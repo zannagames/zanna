@@ -255,6 +255,40 @@ typedef struct {
 } Game3DAudioTestLayout;
 
 typedef struct {
+    double min[3];
+    double max[3];
+    double room;
+    double damping;
+    double wet;
+    int64_t priority;
+} Game3DReverbZoneTestLayout;
+
+typedef struct {
+    double min[3];
+    double max[3];
+    void *clip;
+    int64_t volume;
+} Game3DAmbientBedZoneTestLayout;
+
+typedef struct {
+    Game3DAmbientBedZoneTestLayout zones[16];
+    int32_t zone_count;
+    void *default_clip;
+    int64_t default_volume;
+    double crossfade;
+    int64_t group;
+    int32_t active;
+    int64_t cur_voice;
+    int64_t prev_voice;
+    int64_t cur_volume;
+    int64_t prev_volume;
+    double fade_t;
+} Game3DAmbientBedTestLayout;
+
+extern "C" void game3d_audio_immersion_tick(void *world, double dt);
+extern "C" void game3d_audio_rebase_origin(Game3DAudioTestLayout *audio, const double delta[3]);
+
+typedef struct {
     void *postfx;
     void *items;
     int32_t count;
@@ -6772,6 +6806,34 @@ static bool test_audio_repairs_wrong_class_source_slots() {
                 "Sound3D repair does not release unrelated wrong-class handles");
     rt_game3d_audio_clear_sources(audio);
 
+    void *stopped_source = rt_soundsource3d_new(nullptr);
+    size_t stopped_ref = rt_heap_hdr(stopped_source)->refcnt;
+    rt_obj_retain_maybe(stopped_source);
+    layout->sources[0] = stopped_source;
+    layout->source_count = 1;
+    EXPECT_EQ_INT(rt_game3d_audio_get_source_count(audio),
+                  0,
+                  "Sound3D source count prunes stopped sources before reporting active count");
+    EXPECT_TRUE(rt_heap_hdr(stopped_source)->refcnt == stopped_ref,
+                "Sound3D source count releases its stopped-source retention");
+
+    void *tracked_source = rt_soundsource3d_new(nullptr);
+    rt_obj_retain_maybe(tracked_source);
+    layout->sources[0] = tracked_source;
+    layout->source_count = 1;
+    rt_soundsource3d_set_occlusion(tracked_source, 1.0);
+    rt_game3d_audio_set_occlusion(audio, 1, -1, 1.0);
+    rt_game3d_audio_set_occlusion(audio, 0, -1, 1.0);
+    EXPECT_NEAR(rt_soundsource3d_get_occlusion(tracked_source),
+                0.0,
+                0.001,
+                "disabling Sound3D occlusion clears tracked source muffling");
+    rt_game3d_audio_set_volume(audio, 33);
+    EXPECT_EQ_INT(rt_soundsource3d_get_volume(tracked_source),
+                  33,
+                  "Sound3D master volume updates tracked sources immediately");
+    rt_game3d_audio_clear_sources(audio);
+
     layout->source_count = INT32_MAX;
     layout->source_capacity = 2;
     rt_game3d_world_rebase_origin(world, 1.0, 2.0, 3.0);
@@ -6783,6 +6845,80 @@ static bool test_audio_repairs_wrong_class_source_slots() {
     layout->sources = nullptr;
     layout->source_capacity = 0;
     layout->source_count = 0;
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_audio_immersion_repairs_corrupt_retained_state() {
+    TEST("Sound3D immersion state remains finite, bounded, and canonical");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Audio Immersion Repair Unit"), 32, 24);
+    void *audio = rt_game3d_world_get_audio(world);
+    auto *audio_layout = static_cast<Game3DAudioTestLayout *>(audio);
+    void *zone_obj =
+        rt_game3d_reverbzone_new(rt_vec3_new(-1.0, -2.0, -3.0), rt_vec3_new(1.0, 2.0, 3.0));
+    auto *zone = static_cast<Game3DReverbZoneTestLayout *>(zone_obj);
+
+    zone->min[0] = INFINITY;
+    zone->min[1] = 20.0;
+    zone->max[0] = -INFINITY;
+    zone->max[1] = -20.0;
+    zone->room = NAN;
+    zone->damping = INFINITY;
+    zone->wet = -INFINITY;
+    (void)rt_game3d_reverbzone_get_priority(zone_obj);
+    EXPECT_TRUE(std::isfinite(zone->min[0]) && std::isfinite(zone->max[0]) &&
+                    zone->min[0] <= zone->max[0] && zone->min[1] <= zone->max[1],
+                "ReverbZone3D checked access repairs and orders retained bounds");
+    EXPECT_TRUE(std::isfinite(zone->room) && std::isfinite(zone->damping) &&
+                    std::isfinite(zone->wet) && zone->room >= 0.0 && zone->room <= 1.0 &&
+                    zone->damping >= 0.0 && zone->damping <= 1.0 && zone->wet >= 0.0 &&
+                    zone->wet <= 1.0,
+                "ReverbZone3D checked access repairs retained reverb parameters");
+
+    rt_game3d_audio_add_reverb_zone(audio, zone_obj);
+    zone->min[0] = -1000000000000.0;
+    zone->max[0] = -999999999999.0;
+    const double delta[3] = {1000000000000.0, 0.0, 0.0};
+    game3d_audio_rebase_origin(audio_layout, delta);
+    EXPECT_TRUE(std::fabs(zone->min[0]) <= 1000000000000.0 &&
+                    std::fabs(zone->max[0]) <= 1000000000000.0,
+                "Sound3D rebase keeps reverb-zone bounds inside world coordinates");
+
+    void *bed_obj = rt_game3d_ambientbed_new(world);
+    auto *bed = static_cast<Game3DAmbientBedTestLayout *>(bed_obj);
+    bed->zone_count = INT32_MAX;
+    bed->default_volume = 900;
+    bed->crossfade = NAN;
+    bed->active = INT32_MAX;
+    bed->cur_voice = -9;
+    bed->prev_voice = -10;
+    bed->cur_volume = 500;
+    bed->prev_volume = -500;
+    bed->fade_t = NAN;
+    EXPECT_TRUE(std::isfinite(rt_game3d_ambientbed_get_crossfade(bed_obj)),
+                "AmbientBed3D getter repairs non-finite crossfade state");
+    EXPECT_EQ_INT(rt_game3d_ambientbed_get_active_zone(bed_obj),
+                  -1,
+                  "AmbientBed3D getter hides an out-of-range retained active zone");
+    EXPECT_TRUE(bed->zone_count == 16 && bed->default_volume == 100 && bed->active == -2 &&
+                    bed->cur_voice == 0 && bed->prev_voice == 0 && bed->cur_volume == 100 &&
+                    bed->prev_volume == 0 && std::isfinite(bed->fade_t),
+                "AmbientBed3D checked access persists bounded canonical state");
+
+    bed->zone_count = 0;
+    bed->active = -1;
+    bed->crossfade = 2.0;
+    bed->fade_t = 0.5;
+    bed->cur_voice = INT64_MAX;
+    bed->prev_voice = INT64_MAX;
+    game3d_audio_immersion_tick(world, 0.0);
+    EXPECT_TRUE(bed->cur_voice == 0 && bed->prev_voice == 0,
+                "AmbientBed3D tick reaps finished current and previous voices");
+    bed->fade_t = 0.5;
+    game3d_audio_immersion_tick(world, NAN);
+    EXPECT_TRUE(std::isfinite(bed->fade_t) && bed->fade_t >= 0.0 && bed->fade_t <= 1.0,
+                "Sound3D immersion tick rejects non-finite frame deltas");
+
     rt_game3d_world_destroy(world);
     PASS();
 }
@@ -6854,11 +6990,51 @@ static bool test_phase6_sound3d_and_effects3d_helpers() {
     EXPECT_EQ_INT(rt_game3d_audio_get_volume(audio),
                   100,
                   "Sound3D volume getter clamps corrupt private state");
+    EXPECT_TRUE(audio_view->listener_follow_camera == 1,
+                "Sound3D getter persists a canonical camera-follow flag");
+    EXPECT_NEAR(audio_view->ref_distance,
+                1.0,
+                0.0001,
+                "Sound3D getter persists repaired reference distance");
+    EXPECT_NEAR(
+        audio_view->max_distance, 1.0, 0.0001, "Sound3D getter persists ordered maximum distance");
+    EXPECT_EQ_INT(audio_view->volume, 100, "Sound3D getter persists repaired master volume");
+
+    audio_view->reverb_blend = NAN;
+    audio_view->reverb_room = INFINITY;
+    audio_view->reverb_damp = -INFINITY;
+    audio_view->reverb_wet = NAN;
+    audio_view->reverb_routing = -4;
+    audio_view->occlusion_enabled = -3;
+    audio_view->occlusion_amount = INFINITY;
+    audio_view->occlusion_budget = INT32_MAX;
+    audio_view->occlusion_cursor = -80;
+    EXPECT_TRUE(std::isfinite(rt_game3d_audio_get_reverb_wet(audio)) &&
+                    rt_game3d_audio_get_reverb_wet(audio) == 0.0,
+                "Sound3D reverb getter repairs non-finite retained wet mix");
+    EXPECT_TRUE(std::isfinite(audio_view->reverb_blend) && std::isfinite(audio_view->reverb_room) &&
+                    std::isfinite(audio_view->reverb_damp) && std::isfinite(audio_view->reverb_wet),
+                "Sound3D checked access persists finite reverb state");
+    EXPECT_TRUE(audio_view->reverb_routing == 1 && audio_view->occlusion_enabled == 1,
+                "Sound3D checked access canonicalizes immersion flags");
+    EXPECT_TRUE(std::isfinite(audio_view->occlusion_amount) &&
+                    audio_view->occlusion_amount >= 0.0 && audio_view->occlusion_amount <= 1.0 &&
+                    audio_view->occlusion_budget == 256 && audio_view->occlusion_cursor == 0,
+                "Sound3D checked access repairs retained occlusion controls");
     audio_view->listener = saved_listener;
     audio_view->listener_follow_camera = 0;
     audio_view->ref_distance = 2.0;
     audio_view->max_distance = 12.0;
     audio_view->volume = 70;
+    audio_view->reverb_blend = 0.5;
+    audio_view->reverb_room = 0.5;
+    audio_view->reverb_damp = 0.5;
+    audio_view->reverb_wet = 0.0;
+    audio_view->reverb_routing = 1;
+    audio_view->occlusion_enabled = 0;
+    audio_view->occlusion_amount = 1.0;
+    audio_view->occlusion_budget = 8;
+    audio_view->occlusion_cursor = 0;
     if (wrong_listener && rt_obj_release_check0(wrong_listener))
         rt_obj_free(wrong_listener);
 
@@ -7225,6 +7401,7 @@ int main() {
     ok = test_phase4_collision_events_wrapped_with_entities() && ok;
     ok = test_phase5_animator3d_events_and_root_motion() && ok;
     ok = test_audio_repairs_wrong_class_source_slots() && ok;
+    ok = test_audio_immersion_repairs_corrupt_retained_state() && ok;
     ok = test_phase6_sound3d_and_effects3d_helpers() && ok;
 
     std::printf("\nGame3D runtime tests: %d/%d passed\n", g_tests_passed, g_tests_total);

@@ -1121,6 +1121,13 @@ void rt_camera3d_set_far_plane(void *obj, double far_plane);
 /// @return New GC-managed Vec3 containing the position, or NULL for invalid input/allocation
 /// failure.
 void *rt_camera3d_get_position(void *obj);
+/// @brief Get the camera world-space position without allocating a Vec3 wrapper.
+/// @param obj Borrowed Camera3D handle.
+/// @param x Required output for the sanitized world X coordinate.
+/// @param y Required output for the sanitized world Y coordinate.
+/// @param z Required output for the sanitized world Z coordinate.
+/// @return Nonzero when all outputs were written from a valid camera; otherwise zero.
+int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, double *z);
 /// @brief Move the camera to the given world-space position (Vec3).
 /// @param obj Borrowed Camera3D handle.
 /// @param pos Borrowed Vec3 world-space position.

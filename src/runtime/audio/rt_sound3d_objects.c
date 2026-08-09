@@ -45,7 +45,6 @@
 
 #include "rt_canvas3d.h"
 #include "rt_graphics3d_ids.h"
-#include "rt_mat4.h"
 #include "rt_mixgroup.h"
 #include "rt_platform.h"
 #include "rt_scene3d.h"
@@ -118,6 +117,11 @@ static rt_soundlistener3d *s_active_listener_obj = NULL;
 #define SOUND3D_VELOCITY_ABS_MAX 1000000.0
 #define SOUND3D_DISTANCE_MAX 1000000000.0
 #define SOUND3D_SYNC_DT_MAX 1.0
+#define SOUND3D_PITCH_MIN 0.25
+#define SOUND3D_PITCH_MAX 4.0
+
+static void sound3d_listener_repair_state(rt_soundlistener3d *listener);
+static void sound3d_source_repair_state(rt_soundsource3d *source);
 
 /// @brief Checked cast of an opaque handle to SoundListener3D; NULL on class mismatch.
 /// @param obj Opaque runtime object to validate.
@@ -125,7 +129,9 @@ static rt_soundlistener3d *s_active_listener_obj = NULL;
 static rt_soundlistener3d *sound3d_listener_checked(void *obj) {
     if (!rt_obj_is_instance(obj, RT_G3D_SOUNDLISTENER3D_CLASS_ID, sizeof(rt_soundlistener3d)))
         return NULL;
-    return (rt_soundlistener3d *)obj;
+    rt_soundlistener3d *listener = (rt_soundlistener3d *)obj;
+    sound3d_listener_repair_state(listener);
+    return listener;
 }
 
 /// @brief Checked cast of an opaque handle to SoundSource3D; NULL on class mismatch.
@@ -134,7 +140,9 @@ static rt_soundlistener3d *sound3d_listener_checked(void *obj) {
 static rt_soundsource3d *sound3d_source_checked(void *obj) {
     if (!rt_obj_is_instance(obj, RT_G3D_SOUNDSOURCE3D_CLASS_ID, sizeof(rt_soundsource3d)))
         return NULL;
-    return (rt_soundsource3d *)obj;
+    rt_soundsource3d *source = (rt_soundsource3d *)obj;
+    sound3d_source_repair_state(source);
+    return source;
 }
 
 /// @brief Drop a GC-managed reference stored in `**slot` and null the slot.
@@ -227,6 +235,40 @@ static double sound3d_doppler_or(double value) {
     return value;
 }
 
+/// @brief Clamp an authored pitch multiplier to the range accepted by the mixer.
+/// @param value Requested or retained pitch multiplier.
+/// @return Finite multiplier in `[0.25, 4]`; invalid/non-positive input becomes `1`.
+static double sound3d_pitch_or(double value) {
+    if (!isfinite(value) || value <= 0.0)
+        return 1.0;
+    if (value < SOUND3D_PITCH_MIN)
+        return SOUND3D_PITCH_MIN;
+    if (value > SOUND3D_PITCH_MAX)
+        return SOUND3D_PITCH_MAX;
+    return value;
+}
+
+/// @brief Clamp an occlusion fraction to its canonical mixer domain.
+/// @param value Requested or retained occlusion amount.
+/// @return Finite fraction in `[0, 1]`.
+static double sound3d_occlusion_or(double value) {
+    if (!isfinite(value) || value < 0.0)
+        return 0.0;
+    return value > 1.0 ? 1.0 : value;
+}
+
+/// @brief Compose authored and Doppler pitch without overflowing the mixer input domain.
+/// @param pitch Authored playback-rate multiplier.
+/// @param doppler Spatial Doppler factor.
+/// @return Finite combined playback rate in `[0.25, 4]`.
+static double sound3d_combined_pitch(double pitch, double doppler) {
+    pitch = sound3d_pitch_or(pitch);
+    doppler = sound3d_doppler_or(doppler);
+    if (pitch > SOUND3D_PITCH_MAX / doppler)
+        return SOUND3D_PITCH_MAX;
+    return sound3d_pitch_or(pitch * doppler);
+}
+
 /// @brief Translation-unit-local copy of `rt_sound3d.c::sound3d_copy3`.
 /// @details Null-source-fills-zero convention applies: missing position
 ///   vectors collapse to the origin rather than leaving `dst` untouched.
@@ -311,7 +353,9 @@ static void sound3d_update_velocity(double *velocity,
         dt = 0.0;
     if (dt > SOUND3D_SYNC_DT_MAX)
         dt = SOUND3D_SYNC_DT_MAX;
-    if (*has_last_position && dt > 1e-8) {
+    if (*has_last_position && dt <= 1e-8)
+        return;
+    if (*has_last_position) {
         velocity[0] = sound3d_clamp_abs_or(
             (new_position[0] - last_position[0]) / dt, 0.0, SOUND3D_VELOCITY_ABS_MAX);
         velocity[1] = sound3d_clamp_abs_or(
@@ -338,6 +382,48 @@ static int64_t sound3d_clamp_volume(int64_t volume) {
     if (volume > 100)
         return 100;
     return volume;
+}
+
+/// @brief Repair all retained listener numerics and canonicalize private flags.
+/// @param listener Mutable listener object; NULL is ignored.
+static void sound3d_listener_repair_state(rt_soundlistener3d *listener) {
+    rt_sound3d_listener_state repaired;
+    if (!listener)
+        return;
+    sound3d_listener_sanitized_state(listener, &repaired);
+    listener->state = repaired;
+    listener->state.valid = 1;
+    listener->is_active = s_active_listener_obj == listener ? 1 : 0;
+    listener->has_last_sync_position = listener->has_last_sync_position ? 1 : 0;
+    if (listener->has_last_sync_position)
+        sound3d_copy3(listener->last_sync_position, listener->last_sync_position);
+}
+
+/// @brief Repair all retained source numerics before they reach spatial or mixer code.
+/// @param source Mutable source object; NULL is ignored.
+static void sound3d_source_repair_state(rt_soundsource3d *source) {
+    if (!source)
+        return;
+    sound3d_copy3(source->position, source->position);
+    sound3d_clamp_velocity3(source->velocity);
+    source->doppler_factor = sound3d_doppler_or(source->doppler_factor);
+    source->has_last_sync_position = source->has_last_sync_position ? 1 : 0;
+    if (source->has_last_sync_position)
+        sound3d_copy3(source->last_sync_position, source->last_sync_position);
+    source->ref_distance = sound3d_distance_or(source->ref_distance, 1.0);
+    if (source->ref_distance <= 0.0)
+        source->ref_distance = 1.0;
+    source->max_distance = sound3d_distance_or(source->max_distance, 0.0);
+    if (source->max_distance > 0.0 && source->max_distance < source->ref_distance)
+        source->max_distance = source->ref_distance;
+    source->volume = sound3d_clamp_volume(source->volume);
+    if (source->voice_id < 0)
+        source->voice_id = 0;
+    source->looping = source->looping ? 1 : 0;
+    source->pitch = sound3d_pitch_or(source->pitch);
+    source->occlusion = sound3d_occlusion_or(source->occlusion);
+    if (source->mix_group < 0 || source->mix_group >= RT_MIXGROUP_MAX_GROUPS)
+        source->mix_group = RT_MIXGROUP_SFX;
 }
 
 /// @brief Push a listener onto the head of the global listener list.
@@ -432,17 +518,13 @@ static void sound3d_get_node_world_position(void *node, double *out_position) {
     }
 }
 
-/// @brief Resolve a SceneNode3D's world-space direction.
-/// @details Computes direction as the world-transformed local vector minus the
-///          world-transformed origin — the difference cancels the
-///          translation component, leaving only the rotated direction.
-///          Result is normalised; degenerate transforms fall back to the
-///          supplied fallback. Two `rt_vec3_new` allocations
-///          per call are accepted overhead since this is per-tick, not
-///          per-frame-per-pixel. If many node-bound 3D sources ever make this show up in a
-///          profile, the allocation-free path is an rt_mat4_transform_point/dir variant that
-///          writes into a caller double[3] (no Vec3 wrapper objects), or caching two reusable
-///          scratch Vec3 on the listener/source.
+/// @brief Resolve a SceneNode3D's world-space direction without allocating wrapper objects.
+/// @details Multiplies only the linear 3x3 part of the row-major world matrix,
+///          so translation cannot cancel or clip a valid direction at large
+///          world coordinates. Matrix and input lanes are scaled independently
+///          before multiplication to prevent finite intermediate overflow.
+///          Result is normalized; invalid or degenerate transforms fall back
+///          to the supplied canonical direction.
 /// @param[in] node Optional SceneNode3D object whose transform should be applied.
 /// @param[in] local_direction Local-space direction to transform.
 /// @param[in] fallback Direction copied when the node transform is unavailable or degenerate.
@@ -451,74 +533,64 @@ static void sound3d_get_node_world_direction(void *node,
                                              const double *local_direction,
                                              const double *fallback,
                                              double *out_direction) {
-    void *world_matrix;
-    void *origin_vec;
-    void *direction_vec;
-    void *origin;
-    void *direction;
-    double origin_xyz[3];
-    double direction_xyz[3];
-    double len;
+    double world_matrix[16];
+    double matrix_scale = 0.0;
+    double local_scale;
+    double direction_scale;
+    double length;
+    size_t row;
+    size_t column;
     if (!out_direction)
         return;
-    if (!node) {
+    if (!node || !local_direction ||
+        !rt_scene_node3d_get_world_matrix_components(node, world_matrix)) {
         sound3d_copy3(out_direction, fallback);
         return;
     }
-    world_matrix = rt_scene_node3d_get_world_matrix(node);
-    if (!world_matrix) {
-        sound3d_copy3(out_direction, fallback);
-        return;
-    }
-    origin_vec = rt_vec3_new(0.0, 0.0, 0.0);
-    direction_vec = rt_vec3_new(local_direction[0], local_direction[1], local_direction[2]);
-    if (!origin_vec || !direction_vec) {
-        sound3d_release_local(origin_vec);
-        sound3d_release_local(direction_vec);
-        sound3d_release_local(world_matrix);
-        sound3d_copy3(out_direction, fallback);
-        return;
-    }
-    origin = rt_mat4_transform_point(world_matrix, origin_vec);
-    direction = rt_mat4_transform_point(world_matrix, direction_vec);
-    if (!origin || !direction) {
-        sound3d_release_local(origin_vec);
-        sound3d_release_local(direction_vec);
-        sound3d_release_local(origin);
-        sound3d_release_local(direction);
-        sound3d_release_local(world_matrix);
-        sound3d_copy3(out_direction, fallback);
-        return;
-    }
-    sound3d_vec_from_obj(origin, origin_xyz);
-    sound3d_vec_from_obj(direction, direction_xyz);
-    sound3d_release_local(origin_vec);
-    sound3d_release_local(direction_vec);
-    sound3d_release_local(origin);
-    sound3d_release_local(direction);
-    sound3d_release_local(world_matrix);
-    out_direction[0] = direction_xyz[0] - origin_xyz[0];
-    out_direction[1] = direction_xyz[1] - origin_xyz[1];
-    out_direction[2] = direction_xyz[2] - origin_xyz[2];
-    {
-        double max_abs =
-            fmax(fabs(out_direction[0]), fmax(fabs(out_direction[1]), fabs(out_direction[2])));
-        if (isfinite(max_abs) && max_abs > 0.0) {
-            double x = out_direction[0] / max_abs;
-            double y = out_direction[1] / max_abs;
-            double z = out_direction[2] / max_abs;
-            len = max_abs * sqrt(x * x + y * y + z * z);
-        } else {
-            len = 0.0;
+
+    for (row = 0; row < 3; ++row) {
+        for (column = 0; column < 3; ++column) {
+            double lane = fabs(world_matrix[row * 4 + column]);
+            if (!isfinite(lane)) {
+                sound3d_copy3(out_direction, fallback);
+                return;
+            }
+            if (lane > matrix_scale)
+                matrix_scale = lane;
         }
     }
-    if (!isfinite(len) || len <= 1e-8) {
+    local_scale =
+        fmax(fabs(local_direction[0]), fmax(fabs(local_direction[1]), fabs(local_direction[2])));
+    if (!isfinite(matrix_scale) || matrix_scale <= 0.0 || !isfinite(local_scale) ||
+        local_scale <= 0.0) {
         sound3d_copy3(out_direction, fallback);
         return;
     }
-    out_direction[0] /= len;
-    out_direction[1] /= len;
-    out_direction[2] /= len;
+
+    for (row = 0; row < 3; ++row) {
+        out_direction[row] =
+            (world_matrix[row * 4] / matrix_scale) * (local_direction[0] / local_scale) +
+            (world_matrix[row * 4 + 1] / matrix_scale) * (local_direction[1] / local_scale) +
+            (world_matrix[row * 4 + 2] / matrix_scale) * (local_direction[2] / local_scale);
+    }
+    direction_scale =
+        fmax(fabs(out_direction[0]), fmax(fabs(out_direction[1]), fabs(out_direction[2])));
+    if (!isfinite(direction_scale) || direction_scale <= 1e-8) {
+        sound3d_copy3(out_direction, fallback);
+        return;
+    }
+    out_direction[0] /= direction_scale;
+    out_direction[1] /= direction_scale;
+    out_direction[2] /= direction_scale;
+    length = sqrt(out_direction[0] * out_direction[0] + out_direction[1] * out_direction[1] +
+                  out_direction[2] * out_direction[2]);
+    if (!isfinite(length) || length <= 1e-8) {
+        sound3d_copy3(out_direction, fallback);
+        return;
+    }
+    out_direction[0] /= length;
+    out_direction[1] /= length;
+    out_direction[2] /= length;
 }
 
 /// @brief World-space forward of @p node (its local -Z mapped through the node transform).
@@ -571,6 +643,7 @@ static void sound3d_listener_sync_binding(rt_soundlistener3d *listener, double d
     double up[3];
     if (!listener)
         return;
+    sound3d_listener_repair_state(listener);
 
     if (listener->bound_camera) {
         void *camera = rt_g3d_has_class(listener->bound_camera, RT_G3D_CAMERA3D_CLASS_ID)
@@ -579,13 +652,17 @@ static void sound3d_listener_sync_binding(rt_soundlistener3d *listener, double d
         if (!camera) {
             listener->bound_camera = NULL;
         } else {
-            void *camera_position = rt_camera3d_get_position(camera);
             void *camera_forward = rt_camera3d_get_forward(camera);
-            sound3d_vec_from_obj(camera_position, position);
-            sound3d_vec_from_obj(camera_forward, forward);
-            sound3d_copy3(up, listener->state.up);
-            sound3d_release_local(camera_position);
+            void *camera_up = rt_camera3d_get_up(camera);
+            if (!rt_camera3d_get_position_components(
+                    camera, &position[0], &position[1], &position[2]))
+                sound3d_copy3(position, listener->state.position);
+            if (!camera_forward || !sound3d_vec_from_obj(camera_forward, forward))
+                sound3d_copy3(forward, listener->state.forward);
+            if (!camera_up || !sound3d_vec_from_obj(camera_up, up))
+                sound3d_copy3(up, listener->state.up);
             sound3d_release_local(camera_forward);
+            sound3d_release_local(camera_up);
             sound3d_update_velocity(listener->state.velocity,
                                     listener->last_sync_position,
                                     &listener->has_last_sync_position,
@@ -687,8 +764,7 @@ static void sound3d_source_apply_spatial(rt_soundsource3d *source) {
     /* Doppler and the user pitch compose multiplicatively into the voice's
      * playback rate; occlusion is forwarded for the mixer's smoothed sweep. */
     rt_voice_set_pitch(source->voice_id,
-                       sound3d_doppler_or(source->doppler_factor) *
-                           (source->pitch > 0.0 ? source->pitch : 1.0));
+                       sound3d_combined_pitch(source->pitch, source->doppler_factor));
     rt_voice_set_occlusion(source->voice_id, source->occlusion);
 }
 
@@ -724,6 +800,7 @@ static void sound3d_source_sync_binding(rt_soundsource3d *source, double dt) {
     double position[3];
     if (!source || !source->bound_node)
         return;
+    sound3d_source_repair_state(source);
     if (!rt_g3d_has_class(source->bound_node, RT_G3D_SCENENODE3D_CLASS_ID)) {
         source->bound_node = NULL;
         return;
@@ -843,7 +920,7 @@ void *rt_soundlistener3d_get_position(void *obj) {
 void rt_soundlistener3d_set_position(void *obj, void *position) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double pos[3];
-    if (!listener)
+    if (!listener || !position)
         return;
     if (!sound3d_vec_from_obj(position, pos))
         return;
@@ -859,9 +936,14 @@ void rt_soundlistener3d_set_position(void *obj, void *position) {
 /// @param y World Y coordinate.
 /// @param z World Z coordinate.
 void rt_soundlistener3d_set_position_vec(void *obj, double x, double y, double z) {
-    void *position = rt_vec3_new(x, y, z);
-    rt_soundlistener3d_set_position(obj, position);
-    sound3d_release_local(position);
+    rt_soundlistener3d *listener = sound3d_listener_checked(obj);
+    const double position[3] = {x, y, z};
+    if (!listener)
+        return;
+    sound3d_copy3(listener->state.position, position);
+    sound3d_copy3(listener->last_sync_position, listener->state.position);
+    listener->has_last_sync_position = 1;
+    sound3d_listener_push_active_state(listener);
 }
 
 /// @brief Read the listener's world-space forward (look-at) vector. Re-syncs binding first
@@ -885,7 +967,7 @@ void *rt_soundlistener3d_get_forward(void *obj) {
 void rt_soundlistener3d_set_forward(void *obj, void *forward) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double fwd[3];
-    if (!listener)
+    if (!listener || !forward)
         return;
     if (!sound3d_vec_from_obj(forward, fwd))
         return;
@@ -918,7 +1000,7 @@ void *rt_soundlistener3d_get_up(void *obj) {
 void rt_soundlistener3d_set_up(void *obj, void *up) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
     double upv[3];
-    if (!listener)
+    if (!listener || !up)
         return;
     if (!sound3d_vec_from_obj(up, upv))
         return;
@@ -949,7 +1031,7 @@ void *rt_soundlistener3d_get_velocity(void *obj) {
 /// @param velocity Vec3 world velocity.
 void rt_soundlistener3d_set_velocity(void *obj, void *velocity) {
     rt_soundlistener3d *listener = sound3d_listener_checked(obj);
-    if (!listener)
+    if (!listener || !velocity)
         return;
     if (!sound3d_vec_from_obj(velocity, listener->state.velocity))
         return;
@@ -1099,7 +1181,7 @@ void *rt_soundsource3d_get_position(void *obj) {
 /// @param position Vec3 world position.
 void rt_soundsource3d_set_position(void *obj, void *position) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
-    if (!source)
+    if (!source || !position)
         return;
     if (!sound3d_vec_from_obj(position, source->position))
         return;
@@ -1114,9 +1196,14 @@ void rt_soundsource3d_set_position(void *obj, void *position) {
 /// @param y World Y coordinate.
 /// @param z World Z coordinate.
 void rt_soundsource3d_set_position_vec(void *obj, double x, double y, double z) {
-    void *position = rt_vec3_new(x, y, z);
-    rt_soundsource3d_set_position(obj, position);
-    sound3d_release_local(position);
+    rt_soundsource3d *source = sound3d_source_checked(obj);
+    const double position[3] = {x, y, z};
+    if (!source)
+        return;
+    sound3d_copy3(source->position, position);
+    sound3d_copy3(source->last_sync_position, source->position);
+    source->has_last_sync_position = 1;
+    sound3d_source_apply_spatial(source);
 }
 
 /// @brief Shift a source's stored position by a floating-origin rebase delta.
@@ -1134,13 +1221,18 @@ void rt_soundsource3d_rebase_origin(void *obj, double dx, double dy, double dz) 
         return;
     if (source->bound_node && rt_g3d_has_class(source->bound_node, RT_G3D_SCENENODE3D_CLASS_ID))
         return;
-    source->position[0] -= dx;
-    source->position[1] -= dy;
-    source->position[2] -= dz;
+    const double delta[3] = {sound3d_clamp_abs_or(dx, 0.0, SOUND3D_COMPONENT_ABS_MAX),
+                             sound3d_clamp_abs_or(dy, 0.0, SOUND3D_COMPONENT_ABS_MAX),
+                             sound3d_clamp_abs_or(dz, 0.0, SOUND3D_COMPONENT_ABS_MAX)};
+    for (int lane = 0; lane < 3; lane++) {
+        source->position[lane] = sound3d_clamp_abs_or(
+            source->position[lane] - delta[lane], 0.0, SOUND3D_COMPONENT_ABS_MAX);
+    }
     if (source->has_last_sync_position) {
-        source->last_sync_position[0] -= dx;
-        source->last_sync_position[1] -= dy;
-        source->last_sync_position[2] -= dz;
+        for (int lane = 0; lane < 3; lane++) {
+            source->last_sync_position[lane] = sound3d_clamp_abs_or(
+                source->last_sync_position[lane] - delta[lane], 0.0, SOUND3D_COMPONENT_ABS_MAX);
+        }
     }
     sound3d_source_apply_spatial(source);
 }
@@ -1165,11 +1257,12 @@ void *rt_soundsource3d_get_velocity(void *obj) {
 /// @param velocity Vec3 world velocity.
 void rt_soundsource3d_set_velocity(void *obj, void *velocity) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
-    if (!source)
+    if (!source || !velocity)
         return;
     if (!sound3d_vec_from_obj(velocity, source->velocity))
         return;
     sound3d_clamp_velocity3(source->velocity);
+    source->has_last_sync_position = 0;
     sound3d_source_apply_spatial(source);
 }
 
@@ -1258,7 +1351,7 @@ void rt_soundsource3d_set_volume(void *obj, int64_t volume) {
 /// @return Positive user multiplier, or `1` for invalid/unset state.
 double rt_soundsource3d_get_pitch(void *obj) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
-    return source && source->pitch > 0.0 ? source->pitch : 1.0;
+    return source ? source->pitch : 1.0;
 }
 
 /// @brief Set the source's user playback-rate multiplier.
@@ -1271,9 +1364,7 @@ void rt_soundsource3d_set_pitch(void *obj, double pitch) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
         return;
-    if (!isfinite(pitch) || pitch <= 0.0)
-        pitch = 1.0;
-    source->pitch = pitch;
+    source->pitch = sound3d_pitch_or(pitch);
     sound3d_source_apply_spatial(source);
 }
 
@@ -1295,11 +1386,7 @@ void rt_soundsource3d_set_occlusion(void *obj, double amount) {
     rt_soundsource3d *source = sound3d_source_checked(obj);
     if (!source)
         return;
-    if (!isfinite(amount) || amount < 0.0)
-        amount = 0.0;
-    if (amount > 1.0)
-        amount = 1.0;
-    source->occlusion = amount;
+    source->occlusion = sound3d_occlusion_or(amount);
     sound3d_source_apply_spatial(source);
 }
 
@@ -1387,6 +1474,9 @@ int64_t rt_soundsource3d_play(void *obj) {
                                  source->ref_distance,
                                  source->max_distance,
                                  sound3d_clamp_volume(source->volume));
+    rt_voice_set_pitch(source->voice_id,
+                       sound3d_combined_pitch(source->pitch, source->doppler_factor));
+    rt_voice_set_occlusion(source->voice_id, source->occlusion);
     return source->voice_id;
 }
 

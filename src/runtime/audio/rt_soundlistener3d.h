@@ -7,7 +7,13 @@
 //
 // File: src/runtime/audio/rt_soundlistener3d.h
 // Purpose: Gameplay-facing active-listener object for 3D audio.
-//
+// Key invariants:
+//   - Exactly one live listener identity is active at a time.
+//   - Stored pose and velocity are repaired before observation or mixer publication.
+// Ownership/Lifetime:
+//   - Listeners retain optional SceneNode3D and Camera3D bindings.
+//   - The active-listener global is weak and cleared during finalization.
+// Links: rt_sound3d.h, rt_soundsource3d.h, rt_scene3d.h, rt_canvas3d.h
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -35,7 +41,7 @@ void *rt_soundlistener3d_new(void);
 void *rt_soundlistener3d_get_position(void *listener);
 /// @brief Set the listener's position from a Vec3 handle.
 /// @param listener Listener object.
-/// @param position Vec3 world position.
+/// @param position Vec3 world position; NULL/invalid handles are ignored.
 void rt_soundlistener3d_set_position(void *listener, void *position);
 /// @brief Set the listener's position from raw scalar coordinates.
 /// @param listener Listener object.
@@ -50,7 +56,7 @@ void rt_soundlistener3d_set_position_vec(void *listener, double x, double y, dou
 void *rt_soundlistener3d_get_forward(void *listener);
 /// @brief Set the listener's forward direction.
 /// @param listener Listener object.
-/// @param forward Vec3 direction; the spatial core normalizes it.
+/// @param forward Vec3 direction; the spatial core normalizes it. NULL is ignored.
 void rt_soundlistener3d_set_forward(void *listener, void *forward);
 
 /// @brief Get the listener's up direction as a Vec3.
@@ -59,7 +65,7 @@ void rt_soundlistener3d_set_forward(void *listener, void *forward);
 void *rt_soundlistener3d_get_up(void *listener);
 /// @brief Set the listener's up direction.
 /// @param listener Listener object.
-/// @param up Vec3 direction orthonormalized against forward.
+/// @param up Vec3 direction orthonormalized against forward; NULL is ignored.
 void rt_soundlistener3d_set_up(void *listener, void *up);
 
 /// @brief Get the listener's velocity (used for Doppler shift).
@@ -68,7 +74,7 @@ void rt_soundlistener3d_set_up(void *listener, void *up);
 void *rt_soundlistener3d_get_velocity(void *listener);
 /// @brief Set the listener's velocity.
 /// @param listener Listener object.
-/// @param velocity Vec3 world velocity.
+/// @param velocity Vec3 world velocity; NULL is ignored.
 void rt_soundlistener3d_set_velocity(void *listener, void *velocity);
 
 /// @brief True if this listener is the currently-active spatial-audio listener.
@@ -88,8 +94,10 @@ void rt_soundlistener3d_bind_node(void *listener, void *node);
 /// @brief Detach from any bound scene node.
 /// @param listener Listener object; the last synchronized pose is preserved.
 void rt_soundlistener3d_clear_node_binding(void *listener);
-/// @brief Bind to a Camera3D; listener follows the camera's view position/forward each frame.
-/// @details Replaces and releases any prior camera/node binding.
+/// @brief Bind to a Camera3D; listener follows the complete camera view pose each frame.
+/// @details Position, forward, and rolled up direction are synchronized. Zero-delta
+/// binding refreshes update pose without consuming the next velocity sample.
+/// Replaces and releases any prior camera/node binding.
 /// @param listener Listener object.
 /// @param camera Camera3D to retain, or NULL to clear.
 void rt_soundlistener3d_bind_camera(void *listener, void *camera);

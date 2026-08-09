@@ -7,7 +7,13 @@
 //
 // File: src/runtime/audio/rt_soundsource3d.h
 // Purpose: Gameplay-facing spatial source object for 3D audio.
-//
+// Key invariants:
+//   - Retained position, velocity, attenuation, and mixer state are finite and bounded.
+//   - Floating-origin rebases update current and synchronization positions together.
+// Ownership/Lifetime:
+//   - Sources retain their Sound and optional SceneNode3D binding.
+//   - Each source owns at most one transient mixer voice identifier.
+// Links: rt_sound3d.h, rt_soundlistener3d.h, rt_scene3d.h
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -36,7 +42,7 @@ void *rt_soundsource3d_new(void *sound);
 void *rt_soundsource3d_get_position(void *source);
 /// @brief Set the source's position from a Vec3 handle.
 /// @param source Source object.
-/// @param position Vec3 world position.
+/// @param position Vec3 world position; NULL/invalid handles are ignored.
 void rt_soundsource3d_set_position(void *source, void *position);
 /// @brief Set the source's position from raw scalar coordinates.
 /// @param source Source object.
@@ -57,7 +63,7 @@ void rt_soundsource3d_rebase_origin(void *source, double dx, double dy, double d
 void *rt_soundsource3d_get_velocity(void *source);
 /// @brief Set the source's velocity vector.
 /// @param source Source object.
-/// @param velocity Vec3 world velocity.
+/// @param velocity Vec3 world velocity; NULL/invalid handles are ignored.
 void rt_soundsource3d_set_velocity(void *source, void *velocity);
 /// @brief Get the latest Doppler pitch factor computed from listener/source velocity.
 /// @param source Source object.
@@ -92,11 +98,11 @@ void rt_soundsource3d_set_volume(void *source, int64_t volume);
 
 /// @brief Get the user playback-rate multiplier (1.0 default; composes with Doppler).
 /// @param source Source object.
-/// @return Positive user multiplier, or `1` for invalid input.
+/// @return Bounded multiplier in `[0.25, 4]`, or `1` for invalid input.
 double rt_soundsource3d_get_pitch(void *source);
 /// @brief Set the user playback-rate multiplier (applies immediately to a live voice).
 /// @param source Source object.
-/// @param pitch Positive multiplier; invalid input resets to `1`.
+/// @param pitch Positive multiplier clamped to `[0.25, 4]`; invalid input resets to `1`.
 void rt_soundsource3d_set_pitch(void *source, double pitch);
 /// @brief Get the occlusion amount (0 open .. 1 fully occluded).
 /// @param source Source object.

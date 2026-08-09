@@ -28,6 +28,7 @@
 /// API in `rt_game3d.h` rather than depending on these layouts or helper contracts.
 #pragma once
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1377,6 +1378,64 @@ static inline rt_game3d_entity *game3d_entity_checked(void *obj, const char *met
 /// @param obj Opaque handle supplied by a public API caller.
 /// @param method Diagnostic message used when validation fails.
 /// @return Typed Sound3D payload, or `NULL` after recording the trap.
+static inline void game3d_audio_repair_scalar_state(rt_game3d_audio *audio) {
+    if (!audio)
+        return;
+    if (!isfinite(audio->ref_distance) || audio->ref_distance <= 0.0)
+        audio->ref_distance = RT_GAME3D_DEFAULT_AUDIO_REF_DISTANCE;
+    else if (audio->ref_distance > RT_GAME3D_AUDIO_DISTANCE_MAX)
+        audio->ref_distance = RT_GAME3D_AUDIO_DISTANCE_MAX;
+    if (!isfinite(audio->max_distance) || audio->max_distance <= 0.0)
+        audio->max_distance = RT_GAME3D_DEFAULT_AUDIO_MAX_DISTANCE;
+    else if (audio->max_distance > RT_GAME3D_AUDIO_DISTANCE_MAX)
+        audio->max_distance = RT_GAME3D_AUDIO_DISTANCE_MAX;
+    if (audio->max_distance < audio->ref_distance)
+        audio->max_distance = audio->ref_distance;
+    if (audio->volume < 0)
+        audio->volume = 0;
+    else if (audio->volume > 100)
+        audio->volume = 100;
+    audio->listener_follow_camera = audio->listener_follow_camera ? 1 : 0;
+    audio->reverb_routing = audio->reverb_routing ? 1 : 0;
+    audio->occlusion_enabled = audio->occlusion_enabled ? 1 : 0;
+    if (!isfinite(audio->reverb_blend) || audio->reverb_blend < 0.0)
+        audio->reverb_blend = 0.5;
+    if (!isfinite(audio->reverb_room))
+        audio->reverb_room = 0.5;
+    else if (audio->reverb_room < 0.0)
+        audio->reverb_room = 0.0;
+    else if (audio->reverb_room > 1.0)
+        audio->reverb_room = 1.0;
+    if (!isfinite(audio->reverb_damp))
+        audio->reverb_damp = 0.5;
+    else if (audio->reverb_damp < 0.0)
+        audio->reverb_damp = 0.0;
+    else if (audio->reverb_damp > 1.0)
+        audio->reverb_damp = 1.0;
+    if (!isfinite(audio->reverb_wet) || audio->reverb_wet < 0.0)
+        audio->reverb_wet = 0.0;
+    else if (audio->reverb_wet > 1.0)
+        audio->reverb_wet = 1.0;
+    if (!isfinite(audio->occlusion_amount))
+        audio->occlusion_amount = 1.0;
+    else if (audio->occlusion_amount < 0.0)
+        audio->occlusion_amount = 0.0;
+    else if (audio->occlusion_amount > 1.0)
+        audio->occlusion_amount = 1.0;
+    if (audio->occlusion_budget <= 0)
+        audio->occlusion_budget = 8;
+    else if (audio->occlusion_budget > 256)
+        audio->occlusion_budget = 256;
+    if (audio->occlusion_cursor < 0)
+        audio->occlusion_cursor = 0;
+    if (audio->reverb_group < -1)
+        audio->reverb_group = -1;
+    if (audio->reverb_fx < -1)
+        audio->reverb_fx = -1;
+    if (audio->dialogue_group < -1)
+        audio->dialogue_group = -1;
+}
+
 static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *method) {
     rt_game3d_audio *audio =
         rt_obj_is_instance(obj, RT_G3D_GAME3D_SOUND_CLASS_ID, sizeof(rt_game3d_audio))
@@ -1384,6 +1443,8 @@ static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *metho
             : NULL;
     if (!audio)
         rt_trap(method);
+    else
+        game3d_audio_repair_scalar_state(audio);
     return audio;
 }
 

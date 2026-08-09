@@ -8,11 +8,19 @@
 // File: src/tests/unit/test_rt_sound3d_objects.cpp
 // Purpose: Unit tests for SoundListener3D / SoundSource3D bindings and basic
 //   playback lifecycle.
+// Key invariants:
+//   - Object access repairs retained numeric state before it reaches the mixer.
+//   - Bound transforms and active-listener selection remain deterministic.
+// Ownership/Lifetime:
+//   - Runtime objects are GC-managed by the test runtime for process lifetime.
+//   - Private-layout views are borrowed only for adversarial state injection.
+// Links: src/runtime/audio/rt_sound3d_objects.c, src/runtime/audio/rt_sound3d.c
 //
 //===----------------------------------------------------------------------===//
 
 #include "rt_audio.h"
 #include "rt_canvas3d.h"
+#include "rt_mixgroup.h"
 #include "rt_scene3d.h"
 #include "rt_sound3d.h"
 #include "rt_soundlistener3d.h"
@@ -90,6 +98,7 @@ static void test_listener_follows_bound_camera() {
     void *listener = rt_soundlistener3d_new();
     void *pos;
     void *forward;
+    void *up;
     void *vel;
 
     rt_camera3d_look_at(
@@ -114,6 +123,24 @@ static void test_listener_follows_bound_camera() {
     EXPECT_NEAR(
         rt_vec3_x(vel), 4.0, 0.05, "SoundListener3D computes velocity from bound camera motion");
     EXPECT_NEAR(rt_vec3_z(vel), 0.0, 0.05, "SoundListener3D velocity stays flat on unchanged Z");
+
+    rt_camera3d_look_at(
+        camera, rt_vec3_new(7.0, 2.0, 6.0), rt_vec3_new(7.0, 2.0, 5.0), rt_vec3_new(0.0, 1.0, 0.0));
+    pos = rt_soundlistener3d_get_position(listener);
+    EXPECT_NEAR(
+        rt_vec3_x(pos), 7.0, 0.001, "SoundListener3D getter refreshes a moved bound camera");
+    rt_sound3d_sync_bindings(0.5);
+    vel = rt_soundlistener3d_get_velocity(listener);
+    EXPECT_NEAR(
+        rt_vec3_x(vel), 8.0, 0.05, "zero-delta binding refresh preserves the velocity baseline");
+
+    rt_camera3d_look_at(
+        camera, rt_vec3_new(7.0, 2.0, 6.0), rt_vec3_new(7.0, 2.0, 5.0), rt_vec3_new(1.0, 0.0, 0.0));
+    rt_sound3d_sync_bindings(0.25);
+    up = rt_soundlistener3d_get_up(listener);
+    EXPECT_NEAR(rt_vec3_x(up), 1.0, 0.001, "SoundListener3D follows bound camera roll X");
+    EXPECT_NEAR(rt_vec3_y(up), 0.0, 0.001, "SoundListener3D follows bound camera roll Y");
+    EXPECT_NEAR(rt_vec3_z(up), 0.0, 0.001, "SoundListener3D follows bound camera roll Z");
 }
 
 static void test_source_follows_bound_node_in_world_space() {
@@ -148,6 +175,70 @@ static void test_source_follows_bound_node_in_world_space() {
     EXPECT_NEAR(rt_vec3_z(vel), 2.0, 0.05, "SoundSource3D computes bound-node Z velocity");
 }
 
+static void test_bound_source_manual_velocity_survives_one_sync() {
+    void *node = rt_scene_node3d_new();
+    void *source = rt_soundsource3d_new(nullptr);
+    void *velocity;
+
+    rt_soundsource3d_bind_node(source, node);
+    rt_soundsource3d_set_velocity(source, rt_vec3_new(5.0, 0.0, 0.0));
+    rt_scene_node3d_set_position(node, 2.0, 0.0, 0.0);
+    rt_sound3d_sync_bindings(0.5);
+    velocity = rt_soundsource3d_get_velocity(source);
+    EXPECT_NEAR(rt_vec3_x(velocity),
+                5.0,
+                0.001,
+                "manual source velocity survives the promised next bound sync");
+
+    rt_scene_node3d_set_position(node, 4.0, 0.0, 0.0);
+    rt_sound3d_sync_bindings(0.5);
+    velocity = rt_soundsource3d_get_velocity(source);
+    EXPECT_NEAR(
+        rt_vec3_x(velocity), 4.0, 0.05, "bound source resumes derived velocity after one sync");
+}
+
+static void test_listener_bound_node_direction_ignores_large_translation() {
+    void *node = rt_scene_node3d_new();
+    void *listener = rt_soundlistener3d_new();
+    void *forward;
+    void *up;
+    const double half_sqrt_two = std::sqrt(0.5);
+
+    rt_scene_node3d_set_transform(node,
+                                  1000000000000.0,
+                                  -1000000000000.0,
+                                  1000000000000.0,
+                                  0.0,
+                                  -half_sqrt_two,
+                                  0.0,
+                                  half_sqrt_two,
+                                  3.0,
+                                  2.0,
+                                  4.0);
+    rt_soundlistener3d_bind_node(listener, node);
+    rt_sound3d_sync_bindings(0.25);
+
+    forward = rt_soundlistener3d_get_forward(listener);
+    up = rt_soundlistener3d_get_up(listener);
+    EXPECT_NEAR(rt_vec3_x(forward),
+                1.0,
+                0.001,
+                "SoundListener3D node forward ignores large world translation");
+    EXPECT_NEAR(
+        rt_vec3_y(forward), 0.0, 0.001, "SoundListener3D node forward remains normalized on Y");
+    EXPECT_NEAR(
+        rt_vec3_z(forward), 0.0, 0.001, "SoundListener3D node forward applies world rotation");
+    EXPECT_NEAR(rt_vec3_x(up),
+                0.0,
+                0.001,
+                "SoundListener3D node up remains orthogonal after nonuniform scale");
+    EXPECT_NEAR(rt_vec3_y(up),
+                1.0,
+                0.001,
+                "SoundListener3D node up remains normalized after nonuniform scale");
+    EXPECT_NEAR(rt_vec3_z(up), 0.0, 0.001, "SoundListener3D node up applies world orientation");
+}
+
 static void test_invalid_audio_handles_are_ignored() {
     void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
     void *node = rt_scene_node3d_new();
@@ -157,9 +248,32 @@ static void test_invalid_audio_handles_are_ignored() {
 
     rt_soundsource3d_set_position(source, rt_vec3_new(2.0, 3.0, 4.0));
     rt_soundsource3d_set_position(source, listener);
+    rt_soundsource3d_set_position(source, nullptr);
     pos = rt_soundsource3d_get_position(source);
     EXPECT_NEAR(rt_vec3_x(pos), 2.0, 0.001, "SoundSource3D ignores non-Vec3 position handles");
     EXPECT_NEAR(rt_vec3_y(pos), 3.0, 0.001, "SoundSource3D keeps Y after bad position handle");
+
+    rt_soundsource3d_set_velocity(source, rt_vec3_new(6.0, 7.0, 8.0));
+    rt_soundsource3d_set_velocity(source, nullptr);
+    void *velocity = rt_soundsource3d_get_velocity(source);
+    EXPECT_NEAR(rt_vec3_x(velocity), 6.0, 0.001, "SoundSource3D ignores null velocity handles");
+
+    rt_soundlistener3d_set_position(listener, rt_vec3_new(4.0, 5.0, 6.0));
+    rt_soundlistener3d_set_position(listener, nullptr);
+    pos = rt_soundlistener3d_get_position(listener);
+    EXPECT_NEAR(rt_vec3_x(pos), 4.0, 0.001, "SoundListener3D ignores null position handles");
+    rt_soundlistener3d_set_forward(listener, rt_vec3_new(1.0, 0.0, 0.0));
+    rt_soundlistener3d_set_forward(listener, nullptr);
+    void *direction = rt_soundlistener3d_get_forward(listener);
+    EXPECT_NEAR(rt_vec3_x(direction), 1.0, 0.001, "SoundListener3D ignores null forward handles");
+    rt_soundlistener3d_set_up(listener, rt_vec3_new(0.0, 0.0, 1.0));
+    rt_soundlistener3d_set_up(listener, nullptr);
+    direction = rt_soundlistener3d_get_up(listener);
+    EXPECT_NEAR(rt_vec3_z(direction), 1.0, 0.001, "SoundListener3D ignores null up handles");
+    rt_soundlistener3d_set_velocity(listener, rt_vec3_new(9.0, 8.0, 7.0));
+    rt_soundlistener3d_set_velocity(listener, nullptr);
+    velocity = rt_soundlistener3d_get_velocity(listener);
+    EXPECT_NEAR(rt_vec3_x(velocity), 9.0, 0.001, "SoundListener3D ignores null velocity handles");
 
     rt_scene_node3d_set_position(node, 5.0, 0.0, 0.0);
     rt_soundsource3d_bind_node(source, node);
@@ -285,6 +399,10 @@ static void test_object_getters_sanitize_corrupt_private_state() {
     listener->state.velocity[0] = 1.0e300;
     listener->state.velocity[1] = -1.0e300;
     listener->state.velocity[2] = std::numeric_limits<double>::quiet_NaN();
+    listener->last_sync_position[0] = std::numeric_limits<double>::infinity();
+    listener->last_sync_position[1] = -std::numeric_limits<double>::infinity();
+    listener->last_sync_position[2] = std::numeric_limits<double>::quiet_NaN();
+    listener->has_last_sync_position = -5;
     listener->is_active = -7;
 
     void *listener_pos = rt_soundlistener3d_get_position(listener);
@@ -305,8 +423,21 @@ static void test_object_getters_sanitize_corrupt_private_state() {
                     std::fabs(rt_vec3_y(listener_velocity)) <= 1000000.0 &&
                     std::isfinite(rt_vec3_z(listener_velocity)),
                 "SoundListener3D.GetVelocity keeps corrupt velocity within Doppler bounds");
-    EXPECT_TRUE(rt_soundlistener3d_get_is_active(listener) == 1,
-                "SoundListener3D.IsActive normalizes corrupt nonzero flags");
+    EXPECT_TRUE(rt_soundlistener3d_get_is_active(listener) == 0,
+                "SoundListener3D.IsActive follows the unique active-listener identity");
+    EXPECT_TRUE(std::isfinite(listener->state.position[0]) &&
+                    std::isfinite(listener->state.forward[0]) &&
+                    std::isfinite(listener->state.up[0]),
+                "SoundListener3D getters persist repaired pose state");
+    EXPECT_TRUE(std::fabs(listener->state.velocity[0]) <= 1000000.0 &&
+                    std::fabs(listener->state.velocity[1]) <= 1000000.0 &&
+                    std::isfinite(listener->state.velocity[2]),
+                "SoundListener3D getters persist repaired velocity state");
+    EXPECT_TRUE(listener->has_last_sync_position == 1 &&
+                    std::isfinite(listener->last_sync_position[0]) &&
+                    std::isfinite(listener->last_sync_position[1]) &&
+                    std::isfinite(listener->last_sync_position[2]),
+                "SoundListener3D repairs retained synchronization state");
 
     source->bound_node = nullptr;
     source->position[0] = std::numeric_limits<double>::infinity();
@@ -315,9 +446,19 @@ static void test_object_getters_sanitize_corrupt_private_state() {
     source->velocity[0] = 1.0e300;
     source->velocity[1] = -1.0e300;
     source->velocity[2] = std::numeric_limits<double>::quiet_NaN();
+    source->doppler_factor = std::numeric_limits<double>::quiet_NaN();
+    source->last_sync_position[0] = std::numeric_limits<double>::infinity();
+    source->last_sync_position[1] = -std::numeric_limits<double>::infinity();
+    source->last_sync_position[2] = std::numeric_limits<double>::quiet_NaN();
+    source->has_last_sync_position = -4;
+    source->ref_distance = std::numeric_limits<double>::infinity();
+    source->max_distance = -std::numeric_limits<double>::infinity();
     source->volume = 500;
     source->looping = -9;
     source->voice_id = -42;
+    source->pitch = std::numeric_limits<double>::max();
+    source->occlusion = std::numeric_limits<double>::quiet_NaN();
+    source->mix_group = std::numeric_limits<int64_t>::max();
     void *source_pos = rt_soundsource3d_get_position(source);
     void *source_velocity = rt_soundsource3d_get_velocity(source);
     EXPECT_TRUE(std::isfinite(rt_vec3_x(source_pos)) && std::isfinite(rt_vec3_y(source_pos)) &&
@@ -335,6 +476,48 @@ static void test_object_getters_sanitize_corrupt_private_state() {
                 "SoundSource3D.IsPlaying rejects corrupt negative voice ids");
     EXPECT_TRUE(rt_soundsource3d_get_voice_id(source) == 0,
                 "SoundSource3D.VoiceId clears corrupt negative voice ids");
+    EXPECT_TRUE(std::isfinite(source->position[0]) && std::isfinite(source->position[1]) &&
+                    std::isfinite(source->position[2]),
+                "SoundSource3D getters persist repaired coordinates");
+    EXPECT_TRUE(std::fabs(source->velocity[0]) <= 1000000.0 &&
+                    std::fabs(source->velocity[1]) <= 1000000.0 &&
+                    std::isfinite(source->velocity[2]),
+                "SoundSource3D getters persist repaired velocity");
+    EXPECT_NEAR(source->doppler_factor, 1.0, 0.001, "SoundSource3D repairs cached Doppler");
+    EXPECT_NEAR(rt_soundsource3d_get_ref_distance(source),
+                1.0,
+                0.001,
+                "SoundSource3D repairs corrupt reference distance");
+    EXPECT_NEAR(rt_soundsource3d_get_max_distance(source),
+                0.0,
+                0.001,
+                "SoundSource3D repairs corrupt maximum distance");
+    EXPECT_NEAR(rt_soundsource3d_get_pitch(source),
+                4.0,
+                0.001,
+                "SoundSource3D caps retained pitch to mixer range");
+    EXPECT_NEAR(rt_soundsource3d_get_occlusion(source),
+                0.0,
+                0.001,
+                "SoundSource3D repairs corrupt occlusion");
+    EXPECT_TRUE(rt_soundsource3d_get_mix_group(source) == RT_MIXGROUP_SFX,
+                "SoundSource3D repairs corrupt mix group to SFX");
+    EXPECT_TRUE(source->has_last_sync_position == 1 &&
+                    std::isfinite(source->last_sync_position[0]) &&
+                    std::isfinite(source->last_sync_position[1]) &&
+                    std::isfinite(source->last_sync_position[2]),
+                "SoundSource3D repairs retained synchronization state");
+
+    rt_soundsource3d_set_position_vec(source, 1.0e300, -1.0e300, 12.0);
+    rt_soundsource3d_rebase_origin(source,
+                                   -1.0e300,
+                                   std::numeric_limits<double>::infinity(),
+                                   std::numeric_limits<double>::quiet_NaN());
+    source_pos = rt_soundsource3d_get_position(source);
+    EXPECT_TRUE(std::fabs(rt_vec3_x(source_pos)) <= 1000000000000.0 &&
+                    std::fabs(rt_vec3_y(source_pos)) <= 1000000000000.0 &&
+                    std::fabs(rt_vec3_z(source_pos)) <= 1000000000000.0,
+                "SoundSource3D origin rebase remains within coordinate bounds");
 }
 
 static void test_source_play_stop_when_audio_is_available() {
@@ -358,6 +541,8 @@ static void test_source_play_stop_when_audio_is_available() {
     rt_soundsource3d_set_position(source, rt_vec3_new(2.0, 0.0, 0.0));
     rt_soundsource3d_set_volume(source, 75);
     rt_soundsource3d_set_max_distance(source, 12.0);
+    rt_soundsource3d_set_pitch(source, 1.5);
+    rt_soundsource3d_set_occlusion(source, 0.75);
     voice = rt_soundsource3d_play(source);
 
     EXPECT_TRUE(voice > 0, "SoundSource3D.Play returns a live voice when audio is available");
@@ -365,6 +550,10 @@ static void test_source_play_stop_when_audio_is_available() {
                 "SoundSource3D reports IsPlaying after starting playback");
     EXPECT_TRUE(rt_soundsource3d_get_voice_id(source) == voice,
                 "SoundSource3D exposes the playing voice id");
+    EXPECT_NEAR(rt_voice_get_pitch(voice),
+                1.5,
+                0.01,
+                "SoundSource3D applies authored pitch to a newly started voice");
 
     rt_soundsource3d_stop(source);
     EXPECT_TRUE(rt_soundsource3d_get_is_playing(source) == 0,
@@ -375,6 +564,8 @@ static void test_source_play_stop_when_audio_is_available() {
 int main() {
     test_listener_follows_bound_camera();
     test_source_follows_bound_node_in_world_space();
+    test_bound_source_manual_velocity_survives_one_sync();
+    test_listener_bound_node_direction_ignores_large_translation();
     test_invalid_audio_handles_are_ignored();
     test_reference_distance_and_doppler_math();
     test_listener_up_vector_round_trips_to_active_state();

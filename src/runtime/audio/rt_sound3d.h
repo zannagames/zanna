@@ -8,7 +8,12 @@
 // File: src/runtime/audio/rt_sound3d.h
 // Purpose: Spatial audio — distance attenuation and stereo panning based on
 //   3D listener and source positions. Wraps the existing 2D audio API.
-//
+// Key invariants:
+//   - Published listener snapshots have bounded velocity and an orthonormal basis.
+//   - Voice outputs are initialized and bounded even when inputs are invalid.
+// Ownership/Lifetime:
+//   - Listener snapshots are copied; no caller-owned array is retained.
+//   - Per-voice metadata is process-owned and bounded by the runtime hard cap.
 // Links: rt_audio.h, rt_vec3.h
 //
 //===----------------------------------------------------------------------===//
@@ -69,7 +74,8 @@ void rt_sound3d_listener_state_set_pose(rt_sound3d_listener_state *state,
 /// @param out_state Receives a copied listener snapshot; NULL is ignored.
 void rt_sound3d_get_effective_listener_state(rt_sound3d_listener_state *out_state);
 /// @brief Promote a listener-state snapshot to the active spatial-audio listener.
-/// @details NULL or invalid input clears the active listener.
+/// @details NULL or invalid input clears the active listener. Valid input is copied,
+///          bounded, and orthonormalized before publication.
 /// @param state Snapshot to copy.
 void rt_sound3d_set_active_listener_state(const rt_sound3d_listener_state *state);
 /// @brief Detach the active SoundListener3D and revert to the fallback listener.
@@ -82,6 +88,7 @@ void rt_sound3d_clear_active_listener_state(void);
 /// @param base_volume Logical pre-attenuation volume in `[0, 100]`.
 /// @param out_volume Receives attenuated volume in `[0, 100]`.
 /// @param out_pan Receives stereo pan in `[-100, 100]`.
+/// @details Valid output pointers are cleared before input validation.
 void rt_sound3d_compute_voice_params(const rt_sound3d_listener_state *listener,
                                      const double *source_position,
                                      double max_distance,
@@ -98,6 +105,8 @@ void rt_sound3d_compute_voice_params(const rt_sound3d_listener_state *listener,
 /// @param out_volume Receives attenuated volume.
 /// @param out_pan Receives stereo pan.
 /// @param out_doppler Optional destination for playback-rate factor in `[0.5, 2]`.
+/// @details Valid output pointers are initialized before input validation. Sonic and
+///          supersonic radial inputs saturate in the physical shift direction.
 void rt_sound3d_compute_voice_params_ex(const rt_sound3d_listener_state *listener,
                                         const double *source_position,
                                         const double *source_velocity,
@@ -145,6 +154,9 @@ int64_t rt_sound3d_play_at(void *sound, void *position, double max_distance, int
 /// @param max_distance Positive falloff override, or zero to reuse registration.
 void rt_sound3d_update_voice(int64_t voice, void *position, double max_distance);
 /// @brief Update a playing voice using explicit source velocity and falloff radii.
+/// @details Finished voice identifiers are ignored. Positive distance overrides
+/// persist in the voice metadata table and become the values reused by later
+/// zero-override updates.
 /// @param voice Positive backend voice identifier.
 /// @param position Current source-position Vec3 handle.
 /// @param source_velocity Optional source world-space XYZ velocity.

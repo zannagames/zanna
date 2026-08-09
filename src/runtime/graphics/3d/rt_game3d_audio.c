@@ -210,7 +210,7 @@ int64_t rt_game3d_audio_get_source_count(void *obj) {
     rt_game3d_audio *audio =
         game3d_audio_checked(obj, "Game3D.Sound3D.get_sourceCount: invalid audio");
     if (audio)
-        game3d_audio_repair_sources(audio);
+        game3d_audio_prune_sources(audio);
     return audio ? audio->source_count : 0;
 }
 
@@ -292,8 +292,15 @@ void rt_game3d_audio_set_attenuation(void *obj, double ref_distance, double max_
 /// @param volume Requested integer volume.
 void rt_game3d_audio_set_volume(void *obj, int64_t volume) {
     rt_game3d_audio *audio = game3d_audio_checked(obj, "Game3D.Sound3D.set_volume: invalid audio");
-    if (audio)
-        audio->volume = game3d_clamp_i64(volume, 0, 100);
+    if (!audio)
+        return;
+    audio->volume = game3d_clamp_i64(volume, 0, 100);
+    game3d_audio_repair_sources(audio);
+    for (int32_t i = 0; i < audio->source_count; ++i) {
+        void *source = rt_g3d_checked_or_null(audio->sources[i], RT_G3D_SOUNDSOURCE3D_CLASS_ID);
+        if (source)
+            rt_soundsource3d_set_volume(source, audio->volume);
+    }
 }
 
 /// @brief Load a sound clip from a filesystem path.
@@ -480,12 +487,63 @@ static double game3d_unit_clamped_or(double value, double fallback) {
     return value > 1.0 ? 1.0 : value;
 }
 
+/// @brief Persist a canonical reverb-zone AABB and unit-range mixer parameters.
+/// @param zone Mutable retained zone state; NULL is ignored.
+static void game3d_reverbzone_repair_state(rt_game3d_reverbzone *zone) {
+    if (!zone)
+        return;
+    for (int lane = 0; lane < 3; ++lane) {
+        double lo = game3d_clamp_coord_or(zone->min[lane], 0.0);
+        double hi = game3d_clamp_coord_or(zone->max[lane], 0.0);
+        zone->min[lane] = lo < hi ? lo : hi;
+        zone->max[lane] = lo < hi ? hi : lo;
+    }
+    zone->room = game3d_unit_clamped_or(zone->room, 0.5);
+    zone->damping = game3d_unit_clamped_or(zone->damping, 0.5);
+    zone->wet = game3d_unit_clamped_or(zone->wet, 0.35);
+}
+
+/// @brief Persist bounded AmbientBed3D counters, controls, voices, and zone AABBs.
+/// @param bed Mutable retained ambient-bed state; NULL is ignored.
+static void game3d_ambientbed_repair_state(rt_game3d_ambientbed *bed) {
+    if (!bed)
+        return;
+    if (bed->zone_count < 0)
+        bed->zone_count = 0;
+    else if (bed->zone_count > GAME3D_AMBIENTBED_MAX_ZONES)
+        bed->zone_count = GAME3D_AMBIENTBED_MAX_ZONES;
+    for (int32_t z = 0; z < bed->zone_count; ++z) {
+        for (int lane = 0; lane < 3; ++lane) {
+            double lo = game3d_clamp_coord_or(bed->zones[z].min[lane], 0.0);
+            double hi = game3d_clamp_coord_or(bed->zones[z].max[lane], 0.0);
+            bed->zones[z].min[lane] = lo < hi ? lo : hi;
+            bed->zones[z].max[lane] = lo < hi ? hi : lo;
+        }
+        bed->zones[z].volume = game3d_clamp_i64(bed->zones[z].volume, 0, 100);
+    }
+    bed->default_volume = game3d_clamp_i64(bed->default_volume, 0, 100);
+    if (!isfinite(bed->crossfade) || bed->crossfade < 0.0)
+        bed->crossfade = 2.0;
+    if (bed->group < -1)
+        bed->group = -1;
+    if (bed->active < -2 || bed->active >= bed->zone_count)
+        bed->active = -2;
+    if (bed->cur_voice < 0)
+        bed->cur_voice = 0;
+    if (bed->prev_voice < 0)
+        bed->prev_voice = 0;
+    bed->cur_volume = game3d_clamp_i64(bed->cur_volume, 0, 100);
+    bed->prev_volume = game3d_clamp_i64(bed->prev_volume, 0, 100);
+    bed->fade_t = game3d_unit_clamped_or(bed->fade_t, 1.0);
+}
+
 /// @brief GC finalizer for AmbientBed3D: stop live voices, release clips.
 /// @param obj AmbientBed3D allocation being finalized.
 static void game3d_ambientbed_finalize(void *obj) {
     rt_game3d_ambientbed *bed = (rt_game3d_ambientbed *)obj;
     if (!bed)
         return;
+    game3d_ambientbed_repair_state(bed);
     if (bed->cur_voice > 0)
         rt_voice_stop(bed->cur_voice);
     if (bed->prev_voice > 0)
@@ -506,6 +564,8 @@ static rt_game3d_reverbzone *game3d_reverbzone_checked(void *obj, const char *me
         (rt_game3d_reverbzone *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_REVERBZONE_CLASS_ID);
     if (!zone)
         rt_trap(method);
+    else
+        game3d_reverbzone_repair_state(zone);
     return zone;
 }
 
@@ -518,6 +578,8 @@ static rt_game3d_ambientbed *game3d_ambientbed_checked(void *obj, const char *me
         (rt_game3d_ambientbed *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_AMBIENTBED_CLASS_ID);
     if (!bed)
         rt_trap(method);
+    else
+        game3d_ambientbed_repair_state(bed);
     return bed;
 }
 
@@ -685,6 +747,13 @@ void rt_game3d_audio_set_occlusion(void *obj, int8_t enabled, int64_t mask, doub
     audio->occlusion_enabled = enabled ? 1 : 0;
     audio->occlusion_mask = mask;
     audio->occlusion_amount = game3d_unit_clamped_or(amount, 1.0);
+    if (!audio->occlusion_enabled && game3d_audio_source_storage_valid(audio)) {
+        for (int32_t i = 0; i < audio->source_count; ++i) {
+            void *source = rt_g3d_checked_or_null(audio->sources[i], RT_G3D_SOUNDSOURCE3D_CLASS_ID);
+            if (source)
+                rt_soundsource3d_set_occlusion(source, 0.0);
+        }
+    }
 }
 
 /// @brief Cap occlusion raycasts per world step (default 8, round-robin).
@@ -942,6 +1011,13 @@ static void game3d_audio_occlusion_tick(rt_game3d_world *world,
 static void game3d_audio_ambientbed_tick(rt_game3d_ambientbed *bed,
                                          const double listener[3],
                                          double dt) {
+    if (!bed || !listener)
+        return;
+    game3d_ambientbed_repair_state(bed);
+    if (bed->cur_voice > 0 && !rt_voice_is_playing(bed->cur_voice))
+        bed->cur_voice = 0;
+    if (bed->prev_voice > 0 && !rt_voice_is_playing(bed->prev_voice))
+        bed->prev_voice = 0;
     int32_t selected = -1;
     int32_t zone_count = game3d_ambientbed_safe_zone_count(bed);
     for (int32_t z = 0; z < zone_count; ++z) {
@@ -969,6 +1045,19 @@ static void game3d_audio_ambientbed_tick(rt_game3d_ambientbed *bed,
         bed->cur_volume = volume;
         bed->fade_t = bed->active == -2 ? 1.0 : 0.0; /* first selection snaps */
         bed->active = selected;
+    }
+    if (bed->cur_voice <= 0) {
+        void *clip = bed->active >= 0 ? bed->zones[bed->active].clip : bed->default_clip;
+        if (clip && bed->group < 0) {
+            rt_string group_name = rt_const_cstr("g3d_ambience");
+            bed->group = rt_audio_register_group(group_name);
+            rt_string_unref(group_name);
+        }
+        if (clip && bed->group >= 0) {
+            bed->cur_voice = rt_sound_play_loop_in_group(clip, 0, 0, bed->group);
+            if (bed->cur_voice < 0)
+                bed->cur_voice = 0;
+        }
     }
     if (bed->fade_t < 1.0) {
         double advance = bed->crossfade > 1e-3 ? dt / bed->crossfade : 1.0;
@@ -1004,11 +1093,15 @@ static void game3d_audio_ambientbed_tick(rt_game3d_ambientbed *bed,
 void game3d_audio_rebase_origin(rt_game3d_audio *audio, const double delta[3]) {
     if (!audio || !delta || !isfinite(delta[0]) || !isfinite(delta[1]) || !isfinite(delta[2]))
         return;
+    const double clean_delta[3] = {game3d_clamp_coord_or(delta[0], 0.0),
+                                   game3d_clamp_coord_or(delta[1], 0.0),
+                                   game3d_clamp_coord_or(delta[2], 0.0)};
+    game3d_audio_repair_scalar_state(audio);
     int32_t source_count = game3d_audio_source_storage_valid(audio) ? audio->source_count : 0;
     for (int32_t i = 0; i < source_count; ++i) {
         void *source = rt_g3d_checked_or_null(audio->sources[i], RT_G3D_SOUNDSOURCE3D_CLASS_ID);
         if (source)
-            rt_soundsource3d_rebase_origin(source, delta[0], delta[1], delta[2]);
+            rt_soundsource3d_rebase_origin(source, clean_delta[0], clean_delta[1], clean_delta[2]);
     }
     int32_t reverb_zone_count =
         game3d_audio_reverb_storage_valid(audio) ? audio->reverb_zone_count : 0;
@@ -1017,20 +1110,24 @@ void game3d_audio_rebase_origin(rt_game3d_audio *audio, const double delta[3]) {
             audio->reverb_zones[z], RT_G3D_GAME3D_REVERBZONE_CLASS_ID);
         if (!zone)
             continue;
+        game3d_reverbzone_repair_state(zone);
         for (int k = 0; k < 3; ++k) {
-            zone->min[k] -= delta[k];
-            zone->max[k] -= delta[k];
+            zone->min[k] = game3d_clamp_coord_or(zone->min[k] - clean_delta[k], zone->min[k]);
+            zone->max[k] = game3d_clamp_coord_or(zone->max[k] - clean_delta[k], zone->max[k]);
         }
     }
     {
         rt_game3d_ambientbed *bed = (rt_game3d_ambientbed *)rt_g3d_checked_or_null(
             audio->ambient_bed, RT_G3D_GAME3D_AMBIENTBED_CLASS_ID);
         if (bed) {
+            game3d_ambientbed_repair_state(bed);
             int32_t zone_count = game3d_ambientbed_safe_zone_count(bed);
             for (int32_t z = 0; z < zone_count; ++z) {
                 for (int k = 0; k < 3; ++k) {
-                    bed->zones[z].min[k] -= delta[k];
-                    bed->zones[z].max[k] -= delta[k];
+                    bed->zones[z].min[k] = game3d_clamp_coord_or(
+                        bed->zones[z].min[k] - clean_delta[k], bed->zones[z].min[k]);
+                    bed->zones[z].max[k] = game3d_clamp_coord_or(
+                        bed->zones[z].max[k] - clean_delta[k], bed->zones[z].max[k]);
                 }
             }
         }
@@ -1047,6 +1144,11 @@ void game3d_audio_immersion_tick(struct rt_game3d_world *world, double dt) {
         (rt_game3d_audio *)rt_g3d_checked_or_null(world->audio, RT_G3D_GAME3D_SOUND_CLASS_ID);
     if (!audio)
         return;
+    game3d_audio_repair_scalar_state(audio);
+    if (!isfinite(dt) || dt < 0.0)
+        dt = 0.0;
+    else if (dt > RT_GAME3D_MAX_DT)
+        dt = RT_GAME3D_MAX_DT;
     int wants_reverb = game3d_audio_reverb_storage_valid(audio) && audio->reverb_zone_count > 0;
     rt_game3d_ambientbed *bed = (rt_game3d_ambientbed *)rt_g3d_checked_or_null(
         audio->ambient_bed, RT_G3D_GAME3D_AMBIENTBED_CLASS_ID);

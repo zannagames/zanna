@@ -185,6 +185,16 @@ static void sound3d_copy3(double *dst, const double *src) {
     dst[2] = clamp_abs_or(src[2], 0.0, SOUND3D_COORD_ABS_MAX);
 }
 
+/// @brief Copy a velocity vector using the tighter Doppler-domain component bound.
+/// @param[out] dst Destination array with room for three doubles; NULL is ignored.
+/// @param src Optional source velocity; NULL writes zero velocity.
+static void sound3d_copy_velocity3(double *dst, const double *src) {
+    if (!dst)
+        return;
+    for (int lane = 0; lane < 3; lane++)
+        dst[lane] = src ? sound3d_velocity_or(src[lane]) : 0.0;
+}
+
 /// @brief Decode an `rt_vec3` object handle into three raw doubles.
 /// @details The runtime stores Vec3 as a GC-managed object accessed through
 ///   `rt_vec3_{x,y,z}`; this helper converts it into the plain array that
@@ -220,18 +230,26 @@ static void sound3d_cross3(const double *a, const double *b, double *out) {
 /// @param[in,out] v Three-component vector to sanitize and normalize.
 /// @return 1 on success, 0 if the vector is degenerate (length <= 1e-8), leaving it unchanged.
 static int sound3d_normalize3(double *v) {
+    double max_abs;
+    double scaled[3];
     double len;
     if (!v)
         return 0;
     v[0] = finite_or(v[0], 0.0);
     v[1] = finite_or(v[1], 0.0);
     v[2] = finite_or(v[2], 0.0);
-    len = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    max_abs = fmax(fabs(v[0]), fmax(fabs(v[1]), fabs(v[2])));
+    if (!isfinite(max_abs) || max_abs <= 0.0)
+        return 0;
+    scaled[0] = v[0] / max_abs;
+    scaled[1] = v[1] / max_abs;
+    scaled[2] = v[2] / max_abs;
+    len = sqrt(scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2]);
     if (!isfinite(len) || len <= 1e-8)
         return 0;
-    v[0] /= len;
-    v[1] /= len;
-    v[2] /= len;
+    v[0] = scaled[0] / len;
+    v[1] = scaled[1] / len;
+    v[2] = scaled[2] / len;
     return 1;
 }
 
@@ -300,6 +318,23 @@ static void sound3d_set_basis(rt_sound3d_listener_state *state,
     state->up[2] = upv[2];
 }
 
+/// @brief Produce a canonical, bounded listener snapshot from possibly corrupt retained state.
+/// @param source Optional listener snapshot; NULL or invalid input selects identity state.
+/// @param[out] destination Listener snapshot receiving sanitized pose and velocity.
+static void sound3d_sanitize_listener_state(const rt_sound3d_listener_state *source,
+                                            rt_sound3d_listener_state *destination) {
+    if (!destination)
+        return;
+    if (!source || !source->valid) {
+        rt_sound3d_listener_state_identity(destination);
+        return;
+    }
+    sound3d_copy3(destination->position, source->position);
+    sound3d_copy_velocity3(destination->velocity, source->velocity);
+    sound3d_set_basis(destination, source->forward, source->up);
+    destination->valid = 1;
+}
+
 /// @brief Reset a listener-state struct to the canonical identity orientation.
 /// @details Uses origin position, zero velocity, forward = -Z, right = +X,
 ///          and up = +Y, and marks the state valid.
@@ -345,7 +380,7 @@ void rt_sound3d_listener_state_set_pose(rt_sound3d_listener_state *state,
     if (!state)
         return;
     sound3d_copy3(state->position, position);
-    sound3d_copy3(state->velocity, velocity);
+    sound3d_copy_velocity3(state->velocity, velocity);
     sound3d_set_basis(state, forward, up);
     state->valid = 1;
 }
@@ -376,7 +411,7 @@ void rt_sound3d_set_active_listener_state(const rt_sound3d_listener_state *state
         rt_sound3d_clear_active_listener_state();
         return;
     }
-    s_active_listener = *state;
+    sound3d_sanitize_listener_state(state, &s_active_listener);
     s_has_active_listener = 1;
 }
 
@@ -557,11 +592,11 @@ int64_t rt_sound3d_tracked_voice_capacity(void) {
 /// @param[out] out_ref_distance Optional destination for the reference distance.
 /// @param[out] out_max_distance Optional destination for the maximum distance.
 /// @param[out] out_base_volume Optional destination for the logical base volume.
-/// @return 1 when a matching voice record is found, otherwise 0.
-static int lookup_voice_params(int64_t voice,
-                               double *out_ref_distance,
-                               double *out_max_distance,
-                               int64_t *out_base_volume) {
+/// @return Matching zero-based slot, or `-1` when the voice is not tracked.
+static int32_t lookup_voice_params(int64_t voice,
+                                   double *out_ref_distance,
+                                   double *out_max_distance,
+                                   int64_t *out_base_volume) {
     for (int32_t i = 0; i < s_voice_dist_count; i++) {
         if (s_voice_dist[i].voice_id == voice) {
             if (out_ref_distance)
@@ -570,10 +605,10 @@ static int lookup_voice_params(int64_t voice,
                 *out_max_distance = s_voice_dist[i].max_distance;
             if (out_base_volume)
                 *out_base_volume = s_voice_dist[i].base_volume;
-            return 1;
+            return i;
         }
     }
-    return 0;
+    return -1;
 }
 
 /// @brief Compute distance-attenuated volume and stereo pan for a 3D source.
@@ -606,12 +641,20 @@ void rt_sound3d_compute_voice_params_ex(const rt_sound3d_listener_state *listene
     double dz;
     double dist;
     double atten;
-    const rt_sound3d_listener_state *effective = listener ? listener : &s_fallback_listener;
+    rt_sound3d_listener_state sanitized_listener;
+    const rt_sound3d_listener_state *effective =
+        listener && listener->valid ? listener : &s_fallback_listener;
 
+    if (out_vol)
+        *out_vol = 0;
+    if (out_pan)
+        *out_pan = 0;
     if (out_doppler)
         *out_doppler = 1.0;
     if (!source_position || !out_vol || !out_pan)
         return;
+    sound3d_sanitize_listener_state(effective, &sanitized_listener);
+    effective = &sanitized_listener;
 
     sx = clamp_abs_or(source_position[0], 0.0, SOUND3D_COORD_ABS_MAX);
     sy = clamp_abs_or(source_position[1], 0.0, SOUND3D_COORD_ABS_MAX);
@@ -692,10 +735,17 @@ void rt_sound3d_compute_voice_params_ex(const rt_sound3d_listener_state *listene
                                 sound3d_velocity_or(effective->velocity[1]) * ndy +
                                 sound3d_velocity_or(effective->velocity[2]) * ndz;
         double source_along = src_vx * ndx + src_vy * ndy + src_vz * ndz;
+        double numerator = speed_of_sound + listener_along;
         double denom = speed_of_sound + source_along;
-        double factor = fabs(denom) > 1e-6 ? (speed_of_sound + listener_along) / denom : 1.0;
+        double factor;
+        if (denom <= 1e-6)
+            factor = 2.0;
+        else if (numerator <= 1e-6)
+            factor = 0.5;
+        else
+            factor = numerator / denom;
         if (!isfinite(factor))
-            factor = 1.0;
+            factor = denom <= 0.0 ? 2.0 : 1.0;
         if (factor < 0.5)
             factor = 0.5;
         if (factor > 2.0)
@@ -782,7 +832,7 @@ void rt_sound3d_update_voice(int64_t voice, void *position, double max_distance)
 /// respatialization.
 /// @details Extended form of rt_sound3d_update_voice: @p source_velocity drives Doppler, and
 ///          @p ref_distance / @p max_distance override the attenuation range (0 keeps prior
-///          values).
+///          values). Positive overrides persist for later updates; finished voice IDs are ignored.
 /// @param voice Positive backend voice identifier.
 /// @param position Vec3 current world-space source position.
 /// @param source_velocity Optional three-component source velocity.
@@ -797,15 +847,25 @@ void rt_sound3d_update_voice_ex(int64_t voice,
     double source_pos[3];
     if (!position || voice <= 0)
         return;
+    if (!rt_voice_is_playing(voice))
+        return;
     /* One table scan for all three recorded params; defaults stand on a miss. */
     double rec_ref_distance = 0.0;
     double rec_max_distance = 50.0;
     int64_t base_volume = 100;
-    lookup_voice_params(voice, &rec_ref_distance, &rec_max_distance, &base_volume);
-    if (!isfinite(ref_distance) || ref_distance <= 0.0)
+    int32_t slot = lookup_voice_params(voice, &rec_ref_distance, &rec_max_distance, &base_volume);
+    int ref_override = isfinite(ref_distance) && ref_distance > 0.0;
+    int max_override = isfinite(max_distance) && max_distance > 0.0;
+    if (!ref_override)
         ref_distance = rec_ref_distance;
-    if (!isfinite(max_distance) || max_distance <= 0.0)
+    if (!max_override)
         max_distance = rec_max_distance; /* per-voice fallback */
+    ref_distance = sound3d_distance_or(ref_distance, rec_ref_distance);
+    max_distance = sound3d_distance_or(max_distance, rec_max_distance);
+    if (ref_distance > 0.0 && max_distance > 0.0 && max_distance < ref_distance)
+        max_distance = ref_distance;
+    if (slot >= 0 && (ref_override || max_override))
+        sound3d_store_voice_slot(slot, voice, ref_distance, max_distance, base_volume);
     sound3d_vec_from_obj(position, source_pos);
     rt_sound3d_get_effective_listener_state(&listener);
     int64_t vol = 0;

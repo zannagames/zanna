@@ -1328,11 +1328,11 @@ double rt_game3d_audio_get_max_distance(void *audio);
 /// @param audio Game3D audio subsystem used by the operation.
 /// @return The documented integer result, including any sentinel described above.
 int64_t rt_game3d_audio_get_volume(void *audio);
-/// @brief Set the master output volume (0–100).
+/// @brief Set the master output volume (0–100) for future and tracked positional sources.
 /// @param audio Game3D audio subsystem used by the operation.
 /// @param volume Value supplied for the volume argument.
 void rt_game3d_audio_set_volume(void *audio, int64_t volume);
-/// @brief Count currently active 3D sound sources.
+/// @brief Count currently active 3D sound sources after pruning finished voices.
 /// @param audio Game3D audio subsystem used by the operation.
 /// @return The documented integer result, including any sentinel described above.
 int64_t rt_game3d_audio_get_source_count(void *audio);
@@ -4003,6 +4003,7 @@ double rt_game3d_audio_get_reverb_wet(void *audio);
 /// @param enabled Non-zero to enable reverb routing; zero to bypass it.
 void rt_game3d_audio_set_reverb_routing(void *audio, int8_t enabled);
 /// @brief Configure listener-to-source occlusion for tracked positional voices.
+/// @details Disabling occlusion immediately clears retained occlusion on every tracked source.
 /// @param audio Sound3D subsystem to configure.
 /// @param enabled Non-zero to perform occlusion raycasts; zero to disable them.
 /// @param mask Collision-layer mask used by the occlusion rays.
