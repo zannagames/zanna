@@ -357,7 +357,7 @@ static rt_string rt_messagebox_prompt_impl(rt_string title, rt_string message, i
         if (accepted)
             *accepted = 1;
         if (text)
-            result = rt_string_from_bytes(text, strlen(text));
+            result = rt_gui_string_from_cstr_bounded(text);
     }
 
     vg_widget_destroy((vg_widget_t *)dlg);
@@ -1021,7 +1021,7 @@ rt_string rt_messagebox_get_error(void *box) {
     RT_ASSERT_MAIN_THREAD();
     rt_messagebox_data_t *data = rt_messagebox_checked(box);
     const char *error = data && data->error ? data->error : "";
-    return rt_string_from_bytes(error, strlen(error));
+    return rt_gui_string_from_cstr_bounded(error);
 }
 
 /// @brief Manually free dialog resources (custom buttons, backend handle). The GC finalizer

@@ -772,6 +772,44 @@ static inline double rt_gui_clamp_f64(double value, double min_value, double max
     return value;
 }
 
+/// @brief Replace a non-finite retained value with a deterministic public fallback.
+/// @param value Candidate lower-layer or retained numeric value.
+/// @param fallback Finite value returned for NaN or either infinity.
+/// @return @p value when finite, otherwise @p fallback.
+static inline double rt_gui_finite_or(double value, double fallback) {
+    return rt_gui_double_is_finite(value) ? value : fallback;
+}
+
+/// @brief Normalize a retained non-negative metric before public export.
+/// @param value Candidate lower-layer or retained metric.
+/// @param fallback Non-negative value returned for invalid state.
+/// @return @p value when finite and non-negative, otherwise @p fallback.
+static inline double rt_gui_nonnegative_finite_or(double value, double fallback) {
+    return rt_gui_double_is_finite(value) && value >= 0.0 ? value : fallback;
+}
+
+/// @brief Normalize a retained strictly positive metric before public export.
+/// @param value Candidate lower-layer or retained metric.
+/// @param fallback Positive value returned for invalid or non-positive state.
+/// @return @p value when finite and greater than zero, otherwise @p fallback.
+static inline double rt_gui_positive_finite_or(double value, double fallback) {
+    return rt_gui_double_is_finite(value) && value > 0.0 ? value : fallback;
+}
+
+/// @brief Normalize and clamp a retained value before public export.
+/// @param value Candidate lower-layer or retained value.
+/// @param min_value Inclusive valid lower endpoint.
+/// @param max_value Inclusive valid upper endpoint.
+/// @param fallback Value used when @p value is not finite.
+/// @return Finite @p value clamped to the supplied range, or @p fallback.
+static inline double rt_gui_finite_clamped(double value,
+                                           double min_value,
+                                           double max_value,
+                                           double fallback) {
+    return rt_gui_double_is_finite(value) ? rt_gui_clamp_f64(value, min_value, max_value)
+                                          : fallback;
+}
+
 /// @brief Sanitize a double into a non-negative bounded float.
 /// @param value Candidate public numeric input.
 /// @param max_value Inclusive finite upper bound supplied by the caller.
@@ -834,7 +872,10 @@ static inline float rt_gui_logical_coordinate_to_physical(vg_widget_t *widget, d
 /// @param value Stored framebuffer coordinate or length.
 /// @return Logical value after exactly one division by the positive effective scale.
 static inline double rt_gui_physical_to_logical(vg_widget_t *widget, float value) {
-    return (double)value / (double)rt_gui_widget_effective_scale(widget);
+    if (!isfinite(value))
+        return 0.0;
+    double logical = (double)value / (double)rt_gui_widget_effective_scale(widget);
+    return rt_gui_finite_or(logical, 0.0);
 }
 
 /// @brief Clamp a signed 64-bit value to caller-supplied 32-bit bounds.
@@ -892,6 +933,19 @@ static inline int64_t rt_gui_saturating_u64_to_i64(uint64_t value) {
 /// @return @c INT64_MAX above the signed range, otherwise the exact value.
 static inline int64_t rt_gui_saturating_size_to_i64(size_t value) {
     return (uintmax_t)value > (uintmax_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+}
+
+/// @brief Validate an integer-backed retained enum before public export.
+/// @param value Candidate private enum value widened to the runtime integer domain.
+/// @param min_value Inclusive first public ordinal.
+/// @param max_value Inclusive last public ordinal.
+/// @param fallback Existing invalid/default sentinel for the public API.
+/// @return @p value inside the declared domain, otherwise @p fallback.
+static inline int64_t rt_gui_enum_or(int64_t value,
+                                     int64_t min_value,
+                                     int64_t max_value,
+                                     int64_t fallback) {
+    return value >= min_value && value <= max_value ? value : fallback;
 }
 
 /// @brief Validate GUI image dimensions and calculate their RGBA8 byte count.
@@ -1199,6 +1253,18 @@ static inline bool rt_gui_cstr_length_bounded(const char *text, size_t *out_leng
         return false;
     *out_length = length;
     return true;
+}
+
+/// @brief Convert a conventional lower-layer C string under the GUI text limit.
+/// @details This is the only supported bridge for toolkit-owned C strings whose authoritative
+///          length is not available. NULL or a missing terminator within the 64 MiB policy becomes
+///          the canonical empty runtime string instead of triggering an unbounded scan.
+/// @param text Borrowed candidate NUL-terminated C string.
+/// @return Newly constructed runtime string, or the canonical empty string for invalid input.
+static inline rt_string rt_gui_string_from_cstr_bounded(const char *text) {
+    size_t length = 0;
+    return rt_gui_cstr_length_bounded(text, &length) ? rt_string_from_bytes(text, length)
+                                                     : rt_str_empty();
 }
 
 /// @brief Allocate a bounded copy of a conventional GUI C string.

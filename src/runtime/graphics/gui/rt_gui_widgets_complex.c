@@ -487,7 +487,7 @@ rt_string rt_tab_get_title(void *tab) {
     RT_ASSERT_MAIN_THREAD();
     vg_tab_t *t = rt_gui_tab_from_handle(tab);
     const char *title = t ? vg_tab_get_title(t) : NULL;
-    return title ? rt_string_from_bytes(title, strlen(title)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(title);
 }
 
 /// @brief Store byte-exact runtime string data on a tab.
@@ -836,7 +836,7 @@ double rt_splitpane_get_position(void *split) {
     vg_splitpane_t *sp = rt_splitpane_checked(split);
     if (!sp)
         return 0.5;
-    return (double)vg_splitpane_get_position(sp);
+    return rt_gui_finite_clamped((double)vg_splitpane_get_position(sp), 0.0, 1.0, 0.5);
 }
 
 /// @brief Set the first pane's minimum size in logical UI units.
@@ -873,7 +873,9 @@ void rt_splitpane_set_min_second(void *split, double size) {
 double rt_splitpane_get_min_first(void *split) {
     RT_ASSERT_MAIN_THREAD();
     vg_splitpane_t *sp = rt_splitpane_checked(split);
-    return sp ? rt_gui_physical_to_logical(&sp->base, vg_splitpane_get_min_first(sp)) : 0.0;
+    return sp ? rt_gui_nonnegative_finite_or(
+                    rt_gui_physical_to_logical(&sp->base, vg_splitpane_get_min_first(sp)), 0.0)
+              : 0.0;
 }
 
 /// @brief Return the second pane's configured minimum in logical UI units.
@@ -882,7 +884,9 @@ double rt_splitpane_get_min_first(void *split) {
 double rt_splitpane_get_min_second(void *split) {
     RT_ASSERT_MAIN_THREAD();
     vg_splitpane_t *sp = rt_splitpane_checked(split);
-    return sp ? rt_gui_physical_to_logical(&sp->base, vg_splitpane_get_min_second(sp)) : 0.0;
+    return sp ? rt_gui_nonnegative_finite_or(
+                    rt_gui_physical_to_logical(&sp->base, vg_splitpane_get_min_second(sp)), 0.0)
+              : 0.0;
 }
 
 /// @brief Return the split pane orientation.
@@ -891,7 +895,11 @@ double rt_splitpane_get_min_second(void *split) {
 int64_t rt_splitpane_get_orientation(void *split) {
     RT_ASSERT_MAIN_THREAD();
     vg_splitpane_t *sp = rt_splitpane_checked(split);
-    return sp ? (int64_t)vg_splitpane_get_direction(sp) : -1;
+    return sp ? rt_gui_enum_or((int64_t)vg_splitpane_get_direction(sp),
+                               VG_SPLIT_HORIZONTAL,
+                               VG_SPLIT_VERTICAL,
+                               -1)
+              : -1;
 }
 
 /// @brief Collapse the first (left or top) pane while retaining the restore fraction.
@@ -927,7 +935,11 @@ void rt_splitpane_restore(void *split) {
 int64_t rt_splitpane_get_collapsed_side(void *split) {
     RT_ASSERT_MAIN_THREAD();
     vg_splitpane_t *sp = rt_splitpane_checked(split);
-    return sp ? (int64_t)vg_splitpane_get_collapsed_side(sp) : -1;
+    return sp ? rt_gui_enum_or((int64_t)vg_splitpane_get_collapsed_side(sp),
+                               VG_SPLIT_COLLAPSED_NONE,
+                               VG_SPLIT_COLLAPSED_SECOND,
+                               -1)
+              : -1;
 }
 
 /// @brief Return the first (left/top) panel container of a split pane.
@@ -1036,7 +1048,7 @@ rt_string rt_codeeditor_take_deltas(void *editor, int64_t since_revision) {
     char *json = vg_codeeditor_take_deltas_json(ce, since);
     if (!json)
         return rt_string_from_bytes("overflow", 8); // OOM: force a safe full-sync
-    rt_string result = rt_string_from_bytes(json, strlen(json));
+    rt_string result = rt_gui_string_from_cstr_bounded(json);
     free(json);
     return result;
 }
@@ -1144,7 +1156,7 @@ double rt_codeeditor_get_font_size(void *editor) {
     vg_codeeditor_t *ed = rt_codeeditor_checked(editor);
     if (!ed)
         return 14.0;
-    return (double)ed->font_size;
+    return rt_gui_positive_finite_or((double)ed->font_size, 14.0);
 }
 
 /// @brief Set the code editor font size in the same units used by SetFont.
@@ -1204,7 +1216,7 @@ rt_string rt_theme_get_name(void) {
             name = "dark";
             break;
     }
-    return rt_string_from_bytes(name, strlen(name));
+    return rt_gui_string_from_cstr_bounded(name);
 }
 
 //=============================================================================
@@ -1457,7 +1469,7 @@ rt_string rt_outputpane_get_selection(void *pane) {
     char *selection = vg_outputpane_get_selection(out);
     if (!selection)
         return rt_str_empty();
-    rt_string result = rt_string_from_bytes(selection, strlen(selection));
+    rt_string result = rt_gui_string_from_cstr_bounded(selection);
     free(selection);
     return result;
 }
@@ -1756,7 +1768,7 @@ rt_string rt_radiobutton_get_text(void *radio) {
     RT_ASSERT_MAIN_THREAD();
     vg_radiobutton_t *rb = rt_radiobutton_checked(radio);
     const char *text = rb ? vg_radiobutton_get_text(rb) : NULL;
-    return text ? rt_string_from_bytes(text, strlen(text)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief Store byte-exact runtime string data on a radio button.
@@ -1848,7 +1860,7 @@ double rt_spinner_get_value(void *spinner) {
     vg_spinner_t *sp = rt_spinner_checked(spinner);
     if (!sp)
         return 0.0;
-    return vg_spinner_get_value(sp);
+    return rt_gui_finite_or(vg_spinner_get_value(sp), 0.0);
 }
 
 /// @brief Set whether a spinner presents a mixed group value.
@@ -2079,7 +2091,7 @@ rt_string rt_datagrid_get_cell(void *grid, int64_t row, int64_t col) {
         !rt_datagrid_i64_to_column(col, &native_col))
         return rt_str_empty();
     const char *cell = vg_datagrid_get_cell(g, native_row, native_col);
-    return cell ? rt_string_from_bytes(cell, (int64_t)strlen(cell)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(cell);
 }
 
 /// @brief Remove all rows.
@@ -2310,7 +2322,7 @@ int64_t rt_datagrid_get_sort_column(void *grid) {
 int64_t rt_datagrid_get_sort_direction(void *grid) {
     RT_ASSERT_MAIN_THREAD();
     vg_datagrid_t *g = rt_datagrid_checked(grid);
-    return g ? (int64_t)vg_datagrid_get_sort_direction(g) : 0;
+    return g ? rt_gui_enum_or((int64_t)vg_datagrid_get_sort_direction(g), -1, 1, 0) : 0;
 }
 
 /// @brief Consume the independent Grid sort transition edge.
@@ -2594,7 +2606,7 @@ rt_string rt_popuplist_get_selected(void *list) {
     if (!p)
         return rt_str_empty();
     const char *text = vg_popuplist_selected_text(p);
-    return text ? rt_string_from_bytes(text, (int64_t)strlen(text)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief Mark the current selection accepted.

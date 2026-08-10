@@ -122,7 +122,11 @@ void rt_vbox_set_align(void *vbox, int64_t align) {
 int64_t rt_vbox_get_align(void *vbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *widget = rt_layout_checked(vbox, VG_LAYOUT_VBOX);
-    return widget ? (int64_t)vg_vbox_get_align(widget) : 0;
+    return widget ? rt_gui_enum_or((int64_t)vg_vbox_get_align(widget),
+                                   VG_ALIGN_START,
+                                   VG_ALIGN_STRETCH,
+                                   VG_ALIGN_START)
+                  : VG_ALIGN_START;
 }
 
 /// @brief Set the VBox main-axis justification.
@@ -142,7 +146,11 @@ void rt_vbox_set_justify(void *vbox, int64_t justify) {
 int64_t rt_vbox_get_justify(void *vbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *widget = rt_layout_checked(vbox, VG_LAYOUT_VBOX);
-    return widget ? (int64_t)vg_vbox_get_justify(widget) : 0;
+    return widget ? rt_gui_enum_or((int64_t)vg_vbox_get_justify(widget),
+                                   VG_JUSTIFY_START,
+                                   VG_JUSTIFY_SPACE_EVENLY,
+                                   VG_JUSTIFY_START)
+                  : VG_JUSTIFY_START;
 }
 
 /// @brief Set the HBox cross-axis alignment.
@@ -163,7 +171,11 @@ void rt_hbox_set_align(void *hbox, int64_t align) {
 int64_t rt_hbox_get_align(void *hbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *widget = rt_layout_checked(hbox, VG_LAYOUT_HBOX);
-    return widget ? (int64_t)vg_hbox_get_align(widget) : 0;
+    return widget ? rt_gui_enum_or((int64_t)vg_hbox_get_align(widget),
+                                   VG_ALIGN_START,
+                                   VG_ALIGN_STRETCH,
+                                   VG_ALIGN_START)
+                  : VG_ALIGN_START;
 }
 
 /// @brief Set the HBox main-axis justification.
@@ -183,7 +195,11 @@ void rt_hbox_set_justify(void *hbox, int64_t justify) {
 int64_t rt_hbox_get_justify(void *hbox) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *widget = rt_layout_checked(hbox, VG_LAYOUT_HBOX);
-    return widget ? (int64_t)vg_hbox_get_justify(widget) : 0;
+    return widget ? rt_gui_enum_or((int64_t)vg_hbox_get_justify(widget),
+                                   VG_JUSTIFY_START,
+                                   VG_JUSTIFY_SPACE_EVENLY,
+                                   VG_JUSTIFY_START)
+                  : VG_JUSTIFY_START;
 }
 
 /// @brief Create a detached Flex layout container.
@@ -348,7 +364,8 @@ void rt_layoutgrid_set_gap(void *grid, double horizontal, double vertical) {
 }
 
 /// @brief Set equal LayoutGrid padding in logical units.
-/// @details Converts the public inset to a bounded physical length using the grid's effective scale.
+/// @details Converts the public inset to a bounded physical length using the grid's effective
+/// scale.
 /// @param grid Candidate LayoutGrid widget handle.
 /// @param padding Non-negative logical inset applied to all four edges.
 void rt_layoutgrid_set_padding(void *grid, double padding) {
@@ -385,7 +402,8 @@ int64_t rt_layoutgrid_place(
 }
 
 /// @brief Create a detached DockPanel layout container.
-/// @details The widget initially owns no children and remains detached until added to a widget tree.
+/// @details The widget initially owns no children and remains detached until added to a widget
+/// tree.
 /// @return New detached DockPanel widget, or NULL when allocation fails.
 void *rt_dockpanel_new(void) {
     RT_ASSERT_MAIN_THREAD();
@@ -393,7 +411,8 @@ void *rt_dockpanel_new(void) {
 }
 
 /// @brief Set equal DockPanel padding in logical units.
-/// @details Converts the public inset to bounded framebuffer units using the panel's effective scale.
+/// @details Converts the public inset to bounded framebuffer units using the panel's effective
+/// scale.
 /// @param dock Candidate DockPanel widget handle.
 /// @param padding Non-negative logical inset applied to all four edges.
 void rt_dockpanel_set_padding(void *dock, double padding) {

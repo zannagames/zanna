@@ -57,9 +57,7 @@ static void rt_gui_accessibility_release_object(void *object) {
 /// @param text UTF-8 C string; NULL becomes the canonical empty string.
 /// @return Owned runtime string.
 static rt_string rt_gui_accessibility_string(const char *text) {
-    if (!text)
-        return rt_str_empty();
-    return rt_string_from_bytes(text, strlen(text));
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief Store a UTF-8 string field in a runtime Map without leaking its local reference.
@@ -442,7 +440,12 @@ void rt_widget_set_accessible_role(void *widget, int64_t role) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     vg_widget_t *resolved = rt_gui_widget_handle_checked(widget);
     if (resolved) {
-        vg_widget_set_accessible_role(resolved, (vg_accessible_role_t)role);
+        vg_widget_set_accessible_role(
+            resolved,
+            (vg_accessible_role_t)rt_gui_enum_or(role,
+                                                 VG_ACCESSIBLE_ROLE_NONE,
+                                                 VG_ACCESSIBLE_ROLE_COUNT - 1,
+                                                 VG_ACCESSIBLE_ROLE_NONE));
         rt_gui_accessibility_notify_widget(resolved);
     }
 #else
@@ -458,7 +461,11 @@ int64_t rt_widget_get_accessible_role(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
     vg_widget_t *resolved = rt_gui_widget_handle_checked(widget);
-    return resolved ? (int64_t)vg_widget_get_accessible_role(resolved) : 0;
+    return resolved ? rt_gui_enum_or((int64_t)vg_widget_get_accessible_role(resolved),
+                                     VG_ACCESSIBLE_ROLE_NONE,
+                                     VG_ACCESSIBLE_ROLE_COUNT - 1,
+                                     VG_ACCESSIBLE_ROLE_NONE)
+                    : VG_ACCESSIBLE_ROLE_NONE;
 #else
     (void)widget;
     return 0;
@@ -588,7 +595,10 @@ void rt_widget_set_live_region(void *widget, int64_t mode) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     vg_widget_t *resolved = rt_gui_widget_handle_checked(widget);
     if (resolved) {
-        vg_widget_set_live_region(resolved, (vg_live_region_mode_t)mode);
+        vg_widget_set_live_region(
+            resolved,
+            (vg_live_region_mode_t)rt_gui_enum_or(
+                mode, VG_LIVE_REGION_OFF, VG_LIVE_REGION_ASSERTIVE, VG_LIVE_REGION_OFF));
         rt_gui_accessibility_notify_widget(resolved);
     }
 #else
@@ -604,7 +614,11 @@ int64_t rt_widget_get_live_region(void *widget) {
     RT_ASSERT_MAIN_THREAD();
 #ifdef ZANNA_ENABLE_GRAPHICS
     vg_widget_t *resolved = rt_gui_widget_handle_checked(widget);
-    return resolved ? (int64_t)vg_widget_get_live_region(resolved) : 0;
+    return resolved ? rt_gui_enum_or((int64_t)vg_widget_get_live_region(resolved),
+                                     VG_LIVE_REGION_OFF,
+                                     VG_LIVE_REGION_ASSERTIVE,
+                                     VG_LIVE_REGION_OFF)
+                    : VG_LIVE_REGION_OFF;
 #else
     (void)widget;
     return 0;

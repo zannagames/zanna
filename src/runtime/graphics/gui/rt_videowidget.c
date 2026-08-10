@@ -54,6 +54,8 @@
 #define RT_VIDEOWIDGET_MAX_FRAME_PIXELS ((size_t)64u * 1024u * 1024u)
 /// @brief Maximum authenticated VideoWidget wrappers retained at once.
 #define RT_VIDEOWIDGET_MAX_WRAPPERS ((size_t)1000000)
+/// @brief Maximum lower-layer text scanned by an isolated VideoWidget export.
+#define RT_VIDEOWIDGET_MAX_STRING_BYTES ((size_t)64u * 1024u * 1024u)
 
 /// @copydoc rt_obj_new_i64()
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
@@ -63,6 +65,26 @@ extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
 extern int rt_obj_release_check0(void *obj);
 /// @copydoc rt_obj_free()
 extern void rt_obj_free(void *obj);
+
+/// @brief Convert a lower-layer VideoWidget C string without an unbounded scan.
+/// @param text Borrowed candidate NUL-terminated text.
+/// @return Owned runtime string, or the canonical empty string for invalid/oversized input.
+static rt_string rt_videowidget_string_from_cstr(const char *text) {
+    if (!text)
+        return rt_string_from_bytes("", 0);
+    size_t length = 0;
+    while (length <= RT_VIDEOWIDGET_MAX_STRING_BYTES && text[length] != '\0')
+        ++length;
+    return length <= RT_VIDEOWIDGET_MAX_STRING_BYTES ? rt_string_from_bytes(text, length)
+                                                     : rt_string_from_bytes("", 0);
+}
+
+/// @brief Normalize a non-negative media time read from the isolated player API.
+/// @param value Candidate seconds value.
+/// @return @p value when finite and non-negative, otherwise zero.
+static double rt_videowidget_nonnegative_finite_or_zero(double value) {
+    return isfinite(value) && value >= 0.0 ? value : 0.0;
+}
 
 /* GUI parent validation shim implemented by rt_gui_widgets.c. Kept as a
  * single external dependency so isolated VideoWidget contract tests can stub
@@ -226,8 +248,7 @@ static int videowidget_register_wrapper(rt_videowidget *w) {
             }
             new_cap *= 2u;
         }
-        if (new_cap <= s_videowidget_wrapper_count ||
-            new_cap > SIZE_MAX / sizeof(rt_videowidget *))
+        if (new_cap <= s_videowidget_wrapper_count || new_cap > SIZE_MAX / sizeof(rt_videowidget *))
             return 0;
         void *p = realloc(s_videowidget_wrappers, new_cap * sizeof(rt_videowidget *));
         if (!p)
@@ -717,12 +738,9 @@ void *rt_videowidget_new(void *parent, rt_string path) {
     w->controls_widget = rt_hbox_new();
     if (w->controls_widget) {
         rt_container_set_spacing(w->controls_widget, 8.0);
-        w->play_button =
-            rt_button_new(w->controls_widget, rt_string_from_bytes("Play", strlen("Play")));
-        w->pause_button =
-            rt_button_new(w->controls_widget, rt_string_from_bytes("Pause", strlen("Pause")));
-        w->stop_button =
-            rt_button_new(w->controls_widget, rt_string_from_bytes("Stop", strlen("Stop")));
+        w->play_button = rt_button_new(w->controls_widget, rt_const_cstr("Play"));
+        w->pause_button = rt_button_new(w->controls_widget, rt_const_cstr("Pause"));
+        w->stop_button = rt_button_new(w->controls_widget, rt_const_cstr("Stop"));
         w->position_slider = rt_slider_new(w->controls_widget, 1);
         if (w->position_slider) {
             rt_widget_set_flex(w->position_slider, 1.0);
@@ -904,7 +922,7 @@ rt_string rt_videowidget_get_error(void *obj) {
     RT_ASSERT_MAIN_THREAD();
     rt_videowidget *w = videowidget_checked(obj);
     const char *error = w && w->error ? w->error : "";
-    return rt_string_from_bytes(error, strlen(error));
+    return rt_videowidget_string_from_cstr(error);
 }
 
 /// @brief Return the saturating non-consuming widget revision in signed runtime range.
@@ -1050,7 +1068,9 @@ double rt_videowidget_get_position(void *obj) {
     rt_videowidget *w = videowidget_checked(obj);
     if (!w)
         return 0.0;
-    return w->player ? rt_videoplayer_get_position(w->player) : 0.0;
+    return w->player
+               ? rt_videowidget_nonnegative_finite_or_zero(rt_videoplayer_get_position(w->player))
+               : 0.0;
 }
 
 /// @brief Total video duration in seconds (forwarded from the underlying VideoPlayer).
@@ -1061,7 +1081,9 @@ double rt_videowidget_get_duration(void *obj) {
     rt_videowidget *w = videowidget_checked(obj);
     if (!w)
         return 0.0;
-    return w->player ? rt_videoplayer_get_duration(w->player) : 0.0;
+    return w->player
+               ? rt_videowidget_nonnegative_finite_or_zero(rt_videoplayer_get_duration(w->player))
+               : 0.0;
 }
 
 /// @brief Run one automatic update for every VideoWidget owned by an app.

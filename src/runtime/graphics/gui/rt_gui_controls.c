@@ -169,7 +169,7 @@ rt_string rt_dropdown_get_selected_text(void *dropdown) {
     const char *text = vg_dropdown_get_selected_text(dd);
     if (!text)
         return rt_str_empty();
-    return rt_string_from_bytes(text, strlen(text));
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief Set the placeholder of the dropdown.
@@ -246,7 +246,7 @@ double rt_slider_get_value(void *slider) {
     vg_slider_t *sl = rt_slider_checked(slider);
     if (!sl)
         return 0.0;
-    return (double)vg_slider_get_value(sl);
+    return rt_gui_finite_or((double)vg_slider_get_value(sl), 0.0);
 }
 
 /// @brief Set the range of the slider.
@@ -339,7 +339,7 @@ double rt_progressbar_get_value(void *progress) {
     vg_progressbar_t *pb = rt_progressbar_checked(progress);
     if (!pb)
         return 0.0;
-    return (double)vg_progressbar_get_value(pb);
+    return rt_gui_finite_clamped((double)vg_progressbar_get_value(pb), 0.0, 1.0, 0.0);
 }
 
 /// @brief Set the visual style of a progress bar (bar, circle, or indeterminate).

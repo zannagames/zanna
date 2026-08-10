@@ -85,7 +85,7 @@ rt_string rt_clipboard_get_text(void) {
     char *text = vgfx_clipboard_get_text();
     if (!text)
         return rt_str_empty();
-    rt_string result = rt_string_from_bytes(text, strlen(text));
+    rt_string result = rt_gui_string_from_cstr_bounded(text);
     free(text);
     return result;
 }
@@ -703,10 +703,10 @@ rt_string rt_shortcuts_get_triggered(void) {
     rt_gui_app_t *app = rt_shortcuts_app();
     if (app && app->triggered_shortcut_count > 0 && app->triggered_shortcut_ids[0]) {
         const char *id = app->triggered_shortcut_ids[0];
-        return rt_string_from_bytes(id, strlen(id));
+        return rt_gui_string_from_cstr_bounded(id);
     }
     if (app && app->triggered_shortcut_id) {
-        return rt_string_from_bytes(app->triggered_shortcut_id, strlen(app->triggered_shortcut_id));
+        return rt_gui_string_from_cstr_bounded(app->triggered_shortcut_id);
     }
     return rt_str_empty();
 }
@@ -904,7 +904,7 @@ rt_string rt_app_get_title(void *app) {
     if (!gui_app)
         return rt_str_empty();
     if (gui_app->title)
-        return rt_string_from_bytes(gui_app->title, strlen(gui_app->title));
+        return rt_gui_string_from_cstr_bounded(gui_app->title);
     return rt_str_empty();
 }
 
@@ -958,7 +958,7 @@ double rt_app_get_scale(void *app) {
     rt_gui_app_t *gui_app = rt_app_checked(app);
     if (!gui_app)
         return 1.0;
-    return (double)rt_app_window_scale(gui_app);
+    return rt_gui_positive_finite_or((double)rt_app_window_scale(gui_app), 1.0);
 }
 
 /// @brief Get the window width in logical (point) units (physical width / scale).
@@ -1055,14 +1055,15 @@ void rt_app_set_ui_scale(void *app, double scale) {
 
 /// @brief `App.SetWheelSpeed` — set the global mouse-wheel scroll sensitivity
 ///        used by the code editor, list box, and output pane. The value is
-///        clamped inside the gui library. The app handle is accepted for API
-///        symmetry but the setting is process-global.
+///        clamped inside the gui library. Non-finite input selects the default
+///        multiplier. The app handle is accepted for API symmetry but the setting
+///        is process-global.
 /// @param app Reserved app handle; ignored.
-/// @param speed Requested wheel sensitivity forwarded to the toolkit sanitizer.
+/// @param speed Requested wheel sensitivity; non-finite values become one.
 void rt_app_set_wheel_speed(void *app, double speed) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
-    vg_set_wheel_speed((float)speed);
+    vg_set_wheel_speed((float)rt_gui_finite_or(speed, 1.0));
 }
 
 /// @brief `App.GetWheelSpeed` — return the global mouse-wheel scroll sensitivity.
@@ -1071,7 +1072,7 @@ void rt_app_set_wheel_speed(void *app, double speed) {
 double rt_app_get_wheel_speed(void *app) {
     RT_ASSERT_MAIN_THREAD();
     (void)app;
-    return (double)vg_get_wheel_speed();
+    return rt_gui_positive_finite_or((double)vg_get_wheel_speed(), 1.0);
 }
 
 /// @brief Get the current user UI zoom multiplier (1.0 = default).
@@ -1082,7 +1083,7 @@ double rt_app_get_ui_scale(void *app) {
     rt_gui_app_t *gui_app = rt_app_checked(app);
     if (!gui_app)
         return 1.0;
-    if (!(gui_app->user_scale > 0.0f))
+    if (!isfinite(gui_app->user_scale) || !(gui_app->user_scale > 0.0f))
         return 1.0;
     return (double)gui_app->user_scale;
 }
@@ -1095,7 +1096,7 @@ double rt_app_get_ui_scale(void *app) {
 double rt_app_get_effective_scale(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
-    return (double)rt_gui_app_effective_scale(gui_app);
+    return rt_gui_positive_finite_or((double)rt_gui_app_effective_scale(gui_app), 1.0);
 }
 
 /// @brief Move the app window to a specific screen position.
@@ -1369,7 +1370,7 @@ double rt_app_get_font_size(void *app) {
     rt_gui_app_t *gui_app = rt_app_checked(app);
     if (!gui_app)
         return 14.0;
-    return (double)gui_app->default_font_size;
+    return rt_gui_positive_finite_or((double)gui_app->default_font_size, 14.0);
 }
 
 /// @brief Return the app's stored default font size in logical points.

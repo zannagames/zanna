@@ -318,7 +318,8 @@ void *rt_font_load_system_ui_bold(double size) {
 /// @return Finite positive logical-point size, or zero when unavailable.
 double rt_font_get_logical_size(void *font) {
     RT_ASSERT_MAIN_THREAD();
-    return (double)vg_font_get_logical_size(rt_gui_font_handle_checked(font));
+    return rt_gui_nonnegative_finite_or(
+        (double)vg_font_get_logical_size(rt_gui_font_handle_checked(font)), 0.0);
 }
 
 /// @brief Free a previously loaded font and release its resources.
@@ -599,7 +600,9 @@ void rt_widget_set_min_size(void *widget, double width, double height) {
 double rt_widget_get_min_width(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? rt_gui_physical_to_logical(w, w->constraints.min_width) : 0.0;
+    return w ? rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(w, w->constraints.min_width),
+                                            0.0)
+             : 0.0;
 }
 
 /// @brief Return the widget's stored minimum height converted to logical units.
@@ -608,7 +611,9 @@ double rt_widget_get_min_width(void *widget) {
 double rt_widget_get_min_height(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? rt_gui_physical_to_logical(w, w->constraints.min_height) : 0.0;
+    return w ? rt_gui_nonnegative_finite_or(
+                   rt_gui_physical_to_logical(w, w->constraints.min_height), 0.0)
+             : 0.0;
 }
 
 /// @brief Set the flex-grow factor for a widget within a VBox/HBox container.
@@ -755,7 +760,7 @@ rt_string rt_widget_get_name(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     const char *name = w ? vg_widget_get_name(w) : NULL;
-    return name ? rt_string_from_bytes(name, strlen(name)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(name);
 }
 
 /// @brief Return the stable ID assigned when a widget was initialized.
@@ -951,7 +956,7 @@ double rt_widget_get_flex(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0.0;
-    return (double)w->layout.flex;
+    return rt_gui_nonnegative_finite_or((double)w->layout.flex, 0.0);
 }
 
 /// @brief Return parent-relative X converted from framebuffer to logical units.
@@ -978,7 +983,7 @@ double rt_widget_get_logical_y(void *widget) {
 double rt_widget_get_logical_width(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? rt_gui_physical_to_logical(w, w->width) : 0.0;
+    return w ? rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(w, w->width), 0.0) : 0.0;
 }
 
 /// @brief Return arranged height converted from framebuffer to logical units.
@@ -987,7 +992,7 @@ double rt_widget_get_logical_width(void *widget) {
 double rt_widget_get_logical_height(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? rt_gui_physical_to_logical(w, w->height) : 0.0;
+    return w ? rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(w, w->height), 0.0) : 0.0;
 }
 
 /// @brief Query root-relative X and convert it to public logical units.
@@ -1026,7 +1031,7 @@ double rt_widget_get_screen_width(void *widget) {
         return 0.0;
     float width = 0.0f;
     vg_widget_get_screen_bounds(w, NULL, NULL, &width, NULL);
-    return rt_gui_physical_to_logical(w, width);
+    return rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(w, width), 0.0);
 }
 
 /// @brief Query screen-space height and convert it to public logical units.
@@ -1039,7 +1044,7 @@ double rt_widget_get_screen_height(void *widget) {
         return 0.0;
     float height = 0.0f;
     vg_widget_get_screen_bounds(w, NULL, NULL, NULL, &height);
-    return rt_gui_physical_to_logical(w, height);
+    return rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(w, height), 0.0);
 }
 
 /// @brief Test a logical root-relative point against one widget's effective bounds.
@@ -1197,7 +1202,9 @@ void rt_label_set_alignment(void *label, int64_t alignment) {
 int64_t rt_label_get_alignment(void *label) {
     RT_ASSERT_MAIN_THREAD();
     vg_label_t *lbl = (vg_label_t *)rt_gui_widget_handle_checked_type(label, VG_WIDGET_LABEL);
-    return lbl ? (int64_t)vg_label_get_alignment(lbl) : -1;
+    return lbl ? rt_gui_enum_or(
+                     (int64_t)vg_label_get_alignment(lbl), VG_ALIGN_H_LEFT, VG_ALIGN_H_RIGHT, -1)
+               : -1;
 }
 
 /// @brief Enable or disable ellipsis rendering for truncated label text.
@@ -1654,7 +1661,7 @@ rt_string rt_textinput_get_selected_text(void *input) {
     char *selection = vg_textinput_get_selection(ti);
     if (!selection)
         return rt_str_empty();
-    rt_string result = rt_string_from_bytes(selection, strlen(selection));
+    rt_string result = rt_gui_string_from_cstr_bounded(selection);
     free(selection);
     return result ? result : rt_str_empty();
 }
@@ -1778,7 +1785,7 @@ rt_string rt_textinput_get_composition_text(void *input) {
     if (!ti)
         return rt_str_empty();
     const char *composition = vg_textinput_get_composition_text(ti);
-    return composition ? rt_string_from_bytes(composition, strlen(composition)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(composition);
 }
 
 /// @brief Return the committed-text insertion boundary for active IME preedit.
@@ -1994,7 +2001,7 @@ double rt_scrollview_get_scroll_x(void *scroll) {
         return 0.0;
     float x = 0.0f, y = 0.0f;
     vg_scrollview_get_scroll(sv, &x, &y);
-    return (double)x;
+    return rt_gui_nonnegative_finite_or((double)x, 0.0);
 }
 
 /// @brief Get the current vertical scroll offset.
@@ -2008,7 +2015,7 @@ double rt_scrollview_get_scroll_y(void *scroll) {
         return 0.0;
     float x = 0.0f, y = 0.0f;
     vg_scrollview_get_scroll(sv, &x, &y);
-    return (double)y;
+    return rt_gui_nonnegative_finite_or((double)y, 0.0);
 }
 
 //=============================================================================
@@ -2342,7 +2349,10 @@ int64_t rt_treeview_get_drop_position(void *tree) {
         (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
     if (!tv)
         return 1;
-    return (int64_t)vg_treeview_drop_position_value(tv);
+    return rt_gui_enum_or((int64_t)vg_treeview_drop_position_value(tv),
+                          VG_TREE_DROP_BEFORE,
+                          VG_TREE_DROP_AFTER,
+                          VG_TREE_DROP_INTO);
 }
 
 /// @brief `TreeView.ClearDrop` — consume the latched drop.
@@ -2493,7 +2503,7 @@ rt_string rt_treeview_get_edit_text(void *tree) {
     vg_treeview_t *tv =
         (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
     const char *text = tv ? vg_treeview_get_edit_text(tv) : NULL;
-    return text ? rt_string_from_bytes(text, strlen(text)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief `TreeView.GetEditedNodeOption` — node whose edit most recently committed.
@@ -2579,7 +2589,7 @@ rt_string rt_treeview_node_get_icon(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
     const char *icon = n ? vg_tree_node_get_icon_text(n) : NULL;
-    return icon ? rt_string_from_bytes(icon, strlen(icon)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(icon);
 }
 
 /// @brief Set the node's materialized/lazy-child affordance.

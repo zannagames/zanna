@@ -379,10 +379,10 @@ rt_string rt_findbar_get_find_text(void *bar) {
     if (data->bar && data->bar->find_input) {
         const char *text = vg_textinput_get_text((vg_textinput_t *)data->bar->find_input);
         if (text)
-            return rt_string_from_bytes(text, strlen(text));
+            return rt_gui_string_from_cstr_bounded(text);
     }
     if (data->find_text)
-        return rt_string_from_bytes(data->find_text, strlen(data->find_text));
+        return rt_gui_string_from_cstr_bounded(data->find_text);
     return rt_str_empty();
 }
 
@@ -418,10 +418,10 @@ rt_string rt_findbar_get_replace_text(void *bar) {
     if (data->bar && data->bar->replace_input) {
         const char *text = vg_textinput_get_text((vg_textinput_t *)data->bar->replace_input);
         if (text)
-            return rt_string_from_bytes(text, strlen(text));
+            return rt_gui_string_from_cstr_bounded(text);
     }
     if (data->replace_text)
-        return rt_string_from_bytes(data->replace_text, strlen(data->replace_text));
+        return rt_gui_string_from_cstr_bounded(data->replace_text);
     return rt_str_empty();
 }
 

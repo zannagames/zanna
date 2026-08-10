@@ -497,7 +497,7 @@ rt_string rt_commandpalette_get_selected_command(void *palette) {
         return rt_str_empty();
     rt_commandpalette_data_t *data = rt_commandpalette_checked(palette);
     if (data && data->selected_command) {
-        return rt_string_from_bytes(data->selected_command, strlen(data->selected_command));
+        return rt_gui_string_from_cstr_bounded(data->selected_command);
     }
     return rt_str_empty();
 }
@@ -528,7 +528,7 @@ rt_string rt_commandpalette_get_query(void *palette) {
     if (!data || !data->palette)
         return rt_str_empty();
     const char *q = vg_commandpalette_get_query(data->palette);
-    return q ? rt_string_from_bytes(q, strlen(q)) : rt_str_empty();
+    return rt_gui_string_from_cstr_bounded(q);
 }
 
 /// @brief `CommandPalette.GetQueryGeneration` — bumped on every query change.
@@ -1355,7 +1355,7 @@ rt_string rt_widget_get_drop_type(void *widget) {
         return rt_str_empty();
     rt_drag_drop_data_t data = rt_widget_drag_drop_snapshot(w);
     if (data.drop_type)
-        return rt_string_from_bytes(data.drop_type, strlen(data.drop_type));
+        return rt_gui_string_from_cstr_bounded(data.drop_type);
     return rt_str_empty();
 }
 
@@ -1369,7 +1369,7 @@ rt_string rt_widget_get_drop_data(void *widget) {
         return rt_str_empty();
     rt_drag_drop_data_t data = rt_widget_drag_drop_snapshot(w);
     if (data.drop_data)
-        return rt_string_from_bytes(data.drop_data, strlen(data.drop_data));
+        return rt_gui_string_from_cstr_bounded(data.drop_data);
     return rt_str_empty();
 }
 
@@ -1379,7 +1379,7 @@ rt_string rt_widget_get_drop_data(void *widget) {
 double rt_widget_get_drop_x(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? (double)w->_drop_received_x : 0.0;
+    return w ? rt_gui_finite_or((double)w->_drop_received_x, 0.0) : 0.0;
 }
 
 /// @brief The pointer y recorded when the last drop landed on this widget.
@@ -1388,7 +1388,7 @@ double rt_widget_get_drop_x(void *widget) {
 double rt_widget_get_drop_y(void *widget) {
     RT_ASSERT_MAIN_THREAD();
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
-    return w ? (double)w->_drop_received_y : 0.0;
+    return w ? rt_gui_finite_or((double)w->_drop_received_y, 0.0) : 0.0;
 }
 
 /// @brief Check whether files were dropped onto the app window this frame.
@@ -1424,7 +1424,7 @@ rt_string rt_app_get_dropped_file(void *app, int64_t index) {
         gui_app->file_drop.files) {
         char *file = gui_app->file_drop.files[index];
         if (file) {
-            return rt_string_from_bytes(file, strlen(file));
+            return rt_gui_string_from_cstr_bounded(file);
         }
     }
     return rt_str_empty();

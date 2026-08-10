@@ -373,7 +373,11 @@ void rt_image_set_filter(void *image, int64_t filter) {
 int64_t rt_image_get_filter(void *image) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
-    return img ? (int64_t)vg_image_get_filter(img) : RT_IMAGE_FILTER_NEAREST;
+    return img ? rt_gui_enum_or((int64_t)vg_image_get_filter(img),
+                                RT_IMAGE_FILTER_NEAREST,
+                                RT_IMAGE_FILTER_BILINEAR,
+                                RT_IMAGE_FILTER_NEAREST)
+               : RT_IMAGE_FILTER_NEAREST;
 }
 
 /// @brief Set the opacity of the image.

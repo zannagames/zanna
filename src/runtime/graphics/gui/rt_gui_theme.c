@@ -817,7 +817,8 @@ double rt_theme_palette_get_metric(void *palette_handle, rt_string token) {
     }
     const rt_gui_metric_token_t *descriptor = rt_gui_find_metric_token(name, NULL);
     free(name);
-    return descriptor ? rt_gui_theme_metric_read(palette->theme, descriptor) : 0.0;
+    return descriptor ? rt_gui_finite_or(rt_gui_theme_metric_read(palette->theme, descriptor), 0.0)
+                      : 0.0;
 }
 
 /// @brief Enable or disable palette-defined state-transition motion.
@@ -933,7 +934,8 @@ void rt_theme_set_mode(int64_t mode) {
 int64_t rt_theme_get_mode(void) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
-    return app ? (int64_t)app->theme_kind : s_fallback_theme_mode;
+    int64_t mode = app ? (int64_t)app->theme_kind : s_fallback_theme_mode;
+    return rt_gui_enum_or(mode, RT_GUI_THEME_DARK, RT_GUI_THEME_CUSTOM, RT_GUI_THEME_DARK);
 }
 
 /// @brief Select live platform-following theme behavior.

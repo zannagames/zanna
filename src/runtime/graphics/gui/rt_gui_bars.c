@@ -200,7 +200,7 @@ rt_string rt_statusbar_get_left_text(void *bar) {
         return rt_str_empty();
     vg_statusbar_item_t *item = get_zone_text_item(sb, VG_STATUSBAR_ZONE_LEFT);
     if (item && item->text) {
-        return rt_string_from_bytes(item->text, strlen(item->text));
+        return rt_gui_string_from_cstr_bounded(item->text);
     }
     return rt_str_empty();
 }
@@ -215,7 +215,7 @@ rt_string rt_statusbar_get_center_text(void *bar) {
         return rt_str_empty();
     vg_statusbar_item_t *item = get_zone_text_item(sb, VG_STATUSBAR_ZONE_CENTER);
     if (item && item->text) {
-        return rt_string_from_bytes(item->text, strlen(item->text));
+        return rt_gui_string_from_cstr_bounded(item->text);
     }
     return rt_str_empty();
 }
@@ -230,7 +230,7 @@ rt_string rt_statusbar_get_right_text(void *bar) {
         return rt_str_empty();
     vg_statusbar_item_t *item = get_zone_text_item(sb, VG_STATUSBAR_ZONE_RIGHT);
     if (item && item->text) {
-        return rt_string_from_bytes(item->text, strlen(item->text));
+        return rt_gui_string_from_cstr_bounded(item->text);
     }
     return rt_str_empty();
 }
@@ -435,7 +435,7 @@ rt_string rt_statusbaritem_get_text(void *item) {
     if (!sbi)
         return rt_str_empty();
     if (sbi->text) {
-        return rt_string_from_bytes(sbi->text, strlen(sbi->text));
+        return rt_gui_string_from_cstr_bounded(sbi->text);
     }
     return rt_str_empty();
 }
@@ -475,7 +475,7 @@ double rt_statusbaritem_get_progress(void *item) {
     vg_statusbar_item_t *sbi = rt_statusbaritem_checked(item);
     if (!sbi)
         return 0.0;
-    return (double)sbi->progress;
+    return rt_gui_finite_clamped((double)sbi->progress, 0.0, 1.0, 0.0);
 }
 
 /// @brief Show or hide a status bar item.
@@ -1083,8 +1083,8 @@ static void rt_toolbaritem_screen_rect(
     vg_widget_t *owner = &ti->owner->base;
     *out_x = (float)rt_gui_physical_to_logical(owner, *out_x);
     *out_y = (float)rt_gui_physical_to_logical(owner, *out_y);
-    *out_w = (float)rt_gui_physical_to_logical(owner, *out_w);
-    *out_h = (float)rt_gui_physical_to_logical(owner, *out_h);
+    *out_w = (float)rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(owner, *out_w), 0.0);
+    *out_h = (float)rt_gui_nonnegative_finite_or(rt_gui_physical_to_logical(owner, *out_h), 0.0);
 }
 
 /// @brief On-screen left edge of a directly visible toolbar item (ADR 0220).

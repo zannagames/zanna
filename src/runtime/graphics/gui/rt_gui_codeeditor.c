@@ -2173,7 +2173,7 @@ rt_string rt_editorbuffer_get_text(void *handle) {
     char *t = vg_editor_buffer_get_text(d->buf);
     if (!t)
         return rt_str_empty();
-    rt_string s = rt_string_from_bytes(t, strlen(t));
+    rt_string s = rt_gui_string_from_cstr_bounded(t);
     free(t);
     return s;
 }

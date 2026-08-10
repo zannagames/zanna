@@ -123,6 +123,11 @@ typedef struct {
 
 typedef struct {
     uint64_t magic;
+    vg_theme_t *theme;
+} rt_theme_palette_data_view_t;
+
+typedef struct {
+    uint64_t magic;
     vg_minimap_t *minimap;
     int64_t width;
     const vg_widget_vtable_t *original_vtable;
@@ -3496,6 +3501,167 @@ static void test_numeric_narrowing_saturates_without_undefined_behavior(void) {
     printf("test_numeric_narrowing_saturates_without_undefined_behavior: PASSED\n");
 }
 
+/// @brief Verify public GUI getters contain corrupted retained text, numbers, and enums.
+/// @details Lower toolkit state can be damaged by callbacks, stale native integrations, or memory
+///          faults without passing through runtime setters. Public getters must still return
+///          bounded strings, finite numbers, and documented enum ordinals.
+static void test_public_gui_getters_contain_corrupted_retained_state(void) {
+    assert(rt_gui_finite_or(NAN, 7.0) == 7.0);
+    assert(rt_gui_nonnegative_finite_or(-1.0, 9.0) == 9.0);
+    assert(rt_gui_positive_finite_or(0.0, 11.0) == 11.0);
+    assert(rt_gui_finite_clamped(INFINITY, 0.0, 1.0, 0.5) == 0.5);
+    assert(rt_gui_enum_or(INT64_MAX, 0, 2, -1) == -1);
+
+    rt_string bounded = rt_gui_string_from_cstr_bounded("bounded");
+    assert(strcmp(rt_string_cstr(bounded), "bounded") == 0);
+    rt_str_release_maybe(bounded);
+    bounded = rt_gui_string_from_cstr_bounded(NULL);
+    assert(strcmp(rt_string_cstr(bounded), "") == 0);
+    rt_str_release_maybe(bounded);
+
+    char *unterminated = (char *)malloc(RT_GUI_MAX_STRING_BYTES + 2u);
+    assert(unterminated);
+    memset(unterminated, 'x', RT_GUI_MAX_STRING_BYTES + 1u);
+    unterminated[RT_GUI_MAX_STRING_BYTES + 1u] = '\0';
+    bounded = rt_gui_string_from_cstr_bounded(unterminated);
+    assert(strcmp(rt_string_cstr(bounded), "") == 0);
+    rt_str_release_maybe(bounded);
+    free(unterminated);
+
+    vg_widget_t *widget = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(widget);
+    widget->constraints.min_width = NAN;
+    widget->constraints.min_height = -INFINITY;
+    widget->layout.flex = NAN;
+    widget->x = NAN;
+    widget->y = INFINITY;
+    widget->width = -1.0f;
+    widget->height = INFINITY;
+    assert(rt_widget_get_min_width(widget) == 0.0);
+    assert(rt_widget_get_min_height(widget) == 0.0);
+    assert(rt_widget_get_flex(widget) == 0.0);
+    assert(rt_widget_get_logical_x(widget) == 0.0);
+    assert(rt_widget_get_logical_y(widget) == 0.0);
+    assert(rt_widget_get_logical_width(widget) == 0.0);
+    assert(rt_widget_get_logical_height(widget) == 0.0);
+    assert(rt_widget_get_screen_width(widget) == 0.0);
+    assert(rt_widget_get_screen_height(widget) == 0.0);
+    rt_widget_set_accessible_role(widget, INT64_MAX);
+    rt_widget_set_live_region(widget, INT64_MAX);
+    assert(rt_widget_get_accessible_role(widget) == VG_ACCESSIBLE_ROLE_NONE);
+    assert(rt_widget_get_live_region(widget) == VG_LIVE_REGION_OFF);
+    widget->accessibility.role = (vg_accessible_role_t)INT64_MAX;
+    widget->accessibility.live_mode = (vg_live_region_mode_t)INT64_MAX;
+    assert(rt_widget_get_accessible_role(widget) == VG_ACCESSIBLE_ROLE_NONE);
+    assert(rt_widget_get_live_region(widget) == VG_LIVE_REGION_OFF);
+
+    vg_slider_t *slider = vg_slider_create(NULL, VG_SLIDER_HORIZONTAL);
+    vg_progressbar_t *progress = vg_progressbar_create(NULL);
+    vg_scrollview_t *scroll = vg_scrollview_create(NULL);
+    vg_label_t *label = vg_label_create(NULL, "label");
+    assert(slider && progress && scroll && label);
+    slider->value = NAN;
+    progress->value = INFINITY;
+    scroll->scroll_x = NAN;
+    scroll->scroll_y = -INFINITY;
+    label->h_align = (vg_h_align_t)INT64_MAX;
+    assert(rt_slider_get_value(slider) == 0.0);
+    assert(rt_progressbar_get_value(progress) == 0.0);
+    assert(rt_scrollview_get_scroll_x(scroll) == 0.0);
+    assert(rt_scrollview_get_scroll_y(scroll) == 0.0);
+    assert(rt_label_get_alignment(label) == -1);
+
+    vg_splitpane_t *split = vg_splitpane_create(NULL, VG_SPLIT_HORIZONTAL);
+    vg_image_t *image = vg_image_create(NULL);
+    vg_codeeditor_t *editor = vg_codeeditor_create(NULL);
+    vg_spinner_t *spinner = vg_spinner_create(NULL);
+    vg_datagrid_t *grid = vg_datagrid_create(NULL);
+    vg_treeview_t *tree = vg_treeview_create(NULL);
+    assert(split && image && editor && spinner && grid && tree);
+    split->split_position = NAN;
+    split->min_first_size = INFINITY;
+    split->min_second_size = -1.0f;
+    split->direction = (vg_split_direction_t)INT64_MAX;
+    split->collapsed_side = (vg_split_collapsed_side_t)INT64_MAX;
+    image->filter = (vg_image_filter_t)INT64_MAX;
+    editor->font_size = NAN;
+    spinner->value = NAN;
+    grid->sort_direction = INT32_MAX;
+    tree->latched_pos = (vg_tree_drop_position_t)INT64_MAX;
+    assert(rt_splitpane_get_position(split) == 0.5);
+    assert(rt_splitpane_get_min_first(split) == 0.0);
+    assert(rt_splitpane_get_min_second(split) == 0.0);
+    assert(rt_splitpane_get_orientation(split) == -1);
+    assert(rt_splitpane_get_collapsed_side(split) == -1);
+    assert(rt_image_get_filter(image) == RT_IMAGE_FILTER_NEAREST);
+    assert(rt_codeeditor_get_font_size(editor) == 14.0);
+    editor->font_size = 0.0f;
+    assert(rt_codeeditor_get_font_size(editor) == 14.0);
+    assert(rt_spinner_get_value(spinner) == 0.0);
+    assert(rt_datagrid_get_sort_direction(grid) == 0);
+    assert(rt_treeview_get_drop_position(tree) == 1);
+
+    vg_widget_t *vbox = (vg_widget_t *)rt_vbox_new();
+    vg_widget_t *hbox = (vg_widget_t *)rt_hbox_new();
+    assert(vbox && hbox);
+    vg_vbox_layout_t *vbox_layout = (vg_vbox_layout_t *)vbox->impl_data;
+    vg_hbox_layout_t *hbox_layout = (vg_hbox_layout_t *)hbox->impl_data;
+    assert(vbox_layout && hbox_layout);
+    vbox_layout->align = (vg_align_t)INT64_MAX;
+    vbox_layout->justify = (vg_justify_t)INT64_MAX;
+    hbox_layout->align = (vg_align_t)INT64_MAX;
+    hbox_layout->justify = (vg_justify_t)INT64_MAX;
+    assert(rt_vbox_get_align(vbox) == 0);
+    assert(rt_vbox_get_justify(vbox) == 0);
+    assert(rt_hbox_get_align(hbox) == 0);
+    assert(rt_hbox_get_justify(hbox) == 0);
+
+    vg_statusbar_t *statusbar = (vg_statusbar_t *)rt_statusbar_new(NULL);
+    assert(statusbar);
+    void *progress_handle = rt_statusbar_add_progress(statusbar, VG_STATUSBAR_ZONE_LEFT);
+    assert(progress_handle);
+    vg_statusbar_item_t *progress_item = rt_gui_statusbar_item_from_handle(progress_handle);
+    assert(progress_item);
+    progress_item->progress = NAN;
+    assert(rt_statusbaritem_get_progress(progress_handle) == 0.0);
+
+    rt_gui_app_t app;
+    reset_fake_app(&app);
+    app.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(app.root);
+    app.root->user_data = &app;
+    rt_gui_activate_app(&app);
+    app.theme_kind = (rt_gui_theme_kind_t)INT64_MAX;
+    app.user_scale = NAN;
+    app.default_font_size = NAN;
+    assert(rt_theme_get_mode() == RT_GUI_THEME_DARK);
+    assert(rt_app_get_ui_scale(&app) == 1.0);
+    assert(rt_app_get_effective_scale(&app) == 1.0);
+    assert(rt_app_get_font_size(&app) == 14.0);
+    assert(rt_app_get_logical_font_size(&app) == 14.0);
+    app.default_font_size = 0.0f;
+    assert(rt_app_get_font_size(&app) == 14.0);
+    rt_app_set_wheel_speed(&app, NAN);
+    assert(rt_app_get_wheel_speed(&app) == 1.0);
+    cleanup_fake_app(&app);
+
+    rt_widget_destroy(statusbar);
+    vg_widget_destroy(vbox);
+    vg_widget_destroy(hbox);
+    vg_widget_destroy(&tree->base);
+    vg_datagrid_destroy(grid);
+    vg_widget_destroy(&spinner->base);
+    vg_widget_destroy(&editor->base);
+    vg_widget_destroy(&image->base);
+    vg_widget_destroy(&split->base);
+    vg_widget_destroy(&label->base);
+    vg_widget_destroy(&scroll->base);
+    vg_widget_destroy(&progress->base);
+    vg_widget_destroy(&slider->base);
+    vg_widget_destroy(widget);
+    printf("test_public_gui_getters_contain_corrupted_retained_state: PASSED\n");
+}
+
 static void test_font_destroy_defers_live_app_font(void) {
     rt_gui_app_t app;
     reset_fake_app(&app);
@@ -5543,6 +5709,11 @@ static void test_custom_system_theme_palette_contract(void) {
     assert(palette);
     assert(rt_theme_palette_get_color(palette, rt_const_cstr("bgPrimary")) == 0x0D1A1C);
     assert(rt_theme_palette_get_metric(palette, rt_const_cstr("buttonHeight")) == 28.0);
+    rt_theme_palette_data_view_t *palette_data = (rt_theme_palette_data_view_t *)palette;
+    assert(palette_data->theme);
+    palette_data->theme->button.height = NAN;
+    assert(rt_theme_palette_get_metric(palette, rt_const_cstr("buttonHeight")) == 0.0);
+    assert(rt_theme_palette_set_metric(palette, rt_const_cstr("buttonHeight"), 28.0) == 1);
     assert(rt_theme_palette_set_color(palette, rt_const_cstr("notAColor"), 0x123456) == 0);
     assert(rt_theme_palette_set_metric(palette, rt_const_cstr("notAMetric"), 1.0) == 0);
     assert(rt_theme_palette_set_color(palette, rt_const_cstr("accentPrimary"), 0x3366CC) == 1);
@@ -5739,6 +5910,7 @@ int main(void) {
     test_commandpalette_rejects_embedded_nul_command_ids();
     test_numeric_setters_sanitize_invalid_values();
     test_numeric_narrowing_saturates_without_undefined_behavior();
+    test_public_gui_getters_contain_corrupted_retained_state();
     test_font_destroy_defers_live_app_font();
     test_managed_system_fonts_and_generation_retirement();
     test_detached_widgets_do_not_inherit_current_app_font();

@@ -76,6 +76,8 @@ User-facing documentation lives in the **[main documentation index](../README.md
 Living ledgers that track findings and their resolution for high-risk subsystems.
 
 - [Runtime Hardening Audit (July 2026)](runtime-hardening-audit-2026-07.md) — Resolution ledger for 64 runtime findings
+- [GUI Runtime Hardening Program (August 2026)](gui-runtime-hardening-2026-08.md) — Resolution ledger for the first 100 GUI C runtime findings
+- [GUI Runtime Hardening, Round Two (August 2026)](gui-runtime-hardening-round-two-2026-08.md) — Resolution ledger for 100 additional text, numeric, and retained-state boundary findings
 - [Graphics3D Runtime Hardening Program (July 2026)](graphics3d-runtime-hardening-2026-07.md) — 48-item audit of `src/runtime/graphics/3d`
 - [Graphics3D Backend Correctness Audit (July 2026)](graphics3d-backend-audit-2026-07.md) — OpenGL, D3D11, Metal, and software renderer boundary review
 - [Graphics3D Animation and Navigation Audit (August 2026)](graphics3d-animation-navigation-audit-2026-08.md) — Resolution ledger for 104 IK, morph-target, and navigation findings

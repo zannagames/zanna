@@ -534,7 +534,7 @@ rt_string rt_menu_get_title(void *menu) {
     const char *title = m->title;
     if (!title)
         return rt_str_empty();
-    return rt_string_from_bytes(title, strlen(title));
+    return rt_gui_string_from_cstr_bounded(title);
 }
 
 /// @brief Get the number of items in a menu.
@@ -629,7 +629,7 @@ rt_string rt_menuitem_get_text(void *item) {
     const char *text = mi->text;
     if (!text)
         return rt_str_empty();
-    return rt_string_from_bytes(text, strlen(text));
+    return rt_gui_string_from_cstr_bounded(text);
 }
 
 /// @brief Set the shortcut of the menuitem.
@@ -669,7 +669,7 @@ rt_string rt_menuitem_get_shortcut(void *item) {
     const char *shortcut = mi->shortcut;
     if (!shortcut)
         return rt_str_empty();
-    return rt_string_from_bytes(shortcut, strlen(shortcut));
+    return rt_gui_string_from_cstr_bounded(shortcut);
 }
 
 /// @brief Set the icon of the menuitem.
@@ -847,10 +847,10 @@ static void rt_menuitem_screen_rect(
     if (!vg_contextmenu_get_item_rect(mi->owner_contextmenu, mi, out_x, out_y, out_w, out_h))
         return;
     float scale = rt_gui_app_effective_scale(rt_gui_get_active_app());
-    *out_x /= scale;
-    *out_y /= scale;
-    *out_w /= scale;
-    *out_h /= scale;
+    *out_x = (float)rt_gui_finite_or((double)*out_x / (double)scale, 0.0);
+    *out_y = (float)rt_gui_finite_or((double)*out_y / (double)scale, 0.0);
+    *out_w = (float)rt_gui_nonnegative_finite_or((double)*out_w / (double)scale, 0.0);
+    *out_h = (float)rt_gui_nonnegative_finite_or((double)*out_h / (double)scale, 0.0);
 }
 
 /// @brief Report a visible context-menu row's on-screen left edge (ADR 0219).

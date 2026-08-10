@@ -390,7 +390,7 @@ rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string 
         free(cfilter);
 
     if (result) {
-        rt_string ret = rt_string_from_bytes(result, strlen(result));
+        rt_string ret = rt_gui_string_from_cstr_bounded(result);
         free(result);
         return ret;
     }
@@ -545,7 +545,7 @@ rt_string rt_filedialog_save(rt_string title,
         free(cname);
 
     if (result) {
-        rt_string ret = rt_string_from_bytes(result, strlen(result));
+        rt_string ret = rt_gui_string_from_cstr_bounded(result);
         free(result);
         return ret;
     }
@@ -596,7 +596,7 @@ rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
         free(cpath);
 
     if (result) {
-        rt_string ret = rt_string_from_bytes(result, strlen(result));
+        rt_string ret = rt_gui_string_from_cstr_bounded(result);
         free(result);
         return ret;
     }
@@ -1216,7 +1216,7 @@ rt_string rt_filedialog_get_error(void *dialog) {
     RT_ASSERT_MAIN_THREAD();
     rt_filedialog_data_t *data = rt_filedialog_wrapper_checked(dialog);
     const char *error = data && data->error ? data->error : "";
-    return rt_string_from_bytes(error, strlen(error));
+    return rt_gui_string_from_cstr_bounded(error);
 }
 
 /// @brief Snapshot every accepted path as an owned runtime sequence.
@@ -1234,7 +1234,7 @@ void *rt_filedialog_get_paths(void *dialog) {
         return paths;
     for (size_t index = 0; index < data->selected_count; index++) {
         const char *path = data->selected_paths[index] ? data->selected_paths[index] : "";
-        rt_string value = rt_string_from_bytes(path, strlen(path));
+        rt_string value = rt_gui_string_from_cstr_bounded(path);
         if (!value)
             continue;
         rt_seq_push(paths, value);
@@ -1252,7 +1252,7 @@ rt_string rt_filedialog_get_path(void *dialog) {
     if (!data)
         return rt_str_empty();
     if (data->selected_paths && data->selected_count > 0) {
-        return rt_string_from_bytes(data->selected_paths[0], strlen(data->selected_paths[0]));
+        return rt_gui_string_from_cstr_bounded(data->selected_paths[0]);
     }
     return rt_str_empty();
 }
@@ -1283,8 +1283,7 @@ rt_string rt_filedialog_get_path_at(void *dialog, int64_t index) {
     if (data->selected_paths && index >= 0 && (uintmax_t)index <= (uintmax_t)SIZE_MAX) {
         size_t idx = (size_t)index;
         if (idx < data->selected_count) {
-            return rt_string_from_bytes(data->selected_paths[idx],
-                                        strlen(data->selected_paths[idx]));
+            return rt_gui_string_from_cstr_bounded(data->selected_paths[idx]);
         }
     }
     return rt_str_empty();

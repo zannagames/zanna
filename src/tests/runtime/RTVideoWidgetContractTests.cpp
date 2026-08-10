@@ -352,6 +352,13 @@ extern "C" rt_string rt_string_from_bytes(const char *data, size_t len) {
     return reinterpret_cast<rt_string>(str);
 }
 
+/// @brief Isolated borrowed-string double used only by VideoWidget's static control labels.
+/// @details The button-construction double never inspects or retains this value, so no runtime
+///          string allocation is needed and the production no-allocation contract is preserved.
+extern "C" rt_string rt_const_cstr(const char *text) {
+    return reinterpret_cast<rt_string>(const_cast<char *>(text));
+}
+
 extern "C" void *rt_videoplayer_open(rt_string) {
     g_open_count++;
     if (g_open_should_fail)
@@ -645,6 +652,19 @@ static void test_visibility_and_volume_are_clamped() {
     assert(player->volume == 0.0);
     rt_videowidget_set_volume(widget, std::numeric_limits<double>::infinity());
     assert(player->volume == 0.0);
+
+    player->position = std::numeric_limits<double>::quiet_NaN();
+    player->duration = std::numeric_limits<double>::infinity();
+    assert(rt_videowidget_get_position(widget) == 0.0);
+    assert(rt_videowidget_get_duration(widget) == 0.0);
+    player->position = -1.0;
+    player->duration = -1.0;
+    assert(rt_videowidget_get_position(widget) == 0.0);
+    assert(rt_videowidget_get_duration(widget) == 0.0);
+    player->position = 2.0;
+    player->duration = 8.0;
+    assert(rt_videowidget_get_position(widget) == 2.0);
+    assert(rt_videowidget_get_duration(widget) == 8.0);
 }
 
 static void test_nonfinite_update_delta_is_ignored() {
