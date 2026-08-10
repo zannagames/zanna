@@ -10196,6 +10196,13 @@ static void test_bc6h_all_modes_are_finite_and_deterministic() {
     uint16_t zero[16][3] = {};
     EXPECT_TRUE(std::memcmp(decoded, zero, sizeof(decoded)) == 0,
                 "BC6H reserved modes fail closed to black");
+
+    std::memset(decoded, 0xFF, sizeof(decoded));
+    bc6h_decode_block(nullptr, 0, decoded);
+    EXPECT_TRUE(std::memcmp(decoded, zero, sizeof(decoded)) == 0,
+                "BC6H null input fails closed to black");
+    bc6h_decode_block(reserved, 0, nullptr);
+    EXPECT_TRUE(true, "BC6H null output is rejected without dereferencing it");
 }
 
 int main() {

@@ -339,7 +339,10 @@ static uint16_t bc6h_finish_signed(int32_t i) {
 static int32_t bc6h_floor_div64(int64_t value) {
     if (value >= 0)
         return (int32_t)((uint64_t)value >> 6u);
-    return (int32_t)(-((int64_t)(((uint64_t)(-value) + UINT64_C(63)) >> 6u)));
+    {
+        uint64_t magnitude = (uint64_t)(-(value + 1)) + UINT64_C(1);
+        return (int32_t)(-((int64_t)((magnitude + UINT64_C(63)) >> 6u)));
+    }
 }
 
 /// @brief Decode one 16-byte BC6H block into sixteen RGB half-float bit triples.
@@ -348,12 +351,19 @@ static int32_t bc6h_floor_div64(int64_t value) {
 /// @param is_signed Non-zero for the signed BC6H variant; zero for unsigned BC6H.
 /// @param[out] out_halves Row-major array of sixteen RGB binary16 bit patterns.
 void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halves[16][3]) {
-    bc6h_reader_t reader = {block, 0, 0};
+    bc6h_reader_t reader;
     const bc6h_mode_info_t *info = 0;
     int32_t vars[14];
     int mode;
 
+    if (!out_halves)
+        return;
     memset(out_halves, 0, 16 * 3 * sizeof(uint16_t));
+    if (!block)
+        return;
+    reader.data = block;
+    reader.bit = 0;
+    reader.failed = 0;
     mode = block[0] & 3;
     if (mode >= 2)
         mode = block[0] & 31;
@@ -369,10 +379,14 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
     memset(vars, 0, sizeof(vars));
     for (int f = 0; f < info->field_count; f++) {
         const bc6h_field_t *field = &info->fields[f];
+        if (field->var >= sizeof(vars) / sizeof(vars[0])) {
+            reader.failed = 1;
+            break;
+        }
         if (field->hi >= field->lo) {
             uint32_t width = (uint32_t)(field->hi - field->lo + 1);
             uint32_t bits = bc6h_read_bits(&reader, width);
-            if (field->lo < 0 || field->lo >= 32 || width > 32u - (uint32_t)field->lo) {
+            if (field->lo >= 32 || width > 32u - (uint32_t)field->lo) {
                 reader.failed = 1;
                 break;
             }
@@ -381,6 +395,10 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
             /* Reversed storage: first block bit lands in the highest variable bit. */
             uint32_t width = (uint32_t)(field->lo - field->hi + 1);
             uint32_t bits = bc6h_read_bits(&reader, width);
+            if (field->lo >= 32 || width > 32u) {
+                reader.failed = 1;
+                break;
+            }
             for (uint32_t i = 0; i < width; i++) {
                 if (bits & (1u << i))
                     vars[field->var] |= (int32_t)(UINT32_C(1) << (uint32_t)(field->lo - (int)i));
@@ -444,6 +462,10 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
             int anchor = (t == 0) || (info->two_subset && t == bc6h_anchor2[pb]);
             int index_bits = (info->two_subset ? 3 : 4) - (anchor ? 1 : 0);
             uint32_t index = bc6h_read_bits(&reader, (uint32_t)index_bits);
+            if (reader.failed) {
+                memset(out_halves, 0, 16 * 3 * sizeof(uint16_t));
+                return;
+            }
             int weight = info->two_subset ? bc6h_weights3[index & 7] : bc6h_weights4[index & 15];
             for (int c = 0; c < 3; c++) {
                 int32_t e0 = endpoints[subset * 2][c];
@@ -510,16 +532,19 @@ static void *textureasset3d_decode_bc6h_fallback(const uint8_t *data,
                                                  uint64_t length,
                                                  int is_signed) {
     rt_pixels_impl *pixels;
-    uint32_t blocks_x = (width + 3u) / 4u;
-    uint32_t blocks_y = (height + 3u) / 4u;
-    uint64_t needed = (uint64_t)blocks_x * (uint64_t)blocks_y * 16u;
+    uint32_t blocks_x;
+    uint32_t blocks_y;
+    uint64_t needed;
     uint64_t rgba_bytes = 0;
-    if (width == 0 || height == 0)
+    if (!data || width == 0 || height == 0)
         return NULL;
     if (!textureasset3d_rgba8_byte_count(width, height, &rgba_bytes))
         return NULL;
     if (rgba_bytes > TEXTUREASSET3D_MAX_RGBA8_FALLBACK_BYTES)
         return NULL;
+    blocks_x = 1u + (width - 1u) / 4u;
+    blocks_y = 1u + (height - 1u) / 4u;
+    needed = (uint64_t)blocks_x * (uint64_t)blocks_y * 16u;
     if (length < needed || offset > (uint64_t)size || needed > (uint64_t)size - offset)
         return NULL;
     pixels = (rt_pixels_impl *)rt_pixels_new((int64_t)width, (int64_t)height);
@@ -572,8 +597,8 @@ static void **textureasset3d_decode_bc6h_mips(const uint8_t *data,
                                               int64_t mip_count,
                                               int is_signed) {
     void **mip_pixels;
-    int decoded_count = 0;
-    if (!data || !mips || mip_count <= 0)
+    int64_t decoded_count = 0;
+    if (!data || !mips || mip_count <= 0 || mip_count > (int64_t)TEXTUREASSET3D_MAX_MIP_COUNT)
         return NULL;
     mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
     if (!mip_pixels)

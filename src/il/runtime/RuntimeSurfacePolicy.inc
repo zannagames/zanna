@@ -268,6 +268,7 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_append_matches_general_product")
 // Tool-facing transforms behind `zanna asset bake`; deliberately absent from
 // runtime.def because offline packaging policy is not a language runtime API
 // (ADR 0244).
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas3d_release_adopted_window")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_keep_animation_subset")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_limit_texture_dim")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_simplify_meshes")

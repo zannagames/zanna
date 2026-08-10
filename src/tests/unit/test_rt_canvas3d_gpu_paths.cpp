@@ -526,7 +526,8 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     std::free(canvas->sort_cmds);
     std::free(canvas->motion_history);
     std::free(canvas->motion_history_hash);
-    std::free(canvas->readback_rgba_scratch);
+    if (rt_canvas3d_readback_storage_is_valid(canvas))
+        std::free(canvas->readback_rgba_owned);
     if (canvas->postfx && rt_obj_release_check0(canvas->postfx))
         rt_obj_free(canvas->postfx);
     vgfx3d_postfx_chain_free(&canvas->frame_postfx_chain);
@@ -545,6 +546,9 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     canvas->motion_history_hash = nullptr;
     canvas->readback_rgba_scratch = nullptr;
     canvas->readback_rgba_scratch_capacity = 0;
+    canvas->readback_rgba_owned = nullptr;
+    canvas->readback_rgba_storage_capacity = 0;
+    canvas->readback_rgba_storage_cookie = 0;
     canvas->postfx = nullptr;
     canvas->temp_buf_count = canvas->temp_buf_capacity = 0;
     canvas->temp_obj_count = canvas->temp_obj_capacity = 0;
@@ -3498,6 +3502,64 @@ static void test_screenshot_copy_reuses_destination_and_gpu_scratch(void) {
     cleanup_fake_canvas(&canvas);
 }
 
+static void test_screenshot_repairs_corrupt_readback_mirrors(void) {
+    vgfx3d_backend_t backend = {};
+    backend.name = "metal";
+    backend.gpu_skinning = 1;
+    backend.readback_rgba = record_readback_rgba;
+
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &backend);
+    canvas.width = 2;
+    canvas.height = 2;
+    void *pixels = rt_pixels_new(2, 2);
+
+    EXPECT_TRUE(rt_canvas3d_try_copy_screenshot_to(&canvas, pixels) == 1,
+                "initial screenshot creates authoritative GPU staging storage");
+    uint8_t *owned = canvas.readback_rgba_owned;
+    size_t capacity = canvas.readback_rgba_storage_capacity;
+    uint8_t borrowed = 0;
+    canvas.readback_rgba_scratch = &borrowed;
+    canvas.readback_rgba_scratch_capacity = SIZE_MAX;
+
+    EXPECT_TRUE(rt_canvas3d_try_copy_screenshot_to(&canvas, pixels) == 1,
+                "screenshot survives corrupt readback pointer and capacity mirrors");
+    EXPECT_TRUE(canvas.readback_rgba_owned == owned &&
+                    canvas.readback_rgba_storage_capacity == capacity &&
+                    canvas.readback_rgba_scratch == owned &&
+                    canvas.readback_rgba_scratch_capacity == capacity,
+                "screenshot restores readback mirrors from authoritative ownership metadata");
+
+    if (pixels && rt_obj_release_check0(pixels))
+        rt_obj_free(pixels);
+    cleanup_fake_canvas(&canvas);
+}
+
+static void test_screenshot_rejects_oversized_physical_framebuffer(void) {
+    vgfx3d_backend_t backend = {};
+    backend.name = "metal";
+    backend.gpu_skinning = 1;
+    backend.readback_rgba = record_readback_rgba;
+
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &backend);
+    canvas.width = 1;
+    canvas.height = 1;
+    canvas.framebuffer_width = VGFX3D_RENDERTARGET_DIM_MAX + 1;
+    canvas.framebuffer_height = 1;
+    void *pixels = rt_pixels_new(1, 1);
+    last_readback_w = 0;
+
+    EXPECT_TRUE(rt_canvas3d_try_copy_screenshot_to(&canvas, pixels) == 0,
+                "screenshot rejects physical dimensions beyond the runtime limit");
+    EXPECT_TRUE(last_readback_w == 0,
+                "oversized screenshot dimensions are rejected before backend readback");
+
+    if (pixels && rt_obj_release_check0(pixels))
+        rt_obj_free(pixels);
+    cleanup_fake_canvas(&canvas);
+}
+
 static void test_screenshot_reads_physical_framebuffer_to_logical_pixels(void) {
     typedef struct {
         int64_t w;
@@ -4040,6 +4102,8 @@ int main() {
     test_clear_lights_keeps_scene_explicitly_dark();
     test_screenshot_prefers_backend_readback();
     test_screenshot_copy_reuses_destination_and_gpu_scratch();
+    test_screenshot_repairs_corrupt_readback_mirrors();
+    test_screenshot_rejects_oversized_physical_framebuffer();
     test_screenshot_reads_physical_framebuffer_to_logical_pixels();
     test_final_overlay_replays_after_finalize();
     test_gpu_postfx_final_overlay_presents_composited_frame();

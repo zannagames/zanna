@@ -900,6 +900,11 @@ void rt_game3d_world_destroy(void *obj) {
         game3d_world_checked_allow_destroyed(obj, "Game3D.World3D.destroy: invalid world");
     if (!world || world->destroyed)
         return;
+    /* Adopted-window worlds hand presentation back to the lending 2D canvas
+     * NOW (ADR 0242): the loan return must not wait for the Canvas3D
+     * finalizer, or a shell holding any reference to the old canvas can
+     * never re-adopt the window for the next world. */
+    rt_canvas3d_release_adopted_window(world->canvas);
     game3d_world_release_runtime(world, 1);
     game3d_world_free_registries(world);
     world->destroyed = 1;

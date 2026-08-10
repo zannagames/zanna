@@ -2326,6 +2326,92 @@ static bool test_entity_child_count_repair_bounds_tree_walks() {
     PASS();
 }
 
+static bool test_entity_tree_walks_deduplicate_corrupt_cycles() {
+    TEST("World3D entity-tree walks deduplicate corrupt cycles");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Corrupt Entity Cycle"), 80, 60);
+    void *root = rt_game3d_entity_new();
+    void *child = rt_game3d_entity_new();
+    void *leaf = rt_game3d_entity_new();
+    rt_game3d_entity_add_child(root, child);
+    rt_game3d_entity_add_child(child, leaf);
+
+    auto *child_layout = static_cast<Game3DEntityTestLayout *>(child);
+    void *saved_leaf = child_layout->children[0];
+    child_layout->children[0] = root;
+    rt_game3d_world_spawn(world, root);
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  2,
+                  "spawn visits each unique entity once through a corrupt child cycle");
+
+    rt_game3d_world_despawn(world, root);
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  0,
+                  "despawn terminates and removes each registered cycle member once");
+    child_layout->children[0] = saved_leaf;
+
+    rt_game3d_world_destroy(world);
+    if (rt_obj_release_check0(root))
+        rt_obj_free(root);
+    if (rt_obj_release_check0(child))
+        rt_obj_free(child);
+    if (rt_obj_release_check0(leaf))
+        rt_obj_free(leaf);
+    PASS();
+}
+
+static bool test_world_spawn_stable_id_exhaustion_is_transactional() {
+    TEST("World3D rejects invalid stable-id state and rolls back assigned ids");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Stable Id Exhaustion"), 80, 60);
+    auto *layout = static_cast<Game3DWorldTestLayout *>(world);
+    void *root = rt_game3d_entity_new();
+    void *child = rt_game3d_entity_new();
+    rt_game3d_entity_add_child(root, child);
+
+    layout->next_entity_id = INT64_MAX - 1;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_game3d_world_spawn(world, root); }, "id"),
+                "tree spawn reports exhausted stable-id space");
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  0,
+                  "stable-id exhaustion rolls back the partial tree registration");
+    EXPECT_EQ_INT(rt_game3d_entity_get_id(root),
+                  0,
+                  "rollback restores the root id assigned by the failed transaction");
+    EXPECT_EQ_INT(rt_game3d_entity_get_id(child),
+                  0,
+                  "the child remains unassigned when stable-id space is exhausted");
+    EXPECT_EQ_INT(layout->next_entity_id,
+                  INT64_MAX - 1,
+                  "failed stable-id allocation does not advance the world counter");
+
+    layout->next_entity_id = 0;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_game3d_world_spawn(world, root); }, "id"),
+                "non-positive private stable-id counters fail closed");
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  0,
+                  "invalid stable-id counters cannot register an entity");
+
+    layout->next_entity_id = 1;
+    rt_game3d_world_spawn(world, root);
+    EXPECT_EQ_INT(
+        rt_game3d_world_get_entity_count(world), 2, "repaired counter can spawn the tree");
+    void *duplicate = rt_game3d_entity_new();
+    static_cast<Game3DEntityTestLayout *>(duplicate)->id = rt_game3d_entity_get_id(root);
+    EXPECT_TRUE(expect_trap_contains([&] { rt_game3d_world_spawn(world, duplicate); }, "id"),
+                "preassigned duplicate stable ids are rejected");
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  2,
+                  "duplicate stable-id rejection leaves the registry unchanged");
+
+    rt_game3d_world_destroy(world);
+    if (rt_obj_release_check0(root))
+        rt_obj_free(root);
+    if (rt_obj_release_check0(child))
+        rt_obj_free(child);
+    if (rt_obj_release_check0(duplicate))
+        rt_obj_free(duplicate);
+    PASS();
+}
+
 static bool test_frame_loop_manual_frame_and_final_capture() {
     TEST("World3D runFrames, manual frame API, overlay, and final capture");
     void *world = rt_game3d_world_new(rt_const_cstr("Game3D Unit Frames"), 64, 48);
@@ -2618,6 +2704,87 @@ static bool test_world_animation_clamps_corrupt_entity_count() {
     (void)saved_count;
     (void)saved_capacity;
     rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_world_reusable_storage_repairs_pointer_capacity_disagreement() {
+    TEST("World3D repairs reusable pointer/capacity disagreement");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Reusable Storage Repair"), 64, 48);
+    rt_game3d_world_set_worker_count(world, 4);
+    rt_game3d_world_set_gravity(world, 0.0, 0.0, 0.0);
+
+    void *entities[12] = {};
+    void *animators[12] = {};
+    for (int32_t i = 0; i < 12; ++i) {
+        entities[i] = rt_game3d_entity_new();
+        void *controller = make_game3d_test_controller(2.0 + (double)i * 0.25, 0.25);
+        animators[i] = rt_game3d_animator_new(controller);
+        rt_game3d_entity_attach_animator(entities[i], animators[i]);
+        rt_game3d_animator_play(animators[i], rt_const_cstr("walk"));
+        rt_game3d_world_spawn(world, entities[i]);
+    }
+    rt_game3d_world_step_simulation(world, 0.25);
+
+    auto *layout = static_cast<Game3DWorldTestLayout *>(world);
+    EXPECT_TRUE(layout->animation_animators != nullptr && layout->animation_seen_set != nullptr &&
+                    layout->animation_jobs != nullptr,
+                "first parallel animation step allocates all reusable arrays");
+    std::free(layout->animation_animators);
+    std::free(layout->animation_seen_set);
+    std::free(layout->animation_jobs);
+    layout->animation_animators = nullptr;
+    layout->animation_seen_set = nullptr;
+    layout->animation_jobs = nullptr;
+    layout->animation_animator_capacity = INT32_MAX;
+    layout->animation_seen_capacity = SIZE_MAX;
+    layout->animation_job_capacity = INT32_MAX;
+
+    rt_game3d_world_step_simulation(world, 0.25);
+    EXPECT_TRUE(layout->animation_animators != nullptr,
+                "animator-list storage is recreated despite a stale positive capacity");
+    EXPECT_TRUE(layout->animation_seen_set != nullptr,
+                "dedup-set storage is recreated despite a stale positive capacity");
+    EXPECT_TRUE(layout->animation_jobs != nullptr,
+                "worker-job storage is recreated despite a stale positive capacity");
+    EXPECT_NEAR(rt_game3d_animator_state_time(animators[0]),
+                0.5,
+                0.000001,
+                "repaired reusable storage still advances animation exactly once");
+
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_world_registry_repairs_untrusted_storage_mirrors() {
+    TEST("World3D repairs untrusted entity-registry storage mirrors");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Registry Mirror Repair"), 64, 48);
+    auto *layout = static_cast<Game3DWorldTestLayout *>(world);
+    void *entity = rt_game3d_entity_new();
+
+    layout->entities = nullptr;
+    layout->entity_count = 0;
+    layout->entity_capacity = INT32_MAX;
+    rt_game3d_world_spawn(world, entity);
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  1,
+                  "null registry storage is recreated despite a stale positive capacity");
+    EXPECT_TRUE(layout->entities != nullptr && layout->entities[0] == entity,
+                "recreated registry contains the spawned entity");
+
+    void *wrong = rt_material3d_new_color(0.2, 0.4, 0.6);
+    void *saved = layout->entities[0];
+    layout->entities[0] = wrong;
+    rt_game3d_world_step_simulation(world, 0.25);
+    layout->entities[0] = saved;
+    EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
+                  1,
+                  "wrong-class registry slots are skipped without damaging valid ownership");
+
+    if (rt_obj_release_check0(wrong))
+        rt_obj_free(wrong);
+    rt_game3d_world_destroy(world);
+    if (rt_obj_release_check0(entity))
+        rt_obj_free(entity);
     PASS();
 }
 
@@ -7355,11 +7522,15 @@ int main() {
     ok = test_animator_private_event_slots_reject_wrong_class_refs() && ok;
     ok = test_entity_child_graph_reparents_and_rejects_cycles() && ok;
     ok = test_entity_child_count_repair_bounds_tree_walks() && ok;
+    ok = test_entity_tree_walks_deduplicate_corrupt_cycles() && ok;
+    ok = test_world_spawn_stable_id_exhaustion_is_transactional() && ok;
     ok = test_frame_loop_manual_frame_and_final_capture() && ok;
     ok = test_run_fixed_accumulator_and_spiral_guard() && ok;
     ok = test_worker_count_runframes_replay_parity() && ok;
     ok = test_worker_count_parallel_animation_parity() && ok;
     ok = test_world_animation_clamps_corrupt_entity_count() && ok;
+    ok = test_world_reusable_storage_repairs_pointer_capacity_disagreement() && ok;
+    ok = test_world_registry_repairs_untrusted_storage_mirrors() && ok;
     ok = test_world_getters_sanitize_corrupt_private_state() && ok;
     ok = test_world_floating_origin_controls_and_rebase() && ok;
     ok = test_world_floating_origin_rendered_parity_and_flag_off_bytes() && ok;

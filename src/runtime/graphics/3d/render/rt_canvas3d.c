@@ -1830,9 +1830,13 @@ static void rt_canvas3d_finalize(void *obj) {
     c->text_indices = NULL;
     c->text_index_capacity = 0;
     canvas3d_clear_aa_text_cache(c);
-    free(c->readback_rgba_scratch);
+    if (rt_canvas3d_readback_storage_is_valid(c))
+        free(c->readback_rgba_owned);
     c->readback_rgba_scratch = NULL;
     c->readback_rgba_scratch_capacity = 0u;
+    c->readback_rgba_owned = NULL;
+    c->readback_rgba_storage_capacity = 0u;
+    c->readback_rgba_storage_cookie = 0u;
 
     /* Free shadow render targets if allocated */
     canvas3d_release_shadow_targets(c);
@@ -1881,6 +1885,27 @@ static void canvas3d_return_borrowed_window(rt_canvas3d *c) {
         c->lender_canvas = NULL;
         rt_canvas_return_window(lender);
     }
+}
+
+/// @brief Eagerly return an ADOPTED window to its lending 2D canvas.
+/// @details Single-window handoff (ADR 0242): a menu shell tears its overlay
+///          Canvas3D down and immediately re-adopts the same window for the
+///          live game. The loan return used to ride the canvas FINALIZER,
+///          so any lingering script reference to the old Canvas3D kept the
+///          loan active and the re-adoption trapped ("already adopted").
+///          This entry point runs the borrowed-window return NOW: input is
+///          detached, presentation goes back to the lender, and the canvas
+///          is flagged closed so stale use fails soft. Idempotent; a no-op
+///          for owned windows and offscreen canvases.
+/// @param canvas3d Borrowed Canvas3D handle (invalid handles are ignored).
+void rt_canvas3d_release_adopted_window(void *canvas3d) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas3d);
+    if (!c || !c->gfx_win || c->owns_window)
+        return;
+    rt_canvas3d_detach_input(c->gfx_win);
+    canvas3d_return_borrowed_window(c);
+    c->gfx_win = NULL;
+    c->should_close = 1;
 }
 
 /// @brief Tear down the canvas's platform window and flag it closed.

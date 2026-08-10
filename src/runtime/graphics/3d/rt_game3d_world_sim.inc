@@ -352,6 +352,8 @@ typedef struct {
     int32_t start;
     /// Exclusive slice end.
     int32_t end;
+    /// Total number of valid animator slots in the borrowed array.
+    int32_t animator_count;
     /// Simulation delta forwarded to every animator.
     double dt;
 } rt_game3d_animation_job;
@@ -360,11 +362,12 @@ typedef struct {
 /// @param arg Borrowed `rt_game3d_animation_job` descriptor valid until pool synchronization.
 static void game3d_animation_job_run(void *arg) {
     rt_game3d_animation_job *job = (rt_game3d_animation_job *)arg;
-    if (!job || !job->animators)
+    if (!job || !job->animators || job->start < 0 || job->end < job->start ||
+        job->animator_count <= 0 || job->end > job->animator_count || !isfinite(job->dt))
         return;
     for (int32_t i = job->start; i < job->end; ++i) {
         void *anim = job->animators[i];
-        if (anim)
+        if (rt_obj_is_instance(anim, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator)))
             rt_game3d_animator_update(anim, job->dt);
     }
 }
@@ -374,7 +377,9 @@ static void game3d_animation_job_run(void *arg) {
 /// @param animator_count Number of unique animators requiring an update.
 /// @return Job count in `[1, animator_count]`, with four target jobs per worker.
 static int32_t game3d_animation_job_count(int64_t worker_count, int32_t animator_count) {
-    if (worker_count <= 1 || animator_count <= 1)
+    if (animator_count <= 0)
+        return 0;
+    if (worker_count <= 1 || animator_count == 1)
         return 1;
     int64_t target = worker_count > INT64_MAX / 4 ? (int64_t)animator_count : worker_count * 4;
     if (target < 1)
@@ -389,10 +394,11 @@ static int32_t game3d_animation_job_count(int64_t worker_count, int32_t animator
 /// @param count Number of array elements to consider.
 /// @param dt Simulation delta forwarded to each non-null animator.
 static void game3d_update_animator_list_serial(void **animators, int32_t count, double dt) {
-    if (!animators || count <= 0)
+    if (!animators || count <= 0 || (uint32_t)count > RT_GAME3D_MAX_ENTITY_NODES || !isfinite(dt))
         return;
     for (int32_t i = 0; i < count; ++i) {
-        if (animators[i])
+        if (rt_obj_is_instance(
+                animators[i], RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator)))
             rt_game3d_animator_update(animators[i], dt);
     }
 }
@@ -406,19 +412,41 @@ static void game3d_update_animator_list_serial(void **animators, int32_t count, 
 /// @return Nonzero when the array has sufficient capacity, otherwise zero.
 static int game3d_world_ensure_animation_animators(rt_game3d_world *world, int32_t needed) {
     void **grown;
+    int32_t old_capacity;
     int32_t new_capacity;
-    if (!world || needed < 0)
+    if (!world || needed < 0 || (uint32_t)needed > RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
-    if (world->animation_animator_capacity >= needed)
+    if (world->animation_animator_storage_capacity < 0 ||
+        (uint32_t)world->animation_animator_storage_capacity > RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_world_storage_is_valid(world->animation_animators,
+                                       (size_t)world->animation_animator_storage_capacity,
+                                       world->animation_animator_storage_cookie,
+                                       RT_GAME3D_WORLD_ANIMATOR_STORAGE_COOKIE)) {
+        /* Do not free a tuple that cannot prove ownership: corruption tests may
+         * install borrowed sentinels. Detach it and create fresh storage. */
+        world->animation_animators = NULL;
+        world->animation_animator_capacity = 0;
+        world->animation_animator_storage_capacity = 0;
+        world->animation_animator_storage_cookie = 0;
+    } else {
+        world->animation_animator_capacity = world->animation_animator_storage_capacity;
+    }
+    if (world->animation_animator_storage_capacity >= needed)
         return 1;
-    if (!game3d_compute_capacity(
-            world->animation_animator_capacity, needed, 16, sizeof(void *), &new_capacity))
+    old_capacity = world->animation_animator_storage_capacity;
+    if (!game3d_compute_capacity(old_capacity, needed, 16, sizeof(void *), &new_capacity) ||
+        (uint32_t)new_capacity > RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
     grown = (void **)realloc(world->animation_animators, (size_t)new_capacity * sizeof(*grown));
     if (!grown)
         return 0;
+    if (new_capacity > old_capacity)
+        memset(grown + old_capacity, 0, (size_t)(new_capacity - old_capacity) * sizeof(*grown));
     world->animation_animators = grown;
     world->animation_animator_capacity = new_capacity;
+    world->animation_animator_storage_capacity = new_capacity;
+    world->animation_animator_storage_cookie = game3d_world_storage_cookie_value(
+        grown, (size_t)new_capacity, RT_GAME3D_WORLD_ANIMATOR_STORAGE_COOKIE);
     return 1;
 }
 
@@ -431,14 +459,31 @@ static int game3d_world_ensure_animation_animators(rt_game3d_world *world, int32
 /// @return Cleared world-owned set storage, or `NULL` for invalid size or allocation failure.
 static void **game3d_world_prepare_animation_seen_set(rt_game3d_world *world, size_t capacity) {
     void **grown;
-    if (!world || capacity == 0 || capacity > SIZE_MAX / sizeof(void *))
+    const size_t max_capacity = (size_t)RT_GAME3D_MAX_ENTITY_SET_SLOTS;
+    if (!world || capacity == 0 || (capacity & (capacity - 1u)) != 0 || capacity > max_capacity ||
+        capacity > SIZE_MAX / sizeof(void *))
         return NULL;
-    if (world->animation_seen_capacity < capacity) {
+    if (world->animation_seen_storage_capacity > max_capacity ||
+        !game3d_world_storage_is_valid(world->animation_seen_set,
+                                       world->animation_seen_storage_capacity,
+                                       world->animation_seen_storage_cookie,
+                                       RT_GAME3D_WORLD_SEEN_STORAGE_COOKIE)) {
+        world->animation_seen_set = NULL;
+        world->animation_seen_capacity = 0;
+        world->animation_seen_storage_capacity = 0;
+        world->animation_seen_storage_cookie = 0;
+    } else {
+        world->animation_seen_capacity = world->animation_seen_storage_capacity;
+    }
+    if (world->animation_seen_storage_capacity < capacity) {
         grown = (void **)realloc(world->animation_seen_set, capacity * sizeof(*grown));
         if (!grown)
             return NULL;
         world->animation_seen_set = grown;
         world->animation_seen_capacity = capacity;
+        world->animation_seen_storage_capacity = capacity;
+        world->animation_seen_storage_cookie =
+            game3d_world_storage_cookie_value(grown, capacity, RT_GAME3D_WORLD_SEEN_STORAGE_COOKIE);
     }
     memset(world->animation_seen_set, 0, capacity * sizeof(void *));
     return world->animation_seen_set;
@@ -454,15 +499,28 @@ static void **game3d_world_prepare_animation_seen_set(rt_game3d_world *world, si
 static rt_game3d_animation_job *game3d_world_prepare_animation_jobs(rt_game3d_world *world,
                                                                     int32_t needed) {
     rt_game3d_animation_job *grown;
+    int32_t old_capacity;
     int32_t new_capacity;
-    if (!world || needed <= 0)
+    if (!world || needed <= 0 || (uint32_t)needed > RT_GAME3D_MAX_ENTITY_NODES)
         return NULL;
-    if (world->animation_job_capacity < needed) {
-        if (!game3d_compute_capacity(world->animation_job_capacity,
-                                     needed,
-                                     4,
-                                     sizeof(rt_game3d_animation_job),
-                                     &new_capacity))
+    if (world->animation_job_storage_capacity < 0 ||
+        (uint32_t)world->animation_job_storage_capacity > RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_world_storage_is_valid(world->animation_jobs,
+                                       (size_t)world->animation_job_storage_capacity,
+                                       world->animation_job_storage_cookie,
+                                       RT_GAME3D_WORLD_JOB_STORAGE_COOKIE)) {
+        world->animation_jobs = NULL;
+        world->animation_job_capacity = 0;
+        world->animation_job_storage_capacity = 0;
+        world->animation_job_storage_cookie = 0;
+    } else {
+        world->animation_job_capacity = world->animation_job_storage_capacity;
+    }
+    old_capacity = world->animation_job_storage_capacity;
+    if (old_capacity < needed) {
+        if (!game3d_compute_capacity(
+                old_capacity, needed, 4, sizeof(rt_game3d_animation_job), &new_capacity) ||
+            (uint32_t)new_capacity > RT_GAME3D_MAX_ENTITY_NODES)
             return NULL;
         grown = (rt_game3d_animation_job *)realloc(world->animation_jobs,
                                                    (size_t)new_capacity * sizeof(*grown));
@@ -470,6 +528,9 @@ static rt_game3d_animation_job *game3d_world_prepare_animation_jobs(rt_game3d_wo
             return NULL;
         world->animation_jobs = grown;
         world->animation_job_capacity = new_capacity;
+        world->animation_job_storage_capacity = new_capacity;
+        world->animation_job_storage_cookie = game3d_world_storage_cookie_value(
+            grown, (size_t)new_capacity, RT_GAME3D_WORLD_JOB_STORAGE_COOKIE);
     }
     memset(world->animation_jobs, 0, (size_t)needed * sizeof(rt_game3d_animation_job));
     return (rt_game3d_animation_job *)world->animation_jobs;
@@ -503,7 +564,11 @@ static void game3d_world_update_animations(rt_game3d_world *world, double dt) {
         seen_cap <<= 1;
     seen = game3d_world_prepare_animation_seen_set(world, seen_cap);
     for (int32_t i = 0; i < entity_count; ++i) {
-        rt_game3d_entity *entity = world->entities[i];
+        rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
+                                                      RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                      sizeof(rt_game3d_entity))
+                                       ? world->entities[i]
+                                       : NULL;
         void *anim = game3d_entity_anim_ref(entity);
         int duplicate = 0;
         if (!entity || !entity->alive || entity->destroyed || !anim ||
@@ -554,6 +619,7 @@ static void game3d_world_update_animations(rt_game3d_world *world, double dt) {
         tasks[i].animators = animators;
         tasks[i].start = start;
         tasks[i].end = end;
+        tasks[i].animator_count = animator_count;
         tasks[i].dt = dt;
         if (!rt_threadpool_submit(
                 world->job_pool, game3d_task_fnptr(game3d_animation_job_run), &tasks[i])) {
@@ -604,20 +670,41 @@ static void game3d_world_late_update_controller(rt_game3d_world *world, double d
 /// @param need Minimum number of entity slots required.
 /// @return Nonzero when the requested capacity is available, otherwise zero.
 static int game3d_world_grow_entities(rt_game3d_world *world, int32_t need) {
+    int32_t old_capacity;
     int32_t new_cap;
-    if (!world)
+    if (!world || need <= 0 || (uint32_t)need > RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
-    if (world->entity_capacity >= need)
+    if (world->entity_storage_capacity < 0 ||
+        (uint32_t)world->entity_storage_capacity > RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_world_storage_is_valid(world->entities,
+                                       (size_t)world->entity_storage_capacity,
+                                       world->entity_storage_cookie,
+                                       RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE)) {
+        world->entities = NULL;
+        world->entity_count = 0;
+        world->entity_capacity = 0;
+        world->entity_storage_capacity = 0;
+        world->entity_storage_cookie = 0;
+    } else {
+        game3d_world_repair_entity_count(world);
+    }
+    old_capacity = world->entity_storage_capacity;
+    if (old_capacity >= need)
         return 1;
-    if (!game3d_compute_capacity(
-            world->entity_capacity, need, 16, sizeof(rt_game3d_entity *), &new_cap))
+    if (!game3d_compute_capacity(old_capacity, need, 16, sizeof(rt_game3d_entity *), &new_cap) ||
+        (uint32_t)new_cap > RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
     rt_game3d_entity **grown =
         (rt_game3d_entity **)realloc(world->entities, (size_t)new_cap * sizeof(*grown));
     if (!grown)
         return 0;
+    if (new_cap > old_capacity)
+        memset(grown + old_capacity, 0, (size_t)(new_cap - old_capacity) * sizeof(*grown));
     world->entities = grown;
     world->entity_capacity = new_cap;
+    world->entity_storage_capacity = new_cap;
+    world->entity_storage_cookie = game3d_world_storage_cookie_value(
+        grown, (size_t)new_cap, RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE);
     return 1;
 }
 
@@ -731,15 +818,214 @@ typedef struct game3d_entity_tree_item {
     int8_t visited;
 } game3d_entity_tree_item;
 
+/// @brief One rollback entry, including whether this transaction assigned its stable id.
+typedef struct game3d_spawned_entity_item {
+    rt_game3d_entity *entity;
+    int8_t assigned_id;
+} game3d_spawned_entity_item;
+
 /// @brief Tracks entities added by the current spawn transaction for reverse rollback.
 typedef struct game3d_spawned_entity_list {
-    /// Borrowed entity pointers retained by the world registry.
-    rt_game3d_entity **items;
+    /// Borrowed entity records retained by the world registry.
+    game3d_spawned_entity_item *items;
     /// Number of populated rollback entries.
     int32_t count;
     /// Allocated pointer-slot count.
     int32_t capacity;
 } game3d_spawned_entity_list;
+
+/// @brief Operation-local open-addressing set used to bound and deduplicate hierarchy walks.
+typedef struct game3d_entity_visit_set {
+    rt_game3d_entity **slots;
+    size_t count;
+    size_t capacity;
+} game3d_entity_visit_set;
+
+/// @brief Operation-local set used to validate stable IDs before a spawn transaction mutates state.
+typedef struct game3d_entity_id_set {
+    int64_t *slots;
+    size_t count;
+    size_t capacity;
+} game3d_entity_id_set;
+
+/// @brief Validate common layout invariants for an operation-local open-addressed set.
+/// @details Empty zeroed sets are valid. Populated sets require a power-of-two allocation,
+///          pointer/capacity agreement, and the shared 50%-load resource ceiling.
+/// @param slots Borrowed slot allocation, or NULL for an empty set.
+/// @param count Number of populated entries.
+/// @param capacity Allocated slot count.
+/// @return Nonzero only when hashing and rehashing may safely use the tuple.
+static int game3d_entity_set_layout_valid(const void *slots, size_t count, size_t capacity) {
+    if (!slots)
+        return count == 0u && capacity == 0u;
+    return capacity >= 16u && capacity <= (size_t)RT_GAME3D_MAX_ENTITY_SET_SLOTS &&
+           (capacity & (capacity - 1u)) == 0u && count <= (size_t)RT_GAME3D_MAX_ENTITY_NODES &&
+           count <= capacity / 2u;
+}
+
+/// @brief Mix an aligned entity address for the hierarchy visit set.
+/// @param entity Borrowed entity pointer.
+/// @return Deterministic hash bits for the process-local address.
+static size_t game3d_entity_visit_hash(const rt_game3d_entity *entity) {
+    uint64_t value = (uint64_t)(uintptr_t)entity;
+    value ^= value >> 33;
+    value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    value *= UINT64_C(0xc4ceb9fe1a85ec53);
+    value ^= value >> 33;
+    return (size_t)value;
+}
+
+/// @brief Grow and rehash an operation-local hierarchy visit set.
+/// @param set Set whose owned slot array is replaced transactionally.
+/// @param needed Required number of unique entities.
+/// @return Nonzero on success, otherwise zero for invalid size or allocation failure.
+static int game3d_entity_visit_set_reserve(game3d_entity_visit_set *set, size_t needed) {
+    rt_game3d_entity **grown;
+    size_t new_capacity;
+    if (!set || needed == 0 || needed > (size_t)RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_entity_set_layout_valid(
+            set ? set->slots : NULL, set ? set->count : 0u, set ? set->capacity : 0u))
+        return 0;
+    if (set->capacity >= needed * 2u)
+        return 1;
+    new_capacity = set->capacity > 0 ? set->capacity : 16u;
+    while (new_capacity < needed * 2u) {
+        if (new_capacity >= (size_t)RT_GAME3D_MAX_ENTITY_SET_SLOTS / 2u) {
+            new_capacity = (size_t)RT_GAME3D_MAX_ENTITY_SET_SLOTS;
+            break;
+        }
+        new_capacity *= 2u;
+    }
+    if (new_capacity < needed * 2u || new_capacity > SIZE_MAX / sizeof(*grown))
+        return 0;
+    grown = (rt_game3d_entity **)calloc(new_capacity, sizeof(*grown));
+    if (!grown)
+        return 0;
+    if (set->slots) {
+        size_t mask = new_capacity - 1u;
+        for (size_t i = 0; i < set->capacity; ++i) {
+            rt_game3d_entity *entity = set->slots[i];
+            if (!entity)
+                continue;
+            size_t slot = game3d_entity_visit_hash(entity) & mask;
+            while (grown[slot])
+                slot = (slot + 1u) & mask;
+            grown[slot] = entity;
+        }
+        free(set->slots);
+    }
+    set->slots = grown;
+    set->capacity = new_capacity;
+    return 1;
+}
+
+/// @brief Insert an entity into a bounded hierarchy visit set.
+/// @param set Operation-local set.
+/// @param entity Borrowed entity identity.
+/// @return One when newly inserted, zero when already present, or -1 on resource/policy failure.
+static int game3d_entity_visit_set_insert(game3d_entity_visit_set *set, rt_game3d_entity *entity) {
+    size_t mask;
+    size_t slot;
+    if (!set || !entity || set->count >= (size_t)RT_GAME3D_MAX_ENTITY_NODES)
+        return -1;
+    if (!set->slots || set->count + 1u > set->capacity / 2u) {
+        if (!game3d_entity_visit_set_reserve(set, set->count + 1u))
+            return -1;
+    }
+    if (!set->slots || set->capacity == 0u)
+        return -1;
+    mask = set->capacity - 1u;
+    slot = game3d_entity_visit_hash(entity) & mask;
+    while (set->slots[slot]) {
+        if (set->slots[slot] == entity)
+            return 0;
+        slot = (slot + 1u) & mask;
+    }
+    set->slots[slot] = entity;
+    set->count++;
+    return 1;
+}
+
+/// @brief Release an operation-local hierarchy visit set.
+/// @param set Set to clear; NULL is accepted.
+static void game3d_entity_visit_set_free(game3d_entity_visit_set *set) {
+    if (!set)
+        return;
+    free(set->slots);
+    memset(set, 0, sizeof(*set));
+}
+
+/// @brief Mix a positive stable entity ID for an operation-local open-addressing set.
+/// @param id Positive stable ID.
+/// @return Deterministic hash bits for @p id.
+static size_t game3d_entity_id_hash(int64_t id) {
+    uint64_t value = (uint64_t)id;
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    value ^= value >> 31;
+    return (size_t)value;
+}
+
+/// @brief Insert one positive ID into a bounded operation-local set.
+/// @param set Set whose zero-filled storage uses zero as its empty sentinel.
+/// @param id Positive ID to insert.
+/// @return One when inserted, zero for a duplicate, or -1 on invalid input/allocation failure.
+static int game3d_entity_id_set_insert(game3d_entity_id_set *set, int64_t id) {
+    int64_t *grown;
+    size_t new_capacity;
+    size_t mask;
+    size_t slot;
+    if (!set || id <= 0 || set->count >= (size_t)RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_entity_set_layout_valid(
+            set ? set->slots : NULL, set ? set->count : 0u, set ? set->capacity : 0u))
+        return -1;
+    if (!set->slots || set->count + 1u > set->capacity / 2u) {
+        new_capacity = set->capacity > 0 ? set->capacity * 2u : 16u;
+        if (new_capacity < set->capacity || new_capacity > (size_t)RT_GAME3D_MAX_ENTITY_SET_SLOTS ||
+            new_capacity > SIZE_MAX / sizeof(*grown) || new_capacity < (set->count + 1u) * 2u)
+            return -1;
+        grown = (int64_t *)calloc(new_capacity, sizeof(*grown));
+        if (!grown)
+            return -1;
+        mask = new_capacity - 1u;
+        for (size_t i = 0; i < set->capacity; ++i) {
+            int64_t existing = set->slots[i];
+            if (existing <= 0)
+                continue;
+            slot = game3d_entity_id_hash(existing) & mask;
+            while (grown[slot] != 0)
+                slot = (slot + 1u) & mask;
+            grown[slot] = existing;
+        }
+        free(set->slots);
+        set->slots = grown;
+        set->capacity = new_capacity;
+    }
+    if (!set->slots || set->capacity == 0u)
+        return -1;
+    mask = set->capacity - 1u;
+    slot = game3d_entity_id_hash(id) & mask;
+    while (set->slots[slot] != 0) {
+        if (set->slots[slot] == id)
+            return 0;
+        slot = (slot + 1u) & mask;
+    }
+    set->slots[slot] = id;
+    set->count++;
+    return 1;
+}
+
+/// @brief Release an operation-local stable-ID set.
+/// @param set Set to clear; NULL is accepted.
+static void game3d_entity_id_set_free(game3d_entity_id_set *set) {
+    if (!set)
+        return;
+    free(set->slots);
+    memset(set, 0, sizeof(*set));
+}
 
 /// @brief Push an entity-tree traversal item onto the work list, growing it as needed.
 /// @param items Address of the caller-owned traversal array.
@@ -757,10 +1043,13 @@ static int game3d_entity_tree_push(game3d_entity_tree_item **items,
                                    int visited) {
     game3d_entity_tree_item *grown;
     int32_t new_capacity;
-    if (!items || !count || !capacity)
+    if (!items || !count || !capacity || *count < 0 || *capacity < 0 || *count > *capacity ||
+        (uint32_t)*count >= RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
     if (*count >= *capacity) {
-        if (!game3d_compute_capacity(*capacity, *count + 1, 16, sizeof(**items), &new_capacity))
+        if (*count == INT32_MAX ||
+            !game3d_compute_capacity(*capacity, *count + 1, 16, sizeof(**items), &new_capacity) ||
+            (uint32_t)new_capacity > RT_GAME3D_MAX_ENTITY_NODES)
             return 0;
         grown = (game3d_entity_tree_item *)realloc(*items, (size_t)new_capacity * sizeof(**items));
         if (!grown)
@@ -780,24 +1069,32 @@ static int game3d_entity_tree_push(game3d_entity_tree_item **items,
 ///          Rollback uses the reverse order so children are removed before parents.
 /// @param list Borrowed rollback list to grow and append.
 /// @param entity Borrowed newly registered entity.
+/// @param assigned_id Nonzero when the transaction assigned @p entity its stable ID.
 /// @return Nonzero on success, or zero for invalid input or allocation failure.
 static int game3d_spawned_entity_list_push(game3d_spawned_entity_list *list,
-                                           rt_game3d_entity *entity) {
-    rt_game3d_entity **grown;
+                                           rt_game3d_entity *entity,
+                                           int assigned_id) {
+    game3d_spawned_entity_item *grown;
     int32_t new_capacity;
-    if (!list || !entity)
+    if (!list || !entity || list->count < 0 || list->capacity < 0 || list->count > list->capacity ||
+        (uint32_t)list->count >= RT_GAME3D_MAX_ENTITY_NODES)
         return 0;
     if (list->count >= list->capacity) {
-        if (!game3d_compute_capacity(
-                list->capacity, list->count + 1, 16, sizeof(*list->items), &new_capacity))
+        if (list->count == INT32_MAX ||
+            !game3d_compute_capacity(
+                list->capacity, list->count + 1, 16, sizeof(*list->items), &new_capacity) ||
+            (uint32_t)new_capacity > RT_GAME3D_MAX_ENTITY_NODES)
             return 0;
-        grown = (rt_game3d_entity **)realloc(list->items, (size_t)new_capacity * sizeof(*grown));
+        grown = (game3d_spawned_entity_item *)realloc(list->items,
+                                                      (size_t)new_capacity * sizeof(*grown));
         if (!grown)
             return 0;
         list->items = grown;
         list->capacity = new_capacity;
     }
-    list->items[list->count++] = entity;
+    list->items[list->count].entity = entity;
+    list->items[list->count].assigned_id = assigned_id ? 1 : 0;
+    list->count++;
     return 1;
 }
 
@@ -870,8 +1167,10 @@ static void game3d_world_rollback_spawned_entities(rt_game3d_world *world,
     if (!world || !spawned)
         return;
     for (int32_t i = spawned->count - 1; i >= 0; --i) {
-        rt_game3d_entity *entity = spawned->items[i];
+        rt_game3d_entity *entity = spawned->items[i].entity;
         game3d_world_despawn_entity_one(world, entity, entity == root && attach_to_scene ? 1 : 0);
+        if (entity && spawned->items[i].assigned_id)
+            entity->id = 0;
     }
     game3d_world_rebuild_name_index(world);
 }
@@ -888,11 +1187,18 @@ static void game3d_world_despawn_entity_tree_internal(rt_game3d_world *world,
                                                       int detach_root,
                                                       int mark_destroyed) {
     game3d_entity_tree_item *stack = NULL;
+    game3d_entity_visit_set visited;
     int32_t count = 0;
     int32_t capacity = 0;
     if (!world || !entity)
         return;
+    memset(&visited, 0, sizeof(visited));
+    if (game3d_entity_visit_set_insert(&visited, entity) < 0) {
+        rt_trap("Game3D.World3D.despawn: traversal set allocation failed");
+        return;
+    }
     if (!game3d_entity_tree_push(&stack, &count, &capacity, entity, detach_root, 0)) {
+        game3d_entity_visit_set_free(&visited);
         rt_trap("Game3D.World3D.despawn: traversal stack allocation failed");
         return;
     }
@@ -907,19 +1213,31 @@ static void game3d_world_despawn_entity_tree_internal(rt_game3d_world *world,
         }
         if (!game3d_entity_tree_push(&stack, &count, &capacity, item.entity, item.root_link, 1)) {
             free(stack);
+            game3d_entity_visit_set_free(&visited);
             rt_trap("Game3D.World3D.despawn: traversal stack allocation failed");
             return;
         }
         for (int32_t i = game3d_entity_child_count(item.entity) - 1; i >= 0; --i) {
+            int visit_result = game3d_entity_visit_set_insert(&visited, item.entity->children[i]);
+            if (visit_result == 0)
+                continue;
+            if (visit_result < 0) {
+                free(stack);
+                game3d_entity_visit_set_free(&visited);
+                rt_trap("Game3D.World3D.despawn: traversal node limit exceeded");
+                return;
+            }
             if (!game3d_entity_tree_push(
                     &stack, &count, &capacity, item.entity->children[i], 0, 0)) {
                 free(stack);
+                game3d_entity_visit_set_free(&visited);
                 rt_trap("Game3D.World3D.despawn: traversal stack allocation failed");
                 return;
             }
         }
     }
     free(stack);
+    game3d_entity_visit_set_free(&visited);
     game3d_world_rebuild_name_index(world);
 }
 
@@ -933,36 +1251,188 @@ static void game3d_world_despawn_entity_tree(rt_game3d_world *world,
     game3d_world_despawn_entity_tree_internal(world, entity, detach_root, 1);
 }
 
+/// @brief Validate a complete spawn graph and its future stable IDs before mutating the world.
+/// @details This preflight makes validation failures transactional and changes stable-ID duplicate
+///          detection from a registry scan per entity to two linear set-building passes.
+/// @param world Borrowed destination world.
+/// @param root Borrowed root of the entity graph.
+/// @param next_id Borrowed stable-ID counter used for unassigned entities.
+/// @param error_message Receives a static diagnostic on failure.
+/// @return Nonzero when the complete graph can be registered, otherwise zero.
+static int game3d_world_preflight_spawn_tree(rt_game3d_world *world,
+                                             rt_game3d_entity *root,
+                                             const int64_t *next_id,
+                                             const char **error_message) {
+    game3d_entity_tree_item *stack = NULL;
+    game3d_entity_visit_set visited;
+    game3d_entity_id_set ids;
+    int32_t count = 0;
+    int32_t capacity = 0;
+    int32_t existing_count;
+    size_t new_count = 0;
+    size_t unassigned_count = 0;
+    int result = 0;
+    const char *error = "Game3D.World3D.spawn: validation failed";
+    memset(&visited, 0, sizeof(visited));
+    memset(&ids, 0, sizeof(ids));
+    if (!world || !root) {
+        error = "Game3D.World3D.spawn: invalid entity graph";
+        goto cleanup;
+    }
+
+    existing_count = game3d_world_repair_entity_count(world);
+    for (int32_t i = 0; i < existing_count; ++i) {
+        rt_game3d_entity *existing = rt_obj_is_instance(world->entities[i],
+                                                        RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                        sizeof(rt_game3d_entity))
+                                         ? world->entities[i]
+                                         : NULL;
+        if (!existing || existing->id <= 0) {
+            error = "Game3D.World3D.spawn: corrupt entity registry stable id";
+            goto cleanup;
+        }
+        int inserted = game3d_entity_id_set_insert(&ids, existing->id);
+        if (inserted == 0) {
+            error = "Game3D.World3D.spawn: duplicate stable entity id";
+            goto cleanup;
+        }
+        if (inserted < 0) {
+            error = "Game3D.World3D.spawn: stable-id validation allocation failed";
+            goto cleanup;
+        }
+    }
+
+    if (game3d_entity_visit_set_insert(&visited, root) < 0 ||
+        !game3d_entity_tree_push(&stack, &count, &capacity, root, 0, 0)) {
+        error = "Game3D.World3D.spawn: traversal allocation failed";
+        goto cleanup;
+    }
+    while (count > 0) {
+        game3d_entity_tree_item item = stack[--count];
+        rt_game3d_entity *entity =
+            rt_obj_is_instance(item.entity, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity))
+                ? item.entity
+                : NULL;
+        if (!entity) {
+            error = "Game3D.World3D.spawn: child must be Entity3D";
+            goto cleanup;
+        }
+        if (!entity->alive || entity->destroyed) {
+            error = "Game3D.World3D.spawn: entity is destroyed";
+            goto cleanup;
+        }
+        if (entity->spawned && entity->world == world)
+            continue;
+        if (entity->spawned || (entity->world && entity->world != world)) {
+            error = "Game3D.World3D.spawn: entity already belongs to a world";
+            goto cleanup;
+        }
+        if (entity->id < 0) {
+            error = "Game3D.World3D.spawn: stable entity id must be positive";
+            goto cleanup;
+        }
+        new_count++;
+        if (new_count > (size_t)RT_GAME3D_MAX_ENTITY_NODES - (size_t)existing_count) {
+            error = "Game3D.World3D.spawn: entity registry limit exceeded";
+            goto cleanup;
+        }
+        if (entity->id > 0) {
+            int inserted = game3d_entity_id_set_insert(&ids, entity->id);
+            if (inserted == 0) {
+                error = "Game3D.World3D.spawn: duplicate stable entity id";
+                goto cleanup;
+            }
+            if (inserted < 0) {
+                error = "Game3D.World3D.spawn: stable-id validation allocation failed";
+                goto cleanup;
+            }
+        } else {
+            unassigned_count++;
+        }
+        for (int32_t i = game3d_entity_child_count(entity) - 1; i >= 0; --i) {
+            int visit_result = game3d_entity_visit_set_insert(&visited, entity->children[i]);
+            if (visit_result == 0)
+                continue;
+            if (visit_result < 0 ||
+                !game3d_entity_tree_push(&stack, &count, &capacity, entity->children[i], 0, 0)) {
+                error = "Game3D.World3D.spawn: traversal node limit exceeded";
+                goto cleanup;
+            }
+        }
+    }
+
+    if (unassigned_count > 0) {
+        if (!next_id || *next_id <= 0 || *next_id >= INT64_MAX ||
+            unassigned_count > (uint64_t)(INT64_MAX - *next_id)) {
+            error = "Game3D.World3D.spawn: stable entity id space exhausted";
+            goto cleanup;
+        }
+        int64_t candidate = *next_id;
+        for (size_t i = 0; i < unassigned_count; ++i, ++candidate) {
+            int inserted = game3d_entity_id_set_insert(&ids, candidate);
+            if (inserted == 0) {
+                error = "Game3D.World3D.spawn: duplicate stable entity id";
+                goto cleanup;
+            }
+            if (inserted < 0) {
+                error = "Game3D.World3D.spawn: stable-id validation allocation failed";
+                goto cleanup;
+            }
+        }
+    }
+    result = 1;
+
+cleanup:
+    free(stack);
+    game3d_entity_visit_set_free(&visited);
+    game3d_entity_id_set_free(&ids);
+    if (!result && error_message)
+        *error_message = error;
+    return result;
+}
+
 /// @brief Spawn one entity in a tree walk; returns 1 when children should be visited,
-///   0 when it was already spawned in this world, and -1 on a trapped failure.
+///   0 when it was already spawned in this world, and -1 on a recoverable failure.
 /// @details Registration updates the name and body indices, scene attachment,
 ///          physics membership, node-body binding, ownership, and stable ID.
 /// @param world Borrowed destination world.
 /// @param entity Borrowed entity to validate and register.
 /// @param attach_to_scene Nonzero to attach this entity's node to the scene root.
 /// @param next_id Optional in/out next stable entity identifier.
+/// @param error_message Receives a static diagnostic when registration fails.
 /// @return `1` for a new registration, `0` when no child traversal is needed, or `-1` on failure.
 static int game3d_world_spawn_entity_one(rt_game3d_world *world,
                                          rt_game3d_entity *entity,
                                          int attach_to_scene,
-                                         int64_t *next_id) {
-    if (!world || !entity)
-        return 0;
+                                         int64_t *next_id,
+                                         const char **error_message) {
+#define GAME3D_SPAWN_FAIL(message)                                                                 \
+    do {                                                                                           \
+        if (error_message)                                                                         \
+            *error_message = (message);                                                            \
+        return -1;                                                                                 \
+    } while (0)
+    if (!world || !entity ||
+        !rt_obj_is_instance(entity, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)))
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: child must be Entity3D");
     if (!entity->alive || entity->destroyed) {
-        rt_trap("Game3D.World3D.spawn: entity is destroyed");
-        return -1;
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: entity is destroyed");
     }
     if (entity->spawned && entity->world == world)
         return 0;
     if (entity->spawned || (entity->world && entity->world != world)) {
-        rt_trap("Game3D.World3D.spawn: entity already belongs to a world");
-        return -1;
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: entity already belongs to a world");
+    }
+    if (entity->id < 0) {
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: stable entity id must be positive");
+    }
+    if (entity->id == 0 && (!next_id || *next_id <= 0 || *next_id >= INT64_MAX)) {
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: stable entity id space exhausted");
     }
     game3d_world_repair_entity_count(world);
-    if (world->entity_count == INT32_MAX ||
+    if ((uint32_t)world->entity_count >= RT_GAME3D_MAX_ENTITY_NODES ||
         !game3d_world_grow_entities(world, world->entity_count + 1)) {
-        rt_trap("Game3D.World3D.spawn: registry allocation failed");
-        return -1;
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: registry allocation failed");
     }
 
     entity->spawned = 1;
@@ -975,7 +1445,7 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
         entity->world = NULL;
         game3d_world_registry_remove_no_rebuild(world, entity);
         game3d_world_rebuild_name_index(world);
-        return -1;
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: name index allocation failed");
     }
 
     void *node = game3d_entity_node_ref(entity);
@@ -985,8 +1455,7 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
         entity->world = NULL;
         game3d_world_registry_remove_no_rebuild(world, entity);
         game3d_world_rebuild_name_index(world);
-        rt_trap("Game3D.World3D.spawn: scene attach failed");
-        return -1;
+        GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: scene attach failed");
     }
     if (body && world->physics) {
         rt_body3d_set_collision_layer(body, entity->layer);
@@ -999,8 +1468,7 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
             entity->world = NULL;
             game3d_world_registry_remove_no_rebuild(world, entity);
             game3d_world_rebuild_name_index(world);
-            rt_trap("Game3D.World3D.spawn: body is already attached to another entity");
-            return -1;
+            GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: body is already attached to another entity");
         }
         if (node) {
             rt_scene_node3d_bind_body(node, body);
@@ -1015,8 +1483,7 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
             entity->world = NULL;
             game3d_world_registry_remove_no_rebuild(world, entity);
             game3d_world_rebuild_name_index(world);
-            rt_trap("Game3D.World3D.spawn: physics world add failed");
-            return -1;
+            GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: physics world add failed");
         }
         if (!game3d_world_body_index_add(world, entity)) {
             rt_world3d_remove(world->physics, body);
@@ -1028,12 +1495,12 @@ static int game3d_world_spawn_entity_one(rt_game3d_world *world,
             entity->world = NULL;
             game3d_world_registry_remove_no_rebuild(world, entity);
             game3d_world_rebuild_name_index(world);
-            rt_trap("Game3D.World3D.spawn: body index allocation failed");
-            return -1;
+            GAME3D_SPAWN_FAIL("Game3D.World3D.spawn: body index allocation failed");
         }
     }
-    if (entity->id == 0 && next_id)
+    if (entity->id == 0)
         entity->id = (*next_id)++;
+#undef GAME3D_SPAWN_FAIL
     return 1;
 }
 
@@ -1051,31 +1518,50 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
                                    int attach_to_scene,
                                    int64_t *next_id) {
     game3d_entity_tree_item *stack = NULL;
+    game3d_entity_visit_set visited;
     game3d_spawned_entity_list spawned_entities;
+    const char *error_message = NULL;
     int32_t count = 0;
     int32_t capacity = 0;
     if (!world || !entity)
         return 0;
+    if (!game3d_world_preflight_spawn_tree(world, entity, next_id, &error_message)) {
+        rt_trap(error_message ? error_message : "Game3D.World3D.spawn: validation failed");
+        return 0;
+    }
+    memset(&visited, 0, sizeof(visited));
     memset(&spawned_entities, 0, sizeof(spawned_entities));
+    if (game3d_entity_visit_set_insert(&visited, entity) < 0) {
+        rt_trap("Game3D.World3D.spawn: traversal set allocation failed");
+        return 0;
+    }
     if (!game3d_entity_tree_push(&stack, &count, &capacity, entity, attach_to_scene, 0)) {
+        game3d_entity_visit_set_free(&visited);
         rt_trap("Game3D.World3D.spawn: traversal stack allocation failed");
         return 0;
     }
     while (count > 0) {
         game3d_entity_tree_item item = stack[--count];
-        int spawned = game3d_world_spawn_entity_one(world, item.entity, item.root_link, next_id);
+        int assigned_id = item.entity && item.entity->id == 0;
+        int spawned = game3d_world_spawn_entity_one(
+            world, item.entity, item.root_link, next_id, &error_message);
         if (spawned < 0) {
             free(stack);
+            game3d_entity_visit_set_free(&visited);
             game3d_world_rollback_spawned_entities(
                 world, &spawned_entities, entity, attach_to_scene);
             game3d_spawned_entity_list_free(&spawned_entities);
+            rt_trap(error_message ? error_message : "Game3D.World3D.spawn: registration failed");
             return 0;
         }
         if (spawned == 0)
             continue;
-        if (!game3d_spawned_entity_list_push(&spawned_entities, item.entity)) {
+        if (!game3d_spawned_entity_list_push(&spawned_entities, item.entity, assigned_id)) {
             game3d_world_despawn_entity_one(world, item.entity, item.root_link);
+            if (assigned_id)
+                item.entity->id = 0;
             free(stack);
+            game3d_entity_visit_set_free(&visited);
             game3d_world_rollback_spawned_entities(
                 world, &spawned_entities, entity, attach_to_scene);
             game3d_spawned_entity_list_free(&spawned_entities);
@@ -1083,9 +1569,22 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
             return 0;
         }
         for (int32_t i = game3d_entity_child_count(item.entity) - 1; i >= 0; --i) {
+            int visit_result = game3d_entity_visit_set_insert(&visited, item.entity->children[i]);
+            if (visit_result == 0)
+                continue;
+            if (visit_result < 0) {
+                free(stack);
+                game3d_entity_visit_set_free(&visited);
+                game3d_world_rollback_spawned_entities(
+                    world, &spawned_entities, entity, attach_to_scene);
+                game3d_spawned_entity_list_free(&spawned_entities);
+                rt_trap("Game3D.World3D.spawn: traversal node limit exceeded");
+                return 0;
+            }
             if (!game3d_entity_tree_push(
                     &stack, &count, &capacity, item.entity->children[i], 0, 0)) {
                 free(stack);
+                game3d_entity_visit_set_free(&visited);
                 game3d_world_rollback_spawned_entities(
                     world, &spawned_entities, entity, attach_to_scene);
                 game3d_spawned_entity_list_free(&spawned_entities);
@@ -1095,6 +1594,7 @@ int game3d_world_spawn_entity_tree(rt_game3d_world *world,
         }
     }
     free(stack);
+    game3d_entity_visit_set_free(&visited);
     game3d_spawned_entity_list_free(&spawned_entities);
     return 1;
 }
@@ -1170,13 +1670,34 @@ static void game3d_world_free_registries(rt_game3d_world *world) {
     world->damage_event_capacity = 0;
     free(world->combat_scratch);
     world->combat_scratch = NULL;
-    free(world->entities);
+    if (game3d_world_storage_is_valid(
+            world->entities,
+            (size_t)(world->entity_storage_capacity > 0 ? world->entity_storage_capacity : 0),
+            world->entity_storage_cookie,
+            RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE))
+        free(world->entities);
     free(world->body_index_entries);
     free(world->name_index_hashes);
     free(world->name_index_entities);
-    free(world->animation_animators);
-    free(world->animation_seen_set);
-    free(world->animation_jobs);
+    if (game3d_world_storage_is_valid(world->animation_animators,
+                                      (size_t)(world->animation_animator_storage_capacity > 0
+                                                   ? world->animation_animator_storage_capacity
+                                                   : 0),
+                                      world->animation_animator_storage_cookie,
+                                      RT_GAME3D_WORLD_ANIMATOR_STORAGE_COOKIE))
+        free(world->animation_animators);
+    if (game3d_world_storage_is_valid(world->animation_seen_set,
+                                      world->animation_seen_storage_capacity,
+                                      world->animation_seen_storage_cookie,
+                                      RT_GAME3D_WORLD_SEEN_STORAGE_COOKIE))
+        free(world->animation_seen_set);
+    if (game3d_world_storage_is_valid(world->animation_jobs,
+                                      (size_t)(world->animation_job_storage_capacity > 0
+                                                   ? world->animation_job_storage_capacity
+                                                   : 0),
+                                      world->animation_job_storage_cookie,
+                                      RT_GAME3D_WORLD_JOB_STORAGE_COOKIE))
+        free(world->animation_jobs);
     world->entities = NULL;
     world->body_index_entries = NULL;
     world->name_index_hashes = NULL;
@@ -1194,6 +1715,14 @@ static void game3d_world_free_registries(rt_game3d_world *world) {
     world->animation_animator_capacity = 0;
     world->animation_seen_capacity = 0;
     world->animation_job_capacity = 0;
+    world->entity_storage_capacity = 0;
+    world->entity_storage_cookie = 0;
+    world->animation_animator_storage_capacity = 0;
+    world->animation_animator_storage_cookie = 0;
+    world->animation_seen_storage_capacity = 0;
+    world->animation_seen_storage_cookie = 0;
+    world->animation_job_storage_capacity = 0;
+    world->animation_job_storage_cookie = 0;
 }
 
 /// @brief GC finalizer for a world: release all runtime state and free the entity array.

@@ -32,6 +32,7 @@
 /// skip, stop, and replacement behavior.
 
 #include "rt_animcontroller3d.h"
+#include "rt_audio.h"
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -39,19 +40,178 @@
 #include "rt_object.h"
 #include "rt_path3d.h"
 #include "rt_string.h"
+#include "rt_string_internal.h"
 #include "rt_trap.h"
 #include "rt_vec3.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Validate the dense Timeline3D track-array invariants before traversal.
+/// @brief Check whether a bounded track text buffer contains a terminator.
+/// @param text Fixed-width timeline text buffer.
+/// @return Nonzero when a NUL exists within the physical buffer.
+static int game3d_timeline_text_valid(const char text[RT_GAME3D_TL_TEXT_MAX]) {
+    return text && memchr(text, '\0', RT_GAME3D_TL_TEXT_MAX) != NULL;
+}
+
+/// @brief Check whether a stored coordinate vector is finite and within the runtime ceiling.
+/// @param value Three-component vector embedded in a track.
+/// @return Nonzero when every lane is safe for camera/audio math.
+static int game3d_timeline_vec_valid(const double value[3]) {
+    return value && isfinite(value[0]) && isfinite(value[1]) && isfinite(value[2]) &&
+           fabs(value[0]) <= RT_GAME3D_COORD_ABS_MAX && fabs(value[1]) <= RT_GAME3D_COORD_ABS_MAX &&
+           fabs(value[2]) <= RT_GAME3D_COORD_ABS_MAX;
+}
+
+/// @brief Validate one initialized timeline track before playback or destruction.
+/// @param track Borrowed track record.
+/// @return Nonzero only when the kind-specific numeric, text, and retained-reference invariants
+/// hold.
+static int game3d_timeline_track_valid(const rt_game3d_tl_track *track) {
+    if (!track || track->type < RT_GAME3D_TL_CAMERA_CUT || track->type > RT_GAME3D_TL_MARKER ||
+        !isfinite(track->t0) || !isfinite(track->t1) || track->t0 < 0.0 || track->t1 < track->t0 ||
+        track->t1 > 86400.0 || (track->fired != 0 && track->fired != 1) || track->ease < 0 ||
+        track->ease > 3 || (track->positional != 0 && track->positional != 1))
+        return 0;
+    switch (track->type) {
+        case RT_GAME3D_TL_CAMERA_CUT:
+            return game3d_timeline_vec_valid(track->vec_a) &&
+                   game3d_timeline_vec_valid(track->vec_b) && isfinite(track->scalar_a) &&
+                   track->scalar_a >= 1.0 && track->scalar_a <= 179.0 && !track->obj_a &&
+                   !track->obj_b;
+        case RT_GAME3D_TL_CAMERA_MOVE:
+            return rt_g3d_has_class(track->obj_a, RT_G3D_PATH3D_CLASS_ID) &&
+                   (!track->obj_b || rt_g3d_is_vec3(track->obj_b) ||
+                    rt_obj_is_instance(
+                        track->obj_b, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)) ||
+                    rt_g3d_has_class(track->obj_b, RT_G3D_PATH3D_CLASS_ID));
+        case RT_GAME3D_TL_FOV_RAMP:
+            return isfinite(track->scalar_a) && isfinite(track->scalar_b) &&
+                   track->scalar_a >= 1.0 && track->scalar_a <= 179.0 && track->scalar_b >= 1.0 &&
+                   track->scalar_b <= 179.0 && !track->obj_a && !track->obj_b;
+        case RT_GAME3D_TL_ANIM:
+            return game3d_timeline_text_valid(track->text_a) &&
+                   game3d_timeline_text_valid(track->text_b) && isfinite(track->scalar_a) &&
+                   track->scalar_a >= 0.0 && track->scalar_a <= 60.0 && !track->obj_a &&
+                   !track->obj_b;
+        case RT_GAME3D_TL_AUDIO:
+            return rt_sound_is_handle(track->obj_a) && !track->obj_b &&
+                   (!track->positional || game3d_timeline_vec_valid(track->vec_a));
+        case RT_GAME3D_TL_SUBTITLE:
+            return game3d_timeline_text_valid(track->text_a) && !track->obj_a && !track->obj_b;
+        case RT_GAME3D_TL_LETTERBOX:
+            return isfinite(track->scalar_a) && track->scalar_a >= 0.0 && track->scalar_a <= 0.45 &&
+                   !track->obj_a && !track->obj_b;
+        case RT_GAME3D_TL_FADE:
+            return isfinite(track->scalar_a) && isfinite(track->scalar_b) &&
+                   track->scalar_a >= 0.0 && track->scalar_a <= 1.0 && track->scalar_b >= 0.0 &&
+                   track->scalar_b <= 1.0 && !track->obj_a && !track->obj_b;
+        case RT_GAME3D_TL_MARKER:
+            return !track->obj_a && !track->obj_b;
+        default:
+            return 0;
+    }
+}
+
+/// @brief Validate the authoritative Timeline3D allocation identity and initialized-slot range.
 /// @param timeline Borrowed timeline payload.
-/// @return Nonzero when count, capacity, and backing storage agree.
+/// @return Nonzero when the allocation may be traversed and freed safely.
+static int game3d_timeline_allocation_valid(const rt_game3d_timeline *timeline) {
+    if (!timeline)
+        return 0;
+    if (!timeline->owned_tracks && timeline->track_storage_count == 0 &&
+        timeline->track_storage_capacity == 0 && timeline->track_storage_cookie == 0)
+        return 1;
+    if (timeline->track_storage_count < 0 || timeline->track_storage_capacity <= 0 ||
+        timeline->track_storage_count > timeline->track_storage_capacity ||
+        timeline->track_storage_capacity > RT_GAME3D_TL_MAX_TRACKS ||
+        !game3d_world_storage_is_valid(timeline->owned_tracks,
+                                       (size_t)timeline->track_storage_capacity,
+                                       timeline->track_storage_cookie,
+                                       RT_GAME3D_TIMELINE_TRACK_STORAGE_COOKIE))
+        return 0;
+    return 1;
+}
+
+/// @brief Validate authoritative Timeline3D allocation and every initialized track.
+/// @param timeline Borrowed timeline payload.
+/// @return Nonzero when storage and all kind-specific track invariants agree.
 static int game3d_timeline_storage_valid(const rt_game3d_timeline *timeline) {
-    return timeline && timeline->track_count >= 0 && timeline->track_capacity >= 0 &&
-           timeline->track_count <= timeline->track_capacity &&
-           (timeline->track_capacity == 0 || timeline->tracks != NULL);
+    if (!game3d_timeline_allocation_valid(timeline))
+        return 0;
+    for (int32_t i = 0; i < timeline->track_storage_count; ++i) {
+        if (!game3d_timeline_track_valid(&timeline->owned_tracks[i]))
+            return 0;
+    }
+    return 1;
+}
+
+/// @brief Restore mutable timeline mirrors and scalar state from validated track storage.
+/// @param timeline Mutable timeline payload.
+/// @return Nonzero when storage is valid and state was repaired, otherwise zero.
+static int game3d_timeline_repair_state(rt_game3d_timeline *timeline) {
+    double duration = 0.0;
+    int has_camera_tracks = 0;
+    if (!game3d_timeline_storage_valid(timeline))
+        return 0;
+    timeline->tracks = timeline->owned_tracks;
+    timeline->track_count = timeline->track_storage_count;
+    timeline->track_capacity = timeline->track_storage_capacity;
+    for (int32_t i = 0; i < timeline->track_count; ++i) {
+        if (timeline->tracks[i].t1 > duration)
+            duration = timeline->tracks[i].t1;
+        if (timeline->tracks[i].type == RT_GAME3D_TL_CAMERA_CUT ||
+            timeline->tracks[i].type == RT_GAME3D_TL_CAMERA_MOVE ||
+            timeline->tracks[i].type == RT_GAME3D_TL_FOV_RAMP)
+            has_camera_tracks = 1;
+        if (i > 0 && timeline->tracks[i - 1].t0 > timeline->tracks[i].t0)
+            timeline->sorted = 0;
+    }
+    timeline->duration = duration;
+    timeline->time =
+        duration > 0.0 ? game3d_nonnegative_clamped_or(timeline->time, 0.0, duration) : 0.0;
+    timeline->playing = timeline->playing ? 1 : 0;
+    timeline->finished = timeline->finished ? 1 : 0;
+    timeline->just_finished = timeline->just_finished ? 1 : 0;
+    timeline->skippable = timeline->skippable ? 1 : 0;
+    timeline->sorted = timeline->sorted ? 1 : 0;
+    timeline->has_camera_tracks = has_camera_tracks ? 1 : 0;
+    if (timeline->fired_marker_count < 0 ||
+        timeline->fired_marker_count > RT_GAME3D_TL_MAX_MARKERS_PER_STEP)
+        timeline->fired_marker_count = 0;
+    if (!game3d_timeline_text_valid(timeline->active_subtitle))
+        timeline->active_subtitle[RT_GAME3D_TL_TEXT_MAX - 1] = '\0';
+    timeline->letterbox_amount =
+        game3d_nonnegative_clamped_or(timeline->letterbox_amount, 0.0, 0.45);
+    timeline->fade_alpha = game3d_nonnegative_clamped_or(timeline->fade_alpha, 0.0, 1.0);
+    return 1;
+}
+
+/// @brief Release only kind-validated retained objects from one timeline track.
+/// @param track Mutable initialized track; invalid references are cleared as unowned corruption.
+static void game3d_timeline_release_track_refs(rt_game3d_tl_track *track) {
+    if (!track)
+        return;
+    if (track->type == RT_GAME3D_TL_CAMERA_MOVE) {
+        game3d_release_typed_ref(&track->obj_a, RT_G3D_PATH3D_CLASS_ID);
+        if (track->obj_b &&
+            (rt_g3d_is_vec3(track->obj_b) ||
+             rt_obj_is_instance(
+                 track->obj_b, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)) ||
+             rt_g3d_has_class(track->obj_b, RT_G3D_PATH3D_CLASS_ID)))
+            game3d_release_ref(&track->obj_b);
+        else
+            track->obj_b = NULL;
+    } else if (track->type == RT_GAME3D_TL_AUDIO) {
+        if (rt_sound_is_handle(track->obj_a))
+            game3d_release_ref(&track->obj_a);
+        else
+            track->obj_a = NULL;
+        track->obj_b = NULL;
+    } else {
+        track->obj_a = NULL;
+        track->obj_b = NULL;
+    }
 }
 
 //=========================================================================
@@ -64,16 +224,20 @@ static void game3d_timeline_finalize(void *obj) {
     rt_game3d_timeline *timeline = (rt_game3d_timeline *)obj;
     if (!timeline)
         return;
-    int32_t track_count = game3d_timeline_storage_valid(timeline) ? timeline->track_count : 0;
-    for (int32_t i = 0; i < track_count; ++i) {
-        game3d_release_ref(&timeline->tracks[i].obj_a);
-        game3d_release_ref(&timeline->tracks[i].obj_b);
-    }
-    free(timeline->tracks);
+    int allocation_valid = game3d_timeline_allocation_valid(timeline);
+    int32_t track_count = allocation_valid ? timeline->track_storage_count : 0;
+    for (int32_t i = 0; i < track_count; ++i)
+        game3d_timeline_release_track_refs(&timeline->owned_tracks[i]);
+    if (allocation_valid)
+        free(timeline->owned_tracks);
     timeline->tracks = NULL;
+    timeline->owned_tracks = NULL;
     timeline->track_count = 0;
     timeline->track_capacity = 0;
-    game3d_release_ref(&timeline->world);
+    timeline->track_storage_count = 0;
+    timeline->track_storage_capacity = 0;
+    timeline->track_storage_cookie = 0;
+    game3d_release_typed_ref(&timeline->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
 }
 
 /// @brief Create an empty timeline bound to @p world (installed via playTimeline).
@@ -112,12 +276,12 @@ static rt_game3d_tl_track *game3d_timeline_append(
         rt_trap(api_name);
         return NULL;
     }
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         rt_trap("Game3D.Timeline3D: corrupt track storage");
         return NULL;
     }
     if (timeline->track_count >= timeline->track_capacity) {
-        if (timeline->track_count == INT32_MAX) {
+        if (timeline->track_count >= RT_GAME3D_TL_MAX_TRACKS) {
             rt_trap("Game3D.Timeline3D: track limit exceeded");
             return NULL;
         }
@@ -130,15 +294,24 @@ static rt_game3d_tl_track *game3d_timeline_append(
             rt_trap("Game3D.Timeline3D: track capacity overflow");
             return NULL;
         }
+        if (new_cap > RT_GAME3D_TL_MAX_TRACKS)
+            new_cap = RT_GAME3D_TL_MAX_TRACKS;
+        int32_t old_cap = timeline->track_storage_capacity;
         rt_game3d_tl_track *grown =
-            (rt_game3d_tl_track *)realloc(timeline->tracks, (size_t)new_cap * sizeof(*grown));
+            (rt_game3d_tl_track *)realloc(timeline->owned_tracks, (size_t)new_cap * sizeof(*grown));
         if (!grown)
             return NULL;
+        memset(grown + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(*grown));
         timeline->tracks = grown;
+        timeline->owned_tracks = grown;
         timeline->track_capacity = new_cap;
+        timeline->track_storage_capacity = new_cap;
+        timeline->track_storage_cookie = game3d_world_storage_cookie_value(
+            grown, (size_t)new_cap, RT_GAME3D_TIMELINE_TRACK_STORAGE_COOKIE);
     }
     rt_game3d_tl_track *track = &timeline->tracks[timeline->track_count++];
     memset(track, 0, sizeof(*track));
+    timeline->track_storage_count = timeline->track_count;
     track->type = type;
     t0 = game3d_nonnegative_clamped_or(t0, 0.0, 86400.0);
     t1 = game3d_nonnegative_clamped_or(t1, t0, 86400.0);
@@ -152,16 +325,32 @@ static rt_game3d_tl_track *game3d_timeline_append(
     return track;
 }
 
-/// @brief Copy a snapshot of an rt_string into a bounded track text field.
+/// @brief Copy a validated runtime string into a bounded track field on a UTF-8 boundary.
 /// @param[out] dst Fixed `RT_GAME3D_TL_TEXT_MAX`-byte destination.
 /// @param text Borrowed runtime string, or `NULL` for empty text.
-static void game3d_timeline_copy_text(char *dst, rt_string text) {
-    dst[0] = '\0';
-    const char *src = text ? rt_string_cstr(text) : NULL;
-    if (src) {
-        strncpy(dst, src, RT_GAME3D_TL_TEXT_MAX - 1);
-        dst[RT_GAME3D_TL_TEXT_MAX - 1] = '\0';
-    }
+/// @return Nonzero when the complete input was a valid NUL-free UTF-8 string.
+static int game3d_timeline_copy_text(char *dst, rt_string text) {
+    const char *src;
+    size_t length;
+    size_t copied;
+    if (!dst)
+        return 0;
+    memset(dst, 0, RT_GAME3D_TL_TEXT_MAX);
+    if (!text)
+        return 1;
+    if (!rt_string_is_handle(text))
+        return 0;
+    src = rt_string_cstr(text);
+    length = rt_string_len_bytes(text);
+    if (!src || memchr(src, '\0', length) != NULL || !rt_utf8_span_valid(src, length))
+        return 0;
+    copied = length < RT_GAME3D_TL_TEXT_MAX ? length : RT_GAME3D_TL_TEXT_MAX - 1u;
+    while (copied > 0 && !rt_utf8_span_valid(src, copied))
+        copied--;
+    if (copied > 0)
+        memcpy(dst, src, copied);
+    dst[copied] = '\0';
+    return 1;
 }
 
 //=========================================================================
@@ -213,15 +402,23 @@ void *rt_game3d_timeline_add_camera_move(
     void *obj, double t0, double t1, void *path, void *look_target, int64_t ease) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addCameraMove: invalid timeline");
+    int look_is_entity =
+        rt_obj_is_instance(look_target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     if (!rt_g3d_has_class(path, RT_G3D_PATH3D_CLASS_ID)) {
         rt_trap("Game3D.Timeline3D.addCameraMove: path must be Path3D");
         return obj;
     }
-    if (look_target && !rt_g3d_is_vec3(look_target) &&
-        !rt_g3d_has_class(look_target, RT_G3D_GAME3D_ENTITY_CLASS_ID) &&
+    if (look_target && !rt_g3d_is_vec3(look_target) && !look_is_entity &&
         !rt_g3d_has_class(look_target, RT_G3D_PATH3D_CLASS_ID)) {
         rt_trap("Game3D.Timeline3D.addCameraMove: look target must be Vec3, Entity3D, or Path3D");
         return obj;
+    }
+    if (look_is_entity) {
+        rt_game3d_entity *look_entity = (rt_game3d_entity *)look_target;
+        if (!look_entity->alive || look_entity->destroyed) {
+            rt_trap("Game3D.Timeline3D.addCameraMove: look entity is destroyed");
+            return obj;
+        }
     }
     rt_game3d_tl_track *track = game3d_timeline_append(
         timeline,
@@ -276,6 +473,13 @@ void *rt_game3d_timeline_add_anim(
     void *obj, double t, rt_string entity_name, rt_string state_name, double crossfade_seconds) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addAnim: invalid timeline");
+    char entity_text[RT_GAME3D_TL_TEXT_MAX];
+    char state_text[RT_GAME3D_TL_TEXT_MAX];
+    if (!game3d_timeline_copy_text(entity_text, entity_name) ||
+        !game3d_timeline_copy_text(state_text, state_name)) {
+        rt_trap("Game3D.Timeline3D.addAnim: names must be valid UTF-8 without embedded NUL");
+        return obj;
+    }
     rt_game3d_tl_track *track =
         game3d_timeline_append(timeline,
                                RT_GAME3D_TL_ANIM,
@@ -283,8 +487,8 @@ void *rt_game3d_timeline_add_anim(
                                t,
                                "Game3D.Timeline3D.addAnim: tracks are immutable while playing");
     if (track) {
-        game3d_timeline_copy_text(track->text_a, entity_name);
-        game3d_timeline_copy_text(track->text_b, state_name);
+        memcpy(track->text_a, entity_text, sizeof(track->text_a));
+        memcpy(track->text_b, state_text, sizeof(track->text_b));
         track->scalar_a = game3d_nonnegative_clamped_or(crossfade_seconds, 0.0, 60.0);
     }
     return obj;
@@ -301,8 +505,8 @@ void *rt_game3d_timeline_add_audio(
     void *obj, double t, void *clip, int8_t positional, void *position) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addAudio: invalid timeline");
-    if (!clip) {
-        rt_trap("Game3D.Timeline3D.addAudio: clip must be non-null");
+    if (!clip || !rt_sound_is_handle(clip)) {
+        rt_trap("Game3D.Timeline3D.addAudio: clip must be Sound");
         return obj;
     }
     if (positional && !rt_g3d_is_vec3(position)) {
@@ -336,6 +540,11 @@ void *rt_game3d_timeline_add_audio(
 void *rt_game3d_timeline_add_subtitle(void *obj, double t0, double t1, rt_string text) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.addSubtitle: invalid timeline");
+    char snapshot[RT_GAME3D_TL_TEXT_MAX];
+    if (!game3d_timeline_copy_text(snapshot, text)) {
+        rt_trap("Game3D.Timeline3D.addSubtitle: text must be valid UTF-8 without embedded NUL");
+        return obj;
+    }
     rt_game3d_tl_track *track =
         game3d_timeline_append(timeline,
                                RT_GAME3D_TL_SUBTITLE,
@@ -343,7 +552,7 @@ void *rt_game3d_timeline_add_subtitle(void *obj, double t0, double t1, rt_string
                                t1,
                                "Game3D.Timeline3D.addSubtitle: tracks are immutable while playing");
     if (track)
-        game3d_timeline_copy_text(track->text_a, text);
+        memcpy(track->text_a, snapshot, sizeof(track->text_a));
     return obj;
 }
 
@@ -419,7 +628,7 @@ void *rt_game3d_timeline_add_marker(void *obj, double t, int64_t id) {
 double rt_game3d_timeline_get_duration(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_duration: invalid timeline");
-    return timeline ? timeline->duration : 0.0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->duration : 0.0;
 }
 
 /// @brief Get the current playhead time.
@@ -428,7 +637,7 @@ double rt_game3d_timeline_get_duration(void *obj) {
 double rt_game3d_timeline_get_time(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_time: invalid timeline");
-    return timeline ? timeline->time : 0.0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->time : 0.0;
 }
 
 /// @brief Get whether the playhead is advancing.
@@ -437,7 +646,7 @@ double rt_game3d_timeline_get_time(void *obj) {
 int8_t rt_game3d_timeline_get_playing(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_playing: invalid timeline");
-    return timeline ? timeline->playing : 0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->playing : 0;
 }
 
 /// @brief Get whether playback has reached or skipped to the end.
@@ -446,7 +655,7 @@ int8_t rt_game3d_timeline_get_playing(void *obj) {
 int8_t rt_game3d_timeline_get_finished(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_finished: invalid timeline");
-    return timeline ? timeline->finished : 0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->finished : 0;
 }
 
 /// @brief Get whether explicit skip requests are accepted.
@@ -455,7 +664,7 @@ int8_t rt_game3d_timeline_get_finished(void *obj) {
 int8_t rt_game3d_timeline_get_skippable(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.get_skippable: invalid timeline");
-    return timeline ? timeline->skippable : 0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->skippable : 0;
 }
 
 /// @brief Enable or disable explicit timeline skipping.
@@ -474,7 +683,7 @@ void rt_game3d_timeline_set_skippable(void *obj, int8_t skippable) {
 int8_t rt_game3d_timeline_just_finished(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.justFinished: invalid timeline");
-    return timeline ? timeline->just_finished : 0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->just_finished : 0;
 }
 
 /// @brief Get the number of marker events fired during the latest step.
@@ -483,7 +692,7 @@ int8_t rt_game3d_timeline_just_finished(void *obj) {
 int64_t rt_game3d_timeline_events_fired_count(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.eventsFiredCount: invalid timeline");
-    return timeline ? timeline->fired_marker_count : 0;
+    return timeline && game3d_timeline_repair_state(timeline) ? timeline->fired_marker_count : 0;
 }
 
 /// @brief Read a marker identifier fired during the latest step.
@@ -493,7 +702,8 @@ int64_t rt_game3d_timeline_events_fired_count(void *obj) {
 int64_t rt_game3d_timeline_event_fired_id(void *obj, int64_t index) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.eventFiredId: invalid timeline");
-    if (!timeline || index < 0 || index >= timeline->fired_marker_count)
+    if (!timeline || !game3d_timeline_repair_state(timeline) || index < 0 ||
+        index >= timeline->fired_marker_count)
         return 0;
     return timeline->fired_markers[index];
 }
@@ -504,7 +714,8 @@ int64_t rt_game3d_timeline_event_fired_id(void *obj, int64_t index) {
 rt_string rt_game3d_timeline_active_subtitle(void *obj) {
     rt_game3d_timeline *timeline =
         game3d_timeline_checked(obj, "Game3D.Timeline3D.activeSubtitle: invalid timeline");
-    return rt_const_cstr(timeline ? timeline->active_subtitle : "");
+    return rt_const_cstr(
+        timeline && game3d_timeline_repair_state(timeline) ? timeline->active_subtitle : "");
 }
 
 //=========================================================================
@@ -530,7 +741,7 @@ static int game3d_timeline_track_cmp(const void *a, const void *b) {
 /// @brief Reset the playhead and fire-once latches; sort tracks once.
 /// @param timeline Timeline payload to prepare for playback.
 static void game3d_timeline_reset(rt_game3d_timeline *timeline) {
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         rt_trap("Game3D.Timeline3D: corrupt track storage");
         return;
     }
@@ -630,7 +841,7 @@ int game3d_world_timeline_pre(rt_game3d_world *world, double dt) {
         world->active_timeline, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
     if (!timeline)
         return 0;
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         timeline->playing = 0;
         rt_trap("Game3D.Timeline3D: corrupt track storage");
         return 0;
@@ -721,7 +932,7 @@ void game3d_world_timeline_camera(rt_game3d_world *world) {
         world->active_timeline, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
     if (!timeline || !timeline->has_camera_tracks)
         return;
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         timeline->playing = 0;
         rt_trap("Game3D.Timeline3D: corrupt track storage");
         return;
@@ -868,7 +1079,7 @@ void rt_game3d_world_play_timeline(void *world_obj, void *timeline_obj) {
         timeline_obj, "Game3D.World3D.playTimeline: timeline must be Timeline3D");
     if (!world || !timeline)
         return;
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         rt_trap("Game3D.World3D.playTimeline: corrupt timeline track storage");
         return;
     }
@@ -918,7 +1129,7 @@ void rt_game3d_timeline_skip(void *obj) {
         game3d_timeline_checked(obj, "Game3D.Timeline3D.skip: invalid timeline");
     if (!timeline || !timeline->playing || !timeline->skippable)
         return;
-    if (!game3d_timeline_storage_valid(timeline)) {
+    if (!game3d_timeline_repair_state(timeline)) {
         timeline->playing = 0;
         rt_trap("Game3D.Timeline3D.skip: corrupt track storage");
         return;

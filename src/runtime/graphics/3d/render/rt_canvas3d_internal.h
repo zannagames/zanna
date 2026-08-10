@@ -54,6 +54,11 @@
 #define VGFX3D_RENDERTARGET_DIM_MAX 16384
 /// Maximum byte prefix consumed by Canvas3D bitmap and TrueType text paths.
 #define RT_CANVAS3D_TEXT_MAX_BYTES 512u
+/// Maximum reusable RGBA readback allocation for a supported render target.
+#define RT_CANVAS3D_READBACK_SCRATCH_MAX_BYTES                                                     \
+    ((size_t)VGFX3D_RENDERTARGET_DIM_MAX * (size_t)VGFX3D_RENDERTARGET_DIM_MAX * 4u)
+/// Domain separator for Canvas3D readback-allocation ownership cookies.
+#define RT_CANVAS3D_READBACK_STORAGE_COOKIE UINT64_C(0xC35D5A47B91E260D)
 
 //=============================================================================
 // Vertex format
@@ -1686,7 +1691,30 @@ typedef struct {
     float occlusion_last_near;
     float occlusion_last_far;
     int8_t occlusion_last_is_ortho;
+
+    /* Authoritative ownership metadata for the mirrored screenshot staging fields above.
+     * These fields stay at the tail so internal stack-fixture prefixes remain stable. */
+    uint8_t *readback_rgba_owned;
+    size_t readback_rgba_storage_capacity;
+    uint64_t readback_rgba_storage_cookie;
 } rt_canvas3d;
+
+/// @brief Compute the integrity cookie for a Canvas3D readback allocation tuple.
+static inline uint64_t rt_canvas3d_readback_storage_cookie(const uint8_t *owned, size_t capacity) {
+    uint64_t pointer_bits = (uint64_t)(uintptr_t)owned;
+    uint64_t capacity_bits = (uint64_t)capacity;
+    return RT_CANVAS3D_READBACK_STORAGE_COOKIE ^ pointer_bits ^
+           (capacity_bits * UINT64_C(0x9E3779B185EBCA87));
+}
+
+/// @brief Check whether Canvas3D may safely reuse, resize, or release readback storage.
+static inline int rt_canvas3d_readback_storage_is_valid(const rt_canvas3d *c) {
+    return c && c->readback_rgba_owned && c->readback_rgba_storage_capacity > 0u &&
+           c->readback_rgba_storage_capacity <= RT_CANVAS3D_READBACK_SCRATCH_MAX_BYTES &&
+           c->readback_rgba_storage_cookie ==
+               rt_canvas3d_readback_storage_cookie(c->readback_rgba_owned,
+                                                   c->readback_rgba_storage_capacity);
+}
 
 /// @brief Validate a Canvas3D handle while optionally preserving internal stack fixtures.
 /// @details Production handles must carry the Canvas3D class id. Backend/unit tests

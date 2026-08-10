@@ -90,8 +90,20 @@
 #define RT_GAME3D_ANIM_BLEND_TIME_MAX 1000000.0    ///< Max animation transition duration.
 #define RT_GAME3D_ANIM_STEP_MAX 1.0                ///< Max single Game3D animator update step.
 #define RT_GAME3D_ANIM_SPEED_ABS_MAX 1000000.0     ///< Max animation playback speed multiplier.
+#define RT_GAME3D_MAX_ENTITY_NODES 1000000u        ///< Max entities in one world/tree operation.
+#define RT_GAME3D_MAX_ENTITY_SET_SLOTS 2097152u    ///< Power-of-two slots for 50%-loaded sets.
 #define RT_GAME3D_ENTITY_CHILD_STORAGE_COOKIE                                                      \
     UINT64_C(0x5A4348494C445245) ///< "ZCHILDRE": validates owned raw child storage.
+#define RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE                                                      \
+    UINT64_C(0x5A57454E54495459) ///< "ZWENTITY": validates the world entity array.
+#define RT_GAME3D_WORLD_ANIMATOR_STORAGE_COOKIE                                                    \
+    UINT64_C(0x5A57414E494D4154) ///< "ZWANIMAT": validates animator scratch.
+#define RT_GAME3D_WORLD_SEEN_STORAGE_COOKIE                                                        \
+    UINT64_C(0x5A575345454E5345) ///< "ZWSEENSE": validates animator dedup scratch.
+#define RT_GAME3D_WORLD_JOB_STORAGE_COOKIE                                                         \
+    UINT64_C(0x5A574A4F4253544F) ///< "ZWJOBSTO": validates animation jobs.
+#define RT_GAME3D_TIMELINE_TRACK_STORAGE_COOKIE                                                    \
+    UINT64_C(0x5A544C545241434B) ///< "ZTLTRACK": validates timeline tracks.
 #define RT_GAME3D_TP_FADE_STORAGE_COOKIE                                                           \
     UINT64_C(0x5A54504641444553)              ///< "ZTPFADES": validates owned fade storage.
 #define RT_GAME3D_EFFECT_STEP_MAX 10.0        ///< Max single EffectRegistry3D update step.
@@ -374,6 +386,33 @@ static inline uint64_t game3d_entity_child_storage_cookie_value(const void *chil
     uint64_t address = (uint64_t)(uintptr_t)children;
     uint64_t size = (uint64_t)(uint32_t)capacity;
     return RT_GAME3D_ENTITY_CHILD_STORAGE_COOKIE ^ address ^ (size * UINT64_C(0x9E3779B185EBCA87));
+}
+
+/// @brief Bind a world-owned raw allocation to its address, capacity, and slot discriminator.
+/// @param storage Allocation address, or NULL.
+/// @param capacity Number of elements owned by the allocation.
+/// @param discriminator Nonzero per-slot cookie constant.
+/// @return Integrity marker for the allocation tuple.
+static inline uint64_t game3d_world_storage_cookie_value(const void *storage,
+                                                         size_t capacity,
+                                                         uint64_t discriminator) {
+    uint64_t address = (uint64_t)(uintptr_t)storage;
+    uint64_t size = (uint64_t)capacity;
+    return discriminator ^ address ^ (size * UINT64_C(0x9E3779B185EBCA87));
+}
+
+/// @brief Check one world-owned raw allocation against its authoritative storage tuple.
+/// @param storage Allocation address.
+/// @param capacity Authoritative element capacity.
+/// @param cookie Stored integrity marker.
+/// @param discriminator Per-slot cookie constant.
+/// @return Nonzero only for a nonempty matching allocation tuple.
+static inline int game3d_world_storage_is_valid(const void *storage,
+                                                size_t capacity,
+                                                uint64_t cookie,
+                                                uint64_t discriminator) {
+    return storage && capacity > 0 &&
+           cookie == game3d_world_storage_cookie_value(storage, capacity, discriminator);
 }
 
 /// @brief Return the entity's SceneNode3D slot only when it still has the expected class.
@@ -888,6 +927,7 @@ static inline uint64_t game3d_thirdperson_fade_storage_cookie_value(const void *
 
 #define RT_GAME3D_TL_MAX_MARKERS_PER_STEP 64 ///< Marker events buffered per tick.
 #define RT_GAME3D_TL_TEXT_MAX 256            ///< Subtitle/name text capacity per track.
+#define RT_GAME3D_TL_MAX_TRACKS 65536        ///< Resource ceiling for one timeline.
 
 /// @brief Timeline3D track kinds.
 enum {
@@ -940,6 +980,12 @@ typedef struct rt_game3d_timeline {
     char active_subtitle[RT_GAME3D_TL_TEXT_MAX];
     double letterbox_amount; ///< Current letterbox fraction (overlay pass).
     double fade_alpha;       ///< Current full-screen fade alpha (overlay pass).
+    /// Immutable allocation identity and initialized-slot count. Appended so
+    /// existing white-box test prefixes keep their offsets.
+    rt_game3d_tl_track *owned_tracks;
+    int32_t track_storage_count;
+    int32_t track_storage_capacity;
+    uint64_t track_storage_cookie;
 } rt_game3d_timeline;
 
 #define RT_GAME3D_DLG_MAX_LINES 32  ///< Queued dialogue lines per conversation.
@@ -1257,6 +1303,17 @@ typedef struct rt_game3d_world {
      * survivor nor skip one moved into an already-visited slot. Appended at
      * the end: test fixtures mirror prefixes of this layout. */
     uint32_t sim_tick_stamp;
+    /// Authoritative allocation metadata for raw world-owned arrays. Mirrored
+    /// capacities are repairable state and are never trusted for realloc/free
+    /// without these address-bound cookies.
+    int32_t entity_storage_capacity;
+    uint64_t entity_storage_cookie;
+    int32_t animation_animator_storage_capacity;
+    uint64_t animation_animator_storage_cookie;
+    size_t animation_seen_storage_capacity;
+    uint64_t animation_seen_storage_cookie;
+    int32_t animation_job_storage_capacity;
+    uint64_t animation_job_storage_cookie;
 } rt_game3d_world;
 
 #if defined(_MSC_VER)

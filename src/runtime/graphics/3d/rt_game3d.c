@@ -693,11 +693,28 @@ static int game3d_world_ensure_job_pool(rt_game3d_world *world) {
 /// @param world World whose entity registry metadata is inspected.
 /// @return The non-negative count capped by allocated capacity, or zero for invalid storage.
 static int32_t game3d_world_safe_entity_count(const rt_game3d_world *world) {
-    if (!world || !world->entities || world->entity_capacity <= 0 || world->entity_count <= 0)
+    int32_t storage_capacity;
+    if (!world || world->entity_storage_capacity <= 0 ||
+        (uint32_t)world->entity_storage_capacity > RT_GAME3D_MAX_ENTITY_NODES ||
+        !game3d_world_storage_is_valid(world->entities,
+                                       (size_t)world->entity_storage_capacity,
+                                       world->entity_storage_cookie,
+                                       RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE))
         return 0;
-    if (world->entity_count > world->entity_capacity)
-        return world->entity_capacity;
-    return world->entity_count;
+    storage_capacity = world->entity_storage_capacity;
+    if (world->entity_capacity == storage_capacity && world->entity_count >= 0 &&
+        world->entity_count <= storage_capacity)
+        return world->entity_count;
+
+    /* Capacity/count mirrors are private mutable state, while the cookie-bound
+     * allocation is authoritative. Recover only its validated dense Entity3D
+     * prefix; newly allocated tail slots are always zeroed by the grow path. */
+    int32_t recovered = 0;
+    while (recovered < storage_capacity && world->entities[recovered] &&
+           rt_obj_is_instance(
+               world->entities[recovered], RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)))
+        recovered++;
+    return recovered;
 }
 
 /// @brief Clamp a mutable world registry count back to its allocated entity array.
@@ -705,8 +722,17 @@ static int32_t game3d_world_safe_entity_count(const rt_game3d_world *world) {
 /// @return The repaired non-negative entity count.
 static int32_t game3d_world_repair_entity_count(rt_game3d_world *world) {
     int32_t safe_count = game3d_world_safe_entity_count(world);
-    if (world)
+    if (world) {
         world->entity_count = safe_count;
+        world->entity_capacity =
+            game3d_world_storage_is_valid(
+                world->entities,
+                (size_t)(world->entity_storage_capacity > 0 ? world->entity_storage_capacity : 0),
+                world->entity_storage_cookie,
+                RT_GAME3D_WORLD_ENTITY_STORAGE_COOKIE)
+                ? world->entity_storage_capacity
+                : 0;
+    }
     return safe_count;
 }
 
@@ -1982,8 +2008,7 @@ static void game3d_world_sweep_entities(rt_game3d_world *world,
             /* entity_count is re-read every iteration (ticks mutate the
              * registry) and bounded by capacity so corrupt counts from
              * robustness fixtures cannot walk past the array. */
-            for (int32_t i = 0; i < world->entity_count && i < world->entity_capacity && i >= 0;
-                 i++) {
+            for (int32_t i = 0; i < game3d_world_safe_entity_count(world); i++) {
                 rt_game3d_entity *entity = rt_obj_is_instance(world->entities[i],
                                                               RT_G3D_GAME3D_ENTITY_CLASS_ID,
                                                               sizeof(rt_game3d_entity))

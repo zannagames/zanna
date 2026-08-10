@@ -2369,22 +2369,37 @@ int64_t rt_canvas3d_get_backend_present_path(void *obj) {
 static int canvas3d_reserve_readback_scratch(rt_canvas3d *c, size_t required) {
     size_t capacity;
     uint8_t *next;
-    if (!c || required == 0)
+    if (!c || required == 0 || required > RT_CANVAS3D_READBACK_SCRATCH_MAX_BYTES)
         return 0;
-    if (required <= c->readback_rgba_scratch_capacity && c->readback_rgba_scratch)
+
+    if (rt_canvas3d_readback_storage_is_valid(c)) {
+        c->readback_rgba_scratch = c->readback_rgba_owned;
+        c->readback_rgba_scratch_capacity = c->readback_rgba_storage_capacity;
+    } else {
+        /* A damaged ownership tuple cannot authorize realloc/free of either pointer. */
+        c->readback_rgba_scratch = NULL;
+        c->readback_rgba_scratch_capacity = 0u;
+        c->readback_rgba_owned = NULL;
+        c->readback_rgba_storage_capacity = 0u;
+        c->readback_rgba_storage_cookie = 0u;
+    }
+    if (required <= c->readback_rgba_storage_capacity && c->readback_rgba_owned)
         return 1;
-    capacity = c->readback_rgba_scratch_capacity > 0 ? c->readback_rgba_scratch_capacity : 4096u;
+    capacity = c->readback_rgba_storage_capacity > 0 ? c->readback_rgba_storage_capacity : 4096u;
     while (capacity < required) {
         size_t grown = capacity + capacity / 2u;
-        if (grown <= capacity || grown > SIZE_MAX / 2u) {
+        if (grown <= capacity || grown > RT_CANVAS3D_READBACK_SCRATCH_MAX_BYTES) {
             capacity = required;
             break;
         }
         capacity = grown;
     }
-    next = (uint8_t *)realloc(c->readback_rgba_scratch, capacity);
+    next = (uint8_t *)realloc(c->readback_rgba_owned, capacity);
     if (!next)
         return 0;
+    c->readback_rgba_owned = next;
+    c->readback_rgba_storage_capacity = capacity;
+    c->readback_rgba_storage_cookie = rt_canvas3d_readback_storage_cookie(next, capacity);
     c->readback_rgba_scratch = next;
     c->readback_rgba_scratch_capacity = capacity;
     return 1;
@@ -2417,7 +2432,8 @@ static int canvas3d_screenshot_into(rt_canvas3d *c, rt_pixels_impl *pv) {
     shot_h = c->render_target ? c->render_target->height : c->height;
     source_w = shot_w;
     source_h = shot_h;
-    if (shot_w <= 0 || shot_h <= 0 || pv->width != shot_w || pv->height != shot_h)
+    if (shot_w <= 0 || shot_h <= 0 || shot_w > VGFX3D_RENDERTARGET_DIM_MAX ||
+        shot_h > VGFX3D_RENDERTARGET_DIM_MAX || pv->width != shot_w || pv->height != shot_h)
         return 0;
 
     if (c->render_target && vgfx3d_rendertarget_ensure_color(c->render_target)) {
@@ -2439,6 +2455,10 @@ static int canvas3d_screenshot_into(rt_canvas3d *c, rt_pixels_impl *pv) {
         source_w = c->framebuffer_width;
         source_h = c->framebuffer_height;
     }
+
+    if (source_w <= 0 || source_h <= 0 || source_w > VGFX3D_RENDERTARGET_DIM_MAX ||
+        source_h > VGFX3D_RENDERTARGET_DIM_MAX)
+        return 0;
 
     if (c->backend && c->backend != &vgfx3d_software_backend && c->backend->readback_rgba) {
         const size_t row_bytes = (size_t)source_w * 4u;

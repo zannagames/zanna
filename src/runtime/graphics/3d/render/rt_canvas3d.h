@@ -1288,6 +1288,14 @@ void *rt_material3d_get_lightmap_pixels(void *obj);
 /// @param obj Borrowed Material3D handle.
 /// @param pixels Borrowed supported texture source retained until replaced, or NULL to clear.
 void rt_material3d_set_texture(void *obj, void *pixels);
+/// @brief Eagerly return an ADOPTED window to its lending 2D canvas (ADR
+///        0242 single-window handoff): input detached, presentation handed
+///        back, canvas flagged closed. Idempotent; no-op for owned windows.
+///        Called by World3D destruction so a shell can re-adopt the window
+///        immediately regardless of lingering script references to the old
+///        Canvas3D (whose finalizer previously owned the loan return).
+/// @param canvas3d Borrowed Canvas3D handle (invalid handles are ignored).
+void rt_canvas3d_release_adopted_window(void *canvas3d);
 /// @brief Bind a RenderTarget3D's live contents as the albedo texture (auto-refreshing).
 /// @param obj Borrowed Material3D handle.
 /// @param target Borrowed live RenderTarget3D retained until replaced or detached.

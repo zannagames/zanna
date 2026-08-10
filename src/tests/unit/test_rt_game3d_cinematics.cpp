@@ -61,6 +61,48 @@ typedef struct {
     int32_t roll_key_count;
 } Game3DRailCameraTestLayout;
 
+typedef struct {
+    int8_t type;
+    double t0;
+    double t1;
+    int8_t fired;
+    int8_t ease;
+    double vec_a[3];
+    double vec_b[3];
+    double scalar_a;
+    double scalar_b;
+    void *obj_a;
+    void *obj_b;
+    int8_t positional;
+    int64_t marker_id;
+    char text_a[256];
+    char text_b[256];
+} Game3DTimelineTrackTestLayout;
+
+typedef struct {
+    void *world;
+    Game3DTimelineTrackTestLayout *tracks;
+    int32_t track_count;
+    int32_t track_capacity;
+    double time;
+    double duration;
+    int8_t playing;
+    int8_t finished;
+    int8_t just_finished;
+    int8_t skippable;
+    int8_t sorted;
+    int8_t has_camera_tracks;
+    int64_t fired_markers[64];
+    int32_t fired_marker_count;
+    char active_subtitle[256];
+    double letterbox_amount;
+    double fade_alpha;
+    Game3DTimelineTrackTestLayout *owned_tracks;
+    int32_t track_storage_count;
+    int32_t track_storage_capacity;
+    uint64_t track_storage_cookie;
+} Game3DTimelineTestLayout;
+
 namespace {
 static std::jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
@@ -359,6 +401,108 @@ bool test_dof_focus_drive() {
 // Plan 09 — Timeline3D
 //=========================================================================
 
+bool test_timeline_storage_and_payload_hardening() {
+    TEST("Timeline3D repairs storage mirrors and rejects malformed track payloads");
+    void *world = rt_game3d_world_new(rt_const_cstr("TL Hardening"), 64, 48);
+    void *tl = rt_game3d_timeline_new(world);
+    auto *layout = static_cast<Game3DTimelineTestLayout *>(tl);
+    rt_game3d_timeline_add_marker(tl, 0.5, 10);
+    rt_game3d_timeline_add_marker(tl, 1.0, 20);
+    EXPECT_EQ_INT(layout->track_storage_count, 2, "authoritative count tracks initialized slots");
+
+    void *wrong_clip = rt_vec3_new(1.0, 2.0, 3.0);
+    EXPECT_TRUE(
+        expect_trap_contains(
+            [&] { rt_game3d_timeline_add_audio(tl, 0.25, wrong_clip, 0, nullptr); }, "Sound"),
+        "audio tracks reject non-Sound handles before mutation");
+    EXPECT_EQ_INT(
+        layout->track_storage_count, 2, "invalid audio cannot append a partial timeline track");
+
+    const char invalid_utf8_bytes[] = {static_cast<char>(0xC3), static_cast<char>(0x28)};
+    rt_string invalid_utf8 = rt_string_from_bytes(invalid_utf8_bytes, sizeof(invalid_utf8_bytes));
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { rt_game3d_timeline_add_subtitle(tl, 0.0, 1.0, invalid_utf8); }, "UTF-8"),
+                "subtitle snapshots reject malformed UTF-8 before mutation");
+    rt_string_unref(invalid_utf8);
+    const char embedded_nul_bytes[] = {'a', '\0', 'b'};
+    rt_string embedded_nul = rt_string_from_bytes(embedded_nul_bytes, sizeof(embedded_nul_bytes));
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { rt_game3d_timeline_add_anim(tl, 0.0, embedded_nul, nullptr, 0.0); },
+                    "embedded NUL"),
+                "animation identifiers reject embedded NUL aliasing");
+    rt_string_unref(embedded_nul);
+    EXPECT_EQ_INT(
+        layout->track_storage_count, 2, "invalid text cannot append a partial timeline track");
+
+    layout->tracks = nullptr;
+    layout->track_count = -1;
+    layout->track_capacity = INT32_MAX;
+    layout->time = INFINITY;
+    layout->duration = NAN;
+    layout->playing = 7;
+    layout->finished = -4;
+    layout->just_finished = 9;
+    layout->skippable = 3;
+    layout->sorted = 5;
+    layout->has_camera_tracks = 1;
+    layout->fired_marker_count = INT32_MAX;
+    std::memset(layout->active_subtitle, 'x', sizeof(layout->active_subtitle));
+    layout->letterbox_amount = NAN;
+    layout->fade_alpha = INFINITY;
+    EXPECT_NEAR(rt_game3d_timeline_get_duration(tl),
+                1.0,
+                0.0001,
+                "duration is derived from authoritative track payloads");
+    EXPECT_TRUE(layout->tracks == layout->owned_tracks,
+                "null track mirror is restored from owned storage");
+    EXPECT_EQ_INT(layout->track_count, 2, "corrupt logical count is restored");
+    EXPECT_EQ_INT(layout->track_capacity,
+                  layout->track_storage_capacity,
+                  "corrupt capacity mirror is restored");
+    EXPECT_NEAR(rt_game3d_timeline_get_time(tl), 0.0, 0.0001, "non-finite playhead repairs");
+    EXPECT_EQ_INT(rt_game3d_timeline_get_playing(tl), 1, "playing getter is canonical");
+    EXPECT_EQ_INT(rt_game3d_timeline_get_finished(tl), 1, "finished getter is canonical");
+    EXPECT_EQ_INT(rt_game3d_timeline_just_finished(tl), 1, "completion-edge getter is canonical");
+    EXPECT_EQ_INT(
+        rt_game3d_timeline_events_fired_count(tl), 0, "corrupt marker count fails closed");
+    rt_string repaired_subtitle = rt_game3d_timeline_active_subtitle(tl);
+    EXPECT_EQ_INT(std::strlen(rt_string_cstr(repaired_subtitle)),
+                  255,
+                  "unterminated subtitle state is bounded before exposure");
+    rt_string_unref(repaired_subtitle);
+    EXPECT_NEAR(layout->letterbox_amount, 0.0, 0.0001, "non-finite letterbox state repairs");
+    EXPECT_NEAR(layout->fade_alpha, 0.0, 0.0001, "non-finite fade state repairs");
+    EXPECT_EQ_INT(
+        layout->has_camera_tracks, 0, "camera ownership is derived from validated track kinds");
+
+    double saved_t0 = layout->owned_tracks[0].t0;
+    layout->owned_tracks[0].t0 = NAN;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_game3d_world_play_timeline(world, tl); },
+                                     "corrupt timeline track storage"),
+                "non-finite track times fail before playback mutates the world");
+    layout->owned_tracks[0].t0 = saved_t0;
+
+    rt_game3d_world_play_timeline(world, tl);
+    rt_game3d_world_step_simulation(world, 0.2);
+    rt_game3d_world_step_simulation(world, 0.2);
+    rt_game3d_world_step_simulation(world, 0.2);
+    EXPECT_EQ_INT(
+        rt_game3d_timeline_events_fired_count(tl), 1, "repaired timeline remains playable");
+    rt_game3d_world_stop_timeline(world);
+
+    int64_t wrong_refcount = rt_heap_hdr(wrong_clip)->refcnt;
+    layout->owned_tracks[0].obj_a = wrong_clip;
+    if (rt_obj_release_check0(tl))
+        rt_obj_free(tl);
+    EXPECT_EQ_INT(rt_heap_hdr(wrong_clip)->refcnt,
+                  wrong_refcount,
+                  "finalizer does not release wrong-kind borrowed corruption");
+    if (rt_obj_release_check0(wrong_clip))
+        rt_obj_free(wrong_clip);
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
 bool test_timeline_firing_math() {
     TEST("Timeline3D point tracks fire exactly once regardless of step size");
     void *world = rt_game3d_world_new(rt_const_cstr("TL Fire"), 64, 48);
@@ -532,6 +676,7 @@ int main() {
     ok = test_rail_camera_progress_and_keys() && ok;
     ok = test_rail_camera_repairs_corrupt_state_transactionally() && ok;
     ok = test_dof_focus_drive() && ok;
+    ok = test_timeline_storage_and_payload_hardening() && ok;
     ok = test_timeline_firing_math() && ok;
     ok = test_timeline_camera_ownership() && ok;
     ok = test_timeline_spline_move_and_overlay_state() && ok;
