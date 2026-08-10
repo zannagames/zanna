@@ -76,7 +76,8 @@ static int rt_gui_contextmenu_tree_uses_font(vg_contextmenu_t *menu, vg_font_t *
 /// @param font Font to retain temporarily; must not be NULL.
 /// @return Non-zero when queued/refreshed, or zero on invalid input/allocation failure.
 int rt_gui_retire_font(rt_gui_app_t *app, vg_font_t *font) {
-    if (!app || !font)
+    if (!app || !font || app->retired_font_count < 0 || app->retired_font_cap < 0 ||
+        app->retired_font_count > app->retired_font_cap)
         return 0;
     for (int i = 0; i < app->retired_font_count; i++) {
         if (app->retired_fonts[i] == font) {
@@ -85,9 +86,13 @@ int rt_gui_retire_font(rt_gui_app_t *app, vg_font_t *font) {
         }
     }
     if (app->retired_font_count >= app->retired_font_cap) {
-        if (app->retired_font_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(app->retired_font_cap,
+                                                 app->retired_font_count,
+                                                 4,
+                                                 sizeof(*app->retired_fonts),
+                                                 &new_cap))
             return 0;
-        int new_cap = app->retired_font_cap ? app->retired_font_cap * 2 : 4;
         vg_font_t **new_fonts = (vg_font_t **)malloc((size_t)new_cap * sizeof(*new_fonts));
         uint64_t *new_generations = (uint64_t *)malloc((size_t)new_cap * sizeof(*new_generations));
         if (!new_fonts || !new_generations) {

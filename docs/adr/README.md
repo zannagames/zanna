@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-28
+last-verified: 2026-08-10
 ---
 
 # Architecture Decision Records
@@ -234,6 +234,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0242](0242-canvas3d-window-adoption.md) — Adopt a Canvas Window through an Exclusive Retained Loan
 - [ADR 0243](0243-animation3d-mirror.md) — Mirror Animation3D Clips across the Sagittal Plane
 - [ADR 0244](0244-offline-model-bake-c-abi.md) — Classify Offline Model Bake Helpers as Internal C ABI
+- [ADR 0245](0245-postfx-chain-address-bound-ownership.md) — Bind PostFX Backend Chain Storage to Its Owning Address
 
 ## Release & Packaging
 

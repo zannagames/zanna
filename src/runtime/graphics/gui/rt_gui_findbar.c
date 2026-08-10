@@ -82,8 +82,12 @@ static int rt_findbar_register_wrapper(rt_findbar_data_t *data) {
             return 1;
     }
     if (s_findbar_wrapper_count >= s_findbar_wrapper_cap) {
-        size_t new_cap = s_findbar_wrapper_cap ? s_findbar_wrapper_cap * 2 : 8;
-        if (new_cap < s_findbar_wrapper_cap || new_cap > SIZE_MAX / sizeof(rt_findbar_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_findbar_wrapper_cap,
+                                             s_findbar_wrapper_count + 1u,
+                                             8u,
+                                             sizeof(rt_findbar_data_t *),
+                                             &new_cap))
             return 0;
         void *p = realloc(s_findbar_wrappers, new_cap * sizeof(rt_findbar_data_t *));
         if (!p)
@@ -588,7 +592,7 @@ int64_t rt_findbar_replace_all(void *bar) {
         return 0;
     size_t count_before = vg_findreplacebar_get_match_count(data->bar);
     size_t replaced = vg_findreplacebar_replace_all(data->bar);
-    return (int64_t)(replaced <= count_before ? replaced : count_before);
+    return rt_gui_saturating_size_to_i64(replaced <= count_before ? replaced : count_before);
 }
 
 /// @brief Get the total number of matches for the current search text.
@@ -599,7 +603,7 @@ int64_t rt_findbar_get_match_count(void *bar) {
     rt_findbar_data_t *data = rt_findbar_checked(bar);
     if (!data)
         return 0;
-    return (int64_t)vg_findreplacebar_get_match_count(data->bar);
+    return rt_gui_saturating_size_to_i64(vg_findreplacebar_get_match_count(data->bar));
 }
 
 /// @brief Get the 1-based index of the currently highlighted match.

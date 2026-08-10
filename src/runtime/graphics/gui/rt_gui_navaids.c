@@ -51,11 +51,11 @@
 
 /// @brief Managed Breadcrumb wrapper and edge-triggered click snapshot.
 typedef struct rt_breadcrumb_data {
-    uint64_t magic;                 ///< Must equal @ref RT_BREADCRUMB_DATA_MAGIC while live.
-    vg_breadcrumb_t *breadcrumb;    ///< Borrowed backing widget, or NULL after retirement.
-    int64_t clicked_index;          ///< Last captured zero-based segment index.
+    uint64_t magic;                     ///< Must equal @ref RT_BREADCRUMB_DATA_MAGIC while live.
+    vg_breadcrumb_t *breadcrumb;        ///< Borrowed backing widget, or NULL after retirement.
+    int64_t clicked_index;              ///< Last captured zero-based segment index.
     rt_gui_string_data_t *clicked_data; ///< Owned length-aware clicked-item payload.
-    int64_t was_clicked;            ///< Pending edge-triggered click flag.
+    int64_t was_clicked;                ///< Pending edge-triggered click flag.
 } rt_breadcrumb_data_t;
 
 /// @brief Original lower Breadcrumb vtable delegated to by the runtime override.
@@ -252,7 +252,8 @@ void rt_breadcrumb_destroy(void *crumb) {
 }
 
 /// @brief Set the path of the breadcrumb.
-/// @details Clears prior items and pending click state, then splits GUI-safe @p path on the complete
+/// @details Clears prior items and pending click state, then splits GUI-safe @p path on the
+/// complete
 ///          literal separator string. Empty segments are skipped; each accepted segment owns an
 ///          independent label and click payload.
 /// @param crumb Candidate live Breadcrumb wrapper.
@@ -381,7 +382,8 @@ void rt_breadcrumb_clear(void *crumb) {
 }
 
 /// @brief Check if a breadcrumb segment was clicked this frame (edge-triggered).
-/// @details Consumes only the click flag; index and copied data remain readable after a true result.
+/// @details Consumes only the click flag; index and copied data remain readable after a true
+/// result.
 ///          A false poll clears any stale snapshot.
 /// @param crumb Candidate live Breadcrumb wrapper.
 /// @return One when a pending segment click was consumed, otherwise zero.
@@ -481,11 +483,11 @@ int64_t rt_breadcrumb_is_visible(void *crumb) {
 
 /// @brief Managed Minimap wrapper and per-instance lifetime-intercept vtable.
 typedef struct rt_minimap_data {
-    uint64_t magic;              ///< Must equal @ref RT_MINIMAP_DATA_MAGIC while live.
-    vg_minimap_t *minimap;       ///< Borrowed backing widget, or NULL after retirement.
-    int64_t width;               ///< Requested logical minimap width.
+    uint64_t magic;        ///< Must equal @ref RT_MINIMAP_DATA_MAGIC while live.
+    vg_minimap_t *minimap; ///< Borrowed backing widget, or NULL after retirement.
+    int64_t width;         ///< Requested logical minimap width.
     const vg_widget_vtable_t *original_vtable; ///< Lower vtable used for delegation.
-    vg_widget_vtable_t vtable;   ///< Instance copy intercepting backing-widget destruction.
+    vg_widget_vtable_t vtable; ///< Instance copy intercepting backing-widget destruction.
 } rt_minimap_data_t;
 
 /// @brief Global registry authenticating opaque Minimap wrapper handles.
@@ -509,8 +511,12 @@ static int rt_minimap_register_wrapper(rt_minimap_data_t *data) {
             return 1;
     }
     if (s_minimap_wrapper_count >= s_minimap_wrapper_cap) {
-        size_t new_cap = s_minimap_wrapper_cap ? s_minimap_wrapper_cap * 2 : 8;
-        if (new_cap < s_minimap_wrapper_cap || new_cap > SIZE_MAX / sizeof(rt_minimap_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_minimap_wrapper_cap,
+                                             s_minimap_wrapper_count + 1u,
+                                             8u,
+                                             sizeof(rt_minimap_data_t *),
+                                             &new_cap))
             return 0;
         void *p = realloc(s_minimap_wrappers, new_cap * sizeof(rt_minimap_data_t *));
         if (!p)
@@ -673,7 +679,8 @@ void rt_minimap_destroy(void *minimap) {
 }
 
 /// @brief Bind the editor of the minimap.
-/// @details Accepts only a live CodeEditor widget, installs it as a borrowed source, and invalidates
+/// @details Accepts only a live CodeEditor widget, installs it as a borrowed source, and
+/// invalidates
 ///          the preview. Editor destruction is handled by @ref rt_minimap_forget_editor_subtree.
 /// @param minimap Candidate live Minimap wrapper.
 /// @param editor Candidate live CodeEditor widget handle.
@@ -800,7 +807,7 @@ int64_t rt_minimap_get_source_revision(void *minimap) {
     if (!data || !data->minimap)
         return 0;
     const uint64_t revision = vg_minimap_get_source_revision(data->minimap);
-    return revision > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)revision;
+    return rt_gui_saturating_u64_to_i64(revision);
 }
 
 /// @brief Invalidate only cached summaries intersecting a source-line range.
@@ -856,16 +863,24 @@ void rt_minimap_add_marker(void *minimap, int64_t line, int64_t color, int64_t t
     if (!data || !data->minimap)
         return;
     vg_minimap_t *mm = data->minimap;
+    if (mm->marker_count < 0 || mm->marker_cap < 0 || mm->marker_count > mm->marker_cap)
+        return;
 
     if (mm->marker_count >= mm->marker_cap) {
-        if (mm->marker_cap > INT_MAX / 2)
+        size_t new_cap = 0;
+        if (mm->marker_count < 0 ||
+            !rt_gui_next_collection_capacity((size_t)(mm->marker_cap < 0 ? 0 : mm->marker_cap),
+                                             (size_t)mm->marker_count + 1u,
+                                             8u,
+                                             sizeof(*mm->markers),
+                                             &new_cap) ||
+            new_cap > (size_t)INT_MAX)
             return;
-        int new_cap = mm->marker_cap ? mm->marker_cap * 2 : 8;
-        void *p = realloc(mm->markers, (size_t)new_cap * sizeof(*mm->markers));
+        void *p = realloc(mm->markers, new_cap * sizeof(*mm->markers));
         if (!p)
             return;
         mm->markers = p;
-        mm->marker_cap = new_cap;
+        mm->marker_cap = (int)new_cap;
     }
     struct vg_minimap_marker *m = &mm->markers[mm->marker_count++];
     m->line = rt_gui_clamp_i64_to_i32(line, INT32_MIN, INT32_MAX);

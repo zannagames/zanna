@@ -6,17 +6,15 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/3d/render/rt_postfx3d.c
-// Purpose: PostFX3D — full-screen post-processing effects applied per-pixel
-//   to the rendered framebuffer. Supports bloom (bright extract + blur +
-//   composite), tone mapping (Reinhard / ACES filmic), FXAA, color grading,
-//   and vignette.
+// Purpose: PostFX3D — ordered full-screen color and scene-aware effects for
+//   software framebuffers and backend-owned GPU chain snapshots.
 //
 // Key invariants:
-//   - All effects operate on the software framebuffer (RGBA uint8 pixels).
-//   - Bloom uses a half-resolution scratch buffer for performance.
+//   - CPU effects share one packed RGBRGB... float representation.
+//   - Bloom and scene-aware effects reuse chain-owned scratch allocations.
 //   - Effects chain in order: first added = first applied.
 //   - CPU temporary buffers are retained on the PostFX3D object and reused.
-//   - SSAO / DOF / Motion Blur require GPU scene buffers and trap on CPU path.
+//   - CPU scene-aware effects consume bounded depth and camera snapshots.
 //   - Tonemap mode 0 is identity (passthrough); modes 1/2 are Reinhard/ACES.
 //
 // Ownership/Lifetime:
@@ -40,6 +38,8 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_platform.h"
+#include "rt_threads.h"
 #include "vgfx.h"
 #include "vgfx3d_backend.h"
 #include "vgfx3d_backend_utils.h"
@@ -63,6 +63,17 @@ extern void rt_obj_free(void *obj);
 #define POSTFX3D_RADIUS_MAX 1000000.0f
 #define POSTFX3D_FOCUS_MAX 1000000.0f
 #define POSTFX3D_GAMMA_LUT_SIZE 1024u
+#define POSTFX3D_EV_MIN (-64.0f)
+#define POSTFX3D_EV_MAX 64.0f
+#define POSTFX3D_RGB_FLOAT_MAX_BYTES                                                               \
+    ((size_t)VGFX3D_RENDERTARGET_DIM_MAX * (size_t)VGFX3D_RENDERTARGET_DIM_MAX * 3u * sizeof(float))
+#define POSTFX3D_EFFECT_STORAGE_COOKIE UINT64_C(0x9F3A5D71C4E2860B)
+#define POSTFX3D_TAA_STORAGE_COOKIE UINT64_C(0x47D90813BE62F5AC)
+#define POSTFX3D_FBUF_STORAGE_COOKIE UINT64_C(0xC103A75E29D84B6F)
+#define POSTFX3D_PRIMARY_STORAGE_COOKIE UINT64_C(0xE6852B19A4C70D3F)
+#define POSTFX3D_SECONDARY_STORAGE_COOKIE UINT64_C(0x31AF94D6E8702BC5)
+#define POSTFX3D_LUT_OWNER_COOKIE UINT64_C(0x72C5E18B903FA64D)
+#define POSTFX3D_POOL_OWNER_COOKIE UINT64_C(0xD4A8096F15CE327B)
 
 /*==========================================================================
  * Effect types
@@ -171,7 +182,7 @@ typedef struct {
      * capability validation at Canvas3D.SetPostFX bind time so callers can
      * query why a chain was rejected instead of trapping at apply time. */
     char last_error[160];
-    /* CPU scene-effect state (software path): TAA history (planar RGB float)
+    /* CPU scene-effect state (software path): TAA history (packed RGB float)
      * and the previous frame's view-projection for reprojection. Owned by the
      * chain; released by the finalizer; reset on size change or NotifyCut. */
     float *taa_history;
@@ -197,6 +208,30 @@ typedef struct {
      * creation failed; the chain then runs serially. */
     void *worker_pool;
     int8_t worker_pool_failed;
+    /* Authoritative ownership state. The fields above remain mutable mirrors so corrupted
+     * runtime payloads can be repaired without freeing, reallocating, or dereferencing a
+     * borrowed pointer. These fields stay at the tail to preserve test-fixture prefixes. */
+    postfx_entry_t *owned_effects;
+    int32_t owned_effect_capacity;
+    int32_t initialized_effect_count;
+    uint64_t effect_storage_cookie;
+    float *owned_taa_history;
+    size_t taa_history_capacity_bytes;
+    uint64_t taa_storage_cookie;
+    float *owned_cpu_fbuf;
+    size_t cpu_fbuf_capacity_bytes;
+    uint64_t cpu_fbuf_storage_cookie;
+    float *owned_cpu_scratch_primary;
+    size_t cpu_scratch_primary_capacity_bytes;
+    uint64_t cpu_scratch_primary_storage_cookie;
+    float *owned_cpu_scratch_secondary;
+    size_t cpu_scratch_secondary_capacity_bytes;
+    uint64_t cpu_scratch_secondary_storage_cookie;
+    void *owned_lut_pixels;
+    uint64_t lut_owner_cookie;
+    void *owned_worker_pool;
+    int32_t worker_count;
+    uint64_t worker_pool_owner_cookie;
 } rt_postfx3d;
 
 /// @brief Record a recoverable configuration error on the chain (NULL msg clears).
@@ -213,11 +248,18 @@ static void postfx3d_set_last_error(rt_postfx3d *fx, const char *msg) {
 }
 
 typedef struct {
-    float *primary;
-    size_t primary_bytes;
-    float *secondary;
-    size_t secondary_bytes;
+    rt_postfx3d *fx;
 } postfx_scratch_t;
+
+/* Process-lifetime display-gamma table. 0 = uninitialized, 1 = builder active, 2 = ready. */
+static float g_postfx3d_gamma_lut[POSTFX3D_GAMMA_LUT_SIZE + 1u];
+static int g_postfx3d_gamma_lut_state = 0;
+
+static uint64_t postfx3d_storage_cookie_value(const rt_postfx3d *fx,
+                                              const void *storage,
+                                              size_t capacity,
+                                              uint64_t domain);
+static void postfx3d_reset_temporal_state(rt_postfx3d *fx);
 
 /*==========================================================================
  * Row-banded parallel execution for CPU passes
@@ -237,6 +279,8 @@ extern int64_t rt_parallel_default_workers(void);
 
 #define POSTFX3D_MAX_BANDS 8
 #define POSTFX3D_MIN_ROWS_PER_BAND 32
+
+static int postfx3d_worker_pool_owner_is_valid(const rt_postfx3d *fx);
 
 /// @brief Process one inclusive-exclusive horizontal post-processing band.
 /// @param ctx Borrowed pass-specific callback context.
@@ -266,8 +310,18 @@ static void *postfx3d_worker_pool(rt_postfx3d *fx) {
     int64_t workers;
     if (!fx)
         return NULL;
-    if (fx->worker_pool || fx->worker_pool_failed)
+    if (postfx3d_worker_pool_owner_is_valid(fx)) {
+        fx->worker_pool = fx->owned_worker_pool;
+        fx->worker_pool_failed = 0;
         return fx->worker_pool;
+    }
+    fx->worker_pool = NULL;
+    fx->owned_worker_pool = NULL;
+    fx->worker_count = 0;
+    fx->worker_pool_owner_cookie = 0;
+    fx->worker_pool_failed = fx->worker_pool_failed ? 1 : 0;
+    if (fx->worker_pool_failed)
+        return NULL;
     workers = rt_parallel_default_workers();
     if (workers > POSTFX3D_MAX_BANDS)
         workers = POSTFX3D_MAX_BANDS;
@@ -275,9 +329,15 @@ static void *postfx3d_worker_pool(rt_postfx3d *fx) {
         fx->worker_pool_failed = 1;
         return NULL;
     }
-    fx->worker_pool = rt_threadpool_new(workers);
-    if (!fx->worker_pool)
+    fx->owned_worker_pool = rt_threadpool_new(workers);
+    if (!fx->owned_worker_pool) {
         fx->worker_pool_failed = 1;
+        return NULL;
+    }
+    fx->worker_count = (int32_t)workers;
+    fx->worker_pool_owner_cookie = postfx3d_storage_cookie_value(
+        fx, fx->owned_worker_pool, (size_t)fx->worker_count, POSTFX3D_POOL_OWNER_COOKIE);
+    fx->worker_pool = fx->owned_worker_pool;
     return fx->worker_pool;
 }
 
@@ -299,7 +359,7 @@ static void postfx_run_bands(rt_postfx3d *fx, int32_t h, postfx_band_fn fn, void
     if (!fn || h <= 0)
         return;
     pool = fx ? postfx3d_worker_pool(fx) : NULL;
-    bands = (int32_t)(fx && pool ? rt_parallel_default_workers() : 1);
+    bands = (int32_t)(fx && pool ? fx->worker_count : 1);
     if (bands > POSTFX3D_MAX_BANDS)
         bands = POSTFX3D_MAX_BANDS;
     if (bands > h / POSTFX3D_MIN_ROWS_PER_BAND)
@@ -332,36 +392,63 @@ static rt_postfx3d *postfx3d_checked(void *obj) {
                : NULL;
 }
 
-/// @brief Return a bounded effect count that is safe to iterate.
-/// @param fx PostFX chain whose storage metadata is inspected.
-/// @return The non-negative effect count capped by allocated capacity, or zero for invalid storage.
-static int32_t postfx3d_safe_effect_count(const rt_postfx3d *fx) {
-    if (!fx || !fx->effects || fx->effect_count <= 0 || fx->effect_capacity <= 0)
-        return 0;
-    return fx->effect_count < fx->effect_capacity ? fx->effect_count : fx->effect_capacity;
+/// @brief Derive an address-bound cookie for one PostFX-owned allocation tuple.
+static uint64_t postfx3d_storage_cookie_value(const rt_postfx3d *fx,
+                                              const void *storage,
+                                              size_t capacity,
+                                              uint64_t domain) {
+    return domain ^ (uint64_t)(uintptr_t)fx ^ (uint64_t)(uintptr_t)storage ^
+           ((uint64_t)capacity * UINT64_C(0x9E3779B185EBCA87));
 }
 
-/// @brief Repair corrupted count/capacity metadata before appending to the effect array.
-/// @param fx PostFX chain to normalize; ignored when `NULL`.
+/// @brief Test whether the authoritative effect allocation may be touched.
+static int postfx3d_effect_storage_is_valid(const rt_postfx3d *fx) {
+    return fx && fx->owned_effects && fx->owned_effect_capacity > 0 &&
+           fx->owned_effect_capacity <= VGFX3D_POSTFX_MAX_EFFECTS &&
+           fx->effect_storage_cookie ==
+               postfx3d_storage_cookie_value(fx,
+                                             fx->owned_effects,
+                                             (size_t)fx->owned_effect_capacity,
+                                             POSTFX3D_EFFECT_STORAGE_COOKIE);
+}
+
+/// @brief Restore effect traversal mirrors from the authoritative allocation tuple.
 static void postfx3d_repair_effect_storage(rt_postfx3d *fx) {
     if (!fx)
         return;
-    if (!fx->effects) {
-        fx->effect_count = 0;
-        fx->effect_capacity = 0;
-        return;
-    }
-    if (fx->effect_capacity <= 0) {
-        free(fx->effects);
+    if (!postfx3d_effect_storage_is_valid(fx)) {
         fx->effects = NULL;
         fx->effect_count = 0;
         fx->effect_capacity = 0;
+        fx->owned_effects = NULL;
+        fx->owned_effect_capacity = 0;
+        fx->initialized_effect_count = 0;
+        fx->effect_storage_cookie = 0;
         return;
     }
-    if (fx->effect_count < 0)
-        fx->effect_count = 0;
-    if (fx->effect_count > fx->effect_capacity)
-        fx->effect_count = fx->effect_capacity;
+    if (fx->initialized_effect_count < 0)
+        fx->initialized_effect_count = 0;
+    if (fx->initialized_effect_count > fx->owned_effect_capacity)
+        fx->initialized_effect_count = fx->owned_effect_capacity;
+    fx->effects = fx->owned_effects;
+    fx->effect_capacity = fx->owned_effect_capacity;
+    fx->effect_count = fx->initialized_effect_count;
+}
+
+static int32_t postfx3d_repair_state(rt_postfx3d *fx);
+static int postfx_rgb_float_layout(
+    int32_t w, int32_t h, size_t *out_pixels, size_t *out_floats, size_t *out_bytes);
+static void postfx3d_repair_float_storage(rt_postfx3d *fx,
+                                          float **mirror,
+                                          size_t *mirror_capacity,
+                                          float **owned,
+                                          size_t *owned_capacity,
+                                          uint64_t *cookie,
+                                          uint64_t domain);
+
+/// @brief Return the authoritative, repaired number of initialized effect entries.
+static int32_t postfx3d_safe_effect_count(rt_postfx3d *fx) {
+    return postfx3d_repair_state(fx);
 }
 
 /*==========================================================================
@@ -446,6 +533,223 @@ static int32_t clamp_i64_to_i32(int64_t value, int32_t lo, int32_t hi) {
     return (int32_t)value;
 }
 
+/// @brief Validate the retained LUT object's address-bound ownership record.
+static int postfx3d_lut_owner_is_valid(const rt_postfx3d *fx) {
+    return fx && fx->owned_lut_pixels &&
+           rt_obj_is_instance(fx->owned_lut_pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl)) &&
+           fx->lut_owner_cookie == postfx3d_storage_cookie_value(
+                                       fx, fx->owned_lut_pixels, 1u, POSTFX3D_LUT_OWNER_COOKIE);
+}
+
+/// @brief Validate the lazily allocated worker pool and its address-bound owner record.
+static int postfx3d_worker_pool_owner_is_valid(const rt_postfx3d *fx) {
+    return fx && fx->owned_worker_pool && fx->worker_count >= 2 &&
+           fx->worker_count <= POSTFX3D_MAX_BANDS &&
+           rt_obj_is_instance(fx->owned_worker_pool, RT_THREADPOOL_CLASS_ID, 0) &&
+           fx->worker_pool_owner_cookie ==
+               postfx3d_storage_cookie_value(
+                   fx, fx->owned_worker_pool, (size_t)fx->worker_count, POSTFX3D_POOL_OWNER_COOKIE);
+}
+
+/// @brief Canonicalize and bound every field of one retained effect descriptor.
+/// @return Non-zero for a known effect kind, or zero when the entry must be removed.
+static int postfx3d_sanitize_effect_entry(postfx_entry_t *entry) {
+    float min_ev;
+    float max_ev;
+    if (!entry || entry->type < POSTFX_BLOOM || entry->type > POSTFX_SUN_SHAFTS)
+        return 0;
+    entry->enabled = entry->enabled ? 1 : 0;
+    switch (entry->type) {
+        case POSTFX_BLOOM:
+            entry->p.bloom.threshold = sanitize_nonnegative_f32(entry->p.bloom.threshold, 0.8f);
+            entry->p.bloom.intensity = sanitize_nonnegative_f32(entry->p.bloom.intensity, 1.0f);
+            entry->p.bloom.blur_passes = clamp_i64_to_i32(entry->p.bloom.blur_passes, 0, 32);
+            break;
+        case POSTFX_TONEMAP:
+            entry->p.tonemap.mode = clamp_i64_to_i32(entry->p.tonemap.mode, 0, 2);
+            entry->p.tonemap.exposure = sanitize_nonnegative_f32(entry->p.tonemap.exposure, 1.0f);
+            break;
+        case POSTFX_FXAA:
+            entry->p.fxaa.edge_threshold =
+                sanitize_range_f32(entry->p.fxaa.edge_threshold, 0.166f, 0.0f, 1.0f);
+            entry->p.fxaa.min_threshold =
+                sanitize_range_f32(entry->p.fxaa.min_threshold, 0.0833f, 0.0f, 1.0f);
+            break;
+        case POSTFX_COLOR_GRADE:
+            entry->p.color_grade.brightness =
+                sanitize_range_f32(entry->p.color_grade.brightness, 0.0f, -1.0f, 1.0f);
+            entry->p.color_grade.contrast =
+                sanitize_range_f32(entry->p.color_grade.contrast, 1.0f, 0.0f, 4.0f);
+            entry->p.color_grade.saturation =
+                sanitize_range_f32(entry->p.color_grade.saturation, 1.0f, 0.0f, 4.0f);
+            break;
+        case POSTFX_VIGNETTE:
+            entry->p.vignette.radius =
+                sanitize_range_f32(entry->p.vignette.radius, 0.7f, 0.0f, 1.0f);
+            entry->p.vignette.softness =
+                sanitize_range_f32(entry->p.vignette.softness, 0.3f, 0.001f, 1.0f);
+            break;
+        case POSTFX_SSAO:
+            entry->p.ssao.ao_radius =
+                sanitize_range_f32(entry->p.ssao.ao_radius, 0.5f, 0.0f, POSTFX3D_RADIUS_MAX);
+            entry->p.ssao.ao_intensity = sanitize_nonnegative_f32(entry->p.ssao.ao_intensity, 1.0f);
+            entry->p.ssao.ao_samples = clamp_i64_to_i32(entry->p.ssao.ao_samples, 1, 128);
+            break;
+        case POSTFX_DOF:
+            entry->p.dof.focus_distance =
+                sanitize_range_f32(entry->p.dof.focus_distance, 10.0f, 0.0f, POSTFX3D_FOCUS_MAX);
+            entry->p.dof.aperture = sanitize_nonnegative_f32(entry->p.dof.aperture, 0.0f);
+            entry->p.dof.max_blur = sanitize_range_f32(entry->p.dof.max_blur, 8.0f, 0.0f, 128.0f);
+            break;
+        case POSTFX_MOTION_BLUR:
+            entry->p.motion_blur.mb_intensity =
+                sanitize_range_f32(entry->p.motion_blur.mb_intensity, 0.0f, 0.0f, 1.0f);
+            entry->p.motion_blur.mb_samples =
+                clamp_i64_to_i32(entry->p.motion_blur.mb_samples, 1, 64);
+            break;
+        case POSTFX_TAA:
+            entry->p.taa.blend = sanitize_range_f32(entry->p.taa.blend, 0.9f, 0.5f, 0.98f);
+            break;
+        case POSTFX_SSR:
+            entry->p.ssr.intensity = sanitize_range_f32(entry->p.ssr.intensity, 0.5f, 0.0f, 1.0f);
+            entry->p.ssr.max_roughness =
+                sanitize_range_f32(entry->p.ssr.max_roughness, 0.4f, 0.0f, 1.0f);
+            entry->p.ssr.steps = clamp_i64_to_i32(entry->p.ssr.steps, 1, 128);
+            break;
+        case POSTFX_AUTO_EXPOSURE:
+            min_ev = sanitize_range_f32(
+                entry->p.auto_exposure.min_ev, -4.0f, POSTFX3D_EV_MIN, POSTFX3D_EV_MAX);
+            max_ev = sanitize_range_f32(
+                entry->p.auto_exposure.max_ev, 4.0f, POSTFX3D_EV_MIN, POSTFX3D_EV_MAX);
+            if (!(max_ev > min_ev)) {
+                min_ev = -4.0f;
+                max_ev = 4.0f;
+            }
+            entry->p.auto_exposure.min_ev = min_ev;
+            entry->p.auto_exposure.max_ev = max_ev;
+            entry->p.auto_exposure.adapt_speed = sanitize_range_f32(
+                entry->p.auto_exposure.adapt_speed, 3.0f, 0.001f, POSTFX3D_PARAM_MAX);
+            break;
+        case POSTFX_COLOR_LUT:
+            entry->p.color_lut.blend =
+                sanitize_range_f32(entry->p.color_lut.blend, 1.0f, 0.0f, 1.0f);
+            break;
+        case POSTFX_SUN_SHAFTS:
+            entry->p.sun_shafts.intensity =
+                sanitize_nonnegative_f32(entry->p.sun_shafts.intensity, 0.6f);
+            entry->p.sun_shafts.decay =
+                sanitize_range_f32(entry->p.sun_shafts.decay, 0.92f, 0.001f, 0.999f);
+            entry->p.sun_shafts.samples = clamp_i64_to_i32(entry->p.sun_shafts.samples, 8, 48);
+            break;
+    }
+    return 1;
+}
+
+/// @brief Repair all PostFX retained state before any traversal, mutation, or final export.
+static int32_t postfx3d_repair_state(rt_postfx3d *fx) {
+    int32_t read_index;
+    int32_t write_index = 0;
+    size_t taa_bytes = 0;
+    if (!fx)
+        return 0;
+    fx->enabled = fx->enabled ? 1 : 0;
+    fx->last_error[sizeof(fx->last_error) - 1u] = '\0';
+
+    postfx3d_repair_effect_storage(fx);
+    for (read_index = 0; read_index < fx->initialized_effect_count; read_index++) {
+        postfx_entry_t entry = fx->owned_effects[read_index];
+        if (!postfx3d_sanitize_effect_entry(&entry))
+            continue;
+        fx->owned_effects[write_index++] = entry;
+    }
+    if (fx->owned_effects && write_index < fx->initialized_effect_count) {
+        memset(fx->owned_effects + write_index,
+               0,
+               (size_t)(fx->initialized_effect_count - write_index) * sizeof(*fx->owned_effects));
+    }
+    fx->initialized_effect_count = write_index;
+    fx->effect_count = write_index;
+
+    postfx3d_repair_float_storage(fx,
+                                  &fx->taa_history,
+                                  &fx->taa_history_capacity_bytes,
+                                  &fx->owned_taa_history,
+                                  &fx->taa_history_capacity_bytes,
+                                  &fx->taa_storage_cookie,
+                                  POSTFX3D_TAA_STORAGE_COOKIE);
+    /* TAA has only one capacity field because its public mirror historically exposed dimensions,
+     * not bytes. Reassert the pointer directly after validating the owner tuple above. */
+    fx->taa_history = fx->owned_taa_history;
+    if (!fx->taa_history ||
+        !postfx_rgb_float_layout(fx->taa_w, fx->taa_h, NULL, NULL, &taa_bytes) ||
+        taa_bytes > fx->taa_history_capacity_bytes) {
+        fx->taa_w = 0;
+        fx->taa_h = 0;
+        fx->taa_valid = 0;
+    } else {
+        fx->taa_valid = fx->taa_valid ? 1 : 0;
+    }
+
+    postfx3d_repair_float_storage(fx,
+                                  &fx->cpu_fbuf,
+                                  &fx->cpu_fbuf_bytes,
+                                  &fx->owned_cpu_fbuf,
+                                  &fx->cpu_fbuf_capacity_bytes,
+                                  &fx->cpu_fbuf_storage_cookie,
+                                  POSTFX3D_FBUF_STORAGE_COOKIE);
+    postfx3d_repair_float_storage(fx,
+                                  &fx->cpu_scratch_primary,
+                                  &fx->cpu_scratch_primary_bytes,
+                                  &fx->owned_cpu_scratch_primary,
+                                  &fx->cpu_scratch_primary_capacity_bytes,
+                                  &fx->cpu_scratch_primary_storage_cookie,
+                                  POSTFX3D_PRIMARY_STORAGE_COOKIE);
+    postfx3d_repair_float_storage(fx,
+                                  &fx->cpu_scratch_secondary,
+                                  &fx->cpu_scratch_secondary_bytes,
+                                  &fx->owned_cpu_scratch_secondary,
+                                  &fx->cpu_scratch_secondary_capacity_bytes,
+                                  &fx->cpu_scratch_secondary_storage_cookie,
+                                  POSTFX3D_SECONDARY_STORAGE_COOKIE);
+
+    fx->cpu_prev_vp_valid = fx->cpu_prev_vp_valid ? 1 : 0;
+    if (fx->cpu_prev_vp_valid) {
+        for (int32_t lane = 0; lane < 16; lane++) {
+            if (!isfinite(fx->cpu_prev_vp[lane])) {
+                memset(fx->cpu_prev_vp, 0, sizeof(fx->cpu_prev_vp));
+                fx->cpu_prev_vp_valid = 0;
+                break;
+            }
+        }
+    }
+    if (!isfinite(fx->auto_exposure_ev) || fx->auto_exposure_ev < POSTFX3D_EV_MIN ||
+        fx->auto_exposure_ev > POSTFX3D_EV_MAX) {
+        fx->auto_exposure_ev = 0.0f;
+        fx->auto_exposure_valid = 0;
+    } else {
+        fx->auto_exposure_valid = fx->auto_exposure_valid ? 1 : 0;
+    }
+
+    if (postfx3d_lut_owner_is_valid(fx)) {
+        fx->lut_pixels = fx->owned_lut_pixels;
+    } else {
+        fx->lut_pixels = NULL;
+        fx->owned_lut_pixels = NULL;
+        fx->lut_owner_cookie = 0;
+    }
+    if (postfx3d_worker_pool_owner_is_valid(fx)) {
+        fx->worker_pool = fx->owned_worker_pool;
+        fx->worker_pool_failed = 0;
+    } else {
+        fx->worker_pool = NULL;
+        fx->owned_worker_pool = NULL;
+        fx->worker_count = 0;
+        fx->worker_pool_owner_cookie = 0;
+        fx->worker_pool_failed = fx->worker_pool_failed ? 1 : 0;
+    }
+    return write_index;
+}
+
 /// @brief Perceptual luminance of a linear sRGB colour using the Rec. 709 weights
 /// (0.2126 R + 0.7152 G + 0.0722 B). Used by the bloom extract pass, the FXAA edge
 /// detector, and the saturation term of `apply_color_grade`.
@@ -470,7 +774,7 @@ static int postfx_rgb_float_layout(
     size_t height;
     size_t pixels;
     size_t floats;
-    if (w <= 0 || h <= 0)
+    if (w <= 0 || h <= 0 || w > VGFX3D_RENDERTARGET_DIM_MAX || h > VGFX3D_RENDERTARGET_DIM_MAX)
         return 0;
     width = (size_t)w;
     height = (size_t)h;
@@ -491,31 +795,109 @@ static int postfx_rgb_float_layout(
     return 1;
 }
 
-/// @brief Reserve a reusable float scratch buffer for a CPU post-processing pass.
-/// @details Scratch buffers are retained by the PostFX3D object and reused by bloom, FXAA, and
-///          depth-aware effects instead of allocating/freeing fresh buffers for each apply.
-///          When @p clear is non-zero, the reserved byte range is zeroed before return.
-/// @param slot In/out scratch pointer.
-/// @param capacity_bytes In/out scratch capacity.
-/// @param needed_bytes Required byte count.
-/// @param clear Whether to zero the first @p needed_bytes bytes before returning.
-/// @return Buffer pointer on success; NULL on overflow or allocation failure.
-static float *postfx_scratch_reserve(float **slot,
-                                     size_t *capacity_bytes,
-                                     size_t needed_bytes,
-                                     int clear) {
-    if (!slot || !capacity_bytes || needed_bytes == 0)
+/// @brief Validate an authoritative float-allocation tuple against its owner and policy limit.
+static int postfx3d_float_storage_is_valid(const rt_postfx3d *fx,
+                                           const float *owned,
+                                           size_t capacity_bytes,
+                                           uint64_t cookie,
+                                           uint64_t domain) {
+    return fx && owned && capacity_bytes > 0 && capacity_bytes <= POSTFX3D_RGB_FLOAT_MAX_BYTES &&
+           cookie == postfx3d_storage_cookie_value(fx, owned, capacity_bytes, domain);
+}
+
+/// @brief Restore one float-storage mirror, or detach a tuple that cannot prove ownership.
+static void postfx3d_repair_float_storage(rt_postfx3d *fx,
+                                          float **mirror,
+                                          size_t *mirror_capacity,
+                                          float **owned,
+                                          size_t *owned_capacity,
+                                          uint64_t *cookie,
+                                          uint64_t domain) {
+    if (!fx || !mirror || !mirror_capacity || !owned || !owned_capacity || !cookie)
+        return;
+    if (!postfx3d_float_storage_is_valid(fx, *owned, *owned_capacity, *cookie, domain)) {
+        *mirror = NULL;
+        *mirror_capacity = 0;
+        *owned = NULL;
+        *owned_capacity = 0;
+        *cookie = 0;
+        return;
+    }
+    *mirror = *owned;
+    *mirror_capacity = *owned_capacity;
+}
+
+/// @brief Grow one PostFX-owned float allocation geometrically and publish it transactionally.
+static float *postfx3d_reserve_float_storage(rt_postfx3d *fx,
+                                             float **mirror,
+                                             size_t *mirror_capacity,
+                                             float **owned,
+                                             size_t *owned_capacity,
+                                             uint64_t *cookie,
+                                             uint64_t domain,
+                                             size_t needed_bytes,
+                                             int clear) {
+    size_t capacity;
+    float *grown;
+    if (!fx || !mirror || !mirror_capacity || !owned || !owned_capacity || !cookie ||
+        needed_bytes == 0 || needed_bytes > POSTFX3D_RGB_FLOAT_MAX_BYTES)
         return NULL;
-    if (needed_bytes > *capacity_bytes) {
-        float *grown = (float *)realloc(*slot, needed_bytes);
+    postfx3d_repair_float_storage(
+        fx, mirror, mirror_capacity, owned, owned_capacity, cookie, domain);
+    if (needed_bytes > *owned_capacity) {
+        capacity = *owned_capacity > 0 ? *owned_capacity : 4096u;
+        while (capacity < needed_bytes) {
+            size_t next = capacity + capacity / 2u;
+            if (next <= capacity || next > POSTFX3D_RGB_FLOAT_MAX_BYTES) {
+                capacity = needed_bytes;
+                break;
+            }
+            capacity = next;
+        }
+        grown = (float *)realloc(*owned, capacity);
         if (!grown)
             return NULL;
-        *slot = grown;
-        *capacity_bytes = needed_bytes;
+        *owned = grown;
+        *owned_capacity = capacity;
+        *cookie = postfx3d_storage_cookie_value(fx, grown, capacity, domain);
+        *mirror = grown;
+        *mirror_capacity = capacity;
     }
+    if (!*owned)
+        return NULL;
     if (clear)
-        memset(*slot, 0, needed_bytes);
-    return *slot;
+        memset(*owned, 0, needed_bytes);
+    return *owned;
+}
+
+/// @brief Reserve one of the two reusable effect scratch allocations.
+static float *postfx_scratch_reserve(postfx_scratch_t *scratch,
+                                     int secondary,
+                                     size_t needed_bytes,
+                                     int clear) {
+    rt_postfx3d *fx = scratch ? scratch->fx : NULL;
+    if (!fx)
+        return NULL;
+    if (secondary) {
+        return postfx3d_reserve_float_storage(fx,
+                                              &fx->cpu_scratch_secondary,
+                                              &fx->cpu_scratch_secondary_bytes,
+                                              &fx->owned_cpu_scratch_secondary,
+                                              &fx->cpu_scratch_secondary_capacity_bytes,
+                                              &fx->cpu_scratch_secondary_storage_cookie,
+                                              POSTFX3D_SECONDARY_STORAGE_COOKIE,
+                                              needed_bytes,
+                                              clear);
+    }
+    return postfx3d_reserve_float_storage(fx,
+                                          &fx->cpu_scratch_primary,
+                                          &fx->cpu_scratch_primary_bytes,
+                                          &fx->owned_cpu_scratch_primary,
+                                          &fx->cpu_scratch_primary_capacity_bytes,
+                                          &fx->cpu_scratch_primary_storage_cookie,
+                                          POSTFX3D_PRIMARY_STORAGE_COOKIE,
+                                          needed_bytes,
+                                          clear);
 }
 
 /// @brief Reserve the retained CPU framebuffer scratch for one PostFX apply.
@@ -528,7 +910,15 @@ static float *postfx_scratch_reserve(float **slot,
 static float *postfx3d_reserve_cpu_fbuf(rt_postfx3d *fx, size_t needed_bytes) {
     if (!fx || needed_bytes == 0)
         return NULL;
-    return postfx_scratch_reserve(&fx->cpu_fbuf, &fx->cpu_fbuf_bytes, needed_bytes, 0);
+    return postfx3d_reserve_float_storage(fx,
+                                          &fx->cpu_fbuf,
+                                          &fx->cpu_fbuf_bytes,
+                                          &fx->owned_cpu_fbuf,
+                                          &fx->cpu_fbuf_capacity_bytes,
+                                          &fx->cpu_fbuf_storage_cookie,
+                                          POSTFX3D_FBUF_STORAGE_COOKIE,
+                                          needed_bytes,
+                                          0);
 }
 
 /// @brief Populate a small lookup table for linear-to-display gamma correction.
@@ -541,6 +931,23 @@ static void postfx_build_gamma_lut(float lut[POSTFX3D_GAMMA_LUT_SIZE + 1u]) {
         float x = (float)i / (float)POSTFX3D_GAMMA_LUT_SIZE;
         lut[i] = powf(x, 1.0f / 2.2f);
     }
+}
+
+/// @brief Return the immutable process-wide gamma table, building it exactly once.
+static const float *postfx_gamma_lut_data(void) {
+    if (rt_atomic_load_i32(&g_postfx3d_gamma_lut_state, __ATOMIC_ACQUIRE) != 2) {
+        int expected = 0;
+        if (rt_atomic_compare_exchange_i32(
+                &g_postfx3d_gamma_lut_state, &expected, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            postfx_build_gamma_lut(g_postfx3d_gamma_lut);
+            rt_atomic_store_i32(&g_postfx3d_gamma_lut_state, 2, __ATOMIC_RELEASE);
+        } else {
+            while (rt_atomic_load_i32(&g_postfx3d_gamma_lut_state, __ATOMIC_ACQUIRE) != 2) {
+                /* Another caller is publishing the small process-lifetime table. */
+            }
+        }
+    }
+    return g_postfx3d_gamma_lut;
 }
 
 /// @brief Sample a gamma lookup table with linear interpolation.
@@ -573,35 +980,85 @@ static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
 
     if (!fx)
         return NULL;
-    postfx3d_repair_effect_storage(fx);
+    (void)postfx3d_repair_state(fx);
+    if (fx->initialized_effect_count >= VGFX3D_POSTFX_MAX_EFFECTS)
+        return NULL;
     if (fx->effect_count < fx->effect_capacity) {
         postfx_entry_t *entry = &fx->effects[fx->effect_count++];
+        fx->initialized_effect_count = fx->effect_count;
         memset(entry, 0, sizeof(*entry));
+        postfx3d_reset_temporal_state(fx);
         return entry;
     }
-    if (fx->effect_count == INT32_MAX)
-        return NULL;
 
-    if (fx->effect_capacity > INT32_MAX / 2)
+    if (fx->effect_capacity > VGFX3D_POSTFX_MAX_EFFECTS / 2)
         new_capacity = fx->effect_count + 1;
     else
         new_capacity = fx->effect_capacity > 0 ? fx->effect_capacity * 2 : 8;
     if (new_capacity < fx->effect_count + 1)
         new_capacity = fx->effect_count + 1;
+    if (new_capacity > VGFX3D_POSTFX_MAX_EFFECTS)
+        new_capacity = VGFX3D_POSTFX_MAX_EFFECTS;
     if (new_capacity <= fx->effect_capacity ||
         (size_t)new_capacity > SIZE_MAX / sizeof(postfx_entry_t))
         return NULL;
-    effects = (postfx_entry_t *)realloc(fx->effects, (size_t)new_capacity * sizeof(postfx_entry_t));
+    effects =
+        (postfx_entry_t *)realloc(fx->owned_effects, (size_t)new_capacity * sizeof(postfx_entry_t));
     if (!effects)
         return NULL;
-    memset(effects + fx->effect_capacity,
+    memset(effects + fx->owned_effect_capacity,
            0,
-           (size_t)(new_capacity - fx->effect_capacity) * sizeof(postfx_entry_t));
+           (size_t)(new_capacity - fx->owned_effect_capacity) * sizeof(postfx_entry_t));
+    fx->owned_effects = effects;
+    fx->owned_effect_capacity = new_capacity;
+    fx->effect_storage_cookie = postfx3d_storage_cookie_value(
+        fx, effects, (size_t)new_capacity, POSTFX3D_EFFECT_STORAGE_COOKIE);
     fx->effects = effects;
     fx->effect_capacity = new_capacity;
     effects = &fx->effects[fx->effect_count++];
+    fx->initialized_effect_count = fx->effect_count;
     memset(effects, 0, sizeof(*effects));
+    postfx3d_reset_temporal_state(fx);
     return effects;
+}
+
+/// Domain separator for address-bound backend-chain allocation cookies.
+#define POSTFX3D_BACKEND_CHAIN_STORAGE_COOKIE UINT64_C(0xA61D4F39C708E25B)
+
+static uint64_t vgfx3d_postfx_chain_cookie_value(const vgfx3d_postfx_chain_t *chain,
+                                                 const void *storage,
+                                                 int32_t capacity) {
+    return POSTFX3D_BACKEND_CHAIN_STORAGE_COOKIE ^ (uint64_t)(uintptr_t)chain ^
+           (uint64_t)(uintptr_t)storage ^
+           ((uint64_t)(uint32_t)capacity * UINT64_C(0x9E3779B185EBCA87));
+}
+
+static int vgfx3d_postfx_chain_storage_is_valid(const vgfx3d_postfx_chain_t *chain) {
+    return chain && chain->owned_effects && chain->owned_effect_capacity > 0 &&
+           chain->owned_effect_capacity <= VGFX3D_POSTFX_MAX_EFFECTS &&
+           chain->effect_storage_cookie ==
+               vgfx3d_postfx_chain_cookie_value(
+                   chain, chain->owned_effects, chain->owned_effect_capacity);
+}
+
+static void vgfx3d_postfx_chain_repair_storage(vgfx3d_postfx_chain_t *chain) {
+    if (!chain)
+        return;
+    if (!vgfx3d_postfx_chain_storage_is_valid(chain)) {
+        chain->effects = NULL;
+        chain->effect_count = 0;
+        chain->effect_capacity = 0;
+        chain->owned_effects = NULL;
+        chain->owned_effect_capacity = 0;
+        chain->effect_storage_cookie = 0;
+        return;
+    }
+    chain->effects = chain->owned_effects;
+    chain->effect_capacity = chain->owned_effect_capacity;
+    if (chain->effect_count < 0)
+        chain->effect_count = 0;
+    if (chain->effect_count > chain->effect_capacity)
+        chain->effect_count = chain->effect_capacity;
 }
 
 /// @brief Ensure the backend-facing postfx chain buffer has room for at least `needed`
@@ -618,10 +1075,9 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
     int32_t new_capacity;
     int32_t old_capacity;
 
-    if (!chain || chain->effect_capacity < 0)
+    if (!chain || needed < 0 || needed > VGFX3D_POSTFX_MAX_EFFECTS)
         return 0;
-    if (!chain->effects)
-        chain->effect_capacity = 0;
+    vgfx3d_postfx_chain_repair_storage(chain);
     if (needed <= 0)
         return 1;
     if (chain->effect_capacity >= needed && chain->effects)
@@ -630,15 +1086,17 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
     old_capacity = chain->effect_capacity;
     new_capacity = chain->effect_capacity > 0 ? chain->effect_capacity : 8;
     while (new_capacity < needed) {
-        if (new_capacity > INT32_MAX / 2) {
+        if (new_capacity > VGFX3D_POSTFX_MAX_EFFECTS / 2) {
             new_capacity = needed;
             break;
         }
         new_capacity *= 2;
     }
+    if (new_capacity > VGFX3D_POSTFX_MAX_EFFECTS)
+        new_capacity = VGFX3D_POSTFX_MAX_EFFECTS;
     if ((size_t)new_capacity > SIZE_MAX / sizeof(*effects))
         return 0;
-    effects = (vgfx3d_postfx_effect_desc_t *)realloc(chain->effects,
+    effects = (vgfx3d_postfx_effect_desc_t *)realloc(chain->owned_effects,
                                                      (size_t)new_capacity * sizeof(*effects));
     if (!effects)
         return 0;
@@ -647,6 +1105,9 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
     }
     chain->effects = effects;
     chain->effect_capacity = new_capacity;
+    chain->owned_effects = effects;
+    chain->owned_effect_capacity = new_capacity;
+    chain->effect_storage_cookie = vgfx3d_postfx_chain_cookie_value(chain, effects, new_capacity);
     return 1;
 }
 
@@ -660,10 +1121,16 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
 /// @return 1 when a supported enabled effect was written, or 0 when the entry must be skipped.
 static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
                                               vgfx3d_postfx_effect_desc_t *out_effect) {
+    postfx_entry_t safe_entry;
     vgfx3d_postfx_snapshot_t snapshot;
 
-    if (!e || !out_effect || !e->enabled)
+    if (!e || !out_effect)
         return 0;
+    memset(out_effect, 0, sizeof(*out_effect));
+    safe_entry = *e;
+    if (!postfx3d_sanitize_effect_entry(&safe_entry) || !safe_entry.enabled)
+        return 0;
+    e = &safe_entry;
 
     memset(&snapshot, 0, sizeof(snapshot));
     snapshot.enabled = 1;
@@ -721,6 +1188,12 @@ static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
             snapshot.ssr_intensity = e->p.ssr.intensity;
             snapshot.ssr_max_roughness = e->p.ssr.max_roughness;
             snapshot.ssr_steps = e->p.ssr.steps;
+            break;
+        case POSTFX_AUTO_EXPOSURE:
+        case POSTFX_COLOR_LUT:
+        case POSTFX_SUN_SHAFTS:
+            /* These software-reference effects do not yet have legacy flat-snapshot parameter
+             * slots. Preserve their ordered discriminator instead of silently deleting them. */
             break;
         default:
             return 0;
@@ -873,8 +1346,7 @@ static void apply_bloom(float *buf,
     if (levels <= 0 || total_floats > SIZE_MAX / sizeof(float))
         return;
 
-    chain = postfx_scratch_reserve(
-        &scratch->primary, &scratch->primary_bytes, total_floats * sizeof(float), 1);
+    chain = postfx_scratch_reserve(scratch, 0, total_floats * sizeof(float), 1);
     if (!chain)
         return;
 
@@ -1062,18 +1534,16 @@ static void apply_tonemap(rt_postfx3d *fx,
                           float exposure,
                           int hdr_gamma) {
     size_t count;
-    float gamma_lut[POSTFX3D_GAMMA_LUT_SIZE + 1u];
     postfx_tonemap_band_ctx ctx;
     if (mode != 1 && mode != 2 && !(mode == 0 && hdr_gamma))
         return;
     if (!postfx_rgb_float_layout(w, h, &count, NULL, NULL))
         return;
-    postfx_build_gamma_lut(gamma_lut);
     ctx.buf = buf;
     ctx.w = w;
     ctx.mode = mode;
     ctx.exposure = exposure;
-    ctx.gamma_lut = gamma_lut;
+    ctx.gamma_lut = postfx_gamma_lut_data();
     postfx_run_bands(fx, h, apply_tonemap_rows, &ctx);
 }
 
@@ -1181,9 +1651,7 @@ static void apply_fxaa(rt_postfx3d *fx,
     postfx_fxaa_band_ctx ctx;
     if (!postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
         return;
-    float *out = scratch
-                     ? postfx_scratch_reserve(&scratch->primary, &scratch->primary_bytes, bytes, 0)
-                     : NULL;
+    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
     if (!out)
         return;
     memcpy(out, buf, bytes);
@@ -1349,7 +1817,7 @@ static void apply_vignette(
 /// @param fx PostFX chain to inspect.
 /// @param hdr_active Non-zero when the source buffer contains linear HDR values.
 /// @return 1 when an enabled entry performs the display transform, or 0 otherwise.
-static int postfx_chain_has_tonemap(const rt_postfx3d *fx, int hdr_active) {
+static int postfx_chain_has_tonemap(rt_postfx3d *fx, int hdr_active) {
     int32_t effect_count = postfx3d_safe_effect_count(fx);
     if (!fx || !fx->enabled || effect_count <= 0)
         return 0;
@@ -1376,8 +1844,7 @@ static int postfx_chain_has_tonemap(const rt_postfx3d *fx, int hdr_active) {
 static float *postfx_scratch_primary(postfx_scratch_t *scratch, size_t float_count) {
     if (!scratch || float_count == 0 || float_count > SIZE_MAX / sizeof(float))
         return NULL;
-    return postfx_scratch_reserve(
-        &scratch->primary, &scratch->primary_bytes, float_count * sizeof(float), 0);
+    return postfx_scratch_reserve(scratch, 0, float_count * sizeof(float), 0);
 }
 
 /// @brief Reserve the secondary reusable scratch allocation by float count.
@@ -1387,8 +1854,7 @@ static float *postfx_scratch_primary(postfx_scratch_t *scratch, size_t float_cou
 static float *postfx_scratch_secondary(postfx_scratch_t *scratch, size_t float_count) {
     if (!scratch || float_count == 0 || float_count > SIZE_MAX / sizeof(float))
         return NULL;
-    return postfx_scratch_reserve(
-        &scratch->secondary, &scratch->secondary_bytes, float_count * sizeof(float), 0);
+    return postfx_scratch_reserve(scratch, 1, float_count * sizeof(float), 0);
 }
 
 /// @brief Scene inputs the depth-aware CPU effects consume. All optional: when
@@ -1417,6 +1883,12 @@ typedef struct {
 /// @return 1 when the matrix is invertible and finite, or 0 for singular input.
 static int postfx_mat4_invert(const float *m, float *out) {
     float inv[16];
+    if (!m || !out)
+        return 0;
+    for (int32_t i = 0; i < 16; i++) {
+        if (!isfinite(m[i]))
+            return 0;
+    }
     inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
              m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
     inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
@@ -1453,8 +1925,12 @@ static int postfx_mat4_invert(const float *m, float *out) {
     if (!isfinite(det) || fabsf(det) < 1e-20f)
         return 0;
     det = 1.0f / det;
-    for (int i = 0; i < 16; i++)
-        out[i] = inv[i] * det;
+    for (int i = 0; i < 16; i++) {
+        inv[i] *= det;
+        if (!isfinite(inv[i]))
+            return 0;
+    }
+    memcpy(out, inv, sizeof(inv));
     return 1;
 }
 
@@ -1464,9 +1940,11 @@ static int postfx_mat4_invert(const float *m, float *out) {
 /// @param y Vertical pixel coordinate.
 /// @return The stored NDC depth, or `FLT_MAX` when depth is unavailable or out of bounds.
 static inline float postfx_depth_at(const postfx_scene_in_t *sc, int32_t x, int32_t y) {
+    float depth;
     if (!sc || !sc->has_depth || x < 0 || y < 0 || x >= sc->depth_w || y >= sc->depth_h)
         return FLT_MAX;
-    return sc->depth[(size_t)y * (size_t)sc->depth_w + (size_t)x];
+    depth = sc->depth[(size_t)y * (size_t)sc->depth_w + (size_t)x];
+    return isfinite(depth) && depth >= -1.0f && depth <= 1.0f ? depth : FLT_MAX;
 }
 
 /// @brief Convert NDC depth ([-1,1]) to camera-space linear depth.
@@ -1474,13 +1952,17 @@ static inline float postfx_depth_at(const postfx_scene_in_t *sc, int32_t x, int3
 /// @param ndc_z Normalized-device-coordinate depth.
 /// @return Positive camera-space depth, with safe clip-plane fallbacks for invalid metadata.
 static inline float postfx_linear_depth(const postfx_scene_in_t *sc, float ndc_z) {
-    float n = sc->cam_near > 1e-5f ? sc->cam_near : 0.1f;
-    float f = sc->cam_far > n * 1.001f ? sc->cam_far : n * 1000.0f;
+    float n;
+    float f;
+    if (!sc || !isfinite(ndc_z) || ndc_z < -1.0f || ndc_z > 1.0f)
+        return 1.0f;
+    n = isfinite(sc->cam_near) && sc->cam_near > 1e-5f ? sc->cam_near : 0.1f;
+    f = isfinite(sc->cam_far) && sc->cam_far > n * 1.001f ? sc->cam_far : n * 1000.0f;
     float denom = f + n - ndc_z * (f - n);
-    if (fabsf(denom) < 1e-9f)
+    if (!isfinite(denom) || fabsf(denom) < 1e-9f)
         return f;
     float lin = (2.0f * f * n) / denom;
-    return lin > 0.0f ? lin : f;
+    return isfinite(lin) && lin > 0.0f ? lin : f;
 }
 
 /// @brief Reconstruct the render-space world position of pixel (x,y) at @p ndc_z.
@@ -1499,7 +1981,9 @@ static inline int postfx_world_at(const postfx_scene_in_t *sc,
                                   float y,
                                   float ndc_z,
                                   float out[3]) {
-    if (!sc->has_inv || w <= 0 || h <= 0)
+    if (!sc || !out || !sc->has_inv || w <= 0 || h <= 0 || w > VGFX3D_RENDERTARGET_DIM_MAX ||
+        h > VGFX3D_RENDERTARGET_DIM_MAX || !isfinite(x) || !isfinite(y) || !isfinite(ndc_z) ||
+        ndc_z < -1.0f || ndc_z > 1.0f)
         return 0;
     float nx = (x + 0.5f) / (float)w * 2.0f - 1.0f;
     float ny = 1.0f - (y + 0.5f) / (float)h * 2.0f;
@@ -1525,11 +2009,16 @@ static inline int postfx_world_at(const postfx_scene_in_t *sc,
 /// @return 1 when the point projects in front of the camera with finite coordinates.
 static inline int postfx_project(
     const float *vp, const float world[3], int32_t w, int32_t h, float out_xyz[3]) {
+    if (!vp || !world || !out_xyz || w <= 0 || h <= 0 || w > VGFX3D_RENDERTARGET_DIM_MAX ||
+        h > VGFX3D_RENDERTARGET_DIM_MAX)
+        return 0;
+    if (!isfinite(world[0]) || !isfinite(world[1]) || !isfinite(world[2]))
+        return 0;
     float cx = vp[0] * world[0] + vp[1] * world[1] + vp[2] * world[2] + vp[3];
     float cy = vp[4] * world[0] + vp[5] * world[1] + vp[6] * world[2] + vp[7];
     float cz = vp[8] * world[0] + vp[9] * world[1] + vp[10] * world[2] + vp[11];
     float cw = vp[12] * world[0] + vp[13] * world[1] + vp[14] * world[2] + vp[15];
-    if (!isfinite(cw) || cw <= 1e-7f)
+    if (!isfinite(cx) || !isfinite(cy) || !isfinite(cz) || !isfinite(cw) || cw <= 1e-7f)
         return 0;
     out_xyz[0] = (cx / cw * 0.5f + 0.5f) * (float)w;
     out_xyz[1] = (1.0f - cy / cw) * 0.5f * (float)h;
@@ -1642,28 +2131,26 @@ static void apply_ssao_blur_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     }
 }
 
-/// @brief Multiply planar framebuffer channels by blurred AO for one row band.
+/// @brief Multiply packed framebuffer channels by blurred AO for one row band.
 /// @param ctx_ptr Pointer to a `postfx_ssao_band_ctx` containing framebuffer and AO buffers.
 /// @param y0 Inclusive first row to process.
 /// @param y1 Exclusive row limit.
 static void apply_ssao_modulate_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
     const postfx_ssao_band_ctx *bc = (const postfx_ssao_band_ctx *)ctx_ptr;
     const float *ao_blur = bc->ao_blur;
-    float *rp = bc->fbuf;
-    float *gp = bc->fbuf + bc->count;
-    float *bp = bc->fbuf + bc->count * 2u;
     size_t begin = (size_t)y0 * (size_t)bc->w;
     size_t end = (size_t)y1 * (size_t)bc->w;
     for (size_t i = begin; i < end; i++) {
-        rp[i] *= ao_blur[i];
-        gp[i] *= ao_blur[i];
-        bp[i] *= ao_blur[i];
+        float *pixel = &bc->fbuf[i * 3u];
+        pixel[0] *= ao_blur[i];
+        pixel[1] *= ao_blur[i];
+        pixel[2] *= ao_blur[i];
     }
 }
 
 /// @brief Apply the complete CPU SSAO pipeline using depth comparisons and a spatial blur.
 /// @param fx PostFX chain providing row-band parallelism.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Scene inputs supplying a matching NDC depth buffer.
@@ -1715,7 +2202,7 @@ static void apply_ssao_cpu(rt_postfx3d *fx,
 }
 
 /// @brief DOF: circle-of-confusion gather blur; CoC from |linear - focus| / aperture.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Scene inputs supplying a matching NDC depth buffer.
@@ -1743,9 +2230,6 @@ static void apply_dof_cpu(float *fbuf,
     if (max_radius > 12.0f)
         max_radius = 12.0f;
     memcpy(copy, fbuf, count * 3u * sizeof(float));
-    const float *rp = copy;
-    const float *gp = copy + count;
-    const float *bp = copy + count * 2u;
     for (int32_t y = 0; y < h; y++) {
         for (int32_t x = 0; x < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
@@ -1787,9 +2271,10 @@ static void apply_dof_cpu(float *fbuf,
                     if (tap_dist > 0.5f)
                         wt = reach >= tap_dist ? 1.0f : (reach + 0.5f) / (tap_dist + 0.5f);
                 }
-                sr += rp[sidx] * wt;
-                sg += gp[sidx] * wt;
-                sb += bp[sidx] * wt;
+                const float *sample = &copy[sidx * 3u];
+                sr += sample[0] * wt;
+                sg += sample[1] * wt;
+                sb += sample[2] * wt;
                 wsum += wt;
             }
             if (wsum < 1e-4f)
@@ -1797,16 +2282,17 @@ static void apply_dof_cpu(float *fbuf,
             float br = sr / wsum;
             float bg = sg / wsum;
             float bb = sb / wsum;
-            fbuf[idx] = fbuf[idx] * (1.0f - coc) + br * coc;
-            fbuf[count + idx] = fbuf[count + idx] * (1.0f - coc) + bg * coc;
-            fbuf[count * 2u + idx] = fbuf[count * 2u + idx] * (1.0f - coc) + bb * coc;
+            float *pixel = &fbuf[idx * 3u];
+            pixel[0] = pixel[0] * (1.0f - coc) + br * coc;
+            pixel[1] = pixel[1] * (1.0f - coc) + bg * coc;
+            pixel[2] = pixel[2] * (1.0f - coc) + bb * coc;
         }
     }
 }
 
 /// @brief Motion blur: camera-reprojection velocity, up to 6 samples along it.
 ///   Per-object velocity is a documented divergence from the GPU path.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Scene inputs supplying depth, inverse projection, and prior-frame projection.
@@ -1834,9 +2320,6 @@ static void apply_motion_blur_cpu(float *fbuf,
     if (strength > 2.0f)
         strength = 2.0f;
     memcpy(copy, fbuf, count * 3u * sizeof(float));
-    const float *rp = copy;
-    const float *gp = copy + count;
-    const float *bp = copy + count * 2u;
     for (int32_t y = 0; y < h; y++) {
         for (int32_t x = 0; x < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
@@ -1869,23 +2352,25 @@ static void apply_motion_blur_cpu(float *fbuf,
                 if (sx < 0 || sy < 0 || sx >= w || sy >= h)
                     continue;
                 size_t sidx = (size_t)sy * (size_t)w + (size_t)sx;
-                sr += rp[sidx];
-                sg += gp[sidx];
-                sb += bp[sidx];
+                const float *sample = &copy[sidx * 3u];
+                sr += sample[0];
+                sg += sample[1];
+                sb += sample[2];
                 n++;
             }
             if (n == 0)
                 continue;
-            fbuf[idx] = sr / (float)n;
-            fbuf[count + idx] = sg / (float)n;
-            fbuf[count * 2u + idx] = sb / (float)n;
+            float *pixel = &fbuf[idx * 3u];
+            pixel[0] = sr / (float)n;
+            pixel[1] = sg / (float)n;
+            pixel[2] = sb / (float)n;
         }
     }
 }
 
 /// @brief SSR: coarse screen-space march along the depth-reconstructed reflection ray.
 ///   Misses keep the base color (no environment fallback on CPU — documented).
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Scene inputs supplying depth, camera position, and projection matrices.
@@ -1912,9 +2397,6 @@ static void apply_ssr_cpu(float *fbuf,
     if (intensity > 1.0f)
         intensity = 1.0f;
     memcpy(copy, fbuf, count * 3u * sizeof(float));
-    const float *rp = copy;
-    const float *gp = copy + count;
-    const float *bp = copy + count * 2u;
     for (int32_t y = 1; y + 1 < h; y++) {
         for (int32_t x = 1; x + 1 < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
@@ -1989,9 +2471,10 @@ static void apply_ssr_cpu(float *fbuf,
                     float rlin = postfx_linear_depth(sc, scr[2]);
                     if (rlin - slin < step_len * 2.0f) {
                         size_t sidx = (size_t)sy * (size_t)w + (size_t)sx;
-                        hit_r = rp[sidx];
-                        hit_g = gp[sidx];
-                        hit_b = bp[sidx];
+                        const float *sample = &copy[sidx * 3u];
+                        hit_r = sample[0];
+                        hit_g = sample[1];
+                        hit_b = sample[2];
                         hit = 1;
                     }
                     break;
@@ -2000,9 +2483,10 @@ static void apply_ssr_cpu(float *fbuf,
             if (!hit)
                 continue;
             float k = intensity;
-            fbuf[idx] = fbuf[idx] * (1.0f - k) + hit_r * k;
-            fbuf[count + idx] = fbuf[count + idx] * (1.0f - k) + hit_g * k;
-            fbuf[count * 2u + idx] = fbuf[count * 2u + idx] * (1.0f - k) + hit_b * k;
+            float *pixel = &fbuf[idx * 3u];
+            pixel[0] = pixel[0] * (1.0f - k) + hit_r * k;
+            pixel[1] = pixel[1] * (1.0f - k) + hit_g * k;
+            pixel[2] = pixel[2] * (1.0f - k) + hit_b * k;
         }
     }
 }
@@ -2013,7 +2497,7 @@ static void apply_ssr_cpu(float *fbuf,
 ///   deterministic 1/60 s step; downward adaptation runs 2.5x faster than
 ///   upward for the classic cinematic feel.
 /// @param fx PostFX chain storing the temporally smoothed exposure state.
-/// @param fbuf Planar RGB float framebuffer scaled in place.
+/// @param fbuf Packed RGB float framebuffer scaled in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param min_ev Minimum permitted exposure value in stops.
@@ -2035,14 +2519,14 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
     }
     if (!(adapt_speed > 0.0f))
         adapt_speed = 3.0f;
-    const float *rp = fbuf;
-    const float *gp = fbuf + count;
-    const float *bp = fbuf + count * 2u;
     double log_sum = 0.0;
     size_t stride = count > 4096 ? count / 4096 : 1; /* bounded sampling */
     size_t sampled = 0;
     for (size_t i = 0; i < count; i += stride) {
-        float lum = 0.2126f * rp[i] + 0.7152f * gp[i] + 0.0722f * bp[i];
+        const float *pixel = &fbuf[i * 3u];
+        float lum = luminance(pixel[0], pixel[1], pixel[2]);
+        if (!isfinite(lum) || lum < 0.0f)
+            lum = 0.0f;
         log_sum += log((double)(lum > 1e-4f ? lum : 1e-4f));
         sampled++;
     }
@@ -2074,7 +2558,7 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
 
 /// @brief 3D LUT color grade from a 256x16 strip (16 tiles of 16x16), trilinear.
 /// @param fx PostFX chain owning the retained lookup-table Pixels object.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param blend Lookup-table blend weight, clamped to the unit interval.
@@ -2089,13 +2573,11 @@ static void apply_color_lut_cpu(
     if (blend > 1.0f)
         blend = 1.0f;
     const uint32_t *ld = lut->data;
-    float *rp = fbuf;
-    float *gp = fbuf + count;
-    float *bp = fbuf + count * 2u;
     for (size_t i = 0; i < count; i++) {
-        float r = rp[i] < 0.0f ? 0.0f : (rp[i] > 1.0f ? 1.0f : rp[i]);
-        float g = gp[i] < 0.0f ? 0.0f : (gp[i] > 1.0f ? 1.0f : gp[i]);
-        float b = bp[i] < 0.0f ? 0.0f : (bp[i] > 1.0f ? 1.0f : bp[i]);
+        float *pixel = &fbuf[i * 3u];
+        float r = clampf(pixel[0], 0.0f, 1.0f);
+        float g = clampf(pixel[1], 0.0f, 1.0f);
+        float b = clampf(pixel[2], 0.0f, 1.0f);
         float rf = r * 15.0f;
         float gf = g * 15.0f;
         float bf = b * 15.0f;
@@ -2121,9 +2603,9 @@ static void apply_color_lut_cpu(
             acc[1] += wgt * (float)((texel >> 16) & 0xFFu) / 255.0f;
             acc[2] += wgt * (float)((texel >> 8) & 0xFFu) / 255.0f;
         }
-        rp[i] = rp[i] * (1.0f - blend) + acc[0] * blend;
-        gp[i] = gp[i] * (1.0f - blend) + acc[1] * blend;
-        bp[i] = bp[i] * (1.0f - blend) + acc[2] * blend;
+        pixel[0] = pixel[0] * (1.0f - blend) + acc[0] * blend;
+        pixel[1] = pixel[1] * (1.0f - blend) + acc[1] * blend;
+        pixel[2] = pixel[2] * (1.0f - blend) + acc[2] * blend;
     }
 }
 
@@ -2131,7 +2613,7 @@ static void apply_color_lut_cpu(
 ///   primary directional light's projected position (classic god rays). Sky =
 ///   pixels with no depth (cleared FLT_MAX); occluders carve dark wedges for free.
 ///   No-ops when the sun projects far off-screen or behind the camera.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Scene inputs supplying depth and the projected sun position.
@@ -2165,16 +2647,14 @@ static void apply_sun_shafts_cpu(float *fbuf,
     float sy = sc->sun_screen[1];
     if (sx < -(float)w || sx > 2.0f * (float)w || sy < -(float)h || sy > 2.0f * (float)h)
         return;
-    const float *rp = fbuf;
-    const float *gp = fbuf + count;
-    const float *bp = fbuf + count * 2u;
     for (int32_t y = 0; y < h; y++) {
         for (int32_t x = 0; x < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
             float ndc = postfx_depth_at(sc, x, y);
             /* Sky bright-pass: empty depth contributes its luminance. */
             if (ndc > 1.0f) {
-                mask[idx] = 0.2126f * rp[idx] + 0.7152f * gp[idx] + 0.0722f * bp[idx];
+                const float *pixel = &fbuf[idx * 3u];
+                mask[idx] = luminance(pixel[0], pixel[1], pixel[2]);
             } else {
                 mask[idx] = 0.0f;
             }
@@ -2202,9 +2682,10 @@ static void apply_sun_shafts_cpu(float *fbuf,
             float shaft = accum * intensity / (float)samples;
             if (shaft <= 0.0f)
                 continue;
-            fbuf[idx] += shaft;
-            fbuf[count + idx] += shaft * 0.95f;
-            fbuf[count * 2u + idx] += shaft * 0.85f;
+            float *pixel = &fbuf[idx * 3u];
+            pixel[0] += shaft;
+            pixel[1] += shaft * 0.95f;
+            pixel[2] += shaft * 0.85f;
         }
     }
 }
@@ -2216,34 +2697,52 @@ static void apply_sun_shafts_cpu(float *fbuf,
 ///   temporal smoothing (stabilizing motion, not resolving new edge coverage); the GPU
 ///   backends run the full Halton-jittered TAA resolve.
 /// @param fx PostFX chain owning the persistent history buffer and its validity state.
-/// @param fbuf Planar RGB float framebuffer modified in place and copied into history.
+/// @param fbuf Packed RGB float framebuffer modified in place and copied into history.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param sc Optional scene inputs used to reproject history into the current frame.
 /// @param blend History contribution, clamped below one to retain current-frame influence.
-static void apply_taa_cpu(
-    rt_postfx3d *fx, float *fbuf, int32_t w, int32_t h, const postfx_scene_in_t *sc, float blend) {
-    size_t count = (size_t)w * (size_t)h;
-    if (!fx)
+/// @param scratch Reusable storage used to snapshot the current frame before blending.
+static void apply_taa_cpu(rt_postfx3d *fx,
+                          float *fbuf,
+                          int32_t w,
+                          int32_t h,
+                          const postfx_scene_in_t *sc,
+                          float blend,
+                          postfx_scratch_t *scratch) {
+    size_t count;
+    size_t history_bytes;
+    int reset_history;
+    float *current_frame;
+    if (!fx || !fbuf || !postfx_rgb_float_layout(w, h, &count, NULL, &history_bytes))
         return;
     if (blend < 0.0f)
         blend = 0.0f;
     if (blend > 0.95f)
         blend = 0.95f;
-    if (!fx->taa_history || fx->taa_w != w || fx->taa_h != h) {
-        free(fx->taa_history);
-        fx->taa_history = (float *)malloc(count * 3u * sizeof(float));
+    reset_history = !fx->taa_history || fx->taa_w != w || fx->taa_h != h;
+    fx->taa_history = postfx3d_reserve_float_storage(fx,
+                                                     &fx->taa_history,
+                                                     &fx->taa_history_capacity_bytes,
+                                                     &fx->owned_taa_history,
+                                                     &fx->taa_history_capacity_bytes,
+                                                     &fx->taa_storage_cookie,
+                                                     POSTFX3D_TAA_STORAGE_COOKIE,
+                                                     history_bytes,
+                                                     0);
+    if (!fx->taa_history)
+        return;
+    if (reset_history) {
         fx->taa_w = w;
         fx->taa_h = h;
         fx->taa_valid = 0;
-        if (!fx->taa_history)
-            return;
     }
     if (fx->taa_valid && sc && sc->has_depth && sc->has_inv && sc->has_prev_vp &&
         sc->depth_w == w && sc->depth_h == h) {
-        const float *hr = fx->taa_history;
-        const float *hg = fx->taa_history + count;
-        const float *hb = fx->taa_history + count * 2u;
+        current_frame = postfx_scratch_primary(scratch, count * 3u);
+        if (!current_frame)
+            return;
+        memcpy(current_frame, fbuf, history_bytes);
         for (int32_t y = 0; y < h; y++) {
             for (int32_t x = 0; x < w; x++) {
                 size_t idx = (size_t)y * (size_t)w + (size_t)x;
@@ -2288,9 +2787,10 @@ static void apply_taa_cpu(
                         if (sx < 0 || sy < 0 || sx >= w || sy >= h)
                             continue;
                         size_t sidx = (size_t)sy * (size_t)w + (size_t)sx;
-                        float cr = fbuf[sidx];
-                        float cg = fbuf[count + sidx];
-                        float cb = fbuf[count * 2u + sidx];
+                        const float *current = &current_frame[sidx * 3u];
+                        float cr = current[0];
+                        float cg = current[1];
+                        float cb = current[2];
                         if (cr < mn[0])
                             mn[0] = cr;
                         if (cg < mn[1])
@@ -2308,9 +2808,13 @@ static void apply_taa_cpu(
                 /* Bilinear history sampling: point sampling cannot resolve the sub-pixel
                  * jitter TAA relies on — history snaps between texels and edges shimmer
                  * instead of converging. */
-                float histr = hr[i00] * w00 + hr[i10] * w10 + hr[i01] * w01 + hr[i11] * w11;
-                float histg = hg[i00] * w00 + hg[i10] * w10 + hg[i01] * w01 + hg[i11] * w11;
-                float histb = hb[i00] * w00 + hb[i10] * w10 + hb[i01] * w01 + hb[i11] * w11;
+                const float *h00 = &fx->taa_history[i00 * 3u];
+                const float *h10 = &fx->taa_history[i10 * 3u];
+                const float *h01 = &fx->taa_history[i01 * 3u];
+                const float *h11 = &fx->taa_history[i11 * 3u];
+                float histr = h00[0] * w00 + h10[0] * w10 + h01[0] * w01 + h11[0] * w11;
+                float histg = h00[1] * w00 + h10[1] * w10 + h01[1] * w01 + h11[1] * w11;
+                float histb = h00[2] * w00 + h10[2] * w10 + h01[2] * w01 + h11[2] * w11;
                 if (histr < mn[0])
                     histr = mn[0];
                 if (histg < mn[1])
@@ -2323,27 +2827,26 @@ static void apply_taa_cpu(
                     histg = mx[1];
                 if (histb > mx[2])
                     histb = mx[2];
-                fbuf[idx] = fbuf[idx] * (1.0f - blend) + histr * blend;
-                fbuf[count + idx] = fbuf[count + idx] * (1.0f - blend) + histg * blend;
-                fbuf[count * 2u + idx] = fbuf[count * 2u + idx] * (1.0f - blend) + histb * blend;
+                const float *source = &current_frame[idx * 3u];
+                float *output = &fbuf[idx * 3u];
+                output[0] = source[0] * (1.0f - blend) + histr * blend;
+                output[1] = source[1] * (1.0f - blend) + histg * blend;
+                output[2] = source[2] * (1.0f - blend) + histb * blend;
             }
         }
     }
-    memcpy(fx->taa_history, fbuf, count * 3u * sizeof(float));
+    memcpy(fx->taa_history, fbuf, history_bytes);
     fx->taa_valid = 1;
 }
 
 /// @brief Run the HDR float-buffer stage of the postfx chain in authored order.
-/// @details SSAO, DOF, and motion blur are no-ops here because they require GPU
-///          scene inputs (depth, velocity) that the CPU path doesn't have — those
-///          effects trap on CPU-path binding rather than silently dropping, so the
-///          switch intentionally skips them. Bloom / tonemap / color-grade / vignette
-///          all compose in linear float space before the final LDR conversion, which
-///          is the whole point of running this before `postfx_apply` touches the
-///          integer framebuffer. @p hdr_active selects the linear-HDR source behavior
-///          for explicit mode-0 tonemap entries (gamma-out; see `apply_tonemap`).
+/// @details Color and scene-aware effects compose in linear float space before final LDR
+///          conversion. Scene-aware entries use the validated depth/camera snapshot supplied by
+///          the software canvas; an HDR target without that snapshot safely skips only those
+///          entries. @p hdr_active selects the linear-HDR source behavior for explicit mode-0
+///          tonemap entries (gamma-out; see `apply_tonemap`).
 /// @param fx PostFX chain whose enabled entries are applied in insertion order.
-/// @param fbuf Planar RGB float framebuffer modified in place.
+/// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param hdr_active Non-zero when @p fbuf contains linear HDR source values.
@@ -2358,10 +2861,7 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
     postfx_scratch_t scratch;
     if (!fx || !fx->enabled || effect_count == 0 || !fbuf)
         return;
-    scratch.primary = fx->cpu_scratch_primary;
-    scratch.primary_bytes = fx->cpu_scratch_primary_bytes;
-    scratch.secondary = fx->cpu_scratch_secondary;
-    scratch.secondary_bytes = fx->cpu_scratch_secondary_bytes;
+    scratch.fx = fx;
 
     for (int32_t i = 0; i < effect_count; i++) {
         postfx_entry_t *e = &fx->effects[i];
@@ -2432,7 +2932,7 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                 break;
             case POSTFX_TAA:
                 if (scene)
-                    apply_taa_cpu(fx, fbuf, w, h, scene, e->p.taa.blend);
+                    apply_taa_cpu(fx, fbuf, w, h, scene, e->p.taa.blend, &scratch);
                 break;
             case POSTFX_SSR:
                 if (scene)
@@ -2463,10 +2963,6 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                 break;
         }
     }
-    fx->cpu_scratch_primary = scratch.primary;
-    fx->cpu_scratch_primary_bytes = scratch.primary_bytes;
-    fx->cpu_scratch_secondary = scratch.secondary;
-    fx->cpu_scratch_secondary_bytes = scratch.secondary_bytes;
 }
 
 /// @brief Run the CPU-supported effect chain over a framebuffer.
@@ -2579,6 +3075,29 @@ static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *targ
  * PostFX3D lifecycle + API
  *=========================================================================*/
 
+static void postfx3d_release_lut_owner(rt_postfx3d *fx) {
+    if (!fx)
+        return;
+    if (postfx3d_lut_owner_is_valid(fx)) {
+        void *lut = fx->owned_lut_pixels;
+        if (rt_obj_release_check0(lut))
+            rt_obj_free(lut);
+    }
+    fx->lut_pixels = NULL;
+    fx->owned_lut_pixels = NULL;
+    fx->lut_owner_cookie = 0;
+}
+
+static void postfx3d_reset_temporal_state(rt_postfx3d *fx) {
+    if (!fx)
+        return;
+    fx->taa_valid = 0;
+    fx->cpu_prev_vp_valid = 0;
+    memset(fx->cpu_prev_vp, 0, sizeof(fx->cpu_prev_vp));
+    fx->auto_exposure_ev = 0.0f;
+    fx->auto_exposure_valid = 0;
+}
+
 /// @brief Release all heap buffers, retained objects, and the worker pool owned by PostFX3D.
 /// @details Backend snapshots are rebuilt independently and are not owned by this object.
 /// @param obj PostFX3D runtime object being finalized; ignored when `NULL`.
@@ -2586,35 +3105,73 @@ static void rt_postfx3d_finalize(void *obj) {
     rt_postfx3d *fx = (rt_postfx3d *)obj;
     if (!fx)
         return;
-    free(fx->taa_history);
+    if (postfx3d_float_storage_is_valid(fx,
+                                        fx->owned_taa_history,
+                                        fx->taa_history_capacity_bytes,
+                                        fx->taa_storage_cookie,
+                                        POSTFX3D_TAA_STORAGE_COOKIE))
+        free(fx->owned_taa_history);
     fx->taa_history = NULL;
-    free(fx->cpu_fbuf);
+    fx->owned_taa_history = NULL;
+    fx->taa_history_capacity_bytes = 0;
+    fx->taa_storage_cookie = 0;
+    if (postfx3d_float_storage_is_valid(fx,
+                                        fx->owned_cpu_fbuf,
+                                        fx->cpu_fbuf_capacity_bytes,
+                                        fx->cpu_fbuf_storage_cookie,
+                                        POSTFX3D_FBUF_STORAGE_COOKIE))
+        free(fx->owned_cpu_fbuf);
     fx->cpu_fbuf = NULL;
     fx->cpu_fbuf_bytes = 0;
-    free(fx->cpu_scratch_primary);
+    fx->owned_cpu_fbuf = NULL;
+    fx->cpu_fbuf_capacity_bytes = 0;
+    fx->cpu_fbuf_storage_cookie = 0;
+    if (postfx3d_float_storage_is_valid(fx,
+                                        fx->owned_cpu_scratch_primary,
+                                        fx->cpu_scratch_primary_capacity_bytes,
+                                        fx->cpu_scratch_primary_storage_cookie,
+                                        POSTFX3D_PRIMARY_STORAGE_COOKIE))
+        free(fx->owned_cpu_scratch_primary);
     fx->cpu_scratch_primary = NULL;
     fx->cpu_scratch_primary_bytes = 0;
-    free(fx->cpu_scratch_secondary);
+    fx->owned_cpu_scratch_primary = NULL;
+    fx->cpu_scratch_primary_capacity_bytes = 0;
+    fx->cpu_scratch_primary_storage_cookie = 0;
+    if (postfx3d_float_storage_is_valid(fx,
+                                        fx->owned_cpu_scratch_secondary,
+                                        fx->cpu_scratch_secondary_capacity_bytes,
+                                        fx->cpu_scratch_secondary_storage_cookie,
+                                        POSTFX3D_SECONDARY_STORAGE_COOKIE))
+        free(fx->owned_cpu_scratch_secondary);
     fx->cpu_scratch_secondary = NULL;
     fx->cpu_scratch_secondary_bytes = 0;
-    if (fx->lut_pixels) {
-        if (rt_obj_release_check0(fx->lut_pixels))
-            rt_obj_free(fx->lut_pixels);
-        fx->lut_pixels = NULL;
-    }
-    if (fx->worker_pool) {
+    fx->owned_cpu_scratch_secondary = NULL;
+    fx->cpu_scratch_secondary_capacity_bytes = 0;
+    fx->cpu_scratch_secondary_storage_cookie = 0;
+    postfx3d_release_lut_owner(fx);
+    if (postfx3d_worker_pool_owner_is_valid(fx)) {
         /* Same teardown as the software rasterizer's owned pool: shut down,
          * then drop the runtime object reference. */
-        void *pool = fx->worker_pool;
+        void *pool = fx->owned_worker_pool;
         fx->worker_pool = NULL;
+        fx->owned_worker_pool = NULL;
         rt_threadpool_shutdown(pool);
         if (rt_obj_release_check0(pool))
             rt_obj_free(pool);
     }
-    free(fx->effects);
+    fx->worker_pool = NULL;
+    fx->owned_worker_pool = NULL;
+    fx->worker_count = 0;
+    fx->worker_pool_owner_cookie = 0;
+    if (postfx3d_effect_storage_is_valid(fx))
+        free(fx->owned_effects);
     fx->effects = NULL;
     fx->effect_capacity = 0;
     fx->effect_count = 0;
+    fx->owned_effects = NULL;
+    fx->owned_effect_capacity = 0;
+    fx->initialized_effect_count = 0;
+    fx->effect_storage_cookie = 0;
 }
 
 /// @brief Create a new post-FX chain. Starts empty (no effects) and with the master
@@ -2755,6 +3312,7 @@ void rt_postfx3d_set_enabled(void *obj, int8_t enabled) {
 /// @return 1 when the object is a valid enabled chain, or 0 otherwise.
 int8_t rt_postfx3d_get_enabled(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
+    (void)postfx3d_repair_state(fx);
     return fx && fx->enabled ? 1 : 0;
 }
 
@@ -2764,10 +3322,15 @@ void rt_postfx3d_clear(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
     if (!fx)
         return;
+    (void)postfx3d_repair_state(fx);
     fx->effect_count = 0;
-    if (fx->effects && fx->effect_capacity > 0) {
-        memset(fx->effects, 0, (size_t)fx->effect_capacity * sizeof(*fx->effects));
+    fx->initialized_effect_count = 0;
+    if (fx->owned_effects && fx->owned_effect_capacity > 0) {
+        memset(
+            fx->owned_effects, 0, (size_t)fx->owned_effect_capacity * sizeof(*fx->owned_effects));
     }
+    postfx3d_release_lut_owner(fx);
+    postfx3d_reset_temporal_state(fx);
 }
 
 /// @brief Number of effects currently in the chain.
@@ -2795,8 +3358,7 @@ int64_t rt_postfx3d_get_effect_kind(void *obj, int64_t index) {
 
 /// @brief Remove the effect at @p index, preserving the order of the rest.
 /// @details Later entries shift down one slot and the vacated tail entry is
-///   zeroed. The retained color-LUT Pixels strip (if any) is left in place —
-///   matching `Clear`, which also keeps it for a later `AddColorLut`.
+///   zeroed. Removing the final color-LUT entry releases its retained Pixels source.
 /// @param obj Candidate PostFX3D chain.
 /// @param index Zero-based position in the chain.
 /// @return 1 when an entry was removed, or 0 for an invalid chain or index.
@@ -2813,6 +3375,19 @@ int8_t rt_postfx3d_remove_effect_at(void *obj, int64_t index) {
     }
     memset(&fx->effects[count - 1], 0, sizeof(*fx->effects));
     fx->effect_count = count - 1;
+    fx->initialized_effect_count = count - 1;
+    postfx3d_reset_temporal_state(fx);
+    if (fx->owned_lut_pixels) {
+        int has_lut = 0;
+        for (int32_t i = 0; i < fx->initialized_effect_count; i++) {
+            if (fx->owned_effects[i].type == POSTFX_COLOR_LUT) {
+                has_lut = 1;
+                break;
+            }
+        }
+        if (!has_lut)
+            postfx3d_release_lut_owner(fx);
+    }
     return 1;
 }
 
@@ -2823,50 +3398,62 @@ int8_t rt_postfx3d_remove_effect_at(void *obj, int64_t index) {
 int64_t rt_postfx3d_effect_kind_bloom(void) {
     return (int64_t)POSTFX_BLOOM;
 }
+
 /// @brief PostFXEffectKind.Tonemap constant.
 int64_t rt_postfx3d_effect_kind_tonemap(void) {
     return (int64_t)POSTFX_TONEMAP;
 }
+
 /// @brief PostFXEffectKind.Fxaa constant.
 int64_t rt_postfx3d_effect_kind_fxaa(void) {
     return (int64_t)POSTFX_FXAA;
 }
+
 /// @brief PostFXEffectKind.ColorGrade constant.
 int64_t rt_postfx3d_effect_kind_color_grade(void) {
     return (int64_t)POSTFX_COLOR_GRADE;
 }
+
 /// @brief PostFXEffectKind.Vignette constant.
 int64_t rt_postfx3d_effect_kind_vignette(void) {
     return (int64_t)POSTFX_VIGNETTE;
 }
+
 /// @brief PostFXEffectKind.Ssao constant.
 int64_t rt_postfx3d_effect_kind_ssao(void) {
     return (int64_t)POSTFX_SSAO;
 }
+
 /// @brief PostFXEffectKind.Dof constant.
 int64_t rt_postfx3d_effect_kind_dof(void) {
     return (int64_t)POSTFX_DOF;
 }
+
 /// @brief PostFXEffectKind.MotionBlur constant.
 int64_t rt_postfx3d_effect_kind_motion_blur(void) {
     return (int64_t)POSTFX_MOTION_BLUR;
 }
+
 /// @brief PostFXEffectKind.Taa constant.
 int64_t rt_postfx3d_effect_kind_taa(void) {
     return (int64_t)POSTFX_TAA;
 }
+
 /// @brief PostFXEffectKind.Ssr constant.
 int64_t rt_postfx3d_effect_kind_ssr(void) {
     return (int64_t)POSTFX_SSR;
 }
+
 /// @brief PostFXEffectKind.AutoExposure constant.
 int64_t rt_postfx3d_effect_kind_auto_exposure(void) {
     return (int64_t)POSTFX_AUTO_EXPOSURE;
 }
+
 /// @brief PostFXEffectKind.ColorLut constant.
 int64_t rt_postfx3d_effect_kind_color_lut(void) {
     return (int64_t)POSTFX_COLOR_LUT;
 }
+
 /// @brief PostFXEffectKind.SunShafts constant.
 int64_t rt_postfx3d_effect_kind_sun_shafts(void) {
     return (int64_t)POSTFX_SUN_SHAFTS;
@@ -2923,6 +3510,7 @@ void *rt_canvas3d_get_post_fx(void *canvas) {
 /// @return A new runtime string containing the last error, or an empty string when none exists.
 rt_string rt_postfx3d_get_last_error(void *obj) {
     rt_postfx3d *fx = postfx3d_checked(obj);
+    (void)postfx3d_repair_state(fx);
     const char *msg = fx ? fx->last_error : "";
     return rt_string_from_bytes(msg, strlen(msg));
 }
@@ -3140,7 +3728,8 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
         scene_depth = vgfx3d_sw_get_zbuf(c->backend_ctx, &scene_dw, &scene_dh);
     }
 
-    if (!pixels || width <= 0 || height <= 0 || stride <= 0)
+    if (!pixels || width <= 0 || height <= 0 || width > VGFX3D_RENDERTARGET_DIM_MAX ||
+        height > VGFX3D_RENDERTARGET_DIM_MAX || stride <= 0)
         return;
     {
         postfx_scene_in_t scene;
@@ -3157,13 +3746,18 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
             memcpy(scene.prev_vp, fx->cpu_prev_vp, sizeof(scene.prev_vp));
             scene.has_prev_vp = 1;
         }
-        scene.cam_near = c->cached_cam_near;
-        scene.cam_far = c->cached_cam_far;
-        scene.cam_pos[0] = c->cached_render_cam_pos[0];
-        scene.cam_pos[1] = c->cached_render_cam_pos[1];
-        scene.cam_pos[2] = c->cached_render_cam_pos[2];
+        scene.cam_near =
+            isfinite(c->cached_cam_near) && c->cached_cam_near > 1e-5f ? c->cached_cam_near : 0.1f;
+        scene.cam_far = isfinite(c->cached_cam_far) && c->cached_cam_far > scene.cam_near * 1.001f
+                            ? c->cached_cam_far
+                            : scene.cam_near * 1000.0f;
+        for (int32_t lane = 0; lane < 3; lane++) {
+            float value = c->cached_render_cam_pos[lane];
+            scene.cam_pos[lane] =
+                isfinite(value) && fabsf(value) <= POSTFX3D_FOCUS_MAX ? value : 0.0f;
+        }
         /* Project the primary directional light for the sun-shafts pass. */
-        for (int li = 0; li < VGFX3D_MAX_LIGHTS; li++) {
+        for (int li = 0; scene.has_inv && li < VGFX3D_MAX_LIGHTS; li++) {
             const rt_light3d *l = c->lights[li];
             if (!l || !l->enabled || l->type != 0)
                 continue;
@@ -3183,8 +3777,14 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
             break;
         }
         postfx_apply(fx, pixels, width, height, stride, &scene);
-        memcpy(fx->cpu_prev_vp, c->cached_vp, sizeof(fx->cpu_prev_vp));
-        fx->cpu_prev_vp_valid = 1;
+        if (scene.has_inv) {
+            memcpy(fx->cpu_prev_vp, scene.vp, sizeof(fx->cpu_prev_vp));
+            fx->cpu_prev_vp_valid = 1;
+        } else {
+            memset(fx->cpu_prev_vp, 0, sizeof(fx->cpu_prev_vp));
+            fx->cpu_prev_vp_valid = 0;
+            fx->taa_valid = 0;
+        }
     }
 }
 
@@ -3205,10 +3805,11 @@ void rt_postfx3d_add_auto_exposure(void *obj, double min_ev, double max_ev, doub
         return;
     e->type = POSTFX_AUTO_EXPOSURE;
     e->enabled = 1;
-    e->p.auto_exposure.min_ev = (float)(isfinite(min_ev) ? min_ev : -4.0);
-    e->p.auto_exposure.max_ev = (float)(isfinite(max_ev) ? max_ev : 4.0);
+    e->p.auto_exposure.min_ev = sanitize_range_f32(min_ev, -4.0f, POSTFX3D_EV_MIN, POSTFX3D_EV_MAX);
+    e->p.auto_exposure.max_ev = sanitize_range_f32(max_ev, 4.0f, POSTFX3D_EV_MIN, POSTFX3D_EV_MAX);
     e->p.auto_exposure.adapt_speed =
-        (float)(isfinite(adapt_speed) && adapt_speed > 0.0 ? adapt_speed : 3.0);
+        sanitize_range_f32(adapt_speed, 3.0f, 0.001f, POSTFX3D_PARAM_MAX);
+    (void)postfx3d_sanitize_effect_entry(e);
     fx->auto_exposure_valid = 0;
 }
 
@@ -3241,8 +3842,10 @@ void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
         blend = 1.0;
     e->p.color_lut.blend = (float)blend;
     rt_obj_retain_maybe(lut_pixels);
-    if (fx->lut_pixels && rt_obj_release_check0(fx->lut_pixels))
-        rt_obj_free(fx->lut_pixels);
+    postfx3d_release_lut_owner(fx);
+    fx->owned_lut_pixels = lut_pixels;
+    fx->lut_owner_cookie =
+        postfx3d_storage_cookie_value(fx, lut_pixels, 1u, POSTFX3D_LUT_OWNER_COOKIE);
     fx->lut_pixels = lut_pixels;
 }
 
@@ -3263,13 +3866,9 @@ void rt_postfx3d_add_sun_shafts(void *obj, double intensity, double decay, int64
         return;
     e->type = POSTFX_SUN_SHAFTS;
     e->enabled = 1;
-    e->p.sun_shafts.intensity = (float)(isfinite(intensity) && intensity > 0.0 ? intensity : 0.6);
-    e->p.sun_shafts.decay = (float)(isfinite(decay) && decay > 0.0 && decay < 1.0 ? decay : 0.92);
-    if (samples < 8)
-        samples = 8;
-    if (samples > 48)
-        samples = 48;
-    e->p.sun_shafts.samples = (int32_t)samples;
+    e->p.sun_shafts.intensity = sanitize_nonnegative_f32(intensity, 0.6f);
+    e->p.sun_shafts.decay = sanitize_range_f32(decay, 0.92f, 0.001f, 0.999f);
+    e->p.sun_shafts.samples = clamp_i64_to_i32(samples, 8, 48);
 }
 
 /// @brief Build the identity 256x16 LUT strip. Screenshot it composited over a
@@ -3436,13 +4035,7 @@ void rt_postfx3d_add_ssr(void *obj, double intensity, double max_roughness) {
 void vgfx3d_postfx_chain_reset(vgfx3d_postfx_chain_t *chain) {
     if (!chain)
         return;
-    if (!chain->effects)
-        chain->effect_capacity = 0;
-    if (chain->effect_capacity < 0) {
-        free(chain->effects);
-        chain->effects = NULL;
-        chain->effect_capacity = 0;
-    }
+    vgfx3d_postfx_chain_repair_storage(chain);
     chain->enabled = 0;
     chain->effect_count = 0;
     if (chain->effects && chain->effect_capacity > 0) {
@@ -3456,11 +4049,15 @@ void vgfx3d_postfx_chain_reset(vgfx3d_postfx_chain_t *chain) {
 void vgfx3d_postfx_chain_free(vgfx3d_postfx_chain_t *chain) {
     if (!chain)
         return;
-    free(chain->effects);
+    if (vgfx3d_postfx_chain_storage_is_valid(chain))
+        free(chain->owned_effects);
     chain->effects = NULL;
     chain->effect_capacity = 0;
     chain->effect_count = 0;
     chain->enabled = 0;
+    chain->owned_effects = NULL;
+    chain->owned_effect_capacity = 0;
+    chain->effect_storage_cookie = 0;
 }
 
 /// @brief Copy the enabled effect descriptors from `src` into `dst`, growing `dst`'s
@@ -3475,16 +4072,29 @@ void vgfx3d_postfx_chain_free(vgfx3d_postfx_chain_t *chain) {
 int vgfx3d_postfx_chain_copy(vgfx3d_postfx_chain_t *dst, const vgfx3d_postfx_chain_t *src) {
     if (!dst)
         return 0;
-    if (!src || !src->enabled || src->effect_count <= 0 || !src->effects ||
+    if (!src || !src->enabled || src->effect_count <= 0 ||
+        src->effect_count > VGFX3D_POSTFX_MAX_EFFECTS || !src->effects ||
         src->effect_capacity < src->effect_count) {
         vgfx3d_postfx_chain_reset(dst);
         return 0;
+    }
+    for (int32_t i = 0; i < src->effect_count; i++) {
+        if (src->effects[i].type < (int32_t)VGFX3D_POSTFX_EFFECT_BLOOM ||
+            src->effects[i].type > (int32_t)VGFX3D_POSTFX_EFFECT_SUN_SHAFTS) {
+            vgfx3d_postfx_chain_reset(dst);
+            return 0;
+        }
     }
     if (!vgfx3d_postfx_chain_reserve(dst, src->effect_count)) {
         vgfx3d_postfx_chain_reset(dst);
         return 0;
     }
-    memcpy(dst->effects, src->effects, (size_t)src->effect_count * sizeof(*src->effects));
+    for (int32_t i = 0; i < src->effect_count; i++) {
+        vgfx3d_postfx_snapshot_t safe_snapshot;
+        dst->effects[i].type = src->effects[i].type;
+        vgfx3d_sanitize_postfx_snapshot(&src->effects[i].snapshot, &safe_snapshot);
+        dst->effects[i].snapshot = safe_snapshot;
+    }
     if (dst->effect_capacity > src->effect_count) {
         memset(dst->effects + src->effect_count,
                0,
@@ -3583,6 +4193,8 @@ int vgfx3d_postfx_get_snapshot(void *postfx, vgfx3d_postfx_snapshot_t *out) {
     for (int32_t i = 0; i < effect_count; i++) {
         vgfx3d_postfx_effect_desc_t effect;
         if (!vgfx3d_postfx_fill_effect_snapshot(&fx->effects[i], &effect))
+            continue;
+        if (effect.type > (int32_t)POSTFX_SSR)
             continue;
         valid_count++;
         switch ((postfx_type_t)effect.type) {

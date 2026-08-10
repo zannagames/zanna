@@ -74,8 +74,10 @@ int rt_gui_image_try_set_rgba_bytes(void *image,
                                     int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
-    if (!img || !rgba || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+    size_t byte_count = 0;
+    if (!img || !rgba || !rt_gui_rgba_size_i64(width, height, &byte_count))
         return 0;
+    (void)byte_count;
     return vg_image_try_set_pixels(img, rgba, (int)width, (int)height) ? 1 : 0;
 }
 
@@ -136,13 +138,13 @@ static int rt_image_set_from_pixels_object(vg_image_t *image,
     if (width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
         return 0;
 
-    size_t w = (size_t)width;
-    size_t h = (size_t)height;
-    if (w > SIZE_MAX / h || w * h > SIZE_MAX / 4)
+    size_t rgba_size = 0;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size))
         return 0;
 
-    size_t pixel_count = w * h;
-    uint8_t *rgba = (uint8_t *)malloc(pixel_count * 4);
+    size_t w = (size_t)width;
+    size_t h = (size_t)height;
+    uint8_t *rgba = (uint8_t *)malloc(rgba_size);
     if (!rgba)
         return 0;
 
@@ -203,13 +205,17 @@ int64_t rt_image_try_set_from_render_target(void *image, void *target) {
         return 0;
     int64_t width = rt_rendertarget3d_get_width(target);
     int64_t height = rt_rendertarget3d_get_height(target);
-    if (width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+    size_t rgba_size = 0;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size))
         return 0;
+    (void)rgba_size;
     uint8_t *dst = vg_image_borrow_writable_pixels(img, (int)width, (int)height);
     if (!dst)
         return 0;
-    if (!rt_rendertarget3d_try_read_rgba(target, dst, width, height))
+    if (!rt_rendertarget3d_try_read_rgba(target, dst, width, height)) {
+        vg_image_cancel_borrowed_pixels(img);
         return 0;
+    }
     vg_image_commit_borrowed_pixels(img, (int)width, (int)height);
     return 1;
 }
@@ -225,8 +231,14 @@ int64_t rt_image_try_set_from_render_target(void *image, void *target) {
 uint8_t *rt_gui_image_borrow_rgba(void *image, int64_t width, int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
-    if (!img || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+    size_t rgba_size = 0;
+    if (!img)
         return NULL;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size)) {
+        vg_image_cancel_borrowed_pixels(img);
+        return NULL;
+    }
+    (void)rgba_size;
     return vg_image_borrow_writable_pixels(img, (int)width, (int)height);
 }
 
@@ -237,8 +249,14 @@ uint8_t *rt_gui_image_borrow_rgba(void *image, int64_t width, int64_t height) {
 void rt_gui_image_commit_rgba(void *image, int64_t width, int64_t height) {
     RT_ASSERT_MAIN_THREAD();
     vg_image_t *img = rt_image_checked(image);
-    if (!img || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+    size_t rgba_size = 0;
+    if (!img)
         return;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size)) {
+        vg_image_cancel_borrowed_pixels(img);
+        return;
+    }
+    (void)rgba_size;
     vg_image_commit_borrowed_pixels(img, (int)width, (int)height);
 }
 
@@ -279,12 +297,13 @@ int64_t rt_image_update_region(void *image,
         return 0;
     }
 
-    const size_t region_width = (size_t)width;
-    const size_t region_height = (size_t)height;
-    if (region_width > SIZE_MAX / region_height || region_width * region_height > SIZE_MAX / 4u) {
+    size_t rgba_size = 0;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size)) {
         return 0;
     }
-    uint8_t *rgba = (uint8_t *)malloc(region_width * region_height * 4u);
+    const size_t region_width = (size_t)width;
+    const size_t region_height = (size_t)height;
+    uint8_t *rgba = (uint8_t *)malloc(rgba_size);
     if (!rgba)
         return 0;
 

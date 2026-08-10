@@ -50,6 +50,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define VG_IMAGE_MAX_PIXELS ((size_t)64u * 1024u * 1024u)
+
 static void image_destroy(vg_widget_t *widget);
 static void image_measure(vg_widget_t *widget, float available_width, float available_height);
 static void image_paint(vg_widget_t *widget, void *canvas);
@@ -97,9 +99,12 @@ static bool image_rgba_size(int width, int height, size_t *out_size) {
         return false;
     const size_t w = (size_t)width;
     const size_t h = (size_t)height;
-    if (w > SIZE_MAX / h || w * h > SIZE_MAX / 4u)
+    if (w > SIZE_MAX / h)
         return false;
-    *out_size = w * h * 4u;
+    const size_t pixels = w * h;
+    if (pixels > VG_IMAGE_MAX_PIXELS || pixels > SIZE_MAX / 4u)
+        return false;
+    *out_size = pixels * 4u;
     return true;
 }
 
@@ -502,10 +507,16 @@ static void image_blend_pixel(uint8_t *dst, const uint8_t *src, uint8_t alpha) {
 static void image_destroy(vg_widget_t *widget) {
     vg_image_t *image = (vg_image_t *)widget;
     free(image->pixels);
+    free(image->borrowed_pixels);
     free(image->scaled_pixels);
     image->pixels = NULL;
+    image->borrowed_pixels = NULL;
     image->scaled_pixels = NULL;
     image->pixel_capacity = 0;
+    image->borrowed_capacity = 0;
+    image->borrowed_width = 0;
+    image->borrowed_height = 0;
+    image->borrow_active = false;
     image->scaled_capacity = 0;
     image->img_width = 0;
     image->img_height = 0;
@@ -809,6 +820,7 @@ bool vg_image_try_set_pixels(vg_image_t *image, const uint8_t *pixels, int width
 
     if (image->pixels && image->img_width == width && image->img_height == height &&
         memcmp(image->pixels, pixels, size) == 0) {
+        image->borrow_active = false;
         return true;
     }
 
@@ -832,34 +844,50 @@ bool vg_image_try_set_pixels(vg_image_t *image, const uint8_t *pixels, int width
     image->img_width = width;
     image->img_height = height;
     image->pixels_opaque = image_pixels_are_opaque(image->pixels, size);
+    image->borrow_active = false;
     image_note_content_change(image, layout_changed);
     return true;
 }
 
-/// @brief Borrow the retained pixel buffer resized for one RGBA8 frame.
-/// @details Grows the retained allocation when needed but commits nothing:
-///          dimensions, opacity, and repaint state change only in
-///          vg_image_commit_borrowed_pixels, so a failed producer write
-///          leaves the previous frame fully intact when sizes match.
+/// @brief Borrow an unpublished staging buffer sized for one RGBA8 frame.
+/// @details Grows reusable staging storage when needed but never exposes partial producer writes
+///          through the published image. A later exact-dimension commit atomically swaps staging
+///          and published buffers; failed producers therefore preserve pixels at every size.
 /// @param image Image widget.
 /// @param width Frame width in pixels.
 /// @param height Frame height in pixels.
 /// @return Writable RGBA8 buffer of width*height*4 bytes, or NULL.
 uint8_t *vg_image_borrow_writable_pixels(vg_image_t *image, int width, int height) {
     size_t size = 0;
-    if (!image || !image_rgba_size(width, height, &size))
+    if (!image)
         return NULL;
-    if (!image->pixels || size > image->pixel_capacity) {
+    image->borrow_active = false;
+    image->borrowed_width = 0;
+    image->borrowed_height = 0;
+    if (!image_rgba_size(width, height, &size))
+        return NULL;
+    if (!image->borrowed_pixels || size > image->borrowed_capacity) {
         uint8_t *grown = (uint8_t *)malloc(size);
         if (!grown)
             return NULL;
-        free(image->pixels);
-        image->pixels = grown;
-        image->pixel_capacity = size;
-        image->img_width = 0;
-        image->img_height = 0;
+        free(image->borrowed_pixels);
+        image->borrowed_pixels = grown;
+        image->borrowed_capacity = size;
     }
-    return image->pixels;
+    image->borrowed_width = width;
+    image->borrowed_height = height;
+    image->borrow_active = true;
+    return image->borrowed_pixels;
+}
+
+/// @brief Cancel an unpublished producer frame while retaining its allocation for reuse.
+/// @param image Image widget; NULL is ignored.
+void vg_image_cancel_borrowed_pixels(vg_image_t *image) {
+    if (!image)
+        return;
+    image->borrow_active = false;
+    image->borrowed_width = 0;
+    image->borrowed_height = 0;
 }
 
 /// @brief Commit a frame written through vg_image_borrow_writable_pixels.
@@ -868,10 +896,20 @@ uint8_t *vg_image_borrow_writable_pixels(vg_image_t *image, int width, int heigh
 /// @param height Committed frame height in pixels.
 void vg_image_commit_borrowed_pixels(vg_image_t *image, int width, int height) {
     size_t size = 0;
-    if (!image || !image->pixels || !image_rgba_size(width, height, &size) ||
-        size > image->pixel_capacity)
+    if (!image)
+        return;
+    const bool authorized = image->borrow_active && image->borrowed_pixels &&
+                            image->borrowed_width == width && image->borrowed_height == height;
+    vg_image_cancel_borrowed_pixels(image);
+    if (!authorized || !image_rgba_size(width, height, &size) || size > image->borrowed_capacity)
         return;
     const bool layout_changed = image->img_width != width || image->img_height != height;
+    uint8_t *previous_pixels = image->pixels;
+    size_t previous_capacity = image->pixel_capacity;
+    image->pixels = image->borrowed_pixels;
+    image->pixel_capacity = image->borrowed_capacity;
+    image->borrowed_pixels = previous_pixels;
+    image->borrowed_capacity = previous_capacity;
     image->img_width = width;
     image->img_height = height;
     image->pixels_opaque = image_pixels_are_opaque(image->pixels, size);
@@ -972,6 +1010,7 @@ bool vg_image_update_region(vg_image_t *image,
     }
     if (identical) {
         free(temporary);
+        image->borrow_active = false;
         return true;
     }
 
@@ -985,6 +1024,7 @@ bool vg_image_update_region(vg_image_t *image,
     }
     free(temporary);
     image->pixels_opaque = image_pixels_are_opaque(image->pixels, destination_size);
+    image->borrow_active = false;
     image_note_content_change(image, false);
     return true;
 }
@@ -1014,15 +1054,24 @@ bool vg_image_load_file(vg_image_t *image, const char *path) {
 void vg_image_clear(vg_image_t *image) {
     if (!image)
         return;
-    if (!image->pixels && image->img_width == 0 && image->img_height == 0)
+    if (!image->pixels && !image->borrowed_pixels && image->img_width == 0 &&
+        image->img_height == 0)
         return;
+    const bool content_changed = image->pixels || image->img_width != 0 || image->img_height != 0;
     free(image->pixels);
+    free(image->borrowed_pixels);
     image->pixels = NULL;
+    image->borrowed_pixels = NULL;
     image->pixel_capacity = 0;
+    image->borrowed_capacity = 0;
+    image->borrowed_width = 0;
+    image->borrowed_height = 0;
+    image->borrow_active = false;
     image->img_width = 0;
     image->img_height = 0;
     image->pixels_opaque = true;
-    image_note_content_change(image, true);
+    if (content_changed)
+        image_note_content_change(image, true);
 }
 
 /// @brief Set how pixel data is scaled to fill the widget bounds.

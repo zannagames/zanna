@@ -58,16 +58,7 @@
 /// @param text Source string to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_gui_features_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 /// @brief Return the app scheduler's monotonic timer clock in milliseconds.
@@ -118,13 +109,12 @@ static int rt_commandpalette_register_wrapper(rt_commandpalette_data_t *data) {
             return 1;
     }
     if (s_commandpalette_wrapper_count >= s_commandpalette_wrapper_cap) {
-        size_t new_cap = s_commandpalette_wrapper_cap ? s_commandpalette_wrapper_cap : 8;
-        while (new_cap <= s_commandpalette_wrapper_count) {
-            if (new_cap > SIZE_MAX / 2)
-                return 0;
-            new_cap *= 2;
-        }
-        if (new_cap > SIZE_MAX / sizeof(rt_commandpalette_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_commandpalette_wrapper_cap,
+                                             s_commandpalette_wrapper_count + 1u,
+                                             8u,
+                                             sizeof(rt_commandpalette_data_t *),
+                                             &new_cap))
             return 0;
         void *p = realloc(s_commandpalette_wrappers, new_cap * sizeof(rt_commandpalette_data_t *));
         if (!p)
@@ -538,7 +528,7 @@ rt_string rt_commandpalette_get_query(void *palette) {
     if (!data || !data->palette)
         return rt_str_empty();
     const char *q = vg_commandpalette_get_query(data->palette);
-    return rt_string_from_bytes(q, strlen(q));
+    return q ? rt_string_from_bytes(q, strlen(q)) : rt_str_empty();
 }
 
 /// @brief `CommandPalette.GetQueryGeneration` — bumped on every query change.
@@ -551,7 +541,7 @@ int64_t rt_commandpalette_get_query_generation(void *palette) {
     rt_commandpalette_data_t *data = rt_commandpalette_checked(palette);
     if (!data || !data->palette)
         return 0;
-    return (int64_t)vg_commandpalette_get_query_generation(data->palette);
+    return rt_gui_saturating_u64_to_i64(vg_commandpalette_get_query_generation(data->palette));
 }
 
 /// @brief `CommandPalette.SetQuery` — prefill the query and re-filter.
@@ -1446,6 +1436,10 @@ rt_string rt_app_get_dropped_file(void *app, int64_t index) {
 void rt_gui_file_drop_add(rt_gui_app_t *app, const char *path) {
     if (!app || !path)
         return;
+    if (app->file_drop.was_dropped &&
+        (app->file_drop.file_count < 0 ||
+         (uint64_t)app->file_drop.file_count >= RT_GUI_MAX_COLLECTION_ITEMS))
+        return;
     char *path_copy = rt_gui_features_strdup(path);
     if (!path_copy)
         return;
@@ -1461,6 +1455,7 @@ void rt_gui_file_drop_add(rt_gui_app_t *app, const char *path) {
 
     // Grow array
     if (app->file_drop.file_count < 0 ||
+        (uint64_t)app->file_drop.file_count >= RT_GUI_MAX_COLLECTION_ITEMS ||
         (size_t)app->file_drop.file_count >= SIZE_MAX / sizeof(char *) - 1) {
         free(path_copy);
         return;

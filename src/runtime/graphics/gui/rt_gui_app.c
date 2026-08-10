@@ -86,16 +86,7 @@ static void rt_gui_app_finalizer(void *app_ptr);
 /// @param text Source string to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_gui_app_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 /// @brief Return the index of `app` in `s_registered_apps`, or -1 if not found.
@@ -217,9 +208,13 @@ int rt_gui_register_app(rt_gui_app_t *app) {
     if (rt_gui_app_index(app) >= 0)
         return 1;
     if (s_registered_app_count >= s_registered_app_cap) {
-        if (s_registered_app_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(s_registered_app_cap,
+                                                 s_registered_app_count,
+                                                 4,
+                                                 sizeof(*s_registered_apps),
+                                                 &new_cap))
             return 0;
-        int new_cap = s_registered_app_cap ? s_registered_app_cap * 2 : 4;
         void *p = realloc(s_registered_apps, (size_t)new_cap * sizeof(*s_registered_apps));
         if (!p)
             return 0;
@@ -277,7 +272,7 @@ int8_t rt_gui_automation_snapshot_app(void *app_ptr, rt_gui_automation_app_view_
                                                                 : (uint64_t)clock_ms;
     out_view->window = app->window;
     out_view->root = app->root;
-    out_view->event_time_ms = timestamp > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)timestamp;
+    out_view->event_time_ms = rt_gui_saturating_u64_to_i64(timestamp);
     return 1;
 }
 
@@ -1220,11 +1215,14 @@ uint64_t rt_gui_app_frame_generation_for_owner(void *app_ptr) {
 /// @param app App whose dialog stack to grow.
 /// @return 1 when capacity is available, otherwise 0.
 static int rt_gui_grow_dialog_stack(rt_gui_app_t *app) {
-    if (!app || app->dialog_count < app->dialog_cap)
-        return app != NULL;
-    if (app->dialog_cap > INT_MAX / 2)
+    if (!app || app->dialog_count < 0 || app->dialog_cap < 0 || app->dialog_count > app->dialog_cap)
         return 0;
-    int new_cap = app->dialog_cap ? app->dialog_cap * 2 : 4;
+    if (app->dialog_count < app->dialog_cap)
+        return 1;
+    int new_cap = 0;
+    if (!rt_gui_next_collection_capacity_i32(
+            app->dialog_cap, app->dialog_count, 4, sizeof(*app->dialog_stack), &new_cap))
+        return 0;
     void *p = realloc(app->dialog_stack, (size_t)new_cap * sizeof(*app->dialog_stack));
     if (!p)
         return 0;
@@ -1325,11 +1323,18 @@ vg_dialog_t *rt_gui_top_dialog(rt_gui_app_t *app) {
 /// @param app App whose command palette array to grow.
 /// @return 1 when capacity is available, otherwise 0.
 static int rt_gui_grow_command_palette_array(rt_gui_app_t *app) {
-    if (!app || app->command_palette_count < app->command_palette_cap)
-        return app != NULL;
-    if (app->command_palette_cap > INT_MAX / 2)
+    if (!app || app->command_palette_count < 0 || app->command_palette_cap < 0 ||
+        app->command_palette_count > app->command_palette_cap)
         return 0;
-    int new_cap = app->command_palette_cap ? app->command_palette_cap * 2 : 4;
+    if (app->command_palette_count < app->command_palette_cap)
+        return 1;
+    int new_cap = 0;
+    if (!rt_gui_next_collection_capacity_i32(app->command_palette_cap,
+                                             app->command_palette_count,
+                                             4,
+                                             sizeof(*app->command_palettes),
+                                             &new_cap))
+        return 0;
     void *p = realloc(app->command_palettes, (size_t)new_cap * sizeof(*app->command_palettes));
     if (!p)
         return 0;
@@ -3073,8 +3078,8 @@ static bool rt_gui_render_stack_push(rt_gui_render_frame_t **frames,
     if (!widget)
         return true;
     if (*count == *cap) {
-        size_t new_cap = *cap ? *cap * 2 : 64;
-        if (new_cap < *cap || new_cap > SIZE_MAX / sizeof(**frames))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(*cap, *count + 1u, 64u, sizeof(**frames), &new_cap))
             return false;
         rt_gui_render_frame_t *new_frames =
             (rt_gui_render_frame_t *)realloc(*frames, new_cap * sizeof(*new_frames));
@@ -3106,7 +3111,12 @@ static void render_widget_tree(vgfx_window_t window,
     if (!rt_gui_render_stack_push(&frames, &count, &cap, widget, parent_abs_x, parent_abs_y))
         return;
 
+    size_t visited = 0;
     while (count > 0) {
+        if (visited++ >= RT_GUI_MAX_COLLECTION_ITEMS) {
+            free(frames);
+            return;
+        }
         rt_gui_render_frame_t frame = frames[--count];
         widget = frame.widget;
         if (!widget || !widget->visible)
@@ -3173,7 +3183,12 @@ static void render_widget_overlay_tree(vgfx_window_t window,
     if (!rt_gui_render_stack_push(&frames, &count, &cap, widget, parent_abs_x, parent_abs_y))
         return;
 
+    size_t visited = 0;
     while (count > 0) {
+        if (visited++ >= RT_GUI_MAX_COLLECTION_ITEMS) {
+            free(frames);
+            return;
+        }
         rt_gui_render_frame_t frame = frames[--count];
         widget = frame.widget;
         if (!widget || !widget->visible)

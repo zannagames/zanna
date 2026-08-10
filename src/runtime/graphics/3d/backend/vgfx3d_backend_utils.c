@@ -715,6 +715,7 @@ int vgfx3d_cluster_table_is_usable(const struct vgfx3d_cluster_table *table,
 ///         effect type lies in the public range.
 int vgfx3d_postfx_chain_is_usable(const struct vgfx3d_postfx_chain *chain) {
     if (!chain || !chain->enabled || !chain->effects || chain->effect_count <= 0 ||
+        chain->effect_count > VGFX3D_POSTFX_MAX_EFFECTS ||
         chain->effect_capacity < chain->effect_count)
         return 0;
     for (int32_t index = 0; index < chain->effect_count; index++) {

@@ -3306,6 +3306,8 @@ static inline int64_t rt_gui_dpi_to_physical(int64_t logical, double scale) {
         return logical;
     if (!(scale > 1.0)) // also rejects NaN
         return logical;
+    if (scale >= (double)INT64_MAX / (double)logical)
+        return INT64_MAX;
     return (int64_t)((double)logical * scale + 0.5);
 }
 

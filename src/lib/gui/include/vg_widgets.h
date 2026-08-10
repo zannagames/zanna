@@ -1541,6 +1541,11 @@ typedef struct vg_image {
 
     uint8_t *pixels;             ///< Pixel data (RGBA, owned).
     size_t pixel_capacity;       ///< Allocated byte capacity of @ref pixels.
+    uint8_t *borrowed_pixels;    ///< Unpublished producer staging buffer (owned).
+    size_t borrowed_capacity;    ///< Allocated byte capacity of @ref borrowed_pixels.
+    int borrowed_width;          ///< Width authorized by the active producer borrow.
+    int borrowed_height;         ///< Height authorized by the active producer borrow.
+    bool borrow_active;          ///< True only while an exact-dimension commit is permitted.
     int img_width;               ///< Original image width.
     int img_height;              ///< Original image height.
     vg_image_scale_t scale_mode; ///< Scaling mode.
@@ -1589,15 +1594,20 @@ void vg_image_set_pixels(vg_image_t *image, const uint8_t *pixels, int width, in
 /// @return true when all pixels were copied; false on invalid dimensions or allocation failure.
 bool vg_image_try_set_pixels(vg_image_t *image, const uint8_t *pixels, int width, int height);
 
-/// @brief Borrow the retained pixel buffer resized for one width*height RGBA8 frame.
+/// @brief Borrow an unpublished staging buffer resized for one width*height RGBA8 frame.
 /// @param image Image widget; NULL is rejected.
 /// @param width Positive frame width in pixels.
 /// @param height Positive frame height in pixels.
 /// @return Writable buffer owned by the widget, or NULL on invalid size or allocation failure.
 uint8_t *vg_image_borrow_writable_pixels(vg_image_t *image, int width, int height);
 
+/// @brief Cancel the current producer borrow without changing published image content.
+/// @param image Image widget; NULL is ignored.
+void vg_image_cancel_borrowed_pixels(vg_image_t *image);
+
 /// @brief Commit a frame previously written through vg_image_borrow_writable_pixels.
-/// @param image Image widget; NULL or an uncommittable size is ignored.
+/// @details Only the exact dimensions authorized by the most recent successful borrow can commit.
+/// @param image Image widget; NULL or an unauthorized size is ignored.
 /// @param width Committed frame width in pixels.
 /// @param height Committed frame height in pixels.
 void vg_image_commit_borrowed_pixels(vg_image_t *image, int width, int height);

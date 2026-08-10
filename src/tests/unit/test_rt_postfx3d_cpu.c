@@ -1,0 +1,205 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/unit/test_rt_postfx3d_cpu.c
+// Purpose: Direct offscreen-frame tests for CPU PostFX3D color-buffer semantics.
+//
+// Key invariants:
+//   - Every CPU effect consumes and produces one packed RGBRGB... float buffer.
+//   - Temporal history uses the same packed representation as the active frame.
+//   - Effects preserve the render target's alpha channel.
+//
+// Ownership/Lifetime:
+//   - Each fixture owns its target, canvas, chain, and optional Pixels objects.
+//   - Canvas and PostFX retained references are released in reverse ownership order.
+//
+// Links: rt_postfx3d.c, docs/internals/graphics3d-runtime-hardening-round-three-2026-08-10.md
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef ZANNA_ENABLE_GRAPHICS
+#define ZANNA_ENABLE_GRAPHICS 1
+#endif
+
+#include "rt_canvas3d.h"
+#include "rt_canvas3d_internal.h"
+#include "rt_object.h"
+#include "rt_pixels_internal.h"
+#include "rt_postfx3d.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+extern void rt_postfx3d_apply_to_canvas(void *canvas);
+
+static int tests_run = 0;
+static int tests_passed = 0;
+
+#define EXPECT_TRUE(cond, msg)                                                                     \
+    do {                                                                                           \
+        tests_run++;                                                                               \
+        if (!(cond))                                                                               \
+            fprintf(stderr, "FAIL: %s\n", msg);                                                    \
+        else                                                                                       \
+            tests_passed++;                                                                        \
+    } while (0)
+
+typedef struct {
+    void *target_obj;
+    rt_rendertarget3d *target_wrapper;
+    vgfx3d_rendertarget_t *target;
+    void *canvas_obj;
+    rt_canvas3d *canvas;
+} PostFXCPUFixture;
+
+static PostFXCPUFixture postfx_cpu_fixture_new(void) {
+    PostFXCPUFixture fixture;
+    memset(&fixture, 0, sizeof(fixture));
+    fixture.target_obj = rt_rendertarget3d_new(2, 1);
+    fixture.target_wrapper = (rt_rendertarget3d *)fixture.target_obj;
+    fixture.target = fixture.target_wrapper ? fixture.target_wrapper->target : NULL;
+    fixture.canvas_obj = fixture.target_obj ? rt_canvas3d_new_offscreen(fixture.target_obj) : NULL;
+    fixture.canvas = (rt_canvas3d *)fixture.canvas_obj;
+    if (fixture.target)
+        (void)vgfx3d_rendertarget_ensure_depth(fixture.target);
+    if (fixture.canvas) {
+        memset(fixture.canvas->cached_vp, 0, sizeof(fixture.canvas->cached_vp));
+        fixture.canvas->cached_vp[0] = 1.0f;
+        fixture.canvas->cached_vp[5] = 1.0f;
+        fixture.canvas->cached_vp[10] = 1.0f;
+        fixture.canvas->cached_vp[15] = 1.0f;
+        fixture.canvas->cached_cam_near = 0.1f;
+        fixture.canvas->cached_cam_far = 100.0f;
+    }
+    if (fixture.target && fixture.target->depth_buf) {
+        fixture.target->depth_buf[0] = 0.0f;
+        fixture.target->depth_buf[1] = 0.0f;
+    }
+    return fixture;
+}
+
+static void postfx_cpu_fixture_free(PostFXCPUFixture *fixture) {
+    if (!fixture)
+        return;
+    (void)rt_memory_release(fixture->canvas_obj);
+    (void)rt_memory_release(fixture->target_obj);
+    memset(fixture, 0, sizeof(*fixture));
+}
+
+static void postfx_set_two_pixels(vgfx3d_rendertarget_t *target,
+                                  uint8_t r0,
+                                  uint8_t g0,
+                                  uint8_t b0,
+                                  uint8_t a0,
+                                  uint8_t r1,
+                                  uint8_t g1,
+                                  uint8_t b1,
+                                  uint8_t a1) {
+    if (!target || !target->color_buf)
+        return;
+    target->color_buf[0] = r0;
+    target->color_buf[1] = g0;
+    target->color_buf[2] = b0;
+    target->color_buf[3] = a0;
+    target->color_buf[4] = r1;
+    target->color_buf[5] = g1;
+    target->color_buf[6] = b1;
+    target->color_buf[7] = a1;
+    target->color_dirty = 0;
+}
+
+static void test_color_lut_uses_packed_rgb_pixels(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+    void *lut_obj = rt_postfx3d_make_identity_lut();
+    rt_pixels_impl *lut = rt_pixels_checked_impl_or_null(lut_obj);
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf && fx && lut,
+                "Packed LUT fixture initializes");
+    if (lut && lut->data) {
+        for (size_t i = 0; i < 256u * 16u; i++)
+            lut->data[i] = UINT32_C(0xFF0000FF);
+        pixels_touch(lut);
+    }
+    postfx_set_two_pixels(fixture.target, 11, 29, 47, 71, 83, 101, 127, 149);
+    rt_postfx3d_add_color_lut(fx, lut_obj, 1.0);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(fixture.target->color_buf[0] == 255 && fixture.target->color_buf[1] == 0 &&
+                    fixture.target->color_buf[2] == 0 && fixture.target->color_buf[4] == 255 &&
+                    fixture.target->color_buf[5] == 0 && fixture.target->color_buf[6] == 0,
+                "Color LUT transforms each packed pixel independently");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 71 && fixture.target->color_buf[7] == 149,
+                "Color LUT preserves per-pixel alpha");
+
+    (void)rt_memory_release(lut_obj);
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_auto_exposure_samples_packed_luminance(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf && fx,
+                "Packed auto-exposure fixture initializes");
+    postfx_set_two_pixels(fixture.target, 255, 0, 0, 17, 0, 255, 0, 23);
+    rt_postfx3d_add_auto_exposure(fx, -4.0, 4.0, 3.0);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(fixture.target->color_buf[0] >= 110 && fixture.target->color_buf[0] <= 125 &&
+                    fixture.target->color_buf[5] >= 110 && fixture.target->color_buf[5] <= 125,
+                "Auto exposure computes luminance from each packed RGB triplet");
+    EXPECT_TRUE(fixture.target->color_buf[1] == 0 && fixture.target->color_buf[2] == 0 &&
+                    fixture.target->color_buf[4] == 0 && fixture.target->color_buf[6] == 0,
+                "Auto exposure does not move color channels between pixels");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 17 && fixture.target->color_buf[7] == 23,
+                "Auto exposure preserves alpha");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_taa_history_uses_packed_rgb_pixels(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf &&
+                    fixture.target->depth_buf && fx,
+                "Packed TAA fixture initializes");
+    rt_postfx3d_add_taa(fx, 0.9);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+
+    postfx_set_two_pixels(fixture.target, 255, 0, 0, 31, 0, 0, 255, 37);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    postfx_set_two_pixels(fixture.target, 0, 255, 0, 41, 255, 255, 0, 43);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(fixture.target->color_buf[0] >= 220 && fixture.target->color_buf[0] <= 235 &&
+                    fixture.target->color_buf[1] == 255 && fixture.target->color_buf[2] == 0,
+                "TAA reprojects the first packed history pixel without channel aliasing");
+    EXPECT_TRUE(fixture.target->color_buf[4] >= 20 && fixture.target->color_buf[4] <= 35 &&
+                    fixture.target->color_buf[5] == 255 && fixture.target->color_buf[6] == 0,
+                "TAA reprojects the second packed history pixel without cross-pixel aliasing");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 41 && fixture.target->color_buf[7] == 43,
+                "TAA preserves alpha across temporal frames");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+int main(void) {
+    test_color_lut_uses_packed_rgb_pixels();
+    test_auto_exposure_samples_packed_luminance();
+    test_taa_history_uses_packed_rgb_pixels();
+
+    printf("rt_postfx3d CPU tests: %d/%d passed\n", tests_passed, tests_run);
+    return tests_passed == tests_run ? 0 : 1;
+}

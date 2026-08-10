@@ -698,24 +698,18 @@ static id<MTLTexture> metal_active_readback_texture(VGFXMetalContext *ctx) {
 /// @brief Reset the cached GPU post-processing chain snapshot to empty (without freeing buffers).
 /// @param ctx Borrowed Metal context whose owned chain is reset and marked invalid.
 static void metal_reset_gpu_postfx_chain(VGFXMetalContext *ctx) {
-    vgfx3d_postfx_chain_t chain;
     if (!ctx)
         return;
-    chain = ctx.gpuPostfxChain;
-    vgfx3d_postfx_chain_reset(&chain);
-    ctx.gpuPostfxChain = chain;
+    vgfx3d_postfx_chain_reset(&ctx->_gpuPostfxChain);
     ctx.gpuPostfxChainValid = 0;
 }
 
 /// @brief Free the cached GPU post-processing chain snapshot and release its owned memory.
 /// @param ctx Borrowed Metal context whose owned chain allocation is released.
 static void metal_free_gpu_postfx_chain(VGFXMetalContext *ctx) {
-    vgfx3d_postfx_chain_t chain;
     if (!ctx)
         return;
-    chain = ctx.gpuPostfxChain;
-    vgfx3d_postfx_chain_free(&chain);
-    ctx.gpuPostfxChain = chain;
+    vgfx3d_postfx_chain_free(&ctx->_gpuPostfxChain);
     ctx.gpuPostfxChainValid = 0;
 }
 
@@ -726,13 +720,10 @@ static void metal_free_gpu_postfx_chain(VGFXMetalContext *ctx) {
 /// @param src Borrowed source chain to duplicate.
 /// @return 1 on success, 0 on allocation failure.
 static int metal_copy_gpu_postfx_chain(VGFXMetalContext *ctx, const vgfx3d_postfx_chain_t *src) {
-    vgfx3d_postfx_chain_t chain;
     int ok;
     if (!ctx)
         return 0;
-    chain = ctx.gpuPostfxChain;
-    ok = vgfx3d_postfx_chain_copy(&chain, src);
-    ctx.gpuPostfxChain = chain;
+    ok = vgfx3d_postfx_chain_copy(&ctx->_gpuPostfxChain, src);
     ctx.gpuPostfxChainValid = ok ? 1 : 0;
     return ok;
 }

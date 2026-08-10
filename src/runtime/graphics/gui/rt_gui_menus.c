@@ -213,13 +213,12 @@ vg_icon_t rt_gui_icon_from_pixels(void *pixels) {
     if ((uintmax_t)width > (uintmax_t)SIZE_MAX || (uintmax_t)height > (uintmax_t)SIZE_MAX)
         return icon;
 
-    size_t pixel_count = (size_t)width * (size_t)height;
-    if (pixel_count / (size_t)width != (size_t)height)
+    size_t rgba_size = 0;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size))
         return icon;
-    if (width > UINT32_MAX || height > UINT32_MAX || pixel_count > SIZE_MAX / 4)
-        return icon;
+    size_t pixel_count = rgba_size / 4u;
 
-    uint8_t *rgba = (uint8_t *)malloc(pixel_count * 4);
+    uint8_t *rgba = (uint8_t *)malloc(rgba_size);
     if (!rgba)
         return icon;
 

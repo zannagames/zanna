@@ -66,22 +66,24 @@ typedef enum {
 
 /// @brief Magic value authenticating live managed GUI subhandle records.
 #define RT_GUI_SUBHANDLE_MAGIC UINT64_C(0x52544755484E444C)
+/// @brief Largest power-of-two index that can hold the bounded wrapper population at 70% load.
+#define RT_GUI_SUBHANDLE_MAX_INDEX_CAPACITY ((size_t)1u << 21u)
 
 /// @brief Managed weak wrapper linked into global, target, and owner indexes.
 typedef struct rt_gui_subhandle {
-    uint64_t magic;       ///< Must equal @ref RT_GUI_SUBHANDLE_MAGIC while live.
-    uint64_t generation;  ///< Monotonic wrapper generation for identity diagnostics.
-    uint32_t kind;        ///< One @ref rt_gui_subhandle_kind_t value.
-    uint32_t retired;     ///< Nonzero after the lower target is invalidated.
-    void *ptr;            ///< Borrowed lower target, or NULL after invalidation.
-    vg_widget_t *owner_widget; ///< Borrowed owning widget, or NULL.
-    uint64_t owner_widget_id; ///< Stable owner identity captured while live.
-    struct rt_gui_subhandle *next; ///< Next wrapper in the global intrusive list.
-    struct rt_gui_subhandle *prev; ///< Previous wrapper in the global intrusive list.
+    uint64_t magic;                      ///< Must equal @ref RT_GUI_SUBHANDLE_MAGIC while live.
+    uint64_t generation;                 ///< Monotonic wrapper generation for identity diagnostics.
+    uint32_t kind;                       ///< One @ref rt_gui_subhandle_kind_t value.
+    uint32_t retired;                    ///< Nonzero after the lower target is invalidated.
+    void *ptr;                           ///< Borrowed lower target, or NULL after invalidation.
+    vg_widget_t *owner_widget;           ///< Borrowed owning widget, or NULL.
+    uint64_t owner_widget_id;            ///< Stable owner identity captured while live.
+    struct rt_gui_subhandle *next;       ///< Next wrapper in the global intrusive list.
+    struct rt_gui_subhandle *prev;       ///< Previous wrapper in the global intrusive list.
     struct rt_gui_subhandle *owner_next; ///< Next wrapper in the owner bucket.
     struct rt_gui_subhandle *owner_prev; ///< Previous wrapper in the owner bucket.
-    bool target_indexed; ///< Whether the target hash index contains this wrapper.
-    bool owner_indexed;  ///< Whether an owner bucket contains this wrapper.
+    bool target_indexed;                 ///< Whether the target hash index contains this wrapper.
+    bool owner_indexed;                  ///< Whether an owner bucket contains this wrapper.
 } rt_gui_subhandle_t;
 
 /// @brief Head of the authoritative global wrapper list.
@@ -212,7 +214,8 @@ static bool rt_gui_subhandle_target_insert_raw(rt_gui_subhandle_slot_t *slots,
 static bool rt_gui_subhandle_target_rehash(size_t capacity) {
     if (capacity < 64)
         capacity = 64;
-    if ((capacity & (capacity - 1)) != 0 || capacity > SIZE_MAX / sizeof(*s_target_slots))
+    if ((capacity & (capacity - 1)) != 0 || capacity > RT_GUI_SUBHANDLE_MAX_INDEX_CAPACITY ||
+        capacity > SIZE_MAX / sizeof(*s_target_slots))
         return false;
     rt_gui_subhandle_slot_t *slots = (rt_gui_subhandle_slot_t *)calloc(capacity, sizeof(*slots));
     if (!slots)
@@ -248,8 +251,10 @@ static bool rt_gui_subhandle_target_ensure_capacity(void) {
     bool tombstone_heavy = s_target_occupied > s_target_live * 2 + 16;
     if (!crowded && !tombstone_heavy)
         return true;
-    size_t next = crowded ? s_target_capacity * 2 : s_target_capacity;
-    if (next < s_target_capacity)
+    size_t next = crowded && s_target_capacity <= RT_GUI_SUBHANDLE_MAX_INDEX_CAPACITY / 2u
+                      ? s_target_capacity * 2u
+                      : s_target_capacity;
+    if (crowded && next == s_target_capacity)
         return false;
     return rt_gui_subhandle_target_rehash(next);
 }
@@ -388,7 +393,8 @@ static bool rt_gui_subhandle_owner_rehash(size_t capacity) {
         capacity = 32;
     // cppcheck-suppress divideSizeof
     // The allocation is intentionally an array of wrapper pointers, not wrappers.
-    if ((capacity & (capacity - 1)) != 0 || capacity > SIZE_MAX / sizeof(*s_owner_buckets))
+    if ((capacity & (capacity - 1)) != 0 || capacity > RT_GUI_SUBHANDLE_MAX_INDEX_CAPACITY ||
+        capacity > SIZE_MAX / sizeof(*s_owner_buckets))
         return false;
     rt_gui_subhandle_t **buckets = (rt_gui_subhandle_t **)calloc(capacity, sizeof(*buckets));
     if (!buckets)
@@ -428,7 +434,9 @@ static void rt_gui_subhandle_owner_link(rt_gui_subhandle_t *handle) {
     if (handle->owner_indexed)
         return;
     if (s_owner_capacity > 0 && (s_owner_indexed_count + 1) * 2 > s_owner_capacity * 3) {
-        size_t next = s_owner_capacity * 2;
+        size_t next = s_owner_capacity <= RT_GUI_SUBHANDLE_MAX_INDEX_CAPACITY / 2u
+                          ? s_owner_capacity * 2u
+                          : s_owner_capacity;
         if (next > s_owner_capacity)
             (void)rt_gui_subhandle_owner_rehash(next);
     }
@@ -683,6 +691,8 @@ static void *rt_gui_wrap_subhandle(rt_gui_subhandle_kind_t kind,
         }
         return existing;
     }
+    if (s_gui_subhandle_count >= RT_GUI_MAX_COLLECTION_ITEMS)
+        return NULL;
     rt_gui_subhandle_t *handle =
         (rt_gui_subhandle_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_gui_subhandle_t));
     if (!handle)

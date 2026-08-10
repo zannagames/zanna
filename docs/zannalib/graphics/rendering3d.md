@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-03
+last-verified: 2026-08-10
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -1233,9 +1233,13 @@ Post-processing effect chain applied to a rendered scene.
 | `AddDof(focusDist, focalRange, blurRadius)` | `Void(Double, Double, Double)` | Add depth of field |
 | `AddMotionBlur(strength, samples)` | `Void(Double, Integer)` | Add motion blur |
 | `AddTaa(blend)` | `Void(Double)` | Add temporal anti-aliasing. `blend` is the history weight (0.5–0.98; typical 0.9) |
+| `AddSSR(intensity, maxRoughness)` | `Void(Double, Double)` | Add screen-space reflections; the software reference uses a bounded coarse depth march |
+| `AddAutoExposure(minEv, maxEv, adaptSpeed)` | `Void(Double, Double, Double)` | Add temporally smoothed eye adaptation within the ordered exposure range |
+| `AddColorLUT(pixels, blend)` | `Void(Object, Double)` | Add a retained 256×16 LUT strip and blend it with the current color |
+| `AddSunShafts(intensity, decay, samples)` | `Void(Double, Double, Integer)` | Add bounded screen-space radial light shafts |
 | `GetEffectKind(index)` | `Integer(Integer)` | Kind of the effect at `index` in application order — one of the `PostFXEffectKind` constants; `-1` when out of range |
 | `RemoveEffectAt(index)` | `Boolean(Integer)` | Remove one effect, closing the chain over the gap; `false` when out of range |
-| `Clear()` | `Void()` | Remove all effects from the chain |
+| `Clear()` | `Void()` | Remove all effects, release a retained LUT, and reset temporal adaptation/history while preserving reusable allocations |
 
 Chain entries enumerate in application order: `EffectCount` bounds the index,
 `GetEffectKind(i)` identifies each entry against the static
@@ -1266,6 +1270,11 @@ environment fallback on miss; TAA blends a reprojected history with a 3×3
 neighborhood clamp but without sub-pixel jitter. All are deterministic (fixed tap
 tables, no clock). Per-backend GPU capability keys (`"taa"`, `"ssao"`, …) still
 report only hardware acceleration.
+
+Chains are bounded at 4,096 authored entries. Software effects operate on one packed
+`RGBRGB...` float buffer while preserving each target pixel's alpha. Reusable frame,
+scratch, and TAA-history allocations stay with the chain; `Clear()` resets temporal
+history and auto exposure so a rebuilt chain cannot blend against stale topology.
 
 GPU window backends render the scene into a linear-HDR (RGBA16F) target, so bloom and
 tone mapping operate on unclamped color (`BackendSupports("hdr-scene")`). On HDR

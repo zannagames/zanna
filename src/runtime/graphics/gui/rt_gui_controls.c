@@ -458,7 +458,7 @@ int64_t rt_listbox_get_count(void *listbox) {
     if (!lb)
         return 0;
     size_t count = lb->virtual_mode ? lb->total_item_count : (size_t)lb->item_count;
-    return count > (size_t)INT64_MAX ? INT64_MAX : (int64_t)count;
+    return rt_gui_saturating_size_to_i64(count);
 }
 
 /// @brief Get the selected index of the listbox.
@@ -621,19 +621,24 @@ static bool rt_listbox_append_selected_text(char **buffer,
                                             size_t text_len) {
     if (!buffer || !length || !capacity || !first)
         return false;
+    if ((text_len > 0u && !text) || *length > RT_GUI_MAX_STRING_BYTES)
+        return false;
     size_t prefix = *first ? 0u : 1u;
-    if (text_len > SIZE_MAX - *length - prefix)
+    if (prefix > RT_GUI_MAX_STRING_BYTES - *length ||
+        text_len > RT_GUI_MAX_STRING_BYTES - *length - prefix)
         return false;
     size_t needed = *length + prefix + text_len;
     if (needed + 1 > *capacity) {
         size_t next_cap = *capacity ? *capacity : 64u;
         while (next_cap < needed + 1) {
-            if (next_cap > SIZE_MAX / 2) {
+            if (next_cap > (RT_GUI_MAX_STRING_BYTES + 1u) / 2u) {
                 next_cap = needed + 1;
                 break;
             }
             next_cap *= 2u;
         }
+        if (next_cap > RT_GUI_MAX_STRING_BYTES + 1u)
+            return false;
         char *next = (char *)realloc(*buffer, next_cap);
         if (!next)
             return false;

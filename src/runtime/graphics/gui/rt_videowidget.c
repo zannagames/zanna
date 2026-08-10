@@ -50,6 +50,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Decoder-aligned cap for one converted video frame.
+#define RT_VIDEOWIDGET_MAX_FRAME_PIXELS ((size_t)64u * 1024u * 1024u)
+/// @brief Maximum authenticated VideoWidget wrappers retained at once.
+#define RT_VIDEOWIDGET_MAX_WRAPPERS ((size_t)1000000)
+
 /// @copydoc rt_obj_new_i64()
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 /// @copydoc rt_obj_set_finalizer()
@@ -109,11 +114,11 @@ typedef struct {
     void *vptr;
     /* Owned components */
     /// @brief Owned VideoPlayer.
-    void *player;          /* rt_videoplayer */
+    void *player; /* rt_videoplayer */
     /// @brief Retained root VBox attached to the parent.
-    void *root_widget;     /* VBox container attached to parent */
+    void *root_widget; /* VBox container attached to parent */
     /// @brief Image widget displaying decoded frames.
-    void *image_widget;    /* vg_image_t for video display */
+    void *image_widget; /* vg_image_t for video display */
     /// @brief HBox containing transport controls.
     void *controls_widget; /* HBox container for transport controls */
     /// @brief Borrowed Play button in the owned subtree.
@@ -211,13 +216,18 @@ static int videowidget_register_wrapper(rt_videowidget *w) {
             return 1;
     }
     if (s_videowidget_wrapper_count >= s_videowidget_wrapper_cap) {
+        if (s_videowidget_wrapper_count >= RT_VIDEOWIDGET_MAX_WRAPPERS)
+            return 0;
         size_t new_cap = s_videowidget_wrapper_cap ? s_videowidget_wrapper_cap : 8;
         while (new_cap <= s_videowidget_wrapper_count) {
-            if (new_cap > SIZE_MAX / 2)
-                return 0;
-            new_cap *= 2;
+            if (new_cap > RT_VIDEOWIDGET_MAX_WRAPPERS / 2u) {
+                new_cap = RT_VIDEOWIDGET_MAX_WRAPPERS;
+                break;
+            }
+            new_cap *= 2u;
         }
-        if (new_cap > SIZE_MAX / sizeof(rt_videowidget *))
+        if (new_cap <= s_videowidget_wrapper_count ||
+            new_cap > SIZE_MAX / sizeof(rt_videowidget *))
             return 0;
         void *p = realloc(s_videowidget_wrappers, new_cap * sizeof(rt_videowidget *));
         if (!p)
@@ -430,16 +440,17 @@ static double clamp_volume(double vol) {
 /// @param height Positive frame height.
 /// @return 1 when sufficient storage is available, otherwise 0 with old storage retained.
 static int videowidget_ensure_rgba_scratch(rt_videowidget *w, int64_t width, int64_t height) {
-    if (!w || width <= 0 || height <= 0 || (uintmax_t)width > (uintmax_t)SIZE_MAX ||
-        (uintmax_t)height > (uintmax_t)SIZE_MAX) {
+    if (!w || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX) {
         return 0;
     }
     const size_t frame_width = (size_t)width;
     const size_t frame_height = (size_t)height;
-    if (frame_width > SIZE_MAX / frame_height || frame_width * frame_height > SIZE_MAX / 4u) {
+    if (frame_width > SIZE_MAX / frame_height)
         return 0;
-    }
-    const size_t required = frame_width * frame_height * 4u;
+    const size_t pixels = frame_width * frame_height;
+    if (pixels > RT_VIDEOWIDGET_MAX_FRAME_PIXELS || pixels > SIZE_MAX / 4u)
+        return 0;
+    const size_t required = pixels * 4u;
     if (required <= w->rgba_scratch_capacity && w->rgba_scratch)
         return 1;
     uint8_t *replacement = (uint8_t *)malloc(required);

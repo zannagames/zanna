@@ -286,7 +286,7 @@ static vg_widget_t *rt_widget_parent_or_null_if_invalid(void *parent) {
 }
 
 /// @brief Magic value authenticating a live managed RadioGroup wrapper.
-#define RT_RADIOGROUP_MAGIC UINT64_C(0x52474452554E544D)           // "RGDRUNTM"
+#define RT_RADIOGROUP_MAGIC UINT64_C(0x52474452554E544D) // "RGDRUNTM"
 /// @brief Tombstone value stamped after a RadioGroup is explicitly destroyed.
 #define RT_RADIOGROUP_DESTROYED_MAGIC UINT64_C(0x5247444445414444) // "RGDDEAD"
 
@@ -315,10 +315,12 @@ static int rt_radiogroup_registry_add(rt_radiogroup_data_t *data) {
     if (!data)
         return 0;
     if (s_radiogroup_handle_count >= s_radiogroup_handle_cap) {
-        if (s_radiogroup_handle_cap > SIZE_MAX / 2)
-            return 0;
-        size_t new_cap = s_radiogroup_handle_cap ? s_radiogroup_handle_cap * 2 : 16;
-        if (new_cap > SIZE_MAX / sizeof(rt_radiogroup_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_radiogroup_handle_cap,
+                                             s_radiogroup_handle_count + 1u,
+                                             16u,
+                                             sizeof(rt_radiogroup_data_t *),
+                                             &new_cap))
             return 0;
         rt_radiogroup_data_t **new_handles = (rt_radiogroup_data_t **)realloc(
             s_radiogroup_handles, new_cap * sizeof(rt_radiogroup_data_t *));
@@ -736,7 +738,8 @@ int64_t rt_tabbar_was_close_clicked(void *tabbar) {
 
 /// @brief Get the index of the tab whose close button was clicked (clears after read).
 /// @param tabbar TabBar widget handle.
-/// @return Latched zero-based tab index, or -1 when no close click is pending or the bar is invalid.
+/// @return Latched zero-based tab index, or -1 when no close click is pending or the bar is
+/// invalid.
 int64_t rt_tabbar_get_close_clicked_index(void *tabbar) {
     RT_ASSERT_MAIN_THREAD();
     vg_tabbar_t *tb = rt_tabbar_checked(tabbar);
@@ -774,7 +777,9 @@ int64_t rt_tabbar_get_tab_index_at(void *tabbar, int64_t x, int64_t y) {
     vg_tabbar_t *tb = rt_tabbar_checked(tabbar);
     if (!tb)
         return -1;
-    return (int64_t)vg_tabbar_index_at(tb, (int)x, (int)y);
+    return (int64_t)vg_tabbar_index_at(tb,
+                                       rt_gui_clamp_i64_to_i32(x, INT32_MIN, INT32_MAX),
+                                       rt_gui_clamp_i64_to_i32(y, INT32_MIN, INT32_MAX));
 }
 
 /// @brief Enable or disable automatic tab removal on close-button click.
@@ -1009,7 +1014,7 @@ int64_t rt_codeeditor_get_revision(void *editor) {
     if (!ce)
         return 0;
     uint64_t revision = vg_codeeditor_get_revision(ce);
-    return revision > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)revision;
+    return rt_gui_saturating_u64_to_i64(revision);
 }
 
 /// @brief Serialize the editor's buffered edit deltas after @p since_revision as
@@ -1487,7 +1492,7 @@ int64_t rt_outputpane_get_line_count(void *pane) {
     vg_outputpane_t *out = rt_outputpane_checked(pane);
     if (!out)
         return 0;
-    return out->line_count > (size_t)INT64_MAX ? INT64_MAX : (int64_t)out->line_count;
+    return rt_gui_saturating_size_to_i64(out->line_count);
 }
 
 /// @brief Set the output pane font.
@@ -1512,7 +1517,7 @@ void rt_outputpane_set_font(void *pane, void *font, double size) {
 int64_t rt_outputpane_get_cell_width(void *pane) {
     RT_ASSERT_MAIN_THREAD();
     vg_outputpane_t *out = rt_outputpane_checked(pane);
-    return out ? (int64_t)vg_outputpane_cell_width(out) : 0;
+    return out ? rt_gui_saturating_f64_to_i64(vg_outputpane_cell_width(out)) : 0;
 }
 
 /// @brief Pixel height of one line in the pane's font.
@@ -1521,7 +1526,7 @@ int64_t rt_outputpane_get_cell_width(void *pane) {
 int64_t rt_outputpane_get_cell_height(void *pane) {
     RT_ASSERT_MAIN_THREAD();
     vg_outputpane_t *out = rt_outputpane_checked(pane);
-    return out ? (int64_t)vg_outputpane_cell_height(out) : 0;
+    return out ? rt_gui_saturating_f64_to_i64(vg_outputpane_cell_height(out)) : 0;
 }
 
 /// @brief Pixel width of @p text rendered in the pane's font.
@@ -1534,7 +1539,9 @@ int64_t rt_outputpane_measure_text(void *pane, rt_string text) {
     if (!out)
         return 0;
     char *ctext = rt_string_to_gui_cstr(text);
-    int64_t width = (int64_t)vg_outputpane_measure_text(out, ctext);
+    if (!ctext)
+        return 0;
+    int64_t width = rt_gui_saturating_f64_to_i64(vg_outputpane_measure_text(out, ctext));
     free(ctext);
     return width;
 }
@@ -1673,7 +1680,7 @@ int64_t rt_radiogroup_get_revision(void *group) {
     if (!data)
         return 0;
     uint64_t revision = vg_radiogroup_get_revision(data->group);
-    return revision > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)revision;
+    return rt_gui_saturating_u64_to_i64(revision);
 }
 
 /// @brief Create a single radio button bound to a given group.
@@ -1992,7 +1999,7 @@ static bool rt_datagrid_i64_to_column(int64_t value, int *out_value) {
 /// @param value Native value to convert.
 /// @return Exact value when representable, otherwise `INT64_MAX`.
 static int64_t rt_datagrid_size_to_i64(size_t value) {
-    return (uint64_t)value > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+    return rt_gui_saturating_size_to_i64(value);
 }
 
 /// @brief Create a viewport-aware tabular grid attached to an optional parent.

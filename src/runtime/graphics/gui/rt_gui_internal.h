@@ -724,6 +724,14 @@ static inline vg_widget_t *rt_gui_widget_parent_container_from_handle(void *hand
 
 /// @brief Largest absolute logical layout coordinate accepted from the public API.
 #define RT_GUI_MAX_LAYOUT_VALUE 1000000.0
+/// @brief Maximum number of nodes exported by one accessibility-tree traversal.
+#define RT_GUI_MAX_ACCESSIBILITY_NODES ((size_t)100000)
+/// @brief Maximum decoded or generated pixels accepted by one GUI RGBA surface.
+#define RT_GUI_MAX_IMAGE_PIXELS ((size_t)64u * 1024u * 1024u)
+/// @brief Maximum entries retained by one GUI-owned dynamic collection or handle registry.
+#define RT_GUI_MAX_COLLECTION_ITEMS ((size_t)1000000)
+/// @brief Maximum byte length copied into one GUI-owned text or identifier buffer.
+#define RT_GUI_MAX_STRING_BYTES ((size_t)64u * 1024u * 1024u)
 /// @brief Magic value authenticating heap-backed GUI string data.
 #define RT_GUI_STRING_DATA_MAGIC UINT64_C(0x5254475544535452)
 
@@ -738,7 +746,7 @@ static inline vg_widget_t *rt_gui_widget_parent_container_from_handle(void *hand
 /// @brief Authenticated variable-length UTF-8 storage used by GUI string bridges.
 typedef struct {
     uint64_t magic; ///< Must equal @ref RT_GUI_STRING_DATA_MAGIC while live.
-    size_t len; ///< Number of payload bytes excluding any trailing terminator.
+    size_t len;     ///< Number of payload bytes excluding any trailing terminator.
     char bytes[RT_GUI_FLEX_ARRAY_SIZE]; ///< Inline variable-length byte payload.
 } rt_gui_string_data_t;
 
@@ -842,6 +850,120 @@ static inline int32_t rt_gui_clamp_i64_to_i32(int64_t value, int32_t min_value, 
     return (int32_t)value;
 }
 
+/// @brief Convert a floating-point value to the runtime integer domain without undefined behavior.
+/// @details NaN becomes zero, infinities and out-of-range finite values saturate, and ordinary
+///          values retain C's truncation-toward-zero behavior.
+/// @param value Candidate toolkit or computed value.
+/// @return Deterministic signed 64-bit representation.
+static inline int64_t rt_gui_saturating_f64_to_i64(double value) {
+    if (isnan(value))
+        return 0;
+    if (value >= (double)INT64_MAX)
+        return INT64_MAX;
+    if (value <= (double)INT64_MIN)
+        return INT64_MIN;
+    return (int64_t)value;
+}
+
+/// @brief Convert a floating-point value to a toolkit integer without undefined behavior.
+/// @details NaN becomes zero, infinities and out-of-range finite values saturate, and ordinary
+///          values retain C's truncation-toward-zero behavior.
+/// @param value Candidate computed coordinate or count.
+/// @return Deterministic signed 32-bit representation.
+static inline int32_t rt_gui_saturating_f64_to_i32(double value) {
+    if (isnan(value))
+        return 0;
+    if (value >= (double)INT32_MAX)
+        return INT32_MAX;
+    if (value <= (double)INT32_MIN)
+        return INT32_MIN;
+    return (int32_t)value;
+}
+
+/// @brief Narrow an unsigned revision or identifier into the signed runtime domain.
+/// @param value Unsigned value to expose through an Int-returning runtime API.
+/// @return @c INT64_MAX above the signed range, otherwise the exact value.
+static inline int64_t rt_gui_saturating_u64_to_i64(uint64_t value) {
+    return value > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+}
+
+/// @brief Narrow a native collection size into the signed runtime domain.
+/// @param value Native element count.
+/// @return @c INT64_MAX above the signed range, otherwise the exact value.
+static inline int64_t rt_gui_saturating_size_to_i64(size_t value) {
+    return (uintmax_t)value > (uintmax_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+}
+
+/// @brief Validate GUI image dimensions and calculate their RGBA8 byte count.
+/// @details The cap matches the built-in Pixels decoders and keeps runtime-generated surfaces
+///          from bypassing the same resource boundary.
+/// @param width Positive image width in pixels.
+/// @param height Positive image height in pixels.
+/// @param out_size Receives width times height times four on success.
+/// @return True when both dimensions fit the toolkit and the bounded byte calculation succeeds.
+static inline bool rt_gui_rgba_size_i64(int64_t width, int64_t height, size_t *out_size) {
+    if (!out_size || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+        return false;
+    const size_t w = (size_t)width;
+    const size_t h = (size_t)height;
+    if (w > SIZE_MAX / h)
+        return false;
+    const size_t pixels = w * h;
+    if (pixels > RT_GUI_MAX_IMAGE_PIXELS || pixels > SIZE_MAX / 4u)
+        return false;
+    *out_size = pixels * 4u;
+    return true;
+}
+
+/// @brief Calculate bounded geometric growth for a GUI-owned array.
+/// @param current Current allocated element capacity.
+/// @param minimum Minimum capacity required by the caller.
+/// @param initial First allocation size when @p current is zero.
+/// @param element_size Size of one array element.
+/// @param out_capacity Receives a capacity in [minimum, RT_GUI_MAX_COLLECTION_ITEMS].
+/// @return True when a larger safe capacity exists; otherwise false.
+static inline bool rt_gui_next_collection_capacity(
+    size_t current, size_t minimum, size_t initial, size_t element_size, size_t *out_capacity) {
+    if (!out_capacity || element_size == 0u || minimum > RT_GUI_MAX_COLLECTION_ITEMS ||
+        current >= RT_GUI_MAX_COLLECTION_ITEMS)
+        return false;
+    size_t next = current == 0u ? initial : current;
+    if (next < minimum) {
+        if (next > RT_GUI_MAX_COLLECTION_ITEMS / 2u)
+            next = RT_GUI_MAX_COLLECTION_ITEMS;
+        else
+            next *= 2u;
+    }
+    if (next < minimum)
+        next = minimum;
+    if (next > RT_GUI_MAX_COLLECTION_ITEMS)
+        next = RT_GUI_MAX_COLLECTION_ITEMS;
+    if (next <= current || next < minimum || next > SIZE_MAX / element_size)
+        return false;
+    *out_capacity = next;
+    return true;
+}
+
+/// @brief Calculate bounded geometric growth for a toolkit array using signed counts.
+/// @param current Current signed capacity.
+/// @param count Current initialized element count.
+/// @param initial First allocation size when current capacity is zero.
+/// @param element_size Size of one array element.
+/// @param out_capacity Receives the next positive signed capacity.
+/// @return True when the inputs are consistent and bounded growth is possible.
+static inline bool rt_gui_next_collection_capacity_i32(
+    int current, int count, int initial, size_t element_size, int *out_capacity) {
+    if (!out_capacity || current < 0 || count < 0 || initial <= 0)
+        return false;
+    size_t next = 0;
+    if (!rt_gui_next_collection_capacity(
+            (size_t)current, (size_t)count + 1u, (size_t)initial, element_size, &next) ||
+        next > (size_t)INT_MAX)
+        return false;
+    *out_capacity = (int)next;
+    return true;
+}
+
 /// @brief Validate a font size, returning @p fallback for non-finite input and
 ///        clamping otherwise to the supported [1, 256] point range.
 /// @param size Candidate logical font size in points.
@@ -863,7 +985,7 @@ static inline double rt_gui_sanitize_font_size(double size, double fallback) {
 ///         length, inaccessible bytes, overflow, or allocation failure.
 static inline rt_gui_string_data_t *rt_gui_string_data_new(rt_string value) {
     int64_t len64 = rt_str_len(value);
-    if (len64 < 0)
+    if (len64 < 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES)
         return NULL;
     size_t len = (size_t)len64;
     const size_t header_size = offsetof(rt_gui_string_data_t, bytes);
@@ -891,7 +1013,7 @@ static inline rt_gui_string_data_t *rt_gui_string_data_new(rt_string value) {
 /// @return New owned block released by @ref rt_gui_string_data_free_if_owned, or NULL on invalid
 ///         input, size overflow, or allocation failure.
 static inline rt_gui_string_data_t *rt_gui_string_data_new_bytes(const char *bytes, size_t len) {
-    if (len > 0 && !bytes)
+    if ((len > 0 && !bytes) || len > RT_GUI_MAX_STRING_BYTES)
         return NULL;
     const size_t header_size = offsetof(rt_gui_string_data_t, bytes);
     if (len > SIZE_MAX - header_size - 1)
@@ -941,6 +1063,8 @@ static inline rt_string rt_gui_string_data_to_rt_string(const void *ptr) {
         return rt_str_empty();
     if (rt_gui_string_data_is_owned(ptr)) {
         const rt_gui_string_data_t *data = (const rt_gui_string_data_t *)ptr;
+        if (data->len > RT_GUI_MAX_STRING_BYTES)
+            return rt_str_empty();
         return rt_string_from_bytes(data->bytes, data->len);
     }
     return rt_str_empty();
@@ -962,7 +1086,7 @@ static inline char *rt_string_to_cstr(rt_string str) {
     if (!str)
         return NULL;
     int64_t len64 = rt_str_len(str);
-    if (len64 < 0)
+    if (len64 < 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES)
         return NULL;
     if ((uint64_t)len64 > (uint64_t)SIZE_MAX)
         return NULL;
@@ -990,7 +1114,8 @@ static inline int rt_string_contains_nul(rt_string str) {
     if (!str)
         return 0;
     int64_t len64 = rt_str_len(str);
-    if (len64 <= 0)
+    if (len64 <= 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)len64 > (uint64_t)SIZE_MAX)
         return 0;
     const char *bytes = rt_string_cstr(str);
     if (!bytes)
@@ -1027,7 +1152,8 @@ static inline char *rt_string_to_gui_cstr(rt_string str) {
     }
 
     int64_t len64 = rt_str_len(str);
-    if (len64 < 0)
+    if (len64 < 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)len64 > (uint64_t)SIZE_MAX)
         return NULL;
     size_t len = (size_t)len64;
     const char *bytes = len ? rt_string_cstr(str) : "";
@@ -1057,6 +1183,36 @@ static inline char *rt_string_to_gui_cstr(rt_string str) {
     }
     *out = '\0';
     return result;
+}
+
+/// @brief Measure a conventional C string without scanning beyond the GUI text limit.
+/// @param text Candidate NUL-terminated string.
+/// @param out_length Receives the byte count excluding the terminator.
+/// @return True when a terminator occurs within the supported GUI string domain.
+static inline bool rt_gui_cstr_length_bounded(const char *text, size_t *out_length) {
+    if (!text || !out_length)
+        return false;
+    size_t length = 0;
+    while (length <= RT_GUI_MAX_STRING_BYTES && text[length] != '\0')
+        ++length;
+    if (length > RT_GUI_MAX_STRING_BYTES)
+        return false;
+    *out_length = length;
+    return true;
+}
+
+/// @brief Allocate a bounded copy of a conventional GUI C string.
+/// @param text Candidate NUL-terminated source.
+/// @return Caller-owned copy, or NULL when invalid, over policy, or out of memory.
+static inline char *rt_gui_strdup_bounded(const char *text) {
+    size_t length = 0;
+    if (!rt_gui_cstr_length_bounded(text, &length))
+        return NULL;
+    char *copy = (char *)malloc(length + 1u);
+    if (!copy)
+        return NULL;
+    memcpy(copy, text, length + 1u);
+    return copy;
 }
 
 /// @brief Return @p text when non-NULL, otherwise the immutable empty C string.

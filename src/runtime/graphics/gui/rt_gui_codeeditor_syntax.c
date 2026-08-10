@@ -56,16 +56,7 @@
 /// @param text Source token to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_codeeditor_syntax_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 //=============================================================================
@@ -716,20 +707,19 @@ static void rt_zia_syntax_cb(
 // ─── Zanna BASIC language tokenizer ───────────────────────────────────────
 
 static const char *const basic_keywords[] = {
-    "AND",       "AS",        "CALL",      "CASE",   "CLASS",  "CLOSE",     "CONST",
-    "DECLARE",   "DIM",       "DO",        "EACH",   "ELSE",   "ELSEIF",    "END",
-    "ENDIF",     "ENUM",      "ERASE",     "ERROR",  "EXIT",   "FALSE",     "FOR",
-    "FUNCTION",  "GET",       "GOSUB",     "GOTO",   "IF",     "IMPLEMENTS","IN",
-    "INPUT",     "INHERITS",  "INTERFACE", "LET",    "LINE",   "LOOP",      "MOD",
-    "NAMESPACE", "NEW",       "NEXT",      "NOT",    "ON",     "OPEN",      "OR",
-    "PRINT",     "PRIVATE",   "PROPERTY",  "PUBLIC", "PUT",    "RANDOMIZE", "REDIM",
-    "RESUME",    "RETURN",    "SELECT",    "SHARED", "STATIC", "STEP",      "SUB",
-    "SWAP",      "THEN",      "TO",        "TRUE",   "TYPE",   "UNTIL",     "USING",
-    "WEND",      "WHILE",     "XOR",       NULL};
+    "AND",   "AS",     "CALL",       "CASE",      "CLASS",    "CLOSE",    "CONST",     "DECLARE",
+    "DIM",   "DO",     "EACH",       "ELSE",      "ELSEIF",   "END",      "ENDIF",     "ENUM",
+    "ERASE", "ERROR",  "EXIT",       "FALSE",     "FOR",      "FUNCTION", "GET",       "GOSUB",
+    "GOTO",  "IF",     "IMPLEMENTS", "IN",        "INPUT",    "INHERITS", "INTERFACE", "LET",
+    "LINE",  "LOOP",   "MOD",        "NAMESPACE", "NEW",      "NEXT",     "NOT",       "ON",
+    "OPEN",  "OR",     "PRINT",      "PRIVATE",   "PROPERTY", "PUBLIC",   "PUT",       "RANDOMIZE",
+    "REDIM", "RESUME", "RETURN",     "SELECT",    "SHARED",   "STATIC",   "STEP",      "SUB",
+    "SWAP",  "THEN",   "TO",         "TRUE",      "TYPE",     "UNTIL",    "USING",     "WEND",
+    "WHILE", "XOR",    NULL};
 
 /// @brief Zanna BASIC built-in type names — coloured as types, not keywords.
-static const char *const basic_types[] = {"BOOLEAN", "DOUBLE",  "FLOAT", "INT", "INTEGER",
-                                          "LONG",    "SINGLE",  "STRING", NULL};
+static const char *const basic_types[] = {
+    "BOOLEAN", "DOUBLE", "FLOAT", "INT", "INTEGER", "LONG", "SINGLE", "STRING", NULL};
 
 /// @brief Tokenize a Zanna BASIC source line.
 ///
@@ -1141,11 +1131,13 @@ void rt_codeeditor_set_custom_keywords(void *editor, rt_string keywords) {
 
         if (*token) {
             if (new_count >= cap) {
-                if (cap > INT_MAX / 2 || (size_t)cap * 2 > SIZE_MAX / sizeof(char *)) {
+                int next_cap = 0;
+                if (!rt_gui_next_collection_capacity_i32(
+                        cap, new_count, 8, sizeof(char *), &next_cap)) {
                     ok = 0;
                     break;
                 }
-                cap *= 2;
+                cap = next_cap;
                 char **p = (char **)realloc(new_keywords, (size_t)cap * sizeof(char *));
                 if (!p) {
                     ok = 0;
@@ -1225,6 +1217,9 @@ void rt_codeeditor_add_highlight(void *editor,
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->highlight_span_count < 0 || ce->highlight_span_cap < 0 ||
+        ce->highlight_span_count > ce->highlight_span_cap)
+        return;
     int32_t sl = rt_gui_clamp_i64_to_i32(start_line, 0, INT32_MAX);
     int32_t sc = rt_gui_clamp_i64_to_i32(start_col, 0, INT32_MAX);
     int32_t el = rt_gui_clamp_i64_to_i32(end_line, 0, INT32_MAX);
@@ -1232,9 +1227,13 @@ void rt_codeeditor_add_highlight(void *editor,
     if (el < sl || (el == sl && ec <= sc))
         return;
     if (ce->highlight_span_count >= ce->highlight_span_cap) {
-        if (ce->highlight_span_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(ce->highlight_span_cap,
+                                                 ce->highlight_span_count,
+                                                 8,
+                                                 sizeof(*ce->highlight_spans),
+                                                 &new_cap))
             return;
-        int new_cap = ce->highlight_span_cap ? ce->highlight_span_cap * 2 : 8;
         void *p = realloc(ce->highlight_spans, (size_t)new_cap * sizeof(*ce->highlight_spans));
         if (!p)
             return;
@@ -1309,15 +1308,22 @@ void rt_codeeditor_add_semantic_token(
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->semantic_token_count < 0 || ce->semantic_token_cap < 0 ||
+        ce->semantic_token_count > ce->semantic_token_cap)
+        return;
     int32_t l = rt_gui_clamp_i64_to_i32(line, 0, INT32_MAX);
     int32_t s = rt_gui_clamp_i64_to_i32(start, 0, INT32_MAX);
     int32_t e = rt_gui_clamp_i64_to_i32(end, 0, INT32_MAX);
     if (e <= s)
         return;
     if (ce->semantic_token_count >= ce->semantic_token_cap) {
-        if (ce->semantic_token_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(ce->semantic_token_cap,
+                                                 ce->semantic_token_count,
+                                                 16,
+                                                 sizeof(*ce->semantic_tokens),
+                                                 &new_cap))
             return;
-        int new_cap = ce->semantic_token_cap ? ce->semantic_token_cap * 2 : 16;
         void *p = realloc(ce->semantic_tokens, (size_t)new_cap * sizeof(*ce->semantic_tokens));
         if (!p)
             return;

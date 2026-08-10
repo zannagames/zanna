@@ -86,7 +86,10 @@ static void rt_gui_accessibility_notify_widget(vg_widget_t *widget) {
 /// @param widget Widget to inspect.
 /// @return True only when the widget and every parent are enabled.
 static bool rt_gui_accessibility_effectively_enabled(const vg_widget_t *widget) {
+    size_t depth = 0;
     for (const vg_widget_t *current = widget; current; current = current->parent) {
+        if (depth++ >= RT_GUI_MAX_ACCESSIBILITY_NODES)
+            return false;
         if (!current->enabled)
             return false;
     }
@@ -205,11 +208,15 @@ static void *rt_gui_accessibility_make_node(vg_widget_t *widget, float scale, vo
 
     float screen_x = 0.0f, screen_y = 0.0f, screen_w = 0.0f, screen_h = 0.0f;
     vg_widget_get_screen_bounds(widget, &screen_x, &screen_y, &screen_w, &screen_h);
+    screen_x = rt_gui_sanitize_signed_float(screen_x, RT_GUI_MAX_LAYOUT_VALUE);
+    screen_y = rt_gui_sanitize_signed_float(screen_y, RT_GUI_MAX_LAYOUT_VALUE);
+    screen_w = rt_gui_sanitize_nonnegative_float(screen_w, RT_GUI_MAX_LAYOUT_VALUE);
+    screen_h = rt_gui_sanitize_nonnegative_float(screen_h, RT_GUI_MAX_LAYOUT_VALUE);
     char value_buffer[64] = {0};
     vg_widget_t *label_target = vg_widget_get_accessible_label_for(widget);
 
     rt_map_set_int(map, rt_const_cstr("schemaVersion"), 1);
-    rt_map_set_int(map, rt_const_cstr("id"), (int64_t)widget->id);
+    rt_map_set_int(map, rt_const_cstr("id"), rt_gui_saturating_u64_to_i64(widget->id));
     rt_map_set_int(map, rt_const_cstr("type"), (int64_t)widget->type);
     rt_map_set_int(map, rt_const_cstr("role"), (int64_t)vg_widget_get_accessible_role(widget));
     rt_gui_accessibility_map_set_string(map, "name", rt_gui_accessibility_inferred_name(widget));
@@ -240,13 +247,17 @@ static void *rt_gui_accessibility_make_node(vg_widget_t *widget, float scale, vo
     rt_map_set_float(map, rt_const_cstr("screenY"), screen_y);
     rt_map_set_float(map, rt_const_cstr("screenWidth"), screen_w);
     rt_map_set_float(map, rt_const_cstr("screenHeight"), screen_h);
-    rt_map_set_int(map, rt_const_cstr("labelForId"), label_target ? (int64_t)label_target->id : 0);
+    rt_map_set_int(map,
+                   rt_const_cstr("labelForId"),
+                   label_target ? rt_gui_saturating_u64_to_i64(label_target->id) : 0);
     rt_map_set_int(map, rt_const_cstr("liveRegion"), (int64_t)vg_widget_get_live_region(widget));
-    rt_map_set_int(map, rt_const_cstr("revision"), (int64_t)widget->revision);
-    rt_map_set_int(map, rt_const_cstr("semanticRevision"), (int64_t)widget->accessibility.revision);
+    rt_map_set_int(map, rt_const_cstr("revision"), rt_gui_saturating_u64_to_i64(widget->revision));
+    rt_map_set_int(map,
+                   rt_const_cstr("semanticRevision"),
+                   rt_gui_saturating_u64_to_i64(widget->accessibility.revision));
     rt_map_set_int(map,
                    rt_const_cstr("announcementRevision"),
-                   (int64_t)widget->accessibility.announcement_revision);
+                   rt_gui_saturating_u64_to_i64(widget->accessibility.announcement_revision));
     rt_map_set_int(
         map, rt_const_cstr("announcementMode"), (int64_t)widget->accessibility.announcement_mode);
     rt_gui_accessibility_map_set_string(map, "announcement", widget->accessibility.announcement);
@@ -278,8 +289,12 @@ static bool rt_gui_accessibility_push_frame(rt_gui_accessibility_frame_t **frame
                                             void *children) {
     if (!frames || !count || !capacity || !children)
         return false;
+    if (*count >= RT_GUI_MAX_ACCESSIBILITY_NODES)
+        return false;
     if (*count == *capacity) {
         size_t next_capacity = *capacity ? *capacity * 2u : 32u;
+        if (next_capacity > RT_GUI_MAX_ACCESSIBILITY_NODES)
+            next_capacity = RT_GUI_MAX_ACCESSIBILITY_NODES;
         if (next_capacity < *capacity ||
             next_capacity > SIZE_MAX / sizeof(rt_gui_accessibility_frame_t)) {
             return false;
@@ -324,6 +339,7 @@ void *rt_accessibility_snapshot(void *root) {
     rt_gui_accessibility_frame_t *frames = NULL;
     size_t count = 0;
     size_t capacity = 0;
+    size_t node_count = 1;
     bool truncated = !rt_gui_accessibility_push_frame(
         &frames, &count, &capacity, root_widget->first_child, root_children);
     if (truncated)
@@ -332,14 +348,27 @@ void *rt_accessibility_snapshot(void *root) {
     while (!truncated && count > 0) {
         rt_gui_accessibility_frame_t *frame = &frames[count - 1u];
         vg_widget_t *child = frame->next_child;
-        while (child && !child->visible)
+        size_t skipped = 0;
+        while (child && !child->visible) {
+            if (skipped++ >= RT_GUI_MAX_ACCESSIBILITY_NODES) {
+                truncated = true;
+                break;
+            }
             child = child->next_sibling;
+        }
+        if (truncated)
+            break;
         if (!child) {
             rt_gui_accessibility_release_object(frame->children);
             --count;
             continue;
         }
         frame->next_child = child->next_sibling;
+
+        if (node_count >= RT_GUI_MAX_ACCESSIBILITY_NODES) {
+            truncated = true;
+            break;
+        }
 
         void *child_children = NULL;
         void *child_map = rt_gui_accessibility_make_node(child, scale, &child_children);
@@ -349,6 +378,7 @@ void *rt_accessibility_snapshot(void *root) {
         }
         rt_seq_push(frame->children, child_map);
         rt_gui_accessibility_release_object(child_map);
+        ++node_count;
         if (!rt_gui_accessibility_push_frame(
                 &frames, &count, &capacity, child->first_child, child_children)) {
             rt_gui_accessibility_release_object(child_children);
@@ -589,7 +619,7 @@ int64_t rt_widget_get_revision(void *widget) {
 #ifdef ZANNA_ENABLE_GRAPHICS
     vg_widget_t *resolved = rt_gui_widget_handle_checked(widget);
     uint64_t revision = resolved ? vg_widget_get_revision(resolved) : 0;
-    return revision > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)revision;
+    return rt_gui_saturating_u64_to_i64(revision);
 #else
     (void)widget;
     return 0;

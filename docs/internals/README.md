@@ -85,3 +85,4 @@ Living ledgers that track findings and their resolution for high-risk subsystems
 - [Graphics3D Runtime Integrity Audit (August 2026)](graphics3d-runtime-integrity-audit-2026-08.md) — Resolution ledger for 185 behavior, transient ownership, temporal history, physics, loader, and particle findings
 - [Graphics3D World Runtime Integrity Audit (August 2026)](graphics3d-world-runtime-integrity-audit-2026-08.md) — Resolution ledger for 160 Water3D, Vegetation3D, and Particles3D ownership, retained-state, allocation, and hot-path findings
 - [Graphics3D Runtime Hardening, Round Two (August 2026)](graphics3d-runtime-hardening-round-two-2026-08-09.md) — Resolution ledger for 105 World3D, Timeline3D, Canvas3D readback, and BC6H findings
+- [Graphics3D Runtime Hardening, Round Three (August 2026)](graphics3d-runtime-hardening-round-three-2026-08-10.md) — Resolution ledger for 100 PostFX3D ownership, numeric, packed-buffer, temporal, and backend-chain findings

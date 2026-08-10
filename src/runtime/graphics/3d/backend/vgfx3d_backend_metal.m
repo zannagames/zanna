@@ -88,6 +88,9 @@
     float _taaJitterClip[2];
     float _taaPrevJitterClip[2];
     uint32_t _taaFrameIndex;
+    /* Explicit public ivar: backend chain ownership cookies bind to this stable address while
+     * read-only property accesses may still copy the struct as a borrowed view. */
+    vgfx3d_postfx_chain_t _gpuPostfxChain;
     BOOL _taaJitterActive;
     /* MTL-12: Shadow light view-projection matrices (stored from shadow_begin) */
     float _shadowLightVP[VGFX3D_MAX_SHADOW_LIGHTS][16];
@@ -286,6 +289,7 @@
 @end
 
 @implementation VGFXMetalContext
+@synthesize gpuPostfxChain = _gpuPostfxChain;
 @end
 
 @interface VGFXMetalTextureCacheEntry : NSObject

@@ -6,14 +6,13 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/3d/render/rt_postfx3d.h
-// Purpose: PostFX3D — full-screen post-processing effect chain (bloom, tone
-//   mapping, FXAA, color grading, vignette). Applied to the rendered
-//   framebuffer after scene drawing completes.
+// Purpose: PostFX3D — ordered full-screen color and scene-aware effects for
+//   software framebuffers and backend-owned GPU chain snapshots.
 //
 // Key invariants:
 //   - Effects are applied in chain order (first added = first applied).
-//   - Chain storage grows dynamically as effects are appended.
-//   - Software path: per-pixel operations on the CPU framebuffer.
+//   - Authored and exported chains are bounded at VGFX3D_POSTFX_MAX_EFFECTS.
+//   - Software effects share a packed RGBRGB... float framebuffer.
 //   - SetPostFX on Canvas3D enables automatic application in Flip().
 //
 // Ownership/Lifetime:
@@ -86,8 +85,8 @@ void rt_postfx3d_set_enabled(void *obj, int8_t enabled);
 /// @return 1 for a valid enabled chain, or 0 otherwise.
 int8_t rt_postfx3d_get_enabled(void *obj);
 
-/// @brief Remove all effects from the chain.
-/// @param obj PostFX3D chain to clear without changing its enabled state.
+/// @brief Remove all effects, release any retained LUT, and reset temporal state.
+/// @param obj PostFX3D chain to clear without changing its enabled state or warm allocations.
 void rt_postfx3d_clear(void *obj);
 
 /// @brief Number of effects currently in the chain.
@@ -234,6 +233,9 @@ rt_string rt_postfx3d_get_last_error(void *obj);
 
 /* Backend-facing PostFX snapshot (MTL-11): compact effect params for GPU backends.
  * Exported from rt_postfx3d.c — backends should NOT inspect the private rt_postfx3d struct. */
+/// Maximum authored or backend-snapshot entries in one post-processing chain.
+#define VGFX3D_POSTFX_MAX_EFFECTS 4096
+
 /// @brief Compact, backend-readable snapshot of a PostFX chain's enabled effects and
 ///   their parameters — GPU backends consume this instead of the private rt_postfx3d struct.
 typedef struct vgfx3d_postfx_snapshot {
@@ -281,8 +283,8 @@ typedef enum {
     VGFX3D_POSTFX_EFFECT_SSAO,
     VGFX3D_POSTFX_EFFECT_DOF,
     VGFX3D_POSTFX_EFFECT_MOTION_BLUR,
-    VGFX3D_POSTFX_EFFECT_TAA, /* appended: backend switches key on the raw type value */
-    VGFX3D_POSTFX_EFFECT_SSR, /* Plan 10 */
+    VGFX3D_POSTFX_EFFECT_TAA,           /* appended: backend switches key on the raw type value */
+    VGFX3D_POSTFX_EFFECT_SSR,           /* Plan 10 */
     VGFX3D_POSTFX_EFFECT_AUTO_EXPOSURE, /* Track E doc 07: eye adaptation */
     VGFX3D_POSTFX_EFFECT_COLOR_LUT,     /* Track E doc 07: 3D LUT grading */
     VGFX3D_POSTFX_EFFECT_SUN_SHAFTS,    /* Track E doc 07: screen-space god rays */
@@ -301,6 +303,13 @@ typedef struct vgfx3d_postfx_chain {
     int32_t effect_count;
     int32_t effect_capacity;
     vgfx3d_postfx_effect_desc_t *effects;
+    /* Appended authoritative allocation metadata. The public fields above are traversal
+     * mirrors; only a tuple whose address-bound cookie validates may be resized or freed.
+     * By-value copies intentionally become borrowed views because their cookie is bound to
+     * the original chain address. */
+    vgfx3d_postfx_effect_desc_t *owned_effects;
+    int32_t owned_effect_capacity;
+    uint64_t effect_storage_cookie;
 } vgfx3d_postfx_chain_t;
 
 /// @brief Fill a flat snapshot from a PostFX3D object; returns 0 if it is NULL or disabled.

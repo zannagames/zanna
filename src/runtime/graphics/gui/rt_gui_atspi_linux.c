@@ -51,6 +51,7 @@ typedef struct GMainLoop GMainLoop;
 typedef struct GSource GSource;
 typedef struct GVariant GVariant;
 typedef struct GVariantBuilder GVariantBuilder;
+
 typedef struct GError {
     uint32_t domain;
     int code;
@@ -72,13 +73,8 @@ typedef void (*rt_gdbus_method_call_t)(GDBusConnection *,
 /// @details Receives connection and routing metadata, the property name, an
 ///          optional error destination, and registered user data.
 /// @return Newly constructed property variant, or NULL when unavailable.
-typedef GVariant *(*rt_gdbus_get_property_t)(GDBusConnection *,
-                                             const char *,
-                                             const char *,
-                                             const char *,
-                                             const char *,
-                                             GError **,
-                                             void *);
+typedef GVariant *(*rt_gdbus_get_property_t)(
+    GDBusConnection *, const char *, const char *, const char *, const char *, GError **, void *);
 /// @brief GDBus property-write callback ABI used by the AT-SPI object vtable.
 /// @details Receives connection and routing metadata, the property name and
 ///          borrowed replacement variant, an optional error destination, and
@@ -114,11 +110,8 @@ typedef struct rt_gui_atspi_api {
                                       int,
                                       void *,
                                       GError **);
-    GDBusConnection *(*connection_new_for_address_sync)(const char *,
-                                                        int,
-                                                        void *,
-                                                        void *,
-                                                        GError **);
+    GDBusConnection *(*connection_new_for_address_sync)(
+        const char *, int, void *, void *, GError **);
     const char *(*connection_get_unique_name)(GDBusConnection *);
     uint32_t (*connection_register_object)(GDBusConnection *,
                                            const char *,
@@ -212,6 +205,12 @@ typedef struct rt_gui_atspi_node {
     uint32_t value_registration;
 } rt_gui_atspi_node_t;
 
+/// @brief One pending visible-tree visit with its already-known snapshot parent.
+typedef struct rt_gui_atspi_visit {
+    vg_widget_t *widget;  ///< Borrowed live widget to snapshot.
+    int32_t parent_index; ///< Snapshot index of the parent, or -1 for the root.
+} rt_gui_atspi_visit_t;
+
 typedef struct rt_gui_atspi_bridge {
     vgfx_window_t window;
     char name[256];
@@ -256,7 +255,8 @@ static const char *const g_rt_gui_atspi_xml_parts[] = {
     "<property name='Version' type='s' access='read'/>"
     "<property name='AtspiVersion' type='s' access='read'/>"
     "<property name='Id' type='i' access='readwrite'/>"
-    "<method name='GetLocale'><arg direction='in' type='u'/><arg direction='out' type='s'/></method>"
+    "<method name='GetLocale'><arg direction='in' type='u'/><arg direction='out' "
+    "type='s'/></method>"
     "</interface>",
     "<interface name='org.a11y.atspi.Cache'>"
     "<property name='version' type='u' access='read'/>"
@@ -272,7 +272,8 @@ static const char *const g_rt_gui_atspi_xml_parts[] = {
     "<property name='Locale' type='s' access='read'/>"
     "<property name='AccessibleId' type='s' access='read'/>"
     "<property name='HelpText' type='s' access='read'/>"
-    "<method name='GetChildAtIndex'><arg direction='in' type='i'/><arg direction='out' type='(so)'/></method>"
+    "<method name='GetChildAtIndex'><arg direction='in' type='i'/><arg direction='out' "
+    "type='(so)'/></method>"
     "<method name='GetChildren'><arg direction='out' type='a(so)'/></method>"
     "<method name='GetIndexInParent'><arg direction='out' type='i'/></method>"
     "<method name='GetRelationSet'><arg direction='out' type='a(ua(so))'/></method>"
@@ -285,27 +286,39 @@ static const char *const g_rt_gui_atspi_xml_parts[] = {
     "<method name='GetInterfaces'><arg direction='out' type='as'/></method>"
     "</interface>",
     "<interface name='org.a11y.atspi.Component'>"
-    "<method name='Contains'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='b'/></method>"
-    "<method name='GetAccessibleAtPoint'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='(so)'/></method>"
-    "<method name='GetExtents'><arg direction='in' type='u'/><arg direction='out' type='(iiii)'/></method>"
-    "<method name='GetPosition'><arg direction='in' type='u'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
+    "<method name='Contains'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg "
+    "direction='in' type='u'/><arg direction='out' type='b'/></method>"
+    "<method name='GetAccessibleAtPoint'><arg direction='in' type='i'/><arg direction='in' "
+    "type='i'/><arg direction='in' type='u'/><arg direction='out' type='(so)'/></method>"
+    "<method name='GetExtents'><arg direction='in' type='u'/><arg direction='out' "
+    "type='(iiii)'/></method>"
+    "<method name='GetPosition'><arg direction='in' type='u'/><arg direction='out' type='i'/><arg "
+    "direction='out' type='i'/></method>"
     "<method name='GetSize'><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
     "<method name='GetLayer'><arg direction='out' type='u'/></method>"
     "<method name='GetMDIZOrder'><arg direction='out' type='n'/></method>"
     "<method name='GrabFocus'><arg direction='out' type='b'/></method>"
     "<method name='GetAlpha'><arg direction='out' type='d'/></method>"
-    "<method name='SetExtents'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='b'/></method>"
-    "<method name='SetPosition'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='b'/></method>"
-    "<method name='SetSize'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='out' type='b'/></method>"
+    "<method name='SetExtents'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg "
+    "direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg "
+    "direction='out' type='b'/></method>"
+    "<method name='SetPosition'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg "
+    "direction='in' type='u'/><arg direction='out' type='b'/></method>"
+    "<method name='SetSize'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg "
+    "direction='out' type='b'/></method>"
     "<method name='ScrollTo'><arg direction='in' type='u'/><arg direction='out' type='b'/></method>"
-    "<method name='ScrollToPoint'><arg direction='in' type='u'/><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='out' type='b'/></method>"
+    "<method name='ScrollToPoint'><arg direction='in' type='u'/><arg direction='in' type='i'/><arg "
+    "direction='in' type='i'/><arg direction='out' type='b'/></method>"
     "</interface>",
     "<interface name='org.a11y.atspi.Action'>"
     "<property name='NActions' type='i' access='read'/>"
-    "<method name='GetDescription'><arg direction='in' type='i'/><arg direction='out' type='s'/></method>"
+    "<method name='GetDescription'><arg direction='in' type='i'/><arg direction='out' "
+    "type='s'/></method>"
     "<method name='GetName'><arg direction='in' type='i'/><arg direction='out' type='s'/></method>"
-    "<method name='GetLocalizedName'><arg direction='in' type='i'/><arg direction='out' type='s'/></method>"
-    "<method name='GetKeyBinding'><arg direction='in' type='i'/><arg direction='out' type='s'/></method>"
+    "<method name='GetLocalizedName'><arg direction='in' type='i'/><arg direction='out' "
+    "type='s'/></method>"
+    "<method name='GetKeyBinding'><arg direction='in' type='i'/><arg direction='out' "
+    "type='s'/></method>"
     "<method name='GetActions'><arg direction='out' type='a(sss)'/></method>"
     "<method name='DoAction'><arg direction='in' type='i'/><arg direction='out' type='b'/></method>"
     "</interface>",
@@ -313,20 +326,37 @@ static const char *const g_rt_gui_atspi_xml_parts[] = {
     "<property name='CharacterCount' type='i' access='read'/>"
     "<property name='CaretOffset' type='i' access='read'/>"
     "<property name='version' type='u' access='read'/>"
-    "<method name='GetStringAtOffset'><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetText'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='out' type='s'/></method>"
-    "<method name='GetTextBeforeOffset'><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetTextAtOffset'><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetTextAfterOffset'><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetCharacterAtOffset'><arg direction='in' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetAttributeValue'><arg direction='in' type='i'/><arg direction='in' type='s'/><arg direction='out' type='s'/></method>"
-    "<method name='GetAttributes'><arg direction='in' type='i'/><arg direction='out' type='a{ss}'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
+    "<method name='GetStringAtOffset'><arg direction='in' type='i'/><arg direction='in' "
+    "type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' "
+    "type='i'/></method>"
+    "<method name='GetText'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg "
+    "direction='out' type='s'/></method>"
+    "<method name='GetTextBeforeOffset'><arg direction='in' type='i'/><arg direction='in' "
+    "type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' "
+    "type='i'/></method>"
+    "<method name='GetTextAtOffset'><arg direction='in' type='i'/><arg direction='in' "
+    "type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' "
+    "type='i'/></method>"
+    "<method name='GetTextAfterOffset'><arg direction='in' type='i'/><arg direction='in' "
+    "type='u'/><arg direction='out' type='s'/><arg direction='out' type='i'/><arg direction='out' "
+    "type='i'/></method>"
+    "<method name='GetCharacterAtOffset'><arg direction='in' type='i'/><arg direction='out' "
+    "type='i'/></method>"
+    "<method name='GetAttributeValue'><arg direction='in' type='i'/><arg direction='in' "
+    "type='s'/><arg direction='out' type='s'/></method>"
+    "<method name='GetAttributes'><arg direction='in' type='i'/><arg direction='out' "
+    "type='a{ss}'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
     "<method name='GetDefaultAttributes'><arg direction='out' type='a{ss}'/></method>"
-    "<method name='GetCharacterExtents'><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='i'/><arg direction='out' type='i'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='GetOffsetAtPoint'><arg direction='in' type='i'/><arg direction='in' type='i'/><arg direction='in' type='u'/><arg direction='out' type='i'/></method>"
+    "<method name='GetCharacterExtents'><arg direction='in' type='i'/><arg direction='in' "
+    "type='u'/><arg direction='out' type='i'/><arg direction='out' type='i'/><arg direction='out' "
+    "type='i'/><arg direction='out' type='i'/></method>"
+    "<method name='GetOffsetAtPoint'><arg direction='in' type='i'/><arg direction='in' "
+    "type='i'/><arg direction='in' type='u'/><arg direction='out' type='i'/></method>"
     "<method name='GetNSelections'><arg direction='out' type='i'/></method>"
-    "<method name='GetSelection'><arg direction='in' type='i'/><arg direction='out' type='i'/><arg direction='out' type='i'/></method>"
-    "<method name='SetCaretOffset'><arg direction='in' type='i'/><arg direction='out' type='b'/></method>"
+    "<method name='GetSelection'><arg direction='in' type='i'/><arg direction='out' type='i'/><arg "
+    "direction='out' type='i'/></method>"
+    "<method name='SetCaretOffset'><arg direction='in' type='i'/><arg direction='out' "
+    "type='b'/></method>"
     "</interface>",
     "<interface name='org.a11y.atspi.Value'>"
     "<property name='MinimumValue' type='d' access='read'/>"
@@ -356,8 +386,8 @@ static void rt_gui_atspi_diagnostic(const char *stage, const GError *error) {
 /// @return AT-SPI role value, defaulting to application for invalid input.
 static uint32_t rt_gui_atspi_role(vg_accessible_role_t role) {
     static const uint32_t roles[VG_ACCESSIBLE_ROLE_COUNT] = {
-        39, 75, 69, 99, 29, 43, 7, 44, 79, 79, 11, 31, 32, 65, 91,
-        38, 37, 55, 90, 56, 51, 42, 16, 2, 33, 35, 63, 54, 27, 107, 88,
+        39, 75, 69, 99, 29, 43, 7,  44, 79, 79, 11, 31, 32, 65,  91, 38,
+        37, 55, 90, 56, 51, 42, 16, 2,  33, 35, 63, 54, 27, 107, 88,
     };
     return role >= 0 && role < VG_ACCESSIBLE_ROLE_COUNT ? roles[role] : 39;
 }
@@ -398,9 +428,13 @@ static const char *rt_gui_atspi_node_name(const vg_widget_t *widget) {
 /// @param widget Borrowed widget to inspect.
 /// @return 1 when every node in the chain is enabled, otherwise 0.
 static int rt_gui_atspi_effectively_enabled(const vg_widget_t *widget) {
-    for (const vg_widget_t *cursor = widget; cursor; cursor = cursor->parent)
+    size_t depth = 0;
+    for (const vg_widget_t *cursor = widget; cursor; cursor = cursor->parent) {
+        if (depth++ >= RT_GUI_MAX_ACCESSIBILITY_NODES)
+            return 0;
         if (!cursor->enabled)
             return 0;
+    }
     return 1;
 }
 
@@ -408,7 +442,8 @@ static int rt_gui_atspi_effectively_enabled(const vg_widget_t *widget) {
 /// @param value Coordinate value to round.
 /// @return Nearest integer using symmetric half-away-from-zero behavior.
 static int32_t rt_gui_atspi_round(float value) {
-    return value >= 0.0f ? (int32_t)(value + 0.5f) : (int32_t)(value - 0.5f);
+    double rounded = value >= 0.0f ? (double)value + 0.5 : (double)value - 0.5;
+    return rt_gui_saturating_f64_to_i32(rounded);
 }
 
 /// @brief Count UTF-8 code points up to the AT-SPI signed range.
@@ -427,8 +462,7 @@ static int32_t rt_gui_atspi_utf8_count(const char *text) {
 /// @brief Populate optional Action, Text, and Value snapshot fields for a widget.
 /// @param node Mutable destination node initialized for @p widget.
 /// @param widget Borrowed live widget supplying interface state.
-static void rt_gui_atspi_snapshot_interfaces(rt_gui_atspi_node_t *node,
-                                             const vg_widget_t *widget) {
+static void rt_gui_atspi_snapshot_interfaces(rt_gui_atspi_node_t *node, const vg_widget_t *widget) {
     const char *text = NULL;
     switch (widget->type) {
         case VG_WIDGET_LABEL:
@@ -442,18 +476,16 @@ static void rt_gui_atspi_snapshot_interfaces(rt_gui_atspi_node_t *node,
             const vg_textinput_t *input = (const vg_textinput_t *)widget;
             text = input->password_mode ? "" : input->text;
             node->has_text = 1;
-            node->text_characters = input->password_mode
-                                        ? (input->text_char_count > INT32_MAX
-                                               ? INT32_MAX
-                                               : (int32_t)input->text_char_count)
-                                        : 0;
-            node->caret_offset = input->cursor_pos > INT32_MAX ? INT32_MAX : (int32_t)input->cursor_pos;
-            node->selection_start = input->selection_start > INT32_MAX
-                                        ? INT32_MAX
-                                        : (int32_t)input->selection_start;
-            node->selection_end = input->selection_end > INT32_MAX
-                                      ? INT32_MAX
-                                      : (int32_t)input->selection_end;
+            node->text_characters = input->password_mode ? (input->text_char_count > INT32_MAX
+                                                                ? INT32_MAX
+                                                                : (int32_t)input->text_char_count)
+                                                         : 0;
+            node->caret_offset =
+                input->cursor_pos > INT32_MAX ? INT32_MAX : (int32_t)input->cursor_pos;
+            node->selection_start =
+                input->selection_start > INT32_MAX ? INT32_MAX : (int32_t)input->selection_start;
+            node->selection_end =
+                input->selection_end > INT32_MAX ? INT32_MAX : (int32_t)input->selection_end;
             break;
         }
         case VG_WIDGET_CHECKBOX:
@@ -535,10 +567,8 @@ static void rt_gui_atspi_snapshot_node(rt_gui_atspi_node_t *node,
                    sizeof(node->description),
                    "%s",
                    widget->accessibility.description ? widget->accessibility.description : "");
-    (void)snprintf(node->accessible_id,
-                   sizeof(node->accessible_id),
-                   "%s",
-                   widget->name ? widget->name : "");
+    (void)snprintf(
+        node->accessible_id, sizeof(node->accessible_id), "%s", widget->name ? widget->name : "");
     node->role = rt_gui_atspi_role(widget->accessibility.role);
     rt_gui_atspi_snapshot_interfaces(node, widget);
     float x = 0.0f;
@@ -594,20 +624,34 @@ static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_
     size_t capacity = 64;
     size_t stack_count = 0;
     size_t node_count = 0;
-    vg_widget_t **stack = malloc(capacity * sizeof(*stack));
+    rt_gui_atspi_visit_t *stack = malloc(capacity * sizeof(*stack));
     rt_gui_atspi_node_t *nodes = malloc(capacity * sizeof(*nodes));
     if (!stack || !nodes) {
         free(stack);
         free(nodes);
         return 0;
     }
-    stack[stack_count++] = root;
+    stack[stack_count++] = (rt_gui_atspi_visit_t){root, -1};
     while (stack_count > 0) {
-        vg_widget_t *widget = stack[--stack_count];
+        rt_gui_atspi_visit_t visit = stack[--stack_count];
+        vg_widget_t *widget = visit.widget;
         if (!widget || !widget->visible)
             continue;
+        if (node_count >= RT_GUI_MAX_ACCESSIBILITY_NODES) {
+            free(stack);
+            free(nodes);
+            return 0;
+        }
         if (node_count == capacity) {
             size_t next_capacity = capacity * 2;
+            if (next_capacity > RT_GUI_MAX_ACCESSIBILITY_NODES)
+                next_capacity = RT_GUI_MAX_ACCESSIBILITY_NODES;
+            if (next_capacity <= capacity || next_capacity > SIZE_MAX / sizeof(*nodes) ||
+                next_capacity > SIZE_MAX / sizeof(*stack)) {
+                free(stack);
+                free(nodes);
+                return 0;
+            }
             void *next_nodes = realloc(nodes, next_capacity * sizeof(*nodes));
             void *next_stack = realloc(stack, next_capacity * sizeof(*stack));
             if (!next_nodes || !next_stack) {
@@ -620,10 +664,22 @@ static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_
             capacity = next_capacity;
         }
         rt_gui_atspi_snapshot_node(&nodes[node_count], bridge, widget, node_count);
+        nodes[node_count].parent_index = visit.parent_index;
+        if (visit.parent_index >= 0)
+            nodes[visit.parent_index].child_count++;
+        int32_t parent_index = (int32_t)node_count;
         node_count++;
         for (vg_widget_t *child = widget->last_child; child; child = child->prev_sibling) {
             if (stack_count == capacity) {
                 size_t next_capacity = capacity * 2;
+                if (next_capacity > RT_GUI_MAX_ACCESSIBILITY_NODES)
+                    next_capacity = RT_GUI_MAX_ACCESSIBILITY_NODES;
+                if (next_capacity <= capacity || next_capacity > SIZE_MAX / sizeof(*stack) ||
+                    next_capacity > SIZE_MAX / sizeof(*nodes)) {
+                    free(stack);
+                    free(nodes);
+                    return 0;
+                }
                 void *next_stack = realloc(stack, next_capacity * sizeof(*stack));
                 void *next_nodes = realloc(nodes, next_capacity * sizeof(*nodes));
                 if (!next_stack || !next_nodes) {
@@ -635,22 +691,13 @@ static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_
                 nodes = next_nodes;
                 capacity = next_capacity;
             }
-            stack[stack_count++] = child;
+            stack[stack_count++] = (rt_gui_atspi_visit_t){child, parent_index};
         }
     }
     free(stack);
     if (node_count == 0) {
         free(nodes);
         return 0;
-    }
-    for (size_t i = 1; i < node_count; ++i) {
-        for (size_t parent = 0; parent < node_count; ++parent) {
-            if (nodes[parent].source == nodes[i].source->parent) {
-                nodes[i].parent_index = (int32_t)parent;
-                nodes[parent].child_count++;
-                break;
-            }
-        }
     }
     int32_t *children = node_count > 1 ? malloc((node_count - 1) * sizeof(*children)) : NULL;
     if (node_count > 1 && !children) {
@@ -660,12 +707,20 @@ static int rt_gui_atspi_build_snapshot(rt_gui_atspi_bridge_t *bridge, vg_widget_
     size_t child_offset = 0;
     for (size_t parent = 0; parent < node_count; ++parent) {
         nodes[parent].children = children ? children + child_offset : NULL;
-        int32_t child = 0;
-        for (size_t i = 1; i < node_count; ++i)
-            if (nodes[i].parent_index == (int32_t)parent)
-                nodes[parent].children[child++] = (int32_t)i;
         child_offset += (size_t)nodes[parent].child_count;
     }
+    int32_t *child_counts = calloc(node_count, sizeof(*child_counts));
+    if (!child_counts) {
+        free(children);
+        free(nodes);
+        return 0;
+    }
+    for (size_t i = 1; i < node_count; ++i) {
+        int32_t parent = nodes[i].parent_index;
+        if (parent >= 0)
+            nodes[parent].children[child_counts[parent]++] = (int32_t)i;
+    }
+    free(child_counts);
     bridge->nodes = nodes;
     bridge->node_count = node_count;
     bridge->child_storage = children;
@@ -681,14 +736,14 @@ static void rt_gui_atspi_load_once(void) {
         g_rt_gui_atspi_api.library = dlopen(names[i], RTLD_LAZY | RTLD_LOCAL);
     if (!g_rt_gui_atspi_api.library)
         return;
-#define RT_ATSPI_LOAD(field, symbol)                                                                \
-    do {                                                                                            \
-        *(void **)(&g_rt_gui_atspi_api.field) = dlsym(g_rt_gui_atspi_api.library, symbol);          \
-        if (!g_rt_gui_atspi_api.field) {                                                            \
-            dlclose(g_rt_gui_atspi_api.library);                                                    \
-            memset(&g_rt_gui_atspi_api, 0, sizeof(g_rt_gui_atspi_api));                             \
-            return;                                                                                 \
-        }                                                                                           \
+#define RT_ATSPI_LOAD(field, symbol)                                                               \
+    do {                                                                                           \
+        *(void **)(&g_rt_gui_atspi_api.field) = dlsym(g_rt_gui_atspi_api.library, symbol);         \
+        if (!g_rt_gui_atspi_api.field) {                                                           \
+            dlclose(g_rt_gui_atspi_api.library);                                                   \
+            memset(&g_rt_gui_atspi_api, 0, sizeof(g_rt_gui_atspi_api));                            \
+            return;                                                                                \
+        }                                                                                          \
     } while (0)
     RT_ATSPI_LOAD(bus_get_sync, "g_bus_get_sync");
     RT_ATSPI_LOAD(connection_call_sync, "g_dbus_connection_call_sync");
@@ -740,7 +795,8 @@ static void rt_gui_atspi_load_once(void) {
 /// @param method Borrowed method name included in the diagnostic message.
 static void rt_gui_atspi_return_error(GDBusMethodInvocation *invocation, const char *method) {
     char message[160];
-    (void)snprintf(message, sizeof(message), "AT-SPI method %s is unavailable for this object", method);
+    (void)snprintf(
+        message, sizeof(message), "AT-SPI method %s is unavailable for this object", method);
     g_rt_gui_atspi_api.invocation_return_dbus_error(
         invocation, "org.a11y.atspi.Error.NotImplemented", message);
 }
@@ -851,37 +907,68 @@ static GVariant *rt_gui_atspi_empty_array(const char *type) {
 /// @return Borrowed static role name, or `"unknown"`.
 static const char *rt_gui_atspi_role_name(uint32_t role) {
     switch (role) {
-        case 2: return "alert";
-        case 7: return "check box";
-        case 11: return "combo box";
-        case 16: return "dialog";
-        case 27: return "image";
-        case 29: return "label";
-        case 31: return "list";
-        case 32: return "list item";
-        case 33: return "menu";
-        case 35: return "menu item";
-        case 37: return "page tab";
-        case 38: return "page tab list";
-        case 39: return "panel";
-        case 42: return "progress bar";
-        case 43: return "push button";
-        case 44: return "radio button";
-        case 51: return "slider";
-        case 54: return "status bar";
-        case 55: return "table";
-        case 56: return "table cell";
-        case 63: return "tool bar";
-        case 65: return "tree";
-        case 69: return "window";
-        case 75: return "application";
-        case 79: return "entry";
-        case 88: return "link";
-        case 90: return "table row";
-        case 91: return "tree item";
-        case 99: return "grouping";
-        case 107: return "video";
-        default: return "unknown";
+        case 2:
+            return "alert";
+        case 7:
+            return "check box";
+        case 11:
+            return "combo box";
+        case 16:
+            return "dialog";
+        case 27:
+            return "image";
+        case 29:
+            return "label";
+        case 31:
+            return "list";
+        case 32:
+            return "list item";
+        case 33:
+            return "menu";
+        case 35:
+            return "menu item";
+        case 37:
+            return "page tab";
+        case 38:
+            return "page tab list";
+        case 39:
+            return "panel";
+        case 42:
+            return "progress bar";
+        case 43:
+            return "push button";
+        case 44:
+            return "radio button";
+        case 51:
+            return "slider";
+        case 54:
+            return "status bar";
+        case 55:
+            return "table";
+        case 56:
+            return "table cell";
+        case 63:
+            return "tool bar";
+        case 65:
+            return "tree";
+        case 69:
+            return "window";
+        case 75:
+            return "application";
+        case 79:
+            return "entry";
+        case 88:
+            return "link";
+        case 90:
+            return "table row";
+        case 91:
+            return "tree item";
+        case 99:
+            return "grouping";
+        case 107:
+            return "video";
+        default:
+            return "unknown";
     }
 }
 
@@ -985,9 +1072,8 @@ static void rt_gui_atspi_text_range(const rt_gui_atspi_node_t *node,
         return;
     if (granularity == 1) {
         int word = rt_gui_atspi_word_character(rt_gui_atspi_utf8_character(node->text, offset));
-        while (*start > 0 &&
-               rt_gui_atspi_word_character(
-                   rt_gui_atspi_utf8_character(node->text, *start - 1)) == word)
+        while (*start > 0 && rt_gui_atspi_word_character(
+                                 rt_gui_atspi_utf8_character(node->text, *start - 1)) == word)
             (*start)--;
         while (*end < count &&
                rt_gui_atspi_word_character(rt_gui_atspi_utf8_character(node->text, *end)) == word)
@@ -1127,9 +1213,8 @@ static GVariant *rt_gui_atspi_cache_items(const rt_gui_atspi_bridge_t *bridge) {
         GVariant *interface_array = g_rt_gui_atspi_api.variant_builder_end(interface_builder);
         g_rt_gui_atspi_api.variant_builder_unref(interface_builder);
         GVariant *states = rt_gui_atspi_state_array(node);
-        const char *parent_path = node->parent_index >= 0
-                                      ? bridge->nodes[node->parent_index].path
-                                      : "/org/a11y/atspi/null";
+        const char *parent_path = node->parent_index >= 0 ? bridge->nodes[node->parent_index].path
+                                                          : "/org/a11y/atspi/null";
         g_rt_gui_atspi_api.variant_builder_add(items,
                                                "((so)(so)(so)ii@assus@au)",
                                                unique ? unique : "",
@@ -1192,8 +1277,7 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
             const rt_gui_atspi_node_t *child = &bridge->nodes[node->children[index]];
             g_rt_gui_atspi_api.invocation_return_value(
                 invocation,
-                g_rt_gui_atspi_api.variant_new(
-                    "((so))", rt_gui_atspi_unique(node), child->path));
+                g_rt_gui_atspi_api.variant_new("((so))", rt_gui_atspi_unique(node), child->path));
         }
     } else if (strcmp(interface_name, "org.a11y.atspi.Accessible") == 0 &&
                strcmp(method, "GetChildren") == 0) {
@@ -1210,15 +1294,13 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
     } else if (strcmp(method, "GetRole") == 0) {
         g_rt_gui_atspi_api.invocation_return_value(
             invocation, g_rt_gui_atspi_api.variant_new("(u)", node->role));
-    } else if (strcmp(method, "GetRoleName") == 0 ||
-               strcmp(method, "GetLocalizedRoleName") == 0) {
+    } else if (strcmp(method, "GetRoleName") == 0 || strcmp(method, "GetLocalizedRoleName") == 0) {
         g_rt_gui_atspi_api.invocation_return_value(
-            invocation,
-            g_rt_gui_atspi_api.variant_new("(s)", rt_gui_atspi_role_name(node->role)));
+            invocation, g_rt_gui_atspi_api.variant_new("(s)", rt_gui_atspi_role_name(node->role)));
     } else if (strcmp(method, "GetState") == 0) {
         GVariant *array = rt_gui_atspi_state_array(node);
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(@au)", array));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(@au)", array));
     } else if (strcmp(method, "GetAttributes") == 0) {
         GVariant *attributes = rt_gui_atspi_empty_array("a{ss}");
         g_rt_gui_atspi_api.invocation_return_value(
@@ -1252,7 +1334,8 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         rt_gui_atspi_node_extents(node, coordinate_type, &nx, &ny, &nw, &nh);
         g_rt_gui_atspi_api.invocation_return_value(
             invocation,
-            g_rt_gui_atspi_api.variant_new("(b)", x >= nx && y >= ny && x < nx + nw && y < ny + nh));
+            g_rt_gui_atspi_api.variant_new("(b)",
+                                           x >= nx && y >= ny && x < nx + nw && y < ny + nh));
     } else if (strcmp(interface_name, "org.a11y.atspi.Component") == 0 &&
                strcmp(method, "GetAccessibleAtPoint") == 0) {
         int32_t x = rt_gui_atspi_parameter_i32(parameters, 0);
@@ -1280,8 +1363,8 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         int32_t x, y, width, height;
         rt_gui_atspi_node_extents(
             node, rt_gui_atspi_parameter_u32(parameters, 0), &x, &y, &width, &height);
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(ii)", x, y));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(ii)", x, y));
     } else if (strcmp(interface_name, "org.a11y.atspi.Component") == 0 &&
                strcmp(method, "GetSize") == 0) {
         g_rt_gui_atspi_api.invocation_return_value(
@@ -1292,18 +1375,18 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
             invocation, g_rt_gui_atspi_api.variant_new("(u)", node->parent_index < 0 ? 7u : 3u));
     } else if (strcmp(interface_name, "org.a11y.atspi.Component") == 0 &&
                strcmp(method, "GetMDIZOrder") == 0) {
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(n)", (int)-1));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(n)", (int)-1));
     } else if (strcmp(interface_name, "org.a11y.atspi.Component") == 0 &&
                strcmp(method, "GetAlpha") == 0) {
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(d)", 1.0));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(d)", 1.0));
     } else if (strcmp(interface_name, "org.a11y.atspi.Component") == 0 &&
                (strcmp(method, "GrabFocus") == 0 || strcmp(method, "SetExtents") == 0 ||
                 strcmp(method, "SetPosition") == 0 || strcmp(method, "SetSize") == 0 ||
                 strcmp(method, "ScrollTo") == 0 || strcmp(method, "ScrollToPoint") == 0)) {
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(b)", 0));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(b)", 0));
     } else if (strcmp(interface_name, "org.a11y.atspi.Action") == 0 &&
                (strcmp(method, "GetDescription") == 0 || strcmp(method, "GetName") == 0 ||
                 strcmp(method, "GetLocalizedName") == 0 || strcmp(method, "GetKeyBinding") == 0)) {
@@ -1315,13 +1398,12 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
             else if (strcmp(method, "GetKeyBinding") != 0)
                 result = "activate";
         }
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(s)", result));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(s)", result));
     } else if (strcmp(interface_name, "org.a11y.atspi.Action") == 0 &&
                strcmp(method, "GetActions") == 0) {
         GVariantBuilder *actions = g_rt_gui_atspi_api.variant_builder_new((const void *)"a(sss)");
-        g_rt_gui_atspi_api.variant_builder_add(
-            actions, "(sss)", "activate", node->description, "");
+        g_rt_gui_atspi_api.variant_builder_add(actions, "(sss)", "activate", node->description, "");
         GVariant *array = g_rt_gui_atspi_api.variant_builder_end(actions);
         g_rt_gui_atspi_api.variant_builder_unref(actions);
         g_rt_gui_atspi_api.invocation_return_value(
@@ -1332,7 +1414,8 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         g_rt_gui_atspi_api.invocation_return_value(
             invocation,
             g_rt_gui_atspi_api.variant_new(
-                "(b)", index == 0 ? rt_gui_atspi_request(node, RT_GUI_ATSPI_REQUEST_ACTION, 0.0) : 0));
+                "(b)",
+                index == 0 ? rt_gui_atspi_request(node, RT_GUI_ATSPI_REQUEST_ACTION, 0.0) : 0));
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                strcmp(method, "GetStringAtOffset") == 0) {
         int32_t start, end;
@@ -1385,8 +1468,8 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
                 "(i)", offset >= 0 ? rt_gui_atspi_utf8_character(node->text, offset) : 0));
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                strcmp(method, "GetAttributeValue") == 0) {
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(s)", ""));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(s)", ""));
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                (strcmp(method, "GetAttributes") == 0 ||
                 strcmp(method, "GetDefaultAttributes") == 0)) {
@@ -1394,8 +1477,7 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         if (strcmp(method, "GetAttributes") == 0)
             g_rt_gui_atspi_api.invocation_return_value(
                 invocation,
-                g_rt_gui_atspi_api.variant_new(
-                    "(@a{ss}ii)", attributes, 0, node->text_characters));
+                g_rt_gui_atspi_api.variant_new("(@a{ss}ii)", attributes, 0, node->text_characters));
         else
             g_rt_gui_atspi_api.invocation_return_value(
                 invocation, g_rt_gui_atspi_api.variant_new("(@a{ss})", attributes));
@@ -1415,13 +1497,13 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         int32_t offset = width > 0 ? (x - node->x) / width : -1;
         if (offset < 0 || offset >= node->text_characters)
             offset = -1;
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(i)", offset));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(i)", offset));
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                strcmp(method, "GetNSelections") == 0) {
         int selected = node->selection_start != node->selection_end;
-        g_rt_gui_atspi_api.invocation_return_value(
-            invocation, g_rt_gui_atspi_api.variant_new("(i)", selected));
+        g_rt_gui_atspi_api.invocation_return_value(invocation,
+                                                   g_rt_gui_atspi_api.variant_new("(i)", selected));
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                strcmp(method, "GetSelection") == 0) {
         int32_t selection = rt_gui_atspi_parameter_i32(parameters, 0);
@@ -1430,8 +1512,7 @@ static void rt_gui_atspi_method(GDBusConnection *connection,
         } else {
             g_rt_gui_atspi_api.invocation_return_value(
                 invocation,
-                g_rt_gui_atspi_api.variant_new(
-                    "(ii)", node->selection_start, node->selection_end));
+                g_rt_gui_atspi_api.variant_new("(ii)", node->selection_start, node->selection_end));
         }
     } else if (strcmp(interface_name, "org.a11y.atspi.Text") == 0 &&
                strcmp(method, "SetCaretOffset") == 0) {
@@ -1550,8 +1631,7 @@ static int rt_gui_atspi_set_property(GDBusConnection *connection,
     (void)error;
     rt_gui_atspi_node_t *node = data;
     rt_gui_atspi_bridge_t *bridge = node->bridge;
-    if (strcmp(interface_name, "org.a11y.atspi.Application") == 0 &&
-        strcmp(property, "Id") == 0) {
+    if (strcmp(interface_name, "org.a11y.atspi.Application") == 0 && strcmp(property, "Id") == 0) {
         bridge->application_id = g_rt_gui_atspi_api.variant_get_int32(value);
         return 1;
     }
@@ -1627,22 +1707,23 @@ static void *rt_gui_atspi_worker(void *data) {
     api->main_context_push_thread_default(bridge->context);
     GDBusConnection *session = api->bus_get_sync(2, NULL, &error);
     GVariant *address_result = session ? api->connection_call_sync(session,
-                                                                    "org.a11y.Bus",
-                                                                    "/org/a11y/bus",
-                                                                    "org.a11y.Bus",
-                                                                    "GetAddress",
-                                                                    NULL,
-                                                                    NULL,
-                                                                    0,
-                                                                    500,
-                                                                    NULL,
-                                                                    &error)
-                                             : NULL;
+                                                                   "org.a11y.Bus",
+                                                                   "/org/a11y/bus",
+                                                                   "org.a11y.Bus",
+                                                                   "GetAddress",
+                                                                   NULL,
+                                                                   NULL,
+                                                                   0,
+                                                                   500,
+                                                                   NULL,
+                                                                   &error)
+                                       : NULL;
     if (session)
         api->object_unref(session);
     if (!address_result)
         rt_gui_atspi_diagnostic("accessibility bus discovery failed", error);
-    GVariant *address_value = address_result ? api->variant_get_child_value(address_result, 0) : NULL;
+    GVariant *address_value =
+        address_result ? api->variant_get_child_value(address_result, 0) : NULL;
     const char *address = address_value ? api->variant_get_string(address_value, NULL) : NULL;
     if (address)
         bridge->connection = api->connection_new_for_address_sync(address, 9, NULL, NULL, &error);
@@ -1657,76 +1738,76 @@ static void *rt_gui_atspi_worker(void *data) {
     free(xml);
     if (!bridge->node_info)
         rt_gui_atspi_diagnostic("interface metadata parse failed", error);
-    GDBusInterfaceInfo *accessible = bridge->node_info
-                                         ? api->node_info_lookup_interface(
-                                               bridge->node_info, "org.a11y.atspi.Accessible")
-                                         : NULL;
-    GDBusInterfaceInfo *application = bridge->node_info
-                                          ? api->node_info_lookup_interface(
-                                                bridge->node_info, "org.a11y.atspi.Application")
-                                          : NULL;
-    GDBusInterfaceInfo *cache = bridge->node_info
-                                    ? api->node_info_lookup_interface(
-                                          bridge->node_info, "org.a11y.atspi.Cache")
-                                    : NULL;
-    GDBusInterfaceInfo *component = bridge->node_info
-                                        ? api->node_info_lookup_interface(
-                                              bridge->node_info, "org.a11y.atspi.Component")
-                                        : NULL;
-    GDBusInterfaceInfo *action = bridge->node_info
-                                     ? api->node_info_lookup_interface(
-                                           bridge->node_info, "org.a11y.atspi.Action")
-                                     : NULL;
-    GDBusInterfaceInfo *text = bridge->node_info
-                                   ? api->node_info_lookup_interface(
-                                         bridge->node_info, "org.a11y.atspi.Text")
-                                   : NULL;
-    GDBusInterfaceInfo *value = bridge->node_info
-                                    ? api->node_info_lookup_interface(
-                                          bridge->node_info, "org.a11y.atspi.Value")
-                                    : NULL;
+    GDBusInterfaceInfo *accessible =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Accessible")
+            : NULL;
+    GDBusInterfaceInfo *application =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Application")
+            : NULL;
+    GDBusInterfaceInfo *cache =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Cache")
+            : NULL;
+    GDBusInterfaceInfo *component =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Component")
+            : NULL;
+    GDBusInterfaceInfo *action =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Action")
+            : NULL;
+    GDBusInterfaceInfo *text =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Text")
+            : NULL;
+    GDBusInterfaceInfo *value =
+        bridge->node_info
+            ? api->node_info_lookup_interface(bridge->node_info, "org.a11y.atspi.Value")
+            : NULL;
     int all_nodes_registered = 1;
     if (bridge->connection && accessible && application && component) {
         for (size_t i = 0; i < bridge->node_count; ++i) {
             rt_gui_atspi_node_t *node = &bridge->nodes[i];
             node->accessible_registration = api->connection_register_object(bridge->connection,
-                                                                             node->path,
-                                                                             accessible,
-                                                                             &g_rt_gui_atspi_vtable,
-                                                                             node,
-                                                                             NULL,
-                                                                             &error);
-            node->component_registration = api->connection_register_object(bridge->connection,
                                                                             node->path,
-                                                                            component,
+                                                                            accessible,
                                                                             &g_rt_gui_atspi_vtable,
                                                                             node,
                                                                             NULL,
                                                                             &error);
-            if (node->has_action && action)
-                node->action_registration = api->connection_register_object(bridge->connection,
-                                                                             node->path,
-                                                                             action,
-                                                                             &g_rt_gui_atspi_vtable,
-                                                                             node,
-                                                                             NULL,
-                                                                             &error);
-            if (node->has_text && text)
-                node->text_registration = api->connection_register_object(bridge->connection,
+            node->component_registration = api->connection_register_object(bridge->connection,
                                                                            node->path,
-                                                                           text,
+                                                                           component,
                                                                            &g_rt_gui_atspi_vtable,
                                                                            node,
                                                                            NULL,
                                                                            &error);
-            if (node->has_value && value)
-                node->value_registration = api->connection_register_object(bridge->connection,
+            if (node->has_action && action)
+                node->action_registration = api->connection_register_object(bridge->connection,
                                                                             node->path,
-                                                                            value,
+                                                                            action,
                                                                             &g_rt_gui_atspi_vtable,
                                                                             node,
                                                                             NULL,
                                                                             &error);
+            if (node->has_text && text)
+                node->text_registration = api->connection_register_object(bridge->connection,
+                                                                          node->path,
+                                                                          text,
+                                                                          &g_rt_gui_atspi_vtable,
+                                                                          node,
+                                                                          NULL,
+                                                                          &error);
+            if (node->has_value && value)
+                node->value_registration = api->connection_register_object(bridge->connection,
+                                                                           node->path,
+                                                                           value,
+                                                                           &g_rt_gui_atspi_vtable,
+                                                                           node,
+                                                                           NULL,
+                                                                           &error);
             if (!node->accessible_registration || !node->component_registration ||
                 (node->has_action && !node->action_registration) ||
                 (node->has_text && !node->text_registration) ||
@@ -1736,48 +1817,49 @@ static void *rt_gui_atspi_worker(void *data) {
             }
         }
         bridge->accessible_registration = bridge->nodes[0].accessible_registration;
-        bridge->application_registration = api->connection_register_object(
-            bridge->connection,
-            "/org/a11y/atspi/accessible/root",
-            application,
-            &g_rt_gui_atspi_vtable,
-            &bridge->nodes[0],
-            NULL,
-            &error);
+        bridge->application_registration =
+            api->connection_register_object(bridge->connection,
+                                            "/org/a11y/atspi/accessible/root",
+                                            application,
+                                            &g_rt_gui_atspi_vtable,
+                                            &bridge->nodes[0],
+                                            NULL,
+                                            &error);
         if (cache)
-            bridge->cache_registration = api->connection_register_object(
-                bridge->connection,
-                "/org/a11y/atspi/cache",
-                cache,
-                &g_rt_gui_atspi_vtable,
-                &bridge->nodes[0],
-                NULL,
-                &error);
+            bridge->cache_registration = api->connection_register_object(bridge->connection,
+                                                                         "/org/a11y/atspi/cache",
+                                                                         cache,
+                                                                         &g_rt_gui_atspi_vtable,
+                                                                         &bridge->nodes[0],
+                                                                         NULL,
+                                                                         &error);
     }
-    const char *unique = bridge->connection ? api->connection_get_unique_name(bridge->connection) : NULL;
-    GVariant *embedded = unique && bridge->accessible_registration && bridge->application_registration
-                             ? api->connection_call_sync(
-                                   bridge->connection,
-                                   "org.a11y.atspi.Registry",
-                                   "/org/a11y/atspi/accessible/root",
-                                   "org.a11y.atspi.Socket",
-                                   "Embed",
-                                   api->variant_new(
-                                       "((so))", unique, "/org/a11y/atspi/accessible/root"),
-                                   NULL,
-                                   0,
-                                   500,
-                                   NULL,
-                                   &error)
-                             : NULL;
+    const char *unique =
+        bridge->connection ? api->connection_get_unique_name(bridge->connection) : NULL;
+    GVariant *embedded =
+        unique && bridge->accessible_registration && bridge->application_registration
+            ? api->connection_call_sync(
+                  bridge->connection,
+                  "org.a11y.atspi.Registry",
+                  "/org/a11y/atspi/accessible/root",
+                  "org.a11y.atspi.Socket",
+                  "Embed",
+                  api->variant_new("((so))", unique, "/org/a11y/atspi/accessible/root"),
+                  NULL,
+                  0,
+                  500,
+                  NULL,
+                  &error)
+            : NULL;
     int embedded_success = embedded != NULL;
     if (embedded)
         api->variant_unref(embedded);
     else
         rt_gui_atspi_diagnostic("registry embed failed", error);
     bridge->loop = api->main_loop_new(bridge->context, 0);
-    int started = bridge->loop && unique && all_nodes_registered && bridge->accessible_registration &&
-                  bridge->application_registration && bridge->cache_registration && embedded_success;
+    int started = bridge->loop && unique && all_nodes_registered &&
+                  bridge->accessible_registration && bridge->application_registration &&
+                  bridge->cache_registration && embedded_success;
     GSource *ready_source = started ? api->idle_source_new() : NULL;
     if (ready_source) {
         api->source_set_callback(ready_source, rt_gui_atspi_signal_loop_running, bridge, NULL);
@@ -1929,29 +2011,27 @@ void rt_gui_atspi_linux_detach(vgfx_window_t window) {
 /// @param widget Borrowed changed widget; may be NULL when only rebuild invalidation is needed.
 void rt_gui_atspi_linux_notify(vgfx_window_t window, vg_widget_t *widget) {
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
-    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
-         bridge = bridge->next) {
+    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge; bridge = bridge->next) {
         if (bridge->window == window) {
             if (widget && bridge->connection) {
                 for (size_t i = 0; i < bridge->node_count; ++i) {
                     if (bridge->nodes[i].widget_id != widget->id)
                         continue;
                     GVariant *properties = rt_gui_atspi_empty_array("a{sv}");
-                    GVariant *parameters = g_rt_gui_atspi_api.variant_new(
-                        "(siiv@a{sv})",
-                        "",
-                        0,
-                        0,
-                        g_rt_gui_atspi_api.variant_new_string(""),
-                        properties);
-                    (void)g_rt_gui_atspi_api.connection_emit_signal(
-                        bridge->connection,
-                        NULL,
-                        bridge->nodes[i].path,
-                        "org.a11y.atspi.Event.Object",
-                        "VisibleDataChanged",
-                        parameters,
-                        NULL);
+                    GVariant *parameters =
+                        g_rt_gui_atspi_api.variant_new("(siiv@a{sv})",
+                                                       "",
+                                                       0,
+                                                       0,
+                                                       g_rt_gui_atspi_api.variant_new_string(""),
+                                                       properties);
+                    (void)g_rt_gui_atspi_api.connection_emit_signal(bridge->connection,
+                                                                    NULL,
+                                                                    bridge->nodes[i].path,
+                                                                    "org.a11y.atspi.Event.Object",
+                                                                    "VisibleDataChanged",
+                                                                    parameters,
+                                                                    NULL);
                     break;
                 }
             }
@@ -1973,7 +2053,12 @@ static vg_widget_t *rt_gui_atspi_find_widget(vg_widget_t *root, uint64_t id) {
     if (!stack)
         return NULL;
     stack[count++] = root;
+    size_t visited = 0;
     while (count > 0) {
+        if (visited++ >= RT_GUI_MAX_ACCESSIBILITY_NODES) {
+            free(stack);
+            return NULL;
+        }
         vg_widget_t *widget = stack[--count];
         if (widget->id == id) {
             free(stack);
@@ -1982,6 +2067,12 @@ static vg_widget_t *rt_gui_atspi_find_widget(vg_widget_t *root, uint64_t id) {
         for (vg_widget_t *child = widget->first_child; child; child = child->next_sibling) {
             if (count == capacity) {
                 size_t next_capacity = capacity * 2;
+                if (next_capacity > RT_GUI_MAX_ACCESSIBILITY_NODES)
+                    next_capacity = RT_GUI_MAX_ACCESSIBILITY_NODES;
+                if (next_capacity <= capacity || next_capacity > SIZE_MAX / sizeof(*stack)) {
+                    free(stack);
+                    return NULL;
+                }
                 void *replacement = realloc(stack, next_capacity * sizeof(*stack));
                 if (!replacement) {
                     free(stack);
@@ -2015,18 +2106,16 @@ static void rt_gui_atspi_process_request(rt_gui_atspi_bridge_t *bridge, vg_widge
     int result = 0;
     vg_widget_t *widget = rt_gui_atspi_find_widget(root, widget_id);
     if (widget && rt_gui_atspi_effectively_enabled(widget)) {
-        if (kind == RT_GUI_ATSPI_REQUEST_ACTION && widget->vtable &&
-            widget->vtable->handle_event) {
+        if (kind == RT_GUI_ATSPI_REQUEST_ACTION && widget->vtable && widget->vtable->handle_event) {
             float x = 0.0f;
             float y = 0.0f;
             float width = 0.0f;
             float height = 0.0f;
             vg_widget_get_screen_bounds(widget, &x, &y, &width, &height);
-            vg_event_t event =
-                vg_event_mouse(VG_EVENT_CLICK, x + width * 0.5f, y + height * 0.5f, VG_MOUSE_LEFT, 0);
+            vg_event_t event = vg_event_mouse(
+                VG_EVENT_CLICK, x + width * 0.5f, y + height * 0.5f, VG_MOUSE_LEFT, 0);
             result = vg_event_send(widget, &event) ? 1 : 0;
-        } else if (kind == RT_GUI_ATSPI_REQUEST_CARET &&
-                   widget->type == VG_WIDGET_TEXTINPUT) {
+        } else if (kind == RT_GUI_ATSPI_REQUEST_CARET && widget->type == VG_WIDGET_TEXTINPUT) {
             vg_textinput_t *input = (vg_textinput_t *)widget;
             if (requested_value >= 0.0 && requested_value <= (double)input->text_char_count) {
                 vg_textinput_set_cursor(input, (size_t)requested_value);
@@ -2064,8 +2153,7 @@ void rt_gui_atspi_linux_sync(vgfx_window_t window, vg_widget_t *root) {
     int dirty = 0;
     rt_gui_atspi_bridge_t *matched = NULL;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
-    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
-         bridge = bridge->next) {
+    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge; bridge = bridge->next) {
         if (bridge->window == window) {
             matched = bridge;
             dirty = bridge->dirty;
@@ -2088,8 +2176,7 @@ void rt_gui_atspi_linux_sync(vgfx_window_t window, vg_widget_t *root) {
 size_t rt_gui_atspi_linux_snapshot_count(vgfx_window_t window) {
     size_t count = 0;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
-    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
-         bridge = bridge->next) {
+    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge; bridge = bridge->next) {
         if (bridge->window == window) {
             count = bridge->node_count;
             break;
@@ -2105,8 +2192,7 @@ size_t rt_gui_atspi_linux_snapshot_count(vgfx_window_t window) {
 size_t rt_gui_atspi_linux_cache_item_count(vgfx_window_t window) {
     size_t count = 0;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
-    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
-         bridge = bridge->next) {
+    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge; bridge = bridge->next) {
         if (bridge->window == window) {
             GVariant *items = rt_gui_atspi_cache_items(bridge);
             if (items) {
@@ -2170,21 +2256,20 @@ void rt_gui_atspi_linux_announce(vgfx_window_t window,
     if (!widget || !text || !text[0] || mode == VG_LIVE_REGION_OFF)
         return;
     pthread_mutex_lock(&g_rt_gui_atspi_list_mutex);
-    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge;
-         bridge = bridge->next) {
+    for (rt_gui_atspi_bridge_t *bridge = g_rt_gui_atspi_bridges; bridge; bridge = bridge->next) {
         if (bridge->window != window || !bridge->connection)
             continue;
         for (size_t i = 0; i < bridge->node_count; ++i) {
             if (bridge->nodes[i].widget_id != widget->id)
                 continue;
             GVariant *properties = rt_gui_atspi_empty_array("a{sv}");
-            GVariant *parameters = g_rt_gui_atspi_api.variant_new(
-                "(siiv@a{sv})",
-                "",
-                mode == VG_LIVE_REGION_ASSERTIVE ? 2 : 1,
-                0,
-                g_rt_gui_atspi_api.variant_new_string(text),
-                properties);
+            GVariant *parameters =
+                g_rt_gui_atspi_api.variant_new("(siiv@a{sv})",
+                                               "",
+                                               mode == VG_LIVE_REGION_ASSERTIVE ? 2 : 1,
+                                               0,
+                                               g_rt_gui_atspi_api.variant_new_string(text),
+                                               properties);
             (void)g_rt_gui_atspi_api.connection_emit_signal(bridge->connection,
                                                             NULL,
                                                             bridge->nodes[i].path,

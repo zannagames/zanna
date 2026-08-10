@@ -66,16 +66,7 @@ static rt_gui_app_t *rt_messagebox_app(void) {
 /// @param text Source label to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_messagebox_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 /// @brief Return non-zero if the button label should be treated as a "cancel / close / no" action.
@@ -273,13 +264,14 @@ int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
 
 /// @brief Borrowed state supplied to the synchronous prompt commit callback.
 typedef struct {
-    uint64_t magic;       ///< Reserved callback-state authentication value.
-    vg_dialog_t *dialog;  ///< Borrowed prompt dialog closed on Enter.
+    uint64_t magic;      ///< Reserved callback-state authentication value.
+    vg_dialog_t *dialog; ///< Borrowed prompt dialog closed on Enter.
 } rt_prompt_commit_data_t;
 
 /// @brief Text-input `on_commit` callback — closes the prompt dialog as OK when Enter is pressed.
 /// @param w Borrowed committing TextInput widget; unused because @p user_data owns routing.
-/// @param text Borrowed committed text; collection occurs after modal exit, so this callback ignores it.
+/// @param text Borrowed committed text; collection occurs after modal exit, so this callback
+/// ignores it.
 /// @param user_data Borrowed stack-scoped @ref rt_prompt_commit_data_t valid for the modal loop.
 static void prompt_on_commit(vg_widget_t *w, const char *text, void *user_data) {
     (void)w;
@@ -404,22 +396,22 @@ void *rt_messagebox_prompt_option(rt_string title, rt_string message) {
 
 /// @brief Managed MessageBox controller state and owned custom-button metadata.
 typedef struct {
-    uint64_t magic;        ///< Must equal @ref RT_MESSAGEBOX_DATA_MAGIC while live.
-    vg_dialog_t *dialog;   ///< Owned lower dialog, or NULL when not constructed.
-    int64_t result;        ///< Stable terminal button/result identifier.
-    int64_t status;        ///< Current controller lifecycle status.
-    const char *error;     ///< Borrowed static error text for the latest failure.
+    uint64_t magic;           ///< Must equal @ref RT_MESSAGEBOX_DATA_MAGIC while live.
+    vg_dialog_t *dialog;      ///< Owned lower dialog, or NULL when not constructed.
+    int64_t result;           ///< Stable terminal button/result identifier.
+    int64_t status;           ///< Current controller lifecycle status.
+    const char *error;        ///< Borrowed static error text for the latest failure.
     uint64_t completed_edges; ///< Number of newly observable completion transitions.
-    int64_t default_button; ///< Stable ID activated by Enter.
-    int has_default_button; ///< Nonzero when @ref default_button is configured.
-    int64_t cancel_button;  ///< Stable ID activated by Escape or close.
-    int has_cancel_button;  ///< Nonzero when @ref cancel_button is configured.
-    rt_gui_app_t *owner_app; ///< Borrowed app that owns modal routing.
+    int64_t default_button;   ///< Stable ID activated by Enter.
+    int has_default_button;   ///< Nonzero when @ref default_button is configured.
+    int64_t cancel_button;    ///< Stable ID activated by Escape or close.
+    int has_cancel_button;    ///< Nonzero when @ref cancel_button is configured.
+    rt_gui_app_t *owner_app;  ///< Borrowed app that owns modal routing.
     vg_dialog_button_def_t *custom_buttons; ///< Owned lower button definitions.
-    int64_t *custom_button_ids; ///< Stable IDs parallel to @ref custom_buttons.
-    int64_t *custom_button_roles; ///< Semantic roles parallel to @ref custom_buttons.
-    size_t custom_button_count; ///< Number of initialized custom-button entries.
-    size_t custom_button_cap; ///< Allocated capacity of every parallel button array.
+    int64_t *custom_button_ids;             ///< Stable IDs parallel to @ref custom_buttons.
+    int64_t *custom_button_roles;           ///< Semantic roles parallel to @ref custom_buttons.
+    size_t custom_button_count;             ///< Number of initialized custom-button entries.
+    size_t custom_button_cap;               ///< Allocated capacity of every parallel button array.
 } rt_messagebox_data_t;
 
 /// @brief Global registry authenticating opaque MessageBox wrapper handles.
@@ -443,9 +435,12 @@ static int rt_messagebox_register_wrapper(rt_messagebox_data_t *data) {
             return 1;
     }
     if (s_messagebox_wrapper_count >= s_messagebox_wrapper_cap) {
-        size_t new_cap = s_messagebox_wrapper_cap ? s_messagebox_wrapper_cap * 2 : 8;
-        if (new_cap < s_messagebox_wrapper_cap ||
-            new_cap > SIZE_MAX / sizeof(rt_messagebox_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_messagebox_wrapper_cap,
+                                             s_messagebox_wrapper_count + 1u,
+                                             8u,
+                                             sizeof(rt_messagebox_data_t *),
+                                             &new_cap))
             return 0;
         void *p = realloc(s_messagebox_wrappers, new_cap * sizeof(rt_messagebox_data_t *));
         if (!p)
@@ -793,11 +788,12 @@ static void rt_messagebox_add_button_impl(
 
     // Grow the custom buttons array if needed
     if (data->custom_button_count >= data->custom_button_cap) {
-        if (data->custom_button_cap > SIZE_MAX / 2) {
-            return;
-        }
-        size_t new_cap = data->custom_button_cap ? data->custom_button_cap * 2 : 4;
-        if (new_cap > SIZE_MAX / sizeof(vg_dialog_button_def_t) ||
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(data->custom_button_cap,
+                                             data->custom_button_count + 1u,
+                                             4u,
+                                             sizeof(vg_dialog_button_def_t),
+                                             &new_cap) ||
             new_cap > SIZE_MAX / sizeof(int64_t)) {
             return;
         }
@@ -1030,7 +1026,8 @@ rt_string rt_messagebox_get_error(void *box) {
 
 /// @brief Manually free dialog resources (custom buttons, backend handle). The GC finalizer
 /// also calls this — explicit destruction is optional but useful for early cleanup.
-/// @param box Candidate registered MessageBox wrapper; invalid or already disposed handles are ignored.
+/// @param box Candidate registered MessageBox wrapper; invalid or already disposed handles are
+/// ignored.
 void rt_messagebox_destroy(void *box) {
     RT_ASSERT_MAIN_THREAD();
     rt_messagebox_data_t *data = rt_messagebox_checked(box);

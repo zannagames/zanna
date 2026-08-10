@@ -231,16 +231,7 @@ static rt_gui_app_t *rt_filedialog_app(void) {
 /// @param text Source text to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_filedialog_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 /// @brief Join selected paths as a semicolon-delimited string with '\\' escaping.
@@ -372,21 +363,21 @@ rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string 
 #endif
 #if !RT_PLATFORM_MACOS
     if (!native_dialog_used) {
-    vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_OPEN);
-    if (dlg) {
-        if (ctitle)
-            vg_filedialog_set_title(dlg, ctitle);
-        if (cpath)
-            vg_filedialog_set_initial_path(dlg, cpath);
-        if (cfilter && cfilter[0])
-            vg_filedialog_add_filter(dlg, "Files", cfilter);
-        vg_filedialog_add_default_bookmarks(dlg);
-        if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) && dlg->selected_file_count > 0 &&
-            dlg->selected_files[0]) {
-            result = rt_filedialog_strdup(dlg->selected_files[0]);
+        vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_OPEN);
+        if (dlg) {
+            if (ctitle)
+                vg_filedialog_set_title(dlg, ctitle);
+            if (cpath)
+                vg_filedialog_set_initial_path(dlg, cpath);
+            if (cfilter && cfilter[0])
+                vg_filedialog_add_filter(dlg, "Files", cfilter);
+            vg_filedialog_add_default_bookmarks(dlg);
+            if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) &&
+                dlg->selected_file_count > 0 && dlg->selected_files[0]) {
+                result = rt_filedialog_strdup(dlg->selected_files[0]);
+            }
+            vg_filedialog_destroy(dlg);
         }
-        vg_filedialog_destroy(dlg);
-    }
     }
 #endif
     (void)native_dialog_used;
@@ -523,23 +514,23 @@ rt_string rt_filedialog_save(rt_string title,
 #endif
 #if !RT_PLATFORM_MACOS
     if (!native_dialog_used) {
-    vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_SAVE);
-    if (dlg) {
-        if (ctitle)
-            vg_filedialog_set_title(dlg, ctitle);
-        if (cpath)
-            vg_filedialog_set_initial_path(dlg, cpath);
-        if (cname)
-            vg_filedialog_set_filename(dlg, cname);
-        if (cfilter && cfilter[0])
-            vg_filedialog_add_filter(dlg, "Files", cfilter);
-        vg_filedialog_add_default_bookmarks(dlg);
-        if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) && dlg->selected_file_count > 0 &&
-            dlg->selected_files[0]) {
-            result = rt_filedialog_strdup(dlg->selected_files[0]);
+        vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_SAVE);
+        if (dlg) {
+            if (ctitle)
+                vg_filedialog_set_title(dlg, ctitle);
+            if (cpath)
+                vg_filedialog_set_initial_path(dlg, cpath);
+            if (cname)
+                vg_filedialog_set_filename(dlg, cname);
+            if (cfilter && cfilter[0])
+                vg_filedialog_add_filter(dlg, "Files", cfilter);
+            vg_filedialog_add_default_bookmarks(dlg);
+            if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) &&
+                dlg->selected_file_count > 0 && dlg->selected_files[0]) {
+                result = rt_filedialog_strdup(dlg->selected_files[0]);
+            }
+            vg_filedialog_destroy(dlg);
         }
-        vg_filedialog_destroy(dlg);
-    }
     }
 #endif
     (void)native_dialog_used;
@@ -582,19 +573,19 @@ rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
 #endif
 #if !RT_PLATFORM_MACOS
     if (!native_dialog_used) {
-    vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_SELECT_FOLDER);
-    if (dlg) {
-        if (ctitle)
-            vg_filedialog_set_title(dlg, ctitle);
-        if (cpath)
-            vg_filedialog_set_initial_path(dlg, cpath);
-        vg_filedialog_add_default_bookmarks(dlg);
-        if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) && dlg->selected_file_count > 0 &&
-            dlg->selected_files[0]) {
-            result = rt_filedialog_strdup(dlg->selected_files[0]);
+        vg_filedialog_t *dlg = vg_filedialog_create(VG_FILEDIALOG_SELECT_FOLDER);
+        if (dlg) {
+            if (ctitle)
+                vg_filedialog_set_title(dlg, ctitle);
+            if (cpath)
+                vg_filedialog_set_initial_path(dlg, cpath);
+            vg_filedialog_add_default_bookmarks(dlg);
+            if (rt_filedialog_show_modal(rt_filedialog_app(), dlg) &&
+                dlg->selected_file_count > 0 && dlg->selected_files[0]) {
+                result = rt_filedialog_strdup(dlg->selected_files[0]);
+            }
+            vg_filedialog_destroy(dlg);
         }
-        vg_filedialog_destroy(dlg);
-    }
     }
 #endif
     (void)native_dialog_used;
@@ -649,9 +640,12 @@ static int rt_filedialog_register_wrapper(rt_filedialog_data_t *data) {
             return 1;
     }
     if (s_filedialog_wrapper_count >= s_filedialog_wrapper_cap) {
-        size_t new_cap = s_filedialog_wrapper_cap ? s_filedialog_wrapper_cap * 2 : 8;
-        if (new_cap < s_filedialog_wrapper_cap ||
-            new_cap > SIZE_MAX / sizeof(rt_filedialog_data_t *))
+        size_t new_cap = 0;
+        if (!rt_gui_next_collection_capacity(s_filedialog_wrapper_cap,
+                                             s_filedialog_wrapper_count + 1u,
+                                             8u,
+                                             sizeof(rt_filedialog_data_t *),
+                                             &new_cap))
             return 0;
         void *p = realloc(s_filedialog_wrappers, new_cap * sizeof(rt_filedialog_data_t *));
         if (!p)
@@ -766,7 +760,7 @@ static void rt_filedialog_record_completion(rt_filedialog_data_t *data) {
 static int rt_filedialog_copy_paths(rt_filedialog_data_t *data, char **paths, size_t count) {
     if (!data || !paths || count == 0)
         return 0;
-    if (count > SIZE_MAX / sizeof(char *))
+    if (count > RT_GUI_MAX_COLLECTION_ITEMS || count > SIZE_MAX / sizeof(char *))
         return 0;
 
     char **copy = (char **)calloc(count, sizeof(char *));
@@ -1273,7 +1267,7 @@ int64_t rt_filedialog_get_path_count(void *dialog) {
         return 0;
     if (data->selected_count > (size_t)INT64_MAX)
         return INT64_MAX;
-    return (int64_t)data->selected_count;
+    return rt_gui_saturating_size_to_i64(data->selected_count);
 }
 
 /// @brief Return the i-th selected path (0-based) from a multi-select dialog. Empty if `index`

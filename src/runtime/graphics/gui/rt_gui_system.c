@@ -56,16 +56,7 @@
 /// @param text Source string to copy; NULL returns NULL.
 /// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
 static char *rt_gui_system_strdup(const char *text) {
-    if (!text)
-        return NULL;
-    size_t len = strlen(text);
-    if (len > SIZE_MAX - 1u)
-        return NULL;
-    char *copy = (char *)malloc(len + 1u);
-    if (!copy)
-        return NULL;
-    memcpy(copy, text, len + 1u);
-    return copy;
+    return rt_gui_strdup_bounded(text);
 }
 
 // Clipboard Functions (Phase 1)
@@ -129,12 +120,14 @@ static rt_gui_app_t *rt_shortcuts_app(void) {
 ///          Invalid apps, available capacity, overflow, and allocation failure are no-ops.
 /// @param app App whose owned shortcut array may need one additional slot.
 static void rt_shortcuts_ensure_capacity(rt_gui_app_t *app) {
-    if (!app || app->shortcut_count < app->shortcut_cap)
+    if (!app || app->shortcut_count < 0 || app->shortcut_cap < 0 ||
+        app->shortcut_count > app->shortcut_cap)
         return;
-    if (app->shortcut_cap > INT_MAX / 2)
+    if (app->shortcut_count < app->shortcut_cap)
         return;
-    int new_cap = app->shortcut_cap ? app->shortcut_cap * 2 : 16;
-    if ((size_t)new_cap > SIZE_MAX / sizeof(*app->shortcuts))
+    int new_cap = 0;
+    if (!rt_gui_next_collection_capacity_i32(
+            app->shortcut_cap, app->shortcut_count, 16, sizeof(*app->shortcuts), &new_cap))
         return;
     void *p = realloc(app->shortcuts, (size_t)new_cap * sizeof(*app->shortcuts));
     if (!p)
@@ -169,13 +162,16 @@ static void rt_shortcuts_free_triggered_queue(rt_gui_app_t *app) {
 /// @param id Borrowed non-NULL registered identifier to copy.
 /// @return One when the ordered queue accepted the identifier, otherwise zero.
 static int rt_shortcuts_record_triggered(rt_gui_app_t *app, const char *id) {
-    if (!app || !id)
+    if (!app || !id || app->triggered_shortcut_count < 0 || app->triggered_shortcut_cap < 0 ||
+        app->triggered_shortcut_count > app->triggered_shortcut_cap)
         return 0;
     if (app->triggered_shortcut_count >= app->triggered_shortcut_cap) {
-        if (app->triggered_shortcut_cap > INT_MAX / 2)
-            return 0;
-        int new_cap = app->triggered_shortcut_cap ? app->triggered_shortcut_cap * 2 : 4;
-        if ((size_t)new_cap > SIZE_MAX / sizeof(*app->triggered_shortcut_ids))
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(app->triggered_shortcut_cap,
+                                                 app->triggered_shortcut_count,
+                                                 4,
+                                                 sizeof(*app->triggered_shortcut_ids),
+                                                 &new_cap))
             return 0;
         void *p = realloc(app->triggered_shortcut_ids,
                           (size_t)new_cap * sizeof(*app->triggered_shortcut_ids));
@@ -440,7 +436,7 @@ void rt_shortcuts_register(rt_string id, rt_string keys, rt_string description) 
 
     // Add new shortcut
     rt_shortcuts_ensure_capacity(app);
-    if (app->shortcut_count >= app->shortcut_cap) {
+    if (app->shortcut_count < 0 || app->shortcut_count >= app->shortcut_cap) {
         free(cid);
         free(ckeys);
         free(cdesc);
@@ -1261,7 +1257,7 @@ int64_t rt_app_is_focused(void *app) {
 int64_t rt_app_get_paint_frames_full(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
-    return gui_app ? (int64_t)gui_app->frames_full : 0;
+    return gui_app ? rt_gui_saturating_u64_to_i64(gui_app->frames_full) : 0;
 }
 
 /// @brief Count of frames that took the damage-region (partial) repaint path.
@@ -1270,7 +1266,7 @@ int64_t rt_app_get_paint_frames_full(void *app) {
 int64_t rt_app_get_paint_frames_partial(void *app) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *gui_app = rt_app_checked(app);
-    return gui_app ? (int64_t)gui_app->frames_partial : 0;
+    return gui_app ? rt_gui_saturating_u64_to_i64(gui_app->frames_partial) : 0;
 }
 
 /// @brief Enable or disable damage-region rendering at runtime (kill switch).

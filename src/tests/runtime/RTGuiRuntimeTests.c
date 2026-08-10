@@ -235,6 +235,12 @@ static void test_gui_capability_and_try_new_success(void) {
     rt_gui_app_make_current(app);
     assert(rt_gui_get_active_app() == app_state);
     assert(rt_gui_app_get_next_deadline_ms(app) == 0);
+    app_state->frames_full = UINT64_MAX;
+    app_state->frames_partial = UINT64_MAX;
+    assert(rt_app_get_paint_frames_full(app) == INT64_MAX);
+    assert(rt_app_get_paint_frames_partial(app) == INT64_MAX);
+    app_state->frames_full = 0;
+    app_state->frames_partial = 0;
     assert(rt_gui_app_run_frame_with_delta(app, 16.5) == 1);
     assert(app_state->scheduler_elapsed_ms == 16.5);
     assert(rt_gui_app_get_next_deadline_ms(app) == -1);
@@ -3319,6 +3325,8 @@ static void test_commandpalette_rejects_embedded_nul_command_ids(void) {
     assert(palette);
     rt_commandpalette_data_view_t *data = (rt_commandpalette_data_view_t *)palette;
     assert(data->palette);
+    data->palette->query_generation = UINT64_MAX;
+    assert(rt_commandpalette_get_query_generation(palette) == INT64_MAX);
 
     const char bad_id[] = {'b', 'a', 'd', '\0', 'i', 'd'};
     rt_commandpalette_add_command(palette,
@@ -3389,6 +3397,103 @@ static void test_numeric_setters_sanitize_invalid_values(void) {
     vg_widget_destroy(&split->base);
     vg_widget_destroy(widget);
     printf("test_numeric_setters_sanitize_invalid_values: PASSED\n");
+}
+
+/// @brief Verify every shared numeric narrowing path is finite and saturating.
+/// @details Runtime callers can supply the complete signed 64-bit domain, while retained toolkit
+///          geometry and revisions use floats, signed ints, size_t, and uint64_t. The conversion
+///          helpers and representative widget/editor getters must never rely on undefined
+///          float-to-integer conversion or implementation-defined unsigned narrowing.
+static void test_numeric_narrowing_saturates_without_undefined_behavior(void) {
+    size_t rgba_size = 0;
+    assert(rt_gui_saturating_f64_to_i64(NAN) == 0);
+    assert(rt_gui_saturating_f64_to_i64(INFINITY) == INT64_MAX);
+    assert(rt_gui_saturating_f64_to_i64(-INFINITY) == INT64_MIN);
+    assert(rt_gui_saturating_f64_to_i64(42.75) == 42);
+    assert(rt_gui_saturating_f64_to_i32(NAN) == 0);
+    assert(rt_gui_saturating_f64_to_i32(INFINITY) == INT32_MAX);
+    assert(rt_gui_saturating_f64_to_i32(-INFINITY) == INT32_MIN);
+    assert(rt_gui_saturating_u64_to_i64(UINT64_MAX) == INT64_MAX);
+    assert(rt_gui_saturating_size_to_i64(SIZE_MAX) == INT64_MAX);
+    assert(rt_gui_rgba_size_i64(8192, 8192, &rgba_size));
+    assert(rgba_size == RT_GUI_MAX_IMAGE_PIXELS * 4u);
+    assert(!rt_gui_rgba_size_i64(8193, 8192, &rgba_size));
+    assert(!rt_gui_rgba_size_i64(INT64_MAX, 1, &rgba_size));
+    size_t next_capacity = 0;
+    assert(rt_gui_next_collection_capacity(0, 1, 8, sizeof(void *), &next_capacity));
+    assert(next_capacity == 8);
+    assert(rt_gui_next_collection_capacity(8, 9, 8, sizeof(void *), &next_capacity));
+    assert(next_capacity == 16);
+    assert(rt_gui_next_collection_capacity(700000, 700001, 8, sizeof(void *), &next_capacity));
+    assert(next_capacity == RT_GUI_MAX_COLLECTION_ITEMS);
+    assert(!rt_gui_next_collection_capacity(RT_GUI_MAX_COLLECTION_ITEMS,
+                                            RT_GUI_MAX_COLLECTION_ITEMS,
+                                            8,
+                                            sizeof(void *),
+                                            &next_capacity));
+    assert(!rt_gui_next_collection_capacity(
+        0, RT_GUI_MAX_COLLECTION_ITEMS + 1u, 8, sizeof(void *), &next_capacity));
+    int next_i32_capacity = 0;
+    assert(!rt_gui_next_collection_capacity_i32(-1, 0, 8, sizeof(void *), &next_i32_capacity));
+
+    assert(rt_gui_dpi_to_physical(INT64_MAX, 2.0) == INT64_MAX);
+    assert(rt_gui_dpi_to_physical(INT64_MAX, INFINITY) == INT64_MAX);
+    assert(rt_gui_dpi_to_physical(10, 2.0) == 20);
+    assert(rt_gui_dpi_to_logical(20, 2.0) == 10);
+
+    vg_widget_t *widget = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(widget);
+    widget->width = INFINITY;
+    widget->height = -INFINITY;
+    widget->x = NAN;
+    widget->y = 42.75f;
+    assert(rt_widget_get_width(widget) == INT64_MAX);
+    assert(rt_widget_get_height(widget) == INT64_MIN);
+    assert(rt_widget_get_x(widget) == 0);
+    assert(rt_widget_get_y(widget) == 42);
+    vg_widget_destroy(widget);
+
+    vg_codeeditor_t *editor = vg_codeeditor_create(NULL);
+    assert(editor);
+    vg_codeeditor_set_text(editor, "abc");
+    editor->base.width = 100.0f;
+    editor->base.height = 20.0f;
+    editor->char_width = 10.0f;
+    editor->line_height = 10.0f;
+    editor->gutter_width = 0.0f;
+    editor->base.x = INFINITY;
+    editor->base.y = -INFINITY;
+    assert(rt_codeeditor_get_cursor_pixel_x(editor) == INT64_MAX);
+    assert(rt_codeeditor_get_cursor_pixel_y(editor) == INT64_MIN);
+    editor->base.x = 0.0f;
+    editor->base.y = 0.0f;
+    assert(rt_codeeditor_get_line_at_pixel(editor, INT64_MAX) == 0);
+    assert(rt_codeeditor_get_line_at_pixel(editor, INT64_MIN) == 0);
+    assert(rt_codeeditor_get_col_at_pixel(editor, INT64_MAX, 0) == 3);
+    assert(rt_codeeditor_get_col_at_pixel(editor, INT64_MIN, 0) == 0);
+    editor->gutter_icon_cap = -1;
+    rt_codeeditor_set_gutter_bar(editor, 0, 0xFF00FF, 0);
+    assert(editor->gutter_icon_count == 0);
+    editor->gutter_icon_cap = 0;
+    editor->fold_region_cap = -1;
+    rt_codeeditor_add_fold_region(editor, 0, 1);
+    assert(editor->fold_region_count == 0);
+    editor->fold_region_cap = 0;
+    editor->extra_cursor_cap = -1;
+    rt_codeeditor_add_cursor(editor, 0, 1);
+    assert(editor->extra_cursor_count == 0);
+    editor->extra_cursor_cap = 0;
+    editor->highlight_span_cap = -1;
+    rt_codeeditor_add_highlight(editor, 0, 0, 0, 1, 0xFFFFFFFF);
+    assert(editor->highlight_span_count == 0);
+    editor->highlight_span_cap = 0;
+    editor->semantic_token_cap = -1;
+    rt_codeeditor_add_semantic_token(editor, 0, 0, 1, 0);
+    assert(editor->semantic_token_count == 0);
+    editor->semantic_token_cap = 0;
+    vg_widget_destroy(&editor->base);
+
+    printf("test_numeric_narrowing_saturates_without_undefined_behavior: PASSED\n");
 }
 
 static void test_font_destroy_defers_live_app_font(void) {
@@ -5342,6 +5447,39 @@ static void test_accessibility_snapshot_and_widget_semantics(void) {
     assert(rt_map_get_float(input_node, rt_const_cstr("logicalWidth")) == 100.0);
     release_test_runtime_object(snapshot);
 
+    hidden->base.next_sibling = &hidden->base;
+    snapshot = rt_accessibility_snapshot(app.root);
+    assert(snapshot);
+    assert(rt_map_get_bool(snapshot, rt_const_cstr("truncated")) == 1);
+    children = rt_map_get(snapshot, rt_const_cstr("children"));
+    assert(children && rt_seq_len(children) == 3);
+    release_test_runtime_object(snapshot);
+    hidden->base.next_sibling = NULL;
+
+    app.root->id = UINT64_MAX;
+    app.root->revision = UINT64_MAX;
+    app.root->accessibility.revision = UINT64_MAX;
+    app.root->accessibility.announcement_revision = UINT64_MAX;
+    app.root->x = NAN;
+    app.root->y = -INFINITY;
+    app.root->width = INFINITY;
+    app.root->height = -INFINITY;
+    snapshot = rt_accessibility_snapshot(app.root);
+    assert(snapshot);
+    assert(rt_map_get_int(snapshot, rt_const_cstr("id")) == INT64_MAX);
+    assert(rt_map_get_int(snapshot, rt_const_cstr("revision")) == INT64_MAX);
+    assert(rt_map_get_int(snapshot, rt_const_cstr("semanticRevision")) == INT64_MAX);
+    assert(rt_map_get_int(snapshot, rt_const_cstr("announcementRevision")) == INT64_MAX);
+    assert(rt_map_get_float(snapshot, rt_const_cstr("screenX")) == 0.0);
+    assert(rt_map_get_float(snapshot, rt_const_cstr("screenY")) == 0.0);
+    assert(rt_map_get_float(snapshot, rt_const_cstr("screenWidth")) == 0.0);
+    assert(rt_map_get_float(snapshot, rt_const_cstr("screenHeight")) == 0.0);
+    release_test_runtime_object(snapshot);
+    app.root->x = 0.0f;
+    app.root->y = 0.0f;
+    app.root->width = 400.0f;
+    app.root->height = 200.0f;
+
     rt_accessibility_announce(
         &label->base, rt_const_cstr("Name field ready"), VG_LIVE_REGION_ASSERTIVE);
     snapshot = rt_accessibility_snapshot(app.root);
@@ -5600,6 +5738,7 @@ int main(void) {
     test_commandpalette_show_clear_remove_drop_stale_selection();
     test_commandpalette_rejects_embedded_nul_command_ids();
     test_numeric_setters_sanitize_invalid_values();
+    test_numeric_narrowing_saturates_without_undefined_behavior();
     test_font_destroy_defers_live_app_font();
     test_managed_system_fonts_and_generation_retirement();
     test_detached_widgets_do_not_inherit_current_app_font();

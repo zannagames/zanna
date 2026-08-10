@@ -697,8 +697,21 @@ ordered effect chain for GPU `present_postfx` / readback paths:
    - **FXAA**: luminance-based edge detection → 3x3 average on high-contrast pixels
    - **Color grading**: brightness/contrast/saturation adjustments
    - **Vignette**: radial distance falloff from center
-   - **SSAO / DOF / motion blur**: exported to GPU backends with bounded sample counts; these require scene depth/history/velocity buffers, so CPU render-target/software postfx traps if such effects would otherwise be silently skipped
+   - **SSAO / DOF / motion blur / TAA / SSR**: use bounded depth and camera snapshots on the deterministic software path and bounded backend snapshots on hardware paths
+   - **Auto exposure / color LUT / sun shafts**: run in the software reference path; ordered backend exports retain their effect discriminator even where a hardware pass is not implemented
 3. Convert float RGB → RGBA8 back to framebuffer
+
+The CPU working representation is packed `RGBRGB...`; alpha remains in the render target and is
+preserved. Frame, effect, and temporal buffers are retained by the chain and grow geometrically up
+to the render-target policy ceiling. TAA snapshots the current frame before resolving so its
+neighborhood clamp is independent of traversal order. The shared display-gamma table is built once
+per process.
+
+Authored and backend chains accept at most 4,096 entries. Mutable pointer/count/capacity fields are
+traversal mirrors, not ownership proof: allocation metadata uses address-bound cookies, and only a
+valid owner tuple may be resized or freed. By-value backend-chain copies are therefore borrowed
+views. `Clear()` preserves warm allocations but releases a retained LUT and resets TAA, previous
+view-projection, and auto-exposure state.
 
 PostFX is stored per-canvas (on the `rt_canvas3d` struct), allowing independent effect chains on multiple windows.
 

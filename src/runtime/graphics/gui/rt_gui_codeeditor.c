@@ -52,7 +52,7 @@
 /// @param value Low-level monotonic counter value.
 /// @return Exact signed value when representable, otherwise `INT64_MAX`.
 static int64_t rt_codeeditor_perf_i64(uint64_t value) {
-    return value > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+    return rt_gui_saturating_u64_to_i64(value);
 }
 
 /// @brief Allocate the versioned public CodeEditor performance-statistics Map.
@@ -170,19 +170,15 @@ static vg_icon_t rt_codeeditor_icon_from_pixels(void *pixels) {
         return icon;
     }
 
-    size_t pixel_count = (size_t)width * (size_t)height;
-    if (pixel_count / (size_t)width != (size_t)height) {
+    size_t rgba_size = 0;
+    if (!rt_gui_rgba_size_i64(width, height, &rgba_size)) {
         rt_trap_raise_kind(
             RT_TRAP_KIND_OVERFLOW, Err_Overflow, -1, "CodeEditor.SetGutterIcon: icon too large");
         return icon;
     }
-    if (width > UINT32_MAX || height > UINT32_MAX || pixel_count > SIZE_MAX / 4) {
-        rt_trap_raise_kind(
-            RT_TRAP_KIND_OVERFLOW, Err_Overflow, -1, "CodeEditor.SetGutterIcon: icon too large");
-        return icon;
-    }
+    size_t pixel_count = rgba_size / 4u;
 
-    uint8_t *rgba = (uint8_t *)malloc(pixel_count * 4);
+    uint8_t *rgba = (uint8_t *)malloc(rgba_size);
     if (!rgba) {
         rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR,
                            Err_RuntimeError,
@@ -224,6 +220,9 @@ void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->gutter_icon_count < 0 || ce->gutter_icon_cap < 0 ||
+        ce->gutter_icon_count > ce->gutter_icon_cap)
+        return;
     int type = 0;
     if (!rt_codeeditor_gutter_slot_checked(slot, &type))
         return;
@@ -245,9 +244,10 @@ void rt_codeeditor_set_gutter_icon(void *editor, int64_t line, void *pixels, int
         }
     }
     if (ce->gutter_icon_count >= ce->gutter_icon_cap) {
-        if (ce->gutter_icon_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(
+                ce->gutter_icon_cap, ce->gutter_icon_count, 8, sizeof(*ce->gutter_icons), &new_cap))
             return;
-        int new_cap = ce->gutter_icon_cap ? ce->gutter_icon_cap * 2 : 8;
         void *p = realloc(ce->gutter_icons, (size_t)new_cap * sizeof(*ce->gutter_icons));
         if (!p) {
             rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR,
@@ -284,6 +284,9 @@ void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->gutter_icon_count < 0 || ce->gutter_icon_cap < 0 ||
+        ce->gutter_icon_count > ce->gutter_icon_cap)
+        return;
     int type = 0;
     if (!rt_codeeditor_gutter_slot_checked(slot, &type))
         return;
@@ -301,9 +304,10 @@ void rt_codeeditor_set_gutter_bar(void *editor, int64_t line, int64_t color, int
         }
     }
     if (ce->gutter_icon_count >= ce->gutter_icon_cap) {
-        if (ce->gutter_icon_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(
+                ce->gutter_icon_cap, ce->gutter_icon_count, 8, sizeof(*ce->gutter_icons), &new_cap))
             return;
-        int new_cap = ce->gutter_icon_cap ? ce->gutter_icon_cap * 2 : 8;
         void *p = realloc(ce->gutter_icons, (size_t)new_cap * sizeof(*ce->gutter_icons));
         if (!p)
             return;
@@ -506,6 +510,9 @@ void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->fold_region_count < 0 || ce->fold_region_cap < 0 ||
+        ce->fold_region_count > ce->fold_region_cap)
+        return;
     if (start_line < 0)
         start_line = 0;
     if (end_line >= ce->line_count)
@@ -529,9 +536,10 @@ void rt_codeeditor_add_fold_region(void *editor, int64_t start_line, int64_t end
             return;
     }
     if (ce->fold_region_count >= ce->fold_region_cap) {
-        if (ce->fold_region_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(
+                ce->fold_region_cap, ce->fold_region_count, 8, sizeof(*ce->fold_regions), &new_cap))
             return;
-        int new_cap = ce->fold_region_cap ? ce->fold_region_cap * 2 : 8;
         void *p = realloc(ce->fold_regions, (size_t)new_cap * sizeof(*ce->fold_regions));
         if (!p)
             return;
@@ -730,9 +738,13 @@ void rt_codeeditor_set_auto_fold_detection(void *editor, int64_t enable) {
                 if (end_line > start_line) {
                     // Add fold region via realloc
                     if (ce->fold_region_count >= ce->fold_region_cap) {
-                        if (ce->fold_region_cap > INT_MAX / 2)
+                        int new_cap = 0;
+                        if (!rt_gui_next_collection_capacity_i32(ce->fold_region_cap,
+                                                                 ce->fold_region_count,
+                                                                 16,
+                                                                 sizeof(*ce->fold_regions),
+                                                                 &new_cap))
                             break;
-                        int new_cap = ce->fold_region_cap ? ce->fold_region_cap * 2 : 16;
                         void *p =
                             realloc(ce->fold_regions, (size_t)new_cap * sizeof(*ce->fold_regions));
                         if (!p)
@@ -828,15 +840,22 @@ void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
         return;
+    if (ce->extra_cursor_count < 0 || ce->extra_cursor_cap < 0 ||
+        ce->extra_cursor_count > ce->extra_cursor_cap)
+        return;
     int line_i = rt_gui_clamp_i64_to_i32(line, 0, INT32_MAX);
     int col_i = rt_gui_clamp_i64_to_i32(col, 0, INT32_MAX);
     rt_codeeditor_clamp_position(ce, &line_i, &col_i);
     if (rt_codeeditor_cursor_exists_at(ce, line_i, col_i))
         return;
     if (ce->extra_cursor_count >= ce->extra_cursor_cap) {
-        if (ce->extra_cursor_cap > INT_MAX / 2)
+        int new_cap = 0;
+        if (!rt_gui_next_collection_capacity_i32(ce->extra_cursor_cap,
+                                                 ce->extra_cursor_count,
+                                                 4,
+                                                 sizeof(*ce->extra_cursors),
+                                                 &new_cap))
             return;
-        int new_cap = ce->extra_cursor_cap ? ce->extra_cursor_cap * 2 : 4;
         void *p = realloc(ce->extra_cursors, (size_t)new_cap * sizeof(*ce->extra_cursors));
         if (!p)
             return;
@@ -1448,12 +1467,12 @@ static int rt_codeeditor_visible_anchor_line(const vg_codeeditor_t *ce, int line
 /// @param content_width Available text width in pixels.
 /// @return Characters per row (>= 1 with word-wrap on; 0 with word-wrap off).
 static int rt_codeeditor_chars_per_row(const vg_codeeditor_t *ce, float content_width) {
-    if (!ce || !ce->word_wrap || ce->char_width <= 0.0f)
+    if (!ce || !ce->word_wrap || !isfinite(ce->char_width) || ce->char_width <= 0.0f)
         return 0;
-    if (content_width <= 0.0f)
+    if (!isfinite(content_width) || content_width <= 0.0f)
         return 1;
     double chars_f = (double)content_width / (double)ce->char_width;
-    int chars = chars_f > (double)INT_MAX ? INT_MAX : (int)chars_f;
+    int chars = rt_gui_saturating_f64_to_i32(chars_f);
     return chars > 0 ? chars : 1;
 }
 
@@ -1737,7 +1756,7 @@ int64_t rt_codeeditor_get_cursor_pixel_x(void *editor) {
     } else {
         px += (float)(ce->cursor_col) * ce->char_width - ce->scroll_x;
     }
-    return (int64_t)px;
+    return rt_gui_saturating_f64_to_i64((double)px);
 }
 
 /// @brief Get the screen-absolute Y pixel coordinate of the primary cursor.
@@ -1757,7 +1776,7 @@ int64_t rt_codeeditor_get_cursor_pixel_y(void *editor) {
     int visual_row =
         rt_codeeditor_visual_row_for_position(ce, content_width, ce->cursor_line, ce->cursor_col);
     py += (float)visual_row * ce->line_height - ce->scroll_y;
-    return (int64_t)py;
+    return rt_gui_saturating_f64_to_i64((double)py);
 }
 
 /// @brief Return the 0-based editor line at a screen-absolute Y coordinate.
@@ -1775,9 +1794,11 @@ int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
     vg_widget_get_screen_bounds(&ce->base, &ax, &ay, NULL, NULL);
     (void)ax;
 
-    float local_y = (float)y - ay + ce->scroll_y;
+    double local_y = (double)y - (double)ay + (double)ce->scroll_y;
     float content_width = rt_codeeditor_content_draw_width(ce);
-    int visual_row = ce->line_height > 0.0f ? (int)(local_y / ce->line_height) : 0;
+    int visual_row = isfinite(ce->line_height) && ce->line_height > 0.0f
+                         ? rt_gui_saturating_f64_to_i32(local_y / (double)ce->line_height)
+                         : 0;
     int line = 0;
     rt_codeeditor_locate_visual_row(ce, content_width, visual_row, &line, NULL);
     if (line < 0)
@@ -1808,22 +1829,28 @@ int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
     vg_widget_get_screen_bounds(&ce->base, &ax, &ay, NULL, NULL);
     (void)ay;
 
-    float local_x = (float)x - ax - ce->gutter_width;
+    double local_x = (double)x - (double)ax - (double)ce->gutter_width;
     int col = 0;
     if (ce->word_wrap) {
         float content_width = rt_codeeditor_content_draw_width(ce);
         int chars_per_row = rt_codeeditor_chars_per_row(ce, content_width);
         int visual_row =
-            ce->line_height > 0.0f ? (int)(((float)y - ay + ce->scroll_y) / ce->line_height) : 0;
+            isfinite(ce->line_height) && ce->line_height > 0.0f
+                ? rt_gui_saturating_f64_to_i32(((double)y - (double)ay + (double)ce->scroll_y) /
+                                               (double)ce->line_height)
+                : 0;
         int row_in_line = 0;
         rt_codeeditor_locate_visual_row(ce, content_width, visual_row, NULL, &row_in_line);
-        int col_in_row = ce->char_width > 0.0f ? (int)(local_x / ce->char_width + 0.5f) : 0;
+        int col_in_row = isfinite(ce->char_width) && ce->char_width > 0.0f
+                             ? rt_gui_saturating_f64_to_i32(local_x / (double)ce->char_width + 0.5)
+                             : 0;
         if (col_in_row < 0)
             col_in_row = 0;
-        col = row_in_line * chars_per_row + col_in_row;
+        int64_t wide_col = (int64_t)row_in_line * (int64_t)chars_per_row + col_in_row;
+        col = rt_gui_clamp_i64_to_i32(wide_col, 0, INT32_MAX);
     } else {
         local_x += ce->scroll_x;
-        col = (int)(local_x / ce->char_width + 0.5f);
+        col = rt_gui_saturating_f64_to_i32(local_x / (double)ce->char_width + 0.5);
     }
     if (col < 0)
         col = 0;
@@ -2109,8 +2136,8 @@ static void rt_editorbuffer_finalize(void *obj) {
 /// @param buf Detached editor buffer whose ownership transfers to the wrapper.
 /// @return New managed EditorBuffer handle, or `NULL` if allocation fails.
 static void *rt_editorbuffer_wrap(vg_editor_buffer_t *buf) {
-    rt_editorbuffer_data_t *d = (rt_editorbuffer_data_t *)rt_obj_new_i64(
-        0, (int64_t)sizeof(rt_editorbuffer_data_t));
+    rt_editorbuffer_data_t *d =
+        (rt_editorbuffer_data_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_editorbuffer_data_t));
     if (!d) {
         vg_editor_buffer_destroy(buf);
         return NULL;
@@ -2159,7 +2186,7 @@ int64_t rt_editorbuffer_get_revision(void *handle) {
     rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
     if (!d || !d->buf)
         return 0;
-    return (int64_t)vg_editor_buffer_get_revision(d->buf);
+    return rt_gui_saturating_u64_to_i64(vg_editor_buffer_get_revision(d->buf));
 }
 
 /// @brief `EditorBuffer.IsModified`.
@@ -2187,7 +2214,8 @@ void rt_editorbuffer_clear_modified(void *handle) {
 ///        passed buffer is consumed.
 /// @param editor CodeEditor widget receiving the detached document.
 /// @param bufHandle EditorBuffer handle consumed by a successful swap.
-/// @return Managed handle for the editor's previous document, or `NULL` on invalid input or failure.
+/// @return Managed handle for the editor's previous document, or `NULL` on invalid input or
+/// failure.
 void *rt_codeeditor_attach_buffer(void *editor, void *bufHandle) {
     RT_ASSERT_MAIN_THREAD();
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
@@ -2910,6 +2938,7 @@ void *rt_editorbuffer_new(rt_string text) {
     (void)text;
     return NULL;
 }
+
 /// @brief Return empty text because EditorBuffer is unavailable without graphics.
 /// @param handle Ignored EditorBuffer handle.
 /// @return Empty runtime string.
@@ -2917,6 +2946,7 @@ rt_string rt_editorbuffer_get_text(void *handle) {
     (void)handle;
     return rt_str_empty();
 }
+
 /// @brief Return the neutral revision because EditorBuffer is unavailable without graphics.
 /// @param handle Ignored EditorBuffer handle.
 /// @return Always `0`.
@@ -2924,6 +2954,7 @@ int64_t rt_editorbuffer_get_revision(void *handle) {
     (void)handle;
     return 0;
 }
+
 /// @brief Report an unmodified buffer because EditorBuffer is unavailable without graphics.
 /// @param handle Ignored EditorBuffer handle.
 /// @return Always `0`.
@@ -2931,11 +2962,13 @@ int64_t rt_editorbuffer_is_modified(void *handle) {
     (void)handle;
     return 0;
 }
+
 /// @brief Ignore a modified-state reset because EditorBuffer is unavailable without graphics.
 /// @param handle Ignored EditorBuffer handle.
 void rt_editorbuffer_clear_modified(void *handle) {
     (void)handle;
 }
+
 /// @brief Reject buffer attachment because CodeEditor is unavailable without graphics.
 /// @param editor Ignored CodeEditor handle.
 /// @param bufHandle Ignored EditorBuffer handle.

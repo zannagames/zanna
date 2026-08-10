@@ -768,7 +768,7 @@ int64_t rt_widget_get_id(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0;
-    return w->id > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)w->id;
+    return rt_gui_saturating_u64_to_i64(w->id);
 }
 
 /// @brief Find a positive public widget ID in a subtree and wrap the borrowed result.
@@ -907,7 +907,7 @@ int64_t rt_widget_get_width(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0;
-    return (int64_t)w->width;
+    return rt_gui_saturating_f64_to_i64((double)w->width);
 }
 
 /// @brief Get the current laid-out height of the widget in physical pixels.
@@ -918,7 +918,7 @@ int64_t rt_widget_get_height(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0;
-    return (int64_t)w->height;
+    return rt_gui_saturating_f64_to_i64((double)w->height);
 }
 
 /// @brief Get the widget's X position relative to its parent.
@@ -929,7 +929,7 @@ int64_t rt_widget_get_x(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0;
-    return (int64_t)w->x;
+    return rt_gui_saturating_f64_to_i64((double)w->x);
 }
 
 /// @brief Get the widget's Y position relative to its parent.
@@ -940,7 +940,7 @@ int64_t rt_widget_get_y(void *widget) {
     vg_widget_t *w = rt_gui_widget_handle_checked(widget);
     if (!w)
         return 0;
-    return (int64_t)w->y;
+    return rt_gui_saturating_f64_to_i64((double)w->y);
 }
 
 /// @brief Get the widget's flex-grow factor.
@@ -1481,7 +1481,7 @@ static size_t rt_textinput_size_from_i64(int64_t value) {
 /// @param value Non-negative value produced by the lower GUI editor.
 /// @return Signed runtime representation, saturated at INT64_MAX.
 static int64_t rt_textinput_i64_from_u64(uint64_t value) {
-    return value > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)value;
+    return rt_gui_saturating_u64_to_i64(value);
 }
 
 /// @brief Resolve and type-check a public TextInput handle.
@@ -2221,7 +2221,10 @@ void *rt_treeview_get_node_at(void *tree, int64_t x, int64_t y) {
         (vg_treeview_t *)rt_gui_widget_handle_checked_type(tree, VG_WIDGET_TREEVIEW);
     if (!tv)
         return NULL;
-    return rt_gui_wrap_tree_node(vg_treeview_node_at(tv, (float)x, (float)y));
+    return rt_gui_wrap_tree_node(
+        vg_treeview_node_at(tv,
+                            rt_gui_sanitize_signed_float((double)x, RT_GUI_MAX_LAYOUT_VALUE),
+                            rt_gui_sanitize_signed_float((double)y, RT_GUI_MAX_LAYOUT_VALUE)));
 }
 
 /// @brief Extract a tree node's runtime string data, or empty string.
@@ -2234,10 +2237,12 @@ static rt_string rt_treeview_node_data_string(vg_tree_node_t *n) {
 }
 
 /// @brief Return byte-exact data for every selected retained node in complete preorder.
-/// @details The returned sequence includes one owned runtime string for each selected retained node.
+/// @details The returned sequence includes one owned runtime string for each selected retained
+/// node.
 ///          Invalid, empty, and virtual trees produce an empty sequence.
 /// @param tree TreeView widget handle.
-/// @return Fresh owned sequence of selected-node data strings, or NULL if sequence allocation fails.
+/// @return Fresh owned sequence of selected-node data strings, or NULL if sequence allocation
+/// fails.
 void *rt_treeview_get_selected_data(void *tree) {
     RT_ASSERT_MAIN_THREAD();
     void *result = rt_seq_new_owned();
@@ -2523,7 +2528,8 @@ int64_t rt_treeview_get_revision(void *tree) {
 
 /// @brief Get the display text of a tree node.
 /// @param node Managed tree-node subhandle.
-/// @return Copy of the node's UTF-8 label, or an owned empty string for an invalid or unlabeled node.
+/// @return Copy of the node's UTF-8 label, or an owned empty string for an invalid or unlabeled
+/// node.
 rt_string rt_treeview_node_get_text(void *node) {
     RT_ASSERT_MAIN_THREAD();
     if (!node)

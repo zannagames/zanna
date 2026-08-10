@@ -720,6 +720,46 @@ TEST(image_atomic_upload_and_region_update) {
     ASSERT_EQ(image->pixel_capacity, capacity);
     ASSERT_EQ(image->content_revision, uploaded_revision);
 
+    uint8_t *staged = vg_image_borrow_writable_pixels(image, 3, 1);
+    ASSERT_NOT_NULL(staged);
+    memset(staged, 77, 12);
+    ASSERT(image->pixels == allocated);
+    ASSERT_EQ(memcmp(image->pixels, original, sizeof(original)), 0);
+    ASSERT_EQ(image->img_width, 2);
+    ASSERT_EQ(image->img_height, 2);
+    vg_image_commit_borrowed_pixels(image, 2, 1);
+    ASSERT(image->pixels == allocated);
+    ASSERT_EQ(memcmp(image->pixels, original, sizeof(original)), 0);
+
+    staged = vg_image_borrow_writable_pixels(image, 3, 1);
+    ASSERT_NOT_NULL(staged);
+    for (size_t i = 0; i < 12; ++i)
+        staged[i] = (uint8_t)(i + 20u);
+    const uint64_t before_commit_revision = image->content_revision;
+    vg_image_commit_borrowed_pixels(image, 3, 1);
+    ASSERT(image->pixels == staged);
+    ASSERT(image->borrowed_pixels == allocated);
+    ASSERT_EQ(image->img_width, 3);
+    ASSERT_EQ(image->img_height, 1);
+    ASSERT_EQ(image->content_revision, before_commit_revision + 1u);
+
+    uint8_t published[12];
+    memcpy(published, image->pixels, sizeof(published));
+    staged = vg_image_borrow_writable_pixels(image, 3, 1);
+    ASSERT(staged == allocated);
+    memset(staged, 99, sizeof(published));
+    ASSERT_EQ(memcmp(image->pixels, published, sizeof(published)), 0);
+    vg_image_cancel_borrowed_pixels(image);
+    vg_image_commit_borrowed_pixels(image, 3, 1);
+    ASSERT_EQ(memcmp(image->pixels, published, sizeof(published)), 0);
+
+    ASSERT_NOT_NULL(vg_image_borrow_writable_pixels(image, 3, 1));
+    ASSERT_NULL(vg_image_borrow_writable_pixels(image, 0, 1));
+    vg_image_commit_borrowed_pixels(image, 3, 1);
+    ASSERT_EQ(memcmp(image->pixels, published, sizeof(published)), 0);
+
+    ASSERT(vg_image_try_set_pixels(image, original, 2, 2));
+
     const uint8_t source[16] = {20, 21, 22, 255, 30, 31, 32, 128, 40, 41, 42, 255, 50, 51, 52, 255};
     ASSERT(vg_image_update_region(image, source, 2, 2, 1, 0, 1, 1, 0, 1));
     ASSERT_EQ(image->pixels[8], 30);

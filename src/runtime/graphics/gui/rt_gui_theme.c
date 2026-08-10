@@ -1041,7 +1041,7 @@ int64_t rt_theme_get_revision(void) {
     RT_ASSERT_MAIN_THREAD();
     rt_gui_app_t *app = rt_gui_get_active_app();
     uint64_t revision = app ? app->theme_revision : s_fallback_theme_revision;
-    return revision > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)revision;
+    return rt_gui_saturating_u64_to_i64(revision);
 }
 
 #else
