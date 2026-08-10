@@ -546,6 +546,139 @@ int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
     return replaced;
 }
 
+/// @brief One texture-slot rewrite step for rt_model3d_limit_texture_dim.
+/// @details Resolves the slot's texture reference to decoded pixels; when
+///   either dimension exceeds @p max_dim, produces a proportionally
+///   downscaled Pixels and assigns it through @p setter (which owns the
+///   retain/release of the material slot). A tiny caller-owned dedup table
+///   maps already-processed source refs to their downscaled result so a
+///   texture shared by several slots/materials is resized exactly once.
+/// @param material_obj Material3D handle owning the slot.
+/// @param slot_ref Borrowed current slot reference (Pixels/TextureAsset3D).
+/// @param setter Slot assignment entry point (e.g. rt_material3d_set_texture).
+/// @param max_dim Dimension ceiling in texels.
+/// @param seen_src Parallel dedup arrays (source refs).
+/// @param seen_dst Parallel dedup arrays (downscaled results).
+/// @param seen_count In/out entry count for the dedup arrays.
+/// @param seen_cap Capacity of the dedup arrays.
+/// @return 1 when the slot was rewritten, 0 otherwise.
+static int model_limit_texture_slot(void *material_obj,
+                                    void *slot_ref,
+                                    void (*setter)(void *, void *),
+                                    int64_t max_dim,
+                                    void **seen_src,
+                                    void **seen_dst,
+                                    size_t *seen_count,
+                                    size_t seen_cap) {
+    void *pixels;
+    void *resized;
+    int64_t w;
+    int64_t h;
+    int64_t nw;
+    int64_t nh;
+    if (!material_obj || !slot_ref || !setter)
+        return 0;
+    for (size_t i = 0; i < *seen_count; i++) {
+        if (seen_src[i] == slot_ref) {
+            if (!seen_dst[i])
+                return 0; /* previously inspected, already small enough */
+            setter(material_obj, seen_dst[i]);
+            return 1;
+        }
+    }
+    pixels = rt_material3d_resolve_texture_pixels(slot_ref);
+    if (!pixels)
+        return 0;
+    w = rt_pixels_width(pixels);
+    h = rt_pixels_height(pixels);
+    if (w <= 0 || h <= 0)
+        return 0;
+    if (w <= max_dim && h <= max_dim) {
+        if (*seen_count < seen_cap) {
+            seen_src[*seen_count] = slot_ref;
+            seen_dst[*seen_count] = NULL;
+            (*seen_count)++;
+        }
+        return 0;
+    }
+    if (w >= h) {
+        nw = max_dim;
+        nh = h * max_dim / w;
+    } else {
+        nh = max_dim;
+        nw = w * max_dim / h;
+    }
+    if (nw < 1)
+        nw = 1;
+    if (nh < 1)
+        nh = 1;
+    resized = rt_pixels_resize(pixels, nw, nh);
+    if (!resized)
+        return 0;
+    if (*seen_count < seen_cap) {
+        seen_src[*seen_count] = slot_ref;
+        seen_dst[*seen_count] = resized;
+        (*seen_count)++;
+    }
+    setter(material_obj, resized);
+    return 1;
+}
+
+/// @brief Downscale every material texture above @p max_dim in place.
+/// @details Tool-facing (`zanna asset bake --max-texture-dim N`): imported
+///   containers keep their ORIGINAL encoded bytes (VSCN's source-container
+///   preservation), so an 8192-squared JPEG costs its full decode at every
+///   load. Rewriting oversized slots to downscaled raw Pixels makes the
+///   subsequent save serialize compact pixel payloads instead — the decode
+///   and the bulk both disappear from the runtime path. Shared textures are
+///   resized once; slots already within the ceiling are untouched.
+/// @param obj Model3D whose materials are rewritten in place.
+/// @param max_dim Texture dimension ceiling in texels (minimum 64).
+/// @return Number of texture slots rewritten, or 0 for invalid input.
+int64_t rt_model3d_limit_texture_dim(void *obj, int64_t max_dim) {
+    rt_model3d *model = model3d_checked(obj);
+    int32_t safe_materials;
+    int64_t rewritten = 0;
+    void *seen_src[64];
+    void *seen_dst[64];
+    size_t seen_count = 0;
+    if (!model)
+        return 0;
+    if (max_dim < 64)
+        max_dim = 64;
+    safe_materials = model_clamped_array_count(
+        model->materials, model->material_count, model->material_capacity);
+    for (int32_t i = 0; i < safe_materials; i++) {
+        rt_material3d *material =
+            (rt_material3d *)rt_g3d_checked_or_null(model->materials[i], RT_G3D_MATERIAL3D_CLASS_ID);
+        if (!material)
+            continue;
+        rewritten += model_limit_texture_slot(model->materials[i], material->texture,
+                                              rt_material3d_set_texture, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i], material->normal_map,
+                                              rt_material3d_set_normal_map, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i], material->specular_map,
+                                              rt_material3d_set_specular_map, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i], material->emissive_map,
+                                              rt_material3d_set_emissive_map, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->metallic_roughness_map,
+                                              rt_material3d_set_metallic_roughness_map, max_dim,
+                                              seen_src, seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i], material->ao_map,
+                                              rt_material3d_set_ao_map, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i], material->lightmap,
+                                              rt_material3d_set_lightmap, max_dim, seen_src,
+                                              seen_dst, &seen_count, 64);
+    }
+    return rewritten;
+}
+
 /// @brief Load a model with explicit import options (Plan 09).
 /// @details `force_tangents` generates tangents for every UV0-mapped glTF primitive even
 ///   when its material has no normal map at load time — for assets whose materials gain

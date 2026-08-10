@@ -79,6 +79,26 @@ typedef struct {
     int32_t exit_count;
 } Trigger3DTestLayout;
 
+typedef struct {
+    void *vptr;
+    rt_body3d *body;
+    rt_world3d *world;
+    double step_height;
+    double slope_limit_cos;
+    int8_t is_grounded;
+    int8_t was_grounded;
+    int8_t is_sliding;
+    int8_t collide_dynamic;
+    int8_t ride_platforms;
+    double push_strength;
+    rt_body3d *ground_body;
+    rt_body3d *pushed_body;
+    rt_body3d **move_candidates;
+    int32_t move_candidate_count;
+    int32_t move_candidate_capacity;
+    int8_t move_candidates_active;
+} Character3DTestLayout;
+
 namespace {
 static std::jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
@@ -1562,11 +1582,11 @@ static void test_character_sanitizes_motion_config() {
                 "Extreme finite step height clamps to controller bound");
 
     rt_character3d_set_position(c, 1.0, 2.0, 3.0);
-    rt_character3d_move(c, rt_vec3_new(NAN, 0.0, INFINITY), 1.0);
+    rt_character3d_move(c, rt_vec3_new(NAN, 8.0, INFINITY), 1.0);
     void *pos = rt_character3d_get_position(c);
-    EXPECT_TRUE(std::isfinite(rt_vec3_x(pos)) && std::isfinite(rt_vec3_y(pos)) &&
-                    std::isfinite(rt_vec3_z(pos)),
-                "Character move ignores non-finite velocity components");
+    EXPECT_NEAR(rt_vec3_x(pos), 1.0, 0.001, "invalid velocity leaves Character3D X unchanged");
+    EXPECT_NEAR(rt_vec3_y(pos), 2.0, 0.001, "invalid velocity rejects finite sibling lanes");
+    EXPECT_NEAR(rt_vec3_z(pos), 3.0, 0.001, "invalid velocity leaves Character3D Z unchanged");
     rt_character3d_move(c, rt_vec3_new(1.0, 0.0, 0.0), NAN);
     pos = rt_character3d_get_position(c);
     EXPECT_TRUE(std::isfinite(rt_vec3_x(pos)) && std::isfinite(rt_vec3_y(pos)) &&
@@ -1591,6 +1611,106 @@ static void test_character_world_binding() {
     EXPECT_TRUE(rt_character3d_get_world(c) == w, "Character world getter returns bound world");
     rt_character3d_set_world(c, NULL);
     EXPECT_TRUE(rt_character3d_get_world(c) == nullptr, "Character world can be cleared");
+}
+
+static void test_character_repairs_private_refs_and_clears_stale_grounding() {
+    void *world_a = rt_world3d_new(0, 0, 0);
+    void *world_b = rt_world3d_new(0, 0, 0);
+    void *floor = rt_body3d_new_aabb(10.0, 0.5, 10.0, 0.0);
+    void *character = rt_character3d_new(0.5, 2.0, 80.0);
+    Character3DTestLayout *view = (Character3DTestLayout *)character;
+    rt_body3d_set_position(floor, 0.0, -0.5, 0.0);
+    rt_world3d_add(world_a, floor);
+    rt_character3d_set_world(character, world_a);
+    rt_character3d_set_position(character, 0.0, 1.0, 0.0);
+    rt_character3d_move(character, rt_vec3_new(0.0, -1.0, 0.0), 0.1);
+    EXPECT_TRUE(rt_character3d_is_grounded(character) != 0,
+                "character establishes a support before state-transition checks");
+
+    rt_character3d_set_position(character, 0.0, 10.0, 0.0);
+    EXPECT_TRUE(rt_character3d_is_grounded(character) == 0 &&
+                    rt_character3d_get_ground_body(character) == nullptr,
+                "teleport clears stale grounded and supporting-body state");
+
+    rt_character3d_set_position(character, 0.0, 1.0, 0.0);
+    rt_character3d_move(character, rt_vec3_new(0.0, -1.0, 0.0), 0.1);
+    EXPECT_TRUE(rt_character3d_get_ground_body(character) == floor,
+                "character reacquires support before world replacement");
+    rt_character3d_set_world(character, world_b);
+    EXPECT_TRUE(rt_character3d_is_grounded(character) == 0 &&
+                    rt_character3d_get_ground_body(character) == nullptr,
+                "changing worlds clears support retained from the old world");
+
+    rt_body3d *saved_body = view->body;
+    rt_world3d *saved_world = view->world;
+    void *wrong_class = rt_vec3_new(4.0, 5.0, 6.0);
+    view->body = (rt_body3d *)wrong_class;
+    void *position = rt_character3d_get_position(character);
+    EXPECT_NEAR(
+        rt_vec3_x(position), 0.0, 0.001, "wrong-class private body returns a neutral position");
+    view->body = saved_body;
+    view->world = (rt_world3d *)wrong_class;
+    EXPECT_TRUE(rt_character3d_get_world(character) == nullptr,
+                "wrong-class private world is not exposed");
+    view->world = saved_world;
+    view->ground_body = (rt_body3d *)wrong_class;
+    EXPECT_TRUE(rt_character3d_get_ground_body(character) == nullptr,
+                "wrong-class private ground body is discarded");
+}
+
+static void test_character_skips_wrong_class_world_slots() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *body = rt_body3d_new_sphere(0.5, 0.0);
+    void *character = rt_character3d_new(0.5, 2.0, 80.0);
+    rt_world3d_add(world, body);
+    rt_character3d_set_world(character, world);
+    rt_world3d *world_view = (rt_world3d *)world;
+    rt_body3d *saved = world_view->bodies[0];
+    world_view->bodies[0] = (rt_body3d *)rt_vec3_new(0.0, 0.0, 0.0);
+    rt_character3d_move(character, rt_vec3_new(1.0, 0.0, 0.0), 0.1);
+    void *position = rt_character3d_get_position(character);
+    EXPECT_TRUE(std::isfinite(rt_vec3_x(position)) && std::isfinite(rt_vec3_y(position)) &&
+                    std::isfinite(rt_vec3_z(position)),
+                "character direct scan skips a wrong-class world body slot");
+    world_view->bodies[0] = saved;
+}
+
+static void test_character_sweeps_platform_motion_and_reports_it_in_velocity() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *platform = rt_body3d_new_aabb(2.0, 0.25, 2.0, 1.0);
+    void *wall = rt_body3d_new_aabb(0.1, 2.0, 2.0, 0.0);
+    void *character = rt_character3d_new(0.3, 1.8, 70.0);
+    Character3DTestLayout *view = (Character3DTestLayout *)character;
+    rt_body3d_set_kinematic(platform, 1);
+    rt_body3d_set_position(platform, 0.0, -0.25, 0.0);
+    rt_body3d_set_velocity(platform, 20.0, 0.0, 0.0);
+    rt_body3d_set_position(wall, 1.0, 1.0, 0.0);
+    rt_world3d_add(world, platform);
+    rt_world3d_add(world, wall);
+    rt_character3d_set_world(character, world);
+    rt_character3d_set_position(character, 0.0, 0.91, 0.0);
+    rt_character3d_move(character, rt_vec3_new(0.0, -1.0, 0.0), 0.05);
+    EXPECT_TRUE(rt_character3d_get_ground_body(character) == platform,
+                "character establishes the moving platform as support");
+
+    rt_character3d_move(character, rt_vec3_new(0.0, 0.0, 0.0), 0.1);
+    void *position = rt_character3d_get_position(character);
+    void *achieved_velocity = rt_body3d_get_velocity(view->body);
+    EXPECT_TRUE(rt_vec3_x(position) < 0.7,
+                "swept platform displacement cannot teleport the character through a wall");
+    EXPECT_TRUE(rt_vec3_x(achieved_velocity) > 0.0,
+                "body velocity includes achieved moving-platform displacement");
+
+    double before_remove = rt_vec3_x(position);
+    rt_world3d_remove(world, platform);
+    rt_character3d_move(character, rt_vec3_new(0.0, 0.0, 0.0), 0.1);
+    position = rt_character3d_get_position(character);
+    EXPECT_NEAR(rt_vec3_x(position),
+                before_remove,
+                0.001,
+                "removed supporting platforms no longer displace the character");
+    EXPECT_TRUE(rt_character3d_get_ground_body(character) == nullptr,
+                "removed supporting platforms are cleared from public ground state");
 }
 
 static void test_character_slide_against_wall() {
@@ -4818,6 +4938,33 @@ static void test_trigger_repairs_tracking_and_zeroes_dead_bodies() {
                 "trigger queries repair corrupt non-finite bounds");
 }
 
+static void test_trigger_skips_invalid_and_duplicate_world_slots() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *body = rt_body3d_new_sphere(0.25, 1.0);
+    void *trigger = rt_trigger3d_new(-1, -1, -1, 1, 1, 1);
+    rt_world3d_add(world, body);
+    rt_world3d *view = (rt_world3d *)world;
+
+    view->bodies[1] = view->bodies[0];
+    view->body_count = 2;
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(rt_trigger3d_get_enter_count(trigger) == 1,
+                "duplicate world body slots produce one trigger enter edge");
+
+    view->body_count = 1;
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(rt_trigger3d_get_enter_count(trigger) == 0 &&
+                    rt_trigger3d_get_exit_count(trigger) == 0,
+                "removing a duplicate slot does not create a false trigger edge");
+
+    rt_body3d *saved = view->bodies[0];
+    view->bodies[0] = (rt_body3d *)rt_vec3_new(0.0, 0.0, 0.0);
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(rt_trigger3d_get_exit_count(trigger) == 1,
+                "wrong-class world body slots are skipped and prior occupants exit once");
+    view->bodies[0] = saved;
+}
+
 /* --- CCD per-body catch-up segments (clamped-substep regime) --- */
 
 static void test_ccd_clamped_body_catchup_segments_no_tunnel() {
@@ -5042,6 +5189,9 @@ int main() {
     test_character_step_height();
     test_character_sanitizes_motion_config();
     test_character_world_binding();
+    test_character_repairs_private_refs_and_clears_stale_grounding();
+    test_character_skips_wrong_class_world_slots();
+    test_character_sweeps_platform_motion_and_reports_it_in_velocity();
     test_character_slide_against_wall();
     test_character_step_up();
     test_character_crosses_uneven_walkable_heightfield();
@@ -5059,6 +5209,7 @@ int main() {
     test_trigger_detects_straddling_large_body();
     test_trigger_tracks_beyond_legacy_cap();
     test_trigger_repairs_tracking_and_zeroes_dead_bodies();
+    test_trigger_skips_invalid_and_duplicate_world_slots();
 
     /* Sphere-sphere collision */
     test_sphere_sphere_collision();

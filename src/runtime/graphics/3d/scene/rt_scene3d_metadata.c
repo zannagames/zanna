@@ -34,6 +34,7 @@
 #include "rt_scene3d_internal.h"
 #include "rt_seq.h"
 #include "rt_string.h"
+#include "rt_string_internal.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -48,6 +49,44 @@ static rt_scene_node3d *metadata_node(void *obj) {
     return (rt_scene_node3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENENODE3D_CLASS_ID);
 }
 
+/// @brief Validate bounded native UTF-8 bytes used by one retained metadata entry.
+/// @param data Borrowed byte span.
+/// @param length Signed byte length.
+/// @param maximum Maximum accepted byte length.
+/// @param allow_empty Nonzero to permit an empty span.
+/// @return Nonzero when the complete span is present, NUL-free, and strict UTF-8.
+static int metadata_native_string_valid(const char *data,
+                                        int32_t length,
+                                        int32_t maximum,
+                                        int allow_empty) {
+    return data && length >= (allow_empty ? 0 : 1) && length <= maximum &&
+           memchr(data, '\0', (size_t)length) == NULL && rt_utf8_span_valid(data, (size_t)length);
+}
+
+/// @brief Validate one retained entry's discriminator and active payload.
+/// @param entry Borrowed retained metadata entry.
+/// @return Nonzero when the key and selected value obey their storage contracts.
+static int metadata_entry_valid(const rt_scene3d_metadata_entry *entry) {
+    if (!entry || !metadata_native_string_valid(
+                      entry->key, entry->key_length, RT_SCENE_NODE3D_MAX_METADATA_KEY_BYTES, 0))
+        return 0;
+    switch (entry->kind) {
+        case RT_SCENE3D_METADATA_NULL:
+        case RT_SCENE3D_METADATA_INT:
+            return 1;
+        case RT_SCENE3D_METADATA_BOOL:
+            return entry->value.bool_value == 0 || entry->value.bool_value == 1;
+        case RT_SCENE3D_METADATA_FLOAT:
+            return isfinite(entry->value.float_value);
+        case RT_SCENE3D_METADATA_STRING:
+            return metadata_native_string_valid(entry->value.string_value.data,
+                                                entry->value.string_value.length,
+                                                RT_SCENE_NODE3D_MAX_METADATA_STRING_BYTES,
+                                                1);
+    }
+    return 0;
+}
+
 /// @brief Reject structurally corrupt table bounds before indexing native data.
 /// @param node Borrowed node whose metadata storage invariants are checked.
 /// @return Nonzero when counts, capacity, limit, and backing storage agree.
@@ -58,6 +97,19 @@ static int metadata_table_valid(const rt_scene_node3d *node) {
         return 0;
     if (node->metadata_capacity > 0 && !node->metadata)
         return 0;
+    for (int32_t index = 0; index < node->metadata_count; ++index) {
+        const rt_scene3d_metadata_entry *entry = &node->metadata[index];
+        if (!metadata_entry_valid(entry))
+            return 0;
+        if (index > 0) {
+            const rt_scene3d_metadata_entry *previous = &node->metadata[index - 1];
+            int32_t common =
+                previous->key_length < entry->key_length ? previous->key_length : entry->key_length;
+            int compared = common > 0 ? memcmp(previous->key, entry->key, (size_t)common) : 0;
+            if (compared > 0 || (compared == 0 && previous->key_length >= entry->key_length))
+                return 0;
+        }
+    }
     return 1;
 }
 
@@ -76,8 +128,8 @@ static int metadata_string_view(
         return 0;
     length = rt_str_len(value);
     data = rt_string_cstr(value);
-    if (!data || length < (allow_empty ? 0 : 1) || length > maximum ||
-        memchr(data, '\0', (size_t)length) != NULL)
+    if (length < (allow_empty ? 0 : 1) || length > maximum ||
+        !metadata_native_string_valid(data, (int32_t)length, maximum, allow_empty))
         return 0;
     *out_data = data;
     *out_length = (int32_t)length;

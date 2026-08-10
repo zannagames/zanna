@@ -31,6 +31,7 @@
 #include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_physics3d.h"
+#include "rt_physics3d_internal.h"
 #include "rt_quat.h"
 #include "rt_scene3d.h"
 #include "rt_string.h"
@@ -144,6 +145,17 @@ struct TargetLockTestLayout {
     double los_broken_time;
     int8_t just_acquired;
     int8_t just_lost;
+};
+
+struct LedgeHit3DTestLayout {
+    void *vptr;
+    double grab_point[3];
+    double surface_normal[3];
+    double wall_normal[3];
+    double landing_point[3];
+    double height;
+    int8_t has_standing_room;
+    int8_t has_landing;
 };
 
 bool expect_trap_contains(void (*fn)(void *), void *context, const char *needle) {
@@ -1060,6 +1072,44 @@ bool test_probe_clearance() {
     PASS();
 }
 
+bool test_probe_inputs_and_world_storage_fail_closed() {
+    TEST("Physics3D traversal probes reject invalid numerics and clamp world storage");
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *box = rt_body3d_new_aabb(1.0, 1.0, 1.0, 0.0);
+    void *open_pos = rt_vec3_new(5.0, 1.0, 0.0);
+    void *invalid_pos = rt_vec3_new(NAN, 1.0, 0.0);
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *invalid_forward = rt_vec3_new(0.0, INFINITY, 1.0);
+    rt_world3d_add(world, box);
+
+    EXPECT_TRUE(rt_world3d_probe_clearance(world, invalid_pos, 0.3, 1.8, -1) == 0,
+                "non-finite clearance positions fail instead of moving to the origin");
+    EXPECT_TRUE(rt_world3d_probe_ledge(world, origin, invalid_forward, 0.3, 2.0, 1.5, -1) ==
+                    nullptr,
+                "non-finite ledge directions fail instead of replacing one lane");
+
+    auto *world_view = static_cast<rt_world3d *>(world);
+    const int32_t saved_count = world_view->body_count;
+    const int32_t saved_capacity = world_view->body_capacity;
+    rt_body3d *saved_body = world_view->bodies[0];
+    world_view->body_count = INT32_MAX;
+    EXPECT_TRUE(rt_world3d_probe_clearance(world, open_pos, 0.3, 1.8, -1) != 0,
+                "clearance clamps a corrupt logical body count to allocated storage");
+    world_view->body_count = 1;
+    world_view->bodies[0] = reinterpret_cast<rt_body3d *>(origin);
+    EXPECT_TRUE(rt_world3d_probe_clearance(world, open_pos, 0.3, 1.8, -1) != 0,
+                "clearance skips a retained slot with the wrong runtime class");
+    world_view->bodies[0] = saved_body;
+    world_view->body_count = saved_count;
+    world_view->body_capacity = saved_capacity;
+
+    release_runtime_ref(invalid_forward);
+    release_runtime_ref(origin);
+    release_runtime_ref(invalid_pos);
+    release_runtime_ref(open_pos);
+    PASS();
+}
+
 bool test_probe_ledge_and_mask() {
     TEST("Physics3DWorld.ProbeLedge finds a 1 m wall top with standing room");
     void *world = rt_world3d_new(0.0, 0.0, 0.0);
@@ -1103,6 +1153,28 @@ bool test_probe_ledge_and_mask() {
     PASS();
 }
 
+bool test_probe_ledge_uses_complete_character_height() {
+    TEST("Physics3DWorld.ProbeLedge sweeps the complete maxHeight capsule");
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *wall = rt_body3d_new_aabb(2.0, 0.5, 0.25, 0.0);
+    void *upper_blocker = rt_body3d_new_aabb(2.0, 0.425, 0.5, 0.0);
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *forward = rt_vec3_new(0.0, 0.0, 1.0);
+    rt_body3d_set_position(wall, 0.0, 0.5, 1.5);
+    rt_body3d_set_position(upper_blocker, 0.0, 1.875, 0.9);
+    rt_world3d_add(world, wall);
+    rt_world3d_add(world, upper_blocker);
+
+    void *hit = rt_world3d_probe_ledge(world, origin, forward, 0.3, 2.0, 1.5, -1);
+    EXPECT_TRUE(hit == nullptr,
+                "an upper-body blocker prevents reporting the unobstructed low ledge behind it");
+
+    release_runtime_ref(hit);
+    release_runtime_ref(forward);
+    release_runtime_ref(origin);
+    PASS();
+}
+
 bool test_probe_vault_thin_vs_thick() {
     TEST("Physics3DWorld.ProbeVault accepts thin walls with far landings only");
     for (int scenario = 0; scenario < 2; ++scenario) {
@@ -1138,6 +1210,103 @@ bool test_probe_vault_thin_vs_thick() {
         if (rt_obj_release_check0(origin))
             rt_obj_free(origin);
     }
+    PASS();
+}
+
+bool test_raw_collider_overlap_validates_poses_and_outputs() {
+    TEST("Raw collider overlap validates handles, normalizes poses, and initializes misses");
+    void *box_a = rt_collider3d_new_box(1.0, 0.25, 0.25);
+    void *box_b = rt_collider3d_new_box(1.0, 0.25, 0.25);
+    void *wrong_type = rt_vec3_new(0.0, 0.0, 0.0);
+    const double pos_a[3] = {0.0, 0.0, 0.0};
+    const double pos_b_hit[3] = {0.0, 0.0, 0.4};
+    const double pos_b_miss[3] = {0.0, 0.0, 4.0};
+    const double invalid_pos[3] = {NAN, 0.0, 0.0};
+    const double unit_quat[4] = {0.0, 0.0, 0.0, 1.0};
+    const double scaled_quat[4] = {0.0, 0.0, 0.0, 8.0};
+    double normal[3] = {9.0, 9.0, 9.0};
+    double depth = 9.0;
+    double point[3] = {9.0, 9.0, 9.0};
+
+    EXPECT_TRUE(
+        rt_collider3d_overlap_at_raw(
+            wrong_type, pos_a, unit_quat, box_b, pos_b_hit, unit_quat, normal, &depth, point) == 0,
+        "wrong collider classes fail without testing fallback spheres");
+    EXPECT_TRUE(normal[0] == 0.0 && normal[1] == 1.0 && normal[2] == 0.0 && depth == 0.0 &&
+                    point[0] == 0.0 && point[1] == 0.0 && point[2] == 0.0,
+                "invalid overlap inputs publish deterministic default outputs");
+
+    normal[0] = normal[1] = normal[2] = 7.0;
+    depth = 7.0;
+    point[0] = point[1] = point[2] = 7.0;
+    EXPECT_TRUE(
+        rt_collider3d_overlap_at_raw(
+            box_a, invalid_pos, unit_quat, box_b, pos_b_hit, unit_quat, normal, &depth, point) ==
+                0 &&
+            normal[0] == 0.0 && normal[1] == 1.0 && normal[2] == 0.0 && depth == 0.0,
+        "non-finite positions fail instead of aliasing the origin");
+
+    EXPECT_TRUE(
+        rt_collider3d_overlap_at_raw(
+            box_a, pos_a, scaled_quat, box_b, pos_b_hit, scaled_quat, normal, &depth, point) != 0,
+        "finite non-unit quaternions are normalized before narrow phase");
+    double normal_length =
+        std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+    EXPECT_NEAR(normal_length, 1.0, 1e-9, "published overlap normals are normalized");
+    EXPECT_TRUE(std::isfinite(depth) && depth > 0.0 && std::isfinite(point[0]) &&
+                    std::isfinite(point[1]) && std::isfinite(point[2]),
+                "published overlap depth and witness points are finite");
+
+    normal[0] = normal[1] = normal[2] = -4.0;
+    depth = -4.0;
+    point[0] = point[1] = point[2] = -4.0;
+    EXPECT_TRUE(rt_collider3d_overlap_at_raw(
+                    box_a, pos_a, unit_quat, box_b, pos_b_miss, unit_quat, normal, &depth, point) ==
+                        0 &&
+                    normal[0] == 0.0 && normal[1] == 1.0 && normal[2] == 0.0 && depth == 0.0 &&
+                    point[0] == 0.0 && point[1] == 0.0 && point[2] == 0.0,
+                "ordinary misses also publish deterministic default outputs");
+
+    release_runtime_ref(wrong_type);
+    release_runtime_ref(box_b);
+    release_runtime_ref(box_a);
+    PASS();
+}
+
+bool test_ledge_result_getters_contain_corrupt_numeric_state() {
+    TEST("LedgeHit3D getters contain non-finite retained result state");
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *wall = rt_body3d_new_aabb(2.0, 0.5, 0.25, 0.0);
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *forward = rt_vec3_new(0.0, 0.0, 1.0);
+    rt_body3d_set_position(wall, 0.0, 0.5, 1.5);
+    rt_world3d_add(world, wall);
+    void *hit = rt_world3d_probe_ledge(world, origin, forward, 0.3, 2.0, 1.5, -1);
+    EXPECT_TRUE(hit != nullptr, "fixture creates a ledge result");
+    auto *view = static_cast<LedgeHit3DTestLayout *>(hit);
+    view->grab_point[0] = NAN;
+    view->surface_normal[0] = 0.0;
+    view->surface_normal[1] = 0.0;
+    view->surface_normal[2] = 0.0;
+    view->height = INFINITY;
+    view->has_standing_room = -7;
+
+    void *grab = rt_ledge_hit3d_get_grab_point(hit);
+    void *normal_vec = rt_ledge_hit3d_get_surface_normal(hit);
+    EXPECT_TRUE(grab != nullptr && rt_vec3_x(grab) == 0.0,
+                "non-finite retained result coordinates map to a bounded fallback");
+    EXPECT_TRUE(normal_vec != nullptr && rt_vec3_x(normal_vec) == 0.0 &&
+                    rt_vec3_y(normal_vec) == 1.0 && rt_vec3_z(normal_vec) == 0.0,
+                "degenerate retained result normals map to the canonical up vector");
+    EXPECT_TRUE(rt_ledge_hit3d_get_height(hit) == 0.0 &&
+                    rt_ledge_hit3d_get_has_standing_room(hit) == 1,
+                "result scalar and Boolean getters return finite canonical values");
+
+    release_runtime_ref(normal_vec);
+    release_runtime_ref(grab);
+    release_runtime_ref(hit);
+    release_runtime_ref(forward);
+    release_runtime_ref(origin);
     PASS();
 }
 
@@ -1184,8 +1353,12 @@ int main() {
     ok = test_character_rides_kinematic_platform() && ok;
     ok = test_character_steep_slope_slides() && ok;
     ok = test_probe_clearance() && ok;
+    ok = test_probe_inputs_and_world_storage_fail_closed() && ok;
     ok = test_probe_ledge_and_mask() && ok;
+    ok = test_probe_ledge_uses_complete_character_height() && ok;
     ok = test_probe_vault_thin_vs_thick() && ok;
+    ok = test_raw_collider_overlap_validates_poses_and_outputs() && ok;
+    ok = test_ledge_result_getters_contain_corrupt_numeric_state() && ok;
     ok = test_character_probe_sugar() && ok;
     std::printf("\nThird-person upgrade tests: %d/%d passed\n", g_tests_passed, g_tests_total);
     return ok && g_tests_passed == g_tests_total ? 0 : 1;

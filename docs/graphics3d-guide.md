@@ -1405,8 +1405,11 @@ and drawing uses the highest resident threshold that does not exceed camera
 distance, falling back to the base mesh when the selected LOD has been demoted.
 `SceneGraph.Draw`, `QueryAABB`, `QuerySphere`, and `RaycastNodes` use the
 internal SceneGraph BVH spatial index, with an exact flat-walk fallback kept for
-parity. Transform-only changes refit the BVH; hierarchy, visibility, mesh, LOD,
-and impostor changes rebuild it lazily.
+parity. Transform, geometry, and visibility changes refit the BVH; hierarchy,
+mesh assignment, LOD, and impostor changes rebuild it lazily. Cached topology
+and bounds are validated before use, malformed parent/BVH walks are bounded,
+and deformation data that exceeds a bounded scan uses conservative scene-wide
+bounds instead of risking an under-cull.
 `SceneGraph.AddVisibilityZone(name, min, max)` and
 `AddVisibilityPortal(from, to, bidirectional)` author an interior portal/PVS
 graph; during `Draw`, nodes inside zones unreachable from the camera zone are
@@ -2652,7 +2655,7 @@ Controller-based character movement with slide-and-step collision response.
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
 | `StepHeight` | Float | read/write | Max step-up height |
-| `Grounded` | Boolean | read | On ground |
+| `IsGrounded` | Boolean | read | On ground |
 | `JustLanded` | Boolean | read | Landed this frame |
 | `Position` | Vec3 | read | Current position |
 
@@ -2680,7 +2683,7 @@ AABB zone for enter/exit detection.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Contains(position)` | `i1(obj)` | Point-in-zone test (Vec3) |
-| `Update(body)` | `void(obj)` | Check body against zone (call per frame per body). Overlap tests the body's world AABB against the zone, so large bodies straddling the boundary register; tracked-body count is unbounded |
+| `Update(world)` | `void(obj)` | Recompute occupancy once per frame against the physics world. Overlap tests each body's world AABB against the zone, so large bodies straddling the boundary register; tracked-body count is unbounded |
 | `SetBounds(x0, y0, z0, x1, y1, z1)` | `void(f64 x6)` | Update zone bounds |
 
 ---

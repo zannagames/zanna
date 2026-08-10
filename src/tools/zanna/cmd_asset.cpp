@@ -747,7 +747,7 @@ void printAssetUsage(std::FILE *out) {
                  "  zanna asset bake <input> <output.scene3d> [--force-tangents]\n"
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
                  "                   [--clips LIST] [--strip-meshes] [--simplify-meshes N]\n"
-                 "                   [--json]\n"
+                 "                   [--max-texture-dim N] [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
                  "      generate LOD chains, save the baked .scene3d scene, and report\n"
@@ -757,6 +757,9 @@ void printAssetUsage(std::FILE *out) {
                  "      and A-B index ranges. Node animations follow matching clip\n"
                  "      names. Use per-clip bakes when a full bake exceeds the VSCN\n"
                  "      document size limit.\n"
+                 "      --max-texture-dim downscales every material texture above N\n"
+                 "      texels to fit N (stored as compact raw pixels — the source\n"
+                 "      container's per-load decode cost disappears with its bulk).\n"
                  "  zanna asset validate <input>\n"
                  "      Load a model and print the import diagnostics report (JSON).\n");
 }
@@ -806,6 +809,7 @@ int cmdAsset(int argc, char **argv) {
         std::string clipsSpec;
         long lods = 0;
         long simplifyMeshes = 0;
+        long maxTextureDim = 0;
         bool stripMeshes = false;
         bool json = false;
         for (int i = 3; i < argc; i++) {
@@ -834,6 +838,14 @@ int cmdAsset(int argc, char **argv) {
                     std::fprintf(stderr,
                                  "zanna asset bake: --simplify-meshes expects a triangle "
                                  "ceiling >= 8\n");
+                    return 1;
+                }
+            } else if (arg == "--max-texture-dim" && i + 1 < argc) {
+                maxTextureDim = std::strtol(argv[++i], nullptr, 10);
+                if (maxTextureDim < 64) {
+                    std::fprintf(stderr,
+                                 "zanna asset bake: --max-texture-dim expects a texel "
+                                 "ceiling >= 64\n");
                     return 1;
                 }
             } else if (arg == "--strip-meshes") {
@@ -887,6 +899,8 @@ int cmdAsset(int argc, char **argv) {
             (void)rt_model3d_strip_meshes(model);
         if (simplifyMeshes > 0)
             (void)rt_model3d_simplify_meshes(model, (int64_t)simplifyMeshes);
+        if (maxTextureDim > 0)
+            (void)rt_model3d_limit_texture_dim(model, (int64_t)maxTextureDim);
         if (lods > 0)
             (void)rt_model3d_generate_lods(model, (int64_t)lods, 0.5);
         const AssetSnapshot sourceSnapshot = snapshotAsset(model);

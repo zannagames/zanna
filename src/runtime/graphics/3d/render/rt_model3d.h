@@ -264,6 +264,16 @@ int64_t rt_model3d_apply_variant(void *obj, void *target, int64_t variant_index)
 /// @param obj Model3D modified in place.
 /// @return Number of inventory meshes released, or zero for invalid input/failure.
 int64_t rt_model3d_strip_meshes(void *obj);
+/// @brief Downscale every material texture above @p max_dim to fit it
+///        (tool-facing: `zanna asset bake --max-texture-dim N`). Oversized
+///        slots are rewritten to raw downscaled Pixels, so a subsequent
+///        VSCN save stores compact pixel payloads instead of the original
+///        full-resolution encoded containers (removing their per-load
+///        decode cost). Shared textures are resized once.
+/// @param obj Model3D whose materials are rewritten in place.
+/// @param max_dim Texture dimension ceiling in texels (minimum 64).
+/// @return Number of texture slots rewritten, or 0 for invalid input.
+int64_t rt_model3d_limit_texture_dim(void *obj, int64_t max_dim);
 /// @brief Replace over-budget meshes with simplified copies throughout the model hierarchy.
 /// @param obj Model3D modified in place.
 /// @param max_tris Maximum triangles retained by each simplified mesh.

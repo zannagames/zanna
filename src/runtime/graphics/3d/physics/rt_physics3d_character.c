@@ -104,6 +104,7 @@ typedef struct {
 #define CHARACTER3D_STEP_HEIGHT_MAX 100.0
 #define CHARACTER3D_HEIGHT_MAX 1000000.0
 #define CHARACTER3D_DT_MAX 1.0
+#define CHARACTER3D_WORLD_BODY_MAX 1000000
 
 /// @brief Clamp a character/trigger coordinate to a finite physics state range.
 /// @param value Coordinate to sanitize.
@@ -189,6 +190,43 @@ static double character3d_sanitize_step_height(double value) {
     return value > CHARACTER3D_STEP_HEIGHT_MAX ? CHARACTER3D_STEP_HEIGHT_MAX : value;
 }
 
+/// @brief Validate and borrow a retained Body3D reference.
+/// @param body Candidate body pointer from controller or world private state.
+/// @return Typed Body3D pointer, or NULL on a class mismatch.
+static rt_body3d *character3d_body_or_null(void *body) {
+    return rt_g3d_has_class(body, RT_G3D_BODY3D_CLASS_ID) ? (rt_body3d *)body : NULL;
+}
+
+/// @brief Return a bounded readable prefix length for a world's body table.
+/// @details Pointer/count/capacity disagreement fails closed. Individual slots
+///   are still validated by each consumer so one malformed entry cannot hide
+///   later valid bodies during a direct fallback scan.
+/// @param world Candidate retained physics world.
+/// @return Bounded table length, or zero for invalid metadata.
+static int32_t character3d_world_body_count(rt_world3d *world) {
+    if (!rt_g3d_has_class(world, RT_G3D_WORLD3D_CLASS_ID) || !world->bodies ||
+        world->body_count <= 0 || world->body_capacity <= 0 ||
+        world->body_count > world->body_capacity || world->body_count > CHARACTER3D_WORLD_BODY_MAX)
+        return 0;
+    return world->body_count;
+}
+
+/// @brief Test whether a class-valid body remains registered in the bound world.
+/// @param ctrl Character controller providing the world.
+/// @param body Candidate supporting body.
+/// @return One when the exact body occurs in the bounded world table.
+static int character3d_world_contains_body(const rt_character3d *ctrl, rt_body3d *body) {
+    int32_t count;
+    if (!ctrl || !character3d_body_or_null(body))
+        return 0;
+    count = character3d_world_body_count(ctrl->world);
+    for (int32_t i = 0; i < count; ++i) {
+        if (ctrl->world->bodies[i] == body)
+            return 1;
+    }
+    return 0;
+}
+
 // Character controller — built on top of Body3D with custom motion
 // resolution: kinematic-style sweeps + slide along surfaces, optional
 // step-up over small obstacles, ground probing for "is grounded" state.
@@ -197,12 +235,19 @@ static double character3d_sanitize_step_height(double value) {
 /// @param ctrl Character3D payload whose support reference is replaced.
 /// @param body Supporting Body3D to retain, or NULL when airborne.
 static void character3d_retain_ground_body(rt_character3d *ctrl, rt_body3d *body) {
-    if (!ctrl || ctrl->ground_body == body)
+    rt_body3d *previous;
+    if (!ctrl)
         return;
+    body = character3d_body_or_null(body);
+    previous = character3d_body_or_null(ctrl->ground_body);
+    if (previous == body) {
+        ctrl->ground_body = body;
+        return;
+    }
     if (body)
         rt_obj_retain_maybe(body);
-    if (ctrl->ground_body && rt_obj_release_check0(ctrl->ground_body))
-        rt_obj_free(ctrl->ground_body);
+    if (previous && rt_obj_release_check0(previous))
+        rt_obj_free(previous);
     ctrl->ground_body = body;
 }
 
@@ -216,27 +261,34 @@ static void character3d_retain_ground_body(rt_character3d *ctrl, rt_body3d *body
 static void character3d_set_ground_state(rt_character3d *ctrl,
                                          int8_t grounded,
                                          const double *normal) {
-    if (!ctrl || !ctrl->body)
+    rt_body3d *body;
+    if (!ctrl)
         return;
+    body = character3d_body_or_null(ctrl->body);
+    grounded = grounded ? 1 : 0;
     ctrl->is_grounded = grounded;
-    ctrl->body->is_grounded = grounded;
+    if (!body) {
+        character3d_retain_ground_body(ctrl, NULL);
+        return;
+    }
+    body->is_grounded = grounded;
     if (!grounded)
         character3d_retain_ground_body(ctrl, NULL);
     if (grounded && normal) {
         double contact_normal[3];
         if (character3d_sanitize_contact_normal(contact_normal, normal)) {
-            ctrl->body->ground_normal[0] = -contact_normal[0];
-            ctrl->body->ground_normal[1] = -contact_normal[1];
-            ctrl->body->ground_normal[2] = -contact_normal[2];
+            body->ground_normal[0] = -contact_normal[0];
+            body->ground_normal[1] = -contact_normal[1];
+            body->ground_normal[2] = -contact_normal[2];
         } else {
-            ctrl->body->ground_normal[0] = 0.0;
-            ctrl->body->ground_normal[1] = 1.0;
-            ctrl->body->ground_normal[2] = 0.0;
+            body->ground_normal[0] = 0.0;
+            body->ground_normal[1] = 1.0;
+            body->ground_normal[2] = 0.0;
         }
     } else {
-        ctrl->body->ground_normal[0] = 0.0;
-        ctrl->body->ground_normal[1] = 1.0;
-        ctrl->body->ground_normal[2] = 0.0;
+        body->ground_normal[0] = 0.0;
+        body->ground_normal[1] = 1.0;
+        body->ground_normal[2] = 0.0;
     }
 }
 
@@ -262,8 +314,9 @@ static int character3d_normal_is_walkable(const rt_character3d *ctrl, const doub
 /// @param ctrl Character3D payload providing self, world, and filter state.
 /// @param other Candidate world body.
 /// @return One when the controller should collide with @p other, otherwise zero.
-static int character3d_candidate_body(const rt_character3d *ctrl, const rt_body3d *other) {
-    if (!ctrl || !ctrl->body || !ctrl->world || !other)
+static int character3d_candidate_body(const rt_character3d *ctrl, rt_body3d *other) {
+    if (!ctrl || !character3d_body_or_null(ctrl->body) ||
+        !rt_g3d_has_class(ctrl->world, RT_G3D_WORLD3D_CLASS_ID) || !character3d_body_or_null(other))
         return 0;
     if (other == ctrl->body)
         return 0;
@@ -279,7 +332,10 @@ static int character3d_candidate_body(const rt_character3d *ctrl, const rt_body3
 static void character3d_repair_move_candidates(rt_character3d *ctrl) {
     if (!ctrl)
         return;
-    if (!ctrl->move_candidates || ctrl->move_candidate_capacity < 0) {
+    if (!ctrl->move_candidates || ctrl->move_candidate_capacity < 0 ||
+        ctrl->move_candidate_capacity > CHARACTER3D_WORLD_BODY_MAX) {
+        free(ctrl->move_candidates);
+        ctrl->move_candidates = NULL;
         ctrl->move_candidate_count = 0;
         ctrl->move_candidate_capacity = 0;
         ctrl->move_candidates_active = 0;
@@ -299,7 +355,7 @@ static void character3d_repair_move_candidates(rt_character3d *ctrl) {
 static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t needed) {
     rt_body3d **grown;
     int32_t new_cap;
-    if (!ctrl || needed < 0)
+    if (!ctrl || needed < 0 || needed > CHARACTER3D_WORLD_BODY_MAX)
         return 0;
     character3d_repair_move_candidates(ctrl);
     if (ctrl->move_candidates && ctrl->move_candidate_capacity >= needed)
@@ -339,8 +395,17 @@ static void character3d_begin_move_candidates(rt_character3d *ctrl,
     character3d_repair_move_candidates(ctrl);
     ctrl->move_candidates_active = 0;
     ctrl->move_candidate_count = 0;
-    if (!ctrl->world || !ctrl->body || !start || !isfinite(move_len) || move_len < 0.0)
+    int32_t world_body_count = character3d_world_body_count(ctrl->world);
+    if (!character3d_body_or_null(ctrl->body) || world_body_count <= 0 || !start ||
+        !isfinite(move_len) || move_len < 0.0)
         return;
+
+    /* The shared query broadphase expects every body slot to be typed. Keep
+     * malformed private world state on the direct, class-checking fallback. */
+    for (int32_t i = 0; i < world_body_count; ++i) {
+        if (!character3d_body_or_null(ctrl->world->bodies[i]))
+            return;
+    }
 
     int32_t entry_count = world3d_build_query_broadphase(ctrl->world);
     if (entry_count < 0)
@@ -398,7 +463,8 @@ static void character3d_end_move_candidates(rt_character3d *ctrl) {
 static int character3d_test_position(rt_character3d *ctrl,
                                      const double *pos,
                                      rt_character_hit3d *out_hit) {
-    if (!ctrl || !ctrl->body || !ctrl->world)
+    if (!ctrl || !character3d_body_or_null(ctrl->body) ||
+        !rt_g3d_has_class(ctrl->world, RT_G3D_WORLD3D_CLASS_ID))
         return 0;
 
     rt_body3d *body = ctrl->body;
@@ -412,14 +478,11 @@ static int character3d_test_position(rt_character3d *ctrl,
     character3d_repair_move_candidates(ctrl);
     rt_body3d **candidates =
         ctrl->move_candidates_active ? ctrl->move_candidates : ctrl->world->bodies;
-    int32_t candidate_capacity =
-        ctrl->move_candidates_active ? ctrl->move_candidate_capacity : ctrl->world->body_capacity;
-    int32_t candidate_count =
-        ctrl->move_candidates_active ? ctrl->move_candidate_count : ctrl->world->body_count;
-    if (!candidates || candidate_capacity < 0 || candidate_count < 0)
+    int32_t candidate_count = ctrl->move_candidates_active
+                                  ? ctrl->move_candidate_count
+                                  : character3d_world_body_count(ctrl->world);
+    if (!candidates || candidate_count < 0 || candidate_count > CHARACTER3D_WORLD_BODY_MAX)
         candidate_count = 0;
-    else if (candidate_count > candidate_capacity)
-        candidate_count = candidate_capacity;
 
     rt_character_hit3d best = {0};
     for (int32_t i = 0; i < candidate_count; i++) {
@@ -664,7 +727,8 @@ static void character3d_push_dynamic(rt_character3d *ctrl,
                                      const rt_character_hit3d *hit,
                                      const double *attempted_delta,
                                      double dt) {
-    if (!ctrl || !ctrl->body || !hit || !hit->hit || !hit->body)
+    if (!ctrl || !character3d_body_or_null(ctrl->body) || !hit || !hit->hit ||
+        !character3d_body_or_null(hit->body))
         return;
     if (hit->body->motion_mode != PH3D_MODE_DYNAMIC)
         return;
@@ -785,13 +849,13 @@ static void character3d_finalizer(void *obj) {
     c->move_candidate_count = 0;
     c->move_candidate_capacity = 0;
     c->move_candidates_active = 0;
-    if (c->body && rt_obj_release_check0(c->body))
+    if (character3d_body_or_null(c->body) && rt_obj_release_check0(c->body))
         rt_obj_free(c->body);
     c->body = NULL;
-    if (c->world && rt_obj_release_check0(c->world))
+    if (rt_g3d_has_class(c->world, RT_G3D_WORLD3D_CLASS_ID) && rt_obj_release_check0(c->world))
         rt_obj_free(c->world);
     c->world = NULL;
-    if (c->ground_body && rt_obj_release_check0(c->ground_body))
+    if (character3d_body_or_null(c->ground_body) && rt_obj_release_check0(c->ground_body))
         rt_obj_free(c->ground_body);
     c->ground_body = NULL;
 }
@@ -855,43 +919,52 @@ void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
         return;
     if (dt > CHARACTER3D_DT_MAX)
         dt = CHARACTER3D_DT_MAX;
-    rt_body3d *body = ctrl->body;
-    if (!body)
+    rt_body3d *body = character3d_body_or_null(ctrl->body);
+    if (!body || !rt_g3d_has_class(ctrl->world, RT_G3D_WORLD3D_CLASS_ID))
         return;
 
-    double velocity[3] = {ph3d_finite_or(rt_vec3_x(velocity_vec), 0.0),
-                          ph3d_finite_or(rt_vec3_y(velocity_vec), 0.0),
-                          ph3d_finite_or(rt_vec3_z(velocity_vec), 0.0)};
+    double velocity[3] = {
+        rt_vec3_x(velocity_vec), rt_vec3_y(velocity_vec), rt_vec3_z(velocity_vec)};
+    if (!ph3d_vec3_all_finite(velocity))
+        return;
     character3d_sanitize_vec3(velocity);
 
     ctrl->was_grounded = ctrl->is_grounded;
     ctrl->pushed_body = NULL;
     ctrl->is_sliding = 0;
 
-    /* Moving platforms: while grounded on a kinematic/static body that is
-     * moving, pre-displace by the platform's step displacement (linear plus
-     * yaw about the platform origin) BEFORE the swept move, so a wall on the
-     * platform still blocks the ride. */
-    if (ctrl->ride_platforms && ctrl->is_grounded && ctrl->ground_body &&
+    double platform_delta[3] = {0.0, 0.0, 0.0};
+    /* Moving-platform displacement joins the same bounded sweep as requested
+     * velocity. Removed or wrong-class supports are discarded before reading
+     * motion state. Reducing yaw modulo one turn avoids inaccurate trig for
+     * extreme but finite angular velocities. */
+    if (ctrl->ride_platforms && ctrl->is_grounded &&
+        character3d_world_contains_body(ctrl, ctrl->ground_body) &&
         ctrl->ground_body->motion_mode != PH3D_MODE_DYNAMIC) {
-        rt_body3d *platform = ctrl->ground_body;
+        rt_body3d *platform = character3d_body_or_null(ctrl->ground_body);
         double lin[3] = {ph3d_finite_or(platform->velocity[0], 0.0) * dt,
                          ph3d_finite_or(platform->velocity[1], 0.0) * dt,
                          ph3d_finite_or(platform->velocity[2], 0.0) * dt};
         double yaw = ph3d_finite_or(platform->angular_velocity[1], 0.0) * dt;
-        double px = body->position[0];
-        double pz = body->position[2];
+        double px = character3d_saturate_coord(body->position[0]);
+        double py = character3d_saturate_coord(body->position[1]);
+        double pz = character3d_saturate_coord(body->position[2]);
+        character3d_sanitize_delta(lin, lin);
+        yaw = isfinite(yaw) ? fmod(yaw, 6.28318530717958647692) : 0.0;
         if (fabs(yaw) > 1e-12) {
-            double ox = px - platform->position[0];
-            double oz = pz - platform->position[2];
+            double platform_x = character3d_saturate_coord(platform->position[0]);
+            double platform_z = character3d_saturate_coord(platform->position[2]);
+            double ox = character3d_saturate_coord(px - platform_x);
+            double oz = character3d_saturate_coord(pz - platform_z);
             double c = cos(yaw);
             double s = sin(yaw);
-            px = platform->position[0] + ox * c - oz * s;
-            pz = platform->position[2] + ox * s + oz * c;
+            px = character3d_saturate_coord(platform_x + ox * c - oz * s);
+            pz = character3d_saturate_coord(platform_z + ox * s + oz * c);
         }
-        body->position[0] = character3d_saturate_coord(px + lin[0]);
-        body->position[1] = character3d_saturate_coord(body->position[1] + lin[1]);
-        body->position[2] = character3d_saturate_coord(pz + lin[2]);
+        platform_delta[0] = character3d_saturate_coord(px + lin[0] - body->position[0]);
+        platform_delta[1] = character3d_saturate_coord(py + lin[1] - body->position[1]);
+        platform_delta[2] = character3d_saturate_coord(pz + lin[2] - body->position[2]);
+        character3d_sanitize_delta(platform_delta, platform_delta);
     }
 
     character3d_set_ground_state(ctrl, 0, NULL);
@@ -901,10 +974,11 @@ void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
         character3d_sanitize_vec3(start);
         double horizontal[3] = {velocity[0] * dt, 0.0, velocity[2] * dt};
         double vertical[3] = {0.0, velocity[1] * dt, 0.0};
-        double move_len = vec3_len(horizontal) + vec3_len(vertical);
+        double move_len = vec3_len(platform_delta) + vec3_len(horizontal) + vec3_len(vertical);
 
         character3d_begin_move_candidates(ctrl, start, move_len);
         character3d_resolve_penetration(ctrl);
+        character3d_move_axis(ctrl, platform_delta, 0, dt);
         character3d_move_axis(ctrl, horizontal, 1, dt);
         character3d_move_axis(ctrl, vertical, 0, dt);
         character3d_resolve_penetration(ctrl);
@@ -978,7 +1052,12 @@ void rt_character3d_set_world(void *o, void *world) {
         return;
     if (w)
         rt_obj_retain_maybe(w);
-    if (ctrl->world && rt_obj_release_check0(ctrl->world))
+    character3d_set_ground_state(ctrl, 0, NULL);
+    ctrl->was_grounded = 0;
+    ctrl->is_sliding = 0;
+    character3d_end_move_candidates(ctrl);
+    if (rt_g3d_has_class(ctrl->world, RT_G3D_WORLD3D_CLASS_ID) &&
+        rt_obj_release_check0(ctrl->world))
         rt_obj_free(ctrl->world);
     ctrl->world = w;
 }
@@ -988,7 +1067,7 @@ void rt_character3d_set_world(void *o, void *world) {
 /// @return Borrowed World3D handle, or NULL when unbound or invalid.
 void *rt_character3d_get_world(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->world : NULL;
+    return c && rt_g3d_has_class(c->world, RT_G3D_WORLD3D_CLASS_ID) ? c->world : NULL;
 }
 
 /// @brief `Character3D.IsGrounded` — true when standing on a walkable surface.
@@ -1017,7 +1096,7 @@ int8_t rt_character3d_just_landed(void *o) {
 /// @return Newly allocated world-position Vec3, or the origin when invalid.
 void *rt_character3d_get_position(void *o) {
     rt_character3d *c = character3d_checked(o);
-    if (!c)
+    if (!c || !character3d_body_or_null(c->body))
         return rt_vec3_new(0, 0, 0);
     return rt_body3d_get_position(c->body);
 }
@@ -1032,8 +1111,12 @@ void *rt_character3d_get_position(void *o) {
 /// @param z Finite world-space Z coordinate.
 void rt_character3d_set_position(void *o, double x, double y, double z) {
     rt_character3d *c = character3d_checked(o);
-    if (c)
+    if (c && character3d_body_or_null(c->body)) {
         rt_body3d_set_position(c->body, x, y, z);
+        character3d_set_ground_state(c, 0, NULL);
+        c->was_grounded = 0;
+        c->is_sliding = 0;
+    }
 }
 
 /// @brief `Character3D.TrySetHeight(h)` — crouch/stand capsule resize.
@@ -1048,7 +1131,7 @@ void rt_character3d_set_position(void *o, double x, double y, double z) {
 /// @return One when the resized capsule fits and is committed, otherwise zero.
 int8_t rt_character3d_try_set_height(void *o, double height) {
     rt_character3d *c = character3d_checked(o);
-    if (!c || !c->body || !c->body->collider)
+    if (!c || !character3d_body_or_null(c->body) || !c->body->collider)
         return 0;
     if (!isfinite(height) || height <= 0.0)
         return 0;
@@ -1107,7 +1190,7 @@ void rt_character3d_set_height(void *o, double height) {
 /// @return Current total capsule height, or zero when invalid.
 double rt_character3d_get_height(void *o) {
     rt_character3d *c = character3d_checked(o);
-    if (!c || !c->body)
+    if (!c || !character3d_body_or_null(c->body))
         return 0.0;
     double height = c->body->collider ? rt_collider3d_get_height_raw(c->body->collider) : 0.0;
     if (!isfinite(height) || height <= 0.0)
@@ -1186,7 +1269,13 @@ int8_t rt_character3d_is_sliding(void *o) {
 /// @return Borrowed supporting Body3D handle, or NULL while airborne or invalid.
 void *rt_character3d_get_ground_body(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->ground_body : NULL;
+    if (!c)
+        return NULL;
+    if (!character3d_world_contains_body(c, c->ground_body)) {
+        character3d_set_ground_state(c, 0, NULL);
+        return NULL;
+    }
+    return c->ground_body;
 }
 
 /*==========================================================================
@@ -1549,7 +1638,7 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
         double bmx[3];
         int8_t inside;
         int32_t idx;
-        if (!b)
+        if (!rt_g3d_has_class(b, RT_G3D_BODY3D_CLASS_ID))
             continue;
 
         /* Body AABB vs trigger AABB. */
@@ -1561,6 +1650,8 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
                      : 0;
 
         idx = trigger3d_find_index(t, b);
+        if (idx >= 0 && t->seen_stamp[idx] == t->update_stamp)
+            continue; /* duplicate/corrupt world slot: one body, one edge */
         if (idx < 0) {
             if (!inside)
                 continue; /* untracked and outside: nothing to observe */

@@ -10809,6 +10809,34 @@ static void test_canvas_transient_managers_repair_corrupt_metadata() {
     EXPECT_TRUE(canvas.frame_arena_frame_bytes == std::numeric_limits<size_t>::max(),
                 "frame arena byte telemetry saturates instead of wrapping");
 
+    void *snapshot_vertices = std::malloc(16u);
+    void *snapshot_indices = std::malloc(16u);
+    void *unrelated_snapshot = std::malloc(16u);
+    EXPECT_TRUE(snapshot_vertices != nullptr && snapshot_indices != nullptr &&
+                    unrelated_snapshot != nullptr &&
+                    canvas3d_track_temp_buffer(&canvas, snapshot_vertices) == 1 &&
+                    canvas3d_track_temp_buffer(&canvas, snapshot_indices) == 1 &&
+                    canvas3d_track_temp_buffer(&canvas, unrelated_snapshot) == 1,
+                "mesh snapshot rollback fixtures transfer buffer ownership");
+    canvas.mesh_snapshot_bytes = 120u;
+    canvas3d_release_tracked_mesh_snapshot(&canvas, snapshot_vertices, 10u, snapshot_indices, 10u);
+    EXPECT_TRUE(canvas.mesh_snapshot_bytes == 100u,
+                "first mesh snapshot rollback refunds its two tracked allocations");
+    canvas3d_release_tracked_mesh_snapshot(&canvas, snapshot_vertices, 10u, snapshot_indices, 10u);
+    EXPECT_TRUE(canvas.mesh_snapshot_bytes == 100u,
+                "duplicate mesh snapshot rollback cannot refund already-released ownership");
+
+    rt_canvas3d oversized_arena_canvas = {};
+    constexpr size_t retained_arena_limit = 8u * 1024u * 1024u;
+    EXPECT_TRUE(canvas3d_frame_arena_alloc(&oversized_arena_canvas, retained_arena_limit + 16u) !=
+                    nullptr,
+                "oversized frame-arena fixture allocates one exceptional chunk");
+    canvas3d_frame_arena_reset(&oversized_arena_canvas);
+    EXPECT_TRUE(oversized_arena_canvas.frame_arena_head == nullptr,
+                "frame reset releases a chunk above the retained byte ceiling");
+    canvas3d_frame_arena_free(&oversized_arena_canvas);
+
+    canvas3d_clear_temp_buffers(&canvas);
     canvas3d_frame_arena_free(&canvas);
     std::free(canvas.final_overlay_arena);
     std::free(canvas.final_overlay_temp_buffers);

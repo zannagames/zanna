@@ -1699,6 +1699,156 @@ static void test_scene_spatial_index_rebuilds_on_dirty_node() {
                 "SceneGraph spatial index still has not rebuilt after re-show");
 }
 
+static void test_scene_spatial_index_repairs_storage_and_query_pool_metadata() {
+    void *scene = rt_scene3d_new();
+    auto *scene_impl = (rt_scene3d *)scene;
+    void *node = rt_scene_node3d_new();
+    rt_scene_node3d_set_mesh(node, rt_mesh3d_new_box(1.0, 1.0, 1.0));
+    rt_scene_node3d_set_position(node, 0.0, 0.0, -4.0);
+    rt_scene3d_add(scene, node);
+    auto query = [&] {
+        return rt_scene3d_query_aabb(
+            scene, rt_vec3_new(-1.0, -1.0, -5.0), rt_vec3_new(1.0, 1.0, -3.0));
+    };
+
+    EXPECT_TRUE(rt_seq_len(query()) == 1, "spatial storage fixture builds its initial index");
+
+    rt_scene3d_spatial_entry *orphaned_entries = scene_impl->spatial_index.entries;
+    scene_impl->spatial_index.entries = nullptr;
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "null entry pointer with positive capacity rebuilds instead of dereferencing");
+    free(orphaned_entries);
+
+    int32_t *orphaned_indices = scene_impl->spatial_index.entry_indices;
+    scene_impl->spatial_index.entry_indices = nullptr;
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "null leaf-order pointer with positive capacity rebuilds safely");
+    free(orphaned_indices);
+
+    rt_scene3d_spatial_bvh_node *orphaned_nodes = scene_impl->spatial_index.nodes;
+    scene_impl->spatial_index.nodes = nullptr;
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "null BVH pointer with positive capacity rebuilds safely");
+    free(orphaned_nodes);
+
+    scene_impl->spatial_index.capacity = std::numeric_limits<int32_t>::max();
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "policy-exceeding spatial capacity is discarded and rebuilt");
+
+    free(scene_impl->query_candidates);
+    scene_impl->query_candidates = nullptr;
+    scene_impl->query_candidate_capacity = 64;
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "null pooled candidate pointer with positive capacity is repaired");
+}
+
+static void test_scene_spatial_index_contains_corrupt_cached_topology() {
+    void *scene = rt_scene3d_new();
+    auto *scene_impl = (rt_scene3d *)scene;
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    std::vector<void *> nodes;
+    for (int i = 0; i < 12; ++i) {
+        void *node = rt_scene_node3d_new();
+        rt_scene_node3d_set_mesh(node, mesh);
+        rt_scene_node3d_set_position(node, (double)i * 2.0, 0.0, -4.0);
+        rt_scene3d_add(scene, node);
+        nodes.push_back(node);
+    }
+    auto query_all = [&] {
+        return rt_scene3d_query_aabb(
+            scene, rt_vec3_new(-2.0, -2.0, -6.0), rt_vec3_new(30.0, 2.0, -2.0));
+    };
+
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12 && scene_impl->spatial_index.node_count > 1,
+                "topology corruption fixture builds an internal BVH");
+
+    int32_t root = scene_impl->spatial_index.root_node;
+    int64_t build_count = scene_impl->spatial_index.build_count;
+    scene_impl->spatial_index.nodes[root].parent = root;
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "non-root cached parent topology rebuilds without looping");
+    EXPECT_TRUE(scene_impl->spatial_index.build_count == build_count + 1 &&
+                    scene_impl->spatial_index.nodes[scene_impl->spatial_index.root_node].parent ==
+                        -1,
+                "invalid BVH root parent is detected and repaired");
+
+    root = scene_impl->spatial_index.root_node;
+    scene_impl->spatial_index.nodes[root].left = root;
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "self-referential BVH child falls back without looping or losing results");
+    EXPECT_TRUE(scene_impl->spatial_index.valid == 0,
+                "invalid BVH child topology invalidates the cache");
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12 && scene_impl->spatial_index.valid == 1,
+                "the next indexed query rebuilds invalid child topology");
+
+    root = scene_impl->spatial_index.root_node;
+    scene_impl->spatial_index.nodes[root].world_min[0] = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "non-finite cached BVH bounds fail over to the flat reference");
+    (void)query_all();
+
+    scene_impl->spatial_index.entry_indices[0] = std::numeric_limits<int32_t>::max();
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "out-of-range leaf entry indexes cannot escape the allocation");
+    (void)query_all();
+
+    int32_t leaf = -1;
+    for (int32_t i = 0; i < scene_impl->spatial_index.node_count; ++i) {
+        if (scene_impl->spatial_index.nodes[i].leaf) {
+            leaf = i;
+            break;
+        }
+    }
+    EXPECT_TRUE(leaf >= 0, "topology fixture exposes a leaf for range corruption");
+    scene_impl->spatial_index.nodes[leaf].start = std::numeric_limits<int32_t>::max();
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "overflowing cached leaf range falls back without an out-of-bounds read");
+    (void)query_all();
+
+    auto *cycle_node = (rt_scene_node3d *)nodes[0];
+    rt_scene_node3d *saved_parent = cycle_node->parent;
+    cycle_node->parent = cycle_node;
+    scene_impl->spatial_index.dirty = 1;
+    EXPECT_TRUE(rt_seq_len(query_all()) == 11,
+                "cyclic parent chains are skipped with bounded work during rebuild");
+    cycle_node->parent = saved_parent;
+    scene_impl->spatial_index.dirty = 1;
+    scene_impl->spatial_index.topology_dirty = 1;
+    EXPECT_TRUE(rt_seq_len(query_all()) == 12,
+                "restoring the parent chain makes the node indexable again");
+}
+
+static void test_scene_spatial_refit_repairs_bounds_when_revisions_agree() {
+    void *scene = rt_scene3d_new();
+    auto *scene_impl = (rt_scene3d *)scene;
+    void *node = rt_scene_node3d_new();
+    auto *node_impl = (rt_scene_node3d *)node;
+    rt_scene_node3d_set_mesh(node, rt_mesh3d_new_box(1.0, 1.0, 1.0));
+    rt_scene_node3d_set_position(node, 0.0, 0.0, -4.0);
+    rt_scene3d_add(scene, node);
+    auto query = [&] {
+        return rt_scene3d_query_aabb(
+            scene, rt_vec3_new(-1.0, -1.0, -5.0), rt_vec3_new(1.0, 1.0, -3.0));
+    };
+    EXPECT_TRUE(rt_seq_len(query()) == 1, "refit corruption fixture builds its initial leaf");
+
+    auto &entry = scene_impl->spatial_index.entries[0];
+    auto &root = scene_impl->spatial_index.nodes[scene_impl->spatial_index.root_node];
+    for (int axis = 0; axis < 3; ++axis) {
+        entry.world_min[axis] = 100.0;
+        entry.world_max[axis] = 101.0;
+        root.world_min[axis] = 100.0;
+        root.world_max[axis] = 101.0;
+    }
+    entry.leaf_node = -1;
+    node_impl->world_dirty = 1;
+    scene_impl->spatial_index.dirty = 1;
+    EXPECT_TRUE(rt_seq_len(query()) == 1,
+                "a refresh attempt refits the tree even when revisions remain unchanged");
+    EXPECT_TRUE(root.world_min[0] < 1.0 && root.world_max[0] > -1.0,
+                "full refit replaces stale cached root bounds");
+}
+
 static void test_scene_draw_spatial_index_matches_flat_reference() {
     vgfx3d_backend_t backend = {};
     backend.name = "opengl";
@@ -3403,6 +3553,159 @@ static void test_node_animation_rejects_pathological_channel_sizes() {
                 "Node animation rejects channels whose key-width product is too large");
 }
 
+static void test_node_animation_rejects_ambiguous_byte_names() {
+    const char embedded_target_bytes[] = {'t', 'a', 'r', 'g', 'e', 't', '\0', 'x'};
+    const char malformed_utf8_bytes[] = {(char)0xC0, (char)0xAF};
+    rt_string embedded_target =
+        rt_string_from_bytes(embedded_target_bytes, sizeof(embedded_target_bytes));
+    rt_string malformed_target =
+        rt_string_from_bytes(malformed_utf8_bytes, sizeof(malformed_utf8_bytes));
+    double times[2] = {0.0, 1.0};
+    float values[6] = {};
+
+    void *bad_name_clip = rt_node_animation3d_new(embedded_target, 1.0);
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_node_animation3d_get_name(bad_name_clip)), "") == 0,
+                "NodeAnimation3D.New rejects embedded-NUL clip names");
+
+    void *clip = rt_node_animation3d_new(rt_const_cstr("target"), 1.0);
+    EXPECT_TRUE(rt_node_animation3d_add_channel(clip,
+                                                embedded_target,
+                                                RT_NODE_ANIM_PATH_TRANSLATION,
+                                                RT_NODE_ANIM_INTERP_LINEAR,
+                                                2,
+                                                3,
+                                                times,
+                                                values) < 0,
+                "NodeAnimation3D.AddChannel rejects embedded-NUL target aliases");
+    EXPECT_TRUE(rt_node_animation3d_add_channel(clip,
+                                                malformed_target,
+                                                RT_NODE_ANIM_PATH_TRANSLATION,
+                                                RT_NODE_ANIM_INTERP_LINEAR,
+                                                2,
+                                                3,
+                                                times,
+                                                values) < 0,
+                "NodeAnimation3D.AddChannel rejects malformed UTF-8 target names");
+
+    void *animator = rt_node_animator3d_new(clip);
+    EXPECT_TRUE(rt_node_animator3d_play(animator, embedded_target) == 0,
+                "NodeAnimator3D.Play compares complete stored names without C-string aliasing");
+}
+
+static void test_node_animator_repairs_cache_and_sample_corruption() {
+    void *scene = rt_scene3d_new();
+    auto *root = static_cast<rt_scene_node3d *>(rt_scene3d_get_root(scene));
+    void *target = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(target, rt_const_cstr("animated"));
+    rt_scene3d_add(scene, target);
+
+    double times[3] = {0.0, 0.5, 1.0};
+    float values[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f};
+    void *clip = rt_node_animation3d_new(rt_const_cstr("cache_repair"), 1.0);
+    EXPECT_TRUE(rt_node_animation3d_add_channel(clip,
+                                                rt_const_cstr("animated"),
+                                                RT_NODE_ANIM_PATH_TRANSLATION,
+                                                RT_NODE_ANIM_INTERP_LINEAR,
+                                                3,
+                                                3,
+                                                times,
+                                                values) == 0,
+                "NodeAnimator corruption fixture creates a translation channel");
+    static_cast<rt_node_animation3d *>(clip)->looping = 0;
+    auto *animator = static_cast<rt_node_animator3d *>(rt_node_animator3d_new(clip));
+    animator->cached_target_capacity = 64;
+    animator->cached_targets = nullptr;
+    animator->traversal_stack_capacity = 64;
+    animator->traversal_stack = nullptr;
+    rt_scene_node3d_bind_node_animator(root, animator);
+
+    rt_node_animator3d_update(animator, 0.25);
+    EXPECT_NEAR(rt_vec3_x(rt_scene_node3d_get_position(target)),
+                0.5,
+                0.001,
+                "NodeAnimator repairs null cache/stack pointers with stale positive capacities");
+    EXPECT_TRUE(animator->cached_targets != nullptr && animator->traversal_stack != nullptr,
+                "NodeAnimator reconstructs reusable cache and traversal storage");
+
+    auto *channel = &static_cast<rt_node_animation3d *>(clip)->channels[0];
+    channel->times[1] = std::numeric_limits<double>::quiet_NaN();
+    rt_scene_node3d_set_position(target, 9.0, 0.0, 0.0);
+    rt_node_animator3d_update(animator, 0.1);
+    EXPECT_NEAR(rt_vec3_x(rt_scene_node3d_get_position(target)),
+                9.0,
+                0.001,
+                "NodeAnimator skips a channel with a corrupt interior key time");
+    channel->times[1] = 0.5;
+
+    channel->values[3] = std::numeric_limits<float>::infinity();
+    rt_node_animator3d_set_time(animator, 0.25);
+    rt_node_animator3d_update(animator, 0.0);
+    EXPECT_NEAR(rt_vec3_x(rt_scene_node3d_get_position(target)),
+                9.0,
+                0.001,
+                "NodeAnimator skips non-finite retained sample lanes");
+    channel->values[3] = 1.0f;
+
+    rt_scene_node3d *cached_target = animator->cached_targets[0];
+    if (cached_target && rt_obj_release_check0(cached_target))
+        rt_obj_free(cached_target);
+    animator->cached_targets[0] =
+        static_cast<rt_scene_node3d *>(rt_material3d_new_color(0.1, 0.2, 0.3));
+    rt_scene_node3d_set_position(target, 0.0, 0.0, 0.0);
+    rt_node_animator3d_update(animator, 0.0);
+    EXPECT_NEAR(rt_vec3_x(rt_scene_node3d_get_position(target)),
+                0.5,
+                0.001,
+                "NodeAnimator discards a wrong-class cached target and resolves again");
+
+    animator->speed = std::numeric_limits<double>::max();
+    animator->time = -100.0;
+    EXPECT_NEAR(rt_node_animator3d_get_speed(animator),
+                1000000.0,
+                0.001,
+                "NodeAnimator.Speed caps corrupt retained multipliers");
+    EXPECT_NEAR(rt_node_animator3d_get_time(animator),
+                0.0,
+                0.001,
+                "NodeAnimator.Time rejects corrupt negative retained time");
+}
+
+static void test_node_animator_stops_on_exact_one_shot_endpoints() {
+    void *scene = rt_scene3d_new();
+    void *target = rt_scene_node3d_new();
+    rt_scene_node3d_set_name(target, rt_const_cstr("one_shot_target"));
+    rt_scene3d_add(scene, target);
+    double times[2] = {0.0, 1.0};
+    float values[6] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    void *clip = rt_node_animation3d_new(rt_const_cstr("one_shot"), 1.0);
+    EXPECT_TRUE(rt_node_animation3d_add_channel(clip,
+                                                rt_const_cstr("one_shot_target"),
+                                                RT_NODE_ANIM_PATH_TRANSLATION,
+                                                RT_NODE_ANIM_INTERP_LINEAR,
+                                                2,
+                                                3,
+                                                times,
+                                                values) == 0,
+                "one-shot endpoint fixture creates a translation channel");
+    static_cast<rt_node_animation3d *>(clip)->looping = 0;
+    void *animator = rt_node_animator3d_new(clip);
+    rt_scene_node3d_bind_node_animator(rt_scene3d_get_root(scene), animator);
+
+    rt_node_animator3d_update(animator, 1.0);
+    EXPECT_TRUE(rt_node_animator3d_get_playing(animator) == 0,
+                "forward one-shot playback stops when it lands exactly on duration");
+    EXPECT_NEAR(rt_node_animator3d_get_time(animator), 1.0, 0.001, "forward endpoint is retained");
+
+    EXPECT_TRUE(rt_node_animator3d_play(animator, rt_const_cstr("one_shot")) != 0,
+                "one-shot clip restarts for reverse endpoint coverage");
+    rt_node_animator3d_set_time(animator, 1.0);
+    rt_node_animator3d_set_speed(animator, -1.0);
+    rt_node_animator3d_update(animator, 1.0);
+    EXPECT_TRUE(rt_node_animator3d_get_playing(animator) == 0,
+                "reverse one-shot playback stops when it lands exactly on zero");
+    EXPECT_NEAR(rt_node_animator3d_get_time(animator), 0.0, 0.001, "reverse endpoint is retained");
+}
+
 static void test_frustum_aabb_inside() {
     /* Object at origin, camera looking at it → visible (not culled) */
     void *scene = rt_scene3d_new();
@@ -3839,8 +4142,42 @@ static void test_raw_morph_delta_bounds_handle_large_finite_values() {
     EXPECT_TRUE(std::isfinite(pad) && std::fabs(pad - SCENE3D_ABS_MAX) < 1.0,
                 "SceneGraph raw morph bounds clamp huge finite deltas instead of discarding them");
 
+    uint32_t saved_vertex_count = mesh_view->vertex_count;
+    uint32_t saved_vertex_capacity = mesh_view->vertex_capacity;
+    mesh_view->morph_bound_valid = 0;
+    mesh_view->morph_shape_count = 32;
+    mesh_view->vertex_count = 32769;
+    mesh_view->vertex_capacity = 32769;
+    pad = scene3d_mesh_dynamic_bound_pad(mesh_view, NULL, 1.0);
+    EXPECT_TRUE(std::isfinite(pad) && std::fabs(pad - SCENE3D_ABS_MAX) < 1.0,
+                "SceneGraph uses a conservative bound when a supported raw morph span exceeds "
+                "the scan budget");
+
+    mesh_view->vertex_count = saved_vertex_count;
+    mesh_view->vertex_capacity = saved_vertex_capacity;
+
     mesh_view->morph_deltas = NULL;
     mesh_view->morph_shape_count = 0;
+    mesh_view->morph_bound_valid = 0;
+}
+
+static void test_dynamic_deformation_contains_nonfinite_palette_translation() {
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *skeleton = rt_skeleton3d_new();
+    void *bind = rt_mat4_identity();
+    rt_skeleton3d_add_bone(skeleton, rt_const_cstr("root"), -1, bind);
+    rt_skeleton3d_compute_inverse_bind(skeleton);
+    void *controller = rt_anim_controller3d_new(skeleton);
+    int32_t bone_count = 0;
+    const float *palette = rt_anim_controller3d_get_final_palette_data(controller, &bone_count);
+    EXPECT_TRUE(palette != nullptr && bone_count == 1,
+                "non-finite palette fixture exposes one skinning matrix");
+
+    float *mutable_palette = const_cast<float *>(palette);
+    mutable_palette[3] = std::numeric_limits<float>::quiet_NaN();
+    double pad = scene3d_mesh_dynamic_bound_pad((rt_mesh3d *)mesh, controller, 1.0);
+    EXPECT_TRUE(std::isfinite(pad) && std::fabs(pad - SCENE3D_ABS_MAX) < 1.0,
+                "SceneGraph contains non-finite skinning translations with a conservative bound");
 }
 
 static void test_dynamic_deformation_rejects_corrupt_morph_delta_span() {
@@ -4213,6 +4550,13 @@ static void test_scene_node_metadata_is_typed_bounded_and_persistent() {
                     rt_const_cstr("tooLarge"),
                     rt_string_from_bytes(oversized_value.data(), oversized_value.size())) == 0,
                 "SceneNode metadata rejects strings beyond the documented limit");
+    const char invalid_utf8_bytes[] = {static_cast<char>(0xC0), static_cast<char>(0xAF)};
+    rt_string invalid_utf8 = rt_string_from_bytes(invalid_utf8_bytes, sizeof(invalid_utf8_bytes));
+    EXPECT_TRUE(rt_scene_node3d_metadata_set_int(node, invalid_utf8, 1) == 0 &&
+                    rt_scene_node3d_metadata_set_string(
+                        node, rt_const_cstr("invalidUtf8"), invalid_utf8) == 0,
+                "SceneNode metadata rejects malformed UTF-8 keys and string values");
+    rt_string_unref(invalid_utf8);
 
     EXPECT_TRUE(rt_scene_node3d_metadata_has(node, role) != 0,
                 "SceneNode.MetadataHas distinguishes present values");
@@ -4260,6 +4604,28 @@ static void test_scene_node_metadata_is_typed_bounded_and_persistent() {
                     rt_scene_node3d_metadata_set_int(node, health, 1) == 0,
                 "SceneNode metadata APIs reject corrupt native table bounds safely");
     node_view->metadata_count = saved_metadata_count;
+
+    const int32_t saved_key_length = node_view->metadata[0].key_length;
+    node_view->metadata[0].key_length = -1;
+    void *invalid_entry_keys = rt_scene_node3d_metadata_keys(node);
+    EXPECT_TRUE(rt_seq_len(invalid_entry_keys) == 0 &&
+                    rt_scene_node3d_metadata_has(node, active) == 0 &&
+                    rt_scene_node3d_metadata_set_int(node, health, 1) == 0,
+                "SceneNode metadata rejects malformed retained entry bounds as one table");
+    node_view->metadata[0].key_length = saved_key_length;
+
+    const int8_t saved_bool = node_view->metadata[0].value.bool_value;
+    node_view->metadata[0].value.bool_value = 2;
+    EXPECT_TRUE(rt_scene_node3d_metadata_get_bool(node, active, 0) == 0 &&
+                    rt_scene_node3d_metadata_has(node, health) == 0,
+                "SceneNode metadata getters fail closed on a non-canonical retained payload");
+    node_view->metadata[0].value.bool_value = saved_bool;
+
+    const double saved_float = node_view->metadata[4].value.float_value;
+    node_view->metadata[4].value.float_value = INFINITY;
+    EXPECT_TRUE(rt_scene_node3d_metadata_get_float(node, radius, 19.0) == 19.0,
+                "SceneNode metadata float reads return the default for corrupt retained values");
+    node_view->metadata[4].value.float_value = saved_float;
 
     rt_scene3d_add(scene, node);
     EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(path)) == 1,
@@ -5069,12 +5435,16 @@ int main(int argc, char **argv) {
     test_dynamic_deformation_uses_conservative_frustum_culling();
     test_morph_delta_bounds_keep_deformed_mesh_visible();
     test_raw_morph_delta_bounds_handle_large_finite_values();
+    test_dynamic_deformation_contains_nonfinite_palette_translation();
     test_dynamic_deformation_rejects_corrupt_morph_delta_span();
     test_parent_animator_drives_child_skinned_meshes();
     test_scene_spatial_queries_flat_walk_reference();
     test_scene_precise_raycast_selects_through_aabb_gaps();
     test_scene_spatial_queries_validate_vec3_args_before_result_alloc();
     test_scene_spatial_index_rebuilds_on_dirty_node();
+    test_scene_spatial_index_repairs_storage_and_query_pool_metadata();
+    test_scene_spatial_index_contains_corrupt_cached_topology();
+    test_scene_spatial_refit_repairs_bounds_when_revisions_agree();
     test_scene_draw_spatial_index_matches_flat_reference();
     test_scene_extreme_finite_transforms_and_queries_remain_bounded();
     test_scene_occlusion_grid_uses_spatial_candidates();
@@ -5110,6 +5480,9 @@ int main(int argc, char **argv) {
     test_node_animation_rejects_wrong_string_handles();
     test_node_animation_step_accepts_duplicate_key_times();
     test_node_animation_rejects_pathological_channel_sizes();
+    test_node_animation_rejects_ambiguous_byte_names();
+    test_node_animator_repairs_cache_and_sample_corruption();
+    test_node_animator_stops_on_exact_one_shot_endpoints();
     test_scene_draw_includes_node_attached_lights();
     test_scene_node_light_property_retains_rejects_and_clears();
     test_scene_node_attached_camera_tracks_world_transform();

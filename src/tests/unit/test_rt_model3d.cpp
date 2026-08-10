@@ -7158,7 +7158,7 @@ static void test_scene3d_vscn_v5_source_texture_roundtrip() {
 
     const char tiny_document[] = "{}";
     void *oversized = rt_scene3d_load_from_memory(
-        rt_const_cstr("oversized.vscn"), tiny_document, (size_t)256u * 1024u * 1024u + 1u);
+        rt_const_cstr("oversized.vscn"), tiny_document, (size_t)512u * 1024u * 1024u + 1u);
     EXPECT_TRUE(oversized == nullptr && rt_asset_error_get_code() == RT_ASSET_ERROR_TOO_LARGE,
                 "VSCN memory loading rejects oversized documents before reading the payload");
     release_test_ref(oversized);

@@ -801,6 +801,13 @@ The clip carrier holds both clip classes: rigid-node clips
 (`Animation3D`, driven by `AnimController3D`). `AnimationCount` bounds the
 index; names and durations enumerate both, while `GetAnimation` returns only
 the rigid class so its type is honest.
+
+Node-animation clip and target identifiers must be strict UTF-8, contain no
+embedded NUL byte, and fit the runtime identifier limit. Malformed imported
+clip names read as empty and malformed channel targets are ignored. Non-looping
+`NodeAnimator3D` playback stops as soon as it reaches either endpoint,
+including when a frame lands exactly on time zero or the clip duration.
+
 | `UnresolvedPrefabCount` | `Integer` | Prefab references that loaded as empty placeholders; gate startup on zero to catch broken references (ADR 0227) |
 | `SetNodeTransforms(nodes, values)` | `Void(Object, Object)` | Batch-apply packed TRS values (10 floats per node: `px,py,pz,qx,qy,qz,qw,sx,sy,sz`) to a list of nodes in one runtime call |
 | `Draw(canvas, camera)` | `Void(Object, Object)` | Draw visible node meshes |
@@ -812,13 +819,19 @@ absence-aware search for a subtree.
 
 The query methods are backed by the SceneGraph BVH spatial index, with the
 deterministic flat walk kept as the internal parity fallback. Transform-only
-dirties refit the existing BVH; hierarchy, visibility, mesh, LOD, and impostor
-changes rebuild it lazily. Results skip hidden subtrees and only return nodes
-with their own mesh bounds. Draw culling uses the same indexed candidate set,
-then runs the exact selected-LOD/impostor frustum test before submitting. The
-index stores transformed world AABBs in double precision, so far-origin queries
-and raycasts keep nodes distinct even when their separation is below
-single-precision world-space granularity. Mesh
+dirties, geometry revisions, and visibility changes refit the existing BVH;
+hierarchy, mesh assignment, LOD, and impostor changes rebuild it lazily. Cached
+storage, entry bounds, and parent/child topology are validated at query and
+refit boundaries. Invalid cache state is discarded and rebuilt or sent through
+the exact flat fallback, and all parent-chain and BVH walks have explicit work
+budgets. Results skip hidden subtrees and only return nodes with their own mesh
+bounds. Draw culling uses the same indexed candidate set, then runs the exact
+selected-LOD/impostor frustum test before submitting. Raw morph spans too large
+for the bounded culling scan, and invalid skeletal-palette translations, use the
+conservative scene-distance ceiling rather than an undersized deformation
+bound. The index stores transformed world AABBs in double precision, so
+far-origin queries and raycasts keep nodes distinct even when their separation
+is below single-precision world-space granularity. Mesh
 vertices and backend upload remain float data. Game3D floating-origin frames
 opt into a Canvas3D camera-relative upload path for double-precision `DrawMesh`
 model matrices, camera frame position/view translation, and point/spot light
@@ -2323,7 +2336,7 @@ AABB trigger volume that tracks entry and exit events for `Physics3DBody` object
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `Contains(body)` | `Boolean(Object)` | True when a `Physics3DBody` is inside the volume |
+| `Contains(point)` | `Boolean(Object)` | True when a world-space `Vec3` lies inside the volume |
 | `Update(world)` | `Void(Object)` | Recompute enter/exit events against a `Physics3DWorld` |
 | `SetBounds(minX, minY, minZ, maxX, maxY, maxZ)` | `Void(Double, Double, Double, Double, Double, Double)` | Resize the trigger volume |
 

@@ -42,6 +42,8 @@
 
 #define CANVAS3D_FRAME_ARENA_CHUNK_BYTES (1u * 1024u * 1024u)
 #define CANVAS3D_FRAME_ARENA_RETAIN_CHUNKS 8
+#define CANVAS3D_FRAME_ARENA_RETAIN_BYTES                                                          \
+    ((size_t)CANVAS3D_FRAME_ARENA_CHUNK_BYTES * CANVAS3D_FRAME_ARENA_RETAIN_CHUNKS)
 #define CANVAS3D_FRAME_ARENA_ALIGN 16u
 #define CANVAS3D_HASH_MAX_CAPACITY (INT32_C(1) << 30)
 
@@ -216,29 +218,35 @@ void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
 /// @param c Canvas whose arena is reset; `NULL` is ignored.
 void canvas3d_frame_arena_reset(rt_canvas3d *c) {
     canvas3d_frame_arena_chunk *chunk;
+    canvas3d_frame_arena_chunk *retained_head = NULL;
+    canvas3d_frame_arena_chunk *retained_tail = NULL;
+    size_t retained_bytes = 0u;
     int32_t kept = 0;
     if (!c)
         return;
     canvas3d_frame_arena_repair(c);
     chunk = c->frame_arena_head;
     while (chunk) {
+        canvas3d_frame_arena_chunk *next = chunk->next;
+        int keep = kept < CANVAS3D_FRAME_ARENA_RETAIN_CHUNKS &&
+                   chunk->capacity <= CANVAS3D_FRAME_ARENA_RETAIN_BYTES - retained_bytes;
         chunk->used = 0u;
-        kept++;
-        if (kept == CANVAS3D_FRAME_ARENA_RETAIN_CHUNKS && chunk->next) {
-            /* Unusual frames can chain many chunks; keep a bounded working
-             * set and release the tail. */
-            canvas3d_frame_arena_chunk *tail = chunk->next;
-            chunk->next = NULL;
-            while (tail) {
-                canvas3d_frame_arena_chunk *next = tail->next;
-                free(tail);
-                tail = next;
-            }
-            break;
+        chunk->next = NULL;
+        if (keep) {
+            if (retained_tail)
+                retained_tail->next = chunk;
+            else
+                retained_head = chunk;
+            retained_tail = chunk;
+            retained_bytes += chunk->capacity;
+            kept++;
+        } else {
+            free(chunk);
         }
-        chunk = chunk->next;
+        chunk = next;
     }
-    c->frame_arena_current = c->frame_arena_head;
+    c->frame_arena_head = retained_head;
+    c->frame_arena_current = retained_head;
     c->frame_arena_frame_bytes = 0u;
 }
 
@@ -669,19 +677,26 @@ void canvas3d_release_tracked_temp_buffer(rt_canvas3d *c, void *buffer) {
 /// @param index_bytes Number of bytes charged for @p indices.
 void canvas3d_release_tracked_mesh_snapshot(
     rt_canvas3d *c, void *vertices, size_t vertex_bytes, void *indices, size_t index_bytes) {
-    size_t total_bytes;
+    size_t total_bytes = 0u;
+    int released_vertices;
+    int released_indices;
     if (!c)
         return;
-    if (vertex_bytes > SIZE_MAX - index_bytes)
-        total_bytes = SIZE_MAX;
-    else
-        total_bytes = vertex_bytes + index_bytes;
+    released_vertices = vertices ? canvas3d_untrack_temp_buffer(c, vertices) : 0;
+    released_indices =
+        indices && indices != vertices ? canvas3d_untrack_temp_buffer(c, indices) : 0;
+    if (released_vertices)
+        total_bytes = vertex_bytes;
+    if (released_indices)
+        total_bytes = total_bytes > SIZE_MAX - index_bytes ? SIZE_MAX : total_bytes + index_bytes;
     if (total_bytes >= c->mesh_snapshot_bytes)
         c->mesh_snapshot_bytes = 0u;
     else
         c->mesh_snapshot_bytes -= total_bytes;
-    canvas3d_release_tracked_temp_buffer(c, vertices);
-    canvas3d_release_tracked_temp_buffer(c, indices);
+    if (released_vertices)
+        free(vertices);
+    if (released_indices)
+        free(indices);
 }
 
 /// @brief Track a malloc'd buffer used by deferred final-overlay commands.
@@ -951,7 +966,8 @@ void canvas3d_rebuild_temp_object_set(rt_canvas3d *c) {
 /// @param c Canvas that assumes one conditional runtime reference on success.
 /// @param obj Non-null GC-managed or retain-compatible object.
 /// @return Nonzero when already tracked or newly retained and appended; zero for
-///   invalid input, count/capacity overflow, set failure, or list allocation failure.
+///   invalid input, count/capacity overflow, or list allocation failure. Hash-set
+///   allocation failure falls back to the authoritative list.
 int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;

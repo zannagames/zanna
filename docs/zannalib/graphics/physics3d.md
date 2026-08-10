@@ -541,10 +541,11 @@ Controller-based character movement with slide-and-step collision against a `Phy
 Dynamic-body interaction: blocking dynamic bodies receive one impulse per body
 per move along the contact normal, proportional to the approach speed and
 scaled by `min(1, controllerMass / bodyMass)` — light props yield and heavy
-props wall the controller. Moving platforms: while grounded on a kinematic or
-static body with velocity, the controller pre-displaces by the platform's step
-displacement (linear plus yaw about the platform origin) *before* the swept
-move, so walls on the platform still block. Platform rotation rides yaw only.
+props wall the controller. Moving-platform linear displacement and yaw about
+the platform origin go through the same bounded sweep as requested movement,
+so obstacles along the ride path still block. Removing a support, changing
+worlds, or teleporting clears the old support state. A `Move` velocity with any
+non-finite component is rejected as a whole.
 
 ---
 

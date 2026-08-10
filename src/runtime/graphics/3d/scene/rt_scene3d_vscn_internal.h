@@ -101,7 +101,11 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
  * deepest node's optional light/LOD/auto-LOD objects. Save and load enforce this same limit. */
 #define VSCN_MAX_NODE_DEPTH 98
 #define VSCN_ABS_MAX 1.0e12
-#define VSCN_MAX_FILE_BYTES (256u * 1024u * 1024u)
+/* Runaway-document guard, not a design target. 512 MiB accommodates one
+ * legitimately heavy baked scene (a full stadium shell with pre-generated
+ * LOD chains and downscaled textures serializes ~380 MiB) while still
+ * catching corrupt/looping writers. Save and load enforce the same limit. */
+#define VSCN_MAX_FILE_BYTES (512u * 1024u * 1024u)
 
 /// @brief Return @p value if finite, else @p fallback. Base sanitizer for loaded JSON numbers.
 /// @param value Candidate parsed/serialized scalar.

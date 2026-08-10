@@ -193,13 +193,13 @@ void rt_collider3d_reset_capsule_raw(void *collider, double radius, double heigh
 ///        Combat-volume primitive — no bodies are registered in any world.
 /// @param collider_a First Collider3D handle.
 /// @param pos_a Three-component world position of the first shape.
-/// @param quat_a Unit XYZW world rotation of the first shape.
+/// @param quat_a Finite XYZW world rotation of the first shape, normalized internally.
 /// @param collider_b Second Collider3D handle.
 /// @param pos_b Three-component world position of the second shape.
-/// @param quat_b Unit XYZW world rotation of the second shape.
-/// @param out_normal Optional three-component contact normal output.
-/// @param out_depth Optional penetration-depth output.
-/// @param out_point Optional three-component witness-point output.
+/// @param quat_b Finite XYZW world rotation of the second shape, normalized internally.
+/// @param out_normal Optional unit contact normal output; initialized to world up on a miss.
+/// @param out_depth Optional bounded penetration-depth output; initialized to zero on a miss.
+/// @param out_point Optional bounded witness-point output; initialized to the origin on a miss.
 /// @return One when the posed shapes overlap, otherwise zero.
 int8_t rt_collider3d_overlap_at_raw(void *collider_a,
                                     const double *pos_a,
