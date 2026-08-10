@@ -51,9 +51,11 @@
 
 #include "rt_scene.h"
 #include "rt_camera.h"
+#include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_sprite.h"
 #include "rt_string.h"
 
@@ -68,6 +70,9 @@
 
 /// Maximum accepted ancestor depth before a hierarchy is treated as corrupt.
 #define SCENE_NODE_MAX_PARENT_CHAIN 8192
+/// Private initialized-payload cookies for scene objects.
+#define RT_SCENE_NODE_STATE_MAGIC UINT64_C(0x5A53434E4E4F4432)
+#define RT_SCENE_STATE_MAGIC UINT64_C(0x5A5343454E453032)
 
 //=============================================================================
 // Internal Structures
@@ -77,6 +82,7 @@
 /// @details Local transform fields are authoritative. Cached world fields are
 ///          refreshed on demand after `transform_dirty` propagation.
 typedef struct scene_node_impl {
+    uint64_t state_magic;
     // Local transform (relative to parent)
     int64_t x;
     int64_t y;
@@ -105,6 +111,7 @@ typedef struct scene_node_impl {
 
 /// @brief Private scene container owning the implicit root and draw scratch.
 typedef struct scene_impl {
+    uint64_t state_magic;
     scene_node_impl *root;
     /* Reusable draw-order scratch (node_sort_entry array). Persisted across frames
      * so a static scene performs no per-frame allocation for the collect+sort pass;
@@ -114,6 +121,33 @@ typedef struct scene_impl {
     int64_t draw_scratch_cap;
 } scene_impl;
 
+/// @brief Validate the private Seq used as a node's owning child list.
+static int8_t scene_children_are_valid(void *children) {
+    if (!rt_seq_internal_is_valid(children))
+        return 0;
+    const rt_seq_impl *seq = (const rt_seq_impl *)children;
+    return seq->len >= 0 && seq->cap > 0 && seq->len <= seq->cap && seq->items &&
+           seq->owns_elements == 1 &&
+           (uint64_t)seq->cap <= (uint64_t)SIZE_MAX / sizeof(*seq->items);
+}
+
+/// @brief Validate a node payload without recursively walking its subtree.
+static int8_t scene_node_state_is_valid(const scene_node_impl *node) {
+    if (!node || node->state_magic != RT_SCENE_NODE_STATE_MAGIC || node->scale_x < 1 ||
+        node->scale_y < 1 || node->world_scale_x < 1 || node->world_scale_y < 1 ||
+        (node->visible != 0 && node->visible != 1) ||
+        (node->transform_dirty != 0 && node->transform_dirty != 1) ||
+        !scene_children_are_valid(node->children))
+        return 0;
+    if (node->parent &&
+        (!rt_obj_is_instance(node->parent, RT_SCENE_NODE_CLASS_ID, sizeof(scene_node_impl)) ||
+         node->parent->state_magic != RT_SCENE_NODE_STATE_MAGIC))
+        return 0;
+    if (node->name && !rt_string_is_handle(node->name))
+        return 0;
+    return 1;
+}
+
 /// @brief Validate-and-return a SceneNode pointer; NULL for NULL or wrong class.
 /// @details Soft check used by every public SceneNode entry point.
 /// @param node_ptr Opaque candidate SceneNode handle.
@@ -121,7 +155,8 @@ typedef struct scene_impl {
 static scene_node_impl *scene_node_checked_or_null(void *node_ptr) {
     if (!node_ptr || !rt_obj_is_instance(node_ptr, RT_SCENE_NODE_CLASS_ID, sizeof(scene_node_impl)))
         return NULL;
-    return (scene_node_impl *)node_ptr;
+    scene_node_impl *node = (scene_node_impl *)node_ptr;
+    return scene_node_state_is_valid(node) ? node : NULL;
 }
 
 /// @brief Validate-and-return a Scene pointer; NULL for NULL or wrong class.
@@ -131,7 +166,14 @@ static scene_node_impl *scene_node_checked_or_null(void *node_ptr) {
 static scene_impl *scene_checked_or_null(void *scene_ptr) {
     if (!scene_ptr || !rt_obj_is_instance(scene_ptr, RT_SCENE_CLASS_ID, sizeof(scene_impl)))
         return NULL;
-    return (scene_impl *)scene_ptr;
+    scene_impl *scene = (scene_impl *)scene_ptr;
+    if (scene->state_magic != RT_SCENE_STATE_MAGIC || !scene_node_state_is_valid(scene->root) ||
+        scene->root->parent || scene->draw_scratch_cap < 0 ||
+        (scene->draw_scratch_cap == 0) != (scene->draw_scratch == NULL) ||
+        (uint64_t)scene->draw_scratch_cap >
+            (uint64_t)SIZE_MAX / (sizeof(void *) + 2u * sizeof(int64_t)))
+        return NULL;
+    return scene;
 }
 
 /// @brief Add two int64 values, saturating at INT64_MIN/MAX instead of wrapping.
@@ -267,6 +309,10 @@ static void update_world_transform(scene_node_impl *node);
 static int scene_parent_chain_contains(scene_node_impl *start, scene_node_impl *target) {
     int64_t depth = 0;
     for (scene_node_impl *cur = start; cur; cur = cur->parent) {
+        if (!scene_node_state_is_valid(cur)) {
+            rt_trap("SceneNode: invalid parent chain");
+            return 1;
+        }
         if (cur == target)
             return 1;
         depth++;
@@ -358,11 +404,12 @@ static scene_node_impl *scene_node_stack_pop(scene_node_stack *stack) {
 /// @return 1 on success, 0 if a push failed (allocation/overflow).
 static int8_t scene_node_stack_push_children_reverse(scene_node_stack *stack,
                                                      scene_node_impl *node) {
-    if (!node || !node->children)
-        return 1;
+    if (!scene_node_state_is_valid(node))
+        return 0;
     int64_t count = rt_seq_len(node->children);
     for (int64_t i = count; i > 0; i--) {
-        if (!scene_node_stack_push(stack, (scene_node_impl *)rt_seq_get(node->children, i - 1)))
+        scene_node_impl *child = scene_node_checked_or_null(rt_seq_get(node->children, i - 1));
+        if (!child || child->parent != node || !scene_node_stack_push(stack, child))
             return 0;
     }
     return 1;
@@ -376,7 +423,7 @@ static int8_t scene_node_stack_push_children_reverse(scene_node_stack *stack,
 static void release_owned_ref(void **slot) {
     if (!slot || !*slot)
         return;
-    if (rt_obj_release_check0(*slot))
+    if (rt_heap_is_payload(*slot) && rt_obj_release_check0(*slot))
         rt_obj_free(*slot);
     *slot = NULL;
 }
@@ -388,20 +435,25 @@ static void release_owned_ref(void **slot) {
 ///   reference count reaches zero.
 /// @param obj Finalizing SceneNode runtime object.
 static void scene_node_finalize(void *obj) {
-    scene_node_impl *node = scene_node_checked_or_null(obj);
-    if (!node)
+    if (!obj || !rt_obj_is_instance(obj, RT_SCENE_NODE_CLASS_ID, sizeof(scene_node_impl)))
+        return;
+    scene_node_impl *node = (scene_node_impl *)obj;
+    if (node->state_magic != RT_SCENE_NODE_STATE_MAGIC)
         return;
 
-    if (node->children) {
+    if (scene_children_are_valid(node->children)) {
         int64_t count = rt_seq_len(node->children);
         for (int64_t i = 0; i < count; i++) {
-            scene_node_impl *child = (scene_node_impl *)rt_seq_get(node->children, i);
+            scene_node_impl *child = scene_node_checked_or_null(rt_seq_get(node->children, i));
             if (child)
                 child->parent = NULL;
         }
         release_owned_ref(&node->children);
+    } else {
+        node->children = NULL;
     }
 
+    node->state_magic = 0;
     release_owned_ref(&node->sprite);
     release_owned_ref((void **)&node->name);
 }
@@ -413,10 +465,13 @@ static void scene_node_finalize(void *obj) {
 ///   malloc-owned and freed directly.
 /// @param obj Finalizing Scene runtime object.
 static void scene_finalize(void *obj) {
-    scene_impl *scene = scene_checked_or_null(obj);
-    if (!scene)
+    if (!obj || !rt_obj_is_instance(obj, RT_SCENE_CLASS_ID, sizeof(scene_impl)))
         return;
-    if (scene->root)
+    scene_impl *scene = (scene_impl *)obj;
+    if (scene->state_magic != RT_SCENE_STATE_MAGIC)
+        return;
+    scene->state_magic = 0;
+    if (scene_node_checked_or_null(scene->root))
         scene->root->parent = NULL;
     release_owned_ref((void **)&scene->root);
     free(scene->draw_scratch);
@@ -467,6 +522,7 @@ void *rt_scene_node_new(void) {
         return NULL;
     }
     rt_seq_set_owns_elements(node->children, 1);
+    node->state_magic = RT_SCENE_NODE_STATE_MAGIC;
     node->sprite = NULL;
     node->name = NULL;
 
@@ -597,6 +653,11 @@ static void update_world_transform(scene_node_impl *node) {
 
     scene_node_impl *cur = node;
     while (cur && cur->transform_dirty) {
+        if (!scene_node_state_is_valid(cur)) {
+            free(heap_chain);
+            rt_trap("SceneNode: invalid transform chain");
+            return;
+        }
         if (depth >= SCENE_NODE_MAX_PARENT_CHAIN) {
             free(heap_chain);
             rt_trap("SceneNode: transform chain too deep or cyclic");
@@ -653,6 +714,8 @@ void rt_scene_node_set_x(void *node_ptr, int64_t x) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
+    if (node->x == x)
+        return;
     node->x = x;
     mark_transform_dirty(node);
 }
@@ -673,6 +736,8 @@ int64_t rt_scene_node_get_y(void *node_ptr) {
 void rt_scene_node_set_y(void *node_ptr, int64_t y) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
+        return;
+    if (node->y == y)
         return;
     node->y = y;
     mark_transform_dirty(node);
@@ -722,7 +787,10 @@ void rt_scene_node_set_scale_x(void *node_ptr, int64_t scale) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
-    node->scale_x = scene_normalize_scale(scale);
+    scale = scene_normalize_scale(scale);
+    if (node->scale_x == scale)
+        return;
+    node->scale_x = scale;
     mark_transform_dirty(node);
 }
 
@@ -744,7 +812,10 @@ void rt_scene_node_set_scale_y(void *node_ptr, int64_t scale) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
-    node->scale_y = scene_normalize_scale(scale);
+    scale = scene_normalize_scale(scale);
+    if (node->scale_y == scale)
+        return;
+    node->scale_y = scale;
     mark_transform_dirty(node);
 }
 
@@ -793,6 +864,8 @@ int64_t rt_scene_node_get_rotation(void *node_ptr) {
 void rt_scene_node_set_rotation(void *node_ptr, int64_t degrees) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
+        return;
+    if (node->rotation == degrees)
         return;
     node->rotation = degrees;
     mark_transform_dirty(node);
@@ -1283,8 +1356,12 @@ void rt_scene_node_move(void *node_ptr, int64_t dx, int64_t dy) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
-    node->x = scene_add_saturating(node->x, dx);
-    node->y = scene_add_saturating(node->y, dy);
+    int64_t new_x = scene_add_saturating(node->x, dx);
+    int64_t new_y = scene_add_saturating(node->y, dy);
+    if (new_x == node->x && new_y == node->y)
+        return;
+    node->x = new_x;
+    node->y = new_y;
     mark_transform_dirty(node);
 }
 
@@ -1295,6 +1372,8 @@ void rt_scene_node_move(void *node_ptr, int64_t dx, int64_t dy) {
 void rt_scene_node_set_position(void *node_ptr, int64_t x, int64_t y) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
+        return;
+    if (node->x == x && node->y == y)
         return;
     node->x = x;
     node->y = y;
@@ -1310,6 +1389,8 @@ void rt_scene_node_set_scale(void *node_ptr, int64_t scale) {
     if (!node)
         return;
     scale = scene_normalize_scale(scale);
+    if (node->scale_x == scale && node->scale_y == scale)
+        return;
     node->scale_x = scale;
     node->scale_y = scale;
     mark_transform_dirty(node);
@@ -1347,6 +1428,7 @@ void *rt_scene_new(void) {
     rt_string root_name = rt_const_cstr("root");
     rt_scene_node_set_name(scene->root, root_name);
     rt_string_unref(root_name);
+    scene->state_magic = RT_SCENE_STATE_MAGIC;
     rt_obj_set_finalizer(scene, scene_finalize);
 
     return scene;

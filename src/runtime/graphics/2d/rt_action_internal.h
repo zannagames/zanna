@@ -77,9 +77,13 @@ typedef enum {
 #define ACTION_MAX_BINDINGS_PER_ACTION 65536
 /// @brief Maximum aggregate bindings accepted from one persistence document.
 #define ACTION_LOAD_MAX_TOTAL_BINDINGS 262144
+/// Private cookies for constructed malloc-owned registry nodes.
+#define ACTION_STATE_MAGIC UINT64_C(0x5A414354494F4E32)
+#define ACTION_BINDING_STATE_MAGIC UINT64_C(0x5A42494E44494E32)
 
 /// @brief One malloc-owned physical-source binding in an Action's linked list.
 typedef struct Binding {
+    uint64_t state_magic; ///< Private initialized-node cookie.
     /// Source kind that determines how the remaining fields are interpreted.
     BindingType type;
     /// Key, mouse-button, gamepad-button, or gamepad-axis identifier.
@@ -99,6 +103,7 @@ typedef struct Binding {
 
 /// @brief One named logical action and its cached current-frame state.
 typedef struct Action {
+    uint64_t state_magic; ///< Private initialized-node cookie.
     /// Owned null-terminated action name.
     char *name;
     /// Exact byte length of @ref name, excluding its trailing NUL.
@@ -128,6 +133,23 @@ extern Action *g_actions;
 /// @brief Nonzero while the action subsystem is initialized.
 extern int8_t g_initialized;
 
+/// @brief Validate an Action and its exact bounded binding-list contents.
+static inline int action_binding_list_valid(const Action *action);
+
+/// @brief Validate one Action node without traversing its binding list.
+static inline int action_node_shallow_valid(const Action *action) {
+    return action && action->state_magic == ACTION_STATE_MAGIC && action->name &&
+           action->name_len > 0 && (uint64_t)action->name_len <= SIZE_MAX - 1u &&
+           action->name[action->name_len] == '\0' &&
+           memchr(action->name, '\0', (size_t)action->name_len) == NULL &&
+           (action->is_axis == 0 || action->is_axis == 1) &&
+           (action->pressed == 0 || action->pressed == 1) &&
+           (action->released == 0 || action->released == 1) &&
+           (action->held == 0 || action->held == 1) && isfinite(action->axis_value) &&
+           action->binding_count >= 0 && action->binding_count <= ACTION_MAX_BINDINGS_PER_ACTION &&
+           ((action->binding_count == 0) == (action->bindings == NULL));
+}
+
 /// @brief Linear-scan the global action list by C-string name. NULL on miss.
 /// @param name Borrowed null-terminated action name.
 /// @return Borrowed matching Action, or `NULL` for null/absent names.
@@ -138,7 +160,10 @@ static inline Action *find_action(const char *name) {
     if (name_len > INT64_MAX)
         return NULL;
     Action *a = g_actions;
-    while (a) {
+    int64_t visited = 0;
+    while (a && visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return NULL;
         if (a->name_len == (int64_t)name_len && memcmp(a->name, name, name_len) == 0)
             return a;
         a = a->next;
@@ -161,6 +186,7 @@ static inline Binding *create_binding(BindingType type,
     Binding *b = (Binding *)malloc(sizeof(Binding));
     if (!b)
         return NULL;
+    b->state_magic = ACTION_BINDING_STATE_MAGIC;
     b->type = type;
     b->code = code;
     b->pad_index = pad_index;
@@ -176,6 +202,10 @@ static inline Binding *create_binding(BindingType type,
 /// @param binding Owned detached binding; must be non-null. Ownership transfers
 ///        to @p action.
 static inline void add_binding(Action *action, Binding *binding) {
+    if (!action || action->state_magic != ACTION_STATE_MAGIC || !binding ||
+        binding->state_magic != ACTION_BINDING_STATE_MAGIC || action->binding_count < 0 ||
+        action->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
+        return;
     binding->next = action->bindings;
     action->bindings = binding;
     action->binding_count++;
@@ -186,6 +216,8 @@ static inline void add_binding(Action *action, Binding *binding) {
 /// @param tail Borrowed address of the cached list tail.
 /// @param binding Owned detached binding; ownership transfers to the list.
 static inline void append_binding(Binding **head, Binding **tail, Binding *binding) {
+    if (!head || !tail || !binding || binding->state_magic != ACTION_BINDING_STATE_MAGIC)
+        return;
     binding->next = NULL;
     if (*tail)
         (*tail)->next = binding;
@@ -196,9 +228,23 @@ static inline void append_binding(Binding **head, Binding **tail, Binding *bindi
 
 /// @brief Destroy an owned binding list.
 /// @param binding Owned list head; may be `NULL`.
-static inline void action_free_bindings(Binding *binding) {
-    while (binding) {
+static inline int action_binding_chain_shape_valid(const Binding *binding, int64_t count) {
+    if (count < 0 || count > ACTION_MAX_BINDINGS_PER_ACTION)
+        return 0;
+    for (int64_t i = 0; i < count; ++i) {
+        if (!binding || binding->state_magic != ACTION_BINDING_STATE_MAGIC)
+            return 0;
+        binding = binding->next;
+    }
+    return binding == NULL;
+}
+
+static inline void action_free_bindings(Binding *binding, int64_t count) {
+    if (!action_binding_chain_shape_valid(binding, count))
+        return;
+    for (int64_t released = 0; released < count; ++released) {
         Binding *next = binding->next;
+        binding->state_magic = 0;
         free(binding);
         binding = next;
     }
@@ -207,17 +253,29 @@ static inline void action_free_bindings(Binding *binding) {
 /// @brief Destroy one owned action node and all of its bindings.
 /// @param action Owned action; may be `NULL`.
 static inline void action_free_node(Action *action) {
-    if (!action)
+    if (!action || action->state_magic != ACTION_STATE_MAGIC)
         return;
+    int64_t binding_count = action->binding_count;
+    action->state_magic = 0;
     free(action->name);
-    action_free_bindings(action->bindings);
+    action_free_bindings(action->bindings, binding_count);
     free(action);
 }
 
 /// @brief Destroy an owned action list.
 /// @param action Owned list head; may be `NULL`.
 static inline void action_free_list(Action *action) {
-    while (action) {
+    const Action *cursor = action;
+    int64_t validated = 0;
+    while (cursor && validated++ < ACTION_MAX_ACTIONS) {
+        if (cursor->state_magic != ACTION_STATE_MAGIC)
+            return;
+        cursor = cursor->next;
+    }
+    if (cursor)
+        return;
+    int64_t released = 0;
+    while (action && released++ < ACTION_MAX_ACTIONS) {
         Action *next = action->next;
         action_free_node(action);
         action = next;
@@ -229,8 +287,9 @@ static inline void action_free_list(Action *action) {
 /// @param rhs Borrowed second binding.
 /// @return Nonzero when every semantically relevant field matches exactly.
 static inline int action_binding_equal(const Binding *lhs, const Binding *rhs) {
-    if (!lhs || !rhs || lhs->type != rhs->type || lhs->code != rhs->code ||
-        lhs->pad_index != rhs->pad_index || lhs->value != rhs->value ||
+    if (!lhs || !rhs || lhs->state_magic != ACTION_BINDING_STATE_MAGIC ||
+        rhs->state_magic != ACTION_BINDING_STATE_MAGIC || lhs->type != rhs->type ||
+        lhs->code != rhs->code || lhs->pad_index != rhs->pad_index || lhs->value != rhs->value ||
         lhs->chord_len != rhs->chord_len)
         return 0;
     if (lhs->type != BIND_CHORD)
@@ -269,7 +328,8 @@ static inline int action_pad_axis_valid(int64_t axis) {
 
 /// @brief Validate a persisted binding against its enclosing action kind.
 static inline int action_binding_valid(const Binding *binding, int8_t is_axis) {
-    if (!binding || !isfinite(binding->value))
+    if (!binding || binding->state_magic != ACTION_BINDING_STATE_MAGIC ||
+        (is_axis != 0 && is_axis != 1) || !isfinite(binding->value))
         return 0;
     switch (binding->type) {
         case BIND_KEY:
@@ -305,4 +365,17 @@ static inline int action_binding_valid(const Binding *binding, int8_t is_axis) {
         default:
             return 0;
     }
+}
+
+/// @brief Validate an Action and the exact shape and contents of its binding list.
+static inline int action_binding_list_valid(const Action *action) {
+    if (!action_node_shallow_valid(action))
+        return 0;
+    const Binding *binding = action->bindings;
+    for (int64_t i = 0; i < action->binding_count; ++i) {
+        if (!action_binding_valid(binding, action->is_axis))
+            return 0;
+        binding = binding->next;
+    }
+    return binding == NULL;
 }

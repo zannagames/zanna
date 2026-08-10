@@ -167,9 +167,12 @@ rt_string rt_action_save(void) {
 
     {
         Action *a = g_actions;
-        while (a) {
+        int64_t action_visited = 0;
+        while (a && action_visited++ < ACTION_MAX_ACTIONS) {
             int8_t first_binding;
             int64_t serialized_binding_count = 0;
+            if (!action_binding_list_valid(a))
+                goto save_error;
             if (!first_action) {
                 if (rt_sb_append_cstr(&sb, ",") != RT_SB_OK)
                     goto save_error;
@@ -188,7 +191,7 @@ rt_string rt_action_save(void) {
             first_binding = 1;
             {
                 Binding *b = a->bindings;
-                while (b) {
+                while (b && serialized_binding_count < a->binding_count) {
                     if (!action_binding_valid(b, a->is_axis))
                         goto save_error;
                     serialized_binding_count++;
@@ -226,6 +229,8 @@ rt_string rt_action_save(void) {
                         goto save_error;
                     b = b->next;
                 }
+                if (b)
+                    goto save_error;
             }
             if (serialized_binding_count != a->binding_count)
                 goto save_error;
@@ -234,6 +239,8 @@ rt_string rt_action_save(void) {
                 goto save_error;
             a = a->next;
         }
+        if (a)
+            goto save_error;
     }
 
     if (rt_sb_append_cstr(&sb, "]}") != RT_SB_OK)
@@ -349,7 +356,7 @@ int8_t rt_action_load(rt_string json) {
     size_t total_binding_count = 0;
     int64_t action_count = 0;
 
-    if (!json)
+    if (!json || !rt_string_is_handle(json))
         return 0;
 
     parser = rt_json_stream_new(json);
@@ -581,15 +588,23 @@ int8_t rt_action_load(rt_string json) {
                 goto cleanup;
 
             int64_t name_len = rt_str_len(pending_name);
-            for (Action *existing = g_actions; existing; existing = existing->next) {
+            int64_t duplicate_scan_count = 0;
+            Action *existing = g_actions;
+            for (; existing && duplicate_scan_count++ < ACTION_MAX_ACTIONS;
+                 existing = existing->next) {
+                if (!action_binding_list_valid(existing))
+                    goto cleanup;
                 if (existing->name_len == name_len &&
                     memcmp(existing->name, pending_name->data, (size_t)name_len) == 0)
                     goto cleanup;
             }
+            if (existing)
+                goto cleanup;
 
             building_action = (Action *)calloc(1, sizeof(Action));
             if (!building_action)
                 goto cleanup;
+            building_action->state_magic = ACTION_STATE_MAGIC;
             building_action->name = (char *)malloc((size_t)name_len + 1u);
             if (!building_action->name)
                 goto cleanup;

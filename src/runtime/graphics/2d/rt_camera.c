@@ -61,6 +61,8 @@
 #define RT_CAMERA_MAX_PARALLAX 8
 /// Maximum tile blits permitted while drawing one parallax layer.
 #define RT_CAMERA_MAX_PARALLAX_TILES 65536
+/// Private initialized-payload cookie for Camera objects.
+#define RT_CAMERA_STATE_MAGIC UINT64_C(0x5A43414D45524132)
 
 /// @brief A single parallax scrolling layer.
 typedef struct {
@@ -77,23 +79,57 @@ typedef struct {
 
 /// @brief Camera implementation structure.
 typedef struct rt_camera_impl {
-    int64_t x;          ///< Camera X position (world coordinates)
-    int64_t y;          ///< Camera Y position (world coordinates)
-    int64_t width;      ///< Viewport width
-    int64_t height;     ///< Viewport height
-    int64_t zoom;       ///< Zoom level (100 = 100%)
-    int64_t rotation;   ///< Rotation in degrees
-    int64_t has_bounds; ///< Whether bounds are set
-    int64_t min_x;      ///< Minimum X bound
-    int64_t min_y;      ///< Minimum Y bound
-    int64_t max_x;      ///< Maximum X bound
-    int64_t max_y;      ///< Maximum Y bound
-    int64_t dirty;      ///< 1 if position/zoom/rotation changed since last rt_camera_clear_dirty
+    uint64_t state_magic; ///< Distinguishes constructed state from forged storage.
+    int64_t x;            ///< Camera X position (world coordinates)
+    int64_t y;            ///< Camera Y position (world coordinates)
+    int64_t width;        ///< Viewport width
+    int64_t height;       ///< Viewport height
+    int64_t zoom;         ///< Zoom level (100 = 100%)
+    int64_t rotation;     ///< Rotation in degrees
+    int64_t has_bounds;   ///< Whether bounds are set
+    int64_t min_x;        ///< Minimum X bound
+    int64_t min_y;        ///< Minimum Y bound
+    int64_t max_x;        ///< Maximum X bound
+    int64_t max_y;        ///< Maximum Y bound
+    int64_t dirty;        ///< 1 if position/zoom/rotation changed since last rt_camera_clear_dirty
     int64_t deadzone_w; ///< Deadzone width (0 = disabled). Target within zone doesn't move camera.
     int64_t deadzone_h; ///< Deadzone height (0 = disabled).
     rt_parallax_layer parallax[RT_CAMERA_MAX_PARALLAX]; ///< Fixed parallax layer slots
     int64_t parallax_count;                             ///< Number of active layers
 } rt_camera_impl;
+
+/// @brief Validate the complete shallow Camera state used by public entry points.
+/// @details Retained Pixels handles receive their own complete layout validation.
+///          Cache keys may be stale after source mutation, which is a normal state
+///          repaired lazily by camera_prepare_parallax_tile().
+static int8_t camera_state_is_valid(const rt_camera_impl *camera) {
+    if (!camera || camera->state_magic != RT_CAMERA_STATE_MAGIC || camera->width <= 0 ||
+        camera->height <= 0 || camera->zoom < 10 || camera->zoom > 1000 ||
+        (camera->has_bounds != 0 && camera->has_bounds != 1) ||
+        (camera->dirty != 0 && camera->dirty != 1) || camera->deadzone_w < 0 ||
+        camera->deadzone_h < 0 || camera->parallax_count < 0 ||
+        camera->parallax_count > RT_CAMERA_MAX_PARALLAX)
+        return 0;
+
+    int64_t active_count = 0;
+    for (int i = 0; i < RT_CAMERA_MAX_PARALLAX; ++i) {
+        const rt_parallax_layer *layer = &camera->parallax[i];
+        if (layer->active != 0 && layer->active != 1)
+            return 0;
+        if (!layer->active) {
+            if (layer->pixels || layer->cached_pixels)
+                return 0;
+            continue;
+        }
+        if (!rt_pixels_checked_impl_or_null(layer->pixels) ||
+            (layer->cached_pixels && !rt_pixels_checked_impl_or_null(layer->cached_pixels)) ||
+            layer->scroll_factor_x < 0 || layer->scroll_factor_x > 100 ||
+            layer->scroll_factor_y < 0 || layer->scroll_factor_y > 100)
+            return 0;
+        active_count++;
+    }
+    return active_count == camera->parallax_count;
+}
 
 /// @brief Validate-and-return a Camera pointer; NULL for NULL or wrong class.
 /// @details Performs only validation; individual public APIs decide whether a
@@ -104,7 +140,8 @@ typedef struct rt_camera_impl {
 static rt_camera_impl *camera_checked_or_null(void *camera_ptr) {
     if (!camera_ptr || !rt_obj_is_instance(camera_ptr, RT_CAMERA_CLASS_ID, sizeof(rt_camera_impl)))
         return NULL;
-    return (rt_camera_impl *)camera_ptr;
+    rt_camera_impl *camera = (rt_camera_impl *)camera_ptr;
+    return camera_state_is_valid(camera) ? camera : NULL;
 }
 
 /// @brief Release a GC-managed object held in `*slot` and NULL-out the slot.
@@ -709,9 +746,12 @@ static void camera_release_parallax_layer(rt_parallax_layer *layer) {
 /// @brief GC finalizer: release all parallax layers before the camera allocation is freed.
 /// @param obj Camera object being finalized; invalid handles are ignored.
 static void camera_finalize(void *obj) {
-    rt_camera_impl *camera = camera_checked_or_null(obj);
-    if (!camera)
+    if (!obj || !rt_obj_is_instance(obj, RT_CAMERA_CLASS_ID, sizeof(rt_camera_impl)))
         return;
+    rt_camera_impl *camera = (rt_camera_impl *)obj;
+    if (camera->state_magic != RT_CAMERA_STATE_MAGIC)
+        return;
+    camera->state_magic = 0;
     for (int i = 0; i < RT_CAMERA_MAX_PARALLAX; i++)
         camera_release_parallax_layer(&camera->parallax[i]);
     camera->parallax_count = 0;
@@ -769,6 +809,8 @@ void *rt_camera_new(int64_t width, int64_t height) {
     if (!camera)
         return NULL;
 
+    memset(camera, 0, sizeof(*camera));
+    camera->state_magic = RT_CAMERA_STATE_MAGIC;
     camera->x = 0;
     camera->y = 0;
     camera->width = width;
@@ -1373,7 +1415,7 @@ int64_t rt_camera_add_parallax(void *camera_ptr,
     rt_camera_impl *camera = camera_checked_or_null(camera_ptr);
     if (!camera)
         return -1;
-    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl)))
+    if (!rt_pixels_checked_impl_or_null(pixels))
         return -1;
     if (camera->parallax_count >= RT_CAMERA_MAX_PARALLAX)
         return -1;

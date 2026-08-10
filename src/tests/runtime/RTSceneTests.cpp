@@ -27,6 +27,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 // Stub for rt_abort that's used by runtime
 extern "C" void rt_abort(const char *msg);
@@ -63,6 +64,29 @@ static void test_scene_new_has_class_id() {
     assert(rt_obj_class_id(rt_scene_get_root(scene)) == RT_SCENE_NODE_CLASS_ID);
 
     printf("test_scene_new_has_class_id: PASSED\n");
+}
+
+static void test_scene_rejects_uninitialized_payloads() {
+    void *forged_node = rt_obj_new_i64(RT_SCENE_NODE_CLASS_ID, 512);
+    void *forged_scene = rt_obj_new_i64(RT_SCENE_CLASS_ID, 512);
+    assert(forged_node != nullptr && forged_scene != nullptr);
+    std::memset(forged_node, 0, 512);
+    std::memset(forged_scene, 0, 512);
+
+    assert(rt_scene_node_get_scale_x(forged_node) == 100);
+    assert(rt_scene_node_get_visible(forged_node) == 0);
+    assert(rt_scene_node_child_count(forged_node) == 0);
+    rt_scene_node_set_position(forged_node, 3, 4);
+    assert(rt_scene_node_get_x(forged_node) == 0);
+    assert(rt_scene_get_root(forged_scene) == nullptr);
+    assert(rt_scene_node_count(forged_scene) == 0);
+    rt_scene_add(forged_scene, forged_node);
+
+    if (rt_obj_release_check0(forged_scene))
+        rt_obj_free(forged_scene);
+    if (rt_obj_release_check0(forged_node))
+        rt_obj_free(forged_node);
+    printf("test_scene_rejects_uninitialized_payloads: PASSED\n");
 }
 
 // ============================================================================
@@ -225,6 +249,48 @@ static void test_scene_node_transform_overflow_saturates() {
     assert(rt_scene_node_get_world_x(exact_child) == -1);
 
     printf("test_scene_node_transform_overflow_saturates: PASSED\n");
+}
+
+struct SceneNodeStatePrefix {
+    uint64_t state_magic;
+    int64_t x;
+    int64_t y;
+    int64_t scale_x;
+    int64_t scale_y;
+    int64_t rotation;
+    int64_t depth;
+    int8_t visible;
+    int64_t world_x;
+    int64_t world_y;
+    int64_t world_scale_x;
+    int64_t world_scale_y;
+    int64_t world_rotation;
+    int8_t transform_dirty;
+};
+
+static void test_scene_idempotent_transform_writes_stay_clean() {
+    void *parent = rt_scene_node_new();
+    void *child = rt_scene_node_new();
+    rt_scene_node_add_child(parent, child);
+    (void)rt_scene_node_get_world_x(child);
+    auto *parent_state = static_cast<SceneNodeStatePrefix *>(parent);
+    auto *child_state = static_cast<SceneNodeStatePrefix *>(child);
+    assert(parent_state->transform_dirty == 0 && child_state->transform_dirty == 0);
+
+    rt_scene_node_set_x(parent, 0);
+    rt_scene_node_set_y(parent, 0);
+    rt_scene_node_set_position(parent, 0, 0);
+    rt_scene_node_move(parent, 0, 0);
+    rt_scene_node_set_scale_x(parent, 100);
+    rt_scene_node_set_scale_y(parent, 100);
+    rt_scene_node_set_scale(parent, 100);
+    rt_scene_node_set_rotation(parent, 0);
+    assert(parent_state->transform_dirty == 0 && child_state->transform_dirty == 0);
+    if (rt_obj_release_check0(parent))
+        rt_obj_free(parent);
+    if (rt_obj_release_check0(child))
+        rt_obj_free(child);
+    printf("test_scene_idempotent_transform_writes_stay_clean: PASSED\n");
 }
 
 // ============================================================================
@@ -487,6 +553,7 @@ int main() {
     // SceneNode creation
     test_scene_node_new();
     test_scene_new_has_class_id();
+    test_scene_rejects_uninitialized_payloads();
 
     // SceneNode transforms
     test_scene_node_position();
@@ -500,6 +567,7 @@ int main() {
     test_scene_node_rotation_inheritance();
     test_scene_node_extreme_rotation_stays_periodic();
     test_scene_node_transform_overflow_saturates();
+    test_scene_idempotent_transform_writes_stay_clean();
 
     // SceneNode name/find
     test_scene_node_name();

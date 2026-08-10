@@ -25,6 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt_action.h"
+#include "rt_action_internal.h"
 #include "rt_box.h"
 #include "rt_input.h"
 #include "rt_seq.h"
@@ -512,6 +513,57 @@ static void test_chord_key_validation() {
     assert(rt_action_bind_chord(make_str("shortcut"), make_key_seq(duplicate_keys, 2)) == 0);
     assert(rt_action_chord_count(make_str("shortcut")) == 0);
 
+    int64_t valid_keys[] = {ZANNA_KEY_LCTRL, ZANNA_KEY_S};
+    assert(rt_action_bind_chord(make_str("shortcut"), make_key_seq(valid_keys, 2)) == 1);
+    assert(rt_action_unbind_chord(make_str("shortcut"), make_key_seq(duplicate_keys, 2)) == 0);
+    assert(rt_action_chord_count(make_str("shortcut")) == 1);
+
+    rt_action_clear();
+}
+
+static void test_action_rejects_forged_handles_and_corrupt_private_nodes() {
+    rt_action_init();
+    rt_action_clear();
+    void *wrong = rt_box_i64(7);
+    rt_string wrong_string = reinterpret_cast<rt_string>(wrong);
+    assert(rt_action_define(wrong_string) == 0);
+    assert(rt_action_exists(wrong_string) == 0);
+    assert(rt_action_remove(wrong_string) == 0);
+    assert(rt_action_load_preset(wrong_string) == 0);
+
+    rt_string shortcut = make_str("guarded");
+    assert(rt_action_define(shortcut) == 1);
+    assert(rt_action_bind_chord(shortcut, wrong) == 0);
+    assert(rt_action_unbind_chord(shortcut, wrong) == 0);
+    void *wrong_elements = rt_seq_new();
+    rt_seq_push(wrong_elements, rt_box_i64(ZANNA_KEY_LCTRL));
+    rt_seq_push(wrong_elements, rt_box_f64(1.0));
+    assert(rt_action_bind_chord(shortcut, wrong_elements) == 0);
+    assert(rt_action_unbind_chord(shortcut, wrong_elements) == 0);
+    assert(g_actions != nullptr);
+
+    g_actions->pressed = 2;
+    assert(rt_action_exists(shortcut) == 0);
+    g_actions->pressed = 0;
+    assert(rt_action_bind_key(shortcut, ZANNA_KEY_A) == 1);
+    assert(g_actions->bindings != nullptr);
+    Binding *binding = g_actions->bindings;
+    binding->next = binding;
+    rt_action_update();
+    assert(rt_action_pressed(shortcut) == 0);
+    binding->next = nullptr;
+
+    g_actions->binding_count = 2;
+    assert(rt_action_exists(shortcut) == 0);
+    assert(rt_action_binding_count(shortcut) == 0);
+    rt_action_update();
+    g_actions->binding_count = 1;
+
+    uint64_t binding_magic = binding->state_magic;
+    binding->state_magic = 0;
+    rt_action_update();
+    assert(rt_action_pressed(shortcut) == 0);
+    binding->state_magic = binding_magic;
     rt_action_clear();
 }
 
@@ -587,6 +639,7 @@ int main() {
     test_invalid_name_encoding_and_embedded_nul();
     test_binding_argument_validation();
     test_chord_key_validation();
+    test_action_rejects_forged_handles_and_corrupt_private_nodes();
     test_axis_accumulation_saturates_finitely();
     test_presets_are_idempotent_and_transactional();
 

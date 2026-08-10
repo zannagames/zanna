@@ -960,6 +960,34 @@ static void test_camera_extreme_arithmetic_saturates() {
     printf("test_camera_extreme_arithmetic_saturates: PASSED\n");
 }
 
+static void test_camera_rejects_uninitialized_and_malformed_retained_state() {
+    void *forged = rt_obj_new_i64(RT_CAMERA_CLASS_ID, 2048);
+    assert(forged != nullptr);
+    std::memset(forged, 0, 2048);
+    int64_t screen_x = 11;
+    int64_t screen_y = 22;
+    rt_camera_world_to_screen(forged, 7, 9, &screen_x, &screen_y);
+    assert(screen_x == 11 && screen_y == 22);
+    assert(rt_camera_is_dirty(forged) == 0);
+    assert(rt_camera_parallax_count(forged) == 0);
+
+    void *malformed_pixels = rt_obj_new_i64(RT_PIXELS_CLASS_ID, 512);
+    assert(malformed_pixels != nullptr);
+    std::memset(malformed_pixels, 0, 512);
+    void *camera = rt_camera_new(64, 64);
+    assert(camera != nullptr);
+    assert(rt_camera_add_parallax(camera, malformed_pixels, 50, 50) == -1);
+    assert(rt_camera_parallax_count(camera) == 0);
+
+    if (rt_obj_release_check0(camera))
+        rt_obj_free(camera);
+    if (rt_obj_release_check0(malformed_pixels))
+        rt_obj_free(malformed_pixels);
+    if (rt_obj_release_check0(forged))
+        rt_obj_free(forged);
+    printf("test_camera_rejects_uninitialized_and_malformed_retained_state: PASSED\n");
+}
+
 static void test_layout_rendergraph_tile_helpers_and_importers() {
     rt_string text = rt_str_from_lit("Hello", 5);
     void *layout = rt_textlayout2d_new();
@@ -1120,6 +1148,7 @@ int main() {
     test_transform_sampler_blend_and_sprite_renderer();
     test_animation_collision_palette_gradient_and_rig();
     test_camera_extreme_arithmetic_saturates();
+    test_camera_rejects_uninitialized_and_malformed_retained_state();
     test_layout_rendergraph_tile_helpers_and_importers();
     test_rotation_and_scaled_tilemap_edge_inputs();
     printf("RTGraphics2DTests: ALL PASSED\n");

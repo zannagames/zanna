@@ -79,10 +79,14 @@ static Action *clone_action_list(const Action *source, int *ok) {
     Action *tail = NULL;
     *ok = 0;
 
-    while (source) {
+    int64_t action_count = 0;
+    while (source && action_count++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(source))
+            goto failed;
         Action *copy = (Action *)calloc(1, sizeof(Action));
         if (!copy)
             goto failed;
+        copy->state_magic = ACTION_STATE_MAGIC;
         copy->name = action_preset_strdup(source->name);
         if (!copy->name) {
             free(copy);
@@ -94,10 +98,15 @@ static Action *clone_action_list(const Action *source, int *ok) {
         copy->released = source->released;
         copy->held = source->held;
         copy->axis_value = source->axis_value;
-        copy->binding_count = source->binding_count;
-
         Binding *binding_tail = NULL;
-        for (const Binding *binding = source->bindings; binding; binding = binding->next) {
+        int64_t binding_count = 0;
+        for (const Binding *binding = source->bindings;
+             binding && binding_count++ < source->binding_count;
+             binding = binding->next) {
+            if (!action_binding_valid(binding, source->is_axis)) {
+                action_free_node(copy);
+                goto failed;
+            }
             Binding *binding_copy = (Binding *)malloc(sizeof(Binding));
             if (!binding_copy) {
                 action_free_node(copy);
@@ -106,6 +115,11 @@ static Action *clone_action_list(const Action *source, int *ok) {
             *binding_copy = *binding;
             binding_copy->next = NULL;
             append_binding(&copy->bindings, &binding_tail, binding_copy);
+            copy->binding_count++;
+        }
+        if (binding_count != source->binding_count || copy->binding_count != binding_count) {
+            action_free_node(copy);
+            goto failed;
         }
 
         if (tail)
@@ -115,6 +129,8 @@ static Action *clone_action_list(const Action *source, int *ok) {
         tail = copy;
         source = source->next;
     }
+    if (source)
+        goto failed;
     *ok = 1;
     return head;
 
@@ -144,7 +160,7 @@ static Action *define_action_cstr(const char *name, int8_t is_axis) {
     }
     int64_t action_count = 0;
     for (Action *action = g_actions; action; action = action->next) {
-        if (++action_count >= ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(action) || ++action_count >= ACTION_MAX_ACTIONS) {
             g_preset_build_ok = 0;
             return NULL;
         }
@@ -155,6 +171,7 @@ static Action *define_action_cstr(const char *name, int8_t is_axis) {
         g_preset_build_ok = 0;
         return NULL;
     }
+    a->state_magic = ACTION_STATE_MAGIC;
     a->name = action_preset_strdup(name);
     if (!a->name) {
         free(a);
@@ -170,18 +187,32 @@ static Action *define_action_cstr(const char *name, int8_t is_axis) {
 
 /// @brief Insert a binding unless an exact equivalent already exists.
 static int add_unique_binding(Action *action, Binding *binding) {
-    if (!action || !binding) {
+    if (!action_node_shallow_valid(action) || !binding ||
+        !action_binding_valid(binding, action ? action->is_axis : 0)) {
+        if (binding)
+            binding->state_magic = 0;
         free(binding);
         g_preset_build_ok = 0;
         return 0;
     }
-    for (Binding *existing = action->bindings; existing; existing = existing->next) {
+    int64_t visited = 0;
+    Binding *existing = action->bindings;
+    for (; existing && visited++ < action->binding_count; existing = existing->next) {
+        if (!action_binding_valid(existing, action->is_axis)) {
+            binding->state_magic = 0;
+            free(binding);
+            g_preset_build_ok = 0;
+            return 0;
+        }
         if (action_binding_equal(existing, binding)) {
+            binding->state_magic = 0;
             free(binding);
             return 1;
         }
     }
-    if (action->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION) {
+    if (existing || visited != action->binding_count ||
+        action->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION) {
+        binding->state_magic = 0;
         free(binding);
         g_preset_build_ok = 0;
         return 0;
@@ -532,7 +563,7 @@ int8_t rt_action_load_preset(rt_string preset_name) {
     if (!g_initialized)
         rt_action_init();
 
-    if (!preset_name || rt_str_len(preset_name) == 0)
+    if (!preset_name || !rt_string_is_handle(preset_name) || rt_str_len(preset_name) == 0)
         return 0;
 
     int64_t len = rt_str_len(preset_name);
