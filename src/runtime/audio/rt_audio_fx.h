@@ -23,7 +23,8 @@
 /// @file
 /// @brief Declares the runtime-owned insert-effect registry for audio mix groups.
 /// @details Add operations allocate ordered DSP nodes and return opaque positive
-///          identifiers. Mutation functions serialize access on the control
+///          identifiers. Each group is capped at 32 inserts to bound callback
+///          work and retained DSP memory. Mutation functions serialize access on the control
 ///          path. Mixer-facing query and processing functions are non-blocking:
 ///          under registry contention they report no active effects or leave
 ///          the sample block unchanged.

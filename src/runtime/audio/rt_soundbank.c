@@ -84,6 +84,21 @@ static int find_free(const rt_soundbank_impl *bank) {
     return -1;
 }
 
+/// @brief Recompute the aggregate count from authoritative slot state.
+/// @details Avoids propagating a stale or damaged cached count into capacity
+///          decisions and prevents remove operations from underflowing it.
+/// @param bank Valid sound-bank storage.
+/// @return Number of occupied slots in `[0, BANK_MAX_ENTRIES]`.
+static int soundbank_recount(rt_soundbank_impl *bank) {
+    int count = 0;
+    for (int i = 0; i < BANK_MAX_ENTRIES; ++i) {
+        if (bank->entries[i].in_use)
+            ++count;
+    }
+    bank->count = count;
+    return count;
+}
+
 /// @brief Safe-cast an opaque handle to rt_soundbank_impl.
 /// @param bank_ptr Opaque runtime object to validate.
 /// @return The soundbank, or NULL if @p bank_ptr is not a SoundBank object.
@@ -128,6 +143,7 @@ static void rt_soundbank_finalize(void *obj) {
         if (bank->entries[i].in_use)
             release_entry(&bank->entries[i]);
     }
+    bank->count = 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -167,7 +183,13 @@ int64_t rt_soundbank_register(void *bank_ptr, rt_string name, rt_string path) {
     if (!bank || !name || !path)
         return 0;
 
-    int replacing;
+    int idx = find_entry(bank, name);
+    int replacing = idx >= 0;
+    if (!replacing) {
+        idx = find_free(bank);
+        if (idx < 0)
+            return 0;
+    }
 
     if (!rt_audio_is_available())
         return 0;
@@ -177,29 +199,15 @@ int64_t rt_soundbank_register(void *bank_ptr, rt_string name, rt_string path) {
     if (!sound)
         return 0;
 
-    /* Check if name already exists — replace */
-    int idx = find_entry(bank, name);
-    replacing = idx >= 0;
-    if (idx < 0) {
-        idx = find_free(bank);
-        if (idx < 0) {
-            /* Bank full — free the loaded sound */
-            if (rt_obj_release_check0(sound))
-                rt_obj_free(sound);
-            return 0;
-        }
-    }
-
     rt_str_retain_maybe(name);
     if (replacing)
         release_entry(&bank->entries[idx]);
-    else
-        bank->count++;
 
     /* Store: sound already has refcount 1 from rt_sound_load */
     bank->entries[idx].name = name;
     bank->entries[idx].sound = sound;
     bank->entries[idx].in_use = 1;
+    soundbank_recount(bank);
 
     return 1;
 }
@@ -221,11 +229,9 @@ int64_t rt_soundbank_register_sound(void *bank_ptr, rt_string name, void *sound)
     if (!rt_sound_is_playable(sound))
         return 0;
 
-    int replacing;
-
     /* Check if name already exists — replace */
     int idx = find_entry(bank, name);
-    replacing = idx >= 0;
+    int replacing = idx >= 0;
     if (idx < 0) {
         idx = find_free(bank);
         if (idx < 0)
@@ -237,12 +243,11 @@ int64_t rt_soundbank_register_sound(void *bank_ptr, rt_string name, void *sound)
     rt_str_retain_maybe(name);
     if (replacing)
         release_entry(&bank->entries[idx]);
-    else
-        bank->count++;
 
     bank->entries[idx].name = name;
     bank->entries[idx].sound = sound;
     bank->entries[idx].in_use = 1;
+    soundbank_recount(bank);
 
     return 1;
 }
@@ -324,7 +329,7 @@ void rt_soundbank_remove(void *bank_ptr, rt_string name) {
         return;
 
     release_entry(&bank->entries[idx]);
-    bank->count--;
+    soundbank_recount(bank);
 }
 
 /// @brief Remove and release all sounds from the bank.
@@ -349,5 +354,5 @@ int64_t rt_soundbank_count(void *bank_ptr) {
     if (!bank)
         return 0;
 
-    return bank->count;
+    return soundbank_recount(bank);
 }

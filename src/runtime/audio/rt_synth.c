@@ -64,11 +64,6 @@
 /// @param phase Phase in range [0.0, 1.0) representing [0, 2*PI).
 /// @return Sine value in range [-1.0, 1.0].
 static double synth_sin(double phase) {
-    /* Normalize phase to [0, 1) */
-    phase = phase - (double)(int64_t)phase;
-    if (phase < 0.0)
-        phase += 1.0;
-
     /* Map to [0, 2*PI) and use symmetry */
     double x = phase * SYNTH_2PI;
 
@@ -115,6 +110,10 @@ static void write_le32(uint8_t *p, uint32_t v) {
 /// @param wav_size_out Optional destination for header-plus-payload bytes.
 /// @return Non-zero when both RIFF and platform sizes are representable.
 static int synth_wav_sizes(int32_t num_samples, uint32_t *data_size_out, size_t *wav_size_out) {
+    if (data_size_out)
+        *data_size_out = 0;
+    if (wav_size_out)
+        *wav_size_out = 0;
     if (num_samples <= 0)
         return 0;
 
@@ -166,11 +165,6 @@ static void write_wav_header(uint8_t *buf, uint32_t data_size) {
 /// @param waveform Waveform type constant.
 /// @return Sample value in [-1.0, 1.0].
 static double waveform_sample(double phase, int64_t waveform) {
-    /* Normalize */
-    phase = phase - (double)(int64_t)phase;
-    if (phase < 0.0)
-        phase += 1.0;
-
     switch (waveform) {
         case RT_WAVE_SQUARE:
             return phase < 0.5 ? 1.0 : -1.0;
@@ -190,6 +184,17 @@ static double waveform_sample(double phase, int64_t waveform) {
         default:
             return synth_sin(phase);
     }
+}
+
+/// @brief Advance an already-normalized oscillator phase without unbounded growth.
+/// @param phase Current phase in `[0, 1)`.
+/// @param increment Positive increment smaller than one cycle.
+/// @return Advanced phase in `[0, 1)`.
+static double synth_advance_phase(double phase, double increment) {
+    phase += increment;
+    if (phase >= 1.0)
+        phase -= 1.0;
+    return phase;
 }
 
 //===----------------------------------------------------------------------===//
@@ -219,7 +224,11 @@ static void *samples_to_sound(const int16_t *samples, int32_t num_samples) {
         return NULL;
 
     write_wav_header(wav_buf, data_size);
-    memcpy(wav_buf + WAV_HEADER_SIZE, samples, data_size);
+    for (int32_t i = 0; i < num_samples; ++i) {
+        uint16_t sample = (uint16_t)samples[i];
+        wav_buf[WAV_HEADER_SIZE + (size_t)i * 2] = (uint8_t)sample;
+        wav_buf[WAV_HEADER_SIZE + (size_t)i * 2 + 1] = (uint8_t)(sample >> 8);
+    }
 
     void *sound = rt_sound_load_mem(wav_buf, (int64_t)wav_size);
     free(wav_buf);
@@ -252,7 +261,10 @@ static int64_t clamp_i64(int64_t v, int64_t lo, int64_t hi) {
 /// @param out_samples Receives the computed sample count on success.
 /// @return 1 when the sample count is valid, 0 otherwise.
 static int synth_duration_to_samples(int64_t duration_ms, int32_t *out_samples) {
-    if (!out_samples || duration_ms <= 0 || duration_ms > INT64_MAX / SYNTH_SAMPLE_RATE)
+    if (!out_samples)
+        return 0;
+    *out_samples = 0;
+    if (duration_ms <= 0 || duration_ms > INT64_MAX / SYNTH_SAMPLE_RATE)
         return 0;
     int64_t samples = (duration_ms * SYNTH_SAMPLE_RATE) / 1000;
     if (samples <= 0 || samples > INT32_MAX)
@@ -307,6 +319,9 @@ static double synth_edge_envelope(int32_t sample_index, int32_t num_samples, int
 /// @param waveform Waveform identifier clamped to `[0, 3]`.
 /// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_tone(int64_t freq_hz, int64_t duration_ms, int64_t waveform) {
+    if (!rt_audio_is_available())
+        return NULL;
+
     freq_hz = clamp_i64(freq_hz, 20, 20000);
     duration_ms = clamp_i64(duration_ms, 1, 10000);
     waveform = clamp_i64(waveform, 0, 3);
@@ -321,16 +336,16 @@ void *rt_synth_tone(int64_t freq_hz, int64_t duration_ms, int64_t waveform) {
 
     double phase = 0.0;
     double phase_inc = (double)freq_hz / (double)SYNTH_SAMPLE_RATE;
+    int32_t fade_samples = SYNTH_SAMPLE_RATE / 100; /* 10ms */
 
     for (int32_t i = 0; i < num_samples; i++) {
         double val = waveform_sample(phase, waveform);
 
         /* Apply a short fade-in/fade-out to avoid clicks (10ms each) */
-        int32_t fade_samples = SYNTH_SAMPLE_RATE / 100; /* 10ms */
         double env = synth_edge_envelope(i, num_samples, fade_samples);
 
         samples[i] = (int16_t)(val * env * SYNTH_MAX_AMP);
-        phase += phase_inc;
+        phase = synth_advance_phase(phase, phase_inc);
     }
 
     void *sound = samples_to_sound(samples, num_samples);
@@ -347,6 +362,9 @@ void *rt_synth_tone(int64_t freq_hz, int64_t duration_ms, int64_t waveform) {
 /// @param waveform Waveform identifier clamped to `[0, 3]`.
 /// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_sweep(int64_t start_hz, int64_t end_hz, int64_t duration_ms, int64_t waveform) {
+    if (!rt_audio_is_available())
+        return NULL;
+
     start_hz = clamp_i64(start_hz, 20, 20000);
     end_hz = clamp_i64(end_hz, 20, 20000);
     duration_ms = clamp_i64(duration_ms, 1, 10000);
@@ -361,21 +379,22 @@ void *rt_synth_sweep(int64_t start_hz, int64_t end_hz, int64_t duration_ms, int6
         return NULL;
 
     double phase = 0.0;
+    int32_t fade_samples = SYNTH_SAMPLE_RATE / 100;
+    double interpolation_denominator = num_samples > 1 ? (double)(num_samples - 1) : 1.0;
 
     for (int32_t i = 0; i < num_samples; i++) {
         /* Linear frequency interpolation */
-        double t = (double)i / (double)num_samples;
+        double t = (double)i / interpolation_denominator;
         double freq = (double)start_hz + ((double)end_hz - (double)start_hz) * t;
         double phase_inc = freq / (double)SYNTH_SAMPLE_RATE;
 
         double val = waveform_sample(phase, waveform);
 
         /* Fade envelope */
-        int32_t fade_samples = SYNTH_SAMPLE_RATE / 100;
         double env = synth_edge_envelope(i, num_samples, fade_samples);
 
         samples[i] = (int16_t)(val * env * SYNTH_MAX_AMP);
-        phase += phase_inc;
+        phase = synth_advance_phase(phase, phase_inc);
     }
 
     void *sound = samples_to_sound(samples, num_samples);
@@ -390,6 +409,9 @@ void *rt_synth_sweep(int64_t start_hz, int64_t end_hz, int64_t duration_ms, int6
 /// @param volume Amplitude percentage clamped to `[0, 100]`.
 /// @return Caller-owned Sound handle, or NULL on allocation/loading failure.
 void *rt_synth_noise(int64_t duration_ms, int64_t volume) {
+    if (!rt_audio_is_available())
+        return NULL;
+
     duration_ms = clamp_i64(duration_ms, 1, 10000);
     volume = clamp_i64(volume, 0, 100);
 
@@ -404,17 +426,21 @@ void *rt_synth_noise(int64_t duration_ms, int64_t volume) {
     /* Simple LCG PRNG seeded from the runtime RNG (no external dependency). */
     uint32_t rng_state = (uint32_t)rt_rand_range(1, INT_MAX);
     double vol_scale = (double)volume / 100.0;
+    double decay_denominator = num_samples > 1 ? (double)(num_samples - 1) : 1.0;
+    int32_t fade_samples = SYNTH_SAMPLE_RATE / 200;
 
     for (int32_t i = 0; i < num_samples; i++) {
         /* LCG: state = state * 1103515245 + 12345 */
         rng_state = rng_state * 1103515245u + 12345u;
-        int16_t noise_val = (int16_t)(rng_state >> 16);
+        uint32_t high_word = rng_state >> 16;
+        int32_t noise_val =
+            high_word <= INT16_MAX ? (int32_t)high_word : (int32_t)high_word - 65536;
 
         /* Quadratic decay envelope */
-        double t = (double)i / (double)num_samples;
+        double t = (double)i / decay_denominator;
         double env = 1.0 - t; /* Linear decay */
         env = env * env;      /* Quadratic decay for more natural sound */
-        env *= synth_edge_envelope(i, num_samples, SYNTH_SAMPLE_RATE / 200);
+        env *= synth_edge_envelope(i, num_samples, fade_samples);
 
         samples[i] = (int16_t)((double)noise_val * env * vol_scale);
     }
@@ -459,7 +485,7 @@ static void *sfx_coin(void) {
         env *= synth_edge_envelope(i, num_samples, fade);
 
         samples[i] = (int16_t)(val * env * SYNTH_MAX_AMP);
-        phase += phase_inc;
+        phase = synth_advance_phase(phase, phase_inc);
 
         /* Reset phase at tone boundary for clean transition */
         if (i == half - 1)
@@ -502,6 +528,9 @@ static void *sfx_laser(void) {
 /// @param sfx_type Preset identifier from @ref rt_sfx_preset_t.
 /// @return Caller-owned preset Sound, or NULL for an unknown type/failure.
 void *rt_synth_sfx(int64_t sfx_type) {
+    if (!rt_audio_is_available())
+        return NULL;
+
     switch (sfx_type) {
         case RT_SFX_JUMP:
             return sfx_jump();

@@ -201,8 +201,8 @@ void rt_music_crossfade_update(int64_t dt_ms);
 
 /// @brief Set the crossfade duration for playlist auto-advance (0 = disabled).
 /// @param playlist Opaque playlist object.
-/// @param duration_ms Requested transition duration in milliseconds; negative
-///        values are normalized to zero.
+/// @param duration_ms Requested transition duration in milliseconds; values are
+///        clamped to `[0, 3600000]`.
 void rt_playlist_set_crossfade(void *playlist, int64_t duration_ms);
 
 /// @brief Get the crossfade duration.

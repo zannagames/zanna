@@ -20,6 +20,7 @@
 extern "C" {
 #include "rt_asset.h"
 #include "rt_audio.h"
+#include "rt_audio_internal.h"
 #include "rt_internal.h"
 #include "rt_mixgroup.h"
 #include "rt_object.h"
@@ -336,6 +337,36 @@ static void test_playlist_jump_uses_actual_index_in_shuffle_mode() {
     rt_playlist_set_shuffle(pl, 1);
     rt_playlist_jump(pl, 2);
     ASSERT(rt_playlist_get_current(pl) == 2, "jump uses actual track index while shuffled");
+}
+
+static void collect_seeded_shuffle_order(int64_t out[4]);
+
+static void test_playlist_shuffle_remove_current_preserves_successor() {
+    int64_t order[4] = {};
+    collect_seeded_shuffle_order(order);
+
+    void *pl = rt_playlist_new();
+    rt_playlist_add(pl, make_str("one.wav"));
+    rt_playlist_add(pl, make_str("two.wav"));
+    rt_playlist_add(pl, make_str("three.wav"));
+    rt_playlist_add(pl, make_str("four.wav"));
+    rt_randomize_i64(12345);
+    rt_playlist_set_shuffle(pl, 1);
+    rt_playlist_jump(pl, order[1]);
+
+    int64_t expected = order[2] > order[1] ? order[2] - 1 : order[2];
+    rt_playlist_remove(pl, order[1]);
+    ASSERT(rt_playlist_get_current(pl) == expected,
+           "removing shuffled current track preserves its logical successor");
+}
+
+static void test_playlist_crossfade_duration_is_bounded() {
+    void *pl = rt_playlist_new();
+    rt_playlist_set_crossfade(pl, -1);
+    ASSERT(rt_playlist_get_crossfade(pl) == 0, "negative playlist crossfade clamps to zero");
+    rt_playlist_set_crossfade(pl, INT64_MAX);
+    ASSERT(rt_playlist_get_crossfade(pl) == 3600000,
+           "extreme playlist crossfade clamps to one hour");
 }
 
 static void collect_seeded_shuffle_order(int64_t out[4]) {
@@ -1373,6 +1404,73 @@ static void test_crossfade_set_loop_on_fade_out_still_completes() {
     remove(path2);
 }
 
+static void test_audio_format_detection_rejects_partial_signatures() {
+    const uint8_t riff_only[12] = {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'N', 'O', 'P', 'E'};
+    const uint8_t wav[12] = {'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'A', 'V', 'E'};
+    const uint8_t old_ogg[5] = {'O', 'g', 'g', 'S', 1};
+    const uint8_t ogg[5] = {'O', 'g', 'g', 'S', 0};
+    const uint8_t short_id3[4] = {'I', 'D', '3', 4};
+    const uint8_t id3[10] = {'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0};
+
+    ASSERT(detect_audio_format_mem(riff_only, sizeof(riff_only)) == 0,
+           "RIFF without WAVE form is rejected");
+    ASSERT(detect_audio_format_mem(wav, sizeof(wav)) == 1, "RIFF/WAVE form is detected");
+    ASSERT(detect_audio_format_mem(old_ogg, sizeof(old_ogg)) == 0,
+           "unsupported Ogg stream version is rejected");
+    ASSERT(detect_audio_format_mem(ogg, sizeof(ogg)) == 2, "Ogg version zero is detected");
+    ASSERT(detect_audio_format_mem(short_id3, sizeof(short_id3)) == 0,
+           "truncated ID3 header is rejected");
+    ASSERT(detect_audio_format_mem(id3, sizeof(id3)) == 3, "valid ID3v2 header is detected");
+}
+
+static void test_audio_format_detection_validates_mp3_frame_header() {
+    const uint8_t valid[4] = {0xFF, 0xFB, 0x90, 0x00};
+    const uint8_t reserved_version[4] = {0xFF, 0xEB, 0x90, 0x00};
+    const uint8_t reserved_layer[4] = {0xFF, 0xF9, 0x90, 0x00};
+    const uint8_t bad_bitrate[4] = {0xFF, 0xFB, 0xF0, 0x00};
+    const uint8_t bad_rate[4] = {0xFF, 0xFB, 0x9C, 0x00};
+    const uint8_t reserved_emphasis[4] = {0xFF, 0xFB, 0x90, 0x02};
+
+    ASSERT(detect_audio_format_mem(valid, sizeof(valid)) == 3, "valid MP3 frame is detected");
+    ASSERT(detect_audio_format_mem(reserved_version, sizeof(reserved_version)) == 0,
+           "reserved MPEG version is rejected");
+    ASSERT(detect_audio_format_mem(reserved_layer, sizeof(reserved_layer)) == 0,
+           "reserved MPEG layer is rejected");
+    ASSERT(detect_audio_format_mem(bad_bitrate, sizeof(bad_bitrate)) == 0,
+           "reserved MP3 bitrate is rejected");
+    ASSERT(detect_audio_format_mem(bad_rate, sizeof(bad_rate)) == 0,
+           "reserved MP3 sample rate is rejected");
+    ASSERT(detect_audio_format_mem(reserved_emphasis, sizeof(reserved_emphasis)) == 0,
+           "reserved MP3 emphasis is rejected");
+}
+
+static void test_audio_decode_failures_clear_outputs() {
+    const uint8_t malformed[4] = {0, 1, 2, 3};
+    uint8_t *out = reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(1));
+    size_t out_len = SIZE_MAX;
+
+    ASSERT(ogg_mem_to_wav(malformed, sizeof(malformed), &out, &out_len) == -1,
+           "malformed memory Ogg decode fails");
+    ASSERT(out == nullptr && out_len == 0, "failed memory Ogg decode clears outputs");
+
+    out = reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(1));
+    out_len = SIZE_MAX;
+    ASSERT(mp3_data_to_wav(malformed, sizeof(malformed), &out, &out_len) == -1,
+           "malformed memory MP3 decode fails");
+    ASSERT(out == nullptr && out_len == 0, "failed memory MP3 decode clears outputs");
+
+    out = reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(1));
+    out_len = SIZE_MAX;
+    ASSERT(ogg_file_to_wav(nullptr, &out, &out_len) == -1, "null Ogg path fails");
+    ASSERT(out == nullptr && out_len == 0, "failed file Ogg decode clears outputs");
+
+    out = reinterpret_cast<uint8_t *>(static_cast<uintptr_t>(1));
+    out_len = SIZE_MAX;
+    ASSERT(mp3_file_to_wav(nullptr, &out, &out_len) == -1, "null MP3 path fails");
+    ASSERT(out == nullptr && out_len == 0, "failed file MP3 decode clears outputs");
+    ASSERT(detect_audio_format(nullptr) == 0, "null format-detection path is rejected");
+}
+
 /// @brief Main.
 int main() {
     // Audio system (headless-safe)
@@ -1384,6 +1482,9 @@ int main() {
     test_embedded_nul_paths_rejected_before_backend_open();
     test_voice_null_safety();
     test_music_null_safety();
+    test_audio_format_detection_rejects_partial_signatures();
+    test_audio_format_detection_validates_mp3_frame_header();
+    test_audio_decode_failures_clear_outputs();
 
     // Playlist management (pure data structure)
     test_playlist_new();
@@ -1397,6 +1498,8 @@ int main() {
     test_playlist_skip_on_error_terminates();
     test_playlist_shuffle_preserves_current_track();
     test_playlist_jump_uses_actual_index_in_shuffle_mode();
+    test_playlist_shuffle_remove_current_preserves_successor();
+    test_playlist_crossfade_duration_is_bounded();
     test_playlist_shuffle_uses_runtime_seed();
     test_playlist_stop_preserves_selected_track();
     test_playlist_update_no_crash();

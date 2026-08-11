@@ -1,3 +1,9 @@
+---
+status: active
+audience: contributors
+last-verified: 2026-08-11
+---
+
 # Audio Runtime Hardening — August 2026
 
 ## Summary and objective

@@ -157,7 +157,10 @@ static int64_t mg_max_centbeats_for_bpm(int64_t bpm) {
 static int mg_centbeats_to_frames(int64_t centbeats,
                                   int32_t samples_per_beat,
                                   int64_t *out_frames) {
-    if (!out_frames || samples_per_beat <= 0)
+    if (!out_frames)
+        return 0;
+    *out_frames = 0;
+    if (samples_per_beat <= 0)
         return 0;
     if (centbeats < 0)
         centbeats = 0;
@@ -181,16 +184,11 @@ static mg_song_t *mg_as_song(void *song_ptr) {
 //===----------------------------------------------------------------------===//
 
 /// @brief Approximate sine without the platform math library.
-/// @details Normalizes any phase into `[0, 1)`, maps it to `[0, 2π)`, and
-///          applies Bhaskara I's approximation with approximately 0.08% maximum
-///          error.
+/// @details Maps an already-normalized phase to `[0, 2π)` and applies Bhaskara
+///          I's approximation with approximately 0.08% maximum error.
 /// @param phase Wave-cycle phase, where one unit is a complete cycle.
 /// @return Approximate sine value in `[-1, 1]`.
 static double mg_sin(double phase) {
-    phase = phase - (double)(int64_t)phase;
-    if (phase < 0.0)
-        phase += 1.0;
-
     double x = phase * MG_2PI;
     int negate = 0;
     if (x > MG_PI) {
@@ -432,10 +430,6 @@ static double pow2_cents(int64_t cents) {
 /// @param duty Duty cycle percentage (0-100, only for square wave).
 /// @return Sample value in [-1.0, 1.0].
 static double mg_waveform(double phase, int64_t waveform, int64_t duty) {
-    phase = phase - (double)(int64_t)phase;
-    if (phase < 0.0)
-        phase += 1.0;
-
     switch (waveform) {
         case MUSICGEN_WAVE_SQUARE: {
             double threshold = (double)duty / 100.0;
@@ -461,6 +455,17 @@ static double mg_waveform(double phase, int64_t waveform, int64_t duty) {
         default:
             return mg_sin(phase);
     }
+}
+
+/// @brief Advance a normalized oscillator phase and wrap at one cycle.
+/// @param phase Current phase in `[0, 1)`.
+/// @param increment Non-negative increment smaller than one cycle.
+/// @return Advanced phase in `[0, 1)`.
+static double mg_advance_phase(double phase, double increment) {
+    phase += increment;
+    if (phase >= 1.0)
+        phase -= 1.0;
+    return phase;
 }
 
 //===----------------------------------------------------------------------===//
@@ -531,6 +536,8 @@ typedef struct {
 /// @param n Noise/filter state to initialize.
 /// @param seed Deterministic initial linear-congruential state.
 static void mg_noise_init(mg_noise_t *n, uint32_t seed) {
+    if (!n)
+        return;
     n->state = seed;
     n->prev_sample = 0.0;
 }
@@ -540,9 +547,18 @@ static void mg_noise_init(mg_noise_t *n, uint32_t seed) {
 /// @param cutoff_freq Lowpass cutoff frequency in Hz.
 /// @return Sample in [-1.0, 1.0].
 static double mg_noise_sample(mg_noise_t *n, double cutoff_freq) {
+    if (!n)
+        return 0.0;
+    if (cutoff_freq < 1.0)
+        cutoff_freq = 1.0;
+    if (cutoff_freq > (double)MG_SAMPLE_RATE * 0.5)
+        cutoff_freq = (double)MG_SAMPLE_RATE * 0.5;
+
     /* LCG step */
     n->state = n->state * 1103515245u + 12345u;
-    double white = (double)(int16_t)(n->state >> 16) / 32768.0;
+    uint32_t high_word = n->state >> 16;
+    int32_t signed_word = high_word <= INT16_MAX ? (int32_t)high_word : (int32_t)high_word - 65536;
+    double white = (double)signed_word / 32768.0;
 
     /* One-pole lowpass: y[n] = y[n-1] + alpha * (x[n] - y[n-1])
        alpha = dt / (RC + dt), where RC = 1/(2*PI*cutoff) */
@@ -610,6 +626,10 @@ static void mg_write_le32(uint8_t *p, uint32_t v) {
 /// @param wav_size_out Optional destination for total header-plus-payload bytes.
 /// @return Non-zero when the sizes are representable in RIFF and `size_t`.
 static int mg_wav_sizes(int32_t num_frames, uint32_t *data_size_out, size_t *wav_size_out) {
+    if (data_size_out)
+        *data_size_out = 0;
+    if (wav_size_out)
+        *wav_size_out = 0;
     if (num_frames <= 0)
         return 0;
 
@@ -817,7 +837,7 @@ static void mg_render_note(int32_t *accum,
         if (vib_depth > 0.0 && vib_speed_hz > 0.0) {
             double vib_val = mg_sin(vibrato_phase);
             freq *= pow2_cents((int64_t)(vib_val * vib_depth));
-            vibrato_phase += vib_speed_hz / (double)MG_SAMPLE_RATE;
+            vibrato_phase = mg_advance_phase(vibrato_phase, vib_speed_hz / (double)MG_SAMPLE_RATE);
         }
 
         /* --- Sample generation --- */
@@ -828,7 +848,7 @@ static void mg_render_note(int32_t *accum,
             sample = mg_noise_sample(&noise, cutoff);
         } else {
             sample = mg_waveform(phase, chan->waveform, chan->duty_cycle);
-            phase += freq / (double)MG_SAMPLE_RATE;
+            phase = mg_advance_phase(phase, freq / (double)MG_SAMPLE_RATE);
         }
 
         /* ADSR envelope */
@@ -841,7 +861,7 @@ static void mg_render_note(int32_t *accum,
             trem = 1.0 - trem_depth_frac * (1.0 + trem_val);
             if (trem < 0.0)
                 trem = 0.0;
-            tremolo_phase += trem_speed_hz / (double)MG_SAMPLE_RATE;
+            tremolo_phase = mg_advance_phase(tremolo_phase, trem_speed_hz / (double)MG_SAMPLE_RATE);
         }
 
         /* Final amplitude */
@@ -940,7 +960,7 @@ int64_t rt_musicgen_add_channel(void *song_ptr, int64_t waveform) {
     if (!song)
         return -1;
 
-    if (song->channel_count >= MUSICGEN_MAX_CHANNELS)
+    if (song->channel_count < 0 || song->channel_count >= MUSICGEN_MAX_CHANNELS)
         return -1;
 
     waveform = mg_clamp(waveform, 0, 4);
@@ -963,7 +983,8 @@ static mg_channel_t *mg_get_channel(void *song_ptr, int64_t ch) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
         return NULL;
-    if (ch < 0 || ch >= (int64_t)song->channel_count)
+    if (song->channel_count < 0 || song->channel_count > MUSICGEN_MAX_CHANNELS || ch < 0 ||
+        ch >= (int64_t)song->channel_count)
         return NULL;
     return &song->channels[ch];
 }
@@ -1129,7 +1150,7 @@ int64_t rt_musicgen_add_note_vel(void *song_ptr,
     if (!c)
         return 0;
 
-    if (c->note_count >= MUSICGEN_MAX_NOTES)
+    if (c->note_count < 0 || c->note_count >= MUSICGEN_MAX_NOTES)
         return 0;
 
     mg_song_t *song = mg_as_song(song_ptr);
@@ -1199,7 +1220,7 @@ int64_t rt_musicgen_get_bpm(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
         return 0;
-    return song->bpm;
+    return mg_clamp(song->bpm, 20, 300);
 }
 
 /// @brief Get the song length in centbeats.
@@ -1209,7 +1230,7 @@ int64_t rt_musicgen_get_length(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
         return 0;
-    return song->length_centbeats;
+    return mg_clamp(song->length_centbeats, 0, mg_max_centbeats_for_bpm(song->bpm));
 }
 
 /// @brief Get the number of channels added to the song.
@@ -1219,7 +1240,29 @@ int64_t rt_musicgen_get_channel_count(void *song_ptr) {
     mg_song_t *song = mg_as_song(song_ptr);
     if (!song)
         return 0;
-    return (int64_t)song->channel_count;
+    return mg_clamp(song->channel_count, 0, MUSICGEN_MAX_CHANNELS);
+}
+
+/// @brief Validate retained channel configuration before rendering arithmetic.
+/// @param channel Channel storage to inspect.
+/// @return Non-zero when counts and every numeric setting are in public API ranges.
+static int mg_channel_renderable(const mg_channel_t *channel) {
+    return channel && channel->note_count >= 0 && channel->note_count <= MUSICGEN_MAX_NOTES &&
+           channel->waveform >= MUSICGEN_WAVE_SINE && channel->waveform <= MUSICGEN_WAVE_NOISE &&
+           channel->envelope.attack_ms >= 0 && channel->envelope.attack_ms <= 5000 &&
+           channel->envelope.decay_ms >= 0 && channel->envelope.decay_ms <= 5000 &&
+           channel->envelope.sustain_pct >= 0 && channel->envelope.sustain_pct <= 100 &&
+           channel->envelope.release_ms >= 0 && channel->envelope.release_ms <= 5000 &&
+           channel->volume >= 0 && channel->volume <= 100 && channel->duty_cycle >= 1 &&
+           channel->duty_cycle <= 99 && channel->pan >= -100 && channel->pan <= 100 &&
+           channel->detune_cents >= -1200 && channel->detune_cents <= 1200 &&
+           channel->vibrato_depth >= 0 && channel->vibrato_depth <= 200 &&
+           channel->vibrato_speed >= 0 && channel->vibrato_speed <= 5000 &&
+           channel->tremolo_depth >= 0 && channel->tremolo_depth <= 100 &&
+           channel->tremolo_speed >= 0 && channel->tremolo_speed <= 5000 &&
+           channel->arp_semi1 >= 0 && channel->arp_semi1 <= 24 && channel->arp_semi2 >= 0 &&
+           channel->arp_semi2 <= 24 && channel->arp_speed >= 0 && channel->arp_speed <= 5000 &&
+           channel->portamento_ms >= 0 && channel->portamento_ms <= 2000;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1241,7 +1284,21 @@ void *rt_musicgen_build(void *song_ptr) {
     if (!rt_audio_is_available())
         return NULL;
 
-    if (song->channel_count <= 0 || song->length_centbeats <= 0)
+    if (song->bpm < 20 || song->bpm > 300 || song->channel_count <= 0 ||
+        song->channel_count > MUSICGEN_MAX_CHANNELS || song->length_centbeats <= 0 ||
+        song->length_centbeats > mg_max_centbeats_for_bpm(song->bpm) || song->swing < 0 ||
+        song->swing > 100)
+        return NULL;
+
+    int32_t active_channel_count = 0;
+    for (int32_t ch = 0; ch < song->channel_count; ++ch) {
+        mg_channel_t *channel = &song->channels[ch];
+        if (!mg_channel_renderable(channel))
+            return NULL;
+        if (channel->note_count > 0 && channel->volume > 0)
+            ++active_channel_count;
+    }
+    if (active_channel_count == 0)
         return NULL;
 
     /* Calculate total frames */
@@ -1267,23 +1324,14 @@ void *rt_musicgen_build(void *song_ptr) {
     if (!accum)
         return NULL;
 
-    int32_t active_channel_count = 0;
-    for (int32_t ch = 0; ch < song->channel_count; ch++) {
-        mg_channel_t *chan = &song->channels[ch];
-        if (chan->note_count > 0 && mg_clamp(chan->volume, 0, 100) > 0)
-            active_channel_count++;
-    }
-    if (active_channel_count <= 0)
-        active_channel_count = 1;
-
     /* Render all channels and notes */
     for (int32_t ch = 0; ch < song->channel_count; ch++) {
         mg_channel_t *chan = &song->channels[ch];
-        if (chan->note_count <= 0 || mg_clamp(chan->volume, 0, 100) <= 0)
+        if (chan->note_count <= 0 || chan->volume <= 0)
             continue;
         mg_note_t *notes = chan->notes;
         mg_note_t *sorted_notes = NULL;
-        if (chan->note_count > 1) {
+        if (chan->note_count > 1 && chan->portamento_ms > 0) {
             if ((size_t)chan->note_count > SIZE_MAX / sizeof(mg_note_t)) {
                 free(accum);
                 return NULL;
@@ -1376,7 +1424,11 @@ void *rt_musicgen_build(void *song_ptr) {
     }
 
     mg_write_wav_header(wav_buf, data_size);
-    memcpy(wav_buf + MG_WAV_HEADER, pcm, data_size);
+    for (size_t i = 0; i < pcm_count; ++i) {
+        uint16_t sample = (uint16_t)pcm[i];
+        wav_buf[MG_WAV_HEADER + i * 2] = (uint8_t)sample;
+        wav_buf[MG_WAV_HEADER + i * 2 + 1] = (uint8_t)(sample >> 8);
+    }
     free(pcm);
 
     void *sound = rt_sound_load_mem(wav_buf, (int64_t)wav_size);
