@@ -463,6 +463,24 @@ static double clamp_range(double value, double min_value, double max_value) {
     return value;
 }
 
+/// @brief Clamp a signed value symmetrically around zero, using zero for NaN or infinity.
+/// @details `clamp_range` deliberately uses its lower bound as the generic non-finite fallback,
+///   which is appropriate for non-negative material fields. Signed shader parameters and depth
+///   biases instead need a neutral zero fallback: mapping NaN to the negative magnitude limit
+///   would turn malformed state into the strongest supported effect.
+/// @param value Candidate signed value.
+/// @param max_abs Non-negative maximum magnitude.
+/// @return Finite value in `[-max_abs, max_abs]`, or zero for invalid input or bounds.
+static double material_clamp_symmetric_or_zero(double value, double max_abs) {
+    if (!isfinite(value) || !isfinite(max_abs) || max_abs < 0.0)
+        return 0.0;
+    if (value > max_abs)
+        return max_abs;
+    if (value < -max_abs)
+        return -max_abs;
+    return value;
+}
+
 /// @brief Clamp a UV-transform component into ±MATERIAL3D_UV_TRANSFORM_ABS_MAX, falling
 ///        back on non-finite input. Used to bound material UV scale/offset/rotation.
 /// @param value Transform component to sanitize.
@@ -592,6 +610,8 @@ static void material_init_defaults(rt_material3d *mat) {
     memset(mat->custom_params, 0, sizeof(mat->custom_params));
     mat->depth_bias = 0.0;
     mat->slope_scaled_depth_bias = 0.0;
+    mat->soft_fade = 0.0;
+    mat->ssr_enabled = 0;
 }
 
 /// @brief Re-sanitize copied material state that may have been imported through legacy direct
@@ -621,6 +641,7 @@ static void material_sanitize_state(rt_material3d *mat) {
         mat->alpha_mode > RT_MATERIAL3D_ALPHA_MODE_BLEND)
         mat->alpha_mode = RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
     mat->alpha_mode_auto = mat->alpha_mode_auto ? 1 : 0;
+    mat->alpha_mode_explicit = mat->alpha_mode_explicit ? 1 : 0;
     if (mat->shadow_mode < RT_MATERIAL3D_SHADOW_MODE_AUTO ||
         mat->shadow_mode > RT_MATERIAL3D_SHADOW_MODE_CAST)
         mat->shadow_mode = RT_MATERIAL3D_SHADOW_MODE_AUTO;
@@ -631,10 +652,11 @@ static void material_sanitize_state(rt_material3d *mat) {
     if (mat->shading_model < 0 || mat->shading_model > 5)
         mat->shading_model = 0;
     mat->depth_bias =
-        clamp_range(mat->depth_bias, -MATERIAL3D_DEPTH_BIAS_ABS_MAX, MATERIAL3D_DEPTH_BIAS_ABS_MAX);
-    mat->slope_scaled_depth_bias = clamp_range(mat->slope_scaled_depth_bias,
-                                               -MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX,
-                                               MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
+        material_clamp_symmetric_or_zero(mat->depth_bias, MATERIAL3D_DEPTH_BIAS_ABS_MAX);
+    mat->slope_scaled_depth_bias = material_clamp_symmetric_or_zero(
+        mat->slope_scaled_depth_bias, MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
+    mat->soft_fade = clamp_range(mat->soft_fade, 0.0, MATERIAL3D_EMISSIVE_INTENSITY_MAX);
+    mat->ssr_enabled = mat->ssr_enabled ? 1 : 0;
     for (int slot = 0; slot < RT_MATERIAL3D_TEXTURE_SLOT_COUNT; slot++) {
         int32_t wrap_s = mat->texture_slot_wrap_s[slot];
         int32_t wrap_t = mat->texture_slot_wrap_t[slot];
@@ -684,9 +706,8 @@ static void material_sanitize_state(rt_material3d *mat) {
     mat->texture_mip_filter = mat->texture_slot_mip_filter[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR];
     mat->anisotropy = mat->texture_slot_anisotropy[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR];
     for (int i = 0; i < 12; i++)
-        mat->custom_params[i] = clamp_range(mat->custom_params[i],
-                                            -MATERIAL3D_CUSTOM_PARAM_ABS_MAX,
-                                            MATERIAL3D_CUSTOM_PARAM_ABS_MAX);
+        mat->custom_params[i] = material_clamp_symmetric_or_zero(mat->custom_params[i],
+                                                                 MATERIAL3D_CUSTOM_PARAM_ABS_MAX);
 }
 
 /// @brief Switch the material from legacy-Phong to PBR workflow. Called implicitly by
@@ -777,6 +798,8 @@ static void *material_clone_like(void *obj) {
     memcpy(dst->custom_params, src->custom_params, sizeof(dst->custom_params));
     dst->depth_bias = src->depth_bias;
     dst->slope_scaled_depth_bias = src->slope_scaled_depth_bias;
+    dst->soft_fade = src->soft_fade;
+    dst->ssr_enabled = src->ssr_enabled;
     material_sanitize_state(dst);
 
     material_assign_ref(&dst->texture, src->texture);
@@ -1262,7 +1285,7 @@ void rt_material3d_set_custom_param(void *obj, int64_t index, double value) {
     if (!mat || index < 0 || index >= 12)
         return;
     mat->custom_params[index] =
-        clamp_range(value, -MATERIAL3D_CUSTOM_PARAM_ABS_MAX, MATERIAL3D_CUSTOM_PARAM_ABS_MAX);
+        material_clamp_symmetric_or_zero(value, MATERIAL3D_CUSTOM_PARAM_ABS_MAX);
 }
 
 /// @brief Set the transparency level (0.0 = invisible, 1.0 = fully opaque).
@@ -1696,10 +1719,9 @@ void rt_material3d_set_depth_bias(void *obj, double constant_bias, double slope_
     if (!mat)
         return;
     mat->depth_bias =
-        clamp_range(constant_bias, -MATERIAL3D_DEPTH_BIAS_ABS_MAX, MATERIAL3D_DEPTH_BIAS_ABS_MAX);
-    mat->slope_scaled_depth_bias = clamp_range(slope_scaled_bias,
-                                               -MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX,
-                                               MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
+        material_clamp_symmetric_or_zero(constant_bias, MATERIAL3D_DEPTH_BIAS_ABS_MAX);
+    mat->slope_scaled_depth_bias =
+        material_clamp_symmetric_or_zero(slope_scaled_bias, MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
 }
 
 /* Map-slot and scalar readback (ADR 0233). Slot getters return the borrowed
@@ -1712,6 +1734,8 @@ void rt_material3d_set_depth_bias(void *obj, double constant_bias, double slope_
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_texture(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->texture);
     return mat ? mat->texture : NULL;
 }
 
@@ -1720,6 +1744,8 @@ void *rt_material3d_get_texture(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_normal_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->normal_map);
     return mat ? mat->normal_map : NULL;
 }
 
@@ -1728,6 +1754,8 @@ void *rt_material3d_get_normal_map(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_specular_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->specular_map);
     return mat ? mat->specular_map : NULL;
 }
 
@@ -1736,6 +1764,8 @@ void *rt_material3d_get_specular_map(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_emissive_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->emissive_map);
     return mat ? mat->emissive_map : NULL;
 }
 
@@ -1744,6 +1774,8 @@ void *rt_material3d_get_emissive_map(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_metallic_roughness_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->metallic_roughness_map);
     return mat ? mat->metallic_roughness_map : NULL;
 }
 
@@ -1752,6 +1784,8 @@ void *rt_material3d_get_metallic_roughness_map(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_ao_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->ao_map);
     return mat ? mat->ao_map : NULL;
 }
 
@@ -1760,6 +1794,8 @@ void *rt_material3d_get_ao_map(void *obj) {
 /// @return Borrowed source handle, or NULL when unbound.
 void *rt_material3d_get_lightmap(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    if (mat)
+        (void)material_texture_slot_has_drawable_source(&mat->lightmap);
     return mat ? mat->lightmap : NULL;
 }
 
@@ -1768,6 +1804,7 @@ void *rt_material3d_get_lightmap(void *obj) {
 /// @return Borrowed CubeMap3D handle, or NULL when unbound.
 void *rt_material3d_get_env_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
+    material_repair_env_map(mat);
     return mat ? mat->env_map : NULL;
 }
 
@@ -1778,6 +1815,8 @@ void *rt_material3d_get_emissive_color(void *obj) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
         return rt_vec3_new(0.0, 0.0, 0.0);
+    for (int i = 0; i < 3; i++)
+        mat->emissive[i] = sanitize_emissive_color(mat->emissive[i]);
     return rt_vec3_new(mat->emissive[0], mat->emissive[1], mat->emissive[2]);
 }
 
@@ -1786,7 +1825,10 @@ void *rt_material3d_get_emissive_color(void *obj) {
 /// @return Retained shininess, or zero for an invalid handle.
 double rt_material3d_get_shininess(void *obj) {
     rt_material3d *mat = material_checked(obj);
-    return mat ? mat->shininess : 0.0;
+    if (!mat)
+        return 0.0;
+    mat->shininess = clamp_range(mat->shininess, 0.0, MATERIAL3D_SHININESS_MAX);
+    return mat->shininess;
 }
 
 /// @brief `Material3D.DepthBias` — read the retained constant depth bias (ADR 0233).
@@ -1794,7 +1836,11 @@ double rt_material3d_get_shininess(void *obj) {
 /// @return Retained constant bias, or zero for an invalid handle.
 double rt_material3d_get_depth_bias(void *obj) {
     rt_material3d *mat = material_checked(obj);
-    return mat ? mat->depth_bias : 0.0;
+    if (!mat)
+        return 0.0;
+    mat->depth_bias =
+        material_clamp_symmetric_or_zero(mat->depth_bias, MATERIAL3D_DEPTH_BIAS_ABS_MAX);
+    return mat->depth_bias;
 }
 
 /// @brief `Material3D.DepthSlopeBias` — read the slope-scaled depth bias (ADR 0233).
@@ -1802,7 +1848,11 @@ double rt_material3d_get_depth_bias(void *obj) {
 /// @return Retained slope-scaled bias, or zero for an invalid handle.
 double rt_material3d_get_depth_slope_bias(void *obj) {
     rt_material3d *mat = material_checked(obj);
-    return mat ? mat->slope_scaled_depth_bias : 0.0;
+    if (!mat)
+        return 0.0;
+    mat->slope_scaled_depth_bias = material_clamp_symmetric_or_zero(
+        mat->slope_scaled_depth_bias, MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
+    return mat->slope_scaled_depth_bias;
 }
 
 /// @brief `Material3D.GetCustomParam(index)` — read one custom parameter (ADR 0233).
@@ -1813,6 +1863,8 @@ double rt_material3d_get_custom_param(void *obj, int64_t index) {
     rt_material3d *mat = material_checked(obj);
     if (!mat || index < 0 || (size_t)index >= sizeof(mat->custom_params) / sizeof(double))
         return 0.0;
+    mat->custom_params[index] = material_clamp_symmetric_or_zero(mat->custom_params[index],
+                                                                 MATERIAL3D_CUSTOM_PARAM_ABS_MAX);
     return mat->custom_params[index];
 }
 

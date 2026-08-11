@@ -48,6 +48,7 @@
 #include "rt_path3d.h"
 #include "rt_physics3d.h"
 #include "rt_pixels.h"
+#include "rt_pixels_internal.h"
 #include "rt_platform.h"
 #include "rt_postfx3d.h"
 #include "rt_quat.h"
@@ -1654,8 +1655,10 @@ static bool test_world_entity_registry_and_collision_clear() {
         "World3D.setSkybox rejects non-CubeMap3D handles");
     void *sky_px = rt_pixels_new(1, 1);
     rt_pixels_set(sky_px, 0, 0, 0xFFFFFFFF);
-    void *bad_skybox = rt_cubemap3d_new(sky_px, sky_px, sky_px, sky_px, sky_px, sky_px);
-    ((rt_cubemap3d *)bad_skybox)->face_size = 2;
+    void *bad_sky_px = rt_pixels_new(1, 1);
+    void *bad_skybox =
+        rt_cubemap3d_new(bad_sky_px, bad_sky_px, bad_sky_px, bad_sky_px, bad_sky_px, bad_sky_px);
+    ((rt_pixels_impl *)bad_sky_px)->width = 2;
     EXPECT_TRUE(
         expect_trap_contains([&] { rt_game3d_world_set_skybox(world, bad_skybox); }, "CubeMap3D"),
         "World3D.setSkybox rejects incomplete CubeMap3D handles");
@@ -1677,11 +1680,12 @@ static bool test_world_entity_registry_and_collision_clear() {
         EXPECT_TRUE(
             expect_trap_contains([&] { rt_game3d_world_set_skybox(world, parent); }, "CubeMap3D"),
             "World3D.setSkybox still rejects non-CubeMap3D replacements");
-        EXPECT_TRUE(canvas_state->skybox == nullptr,
-                    "World3D.setSkybox repairs a stale bound canvas skybox before rejecting");
-        EXPECT_TRUE(canvas_state->skybox_cpu_cache == nullptr &&
-                        canvas_state->skybox_cpu_cache_generation == 0,
-                    "World3D.setSkybox invalidates stale skybox CPU cache during repair");
+        EXPECT_TRUE(canvas_state->skybox == (rt_cubemap3d *)good_skybox &&
+                        ((rt_cubemap3d *)good_skybox)->face_size == 1,
+                    "World3D.setSkybox repairs a recoverable bound skybox before rejecting");
+        EXPECT_TRUE(canvas_state->skybox_cpu_cache != nullptr &&
+                        canvas_state->skybox_cpu_cache_generation == 7,
+                    "World3D.setSkybox preserves the repaired skybox CPU cache");
     }
     EXPECT_EQ_INT(rt_scene3d_get_node_count(rt_game3d_world_get_scene(world)),
                   4,

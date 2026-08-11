@@ -12,13 +12,14 @@
 // Key invariants:
 //   - All 6 faces must be square and the same dimensions
 //   - Faces are retained Pixels objects while the cubemap is alive.
+//   - Mutable face/IBL mirrors are restored from authoritative retained identities.
 //   - Face order: +X, -X, +Y, -Y, +Z, -Z
 //   - Per-cubemap `cache_identity` is unique within a process and skips zero
 //     so callers can use 0 as "no identity yet".
 //
 // Ownership/Lifetime:
 //   - CubeMap3D is GC-managed; finalizer releases each face Pixels reference.
-//   - Faces are retained on construction and held for the cubemap's lifetime.
+//   - Source and generated faces are released only through their authoritative owner slots.
 //   - Canvas/Material env-map setters retain/release the cubemap on assign.
 //
 // Links: rt_canvas3d.h, rt_canvas3d_internal.h, plans/3d/11-cube-maps.md
@@ -101,6 +102,8 @@ typedef struct cubemap_sample_view {
     rt_pixels_impl *faces[6];
 } cubemap_sample_view;
 
+static int cubemap_repair_state(rt_cubemap3d *cm);
+
 /// @brief Validate a cubemap and cache its six borrowed Pixels implementations.
 /// @param cm Candidate cubemap to inspect.
 /// @param out Output view populated only with live, matching square faces.
@@ -108,7 +111,7 @@ typedef struct cubemap_sample_view {
 static int cubemap_sample_view_init(const rt_cubemap3d *cm, cubemap_sample_view *out) {
     int64_t face_size;
 
-    if (!out || !cubemap_handle_valid(cm))
+    if (!out || !cubemap_repair_state((rt_cubemap3d *)(uintptr_t)cm))
         return 0;
     face_size = cm->face_size;
     if (face_size <= 0 || face_size > CUBEMAP3D_MAX_FACE_SIZE || cm->cache_identity == 0)
@@ -159,6 +162,130 @@ static void cubemap_release_face_slot(void **slot) {
         return;
     }
     cubemap_release_ref(slot);
+}
+
+/// @brief Clear every mutable IBL field without releasing substituted mirrors.
+static void cubemap_clear_ibl_mirrors(rt_cubemap3d *cm) {
+    if (!cm)
+        return;
+    for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++)
+        for (int f = 0; f < 6; f++)
+            cm->ibl_mips[m][f] = NULL;
+    for (int i = 0; i < 27; i++)
+        cm->ibl_sh[i] = 0.0f;
+    cm->ibl_mip_count = 0;
+    cm->ibl_base_size = 0;
+    cm->ibl_ready = 0;
+    cm->ibl_identity = 0;
+}
+
+/// @brief Release the authoritative generated IBL faces and reset both state copies.
+static void cubemap_release_owned_ibl(rt_cubemap3d *cm) {
+    if (!cm)
+        return;
+    cubemap_clear_ibl_mirrors(cm);
+    for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++) {
+        for (int f = 0; f < 6; f++)
+            cubemap_release_ref(&cm->owned_ibl_mips[m][f]);
+    }
+    for (int i = 0; i < 27; i++)
+        cm->owned_ibl_sh[i] = 0.0f;
+    cm->owned_ibl_mip_count = 0;
+    cm->owned_ibl_base_size = 0;
+    cm->owned_ibl_ready = 0;
+    cm->owned_ibl_identity = 0;
+}
+
+/// @brief Return the fixed prefilter base size for one validated source allocation.
+static int cubemap_expected_ibl_base(int64_t face_size) {
+    int base = face_size < 128 ? (int)face_size : 128;
+    return base < 4 ? 4 : base;
+}
+
+/// @brief Return the number of retained levels for a prefilter base dimension.
+static int cubemap_expected_ibl_mips(int base) {
+    int mips = 1;
+    while (mips < RT_CUBEMAP3D_IBL_MAX_MIPS && (base >> mips) >= 4)
+        mips++;
+    return mips;
+}
+
+/// @brief Validate every authoritative IBL face and its immutable generation metadata.
+static int cubemap_owned_ibl_valid(const rt_cubemap3d *cm) {
+    int expected_base;
+    int expected_mips;
+    if (!cm || cm->owned_ibl_ready != 1 || cm->owned_ibl_identity == 0)
+        return 0;
+    expected_base = cubemap_expected_ibl_base(cm->allocation_face_size);
+    expected_mips = cubemap_expected_ibl_mips(expected_base);
+    if (cm->owned_ibl_base_size != expected_base || cm->owned_ibl_mip_count != expected_mips)
+        return 0;
+    for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++) {
+        for (int f = 0; f < 6; f++) {
+            void *pixels = cm->owned_ibl_mips[m][f];
+            if (m < expected_mips) {
+                rt_pixels_impl *pv = cubemap_face_pixels_impl(pixels);
+                int expected_size = expected_base >> m;
+                if (!pv || pv->width != expected_size || pv->height != expected_size)
+                    return 0;
+            } else if (pixels) {
+                return 0;
+            }
+        }
+    }
+    for (int i = 0; i < 27; i++) {
+        if (!isfinite(cm->owned_ibl_sh[i]))
+            return 0;
+    }
+    return 1;
+}
+
+/// @brief Restore source and generated mirrors from authoritative cubemap ownership state.
+static int cubemap_repair_state(rt_cubemap3d *cm) {
+    if (!cubemap_handle_valid(cm) || cm->allocation_face_size <= 0 ||
+        cm->allocation_face_size > CUBEMAP3D_MAX_FACE_SIZE || cm->allocation_cache_identity == 0)
+        return 0;
+    for (int f = 0; f < 6; f++) {
+        rt_pixels_impl *pv = cubemap_face_pixels_impl(cm->owned_faces[f]);
+        if (!pv || pv->width != cm->allocation_face_size || pv->height != cm->allocation_face_size)
+            return 0;
+    }
+    cm->face_size = cm->allocation_face_size;
+    cm->cache_identity = cm->allocation_cache_identity;
+    for (int f = 0; f < 6; f++)
+        cm->faces[f] = cm->owned_faces[f];
+
+    if (cm->owned_ibl_ready == 0) {
+        int has_owned_payload = cm->owned_ibl_mip_count != 0 || cm->owned_ibl_base_size != 0 ||
+                                cm->owned_ibl_identity != 0;
+        for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS && !has_owned_payload; m++)
+            for (int f = 0; f < 6; f++)
+                has_owned_payload |= cm->owned_ibl_mips[m][f] != NULL;
+        if (has_owned_payload)
+            cubemap_release_owned_ibl(cm);
+        else
+            cubemap_clear_ibl_mirrors(cm);
+        return 1;
+    }
+    if (!cubemap_owned_ibl_valid(cm)) {
+        cubemap_release_owned_ibl(cm);
+        return 1;
+    }
+    for (int i = 0; i < 27; i++)
+        cm->ibl_sh[i] = cm->owned_ibl_sh[i];
+    for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++)
+        for (int f = 0; f < 6; f++)
+            cm->ibl_mips[m][f] = cm->owned_ibl_mips[m][f];
+    cm->ibl_mip_count = cm->owned_ibl_mip_count;
+    cm->ibl_base_size = cm->owned_ibl_base_size;
+    cm->ibl_ready = 1;
+    cm->ibl_identity = cm->owned_ibl_identity;
+    return 1;
+}
+
+/// @brief Validate and repair a cubemap for renderer translation units.
+int rt_cubemap3d_repair_internal(void *cubemap) {
+    return cubemap_repair_state((rt_cubemap3d *)cubemap);
 }
 
 /// @brief Return a process-unique nonzero cache identity for skybox/env-map invalidation.
@@ -243,13 +370,11 @@ static void cubemap_finalize(void *obj) {
     rt_cubemap3d *cm = (rt_cubemap3d *)obj;
     if (!cm)
         return;
-    for (int i = 0; i < 6; i++)
-        cubemap_release_face_slot(&cm->faces[i]);
-    for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++)
-        for (int f = 0; f < 6; f++)
-            cubemap_release_face_slot(&cm->ibl_mips[m][f]);
-    cm->ibl_mip_count = 0;
-    cm->ibl_ready = 0;
+    for (int i = 0; i < 6; i++) {
+        cm->faces[i] = NULL;
+        cubemap_release_ref(&cm->owned_faces[i]);
+    }
+    cubemap_release_owned_ibl(cm);
 }
 
 /// @brief Convert a 3D direction vector into a cubemap face index plus UV.
@@ -1021,19 +1146,30 @@ void *rt_cubemap3d_new(void *px, void *nx, void *py, void *ny, void *pz, void *n
     cm->vptr = NULL;
     for (int i = 0; i < 6; i++) {
         rt_obj_retain_maybe(faces[i]);
+        cm->owned_faces[i] = faces[i];
         cm->faces[i] = faces[i];
     }
     cm->face_size = size;
     cm->cache_identity = cubemap_next_cache_identity();
-    for (int i = 0; i < 27; i++)
+    cm->allocation_face_size = size;
+    cm->allocation_cache_identity = cm->cache_identity;
+    for (int i = 0; i < 27; i++) {
         cm->ibl_sh[i] = 0.0f;
+        cm->owned_ibl_sh[i] = 0.0f;
+    }
     for (int m = 0; m < RT_CUBEMAP3D_IBL_MAX_MIPS; m++)
-        for (int f = 0; f < 6; f++)
+        for (int f = 0; f < 6; f++) {
             cm->ibl_mips[m][f] = NULL;
+            cm->owned_ibl_mips[m][f] = NULL;
+        }
     cm->ibl_mip_count = 0;
     cm->ibl_base_size = 0;
     cm->ibl_ready = 0;
     cm->ibl_identity = 0;
+    cm->owned_ibl_mip_count = 0;
+    cm->owned_ibl_base_size = 0;
+    cm->owned_ibl_ready = 0;
+    cm->owned_ibl_identity = 0;
     rt_obj_set_finalizer(cm, cubemap_finalize);
     return cm;
 }
@@ -1883,6 +2019,8 @@ static int cubemap_prefilter_level(const cubemap_ibl_source *source,
 int rt_cubemap3d_ensure_ibl(void *cubemap) {
     rt_cubemap3d *cm = (rt_cubemap3d *)cubemap;
     cubemap_ibl_source source;
+    void *generated[RT_CUBEMAP3D_IBL_MAX_MIPS][6] = {{NULL}};
+    float generated_sh[27];
     void *worker_pool = NULL;
     int base;
     int mips;
@@ -1894,27 +2032,21 @@ int rt_cubemap3d_ensure_ibl(void *cubemap) {
     if (!cubemap_ibl_source_init(cm, &source))
         return 0;
 
-    base = cm->face_size < 128 ? (int)cm->face_size : 128;
-    if (base < 4)
-        base = 4;
-    mips = 1;
-    while (mips < RT_CUBEMAP3D_IBL_MAX_MIPS && (base >> mips) >= 4)
-        mips++;
+    base = cubemap_expected_ibl_base(cm->allocation_face_size);
+    mips = cubemap_expected_ibl_mips(base);
 
     if (base >= 64 && !rt_threadpool_current_worker_pool() && rt_parallel_default_workers() > 1)
         worker_pool = rt_parallel_default_pool();
 
-    cubemap_project_sh9(&source, cm->ibl_sh);
+    cubemap_project_sh9(&source, generated_sh);
     for (int m = 0; m < mips; m++) {
         float roughness = mips > 1 ? (float)m / (float)(mips - 1) : 0.0f;
         int size = base >> m;
 
-        if (!cubemap_prefilter_level(&source, roughness, size, cm->ibl_mips[m], worker_pool)) {
-            for (int mm = 0; mm <= m; mm++)
+        if (!cubemap_prefilter_level(&source, roughness, size, generated[m], worker_pool)) {
+            for (int mm = 0; mm < RT_CUBEMAP3D_IBL_MAX_MIPS; mm++)
                 for (int f = 0; f < 6; f++)
-                    cubemap_release_face_slot(&cm->ibl_mips[mm][f]);
-            for (int i = 0; i < 27; i++)
-                cm->ibl_sh[i] = 0.0f;
+                    cubemap_release_ref(&generated[mm][f]);
             if (worker_pool && rt_obj_release_check0(worker_pool))
                 rt_obj_free(worker_pool);
             return 0;
@@ -1922,9 +2054,24 @@ int rt_cubemap3d_ensure_ibl(void *cubemap) {
     }
     if (worker_pool && rt_obj_release_check0(worker_pool))
         rt_obj_free(worker_pool);
-    cm->ibl_mip_count = mips;
-    cm->ibl_base_size = base;
-    cm->ibl_identity = cubemap_next_cache_identity();
+
+    for (int i = 0; i < 27; i++) {
+        cm->owned_ibl_sh[i] = generated_sh[i];
+        cm->ibl_sh[i] = generated_sh[i];
+    }
+    for (int m = 0; m < mips; m++) {
+        for (int f = 0; f < 6; f++) {
+            cm->owned_ibl_mips[m][f] = generated[m][f];
+            cm->ibl_mips[m][f] = generated[m][f];
+        }
+    }
+    cm->owned_ibl_mip_count = mips;
+    cm->owned_ibl_base_size = base;
+    cm->owned_ibl_identity = cubemap_next_cache_identity();
+    cm->owned_ibl_ready = 1;
+    cm->ibl_mip_count = cm->owned_ibl_mip_count;
+    cm->ibl_base_size = cm->owned_ibl_base_size;
+    cm->ibl_identity = cm->owned_ibl_identity;
     cm->ibl_ready = 1;
     return 1;
 }
@@ -1962,7 +2109,8 @@ void rt_cubemap_sample_ibl(const rt_cubemap3d *cm,
 
     if (!out_r || !out_g || !out_b)
         return;
-    if (!cubemap_handle_valid(cm) || !cm->ibl_ready || cm->ibl_mip_count <= 0) {
+    if (!cubemap_repair_state((rt_cubemap3d *)(uintptr_t)cm) || !cm->ibl_ready ||
+        cm->ibl_mip_count <= 0) {
         rt_cubemap_sample_roughness(cm, dx, dy, dz, roughness, out_r, out_g, out_b);
         return;
     }

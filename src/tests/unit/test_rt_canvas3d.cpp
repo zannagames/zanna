@@ -5465,7 +5465,7 @@ static void test_cubemap_new() {
 }
 
 static void test_canvas_set_skybox_repairs_stale_existing_slot() {
-    TEST("Canvas3D.SetSkybox repairs stale existing skybox before rejecting replacement");
+    TEST("Canvas3D.SetSkybox repairs existing skybox before rejecting replacement");
     rt_canvas3d canvas = {};
     void *px = rt_pixels_new(1, 1);
     void *cm = rt_cubemap3d_new(px, px, px, px, px, px);
@@ -5486,10 +5486,12 @@ static void test_canvas_set_skybox_repairs_stale_existing_slot() {
 
     rt_canvas3d_set_skybox(&canvas, wrong);
 
-    EXPECT_TRUE(canvas.skybox == nullptr,
-                "Stale skybox slot is cleared even when replacement is invalid");
-    EXPECT_TRUE(canvas.skybox_cpu_cache == nullptr && canvas.skybox_cpu_cache_generation == 0,
-                "Clearing a stale skybox invalidates the CPU skybox cache");
+    EXPECT_TRUE(canvas.skybox == (rt_cubemap3d *)cm && ((rt_cubemap3d *)cm)->face_size == 1,
+                "Recoverable skybox metadata is repaired before replacement validation");
+    EXPECT_TRUE(canvas.skybox_cpu_cache != nullptr && canvas.skybox_cpu_cache_generation == 123,
+                "Repairing immutable skybox metadata preserves its matching CPU cache");
+    free(canvas.skybox_cpu_cache);
+    canvas.skybox_cpu_cache = nullptr;
     PASS();
 }
 
@@ -5866,8 +5868,8 @@ static void test_rendertarget_dimensions() {
     EXPECT_EQ(rt_rendertarget3d_get_height(rt), 64);
     rt->width = -128;
     rt->height = -64;
-    EXPECT_EQ(rt_rendertarget3d_get_width(rt), 0);
-    EXPECT_EQ(rt_rendertarget3d_get_height(rt), 0);
+    EXPECT_EQ(rt_rendertarget3d_get_width(rt), 128);
+    EXPECT_EQ(rt_rendertarget3d_get_height(rt), 64);
     PASS();
 }
 
@@ -5913,6 +5915,61 @@ static void test_rendertarget_null_safety() {
     assert(rt_rendertarget3d_as_pixels(NULL) == NULL);
     rt_canvas3d_set_render_target(NULL, NULL);
     rt_canvas3d_reset_render_target(NULL);
+    PASS();
+}
+
+static void test_rendertarget_repairs_wrapper_and_cache_mirrors() {
+    TEST("RenderTarget3D repairs wrapper and material-cache mirrors");
+    auto *rt = static_cast<rt_rendertarget3d *>(rt_rendertarget3d_new(2, 3));
+    assert(rt && rt->target && rt->owned_target);
+    vgfx3d_rendertarget_t *owned_target = rt->owned_target;
+    vgfx3d_rendertarget_t substituted = {};
+    substituted.width = 7;
+    substituted.height = 5;
+    substituted.stride = 28;
+    substituted.color_format = VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F;
+    substituted.cache_identity = 99;
+    substituted.estimated_bytes = 1;
+    rt->target = &substituted;
+    rt->width = -2;
+    rt->height = INT64_MAX;
+    owned_target->width = -8;
+    owned_target->height = 9;
+    owned_target->stride = 1;
+    owned_target->color_format = 77;
+    owned_target->cache_identity = 0;
+    owned_target->estimated_bytes = 0;
+
+    EXPECT_EQ(rt_rendertarget3d_get_width(rt), 2);
+    EXPECT_EQ(rt_rendertarget3d_get_height(rt), 3);
+    EXPECT_TRUE(rt->target == owned_target,
+                "RenderTarget3D restores the authoritative backing-shell pointer");
+    EXPECT_EQ(owned_target->stride, 8);
+    EXPECT_TRUE(owned_target->color_format == VGFX3D_RENDERTARGET_COLOR_FORMAT_UNORM8,
+                "RenderTarget3D restores the allocation color format");
+    EXPECT_TRUE(owned_target->estimated_bytes == rt->allocation_estimated_bytes,
+                "RenderTarget3D restores reservation accounting metadata");
+    EXPECT_TRUE(owned_target->cache_identity == rt->allocation_cache_identity,
+                "RenderTarget3D restores its nonzero backend cache identity");
+    EXPECT_TRUE(rt_rendertarget3d_as_pixels(rt) != nullptr,
+                "RenderTarget3D.AsPixels uses the repaired backing shell");
+    std::vector<uint8_t> rgba(2u * 3u * 4u);
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, rgba.data(), 2, 3) == 1,
+                "RenderTarget3D.TryReadRgba uses the repaired backing shell");
+
+    void *cached = rt_rendertarget3d_material_pixels(rt);
+    void *wrong = rt_vec3_new(0.0, 0.0, 0.0);
+    assert(cached && wrong && rt->owned_material_pixels == cached);
+    rt->material_pixels = wrong;
+    EXPECT_TRUE(rt_rendertarget3d_material_pixels(rt) == cached,
+                "RenderTarget3D restores the authoritative material Pixels mirror");
+    auto *cached_impl = static_cast<rt_pixels_impl *>(cached);
+    cached_impl->width = 99;
+    void *rebuilt = rt_rendertarget3d_material_pixels(rt);
+    EXPECT_TRUE(rebuilt != nullptr && rt->owned_material_pixels == rebuilt,
+                "RenderTarget3D rebuilds a malformed owned material Pixels cache");
+    EXPECT_EQ(rt_pixels_width(rebuilt), 2);
+    EXPECT_EQ(rt_pixels_height(rebuilt), 3);
     PASS();
 }
 
@@ -7201,8 +7258,9 @@ static void test_rendertarget_rejects_malformed_buffer_layouts() {
     EXPECT_TRUE(vgfx3d_rendertarget_ensure_color(rt->target) != 0,
                 "AsPixels malformed-layout test allocates color");
     rt->target->stride = 4;
-    EXPECT_TRUE(rt_rendertarget3d_as_pixels(rt) == nullptr,
-                "AsPixels refuses an existing color buffer with invalid stride");
+    EXPECT_TRUE(rt_rendertarget3d_as_pixels(rt) != nullptr,
+                "AsPixels repairs a wrapper-owned color buffer with invalid stride");
+    EXPECT_EQ(rt->target->stride, 8);
     PASS();
 }
 
@@ -11451,6 +11509,7 @@ int main() {
     test_rendertarget_as_pixels();
     test_rendertarget_try_read_rgba();
     test_rendertarget_null_safety();
+    test_rendertarget_repairs_wrapper_and_cache_mirrors();
     test_rendertarget_as_pixels_syncs_gpu_color_on_demand();
     test_rendertarget_clear_sync_detaches_backend_callback();
     test_rendertarget_rejects_malformed_buffer_layouts();

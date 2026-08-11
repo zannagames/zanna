@@ -1498,7 +1498,7 @@ static void test_incomplete_cubemaps_are_not_forwarded(void) {
     void *px = rt_pixels_new(1, 1);
     rt_pixels_set(px, 0, 0, 0xFF0000FF);
     void *cubemap = rt_cubemap3d_new(px, px, px, px, px, px);
-    ((rt_cubemap3d *)cubemap)->face_size = 2;
+    ((rt_pixels_impl *)px)->width = 2;
     EXPECT_TRUE(rt_cubemap3d_is_complete(cubemap) == 0,
                 "CubeMap3D completeness rejects mismatched face sizes");
 
@@ -1510,11 +1510,13 @@ static void test_incomplete_cubemaps_are_not_forwarded(void) {
 
     init_fake_canvas(&canvas, &backend);
     canvas.backend_ctx = &canvas;
-    void *bound_cubemap = rt_cubemap3d_new(px, px, px, px, px, px);
+    void *bound_px = rt_pixels_new(1, 1);
+    void *bound_cubemap =
+        rt_cubemap3d_new(bound_px, bound_px, bound_px, bound_px, bound_px, bound_px);
     rt_canvas3d_set_skybox(&canvas, bound_cubemap);
     EXPECT_TRUE(rt_heap_hdr(bound_cubemap)->refcnt == 2,
                 "Canvas3D.SetSkybox retains a complete cubemap");
-    ((rt_cubemap3d *)bound_cubemap)->face_size = 2;
+    ((rt_pixels_impl *)bound_px)->width = 2;
     skybox_draw_calls = 0;
     rt_canvas3d_end(&canvas);
     EXPECT_TRUE(skybox_draw_calls == 0, "Canvas3D.End rejects skyboxes corrupted after binding");
@@ -1580,7 +1582,7 @@ static void test_material_repairs_wrong_class_private_refs_without_release(void)
     rt_material3d_set_env_map(material, cubemap);
     EXPECT_TRUE(rt_heap_hdr(cubemap)->refcnt == 2,
                 "Material3D.SetEnvMap retains a complete cubemap");
-    ((rt_cubemap3d *)cubemap)->face_size = 2;
+    ((rt_pixels_impl *)px)->width = 2;
     EXPECT_TRUE(rt_material3d_get_has_env_map(material) == 0,
                 "Material3D.GetHasEnvMap rejects cubemaps corrupted after assignment");
     EXPECT_TRUE(mat->env_map == nullptr,
@@ -1601,8 +1603,8 @@ static void test_cubemap_finalizer_skips_wrong_class_private_faces(void) {
     rt_obj_retain_maybe(wrong);
     size_t wrong_refcnt = rt_heap_hdr(wrong)->refcnt;
     ((rt_cubemap3d *)cubemap)->faces[2] = wrong;
-    EXPECT_TRUE(rt_cubemap3d_is_complete(cubemap) == 0,
-                "CubeMap3D completeness rejects wrong-class private face refs");
+    EXPECT_TRUE(rt_cubemap3d_is_complete(cubemap) == 1 && ((rt_cubemap3d *)cubemap)->faces[2] == px,
+                "CubeMap3D completeness repairs wrong-class private face mirrors");
     if (rt_obj_release_check0(cubemap))
         rt_obj_free(cubemap);
     EXPECT_TRUE(rt_heap_hdr(wrong)->refcnt == wrong_refcnt,

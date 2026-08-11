@@ -82,6 +82,46 @@ static void joint3d_release_body_ref(rt_body3d_kinematics **slot) {
     rt_g3d_ref_slot_release_class((void **)slot, RT_G3D_BODY3D_CLASS_ID);
 }
 
+/// @brief Restore mutable body mirrors from the two retained ownership identities.
+/// @param[in,out] body_a Public first-body mirror.
+/// @param[in,out] body_b Public second-body mirror.
+/// @param owned_body_a Immutable retained first-body identity.
+/// @param owned_body_b Immutable retained second-body identity.
+/// @return One when both owners are live Body3D objects; zero after clearing unusable mirrors.
+static int joint3d_repair_body_pair(rt_body3d_kinematics **body_a,
+                                    rt_body3d_kinematics **body_b,
+                                    rt_body3d_kinematics *owned_body_a,
+                                    rt_body3d_kinematics *owned_body_b) {
+    if (!body_a || !body_b)
+        return 0;
+    if (!rt_g3d_has_class(owned_body_a, RT_G3D_BODY3D_CLASS_ID) ||
+        !rt_g3d_has_class(owned_body_b, RT_G3D_BODY3D_CLASS_ID)) {
+        *body_a = NULL;
+        *body_b = NULL;
+        return 0;
+    }
+    *body_a = owned_body_a;
+    *body_b = owned_body_b;
+    return 1;
+}
+
+/// @brief Release the authoritative retained body pair and clear both public mirrors.
+/// @param[in,out] body_a Public first-body mirror.
+/// @param[in,out] body_b Public second-body mirror.
+/// @param[in,out] owned_body_a Authoritative first-body ownership slot.
+/// @param[in,out] owned_body_b Authoritative second-body ownership slot.
+static void joint3d_release_owned_body_pair(rt_body3d_kinematics **body_a,
+                                            rt_body3d_kinematics **body_b,
+                                            rt_body3d_kinematics **owned_body_a,
+                                            rt_body3d_kinematics **owned_body_b) {
+    if (body_a)
+        *body_a = NULL;
+    if (body_b)
+        *body_b = NULL;
+    joint3d_release_body_ref(owned_body_a);
+    joint3d_release_body_ref(owned_body_b);
+}
+
 /*==========================================================================
  * Distance Joint
  *=========================================================================*/
@@ -91,7 +131,17 @@ typedef struct {
     rt_body3d_kinematics *body_a;
     rt_body3d_kinematics *body_b;
     double target_distance;
+    rt_body3d_kinematics *owned_body_a;
+    rt_body3d_kinematics *owned_body_b;
 } rt_distance_joint3d;
+
+/// @brief Repair a distance joint's body mirrors and target distance.
+static int distance_joint_repair(rt_distance_joint3d *j) {
+    if (!j)
+        return 0;
+    j->target_distance = joint3d_sanitize_nonnegative(j->target_distance);
+    return joint3d_repair_body_pair(&j->body_a, &j->body_b, j->owned_body_a, j->owned_body_b);
+}
 
 /// @brief GC finalizer — release the bodies retained by this distance joint.
 /// @param obj DistanceJoint3D payload being finalized.
@@ -99,8 +149,7 @@ static void distance_joint_finalizer(void *obj) {
     rt_distance_joint3d *j = (rt_distance_joint3d *)obj;
     if (!j)
         return;
-    joint3d_release_body_ref(&j->body_a);
-    joint3d_release_body_ref(&j->body_b);
+    joint3d_release_owned_body_pair(&j->body_a, &j->body_b, &j->owned_body_a, &j->owned_body_b);
 }
 
 /// @brief Create a distance joint that constrains two bodies to a fixed separation.
@@ -126,6 +175,8 @@ void *rt_distance_joint3d_new(void *body_a, void *body_b, double distance) {
     j->vptr = NULL;
     j->body_a = (rt_body3d_kinematics *)body_a;
     j->body_b = (rt_body3d_kinematics *)body_b;
+    j->owned_body_a = j->body_a;
+    j->owned_body_b = j->body_b;
     rt_obj_retain_maybe(body_a);
     rt_obj_retain_maybe(body_b);
     j->target_distance = joint3d_sanitize_nonnegative(distance);
@@ -139,7 +190,10 @@ void *rt_distance_joint3d_new(void *body_a, void *body_b, double distance) {
 double rt_distance_joint3d_get_distance(void *joint) {
     rt_distance_joint3d *j =
         (rt_distance_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_DISTANCEJOINT3D_CLASS_ID);
-    return j ? j->target_distance : 0;
+    if (!j)
+        return 0.0;
+    j->target_distance = joint3d_sanitize_nonnegative(j->target_distance);
+    return j->target_distance;
 }
 
 /// @brief Change the target distance of a distance joint at runtime.
@@ -252,7 +306,19 @@ typedef struct {
     double rest_length;
     double stiffness;
     double damping;
+    rt_body3d_kinematics *owned_body_a;
+    rt_body3d_kinematics *owned_body_b;
 } rt_spring_joint3d;
+
+/// @brief Repair a spring joint's body mirrors and scalar configuration.
+static int spring_joint_repair(rt_spring_joint3d *j) {
+    if (!j)
+        return 0;
+    j->rest_length = joint3d_sanitize_nonnegative(j->rest_length);
+    j->stiffness = joint3d_sanitize_nonnegative(j->stiffness);
+    j->damping = joint3d_sanitize_nonnegative(j->damping);
+    return joint3d_repair_body_pair(&j->body_a, &j->body_b, j->owned_body_a, j->owned_body_b);
+}
 
 /// @brief GC finalizer — release the bodies retained by this spring joint.
 /// @param obj SpringJoint3D payload being finalized.
@@ -260,8 +326,7 @@ static void spring_joint_finalizer(void *obj) {
     rt_spring_joint3d *j = (rt_spring_joint3d *)obj;
     if (!j)
         return;
-    joint3d_release_body_ref(&j->body_a);
-    joint3d_release_body_ref(&j->body_b);
+    joint3d_release_owned_body_pair(&j->body_a, &j->body_b, &j->owned_body_a, &j->owned_body_b);
 }
 
 /// @brief Create a spring joint that applies Hooke's law forces between two bodies.
@@ -290,6 +355,8 @@ void *rt_spring_joint3d_new(
     j->vptr = NULL;
     j->body_a = (rt_body3d_kinematics *)body_a;
     j->body_b = (rt_body3d_kinematics *)body_b;
+    j->owned_body_a = j->body_a;
+    j->owned_body_b = j->body_b;
     rt_obj_retain_maybe(body_a);
     rt_obj_retain_maybe(body_b);
     j->rest_length = joint3d_sanitize_nonnegative(rest_length);
@@ -305,7 +372,10 @@ void *rt_spring_joint3d_new(
 double rt_spring_joint3d_get_stiffness(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
-    return j ? j->stiffness : 0;
+    if (!j)
+        return 0.0;
+    j->stiffness = joint3d_sanitize_nonnegative(j->stiffness);
+    return j->stiffness;
 }
 
 /// @brief Set the spring constant k at runtime.
@@ -324,7 +394,10 @@ void rt_spring_joint3d_set_stiffness(void *joint, double stiffness) {
 double rt_spring_joint3d_get_damping(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
-    return j ? j->damping : 0;
+    if (!j)
+        return 0.0;
+    j->damping = joint3d_sanitize_nonnegative(j->damping);
+    return j->damping;
 }
 
 /// @brief Set the velocity damping coefficient at runtime.
@@ -343,7 +416,10 @@ void rt_spring_joint3d_set_damping(void *joint, double damping) {
 double rt_spring_joint3d_get_rest_length(void *joint) {
     rt_spring_joint3d *j =
         (rt_spring_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
-    return j ? j->rest_length : 0;
+    if (!j)
+        return 0.0;
+    j->rest_length = joint3d_sanitize_nonnegative(j->rest_length);
+    return j->rest_length;
 }
 
 /// @brief Integrate spring + damping forces into both bodies' velocities.
@@ -431,7 +507,43 @@ typedef struct {
     int8_t has_limits;
     double angle_min;
     double angle_max;
+    rt_body3d_kinematics *owned_body_a;
+    rt_body3d_kinematics *owned_body_b;
 } rt_hinge_joint3d;
+
+/// @brief Repair a hinge joint's retained bodies, basis, flags, and motor/limit state.
+static int hinge_joint_repair(rt_hinge_joint3d *j) {
+    if (!j)
+        return 0;
+    if (!joint3d_repair_body_pair(&j->body_a, &j->body_b, j->owned_body_a, j->owned_body_b))
+        return 0;
+    joint3d_vec3_sanitize(j->local_anchor_a);
+    joint3d_vec3_sanitize(j->local_anchor_b);
+    if (!joint3d_vec3_normalize(j->local_axis_a))
+        joint3d_vec3_set(j->local_axis_a, 0.0, 1.0, 0.0);
+    if (!joint3d_vec3_normalize(j->ref_perp_a))
+        joint3d_vec3_set(j->ref_perp_a, 1.0, 0.0, 0.0);
+    if (!joint3d_vec3_normalize(j->ref_perp_b))
+        joint3d_vec3_set(j->ref_perp_b, 1.0, 0.0, 0.0);
+    j->motor_enabled = j->motor_enabled ? 1 : 0;
+    j->motor_target_velocity = joint3d_clamp_force(j->motor_target_velocity);
+    j->motor_max_impulse = joint3d_sanitize_nonnegative(j->motor_max_impulse);
+    j->has_limits = j->has_limits ? 1 : 0;
+    if (!isfinite(j->angle_min) || !isfinite(j->angle_max)) {
+        j->has_limits = 0;
+        j->angle_min = 0.0;
+        j->angle_max = 0.0;
+    } else {
+        j->angle_min = joint3d_clamp_force(j->angle_min);
+        j->angle_max = joint3d_clamp_force(j->angle_max);
+        if (j->angle_min > j->angle_max) {
+            double swap = j->angle_min;
+            j->angle_min = j->angle_max;
+            j->angle_max = swap;
+        }
+    }
+    return 1;
+}
 
 /// @brief GC finalizer: release the hinge's two retained body references.
 /// @param obj HingeJoint3D payload being finalized.
@@ -439,8 +551,7 @@ static void hinge_joint_finalizer(void *obj) {
     rt_hinge_joint3d *j = (rt_hinge_joint3d *)obj;
     if (!j)
         return;
-    joint3d_release_body_ref(&j->body_a);
-    joint3d_release_body_ref(&j->body_b);
+    joint3d_release_owned_body_pair(&j->body_a, &j->body_b, &j->owned_body_a, &j->owned_body_b);
 }
 
 /// @brief Create a hinge joint pinning two bodies at @p anchor and constraining rotation to @p
@@ -480,6 +591,8 @@ void *rt_hinge_joint3d_new(void *body_a, void *body_b, void *anchor, void *axis)
     j->vptr = NULL;
     j->body_a = (rt_body3d_kinematics *)body_a;
     j->body_b = (rt_body3d_kinematics *)body_b;
+    j->owned_body_a = j->body_a;
+    j->owned_body_b = j->body_b;
     joint3d_local_from_world(j->body_a, anchor_world, j->local_anchor_a);
     joint3d_local_from_world(j->body_b, anchor_world, j->local_anchor_b);
     joint3d_quat_conjugate(j->body_a->orientation, inv_a_rotation);
@@ -657,9 +770,11 @@ static void solve_hinge(rt_hinge_joint3d *j, double dt) {
 /// @param joint HingeJoint3D handle to inspect.
 /// @return Signed current angle in radians, or zero for an invalid handle.
 double rt_hinge_joint3d_get_angle(void *joint) {
-    if (!rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
+    rt_hinge_joint3d *j =
+        (rt_hinge_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_HINGEJOINT3D_CLASS_ID);
+    if (!hinge_joint_repair(j))
         return 0.0;
-    return hinge_joint_current_angle((const rt_hinge_joint3d *)joint);
+    return hinge_joint_current_angle(j);
 }
 
 /// @brief Constrain the hinge to [min, max] radians (swapped if reversed); the
@@ -714,7 +829,17 @@ typedef struct {
     rt_body3d_kinematics *body_a;
     rt_body3d_kinematics *body_b;
     double max_length;
+    rt_body3d_kinematics *owned_body_a;
+    rt_body3d_kinematics *owned_body_b;
 } rt_rope_joint3d;
+
+/// @brief Repair a rope joint's body mirrors and maximum length.
+static int rope_joint_repair(rt_rope_joint3d *j) {
+    if (!j)
+        return 0;
+    j->max_length = joint3d_sanitize_nonnegative(j->max_length);
+    return joint3d_repair_body_pair(&j->body_a, &j->body_b, j->owned_body_a, j->owned_body_b);
+}
 
 /// @brief GC finalizer: release the rope's two retained body references.
 /// @param obj RopeJoint3D payload being finalized.
@@ -722,8 +847,7 @@ static void rope_joint_finalizer(void *obj) {
     rt_rope_joint3d *j = (rt_rope_joint3d *)obj;
     if (!j)
         return;
-    joint3d_release_body_ref(&j->body_a);
-    joint3d_release_body_ref(&j->body_b);
+    joint3d_release_owned_body_pair(&j->body_a, &j->body_b, &j->owned_body_a, &j->owned_body_b);
 }
 
 /// @brief Create a rope joint limiting the distance between two bodies to @p max_length.
@@ -748,6 +872,8 @@ void *rt_rope_joint3d_new(void *body_a, void *body_b, double max_length) {
     j->vptr = NULL;
     j->body_a = (rt_body3d_kinematics *)body_a;
     j->body_b = (rt_body3d_kinematics *)body_b;
+    j->owned_body_a = j->body_a;
+    j->owned_body_b = j->body_b;
     j->max_length = joint3d_sanitize_nonnegative(max_length);
     rt_obj_retain_maybe(body_a);
     rt_obj_retain_maybe(body_b);
@@ -761,7 +887,10 @@ void *rt_rope_joint3d_new(void *body_a, void *body_b, double max_length) {
 double rt_rope_joint3d_get_max_length(void *joint) {
     rt_rope_joint3d *j =
         (rt_rope_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_ROPEJOINT3D_CLASS_ID);
-    return j ? j->max_length : 0.0;
+    if (!j)
+        return 0.0;
+    j->max_length = joint3d_sanitize_nonnegative(j->max_length);
+    return j->max_length;
 }
 
 /// @brief Set the rope's maximum length (sanitized non-negative).
@@ -849,7 +978,28 @@ typedef struct {
     int8_t linear_motor_enabled;
     double linear_motor_velocity[3];
     double linear_motor_max_impulse;
+    rt_body3d_kinematics *owned_body_a;
+    rt_body3d_kinematics *owned_body_b;
 } rt_sixdof_joint3d;
+
+/// @brief Repair a SixDof joint's retained bodies and solver/readback configuration.
+static int sixdof_joint_repair(rt_sixdof_joint3d *j) {
+    if (!j)
+        return 0;
+    if (!joint3d_repair_body_pair(&j->body_a, &j->body_b, j->owned_body_a, j->owned_body_b))
+        return 0;
+    joint3d_vec3_sanitize(j->local_anchor_a);
+    joint3d_vec3_sanitize(j->local_anchor_b);
+    joint3d_canonicalize_limits(j->linear_min, j->linear_max);
+    joint3d_canonicalize_limits(j->angular_min, j->angular_max);
+    joint3d_quat_normalize(j->reference_relative_orientation);
+    j->linear_motor_enabled = j->linear_motor_enabled ? 1 : 0;
+    j->linear_motor_velocity[0] = joint3d_clamp_force(j->linear_motor_velocity[0]);
+    j->linear_motor_velocity[1] = joint3d_clamp_force(j->linear_motor_velocity[1]);
+    j->linear_motor_velocity[2] = joint3d_clamp_force(j->linear_motor_velocity[2]);
+    j->linear_motor_max_impulse = joint3d_sanitize_nonnegative(j->linear_motor_max_impulse);
+    return 1;
+}
 
 /// @brief GC finalizer: release the 6DOF joint's two retained body references.
 /// @param obj SixDofJoint3D payload being finalized.
@@ -857,8 +1007,7 @@ static void sixdof_joint_finalizer(void *obj) {
     rt_sixdof_joint3d *j = (rt_sixdof_joint3d *)obj;
     if (!j)
         return;
-    joint3d_release_body_ref(&j->body_a);
-    joint3d_release_body_ref(&j->body_b);
+    joint3d_release_owned_body_pair(&j->body_a, &j->body_b, &j->owned_body_a, &j->owned_body_b);
 }
 
 /// @brief Create a 6-DOF joint anchoring two bodies at the translations of @p frame_a / @p frame_b.
@@ -893,6 +1042,8 @@ void *rt_sixdof_joint3d_new(void *body_a, void *body_b, void *frame_a, void *fra
     j->vptr = NULL;
     j->body_a = (rt_body3d_kinematics *)body_a;
     j->body_b = (rt_body3d_kinematics *)body_b;
+    j->owned_body_a = j->body_a;
+    j->owned_body_b = j->body_b;
     memcpy(j->local_anchor_a, local_anchor_a, sizeof(j->local_anchor_a));
     memcpy(j->local_anchor_b, local_anchor_b, sizeof(j->local_anchor_b));
     joint3d_vec3_set(j->linear_min, 0.0, 0.0, 0.0);
@@ -1020,10 +1171,10 @@ static void sixdof_joint_apply_pose_angle_velocity_stop(rt_sixdof_joint3d *j,
             continue;
         correction = joint3d_clamp_force(rel_axis / inv_sum);
         for (int k = 0; k < 3; k++) {
-            j->body_a->angular_velocity[k] = joint3d_clamp_force(
-                j->body_a->angular_velocity[k] + axis_world[k] * correction * w_a);
-            j->body_b->angular_velocity[k] = joint3d_clamp_force(
-                j->body_b->angular_velocity[k] - axis_world[k] * correction * w_b);
+            j->body_a->angular_velocity[k] = joint3d_clamp_force(j->body_a->angular_velocity[k] +
+                                                                 axis_world[k] * correction * w_a);
+            j->body_b->angular_velocity[k] = joint3d_clamp_force(j->body_b->angular_velocity[k] -
+                                                                 axis_world[k] * correction * w_b);
         }
     }
 }
@@ -1231,16 +1382,18 @@ int rt_joint3d_get_bodies(void *joint, int32_t joint_type, void **out_body_a, vo
         *out_body_b = NULL;
     if (!joint)
         return 0;
-    if (joint_type == RT_JOINT_DISTANCE)
-        matches = rt_g3d_has_class(joint, RT_G3D_DISTANCEJOINT3D_CLASS_ID);
-    else if (joint_type == RT_JOINT_SPRING)
-        matches = rt_g3d_has_class(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID);
-    else if (joint_type == RT_JOINT_HINGE)
-        matches = rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID);
-    else if (joint_type == RT_JOINT_ROPE)
-        matches = rt_g3d_has_class(joint, RT_G3D_ROPEJOINT3D_CLASS_ID);
-    else if (joint_type == RT_JOINT_SIXDOF)
-        matches = rt_g3d_has_class(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID);
+    if (joint_type == RT_JOINT_DISTANCE && rt_g3d_has_class(joint, RT_G3D_DISTANCEJOINT3D_CLASS_ID))
+        matches = distance_joint_repair((rt_distance_joint3d *)joint);
+    else if (joint_type == RT_JOINT_SPRING &&
+             rt_g3d_has_class(joint, RT_G3D_SPRINGJOINT3D_CLASS_ID))
+        matches = spring_joint_repair((rt_spring_joint3d *)joint);
+    else if (joint_type == RT_JOINT_HINGE && rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
+        matches = hinge_joint_repair((rt_hinge_joint3d *)joint);
+    else if (joint_type == RT_JOINT_ROPE && rt_g3d_has_class(joint, RT_G3D_ROPEJOINT3D_CLASS_ID))
+        matches = rope_joint_repair((rt_rope_joint3d *)joint);
+    else if (joint_type == RT_JOINT_SIXDOF &&
+             rt_g3d_has_class(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID))
+        matches = sixdof_joint_repair((rt_sixdof_joint3d *)joint);
     if (!matches)
         return 0;
     rt_joint3d_body_pair_view *pair = (rt_joint3d_body_pair_view *)joint;
@@ -1267,8 +1420,9 @@ void rt_joint3d_solve(void *joint, int32_t joint_type, double dt) {
     {
         void *gate_a = NULL;
         void *gate_b = NULL;
-        if (rt_joint3d_get_bodies(joint, joint_type, &gate_a, &gate_b) &&
-            !joint3d_pair_begin_solve((rt_body3d_kinematics *)gate_a,
+        if (!rt_joint3d_get_bodies(joint, joint_type, &gate_a, &gate_b))
+            return;
+        if (!joint3d_pair_begin_solve((rt_body3d_kinematics *)gate_a,
                                       (rt_body3d_kinematics *)gate_b))
             return;
     }
@@ -1357,9 +1511,11 @@ void *rt_sixdof_joint3d_get_body_b(void *joint) {
 /// @param joint Candidate joint handle.
 /// @return Typed hinge pointer, or NULL for a class mismatch.
 static rt_hinge_joint3d *hinge_joint_readback_checked(void *joint) {
-    if (!rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
+    rt_hinge_joint3d *j =
+        (rt_hinge_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_HINGEJOINT3D_CLASS_ID);
+    if (!hinge_joint_repair(j))
         return NULL;
-    return (rt_hinge_joint3d *)joint;
+    return j;
 }
 
 /// @brief `HingeJoint3D.MotorEnabled` — retained motor flag. @param joint Joint handle.
@@ -1380,19 +1536,22 @@ double rt_hinge_joint3d_get_motor_max_impulse(void *joint) {
     return j ? j->motor_max_impulse : 0.0;
 }
 
-/// @brief `HingeJoint3D.LimitsEnabled` — whether angle limits are active. @param joint Joint handle.
+/// @brief `HingeJoint3D.LimitsEnabled` — whether angle limits are active. @param joint Joint
+/// handle.
 int8_t rt_hinge_joint3d_get_limits_enabled(void *joint) {
     rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
     return j && j->has_limits ? 1 : 0;
 }
 
-/// @brief `HingeJoint3D.LimitMin` — retained lower angle limit (radians). @param joint Joint handle.
+/// @brief `HingeJoint3D.LimitMin` — retained lower angle limit (radians). @param joint Joint
+/// handle.
 double rt_hinge_joint3d_get_limit_min(void *joint) {
     rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
     return j && j->has_limits ? j->angle_min : 0.0;
 }
 
-/// @brief `HingeJoint3D.LimitMax` — retained upper angle limit (radians). @param joint Joint handle.
+/// @brief `HingeJoint3D.LimitMax` — retained upper angle limit (radians). @param joint Joint
+/// handle.
 double rt_hinge_joint3d_get_limit_max(void *joint) {
     rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
     return j && j->has_limits ? j->angle_max : 0.0;
@@ -1402,7 +1561,9 @@ double rt_hinge_joint3d_get_limit_max(void *joint) {
 /// @param joint Candidate joint handle.
 /// @return Typed joint pointer, or NULL for a class mismatch.
 static rt_sixdof_joint3d *sixdof_joint_readback_checked(void *joint) {
-    return (rt_sixdof_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID);
+    rt_sixdof_joint3d *j =
+        (rt_sixdof_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID);
+    return sixdof_joint_repair(j) ? j : NULL;
 }
 
 /// @brief Box a stored double triple as a fresh Vec3 (origin for NULL joints).
@@ -1411,7 +1572,9 @@ static rt_sixdof_joint3d *sixdof_joint_readback_checked(void *joint) {
 static void *joint3d_vec3_snapshot(const double *values) {
     if (!values)
         return rt_vec3_new(0.0, 0.0, 0.0);
-    return rt_vec3_new(values[0], values[1], values[2]);
+    return rt_vec3_new(joint3d_clamp_coord(values[0]),
+                       joint3d_clamp_coord(values[1]),
+                       joint3d_clamp_coord(values[2]));
 }
 
 /// @brief `SixDofJoint3D.LinearLimitMin` — fresh Vec3 lower bounds. @param joint Joint handle.

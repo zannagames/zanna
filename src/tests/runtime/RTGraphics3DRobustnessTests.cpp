@@ -667,8 +667,14 @@ static void test_scene_particles_water_and_render_targets_reject_wrong_handles()
     assert(water->env_map == cubemap);
     rt_water3d_set_env_map(water_obj, fake);
     assert(water->env_map == cubemap);
-    void *incomplete_cubemap = rt_cubemap3d_new(pixels, pixels, pixels, pixels, pixels, pixels);
-    static_cast<rt_cubemap3d *>(incomplete_cubemap)->face_size = 2;
+    void *incomplete_pixels = rt_pixels_new(1, 1);
+    void *incomplete_cubemap = rt_cubemap3d_new(incomplete_pixels,
+                                                incomplete_pixels,
+                                                incomplete_pixels,
+                                                incomplete_pixels,
+                                                incomplete_pixels,
+                                                incomplete_pixels);
+    static_cast<rt_pixels_impl *>(incomplete_pixels)->width = 2;
     rt_water3d_set_env_map(water_obj, incomplete_cubemap);
     assert(water->env_map == cubemap);
     water->env_map = incomplete_cubemap;
@@ -714,16 +720,16 @@ static void test_cubemap_sampling_sanitizes_inputs() {
     assert(out[0] > 0.1f);
 
     void *fake = rt_obj_new_i64(0, 8);
-    void *saved_neg_x = cubemap->faces[1];
     cubemap->faces[1] = fake;
     out[0] = out[1] = out[2] = 1.0f;
     rt_cubemap_sample(cubemap, 1.0f, 0.0f, 0.0f, &out[0], &out[1], &out[2]);
-    assert(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f);
-    cubemap->faces[1] = saved_neg_x;
+    assert(out[0] > 0.9f && out[1] < 0.1f && out[2] < 0.1f);
+    assert(cubemap->faces[1] == cubemap->owned_faces[1]);
 
     cubemap->faces[0] = fake;
     rt_cubemap_sample(cubemap, 1.0f, 0.0f, 0.0f, &out[0], &out[1], &out[2]);
-    assert(out[0] == 0.0f && out[1] == 0.0f && out[2] == 0.0f);
+    assert(out[0] > 0.9f && out[1] < 0.1f && out[2] < 0.1f);
+    assert(cubemap->faces[0] == cubemap->owned_faces[0]);
 
     auto *fake_cubemap = static_cast<rt_cubemap3d *>(rt_obj_new_i64(0, sizeof(rt_cubemap3d)));
     out[0] = out[1] = out[2] = 1.0f;

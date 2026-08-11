@@ -474,8 +474,7 @@ static void *vscn_material_texture_ref(void *texture_ref) {
 /// @param cubemap Borrowed candidate Cubemap3D payload.
 /// @return Nonzero when all six face images are complete and dimensionally consistent.
 static int vscn_cubemap_is_serializable(rt_cubemap3d *cubemap) {
-    if (!rt_g3d_has_class(cubemap, RT_G3D_CUBEMAP3D_CLASS_ID) || cubemap->face_size <= 0 ||
-        cubemap->face_size > INT32_MAX)
+    if (!rt_cubemap3d_repair_internal(cubemap) || cubemap->face_size > INT32_MAX)
         return 0;
     for (int i = 0; i < 6; i++) {
         rt_pixels_impl *face = rt_pixels_checked_impl_or_null(cubemap->faces[i]);

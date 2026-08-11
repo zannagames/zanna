@@ -1548,9 +1548,7 @@ static void canvas3d_begin_camera_pass(void *obj,
     }
     params.load_existing_color = view_model_pass ? 1 : 0;
     params.load_existing_depth = 0;
-    if (c->ibl_enabled && c->skybox && !c->skybox->ibl_ready)
-        (void)rt_cubemap3d_ensure_ibl(c->skybox);
-    if (c->ibl_enabled && c->skybox && c->skybox->ibl_ready) {
+    if (c->ibl_enabled && c->skybox && rt_cubemap3d_ensure_ibl(c->skybox)) {
         params.ibl_enabled = 1;
         params.ibl_intensity = c->ibl_intensity;
         memcpy(params.ibl_sh, c->skybox->ibl_sh, sizeof(params.ibl_sh));

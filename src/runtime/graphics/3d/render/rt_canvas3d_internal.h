@@ -960,6 +960,15 @@ typedef struct {
     int32_t ibl_base_size;                        /* face size of prefiltered mip 0 */
     int8_t ibl_ready;
     uint64_t ibl_identity; /* distinct GPU cache key for the prefiltered chain */
+    void *owned_faces[6];  /* authoritative retained source-face identities */
+    void *owned_ibl_mips[RT_CUBEMAP3D_IBL_MAX_MIPS][6];
+    int64_t allocation_face_size;
+    uint64_t allocation_cache_identity;
+    float owned_ibl_sh[27];
+    int32_t owned_ibl_mip_count;
+    int32_t owned_ibl_base_size;
+    int8_t owned_ibl_ready;
+    uint64_t owned_ibl_identity;
 } rt_cubemap3d;
 
 #ifdef __cplusplus
@@ -970,6 +979,11 @@ extern "C" {
 /// @return One when all six faces are present, square, and dimensionally
 ///   consistent; otherwise zero.
 int rt_cubemap3d_is_complete(void *cubemap);
+
+/// @brief Restore a CubeMap3D from its authoritative retained identities.
+/// @param cubemap Candidate CubeMap3D runtime handle.
+/// @return One when the source faces are valid; malformed IBL caches are discarded.
+int rt_cubemap3d_repair_internal(void *cubemap);
 #ifdef __cplusplus
 }
 #endif
@@ -1238,9 +1252,21 @@ typedef struct {
     vgfx3d_rendertarget_t *target;
     int64_t width;
     int64_t height;
-    void *material_pixels;             /* cached Pixels mirror for RT-as-texture binding */
-    uint64_t material_pixels_revision; /* content_revision the mirror was refreshed at */
+    void *material_pixels;               /* cached Pixels mirror for RT-as-texture binding */
+    uint64_t material_pixels_revision;   /* content_revision the mirror was refreshed at */
+    vgfx3d_rendertarget_t *owned_target; /* immutable backing-shell allocation identity */
+    void *owned_material_pixels;         /* authoritative retained Pixels cache identity */
+    int32_t allocation_width;
+    int32_t allocation_height;
+    int32_t allocation_color_format;
+    uint64_t allocation_estimated_bytes;
+    uint64_t allocation_cache_identity;
 } rt_rendertarget3d;
+
+/// @brief Repair a RenderTarget3D wrapper from its immutable allocation identities.
+/// @param obj Candidate RenderTarget3D runtime handle.
+/// @return One when the wrapper and backing shell are valid and repaired.
+int rt_rendertarget3d_repair_internal(void *obj);
 
 /// @brief Resolve a RenderTarget3D handle to its material-binding Pixels mirror,
 ///   refreshing the mirror only when the target's content changed since the last

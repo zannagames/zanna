@@ -16,6 +16,8 @@
 //   - rt_cubemap3d_ensure_ibl is idempotent and assigns a stable ibl_identity.
 //   - rt_cubemap_sample_ibl falls back to the legacy roughness blur when the
 //     IBL payload has not been prepared.
+//   - Mutable source and generated-payload mirrors are repaired from retained
+//     ownership identities before sampling or finalization.
 //
 // Ownership/Lifetime:
 //   - Test-scoped runtime objects are retained only for each case's duration.
@@ -31,6 +33,7 @@
 #include "rt_canvas3d.h"
 #include "rt_internal.h"
 #include "rt_pixels.h"
+#include "rt_pixels_internal.h"
 
 #include <cmath>
 #include <cstdint>
@@ -43,6 +46,10 @@ extern "C" {
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
 }
+
+extern "C" int rt_obj_release_check0(void *obj);
+extern "C" void rt_obj_free(void *obj);
+extern "C" void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
 
 static int tests_passed = 0;
 static int tests_total = 0;
@@ -68,8 +75,11 @@ static int tests_total = 0;
 
 #define EXPECT_NEAR(a, b, eps)                                                                     \
     do {                                                                                           \
-        if (std::fabs((double)(a) - (double)(b)) > (eps)) {                                        \
-            printf("FAIL: expected ~%f, got %f\n", (double)(b), (double)(a));                      \
+        const double actual_ = (double)(a);                                                        \
+        const double expected_ = (double)(b);                                                      \
+        if (!std::isfinite(actual_) || !std::isfinite(expected_) ||                                \
+            std::fabs(actual_ - expected_) > (eps)) {                                              \
+            printf("FAIL: expected ~%f, got %f\n", expected_, actual_);                            \
             return;                                                                                \
         }                                                                                          \
     } while (0)
@@ -98,6 +108,17 @@ static rt_cubemap3d *make_cubemap(int size, const int64_t face_rgba[6]) {
         faces[i] = make_face(size, face_rgba[i]);
     return (rt_cubemap3d *)rt_cubemap3d_new(
         faces[0], faces[1], faces[2], faces[3], faces[4], faces[5]);
+}
+
+static int tracked_pixels_finalizers = 0;
+
+static void tracked_pixels_finalize(void *) {
+    tracked_pixels_finalizers++;
+}
+
+static void release_runtime_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
 }
 
 /// Constant environment: SH irradiance must be the environment color for every
@@ -225,6 +246,118 @@ static void test_prefilter_blurs_with_roughness() {
     PASS();
 }
 
+/// Source-face fields are public runtime payload mirrors, not ownership identities.
+static void test_source_face_state_repair() {
+    TEST("source faces and allocation metadata repair before sampling");
+    void *faces[6];
+    for (int f = 0; f < 6; f++)
+        faces[f] = make_face(8, 0xFF0000FF);
+    void *substitute = make_face(8, 0x00FF00FF);
+    rt_cubemap3d *cm = (rt_cubemap3d *)rt_cubemap3d_new(
+        faces[0], faces[1], faces[2], faces[3], faces[4], faces[5]);
+    EXPECT_TRUE(cm != nullptr && substitute != nullptr, "repair fixtures exist");
+    for (int f = 0; f < 6; f++)
+        cm->faces[f] = substitute;
+    cm->face_size = -8;
+    cm->cache_identity = 0;
+
+    EXPECT_EQ(rt_cubemap3d_is_complete(cm), 1);
+    EXPECT_EQ(cm->face_size, 8);
+    EXPECT_TRUE(cm->cache_identity == cm->allocation_cache_identity,
+                "source cache identity restored");
+    for (int f = 0; f < 6; f++)
+        EXPECT_TRUE(cm->faces[f] == cm->owned_faces[f], "source face mirror restored");
+
+    float r, g, b;
+    cm->faces[0] = substitute;
+    rt_cubemap_sample(cm, 1.0f, 0.0f, 0.0f, &r, &g, &b);
+    EXPECT_TRUE(r > 0.99f && g < 0.01f && b < 0.01f, "sample repairs its source view");
+    cm->faces[0] = substitute;
+    rt_cubemap_sample_unit(cm, 1.0f, 0.0f, 0.0f, &r, &g, &b);
+    EXPECT_TRUE(r > 0.99f && g < 0.01f && b < 0.01f, "unit sample repairs its source view");
+    cm->faces[0] = substitute;
+    rt_cubemap_sample_roughness(cm, 1.0f, 0.0f, 0.0f, 0.5f, &r, &g, &b);
+    EXPECT_TRUE(r > 0.99f && g < 0.01f && b < 0.01f, "roughness sample repairs its source view");
+
+    release_runtime_object(cm);
+    for (int f = 0; f < 6; f++)
+        release_runtime_object(faces[f]);
+    release_runtime_object(substitute);
+    PASS();
+}
+
+/// Generated IBL metadata must be repaired before any mip indexing or backend use.
+static void test_ibl_state_repair_and_rebuild() {
+    TEST("IBL mirrors repair and malformed authoritative payloads rebuild");
+    const int64_t red[6] = {0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF, 0xFF0000FF};
+    rt_cubemap3d *cm = make_cubemap(8, red);
+    void *substitute = make_face(8, 0x00FF00FF);
+    EXPECT_EQ(rt_cubemap3d_ensure_ibl(cm), 1);
+    const int32_t expected_mips = cm->owned_ibl_mip_count;
+    const int32_t expected_base = cm->owned_ibl_base_size;
+    const uint64_t expected_identity = cm->owned_ibl_identity;
+    const float expected_sh0 = cm->owned_ibl_sh[0];
+
+    for (int f = 0; f < 6; f++)
+        cm->ibl_mips[0][f] = substitute;
+    cm->ibl_ready = 7;
+    cm->ibl_mip_count = INT32_MAX;
+    cm->ibl_base_size = -1;
+    cm->ibl_identity = 0;
+    cm->ibl_sh[0] = NAN;
+    float r, g, b;
+    rt_cubemap_sample_ibl(cm, 1.0f, 0.0f, 0.0f, 0.5f, &r, &g, &b);
+    EXPECT_EQ(cm->ibl_ready, 1);
+    EXPECT_EQ(cm->ibl_mip_count, expected_mips);
+    EXPECT_EQ(cm->ibl_base_size, expected_base);
+    EXPECT_TRUE(cm->ibl_identity == expected_identity, "IBL identity restored");
+    EXPECT_NEAR(cm->ibl_sh[0], expected_sh0, 1e-6);
+    for (int f = 0; f < 6; f++)
+        EXPECT_TRUE(cm->ibl_mips[0][f] == cm->owned_ibl_mips[0][f], "IBL face mirror restored");
+    EXPECT_TRUE(r > 0.99f && g < 0.01f && b < 0.01f,
+                "IBL sample remains bounded after corrupt mip metadata");
+
+    ((rt_pixels_impl *)cm->owned_ibl_mips[0][0])->width = 99;
+    EXPECT_EQ(rt_cubemap3d_ensure_ibl(cm), 1);
+    EXPECT_TRUE(cm->ibl_identity != expected_identity,
+                "malformed authoritative mip chain receives a fresh identity");
+    EXPECT_EQ(rt_pixels_width(cm->ibl_mips[0][0]), expected_base);
+    const uint64_t rebuilt_identity = cm->ibl_identity;
+    cm->owned_ibl_sh[0] = NAN;
+    EXPECT_EQ(rt_cubemap3d_ensure_ibl(cm), 1);
+    EXPECT_TRUE(cm->ibl_identity != rebuilt_identity,
+                "non-finite authoritative SH cache is rebuilt transactionally");
+
+    release_runtime_object(cm);
+    release_runtime_object(substitute);
+    PASS();
+}
+
+/// Finalization follows retained owner slots even when every public mirror is substituted.
+static void test_cubemap_finalizer_uses_owner_slots() {
+    TEST("cubemap finalizer releases source and IBL owner slots");
+    void *faces[6];
+    for (int f = 0; f < 6; f++) {
+        faces[f] = make_face(4, 0x102030FF);
+        rt_obj_set_finalizer(faces[f], tracked_pixels_finalize);
+    }
+    void *substitute = make_face(4, 0xA0B0C0FF);
+    rt_cubemap3d *cm = (rt_cubemap3d *)rt_cubemap3d_new(
+        faces[0], faces[1], faces[2], faces[3], faces[4], faces[5]);
+    EXPECT_EQ(rt_cubemap3d_ensure_ibl(cm), 1);
+    rt_obj_set_finalizer(cm->owned_ibl_mips[0][0], tracked_pixels_finalize);
+    for (int f = 0; f < 6; f++) {
+        release_runtime_object(faces[f]);
+        cm->faces[f] = substitute;
+    }
+    cm->ibl_mips[0][0] = substitute;
+    tracked_pixels_finalizers = 0;
+    release_runtime_object(cm);
+    EXPECT_EQ(tracked_pixels_finalizers, 7);
+    release_runtime_object(substitute);
+    PASS();
+}
+
 int main() {
     printf("test_rt_cubemap3d_ibl:\n");
     test_constant_environment();
@@ -232,6 +365,9 @@ int main() {
     test_ensure_idempotent();
     test_sample_fallback();
     test_prefilter_blurs_with_roughness();
+    test_source_face_state_repair();
+    test_ibl_state_repair_and_rebuild();
+    test_cubemap_finalizer_uses_owner_slots();
     printf("%d/%d tests passed\n", tests_passed, tests_total);
     return tests_passed == tests_total ? 0 : 1;
 }

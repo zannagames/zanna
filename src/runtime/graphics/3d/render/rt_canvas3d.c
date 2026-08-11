@@ -2292,9 +2292,9 @@ void *rt_canvas3d_new_fullscreen(rt_string title) {
 /// @return New GC-managed offscreen Canvas3D handle, or NULL after trapping invalid target,
 /// allocation, or backend initialization failures.
 static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
-    rt_rendertarget3d *rtd =
-        (rt_rendertarget3d *)rt_g3d_checked_or_null(target, RT_G3D_RENDERTARGET3D_CLASS_ID);
-    if (!rtd || !rtd->target || !vgfx3d_rendertarget_valid_pixels(rtd->target, NULL)) {
+    rt_rendertarget3d *rtd = (rt_rendertarget3d *)target;
+    if (!rt_rendertarget3d_repair_internal(rtd) || !rtd->target ||
+        !vgfx3d_rendertarget_valid_pixels(rtd->target, NULL)) {
         rt_trap("Canvas3D.NewOffscreen: target must be a live RenderTarget3D");
         return NULL;
     }

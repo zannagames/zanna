@@ -54,6 +54,7 @@ extern double rt_vec3_x(void *v);
 extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
 extern int rt_obj_release_check0(void *obj);
+extern void rt_obj_free(void *obj);
 extern void *rt_mesh3d_new(void);
 extern void rt_mesh3d_add_vertex(
     void *obj, double x, double y, double z, double nx, double ny, double nz, double u, double v);
@@ -78,6 +79,72 @@ typedef struct {
     int32_t enter_count;
     int32_t exit_count;
 } Trigger3DTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *body_a;
+    void *body_b;
+    double target_distance;
+    void *owned_body_a;
+    void *owned_body_b;
+} DistanceJoint3DTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *body_a;
+    void *body_b;
+    double rest_length;
+    double stiffness;
+    double damping;
+    void *owned_body_a;
+    void *owned_body_b;
+} SpringJoint3DTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *body_a;
+    void *body_b;
+    double local_anchor_a[3];
+    double local_anchor_b[3];
+    double local_axis_a[3];
+    double ref_perp_a[3];
+    double ref_perp_b[3];
+    int8_t motor_enabled;
+    double motor_target_velocity;
+    double motor_max_impulse;
+    int8_t has_limits;
+    double angle_min;
+    double angle_max;
+    void *owned_body_a;
+    void *owned_body_b;
+} HingeJoint3DTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *body_a;
+    void *body_b;
+    double max_length;
+    void *owned_body_a;
+    void *owned_body_b;
+} RopeJoint3DTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *body_a;
+    void *body_b;
+    double local_anchor_a[3];
+    double local_anchor_b[3];
+    double linear_min[3];
+    double linear_max[3];
+    double angular_min[3];
+    double angular_max[3];
+    double reference_relative_orientation[4];
+    int8_t linear_motor_enabled;
+    double linear_motor_velocity[3];
+    double linear_motor_max_impulse;
+    void *owned_body_a;
+    void *owned_body_b;
+} SixDofJoint3DTestLayout;
 
 typedef struct {
     void *vptr;
@@ -136,9 +203,13 @@ template <typename Fn> static bool expect_trap_contains(Fn &&fn, const char *nee
 
 #define EXPECT_NEAR(a, b, eps, msg)                                                                \
     do {                                                                                           \
+        const double actual_value = (double)(a);                                                   \
+        const double expected_value = (double)(b);                                                 \
         tests_run++;                                                                               \
-        if (fabs((double)(a) - (double)(b)) > (eps)) {                                             \
-            fprintf(stderr, "FAIL: %s (got %f, expected %f)\n", msg, (double)(a), (double)(b));    \
+        if (!std::isfinite(actual_value) || !std::isfinite(expected_value) ||                      \
+            fabs(actual_value - expected_value) > (eps)) {                                         \
+            fprintf(                                                                               \
+                stderr, "FAIL: %s (got %f, expected %f)\n", msg, actual_value, expected_value);    \
         } else {                                                                                   \
             tests_passed++;                                                                        \
         }                                                                                          \
@@ -3627,6 +3698,197 @@ static void test_joints_retain_bodies_and_sanitize_parameters() {
         rt_rope_joint3d_get_max_length(rope), 1.0e9, 1.0, "RopeJoint3D clamps huge max length");
 }
 
+static void test_joint_readbacks_repair_corrupt_private_state() {
+    void *a = rt_body3d_new_sphere(0.5, 1.0);
+    void *b = rt_body3d_new_sphere(0.5, 1.0);
+    void *wrong = rt_vec3_new(9.0, 8.0, 7.0);
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *axis = rt_vec3_new(0.0, 1.0, 0.0);
+    void *frame = rt_mat4_identity();
+    auto *distance = static_cast<DistanceJoint3DTestLayout *>(rt_distance_joint3d_new(a, b, 2.0));
+    auto *spring =
+        static_cast<SpringJoint3DTestLayout *>(rt_spring_joint3d_new(a, b, 2.0, 3.0, 4.0));
+    auto *hinge = static_cast<HingeJoint3DTestLayout *>(rt_hinge_joint3d_new(a, b, origin, axis));
+    auto *rope = static_cast<RopeJoint3DTestLayout *>(rt_rope_joint3d_new(a, b, 2.0));
+    auto *six = static_cast<SixDofJoint3DTestLayout *>(rt_sixdof_joint3d_new(a, b, frame, frame));
+    assert(a && b && wrong && origin && axis && frame && distance && spring && hinge && rope &&
+           six);
+
+    distance->body_a = wrong;
+    distance->body_b = wrong;
+    spring->body_a = wrong;
+    spring->body_b = wrong;
+    hinge->body_a = wrong;
+    hinge->body_b = wrong;
+    rope->body_a = wrong;
+    rope->body_b = wrong;
+    six->body_a = wrong;
+    six->body_b = wrong;
+    EXPECT_TRUE(rt_distance_joint3d_get_body_a(distance) == a,
+                "DistanceJoint3D.BodyA repairs its retained body mirror");
+    EXPECT_TRUE(rt_distance_joint3d_get_body_b(distance) == b,
+                "DistanceJoint3D.BodyB repairs its retained body mirror");
+    EXPECT_TRUE(rt_spring_joint3d_get_body_a(spring) == a,
+                "SpringJoint3D.BodyA repairs its retained body mirror");
+    EXPECT_TRUE(rt_spring_joint3d_get_body_b(spring) == b,
+                "SpringJoint3D.BodyB repairs its retained body mirror");
+    EXPECT_TRUE(rt_hinge_joint3d_get_body_a(hinge) == a,
+                "HingeJoint3D.BodyA repairs its retained body mirror");
+    EXPECT_TRUE(rt_hinge_joint3d_get_body_b(hinge) == b,
+                "HingeJoint3D.BodyB repairs its retained body mirror");
+    EXPECT_TRUE(rt_rope_joint3d_get_body_a(rope) == a,
+                "RopeJoint3D.BodyA repairs its retained body mirror");
+    EXPECT_TRUE(rt_rope_joint3d_get_body_b(rope) == b,
+                "RopeJoint3D.BodyB repairs its retained body mirror");
+    EXPECT_TRUE(rt_sixdof_joint3d_get_body_a(six) == a,
+                "SixDofJoint3D.BodyA repairs its retained body mirror");
+    EXPECT_TRUE(rt_sixdof_joint3d_get_body_b(six) == b,
+                "SixDofJoint3D.BodyB repairs its retained body mirror");
+
+    distance->target_distance = NAN;
+    spring->rest_length = NAN;
+    spring->stiffness = INFINITY;
+    spring->damping = -INFINITY;
+    rope->max_length = NAN;
+    EXPECT_NEAR(rt_distance_joint3d_get_distance(distance),
+                0.0,
+                0.0,
+                "DistanceJoint3D.Distance repairs non-finite retained state");
+    EXPECT_NEAR(rt_spring_joint3d_get_rest_length(spring),
+                0.0,
+                0.0,
+                "SpringJoint3D.RestLength repairs non-finite retained state");
+    EXPECT_NEAR(rt_spring_joint3d_get_stiffness(spring),
+                0.0,
+                0.0,
+                "SpringJoint3D.Stiffness repairs non-finite retained state");
+    EXPECT_NEAR(rt_spring_joint3d_get_damping(spring),
+                0.0,
+                0.0,
+                "SpringJoint3D.Damping repairs non-finite retained state");
+    EXPECT_NEAR(rt_rope_joint3d_get_max_length(rope),
+                0.0,
+                0.0,
+                "RopeJoint3D.MaxLength repairs non-finite retained state");
+
+    hinge->motor_enabled = -7;
+    hinge->motor_target_velocity = INFINITY;
+    hinge->motor_max_impulse = -INFINITY;
+    hinge->has_limits = -3;
+    hinge->angle_min = NAN;
+    hinge->angle_max = INFINITY;
+    EXPECT_TRUE(rt_hinge_joint3d_get_motor_enabled(hinge) == 1 && hinge->motor_enabled == 1,
+                "HingeJoint3D.MotorEnabled persists a canonical Boolean");
+    EXPECT_NEAR(rt_hinge_joint3d_get_motor_target_velocity(hinge),
+                0.0,
+                0.0,
+                "HingeJoint3D.MotorTargetVelocity repairs non-finite state");
+    EXPECT_NEAR(rt_hinge_joint3d_get_motor_max_impulse(hinge),
+                0.0,
+                0.0,
+                "HingeJoint3D.MotorMaxImpulse repairs non-finite state");
+    EXPECT_TRUE(rt_hinge_joint3d_get_limits_enabled(hinge) == 0 && hinge->has_limits == 0,
+                "HingeJoint3D disables corrupt non-finite retained limits");
+    EXPECT_NEAR(rt_hinge_joint3d_get_limit_min(hinge),
+                0.0,
+                0.0,
+                "HingeJoint3D.LimitMin hides disabled corrupt limits");
+    EXPECT_NEAR(rt_hinge_joint3d_get_limit_max(hinge),
+                0.0,
+                0.0,
+                "HingeJoint3D.LimitMax hides disabled corrupt limits");
+
+    six->linear_min[0] = NAN;
+    six->linear_min[1] = 5.0;
+    six->linear_min[2] = -INFINITY;
+    six->linear_max[0] = INFINITY;
+    six->linear_max[1] = -5.0;
+    six->linear_max[2] = NAN;
+    six->angular_min[0] = NAN;
+    six->angular_min[1] = 4.0;
+    six->angular_min[2] = -INFINITY;
+    six->angular_max[0] = INFINITY;
+    six->angular_max[1] = -4.0;
+    six->angular_max[2] = NAN;
+    six->linear_motor_enabled = -4;
+    six->linear_motor_velocity[0] = NAN;
+    six->linear_motor_velocity[1] = INFINITY;
+    six->linear_motor_velocity[2] = -INFINITY;
+    six->linear_motor_max_impulse = INFINITY;
+    void *linear_min = rt_sixdof_joint3d_get_linear_limit_min(six);
+    void *linear_max = rt_sixdof_joint3d_get_linear_limit_max(six);
+    void *angular_min = rt_sixdof_joint3d_get_angular_limit_min(six);
+    void *angular_max = rt_sixdof_joint3d_get_angular_limit_max(six);
+    void *motor_velocity = rt_sixdof_joint3d_get_linear_motor_velocity(six);
+    EXPECT_TRUE(rt_vec3_x(linear_min) == 0.0 && rt_vec3_y(linear_min) == -5.0 &&
+                    rt_vec3_z(linear_min) == 0.0,
+                "SixDofJoint3D.LinearLimitMin repairs and canonicalizes retained lanes");
+    EXPECT_TRUE(rt_vec3_x(linear_max) == 0.0 && rt_vec3_y(linear_max) == 5.0 &&
+                    rt_vec3_z(linear_max) == 0.0,
+                "SixDofJoint3D.LinearLimitMax repairs and canonicalizes retained lanes");
+    EXPECT_TRUE(rt_vec3_x(angular_min) == 0.0 && rt_vec3_y(angular_min) == -4.0 &&
+                    rt_vec3_z(angular_min) == 0.0,
+                "SixDofJoint3D.AngularLimitMin repairs and canonicalizes retained lanes");
+    EXPECT_TRUE(rt_vec3_x(angular_max) == 0.0 && rt_vec3_y(angular_max) == 4.0 &&
+                    rt_vec3_z(angular_max) == 0.0,
+                "SixDofJoint3D.AngularLimitMax repairs and canonicalizes retained lanes");
+    EXPECT_TRUE(rt_sixdof_joint3d_get_linear_motor_enabled(six) == 1 &&
+                    six->linear_motor_enabled == 1,
+                "SixDofJoint3D.LinearMotorEnabled persists a canonical Boolean");
+    EXPECT_TRUE(rt_vec3_x(motor_velocity) == 0.0 && rt_vec3_y(motor_velocity) == 0.0 &&
+                    rt_vec3_z(motor_velocity) == 0.0,
+                "SixDofJoint3D.LinearMotorVelocity repairs non-finite retained lanes");
+    EXPECT_NEAR(rt_sixdof_joint3d_get_linear_motor_max_impulse(six),
+                0.0,
+                0.0,
+                "SixDofJoint3D.LinearMotorMaxImpulse repairs non-finite state");
+}
+
+static void test_distance_joint_owned_bodies_survive_mirror_corruption() {
+    void *a = rt_body3d_new_sphere(0.5, 1.0);
+    void *b = rt_body3d_new_sphere(0.5, 1.0);
+    void *unrelated = rt_body3d_new_sphere(0.5, 1.0);
+    auto *joint = static_cast<DistanceJoint3DTestLayout *>(rt_distance_joint3d_new(a, b, 5.0));
+    assert(a && b && unrelated && joint);
+    rt_body3d_set_position(a, 0.0, 0.0, 0.0);
+    rt_body3d_set_position(b, 10.0, 0.0, 0.0);
+    rt_body3d_set_position(unrelated, 100.0, 0.0, 0.0);
+    joint->body_a = unrelated;
+    rt_joint3d_solve(joint, RT_JOINT_DISTANCE, 1.0 / 60.0);
+    void *a_position = rt_body3d_get_position(a);
+    void *unrelated_position = rt_body3d_get_position(unrelated);
+    EXPECT_TRUE(rt_vec3_x(a_position) > 0.0,
+                "DistanceJoint3D solve repairs body mirrors before applying corrections");
+    EXPECT_NEAR(rt_vec3_x(unrelated_position),
+                100.0,
+                0.0,
+                "DistanceJoint3D solve never mutates a substituted unrelated body");
+}
+
+static void test_distance_joint_finalizer_releases_owned_bodies_after_mirror_corruption() {
+    void *a = rt_body3d_new_sphere(0.5, 1.0);
+    void *b = rt_body3d_new_sphere(0.5, 1.0);
+    void *wrong = rt_vec3_new(0.0, 0.0, 0.0);
+    auto *joint = static_cast<DistanceJoint3DTestLayout *>(rt_distance_joint3d_new(a, b, 1.0));
+    assert(a && b && wrong && joint);
+    joint->body_a = wrong;
+    joint->body_b = wrong;
+    if (rt_obj_release_check0(joint))
+        rt_obj_free(joint);
+    int a_released = rt_obj_release_check0(a);
+    int b_released = rt_obj_release_check0(b);
+    EXPECT_TRUE(a_released == 1,
+                "DistanceJoint3D finalizer releases owned body A despite mirror corruption");
+    EXPECT_TRUE(b_released == 1,
+                "DistanceJoint3D finalizer releases owned body B despite mirror corruption");
+    if (a_released)
+        rt_obj_free(a);
+    if (b_released)
+        rt_obj_free(b);
+    if (rt_obj_release_check0(wrong))
+        rt_obj_free(wrong);
+}
+
 static void test_joint3d_extreme_finite_inputs_remain_finite() {
     void *hinge_world = rt_world3d_new(0.0, 0.0, 0.0);
     void *base = rt_body3d_new_sphere(0.25, 0.0);
@@ -5281,6 +5543,9 @@ int main() {
     /* Joint tests */
     test_distance_joint_create();
     test_joints_retain_bodies_and_sanitize_parameters();
+    test_joint_readbacks_repair_corrupt_private_state();
+    test_distance_joint_owned_bodies_survive_mirror_corruption();
+    test_distance_joint_finalizer_releases_owned_bodies_after_mirror_corruption();
     test_joint3d_extreme_finite_inputs_remain_finite();
     test_distance_joint_constraint();
     test_spring_joint_create();

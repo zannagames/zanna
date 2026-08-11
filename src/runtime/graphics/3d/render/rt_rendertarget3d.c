@@ -229,6 +229,74 @@ static void rt_free(vgfx3d_rendertarget_t *rt) {
     free(rt);
 }
 
+/// @brief Release the authoritative cached Pixels reference and clear its public mirror.
+static void rendertarget3d_release_material_pixels(rt_rendertarget3d *rtd) {
+    if (!rtd)
+        return;
+    rtd->material_pixels = NULL;
+    if (rtd->owned_material_pixels) {
+        if (rt_obj_release_check0(rtd->owned_material_pixels))
+            rt_obj_free(rtd->owned_material_pixels);
+        rtd->owned_material_pixels = NULL;
+    }
+    rtd->material_pixels_revision = 0u;
+}
+
+/// @brief Validate the target-owned material Pixels cache against immutable target dimensions.
+static int rendertarget3d_material_pixels_valid(const rt_rendertarget3d *rtd, void *pixels) {
+    rt_pixels_impl *pv;
+    size_t pixel_count;
+    size_t payload_bytes;
+    if (!rtd || !pixels || rtd->allocation_width <= 0 || rtd->allocation_height <= 0)
+        return 0;
+    pv = rt_pixels_checked_impl_or_null(pixels);
+    if (!pv || !pv->data || pv->width != rtd->allocation_width ||
+        pv->height != rtd->allocation_height)
+        return 0;
+    pixel_count = (size_t)rtd->allocation_width * (size_t)rtd->allocation_height;
+    if (pixel_count > (SIZE_MAX - sizeof(*pv)) / sizeof(uint32_t))
+        return 0;
+    payload_bytes = sizeof(*pv) + pixel_count * sizeof(uint32_t);
+    return pv->data == (uint32_t *)((uint8_t *)pv + sizeof(*pv)) &&
+           rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, payload_bytes);
+}
+
+/// @brief Restore mutable wrapper/shell metadata from immutable allocation identities.
+/// @return One when the backing target allocation and its construction metadata are usable.
+static int rendertarget3d_repair_state(rt_rendertarget3d *rtd) {
+    vgfx3d_rendertarget_t *target;
+    if (!rtd || !rtd->owned_target || rtd->allocation_width <= 0 ||
+        rtd->allocation_width > VGFX3D_RENDERTARGET_DIM_MAX || rtd->allocation_height <= 0 ||
+        rtd->allocation_height > VGFX3D_RENDERTARGET_DIM_MAX ||
+        (rtd->allocation_color_format != VGFX3D_RENDERTARGET_COLOR_FORMAT_UNORM8 &&
+         rtd->allocation_color_format != VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F) ||
+        rtd->allocation_estimated_bytes == 0u || rtd->allocation_cache_identity == 0u)
+        return 0;
+    target = rtd->owned_target;
+    rtd->target = target;
+    rtd->width = rtd->allocation_width;
+    rtd->height = rtd->allocation_height;
+    target->width = rtd->allocation_width;
+    target->height = rtd->allocation_height;
+    target->stride = rtd->allocation_width * 4;
+    target->color_format = rtd->allocation_color_format;
+    target->estimated_bytes = rtd->allocation_estimated_bytes;
+    target->cache_identity = rtd->allocation_cache_identity;
+    if (rtd->owned_material_pixels &&
+        !rendertarget3d_material_pixels_valid(rtd, rtd->owned_material_pixels))
+        rendertarget3d_release_material_pixels(rtd);
+    else
+        rtd->material_pixels = rtd->owned_material_pixels;
+    return 1;
+}
+
+/// @brief Validate and repair a RenderTarget3D wrapper for other renderer translation units.
+int rt_rendertarget3d_repair_internal(void *obj) {
+    rt_rendertarget3d *rtd =
+        (rt_rendertarget3d *)rt_g3d_checked_or_null(obj, RT_G3D_RENDERTARGET3D_CLASS_ID);
+    return rendertarget3d_repair_state(rtd);
+}
+
 //=============================================================================
 // Runtime type
 //=============================================================================
@@ -241,15 +309,12 @@ static void rt_rendertarget3d_finalize(void *obj) {
     rt_rendertarget3d *rtd = (rt_rendertarget3d *)obj;
     if (!rtd)
         return;
-    if (rtd->target) {
-        rt_free(rtd->target);
-        rtd->target = NULL;
+    rtd->target = NULL;
+    if (rtd->owned_target) {
+        rt_free(rtd->owned_target);
+        rtd->owned_target = NULL;
     }
-    if (rtd->material_pixels) {
-        if (rt_obj_release_check0(rtd->material_pixels))
-            rt_obj_free(rtd->material_pixels);
-        rtd->material_pixels = NULL;
-    }
+    rendertarget3d_release_material_pixels(rtd);
 }
 
 /// @brief Validate @p obj as a RenderTarget3D handle and return its typed pointer (NULL on
@@ -257,7 +322,9 @@ static void rt_rendertarget3d_finalize(void *obj) {
 /// @param obj Candidate runtime object.
 /// @return The typed RenderTarget3D pointer, or `NULL` for a null or wrong-class object.
 static rt_rendertarget3d *rendertarget3d_checked(void *obj) {
-    return (rt_rendertarget3d *)rt_g3d_checked_or_null(obj, RT_G3D_RENDERTARGET3D_CLASS_ID);
+    rt_rendertarget3d *rtd =
+        (rt_rendertarget3d *)rt_g3d_checked_or_null(obj, RT_G3D_RENDERTARGET3D_CLASS_ID);
+    return rendertarget3d_repair_state(rtd) ? rtd : NULL;
 }
 
 /// @brief Create an offscreen render target for render-to-texture effects.
@@ -291,6 +358,13 @@ static void *rt_rendertarget3d_new_with_format(int64_t width,
     rtd->height = height;
     rtd->material_pixels = NULL;
     rtd->material_pixels_revision = 0;
+    rtd->owned_target = NULL;
+    rtd->owned_material_pixels = NULL;
+    rtd->allocation_width = (int32_t)width;
+    rtd->allocation_height = (int32_t)height;
+    rtd->allocation_color_format = (int32_t)color_format;
+    rtd->allocation_estimated_bytes = 0u;
+    rtd->allocation_cache_identity = 0u;
     rtd->target = rt_alloc((int32_t)width, (int32_t)height, color_format);
 
     if (!rtd->target) {
@@ -299,6 +373,10 @@ static void *rt_rendertarget3d_new_with_format(int64_t width,
         rt_trap("RenderTarget3D: buffer allocation failed");
         return NULL;
     }
+
+    rtd->owned_target = rtd->target;
+    rtd->allocation_estimated_bytes = rtd->target->estimated_bytes;
+    rtd->allocation_cache_identity = rtd->target->cache_identity;
 
     rt_obj_set_finalizer(rtd, rt_rendertarget3d_finalize);
     return rtd;
@@ -537,9 +615,11 @@ void *rt_rendertarget3d_material_pixels(void *obj) {
     if (!rtd || !rtd->target)
         return NULL;
     if (!rtd->material_pixels) {
-        rtd->material_pixels = rt_pixels_new(rtd->width, rtd->height);
-        if (!rtd->material_pixels)
+        void *new_pixels = rt_pixels_new(rtd->width, rtd->height);
+        if (!new_pixels)
             return NULL;
+        rtd->owned_material_pixels = new_pixels;
+        rtd->material_pixels = new_pixels;
         rtd->material_pixels_revision = rtd->target->content_revision - 1u;
     }
     if (rtd->material_pixels_revision != rtd->target->content_revision) {
@@ -571,9 +651,8 @@ void rt_canvas3d_set_render_target(void *canvas, void *target) {
         rt_canvas3d_reset_render_target(canvas);
         return;
     }
-    rt_rendertarget3d *rtd =
-        (rt_rendertarget3d *)rt_g3d_checked_or_null(target, RT_G3D_RENDERTARGET3D_CLASS_ID);
-    if (!rtd || !rtd->target)
+    rt_rendertarget3d *rtd = (rt_rendertarget3d *)target;
+    if (!rt_rendertarget3d_repair_internal(rtd) || !rtd->target)
         return;
     if (c->backend == &vgfx3d_software_backend && !vgfx3d_rendertarget_ensure_color(rtd->target)) {
         rt_trap("Canvas3D.SetRenderTarget: buffer allocation failed");
