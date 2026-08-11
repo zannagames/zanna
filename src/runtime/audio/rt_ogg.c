@@ -35,6 +35,7 @@ struct ogg_stream_state_t {
     uint32_t next_page_sequence;
     ogg_packet_t partial;
     int saw_bos;
+    int pending_bos;
     int has_page_sequence;
     struct ogg_stream_state_t *next;
 };
@@ -72,6 +73,17 @@ struct ogg_packet_node_t {
 /// @details At most one packet can carry bytes from earlier pages; all other
 ///          queued completions are bounded by the current page's 65,025-byte body.
 #define OGG_MAX_READY_BYTES (OGG_MAX_PACKET_BYTES + (size_t)255u * 255u)
+
+/// @brief Maximum junk prefix scanned while resynchronizing to one page.
+/// @details Bounds byte-at-a-time work for malformed or hostile inputs while
+///          still tolerating ordinary container prefixes and localized damage.
+#define OGG_MAX_CAPTURE_RESYNC_BYTES ((size_t)1024u * 1024u)
+
+/// @brief Maximum pages consumed by one next-packet request.
+/// @details Valid audio streams normally complete packets every page. This
+///          ceiling prevents long runs of valid empty pages from monopolizing
+///          the caller thread.
+#define OGG_MAX_PAGES_PER_PACKET_REQUEST ((size_t)4096u)
 
 //===----------------------------------------------------------------------===//
 // CRC-32 for OGG (polynomial 0x04C11DB7, init 0)
@@ -179,12 +191,16 @@ static int ogg_read_page(ogg_reader_t *r, uint8_t **body_out, size_t *body_len_o
     uint8_t header[27];
     if (ogg_read(r, header, 4) != 4)
         return 0;
+    size_t skipped_bytes = 0;
     while (!(header[0] == 'O' && header[1] == 'g' && header[2] == 'g' && header[3] == 'S')) {
+        if (skipped_bytes >= OGG_MAX_CAPTURE_RESYNC_BYTES)
+            return 0;
         header[0] = header[1];
         header[1] = header[2];
         header[2] = header[3];
         if (!ogg_read_byte(r, &header[3]))
             return 0;
+        skipped_bytes++;
     }
 
     // Read remaining header bytes (23 more)
@@ -201,9 +217,16 @@ static int ogg_read_page(ogg_reader_t *r, uint8_t **body_out, size_t *body_len_o
 
     if (r->page.version != 0)
         return 0;
+    if ((r->page.header_type & (uint8_t)~0x07u) != 0)
+        return 0;
+    if ((r->page.header_type & 0x03u) == 0x03u)
+        return 0;
 
     // Read segment table
     if (ogg_read(r, r->page.segment_table, r->page.num_segments) != r->page.num_segments)
+        return 0;
+    if ((r->page.header_type & 0x04u) != 0 && r->page.num_segments > 0 &&
+        r->page.segment_table[r->page.num_segments - 1] == 255u)
         return 0;
 
     // Calculate body size
@@ -417,6 +440,8 @@ static int queue_completed_packet(ogg_reader_t *r,
 
     if (state->partial.len > 0)
         memcpy(node->data, state->partial.data, state->partial.len);
+    else
+        node->data[0] = 0;
     node->len = state->partial.len;
     node->info.serial_number = state->serial_number;
     node->info.granule_position = granule_position;
@@ -462,8 +487,12 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
         packet_reset(&state->partial);
         return 0;
     }
+    if ((r->page.header_type & 0x02u) != 0 && state->has_page_sequence)
+        return 0;
     state->has_page_sequence = 1;
     state->next_page_sequence = r->page.page_sequence + UINT32_C(1);
+    if ((r->page.header_type & 0x02u) != 0)
+        state->pending_bos = 1;
 
     int last_complete_segment = -1;
     for (int i = 0; i < r->page.num_segments; i++) {
@@ -495,17 +524,50 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
             int64_t packet_granule = (i == last_complete_segment) ? r->page.granule_position : -1;
             uint8_t bos = 0;
             uint8_t eos = 0;
-            if ((r->page.header_type & 0x02) && !state->saw_bos) {
+            if (state->pending_bos && !state->saw_bos) {
                 bos = 1;
-                state->saw_bos = 1;
             }
             if ((r->page.header_type & 0x04) && i == last_complete_segment)
                 eos = 1;
             if (!queue_completed_packet(r, state, packet_granule, bos, eos))
                 return 0;
+            if (bos) {
+                state->saw_bos = 1;
+                state->pending_bos = 0;
+            }
         }
     }
 
+    if ((r->page.header_type & 0x04u) != 0 && state->partial.len > 0) {
+        packet_reset(&state->partial);
+        return 0;
+    }
+
+    return 1;
+}
+
+/// @brief Transfer the head of the completed-packet queue to caller outputs.
+/// @param r Reader with a non-empty ready queue.
+/// @param out_data Receives reader-owned packet storage.
+/// @param out_len Receives packet length.
+/// @param out_info Optional packet metadata destination.
+/// @return 1 when a queued node was popped, otherwise 0.
+static int pop_ready_packet(ogg_reader_t *r,
+                            const uint8_t **out_data,
+                            size_t *out_len,
+                            ogg_packet_info_t *out_info) {
+    if (!r || !r->ready_head || !out_data || !out_len)
+        return 0;
+    ogg_packet_node_t *node = r->ready_head;
+    r->ready_head = node->next;
+    if (!r->ready_head)
+        r->ready_tail = NULL;
+    r->last_packet_data = node->data;
+    *out_data = r->last_packet_data;
+    *out_len = node->len;
+    if (out_info)
+        *out_info = node->info;
+    free(node);
     return 1;
 }
 
@@ -618,30 +680,23 @@ int ogg_reader_next_packet_ex(ogg_reader_t *r,
     free(r->last_packet_data);
     r->last_packet_data = NULL;
 
-    if (r->ready_head) {
-        ogg_packet_node_t *node = r->ready_head;
-        r->ready_head = node->next;
-        if (!r->ready_head)
-            r->ready_tail = NULL;
-        r->last_packet_data = node->data;
-        *out_data = r->last_packet_data;
-        *out_len = node->len;
-        if (out_info)
-            *out_info = node->info;
-        free(node);
-        return 1;
-    }
+    if (r->ready_head)
+        return pop_ready_packet(r, out_data, out_len, out_info);
 
+    size_t pages_read = 0;
     while (!r->ready_head) {
+        if (pages_read >= OGG_MAX_PAGES_PER_PACKET_REQUEST)
+            return 0;
         uint8_t *page_body = NULL;
         size_t page_body_len = 0;
         if (!ogg_read_page(r, &page_body, &page_body_len))
             return 0;
+        pages_read++;
         int ok = process_page_packets(r, page_body, page_body_len);
         free(page_body);
         if (!ok)
             return 0;
     }
 
-    return ogg_reader_next_packet_ex(r, out_data, out_len, out_info);
+    return pop_ready_packet(r, out_data, out_len, out_info);
 }

@@ -1308,6 +1308,12 @@ function(zanna_add_runtime_tests)
     endif ()
     zanna_add_ctest(test_rt_vorbis_internal test_rt_vorbis_internal)
 
+    zanna_add_test(test_rt_mp3_internal ${ZANNA_TESTS_DIR}/runtime/RTMp3InternalTests.c)
+    if (UNIX AND NOT APPLE)
+        target_link_libraries(test_rt_mp3_internal PRIVATE m)
+    endif ()
+    zanna_add_ctest(test_rt_mp3_internal test_rt_mp3_internal)
+
     zanna_add_test(test_rt_csv ${ZANNA_TESTS_DIR}/runtime/RTCsvTests.cpp)
     target_link_libraries(test_rt_csv PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_csv test_rt_csv)

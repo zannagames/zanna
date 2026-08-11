@@ -54,6 +54,7 @@ typedef struct {
     size_t len;
     size_t byte_pos;
     int bit_pos; // 0..7 within current byte
+    int error;   // sticky truncation/invalid-request indicator
 } vorbis_bits_t;
 
 // ---------------------------------------------------------------------------
@@ -72,20 +73,34 @@ static void bits_init(vorbis_bits_t *b, const uint8_t *data, size_t len) {
     b->len = len;
     b->byte_pos = 0;
     b->bit_pos = 0;
+    b->error = 0;
 }
 
-/// @brief Pull `count` bits (LSB-first into `val`) from the bitstream. Returns 0 if EOF.
-/// Valid counts are `[1, 32]`; assembles bits into a uint32 with bit 0 read first.
+/// @brief Pull `count` bits (LSB-first into `val`) from the bitstream.
+/// Valid counts are `[0, 32]`; zero is useful for single-mode streams. A request
+/// that cannot be satisfied sets the sticky error flag and returns zero rather
+/// than exposing a partial field as though it were complete.
 /// @param b Initialized packet bit reader.
 /// @param count Number of bits to consume.
-/// @return Decoded field or the available prefix at EOF; zero for invalid count.
+/// @return Decoded field, or zero after an invalid request or truncation.
 static uint32_t bits_read(vorbis_bits_t *b, int count) {
-    if (count <= 0 || count > 32)
+    if (!b || b->error)
         return 0;
+    if (count == 0)
+        return 0;
+    if (count < 0 || count > 32) {
+        b->error = 1;
+        return 0;
+    }
+    size_t remaining_bits = (b->len - b->byte_pos) * 8u - (size_t)b->bit_pos;
+    if ((size_t)count > remaining_bits) {
+        b->byte_pos = b->len;
+        b->bit_pos = 0;
+        b->error = 1;
+        return 0;
+    }
     uint32_t val = 0;
     for (int i = 0; i < count; i++) {
-        if (b->byte_pos >= b->len)
-            return val;
         if (b->data[b->byte_pos] & (1 << b->bit_pos))
             val |= (1u << i);
         b->bit_pos++;
@@ -102,13 +117,6 @@ static uint32_t bits_read(vorbis_bits_t *b, int count) {
 /// @return Next bit value, or zero at EOF.
 static int bits_read1(vorbis_bits_t *b) {
     return (int)bits_read(b, 1);
-}
-
-/// @brief True if the cursor has consumed every byte in the bitstream.
-/// @param b Bit reader to query.
-/// @return Non-zero when no unread byte remains.
-static int bits_eof(const vorbis_bits_t *b) {
-    return b->byte_pos >= b->len;
 }
 
 //===----------------------------------------------------------------------===//
@@ -262,10 +270,8 @@ static int codebook_decode_scalar(vorbis_codebook_t *cb, vorbis_bits_t *b) {
     // For each possible length, try to match
     uint32_t code = 0;
     for (int len = 1; len <= 32; len++) {
-        if (bits_eof(b))
-            return -1;
         int bit = bits_read1(b);
-        if (bits_eof(b) && len > 1)
+        if (b->error)
             return -1;
         code |= ((uint32_t)bit << (len - 1));
 
@@ -632,7 +638,7 @@ void vorbis_decoder_free(vorbis_decoder_t *dec) {
 /// @param len Packet length in bytes.
 /// @return `0` on success or `-1` on malformed/unsupported input/allocation failure.
 static int decode_identification(vorbis_decoder_t *dec, const uint8_t *data, size_t len) {
-    if (len < 30)
+    if (len != 30)
         return -1;
     // Verify "\x01vorbis"
     if (data[0] != 1 || memcmp(data + 1, "vorbis", 6) != 0)
@@ -649,16 +655,19 @@ static int decode_identification(vorbis_decoder_t *dec, const uint8_t *data, siz
                              ((uint32_t)data[15] << 24));
     // Skip bitrate fields (16..27)
     uint8_t blocksizes = data[28];
-    dec->blocksize_0 = 1 << (blocksizes & 0x0F);
-    dec->blocksize_1 = 1 << ((blocksizes >> 4) & 0x0F);
+    int short_exp = blocksizes & 0x0F;
+    int long_exp = (blocksizes >> 4) & 0x0F;
+    if (data[29] != 1)
+        return vorbis_fail(dec, "Vorbis: invalid identification framing bit");
+    if (short_exp < 6 || short_exp > 13 || long_exp < short_exp || long_exp > 13)
+        return vorbis_fail(dec, "Vorbis: unsupported block size");
+    dec->blocksize_0 = 1 << short_exp;
+    dec->blocksize_1 = 1 << long_exp;
 
     if (dec->channels < 1 || dec->channels > VORBIS_MAX_CHANNELS)
         return vorbis_fail(dec, "Vorbis: unsupported channel count");
     if (dec->sample_rate <= 0)
         return vorbis_fail(dec, "Vorbis: invalid sample rate");
-    if (dec->blocksize_0 < 64 || dec->blocksize_1 < dec->blocksize_0)
-        return vorbis_fail(dec, "Vorbis: unsupported block size");
-
     // Precompute windows
     dec->window_short = make_window(dec->blocksize_0);
     dec->window_long = make_window(dec->blocksize_1);
@@ -675,17 +684,44 @@ static int decode_identification(vorbis_decoder_t *dec, const uint8_t *data, siz
     return 0;
 }
 
-/// @brief Skip the comment header packet — we don't surface metadata to the runtime.
-/// @param dec Decoder context; currently unused.
+/// @brief Validate the complete comment packet without retaining metadata.
+/// @param dec Decoder receiving a stable failure reason.
 /// @param data Borrowed comment packet bytes.
 /// @param len Packet length in bytes.
-/// @return `0` for a valid comment signature, otherwise `-1`.
+/// @return `0` for a complete, framed comment packet, otherwise `-1`.
 static int decode_comment(vorbis_decoder_t *dec, const uint8_t *data, size_t len) {
-    (void)dec;
-    // Verify "\x03vorbis"
-    if (len < 7 || data[0] != 3 || memcmp(data + 1, "vorbis", 6) != 0)
+    if (len < 16 || data[0] != 3 || memcmp(data + 1, "vorbis", 6) != 0)
         return -1;
-    // We don't need comment data — just validate the header
+
+    size_t pos = 7;
+#define READ_COMMENT_U32(target)                                                                   \
+    do {                                                                                           \
+        if (len - pos < 4)                                                                         \
+            return vorbis_fail(dec, "Vorbis: truncated comment header");                           \
+        (target) = (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) |                          \
+                   ((uint32_t)data[pos + 2] << 16) | ((uint32_t)data[pos + 3] << 24);              \
+        pos += 4;                                                                                  \
+    } while (0)
+
+    uint32_t vendor_len;
+    READ_COMMENT_U32(vendor_len);
+    if ((size_t)vendor_len > len - pos)
+        return vorbis_fail(dec, "Vorbis: truncated comment vendor");
+    pos += (size_t)vendor_len;
+
+    uint32_t comment_count;
+    READ_COMMENT_U32(comment_count);
+    for (uint32_t i = 0; i < comment_count; i++) {
+        uint32_t comment_len;
+        READ_COMMENT_U32(comment_len);
+        if ((size_t)comment_len > len - pos)
+            return vorbis_fail(dec, "Vorbis: truncated user comment");
+        pos += (size_t)comment_len;
+    }
+#undef READ_COMMENT_U32
+
+    if (len - pos != 1 || data[pos] != 1)
+        return vorbis_fail(dec, "Vorbis: invalid comment framing");
     return 0;
 }
 
@@ -750,8 +786,12 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
             int current_entry = 0;
             int current_length = (int)bits_read(&bits, 5) + 1;
             while (current_entry < cb->entries) {
+                if (bits.error || current_length > 32)
+                    return -1;
                 int bits_count = ilog((uint32_t)(cb->entries - current_entry));
                 int number = (int)bits_read(&bits, bits_count);
+                if (bits.error || number <= 0 || number > cb->entries - current_entry)
+                    return -1;
                 for (int j = 0; j < number && current_entry < cb->entries; j++)
                     cb->lengths[current_entry++] = (uint8_t)current_length;
                 current_length++;
@@ -768,6 +808,8 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
         if (cb->lookup_type == 1 || cb->lookup_type == 2) {
             cb->minimum_value = float32_unpack(bits_read(&bits, 32));
             cb->delta_value = float32_unpack(bits_read(&bits, 32));
+            if (bits.error || !isfinite(cb->minimum_value) || !isfinite(cb->delta_value))
+                return -1;
             int value_bits = (int)bits_read(&bits, 4) + 1;
             cb->sequence_p = bits_read1(&bits);
 
@@ -813,6 +855,10 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
                         float val = cb->minimum_value + (float)multiplicands[off] * cb->delta_value;
                         if (cb->sequence_p)
                             val += last;
+                        if (!isfinite(val)) {
+                            free(multiplicands);
+                            return -1;
+                        }
                         cb->vq_table[j * cb->dimensions + k] = val;
                         last = val;
                         if (cb->lookup_type == 1) {
@@ -907,7 +953,7 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
             uint8_t high = 0;
             if (bits_read1(&bits))
                 high = (uint8_t)bits_read(&bits, 5);
-            res->cascade[j] = low | (high << 3);
+            res->cascade[j] = (uint8_t)(low | (uint8_t)(high << 3));
         }
         for (int j = 0; j < res->classifications; j++) {
             for (int k = 0; k < 8; k++) {
@@ -985,8 +1031,9 @@ static int decode_setup(vorbis_decoder_t *dec, const uint8_t *data, size_t len) 
             return vorbis_fail(dec, "Vorbis: invalid mode mapping");
     }
 
-    // Framing bit
-    if (!bits_read1(&bits))
+    // Framing bit. A zero returned because the packet ended is not valid padding.
+    int framing = bits_read1(&bits);
+    if (bits.error || !framing)
         return -1;
 
     return 0;
@@ -1009,19 +1056,25 @@ int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len,
     int rc;
     switch (packet_num) {
         case 0:
+            if (dec->headers_done != 0)
+                return vorbis_fail(dec, "Vorbis: identification header out of order");
             rc = decode_identification(dec, data, len);
             if (rc == 0)
-                dec->headers_done |= 1;
+                dec->headers_done = 1;
             return rc;
         case 1:
+            if (dec->headers_done != 1)
+                return vorbis_fail(dec, "Vorbis: comment header out of order");
             rc = decode_comment(dec, data, len);
             if (rc == 0)
-                dec->headers_done |= 2;
+                dec->headers_done = 3;
             return rc;
         case 2:
+            if (dec->headers_done != 3)
+                return vorbis_fail(dec, "Vorbis: setup header out of order");
             rc = decode_setup(dec, data, len);
             if (rc == 0)
-                dec->headers_done |= 4;
+                dec->headers_done = 7;
             return rc;
         default:
             return -1;
@@ -1031,6 +1084,22 @@ int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len,
 //===----------------------------------------------------------------------===//
 // Audio packet decoding
 //===----------------------------------------------------------------------===//
+
+/// @brief Saturate a normalized floating-point sample to signed 16-bit PCM.
+/// @details NaN represents corrupt decoder state and maps to silence. Infinities
+///          and finite out-of-range values saturate before any integer cast, so
+///          conversion never invokes undefined behavior.
+/// @param sample Normalized sample, conventionally in `[-1.0, 1.0]`.
+/// @return Saturated signed 16-bit PCM value.
+static int16_t pcm_s16_from_float(float sample) {
+    if (isnan(sample))
+        return 0;
+    if (sample >= 1.0f)
+        return INT16_MAX;
+    if (sample <= -1.0f)
+        return INT16_MIN;
+    return (int16_t)(sample * 32767.0f);
+}
 
 /// @brief Decode one audio packet — produces `n/4 .. n/2` PCM samples per channel.
 /// @details Audio packets are the bulk of a Vorbis stream; each one carries one
@@ -1081,6 +1150,10 @@ int vorbis_decode_header(vorbis_decoder_t *dec, const uint8_t *data, size_t len,
 /// @return `0` on success or `-1` on invalid/malformed input or allocation failure.
 int vorbis_decode_packet(
     vorbis_decoder_t *dec, const uint8_t *data, size_t len, int16_t **out_pcm, int *out_samples) {
+    if (!out_pcm || !out_samples)
+        return -1;
+    *out_pcm = NULL;
+    *out_samples = 0;
     if (!dec || !data || dec->headers_done != 7)
         return -1;
     vorbis_clear_error(dec);
@@ -1095,7 +1168,7 @@ int vorbis_decode_packet(
     // Mode number
     int mode_bits = ilog((uint32_t)(dec->mode_count - 1));
     int mode_number = (int)bits_read(&bits, mode_bits);
-    if (mode_number >= dec->mode_count)
+    if (bits.error || mode_number >= dec->mode_count)
         return -1;
 
     vorbis_mode_t *mode = &dec->modes[mode_number];
@@ -1110,6 +1183,8 @@ int vorbis_decode_packet(
     if (block_flag) {
         prev_flag = bits_read1(&bits);
         next_flag = bits_read1(&bits);
+        if (bits.error)
+            return -1;
     }
     (void)prev_flag;
     (void)next_flag;
@@ -1145,6 +1220,8 @@ int vorbis_decode_packet(
 
         // Floor type 1 decode: read amplitude values
         int amplitude = bits_read1(&bits);
+        if (bits.error)
+            goto floor_decode_error;
         if (!amplitude) {
             no_residue[ch] = 1; // unused channel
             continue;
@@ -1157,6 +1234,8 @@ int vorbis_decode_packet(
         int range_bits_val = ilog((uint32_t)(range - 1));
         y_list[0] = (int)bits_read(&bits, range_bits_val);
         y_list[1] = (int)bits_read(&bits, range_bits_val);
+        if (bits.error)
+            goto floor_decode_error;
 
         int offset = 2;
         for (int j = 0; j < fl->partitions; j++) {
@@ -1167,14 +1246,19 @@ int vorbis_decode_packet(
             int cval = 0;
             if (cbits > 0) {
                 int book = fl->class_masterbooks[cls];
-                if (book >= 0 && book < dec->codebook_count)
+                if (book >= 0 && book < dec->codebook_count) {
                     cval = codebook_decode_scalar(&dec->codebooks[book], &bits);
+                    if (cval < 0)
+                        goto floor_decode_error;
+                }
             }
             for (int k = 0; k < cdim && offset < fl->x_list_count; k++) {
                 int book = fl->subclass_books[cls][cval & csub];
                 cval >>= cbits;
                 if (book >= 0 && book < dec->codebook_count) {
                     y_list[offset] = (int)codebook_decode_scalar(&dec->codebooks[book], &bits);
+                    if (y_list[offset] < 0)
+                        goto floor_decode_error;
                 } else {
                     y_list[offset] = 0;
                 }
@@ -1281,25 +1365,20 @@ floor_decode_done:;
         if (classbook < 0 || classbook >= dec->codebook_count)
             continue;
         vorbis_codebook_t *cb = &dec->codebooks[classbook];
-        int actual_size = res->end - res->begin;
+        int residue_begin = res->begin < n2 ? res->begin : n2;
+        int residue_end = res->end < n2 ? res->end : n2;
+        int actual_size = residue_end - residue_begin;
         if (actual_size <= 0 || res->partition_size <= 0)
             continue;
         int parts_per_ch = actual_size / res->partition_size;
+        if (parts_per_ch <= 0)
+            continue;
 
         // Allocate per-partition classification array (decoded in pass 0, used in all passes)
         int total_parts = parts_per_ch * ch_count;
         int *classifications = (int *)calloc((size_t)total_parts, sizeof(int));
         if (!classifications)
-            goto residue_done;
-
-        // Pass 0: decode classification values from the classbook
-        for (int p = 0; p < parts_per_ch; p++) {
-            for (int c = 0; c < ch_count; c++) {
-                if (p == 0 || (p % cb->dimensions) == 0) {
-                    // Read a new classword every cb->dimensions partitions
-                }
-            }
-        }
+            goto residue_decode_error;
 
         // Decode classwords and unpack classifications
         {
@@ -1307,8 +1386,10 @@ floor_decode_done:;
             for (int p = 0; p < parts_per_ch;) {
                 for (int c = 0; c < ch_count; c++) {
                     int cw = codebook_decode_scalar(cb, &bits);
-                    if (cw < 0)
-                        goto residue_class_done;
+                    if (cw < 0) {
+                        free(classifications);
+                        goto residue_decode_error;
+                    }
                     // Unpack classification values from the codeword
                     int temp = cw;
                     // The classifications for this channel's next `classwords_per_ch`
@@ -1325,8 +1406,6 @@ floor_decode_done:;
                 p += classwords_per_ch;
             }
         }
-    residue_class_done:
-
         // Passes 0..7: decode residue vectors for each pass with cascade bits
         for (int pass = 0; pass < 8; pass++) {
             for (int p = 0; p < parts_per_ch; p++) {
@@ -1342,13 +1421,15 @@ floor_decode_done:;
 
                     vorbis_codebook_t *rcb = &dec->codebooks[book_idx];
                     int ch_idx = ch_list[c];
-                    int offset = res->begin + p * res->partition_size;
+                    int offset = residue_begin + p * res->partition_size;
 
                     for (int j = 0; j < res->partition_size && offset + j < n2;
                          j += rcb->dimensions) {
                         int entry = codebook_decode_scalar(rcb, &bits);
-                        if (entry < 0)
-                            goto residue_pass_done;
+                        if (entry < 0) {
+                            free(classifications);
+                            goto residue_decode_error;
+                        }
                         if (rcb->vq_table) {
                             float vq[256];
                             codebook_decode_vq(rcb, entry, vq);
@@ -1359,10 +1440,21 @@ floor_decode_done:;
                 }
             }
         }
-    residue_pass_done:
         free(classifications);
     }
-residue_done:
+    goto residue_decode_done;
+
+residue_decode_error:
+    for (int ch = 0; ch < dec->channels; ch++) {
+        free(floor_buf[ch]);
+        free(residue_buf[ch]);
+    }
+    free(floor_buf);
+    free(residue_buf);
+    free(no_residue);
+    return -1;
+
+residue_decode_done:
 
     // --- Inverse coupling ---
     for (int step = map->coupling_steps - 1; step >= 0; step--) {
@@ -1406,10 +1498,9 @@ residue_done:
     // Ensure PCM output buffer is large enough
     int total_pcm = output_samples * dec->channels;
     if (total_pcm > dec->pcm_out_cap) {
-        free(dec->pcm_out);
-        dec->pcm_out_cap = total_pcm + 1024;
-        dec->pcm_out = (int16_t *)calloc((size_t)dec->pcm_out_cap, sizeof(int16_t));
-        if (!dec->pcm_out) {
+        int new_cap = total_pcm + 1024;
+        int16_t *new_pcm = (int16_t *)calloc((size_t)new_cap, sizeof(int16_t));
+        if (!new_pcm) {
             for (int ch = 0; ch < dec->channels; ch++) {
                 free(floor_buf[ch]);
                 free(residue_buf[ch]);
@@ -1419,6 +1510,9 @@ residue_done:
             free(no_residue);
             return -1;
         }
+        free(dec->pcm_out);
+        dec->pcm_out = new_pcm;
+        dec->pcm_out_cap = new_cap;
     }
 
     float *imdct_buf = (float *)calloc((size_t)n, sizeof(float));
@@ -1457,13 +1551,7 @@ residue_done:
         // Overlap-add with previous frame
         for (int j = 0; j < overlap; j++) {
             float sample = dec->overlap[ch][j] + windowed[j];
-            // Clamp to 16-bit range
-            int s = (int)(sample * 32767.0f);
-            if (s > 32767)
-                s = 32767;
-            if (s < -32768)
-                s = -32768;
-            dec->pcm_out[j * dec->channels + ch] = (int16_t)s;
+            dec->pcm_out[j * dec->channels + ch] = pcm_s16_from_float(sample);
         }
 
         // Save right half for next frame's overlap

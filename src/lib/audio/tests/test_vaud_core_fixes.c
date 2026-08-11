@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/lib/audio/tests/test_vaud_core_fixes.c
+// Purpose: Validate core, streaming, mixer, DSP, and lifecycle hardening.
+// Key invariants:
+//   - Failed/corrupt sources cannot escape bounded mixer storage.
+//   - Realtime rendering is allocation-free and publishes deterministic PCM.
+//   - Public control values remain finite and bounded across render threads.
+// Ownership/Lifetime:
+//   - Tests release every context, sound, music buffer, file, and decoder stub.
+// Links: src/lib/audio/src/vaud.c, src/lib/audio/src/vaud_mixer.c
+//
+//===----------------------------------------------------------------------===//
 
 #include "vaud_internal.h"
 
@@ -691,6 +703,217 @@ static void test_mixer_outputs_silence_when_context_paused(void) {
     vaud_destroy(ctx);
 }
 
+static void test_mixer_null_context_clears_output(void) {
+    int16_t out[VAUD_CHANNELS * 2] = {1, 2, 3, 4};
+    vaud_mixer_render(NULL, out, 2);
+    for (size_t i = 0; i < sizeof(out) / sizeof(out[0]); i++)
+        EXPECT_TRUE(out[i] == 0);
+}
+
+static void test_mixer_rejects_invalid_voice_storage(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    int16_t sample[2] = {1000, 1000};
+    struct vaud_sound sound;
+    memset(&sound, 0, sizeof(sound));
+    sound.frame_count = 1;
+    sound.source_channels = 2;
+
+    ctx->voices[0].state = VAUD_VOICE_PLAYING;
+    ctx->voices[0].sound = &sound;
+    ctx->voices[0].loop = 1;
+    ctx->voices[0].volume = 1.0f;
+    int16_t out[2] = {7, 7};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(ctx->voices[0].state == VAUD_VOICE_INACTIVE);
+    EXPECT_TRUE(out[0] == 0 && out[1] == 0);
+
+    sound.samples = sample;
+    sound.frame_count = 0;
+    ctx->voices[0].state = VAUD_VOICE_PLAYING;
+    ctx->voices[0].sound = &sound;
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(ctx->voices[0].state == VAUD_VOICE_INACTIVE);
+    vaud_destroy(ctx);
+}
+
+static void test_mixer_sanitizes_voice_cursors_and_dsp_state(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    int16_t samples[4] = {2000, -2000, 3000, -3000};
+    struct vaud_sound sound;
+    memset(&sound, 0, sizeof(sound));
+    sound.samples = samples;
+    sound.frame_count = 2;
+    sound.source_channels = 2;
+
+    vaud_voice *voice = &ctx->voices[0];
+    voice->state = VAUD_VOICE_PLAYING;
+    voice->sound = &sound;
+    voice->position = -9;
+    voice->frac_pos = NAN;
+    voice->pitch = 2.0f;
+    voice->volume = 1.0f;
+    voice->occlusion_smooth = NAN;
+    voice->occlusion_target = INFINITY;
+    voice->lowpass_cutoff = INFINITY;
+
+    int16_t out[2] = {0, 0};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(out[0] != 0 || out[1] != 0);
+    EXPECT_TRUE(voice->position >= 0);
+    EXPECT_TRUE(isfinite(voice->frac_pos));
+    EXPECT_TRUE(isfinite(voice->occlusion_smooth));
+    EXPECT_TRUE(voice->occlusion_smooth >= 0.0f && voice->occlusion_smooth <= 1.0f);
+    EXPECT_TRUE(isfinite(voice->lowpass_cutoff));
+    EXPECT_TRUE(voice->lowpass_cutoff <= (float)VAUD_SAMPLE_RATE * 0.5f);
+    vaud_destroy(ctx);
+}
+
+static void test_voice_finishes_on_exact_render_boundary(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    int16_t samples[2] = {2000, 2000};
+    struct vaud_sound sound;
+    memset(&sound, 0, sizeof(sound));
+    sound.samples = samples;
+    sound.frame_count = 1;
+    sound.source_channels = 2;
+    ctx->voices[0].state = VAUD_VOICE_PLAYING;
+    ctx->voices[0].sound = &sound;
+    ctx->voices[0].volume = 1.0f;
+
+    int16_t out[2] = {0, 0};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(out[0] != 0 && out[1] != 0);
+    EXPECT_TRUE(ctx->voices[0].state == VAUD_VOICE_INACTIVE);
+    EXPECT_TRUE(ctx->voices[0].sound == NULL);
+    vaud_destroy(ctx);
+}
+
+static void test_mixer_bounds_music_ring_state(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    struct vaud_music music;
+    memset(&music, 0, sizeof(music));
+    music.state = VAUD_MUSIC_PLAYING;
+    music.current_buffer = VAUD_MUSIC_BUFFER_COUNT;
+    music.volume = 1.0f;
+    ctx->active_music[0] = &music;
+    ctx->music_count = 1;
+
+    int16_t out[2] = {7, 7};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(music.state == VAUD_MUSIC_STOPPED);
+    EXPECT_TRUE(out[0] == 0 && out[1] == 0);
+
+    int16_t *buffer = (int16_t *)calloc((size_t)VAUD_MUSIC_BUFFER_FRAMES * 2, sizeof(int16_t));
+    EXPECT_TRUE(buffer != NULL);
+    buffer[0] = 4096;
+    buffer[1] = 4096;
+    memset(&music, 0, sizeof(music));
+    music.state = VAUD_MUSIC_PLAYING;
+    music.volume = 1.0f;
+    music.buffers[0] = buffer;
+    music.buffer_frames[0] = INT32_MAX;
+    music.buffer_position = -10;
+    music.position = INT64_MAX;
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(music.buffer_frames[0] == VAUD_MUSIC_BUFFER_FRAMES);
+    EXPECT_TRUE(music.buffer_position == 1);
+    EXPECT_TRUE(music.position == INT64_MAX);
+
+    music.buffer_position = 0;
+    music.buffer_frames[0] = 1;
+    music.buffers[0] = NULL;
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(music.buffer_frames[0] == 0);
+    free(buffer);
+    ctx->active_music[0] = NULL;
+    ctx->music_count = 0;
+    vaud_destroy(ctx);
+}
+
+static void test_mixer_bounds_corrupt_registry_counts(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    ctx->music_count = INT32_MAX;
+    ctx->duck_rule_count = INT32_MAX;
+    int16_t out[2] = {7, 7};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(out[0] == 0 && out[1] == 0);
+    vaud_destroy(ctx);
+}
+
+static void test_mixer_sanitizes_duck_envelopes_and_paused_cache(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    ctx->duck_rule_count = 1;
+    ctx->duck_rules[0].amount = NAN;
+    ctx->duck_rules[0].attack_sec = NAN;
+    ctx->duck_rules[0].release_sec = INFINITY;
+    ctx->duck_rules[0].gain = NAN;
+    int16_t out[2] = {7, 7};
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].amount));
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].attack_sec));
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].release_sec));
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].gain));
+
+    ctx->last_output_frames = 1;
+    ctx->last_output_buf[0] = 1000;
+    ctx->last_output_buf[1] = -1000;
+    ctx->paused = 1;
+    vaud_mixer_render(ctx, out, 1);
+    EXPECT_TRUE(ctx->last_output_frames == 1);
+    EXPECT_TRUE(ctx->last_output_buf[0] == 0 && ctx->last_output_buf[1] == 0);
+    vaud_destroy(ctx);
+}
+
+static void test_voice_allocation_survives_saturated_clock(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    ctx->frame_counter = INT64_MAX;
+    for (int32_t i = 0; i < VAUD_MAX_VOICES; i++) {
+        ctx->voices[i].state = VAUD_VOICE_PLAYING;
+        ctx->voices[i].loop = 1;
+        ctx->voices[i].start_time = INT64_MAX;
+    }
+    EXPECT_TRUE(vaud_alloc_voice(ctx) != NULL);
+    vaud_destroy(ctx);
+}
+
+static void test_public_dsp_controls_reject_infinity(void) {
+    vaud_context_t ctx = vaud_create();
+    EXPECT_TRUE(ctx != NULL);
+    int16_t samples[4] = {100, 100, 100, 100};
+    struct vaud_sound sound;
+    memset(&sound, 0, sizeof(sound));
+    sound.ctx = ctx;
+    sound.samples = samples;
+    sound.frame_count = 2;
+    sound.source_channels = 2;
+    ctx->loaded_sounds[0] = &sound;
+    ctx->sound_count = 1;
+
+    vaud_voice_id id = vaud_play_ex2(&sound, 1.0f, 0.0f, 2.0f);
+    EXPECT_TRUE(id != VAUD_INVALID_VOICE);
+    vaud_voice *voice = find_voice_by_id(ctx, id);
+    EXPECT_TRUE(voice != NULL && voice->pitch == 2.0f);
+    vaud_set_voice_lowpass(ctx, id, INFINITY);
+    EXPECT_TRUE(isfinite(voice->lowpass_cutoff));
+    EXPECT_TRUE(voice->lowpass_cutoff <= (float)VAUD_SAMPLE_RATE * 0.5f);
+
+    vaud_set_group_duck(ctx, 1, 2, 0.5f, INFINITY, INFINITY);
+    EXPECT_TRUE(ctx->duck_rule_count == 1);
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].attack_sec));
+    EXPECT_TRUE(isfinite(ctx->duck_rules[0].release_sec));
+    vaud_stop_voice(ctx, id);
+    ctx->loaded_sounds[0] = NULL;
+    ctx->sound_count = 0;
+    vaud_destroy(ctx);
+}
+
 static void test_vaud_update_refills_without_holding_state_mutex(void) {
     vaud_context_t ctx = vaud_create();
     EXPECT_TRUE(ctx != NULL);
@@ -1086,6 +1309,15 @@ int main(void) {
     test_refill_in_progress_still_mixes_ready_current_buffer();
     test_mixer_skips_music_when_current_buffer_is_refilling();
     test_mixer_outputs_silence_when_context_paused();
+    test_mixer_null_context_clears_output();
+    test_mixer_rejects_invalid_voice_storage();
+    test_mixer_sanitizes_voice_cursors_and_dsp_state();
+    test_voice_finishes_on_exact_render_boundary();
+    test_mixer_bounds_music_ring_state();
+    test_mixer_bounds_corrupt_registry_counts();
+    test_mixer_sanitizes_duck_envelopes_and_paused_cache();
+    test_voice_allocation_survives_saturated_clock();
+    test_public_dsp_controls_reject_infinity();
     test_vaud_update_refills_without_holding_state_mutex();
     test_mixer_outputs_silence_when_state_lock_is_busy();
     test_vaud_get_stats_handles_nulls_and_counts_render();

@@ -906,9 +906,45 @@ vaud_voice_id vaud_play_ex_group(vaud_sound_t sound, float volume, float pan, in
 
 /// @copydoc vaud_play_ex2
 vaud_voice_id vaud_play_ex2(vaud_sound_t sound, float volume, float pan, float pitch) {
-    vaud_voice_id id = vaud_play_ex(sound, volume, pan);
-    if (id != VAUD_INVALID_VOICE && sound && sound->ctx)
-        vaud_set_voice_pitch(sound->ctx, id, pitch);
+    if (!sound)
+        return VAUD_INVALID_VOICE;
+
+    vaud_context_t ctx = sound->ctx;
+    if (!ctx)
+        return VAUD_INVALID_VOICE;
+
+    vaud_mutex_lock(&ctx->mutex);
+    if (!sound_is_attached_to_context_locked(sound, ctx) ||
+        vaud_atomic_load_i32(&ctx->destroying) != 0) {
+        vaud_mutex_unlock(&ctx->mutex);
+        return VAUD_INVALID_VOICE;
+    }
+
+    vaud_voice *voice = vaud_alloc_voice(ctx);
+    if (!voice) {
+        vaud_mutex_unlock(&ctx->mutex);
+        return VAUD_INVALID_VOICE;
+    }
+
+    if (!isfinite(pitch) || pitch <= 0.0f)
+        pitch = 1.0f;
+    if (pitch < VAUD_PITCH_MIN)
+        pitch = VAUD_PITCH_MIN;
+    if (pitch > VAUD_PITCH_MAX)
+        pitch = VAUD_PITCH_MAX;
+
+    voice->sound = sound;
+    voice->position = 0;
+    voice->volume = vaud_clamp_unit_float(volume);
+    voice->pan = vaud_clamp_pan_float(pan);
+    voice->loop = 0;
+    voice->group_id = 0;
+    vaud_voice_reset_dsp(voice);
+    voice->pitch = pitch;
+    voice->state = VAUD_VOICE_PLAYING;
+
+    vaud_voice_id id = voice->id;
+    vaud_mutex_unlock(&ctx->mutex);
     return id;
 }
 
@@ -1063,8 +1099,10 @@ void vaud_set_voice_lowpass(vaud_context_t ctx, vaud_voice_id voice_id, float cu
     vaud_mutex_lock(&ctx->mutex);
     vaud_voice *voice = vaud_find_voice(ctx, voice_id);
     if (voice) {
-        if (!(cutoff_hz > 0.0f)) /* <= 0 or NaN disables the filter */
+        if (!isfinite(cutoff_hz) || cutoff_hz <= 0.0f)
             cutoff_hz = 0.0f;
+        else if (cutoff_hz > (float)VAUD_SAMPLE_RATE * 0.5f)
+            cutoff_hz = (float)VAUD_SAMPLE_RATE * 0.5f;
         voice->lowpass_cutoff = cutoff_hz;
     }
     vaud_mutex_unlock(&ctx->mutex);
@@ -1148,9 +1186,9 @@ void vaud_set_group_duck(vaud_context_t ctx,
 
     if (amount > 1.0f)
         amount = 1.0f;
-    if (!(attack_sec > 0.0f))
+    if (!isfinite(attack_sec) || attack_sec <= 0.0f)
         attack_sec = 0.001f;
-    if (!(release_sec > 0.0f))
+    if (!isfinite(release_sec) || release_sec <= 0.0f)
         release_sec = 0.001f;
 
     if (found < 0) {
