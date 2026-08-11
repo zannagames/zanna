@@ -511,6 +511,50 @@ int main() {
         CHECK(eliminated == 0); // Executable sections are excluded.
     }
 
+    // --- A section symbol is never merged as the string it happens to start ---
+    // A mergeable string section is addressed as "section symbol + offset", so
+    // treating that nameless symbol as the string at offset zero would redirect
+    // every one of those offsets into another object's copy of that string.
+    {
+        auto makeSectionSymbolObj = [](const std::string &objName) {
+            ObjFile obj;
+            obj.name = objName;
+            obj.sections.push_back({}); // null section
+
+            ObjSection sec;
+            sec.name = ".rodata.str1.1";
+            sec.alloc = true;
+            sec.isCStringSection = true;
+            // Two strings packed back to back, as a mergeable section holds them.
+            const char kBytes[] = "failed\0zwp_text_input_manager_v3";
+            sec.data.assign(kBytes, kBytes + sizeof(kBytes));
+            sec.memSize = sec.data.size();
+            obj.sections.push_back(sec);
+
+            obj.symbols.push_back({}); // null symbol
+
+            ObjSymbol sectionSym; // STT_SECTION: no name, offset zero
+            sectionSym.name = "";
+            sectionSym.sectionIndex = 1;
+            sectionSym.offset = 0;
+            sectionSym.binding = ObjSymbol::Local;
+            obj.symbols.push_back(sectionSym);
+            return obj;
+        };
+
+        std::vector<ObjFile> objs = {makeSectionSymbolObj("wl1.o"), makeSectionSymbolObj("wl2.o")};
+        std::unordered_map<std::string, GlobalSymEntry> globalSyms;
+
+        CHECK(deduplicateStrings(objs, globalSyms) == 0);
+        // Both sections must keep their bytes so "section + offset" references
+        // still land on the string the compiler picked.
+        for (const auto &obj : objs) {
+            CHECK(obj.symbols[1].name.empty());
+            CHECK(obj.symbols[1].sectionIndex == 1);
+            CHECK(obj.sections[1].data.size() == sizeof("failed\0zwp_text_input_manager_v3"));
+        }
+    }
+
     // --- Result ---
     if (gFail == 0) {
         std::cout << "All StringDedup tests passed.\n";

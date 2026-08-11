@@ -23,6 +23,7 @@ add_library(zanna_codegen_common STATIC
         linker/SectionMerger.cpp
         linker/RelocApplier.cpp
         linker/ElfExeWriter.cpp
+        linker/ElfSymbolVersions.cpp
         linker/MachOCodeSign.cpp
         linker/MachOBindRebase.cpp
         linker/MachOExeWriter.cpp

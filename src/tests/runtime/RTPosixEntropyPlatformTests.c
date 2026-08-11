@@ -21,6 +21,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+// glibc emits fortified inline definitions of read() and open() when
+// _FORTIFY_SOURCE is active, which GCC turns on by default at -O1 and above on
+// several distributions. Those inline definitions collide with the
+// `#define read mock_read` interposition below, so opt this translation unit
+// out before any system header is pulled in.
+#undef _FORTIFY_SOURCE
+#define _FORTIFY_SOURCE 0
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

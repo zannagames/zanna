@@ -31,7 +31,8 @@ namespace {
 /// @brief Portable signed high-64 multiply (the SMULH / one-operand IMUL result).
 int64_t mulhiS64(int64_t a, int64_t b) {
 #if defined(__SIZEOF_INT128__)
-    return static_cast<int64_t>((static_cast<__int128>(a) * static_cast<__int128>(b)) >> 64);
+    return static_cast<int64_t>(
+        __extension__((static_cast<__int128>(a) * static_cast<__int128>(b)) >> 64));
 #else
     // 32-bit split fallback.
     const uint64_t ua = static_cast<uint64_t>(a);
@@ -56,9 +57,9 @@ int64_t mulhiS64(int64_t a, int64_t b) {
 /// @brief Portable unsigned high-64 multiply (UMULH / one-operand MUL result).
 uint64_t mulhiU64(uint64_t a, uint64_t b) {
 #if defined(__SIZEOF_INT128__)
-    return static_cast<uint64_t>((static_cast<unsigned __int128>(a) *
-                                  static_cast<unsigned __int128>(b)) >>
-                                 64);
+    return static_cast<uint64_t>(__extension__((static_cast<unsigned __int128>(a) *
+                                                static_cast<unsigned __int128>(b)) >>
+                                               64));
 #else
     const uint64_t aLo = a & 0xFFFFFFFFULL, aHi = a >> 32;
     const uint64_t bLo = b & 0xFFFFFFFFULL, bHi = b >> 32;

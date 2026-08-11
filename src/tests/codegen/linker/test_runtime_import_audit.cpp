@@ -194,6 +194,10 @@ TEST(LinkerRuntimeImportAudit, HostRuntimeArchivesUseKnownDynamicImports) {
     std::vector<std::string> unknown;
 
     for (const auto &sym : unresolved) {
+        // Linker-defined names (the ELF GOT base) are supplied by the link
+        // itself, so they are neither loader imports nor unclassified.
+        if (isLinkerDefinedSymbol(sym, platform))
+            continue;
         const bool allowSynthetic =
             platform == LinkPlatform::Windows && isWindowsLinkerHelperSymbol(sym);
         const bool allowDynamic = allowSynthetic || isKnownDynamicSymbol(sym, platform);

@@ -44,6 +44,7 @@
 
 #include "rt_textureasset3d.h"
 
+#include "rt_alloc_size.h"
 #include "rt_asset.h"
 #include "rt_asset_error.h"
 #include "rt_compress.h"

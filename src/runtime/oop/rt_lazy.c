@@ -368,7 +368,7 @@ void *rt_lazy_flat_map(void *obj, void *(*fn)(void *)) {
 /// @param[in] supplier Opaque native supplier function pointer.
 /// @return Caller-owned managed Lazy, or NULL on allocation failure.
 void *rt_lazy_new_wrapper(void *supplier) {
-    return rt_lazy_new((void *(*)(void))supplier);
+    return rt_lazy_new(RT_FN_PTR_CAST((void *(*)(void))supplier));
 }
 
 /// @brief IL trampoline for `rt_lazy_map`.
@@ -376,7 +376,7 @@ void *rt_lazy_new_wrapper(void *supplier) {
 /// @param[in] fn Opaque native transform pointer.
 /// @return Result from rt_lazy_map().
 void *rt_lazy_map_wrapper(void *obj, void *fn) {
-    return rt_lazy_map(obj, (void *(*)(void *))fn);
+    return rt_lazy_map(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for `rt_lazy_flat_map`.
@@ -384,5 +384,5 @@ void *rt_lazy_map_wrapper(void *obj, void *fn) {
 /// @param[in] fn Opaque native transform pointer.
 /// @return Result from rt_lazy_flat_map().
 void *rt_lazy_flat_map_wrapper(void *obj, void *fn) {
-    return rt_lazy_flat_map(obj, (void *(*)(void *))fn);
+    return rt_lazy_flat_map(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }

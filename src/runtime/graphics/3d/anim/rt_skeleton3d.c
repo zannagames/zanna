@@ -36,6 +36,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_skeleton3d.h"
+#include "rt_alloc_size.h"
 #include "rt_animcontroller3d.h"
 #include "rt_blendtree3d.h"
 #include "rt_canvas3d.h"

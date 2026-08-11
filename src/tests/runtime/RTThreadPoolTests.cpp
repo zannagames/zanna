@@ -123,7 +123,7 @@ static void shutdown_pool_now(void *arg) {
 
 static int call_traps(void (*fn)(void *), void *arg) {
     jmp_buf recovery;
-    int trapped = 0;
+    volatile int trapped = 0;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         fn(arg);

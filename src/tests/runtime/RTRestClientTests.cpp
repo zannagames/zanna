@@ -368,7 +368,7 @@ static void test_restclient_identity_and_constructor_allocation_cleanup() {
                 "constructor: every managed allocation failure cleans partial state");
 
     void *wrong = rt_seq_new();
-    bool wrong_receiver_trapped = false;
+    volatile bool wrong_receiver_trapped = false;
     jmp_buf receiver_recovery;
     rt_trap_set_recovery(&receiver_recovery);
     if (setjmp(receiver_recovery) == 0) {

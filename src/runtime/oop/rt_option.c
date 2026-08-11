@@ -42,6 +42,7 @@
 #include "rt_error.h"
 #include "rt_heap.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_result.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -555,7 +556,7 @@ void *rt_option_expect(void *obj, rt_string msg) {
 /// @return Callback result without retaining or otherwise transforming it.
 void *rt_cb_direct_invoke1(void *ctx, void *fn, void *arg) {
     (void)ctx;
-    return ((void *(*)(void *))fn)(arg);
+    return (RT_FN_PTR_CAST((void *(*)(void *))fn))(arg);
 }
 
 /// @brief Direct-call invoker for zero-argument callbacks.
@@ -565,7 +566,7 @@ void *rt_cb_direct_invoke1(void *ctx, void *fn, void *arg) {
 /// @return Callback result without retaining or otherwise transforming it.
 void *rt_cb_direct_invoke0(void *ctx, void *fn) {
     (void)ctx;
-    return ((void *(*)(void))fn)();
+    return (RT_FN_PTR_CAST((void *(*)(void))fn))();
 }
 
 /// @brief Direct-call invoker for boolean predicates.
@@ -576,7 +577,7 @@ void *rt_cb_direct_invoke0(void *ctx, void *fn) {
 /// @return Predicate result exactly as returned by the callback.
 int8_t rt_cb_direct_invoke_pred(void *ctx, void *fn, void *arg) {
     (void)ctx;
-    return ((int8_t (*)(void *))fn)(arg);
+    return (RT_FN_PTR_CAST((int8_t (*)(void *))fn))(arg);
 }
 
 /// @brief Apply a native callback to a pointer-valued `Some`.
@@ -589,7 +590,7 @@ int8_t rt_cb_direct_invoke_pred(void *ctx, void *fn, void *arg) {
 /// @return New caller-owned Option for mapped/absent paths, or the borrowed
 ///         original @p obj for a typed non-pointer `Some`.
 void *rt_option_map(void *obj, void *(*fn)(void *)) {
-    return rt_option_map_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_option_map_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Combinator core shared by the native wrapper and the VM callback bridges.
@@ -629,7 +630,7 @@ void *rt_option_map_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx)
 ///         caller-owned `None` for absent paths, or the borrowed original
 ///         Option for a typed non-pointer `Some`.
 void *rt_option_and_then(void *obj, void *(*fn)(void *)) {
-    return rt_option_and_then_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_option_and_then_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Run a pluggable Option-returning callback and flatten its result.
@@ -663,7 +664,7 @@ void *rt_option_and_then_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void 
 ///         an available fallback, or a fresh caller-owned `None` when no
 ///         fallback callback is supplied.
 void *rt_option_or_else(void *obj, void *(*fn)(void)) {
-    return rt_option_or_else_invoke(obj, (void *)fn, rt_cb_direct_invoke0, NULL);
+    return rt_option_or_else_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke0, NULL);
 }
 
 /// @brief Compute a fallback Option through a pluggable zero-argument invoker.
@@ -692,7 +693,8 @@ void *rt_option_or_else_invoke(void *obj, void *fn, rt_cb_invoke0 invoke, void *
 /// @return Borrowed original pointer-valued Option when the predicate succeeds;
 ///         otherwise a fresh caller-owned `None`.
 void *rt_option_filter(void *obj, int8_t (*pred)(void *)) {
-    return rt_option_filter_invoke(obj, (void *)pred, rt_cb_direct_invoke_pred, NULL);
+    return rt_option_filter_invoke(
+        obj, RT_FN_PTR_CAST((void *)pred), rt_cb_direct_invoke_pred, NULL);
 }
 
 /// @brief Filter a pointer-valued Option through a pluggable predicate invoker.
@@ -721,7 +723,7 @@ void *rt_option_filter_invoke(void *obj, void *fn, rt_cb_invoke_pred invoke, voi
 ///        may be @c NULL.
 /// @return Result produced by @ref rt_option_map with the same ownership rules.
 void *rt_option_map_wrapper(void *obj, void *fn) {
-    return rt_option_map(obj, (void *(*)(void *))fn);
+    return rt_option_map(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for @ref rt_option_and_then.
@@ -729,7 +731,7 @@ void *rt_option_map_wrapper(void *obj, void *fn) {
 /// @param fn Opaque native Option-returning callback pointer; may be @c NULL.
 /// @return Result produced by @ref rt_option_and_then with the same ownership rules.
 void *rt_option_and_then_wrapper(void *obj, void *fn) {
-    return rt_option_and_then(obj, (void *(*)(void *))fn);
+    return rt_option_and_then(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for @ref rt_option_or_else.
@@ -737,7 +739,7 @@ void *rt_option_and_then_wrapper(void *obj, void *fn) {
 /// @param fn Opaque native zero-argument fallback pointer; may be @c NULL.
 /// @return Result produced by @ref rt_option_or_else with the same ownership rules.
 void *rt_option_or_else_wrapper(void *obj, void *fn) {
-    return rt_option_or_else(obj, (void *(*)(void))fn);
+    return rt_option_or_else(obj, RT_FN_PTR_CAST((void *(*)(void))fn));
 }
 
 /// @brief IL trampoline for @ref rt_option_filter.
@@ -745,7 +747,7 @@ void *rt_option_or_else_wrapper(void *obj, void *fn) {
 /// @param pred Opaque native predicate pointer; may be @c NULL.
 /// @return Result produced by @ref rt_option_filter with the same ownership rules.
 void *rt_option_filter_wrapper(void *obj, void *pred) {
-    return rt_option_filter(obj, (int8_t (*)(void *))pred);
+    return rt_option_filter(obj, RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }
 
 //=============================================================================

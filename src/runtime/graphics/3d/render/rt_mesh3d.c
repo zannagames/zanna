@@ -32,6 +32,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_alloc_size.h"
 #include "rt_asset_error.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
@@ -513,7 +514,7 @@ static int mesh3d_ensure_positions64(rt_mesh3d *m, const char *label) {
         return 0;
     if (m->positions64)
         return 1;
-    if ((size_t)m->vertex_capacity > SIZE_MAX / (3u * sizeof(double))) {
+    if (!rt_alloc_count_ok(m->vertex_capacity, 3u * sizeof(double))) {
         snprintf(msg, sizeof(msg), "%s: position sidecar allocation overflow", label);
         rt_trap(msg);
         return 0;
@@ -765,7 +766,7 @@ static int mesh3d_alloc_grown_vertex_storage(rt_mesh3d *m,
         return 0;
     *out_vertices = NULL;
     *out_positions64 = NULL;
-    if ((size_t)vertex_capacity > SIZE_MAX / sizeof(vgfx3d_vertex_t)) {
+    if (!rt_alloc_count_ok(vertex_capacity, sizeof(vgfx3d_vertex_t))) {
         snprintf(msg, sizeof(msg), "%s: vertex allocation overflow", label);
         rt_trap(msg);
         return 0;
@@ -780,7 +781,7 @@ static int mesh3d_alloc_grown_vertex_storage(rt_mesh3d *m,
     if (m->vertices && m->vertex_count > 0)
         memcpy(vertices, m->vertices, (size_t)m->vertex_count * sizeof(vgfx3d_vertex_t));
     if (m->positions64) {
-        if ((size_t)vertex_capacity > SIZE_MAX / (3u * sizeof(double))) {
+        if (!rt_alloc_count_ok(vertex_capacity, 3u * sizeof(double))) {
             snprintf(msg, sizeof(msg), "%s: position sidecar allocation overflow", label);
             rt_trap(msg);
             free(vertices);
@@ -829,7 +830,7 @@ static int mesh3d_reserve_storage(rt_mesh3d *m,
     }
     if (index_capacity > m->index_capacity) {
         uint32_t *ni;
-        if ((size_t)index_capacity > SIZE_MAX / sizeof(uint32_t)) {
+        if (!rt_alloc_count_ok(index_capacity, sizeof(uint32_t))) {
             snprintf(msg, sizeof(msg), "%s: index allocation overflow", label);
             rt_trap(msg);
             return 0;
@@ -1335,7 +1336,7 @@ void rt_mesh3d_add_triangle(void *obj, int64_t v0, int64_t v1, int64_t v2) {
         new_cap = m->index_capacity * 2u;
         if (new_cap < needed)
             new_cap = needed;
-        if ((size_t)new_cap > SIZE_MAX / sizeof(uint32_t)) {
+        if (!rt_alloc_count_ok(new_cap, sizeof(uint32_t))) {
             mesh_mark_build_failed(m);
             rt_trap("Mesh3D.AddTriangle: index allocation overflow");
             return;
@@ -1574,7 +1575,7 @@ void rt_mesh3d_recalc_normals(void *obj) {
         mesh3d_bump_vertex_revision(m, 1);
         return;
     }
-    if ((size_t)vertex_count > SIZE_MAX / (3u * sizeof(double))) {
+    if (!rt_alloc_count_ok(vertex_count, 3u * sizeof(double))) {
         rt_trap("Mesh3D.RecalcNormals: normal accumulator allocation overflow");
         return;
     }
@@ -1657,7 +1658,7 @@ static int mesh3d_fill_missing_normals(rt_mesh3d *m) {
 
     if (!m || m->index_count < 3u)
         return 1;
-    if ((size_t)m->vertex_count > SIZE_MAX / (3u * sizeof(double))) {
+    if (!rt_alloc_count_ok(m->vertex_count, 3u * sizeof(double))) {
         rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
                            "Mesh3D.FromOBJ: normal accumulator allocation overflow");
         return 0;
@@ -1755,10 +1756,10 @@ void *rt_mesh3d_clone(void *obj) {
     if (!dst)
         return NULL;
 
-    if ((size_t)vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)index_count > SIZE_MAX / sizeof(uint32_t) ||
-        (size_t)submesh_range_count > SIZE_MAX / sizeof(rt_mesh3d_submesh_range) ||
-        (src->positions64 && (size_t)vertex_count > SIZE_MAX / (3u * sizeof(double)))) {
+    if (!rt_alloc_count_ok(vertex_count, sizeof(vgfx3d_vertex_t)) ||
+        !rt_alloc_count_ok(index_count, sizeof(uint32_t)) ||
+        !rt_alloc_count_ok(submesh_range_count, sizeof(rt_mesh3d_submesh_range)) ||
+        (src->positions64 && !rt_alloc_count_ok(vertex_count, 3u * sizeof(double)))) {
         if (rt_obj_release_check0(dst))
             rt_obj_free(dst);
         rt_trap("Mesh3D.Clone: allocation overflow");

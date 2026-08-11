@@ -15,7 +15,7 @@
 // Key invariants:
 //   - The seven cert/ASN.1 helpers below are defined once in the common TU and
 //     called from the platform TUs; cert_allows_tls_server_auth is implemented
-//     per-platform and forward-declared here.
+//     per-platform and is therefore declared only inside those TUs.
 //   - On Windows, winsock2.h (which pulls windows.h) must precede wincrypt.h.
 //
 // Links: rt_tls_verify_common.c, rt_tls_verify_win.c, rt_tls_verify_posix.c,
@@ -74,17 +74,10 @@
 /// @brief Maximum number of handshake intermediates accepted by either trust adapter.
 #define TLS_MAX_INTERMEDIATE_CERTS 16
 
-/// @brief Check whether an X.509 certificate permits TLS server authentication.
-/// @details Each platform translation unit supplies its own static definition.
-///          When KeyUsage is present it must permit digital signatures, and
-///          when ExtendedKeyUsage is present it must include serverAuth or
-///          anyExtendedKeyUsage.
-/// @param[in] cert_der Complete DER-encoded X.509 certificate.
-/// @param[in] cert_len Length of @p cert_der in bytes.
-/// @return 1 when the applicable usage extensions allow server authentication;
-///         otherwise 0, including malformed recognized extensions.
-static RT_TLS_MAYBE_UNUSED int cert_allows_tls_server_auth(const uint8_t *cert_der,
-                                                           size_t cert_len);
+// `cert_allows_tls_server_auth` is intentionally not declared here. Each
+// platform translation unit defines its own static version above its first use;
+// a static declaration in this shared header would also reach the common TU,
+// which never defines it, and compilers reject that as an undefined static.
 
 /// @brief Advance through one entry of a TLS 1.3 certificate_list.
 /// @details Parses the certificate and per-entry extension length fields,

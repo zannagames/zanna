@@ -278,7 +278,7 @@ static void test_i64_overflow_traps() {
     {
         jmp_buf env;
         rt_trap_set_recovery(&env);
-        bool trapped = true;
+        volatile bool trapped = true;
         if (setjmp(env) == 0) {
             rt_i64buf_mul_scalar(buf, 2);
             trapped = false;
@@ -292,7 +292,7 @@ static void test_i64_overflow_traps() {
         rt_i64buf_set(pair, 1, INT64_MAX);
         jmp_buf env;
         rt_trap_set_recovery(&env);
-        bool trapped = true;
+        volatile bool trapped = true;
         if (setjmp(env) == 0) {
             (void)rt_i64buf_sum(pair);
             trapped = false;

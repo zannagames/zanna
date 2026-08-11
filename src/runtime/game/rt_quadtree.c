@@ -281,7 +281,7 @@ static int64_t qt_saturating_sub(int64_t a, int64_t b) {
 /// @return Exact product or nearest int64 endpoint.
 static int64_t qt_saturating_mul(int64_t a, int64_t b) {
 #if defined(__SIZEOF_INT128__)
-    __int128 result = (__int128)a * (__int128)b;
+    __extension__ __int128 result = (__int128)a * (__int128)b;
     if (result > INT64_MAX)
         return INT64_MAX;
     if (result < INT64_MIN)

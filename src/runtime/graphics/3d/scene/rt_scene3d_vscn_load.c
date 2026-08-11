@@ -34,6 +34,7 @@
 ///   rebuilds retained resources and node trees, resolves nested prefab references,
 ///   and releases every partial object on failure.
 
+#include "rt_alloc_size.h"
 #include "rt_platform_feature.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -1310,9 +1311,9 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
                            "Scene3D.Load: mesh index count is not a triangle list");
         return NULL;
     }
-    if ((size_t)vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)vertex_count > SIZE_MAX / 84u ||
-        (size_t)index_count > SIZE_MAX / sizeof(uint32_t)) {
+    if (!rt_alloc_count_ok(vertex_count, sizeof(vgfx3d_vertex_t)) ||
+        !rt_alloc_count_ok(vertex_count, 84u) ||
+        !rt_alloc_count_ok(index_count, sizeof(uint32_t))) {
         rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE, "Scene3D.Load: mesh payload is too large");
         return NULL;
     }

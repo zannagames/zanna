@@ -122,8 +122,11 @@ static linker::LinkPlatform targetLinkPlatform(TargetPlatform platform) {
 }
 
 /// @brief Return the system assembler command-line prefix for a given target platform.
-/// @details On Darwin hosts builds a `cc -arch arm64` invocation; cross-target
-///          paths use the Clang `--target=` triple matching the requested ABI.
+/// @details On native hosts builds a `cc` invocation, the POSIX-mandated driver
+///          name, so the mode works where the default toolchain is GCC;
+///          cross-target paths use the Clang `--target=` triple matching the
+///          requested ABI, since only Clang assembles for a foreign triple
+///          without a separate cross toolchain.
 /// @param platform Requested target, or `Host` for host-platform mapping.
 /// @return Executable and fixed target arguments, excluding input/output paths.
 static std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
@@ -134,6 +137,9 @@ static std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
             }
             return {"clang", "--target=arm64-apple-macos11"};
         case TargetPlatform::Linux:
+            if constexpr (zanna::platform::kHostLinux) {
+                return {"cc"};
+            }
             return {"clang", "--target=aarch64-unknown-linux-gnu"};
         case TargetPlatform::Windows:
             return {"clang", "--target=aarch64-pc-windows-msvc"};

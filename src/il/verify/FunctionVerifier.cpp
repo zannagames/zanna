@@ -1478,10 +1478,10 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         /// @return `true` when at least one ID was newly inserted.
         auto mergeReleaseSet = [](std::unordered_set<unsigned> &dst,
                                   const std::unordered_set<unsigned> &src) {
-            bool changed = false;
+            bool inserted = false;
             for (unsigned id : src)
-                changed |= dst.insert(id).second;
-            return changed;
+                inserted |= dst.insert(id).second;
+            return inserted;
         };
 
         while (!worklist.empty()) {

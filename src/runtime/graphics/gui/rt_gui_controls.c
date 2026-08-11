@@ -488,7 +488,7 @@ void rt_listbox_select_index(void *listbox, int64_t index) {
     if ((uintmax_t)index > (uintmax_t)SIZE_MAX)
         return;
     size_t idx = (size_t)index;
-    size_t count = lb->virtual_mode ? lb->total_item_count : lb->item_count;
+    size_t count = lb->virtual_mode ? lb->total_item_count : (size_t)lb->item_count;
     if (idx >= count)
         return;
     vg_listbox_select_index(lb, idx);

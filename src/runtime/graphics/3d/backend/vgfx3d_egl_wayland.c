@@ -153,12 +153,14 @@ static int vgfx3d_egl_load(void) {
     if (!g_egl.egl_library || !g_egl.wayland_egl_library)
         goto fail;
 #define LOAD_EGL(field, symbol)                                                                    \
-    g_egl.field = (__typeof__(g_egl.field))dlsym(g_egl.egl_library, symbol);                        \
-    if (!g_egl.field)                                                                               \
+    g_egl.field =                                                                                  \
+        RT_FN_PTR_CAST((__typeof__(g_egl.field))dlsym(g_egl.egl_library, symbol));                 \
+    if (!g_egl.field)                                                                              \
         goto fail
 #define LOAD_WL(field, symbol)                                                                     \
-    g_egl.field = (__typeof__(g_egl.field))dlsym(g_egl.wayland_egl_library, symbol);                \
-    if (!g_egl.field)                                                                               \
+    g_egl.field = RT_FN_PTR_CAST(                                                                  \
+        (__typeof__(g_egl.field))dlsym(g_egl.wayland_egl_library, symbol));                        \
+    if (!g_egl.field)                                                                              \
         goto fail
     LOAD_EGL(get_display, "eglGetDisplay");
     LOAD_EGL(initialize, "eglInitialize");
@@ -178,11 +180,11 @@ static int vgfx3d_egl_load(void) {
     LOAD_WL(window_resize, "wl_egl_window_resize");
 #undef LOAD_EGL
 #undef LOAD_WL
-    g_egl.get_platform_display = (egl_get_platform_display_fn)dlsym(
-        g_egl.egl_library, "eglGetPlatformDisplay");
+    g_egl.get_platform_display = RT_FN_PTR_CAST(
+        (egl_get_platform_display_fn)dlsym(g_egl.egl_library, "eglGetPlatformDisplay"));
     if (!g_egl.get_platform_display)
-        g_egl.get_platform_display = (egl_get_platform_display_fn)g_egl.get_proc_address(
-            "eglGetPlatformDisplayEXT");
+        g_egl.get_platform_display = RT_FN_PTR_CAST(
+            (egl_get_platform_display_fn)g_egl.get_proc_address("eglGetPlatformDisplayEXT"));
     __atomic_store_n(&g_egl_state, 1, __ATOMIC_RELEASE);
     vgfx3d_egl_unlock();
     return 1;

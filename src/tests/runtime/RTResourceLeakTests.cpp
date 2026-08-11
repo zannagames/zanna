@@ -103,7 +103,8 @@ static void test_load_png_bad_signature_no_leak() {
     int fd = mkstemp(tmpfile);
     assert(fd >= 0);
     const char *junk = "This is not a PNG file at all!";
-    write(fd, junk, strlen(junk));
+    const ssize_t junk_written = write(fd, junk, strlen(junk));
+    assert(junk_written == static_cast<ssize_t>(strlen(junk)));
     close(fd);
 
     int64_t before = rt_gc_tracked_count();
@@ -129,7 +130,8 @@ static void test_load_png_truncated_no_leak() {
 
     // PNG signature
     unsigned char sig[8] = {137, 80, 78, 71, 13, 10, 26, 10};
-    write(fd, sig, 8);
+    const ssize_t sig_written = write(fd, sig, 8);
+    assert(sig_written == 8);
     // Truncated — no IHDR or IDAT chunks
     close(fd);
 
@@ -153,7 +155,8 @@ static void test_load_png_repeated_failures_stable() {
     int fd = mkstemp(tmpfile);
     assert(fd >= 0);
     const char *junk = "NotAPNG";
-    write(fd, junk, strlen(junk));
+    const ssize_t junk_written = write(fd, junk, strlen(junk));
+    assert(junk_written == static_cast<ssize_t>(strlen(junk)));
     close(fd);
 
     rt_string s = rt_string_from_bytes(tmpfile, strlen(tmpfile));
@@ -198,7 +201,8 @@ static void test_load_bmp_truncated_no_leak() {
     int fd = mkstemp(tmpfile);
     assert(fd >= 0);
     // Write just BM magic + a few bytes (not a complete header)
-    write(fd, "BM\0\0\0\0\0\0\0\0\0\0\0\0", 14);
+    const ssize_t header_written = write(fd, "BM\0\0\0\0\0\0\0\0\0\0\0\0", 14);
+    assert(header_written == 14);
     close(fd);
 
     rt_string s = rt_string_from_bytes(tmpfile, strlen(tmpfile));

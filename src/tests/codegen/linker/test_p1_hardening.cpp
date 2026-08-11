@@ -164,7 +164,7 @@ int main() {
     // no remaining way to recover their origin from the chunk metadata.
     {
         std::unordered_set<std::string> dyn = {"printf", "fwrite"};
-        ObjFile stub = generateDynStubsAArch64(dyn);
+        ObjFile stub = generateDynStubsAArch64(dyn, /*copyRelocDataSymbols=*/false);
 
         // The stub object always carries a null section at index 0, a .text
         // section, and a separate GOT section. We expect the GOT section to

@@ -61,6 +61,48 @@ func assertFinalOverlayCrisp(img: Pixels, width: Integer, height: Integer) -> Bo
     return true;
 }
 
+/// @brief Smallest colour distance from a sample to any baseline pixel one step away.
+/// @details The baseline is a single committed image compared on every host, but
+///          the software rasteriser resolves a silhouette from transcendental
+///          math whose last bits differ between C libraries. That moves an edge
+///          by at most a pixel, and a strict same-coordinate comparison reads
+///          such a shift as a full material swap — the largest difference the
+///          image can produce — even though nothing about the render changed.
+///          Allowing the match to come from the immediate neighbourhood absorbs
+///          that sub-pixel placement while keeping the per-pixel colour
+///          tolerance tight: a genuine regression moves geometry further than
+///          one pixel or changes shading everywhere, and no neighbour matches.
+/// @param baseline Committed reference image.
+/// @param colour Sampled pixel from the freshly rendered frame.
+/// @param x Sample column.
+/// @param y Sample row.
+/// @param width Image width in pixels.
+/// @param height Image height in pixels.
+/// @return Minimum colour distance over the in-bounds 3x3 baseline neighbourhood.
+func nearestBaselineDiff(baseline: Pixels, colour: Integer, x: Integer, y: Integer,
+                         width: Integer, height: Integer) -> Integer {
+    var best = -1;
+    var dy = -1;
+    while (dy <= 1) {
+        var ny = y + dy;
+        if (ny >= 0 && ny < height) {
+            var dx = -1;
+            while (dx <= 1) {
+                var nx = x + dx;
+                if (nx >= 0 && nx < width) {
+                    var diff = colorDiff(colour, Pixels.Get(baseline, nx, ny));
+                    if (best < 0 || diff < best) {
+                        best = diff;
+                    }
+                }
+                dx = dx + 1;
+            }
+        }
+        dy = dy + 1;
+    }
+    return best;
+}
+
 func assertNearBaseline(img: Pixels, baseline: Pixels, width: Integer, height: Integer) -> Boolean {
     var maxDiff = 0;
     var totalDiff = 0;
@@ -71,7 +113,8 @@ func assertNearBaseline(img: Pixels, baseline: Pixels, width: Integer, height: I
         var x = 4;
         while (x < width) {
             if (inFinalOverlayRegion(x, y, width, height) == false) {
-                var diff = colorDiff(Pixels.Get(img, x, y), Pixels.Get(baseline, x, y));
+                var diff = nearestBaselineDiff(baseline, Pixels.Get(img, x, y), x, y,
+                                               width, height);
                 if (diff > maxDiff) { maxDiff = diff; }
                 totalDiff = totalDiff + diff;
                 count = count + 1;

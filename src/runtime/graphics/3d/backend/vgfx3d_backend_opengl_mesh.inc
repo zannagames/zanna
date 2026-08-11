@@ -117,8 +117,9 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
         size_t ibytes;
         ctx->stats.mesh_cache_misses++;
 
-        if ((size_t)cmd->vertex_count > (size_t)PTRDIFF_MAX / sizeof(vgfx3d_vertex_t) ||
-            (size_t)cmd->index_count > (size_t)PTRDIFF_MAX / sizeof(uint32_t)) {
+        if (!rt_count_fits_bytes(
+                cmd->vertex_count, sizeof(vgfx3d_vertex_t), (uint64_t)PTRDIFF_MAX) ||
+            !rt_count_fits_bytes(cmd->index_count, sizeof(uint32_t), (uint64_t)PTRDIFF_MAX)) {
             return 0;
         }
 
@@ -205,8 +206,8 @@ static int prepare_mesh_buffers(gl_context_t *ctx,
     if (out_compact)
         *out_compact = 0;
     if (!ctx || !cmd || !out_vbo || !out_ibo || !cmd->vertices || !cmd->indices ||
-        (size_t)cmd->vertex_count > (size_t)PTRDIFF_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)cmd->index_count > (size_t)PTRDIFF_MAX / sizeof(uint32_t)) {
+        !rt_count_fits_bytes(cmd->vertex_count, sizeof(vgfx3d_vertex_t), (uint64_t)PTRDIFF_MAX) ||
+        !rt_count_fits_bytes(cmd->index_count, sizeof(uint32_t), (uint64_t)PTRDIFF_MAX)) {
         return 0;
     }
     *out_vbo = 0;

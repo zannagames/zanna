@@ -379,9 +379,9 @@ static void test_request_transaction_cleanup() {
     test_result(calibration_trapped && allocation_count > 0 && rt_gc_tracked_count() == baseline,
                 "invalid request releases its complete transaction");
 
-    bool all_clean = true;
-    int traps = 0;
-    for (int fail_at = 1; fail_at <= allocation_count; fail_at++) {
+    volatile bool all_clean = true;
+    volatile int traps = 0;
+    for (volatile int fail_at = 1; fail_at <= allocation_count;) {
         void *volatile response = nullptr;
         volatile bool trapped = false;
         jmp_buf recovery;
@@ -403,6 +403,9 @@ static void test_request_transaction_cleanup() {
         release_managed((void *)response);
         all_clean = all_clean && rt_gc_tracked_count() == baseline &&
                     rt_http_client_get_keep_alive(client) == 1;
+        // Advance in the body: C++20 deprecates reading the value
+        // of an assignment to a volatile operand.
+        fail_at = fail_at + 1;
     }
     http_client_alloc_fail_countdown = 0;
     test_result(all_clean && traps == allocation_count,
@@ -528,8 +531,8 @@ static void test_transactional_and_concurrent_headers() {
     std::snprintf(url_buffer, sizeof(url_buffer), "http://127.0.0.1:%d/headers", port);
     rt_string url = rt_const_cstr(url_buffer);
 
-    bool all_preserved = true;
-    for (int fail_at = 1; fail_at <= allocation_count; fail_at++) {
+    volatile bool all_preserved = true;
+    for (volatile int fail_at = 1; fail_at <= allocation_count;) {
         void *client = rt_http_client_new();
         rt_http_client_set_keep_alive(client, 0);
         rt_http_client_set_header(client, old_name, old_value);
@@ -554,6 +557,9 @@ static void test_transactional_and_concurrent_headers() {
         all_preserved = all_preserved && response && rt_http_res_status(response) == 200;
         release_managed(response);
         release_managed(client);
+        // Advance in the body: C++20 deprecates reading the value
+        // of an assignment to a volatile operand.
+        fail_at = fail_at + 1;
     }
 
     void *concurrent_client = rt_http_client_new();

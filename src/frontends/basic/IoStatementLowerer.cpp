@@ -685,23 +685,23 @@ void IoStatementLowerer::lowerInputCh(const InputChStmt &stmt) {
             lowerer_.emitCallRet(IlType(IlType::Kind::Ptr), "rt_string_cstr", {field});
         Value parsedSlot = lowerer_.emitAlloca(8);
         if (slotInfo.type.kind == IlType::Kind::F64) {
-            Value err = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
-                                             il::frontends::basic::runtime::kParseDoubleCStr,
-                                             {fieldCstr, parsedSlot});
+            Value parseErr = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
+                                                  il::frontends::basic::runtime::kParseDoubleCStr,
+                                                  {fieldCstr, parsedSlot});
             /// @brief Emits a trap when floating-point field parsing fails.
             /// @param code Runtime error code.
-            lowerer_.emitRuntimeErrCheck(err, stmt.loc, "inputch_parse", [&](Value code) {
+            lowerer_.emitRuntimeErrCheck(parseErr, stmt.loc, "inputch_parse", [&](Value code) {
                 lowerer_.emitTrapFromErr(code);
             });
             Value parsed = lowerer_.emitLoad(IlType(IlType::Kind::F64), parsedSlot);
             lowerer_.emitStore(IlType(IlType::Kind::F64), slot, parsed);
         } else {
-            Value err = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
-                                             il::frontends::basic::runtime::kParseInt64CStr,
-                                             {fieldCstr, parsedSlot});
+            Value parseErr = lowerer_.emitCallRet(IlType(IlType::Kind::I32),
+                                                  il::frontends::basic::runtime::kParseInt64CStr,
+                                                  {fieldCstr, parsedSlot});
             /// @brief Emits a trap when integer field parsing fails.
             /// @param code Runtime error code.
-            lowerer_.emitRuntimeErrCheck(err, stmt.loc, "inputch_parse", [&](Value code) {
+            lowerer_.emitRuntimeErrCheck(parseErr, stmt.loc, "inputch_parse", [&](Value code) {
                 lowerer_.emitTrapFromErr(code);
             });
             Value parsed = lowerer_.emitLoad(IlType(IlType::Kind::I64), parsedSlot);

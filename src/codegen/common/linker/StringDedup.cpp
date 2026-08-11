@@ -112,6 +112,15 @@ size_t deduplicateStrings(std::vector<ObjFile> &allObjects,
             // Only LOCAL symbols with a valid section reference.
             if (sym.binding != ObjSymbol::Local)
                 continue;
+            // A nameless local symbol is the section symbol: it denotes the
+            // whole section rather than the string that happens to start it.
+            // References through it carry the target's offset in the addend —
+            // which is how a compiler addresses every string in a mergeable
+            // section — so merging it away by the content at offset zero
+            // silently redirects every one of those references into another
+            // object's copy of that first string.
+            if (sym.name.empty())
+                continue;
             if (sym.sectionIndex == 0 || sym.sectionIndex >= obj.sections.size())
                 continue;
 

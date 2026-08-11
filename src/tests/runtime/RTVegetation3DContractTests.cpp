@@ -33,6 +33,7 @@ extern "C" {
 #include "rt_vegetation3d.h"
 }
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <csetjmp>
@@ -661,7 +662,7 @@ static void test_lod_thinning_is_monotone_with_distance() {
             for (int32_t i = 0; i < cur_count; i++)
                 assert(key_present(prev_keys, prev_count, cur_keys[i]));
         }
-        std::memcpy(prev_keys, cur_keys, sizeof(cur_keys[0]) * static_cast<size_t>(cur_count));
+        std::copy_n(cur_keys, static_cast<size_t>(cur_count), prev_keys);
         prev_count = cur_count;
     }
     assert(prev_count == 0); // far enough that everything has faded out

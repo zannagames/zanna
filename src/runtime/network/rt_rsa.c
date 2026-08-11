@@ -201,7 +201,8 @@ static void rsa_mul_add_u64(uint64_t a,
                             uint64_t *low_out,
                             uint64_t *high_out) {
 #if defined(__SIZEOF_INT128__)
-    unsigned __int128 acc = (unsigned __int128)a * (unsigned __int128)b + addend + carry_in;
+    __extension__ unsigned __int128 acc =
+        (unsigned __int128)a * (unsigned __int128)b + addend + carry_in;
     *low_out = (uint64_t)acc;
     *high_out = (uint64_t)(acc >> 64);
 #else

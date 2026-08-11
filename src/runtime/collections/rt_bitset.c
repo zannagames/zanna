@@ -90,7 +90,11 @@ static rt_bitset_impl *as_bitset(void *obj, const char *what) {
 /// @param x Word whose population is counted.
 /// @return Number of one bits in @p x, in the range `[0, 64]`.
 static int popcount64(uint64_t x) {
-#if defined(__GNUC__) || defined(__clang__)
+// The compiler builtin is used only where it expands inline: without a hardware
+// population-count instruction GCC lowers it to libgcc's __popcountdi2, and
+// Zanna's native linker does not pull compiler runtime archive members.
+#if (defined(__GNUC__) || defined(__clang__)) &&                                                   \
+    (defined(__POPCNT__) || defined(__aarch64__) || defined(__ARM_NEON))
     return __builtin_popcountll(x);
 #else
     // Hamming weight

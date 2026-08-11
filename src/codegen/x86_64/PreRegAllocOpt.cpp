@@ -230,6 +230,33 @@ struct X64PreRATraits {
     static void forwardUse(MInstr &use, std::size_t operandIndex, const MInstr &copy) {
         use.operands[operandIndex] = copy.operands[1];
     }
+
+    /// @brief Append every virtual register the instruction mentions.
+    /// @details Role-agnostic on purpose: the caller only needs to know which
+    ///          blocks touch a register, so defs, uses, and address components
+    ///          all count.
+    /// @param instr Instruction to scan.
+    /// @param out Destination vector receiving the virtual registers.
+    static void collectVRegs(const MInstr &instr, std::vector<OpReg> &out) {
+        for (const auto &operand : instr.operands) {
+            if (const auto *opReg = std::get_if<OpReg>(&operand)) {
+                if (!opReg->isPhys)
+                    out.push_back(*opReg);
+            } else if (const auto *mem = std::get_if<OpMem>(&operand)) {
+                if (!mem->base.isPhys)
+                    out.push_back(mem->base);
+                if (mem->hasIndex && !mem->index.isPhys)
+                    out.push_back(mem->index);
+            }
+        }
+    }
+
+    /// @brief Stable identity for a virtual register.
+    /// @param reg Virtual register to key.
+    /// @return Class-qualified key, so GPR and XMM ids never collide.
+    static uint32_t vregKey(const OpReg &reg) {
+        return (static_cast<uint32_t>(reg.cls) << 16) | reg.idOrPhys;
+    }
 };
 
 } // namespace

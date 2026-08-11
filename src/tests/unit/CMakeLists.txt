@@ -1878,12 +1878,19 @@ function(zanna_add_runtime_tests)
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
         (ZANNAGFX_BACKEND STREQUAL "Wayland" OR ZANNAGFX_BACKEND STREQUAL "LinuxAuto" OR
          ZANNAGFX_BACKEND STREQUAL "X11"))
-        zanna_add_test(test_rt_gui_linux_platform
-                ${ZANNA_TESTS_DIR}/runtime/RTGuiLinuxPlatformTests.c)
-        target_link_libraries(test_rt_gui_linux_platform PRIVATE
-                ${ZANNA_RUNTIME_TEST_LIBS} zannagfx zannagui)
-        zanna_add_ctest(test_rt_gui_linux_platform test_rt_gui_linux_platform)
-        zanna_add_test_labels(test_rt_gui_linux_platform runtime gui unit requires_linux)
+        # The XSettings parser under test is defined in
+        # graphics/gui/rt_gui_accessibility_linux.c, which the runtime compiles
+        # only when the X11 desktop path is part of the build. A Wayland-only
+        # configuration (no X11 development files present) has no such symbol.
+        if (ZANNAGFX_BACKEND STREQUAL "X11" OR
+            (ZANNAGFX_BACKEND STREQUAL "LinuxAuto" AND ZANNAGFX_AUTO_HAS_X11))
+            zanna_add_test(test_rt_gui_linux_platform
+                    ${ZANNA_TESTS_DIR}/runtime/RTGuiLinuxPlatformTests.c)
+            target_link_libraries(test_rt_gui_linux_platform PRIVATE
+                    ${ZANNA_RUNTIME_TEST_LIBS} zannagfx zannagui)
+            zanna_add_ctest(test_rt_gui_linux_platform test_rt_gui_linux_platform)
+            zanna_add_test_labels(test_rt_gui_linux_platform runtime gui unit requires_linux)
+        endif ()
 
         zanna_add_test(test_rt_gui_atspi_linux
                 ${ZANNA_TESTS_DIR}/runtime/RTGuiAtspiLinuxTests.c)

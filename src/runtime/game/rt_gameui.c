@@ -97,7 +97,7 @@ int64_t ui_mul_sat_i64(int64_t a, int64_t b) {
     if (a == 0 || b == 0)
         return 0;
 #if defined(__SIZEOF_INT128__)
-    __int128 r = (__int128)a * (__int128)b;
+    __extension__ __int128 r = (__int128)a * (__int128)b;
     if (r > INT64_MAX)
         return INT64_MAX;
     if (r < INT64_MIN)

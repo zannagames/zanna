@@ -44,6 +44,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_particles3d.h"
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
@@ -2628,14 +2629,14 @@ static int particles3d_prepare_draw_slot(vgfx3d_vertex_t **draw_vertices,
     grow_vertices = vert_count > vertex_capacity[slot] || (vert_count > 0 && !draw_vertices[slot]);
     grow_indices = idx_count > index_capacity[slot] || (idx_count > 0 && !draw_indices[slot]);
     if (grow_vertices) {
-        if ((size_t)vert_count > SIZE_MAX / sizeof(*new_vertices))
+        if (!rt_alloc_count_ok(vert_count, sizeof(*new_vertices)))
             return 0;
         new_vertices = (vgfx3d_vertex_t *)malloc((size_t)vert_count * sizeof(*new_vertices));
         if (!new_vertices)
             return 0;
     }
     if (grow_indices) {
-        if ((size_t)idx_count > SIZE_MAX / sizeof(*new_indices)) {
+        if (!rt_alloc_count_ok(idx_count, sizeof(*new_indices))) {
             free(new_vertices);
             return 0;
         }

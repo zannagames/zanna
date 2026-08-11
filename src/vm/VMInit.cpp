@@ -329,15 +329,15 @@ void initializeGlobalStorage(const Global &global, void *storage) {
 /// @param tc  Trace configuration used to initialise the @c TraceSink.
 /// @param ms  Optional step limit; @c 0 disables the limit.
 /// @param dbg Initial debugger control block describing active breakpoints.
-/// @param script Optional scripted debugger interaction controller.
+/// @param debugScript Optional scripted debugger interaction controller.
 /// @param stackBytes Per-frame operand-stack capacity; zero selects the default.
 VM::VM(const Module &m,
        TraceConfig tc,
        uint64_t ms,
        DebugCtrl dbg,
-       DebugScript *script,
+       DebugScript *debugScript,
        std::size_t stackBytes)
-    : mod(m), tracer(tc), debug(std::move(dbg)), script(script), maxSteps(ms),
+    : mod(m), tracer(tc), debug(std::move(dbg)), script(debugScript), maxSteps(ms),
       stackBytes_(stackBytes ? stackBytes : Frame::kDefaultStackSize) {
     debug.setSourceManager(tc.sm);
     init(nullptr);
@@ -352,16 +352,16 @@ VM::VM(const Module &m,
 /// @param tc Trace configuration used to initialize the trace sink.
 /// @param ms Instruction limit, or zero for unlimited execution.
 /// @param dbg Initial breakpoint and watch configuration.
-/// @param script Optional non-owning scripted debugger.
+/// @param debugScript Optional non-owning scripted debugger.
 /// @param stackBytes Per-frame operand-stack capacity; zero selects the default.
 VM::VM(const Module &m,
        std::shared_ptr<ProgramState> program,
        TraceConfig tc,
        uint64_t ms,
        DebugCtrl dbg,
-       DebugScript *script,
+       DebugScript *debugScript,
        std::size_t stackBytes)
-    : mod(m), tracer(tc), debug(std::move(dbg)), script(script), maxSteps(ms),
+    : mod(m), tracer(tc), debug(std::move(dbg)), script(debugScript), maxSteps(ms),
       stackBytes_(stackBytes ? stackBytes : Frame::kDefaultStackSize) {
     debug.setSourceManager(tc.sm);
     init(std::move(program));

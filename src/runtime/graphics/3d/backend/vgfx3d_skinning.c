@@ -33,6 +33,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "vgfx3d_skinning.h"
+#include "rt_alloc_size.h"
 #include "vgfx3d_backend_utils.h"
 
 #include <math.h>
@@ -260,7 +261,7 @@ void vgfx3d_skin_vertices_extra(const vgfx3d_vertex_t *src,
         return;
     if (!palette || bone_count <= 0) {
         if (dst != src) {
-            if ((size_t)vertex_count > SIZE_MAX / sizeof(*dst))
+            if (!rt_alloc_count_ok(vertex_count, sizeof(*dst)))
                 return;
             memcpy(dst, src, (size_t)vertex_count * sizeof(*dst));
         }

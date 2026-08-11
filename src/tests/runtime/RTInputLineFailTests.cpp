@@ -50,7 +50,8 @@ int main() {
     assert(tmpfd >= 0);
 
     std::string input(1500, 'x');
-    (void)write(tmpfd, input.data(), input.size());
+    const ssize_t written = write(tmpfd, input.data(), input.size());
+    assert(written == static_cast<ssize_t>(input.size()));
     close(tmpfd);
 
     // Redirect stdin to the temp file

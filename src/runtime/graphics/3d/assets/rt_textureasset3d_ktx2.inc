@@ -377,8 +377,9 @@ static void *textureasset3d_parse_ktx2(const uint8_t *data,
         rt_asset_error_setf(RT_ASSET_ERROR_UNSUPPORTED, "%s: unsupported mip count", api_name);
         return NULL;
     }
-    if ((uint64_t)level_count >
-        (UINT64_MAX - TEXTUREASSET3D_KTX2_HEADER_SIZE) / TEXTUREASSET3D_KTX2_LEVEL_ENTRY_SIZE) {
+    if (!rt_count_fits_bytes(level_count,
+                             TEXTUREASSET3D_KTX2_LEVEL_ENTRY_SIZE,
+                             UINT64_MAX - TEXTUREASSET3D_KTX2_HEADER_SIZE)) {
         rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT, "%s: level index overflow", api_name);
         return NULL;
     }

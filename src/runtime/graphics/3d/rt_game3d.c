@@ -464,7 +464,7 @@ static rt_game3d_update_fn game3d_update_callback_checked(void *callback, const 
         rt_trap(diagnostic);
         return NULL;
     }
-    return (rt_game3d_update_fn)callback;
+    return RT_FN_PTR_CAST((rt_game3d_update_fn)callback);
 }
 
 /// @brief Validate and cast a raw pointer to an overlay callback, trapping with
@@ -480,7 +480,7 @@ static rt_game3d_overlay_fn game3d_overlay_callback_checked(void *callback,
         rt_trap(diagnostic);
         return NULL;
     }
-    return (rt_game3d_overlay_fn)callback;
+    return RT_FN_PTR_CAST((rt_game3d_overlay_fn)callback);
 }
 
 /// @brief Clamp a requested worker-thread count to the valid range [1, RT_GAME3D_MAX_WORKERS].

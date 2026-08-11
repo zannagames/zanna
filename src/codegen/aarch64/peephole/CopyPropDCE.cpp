@@ -224,11 +224,11 @@ std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
     // Mark argument registers as live at block exit
     for (int i = 0; i <= 7; ++i) {
         liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) |
-                        static_cast<uint32_t>(PhysReg::X0) + i);
+                        (static_cast<uint32_t>(PhysReg::X0) + i));
     }
     for (int i = 0; i <= 7; ++i) {
         liveRegs.insert((static_cast<uint32_t>(RegClass::FPR) << 16) |
-                        static_cast<uint32_t>(PhysReg::V0) + i);
+                        (static_cast<uint32_t>(PhysReg::V0) + i));
     }
 
     // Mark callee-saved GPRs (x19-x28) as live at block exit

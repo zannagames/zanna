@@ -269,7 +269,7 @@ static void render_button(vgfx_window_t window, vg_button_t *button) {
         fg = 0xFFFFFFFF;
     }
     if (button->base.state & VG_STATE_HOVERED)
-        bg = (bg & 0xFF000000) | ((bg & 0x00FEFEFE) >> 1) + 0x00404040;
+        bg = (bg & 0xFF000000) | (((bg & 0x00FEFEFE) >> 1) + 0x00404040);
     if (button->base.state & VG_STATE_PRESSED)
         bg = theme->colors.bg_active;
 

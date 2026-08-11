@@ -119,6 +119,21 @@
 #define RT_SUPPRESS_SETJMP_WARNING_END
 #endif
 
+/// @brief Wrap a deliberate object-pointer <-> function-pointer cast.
+/// @details ISO C leaves this conversion undefined, so GCC reports every such
+///          cast under `-Wpedantic`. The runtime needs it for `dlsym`-style
+///          symbol loading and for the opaque `void *` callback bridges shared
+///          by the VM and native entry points. `__extension__` marks the cast
+///          as an intentional GNU extension without disabling the diagnostic
+///          for unrelated code.
+/// @param cast_expr Complete parenthesized cast expression, for example
+///        `RT_FN_PTR_CAST((void *(*)(void *))fn)`.
+#if RT_COMPILER_GCC_LIKE
+#define RT_FN_PTR_CAST(cast_expr) (__extension__(cast_expr))
+#else
+#define RT_FN_PTR_CAST(cast_expr) (cast_expr)
+#endif
+
 //===----------------------------------------------------------------------===//
 // Atomic Operations
 //===----------------------------------------------------------------------===//

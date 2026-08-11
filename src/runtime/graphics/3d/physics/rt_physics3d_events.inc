@@ -542,7 +542,9 @@ void *rt_physics_hit_list3d_get(void *obj, int64_t index) {
     if (!created)
         return NULL;
     void *expected = NULL;
-    if (!rt_atomic_compare_exchange_ptr((void *volatile *)&list->items[index],
+    // The intermediate `void *` keeps -Wcast-qual quiet about adding
+    // `volatile` below the first pointer level; the address is unchanged.
+    if (!rt_atomic_compare_exchange_ptr((void *volatile *)(void *)&list->items[index],
                                         &expected,
                                         created,
                                         __ATOMIC_RELEASE,

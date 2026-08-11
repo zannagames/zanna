@@ -179,7 +179,9 @@ extern "C" void vm_game3d_overlay_trampoline(void) {
 template <typename Fn>
 static void invokeGame3DLoopWithScope(VmGame3DCallbackScope &scope, Fn &&fn) {
     char trapMessage[512] = "";
-    int trapped = 0;
+    // Written after setjmp() and read after the longjmp() path rejoins, so it
+    // must survive the register state the trap unwind restores.
+    volatile int trapped = 0;
     jmp_buf recovery;
 
     scope.previous = tlsGame3DScope;

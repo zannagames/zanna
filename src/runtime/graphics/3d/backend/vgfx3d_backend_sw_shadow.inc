@@ -523,7 +523,7 @@ static int sw_shadow_tri_list_reserve(sw_shadow_tri_list_t *list, uint32_t neede
         }
         new_capacity *= 2u;
     }
-    if ((size_t)new_capacity > SIZE_MAX / sizeof(sw_shadow_screen_tri_t))
+    if (!rt_alloc_count_ok(new_capacity, sizeof(sw_shadow_screen_tri_t)))
         return 0;
     new_items =
         (sw_shadow_screen_tri_t *)realloc(list->items, (size_t)new_capacity * sizeof(*new_items));
@@ -642,7 +642,7 @@ static int sw_shadow_tile_bin_append(sw_shadow_tile_bin_t *bin, uint32_t tri_ind
     new_capacity = bin->capacity ? bin->capacity * 2u : 16u;
     if (new_capacity <= bin->capacity)
         new_capacity = bin->count + 1u;
-    if ((size_t)new_capacity > SIZE_MAX / sizeof(uint32_t))
+    if (!rt_alloc_count_ok(new_capacity, sizeof(uint32_t)))
         return 0;
     new_indices = (uint32_t *)realloc(bin->indices, (size_t)new_capacity * sizeof(*new_indices));
     if (!new_indices)

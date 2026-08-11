@@ -200,6 +200,74 @@ TEST(CodegenPreRegAllocOpt, AArch64DoesNotEraseCopyNeededAfterCall) {
     EXPECT_EQ(fn.blocks.front().instrs.front().opc, a64::MOpcode::MovRR);
 }
 
+TEST(CodegenPreRegAllocOpt, X86KeepsCopyWhoseDestinationIsReadByAnotherBlock) {
+    namespace x64 = zanna::codegen::x64;
+
+    // Shape lifted from `const_str` lowering: the literal is materialised into
+    // a temporary, copied to the IL value's vreg, consumed once in the defining
+    // block, then released again in a later block. Forwarding the in-block use
+    // and erasing the copy leaves the release reading an undefined register.
+    x64::MFunction fn;
+    fn.name = "x86_pre_ra_cross_block";
+
+    auto v1 = x64::makeVRegOperand(x64::RegClass::GPR, 1);
+    auto v2 = x64::makeVRegOperand(x64::RegClass::GPR, 2);
+    auto v3 = x64::makeVRegOperand(x64::RegClass::GPR, 3);
+
+    x64::MBasicBlock entry;
+    entry.label = ".Lentry";
+    entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::MOVrr, {v2, v1}));
+    entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::ADDrr, {v3, v2}));
+    entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::JMP, {x64::makeLabelOperand(
+                                                                          ".Lnext")}));
+    fn.blocks.push_back(std::move(entry));
+
+    x64::MBasicBlock next;
+    next.label = ".Lnext";
+    next.instructions.push_back(x64::MInstr::make(x64::MOpcode::ADDrr, {v3, v2}));
+    next.instructions.push_back(x64::MInstr::make(x64::MOpcode::RET, {}));
+    fn.blocks.push_back(std::move(next));
+
+    EXPECT_EQ(x64::runPreRegAllocOpt(fn), 0u);
+    ASSERT_EQ(fn.blocks.front().instructions.size(), 3u);
+    EXPECT_EQ(fn.blocks.front().instructions.front().opcode, x64::MOpcode::MOVrr);
+    const auto &laterUse = fn.blocks.back().instructions.front();
+    ASSERT_NE(x64Reg(laterUse.operands[1]), nullptr);
+    EXPECT_EQ(x64Reg(laterUse.operands[1])->idOrPhys, 2u);
+}
+
+TEST(CodegenPreRegAllocOpt, AArch64KeepsCopyWhoseDestinationIsReadByAnotherBlock) {
+    namespace a64 = zanna::codegen::aarch64;
+
+    a64::MFunction fn;
+    fn.name = "a64_pre_ra_cross_block";
+
+    auto v1 = a64::MOperand::vregOp(a64::RegClass::GPR, 1);
+    auto v2 = a64::MOperand::vregOp(a64::RegClass::GPR, 2);
+    auto v3 = a64::MOperand::vregOp(a64::RegClass::GPR, 3);
+    auto v4 = a64::MOperand::vregOp(a64::RegClass::GPR, 4);
+
+    a64::MBasicBlock entry;
+    entry.name = ".Lentry";
+    entry.instrs.push_back(a64::MInstr{a64::MOpcode::MovRR, {v2, v1}});
+    entry.instrs.push_back(a64::MInstr{a64::MOpcode::AddRRR, {v3, v2, v4}});
+    entry.instrs.push_back(a64::MInstr{a64::MOpcode::Br, {a64::MOperand::labelOp(".Lnext")}});
+    fn.blocks.push_back(std::move(entry));
+
+    a64::MBasicBlock next;
+    next.name = ".Lnext";
+    next.instrs.push_back(a64::MInstr{a64::MOpcode::AddRRR, {v3, v2, v4}});
+    next.instrs.push_back(a64::MInstr{a64::MOpcode::Ret, {}});
+    fn.blocks.push_back(std::move(next));
+
+    EXPECT_EQ(a64::runPreRegAllocOpt(fn), 0u);
+    ASSERT_EQ(fn.blocks.front().instrs.size(), 3u);
+    EXPECT_EQ(fn.blocks.front().instrs.front().opc, a64::MOpcode::MovRR);
+    const auto &laterUse = fn.blocks.back().instrs.front();
+    ASSERT_EQ(laterUse.ops[1].kind, a64::MOperand::Kind::Reg);
+    EXPECT_EQ(laterUse.ops[1].reg.idOrPhys, 2u);
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, argv);
     return zanna_test::run_all_tests();

@@ -24,6 +24,17 @@
 #include <cstdio>
 #include <string>
 
+/// @brief Erase constness so borrowed text can travel through an opaque `void *`.
+/// @details The runtime payload APIs take `void *`; these tests hand them
+///          read-only bytes they own elsewhere and never write through the
+///          result, so the cast is safe here.
+/// @param text Borrowed NUL-terminated bytes.
+/// @return The same address as a mutable `void *`.
+static void *borrowedPayload(const char *text) {
+    return const_cast<void *>(static_cast<const void *>(text));
+}
+
+
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 extern "C" const char *rt_trap_get_error(void);
@@ -167,7 +178,7 @@ static void test_assert_not_null_passing() {
     rt_diag_assert_not_null(&dummy, make_str("non-null pointer"));
 
     const char *str = "test";
-    rt_diag_assert_not_null((void *)str, make_str("string pointer"));
+    rt_diag_assert_not_null(borrowedPayload(str), make_str("string pointer"));
 
     printf("test_assert_not_null_passing: PASSED\n");
 }

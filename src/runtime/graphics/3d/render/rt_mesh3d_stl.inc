@@ -359,7 +359,7 @@ static int stl_emit_triangle(void *mesh,
 /// @param data Complete binary STL byte buffer.
 /// @param len Number of readable bytes in @p data.
 /// @return New Mesh3D with recalculated normals, or NULL for malformed, empty, or failed input.
-static void *MESH3D_UNUSED_PRIVATE stl_load_binary(const uint8_t *data, size_t len) {
+MESH3D_UNUSED_PRIVATE static void *stl_load_binary(const uint8_t *data, size_t len) {
     if (len < 84)
         return NULL;
     uint32_t tri_count = stl_read_u32_le(data + 80);
@@ -631,7 +631,7 @@ static int stl_parse_vertex_line(const char *start, const char *end, float *out_
 /// @param data Complete ASCII STL byte buffer.
 /// @param len Number of readable bytes in @p data.
 /// @return New nonempty Mesh3D with recalculated normals, or NULL for malformed or failed input.
-static void *MESH3D_UNUSED_PRIVATE stl_load_ascii(const uint8_t *data, size_t len) {
+MESH3D_UNUSED_PRIVATE static void *stl_load_ascii(const uint8_t *data, size_t len) {
     enum {
         STL_ASCII_OUTSIDE_FACET = 0,
         STL_ASCII_EXPECT_OUTER_LOOP = 1,
@@ -929,7 +929,7 @@ void *rt_mesh3d_from_stl(rt_string path) {
         uint32_t tri_count = stl_read_u32_le(header + 80);
         size_t expected_binary = 0;
         if (rt_untrusted_count_ok((int64_t)tri_count, 50u, (size_t)file_len - 84u) &&
-            (size_t)tri_count <= (SIZE_MAX - 84u) / 50u)
+            rt_alloc_count_ok_with_extra(tri_count, 50u, 84u))
             expected_binary = 84u + (size_t)tri_count * 50u;
         if (expected_binary != 0 && (size_t)file_len == expected_binary && tri_count > 0) {
             mesh = stl_load_binary_stream(f, tri_count);

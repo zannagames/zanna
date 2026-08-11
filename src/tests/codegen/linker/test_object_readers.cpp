@@ -164,6 +164,44 @@ static std::vector<uint8_t> makeElfRelocWithSecondSymtab() {
     return obj;
 }
 
+/// @brief Build an ELF object shaped like GCC's COMDAT group emission.
+/// @details GCC points a group's signature symbol at the `.group` section
+///          itself. That section carries no image bytes and is not
+///          materialized by the reader, so the symbol must survive as a
+///          placeholder rather than fail the load.
+/// @return Encoded relocatable object bytes.
+static std::vector<uint8_t> makeElfComdatGroupSignatureSymbol() {
+    constexpr uint32_t kShtProgbits = 1;
+    constexpr uint32_t kShtSymtab = 2;
+    constexpr uint32_t kShtStrtab = 3;
+    constexpr uint32_t kShtGroup = 17;
+    constexpr uint32_t kGrpComdat = 0x1;
+    constexpr uint64_t kShfGroup = 0x200;
+
+    std::vector<uint8_t> obj;
+    appendElfHeader(obj, 5, 0, 0);
+
+    const size_t groupOff = obj.size();
+    appendLE32(obj, kGrpComdat);
+    appendLE32(obj, 2); // Member section index.
+    const size_t textOff = obj.size();
+    appendLE32(obj, 0);
+    const size_t strOff = obj.size();
+    obj.insert(obj.end(), {'\0', 's', 'i', 'g', '\0'});
+    const size_t symOff = obj.size();
+    obj.resize(obj.size() + 24, 0);           // Null symbol.
+    appendElfSym(obj, 1, 0x00, 1, 0, 0);      // LOCAL NOTYPE 'sig' in .group.
+
+    const size_t shoff = obj.size();
+    patchLE64(obj, 40, shoff);
+    appendElfShdr(obj, 0, 0, 0, 0, 0, 0, 0, 0);
+    appendElfShdr(obj, kShtGroup, 0, groupOff, 8, 4, 1, 4, 4);
+    appendElfShdr(obj, kShtProgbits, 0x6 | kShfGroup, textOff, 4, 0, 0, 4, 0);
+    appendElfShdr(obj, kShtStrtab, 0, strOff, 5, 0, 0, 1, 0);
+    appendElfShdr(obj, kShtSymtab, 0, symOff, 48, 3, 1, 8, 24);
+    return obj;
+}
+
 static std::vector<uint8_t> makeCoffRelocTargetsAux() {
     constexpr uint32_t kTextFlags = 0x00000020 | 0x20000000 | 0x40000000;
     std::vector<uint8_t> obj;
@@ -493,6 +531,21 @@ int main() {
         CHECK(obj.sections.size() == 2);
         CHECK(obj.sections[1].relocs.size() == 1);
         CHECK(obj.symbols[obj.sections[1].relocs[0].symIndex].name == "right");
+    }
+
+    // A COMDAT group signature symbol lives in the `.group` section, which the
+    // reader never materializes. It must load as an addressless local.
+    {
+        ObjFile obj;
+        std::ostringstream err;
+        auto bytes = makeElfComdatGroupSignatureSymbol();
+        CHECK(readObjFile(bytes.data(), bytes.size(), "comdat-signature.o", obj, err));
+        CHECK(err.str().empty());
+        CHECK(obj.symbols.size() == 2);
+        CHECK(obj.symbols[1].name == "sig");
+        CHECK(obj.symbols[1].binding == ObjSymbol::Local);
+        CHECK(obj.symbols[1].sectionIndex == 0);
+        CHECK(!obj.symbols[1].absolute);
     }
 
     {

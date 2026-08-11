@@ -246,36 +246,42 @@ static int tz_append_4(char *buffer, size_t capacity, size_t *pos, int value) {
     return tz_append_n(buffer, capacity, pos, tmp, (size_t)len);
 }
 
+/** Largest whole-minute magnitude the two-digit `HH:MM` fields can render. */
+#define TZ_OFFSET_TEXT_MAX_MINUTES 5999u
+
+/// @brief Convert a signed UTC offset to whole minutes of magnitude.
+/// @details Negating `INT32_MIN` is undefined, so the magnitude is taken in a
+///          wider signed type before narrowing.
+/// @param offset_seconds Seconds east of UTC.
+/// @return Magnitude of the offset in whole minutes.
+static uint32_t tz_offset_abs_minutes(int32_t offset_seconds) {
+    int64_t magnitude = offset_seconds < 0 ? -(int64_t)offset_seconds : (int64_t)offset_seconds;
+    return (uint32_t)(magnitude / 60);
+}
+
 /// @brief Render an offset as `+HH:MM` or `-HH:MM`.
+/// @details Offsets are clamped to 99:59 because the field carries only two
+///          hour digits; real zone offsets stay far inside that limit.
 /// @param offset_seconds Seconds east of UTC; embedded offsets are minute-aligned.
 /// @param out Seven-byte destination receiving six characters and a terminator.
 static void tz_offset_text(int32_t offset_seconds, char out[7]) {
-    char sign = '+';
-    int32_t magnitude = offset_seconds;
-    if (magnitude < 0) {
-        sign = '-';
-        magnitude = -magnitude;
-    }
-    int32_t minutes_total = magnitude / 60;
-    int32_t hours = minutes_total / 60;
-    int32_t minutes = minutes_total % 60;
-    (void)snprintf(out, 7, "%c%02d:%02d", sign, (int)hours, (int)minutes);
+    char sign = offset_seconds < 0 ? '-' : '+';
+    uint32_t minutes_total = tz_offset_abs_minutes(offset_seconds);
+    if (minutes_total > TZ_OFFSET_TEXT_MAX_MINUTES)
+        minutes_total = TZ_OFFSET_TEXT_MAX_MINUTES;
+    (void)snprintf(out, 7, "%c%02u:%02u", sign, minutes_total / 60u, minutes_total % 60u);
 }
 
 /// @brief Render an offset as compact `+HHMM` or `-HHMM`.
+/// @details Shares the two-digit hour clamp used by @ref tz_offset_text.
 /// @param offset_seconds Seconds east of UTC; embedded offsets are minute-aligned.
 /// @param out Six-byte destination receiving five characters and a terminator.
 static void tz_offset_compact_text(int32_t offset_seconds, char out[6]) {
-    char sign = '+';
-    int32_t magnitude = offset_seconds;
-    if (magnitude < 0) {
-        sign = '-';
-        magnitude = -magnitude;
-    }
-    int32_t minutes_total = magnitude / 60;
-    int32_t hours = minutes_total / 60;
-    int32_t minutes = minutes_total % 60;
-    (void)snprintf(out, 6, "%c%02d%02d", sign, (int)hours, (int)minutes);
+    char sign = offset_seconds < 0 ? '-' : '+';
+    uint32_t minutes_total = tz_offset_abs_minutes(offset_seconds);
+    if (minutes_total > TZ_OFFSET_TEXT_MAX_MINUTES)
+        minutes_total = TZ_OFFSET_TEXT_MAX_MINUTES;
+    (void)snprintf(out, 6, "%c%02u%02u", sign, minutes_total / 60u, minutes_total % 60u);
 }
 
 /// @brief Expand one supported strftime-like conversion specifier.

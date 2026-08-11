@@ -32,6 +32,17 @@
 #include <cstring>
 #include <string>
 
+/// @brief Erase constness so borrowed text can travel through an opaque `void *`.
+/// @details The runtime payload APIs take `void *`; these tests hand them
+///          read-only bytes they own elsewhere and never write through the
+///          result, so the cast is safe here.
+/// @param text Borrowed NUL-terminated bytes.
+/// @return The same address as a mutable `void *`.
+static void *borrowedPayload(const char *text) {
+    return const_cast<void *>(static_cast<const void *>(text));
+}
+
+
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 extern "C" const char *rt_trap_get_error(void);
@@ -449,7 +460,7 @@ static void test_publish_borrows_raw_string_payload() {
     subscribe_native(bus, topic, cb_capture_text_payload);
 
     reset_trace();
-    assert(rt_msgbus_publish(bus, topic, (void *)payload) == 1);
+    assert(rt_msgbus_publish(bus, topic, borrowedPayload(payload)) == 1);
     assert(g_trace_len == 1);
     assert(g_trace[0] == 6);
     assert(std::strcmp(g_last_text_payload, "borrowed bytes") == 0);

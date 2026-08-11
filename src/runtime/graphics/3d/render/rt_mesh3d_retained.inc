@@ -96,8 +96,8 @@ rt_mesh3d_geometry_revision *rt_mesh3d_get_retained_geometry(rt_mesh3d *mesh) {
         return mesh->retained_geometry;
     }
     rt_mesh3d_invalidate_retained_geometry(mesh);
-    if ((size_t)vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)index_count > SIZE_MAX / sizeof(uint32_t))
+    if (!rt_alloc_count_ok(vertex_count, sizeof(vgfx3d_vertex_t)) ||
+        !rt_alloc_count_ok(index_count, sizeof(uint32_t)))
         return NULL;
     vertex_bytes = (size_t)vertex_count * sizeof(vgfx3d_vertex_t);
     index_bytes = (size_t)index_count * sizeof(uint32_t);
@@ -143,7 +143,7 @@ int rt_mesh3d_geometry_revision_ensure_tangents(rt_mesh3d *mesh,
         mesh3d_increment_counter(&mesh->retained_tangent_cache_hit_count);
         return 1;
     }
-    if ((size_t)revision->vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t))
+    if (!rt_alloc_count_ok(revision->vertex_count, sizeof(vgfx3d_vertex_t)))
         return 0;
     vertex_bytes = (size_t)revision->vertex_count * sizeof(vgfx3d_vertex_t);
     revision->tangent_vertices = (vgfx3d_vertex_t *)malloc(vertex_bytes);

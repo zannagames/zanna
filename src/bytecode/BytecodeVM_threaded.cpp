@@ -63,6 +63,13 @@ namespace bytecode {
 /// @post Execution leaves the VM halted, trapped, paused, or at a re-entrant
 ///       callback boundary, with register-local state flushed to VM members.
 void BytecodeVM::runThreaded() {
+// Label addresses (`&&L_x`) and computed gotos (`goto *p`) are GNU extensions
+// that ISO C++ does not define. This dispatcher exists to use them, so the
+// pedantic diagnostics are suppressed for its body only.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
     // Dispatch table for computed goto. Keep it local: GCC C++ rejects label
     // addresses in designated initializers, and static post-init mutation races.
     //
@@ -1691,6 +1698,9 @@ L_DEFAULT:
 #undef RELOAD_STATE
 #undef RETURN_OR_DISPATCH_TRAP
 #undef THREAD_TRAP_OR_DISPATCH
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 }
 
 #endif // __GNUC__ || __clang__

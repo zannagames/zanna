@@ -54,6 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "rt_alloc_size.h"
 #include "rt_object.h"
 #include "rt_trap.h"
 /// @brief Decrement a runtime object's reference count and report whether finalization is due.
@@ -1144,7 +1145,7 @@ void *rt_mesh3d_simplify(void *mesh_obj, int64_t target_triangles) {
         size_t table_size = 1u;
         uint64_t *edge_keys = NULL;
         uint32_t *edge_counts = NULL;
-        if ((size_t)cx.tri_count > (SIZE_MAX - 1u) / 8u)
+        if (!rt_alloc_count_ok_with_extra(cx.tri_count, 8u, 1u))
             goto fail;
         desired_table_size = (size_t)cx.tri_count * 8u + 1u;
         while (table_size < desired_table_size) {
@@ -1320,7 +1321,7 @@ void *rt_mesh3d_simplify(void *mesh_obj, int64_t target_triangles) {
     if (!out_sources || !out_vertices || !out_indices)
         goto fail;
     if (mesh->positions64) {
-        if ((size_t)out_vertex_count > SIZE_MAX / (3u * sizeof(double)))
+        if (!rt_alloc_count_ok(out_vertex_count, 3u * sizeof(double)))
             goto fail;
         out_positions64 = (double *)malloc((size_t)out_vertex_count * 3u * sizeof(double));
         if (!out_positions64)

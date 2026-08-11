@@ -74,7 +74,9 @@ typedef enum {
 /// @brief Heap object header preceding every payload.
 /// @details Contains metadata for validation, type safety, reference counting,
 ///          and capacity management. The payload immediately follows this header.
-typedef struct rt_heap_hdr {
+// The tag differs from the `rt_heap_hdr()` accessor below: in C++ translation
+// units a function sharing the struct's name hides its injected constructor.
+typedef struct rt_heap_hdr_s {
     uint32_t magic;                ///< Validation marker (must be RT_MAGIC = 0x52504956).
     uint16_t kind;                 ///< Heap object kind (rt_heap_kind_t).
     uint16_t elem_kind;            ///< Element type tag (rt_elem_kind_t).

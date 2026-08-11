@@ -160,8 +160,8 @@ void printValue(std::ostream &os, const il::core::Value &v) {
 ///          corrupt emitted IL snippets.  File caches and instruction maps are
 ///          populated lazily, allowing the trace sink to remain cheap when
 ///          tracing is disabled.
-/// @param cfg Trace configuration controlling emission behaviour and source lookup.
-TraceSink::TraceSink(TraceConfig cfg) : cfg(cfg) {
+/// @param config Trace configuration controlling emission behaviour and source lookup.
+TraceSink::TraceSink(TraceConfig config) : cfg(std::move(config)) {
 #ifdef _WIN32
     _setmode(_fileno(stderr), _O_BINARY);
 #endif

@@ -140,22 +140,22 @@ void buildFunctionEdges(CFGContext &ctx, il::core::Function &fn) {
 /// discovered successor edges. The constructor also tracks the parent function
 /// for every block encountered so that subsequent queries can resolve
 /// relationships efficiently.
-/// @param module IL module whose functions and blocks seed the CFG caches.
-CFGContext::CFGContext(il::core::Module &module) : module(&module) {
-    for (auto &fn : module.functions) {
+/// @param owningModule IL module whose functions and blocks seed the CFG caches.
+CFGContext::CFGContext(il::core::Module &owningModule) : module(&owningModule) {
+    for (auto &fn : owningModule.functions) {
         indexFunction(*this, fn);
     }
 
-    for (auto &fn : module.functions) {
+    for (auto &fn : owningModule.functions) {
         buildFunctionEdges(*this, fn);
     }
 }
 
 /// @brief Construct a CFG context containing only one function.
-/// @param module Module that owns the function and interned label storage.
+/// @param owningModule Module that owns the function and interned label storage.
 /// @param function Function whose blocks and edges are indexed.
-CFGContext::CFGContext(il::core::Module &module, il::core::Function &function)
-    : module(&module) {
+CFGContext::CFGContext(il::core::Module &owningModule, il::core::Function &function)
+    : module(&owningModule) {
     indexFunction(*this, function);
     buildFunctionEdges(*this, function);
 }

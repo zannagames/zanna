@@ -217,11 +217,17 @@ static int gl_ensure_color_target(gl_context_t *ctx,
 
     previous_fbo = *io_fbo;
     previous_texture = *io_texture;
-    if ((GLuint)saved.draw_framebuffer == previous_fbo)
-        saved.draw_framebuffer = (GLint)candidate_fbo;
-    if ((GLuint)saved.read_framebuffer == previous_fbo)
-        saved.read_framebuffer = (GLint)candidate_fbo;
-    if ((GLuint)saved.texture_binding_2d == previous_texture)
+    /* Same aliasing hazard as gl_build_scene_target_set's caller: name zero
+     * denotes the default framebuffer or "no texture", never this target, so a
+     * first allocation must not capture a caller's default-framebuffer binding
+     * and replay its draw buffer against the new FBO. */
+    if (previous_fbo != 0) {
+        if ((GLuint)saved.draw_framebuffer == previous_fbo)
+            saved.draw_framebuffer = (GLint)candidate_fbo;
+        if ((GLuint)saved.read_framebuffer == previous_fbo)
+            saved.read_framebuffer = (GLint)candidate_fbo;
+    }
+    if (previous_texture != 0 && (GLuint)saved.texture_binding_2d == previous_texture)
         saved.texture_binding_2d = (GLint)candidate_texture;
     *io_fbo = candidate_fbo;
     *io_texture = candidate_texture;
@@ -333,18 +339,30 @@ static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
     previous.motion_tex = ctx->scene_motion_tex;
     previous.postfx_tex = ctx->scene_postfx_tex;
     previous.depth_tex = ctx->scene_depth_tex;
-    if ((GLuint)saved.draw_framebuffer == previous.fbo)
-        saved.draw_framebuffer = (GLint)candidate.fbo;
-    if ((GLuint)saved.read_framebuffer == previous.fbo)
-        saved.read_framebuffer = (GLint)candidate.fbo;
-    if ((GLuint)saved.texture_binding_2d == previous.color_tex)
-        saved.texture_binding_2d = (GLint)candidate.color_tex;
-    else if ((GLuint)saved.texture_binding_2d == previous.motion_tex)
-        saved.texture_binding_2d = (GLint)candidate.motion_tex;
-    else if ((GLuint)saved.texture_binding_2d == previous.postfx_tex)
-        saved.texture_binding_2d = (GLint)candidate.postfx_tex;
-    else if ((GLuint)saved.texture_binding_2d == previous.depth_tex)
-        saved.texture_binding_2d = (GLint)candidate.depth_tex;
+    /* Redirect only bindings that actually named the set being replaced. Name
+     * zero is not one of this set's objects: as a framebuffer it is the default
+     * framebuffer and as a texture it means "none". On the first allocation
+     * every `previous` name is zero, so an unguarded comparison matches a
+     * caller that had the default framebuffer bound and rewrites the restore to
+     * bind the new FBO while still replaying the default framebuffer's
+     * GL_BACK draw buffer — which is invalid on a non-default framebuffer and
+     * leaves GL_INVALID_OPERATION queued for whatever runs next. */
+    if (previous.fbo != 0) {
+        if ((GLuint)saved.draw_framebuffer == previous.fbo)
+            saved.draw_framebuffer = (GLint)candidate.fbo;
+        if ((GLuint)saved.read_framebuffer == previous.fbo)
+            saved.read_framebuffer = (GLint)candidate.fbo;
+    }
+    if ((GLuint)saved.texture_binding_2d != 0) {
+        if ((GLuint)saved.texture_binding_2d == previous.color_tex)
+            saved.texture_binding_2d = (GLint)candidate.color_tex;
+        else if ((GLuint)saved.texture_binding_2d == previous.motion_tex)
+            saved.texture_binding_2d = (GLint)candidate.motion_tex;
+        else if ((GLuint)saved.texture_binding_2d == previous.postfx_tex)
+            saved.texture_binding_2d = (GLint)candidate.postfx_tex;
+        else if ((GLuint)saved.texture_binding_2d == previous.depth_tex)
+            saved.texture_binding_2d = (GLint)candidate.depth_tex;
+    }
     ctx->scene_fbo = candidate.fbo;
     ctx->scene_color_tex = candidate.color_tex;
     ctx->scene_motion_tex = candidate.motion_tex;

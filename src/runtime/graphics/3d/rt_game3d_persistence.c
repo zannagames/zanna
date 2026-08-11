@@ -31,6 +31,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_alloc_size.h"
 #include "rt_file_stdio.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -1010,8 +1011,8 @@ int8_t rt_game3d_world_load_state(void *obj, rt_string app_name, rt_string slot)
     double elapsed = persist3d_read_f64(&reader);
 
     if (record_count > (uint32_t)INT32_MAX ||
-        (size_t)record_count > SIZE_MAX / sizeof(*staged_records) ||
-        flag_count > (uint32_t)INT32_MAX || (size_t)flag_count > SIZE_MAX / sizeof(*staged_flags))
+        !rt_alloc_count_ok(record_count, sizeof(*staged_records)) ||
+        flag_count > (uint32_t)INT32_MAX || !rt_alloc_count_ok(flag_count, sizeof(*staged_flags)))
         goto load_failed;
     if (record_count > 0) {
         staged_records =

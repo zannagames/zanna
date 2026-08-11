@@ -113,7 +113,7 @@ static void test_identity_and_trap_safe_lifecycle() {
     rt_string field_value = rt_const_cstr("value");
     rt_multipart_add_field(builder, field_name, field_value);
     const int64_t build_baseline = rt_gc_tracked_count();
-    bool build_trapped = false;
+    volatile bool build_trapped = false;
     g_trap_expected = true;
     g_alloc_fail_countdown = 1;
     if (setjmp(g_trap_jmp) == 0) {

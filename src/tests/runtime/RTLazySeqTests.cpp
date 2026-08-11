@@ -478,7 +478,7 @@ static void test_invalid_limits_trap() {
         rt_lazyseq src = rt_lazyseq_range(0, 10, 1);
         jmp_buf env;
         rt_trap_set_recovery(&env);
-        bool trapped = true;
+        volatile bool trapped = true;
         if (setjmp(env) == 0) {
             (void)rt_lazyseq_take(src, -1);
             trapped = false;
@@ -489,7 +489,7 @@ static void test_invalid_limits_trap() {
     {
         jmp_buf env;
         rt_trap_set_recovery(&env);
-        bool trapped = true;
+        volatile bool trapped = true;
         if (setjmp(env) == 0) {
             (void)rt_lazyseq_range(0, 10, 0);
             trapped = false;

@@ -191,6 +191,15 @@ struct vgfx_window {
     ///          games/demos draw in logical pixels; the GUI layer leaves it at 1.0.
     float coord_scale;
 
+    /// @brief Whether a caller selected the coordinate scale explicitly.
+    /// @details Distinguishes the Canvas layer opting into logical coordinates
+    ///          from the GUI layer's untouched 1.0 default. The two are
+    ///          otherwise indistinguishable whenever the backing scale is also
+    ///          1.0, which is the normal state on backends that report HiDPI
+    ///          asynchronously after the window exists (Wayland). Only an
+    ///          explicit selection follows later backing-scale changes.
+    int coord_scale_explicit;
+
     /// @brief Target frame rate for this window.
     /// @details fps > 0: Target that specific FPS with frame limiting.
     ///          fps < 0: Unlimited (no frame rate limiting).
@@ -1051,11 +1060,20 @@ static inline int32_t vgfx_internal_public_extent_i32(int32_t framebuffer_extent
 }
 
 /// @brief Refresh a window's backing scale without overriding an explicit coordinate scale.
-/// @details Stores sanitized @p new_scale in `scale_factor`.  When the current
-///          coordinate scale still tracks the previous backing scale, including
-///          a small tolerance for representation noise, it is advanced to the
-///          new value as well.  A caller-selected independent coordinate scale
-///          is preserved.
+/// @details Stores sanitized @p new_scale in `scale_factor`.  A caller that
+///          selected the coordinate scale and left it tracking the previous
+///          backing scale — within a small tolerance for representation noise —
+///          has it advanced to the new value as well; a caller-selected
+///          independent coordinate scale is preserved.
+///
+///          The untouched 1.0 default is never advanced. It means "public
+///          coordinates are physical pixels", which is what the GUI layer
+///          relies on, and it is numerically indistinguishable from an explicit
+///          1.0 selection. Backends that learn the HiDPI factor only after the
+///          window exists (Wayland reports it asynchronously) would otherwise
+///          flip every GUI window into coordinate-scaled mode on the first
+///          scale report, so `vgfx_get_size` would start returning logical
+///          extents that the GUI layer then divides by the scale a second time.
 /// @param win Window whose scale state should be refreshed; NULL is ignored.
 /// @param new_scale Newly reported physical-pixels-per-logical-unit scale.
 static inline void vgfx_internal_refresh_scale_factor(struct vgfx_window *win, float new_scale) {
@@ -1067,6 +1085,9 @@ static inline void vgfx_internal_refresh_scale_factor(struct vgfx_window *win, f
     float sanitized = vgfx_internal_sanitize_scale(new_scale);
 
     win->scale_factor = sanitized;
+
+    if (!win->coord_scale_explicit)
+        return;
 
     if (old_coord == old_scale || (old_coord > old_scale - 0.01f && old_coord < old_scale + 0.01f))
         win->coord_scale = sanitized;

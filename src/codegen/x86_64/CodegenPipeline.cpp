@@ -135,8 +135,11 @@ using TargetPlatform = CodegenOptions::TargetPlatform;
 }
 
 /// @brief Build the system assembler command prefix for @p platform.
-/// @details On a native Darwin host uses `cc`; cross-targets use `clang`
-///          with the matching `--target=` x86-64 triple for the target OS.
+/// @details On a native host uses `cc`, the POSIX-mandated C driver name, so
+///          the mode works on distributions whose default toolchain is GCC;
+///          cross-targets use `clang` with the matching `--target=` x86-64
+///          triple for the target OS, since only Clang assembles for a
+///          foreign triple without a separate cross toolchain.
 /// @param platform Platform whose assembler driver and target flags are needed.
 /// @return Executable name and fixed arguments preceding input/output arguments.
 [[nodiscard]] std::vector<std::string> systemAssemblerArgs(TargetPlatform platform) {
@@ -147,6 +150,9 @@ using TargetPlatform = CodegenOptions::TargetPlatform;
             }
             return {"clang", "--target=x86_64-apple-macos11"};
         case TargetPlatform::Linux:
+            if constexpr (zanna::platform::kHostLinux) {
+                return {"cc"};
+            }
             return {"clang", "--target=x86_64-unknown-linux-gnu"};
         case TargetPlatform::Windows:
             return {"clang", "--target=x86_64-pc-windows-msvc"};

@@ -124,6 +124,8 @@ static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     ctx->frame_active = 1;
 
     ctx->frame_serial++;
+    /* A new frame invalidates the copy retained at the previous present. */
+    ctx->present_capture_valid = 0;
     /* Plan 07: cluster tables are camera-dependent; a light revision surviving
      * into a new frame does not imply the same froxel contents. */
     ctx->uploaded_cluster_revision = 0;
@@ -830,6 +832,14 @@ static int gl_readback_rgba(
             source_h = ctx->scene_height;
             use_postfx_readback = 1;
         }
+    } else if (ctx->present_capture_valid && ctx->present_fbo && ctx->present_tex) {
+        /* A frame was presented since the last render, so the back buffer no
+         * longer holds it; read the copy taken just before the swap. */
+        readback_framebuffer = ctx->present_fbo;
+        readback_buffer = GL_COLOR_ATTACHMENT0;
+        source_w = ctx->present_width;
+        source_h = ctx->present_height;
+        use_postfx_readback = 1;
     } else if (!ctx->default_framebuffer_writable && ctx->present_fbo && ctx->present_tex) {
         readback_framebuffer = ctx->present_fbo;
         readback_buffer = GL_COLOR_ATTACHMENT0;
@@ -961,6 +971,42 @@ static int gl_present_offscreen_vgfx(gl_context_t *ctx) {
 /// next frame starts clean.
 /// @param ctx Borrowed OpenGL context whose window frame is presented.
 /// @param chain Borrowed post-processing chain to composite, or NULL for a plain resolve.
+/// @brief Copy the composited back buffer into the present target before a swap.
+/// @details Serves the `set_capture_after_present` contract on this backend: the
+///          swap leaves the back buffer undefined, so a readback that follows a
+///          present must come from a copy taken while the frame was still there.
+///          A failure leaves `present_capture_valid` clear, and the readback path
+///          falls back to its previous default-framebuffer source.
+/// @param ctx Borrowed context whose current back buffer should be retained.
+static void gl_capture_presented_frame(gl_context_t *ctx) {
+    gl_framebuffer_state_t saved;
+
+    if (!ctx || !gl.BlitFramebuffer || ctx->width <= 0 || ctx->height <= 0)
+        return;
+    ctx->present_capture_valid = 0;
+    if (ensure_present_target(ctx, ctx->width, ctx->height) != 0)
+        return;
+
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-present-capture");
+    gl.BindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    gl.ReadBuffer(ctx->default_draw_buffer);
+    gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, ctx->present_fbo);
+    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
+    gl.BlitFramebuffer(0,
+                       0,
+                       ctx->width,
+                       ctx->height,
+                       0,
+                       0,
+                       ctx->present_width,
+                       ctx->present_height,
+                       GL_COLOR_BUFFER_BIT,
+                       GL_NEAREST);
+    ctx->present_capture_valid = gl_drain_errors("present-capture") ? 1 : 0;
+    gl_restore_framebuffer_state(&saved);
+}
+
 static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
@@ -1000,6 +1046,14 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
         ctx->scene_composited_to_backbuffer = 0;
         return;
     }
+    /* Swapping hands the back buffer to the display and leaves its contents
+     * undefined, so a readback taken after presenting has nothing to read. Keep
+     * a copy first when the caller has declared that presented frames must stay
+     * readable; retaining unconditionally would charge every rendered frame a
+     * full-screen blit and state round-trip for a capture that usually never
+     * comes. */
+    if (ctx->capture_after_present)
+        gl_capture_presented_frame(ctx);
     gl_swap_native_buffers(ctx);
     ctx->stats.direct_presents++;
     ctx->stats.present_path = 1;
@@ -1011,6 +1065,22 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
 /// @param ctx_ptr Borrowed OpenGL backend context to present.
 static void gl_present(void *ctx_ptr) {
     gl_present_impl((gl_context_t *)ctx_ptr, NULL);
+}
+
+/// @brief Backend `set_capture_after_present` op — keep presented frames readable.
+/// @details This backend reads back from the window's back buffer, which a swap
+///          leaves undefined, so it needs the hook for the same reason the Metal
+///          backend does. Disabling drops any retained frame so a later readback
+///          resolves against live targets instead of a stale copy.
+/// @param ctx_ptr Borrowed OpenGL backend context.
+/// @param enabled Nonzero to retain each presented frame for readback.
+static void gl_set_capture_after_present(void *ctx_ptr, int8_t enabled) {
+    gl_context_t *ctx = (gl_context_t *)ctx_ptr;
+    if (!ctx)
+        return;
+    ctx->capture_after_present = enabled ? 1 : 0;
+    if (!ctx->capture_after_present)
+        ctx->present_capture_valid = 0;
 }
 
 /// @brief Backend `present_postfx` hook — composite the scene through the supplied chain and swap.

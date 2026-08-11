@@ -76,6 +76,11 @@ func start() {
     G3D.Canvas3D.SetShadowDistance(world.Canvas, 200.0);
     world.Camera.LookAt(new Vec3(14.0, 10.0, 22.0), new Vec3(0.0, 2.0, 0.0),
                         new Vec3(0.0, 1.0, 0.0));
+    // The frames below are presented, and presenting hands the drawable to the
+    // display with its contents left undefined. Reading shadow pixels back
+    // afterwards is only defined once the backend has been told to retain each
+    // presented frame.
+    G3D.Canvas3D.SetCaptureAfterPresent(world.Canvas, true);
     world.RunFramesOnly(4, 0.05);
     var shot = world.CaptureFinalFrame();
     if shot == null {

@@ -25,6 +25,7 @@
  */
 
 #include "DynStubGen.hpp"
+#include "codegen/common/linker/DynamicSymbolPolicy.hpp"
 #include "RelocConstants.hpp"
 
 #include <algorithm>
@@ -97,6 +98,52 @@ size_t checkedAddSize(size_t lhs, size_t rhs, const char *context) {
         throw std::runtime_error(std::string("dynamic stub size addition overflow in ") + context);
     }
     return lhs + rhs;
+}
+
+/// @brief Reserve writable storage for a loader-copied data import.
+/// @details Unlike a code import, a data import cannot be represented by a
+///          trampoline: non-PIC references load through the symbol directly, so
+///          the name has to denote storage holding the value. This reserves
+///          @p size zero bytes in the synthetic writable section for the value
+///          itself, plus a second word holding its address for translation units
+///          that reach the import through the GOT.
+/// @param stubObj Synthetic object receiving the symbol definitions.
+/// @param gotSec Writable synthetic section receiving the storage.
+/// @param name Imported symbol name.
+/// @param slotOff Byte offset within @p gotSec at which the value slot starts.
+/// @param size Storage size in bytes.
+/// @throws std::runtime_error If the section size arithmetic would overflow.
+void appendCopyRelocSlot(ObjFile &stubObj,
+                         ObjSection &gotSec,
+                         const std::string &name,
+                         size_t slotOff,
+                         size_t size) {
+    gotSec.data.resize(checkedAddSize(slotOff, size, "loader data import slot"), 0);
+
+    ObjSymbol dataSym;
+    dataSym.name = name;
+    dataSym.binding = ObjSymbol::Global;
+    dataSym.sectionIndex = 2;
+    dataSym.offset = slotOff;
+    stubObj.symbols.push_back(std::move(dataSym));
+
+    // The `__got_` alias must stay a separate word holding the *address* of the
+    // storage above. Sharing one word would make it hold the object's value
+    // instead, and a translation unit that reaches the import through the GOT
+    // (`mov stdout@GOTPCREL(%rip), %rax`) would then dereference one level too
+    // far. The executable writer binds this word like any other GOT slot; the
+    // copy relocation makes the executable the definition the loader finds, so
+    // the bind lands on the storage above rather than the library's own copy.
+    const size_t gotOff = gotSec.data.size();
+    gotSec.data.resize(checkedAddSize(gotOff, size, "loader data import pointer"), 0);
+
+    ObjSymbol gotSym;
+    gotSym.name = "__got_" + name;
+    gotSym.binding = ObjSymbol::Global;
+    gotSym.sectionIndex = 2;
+    gotSym.offset = gotOff;
+    stubObj.symbols.push_back(std::move(gotSym));
+
 }
 
 } // namespace
@@ -264,8 +311,9 @@ ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynami
     return stubObj;
 }
 
-/// @copydoc generateDynStubsAArch64(const std::unordered_set<std::string> &)
-ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms) {
+/// @copydoc generateDynStubsAArch64(const std::unordered_set<std::string> &, bool)
+ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms,
+                                bool copyRelocDataSymbols) {
     ObjFile stubObj;
     stubObj.name = "<dyld-stubs>";
     stubObj.synthetic = true;
@@ -305,8 +353,19 @@ ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSy
     std::sort(sorted.begin(), sorted.end());
 
     for (size_t i = 0; i < sorted.size(); ++i) {
-        const size_t stubOff = checkedMulSize(i, 12, "AArch64 dynamic stub offset");
-        const size_t gotOff = checkedMulSize(i, 8, "AArch64 dynamic GOT offset");
+        const size_t gotOff = gotSec.data.size();
+
+        // Imported data objects get storage instead of a trampoline: the name
+        // must denote the value, not a branch to it. See loaderDataSymbolSize().
+        if (copyRelocDataSymbols) {
+            const size_t dataSize = loaderDataSymbolSize(sorted[i]);
+            if (dataSize != 0) {
+                appendCopyRelocSlot(stubObj, gotSec, sorted[i], gotOff, dataSize);
+                continue;
+            }
+        }
+
+        const size_t stubOff = textSec.data.size();
 
         // GOT entry symbol.
         const uint32_t gotSymIdx =
@@ -392,8 +451,17 @@ ObjFile generateDynStubsX8664(const std::unordered_set<std::string> &dynamicSyms
     std::sort(sorted.begin(), sorted.end());
 
     for (size_t i = 0; i < sorted.size(); ++i) {
-        const size_t stubOff = textSec.data.size();
         const size_t gotOff = gotSec.data.size();
+
+        // Imported data objects get storage instead of a trampoline: the name
+        // must denote the value, not a jump to it. See loaderDataSymbolSize().
+        const size_t dataSize = loaderDataSymbolSize(sorted[i]);
+        if (dataSize != 0) {
+            appendCopyRelocSlot(stubObj, gotSec, sorted[i], gotOff, dataSize);
+            continue;
+        }
+
+        const size_t stubOff = textSec.data.size();
 
         ObjSymbol gotSym;
         gotSym.name = "__got_" + sorted[i];

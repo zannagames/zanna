@@ -46,6 +46,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_fbx_loader.h"
+#include "rt_alloc_size.h"
 #include "rt_asset_error.h"
 #include "rt_bytes.h"
 #include "rt_canvas3d.h"

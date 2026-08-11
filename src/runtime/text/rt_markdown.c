@@ -218,6 +218,9 @@ static void append_escaped(rt_string_builder *sb, char c) {
     }
 }
 
+/** Deepest ATX heading level recognized, matching HTML's `<h6>`. */
+#define MARKDOWN_MAX_HEADING_LEVEL 6
+
 /// @brief Recognize an ATX heading marker at the exact start of a line.
 /// @details Accepts one through six `#` bytes followed by one literal space.
 ///          Leading indentation and seven or more markers are not headings.
@@ -231,7 +234,7 @@ static int markdown_heading_level(const char *line, const char *eol) {
         level++;
         p++;
     }
-    if (level < 1 || level > 6)
+    if (level < 1 || level > MARKDOWN_MAX_HEADING_LEVEL)
         return 0;
     return (p < eol && *p == ' ') ? level : 0;
 }
@@ -444,7 +447,9 @@ rt_string rt_markdown_to_html(rt_string md) {
 
         // Heading
         int heading_level = markdown_heading_level(p, eol);
-        if (heading_level > 0) {
+        // The level is always 1-6 here; restating the bound keeps the single
+        // digit written into `tag` provable at this call site.
+        if (heading_level > 0 && heading_level <= MARKDOWN_MAX_HEADING_LEVEL) {
             int level = heading_level;
             const char *h = p + level + 1;
             char tag[8];

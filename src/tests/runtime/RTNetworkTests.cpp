@@ -773,7 +773,7 @@ static void test_tcp_receive_trap_cleanup() {
     requested.store(1, std::memory_order_release);
     while (published.load(std::memory_order_acquire) < 1)
         std::this_thread::yield();
-    bool short_recv_trapped = false;
+    volatile bool short_recv_trapped = false;
     tcp_alloc_fail_countdown = 2;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -793,7 +793,7 @@ static void test_tcp_receive_trap_cleanup() {
     requested.store(2, std::memory_order_release);
     while (published.load(std::memory_order_acquire) < 2)
         std::this_thread::yield();
-    bool recv_str_trapped = false;
+    volatile bool recv_str_trapped = false;
     tcp_alloc_fail_countdown = 2;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -813,7 +813,7 @@ static void test_tcp_receive_trap_cleanup() {
     requested.store(3, std::memory_order_release);
     while (published.load(std::memory_order_acquire) < 3)
         std::this_thread::yield();
-    bool recv_line_trapped = false;
+    volatile bool recv_line_trapped = false;
     tcp_alloc_fail_countdown = 1;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -1130,7 +1130,7 @@ static void test_connection_pool_rejects_cross_pool_aliasing() {
     void *conn = rt_connpool_acquire(pool_a, host, port);
     test_result("Pool A acquired a live connection", conn != nullptr);
 
-    bool saw_foreign_pool_trap = false;
+    volatile bool saw_foreign_pool_trap = false;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -1149,7 +1149,7 @@ static void test_connection_pool_rejects_cross_pool_aliasing() {
     test_result("Rejected foreign release did not close the transport", rt_tcp_is_open(conn) == 1);
 
     void *not_bytes = rt_seq_new();
-    bool saw_invalid_bytes_trap = false;
+    volatile bool saw_invalid_bytes_trap = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_tcp_send(conn, not_bytes);
@@ -1162,7 +1162,7 @@ static void test_connection_pool_rejects_cross_pool_aliasing() {
     release_test_object(not_bytes);
     test_result("TCP send rejects a non-Bytes managed payload", saw_invalid_bytes_trap);
 
-    bool saw_negative_length_trap = false;
+    volatile bool saw_negative_length_trap = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         rt_tcp_send_all_raw(conn, nullptr, -1);
@@ -1174,7 +1174,7 @@ static void test_connection_pool_rejects_cross_pool_aliasing() {
     }
     test_result("TCP raw send rejects a negative length", saw_negative_length_trap);
 
-    bool saw_negative_receive_trap = false;
+    volatile bool saw_negative_receive_trap = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_tcp_recv(conn, -1);
@@ -1744,7 +1744,7 @@ static void test_tcp_transport_constructor_trap_cleanup() {
     int64_t port = rt_tcp_server_port(server);
     rt_string host = rt_const_cstr("127.0.0.1");
 
-    bool connect_alloc_trapped = false;
+    volatile bool connect_alloc_trapped = false;
     tcp_alloc_fail_countdown = 1;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -1770,7 +1770,7 @@ static void test_tcp_transport_constructor_trap_cleanup() {
 
     void *accept_client = rt_tcp_connect(host, port);
     assert(accept_client != nullptr);
-    bool accept_alloc_trapped = false;
+    volatile bool accept_alloc_trapped = false;
     tcp_alloc_fail_countdown = 1;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -1911,7 +1911,7 @@ static void test_udp_datagram_integrity_and_trap_cleanup() {
     test_result("UDP receive rejects a negative size", negative_size_trapped);
 
     void *not_bytes = rt_seq_new();
-    bool invalid_payload_trapped = false;
+    volatile bool invalid_payload_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_udp_send_to(sender, host, receiver_port, not_bytes);
@@ -1927,7 +1927,7 @@ static void test_udp_datagram_integrity_and_trap_cleanup() {
     void *first = make_bytes_str("a");
     assert(rt_udp_send_to(sender, host, receiver_port, first) == 1);
     release_test_object(first);
-    bool right_size_trapped = false;
+    volatile bool right_size_trapped = false;
     tcp_alloc_fail_countdown = 2;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -1962,7 +1962,7 @@ static void test_udp_datagram_integrity_and_trap_cleanup() {
 
     const int rebind_port = get_free_udp_port_ipv4();
     assert(rebind_port > 0);
-    bool bind_alloc_trapped = false;
+    volatile bool bind_alloc_trapped = false;
     tcp_alloc_fail_countdown = 1;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
@@ -2457,8 +2457,8 @@ static void test_dns_allocation_trap_cleanup() {
                         rt_gc_tracked_count() == tracked_baseline);
     }
 
-    bool local_trapped = false;
-    void *local_result = nullptr;
+    volatile bool local_trapped = false;
+    void *volatile local_result = nullptr;
     jmp_buf recovery;
     tcp_alloc_fail_countdown = 2;
     rt_trap_set_recovery(&recovery);
@@ -3030,8 +3030,8 @@ static void test_http_send_result_allocation_cleanup() {
     int trap_count = 0;
     bool all_failures_clean = allocation_count > 0;
     for (int fail_at = 1; fail_at <= allocation_count; ++fail_at) {
-        void *result = nullptr;
-        bool trapped = false;
+        void *volatile result = nullptr;
+        volatile bool trapped = false;
         jmp_buf recovery;
         http_alloc_fail_countdown = fail_at;
         http_alloc_observed = 0;
@@ -3106,7 +3106,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
 
     void *wrong = rt_seq_new();
     jmp_buf recovery;
-    bool body_trapped = false;
+    volatile bool body_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_http_req_set_body(request, wrong);
@@ -3122,7 +3122,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
                            "preserved-body",
                            strlen("preserved-body")) == 0);
 
-    bool pool_trapped = false;
+    volatile bool pool_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_http_req_set_connection_pool(request, wrong);
@@ -3134,7 +3134,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
     test_result("Rejected pool preserves prior retained pool",
                 pool_trapped && static_cast<rt_http_req_t *>(request)->connection_pool == pool);
 
-    bool request_receiver_trapped = false;
+    volatile bool request_receiver_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_http_req_set_timeout(wrong, 1);
@@ -3143,7 +3143,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
         request_receiver_trapped = true;
         rt_trap_clear_recovery();
     }
-    bool response_receiver_trapped = false;
+    volatile bool response_receiver_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_http_res_headers(wrong);
@@ -3152,7 +3152,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
         response_receiver_trapped = true;
         rt_trap_clear_recovery();
     }
-    bool response_predicate_trapped = false;
+    volatile bool response_predicate_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         (void)rt_http_res_is_ok(wrong);
@@ -3161,7 +3161,7 @@ static void test_http_identity_and_accessor_trap_cleanup() {
         response_predicate_trapped = true;
         rt_trap_clear_recovery();
     }
-    bool pool_receiver_trapped = false;
+    volatile bool pool_receiver_trapped = false;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) == 0) {
         rt_http_conn_pool_clear(wrong);
@@ -3175,11 +3175,11 @@ static void test_http_identity_and_accessor_trap_cleanup() {
                     response_predicate_trapped && pool_receiver_trapped && rt_seq_len(wrong) == 0);
 
     const int64_t accessor_baseline = rt_gc_tracked_count();
-    bool all_header_copy_failures_clean = true;
-    int header_copy_traps = 0;
-    for (int fail_at = 1; fail_at <= 8; ++fail_at) {
-        void *copy = nullptr;
-        bool trapped = false;
+    volatile bool all_header_copy_failures_clean = true;
+    volatile int header_copy_traps = 0;
+    for (volatile int fail_at = 1; fail_at <= 8;) {
+        void *volatile copy = nullptr;
+        volatile bool trapped = false;
         http_alloc_fail_countdown = fail_at;
         http_alloc_observed = 0;
         rt_trap_set_recovery(&recovery);
@@ -3194,19 +3194,22 @@ static void test_http_identity_and_accessor_trap_cleanup() {
             rt_trap_clear_recovery();
         }
         if (trapped)
-            header_copy_traps++;
+            header_copy_traps = header_copy_traps + 1;
         release_test_object(copy);
         all_header_copy_failures_clean =
             all_header_copy_failures_clean && rt_gc_tracked_count() == accessor_baseline;
+        // Advance in the body: C++20 deprecates reading the value
+        // of an assignment to a volatile operand.
+        fail_at = fail_at + 1;
     }
     test_result("HttpRes.Headers releases every partial Map/Seq/String snapshot",
                 all_header_copy_failures_clean && header_copy_traps >= 4);
 
-    bool all_header_lookup_failures_clean = true;
-    int header_lookup_traps = 0;
-    for (int fail_at = 1; fail_at <= 2; ++fail_at) {
-        rt_string value = nullptr;
-        bool trapped = false;
+    volatile bool all_header_lookup_failures_clean = true;
+    volatile int header_lookup_traps = 0;
+    for (volatile int fail_at = 1; fail_at <= 2;) {
+        volatile rt_string value = nullptr;
+        volatile bool trapped = false;
         http_alloc_fail_countdown = fail_at;
         http_alloc_observed = 0;
         rt_trap_set_recovery(&recovery);
@@ -3221,11 +3224,14 @@ static void test_http_identity_and_accessor_trap_cleanup() {
             rt_trap_clear_recovery();
         }
         if (trapped)
-            header_lookup_traps++;
+            header_lookup_traps = header_lookup_traps + 1;
         if (value)
             rt_string_unref(value);
         all_header_lookup_failures_clean =
             all_header_lookup_failures_clean && rt_gc_tracked_count() == accessor_baseline;
+        // Advance in the body: C++20 deprecates reading the value
+        // of an assignment to a volatile operand.
+        fail_at = fail_at + 1;
     }
     test_result("HttpRes.Header releases lookup key/value/result on allocation traps",
                 all_header_lookup_failures_clean && header_lookup_traps == 2);
@@ -3281,9 +3287,9 @@ static void test_http_one_shot_allocation_sweep() {
     test_result("Count-only Http.Get leaves no temporary managed objects",
                 rt_gc_tracked_count() == baseline);
 
-    bool all_failures_trapped = true;
-    bool all_failures_clean = true;
-    for (int fail_at = 1; fail_at <= allocation_count; ++fail_at) {
+    volatile bool all_failures_trapped = true;
+    volatile bool all_failures_clean = true;
+    for (volatile int fail_at = 1; fail_at <= allocation_count;) {
         const int port = get_free_tcp_port_ipv4();
         assert(port > 0);
         std::thread server = run_server(port);
@@ -3315,6 +3321,9 @@ static void test_http_one_shot_allocation_sweep() {
         all_failures_trapped = all_failures_trapped && trapped && http_alloc_fail_countdown == 0;
         all_failures_clean = all_failures_clean && rt_gc_tracked_count() == iteration_baseline;
         rt_string_unref(url);
+        // Advance in the body: C++20 deprecates reading the value
+        // of an assignment to a volatile operand.
+        fail_at = fail_at + 1;
     }
     test_result("Every managed Http.Get allocation failure propagates exactly once",
                 all_failures_trapped);

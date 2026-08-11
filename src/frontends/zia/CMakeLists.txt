@@ -60,7 +60,8 @@ target_compile_options(fe_zia PRIVATE
         $<$<CXX_COMPILER_ID:MSVC>:/bigobj>
         $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>,$<BOOL:$<STREQUAL:${CMAKE_CXX_COMPILER_FRONTEND_VARIANT},MSVC>>>:/clang:-fconstexpr-steps=100000000>
         $<$<AND:$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang>,$<NOT:$<BOOL:$<STREQUAL:${CMAKE_CXX_COMPILER_FRONTEND_VARIANT},MSVC>>>>:-fconstexpr-steps=100000000>
-        $<$<CXX_COMPILER_ID:GNU>:-fconstexpr-ops-limit=100000000>
+        # 100000000 is GCC's default, so the budget has to be raised past it.
+        $<$<CXX_COMPILER_ID:GNU>:-fconstexpr-ops-limit=1000000000>
 )
 
 target_include_directories(fe_zia PUBLIC

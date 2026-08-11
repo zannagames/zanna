@@ -87,11 +87,11 @@ typedef struct heap_entry {
 ///
 /// **Memory layout example (min-heap with 5 elements):**
 /// ```
-///                  [0]
-///                 /    \
-///              [1]      [2]
-///             /   \
-///          [3]     [4]
+/// [0]
+/// +-- [1]
+/// |   +-- [3]
+/// |   +-- [4]
+/// +-- [2]
 ///
 /// Array: [(1,A), (3,B), (2,C), (5,D), (4,E)]
 ///         ^root

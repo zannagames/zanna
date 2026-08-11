@@ -526,7 +526,7 @@ static int basislz_decode_slice(const uint8_t *data,
     int ok = 0;
     if (num_blocks_x == 0 || num_blocks_y == 0 || num_endpoints == 0 || num_selectors == 0)
         return 0;
-    if ((size_t)num_blocks_x > SIZE_MAX / (2u * sizeof(*preds)))
+    if (!rt_alloc_count_ok(num_blocks_x, 2u * sizeof(*preds)))
         return 0;
     preds = calloc((size_t)num_blocks_x * 2u, sizeof(*preds));
     if (!preds)

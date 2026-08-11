@@ -95,7 +95,7 @@ struct UnsignedMagicNumber {
     }
     return quotient;
 #else
-    const unsigned __int128 numerator =
+    __extension__ const unsigned __int128 numerator =
         (static_cast<unsigned __int128>(hi) << 64) | static_cast<unsigned __int128>(lo);
     rem = static_cast<uint64_t>(numerator % divisor);
     return static_cast<uint64_t>(numerator / divisor);

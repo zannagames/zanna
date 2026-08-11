@@ -942,6 +942,19 @@ bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
         if (it != globalSyms.end() && it->second.binding != GlobalSymEntry::Undefined)
             continue; // Was resolved during iteration.
 
+        // Zanna emits no GOT, so a linker-defined GOT base resolves to absolute
+        // zero - the base of an empty table - instead of failing the link.
+        if (isLinkerDefinedSymbol(undef, platform)) {
+            if (it != globalSyms.end()) {
+                it->second.binding = GlobalSymEntry::Global;
+                it->second.absolute = true;
+                it->second.offset = 0;
+                it->second.resolvedAddr = 0;
+                it->second.resolvedAddrValid = true;
+            }
+            continue;
+        }
+
         const bool allowSynthetic =
             platform == LinkPlatform::Windows && isWindowsLinkerHelperSymbol(undef);
         const bool allowDynamic = allowSynthetic || (isKnownDynamicSymbol(undef, platform) &&

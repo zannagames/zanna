@@ -860,22 +860,32 @@ int contact3d_expand_obb_manifold(rt_contact3d *contact,
         double neg_v[3];
         vec3_negate(ref_box->axes[u], neg_u);
         vec3_negate(ref_box->axes[v], neg_v);
-        clipped_count = ph3d_clip_poly_to_extent(poly_a,
+        clipped_count = ph3d_clip_poly_to_extent((const double (*)[3])poly_a,
                                                  clipped_count,
                                                  ref_face_center,
                                                  ref_box->axes[u],
                                                  ref_box->half_extents[u],
                                                  poly_b);
         clipped_count = ph3d_clip_poly_to_extent(
-            poly_b, clipped_count, ref_face_center, neg_u, ref_box->half_extents[u], poly_a);
-        clipped_count = ph3d_clip_poly_to_extent(poly_a,
+            (const double (*)[3])poly_b,
+            clipped_count,
+            ref_face_center,
+            neg_u,
+            ref_box->half_extents[u],
+            poly_a);
+        clipped_count = ph3d_clip_poly_to_extent((const double (*)[3])poly_a,
                                                  clipped_count,
                                                  ref_face_center,
                                                  ref_box->axes[v],
                                                  ref_box->half_extents[v],
                                                  poly_b);
         clipped_count = ph3d_clip_poly_to_extent(
-            poly_b, clipped_count, ref_face_center, neg_v, ref_box->half_extents[v], poly_a);
+            (const double (*)[3])poly_b,
+            clipped_count,
+            ref_face_center,
+            neg_v,
+            ref_box->half_extents[v],
+            poly_a);
     }
 
     if (clipped_count <= 0)

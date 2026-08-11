@@ -255,7 +255,7 @@ static int fbx_mesh_material_map_append(fbx_mesh_material_map_t *map,
     if (!rt_untrusted_count_ok(
             (int64_t)triangle_count, sizeof(int32_t), FBX_MAX_DECOMPRESSED_ARRAY_BYTES))
         return 0;
-    if ((size_t)(map->triangle_count + triangle_count) > SIZE_MAX / sizeof(*map->triangle_slots))
+    if (!rt_alloc_count_ok((map->triangle_count + triangle_count), sizeof(*map->triangle_slots)))
         return 0;
     grown = (int32_t *)realloc(map->triangle_slots,
                                (size_t)(map->triangle_count + triangle_count) *

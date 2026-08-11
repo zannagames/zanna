@@ -30,6 +30,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_heap.h"
@@ -262,8 +263,8 @@ int canvas3d_snapshot_mesh_geometry(rt_canvas3d *c,
         return 0;
     vertex_count = rt_mesh3d_safe_vertex_count(mesh);
     index_count = rt_mesh3d_safe_index_count(mesh);
-    if ((size_t)vertex_count > SIZE_MAX / sizeof(*vertices) ||
-        (size_t)index_count > SIZE_MAX / sizeof(*indices))
+    if (!rt_alloc_count_ok(vertex_count, sizeof(*vertices)) ||
+        !rt_alloc_count_ok(index_count, sizeof(*indices)))
         return 0;
     vertex_bytes = (size_t)vertex_count * sizeof(*vertices);
     index_bytes = (size_t)index_count * sizeof(*indices);
@@ -436,8 +437,8 @@ int canvas3d_snapshot_mesh_geometry_cached(rt_canvas3d *c,
         return 0;
     vertex_count = rt_mesh3d_safe_vertex_count(mesh);
     index_count = rt_mesh3d_safe_index_count(mesh);
-    if ((size_t)vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)index_count > SIZE_MAX / sizeof(uint32_t) ||
+    if (!rt_alloc_count_ok(vertex_count, sizeof(vgfx3d_vertex_t)) ||
+        !rt_alloc_count_ok(index_count, sizeof(uint32_t)) ||
         (size_t)vertex_count * sizeof(vgfx3d_vertex_t) >
             SIZE_MAX - (size_t)index_count * sizeof(uint32_t)) {
         if (canvas3d_consume_injected_snapshot_failure(c, SIZE_MAX))
@@ -555,8 +556,8 @@ int canvas3d_snapshot_mesh_geometry_with_tangents_cached(rt_canvas3d *c,
         return 0;
     vertex_count = rt_mesh3d_safe_vertex_count(mesh);
     index_count = rt_mesh3d_safe_index_count(mesh);
-    if ((size_t)vertex_count <= SIZE_MAX / sizeof(vgfx3d_vertex_t) &&
-        (size_t)index_count <= SIZE_MAX / sizeof(uint32_t) &&
+    if (rt_alloc_count_ok(vertex_count, sizeof(vgfx3d_vertex_t)) &&
+        rt_alloc_count_ok(index_count, sizeof(uint32_t)) &&
         (size_t)vertex_count * sizeof(vgfx3d_vertex_t) <=
             SIZE_MAX - (size_t)index_count * sizeof(uint32_t) &&
         canvas3d_consume_injected_snapshot_failure(c,

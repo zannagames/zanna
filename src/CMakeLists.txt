@@ -128,8 +128,10 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
             PROPERTIES COMPILE_FLAGS "-fconstexpr-steps=100000000")
     endif ()
 elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    # 100000000 is GCC's own default and no longer covers the descriptor sort,
+    # so this budget has to be raised well above it.
     set_source_files_properties(il/runtime/RuntimeSignatures.cpp
-            PROPERTIES COMPILE_FLAGS "-fconstexpr-ops-limit=100000000")
+            PROPERTIES COMPILE_FLAGS "-fconstexpr-ops-limit=1000000000")
 elseif (MSVC)
     set_source_files_properties(il/runtime/RuntimeSignatures.cpp
             PROPERTIES COMPILE_FLAGS "/constexpr:steps100000000 /bigobj")

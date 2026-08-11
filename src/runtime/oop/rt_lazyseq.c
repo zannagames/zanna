@@ -43,6 +43,7 @@
 #include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_trap.h"
 #include <limits.h>
@@ -1220,7 +1221,7 @@ int64_t rt_lazyseq_w_count(void *seq) {
 /// @param[in] fn Opaque transform function pointer.
 /// @return Result from rt_lazyseq_map().
 void *rt_lazyseq_w_map(void *seq, void *fn) {
-    return (void *)rt_lazyseq_map(as_lazyseq(seq), (void *(*)(void *))fn);
+    return (void *)rt_lazyseq_map(as_lazyseq(seq), RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for `rt_lazyseq_filter`.
@@ -1228,7 +1229,7 @@ void *rt_lazyseq_w_map(void *seq, void *fn) {
 /// @param[in] pred Opaque predicate function pointer.
 /// @return Result from rt_lazyseq_filter().
 void *rt_lazyseq_w_filter(void *seq, void *pred) {
-    return (void *)rt_lazyseq_filter(as_lazyseq(seq), (int8_t (*)(void *))pred);
+    return (void *)rt_lazyseq_filter(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }
 
 /// @brief IL trampoline for `rt_lazyseq_take_while`.
@@ -1236,7 +1237,7 @@ void *rt_lazyseq_w_filter(void *seq, void *pred) {
 /// @param[in] pred Opaque predicate function pointer.
 /// @return Result from rt_lazyseq_take_while().
 void *rt_lazyseq_w_take_while(void *seq, void *pred) {
-    return (void *)rt_lazyseq_take_while(as_lazyseq(seq), (int8_t (*)(void *))pred);
+    return (void *)rt_lazyseq_take_while(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }
 
 /// @brief IL trampoline for `rt_lazyseq_drop_while`.
@@ -1244,7 +1245,7 @@ void *rt_lazyseq_w_take_while(void *seq, void *pred) {
 /// @param[in] pred Opaque predicate function pointer.
 /// @return Result from rt_lazyseq_drop_while().
 void *rt_lazyseq_w_drop_while(void *seq, void *pred) {
-    return (void *)rt_lazyseq_drop_while(as_lazyseq(seq), (int8_t (*)(void *))pred);
+    return (void *)rt_lazyseq_drop_while(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }
 
 /// @brief IL trampoline for `rt_lazyseq_find`. Discards the `found` flag (caller checks NULL).
@@ -1253,7 +1254,7 @@ void *rt_lazyseq_w_drop_while(void *seq, void *pred) {
 /// @return Borrowed matching element, or NULL for no match and matching null elements.
 void *rt_lazyseq_w_find(void *seq, void *pred) {
     int8_t found;
-    return rt_lazyseq_find(as_lazyseq(seq), (int8_t (*)(void *))pred, &found);
+    return rt_lazyseq_find(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred), &found);
 }
 
 /// @brief IL trampoline for `rt_lazyseq_find` that preserves absence as Option.None.
@@ -1265,7 +1266,8 @@ void *rt_lazyseq_w_find(void *seq, void *pred) {
 /// @return Opaque Zanna.Option containing the first matching element, or None.
 void *rt_lazyseq_w_find_option(void *seq, void *pred) {
     int8_t found = 0;
-    void *value = rt_lazyseq_find(as_lazyseq(seq), (int8_t (*)(void *))pred, &found);
+    void *value =
+        rt_lazyseq_find(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred), &found);
     return found ? rt_option_some(value) : rt_option_none();
 }
 
@@ -1274,7 +1276,7 @@ void *rt_lazyseq_w_find_option(void *seq, void *pred) {
 /// @param[in] pred Opaque predicate function pointer.
 /// @return 1 on the first match; otherwise 0.
 int8_t rt_lazyseq_w_any(void *seq, void *pred) {
-    return rt_lazyseq_any(as_lazyseq(seq), (int8_t (*)(void *))pred);
+    return rt_lazyseq_any(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }
 
 /// @brief IL trampoline for `rt_lazyseq_all`.
@@ -1282,5 +1284,5 @@ int8_t rt_lazyseq_w_any(void *seq, void *pred) {
 /// @param[in] pred Opaque predicate function pointer.
 /// @return 0 on the first failure; otherwise 1.
 int8_t rt_lazyseq_w_all(void *seq, void *pred) {
-    return rt_lazyseq_all(as_lazyseq(seq), (int8_t (*)(void *))pred);
+    return rt_lazyseq_all(as_lazyseq(seq), RT_FN_PTR_CAST((int8_t (*)(void *))pred));
 }

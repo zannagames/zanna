@@ -893,6 +893,31 @@ int main() {
         CHECK(err.str().find("undefined symbol '__user_defined_helper'") != std::string::npos);
     }
 
+    // --- _GLOBAL_OFFSET_TABLE_ is linker-defined on ELF, not an import ---
+    {
+        auto obj = makeObj("main.o", {".text"});
+        addSymbol(obj, "main", 1, ObjSymbol::Global);
+        addSymbol(obj, "_GLOBAL_OFFSET_TABLE_", 0, ObjSymbol::Undefined);
+
+        std::vector<ObjFile> initObjs = {obj};
+        std::vector<Archive> archives;
+        std::unordered_map<std::string, GlobalSymEntry> globalSyms;
+        std::vector<ObjFile> allObjects;
+        std::unordered_set<std::string> dynamicSyms;
+        std::ostringstream err;
+
+        bool ok = resolveSymbols(
+            initObjs, archives, globalSyms, allObjects, dynamicSyms, err, LinkPlatform::Linux);
+        CHECK(ok);
+        CHECK(err.str().empty());
+        CHECK(dynamicSyms.empty());
+        CHECK(globalSyms.count("_GLOBAL_OFFSET_TABLE_") == 1);
+        CHECK(globalSyms["_GLOBAL_OFFSET_TABLE_"].binding == GlobalSymEntry::Global);
+        CHECK(globalSyms["_GLOBAL_OFFSET_TABLE_"].absolute);
+        CHECK(globalSyms["_GLOBAL_OFFSET_TABLE_"].resolvedAddr == 0);
+        CHECK(globalSyms["_GLOBAL_OFFSET_TABLE_"].resolvedAddrValid);
+    }
+
     // --- Unknown undefined symbol is a hard error ---
     {
         auto obj = makeObj("main.o", {".text"});

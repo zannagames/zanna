@@ -65,13 +65,14 @@ TEST(TUI, ListTree) {
     ASSERT_TRUE(sel.size() == 2 && sel[0] == 1 && sel[1] == 2);
 
     // Custom renderer outputs uppercase without prefix
-    lv.setRenderer([](ScreenBuffer &sb, int row, const std::string &it, bool, const Theme &theme) {
-        for (int i = 0; i < static_cast<int>(it.size()); ++i) {
-            auto &c = sb.at(row, i);
-            c.ch = static_cast<char32_t>(std::toupper(it[i]));
-            c.style = theme.style(Role::Normal);
-        }
-    });
+    lv.setRenderer(
+        [](ScreenBuffer &target, int row, const std::string &it, bool, const Theme &rowTheme) {
+            for (int i = 0; i < static_cast<int>(it.size()); ++i) {
+                auto &c = target.at(row, i);
+                c.ch = static_cast<char32_t>(std::toupper(it[i]));
+                c.style = rowTheme.style(Role::Normal);
+            }
+        });
     sb.clear(theme.style(Role::Normal));
     lv.paint(sb);
     tio.clear();

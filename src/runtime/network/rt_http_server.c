@@ -44,6 +44,7 @@
 #include "rt_network_http_internal.h"
 #include "rt_network_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_threadpool.h"
@@ -681,7 +682,7 @@ static void free_handler_bindings(rt_http_server_impl *server) {
 static void native_handler_dispatch(void *ctx, void *req, void *res) {
     if (!ctx)
         return;
-    ((rt_http_server_handler_fn)ctx)(req, res);
+    (RT_FN_PTR_CAST((rt_http_server_handler_fn)ctx))(req, res);
 }
 
 //=============================================================================
@@ -1250,7 +1251,9 @@ static void *accept_loop(void *arg)
         rt_obj_retain_maybe(server);
 
         if (!server->worker_pool ||
-            !rt_threadpool_submit(server->worker_pool, (void *)handle_connection_task, task)) {
+            !rt_threadpool_submit(server->worker_pool,
+                                  RT_FN_PTR_CAST((void *)handle_connection_task),
+                                  task)) {
             server_release_object(server);
             free(task);
             rt_tcp_close(tcp);
@@ -1598,9 +1601,9 @@ void rt_http_server_bind_handler_dispatch(
     }
     int bound = set_handler_binding(server,
                                     tag,
-                                    (rt_http_server_handler_dispatch_fn)dispatch,
+                                    RT_FN_PTR_CAST((rt_http_server_handler_dispatch_fn)dispatch),
                                     ctx,
-                                    (rt_http_server_handler_cleanup_fn)cleanup,
+                                    RT_FN_PTR_CAST((rt_http_server_handler_cleanup_fn)cleanup),
                                     &old_cleanup,
                                     &old_ctx);
     server_lifecycle_unlock(server);

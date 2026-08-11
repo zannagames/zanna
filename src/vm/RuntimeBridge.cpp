@@ -727,43 +727,45 @@ void RuntimeBridge::trap(TrapKind kind,
     if (ctx.vm) {
         /// @brief Publish trap source and function context into an active VM.
         /// @param vm Active VM receiving context updates.
-        /// @param loc Trap source location.
-        /// @param fn Active function name.
-        /// @param block Active block label.
-        auto populateVm =
-            [](VM &vm, const SourceLoc &loc, const std::string &fn, const std::string &block) {
-                if (loc.hasFile()) {
-                    vm.currentContext.loc = loc;
-                    vm.runtimeContext.loc = loc;
-                } else {
-                    vm.runtimeContext.loc = {};
-                }
-                if (!fn.empty()) {
-                    vm.runtimeContext.function = fn;
-                } else {
-                    vm.runtimeContext.function.clear();
-                    vm.lastTrap.frame.function.clear();
-                }
-                if (!block.empty()) {
-                    vm.runtimeContext.block = block;
-                } else {
-                    vm.runtimeContext.block.clear();
-                }
-                if (!loc.hasLine())
-                    vm.lastTrap.frame.line = -1;
-            };
+        /// @param trapLoc Trap source location.
+        /// @param fnName Active function name.
+        /// @param blockLabel Active block label.
+        auto populateVm = [](VM &vm,
+                             const SourceLoc &trapLoc,
+                             const std::string &fnName,
+                             const std::string &blockLabel) {
+            if (trapLoc.hasFile()) {
+                vm.currentContext.loc = trapLoc;
+                vm.runtimeContext.loc = trapLoc;
+            } else {
+                vm.runtimeContext.loc = {};
+            }
+            if (!fnName.empty()) {
+                vm.runtimeContext.function = fnName;
+            } else {
+                vm.runtimeContext.function.clear();
+                vm.lastTrap.frame.function.clear();
+            }
+            if (!blockLabel.empty()) {
+                vm.runtimeContext.block = blockLabel;
+            } else {
+                vm.runtimeContext.block.clear();
+            }
+            if (!trapLoc.hasLine())
+                vm.lastTrap.frame.line = -1;
+        };
         populateVm(*ctx.vm, loc, fn, block);
         ctx.vm->runtimeContext.message = msg;
     } else {
         /// @brief Populate fallback trap records when no VM instance is active.
         /// @param c Trap context receiving error and frame metadata.
-        /// @param loc Trap source location.
-        /// @param fn Active function name, or empty when unavailable.
-        auto populateNoVm = [](TrapCtx &c, const SourceLoc &loc, const std::string &fn) {
+        /// @param trapLoc Trap source location.
+        /// @param fnName Active function name, or empty when unavailable.
+        auto populateNoVm = [](TrapCtx &c, const SourceLoc &trapLoc, const std::string &fnName) {
             c.error.ip = 0;
-            c.error.line = loc.hasLine() ? static_cast<int32_t>(loc.line) : -1;
+            c.error.line = trapLoc.hasLine() ? static_cast<int32_t>(trapLoc.line) : -1;
 
-            c.frame.function = fn.empty() ? std::string("<unknown>") : fn;
+            c.frame.function = fnName.empty() ? std::string("<unknown>") : fnName;
             c.frame.ip = 0;
             c.frame.line = c.error.line;
             c.frame.handlerInstalled = false;

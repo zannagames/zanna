@@ -31,6 +31,7 @@
  */
 
 #include "rt_avi.h"
+#include "rt_alloc_size.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -605,7 +606,7 @@ static int avi_try_build_chunks_from_idx1(avi_context_t *ctx) {
     raw_entry_count = ctx->idx1_size / 16u;
     if (raw_entry_count == 0u || raw_entry_count > AVI_MAX_IDX1_ENTRIES ||
         raw_entry_count > (uint32_t)INT32_MAX ||
-        (size_t)raw_entry_count > SIZE_MAX / sizeof(*chunks))
+        !rt_alloc_count_ok(raw_entry_count, sizeof(*chunks)))
         return 0;
     entry_count = (int32_t)raw_entry_count;
     chunks = (avi_chunk_t *)malloc((size_t)entry_count * sizeof(*chunks));
@@ -678,7 +679,7 @@ int avi_parse(avi_context_t *ctx, const uint8_t *data, size_t len) {
     if (read_le32(data) != FOURCC_RIFF)
         return -1;
     uint32_t riff_size = read_le32(data + 4);
-    if (riff_size < 4u || (size_t)riff_size > SIZE_MAX - 8u)
+    if (riff_size < 4u || !rt_alloc_count_ok_with_extra(riff_size, 1u, 8u))
         return -1;
     size_t riff_end = (size_t)riff_size + 8u;
     if (riff_end > len)

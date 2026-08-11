@@ -1093,16 +1093,16 @@ static void *fbx_clone_mesh_for_material_slot(const rt_mesh3d *src,
     if (dst->build_failed)
         goto fail;
     if (src->positions64 && src->vertex_count > 0) {
-        if ((size_t)dst->vertex_capacity > SIZE_MAX / (3u * sizeof(double)))
+        if (!rt_alloc_count_ok(dst->vertex_capacity, 3u * sizeof(double)))
             goto fail;
         dst->positions64 = (double *)calloc((size_t)dst->vertex_capacity * 3u, sizeof(double));
         if (!dst->positions64)
             goto fail;
     }
-    if ((size_t)src->vertex_count > SIZE_MAX / sizeof(*vertex_map))
+    if (!rt_alloc_count_ok(src->vertex_count, sizeof(*vertex_map)))
         goto fail;
     vertex_map = (uint32_t *)malloc((size_t)src->vertex_count * sizeof(*vertex_map));
-    if ((size_t)dst->vertex_capacity > SIZE_MAX / sizeof(*new_to_old))
+    if (!rt_alloc_count_ok(dst->vertex_capacity, sizeof(*new_to_old)))
         goto fail;
     new_to_old = (uint32_t *)malloc((size_t)dst->vertex_capacity * sizeof(*new_to_old));
     if (!vertex_map || !new_to_old)

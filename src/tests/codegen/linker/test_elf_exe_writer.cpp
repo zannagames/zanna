@@ -21,6 +21,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "codegen/common/linker/ElfExeWriter.hpp"
+#include "codegen/common/linker/ElfSymbolVersions.hpp"
 #include "codegen/common/linker/LinkTypes.hpp"
 
 #include <algorithm>
@@ -109,6 +110,8 @@ static constexpr uint32_t SHT_HASH = 5;
 static constexpr uint32_t SHT_DYNAMIC = 6;
 static constexpr uint32_t SHT_NOBITS = 8;
 static constexpr uint32_t SHT_DYNSYM = 11;
+static constexpr uint32_t SHT_GNU_VERNEED = 0x6ffffffe;
+static constexpr uint32_t SHT_GNU_VERSYM = 0x6fffffff;
 static constexpr uint32_t SHF_ALLOC = 0x2;
 static constexpr uint32_t SHF_WRITE = 0x1;
 static constexpr uint32_t SHF_EXECINSTR = 0x4;
@@ -753,6 +756,88 @@ static void testTlsProgramHeaderAndSectionFlags() {
     CHECK(tbssShdr.sh_type == SHT_NOBITS);
 }
 
+/// Test 14b: Imports name the version their provider defines by default.
+///
+/// A reference carrying no version does not reliably select a library's current
+/// definition where several versions of a name exist, so the writer emits
+/// `.gnu.version` / `.gnu.version_r`. Version data comes from the host's own
+/// libraries, so this asserts the resolved-versions path only when the host
+/// actually supplies them, and asserts the documented fallback — no version
+/// sections at all — when it does not.
+static void testSymbolVersionRequirements() {
+    auto path = tmpPath("symbol_versions.elf");
+    auto text = makeSec(".text", 32, 0x401000, true, false, 0xC3);
+    auto dataSec = makeSec(".data", 16, 0x402000, false, true, 0x00);
+
+    auto layout = makeLayout({text, dataSec});
+    layout.gotEntries.push_back({"pthread_cond_init", 0x402000});
+
+    const std::vector<std::string> neededLibs = {"libc.so.6"};
+    const std::unordered_set<std::string> dynSyms = {"pthread_cond_init"};
+    const auto versions =
+        resolveElfSymbolVersions(neededLibs, {"pthread_cond_init"}, LinkArch::X86_64);
+
+    std::ostringstream err;
+    bool ok = writeElfExe(path, layout, LinkArch::X86_64, neededLibs, dynSyms, err);
+    CHECK(ok);
+    CHECK(err.str().empty());
+
+    auto data = readFile(path);
+    Elf64_Ehdr ehdr;
+    std::memcpy(&ehdr, data.data(), sizeof(ehdr));
+
+    Elf64_Shdr versymShdr{};
+    Elf64_Shdr verneedShdr{};
+    const bool hasVersym = findSectionByName(data, ehdr, ".gnu.version", versymShdr);
+    const bool hasVerneed = findSectionByName(data, ehdr, ".gnu.version_r", verneedShdr);
+
+    if (versions.empty()) {
+        // No inspectable provider: references stay unversioned, as before.
+        CHECK(!hasVersym);
+        CHECK(!hasVerneed);
+        return;
+    }
+
+    CHECK(hasVersym);
+    CHECK(hasVerneed);
+    CHECK(versymShdr.sh_type == SHT_GNU_VERSYM);
+    CHECK(verneedShdr.sh_type == SHT_GNU_VERNEED);
+    CHECK(verneedShdr.sh_info == 1);
+
+    // One 16-bit index per .dynsym entry: the null symbol plus each import.
+    Elf64_Shdr dynsymShdr{};
+    CHECK(findSectionByName(data, ehdr, ".dynsym", dynsymShdr));
+    CHECK(versymShdr.sh_size == (dynsymShdr.sh_size / dynsymShdr.sh_entsize) * sizeof(uint16_t));
+
+    // The single import must carry a real requirement index, not the reserved
+    // "no version requested" one that the loader treats as unversioned.
+    uint16_t importIndex = 0;
+    std::memcpy(
+        &importIndex, data.data() + versymShdr.sh_offset + sizeof(uint16_t), sizeof(importIndex));
+    CHECK(importIndex >= 2);
+
+    // ...and that index must be the one the requirement table publishes, with a
+    // version name matching what the provider was found to define.
+    uint16_t vnCnt = 0;
+    uint32_t vnAux = 0;
+    std::memcpy(&vnCnt, data.data() + verneedShdr.sh_offset + 2, sizeof(vnCnt));
+    std::memcpy(&vnAux, data.data() + verneedShdr.sh_offset + 8, sizeof(vnAux));
+    CHECK(vnCnt == 1);
+
+    const uint64_t auxOff = verneedShdr.sh_offset + vnAux;
+    uint16_t vnaOther = 0;
+    uint32_t vnaName = 0;
+    std::memcpy(&vnaOther, data.data() + auxOff + 6, sizeof(vnaOther));
+    std::memcpy(&vnaName, data.data() + auxOff + 8, sizeof(vnaName));
+    CHECK(vnaOther == importIndex);
+
+    Elf64_Shdr dynstrShdr{};
+    CHECK(findSectionByName(data, ehdr, ".dynstr", dynstrShdr));
+    const char *versionName =
+        reinterpret_cast<const char *>(data.data() + dynstrShdr.sh_offset + vnaName);
+    CHECK(versions.at("pthread_cond_init").version == versionName);
+}
+
 /// Test 14: Overflowing allocatable section ranges are rejected before placement.
 static void testAllocSectionAddressOverflow() {
     auto path = tmpPath("overflow_alloc.elf");
@@ -781,6 +866,7 @@ int main() {
     testLargePageSize();
     testGnuStackSectionHeader();
     testDynamicImports();
+    testSymbolVersionRequirements();
     testTlsProgramHeaderAndSectionFlags();
     testAllocSectionAddressOverflow();
 

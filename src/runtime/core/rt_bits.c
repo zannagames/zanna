@@ -444,7 +444,11 @@ int64_t rt_bits_rotr(int64_t val, int64_t count) {
 ///       portable fallback using parallel counting algorithm.
 int64_t rt_bits_count(int64_t val) {
     // Population count (number of 1 bits)
-#if defined(__GNUC__) || defined(__clang__)
+// The compiler builtin is used only where it expands inline: without a hardware
+// population-count instruction GCC lowers it to libgcc's __popcountdi2, and
+// Zanna's native linker does not pull compiler runtime archive members.
+#if (defined(__GNUC__) || defined(__clang__)) &&                                                   \
+    (defined(__POPCNT__) || defined(__aarch64__) || defined(__ARM_NEON))
     return (int64_t)__builtin_popcountll((unsigned long long)val);
 #elif defined(_MSC_VER)
     return (int64_t)__popcnt64((unsigned __int64)val);

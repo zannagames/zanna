@@ -170,7 +170,9 @@ static void dur_append_iso_seconds(char **p,
     }
 
     char frac[4];
-    snprintf(frac, sizeof(frac), "%03llu", (unsigned long long)millis);
+    // Callers pass 0-999; the modulo makes that bound local so the three-digit
+    // field provably fits the buffer.
+    snprintf(frac, sizeof(frac), "%03u", (unsigned int)(millis % 1000u));
     size_t frac_len = 3;
     while (frac_len > 0 && frac[frac_len - 1] == '0')
         frac_len--;

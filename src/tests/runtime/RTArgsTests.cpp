@@ -177,9 +177,9 @@ int main() {
                 for (int i = 0; i < 2000; ++i) {
                     if (rt_args_count() != expected_count)
                         ok.store(false);
-                    rt_string a = rt_args_get(0);
-                    if (a)
-                        rt_string_unref(a);
+                    rt_string arg0 = rt_args_get(0);
+                    if (arg0)
+                        rt_string_unref(arg0);
                 }
             });
         }

@@ -40,6 +40,7 @@
 #include "rt_result.h"
 #include "rt_error.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_trap.h"
 
@@ -621,7 +622,7 @@ void *rt_result_expect_err(void *obj, rt_string msg) {
 /// @return Caller-owned new Result for a mapped pointer `Ok`; otherwise the
 ///         borrowed original @p obj.
 void *rt_result_map(void *obj, void *(*fn)(void *)) {
-    return rt_result_map_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_result_map_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Combinator core shared by the native wrapper and the VM callback bridges.
@@ -659,7 +660,7 @@ void *rt_result_map_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx)
 /// @return Caller-owned new Result for a mapped pointer `Err`; otherwise the
 ///         borrowed original @p obj.
 void *rt_result_map_err(void *obj, void *(*fn)(void *)) {
-    return rt_result_map_err_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_result_map_err_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Apply a pluggable callback to a pointer-valued `Err`.
@@ -693,7 +694,7 @@ void *rt_result_map_err_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *
 /// @return Callback result unchanged for a pointer `Ok`; otherwise the borrowed
 ///         original @p obj.
 void *rt_result_and_then(void *obj, void *(*fn)(void *)) {
-    return rt_result_and_then_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_result_and_then_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Run a pluggable Result-returning callback for a pointer-valued `Ok`.
@@ -726,7 +727,7 @@ void *rt_result_and_then_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void 
 /// @return Callback result unchanged for a pointer `Err`; otherwise the
 ///         borrowed original @p obj.
 void *rt_result_or_else(void *obj, void *(*fn)(void *)) {
-    return rt_result_or_else_invoke(obj, (void *)fn, rt_cb_direct_invoke1, NULL);
+    return rt_result_or_else_invoke(obj, RT_FN_PTR_CAST((void *)fn), rt_cb_direct_invoke1, NULL);
 }
 
 /// @brief Run a pluggable recovery callback for a pointer-valued `Err`.
@@ -756,7 +757,7 @@ void *rt_result_or_else_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *
 /// @param fn Opaque native transform callback; may be @c NULL.
 /// @return Result of @ref rt_result_map with identical ownership.
 void *rt_result_map_wrapper(void *obj, void *fn) {
-    return rt_result_map(obj, (void *(*)(void *))fn);
+    return rt_result_map(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for @ref rt_result_map_err.
@@ -764,7 +765,7 @@ void *rt_result_map_wrapper(void *obj, void *fn) {
 /// @param fn Opaque native error-transform callback; may be @c NULL.
 /// @return Result of @ref rt_result_map_err with identical ownership.
 void *rt_result_map_err_wrapper(void *obj, void *fn) {
-    return rt_result_map_err(obj, (void *(*)(void *))fn);
+    return rt_result_map_err(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for @ref rt_result_and_then.
@@ -772,7 +773,7 @@ void *rt_result_map_err_wrapper(void *obj, void *fn) {
 /// @param fn Opaque native Result-returning callback; may be @c NULL.
 /// @return Result of @ref rt_result_and_then with identical ownership.
 void *rt_result_and_then_wrapper(void *obj, void *fn) {
-    return rt_result_and_then(obj, (void *(*)(void *))fn);
+    return rt_result_and_then(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 /// @brief IL trampoline for @ref rt_result_or_else.
@@ -780,7 +781,7 @@ void *rt_result_and_then_wrapper(void *obj, void *fn) {
 /// @param fn Opaque native recovery callback; may be @c NULL.
 /// @return Result of @ref rt_result_or_else with identical ownership.
 void *rt_result_or_else_wrapper(void *obj, void *fn) {
-    return rt_result_or_else(obj, (void *(*)(void *))fn);
+    return rt_result_or_else(obj, RT_FN_PTR_CAST((void *(*)(void *))fn));
 }
 
 //=============================================================================

@@ -1434,7 +1434,10 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                         ++pairs;
                     }
                     if (pairs >= 2)
-                        solved = animation3d_quat_wahba(ddirs, sdirs, pairs, g_align[d]);
+                        solved = animation3d_quat_wahba((const float (*)[3])ddirs,
+                                                        (const float (*)[3])sdirs,
+                                                        pairs,
+                                                        g_align[d]);
                     if (!solved && pairs == 1) {
                         animation3d_quat_shortest_arc(ddirs[0], sdirs[0], g_align[d]);
                         sanitize_keyframe_quat(g_align[d]);

@@ -600,7 +600,7 @@ static int canvas3d_build_shadow_light_vp(const float *world_min,
         return 0;
     canvas3d_shadow_build_light_view(center, eye, view);
     canvas3d_shadow_build_world_corners(world_min, world_max, corners);
-    canvas3d_shadow_accumulate_light_bounds(view, corners, ls_min, ls_max);
+    canvas3d_shadow_accumulate_light_bounds(view, (const float (*)[3])corners, ls_min, ls_max);
     canvas3d_shadow_snap_light_bounds(ls_min, ls_max, shadow_resolution);
     if (!canvas3d_shadow_build_ortho_projection(ls_min, ls_max, proj))
         return 0;

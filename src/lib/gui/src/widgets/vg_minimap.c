@@ -252,6 +252,19 @@ uint64_t vg_minimap_get_source_revision(vg_minimap_t *minimap) {
     return minimap->source_revision;
 }
 
+/// @brief Report whether a cache of @p count entries of @p entry_size fits in `size_t`.
+/// @details Written against a runtime bound rather than `count > SIZE_MAX /
+///          entry_size` so the guard keeps its meaning on 32-bit targets
+///          without folding into a constant comparison on 64-bit ones.
+/// @param count Requested entry count.
+/// @param entry_size Size of one cache entry in bytes.
+/// @return `true` when `count * entry_size` is representable as `size_t`.
+static bool vg_minimap_cache_count_fits(uint64_t count, size_t entry_size) {
+    if (entry_size == 0u)
+        return true;
+    return count <= (uint64_t)SIZE_MAX / (uint64_t)entry_size;
+}
+
 /// @brief Atomically replace the bounded direct-mapped line cache.
 /// @details A zero limit disables caching and releases storage. For nonzero
 ///          limits, replacement allocation completes before the old cache is
@@ -274,7 +287,7 @@ bool vg_minimap_set_maximum_cached_lines(vg_minimap_t *minimap, uint32_t maximum
         vg_widget_invalidate(&minimap->base);
         return true;
     }
-    if ((size_t)maximum_lines > SIZE_MAX / sizeof(*minimap->line_cache))
+    if (!vg_minimap_cache_count_fits(maximum_lines, sizeof(*minimap->line_cache)))
         return false;
     vg_minimap_line_cache_entry_t *replacement =
         (vg_minimap_line_cache_entry_t *)calloc((size_t)maximum_lines, sizeof(*replacement));

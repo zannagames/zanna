@@ -41,6 +41,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_object.h"

@@ -40,6 +40,7 @@
 #include "rt_keyderive.h"
 #include "rt_keyderive_internal.h"
 
+#include "rt_alloc_size.h"
 #include "rt_bytes.h"
 #include "rt_codec.h"
 #include "rt_crypto_module.h"
@@ -492,7 +493,7 @@ static int scrypt_params_valid(uint64_t n, uint32_t r, uint32_t p, size_t out_le
         return 0;
     if (n > (UINT64_C(1) << RT_SCRYPT_MAX_N_LOG2))
         return 0;
-    if ((uint64_t)r > SIZE_MAX / 128)
+    if (!rt_alloc_count_ok(r, 128))
         return 0;
     size_t block_len = (size_t)128 * r;
     if (n > SIZE_MAX / block_len)

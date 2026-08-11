@@ -26,6 +26,17 @@
 #include <csetjmp>
 #include <cstring>
 
+/// @brief Erase constness so borrowed text can travel through an opaque `void *`.
+/// @details The runtime payload APIs take `void *`; these tests hand them
+///          read-only bytes they own elsewhere and never write through the
+///          result, so the cast is safe here.
+/// @param text Borrowed NUL-terminated bytes.
+/// @return The same address as a mutable `void *`.
+static void *borrowedPayload(const char *text) {
+    return const_cast<void *>(static_cast<const void *>(text));
+}
+
+
 namespace {
 static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
@@ -718,10 +729,10 @@ static void test_sort_strings() {
     const char *s3 = "banana";
     const char *s4 = "date";
 
-    rt_seq_push(seq, (void *)s1);
-    rt_seq_push(seq, (void *)s2);
-    rt_seq_push(seq, (void *)s3);
-    rt_seq_push(seq, (void *)s4);
+    rt_seq_push(seq, borrowedPayload(s1));
+    rt_seq_push(seq, borrowedPayload(s2));
+    rt_seq_push(seq, borrowedPayload(s3));
+    rt_seq_push(seq, borrowedPayload(s4));
 
     // Sort should order by pointer value for non-string objects
     rt_seq_sort(seq);
@@ -729,10 +740,10 @@ static void test_sort_strings() {
     // After sorting, elements should be in some consistent order
     assert(rt_seq_len(seq) == 4);
     // All original elements should still be present
-    assert(rt_seq_has(seq, (void *)s1));
-    assert(rt_seq_has(seq, (void *)s2));
-    assert(rt_seq_has(seq, (void *)s3));
-    assert(rt_seq_has(seq, (void *)s4));
+    assert(rt_seq_has(seq, borrowedPayload(s1)));
+    assert(rt_seq_has(seq, borrowedPayload(s2)));
+    assert(rt_seq_has(seq, borrowedPayload(s3)));
+    assert(rt_seq_has(seq, borrowedPayload(s4)));
 }
 
 static void test_sort_empty() {

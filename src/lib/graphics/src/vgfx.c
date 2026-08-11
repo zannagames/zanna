@@ -1275,6 +1275,23 @@ vgfx_window_t vgfx_create_window(const vgfx_window_params_t *params) {
         return NULL;
     }
 
+    /* Backends that only learn the HiDPI factor once a native surface exists
+     * (Wayland reports it through the surface's outputs) publish it during the
+     * init above, after win->width was already derived from the pre-window
+     * scale queried earlier.  Re-derive the framebuffer from the requested
+     * logical size so the window is settled before the first frame instead of
+     * resizing underneath the caller's initial paint. */
+    if (win->scale_factor != dpi_scale) {
+        int32_t settled_w = vgfx_internal_scale_up_i32(actual_params.width, win->scale_factor);
+        int32_t settled_h = vgfx_internal_scale_up_i32(actual_params.height, win->scale_factor);
+        if (settled_w > 0 && settled_h > 0 && settled_w <= VGFX_MAX_WIDTH &&
+            settled_h <= VGFX_MAX_HEIGHT && (settled_w != win->width || settled_h != win->height)) {
+            /* A failure here leaves the pre-scale framebuffer in place, which
+             * still renders correctly; the next resize retries. */
+            (void)vgfx_internal_resize_framebuffer(win, settled_w, settled_h);
+        }
+    }
+
     /* Engage fullscreen immediately after creation. The window was already
      * sized to the desktop above, so there is no windowed flash — this just
      * flips the platform window state (borderless/native fullscreen). */
@@ -1607,6 +1624,10 @@ void vgfx_set_coord_scale(vgfx_window_t window, float scale) {
     if (!win)
         return;
     win->coord_scale = vgfx_internal_sanitize_scale(scale);
+    // Recording the selection is what lets a later backing-scale change follow
+    // this window; the untouched default must not. See
+    // vgfx_internal_refresh_scale_factor().
+    win->coord_scale_explicit = 1;
 }
 
 /// @brief Get the physical pixel width of the window framebuffer.

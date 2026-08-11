@@ -42,6 +42,7 @@
 #include "rt_future.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_threads.h"
@@ -365,7 +366,7 @@ static void *rt_async_run_impl(void *callback, void *arg, int8_t retain_arg) {
         return future;
     }
 
-    ctx->callback = (void *(*)(void *))callback;
+    ctx->callback = RT_FN_PTR_CAST((void *(*)(void *))callback);
     ctx->arg = arg;
     ctx->owns_arg = (retain_arg && arg) ? 1 : 0;
     if (ctx->owns_arg)
@@ -470,7 +471,7 @@ static void *rt_async_run_cancellable_impl(void *callback,
         return future;
     }
 
-    ctx->callback = (void *(*)(void *, void *))callback;
+    ctx->callback = RT_FN_PTR_CAST((void *(*)(void *, void *))callback);
     ctx->arg = arg;
     ctx->owns_arg = (retain_arg && arg) ? 1 : 0;
     if (ctx->owns_arg)
@@ -613,7 +614,7 @@ static void *rt_async_map_impl(void *future, void *mapper, void *arg, int8_t ret
         return result_future;
     }
 
-    state->mapper = (void *(*)(void *, void *))mapper;
+    state->mapper = RT_FN_PTR_CAST((void *(*)(void *, void *))mapper);
     state->arg = arg;
     state->owns_arg = (retain_arg && arg) ? 1 : 0;
     if (state->owns_arg)

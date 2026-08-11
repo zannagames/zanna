@@ -438,6 +438,72 @@ inline bool isKnownCompilerRuntimeDynamicSymbol(const std::string &name, LinkPla
     return false;
 }
 
+/// @brief Determines whether the linker itself supplies an unresolved name.
+/// @details ELF toolchains reference `_GLOBAL_OFFSET_TABLE_` and expect the
+///          linker to define it as the GOT base; GCC leaves the undefined entry
+///          in an object's symbol table even when no relocation uses it. Such
+///          names are neither loader imports nor link errors.
+/// @param name Raw object-format unresolved symbol name.
+/// @param platform Platform for which the output is being linked.
+/// @return `true` when the linker defines the symbol itself.
+inline bool isLinkerDefinedSymbol(const std::string &name, LinkPlatform platform) {
+    return platform == LinkPlatform::Linux && name == "_GLOBAL_OFFSET_TABLE_";
+}
+
+/// @brief Reports the storage size of a loader-resolved *data* symbol.
+/// @details The dynamic-import machinery represents every loader-resolved name
+///          with a jump thunk whose address stands in for the symbol. That is
+///          correct for code, where a reference is always a call or a branch,
+///          but wrong for data: a non-PIC ELF translation unit references an
+///          imported object directly (`mov stdout(%rip), %rax`), so pointing
+///          the name at a thunk makes the load read instruction bytes as a
+///          value. Such symbols instead need writable storage in the
+///          executable plus an `R_X86_64_COPY` / `R_AARCH64_COPY` relocation
+///          that has the loader populate it, which in turn requires the size
+///          up front.
+///
+///          The set is deliberately closed and matches the import policy's
+///          no-filesystem-access rule: every entry below is a pointer-sized
+///          object in the platform C library, so the size is uniform. Names
+///          are matched exactly rather than by stripped form because the
+///          Darwin spellings (`__stdoutp`) and the ELF spellings (`stdout`)
+///          designate different libraries' objects.
+/// @param name Raw object-format symbol name.
+/// @return Size in bytes of the imported object, or `0` when @p name is not a
+///         known loader-resolved data symbol (the common case: it is code).
+inline size_t loaderDataSymbolSize(const std::string &name) {
+    // Every entry is a single pointer: `FILE *stdout;` and `char **environ;`
+    // and their per-platform spellings. 64-bit is the only word size the
+    // native linker emits, so the size is a constant rather than a per-entry
+    // field.
+    static constexpr size_t kPointerSize = 8;
+    static const std::vector<const char *> kDataSyms = {
+        // glibc / musl (ELF).
+        "stdin",
+        "stdout",
+        "stderr",
+        "environ",
+        "__environ",
+        // Darwin libSystem.
+        "__stdinp",
+        "__stdoutp",
+        "__stderrp",
+    };
+    for (const char *sym : kDataSyms) {
+        if (name == sym)
+            return kPointerSize;
+    }
+    return 0;
+}
+
+/// @brief Convenience predicate over loaderDataSymbolSize().
+/// @param name Raw object-format symbol name.
+/// @return `true` when the loader must copy an object's value rather than bind
+///         a call target.
+inline bool isLoaderDataSymbol(const std::string &name) {
+    return loaderDataSymbolSize(name) != 0;
+}
+
 /// @brief Determines whether an unresolved name may be delegated to the target loader.
 /// @details Applies foreign-platform negative filters before shared and
 ///          platform-specific exact/prefix allowlists.  Linux additionally

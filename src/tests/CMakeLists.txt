@@ -171,6 +171,7 @@ if (ZANNA_BASH_EXECUTABLE)
                 --self-test)
         set_tests_properties(sanitizer_script_self_test PROPERTIES
                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                SKIP_REGULAR_EXPRESSION "SKIP:"
                 LABELS "tools;requires_posix_shell")
     endif ()
 
@@ -193,6 +194,7 @@ if (ZANNA_BASH_EXECUTABLE)
     endif ()
     set_tests_properties(coverage_script_self_test PROPERTIES
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            SKIP_REGULAR_EXPRESSION "SKIP:"
             LABELS "tools;requires_posix_shell")
 
     add_test(NAME example_smoke_manifest_audit

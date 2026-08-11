@@ -531,9 +531,10 @@ constexpr std::size_t kEhStateTraversalBudget = 1u << 20;
 class EhStackTraversal {
   public:
     /// @brief Bind a traversal to an EH model and shared diagnostic accumulator.
-    /// @param model Canonical model traversed for the lifetime of this object.
-    /// @param diags First-error accumulator receiving invariant failures.
-    EhStackTraversal(const EhModel &model, Diagnostics &diags) : model(model), diags(diags) {}
+    /// @param ehModel Canonical model traversed for the lifetime of this object.
+    /// @param diagnostics First-error accumulator receiving invariant failures.
+    EhStackTraversal(const EhModel &ehModel, Diagnostics &diagnostics)
+        : model(ehModel), diags(diagnostics) {}
 
     /// @brief Explore all unique reachable EH states from the function entry.
     /// @details Applies a finite dequeue budget and fails closed if the
@@ -769,10 +770,10 @@ class HandlerCoverageTraversal {
     /// @brief Create a traversal wired to the given EH model and coverage map.
     /// @details Stores references so @ref compute can populate @p coverage in
     ///          place without copying data structures.
-    /// @param model Exception-handling graph to traverse.
-    /// @param coverage Output map that gathers handler-to-block relationships.
-    HandlerCoverageTraversal(const EhModel &model, HandlerCoverage &coverage)
-        : model(model), coverage(coverage) {}
+    /// @param ehModel Exception-handling graph to traverse.
+    /// @param coverageOut Output map that gathers handler-to-block relationships.
+    HandlerCoverageTraversal(const EhModel &ehModel, HandlerCoverage &coverageOut)
+        : model(ehModel), coverage(coverageOut) {}
 
     /// @brief Execute the traversal starting at the function entry block.
     /// @details Initialises the work queue, walks reachable basic blocks, and

@@ -34,6 +34,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_alloc_size.h"
 #include "rt_asset_error.h"
 #include "rt_box.h"
 #include "rt_canvas3d.h"
@@ -1141,8 +1142,8 @@ static int vscn_serialize_mesh(
         return 0;
     if (mesh->index_count > 0 && !mesh->indices)
         return 0;
-    if ((size_t)mesh->vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-        (size_t)mesh->index_count > SIZE_MAX / sizeof(uint32_t))
+    if (!rt_alloc_count_ok(mesh->vertex_count, sizeof(vgfx3d_vertex_t)) ||
+        !rt_alloc_count_ok(mesh->index_count, sizeof(uint32_t)))
         return 0;
     vertex_bytes_len = (size_t)mesh->vertex_count * sizeof(vgfx3d_vertex_t);
     index_bytes_len = (size_t)mesh->index_count * sizeof(uint32_t);

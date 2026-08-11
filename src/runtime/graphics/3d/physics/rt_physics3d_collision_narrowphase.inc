@@ -1264,20 +1264,32 @@ static int test_triangle_box_obb(const double *world_a,
     vec3_cross(edge0, edge1, tri_normal);
 
     for (int i = 0; i < 3; i++) {
-        if (!test_triangle_box_local_axis(
-                tri, box->half_extents, axes[i], &best_depth, best_axis, &best_sign))
+        if (!test_triangle_box_local_axis((const double (*)[3])tri,
+                                          box->half_extents,
+                                          axes[i],
+                                          &best_depth,
+                                          best_axis,
+                                          &best_sign))
             return 0;
     }
-    if (!test_triangle_box_local_axis(
-            tri, box->half_extents, tri_normal, &best_depth, best_axis, &best_sign))
+    if (!test_triangle_box_local_axis((const double (*)[3])tri,
+                                      box->half_extents,
+                                      tri_normal,
+                                      &best_depth,
+                                      best_axis,
+                                      &best_sign))
         return 0;
     for (int e = 0; e < 3; e++) {
         const double *edge = e == 0 ? edge0 : (e == 1 ? edge1 : edge2);
         for (int a = 0; a < 3; a++) {
             double axis[3];
             vec3_cross(edge, axes[a], axis);
-            if (!test_triangle_box_local_axis(
-                    tri, box->half_extents, axis, &best_depth, best_axis, &best_sign))
+            if (!test_triangle_box_local_axis((const double (*)[3])tri,
+                                              box->half_extents,
+                                              axis,
+                                              &best_depth,
+                                              best_axis,
+                                              &best_sign))
                 return 0;
         }
     }

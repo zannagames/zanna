@@ -32,11 +32,28 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# The self-test verifies this script's own tool and CMake-option wiring, so on a
+# host without the LLVM coverage toolchain it reports a skip rather than a
+# failure. A real coverage run still errors out: there the missing tool means
+# the requested reports cannot be produced.
 need_tool() {
     if ! command -v "$1" >/dev/null 2>&1; then
+        if $SELF_TEST; then
+            echo "SKIP: required tool not found: $1"
+            exit 0
+        fi
         echo "error: required tool not found: $1" >&2
         exit 1
     fi
+}
+
+missing_tool() {
+    if $SELF_TEST; then
+        echo "SKIP: required tool not found: $1"
+        exit 0
+    fi
+    echo "error: required tool not found: $1" >&2
+    exit 1
 }
 
 need_tool clang
@@ -81,12 +98,10 @@ resolve_llvm_tool() {
 LLVM_PROFDATA="$(resolve_llvm_tool llvm-profdata || true)"
 LLVM_COV="$(resolve_llvm_tool llvm-cov || true)"
 if [[ -z "$LLVM_PROFDATA" ]]; then
-    echo "error: required tool not found: llvm-profdata" >&2
-    exit 1
+    missing_tool llvm-profdata
 fi
 if [[ -z "$LLVM_COV" ]]; then
-    echo "error: required tool not found: llvm-cov" >&2
-    exit 1
+    missing_tool llvm-cov
 fi
 
 if $SELF_TEST; then

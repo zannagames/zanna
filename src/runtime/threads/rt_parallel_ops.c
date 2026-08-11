@@ -40,6 +40,7 @@
 
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_threadpool.h"
 
@@ -102,7 +103,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
         if (setjmp(recovery) == 0) {
-            void (*worker)(void *) = (void (*)(void *))func;
+            void (*worker)(void *) = RT_FN_PTR_CAST((void (*)(void *))func);
             for (int64_t i = 0; i < count; i++)
                 worker(rt_seq_get(seq, i));
         } else {
@@ -210,7 +211,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     for (int64_t i = 0; i < task_count; i++) {
         tasks[i].items = items;
         parallel_split_range(count, task_count, i, &tasks[i].start, &tasks[i].end);
-        tasks[i].func = (void (*)(void *))func;
+        tasks[i].func = RT_FN_PTR_CAST((void (*)(void *))func);
 #if RT_PLATFORM_WINDOWS
         tasks[i].remaining = remaining;
         tasks[i].failed = &task_failed;
@@ -302,7 +303,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
         if (setjmp(recovery) == 0) {
-            void *(*mapper)(void *) = (void *(*)(void *))func;
+            void *(*mapper)(void *) = RT_FN_PTR_CAST((void *(*)(void *))func);
             for (int64_t i = 0; i < count; i++) {
                 void *mapped = mapper(rt_seq_get(seq, i));
                 rt_seq_push(result, mapped);
@@ -426,7 +427,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     for (int64_t i = 0; i < task_count; i++) {
         tasks[i].items = items;
         tasks[i].results = results;
-        tasks[i].func = (void *(*)(void *))func;
+        tasks[i].func = RT_FN_PTR_CAST((void *(*)(void *))func);
         parallel_split_range(count, task_count, i, &tasks[i].start, &tasks[i].end);
 #if RT_PLATFORM_WINDOWS
         tasks[i].remaining = remaining;
@@ -535,7 +536,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
         rt_trap_set_recovery(&recovery);
         if (setjmp(recovery) == 0) {
             for (int64_t i = 0; i < count; i++) {
-                void (*worker)(void) = (void (*)(void))rt_seq_get(funcs, i);
+                void (*worker)(void) = RT_FN_PTR_CAST((void (*)(void))rt_seq_get(funcs, i));
                 worker();
             }
         } else {
@@ -620,7 +621,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
 
     // Submit all tasks
     for (int64_t i = 0; i < count; i++) {
-        tasks[i].func = (void (*)(void))rt_seq_get(funcs, i);
+        tasks[i].func = RT_FN_PTR_CAST((void (*)(void))rt_seq_get(funcs, i));
 #if RT_PLATFORM_WINDOWS
         tasks[i].remaining = remaining;
         tasks[i].failed = &task_failed;
@@ -699,7 +700,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
         return identity;
 
     /* For small sequences, reduce serially. */
-    void *(*combine)(void *, void *) = (void *(*)(void *, void *))func;
+    void *(*combine)(void *, void *) = RT_FN_PTR_CAST((void *(*)(void *, void *))func);
     if (count <= 4) {
         void *accum = identity;
         for (int64_t i = 0; i < count; i++) {
@@ -948,7 +949,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
         if (setjmp(recovery) == 0) {
-            void (*worker)(int64_t) = (void (*)(int64_t))func;
+            void (*worker)(int64_t) = RT_FN_PTR_CAST((void (*)(int64_t))func);
             for (int64_t i = start; i < end; i++)
                 worker(i);
         } else {
@@ -1038,7 +1039,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         parallel_split_range(count, task_count, i, &local_start, &local_end);
         tasks[i].start = start + local_start;
         tasks[i].end = start + local_end;
-        tasks[i].func = (void (*)(int64_t))func;
+        tasks[i].func = RT_FN_PTR_CAST((void (*)(int64_t))func);
 #if RT_PLATFORM_WINDOWS
         tasks[i].remaining = remaining;
         tasks[i].failed = &task_failed;

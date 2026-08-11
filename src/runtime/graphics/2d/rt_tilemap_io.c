@@ -263,7 +263,7 @@ void rt_tilemap_set_tile_property(void *tm, int64_t tile_index, rt_string key, i
     if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &klen))
         return;
 
-    tile_props *p = &tilemap->tile_props[tile_index];
+    tile_props *p = &tilemap->tile_prop_sets[tile_index];
     if (p->count < 0 || p->count > MAX_PROP_KEYS)
         return;
     // Check if key exists
@@ -306,7 +306,7 @@ int64_t rt_tilemap_get_tile_property(void *tm,
     if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &key_length))
         return default_val;
 
-    tile_props *p = &tilemap->tile_props[tile_index];
+    tile_props *p = &tilemap->tile_prop_sets[tile_index];
     if (p->count < 0 || p->count > MAX_PROP_KEYS)
         return default_val;
     for (int32_t i = 0; i < p->count; i++) {
@@ -334,7 +334,7 @@ int8_t rt_tilemap_has_tile_property(void *tm, int64_t tile_index, rt_string key)
     if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &key_length))
         return 0;
 
-    tile_props *p = &tilemap->tile_props[tile_index];
+    tile_props *p = &tilemap->tile_prop_sets[tile_index];
     if (p->count < 0 || p->count > MAX_PROP_KEYS)
         return 0;
     for (int32_t i = 0; i < p->count; i++) {
@@ -1093,7 +1093,7 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     if (!props_arr)
         goto cleanup;
     for (int64_t tile_id = 0; tile_id < MAX_TILE_PROPS; tile_id++) {
-        tile_props *props = &tilemap->tile_props[tile_id];
+        tile_props *props = &tilemap->tile_prop_sets[tile_id];
         if (props->count < 0 || props->count > MAX_PROP_KEYS) {
             tilemap_io_release_ref(&props_arr);
             goto cleanup;
@@ -1573,7 +1573,7 @@ void *rt_tilemap_load_from_file(rt_string path) {
                 (void)key_bytes;
                 (void)key_length;
                 rt_tilemap_set_tile_property(tm, tile_id, key, value);
-                if (tilemap->tile_props[tile_id].count != j + 1)
+                if (tilemap->tile_prop_sets[tile_id].count != j + 1)
                     goto cleanup;
             }
         }

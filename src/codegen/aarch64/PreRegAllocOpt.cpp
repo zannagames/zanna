@@ -343,6 +343,31 @@ struct A64PreRATraits {
     static void forwardUse(MInstr &use, std::size_t operandIndex, const MInstr &copy) {
         use.ops[operandIndex] = copy.ops[1];
     }
+
+    /**
+     * @brief Appends every virtual register the instruction mentions.
+     *
+     * Role-agnostic on purpose: the caller only needs to know which blocks
+     * touch a register, so definitions and uses alike count.
+     *
+     * @param instr Instruction to scan.
+     * @param[out] out Vector receiving the virtual registers.
+     */
+    static void collectVRegs(const MInstr &instr, std::vector<MReg> &out) {
+        for (const auto &operand : instr.ops) {
+            if (operand.kind == MOperand::Kind::Reg && !operand.reg.isPhys)
+                out.push_back(operand.reg);
+        }
+    }
+
+    /**
+     * @brief Produces a stable identity for a virtual register.
+     * @param reg Virtual register to key.
+     * @return Class-qualified key, so GPR and FPR ids never collide.
+     */
+    static uint32_t vregKey(const MReg &reg) {
+        return (static_cast<uint32_t>(reg.cls) << 16) | reg.idOrPhys;
+    }
 };
 
 /**

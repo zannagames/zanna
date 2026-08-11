@@ -54,10 +54,16 @@ ObjFile generateObjcSelectorStubsAArch64(std::unordered_set<std::string> &dynami
 ///          The GOT entries are filled by dyld at load time via non-lazy binding.
 ///
 /// @param dynamicSyms Set of dynamic symbols requiring stubs.
+/// @param copyRelocDataSymbols When `true`, imported data objects receive
+///        writable storage plus a loader copy relocation instead of a
+///        trampoline. Required for ELF targets, whose non-PIC references load
+///        through the symbol directly; Mach-O reaches imported data through the
+///        GOT already, so macOS passes `false`.
 /// @return Synthetic ObjFile with stub text, GOT data, and relocations.
 /// @throws std::runtime_error If a generated size or symbol index exceeds the
 ///         linker's representable range.
-ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms);
+ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSyms,
+                                bool copyRelocDataSymbols);
 
 /// @brief Generate dynamic symbol jump stubs and GOT entries for Linux x86_64.
 ///
@@ -65,6 +71,9 @@ ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSy
 ///          stubs (`jmpq *__got_sym(%rip)`) and 8-byte GOT slots for each
 ///          dynamic symbol. The executable writer emits dynamic relocations for
 ///          the GOT slots so the runtime loader resolves them before entry.
+///          Imported data objects are the exception: they receive writable
+///          storage plus a loader copy relocation, because ELF references to
+///          them load through the symbol rather than branching to it.
 ///
 /// @param dynamicSyms Set of dynamic symbols requiring loader-backed GOT slots.
 /// @return Synthetic ObjFile with stub text, GOT data, and relocations.

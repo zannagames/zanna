@@ -330,10 +330,10 @@ bool ImportResolver::processModule(ModuleDecl &module,
 
     /// @brief Builds a deterministic deduplication key for a file bind.
     /// @param bind File bind declaration.
-    /// @param normalizedPath Canonical imported path.
+    /// @param canonicalPath Canonical imported path.
     /// @return Key containing path, source file, alias, and selected items.
-    auto makeFileBindKey = [](const BindDecl &bind, const std::string &normalizedPath) {
-        std::string key = normalizedPath;
+    auto makeFileBindKey = [](const BindDecl &bind, const std::string &canonicalPath) {
+        std::string key = canonicalPath;
         key.push_back('\n');
         key += std::to_string(bind.loc.file_id);
         key.push_back('\n');

@@ -197,13 +197,20 @@ static int thread_cond_init(pthread_cond_t *cond, int8_t *uses_monotonic) {
         return pthread_cond_init(cond, NULL);
     }
     {
-        if (uses_monotonic)
-            *uses_monotonic = 1;
         const int rc = pthread_cond_init(cond, &attr);
-        if (rc != 0 && uses_monotonic)
-            *uses_monotonic = 0;
         pthread_condattr_destroy(&attr);
-        return rc;
+        if (rc == 0) {
+            if (uses_monotonic)
+                *uses_monotonic = 1;
+            return 0;
+        }
+        // Accepting the attribute does not oblige an implementation to accept
+        // it at construction: a condition variable whose implementation
+        // predates clock selection rejects the whole attribute set with
+        // EINVAL. The monotonic clock is an improvement, not a requirement —
+        // the wait paths already consult `uses_monotonic` — so fall back to a
+        // realtime-clock condition variable rather than failing thread start.
+        return pthread_cond_init(cond, NULL);
     }
 #else
     return pthread_cond_init(cond, NULL);

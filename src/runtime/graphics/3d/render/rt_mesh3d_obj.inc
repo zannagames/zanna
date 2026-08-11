@@ -742,7 +742,7 @@ void rt_mesh3d_calc_tangents_impl(rt_mesh3d *m) {
         return;
     }
 
-    if ((size_t)m->vertex_count > SIZE_MAX / 3u / sizeof(double)) {
+    if (!rt_alloc_count_ok(m->vertex_count, 3u * sizeof(double))) {
         rt_trap("Mesh3D.CalcTangents: tangent allocation overflow");
         return;
     }

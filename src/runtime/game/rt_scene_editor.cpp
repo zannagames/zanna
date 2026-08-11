@@ -5005,7 +5005,7 @@ int64_t rt_game_scene_tile_collision(void *scene, int64_t tile) {
     SCENE_TRY {
         const auto &collision = requireScene(scene)->state->behavior.collision;
         auto it = collision.find(tile);
-        return it == collision.end() ? RT_TILE_COLLISION_NONE : it->second;
+        return it == collision.end() ? static_cast<int64_t>(RT_TILE_COLLISION_NONE) : it->second;
     }
     SCENE_CATCH(RT_TILE_COLLISION_NONE)
 }

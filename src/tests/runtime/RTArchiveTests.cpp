@@ -1339,7 +1339,8 @@ static void test_is_zip_bytes() {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     void *zip_bytes = rt_bytes_new(size);
-    fread(get_bytes_data(zip_bytes), 1, size, f);
+    const size_t zip_read = fread(get_bytes_data(zip_bytes), 1, size, f);
+    assert(zip_read == static_cast<size_t>(size));
     fclose(f);
 
     // Create non-ZIP bytes

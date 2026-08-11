@@ -37,6 +37,7 @@
 
 #include "rt_zpak_reader.h"
 
+#include "rt_alloc_size.h"
 #include "rt_crc32.h"
 #include "rt_file_stdio.h"
 #include "rt_object.h"
@@ -329,7 +330,7 @@ static zpak_entry_t *parse_toc(const uint8_t *toc_data,
         version == RT_ZPAK_VERSION_2 ? RT_ZPAK_V2_ENTRY_FIXED_SIZE : RT_ZPAK_V1_ENTRY_FIXED_SIZE;
     size_t minimum_size = 2u + 1u + fixed_size;
     if ((size_t)expected_count > toc_size / minimum_size ||
-        (size_t)expected_count > SIZE_MAX / sizeof(zpak_entry_t))
+        !rt_alloc_count_ok(expected_count, sizeof(zpak_entry_t)))
         return NULL;
 
     zpak_entry_t *entries = (zpak_entry_t *)calloc(expected_count, sizeof(zpak_entry_t));

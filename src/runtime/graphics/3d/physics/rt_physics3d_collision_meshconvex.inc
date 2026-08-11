@@ -140,7 +140,7 @@ static void gjk_support_triangle_hull(void *ctx, const double *direction, gjk_su
     if (!pair || !direction || !out)
         return;
     vec3_negate(direction, inv_dir);
-    triangle_support_point(pair->tri, direction, tri_point);
+    triangle_support_point((const double (*)[3])pair->tri, direction, tri_point);
     collider_support_point(pair->hull_collider, pair->hull_pose, inv_dir, hull_point);
     vec3_sub(tri_point, hull_point, out->v);
 }
@@ -807,8 +807,12 @@ static int test_meshlike_convex_hull(rt_mesh3d *mesh,
                 local[1] = mesh->vertices[i2].pos[1];
                 local[2] = mesh->vertices[i2].pos[2];
                 transform_point_from_pose(mesh_pose, local, tri[2]);
-                if (test_triangle_convex_hull_gjk_epa(
-                        tri, hull_collider, hull_pose, hull_center, cur_normal, &cur_depth) &&
+                if (test_triangle_convex_hull_gjk_epa((const double (*)[3])tri,
+                                                      hull_collider,
+                                                      hull_pose,
+                                                      hull_center,
+                                                      cur_normal,
+                                                      &cur_depth) &&
                     (!hit || cur_depth > best_depth)) {
                     best_depth = cur_depth;
                     vec3_copy(best_normal, cur_normal);
@@ -845,8 +849,12 @@ static int test_meshlike_convex_hull(rt_mesh3d *mesh,
         local[1] = mesh->vertices[i2].pos[1];
         local[2] = mesh->vertices[i2].pos[2];
         transform_point_from_pose(mesh_pose, local, tri[2]);
-        if (test_triangle_convex_hull_gjk_epa(
-                tri, hull_collider, hull_pose, hull_center, cur_normal, &cur_depth) &&
+        if (test_triangle_convex_hull_gjk_epa((const double (*)[3])tri,
+                                              hull_collider,
+                                              hull_pose,
+                                              hull_center,
+                                              cur_normal,
+                                              &cur_depth) &&
             (!hit || cur_depth > best_depth)) {
             best_depth = cur_depth;
             vec3_copy(best_normal, cur_normal);

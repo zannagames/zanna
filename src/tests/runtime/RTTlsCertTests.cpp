@@ -17,11 +17,11 @@
 //   - tls_verify_hostname:      End-to-end hostname verification via session
 //   - tls_verify_cert_verify:    Strict CertificateVerify message framing
 //
-// Test certs generated with:
-//   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
-//               -nodes -keyout key.pem -out cert.pem -days 365 \
-//               -subj "/CN=example.com" -addext
-//               "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:www.example.com"
+// Test certs generated with one openssl invocation, wrapped here for width:
+//   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256
+//     -nodes -keyout key.pem -out cert.pem -days 365
+//     -subj "/CN=example.com"
+//     -addext "subjectAltName=DNS:example.com,DNS:*.example.com,DNS:www.example.com"
 //===----------------------------------------------------------------------===//
 
 #include "common/PlatformCapabilities.hpp"

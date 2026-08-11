@@ -322,12 +322,22 @@ else()
 
   # High-value warnings not included in -Wall/-Wextra
   list(APPEND IL_COMPILE_FLAGS
-    -Wshadow             # local hides outer declaration
     -Wnull-dereference   # potential null pointer dereference
     -Wcast-qual          # cast drops const/volatile qualifier
     -Wimplicit-fallthrough  # switch fallthrough without [[fallthrough]]
     -Wformat=2           # stricter printf/scanf format string checking
   )
+
+  # Local hides outer declaration. GCC's full -Wshadow additionally flags
+  # constructor parameters that deliberately carry a member's name and
+  # scoped-enum enumerators matching a global name; Clang, the canonical
+  # compiler, flags neither, and a later -Wshadow=local cannot narrow an
+  # already-enabled -Wshadow. Select the level per compiler instead.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    list(APPEND IL_COMPILE_FLAGS -Wshadow=local)
+  else()
+    list(APPEND IL_COMPILE_FLAGS -Wshadow)
+  endif()
 
   if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     list(APPEND IL_COMPILE_FLAGS -Wunreachable-code)  # dead code after return/throw/break
@@ -357,6 +367,19 @@ else()
   elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # Keep parity with Clang: suppress benign unused parameter warnings under -Werror
     list(APPEND IL_COMPILE_FLAGS -Wno-unused-parameter)
+    # Same rationale as the Clang branch above: visitor-pattern code
+    # legitimately hides base-class overloads. GCC, unlike Clang, diagnoses the
+    # option itself as inapplicable when it reaches a C translation unit, so
+    # scope it to C++ sources.
+    list(APPEND IL_COMPILE_FLAGS $<$<COMPILE_LANGUAGE:CXX>:-Wno-overloaded-virtual>)
+    # Zanna's own linker consumes these archives when it produces native
+    # binaries, and it resolves a fixed libc surface. Several distributions
+    # turn on _FORTIFY_SOURCE by default at -O1 and above, which rewrites
+    # calls into glibc's `__*_chk` entry points that this surface does not
+    # carry. This is a toolchain requirement rather than a style choice, so it
+    # applies to every target in the tree, not only those consuming
+    # zanna_common_opts.
+    add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0)
   endif()
 
   if(IL_WARN_AS_ERROR)
@@ -368,12 +391,23 @@ else()
   # better LTO dead-code elimination on Linux/macOS (LOW-4).
   # Static archives are unaffected; this only matters for DSOs and executables.
   if(NOT WIN32)
-    list(APPEND IL_COMPILE_FLAGS -fvisibility=hidden -fvisibility-inlines-hidden)
+    list(APPEND IL_COMPILE_FLAGS -fvisibility=hidden)
+    # -fvisibility-inlines-hidden is a C++/ObjC++-only option. Clang silently
+    # ignores it for C sources, but GCC rejects it outright, which becomes a
+    # hard error under -Werror. Scope it to C++ translation units.
+    list(APPEND IL_COMPILE_FLAGS $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>)
   endif()
 
   # Test code often has variables/functions/types used only in assertions (compiled out in release builds)
   if(ZANNA_BUILD_TESTING)
-    list(APPEND IL_COMPILE_FLAGS -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function -Wno-unused-lambda-capture -Wno-unused-local-typedef)
+    list(APPEND IL_COMPILE_FLAGS -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-function)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      list(APPEND IL_COMPILE_FLAGS -Wno-unused-lambda-capture -Wno-unused-local-typedef)
+    else()
+      # GCC spells the local-typedef warning in the plural and has no
+      # lambda-capture equivalent.
+      list(APPEND IL_COMPILE_FLAGS -Wno-unused-local-typedefs)
+    endif()
   endif()
 
   if(IL_USE_LLD)

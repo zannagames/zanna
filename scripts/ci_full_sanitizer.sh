@@ -53,8 +53,15 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# Only run on Clang
+# Only run on Clang. The self-test verifies this script's own wiring, so on a
+# host whose toolchain is GCC there is nothing for it to check and it reports a
+# skip; an actual sanitizer run still fails loudly, because there the missing
+# compiler means the requested work cannot be done at all.
 if ! command -v clang++ > /dev/null 2>&1; then
+    if $SELF_TEST; then
+        echo "SKIP: clang++ not found; sanitizers require Clang"
+        exit 0
+    fi
     echo -e "${RED}Error: clang++ not found. Sanitizers require Clang.${NC}"
     exit 1
 fi

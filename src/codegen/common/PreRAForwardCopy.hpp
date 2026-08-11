@@ -16,6 +16,10 @@
 //   - Forwarding never crosses block boundaries or call clobbers: a use found
 //     after a call, or any redefinition of the copy source before the use,
 //     cancels the rewrite.
+//   - A copy is only removed when its destination is confined to the block
+//     being rewritten. The forward scan stops at the block's terminator, so it
+//     can only ever prove single use *within* the block; a destination that is
+//     also read by a successor must keep its defining copy.
 //   - Only direct register operands are substituted; uses embedded in memory
 //     operands (base/index) count as uses but are never rewritten.
 //   - Physical registers are never forwarded (their live ranges are not
@@ -31,7 +35,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -69,6 +76,11 @@ struct PreRAUseScan {
 ///   static PreRAUseScan scanUses(const InstrT &instr, const RegT &dst);
 ///   static void forwardUse(InstrT &use, std::size_t operandIndex, const InstrT &copy);
 ///       // rewrite the direct use to read the copy's source operand.
+///   static void collectVRegs(const InstrT &instr, std::vector<RegT> &out);
+///       // append every virtual register the instruction references, whether
+///       // read or written and including registers buried in addresses.
+///   static uint32_t vregKey(const RegT &reg);
+///       // stable identity for a virtual register across instructions.
 
 namespace detail {
 
@@ -122,11 +134,48 @@ std::optional<PreRAUseSite> findSingleDirectUse(const typename Traits::BlockT &b
     return site;
 }
 
+/// @brief Collect the virtual registers referenced by more than one block.
+/// @details The forwarding scan is block-local: it stops at the terminator, so
+///          "exactly one use" can only ever mean "exactly one use in this
+///          block". Removing the copy on that evidence alone drops the
+///          definition out from under any successor that also reads the
+///          destination, leaving the consumer reading whatever the register
+///          allocator later parks there. This pre-pass records the escapees so
+///          the rewrite can skip them.
+/// @tparam Traits Backend-specific MIR query and rewrite contract.
+/// @param fn Function whose blocks are scanned.
+/// @return Keys of virtual registers appearing in two or more blocks.
+template <typename Traits, typename FunctionT>
+std::unordered_set<uint32_t> collectEscapingVRegs(const FunctionT &fn) {
+    std::unordered_map<uint32_t, std::size_t> firstBlock;
+    std::unordered_set<uint32_t> escaping;
+    std::vector<typename Traits::RegT> regs;
+
+    std::size_t blockIdx = 0;
+    for (const auto &block : fn.blocks) {
+        for (const auto &instr : Traits::instrs(block)) {
+            regs.clear();
+            Traits::collectVRegs(instr, regs);
+            for (const auto &reg : regs) {
+                const uint32_t key = Traits::vregKey(reg);
+                const auto [it, inserted] = firstBlock.emplace(key, blockIdx);
+                if (!inserted && it->second != blockIdx)
+                    escaping.insert(key);
+            }
+        }
+        ++blockIdx;
+    }
+    return escaping;
+}
+
 /// @brief Forward each virtual-to-virtual copy whose destination has one use.
 /// @tparam Traits Backend-specific MIR query and rewrite contract.
 /// @param[in,out] block Basic block whose eligible copies are forwarded and removed.
+/// @param escaping Destinations that other blocks also reference; never removed.
 /// @return Number of copy instructions removed.
-template <typename Traits> std::size_t rewriteSingleUseCopies(typename Traits::BlockT &block) {
+template <typename Traits>
+std::size_t rewriteSingleUseCopies(typename Traits::BlockT &block,
+                                   const std::unordered_set<uint32_t> &escaping) {
     auto &instrs = Traits::instrs(block);
     std::vector<bool> erase(instrs.size(), false);
     std::size_t removed = 0;
@@ -135,6 +184,10 @@ template <typename Traits> std::size_t rewriteSingleUseCopies(typename Traits::B
         typename Traits::RegT dst{};
         typename Traits::RegT src{};
         if (!Traits::isForwardableCopy(instrs[idx], dst, src))
+            continue;
+
+        // A destination read by another block outlives this scan's evidence.
+        if (escaping.count(Traits::vregKey(dst)) != 0)
             continue;
 
         auto site = findSingleDirectUse<Traits>(block, idx, dst, src);
@@ -168,6 +221,7 @@ template <typename Traits> std::size_t rewriteSingleUseCopies(typename Traits::B
 /// @return Number of MIR instructions removed.
 template <typename Traits, typename FunctionT> std::size_t runPreRAForwardCopy(FunctionT &fn) {
     std::size_t removed = 0;
+    const auto escaping = detail::collectEscapingVRegs<Traits>(fn);
     for (auto &block : fn.blocks) {
         auto &instrs = Traits::instrs(block);
         const auto oldSize = instrs.size();
@@ -179,7 +233,7 @@ template <typename Traits, typename FunctionT> std::size_t runPreRAForwardCopy(F
                                     }),
                      instrs.end());
         removed += oldSize - instrs.size();
-        removed += detail::rewriteSingleUseCopies<Traits>(block);
+        removed += detail::rewriteSingleUseCopies<Traits>(block, escaping);
     }
     return removed;
 }

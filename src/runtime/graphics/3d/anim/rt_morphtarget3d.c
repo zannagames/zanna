@@ -39,6 +39,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_morphtarget3d.h"
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
@@ -1707,7 +1708,7 @@ static void morphtarget_draw_mesh_matrix(void *canvas,
     }
 
     /* Allocate morphed vertex buffer */
-    if ((size_t)m->vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t))
+    if (!rt_alloc_count_ok(m->vertex_count, sizeof(vgfx3d_vertex_t)))
         return;
     vgfx3d_vertex_t *morphed =
         (vgfx3d_vertex_t *)malloc((size_t)m->vertex_count * sizeof(vgfx3d_vertex_t));

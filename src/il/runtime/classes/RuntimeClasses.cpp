@@ -94,7 +94,7 @@ namespace {
 /// based on whether the setter pointer is null.
 #define RUNTIME_PROP(_name, _type, _getter, _setter)                                               \
     ::il::runtime::RuntimeProperty {                                                               \
-        (_name), (_type), (_getter), (_setter), !(_setter)                                         \
+        (_name), (_type), (_getter), (_setter), ((_setter) == nullptr)                             \
     }
 
 /// @brief Constructs a vector of RuntimeProperty descriptors.

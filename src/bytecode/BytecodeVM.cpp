@@ -5189,7 +5189,9 @@ template <typename Fn>
 ///          before propagating any captured native trap.
 static void invokeUnifiedGame3DLoop(UnifiedGame3DCallbackScope &scope, Fn &&fn) {
     char trapMessage[512] = "";
-    int trapped = 0;
+    // Written after setjmp() and read after the longjmp() path rejoins, so it
+    // must survive the register state the trap unwind restores.
+    volatile int trapped = 0;
     jmp_buf recovery;
 
     scope.previous = tlsUnifiedGame3DScope;

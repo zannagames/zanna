@@ -88,6 +88,9 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/collections/rt_list_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/collections/rt_queue_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/collections/rt_ring_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/collections/rt_stack_internal.h")
+// Header-only allocation-size guards used while sizing internal buffers; they
+// expose no runtime callable.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_alloc_size.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_context.h")
 // Transactional thread-binding reservation/adoption is shared only by the
 // runtime's platform thread adapters.  Keeping it in a separate internal

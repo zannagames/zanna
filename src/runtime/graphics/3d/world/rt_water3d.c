@@ -38,6 +38,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_water3d.h"
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
@@ -501,8 +502,8 @@ static int water3d_mesh_reserve(rt_mesh3d *mesh,
 
     if (replace_vertices) {
         uint32_t copy_count = mesh->vertex_count;
-        if ((size_t)vertex_capacity > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-            (mesh->positions64 && (size_t)vertex_capacity > SIZE_MAX / (3u * sizeof(double)))) {
+        if (!rt_alloc_count_ok(vertex_capacity, sizeof(vgfx3d_vertex_t)) ||
+            (mesh->positions64 && !rt_alloc_count_ok(vertex_capacity, 3u * sizeof(double)))) {
             rt_trap("Water3D.Update: mesh vertex allocation overflow");
             return 0;
         }
@@ -533,7 +534,7 @@ static int water3d_mesh_reserve(rt_mesh3d *mesh,
     }
     if (replace_indices) {
         uint32_t copy_count = mesh->index_count;
-        if ((size_t)index_capacity > SIZE_MAX / sizeof(*new_indices)) {
+        if (!rt_alloc_count_ok(index_capacity, sizeof(*new_indices))) {
             free(new_vertices);
             free(new_positions64);
             rt_trap("Water3D.Update: mesh index allocation overflow");

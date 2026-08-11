@@ -36,6 +36,7 @@
 
 #if defined(__linux__) && defined(ZANNA_ENABLE_GRAPHICS)
 
+#include "rt_alloc_size.h"
 #include "rt_platform.h"
 #include "rt_textureasset3d.h"
 #include "vgfx.h"
@@ -904,6 +905,10 @@ typedef struct {
     int8_t rtt_color_dirty;
     int8_t scene_postfx_pending;
     int8_t scene_composited_to_backbuffer;
+    /// Nonzero when the caller asked every presented frame to stay readable.
+    int8_t capture_after_present;
+    /// Nonzero while `present_fbo` holds the copy taken at the last present.
+    int8_t present_capture_valid;
     int8_t default_doublebuffered;
     int8_t default_framebuffer_writable;
     GLenum default_draw_buffer;
@@ -1425,20 +1430,23 @@ static int load_gl(int wayland_binding) {
     gl_wayland_binding = wayland_binding ? 1 : 0;
 
 #define LOAD(name)                                                                                 \
-    gl.name = (__typeof__(gl.name))dlsym(gl.lib, "gl" #name);                                      \
+    gl.name =                                                                                      \
+        RT_FN_PTR_CAST((__typeof__(gl.name))dlsym(gl.lib, "gl" #name));                            \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
     }
 #define LOADX(name)                                                                                \
-    glx.name = (__typeof__(glx.name))dlsym(gl.lib, "glX" #name);                                   \
+    glx.name =                                                                                     \
+        RT_FN_PTR_CAST((__typeof__(glx.name))dlsym(gl.lib, "glX" #name));                          \
     if (!glx.name) {                                                                               \
         missing_symbol = "glX" #name;                                                              \
         goto fail;                                                                                 \
     }
 #if defined(ZANNA_GRAPHICS_WAYLAND)
 #define LOADP(name)                                                                                \
-    gl.name = (__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name);                        \
+    gl.name =                                                                                      \
+        RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));              \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
@@ -1446,16 +1454,19 @@ static int load_gl(int wayland_binding) {
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
 #define LOADP(name)                                                                                \
     if (gl_wayland_binding)                                                                        \
-        gl.name = (__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name);                   \
+        gl.name =                                                                                  \
+            RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));          \
     else                                                                                           \
-        gl.name = (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name);     \
+        gl.name = RT_FN_PTR_CAST(                                                                  \
+            (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));           \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                              \
         goto fail;                                                                                 \
     }
 #else
 #define LOADP(name)                                                                                \
-    gl.name = (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name);          \
+    gl.name = RT_FN_PTR_CAST(                                                                      \
+        (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));               \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
@@ -1503,10 +1514,12 @@ static int load_gl(int wayland_binding) {
     /* Optional: ARB_clip_control (GL 4.5). NULL is fine — the backend keeps
      * the fixed [-1,1] depth mapping when the entry point is absent. */
 #if defined(ZANNA_GRAPHICS_WAYLAND)
-    gl.ClipControl = (PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl");
+    gl.ClipControl =
+        RT_FN_PTR_CAST((PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl"));
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
     if (gl_wayland_binding)
-        gl.ClipControl = (PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl");
+        gl.ClipControl =
+            RT_FN_PTR_CAST((PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl"));
     else
         gl.ClipControl =
             (PFNGLCLIPCONTROLPROC)glx.GetProcAddress((const unsigned char *)"glClipControl");
@@ -1560,10 +1573,10 @@ static int load_gl(int wayland_binding) {
     LOADP(TexImage2D);
     LOADP(TexSubImage2D);
 #if defined(ZANNA_GRAPHICS_WAYLAND)
-    gl.CompressedTexImage2D = (PFNGLCOMPRESSEDTEXIMAGE2DPROC)vgfx3d_egl_wayland_get_proc(
-        "glCompressedTexImage2D");
-    gl.CompressedTexSubImage2D = (PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC)vgfx3d_egl_wayland_get_proc(
-        "glCompressedTexSubImage2D");
+    gl.CompressedTexImage2D = RT_FN_PTR_CAST(
+        (PFNGLCOMPRESSEDTEXIMAGE2DPROC)vgfx3d_egl_wayland_get_proc("glCompressedTexImage2D"));
+    gl.CompressedTexSubImage2D = RT_FN_PTR_CAST(
+        (PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC)vgfx3d_egl_wayland_get_proc("glCompressedTexSubImage2D"));
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
     if (gl_wayland_binding) {
         gl.CompressedTexImage2D = (PFNGLCOMPRESSEDTEXIMAGE2DPROC)vgfx3d_egl_wayland_get_proc(
@@ -1613,10 +1626,12 @@ static int load_gl(int wayland_binding) {
     LOADP(ReadBuffer);
     LOADP(ColorMask);
 #if defined(ZANNA_GRAPHICS_WAYLAND)
-    gl.GetStringi = (PFNGLGETSTRINGIPROC)vgfx3d_egl_wayland_get_proc("glGetStringi");
+    gl.GetStringi =
+        RT_FN_PTR_CAST((PFNGLGETSTRINGIPROC)vgfx3d_egl_wayland_get_proc("glGetStringi"));
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
     if (gl_wayland_binding)
-        gl.GetStringi = (PFNGLGETSTRINGIPROC)vgfx3d_egl_wayland_get_proc("glGetStringi");
+        gl.GetStringi =
+            RT_FN_PTR_CAST((PFNGLGETSTRINGIPROC)vgfx3d_egl_wayland_get_proc("glGetStringi"));
     else
         gl.GetStringi =
             (PFNGLGETSTRINGIPROC)glx.GetProcAddress((const unsigned char *)"glGetStringi");
@@ -2111,6 +2126,7 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .submit_draw_instanced = gl_submit_draw_instanced,
     .present = gl_present,
     .readback_rgba = gl_readback_rgba,
+    .set_capture_after_present = gl_set_capture_after_present,
     .present_postfx = gl_present_postfx,
     .resolve_opaque_targets = gl_resolve_opaque_targets,
     .apply_postfx = gl_apply_postfx,

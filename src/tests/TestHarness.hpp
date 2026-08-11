@@ -173,8 +173,8 @@ namespace zanna_test {
 /// @invariant Once thrown, the test runner will record the failure.
 struct TestFailure final : public std::exception {
     /// @brief Construct a test failure exception.
-    /// @param fatal If true, the test runner will stop executing the current test.
-    explicit TestFailure(bool fatal) : fatal(fatal) {}
+    /// @param isFatal If true, the test runner will stop executing the current test.
+    explicit TestFailure(bool isFatal) : fatal(isFatal) {}
 
     /// @brief Whether this failure should abort the current test.
     bool fatal = false;
@@ -204,8 +204,8 @@ struct TestFailure final : public std::exception {
 /// ```
 struct TestSkip final : public std::exception {
     /// @brief Construct a skip exception with an explanatory reason.
-    /// @param reason Human-readable explanation for why the test was skipped.
-    explicit TestSkip(std::string reason) : reason(std::move(reason)) {}
+    /// @param skipReason Human-readable explanation for why the test was skipped.
+    explicit TestSkip(std::string skipReason) : reason(std::move(skipReason)) {}
 
     /// @brief The reason this test was skipped.
     std::string reason;

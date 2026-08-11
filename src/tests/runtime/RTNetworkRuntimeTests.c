@@ -25,6 +25,7 @@
 #include "rt_map.h"
 #include "rt_network.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_retry.h"
 #include "rt_smtp.h"
 #include "rt_sse.h"
@@ -631,7 +632,8 @@ static void test_http_server_executes_bound_native_handler(void) {
 
     void *server = rt_http_server_new(8080);
     rt_http_server_post(server, rt_const_cstr("/users/:id"), rt_const_cstr("handle_user"));
-    rt_http_server_bind_handler(server, rt_const_cstr("handle_user"), (void *)&native_http_handler);
+    rt_http_server_bind_handler(
+        server, rt_const_cstr("handle_user"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     rt_string raw = rt_const_cstr("POST /users/42?q=search HTTP/1.1\r\n"
                                   "Host: example.test\r\n"
@@ -663,7 +665,8 @@ static void test_http_server_accessor_preserves_nul_header_and_query_key_length(
 
     void *server = rt_http_server_new(8086);
     rt_http_server_post(server, rt_const_cstr("/users/:id"), rt_const_cstr("handle_user"));
-    rt_http_server_bind_handler(server, rt_const_cstr("handle_user"), (void *)&native_http_handler);
+    rt_http_server_bind_handler(
+        server, rt_const_cstr("handle_user"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     const char raw[] = "POST /users/42?q%00x=bad&q=good HTTP/1.1\r\n"
                        "Host: example.test\r\n"
@@ -692,7 +695,8 @@ static void test_http_server_process_request_preserves_nul_body_and_decodes_quer
 
     void *server = rt_http_server_new(8085);
     rt_http_server_post(server, rt_const_cstr("/users/:id"), rt_const_cstr("handle_user"));
-    rt_http_server_bind_handler(server, rt_const_cstr("handle_user"), (void *)&native_http_handler);
+    rt_http_server_bind_handler(
+        server, rt_const_cstr("handle_user"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     const char raw[] = "POST /users/42?%71=search HTTP/1.1\r\n"
                        "Host: example.test\r\n"
@@ -723,7 +727,7 @@ static void test_http_server_executes_bound_native_handler_for_chunked_body(void
     void *server = rt_http_server_new(8082);
     rt_http_server_post(server, rt_const_cstr("/stream/:id"), rt_const_cstr("handle_stream"));
     rt_http_server_bind_handler(
-        server, rt_const_cstr("handle_stream"), (void *)&native_http_handler);
+        server, rt_const_cstr("handle_stream"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     rt_string raw = rt_const_cstr("POST /stream/7?q=resume HTTP/1.1\r\n"
                                   "Host: example.test\r\n"
@@ -754,7 +758,8 @@ static void test_http_server_executes_bound_native_handler_for_chunked_body(void
 static void test_http_server_http10_defaults_to_close(void) {
     void *server = rt_http_server_new(8083);
     rt_http_server_get(server, rt_const_cstr("/ping"), rt_const_cstr("handle_ping"));
-    rt_http_server_bind_handler(server, rt_const_cstr("handle_ping"), (void *)&native_http_handler);
+    rt_http_server_bind_handler(
+        server, rt_const_cstr("handle_ping"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     rt_string raw = rt_const_cstr("GET /ping HTTP/1.0\r\n"
                                   "Host: example.test\r\n"
@@ -773,7 +778,8 @@ static void test_http_server_http10_defaults_to_close(void) {
 static void test_http_server_http10_keepalive_opt_in(void) {
     void *server = rt_http_server_new(8084);
     rt_http_server_get(server, rt_const_cstr("/ping"), rt_const_cstr("handle_ping"));
-    rt_http_server_bind_handler(server, rt_const_cstr("handle_ping"), (void *)&native_http_handler);
+    rt_http_server_bind_handler(
+        server, rt_const_cstr("handle_ping"), RT_FN_PTR_CAST((void *)&native_http_handler));
 
     rt_string raw = rt_const_cstr("GET /ping HTTP/1.0\r\n"
                                   "Host: example.test\r\n"

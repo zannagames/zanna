@@ -31,6 +31,17 @@
 #include <stdint.h>
 #include <string>
 
+/// @brief Erase constness so borrowed text can travel through an opaque `void *`.
+/// @details The runtime payload APIs take `void *`; these tests hand them
+///          read-only bytes they own elsewhere and never write through the
+///          result, so the cast is safe here.
+/// @param text Borrowed NUL-terminated bytes.
+/// @return The same address as a mutable `void *`.
+static void *borrowedPayload(const char *text) {
+    return const_cast<void *>(static_cast<const void *>(text));
+}
+
+
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 extern "C" const char *rt_trap_get_error(void);
@@ -82,7 +93,7 @@ void call_memory_retain_string_payload() {
     const char *raw = "heap-backed string payload must not be retained directly";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    rt_memory_retain((void *)rt_string_cstr(text));
+    rt_memory_retain(borrowedPayload(rt_string_cstr(text)));
 }
 
 void call_memory_release_str_object() {
@@ -162,7 +173,7 @@ void call_box_str_retain_overflow() {
     const char *raw = "heap-backed box string retain overflow";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *payload = (void *)rt_string_cstr(text);
+    void *payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(payload) == 1);
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
@@ -175,7 +186,7 @@ void call_value_type_add_field_retain_overflow() {
     const char *raw = "heap-backed value type string retain overflow";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *payload = (void *)rt_string_cstr(text);
+    void *payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(payload) == 1);
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     *(rt_string *)value_type = text;
@@ -195,7 +206,7 @@ void call_option_some_str_retain_overflow() {
     const char *raw = "heap-backed option string retain overflow";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *payload = (void *)rt_string_cstr(text);
+    void *payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(payload) == 1);
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
@@ -222,7 +233,7 @@ void call_result_ok_str_retain_overflow() {
     const char *raw = "heap-backed result ok string retain overflow";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *payload = (void *)rt_string_cstr(text);
+    void *payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(payload) == 1);
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
@@ -233,7 +244,7 @@ void call_result_err_str_retain_overflow() {
     const char *raw = "heap-backed result err string retain overflow";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *payload = (void *)rt_string_cstr(text);
+    void *payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(payload) == 1);
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
@@ -430,7 +441,7 @@ void test_value_type_trapping_previous_finalizer_releases_fields() {
     const char *raw = "value type field survives until chained finalizer trap cleanup";
     rt_string text = rt_string_from_bytes(raw, std::strlen(raw));
     assert(text != nullptr);
-    void *text_payload = (void *)rt_string_cstr(text);
+    void *text_payload = borrowedPayload(rt_string_cstr(text));
     assert(rt_heap_is_payload(text_payload) == 1);
     *(rt_string *)value_type = text;
     rt_box_value_type_add_field(value_type, 0, RT_VALUE_FIELD_STR, 1);

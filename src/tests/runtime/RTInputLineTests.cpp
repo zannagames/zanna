@@ -23,12 +23,18 @@
 static rt_string read_line(const std::string &data) {
     int fds[2];
     assert(pipe(fds) == 0);
-    if (!data.empty())
 #ifdef _WIN32
-        (void)posix_write(fds[1], data.data(), static_cast<unsigned int>(data.size()));
+    if (!data.empty()) {
+        const int written =
+            posix_write(fds[1], data.data(), static_cast<unsigned int>(data.size()));
+        assert(written == static_cast<int>(data.size()));
+    }
     posix_close(fds[1]);
 #else
-        (void)write(fds[1], data.data(), data.size());
+    if (!data.empty()) {
+        const ssize_t written = write(fds[1], data.data(), data.size());
+        assert(written == static_cast<ssize_t>(data.size()));
+    }
     close(fds[1]);
 #endif
 

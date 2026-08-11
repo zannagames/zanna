@@ -352,7 +352,7 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
         return;
     }
 
-    if ((size_t)mesh->vertex_count > SIZE_MAX / sizeof(vgfx3d_vertex_t))
+    if (!rt_alloc_count_ok(mesh->vertex_count, sizeof(vgfx3d_vertex_t)))
         return;
     /* Frame arena: stable until frame flush, no per-draw malloc + dedup-set
      * tracking + free. This is the CPU-skinning fallback's hottest allocation

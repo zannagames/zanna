@@ -192,7 +192,7 @@ typedef struct rt_tilemap_impl {
     /// Number of animation entries.
     int32_t tile_anim_count;
     /// Fixed per-tile property sets.
-    tile_props tile_props[MAX_TILE_PROPS];
+    tile_props tile_prop_sets[MAX_TILE_PROPS];
     /// Allocated rule slots.
     autotile_rule autotile_rules[MAX_AUTOTILE_RULES];
     /// Slots ever allocated.

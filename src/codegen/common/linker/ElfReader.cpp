@@ -734,6 +734,14 @@ bool readElfObj(
                 os.common = true;
                 os.commonAlignment = alignment == 0 ? 1 : alignment;
                 os.sectionIndex = 0;
+            } else if (effectiveShndx < shnum && shdrs[effectiveShndx].sh_type == elf::SHT_GROUP) {
+                // COMDAT group signature symbol: GCC points the signature at its
+                // `.group` section, which holds no image bytes and is therefore
+                // not materialized above. Group membership is already parsed from
+                // the section headers, so keep a placeholder entry - relocation
+                // symbol indices are positional - that owns no address.
+                os.binding = ObjSymbol::Local;
+                os.sectionIndex = 0;
             } else if (effectiveShndx < shnum && effectiveShndx != elf::SHN_UNDEF) {
                 os.sectionIndex = secMap[effectiveShndx];
                 if (os.sectionIndex == 0) {

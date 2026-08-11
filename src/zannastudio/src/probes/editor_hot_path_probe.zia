@@ -360,8 +360,14 @@ func VerifyLargeBufferAndFoldingBudgets(
     var hiddenOutline = new symbols.SymbolOutline();
     hiddenOutline.setSourcePath("fold_perf.zia");
     hiddenOutline.setSemanticFoldingEnabled(true, engine);
+    // Pump until the fold lands, exactly as the visible outline below does.
+    // What is under test is that hiding the outline does not suppress semantic
+    // folding, not how many frames the background symbol job needs: that job
+    // runs the same analysis either way, so a fixed pump count would turn this
+    // into an unintended wall-clock budget that tracks host speed. The two
+    // explicit 250 ms budgets above remain this probe's timing assertions.
     var hiddenFoldTicks = 0;
-    while hiddenFoldTicks < 20 {
+    while hiddenOutline.foldedPath == "" and hiddenFoldTicks < 200 {
         hiddenOutline.update(engine);
         Clock.Sleep(1);
         hiddenFoldTicks = hiddenFoldTicks + 1;

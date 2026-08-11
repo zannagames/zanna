@@ -301,6 +301,13 @@ class ThreadedDispatchDriver final : public VM::DispatchDriver {
     /// @param state Execution state under control of the dispatcher.
     /// @return True when execution terminated normally; false otherwise.
     bool run(VM &vm, VMContext &context, VM::ExecState &state) override {
+// Label addresses (`&&LBL_x`) and computed gotos (`goto *p`) are GNU
+// extensions that ISO C++ does not define. They are the point of this
+// dispatcher, so the pedantic diagnostics are suppressed for the body only.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#endif
         // Cache frequently accessed state in locals for faster access
         const il::core::Instr *currentInstr = nullptr;
         il::core::Opcode opcode = il::core::Opcode::Trap;
@@ -464,6 +471,9 @@ class ThreadedDispatchDriver final : public VM::DispatchDriver {
 #undef DISPATCH_NEXT_FAST
 #undef DISPATCH_TO
         return false; // Unreachable but placates control-flow analysis.
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
     }
 };
 #endif // ZANNA_THREADING_SUPPORTED

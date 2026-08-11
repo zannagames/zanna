@@ -29,6 +29,8 @@
 #include "codegen/common/linker/ElfExeWriter.hpp"
 
 #include "codegen/common/linker/AlignUtil.hpp"
+#include "codegen/common/linker/DynamicSymbolPolicy.hpp"
+#include "codegen/common/linker/ElfSymbolVersions.hpp"
 #include "codegen/common/linker/ExeWriterUtil.hpp"
 #include "codegen/common/objfile/ObjFileWriterUtil.hpp"
 
@@ -68,6 +70,8 @@ static constexpr uint32_t SHT_HASH = 5;
 static constexpr uint32_t SHT_DYNAMIC = 6;
 static constexpr uint32_t SHT_NOBITS = 8;
 static constexpr uint32_t SHT_DYNSYM = 11;
+static constexpr uint32_t SHT_GNU_VERSYM = 0x6fffffff;
+static constexpr uint32_t SHT_GNU_VERNEED = 0x6ffffffe;
 
 static constexpr uint32_t SHF_WRITE = 0x1;
 static constexpr uint32_t SHF_ALLOC = 0x2;
@@ -86,12 +90,28 @@ static constexpr int64_t DT_RELAENT = 9;
 static constexpr int64_t DT_STRSZ = 10;
 static constexpr int64_t DT_SYMENT = 11;
 static constexpr int64_t DT_TEXTREL = 22;
+static constexpr int64_t DT_VERSYM = 0x6ffffff0;
+static constexpr int64_t DT_VERNEED = 0x6ffffffe;
+static constexpr int64_t DT_VERNEEDNUM = 0x6fffffff;
+
+// Reserved version indices: 0 selects the local pseudo-version and 1 the
+// global one, both of which the loader treats as "no version requested".
+static constexpr uint16_t VER_NDX_LOCAL = 0;
+static constexpr uint16_t VER_NDX_GLOBAL = 1;
+static constexpr uint16_t VER_NDX_FIRST_REQUIREMENT = 2;
 
 // Dynamic relocation types.
 static constexpr uint32_t R_X86_64_64 = 1;
+static constexpr uint32_t R_X86_64_COPY = 5;
 static constexpr uint32_t R_X86_64_GLOB_DAT = 6;
 static constexpr uint32_t R_AARCH64_ABS64 = 257;
+static constexpr uint32_t R_AARCH64_COPY = 1024;
 static constexpr uint32_t R_AARCH64_GLOB_DAT = 1025;
+
+// Symbol table binding/type encodings used in .dynsym entries.
+static constexpr uint8_t STB_GLOBAL = 1;
+static constexpr uint8_t STT_NOTYPE = 0;
+static constexpr uint8_t STT_OBJECT = 1;
 
 static constexpr const char *kLinuxX8664Interpreter = "/lib64/ld-linux-x86-64.so.2";
 static constexpr const char *kLinuxAArch64Interpreter = "/lib/ld-linux-aarch64.so.1";
@@ -163,6 +183,24 @@ struct Elf64_Dyn {
     uint64_t d_val = 0;
 };
 
+/// @brief Header of one `.gnu.version_r` entry: the versions needed from one library.
+struct Elf64_Verneed {
+    uint16_t vn_version = 1; ///< Format revision; always 1.
+    uint16_t vn_cnt = 0;     ///< Number of auxiliary version records that follow.
+    uint32_t vn_file = 0;    ///< `.dynstr` offset of the library's SONAME.
+    uint32_t vn_aux = 0;     ///< Byte offset from here to the first auxiliary record.
+    uint32_t vn_next = 0;    ///< Byte offset from here to the next Verneed, or zero.
+};
+
+/// @brief One required version within a `.gnu.version_r` entry.
+struct Elf64_Vernaux {
+    uint32_t vna_hash = 0;  ///< ELF hash of the version name.
+    uint16_t vna_flags = 0; ///< Version flags; unused for requirements.
+    uint16_t vna_other = 0; ///< Index this requirement occupies in `.gnu.version`.
+    uint32_t vna_name = 0;  ///< `.dynstr` offset of the version name.
+    uint32_t vna_next = 0;  ///< Byte offset from here to the next auxiliary, or zero.
+};
+
 /// @brief Planned file and virtual-address extent of one `PT_LOAD` segment.
 struct SegmentInfo {
     size_t fileOffset = 0;
@@ -203,6 +241,8 @@ struct DynamicInfo {
     std::vector<uint8_t> dynsym;
     std::vector<uint8_t> hash;
     std::vector<uint8_t> rela;
+    std::vector<uint8_t> versym;
+    std::vector<uint8_t> verneed;
     std::vector<uint8_t> roBlob;
     std::vector<uint8_t> dynamic;
 
@@ -211,6 +251,11 @@ struct DynamicInfo {
     size_t dynsymOff = 0;
     size_t hashOff = 0;
     size_t relaOff = 0;
+    size_t versymOff = 0;
+    size_t verneedOff = 0;
+
+    /// Number of `.gnu.version_r` entries, i.e. libraries contributing versions.
+    size_t verneedCount = 0;
 
     size_t roFileOff = 0;
     size_t rwFileOff = 0;
@@ -529,16 +574,50 @@ std::vector<uint8_t> buildLinuxAArch64StartupStub(uint64_t stubVa,
     return stub;
 }
 
+/// @brief Locate the section-header index of the allocatable section covering @p addr.
+/// @details Section headers are written as a null entry followed by
+///          @p loadableIndices in order, so a section's header index is its
+///          position in that vector plus one.
+/// @param layout Finalized sections.
+/// @param loadableIndices VA-ordered allocatable section indices.
+/// @param addr Virtual address to locate.
+/// @return The one-based section-header index, or `0` (SHN_UNDEF) when no
+///         allocatable section covers @p addr.
+uint16_t shndxForAddress(const LinkLayout &layout,
+                         const std::vector<size_t> &loadableIndices,
+                         uint64_t addr) {
+    for (size_t i = 0; i < loadableIndices.size(); ++i) {
+        const auto &sec = layout.sections[loadableIndices[i]];
+        const uint64_t start = sec.virtualAddr;
+        const uint64_t size = static_cast<uint64_t>(outputSectionMemSize(sec));
+        if (addr >= start && addr < start + size) {
+            // Header indices beyond the ELF field width cannot be represented;
+            // reporting SHN_UNDEF keeps the symbol conservatively undefined
+            // rather than naming an unrelated section.
+            const size_t shndx = i + 1;
+            if (shndx > std::numeric_limits<uint16_t>::max())
+                return 0;
+            return static_cast<uint16_t>(shndx);
+        }
+    }
+    return 0;
+}
+
 /// @brief Construct the .dynamic / .dynsym / .dynstr / .rela.dyn / .hash blobs.
 /// @details Emits one DT_NEEDED per @p neededLibs entry, one .dynsym + .dynstr
-///          entry per @p dynSyms member, and one R_*_GLOB_DAT relocation per
-///          GOT/import slot found in the layout. The synthesised buffers are
-///          page-aligned and placed contiguously after the existing alloc
-///          sections by the caller.
+///          entry per @p dynSyms member, and one loader relocation per GOT/import
+///          slot found in the layout. Code imports get an `R_*_GLOB_DAT` bind of
+///          the slot; data imports instead get an `R_*_COPY` that has the loader
+///          copy the object's value into the slot, and their `.dynsym` entries
+///          are emitted as definitions so the loader knows the size to copy. The
+///          synthesised buffers are page-aligned and placed contiguously after
+///          the existing alloc sections by the caller.
 /// @param layout Finalized sections, GOT entries, and direct bind entries.
 /// @param arch Target architecture controlling interpreter and relocation types.
 /// @param neededLibs Ordered `DT_NEEDED` dependency names.
 /// @param dynSyms Loader-resolved symbols to place in `.dynsym`.
+/// @param loadableIndices VA-ordered allocatable section indices, used to give
+///        copied data symbols a defining section-header index.
 /// @param pageSize Target page alignment used for synthesized placement.
 /// @param info Destination dynamic-linking buffers and placement metadata.
 /// @param err Diagnostic output stream.
@@ -547,6 +626,7 @@ bool buildDynamicInfo(const LinkLayout &layout,
                       LinkArch arch,
                       const std::vector<std::string> &neededLibs,
                       const std::unordered_set<std::string> &dynSyms,
+                      const std::vector<size_t> &loadableIndices,
                       size_t pageSize,
                       DynamicInfo &info,
                       std::ostream &err) {
@@ -579,17 +659,142 @@ bool buildDynamicInfo(const LinkLayout &layout,
         if (!addString(info.dynstr, sym, info.dynStrOff[sym], err))
             return false;
 
+    // A reference carrying no version does not reliably select a library's
+    // current definition of a name that exists in several versions; the loader
+    // may bind a compatibility definition kept only for old binaries. Name the
+    // versions explicitly wherever the providing libraries can be inspected.
+    const auto symbolVersions = resolveElfSymbolVersions(info.neededLibs, info.dynSymbols, arch);
+
+    /// @brief One required version, already assigned its `.gnu.version` index.
+    struct VersionRequirement {
+        std::string name;      ///< Version definition name.
+        uint16_t index = 0;    ///< Index this requirement occupies in `.gnu.version`.
+        uint32_t nameOff = 0;  ///< `.dynstr` offset of `name`.
+    };
+
+    // Group requirements by library, preserving DT_NEEDED order so the emitted
+    // table matches the order the loader searches. A library/version pair is
+    // interned once and reused by every symbol naming it.
+    std::unordered_map<std::string, uint16_t> versionIndex;
+    std::vector<std::pair<std::string, std::vector<VersionRequirement>>> versionsByLib;
+    std::unordered_map<std::string, size_t> libSlot;
+    for (const auto &sym : info.dynSymbols) {
+        auto found = symbolVersions.find(sym);
+        if (found == symbolVersions.end())
+            continue;
+        const auto &requirement = found->second;
+        // A NUL separator cannot occur inside either component, so the joined
+        // key is unambiguous.
+        const std::string key = requirement.library + '\0' + requirement.version;
+        if (versionIndex.count(key) != 0)
+            continue;
+
+        const size_t nextIndex = versionIndex.size() + VER_NDX_FIRST_REQUIREMENT;
+        if (nextIndex > std::numeric_limits<uint16_t>::max()) {
+            err << "error: ELF symbol version count exceeds the version index field\n";
+            return false;
+        }
+
+        VersionRequirement entry;
+        entry.name = requirement.version;
+        entry.index = static_cast<uint16_t>(nextIndex);
+        if (!addString(info.dynstr, entry.name, entry.nameOff, err))
+            return false;
+
+        auto slot = libSlot.find(requirement.library);
+        if (slot == libSlot.end()) {
+            slot = libSlot.emplace(requirement.library, versionsByLib.size()).first;
+            versionsByLib.emplace_back(requirement.library, std::vector<VersionRequirement>{});
+        }
+        versionsByLib[slot->second].second.push_back(std::move(entry));
+        versionIndex.emplace(key, static_cast<uint16_t>(nextIndex));
+    }
+
+    // Data imports are defined by this executable: the loader copies the
+    // object's value into linker-reserved storage, and every reference in the
+    // image reads that storage. Their slot addresses come from the same GOT
+    // entry table that drives the loader relocations below.
+    std::unordered_map<std::string, uint64_t> copySlotAddr;
+    for (const auto &name : info.dynSymbols) {
+        if (!isLoaderDataSymbol(name))
+            continue;
+        auto defined = layout.globalSyms.find(name);
+        if (defined != layout.globalSyms.end() && defined->second.resolvedAddrValid)
+            copySlotAddr[name] = defined->second.resolvedAddr;
+    }
+
     appendStruct(info.dynsym, Elf64_Sym{}, 8);
     if (info.dynSymbols.size() >= std::numeric_limits<uint32_t>::max()) {
         err << "error: ELF dynamic symbol count exceeds 32-bit file format limit\n";
         return false;
     }
     for (size_t i = 0; i < info.dynSymbols.size(); ++i) {
+        const std::string &name = info.dynSymbols[i];
         Elf64_Sym sym{};
-        sym.st_name = info.dynStrOff[info.dynSymbols[i]];
-        sym.st_info = (1u << 4); // STB_GLOBAL | STT_NOTYPE
+        sym.st_name = info.dynStrOff[name];
+        sym.st_info = static_cast<uint8_t>((STB_GLOBAL << 4) | STT_NOTYPE);
+        if (auto slot = copySlotAddr.find(name); slot != copySlotAddr.end()) {
+            // The loader copies MIN(definition size, this size) bytes, so an
+            // omitted size would silently copy nothing.
+            sym.st_info = static_cast<uint8_t>((STB_GLOBAL << 4) | STT_OBJECT);
+            sym.st_size = loaderDataSymbolSize(name);
+            sym.st_value = slot->second;
+            sym.st_shndx = shndxForAddress(layout, loadableIndices, slot->second);
+            if (sym.st_shndx == 0) {
+                err << "error: loader data import '" << name
+                    << "' has no allocatable section covering its copy slot\n";
+                return false;
+            }
+        }
         appendStruct(info.dynsym, sym, 8);
-        info.dynSymIndex[info.dynSymbols[i]] = static_cast<uint32_t>(i + 1);
+        info.dynSymIndex[name] = static_cast<uint32_t>(i + 1);
+    }
+
+    if (!versionsByLib.empty()) {
+        // `.gnu.version` is parallel to `.dynsym`: one index per entry. The
+        // null symbol takes the local pseudo-version, and a symbol whose
+        // providing library could not be inspected takes the global one, which
+        // the loader reads as the unversioned reference emitted previously.
+        encoding::writeLE16(info.versym, VER_NDX_LOCAL);
+        for (const auto &name : info.dynSymbols) {
+            uint16_t index = VER_NDX_GLOBAL;
+            if (auto found = symbolVersions.find(name); found != symbolVersions.end()) {
+                const std::string key = found->second.library + '\0' + found->second.version;
+                if (auto slot = versionIndex.find(key); slot != versionIndex.end())
+                    index = slot->second;
+            }
+            encoding::writeLE16(info.versym, index);
+        }
+
+        // `.gnu.version_r` is a chain of per-library records, each followed by
+        // its own chain of required versions. Both chains store byte deltas, so
+        // the records are laid out first and the links computed from the sizes.
+        for (size_t libIdx = 0; libIdx < versionsByLib.size(); ++libIdx) {
+            const auto &[lib, versions] = versionsByLib[libIdx];
+            const bool lastLib = libIdx + 1 == versionsByLib.size();
+
+            Elf64_Verneed need;
+            need.vn_cnt = static_cast<uint16_t>(versions.size());
+            need.vn_file = info.neededNameOff[lib];
+            need.vn_aux = sizeof(Elf64_Verneed);
+            need.vn_next =
+                lastLib ? 0u
+                        : static_cast<uint32_t>(sizeof(Elf64_Verneed) +
+                                                versions.size() * sizeof(Elf64_Vernaux));
+            appendStruct(info.verneed, need, 8);
+
+            for (size_t auxIdx = 0; auxIdx < versions.size(); ++auxIdx) {
+                Elf64_Vernaux aux;
+                aux.vna_hash = elfHash(versions[auxIdx].name);
+                aux.vna_other = versions[auxIdx].index;
+                aux.vna_name = versions[auxIdx].nameOff;
+                aux.vna_next = auxIdx + 1 == versions.size()
+                                   ? 0u
+                                   : static_cast<uint32_t>(sizeof(Elf64_Vernaux));
+                appendStruct(info.verneed, aux, 8);
+            }
+        }
+        info.verneedCount = versionsByLib.size();
     }
 
     uint32_t dynSymCount = 0;
@@ -634,9 +839,27 @@ bool buildDynamicInfo(const LinkLayout &layout,
             err << "error: missing .dynsym entry for GOT symbol '" << got.symbolName << "'\n";
             return false;
         }
+        // Data imports bind here too: their copy relocation below makes this
+        // executable the definition the loader finds, so the bind resolves to
+        // the copied storage rather than the library's own object.
         emitRela(got.gotAddr,
                  it->second,
                  arch == LinkArch::AArch64 ? R_AARCH64_GLOB_DAT : R_X86_64_GLOB_DAT);
+    }
+
+    // Iterate the sorted symbol list rather than the lookup map so the emitted
+    // relocation order is reproducible.
+    for (const auto &name : info.dynSymbols) {
+        auto slot = copySlotAddr.find(name);
+        if (slot == copySlotAddr.end())
+            continue;
+        auto it = info.dynSymIndex.find(name);
+        if (it == info.dynSymIndex.end()) {
+            err << "error: missing .dynsym entry for loader data import '" << name << "'\n";
+            return false;
+        }
+        emitRela(
+            slot->second, it->second, arch == LinkArch::AArch64 ? R_AARCH64_COPY : R_X86_64_COPY);
     }
 
     std::vector<BindEntry> bindEntries = layout.bindEntries;
@@ -678,6 +901,10 @@ bool buildDynamicInfo(const LinkLayout &layout,
     appendBytes(info.roBlob, info.dynsym, info.dynsymOff, 8);
     appendBytes(info.roBlob, info.hash, info.hashOff, 8);
     appendBytes(info.roBlob, info.rela, info.relaOff, 8);
+    if (!info.versym.empty()) {
+        appendBytes(info.roBlob, info.versym, info.versymOff, 2);
+        appendBytes(info.roBlob, info.verneed, info.verneedOff, 8);
+    }
 
     uint64_t maxAllocEnd = 0;
     if (!maxAllocEndAddr(layout, maxAllocEnd, err))
@@ -739,6 +966,16 @@ bool buildDynamicInfo(const LinkLayout &layout,
     entries.push_back({DT_RELAENT, sizeof(Elf64_Rela)});
     entries.push_back({DT_STRSZ, info.dynstr.size()});
     entries.push_back({DT_SYMENT, sizeof(Elf64_Sym)});
+    if (!info.versym.empty()) {
+        uint64_t versymVA = 0;
+        uint64_t verneedVA = 0;
+        if (!dynSectionVA(info.versymOff, ".gnu.version virtual address", versymVA) ||
+            !dynSectionVA(info.verneedOff, ".gnu.version_r virtual address", verneedVA))
+            return false;
+        entries.push_back({DT_VERSYM, versymVA});
+        entries.push_back({DT_VERNEED, verneedVA});
+        entries.push_back({DT_VERNEEDNUM, info.verneedCount});
+    }
     if (info.hasTextRel)
         entries.push_back({DT_TEXTREL, 0});
     entries.push_back({DT_NULL, 0});
@@ -782,7 +1019,8 @@ bool writeElfExe(const std::string &path,
     }
 
     DynamicInfo dynInfo;
-    if (!buildDynamicInfo(layout, arch, neededLibs, dynSyms, pageSize, dynInfo, err))
+    if (!buildDynamicInfo(
+            layout, arch, neededLibs, dynSyms, loadableIndices, pageSize, dynInfo, err))
         return false;
 
     StartupStubInfo startupStub;
@@ -1031,8 +1269,13 @@ bool writeElfExe(const std::string &path,
 
     std::vector<uint32_t> syntheticNameOffsets;
     if (dynInfo.enabled) {
-        for (const char *name :
-             {".interp", ".dynstr", ".dynsym", ".hash", ".rela.dyn", ".dynamic"}) {
+        std::vector<const char *> syntheticNames = {
+            ".interp", ".dynstr", ".dynsym", ".hash", ".rela.dyn", ".dynamic"};
+        if (!dynInfo.versym.empty()) {
+            syntheticNames.push_back(".gnu.version");
+            syntheticNames.push_back(".gnu.version_r");
+        }
+        for (const char *name : syntheticNames) {
             uint32_t off = 0;
             if (!checkedU32(shstrtab.size(), "section-name string-table offset", err, off))
                 return false;
@@ -1064,7 +1307,7 @@ bool writeElfExe(const std::string &path,
     if (!checkedAlignUpSize(shstrtabEnd, 8, "section-header table offset", err, shdrsOff))
         return false;
 
-    const size_t syntheticCount = dynInfo.enabled ? 6 : 0;
+    const size_t syntheticCount = dynInfo.enabled ? (dynInfo.versym.empty() ? 6 : 8) : 0;
     const size_t shdrCount = loadableIndices.size() + nonAllocIndices.size() + syntheticCount + 3;
     if (shdrCount > std::numeric_limits<uint16_t>::max()) {
         err << "error: ELF section header count exceeds 16-bit file format limit\n";
@@ -1287,6 +1530,31 @@ bool writeElfExe(const std::string &path,
              8,
              sizeof(Elf64_Dyn)},
         };
+        if (!dynInfo.versym.empty()) {
+            // sh_link names the table each section indexes into: `.gnu.version`
+            // parallels `.dynsym`, while `.gnu.version_r` names strings in
+            // `.dynstr`. sh_info on the requirement table is its entry count.
+            syntheticSections.push_back({".gnu.version",
+                                         SHT_GNU_VERSYM,
+                                         SHF_ALLOC,
+                                         dynInfo.roVaddr + dynInfo.versymOff,
+                                         dynInfo.roFileOff + dynInfo.versymOff,
+                                         dynInfo.versym.size(),
+                                         dynsymShndx,
+                                         0,
+                                         2,
+                                         sizeof(uint16_t)});
+            syntheticSections.push_back({".gnu.version_r",
+                                         SHT_GNU_VERNEED,
+                                         SHF_ALLOC,
+                                         dynInfo.roVaddr + dynInfo.verneedOff,
+                                         dynInfo.roFileOff + dynInfo.verneedOff,
+                                         dynInfo.verneed.size(),
+                                         dynstrShndx,
+                                         static_cast<uint32_t>(dynInfo.verneedCount),
+                                         8,
+                                         0});
+        }
     }
 
     if (static_cast<size_t>(numShdrs) > std::numeric_limits<size_t>::max() / sizeof(Elf64_Shdr)) {

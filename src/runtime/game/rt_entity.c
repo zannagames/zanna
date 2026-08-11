@@ -121,7 +121,7 @@ static int64_t entity_saturating_neg(int64_t value) {
 ///         `INT64_MAX` according to its sign.
 static int64_t entity_saturating_mul(int64_t a, int64_t b) {
 #if defined(__SIZEOF_INT128__)
-    __int128 result = (__int128)a * (__int128)b;
+    __extension__ __int128 result = (__int128)a * (__int128)b;
     if (result > INT64_MAX)
         return INT64_MAX;
     if (result < INT64_MIN)
@@ -145,7 +145,7 @@ static int64_t entity_saturating_mul(int64_t a, int64_t b) {
 ///         division by 16 and saturated to the `int64_t` range.
 static int64_t entity_scaled_delta(int64_t velocity, int64_t dt) {
 #if defined(__SIZEOF_INT128__)
-    __int128 result = (__int128)velocity * (__int128)dt;
+    __extension__ __int128 result = (__int128)velocity * (__int128)dt;
     if (result < 0)
         result = -((-result) >> 4);
     else

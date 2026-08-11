@@ -88,13 +88,11 @@ int main() {
     // -------------------------------------------------------------------------
     // Test 2: Diamond — entry -> {left, right} -> merge -> exit
     //
-    //        entry
-    //       /     \
-    //     left   right
-    //       \     /
-    //        merge
-    //          |
-    //        exit (ret)
+    //   entry
+    //   +-- left  --+
+    //   +-- right --+
+    //               +-- merge
+    //                   +-- exit (ret)
     //
     // Expected post-dominator tree:
     //   exit  .ipostdom = nullptr
@@ -154,11 +152,9 @@ int main() {
     // -------------------------------------------------------------------------
     // Test 3: Multiple exits — two independent paths, no common block before exit
     //
-    //        entry
-    //       /     \
-    //    left     right
-    //     |         |
-    //   exit1     exit2
+    //   entry
+    //   +-- left  --+-- exit1
+    //   +-- right --+-- exit2
     //
     // Expected post-dominator tree:
     //   exit1 .ipostdom = nullptr      (exit block)

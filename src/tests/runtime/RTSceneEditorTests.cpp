@@ -1449,8 +1449,8 @@ int main() {
     // image graph from a mounted package after loose-file paths are irrelevant.
     std::filesystem::path tiled_pack = tiled_dir.parent_path() / "zanna_tiled_import_test.zpak";
     zanna::asset::ZpakWriter tiled_writer;
-    auto add_text_entry = [&](const char *name, const std::filesystem::path &path) {
-        std::string value = read_text(path);
+    auto add_text_entry = [&](const char *name, const std::filesystem::path &source_path) {
+        std::string value = read_text(source_path);
         tiled_writer.addEntry(
             name, reinterpret_cast<const uint8_t *>(value.data()), value.size(), false);
     };

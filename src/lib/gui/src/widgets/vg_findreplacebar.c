@@ -727,7 +727,7 @@ static vg_codeeditor_t *findreplacebar_live_target(vg_findreplacebar_t *bar) {
 static void clear_matches(vg_findreplacebar_t *bar) {
     bar->match_count = 0;
     bar->current_match = 0;
-    snprintf(bar->result_text, sizeof(bar->result_text), "");
+    bar->result_text[0] = '\0';
 }
 
 /// @brief Rescans the linked editor for the current query and options.

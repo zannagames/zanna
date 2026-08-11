@@ -1037,8 +1037,8 @@ LowerResult Lowerer::lowerCall(CallExpr *expr) {
         /// @param e Callee expression node.
         /// @return `true` when the expression is a pure qualified-name chain.
         std::function<bool(Expr *)> buildQualifiedName = [&](Expr *e) -> bool {
-            if (auto *ident = exprAs<IdentExpr>(e, ExprKind::Ident)) {
-                qualifiedName = ident->name;
+            if (auto *identLeaf = exprAs<IdentExpr>(e, ExprKind::Ident)) {
+                qualifiedName = identLeaf->name;
                 return true;
             }
             if (auto *field = exprAs<FieldExpr>(e, ExprKind::Field)) {

@@ -40,6 +40,7 @@
 ///          null handling, traversal, allocation, ownership, and short-circuit
 ///          behavior to the corresponding typed operation.
 
+#include "rt_platform.h"
 #include "rt_seq.h"
 
 #include <stdint.h>
@@ -68,7 +69,7 @@ typedef void *(*reducer_fn)(void *, void *);
 /// @return New runtime-managed Seq preserving source ownership mode and
 ///         containing matching values.
 void *rt_seq_keep_wrapper(void *seq, void *pred) {
-    return rt_seq_keep(seq, (predicate_fn)pred);
+    return rt_seq_keep(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Exclude values selected by an opaque IL predicate.
@@ -77,7 +78,7 @@ void *rt_seq_keep_wrapper(void *seq, void *pred) {
 /// @return New runtime-managed Seq preserving source ownership mode and
 ///         containing nonmatching values.
 void *rt_seq_reject_wrapper(void *seq, void *pred) {
-    return rt_seq_reject(seq, (predicate_fn)pred);
+    return rt_seq_reject(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Transform every Seq element through an opaque IL callable.
@@ -85,7 +86,7 @@ void *rt_seq_reject_wrapper(void *seq, void *pred) {
 /// @param fn Opaque `transform_fn`; `NULL` clones the source.
 /// @return New runtime-managed owning Seq of transformed results.
 void *rt_seq_apply_wrapper(void *seq, void *fn) {
-    return rt_seq_apply(seq, (transform_fn)fn);
+    return rt_seq_apply(seq, RT_FN_PTR_CAST((transform_fn)fn));
 }
 
 /// @brief Check if all elements satisfy a predicate (opaque function pointer wrapper).
@@ -95,7 +96,7 @@ void *rt_seq_apply_wrapper(void *seq, void *fn) {
 /// @param pred Opaque `predicate_fn`, or `NULL`.
 /// @return 1 if all elements match, otherwise 0.
 int8_t rt_seq_all_wrapper(void *seq, void *pred) {
-    return rt_seq_all(seq, (predicate_fn)pred);
+    return rt_seq_all(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Check if any element satisfies a predicate (opaque function pointer wrapper).
@@ -105,7 +106,7 @@ int8_t rt_seq_all_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`, or `NULL`.
 /// @return 1 if at least one element matches, 0 if none do.
 int8_t rt_seq_any_wrapper(void *seq, void *pred) {
-    return rt_seq_any(seq, (predicate_fn)pred);
+    return rt_seq_any(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Check if no elements satisfy a predicate (opaque function pointer wrapper).
@@ -113,7 +114,7 @@ int8_t rt_seq_any_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`, or `NULL`.
 /// @return 1 if no elements match, 0 if any do.
 int8_t rt_seq_none_wrapper(void *seq, void *pred) {
-    return rt_seq_none(seq, (predicate_fn)pred);
+    return rt_seq_none(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Count elements satisfying a predicate (opaque function pointer wrapper).
@@ -121,7 +122,7 @@ int8_t rt_seq_none_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`; `NULL` counts every element.
 /// @return Number of matching elements, or 0 for a null source.
 int64_t rt_seq_count_where_wrapper(void *seq, void *pred) {
-    return rt_seq_count_where(seq, (predicate_fn)pred);
+    return rt_seq_count_where(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Borrow the first element selected by an opaque predicate.
@@ -132,7 +133,7 @@ int64_t rt_seq_count_where_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`, or `NULL`.
 /// @return Borrowed matching value, or `NULL` when absent/null-valued.
 void *rt_seq_find_where_wrapper(void *seq, void *pred) {
-    return rt_seq_find_where(seq, (predicate_fn)pred);
+    return rt_seq_find_where(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief IL trampoline for sentinel-free `Seq.FindWhereOption`.
@@ -140,7 +141,7 @@ void *rt_seq_find_where_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`; `NULL` selects the first element.
 /// @return New runtime-managed Option containing the first match, or `None`.
 void *rt_seq_find_where_option_wrapper(void *seq, void *pred) {
-    return rt_seq_find_where_option(seq, (predicate_fn)pred);
+    return rt_seq_find_where_option(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Copy the longest leading prefix accepted by an opaque predicate.
@@ -148,7 +149,7 @@ void *rt_seq_find_where_option_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`; `NULL` clones the source.
 /// @return New runtime-managed Seq preserving source ownership mode.
 void *rt_seq_take_while_wrapper(void *seq, void *pred) {
-    return rt_seq_take_while(seq, (predicate_fn)pred);
+    return rt_seq_take_while(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Copy the suffix after an opaque predicate stops matching.
@@ -156,7 +157,7 @@ void *rt_seq_take_while_wrapper(void *seq, void *pred) {
 /// @param pred Opaque `predicate_fn`; `NULL` produces an empty like-mode Seq.
 /// @return New runtime-managed Seq preserving source ownership mode.
 void *rt_seq_drop_while_wrapper(void *seq, void *pred) {
-    return rt_seq_drop_while(seq, (predicate_fn)pred);
+    return rt_seq_drop_while(seq, RT_FN_PTR_CAST((predicate_fn)pred));
 }
 
 /// @brief Fold a Seq left through an opaque reducer.
@@ -167,5 +168,5 @@ void *rt_seq_drop_while_wrapper(void *seq, void *pred) {
 /// @param fn Opaque `reducer_fn`, or `NULL`.
 /// @return Final callback-produced accumulator, or @p init when no fold runs.
 void *rt_seq_fold_wrapper(void *seq, void *init, void *fn) {
-    return rt_seq_fold(seq, init, (reducer_fn)fn);
+    return rt_seq_fold(seq, init, RT_FN_PTR_CAST((reducer_fn)fn));
 }
