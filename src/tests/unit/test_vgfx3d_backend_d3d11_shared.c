@@ -2406,6 +2406,20 @@ static void test_d3d11_backend_source_contracts(void) {
                                             "d3d11_rasterizer_desc_matches",
                                             "SAFE_RELEASE(ctx->rs_depth_biased_cached)"),
                 "Depth-biased rasterizer cache hits revalidate native state before reuse");
+    EXPECT_TRUE(strstr(source, "static HRESULT d3d11_bind_main_pipeline") != NULL &&
+                    strstr(source, "Bind(main pipeline)") != NULL,
+                "Main pipeline binding reports state and device-health failures to draw callers");
+    EXPECT_TRUE(strstr(source, "(void)d3d11_get_depth_biased_rasterizer") == NULL &&
+                    strstr(source, "CreateRasterizerState(main depth bias)") != NULL &&
+                    strstr(source, "CreateRasterizerState(shadow depth bias)") != NULL,
+                "Depth-biased scene and shadow draws cannot ignore rasterizer creation failures");
+    EXPECT_TRUE(strstr(source, "SelectRasterizerState(main)") != NULL &&
+                    strstr(source, "SelectRasterizerState(shadow)") != NULL &&
+                    strstr(source, "Bind(shadow rasterizer)") != NULL,
+                "Scene and shadow draws require a concrete, healthy rasterizer state");
+    EXPECT_TRUE(count_text(source, "d3d11_stats_count(&ctx->stats.dropped_draws);") >= 12u &&
+                    strstr(source, "Draw(skybox)\")))\n        d3d11_stats_count") != NULL,
+                "Bind, post-draw, and skybox device failures contribute to dropped-draw telemetry");
     EXPECT_TRUE(strstr(source, "D3D11_CREATE_DEVICE_BGRA_SUPPORT") != NULL &&
                     strstr(source, "created_feature_level != requested_feature_level") != NULL,
                 "Device creation requests interop support and confirms Direct3D 11.0");

@@ -1690,14 +1690,27 @@ void writeBytesAtomic(const fs::path &path, const std::vector<uint8_t> &bytes) {
                                      wideToUtf8(formatWindowsError(GetLastError())));
         output.reset();
     } catch (...) {
-        if (created)
-            DeleteFileW(temporary.c_str());
+        if (created && !DeleteFileW(temporary.c_str())) {
+            const DWORD cleanupError = GetLastError();
+            if (cleanupError != ERROR_FILE_NOT_FOUND && cleanupError != ERROR_PATH_NOT_FOUND) {
+                throw std::runtime_error("cannot remove a failed staged installer file: " +
+                                         wideToUtf8(formatWindowsError(cleanupError)));
+            }
+        }
         throw;
     }
     if (!MoveFileExW(
             temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const DWORD error = GetLastError();
-        DeleteFileW(temporary.c_str());
+        if (!DeleteFileW(temporary.c_str())) {
+            const DWORD cleanupError = GetLastError();
+            if (cleanupError != ERROR_FILE_NOT_FOUND && cleanupError != ERROR_PATH_NOT_FOUND) {
+                throw std::runtime_error(
+                    "cannot commit or remove a staged installer file: " +
+                    wideToUtf8(formatWindowsError(cleanupError)) +
+                    "; commit error: " + wideToUtf8(formatWindowsError(error)));
+            }
+        }
         throw std::runtime_error("cannot commit staged installer file: " +
                                  wideToUtf8(formatWindowsError(error)));
     }
@@ -2974,14 +2987,28 @@ void createShellLink(const zanna::pkg::WindowsInstallerShortcutMetadata &metadat
                                hashHex(GetTickCount64()) + L".lnk";
     result = persist->Save(temporary.c_str(), TRUE);
     if (FAILED(result)) {
-        DeleteFileW(temporary.c_str());
+        if (!DeleteFileW(temporary.c_str())) {
+            const DWORD cleanupError = GetLastError();
+            if (cleanupError != ERROR_FILE_NOT_FOUND && cleanupError != ERROR_PATH_NOT_FOUND) {
+                throw std::runtime_error("cannot save or remove a staged Windows shortcut: " +
+                                         wideToUtf8(formatWindowsError(cleanupError)));
+            }
+        }
         throw std::runtime_error("cannot save a Windows shortcut");
     }
     if (!MoveFileExW(temporary.c_str(),
                      destination.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const DWORD error = GetLastError();
-        DeleteFileW(temporary.c_str());
+        if (!DeleteFileW(temporary.c_str())) {
+            const DWORD cleanupError = GetLastError();
+            if (cleanupError != ERROR_FILE_NOT_FOUND && cleanupError != ERROR_PATH_NOT_FOUND) {
+                throw std::runtime_error(
+                    "cannot commit or remove a staged Windows shortcut: " +
+                    wideToUtf8(formatWindowsError(cleanupError)) +
+                    "; commit error: " + wideToUtf8(formatWindowsError(error)));
+            }
+        }
         throw std::runtime_error("cannot commit a Windows shortcut: " +
                                  wideToUtf8(formatWindowsError(error)));
     }
@@ -3403,8 +3430,16 @@ bool launchDetachedCleanup(const HostPackage &package,
                                     FILE_ATTRIBUTE_TEMPORARY,
                                     nullptr));
     if (!helper) {
-        RemoveDirectoryW(helperDirectory.c_str());
-        throw std::runtime_error("cannot create the detached cleanup helper");
+        const DWORD createError = GetLastError();
+        if (!RemoveDirectoryW(helperDirectory.c_str())) {
+            const DWORD cleanupError = GetLastError();
+            throw std::runtime_error(
+                "cannot create the detached cleanup helper and cannot remove its directory: " +
+                wideToUtf8(formatWindowsError(cleanupError)) +
+                "; create error: " + wideToUtf8(formatWindowsError(createError)));
+        }
+        throw std::runtime_error("cannot create the detached cleanup helper: " +
+                                 wideToUtf8(formatWindowsError(createError)));
     }
 
     bool processMayBeRunning = false;
@@ -3513,8 +3548,18 @@ bool launchDetachedCleanup(const HostPackage &package,
     } catch (...) {
         helper.reset();
         if (!processMayBeRunning) {
-            DeleteFileW(helperPath.c_str());
-            RemoveDirectoryW(helperDirectory.c_str());
+            if (!DeleteFileW(helperPath.c_str())) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                    logger.error(L"Cannot remove failed detached cleanup helper: " +
+                                 formatWindowsError(error));
+            }
+            if (!RemoveDirectoryW(helperDirectory.c_str())) {
+                const DWORD error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                    logger.error(L"Cannot remove failed detached cleanup directory: " +
+                                 formatWindowsError(error));
+            }
         }
         throw;
     }
@@ -3637,8 +3682,14 @@ int launchMaintenanceHandoff(const HostPackage &package,
         throw std::runtime_error("cannot hand maintenance off to the verified cache: " +
                                  wideToUtf8(formatWindowsError(error)));
     }
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
+    const BOOL threadClosed = CloseHandle(process.hThread);
+    const DWORD threadCloseError = threadClosed ? ERROR_SUCCESS : GetLastError();
+    const BOOL processClosed = CloseHandle(process.hProcess);
+    const DWORD processCloseError = processClosed ? ERROR_SUCCESS : GetLastError();
+    if (!threadClosed || !processClosed) {
+        logger.error(L"Maintenance handoff started, but a launcher handle could not be closed: " +
+                     formatWindowsError(!threadClosed ? threadCloseError : processCloseError));
+    }
     logger.info(L"Maintenance operation handed off to the verified cache");
     return kExitSuccess;
 }

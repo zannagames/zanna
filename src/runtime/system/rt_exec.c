@@ -29,7 +29,8 @@
 //   - No persistent state is held across calls except the thread-local last
 //     capture-style shell exit code.
 //
-// Links: src/runtime/system/rt_exec.h (public API)
+// Links: src/runtime/system/rt_exec.h (public API),
+//        src/runtime/rt_win32_wait.h (bounded Windows process teardown)
 //
 //===----------------------------------------------------------------------===//
 
@@ -58,6 +59,7 @@
 
 #ifdef _WIN32
 #include "rt_file_path.h"
+#include "rt_win32_wait.h"
 #include <process.h>
 #include <windows.h>
 #define popen _popen
@@ -675,7 +677,17 @@ static int exec_win_startup_init(exec_win_startup_info *info, HANDLE *handles, D
     info->startup.StartupInfo.cb = sizeof(info->startup);
     if (!handles || handle_count == 0)
         return 1;
-    (void)InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+    if ((size_t)handle_count > SIZE_MAX / sizeof(HANDLE))
+        return 0;
+    for (DWORD i = 0; i < handle_count; ++i) {
+        if (!handles[i] || handles[i] == INVALID_HANDLE_VALUE)
+            return 0;
+    }
+    SetLastError(ERROR_SUCCESS);
+    if (InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size) || attr_size == 0 ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return 0;
+    }
     info->attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
     if (!info->attrs)
         return 0;
@@ -699,6 +711,28 @@ static int exec_win_startup_init(exec_win_startup_info *info, HANDLE *handles, D
         return 0;
     }
     return 1;
+}
+
+/// @brief Close one owned Win32 handle and clear its slot only on success.
+/// @param handle Address of an owned handle slot.
+/// @return 1 when absent or closed, otherwise 0 with the slot retained.
+static int exec_win_close_handle(HANDLE *handle) {
+    if (!handle || !*handle || *handle == INVALID_HANDLE_VALUE)
+        return 1;
+    if (!CloseHandle(*handle))
+        return 0;
+    *handle = INVALID_HANDLE_VALUE;
+    return 1;
+}
+
+/// @brief Bound teardown of a created child that cannot be consumed safely.
+/// @param process Borrowed child process handle.
+/// @param exit_code Requested failure exit status.
+/// @return 1 only after exact exit confirmation.
+static int exec_win_terminate_child(HANDLE process, DWORD exit_code) {
+    DWORD confirmed = STILL_ACTIVE;
+    return process && process != INVALID_HANDLE_VALUE &&
+           rt_win32_terminate_process_bounded(process, exit_code, 5000U, &confirmed);
 }
 
 /// @brief Release resources allocated for a Windows extended startup block.
@@ -782,14 +816,14 @@ static int64_t exec_spawn(const char *program, void *args) {
         return -1;
     }
 
+    int thread_close_ok = exec_win_close_handle(&pi.hThread);
     DWORD wait_result = WaitForSingleObject(pi.hProcess, INFINITE);
     DWORD exit_code = 0;
-    BOOL exit_ok = wait_result == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &exit_code);
+    BOOL exit_ok = wait_result == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &exit_code) &&
+                   exit_code != STILL_ACTIVE;
+    int process_close_ok = exec_win_close_handle(&pi.hProcess);
 
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-
-    return exit_ok ? (int64_t)exit_code : -1;
+    return exit_ok && thread_close_ok && process_close_ok ? (int64_t)exit_code : -1;
 }
 
 /// @brief Execute a Windows program directly and capture its standard output.
@@ -834,8 +868,8 @@ static rt_string exec_capture_spawn(const char *program, void *args) {
         free(wprogram);
         free(wcmdline);
         free(cmdline);
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
+        (void)exec_win_close_handle(&hReadPipe);
+        (void)exec_win_close_handle(&hWritePipe);
         return rt_string_from_bytes("", 0);
     }
 
@@ -855,8 +889,8 @@ static rt_string exec_capture_spawn(const char *program, void *args) {
         free(wprogram);
         free(wcmdline);
         free(cmdline);
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
+        (void)exec_win_close_handle(&hReadPipe);
+        (void)exec_win_close_handle(&hWritePipe);
         return rt_string_from_bytes("", 0);
     }
     si.startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -881,10 +915,17 @@ static rt_string exec_capture_spawn(const char *program, void *args) {
     free(wprogram);
     free(wcmdline);
     free(cmdline);
-    CloseHandle(hWritePipe);
+    int write_close_ok = exec_win_close_handle(&hWritePipe);
 
     if (!success) {
-        CloseHandle(hReadPipe);
+        (void)exec_win_close_handle(&hReadPipe);
+        return rt_string_from_bytes("", 0);
+    }
+    if (!write_close_ok) {
+        (void)exec_win_terminate_child(pi.hProcess, ERROR_WRITE_FAULT);
+        (void)exec_win_close_handle(&hReadPipe);
+        (void)exec_win_close_handle(&pi.hThread);
+        (void)exec_win_close_handle(&pi.hProcess);
         return rt_string_from_bytes("", 0);
     }
 
@@ -892,35 +933,56 @@ static rt_string exec_capture_spawn(const char *program, void *args) {
     size_t cap = CAPTURE_INITIAL_SIZE;
     size_t len = 0;
     int truncated = 0;
+    int read_failed = 0;
     char *buf = (char *)malloc(cap);
 
-    if (buf) {
-        DWORD bytesRead;
-        while (ReadFile(hReadPipe, buf + len, (DWORD)(cap - len), &bytesRead, NULL) &&
-               bytesRead > 0) {
-            len += bytesRead;
-            if (cap - len < 256 && cap < CAPTURE_MAX_SIZE) {
-                size_t new_cap = cap * 2;
-                if (new_cap > CAPTURE_MAX_SIZE)
-                    new_cap = CAPTURE_MAX_SIZE;
+    if (!buf) {
+        (void)exec_win_terminate_child(pi.hProcess, ERROR_NOT_ENOUGH_MEMORY);
+    } else {
+        char drain[4096];
+        for (;;) {
+            if (len == cap && cap < CAPTURE_MAX_SIZE) {
+                size_t new_cap = cap > CAPTURE_MAX_SIZE / 2 ? CAPTURE_MAX_SIZE : cap * 2;
                 char *new_buf = (char *)realloc(buf, new_cap);
                 if (new_buf) {
                     buf = new_buf;
                     cap = new_cap;
+                } else {
+                    truncated = 1;
                 }
-            } else if (cap - len < 256 && cap >= CAPTURE_MAX_SIZE) {
-                truncated = 1;
+            }
+            char *destination = truncated || len == cap ? drain : buf + len;
+            DWORD capacity = truncated || len == cap ? (DWORD)sizeof(drain) : (DWORD)(cap - len);
+            DWORD bytes_read = 0;
+            if (!ReadFile(hReadPipe, destination, capacity, &bytes_read, NULL)) {
+                DWORD error = GetLastError();
+                if (error != ERROR_BROKEN_PIPE)
+                    read_failed = 1;
                 break;
+            }
+            if (bytes_read == 0)
+                break;
+            if (destination == drain) {
+                truncated = 1;
+            } else {
+                len += bytes_read;
+                if (len == CAPTURE_MAX_SIZE)
+                    truncated = 1;
             }
         }
     }
 
-    CloseHandle(hReadPipe);
-    DWORD wait_result = WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
+    if (read_failed)
+        (void)exec_win_terminate_child(pi.hProcess, ERROR_READ_FAULT);
+    int read_close_ok = exec_win_close_handle(&hReadPipe);
+    DWORD wait_result = WaitForSingleObject(pi.hProcess, buf && !read_failed ? INFINITE : 5000U);
+    DWORD exit_code = STILL_ACTIVE;
+    int exit_ok = wait_result == WAIT_OBJECT_0 && GetExitCodeProcess(pi.hProcess, &exit_code) &&
+                  exit_code != STILL_ACTIVE;
+    int process_close_ok = exec_win_close_handle(&pi.hProcess);
+    int thread_close_ok = exec_win_close_handle(&pi.hThread);
 
-    if (wait_result != WAIT_OBJECT_0) {
+    if (!exit_ok || !read_close_ok || !process_close_ok || !thread_close_ok || read_failed) {
         free(buf);
         return rt_string_from_bytes("", 0);
     }

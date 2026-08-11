@@ -1,7 +1,7 @@
 ---
-status: active
+status: complete
 audience: developers
-last-verified: 2026-08-05
+last-verified: 2026-08-11
 ---
 
 # Windows Runtime Reliability Audit
@@ -28,6 +28,9 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
 frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and validation repairs.
 The 2026-08-05 alpha-hardening pass adds WR-806 through WR-880: 75 demo/build confinement,
 Direct3D telemetry, process/ConPTY teardown, Win32 input, installer, and WASAPI lifecycle repairs.
+The 2026-08-11 alpha-hardening pass adds WR-881 through WR-930: 50 Direct3D state-submission,
+Win32 GDI/clipboard cleanup, synchronous execution, shared-preview IPC, installer staging, and
+maintenance-handoff repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -911,6 +914,56 @@ Direct3D telemetry, process/ConPTY teardown, Win32 input, installer, and WASAPI 
 | WR-878 | Windows embedded demo assets | MSVC emits the runtime's empty `__declspec(selectany)` asset fallbacks as `COMDAT ANY`, but the native linker treated them as hard duplicates of generated strong asset blobs. Windows COFF resolution now lets an ordinary definition replace a selectany fallback in either object order and strips the losing COMDAT group. |
 | WR-879 | Win32 asynchronous termination | `Process.Kill()` could successfully begin asynchronous termination and an immediate `Destroy()` could issue a second `TerminateProcess` before the child became signaled. The second request then failed and teardown trapped without using its finite confirmation window. The shared helper now waits within that existing bound even when termination is already in flight and reports success only after exact exit confirmation. |
 | WR-880 | Windows application runtime packaging | Package-generated release executables imported app-local MSVC runtime DLLs from a private temporary path, while the build-tree compiler kept redistributables only for installation. Packaging therefore failed closed even on a complete developer build. The native support-host directory now mirrors the installed runtime closure, and the application builder may source only recognized numbered compiler runtimes from that trusted directory while ordinary DLLs remain application-adjacent. |
+| WR-881 | D3D11 biased scene state | Main mesh draws ignored failure to create their requested depth-biased rasterizer and silently rendered with an unbiased fallback. Pipeline binding now returns the exact failure and the draw is dropped. |
+| WR-882 | D3D11 biased instanced state | Instanced and particle submissions inherited the same silent biased-state fallback through the shared binder. They now abort before `DrawIndexedInstanced` when biased state cannot be created. |
+| WR-883 | D3D11 scene rasterizer completeness | A missing prebuilt rasterizer state could leave the prior command's state active and still submit a main draw. The binder now requires a concrete selected state and reports `E_UNEXPECTED` otherwise. |
+| WR-884 | D3D11 instanced rasterizer completeness | Instanced submissions had the same stale-state exposure when an ordinary cached rasterizer was absent. The common binding result now rejects that submission too. |
+| WR-885 | D3D11 main bind health | The main binder returned `void`, so device removal during its many void state-setting calls was not observed until after a draw. Binding now checks and latches device health before submission. |
+| WR-886 | D3D11 main bind propagation | Non-instanced callers could not distinguish a completed bind from a failed one. They now unwind temporary SRVs, unbind resources, and return before drawing on failure. |
+| WR-887 | D3D11 instanced bind propagation | Instanced callers likewise now unwind their draw resources and return before overriding particle state or submitting work after a failed bind. |
+| WR-888 | D3D11 main dropped telemetry | Device loss after a main indexed draw suppressed `draw_calls` but did not count the attempted submission as dropped. The failure branch now advances `dropped_draws`. |
+| WR-889 | D3D11 instanced dropped telemetry | Device loss after an indexed-instanced draw had the same undercount. The failure now contributes to dropped-draw telemetry. |
+| WR-890 | D3D11 biased shadow state | Shadow draws ignored depth-biased rasterizer creation failure and rendered with the wrong bias. The pass is now marked failed and exits before touching later pipeline state. |
+| WR-891 | D3D11 shadow rasterizer completeness | A missing ordinary shadow rasterizer could reuse stale state. Shadow submission now requires a concrete rasterizer and leaves the shadow slot incomplete on failure. |
+| WR-892 | D3D11 shadow/skybox health | Shadow rasterizer binding was not checked before buffer work, and skybox device loss did not affect dropped telemetry. Both void-command boundaries now record device health; failed skyboxes count as dropped. |
+| WR-893 | Win32 initial DIB cleanup | A partially created DIB whose pixel pointer was missing was deleted without checking `DeleteObject`. A common checked GDI cleanup helper now reports the native failure. |
+| WR-894 | Win32 unselectable DIB cleanup | Failure to select a new DIB also discarded its delete result. That candidate cleanup is now checked and diagnosed. |
+| WR-895 | Win32 replaced DIB cleanup | Successful DIB replacement silently ignored failure to release the old bitmap. The live replacement remains valid while the leak/failure becomes observable. |
+| WR-896 | Win32 resize candidate cleanup | Incomplete or unselectable resize DIBs had independent unchecked delete paths. Both now use the checked GDI cleanup boundary. |
+| WR-897 | Win32 resize rollback selection | Framebuffer-resize failure assumed the previous bitmap was reselected successfully. Rollback now validates `SelectObject` before deleting the rejected candidate. |
+| WR-898 | Win32 resize rollback release | The rejected resize bitmap's deletion was unchecked after rollback. It now produces a stable platform diagnostic. |
+| WR-899 | Win32 resize commit release | Commit of a new backing DIB ignored failure to release the prior unselected bitmap. The cleanup helper now reports it without corrupting the committed dimensions. |
+| WR-900 | Win32 paint lifecycle | `EndPaint` failure was explicitly discarded, potentially hiding a broken paint-validation loop. The window procedure now reports that failure. |
+| WR-901 | Win32 display DC | Display-scale probing discarded the `ReleaseDC` result. Display DC release now uses the checked DC helper. |
+| WR-902 | Win32 window-init unwind | Four creation failures destroyed the native window without checking success. Every unwind now diagnoses a retained native window instead of silently claiming complete cleanup. |
+| WR-903 | Win32 DC-init unwind | Memory-DC and DIB failures ignored `ReleaseDC`/`DeleteDC` results. Both DC classes now use checked cleanup helpers throughout initialization rollback. |
+| WR-904 | Win32 bitmap teardown | Final destruction assumed the original memory-DC object was restored before deleting the DIB. The restore result is now validated. |
+| WR-905 | Win32 window teardown | Final DIB, memory DC, window DC, and native-window destruction results were all ignored. Each cleanup stage now has a stable diagnostic. |
+| WR-906 | Win32 window state lifetime | Native user data still pointed at soon-to-be-freed Zanna window state during final destruction. The pointer is explicitly detached and the detach result checked before `DestroyWindow`. |
+| WR-907 | Win32 clipboard ownership | Read/write/clear paths ignored real `GlobalUnlock`, `CloseClipboard`, `EmptyClipboard`, and publication failures. They now distinguish successful final unlocks, discard untrustworthy reads, and report every lost clipboard transition. |
+| WR-908 | Exec startup attribute sizing | The required-size `InitializeProcThreadAttributeList` probe ignored both its error class and a zero returned size. It now accepts only the documented insufficient-buffer result with nonzero storage. |
+| WR-909 | Exec inherited-handle list | The generic allow-list builder did not validate aggregate byte size or reject null/invalid entries. It now checks multiplication and every handle before native attribute construction. |
+| WR-910 | Exec handle ownership | Direct execution and capture scattered unchecked `CloseHandle` calls. One helper now clears ownership only after successful close so failures cannot masquerade as retirement. |
+| WR-911 | Exec.Run thread handle | Synchronous direct execution retained the primary-thread handle until after process completion and ignored close failure. It now retires the thread handle immediately and includes that result in success. |
+| WR-912 | Exec.Run exit proof | A signaled process whose queried status remained `STILL_ACTIVE` could be returned as the large unsigned value 259. Exact completion now rejects that inconsistent state. |
+| WR-913 | Exec.Run process handle | Process-handle close failure did not affect the direct-execution result. A successful exit code is now returned only when both native handles retire successfully. |
+| WR-914 | Exec.Capture writer ownership | Failure to close the parent's pipe writer could keep the reader from ever observing EOF. The child is now terminated with bounded confirmation and all remaining handles are retired. |
+| WR-915 | Exec.Capture allocation pressure | Initial allocation failure stopped consuming the pipe, and growth failure eventually issued a zero-byte read then waited behind a full child pipe. Initial failure uses bounded teardown; growth failure switches to a drain buffer. |
+| WR-916 | Exec.Capture bounded output | Reaching 16 MiB stopped reading and could deadlock before raising the truncation trap; non-broken-pipe read errors were also indistinguishable from EOF. Oversized output is fully drained, and real read failures now fail capture. |
+| WR-917 | Exec.Capture completion proof | Read/process/thread closes, process wait, exit query, and `STILL_ACTIVE` consistency were incompletely checked. Capture publishes bytes only after every close and exact process completion succeeds. |
+| WR-918 | Win32 embed cleanup diagnostics | Shared-preview mapping cleanup failures had no error surface. A bounded debugger/stderr diagnostic now records the operation and native error without changing the channel ABI. |
+| WR-919 | Win32 embed host setup | Duplicate-name and host-map failure paths closed their section handle unchecked. Both now use the checked mapping owner helper. |
+| WR-920 | Win32 embed client probe | Failure to map the client header probe discarded mapping-handle close failure. The handle remains truthfully owned until a successful close and failure is reported. |
+| WR-921 | Win32 embed invalid metadata | Invalid header layout discarded both probe-unmap and mapping-close results. Both cleanup stages are now independently checked. |
+| WR-922 | Win32 embed client publication | Valid-probe transition, full-map failure, header revalidation, and producer-claim rejection all had unchecked unmap/close paths. Each ownership transition now uses the common helpers. |
+| WR-923 | Win32 embed finalization | Public channel close ignored final `UnmapViewOfFile` and `CloseHandle` failure. Both are now diagnosed, and the mapping-handle slot clears only after native success. |
+| WR-924 | Installer helper create diagnostics | Cleanup-helper creation read `GetLastError` only after attempting directory rollback, so the original cause could be lost. The create error is now captured first and retained in diagnostics. |
+| WR-925 | Installer helper-directory rollback | Failure to create the cleanup executable ignored inability to remove its private directory. The combined create/cleanup error now identifies retained staging. |
+| WR-926 | Installer helper-file unwind | Later detached-helper failure deleted the staged executable unchecked. Non-missing failures are now written to the installer log. |
+| WR-927 | Installer helper-directory unwind | The matching directory removal was also unchecked. Non-missing failures are logged independently so support can locate residue. |
+| WR-928 | Installer atomic file rollback | Failed staged installer writes and commits discarded temporary-file deletion failure. Rollback now reports cleanup errors together with commit context. |
+| WR-929 | Installer shortcut rollback | Shell Link save and atomic commit failures similarly ignored temporary `.lnk` cleanup. Both paths now report retained shortcut staging and preserve commit context. |
+| WR-930 | Installer maintenance handoff | A successfully launched verified maintenance executable was reported cleanly even when its thread or process handle could not close. Handoff remains successful to avoid duplicate mutation, but logs the exact launcher-handle failure. |
 
 ## Regression coverage
 
@@ -1044,6 +1097,27 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Final Windows x64/MSVC alpha-hardening validation on 2026-08-11:
+
+- A no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the complete warning-as-error Debug
+  tree, including Zanna Studio, and completed installation. One parallel graphics3d test failed
+  transiently; its immediate isolated replay passed in 7.24 seconds. An exact-source incremental
+  replay of the complete canonical script then passed all 1,861 non-slow CTests under the same
+  eight-way concurrency and continued through changed-tree platform-policy lint, runtime-surface
+  audit, every cross-platform host smoke, and installation with exit zero.
+- The focused D3D11, Windows runtime, installer-lifecycle, and shared-preview IPC regressions
+  passed 4/4. The complete `graphics3d` label passed 151/151, including hardware-backed D3D11,
+  GPU smoke, and soak coverage. The installer selection passed 23 tests with its expected
+  non-elevated all-users skip; the installed-configuration smoke passed separately after the
+  canonical build restored the Studio target.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_demos_win.ps1 --clean
+  --run` rebuilt and privately launch-smoked all seven curated native x64 demos in 59.1 seconds:
+  Crackman, Chess, Action Slice, Game3D Starter, Game3D Scenes, Overhaul Showcase, and Paint.
+- `clang-format --dry-run --Werror` passed for every changed native source. The source-header
+  audit reported zero missing headers, `scripts/check_docs.sh`, strict changed-only platform
+  lint, and `git diff --check` passed. The documentation auditor's 48 existing undocumented
+  prototypes remain informational debt and were not increased by this pass.
 
 Final Windows x64/MSVC alpha-hardening validation on 2026-08-05:
 

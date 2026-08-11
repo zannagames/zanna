@@ -1137,24 +1137,35 @@ static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
 /// @param[in] wireframe Nonzero for wireframe rasterization.
 /// @param[in] backface_cull Nonzero for back-face culling.
 /// @param[in] instanced Nonzero to select an instanced or particle vertex shader/layout.
-static void d3d11_bind_main_pipeline(d3d11_context_t *ctx,
-                                     const vgfx3d_draw_cmd_t *cmd,
-                                     int8_t wireframe,
-                                     int8_t backface_cull,
-                                     int instanced) {
+/// @return S_OK when every required state was bound and the device remains usable.
+static HRESULT d3d11_bind_main_pipeline(d3d11_context_t *ctx,
+                                        const vgfx3d_draw_cmd_t *cmd,
+                                        int8_t wireframe,
+                                        int8_t backface_cull,
+                                        int instanced) {
     ID3D11RasterizerState *rasterizer;
     ID3D11ShaderResourceView *vs_srvs[2];
+    HRESULT hr = S_OK;
     float blend_factor[4] = {0, 0, 0, 0};
     vgfx3d_d3d11_blend_mode_t blend_mode = vgfx3d_d3d11_choose_blend_mode(cmd);
     UINT draw_rtv_count = ctx->current_rtv_count;
 
     rasterizer = NULL;
-    if (d3d11_draw_needs_depth_bias(cmd))
-        (void)d3d11_get_depth_biased_rasterizer(ctx, cmd, wireframe, backface_cull, 1, &rasterizer);
-    if (!rasterizer)
+    if (d3d11_draw_needs_depth_bias(cmd)) {
+        hr = d3d11_get_depth_biased_rasterizer(ctx, cmd, wireframe, backface_cull, 1, &rasterizer);
+        if (FAILED(hr)) {
+            d3d11_log_hresult("CreateRasterizerState(main depth bias)", hr);
+            d3d11_log_device_removed_reason(ctx, "CreateRasterizerState(main depth bias)", hr);
+            return hr;
+        }
+    } else {
         rasterizer = d3d11_choose_rasterizer(ctx, wireframe, backface_cull);
-    if (rasterizer)
-        ID3D11DeviceContext_RSSetState(ctx->ctx, rasterizer);
+    }
+    if (!rasterizer) {
+        d3d11_log_hresult("SelectRasterizerState(main)", E_UNEXPECTED);
+        return E_UNEXPECTED;
+    }
+    ID3D11DeviceContext_RSSetState(ctx->ctx, rasterizer);
     if (ctx->current_target_kind == VGFX3D_D3D11_TARGET_SCENE &&
         vgfx3d_d3d11_choose_motion_attachment_mode(ctx->current_target_kind, cmd) ==
             VGFX3D_D3D11_MOTION_ATTACHMENTS_COLOR_ONLY)
@@ -1203,6 +1214,7 @@ static void d3d11_bind_main_pipeline(d3d11_context_t *ctx,
     vs_srvs[0] = ctx->current_morph_srv;
     vs_srvs[1] = ctx->current_morph_normal_srv;
     ID3D11DeviceContext_VSSetShaderResources(ctx->ctx, 0, 2, vs_srvs);
+    return d3d11_record_frame_device_status(ctx, "Bind(main pipeline)");
 }
 
 /// @brief Clear all VS / PS texture bindings (the "untether" call).
@@ -1634,10 +1646,19 @@ static void d3d11_submit_draw(void *ctx_ptr,
         stride = VGFX3D_COMPACT_VERTEX_STRIDE; /* R20 packed static-cache layout */
     ID3D11DeviceContext_IASetVertexBuffers(ctx->ctx, 0, 1, &mesh_vb, &stride, &offset);
     ID3D11DeviceContext_IASetIndexBuffer(ctx->ctx, mesh_ib, DXGI_FORMAT_R32_UINT, 0);
-    d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 0);
+    hr = d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 0);
+    if (FAILED(hr)) {
+        d3d11_unbind_draw_resources(ctx);
+        d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
+        return;
+    }
     ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
-    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexed(main)")))
+    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexed(main)"))) {
         d3d11_stats_count(&ctx->stats.draw_calls);
+    } else {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
+    }
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);
@@ -1854,14 +1875,23 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     vertex_buffers[1] = ctx->instance_buffer;
     ID3D11DeviceContext_IASetVertexBuffers(ctx->ctx, 0, 2, vertex_buffers, strides, offsets);
     ID3D11DeviceContext_IASetIndexBuffer(ctx->ctx, mesh_ib, DXGI_FORMAT_R32_UINT, 0);
-    d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 1);
+    hr = d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 1);
+    if (FAILED(hr)) {
+        d3d11_unbind_draw_resources(ctx);
+        d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
+        return;
+    }
     if (particle_mode) {
         ID3D11DeviceContext_IASetInputLayout(ctx->ctx, ctx->input_layout_particles);
         ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_particles, NULL, 0);
     }
     ID3D11DeviceContext_DrawIndexedInstanced(ctx->ctx, index_count, instance_count, 0, 0, 0);
-    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)")))
+    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)"))) {
         d3d11_stats_count(&ctx->stats.draw_calls);
+    } else {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
+    }
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);

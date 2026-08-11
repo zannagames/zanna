@@ -128,6 +128,66 @@ static vgfx_win32_dwm_flush_fn g_vgfx_win32_dwm_flush = NULL;
 static LARGE_INTEGER g_vgfx_win32_qpc_frequency = {0};
 static volatile LONG g_vgfx_win32_cursor_visible = 1;
 
+/// @brief Delete a GDI object while surfacing native cleanup failures.
+static int win32_delete_gdi_object(HGDIOBJ object, const char *message) {
+    if (!object || DeleteObject(object))
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+    return 0;
+}
+
+/// @brief Delete a memory DC while surfacing native cleanup failures.
+static int win32_delete_memory_dc(HDC dc, const char *message) {
+    if (!dc || DeleteDC(dc))
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+    return 0;
+}
+
+/// @brief Release a window or display DC while surfacing native cleanup failures.
+static int win32_release_dc(HWND window, HDC dc, const char *message) {
+    if (!dc || ReleaseDC(window, dc) != 0)
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+    return 0;
+}
+
+/// @brief Destroy a native window while surfacing native cleanup failures.
+static int win32_destroy_native_window(HWND window, const char *message) {
+    int detached = 1;
+    if (!window)
+        return 1;
+    SetLastError(ERROR_SUCCESS);
+    if (SetWindowLongPtrW(window, GWLP_USERDATA, 0) == 0 && GetLastError() != ERROR_SUCCESS) {
+        detached = 0;
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to detach Win32 window state");
+    }
+    if (!DestroyWindow(window)) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+        return 0;
+    }
+    return detached;
+}
+
+/// @brief Unlock global storage and distinguish a successful final unlock from failure.
+static int win32_unlock_global(HGLOBAL memory, const char *message) {
+    if (!memory)
+        return 1;
+    SetLastError(ERROR_SUCCESS);
+    if (GlobalUnlock(memory) || GetLastError() == ERROR_SUCCESS)
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+    return 0;
+}
+
+/// @brief Close the process clipboard while surfacing lost-ownership failures.
+static int win32_close_clipboard(const char *message) {
+    if (CloseClipboard())
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, message);
+    return 0;
+}
+
 /// @brief Resolve optional Desktop Window Manager frame synchronization once.
 /// @details Loads `dwmapi.dll` dynamically and caches `DwmFlush` when present,
 ///          preserving compatibility with environments where DWM is absent.
@@ -626,21 +686,22 @@ static int win32_recreate_dib(struct vgfx_window *win) {
     HBITMAP new_hbmp = CreateDIBSection(w32->memdc, &bmi, DIB_RGB_COLORS, &new_pixels, NULL, 0);
     if (!new_hbmp || !new_pixels) {
         if (new_hbmp)
-            DeleteObject(new_hbmp);
+            (void)win32_delete_gdi_object(new_hbmp,
+                                          "Failed to release incomplete Win32 DIB section");
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to create Win32 DIB section");
         return 0;
     }
 
     HGDIOBJ previous = SelectObject(w32->memdc, new_hbmp);
     if (!previous || previous == HGDI_ERROR) {
-        DeleteObject(new_hbmp);
+        (void)win32_delete_gdi_object(new_hbmp, "Failed to release unselectable Win32 DIB section");
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to select Win32 DIB section");
         return 0;
     }
     if (!w32->old_bitmap)
         w32->old_bitmap = previous;
     if (w32->hbmp)
-        DeleteObject(w32->hbmp);
+        (void)win32_delete_gdi_object(w32->hbmp, "Failed to release replaced Win32 DIB section");
     w32->hbmp = new_hbmp;
     w32->dib_pixels = new_pixels;
     w32->dib_width = win->width;
@@ -675,7 +736,8 @@ static int win32_create_dib_for_size(
     HBITMAP hbmp = CreateDIBSection(w32->memdc, &bmi, DIB_RGB_COLORS, &pixels, NULL, 0);
     if (!hbmp || !pixels) {
         if (hbmp)
-            DeleteObject(hbmp);
+            (void)win32_delete_gdi_object(hbmp,
+                                          "Failed to release incomplete resized Win32 DIB section");
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to create Win32 DIB section");
         return 0;
     }
@@ -725,7 +787,8 @@ static int win32_resize_backing_store(struct vgfx_window *win,
     if (new_hbmp) {
         previous_bitmap = SelectObject(w32->memdc, new_hbmp);
         if (!previous_bitmap || previous_bitmap == HGDI_ERROR) {
-            DeleteObject(new_hbmp);
+            (void)win32_delete_gdi_object(
+                new_hbmp, "Failed to release unselectable resized Win32 DIB section");
             vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to select resized Win32 DIB");
             return 0;
         }
@@ -735,8 +798,12 @@ static int win32_resize_backing_store(struct vgfx_window *win,
 
     if (!vgfx_internal_resize_framebuffer(win, phys_w, phys_h)) {
         if (new_hbmp) {
-            SelectObject(w32->memdc, previous_bitmap);
-            DeleteObject(new_hbmp);
+            HGDIOBJ restored = SelectObject(w32->memdc, previous_bitmap);
+            if (!restored || restored == HGDI_ERROR)
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to restore Win32 DIB selection after resize");
+            (void)win32_delete_gdi_object(
+                new_hbmp, "Failed to release rolled-back resized Win32 DIB section");
         }
         return 0;
     }
@@ -747,7 +814,8 @@ static int win32_resize_backing_store(struct vgfx_window *win,
         w32->dib_width = phys_w;
         w32->dib_height = phys_h;
         if (old_hbmp)
-            DeleteObject(old_hbmp);
+            (void)win32_delete_gdi_object(old_hbmp,
+                                          "Failed to release replaced resized Win32 DIB section");
     }
 
     w32->width = client_w;
@@ -1663,7 +1731,8 @@ static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, L
             PAINTSTRUCT ps;
             HDC paint_dc = BeginPaint(hwnd, &ps);
             if (paint_dc) {
-                (void)EndPaint(hwnd, &ps);
+                if (!EndPaint(hwnd, &ps))
+                    vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to finish Win32 paint");
                 return 0;
             }
             break;
@@ -1749,7 +1818,7 @@ float vgfx_platform_get_display_scale(void) {
     if (!hdc)
         return 1.0f;
     int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
-    ReleaseDC(NULL, hdc);
+    (void)win32_release_dc(NULL, hdc, "Failed to release Win32 display DC");
 
     if (dpi < 96)
         dpi = 96; /* clamp against bogus values */
@@ -1900,7 +1969,8 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     SetLastError(ERROR_SUCCESS);
     if (SetWindowLongPtrW(w32->hwnd, GWLP_USERDATA, (LONG_PTR)win) == 0 &&
         GetLastError() != ERROR_SUCCESS) {
-        DestroyWindow(w32->hwnd);
+        (void)win32_destroy_native_window(
+            w32->hwnd, "Failed to destroy Win32 window after state attachment failure");
         free(w32);
         win->platform_data = NULL;
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to attach Win32 window state");
@@ -1913,7 +1983,8 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     /* Get device context for window */
     w32->hdc = GetDC(w32->hwnd);
     if (!w32->hdc) {
-        DestroyWindow(w32->hwnd);
+        (void)win32_destroy_native_window(
+            w32->hwnd, "Failed to destroy Win32 window after DC acquisition failure");
         free(w32);
         win->platform_data = NULL;
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to get Win32 DC");
@@ -1923,8 +1994,10 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     /* Create memory DC for double-buffering */
     w32->memdc = CreateCompatibleDC(w32->hdc);
     if (!w32->memdc) {
-        ReleaseDC(w32->hwnd, w32->hdc);
-        DestroyWindow(w32->hwnd);
+        (void)win32_release_dc(
+            w32->hwnd, w32->hdc, "Failed to release Win32 DC after memory DC failure");
+        (void)win32_destroy_native_window(w32->hwnd,
+                                          "Failed to destroy Win32 window after memory DC failure");
         free(w32);
         win->platform_data = NULL;
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to create memory DC");
@@ -1932,9 +2005,11 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     }
 
     if (!win32_recreate_dib(win)) {
-        DeleteDC(w32->memdc);
-        ReleaseDC(w32->hwnd, w32->hdc);
-        DestroyWindow(w32->hwnd);
+        (void)win32_delete_memory_dc(w32->memdc,
+                                     "Failed to delete Win32 memory DC after DIB failure");
+        (void)win32_release_dc(w32->hwnd, w32->hdc, "Failed to release Win32 DC after DIB failure");
+        (void)win32_destroy_native_window(w32->hwnd,
+                                          "Failed to destroy Win32 window after DIB failure");
         free(w32);
         win->platform_data = NULL;
         return 0;
@@ -1998,9 +2073,13 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
 
     /* Delete DIB section */
     if (w32->hbmp) {
-        if (w32->old_bitmap)
-            SelectObject(w32->memdc, w32->old_bitmap);
-        DeleteObject(w32->hbmp);
+        if (w32->old_bitmap) {
+            HGDIOBJ restored = SelectObject(w32->memdc, w32->old_bitmap);
+            if (!restored || restored == HGDI_ERROR)
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to restore original Win32 memory DC object");
+        }
+        (void)win32_delete_gdi_object(w32->hbmp, "Failed to delete Win32 DIB section");
         w32->hbmp = NULL;
         w32->dib_pixels = NULL;
         w32->dib_width = 0;
@@ -2009,13 +2088,13 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
 
     /* Delete memory DC */
     if (w32->memdc) {
-        DeleteDC(w32->memdc);
+        (void)win32_delete_memory_dc(w32->memdc, "Failed to delete Win32 memory DC");
         w32->memdc = NULL;
     }
 
     /* Release window DC */
     if (w32->hdc && w32->hwnd) {
-        ReleaseDC(w32->hwnd, w32->hdc);
+        (void)win32_release_dc(w32->hwnd, w32->hdc, "Failed to release Win32 window DC");
         w32->hdc = NULL;
     }
 
@@ -2026,7 +2105,7 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
             g_vgfx_win32_clipboard_owner = NULL;
         }
         ReleaseSRWLockExclusive(&g_vgfx_win32_clipboard_lock);
-        DestroyWindow(w32->hwnd);
+        (void)win32_destroy_native_window(w32->hwnd, "Failed to destroy Win32 window");
         w32->hwnd = NULL;
     }
 
@@ -2334,11 +2413,17 @@ char *vgfx_clipboard_get_text(void) {
                     }
                 }
             }
-            GlobalUnlock(hData);
+            if (!win32_unlock_global(hData, "Failed to unlock Win32 clipboard text")) {
+                free(result);
+                result = NULL;
+            }
         }
     }
 
-    CloseClipboard();
+    if (!win32_close_clipboard("Failed to close Win32 clipboard after reading")) {
+        free(result);
+        result = NULL;
+    }
     return result ? result : win32_dup_clipboard_text();
 }
 
@@ -2359,11 +2444,14 @@ void vgfx_clipboard_set_text(const char *text) {
         if (!wide || MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, wide_len) !=
                          wide_len) {
             if (wide)
-                GlobalUnlock(memory);
+                (void)win32_unlock_global(memory, "Failed to unlock rejected Win32 clipboard text");
             GlobalFree(memory);
             return;
         }
-        GlobalUnlock(memory);
+        if (!win32_unlock_global(memory, "Failed to unlock prepared Win32 clipboard text")) {
+            GlobalFree(memory);
+            return;
+        }
     }
 
     win32_store_clipboard_text(text ? text : "");
@@ -2375,15 +2463,17 @@ void vgfx_clipboard_set_text(const char *text) {
     }
 
     if (!EmptyClipboard()) {
-        CloseClipboard();
+        (void)win32_close_clipboard("Failed to close Win32 clipboard after clear failure");
         if (memory)
             GlobalFree(memory);
         return;
     }
-    if (memory && !SetClipboardData(CF_UNICODETEXT, memory))
-        GlobalFree(memory);
+    if (memory && !SetClipboardData(CF_UNICODETEXT, memory)) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to publish Win32 clipboard text");
+        (void)GlobalFree(memory);
+    }
 
-    CloseClipboard();
+    (void)win32_close_clipboard("Failed to close Win32 clipboard after writing");
 }
 
 /// @brief Clear all clipboard contents.
@@ -2391,8 +2481,9 @@ void vgfx_clipboard_clear(void) {
     win32_store_clipboard_text("");
 
     if (win32_open_clipboard_retry()) {
-        EmptyClipboard();
-        CloseClipboard();
+        if (!EmptyClipboard())
+            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to clear Win32 clipboard");
+        (void)win32_close_clipboard("Failed to close Win32 clipboard after clearing");
     }
 }
 
