@@ -661,6 +661,38 @@ static void test_win32_window_source_contracts() {
     assert(source.find("(void)ReleaseCapture()") == std::string::npos);
     assert(source.find("(void)RegisterRawInputDevices") == std::string::npos);
     assert(source.find("(void)ClipCursor(NULL)") == std::string::npos);
+    assert(source.find("win32_delete_gdi_object") != std::string::npos);
+    assert(source.find("win32_delete_memory_dc") != std::string::npos);
+    assert(source.find("win32_release_dc") != std::string::npos);
+    assert(source.find("win32_destroy_native_window") != std::string::npos);
+    assert(source.find("win32_unlock_global") != std::string::npos);
+    assert(source.find("win32_close_clipboard") != std::string::npos);
+    assert(source.find("Failed to restore Win32 DIB selection after resize") != std::string::npos);
+    assert(source.find("Failed to detach Win32 window state") != std::string::npos);
+}
+
+static void test_windows_exec_and_embed_source_contracts() {
+    const std::string exec = read_source({"src", "runtime", "system", "rt_exec.c"});
+    assert(exec.find("#include \"rt_win32_wait.h\"") != std::string::npos);
+    assert(exec.find("exec_win_close_handle") != std::string::npos);
+    assert(exec.find("exec_win_terminate_child") != std::string::npos);
+    assert(exec.find("GetLastError() != ERROR_INSUFFICIENT_BUFFER") != std::string::npos);
+    assert(exec.find("handles[i] == INVALID_HANDLE_VALUE") != std::string::npos);
+    assert(exec.find("char drain[4096]") != std::string::npos);
+    assert(exec.find("error != ERROR_BROKEN_PIPE") != std::string::npos);
+    assert(exec.find("exit_code != STILL_ACTIVE") != std::string::npos);
+    assert(exec.find("WaitForSingleObject(pi.hProcess, buf && !read_failed ? INFINITE : 5000U)") !=
+           std::string::npos);
+    assert(exec.find("CloseHandle(pi.hProcess)") == std::string::npos);
+    assert(exec.find("CloseHandle(pi.hThread)") == std::string::npos);
+
+    const std::string embed =
+        read_source({"src", "lib", "graphics", "src", "vgfx_embed_channel.c"});
+    assert(embed.find("embed_win32_report_cleanup_failure") != std::string::npos);
+    assert(embed.find("embed_win32_close_mapping") != std::string::npos);
+    assert(embed.find("embed_win32_unmap_view") != std::string::npos);
+    assert(embed.find("CloseHandle(ch->mapping)") == std::string::npos);
+    assert(embed.find("UnmapViewOfFile(ch->header)") == std::string::npos);
 }
 
 static void test_windows_machine_source_contracts() {
@@ -728,6 +760,7 @@ int main(int argc, char **argv) {
     test_windows_synchronization_source_contracts();
     test_windows_unicode_storage_source_contracts();
     test_win32_window_source_contracts();
+    test_windows_exec_and_embed_source_contracts();
     test_windows_machine_source_contracts();
     test_windows_terminal_wrapper_source_contracts();
     test_windows_run_process_source_contracts();

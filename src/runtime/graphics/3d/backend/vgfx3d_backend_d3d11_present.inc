@@ -2060,13 +2060,28 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         return;
     }
 
-    if (d3d11_draw_needs_depth_bias(cmd))
-        (void)d3d11_get_depth_biased_rasterizer(
+    if (d3d11_draw_needs_depth_bias(cmd)) {
+        hr = d3d11_get_depth_biased_rasterizer(
             ctx, cmd, 0, cmd->double_sided ? 0 : 1, 0, &shadow_rasterizer);
-    if (!shadow_rasterizer)
+        if (FAILED(hr)) {
+            d3d11_log_hresult("CreateRasterizerState(shadow depth bias)", hr);
+            d3d11_log_device_removed_reason(ctx, "CreateRasterizerState(shadow depth bias)", hr);
+            ctx->shadow_pass_failed = 1;
+            return;
+        }
+    } else {
         shadow_rasterizer = d3d11_choose_rasterizer(ctx, 0, cmd->double_sided ? 0 : 1);
-    if (shadow_rasterizer)
-        ID3D11DeviceContext_RSSetState(ctx->ctx, shadow_rasterizer);
+    }
+    if (!shadow_rasterizer) {
+        d3d11_log_hresult("SelectRasterizerState(shadow)", E_UNEXPECTED);
+        ctx->shadow_pass_failed = 1;
+        return;
+    }
+    ID3D11DeviceContext_RSSetState(ctx->ctx, shadow_rasterizer);
+    if (FAILED(d3d11_record_frame_device_status(ctx, "Bind(shadow rasterizer)"))) {
+        ctx->shadow_pass_failed = 1;
+        return;
+    }
 
     d3d11_prepare_object_data(cmd, &object_data);
     memset(&scene_data, 0, sizeof(scene_data));
@@ -2291,6 +2306,7 @@ static void d3d11_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
         ID3D11ShaderResourceView *null_srv = NULL;
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &null_srv);
     }
-    (void)d3d11_record_frame_device_status(ctx, "Draw(skybox)");
+    if (FAILED(d3d11_record_frame_device_status(ctx, "Draw(skybox)")))
+        d3d11_stats_count(&ctx->stats.dropped_draws);
     d3d11_release_temp_srv(&cubemap_resource);
 }

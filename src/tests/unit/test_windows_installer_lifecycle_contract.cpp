@@ -149,6 +149,23 @@ int main() {
            "Writable-parent probes retry bounded name collisions");
     expect(source.find("cannot inspect an existing installation entry") != std::string::npos,
            "Disk preflight fails closed when existing entry attributes are unreadable");
+    expect(
+        source.find("cannot create the detached cleanup helper and cannot remove its directory") !=
+                std::string::npos &&
+            source.find("Cannot remove failed detached cleanup helper") != std::string::npos &&
+            source.find("Cannot remove failed detached cleanup directory") != std::string::npos,
+        "Detached-helper creation and unwind report retained temporary artifacts");
+    expect(
+        source.find("cannot remove a failed staged installer file") != std::string::npos &&
+            source.find("cannot commit or remove a staged installer file") != std::string::npos,
+        "Atomic installer-file publication reports cleanup failures without hiding commit context");
+    expect(source.find("cannot save or remove a staged Windows shortcut") != std::string::npos &&
+               source.find("cannot commit or remove a staged Windows shortcut") !=
+                   std::string::npos,
+           "Shortcut staging reports failed rollback and commit cleanup");
+    expect(source.find("Maintenance handoff started, but a launcher handle could not be closed") !=
+               std::string::npos,
+           "A successful maintenance handoff diagnoses launcher-handle retirement failures");
     expect(source.find("std::array<uint32_t, 3> parseWindowsVersion") != std::string::npos &&
                source.find("part.size() > 1U && part.front() == '0'") != std::string::npos &&
                source.find("optional prerelease and build metadata") == std::string::npos,

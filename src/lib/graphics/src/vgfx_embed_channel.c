@@ -46,6 +46,46 @@
 #define EMBED_INPUT_CAPACITY 256u /* power of two */
 #define EMBED_MAX_DIMENSION 8192
 
+#if defined(_WIN32)
+/// @brief Report a Win32 shared-memory cleanup failure without changing the public ABI.
+static void embed_win32_report_cleanup_failure(const char *operation, DWORD error) {
+    char message[256];
+    int written = snprintf(message,
+                           sizeof(message),
+                           "[vgfx_embed] %s failed (error=%lu)\n",
+                           operation ? operation : "Win32 cleanup",
+                           (unsigned long)error);
+    if (written < 0)
+        return;
+    message[sizeof(message) - 1u] = '\0';
+    OutputDebugStringA(message);
+    fputs(message, stderr);
+}
+
+/// @brief Close an owned mapping handle and clear its slot only on success.
+static int embed_win32_close_mapping(HANDLE *mapping, const char *operation) {
+    if (!mapping || !*mapping || *mapping == INVALID_HANDLE_VALUE)
+        return 1;
+    if (!CloseHandle(*mapping)) {
+        embed_win32_report_cleanup_failure(operation, GetLastError());
+        return 0;
+    }
+    *mapping = NULL;
+    return 1;
+}
+
+/// @brief Unmap an owned section view.
+static int embed_win32_unmap_view(void *view, const char *operation) {
+    if (!view)
+        return 1;
+    if (!UnmapViewOfFile(view)) {
+        embed_win32_report_cleanup_failure(operation, GetLastError());
+        return 0;
+    }
+    return 1;
+}
+#endif
+
 #if !defined(_WIN32)
 /// @brief Derive a stable POSIX object name within Darwin's short shm-name limit.
 /// @details The public channel name remains portable and may contain up to 96 bytes. Two
@@ -238,13 +278,14 @@ int vgfx_embed_channel_create(const char *name,
         return 0;
     }
     if (mapping_error == ERROR_ALREADY_EXISTS) {
-        CloseHandle(ch->mapping);
+        (void)embed_win32_close_mapping(&ch->mapping, "closing duplicate host mapping handle");
         free(ch);
         return 0;
     }
     void *base = MapViewOfFile(ch->mapping, FILE_MAP_ALL_ACCESS, 0, 0, ch->map_bytes);
     if (!base) {
-        CloseHandle(ch->mapping);
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing host mapping after MapViewOfFile failure");
         free(ch);
         return 0;
     }
@@ -297,7 +338,7 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
     void *probe =
         MapViewOfFile(ch->mapping, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(vgfx_embed_header_t));
     if (!probe) {
-        CloseHandle(ch->mapping);
+        (void)embed_win32_close_mapping(&ch->mapping, "closing client mapping after probe failure");
         free(ch);
         return 0;
     }
@@ -328,8 +369,9 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
     size_t map_bytes = 0;
     if (!embed_header_layout(header, &slot_bytes, &map_bytes)) {
 #if defined(_WIN32)
-        UnmapViewOfFile(probe);
-        CloseHandle(ch->mapping);
+        (void)embed_win32_unmap_view(probe, "unmapping invalid client header probe");
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing client mapping with invalid header layout");
 #else
         munmap(probe, sizeof(vgfx_embed_header_t));
         close(fd);
@@ -344,14 +386,16 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
     ch->slot_bytes = slot_bytes;
     ch->map_bytes = map_bytes;
 #if defined(_WIN32)
-    if (!UnmapViewOfFile(probe)) {
-        CloseHandle(ch->mapping);
+    if (!embed_win32_unmap_view(probe, "unmapping validated client header probe")) {
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing client mapping after probe unmap failure");
         free(ch);
         return 0;
     }
     void *base = MapViewOfFile(ch->mapping, FILE_MAP_ALL_ACCESS, 0, 0, ch->map_bytes);
     if (!base) {
-        CloseHandle(ch->mapping);
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing client mapping after full-map failure");
         free(ch);
         return 0;
     }
@@ -376,8 +420,10 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
         ch->header->max_width != max_w || ch->header->max_height != max_h ||
         verified_slot_bytes != ch->slot_bytes || verified_map_bytes != ch->map_bytes) {
 #if defined(_WIN32)
-        UnmapViewOfFile(ch->header);
-        CloseHandle(ch->mapping);
+        (void)embed_win32_unmap_view(ch->header,
+                                     "unmapping client view after header revalidation failure");
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing client mapping after header revalidation failure");
 #else
         munmap(ch->header, ch->map_bytes);
 #endif
@@ -391,8 +437,10 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
                                                  memory_order_acq_rel,
                                                  memory_order_acquire)) {
 #if defined(_WIN32)
-        UnmapViewOfFile(ch->header);
-        CloseHandle(ch->mapping);
+        (void)embed_win32_unmap_view(ch->header,
+                                     "unmapping client view after producer-claim failure");
+        (void)embed_win32_close_mapping(&ch->mapping,
+                                        "closing client mapping after producer-claim failure");
 #else
         munmap(ch->header, ch->map_bytes);
 #endif
@@ -416,14 +464,15 @@ void vgfx_embed_channel_close(vgfx_embed_channel_t *channel) {
             channel->producer_claimed = 0;
         }
 #if defined(_WIN32)
-        UnmapViewOfFile(channel->header);
+        (void)embed_win32_unmap_view(channel->header, "unmapping shared channel during close");
 #else
         munmap(channel->header, channel->map_bytes);
 #endif
     }
 #if defined(_WIN32)
     if (channel->mapping)
-        CloseHandle(channel->mapping);
+        (void)embed_win32_close_mapping(&channel->mapping,
+                                        "closing shared channel mapping during close");
 #else
     if (channel->is_host)
         shm_unlink(channel->shm_name);
