@@ -128,10 +128,16 @@ typedef struct Action {
 } Action;
 
 // Global state (defined in rt_action.c)
+#ifdef __cplusplus
+extern "C" {
+#endif
 /// @brief Head of the global newest-first Action list.
 extern Action *g_actions;
 /// @brief Nonzero while the action subsystem is initialized.
 extern int8_t g_initialized;
+#ifdef __cplusplus
+}
+#endif
 
 /// @brief Validate an Action and its exact bounded binding-list contents.
 static inline int action_binding_list_valid(const Action *action);

@@ -69,12 +69,14 @@ soak_pid=$!
 
 # Sample resident set size once a second until the scene exits.
 while kill -0 "${soak_pid}" 2>/dev/null; do
-    rss="$(ps -o rss= -p "${soak_pid}" 2>/dev/null | tr -d ' ')"
+    # The scene may exit after kill -0 succeeds but before ps samples it.
+    # Keep that expected race from tripping errexit under pipefail.
+    rss="$(ps -o rss= -p "${soak_pid}" 2>/dev/null | tr -d ' ' || true)"
     [[ -n "${rss}" ]] && echo "${rss}" >> "${RSS_LOG}"
     sleep 1
 done
-wait "${soak_pid}"
-soak_status=$?
+soak_status=0
+wait "${soak_pid}" || soak_status=$?
 
 grep -E "SOAK|RESULT" "${OUT_LOG}" || true
 

@@ -14,6 +14,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+// This assertion-driven test harness executes some setup and cleanup inside
+// assert expressions, so keep those expressions active in Release builds.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include "rt_binfile.h"
 #include "rt_bytes.h"
 #include "rt_internal.h"

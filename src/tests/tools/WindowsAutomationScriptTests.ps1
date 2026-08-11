@@ -16,6 +16,7 @@
 #   - The cmd.exe demo compatibility entry point remains a logic-free forwarding shim.
 #   - Installer automation recognizes every existing-input spelling and requires Studio by default.
 #   - Canonical Windows builds do not clean an unconfigured or absent build tree.
+#   - Canonical Windows CTest runs bound tests that lack an explicit timeout.
 #   - End-to-end validation has bounded child processes and path-confined cleanup.
 # Ownership/Lifetime: The caller-owned work directory contains all temporary fixtures.
 # Links: scripts/sign-windows-installer.ps1, scripts/build_demos_win.ps1,
@@ -436,6 +437,15 @@ Assert-True ($buildSource.Contains('must be 0 or 1; received') -and
              $buildSource.Contains('ZANNA_SKIP_STUDIO') -and
              $buildSource.Contains('must be an integer from 1 through 1024')) `
     "The canonical Windows build does not bound boolean controls and worker counts."
+Assert-True ($buildSource.Contains(
+                 'Get-EnvironmentValue -Name "ZANNA_CTEST_TIMEOUT" -Default "600"') -and
+             $buildSource.Contains(
+                 'Get-TimeoutSeconds -Name "ZANNA_CTEST_TIMEOUT"') -and
+             $buildSource.Contains(
+                 'must be an integer from 1 through 86400') -and
+             $buildSource.Contains(
+                 '"--timeout", [string]$ctestTimeout')) `
+    "The canonical Windows build leaves otherwise untimed CTests unbounded."
 $extraCmakePosition = $buildSource.IndexOf(
     '$configArguments += @(ConvertFrom-NativeArgumentString -Value $extraArguments)')
 $studioPolicyPosition = $buildSource.IndexOf(

@@ -7,6 +7,13 @@
 //
 // File: src/tests/runtime/RTMultiMapTests.cpp
 // Purpose: Tests for Zanna.Collections.MultiMap runtime helpers.
+// Key invariants:
+//   - Reentrant finalizers cannot corrupt multimap ownership or value groups.
+//   - Test-owned runtime objects and strings are released after each case.
+// Ownership/Lifetime:
+//   - Runtime heap objects use the production reference-counting contract.
+//   - Global trap and reentry state is reset before it can escape a test case.
+// Links: src/runtime/collections/rt_multimap.c, src/runtime/collections/rt_multimap.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -337,7 +344,7 @@ static void test_owner_finalizer_blocks_reentrant_put() {
     g_reentry_action = ReentryAction::Put;
     rt_release_obj(mm);
 
-    rt_heap_info_t inserted_info;
+    [[maybe_unused]] rt_heap_info_t inserted_info;
     assert(g_reentry_calls == 1);
     assert(rt_heap_get_info(inserted, &inserted_info) == 1);
     assert(inserted_info.refcnt == 1);

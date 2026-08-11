@@ -197,7 +197,7 @@ Linux audio availability is now controlled by `ZANNA_AUDIO_MODE=AUTO|REQUIRE|OFF
 | `src/tools/common/packaging/ToolchainInstallManifest.*` | Shared manifest and install-path mapping for Windows/macOS/Linux installers. This is the single source of truth for staged file selection. |
 | `src/tools/common/packaging/WindowsPackageBuilder.*`, `MacOSPackageBuilder.*`, `LinuxPackageBuilder.*` | Platform-specific installer writers and payload layout policy. Keep staged-relative layout stable across all three. |
 | `src/tools/common/packaging/PkgVerify.*` | Structural verification for produced installer artifacts. Extend this rather than adding format-specific one-off verification scripts. |
-| `scripts/build_zanna_unix.sh`, `scripts/build_zanna_mac.sh`, `scripts/build_zanna_linux.sh`, `scripts/build_zanna_win.ps1`, `scripts/build_installer.sh`, `scripts/build_installer.ps1` | Canonical build/test/install and toolchain-packaging entry points. Shared env vars: `ZANNA_BUILD_DIR`, `ZANNA_BUILD_TYPE`, `ZANNA_FAST_DEBUG`, `ZANNA_JOBS`, `ZANNA_CTEST_JOBS`, `ZANNA_RUN_SLOW_TESTS`, `ZANNA_SKIP_INSTALL`, `ZANNA_SKIP_LINT`, `ZANNA_SKIP_AUDIT`, `ZANNA_SKIP_SMOKE`, `ZANNA_CMAKE_GENERATOR`, `ZANNA_EXTRA_CMAKE_ARGS`. |
+| `scripts/build_zanna_unix.sh`, `scripts/build_zanna_mac.sh`, `scripts/build_zanna_linux.sh`, `scripts/build_zanna_win.ps1`, `scripts/build_installer.sh`, `scripts/build_installer.ps1` | Canonical build/test/install and toolchain-packaging entry points. Shared env vars: `ZANNA_BUILD_DIR`, `ZANNA_BUILD_TYPE`, `ZANNA_FAST_DEBUG`, `ZANNA_JOBS`, `ZANNA_CTEST_JOBS`, `ZANNA_CTEST_TIMEOUT`, `ZANNA_RUN_SLOW_TESTS`, `ZANNA_SKIP_INSTALL`, `ZANNA_SKIP_LINT`, `ZANNA_SKIP_AUDIT`, `ZANNA_SKIP_SMOKE`, `ZANNA_CMAKE_GENERATOR`, `ZANNA_EXTRA_CMAKE_ARGS`. |
 
 ---
 
