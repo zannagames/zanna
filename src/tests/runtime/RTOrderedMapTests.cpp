@@ -4,6 +4,18 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTOrderedMapTests.cpp
+// Purpose: Tests for Zanna.Collections.OrderedMap runtime helpers.
+// Key invariants:
+//   - Reentrant finalizers cannot corrupt map ownership or insertion order.
+//   - Test-owned runtime objects and strings are released after each case.
+// Ownership/Lifetime:
+//   - Runtime heap objects use the production reference-counting contract.
+//   - Global trap and reentry state is reset before it can escape a test case.
+// Links: src/runtime/collections/rt_orderedmap.c, src/runtime/collections/rt_orderedmap.h
+//
+//===----------------------------------------------------------------------===//
 
 #include "rt_heap.h"
 #include "rt_internal.h"
@@ -354,7 +366,7 @@ static void test_owner_finalizer_blocks_reentrant_insert() {
     g_reentry_action = ReentryAction::Set;
     release_obj(m);
 
-    rt_heap_info_t inserted_info;
+    [[maybe_unused]] rt_heap_info_t inserted_info;
     assert(g_reentry_calls == 1);
     assert(rt_heap_get_info(inserted, &inserted_info) == 1);
     assert(inserted_info.refcnt == 1);

@@ -332,6 +332,37 @@ static void test_multiple_entries() {
     printf("  test_multiple_entries: PASSED\n");
 }
 
+static void test_capacity_is_bounded_and_reusable() {
+    void *bank = rt_soundbank_new();
+    void *sound = make_registry_sound();
+    if (!sound) {
+        printf("  test_capacity_is_bounded_and_reusable: SKIPPED (audio unavailable)\n");
+        return;
+    }
+
+    for (int i = 0; i < 64; ++i) {
+        char name[16];
+        std::snprintf(name, sizeof(name), "sound-%d", i);
+        rt_string key = rt_string_from_bytes(name, std::strlen(name));
+        assert(key != nullptr);
+        assert(rt_soundbank_register_sound(bank, key, sound) == 1);
+        rt_string_unref(key);
+    }
+    assert(rt_soundbank_count(bank) == 64);
+    assert(rt_soundbank_register_sound(bank, S("overflow"), sound) == 0);
+    assert(rt_soundbank_count(bank) == 64);
+
+    assert(rt_soundbank_register_sound(bank, S("sound-0"), sound) == 1);
+    assert(rt_soundbank_count(bank) == 64);
+    rt_soundbank_remove(bank, S("sound-1"));
+    assert(rt_soundbank_count(bank) == 63);
+    assert(rt_soundbank_register_sound(bank, S("replacement"), sound) == 1);
+    assert(rt_soundbank_count(bank) == 64);
+
+    release_obj(sound);
+    printf("  test_capacity_is_bounded_and_reusable: PASSED\n");
+}
+
 // ============================================================================
 // Synth Sound Generation
 // ============================================================================
@@ -404,6 +435,7 @@ int main() {
     test_remove();
     test_clear();
     test_multiple_entries();
+    test_capacity_is_bounded_and_reusable();
 
     printf("\n--- Synth Sound Generation ---\n");
     test_synth_tone();

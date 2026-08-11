@@ -25,7 +25,7 @@
 /// @file
 /// @brief Implements audio-container detection and conversion to PCM WAV data.
 /// @details The runtime recognizes RIFF/WAV, Ogg Vorbis, and MP3 inputs from
-///          leading bytes. Ogg and MP3 decoders produce bounded interleaved
+///          validated leading bytes. Ogg and MP3 decoders produce bounded interleaved
 ///          16-bit PCM, which is wrapped in an in-memory RIFF/WAVE container
 ///          for the common sound-loading path. Every returned byte buffer is
 ///          allocated with `malloc` and transfers ownership to the caller.
@@ -53,9 +53,9 @@
 #include <string.h>
 
 /// @brief Identify an encoded audio format from its leading bytes.
-/// @details Recognizes RIFF/WAV and Ogg capture signatures, MP3 streams with an
-///          ID3 tag, and MP3 frame-sync headers. The input is borrowed and only
-///          the first four bytes are inspected.
+/// @details Recognizes RIFF/WAVE and Ogg capture signatures, validated ID3v2
+///          headers, and structurally valid MP3 frame headers. The input is
+///          borrowed and at most the first twelve bytes are inspected.
 /// @param data Encoded byte buffer.
 /// @param size Number of readable bytes in @p data.
 /// @return `1` for RIFF/WAV, `2` for Ogg, `3` for MP3, or `0` for invalid,
@@ -64,28 +64,42 @@ int detect_audio_format_mem(const void *data, size_t size) {
     if (!data || size < 4)
         return 0;
     const uint8_t *hdr = (const uint8_t *)data;
-    if (hdr[0] == 'R' && hdr[1] == 'I' && hdr[2] == 'F' && hdr[3] == 'F')
+    if (size >= 12 && memcmp(hdr, "RIFF", 4) == 0 && memcmp(hdr + 8, "WAVE", 4) == 0)
         return 1;
-    if (hdr[0] == 'O' && hdr[1] == 'g' && hdr[2] == 'g' && hdr[3] == 'S')
+    if (size >= 5 && memcmp(hdr, "OggS", 4) == 0 && hdr[4] == 0)
         return 2;
-    if (hdr[0] == 'I' && hdr[1] == 'D' && hdr[2] == '3')
+
+    if (size >= 10 && memcmp(hdr, "ID3", 3) == 0 && hdr[3] >= 2 && hdr[3] <= 4 && hdr[4] != 0xFF &&
+        (hdr[6] & 0x80u) == 0 && (hdr[7] & 0x80u) == 0 && (hdr[8] & 0x80u) == 0 &&
+        (hdr[9] & 0x80u) == 0)
         return 3;
-    if (hdr[0] == 0xFF && (hdr[1] & 0xE0) == 0xE0)
-        return 3;
+
+    if (size >= 4 && hdr[0] == 0xFF && (hdr[1] & 0xE0u) == 0xE0u) {
+        uint8_t version = (uint8_t)((hdr[1] >> 3) & 0x03u);
+        uint8_t layer = (uint8_t)((hdr[1] >> 1) & 0x03u);
+        uint8_t bitrate = (uint8_t)((hdr[2] >> 4) & 0x0Fu);
+        uint8_t sample_rate = (uint8_t)((hdr[2] >> 2) & 0x03u);
+        uint8_t emphasis = (uint8_t)(hdr[3] & 0x03u);
+        if (version != 1 && layer != 0 && bitrate != 0 && bitrate != 15 && sample_rate != 3 &&
+            emphasis != 2)
+            return 3;
+    }
     return 0;
 }
 
 /// @brief Detect audio file format from magic bytes.
-/// @details Reads at most four leading bytes and delegates recognition to
+/// @details Reads at most twelve leading bytes and delegates recognition to
 ///          @ref detect_audio_format_mem.
 /// @param filepath NUL-terminated path to the encoded audio file.
 /// @return `1` for RIFF/WAV, `2` for Ogg, `3` for MP3, or `0` when the file
 ///         cannot be opened/read or its signature is unrecognized.
 int detect_audio_format(const char *filepath) {
+    if (!filepath || filepath[0] == '\0')
+        return 0;
     FILE *af = rt_file_stdio_open_utf8(filepath, "rb");
     if (!af)
         return 0;
-    uint8_t hdr[4];
+    uint8_t hdr[12];
     size_t n = fread(hdr, 1, sizeof(hdr), af);
     fclose(af);
     return detect_audio_format_mem(hdr, n);
@@ -131,6 +145,10 @@ static int build_wav_from_pcm(const int16_t *pcm,
         data_size > SIZE_MAX - 44)
         return -1;
 
+    uint64_t byte_rate64 = (uint64_t)sample_rate * (uint64_t)channels * 2u;
+    if (byte_rate64 > UINT32_MAX)
+        return -1;
+
     size_t wav_size = 44 + data_size;
     uint8_t *wav = (uint8_t *)malloc(wav_size);
     if (!wav)
@@ -154,11 +172,6 @@ static int build_wav_from_pcm(const int16_t *pcm,
     wav[25] = (uint8_t)(sample_rate >> 8);
     wav[26] = (uint8_t)(sample_rate >> 16);
     wav[27] = (uint8_t)(sample_rate >> 24);
-    uint64_t byte_rate64 = (uint64_t)sample_rate * (uint64_t)channels * 2u;
-    if (byte_rate64 > UINT32_MAX) {
-        free(wav);
-        return -1;
-    }
     uint32_t byte_rate = (uint32_t)byte_rate64;
     wav[28] = (uint8_t)(byte_rate);
     wav[29] = (uint8_t)(byte_rate >> 8);
@@ -173,7 +186,11 @@ static int build_wav_from_pcm(const int16_t *pcm,
     wav[41] = (uint8_t)(data_size >> 8);
     wav[42] = (uint8_t)(data_size >> 16);
     wav[43] = (uint8_t)(data_size >> 24);
-    memcpy(wav + 44, pcm, data_size);
+    for (size_t i = 0; i < sample_count; ++i) {
+        uint16_t sample = (uint16_t)pcm[i];
+        wav[44 + i * 2] = (uint8_t)sample;
+        wav[45 + i * 2] = (uint8_t)(sample >> 8);
+    }
 
     *out_data = wav;
     *out_len = wav_size;
@@ -195,6 +212,10 @@ static int build_wav_from_pcm(const int16_t *pcm,
 /// @param out_len  Receives the WAV buffer length on success.
 /// @return 0 on success, -1 on malformed stream, decode error, oversize, or OOM.
 static int ogg_decode_reader_to_wav(ogg_reader_t *reader, uint8_t **out_data, size_t *out_len) {
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
     if (!reader || !out_data || !out_len)
         return -1;
 
@@ -270,7 +291,7 @@ static int ogg_decode_reader_to_wav(ogg_reader_t *reader, uint8_t **out_data, si
             return -1;
         }
         if (needed > pcm_cap) {
-            size_t new_cap = pcm_cap ? (pcm_cap > SIZE_MAX / 2 ? needed : pcm_cap * 2) : 65536;
+            size_t new_cap = pcm_cap ? (pcm_cap > SIZE_MAX / 2 ? needed : pcm_cap * 2) : 4096;
             if (new_cap < needed)
                 new_cap = needed;
             if (new_cap > SIZE_MAX / (size_t)channels ||
@@ -313,6 +334,12 @@ static int ogg_decode_reader_to_wav(ogg_reader_t *reader, uint8_t **out_data, si
 /// @param out_len  Receives the WAV buffer length on success.
 /// @return 0 on success, -1 on open/decode failure.
 int ogg_file_to_wav(const char *filepath, uint8_t **out_data, size_t *out_len) {
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (!filepath || !out_data || !out_len)
+        return -1;
     ogg_reader_t *reader = ogg_reader_open_file(filepath);
     if (!reader)
         return -1;
@@ -331,6 +358,12 @@ int ogg_file_to_wav(const char *filepath, uint8_t **out_data, size_t *out_len) {
 /// @param out_len  Receives the WAV buffer length on success.
 /// @return 0 on success, -1 on open/decode failure.
 int ogg_mem_to_wav(const void *data, size_t size, uint8_t **out_data, size_t *out_len) {
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (!data || size == 0 || !out_data || !out_len)
+        return -1;
     ogg_reader_t *reader = ogg_reader_open_mem((const uint8_t *)data, size);
     if (!reader)
         return -1;
@@ -352,7 +385,11 @@ int ogg_mem_to_wav(const void *data, size_t size, uint8_t **out_data, size_t *ou
 /// @param out_len  Receives the WAV buffer length on success.
 /// @return 0 on success, -1 on decode error, validation failure, or OOM.
 int mp3_data_to_wav(const uint8_t *data, size_t size, uint8_t **out_data, size_t *out_len) {
-    if (!data || size == 0)
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (!data || size == 0 || !out_data || !out_len)
         return -1;
 
     mp3_decoder_t *dec = mp3_decoder_new();
@@ -387,6 +424,12 @@ int mp3_data_to_wav(const uint8_t *data, size_t size, uint8_t **out_data, size_t
 /// @param out_len Receives the WAV buffer length in bytes on success.
 /// @return `0` on success, or `-1` on file, size, allocation, or decode failure.
 int mp3_file_to_wav(const char *filepath, uint8_t **out_data, size_t *out_len) {
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (!filepath || !out_data || !out_len)
+        return -1;
     FILE *mf = rt_file_stdio_open_utf8(filepath, "rb");
     if (!mf)
         return -1;

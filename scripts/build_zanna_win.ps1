@@ -13,6 +13,7 @@
 #     arguments, without an intervening command shell.
 #   - Pre-configure cleaning runs only for an already configured build tree.
 #   - Only a validated POSIX shell is used by CTest and script-based checks.
+#   - Tests without an explicit CMake timeout receive a bounded default.
 #   - A failed validation stage causes the script to return a nonzero status.
 #
 # Ownership/Lifetime: Build outputs remain in ZANNA_BUILD_DIR; recursive
@@ -122,6 +123,20 @@ function Get-PositiveInteger {
     $parsed = 0
     if (-not [int]::TryParse($Value, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 1024) {
         throw "$Name must be an integer from 1 through 1024; received '$Value'."
+    }
+    return $parsed
+}
+
+function Get-TimeoutSeconds {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    $parsed = 0
+    if (-not [int]::TryParse($Value, [ref]$parsed) -or $parsed -lt 1 -or
+        $parsed -gt 86400) {
+        throw "$Name must be an integer from 1 through 86400; received '$Value'."
     }
     return $parsed
 }
@@ -303,6 +318,8 @@ if ([string]::IsNullOrWhiteSpace($requestedJobs)) {
 }
 $ctestJobsValue = Get-EnvironmentValue -Name "ZANNA_CTEST_JOBS" -Default ([string]$jobs)
 $ctestJobs = Get-PositiveInteger -Name "ZANNA_CTEST_JOBS" -Value $ctestJobsValue
+$ctestTimeoutValue = Get-EnvironmentValue -Name "ZANNA_CTEST_TIMEOUT" -Default "600"
+$ctestTimeout = Get-TimeoutSeconds -Name "ZANNA_CTEST_TIMEOUT" -Value $ctestTimeoutValue
 
 $env:MSBUILDDISABLENODEREUSE = Get-EnvironmentValue -Name "MSBUILDDISABLENODEREUSE" -Default "1"
 $buildDir = Set-EnvironmentDefault -Name "ZANNA_BUILD_DIR" -Default "build"
@@ -341,6 +358,7 @@ try {
     Write-Host ""
     Write-Host "Using $jobs build jobs"
     Write-Host "Using $ctestJobs CTest jobs"
+    Write-Host "Using a $ctestTimeout-second default timeout for otherwise untimed tests"
     Write-Host "Build type: $buildType"
     Write-Host "Fast Debug: $fastDebug"
 
@@ -447,6 +465,7 @@ try {
             "--test-dir", $buildDir,
             "-C", $buildType,
             "--output-on-failure",
+            "--timeout", [string]$ctestTimeout,
             "-j", [string]$ctestJobs
         )
         $testLabel = [Environment]::GetEnvironmentVariable("ZANNA_TEST_LABEL", "Process")

@@ -37,6 +37,7 @@
 
 #define RT_AUDIO_FX_DEFAULT_RATE 44100
 #define RT_AUDIO_FX_MAX_DELAY_SECONDS 2.0
+#define RT_AUDIO_FX_MAX_PER_GROUP 32
 #define RT_AUDIO_FX_PI 3.14159265358979323846
 
 /// @brief Runtime discriminator for the DSP state stored in an effect node.
@@ -167,9 +168,9 @@ static float clampf_range(float value, float lo, float hi) {
 /// @return Zero for non-finite values or magnitudes below `1e-20`; otherwise
 ///         the original value.
 static float sanitize_feedback(float value) {
-    if (fabsf(value) < 1.0e-20f)
-        return 0.0f;
     if (!isfinite(value))
+        return 0.0f;
+    if (fabsf(value) < 1.0e-20f)
         return 0.0f;
     return value;
 }
@@ -195,7 +196,13 @@ static int32_t seconds_to_frames(double seconds) {
 /// @param frames Positive circular-buffer length in frames.
 /// @return Non-zero on success, or zero for invalid input/allocation failure.
 static int alloc_reverb_line(rt_reverb_line *line, int32_t frames) {
-    if (!line || frames <= 0)
+    if (!line)
+        return 0;
+    line->buffer = NULL;
+    line->frames = 0;
+    line->pos = 0;
+    line->filter = 0.0f;
+    if (frames <= 0)
         return 0;
     line->buffer = (float *)calloc((size_t)frames, sizeof(float));
     if (!line->buffer)
@@ -324,9 +331,12 @@ static void biquad_set(rt_biquad_state *bq, int mode, double freq_hz, double q, 
 static float biquad_sample(rt_biquad_state *bq, float in, int right) {
     float *z1 = right ? &bq->z1_r : &bq->z1_l;
     float *z2 = right ? &bq->z2_r : &bq->z2_l;
+    in = sanitize_feedback(in);
+    *z1 = sanitize_feedback(*z1);
+    *z2 = sanitize_feedback(*z2);
     float out = in * bq->b0 + *z1;
-    *z1 = in * bq->b1 + *z2 - bq->a1 * out;
-    *z2 = in * bq->b2 - bq->a2 * out;
+    *z1 = sanitize_feedback(in * bq->b1 + *z2 - bq->a1 * out);
+    *z2 = sanitize_feedback(in * bq->b2 - bq->a2 * out);
     return sanitize_feedback(out);
 }
 
@@ -338,7 +348,7 @@ static float biquad_sample(rt_biquad_state *bq, float in, int right) {
 /// @param frames Number of frames to process.
 /// @param channels Number of interleaved channels per frame.
 static void process_biquad(rt_biquad_state *bq, float *samples, int32_t frames, int32_t channels) {
-    if (!bq || !samples || channels < 1)
+    if (!bq || !samples || frames <= 0 || channels < 1)
         return;
     for (int32_t i = 0; i < frames; i++) {
         samples[(size_t)i * channels] = biquad_sample(bq, samples[(size_t)i * channels], 0);
@@ -357,15 +367,20 @@ static void process_biquad(rt_biquad_state *bq, float *samples, int32_t frames, 
 /// @param frames Number of frames to process.
 /// @param channels Number of interleaved channels per frame.
 static void process_delay(rt_delay_state *delay, float *samples, int32_t frames, int32_t channels) {
-    if (!delay || !delay->buffer || !samples || delay->frames <= 0 || channels < 1)
+    if (!delay || !delay->buffer || !samples || delay->frames <= 0 || frames <= 0 || channels < 1)
         return;
+    if (delay->pos < 0 || delay->pos >= delay->frames)
+        delay->pos = 0;
+    delay->feedback = clampf_range(delay->feedback, 0.0f, 0.95f);
+    delay->wet = clampf_range(delay->wet, 0.0f, 1.0f);
+    delay->dry = 1.0f - delay->wet;
     for (int32_t i = 0; i < frames; i++) {
         size_t sample_base = (size_t)i * (size_t)channels;
         size_t delay_base = (size_t)delay->pos * 2u;
-        float in_l = samples[sample_base];
-        float in_r = channels > 1 ? samples[sample_base + 1] : in_l;
-        float delayed_l = delay->buffer[delay_base];
-        float delayed_r = delay->buffer[delay_base + 1];
+        float in_l = sanitize_feedback(samples[sample_base]);
+        float in_r = channels > 1 ? sanitize_feedback(samples[sample_base + 1]) : in_l;
+        float delayed_l = sanitize_feedback(delay->buffer[delay_base]);
+        float delayed_r = sanitize_feedback(delay->buffer[delay_base + 1]);
         samples[sample_base] = sanitize_feedback(in_l * delay->dry + delayed_l * delay->wet);
         if (channels > 1)
             samples[sample_base + 1] =
@@ -385,7 +400,11 @@ static void process_delay(rt_delay_state *delay, float *samples, int32_t frames,
 /// @param damp One-pole damping coefficient.
 /// @return Delayed sample read before the line is updated.
 static float process_comb(rt_reverb_line *line, float input, float room, float damp) {
-    float out = line->buffer[line->pos];
+    if (line->pos < 0 || line->pos >= line->frames)
+        line->pos = 0;
+    float out = sanitize_feedback(line->buffer[line->pos]);
+    input = sanitize_feedback(input);
+    line->filter = sanitize_feedback(line->filter);
     line->filter = sanitize_feedback(out * (1.0f - damp) + line->filter * damp);
     line->buffer[line->pos] = sanitize_feedback(input + line->filter * room);
     line->pos++;
@@ -399,13 +418,33 @@ static float process_comb(rt_reverb_line *line, float input, float room, float d
 /// @param input Input sample.
 /// @return Phase-dispersed output with unstable values sanitized.
 static float process_allpass(rt_reverb_line *line, float input) {
-    float buffered = line->buffer[line->pos];
+    if (line->pos < 0 || line->pos >= line->frames)
+        line->pos = 0;
+    input = sanitize_feedback(input);
+    float buffered = sanitize_feedback(line->buffer[line->pos]);
     float out = -input + buffered;
     line->buffer[line->pos] = sanitize_feedback(input + buffered * 0.5f);
     line->pos++;
     if (line->pos >= line->frames)
         line->pos = 0;
     return sanitize_feedback(out);
+}
+
+/// @brief Validate all heap-backed delay lines before entering the sample loop.
+/// @param rv Reverb state to inspect.
+/// @return Non-zero when every line has storage and a positive frame count.
+static int reverb_lines_valid(const rt_reverb_state *rv) {
+    for (int i = 0; i < 8; ++i) {
+        if (!rv->comb_l[i].buffer || rv->comb_l[i].frames <= 0 || !rv->comb_r[i].buffer ||
+            rv->comb_r[i].frames <= 0)
+            return 0;
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (!rv->allpass_l[i].buffer || rv->allpass_l[i].frames <= 0 || !rv->allpass_r[i].buffer ||
+            rv->allpass_r[i].frames <= 0)
+            return 0;
+    }
+    return 1;
 }
 
 /// @brief Process an interleaved block through the stereo reverb network.
@@ -417,13 +456,17 @@ static float process_allpass(rt_reverb_line *line, float input) {
 /// @param frames Number of frames to process.
 /// @param channels Number of interleaved channels per frame.
 static void process_reverb(rt_reverb_state *rv, float *samples, int32_t frames, int32_t channels) {
-    if (!rv || !samples || channels < 1)
+    if (!rv || !samples || frames <= 0 || channels < 1 || !reverb_lines_valid(rv))
         return;
+    rv->room = clampf_range(rv->room, 0.55f, 0.95f);
+    rv->damp = clampf_range(rv->damp, 0.0f, 0.8f);
+    rv->wet = clampf_range(rv->wet, 0.0f, 1.0f);
+    rv->dry = 1.0f - rv->wet;
     for (int32_t i = 0; i < frames; i++) {
         size_t base = (size_t)i * (size_t)channels;
-        float dry_l = samples[base];
-        float dry_r = channels > 1 ? samples[base + 1] : dry_l;
-        float mono = (dry_l + dry_r) * 0.5f;
+        float dry_l = sanitize_feedback(samples[base]);
+        float dry_r = channels > 1 ? sanitize_feedback(samples[base + 1]) : dry_l;
+        float mono = sanitize_feedback((dry_l + dry_r) * 0.5f);
         float wet_l = 0.0f;
         float wet_r = 0.0f;
         for (int c = 0; c < 8; c++) {
@@ -500,6 +543,14 @@ static int64_t append_fx(int64_t group, rt_audio_fx *fx) {
         return -1;
     }
     fx_lock();
+    size_t chain_length = 0;
+    for (rt_audio_fx *current = g_group_fx[group]; current; current = current->next) {
+        if (++chain_length >= RT_AUDIO_FX_MAX_PER_GROUP) {
+            fx_unlock();
+            free_fx(fx);
+            return -1;
+        }
+    }
     fx->id = allocate_fx_id_locked();
     if (fx->id <= 0) {
         fx_unlock();
@@ -720,11 +771,26 @@ void rt_audio_fx_clear_group(int64_t group) {
 }
 
 /// @brief Clear every fixed mix-group effect chain.
-/// @details Delegates each group to @ref rt_audio_fx_clear_group so large DSP
-///          allocations are released outside the registry lock.
+/// @details Detaches every chain under one lock so the mixer cannot observe a
+///          partially-cleared registry, then releases large DSP allocations
+///          after unlocking.
 void rt_audio_fx_clear_all(void) {
-    for (int64_t group = 0; group < RT_MIXGROUP_MAX_GROUPS; group++)
-        rt_audio_fx_clear_group(group);
+    rt_audio_fx *detached[RT_MIXGROUP_MAX_GROUPS];
+    fx_lock();
+    for (int64_t group = 0; group < RT_MIXGROUP_MAX_GROUPS; group++) {
+        detached[group] = g_group_fx[group];
+        g_group_fx[group] = NULL;
+    }
+    fx_unlock();
+
+    for (int64_t group = 0; group < RT_MIXGROUP_MAX_GROUPS; group++) {
+        rt_audio_fx *current = detached[group];
+        while (current) {
+            rt_audio_fx *next = current->next;
+            free_fx(current);
+            current = next;
+        }
+    }
 }
 
 /// @brief Check whether a group has any enabled effect.
@@ -763,7 +829,8 @@ int rt_audio_fx_group_has_effects(int64_t group) {
 void rt_audio_fx_process_group(
     int64_t group, float *samples, int32_t frames, int32_t channels, int32_t sample_rate) {
     (void)sample_rate;
-    if (!group_valid(group) || !samples || frames <= 0 || channels <= 0)
+    if (!group_valid(group) || !samples || frames <= 0 || channels <= 0 ||
+        (size_t)frames > SIZE_MAX / (size_t)channels)
         return;
     if (!fx_try_lock())
         return;

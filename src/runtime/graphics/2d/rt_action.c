@@ -36,11 +36,14 @@
 
 #include "rt_action.h"
 #include "rt_action_internal.h"
+#include "rt_box.h"
 #include "rt_input.h"
 #include "rt_internal.h"
 #include "rt_json_stream.h"
+#include "rt_object.h"
 #include "rt_platform.h"
 #include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
 #include "rt_trap.h"
@@ -51,8 +54,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Extract an int64 value from a borrowed runtime box.
-extern int64_t rt_unbox_i64(void *box);
+/// @brief Validate the shallow Seq storage used by chord APIs before indexing.
+static int8_t action_chord_seq_valid(void *keys) {
+    if (!rt_seq_internal_is_valid(keys))
+        return 0;
+    const rt_seq_impl *seq = (const rt_seq_impl *)keys;
+    return seq->len >= 2 && seq->len <= MAX_CHORD_KEYS && seq->cap >= seq->len && seq->cap > 0 &&
+           seq->items && (uint64_t)seq->cap <= (uint64_t)SIZE_MAX / sizeof(*seq->items);
+}
 
 // Global action registry (declared extern in rt_action_internal.h).
 /// @brief Head of the malloc-owned, newest-first global action list.
@@ -67,13 +76,18 @@ int8_t g_initialized = 0;
 /// @param name Borrowed runtime string to match exactly.
 /// @return Borrowed action node, or `NULL` when the name is null or absent.
 static Action *find_action_str(rt_string name) {
-    if (!name)
+    if (!name || !rt_string_is_handle(name))
         return NULL;
     int64_t name_len = rt_str_len(name);
+    if (name_len <= 0 || (uint64_t)name_len > SIZE_MAX)
+        return NULL;
     const char *name_data = name->data;
 
     Action *a = g_actions;
-    while (a) {
+    int64_t visited = 0;
+    while (a && visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return NULL;
         if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0)
             return a;
         a = a->next;
@@ -86,7 +100,7 @@ static Action *find_action_str(rt_string name) {
 /// @return Nonzero when the name can be represented losslessly in JSON and in
 ///         the registry's trailing-NUL C-string storage.
 static int action_name_valid(rt_string name) {
-    if (!name)
+    if (!name || !rt_string_is_handle(name))
         return 0;
     int64_t signed_len = rt_str_len(name);
     if (signed_len <= 0 || (uint64_t)signed_len > SIZE_MAX - 1u)
@@ -142,7 +156,7 @@ static int action_name_valid(rt_string name) {
 /// @return Owned null-terminated copy, or `NULL` for null/empty input or
 ///         allocation failure.
 static char *strdup_rt_string(rt_string s) {
-    if (!s)
+    if (!s || !rt_string_is_handle(s))
         return NULL;
     int64_t len = rt_str_len(s);
     if (len <= 0 || (uint64_t)len > SIZE_MAX - 1u)
@@ -166,11 +180,17 @@ static char *strdup_rt_string(rt_string s) {
 /// @param pad_index Required controller index.
 /// @return `1` after unlinking and freeing the first match; otherwise `0`.
 static int8_t remove_binding(Action *action, BindingType type, int64_t code, int64_t pad_index) {
+    if (!action_binding_list_valid(action))
+        return 0;
     Binding **pp = &action->bindings;
-    while (*pp) {
+    int64_t visited = 0;
+    while (*pp && visited++ < action->binding_count) {
         Binding *b = *pp;
+        if (!action_binding_valid(b, action->is_axis))
+            return 0;
         if (b->type == type && b->code == code && b->pad_index == pad_index) {
             *pp = b->next;
+            b->state_magic = 0;
             free(b);
             action->binding_count--;
             return 1;
@@ -424,7 +444,10 @@ void rt_action_update(void) {
         return;
 
     Action *a = g_actions;
-    while (a) {
+    int64_t action_visited = 0;
+    while (a && action_visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_node_shallow_valid(a))
+            return;
         int8_t was_held = a->held;
         a->pressed = 0;
         a->released = 0;
@@ -432,7 +455,15 @@ void rt_action_update(void) {
         a->axis_value = 0.0;
 
         Binding *b = a->bindings;
-        while (b) {
+        int64_t binding_visited = 0;
+        while (b && binding_visited++ < a->binding_count) {
+            if (!action_binding_valid(b, a->is_axis)) {
+                a->pressed = 0;
+                a->released = was_held ? 1 : 0;
+                a->held = 0;
+                a->axis_value = 0.0;
+                break;
+            }
             switch (b->type) {
                 case BIND_KEY:
                     if (a->is_axis) {
@@ -533,6 +564,14 @@ void rt_action_update(void) {
             b = b->next;
         }
 
+        if (b || binding_visited != a->binding_count) {
+            a->pressed = 0;
+            a->released = was_held ? 1 : 0;
+            a->held = 0;
+            a->axis_value = 0.0;
+            return;
+        }
+
         if (was_held && !a->held)
             a->released = 1;
 
@@ -558,13 +597,14 @@ static int8_t action_define_impl(rt_string name, int8_t is_axis) {
         return 0;
     int64_t action_count = 0;
     for (Action *existing = g_actions; existing; existing = existing->next) {
-        if (++action_count >= ACTION_MAX_ACTIONS)
+        if (!action_binding_list_valid(existing) || ++action_count >= ACTION_MAX_ACTIONS)
             return 0;
     }
 
     Action *action = (Action *)calloc(1, sizeof(Action));
     if (!action)
         return 0;
+    action->state_magic = ACTION_STATE_MAGIC;
     action->name = strdup_rt_string(name);
     if (!action->name) {
         free(action);
@@ -633,15 +673,20 @@ int8_t rt_action_is_axis(rt_string name) {
 /// @return `1` when the action was removed; `0` for null or absent names.
 int8_t rt_action_remove(rt_string name) {
     RT_ASSERT_MAIN_THREAD();
-    if (!name)
+    if (!name || !rt_string_is_handle(name))
         return 0;
 
     int64_t name_len = rt_str_len(name);
+    if (name_len <= 0 || (uint64_t)name_len > SIZE_MAX)
+        return 0;
     const char *name_data = name->data;
 
     Action **pp = &g_actions;
-    while (*pp) {
+    int64_t visited = 0;
+    while (*pp && visited++ < ACTION_MAX_ACTIONS) {
         Action *a = *pp;
+        if (!action_binding_list_valid(a))
+            return 0;
         if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0) {
             *pp = a->next;
             action_free_node(a);
@@ -727,7 +772,7 @@ int8_t rt_action_bind_chord(rt_string action, void *keys) {
     Action *a = find_action_str(action);
     if (!a || a->is_axis || a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
-    if (!keys)
+    if (!action_chord_seq_valid(keys))
         return 0;
 
     len = rt_seq_len(keys);
@@ -735,8 +780,8 @@ int8_t rt_action_bind_chord(rt_string action, void *keys) {
         return 0;
 
     for (i = 0; i < len; i++) {
-        chord_keys[i] = rt_unbox_i64(rt_seq_get(keys, i));
-        if (!action_key_code_valid(chord_keys[i]))
+        if (!rt_box_try_to_i64(rt_seq_get(keys, i), &chord_keys[i]) ||
+            !action_key_code_valid(chord_keys[i]))
             return 0;
         for (int64_t previous = 0; previous < i; ++previous) {
             if (chord_keys[previous] == chord_keys[i])
@@ -768,21 +813,28 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
     int64_t chord_keys[MAX_CHORD_KEYS];
     Binding **pp;
     Action *a = find_action_str(action);
-    if (!a || !keys)
+    if (!a || !action_chord_seq_valid(keys))
         return 0;
 
     len = rt_seq_len(keys);
     if (len < 2 || len > MAX_CHORD_KEYS)
         return 0;
     for (i = 0; i < len; ++i) {
-        chord_keys[i] = rt_unbox_i64(rt_seq_get(keys, i));
-        if (!action_key_code_valid(chord_keys[i]))
+        if (!rt_box_try_to_i64(rt_seq_get(keys, i), &chord_keys[i]) ||
+            !action_key_code_valid(chord_keys[i]))
             return 0;
+        for (int64_t previous = 0; previous < i; ++previous) {
+            if (chord_keys[previous] == chord_keys[i])
+                return 0;
+        }
     }
 
     pp = &a->bindings;
-    while (*pp) {
+    int64_t visited = 0;
+    while (*pp && visited++ < a->binding_count) {
         Binding *b = *pp;
+        if (!action_binding_valid(b, a->is_axis))
+            return 0;
         if (b->type == BIND_CHORD && b->chord_len == (int32_t)len) {
             int8_t match = 1;
             for (i = 0; i < len; i++) {
@@ -793,6 +845,7 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
             }
             if (match) {
                 *pp = b->next;
+                b->state_magic = 0;
                 free(b);
                 a->binding_count--;
                 return 1;
@@ -815,11 +868,16 @@ int64_t rt_action_chord_count(rt_string action) {
         return 0;
 
     b = a->bindings;
-    while (b) {
+    int64_t visited = 0;
+    while (b && visited++ < a->binding_count) {
+        if (!action_binding_valid(b, a->is_axis))
+            return 0;
         if (b->type == BIND_CHORD)
             count++;
         b = b->next;
     }
+    if (b || visited != a->binding_count)
+        return 0;
     return count;
 }
 
@@ -1109,13 +1167,21 @@ void *rt_action_list(void) {
      * keeps an extra reference that nothing ever releases, leaking one per action. */
     rt_seq_set_owns_elements(seq, 1);
     Action *a = g_actions;
-    while (a) {
+    int64_t visited = 0;
+    while (a && visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return seq;
         rt_string name = rt_string_from_bytes(a->name, (size_t)a->name_len);
         if (!name)
             return seq;
         rt_seq_push(seq, (void *)name);
         rt_string_unref(name);
         a = a->next;
+    }
+    if (a) {
+        if (rt_obj_release_check0(seq))
+            rt_obj_free(seq);
+        return NULL;
     }
     return seq;
 }
@@ -1161,7 +1227,7 @@ static int action_bindings_append_key_name(rt_string_builder *sb,
 /// @param b Borrowed binding to describe; `NULL` emits `"Unknown"`.
 /// @return `1` on success; `0` if appending to the builder failed.
 static int action_bindings_append_desc(rt_string_builder *sb, const Binding *b) {
-    if (!b)
+    if (!b || b->state_magic != ACTION_BINDING_STATE_MAGIC)
         return action_bindings_append_cstr(sb, "Unknown");
 
     switch (b->type) {
@@ -1272,7 +1338,10 @@ rt_string rt_action_bindings_str(rt_string action) {
     int first = 1;
 
     Binding *b = a->bindings;
-    while (b) {
+    int64_t visited = 0;
+    while (b && visited++ < a->binding_count) {
+        if (!action_binding_valid(b, a->is_axis))
+            goto failed;
         if (!first && !action_bindings_append_cstr(&sb, ", "))
             goto failed;
         first = 0;
@@ -1280,6 +1349,8 @@ rt_string rt_action_bindings_str(rt_string action) {
             goto failed;
         b = b->next;
     }
+    if (b || visited != a->binding_count)
+        goto failed;
 
     rt_string result = rt_string_from_bytes(sb.data, sb.len);
     rt_sb_free(&sb);
@@ -1313,13 +1384,21 @@ rt_string rt_action_key_bound_to(int64_t key) {
     if (!action_key_code_valid(key))
         return rt_str_empty();
     Action *a = g_actions;
-    while (a) {
+    int64_t action_visited = 0;
+    while (a && action_visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return rt_str_empty();
         Binding *b = a->bindings;
-        while (b) {
+        int64_t binding_visited = 0;
+        while (b && binding_visited++ < a->binding_count) {
+            if (!action_binding_valid(b, a->is_axis))
+                return rt_str_empty();
             if (b->type == BIND_KEY && b->code == key)
                 return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
+        if (b || binding_visited != a->binding_count)
+            return rt_str_empty();
         a = a->next;
     }
     return rt_str_empty();
@@ -1333,13 +1412,21 @@ rt_string rt_action_mouse_bound_to(int64_t button) {
     if (!action_mouse_button_valid(button))
         return rt_str_empty();
     Action *a = g_actions;
-    while (a) {
+    int64_t action_visited = 0;
+    while (a && action_visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return rt_str_empty();
         Binding *b = a->bindings;
-        while (b) {
+        int64_t binding_visited = 0;
+        while (b && binding_visited++ < a->binding_count) {
+            if (!action_binding_valid(b, a->is_axis))
+                return rt_str_empty();
             if (b->type == BIND_MOUSE_BUTTON && b->code == button)
                 return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
+        if (b || binding_visited != a->binding_count)
+            return rt_str_empty();
         a = a->next;
     }
     return rt_str_empty();
@@ -1358,14 +1445,22 @@ rt_string rt_action_pad_button_bound_to(int64_t pad_index, int64_t button) {
     if (!action_pad_index_valid(pad_index) || !action_pad_button_valid(button))
         return rt_str_empty();
     Action *a = g_actions;
-    while (a) {
+    int64_t action_visited = 0;
+    while (a && action_visited++ < ACTION_MAX_ACTIONS) {
+        if (!action_binding_list_valid(a))
+            return rt_str_empty();
         Binding *b = a->bindings;
-        while (b) {
+        int64_t binding_visited = 0;
+        while (b && binding_visited++ < a->binding_count) {
+            if (!action_binding_valid(b, a->is_axis))
+                return rt_str_empty();
             if ((b->type == BIND_PAD_BUTTON || b->type == BIND_PAD_BUTTON_AXIS) &&
                 b->code == button && (b->pad_index == pad_index || b->pad_index == -1))
                 return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
+        if (b || binding_visited != a->binding_count)
+            return rt_str_empty();
         a = a->next;
     }
     return rt_str_empty();

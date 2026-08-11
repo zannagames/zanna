@@ -154,6 +154,41 @@ void test_invalid_groups_reject_every_effect_kind() {
     rt_audio_fx_clear_all();
 }
 
+void test_effect_chain_has_bounded_capacity() {
+    rt_audio_fx_clear_all();
+    for (int i = 0; i < 32; ++i)
+        assert(rt_audio_fx_add_lowpass(RT_MIXGROUP_SFX, 1000.0, 0.707) > 0);
+    assert(rt_audio_fx_add_lowpass(RT_MIXGROUP_SFX, 1000.0, 0.707) == -1);
+    rt_audio_fx_clear_group(RT_MIXGROUP_SFX);
+    assert(rt_audio_fx_add_lowpass(RT_MIXGROUP_SFX, 1000.0, 0.707) > 0);
+    rt_audio_fx_clear_all();
+}
+
+void test_nonfinite_input_does_not_poison_effect_state() {
+    constexpr float nan = std::numeric_limits<float>::quiet_NaN();
+    const int64_t groups[] = {RT_MIXGROUP_SFX, RT_MIXGROUP_MUSIC, RT_MIXGROUP_NAMED_BASE};
+
+    rt_audio_fx_clear_all();
+    assert(rt_audio_fx_add_lowpass(groups[0], 1000.0, 0.707) > 0);
+    assert(rt_audio_fx_add_delay(groups[1], 1.0, 0.5, 0.5) > 0);
+    assert(rt_audio_fx_add_reverb(groups[2], 0.5, 0.5, 0.5) > 0);
+
+    for (int64_t group : groups) {
+        std::vector<float> poisoned(64 * kChannels, nan);
+        rt_audio_fx_process_group(group, poisoned.data(), 64, kChannels, kRate);
+        for (float sample : poisoned)
+            assert(std::isfinite(sample));
+
+        std::vector<float> clean(4096 * kChannels, 0.0f);
+        clean[0] = clean[1] = 1.0f;
+        rt_audio_fx_process_group(group, clean.data(), 4096, kChannels, kRate);
+        for (float sample : clean)
+            assert(std::isfinite(sample));
+        assert(rms(clean) > 0.0);
+    }
+    rt_audio_fx_clear_all();
+}
+
 } // namespace
 
 void test_peaking_sanitizes_gain() {
@@ -195,6 +230,8 @@ int main() {
     test_reverb_generates_decaying_tail();
     test_bypass_remove_clear_are_identity();
     test_invalid_groups_reject_every_effect_kind();
+    test_effect_chain_has_bounded_capacity();
+    test_nonfinite_input_does_not_poison_effect_state();
     std::printf("Audio FX tests passed.\n");
     return 0;
 }

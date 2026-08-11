@@ -7,6 +7,13 @@
 //
 // File: src/tests/runtime/RTLruCacheTests.cpp
 // Purpose: Tests for Zanna.Collections.LruCache runtime helpers.
+// Key invariants:
+//   - Reentrant finalizers cannot corrupt cache ownership or ordering.
+//   - Test-owned runtime objects and strings are released after each case.
+// Ownership/Lifetime:
+//   - Runtime heap objects use the production reference-counting contract.
+//   - Global trap and reentry state is reset before it can escape a test case.
+// Links: src/runtime/collections/rt_lrucache.c, src/runtime/collections/rt_lrucache.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -591,7 +598,7 @@ static void test_owner_finalizer_blocks_reentrant_put() {
     g_reentry_action = ReentryAction::Put;
     rt_release_obj(cache);
 
-    rt_heap_info_t inserted_info;
+    [[maybe_unused]] rt_heap_info_t inserted_info;
     assert(g_reentry_calls == 1);
     assert(rt_heap_get_info(inserted, &inserted_info) == 1);
     assert(inserted_info.refcnt == 1);

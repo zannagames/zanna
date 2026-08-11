@@ -346,7 +346,6 @@ static vaud_context_t g_audio_ctx = NULL;
 static volatile int g_audio_initialized = 0;
 static int8_t g_audio_paused = 0;
 
-
 typedef struct {
     int64_t voice_id;
     int64_t group;
@@ -2614,6 +2613,8 @@ void rt_snd_group_clear_fx(int64_t group) {
 /// @param new_music Opaque music handle to fade in; may be NULL.
 /// @param duration_ms Transition duration in milliseconds.
 void rt_music_crossfade_to(void *current_music, void *new_music, int64_t duration_ms) {
+    if (duration_ms > INT64_C(3600000))
+        duration_ms = INT64_C(3600000);
     rt_deferred_release_list releases = {0};
 
     audio_state_lock();

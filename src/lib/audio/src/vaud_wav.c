@@ -109,7 +109,7 @@ static int64_t vaud_wav_tell_stream(FILE *file) {
 /// @param p Pointer to at least two readable bytes.
 /// @return Host-order unsigned value.
 static inline uint16_t read_u16_le(const uint8_t *p) {
-    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+    return (uint16_t)((uint16_t)p[0] | (uint16_t)((uint16_t)p[1] << 8));
 }
 
 /// @brief Read a 32-bit little-endian value from a buffer.
@@ -304,6 +304,26 @@ static int validate_wav_data_alignment(const vaud_wav_info *info) {
     return 1;
 }
 
+/// @brief Validate a raw layout accepted by the PCM frame converter.
+/// @details This gate is used by streaming helpers whose layout arguments do
+///          not necessarily originate in the validated WAV parser.
+/// @param channels Source channel count.
+/// @param bits_per_sample Source sample width.
+/// @param audio_format WAV encoding identifier.
+/// @return Non-zero for a supported mono/stereo PCM or float layout.
+static int wav_decode_layout_supported(int32_t channels,
+                                       int32_t bits_per_sample,
+                                       int32_t audio_format) {
+    if (channels != 1 && channels != 2)
+        return 0;
+    if (audio_format == WAV_FORMAT_IEEE_FLOAT)
+        return bits_per_sample == 32;
+    if (audio_format != WAV_FORMAT_PCM)
+        return 0;
+    return bits_per_sample == 8 || bits_per_sample == 16 || bits_per_sample == 24 ||
+           bits_per_sample == 32;
+}
+
 /// @brief Reset all successful-stream outputs to inert values after a failure.
 /// @details Callers use this once pointer validation has succeeded so a later
 ///          parse or seek error cannot leave stale file metadata behind.
@@ -363,21 +383,36 @@ static int parse_wav_header(const uint8_t *data, size_t size, vaud_wav_info *inf
         return 0;
     }
 
+    uint32_t riff_size = read_u32_le(data + 4);
+    if (riff_size < 4u) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Invalid RIFF container size");
+        return 0;
+    }
+    if ((size_t)riff_size > size - 8u) {
+        vaud_set_error(VAUD_ERR_FORMAT, "RIFF container extends beyond file");
+        return 0;
+    }
+    size_t riff_end = (size_t)riff_size + 8u;
+
     /* Find and parse fmt chunk */
     size_t offset = 12;
     int found_fmt = 0;
     int found_data = 0;
 
-    while (offset + 8 <= size) {
+    while (offset <= riff_end && riff_end - offset >= 8u) {
         uint32_t chunk_id = read_u32_le(data + offset);
         uint32_t chunk_size = read_u32_le(data + offset + 4);
-        size_t available = size - offset - 8;
+        size_t available = riff_end - offset - 8u;
         if ((size_t)chunk_size > available) {
-            vaud_set_error(VAUD_ERR_FORMAT, "WAV chunk extends beyond file");
+            vaud_set_error(VAUD_ERR_FORMAT, "WAV chunk extends beyond RIFF container");
             return 0;
         }
 
         if (chunk_id == WAV_FMT_ID) {
+            if (found_fmt) {
+                vaud_set_error(VAUD_ERR_FORMAT, "Duplicate fmt chunk");
+                return 0;
+            }
             if (chunk_size < 16) {
                 vaud_set_error(VAUD_ERR_FORMAT, "Invalid fmt chunk");
                 return 0;
@@ -427,6 +462,10 @@ static int parse_wav_header(const uint8_t *data, size_t size, vaud_wav_info *inf
 
             found_fmt = 1;
         } else if (chunk_id == WAV_DATA_ID) {
+            if (found_data) {
+                vaud_set_error(VAUD_ERR_FORMAT, "Duplicate data chunk");
+                return 0;
+            }
             info->data_offset = (int64_t)(offset + 8);
             info->data_size = (int64_t)chunk_size;
             found_data = 1;
@@ -434,7 +473,7 @@ static int parse_wav_header(const uint8_t *data, size_t size, vaud_wav_info *inf
 
         /* Move to next chunk (chunks are word-aligned) */
         offset += 8 + (size_t)chunk_size;
-        if ((chunk_size & 1) && offset < size)
+        if ((chunk_size & 1) && offset < riff_end)
             offset++; /* Pad byte */
 
         if (found_fmt && found_data)
@@ -494,11 +533,34 @@ static int parse_wav_stream(FILE *file, vaud_wav_info *info) {
         return 0;
     }
 
+    uint32_t riff_size = read_u32_le(header + 4);
+    if (riff_size < 4u) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Invalid RIFF container size");
+        return 0;
+    }
+    int64_t riff_end = (int64_t)riff_size + 8;
+    if (riff_end > file_size) {
+        vaud_set_error(VAUD_ERR_FORMAT, "RIFF container extends beyond file");
+        return 0;
+    }
+
     memset(info, 0, sizeof(*info));
     int found_fmt = 0;
     int found_data = 0;
 
     while (1) {
+        int64_t chunk_header_offset = vaud_wav_tell_stream(file);
+        if (chunk_header_offset < 0) {
+            vaud_set_error(VAUD_ERR_FILE, "Failed to read WAV chunk offset");
+            return 0;
+        }
+        if (chunk_header_offset == riff_end)
+            break;
+        if (chunk_header_offset > riff_end || riff_end - chunk_header_offset < 8) {
+            vaud_set_error(VAUD_ERR_FORMAT, "Truncated WAV chunk header");
+            return 0;
+        }
+
         uint8_t chunk_header[8];
         size_t header_read = fread(chunk_header, 1, sizeof(chunk_header), file);
         if (header_read == 0)
@@ -516,13 +578,16 @@ static int parse_wav_stream(FILE *file, vaud_wav_info *info) {
             return 0;
         }
 
-        int64_t padded_size = (int64_t)chunk_size + (int64_t)(chunk_size & 1u);
-        if ((int64_t)chunk_data_offset + padded_size > file_size) {
-            vaud_set_error(VAUD_ERR_FORMAT, "WAV chunk extends beyond file");
+        if ((int64_t)chunk_size > riff_end - chunk_data_offset) {
+            vaud_set_error(VAUD_ERR_FORMAT, "WAV chunk extends beyond RIFF container");
             return 0;
         }
 
         if (chunk_id == WAV_FMT_ID) {
+            if (found_fmt) {
+                vaud_set_error(VAUD_ERR_FORMAT, "Duplicate fmt chunk");
+                return 0;
+            }
             uint8_t fmt[16];
             if (chunk_size < sizeof(fmt) || fread(fmt, 1, sizeof(fmt), file) != sizeof(fmt)) {
                 vaud_set_error(VAUD_ERR_FORMAT, "Invalid fmt chunk");
@@ -573,6 +638,10 @@ static int parse_wav_stream(FILE *file, vaud_wav_info *info) {
             }
             found_fmt = 1;
         } else if (chunk_id == WAV_DATA_ID) {
+            if (found_data) {
+                vaud_set_error(VAUD_ERR_FORMAT, "Duplicate data chunk");
+                return 0;
+            }
             info->data_offset = (int64_t)chunk_data_offset;
             info->data_size = (int64_t)chunk_size;
             if (!vaud_wav_seek_stream(file, (int64_t)chunk_size, SEEK_CUR)) {
@@ -585,9 +654,16 @@ static int parse_wav_stream(FILE *file, vaud_wav_info *info) {
             return 0;
         }
 
-        if ((chunk_size & 1u) != 0 && !vaud_wav_seek_stream(file, 1, SEEK_CUR)) {
-            vaud_set_error(VAUD_ERR_FILE, "Failed to skip WAV chunk padding");
-            return 0;
+        if ((chunk_size & 1u) != 0) {
+            int64_t after_chunk = vaud_wav_tell_stream(file);
+            if (after_chunk < 0) {
+                vaud_set_error(VAUD_ERR_FILE, "Failed to read WAV chunk offset");
+                return 0;
+            }
+            if (after_chunk < riff_end && !vaud_wav_seek_stream(file, 1, SEEK_CUR)) {
+                vaud_set_error(VAUD_ERR_FILE, "Failed to skip WAV chunk padding");
+                return 0;
+            }
         }
 
         if (found_fmt && found_data)
@@ -602,8 +678,8 @@ static int parse_wav_stream(FILE *file, vaud_wav_info *info) {
         vaud_set_error(VAUD_ERR_FORMAT, "Missing data chunk");
         return 0;
     }
-    if (info->data_offset + info->data_size > file_size) {
-        vaud_set_error(VAUD_ERR_FORMAT, "Data chunk extends beyond file");
+    if (info->data_offset > riff_end || info->data_size > riff_end - info->data_offset) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Data chunk extends beyond RIFF container");
         return 0;
     }
 
@@ -773,7 +849,17 @@ int vaud_wav_load_mem(const void *data,
                       int64_t *out_frames,
                       int32_t *out_sample_rate,
                       int32_t *out_channels) {
-    if (!data || !out_samples || !out_frames || !out_sample_rate || !out_channels) {
+    if (!out_samples || !out_frames || !out_sample_rate || !out_channels) {
+        vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL parameter");
+        return 0;
+    }
+
+    *out_samples = NULL;
+    *out_frames = 0;
+    *out_sample_rate = 0;
+    *out_channels = 0;
+
+    if (!data) {
         vaud_set_error(VAUD_ERR_INVALID_PARAM, "NULL parameter");
         return 0;
     }
@@ -880,8 +966,10 @@ int32_t vaud_wav_read_frames(void *file,
     if (!file || !samples || frames <= 0)
         return 0;
 
-    if (channels <= 0 || bits_per_sample <= 0)
+    if (!wav_decode_layout_supported(channels, bits_per_sample, audio_format)) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Unsupported WAV stream layout");
         return 0;
+    }
     int32_t bytes_per_sample = bits_per_sample / 8;
     if (bytes_per_sample > 0 && channels > INT32_MAX / bytes_per_sample)
         return 0;
@@ -916,8 +1004,10 @@ int32_t vaud_wav_read_frames_buffered(void *file,
     if (!file || !samples || !temp || frames <= 0)
         return 0;
 
-    if (channels <= 0 || bits_per_sample <= 0)
+    if (!wav_decode_layout_supported(channels, bits_per_sample, audio_format)) {
+        vaud_set_error(VAUD_ERR_FORMAT, "Unsupported WAV stream layout");
         return 0;
+    }
     int32_t bytes_per_sample = bits_per_sample / 8;
     if (bytes_per_sample > 0 && channels > INT32_MAX / bytes_per_sample)
         return 0;
@@ -975,7 +1065,10 @@ int64_t vaud_resample_output_frames(int64_t in_frames, int32_t in_rate, int32_t 
 
 /// @copydoc vaud_pcm_s16_buffer_size
 int vaud_pcm_s16_buffer_size(int64_t frames, int32_t channels, size_t *out_bytes) {
-    if (!out_bytes || frames <= 0 || channels <= 0)
+    if (!out_bytes)
+        return 0;
+    *out_bytes = 0;
+    if (frames <= 0 || channels <= 0)
         return 0;
     if ((uint64_t)frames > SIZE_MAX / (uint64_t)channels)
         return 0;
@@ -1012,7 +1105,8 @@ static inline double sample_s16_clamped(
         frame = 0;
     if (frame >= in_frames)
         frame = in_frames - 1;
-    return (double)input[frame * channels + channel];
+    size_t sample_index = (size_t)frame * (size_t)channels + (size_t)channel;
+    return (double)input[sample_index];
 }
 
 /// @brief Interpolate one channel using a Catmull-Rom cubic kernel.
@@ -1053,21 +1147,35 @@ void vaud_resample(const int16_t *input,
         channels <= 0)
         return;
 
+    size_t input_bytes = 0;
+    size_t output_bytes = 0;
+    if (!vaud_pcm_s16_buffer_size(in_frames, channels, &input_bytes) ||
+        !vaud_pcm_s16_buffer_size(out_frames, channels, &output_bytes))
+        return;
+
     if (in_rate == out_rate && in_frames == out_frames) {
-        if ((uint64_t)in_frames <= SIZE_MAX / (size_t)channels / sizeof(int16_t)) {
-            size_t bytes = (size_t)in_frames * (size_t)channels * sizeof(int16_t);
-            memmove(output, input, bytes);
+        memmove(output, input, output_bytes);
+        return;
+    }
+
+    if (in_frames == 1) {
+        for (int64_t out_idx = 0; out_idx < out_frames; out_idx++) {
+            size_t output_base = (size_t)out_idx * (size_t)channels;
+            for (int32_t ch = 0; ch < channels; ch++)
+                output[output_base + (size_t)ch] = input[ch];
         }
         return;
     }
+
+    (void)input_bytes;
 
     /* Dependency-free cubic interpolation resampler. */
     double ratio = (double)in_rate / (double)out_rate;
 
     for (int64_t out_idx = 0; out_idx < out_frames; out_idx++) {
-        double in_pos = out_idx * ratio;
+        double in_pos = (double)out_idx * ratio;
         int64_t in_idx = (int64_t)in_pos;
-        double frac = in_pos - in_idx;
+        double frac = in_pos - (double)in_idx;
 
         /* Clamp to valid range */
         if (in_idx >= in_frames - 1) {
@@ -1077,7 +1185,8 @@ void vaud_resample(const int16_t *input,
 
         for (int32_t ch = 0; ch < channels; ch++) {
             double interp = cubic_sample_s16(input, in_idx, frac, in_frames, channels, ch);
-            output[out_idx * channels + ch] = clamp_double_to_s16(interp);
+            size_t output_index = (size_t)out_idx * (size_t)channels + (size_t)ch;
+            output[output_index] = clamp_double_to_s16(interp);
         }
     }
 }

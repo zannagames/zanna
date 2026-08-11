@@ -88,14 +88,16 @@ std::vector<uint8_t> make_single_packet_page(uint32_t serial,
     return page;
 }
 
-std::vector<uint8_t> make_unfinished_packet_page(uint32_t serial, uint32_t sequence = 0) {
+std::vector<uint8_t> make_unfinished_packet_page(uint32_t serial,
+                                                 uint32_t sequence = 0,
+                                                 uint8_t header_type = 0x02) {
     std::vector<uint8_t> page(27 + 1 + 255, 0);
     page[0] = 'O';
     page[1] = 'g';
     page[2] = 'g';
     page[3] = 'S';
     page[4] = 0;
-    page[5] = 0x02; // BOS
+    page[5] = header_type;
     for (int i = 0; i < 8; ++i)
         page[6 + i] = 0xFFu;
     put_u32_le(page, 14, serial);
@@ -103,6 +105,22 @@ std::vector<uint8_t> make_unfinished_packet_page(uint32_t serial, uint32_t seque
     page[26] = 1;
     page[27] = 255; // No terminating lacing value: packet remains partial.
     std::memset(page.data() + 28, static_cast<int>(serial & 0xFFu), 255);
+    put_u32_le(page, 22, ogg_crc(page));
+    return page;
+}
+
+std::vector<uint8_t> make_empty_page(uint32_t serial, uint32_t sequence, uint8_t header_type = 0) {
+    std::vector<uint8_t> page(27, 0);
+    page[0] = 'O';
+    page[1] = 'g';
+    page[2] = 'g';
+    page[3] = 'S';
+    page[5] = header_type;
+    for (int i = 0; i < 8; ++i)
+        page[6 + i] = 0xFFu;
+    put_u32_le(page, 14, serial);
+    put_u32_le(page, 18, sequence);
+    page[26] = 0;
     put_u32_le(page, 22, ogg_crc(page));
     return page;
 }
@@ -313,6 +331,125 @@ void test_page_sequence_wraparound_preserves_continuation() {
     ogg_reader_free(reader);
 }
 
+void test_reserved_page_header_flags_are_rejected() {
+    std::vector<uint8_t> page =
+        make_single_packet_page(905, std::vector<uint8_t>{'x'}, false, 0, 0, 0x82);
+    ogg_reader_t *reader = ogg_reader_open_mem(page.data(), page.size());
+    assert(reader != nullptr);
+
+    const uint8_t *out = reinterpret_cast<const uint8_t *>(static_cast<uintptr_t>(1));
+    size_t out_len = 99;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
+void test_bos_continuation_combination_is_rejected() {
+    std::vector<uint8_t> data = make_unfinished_packet_page(906, 0, 0x02);
+    std::vector<uint8_t> invalid =
+        make_single_packet_page(906, std::vector<uint8_t>{'x'}, false, 0, 1, 0x03);
+    data.insert(data.end(), invalid.begin(), invalid.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
+void test_duplicate_bos_is_rejected() {
+    std::vector<uint8_t> data =
+        make_single_packet_page(907, std::vector<uint8_t>{'a'}, false, 0, 0, 0x02);
+    std::vector<uint8_t> duplicate =
+        make_single_packet_page(907, std::vector<uint8_t>{'b'}, false, 0, 1, 0x02);
+    data.insert(data.end(), duplicate.begin(), duplicate.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 1);
+    assert(out_len == 1 && out[0] == 'a');
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
+void test_bos_metadata_survives_packet_continuation() {
+    std::vector<uint8_t> data = make_unfinished_packet_page(908, 0, 0x02);
+    std::vector<uint8_t> continuation =
+        make_single_packet_page(908, std::vector<uint8_t>{'z'}, false, 0, 1, 0x01);
+    data.insert(data.end(), continuation.begin(), continuation.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    ogg_packet_info_t info{};
+    assert(ogg_reader_next_packet_ex(reader, &out, &out_len, &info) == 1);
+    assert(out_len == 256);
+    assert(info.bos == 1);
+    ogg_reader_free(reader);
+}
+
+void test_eos_cannot_leave_an_unterminated_packet() {
+    std::vector<uint8_t> data = make_unfinished_packet_page(909, 0, 0x06);
+    std::vector<uint8_t> continuation =
+        make_single_packet_page(909, std::vector<uint8_t>{'z'}, false, 0, 1, 0x01);
+    data.insert(data.end(), continuation.begin(), continuation.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
+void test_capture_resynchronization_work_is_bounded() {
+    constexpr size_t kMaxResyncBytes = 1024u * 1024u;
+    std::vector<uint8_t> data(kMaxResyncBytes + 1u, 'x');
+    std::vector<uint8_t> page = make_single_packet_page(910, std::vector<uint8_t>{'o', 'k'});
+    data.insert(data.end(), page.begin(), page.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
+void test_empty_page_work_per_packet_request_is_bounded() {
+    constexpr uint32_t kMaxPagesPerRequest = 4096;
+    std::vector<uint8_t> data;
+    for (uint32_t sequence = 0; sequence <= kMaxPagesPerRequest; ++sequence) {
+        std::vector<uint8_t> page = make_empty_page(911, sequence, sequence == 0 ? 0x02 : 0);
+        data.insert(data.end(), page.begin(), page.end());
+    }
+    std::vector<uint8_t> packet = make_single_packet_page(
+        911, std::vector<uint8_t>{'o', 'k'}, false, 0, kMaxPagesPerRequest + 1, 0);
+    data.insert(data.end(), packet.begin(), packet.end());
+
+    ogg_reader_t *reader = ogg_reader_open_mem(data.data(), data.size());
+    assert(reader != nullptr);
+    const uint8_t *out = nullptr;
+    size_t out_len = 0;
+    assert(ogg_reader_next_packet(reader, &out, &out_len) == 0);
+    assert(out == nullptr);
+    assert(out_len == 0);
+    ogg_reader_free(reader);
+}
+
 } // namespace
 
 int main() {
@@ -326,5 +463,12 @@ int main() {
     test_missing_continuation_flag_cannot_splice_partial_packet();
     test_duplicate_page_sequence_is_rejected();
     test_page_sequence_wraparound_preserves_continuation();
+    test_reserved_page_header_flags_are_rejected();
+    test_bos_continuation_combination_is_rejected();
+    test_duplicate_bos_is_rejected();
+    test_bos_metadata_survives_packet_continuation();
+    test_eos_cannot_leave_an_unterminated_packet();
+    test_capture_resynchronization_work_is_bounded();
+    test_empty_page_work_per_packet_request_is_bounded();
     return 0;
 }

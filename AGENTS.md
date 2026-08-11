@@ -38,6 +38,7 @@ Fast iteration knobs (environment variables, all platforms):
 | `ZANNA_SKIP_CLEAN=1` | Incremental rebuild (skip the clean-all step) |
 | `ZANNA_SKIP_TESTS=1` | Build only; skip ctest |
 | `ZANNA_TEST_LABEL=<label>` | Run only tests with that ctest label |
+| `ZANNA_CTEST_TIMEOUT=<seconds>` | Bound tests without an explicit CMake timeout (Windows default: 600 seconds) |
 | `ZANNA_SKIP_LINT=1 ZANNA_SKIP_AUDIT=1 ZANNA_SKIP_SMOKE=1 ZANNA_SKIP_INSTALL=1` | Skip non-test stages |
 | `ZANNA_SKIP_STUDIO=1` | Skip the multi-minute Zanna Studio native compile |
 | `ZANNA_CMAKE_GENERATOR=Ninja` | Use Ninja |

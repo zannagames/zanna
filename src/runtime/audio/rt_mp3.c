@@ -56,6 +56,7 @@ typedef struct {
     const uint8_t *data;
     size_t len;
     size_t pos; // bit position
+    int error;  // sticky invalid-request/truncation indicator
 } mp3_bits_t;
 
 // ---------------------------------------------------------------------------
@@ -70,23 +71,34 @@ typedef struct {
 /// @param byte_len Number of readable bytes; converted to the stored bit length.
 static void mp3_bits_init(mp3_bits_t *b, const uint8_t *data, size_t byte_len) {
     b->data = data;
-    b->len = byte_len * 8;
+    b->len = 0;
     b->pos = 0;
+    b->error = 0;
+    if ((!data && byte_len != 0) || byte_len > SIZE_MAX / 8u) {
+        b->error = 1;
+        return;
+    }
+    b->len = byte_len * 8u;
 }
 
 /// @brief Pull up to 32 MSB-first bits from the current reader position.
-/// @details If the buffer ends mid-field, returns the accumulated prefix and
-///          leaves unread low-order result bits as zero.
+/// @details If the buffer ends mid-field, returns zero and marks the reader
+///          failed. The failure is sticky for the remainder of the packet.
 /// @param b Initialized bit reader.
 /// @param count Number of bits to consume; non-positive values consume none.
 /// @return Decoded unsigned field, or zero when no bits are requested/available.
 static uint32_t mp3_bits_read(mp3_bits_t *b, int count) {
-    if (count <= 0)
+    if (!b || b->error)
         return 0;
+    if (count == 0)
+        return 0;
+    if (count < 0 || count > 32 || (size_t)count > b->len - b->pos) {
+        b->pos = b->len;
+        b->error = 1;
+        return 0;
+    }
     uint32_t val = 0;
     for (int i = 0; i < count; i++) {
-        if (b->pos >= b->len)
-            return val;
         size_t byte_idx = b->pos / 8;
         int bit_idx = 7 - (int)(b->pos % 8); // MSB first
         if (b->data[byte_idx] & (1 << bit_idx))
@@ -110,6 +122,7 @@ typedef struct {
     int mode_ext;
     int channels;
     int frame_size; // total frame bytes including header
+    int crc_size;
     int side_info_size;
     int main_data_size;
 } mp3_frame_header_t;
@@ -123,6 +136,12 @@ typedef struct {
 /// @param out Receives parsed header fields and derived sizes on success.
 /// @return `0` for a supported Layer III header, otherwise `-1`.
 static int mp3_parse_header(const uint8_t *hdr, mp3_frame_header_t *out) {
+    if (!out)
+        return -1;
+    memset(out, 0, sizeof(*out));
+    if (!hdr)
+        return -1;
+
     // Sync word check: 11 bits of 1
     if (hdr[0] != 0xFF || (hdr[1] & 0xE0) != 0xE0)
         return -1;
@@ -164,6 +183,9 @@ static int mp3_parse_header(const uint8_t *hdr, mp3_frame_header_t *out) {
     out->channel_mode = (hdr[3] >> 6) & 0x03;
     out->mode_ext = (hdr[3] >> 4) & 0x03;
     out->channels = (out->channel_mode == 3) ? 1 : 2;
+    out->crc_size = (hdr[1] & 0x01) ? 0 : 2;
+    if ((hdr[3] & 0x03) == 2)
+        return -1; // reserved emphasis
 
     // Frame size for Layer III
     if (out->mpeg_version == 3) {
@@ -176,7 +198,7 @@ static int mp3_parse_header(const uint8_t *hdr, mp3_frame_header_t *out) {
         out->side_info_size = (out->channels == 1) ? 9 : 17;
     }
 
-    out->main_data_size = out->frame_size - 4 - out->side_info_size;
+    out->main_data_size = out->frame_size - 4 - out->crc_size - out->side_info_size;
     if (out->main_data_size < 0)
         return -1;
 
@@ -225,6 +247,12 @@ typedef struct {
 /// @return `0` after parsing.
 static int mp3_parse_side_info(
     const uint8_t *data, int size, int channels, int mpeg1, mp3_side_info_t *si) {
+    if (si)
+        memset(si, 0, sizeof(*si));
+    int expected_size = mpeg1 ? (channels == 1 ? 17 : 32) : (channels == 1 ? 9 : 17);
+    if (!data || !si || (channels != 1 && channels != 2) || (mpeg1 != 0 && mpeg1 != 1) ||
+        size != expected_size)
+        return -1;
     mp3_bits_t bits;
     mp3_bits_init(&bits, data, (size_t)size);
 
@@ -245,11 +273,15 @@ static int mp3_parse_side_info(
             mp3_granule_info_t *gi = &si->granules[gr][ch];
             gi->part2_3_length = (int)mp3_bits_read(&bits, 12);
             gi->big_values = (int)mp3_bits_read(&bits, 9);
+            if (gi->big_values > 288)
+                return -1;
             gi->global_gain = (int)mp3_bits_read(&bits, 8);
             gi->scalefac_compress = (int)mp3_bits_read(&bits, mpeg1 ? 4 : 9);
             gi->window_switching = (int)mp3_bits_read(&bits, 1);
             if (gi->window_switching) {
                 gi->block_type = (int)mp3_bits_read(&bits, 2);
+                if (gi->block_type == 0)
+                    return -1;
                 gi->mixed_block = (int)mp3_bits_read(&bits, 1);
                 gi->table_select[0] = (int)mp3_bits_read(&bits, 5);
                 gi->table_select[1] = (int)mp3_bits_read(&bits, 5);
@@ -284,7 +316,7 @@ static int mp3_parse_side_info(
         }
     }
 
-    return 0;
+    return bits.error ? -1 : 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -361,6 +393,8 @@ static int mp3_huff_tree_decode(
         }
         // Branch: read one bit to choose left/right child
         int bit = (int)mp3_bits_read(bits, 1);
+        if (bits->error)
+            return -1;
         node = -val + bit;
         depth++;
     }
@@ -419,18 +453,22 @@ static int mp3_huff_table_supported(int table_idx) {
 /// @param table_idx Layer III Huffman table index.
 /// @param x Receives the first non-negative spectral value.
 /// @param y Receives the second non-negative spectral value.
-static void mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y) {
+static int mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y) {
+    if (!bits || !x || !y)
+        return -1;
     if (table_idx <= 0 || table_idx >= 32 || mp3_huff_info[table_idx].max_val == 0) {
         *x = *y = 0;
-        return;
+        return 0;
     }
 
     int tree_size;
     const mp3_huff_node_t *tree = mp3_get_huff_tree(table_idx, &tree_size);
     if (tree) {
-        if (mp3_huff_tree_decode(bits, tree, tree_size, x, y) != 0)
+        if (mp3_huff_tree_decode(bits, tree, tree_size, x, y) != 0) {
             *x = *y = 0;
-        return;
+            return -1;
+        }
+        return 0;
     }
 
     // Fallback for larger tables: read variable-length values.
@@ -452,6 +490,7 @@ static void mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y
         *x = max_val;
     if (*y > max_val)
         *y = max_val;
+    return bits->error ? -1 : 0;
 }
 
 //===----------------------------------------------------------------------===//
@@ -498,6 +537,19 @@ static void mp3_imdct12(const float *in, float *out) {
 // Polyphase synthesis filterbank
 //===----------------------------------------------------------------------===//
 
+/// @brief Convert a normalized synthesis sample to saturated signed 16-bit PCM.
+/// @param sample Floating-point sample.
+/// @return Zero for NaN, otherwise a value saturated to the int16 range.
+static int16_t mp3_pcm_s16_from_double(double sample) {
+    if (isnan(sample))
+        return 0;
+    if (sample >= 1.0)
+        return INT16_MAX;
+    if (sample <= -1.0)
+        return INT16_MIN;
+    return (int16_t)(sample * 32768.0);
+}
+
 /// @brief Polyphase synthesis filter — converts subband samples back to PCM.
 ///
 /// MP3's final stage: each frame yields 32 subband samples per
@@ -540,13 +592,7 @@ static void mp3_synth_filter(mp3_decoder_t *dec,
             if (d_idx < 512)
                 sum += (double)buf[idx] * (double)mp3_synth_d[d_idx];
         }
-        // Clamp to 16-bit
-        int s = (int)(sum * 32768.0);
-        if (s > 32767)
-            s = 32767;
-        if (s < -32768)
-            s = -32768;
-        pcm_out[j] = (int16_t)s;
+        pcm_out[j] = mp3_pcm_s16_from_double(sum);
     }
 }
 
@@ -560,14 +606,29 @@ static void mp3_synth_filter(mp3_decoder_t *dec,
 /// @return Tag-end offset, zero when no ID3v2 prefix exists, or @p len when a
 ///         declared tag extends beyond the available buffer.
 static size_t mp3_skip_id3v2(const uint8_t *data, size_t len) {
-    if (len >= 10 && data[0] == 'I' && data[1] == 'D' && data[2] == '3') {
+    if (!data || len < 3 || data[0] != 'I' || data[1] != 'D' || data[2] != '3')
+        return 0;
+    if (len < 10)
+        return len;
+
+    uint8_t version = data[3];
+    uint8_t flags = data[5];
+    uint8_t allowed_flags = version == 2 ? 0xC0u : version == 3 ? 0xE0u : 0xF0u;
+    if (version < 2 || version > 4 || data[4] == 0xFF || (flags & (uint8_t)~allowed_flags) != 0)
+        return len;
+    for (int i = 6; i < 10; i++) {
+        if ((data[i] & 0x80u) != 0)
+            return len;
+    }
+
+    {
         // Syncsafe integer size (4 bytes, 7 bits each)
         size_t tag_size = ((size_t)(data[6] & 0x7F) << 21) | ((size_t)(data[7] & 0x7F) << 14) |
                           ((size_t)(data[8] & 0x7F) << 7) | ((size_t)(data[9] & 0x7F));
-        size_t total = 10 + tag_size;
+        size_t footer_size = (version == 4 && (flags & 0x10u) != 0) ? 10u : 0u;
+        size_t total = 10u + tag_size + footer_size;
         return (total <= len) ? total : len;
     }
-    return 0;
 }
 
 /// @brief Find the next parseable Layer III frame header.
@@ -584,6 +645,17 @@ static size_t mp3_find_sync(const uint8_t *data, size_t len, size_t start) {
         }
     }
     return len; // not found
+}
+
+/// @brief Add a frame's sample count without overflowing the public integer total.
+/// @param total In/out accumulated per-channel sample count.
+/// @param frame_samples Positive sample count for one frame.
+/// @return Zero on success, or -1 when arguments are invalid or the sum overflows.
+static int mp3_add_sample_count(int *total, int frame_samples) {
+    if (!total || *total < 0 || frame_samples <= 0 || *total > INT32_MAX - frame_samples)
+        return -1;
+    *total += frame_samples;
+    return 0;
 }
 
 /// @brief Pre-walk an MP3 stream to extract channel/rate and total-sample counts.
@@ -608,6 +680,16 @@ static int mp3_scan_stream_metadata(const uint8_t *data,
                                     int *out_channels,
                                     int *out_sample_rate,
                                     int *out_total_samples) {
+    if (out_first_pos)
+        *out_first_pos = 0;
+    if (out_effective_len)
+        *out_effective_len = 0;
+    if (out_channels)
+        *out_channels = 0;
+    if (out_sample_rate)
+        *out_sample_rate = 0;
+    if (out_total_samples)
+        *out_total_samples = 0;
     if (!data || len < 4 || !out_first_pos || !out_effective_len || !out_channels ||
         !out_sample_rate || !out_total_samples) {
         return -1;
@@ -634,9 +716,12 @@ static int mp3_scan_stream_metadata(const uint8_t *data,
             scan_pos = mp3_find_sync(data, effective_len, scan_pos + 1);
             continue;
         }
-        if (scan_pos + (size_t)hdr.frame_size > effective_len)
+        if ((size_t)hdr.frame_size > effective_len - scan_pos)
             break;
-        total_samples += (hdr.mpeg_version == 3) ? 1152 : 576;
+        if (hdr.channels != first_hdr.channels || hdr.sample_rate != first_hdr.sample_rate)
+            return -1;
+        if (mp3_add_sample_count(&total_samples, (hdr.mpeg_version == 3) ? 1152 : 576) != 0)
+            return -1;
         scan_pos += (size_t)hdr.frame_size;
     }
 
@@ -649,6 +734,53 @@ static int mp3_scan_stream_metadata(const uint8_t *data,
     *out_sample_rate = first_hdr.sample_rate;
     *out_total_samples = total_samples;
     return 0;
+}
+
+/// @brief Append the current frame's main-data bytes to the bounded reservoir.
+/// @param dec Decoder owning the reservoir.
+/// @param data Main-data bytes from the current frame.
+/// @param size Number of bytes to append.
+static void mp3_reservoir_append(mp3_decoder_t *dec, const uint8_t *data, int size) {
+    if (!dec || !data || size <= 0)
+        return;
+    int to_save = size;
+    if (to_save > (int)sizeof(dec->reservoir)) {
+        data += to_save - (int)sizeof(dec->reservoir);
+        to_save = (int)sizeof(dec->reservoir);
+    }
+    if (dec->reservoir_size + to_save > (int)sizeof(dec->reservoir)) {
+        int shift = dec->reservoir_size + to_save - (int)sizeof(dec->reservoir);
+        memmove(dec->reservoir, dec->reservoir + shift, (size_t)(dec->reservoir_size - shift));
+        dec->reservoir_size -= shift;
+    }
+    memcpy(dec->reservoir + dec->reservoir_size, data, (size_t)to_save);
+    dec->reservoir_size += to_save;
+}
+
+/// @brief Map a short-block scalefactor-band coefficient to reordered spectral storage.
+static int mp3_short_band_index(int sample_rate_index, int band, int window, int coefficient) {
+    if (sample_rate_index < 0 || sample_rate_index >= 3 || band < 0 || band >= 13 || window < 0 ||
+        window >= 3)
+        return -1;
+    int start = mp3_sfb_short_cumul[sample_rate_index][band];
+    int width = mp3_sfb_short_cumul[sample_rate_index][band + 1] - start;
+    if (coefficient < 0 || coefficient >= width)
+        return -1;
+    return 3 * start + window * width + coefficient;
+}
+
+/// @brief Return the time-domain destination for a short-window IMDCT sample.
+static int mp3_short_imdct_offset(int window, int sample) {
+    if (window < 0 || window >= 3 || sample < 0 || sample >= 12)
+        return -1;
+    return 6 + window * 6 + sample;
+}
+
+/// @brief Select short IMDCT for a subband, respecting mixed-block long bands.
+static int mp3_uses_short_imdct(const mp3_granule_info_t *gi, int subband) {
+    if (!gi || subband < 0 || subband >= MP3_SUBBANDS || gi->block_type != 2)
+        return 0;
+    return !gi->mixed_block || subband >= 2;
 }
 
 /// @brief Decode one MP3 frame at the cursor into @p pcm_out.
@@ -680,7 +812,14 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                                      int *out_frames,
                                      int *out_channels,
                                      int *out_sample_rate) {
-    if (!dec || !data || !io_pos || !pcm_out || !out_frames || !out_channels || !out_sample_rate)
+    if (out_frames)
+        *out_frames = 0;
+    if (out_channels)
+        *out_channels = 0;
+    if (out_sample_rate)
+        *out_sample_rate = 0;
+    if (!dec || !data || !io_pos || !pcm_out || !out_frames || !out_channels || !out_sample_rate ||
+        *io_pos > effective_len)
         return -1;
 
     size_t pos = mp3_find_sync(data, effective_len, *io_pos);
@@ -694,28 +833,36 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
         *io_pos = pos + 1;
         return -1;
     }
-    if (pos + (size_t)hdr.frame_size > effective_len) {
+    if ((size_t)hdr.frame_size > effective_len - pos) {
         *io_pos = effective_len;
         return 0;
     }
 
-    const uint8_t *frame_data = data + pos + 4;
+    const uint8_t *frame_data = data + pos + 4 + (size_t)hdr.crc_size;
     mp3_side_info_t si;
     memset(&si, 0, sizeof(si));
     int is_mpeg1 = (hdr.mpeg_version == 3) ? 1 : 0;
-    mp3_parse_side_info(frame_data, hdr.side_info_size, hdr.channels, is_mpeg1, &si);
+    if (mp3_parse_side_info(frame_data, hdr.side_info_size, hdr.channels, is_mpeg1, &si) != 0) {
+        *io_pos = pos + (size_t)hdr.frame_size;
+        return -1;
+    }
 
     const uint8_t *main_data = frame_data + hdr.side_info_size;
     int main_data_len = hdr.main_data_size;
     uint8_t combined[4096];
-    if (si.main_data_begin > 0 && dec->reservoir_size >= si.main_data_begin) {
+    if (si.main_data_begin > dec->reservoir_size) {
+        mp3_reservoir_append(dec, main_data, main_data_len);
+        *io_pos = pos + (size_t)hdr.frame_size;
+        return -1;
+    }
+    if (si.main_data_begin > 0) {
         int res_start = dec->reservoir_size - si.main_data_begin;
         int total = si.main_data_begin + main_data_len;
-        if (total > (int)sizeof(combined))
-            total = (int)sizeof(combined);
+        if (total > (int)sizeof(combined)) {
+            *io_pos = pos + (size_t)hdr.frame_size;
+            return -1;
+        }
         int from_res = si.main_data_begin;
-        if (from_res > (int)sizeof(combined))
-            from_res = (int)sizeof(combined);
         memcpy(combined, dec->reservoir + res_start, (size_t)from_res);
         int from_frame = total - from_res;
         if (from_frame > main_data_len)
@@ -726,19 +873,15 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
         main_data_len = total;
     }
 
-    if (hdr.main_data_size > 0) {
-        int to_save = hdr.main_data_size;
-        if (to_save > (int)sizeof(dec->reservoir))
-            to_save = (int)sizeof(dec->reservoir);
-        if (dec->reservoir_size + to_save > (int)sizeof(dec->reservoir)) {
-            int shift = dec->reservoir_size + to_save - (int)sizeof(dec->reservoir);
-            memmove(dec->reservoir, dec->reservoir + shift, (size_t)(dec->reservoir_size - shift));
-            dec->reservoir_size -= shift;
-        }
-        memcpy(
-            dec->reservoir + dec->reservoir_size, frame_data + hdr.side_info_size, (size_t)to_save);
-        dec->reservoir_size += to_save;
-    }
+    mp3_reservoir_append(dec, frame_data + hdr.side_info_size, hdr.main_data_size);
+
+    float saved_overlap[MP3_MAX_CHANNELS][MP3_SUBBANDS][18];
+    float saved_synth_buf[MP3_MAX_CHANNELS][1024];
+    int saved_synth_offset[MP3_MAX_CHANNELS];
+    memcpy(saved_overlap, dec->overlap, sizeof(saved_overlap));
+    memcpy(saved_synth_buf, dec->synth_buf, sizeof(saved_synth_buf));
+    memcpy(saved_synth_offset, dec->synth_offset, sizeof(saved_synth_offset));
+    int frame_error_code = -1;
 
     int samples_per_frame = (hdr.mpeg_version == 3) ? 1152 : 576;
     memset(pcm_out, 0, (size_t)samples_per_frame * (size_t)hdr.channels * sizeof(int16_t));
@@ -756,14 +899,17 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
             for (int region = 0; region < 3; region++) {
                 if (!mp3_huff_table_supported(gi->table_select[region])) {
                     *io_pos = effective_len;
-                    return -2;
+                    frame_error_code = -2;
+                    goto frame_data_error;
                 }
             }
 
             size_t part_start = bits.pos;
+            if ((size_t)gi->part2_3_length > bits.len - part_start)
+                goto frame_data_error;
             size_t part_end = part_start + (size_t)gi->part2_3_length;
-            if (part_end > bits.len)
-                part_end = bits.len;
+            size_t main_data_bit_len = bits.len;
+            bits.len = part_end;
 
             int scalefac_l[22];
             int scalefac_s[13][3];
@@ -798,6 +944,8 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 for (int sfb = 11; sfb < 21; sfb++)
                     scalefac_l[sfb] = slen2 > 0 ? (int)mp3_bits_read(&bits, slen2) : 0;
             }
+            if (bits.error)
+                goto frame_data_error;
 
             int is_values[MP3_SBLIMIT];
             memset(is_values, 0, sizeof(is_values));
@@ -853,7 +1001,8 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                     }
 
                     int x, y;
-                    mp3_huff_decode_pair(&bits, table_idx, &x, &y);
+                    if (mp3_huff_decode_pair(&bits, table_idx, &x, &y) != 0)
+                        goto frame_data_error;
 
                     if (linbits > 0 && x >= 15)
                         x += (int)mp3_bits_read(&bits, linbits);
@@ -870,6 +1019,9 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                         is_values[line++] = y;
                 }
             }
+
+            if (bits.error)
+                goto frame_data_error;
 
             while (line + 3 < MP3_SBLIMIT && bits.pos < part_end) {
                 if (gi->count1table_select == 0) {
@@ -888,23 +1040,45 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 }
             }
 
+            if (bits.error)
+                goto frame_data_error;
+
             bits.pos = part_end;
+            bits.len = main_data_bit_len;
 
             float xr[MP3_SBLIMIT];
             memset(xr, 0, sizeof(xr));
             double global_gain_pow = pow(2.0, (double)(gi->global_gain - 210) / 4.0);
             int sfac_scale = gi->scalefac_scale ? 2 : 1;
 
-            if (gi->window_switching && gi->block_type == 2 && !gi->mixed_block) {
-                for (int sfb = 0; sfb < 12; sfb++) {
-                    int width = mp3_sfb_short_44100[sfb];
+            if (gi->window_switching && gi->block_type == 2) {
+                if (gi->mixed_block) {
+                    for (int sfb = 0; sfb < 8; sfb++) {
+                        int start = mp3_sfb_long_cumul[sr_idx][sfb];
+                        int end = mp3_sfb_long_cumul[sr_idx][sfb + 1];
+                        int sf = scalefac_l[sfb];
+                        if (gi->preflag)
+                            sf += mp3_pretab[sfb];
+                        double sfac_pow = pow(2.0, -0.5 * (double)(sf * sfac_scale));
+                        for (int i = start; i < end; i++) {
+                            double val = (double)abs(is_values[i]);
+                            val = (is_values[i] < 0 ? -1.0 : 1.0) * pow(val, 4.0 / 3.0);
+                            xr[i] = (float)(val * global_gain_pow * sfac_pow);
+                        }
+                    }
+                }
+
+                int first_short_band = gi->mixed_block ? 3 : 0;
+                for (int sfb = first_short_band; sfb < 12; sfb++) {
+                    int width =
+                        mp3_sfb_short_cumul[sr_idx][sfb + 1] - mp3_sfb_short_cumul[sr_idx][sfb];
                     for (int win = 0; win < 3; win++) {
                         double sfac_pow =
                             pow(2.0, -0.5 * (double)(scalefac_s[sfb][win] * sfac_scale));
                         double subblock_pow = pow(2.0, -0.5 * (double)(gi->subblock_gain[win] * 8));
                         for (int i = 0; i < width; i++) {
-                            int idx = sfb * 3 * width + win * width + i;
-                            if (idx >= MP3_SBLIMIT)
+                            int idx = mp3_short_band_index(sr_idx, sfb, win, i);
+                            if (idx < 0 || idx >= MP3_SBLIMIT)
                                 break;
                             double val = (double)abs(is_values[idx]);
                             val = (is_values[idx] < 0 ? -1.0 : 1.0) * pow(val, 4.0 / 3.0);
@@ -932,8 +1106,9 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 }
             }
 
-            if (gi->block_type != 2) {
-                for (int sb = 1; sb < 32; sb++) {
+            if (gi->block_type != 2 || gi->mixed_block) {
+                int alias_subbands = gi->mixed_block ? 2 : 32;
+                for (int sb = 1; sb < alias_subbands; sb++) {
                     for (int i = 0; i < 8; i++) {
                         int a_idx = sb * 18 - 1 - i;
                         int b_idx = sb * 18 + i;
@@ -950,7 +1125,7 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
             for (int sb = 0; sb < 32; sb++) {
                 float imdct_out[36];
 
-                if (gi->block_type == 2) {
+                if (mp3_uses_short_imdct(gi, sb)) {
                     memset(imdct_out, 0, sizeof(imdct_out));
                     for (int win = 0; win < 3; win++) {
                         float short_in[6];
@@ -958,8 +1133,10 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                             short_in[i] = xr[sb * 18 + win * 6 + i];
                         float short_out[12];
                         mp3_imdct12(short_in, short_out);
-                        for (int i = 0; i < 12; i++)
-                            imdct_out[6 + win * 6 + i % 6] += short_out[i] * mp3_win_short[i];
+                        for (int i = 0; i < 12; i++) {
+                            int out_index = mp3_short_imdct_offset(win, i);
+                            imdct_out[out_index] += short_out[i] * mp3_win_short[i];
+                        }
                     }
                 } else {
                     float long_in[18];
@@ -1019,6 +1196,14 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
     *out_channels = hdr.channels;
     *out_sample_rate = hdr.sample_rate;
     return 1;
+
+frame_data_error:
+    memcpy(dec->overlap, saved_overlap, sizeof(saved_overlap));
+    memcpy(dec->synth_buf, saved_synth_buf, sizeof(saved_synth_buf));
+    memcpy(dec->synth_offset, saved_synth_offset, sizeof(saved_synth_offset));
+    if (frame_error_code != -2)
+        *io_pos = pos + (size_t)hdr.frame_size;
+    return frame_error_code;
 }
 
 /// @brief Decode an entire MP3 file in one shot — header sniff → per-frame decode → PCM out.
@@ -1043,14 +1228,17 @@ int mp3_decode_file(mp3_decoder_t *dec,
                     int *out_samples,
                     int *out_channels,
                     int *out_sample_rate) {
+    if (out_pcm)
+        *out_pcm = NULL;
+    if (out_samples)
+        *out_samples = 0;
+    if (out_channels)
+        *out_channels = 0;
+    if (out_sample_rate)
+        *out_sample_rate = 0;
     if (!dec || !data || len < 4 || !out_pcm || !out_samples || !out_channels || !out_sample_rate) {
         return -1;
     }
-
-    *out_pcm = NULL;
-    *out_samples = 0;
-    *out_channels = 0;
-    *out_sample_rate = 0;
 
     size_t first_frame_pos = 0;
     size_t effective_len = 0;
@@ -1156,10 +1344,12 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
     FILE *f = rt_file_stdio_open_utf8(filepath, "rb");
     if (!f)
         return NULL;
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
     long flen = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (flen <= 0 || flen > 256 * 1024 * 1024) {
+    if (flen <= 0 || flen > 256 * 1024 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
@@ -1221,10 +1411,10 @@ mp3_stream_t *mp3_stream_open(const char *filepath) {
 /// @return Frame count per channel, `0` at end-of-stream, or `-1` for invalid
 ///         arguments, unsupported data, or a mid-stream format change.
 int mp3_stream_decode_frame(mp3_stream_t *stream, int16_t **out_pcm) {
+    if (out_pcm)
+        *out_pcm = NULL;
     if (!stream || !out_pcm)
         return -1;
-
-    *out_pcm = NULL;
     while (stream->pos < stream->effective_len) {
         int frame_samples = 0;
         int frame_channels = 0;

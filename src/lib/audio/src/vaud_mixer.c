@@ -93,6 +93,32 @@ static float vaud_mixer_unit_volume(float volume) {
     return volume;
 }
 
+/// @brief Return the bounded number of mixer-visible music registry entries.
+static int32_t vaud_mixer_music_count(vaud_context_t ctx) {
+    if (!ctx)
+        return 0;
+    if (ctx->music_count <= 0) {
+        ctx->music_count = 0;
+        return 0;
+    }
+    if (ctx->music_count > VAUD_MAX_MUSIC)
+        ctx->music_count = VAUD_MAX_MUSIC;
+    return ctx->music_count;
+}
+
+/// @brief Return the bounded number of mixer-visible ducking rules.
+static int32_t vaud_mixer_duck_rule_count(vaud_context_t ctx) {
+    if (!ctx)
+        return 0;
+    if (ctx->duck_rule_count <= 0) {
+        ctx->duck_rule_count = 0;
+        return 0;
+    }
+    if (ctx->duck_rule_count > VAUD_MAX_DUCK_RULES)
+        ctx->duck_rule_count = VAUD_MAX_DUCK_RULES;
+    return ctx->duck_rule_count;
+}
+
 /// @brief Convert a sanitized floating gain to 8.8 fixed-point.
 /// @param gain Floating gain, expected in [0, 1].
 /// @return Fixed-point gain with 256 representing unity.
@@ -230,9 +256,18 @@ static void calculate_pan_gains(float pan,
 /// @return Product of all matching rule gains, or unity when none match.
 static float mixer_group_duck_gain(vaud_context_t ctx, int64_t group_id) {
     float gain = 1.0f;
-    for (int32_t i = 0; i < ctx->duck_rule_count; i++) {
-        if (ctx->duck_rules[i].target_group == group_id)
-            gain *= ctx->duck_rules[i].gain;
+    int32_t rule_count = vaud_mixer_duck_rule_count(ctx);
+    for (int32_t i = 0; i < rule_count; i++) {
+        if (ctx->duck_rules[i].target_group == group_id) {
+            float rule_gain = ctx->duck_rules[i].gain;
+            if (!isfinite(rule_gain))
+                rule_gain = 1.0f;
+            if (rule_gain < 0.0f)
+                rule_gain = 0.0f;
+            if (rule_gain > 1.0f)
+                rule_gain = 1.0f;
+            gain *= rule_gain;
+        }
     }
     return gain;
 }
@@ -247,12 +282,20 @@ static float mixer_group_duck_gain(vaud_context_t ctx, int64_t group_id) {
 /// @param ctx Context whose voices, streams, and duck rules are inspected.
 /// @param frames Number of output frames represented by this envelope step.
 static void mixer_update_duck_rules(vaud_context_t ctx, int32_t frames) {
-    if (ctx->duck_rule_count <= 0)
+    int32_t rule_count = vaud_mixer_duck_rule_count(ctx);
+    if (rule_count <= 0)
         return;
     float chunk_sec = (float)frames / (float)VAUD_SAMPLE_RATE;
 
-    for (int32_t r = 0; r < ctx->duck_rule_count; r++) {
+    for (int32_t r = 0; r < rule_count; r++) {
         vaud_duck_rule *rule = &ctx->duck_rules[r];
+        rule->amount = vaud_mixer_unit_volume(rule->amount);
+        if (!isfinite(rule->attack_sec) || rule->attack_sec < 0.001f)
+            rule->attack_sec = 0.001f;
+        if (!isfinite(rule->release_sec) || rule->release_sec < 0.001f)
+            rule->release_sec = 0.001f;
+        if (!isfinite(rule->gain))
+            rule->gain = 1.0f;
 
         int triggered = 0;
         for (int32_t i = 0; i < VAUD_MAX_VOICES; i++) {
@@ -264,7 +307,8 @@ static void mixer_update_duck_rules(vaud_context_t ctx, int32_t frames) {
             }
         }
         if (!triggered) {
-            for (int32_t i = 0; i < ctx->music_count; i++) {
+            int32_t music_count = vaud_mixer_music_count(ctx);
+            for (int32_t i = 0; i < music_count; i++) {
                 vaud_music_t music = ctx->active_music[i];
                 if (music && music->state == VAUD_MUSIC_PLAYING &&
                     music->group_id == rule->trigger_group && music->volume > 0.001f) {
@@ -319,9 +363,20 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
     const int16_t *samples = sound->samples;
     int64_t sound_frames = sound->frame_count;
     int64_t pos = voice->position;
+    if (!samples || sound_frames <= 0) {
+        voice->state = VAUD_VOICE_INACTIVE;
+        voice->sound = NULL;
+        voice->position = 0;
+        voice->frac_pos = 0.0;
+        return 0;
+    }
+    if (pos < 0)
+        pos = 0;
 
     /* Smooth the occlusion amount toward its target once per chunk (~80 ms
      * time constant) so gameplay-driven occlusion flips never click. */
+    voice->occlusion_target = vaud_mixer_unit_volume(voice->occlusion_target);
+    voice->occlusion_smooth = vaud_mixer_unit_volume(voice->occlusion_smooth);
     if (voice->occlusion_smooth != voice->occlusion_target) {
         float k = 1.0f - expf(-(float)frames / (0.080f * (float)VAUD_SAMPLE_RATE));
         voice->occlusion_smooth += (voice->occlusion_target - voice->occlusion_smooth) * k;
@@ -348,10 +403,21 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
     float cutoff = 0.0f;
     if (occ > 0.001f)
         cutoff = 22000.0f * powf(800.0f / 22000.0f, occ);
+    if (!isfinite(voice->lowpass_cutoff) || voice->lowpass_cutoff < 0.0f)
+        voice->lowpass_cutoff = 0.0f;
+    if (voice->lowpass_cutoff > (float)VAUD_SAMPLE_RATE * 0.5f)
+        voice->lowpass_cutoff = (float)VAUD_SAMPLE_RATE * 0.5f;
     if (voice->lowpass_cutoff > 0.0f && (cutoff <= 0.0f || voice->lowpass_cutoff < cutoff))
         cutoff = voice->lowpass_cutoff;
 
-    float pitch = voice->pitch > 0.0f ? voice->pitch : 1.0f;
+    float pitch = voice->pitch;
+    if (!isfinite(pitch) || pitch <= 0.0f)
+        pitch = 1.0f;
+    if (pitch < VAUD_PITCH_MIN)
+        pitch = VAUD_PITCH_MIN;
+    if (pitch > VAUD_PITCH_MAX)
+        pitch = VAUD_PITCH_MAX;
+    voice->pitch = pitch;
     int needs_general_path = (pitch != 1.0f) || (cutoff > 0.0f);
 
     /* Convert to fixed-point for efficiency */
@@ -396,18 +462,24 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
         }
 
         if (voice->metering)
-            voice->level =
-                meter_samples > 0 ? sqrtf(meter_sum_sq / (float)meter_samples) : 0.0f;
+            voice->level = meter_samples > 0 ? sqrtf(meter_sum_sq / (float)meter_samples) : 0.0f;
         voice->position = pos;
         /* Keep the fractional cursor trailing the integer one so a later
          * pitch/filter change resumes from the right place. */
         voice->frac_pos = (double)pos;
+        if (!voice->loop && pos >= sound_frames) {
+            voice->state = VAUD_VOICE_INACTIVE;
+            voice->sound = NULL;
+            return 0;
+        }
         return 1;
     }
 
     /* General path: fractional cursor with linear interpolation + optional
      * one-pole lowpass. Sync the cursor forward if the fast path advanced it. */
     double fpos = voice->frac_pos;
+    if (!isfinite(fpos) || fpos < 0.0)
+        fpos = (double)pos;
     if ((double)pos > fpos)
         fpos = (double)pos;
 
@@ -451,8 +523,8 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
             src_right = lp_r;
         }
 
-        output[i * 2] = vaud_mixer_saturating_add_i32(
-            output[i * 2], ((int32_t)src_left * left_gain_fp) >> 8);
+        output[i * 2] =
+            vaud_mixer_saturating_add_i32(output[i * 2], ((int32_t)src_left * left_gain_fp) >> 8);
         output[i * 2 + 1] = vaud_mixer_saturating_add_i32(
             output[i * 2 + 1], ((int32_t)src_right * right_gain_fp) >> 8);
 
@@ -471,6 +543,13 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
     voice->position = (int64_t)fpos;
     voice->lp_state_l = lp_l;
     voice->lp_state_r = lp_r;
+    if (!voice->loop && fpos >= (double)sound_frames) {
+        voice->state = VAUD_VOICE_INACTIVE;
+        voice->sound = NULL;
+        voice->position = sound_frames;
+        voice->frac_pos = (double)sound_frames;
+        return 0;
+    }
     return 1;
 }
 
@@ -489,6 +568,14 @@ static int mix_voice(vaud_voice *voice, int32_t *output, int32_t frames, float m
 static void mix_music(vaud_music_t music, int32_t *output, int32_t frames, float master_vol) {
     if (!music || music->state != VAUD_MUSIC_PLAYING)
         return;
+    if (music->current_buffer < 0 || music->current_buffer >= VAUD_MUSIC_BUFFER_COUNT) {
+        music->state = VAUD_MUSIC_STOPPED;
+        music->current_buffer = 0;
+        music->buffer_position = 0;
+        return;
+    }
+    if (music->buffer_position < 0)
+        music->buffer_position = 0;
     if (music->buffer_refilling[music->current_buffer])
         return;
 
@@ -499,6 +586,8 @@ static void mix_music(vaud_music_t music, int32_t *output, int32_t frames, float
     int32_t output_offset = 0;
 
     while (frames_remaining > 0) {
+        if (music->buffer_frames[music->current_buffer] > VAUD_MUSIC_BUFFER_FRAMES)
+            music->buffer_frames[music->current_buffer] = VAUD_MUSIC_BUFFER_FRAMES;
         if (music->buffer_position >= music->buffer_frames[music->current_buffer]) {
             music->buffer_frames[music->current_buffer] = 0;
             music->buffer_position = 0;
@@ -523,6 +612,10 @@ static void mix_music(vaud_music_t music, int32_t *output, int32_t frames, float
 
         /* Mix from current buffer */
         int16_t *src = music->buffers[music->current_buffer];
+        if (!src) {
+            music->buffer_frames[music->current_buffer] = 0;
+            continue;
+        }
         int32_t available = music->buffer_frames[music->current_buffer] - music->buffer_position;
         int32_t to_mix = (frames_remaining < available) ? frames_remaining : available;
 
@@ -538,7 +631,10 @@ static void mix_music(vaud_music_t music, int32_t *output, int32_t frames, float
         }
 
         music->buffer_position += to_mix;
-        music->position += to_mix;
+        if (music->position > INT64_MAX - (int64_t)to_mix)
+            music->position = INT64_MAX;
+        else
+            music->position += to_mix;
         output_offset += to_mix;
         frames_remaining -= to_mix;
     }
@@ -593,7 +689,8 @@ static int32_t collect_effect_group_candidates_locked(vaud_context_t ctx,
         }
     }
 
-    for (int32_t i = 0; i < ctx->music_count; i++) {
+    int32_t music_count = vaud_mixer_music_count(ctx);
+    for (int32_t i = 0; i < music_count; i++) {
         vaud_music_t music = ctx->active_music[i];
         if (music && music->state == VAUD_MUSIC_PLAYING) {
             group_list_add(groups, &count, cap, music->group_id);
@@ -687,13 +784,14 @@ static void mix_with_group_effects(vaud_context_t ctx,
                                    int32_t effect_group_count,
                                    vaud_group_effects_process_fn process,
                                    void *userdata) {
+    int32_t music_count = vaud_mixer_music_count(ctx);
     if (effect_group_count <= 0) {
         for (int32_t i = 0; i < VAUD_MAX_VOICES; i++)
             mix_voice(&ctx->voices[i],
                       accum,
                       frames,
                       master * mixer_group_duck_gain(ctx, ctx->voices[i].group_id));
-        for (int32_t i = 0; i < ctx->music_count; i++) {
+        for (int32_t i = 0; i < music_count; i++) {
             if (ctx->active_music[i])
                 mix_music(ctx->active_music[i],
                           accum,
@@ -712,7 +810,7 @@ static void mix_with_group_effects(vaud_context_t ctx,
         mix_voice(voice, accum, frames, master * mixer_group_duck_gain(ctx, voice->group_id));
     }
 
-    for (int32_t i = 0; i < ctx->music_count; i++) {
+    for (int32_t i = 0; i < music_count; i++) {
         vaud_music_t music = ctx->active_music[i];
         if (!music)
             continue;
@@ -734,7 +832,7 @@ static void mix_with_group_effects(vaud_context_t ctx,
             }
         }
 
-        for (int32_t i = 0; i < ctx->music_count; i++) {
+        for (int32_t i = 0; i < music_count; i++) {
             vaud_music_t music = ctx->active_music[i];
             if (music && music->group_id == group_id)
                 mix_music(music, ctx->group_accum_buf, frames, group_master);
@@ -751,8 +849,12 @@ static void mix_with_group_effects(vaud_context_t ctx,
 
 /// @copydoc vaud_mixer_render
 void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
-    if (!ctx || !output || frames <= 0)
+    if (!output || frames <= 0)
         return;
+    if (!ctx) {
+        vaud_zero_output(output, frames);
+        return;
+    }
     vaud_stats_add(&ctx->stats.render_calls, 1);
 
     if (vaud_atomic_load_i32(&ctx->destroying) != 0) {
@@ -790,8 +892,9 @@ void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
     float master = vaud_mixer_unit_volume(ctx->master_volume);
 
     if (ctx->paused) {
-        vaud_mutex_unlock(&ctx->mutex);
         vaud_zero_output(output, frames);
+        vaud_mixer_cache_output(ctx, output, frames);
+        vaud_mutex_unlock(&ctx->mutex);
         return;
     }
 
@@ -813,8 +916,9 @@ void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
         effect_group_count = filter_effect_groups_locked(
             query, effects_userdata, candidate_groups, candidate_count, effect_groups, group_cap);
         if (ctx->paused || vaud_atomic_load_i32(&ctx->destroying) != 0) {
-            vaud_mutex_unlock(&ctx->mutex);
             vaud_zero_output(output, frames);
+            vaud_mixer_cache_output(ctx, output, frames);
+            vaud_mutex_unlock(&ctx->mutex);
             return;
         }
     }
@@ -827,13 +931,12 @@ void vaud_mixer_render(vaud_context_t ctx, int16_t *output, int32_t frames) {
     else
         ctx->frame_counter += frames;
 
-    vaud_mutex_unlock(&ctx->mutex);
-
     /* Convert to 16-bit with soft clipping */
     for (size_t i = 0; i < sample_count; i++) {
         output[i] = soft_clip(accum[i]);
     }
     vaud_mixer_cache_output(ctx, output, frames);
+    vaud_mutex_unlock(&ctx->mutex);
     /* H-1: accum is ctx->accum_buf — no free needed */
 }
 
@@ -896,7 +999,7 @@ vaud_voice *vaud_alloc_voice(vaud_context_t ctx) {
         return NULL;
 
     vaud_voice *oldest = NULL;
-    int64_t oldest_time = ctx->frame_counter + 1;
+    int64_t oldest_time = INT64_MAX;
 
     /* First pass: look for inactive voice */
     for (int32_t i = 0; i < VAUD_MAX_VOICES; i++) {
@@ -909,7 +1012,7 @@ vaud_voice *vaud_alloc_voice(vaud_context_t ctx) {
         }
 
         /* Track oldest non-looping voice for stealing */
-        if (!ctx->voices[i].loop && ctx->voices[i].start_time < oldest_time) {
+        if (!ctx->voices[i].loop && (!oldest || ctx->voices[i].start_time < oldest_time)) {
             oldest = &ctx->voices[i];
             oldest_time = ctx->voices[i].start_time;
         }
@@ -927,8 +1030,10 @@ vaud_voice *vaud_alloc_voice(vaud_context_t ctx) {
     }
 
     /* All voices are looping - steal absolute oldest */
+    oldest = NULL;
+    oldest_time = INT64_MAX;
     for (int32_t i = 0; i < VAUD_MAX_VOICES; i++) {
-        if (ctx->voices[i].start_time < oldest_time) {
+        if (!oldest || ctx->voices[i].start_time < oldest_time) {
             oldest = &ctx->voices[i];
             oldest_time = ctx->voices[i].start_time;
         }

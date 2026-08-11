@@ -56,6 +56,7 @@
 //=============================================================================
 
 #define RT_PLAYLIST_CLASS_ID INT64_C(-0x730102)
+#define RT_PLAYLIST_MAX_CROSSFADE_MS INT64_C(3600000)
 
 typedef struct {
     void *tracks;         // Seq of path strings
@@ -161,11 +162,16 @@ static void generate_shuffle_order(playlist_impl *pl) {
 /// @return Track-list index, or @p position when shuffle is inactive
 ///         or @p position is out of range.
 static int64_t get_track_index(playlist_impl *pl, int64_t position) {
-    if (pl->shuffle && pl->shuffle_order) {
-        int64_t count = rt_seq_len(pl->shuffle_order);
-        if (position >= 0 && position < count) {
-            return (int64_t)(intptr_t)rt_seq_get(pl->shuffle_order, position);
-        }
+    if (!pl || !pl->tracks || position < 0)
+        return -1;
+    int64_t track_count = rt_seq_len(pl->tracks);
+    if (position >= track_count)
+        return -1;
+    if (pl->shuffle) {
+        if (!pl->shuffle_order || rt_seq_len(pl->shuffle_order) != track_count)
+            return -1;
+        int64_t actual = (int64_t)(intptr_t)rt_seq_get(pl->shuffle_order, position);
+        return actual >= 0 && actual < track_count ? actual : -1;
     }
     return position;
 }
@@ -193,7 +199,8 @@ static void playlist_release_music(playlist_impl *pl) {
 static int64_t playlist_current_actual_index(playlist_impl *pl) {
     if (!pl || pl->current < 0)
         return -1;
-    return get_track_index(pl, pl->current);
+    int64_t actual = get_track_index(pl, pl->current);
+    return actual >= 0 && actual < rt_seq_len(pl->tracks) ? actual : -1;
 }
 
 /// @brief Find which shuffle slot currently holds @p actual_index.
@@ -233,7 +240,7 @@ static void playlist_set_current_from_actual(playlist_impl *pl, int64_t actual_i
     }
     if (pl->shuffle) {
         int64_t pos = playlist_find_shuffle_position(pl, actual_index);
-        pl->current = pos >= 0 ? pos : 0;
+        pl->current = pos;
         return;
     }
     pl->current = actual_index;
@@ -325,6 +332,15 @@ static void playlist_select_position(playlist_impl *pl,
     if (!pl)
         return;
 
+    int64_t count = rt_seq_len(pl->tracks);
+    if (new_position < 0 || new_position >= count || get_track_index(pl, new_position) < 0) {
+        playlist_release_music(pl);
+        pl->current = -1;
+        pl->playing = 0;
+        pl->paused = 0;
+        return;
+    }
+
     pl->current = new_position;
     if (!resume_playing && !preserve_paused) {
         playlist_release_music(pl);
@@ -339,9 +355,8 @@ static void playlist_select_position(playlist_impl *pl,
         // not stall the queue. Try subsequent positions with the same wrap
         // semantics as Next, bounded by the track count so a playlist whose
         // every entry fails stops cleanly instead of looping.
-        int64_t count = rt_seq_len(pl->tracks);
         for (int64_t attempts = 1; attempts < count && !new_music; ++attempts) {
-            int64_t candidate = pl->current + 1;
+            int64_t candidate = pl->current >= count - 1 ? count : pl->current + 1;
             if (candidate >= count) {
                 if (pl->repeat != RT_REPEAT_ALL)
                     break;
@@ -523,6 +538,13 @@ void rt_playlist_remove(void *obj, int64_t index) {
     int8_t was_playing = pl->playing;
     int8_t was_paused = pl->paused;
     int8_t removed_current = (current_actual == index);
+    int64_t successor_actual = -1;
+    if (removed_current && count > 1) {
+        int64_t successor_position = current_position >= count - 1 ? 0 : current_position + 1;
+        successor_actual = get_track_index(pl, successor_position);
+        if (successor_actual > index)
+            --successor_actual;
+    }
 
     if (current_actual > index)
         current_actual--;
@@ -544,12 +566,9 @@ void rt_playlist_remove(void *obj, int64_t index) {
     }
 
     if (removed_current) {
-        int64_t next_position = current_position;
-        if (next_position < 0)
-            next_position = 0;
-        if (next_position >= count)
-            next_position = 0;
-        pl->current = next_position;
+        if (successor_actual < 0)
+            successor_actual = 0;
+        playlist_set_current_from_actual(pl, successor_actual);
 
         void *new_music = playlist_load_current_music(pl);
         playlist_replace_music(pl, new_music, was_playing);
@@ -656,7 +675,7 @@ void rt_playlist_play(void *obj) {
         // entries so a single bad track cannot defeat playback.
         int64_t count = rt_seq_len(pl->tracks);
         for (int64_t attempts = 1; attempts < count && !pl->music; ++attempts) {
-            int64_t candidate = pl->current + 1;
+            int64_t candidate = pl->current >= count - 1 ? count : pl->current + 1;
             if (candidate >= count) {
                 if (pl->repeat != RT_REPEAT_ALL)
                     break;
@@ -691,7 +710,7 @@ void rt_playlist_pause(void *obj) {
     }
 }
 
-/// @brief Stop playback and reset the current position to the beginning.
+/// @brief Stop and rewind playback while preserving the selected track.
 /// @param obj Playlist object pointer; no-op if NULL.
 void rt_playlist_stop(void *obj) {
     playlist_impl *pl = as_playlist(obj);
@@ -722,7 +741,8 @@ void rt_playlist_next(void *obj) {
 
     int8_t was_playing = pl->playing;
     int8_t was_paused = pl->paused;
-    int64_t next_position = (pl->current < 0) ? 0 : pl->current + 1;
+    int64_t next_position =
+        pl->current < 0 ? 0 : (pl->current >= count - 1 ? count : pl->current + 1);
 
     if (next_position >= count) {
         if (pl->repeat == RT_REPEAT_ALL) {
@@ -754,7 +774,8 @@ void rt_playlist_prev(void *obj) {
 
     int8_t was_playing = pl->playing;
     int8_t was_paused = pl->paused;
-    int64_t prev_position = (pl->current < 0) ? 0 : pl->current - 1;
+    int64_t prev_position =
+        (pl->current < 0 || pl->current >= count) ? 0 : (pl->current == 0 ? -1 : pl->current - 1);
 
     if (prev_position < 0) {
         if (pl->repeat == RT_REPEAT_ALL) {
@@ -805,10 +826,7 @@ int64_t rt_playlist_get_current(void *obj) {
     if (!pl)
         return -1;
 
-    if (pl->shuffle && pl->current >= 0) {
-        return get_track_index(pl, pl->current);
-    }
-    return pl->current;
+    return get_track_index(pl, pl->current);
 }
 
 /// @brief Check whether the playlist is currently playing a track.
@@ -818,7 +836,7 @@ int8_t rt_playlist_is_playing(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
-    return pl->playing;
+    return pl->playing ? 1 : 0;
 }
 
 /// @brief Check whether the playlist is paused.
@@ -828,7 +846,7 @@ int8_t rt_playlist_is_paused(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
-    return pl->paused;
+    return pl->paused ? 1 : 0;
 }
 
 /// @brief Return the current playback volume of the playlist.
@@ -838,6 +856,10 @@ int64_t rt_playlist_get_volume(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
+    if (pl->volume < 0)
+        return 0;
+    if (pl->volume > 100)
+        return 100;
     return pl->volume;
 }
 
@@ -907,7 +929,7 @@ int8_t rt_playlist_get_shuffle(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
-    return pl->shuffle;
+    return pl->shuffle ? 1 : 0;
 }
 
 /// @brief Set the repeat mode for the playlist.
@@ -936,6 +958,10 @@ int64_t rt_playlist_get_repeat(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
+    if (pl->repeat < RT_REPEAT_NONE)
+        return RT_REPEAT_NONE;
+    if (pl->repeat > RT_REPEAT_ONE)
+        return RT_REPEAT_ONE;
     return pl->repeat;
 }
 
@@ -953,10 +979,10 @@ void rt_playlist_update(void *obj) {
     if (!pl)
         return;
 
-    rt_audio_update();
-
     if (!pl->playing || !pl->music)
         return;
+
+    rt_audio_update();
 
     // Check if current track has ended
     if (!rt_music_is_playing(pl->music)) {
@@ -980,14 +1006,19 @@ void rt_playlist_update(void *obj) {
 /// @brief Set the crossfade duration for track transitions.
 /// @details A value of 0 disables crossfading (immediate switch). Positive
 ///          values enable a linear volume crossfade of the specified duration
-///          when advancing between tracks.
+///          when advancing between tracks. Durations are capped at one hour so
+///          malformed values cannot retain two music streams indefinitely.
 /// @param obj Playlist object pointer; no-op if NULL.
 /// @param duration_ms Crossfade duration in milliseconds (0 = disabled).
 void rt_playlist_set_crossfade(void *obj, int64_t duration_ms) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return;
-    pl->crossfade_ms = duration_ms < 0 ? 0 : duration_ms;
+    if (duration_ms < 0)
+        duration_ms = 0;
+    if (duration_ms > RT_PLAYLIST_MAX_CROSSFADE_MS)
+        duration_ms = RT_PLAYLIST_MAX_CROSSFADE_MS;
+    pl->crossfade_ms = duration_ms;
 }
 
 /// @brief Return the current crossfade duration in milliseconds.
@@ -997,5 +1028,9 @@ int64_t rt_playlist_get_crossfade(void *obj) {
     playlist_impl *pl = as_playlist(obj);
     if (!pl)
         return 0;
+    if (pl->crossfade_ms < 0)
+        return 0;
+    if (pl->crossfade_ms > RT_PLAYLIST_MAX_CROSSFADE_MS)
+        return RT_PLAYLIST_MAX_CROSSFADE_MS;
     return pl->crossfade_ms;
 }

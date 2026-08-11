@@ -762,6 +762,30 @@ TEST(RTSprite, NullSafety) {
     ASSERT(rt_spritesheet_remove_region(NULL, name) == 0, "null remove = 0");
 }
 
+TEST(RTSprite, AtlasFamiliesRejectUninitializedPayloads) {
+    rt_string name = rt_const_cstr("idle");
+    void *forged_sheet = rt_obj_new_i64(RT_SPRITESHEET_CLASS_ID, 512);
+    ASSERT_TRUE(forged_sheet != nullptr);
+    std::memset(forged_sheet, 0, 512);
+    ASSERT_TRUE(rt_spritesheet_region_count(forged_sheet) == 0);
+    ASSERT_TRUE(rt_spritesheet_width(forged_sheet) == 0);
+    ASSERT_TRUE(rt_spritesheet_get_region(forged_sheet, name) == nullptr);
+    rt_spritesheet_set_region(forged_sheet, name, 0, 0, 1, 1);
+    ASSERT_TRUE(rt_spritesheet_has_region(forged_sheet, name) == 0);
+
+    void *forged_atlas = rt_obj_new_i64(RT_TEXATLAS_CLASS_ID, 65536);
+    ASSERT_TRUE(forged_atlas != nullptr);
+    std::memset(forged_atlas, 0, 65536);
+    ASSERT_TRUE(rt_texatlas_region_count(forged_atlas) == 0);
+    ASSERT_TRUE(rt_texatlas_get_pixels(forged_atlas) == nullptr);
+    ASSERT_TRUE(rt_texatlas_has(forged_atlas, name) == 0);
+    rt_texatlas_add(forged_atlas, name, 0, 0, 1, 1);
+    ASSERT_TRUE(rt_texatlas_region_count(forged_atlas) == 0);
+
+    release_object(forged_atlas);
+    release_object(forged_sheet);
+}
+
 TEST(RTSprite, AnimatorDuplicateClipReplacesAndPlayRestarts) {
     rt_sprite_animator_t *anim = rt_sprite_animator_new();
     ASSERT_TRUE(anim != nullptr);

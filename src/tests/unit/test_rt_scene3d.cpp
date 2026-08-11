@@ -3555,7 +3555,7 @@ static void test_node_animation_rejects_pathological_channel_sizes() {
 
 static void test_node_animation_rejects_ambiguous_byte_names() {
     const char embedded_target_bytes[] = {'t', 'a', 'r', 'g', 'e', 't', '\0', 'x'};
-    const char malformed_utf8_bytes[] = {(char)0xC0, (char)0xAF};
+    const char malformed_utf8_bytes[] = {static_cast<char>(0xC0), static_cast<char>(0xAF)};
     rt_string embedded_target =
         rt_string_from_bytes(embedded_target_bytes, sizeof(embedded_target_bytes));
     rt_string malformed_target =

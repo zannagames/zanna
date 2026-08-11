@@ -18,6 +18,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+// This assertion-driven test harness executes some state transitions inside
+// assert expressions, so keep those expressions active in Release builds.
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #ifndef ZANNA_ENABLE_GRAPHICS
 #define ZANNA_ENABLE_GRAPHICS 1
 #endif

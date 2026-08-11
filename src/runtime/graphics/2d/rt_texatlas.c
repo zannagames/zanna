@@ -68,6 +68,8 @@
 #define TEXATLAS_NAME_LEN 32
 /// @brief Number of slots in the open-addressed lookup table.
 #define TEXATLAS_HASH_SIZE 1024
+/// Private initialized-payload cookie for TextureAtlas objects.
+#define RT_TEXATLAS_STATE_MAGIC UINT64_C(0x5A54455841544C32)
 
 /// @brief Fixed-size named atlas rectangle.
 typedef struct {
@@ -80,6 +82,7 @@ typedef struct {
 
 /// @brief Private runtime-managed atlas and open-addressing lookup state.
 typedef struct {
+    uint64_t state_magic;                          ///< Private initialized-payload cookie.
     void *pixels;                                  ///< Retained backing Pixels object.
     texatlas_region regions[TEXATLAS_MAX_REGIONS]; ///< Embedded region records.
     int32_t region_count;                     ///< Number of initialized entries in @ref regions.
@@ -92,6 +95,8 @@ typedef struct {
 // Helpers
 //=============================================================================
 
+static uint32_t hash_name(const char *name, size_t name_len);
+
 /// @brief Cast a generic atlas handle to the concrete `texatlas_impl` pointer.
 /// @param atlas Candidate opaque TextureAtlas handle.
 /// @return Validated implementation pointer, or `NULL` for a null, undersized,
@@ -100,9 +105,28 @@ static texatlas_impl *get_impl(void *atlas) {
     if (!atlas || !rt_obj_is_instance(atlas, RT_TEXATLAS_CLASS_ID, sizeof(texatlas_impl)))
         return NULL;
     texatlas_impl *impl = (texatlas_impl *)atlas;
-    if (impl->region_count < 0 || impl->region_count > TEXATLAS_MAX_REGIONS)
+    rt_pixels_impl *pixels = rt_pixels_checked_impl_or_null(impl->pixels);
+    if (impl->state_magic != RT_TEXATLAS_STATE_MAGIC || !pixels || impl->region_count < 0 ||
+        impl->region_count > TEXATLAS_MAX_REGIONS || pixels->width != impl->pixel_width ||
+        pixels->height != impl->pixel_height)
         return NULL;
     return impl;
+}
+
+/// @brief Validate one published atlas region before lookup or drawing.
+static int8_t texatlas_region_is_valid(const texatlas_impl *impl, int32_t index) {
+    if (!impl || index < 0 || index >= impl->region_count)
+        return 0;
+    const texatlas_region *region = &impl->regions[index];
+    size_t name_len = region->name_len;
+    if (name_len == 0 || name_len >= TEXATLAS_NAME_LEN || region->name[name_len] != '\0' ||
+        memchr(region->name, '\0', name_len) != NULL ||
+        hash_name(region->name, name_len) != region->name_hash || region->x < 0 || region->y < 0 ||
+        region->w <= 0 || region->h <= 0 || region->x >= impl->pixel_width ||
+        region->y >= impl->pixel_height || region->w > impl->pixel_width - region->x ||
+        region->h > impl->pixel_height - region->y)
+        return 0;
+    return 1;
 }
 
 /// @brief FNV-1a 32-bit hash of a region name string.
@@ -160,8 +184,9 @@ static int find_region(texatlas_impl *impl, const char *name, size_t name_len, u
         if (entry == 0)
             return -1;
         int idx = entry - 1;
-        if (idx >= 0 && idx < impl->region_count && impl->regions[idx].name_hash == name_hash &&
-            impl->regions[idx].name_len == name_len &&
+        if (!texatlas_region_is_valid(impl, idx))
+            return -1;
+        if (impl->regions[idx].name_hash == name_hash && impl->regions[idx].name_len == name_len &&
             memcmp(impl->regions[idx].name, name, name_len) == 0)
             return idx;
     }
@@ -183,6 +208,8 @@ static int8_t bind_region_slot(texatlas_impl *impl, int idx) {
     uint32_t hash = impl->regions[idx].name_hash;
     for (int probe = 0; probe < TEXATLAS_HASH_SIZE; ++probe) {
         int32_t *slot = &impl->region_slots[(hash + (uint32_t)probe) & (TEXATLAS_HASH_SIZE - 1)];
+        if (*slot < 0 || *slot > impl->region_count)
+            return 0;
         if (*slot == 0 || *slot == idx + 1) {
             *slot = idx + 1;
             return 1;
@@ -204,13 +231,16 @@ static int8_t bind_region_slot(texatlas_impl *impl, int idx) {
 ///   in `rt_texatlas_new` to extend the pixel data's lifetime to match the atlas.
 /// @param obj Candidate TextureAtlas supplied by the runtime finalizer.
 static void texatlas_finalize(void *obj) {
-    texatlas_impl *impl = get_impl(obj);
-    if (!impl)
+    if (!obj || !rt_obj_is_instance(obj, RT_TEXATLAS_CLASS_ID, sizeof(texatlas_impl)))
         return;
-    if (impl->pixels) {
+    texatlas_impl *impl = (texatlas_impl *)obj;
+    if (impl->state_magic != RT_TEXATLAS_STATE_MAGIC)
+        return;
+    impl->state_magic = 0;
+    if (impl->pixels && rt_heap_is_payload(impl->pixels)) {
         rt_heap_release(impl->pixels);
-        impl->pixels = NULL;
     }
+    impl->pixels = NULL;
 }
 
 /// @brief Construct an empty texture atlas backed by `pixels`. The Pixels object is retained;
@@ -239,6 +269,7 @@ void *rt_texatlas_new(void *pixels) {
     }
 
     memset(impl, 0, sizeof(texatlas_impl));
+    impl->state_magic = RT_TEXATLAS_STATE_MAGIC;
     impl->pixels = pixels;
     impl->pixel_width = pixel_impl->width;
     impl->pixel_height = pixel_impl->height;
@@ -257,8 +288,7 @@ void *rt_texatlas_new(void *pixels) {
 /// @return A caller-owned TextureAtlas, or `NULL` after an argument trap or
 ///         allocation failure.
 void *rt_texatlas_load_grid(void *pixels, int64_t frame_w, int64_t frame_h) {
-    if (!pixels || !rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl)) ||
-        frame_w <= 0 || frame_h <= 0) {
+    if (!rt_pixels_checked_impl_or_null(pixels) || frame_w <= 0 || frame_h <= 0) {
         rt_trap("TextureAtlas.LoadGrid: invalid arguments");
         return NULL;
     }

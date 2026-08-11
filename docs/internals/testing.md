@@ -48,6 +48,7 @@ platforms (ccache is auto-detected; disable with `ZANNA_NO_CCACHE=1`):
 | `ZANNA_BUILD_TYPE=RelWithDebInfo` | Override the full-suite script default build type (`Debug`) |
 | `ZANNA_JOBS=<n>` | Override build parallelism |
 | `ZANNA_CTEST_JOBS=<n>` | Override CTest parallelism independently from build jobs; macOS defaults to performance-core count |
+| `ZANNA_CTEST_TIMEOUT=<seconds>` | Set the default limit for tests without an explicit CMake `TIMEOUT`; the Windows build defaults to 600 seconds |
 | `ZANNA_FAST_DEBUG=0` | Disable the default fast-Debug compile mode (`-Og` on Linux/macOS or `/O1` with lean STL checks on Windows) |
 | `ZANNA_SKIP_CLEAN=1` | Skip the clean-all step (incremental rebuild) |
 | `ZANNA_SKIP_TESTS=1` | Build without running ctest |

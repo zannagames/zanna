@@ -47,7 +47,8 @@ void vorbis_decoder_free(vorbis_decoder_t *dec);
 
 /// @brief Feed the three Vorbis header packets to the decoder.
 /// @details Packets `0`, `1`, and `2` must be submitted successfully in order
-///          before any audio packet can be decoded.
+///          before any audio packet can be decoded. Repeated or out-of-order
+///          packets and incomplete identification/comment framing are rejected.
 /// @param dec Decoder instance.
 /// @param packet_data Borrowed packet data.
 /// @param packet_len Length of packet data in bytes.
@@ -59,6 +60,8 @@ int vorbis_decode_header(vorbis_decoder_t *dec,
                          int packet_num);
 
 /// @brief Decode one audio packet into PCM samples.
+/// @details When both output pointers are valid, they are reset to NULL and zero
+///          before packet validation and remain inert on failure.
 /// @param dec Decoder instance (headers must have been parsed first).
 /// @param packet_data Borrowed audio-packet data.
 /// @param packet_len Packet length in bytes.

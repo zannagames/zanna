@@ -1944,7 +1944,9 @@ add_test(NAME zia_zannastudio_multi_root
 set_tests_properties(zia_zannastudio_multi_root PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;multi-root;requires_display;slow"
-        TIMEOUT 90)
+        # The probe completes in under a minute alone, but unrelated workers in
+        # the full parallel Debug suite can double that runtime on Windows.
+        TIMEOUT 180)
 
 add_test(NAME zia_zannastudio_scm
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scm_probe.zia"

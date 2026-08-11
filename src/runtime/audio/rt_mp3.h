@@ -48,7 +48,8 @@ void mp3_decoder_free(mp3_decoder_t *dec);
 
 /// @brief Decode an entire MP3 file from memory to PCM.
 /// @details Resets @p dec before decoding and requires channel count and sample
-///          rate to remain stable across frames.
+///          rate to remain stable across frames. Every valid output pointer is
+///          reset to an inert value before input validation.
 /// @param dec Decoder instance.
 /// @param data Borrowed file data, optionally including ID3 metadata.
 /// @param len Length of @p data in bytes.
@@ -77,6 +78,8 @@ typedef struct mp3_stream mp3_stream_t;
 mp3_stream_t *mp3_stream_open(const char *filepath);
 
 /// @brief Decode the next MP3 frame (up to 1152 stereo samples).
+/// @details A valid @p out_pcm is reset to NULL before stream validation and
+///          remains NULL at EOF or on error.
 /// @param stream Stream handle.
 /// @param out_pcm Receives pointer to interleaved 16-bit PCM (internal buffer, valid until next
 /// call).

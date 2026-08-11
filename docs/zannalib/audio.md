@@ -500,7 +500,7 @@ crossfade it temporarily retains both streams.
 | `Volume` | Integer | R/W | Logical volume, clamped to 0–100 and applied immediately |
 | `Shuffle` | Boolean | R/W | Use a runtime-RNG permutation while preserving `Current` as the actual index |
 | `Repeat` | Integer | R/W | 0 = none, 1 = all, 2 = current track; other values clamp into this range |
-| `Crossfade` | Integer | R/W | Auto-transition fade duration in ms; negative values become 0 |
+| `Crossfade` | Integer | R/W | Auto-transition fade duration in ms, clamped to 0–3,600,000 |
 
 ### Methods
 
