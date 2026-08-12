@@ -555,9 +555,16 @@ static void jpeg_idct_row(int32_t *row) {
     row[7] = jpeg_saturate_i32(e0 - o3);
 }
 
-/// @brief Apply the one-dimensional AAN IDCT to one workspace column.
-/// @details The column pass performs the final five-bit descale before
-///          saturating each stored result.
+/// @brief Apply the one-dimensional Loeffler IDCT to one workspace column.
+/// @details The column pass performs the final three-bit descale (the 2-D
+///          1/8 normalization, log2(8)) before saturating each stored
+///          result. Both passes descale every fixed-point product by the
+///          full CONST_BITS immediately, so — unlike libjpeg's
+///          CONST_BITS/PASS1_BITS split — no other residual scale
+///          survives to this point. A DC-only block must reconstruct to
+///          DC/8 + 128; the previous five-bit descale produced DC/32 +
+///          128, flattening every decoded JPEG's contrast and chroma by
+///          4x around mid-grey (the washed-out-texture bug).
 /// @param workspace In/out 8x8 row-major IDCT workspace.
 /// @param col Zero-based column index in `[0, 7]`.
 static void jpeg_idct_col(int32_t *workspace, int col) {
@@ -594,15 +601,16 @@ static void jpeg_idct_col(int32_t *workspace, int col) {
     int64_t o2 = jpeg_descale_i64(x3 * JPEG_FIX(3.072711026), 12) + t1 + t2;
     int64_t o3 = jpeg_descale_i64(x1 * JPEG_FIX(1.501321110), 12) + t0 + t3;
 
-    // Descale with rounding and shift for final output
-    workspace[col + 0 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e0 + o3, 5));
-    workspace[col + 1 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e1 + o2, 5));
-    workspace[col + 2 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e2 + o1, 5));
-    workspace[col + 3 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e3 + o0, 5));
-    workspace[col + 4 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e3 - o0, 5));
-    workspace[col + 5 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e2 - o1, 5));
-    workspace[col + 6 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e1 - o2, 5));
-    workspace[col + 7 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e0 - o3, 5));
+    // Final descale with rounding: only the 2-D 1/8 normalization remains
+    // (per-product CONST_BITS descales already ran in both passes).
+    workspace[col + 0 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e0 + o3, 3));
+    workspace[col + 1 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e1 + o2, 3));
+    workspace[col + 2 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e2 + o1, 3));
+    workspace[col + 3 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e3 + o0, 3));
+    workspace[col + 4 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e3 - o0, 3));
+    workspace[col + 5 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e2 - o1, 3));
+    workspace[col + 6 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e1 - o2, 3));
+    workspace[col + 7 * 8] = jpeg_saturate_i32(jpeg_descale_i64(e0 - o3, 3));
 }
 
 /// @brief Full 2D IDCT on an 8×8 coefficient block, producing 8-bit samples.

@@ -1280,13 +1280,23 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "        color = pow(clamp(color * p.tonemapExposure, 0.0, 1.0), "
                               "float3(1.0 / 2.2));\n"
                               "    }\n"
+                              /* Plan 49 R2: real tone curves consume LINEAR input. A
+                               * non-HDR scene texture is display-referred sRGB — running
+                               * Reinhard/ACES plus gamma-out on it directly lifts blacks,
+                               * caps the reachable range at ~74%, and desaturates (the
+                               * washed-out-broadcast bug). Linearize first when the scene
+                               * is not already linear-HDR. */
                               "    if (p.tonemapMode == 1) {\n"
-                              "        color *= p.tonemapExposure;\n"
-                              "        color = color / (color + 1.0);\n"
-                              "        color = pow(clamp(color, 0.0, 1.0), float3(1.0 / 2.2));\n"
+                              "        float3 tc = (p.sceneIsHdr != 0) ? color : "
+                              "pow(max(color, 0.0), float3(2.2));\n"
+                              "        tc *= p.tonemapExposure;\n"
+                              "        tc = tc / (tc + 1.0);\n"
+                              "        color = pow(clamp(tc, 0.0, 1.0), float3(1.0 / 2.2));\n"
                               "    }\n"
                               "    if (p.tonemapMode == 2) {\n"
-                              "        float3 x = color * p.tonemapExposure;\n"
+                              "        float3 tl = (p.sceneIsHdr != 0) ? color : "
+                              "pow(max(color, 0.0), float3(2.2));\n"
+                              "        float3 x = tl * p.tonemapExposure;\n"
                               "        color = (x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14);\n"
                               "        color = pow(clamp(color, 0.0, 1.0), float3(1.0 / 2.2));\n"
                               "    }\n"
@@ -1569,6 +1579,13 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                     MTLRenderPipelineDescriptor *ppd = [[MTLRenderPipelineDescriptor alloc] init];
                     ppd.vertexFunction = pfxVS;
                     ppd.fragmentFunction = pfxFS;
+                    /* Plan 49 R2 note: the ping-pong intermediates are 8-bit, so a
+                     * linear-HDR scene loses >1.0 energy in any pass that runs BEFORE
+                     * the tonemap. LDR scenes are unaffected (the tonemap pass now
+                     * linearizes display-referred input itself). Lifting this for HDR
+                     * scenes means RGBA16F intermediates plus a final BGRA8 resolve
+                     * pass (the present path blits and requires BGRA8 — see
+                     * metal_draw.inc displayTexture checks). */
                     ppd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
                     ctx.postfxPipeline =
                         [device newRenderPipelineStateWithDescriptor:ppd error:&pfxErr];
