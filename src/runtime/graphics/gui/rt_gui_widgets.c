@@ -1100,7 +1100,9 @@ void *rt_label_new(void *parent, rt_string text) {
     if (parent && !parent_widget)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
-    vg_label_t *label = vg_label_create(parent_widget, ctext ? ctext : "");
+    if (!ctext)
+        return NULL;
+    vg_label_t *label = vg_label_create(parent_widget, ctext);
     free(ctext);
     rt_gui_apply_default_font((vg_widget_t *)label);
     return label;
@@ -1117,6 +1119,8 @@ void rt_label_set_text(void *label, rt_string text) {
     if (!lbl)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_label_set_text(lbl, ctext);
     free(ctext);
 }
@@ -1172,7 +1176,9 @@ void rt_label_set_icon_name(void *label, rt_string name) {
     if (!lbl)
         return;
     char *cname = rt_string_to_gui_cstr(name);
-    if (!cname || !cname[0]) {
+    if (!cname)
+        return;
+    if (!cname[0]) {
         vg_label_set_vector_icon(lbl, -1);
         free(cname);
         return;
@@ -1254,7 +1260,8 @@ rt_string rt_label_get_selected_text(void *label) {
     vg_label_t *lbl = (vg_label_t *)rt_gui_widget_handle_checked_type(label, VG_WIDGET_LABEL);
     size_t length = 0;
     const char *selection = lbl ? vg_label_get_selected_text(lbl, &length) : NULL;
-    return selection && length > 0 ? rt_string_from_bytes(selection, length) : rt_str_empty();
+    return selection && length > 0 ? rt_gui_string_from_bytes_bounded(selection, length)
+                                   : rt_str_empty();
 }
 
 //=============================================================================
@@ -1275,7 +1282,9 @@ void *rt_button_new(void *parent, rt_string text) {
     if (parent && !parent_widget)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
-    vg_button_t *button = vg_button_create(parent_widget, rt_gui_cstr_or_empty(ctext));
+    if (!ctext)
+        return NULL;
+    vg_button_t *button = vg_button_create(parent_widget, ctext);
     free(ctext);
     rt_gui_apply_default_font((vg_widget_t *)button);
     return button;
@@ -1291,6 +1300,8 @@ void rt_button_set_text(void *button, rt_string text) {
     if (!btn)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_button_set_text(btn, ctext);
     free(ctext);
 }
@@ -1339,6 +1350,8 @@ void rt_button_set_icon(void *button, rt_string icon) {
     if (!btn)
         return;
     char *cicon = rt_string_to_gui_cstr(icon);
+    if (!cicon)
+        return;
     vg_button_set_icon(btn, cicon);
     free(cicon);
 }
@@ -1354,7 +1367,9 @@ void rt_button_set_icon_name(void *button, rt_string name) {
     if (!btn)
         return;
     char *cname = rt_string_to_gui_cstr(name);
-    if (!cname || !cname[0]) {
+    if (!cname)
+        return;
+    if (!cname[0]) {
         vg_button_set_vector_icon(btn, -1);
         free(cname);
         return;
@@ -1411,6 +1426,8 @@ void rt_textinput_set_text(void *input, rt_string text) {
     if (!ti)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_textinput_set_text(ti, ctext);
     free(ctext);
 }
@@ -1429,7 +1446,7 @@ rt_string rt_textinput_get_text(void *input) {
     const char *text = vg_textinput_get_text(ti);
     if (!text)
         return rt_str_empty();
-    return rt_string_from_bytes(text, ti->text_len);
+    return rt_gui_string_from_bytes_bounded(text, ti->text_len);
 }
 
 /// @brief Set the placeholder text shown when the input is empty.
@@ -1444,6 +1461,8 @@ void rt_textinput_set_placeholder(void *input, rt_string placeholder) {
     if (!ti)
         return;
     char *ctext = rt_string_to_gui_cstr(placeholder);
+    if (!ctext)
+        return;
     vg_textinput_set_placeholder(ti, ctext);
     free(ctext);
 }
@@ -1823,6 +1842,8 @@ void *rt_checkbox_new(void *parent, rt_string text) {
     if (parent && !parent_widget)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return NULL;
     vg_checkbox_t *checkbox = vg_checkbox_create(parent_widget, ctext);
     free(ctext);
     rt_gui_apply_default_font((vg_widget_t *)checkbox);
@@ -1862,6 +1883,8 @@ void rt_checkbox_set_text(void *checkbox, rt_string text) {
     if (!cb)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_checkbox_set_text(cb, ctext);
     free(ctext);
 }
@@ -2058,6 +2081,8 @@ void *rt_treeview_add_node(void *tree, void *parent_node, rt_string text) {
     if (parent_node && (!parent || parent->owner != tv))
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return NULL;
     vg_tree_node_t *node = vg_treeview_add_node(tv, parent, ctext);
     free(ctext);
     return rt_gui_wrap_tree_node(node);
@@ -2470,7 +2495,9 @@ int64_t rt_treeview_begin_edit_node(void *tree, void *node, rt_string initial_te
     if (!tv || !n || n->owner != tv)
         return 0;
     char *ctext = rt_string_to_gui_cstr(initial_text);
-    bool began = vg_treeview_begin_edit(tv, n, ctext ? ctext : "");
+    if (!ctext)
+        return 0;
+    bool began = vg_treeview_begin_edit(tv, n, ctext);
     free(ctext);
     return began ? 1 : 0;
 }
@@ -2549,7 +2576,7 @@ rt_string rt_treeview_node_get_text(void *node) {
         return rt_str_empty();
     if (!n->text)
         return rt_str_empty();
-    return rt_string_from_bytes(n->text, n->text_len);
+    return rt_gui_string_from_bytes_bounded(n->text, n->text_len);
 }
 
 /// @brief Replace a tree node's visible text using allocation-safe GUI text conversion.
@@ -2658,7 +2685,8 @@ rt_string rt_treeview_node_get_stable_id(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
     const char *stable_id = n ? vg_tree_node_get_stable_id(n) : NULL;
-    return stable_id ? rt_string_from_bytes(stable_id, n->stable_id_len) : rt_str_empty();
+    return stable_id ? rt_gui_string_from_bytes_bounded(stable_id, n->stable_id_len)
+                     : rt_str_empty();
 }
 
 /// @brief Attach arbitrary string data to a tree node (replaces any previous data).

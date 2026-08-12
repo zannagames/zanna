@@ -59,16 +59,6 @@ static rt_gui_app_t *rt_messagebox_app(void) {
     return app ? app : s_current_app;
 }
 
-/// @brief Duplicate a message-box label with malloc ownership.
-/// @details Custom button labels are released with `free` by the message-box
-///          wrapper, so this helper avoids relying on platform-specific
-///          `strdup` declarations for fallback labels.
-/// @param text Source label to copy; NULL returns NULL.
-/// @return Newly allocated copy, or NULL on invalid input, overflow, or OOM.
-static char *rt_messagebox_strdup(const char *text) {
-    return rt_gui_strdup_bounded(text);
-}
-
 /// @brief Return non-zero if the button label should be treated as a "cancel / close / no" action.
 /// @details Performs exact ASCII case-insensitive comparisons for the three legacy English labels;
 ///          role-aware button APIs intentionally bypass this localization-sensitive inference.
@@ -129,10 +119,12 @@ int64_t rt_messagebox_info(rt_string title, rt_string message) {
     rt_gui_app_t *app = rt_messagebox_app();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_t *dlg = vg_dialog_message(rt_gui_cstr_or_empty(ctitle),
-                                         rt_gui_cstr_or_empty(cmsg),
-                                         VG_DIALOG_ICON_INFO,
-                                         VG_DIALOG_BUTTONS_OK);
+    if (!ctitle || !cmsg) {
+        free(ctitle);
+        free(cmsg);
+        return 0;
+    }
+    vg_dialog_t *dlg = vg_dialog_message(ctitle, cmsg, VG_DIALOG_ICON_INFO, VG_DIALOG_BUTTONS_OK);
     if (ctitle)
         free(ctitle);
     if (cmsg)
@@ -158,10 +150,13 @@ int64_t rt_messagebox_warning(rt_string title, rt_string message) {
     rt_gui_app_t *app = rt_messagebox_app();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_t *dlg = vg_dialog_message(rt_gui_cstr_or_empty(ctitle),
-                                         rt_gui_cstr_or_empty(cmsg),
-                                         VG_DIALOG_ICON_WARNING,
-                                         VG_DIALOG_BUTTONS_OK);
+    if (!ctitle || !cmsg) {
+        free(ctitle);
+        free(cmsg);
+        return 0;
+    }
+    vg_dialog_t *dlg =
+        vg_dialog_message(ctitle, cmsg, VG_DIALOG_ICON_WARNING, VG_DIALOG_BUTTONS_OK);
     if (ctitle)
         free(ctitle);
     if (cmsg)
@@ -186,10 +181,12 @@ int64_t rt_messagebox_error(rt_string title, rt_string message) {
     rt_gui_app_t *app = rt_messagebox_app();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_t *dlg = vg_dialog_message(rt_gui_cstr_or_empty(ctitle),
-                                         rt_gui_cstr_or_empty(cmsg),
-                                         VG_DIALOG_ICON_ERROR,
-                                         VG_DIALOG_BUTTONS_OK);
+    if (!ctitle || !cmsg) {
+        free(ctitle);
+        free(cmsg);
+        return 0;
+    }
+    vg_dialog_t *dlg = vg_dialog_message(ctitle, cmsg, VG_DIALOG_ICON_ERROR, VG_DIALOG_BUTTONS_OK);
     if (ctitle)
         free(ctitle);
     if (cmsg)
@@ -215,10 +212,13 @@ int64_t rt_messagebox_question(rt_string title, rt_string message) {
     rt_gui_app_t *app = rt_messagebox_app();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_t *dlg = vg_dialog_message(rt_gui_cstr_or_empty(ctitle),
-                                         rt_gui_cstr_or_empty(cmsg),
-                                         VG_DIALOG_ICON_QUESTION,
-                                         VG_DIALOG_BUTTONS_YES_NO);
+    if (!ctitle || !cmsg) {
+        free(ctitle);
+        free(cmsg);
+        return 0;
+    }
+    vg_dialog_t *dlg =
+        vg_dialog_message(ctitle, cmsg, VG_DIALOG_ICON_QUESTION, VG_DIALOG_BUTTONS_YES_NO);
     if (ctitle)
         free(ctitle);
     if (cmsg)
@@ -243,10 +243,13 @@ int64_t rt_messagebox_confirm(rt_string title, rt_string message) {
     rt_gui_app_t *app = rt_messagebox_app();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_t *dlg = vg_dialog_message(rt_gui_cstr_or_empty(ctitle),
-                                         rt_gui_cstr_or_empty(cmsg),
-                                         VG_DIALOG_ICON_QUESTION,
-                                         VG_DIALOG_BUTTONS_OK_CANCEL);
+    if (!ctitle || !cmsg) {
+        free(ctitle);
+        free(cmsg);
+        return 0;
+    }
+    vg_dialog_t *dlg =
+        vg_dialog_message(ctitle, cmsg, VG_DIALOG_ICON_QUESTION, VG_DIALOG_BUTTONS_OK_CANCEL);
     if (ctitle)
         free(ctitle);
     if (cmsg)
@@ -301,21 +304,22 @@ static rt_string rt_messagebox_prompt_impl(rt_string title, rt_string message, i
 
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cmsg = rt_string_to_gui_cstr(message);
-
-    vg_dialog_t *dlg = vg_dialog_create(rt_gui_cstr_or_empty(ctitle));
-    if (ctitle)
+    if (!ctitle || !cmsg) {
         free(ctitle);
+        free(cmsg);
+        return rt_str_empty();
+    }
+
+    vg_dialog_t *dlg = vg_dialog_create(ctitle);
+    free(ctitle);
     if (!dlg) {
-        if (cmsg)
-            free(cmsg);
+        free(cmsg);
         return rt_str_empty();
     }
 
     // Show the prompt message above the text input
-    if (cmsg) {
-        vg_dialog_set_message(dlg, rt_gui_cstr_or_empty(cmsg));
-        free(cmsg);
-    }
+    vg_dialog_set_message(dlg, cmsg);
+    free(cmsg);
 
     // Apply app font to dialog
     rt_gui_apply_default_font((vg_widget_t *)dlg);
@@ -665,16 +669,20 @@ static void rt_messagebox_finalize(void *box) {
 void *rt_messagebox_new(rt_string title, rt_string message, int64_t type) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
-    vg_dialog_t *dlg = vg_dialog_create(rt_gui_cstr_or_empty(ctitle));
-    if (ctitle)
-        free(ctitle);
+    if (!ctitle)
+        return NULL;
+    vg_dialog_t *dlg = vg_dialog_create(ctitle);
+    free(ctitle);
     if (!dlg)
         return NULL;
 
     char *cmsg = rt_string_to_gui_cstr(message);
-    vg_dialog_set_message(dlg, rt_gui_cstr_or_empty(cmsg));
-    if (cmsg)
-        free(cmsg);
+    if (!cmsg) {
+        vg_widget_destroy((vg_widget_t *)dlg);
+        return NULL;
+    }
+    vg_dialog_set_message(dlg, cmsg);
+    free(cmsg);
 
     vg_dialog_icon_t icon = VG_DIALOG_ICON_INFO;
     switch (type) {
@@ -825,8 +833,6 @@ static void rt_messagebox_add_button_impl(
     }
 
     char *clabel = rt_string_to_gui_cstr(text);
-    if (!clabel)
-        clabel = rt_messagebox_strdup("OK");
     if (!clabel)
         return;
     size_t index = data->custom_button_count++;

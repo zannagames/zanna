@@ -547,6 +547,8 @@ void *rt_groupbox_new(void *parent, rt_string title) {
     if (parent && !parent_widget)
         return NULL;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return NULL;
     vg_groupbox_t *gb = vg_groupbox_create(parent_widget, ctitle);
     free(ctitle);
     if (gb)
@@ -572,6 +574,8 @@ void rt_groupbox_set_title(void *gb, rt_string title) {
     if (!g)
         return;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return;
     vg_groupbox_set_title(g, ctitle);
     free(ctitle);
 }

@@ -1267,6 +1267,16 @@ static inline rt_string rt_gui_string_from_cstr_bounded(const char *text) {
                                                      : rt_str_empty();
 }
 
+/// @brief Convert an authoritative lower-layer byte span under the GUI text limit.
+/// @param bytes Borrowed byte span; may be NULL only when @p length is zero.
+/// @param length Exact byte count, excluding any optional terminator.
+/// @return Newly constructed runtime string, or the canonical empty string for invalid input.
+static inline rt_string rt_gui_string_from_bytes_bounded(const char *bytes, size_t length) {
+    if ((length > 0u && !bytes) || length > RT_GUI_MAX_STRING_BYTES)
+        return rt_str_empty();
+    return rt_string_from_bytes(bytes ? bytes : "", length);
+}
+
 /// @brief Allocate a bounded copy of a conventional GUI C string.
 /// @param text Candidate NUL-terminated source.
 /// @return Caller-owned copy, or NULL when invalid, over policy, or out of memory.

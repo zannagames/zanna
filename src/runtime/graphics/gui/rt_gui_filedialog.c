@@ -46,7 +46,8 @@ int64_t rt_filedialog_path_list_count(rt_string escaped) {
     if (!escaped)
         return 0;
     int64_t len64 = rt_str_len(escaped);
-    if (len64 <= 0)
+    if (len64 <= 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)len64 > (uint64_t)SIZE_MAX)
         return 0;
     const char *bytes = rt_string_cstr(escaped);
     if (!bytes)
@@ -76,7 +77,8 @@ rt_string rt_filedialog_path_list_get(rt_string escaped, int64_t index) {
     if (!escaped || index < 0)
         return rt_str_empty();
     int64_t len64 = rt_str_len(escaped);
-    if (len64 <= 0)
+    if (len64 <= 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)len64 > (uint64_t)SIZE_MAX)
         return rt_str_empty();
     const char *bytes = rt_string_cstr(escaped);
     if (!bytes)
@@ -349,6 +351,12 @@ rt_string rt_filedialog_open(rt_string title, rt_string default_path, rt_string 
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cfilter = rt_string_to_cstr_no_nul(filter);
     char *cpath = rt_string_to_cstr_no_nul(default_path);
+    if (!ctitle || (filter && !cfilter) || (default_path && !cpath)) {
+        free(ctitle);
+        free(cfilter);
+        free(cpath);
+        return rt_str_empty();
+    }
 
 #if RT_PLATFORM_MACOS || RT_PLATFORM_WINDOWS
     // Native OS dialog (macOS panels; Windows IFileOpenDialog via COM). A
@@ -408,6 +416,12 @@ rt_string rt_filedialog_open_multiple(rt_string title, rt_string default_path, r
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cpath = rt_string_to_cstr_no_nul(default_path);
     char *cfilter = rt_string_to_cstr_no_nul(filter);
+    if (!ctitle || (default_path && !cpath) || (filter && !cfilter)) {
+        free(ctitle);
+        free(cpath);
+        free(cfilter);
+        return rt_str_empty();
+    }
 
 #if RT_PLATFORM_MACOS || RT_PLATFORM_WINDOWS
     if (vg_native_dialogs_available()) {
@@ -501,6 +515,13 @@ rt_string rt_filedialog_save(rt_string title,
     char *cfilter = rt_string_to_cstr_no_nul(filter);
     char *cname = rt_string_to_gui_cstr(default_name);
     char *cpath = rt_string_to_cstr_no_nul(default_path);
+    if (!ctitle || (filter && !cfilter) || !cname || (default_path && !cpath)) {
+        free(ctitle);
+        free(cfilter);
+        free(cname);
+        free(cpath);
+        return rt_str_empty();
+    }
 
 #if RT_PLATFORM_MACOS || RT_PLATFORM_WINDOWS
     // Native OS dialog with drawn fallback when Windows COM is unavailable.
@@ -560,6 +581,11 @@ rt_string rt_filedialog_select_folder(rt_string title, rt_string default_path) {
     RT_ASSERT_MAIN_THREAD();
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cpath = rt_string_to_cstr_no_nul(default_path);
+    if (!ctitle || (default_path && !cpath)) {
+        free(ctitle);
+        free(cpath);
+        return rt_str_empty();
+    }
 
 #if RT_PLATFORM_MACOS || RT_PLATFORM_WINDOWS
     // Native OS dialog with drawn fallback when Windows COM is unavailable.
@@ -951,6 +977,8 @@ void rt_filedialog_set_title(void *dialog, rt_string title) {
     if (!data)
         return;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return;
     vg_filedialog_set_title(data->dialog, ctitle);
     if (ctitle)
         free(ctitle);
@@ -1027,6 +1055,8 @@ void rt_filedialog_set_default_name(void *dialog, rt_string name) {
     if (!data)
         return;
     char *cname = rt_string_to_gui_cstr(name);
+    if (!cname)
+        return;
     vg_filedialog_set_filename(data->dialog, cname);
     if (cname)
         free(cname);

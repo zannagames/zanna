@@ -403,7 +403,7 @@ void rt_shortcuts_register(rt_string id, rt_string keys, rt_string description) 
     char *ckeys = rt_string_to_cstr(keys);
     char *cdesc = rt_string_to_gui_cstr(description);
 
-    if (!cid || !ckeys) {
+    if (!cid || !ckeys || !cdesc) {
         free(cid);
         free(ckeys);
         free(cdesc);
@@ -524,7 +524,8 @@ int64_t rt_shortcuts_was_triggered(rt_string id) {
         return 0;
 
     int64_t id_len64 = rt_str_len(id);
-    if (id_len64 < 0)
+    if (id_len64 < 0 || (uint64_t)id_len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)id_len64 > (uint64_t)SIZE_MAX)
         return 0;
     size_t id_len = (size_t)id_len64;
     const char *id_bytes = id_len > 0 ? rt_string_cstr(id) : "";

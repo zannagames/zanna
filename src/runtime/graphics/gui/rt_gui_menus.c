@@ -314,6 +314,8 @@ void *rt_menubar_add_menu(void *menubar, rt_string title) {
     if (!mb)
         return NULL;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return NULL;
     vg_menu_t *menu = vg_menubar_add_menu(mb, ctitle);
     free(ctitle);
     rt_gui_menu_sync_menubar(mb);
@@ -409,7 +411,9 @@ void *rt_menu_add_item(void *menu, rt_string text) {
     if (!m)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
-    vg_menu_item_t *item = vg_menu_add_item(m, rt_gui_cstr_or_empty(ctext), NULL, NULL, NULL);
+    if (!ctext)
+        return NULL;
+    vg_menu_item_t *item = vg_menu_add_item(m, ctext, NULL, NULL, NULL);
     free(ctext);
     rt_gui_menu_sync_menubar(rt_gui_menu_owner_from_menu(m));
     return rt_gui_wrap_menu_item(item);
@@ -430,8 +434,12 @@ void *rt_menu_add_item_with_shortcut(void *menu, rt_string text, rt_string short
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
     char *cshortcut = rt_string_to_gui_cstr(shortcut);
-    vg_menu_item_t *item = vg_menu_add_item(
-        m, rt_gui_cstr_or_empty(ctext), rt_gui_cstr_or_empty(cshortcut), NULL, NULL);
+    if (!ctext || !cshortcut) {
+        free(ctext);
+        free(cshortcut);
+        return NULL;
+    }
+    vg_menu_item_t *item = vg_menu_add_item(m, ctext, cshortcut, NULL, NULL);
     free(ctext);
     free(cshortcut);
     rt_gui_menu_sync_menubar(rt_gui_menu_owner_from_menu(m));
@@ -464,6 +472,8 @@ void *rt_menu_add_submenu(void *menu, rt_string title) {
     if (!m)
         return NULL;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return NULL;
     vg_menu_t *submenu = vg_menu_add_submenu(m, ctitle);
     free(ctitle);
     rt_gui_menu_sync_menubar(rt_gui_menu_owner_from_menu(m));
@@ -940,8 +950,9 @@ void *rt_contextmenu_add_item(void *menu, rt_string text) {
     if (!cm)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
-    vg_menu_item_t *item =
-        vg_contextmenu_add_item(cm, rt_gui_cstr_or_empty(ctext), NULL, NULL, NULL);
+    if (!ctext)
+        return NULL;
+    vg_menu_item_t *item = vg_contextmenu_add_item(cm, ctext, NULL, NULL, NULL);
     free(ctext);
     return rt_gui_wrap_menu_item(item);
 }
@@ -960,8 +971,12 @@ void *rt_contextmenu_add_item_with_shortcut(void *menu, rt_string text, rt_strin
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
     char *cshortcut = rt_string_to_gui_cstr(shortcut);
-    vg_menu_item_t *item = vg_contextmenu_add_item(
-        cm, rt_gui_cstr_or_empty(ctext), rt_gui_cstr_or_empty(cshortcut), NULL, NULL);
+    if (!ctext || !cshortcut) {
+        free(ctext);
+        free(cshortcut);
+        return NULL;
+    }
+    vg_menu_item_t *item = vg_contextmenu_add_item(cm, ctext, cshortcut, NULL, NULL);
     free(ctext);
     free(cshortcut);
     return rt_gui_wrap_menu_item(item);
@@ -992,6 +1007,8 @@ void *rt_contextmenu_add_submenu(void *menu, rt_string title) {
     if (!cm)
         return NULL;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return NULL;
 
     // Create a child context menu and attach it as a submenu
     vg_contextmenu_t *submenu = vg_contextmenu_create();

@@ -110,7 +110,9 @@ int64_t rt_dropdown_add_item(void *dropdown, rt_string text) {
     if (!dd)
         return -1;
     char *ctext = rt_string_to_gui_cstr(text);
-    int64_t index = vg_dropdown_add_item(dd, rt_gui_cstr_or_empty(ctext));
+    if (!ctext)
+        return -1;
+    int64_t index = vg_dropdown_add_item(dd, ctext);
     free(ctext);
     return index;
 }
@@ -181,7 +183,9 @@ void rt_dropdown_set_placeholder(void *dropdown, rt_string placeholder) {
     if (!dd)
         return;
     char *ctext = rt_string_to_gui_cstr(placeholder);
-    vg_dropdown_set_placeholder(dd, rt_gui_cstr_or_empty(ctext));
+    if (!ctext)
+        return;
+    vg_dropdown_set_placeholder(dd, ctext);
     free(ctext);
 }
 
@@ -395,6 +399,8 @@ void *rt_listbox_add_item(void *listbox, rt_string text) {
     if (!lb)
         return NULL;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return NULL;
     vg_listbox_item_t *item = vg_listbox_add_item(lb, ctext, NULL);
     free(ctext);
     return rt_gui_wrap_listbox_item(item);
@@ -796,7 +802,7 @@ rt_string rt_listbox_item_get_text(void *item) {
     if (!it)
         return rt_str_empty();
     if (it->text)
-        return rt_string_from_bytes(it->text, it->text_len);
+        return rt_gui_string_from_bytes_bounded(it->text, it->text_len);
     return rt_str_empty();
 }
 
@@ -833,6 +839,8 @@ void rt_listbox_item_set_named_icon(void *item, rt_string icon_name) {
     if (!it)
         return;
     char *cname = rt_string_to_gui_cstr(icon_name);
+    if (!cname)
+        return;
     int32_t vector_id = cname && cname[0] ? vg_icon_vector_find(cname) : VG_ICON_VECTOR_INVALID;
     free(cname);
     vg_listbox_item_set_icon_vector(it, vector_id);

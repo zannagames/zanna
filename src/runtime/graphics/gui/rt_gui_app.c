@@ -1502,7 +1502,11 @@ static void *rt_gui_app_create(rt_string title,
     params.width = (int32_t)(width < 1 ? 1 : width > INT32_MAX ? INT32_MAX : width);
     params.height = (int32_t)(height < 1 ? 1 : height > INT32_MAX ? INT32_MAX : height);
     char *ctitle = rt_string_to_gui_cstr(title);
-    const char *window_title = ctitle ? ctitle : "Zanna GUI";
+    if (!ctitle) {
+        rt_gui_app_set_create_error(out_error, RT_GUI_APP_CREATE_STATE);
+        return NULL;
+    }
+    const char *window_title = ctitle;
     params.title = window_title;
     params.resizable = 1;
 

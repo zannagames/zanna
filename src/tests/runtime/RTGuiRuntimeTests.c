@@ -35,6 +35,7 @@
 
 #include "../../runtime/graphics/gui/rt_gui_app_internal.h"
 #include "../../runtime/graphics/gui/rt_gui_internal.h"
+#include "../../runtime/rt_internal.h"
 #include "rt_gui.h"
 #include "rt_gui_constants.h"
 #include "rt_gui_ide.h"
@@ -3518,6 +3519,9 @@ static void test_public_gui_getters_contain_corrupted_retained_state(void) {
     bounded = rt_gui_string_from_cstr_bounded(NULL);
     assert(strcmp(rt_string_cstr(bounded), "") == 0);
     rt_str_release_maybe(bounded);
+    bounded = rt_gui_string_from_bytes_bounded("x", RT_GUI_MAX_STRING_BYTES + 1u);
+    assert(strcmp(rt_string_cstr(bounded), "") == 0);
+    rt_str_release_maybe(bounded);
 
     char *unterminated = (char *)malloc(RT_GUI_MAX_STRING_BYTES + 2u);
     assert(unterminated);
@@ -3660,6 +3664,62 @@ static void test_public_gui_getters_contain_corrupted_retained_state(void) {
     vg_widget_destroy(&slider->base);
     vg_widget_destroy(widget);
     printf("test_public_gui_getters_contain_corrupted_retained_state: PASSED\n");
+}
+
+/// @brief Verify failed runtime-string conversion never publishes empty replacement text.
+/// @details A registered small runtime string is temporarily given an over-policy retained length,
+///          making every GUI conversion reject it without allocating a 64 MiB fixture. Constructors
+///          fail, append operations add nothing, and setters preserve previously published text.
+static void test_oversized_text_ingress_is_transactional(void) {
+    rt_string oversized = rt_string_from_bytes("x", 1);
+    assert(oversized);
+    assert(oversized->heap == RT_SSO_SENTINEL);
+    const size_t saved_length = oversized->literal_len;
+    oversized->literal_len = RT_GUI_MAX_STRING_BYTES + 1u;
+    assert(rt_string_to_gui_cstr(oversized) == NULL);
+
+    vg_label_t *label = vg_label_create(NULL, "label-before");
+    vg_button_t *button = vg_button_create(NULL, "button-before");
+    vg_textinput_t *input = vg_textinput_create(NULL);
+    vg_dropdown_t *dropdown = vg_dropdown_create(NULL);
+    vg_tabbar_t *tabbar = vg_tabbar_create(NULL);
+    vg_menubar_t *menubar = vg_menubar_create(NULL);
+    vg_outputpane_t *output = vg_outputpane_create();
+    assert(label && button && input && dropdown && tabbar && menubar && output);
+    vg_textinput_set_text(input, "input-before");
+
+    rt_label_set_text(label, oversized);
+    rt_button_set_text(button, oversized);
+    rt_textinput_set_text(input, oversized);
+    assert(strcmp(vg_label_get_text(label), "label-before") == 0);
+    assert(strcmp(vg_button_get_text(button), "button-before") == 0);
+    assert(strcmp(vg_textinput_get_text(input), "input-before") == 0);
+
+    assert(rt_label_new(NULL, oversized) == NULL);
+    assert(rt_button_new(NULL, oversized) == NULL);
+    assert(rt_checkbox_new(NULL, oversized) == NULL);
+    assert(rt_groupbox_new(NULL, oversized) == NULL);
+    assert(rt_dropdown_add_item(dropdown, oversized) == -1);
+    assert(dropdown->item_count == 0);
+    assert(rt_tabbar_add_tab(tabbar, oversized, 0) == NULL);
+    assert(rt_tabbar_get_tab_count(tabbar) == 0);
+    assert(rt_menubar_add_menu(menubar, oversized) == NULL);
+    assert(rt_menubar_get_menu_count(menubar) == 0);
+    const int64_t output_line_count = rt_outputpane_get_line_count(output);
+    rt_outputpane_append(output, oversized);
+    assert(rt_outputpane_get_line_count(output) == output_line_count);
+    assert(rt_editorbuffer_new(oversized) == NULL);
+
+    vg_widget_destroy(&output->base);
+    vg_widget_destroy(&menubar->base);
+    vg_widget_destroy(&tabbar->base);
+    vg_widget_destroy(&dropdown->base);
+    vg_widget_destroy(&input->base);
+    vg_widget_destroy(&button->base);
+    vg_widget_destroy(&label->base);
+    oversized->literal_len = saved_length;
+    rt_str_release_maybe(oversized);
+    printf("test_oversized_text_ingress_is_transactional: PASSED\n");
 }
 
 static void test_font_destroy_defers_live_app_font(void) {
@@ -5911,6 +5971,7 @@ int main(void) {
     test_numeric_setters_sanitize_invalid_values();
     test_numeric_narrowing_saturates_without_undefined_behavior();
     test_public_gui_getters_contain_corrupted_retained_state();
+    test_oversized_text_ingress_is_transactional();
     test_font_destroy_defers_live_app_font();
     test_managed_system_fonts_and_generation_retirement();
     test_detached_widgets_do_not_inherit_current_app_font();
