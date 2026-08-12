@@ -80,6 +80,7 @@ Living ledgers that track findings and their resolution for high-risk subsystems
 - [Audio Runtime Hardening, Round Two (August 2026)](audio-runtime-hardening-round-two-2026-08.md) — Resolution ledger for 100 additional decoder-wrapper, synth, effects, soundbank, MusicGen, playlist, and crossfade findings
 - [GUI Runtime Hardening Program (August 2026)](gui-runtime-hardening-2026-08.md) — Resolution ledger for the first 100 GUI C runtime findings
 - [GUI Runtime Hardening, Round Two (August 2026)](gui-runtime-hardening-round-two-2026-08.md) — Resolution ledger for 100 additional text, numeric, and retained-state boundary findings
+- [GUI Runtime Hardening, Round Three (August 2026)](gui-runtime-hardening-round-three-2026-08.md) — Resolution ledger for 100 transactional text-boundary findings plus supporting consistency migrations
 - [Graphics3D Runtime Hardening Program (July 2026)](graphics3d-runtime-hardening-2026-07.md) — 48-item audit of `src/runtime/graphics/3d`
 - [Graphics3D Backend Correctness Audit (July 2026)](graphics3d-backend-audit-2026-07.md) — OpenGL, D3D11, Metal, and software renderer boundary review
 - [Graphics3D Animation and Navigation Audit (August 2026)](graphics3d-animation-navigation-audit-2026-08.md) — Resolution ledger for 104 IK, morph-target, and navigation findings

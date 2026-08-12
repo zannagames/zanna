@@ -419,6 +419,8 @@ void *rt_tabbar_add_tab(void *tabbar, rt_string title, int64_t closable) {
     if (!tb)
         return NULL;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return NULL;
     vg_tab_t *tab = vg_tabbar_add_tab(tb, ctitle, closable != 0);
     free(ctitle);
     return rt_gui_wrap_tab(tab);
@@ -476,6 +478,8 @@ void rt_tab_set_title(void *tab, rt_string title) {
     if (!t)
         return;
     char *ctitle = rt_string_to_gui_cstr(title);
+    if (!ctitle)
+        return;
     vg_tab_set_title(t, ctitle);
     free(ctitle);
 }
@@ -568,7 +572,8 @@ rt_string rt_tab_get_stable_id(void *tab) {
     RT_ASSERT_MAIN_THREAD();
     vg_tab_t *t = rt_gui_tab_from_handle(tab);
     const char *stable_id = t ? vg_tab_get_stable_id(t) : NULL;
-    return stable_id ? rt_string_from_bytes(stable_id, t->stable_id_len) : rt_str_empty();
+    return stable_id ? rt_gui_string_from_bytes_bounded(stable_id, t->stable_id_len)
+                     : rt_str_empty();
 }
 
 /// @brief Update the tooltip text of a tab.
@@ -580,6 +585,8 @@ void rt_tab_set_tooltip(void *tab, rt_string tooltip) {
     if (!t)
         return;
     char *ctooltip = rt_string_to_gui_cstr(tooltip);
+    if (!ctooltip)
+        return;
     vg_tab_set_tooltip(t, ctooltip);
     free(ctooltip);
 }
@@ -603,6 +610,8 @@ void rt_tab_set_named_icon(void *tab, rt_string icon_name) {
     if (!t)
         return;
     char *cname = rt_string_to_gui_cstr(icon_name);
+    if (!cname)
+        return;
     int32_t vector_id = cname && cname[0] ? vg_icon_vector_find(cname) : VG_ICON_VECTOR_INVALID;
     free(cname);
     vg_tab_set_icon_vector(t, vector_id);
@@ -997,7 +1006,8 @@ void rt_codeeditor_set_text(void *editor, rt_string text) {
     if (!ce)
         return;
     int64_t len64 = text ? rt_str_len(text) : 0;
-    if (len64 < 0)
+    if (len64 < 0 || (uint64_t)len64 > RT_GUI_MAX_STRING_BYTES ||
+        (uint64_t)len64 > (uint64_t)SIZE_MAX)
         return;
     size_t len = (size_t)len64;
     const char *bytes = len ? rt_string_cstr(text) : "";
@@ -1387,6 +1397,8 @@ void rt_outputpane_append(void *pane, rt_string text) {
     if (!out)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_outputpane_append(out, ctext);
     free(ctext);
 }
@@ -1400,6 +1412,8 @@ void rt_outputpane_append_line(void *pane, rt_string text) {
     if (!out)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_outputpane_append_line(out, ctext);
     free(ctext);
 }
@@ -1416,6 +1430,8 @@ void rt_outputpane_append_styled(void *pane, rt_string text, int64_t fg, int64_t
     if (!out)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_outputpane_append_styled(out, ctext, (uint32_t)fg, (uint32_t)bg, bold != 0);
     free(ctext);
 }
@@ -1598,7 +1614,7 @@ rt_string rt_outputpane_take_input(void *pane) {
     char *input = vg_outputpane_take_input_bytes(out, &input_len);
     if (!input)
         return rt_str_empty();
-    rt_string result = rt_string_from_bytes(input, input_len);
+    rt_string result = rt_gui_string_from_bytes_bounded(input, input_len);
     free(input);
     return result;
 }
@@ -1714,6 +1730,8 @@ void *rt_radiobutton_new(void *parent, rt_string text, void *group) {
             return NULL;
     }
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return NULL;
     vg_radiobutton_t *radio =
         vg_radiobutton_create(parent_widget, ctext, group_data ? group_data->group : NULL);
     free(ctext);
@@ -1755,9 +1773,9 @@ void rt_radiobutton_set_text(void *radio, rt_string text) {
     if (!rb)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
-    if (text && !ctext)
+    if (!ctext)
         return;
-    vg_radiobutton_set_text(rb, rt_gui_cstr_or_empty(ctext));
+    vg_radiobutton_set_text(rb, ctext);
     free(ctext);
 }
 
@@ -2525,6 +2543,8 @@ void rt_popuplist_add_item(void *list, rt_string text) {
     if (!p)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_popuplist_add_item(p, ctext);
     free(ctext);
 }
@@ -2547,6 +2567,8 @@ void rt_popuplist_set_filter(void *list, rt_string filter) {
     if (!p)
         return;
     char *cfilter = rt_string_to_gui_cstr(filter);
+    if (!cfilter)
+        return;
     vg_popuplist_set_filter(p, cfilter);
     free(cfilter);
 }

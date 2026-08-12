@@ -267,6 +267,11 @@ void rt_breadcrumb_set_path(void *crumb, rt_string path, rt_string separator) {
 
     char *cpath = rt_string_to_gui_cstr(path);
     char *csep = rt_string_to_gui_cstr(separator);
+    if (!cpath || !csep) {
+        free(cpath);
+        free(csep);
+        return;
+    }
 
     rt_breadcrumb_clear_click_state(data);
     // Clear existing items
@@ -305,6 +310,8 @@ void rt_breadcrumb_set_items(void *crumb, rt_string items) {
         return;
 
     char *citems = rt_string_to_gui_cstr(items);
+    if (!citems)
+        return;
 
     rt_breadcrumb_clear_click_state(data);
     // Clear existing items
@@ -352,21 +359,22 @@ void rt_breadcrumb_add_item(void *crumb, rt_string text, rt_string item_data) {
 
     char *ctext = rt_string_to_gui_cstr(text);
     rt_gui_string_data_t *payload = item_data ? rt_gui_string_data_new(item_data) : NULL;
-
-    if (ctext) {
-        size_t prev_count = data->breadcrumb->item_count;
-        vg_breadcrumb_push(data->breadcrumb, ctext, payload);
-        if (data->breadcrumb->item_count > prev_count) {
-            if (payload) {
-                data->breadcrumb->items[data->breadcrumb->item_count - 1].owns_user_data = true;
-            }
-        } else if (payload) {
-            free(payload);
-        }
+    if (!ctext || (item_data && !payload)) {
         free(ctext);
-    } else {
+        free(payload);
+        return;
+    }
+
+    size_t prev_count = data->breadcrumb->item_count;
+    vg_breadcrumb_push(data->breadcrumb, ctext, payload);
+    if (data->breadcrumb->item_count > prev_count) {
+        if (payload) {
+            data->breadcrumb->items[data->breadcrumb->item_count - 1].owns_user_data = true;
+        }
+    } else if (payload) {
         free(payload);
     }
+    free(ctext);
 }
 
 /// @brief Remove all entries from the breadcrumb.

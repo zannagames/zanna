@@ -483,9 +483,10 @@ void rt_commandpalette_set_placeholder(void *palette, rt_string text) {
     if (!data || !data->palette)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_commandpalette_set_placeholder(data->palette, ctext);
-    if (ctext)
-        free(ctext);
+    free(ctext);
 }
 
 /// @brief Get the selected command of the commandpalette.
@@ -555,9 +556,10 @@ void rt_commandpalette_set_query(void *palette, rt_string text) {
     if (!data || !data->palette)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_commandpalette_set_query(data->palette, ctext);
-    if (ctext)
-        free(ctext);
+    free(ctext);
 }
 
 /// @brief `CommandPalette.SetClientFiltered` — toggle application-driven filtering.
@@ -606,13 +608,15 @@ void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
     if (!app)
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
 
     // Create tooltip if needed
     if (!app->manual_tooltip) {
         app->manual_tooltip = vg_tooltip_create();
     }
 
-    if (app->manual_tooltip && ctext) {
+    if (app->manual_tooltip) {
         if (app->default_font) {
             app->manual_tooltip->font = app->default_font;
             app->manual_tooltip->font_size = rt_gui_app_effective_font_size(app);
@@ -624,8 +628,7 @@ void rt_tooltip_show(rt_string text, int64_t x, int64_t y) {
                            rt_gui_clamp_i64_to_i32(y, INT32_MIN, INT32_MAX));
     }
 
-    if (ctext)
-        free(ctext);
+    free(ctext);
 }
 
 /// @brief Show a rich tooltip with a title and body at a specific screen position.
@@ -640,6 +643,11 @@ void rt_tooltip_show_rich(rt_string title, rt_string body, int64_t x, int64_t y)
         return;
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cbody = rt_string_to_gui_cstr(body);
+    if (!ctitle || !cbody) {
+        free(ctitle);
+        free(cbody);
+        return;
+    }
 
     // Create tooltip if needed
     if (!app->manual_tooltip) {
@@ -665,10 +673,8 @@ void rt_tooltip_show_rich(rt_string title, rt_string body, int64_t x, int64_t y)
     }
 
 tooltip_rich_done:
-    if (ctitle)
-        free(ctitle);
-    if (cbody)
-        free(cbody);
+    free(ctitle);
+    free(cbody);
 }
 
 /// @brief Hide the tooltip.
@@ -709,9 +715,10 @@ void rt_widget_set_tooltip(void *widget, rt_string text) {
     if (!rt_gui_is_widget_handle(widget))
         return;
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return;
     vg_widget_set_tooltip_text((vg_widget_t *)widget, ctext);
-    if (ctext)
-        free(ctext);
+    free(ctext);
 }
 
 /// @brief Attach a rich tooltip (title + body) to a widget for hover display.
@@ -726,6 +733,11 @@ void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
     // vg_tooltip_t enhancements.
     char *ctitle = rt_string_to_gui_cstr(title);
     char *cbody = rt_string_to_gui_cstr(body);
+    if (!ctitle || !cbody) {
+        free(ctitle);
+        free(cbody);
+        return;
+    }
 
     char *combined = rt_gui_join_title_body(ctitle, cbody);
     if (combined) {
@@ -733,10 +745,8 @@ void rt_widget_set_tooltip_rich(void *widget, rt_string title, rt_string body) {
         free(combined);
     }
 
-    if (ctitle)
-        free(ctitle);
-    if (cbody)
-        free(cbody);
+    free(ctitle);
+    free(cbody);
 }
 
 /// @brief Clear the tooltip of the widget.
@@ -949,9 +959,10 @@ void rt_toast_info(rt_string message) {
         return;
 
     char *cmsg = rt_string_to_gui_cstr(message);
+    if (!cmsg)
+        return;
     rt_toast_show_shortcut(app, mgr, VG_NOTIFICATION_INFO, "Info", cmsg, 3000);
-    if (cmsg)
-        free(cmsg);
+    free(cmsg);
 }
 
 /// @brief Show a success toast notification (auto-dismisses after 3 seconds).
@@ -964,9 +975,10 @@ void rt_toast_success(rt_string message) {
         return;
 
     char *cmsg = rt_string_to_gui_cstr(message);
+    if (!cmsg)
+        return;
     rt_toast_show_shortcut(app, mgr, VG_NOTIFICATION_SUCCESS, "Success", cmsg, 3000);
-    if (cmsg)
-        free(cmsg);
+    free(cmsg);
 }
 
 /// @brief Show a warning toast notification (auto-dismisses after 5 seconds).
@@ -979,9 +991,10 @@ void rt_toast_warning(rt_string message) {
         return;
 
     char *cmsg = rt_string_to_gui_cstr(message);
+    if (!cmsg)
+        return;
     rt_toast_show_shortcut(app, mgr, VG_NOTIFICATION_WARNING, "Warning", cmsg, 5000);
-    if (cmsg)
-        free(cmsg);
+    free(cmsg);
 }
 
 /// @brief Show an error toast notification (does not auto-dismiss; user must close).
@@ -994,9 +1007,10 @@ void rt_toast_error(rt_string message) {
         return;
 
     char *cmsg = rt_string_to_gui_cstr(message);
+    if (!cmsg)
+        return;
     rt_toast_show_shortcut(app, mgr, VG_NOTIFICATION_ERROR, "Error", cmsg, 0);
-    if (cmsg)
-        free(cmsg);
+    free(cmsg);
 }
 
 /// @brief Create a configurable toast and return a handle for action / dismissal polling.
@@ -1017,6 +1031,8 @@ void *rt_toast_new(rt_string message, int64_t type, int64_t duration_ms) {
         return NULL;
 
     char *cmsg = rt_string_to_gui_cstr(message);
+    if (!cmsg)
+        return NULL;
 
     rt_toast_data_t *data = (rt_toast_data_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_toast_data_t));
     if (!data) {

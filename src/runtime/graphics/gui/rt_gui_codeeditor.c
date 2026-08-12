@@ -1929,7 +1929,7 @@ rt_string rt_codeeditor_get_word_at_cursor(void *editor) {
     while (end < len && rt_codeeditor_identifier_byte((unsigned char)text[end]))
         ++end;
 
-    return rt_string_from_bytes(text + start, (size_t)(end - start));
+    return rt_gui_string_from_bytes_bounded(text + start, (size_t)(end - start));
 }
 
 /// @brief Replace the identifier word under the primary cursor with new_text.
@@ -1977,7 +1977,7 @@ rt_string rt_codeeditor_get_line(void *editor, int64_t line_index) {
     if (line_index < 0 || line_index >= (int64_t)ce->line_count)
         return rt_str_empty();
     vg_code_line_t *line = &ce->lines[(int)line_index];
-    return rt_string_from_bytes(line->text, line->length);
+    return rt_gui_string_from_bytes_bounded(line->text, line->length);
 }
 
 /// @brief Clear low-level editor performance counters.
@@ -2154,6 +2154,8 @@ static void *rt_editorbuffer_wrap(vg_editor_buffer_t *buf) {
 void *rt_editorbuffer_new(rt_string text) {
     RT_ASSERT_MAIN_THREAD();
     char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return NULL;
     vg_editor_buffer_t *buf = vg_editor_buffer_create(ctext);
     if (ctext)
         free(ctext);

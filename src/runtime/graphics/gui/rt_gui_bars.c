@@ -415,7 +415,9 @@ void rt_statusbaritem_set_icon_name(void *item, rt_string name) {
     if (!sbi)
         return;
     char *cname = rt_string_to_gui_cstr(name);
-    if (!cname || !cname[0]) {
+    if (!cname)
+        return;
+    if (!cname[0]) {
         vg_statusbar_item_set_icon_vector(sbi, -1);
         free(cname);
         return;
@@ -561,26 +563,32 @@ static uint32_t rt_toolbar_builtin_icon_codepoint(const char *name) {
     return 0;
 }
 
-/// @brief Convert a runtime string semantic icon name into a GUI icon value.
-/// @param icon_name Runtime string containing a built-in icon name.
-/// @return Glyph icon on known names, otherwise VG_ICON_NONE.
-static vg_icon_t rt_toolbar_icon_from_name(rt_string icon_name) {
-    vg_icon_t icon = {0};
+/// @brief Convert a runtime string semantic icon name into a GUI icon value transactionally.
+/// @param icon_name Runtime string containing a built-in icon name; NULL selects no icon.
+/// @param out_icon Receives a glyph/vector icon on success or `VG_ICON_NONE` for an unknown name.
+/// @return True when conversion succeeded, false for invalid/oversized text or an invalid output.
+static bool rt_toolbar_icon_from_name(rt_string icon_name, vg_icon_t *out_icon) {
+    if (!out_icon)
+        return false;
+    memset(out_icon, 0, sizeof(*out_icon));
+    if (!icon_name)
+        return true;
     char *cname = rt_string_to_cstr_no_nul(icon_name);
-    if (icon_name && !cname)
-        return icon;
+    if (!cname)
+        return false;
     // Scalable vector icons take precedence (ADR 0137); the legacy builtin
     // codepoint table remains the fallback for unmapped names.
     int32_t vector_id = vg_icon_vector_find(cname);
     if (vector_id != VG_ICON_VECTOR_INVALID) {
         free(cname);
-        return vg_icon_from_vector(vector_id);
+        *out_icon = vg_icon_from_vector(vector_id);
+        return true;
     }
     uint32_t cp = rt_toolbar_builtin_icon_codepoint(cname);
     free(cname);
     if (cp != 0)
-        icon = vg_icon_from_glyph(cp);
-    return icon;
+        *out_icon = vg_icon_from_glyph(cp);
+    return true;
 }
 
 /// @brief Create a new horizontal toolbar widget.
@@ -723,9 +731,13 @@ void *rt_toolbar_add_named_button(void *toolbar, rt_string icon_name, rt_string 
     char *ctooltip = rt_string_to_gui_cstr(tooltip);
     if (!ctooltip)
         return NULL;
+    vg_icon_t icon = {0};
+    if (!rt_toolbar_icon_from_name(icon_name, &icon)) {
+        free(ctooltip);
+        return NULL;
+    }
 
-    vg_toolbar_item_t *item =
-        vg_toolbar_add_button(tb, NULL, NULL, rt_toolbar_icon_from_name(icon_name), NULL, NULL);
+    vg_toolbar_item_t *item = vg_toolbar_add_button(tb, NULL, NULL, icon, NULL, NULL);
     if (item)
         vg_toolbar_item_set_tooltip(item, ctooltip);
 
@@ -754,9 +766,14 @@ void *rt_toolbar_add_named_button_with_text(void *toolbar,
         free(ctooltip);
         return NULL;
     }
+    vg_icon_t icon = {0};
+    if (!rt_toolbar_icon_from_name(icon_name, &icon)) {
+        free(ctext);
+        free(ctooltip);
+        return NULL;
+    }
 
-    vg_toolbar_item_t *item =
-        vg_toolbar_add_button(tb, NULL, ctext, rt_toolbar_icon_from_name(icon_name), NULL, NULL);
+    vg_toolbar_item_t *item = vg_toolbar_add_button(tb, NULL, ctext, icon, NULL, NULL);
     if (item) {
         item->show_label = true;
         vg_toolbar_item_set_tooltip(item, ctooltip);
@@ -811,9 +828,13 @@ void *rt_toolbar_add_named_toggle(void *toolbar, rt_string icon_name, rt_string 
     char *ctooltip = rt_string_to_gui_cstr(tooltip);
     if (!ctooltip)
         return NULL;
+    vg_icon_t icon = {0};
+    if (!rt_toolbar_icon_from_name(icon_name, &icon)) {
+        free(ctooltip);
+        return NULL;
+    }
 
-    vg_toolbar_item_t *item = vg_toolbar_add_toggle(
-        tb, NULL, NULL, rt_toolbar_icon_from_name(icon_name), false, NULL, NULL);
+    vg_toolbar_item_t *item = vg_toolbar_add_toggle(tb, NULL, NULL, icon, false, NULL, NULL);
     if (item)
         vg_toolbar_item_set_tooltip(item, ctooltip);
 
@@ -973,6 +994,8 @@ void rt_toolbaritem_set_icon(void *item, rt_string icon_path) {
     if (!ti)
         return;
     char *cicon = rt_string_to_cstr_no_nul(icon_path);
+    if (icon_path && !cicon)
+        return;
     vg_icon_t icon = rt_gui_icon_from_path_cstr(cicon);
     free(cicon);
     vg_toolbar_item_set_icon(ti, icon);
@@ -997,7 +1020,10 @@ void rt_toolbaritem_set_named_icon(void *item, rt_string icon_name) {
     vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
     if (!ti)
         return;
-    vg_toolbar_item_set_icon(ti, rt_toolbar_icon_from_name(icon_name));
+    vg_icon_t icon = {0};
+    if (!rt_toolbar_icon_from_name(icon_name, &icon))
+        return;
+    vg_toolbar_item_set_icon(ti, icon);
 }
 
 /// @brief Set the text of the toolbaritem.
