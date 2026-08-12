@@ -183,6 +183,42 @@ static std::vector<uint8_t> make_gray_jpeg(uint8_t table_id = 0,
     return jpeg;
 }
 
+// One-block grayscale JPEG whose single DC coefficient is non-zero
+// (quantizer 1): the DC Huffman table's lone 1-bit code maps to the given
+// category, and `entropy` carries code + magnitude bits + AC EOB.
+// Reconstruction must equal dc/8 + 128 — the spec relation the IDCT
+// descale bug (five-bit final shift instead of three) violated by 4x while
+// the all-zero fixtures above stayed green (0/32 == 0/8).
+static std::vector<uint8_t> make_dc_jpeg(uint8_t dc_category,
+                                         const std::vector<uint8_t> &entropy) {
+    std::vector<uint8_t> jpeg = {0xFF, 0xD8};
+
+    std::vector<uint8_t> dqt(65, 1);
+    dqt[0] = 0;
+    jpeg_append_segment(jpeg, 0xDB, dqt);
+
+    std::vector<uint8_t> sof = jpeg_gray_sof(0x11, 0);
+    jpeg_append_segment(jpeg, 0xC0, sof);
+
+    std::vector<uint8_t> dht;
+    dht.push_back(0); // DC table 0: one 1-bit code -> the category symbol
+    dht.push_back(1);
+    dht.insert(dht.end(), 15, 0);
+    dht.push_back(dc_category);
+    dht.push_back(0x10); // AC table 0: one 1-bit code -> EOB
+    dht.push_back(1);
+    dht.insert(dht.end(), 15, 0);
+    dht.push_back(0x00);
+    jpeg_append_segment(jpeg, 0xC4, dht);
+
+    std::vector<uint8_t> sos = {1, 1, 0x00, 0, 63, 0};
+    jpeg_append_segment(jpeg, 0xDA, sos);
+    jpeg.insert(jpeg.end(), entropy.begin(), entropy.end());
+    jpeg.push_back(0xFF);
+    jpeg.push_back(0xD9);
+    return jpeg;
+}
+
 static std::vector<uint8_t> make_three_component_jpeg(bool rgb_ids = false,
                                                       int adobe_transform = -1) {
     std::vector<uint8_t> jpeg = {0xFF, 0xD8};
@@ -277,6 +313,34 @@ TEST(JpegDecodeTest, RoundTripViaPng) {
     remove(path);
 }
 
+TEST(JpegDecodeTest, IdctDcScaleIsSpecExact) {
+    // dc=64 (category 7, bits 0 1000000, EOB 0)  -> 64/8  + 128 = 136.
+    // dc=512 (category 10, bits 0 1000000000, 0) -> 512/8 + 128 = 192.
+    // Two magnitudes pin the SCALE, not just the offset: any wrong final
+    // shift moves both, and moves them by different amounts.
+    struct DcCase {
+        uint8_t category;
+        std::vector<uint8_t> entropy;
+        uint32_t expected;
+    };
+    const DcCase cases[] = {
+        {7, {0x40, 0x7F}, UINT32_C(0x888888FF)},
+        {10, {0x40, 0x0F}, UINT32_C(0xC0C0C0FF)},
+    };
+    for (const DcCase &c : cases) {
+        std::vector<uint8_t> jpeg = make_dc_jpeg(c.category, c.entropy);
+        uint32_t *pixels = nullptr;
+        int64_t width = 0;
+        int64_t height = 0;
+        EXPECT_TRUE(decode_raw(jpeg, &pixels, &width, &height));
+        ASSERT_TRUE(pixels != nullptr);
+        EXPECT_EQ(width, 1);
+        EXPECT_EQ(height, 1);
+        EXPECT_EQ(pixels[0], c.expected);
+        std::free(pixels);
+    }
+}
+
 TEST(JpegDecodeTest, DecodesGeneratedBaselineAndAllTableIds) {
     for (uint8_t table_id = 0; table_id < 4; ++table_id) {
         std::vector<uint8_t> jpeg = make_gray_jpeg(table_id);
@@ -302,6 +366,9 @@ TEST(JpegDecodeTest, DecodesGeneratedBaselineAndAllTableIds) {
 }
 
 TEST(JpegDecodeTest, MapsYcbcrRolesByComponentId) {
+    // The fixture's luma block decodes to DC=256 -> 256/8 + 128 = 160
+    // (0xA0). The previous expectation (0x88 = 136) had the IDCT descale
+    // bug baked in (256/32 + 128) — see IdctDcScaleIsSpecExact.
     std::vector<uint8_t> jpeg = make_three_component_jpeg();
     uint32_t *pixels = nullptr;
     int64_t width = 0;
@@ -310,14 +377,14 @@ TEST(JpegDecodeTest, MapsYcbcrRolesByComponentId) {
     ASSERT_TRUE(pixels != nullptr);
     EXPECT_EQ(width, 1);
     EXPECT_EQ(height, 1);
-    EXPECT_EQ(pixels[0], UINT32_C(0x888888FF));
+    EXPECT_EQ(pixels[0], UINT32_C(0xA0A0A0FF));
     std::free(pixels);
 
     jpeg = make_three_component_jpeg(false, 1);
     pixels = nullptr;
     EXPECT_TRUE(decode_raw(jpeg, &pixels, &width, &height));
     ASSERT_TRUE(pixels != nullptr);
-    EXPECT_EQ(pixels[0], UINT32_C(0x888888FF));
+    EXPECT_EQ(pixels[0], UINT32_C(0xA0A0A0FF));
     std::free(pixels);
 }
 

@@ -2992,21 +2992,44 @@ static void postfx_apply(rt_postfx3d *fx,
         return;
     (void)pixel_count;
 
-    /* Convert framebuffer to retained float RGB scratch for processing. */
+    /* Convert framebuffer to retained float RGB scratch for processing.
+     * When the chain carries a real tone curve (Reinhard/ACES) the 8-bit
+     * source — display-referred sRGB — must be LINEARIZED first: running
+     * the curve plus its 2.2 gamma-out on already-encoded values lifts
+     * blacks to grey, caps the reachable display range at ~74%, and
+     * halves saturation (the washed-out-broadcast bug). Tonemap-less
+     * chains keep the historical display-referred passthrough exactly. */
     float *fbuf = postfx3d_reserve_cpu_fbuf(fx, fbuf_bytes);
     if (!fbuf)
         return;
+
+    int tone_active = postfx_chain_has_tonemap(fx, /*hdr_active=*/0);
+    static float srgb_decode_lut[256];
+    static int srgb_decode_ready = 0;
+    if (tone_active && !srgb_decode_ready) {
+        for (int i = 0; i < 256; i++)
+            srgb_decode_lut[i] = powf((float)i / 255.0f, 2.2f);
+        srgb_decode_ready = 1;
+    }
 
     for (int32_t y = 0; y < h; y++)
         for (int32_t x = 0; x < w; x++) {
             const uint8_t *src = &pixels[(size_t)y * (size_t)stride + (size_t)x * 4u];
             size_t di = ((size_t)y * (size_t)w + (size_t)x) * 3u;
-            fbuf[di] = (float)src[0] / 255.0f;
-            fbuf[di + 1] = (float)src[1] / 255.0f;
-            fbuf[di + 2] = (float)src[2] / 255.0f;
+            if (tone_active) {
+                fbuf[di] = srgb_decode_lut[src[0]];
+                fbuf[di + 1] = srgb_decode_lut[src[1]];
+                fbuf[di + 2] = srgb_decode_lut[src[2]];
+            } else {
+                fbuf[di] = (float)src[0] / 255.0f;
+                fbuf[di + 1] = (float)src[1] / 255.0f;
+                fbuf[di + 2] = (float)src[2] / 255.0f;
+            }
         }
 
-    postfx_apply_float_effects(fx, fbuf, w, h, /*hdr_active=*/0, scene);
+    /* tone_active selects the linear-HDR contract inside the chain: the
+     * tone curve consumes linear values and performs the single gamma-out. */
+    postfx_apply_float_effects(fx, fbuf, w, h, /*hdr_active=*/tone_active, scene);
 
     /* Write back to framebuffer */
     for (int32_t y = 0; y < h; y++)

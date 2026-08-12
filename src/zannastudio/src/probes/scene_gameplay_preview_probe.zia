@@ -685,7 +685,11 @@ func VerifyPostFXAndRenderedFrame(ctx: GameplayPreviewProbeContext) -> Boolean {
         editor.viewportPixels,
         editor.renderedViewportWidth,
         editor.renderedViewportHeight);
-    if meanLuma < 180.0 or meanLuma > 215.0 {
+    // Envelope re-centered 2026-08-11: the old [180, 215] was measured on
+    // the pre-fix post-FX pipeline, whose tonemap ran on display-referred
+    // input and lifted the whole frame toward white (rt_postfx3d gamma
+    // fix). The corrected render of the same recipe sits near 107.
+    if meanLuma < 85.0 or meanLuma > 145.0 {
         fail(shell, project,
              "finalized Ashfall viewport escaped its runtime-lit visual "
              + "envelope (mean luma " + meanLuma + ")");
@@ -829,7 +833,7 @@ func VerifyGameViewAndCameraRestore(ctx: GameplayPreviewProbeContext) -> Boolean
        or editor.projectViewButton.IsEnabled()
        or editor.EffectiveViewportMode()
           != scene_editor_3d.VIEWPORT_MODE_SHADED
-       or meanLuma < 180.0 or meanLuma > 215.0
+       or meanLuma < 85.0 or meanLuma > 145.0
        or sceneDoc.content != baseline
        or sceneDoc.isModified
        or editor.GetRevision() != baselineRevision
