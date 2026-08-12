@@ -836,6 +836,15 @@ static void vgfx_wl_seat_name(void *data, struct wl_proxy *seat, const char *nam
 }
 static const vgfx_wl_seat_listener_t g_seat_listener = {vgfx_wl_seat_capabilities, vgfx_wl_seat_name};
 
+/// @brief Adapt a connection capability notification to the seat handler.
+/// @param user Borrowed input state registered with the connection.
+/// @param capabilities Newly advertised `wl_seat` capability bitmask.
+static void vgfx_wl_seat_capabilities_changed(void *user, uint32_t capabilities) {
+    vgfx_wayland_input_t *input = (vgfx_wayland_input_t *)user;
+    if (input && input->connection)
+        vgfx_wl_seat_capabilities(input, input->connection->seat, capabilities);
+}
+
 /// @copydoc vgfx_wayland_input_open
 int vgfx_wayland_input_open(vgfx_wayland_input_t *input, vgfx_wayland_connection_t *connection,
                             struct wl_proxy *surface, struct vgfx_window *window,
@@ -847,9 +856,13 @@ int vgfx_wayland_input_open(vgfx_wayland_input_t *input, vgfx_wayland_connection
     input->window = window;
     input->repeat_rate = 25;
     input->repeat_delay = 600;
-    if (connection->api.proxy_add_listener(connection->seat,
-            (void (**)(void))(void *)&g_seat_listener, input) != 0 ||
-        connection->api.display_roundtrip(connection->display) < 0) {
+    /* The connection owns the seat listener, because the capabilities event is
+     * announced during connection setup and is gone by the time a window opens
+     * input. Adopt the value it recorded, then subscribe for later changes. */
+    connection->seat_capabilities_cb = vgfx_wl_seat_capabilities_changed;
+    connection->seat_capabilities_user = input;
+    vgfx_wl_seat_capabilities(input, connection->seat, connection->seat_capabilities);
+    if (connection->api.display_roundtrip(connection->display) < 0) {
         if (error && error_size) snprintf(error, error_size, "Wayland seat initialization failed");
         vgfx_wayland_input_close(input);
         return 0;
@@ -860,6 +873,10 @@ int vgfx_wayland_input_open(vgfx_wayland_input_t *input, vgfx_wayland_connection
 /// @copydoc vgfx_wayland_input_close
 void vgfx_wayland_input_close(vgfx_wayland_input_t *input) {
     if (!input) return;
+    if (input->connection && input->connection->seat_capabilities_user == input) {
+        input->connection->seat_capabilities_cb = NULL;
+        input->connection->seat_capabilities_user = NULL;
+    }
     vgfx_wl_release(input, &input->touch, WL_TOUCH_RELEASE);
     vgfx_wl_release(input, &input->keyboard, WL_KEYBOARD_RELEASE);
     vgfx_wl_release(input, &input->pointer, WL_POINTER_RELEASE);

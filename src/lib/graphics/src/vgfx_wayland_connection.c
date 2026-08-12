@@ -216,6 +216,42 @@ void vgfx_wayland_connection_close(vgfx_wayland_connection_t *connection) {
     memset(connection, 0, sizeof(*connection));
 }
 
+/// @brief Record the seat's advertised capabilities and forward them onward.
+/// @details Runs for the announcement delivered during connection setup and for
+///          any later change, so an input module that attaches afterwards can
+///          still create its devices.
+/// @param data Borrowed owning connection.
+/// @param seat Unused seat proxy the event arrived on.
+/// @param capabilities `wl_seat` capability bitmask.
+static void vgfx_wayland_connection_seat_capabilities(void *data,
+                                                      struct wl_proxy *seat,
+                                                      uint32_t capabilities) {
+    (void)seat;
+    vgfx_wayland_connection_t *connection = (vgfx_wayland_connection_t *)data;
+    if (!connection)
+        return;
+    connection->seat_capabilities = capabilities;
+    if (connection->seat_capabilities_cb)
+        connection->seat_capabilities_cb(connection->seat_capabilities_user, capabilities);
+}
+
+/// @brief Ignore the seat's human-readable name.
+/// @param data Unused listener context.
+/// @param seat Unused seat proxy.
+/// @param name Unused seat name.
+static void vgfx_wayland_connection_seat_name(void *data, struct wl_proxy *seat, const char *name) {
+    (void)data;
+    (void)seat;
+    (void)name;
+}
+
+/// @brief Seat listener owned by the connection for the lifetime of the seat.
+static const struct {
+    void (*capabilities)(void *, struct wl_proxy *, uint32_t);
+    void (*name)(void *, struct wl_proxy *, const char *);
+} g_connection_seat_listener = {vgfx_wayland_connection_seat_capabilities,
+                                vgfx_wayland_connection_seat_name};
+
 /// @copydoc vgfx_wayland_connection_open
 int vgfx_wayland_connection_open(vgfx_wayland_connection_t *connection,
                                  const char *display_name,
@@ -300,6 +336,14 @@ int vgfx_wayland_connection_open(vgfx_wayland_connection_t *connection,
                                                   connection->api.seat_interface,
                                                   connection->seat_version,
                                                   8);
+    /* The seat announces its capabilities once, in the roundtrip below. A
+     * listener attached after that — as the input module necessarily is, since
+     * it opens per window — never learns that a pointer or keyboard exists, so
+     * no input device is ever created. Own the listener here and record the
+     * value for whoever opens input later. */
+    if (connection->seat)
+        (void)connection->api.proxy_add_listener(
+            connection->seat, (void (**)(void))(void *)&g_connection_seat_listener, connection);
     connection->xdg_wm_base =
         (struct xdg_wm_base *)vgfx_wayland_registry_bind(&connection->api,
                                                          connection->registry,

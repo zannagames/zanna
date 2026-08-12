@@ -34,7 +34,11 @@ enum {
     VGFX_WL_SUBCOMPOSITOR_GET_SUBSURFACE = 1,
     VGFX_WL_SUBSURFACE_DESTROY = 0,
     VGFX_WL_SUBSURFACE_SET_POSITION = 1,
-    VGFX_WL_SUBSURFACE_PLACE_BELOW = 2,
+    /* wl_subsurface request order is destroy, set_position, place_above,
+     * place_below: the frame must be stacked below, and opcode 2 is the
+     * request that stacks it above. */
+    VGFX_WL_SUBSURFACE_PLACE_ABOVE = 2,
+    VGFX_WL_SUBSURFACE_PLACE_BELOW = 3,
     VGFX_XDG_SURFACE_SET_WINDOW_GEOMETRY = 3,
     VGFX_XDG_TOPLEVEL_MOVE = 5,
     VGFX_XDG_TOPLEVEL_RESIZE = 6,

@@ -68,6 +68,16 @@ typedef struct vgfx_wayland_connection {
     struct wl_proxy *subcompositor;
     struct wl_proxy *shm;
     struct wl_proxy *seat;
+    /// @brief Latest `wl_seat.capabilities` bitmask, recorded at bind time.
+    /// @details The compositor announces capabilities once, during the roundtrip
+    ///          that follows the bind. A listener attached later never sees that
+    ///          event, so the connection owns the seat listener and records the
+    ///          value for whoever opens input afterwards.
+    uint32_t seat_capabilities;
+    /// @brief Optional forwarder invoked on every capabilities change.
+    void (*seat_capabilities_cb)(void *user, uint32_t capabilities);
+    /// @brief Borrowed context passed to @ref seat_capabilities_cb.
+    void *seat_capabilities_user;
     struct wl_proxy *data_device_manager;
     /// @brief Owned optional extension-manager singleton proxies.
     struct zwp_text_input_manager_v3 *text_input_manager_v3;
