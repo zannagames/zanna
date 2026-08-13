@@ -841,6 +841,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
     id<MTLTexture> new_overlay_depth = nil;
     id<MTLTexture> new_postfx_color = nil;
     id<MTLTexture> new_postfx_scratch = nil;
+    id<MTLTexture> new_postfx_resolve = nil;
     id<MTLTexture> new_taa_history_a = nil;
     id<MTLTexture> new_taa_history_b = nil;
     NSMutableArray<id<MTLTexture>> *new_bloom_mips = nil;
@@ -897,7 +898,26 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                                     NO);
         new_overlay_depth = metal_new_depth_texture(ctx, w, h, MTLTextureUsageRenderTarget);
         if (ctx.postfxPipeline) {
+            /* ADR 0246 / V1b: RGBA16F ping-pong intermediates (pre-tonemap
+             * passes keep >1.0 energy) + a BGRA8 resolve the present blit
+             * and CPU readback consume. */
             new_postfx_color =
+                metal_new_color_texture(ctx,
+                                        w,
+                                        h,
+                                        metal_color_pixel_format(VGFX3D_METAL_COLOR_FORMAT_HDR16F),
+                                        MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
+                                        MTLStorageModePrivate,
+                                        NO);
+            new_postfx_scratch =
+                metal_new_color_texture(ctx,
+                                        w,
+                                        h,
+                                        metal_color_pixel_format(VGFX3D_METAL_COLOR_FORMAT_HDR16F),
+                                        MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
+                                        MTLStorageModePrivate,
+                                        NO);
+            new_postfx_resolve =
                 metal_new_color_texture(ctx,
                                         w,
                                         h,
@@ -905,18 +925,11 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                                         MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
                                         MTLStorageModeShared,
                                         NO);
-            new_postfx_scratch =
-                metal_new_color_texture(ctx,
-                                        w,
-                                        h,
-                                        metal_color_pixel_format(VGFX3D_METAL_COLOR_FORMAT_UNORM8),
-                                        MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead,
-                                        MTLStorageModePrivate,
-                                        NO);
         }
         if (!new_offscreen_color || !new_offscreen_motion || !new_overlay_color ||
             !new_overlay_motion || !new_overlay_depth ||
-            (ctx.postfxPipeline && (!new_postfx_color || !new_postfx_scratch))) {
+            (ctx.postfxPipeline &&
+             (!new_postfx_color || !new_postfx_scratch || !new_postfx_resolve))) {
             return 0;
         }
         /* Plan 05: half-res RGBA16F bloom mip chain (min dim 8, up to 6 levels). */
@@ -991,6 +1004,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
     ctx.overlayDepthTexture = new_overlay_depth;
     ctx.postfxColorTexture = new_postfx_color;
     ctx.postfxScratchTexture = new_postfx_scratch;
+    ctx.postfxResolveTexture = new_postfx_resolve;
     ctx.bloomMipTextures = new_bloom_mips;
     ctx.taaHistoryA = new_taa_history_a;
     ctx.taaHistoryB = new_taa_history_b;

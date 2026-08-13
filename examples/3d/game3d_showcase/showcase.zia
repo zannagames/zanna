@@ -232,7 +232,7 @@ func runScenario(title: String, render: Boolean) -> Float {
             Game3D.PostFX.Crisp(world);
             Game3D.Quality.Apply(world, Game3D.QualityLevel.get_Balanced());
             ball.Material = ballMat;
-            world.SetFog(0.025, 0.035, 0.045, 12.0, 48.0);
+            world.SetFog(12.0, 48.0, 0.025, 0.035, 0.045);
         }
 
         world.StepSimulation(1.0 / 60.0);

@@ -113,6 +113,126 @@ static void postfx_set_two_pixels(vgfx3d_rendertarget_t *target,
     target->color_dirty = 0;
 }
 
+/* ADR 0246 transfer-identity suite: the 8-bit software scene buffer is
+ * SCENE-LINEAR and a real tone curve performs the pipeline's single display
+ * encode. A re-introduced input decode (the ZB-20 grey wash: pow(2.2) in
+ * front of the curve cancels the encode and runs ACES in display space)
+ * fails these anchors loudly — mid-grey byte 46 came out ~33 instead of
+ * ~147 under the inverted contract. */
+
+static void test_tonemap_midgrey_anchor(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf && fx,
+                "Mid-grey anchor fixture initializes");
+    /* Uniform linear mid-grey (0.18 = byte 46). ACES(0.18 * 1.10) then the
+     * 1/2.2 gamma-out lands at 0.576 -> byte 147. */
+    postfx_set_two_pixels(fixture.target, 46, 46, 46, 255, 46, 46, 46, 255);
+    rt_postfx3d_add_tonemap(fx, 2, 1.10);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(fixture.target->color_buf[0] >= 144 && fixture.target->color_buf[0] <= 150,
+                "ACES consumes scene-linear input: byte 46 -> 147 +/- 3 "
+                "(a display-space decode crushes it to ~33)");
+    EXPECT_TRUE(fixture.target->color_buf[0] == fixture.target->color_buf[1] &&
+                    fixture.target->color_buf[1] == fixture.target->color_buf[2],
+                "Grey stays neutral through the tone curve");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_tonemap_saturated_patch_anchor(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf && fx,
+                "Saturated patch fixture initializes");
+    /* Linear (60,180,60) through ACES@1.10 + gamma-out -> ~(169,223,169).
+     * The inverted contract gave ~(58,208,58): the red/blue channels land
+     * >100 bytes low and the hue collapses. */
+    postfx_set_two_pixels(fixture.target, 60, 180, 60, 255, 60, 180, 60, 255);
+    rt_postfx3d_add_tonemap(fx, 2, 1.10);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(fixture.target->color_buf[0] >= 163 && fixture.target->color_buf[0] <= 175,
+                "Saturated patch red channel matches the linear-in contract");
+    EXPECT_TRUE(fixture.target->color_buf[1] >= 217 && fixture.target->color_buf[1] <= 229,
+                "Saturated patch green channel matches the linear-in contract");
+    EXPECT_TRUE(fixture.target->color_buf[2] == fixture.target->color_buf[0],
+                "Saturated patch stays hue-symmetric (r == b)");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_tonemap_toe_monotone_lift(void) {
+    /* Under the correct contract the ACES toe + gamma-out LIFT every dark
+     * value (out >= in for bytes 1..128). The display-space decode made the
+     * curve crush them instead (byte 40 -> 29). */
+    int monotone_ok = 1;
+    for (int v = 1; v <= 128; v += 3) {
+        PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+        void *fx = rt_postfx3d_new();
+        if (!fixture.canvas || !fixture.target || !fixture.target->color_buf || !fx) {
+            monotone_ok = 0;
+            (void)rt_memory_release(fx);
+            postfx_cpu_fixture_free(&fixture);
+            break;
+        }
+        postfx_set_two_pixels(fixture.target,
+                              (uint8_t)v, (uint8_t)v, (uint8_t)v, 255,
+                              (uint8_t)v, (uint8_t)v, (uint8_t)v, 255);
+        rt_postfx3d_add_tonemap(fx, 2, 1.10);
+        rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+        rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+        if (fixture.target->color_buf[0] < v)
+            monotone_ok = 0;
+        (void)rt_memory_release(fx);
+        postfx_cpu_fixture_free(&fixture);
+    }
+    EXPECT_TRUE(monotone_ok, "ACES toe lifts every dark byte (out >= in for 1..128)");
+}
+
+static void test_tonemap_free_chain_is_passthrough(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf && fx,
+                "Tonemap-free fixture initializes");
+    /* An identity color grade carries no tone curve: the chain must be a
+     * byte-exact passthrough (no hidden decode/encode without a tonemap). */
+    postfx_set_two_pixels(fixture.target, 11, 29, 47, 71, 83, 101, 127, 149);
+    rt_postfx3d_add_color_grade(fx, 0.0, 1.0, 1.0);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    {
+        /* The float round-trip truncates on write-back, so "passthrough"
+         * means within one byte of quantization — a hidden decode/encode
+         * shifts values by dozens. */
+        static const uint8_t expect[6] = {11, 29, 47, 83, 101, 127};
+        static const int idx[6] = {0, 1, 2, 4, 5, 6};
+        int passthrough_ok = 1;
+        for (int i = 0; i < 6; i++) {
+            int got = (int)fixture.target->color_buf[idx[i]];
+            if (got < (int)expect[i] - 1 || got > (int)expect[i] + 1)
+                passthrough_ok = 0;
+        }
+        EXPECT_TRUE(passthrough_ok,
+                    "Tonemap-free chain is a display-referred passthrough "
+                    "(each byte within write-back rounding)");
+    }
+    EXPECT_TRUE(fixture.target->color_buf[3] == 71 && fixture.target->color_buf[7] == 149,
+                "Tonemap-free chain preserves alpha");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
 static void test_color_lut_uses_packed_rgb_pixels(void) {
     PostFXCPUFixture fixture = postfx_cpu_fixture_new();
     void *fx = rt_postfx3d_new();
@@ -196,6 +316,10 @@ static void test_taa_history_uses_packed_rgb_pixels(void) {
 }
 
 int main(void) {
+    test_tonemap_midgrey_anchor();
+    test_tonemap_saturated_patch_anchor();
+    test_tonemap_toe_monotone_lift();
+    test_tonemap_free_chain_is_passthrough();
     test_color_lut_uses_packed_rgb_pixels();
     test_auto_exposure_samples_packed_luminance();
     test_taa_history_uses_packed_rgb_pixels();

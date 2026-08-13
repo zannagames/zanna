@@ -37,7 +37,7 @@ class WalkMinGame {
         camera = world.Camera;
         Canvas3D.SetMaxDeltaTime(canvas, 50);
 
-        world.SetFog(0.025, 0.035, 0.050, 16.0, 42.0);
+        world.SetFog(16.0, 42.0, 0.025, 0.035, 0.050);
         world.SetAmbient(0.24, 0.26, 0.30);
         world.SetQuality(QualityLevel.get_Balanced());
 

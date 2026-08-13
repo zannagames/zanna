@@ -690,7 +690,13 @@ hold stack-wrapper or freed-payload pointers.
 `PostFX3D` applies effects to the software framebuffer in `Canvas3D.Flip()` and exports the same
 ordered effect chain for GPU `present_postfx` / readback paths:
 
-1. Convert framebuffer RGBA8 → float RGB buffer
+1. Convert framebuffer RGBA8 → float RGB buffer. The scene buffer is
+   scene-referred linear on every backend (ADR 0246): the conversion is a plain
+   `/255` with no sRGB decode, and the tone-mapping pass performs the single
+   display encode for the whole chain. GPU backends thread the same contract as
+   chain state (`sceneIsHdr` means "no tonemap pass has run yet", never a pixel
+   format), and Metal ping-pongs chain intermediates through `RGBA16F` with one
+   BGRA8 resolve at the end of the chain.
 2. Apply each enabled effect in chain order:
    - **Bloom**: bright extract (half-res) → separable Gaussian blur (N passes) → additive composite; GPU paths receive the authored pass count and use it as bloom radius
    - **Tone mapping**: Reinhard (`c/(c+1)`) or ACES filmic (Narkowicz approximation) + gamma correction

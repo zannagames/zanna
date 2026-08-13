@@ -1,0 +1,106 @@
+module TestCanvas3DDoubleSidedLighting;
+
+bind Zanna.Graphics3D;
+bind Zanna.Graphics;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+// ZB-21 regression pin (plan 51 V2), run under BOTH the software and the
+// platform GPU backend via ctest: a double-sided surface must shade each
+// fragment with the normal of the side the CAMERA sees. Before the fix no
+// backend flipped the interpolated normal for back faces, so cull-off
+// geometry viewed from its far side both leaked light through the sheet
+// (lit by a light behind it) and went black against a light on the viewer's
+// side — stadium canopies seen from below rendered as black silhouettes.
+// Three checks:
+//   A sanity: camera and light on the normal side -> lit.
+//   B bleed:  camera behind the sheet, light on the normal side -> dark
+//             (pre-fix: bright, light passed through).
+//   C flip:   camera AND light behind the sheet -> lit
+//             (pre-fix: black, shaded with the far side's normal).
+
+func meanLuma(shot: Pixels, x0: Integer, y0: Integer, x1: Integer, y1: Integer) -> Integer {
+    var total = 0;
+    var count = 0;
+    var y = y0;
+    while (y < y1) {
+        var x = x0;
+        while (x < x1) {
+            var c = Pixels.Get(shot, x, y);
+            // Pixels.Get packs RGBA with red in the top byte.
+            var r = (c / 16777216) % 256;
+            var g = (c / 65536) % 256;
+            var b = (c / 256) % 256;
+            total = total + (r * 54 + g * 183 + b * 19) / 256;
+            count = count + 1;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return total / count;
+}
+
+func renderPlane(canvas: Canvas3D, cam: Camera3D, plane: Mesh3D, mat: Material3D) -> Pixels {
+    Canvas3D.Clear(canvas, 0.0, 0.0, 0.0);
+    Canvas3D.Begin(canvas, cam);
+    Canvas3D.DrawMesh(canvas, plane, Mat4.Translate(0.0, 0.0, 0.0), mat);
+    Canvas3D.End(canvas);
+    var shot = Canvas3D.ScreenshotFinal(canvas);
+    Canvas3D.Flip(canvas);
+    return shot;
+}
+
+func start() {
+    var canvas = Canvas3D.New("DoubleSided Lighting", 96, 64);
+    // The only illumination is one directional light; ambient is zeroed so
+    // every check reads pure N-dot-L.
+    Canvas3D.ClearLights(canvas);
+    Canvas3D.SetAmbient(canvas, 0.0, 0.0, 0.0);
+    var downward = Light3D.Directional(new Vec3(0.0, 0.0 - 1.0, 0.0), 1.0, 1.0, 1.0);
+    var upward = Light3D.Directional(new Vec3(0.0, 1.0, 0.0), 1.0, 1.0, 1.0);
+
+    var plane = Mesh3D.Plane(8.0, 8.0);
+    var mat = Material3D.FromColor(0.8, 0.8, 0.8);
+    mat.DoubleSided = true;
+
+    var above = Camera3D.New(60.0, 1.5, 0.1, 100.0);
+    Camera3D.LookAt(above,
+                    new Vec3(0.0, 5.0, 0.01),
+                    new Vec3(0.0, 0.0, 0.0),
+                    new Vec3(0.0, 0.0, 1.0));
+    var below = Camera3D.New(60.0, 1.5, 0.1, 100.0);
+    Camera3D.LookAt(below,
+                    new Vec3(0.0, 0.0 - 5.0, 0.01),
+                    new Vec3(0.0, 0.0, 0.0),
+                    new Vec3(0.0, 0.0, 1.0));
+
+    // A: camera above, light shining down onto the +Y normal — sanity.
+    Canvas3D.SetLight(canvas, 0, downward);
+    var litA = meanLuma(renderPlane(canvas, above, plane, mat), 32, 22, 64, 42);
+    if (litA < 60) {
+        Say("FAIL A: front face under a direct light should be lit, mean "
+            + "luma " + litA);
+        return;
+    }
+
+    // B: camera below, light still shining down from the far side — the
+    // sheet must NOT leak light through (pre-fix it rendered bright).
+    var litB = meanLuma(renderPlane(canvas, below, plane, mat), 32, 22, 64, 42);
+    if (litB > 20) {
+        Say("FAIL B: light leaked through the sheet to the back face "
+            + "(ZB-21), mean luma " + litB);
+        return;
+    }
+
+    // C: camera below, light shining up from the camera's side — the back
+    // face must shade with the viewer-side normal (pre-fix it was black).
+    Canvas3D.SetLight(canvas, 0, upward);
+    var litC = meanLuma(renderPlane(canvas, below, plane, mat), 32, 22, 64, 42);
+    if (litC < 60) {
+        Say("FAIL C: back face lit from the viewer's side should be lit "
+            + "(ZB-21), mean luma " + litC);
+        return;
+    }
+
+    Say("PASS");
+}

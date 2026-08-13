@@ -618,6 +618,9 @@ static const char *const
             "        }\n"
             "    }\n"
             "    vec3 N = safeNormalize3(vNormal, vec3(0.0, 0.0, 1.0));\n"
+            // ZB-21: back faces of cull-off (doubleSided) geometry shade with the
+            // outward normal; culling removes back faces everywhere else.
+            "    if (!gl_FrontFacing) N = -N;\n"
             "    if (uHasNormalMap != 0) {\n"
             "        vec3 mapN = texture(uNormalTex, materialUv(1)).xyz * 2.0 - 1.0;\n"
             "        mapN.xy *= uPbrScalars1.x;\n"

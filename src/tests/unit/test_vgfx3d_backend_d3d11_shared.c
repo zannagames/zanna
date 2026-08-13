@@ -1893,8 +1893,11 @@ static void test_d3d11_shader_sources_keep_numeric_guards(void) {
                               "float sampleShadowAt(int shadowIndex, float2 uv, float depth, "
                               "float bias) {\n    float result = 1.0;"),
                 "Shadow sampling initializes one result across every texture branch");
-    EXPECT_TRUE(contains_text(d3d11_shader_source, "PS_OUTPUT PSMain(PS_INPUT input)"),
+    EXPECT_TRUE(contains_text(d3d11_shader_source,
+                              "PS_OUTPUT PSMain(PS_INPUT input, bool isFront : SV_IsFrontFace)"),
                 "Main D3D11 shader source remains available to the compile path");
+    EXPECT_TRUE(contains_text(d3d11_shader_source, "if (!isFront) N = -N;"),
+                "D3D11 back faces of cull-off geometry shade with the outward normal (ZB-21)");
     EXPECT_TRUE(contains_text(d3d11_shader_source, "evalNativeLight") &&
                     contains_text(d3d11_shader_source, "nativeLightDecay"),
                 "D3D11 shader retains native area/volume evaluation and FBX decay");

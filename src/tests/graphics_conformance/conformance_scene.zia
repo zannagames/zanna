@@ -38,7 +38,7 @@ class ConformanceScene {
         camera = world.Camera;
         Canvas3D.SetMaxDeltaTime(canvas, 50);
 
-        world.SetFog(0.030, 0.034, 0.048, 14.0, 40.0);
+        world.SetFog(14.0, 40.0, 0.030, 0.034, 0.048);
         world.SetAmbient(0.22, 0.24, 0.28);
         world.SetQuality(QualityLevel.get_Balanced());
 

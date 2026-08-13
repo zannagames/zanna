@@ -1,0 +1,43 @@
+module test_game3d_world_fog_order;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Terminal as Terminal;
+
+// ADR 0247 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) — the SAME
+// order as Canvas3D.SetFog. The original World3D surface took
+// (r, g, b, near, far) across five untyped f64s, so a caller who knew the
+// Canvas3D order fed plane distances into color channels and saturated the
+// whole frame. This pins the forwarding order through canvas readback, and
+// the new World3D.ClearFog.
+
+func near(a: Float, b: Float) -> Boolean {
+    var d = a - b;
+    if (d < 0.0) { d = 0.0 - d; }
+    return d <= 0.001;
+}
+
+func start() {
+    var world = Game3D.World3D.New("World Fog Order", 64, 48);
+    var canvas = world.Canvas;
+    if (canvas.FogEnabled) {
+        Terminal.Say("FAIL: fog reported enabled before SetFog");
+        return;
+    }
+    world.SetFog(120.0, 900.0, 0.25, 0.45, 0.65);
+    var c = canvas.FogColor;
+    if (canvas.FogEnabled == false or near(canvas.FogNear, 120.0) == false
+        or near(canvas.FogFar, 900.0) == false or near(c.X, 0.25) == false
+        or near(c.Y, 0.45) == false or near(c.Z, 0.65) == false) {
+        Terminal.Say("FAIL: World3D.SetFog forwarding order drifted: near="
+                     + canvas.FogNear + " far=" + canvas.FogFar + " r=" + c.X
+                     + " g=" + c.Y + " b=" + c.Z);
+        return;
+    }
+    world.ClearFog();
+    if (canvas.FogEnabled) {
+        Terminal.Say("FAIL: World3D.ClearFog left fog enabled");
+        return;
+    }
+    Terminal.Say("PASS");
+}

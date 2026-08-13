@@ -250,7 +250,12 @@
 /* MTL-11: Post-processing state */
 @property(nonatomic, strong) id<MTLTexture> postfxColorTexture;
 @property(nonatomic, strong) id<MTLTexture> postfxScratchTexture;
+/* ADR 0246 / V1b: the ping-pong intermediates are RGBA16F so pre-tonemap
+ * passes keep >1.0 energy (ACES gets its shoulder); the final image resolves
+ * into this BGRA8 target because the present path blits format-matched. */
+@property(nonatomic, strong) id<MTLTexture> postfxResolveTexture;
 @property(nonatomic, strong) id<MTLRenderPipelineState> postfxPipeline;
+@property(nonatomic, strong) id<MTLRenderPipelineState> postfxPipelineHdr;
 @property(nonatomic, strong) id<MTLLibrary> postfxLibrary;
 /* Plan 05: mip-chain bloom targets (half-res RGBA16F chain) + pass pipelines. */
 @property(nonatomic, strong) NSMutableArray<id<MTLTexture>> *bloomMipTextures;

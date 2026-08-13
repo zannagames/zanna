@@ -10,6 +10,15 @@ bind Zanna.Terminal;
 //     backend (previously refused at bind with LastError, trapped if forced).
 //   - SSAO measurably darkens a corner scene; DOF measurably blurs a
 //     high-contrast surface far from focus; the full 10-effect chain renders.
+// ADR 0246 display-transfer contract (run under EVERY backend — ctest
+// registers a software and a GPU variant of this probe):
+//   - Scene targets are scene-referred linear; the tonemap pass performs the
+//     single display encode. A mid-grey clear through ACES must land on the
+//     same absolute anchor on every backend.
+//   - Chain ordering must not change the transfer: bloom-before-tonemap has
+//     to match tonemap-only on a frame with nothing above the bloom
+//     threshold. The 2026-08 grey-wash regression failed exactly this pair
+//     (the tonemap pass re-linearized already-linear ping-pong output).
 
 func sumRegion(shot: Pixels, x0: Integer, y0: Integer, x1: Integer, y1: Integer) -> Integer {
     var total = 0;
@@ -43,6 +52,32 @@ func contrast(shot: Pixels, x0: Integer, y0: Integer, x1: Integer, y1: Integer) 
         y = y + 1;
     }
     return total;
+}
+
+func meanChannel(shot: Pixels, x0: Integer, y0: Integer, x1: Integer, y1: Integer,
+                 div: Integer) -> Integer {
+    var total = 0;
+    var count = 0;
+    var y = y0;
+    while (y < y1) {
+        var x = x0;
+        while (x < x1) {
+            total = total + (Pixels.Get(shot, x, y) / div) % 256;
+            count = count + 1;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return total / count;
+}
+
+func flatFrame(canvas: Canvas3D, cam: Camera3D, r: Number, g: Number, b: Number) -> Pixels {
+    Canvas3D.Clear(canvas, r, g, b);
+    Canvas3D.Begin(canvas, cam);
+    Canvas3D.End(canvas);
+    var shot = Canvas3D.ScreenshotFinal(canvas);
+    Canvas3D.Flip(canvas);
+    return shot;
 }
 
 func drawScene(canvas: Canvas3D, cam: Camera3D, floor: Mesh3D, wall: Mesh3D, mat: Material3D) {
@@ -153,6 +188,62 @@ func start() {
     var blurredContrast = contrast(blurred, 24, 16, 72, 40);
     if (blurredContrast * 20 >= sharpContrast * 19) {
         Say("FAIL: DOF should reduce checker contrast by more than 5 percent");
+        return;
+    }
+
+    // --- ADR 0246: mid-grey transfer anchor, backend-independent --------------
+    // Linear 0.5 through ACES (exposure 1.0) + the single 1/2.2 display
+    // encode lands at byte ~205-207; the inverted transfer measured ~154.
+    var toneOnly = PostFX3D.New();
+    PostFX3D.AddTonemap(toneOnly, 2, 1.0);
+    Canvas3D.SetPostFX(canvas, toneOnly);
+    var greyA = flatFrame(canvas, cam, 0.5, 0.5, 0.5);
+    var anchorA = meanChannel(greyA, 24, 16, 72, 48, 65536);
+    if (anchorA < 198 or anchorA > 214) {
+        Say("FAIL: mid-grey ACES anchor escaped [198, 214]: " + anchorA);
+        return;
+    }
+
+    // --- ADR 0246: bloom-before-tonemap must match tonemap-only ---------------
+    // Nothing in a 0.5 frame clears a 0.95 bloom threshold, so the pair can
+    // only diverge if a pass re-linearizes already-linear chain output (the
+    // exact 2026-08 grey-wash shape on the GPU ping-pong).
+    var bloomFirst = PostFX3D.New();
+    PostFX3D.AddBloom(bloomFirst, 0.95, 0.6, 2);
+    PostFX3D.AddTonemap(bloomFirst, 2, 1.0);
+    Canvas3D.SetPostFX(canvas, bloomFirst);
+    var greyB = flatFrame(canvas, cam, 0.5, 0.5, 0.5);
+    var anchorB = meanChannel(greyB, 24, 16, 72, 48, 65536);
+    var orderDelta = anchorA - anchorB;
+    if (orderDelta < 0) {
+        orderDelta = 0 - orderDelta;
+    }
+    if (orderDelta > 4) {
+        Say("FAIL: bloom-before-tonemap diverged from tonemap-only: "
+            + anchorA + " vs " + anchorB);
+        return;
+    }
+    if (anchorB < 198 or anchorB > 214) {
+        Say("FAIL: bloom-first ACES anchor escaped [198, 214]: " + anchorB);
+        return;
+    }
+
+    // --- ADR 0246: saturated input keeps its per-channel anchors --------------
+    Canvas3D.SetPostFX(canvas, toneOnly);
+    var tint = flatFrame(canvas, cam, 0.15, 0.5, 0.15);
+    // Pixels.Get packs RGBA with red in the top byte.
+    var tintR = meanChannel(tint, 24, 16, 72, 48, 16777216);
+    var tintG = meanChannel(tint, 24, 16, 72, 48, 65536);
+    if (tintR < 119 or tintR > 135) {
+        Say("FAIL: tint red ACES anchor escaped [119, 135]: " + tintR);
+        return;
+    }
+    if (tintG < 198 or tintG > 214) {
+        Say("FAIL: tint green ACES anchor escaped [198, 214]: " + tintG);
+        return;
+    }
+    if (tintG - tintR < 60) {
+        Say("FAIL: tonemap collapsed chroma: g " + tintG + " r " + tintR);
         return;
     }
 

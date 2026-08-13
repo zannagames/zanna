@@ -1089,6 +1089,7 @@ Constructor: `Zanna.Game3D.World3D.New`
 | <a id="zanna-game3d-world3d-clearlights"></a>`ClearLights` | `void()` | `Zanna.Game3D.World3D.ClearLights` |
 | <a id="zanna-game3d-world3d-setskybox"></a>`SetSkybox` | `void(obj)` | `Zanna.Game3D.World3D.SetSkybox` |
 | <a id="zanna-game3d-world3d-setfog"></a>`SetFog` | `void(f64,f64,f64,f64,f64)` | `Zanna.Game3D.World3D.SetFog` |
+| <a id="zanna-game3d-world3d-clearfog"></a>`ClearFog` | `void()` | `Zanna.Game3D.World3D.ClearFog` |
 | <a id="zanna-game3d-world3d-setquality"></a>`SetQuality` | `void(i64)` | `Zanna.Game3D.World3D.SetQuality` |
 | <a id="zanna-game3d-world3d-bakenavmesh"></a>`BakeNavMesh` | `obj<Zanna.Graphics3D.NavMesh3D>(f64,f64,f64,f64)` | `Zanna.Game3D.World3D.BakeNavMesh` |
 | <a id="zanna-game3d-world3d-baketilednavmesh"></a>`BakeTiledNavMesh` | `obj<Zanna.Graphics3D.NavMesh3D>(f64,f64,f64,f64,f64)` | `Zanna.Game3D.World3D.BakeTiledNavMesh` |
@@ -2347,6 +2348,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.World3D.ClearLights` | `void(obj)` | `rt_game3d_world_clear_lights` |
 | `Zanna.Game3D.World3D.SetSkybox` | `void(obj,obj)` | `rt_game3d_world_set_skybox` |
 | `Zanna.Game3D.World3D.SetFog` | `void(obj,f64,f64,f64,f64,f64)` | `rt_game3d_world_set_fog` |
+| `Zanna.Game3D.World3D.ClearFog` | `void(obj)` | `rt_game3d_world_clear_fog` |
 | `Zanna.Game3D.World3D.SetQuality` | `void(obj,i64)` | `rt_game3d_world_set_quality` |
 | `Zanna.Game3D.World3D.BakeNavMesh` | `obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64)` | `rt_game3d_world_bake_nav_mesh` |
 | `Zanna.Game3D.World3D.BakeTiledNavMesh` | `obj<Zanna.Graphics3D.NavMesh3D>(obj,f64,f64,f64,f64,f64)` | `rt_game3d_world_bake_tiled_nav_mesh` |

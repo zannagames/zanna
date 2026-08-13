@@ -1692,7 +1692,8 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
 /// @param postfx Borrowed effect snapshot to sanitize and encode, or NULL for passthrough values.
 /// @param overlay_enabled Nonzero when the overlay texture will be composited by this pass.
 /// @param bloom_tex_enabled Nonzero when a prefiltered bloom texture is bound for sampling.
-/// @param source_is_hdr Nonzero when the current source is linear RGBA16F scene color.
+/// @param source_is_linear Nonzero while the pass input is scene-referred linear (ADR 0246
+///        chain-state: true until a tonemap pass has encoded, independent of storage format).
 /// @param source_width Width of the pass's source texture in pixels.
 /// @param source_height Height of the pass's source texture in pixels.
 /// @param[out] params Destination uniform structure populated for the fragment shader.
@@ -1700,7 +1701,7 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
                                      const vgfx3d_postfx_snapshot_t *postfx,
                                      int overlay_enabled,
                                      int bloom_tex_enabled,
-                                     int source_is_hdr,
+                                     int source_is_linear,
                                      NSUInteger source_width,
                                      NSUInteger source_height,
                                      mtl_postfx_params_t *params) {
@@ -1716,7 +1717,7 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
     params->invResolution[0] = source_width > 0 ? 1.0f / (float)source_width : 0.0f;
     params->invResolution[1] = source_height > 0 ? 1.0f / (float)source_height : 0.0f;
     params->overlayEnabled = overlay_enabled ? 1 : 0;
-    params->sceneIsHdr = source_is_hdr ? 1 : 0;
+    params->sceneIsHdr = source_is_linear ? 1 : 0;
     params->bloomTexEnabled = bloom_tex_enabled ? 1 : 0;
     if (!postfx)
         return;
@@ -1758,21 +1759,35 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
 /// @param postfx Borrowed effect snapshot, or NULL to perform a passthrough/composite pass.
 /// @param overlay_enabled Nonzero to composite the context's overlay texture.
 /// @param bloom_texture Borrowed prefiltered bloom texture, or nil when bloom is unavailable.
+/// @param source_is_linear Nonzero while the chain input is still scene-referred linear —
+///        i.e. no tonemap pass has encoded it yet (ADR 0246 chain-state; the storage
+///        format is irrelevant: BGRA8 ping-pong intermediates hold linear values too).
 /// @return The pass output texture (nil on failure).
 static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
                                                id<MTLTexture> source_texture,
                                                id<MTLTexture> target_texture,
                                                const vgfx3d_postfx_snapshot_t *postfx,
                                                int overlay_enabled,
-                                               id<MTLTexture> bloom_texture) {
+                                               id<MTLTexture> bloom_texture,
+                                               int source_is_linear) {
     MTLRenderPassDescriptor *rp;
     id<MTLRenderCommandEncoder> pfxEncoder;
     mtl_postfx_params_t params;
     int bloom_tex_enabled;
+    id<MTLRenderPipelineState> pipeline;
 
     if (!ctx || !ctx.cmdBuf || !ctx.postfxPipeline || !source_texture || !target_texture ||
         !ctx.offscreenMotion || !ctx.depthTexture)
         return nil;
+
+    /* ADR 0246 / V1b: pick the pipeline variant matching the pass target —
+     * RGBA16F for chain intermediates, BGRA8 for the final resolve. */
+    pipeline = ctx.postfxPipeline;
+    if (target_texture.pixelFormat != MTLPixelFormatBGRA8Unorm) {
+        pipeline = ctx.postfxPipelineHdr;
+        if (!pipeline)
+            return nil;
+    }
 
     rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target_texture;
@@ -1785,7 +1800,7 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
 
     bloom_tex_enabled = (postfx && postfx->bloom_enabled && bloom_texture) ? 1 : 0;
 
-    [pfxEncoder setRenderPipelineState:ctx.postfxPipeline];
+    [pfxEncoder setRenderPipelineState:pipeline];
     [pfxEncoder setFragmentTexture:source_texture atIndex:0];
     [pfxEncoder setFragmentTexture:ctx.depthTexture atIndex:1];
     [pfxEncoder setFragmentTexture:ctx.offscreenMotion atIndex:2];
@@ -1800,7 +1815,7 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
                              postfx,
                              overlay_enabled,
                              bloom_tex_enabled,
-                             source_texture.pixelFormat == MTLPixelFormatRGBA16Float,
+                             source_is_linear,
                              source_texture.width,
                              source_texture.height,
                              &params);
@@ -2018,6 +2033,12 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
 
     source_texture = ctx.offscreenColor;
     target_texture = ctx.postfxColorTexture;
+    /* ADR 0246 chain-state: the scene stays scene-referred linear through
+     * every pass until a tonemap pass performs the single display encode —
+     * regardless of which storage format a ping-pong hop used. The former
+     * per-pass pixelFormat test mistook BGRA8 intermediates holding linear
+     * data for display-referred input (ZB-20 grey wash). */
+    int tonemapped_yet = 0;
     if (vgfx3d_postfx_chain_is_usable(postfx)) {
         for (int32_t i = 0; i < postfx->effect_count; i++) {
             id<MTLTexture> output_texture;
@@ -2040,8 +2061,8 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
                     metal_encode_taa_pass(ctx, source_texture, &safe_snapshot);
                 if (!resolved)
                     return nil;
-                output_texture =
-                    metal_encode_postfx_pass(ctx, resolved, target_texture, NULL, 0, nil);
+                output_texture = metal_encode_postfx_pass(
+                    ctx, resolved, target_texture, NULL, 0, nil, !tonemapped_yet);
             } else if (postfx->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR &&
                        safe_snapshot.ssr_enabled) {
                 output_texture =
@@ -2049,8 +2070,17 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
                 if (!output_texture)
                     return nil;
             } else {
-                output_texture = metal_encode_postfx_pass(
-                    ctx, source_texture, target_texture, &safe_snapshot, 0, bloom_texture);
+                output_texture =
+                    metal_encode_postfx_pass(ctx, source_texture, target_texture, &safe_snapshot,
+                                             0, bloom_texture, !tonemapped_yet);
+                /* This pass encoded to display space iff it ran a real tone
+                 * curve, or the explicit "tonemap off" output transform on
+                 * still-linear input. */
+                if (safe_snapshot.tonemap_mode == 1 || safe_snapshot.tonemap_mode == 2 ||
+                    (safe_snapshot.tonemap_mode == 0 && safe_snapshot.tonemap_explicit &&
+                     !tonemapped_yet)) {
+                    tonemapped_yet = 1;
+                }
             }
             if (!output_texture)
                 return nil;
@@ -2060,7 +2090,7 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
         }
     } else {
         id<MTLTexture> output_texture =
-            metal_encode_postfx_pass(ctx, source_texture, target_texture, NULL, 0, nil);
+            metal_encode_postfx_pass(ctx, source_texture, target_texture, NULL, 0, nil, 1);
         if (!output_texture)
             return nil;
         source_texture = output_texture;
@@ -2068,11 +2098,23 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
     }
 
     if (ctx.frameHistory.overlay_used_this_frame && ctx.overlayColorTexture) {
-        id<MTLTexture> output_texture =
-            metal_encode_postfx_pass(ctx, source_texture, target_texture, NULL, 1, nil);
+        id<MTLTexture> output_texture = metal_encode_postfx_pass(
+            ctx, source_texture, target_texture, NULL, 1, nil, !tonemapped_yet);
         if (!output_texture)
             return nil;
         source_texture = output_texture;
+    }
+
+    /* ADR 0246 / V1b: the present blit and CPU readback require BGRA8 —
+     * resolve the final image out of the RGBA16F ping-pong. A chain that
+     * never tonemapped resolves clamped linear values, matching the
+     * historical no-chain look. */
+    if (source_texture.pixelFormat != MTLPixelFormatBGRA8Unorm && ctx.postfxResolveTexture) {
+        id<MTLTexture> resolved = metal_encode_postfx_pass(
+            ctx, source_texture, ctx.postfxResolveTexture, NULL, 0, nil, !tonemapped_yet);
+        if (!resolved)
+            return nil;
+        source_texture = resolved;
     }
 
     ctx.postfxEncodedThisFrame = 1;

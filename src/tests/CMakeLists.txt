@@ -3110,11 +3110,66 @@ if (EXISTS "${CANVAS3D_VISUAL_POLISH_PROBE}")
 endif ()
 
 set(CANVAS3D_POSTFX_PARITY_PROBE "${G3D_TESTS_DIR}/test_canvas3d_postfx_parity.zia")
+if (APPLE)
+    set(CANVAS3D_POSTFX_PARITY_GPU_BACKEND "metal")
+elseif (WIN32)
+    set(CANVAS3D_POSTFX_PARITY_GPU_BACKEND "d3d11")
+else ()
+    set(CANVAS3D_POSTFX_PARITY_GPU_BACKEND "opengl")
+endif ()
 if (EXISTS "${CANVAS3D_POSTFX_PARITY_PROBE}")
     add_test(NAME g3d_test_canvas3d_postfx_parity
             COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_POSTFX_PARITY_PROBE}"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     set_tests_properties(g3d_test_canvas3d_postfx_parity PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+
+    # ADR 0246: the same probe pins the display-transfer contract on the
+    # platform GPU backend — its ACES anchors must match software's.
+    add_test(NAME g3d_test_canvas3d_postfx_parity_gpu
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_POSTFX_PARITY_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_postfx_parity_gpu PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=${CANVAS3D_POSTFX_PARITY_GPU_BACKEND}"
+            TIMEOUT 60)
+endif ()
+
+set(CANVAS3D_DOUBLE_SIDED_PROBE "${G3D_TESTS_DIR}/test_canvas3d_double_sided_lighting.zia")
+if (EXISTS "${CANVAS3D_DOUBLE_SIDED_PROBE}")
+    # ZB-21: double-sided geometry shades with the outward normal on both
+    # sides, on every backend (software + the platform GPU backend).
+    add_test(NAME g3d_test_canvas3d_double_sided_lighting
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_DOUBLE_SIDED_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_double_sided_lighting PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+
+    add_test(NAME g3d_test_canvas3d_double_sided_lighting_gpu
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_DOUBLE_SIDED_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_double_sided_lighting_gpu PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=${CANVAS3D_POSTFX_PARITY_GPU_BACKEND}"
+            TIMEOUT 60)
+endif ()
+
+set(GAME3D_WORLD_FOG_ORDER_PROBE "${G3D_TESTS_DIR}/test_game3d_world_fog_order.zia")
+if (EXISTS "${GAME3D_WORLD_FOG_ORDER_PROBE}")
+    # ADR 0247 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) —
+    # Canvas3D's order — and World3D.ClearFog turns fog back off.
+    add_test(NAME g3d_test_game3d_world_fog_order
+            COMMAND $<TARGET_FILE:zanna> run "${GAME3D_WORLD_FOG_ORDER_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_game3d_world_fog_order PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS"
             LABELS "runtime;graphics3d;zia;requires_display"
             ENVIRONMENT "ZANNA_3D_BACKEND=software"

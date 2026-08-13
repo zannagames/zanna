@@ -3327,15 +3327,19 @@ void rt_game3d_world_clear_lights(void *world);
 /// @param world World3D instance used by the operation.
 /// @param cubemap Value supplied for the cubemap argument.
 void rt_game3d_world_set_skybox(void *world, void *cubemap);
-/// @brief Configure distance fog: RGB color plus near/far planes.
+/// @brief Configure distance fog: near/far planes plus RGB color (matches
+///        Canvas3D.SetFog — ADR 0247).
 /// @param world World3D instance used by the operation.
+/// @param near_plane Distance at which fog begins.
+/// @param far_plane Distance at which fog reaches full density.
 /// @param r Red color channel.
 /// @param g Green color channel.
 /// @param b Blue color channel.
-/// @param near_plane Value supplied for the near plane argument.
-/// @param far_plane Value supplied for the far plane argument.
 void rt_game3d_world_set_fog(
-    void *world, double r, double g, double b, double near_plane, double far_plane);
+    void *world, double near_plane, double far_plane, double r, double g, double b);
+/// @brief Disable distance fog on the world's canvas (ADR 0247).
+/// @param world World3D instance used by the operation.
+void rt_game3d_world_clear_fog(void *world);
 /// @brief Apply a render quality preset (RT_GAME3D_QUALITY_*) to the world.
 /// @param world World3D instance used by the operation.
 /// @param quality Value supplied for the quality argument.

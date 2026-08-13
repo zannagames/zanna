@@ -788,8 +788,12 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
                 "Metal validates ordinary and shadow-atlas texture extents before allocation");
     EXPECT_TRUE(strstr(source, "if (!metal_generate_mipmaps(ctx, entry.texture))") != NULL,
                 "Metal publishes texture generations only after mip work is committed");
-    EXPECT_TRUE(strstr(source, "params->sceneIsHdr = source_is_hdr ? 1 : 0;") != NULL,
-                "Metal distinguishes HDR scene input from LDR post-effect intermediates");
+    EXPECT_TRUE(strstr(source, "params->sceneIsHdr = source_is_linear ? 1 : 0;") != NULL &&
+                    strstr(source, "int tonemapped_yet = 0;") != NULL &&
+                    strstr(source, "!tonemapped_yet") != NULL,
+                "Metal threads the display-transfer state through the chain (ADR 0246): the "
+                "pass input stays scene-linear until a tonemap pass has run, never derived "
+                "from the source pixel format");
     EXPECT_TRUE(strstr(source, "ctx, source_texture, safe_snapshot.bloom_threshold") != NULL,
                 "Metal bloom consumes the current ordered-chain source");
     EXPECT_TRUE(strstr(source, "if (!resolved)\n                    return nil;") != NULL &&

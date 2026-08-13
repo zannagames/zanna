@@ -1083,9 +1083,12 @@ static float sw_sample_shadow_light(const sw_context_t *ctx,
 }
 
 /// @brief Return whether a draw must defer legacy lighting to the fragment stage.
-/// @details PBR and normal maps are always per-pixel. Legacy materials also become
-///          per-pixel when at least one referenced shadow slot is complete; otherwise
-///          applying Gouraud lighting first and Phong lighting again during shadow
+/// @details PBR and normal maps are always per-pixel. Double-sided draws are also
+///          per-pixel: facing is a per-triangle rasterization property, so the
+///          ZB-21 back-face normal flip cannot be applied by vertex (Gouraud)
+///          lighting. Legacy materials additionally become per-pixel when at
+///          least one referenced shadow slot is complete; otherwise applying
+///          Gouraud lighting first and Phong lighting again during shadow
 ///          sampling squares the light contribution.
 /// @param ctx Borrowed software context containing available shadow slots.
 /// @param cmd Borrowed draw command containing material workflow and normal-map state.
@@ -1099,6 +1102,8 @@ static int sw_draw_requires_per_pixel_lighting(const sw_context_t *ctx,
     if (!cmd)
         return 0;
     if (cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR || cmd->normal_map)
+        return 1;
+    if (cmd->double_sided)
         return 1;
     if (!ctx || ctx->shadow_count <= 0)
         return 0;

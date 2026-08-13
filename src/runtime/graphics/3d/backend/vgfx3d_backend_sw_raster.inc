@@ -65,6 +65,7 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
                                             const screen_vert_t *v1,
                                             const screen_vert_t *v2,
                                             const sw_context_t *ctx,
+                                            float normal_sign,
                                             const float *precomputed_world_normal,
                                             const struct sw_slot_uvs *precomputed_uvs,
                                             float *inout_r,
@@ -235,6 +236,9 @@ static inline float sw_compute_fog_distance(const sw_context_t *ctx, float wx, f
 /// @param v1 Borrowed second triangle vertex.
 /// @param v2 Borrowed third triangle vertex.
 /// @param ctx Borrowed software context containing camera state.
+/// @param normal_sign -1 for a back-facing cull-off triangle, +1 otherwise (ZB-21);
+///   only consulted when the fallback recompute runs (the main pass's
+///   precomputed normal already carries the flip).
 /// @param precomputed_world_normal Optional borrowed normalized shading normal from the main pass.
 /// @param precomputed_uvs Optional borrowed slot UVs from the main shading pass.
 /// @param inout_r In/out fragment red component.
@@ -253,6 +257,7 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
                                             const screen_vert_t *v1,
                                             const screen_vert_t *v2,
                                             const sw_context_t *ctx,
+                                            float normal_sign,
                                             const float *precomputed_world_normal,
                                             const struct sw_slot_uvs *precomputed_uvs,
                                             float *inout_r,
@@ -285,6 +290,9 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
     pny = attr_b0 * v0->ny + attr_b1 * v1->ny + attr_b2 * v2->ny;
     pnz = attr_b0 * v0->nz + attr_b1 * v1->nz + attr_b2 * v2->nz;
     normalize3f(&pnx, &pny, &pnz);
+    pnx *= normal_sign;
+    pny *= normal_sign;
+    pnz *= normal_sign;
 
     /* Reuse the slot UVs the main shading path already interpolated for this
      * fragment; only recompute them for fragments that skipped that path. */
@@ -484,6 +492,11 @@ typedef struct {
      * take the per-pixel lighting path so shadows land (parity with the GPU
      * backends, which always shade per pixel). */
     int per_pixel_shadows;
+    /* ZB-21: -1 when this triangle rasterized back-facing (only reachable on
+     * cull-off draws), +1 otherwise. Shading normals multiply by this so
+     * double-sided geometry lights with the outward normal on both sides —
+     * parity with the GPU backends' front-facing flip. */
+    float normal_sign;
     const sw_pixels_view *splat_view;
     const sw_pixels_view *layer_views;
 } sw_fragment_ctx;
@@ -658,6 +671,11 @@ static void sw_shade_perturb_normal(const sw_fragment_ctx *fc,
     float pny = b0 * v0->ny + b1 * v1->ny + b2 * v2->ny;
     float pnz = b0 * v0->nz + b1 * v1->nz + b2 * v2->nz;
     normalize3f(&pnx, &pny, &pnz);
+    /* ZB-21: back faces of cull-off geometry shade with the outward normal;
+     * the TBN below composes on the flipped base, matching the GPU flip. */
+    pnx *= fc->normal_sign;
+    pny *= fc->normal_sign;
+    pnz *= fc->normal_sign;
 
     /* Interpolate tangent + build TBN */
     float ptx = b0 * v0->tx + b1 * v1->tx + b2 * v2->tx;
@@ -1573,6 +1591,7 @@ static int sw_shade_fragment(
                                         v1,
                                         v2,
                                         fog_ctx,
+                                        fc->normal_sign,
                                         shading_normal_valid ? shading_normal : NULL,
                                         uv_valid ? &uv : NULL,
                                         &fr,
@@ -1921,6 +1940,7 @@ static void raster_triangle_scissored(uint8_t *pixels,
                           .depth_disabled = depth_disabled,
                           .have_splat = have_splat,
                           .per_pixel_shadows = per_pixel_shadows,
+                          .normal_sign = (g.original_area > 0.0f) ? -1.0f : 1.0f,
                           .splat_view = have_splat ? &splat_view : NULL,
                           .layer_views = have_splat ? layer_views : NULL};
 

@@ -42,11 +42,13 @@ namespace {
  * Canvas3D.DrawText2DTtf + MeasureText2DTtf (2026-08-07, E1 font bridge):
  * +2 functions / +2 methods.
  * Animation3D.Mirror (2026-08-07, ADR 0243 L/R clip mirroring):
+ * +1 function / +1 method.
+ * World3D.ClearFog (2026-08-13, ADR 0247 fog argument-order alignment):
  * +1 function / +1 method. */
-constexpr std::size_t kExpectedFunctionCount = 2241;
+constexpr std::size_t kExpectedFunctionCount = 2242;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 821;
-constexpr std::size_t kExpectedMethodCount = 1207;
+constexpr std::size_t kExpectedMethodCount = 1208;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -233,8 +235,11 @@ int main() {
      * get_CaptureAfterPresent (E3 capture hardening: opt-in pre-present
      * blit so post-Present readback sees the shown frame on GPU
      * direct-present paths), then Animation3D.Mirror (ADR 0243 L/R clip
-     * mirroring). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x5b5f29edda1767ff);
+     * mirroring).
+     * Rehashed 2026-08-13: World3D.ClearFog added and World3D.SetFog's
+     * parameter meaning realigned to Canvas3D's (near, far, r, g, b) —
+     * ADR 0247 / ZB-22. */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x59b5c22a2933fa48);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

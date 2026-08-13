@@ -688,8 +688,10 @@ static id<MTLTexture> metal_active_readback_texture(VGFXMetalContext *ctx) {
     if (ctx.displayTexture)
         return ctx.displayTexture;
     if (metal_window_scene_route_enabled(ctx) && ctx.postfxEncodedThisFrame &&
-        ctx.postfxColorTexture)
-        return ctx.postfxColorTexture;
+        ctx.postfxResolveTexture)
+        return ctx.postfxResolveTexture; /* ADR 0246 / V1b: BGRA8 resolve —
+                                          * the F16 ping-pongs are not
+                                          * readback-layout compatible. */
     if (ctx.currentTargetKind == VGFX3D_METAL_TARGET_SWAPCHAIN && ctx.drawable)
         return ctx.drawable.texture;
     return ctx.offscreenColor;

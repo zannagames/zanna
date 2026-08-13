@@ -1007,7 +1007,7 @@ static const char *const
                 "    return result;\n"
                 "}\n"
                 "\n"
-                "PS_OUTPUT PSMain(PS_INPUT input) {\n"
+                "PS_OUTPUT PSMain(PS_INPUT input, bool isFront : SV_IsFrontFace) {\n"
                 "    PS_OUTPUT output;\n"
                 "    float3 baseColor = diffuseColor.rgb * input.color.rgb;\n"
                 "    float texAlpha = 1.0;\n"
@@ -1040,6 +1040,9 @@ static const char *const
                 "        }\n"
                 "    }\n"
                 "    float3 N = safeNormalize3(input.normal, float3(0.0, 1.0, 0.0));\n"
+                // ZB-21: back faces of cull-off (doubleSided) geometry shade with the
+                // outward normal; culling removes back faces everywhere else.
+                "    if (!isFront) N = -N;\n"
                 "    if (flags0.z != 0) {\n"
                 "        float3 mapN = normalTex.Sample(normalSampler, materialUv(input, 1)).xyz * "
                 "2.0 - 1.0;\n"

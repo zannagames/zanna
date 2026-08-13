@@ -1280,23 +1280,22 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "        color = pow(clamp(color * p.tonemapExposure, 0.0, 1.0), "
                               "float3(1.0 / 2.2));\n"
                               "    }\n"
-                              /* Plan 49 R2: real tone curves consume LINEAR input. A
-                               * non-HDR scene texture is display-referred sRGB — running
-                               * Reinhard/ACES plus gamma-out on it directly lifts blacks,
-                               * caps the reachable range at ~74%, and desaturates (the
-                               * washed-out-broadcast bug). Linearize first when the scene
-                               * is not already linear-HDR. */
+                              /* ADR 0246: every pre-tonemap intermediate in the chain
+                               * holds SCENE-LINEAR values regardless of its storage
+                               * format (the scene target is linear-HDR and no earlier
+                               * pass encodes), so real tone curves consume the input
+                               * directly and perform the pipeline's single display
+                               * encode. The former `pow(color, 2.2)` "linearization" of
+                               * non-HDR sources double-decoded linear data whenever any
+                               * pass preceded the tonemap through the 8-bit ping-pong —
+                               * the grey-wash regression (ZB-20). */
                               "    if (p.tonemapMode == 1) {\n"
-                              "        float3 tc = (p.sceneIsHdr != 0) ? color : "
-                              "pow(max(color, 0.0), float3(2.2));\n"
-                              "        tc *= p.tonemapExposure;\n"
+                              "        float3 tc = max(color, 0.0) * p.tonemapExposure;\n"
                               "        tc = tc / (tc + 1.0);\n"
                               "        color = pow(clamp(tc, 0.0, 1.0), float3(1.0 / 2.2));\n"
                               "    }\n"
                               "    if (p.tonemapMode == 2) {\n"
-                              "        float3 tl = (p.sceneIsHdr != 0) ? color : "
-                              "pow(max(color, 0.0), float3(2.2));\n"
-                              "        float3 x = tl * p.tonemapExposure;\n"
+                              "        float3 x = max(color, 0.0) * p.tonemapExposure;\n"
                               "        color = (x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14);\n"
                               "        color = pow(clamp(color, 0.0, 1.0), float3(1.0 / 2.2));\n"
                               "    }\n"
@@ -1579,15 +1578,17 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                     MTLRenderPipelineDescriptor *ppd = [[MTLRenderPipelineDescriptor alloc] init];
                     ppd.vertexFunction = pfxVS;
                     ppd.fragmentFunction = pfxFS;
-                    /* Plan 49 R2 note: the ping-pong intermediates are 8-bit, so a
-                     * linear-HDR scene loses >1.0 energy in any pass that runs BEFORE
-                     * the tonemap. LDR scenes are unaffected (the tonemap pass now
-                     * linearizes display-referred input itself). Lifting this for HDR
-                     * scenes means RGBA16F intermediates plus a final BGRA8 resolve
-                     * pass (the present path blits and requires BGRA8 — see
-                     * metal_draw.inc displayTexture checks). */
+                    /* ADR 0246 / V1b: chain intermediates ping-pong through RGBA16F
+                     * so passes BEFORE the tonemap keep >1.0 energy (ACES' shoulder
+                     * works live); the last pass resolves into the BGRA8 target the
+                     * present blit requires. Two pipeline variants, picked by the
+                     * pass's target format. */
                     ppd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
                     ctx.postfxPipeline =
+                        [device newRenderPipelineStateWithDescriptor:ppd error:&pfxErr];
+                    ppd.colorAttachments[0].pixelFormat =
+                        metal_color_pixel_format(VGFX3D_METAL_COLOR_FORMAT_HDR16F);
+                    ctx.postfxPipelineHdr =
                         [device newRenderPipelineStateWithDescriptor:ppd error:&pfxErr];
                 }
                 /* Plan 05: bloom mip-chain pipelines (RGBA16F targets; the upsample pass
@@ -1641,8 +1642,9 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                                 [[MTLRenderPipelineDescriptor alloc] init];
                             sd.vertexFunction = pfxVS;
                             sd.fragmentFunction = ssrFS;
-                            /* SSR writes into the BGRA8 postfx ping-pong targets. */
-                            sd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+                            /* SSR runs pre-tonemap, into the RGBA16F ping-pong (V1b). */
+                            sd.colorAttachments[0].pixelFormat =
+                                metal_color_pixel_format(VGFX3D_METAL_COLOR_FORMAT_HDR16F);
                             ctx.ssrPipeline =
                                 [device newRenderPipelineStateWithDescriptor:sd error:&pfxErr];
                         }

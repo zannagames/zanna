@@ -19,7 +19,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [GUI](gui.md) | 79 | 1161 |
 | [Game](game.md) | 52 | 781 |
 | [Game2D](game2d.md) | 1 | 143 |
-| [Game3D](game3d.md) | 61 | 815 |
+| [Game3D](game3d.md) | 61 | 816 |
 | [Graphics](graphics.md) | 48 | 580 |
 | [Graphics2D](graphics2d.md) | 4 | 109 |
 | [Graphics3D](graphics3d.md) | 70 | 1426 |
