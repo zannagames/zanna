@@ -872,7 +872,11 @@ static const char *const
             "            } else {\n"
             "                continue;\n"
             "            }\n"
-            "            if ((uLightType[i] == 0 || uLightType[i] == 3 ||\n"
+            /* ADR 0246: type 1 (point) joins the shadowed set. It was excluded while
+             * OpenGL had no atlas slots -- a point light could never hold one, so
+             * sampling it was pointless -- but omni lights now occupy six cube-face
+             * slots and must be sampled or their shadows never darken anything. */
+            "            if ((uLightType[i] == 0 || uLightType[i] == 1 || uLightType[i] == 3 ||\n"
             "                 uLightType[i] == 4 || uLightType[i] == 5) && atten > 0.0) {\n"
             "                atten *= mix(1.0 - uShadowStrength, 1.0, "
             "sampleShadowMap(uLightShadowIndex[i], "
@@ -1029,7 +1033,11 @@ static const char *const
             "            } else {\n"
             "                continue;\n"
             "            }\n"
-            "            if ((uLightType[i] == 0 || uLightType[i] == 3 ||\n"
+            /* ADR 0246: type 1 (point) joins the shadowed set. It was excluded while
+             * OpenGL had no atlas slots -- a point light could never hold one, so
+             * sampling it was pointless -- but omni lights now occupy six cube-face
+             * slots and must be sampled or their shadows never darken anything. */
+            "            if ((uLightType[i] == 0 || uLightType[i] == 1 || uLightType[i] == 3 ||\n"
             "                 uLightType[i] == 4 || uLightType[i] == 5) && atten > 0.0) {\n"
             "                atten *= mix(1.0 - uShadowStrength, 1.0, "
             "sampleShadowMap(uLightShadowIndex[i], "

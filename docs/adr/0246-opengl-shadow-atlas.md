@@ -43,18 +43,38 @@ stand on their own:
   UVs never landed on the map. Both sites now test `projectionType != 0`.
 
 **Still not landed — `shadow_atlas_slots` remains 0, so GAP-8 is still open.**
-The storage half now demonstrably works: layered FBOs report
-`GL_FRAMEBUFFER_COMPLETE`, a six-face omni light renders slots 0-6, the completed
-count climbs 0→7 as each slot finishes, and the GL error queue stays clean end to
-end. But `test_canvas3d_point_shadows.zia` still reports no darkening on OpenGL:
-the geometry rasterizes into the layers and the shader resolves a face, yet the
-depth comparison reads fully lit. The remaining fault is somewhere between the
-per-face `uShadowVP` matrices and the face lookup, and is not diagnosed.
 
-The flag stays off deliberately: advertising an atlas whose shadows silently read
-as fully lit would hand Canvas3D slot indices that produce no shadow at all —
-exactly the silent-breakage class this ADR exists to close. Flip it to 1 only once
-the point-shadow probe passes.
+Everything up to the shader is verified correct:
+
+- layered FBOs report `GL_FRAMEBUFFER_COMPLETE`; a six-face omni light renders
+  slots 0-6 and the completed count climbs 0→7; the GL error queue is clean
+- the probe's own slot accounting passes (`ShadowSlotsUsed == 7`,
+  `ShadowRequestsDropped == 0`); it fails only the final darkening comparison
+- `canvas3d_build_point_shadow_face_vp` orders faces `+X,-X,+Y,-Y,+Z,-Z`, which
+  the shader's dominant-axis selection matches exactly
+- the uniforms actually reaching the shader are right: instrumenting the upload
+  showed `type=1 shadowIndex=1 projectionType=2 shadowCount=7` on the shadowed
+  frame and `shadowIndex=-1` on the unshadowed one
+
+The blocker is narrower than previously recorded, and the earlier guesses
+(layered-FBO attach, face ordering, cube VP matrices) are all disproven.
+**The main fragment shader never invokes `sampleShadowMap` for these draws at
+all.** Forcing every slot ≥ 1 to fully shadowed — bypassing face selection,
+projection and depth comparison entirely — produces no visual change whatsoever.
+So the scene is shaded by some program or light loop other than the one carrying
+the shadow gate; finding that path is the next step, not further work on the
+atlas. (Note that forcing *all* slots dark is not a valid probe: it darkens both
+frames equally and the comparison is relative.)
+
+Adding light type 1 to the shadow gate in both light loops is landed and correct
+— a point light could never hold a slot while the atlas was off, so its exclusion
+was previously harmless — but it is inert until the real shading path is found.
+
+The flag stays off deliberately: advertising an atlas whose shadows silently
+never darken anything is exactly the silent-breakage class this ADR exists to
+close. Flip it to 1 only once the point-shadow probe passes for real; note that
+the probe self-skips with `PASS` when `BackendSupports("shadow-point")` is false,
+so a green run against the flag-off backend proves nothing.
 
 ## Context
 

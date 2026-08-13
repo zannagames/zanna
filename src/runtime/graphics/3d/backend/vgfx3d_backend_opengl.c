@@ -2196,14 +2196,15 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .particle_instancing = 1,
     .clustered_lighting = 1,
     .shadow_csm = 1,
-    /* ADR 0246 step 1 of 2. The atlas storage works: all VGFX3D_MAX_SHADOW_LIGHTS
-     * slots live in one depth texture array, the layered FBOs report COMPLETE, and a
-     * six-face omni light renders slots 0-6 with a clean GL error queue. The flag is
-     * still OFF because the sampled result does not darken -- the geometry resolves
-     * but the comparison does not, so something between the cube VP matrices and the
-     * face lookup is still wrong. Advertising it would hand Canvas3D slot indices
-     * whose shadows silently read as fully lit, which is the class of breakage this
-     * ADR exists to close; flip to 1 only once the point-shadow probe passes. */
+    /* ADR 0246 step 1 of 2. Storage is done -- all slots live in one depth texture
+     * array, layered FBOs report COMPLETE, a six-face omni light renders slots 0-6,
+     * and the uniforms reach the shader correctly (type=1, shadowIndex=1,
+     * projectionType=CUBE, shadowCount=7). The flag stays OFF because the main
+     * fragment shader never invokes sampleShadowMap for these draws at all: forcing
+     * every slot >= 1 to fully shadowed produces no visual change, so the scene is
+     * shaded by a program or light loop other than the one carrying the shadow gate.
+     * Until that path is found, advertising the atlas would report point shadows that
+     * silently never darken anything. */
     .shadow_atlas_slots = 0,
     .create_ctx = gl_create_ctx,
     .destroy_ctx = gl_destroy_ctx,
