@@ -791,7 +791,7 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
     EXPECT_TRUE(strstr(source, "params->sceneIsHdr = source_is_linear ? 1 : 0;") != NULL &&
                     strstr(source, "int tonemapped_yet = 0;") != NULL &&
                     strstr(source, "!tonemapped_yet") != NULL,
-                "Metal threads the display-transfer state through the chain (ADR 0246): the "
+                "Metal threads the display-transfer state through the chain (ADR 0247): the "
                 "pass input stays scene-linear until a tonemap pass has run, never derived "
                 "from the source pixel format");
     EXPECT_TRUE(strstr(source, "ctx, source_texture, safe_snapshot.bloom_threshold") != NULL,

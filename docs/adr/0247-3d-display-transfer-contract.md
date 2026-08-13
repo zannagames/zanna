@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-08-13
 ---
 
-# ADR 0246: 3D Display-Transfer Contract (Scene-Linear Targets, Single Encode)
+# ADR 0247: 3D Display-Transfer Contract (Scene-Linear Targets, Single Encode)
 
 ## Status
 

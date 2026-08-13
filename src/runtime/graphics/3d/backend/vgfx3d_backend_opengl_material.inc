@@ -692,17 +692,12 @@ static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *c
                                    emissive_tex,
                                    cmd,
                                    RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE);
-    /* GL 3.3's 16 fragment sampler units are fully assigned, so OpenGL keeps
-     * the classic per-texture shadow slots (0..VGFX3D_CSM_SLOTS-1) and opts out
-     * of the atlas slots (shadow_atlas_slots = 0 caps the runtime accordingly).
-     * Binding beyond CSM slots would clobber the splat/env/PBR units. */
-    for (int32_t slot = 0; slot < VGFX3D_CSM_SLOTS; slot++) {
-        bind_texture_unit(ctx->uShadowTex[slot],
-                          GL_TU_SHADOW0 + slot,
-                          GL_TEXTURE_2D,
-                          gl_sanitize_shadow_slot(ctx, slot) >= 0 ? ctx->shadow_depth_tex[slot]
-                                                                  : 0);
-    }
+    /* ADR 0246: one array texture carries every shadow slot, so a single bind
+     * covers the CSM cascades and the general/point-light slots alike. Per-slot
+     * completeness is enforced by uShadowCount plus gl_sanitize_shadow_slot on
+     * the render side, so there is nothing to gate here. */
+    bind_texture_unit(
+        ctx->uShadowArray, GL_TU_SHADOW_ARRAY, GL_TEXTURE_2D_ARRAY, ctx->shadow_array_tex);
     /* Plan 10: soft-particle draws never carry splat maps, so the snapshot
      * borrows the splat-control unit (GL 3.3's 16-unit budget is fully
      * assigned). The shader-side fade is force-disabled whenever a draw has
@@ -716,12 +711,12 @@ static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *c
     bind_texture_unit(ctx->uSplatLayer0, GL_TU_SPLAT_LAYER0, GL_TEXTURE_2D, splat_layer0);
     bind_texture_unit(ctx->uSplatLayer1, GL_TU_SPLAT_LAYER0 + 1, GL_TEXTURE_2D, splat_layer1);
     bind_texture_unit(ctx->uSplatLayer2, GL_TU_SPLAT_LAYER0 + 2, GL_TEXTURE_2D, splat_layer2);
-    /* The BRDF LUT shares terrain layer 3's sampler. Terrain uses the analytic
-     * BRDF approximation; non-terrain materials retain the LUT path. */
-    bind_texture_unit(ctx->uSplatLayer3,
-                      GL_TU_SPLAT_LAYER0 + 3,
-                      GL_TEXTURE_2D,
-                      has_splat ? splat_layer3 : ctx->brdf_lut_tex);
+    bind_texture_unit(ctx->uSplatLayer3, GL_TU_SPLAT_LAYER0 + 3, GL_TEXTURE_2D, splat_layer3);
+    /* ADR 0246: the LUT has its own unit now. It used to alias splat layer 3, so
+     * a terrain draw evicted it and the shader silently fell back to an analytic
+     * environment BRDF — terrain now gets the same exact table as every other
+     * material, matching D3D11's dedicated t18. */
+    bind_texture_unit(ctx->uBrdfLut, GL_TU_BRDF_LUT, GL_TEXTURE_2D, ctx->brdf_lut_tex);
     bind_texture_unit(ctx->uEnvMap, GL_TU_ENV_MAP, GL_TEXTURE_CUBE_MAP, env_tex);
     bind_texture_unit_with_sampler(ctx,
                                    ctx->uMetallicRoughnessTex,
@@ -1034,10 +1029,7 @@ static void query_main_uniforms(gl_context_t *ctx) {
         snprintf(name, sizeof(name), "uShadowVP[%d]", i);
         ctx->uShadowVP[i] = gl.GetUniformLocation(ctx->program, name);
     }
-    ctx->uShadowTex[0] = gl.GetUniformLocation(ctx->program, "uShadowTex0");
-    ctx->uShadowTex[1] = gl.GetUniformLocation(ctx->program, "uShadowTex1");
-    ctx->uShadowTex[2] = gl.GetUniformLocation(ctx->program, "uShadowTex2");
-    ctx->uShadowTex[3] = gl.GetUniformLocation(ctx->program, "uShadowTex3");
+    ctx->uShadowArray = gl.GetUniformLocation(ctx->program, "uShadowArray");
 }
 
 /// @brief Measure the contiguous context-memory span occupied by main uniform locations.

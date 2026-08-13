@@ -691,7 +691,7 @@ hold stack-wrapper or freed-payload pointers.
 ordered effect chain for GPU `present_postfx` / readback paths:
 
 1. Convert framebuffer RGBA8 → float RGB buffer. The scene buffer is
-   scene-referred linear on every backend (ADR 0246): the conversion is a plain
+   scene-referred linear on every backend (ADR 0247): the conversion is a plain
    `/255` with no sRGB decode, and the tone-mapping pass performs the single
    display encode for the whole chain. GPU backends thread the same contract as
    chain state (`sceneIsHdr` means "no tonemap pass has run yet", never a pixel
@@ -706,6 +706,22 @@ ordered effect chain for GPU `present_postfx` / readback paths:
    - **SSAO / DOF / motion blur / TAA / SSR**: use bounded depth and camera snapshots on the deterministic software path and bounded backend snapshots on hardware paths
    - **Auto exposure / color LUT / sun shafts**: run in the software reference path; ordered backend exports retain their effect discriminator even where a hardware pass is not implemented
 3. Convert float RGB → RGBA8 back to framebuffer
+
+### Display-transform invariant
+
+**A tone curve consumes scene-linear input, and exactly one display encode may reach the
+framebuffer.** ADR 0247 defines every backend scene target as scene-referred linear regardless of
+its precision. Authored color values are interpreted in that working space; texture sampling paths
+perform any required decode before lighting. Post-FX passes therefore must not infer color space
+from pixel format or re-linearize chain intermediates.
+
+Each backend carries the same chain-state contract: the source remains linear until a tonemap pass
+performs the display encode. Metal threads this explicitly across its RGBA16F ping-pong, while
+OpenGL and D3D11 start their post-FX chains with linear scene content. The software path converts
+its linear RGBA8 storage with a plain `/255`. Any change to scene-target formats, material color
+handling, or ordered post-FX passes must re-check this invariant on **every** backend; OpenGL is
+`__linux__`-guarded and cannot be compiled from a macOS host, so it is the one most easily left
+behind.
 
 The CPU working representation is packed `RGBRGB...`; alpha remains in the render target and is
 preserved. Frame, effect, and temporal buffers are retained by the chain and grow geometrically up

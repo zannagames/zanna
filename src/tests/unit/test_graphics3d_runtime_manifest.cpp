@@ -43,7 +43,7 @@ namespace {
  * +2 functions / +2 methods.
  * Animation3D.Mirror (2026-08-07, ADR 0243 L/R clip mirroring):
  * +1 function / +1 method.
- * World3D.ClearFog (2026-08-13, ADR 0247 fog argument-order alignment):
+ * World3D.ClearFog (2026-08-13, ADR 0248 fog argument-order alignment):
  * +1 function / +1 method. */
 constexpr std::size_t kExpectedFunctionCount = 2242;
 constexpr std::size_t kExpectedClassCount = 131;
@@ -238,7 +238,7 @@ int main() {
      * mirroring).
      * Rehashed 2026-08-13: World3D.ClearFog added and World3D.SetFog's
      * parameter meaning realigned to Canvas3D's (near, far, r, g, b) —
-     * ADR 0247 / ZB-22. */
+     * ADR 0248 / ZB-22. */
     constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x59b5c22a2933fa48);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex

@@ -1726,7 +1726,7 @@ void rt_game3d_world_set_skybox(void *obj, void *cubemap) {
 }
 
 /// @brief Configure distance fog (near/far planes + RGB color). See header.
-/// @details ADR 0247 (ZB-22): the argument order matches `Canvas3D.SetFog`
+/// @details ADR 0248 (ZB-22): the argument order matches `Canvas3D.SetFog`
 ///          exactly — (near, far, r, g, b). The original World3D surface took
 ///          (r, g, b, near, far) across five untyped f64s, so any caller who
 ///          knew the Canvas3D order fed plane distances into color channels
@@ -1745,7 +1745,7 @@ void rt_game3d_world_set_fog(
 }
 
 /// @brief Disable distance fog on the world's canvas. See header.
-/// @details ADR 0247: World3D previously had no way to turn fog back off.
+/// @details ADR 0248: World3D previously had no way to turn fog back off.
 /// @param obj Borrowed World3D handle.
 void rt_game3d_world_clear_fog(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.clearFog: invalid world");

@@ -898,7 +898,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                                     NO);
         new_overlay_depth = metal_new_depth_texture(ctx, w, h, MTLTextureUsageRenderTarget);
         if (ctx.postfxPipeline) {
-            /* ADR 0246 / V1b: RGBA16F ping-pong intermediates (pre-tonemap
+            /* ADR 0247 / V1b: RGBA16F ping-pong intermediates (pre-tonemap
              * passes keep >1.0 energy) + a BGRA8 resolve the present blit
              * and CPU readback consume. */
             new_postfx_color =

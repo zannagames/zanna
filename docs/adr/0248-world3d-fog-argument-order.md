@@ -4,7 +4,7 @@ audience: contributors
 last-verified: 2026-08-13
 ---
 
-# ADR 0247: Align World3D.SetFog with Canvas3D's Argument Order; Add ClearFog
+# ADR 0248: Align World3D.SetFog with Canvas3D's Argument Order; Add ClearFog
 
 ## Status
 
@@ -60,4 +60,4 @@ baselines — is unchanged.
 ## Links
 
 - ZB-22 in the Legacy Baseball engine-bug ledger
-- ADR 0246 — 3D display-transfer contract (companion visual-correctness work)
+- ADR 0247 — 3D display-transfer contract (companion visual-correctness work)

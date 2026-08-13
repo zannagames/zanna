@@ -517,9 +517,10 @@ static void test_opengl_source_contracts_are_context_safe(void) {
                     strstr(source, "gl.ClientWaitSync(ctx->depth_probe_fence, 0, 0)") != NULL &&
                     strstr(source, "gl.DeleteSync(ctx->depth_probe_fence)") != NULL,
                 "OpenGL depth-probe PBOs use an explicit GPU fence lifecycle");
+    /* ADR 0246 renamed the per-slot depth textures to one shared array texture; the
+     * guard itself is unchanged, so this tracks the new field name. */
     EXPECT_TRUE(strstr(source, "ctx->shadow_pass_failed = 1") != NULL &&
-                    strstr(source, "!ctx->shadow_pass_failed && ctx->shadow_depth_tex[slot]") !=
-                        NULL,
+                    strstr(source, "!ctx->shadow_pass_failed && ctx->shadow_array_tex") != NULL,
                 "OpenGL never publishes a shadow slot after a failed shadow draw");
     EXPECT_TRUE(strstr(source, "GL_UPLOAD_FAILED = -1") != NULL &&
                     strstr(source, "entry->failed_generation == generation") != NULL,

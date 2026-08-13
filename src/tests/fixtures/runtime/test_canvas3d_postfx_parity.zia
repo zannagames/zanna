@@ -10,7 +10,7 @@ bind Zanna.Terminal;
 //     backend (previously refused at bind with LastError, trapped if forced).
 //   - SSAO measurably darkens a corner scene; DOF measurably blurs a
 //     high-contrast surface far from focus; the full 10-effect chain renders.
-// ADR 0246 display-transfer contract (run under EVERY backend — ctest
+// ADR 0247 display-transfer contract (run under EVERY backend — ctest
 // registers a software and a GPU variant of this probe):
 //   - Scene targets are scene-referred linear; the tonemap pass performs the
 //     single display encode. A mid-grey clear through ACES must land on the
@@ -191,7 +191,7 @@ func start() {
         return;
     }
 
-    // --- ADR 0246: mid-grey transfer anchor, backend-independent --------------
+    // --- ADR 0247: mid-grey transfer anchor, backend-independent --------------
     // Linear 0.5 through ACES (exposure 1.0) + the single 1/2.2 display
     // encode lands at byte ~205-207; the inverted transfer measured ~154.
     var toneOnly = PostFX3D.New();
@@ -204,7 +204,7 @@ func start() {
         return;
     }
 
-    // --- ADR 0246: bloom-before-tonemap must match tonemap-only ---------------
+    // --- ADR 0247: bloom-before-tonemap must match tonemap-only ---------------
     // Nothing in a 0.5 frame clears a 0.95 bloom threshold, so the pair can
     // only diverge if a pass re-linearizes already-linear chain output (the
     // exact 2026-08 grey-wash shape on the GPU ping-pong).
@@ -228,7 +228,7 @@ func start() {
         return;
     }
 
-    // --- ADR 0246: saturated input keeps its per-channel anchors --------------
+    // --- ADR 0247: saturated input keeps its per-channel anchors --------------
     Canvas3D.SetPostFX(canvas, toneOnly);
     var tint = flatFrame(canvas, cam, 0.15, 0.5, 0.15);
     // Pixels.Get packs RGBA with red in the top byte.

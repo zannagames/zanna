@@ -1280,7 +1280,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "        color = pow(clamp(color * p.tonemapExposure, 0.0, 1.0), "
                               "float3(1.0 / 2.2));\n"
                               "    }\n"
-                              /* ADR 0246: every pre-tonemap intermediate in the chain
+                              /* ADR 0247: every pre-tonemap intermediate in the chain
                                * holds SCENE-LINEAR values regardless of its storage
                                * format (the scene target is linear-HDR and no earlier
                                * pass encodes), so real tone curves consume the input
@@ -1578,7 +1578,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                     MTLRenderPipelineDescriptor *ppd = [[MTLRenderPipelineDescriptor alloc] init];
                     ppd.vertexFunction = pfxVS;
                     ppd.fragmentFunction = pfxFS;
-                    /* ADR 0246 / V1b: chain intermediates ping-pong through RGBA16F
+                    /* ADR 0247 / V1b: chain intermediates ping-pong through RGBA16F
                      * so passes BEFORE the tonemap keep >1.0 energy (ACES' shoulder
                      * works live); the last pass resolves into the BGRA8 target the
                      * present blit requires. Two pipeline variants, picked by the

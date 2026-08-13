@@ -113,7 +113,7 @@ static void postfx_set_two_pixels(vgfx3d_rendertarget_t *target,
     target->color_dirty = 0;
 }
 
-/* ADR 0246 transfer-identity suite: the 8-bit software scene buffer is
+/* ADR 0247 transfer-identity suite: the 8-bit software scene buffer is
  * SCENE-LINEAR and a real tone curve performs the pipeline's single display
  * encode. A re-introduced input decode (the ZB-20 grey wash: pow(2.2) in
  * front of the curve cancels the encode and runs ACES in display space)

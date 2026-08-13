@@ -2230,18 +2230,22 @@ if (ZANNA_BASH_EXECUTABLE)
             LABELS "zia;smoke;graphics3d;requires_posix_shell"
             TIMEOUT 180)
 
-    # Cross-backend visual conformance (software vs the platform GPU backend)
-    # and the leak-guarded 3D soak previously ran only when someone invoked
-    # the shell scripts by hand. Both are registered as opt-in slow tests so
-    # `ctest -L gpu_smoke` / `-L soak` exercises them without joining the
-    # default gate (they need a display and a GPU backend).
+    # Cross-backend visual conformance: the platform GPU backend must match the
+    # software golden. This is the only automated gate on GPU colour correctness,
+    # and while it carried the `slow` label (so `-LE slow` hid it from the default
+    # run) an OpenGL display-transform regression shipped against a green suite —
+    # the backend re-encoded already-encoded colour and every default-lane test
+    # still passed. It is a default-lane test now. `--postfx` matters: the tone
+    # curve is where that bug lived, so the no-postfx variant alone would not have
+    # caught it. Like the other 100+ `requires_display` entries in this lane it
+    # needs a display and a working GPU backend; the soak below stays opt-in.
     add_test(NAME zia_graphics_conformance_cross_backend
             COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/scripts/run_backend_conformance.sh"
-                    --zia $<TARGET_FILE:zia>
+                    --postfx --zia $<TARGET_FILE:zia>
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     set_tests_properties(zia_graphics_conformance_cross_backend PROPERTIES
             PASS_REGULAR_EXPRESSION "RESULT: ok"
-            LABELS "zia;graphics3d;gpu_smoke;requires_display;requires_posix_shell;slow"
+            LABELS "zia;graphics3d;gpu_smoke;requires_display;requires_posix_shell"
             TIMEOUT 600)
 
     add_test(NAME zia_graphics_3d_soak_short
@@ -3127,7 +3131,7 @@ if (EXISTS "${CANVAS3D_POSTFX_PARITY_PROBE}")
             ENVIRONMENT "ZANNA_3D_BACKEND=software"
             TIMEOUT 60)
 
-    # ADR 0246: the same probe pins the display-transfer contract on the
+    # ADR 0247: the same probe pins the display-transfer contract on the
     # platform GPU backend — its ACES anchors must match software's.
     add_test(NAME g3d_test_canvas3d_postfx_parity_gpu
             COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_POSTFX_PARITY_PROBE}"
@@ -3164,7 +3168,7 @@ endif ()
 
 set(GAME3D_WORLD_FOG_ORDER_PROBE "${G3D_TESTS_DIR}/test_game3d_world_fog_order.zia")
 if (EXISTS "${GAME3D_WORLD_FOG_ORDER_PROBE}")
-    # ADR 0247 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) —
+    # ADR 0248 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) —
     # Canvas3D's order — and World3D.ClearFog turns fog back off.
     add_test(NAME g3d_test_game3d_world_fog_order
             COMMAND $<TARGET_FILE:zanna> run "${GAME3D_WORLD_FOG_ORDER_PROBE}"

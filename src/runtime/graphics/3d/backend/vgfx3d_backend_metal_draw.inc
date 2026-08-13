@@ -1692,7 +1692,7 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
 /// @param postfx Borrowed effect snapshot to sanitize and encode, or NULL for passthrough values.
 /// @param overlay_enabled Nonzero when the overlay texture will be composited by this pass.
 /// @param bloom_tex_enabled Nonzero when a prefiltered bloom texture is bound for sampling.
-/// @param source_is_linear Nonzero while the pass input is scene-referred linear (ADR 0246
+/// @param source_is_linear Nonzero while the pass input is scene-referred linear (ADR 0247
 ///        chain-state: true until a tonemap pass has encoded, independent of storage format).
 /// @param source_width Width of the pass's source texture in pixels.
 /// @param source_height Height of the pass's source texture in pixels.
@@ -1760,7 +1760,7 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
 /// @param overlay_enabled Nonzero to composite the context's overlay texture.
 /// @param bloom_texture Borrowed prefiltered bloom texture, or nil when bloom is unavailable.
 /// @param source_is_linear Nonzero while the chain input is still scene-referred linear —
-///        i.e. no tonemap pass has encoded it yet (ADR 0246 chain-state; the storage
+///        i.e. no tonemap pass has encoded it yet (ADR 0247 chain-state; the storage
 ///        format is irrelevant: BGRA8 ping-pong intermediates hold linear values too).
 /// @return The pass output texture (nil on failure).
 static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
@@ -1780,7 +1780,7 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
         !ctx.offscreenMotion || !ctx.depthTexture)
         return nil;
 
-    /* ADR 0246 / V1b: pick the pipeline variant matching the pass target —
+    /* ADR 0247 / V1b: pick the pipeline variant matching the pass target —
      * RGBA16F for chain intermediates, BGRA8 for the final resolve. */
     pipeline = ctx.postfxPipeline;
     if (target_texture.pixelFormat != MTLPixelFormatBGRA8Unorm) {
@@ -2033,7 +2033,7 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
 
     source_texture = ctx.offscreenColor;
     target_texture = ctx.postfxColorTexture;
-    /* ADR 0246 chain-state: the scene stays scene-referred linear through
+    /* ADR 0247 chain-state: the scene stays scene-referred linear through
      * every pass until a tonemap pass performs the single display encode —
      * regardless of which storage format a ping-pong hop used. The former
      * per-pass pixelFormat test mistook BGRA8 intermediates holding linear
@@ -2105,7 +2105,7 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
         source_texture = output_texture;
     }
 
-    /* ADR 0246 / V1b: the present blit and CPU readback require BGRA8 —
+    /* ADR 0247 / V1b: the present blit and CPU readback require BGRA8 —
      * resolve the final image out of the RGBA16F ping-pong. A chain that
      * never tonemapped resolves clamped linear values, matching the
      * historical no-chain look. */

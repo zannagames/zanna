@@ -1292,7 +1292,7 @@ static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
     postfx_data->cg_contrast = 1.0f;
     postfx_data->cg_saturation = 1.0f;
     postfx_data->vignette_radius = 1.0f;
-    /* The D3D11 scene target is always R16G16B16A16_FLOAT (linear HDR). */
+    /* ADR 0247: the D3D11 scene target is scene-referred linear HDR. */
     postfx_data->scene_is_hdr = 1;
     postfx_data->bloom_tex_enabled =
         (snapshot && snapshot->bloom_enabled && ctx->postfx_current_bloom_srv) ? 1 : 0;

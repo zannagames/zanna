@@ -4,7 +4,7 @@ bind Zanna.Game3D as Game3D;
 bind Zanna.Graphics3D as G3D;
 bind Zanna.Terminal as Terminal;
 
-// ADR 0247 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) — the SAME
+// ADR 0248 (ZB-22): World3D.SetFog forwards (near, far, r, g, b) — the SAME
 // order as Canvas3D.SetFog. The original World3D surface took
 // (r, g, b, near, far) across five untyped f64s, so a caller who knew the
 // Canvas3D order fed plane distances into color channels and saturated the

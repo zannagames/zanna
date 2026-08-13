@@ -73,6 +73,66 @@ static GLXFBConfig gl_pick_matching_fb_config(Display *dpy,
 }
 #endif
 
+/// @brief Allocate the GL_TIMESTAMP query ring used for GPU frame timing (GAP-9).
+/// @details Requires all five ARB_timer_query entry points; any missing one leaves
+///   `timer_queries_ready` clear and `Canvas3D.FrameGpuTimeUs` reading 0, matching the
+///   documented "zero before a result is available" contract rather than trapping.
+/// @param ctx Borrowed OpenGL context with a current GL context; NULL is ignored.
+static void gl_init_timer_queries(gl_context_t *ctx) {
+    if (!ctx)
+        return;
+    ctx->timer_slot_active = -1;
+    if (!gl.GenQueries || !gl.DeleteQueries || !gl.QueryCounter || !gl.GetQueryObjectiv ||
+        !gl.GetQueryObjectui64v)
+        return;
+    gl.GenQueries((GLsizei)(VGFX3D_GL_TIMER_FRAMES * 2), &ctx->timer_query[0][0]);
+    if (!gl_drain_errors("timer query alloc") || ctx->timer_query[0][0] == 0)
+        return;
+    ctx->timer_queries_ready = 1;
+}
+
+/// @brief Release the GPU timing query ring.
+/// @param ctx Borrowed OpenGL context with a current GL context; NULL is ignored.
+static void gl_destroy_timer_queries(gl_context_t *ctx) {
+    if (!ctx || !ctx->timer_queries_ready || !gl.DeleteQueries)
+        return;
+    gl.DeleteQueries((GLsizei)(VGFX3D_GL_TIMER_FRAMES * 2), &ctx->timer_query[0][0]);
+    memset(ctx->timer_query, 0, sizeof(ctx->timer_query));
+    memset(ctx->timer_query_pending, 0, sizeof(ctx->timer_query_pending));
+    ctx->timer_queries_ready = 0;
+    ctx->timer_slot_active = -1;
+}
+
+/// @brief Collect any retired GPU timestamp pairs into `frame_gpu_time_us`.
+/// @details Polls with GL_QUERY_RESULT_AVAILABLE and never blocks: an unfinished pair is
+///   left pending for a later call, so the reported figure trails real time by up to
+///   `VGFX3D_GL_TIMER_FRAMES` frames instead of stalling the pipeline being measured.
+///   Slots are walked oldest-first so the retained value is the most recent completed frame.
+/// @param ctx Borrowed OpenGL context with a current GL context; NULL is ignored.
+static void gl_harvest_timer_queries(gl_context_t *ctx) {
+    if (!ctx || !ctx->timer_queries_ready)
+        return;
+    for (int32_t step = 0; step < VGFX3D_GL_TIMER_FRAMES; step++) {
+        int32_t slot = (ctx->timer_query_head + step) % VGFX3D_GL_TIMER_FRAMES;
+        GLint available = 0;
+        uint64_t start_ns = 0;
+        uint64_t end_ns = 0;
+        if (!ctx->timer_query_pending[slot])
+            continue;
+        gl.GetQueryObjectiv(ctx->timer_query[slot][1], GL_QUERY_RESULT_AVAILABLE, &available);
+        if (!available)
+            continue;
+        gl.GetQueryObjectui64v(ctx->timer_query[slot][0], GL_QUERY_RESULT, &start_ns);
+        gl.GetQueryObjectui64v(ctx->timer_query[slot][1], GL_QUERY_RESULT, &end_ns);
+        ctx->timer_query_pending[slot] = 0;
+        /* Timestamps come from a monotonic GPU counter, but a context loss or driver
+         * reset can retire them out of order — publish only a forward-going delta. */
+        if (end_ns > start_ns)
+            ctx->frame_gpu_time_us = (end_ns - start_ns) / 1000u;
+    }
+    (void)gl_drain_errors("timer query harvest");
+}
+
 /// @brief Initialize all per-context matrices and default target/upload state.
 /// @param ctx Borrowed newly allocated OpenGL context to initialize.
 /// @param w Initial logical output width in pixels.
@@ -306,8 +366,7 @@ static void gl_bind_main_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->uNormalTex, 1);
     gl.Uniform1i(ctx->uSpecularTex, 2);
     gl.Uniform1i(ctx->uEmissiveTex, 3);
-    for (int32_t slot = 0; slot < VGFX3D_CSM_SLOTS; slot++)
-        gl.Uniform1i(ctx->uShadowTex[slot], GL_TU_SHADOW0 + slot);
+    gl.Uniform1i(ctx->uShadowArray, GL_TU_SHADOW_ARRAY);
     gl.Uniform1i(ctx->uSplatTex, GL_TU_SPLAT_CONTROL);
     gl.Uniform1i(ctx->uSplatLayer0, GL_TU_SPLAT_LAYER0);
     gl.Uniform1i(ctx->uSplatLayer1, GL_TU_SPLAT_LAYER0 + 1);
@@ -799,6 +858,7 @@ static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
         }
     }
     gl_init_context_defaults(ctx, w, h);
+    gl_init_timer_queries(ctx);
     gl_query_default_framebuffer_buffer(ctx);
     gl_probe_default_framebuffer_writable(ctx);
     {
@@ -807,13 +867,17 @@ static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
             /* An EGL window surface is the native Wayland presentation path. */
             ctx->default_framebuffer_writable = 1;
         } else if (present_override == 0) {
-            /*
-             * Linux GLX default drawables can pass a clear/read probe while still rejecting the
-             * fullscreen shader resolve used by post-FX. Keep all final color composition in
-             * backend-owned FBOs and present through ZannaGFX unless the user explicitly opts into
-             * auto/direct presentation for parity debugging.
-             */
+            /* Explicit ZANNA_OPENGL_PRESENT=offscreen: force the compatibility resolve. */
             ctx->default_framebuffer_writable = 0;
+        } else if (present_override == 1) {
+            /*
+             * Trust gl_probe_default_framebuffer_writable. A GLX default drawable can still pass
+             * a clear/read probe and then reject the fullscreen shader resolve used by post-FX,
+             * so this is not proof on its own — gl_demote_to_offscreen_present() catches that
+             * case on the first failed composite and moves the context to the ZannaGFX route for
+             * the rest of its life. Presuming failure instead cost every X11/GLX frame a
+             * full-screen glReadPixels plus a CPU blit on hardware that presents directly.
+             */
         } else if (present_override == 2) {
             ctx->default_framebuffer_writable = 1;
         }
@@ -902,6 +966,7 @@ static void gl_destroy_ctx(void *ctx_ptr) {
         return;
     }
 
+    gl_destroy_timer_queries(ctx);
     texture_cache_destroy(ctx);
     gl_destroy_mesh_cache(ctx);
     destroy_scene_targets(ctx);

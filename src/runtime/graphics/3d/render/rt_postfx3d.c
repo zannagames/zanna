@@ -2993,7 +2993,7 @@ static void postfx_apply(rt_postfx3d *fx,
     (void)pixel_count;
 
     /* Convert framebuffer to retained float RGB scratch for processing.
-     * ADR 0246: the 8-bit software scene buffer is SCENE-REFERRED LINEAR —
+     * ADR 0247: the 8-bit software scene buffer is SCENE-REFERRED LINEAR —
      * the rasterizer writes `clamp01(f) * 255` with no encode
      * (vgfx3d_backend_sw_raster.inc) and albedo textures are linearized at
      * sample time (vgfx3d_backend_sw_texture.inc), so there is NO storage
