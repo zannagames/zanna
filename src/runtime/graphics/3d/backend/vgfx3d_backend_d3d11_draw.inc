@@ -1292,8 +1292,13 @@ static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
     postfx_data->cg_contrast = 1.0f;
     postfx_data->cg_saturation = 1.0f;
     postfx_data->vignette_radius = 1.0f;
-    /* The D3D11 scene target is always R16G16B16A16_FLOAT (linear HDR). */
-    postfx_data->scene_is_hdr = 1;
+    /* The D3D11 scene target is always R16G16B16A16_FLOAT, but its precision says nothing
+     * about the space of its contents: authored colors (diffuse, emissive, light, fog,
+     * ambient, clear) reach the shaders without an sRGB decode, legacy-workflow draws
+     * sample albedo raw, and the skybox writes cubemap texels straight through. Treating
+     * the target as linear encoded those values a second time — the washed-out-broadcast
+     * bug fixed on OpenGL. Mirrors gl_begin_frame's scene_content_linear seed. */
+    postfx_data->scene_is_linear = 0;
     postfx_data->bloom_tex_enabled =
         (snapshot && snapshot->bloom_enabled && ctx->postfx_current_bloom_srv) ? 1 : 0;
     if (!snapshot)

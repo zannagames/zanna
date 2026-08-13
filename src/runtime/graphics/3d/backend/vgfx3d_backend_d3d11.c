@@ -285,7 +285,7 @@ typedef struct {
     float motion_blur_intensity;
     int32_t motion_blur_samples;
     /* Plan 05 additions (tail rounds the cbuffer to a 16-byte multiple). */
-    int32_t scene_is_hdr;
+    int32_t scene_is_linear;
     int32_t tonemap_explicit;
     int32_t bloom_tex_enabled;
     float _pad0;
@@ -294,7 +294,7 @@ typedef struct {
 
 _Static_assert(offsetof(d3d_postfx_cb_t, inv_resolution) == 144u,
                "D3D11 PostFX cbuffer matrices must end on an HLSL register boundary");
-_Static_assert(offsetof(d3d_postfx_cb_t, scene_is_hdr) == 252u,
+_Static_assert(offsetof(d3d_postfx_cb_t, scene_is_linear) == 252u,
                "D3D11 PostFX tail flags must match their HLSL offsets");
 _Static_assert(sizeof(d3d_postfx_cb_t) == 272u, "D3D11 PostFX cbuffer must match its HLSL layout");
 

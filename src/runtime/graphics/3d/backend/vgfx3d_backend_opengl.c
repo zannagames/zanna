@@ -80,7 +80,15 @@ typedef void *GLsync;
 #define VGFX3D_STR_IMPL(x) #x
 #define VGFX3D_STR(x) VGFX3D_STR_IMPL(x)
 
-#define GL_TU_SHADOW0 4
+/* ADR 0246: every shadow slot lives in one depth texture array on a single unit,
+ * so all VGFX3D_MAX_SHADOW_LIGHTS slots (cascades and general/point-light atlas
+ * slots alike) are samplable without extra bind points. Collapsing the former
+ * per-slot units 4-7 freed three of GL 3.3's guaranteed 16 fragment units: the
+ * BRDF LUT took one as a dedicated unit — it previously aliased splat layer 3,
+ * which silently downgraded terrain draws to an analytic environment-BRDF — and
+ * units 6-7 are spare. */
+#define GL_TU_SHADOW_ARRAY 4
+#define GL_TU_BRDF_LUT 5
 #define GL_TU_SPLAT_CONTROL 8
 #define GL_TU_SPLAT_LAYER0 9
 #define GL_TU_ENV_MAP 13
@@ -88,12 +96,10 @@ typedef void *GLsync;
 #define GL_TU_AO 15
 #define GL_TU_MORPH_DELTAS 16
 #define GL_TU_MORPH_NORMAL_DELTAS 17
-/* Fragment units 0-15 are the GL 3.3 min-spec budget and the main FS already
- * assigns all of them; the BRDF LUT aliases the last splat layer unit, bound
- * per draw. Splat terrain draws use the shader's analytic environment-BRDF
- * approximation while layer 3 occupies this unit; non-terrain draws bind and
- * sample the LUT. */
-#define GL_TU_BRDF_LUT (GL_TU_SPLAT_LAYER0 + 3)
+
+/* Depth of the GPU-timestamp query ring. Three frames keeps a result available
+ * without ever blocking on a query the GPU has not retired. */
+#define VGFX3D_GL_TIMER_FRAMES 3
 
 #define GL_TRUE 1
 #define GL_FALSE 0
@@ -210,6 +216,12 @@ typedef void *GLsync;
 #define GL_STREAM_READ 0x88E1
 #define GL_MAP_READ_BIT 0x0001
 #define GL_SYNC_GPU_COMMANDS_COMPLETE 0x9117
+/* Depth texture arrays back the unified shadow atlas (ADR 0246). GL 3.0 core. */
+#define GL_TEXTURE_2D_ARRAY 0x8C1A
+/* ARB_timer_query (core since GL 3.3) — GPU frame timing telemetry. */
+#define GL_QUERY_RESULT 0x8866
+#define GL_QUERY_RESULT_AVAILABLE 0x8867
+#define GL_TIMESTAMP 0x8E28
 #define GL_ALREADY_SIGNALED 0x911A
 #define GL_TIMEOUT_EXPIRED 0x911B
 #define GL_CONDITION_SATISFIED 0x911C
@@ -229,6 +241,7 @@ typedef void *GLsync;
 #define GL_RENDERBUFFER 0x8D41
 #define GL_RENDERBUFFER_BINDING 0x8CA7
 #define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_COLOR_ATTACHMENT15 0x8CEF
 #define GL_COLOR_ATTACHMENT1 0x8CE1
 #define GL_COLOR_ATTACHMENT2 0x8CE2
 #define GL_DEPTH_ATTACHMENT 0x8D00
@@ -340,6 +353,14 @@ typedef GLboolean (*PFNGLUNMAPBUFFERPROC)(GLenum);
 typedef GLsync (*PFNGLFENCESYNCPROC)(GLenum, GLbitfield);
 typedef GLenum (*PFNGLCLIENTWAITSYNCPROC)(GLsync, GLbitfield, uint64_t);
 typedef void (*PFNGLDELETESYNCPROC)(GLsync);
+typedef void (*PFNGLTEXIMAGE3DPROC)(
+    GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
+typedef void (*PFNGLFRAMEBUFFERTEXTURELAYERPROC)(GLenum, GLenum, GLuint, GLint, GLint);
+typedef void (*PFNGLGENQUERIESPROC)(GLsizei, GLuint *);
+typedef void (*PFNGLDELETEQUERIESPROC)(GLsizei, const GLuint *);
+typedef void (*PFNGLQUERYCOUNTERPROC)(GLuint, GLenum);
+typedef void (*PFNGLGETQUERYOBJECTIVPROC)(GLuint, GLenum, GLint *);
+typedef void (*PFNGLGETQUERYOBJECTUI64VPROC)(GLuint, GLenum, uint64_t *);
 typedef void (*PFNGLDRAWBUFFERPROC)(GLenum);
 typedef void (*PFNGLDRAWBUFFERSPROC)(GLsizei, const GLenum *);
 typedef void (*PFNGLREADBUFFERPROC)(GLenum);
@@ -451,6 +472,15 @@ static struct {
     PFNGLFENCESYNCPROC FenceSync;
     PFNGLCLIENTWAITSYNCPROC ClientWaitSync;
     PFNGLDELETESYNCPROC DeleteSync;
+    /* GL 3.0 core — depth texture array storage and per-layer FBO attachment. */
+    PFNGLTEXIMAGE3DPROC TexImage3D;
+    PFNGLFRAMEBUFFERTEXTURELAYERPROC FramebufferTextureLayer;
+    /* Optional (ARB_timer_query): NULL disables GPU frame timing telemetry. */
+    PFNGLGENQUERIESPROC GenQueries;
+    PFNGLDELETEQUERIESPROC DeleteQueries;
+    PFNGLQUERYCOUNTERPROC QueryCounter;
+    PFNGLGETQUERYOBJECTIVPROC GetQueryObjectiv;
+    PFNGLGETQUERYOBJECTUI64VPROC GetQueryObjectui64v;
     PFNGLDRAWBUFFERPROC DrawBuffer;
     PFNGLDRAWBUFFERSPROC DrawBuffers;
     PFNGLREADBUFFERPROC ReadBuffer;
@@ -528,15 +558,18 @@ static int gl_debug_enabled(void) {
 }
 
 /// @brief Parse the Linux OpenGL presentation override.
-/// @details The default path remains the conservative offscreen/ZannaGFX resolve used by the
-///          existing backend. `ZANNA_OPENGL_PRESENT=auto` trusts the framebuffer writability probe,
-///          `direct` forces native GLX/default-framebuffer presentation, and `offscreen` forces the
-///          compatibility resolve path. Unknown values fall back to offscreen.
+/// @details The default is `auto`: the framebuffer writability probe decides, and a resolve that
+///          fails at runtime demotes the context to the offscreen path (see
+///          `gl_demote_to_offscreen_present`). Previously the default discarded the probe and
+///          always took the offscreen route, which charged every X11/GLX frame a full-screen
+///          `glReadPixels` plus a CPU blit even on stacks that present directly without issue.
+///          `direct` forces native GLX/default-framebuffer presentation and skips the probe;
+///          `offscreen` forces the compatibility resolve. Unknown values fall back to `auto`.
 /// @return 0 for offscreen, 1 for auto/probe, 2 for direct.
 static int gl_present_override_mode(void) {
     const char *value = getenv("ZANNA_OPENGL_PRESENT");
     if (!value || value[0] == '\0')
-        return 0;
+        return 1;
     if (strcmp(value, "auto") == 0 || strcmp(value, "probe") == 0)
         return 1;
     if (strcmp(value, "direct") == 0 || strcmp(value, "glx") == 0)
@@ -806,6 +839,14 @@ typedef struct {
     int8_t taa_history_valid;
     int8_t taa_history_hdr;
     int8_t scene_hdr_active;
+    /* Non-zero while every draw composited into the scene target this frame wrote
+     * LINEAR radiance. Legacy-workflow draws sample albedo/emissive raw and light in
+     * gamma space (matching the software rasterizer and the other GPU backends), and
+     * the skybox writes undecoded cubemap texels, so any of those makes the scene
+     * display-referred. The display transform keys off this rather than the target's
+     * pixel format: an RGBA16F target says nothing about the space of its contents,
+     * and encoding gamma-space color a second time is the washed-out-broadcast bug. */
+    int8_t scene_content_linear;
     float taa_jitter_clip[2];
     float taa_prev_jitter_clip[2];
     uint32_t taa_frame_index;
@@ -820,7 +861,14 @@ typedef struct {
     vgfx3d_rendertarget_t *rtt_target;
 
     GLuint shadow_fbo[VGFX3D_MAX_SHADOW_LIGHTS];
-    GLuint shadow_depth_tex[VGFX3D_MAX_SHADOW_LIGHTS];
+    /* ADR 0246: one GL_TEXTURE_2D_ARRAY depth texture, layer per shadow slot.
+     * Array layers share one size, so every slot renders at the same resolution
+     * — Canvas3D already drives them all from a single shadow_resolution, and a
+     * request at a different size reallocates the array and invalidates the
+     * slots, which the shadow_complete[] reset below records. */
+    GLuint shadow_array_tex;
+    int32_t shadow_array_width;
+    int32_t shadow_array_height;
     int32_t shadow_width[VGFX3D_MAX_SHADOW_LIGHTS];
     int32_t shadow_height[VGFX3D_MAX_SHADOW_LIGHTS];
     int32_t shadow_pass_slot;
@@ -941,7 +989,7 @@ typedef struct {
     GLint uInstanceBoneStride;
     GLint uHasPrevModelMatrix, uHasPrevInstanceMatrices, uHasPrevSkinning, uHasPrevMorphWeights;
     GLint uMorphWeights, uPrevMorphWeights, uMorphDeltas, uMorphNormalDeltas, uHasMorphNormalDeltas;
-    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowTex[VGFX3D_MAX_SHADOW_LIGHTS],
+    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray,
         uEnvMap, uBrdfLut;
     GLint uMetallicRoughnessTex, uAOTex;
     GLint uSplatTex, uSplatLayer0, uSplatLayer1, uSplatLayer2, uSplatLayer3, uSplatScales;
@@ -977,7 +1025,7 @@ typedef struct {
     GLint postfx_uDofEnabled, postfx_uDofFocusDistance, postfx_uDofAperture, postfx_uDofMaxBlur;
     GLint postfx_uMotionBlurEnabled, postfx_uMotionBlurIntensity, postfx_uMotionBlurSamples;
     GLint postfx_uCameraPos, postfx_uInvViewProjection, postfx_uPrevViewProjection;
-    GLint postfx_uSceneHdr, postfx_uTonemapExplicit, postfx_uBloomTex, postfx_uBloomTexEnabled;
+    GLint postfx_uSceneLinear, postfx_uTonemapExplicit, postfx_uBloomTex, postfx_uBloomTexEnabled;
 
     GLint bloom_down_uSrcTex, bloom_down_uSrcInvSize, bloom_down_uThreshold, bloom_down_uFirstPass;
     GLint bloom_up_uSrcTex, bloom_up_uSrcInvSize;
@@ -999,6 +1047,18 @@ typedef struct {
     float depth_probe_requests[VGFX3D_DEPTH_PROBE_MAX][2];
     int32_t depth_probe_request_count;
     GLuint depth_probe_pbo;
+    /* GAP-9 GPU frame timing. A ring of GL_TIMESTAMP query pairs so a result is
+     * harvested only once the GPU has retired it — reading the current frame's
+     * pair back immediately would stall the pipeline it is meant to measure.
+     * `timer_slot_active` is the slot holding an issued-but-unterminated start,
+     * or -1; a frame that never presents simply has its start overwritten. */
+    GLuint timer_query[VGFX3D_GL_TIMER_FRAMES][2];
+    int8_t timer_query_pending[VGFX3D_GL_TIMER_FRAMES];
+    int32_t timer_query_head;
+    int32_t timer_slot_active;
+    int8_t timer_queries_ready;
+    uint64_t frame_gpu_time_us;
+
     GLsync depth_probe_fence;
     int32_t depth_probe_pending_count;
     uint32_t depth_probe_pending_polls;
@@ -1241,13 +1301,32 @@ static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
 /// @brief Restore framebuffer/read/draw/viewport state captured by
 /// `gl_capture_framebuffer_state`.
 /// @param state Borrowed state snapshot previously populated by gl_capture_framebuffer_state().
+/// @brief Report whether a draw/read buffer token is legal for the given framebuffer.
+/// @details The default framebuffer names its buffers (`GL_BACK`, `GL_FRONT`, …) while an FBO
+///   names attachments (`GL_COLOR_ATTACHMENT0`+). Feeding one an enum from the other's namespace
+///   is `GL_INVALID_OPERATION`, and a captured snapshot can legitimately pair an FBO binding with
+///   a default-framebuffer token when the two were queried across a binding change. Restoring
+///   such a pair blindly poisoned the error queue for every later operation.
+/// @param framebuffer Framebuffer name the buffer token would be applied to.
+/// @param buffer Draw or read buffer token from a captured snapshot.
+/// @return Nonzero when the token is valid for that framebuffer.
+static int gl_buffer_token_valid_for(GLuint framebuffer, GLenum buffer) {
+    if (buffer == GL_NONE)
+        return 1;
+    if (framebuffer == 0)
+        return buffer != GL_NONE && (buffer < GL_COLOR_ATTACHMENT0 || buffer > GL_COLOR_ATTACHMENT15);
+    return buffer >= GL_COLOR_ATTACHMENT0 && buffer <= GL_COLOR_ATTACHMENT15;
+}
+
 static void gl_restore_framebuffer_state(const gl_framebuffer_state_t *state) {
     if (!state)
         return;
     gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)state->draw_framebuffer);
-    gl.DrawBuffer((GLenum)state->draw_buffer);
+    if (gl_buffer_token_valid_for((GLuint)state->draw_framebuffer, (GLenum)state->draw_buffer))
+        gl.DrawBuffer((GLenum)state->draw_buffer);
     gl.BindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)state->read_framebuffer);
-    gl.ReadBuffer((GLenum)state->read_buffer);
+    if (gl_buffer_token_valid_for((GLuint)state->read_framebuffer, (GLenum)state->read_buffer))
+        gl.ReadBuffer((GLenum)state->read_buffer);
     gl.Viewport(state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3]);
     gl.PixelStorei(GL_PACK_ALIGNMENT, state->pack_alignment);
     gl.PixelStorei(GL_UNPACK_ALIGNMENT, state->unpack_alignment);
@@ -1473,6 +1552,25 @@ static int load_gl(int wayland_binding) {
     }
 #endif
 
+/* Same resolution order as LOADP, but a missing symbol is not fatal: the caller
+ * must null-check before use and degrade the corresponding feature. */
+#if defined(ZANNA_GRAPHICS_WAYLAND)
+#define LOADP_OPTIONAL(name)                                                                       \
+    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));
+#elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
+#define LOADP_OPTIONAL(name)                                                                       \
+    if (gl_wayland_binding)                                                                        \
+        gl.name =                                                                                  \
+            RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));          \
+    else                                                                                           \
+        gl.name = RT_FN_PTR_CAST(                                                                  \
+            (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));
+#else
+#define LOADP_OPTIONAL(name)                                                                       \
+    gl.name = RT_FN_PTR_CAST(                                                                      \
+        (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));
+#endif
+
     LOAD(GetError);
     LOAD(GetString);
     LOAD(GetIntegerv);
@@ -1513,20 +1611,16 @@ static int load_gl(int wayland_binding) {
     LOADP(CompileShader);
     /* Optional: ARB_clip_control (GL 4.5). NULL is fine — the backend keeps
      * the fixed [-1,1] depth mapping when the entry point is absent. */
-#if defined(ZANNA_GRAPHICS_WAYLAND)
-    gl.ClipControl =
-        RT_FN_PTR_CAST((PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl"));
-#elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
-    if (gl_wayland_binding)
-        gl.ClipControl =
-            RT_FN_PTR_CAST((PFNGLCLIPCONTROLPROC)vgfx3d_egl_wayland_get_proc("glClipControl"));
-    else
-        gl.ClipControl =
-            (PFNGLCLIPCONTROLPROC)glx.GetProcAddress((const unsigned char *)"glClipControl");
-#else
-    gl.ClipControl =
-        (PFNGLCLIPCONTROLPROC)glx.GetProcAddress((const unsigned char *)"glClipControl");
-#endif
+    LOADP_OPTIONAL(ClipControl);
+    LOADP(TexImage3D);
+    LOADP(FramebufferTextureLayer);
+    /* Optional: ARB_timer_query (core in GL 3.3). All five must resolve before
+     * GPU frame timing is enabled; any NULL leaves FrameGpuTimeUs reading 0. */
+    LOADP_OPTIONAL(GenQueries);
+    LOADP_OPTIONAL(DeleteQueries);
+    LOADP_OPTIONAL(QueryCounter);
+    LOADP_OPTIONAL(GetQueryObjectiv);
+    LOADP_OPTIONAL(GetQueryObjectui64v);
     LOADP(GetShaderiv);
     LOADP(GetShaderInfoLog);
     LOADP(CreateProgram);
@@ -2110,6 +2204,15 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .particle_instancing = 1,
     .clustered_lighting = 1,
     .shadow_csm = 1,
+    /* ADR 0246 step 1 of 2. The atlas storage works: all VGFX3D_MAX_SHADOW_LIGHTS
+     * slots live in one depth texture array, the layered FBOs report COMPLETE, and a
+     * six-face omni light renders slots 0-6 with a clean GL error queue. The flag is
+     * still OFF because the sampled result does not darken -- the geometry resolves
+     * but the comparison does not, so something between the cube VP matrices and the
+     * face lookup is still wrong. Advertising it would hand Canvas3D slot indices
+     * whose shadows silently read as fully lit, which is the class of breakage this
+     * ADR exists to close; flip to 1 only once the point-shadow probe passes. */
+    .shadow_atlas_slots = 0,
     .create_ctx = gl_create_ctx,
     .destroy_ctx = gl_destroy_ctx,
     .clear = gl_clear,
@@ -2135,6 +2238,7 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .set_texture_upload_budget = gl_set_texture_upload_budget,
     .get_texture_upload_pending_bytes = gl_get_texture_upload_pending_bytes,
     .get_texture_upload_bytes = gl_get_texture_upload_bytes,
+    .get_frame_gpu_time_us = gl_get_frame_gpu_time_us,
     .get_native_texture_caps = gl_get_native_texture_caps,
     .get_feature_caps = gl_get_feature_caps,
     .get_backend_stats = gl_get_backend_stats,

@@ -2638,7 +2638,7 @@ static const char *const d3d11_postfx_shader_source_chunks[] = {
     "    int motionBlurEnabled;\n"
     "    float motionBlurIntensity;\n"
     "    int motionBlurSamples;\n"
-    "    int sceneIsHdr;\n"
+    "    int sceneIsLinear;\n"
     "    int tonemapExplicit;\n"
     "    int bloomTexEnabled;\n"
     "    float _postPad0;\n"
@@ -2811,10 +2811,16 @@ static const char *const d3d11_postfx_shader_source_chunks[] = {
     "float3 tonemap(float3 color) {\n"
     /* Plan 05 gamma fix: explicit mode-0 tonemap on the linear-HDR scene target applies
      * exposure + gamma-out so its output transform matches modes 1/2. */
-    "    if (tonemapMode == 0 && tonemapExplicit != 0 && sceneIsHdr != 0)\n"
+    "    if (tonemapMode == 0 && tonemapExplicit != 0 && sceneIsLinear != 0)\n"
     "        return pow(saturate(color * tonemapExposure), 1.0 / 2.2);\n"
     "    if (tonemapMode != 1 && tonemapMode != 2)\n"
     "        return color;\n"
+    /* Real tone curves consume LINEAR input. A display-referred scene must be linearized
+     * first: running Reinhard/ACES plus the 2.2 gamma-out on already-encoded values lifts
+     * blacks, caps the reachable range at ~74%, and desaturates — the washed-out-broadcast
+     * bug. Mirrors the OpenGL shader and the software reference (rt_postfx3d.c). */
+    "    if (sceneIsLinear == 0)\n"
+    "        color = pow(max(color, float3(0.0, 0.0, 0.0)), 2.2);\n"
     "    color = max(color * tonemapExposure, float3(0.0, 0.0, 0.0));\n"
     "    if (tonemapMode == 1)\n"
     "        return pow(saturate(color / (1.0 + color)), 1.0 / 2.2);\n"

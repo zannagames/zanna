@@ -23,6 +23,28 @@
 ///          including target routing, temporal history, asynchronous depth probes, post-processing
 ///          composition, render-target synchronization, and regular or instanced mesh submission.
 
+/// @brief Move a context off direct presentation after a failed default-framebuffer resolve.
+///
+/// @details `gl_probe_default_framebuffer_writable` only proves the drawable accepts a clear and
+///   a read; some GLX stacks pass that and still discard the fullscreen shader resolve post-FX
+///   needs. Rather than presume failure for everyone, presentation starts direct and this demotes
+///   the context the first time a composite actually fails. The decision is sticky — a drawable
+///   that rejected the resolve once will keep doing so, and re-probing every frame would trade a
+///   one-time cost for a permanent one.
+/// @param ctx Borrowed OpenGL context to move onto the ZannaGFX offscreen route; NULL is ignored.
+static void gl_demote_to_offscreen_present(gl_context_t *ctx) {
+    if (!ctx || !ctx->default_framebuffer_writable)
+        return;
+    ctx->default_framebuffer_writable = 0;
+    ctx->present_path = 2;
+    ctx->stats.present_path = 2;
+    ctx->stats.default_framebuffer_writable = 0;
+    if (gl_debug_enabled()) {
+        fprintf(stderr,
+                "[OpenGL] default framebuffer resolve failed; demoting to offscreen present\n");
+    }
+}
+
 /// @brief Backend `clear` op: store the clear color for use during `BeginFrame`.
 ///
 /// We don't actually issue `glClear` here; that happens in
@@ -126,6 +148,23 @@ static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     ctx->frame_serial++;
     /* A new frame invalidates the copy retained at the previous present. */
     ctx->present_capture_valid = 0;
+    if (ctx->timer_queries_ready) {
+        /* Retire whatever the GPU has finished before claiming a slot, so the ring
+         * only ever recycles a slot whose result has already been collected. */
+        gl_harvest_timer_queries(ctx);
+        ctx->timer_slot_active = ctx->timer_query_head;
+        ctx->timer_query_pending[ctx->timer_slot_active] = 0;
+        gl.QueryCounter(ctx->timer_query[ctx->timer_slot_active][0], GL_TIMESTAMP);
+    }
+    /* Authored colors (uDiffuseColor, emissive, light/fog/ambient, clear) reach the
+     * shaders without an sRGB decode, legacy-workflow draws sample albedo raw, and the
+     * skybox writes cubemap texels straight through — so the scene target is
+     * display-referred no matter how precise its pixel format is. Keying the display
+     * transform off the format instead encoded these values a second time, which is the
+     * washed-out-broadcast bug. Should authored colors ever be sRGB-decoded into a real
+     * linear pipeline, this becomes a per-draw latch that starts at 1 and is cleared by
+     * any remaining gamma-space contribution. */
+    ctx->scene_content_linear = 0;
     /* Plan 07: cluster tables are camera-dependent; a light revision surviving
      * into a new frame does not imply the same froxel contents. */
     ctx->uploaded_cluster_revision = 0;
@@ -1020,8 +1059,17 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
                      : 0;
     if (gl_window_scene_route_enabled(ctx) && ctx->scene_postfx_pending &&
         !ctx->scene_composited_to_backbuffer) {
-        if (draw_scene_texture(ctx, use_postfx ? chain : NULL))
+        if (draw_scene_texture(ctx, use_postfx ? chain : NULL)) {
             ctx->scene_composited_to_backbuffer = 1;
+        } else if (ctx->default_framebuffer_writable) {
+            /* The writability probe passed but the fullscreen resolve to the default
+             * drawable did not land — the documented GLX failure mode. Demote to the
+             * ZannaGFX route permanently and retry; draw_scene_texture now targets the
+             * backend-owned present FBO, so this frame still composites correctly. */
+            gl_demote_to_offscreen_present(ctx);
+            if (draw_scene_texture(ctx, use_postfx ? chain : NULL))
+                ctx->scene_composited_to_backbuffer = 1;
+        }
     }
     if (gl_debug_enabled()) {
         GLint draw_buffer = 0;
@@ -1037,6 +1085,14 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
                 (int)ctx->scene_postfx_pending,
                 (int)ctx->scene_composited_to_backbuffer,
                 use_postfx);
+    }
+    /* Close the frame's timestamp pair before the present path runs, so the measured
+     * span covers this frame's GPU work and not the next frame's submissions. */
+    if (ctx->timer_queries_ready && ctx->timer_slot_active >= 0) {
+        gl.QueryCounter(ctx->timer_query[ctx->timer_slot_active][1], GL_TIMESTAMP);
+        ctx->timer_query_pending[ctx->timer_slot_active] = 1;
+        ctx->timer_query_head = (ctx->timer_slot_active + 1) % VGFX3D_GL_TIMER_FRAMES;
+        ctx->timer_slot_active = -1;
     }
     if (!ctx->default_framebuffer_writable) {
         (void)gl_present_offscreen_vgfx(ctx);
@@ -1065,6 +1121,22 @@ static void gl_present_impl(gl_context_t *ctx, const vgfx3d_postfx_chain_t *chai
 /// @param ctx_ptr Borrowed OpenGL backend context to present.
 static void gl_present(void *ctx_ptr) {
     gl_present_impl((gl_context_t *)ctx_ptr, NULL);
+}
+
+/// @brief Backend `get_frame_gpu_time_us` op — latest retired GPU frame duration (GAP-9).
+/// @details Polls the timestamp ring without blocking, so the value trails by up to
+///   `VGFX3D_GL_TIMER_FRAMES` frames and reads 0 until the first pair retires or when
+///   ARB_timer_query is unavailable.
+/// @param ctx_ptr Borrowed OpenGL backend context.
+/// @return Duration in microseconds, or zero when no result is available yet.
+static uint64_t gl_get_frame_gpu_time_us(void *ctx_ptr) {
+    gl_context_t *ctx = (gl_context_t *)ctx_ptr;
+    if (!ctx || !ctx->timer_queries_ready)
+        return 0;
+    if (!gl_make_current(ctx))
+        return ctx->frame_gpu_time_us;
+    gl_harvest_timer_queries(ctx);
+    return ctx->frame_gpu_time_us;
 }
 
 /// @brief Backend `set_capture_after_present` op — keep presented frames readable.
@@ -1384,8 +1456,19 @@ static void gl_shadow_begin(
     }
     ctx->shadow_pass_slot = slot;
     vgfx3d_copy_mat4_finite_or_identity(ctx->shadow_vp[slot], light_vp);
+    /* ADR 0246: every slot is a layer of one array texture, so the main pass's
+     * sampler binding on GL_TU_SHADOW_ARRAY covers the very layer this pass is about
+     * to render into — a texture feedback loop, which is undefined and which this
+     * driver reports as GL_INVALID_OPERATION. With per-slot 2D textures the bound
+     * texture was never the render target, so the hazard did not exist. Drop the
+     * binding for the duration of the pass; the main pass rebinds it per draw. */
+    gl.ActiveTexture(GL_TEXTURE0 + (GLenum)GL_TU_SHADOW_ARRAY);
+    gl.BindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    gl.ActiveTexture(GL_TEXTURE0);
     gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->shadow_fbo[slot]);
-    gl.Viewport(0, 0, w, h);
+    /* The shared array may exceed this slot's requested size (grow-only policy), so
+     * render across the full layer to keep sample UVs spanning [0,1]. */
+    gl.Viewport(0, 0, ctx->shadow_array_width, ctx->shadow_array_height);
     /* Shadow maps keep the standard depth convention: clear 1, compare Less. The
      * func is pinned here because scene draws leave Greater (reversed-Z) behind. */
     gl.ClearDepth(1.0);
@@ -1524,7 +1607,7 @@ static void gl_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     }
     ctx->shadow_bias = vgfx3d_clamp_float_param(bias, -1000000.0f, 1000000.0f, 0.0f);
     ctx->shadow_complete[slot] =
-        (!ctx->shadow_pass_failed && ctx->shadow_depth_tex[slot] && ctx->shadow_fbo[slot] &&
+        (!ctx->shadow_pass_failed && ctx->shadow_array_tex && ctx->shadow_fbo[slot] &&
          ctx->shadow_width[slot] > 0 && ctx->shadow_height[slot] > 0)
             ? 1
             : 0;
@@ -1550,8 +1633,10 @@ static int8_t gl_shadow_reuse(
     if (!ctx || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS ||
         !vgfx3d_shadow_matrix_is_usable(light_vp) || w <= 0 || h <= 0)
         return 0;
-    if (!ctx->shadow_depth_tex[slot] || !ctx->shadow_fbo[slot] || ctx->shadow_width[slot] != w ||
-        ctx->shadow_height[slot] != h)
+    /* The shared array may be larger than this slot asked for (see
+     * ensure_shadow_targets' grow-only policy), so accept any layer that covers it. */
+    if (!ctx->shadow_array_tex || !ctx->shadow_fbo[slot] || ctx->shadow_width[slot] < w ||
+        ctx->shadow_height[slot] < h)
         return 0;
     vgfx3d_copy_mat4_finite_or_identity(ctx->shadow_vp[slot], light_vp);
     ctx->shadow_complete[slot] = 1;

@@ -701,6 +701,25 @@ ordered effect chain for GPU `present_postfx` / readback paths:
    - **Auto exposure / color LUT / sun shafts**: run in the software reference path; ordered backend exports retain their effect discriminator even where a hardware pass is not implemented
 3. Convert float RGB → RGBA8 back to framebuffer
 
+### Display-transform invariant
+
+**A tone curve consumes linear input, and exactly one display encode may reach the framebuffer.**
+Whether the scene contents are linear is a property of *what was written into the target*, never of
+the target's pixel format. Authored colors (diffuse, emissive, light, fog, ambient, clear) reach the
+shaders without an sRGB decode, legacy-workflow (`RT_MATERIAL3D_WORKFLOW_LEGACY`) draws sample
+albedo raw and light in gamma space, and the skybox writes cubemap texels straight through — so a
+`RGBA16F` / `R16G16B16A16_FLOAT` scene target routinely holds display-referred color.
+
+Each backend therefore carries an explicit "is the source linear" flag rather than inferring it:
+`uSceneLinear` (OpenGL, seeded per frame from `gl_context_t.scene_content_linear`), `sceneIsLinear`
+(D3D11), `sceneIsHdr` (Metal, derived per pass from the source texture format because its post-FX
+ping-pong is 8-bit), and `tone_active` (software, which decodes its 8-bit source). When the flag is
+false the tone curve linearizes first and the mode-0 explicit gamma-out is skipped. Keying off the
+format instead re-encoded already-encoded color — lifted blacks, range capped near 74%, desaturation
+(the washed-out-broadcast bug). Any change to scene-target formats or material color handling must
+re-check this flag on **every** backend; OpenGL is `__linux__`-guarded and cannot be compiled from a
+macOS host, so it is the one most easily left behind.
+
 The CPU working representation is packed `RGBRGB...`; alpha remains in the render target and is
 preserved. Frame, effect, and temporal buffers are retained by the chain and grow geometrically up
 to the render-target policy ceiling. TAA snapshots the current frame before resolving so its

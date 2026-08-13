@@ -1158,16 +1158,18 @@ static void destroy_shadow_targets(gl_context_t *ctx) {
     if (!ctx)
         return;
     for (int32_t slot = 0; slot < VGFX3D_MAX_SHADOW_LIGHTS; slot++) {
-        if (ctx->shadow_depth_tex[slot])
-            gl.DeleteTextures(1, &ctx->shadow_depth_tex[slot]);
         if (ctx->shadow_fbo[slot])
             gl.DeleteFramebuffers(1, &ctx->shadow_fbo[slot]);
         ctx->shadow_fbo[slot] = 0;
-        ctx->shadow_depth_tex[slot] = 0;
         ctx->shadow_width[slot] = 0;
         ctx->shadow_height[slot] = 0;
         ctx->shadow_complete[slot] = 0;
     }
+    if (ctx->shadow_array_tex)
+        gl.DeleteTextures(1, &ctx->shadow_array_tex);
+    ctx->shadow_array_tex = 0;
+    ctx->shadow_array_width = 0;
+    ctx->shadow_array_height = 0;
     ctx->shadow_pass_slot = -1;
     ctx->shadow_count = 0;
 }
@@ -1184,7 +1186,7 @@ static void gl_recompute_shadow_count(gl_context_t *ctx) {
     if (!ctx)
         return;
     for (int32_t slot = 0; slot < VGFX3D_MAX_SHADOW_LIGHTS; slot++) {
-        if (!ctx->shadow_complete[slot] || !ctx->shadow_depth_tex[slot] || !ctx->shadow_fbo[slot] ||
+        if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex || !ctx->shadow_fbo[slot] ||
             ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0)
             break;
         count++;
@@ -1206,7 +1208,7 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
     slot = vgfx3d_opengl_sanitize_shadow_index(shadow_index, ctx->shadow_count);
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
         return -1;
-    if (!ctx->shadow_complete[slot] || !ctx->shadow_depth_tex[slot] || !ctx->shadow_fbo[slot] ||
+    if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex || !ctx->shadow_fbo[slot] ||
         ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0) {
         return -1;
     }
@@ -1226,17 +1228,26 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
 static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int32_t h) {
     gl_framebuffer_state_t saved;
     GLuint candidate_fbo = 0;
-    GLuint candidate_depth_tex = 0;
     GLuint previous_fbo;
-    GLuint previous_depth_tex;
     GLint depth_format;
     GLenum depth_type;
     if (!gl_target_extent_is_valid(ctx, w, h) || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS) {
         return -1;
     }
-    if (ctx->shadow_fbo[slot] && ctx->shadow_depth_tex[slot] && ctx->shadow_width[slot] == w &&
-        ctx->shadow_height[slot] == h) {
+    /* Array layers share one size, and Canvas3D may request a smaller map for some
+     * slots than for others (cube faces versus cascades). Reallocating for a smaller
+     * request would drop every already-rendered layer, so the array only ever grows:
+     * a smaller slot simply renders into the full, higher-resolution layer, which
+     * costs memory already committed and keeps sample UVs in [0,1] unchanged. */
+    if (ctx->shadow_array_tex && ctx->shadow_fbo[slot] && ctx->shadow_array_width >= w &&
+        ctx->shadow_array_height >= h) {
+        ctx->shadow_width[slot] = ctx->shadow_array_width;
+        ctx->shadow_height[slot] = ctx->shadow_array_height;
         return 0;
+    }
+    if (ctx->shadow_array_tex) {
+        w = w > ctx->shadow_array_width ? w : ctx->shadow_array_width;
+        h = h > ctx->shadow_array_height ? h : ctx->shadow_array_height;
     }
 
     depth_format = ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
@@ -1244,29 +1255,55 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
 
     gl_capture_framebuffer_state(&saved);
     (void)gl_drain_errors("pre-shadow-target-allocation");
+
+    /* Growing invalidates every layer at once, so drop the whole array and all
+     * per-slot FBOs rather than leaving slots pointing at a stale texture. */
+    if (ctx->shadow_array_tex &&
+        (ctx->shadow_array_width != w || ctx->shadow_array_height != h)) {
+        destroy_shadow_targets(ctx);
+    }
+
+    if (!ctx->shadow_array_tex) {
+        GLuint candidate_array = 0;
+        gl.GenTextures(1, &candidate_array);
+        gl.BindTexture(GL_TEXTURE_2D_ARRAY, candidate_array);
+        gl.TexImage3D(GL_TEXTURE_2D_ARRAY,
+                      0,
+                      depth_format,
+                      w,
+                      h,
+                      (GLsizei)VGFX3D_MAX_SHADOW_LIGHTS,
+                      0,
+                      GL_DEPTH_COMPONENT,
+                      depth_type,
+                      NULL);
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        /* Sampled through sampler2DArrayShadow: the comparison mode makes each
+         * texture() tap a hardware-filtered depth compare (free 2x2 PCF per tap). */
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
+        gl.TexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+        if (!candidate_array || !gl_upload_ok()) {
+            if (candidate_array)
+                gl.DeleteTextures(1, &candidate_array);
+            gl_restore_framebuffer_state(&saved);
+            return -1;
+        }
+        ctx->shadow_array_tex = candidate_array;
+        ctx->shadow_array_width = w;
+        ctx->shadow_array_height = h;
+    }
+
     gl.GenFramebuffers(1, &candidate_fbo);
     gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo);
-
-    gl.GenTextures(1, &candidate_depth_tex);
-    gl.BindTexture(GL_TEXTURE_2D, candidate_depth_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, depth_format, w, h, 0, GL_DEPTH_COMPONENT, depth_type, NULL);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    /* Shadow maps are sampled through sampler2DShadow: the comparison mode makes each
-     * texture() tap a hardware-filtered depth compare (free 2x2 PCF per tap). */
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
-    gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, candidate_depth_tex, 0);
+    gl.FramebufferTextureLayer(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, ctx->shadow_array_tex, 0, (GLint)slot);
     gl.DrawBuffer(GL_NONE);
     gl.ReadBuffer(GL_NONE);
-
-    if (!candidate_fbo || !candidate_depth_tex ||
+    if (!candidate_fbo ||
         gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        if (candidate_depth_tex)
-            gl.DeleteTextures(1, &candidate_depth_tex);
         if (candidate_fbo)
             gl.DeleteFramebuffers(1, &candidate_fbo);
         gl_restore_framebuffer_state(&saved);
@@ -1274,21 +1311,15 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
     }
 
     previous_fbo = ctx->shadow_fbo[slot];
-    previous_depth_tex = ctx->shadow_depth_tex[slot];
     if ((GLuint)saved.draw_framebuffer == previous_fbo)
         saved.draw_framebuffer = (GLint)candidate_fbo;
     if ((GLuint)saved.read_framebuffer == previous_fbo)
         saved.read_framebuffer = (GLint)candidate_fbo;
-    if ((GLuint)saved.texture_binding_2d == previous_depth_tex)
-        saved.texture_binding_2d = (GLint)candidate_depth_tex;
     ctx->shadow_fbo[slot] = candidate_fbo;
-    ctx->shadow_depth_tex[slot] = candidate_depth_tex;
     ctx->shadow_width[slot] = w;
     ctx->shadow_height[slot] = h;
     ctx->shadow_complete[slot] = 0;
     gl_recompute_shadow_count(ctx);
-    if (previous_depth_tex)
-        gl.DeleteTextures(1, &previous_depth_tex);
     if (previous_fbo)
         gl.DeleteFramebuffers(1, &previous_fbo);
     gl_restore_framebuffer_state(&saved);
@@ -1460,7 +1491,11 @@ static void gl_apply_postfx_uniforms(gl_context_t *ctx,
                  ctx->scene_cam_pos[2]);
     gl.UniformMatrix4fv(ctx->postfx_uInvViewProjection, 1, GL_TRUE, ctx->scene_inv_vp);
     gl.UniformMatrix4fv(ctx->postfx_uPrevViewProjection, 1, GL_TRUE, ctx->scene_prev_vp);
-    gl.Uniform1i(ctx->postfx_uSceneHdr, ctx->scene_hdr_active ? 1 : 0);
+    /* The display transform needs the space of the scene contents, not the precision of
+     * the buffer holding them. A float target still holds gamma-space color whenever a
+     * legacy-workflow draw or the skybox contributed to the frame. */
+    gl.Uniform1i(ctx->postfx_uSceneLinear,
+                 (ctx->scene_hdr_active && ctx->scene_content_linear) ? 1 : 0);
     gl.Uniform1i(ctx->postfx_uBloomTexEnabled,
                  (snapshot && snapshot->bloom_enabled && ctx->postfx_current_bloom_tex) ? 1 : 0);
 
