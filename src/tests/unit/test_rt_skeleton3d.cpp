@@ -52,6 +52,8 @@ extern double rt_quat_w(void *q);
 extern void *rt_mat4_identity(void);
 extern void *rt_mat4_translate(double tx, double ty, double tz);
 extern void *rt_mat4_rotate_x(double angle);
+extern void *rt_mat4_rotate_z(double angle);
+extern void *rt_mat4_mul(void *a, void *b);
 extern rt_string rt_const_cstr(const char *s);
 extern int rt_obj_release_check0(void *obj);
 }
@@ -1411,8 +1413,165 @@ static void test_animation_mirror_respects_name_boundaries() {
     EXPECT_TRUE(found_right_widget, "Mirror swaps a complete all-uppercase LEFT token to RIGHT");
     EXPECT_TRUE(found_long_right,
                 "Mirror resolves side tokens in exact bone names longer than its stack buffer");
-    EXPECT_TRUE(found_right_arm && found_mix_left_arm,
-                "Mirror preserves channels when two inferred roles target the same partner");
+    EXPECT_TRUE(found_right_arm && !found_mix_left_arm,
+                "Mirror builds each output bone from its own resolved partner; a duplicate-role "
+                "source whose partner is claimed by an exact name contributes nothing");
+}
+
+/// @brief Mirror is exact on rigs whose BIND POSE is not bilaterally symmetric
+///        (the auto-rig pattern: a rotated pelvis frame puts the left-right
+///        axis on local Y, and center bones carry large rotations / lateral
+///        offsets). Regression for the local-conjugation algorithm, which
+///        deformed such rigs (ADR 0243 amendment). Only model-space bind
+///        POSITIONS are symmetric here — the documented precondition.
+static void test_animation_mirror_asymmetric_bind() {
+    const double kPi = 3.14159265358979323846;
+    void *skel = rt_skeleton3d_new();
+    /* Hips: root, T(0,10,0)·Rz(+90°) — in hips-local space left-right is Y. */
+    int64_t hips = rt_skeleton3d_add_bone(
+        skel,
+        rt_const_cstr("Hips"),
+        -1,
+        rt_mat4_mul(rt_mat4_translate(0.0, 10.0, 0.0), rt_mat4_rotate_z(kPi / 2.0)));
+    /* Spine: center bone with a LATERAL local offset and its own rotation. */
+    int64_t spine = rt_skeleton3d_add_bone(
+        skel,
+        rt_const_cstr("Spine"),
+        0,
+        rt_mat4_mul(rt_mat4_translate(3.0, 0.0, 1.0), rt_mat4_rotate_z(0.0 - kPi / 6.0)));
+    /* Legs: locals differ on Y, not X — model bind positions (±2, 9, 0). */
+    int64_t lleg = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("LeftUpLeg"), 0, rt_mat4_translate(-1.0, -2.0, 0.0));
+    int64_t rleg = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("RightUpLeg"), 0, rt_mat4_translate(-1.0, 2.0, 0.0));
+    /* Feet: children with nonzero local X — orientation probes for the legs. */
+    int64_t lfoot = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("LeftFoot"), lleg, rt_mat4_translate(0.5, 0.0, -4.0));
+    int64_t rfoot = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("RightFoot"), rleg, rt_mat4_translate(0.5, 0.0, -4.0));
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    /* Hips yaw 90°→110° and drift; the left leg spins about local X and
+     * drifts. Spine and feet stay keyless — they must ride their parents. */
+    void *anim = rt_animation3d_new(rt_const_cstr("kick"), 1.0);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim,
+                                hips,
+                                0.0,
+                                rt_vec3_new(0.0, 10.0, 0.0),
+                                rt_quat_new(0.0, 0.0, sin(kPi / 4.0), cos(kPi / 4.0)),
+                                one);
+    rt_animation3d_add_keyframe(
+        anim,
+        hips,
+        1.0,
+        rt_vec3_new(1.0, 10.5, 0.25),
+        rt_quat_new(0.0, 0.0, sin(kPi * 55.0 / 180.0), cos(kPi * 55.0 / 180.0)),
+        one);
+    rt_animation3d_add_keyframe(anim,
+                                lleg,
+                                0.0,
+                                rt_vec3_new(-1.0, -2.0, 0.0),
+                                rt_quat_new(0.0, 0.0, 0.0, 1.0),
+                                one);
+    rt_animation3d_add_keyframe(
+        anim,
+        lleg,
+        1.0,
+        rt_vec3_new(-1.2, -2.0, 0.3),
+        rt_quat_new(sin(kPi * 20.0 / 180.0), 0.0, 0.0, cos(kPi * 20.0 / 180.0)),
+        one);
+
+    void *mir = rt_animation3d_mirror(anim, skel);
+    EXPECT_TRUE(mir != nullptr, "Mirror accepts the asymmetric-bind rig");
+    void *back = mir ? rt_animation3d_mirror(mir, skel) : NULL;
+    EXPECT_TRUE(back != nullptr, "Mirror round-trip accepts the mirrored clip");
+    if (!mir || !back)
+        return;
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+    const int64_t bones[6] = {hips, spine, lleg, rleg, lfoot, rfoot};
+    const int64_t partner[6] = {hips, spine, rleg, lleg, rfoot, lfoot};
+
+    /* Contract: mirrored joint positions are the X=0 reflections of the
+     * partner's source positions, at every time — including keyless riders. */
+    void *src_p = rt_anim_player3d_new(skel);
+    void *mir_p = rt_anim_player3d_new(skel);
+    void *back_p = rt_anim_player3d_new(skel);
+    rt_anim_player3d_play(src_p, anim);
+    rt_anim_player3d_play(mir_p, mir);
+    rt_anim_player3d_play(back_p, back);
+    double reflect_err = 0.0;
+    double roundtrip_err = 0.0;
+    const double steps[3] = {0.0, 0.5, 0.5}; /* absolute t = 0.0, 0.5, 1.0 */
+    for (int s = 0; s < 3; ++s) {
+        rt_anim_player3d_update(src_p, steps[s]);
+        rt_anim_player3d_update(mir_p, steps[s]);
+        rt_anim_player3d_update(back_p, steps[s]);
+        for (int i = 0; i < 6; ++i) {
+            mat4_view *mm = (mat4_view *)rt_anim_player3d_get_bone_matrix(mir_p, bones[i]);
+            mat4_view *pm = (mat4_view *)rt_anim_player3d_get_bone_matrix(src_p, partner[i]);
+            mat4_view *bm = (mat4_view *)rt_anim_player3d_get_bone_matrix(back_p, bones[i]);
+            mat4_view *sm = (mat4_view *)rt_anim_player3d_get_bone_matrix(src_p, bones[i]);
+            double dx = fabs(mm->m[3] - (0.0 - pm->m[3]));
+            double dy = fabs(mm->m[7] - pm->m[7]);
+            double dz = fabs(mm->m[11] - pm->m[11]);
+            if (dx > reflect_err)
+                reflect_err = dx;
+            if (dy > reflect_err)
+                reflect_err = dy;
+            if (dz > reflect_err)
+                reflect_err = dz;
+            double rx = fabs(bm->m[3] - sm->m[3]);
+            double ry = fabs(bm->m[7] - sm->m[7]);
+            double rz = fabs(bm->m[11] - sm->m[11]);
+            if (rx > roundtrip_err)
+                roundtrip_err = rx;
+            if (ry > roundtrip_err)
+                roundtrip_err = ry;
+            if (rz > roundtrip_err)
+                roundtrip_err = rz;
+        }
+    }
+    EXPECT_TRUE(reflect_err < 2e-3,
+                "Mirrored joint positions are X-reflections of the partner's on the "
+                "asymmetric-bind rig (max error < 2e-3)");
+    EXPECT_TRUE(roundtrip_err < 2e-3,
+                "Mirror round-trip restores every joint position on the asymmetric-bind rig");
+
+    /* Hand-computed pins at t = 1.0 (players are parked at the endpoint):
+     * source left leg  G = T(1,10.5,0.25)·Rz(110°)·T(−1.2,−2,0.3) →
+     *   p = (3.2898, 10.0564, 0.55); mirrored RightUpLeg = (−3.2898, …).
+     * source left foot adds Rz(110°)·(T(−1.2,−2,0.3)+Rx(40°)·(0.5,0,−4)) →
+     *   p = (0.7027, 9.6469, −2.5142); mirrored RightFoot = (−0.7027, …). */
+    {
+        mat4_view *rm = (mat4_view *)rt_anim_player3d_get_bone_matrix(mir_p, rleg);
+        EXPECT_NEAR(rm->m[3], -3.2898, 2e-3, "mirrored RightUpLeg X at t=1 (hand-computed)");
+        EXPECT_NEAR(rm->m[7], 10.0564, 2e-3, "mirrored RightUpLeg Y at t=1 (hand-computed)");
+        EXPECT_NEAR(rm->m[11], 0.55, 2e-3, "mirrored RightUpLeg Z at t=1 (hand-computed)");
+        mat4_view *fm = (mat4_view *)rt_anim_player3d_get_bone_matrix(mir_p, rfoot);
+        EXPECT_NEAR(fm->m[3], -0.7027, 2e-3, "mirrored RightFoot X at t=1 (orientation probe)");
+        EXPECT_NEAR(fm->m[7], 9.6469, 2e-3, "mirrored RightFoot Y at t=1 (orientation probe)");
+        EXPECT_NEAR(fm->m[11], -2.5142, 2e-3, "mirrored RightFoot Z at t=1 (orientation probe)");
+    }
+
+    /* Quaternion-cover continuity: a hemisphere pop between resampled keys
+     * would swing child joints wildly inside one 20 ms step. */
+    {
+        void *cont_p = rt_anim_player3d_new(skel);
+        rt_anim_player3d_play(cont_p, mir);
+        rt_anim_player3d_update(cont_p, 0.49);
+        mat4_view *f0 = (mat4_view *)rt_anim_player3d_get_bone_matrix(cont_p, rfoot);
+        double fx = f0->m[3];
+        double fy = f0->m[7];
+        double fz = f0->m[11];
+        rt_anim_player3d_update(cont_p, 0.02);
+        mat4_view *f1 = (mat4_view *)rt_anim_player3d_get_bone_matrix(cont_p, rfoot);
+        double drift = fabs(f1->m[3] - fx) + fabs(f1->m[7] - fy) + fabs(f1->m[11] - fz);
+        EXPECT_TRUE(drift < 0.25, "mirrored playback is continuous across resampled keys");
+    }
 }
 
 static void test_animation_retarget_matches_bone_names() {
@@ -1572,6 +1731,7 @@ int main() {
     test_animation_extract_range_trims_and_rebases();
     test_animation_mirror_swaps_and_conjugates();
     test_animation_mirror_respects_name_boundaries();
+    test_animation_mirror_asymmetric_bind();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
     test_animation_retarget_biped_side_letters();

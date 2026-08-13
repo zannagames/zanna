@@ -997,6 +997,11 @@ static void sample_channel_trs_with_fallback(const vgfx3d_anim_channel_t *ch,
                                              float *out_rot,
                                              float *out_scl);
 
+static void sample_channel_with_fallback(const vgfx3d_anim_channel_t *ch,
+                                         float t,
+                                         const vgfx3d_bone_t *bone,
+                                         float *out_local);
+
 /// @brief Fold a child's local TRS under an accumulated parent TRS (`acc = acc * child`).
 static void animation3d_trs_compose(float acc_pos[3],
                                     float acc_rot[4],
@@ -2055,22 +2060,49 @@ static int32_t animation3d_mirror_bone(const rt_skeleton3d *skel,
     return bone;
 }
 
+/// @brief Cap on the mirror resample grid. A 30 Hz densified grid reaches this
+///        only past four minutes of clip; longer inputs truncate defensively
+///        (same spirit as the retarget keyframe cap).
+#define ANIMATION3D_MIRROR_MAX_GRID 8192
+
+/// @brief Conjugate a row-major affine matrix by the X-reflection
+///        `Mx = diag(-1,1,1)`: `out = Mx · m · Mx`. Exactly the entries with
+///        one X-axis index flip sign (row 0 columns 1..3, column 0 rows 1..3),
+///        so a proper rotation stays proper.
+/// @param[in] m Source row-major 4x4 float matrix.
+/// @param[out] out Destination matrix; must not alias @p m.
+static void mat4f_reflect_x_conjugate(const float *m, float *out) {
+    memcpy(out, m, 16 * sizeof(float));
+    out[1] = -out[1];
+    out[2] = -out[2];
+    out[3] = -out[3];
+    out[4] = -out[4];
+    out[8] = -out[8];
+    out[12] = -out[12];
+}
+
 /// @brief Produce the left/right-mirrored copy of a clip (ADR 0243).
-/// @details Reflection across the model-space X=0 plane is the conjugation
-///          `T' = M·T·M` (`M = diag(-1,1,1)`): local translation X negates,
-///          local quaternion Y/Z negate, scale is untouched. Applying it to
-///          every LOCAL keyframe while swapping each channel onto its
-///          Left<->Right partner yields exactly the reflected model-space
-///          pose (induction from the root) — no global composition needed.
-///          Cubic tangents conjugate with their lanes. Key times, duration,
-///          and looping are preserved; the name gains a "_mirror" suffix.
-///          The skinned result reads correctly when the skeleton's bind pose
-///          is bilaterally symmetric (true of humanoid auto-rigs). The
-///          source clip is never modified.
+/// @details Mirrors in MODEL space relative to the bind pose, which is valid
+///          for any rig — including auto-rigs whose bind pose is NOT
+///          bilaterally symmetric (the old local-key conjugation deformed
+///          those; visual correctness now only assumes the character MESH is
+///          symmetric about model X=0). Per union-grid time the source pose
+///          is composed to model space and each bone receives the
+///          X-reflection of its Left<->Right partner's bind-relative
+///          displacement: `G'_b = Mx·(G_m·B_m⁻¹)·Mx·B_b`, so skinning sees
+///          `G'_b·B_b⁻¹ = Mx·(G_m·B_m⁻¹)·Mx` — the reflected displacement
+///          field of the partner bone. Locals are then recomputed against the
+///          mirrored parent globals, decomposed, and emitted as LINEAR keys
+///          (cubic segments are preserved by ~30 Hz grid densification, not
+///          tangents). Bones whose every key stays at bind are dropped.
+///          Bind locals feed the same sampler path playback uses, so an
+///          unanimated bone's displacement is exactly identity. Root-motion X
+///          still negates. Duration/looping are preserved; the name gains a
+///          "_mirror" suffix. The source clip is never modified.
 /// @param[in] animation Source Animation3D (borrowed).
 /// @param[in] skeleton Skeleton3D interpreting the channel bone indices.
 /// @return A new owned Animation3D, or NULL for invalid input, allocation
-///         failure, or a clip with no mappable channels.
+///         failure, or a clip with no keyed channels.
 void *rt_animation3d_mirror(void *animation, void *skeleton) {
     rt_animation3d *src = animation3d_checked(animation);
     rt_skeleton3d *skel =
@@ -2083,91 +2115,255 @@ void *rt_animation3d_mirror(void *animation, void *skeleton) {
     int32_t channel_count = animation3d_safe_channel_count(src);
     if (channel_count <= 0)
         return NULL;
+
+    int ok = 1;
     int32_t *roles = animation3d_build_humanoid_role_cache(skel);
-    uint8_t *used = (uint8_t *)calloc((size_t)bone_count, sizeof(uint8_t));
-    rt_animation3d *out = (rt_animation3d *)rt_animation3d_new(NULL, (double)src->duration);
-    if (!out || !used) {
-        free(roles);
-        free(used);
-        if (out)
-            animation3d_release_ref((void **)&out);
-        return NULL;
+    int32_t *mirror_of = (int32_t *)malloc((size_t)bone_count * sizeof(int32_t));
+    const vgfx3d_anim_channel_t **src_channel_of = (const vgfx3d_anim_channel_t **)calloc(
+        (size_t)bone_count, sizeof(*src_channel_of));
+    float *bind_locals = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    float *bind_globals = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    float *bind_inv = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    float *locals = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    float *globals = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    float *gout = (float *)malloc((size_t)bone_count * 16u * sizeof(float));
+    vgfx3d_keyframe_t **keys_of =
+        (vgfx3d_keyframe_t **)calloc((size_t)bone_count, sizeof(*keys_of));
+    double *times = NULL;
+    int32_t time_count = 0;
+    rt_animation3d *out = NULL;
+
+    if (!mirror_of || !src_channel_of || !bind_locals || !bind_globals || !bind_inv || !locals ||
+        !globals || !gout || !keys_of)
+        ok = 0;
+
+    if (ok) {
+        /* Sagittal partner per bone; invalid resolutions self-mirror. */
+        for (int32_t b = 0; b < bone_count; ++b) {
+            int32_t m = animation3d_mirror_bone(skel, roles, b, bone_count);
+            mirror_of[b] = (m >= 0 && m < bone_count) ? m : b;
+        }
+        /* First keyed channel per bone (duplicates driving one bone are a
+         * corrupt-input case; the first one wins deterministically). */
+        for (int32_t c = 0; c < channel_count; ++c) {
+            const vgfx3d_anim_channel_t *ch = &src->channels[c];
+            int32_t b = ch->bone_index;
+            if (animation3d_safe_keyframe_count(ch) <= 0 || b < 0 || b >= bone_count)
+                continue;
+            if (!src_channel_of[b])
+                src_channel_of[b] = ch;
+        }
     }
-    {
+
+    /* Union key-time grid over every keyed channel; the mirrored local of any
+     * bone depends on the whole pose, so per-channel source times are not
+     * enough. */
+    if (ok) {
+        int32_t total = 0;
+        for (int32_t b = 0; b < bone_count; ++b)
+            if (src_channel_of[b])
+                total += animation3d_safe_keyframe_count(src_channel_of[b]);
+        if (total <= 0)
+            ok = 0;
+        if (ok) {
+            times = (double *)malloc((size_t)total * sizeof(double));
+            ok = times != NULL;
+        }
+        if (ok) {
+            for (int32_t b = 0; b < bone_count; ++b) {
+                const vgfx3d_anim_channel_t *ch = src_channel_of[b];
+                if (!ch)
+                    continue;
+                int32_t kc = animation3d_safe_keyframe_count(ch);
+                for (int32_t q = 0; q < kc; ++q)
+                    times[time_count++] = ch->keyframes[q].time;
+            }
+            qsort(times, (size_t)time_count, sizeof(double), animation3d_time_cmp);
+            int32_t unique = 0;
+            for (int32_t q = 0; q < time_count; ++q)
+                if (unique == 0 || times[q] > times[unique - 1])
+                    times[unique++] = times[q];
+            time_count = unique;
+            /* Cubic source segments flatten to lines in the linear-key output;
+             * subdivide wide spans to ~30 Hz so sampled keys preserve curve
+             * shape (mirrors the retarget resample policy). */
+            if (time_count > 1) {
+                int32_t est = time_count;
+                for (int32_t q = 1; q < time_count; ++q)
+                    est += (int32_t)((times[q] - times[q - 1]) / 0.034);
+                double *densified =
+                    est > time_count ? (double *)malloc((size_t)est * sizeof(double)) : NULL;
+                if (densified) {
+                    int32_t n = 0;
+                    for (int32_t q = 0; q < time_count; ++q) {
+                        if (q > 0) {
+                            double span = times[q] - times[q - 1];
+                            int32_t subs = (int32_t)(span / 0.034);
+                            for (int32_t u = 1; u <= subs && n < est; ++u)
+                                densified[n++] =
+                                    times[q - 1] + span * (double)u / (double)(subs + 1);
+                        }
+                        if (n < est)
+                            densified[n++] = times[q];
+                    }
+                    free(times);
+                    times = densified;
+                    time_count = n;
+                }
+            }
+            if (time_count > ANIMATION3D_MIRROR_MAX_GRID)
+                time_count = ANIMATION3D_MIRROR_MAX_GRID;
+            if (time_count <= 0)
+                ok = 0;
+        }
+    }
+
+    /* Bind globals and their inverses. Bind locals are REBUILT through the
+     * sampler's own TRS path (sample with a NULL channel) so an unanimated
+     * bone's per-time local below is bitwise identical to its bind local and
+     * its bind-relative displacement is exactly identity. */
+    if (ok) {
+        for (int32_t b = 0; b < bone_count; ++b)
+            sample_channel_with_fallback(NULL, 0.0f, &skel->bones[b], &bind_locals[b * 16]);
+        skeleton3d_compute_globals_from_locals(skel, bind_locals, bind_globals, bone_count);
+        for (int32_t b = 0; b < bone_count; ++b)
+            if (mat4f_invert(&bind_globals[b * 16], &bind_inv[b * 16]) != 0)
+                mat4f_identity(&bind_inv[b * 16]);
+    }
+
+    if (ok) {
+        out = (rt_animation3d *)rt_animation3d_new(NULL, (double)src->duration);
+        ok = out != NULL;
+    }
+    if (ok) {
         size_t n = strnlen(src->name, sizeof(out->name) - 8);
         memcpy(out->name, src->name, n);
         memcpy(out->name + n, "_mirror", 8);
+        out->looping = src->looping;
+        out->owned_channels =
+            (vgfx3d_anim_channel_t *)calloc((size_t)bone_count, sizeof(vgfx3d_anim_channel_t));
+        ok = out->owned_channels != NULL;
+        if (ok) {
+            out->channels = out->owned_channels;
+            out->channel_capacity = bone_count;
+            out->owned_channel_capacity = bone_count;
+        }
     }
-    out->looping = src->looping;
-    out->owned_channels =
-        (vgfx3d_anim_channel_t *)calloc((size_t)channel_count, sizeof(vgfx3d_anim_channel_t));
-    if (!out->owned_channels) {
-        free(roles);
-        free(used);
-        animation3d_release_ref((void **)&out);
-        return NULL;
-    }
-    out->channels = out->owned_channels;
-    out->channel_capacity = channel_count;
-    out->owned_channel_capacity = channel_count;
+    if (ok)
+        for (int32_t b = 0; b < bone_count && ok; ++b) {
+            keys_of[b] =
+                (vgfx3d_keyframe_t *)calloc((size_t)time_count, sizeof(vgfx3d_keyframe_t));
+            ok = keys_of[b] != NULL;
+        }
 
-    for (int32_t c = 0; c < channel_count; ++c) {
-        vgfx3d_anim_channel_t *ch = &src->channels[c];
-        int32_t key_count = animation3d_safe_keyframe_count(ch);
-        int32_t b = ch->bone_index;
-        if (key_count <= 0 || b < 0 || b >= bone_count)
-            continue;
-        int32_t d = animation3d_mirror_bone(skel, roles, b, bone_count);
-        if (d < 0 || d >= bone_count)
-            continue;
-        /* Ambiguous role inference must not silently discard a valid source channel. Prefer its
-         * own still-free bone as a conservative fallback; duplicate/corrupt channels whose source
-         * and destination are both occupied still fail closed below. */
-        if (used[d] && !used[b])
-            d = b;
-        if (used[d]) {
-            free(roles);
-            free(used);
-            animation3d_release_ref((void **)&out);
-            return NULL;
+    if (ok) {
+        for (int32_t ti = 0; ti < time_count; ++ti) {
+            float t = (float)times[ti];
+            for (int32_t b = 0; b < bone_count; ++b)
+                sample_channel_with_fallback(
+                    src_channel_of[b], t, &skel->bones[b], &locals[b * 16]);
+            skeleton3d_compute_globals_from_locals(skel, locals, globals, bone_count);
+            for (int32_t b = 0; b < bone_count; ++b) {
+                float delta[16];
+                float reflected[16];
+                int32_t m = mirror_of[b];
+                mat4f_mul_local(&globals[m * 16], &bind_inv[m * 16], delta);
+                mat4f_reflect_x_conjugate(delta, reflected);
+                mat4f_mul_local(reflected, &bind_globals[b * 16], &gout[b * 16]);
+            }
+            for (int32_t b = 0; b < bone_count; ++b) {
+                float local_m[16];
+                int32_t p = skeleton3d_valid_parent_index(skel, b, bone_count);
+                if (p < 0) {
+                    memcpy(local_m, &gout[b * 16], sizeof(local_m));
+                } else {
+                    float parent_inv[16];
+                    if (mat4f_invert(&gout[p * 16], parent_inv) != 0)
+                        mat4f_identity(parent_inv);
+                    mat4f_mul_local(parent_inv, &gout[b * 16], local_m);
+                }
+                vgfx3d_keyframe_t *key = &keys_of[b][ti];
+                key->time = times[ti];
+                mat4f_decompose_trs(local_m, key->position, key->rotation, key->scale_xyz);
+                key->position_mask = 0x07u;
+                key->rotation_mask = 0x0Fu;
+                key->scale_mask = 0x07u;
+            }
         }
-        used[d] = 1;
-        vgfx3d_keyframe_t *keys =
-            (vgfx3d_keyframe_t *)malloc((size_t)key_count * sizeof(vgfx3d_keyframe_t));
-        if (!keys) {
-            free(roles);
-            free(used);
-            animation3d_release_ref((void **)&out);
-            return NULL;
-        }
-        for (int32_t k = 0; k < key_count; ++k) {
-            keys[k] = ch->keyframes[k];
-            keys[k].position[0] = -keys[k].position[0];
-            keys[k].rotation[1] = -keys[k].rotation[1];
-            keys[k].rotation[2] = -keys[k].rotation[2];
-            keys[k].pos_in_tangent[0] = -keys[k].pos_in_tangent[0];
-            keys[k].pos_out_tangent[0] = -keys[k].pos_out_tangent[0];
-            keys[k].rot_in_tangent[1] = -keys[k].rot_in_tangent[1];
-            keys[k].rot_in_tangent[2] = -keys[k].rot_in_tangent[2];
-            keys[k].rot_out_tangent[1] = -keys[k].rot_out_tangent[1];
-            keys[k].rot_out_tangent[2] = -keys[k].rot_out_tangent[2];
-        }
-        vgfx3d_anim_channel_t *oc = &out->channels[out->channel_count];
-        memset(oc, 0, sizeof(*oc));
-        oc->bone_index = d;
-        oc->keyframes = keys;
-        oc->owned_keyframes = keys;
-        oc->keyframe_count = key_count;
-        oc->keyframe_capacity = key_count;
-        oc->owned_keyframe_capacity = key_count;
-        oc->initialized_keyframe_count = key_count;
-        out->channel_count += 1;
-        out->initialized_channel_count = out->channel_count;
     }
+
+    /* Publish per-bone channels: hemisphere-align quaternion covers, drop
+     * bones that never leave bind (float-noise tolerance), move ownership. */
+    if (ok) {
+        for (int32_t b = 0; b < bone_count; ++b) {
+            const vgfx3d_bone_t *bone = &skel->bones[b];
+            int at_bind = 1;
+            for (int32_t k = 1; k < time_count; ++k) {
+                float *q = keys_of[b][k].rotation;
+                const float *prev = keys_of[b][k - 1].rotation;
+                if (q[0] * prev[0] + q[1] * prev[1] + q[2] * prev[2] + q[3] * prev[3] < 0.0f) {
+                    q[0] = -q[0];
+                    q[1] = -q[1];
+                    q[2] = -q[2];
+                    q[3] = -q[3];
+                }
+            }
+            for (int32_t k = 0; k < time_count && at_bind; ++k) {
+                const vgfx3d_keyframe_t *key = &keys_of[b][k];
+                float sign = (key->rotation[0] * bone->bind_rot[0] +
+                              key->rotation[1] * bone->bind_rot[1] +
+                              key->rotation[2] * bone->bind_rot[2] +
+                              key->rotation[3] * bone->bind_rot[3]) >= 0.0f
+                                 ? 1.0f
+                                 : -1.0f;
+                for (int32_t i = 0; i < 3 && at_bind; ++i) {
+                    if (fabsf(key->position[i] - bone->bind_pos[i]) > 1e-3f ||
+                        fabsf(key->scale_xyz[i] - bone->bind_scl[i]) > 1e-3f)
+                        at_bind = 0;
+                }
+                for (int32_t i = 0; i < 4 && at_bind; ++i)
+                    if (fabsf(key->rotation[i] - sign * bone->bind_rot[i]) > 1e-3f)
+                        at_bind = 0;
+            }
+            if (at_bind) {
+                free(keys_of[b]);
+                keys_of[b] = NULL;
+                continue;
+            }
+            vgfx3d_anim_channel_t *oc = &out->channels[out->channel_count];
+            memset(oc, 0, sizeof(*oc));
+            oc->bone_index = b;
+            oc->keyframes = keys_of[b];
+            oc->owned_keyframes = keys_of[b];
+            oc->keyframe_count = time_count;
+            oc->keyframe_capacity = time_count;
+            oc->owned_keyframe_capacity = time_count;
+            oc->initialized_keyframe_count = time_count;
+            keys_of[b] = NULL; /* ownership moved into the clip */
+            out->channel_count += 1;
+            out->initialized_channel_count = out->channel_count;
+        }
+        if (out->channel_count == 0)
+            ok = 0;
+    }
+
     free(roles);
-    free(used);
-    if (out->channel_count == 0) {
-        animation3d_release_ref((void **)&out);
+    free(mirror_of);
+    free(src_channel_of);
+    free(bind_locals);
+    free(bind_globals);
+    free(bind_inv);
+    free(locals);
+    free(globals);
+    free(gout);
+    free(times);
+    if (keys_of)
+        for (int32_t b = 0; b < bone_count; ++b)
+            free(keys_of[b]);
+    free(keys_of);
+    if (!ok) {
+        if (out)
+            animation3d_release_ref((void **)&out);
         return NULL;
     }
     return out;
