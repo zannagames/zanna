@@ -177,7 +177,9 @@ func start() {
     var sharpContrast = contrast(sharp, 24, 16, 72, 40);
 
     var dofChain = PostFX3D.New();
-    PostFX3D.AddDof(dofChain, 1.0, 1.5, 1.0); // focus at 1.0, wall ~10 away
+    // Drive the far wall to the one-pixel GPU radius cap. Lower apertures rely
+    // on the software path's wider gather and do not exercise backend parity.
+    PostFX3D.AddDof(dofChain, 1.0, 8.0, 1.0); // focus at 1.0, wall ~10 away
     Canvas3D.SetPostFX(canvas, dofChain);
     Canvas3D.Clear(canvas, 0.0, 0.0, 0.0);
     Canvas3D.Begin(canvas, cam);
@@ -187,7 +189,8 @@ func start() {
     Canvas3D.Flip(canvas);
     var blurredContrast = contrast(blurred, 24, 16, 72, 40);
     if (blurredContrast * 20 >= sharpContrast * 19) {
-        Say("FAIL: DOF should reduce checker contrast by more than 5 percent");
+        Say("FAIL: DOF should reduce checker contrast by more than 5 percent: "
+            + sharpContrast + " vs " + blurredContrast);
         return;
     }
 

@@ -76,6 +76,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <type_traits>
 #include <utility>
 
 namespace il::runtime {
@@ -94,7 +95,7 @@ namespace {
 /// based on whether the setter pointer is null.
 #define RUNTIME_PROP(_name, _type, _getter, _setter)                                               \
     ::il::runtime::RuntimeProperty {                                                               \
-        (_name), (_type), (_getter), (_setter), ((_setter) == nullptr)                             \
+        (_name), (_type), (_getter), (_setter), std::is_null_pointer_v<decltype(_setter)>          \
     }
 
 /// @brief Constructs a vector of RuntimeProperty descriptors.
