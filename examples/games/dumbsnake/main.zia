@@ -1,0 +1,214 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/dumbsnake/main.zia
+// Purpose: Provide Dumb Snake's keyboard input, fixed-step loop, and 2D rendering.
+// Key invariants:
+//   - Gameplay advances only in SnakeGame's fixed grid ticks.
+//   - Every successful BeginFrame is paired with exactly one Flip.
+// Ownership/Lifetime:
+//   - DumbSnakeApp owns one Canvas and one SnakeGame for the application lifetime.
+//   - Input actions are process-global and are defined once during initialization.
+// Links: config.zia, snake.zia, smoke_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module main;
+
+bind Zanna.Graphics;
+bind Zanna.Input.Action as Action;
+bind Zanna.Input.Key as Key;
+bind Zanna.Text.Fmt as Fmt;
+bind "./config";
+bind "./snake";
+
+/// @brief Windowed Dumb Snake application controller.
+class DumbSnakeApp {
+    hide Canvas canvas;
+    hide snake.SnakeGame game;
+    hide Integer accumulatorMs;
+    hide Integer roundSeed;
+    hide Boolean paused;
+
+    expose func init() {
+        canvas = Canvas.New("DUMB SNAKE", config.SCREEN_WIDTH, config.SCREEN_HEIGHT);
+        canvas.SetFps(60);
+        canvas.SetMaxDeltaTime(config.MAX_FRAME_MS);
+        game = new snake.SnakeGame();
+        accumulatorMs = 0;
+        roundSeed = 1337;
+        paused = false;
+        self.setupInput();
+    }
+
+    hide func bindMove(name: String, arrow: Integer, letter: Integer) {
+        Action.Define(name);
+        Action.BindKey(name, arrow);
+        Action.BindKey(name, letter);
+    }
+
+    hide func setupInput() {
+        self.bindMove(config.ACTION_UP, Key.Up, Key.W);
+        self.bindMove(config.ACTION_DOWN, Key.Down, Key.S);
+        self.bindMove(config.ACTION_LEFT, Key.Left, Key.A);
+        self.bindMove(config.ACTION_RIGHT, Key.Right, Key.D);
+        Action.Define(config.ACTION_PAUSE);
+        Action.BindKey(config.ACTION_PAUSE, Key.P);
+        Action.BindKey(config.ACTION_PAUSE, Key.Space);
+        Action.Define(config.ACTION_RESTART);
+        Action.BindKey(config.ACTION_RESTART, Key.R);
+        Action.Define(config.ACTION_QUIT);
+        Action.BindKey(config.ACTION_QUIT, Key.Escape);
+    }
+
+    expose func run() {
+        var running = true;
+        while running && canvas.BeginFrame() != 0 {
+            if Action.Pressed(config.ACTION_QUIT) { running = false; }
+            self.handleInput();
+            self.update();
+            self.draw();
+            canvas.Flip();
+        }
+    }
+
+    hide func restart() {
+        roundSeed = roundSeed + 1;
+        game.reset(roundSeed);
+        accumulatorMs = 0;
+        paused = false;
+    }
+
+    hide func handleInput() {
+        if Action.Pressed(config.ACTION_RESTART) {
+            self.restart();
+            return;
+        }
+        if Action.Pressed(config.ACTION_PAUSE) && game.isAlive() {
+            paused = !paused;
+        }
+        if !game.isAlive() || paused { return; }
+
+        if Action.Pressed(config.ACTION_UP) {
+            game.requestDirection(0, -1);
+        } else if Action.Pressed(config.ACTION_DOWN) {
+            game.requestDirection(0, 1);
+        } else if Action.Pressed(config.ACTION_LEFT) {
+            game.requestDirection(-1, 0);
+        } else if Action.Pressed(config.ACTION_RIGHT) {
+            game.requestDirection(1, 0);
+        }
+    }
+
+    hide func update() {
+        if paused || !game.isAlive() { return; }
+        var dt = canvas.DeltaTime;
+        if dt < 0 { dt = 0; }
+        if dt > config.MAX_FRAME_MS { dt = config.MAX_FRAME_MS; }
+        accumulatorMs = accumulatorMs + dt;
+
+        var steps = 0;
+        while accumulatorMs >= game.getStepMs() && steps < 4 {
+            accumulatorMs = accumulatorMs - game.getStepMs();
+            game.step();
+            steps = steps + 1;
+            if !game.isAlive() { accumulatorMs = 0; }
+        }
+    }
+
+    hide func cellX(gridX: Integer) -> Integer {
+        return config.BOARD_X + gridX * config.CELL_SIZE;
+    }
+
+    hide func cellY(gridY: Integer) -> Integer {
+        return config.BOARD_Y + gridY * config.CELL_SIZE;
+    }
+
+    hide func drawBoard() {
+        canvas.Box(config.BOARD_X, config.BOARD_Y,
+                   config.BOARD_WIDTH, config.BOARD_HEIGHT, config.COLOR_BOARD);
+        var x = 0;
+        while x <= config.GRID_WIDTH {
+            var px = config.BOARD_X + x * config.CELL_SIZE;
+            canvas.Line(px, config.BOARD_Y, px, config.BOARD_Y + config.BOARD_HEIGHT,
+                        config.COLOR_GRID);
+            x = x + 1;
+        }
+        var y = 0;
+        while y <= config.GRID_HEIGHT {
+            var py = config.BOARD_Y + y * config.CELL_SIZE;
+            canvas.Line(config.BOARD_X, py, config.BOARD_X + config.BOARD_WIDTH, py,
+                        config.COLOR_GRID);
+            y = y + 1;
+        }
+        canvas.RoundFrame(config.BOARD_X - 4, config.BOARD_Y - 4,
+                          config.BOARD_WIDTH + 8, config.BOARD_HEIGHT + 8,
+                          8, config.COLOR_FRAME);
+    }
+
+    hide func drawFood() {
+        var cx = self.cellX(game.getFoodX()) + config.CELL_SIZE / 2;
+        var cy = self.cellY(game.getFoodY()) + config.CELL_SIZE / 2;
+        canvas.DiscAlpha(cx, cy, 11, config.COLOR_FOOD_GLOW, 42);
+        canvas.Disc(cx, cy, 7, config.COLOR_FOOD);
+        canvas.Disc(cx - 2, cy - 2, 2, config.COLOR_TEXT);
+    }
+
+    hide func drawSnake() {
+        var i = game.getLength() - 1;
+        while i >= 0 {
+            var x = self.cellX(game.getSegmentX(i)) + 3;
+            var y = self.cellY(game.getSegmentY(i)) + 3;
+            var color = config.COLOR_SNAKE;
+            if i == 0 { color = config.COLOR_HEAD; }
+            canvas.RoundBox(x, y, config.CELL_SIZE - 6, config.CELL_SIZE - 6, 5, color);
+            if i == 0 {
+                canvas.Disc(x + 6, y + 6, 2, config.COLOR_EYE);
+                canvas.Disc(x + config.CELL_SIZE - 12, y + 6, 2, config.COLOR_EYE);
+            }
+            i = i - 1;
+        }
+    }
+
+    hide func drawOverlay() {
+        if game.isAlive() && !paused { return; }
+        var panelX = config.BOARD_X + 104;
+        var panelY = config.BOARD_Y + config.BOARD_HEIGHT / 2 - 48;
+        var panelW = config.BOARD_WIDTH - 208;
+        canvas.RoundBox(panelX, panelY, panelW, 96, 12, config.COLOR_PANEL);
+        canvas.RoundFrame(panelX, panelY, panelW, 96, 12, config.COLOR_FRAME);
+        if paused {
+            canvas.TextCenteredScaled(panelY + 17, "PAUSED", config.COLOR_TEXT, 3);
+            canvas.TextCentered(panelY + 61, "P / SPACE TO CONTINUE", config.COLOR_MUTED);
+        } else if game.didWin() {
+            canvas.TextCenteredScaled(panelY + 17, "YOU WIN", config.COLOR_HEAD, 3);
+            canvas.TextCentered(panelY + 61, "R TO PLAY AGAIN", config.COLOR_MUTED);
+        } else {
+            canvas.TextCenteredScaled(panelY + 17, "GAME OVER", config.COLOR_FOOD, 3);
+            canvas.TextCentered(panelY + 61, "R TO RESTART", config.COLOR_MUTED);
+        }
+    }
+
+    hide func draw() {
+        canvas.GradientV(0, 0, config.SCREEN_WIDTH, config.SCREEN_HEIGHT,
+                         config.COLOR_BG_TOP, config.COLOR_BG_BOTTOM);
+        canvas.TextCenteredScaled(20, "DUMB SNAKE", config.COLOR_HEAD, 3);
+        canvas.Text(config.BOARD_X, 76, "SCORE  " + Fmt.Int(game.getScore()), config.COLOR_TEXT);
+        canvas.TextRight(config.BOARD_X, 76,
+                         "ARROWS / WASD   P PAUSE   R RESTART", config.COLOR_MUTED);
+        self.drawBoard();
+        self.drawFood();
+        self.drawSnake();
+        self.drawOverlay();
+    }
+}
+
+/// @brief Construct and run the game until Escape or window close.
+func start() {
+    var app = new DumbSnakeApp();
+    app.run();
+}

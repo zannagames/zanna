@@ -1,0 +1,86 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/dumbsnake/smoke_probe.zia
+// Purpose: Verify Dumb Snake's core rules without creating a graphics window.
+// Key invariants:
+//   - The probe is deterministic and prints one RESULT line.
+//   - Every failure exits the scenario immediately with a specific reason.
+// Ownership/Lifetime:
+//   - The probe owns one temporary SnakeGame for the process lifetime.
+// Links: snake.zia, config.zia, main.zia
+//
+//===----------------------------------------------------------------------===//
+
+module smoke_probe;
+
+bind Zanna.Terminal as Terminal;
+bind "./config";
+bind "./snake";
+
+func fail(message: String) {
+    Terminal.Say("RESULT: fail " + message);
+}
+
+func start() {
+    var game = new snake.SnakeGame();
+    game.reset(7);
+
+    if game.getLength() != 3 || game.getScore() != 0 || !game.isAlive() {
+        fail("initial state");
+        return;
+    }
+    if game.getFoodX() < 0 || game.getFoodX() >= config.GRID_WIDTH ||
+       game.getFoodY() < 0 || game.getFoodY() >= config.GRID_HEIGHT {
+        fail("food bounds");
+        return;
+    }
+    if game.requestDirection(-1, 0) {
+        fail("accepted direct reverse");
+        return;
+    }
+    if !game.requestDirection(0, -1) || game.requestDirection(-1, 0) {
+        fail("turn buffer");
+        return;
+    }
+    if !game.step() || game.getHeadY() != config.GRID_HEIGHT / 2 - 1 {
+        fail("movement");
+        return;
+    }
+
+    var targetX = game.getHeadX();
+    var targetY = game.getHeadY() - 1;
+    if !game.tryPlaceFood(targetX, targetY) || !game.step() {
+        fail("food placement");
+        return;
+    }
+    if game.getLength() != 4 || game.getScore() != config.FOOD_POINTS {
+        fail("growth and score");
+        return;
+    }
+    if game.tryPlaceFood(game.getHeadX(), game.getHeadY()) {
+        fail("food on snake");
+        return;
+    }
+
+    var wallGame = new snake.SnakeGame();
+    var stepCount = 0;
+    while wallGame.isAlive() && stepCount < config.GRID_WIDTH + 2 {
+        wallGame.step();
+        stepCount = stepCount + 1;
+    }
+    if wallGame.isAlive() || stepCount >= config.GRID_WIDTH + 2 {
+        fail("wall collision");
+        return;
+    }
+    if wallGame.step() {
+        fail("moved after death");
+        return;
+    }
+
+    Terminal.Say("RESULT: ok");
+}

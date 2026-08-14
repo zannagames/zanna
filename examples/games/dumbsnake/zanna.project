@@ -1,0 +1,10 @@
+project dumbsnake
+version 0.1.0
+lang zia
+entry main.zia
+
+package-name "Dumb Snake"
+package-description "A compact keyboard-controlled Snake clone built with Zia"
+package-identifier org.zanna-lang.dumbsnake
+package-author "Zanna Project"
+package-license GPL-3.0

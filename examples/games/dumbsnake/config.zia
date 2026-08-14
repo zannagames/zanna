@@ -1,0 +1,57 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/dumbsnake/config.zia
+// Purpose: Define Dumb Snake's board, presentation, timing, and input constants.
+// Key invariants:
+//   - Board coordinates are zero-based and bounded by GRID_WIDTH/GRID_HEIGHT.
+//   - Colors use Canvas's 0x00RRGGBB representation.
+// Ownership/Lifetime:
+//   - Constants are immutable for the process lifetime.
+// Links: main.zia, snake.zia, smoke_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module config;
+
+final GRID_WIDTH = 24;
+final GRID_HEIGHT = 18;
+final CELL_SIZE = 24;
+final BOARD_X = 32;
+final BOARD_Y = 112;
+final BOARD_WIDTH = GRID_WIDTH * CELL_SIZE;
+final BOARD_HEIGHT = GRID_HEIGHT * CELL_SIZE;
+final SCREEN_WIDTH = BOARD_WIDTH + BOARD_X * 2;
+final SCREEN_HEIGHT = BOARD_HEIGHT + BOARD_Y + 48;
+
+final START_STEP_MS = 140;
+final MIN_STEP_MS = 65;
+final SPEEDUP_MS = 4;
+final MAX_FRAME_MS = 50;
+final FOOD_POINTS = 10;
+
+final COLOR_BG_TOP = 0x00071016;
+final COLOR_BG_BOTTOM = 0x00122620;
+final COLOR_BOARD = 0x000B1715;
+final COLOR_GRID = 0x00162A25;
+final COLOR_FRAME = 0x0034D399;
+final COLOR_SNAKE = 0x0022C55E;
+final COLOR_HEAD = 0x00A3E635;
+final COLOR_EYE = 0x0007110A;
+final COLOR_FOOD = 0x00FB7185;
+final COLOR_FOOD_GLOW = 0x00FDA4AF;
+final COLOR_TEXT = 0x00ECFDF5;
+final COLOR_MUTED = 0x0094A3B8;
+final COLOR_PANEL = 0x00040A09;
+
+final ACTION_UP = "dumb_snake_up";
+final ACTION_DOWN = "dumb_snake_down";
+final ACTION_LEFT = "dumb_snake_left";
+final ACTION_RIGHT = "dumb_snake_right";
+final ACTION_PAUSE = "dumb_snake_pause";
+final ACTION_RESTART = "dumb_snake_restart";
+final ACTION_QUIT = "dumb_snake_quit";

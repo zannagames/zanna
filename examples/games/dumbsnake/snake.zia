@@ -1,0 +1,191 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: examples/games/dumbsnake/snake.zia
+// Purpose: Implement deterministic, renderer-independent Snake game rules.
+// Key invariants:
+//   - Segment zero is always the head and parallel X/Y lists have equal length.
+//   - Food is in bounds and never overlaps a live snake segment.
+//   - At most one turn is buffered per movement tick; direct reversal is rejected.
+// Ownership/Lifetime:
+//   - SnakeGame exclusively owns its segment lists and scalar game state.
+//   - Returned coordinates are values and never expose mutable collection storage.
+// Links: config.zia, main.zia, smoke_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module snake;
+
+bind "./config";
+
+/// @brief Pure Snake simulation that can run with or without a graphics window.
+class SnakeGame {
+    hide List[Integer] segmentX;
+    hide List[Integer] segmentY;
+    hide Integer directionX;
+    hide Integer directionY;
+    hide Integer queuedX;
+    hide Integer queuedY;
+    hide Boolean turnQueued;
+    hide Integer foodX;
+    hide Integer foodY;
+    hide Integer score;
+    hide Integer randomState;
+    hide Boolean alive;
+    hide Boolean won;
+
+    expose func init() {
+        segmentX = [];
+        segmentY = [];
+        self.reset(1337);
+    }
+
+    /// @brief Start a new round with a deterministic food seed.
+    expose func reset(seed: Integer) {
+        segmentX.clear();
+        segmentY.clear();
+
+        var centerX = config.GRID_WIDTH / 2;
+        var centerY = config.GRID_HEIGHT / 2;
+        segmentX.add(centerX);
+        segmentY.add(centerY);
+        segmentX.add(centerX - 1);
+        segmentY.add(centerY);
+        segmentX.add(centerX - 2);
+        segmentY.add(centerY);
+
+        directionX = 1;
+        directionY = 0;
+        queuedX = directionX;
+        queuedY = directionY;
+        turnQueued = false;
+        score = 0;
+        alive = true;
+        won = false;
+        randomState = seed % 65536;
+        if randomState < 0 { randomState = 0 - randomState; }
+        self.placeFood();
+    }
+
+    /// @brief Buffer one cardinal turn for the next tick.
+    /// @return True when accepted; false for non-cardinal, opposite, or extra turns.
+    expose func requestDirection(dx: Integer, dy: Integer) -> Boolean {
+        if !alive || turnQueued { return false; }
+        if (dx == 0 && dy == 0) || (dx != 0 && dy != 0) { return false; }
+        if dx < -1 || dx > 1 || dy < -1 || dy > 1 { return false; }
+        if dx == 0 - directionX && dy == 0 - directionY { return false; }
+        queuedX = dx;
+        queuedY = dy;
+        turnQueued = true;
+        return true;
+    }
+
+    /// @brief Advance one grid tick.
+    /// @return True when the snake moved; false after a collision or completed board.
+    expose func step() -> Boolean {
+        if !alive { return false; }
+
+        if turnQueued {
+            directionX = queuedX;
+            directionY = queuedY;
+            turnQueued = false;
+        }
+
+        var nextX = segmentX.get(0) + directionX;
+        var nextY = segmentY.get(0) + directionY;
+        if nextX < 0 || nextX >= config.GRID_WIDTH ||
+           nextY < 0 || nextY >= config.GRID_HEIGHT {
+            alive = false;
+            return false;
+        }
+
+        var eating = nextX == foodX && nextY == foodY;
+        var collisionLength = segmentX.length();
+        if !eating { collisionLength = collisionLength - 1; }
+        if self.occupiedWithin(nextX, nextY, collisionLength) {
+            alive = false;
+            return false;
+        }
+
+        segmentX.insert(0, nextX);
+        segmentY.insert(0, nextY);
+        if eating {
+            score = score + config.FOOD_POINTS;
+            if segmentX.length() >= config.GRID_WIDTH * config.GRID_HEIGHT {
+                won = true;
+                alive = false;
+            } else {
+                self.placeFood();
+            }
+        } else {
+            segmentX.removeAt(segmentX.length() - 1);
+            segmentY.removeAt(segmentY.length() - 1);
+        }
+        return true;
+    }
+
+    /// @brief Place food at a requested empty cell, primarily for deterministic levels/probes.
+    expose func tryPlaceFood(x: Integer, y: Integer) -> Boolean {
+        if x < 0 || x >= config.GRID_WIDTH || y < 0 || y >= config.GRID_HEIGHT {
+            return false;
+        }
+        if self.occupiedWithin(x, y, segmentX.length()) { return false; }
+        foodX = x;
+        foodY = y;
+        return true;
+    }
+
+    hide func nextCandidate() -> Integer {
+        randomState = (randomState * 25173 + 13849) % 65536;
+        return randomState % (config.GRID_WIDTH * config.GRID_HEIGHT);
+    }
+
+    hide func placeFood() {
+        var cells = config.GRID_WIDTH * config.GRID_HEIGHT;
+        var candidate = self.nextCandidate();
+        var checked = 0;
+        while checked < cells {
+            var index = (candidate + checked) % cells;
+            var x = index % config.GRID_WIDTH;
+            var y = index / config.GRID_WIDTH;
+            if !self.occupiedWithin(x, y, segmentX.length()) {
+                foodX = x;
+                foodY = y;
+                return;
+            }
+            checked = checked + 1;
+        }
+        won = true;
+        alive = false;
+    }
+
+    hide func occupiedWithin(x: Integer, y: Integer, count: Integer) -> Boolean {
+        var i = 0;
+        while i < count {
+            if segmentX.get(i) == x && segmentY.get(i) == y { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    expose func getLength() -> Integer { return segmentX.length(); }
+    expose func getSegmentX(index: Integer) -> Integer { return segmentX.get(index); }
+    expose func getSegmentY(index: Integer) -> Integer { return segmentY.get(index); }
+    expose func getHeadX() -> Integer { return segmentX.get(0); }
+    expose func getHeadY() -> Integer { return segmentY.get(0); }
+    expose func getFoodX() -> Integer { return foodX; }
+    expose func getFoodY() -> Integer { return foodY; }
+    expose func getScore() -> Integer { return score; }
+    expose func isAlive() -> Boolean { return alive; }
+    expose func didWin() -> Boolean { return won; }
+
+    expose func getStepMs() -> Integer {
+        var stepMs = config.START_STEP_MS - (score / config.FOOD_POINTS) * config.SPEEDUP_MS;
+        if stepMs < config.MIN_STEP_MS { stepMs = config.MIN_STEP_MS; }
+        return stepMs;
+    }
+}
