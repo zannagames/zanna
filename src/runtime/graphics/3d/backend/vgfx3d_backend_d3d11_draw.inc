@@ -37,16 +37,30 @@
 /// matching `RSSetViewports`. Called whenever the active target
 /// changes.
 /// @param[in,out] ctx Backend context holding the tracked target set and viewport extent.
-static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
+/// @return S_OK after a complete native bind, or an exact validation/device-health failure.
+static HRESULT d3d11_bind_render_targets(d3d11_context_t *ctx) {
     D3D11_VIEWPORT viewport;
 
     if (!ctx || !ctx->ctx)
-        return;
+        return E_POINTER;
+    if (!vgfx3d_d3d11_target_binding_is_usable(ctx->current_rtv_count,
+                                               ctx->current_rtvs[0] != NULL,
+                                               ctx->current_rtvs[1] != NULL,
+                                               ctx->current_dsv != NULL,
+                                               ctx->current_width,
+                                               ctx->current_height)) {
+        ID3D11DeviceContext_OMSetRenderTargets(ctx->ctx, 0, NULL, NULL);
+        ID3D11DeviceContext_RSSetViewports(ctx->ctx, 0, NULL);
+        (void)d3d11_device_status_after_void_command(ctx, "Unbind invalid render targets");
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
+        return E_INVALIDARG;
+    }
     ID3D11DeviceContext_OMSetRenderTargets(
         ctx->ctx, ctx->current_rtv_count, ctx->current_rtvs, ctx->current_dsv);
-    if (ctx->current_width <= 0 || ctx->current_height <= 0) {
+    if (ctx->current_rtv_count == 0) {
         ID3D11DeviceContext_RSSetViewports(ctx->ctx, 0, NULL);
-        return;
+        return d3d11_device_status_after_void_command(ctx, "Bind empty render targets");
     }
 
     memset(&viewport, 0, sizeof(viewport));
@@ -57,6 +71,7 @@ static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
     viewport.MinDepth = 0.0f;
     viewport.MaxDepth = 1.0f;
     ID3D11DeviceContext_RSSetViewports(ctx->ctx, 1, &viewport);
+    return d3d11_device_status_after_void_command(ctx, "Bind render targets");
 }
 
 /// @brief Translate the active target kind into concrete RTV/DSV pointers.
@@ -68,9 +83,9 @@ static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
 ///   - default (SWAPCHAIN) → backbuffer + main depth.
 /// Then pushes everything into the pipeline via `bind_render_targets`.
 /// @param[in,out] ctx Backend context whose concrete current target set is selected and bound.
-static void d3d11_select_current_targets(d3d11_context_t *ctx) {
+static HRESULT d3d11_select_current_targets(d3d11_context_t *ctx) {
     if (!ctx)
-        return;
+        return E_POINTER;
     if (ctx->active_target_kind == VGFX3D_D3D11_TARGET_RTT && d3d11_has_rtt_targets(ctx)) {
         ctx->current_rtvs[0] = ctx->rtt_rtv;
         ctx->current_rtvs[1] = NULL;
@@ -119,7 +134,7 @@ static void d3d11_select_current_targets(d3d11_context_t *ctx) {
         ctx->current_height = ctx->rtv ? ctx->height : 0;
         ctx->current_target_kind = VGFX3D_D3D11_TARGET_SWAPCHAIN;
     }
-    d3d11_bind_render_targets(ctx);
+    return d3d11_bind_render_targets(ctx);
 }
 
 /// @brief Force-bind the swapchain backbuffer (skip the kind dispatch).
@@ -127,9 +142,9 @@ static void d3d11_select_current_targets(d3d11_context_t *ctx) {
 /// Used during present / postfx composition where we always want to
 /// write to the swapchain regardless of the active target kind.
 /// @param[in,out] ctx Backend context whose backbuffer is force-selected and bound.
-static void d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
+static HRESULT d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
     if (!ctx)
-        return;
+        return E_POINTER;
     ctx->current_rtvs[0] = ctx->rtv;
     ctx->current_rtvs[1] = NULL;
     ctx->current_rtv_count = ctx->rtv ? 1u : 0u;
@@ -137,7 +152,7 @@ static void d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
     ctx->current_width = ctx->rtv ? ctx->width : 0;
     ctx->current_height = ctx->rtv ? ctx->height : 0;
     ctx->current_target_kind = VGFX3D_D3D11_TARGET_SWAPCHAIN;
-    d3d11_bind_render_targets(ctx);
+    return d3d11_bind_render_targets(ctx);
 }
 
 /// @brief Clear color + (optionally) depth on the currently-bound targets.
@@ -637,8 +652,8 @@ static void d3d11_resolve_opaque_targets(void *ctx_ptr) {
     d3d11_unbind_output_targets(ctx);
     ID3D11DeviceContext_CopyResource(
         ctx->ctx, (ID3D11Resource *)ctx->opaque_depth_tex, (ID3D11Resource *)depth);
-    d3d11_restore_current_target_bindings(ctx);
-    if (FAILED(d3d11_device_status_after_void_command(ctx, "CopyResource(opaqueDepth)")))
+    if (FAILED(d3d11_restore_current_target_bindings(ctx)) ||
+        FAILED(d3d11_device_status_after_void_command(ctx, "CopyResource(opaqueDepth)")))
         return;
     ctx->opaque_depth_valid = 1;
 }

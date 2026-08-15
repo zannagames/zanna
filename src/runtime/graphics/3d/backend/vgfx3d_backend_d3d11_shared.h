@@ -852,6 +852,20 @@ int vgfx3d_d3d11_draw_submission_is_ready(int8_t frame_active,
                                           int has_primary_render_target,
                                           int32_t target_width,
                                           int32_t target_height);
+/// @brief Validate the backend's fixed two-slot color-target mirror before native binding.
+/// @param[in] render_target_count Number of color views to bind (zero through two).
+/// @param[in] has_primary_render_target Nonzero when slot zero contains a view.
+/// @param[in] has_secondary_render_target Nonzero when slot one contains a view.
+/// @param[in] has_depth_target Nonzero when a depth view accompanies the color binding.
+/// @param[in] target_width Tracked viewport width.
+/// @param[in] target_height Tracked viewport height.
+/// @return One for a canonical empty binding or a complete one/two-target binding.
+int vgfx3d_d3d11_target_binding_is_usable(uint32_t render_target_count,
+                                          int has_primary_render_target,
+                                          int has_secondary_render_target,
+                                          int has_depth_target,
+                                          int32_t target_width,
+                                          int32_t target_height);
 /// @brief Pick the right render-target classification (RTT > swapchain > overlay > scene).
 /// @param[in] rtt_active Explicit RTT flag.
 /// @param[in] gpu_postfx_enabled Offscreen scene-route flag.

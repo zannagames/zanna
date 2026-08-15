@@ -5,15 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file WindowsInstallerTheme.hpp
-/// @brief Declares the native Zanna Games visual system used by Windows setup.
-///
-/// The default palette matches the dark-only Zanna Games brand surface, while high-contrast mode
-/// substitutes Windows system colors. The vector Z mark and every layout metric scale at the
-/// active DPI without external runtime dependencies.
-///
-/// InstallerThemeResources owns its GDI fonts and brushes. Drawing helpers borrow caller-owned
-/// device contexts, windows, and rectangles.
+// File: src/tools/windows_installer/WindowsInstallerTheme.hpp
+// Purpose: Declare the native Windows installer visual system and checked UI cleanup adapters.
+// Key invariants:
+//   - Theme geometry and resources are DPI-aware and preserve high-contrast accessibility.
+//   - Native UI cleanup failures are diagnosed instead of being silently discarded.
+// Ownership/Lifetime:
+//   - InstallerThemeResources uniquely owns its GDI fonts and brushes.
+//   - Cleanup adapters consume only the explicitly supplied native resource.
+// Links: WindowsInstallerTheme.cpp, WindowsInstallerWizard.cpp,
+//        WindowsInstallerBrandDialog.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,6 +25,42 @@
 #include <cstdint>
 
 namespace zanna::installer {
+
+/// @brief Delete an owned GDI object and diagnose native cleanup failure.
+/// @param object Owned font, brush, pen, bitmap, or other deletable GDI object.
+/// @param operation Stable diagnostic label.
+/// @return @c true when absent or deleted; otherwise @c false.
+bool deleteInstallerGdiObject(HGDIOBJ object, const wchar_t *operation) noexcept;
+
+/// @brief Release an owned window or display device context with diagnostics.
+/// @param window Window paired with @p dc, or null for a display DC.
+/// @param dc Owned device context returned by GetDC.
+/// @param operation Stable diagnostic label.
+/// @return @c true when absent or released; otherwise @c false.
+bool releaseInstallerDc(HWND window, HDC dc, const wchar_t *operation) noexcept;
+
+/// @brief Destroy an owned installer window with diagnostics.
+/// @param window Owned native window.
+/// @param operation Stable diagnostic label.
+/// @return @c true when absent or destroyed; otherwise @c false.
+bool destroyInstallerWindow(HWND window, const wchar_t *operation) noexcept;
+
+/// @brief Fully unlock one installer-owned movable global-memory block.
+/// @param memory Block previously locked exactly once by the caller.
+/// @param operation Stable diagnostic label.
+/// @return @c true only after the final successful unlock.
+bool unlockInstallerGlobal(HGLOBAL memory, const wchar_t *operation) noexcept;
+
+/// @brief Free one installer-owned global-memory block with diagnostics.
+/// @param memory Block still owned by the installer.
+/// @param operation Stable diagnostic label.
+/// @return @c true when absent or freed; otherwise @c false.
+bool freeInstallerGlobal(HGLOBAL memory, const wchar_t *operation) noexcept;
+
+/// @brief Close the clipboard opened by the current installer thread.
+/// @param operation Stable diagnostic label.
+/// @return @c true on exact close success; otherwise @c false.
+bool closeInstallerClipboard(const wchar_t *operation) noexcept;
 
 /// @brief Semantic RGB colors shared with the website and Zanna Studio dark theme.
 struct InstallerBrandPalette {

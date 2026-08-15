@@ -196,6 +196,10 @@ void parallel_win_complete_one(LONG *remaining, HANDLE event);
 /// @brief Wait indefinitely for a Windows parallel batch to drain.
 /// @param event Completion event signaled by the last worker.
 void parallel_win_wait_for_completion(HANDLE event);
+
+/// @brief Close a batch-completion event or terminate on an ownership invariant failure.
+/// @param event Owned event handle that must be valid and closable.
+void parallel_win_close_event(HANDLE event);
 #endif
 
 /// @brief Convert a function pointer to void* without pedantic warnings.

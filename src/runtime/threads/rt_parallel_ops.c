@@ -156,7 +156,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     }
     CRITICAL_SECTION error_lock;
     if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
-        CloseHandle(event);
+        parallel_win_close_event(event);
         free(remaining);
         free(items);
         parallel_release_default_pool(pool, actual_pool);
@@ -179,7 +179,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     // Allocate task array
     if (!parallel_count_fits_array(task_count, sizeof(foreach_task))) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -193,7 +193,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     foreach_task *tasks = (foreach_task *)malloc((size_t)task_count * sizeof(foreach_task));
     if (!tasks) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -238,7 +238,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
     // Wait for completion
 #if RT_PLATFORM_WINDOWS
     parallel_win_wait_for_completion(event);
-    CloseHandle(event);
+    parallel_win_close_event(event);
     DeleteCriticalSection(&error_lock);
     free(remaining);
 #else
@@ -368,7 +368,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     }
     CRITICAL_SECTION error_lock;
     if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
-        CloseHandle(event);
+        parallel_win_close_event(event);
         free(remaining);
         free(items);
         free(results);
@@ -393,7 +393,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     // Allocate task array
     if (!parallel_count_fits_array(task_count, sizeof(map_task))) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -408,7 +408,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     map_task *tasks = (map_task *)malloc((size_t)task_count * sizeof(map_task));
     if (!tasks) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -455,7 +455,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
     // Wait for completion
 #if RT_PLATFORM_WINDOWS
     parallel_win_wait_for_completion(event);
-    CloseHandle(event);
+    parallel_win_close_event(event);
     DeleteCriticalSection(&error_lock);
     free(remaining);
 #else
@@ -572,7 +572,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
     }
     CRITICAL_SECTION error_lock;
     if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
-        CloseHandle(event);
+        parallel_win_close_event(event);
         free(remaining);
         parallel_release_default_pool(pool, actual_pool);
         rt_trap("Parallel.Invoke: error mutex initialization failed");
@@ -593,7 +593,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
     // Allocate task array
     if (!parallel_count_fits_array(count, sizeof(invoke_task))) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -606,7 +606,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
     invoke_task *tasks = (invoke_task *)malloc((size_t)count * sizeof(invoke_task));
     if (!tasks) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -648,7 +648,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
     // Wait for completion
 #if RT_PLATFORM_WINDOWS
     parallel_win_wait_for_completion(event);
-    CloseHandle(event);
+    parallel_win_close_event(event);
     DeleteCriticalSection(&error_lock);
     free(remaining);
 #else
@@ -775,7 +775,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
     }
     CRITICAL_SECTION error_lock;
     if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
-        CloseHandle(event);
+        parallel_win_close_event(event);
         free(remaining);
         free(items);
         parallel_release_default_pool(pool, actual_pool);
@@ -797,7 +797,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
 
     if (!parallel_count_fits_array(nworkers, sizeof(reduce_task))) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -811,7 +811,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
     reduce_task *tasks = (reduce_task *)malloc((size_t)nworkers * sizeof(reduce_task));
     if (!tasks) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -863,7 +863,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
     /* Wait for completion. */
 #if RT_PLATFORM_WINDOWS
     parallel_win_wait_for_completion(event);
-    CloseHandle(event);
+    parallel_win_close_event(event);
     DeleteCriticalSection(&error_lock);
     free(remaining);
 #else
@@ -985,7 +985,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
     }
     CRITICAL_SECTION error_lock;
     if (!InitializeCriticalSectionEx(&error_lock, 0, 0)) {
-        CloseHandle(event);
+        parallel_win_close_event(event);
         free(remaining);
         parallel_release_default_pool(pool, actual_pool);
         rt_trap("Parallel.For: error mutex initialization failed");
@@ -1006,7 +1006,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
     // Allocate task array
     if (!parallel_count_fits_array(task_count, sizeof(for_task))) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -1019,7 +1019,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
     for_task *tasks = (for_task *)malloc((size_t)task_count * sizeof(for_task));
     if (!tasks) {
 #if RT_PLATFORM_WINDOWS
-        CloseHandle(event);
+        parallel_win_close_event(event);
         DeleteCriticalSection(&error_lock);
         free(remaining);
 #else
@@ -1066,7 +1066,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
     // Wait for completion
 #if RT_PLATFORM_WINDOWS
     parallel_win_wait_for_completion(event);
-    CloseHandle(event);
+    parallel_win_close_event(event);
     DeleteCriticalSection(&error_lock);
     free(remaining);
 #else

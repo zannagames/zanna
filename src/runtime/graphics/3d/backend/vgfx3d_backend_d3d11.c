@@ -1174,7 +1174,7 @@ static void d3d11_log_hresult(const char *msg, HRESULT hr);
 static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostics, int failed);
 static int d3d11_present_swapchain(d3d11_context_t *ctx);
 static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx);
-static void d3d11_bind_render_targets(d3d11_context_t *ctx);
+static HRESULT d3d11_bind_render_targets(d3d11_context_t *ctx);
 static void d3d11_unbind_draw_resources(d3d11_context_t *ctx);
 static void d3d11_release_swapchain_main_targets(d3d11_context_t *ctx);
 static void d3d11_release_readback_staging_texture(d3d11_context_t *ctx);
@@ -2012,11 +2012,19 @@ static void d3d11_unbind_shadow_resources(d3d11_context_t *ctx) {
 /// @details Readback and RTT sync paths unbind outputs for `CopyResource`; this
 ///   helper restores the render target set only when one was known to be active.
 /// @param[in,out] ctx Backend context holding the tracked target binding.
-static void d3d11_restore_current_target_bindings(d3d11_context_t *ctx) {
+static HRESULT d3d11_restore_current_target_bindings(d3d11_context_t *ctx) {
     if (!ctx || !ctx->ctx)
-        return;
+        return E_POINTER;
     if (ctx->current_rtv_count > 0 || ctx->current_dsv)
-        d3d11_bind_render_targets(ctx);
+        return d3d11_bind_render_targets(ctx);
+    return vgfx3d_d3d11_target_binding_is_usable(ctx->current_rtv_count,
+                                                 ctx->current_rtvs[0] != NULL,
+                                                 ctx->current_rtvs[1] != NULL,
+                                                 0,
+                                                 ctx->current_width,
+                                                 ctx->current_height)
+               ? S_OK
+               : E_INVALIDARG;
 }
 
 /// @brief Map our color-format class to a DXGI texture format.

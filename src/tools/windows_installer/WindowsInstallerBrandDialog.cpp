@@ -442,7 +442,7 @@ void acceptPageAction(PageContext &context, const BrandedInstallerAction &action
     context.result.verificationChecked =
         context.verification &&
         SendMessageW(context.verification, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    DestroyWindow(context.window);
+    (void)destroyInstallerWindow(context.window, L"Destroy completed installer page");
 }
 
 /// @brief Dispatch native messages for the branded choice page.
@@ -545,7 +545,7 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
                 }
                 if (id == kIdCancel) {
                     context->result.action = context->page.closeAction;
-                    DestroyWindow(window);
+                    (void)destroyInstallerWindow(window, L"Destroy installer page after action");
                     return 0;
                 }
             }
@@ -572,7 +572,7 @@ LRESULT CALLBACK pageWindowProcedure(HWND window, UINT message, WPARAM wParam, L
         }
         case WM_CLOSE:
             context->result.action = context->page.closeAction;
-            DestroyWindow(window);
+            (void)destroyInstallerWindow(window, L"Destroy closing installer page");
             return 0;
         case WM_NCDESTROY:
             SetWindowLongPtrW(window, GWLP_USERDATA, 0);
@@ -787,7 +787,7 @@ void paintProgressTrack(HDC dc, const RECT &client, const ProgressContext &conte
     HBRUSH trackBrush = CreateSolidBrush(context.theme.borderColor());
     if (trackBrush) {
         FillRect(dc, &track, trackBrush);
-        DeleteObject(trackBrush);
+        (void)deleteInstallerGdiObject(trackBrush, L"Delete installer progress-track brush");
     }
     const int width = right - left;
     const int pulseWidth = std::max(scaled(64, context.theme.dpi()), width / 5);
@@ -805,7 +805,7 @@ void paintProgressTrack(HDC dc, const RECT &client, const ProgressContext &conte
         HBRUSH pulseBrush = CreateSolidBrush(context.theme.accentColor(accent));
         if (pulseBrush) {
             FillRect(dc, &pulse, pulseBrush);
-            DeleteObject(pulseBrush);
+            (void)deleteInstallerGdiObject(pulseBrush, L"Delete installer progress-pulse brush");
         }
     }
 }
@@ -1007,13 +1007,13 @@ LRESULT CALLBACK progressWindowProcedure(HWND window, UINT message, WPARAM wPara
         }
         case kMessageProgressComplete:
             if (context->completed.load()) {
-                DestroyWindow(window);
+                (void)destroyInstallerWindow(window, L"Destroy cancelled installer progress");
                 return 0;
             }
             break;
         case WM_CLOSE:
             if (context->completed.load())
-                DestroyWindow(window);
+                (void)destroyInstallerWindow(window, L"Destroy completed installer progress");
             else
                 requestProgressCancellation(*context);
             return 0;
@@ -1123,7 +1123,8 @@ BrandedInstallerPageResult showBrandedInstallerPage(HINSTANCE instance,
 
         ~WindowGuard() {
             if (context.window && IsWindow(context.window))
-                DestroyWindow(context.window);
+                (void)destroyInstallerWindow(context.window,
+                                             L"Destroy unwinding installer progress");
         }
     } guard{context};
 
@@ -1362,7 +1363,7 @@ int runBrandedInstallerProgress(HINSTANCE instance,
             context.logger.setProgressCallback({});
             context.logger.setCancellationCallback({});
             if (context.window && IsWindow(context.window))
-                DestroyWindow(context.window);
+                (void)destroyInstallerWindow(context.window, L"Destroy unwinding installer page");
         }
     } guard{context};
 

@@ -1635,6 +1635,27 @@ static void test_frame_protocol_submission_guards(void) {
     EXPECT_TRUE(vgfx3d_d3d11_draw_submission_is_ready(1, -1, 1, 1, 1, 0, 480) == 0 &&
                     vgfx3d_d3d11_draw_submission_is_ready(1, -1, 1, 1, 1, 640, -1) == 0,
                 "D3D11 draw submission rejects invalid viewport extents");
+    EXPECT_TRUE(vgfx3d_d3d11_draw_submission_is_ready(1, -1, 1, 3, 1, 640, 480) == 0,
+                "D3D11 draw submission rejects counts beyond the tracked RTV array");
+
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(0, 0, 0, 0, 0, 0) == 1,
+                "D3D11 target binding accepts canonical empty state");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(0, 0, 0, 0, 640, 480) == 0,
+                "D3D11 target binding rejects an empty target with a stale viewport");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(0, 0, 0, 1, 0, 0) == 0,
+                "D3D11 target binding rejects an untracked depth-only output");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(1, 1, 0, 1, 640, 480) == 1,
+                "D3D11 target binding accepts one complete color target");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(1, 1, 1, 0, 640, 480) == 0,
+                "D3D11 target binding rejects an uncounted secondary target");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(2, 1, 1, 1, 640, 480) == 1,
+                "D3D11 target binding accepts two complete color targets");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(2, 1, 0, 0, 640, 480) == 0,
+                "D3D11 target binding rejects a missing secondary target");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(3, 1, 1, 0, 640, 480) == 0,
+                "D3D11 target binding bounds the fixed two-slot array");
+    EXPECT_TRUE(vgfx3d_d3d11_target_binding_is_usable(1, 1, 0, 0, -1, 480) == 0,
+                "D3D11 target binding rejects invalid viewport extents");
 }
 
 static void test_postfx_readback_policy_helpers(void) {
@@ -2165,6 +2186,16 @@ static void test_d3d11_backend_source_contracts(void) {
                 "D3D11 sanitizes draw snapshots before native upload");
     EXPECT_TRUE(count_text(source, "vgfx3d_d3d11_draw_submission_is_ready(") >= 4,
                 "D3D11 gates regular, instanced, skybox, and begin-frame target submission");
+    EXPECT_TRUE(strstr(source, "vgfx3d_d3d11_target_binding_is_usable(") != NULL &&
+                    strstr(source, "static HRESULT d3d11_bind_render_targets(") != NULL,
+                "D3D11 validates the fixed RTV mirror and propagates native bind status");
+    EXPECT_TRUE(count_text(source, "FAILED(d3d11_restore_current_target_bindings(ctx))") >= 4,
+                "D3D11 copy/readback paths require successful output-target restoration");
+    EXPECT_TRUE(count_text(source, "FAILED(d3d11_bind_swapchain_target(ctx))") >= 6,
+                "D3D11 resize and route changes observe forced swapchain bind failure");
+    EXPECT_TRUE(strstr(source, "Bind frame sampler state") != NULL &&
+                    strstr(source, "hr = d3d11_select_current_targets(ctx);") != NULL,
+                "D3D11 BeginFrame aborts failed target and common-state binding");
     EXPECT_TRUE(count_text(source, "vgfx3d_d3d11_frame_state_is_idle(") >= 1,
                 "D3D11 blocks render-scale mutation while a completed frame awaits Present");
     EXPECT_TRUE(strstr(source, "CopyResource(presentedSnapshot)") != NULL &&

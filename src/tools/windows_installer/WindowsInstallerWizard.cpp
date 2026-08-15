@@ -335,33 +335,53 @@ void copyTextToClipboard(std::wstring_view text) {
         throw std::runtime_error("cannot allocate clipboard text");
     void *destination = GlobalLock(memory);
     if (!destination) {
-        GlobalFree(memory);
+        (void)freeInstallerGlobal(memory, L"Free inaccessible installer clipboard text");
         throw std::runtime_error("cannot access clipboard text");
     }
     std::memcpy(destination, text.data(), text.size() * sizeof(wchar_t));
-    GlobalUnlock(memory);
+    if (!unlockInstallerGlobal(memory, L"Unlock installer clipboard text")) {
+        (void)freeInstallerGlobal(memory, L"Free installer clipboard text after unlock failure");
+        throw std::runtime_error("cannot unlock clipboard text");
+    }
 
     if (!OpenClipboard(nullptr)) {
-        GlobalFree(memory);
+        (void)freeInstallerGlobal(memory, L"Free installer clipboard text after open failure");
         throw std::runtime_error("cannot open the Windows clipboard");
     }
 
     /// @brief Ensure an opened clipboard is closed on every exit path.
     struct ClipboardGuard {
+        bool open{true};
+
         /// @brief Close the clipboard owned by the surrounding operation.
         ~ClipboardGuard() {
-            CloseClipboard();
+            if (open)
+                (void)closeInstallerClipboard(L"Close installer clipboard during unwind");
+        }
+
+        /// @brief Close now and suppress destructor retry only after exact success.
+        /// @return @c true when the clipboard closed.
+        bool close() noexcept {
+            if (!open)
+                return true;
+            if (!closeInstallerClipboard(L"Close installer clipboard"))
+                return false;
+            open = false;
+            return true;
         }
     } guard;
 
     if (!EmptyClipboard()) {
-        GlobalFree(memory);
+        (void)freeInstallerGlobal(memory, L"Free installer clipboard text after clear failure");
         throw std::runtime_error("cannot clear the Windows clipboard");
     }
     if (!SetClipboardData(CF_UNICODETEXT, memory)) {
-        GlobalFree(memory);
+        (void)freeInstallerGlobal(memory, L"Free rejected installer clipboard text");
         throw std::runtime_error("cannot publish clipboard text");
     }
+    memory = nullptr;
+    if (!guard.close())
+        throw std::runtime_error("cannot close the Windows clipboard");
 }
 
 /// @brief Run update discovery and translate failures into a non-mutating warning dialog.
@@ -733,7 +753,7 @@ void acceptCustomDialog(CustomDialogContext &context) {
         SendDlgItemMessageW(context.window, kIdAssociations, BM_GETCHECK, 0, 0) == BST_CHECKED;
     staged.createShortcuts =
         SendDlgItemMessageW(context.window, kIdShortcuts, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    if (!DestroyWindow(context.window))
+    if (!destroyInstallerWindow(context.window, L"Destroy accepted installer options"))
         throw std::runtime_error("cannot close the native setup options window");
     *context.options = std::move(staged);
     context.accepted = true;
@@ -1015,7 +1035,7 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
                     }
                     return 0;
                 case IDCANCEL:
-                    DestroyWindow(window);
+                    (void)destroyInstallerWindow(window, L"Destroy cancelled installer options");
                     return 0;
                 default:
                     if (LOWORD(wParam) >= kIdFirstComponent &&
@@ -1048,7 +1068,7 @@ LRESULT CALLBACK customWindowProcedure(HWND window, UINT message, WPARAM wParam,
             return 0;
         }
         case WM_CLOSE:
-            DestroyWindow(window);
+            (void)destroyInstallerWindow(window, L"Destroy closing installer options");
             return 0;
         case WM_NCDESTROY:
             SetWindowLongPtrW(window, GWLP_USERDATA, 0);
@@ -1124,7 +1144,8 @@ bool showCustomDialog(HINSTANCE instance,
         /// @brief Destroy the owned native window if it remains live.
         ~DialogResources() {
             if (context.window && IsWindow(context.window))
-                DestroyWindow(context.window);
+                (void)destroyInstallerWindow(context.window,
+                                             L"Destroy unwinding installer options");
         }
     } resources{context};
 

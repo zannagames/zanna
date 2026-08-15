@@ -399,7 +399,9 @@ static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx) {
     ID3D11DeviceContext_CopyResource(
         ctx->ctx, (ID3D11Resource *)ctx->presented_color_tex, (ID3D11Resource *)back_buffer);
     SAFE_RELEASE(back_buffer);
-    d3d11_restore_current_target_bindings(ctx);
+    hr = d3d11_restore_current_target_bindings(ctx);
+    if (FAILED(hr))
+        return 0;
     hr = ctx->device ? ID3D11Device_GetDeviceRemovedReason(ctx->device) : E_POINTER;
     if (FAILED(hr)) {
         d3d11_log_hresult("CopyResource(presentedSnapshot)", hr);
@@ -1060,8 +1062,8 @@ static int d3d11_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *
 cleanup:
     if (mapped_ok)
         ID3D11DeviceContext_Unmap(ctx->ctx, (ID3D11Resource *)ctx->rtt_staging, 0);
-    if (restore_target)
-        d3d11_restore_current_target_bindings(ctx);
+    if (restore_target && FAILED(d3d11_restore_current_target_bindings(ctx)))
+        ok = 0;
     if (staging_failed) {
         SAFE_RELEASE(ctx->rtt_staging);
         if (ctx->device && vgfx3d_d3d11_is_valid_texture2d_extent(target->width, target->height)) {

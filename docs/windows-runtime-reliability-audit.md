@@ -1,7 +1,7 @@
 ---
 status: complete
 audience: developers
-last-verified: 2026-08-11
+last-verified: 2026-08-14
 ---
 
 # Windows Runtime Reliability Audit
@@ -31,6 +31,8 @@ Direct3D telemetry, process/ConPTY teardown, Win32 input, installer, and WASAPI 
 The 2026-08-11 alpha-hardening pass adds WR-881 through WR-930: 50 Direct3D state-submission,
 Win32 GDI/clipboard cleanup, synchronous execution, shared-preview IPC, installer staging, and
 maintenance-handoff repairs.
+The 2026-08-14 alpha-hardening pass adds WR-931 through WR-980: 50 Direct3D target-binding,
+parallel-batch event ownership, and native-installer UI cleanup repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -964,6 +966,56 @@ maintenance-handoff repairs.
 | WR-928 | Installer atomic file rollback | Failed staged installer writes and commits discarded temporary-file deletion failure. Rollback now reports cleanup errors together with commit context. |
 | WR-929 | Installer shortcut rollback | Shell Link save and atomic commit failures similarly ignored temporary `.lnk` cleanup. Both paths now report retained shortcut staging and preserve commit context. |
 | WR-930 | Installer maintenance handoff | A successfully launched verified maintenance executable was reported cleanly even when its thread or process handle could not close. Handoff remains successful to avoid duplicate mutation, but logs the exact launcher-handle failure. |
+| WR-931 | D3D11 target count | The ordinary-draw readiness gate accepted a render-target count larger than the backend's two-entry RTV mirror. It now rejects counts above two before native submission. |
+| WR-932 | D3D11 primary target | The native target binder trusted a positive count even when slot zero was null. A shared validator now requires the primary view for every nonempty color binding. |
+| WR-933 | D3D11 secondary target | Count-two bindings could expose a null second view, while count-one bindings could retain an uncounted second view in the CPU mirror. Both forms now fail validation. |
+| WR-934 | D3D11 empty viewport | A zero-target binding could retain nonzero viewport dimensions and leave CPU/native state contradictory. Only the canonical zero-count, zero-view, zero-extent state is accepted. |
+| WR-935 | D3D11 target-bind health | `OMSetRenderTargets` and `RSSetViewports` return no status, and the binder returned `void`. It now checks device health and returns the exact removal/reset reason. |
+| WR-936 | D3D11 invalid-bind containment | An invalid target mirror previously returned without retiring the old output and viewport. It now explicitly unbinds both and marks an active frame failed. |
+| WR-937 | D3D11 target selection | RTT, scene, overlay, and swapchain selection discarded native bind failure. Selection now propagates an `HRESULT` to every lifecycle caller. |
+| WR-938 | D3D11 swapchain binding | Forced swapchain binding during resize and route changes also discarded native failure. It now returns device/validation status. |
+| WR-939 | D3D11 BeginFrame target rollback | BeginFrame published an active/pending frame even when target binding was discarded by a removed device. It now clears tracked targets and restores the prior frame protocol state. |
+| WR-940 | D3D11 BeginFrame sampler health | Initial common sampler binding was not checked before timing and cache maintenance began. Device loss now cancels the frame transaction at that boundary. |
+| WR-941 | D3D11 presented snapshot restore | Backbuffer snapshot capture could mark a copy valid after restoration of the render target failed. Snapshot validity now requires a successful restore. |
+| WR-942 | D3D11 depth-probe restore | Probe copies could publish a pending batch even when the original output target could not be restored. The failed batch and staging resource are now discarded. |
+| WR-943 | D3D11 RTT readback restore | Render-target readback could clear `color_dirty` after its target restore failed. Readback success now includes restoration, retaining dirty state for retry. |
+| WR-944 | D3D11 opaque-depth restore | The soft-particle depth snapshot became valid even when restoring the draw target failed. Validity now requires both restoration and healthy copy completion. |
+| WR-945 | D3D11 same-size resize | Repairing an incomplete same-size swapchain could retain a complete resource set but claim a stale current binding after bind failure. The mirror is now cleared. |
+| WR-946 | D3D11 resize rollback | Failed `ResizeBuffers` recovery recreated old targets but ignored failure to bind them. Rollback now clears the current-target mirror when rebinding fails. |
+| WR-947 | D3D11 resize commit | Successful swapchain resize likewise ignored final bind failure. The committed resources remain owned, but no false current binding survives. |
+| WR-948 | D3D11 render-scale publication | `SetRenderScale` returned success after its final swapchain rebind failed. It now returns false and leaves device loss visible to the caller. |
+| WR-949 | D3D11 shadow entry | Starting a new shadow pass ignored failure to restore targets from a prior pass. Shadow setup now aborts before mutating the next slot. |
+| WR-950 | D3D11 shadow completion | Ending a shadow pass could advertise its slot complete even when the main target could not be rebound. The slot is now invalidated, shadow count recomputed, and the frame failed. |
+| WR-951 | Parallel.ForEach event unwind | Critical-section, task-size, and task-allocation failures closed the batch event unchecked. Every pre-submission unwind now uses fatal checked retirement. |
+| WR-952 | Parallel.ForEach event completion | The successful drain path also discarded `CloseHandle` failure before freeing synchronization state. It now enforces the same ownership invariant. |
+| WR-953 | Parallel.Map event unwind | Three Map setup failures could hide an invalid/leaked completion event. They now use the shared checked closer. |
+| WR-954 | Parallel.Map event completion | Map's drained event is now proven closed before result collection and synchronization storage are released. |
+| WR-955 | Parallel.Invoke event unwind | Invoke setup discarded completion-event close results on all allocation/synchronization failures. Those paths now fail fast on ownership corruption. |
+| WR-956 | Parallel.Invoke event completion | Invoke completion now proves the event retired before freeing worker-borrowed state. |
+| WR-957 | Parallel.Reduce event unwind | Reduce's critical-section and task-allocation unwind paths silently ignored event close failure. All now use the checked adapter. |
+| WR-958 | Parallel.Reduce event completion | Reduce no longer publishes an accumulator after an unobservable event-retirement failure. |
+| WR-959 | Parallel.For event unwind | Integer-range parallel setup had the same three unchecked completion-event cleanup paths. They now share the fatal ownership boundary. |
+| WR-960 | Parallel.For event completion | The successful range drain now checks event retirement before releasing tasks and counters. |
+| WR-961 | Installer font-probe early release | Invalid font-family input released its display DC unchecked. The common DC adapter now diagnoses failure on that early exit. |
+| WR-962 | Installer font-probe normal release | Successful font enumeration also discarded `ReleaseDC` status. Normal completion now uses the checked adapter. |
+| WR-963 | Installer font ownership | Theme destruction and replacement cleared owned font slots regardless of `DeleteObject` failure. Every font retirement now records native failure. |
+| WR-964 | Installer brush ownership | Long-lived theme brush retirement had the same silent GDI leak path. It now uses checked deletion. |
+| WR-965 | Installer circuit pens | Per-line decorative pens were deleted unchecked after selection restoration. Each retirement now carries a stable diagnostic label. |
+| WR-966 | Installer circuit ring | The separately allocated ring pen had an independent silent cleanup path. It now uses checked GDI deletion. |
+| WR-967 | Installer brand-panel brush | A temporary backdrop brush could leak without any support signal. Its cleanup is now diagnosed. |
+| WR-968 | Installer focus resources | Owner-drawn focus pen and brush cleanup results were discarded. Both are now checked independently. |
+| WR-969 | Installer action-button resources | Border pen, fill brush, and accent brush retirement could each fail silently. All three use labeled checked deletion. |
+| WR-970 | Installer page completion | Programmatic branded-page completion destroyed the native window unchecked. Failure now reaches the shared bounded debugger diagnostic. |
+| WR-971 | Installer page action | Action-button closure discarded `DestroyWindow` failure and could leave a modal page alive. The failure is now observable. |
+| WR-972 | Installer page close | The branded page's `WM_CLOSE` path had the same unreported failure. It now uses checked destruction. |
+| WR-973 | Installer progress brushes | Indeterminate track and pulse brushes were deleted unchecked every animation frame. Both transient cleanup paths now report failure. |
+| WR-974 | Installer progress completion | Cancellation and worker-completion messages could fail to destroy the progress window silently. Both transitions now use checked destruction. |
+| WR-975 | Installer progress unwind | Exception and normal stack unwinds discarded progress-window destruction failure. Surviving native state is now diagnosed. |
+| WR-976 | Installer clipboard unlock | Clipboard text publication ignored `GlobalUnlock`, so a still-locked allocation could proceed into clipboard ownership. Exact final unlock is now required. |
+| WR-977 | Installer clipboard rollback | Allocation, open, clear, and publication failures discarded `GlobalFree` status. Every still-owned block is now freed through a diagnostic adapter. |
+| WR-978 | Installer clipboard close | RAII cleanup ignored `CloseClipboard`, allowing apparent success with clipboard ownership retained. Success now requires an exact close; unwind retries and diagnoses. |
+| WR-979 | Installer options closure | Accepted, cancelled, and `WM_CLOSE` options-window paths used inconsistent checked/unchecked destruction. All now share the checked window adapter. |
+| WR-980 | Installer options unwind | Stack unwinding could silently leave the custom-options window alive. The surviving window is now reported through the same bounded diagnostic path. |
 
 ## Regression coverage
 
@@ -1170,6 +1222,30 @@ Final alpha-hardening revalidation on Windows x64/MSVC on 2026-08-01:
   changed-only platform lint, shell syntax validation, `git diff --check`, and explicit untracked
   whitespace/final-newline checks passed. The documentation auditor's 66 existing undocumented
   runtime prototypes remain informational debt.
+
+Alpha-hardening revalidation on Windows x64/MSVC on 2026-08-14:
+
+- A final frozen-source, no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the
+  warning-as-error Debug tree with no compiler diagnostics and exited zero in 2,512.3 seconds. It
+  selected all 1,866 configured non-slow CTests with zero failures (12 entries are disabled by
+  policy), then completed platform-policy lint, the runtime-surface audit, every cross-platform
+  host smoke, and installation.
+- An earlier clean integration pass exposed one pre-existing MSVC `C4310` warning in the Ogg
+  reserved-page-bit mask. The behavior-preserving exact `0xF8` mask removed the truncating
+  complement cast; `test_ogg_vorbis` and the final clean canonical run passed without a warning.
+- The complete `graphics3d` label passed 155/155 tests in 962.86 seconds, including the shared
+  D3D11 contracts, four D3D11 integration tests, three GPU smoke tests, and soak coverage. The
+  final affected Windows/D3D/installer/parallel selection passed 18 applicable tests; its
+  administrator-only all-users installer smoke was correctly skipped in the non-elevated session.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` rebuilt, staged, and privately launch-smoked all eight
+  curated native x64 demos in 65.9 seconds: Crackman, Chess, Dumbsnake, Action Slice, Game3D
+  Starter, Game3D Scenes, Overhaul Showcase, and Paint. Every executable remained healthy through
+  its bounded launch window.
+- `clang-format --dry-run --Werror`, the source-header audit, `scripts/check_docs.sh`, strict
+  changed-tree platform lint, and `git diff --check` passed for the final change set. The
+  documentation auditor reported zero missing file headers; its 49 existing undocumented runtime
+  prototypes remain informational debt and were not increased by this pass.
 
 Final alpha-hardening revalidation on Windows x64/MSVC on 2026-07-26:
 

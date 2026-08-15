@@ -98,6 +98,16 @@ void parallel_win_wait_for_completion(HANDLE event) {
     if (!event || WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0)
         rt_abort("Parallel: completion event wait failed");
 }
+
+/// @brief Retire a Windows batch event without hiding handle corruption or a kernel leak.
+/// @details Every caller has either failed before submission or waited for all workers, so no
+///   task can legally retain the event. A close failure therefore violates the ownership model
+///   and cannot be recovered while continuing safely.
+/// @param event Owned completion-event handle.
+void parallel_win_close_event(HANDLE event) {
+    if (!event || event == INVALID_HANDLE_VALUE || !CloseHandle(event))
+        rt_abort("Parallel: completion event close failed");
+}
 #else
 #include <pthread.h>
 #if RT_PLATFORM_MACOS

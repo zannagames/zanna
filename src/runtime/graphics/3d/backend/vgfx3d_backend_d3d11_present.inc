@@ -248,7 +248,13 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
             d3d11_log_hresult("CreateOverlayTarget", hr);
     }
     d3d11_refresh_pass_flags(ctx, cam);
-    d3d11_select_current_targets(ctx);
+    hr = d3d11_select_current_targets(ctx);
+    if (FAILED(hr)) {
+        d3d11_clear_current_target_bindings(ctx);
+        ctx->frame_active = 0;
+        ctx->frame_pending_present = prior_pending_present;
+        return;
+    }
     if (!vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
                                                ctx->ctx != NULL,
@@ -306,6 +312,12 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
     }
 
     d3d11_bind_common_state(ctx, NULL);
+    if (FAILED(d3d11_record_frame_device_status(ctx, "Bind frame sampler state"))) {
+        d3d11_clear_current_target_bindings(ctx);
+        ctx->frame_active = 0;
+        ctx->frame_pending_present = prior_pending_present;
+        return;
+    }
     d3d11_begin_frame_timing(ctx);
     if ((ctx->frame_serial & 31u) == 0u) {
         d3d11_prune_texture_cache(ctx);
@@ -414,13 +426,18 @@ static void d3d11_issue_depth_probes(d3d11_context_t *ctx) {
             d3d11_log_hresult("CopySubresourceRegion(depthProbeStaging)", device_status);
             d3d11_log_device_removed_reason(
                 ctx, "CopySubresourceRegion(depthProbeStaging)", device_status);
-            d3d11_restore_current_target_bindings(ctx);
+            if (FAILED(d3d11_restore_current_target_bindings(ctx)))
+                d3d11_clear_current_target_bindings(ctx);
             ctx->depth_probe_request_count = 0;
             d3d11_discard_depth_probe_staging(ctx);
             return;
         }
     }
-    d3d11_restore_current_target_bindings(ctx);
+    if (FAILED(d3d11_restore_current_target_bindings(ctx))) {
+        ctx->depth_probe_request_count = 0;
+        d3d11_discard_depth_probe_staging(ctx);
+        return;
+    }
     ctx->depth_probe_pending_count = ctx->depth_probe_request_count;
     ctx->depth_probe_pending_polls = 0;
     ctx->depth_probe_request_count = 0;
@@ -686,8 +703,8 @@ static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
     if (ctx->width == w && ctx->height == h) {
         hr = d3d11_recreate_swapchain_main_targets(
             ctx, w, h, "Recreate incomplete same-size swapchain targets");
-        if (SUCCEEDED(hr))
-            d3d11_bind_swapchain_target(ctx);
+        if (SUCCEEDED(hr) && FAILED(d3d11_bind_swapchain_target(ctx)))
+            d3d11_clear_current_target_bindings(ctx);
         return;
     }
     old_w = ctx->width;
@@ -703,7 +720,8 @@ static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
         d3d11_log_device_removed_reason(ctx, "IDXGISwapChain::ResizeBuffers", hr);
         if (SUCCEEDED(d3d11_recreate_swapchain_main_targets(
                 ctx, old_w, old_h, "Recreate swapchain targets after failed resize"))) {
-            d3d11_bind_swapchain_target(ctx);
+            if (FAILED(d3d11_bind_swapchain_target(ctx)))
+                d3d11_clear_current_target_bindings(ctx);
         }
         return;
     }
@@ -719,7 +737,8 @@ static void d3d11_resize(void *ctx_ptr, int32_t w, int32_t h) {
         d3d11_recreate_swapchain_main_targets(ctx, w, h, "Recreate swapchain targets after resize");
     if (FAILED(hr))
         return;
-    d3d11_bind_swapchain_target(ctx);
+    if (FAILED(d3d11_bind_swapchain_target(ctx)))
+        d3d11_clear_current_target_bindings(ctx);
 }
 
 /// @brief Copy a mapped texture's rows to an RGBA8 destination, format-aware.
@@ -882,7 +901,8 @@ cleanup:
     if (mapped_ok)
         ID3D11DeviceContext_Unmap(ctx->ctx, (ID3D11Resource *)staging, 0);
     if (restore_target)
-        d3d11_restore_current_target_bindings(ctx);
+        if (FAILED(d3d11_restore_current_target_bindings(ctx)))
+            ok = 0;
     if (discard_staging)
         d3d11_release_readback_staging_texture(ctx);
     return ok;
@@ -1797,14 +1817,18 @@ static int8_t d3d11_set_render_scale(void *ctx_ptr, float scale) {
          * later allocation failure leaves the previous complete scene route intact. */
         hr = d3d11_ensure_overlay_target(ctx, ctx->width, ctx->height);
         if (FAILED(hr)) {
-            if (!ctx->rtt_active)
-                d3d11_bind_swapchain_target(ctx);
+            if (!ctx->rtt_active) {
+                if (FAILED(d3d11_bind_swapchain_target(ctx)))
+                    d3d11_clear_current_target_bindings(ctx);
+            }
             return 0;
         }
         hr = d3d11_ensure_scene_targets(ctx, scene_width, scene_height);
         if (FAILED(hr)) {
-            if (!ctx->rtt_active)
-                d3d11_bind_swapchain_target(ctx);
+            if (!ctx->rtt_active) {
+                if (FAILED(d3d11_bind_swapchain_target(ctx)))
+                    d3d11_clear_current_target_bindings(ctx);
+            }
             return 0;
         }
     }
@@ -1816,8 +1840,10 @@ static int8_t d3d11_set_render_scale(void *ctx_ptr, float scale) {
     ctx->presented_color_valid = 0;
     if (!route_required)
         d3d11_destroy_scene_targets(ctx);
-    if (!ctx->rtt_active)
-        d3d11_bind_swapchain_target(ctx);
+    if (!ctx->rtt_active) {
+        if (FAILED(d3d11_bind_swapchain_target(ctx)))
+            return 0;
+    }
     return 1;
 }
 
@@ -1896,13 +1922,13 @@ static void d3d11_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
 
 /// @brief Leave any active shadow pass and restore the current color/depth target set.
 /// @param[in,out] ctx Active D3D11 backend context.
-static void d3d11_leave_shadow_pass(d3d11_context_t *ctx) {
+static HRESULT d3d11_leave_shadow_pass(d3d11_context_t *ctx) {
     if (!ctx || ctx->shadow_pass_slot < 0)
-        return;
+        return ctx ? S_OK : E_POINTER;
     d3d11_unbind_output_targets(ctx);
     ctx->shadow_pass_slot = -1;
     ctx->shadow_pass_failed = 0;
-    d3d11_select_current_targets(ctx);
+    return d3d11_select_current_targets(ctx);
 }
 
 /// @brief Backend `shadow_begin` - switch the pipeline to shadow-pass mode.
@@ -1932,7 +1958,8 @@ static void d3d11_shadow_begin(void *ctx_ptr,
     (void)depth_buf;
     if (!ctx || !ctx->frame_active || ctx->frame_submission_failed)
         return;
-    d3d11_leave_shadow_pass(ctx);
+    if (FAILED(d3d11_leave_shadow_pass(ctx)))
+        return;
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
         return;
     ctx->shadow_pass_slot = -1;
@@ -2195,7 +2222,8 @@ static void d3d11_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     if (!ctx || !ctx->frame_active)
         return;
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS || ctx->shadow_pass_slot != slot) {
-        d3d11_leave_shadow_pass(ctx);
+        if (FAILED(d3d11_leave_shadow_pass(ctx)))
+            ctx->frame_submission_failed = 1;
         d3d11_recompute_shadow_count(ctx);
         return;
     }
@@ -2204,7 +2232,11 @@ static void d3d11_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     ctx->shadow_bias = vgfx3d_d3d11_sanitize_shadow_bias(bias);
     ctx->shadow_pass_slot = -1;
     ctx->shadow_pass_failed = 0;
-    d3d11_select_current_targets(ctx);
+    if (FAILED(d3d11_select_current_targets(ctx))) {
+        ctx->shadow_slot_complete[slot] = 0;
+        d3d11_recompute_shadow_count(ctx);
+        ctx->frame_submission_failed = 1;
+    }
 }
 
 /// @brief Backend `shadow_reuse` op — re-arm a slot from its previous-frame depth texture.

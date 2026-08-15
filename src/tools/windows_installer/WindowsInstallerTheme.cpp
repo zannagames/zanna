@@ -5,15 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file WindowsInstallerTheme.cpp
-/// @brief Implements the native dark Zanna Games installer visual system.
-///
-/// Brand values remain RGB rather than @c COLORREF literals, while high-contrast rendering uses
-/// only Windows system colors and retains focus outlines. Painting restores selected GDI objects
-/// before deletion, and noexcept drawing helpers cannot unwind through Win32 callbacks.
-///
-/// InstallerThemeResources owns long-lived fonts and brushes. Painting functions release locally
-/// created pens and temporary brushes before returning.
+// File: src/tools/windows_installer/WindowsInstallerTheme.cpp
+// Purpose: Implement the Windows installer theme and checked native UI cleanup adapters.
+// Key invariants:
+//   - Brand colors stay RGB while high-contrast rendering uses Windows system colors.
+//   - Painting restores selected objects and reports every failed native resource retirement.
+// Ownership/Lifetime:
+//   - InstallerThemeResources owns long-lived fonts and brushes.
+//   - Painting helpers own and retire only their locally created GDI resources.
+// Links: WindowsInstallerTheme.hpp, WindowsInstallerWizard.cpp,
+//        WindowsInstallerBrandDialog.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,6 +26,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <cwchar>
 #include <iterator>
 #include <stdexcept>
@@ -32,6 +34,23 @@
 
 namespace zanna::installer {
 namespace {
+
+/// @brief Emit a bounded debugger diagnostic for a failed installer UI operation.
+/// @param operation Stable human-readable operation name.
+/// @param error Win32 error, normalized by the caller when an API leaves it unset.
+void reportInstallerUiFailure(const wchar_t *operation, DWORD error) noexcept {
+    wchar_t message[384]{};
+    const wchar_t *label = operation && *operation ? operation : L"Installer UI operation";
+    if (error == ERROR_SUCCESS)
+        error = ERROR_INVALID_FUNCTION;
+    if (swprintf_s(message,
+                   std::size(message),
+                   L"[zanna-installer] %ls failed (Win32 error %lu)\r\n",
+                   label,
+                   static_cast<unsigned long>(error)) > 0) {
+        OutputDebugStringW(message);
+    }
+}
 
 constexpr InstallerBrandPalette kPalette{
     0x0C1214,
@@ -114,12 +133,12 @@ bool fontFamilyAvailable(const wchar_t *face) noexcept {
     LOGFONTW candidate{};
     candidate.lfCharSet = DEFAULT_CHARSET;
     if (wcsncpy_s(candidate.lfFaceName, LF_FACESIZE, face, _TRUNCATE) != 0) {
-        ReleaseDC(nullptr, dc);
+        (void)releaseInstallerDc(nullptr, dc, L"Release installer font-enumeration DC");
         return false;
     }
     bool found = false;
     EnumFontFamiliesExW(dc, &candidate, noteFontFamily, reinterpret_cast<LPARAM>(&found), 0);
-    ReleaseDC(nullptr, dc);
+    (void)releaseInstallerDc(nullptr, dc, L"Release installer font-enumeration DC");
     return found;
 }
 
@@ -143,7 +162,7 @@ double relativeLuminance(uint32_t rgb) noexcept {
 /// @param font Handle slot to release and set to null.
 void deleteFont(HFONT &font) noexcept {
     if (font)
-        DeleteObject(font);
+        (void)deleteInstallerGdiObject(font, L"Delete installer font");
     font = nullptr;
 }
 
@@ -151,7 +170,7 @@ void deleteFont(HFONT &font) noexcept {
 /// @param brush Handle slot to release and set to null.
 void deleteBrush(HBRUSH &brush) noexcept {
     if (brush)
-        DeleteObject(brush);
+        (void)deleteInstallerGdiObject(brush, L"Delete installer brush");
     brush = nullptr;
 }
 
@@ -187,7 +206,7 @@ void drawCircuitField(HDC dc, const RECT &bounds, const InstallerThemeResources 
         const int node = scaled(3, theme.dpi());
         Ellipse(dc, bounds.left + inset - node, y - node, bounds.left + inset + node, y + node);
         SelectObject(dc, oldPen);
-        DeleteObject(pen);
+        (void)deleteInstallerGdiObject(pen, L"Delete installer circuit pen");
     }
 
     HPEN ringPen =
@@ -205,7 +224,7 @@ void drawCircuitField(HDC dc, const RECT &bounds, const InstallerThemeResources 
         Ellipse(dc, left + inner, top + inner, left + size - inner, top + size - inner);
         SelectObject(dc, oldBrush);
         SelectObject(dc, oldPen);
-        DeleteObject(ringPen);
+        (void)deleteInstallerGdiObject(ringPen, L"Delete installer circuit ring pen");
     }
     RestoreDC(dc, saved);
 }
@@ -235,6 +254,65 @@ void drawTextLine(HDC dc,
 }
 
 } // namespace
+
+bool deleteInstallerGdiObject(HGDIOBJ object, const wchar_t *operation) noexcept {
+    if (!object)
+        return true;
+    SetLastError(ERROR_SUCCESS);
+    if (DeleteObject(object))
+        return true;
+    reportInstallerUiFailure(operation, GetLastError());
+    return false;
+}
+
+bool releaseInstallerDc(HWND window, HDC dc, const wchar_t *operation) noexcept {
+    if (!dc)
+        return true;
+    SetLastError(ERROR_SUCCESS);
+    if (ReleaseDC(window, dc) == 1)
+        return true;
+    reportInstallerUiFailure(operation, GetLastError());
+    return false;
+}
+
+bool destroyInstallerWindow(HWND window, const wchar_t *operation) noexcept {
+    if (!window)
+        return true;
+    SetLastError(ERROR_SUCCESS);
+    if (DestroyWindow(window))
+        return true;
+    reportInstallerUiFailure(operation, GetLastError());
+    return false;
+}
+
+bool unlockInstallerGlobal(HGLOBAL memory, const wchar_t *operation) noexcept {
+    if (!memory)
+        return true;
+    SetLastError(ERROR_SUCCESS);
+    if (!GlobalUnlock(memory) && GetLastError() == ERROR_SUCCESS)
+        return true;
+    reportInstallerUiFailure(operation,
+                             GetLastError() == ERROR_SUCCESS ? ERROR_BUSY : GetLastError());
+    return false;
+}
+
+bool freeInstallerGlobal(HGLOBAL memory, const wchar_t *operation) noexcept {
+    if (!memory)
+        return true;
+    SetLastError(ERROR_SUCCESS);
+    if (!GlobalFree(memory))
+        return true;
+    reportInstallerUiFailure(operation, GetLastError());
+    return false;
+}
+
+bool closeInstallerClipboard(const wchar_t *operation) noexcept {
+    SetLastError(ERROR_SUCCESS);
+    if (CloseClipboard())
+        return true;
+    reportInstallerUiFailure(operation, GetLastError());
+    return false;
+}
 
 /// @brief Return the immutable canonical installer palette.
 /// @return Process-lifetime palette expressed as @c 0xRRGGBB values.
@@ -614,7 +692,7 @@ void drawInstallerBackdrop(HDC dc,
         HBRUSH brush = CreateSolidBrush(theme.accentColor(accents[index]));
         if (brush) {
             FillRect(dc, &segment, brush);
-            DeleteObject(brush);
+            (void)deleteInstallerGdiObject(brush, L"Delete installer brand-panel brush");
         }
     }
 
@@ -720,9 +798,9 @@ void drawInstallerBrandMark(HDC dc,
             SelectObject(dc, oldBrush);
         }
         if (pen)
-            DeleteObject(pen);
+            (void)deleteInstallerGdiObject(pen, L"Delete installer focus pen");
         if (brush)
-            DeleteObject(brush);
+            (void)deleteInstallerGdiObject(brush, L"Delete installer focus brush");
     }
     RestoreDC(dc, saved);
 }
@@ -761,9 +839,9 @@ void drawInstallerActionButton(const DRAWITEMSTRUCT &item,
         SelectObject(item.hDC, oldBrush);
     }
     if (borderPen)
-        DeleteObject(borderPen);
+        (void)deleteInstallerGdiObject(borderPen, L"Delete installer button border pen");
     if (fillBrush)
-        DeleteObject(fillBrush);
+        (void)deleteInstallerGdiObject(fillBrush, L"Delete installer button fill brush");
 
     RECT accentBounds = bounds;
     accentBounds.right = std::min(bounds.right, bounds.left + std::max(3, scaled(5, theme.dpi())));
@@ -772,7 +850,7 @@ void drawInstallerActionButton(const DRAWITEMSTRUCT &item,
     HBRUSH accentBrush = CreateSolidBrush(theme.accentColor(accent));
     if (accentBrush) {
         FillRect(item.hDC, &accentBounds, accentBrush);
-        DeleteObject(accentBrush);
+        (void)deleteInstallerGdiObject(accentBrush, L"Delete installer button accent brush");
     }
 
     wchar_t text[512]{};

@@ -323,6 +323,19 @@ int main() {
                wizardSource.find("if (!dc)") != std::string::npos &&
                themeSource.find("if (saved == 0)") != std::string::npos,
            "Installer paint paths fail safely when BeginPaint or SaveDC fails");
+    expect(themeSource.find("reportInstallerUiFailure") != std::string::npos &&
+               themeSource.find("deleteInstallerGdiObject") != std::string::npos &&
+               themeSource.find("releaseInstallerDc") != std::string::npos &&
+               themeSource.find("destroyInstallerWindow") != std::string::npos,
+           "Installer UI resources use common checked native cleanup adapters");
+    expect(brandSource.find("DeleteObject(") == std::string::npos &&
+               brandSource.find("DestroyWindow(") == std::string::npos,
+           "Branded installer windows do not discard GDI or window-destruction results");
+    expect(wizardSource.find("GlobalUnlock(") == std::string::npos &&
+               wizardSource.find("GlobalFree(") == std::string::npos &&
+               wizardSource.find("CloseClipboard(") == std::string::npos &&
+               wizardSource.find("DestroyWindow(") == std::string::npos,
+           "Installer options and clipboard paths use checked ownership transitions");
     expect(brandSource.find("PostQuitMessage(static_cast<int>(message.wParam))") !=
                    std::string::npos &&
                wizardSource.find("PostQuitMessage(static_cast<int>(message.wParam))") !=

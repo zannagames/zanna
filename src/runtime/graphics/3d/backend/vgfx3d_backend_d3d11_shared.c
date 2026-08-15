@@ -1820,7 +1820,35 @@ int vgfx3d_d3d11_draw_submission_is_ready(int8_t frame_active,
                                           int32_t target_width,
                                           int32_t target_height) {
     return frame_active && shadow_pass_slot < 0 && has_device_context && render_target_count > 0 &&
-           has_primary_render_target && target_width > 0 && target_height > 0;
+           render_target_count <= 2 && has_primary_render_target && target_width > 0 &&
+           target_height > 0;
+}
+
+/// @brief Validate the fixed two-entry render-target mirror before passing it to D3D11.
+/// @details A count above two would make `OMSetRenderTargets` read beyond the backend's
+///   `current_rtvs` array. A missing view or mismatched empty-state extent can otherwise leave
+///   the previous output/viewport active while the CPU mirror claims a different binding.
+/// @param[in] render_target_count Number of color views requested.
+/// @param[in] has_primary_render_target Whether slot zero is nonnull.
+/// @param[in] has_secondary_render_target Whether slot one is nonnull.
+/// @param[in] has_depth_target Whether a depth view accompanies the color binding.
+/// @param[in] target_width Tracked viewport width.
+/// @param[in] target_height Tracked viewport height.
+/// @return One for canonical empty state or a complete one/two-view state.
+int vgfx3d_d3d11_target_binding_is_usable(uint32_t render_target_count,
+                                          int has_primary_render_target,
+                                          int has_secondary_render_target,
+                                          int has_depth_target,
+                                          int32_t target_width,
+                                          int32_t target_height) {
+    if (render_target_count == 0)
+        return !has_primary_render_target && !has_secondary_render_target && !has_depth_target &&
+               target_width == 0 && target_height == 0;
+    if (render_target_count > 2 || !has_primary_render_target || target_width <= 0 ||
+        target_height <= 0) {
+        return 0;
+    }
+    return render_target_count == 2 ? has_secondary_render_target : !has_secondary_render_target;
 }
 
 /// @brief Pick the right render-target classification for the current draw context.

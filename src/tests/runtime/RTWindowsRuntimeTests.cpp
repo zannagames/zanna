@@ -554,9 +554,13 @@ static void test_windows_synchronization_source_contracts() {
     }
 
     const std::string parallel = read_source({"src", "runtime", "threads", "rt_parallel_ops.c"});
+    const std::string parallelCore = read_source({"src", "runtime", "threads", "rt_parallel.c"});
     assert(parallel.find("SetEvent(task->event)") == std::string::npos);
     assert(parallel.find("parallel_win_complete_one(task->remaining, task->event)") !=
            std::string::npos);
+    assert(parallel.find("CloseHandle(event)") == std::string::npos);
+    assert(parallel.find("parallel_win_close_event(event)") != std::string::npos);
+    assert(parallelCore.find("Parallel: completion event close failed") != std::string::npos);
 }
 
 static void test_windows_unicode_storage_source_contracts() {

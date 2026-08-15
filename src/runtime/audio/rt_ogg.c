@@ -217,7 +217,7 @@ static int ogg_read_page(ogg_reader_t *r, uint8_t **body_out, size_t *body_len_o
 
     if (r->page.version != 0)
         return 0;
-    if ((r->page.header_type & (uint8_t)~0x07u) != 0)
+    if ((r->page.header_type & UINT8_C(0xF8)) != 0)
         return 0;
     if ((r->page.header_type & 0x03u) == 0x03u)
         return 0;
