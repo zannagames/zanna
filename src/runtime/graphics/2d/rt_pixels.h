@@ -120,6 +120,9 @@ void rt_pixels_tint_luminance_masked(
 /// @param target_rgb Replacement color 0xRRGGBB.
 /// @param ref_rgb Reference color class 0xRRGGBB.
 /// @param tolerance Euclidean RGB radius of the class (full inside /2).
+void rt_pixels_tint_masked_neutral(
+    void *pixels, void *mask, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi,
+    int64_t neutral_max);
 void rt_pixels_recolor_masked(
     void *pixels, int64_t target_rgb, int64_t ref_rgb, int64_t tolerance);
 

@@ -258,6 +258,7 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-fliph"></a>`FlipH` | `obj()` | `Zanna.Graphics.Pixels.FlipH` |
 | <a id="zanna-graphics-pixels-tintluminancemasked"></a>`TintLuminanceMasked` | `void(i64,f64,i64,i64)` | `Zanna.Graphics.Pixels.TintLuminanceMasked` |
 | <a id="zanna-graphics-pixels-recolormasked"></a>`RecolorMasked` | `void(i64,i64,i64)` | `Zanna.Graphics.Pixels.RecolorMasked` |
+| <a id="zanna-graphics-pixels-tintmaskedneutral"></a>`TintMaskedNeutral` | `void(obj,i64,f64,i64,i64,i64)` | `Zanna.Graphics.Pixels.TintMaskedNeutral` |
 | <a id="zanna-graphics-pixels-flipv"></a>`FlipV` | `obj()` | `Zanna.Graphics.Pixels.FlipV` |
 | <a id="zanna-graphics-pixels-rotateclockwise"></a>`RotateClockwise` | `obj()` | `Zanna.Graphics.Pixels.RotateClockwise` |
 | <a id="zanna-graphics-pixels-rotatecounterclockwise"></a>`RotateCounterClockwise` | `obj()` | `Zanna.Graphics.Pixels.RotateCounterClockwise` |
@@ -1683,6 +1684,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.FlipH` | `obj(obj)` | `rt_pixels_flip_h` |
 | `Zanna.Graphics.Pixels.TintLuminanceMasked` | `void(obj,i64,f64,i64,i64)` | `rt_pixels_tint_luminance_masked` |
 | `Zanna.Graphics.Pixels.RecolorMasked` | `void(obj,i64,i64,i64)` | `rt_pixels_recolor_masked` |
+| `Zanna.Graphics.Pixels.TintMaskedNeutral` | `void(obj,obj,i64,f64,i64,i64,i64)` | `rt_pixels_tint_masked_neutral` |
 | `Zanna.Graphics.Pixels.FlipV` | `obj(obj)` | `rt_pixels_flip_v` |
 | `Zanna.Graphics.Pixels.RotateClockwise` | `obj(obj)` | `rt_pixels_rotate_cw` |
 | `Zanna.Graphics.Pixels.RotateCounterClockwise` | `obj(obj)` | `rt_pixels_rotate_ccw` |

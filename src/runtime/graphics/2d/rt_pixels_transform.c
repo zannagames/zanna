@@ -1375,6 +1375,98 @@ void rt_pixels_recolor_masked(
     pixels_touch(p);
 }
 
+/// @brief Luminance-band tint restricted to a coverage mask and to near-neutral
+///   texels. Same blend as rt_pixels_tint_luminance_masked, with two extra
+///   gates: the mask (any non-zero RGB at the scaled coordinate) must cover
+///   the texel, and the texel's channel spread (max-min) must not exceed
+///   @p neutral_max — white/grey fabric passes, skin does not. The mask may be
+///   any size; coordinates scale proportionally.
+/// @param pixels Borrowed Pixels handle mutated in place.
+/// @param mask Borrowed Pixels coverage mask (non-zero RGB = covered).
+/// @param rgb Packed 0xRRGGBB target color.
+/// @param strength Blend strength at full mask, clamped to [0, 1].
+/// @param lum_lo Luma at which the band begins (0..255).
+/// @param lum_hi Luma at which the band reaches full strength (> lum_lo).
+/// @param neutral_max Maximum channel spread (max-min) for a texel to qualify.
+void rt_pixels_tint_masked_neutral(
+    void *pixels, void *mask, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi,
+    int64_t neutral_max) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.TintMaskedNeutral: null pixels");
+    rt_pixels_impl *mk = rt_pixels_checked_impl(mask, "Pixels.TintMaskedNeutral: null mask");
+    int64_t tr;
+    int64_t tg;
+    int64_t tb;
+    if (!p || !p->data || !mk || !mk->data)
+        return;
+    if (mk->width <= 0 || mk->height <= 0)
+        return;
+    if (!isfinite(strength))
+        return;
+    if (strength < 0.0)
+        strength = 0.0;
+    if (strength > 1.0)
+        strength = 1.0;
+    if (lum_lo < 0)
+        lum_lo = 0;
+    if (lum_hi <= lum_lo)
+        lum_hi = lum_lo + 1;
+    if (neutral_max < 0)
+        neutral_max = 0;
+    tr = (rgb >> 16) & 0xFF;
+    tg = (rgb >> 8) & 0xFF;
+    tb = rgb & 0xFF;
+    for (int64_t y = 0; y < p->height; y++) {
+        int64_t my = y * mk->height / p->height;
+        for (int64_t x = 0; x < p->width; x++) {
+            int64_t mx = x * mk->width / p->width;
+            uint32_t mtex = mk->data[(size_t)my * (size_t)mk->width + (size_t)mx];
+            uint32_t texel;
+            int64_t pr;
+            int64_t pg;
+            int64_t pb;
+            uint32_t pa;
+            int64_t lum;
+            int64_t hi_c;
+            int64_t lo_c;
+            double a;
+            int64_t nr;
+            int64_t ng;
+            int64_t nb;
+            if ((mtex >> 8) == 0u) /* RGB all zero = uncovered */
+                continue;
+            texel = p->data[(size_t)y * (size_t)p->width + (size_t)x];
+            pr = (texel >> 24) & 0xFF;
+            pg = (texel >> 16) & 0xFF;
+            pb = (texel >> 8) & 0xFF;
+            pa = texel & 0xFF;
+            hi_c = pr;
+            lo_c = pr;
+            if (pg > hi_c)
+                hi_c = pg;
+            if (pb > hi_c)
+                hi_c = pb;
+            if (pg < lo_c)
+                lo_c = pg;
+            if (pb < lo_c)
+                lo_c = pb;
+            if (hi_c - lo_c > neutral_max)
+                continue;
+            lum = (pr * 77 + pg * 150 + pb * 29) / 256;
+            if (lum < lum_lo)
+                continue;
+            a = strength;
+            if (lum < lum_hi)
+                a = strength * (double)(lum - lum_lo) / (double)(lum_hi - lum_lo);
+            nr = (int64_t)((double)pr * (1.0 - a) + (double)tr * a);
+            ng = (int64_t)((double)pg * (1.0 - a) + (double)tg * a);
+            nb = (int64_t)((double)pb * (1.0 - a) + (double)tb * a);
+            p->data[(size_t)y * (size_t)p->width + (size_t)x] =
+                ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
+        }
+    }
+    pixels_touch(p);
+}
+
 void rt_pixels_tint_luminance_masked(
     void *pixels, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.TintLuminanceMasked: null pixels");

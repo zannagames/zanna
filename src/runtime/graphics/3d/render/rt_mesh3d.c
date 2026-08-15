@@ -1646,6 +1646,113 @@ void rt_mesh3d_recalc_normals(void *obj) {
     mesh3d_bump_vertex_revision(m, 1);
 }
 
+/// @brief Rasterize the UV footprint of triangles whose object-space Y sits inside
+///   [y_min, y_max] into a Pixels mask (opaque white texels; everything else untouched).
+/// @details Body-zone texture masking: a clothing region of a character atlas is
+///   identified by the bind-pose HEIGHT of the geometry that samples it, letting
+///   per-region recolors (jersey vs pants) work on atlases whose colors alone
+///   cannot be separated. UVs map to texels exactly like the samplers do
+///   (u * width, v * height, repeat-wrapped); a triangle is included only when
+///   all three vertices sit inside the Y band. The mask must be an ordinary
+///   Pixels object; it is mutated in place.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param mask_pixels Pixels handle receiving the coverage (any size).
+/// @param y_min Inclusive lower object-space Y bound.
+/// @param y_max Inclusive upper object-space Y bound.
+void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, double y_max) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    int64_t w;
+    int64_t h;
+    uint32_t vertex_count;
+    uint32_t index_count;
+    if (!m || !mask_pixels)
+        return;
+    w = rt_pixels_width(mask_pixels);
+    h = rt_pixels_height(mask_pixels);
+    if (w <= 0 || h <= 0)
+        return;
+    rt_mesh3d_repair_geometry_counts(m);
+    vertex_count = rt_mesh3d_safe_vertex_count(m);
+    index_count = rt_mesh3d_safe_index_count(m);
+    for (uint32_t i = 0; i + 2 < index_count; i += 3) {
+        uint32_t i0 = m->indices[i], i1 = m->indices[i + 1], i2 = m->indices[i + 2];
+        double ax, ay, bx, by, cx, cy;
+        double min_x, max_x, min_y, max_y;
+        double area;
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
+            continue;
+        if (m->vertices[i0].pos[1] < y_min || m->vertices[i0].pos[1] > y_max ||
+            m->vertices[i1].pos[1] < y_min || m->vertices[i1].pos[1] > y_max ||
+            m->vertices[i2].pos[1] < y_min || m->vertices[i2].pos[1] > y_max)
+            continue;
+        /* Repeat-wrap each UV into [0,1) (the atlases in scope never span the
+         * seam), then scale onto the texel grid. */
+        ax = ((double)m->vertices[i0].uv[0] - floor((double)m->vertices[i0].uv[0])) * (double)w;
+        ay = ((double)m->vertices[i0].uv[1] - floor((double)m->vertices[i0].uv[1])) * (double)h;
+        bx = ((double)m->vertices[i1].uv[0] - floor((double)m->vertices[i1].uv[0])) * (double)w;
+        by = ((double)m->vertices[i1].uv[1] - floor((double)m->vertices[i1].uv[1])) * (double)h;
+        cx = ((double)m->vertices[i2].uv[0] - floor((double)m->vertices[i2].uv[0])) * (double)w;
+        cy = ((double)m->vertices[i2].uv[1] - floor((double)m->vertices[i2].uv[1])) * (double)h;
+        if (!isfinite(ax) || !isfinite(ay) || !isfinite(bx) || !isfinite(by) || !isfinite(cx) ||
+            !isfinite(cy))
+            continue;
+        min_x = ax;
+        max_x = ax;
+        min_y = ay;
+        max_y = ay;
+        if (bx < min_x)
+            min_x = bx;
+        if (bx > max_x)
+            max_x = bx;
+        if (cx < min_x)
+            min_x = cx;
+        if (cx > max_x)
+            max_x = cx;
+        if (by < min_y)
+            min_y = by;
+        if (by > max_y)
+            max_y = by;
+        if (cy < min_y)
+            min_y = cy;
+        if (cy > max_y)
+            max_y = cy;
+        area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (!isfinite(area) || (area > -1e-9 && area < 1e-9))
+            continue;
+        {
+            int64_t x_lo = (int64_t)floor(min_x);
+            int64_t x_hi = (int64_t)ceil(max_x);
+            int64_t y_lo = (int64_t)floor(min_y);
+            int64_t y_hi = (int64_t)ceil(max_y);
+            if (x_lo < 0)
+                x_lo = 0;
+            if (y_lo < 0)
+                y_lo = 0;
+            if (x_hi > w - 1)
+                x_hi = w - 1;
+            if (y_hi > h - 1)
+                y_hi = h - 1;
+            for (int64_t py = y_lo; py <= y_hi; py++) {
+                for (int64_t px = x_lo; px <= x_hi; px++) {
+                    double sx = (double)px + 0.5;
+                    double sy = (double)py + 0.5;
+                    double w0 = (bx - ax) * (sy - ay) - (by - ay) * (sx - ax);
+                    double w1 = (cx - bx) * (sy - by) - (cy - by) * (sx - bx);
+                    double w2 = (ax - cx) * (sy - cy) - (ay - cy) * (sx - cx);
+                    if (area > 0.0) {
+                        if (w0 < 0.0 || w1 < 0.0 || w2 < 0.0)
+                            continue;
+                    } else {
+                        if (w0 > 0.0 || w1 > 0.0 || w2 > 0.0)
+                            continue;
+                    }
+                    rt_pixels_set_rgba(mask_pixels, px, py, (int64_t)0xFFFFFFFFu);
+                }
+            }
+        }
+    }
+}
+
 /// @brief Compute per-vertex normals from the mesh's triangle faces when the source provided
 ///   none, accumulating area-weighted face normals and normalizing. Traps on accumulator
 ///   allocation overflow.

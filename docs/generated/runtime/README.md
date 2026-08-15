@@ -20,9 +20,9 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Game](game.md) | 52 | 781 |
 | [Game2D](game2d.md) | 1 | 143 |
 | [Game3D](game3d.md) | 61 | 816 |
-| [Graphics](graphics.md) | 48 | 581 |
+| [Graphics](graphics.md) | 48 | 582 |
 | [Graphics2D](graphics2d.md) | 4 | 109 |
-| [Graphics3D](graphics3d.md) | 70 | 1426 |
+| [Graphics3D](graphics3d.md) | 70 | 1427 |
 | [IO](io.md) | 16 | 233 |
 | [Input](input.md) | 7 | 265 |
 | [Localization](localization.md) | 10 | 121 |

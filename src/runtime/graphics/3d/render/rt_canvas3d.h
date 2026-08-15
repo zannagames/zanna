@@ -998,6 +998,13 @@ int rt_mesh3d_triangle_indices_valid(void *obj, int64_t v0, int64_t v1, int64_t 
 /// @brief Recompute smooth per-vertex normals from triangle face normals (overwrites existing).
 /// @param obj Borrowed mutable Mesh3D handle.
 void rt_mesh3d_recalc_normals(void *obj);
+/// @brief Rasterize the UV footprint of triangles inside an object-space Y band into a
+///   Pixels mask (opaque white; untouched elsewhere) — body-zone texture masking.
+/// @param obj Borrowed Mesh3D handle.
+/// @param mask_pixels Borrowed mutable Pixels handle receiving the coverage.
+/// @param y_min Inclusive lower object-space Y bound.
+/// @param y_max Inclusive upper object-space Y bound.
+void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, double y_max);
 /// @brief Deep copy the mesh (independent storage; safe to mutate the clone).
 /// @param obj Borrowed source Mesh3D handle.
 /// @return New independent GC-managed Mesh3D, or NULL on invalid input or allocation failure.

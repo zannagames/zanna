@@ -44,11 +44,13 @@ namespace {
  * Animation3D.Mirror (2026-08-07, ADR 0243 L/R clip mirroring):
  * +1 function / +1 method.
  * World3D.ClearFog (2026-08-13, ADR 0248 fog argument-order alignment):
- * +1 function / +1 method. */
-constexpr std::size_t kExpectedFunctionCount = 2242;
+ * +1 function / +1 method.
+ * Mesh3D.RasterizeUvMaskY (2026-08-15, body-zone texture masking for
+ * per-region character recolors): +1 function / +1 method. */
+constexpr std::size_t kExpectedFunctionCount = 2243;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 821;
-constexpr std::size_t kExpectedMethodCount = 1208;
+constexpr std::size_t kExpectedMethodCount = 1209;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -238,8 +240,11 @@ int main() {
      * mirroring).
      * Rehashed 2026-08-13: World3D.ClearFog added and World3D.SetFog's
      * parameter meaning realigned to Canvas3D's (near, far, r, g, b) —
-     * ADR 0248 / ZB-22. */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x59b5c22a2933fa48);
+     * ADR 0248 / ZB-22.
+     * Rehashed 2026-08-15: Mesh3D.RasterizeUvMaskY added (bind-pose
+     * Y-band UV coverage into a Pixels mask — body-zone texture masking
+     * for per-region character recolors, plan 55 uniforms). */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x9f0db4b0aa954463);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

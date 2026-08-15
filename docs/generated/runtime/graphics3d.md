@@ -327,6 +327,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-addtriangle"></a>`AddTriangle` | `void(i64,i64,i64)` | `Zanna.Graphics3D.Mesh3D.AddTriangle` |
 | <a id="zanna-graphics3d-mesh3d-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.Mesh3D.Clear` |
 | <a id="zanna-graphics3d-mesh3d-recalculatenormals"></a>`RecalculateNormals` | `void()` | `Zanna.Graphics3D.Mesh3D.RecalculateNormals` |
+| <a id="zanna-graphics3d-mesh3d-rasterizeuvmasky"></a>`RasterizeUvMaskY` | `void(obj,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvMaskY` |
 | <a id="zanna-graphics3d-mesh3d-clone"></a>`Clone` | `obj()` | `Zanna.Graphics3D.Mesh3D.Clone` |
 | <a id="zanna-graphics3d-mesh3d-transform"></a>`Transform` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.Transform` |
 | <a id="zanna-graphics3d-mesh3d-releasecpuscratch"></a>`ReleaseCpuScratch` | `i64()` | `Zanna.Graphics3D.Mesh3D.ReleaseCpuScratch` |
@@ -2918,6 +2919,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.AddTriangle` | `void(obj,i64,i64,i64)` | `rt_mesh3d_add_triangle` |
 | `Zanna.Graphics3D.Mesh3D.Clear` | `void(obj)` | `rt_mesh3d_clear` |
 | `Zanna.Graphics3D.Mesh3D.RecalculateNormals` | `void(obj)` | `rt_mesh3d_recalc_normals` |
+| `Zanna.Graphics3D.Mesh3D.RasterizeUvMaskY` | `void(obj,obj,f64,f64)` | `rt_mesh3d_rasterize_uv_mask_y` |
 | `Zanna.Graphics3D.Mesh3D.Clone` | `obj(obj)` | `rt_mesh3d_clone` |
 | `Zanna.Graphics3D.Mesh3D.Transform` | `void(obj,obj)` | `rt_mesh3d_transform` |
 | `Zanna.Graphics3D.Camera3D.New` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new` |
