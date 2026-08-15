@@ -6376,38 +6376,6 @@ static void test_model3d_missing_fbx_returns_null_without_trap() {
                 "SceneAsset.Load records an error for missing FBX files");
 }
 
-static void test_model3d_loads_demo_fbx_textures() {
-    const char *path = find_existing_path({
-#ifdef ZANNA_SOURCE_DIR
-        ZANNA_SOURCE_DIR "/examples/games/3dbaseball/model.fbx",
-#endif
-        "examples/games/3dbaseball/model.fbx",
-        "../examples/games/3dbaseball/model.fbx"});
-    if (!path) {
-        skip_test("3dbaseball FBX fixture is not present in this checkout");
-        return;
-    }
-
-    void *model = rt_model3d_load(rt_const_cstr(path));
-    EXPECT_TRUE(model != nullptr, "SceneAsset.Load parses the 3dbaseball FBX asset");
-    if (!model)
-        return;
-
-    bool saw_textured_material = false;
-    int64_t material_count = rt_model3d_get_material_count(model);
-    for (int64_t i = 0; i < material_count; i++) {
-        auto *mat = static_cast<rt_material3d *>(rt_model3d_get_material(model, i));
-        if (mat && mat->texture) {
-            saw_textured_material = true;
-            break;
-        }
-    }
-
-    EXPECT_TRUE(
-        saw_textured_material,
-        "FBX imports preserve demo diffuse textures when texture files sit beside the asset");
-}
-
 static void mesh_position_bounds(rt_mesh3d *mesh, float out_min[3], float out_max[3]) {
     for (int a = 0; a < 3; a++) {
         out_min[a] = 0.0f;
@@ -10283,7 +10251,6 @@ int main() {
     test_fbx_imports_progressive_morph_fidelity_and_animation();
     test_model3d_rejects_truncated_fbx();
     test_model3d_missing_fbx_returns_null_without_trap();
-    test_model3d_loads_demo_fbx_textures();
     test_gltf_rejects_unknown_animation_interpolation();
     test_gltf_rejects_oversized_node_animation_key_count_before_scan();
     test_gltf_rejects_oversized_morph_weight_animation_width();

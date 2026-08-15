@@ -112,9 +112,6 @@ lcov.info
 **/build/test-out/
 /src/zannastudio/bin/
 *.s
-# Baseball franchise shell save root (created on first interactive run).
-baseball_saves/
-
 # --- Code mapping / analysis temp files ---
 .all_code_files.txt
 all_code_files.txt

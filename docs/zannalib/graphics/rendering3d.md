@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-10
+last-verified: 2026-08-14
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -36,7 +36,10 @@ diagnostics on `Zanna.Graphics3D.AssetDiagnostics3D`. Successful partial
 degradation, such as an OBJ material whose albedo texture is missing, returns
 the loaded asset and records warnings.
 
-Warnings are per outer load, append-only, and capped. Use
+Warnings accumulate per outer load and are capped. The first 16 warnings are
+initially visible. If more arrive, the first 15 remain stable and slot 15
+becomes an `N more suppressed` summary; the suppressed count includes the
+displaced sixteenth warning. Use
 `AssetDiagnostics3D.LoadWarningCount`, `AssetDiagnostics3D.GetLoadWarning(index)`, or
 `AssetDiagnostics3D.GetLoadWarnings()` to inspect partial degradation.
 
@@ -44,9 +47,12 @@ Warnings are per outer load, append-only, and capped. Use
 document: structured counters plus the warning strings, e.g.
 `{"skippedPrimitives":1,"truncatedInfluenceVertices":0,"outOfRangeJointVertices":0,`
 `"ignoredExtensions":0,"bakedCubicSplineChannels":0,"suppressedWarnings":0,"warnings":[...]}`.
-Counters cover primitives skipped for unsupported modes, vertices whose bone
-influences were truncated or referenced out-of-range joints, optional extensions
-the loader ignored, and skeletal CUBICSPLINE channels baked to sampled keys.
+The report is always emitted as one complete strict-JSON document, even when
+every warning byte needs escaping. Valid UTF-8 is preserved; malformed warning
+bytes are represented with `\u00xx` escapes. Counters cover primitives skipped
+for unsupported modes, vertices whose bone influences were truncated or
+referenced out-of-range joints, optional extensions the loader ignored, and
+skeletal CUBICSPLINE channels baked to sampled keys.
 
 | Loader | Content failure behavior | Partial degradation |
 |--------|--------------------------|---------------------|
@@ -163,8 +169,19 @@ Plain `.gltf` input is length-aware and rejects embedded NUL bytes. Synchronous
 and preload `.glb` loads use the same bounded GLB 2.0 chunk iterator, so missing
 JSON/BIN chunks, invalid order, truncated payloads, and trailing bytes fail the
 same way. Recognized integer and boolean-like fields require one complete exact
-JSON token; malformed array separators invalidate the containing object rather
-than returning a parsed prefix.
+JSON token and the schema-appropriate JSON type. The raw scanner accepts only
+the four JSON whitespace bytes and well-formed UTF-8 scalar encodings; malformed
+continuations, overlong encodings, surrogate encodings, and out-of-range code
+points fail the load. Escaped surrogate pairs are validated. A decoded U+0000
+cannot be returned through a C-string-backed field.
+
+Container lookup is transactional: malformed object/array suffixes invalidate
+an earlier candidate instead of exposing a valid prefix, exact caller-supplied
+ranges cannot be escaped, and duplicate queried object keys are rejected as
+ambiguous. Root definition arrays, scene index arrays, attribute maps,
+morph-target maps, and recognized extension payloads retain their distinct
+schema types; valid sparse-accessor `indices`, animation `target`,
+`KHR_materials_variants`, and `EXT_meshopt_compression` forms remain accepted.
 
 Each imported texture slot preserves wrap plus independent minification,
 magnification, and mip-filter axes through Canvas3D and every backend. UV0 and

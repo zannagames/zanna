@@ -1283,6 +1283,98 @@ void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height) {
 /// @param strength Blend strength at full mask, clamped to [0, 1].
 /// @param lum_lo Luma at which the mask begins (0..255).
 /// @param lum_hi Luma at which the mask reaches full strength (> lum_lo).
+/// Recolor texels whose color sits within `tolerance` (Euclidean RGB
+/// distance) of `ref_rgb` toward `target_rgb`, preserving each texel's
+/// own luminance relative to the reference — a shaded navy jersey
+/// becomes a shaded club-color jersey, not a flat decal. Distance alone
+/// cannot separate a dark color class from black/brown neighbors, so a
+/// texel must also share the reference's chroma direction: its
+/// ref-dominant channel must exceed its ref-weakest channel by at least
+/// 6 (skipped for near-neutral references). The mask holds full
+/// strength inside tolerance/2 and ramps to zero at tolerance so
+/// UV-island edges blend. Alpha untouched.
+void rt_pixels_recolor_masked(
+    void *pixels, int64_t target_rgb, int64_t ref_rgb, int64_t tolerance) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.RecolorMasked: null pixels");
+    int64_t count;
+    if (!p || !p->data)
+        return;
+    if (tolerance < 1)
+        tolerance = 1;
+    {
+        const int64_t rr = (ref_rgb >> 16) & 0xFF;
+        const int64_t rg = (ref_rgb >> 8) & 0xFF;
+        const int64_t rb = ref_rgb & 0xFF;
+        const int64_t tr = (target_rgb >> 16) & 0xFF;
+        const int64_t tg = (target_rgb >> 8) & 0xFF;
+        const int64_t tb = target_rgb & 0xFF;
+        int64_t ref_lum = (rr * 77 + rg * 150 + rb * 29) / 256;
+        const int64_t tol2 = tolerance * tolerance;
+        const int64_t inner2 = (tolerance / 2) * (tolerance / 2);
+        /* Chroma-direction gate: channel index 0=R 1=G 2=B of the
+           reference's strongest and weakest channels. */
+        int dom = 0;
+        int weak = 0;
+        {
+            const int64_t rc[3] = {rr, rg, rb};
+            for (int c = 1; c < 3; c++) {
+                if (rc[c] > rc[dom])
+                    dom = c;
+                if (rc[c] < rc[weak])
+                    weak = c;
+            }
+            if (rc[dom] - rc[weak] < 6)
+                dom = weak; /* near-neutral ref: gate disabled */
+        }
+        if (ref_lum < 1)
+            ref_lum = 1;
+        count = p->width * p->height;
+        for (int64_t i = 0; i < count; i++) {
+            uint32_t texel = p->data[i]; /* raw 0xRRGGBBAA */
+            int64_t pr = (texel >> 24) & 0xFF;
+            int64_t pg = (texel >> 16) & 0xFF;
+            int64_t pb = (texel >> 8) & 0xFF;
+            uint32_t pa = texel & 0xFF;
+            int64_t dr = pr - rr;
+            int64_t dg = pg - rg;
+            int64_t db = pb - rb;
+            int64_t dist2 = dr * dr + dg * dg + db * db;
+            double a;
+            double shade;
+            int64_t lum;
+            int64_t nr;
+            int64_t ng;
+            int64_t nb;
+            if (dist2 > tol2)
+                continue;
+            if (dom != weak) {
+                const int64_t pc[3] = {pr, pg, pb};
+                if (pc[dom] < pc[weak] + 6)
+                    continue;
+            }
+            a = 1.0;
+            if (dist2 > inner2 && tol2 > inner2)
+                a = (double)(tol2 - dist2) / (double)(tol2 - inner2);
+            lum = (pr * 77 + pg * 150 + pb * 29) / 256;
+            shade = (double)lum / (double)ref_lum;
+            if (shade > 1.5)
+                shade = 1.5;
+            nr = (int64_t)((double)pr * (1.0 - a) + (double)tr * shade * a);
+            ng = (int64_t)((double)pg * (1.0 - a) + (double)tg * shade * a);
+            nb = (int64_t)((double)pb * (1.0 - a) + (double)tb * shade * a);
+            if (nr > 255)
+                nr = 255;
+            if (ng > 255)
+                ng = 255;
+            if (nb > 255)
+                nb = 255;
+            p->data[i] = ((uint32_t)nr << 24) | ((uint32_t)ng << 16) |
+                         ((uint32_t)nb << 8) | pa;
+        }
+    }
+    pixels_touch(p);
+}
+
 void rt_pixels_tint_luminance_masked(
     void *pixels, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.TintLuminanceMasked: null pixels");

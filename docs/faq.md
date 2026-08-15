@@ -91,9 +91,9 @@ ilrun program.il
 
 - `games/xenoscape/` - Ten-region action Metroidvania
 - `games/ashfall/` - Nine-mission sci-fi FPS campaign
-- `games/3dbowling/`, `games/ridgebound/`, `games/3dbaseball/`, `games/3dscene/` - 3D games over `Zanna.Game3D` / `Zanna.Graphics3D`
+- `games/3dbowling/`, `games/ridgebound/`, `games/3dscene/` - 3D games over `Zanna.Game3D` / `Zanna.Graphics3D`
 - `games/xenoscape-scenes/`, `games/ashfall-scenes/` - The same games with regions authored as `.scene2d` / `.scene3d` documents instead of code
-- `games/frogger/`, `games/centipede/`, `games/pacman-basic/`, `games/baseball/` and more
+- `games/frogger/`, `games/centipede/`, `games/pacman-basic/` and more
 - `apps/zannasql/`, `apps/webserver/`, `apps/telnet/`, `sqldb-basic/` - Larger applications
 
 ### 7. What platforms does Zanna support?

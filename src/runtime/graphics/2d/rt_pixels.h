@@ -115,6 +115,14 @@ void rt_pixels_set_color(void *pixels, int64_t x, int64_t y, int64_t color);
 void rt_pixels_tint_luminance_masked(
     void *pixels, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi);
 
+/// @brief Recolor texels near a reference color toward a target color,
+///        preserving per-texel shading (see rt_pixels_transform.c).
+/// @param target_rgb Replacement color 0xRRGGBB.
+/// @param ref_rgb Reference color class 0xRRGGBB.
+/// @param tolerance Euclidean RGB radius of the class (full inside /2).
+void rt_pixels_recolor_masked(
+    void *pixels, int64_t target_rgb, int64_t ref_rgb, int64_t tolerance);
+
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.

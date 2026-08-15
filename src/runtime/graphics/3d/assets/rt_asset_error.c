@@ -45,6 +45,9 @@
 /// Capacity of the newline-joined warning and base report storage.
 #define RT_ASSET_WARNING_JOINED_CAP                                                                \
     ((RT_ASSET_WARNING_CAP * (RT_ASSET_WARNING_MESSAGE_CAP + 1)) + 64)
+/// Capacity proven sufficient for the fixed report plus worst-case `\u00xx` warning escaping.
+#define RT_ASSET_IMPORT_REPORT_CAP                                                                 \
+    ((RT_ASSET_WARNING_CAP * (((RT_ASSET_WARNING_MESSAGE_CAP - 1) * 6) + 3)) + 2048)
 
 /// Last recoverable asset error code for the current thread.
 static RT_THREAD_LOCAL rt_asset_error_code g_asset_error_code = RT_ASSET_ERROR_NONE;
@@ -58,10 +61,10 @@ static RT_THREAD_LOCAL char g_asset_warnings[RT_ASSET_WARNING_CAP][RT_ASSET_WARN
 static RT_THREAD_LOCAL int g_asset_warning_truncated[RT_ASSET_WARNING_CAP];
 /// Number of currently visible warning slots.
 static RT_THREAD_LOCAL int64_t g_asset_warning_count = 0;
-/// Number of warnings received after the visible table filled.
+/// Number of warnings hidden by the summary slot, including the displaced final visible warning.
 static RT_THREAD_LOCAL int64_t g_asset_warning_suppressed = 0;
 /// Nesting depth of asset loaders participating in the current transaction.
-static RT_THREAD_LOCAL int32_t g_asset_load_depth = 0;
+static RT_THREAD_LOCAL uint64_t g_asset_load_depth = 0;
 /// Saturating import-quality counters indexed by `rt_asset_import_stat`.
 static RT_THREAD_LOCAL int64_t g_asset_import_stats[RT_ASSET_IMPORT_STAT_COUNT];
 
@@ -94,6 +97,17 @@ static int asset_error_vformat(char *dst, size_t dst_cap, const char *fmt, va_li
     written = vsnprintf(dst, dst_cap, fmt, ap);
     dst[dst_cap - 1] = '\0';
     return written < 0 || (size_t)written >= dst_cap;
+}
+
+/// @brief Map arbitrary integer-backed enum values to the public diagnostic code domain.
+/// @param code Caller-supplied error classification.
+/// @return @p code when canonical, `NONE` unchanged, or `CORRUPT` for an invalid value.
+static rt_asset_error_code asset_error_normalize_code(rt_asset_error_code code) {
+    if (code == RT_ASSET_ERROR_NONE)
+        return RT_ASSET_ERROR_NONE;
+    if (code < RT_ASSET_ERROR_NOT_FOUND || code > RT_ASSET_ERROR_TOO_LARGE)
+        return RT_ASSET_ERROR_CORRUPT;
+    return code;
 }
 
 /// @brief Clear only the current thread's last error.
@@ -149,11 +163,10 @@ int64_t rt_asset_error_get_import_stat(rt_asset_import_stat stat) {
 /// @details Entering at depth zero clears all diagnostics and counters. Nested
 /// loaders share the outer transaction's thread-local state.
 int rt_asset_error_begin_load(void) {
-    if (g_asset_load_depth <= 0) {
-        g_asset_load_depth = 0;
+    if (g_asset_load_depth == 0)
         rt_asset_error_clear();
-    }
-    g_asset_load_depth++;
+    if (g_asset_load_depth != UINT64_MAX)
+        g_asset_load_depth++;
     return g_asset_load_depth == 1;
 }
 
@@ -162,8 +175,9 @@ int rt_asset_error_begin_load(void) {
 /// last error is cleared while warnings and import statistics remain available
 /// for inspection.
 void rt_asset_error_end_load_success(void) {
-    if (g_asset_load_depth > 0)
-        g_asset_load_depth--;
+    if (g_asset_load_depth == 0)
+        return;
+    g_asset_load_depth--;
     if (g_asset_load_depth == 0)
         rt_asset_error_clear_error();
 }
@@ -183,6 +197,11 @@ void rt_asset_error_end_load_failure(void) {
 /// truncation flag records formatting failure or insufficient capacity.
 void rt_asset_error_set(rt_asset_error_code code, const char *message) {
     int written;
+    code = asset_error_normalize_code(code);
+    if (code == RT_ASSET_ERROR_NONE) {
+        rt_asset_error_clear_error();
+        return;
+    }
     g_asset_error_code = code;
     written = snprintf(
         g_asset_error_message, sizeof(g_asset_error_message), "%s", message ? message : "");
@@ -199,6 +218,11 @@ void rt_asset_error_set(rt_asset_error_code code, const char *message) {
 /// retained alongside the code.
 void rt_asset_error_setf(rt_asset_error_code code, const char *fmt, ...) {
     va_list ap;
+    code = asset_error_normalize_code(code);
+    if (code == RT_ASSET_ERROR_NONE) {
+        rt_asset_error_clear_error();
+        return;
+    }
     g_asset_error_code = code;
     va_start(ap, fmt);
     g_asset_error_message_truncated =
@@ -224,6 +248,11 @@ void rt_asset_error_setf_if_empty(rt_asset_error_code code, const char *fmt, ...
     va_list ap;
     if (g_asset_error_code != RT_ASSET_ERROR_NONE)
         return;
+    code = asset_error_normalize_code(code);
+    if (code == RT_ASSET_ERROR_NONE) {
+        rt_asset_error_clear_error();
+        return;
+    }
     g_asset_error_code = code;
     va_start(ap, fmt);
     g_asset_error_message_truncated =
@@ -245,12 +274,10 @@ const char *rt_asset_error_get_message(void) {
     return g_asset_error_message;
 }
 
-/// @brief Append one warning to the current thread's bounded warning list.
+/// @brief Append one warning while preserving any truncation from an earlier formatting stage.
 /// @param[in] message Null-terminated warning text, or `NULL` for empty text.
-/// @details The first 16 warnings occupy visible slots. Each later warning
-/// increments the suppression count and replaces the last visible slot with a
-/// cumulative `"N more suppressed"` summary.
-void rt_asset_error_add_warning(const char *message) {
+/// @param[in] source_truncated Nonzero when @p message was already truncated before this copy.
+static void asset_error_add_warning_impl(const char *message, int source_truncated) {
     if (g_asset_warning_count < RT_ASSET_WARNING_CAP) {
         int written = snprintf(g_asset_warnings[g_asset_warning_count],
                                RT_ASSET_WARNING_MESSAGE_CAP,
@@ -258,11 +285,14 @@ void rt_asset_error_add_warning(const char *message) {
                                message ? message : "");
         g_asset_warnings[g_asset_warning_count][RT_ASSET_WARNING_MESSAGE_CAP - 1] = '\0';
         g_asset_warning_truncated[g_asset_warning_count] =
-            written < 0 || (size_t)written >= RT_ASSET_WARNING_MESSAGE_CAP;
+            source_truncated || written < 0 || (size_t)written >= RT_ASSET_WARNING_MESSAGE_CAP;
         g_asset_warning_count++;
         return;
     }
-    g_asset_warning_suppressed++;
+    if (g_asset_warning_suppressed == 0)
+        g_asset_warning_suppressed = 2;
+    else if (g_asset_warning_suppressed < INT64_MAX)
+        g_asset_warning_suppressed++;
     int written = snprintf(g_asset_warnings[RT_ASSET_WARNING_CAP - 1],
                            RT_ASSET_WARNING_MESSAGE_CAP,
                            "%lld more suppressed",
@@ -272,6 +302,14 @@ void rt_asset_error_add_warning(const char *message) {
         written < 0 || (size_t)written >= RT_ASSET_WARNING_MESSAGE_CAP;
 }
 
+/// @brief Append one warning to the current thread's bounded warning list.
+/// @param[in] message Null-terminated warning text, or `NULL` for empty text.
+/// @details The first 16 warnings occupy visible slots. On overflow, the last actual warning is
+///          displaced by a cumulative summary and counted together with each incoming warning.
+void rt_asset_error_add_warning(const char *message) {
+    asset_error_add_warning_impl(message, 0);
+}
+
 /// @brief Format and append one warning.
 /// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
 /// @param[in] ... Values referenced by `fmt`.
@@ -279,11 +317,12 @@ void rt_asset_error_add_warning(const char *message) {
 /// which the bounded result follows the ordinary warning insertion policy.
 void rt_asset_error_add_warningf(const char *fmt, ...) {
     char message[RT_ASSET_WARNING_MESSAGE_CAP];
+    int truncated;
     va_list ap;
     va_start(ap, fmt);
-    (void)asset_error_vformat(message, sizeof(message), fmt, ap);
+    truncated = asset_error_vformat(message, sizeof(message), fmt, ap);
     va_end(ap);
-    rt_asset_error_add_warning(message);
+    asset_error_add_warning_impl(message, truncated);
 }
 
 /// @brief Read the number of visible current-thread warning slots.
@@ -390,15 +429,59 @@ rt_string rt_assets3d_get_load_warnings(void) {
 /// @param[in] text Null-terminated text, or `NULL` for no bytes.
 /// @details Text beyond the remaining capacity is silently truncated while the
 /// destination remains null-terminated.
-static void asset_report_append(char *dst, size_t cap, size_t *used, const char *text) {
-    size_t len = text ? strlen(text) : 0;
-    if (*used >= cap - 1)
+static void asset_report_append_bytes(
+    char *dst, size_t cap, size_t *used, const char *text, size_t len) {
+    if (!dst || !used || cap == 0 || *used >= cap || !text || len == 0)
         return;
     if (len > cap - 1 - *used)
         len = cap - 1 - *used;
     memcpy(dst + *used, text, len);
     *used += len;
     dst[*used] = '\0';
+}
+
+/// @brief Append null-terminated text to a bounded report buffer.
+/// @param[in,out] dst Null-terminated destination buffer.
+/// @param[in] cap Total destination capacity including the null terminator.
+/// @param[in,out] used Number of bytes currently written, updated on return.
+/// @param[in] text Null-terminated text, or `NULL` for no bytes.
+static void asset_report_append(char *dst, size_t cap, size_t *used, const char *text) {
+    asset_report_append_bytes(dst, cap, used, text, text ? strlen(text) : 0u);
+}
+
+/// @brief Validate one UTF-8 scalar in a null-terminated warning byte span.
+/// @param text Source warning bytes.
+/// @param len Exact remaining source byte count.
+/// @return Encoded byte length from two through four, or zero for malformed UTF-8.
+static size_t asset_report_utf8_sequence_length(const unsigned char *text, size_t len) {
+    unsigned char b0;
+    unsigned char b1;
+    if (!text || len == 0)
+        return 0u;
+    b0 = text[0];
+    if (b0 >= 0xC2u && b0 <= 0xDFu)
+        return len >= 2u && text[1] >= 0x80u && text[1] <= 0xBFu ? 2u : 0u;
+    if (b0 >= 0xE0u && b0 <= 0xEFu) {
+        if (len < 3u || text[2] < 0x80u || text[2] > 0xBFu)
+            return 0u;
+        b1 = text[1];
+        if (b0 == 0xE0u)
+            return b1 >= 0xA0u && b1 <= 0xBFu ? 3u : 0u;
+        if (b0 == 0xEDu)
+            return b1 >= 0x80u && b1 <= 0x9Fu ? 3u : 0u;
+        return b1 >= 0x80u && b1 <= 0xBFu ? 3u : 0u;
+    }
+    if (b0 >= 0xF0u && b0 <= 0xF4u) {
+        if (len < 4u || text[2] < 0x80u || text[2] > 0xBFu || text[3] < 0x80u || text[3] > 0xBFu)
+            return 0u;
+        b1 = text[1];
+        if (b0 == 0xF0u)
+            return b1 >= 0x90u && b1 <= 0xBFu ? 4u : 0u;
+        if (b0 == 0xF4u)
+            return b1 >= 0x80u && b1 <= 0x8Fu ? 4u : 0u;
+        return b1 >= 0x80u && b1 <= 0xBFu ? 4u : 0u;
+    }
+    return 0u;
 }
 
 /// @brief Append @p text as a JSON string literal (quoted, minimally escaped).
@@ -409,25 +492,43 @@ static void asset_report_append(char *dst, size_t cap, size_t *used, const char 
 /// @details Quotes, backslashes, common whitespace controls, and remaining
 /// bytes below `0x20` are escaped before bounded append.
 static void asset_report_append_json_string(char *dst, size_t cap, size_t *used, const char *text) {
+    size_t text_len = text ? strlen(text) : 0u;
+    size_t pos = 0u;
     asset_report_append(dst, cap, used, "\"");
-    for (const char *p = text ? text : ""; *p; p++) {
+    while (pos < text_len) {
         char escaped[8];
-        unsigned char ch = (unsigned char)*p;
+        unsigned char ch = (unsigned char)text[pos];
         if (ch == '"' || ch == '\\') {
             escaped[0] = '\\';
             escaped[1] = (char)ch;
             escaped[2] = '\0';
+            pos++;
         } else if (ch == '\n') {
             memcpy(escaped, "\\n", 3);
+            pos++;
         } else if (ch == '\r') {
             memcpy(escaped, "\\r", 3);
+            pos++;
         } else if (ch == '\t') {
             memcpy(escaped, "\\t", 3);
+            pos++;
         } else if (ch < 0x20u) {
             snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)ch);
+            pos++;
+        } else if (ch >= 0x80u) {
+            size_t sequence_length = asset_report_utf8_sequence_length(
+                (const unsigned char *)text + pos, text_len - pos);
+            if (sequence_length != 0u) {
+                asset_report_append_bytes(dst, cap, used, text + pos, sequence_length);
+                pos += sequence_length;
+                continue;
+            }
+            snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)ch);
+            pos++;
         } else {
             escaped[0] = (char)ch;
             escaped[1] = '\0';
+            pos++;
         }
         asset_report_append(dst, cap, used, escaped);
     }
@@ -444,22 +545,18 @@ static void asset_report_append_json_string(char *dst, size_t cap, size_t *used,
 static void asset_report_append_counter(
     char *dst, size_t cap, size_t *used, const char *key, int64_t value, int leading_comma) {
     char field[96];
-    snprintf(field,
-             sizeof(field),
-             "%s\"%s\":%lld",
-             leading_comma ? "," : "",
-             key,
-             (long long)value);
+    snprintf(
+        field, sizeof(field), "%s\"%s\":%lld", leading_comma ? "," : "", key, (long long)value);
     asset_report_append(dst, cap, used, field);
 }
 
 /// @brief Build the current thread's machine-readable asset import report.
-/// @return A newly allocated runtime string containing a bounded JSON object
+/// @return A newly allocated runtime string containing a complete JSON object
 /// with import counters, suppression count, and visible warnings.
-/// @details Warning strings are JSON-escaped. The fixed report buffer prevents
-/// unbounded allocation; exceptionally escape-heavy content may be truncated.
+/// @details The fixed buffer covers the exact worst case where every retained warning byte needs
+/// a six-byte JSON escape. Malformed UTF-8 is escaped bytewise so output remains strict JSON.
 rt_string rt_assets3d_get_import_report(void) {
-    char report[RT_ASSET_WARNING_JOINED_CAP + 1024];
+    char report[RT_ASSET_IMPORT_REPORT_CAP];
     size_t used = 0;
     int64_t count = rt_asset_error_get_warning_count();
     report[0] = '\0';

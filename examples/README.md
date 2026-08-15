@@ -49,8 +49,8 @@ Playable games showcasing [graphics](../docs/zannalib/graphics/README.md), AI, a
 | [VTris](games/vtris/) | Tetris | All 7 pieces with rotation, line clearing, level progression |
 
 More games (Ashfall, Ashfall: Scenes, XENOSCAPE, Xenoscape: Scenes, 3D Bowling,
-Ridgebound, 3D Baseball, 3D Scene, Baseball, Centipede, Frogger, Graphics Show,
-Fade Test, Pac-Man BASIC, and others) live in the
+Ridgebound, 3D Scene, Centipede, Frogger, Graphics Show, Fade Test, Pac-Man
+BASIC, and others) live in the
 [zannademos repository](https://github.com/zannagames/zannademos).
 
 ### 3D Learning Ladder

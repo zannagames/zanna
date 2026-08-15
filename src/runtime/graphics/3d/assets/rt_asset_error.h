@@ -10,6 +10,7 @@
 // Key invariants:
 //   - Content failures are reported as last-error state instead of traps.
 //   - Partial degradation is reported through a bounded warning list.
+//   - Stored codes are canonical and machine-readable reports are complete JSON.
 // Ownership/Lifetime:
 //   - Diagnostic strings live in thread-local storage owned by this module.
 //   - Runtime string getters return freshly allocated rt_string handles.
@@ -72,17 +73,19 @@ void rt_asset_error_clear_error(void);
 /// @return Nonzero for the outermost scope, which also clears prior
 /// diagnostics; zero for a nested scope.
 int rt_asset_error_begin_load(void);
-/// @brief End a successful load scope and clear the error at outermost exit.
-/// @details Warnings and statistics remain available after success.
+/// @brief End a successful load scope and clear the error at a matched outermost exit.
+/// @details Warnings and statistics remain available after success. An unmatched exit is ignored.
 void rt_asset_error_end_load_success(void);
 /// @brief End a failed load scope without clearing diagnostics.
 void rt_asset_error_end_load_failure(void);
 /// @brief Replace the last error with copied bounded text.
-/// @param[in] code Error classification.
+/// @param[in] code Error classification; out-of-range values normalize to `CORRUPT`, while
+/// `NONE` clears stale error text and truncation state.
 /// @param[in] message Null-terminated text, or `NULL` for empty text.
 void rt_asset_error_set(rt_asset_error_code code, const char *message);
 /// @brief Replace the last error with bounded formatted text.
-/// @param[in] code Error classification.
+/// @param[in] code Error classification; out-of-range values normalize to `CORRUPT`, while
+/// `NONE` clears stale error text and truncation state.
 /// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
 /// @param[in] ... Values referenced by `fmt`.
 void rt_asset_error_setf(rt_asset_error_code code, const char *fmt, ...)
@@ -107,8 +110,9 @@ rt_asset_error_code rt_asset_error_get_code(void);
 const char *rt_asset_error_get_message(void);
 /// @brief Append copied text to the bounded warning list.
 /// @param[in] message Null-terminated text, or `NULL` for an empty warning.
-/// @details Warnings beyond the 16 visible slots increment a suppression count
-/// and update the last slot with a cumulative summary.
+/// @details The first 16 warnings are initially retained. Once a seventeenth arrives, slot 15 is
+/// replaced by a summary, and both its displaced warning and every later warning are counted as
+/// suppressed. The first 15 messages stay stable.
 void rt_asset_error_add_warning(const char *message);
 /// @brief Append bounded formatted text to the warning list.
 /// @param[in] fmt `printf`-style format string, or `NULL` for empty text.
@@ -158,8 +162,8 @@ int rt_asset_error_get_message_was_truncated(void);
 /// @param[in] index Zero-based visible warning slot.
 /// @return One when truncated, otherwise zero; invalid indices return zero.
 int rt_asset_error_get_warning_was_truncated(int64_t index);
-/// @brief Return how many warnings were suppressed after the bounded warning list filled.
-/// @return The current thread's cumulative suppressed-warning count.
+/// @brief Return how many warnings are hidden by the bounded warning list's summary slot.
+/// @return The saturating cumulative count, including the displaced sixteenth warning.
 int64_t rt_asset_error_get_warning_suppressed_count(void);
 
 /// @brief Copy the last load-error text into a new runtime string.
@@ -180,7 +184,8 @@ rt_string rt_assets3d_get_load_warning(int64_t index);
 rt_string rt_assets3d_get_load_warnings(void);
 /// @brief JSON summary of the last load's degradation: the structured counters plus
 ///        the warning strings, e.g. `{"skippedPrimitives":1,...,"warnings":["..."]}`.
-/// @return A caller-owned bounded JSON report string.
+/// @return A caller-owned complete strict-JSON report string. Valid UTF-8 is preserved and
+/// malformed warning bytes are emitted as `\u00xx` escapes.
 rt_string rt_assets3d_get_import_report(void);
 
 #ifdef __cplusplus

@@ -2094,6 +2094,32 @@ static void test_tint_luminance_masked_keeps_handle_valid() {
     printf("test_tint_luminance_masked_keeps_handle_valid: PASSED\n");
 }
 
+static void test_recolor_masked_color_class() {
+    void *p = rt_pixels_new(4, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x171D31FF); /* navy: exact ref, recolors */
+    rt_pixels_set_rgba(p, 1, 0, 0x0A1228FF); /* shaded navy: recolors darker */
+    rt_pixels_set_rgba(p, 2, 0, 0x3C2D1EFF); /* brown: inside tolerance but
+                                              * chroma points red-ward — the
+                                              * class gate must reject it */
+    rt_pixels_set_rgba(p, 3, 0, 0xFBFBFBFF); /* white: outside tolerance */
+
+    rt_pixels_recolor_masked(p, 0xC81E1E, 0x171D31, 64);
+
+    uint32_t exact = (uint32_t)rt_pixels_get_rgba(p, 0, 0);
+    uint32_t shaded = (uint32_t)rt_pixels_get_rgba(p, 1, 0);
+    /* Exact ref recolors to ~target (shade == 1). */
+    assert(((exact >> 24) & 0xFFu) > 0x90u);
+    assert(((exact >> 8) & 0xFFu) < 0x40u);
+    assert((exact & 0xFFu) == 0xFFu);
+    /* Shaded navy recolors red-dominant but darker than the exact hit. */
+    assert(((shaded >> 24) & 0xFFu) > ((shaded >> 8) & 0xFFu));
+    assert(((shaded >> 24) & 0xFFu) < ((exact >> 24) & 0xFFu));
+    /* Brown neighbor and white stay untouched. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0x3C2D1EFFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0xFBFBFBFFu);
+    printf("test_recolor_masked_color_class: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -2264,6 +2290,7 @@ int main() {
 
     // BlendPixel
     test_tint_luminance_masked_keeps_handle_valid();
+    test_recolor_masked_color_class();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

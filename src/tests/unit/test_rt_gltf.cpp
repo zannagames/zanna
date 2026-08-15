@@ -177,7 +177,9 @@ static bool load_warnings_contain(const char *needle) {
 static bool import_report_contains(const char *needle) {
     rt_string report = rt_assets3d_get_import_report();
     const char *text = report ? rt_string_cstr(report) : nullptr;
-    return text && std::strstr(text, needle) != nullptr;
+    bool contains = text && std::strstr(text, needle) != nullptr;
+    rt_string_unref(report);
+    return contains;
 }
 
 static void test_gltf_accessors_reject_wrong_handles() {
@@ -6110,6 +6112,173 @@ static void test_gltf_json_array_iteration_rejects_malformed_suffixes() {
                 "Strict array iteration returns the exact requested nested span");
 }
 
+/// @brief Reject whitespace bytes that C locales classify as space but JSON does not.
+/// @details JSON permits only space, tab, CR, and LF. Form-feed and vertical-tab must not be
+/// accepted after primitive tokens or around schema-integral values.
+static void test_gltf_json_uses_exact_json_whitespace() {
+    const std::string invalid_documents[] = {std::string("1\v", 2),
+                                             std::string("1\f", 2),
+                                             std::string("{\"v\":1\v}", 8),
+                                             std::string("{\"v\":1\f}", 8)};
+    for (const std::string &json : invalid_documents)
+        EXPECT_TRUE(!gltf_json_validate_document(json.data(), json.size()),
+                    "Only the four JSON whitespace bytes may trail a primitive");
+
+    const std::string bad_int = std::string("{\"v\":\v1}", 8);
+    const std::string bad_size = std::string("{\"v\":1\f}", 8);
+    EXPECT_TRUE(
+        gltf_json_object_get_int(bad_int.data(), bad_int.size(), 0, bad_int.size(), "v", 73) == 73,
+        "Signed integer fields reject non-JSON leading whitespace");
+    EXPECT_TRUE(gltf_json_object_get_size(
+                    bad_size.data(), bad_size.size(), 0, bad_size.size(), "v", 91) == 91,
+                "Size fields reject non-JSON trailing whitespace");
+    EXPECT_TRUE(gltf_json_skip_ws(nullptr, 4, 0) == 4,
+                "Whitespace scanning is null-safe for a nonempty claimed range");
+    EXPECT_TRUE(gltf_json_skip_ws("x", 1, SIZE_MAX) == 1,
+                "Whitespace scanning clamps an out-of-range cursor to the buffer end");
+}
+
+/// @brief Require raw JSON strings and Unicode escapes to encode Unicode scalar values.
+static void test_gltf_json_rejects_malformed_utf8_and_surrogates() {
+    const std::vector<std::vector<uint8_t>> invalid_utf8 = {{0x80u},
+                                                            {0xC0u, 0x80u},
+                                                            {0xC2u},
+                                                            {0xC2u, 0x20u},
+                                                            {0xE0u, 0x80u, 0x80u},
+                                                            {0xEDu, 0xA0u, 0x80u},
+                                                            {0xE2u, 0x82u},
+                                                            {0xE2u, 0x28u, 0xA1u},
+                                                            {0xF0u, 0x80u, 0x80u, 0x80u},
+                                                            {0xF4u, 0x90u, 0x80u, 0x80u},
+                                                            {0xF0u, 0x9Fu, 0x92u},
+                                                            {0xF0u, 0x28u, 0x8Cu, 0xBCu},
+                                                            {0xF5u, 0x80u, 0x80u, 0x80u}};
+    for (const std::vector<uint8_t> &payload : invalid_utf8) {
+        std::string json = "{\"v\":\"";
+        json.append(reinterpret_cast<const char *>(payload.data()), payload.size());
+        json += "\"}";
+        EXPECT_TRUE(!gltf_json_validate_document(json.data(), json.size()),
+                    "Malformed raw UTF-8 cannot enter a glTF JSON string");
+        size_t next = 17;
+        EXPECT_TRUE(gltf_json_read_string_alloc(json.data(), json.size(), 5, &next) == nullptr &&
+                        next == SIZE_MAX,
+                    "String extraction rejects the same malformed raw UTF-8");
+    }
+
+    const char *invalid_escapes[] = {
+        "{\"v\":\"\\uD800\"}", "{\"v\":\"\\uDC00\"}", "{\"v\":\"\\uD800\\u0041\"}"};
+    for (const char *json : invalid_escapes)
+        EXPECT_TRUE(!gltf_json_validate_document(json, std::strlen(json)),
+                    "Unpaired UTF-16 surrogate escapes are rejected consistently");
+
+    const char escaped_nul[] = "{\"v\":\"\\u0000\"}";
+    EXPECT_TRUE(gltf_json_validate_document(escaped_nul, sizeof(escaped_nul) - 1u),
+                "Escaped U+0000 remains valid JSON syntax");
+    EXPECT_TRUE(gltf_json_object_get_string(
+                    escaped_nul, sizeof(escaped_nul) - 1u, 0, sizeof(escaped_nul) - 1u, "v") ==
+                    nullptr,
+                "C-string extraction rejects decoded U+0000 instead of returning truncated data");
+
+    const char valid[] = "{\"v\":\"\xC3\xA9 \\uD834\\uDD1E\"}";
+    EXPECT_TRUE(gltf_json_validate_document(valid, sizeof(valid) - 1u),
+                "Valid raw UTF-8 and a valid surrogate pair remain accepted");
+    char *decoded =
+        gltf_json_object_get_string(valid, sizeof(valid) - 1u, 0, sizeof(valid) - 1u, "v");
+    EXPECT_TRUE(decoded != nullptr && std::strcmp(decoded, "\xC3\xA9 \xF0\x9D\x84\x9E") == 0,
+                "Valid mixed Unicode strings decode to canonical UTF-8");
+    std::free(decoded);
+}
+
+/// @brief Verify every public object/range helper validates its exact claimed container.
+static void test_gltf_json_object_ranges_are_transactional() {
+    size_t start = 1;
+    size_t end = 2;
+    EXPECT_TRUE(!gltf_json_object_find_value(nullptr, 1, 0, 1, "x", &start, &end) &&
+                    start == SIZE_MAX && end == SIZE_MAX,
+                "Object lookup rejects a null source without touching memory");
+
+    const char valid[] = "{\"x\":1}";
+    EXPECT_TRUE(!gltf_json_object_find_value(
+                    valid, sizeof(valid) - 1u, 0, sizeof(valid), "x", &start, &end),
+                "Object lookup rejects an end beyond the source range");
+    EXPECT_TRUE(!gltf_json_object_find_value("[1]", 3, 0, 3, "x", &start, &end),
+                "Object lookup requires an object container");
+
+    const char malformed_suffix[] = "{\"x\":1,}";
+    EXPECT_TRUE(!gltf_json_object_find_value(malformed_suffix,
+                                             sizeof(malformed_suffix) - 1u,
+                                             0,
+                                             sizeof(malformed_suffix) - 1u,
+                                             "x",
+                                             &start,
+                                             &end),
+                "A malformed suffix invalidates an earlier object member");
+
+    const char duplicate[] = "{\"x\":1,\"x\":2}";
+    EXPECT_TRUE(
+        !gltf_json_object_find_value(
+            duplicate, sizeof(duplicate) - 1u, 0, sizeof(duplicate) - 1u, "x", &start, &end),
+        "Duplicate queried keys are rejected instead of selecting an ambiguous value");
+
+    const char escaped_range[] = "{\"x\":\"outside\"}";
+    EXPECT_TRUE(gltf_json_object_get_string(escaped_range, sizeof(escaped_range) - 1u, 0, 9, "x") ==
+                    nullptr,
+                "String extraction cannot scan past the claimed object range");
+
+    const char bad_root[] = "{\"items\":[],\"bad\":}";
+    EXPECT_TRUE(
+        !gltf_json_find_top_level_array(bad_root, sizeof(bad_root) - 1u, "items", &start, &end),
+        "A malformed root suffix invalidates a previously found top-level array");
+    EXPECT_TRUE(!gltf_json_find_top_level_array(nullptr, 1, "items", &start, &end),
+                "Top-level array lookup rejects null input safely");
+
+    const char crossed[] = "{\"x\":[}]";
+    EXPECT_TRUE(gltf_json_find_matching(crossed, sizeof(crossed) - 1u, 0, '{', '}') == SIZE_MAX,
+                "Matching rejects crossed object and array delimiters");
+    EXPECT_TRUE(gltf_json_find_matching("()", 2, 0, '(', ')') == SIZE_MAX,
+                "Matching accepts only JSON container delimiter pairs");
+}
+
+/// @brief Reject wrong JSON types at glTF positions whose schema requires integral values.
+static void test_gltf_json_integral_schema_rejects_wrong_types() {
+    const char *invalid[] = {
+        "[]",
+        "{\"asset\":\"2.0\"}",
+        "{\"buffers\":{}}",
+        "{\"nodes\":[0]}",
+        "{\"scene\":\"0\"}",
+        "{\"accessors\":[{\"normalized\":null}]}",
+        "{\"scenes\":[{\"nodes\":[\"0\"]}]}",
+        "{\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":\"0\"}}]}]}",
+        "{\"meshes\":[{\"primitives\":[{\"targets\":[0]}]}]}",
+        "{\"extensions\":{\"KHR_texture_transform\":0}}",
+        "{\"extensions\":{\"KHR_materials_variants\":{\"variants\":[0]}}}",
+        "{\"extensions\":{\"EXT_meshopt_compression\":{\"mode\":0}}}"};
+    for (const char *json : invalid)
+        EXPECT_TRUE(!gltf_json_validate_gltf_integral_tokens(json, std::strlen(json)),
+                    "Recognized glTF integral positions reject the wrong JSON type");
+
+    const char invalid_bool[] = "{\"v\":1.5}";
+    EXPECT_TRUE(
+        gltf_json_object_get_boolish(
+            invalid_bool, sizeof(invalid_bool) - 1u, 0, sizeof(invalid_bool) - 1u, "v", 73) == 73,
+        "An invalid present boolish value returns the caller's exact fallback");
+
+    const char valid_polymorphic[] =
+        "{\"asset\":{\"version\":\"2.0\"},\"nodes\":[{\"children\":[0]}],"
+        "\"animations\":[{\"channels\":[{\"target\":{\"node\":0,"
+        "\"path\":\"translation\"}}]}],\"accessors\":[{\"sparse\":{\"indices\":{"
+        "\"bufferView\":0,\"componentType\":5123}}}],\"extensions\":{"
+        "\"KHR_materials_variants\":{\"variants\":[{\"name\":\"red\"}]},"
+        "\"EXT_meshopt_compression\":{\"buffer\":0,\"byteOffset\":0,"
+        "\"byteLength\":1,\"byteStride\":1,\"count\":1,\"mode\":\"ATTRIBUTES\","
+        "\"filter\":\"NONE\"}}}";
+    EXPECT_TRUE(
+        gltf_json_validate_gltf_integral_tokens(valid_polymorphic, sizeof(valid_polymorphic) - 1u),
+        "Schema hardening preserves valid root objects, polymorphic objects, variants, "
+        "and meshopt string enums");
+}
+
 /// @brief Ensure plain `.gltf` bytes containing a literal NUL cannot parse as a valid prefix.
 /// @details Exercises both synchronous and preload entry points with a valid object before the NUL
 /// and attacker-controlled trailing bytes after it.
@@ -6233,6 +6402,10 @@ int main() {
     test_gltf_shared_glb_chunk_validation_is_atomic();
     test_gltf_json_integral_tokens_are_exact();
     test_gltf_json_array_iteration_rejects_malformed_suffixes();
+    test_gltf_json_uses_exact_json_whitespace();
+    test_gltf_json_rejects_malformed_utf8_and_surrogates();
+    test_gltf_json_object_ranges_are_transactional();
+    test_gltf_json_integral_schema_rejects_wrong_types();
     test_gltf_embedded_nul_is_not_prefix_truncated();
     std::printf("GLTF tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

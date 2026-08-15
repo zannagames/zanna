@@ -6,10 +6,13 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/unit/test_rt_asset_load_errors.cpp
-// Purpose: Unit tests for recoverable runtime content-loader diagnostics.
+// Purpose: Unit tests for recoverable runtime content-loader diagnostics and
+//   their bounded, machine-readable reporting contract.
 // Key invariants:
 //   - Bad or missing content returns NULL and records a queryable error.
 //   - Optional material texture loss records warnings without failing the parent load.
+//   - Scope misuse, truncation, suppression, and hostile warning bytes cannot
+//     corrupt diagnostic state or the JSON import report.
 // Ownership/Lifetime:
 //   - Tests release any GC-managed runtime objects they receive.
 //   - Temporary files are created under /tmp and removed by each test.
@@ -22,6 +25,7 @@
 #endif
 
 #include "rt_asset_error.h"
+#include "rt_gltf_json.h"
 #include "rt_string.h"
 #include "tests/TestHarness.hpp"
 
@@ -338,6 +342,112 @@ TEST(AssetLoadErrors, MissingObjMaterialTextureRecordsOneWarning) {
     release_obj(model);
     std::remove(obj_path.c_str());
     std::remove(mtl_path.c_str());
+}
+
+TEST(AssetLoadErrors, DiagnosticCodesAndScopeStateRemainCanonical) {
+    rt_asset_error_clear();
+    rt_asset_error_set(static_cast<rt_asset_error_code>(-17), "invalid negative code");
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
+    EXPECT_CONTAINS(rt_asset_error_get_message(), "invalid negative code");
+
+    rt_asset_error_set(static_cast<rt_asset_error_code>(999), "invalid positive code");
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
+    EXPECT_CONTAINS(rt_asset_error_get_message(), "invalid positive code");
+
+    rt_asset_error_setf(static_cast<rt_asset_error_code>(-99), "formatted invalid %d", 7);
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
+    EXPECT_CONTAINS(rt_asset_error_get_message(), "formatted invalid 7");
+
+    rt_asset_error_clear();
+    rt_asset_error_setf_if_empty(static_cast<rt_asset_error_code>(700), "first invalid");
+    rt_asset_error_set_if_empty(RT_ASSET_ERROR_UNREADABLE, "must not replace first");
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
+    EXPECT_EQ(std::string(rt_asset_error_get_message()), std::string("first invalid"));
+
+    rt_asset_error_set(RT_ASSET_ERROR_NONE, "stale text");
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_NONE);
+    EXPECT_EQ(std::string(rt_asset_error_get_message()), std::string());
+    EXPECT_EQ(rt_asset_error_get_message_was_truncated(), 0);
+
+    rt_asset_error_set(RT_ASSET_ERROR_CORRUPT, "must survive unmatched success");
+    rt_asset_error_end_load_success();
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
+    EXPECT_CONTAINS(rt_asset_error_get_message(), "must survive unmatched success");
+
+    EXPECT_EQ(rt_asset_error_begin_load(), 1);
+    rt_asset_error_set(RT_ASSET_ERROR_UNREADABLE, "nested failure");
+    EXPECT_EQ(rt_asset_error_begin_load(), 0);
+    rt_asset_error_end_load_success();
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_UNREADABLE);
+    rt_asset_error_end_load_failure();
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_UNREADABLE);
+
+    EXPECT_EQ(rt_asset_error_begin_load(), 1);
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_NONE);
+    rt_asset_error_end_load_success();
+}
+
+TEST(AssetLoadErrors, WarningTruncationAndSuppressionAccountingAreExact) {
+    rt_asset_error_clear();
+    std::string oversized(600, 'w');
+    rt_asset_error_add_warningf("formatted:%s", oversized.c_str());
+    ASSERT_EQ(rt_asset_error_get_warning_count(), INT64_C(1));
+    EXPECT_EQ(rt_asset_error_get_warning_was_truncated(0), 1);
+    EXPECT_EQ(std::strlen(rt_asset_error_get_warning(0)), (size_t)255);
+
+    rt_asset_error_clear();
+    for (int i = 0; i < 17; ++i) {
+        std::string warning = "warning-" + std::to_string(i);
+        rt_asset_error_add_warning(warning.c_str());
+    }
+    ASSERT_EQ(rt_asset_error_get_warning_count(), INT64_C(16));
+    for (int i = 0; i < 15; ++i) {
+        std::string expected = "warning-" + std::to_string(i);
+        EXPECT_EQ(std::string(rt_asset_error_get_warning(i)), expected);
+    }
+    EXPECT_EQ(rt_asset_error_get_warning_suppressed_count(), INT64_C(2));
+    EXPECT_EQ(std::string(rt_asset_error_get_warning(15)), std::string("2 more suppressed"));
+    EXPECT_EQ(rt_asset_error_get_warning_was_truncated(15), 0);
+
+    rt_asset_error_add_warning("warning-17");
+    EXPECT_EQ(rt_asset_error_get_warning_suppressed_count(), INT64_C(3));
+    EXPECT_EQ(std::string(rt_asset_error_get_warning(15)), std::string("3 more suppressed"));
+}
+
+TEST(AssetLoadErrors, WorstCaseImportReportIsCompleteStrictJson) {
+    rt_asset_error_clear();
+    std::string controls(255, '\x01');
+    for (int i = 0; i < 16; ++i)
+        rt_asset_error_add_warning(controls.c_str());
+
+    rt_string report = rt_assets3d_get_import_report();
+    ASSERT_NE(report, nullptr);
+    const char *text = rt_string_cstr(report);
+    const size_t length = (size_t)rt_str_len(report);
+    EXPECT_TRUE(length > 20000u);
+    EXPECT_TRUE(gltf_json_validate_document(text, length) != 0);
+    EXPECT_TRUE(length >= 2u && text[length - 2u] == ']' && text[length - 1u] == '}');
+    rt_string_unref(report);
+
+    rt_asset_error_clear();
+    const char invalid_utf8[] = {'a', (char)0xC0, (char)0xAF, 'z', '\0'};
+    rt_asset_error_add_warning(invalid_utf8);
+    report = rt_assets3d_get_import_report();
+    ASSERT_NE(report, nullptr);
+    text = rt_string_cstr(report);
+    EXPECT_CONTAINS(text, "a\\u00c0\\u00afz");
+    EXPECT_TRUE(gltf_json_validate_document(text, (size_t)rt_str_len(report)) != 0);
+    rt_string_unref(report);
+
+    rt_asset_error_clear();
+    const char valid_utf8[] = {'c', 'a', 'f', (char)0xC3, (char)0xA9, '\0'};
+    rt_asset_error_add_warning(valid_utf8);
+    report = rt_assets3d_get_import_report();
+    ASSERT_NE(report, nullptr);
+    text = rt_string_cstr(report);
+    EXPECT_CONTAINS(text, valid_utf8);
+    EXPECT_TRUE(gltf_json_validate_document(text, (size_t)rt_str_len(report)) != 0);
+    rt_string_unref(report);
 }
 
 int main(int argc, char **argv) {

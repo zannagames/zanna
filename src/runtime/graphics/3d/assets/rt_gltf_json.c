@@ -6,15 +6,15 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/3d/assets/rt_gltf_json.c
-// Purpose: Allocation-free in-place JSON scanner for the glTF importer. Walks a
+// Purpose: Allocation-light in-place JSON scanner for the glTF importer. Walks a
 //   (json, len) buffer with byte-offset cursors to locate object/array members
 //   and extract scalars/strings, without constructing a DOM.
 // Key invariants:
 //   - Scanners are pure over their (json, len) argument buffer; no global state.
 //   - Object/array ranges are [start, end) byte offsets into that buffer.
 // Ownership/Lifetime:
-//   - `*_alloc` / `*_get_string` helpers return malloc'd strings owned by the
-//     caller; every other helper allocates nothing.
+//   - String extractors return malloc'd strings owned by the caller; numeric
+//     extraction uses stack storage first and may allocate for unusually long tokens.
 // Links: rt_gltf_json.h, rt_gltf.c
 //
 //===----------------------------------------------------------------------===//
@@ -34,7 +34,6 @@
 #include "rt_gltf_json.h"
 #include "rt_numeric.h"
 
-#include <ctype.h>
 #include <limits.h>
 #include <math.h>
 #include <stdlib.h>
@@ -42,6 +41,74 @@
 
 /// Maximum nested object/array depth accepted by recursive JSON validation.
 #define GLTF_JSON_MAX_DEPTH 512
+/// Stack storage used by the common fast path for one JSON number token.
+#define GLTF_JSON_NUMBER_STACK_CAP 128
+
+/// @brief Test for one of the four whitespace bytes admitted by RFC 8259.
+/// @param c Source byte.
+/// @return Nonzero for space, horizontal tab, carriage return, or line feed.
+static int gltf_json_is_ws(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+/// @brief Test whether a byte is a UTF-8 continuation byte.
+/// @param value Source byte.
+/// @return Nonzero for the inclusive `0x80..0xBF` continuation range.
+static int gltf_json_is_utf8_continuation(unsigned char value) {
+    return value >= 0x80u && value <= 0xBFu;
+}
+
+/// @brief Validate one raw UTF-8 scalar beginning at @p pos.
+/// @details Rejects lone continuations, overlong encodings, UTF-16 surrogates,
+///          truncation, invalid continuations, and values above U+10FFFF.
+/// @param json Source byte buffer.
+/// @param len Exact source length.
+/// @param pos Offset of the candidate leading byte.
+/// @return Encoded byte length from one through four, or zero when invalid.
+static size_t gltf_json_utf8_sequence_length(const char *json, size_t len, size_t pos) {
+    unsigned char b0;
+    unsigned char b1;
+    unsigned char b2;
+    unsigned char b3;
+    if (!json || pos >= len)
+        return 0u;
+    b0 = (unsigned char)json[pos];
+    if (b0 <= 0x7Fu)
+        return 1u;
+    if (b0 >= 0xC2u && b0 <= 0xDFu) {
+        if (len - pos < 2u)
+            return 0u;
+        return gltf_json_is_utf8_continuation((unsigned char)json[pos + 1u]) ? 2u : 0u;
+    }
+    if (b0 >= 0xE0u && b0 <= 0xEFu) {
+        if (len - pos < 3u)
+            return 0u;
+        b1 = (unsigned char)json[pos + 1u];
+        b2 = (unsigned char)json[pos + 2u];
+        if (!gltf_json_is_utf8_continuation(b2))
+            return 0u;
+        if (b0 == 0xE0u)
+            return b1 >= 0xA0u && b1 <= 0xBFu ? 3u : 0u;
+        if (b0 == 0xEDu)
+            return b1 >= 0x80u && b1 <= 0x9Fu ? 3u : 0u;
+        return gltf_json_is_utf8_continuation(b1) ? 3u : 0u;
+    }
+    if (b0 >= 0xF0u && b0 <= 0xF4u) {
+        if (len - pos < 4u)
+            return 0u;
+        b1 = (unsigned char)json[pos + 1u];
+        b2 = (unsigned char)json[pos + 2u];
+        b3 = (unsigned char)json[pos + 3u];
+        if (!gltf_json_is_utf8_continuation(b2) || !gltf_json_is_utf8_continuation(b3))
+            return 0u;
+        if (b0 == 0xF0u)
+            return b1 >= 0x90u && b1 <= 0xBFu ? 4u : 0u;
+        if (b0 == 0xF4u)
+            return b1 >= 0x80u && b1 <= 0x8Fu ? 4u : 0u;
+        return gltf_json_is_utf8_continuation(b1) ? 4u : 0u;
+    }
+    return 0u;
+}
 
 /// @brief Decode one hexadecimal JSON escape digit.
 /// @param c ASCII character to decode.
@@ -83,26 +150,22 @@ static int gltf_json_read_hex4(const char *json, size_t len, size_t pos, uint32_
 /// @param cp Unicode scalar value to append.
 /// @return 1 on success, 0 if @p cp is invalid or there is not enough capacity.
 static int gltf_json_append_utf8(char *out, size_t *count, size_t cap, uint32_t cp) {
+    size_t needed;
     if (!out || !count || cp > 0x10FFFFu || (cp >= 0xD800u && cp <= 0xDFFFu))
         return 0;
-    if (cp <= 0x7Fu) {
-        if (*count + 1u > cap)
-            return 0;
+    needed = cp <= 0x7Fu ? 1u : cp <= 0x7FFu ? 2u : cp <= 0xFFFFu ? 3u : 4u;
+    if (*count >= cap || needed > cap - *count - 1u)
+        return 0;
+    if (needed == 1u) {
         out[(*count)++] = (char)cp;
-    } else if (cp <= 0x7FFu) {
-        if (*count + 2u > cap)
-            return 0;
+    } else if (needed == 2u) {
         out[(*count)++] = (char)(0xC0u | (cp >> 6));
         out[(*count)++] = (char)(0x80u | (cp & 0x3Fu));
-    } else if (cp <= 0xFFFFu) {
-        if (*count + 3u > cap)
-            return 0;
+    } else if (needed == 3u) {
         out[(*count)++] = (char)(0xE0u | (cp >> 12));
         out[(*count)++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
         out[(*count)++] = (char)(0x80u | (cp & 0x3Fu));
     } else {
-        if (*count + 4u > cap)
-            return 0;
         out[(*count)++] = (char)(0xF0u | (cp >> 18));
         out[(*count)++] = (char)(0x80u | ((cp >> 12) & 0x3Fu));
         out[(*count)++] = (char)(0x80u | ((cp >> 6) & 0x3Fu));
@@ -118,7 +181,7 @@ static int gltf_json_append_utf8(char *out, size_t *count, size_t cap, uint32_t 
 /// @return 1 when only JSON whitespace follows the literal before @p value_end.
 static int gltf_json_literal_ends_cleanly(const char *json, size_t token_end, size_t value_end) {
     size_t pos = token_end;
-    while (pos < value_end && isspace((unsigned char)json[pos]))
+    while (pos < value_end && gltf_json_is_ws(json[pos]))
         pos++;
     return pos == value_end;
 }
@@ -129,9 +192,11 @@ static int gltf_json_literal_ends_cleanly(const char *json, size_t token_end, si
 /// @param pos Starting byte offset.
 /// @return First offset at or after @p pos that is not JSON whitespace, or @p len.
 size_t gltf_json_skip_ws(const char *json, size_t len, size_t pos) {
+    if (!json || pos > len)
+        return len;
     while (pos < len) {
         char c = json[pos];
-        if (c != ' ' && c != '\t' && c != '\r' && c != '\n')
+        if (!gltf_json_is_ws(c))
             break;
         pos++;
     }
@@ -149,6 +214,7 @@ size_t gltf_json_skip_string_raw(const char *json, size_t len, size_t pos) {
         return SIZE_MAX;
     pos++;
     while (pos < len) {
+        size_t byte_pos = pos;
         unsigned char c = (unsigned char)json[pos++];
         if (c < 0x20u)
             return SIZE_MAX;
@@ -170,15 +236,30 @@ size_t gltf_json_skip_string_raw(const char *json, size_t len, size_t pos) {
                 case 't':
                     break;
                 case 'u': {
-                    uint32_t ignored_cp;
-                    if (!gltf_json_read_hex4(json, len, pos, &ignored_cp))
+                    uint32_t cp;
+                    if (!gltf_json_read_hex4(json, len, pos, &cp))
                         return SIZE_MAX;
                     pos += 4u;
+                    if (cp >= 0xD800u && cp <= 0xDBFFu) {
+                        uint32_t low;
+                        if (len - pos < 6u || json[pos] != '\\' || json[pos + 1u] != 'u' ||
+                            !gltf_json_read_hex4(json, len, pos + 2u, &low) || low < 0xDC00u ||
+                            low > 0xDFFFu)
+                            return SIZE_MAX;
+                        pos += 6u;
+                    } else if (cp >= 0xDC00u && cp <= 0xDFFFu) {
+                        return SIZE_MAX;
+                    }
                     break;
                 }
                 default:
                     return SIZE_MAX;
             }
+        } else if (c >= 0x80u) {
+            size_t sequence_length = gltf_json_utf8_sequence_length(json, len, byte_pos);
+            if (sequence_length == 0u)
+                return SIZE_MAX;
+            pos = byte_pos + sequence_length;
         }
     }
     return SIZE_MAX;
@@ -200,13 +281,17 @@ char *gltf_json_read_string_alloc(const char *json, size_t len, size_t pos, size
         *out_next = SIZE_MAX;
     if (!json || pos >= len || json[pos] != '"')
         return NULL;
+    if (len - pos == SIZE_MAX)
+        return NULL;
     cap = len - pos + 1u;
     out = (char *)malloc(cap);
     if (!out)
         return NULL;
     pos++;
     while (pos < len) {
-        char c = json[pos++];
+        size_t byte_pos = pos;
+        unsigned char byte = (unsigned char)json[pos++];
+        char c = (char)byte;
         if (c == '"') {
             out[count] = '\0';
             if (out_next)
@@ -246,7 +331,7 @@ char *gltf_json_read_string_alloc(const char *json, size_t len, size_t pos, size
                     pos += 4u;
                     if (cp >= 0xD800u && cp <= 0xDBFFu) {
                         uint32_t low;
-                        if (pos + 6u > len || json[pos] != '\\' || json[pos + 1u] != 'u' ||
+                        if (len - pos < 6u || json[pos] != '\\' || json[pos + 1u] != 'u' ||
                             !gltf_json_read_hex4(json, len, pos + 2u, &low) || low < 0xDC00u ||
                             low > 0xDFFFu) {
                             free(out);
@@ -272,7 +357,21 @@ char *gltf_json_read_string_alloc(const char *json, size_t len, size_t pos, size
                     free(out);
                     return NULL;
             }
-        } else if ((unsigned char)c < 0x20u || c == '\0') {
+        } else if (byte < 0x20u) {
+            free(out);
+            return NULL;
+        } else if (byte >= 0x80u) {
+            size_t sequence_length = gltf_json_utf8_sequence_length(json, len, byte_pos);
+            if (sequence_length == 0u || count >= cap || sequence_length > cap - count - 1u) {
+                free(out);
+                return NULL;
+            }
+            memcpy(out + count, json + byte_pos, sequence_length);
+            count += sequence_length;
+            pos = byte_pos + sequence_length;
+            continue;
+        }
+        if (count >= cap - 1u) {
             free(out);
             return NULL;
         }
@@ -304,6 +403,7 @@ int gltf_json_key_matches(
     cursor = start;
     while (cursor < len) {
         unsigned char c = (unsigned char)json[cursor];
+        size_t sequence_length;
         if (c < 0x20u)
             return 0;
         if (c == '\\')
@@ -313,7 +413,10 @@ int gltf_json_key_matches(
                 *out_next = cursor + 1u;
             return cursor - start == key_len && memcmp(json + start, key, key_len) == 0;
         }
-        cursor++;
+        sequence_length = c < 0x80u ? 1u : gltf_json_utf8_sequence_length(json, len, cursor);
+        if (sequence_length == 0u)
+            return 0;
+        cursor += sequence_length;
     }
     char *decoded = gltf_json_read_string_alloc(json, len, pos, out_next);
     int matches = decoded && strcmp(decoded, key) == 0;
@@ -338,7 +441,7 @@ static size_t gltf_json_skip_primitive(const char *json, size_t len, size_t pos)
     while (pos < len && json[pos] != ',' && json[pos] != '}' && json[pos] != ']')
         pos++;
     end = pos;
-    while (end > start && isspace((unsigned char)json[end - 1u]))
+    while (end > start && gltf_json_is_ws(json[end - 1u]))
         end--;
     if (end == start)
         return SIZE_MAX;
@@ -479,14 +582,24 @@ int gltf_json_validate_document(const char *json, size_t len) {
 typedef enum gltf_json_integral_walk_mode {
     /// Ordinary recursive glTF object/value validation.
     GLTF_JSON_INTEGRAL_WALK_NORMAL = 0,
+    /// glTF root object, where `nodes` contains definitions rather than scene indices.
+    GLTF_JSON_INTEGRAL_WALK_ROOT = 1,
     /// Array whose numeric elements are required to be integers.
-    GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY = 1,
+    GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY = 2,
     /// Attribute semantic map whose numeric property values are accessor indices.
-    GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT = 2,
+    GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT = 3,
     /// Morph-target array whose entries are attribute semantic maps.
-    GLTF_JSON_INTEGRAL_WALK_TARGET_ARRAY = 3,
+    GLTF_JSON_INTEGRAL_WALK_TARGET_ARRAY = 4,
     /// Extension object where only explicitly supported extension payloads are interpreted.
-    GLTF_JSON_INTEGRAL_WALK_EXTENSION_MAP = 4
+    GLTF_JSON_INTEGRAL_WALK_EXTENSION_MAP = 5,
+    /// Root KHR_materials_variants payload, where `variants` contains definitions.
+    GLTF_JSON_INTEGRAL_WALK_VARIANTS_EXTENSION = 6,
+    /// EXT_meshopt_compression payload, where `mode` is a string enum.
+    GLTF_JSON_INTEGRAL_WALK_MESHOPT_EXTENSION = 7,
+    /// Schema-defined array whose elements must be JSON objects.
+    GLTF_JSON_INTEGRAL_WALK_OBJECT_ARRAY = 8,
+    /// Schema-defined value that must be one JSON object.
+    GLTF_JSON_INTEGRAL_WALK_OBJECT = 9
 } gltf_json_integral_walk_mode;
 
 /**
@@ -525,7 +638,7 @@ static int gltf_json_parse_i64_span(const char *json, size_t start, size_t end, 
     uint64_t limit;
     size_t pos = start;
     int negative = 0;
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos < end && json[pos] == '-') {
         negative = 1;
@@ -543,7 +656,7 @@ static int gltf_json_parse_i64_span(const char *json, size_t start, size_t end, 
         magnitude = magnitude * 10u + digit;
         pos++;
     }
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos != end)
         return 0;
@@ -566,6 +679,20 @@ static int gltf_json_parse_i64_span(const char *json, size_t start, size_t end, 
 static int gltf_json_span_is_numeric(const char *json, size_t start, size_t end) {
     start = gltf_json_skip_ws(json, end, start);
     return start < end && (json[start] == '-' || (json[start] >= '0' && json[start] <= '9'));
+}
+
+/// @brief Return whether a raw value span is exactly `true` or `false`.
+/// @param json Source JSON bytes.
+/// @param start Inclusive value-span start.
+/// @param end Exclusive value-span end.
+/// @return Nonzero only for one complete boolean literal plus JSON whitespace.
+static int gltf_json_span_is_boolean(const char *json, size_t start, size_t end) {
+    start = gltf_json_skip_ws(json, end, start);
+    if (start <= end && end - start >= 4u && memcmp(json + start, "true", 4u) == 0 &&
+        gltf_json_literal_ends_cleanly(json, start + 4u, end))
+        return 1;
+    return start <= end && end - start >= 5u && memcmp(json + start, "false", 5u) == 0 &&
+           gltf_json_literal_ends_cleanly(json, start + 5u, end);
 }
 
 /**
@@ -591,8 +718,20 @@ static int gltf_json_validate_integral_value(const char *json,
         "output",        "sampler",    "scene",      "skin",       "skeleton",   "source",
         "target",        "texCoord",   "wrapS",      "wrapT",      NULL};
     static const char *const boolean_keys[] = {"doubleSided", "normalized", NULL};
-    static const char *const integer_array_keys[] = {
-        "children", "joints", "nodes", "variants", NULL};
+    static const char *const root_object_array_keys[] = {"accessors",
+                                                         "animations",
+                                                         "buffers",
+                                                         "bufferViews",
+                                                         "cameras",
+                                                         "images",
+                                                         "materials",
+                                                         "meshes",
+                                                         "nodes",
+                                                         "samplers",
+                                                         "scenes",
+                                                         "skins",
+                                                         "textures",
+                                                         NULL};
     static const char *const supported_extensions[] = {"EXT_meshopt_compression",
                                                        "KHR_draco_mesh_compression",
                                                        "KHR_lights_punctual",
@@ -617,6 +756,18 @@ static int gltf_json_validate_integral_value(const char *json,
     pos = gltf_json_skip_ws(json, len, start);
     if (pos >= end)
         return 0;
+    if ((mode == GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY ||
+         mode == GLTF_JSON_INTEGRAL_WALK_TARGET_ARRAY ||
+         mode == GLTF_JSON_INTEGRAL_WALK_OBJECT_ARRAY) &&
+        json[pos] != '[')
+        return 0;
+    if ((mode == GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT ||
+         mode == GLTF_JSON_INTEGRAL_WALK_EXTENSION_MAP || mode == GLTF_JSON_INTEGRAL_WALK_ROOT ||
+         mode == GLTF_JSON_INTEGRAL_WALK_VARIANTS_EXTENSION ||
+         mode == GLTF_JSON_INTEGRAL_WALK_MESHOPT_EXTENSION ||
+         mode == GLTF_JSON_INTEGRAL_WALK_OBJECT) &&
+        json[pos] != '{')
+        return 0;
     if (json[pos] == '[') {
         pos = gltf_json_skip_ws(json, len, pos + 1u);
         while (pos < end && json[pos] != ']') {
@@ -624,12 +775,15 @@ static int gltf_json_validate_integral_value(const char *json,
             gltf_json_integral_walk_mode item_mode = GLTF_JSON_INTEGRAL_WALK_NORMAL;
             if (item_end == SIZE_MAX || item_end > end)
                 return 0;
-            if (mode == GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY &&
-                gltf_json_span_is_numeric(json, pos, item_end) &&
-                !gltf_json_parse_i64_span(json, pos, item_end, NULL))
-                return 0;
+            if (mode == GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY) {
+                if (!gltf_json_span_is_numeric(json, pos, item_end) ||
+                    !gltf_json_parse_i64_span(json, pos, item_end, NULL))
+                    return 0;
+            }
             if (mode == GLTF_JSON_INTEGRAL_WALK_TARGET_ARRAY)
                 item_mode = GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT;
+            else if (mode == GLTF_JSON_INTEGRAL_WALK_OBJECT_ARRAY)
+                item_mode = GLTF_JSON_INTEGRAL_WALK_OBJECT;
             if (!gltf_json_validate_integral_value(json, len, pos, item_end, item_mode, depth + 1))
                 return 0;
             pos = gltf_json_skip_ws(json, len, item_end);
@@ -664,21 +818,67 @@ static int gltf_json_validate_integral_value(const char *json,
 
         if (mode == GLTF_JSON_INTEGRAL_WALK_EXTENSION_MAP) {
             recurse = gltf_json_integral_key_in(json, len, key_pos, supported_extensions);
+            if (recurse) {
+                size_t extension_start = gltf_json_skip_ws(json, value_end, value_start);
+                if (extension_start >= value_end || json[extension_start] != '{')
+                    return 0;
+                if (gltf_json_key_matches(json, len, key_pos, "KHR_materials_variants", NULL))
+                    child_mode = GLTF_JSON_INTEGRAL_WALK_VARIANTS_EXTENSION;
+                else if (gltf_json_key_matches(json, len, key_pos, "EXT_meshopt_compression", NULL))
+                    child_mode = GLTF_JSON_INTEGRAL_WALK_MESHOPT_EXTENSION;
+            }
         } else if (gltf_json_key_matches(json, len, key_pos, "extras", NULL)) {
             recurse = 0;
         } else {
-            if ((mode == GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT ||
-                 gltf_json_integral_key_in(json, len, key_pos, scalar_integer_keys)) &&
-                gltf_json_span_is_numeric(json, value_start, value_end) &&
-                !gltf_json_parse_i64_span(json, value_start, value_end, NULL))
-                return 0;
-            if (gltf_json_integral_key_in(json, len, key_pos, boolean_keys) &&
-                gltf_json_span_is_numeric(json, value_start, value_end)) {
-                if (!gltf_json_parse_i64_span(json, value_start, value_end, &boolean_integer) ||
-                    (boolean_integer != 0 && boolean_integer != 1))
+            if (mode == GLTF_JSON_INTEGRAL_WALK_MESHOPT_EXTENSION &&
+                (gltf_json_key_matches(json, len, key_pos, "mode", NULL) ||
+                 gltf_json_key_matches(json, len, key_pos, "filter", NULL))) {
+                size_t enum_start = gltf_json_skip_ws(json, value_end, value_start);
+                if (enum_start >= value_end || json[enum_start] != '"')
                     return 0;
             }
-            if (gltf_json_integral_key_in(json, len, key_pos, integer_array_keys))
+            if (mode == GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT ||
+                (gltf_json_integral_key_in(json, len, key_pos, scalar_integer_keys) &&
+                 !(mode == GLTF_JSON_INTEGRAL_WALK_MESHOPT_EXTENSION &&
+                   gltf_json_key_matches(json, len, key_pos, "mode", NULL)))) {
+                if (gltf_json_span_is_numeric(json, value_start, value_end)) {
+                    if (!gltf_json_parse_i64_span(json, value_start, value_end, NULL))
+                        return 0;
+                } else {
+                    size_t typed_start = gltf_json_skip_ws(json, value_end, value_start);
+                    int polymorphic_object =
+                        mode != GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT &&
+                        (gltf_json_key_matches(json, len, key_pos, "indices", NULL) ||
+                         gltf_json_key_matches(json, len, key_pos, "target", NULL)) &&
+                        typed_start < value_end && json[typed_start] == '{';
+                    if (!polymorphic_object)
+                        return 0;
+                }
+            }
+            if (gltf_json_integral_key_in(json, len, key_pos, boolean_keys)) {
+                if (gltf_json_span_is_numeric(json, value_start, value_end)) {
+                    if (!gltf_json_parse_i64_span(json, value_start, value_end, &boolean_integer) ||
+                        (boolean_integer != 0 && boolean_integer != 1))
+                        return 0;
+                } else if (!gltf_json_span_is_boolean(json, value_start, value_end)) {
+                    return 0;
+                }
+            }
+            if (mode == GLTF_JSON_INTEGRAL_WALK_ROOT &&
+                gltf_json_key_matches(json, len, key_pos, "asset", NULL))
+                child_mode = GLTF_JSON_INTEGRAL_WALK_OBJECT;
+            else if (mode == GLTF_JSON_INTEGRAL_WALK_ROOT &&
+                     gltf_json_integral_key_in(json, len, key_pos, root_object_array_keys))
+                child_mode = GLTF_JSON_INTEGRAL_WALK_OBJECT_ARRAY;
+            else if (mode == GLTF_JSON_INTEGRAL_WALK_VARIANTS_EXTENSION &&
+                     gltf_json_key_matches(json, len, key_pos, "variants", NULL))
+                child_mode = GLTF_JSON_INTEGRAL_WALK_OBJECT_ARRAY;
+            else if (gltf_json_key_matches(json, len, key_pos, "children", NULL) ||
+                     gltf_json_key_matches(json, len, key_pos, "joints", NULL) ||
+                     (mode != GLTF_JSON_INTEGRAL_WALK_ROOT &&
+                      gltf_json_key_matches(json, len, key_pos, "nodes", NULL)) ||
+                     (mode != GLTF_JSON_INTEGRAL_WALK_VARIANTS_EXTENSION &&
+                      gltf_json_key_matches(json, len, key_pos, "variants", NULL)))
                 child_mode = GLTF_JSON_INTEGRAL_WALK_INTEGER_ARRAY;
             else if (gltf_json_key_matches(json, len, key_pos, "attributes", NULL))
                 child_mode = GLTF_JSON_INTEGRAL_WALK_ATTRIBUTE_OBJECT;
@@ -713,11 +913,13 @@ int gltf_json_validate_gltf_integral_tokens(const char *json, size_t len) {
     if (!gltf_json_validate_document(json, len))
         return 0;
     start = gltf_json_skip_ws(json, len, 0);
+    if (start >= len || json[start] != '{')
+        return 0;
     end = gltf_json_skip_value(json, len, start);
     if (end == SIZE_MAX)
         return 0;
     return gltf_json_validate_integral_value(
-        json, len, start, end, GLTF_JSON_INTEGRAL_WALK_NORMAL, 0);
+        json, len, start, end, GLTF_JSON_INTEGRAL_WALK_ROOT, 0);
 }
 
 /// @brief Find the index just past the bracket that closes the @p open_ch at @p pos.
@@ -730,34 +932,17 @@ int gltf_json_validate_gltf_integral_tokens(const char *json, size_t len) {
 /// @return Index after the matching @p close_ch, or SIZE_MAX if unbalanced.
 size_t gltf_json_find_matching(
     const char *json, size_t len, size_t pos, char open_ch, char close_ch) {
-    int depth = 0;
-    if (!json || pos >= len || json[pos] != open_ch)
+    size_t end;
+    if (!json || pos >= len || json[pos] != open_ch ||
+        !((open_ch == '{' && close_ch == '}') || (open_ch == '[' && close_ch == ']')))
         return SIZE_MAX;
-    while (pos < len) {
-        char c = json[pos];
-        if (c == '"') {
-            pos = gltf_json_skip_string_raw(json, len, pos);
-            if (pos == SIZE_MAX)
-                return SIZE_MAX;
-            continue;
-        }
-        if (c == open_ch)
-            depth++;
-        else if (c == close_ch) {
-            depth--;
-            if (depth == 0)
-                return pos + 1u;
-        }
-        if (depth < 0 || depth > GLTF_JSON_MAX_DEPTH)
-            return SIZE_MAX;
-        pos++;
-    }
-    return SIZE_MAX;
+    end = gltf_json_skip_value(json, len, pos);
+    return end != SIZE_MAX && end > pos && json[end - 1u] == close_ch ? end : SIZE_MAX;
 }
 
-/// @brief Locate a top-level array property @p key in the root object, by raw byte scan.
-/// @details Only matches keys at object depth 1 (true top level), then returns the byte range
-///          of the '['..']' array value via @p out_start / @p out_end.
+/// @brief Locate a top-level array property @p key in one complete root object.
+/// @details Validates the full document before publishing the bracketed property range. Duplicate
+///          queried keys, malformed suffixes, and non-array values are rejected transactionally.
 /// @param json Source JSON byte buffer.
 /// @param len Exact source byte length.
 /// @param key Root property name to locate.
@@ -766,60 +951,35 @@ size_t gltf_json_find_matching(
 /// @return 1 if found (range set), 0 otherwise.
 int gltf_json_find_top_level_array(
     const char *json, size_t len, const char *key, size_t *out_start, size_t *out_end) {
-    int object_depth = 0;
-    int array_depth = 0;
-    size_t pos = 0;
+    size_t root_start;
+    size_t root_end;
+    size_t value_start;
+    size_t value_end;
     if (out_start)
         *out_start = SIZE_MAX;
     if (out_end)
         *out_end = SIZE_MAX;
-    while (pos < len) {
-        char c = json[pos];
-        if (c == '"') {
-            size_t next = gltf_json_skip_string_raw(json, len, pos);
-            int at_top_key = 0;
-            if (next == SIZE_MAX)
-                return 0;
-            if (object_depth == 1 && array_depth == 0)
-                at_top_key = gltf_json_key_matches(json, len, pos, key, NULL);
-            if (at_top_key) {
-                size_t colon = gltf_json_skip_ws(json, len, next);
-                size_t start;
-                size_t end;
-                if (colon < len && json[colon] == ':') {
-                    start = gltf_json_skip_ws(json, len, colon + 1u);
-                    if (start < len && json[start] == '[') {
-                        end = gltf_json_skip_value(json, len, start);
-                        if (end != SIZE_MAX && end > start && json[end - 1u] == ']') {
-                            if (out_start)
-                                *out_start = start;
-                            if (out_end)
-                                *out_end = end;
-                            return 1;
-                        }
-                    }
-                }
-            }
-            pos = next;
-            continue;
-        }
-        if (c == '{')
-            object_depth++;
-        else if (c == '}')
-            object_depth--;
-        else if (c == '[')
-            array_depth++;
-        else if (c == ']')
-            array_depth--;
-        if (object_depth < 0 || array_depth < 0 || object_depth + array_depth > GLTF_JSON_MAX_DEPTH)
-            return 0;
-        pos++;
-    }
-    return 0;
+    if (!json || !key)
+        return 0;
+    root_start = gltf_json_skip_ws(json, len, 0u);
+    if (root_start >= len || json[root_start] != '{')
+        return 0;
+    root_end = gltf_json_skip_value(json, len, root_start);
+    if (root_end == SIZE_MAX || gltf_json_skip_ws(json, len, root_end) != len ||
+        !gltf_json_object_find_value(
+            json, len, root_start, root_end, key, &value_start, &value_end) ||
+        value_start >= value_end || json[value_start] != '[' || json[value_end - 1u] != ']')
+        return 0;
+    if (out_start)
+        *out_start = value_start;
+    if (out_end)
+        *out_end = value_end;
+    return 1;
 }
 
 /// @brief Read a direct string property @p key from the object spanning [obj_start, obj_end).
-/// @details Only the object's own (depth-1) keys are considered; nested objects are skipped.
+/// @details Uses the exact validated value range, so malformed suffixes and duplicate queried keys
+///          cannot expose a partial result or let decoding escape the caller-supplied object span.
 /// @param json Source JSON byte buffer.
 /// @param len Exact source byte length.
 /// @param obj_start Offset of the object's opening brace.
@@ -828,44 +988,20 @@ int gltf_json_find_top_level_array(
 /// @return The unescaped value (caller frees), or NULL if absent or not a string.
 char *gltf_json_object_get_string(
     const char *json, size_t len, size_t obj_start, size_t obj_end, const char *key) {
-    int depth = 0;
-    size_t pos = obj_start;
-    while (pos < obj_end && pos < len) {
-        char c = json[pos];
-        if (c == '"') {
-            size_t next = gltf_json_skip_string_raw(json, len, pos);
-            int at_key = 0;
-            if (next == SIZE_MAX)
-                return NULL;
-            if (depth == 1)
-                at_key = gltf_json_key_matches(json, len, pos, key, NULL);
-            if (at_key) {
-                size_t colon = gltf_json_skip_ws(json, len, next);
-                size_t value;
-                if (colon < obj_end && json[colon] == ':') {
-                    value = gltf_json_skip_ws(json, len, colon + 1u);
-                    if (value < obj_end && json[value] == '"')
-                        return gltf_json_read_string_alloc(json, len, value, NULL);
-                }
-            }
-            pos = next;
-            continue;
-        }
-        if (c == '{')
-            depth++;
-        else if (c == '}') {
-            depth--;
-            if (depth == 0)
-                break;
-        } else if (depth == 1 && c == ':') {
-            pos = gltf_json_skip_value(json, len, pos + 1u);
-            if (pos == SIZE_MAX)
-                return NULL;
-            continue;
-        }
-        pos++;
+    size_t value_start;
+    size_t value_end;
+    size_t decoded_end;
+    char *decoded;
+    if (!gltf_json_object_find_value(
+            json, len, obj_start, obj_end, key, &value_start, &value_end) ||
+        value_start >= value_end || json[value_start] != '"')
+        return NULL;
+    decoded = gltf_json_read_string_alloc(json, value_end, value_start, &decoded_end);
+    if (!decoded || decoded_end != value_end) {
+        free(decoded);
+        return NULL;
     }
-    return NULL;
+    return decoded;
 }
 
 /// @brief Read a direct non-negative integer property @p key as size_t (overflow-checked).
@@ -888,7 +1024,7 @@ static int gltf_json_parse_unsigned_integer_span(const char *json,
     size_t pos = start;
     if (!json || !out)
         return 0;
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos >= end || json[pos] < '0' || json[pos] > '9')
         return 0;
@@ -901,7 +1037,7 @@ static int gltf_json_parse_unsigned_integer_span(const char *json,
         result = result * 10u + digit;
         pos++;
     }
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos != end)
         return 0;
@@ -955,7 +1091,7 @@ static int gltf_json_parse_int_span(const char *json, size_t start, size_t end, 
     int negative = 0;
     if (!json || !out)
         return 0;
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos < end && json[pos] == '-') {
         negative = 1;
@@ -973,7 +1109,7 @@ static int gltf_json_parse_int_span(const char *json, size_t start, size_t end, 
         magnitude = magnitude * 10u + digit;
         pos++;
     }
-    while (pos < end && isspace((unsigned char)json[pos]))
+    while (pos < end && gltf_json_is_ws(json[pos]))
         pos++;
     if (pos != end)
         return 0;
@@ -1006,9 +1142,10 @@ int gltf_json_object_get_int(
     return result;
 }
 
-/// @brief Find the byte range of a direct property @p key's value within an object.
-/// @details Reports the [out_start, out_end) span of the raw value (any JSON type) for the
-///          caller to parse further. Only depth-1 keys match.
+/// @brief Find the byte range of one unique direct property within an exact object span.
+/// @details Validates the entire bounded object before publishing a result. Only direct keys
+///          match; a duplicate queried key or malformed suffix makes the operation fail with
+///          untouched sentinel outputs.
 /// @param json Source JSON byte buffer.
 /// @param len Exact source byte length.
 /// @param obj_start Offset of the object's opening brace.
@@ -1024,58 +1161,69 @@ int gltf_json_object_find_value(const char *json,
                                 const char *key,
                                 size_t *out_start,
                                 size_t *out_end) {
-    int depth = 0;
-    size_t pos = obj_start;
+    size_t found_start = SIZE_MAX;
+    size_t found_end = SIZE_MAX;
+    size_t pos;
     if (out_start)
         *out_start = SIZE_MAX;
     if (out_end)
         *out_end = SIZE_MAX;
-    while (pos < obj_end && pos < len) {
-        char c = json[pos];
-        if (c == '"') {
-            size_t next = gltf_json_skip_string_raw(json, len, pos);
-            int at_key = 0;
-            if (next == SIZE_MAX)
+    if (!json || !key || obj_start >= obj_end || obj_end > len || json[obj_start] != '{')
+        return 0;
+    pos = gltf_json_skip_ws(json, obj_end, obj_start + 1u);
+    if (pos >= obj_end || json[pos] == '}')
+        return 0;
+    for (;;) {
+        size_t key_start = pos;
+        size_t key_end;
+        size_t value_start;
+        size_t value_end;
+        int matches;
+        if (pos >= obj_end || json[pos] != '"')
+            return 0;
+        key_end = gltf_json_skip_string_raw(json, obj_end, pos);
+        if (key_end == SIZE_MAX)
+            return 0;
+        matches = gltf_json_key_matches(json, obj_end, key_start, key, NULL);
+        pos = gltf_json_skip_ws(json, obj_end, key_end);
+        if (pos >= obj_end || json[pos] != ':')
+            return 0;
+        value_start = gltf_json_skip_ws(json, obj_end, pos + 1u);
+        value_end = gltf_json_skip_value(json, obj_end, value_start);
+        if (value_end == SIZE_MAX)
+            return 0;
+        if (matches) {
+            if (found_start != SIZE_MAX)
                 return 0;
-            if (depth == 1)
-                at_key = gltf_json_key_matches(json, len, pos, key, NULL);
-            if (at_key) {
-                size_t colon = gltf_json_skip_ws(json, len, next);
-                if (colon < obj_end && json[colon] == ':') {
-                    size_t value = gltf_json_skip_ws(json, len, colon + 1u);
-                    size_t end = gltf_json_skip_value(json, len, value);
-                    if (end != SIZE_MAX && end <= obj_end) {
-                        if (out_start)
-                            *out_start = value;
-                        if (out_end)
-                            *out_end = end;
-                        return 1;
-                    }
-                }
-                return 0;
-            }
-            pos = next;
-            continue;
+            found_start = value_start;
+            found_end = value_end;
         }
-        if (c == '{')
-            depth++;
-        else if (c == '}') {
-            depth--;
-            if (depth == 0)
-                break;
-        } else if (depth == 1 && c == ':') {
-            pos = gltf_json_skip_value(json, len, pos + 1u);
-            if (pos == SIZE_MAX)
+        pos = gltf_json_skip_ws(json, obj_end, value_end);
+        if (pos >= obj_end)
+            return 0;
+        if (json[pos] == '}') {
+            if (pos + 1u != obj_end)
                 return 0;
-            continue;
+            break;
         }
-        pos++;
+        if (json[pos] != ',')
+            return 0;
+        pos = gltf_json_skip_ws(json, obj_end, pos + 1u);
+        if (pos >= obj_end || json[pos] == '}')
+            return 0;
     }
-    return 0;
+    if (found_start == SIZE_MAX)
+        return 0;
+    if (out_start)
+        *out_start = found_start;
+    if (out_end)
+        *out_end = found_end;
+    return 1;
 }
 
-/// @brief Find the byte range of the @p item_index-th element of a JSON array.
-/// @details Walks comma-separated values (skipping each whole) until it reaches the index.
+/// @brief Find the byte range of the @p item_index-th element of an exact JSON array.
+/// @details Validates the array in one pass and publishes the saved range only after its complete
+///          suffix and closing delimiter are known to be valid.
 /// @param json Source JSON byte buffer.
 /// @param len Exact source byte length.
 /// @param array_start Offset of the array's opening bracket.
@@ -1091,8 +1239,10 @@ int gltf_json_array_item_range(const char *json,
                                int item_index,
                                size_t *out_start,
                                size_t *out_end) {
+    size_t found_start = SIZE_MAX;
+    size_t found_end = SIZE_MAX;
+    size_t index = 0u;
     size_t pos;
-    int index = 0;
     if (out_start)
         *out_start = SIZE_MAX;
     if (out_end)
@@ -1100,35 +1250,45 @@ int gltf_json_array_item_range(const char *json,
     if (!json || item_index < 0 || array_start >= array_end || array_end > len ||
         json[array_start] != '[')
         return 0;
-    {
-        size_t validated_end = gltf_json_skip_value(json, len, array_start);
-        if (validated_end == SIZE_MAX || validated_end != array_end)
-            return 0;
-    }
-    pos = array_start + 1u;
-    while (pos < array_end) {
+    pos = gltf_json_skip_ws(json, array_end, array_start + 1u);
+    if (pos < array_end && json[pos] == ']')
+        return 0;
+    for (;;) {
         size_t value_start;
         size_t value_end;
-        pos = gltf_json_skip_ws(json, len, pos);
-        if (pos >= array_end || json[pos] == ']')
-            break;
-        value_start = pos;
-        value_end = gltf_json_skip_value(json, len, value_start);
-        if (value_end == SIZE_MAX || value_end > array_end)
+        if (pos >= array_end)
             return 0;
-        if (index == item_index) {
-            if (out_start)
-                *out_start = value_start;
-            if (out_end)
-                *out_end = value_end;
-            return 1;
+        value_start = pos;
+        value_end = gltf_json_skip_value(json, array_end, value_start);
+        if (value_end == SIZE_MAX)
+            return 0;
+        if (index == (size_t)item_index) {
+            found_start = value_start;
+            found_end = value_end;
         }
-        index++;
-        pos = gltf_json_skip_ws(json, len, value_end);
-        if (pos < array_end && json[pos] == ',')
-            pos++;
+        if (index != SIZE_MAX)
+            index++;
+        pos = gltf_json_skip_ws(json, array_end, value_end);
+        if (pos >= array_end)
+            return 0;
+        if (json[pos] == ']') {
+            if (pos + 1u != array_end)
+                return 0;
+            break;
+        }
+        if (json[pos] != ',')
+            return 0;
+        pos = gltf_json_skip_ws(json, array_end, pos + 1u);
+        if (pos >= array_end || json[pos] == ']')
+            return 0;
     }
-    return 0;
+    if (found_start == SIZE_MAX)
+        return 0;
+    if (out_start)
+        *out_start = found_start;
+    if (out_end)
+        *out_end = found_end;
+    return 1;
 }
 
 /// @brief Read the @p item_index-th array element as a C-locale double (@p fallback otherwise).
@@ -1149,7 +1309,8 @@ double gltf_json_array_get_number(const char *json,
     size_t value_start;
     size_t value_end;
     size_t text_len;
-    char *text;
+    char stack_text[GLTF_JSON_NUMBER_STACK_CAP];
+    char *text = stack_text;
     double value;
     if (!gltf_json_array_item_range(
             json, len, array_start, array_end, item_index, &value_start, &value_end))
@@ -1161,14 +1322,17 @@ double gltf_json_array_get_number(const char *json,
     text_len = value_end - value_start;
     if (text_len > SIZE_MAX - 1u)
         return fallback;
-    text = (char *)malloc(text_len + 1u);
-    if (!text)
-        return fallback;
+    if (text_len + 1u > sizeof(stack_text)) {
+        text = (char *)malloc(text_len + 1u);
+        if (!text)
+            return fallback;
+    }
     memcpy(text, json + value_start, text_len);
     text[text_len] = '\0';
     if (rt_parse_double(text, &value) != (int32_t)Err_None || !isfinite(value))
         value = fallback;
-    free(text);
+    if (text != stack_text)
+        free(text);
     return value;
 }
 
@@ -1191,7 +1355,7 @@ char *gltf_json_array_get_string_alloc(
     value_start = gltf_json_skip_ws(json, len, value_start);
     if (value_start >= value_end || json[value_start] != '"')
         return NULL;
-    return gltf_json_read_string_alloc(json, len, value_start, NULL);
+    return gltf_json_read_string_alloc(json, value_end, value_start, NULL);
 }
 
 /// @brief Read a property @p key as a boolean, accepting literal true/false or a nonzero number.
@@ -1207,16 +1371,19 @@ int gltf_json_object_get_boolish(
     size_t value_start;
     size_t value_end;
     size_t value;
+    int numeric;
     if (!gltf_json_object_find_value(json, len, obj_start, obj_end, key, &value_start, &value_end))
         return fallback;
     value = gltf_json_skip_ws(json, len, value_start);
-    if (value + 4u <= value_end && strncmp(json + value, "true", 4u) == 0 &&
+    if (value <= value_end && value_end - value >= 4u && strncmp(json + value, "true", 4u) == 0 &&
         gltf_json_literal_ends_cleanly(json, value + 4u, value_end))
         return 1;
-    if (value + 5u <= value_end && strncmp(json + value, "false", 5u) == 0 &&
+    if (value <= value_end && value_end - value >= 5u && strncmp(json + value, "false", 5u) == 0 &&
         gltf_json_literal_ends_cleanly(json, value + 5u, value_end))
         return 0;
-    return gltf_json_object_get_int(json, len, obj_start, obj_end, key, fallback) ? 1 : 0;
+    if (!gltf_json_parse_int_span(json, value_start, value_end, &numeric))
+        return fallback;
+    return numeric ? 1 : 0;
 }
 
 #endif /* ZANNA_ENABLE_GRAPHICS */
