@@ -40,6 +40,7 @@
 
 #include "rt_gc.h"
 #include "rt_hash_util.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -183,6 +184,19 @@ static rt_concmap_impl *concmap_require(void *obj, int8_t trap_on_null) {
         return NULL;
     }
     return (rt_concmap_impl *)obj;
+}
+
+/// @brief Retain a validated map receiver without allowing trap fallthrough.
+/// @param obj Validated managed ConcurrentMap payload.
+/// @return One when the receiver is live and retained, otherwise zero after trapping.
+static int8_t concmap_retain_receiver(void *obj) {
+    int32_t retained = rt_heap_try_retain_live(obj);
+    if (retained == 1)
+        return 1;
+    rt_trap(retained < 0    ? "ConcurrentMap: receiver refcount overflow"
+            : retained == 2 ? "ConcurrentMap: receiver has an immortal refcount"
+                            : "ConcurrentMap: receiver is no longer live");
+    return 0;
 }
 
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
@@ -495,7 +509,8 @@ int64_t rt_concmap_len(void *obj) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return 0;
     CM_LOCK(cm);
     int64_t len = (int64_t)cm->count;
     CM_UNLOCK(cm);
@@ -523,7 +538,8 @@ void rt_concmap_set(void *obj, rt_string key, void *value) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -603,7 +619,8 @@ void *rt_concmap_get(void *obj, rt_string key) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return NULL;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return NULL;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -651,7 +668,8 @@ void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return default_value;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return default_value;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -697,7 +715,8 @@ int8_t rt_concmap_has(void *obj, rt_string key) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return 0;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -728,7 +747,8 @@ int8_t rt_concmap_set_if_missing(void *obj, rt_string key, void *value) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return 0;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -804,7 +824,8 @@ int8_t rt_concmap_remove(void *obj, rt_string key) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return 0;
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
@@ -847,7 +868,8 @@ void rt_concmap_clear(void *obj) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return;
     CM_LOCK(cm);
     cm_entry *entries = cm_detach_entries_unlocked(cm);
     CM_UNLOCK(cm);
@@ -868,7 +890,8 @@ void *rt_concmap_keys(void *obj) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return seq;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return seq;
 
     size_t snapshot_count = 0;
     size_t total_bytes = 0;
@@ -977,7 +1000,8 @@ void *rt_concmap_values(void *obj) {
     rt_concmap_impl *cm = concmap_require(obj, 0);
     if (!cm)
         return seq;
-    rt_obj_retain_maybe(obj);
+    if (!concmap_retain_receiver(obj))
+        return seq;
 
     size_t snapshot_count = 0;
     void **volatile values = NULL;

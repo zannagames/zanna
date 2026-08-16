@@ -1061,10 +1061,32 @@ static int box_sort_rank(void *p) {
     }
 }
 
+/// @brief Compare an exact signed integer with a finite double without rounding the integer.
+/// @param integer Signed integer operand.
+/// @param number Finite floating-point operand.
+/// @return Negative, zero, or positive according to the numeric ordering.
+static int64_t box_compare_i64_f64(int64_t integer, double number) {
+    const double i64_limit = 0x1p63;
+    if (number >= i64_limit)
+        return -1;
+    if (number < -i64_limit)
+        return 1;
+
+    int64_t truncated = (int64_t)number;
+    if (integer < truncated)
+        return -1;
+    if (integer > truncated)
+        return 1;
+
+    double truncated_number = (double)truncated;
+    return truncated_number < number ? -1 : (truncated_number > number ? 1 : 0);
+}
+
 /// @brief Compare two arbitrary collection elements using the runtime's total default order.
 /// @details Orders type classes as NULL, numeric, String, then other. Integers
-///          compare exactly, mixed numeric values compare as doubles, NaN sorts
-///          last, Strings compare lexicographically, and other values use uintptr_t order.
+///          compare exactly, mixed integer/floating values preserve full integer
+///          precision, NaN sorts last, Strings compare lexicographically, and
+///          other values use uintptr_t order.
 /// @param[in] a First collection element.
 /// @param[in] b Second collection element.
 /// @return Negative when @p a sorts first, zero when equivalent, or positive when @p b sorts first.
@@ -1086,16 +1108,20 @@ int64_t rt_box_default_sort_compare(void *a, void *b) {
                 int64_t ib = tb == RT_BOX_I1 ? (int64_t)rt_unbox_i1(b) : rt_unbox_i64(b);
                 return ia < ib ? -1 : (ia > ib ? 1 : 0);
             }
-            double da = ta == RT_BOX_F64  ? rt_unbox_f64(a)
-                        : ta == RT_BOX_I1 ? (double)rt_unbox_i1(a)
-                                          : (double)rt_unbox_i64(a);
-            double db = tb == RT_BOX_F64  ? rt_unbox_f64(b)
-                        : tb == RT_BOX_I1 ? (double)rt_unbox_i1(b)
-                                          : (double)rt_unbox_i64(b);
+            double da = ta == RT_BOX_F64 ? rt_unbox_f64(a) : 0.0;
+            double db = tb == RT_BOX_F64 ? rt_unbox_f64(b) : 0.0;
             // NaN sorts after every number and equal to another NaN.
             int na = isnan(da), nb = isnan(db);
             if (na || nb)
                 return na == nb ? 0 : (na ? 1 : -1);
+            if (ta != RT_BOX_F64) {
+                int64_t ia = ta == RT_BOX_I1 ? (int64_t)rt_unbox_i1(a) : rt_unbox_i64(a);
+                return box_compare_i64_f64(ia, db);
+            }
+            if (tb != RT_BOX_F64) {
+                int64_t ib = tb == RT_BOX_I1 ? (int64_t)rt_unbox_i1(b) : rt_unbox_i64(b);
+                return -box_compare_i64_f64(ib, da);
+            }
             return da < db ? -1 : (da > db ? 1 : 0);
         }
         case 2: {

@@ -373,6 +373,24 @@ static void test_invalid_name_returning_trap_does_not_alias_empty_name() {
         rt_obj_free(sched);
 }
 
+static void test_receiver_retain_overflow_stops_operation() {
+    void *sched = rt_scheduler_new();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(sched);
+    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+    g_last_returning_trap = nullptr;
+    g_return_traps = true;
+    assert(rt_scheduler_pending(sched) == 0);
+    g_return_traps = false;
+
+    assert(g_last_returning_trap != nullptr);
+    assert(std::strstr(g_last_returning_trap, "receiver refcount overflow") != nullptr);
+    assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    hdr->refcnt = 1;
+    if (rt_obj_release_check0(sched))
+        rt_obj_free(sched);
+}
+
 int main() {
     test_generation_of_option_disambiguates();
     test_new_scheduler();
@@ -393,5 +411,6 @@ int main() {
     test_generation_supersession();
     test_plain_schedule_is_generation_zero();
     test_invalid_name_returning_trap_does_not_alias_empty_name();
+    test_receiver_retain_overflow_stops_operation();
     return 0;
 }

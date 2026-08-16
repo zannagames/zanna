@@ -550,6 +550,24 @@ static void test_invalid_key_returning_trap_does_not_mutate_empty_key() {
     printf("test_invalid_key_returning_trap_does_not_mutate_empty_key: PASSED\n");
 }
 
+static void test_receiver_retain_overflow_stops_operation() {
+    void *m = rt_concmap_new();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(m);
+    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+    g_last_returning_trap = nullptr;
+    g_return_traps = true;
+    assert(rt_concmap_len(m) == 0);
+    g_return_traps = false;
+
+    assert(g_last_returning_trap != nullptr);
+    assert(std::strstr(g_last_returning_trap, "receiver refcount overflow") != nullptr);
+    assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    hdr->refcnt = 1;
+    if (rt_obj_release_check0(m))
+        rt_obj_free(m);
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -586,6 +604,7 @@ int main() {
     test_concurrent_read_write();
     test_concurrent_set_if_missing();
     test_invalid_key_returning_trap_does_not_mutate_empty_key();
+    test_receiver_retain_overflow_stops_operation();
 
     printf("\nAll ConcurrentMap tests passed!\n");
     return 0;

@@ -430,7 +430,7 @@ TEST(AssetLoadErrors, WorstCaseImportReportIsCompleteStrictJson) {
     rt_string_unref(report);
 
     rt_asset_error_clear();
-    const char invalid_utf8[] = {'a', (char)0xC0, (char)0xAF, 'z', '\0'};
+    const char invalid_utf8[] = "a\xC0\xAFz";
     rt_asset_error_add_warning(invalid_utf8);
     report = rt_assets3d_get_import_report();
     ASSERT_NE(report, nullptr);
@@ -440,7 +440,7 @@ TEST(AssetLoadErrors, WorstCaseImportReportIsCompleteStrictJson) {
     rt_string_unref(report);
 
     rt_asset_error_clear();
-    const char valid_utf8[] = {'c', 'a', 'f', (char)0xC3, (char)0xA9, '\0'};
+    const char valid_utf8[] = "caf\xC3\xA9";
     rt_asset_error_add_warning(valid_utf8);
     report = rt_assets3d_get_import_report();
     ASSERT_NE(report, nullptr);

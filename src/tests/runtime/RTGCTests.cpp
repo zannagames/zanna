@@ -528,6 +528,73 @@ static void test_weakref_rejects_raw_target() {
     }
 }
 
+static void test_weakref_rejects_unsupported_heap_kind() {
+    void *target = make_node();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(target);
+    uint16_t original_kind = hdr->kind;
+    hdr->kind = UINT16_MAX;
+
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) == 0) {
+        (void)rt_weakref_new(target);
+        rt_trap_clear_recovery();
+        ASSERT(0, "weakref unsupported heap kind should trap");
+    } else {
+        std::string message = rt_trap_get_error();
+        rt_trap_clear_recovery();
+        ASSERT(message.find("weak reference target") != std::string::npos,
+               "weakref unsupported kind trap mentions target");
+    }
+
+    hdr->kind = original_kind;
+    release_obj(target);
+}
+
+static void test_weakref_rejects_zero_ref_heap_target() {
+    void *target = make_node();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(target);
+    hdr->refcnt = 0;
+
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) == 0) {
+        (void)rt_weakref_new(target);
+        rt_trap_clear_recovery();
+        ASSERT(0, "weakref zero-ref heap target should trap");
+    } else {
+        std::string message = rt_trap_get_error();
+        rt_trap_clear_recovery();
+        ASSERT(message.find("weak reference target") != std::string::npos,
+               "weakref zero-ref heap trap mentions target");
+    }
+
+    hdr->refcnt = 1;
+    release_obj(target);
+}
+
+static void test_weakref_rejects_zero_ref_string_target() {
+    rt_string target = rt_string_from_bytes("x", 1);
+    ASSERT(target != nullptr, "weakref zero-ref string target allocated");
+    target->literal_refs = 0;
+
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) == 0) {
+        (void)rt_weakref_new(target);
+        rt_trap_clear_recovery();
+        ASSERT(0, "weakref zero-ref string target should trap");
+    } else {
+        std::string message = rt_trap_get_error();
+        rt_trap_clear_recovery();
+        ASSERT(message.find("weak reference target") != std::string::npos,
+               "weakref zero-ref string trap mentions target");
+    }
+
+    target->literal_refs = 1;
+    rt_string_unref(target);
+}
+
 static void test_collect_snapshot_retain_overflow_recovers() {
     void *obj = make_node();
     rt_gc_track(obj, test_node_traverse);
@@ -1316,6 +1383,9 @@ int main() {
     test_weakref_reset_after_clear();
     test_weakref_survives_finalizer_resurrection();
     test_weakref_rejects_raw_target();
+    test_weakref_rejects_unsupported_heap_kind();
+    test_weakref_rejects_zero_ref_heap_target();
+    test_weakref_rejects_zero_ref_string_target();
     test_collect_snapshot_retain_overflow_recovers();
 
     // Cycle collection

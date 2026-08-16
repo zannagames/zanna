@@ -34,12 +34,20 @@ static void *borrowedPayload(const char *text) {
     return const_cast<void *>(static_cast<const void *>(text));
 }
 
-
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 extern "C" const char *rt_trap_get_error(void);
 
+static bool g_return_traps = false;
+static int g_returning_trap_count = 0;
+static std::string g_last_returning_trap;
+
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_returning_trap_count++;
+        g_last_returning_trap = msg ? msg : "";
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -67,6 +75,18 @@ static void call_assert_fail_invalid_message() {
 static void call_assert_invalid_message() {
     int local = 42;
     rt_diag_assert(0, (rt_string)&local);
+}
+
+static void test_invalid_message_returning_trap_stops_assertion() {
+    int local = 42;
+    g_returning_trap_count = 0;
+    g_last_returning_trap.clear();
+    g_return_traps = true;
+    rt_diag_assert_eq(1, 2, (rt_string)&local);
+    g_return_traps = false;
+
+    assert(g_returning_trap_count == 1);
+    assert(g_last_returning_trap.find("invalid message string handle") != std::string::npos);
 }
 
 static void call_trap_string_escapes_controls() {
@@ -277,6 +297,7 @@ int main() {
     expect_trap(call_assert_fail_invalid_message, "invalid message string handle");
     expect_trap(call_assert_invalid_message, "invalid message string handle");
     expect_trap(call_trap_string_escapes_controls, "line\\x0A\\\"\\\\");
+    test_invalid_message_returning_trap_stops_assertion();
 
     printf("\nAll RTDiagTests passed!\n");
     return 0;

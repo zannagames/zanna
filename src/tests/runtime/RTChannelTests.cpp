@@ -29,8 +29,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 #include <vector>
+
+static bool g_return_traps = false;
+static std::string g_last_returning_trap;
 
 extern "C" {
 #include "rt_array_obj.h"
@@ -48,6 +52,10 @@ void rt_trap_clear_recovery(void);
 
 /// @brief Vm_trap.
 void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg ? msg : "";
+        return;
+    }
     fprintf(stderr, "TRAP: %s\n", msg);
     rt_abort(msg);
 }
@@ -801,6 +809,23 @@ static void test_synchronous_try_recv_is_strictly_nonblocking() {
     rt_channel_close(ch);
 }
 
+static void test_receiver_retain_overflow_stops_operation() {
+    void *ch = rt_channel_new(1);
+    rt_heap_hdr_t *hdr = rt_heap_hdr(ch);
+    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+    g_last_returning_trap.clear();
+    g_return_traps = true;
+    assert(rt_channel_get_len(ch) == 0);
+    g_return_traps = false;
+
+    assert(g_last_returning_trap.find("receiver refcount overflow") != std::string::npos);
+    assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    hdr->refcnt = 1;
+    if (rt_obj_release_check0(ch))
+        rt_obj_free(ch);
+}
+
 /// @brief Main.
 int main() {
     test_new_buffered();
@@ -842,6 +867,7 @@ int main() {
     test_synchronous_is_full_honors_waiting_receiver();
     test_synchronous_try_send_handoffs_to_waiting_receiver();
     test_synchronous_try_recv_is_strictly_nonblocking();
+    test_receiver_retain_overflow_stops_operation();
 
     printf("Channel tests: all passed\n");
     return 0;

@@ -42,12 +42,18 @@ static void *borrowedPayload(const char *text) {
     return const_cast<void *>(static_cast<const void *>(text));
 }
 
-
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 extern "C" const char *rt_trap_get_error(void);
 
+static bool g_return_traps = false;
+static std::string g_last_returning_trap;
+
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg ? msg : "";
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -837,6 +843,22 @@ static void test_null_safety() {
     destroy_obj(bus);
 }
 
+static void test_receiver_retain_overflow_stops_operation() {
+    void *bus = rt_msgbus_new();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(bus);
+    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+    g_last_returning_trap.clear();
+    g_return_traps = true;
+    assert(rt_msgbus_total_subscriptions(bus) == 0);
+    g_return_traps = false;
+
+    assert(g_last_returning_trap.find("receiver refcount overflow") != std::string::npos);
+    assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    hdr->refcnt = 1;
+    destroy_obj(bus);
+}
+
 int main() {
     test_new();
     test_callback_wrapper();
@@ -864,5 +886,6 @@ int main() {
     test_clear();
     test_callback_object_cleanup_on_unsubscribe();
     test_null_safety();
+    test_receiver_retain_overflow_stops_operation();
     return 0;
 }

@@ -244,7 +244,19 @@ static rt_msgbus_impl *mb_require_retained(void *obj, const char *fn_name) {
     rt_msgbus_impl *mb = mb_require(obj, fn_name);
     if (!mb)
         return NULL;
-    rt_obj_retain_maybe(mb);
+    int32_t retained = rt_heap_try_retain_live(mb);
+    if (retained != 1) {
+        char buf[192];
+        snprintf(buf,
+                 sizeof(buf),
+                 "%s: MessageBus receiver %s",
+                 fn_name ? fn_name : "MessageBus",
+                 retained < 0    ? "refcount overflow"
+                 : retained == 2 ? "has an immortal refcount"
+                                 : "is no longer live");
+        rt_trap(buf);
+        return NULL;
+    }
     return mb;
 }
 

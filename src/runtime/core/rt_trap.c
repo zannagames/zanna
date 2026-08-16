@@ -99,11 +99,12 @@ static void append_escaped_string(char *dst, size_t dst_cap, rt_string s) {
 ///          diagnostic. Invalid non-NULL handles trap at the diagnostic boundary
 ///          instead of being silently replaced by the fallback text.
 /// @param message Borrowed optional diagnostic string.
-/// @return One only for a valid handle with at least one stored byte.
+/// @return One for a valid non-empty handle, zero for an empty message, or -1
+///   after trapping for an invalid handle.
 static int message_has_bytes(rt_string message) {
     if (message && !rt_string_is_handle((const void *)message)) {
         rt_trap("Zanna.Core.Diagnostics: invalid message string handle");
-        return 0;
+        return -1;
     }
     if (!message || !message->data)
         return 0;
@@ -121,7 +122,10 @@ static int message_has_bytes(rt_string message) {
 /// @param cap Total capacity of @p buf.
 /// @return @p buf for a rendered non-empty message; otherwise @p fallback.
 static const char *format_message(rt_string message, const char *fallback, char *buf, size_t cap) {
-    if (!message_has_bytes(message))
+    int has_bytes = message_has_bytes(message);
+    if (has_bytes < 0)
+        return NULL;
+    if (!has_bytes)
         return fallback;
     if (!buf || cap == 0)
         return fallback;
@@ -189,7 +193,10 @@ void rt_diag_assert(int8_t condition, rt_string message) {
         return;
 
     char msg_buf[160];
-    rt_trap(format_message(message, "Assertion failed", msg_buf, sizeof(msg_buf)));
+    const char *msg = format_message(message, "Assertion failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
+    rt_trap(msg);
 }
 
 /// @brief Assert two integers are equal.
@@ -202,6 +209,8 @@ void rt_diag_assert_eq(int64_t expected, int64_t actual, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertEq failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %" PRId64 ", got %" PRId64, msg, expected, actual);
     rt_trap(buf);
@@ -217,6 +226,8 @@ void rt_diag_assert_neq(int64_t a, int64_t b, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertNeq failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: values should not be equal (both are %" PRId64 ")", msg, a);
     rt_trap(buf);
@@ -249,6 +260,8 @@ void rt_diag_assert_eq_num(double expected, double actual, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertEqNum failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %g, got %g (diff=%g)", msg, expected, actual, diff);
     rt_trap(buf);
@@ -271,6 +284,8 @@ void rt_diag_assert_eq_str(rt_string expected, rt_string actual, rt_string messa
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertEqStr failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[512];
     if (!expected_valid || !actual_valid)
         snprintf(buf, sizeof(buf), "%s: invalid string handle; expected \"", msg);
@@ -292,6 +307,8 @@ void rt_diag_assert_null(void *obj, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertNull failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected null, got non-null object", msg);
     rt_trap(buf);
@@ -306,6 +323,8 @@ void rt_diag_assert_not_null(void *obj, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertNotNull failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected non-null, got null", msg);
     rt_trap(buf);
@@ -316,6 +335,8 @@ void rt_diag_assert_not_null(void *obj, rt_string message) {
 void rt_diag_assert_fail(rt_string message) {
     char msg_buf[160];
     const char *msg = format_message(message, "AssertFail called", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     rt_trap(msg);
 }
 
@@ -329,6 +350,8 @@ void rt_diag_assert_gt(int64_t a, int64_t b, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertGt failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %" PRId64 " > %" PRId64, msg, a, b);
     rt_trap(buf);
@@ -344,6 +367,8 @@ void rt_diag_assert_lt(int64_t a, int64_t b, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertLt failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %" PRId64 " < %" PRId64, msg, a, b);
     rt_trap(buf);
@@ -359,6 +384,8 @@ void rt_diag_assert_gte(int64_t a, int64_t b, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertGte failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %" PRId64 " >= %" PRId64, msg, a, b);
     rt_trap(buf);
@@ -374,6 +401,8 @@ void rt_diag_assert_lte(int64_t a, int64_t b, rt_string message) {
 
     char msg_buf[160];
     const char *msg = format_message(message, "AssertLte failed", msg_buf, sizeof(msg_buf));
+    if (!msg)
+        return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s: expected %" PRId64 " <= %" PRId64, msg, a, b);
     rt_trap(buf);

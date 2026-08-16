@@ -169,6 +169,21 @@ static void test_seq_find_boxed_floats() {
     printf("\n");
 }
 
+static void test_mixed_numeric_sort_preserves_i64_precision() {
+    printf("Testing mixed numeric sort precision:\n");
+
+    void *integer = rt_box_i64(INT64_C(9007199254740993));
+    void *number = rt_box_f64(9007199254740992.0);
+    test_result("i64 above 2^53 sorts after rounded f64",
+                rt_box_default_sort_compare(integer, number) > 0);
+    test_result("mixed numeric comparison is antisymmetric",
+                rt_box_default_sort_compare(number, integer) < 0);
+
+    release_object(integer);
+    release_object(number);
+    printf("\n");
+}
+
 //=============================================================================
 // Seq.Find / Seq.Has with boxed booleans
 //=============================================================================
@@ -434,6 +449,7 @@ int main() {
     test_seq_find_boxed_strings();
     test_seq_find_boxed_integers();
     test_seq_find_boxed_floats();
+    test_mixed_numeric_sort_preserves_i64_precision();
     test_seq_find_boxed_booleans();
     test_seq_pointer_identity();
     test_box_type_rejects_box_element_arrays();

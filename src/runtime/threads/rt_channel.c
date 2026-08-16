@@ -39,6 +39,7 @@
 #include "rt_channel.h"
 
 #include "rt_gc.h"
+#include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_threads.h"
@@ -460,6 +461,19 @@ static channel_impl *channel_require(void *channel, const char *null_msg, int8_t
     return (channel_impl *)channel;
 }
 
+/// @brief Retain a validated channel receiver without allowing trap fallthrough.
+/// @param channel Validated managed Channel payload.
+/// @return One when the receiver is live and retained, otherwise zero after trapping.
+static int8_t channel_retain_receiver(void *channel) {
+    int32_t retained = rt_heap_try_retain_live(channel);
+    if (retained == 1)
+        return 1;
+    rt_trap(retained < 0    ? "Channel: receiver refcount overflow"
+            : retained == 2 ? "Channel: receiver has an immortal refcount"
+                            : "Channel: receiver is no longer live");
+    return 0;
+}
+
 /// @brief Create a new channel for thread-safe message passing between threads.
 /// @details Capacity 0 creates a synchronous (unbuffered) channel where send blocks
 ///          until a receiver is ready. Capacity > 0 creates a buffered channel that
@@ -546,7 +560,8 @@ void rt_channel_send(void *channel, void *item) {
     channel_impl *ch = channel_require(channel, "Channel.Send: nil channel", 1);
     if (!ch)
         return;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return;
 
     rt_monitor_enter(ch->monitor);
 
@@ -662,7 +677,8 @@ int8_t rt_channel_try_send(void *channel, void *item) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 0;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     rt_monitor_enter(ch->monitor);
 
@@ -723,7 +739,8 @@ int8_t rt_channel_send_for(void *channel, void *item, int64_t ms) {
     if (ms <= 0)
         return rt_channel_try_send(channel, item);
     channel_deadline deadline = channel_deadline_from_now(ms);
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     int64_t monitor_budget = channel_remaining_ms(deadline);
     if (monitor_budget <= 0 || !rt_monitor_try_enter_for(ch->monitor, monitor_budget)) {
@@ -862,7 +879,8 @@ void *rt_channel_recv(void *channel) {
     channel_impl *ch = channel_require(channel, "Channel.Recv: nil channel", 1);
     if (!ch)
         return NULL;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return NULL;
 
     rt_monitor_enter(ch->monitor);
 
@@ -945,7 +963,8 @@ int8_t rt_channel_try_recv(void *channel, void **out) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 0;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     rt_monitor_enter(ch->monitor);
 
@@ -1055,7 +1074,8 @@ int8_t rt_channel_recv_for(void *channel, void **out, int64_t ms) {
     if (ms <= 0)
         return rt_channel_try_recv(channel, out);
     channel_deadline deadline = channel_deadline_from_now(ms);
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     int64_t monitor_budget = channel_remaining_ms(deadline);
     if (monitor_budget <= 0 || !rt_monitor_try_enter_for(ch->monitor, monitor_budget)) {
@@ -1208,7 +1228,8 @@ void rt_channel_close(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return;
 
     rt_monitor_enter(ch->monitor);
 
@@ -1238,7 +1259,8 @@ int64_t rt_channel_get_len(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 0;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     rt_monitor_enter(ch->monitor);
     int64_t len = ch->count;
@@ -1255,7 +1277,8 @@ int64_t rt_channel_get_cap(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 0;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
     rt_monitor_enter(ch->monitor);
     int64_t cap = ch->capacity;
     rt_monitor_exit(ch->monitor);
@@ -1270,7 +1293,8 @@ int8_t rt_channel_get_is_closed(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 1;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 1;
     rt_monitor_enter(ch->monitor);
     int8_t closed = ch->closed;
     rt_monitor_exit(ch->monitor);
@@ -1285,7 +1309,8 @@ int8_t rt_channel_get_is_empty(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 1;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 1;
 
     rt_monitor_enter(ch->monitor);
     int8_t empty = (ch->count == 0) ? 1 : 0;
@@ -1304,7 +1329,8 @@ int8_t rt_channel_get_is_full(void *channel) {
     channel_impl *ch = channel_require(channel, NULL, 0);
     if (!ch)
         return 0;
-    rt_obj_retain_maybe(channel);
+    if (!channel_retain_receiver(channel))
+        return 0;
 
     rt_monitor_enter(ch->monitor);
     int8_t full = (ch->capacity == 0) ? ((ch->count != 0 || ch->waiting_receivers == 0) ? 1 : 0)

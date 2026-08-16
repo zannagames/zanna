@@ -41,6 +41,7 @@
 #include "rt_concqueue.h"
 
 #include "rt_gc.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
@@ -306,6 +307,19 @@ static rt_concqueue_impl *concqueue_require(void *obj, int8_t trap_on_null) {
     return (rt_concqueue_impl *)obj;
 }
 
+/// @brief Retain a validated queue receiver without allowing trap fallthrough.
+/// @param obj Validated managed ConcurrentQueue payload.
+/// @return One when the receiver is live and retained, otherwise zero after trapping.
+static int8_t concqueue_retain_receiver(void *obj) {
+    int32_t retained = rt_heap_try_retain_live(obj);
+    if (retained == 1)
+        return 1;
+    rt_trap(retained < 0    ? "ConcurrentQueue: receiver refcount overflow"
+            : retained == 2 ? "ConcurrentQueue: receiver has an immortal refcount"
+                            : "ConcurrentQueue: receiver is no longer live");
+    return 0;
+}
+
 /// @brief Drop one GC reference to @p obj and free it if the count hit zero.
 /// @param obj Runtime-managed object reference, or null.
 static void concqueue_release_object(void *obj) {
@@ -510,7 +524,8 @@ int64_t rt_concqueue_len(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return 0;
     CQ_LOCK(cq);
     int64_t len = cq->count;
     CQ_UNLOCK(cq);
@@ -535,7 +550,8 @@ int8_t rt_concqueue_get_is_closed(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return 1;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return 1;
     CQ_LOCK(cq);
     int8_t closed = cq->closed;
     CQ_UNLOCK(cq);
@@ -555,7 +571,8 @@ void rt_concqueue_enqueue(void *obj, void *item) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return;
 
     cq_node *node = (cq_node *)malloc(sizeof(cq_node));
     if (!node) {
@@ -624,7 +641,8 @@ int8_t rt_concqueue_try_enqueue(void *obj, void *item) {
     cq = concqueue_require(obj, 0);
     if (!cq)
         return 0;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return 0;
     node = (cq_node *)malloc(sizeof(*node));
     if (!node) {
         concqueue_release_object(obj);
@@ -676,7 +694,8 @@ void *rt_concqueue_try_dequeue(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return NULL;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return NULL;
 
     CQ_LOCK(cq);
     if (!cq->head) {
@@ -707,7 +726,8 @@ void *rt_concqueue_try_dequeue_option(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return rt_option_none();
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return rt_option_none();
 
     CQ_LOCK(cq);
     if (!cq->head) {
@@ -753,7 +773,8 @@ void *rt_concqueue_dequeue(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return NULL;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return NULL;
 
     CQ_LOCK(cq);
     while (!cq->head && !cq->closed) {
@@ -803,7 +824,8 @@ void *rt_concqueue_dequeue_timeout(void *obj, int64_t timeout_ms) {
         return NULL;
     if (timeout_ms <= 0)
         return rt_concqueue_try_dequeue(obj);
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return NULL;
 
 #if RT_PLATFORM_WINDOWS
     CQ_LOCK(cq);
@@ -875,7 +897,8 @@ void *rt_concqueue_peek(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return NULL;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return NULL;
 
     CQ_LOCK(cq);
     void *value = cq->head ? cq->head->value : NULL;
@@ -910,7 +933,8 @@ void rt_concqueue_clear(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return;
 
     CQ_LOCK(cq);
     cq_node *n = cq_detach_all_locked(cq);
@@ -929,7 +953,8 @@ void rt_concqueue_close(void *obj) {
     rt_concqueue_impl *cq = concqueue_require(obj, 0);
     if (!cq)
         return;
-    rt_obj_retain_maybe(obj);
+    if (!concqueue_retain_receiver(obj))
+        return;
     CQ_LOCK(cq);
     if (cq->closed) {
         CQ_UNLOCK(cq);

@@ -908,12 +908,20 @@ static int gc_is_weakref_handle_unlocked(void *candidate) {
 static int gc_weak_target_is_valid(void *target) {
     if (!target)
         return 1;
-    if (rt_string_is_handle(target))
-        return 1;
+    if (rt_string_is_handle(target)) {
+        rt_string s = (rt_string)target;
+        rt_heap_hdr_t *string_hdr = s->heap && s->heap != RT_SSO_SENTINEL ? s->heap : NULL;
+        size_t refs =
+            __atomic_load_n(string_hdr ? &string_hdr->refcnt : &s->literal_refs, __ATOMIC_ACQUIRE);
+        return refs != 0 ? 1 : 0;
+    }
     rt_heap_hdr_t *hdr = NULL;
     if (!rt_heap_try_get_header(target, &hdr) || !hdr)
         return 0;
-    return (rt_heap_kind_t)hdr->kind != RT_HEAP_STRING ? 1 : 0;
+    rt_heap_kind_t kind = (rt_heap_kind_t)hdr->kind;
+    if (kind != RT_HEAP_ARRAY && kind != RT_HEAP_OBJECT)
+        return 0;
+    return __atomic_load_n(&hdr->refcnt, __ATOMIC_ACQUIRE) != 0 ? 1 : 0;
 }
 
 /// @brief Detach a weak-reference object from the registry during generic object release.

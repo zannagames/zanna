@@ -41,6 +41,7 @@
 
 #include "rt_option.h"
 
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -252,6 +253,19 @@ static void scheduler_save_trap_error(char *buffer, size_t buffer_size, const ch
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
+/// @brief Retain a validated scheduler receiver without allowing trap fallthrough.
+/// @param sched Validated managed Scheduler payload.
+/// @return One when the receiver is live and retained, otherwise zero after trapping.
+static int8_t scheduler_retain_receiver(void *sched) {
+    int32_t retained = rt_heap_try_retain_live(sched);
+    if (retained == 1)
+        return 1;
+    rt_trap(retained < 0    ? "Scheduler: receiver refcount overflow"
+            : retained == 2 ? "Scheduler: receiver has an immortal refcount"
+                            : "Scheduler: receiver is no longer live");
+    return 0;
+}
+
 /// @brief Release task-name references and free every node in an entry chain.
 /// @param e Head of the detached entry list, or NULL.
 static void scheduler_free_entry_list(sched_entry *e) {
@@ -345,7 +359,8 @@ static void scheduler_schedule_impl(void *sched,
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return;
 
     int64_t due = due_time_from_now(delay_ms);
     rt_string retained_name = NULL;
@@ -437,7 +452,8 @@ int8_t rt_scheduler_cancel(void *sched, rt_string name) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return 0;
 
     SCHED_LOCK(data);
     sched_entry **pp = &data->head;
@@ -474,7 +490,8 @@ int8_t rt_scheduler_is_due(void *sched, rt_string name) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return 0;
     int64_t now = current_time_ms();
 
     SCHED_LOCK(data);
@@ -511,7 +528,8 @@ int8_t rt_scheduler_is_due_gen(void *sched, rt_string name, int64_t generation) 
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return 0;
     int64_t now = current_time_ms();
 
     SCHED_LOCK(data);
@@ -543,7 +561,8 @@ int64_t rt_scheduler_generation_of(void *sched, rt_string name) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return -1;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return -1;
 
     SCHED_LOCK(data);
     sched_entry *e = data->head;
@@ -576,7 +595,8 @@ void *rt_scheduler_generation_of_option(void *sched, rt_string name) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return rt_option_none();
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return rt_option_none();
 
     SCHED_LOCK(data);
     sched_entry *e = data->head;
@@ -607,7 +627,8 @@ void *rt_scheduler_poll(void *sched) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return rt_seq_new_owned();
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return rt_seq_new_owned();
     int64_t now = current_time_ms();
     sched_entry *due_head = NULL;
     sched_entry *due_tail = NULL;
@@ -688,7 +709,8 @@ int64_t rt_scheduler_pending(void *sched) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return 0;
     SCHED_LOCK(data);
     int64_t count = data->count;
     SCHED_UNLOCK(data);
@@ -707,7 +729,8 @@ void rt_scheduler_clear(void *sched) {
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return;
-    rt_obj_retain_maybe(sched);
+    if (!scheduler_retain_receiver(sched))
+        return;
 
     SCHED_LOCK(data);
     sched_entry *e = data->head;

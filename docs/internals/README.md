@@ -75,6 +75,7 @@ User-facing documentation lives in the **[main documentation index](../README.md
 
 Living ledgers that track findings and their resolution for high-risk subsystems.
 
+- [Memory, Threads, and Core Runtime Audit (August 2026)](memory-threads-core-runtime-audit-2026-08.md) — Resolution ledger for 10 weak-reference, numeric-ordering, diagnostics, and receiver-retain findings
 - [Runtime Hardening Audit (July 2026)](runtime-hardening-audit-2026-07.md) — Resolution ledger for 64 runtime findings
 - [Audio Runtime Hardening Program (August 2026)](audio-runtime-hardening-2026-08.md) — Resolution ledger for 100 WAV, Ogg, Vorbis, MP3, streaming, and mixer findings
 - [Audio Runtime Hardening, Round Two (August 2026)](audio-runtime-hardening-round-two-2026-08.md) — Resolution ledger for 100 additional decoder-wrapper, synth, effects, soundbank, MusicGen, playlist, and crossfade findings

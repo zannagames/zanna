@@ -33,10 +33,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <thread>
 
 static std::atomic<int> g_queue_value_finalized{0};
 static int g_queue_alloc_fail_countdown = 0;
+static bool g_return_traps = false;
+static std::string g_last_returning_trap;
 
 /// @brief Count finalization of a transferred queue value in failure tests.
 static void queue_value_finalizer(void *obj) {
@@ -58,6 +61,10 @@ extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg ? msg : "";
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -269,6 +276,23 @@ static void test_null_safety() {
     assert(rt_concqueue_dequeue_timeout(NULL, 10) == NULL);
 }
 
+static void test_receiver_retain_overflow_stops_operation() {
+    void *q = rt_concqueue_new();
+    rt_heap_hdr_t *hdr = rt_heap_hdr(q);
+    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+    g_last_returning_trap.clear();
+    g_return_traps = true;
+    assert(rt_concqueue_len(q) == 0);
+    g_return_traps = false;
+
+    assert(g_last_returning_trap.find("receiver refcount overflow") != std::string::npos);
+    assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    hdr->refcnt = 1;
+    if (rt_obj_release_check0(q))
+        rt_obj_free(q);
+}
+
 /// @brief Main.
 int main() {
     test_new();
@@ -285,5 +309,6 @@ int main() {
     test_close_wakes_blocked_dequeue();
     test_concurrent_produce_consume();
     test_null_safety();
+    test_receiver_retain_overflow_stops_operation();
     return 0;
 }
