@@ -857,6 +857,13 @@ endif ()
 # =============================================================================
 set(ZIA_RUNTIME_TESTS_DIR "${CMAKE_SOURCE_DIR}/src/tests/fixtures/runtime")
 set(ZIA_RUNTIME_TESTS
+        # ADR 0249-0253 runtime completions. Each is written on
+        # Zanna.Testing.Suite, so these also exercise the harness itself.
+        test_random_state
+        test_playback_primitives
+        test_text_table
+        test_runtime_completions
+        test_mesh3d_append
         test_math
         test_string
         test_bits

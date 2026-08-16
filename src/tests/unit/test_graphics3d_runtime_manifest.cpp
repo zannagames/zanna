@@ -46,11 +46,19 @@ namespace {
  * World3D.ClearFog (2026-08-13, ADR 0248 fog argument-order alignment):
  * +1 function / +1 method.
  * Mesh3D.RasterizeUvMaskY (2026-08-15, body-zone texture masking for
- * per-region character recolors): +1 function / +1 method. */
-constexpr std::size_t kExpectedFunctionCount = 2243;
+ * per-region character recolors): +1 function / +1 method.
+ * Mesh3D.BoundsMin/BoundsMax/BoundsCenter/BoundsSize/BoundsRadius
+ * (2026-08-16, ADR 0252 bounds readback — the runtime already maintained
+ * this AABB for culling but never exposed it, so every app re-scanned the
+ * vertex buffer by hand): +5 functions / +5 properties.
+ * Mesh3D.Append (2026-08-16, ADR 0252 geometry merge — the runtime could
+ * build and transform a mesh but not put one mesh's triangles into another,
+ * so batching parts into a single draw call meant re-emitting every vertex
+ * by hand): +1 function / +1 method. */
+constexpr std::size_t kExpectedFunctionCount = 2249;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 821;
-constexpr std::size_t kExpectedMethodCount = 1209;
+constexpr std::size_t kExpectedPropertyCount = 826;
+constexpr std::size_t kExpectedMethodCount = 1210;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -244,7 +252,7 @@ int main() {
      * Rehashed 2026-08-15: Mesh3D.RasterizeUvMaskY added (bind-pose
      * Y-band UV coverage into a Pixels mask — body-zone texture masking
      * for per-region character recolors, plan 55 uniforms). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x9f0db4b0aa954463);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x13e1a31028da0a8f);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

@@ -101,6 +101,27 @@ void rt_env_set_var(rt_string name, rt_string value);
 /// @note Does not return; @p code is narrowed to the platform exit-status width.
 void rt_env_exit(int64_t code);
 
+// Flag and option parsing (ADR 0253).
+/// @brief True when @p name appears as a standalone argument.
+/// @param name Flag to look for, including any leading dashes.
+/// @return Non-zero when present.
+int8_t rt_args_has_flag(rt_string name);
+/// @brief Value following @p name, accepting `--opt value` and `--opt=value`.
+/// @param name Option to look for.
+/// @param fallback Returned when absent or unvalued.
+/// @return Owned value string.
+rt_string rt_args_get_option(rt_string name, rt_string fallback);
+/// @brief Integer value following @p name, or @p fallback.
+/// @param name Option to look for.
+/// @param fallback Returned when absent or unparseable.
+/// @return Parsed integer or @p fallback.
+int64_t rt_args_get_option_int(rt_string name, int64_t fallback);
+/// @brief Arguments that are neither flags nor option values.
+/// @details A bare `--` ends option processing; everything after it is
+///          positional.
+/// @return Owned Seq of positional argument strings.
+void *rt_args_positionals(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -28,6 +28,24 @@ to construct the class directly. Its public surface exposes operations including
 | <a id="zanna-system-environment-isnative"></a>`IsNative` | `i1()` | `Zanna.System.Environment.IsNative` |
 | <a id="zanna-system-environment-setvariable"></a>`SetVariable` | `void(str,str)` | `Zanna.System.Environment.SetVariable` |
 
+<a id="zanna-system-args"></a>
+### `Zanna.System.Args`
+
+Answers "was this flag passed?" and "what followed this option?".
+
+`Zanna.System.Environment` exposes the raw argument count and index; this exposes the scan every
+CLI-facing program was writing on top of it. Deliberately minimal — no spec object, no usage
+generation, no subcommands: those are opinionated, and the shared part is the scan.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-system-args-hasflag"></a>`HasFlag` | `i1(str)` | `Zanna.System.Args.HasFlag` |
+| <a id="zanna-system-args-getoption"></a>`GetOption` | `str(str,str)` | `Zanna.System.Args.GetOption` |
+| <a id="zanna-system-args-getoptionint"></a>`GetOptionInt` | `i64(str,i64)` | `Zanna.System.Args.GetOptionInt` |
+| <a id="zanna-system-args-positionals"></a>`Positionals` | `seq<str>()` | `Zanna.System.Args.Positionals` |
+
 <a id="zanna-system-clipboard"></a>
 ### `Zanna.System.Clipboard`
 
@@ -256,6 +274,10 @@ construct the class directly. Its public surface exposes properties such as `Arc
 |---|---|---|
 | `Zanna.System.Environment.GetArgumentCount` | `i64()` | `rt_args_count` |
 | `Zanna.System.Environment.GetArgument` | `str(i64)` | `rt_args_get` |
+| `Zanna.System.Args.HasFlag` | `i1(str)` | `rt_args_has_flag` |
+| `Zanna.System.Args.GetOption` | `str(str,str)` | `rt_args_get_option` |
+| `Zanna.System.Args.GetOptionInt` | `i64(str,i64)` | `rt_args_get_option_int` |
+| `Zanna.System.Args.Positionals` | `seq()` | `rt_args_positionals` |
 | `Zanna.System.Environment.GetCommandLine` | `str()` | `rt_cmdline` |
 | `Zanna.System.Environment.Exit` | `void(i64)` | `rt_env_exit` |
 | `Zanna.System.Environment.GetVariable` | `str(str)` | `rt_env_get_var` |

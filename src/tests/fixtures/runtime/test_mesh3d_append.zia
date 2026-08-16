@@ -1,0 +1,55 @@
+// Test: ADR 0252 — Mesh3D bounds readback and geometry merge
+// Written on Zanna.Testing.Suite, which is itself part of the surface
+// under test (ADR 0251) — the harness and its first real consumer.
+module test_mesh3d_append;
+bind Zanna.Testing.Suite as Suite;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math as Math;
+bind Zanna.Text.Fmt as Fmt;
+
+func start() {
+    var t = new Suite("Mesh3D.Append");
+
+    var a = G3D.Mesh3D.Box(2.0, 2.0, 2.0);
+    var b = G3D.Mesh3D.Box(2.0, 2.0, 2.0);
+    var av = a.VertexCount;
+    var at = a.TriangleCount;
+    t.Check(av > 0, "box has vertices");
+
+    // --- plain merge ---------------------------------------------------------
+    a.Append(b);
+    t.EqInt(a.VertexCount, av * 2, "vertex counts add");
+    t.EqInt(a.TriangleCount, at * 2, "triangle counts add");
+
+    // --- the documented transform idiom: clone, transform, append -----------
+    var world = G3D.Mesh3D.Box(1.0, 1.0, 1.0);
+    var baseV = world.VertexCount;
+    var part = G3D.Mesh3D.Box(1.0, 1.0, 1.0).Clone();
+    part.Transform(Math.Mat4.Translate(10.0, 0.0, 0.0));
+    world.Append(part);
+    t.EqInt(world.VertexCount, baseV * 2, "clone+transform+append merges");
+    // the merged bounds must now span both parts
+    var mx = world.BoundsMax;
+    t.Check(mx.X > 9.0, "merged bounds reach the translated part (maxX=" +
+            Fmt.Num(mx.X) + ")");
+    var mn = world.BoundsMin;
+    t.Check(mn.X < 0.0, "merged bounds still include the original part (minX=" +
+            Fmt.Num(mn.X) + ")");
+
+    // --- indices are rebased, so the merged mesh is still valid geometry ----
+    // A mesh whose indices were not offset would reference only the first
+    // part's vertices; bounds would then not span both.
+    t.Check(mx.X - mn.X > 10.0, "merged extent spans both parts");
+
+    // --- empty source is a no-op --------------------------------------------
+    var e = new G3D.Mesh3D();
+    var beforeV = world.VertexCount;
+    world.Append(e);
+    t.EqInt(world.VertexCount, beforeV, "appending an empty mesh is a no-op");
+
+    // --- bounds accessors on an empty mesh ----------------------------------
+    t.Check(e.BoundsMin == null, "empty mesh has no bounds");
+    t.EqNum(e.BoundsRadius, 0.0, 0.000001, "empty mesh radius is zero");
+
+    t.Report();
+}

@@ -368,6 +368,13 @@ enum class RuntimeTypeId : std::size_t {
     // Additional collections
     RTCLS_Iterator,
     RTCLS_Deque,
+    // Testing harness (ADR 0251)
+    RTCLS_TestingSuite,
+    RTCLS_TestingGolden,
+    // Fixed-width text table (ADR 0252)
+    RTCLS_TextTable,
+    // CLI flag/option parsing (ADR 0253)
+    RTCLS_SystemArgs,
     // Text utilities
     RTCLS_Diff,
     RTCLS_Toml,

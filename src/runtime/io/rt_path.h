@@ -125,6 +125,22 @@ rt_string rt_path_exe_dir_str(void);
 /// @return Malloc-owned C string for the caller to free, or NULL on failure.
 char *rt_path_exe_dir_cstr(void);
 
+// Upward marker search (ADR 0253).
+/// @brief Walk up from @p start_dir looking for a relative marker path.
+/// @details Returns the directory *containing* the marker. The marker is probed
+///          as both a file and a directory. The level bound prevents an
+///          unbounded climb when the marker is absent.
+/// @param start_dir Start directory; empty or NULL means the working directory.
+/// @param relative_marker Path fragment probed at each level.
+/// @param max_levels Parent levels above the start; clamped to 0..64.
+/// @return Owned directory path, or the empty string when nothing matched.
+rt_string rt_path_find_upward(rt_string start_dir, rt_string relative_marker, int64_t max_levels);
+/// @brief Resolve a data root from an environment override, then a marker walk.
+/// @param env_var Environment variable consulted first; may be NULL.
+/// @param relative_marker Path fragment identifying the root.
+/// @return Owned directory path, or the empty string when unresolved.
+rt_string rt_path_resolve_data_root(rt_string env_var, rt_string relative_marker);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1282,6 +1282,111 @@ void rt_mesh3d_add_vertex(
     rt_mesh3d_touch_geometry(m);
 }
 
+
+//=============================================================================
+// Geometry Merge (ADR 0252)
+//=============================================================================
+
+/// @brief Append @p src's geometry into @p dst.
+/// @details The missing primitive: the runtime could build a box, a sphere, a
+///          cylinder, or a plane, and could transform one — but not put one
+///          mesh's triangles into another. Without it, an application that
+///          wants a hundred parts as **one draw call** must re-emit every
+///          vertex by hand, which is why procedural-geometry code ends up
+///          funnelled through a hand-written batcher.
+///
+///          **No transform argument, deliberately.** Meshes are GC-managed
+///          with no destroy entry point, so a transform variant would have to
+///          create and release a temporary clone inside C. The Zia-side idiom
+///          keeps that allocation explicit and under the collector:
+///          @code
+///          var part = box.Clone();
+///          part.Transform(placement);
+///          stadium.Append(part);
+///          @endcode
+///
+///          Skinned and morph-target meshes are rejected rather than merged:
+///          their bone indices and shape deltas are meaningless once vertices
+///          from another mesh share the buffer, and silently producing a
+///          corrupt rig is worse than refusing.
+///
+///          Appending a mesh to itself is rejected — the source buffers move
+///          under the copy when storage grows.
+/// @param obj Destination mesh, mutated in place.
+/// @param src_obj Source mesh; unchanged.
+void rt_mesh3d_append(void *obj, void *src_obj) {
+    rt_mesh3d *dst = mesh3d_checked(obj);
+    rt_mesh3d *src = mesh3d_checked(src_obj);
+    if (!dst || !src)
+        return;
+    if (dst->build_failed)
+        return;
+    if (dst == src) {
+        rt_trap("Mesh3D.Append: cannot append a mesh to itself");
+        return;
+    }
+    if (dst->skeleton_ref || src->skeleton_ref || dst->morph_targets_ref ||
+        src->morph_targets_ref) {
+        rt_trap("Mesh3D.Append: skinned and morph-target meshes cannot be merged");
+        return;
+    }
+
+    rt_mesh3d_repair_geometry_counts(dst);
+    rt_mesh3d_repair_geometry_counts(src);
+    uint32_t src_vertices = rt_mesh3d_safe_vertex_count(src);
+    uint32_t src_indices = rt_mesh3d_safe_index_count(src);
+    if (src_vertices == 0u || src_indices == 0u)
+        return;
+
+    uint32_t base = dst->vertex_count;
+    if ((uint64_t)base + (uint64_t)src_vertices > UINT32_MAX ||
+        (uint64_t)dst->index_count + (uint64_t)src_indices > UINT32_MAX) {
+        mesh_mark_build_failed(dst);
+        rt_trap("Mesh3D.Append: merged mesh exceeds the 32-bit vertex/index limit");
+        return;
+    }
+
+    if (!mesh3d_reserve_storage(dst, base + src_vertices, dst->index_count + src_indices,
+                                "Mesh3D.Append")) {
+        mesh_mark_build_failed(dst);
+        return;
+    }
+
+    // The double-precision sidecar is authoritative wherever it exists, so the
+    // merged mesh must carry it if either input did — otherwise appending a
+    // precise mesh into a float-only one would silently quantize it.
+    if ((src->positions64 || dst->positions64) &&
+        !mesh3d_ensure_positions64(dst, "Mesh3D.Append")) {
+        mesh_mark_build_failed(dst);
+        return;
+    }
+
+    memcpy(&dst->vertices[base], src->vertices, (size_t)src_vertices * sizeof(vgfx3d_vertex_t));
+    if (dst->positions64) {
+        for (uint32_t i = 0; i < src_vertices; i++) {
+            double *out = &dst->positions64[((size_t)base + i) * 3u];
+            if (src->positions64) {
+                const double *in = &src->positions64[(size_t)i * 3u];
+                out[0] = in[0];
+                out[1] = in[1];
+                out[2] = in[2];
+            } else {
+                // Widen the drawable float positions; they are authoritative
+                // for a mesh that never needed the sidecar.
+                out[0] = (double)src->vertices[i].pos[0];
+                out[1] = (double)src->vertices[i].pos[1];
+                out[2] = (double)src->vertices[i].pos[2];
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < src_indices; i++)
+        dst->indices[dst->index_count + i] = src->indices[i] + base;
+
+    dst->vertex_count = base + src_vertices;
+    dst->index_count += src_indices;
+    rt_mesh3d_touch_geometry(dst);
+}
 /// @brief Add a triangle defined by three vertex indices (CCW winding = front-facing).
 /// @details Negative, out-of-range, repeated, or geometrically degenerate indices trap and latch
 ///          the mesh's failed-build state. Successful insertion grows index storage as needed and
@@ -1382,6 +1487,84 @@ void *rt_mesh3d_get_vertex_position(void *obj, int64_t index) {
     return rt_vec3_new(position[0], position[1], position[2]);
 }
 
+
+//=============================================================================
+// Bounds Readback and Normalization (ADR 0252)
+//=============================================================================
+
+/// @brief Refresh @p m's cached bounds and report whether they are usable.
+/// @details Shared by the public bounds accessors. A mesh with no live
+///          vertices has no meaningful extent, which callers must distinguish
+///          from a legitimately zero-sized one.
+/// @param m Mesh to refresh (may be NULL).
+/// @return Non-zero when @p m has at least one live vertex.
+static int mesh3d_bounds_ready(rt_mesh3d *m) {
+    if (!m)
+        return 0;
+    rt_mesh3d_repair_geometry_counts(m);
+    if (rt_mesh3d_safe_vertex_count(m) == 0)
+        return 0;
+    rt_mesh3d_refresh_bounds(m);
+    return 1;
+}
+
+/// @brief Minimum corner of the mesh-local axis-aligned bounding box.
+/// @details The runtime already maintains this AABB for culling; it was simply
+///          never readable from Zia, so every app that normalizes an imported
+///          asset re-scanned the vertex buffer by hand.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_min(void *obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!mesh3d_bounds_ready(m))
+        return NULL;
+    return rt_vec3_new((double)m->aabb_min[0], (double)m->aabb_min[1], (double)m->aabb_min[2]);
+}
+
+/// @brief Maximum corner of the mesh-local axis-aligned bounding box.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_max(void *obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!mesh3d_bounds_ready(m))
+        return NULL;
+    return rt_vec3_new((double)m->aabb_max[0], (double)m->aabb_max[1], (double)m->aabb_max[2]);
+}
+
+/// @brief Centre of the mesh-local bounding box.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_center(void *obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!mesh3d_bounds_ready(m))
+        return NULL;
+    return rt_vec3_new(((double)m->aabb_min[0] + (double)m->aabb_max[0]) * 0.5,
+                       ((double)m->aabb_min[1] + (double)m->aabb_max[1]) * 0.5,
+                       ((double)m->aabb_min[2] + (double)m->aabb_max[2]) * 0.5);
+}
+
+/// @brief Extent of the mesh-local bounding box along each axis.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3 of non-negative extents, or NULL for an
+///         invalid or empty mesh.
+void *rt_mesh3d_get_bounds_size(void *obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!mesh3d_bounds_ready(m))
+        return NULL;
+    return rt_vec3_new((double)m->aabb_max[0] - (double)m->aabb_min[0],
+                       (double)m->aabb_max[1] - (double)m->aabb_min[1],
+                       (double)m->aabb_max[2] - (double)m->aabb_min[2]);
+}
+
+/// @brief Radius of the mesh-local bounding sphere.
+/// @param obj Mesh3D receiver.
+/// @return Bounding-sphere radius, or zero for an invalid or empty mesh.
+double rt_mesh3d_get_bounds_radius(void *obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!mesh3d_bounds_ready(m))
+        return 0.0;
+    return (double)m->bsphere_radius;
+}
 /// @brief Get the number of triangles in the mesh (index_count / 3).
 /// @param obj Mesh3D receiver.
 /// @return Number of complete triangles in the safe live index range, or zero for invalid input.

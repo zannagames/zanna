@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-10
+last-verified: 2026-08-16
 ---
 
 # Architecture Decision Records
@@ -100,6 +100,12 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0228](0228-http-end-to-end-request-deadlines.md) — Use One End-to-End Deadline for Each HTTP Request
 - [ADR 0229](0229-bounded-native-gzip-decoding.md) — Bound Native GZIP Decoding Before Output Allocation
 - [ADR 0231](0231-fail-closed-crypto-policy-identifiers.md) — Fail Closed on Unknown Crypto Policy Identifiers
+- [ADR 0249](0249-replayable-rng-state-and-stable-mixing.md) — Replayable RNG Stream State and Cross-Run Stable Integer Mixing
+- [ADR 0250](0250-deterministic-playback-primitives.md) — Deterministic, Seekable Playback Primitives
+- [ADR 0251](0251-zanna-testing-suite.md) — `Zanna.Testing` — Non-Fatal Assertions and Golden Digests
+- [ADR 0252](0252-text-table-layout.md) — `Zanna.Text.Table` and `Mesh3D` Bounds/Merge
+- [ADR 0253](0253-runtime-completions-color-args-path.md) — Runtime Completions — Additive Colour, CLI Arguments, Data-Root Search
+- [ADR 0254](0254-comparator-ordering-belongs-in-the-frontend.md) — Comparator Ordering Belongs in the Frontend, Not a Runtime Callback
 
 ## GUI & IDE
 

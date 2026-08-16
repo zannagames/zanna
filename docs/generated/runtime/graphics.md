@@ -213,6 +213,13 @@ construct the class directly. Its public surface exposes properties such as `Red
 | <a id="zanna-graphics-color-complement"></a>`Complement` | `i64(i64)` | `Zanna.Graphics.Color.Complement` |
 | <a id="zanna-graphics-color-grayscale"></a>`Grayscale` | `i64(i64)` | `Zanna.Graphics.Color.Grayscale` |
 | <a id="zanna-graphics-color-invert"></a>`Invert` | `i64(i64)` | `Zanna.Graphics.Color.Invert` |
+| <a id="zanna-graphics-color-addchannels"></a>`AddChannels` | `i64(i64,i64)` | `Zanna.Graphics.Color.AddChannels` |
+| <a id="zanna-graphics-color-scalergb"></a>`ScaleRgb` | `i64(i64,f64)` | `Zanna.Graphics.Color.ScaleRgb` |
+| <a id="zanna-graphics-color-rgbf"></a>`RgbF` | `i64(f64,f64,f64)` | `Zanna.Graphics.Color.RgbF` |
+| <a id="zanna-graphics-color-getredf"></a>`GetRedF` | `f64(i64)` | `Zanna.Graphics.Color.GetRedF` |
+| <a id="zanna-graphics-color-getgreenf"></a>`GetGreenF` | `f64(i64)` | `Zanna.Graphics.Color.GetGreenF` |
+| <a id="zanna-graphics-color-getbluef"></a>`GetBlueF` | `f64(i64)` | `Zanna.Graphics.Color.GetBlueF` |
+| <a id="zanna-graphics-color-luma"></a>`Luma` | `f64(i64)` | `Zanna.Graphics.Color.Luma` |
 | <a id="zanna-graphics-color-gethue"></a>`GetHue` | `i64(i64)` | `Zanna.Graphics.Color.GetHue` |
 | <a id="zanna-graphics-color-getsaturation"></a>`GetSaturation` | `i64(i64)` | `Zanna.Graphics.Color.GetSaturation` |
 | <a id="zanna-graphics-color-getlightness"></a>`GetLightness` | `i64(i64)` | `Zanna.Graphics.Color.GetLightness` |
@@ -1662,6 +1669,13 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Color.Complement` | `i64(i64)` | `rt_color_complement` |
 | `Zanna.Graphics.Color.Grayscale` | `i64(i64)` | `rt_color_grayscale` |
 | `Zanna.Graphics.Color.Invert` | `i64(i64)` | `rt_color_invert` |
+| `Zanna.Graphics.Color.AddChannels` | `i64(i64,i64)` | `rt_color_add_channels` |
+| `Zanna.Graphics.Color.ScaleRgb` | `i64(i64,f64)` | `rt_color_scale_rgb` |
+| `Zanna.Graphics.Color.RgbF` | `i64(f64,f64,f64)` | `rt_color_rgb_f` |
+| `Zanna.Graphics.Color.GetRedF` | `f64(i64)` | `rt_color_get_red_f` |
+| `Zanna.Graphics.Color.GetGreenF` | `f64(i64)` | `rt_color_get_green_f` |
+| `Zanna.Graphics.Color.GetBlueF` | `f64(i64)` | `rt_color_get_blue_f` |
+| `Zanna.Graphics.Color.Luma` | `f64(i64)` | `rt_color_luma` |
 | `Zanna.Graphics.Pixels.Clear` | `void(obj)` | `rt_pixels_clear` |
 | `Zanna.Graphics.Pixels.Clone` | `obj(obj)` | `rt_pixels_clone` |
 | `Zanna.Graphics.Pixels.Copy` | `void(obj,i64,i64,obj,i64,i64,i64,i64)` | `rt_pixels_copy` |

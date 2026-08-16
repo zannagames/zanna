@@ -513,3 +513,167 @@ double rt_rad(double degrees) {
 #ifdef __cplusplus
 }
 #endif
+
+//=============================================================================
+// Interpolation Shaping (ADR 0251)
+//=============================================================================
+
+/// @brief Hermite smoothstep of @p x across the [@p edge0, @p edge1] band.
+/// @details Returns 0 at or below @p edge0, 1 at or above @p edge1, and
+///   `t*t*(3-2t)` in between, where `t` is the clamped normalized position.
+///   A degenerate band (`edge0 == edge1`) returns 0 below the edge and 1 at or
+///   above it, so the function stays a step rather than dividing by zero. This
+///   is the curve the runtime already applies internally in the rail camera,
+///   terrain builder, timeline easer, and Perlin lattice; exposing it stops
+///   every caller from re-deriving it.
+/// @param edge0 Band start.
+/// @param edge1 Band end.
+/// @param x Value to shape.
+/// @return Smoothly interpolated result in `[0, 1]`.
+double rt_smoothstep(double edge0, double edge1, double x) {
+    if (edge0 == edge1)
+        return x < edge0 ? 0.0 : 1.0;
+    double t = (x - edge0) / (edge1 - edge0);
+    if (!(t > 0.0))
+        return 0.0; // also catches NaN
+    if (t >= 1.0)
+        return 1.0;
+    return t * t * (3.0 - 2.0 * t);
+}
+
+/// @brief Hermite smoothstep of an already-normalized @p t.
+/// @details Equivalent to `rt_smoothstep(0, 1, t)` without the divide.
+/// @param t Normalized position; values outside `[0, 1]` are clamped.
+/// @return `t*t*(3-2t)` over the clamped input.
+double rt_smoothstep01(double t) {
+    if (!(t > 0.0))
+        return 0.0;
+    if (t >= 1.0)
+        return 1.0;
+    return t * t * (3.0 - 2.0 * t);
+}
+
+/// @brief Perlin's second-order smootherstep of an already-normalized @p t.
+/// @details `6t^5 - 15t^4 + 10t^3` — continuous in the second derivative, so
+///   it avoids the visible acceleration kink smoothstep leaves at the edges.
+/// @param t Normalized position; values outside `[0, 1]` are clamped.
+/// @return Shaped value in `[0, 1]`.
+double rt_smootherstep01(double t) {
+    if (!(t > 0.0))
+        return 0.0;
+    if (t >= 1.0)
+        return 1.0;
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+/// @brief Position of @p v within [@p a, @p b], the inverse of a lerp.
+/// @details A degenerate span returns 0. The result is **not** clamped, so
+///   callers can detect out-of-band inputs; compose with @ref rt_clamp_f64
+///   when a bounded parameter is wanted.
+/// @param a Span start.
+/// @param b Span end.
+/// @param v Value to locate.
+/// @return Normalized position of @p v.
+double rt_inverse_lerp(double a, double b, double v) {
+    if (a == b)
+        return 0.0;
+    return (v - a) / (b - a);
+}
+
+/// @brief Rescale @p v from [@p inLo, @p inHi] onto [@p outLo, @p outHi].
+/// @details Composition of @ref rt_inverse_lerp and a linear blend. A
+///   degenerate input span maps everything to @p outLo. The result is not
+///   clamped.
+/// @param v Value to rescale.
+/// @param inLo Source span start.
+/// @param inHi Source span end.
+/// @param outLo Destination span start.
+/// @param outHi Destination span end.
+/// @return Rescaled value.
+double rt_remap(double v, double inLo, double inHi, double outLo, double outHi) {
+    if (inLo == inHi)
+        return outLo;
+    double t = (v - inLo) / (inHi - inLo);
+    return outLo + t * (outHi - outLo);
+}
+
+/// @brief Integer linear interpolation from @p a to @p b at @p num/@p den.
+/// @details Stays entirely in integer arithmetic, so the result is bit-exact
+///   on every backend — the property a deterministic simulation needs and that
+///   the `f64` @ref rt_lerp cannot promise. A non-positive denominator returns
+///   @p a. Rounds toward zero, matching integer division elsewhere in the
+///   runtime.
+/// @param a Start value.
+/// @param b End value.
+/// @param num Interpolation numerator.
+/// @param den Interpolation denominator.
+/// @return `a + (b - a) * num / den` in exact integer arithmetic.
+long long rt_lerp_i64(long long a, long long b, long long num, long long den) {
+    if (den <= 0)
+        return a;
+    return a + ((b - a) * num) / den;
+}
+
+//=============================================================================
+// Stable Integer Mixing (ADR 0254)
+//=============================================================================
+
+/// @brief splitmix64 finalizer over @p x.
+/// @details Shared by the Mix entry points below.
+/// @param x Value to avalanche.
+/// @return Mixed 64-bit result.
+static uint64_t rt_math_mix_u64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+/// @brief Fold one more value into a running hash, order-sensitively.
+/// @details The running hash is multiplied by an odd prime before the
+///   combine, which is what makes the fold asymmetric: a plain `h ^ mix(v)`
+///   would be commutative, so `Mix2(a, b)` and `Mix2(b, a)` would collide and
+///   a `(row, col)` key would alias its transpose.
+/// @param h Running hash.
+/// @param v Value to fold in.
+/// @return Updated running hash.
+static uint64_t rt_math_mix_step(uint64_t h, uint64_t v) {
+    return rt_math_mix_u64((h * 0x100000001B3ULL) ^ rt_math_mix_u64(v));
+}
+
+/// @brief Avalanche one integer into a well-distributed 64-bit value.
+/// @details **Stability contract:** the mapping is fixed. The same input yields
+///   the same output in every process, on every backend, in every future
+///   runtime version. That is what separates this from
+///   `Zanna.Crypto.Hash.NonCryptoFastInt`, which is keyed per process and is
+///   therefore unusable for replay, save-games, or golden output. Not
+///   cryptographic — do not use it where preimage resistance matters.
+/// @param x Value to mix.
+/// @return Mixed value.
+long long rt_math_mix1(long long x) {
+    return (long long)rt_math_mix_u64((uint64_t)x);
+}
+
+/// @brief Combine two integers into one well-distributed 64-bit value.
+/// @details Order-sensitive: `Mix(a, b)` and `Mix(b, a)` differ. Carries the
+///   same cross-run stability contract as @ref rt_math_mix1.
+/// @param a First input.
+/// @param b Second input.
+/// @return Combined value.
+long long rt_math_mix2(long long a, long long b) {
+    return (long long)rt_math_mix_step(rt_math_mix_u64((uint64_t)a), (uint64_t)b);
+}
+
+/// @brief Combine three integers into one well-distributed 64-bit value.
+/// @details The `(seed, sequence, salt)` shape a deterministic presentation
+///   layer needs: it lets independent consumers of the same event decorrelate
+///   without any of them owning RNG state. Carries the same cross-run
+///   stability contract as @ref rt_math_mix1.
+/// @param a First input.
+/// @param b Second input.
+/// @param c Third input.
+/// @return Combined value.
+long long rt_math_mix3(long long a, long long b, long long c) {
+    uint64_t h = rt_math_mix_step(rt_math_mix_u64((uint64_t)a), (uint64_t)b);
+    return (long long)rt_math_mix_step(h, (uint64_t)c);
+}

@@ -519,6 +519,13 @@ RT_CLASS_BEGIN("Zanna.Game.Tween", Tween, "obj", TweenNew)
     // Static interpolation functions (can be called without an instance)
     RT_METHOD("LerpI64", "i64(i64,i64,f64)", TweenLerpI64)
     RT_METHOD("Ease", "f64(f64,i64)", TweenEase)
+    RT_PROP("ProgressPermille", "i64", TweenProgressPermille, none)
+    RT_PROP("IsMs", "i1", TweenIsMs, none)
+    RT_PROP("ReduceMotion", "i1", TweenGetReduceMotion, TweenSetReduceMotion)
+    RT_METHOD("StartMs", "void(f64,f64,i64,i64)", TweenStartMs)
+    RT_METHOD("UpdateMs", "i1(i64)", TweenUpdateMs)
+    RT_METHOD("SeekMs", "i1(i64)", TweenSeekMs)
+    RT_METHOD("LerpIntPermille", "i64(i64,i64,i64)", TweenLerpIntPermille)
 RT_CLASS_END()
 
 
@@ -561,6 +568,9 @@ RT_CLASS_BEGIN("Zanna.Game.SmoothValue", SmoothValue, "obj", SmoothValueNew)
     RT_METHOD("SetImmediate", "void(f64)", SmoothValueSetImmediate)
     RT_METHOD("Update", "void()", SmoothValueUpdate)
     RT_METHOD("Impulse", "void(f64)", SmoothValueImpulse)
+    RT_PROP("TimeConstantMs", "i64", SmoothValueGetTimeConstantMs, SmoothValueSetTimeConstantMs)
+    RT_METHOD("UpdateMs", "void(i64)", SmoothValueUpdateMs)
+    RT_METHOD("SnapToTarget", "void()", SmoothValueSnapToTarget)
 RT_CLASS_END()
 
 // Zanna.ParticleEmitter - particle effects system

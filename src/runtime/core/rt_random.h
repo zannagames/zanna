@@ -166,6 +166,46 @@ long long rt_rand_range_method(void *self, long long min, long long max);
 /// @param seed New state converted modulo 2^64.
 void rt_randomize_i64_method(void *self, long long seed);
 
+
+// Stream state: snapshot, restore, fork, derive.
+/// @brief Read @p self's raw stream cursor for checkpointing.
+/// @param self Runtime-managed Random handle.
+/// @return Current cursor, or zero after a returning invalid-receiver trap.
+long long rt_random_get_state(void *self);
+/// @brief Restore @p self's stream cursor from a checkpoint.
+/// @param self Runtime-managed Random handle.
+/// @param state Cursor to resume from, converted modulo 2^64.
+void rt_random_set_state(void *self, long long state);
+/// @brief Fork @p self into an independent stream at its current position.
+/// @param self Runtime-managed Random handle.
+/// @return New Random handle, or `NULL` on invalid receiver / allocation failure.
+void *rt_random_clone(void *self);
+/// @brief Derive a decorrelated child stream without advancing @p self.
+/// @param self Runtime-managed Random handle supplying the parent cursor.
+/// @param ns Caller-chosen namespace discriminator.
+/// @return New independent Random handle, or `NULL` on failure.
+void *rt_random_derive(void *self, long long ns);
+/// @brief Read the effective context's shared (static-API) cursor.
+/// @return Current shared cursor, or zero if context acquisition fails.
+long long rt_random_get_global_state(void);
+/// @brief Restore the effective context's shared (static-API) cursor.
+/// @param state Cursor to resume from, converted modulo 2^64.
+void rt_random_set_global_state(long long state);
+/// @brief Stateless uniform draw in [@p lo, @p hi] from (@p seed, @p seq, @p salt).
+/// @details Consumes no stream; a pure function of its arguments.
+/// @param seed Run-level seed.
+/// @param seq Monotonic sequence counter.
+/// @param salt Per-call-site discriminator.
+/// @param lo First inclusive bound.
+/// @param hi Second inclusive bound.
+/// @return Uniform value in the normalized inclusive range.
+long long rt_random_hash_range(
+    long long seed, long long seq, long long salt, long long lo, long long hi);
+/// @brief Instance chance test on an integer percentage.
+/// @param self Runtime-managed Random handle.
+/// @param percent Probability in percent; clamped ends do not advance.
+/// @return Non-zero when the draw succeeds.
+int8_t rt_rand_chance_percent_method(void *self, long long percent);
 #ifdef __cplusplus
 }
 #endif

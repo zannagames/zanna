@@ -188,6 +188,10 @@ RT_FUNC(PathStem,    rt_path_stem,     "Zanna.IO.Path.Stem",    "str(str)")
 RT_FUNC(PathWithExt, rt_path_with_ext, "Zanna.IO.Path.WithExtension", "str(str,str)")
 RT_FUNC(PathExeDir,  rt_path_exe_dir_str, "Zanna.IO.Path.ExeDir", "str()")
 RT_FUNC(PathDataDir, rt_path_data_dir,    "Zanna.IO.Path.DataDir", "str(str)")
+// Upward marker search (ADR 0253): "find my data root from wherever I was
+// launched" fails silently when hand-rolled, so it belongs in one place.
+RT_FUNC(PathFindUpward,      rt_path_find_upward,       "Zanna.IO.Path.FindUpward",      "str(str,str,i64)")
+RT_FUNC(PathResolveDataRoot, rt_path_resolve_data_root, "Zanna.IO.Path.ResolveDataRoot", "str(str,str)")
 
 RT_FUNC(AssetLoad,      rt_asset_load,       "Zanna.IO.Assets.Load",      "obj(str)")
 RT_FUNC(AssetLoadBytes, rt_asset_load_bytes, "Zanna.IO.Assets.LoadBytes", "obj(str)")

@@ -309,6 +309,11 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-simplifyrequestedtriangles"></a>`SimplifyRequestedTriangles` | `i64` | read-only |
 | <a id="zanna-graphics3d-mesh3d-simplifyachievedtriangles"></a>`SimplifyAchievedTriangles` | `i64` | read-only |
 | <a id="zanna-graphics3d-mesh3d-simplifystatus"></a>`SimplifyStatus` | `i64` | read-only |
+| <a id="zanna-graphics3d-mesh3d-boundsmin"></a>`BoundsMin` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-mesh3d-boundsmax"></a>`BoundsMax` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-mesh3d-boundscenter"></a>`BoundsCenter` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-mesh3d-boundssize"></a>`BoundsSize` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-mesh3d-boundsradius"></a>`BoundsRadius` | `f64` | read-only |
 
 #### Methods
 
@@ -323,6 +328,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-fromstl"></a>`FromStl` | `obj(str)` | `Zanna.Graphics3D.Mesh3D.FromStl` |
 | <a id="zanna-graphics3d-mesh3d-reserve"></a>`Reserve` | `void(i64,i64)` | `Zanna.Graphics3D.Mesh3D.Reserve` |
 | <a id="zanna-graphics3d-mesh3d-vertexposition"></a>`VertexPosition` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Graphics3D.Mesh3D.VertexPosition` |
+| <a id="zanna-graphics3d-mesh3d-append"></a>`Append` | `void(obj<Zanna.Graphics3D.Mesh3D>)` | `Zanna.Graphics3D.Mesh3D.Append` |
 | <a id="zanna-graphics3d-mesh3d-addvertex"></a>`AddVertex` | `void(f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Graphics3D.Mesh3D.AddVertex` |
 | <a id="zanna-graphics3d-mesh3d-addtriangle"></a>`AddTriangle` | `void(i64,i64,i64)` | `Zanna.Graphics3D.Mesh3D.AddTriangle` |
 | <a id="zanna-graphics3d-mesh3d-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.Mesh3D.Clear` |
@@ -2906,6 +2912,12 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.FromStl` | `obj(str)` | `rt_mesh3d_from_stl` |
 | <a id="zanna-graphics3d-mesh3d-get-vertexcount"></a>`Zanna.Graphics3D.Mesh3D.get_VertexCount` | `i64(obj)` | `rt_mesh3d_get_vertex_count` |
 | `Zanna.Graphics3D.Mesh3D.VertexPosition` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_mesh3d_get_vertex_position` |
+| `Zanna.Graphics3D.Mesh3D.Append` | `void(obj,obj)` | `rt_mesh3d_append` |
+| <a id="zanna-graphics3d-mesh3d-get-boundsmin"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsMin` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_min` |
+| <a id="zanna-graphics3d-mesh3d-get-boundsmax"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsMax` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_max` |
+| <a id="zanna-graphics3d-mesh3d-get-boundscenter"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsCenter` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_center` |
+| <a id="zanna-graphics3d-mesh3d-get-boundssize"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsSize` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_size` |
+| <a id="zanna-graphics3d-mesh3d-get-boundsradius"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsRadius` | `f64(obj)` | `rt_mesh3d_get_bounds_radius` |
 | <a id="zanna-graphics3d-mesh3d-get-trianglecount"></a>`Zanna.Graphics3D.Mesh3D.get_TriangleCount` | `i64(obj)` | `rt_mesh3d_get_triangle_count` |
 | <a id="zanna-graphics3d-mesh3d-get-resident"></a>`Zanna.Graphics3D.Mesh3D.get_Resident` | `i1(obj)` | `rt_mesh3d_get_resident` |
 | <a id="zanna-graphics3d-mesh3d-set-resident"></a>`Zanna.Graphics3D.Mesh3D.set_Resident` | `void(obj,i1)` | `rt_mesh3d_set_resident` |

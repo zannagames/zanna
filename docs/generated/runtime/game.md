@@ -248,6 +248,9 @@ Constructor: `Zanna.Game.Tween.New`
 | <a id="zanna-game-tween-progress"></a>`Progress` | `i64` | read-only |
 | <a id="zanna-game-tween-elapsed"></a>`Elapsed` | `i64` | read-only |
 | <a id="zanna-game-tween-duration"></a>`Duration` | `i64` | read-only |
+| <a id="zanna-game-tween-progresspermille"></a>`ProgressPermille` | `i64` | read-only |
+| <a id="zanna-game-tween-isms"></a>`IsMs` | `i1` | read-only |
+| <a id="zanna-game-tween-reducemotion"></a>`ReduceMotion` | `i1` | read/write |
 
 #### Methods
 
@@ -262,6 +265,10 @@ Constructor: `Zanna.Game.Tween.New`
 | <a id="zanna-game-tween-resume"></a>`Resume` | `void()` | `Zanna.Game.Tween.Resume` |
 | <a id="zanna-game-tween-lerpi64"></a>`LerpI64` | `i64(i64,i64,f64)` | `Zanna.Game.Tween.LerpI64` |
 | <a id="zanna-game-tween-ease"></a>`Ease` | `f64(f64,i64)` | `Zanna.Game.Tween.Ease` |
+| <a id="zanna-game-tween-startms"></a>`StartMs` | `void(f64,f64,i64,i64)` | `Zanna.Game.Tween.StartMs` |
+| <a id="zanna-game-tween-updatems"></a>`UpdateMs` | `i1(i64)` | `Zanna.Game.Tween.UpdateMs` |
+| <a id="zanna-game-tween-seekms"></a>`SeekMs` | `i1(i64)` | `Zanna.Game.Tween.SeekMs` |
+| <a id="zanna-game-tween-lerpintpermille"></a>`LerpIntPermille` | `i64(i64,i64,i64)` | `Zanna.Game.Tween.LerpIntPermille` |
 | <a id="zanna-game-tween-new"></a>`New` | `obj()` | `Zanna.Game.Tween.New` |
 | <a id="zanna-game-tween-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.Tween.Destroy` |
 
@@ -323,6 +330,7 @@ Constructor: `Zanna.Game.SmoothValue.New`
 | <a id="zanna-game-smoothvalue-smoothing"></a>`Smoothing` | `f64` | read/write |
 | <a id="zanna-game-smoothvalue-attarget"></a>`AtTarget` | `i1` | read-only |
 | <a id="zanna-game-smoothvalue-velocity"></a>`Velocity` | `f64` | read-only |
+| <a id="zanna-game-smoothvalue-timeconstantms"></a>`TimeConstantMs` | `i64` | read/write |
 
 #### Methods
 
@@ -331,6 +339,8 @@ Constructor: `Zanna.Game.SmoothValue.New`
 | <a id="zanna-game-smoothvalue-setimmediate"></a>`SetImmediate` | `void(f64)` | `Zanna.Game.SmoothValue.SetImmediate` |
 | <a id="zanna-game-smoothvalue-update"></a>`Update` | `void()` | `Zanna.Game.SmoothValue.Update` |
 | <a id="zanna-game-smoothvalue-impulse"></a>`Impulse` | `void(f64)` | `Zanna.Game.SmoothValue.Impulse` |
+| <a id="zanna-game-smoothvalue-updatems"></a>`UpdateMs` | `void(i64)` | `Zanna.Game.SmoothValue.UpdateMs` |
+| <a id="zanna-game-smoothvalue-snaptotarget"></a>`SnapToTarget` | `void()` | `Zanna.Game.SmoothValue.SnapToTarget` |
 | <a id="zanna-game-smoothvalue-new"></a>`New` | `obj(f64,f64)` | `Zanna.Game.SmoothValue.New` |
 | <a id="zanna-game-smoothvalue-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Game.SmoothValue.Destroy` |
 
@@ -1856,6 +1866,14 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.Tween.Start` | `void(obj,f64,f64,i64,i64)` | `rt_tween_start` |
 | `Zanna.Game.Tween.StartI64` | `void(obj,i64,i64,i64,i64)` | `rt_tween_start_i64` |
 | `Zanna.Game.Tween.Update` | `i1(obj)` | `rt_tween_update` |
+| `Zanna.Game.Tween.StartMs` | `void(obj,f64,f64,i64,i64)` | `rt_tween_start_ms` |
+| `Zanna.Game.Tween.UpdateMs` | `i1(obj,i64)` | `rt_tween_update_ms` |
+| `Zanna.Game.Tween.SeekMs` | `i1(obj,i64)` | `rt_tween_seek_ms` |
+| <a id="zanna-game-tween-get-progresspermille"></a>`Zanna.Game.Tween.get_ProgressPermille` | `i64(obj)` | `rt_tween_progress_permille` |
+| `Zanna.Game.Tween.LerpIntPermille` | `i64(i64,i64,i64)` | `rt_tween_lerp_int_permille` |
+| <a id="zanna-game-tween-get-isms"></a>`Zanna.Game.Tween.get_IsMs` | `i1(obj)` | `rt_tween_is_ms` |
+| <a id="zanna-game-tween-set-reducemotion"></a>`Zanna.Game.Tween.set_ReduceMotion` | `void(obj,i1)` | `rt_tween_set_reduce_motion` |
+| <a id="zanna-game-tween-get-reducemotion"></a>`Zanna.Game.Tween.get_ReduceMotion` | `i1(obj)` | `rt_tween_get_reduce_motion` |
 | <a id="zanna-game-tween-get-value"></a>`Zanna.Game.Tween.get_Value` | `f64(obj)` | `rt_tween_value` |
 | <a id="zanna-game-tween-get-valuei64"></a>`Zanna.Game.Tween.get_ValueI64` | `i64(obj)` | `rt_tween_value_i64` |
 | <a id="zanna-game-tween-get-isrunning"></a>`Zanna.Game.Tween.get_IsRunning` | `i1(obj)` | `rt_tween_is_running` |
@@ -1896,6 +1914,10 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | <a id="zanna-game-smoothvalue-get-smoothing"></a>`Zanna.Game.SmoothValue.get_Smoothing` | `f64(obj)` | `rt_smoothvalue_smoothing` |
 | <a id="zanna-game-smoothvalue-set-smoothing"></a>`Zanna.Game.SmoothValue.set_Smoothing` | `void(obj,f64)` | `rt_smoothvalue_set_smoothing` |
 | `Zanna.Game.SmoothValue.Update` | `void(obj)` | `rt_smoothvalue_update` |
+| `Zanna.Game.SmoothValue.UpdateMs` | `void(obj,i64)` | `rt_smoothvalue_update_ms` |
+| <a id="zanna-game-smoothvalue-set-timeconstantms"></a>`Zanna.Game.SmoothValue.set_TimeConstantMs` | `void(obj,i64)` | `rt_smoothvalue_set_time_constant_ms` |
+| <a id="zanna-game-smoothvalue-get-timeconstantms"></a>`Zanna.Game.SmoothValue.get_TimeConstantMs` | `i64(obj)` | `rt_smoothvalue_get_time_constant_ms` |
+| `Zanna.Game.SmoothValue.SnapToTarget` | `void(obj)` | `rt_smoothvalue_snap_to_target` |
 | <a id="zanna-game-smoothvalue-get-attarget"></a>`Zanna.Game.SmoothValue.get_AtTarget` | `i1(obj)` | `rt_smoothvalue_at_target` |
 | <a id="zanna-game-smoothvalue-get-velocity"></a>`Zanna.Game.SmoothValue.get_Velocity` | `f64(obj)` | `rt_smoothvalue_velocity` |
 | `Zanna.Game.SmoothValue.Impulse` | `void(obj,f64)` | `rt_smoothvalue_impulse` |

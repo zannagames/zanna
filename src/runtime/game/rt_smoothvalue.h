@@ -113,6 +113,24 @@ double rt_smoothvalue_velocity(rt_smoothvalue sv);
 /// @param impulse Finite offset added immediately to the current value.
 void rt_smoothvalue_impulse(rt_smoothvalue sv, double impulse);
 
+
+// Time-constant damping (ADR 0250): frame-rate independent, so a reproducible
+// camera or paced HUD converges identically on every machine.
+/// @brief Advance the smoothing by @p dt_ms using a time-constant response.
+/// @param sv Borrowed SmoothValue handle.
+/// @param dt_ms Elapsed milliseconds; non-positive does not advance.
+void rt_smoothvalue_update_ms(rt_smoothvalue sv, int64_t dt_ms);
+/// @brief Set the damping response as an explicit millisecond time constant.
+/// @param sv Borrowed SmoothValue handle.
+/// @param tau_ms Time constant in milliseconds; zero snaps immediately.
+void rt_smoothvalue_set_time_constant_ms(rt_smoothvalue sv, int64_t tau_ms);
+/// @brief Read the damping response as a millisecond time constant.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Time constant in milliseconds.
+int64_t rt_smoothvalue_get_time_constant_ms(rt_smoothvalue sv);
+/// @brief Snap the value to its target immediately, clearing velocity.
+/// @param sv Borrowed SmoothValue handle.
+void rt_smoothvalue_snap_to_target(rt_smoothvalue sv);
 #ifdef __cplusplus
 }
 #endif

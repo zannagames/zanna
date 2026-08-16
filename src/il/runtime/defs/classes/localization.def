@@ -403,6 +403,19 @@ RT_CLASS_BEGIN("Zanna.System.Environment", Environment, "obj", none)
     RT_METHOD("SetVariable", "void(str,str)", EnvSetVar)
 RT_CLASS_END()
 
+// Zanna.System.Args - command-line flag and option parsing (ADR 0253)
+/// @summary Answers "was this flag passed?" and "what followed this option?".
+/// @details
+/// `Zanna.System.Environment` exposes the raw argument count and index; this exposes the scan every
+/// CLI-facing program was writing on top of it. Deliberately minimal — no spec object, no usage
+/// generation, no subcommands: those are opinionated, and the shared part is the scan.
+RT_CLASS_BEGIN("Zanna.System.Args", SystemArgs, "obj", none)
+    RT_METHOD("HasFlag", "i1(str)", ArgsHasFlag)
+    RT_METHOD("GetOption", "str(str,str)", ArgsGetOption)
+    RT_METHOD("GetOptionInt", "i64(str,i64)", ArgsGetOptionInt)
+    RT_METHOD("Positionals", "seq<str>()", ArgsPositionals)
+RT_CLASS_END()
+
 // Zanna.System.Clipboard - UTF-8 system clipboard
 /// @summary Provides UTF-8 system clipboard.
 /// @details
@@ -740,6 +753,13 @@ RT_CLASS_BEGIN("Zanna.Graphics.Color", Color, "obj", none)
     RT_METHOD("Complement", "i64(i64)", ColorComplement)
     RT_METHOD("Grayscale", "i64(i64)", ColorGrayscale)
     RT_METHOD("Invert", "i64(i64)", ColorInvert)
+    RT_METHOD("AddChannels", "i64(i64,i64)", ColorAddChannels)
+    RT_METHOD("ScaleRgb", "i64(i64,f64)", ColorScaleRgb)
+    RT_METHOD("RgbF", "i64(f64,f64,f64)", ColorRgbF)
+    RT_METHOD("GetRedF", "f64(i64)", ColorGetRedF)
+    RT_METHOD("GetGreenF", "f64(i64)", ColorGetGreenF)
+    RT_METHOD("GetBlueF", "f64(i64)", ColorGetBlueF)
+    RT_METHOD("Luma", "f64(i64)", ColorLuma)
     RT_METHOD("GetHue", "i64(i64)", ColorGetH)
     RT_METHOD("GetSaturation", "i64(i64)", ColorGetS)
     RT_METHOD("GetLightness", "i64(i64)", ColorGetL)

@@ -514,6 +514,18 @@ RT_FUNC(Mesh3DFromOBJ,          rt_mesh3d_from_obj,         "Zanna.Graphics3D.Me
 RT_FUNC(Mesh3DFromSTL,          rt_mesh3d_from_stl,         "Zanna.Graphics3D.Mesh3D.FromStl",          "obj(str)")
 RT_FUNC(Mesh3DGetVertexCount,   rt_mesh3d_get_vertex_count, "Zanna.Graphics3D.Mesh3D.get_VertexCount",  "i64(obj)")
 RT_FUNC(Mesh3DVertexPosition,   rt_mesh3d_get_vertex_position, "Zanna.Graphics3D.Mesh3D.VertexPosition", "obj<Zanna.Math.Vec3>(obj,i64)")
+// Bounds readback (ADR 0252). The runtime already maintains this AABB for
+// culling; exposing it retires the hand-written vertex min/max scan every app
+// writes to normalize an imported asset.
+// Geometry merge (ADR 0252): the runtime could build and transform a mesh but
+// not put one mesh's triangles into another, so batching parts into a single
+// draw call meant re-emitting every vertex by hand.
+RT_FUNC(Mesh3DAppend, rt_mesh3d_append, "Zanna.Graphics3D.Mesh3D.Append", "void(obj,obj)")
+RT_FUNC(Mesh3DBoundsMin,        rt_mesh3d_get_bounds_min,    "Zanna.Graphics3D.Mesh3D.get_BoundsMin",    "obj<Zanna.Math.Vec3>(obj)")
+RT_FUNC(Mesh3DBoundsMax,        rt_mesh3d_get_bounds_max,    "Zanna.Graphics3D.Mesh3D.get_BoundsMax",    "obj<Zanna.Math.Vec3>(obj)")
+RT_FUNC(Mesh3DBoundsCenter,     rt_mesh3d_get_bounds_center, "Zanna.Graphics3D.Mesh3D.get_BoundsCenter", "obj<Zanna.Math.Vec3>(obj)")
+RT_FUNC(Mesh3DBoundsSize,       rt_mesh3d_get_bounds_size,   "Zanna.Graphics3D.Mesh3D.get_BoundsSize",   "obj<Zanna.Math.Vec3>(obj)")
+RT_FUNC(Mesh3DBoundsRadius,     rt_mesh3d_get_bounds_radius, "Zanna.Graphics3D.Mesh3D.get_BoundsRadius", "f64(obj)")
 RT_FUNC(Mesh3DGetTriangleCount, rt_mesh3d_get_triangle_count,"Zanna.Graphics3D.Mesh3D.get_TriangleCount","i64(obj)")
 RT_FUNC(Mesh3DGetResident,      rt_mesh3d_get_resident,     "Zanna.Graphics3D.Mesh3D.get_Resident",     "i1(obj)")
 RT_FUNC(Mesh3DSetResident,      rt_mesh3d_set_resident,     "Zanna.Graphics3D.Mesh3D.set_Resident",     "void(obj,i1)")
@@ -558,6 +570,12 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Mesh3D", Mesh3D, "obj", Mesh3DNew)
     RT_METHOD("FromStl", "obj(str)", Mesh3DFromSTL)
     RT_METHOD("Reserve", "void(i64,i64)", Mesh3DReserve)
     RT_METHOD("VertexPosition", "obj<Zanna.Math.Vec3>(i64)", Mesh3DVertexPosition)
+    RT_METHOD("Append", "void(obj<Zanna.Graphics3D.Mesh3D>)", Mesh3DAppend)
+    RT_PROP("BoundsMin", "obj<Zanna.Math.Vec3>", Mesh3DBoundsMin, none)
+    RT_PROP("BoundsMax", "obj<Zanna.Math.Vec3>", Mesh3DBoundsMax, none)
+    RT_PROP("BoundsCenter", "obj<Zanna.Math.Vec3>", Mesh3DBoundsCenter, none)
+    RT_PROP("BoundsSize", "obj<Zanna.Math.Vec3>", Mesh3DBoundsSize, none)
+    RT_PROP("BoundsRadius", "f64", Mesh3DBoundsRadius, none)
     RT_METHOD("AddVertex", "void(f64,f64,f64,f64,f64,f64,f64,f64)", Mesh3DAddVertex)
     RT_METHOD("AddTriangle", "void(i64,i64,i64)", Mesh3DAddTriangle)
     RT_METHOD("Clear", "void()", Mesh3DClear)

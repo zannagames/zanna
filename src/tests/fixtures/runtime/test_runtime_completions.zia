@@ -1,0 +1,66 @@
+// Test: ADR 0253 — additive/float Color, System.Args, IO.Path.FindUpward
+// Written on Zanna.Testing.Suite, which is itself part of the surface
+// under test (ADR 0251) — the harness and its first real consumer.
+module test_runtime_completions;
+bind Zanna.Testing.Suite as Suite;
+bind Zanna.Graphics.Color as Color;
+bind Zanna.System.Args as Args;
+bind Zanna.IO.Path as Path;
+bind Zanna.Text.Fmt as Fmt;
+
+func start() {
+    var t = new Suite("ADR 0253 long tail");
+
+    // --- additive vs percentage colour ops ----------------------------------
+    var grey = Color.Rgb(100, 100, 100);
+    t.EqInt(Color.AddChannels(grey, 20), Color.Rgb(120, 120, 120), "AddChannels is additive");
+    t.EqInt(Color.AddChannels(grey, 0 - 20), Color.Rgb(80, 80, 80), "negative offset darkens");
+    t.EqInt(Color.AddChannels(Color.Rgb(250, 10, 5), 20), Color.Rgb(255, 30, 25),
+            "AddChannels clamps at 255");
+    t.EqInt(Color.AddChannels(Color.Rgb(5, 10, 250), 0 - 20), Color.Rgb(0, 0, 230),
+            "AddChannels clamps at 0");
+    // the whole point: Brighten is NOT the same operation
+    t.Check(Color.Brighten(grey, 20) != Color.AddChannels(grey, 20),
+            "Brighten (percentage) differs from AddChannels (additive)");
+    // equal spacing is preserved by AddChannels and not by Brighten
+    var a1 = Color.AddChannels(Color.Rgb(60, 60, 60), 40);
+    var a2 = Color.AddChannels(Color.Rgb(100, 100, 100), 40);
+    t.EqInt(Color.GetRed(a1), 100, "tone 1 steps by a constant");
+    t.EqInt(Color.GetRed(a2), 140, "tone 2 steps by the same constant");
+
+    // --- float channels ------------------------------------------------------
+    t.EqInt(Color.RgbF(1.0, 0.0, 0.0), Color.Rgb(255, 0, 0), "RgbF red");
+    t.EqInt(Color.RgbF(0.0, 1.0, 0.0), Color.Rgb(0, 255, 0), "RgbF green");
+    t.EqInt(Color.RgbF(2.0, 0.0 - 1.0, 0.5), Color.Rgb(255, 0, 128), "RgbF clamps");
+    t.EqNum(Color.GetRedF(Color.Rgb(255, 0, 0)), 1.0, 0.000001, "GetRedF");
+    t.EqNum(Color.GetGreenF(Color.Rgb(0, 255, 0)), 1.0, 0.000001, "GetGreenF");
+    t.EqNum(Color.GetBlueF(Color.Rgb(0, 0, 0)), 0.0, 0.000001, "GetBlueF");
+    t.EqNum(Color.Luma(Color.Rgb(255, 255, 255)), 1.0, 0.000001, "Luma of white");
+    t.EqNum(Color.Luma(Color.Rgb(0, 0, 0)), 0.0, 0.000001, "Luma of black");
+    t.Check(Color.Luma(Color.Rgb(0, 255, 0)) > Color.Luma(Color.Rgb(0, 0, 255)),
+            "green is brighter than blue (Rec.709)");
+    t.EqInt(Color.ScaleRgb(Color.Rgb(100, 100, 100), 2.0), Color.Rgb(200, 200, 200),
+            "ScaleRgb doubles");
+    t.EqInt(Color.ScaleRgb(Color.Rgb(200, 200, 200), 4.0), Color.Rgb(255, 255, 255),
+            "ScaleRgb clamps");
+
+    // --- CLI args (this program is run with no extra args) -------------------
+    t.Check(!Args.HasFlag("--definitely-not-passed"), "absent flag is false");
+    t.EqStr(Args.GetOption("--missing", "fallback"), "fallback", "missing option falls back");
+    t.EqInt(Args.GetOptionInt("--missing", 7), 7, "missing int option falls back");
+
+    // --- upward marker search ------------------------------------------------
+    // docs/ exists at the zanna root; run from anywhere under it and the walk
+    // should find the directory that contains it.
+    // A relative start must work: Path.Directory(".") is ".", so an
+    // implementation that walks without absolutizing first stops dead on
+    // level 0 and silently finds nothing.
+    var root = Path.FindUpward("", "docs/adr", 8);
+    t.Check(root != "", "FindUpward walks up from a relative start (got '" + root + "')");
+    var explicitRel = Path.FindUpward(".", "docs/adr", 8);
+    t.EqStr(explicitRel, root, "an explicit '.' start matches the default");
+    t.EqStr(Path.FindUpward("", "no/such/marker/anywhere", 4), "",
+            "absent marker returns empty");
+
+    t.Report();
+}

@@ -231,6 +231,15 @@ operations including `Abs`, `AbsInt`, `Acos`, `Asin`.
 | <a id="zanna-math-truncate"></a>`Truncate` | `f64(f64)` | `Zanna.Math.Truncate` |
 | <a id="zanna-math-wrap"></a>`Wrap` | `f64(f64,f64,f64)` | `Zanna.Math.Wrap` |
 | <a id="zanna-math-wrapint"></a>`WrapInt` | `i64(i64,i64,i64)` | `Zanna.Math.WrapInt` |
+| <a id="zanna-math-smoothstep"></a>`SmoothStep` | `f64(f64,f64,f64)` | `Zanna.Math.SmoothStep` |
+| <a id="zanna-math-smoothstep01"></a>`SmoothStep01` | `f64(f64)` | `Zanna.Math.SmoothStep01` |
+| <a id="zanna-math-smootherstep01"></a>`SmootherStep01` | `f64(f64)` | `Zanna.Math.SmootherStep01` |
+| <a id="zanna-math-inverselerp"></a>`InverseLerp` | `f64(f64,f64,f64)` | `Zanna.Math.InverseLerp` |
+| <a id="zanna-math-remap"></a>`Remap` | `f64(f64,f64,f64,f64,f64)` | `Zanna.Math.Remap` |
+| <a id="zanna-math-lerpint"></a>`LerpInt` | `i64(i64,i64,i64,i64)` | `Zanna.Math.LerpInt` |
+| <a id="zanna-math-mix"></a>`Mix` | `i64(i64)` | `Zanna.Math.Mix` |
+| <a id="zanna-math-mix2"></a>`Mix2` | `i64(i64,i64)` | `Zanna.Math.Mix2` |
+| <a id="zanna-math-mix3"></a>`Mix3` | `i64(i64,i64,i64)` | `Zanna.Math.Mix3` |
 
 <a id="zanna-math-perlinnoise"></a>
 ### `Zanna.Math.PerlinNoise`
@@ -306,6 +315,12 @@ with the instance members below. Its public surface exposes operations including
 
 Constructor: `Zanna.Math.Random.New`
 
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-math-random-state"></a>`State` | `i64` | read/write |
+
 #### Methods
 
 | Method | Signature | Runtime target |
@@ -314,12 +329,18 @@ Constructor: `Zanna.Math.Random.New`
 | <a id="zanna-math-random-nextint"></a>`NextInt` | `i64(i64)` | `Zanna.Math.Random.inst_NextInt` |
 | <a id="zanna-math-random-range"></a>`Range` | `i64(i64,i64)` | `Zanna.Math.Random.inst_Range` |
 | <a id="zanna-math-random-seed"></a>`Seed` | `void(i64)` | `Zanna.Math.Random.inst_Seed` |
+| <a id="zanna-math-random-clone"></a>`Clone` | `obj<Zanna.Math.Random>()` | `Zanna.Math.Random.Clone` |
+| <a id="zanna-math-random-derive"></a>`Derive` | `obj<Zanna.Math.Random>(i64)` | `Zanna.Math.Random.Derive` |
+| <a id="zanna-math-random-chancepercent"></a>`ChancePercent` | `i1(i64)` | `Zanna.Math.Random.inst_ChancePercent` |
+| <a id="zanna-math-random-getglobalstate"></a>`GetGlobalState` | `i64()` | `Zanna.Math.Random.GetGlobalState` |
+| <a id="zanna-math-random-setglobalstate"></a>`SetGlobalState` | `void(i64)` | `Zanna.Math.Random.SetGlobalState` |
 | <a id="zanna-math-random-new"></a>`New` | `obj(i64)` | `Zanna.Math.Random.New` |
 | <a id="zanna-math-random-gaussian"></a>`Gaussian` | `f64(f64,f64)` | `Zanna.Math.Random.Gaussian` |
 | <a id="zanna-math-random-exponential"></a>`Exponential` | `f64(f64)` | `Zanna.Math.Random.Exponential` |
 | <a id="zanna-math-random-dice"></a>`Dice` | `i64(i64)` | `Zanna.Math.Random.Dice` |
 | <a id="zanna-math-random-chance"></a>`Chance` | `i1(f64)` | `Zanna.Math.Random.Chance` |
 | <a id="zanna-math-random-shuffle"></a>`Shuffle` | `void(obj)` | `Zanna.Math.Random.Shuffle` |
+| <a id="zanna-math-random-hashrange"></a>`HashRange` | `i64(i64,i64,i64,i64,i64)` | `Zanna.Math.Random.HashRange` |
 
 <a id="zanna-math-vec2"></a>
 ### `Zanna.Math.Vec2`
@@ -581,6 +602,15 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | <a id="zanna-math-get-tau"></a>`Zanna.Math.get_Tau` | `f64()` | `rt_math_tau` |
 | `Zanna.Math.Truncate` | `f64(f64)` | `rt_trunc` |
 | `Zanna.Math.Wrap` | `f64(f64,f64,f64)` | `rt_wrap_f64` |
+| `Zanna.Math.SmoothStep` | `f64(f64,f64,f64)` | `rt_smoothstep` |
+| `Zanna.Math.SmoothStep01` | `f64(f64)` | `rt_smoothstep01` |
+| `Zanna.Math.SmootherStep01` | `f64(f64)` | `rt_smootherstep01` |
+| `Zanna.Math.InverseLerp` | `f64(f64,f64,f64)` | `rt_inverse_lerp` |
+| `Zanna.Math.Remap` | `f64(f64,f64,f64,f64,f64)` | `rt_remap` |
+| `Zanna.Math.LerpInt` | `i64(i64,i64,i64,i64)` | `rt_lerp_i64` |
+| `Zanna.Math.Mix` | `i64(i64)` | `rt_math_mix1` |
+| `Zanna.Math.Mix2` | `i64(i64,i64)` | `rt_math_mix2` |
+| `Zanna.Math.Mix3` | `i64(i64,i64,i64)` | `rt_math_mix3` |
 | `Zanna.Math.WrapInt` | `i64(i64,i64,i64)` | `rt_wrap_i64` |
 | `Zanna.Math.Random.New` | `obj(i64)` | `rt_random_new` |
 | `Zanna.Math.Random.NextDouble` | `f64()` | `rt_rnd` |
@@ -592,6 +622,13 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | `Zanna.Math.Random.Dice` | `i64(i64)` | `rt_rand_dice` |
 | `Zanna.Math.Random.Chance` | `i1(f64)` | `rt_rand_chance_bool` |
 | `Zanna.Math.Random.Shuffle` | `void(obj)` | `rt_rand_shuffle` |
+| <a id="zanna-math-random-get-state"></a>`Zanna.Math.Random.get_State` | `i64(obj)` | `rt_random_get_state` |
+| <a id="zanna-math-random-set-state"></a>`Zanna.Math.Random.set_State` | `void(obj,i64)` | `rt_random_set_state` |
+| `Zanna.Math.Random.Clone` | `obj(obj)` | `rt_random_clone` |
+| `Zanna.Math.Random.Derive` | `obj(obj,i64)` | `rt_random_derive` |
+| `Zanna.Math.Random.GetGlobalState` | `i64()` | `rt_random_get_global_state` |
+| `Zanna.Math.Random.SetGlobalState` | `void(i64)` | `rt_random_set_global_state` |
+| `Zanna.Math.Random.HashRange` | `i64(i64,i64,i64,i64,i64)` | `rt_random_hash_range` |
 | `Zanna.Math.BigInt.FromInt` | `obj(i64)` | `rt_bigint_from_i64` |
 | `Zanna.Math.BigInt.FromStr` | `obj(str)` | `rt_bigint_from_str` |
 | `Zanna.Math.BigInt.FromBytes` | `obj(obj)` | `rt_bigint_from_bytes` |

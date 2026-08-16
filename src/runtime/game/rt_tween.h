@@ -219,6 +219,51 @@ int64_t rt_tween_lerp_i64(int64_t from, int64_t to, double t);
 ///         exceed one.
 double rt_tween_ease(double t, int64_t ease_type);
 
+
+// Millisecond mode (ADR 0250). Mirrors Zanna.Game.Timer's dual API: the mode is
+// sticky, so a mismatched Update/UpdateMs call is a no-op rather than a silent
+// unit reinterpretation.
+/// @brief Start a millisecond-timed tween.
+/// @param tween Borrowed Tween handle.
+/// @param from Start value.
+/// @param to End value.
+/// @param duration_ms Duration in milliseconds; clamped up to one.
+/// @param ease_type Easing identifier.
+void rt_tween_start_ms(
+    rt_tween tween, double from, double to, int64_t duration_ms, int64_t ease_type);
+/// @brief Advance a millisecond-mode tween by @p dt_ms.
+/// @param tween Borrowed Tween handle.
+/// @param dt_ms Elapsed milliseconds; non-positive does not advance.
+/// @return `1` only on the call that reaches the duration.
+int8_t rt_tween_update_ms(rt_tween tween, int64_t dt_ms);
+/// @brief Position a millisecond-mode tween at an absolute time.
+/// @details Path-independent: the same @p ms always yields the same value.
+/// @param tween Borrowed Tween handle.
+/// @param ms Absolute milliseconds from the start; negative clamps to zero.
+/// @return `1` when the seek lands at or past the duration.
+int8_t rt_tween_seek_ms(rt_tween tween, int64_t ms);
+/// @brief Eased progress in permille (0..1000), integer-exact.
+/// @param tween Borrowed Tween handle.
+/// @return Eased progress scaled to `[0, 1000]`.
+int64_t rt_tween_progress_permille(rt_tween tween);
+/// @brief Bit-exact integer interpolation at @p t_permille.
+/// @param from Start value.
+/// @param to End value.
+/// @param t_permille Position in thousandths; clamped to `[0, 1000]`.
+/// @return Interpolated value.
+int64_t rt_tween_lerp_int_permille(int64_t from, int64_t to, int64_t t_permille);
+/// @brief True when the tween was started in millisecond mode.
+/// @param tween Borrowed Tween handle.
+/// @return Non-zero for a millisecond-mode tween.
+int8_t rt_tween_is_ms(rt_tween tween);
+/// @brief Enable or disable the reduce-motion snap applied at Start.
+/// @param tween Borrowed Tween handle.
+/// @param on Non-zero to snap.
+void rt_tween_set_reduce_motion(rt_tween tween, int8_t on);
+/// @brief Read the reduce-motion snap flag.
+/// @param tween Borrowed Tween handle.
+/// @return Non-zero when the snap is enabled.
+int8_t rt_tween_get_reduce_motion(rt_tween tween);
 #ifdef __cplusplus
 }
 #endif

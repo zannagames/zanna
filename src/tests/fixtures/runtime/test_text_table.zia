@@ -1,0 +1,96 @@
+// Test: ADR 0252 — Zanna.Text.Table fixed-width layout
+// Written on Zanna.Testing.Suite, which is itself part of the surface
+// under test (ADR 0251) — the harness and its first real consumer.
+module test_text_table;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Text.Table as Table;
+bind Zanna.Testing.Suite as Suite;
+
+func start() {
+    var t = new Suite("Text.Table");
+
+    // --- fixed widths, mixed alignment --------------------------------------
+    var tb = new Table();
+    tb.AddColumn("Player", 10, Table.AlignLeft);
+    tb.AddColumn("HR", 4, Table.AlignRight);
+    tb.AddColumn("AVG", 6, Table.AlignRight);
+    var r0 = tb.AddRow();
+    tb.SetCell(r0, 0, "Ruiz");
+    tb.SetCell(r0, 1, "31");
+    tb.SetCell(r0, 2, ".298");
+    var r1 = tb.AddRow();
+    tb.SetCell(r1, 0, "Abercrombie");   // wider than its column
+    tb.SetCell(r1, 1, "7");
+    tb.SetCell(r1, 2, ".251");
+
+    t.EqInt(tb.ColumnCount, 3, "column count");
+    t.EqInt(tb.RowCount, 2, "row count");
+    t.EqStr(tb.RenderHeader(), "Player       HR    AVG", "header layout");
+    t.EqStr(tb.RenderRow(0), "Ruiz         31   .298", "row 0 layout");
+    // an over-wide cell makes the row ragged rather than losing data
+    t.EqStr(tb.RenderRow(1), "Abercrombie    7   .251", "over-wide cell is not clipped");
+    t.EqStr(tb.GetCell(r0, 0), "Ruiz", "cell readback");
+
+    // --- opt-in truncation ---------------------------------------------------
+    tb.SetTruncate(0, true);
+    t.EqStr(tb.RenderRow(1), "Abercrombi    7   .251", "truncation clips to the column width");
+    tb.SetTruncate(0, false);
+
+    // --- auto width sizes to the widest cell --------------------------------
+    var au = new Table();
+    au.AddColumnAuto("Name", Table.AlignLeft);
+    au.AddColumnAuto("N", Table.AlignRight);
+    var a0 = au.AddRow();
+    au.SetCell(a0, 0, "x");
+    au.SetCell(a0, 1, "1");
+    var a1 = au.AddRow();
+    au.SetCell(a1, 0, "a much longer name");
+    au.SetCell(a1, 1, "1000");
+    t.EqStr(au.RenderHeader(), "Name                  N", "auto header widens to content");
+    t.EqStr(au.RenderRow(0), "x                     1", "auto row 0");
+    t.EqStr(au.RenderRow(1), "a much longer name 1000", "auto row 1");
+
+    // --- header is never clipped by a too-small declaration ------------------
+    var nw = new Table();
+    nw.AddColumn("LongHeader", 3, Table.AlignLeft);
+    t.EqStr(nw.RenderHeader(), "LongHeader", "header widens a too-small column");
+
+    // --- gutter, rule, and whole-table render --------------------------------
+    var g = new Table();
+    g.SetGutter(" | ");
+    g.AddColumn("A", 3, Table.AlignLeft);
+    g.AddColumn("B", 3, Table.AlignRight);
+    var g0 = g.AddRow();
+    g.SetCell(g0, 0, "aa");
+    g.SetCell(g0, 1, "bb");
+    t.EqStr(g.RenderHeader(), "A   |   B", "gutter in header");
+    t.EqStr(g.RenderRow(0), "aa  |  bb", "gutter in row");
+    t.EqStr(g.RenderRule("="), "=========", "rule spans the full width");
+    t.EqStr(g.Render(true, true), "A   |   B\n---------\naa  |  bb",
+            "whole-table render uses the default rule char");
+    t.EqStr(g.Render(false, false), "aa  |  bb", "body-only render");
+
+    // --- no trailing whitespace ---------------------------------------------
+    var tw = new Table();
+    tw.AddColumn("X", 8, Table.AlignLeft);
+    var t0 = tw.AddRow();
+    tw.SetCell(t0, 0, "hi");
+    t.EqStr(tw.RenderRow(0), "hi", "trailing padding is trimmed");
+
+    // --- centre alignment ----------------------------------------------------
+    var ct = new Table();
+    ct.AddColumn("C", 7, Table.AlignCenter);
+    ct.AddColumn("z", 3, Table.AlignLeft);
+    var c0 = ct.AddRow();
+    ct.SetCell(c0, 0, "ab");
+    ct.SetCell(c0, 1, "q");
+    t.EqStr(ct.RenderRow(0), "  ab    q", "centre biases extra space right");
+
+    // --- ClearRows keeps the columns ----------------------------------------
+    g.ClearRows();
+    t.EqInt(g.RowCount, 0, "ClearRows empties rows");
+    t.EqInt(g.ColumnCount, 2, "ClearRows keeps columns");
+
+    t.Report();
+}

@@ -316,6 +316,57 @@ RT_FUNC(NumFmtPad,       rt_numfmt_pad,       "Zanna.Text.InvariantNumberFormat.
 
 RT_FUNC(DiffLines,        rt_diff_lines,         "Zanna.Text.Diff.Lines",        "seq<str>(str,str)")
 RT_FUNC(DiffUnified,      rt_diff_unified,       "Zanna.Text.Diff.Unified",      "str(str,str,i64)")
+
+//=============================================================================
+// TESTING (ADR 0251) — non-fatal assertions and golden digests
+//=============================================================================
+// Zanna.Core.Diagnostics.Assert* traps on first failure. These record instead,
+// so a test program runs every check, prints every failure, and emits one
+// parseable verdict line plus a process exit code.
+
+RT_FUNC(TestingSuiteNew,    rt_testing_suite_new,   "Zanna.Testing.Suite.New",          "obj(str)")
+RT_FUNC(TestingCheck,       rt_testing_check,       "Zanna.Testing.Suite.Check",        "i1(obj,i1,str)")
+RT_FUNC(TestingEqInt,       rt_testing_eq_int,      "Zanna.Testing.Suite.EqInt",        "i1(obj,i64,i64,str)")
+RT_FUNC(TestingEqStr,       rt_testing_eq_str,      "Zanna.Testing.Suite.EqStr",        "i1(obj,str,str,str)")
+RT_FUNC(TestingEqNum,       rt_testing_eq_num,      "Zanna.Testing.Suite.EqNum",        "i1(obj,f64,f64,f64,str)")
+RT_FUNC(TestingInBand,      rt_testing_in_band,     "Zanna.Testing.Suite.InBand",       "i1(obj,f64,f64,f64,str)")
+RT_FUNC(TestingFail,        rt_testing_fail,        "Zanna.Testing.Suite.Fail",         "void(obj,str)")
+RT_FUNC(TestingNote,        rt_testing_note,        "Zanna.Testing.Suite.Note",         "void(obj,str)")
+RT_FUNC(TestingFailures,    rt_testing_failures,    "Zanna.Testing.Suite.get_Failures", "i64(obj)")
+RT_FUNC(TestingChecks,      rt_testing_checks,      "Zanna.Testing.Suite.get_Checks",   "i64(obj)")
+RT_FUNC(TestingName,        rt_testing_name,        "Zanna.Testing.Suite.get_Name",     "str(obj)")
+RT_FUNC(TestingPassed,      rt_testing_passed,      "Zanna.Testing.Suite.get_Passed",   "i1(obj)")
+RT_FUNC(TestingReport,      rt_testing_report,      "Zanna.Testing.Suite.Report",       "i1(obj)")
+RT_FUNC(TestingExitCode,    rt_testing_exit_code,   "Zanna.Testing.Suite.ExitCode",     "i64(obj)")
+RT_FUNC(TestingGoldenDigest, rt_testing_golden_digest, "Zanna.Testing.Golden.Digest",   "str(str)")
+RT_FUNC(TestingGoldenCheck, rt_testing_golden_check, "Zanna.Testing.Golden.Check",      "i1(obj,str,str,str)")
+
+//=============================================================================
+// TEXT TABLE (ADR 0252) — fixed-width column layout
+//=============================================================================
+// TextWrapper aligns a single string; the GUI/HUD grids are interactive
+// widgets. Neither lays out a table of rows as text, so every report generator
+// hand-counts column widths in a header literal and keeps them in sync with a
+// chain of pad calls by eye.
+
+RT_FUNC(TableNew,           rt_table_new,             "Zanna.Text.Table.New",             "obj()")
+RT_FUNC(TableAddColumn,     rt_table_add_column,      "Zanna.Text.Table.AddColumn",       "i64(obj,str,i64,i64)")
+RT_FUNC(TableAddColumnAuto, rt_table_add_column_auto, "Zanna.Text.Table.AddColumnAuto",   "i64(obj,str,i64)")
+RT_FUNC(TableSetTruncate,   rt_table_set_truncate,    "Zanna.Text.Table.SetTruncate",     "void(obj,i64,i1)")
+RT_FUNC(TableColumnCount,   rt_table_column_count,    "Zanna.Text.Table.get_ColumnCount", "i64(obj)")
+RT_FUNC(TableAddRow,        rt_table_add_row,         "Zanna.Text.Table.AddRow",          "i64(obj)")
+RT_FUNC(TableSetCell,       rt_table_set_cell,        "Zanna.Text.Table.SetCell",         "void(obj,i64,i64,str)")
+RT_FUNC(TableGetCell,       rt_table_get_cell,        "Zanna.Text.Table.GetCell",         "str(obj,i64,i64)")
+RT_FUNC(TableRowCount,      rt_table_row_count,       "Zanna.Text.Table.get_RowCount",    "i64(obj)")
+RT_FUNC(TableClearRows,     rt_table_clear_rows,      "Zanna.Text.Table.ClearRows",       "void(obj)")
+RT_FUNC(TableSetGutter,     rt_table_set_gutter,      "Zanna.Text.Table.SetGutter",       "void(obj,str)")
+RT_FUNC(TableRenderHeader,  rt_table_render_header,   "Zanna.Text.Table.RenderHeader",    "str(obj)")
+RT_FUNC(TableRenderRule,    rt_table_render_rule,     "Zanna.Text.Table.RenderRule",      "str(obj,str)")
+RT_FUNC(TableRenderRow,     rt_table_render_row,      "Zanna.Text.Table.RenderRow",       "str(obj,i64)")
+RT_FUNC(TableRender,        rt_table_render,          "Zanna.Text.Table.Render",          "str(obj,i1,i1)")
+RT_FUNC(TableAlignLeft,     rt_table_align_left,      "Zanna.Text.Table.get_AlignLeft",   "i64()")
+RT_FUNC(TableAlignRight,    rt_table_align_right,     "Zanna.Text.Table.get_AlignRight",  "i64()")
+RT_FUNC(TableAlignCenter,   rt_table_align_center,    "Zanna.Text.Table.get_AlignCenter", "i64()")
 RT_FUNC(DiffCountChanges, rt_diff_count_changes, "Zanna.Text.Diff.CountChanges", "i64(str,str)")
 RT_FUNC(DiffPatch,        rt_diff_patch,         "Zanna.Text.Diff.Patch",        "str(str,obj)")
 
@@ -446,6 +497,12 @@ RT_CLASS_END()
 
 RT_FUNC(EnvArgCount, rt_args_count,    "Zanna.System.Environment.GetArgumentCount", "i64()")
 RT_FUNC(EnvArgGet,   rt_args_get,      "Zanna.System.Environment.GetArgument",      "str(i64)")
+// Flag and option parsing (ADR 0253). The raw count/index store below is the
+// primitive; every CLI-facing program then rewrote the same scan.
+RT_FUNC(ArgsHasFlag,      rt_args_has_flag,       "Zanna.System.Args.HasFlag",      "i1(str)")
+RT_FUNC(ArgsGetOption,    rt_args_get_option,     "Zanna.System.Args.GetOption",    "str(str,str)")
+RT_FUNC(ArgsGetOptionInt, rt_args_get_option_int, "Zanna.System.Args.GetOptionInt", "i64(str,i64)")
+RT_FUNC(ArgsPositionals,  rt_args_positionals,    "Zanna.System.Args.Positionals",  "seq()")
 RT_FUNC(EnvCmdLine,  rt_cmdline,       "Zanna.System.Environment.GetCommandLine",   "str()")
 RT_FUNC(EnvExit,     rt_env_exit,      "Zanna.System.Environment.Exit",       "void(i64)")
 RT_FUNC(EnvGetVar,   rt_env_get_var,   "Zanna.System.Environment.GetVariable",      "str(str)")

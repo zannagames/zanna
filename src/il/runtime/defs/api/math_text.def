@@ -102,6 +102,20 @@ RT_FUNC(MathTanh,     rt_tanh,           "Zanna.Math.Tanh",     "f64(f64)")
 RT_FUNC(MathTau,      rt_math_tau,       "Zanna.Math.get_Tau",  "f64()")
 RT_FUNC(MathTrunc,    rt_trunc,          "Zanna.Math.Truncate",    "f64(f64)")
 RT_FUNC(MathWrap,     rt_wrap_f64,       "Zanna.Math.Wrap",     "f64(f64,f64,f64)")
+
+// Interpolation shaping (ADR 0251). SmoothStep is already implemented four
+// times inside the runtime (rail camera, terrain builder, timeline easer,
+// Perlin lattice) but was never exposed; InverseLerp/Remap complete Lerp.
+// LerpInt is the bit-exact integer form a deterministic simulation needs.
+RT_FUNC(MathSmoothStep,    rt_smoothstep,     "Zanna.Math.SmoothStep",       "f64(f64,f64,f64)")
+RT_FUNC(MathSmoothStep01,  rt_smoothstep01,   "Zanna.Math.SmoothStep01",     "f64(f64)")
+RT_FUNC(MathSmootherStep01, rt_smootherstep01, "Zanna.Math.SmootherStep01",  "f64(f64)")
+RT_FUNC(MathInverseLerp,   rt_inverse_lerp,   "Zanna.Math.InverseLerp",      "f64(f64,f64,f64)")
+RT_FUNC(MathRemap,         rt_remap,          "Zanna.Math.Remap",            "f64(f64,f64,f64,f64,f64)")
+RT_FUNC(MathLerpInt,       rt_lerp_i64,       "Zanna.Math.LerpInt",          "i64(i64,i64,i64,i64)")
+RT_FUNC(MathMix1,          rt_math_mix1,      "Zanna.Math.Mix",              "i64(i64)")
+RT_FUNC(MathMix2,          rt_math_mix2,      "Zanna.Math.Mix2",             "i64(i64,i64)")
+RT_FUNC(MathMix3,          rt_math_mix3,      "Zanna.Math.Mix3",             "i64(i64,i64,i64)")
 RT_FUNC(MathWrapInt,  rt_wrap_i64,       "Zanna.Math.WrapInt",  "i64(i64,i64,i64)")
 
 //=============================================================================
@@ -138,6 +152,17 @@ RT_FUNC(RandomExponential, rt_rand_exponential, "Zanna.Math.Random.Exponential",
 RT_FUNC(RandomDice,        rt_rand_dice,        "Zanna.Math.Random.Dice",        "i64(i64)")
 RT_FUNC(RandomChance,      rt_rand_chance_bool, "Zanna.Math.Random.Chance",      "i1(f64)")
 RT_FUNC(RandomShuffle,     rt_rand_shuffle,     "Zanna.Math.Random.Shuffle",     "void(obj)")
+
+// Stream state: snapshot / restore / fork / derive (ADR 0254). Replay,
+// save-games, and deterministic test harnesses all need the cursor.
+RT_FUNC(RandomGetState,     rt_random_get_state,        "Zanna.Math.Random.get_State",       "i64(obj)")
+RT_FUNC(RandomSetState,     rt_random_set_state,        "Zanna.Math.Random.set_State",       "void(obj,i64)")
+RT_FUNC(RandomClone,        rt_random_clone,            "Zanna.Math.Random.Clone",           "obj(obj)")
+RT_FUNC(RandomDerive,       rt_random_derive,           "Zanna.Math.Random.Derive",          "obj(obj,i64)")
+RT_FUNC(RandomGetGlobalState, rt_random_get_global_state, "Zanna.Math.Random.GetGlobalState",  "i64()")
+RT_FUNC(RandomSetGlobalState, rt_random_set_global_state, "Zanna.Math.Random.SetGlobalState",  "void(i64)")
+RT_FUNC(RandomHashRange,    rt_random_hash_range,       "Zanna.Math.Random.HashRange",       "i64(i64,i64,i64,i64,i64)")
+RT_INTERNAL_FUNC(RandomChancePercentMethod, rt_rand_chance_percent_method, "Zanna.Math.Random.inst_ChancePercent", "i1(obj,i64)")
 
 //=============================================================================
 // BIGINT - Arbitrary Precision Integers

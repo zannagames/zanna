@@ -878,6 +878,41 @@ int64_t rt_canvas_get_monitor_width(void *canvas);
 /// @return Monitor height in physical pixels.
 int64_t rt_canvas_get_monitor_height(void *canvas);
 
+// Additive and float-channel operations (ADR 0253).
+/// @brief Offset every RGB channel by a signed amount, clamped to 0..255.
+/// @details Additive, unlike the percentage-based Brighten/Darken pair.
+/// @param color Runtime color to transform.
+/// @param amount Signed per-channel offset.
+/// @return Offset color.
+int64_t rt_color_add_channels(int64_t color, int64_t amount);
+/// @brief Scale every RGB channel by a factor, clamped to 0..255.
+/// @param color Runtime color to transform.
+/// @param factor Multiplier; negative or non-finite becomes zero.
+/// @return Scaled color.
+int64_t rt_color_scale_rgb(int64_t color, double factor);
+/// @brief Pack three 0..1 float channels into a runtime color.
+/// @param r Red in 0..1.
+/// @param g Green in 0..1.
+/// @param b Blue in 0..1.
+/// @return Packed 0xRRGGBB color.
+int64_t rt_color_rgb_f(double r, double g, double b);
+/// @brief Red channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Red divided by 255.
+double rt_color_get_red_f(int64_t color);
+/// @brief Green channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Green divided by 255.
+double rt_color_get_green_f(int64_t color);
+/// @brief Blue channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Blue divided by 255.
+double rt_color_get_blue_f(int64_t color);
+/// @brief Rec.709 relative luminance of a color, 0..1.
+/// @param color Runtime color.
+/// @return Luminance in 0..1.
+double rt_color_luma(int64_t color);
+
 #ifdef __cplusplus
 }
 #endif

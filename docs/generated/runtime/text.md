@@ -207,6 +207,45 @@ construct the class directly. Its public surface exposes operations including `C
 | <a id="zanna-text-diff-patch"></a>`Patch` | `str(str,obj)` | `Zanna.Text.Diff.Patch` |
 | <a id="zanna-text-diff-unified"></a>`Unified` | `str(str,str,i64)` | `Zanna.Text.Diff.Unified` |
 
+<a id="zanna-text-table"></a>
+### `Zanna.Text.Table`
+
+Lays out rows into aligned monospace columns.
+
+Header and body are generated from one width declaration, so they cannot drift apart the way a
+hand-counted header literal does. `AddColumnAuto` sizes a column from its widest cell at render
+time. Widths are byte widths, matching `Zanna.String.PadLeft`/`PadRight`.
+
+Constructor: `Zanna.Text.Table.New`
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-text-table-columncount"></a>`ColumnCount` | `i64` | read-only |
+| <a id="zanna-text-table-rowcount"></a>`RowCount` | `i64` | read-only |
+| <a id="zanna-text-table-alignleft"></a>`AlignLeft` | `i64` | read-only |
+| <a id="zanna-text-table-alignright"></a>`AlignRight` | `i64` | read-only |
+| <a id="zanna-text-table-aligncenter"></a>`AlignCenter` | `i64` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-text-table-addcolumn"></a>`AddColumn` | `i64(str,i64,i64)` | `Zanna.Text.Table.AddColumn` |
+| <a id="zanna-text-table-addcolumnauto"></a>`AddColumnAuto` | `i64(str,i64)` | `Zanna.Text.Table.AddColumnAuto` |
+| <a id="zanna-text-table-settruncate"></a>`SetTruncate` | `void(i64,i1)` | `Zanna.Text.Table.SetTruncate` |
+| <a id="zanna-text-table-addrow"></a>`AddRow` | `i64()` | `Zanna.Text.Table.AddRow` |
+| <a id="zanna-text-table-setcell"></a>`SetCell` | `void(i64,i64,str)` | `Zanna.Text.Table.SetCell` |
+| <a id="zanna-text-table-getcell"></a>`GetCell` | `str(i64,i64)` | `Zanna.Text.Table.GetCell` |
+| <a id="zanna-text-table-clearrows"></a>`ClearRows` | `void()` | `Zanna.Text.Table.ClearRows` |
+| <a id="zanna-text-table-setgutter"></a>`SetGutter` | `void(str)` | `Zanna.Text.Table.SetGutter` |
+| <a id="zanna-text-table-renderheader"></a>`RenderHeader` | `str()` | `Zanna.Text.Table.RenderHeader` |
+| <a id="zanna-text-table-renderrule"></a>`RenderRule` | `str(str)` | `Zanna.Text.Table.RenderRule` |
+| <a id="zanna-text-table-renderrow"></a>`RenderRow` | `str(i64)` | `Zanna.Text.Table.RenderRow` |
+| <a id="zanna-text-table-render"></a>`Render` | `str(i1,i1)` | `Zanna.Text.Table.Render` |
+| <a id="zanna-text-table-new"></a>`New` | `obj()` | `Zanna.Text.Table.New` |
+
 <a id="zanna-text-markdown"></a>
 ### `Zanna.Text.Markdown`
 
@@ -440,6 +479,24 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.InvariantNumberFormat.Pad` | `str(i64,i64)` | `rt_numfmt_pad` |
 | `Zanna.Text.Diff.Lines` | `seq<str>(str,str)` | `rt_diff_lines` |
 | `Zanna.Text.Diff.Unified` | `str(str,str,i64)` | `rt_diff_unified` |
+| `Zanna.Text.Table.New` | `obj()` | `rt_table_new` |
+| `Zanna.Text.Table.AddColumn` | `i64(obj,str,i64,i64)` | `rt_table_add_column` |
+| `Zanna.Text.Table.AddColumnAuto` | `i64(obj,str,i64)` | `rt_table_add_column_auto` |
+| `Zanna.Text.Table.SetTruncate` | `void(obj,i64,i1)` | `rt_table_set_truncate` |
+| <a id="zanna-text-table-get-columncount"></a>`Zanna.Text.Table.get_ColumnCount` | `i64(obj)` | `rt_table_column_count` |
+| `Zanna.Text.Table.AddRow` | `i64(obj)` | `rt_table_add_row` |
+| `Zanna.Text.Table.SetCell` | `void(obj,i64,i64,str)` | `rt_table_set_cell` |
+| `Zanna.Text.Table.GetCell` | `str(obj,i64,i64)` | `rt_table_get_cell` |
+| <a id="zanna-text-table-get-rowcount"></a>`Zanna.Text.Table.get_RowCount` | `i64(obj)` | `rt_table_row_count` |
+| `Zanna.Text.Table.ClearRows` | `void(obj)` | `rt_table_clear_rows` |
+| `Zanna.Text.Table.SetGutter` | `void(obj,str)` | `rt_table_set_gutter` |
+| `Zanna.Text.Table.RenderHeader` | `str(obj)` | `rt_table_render_header` |
+| `Zanna.Text.Table.RenderRule` | `str(obj,str)` | `rt_table_render_rule` |
+| `Zanna.Text.Table.RenderRow` | `str(obj,i64)` | `rt_table_render_row` |
+| `Zanna.Text.Table.Render` | `str(obj,i1,i1)` | `rt_table_render` |
+| <a id="zanna-text-table-get-alignleft"></a>`Zanna.Text.Table.get_AlignLeft` | `i64()` | `rt_table_align_left` |
+| <a id="zanna-text-table-get-alignright"></a>`Zanna.Text.Table.get_AlignRight` | `i64()` | `rt_table_align_right` |
+| <a id="zanna-text-table-get-aligncenter"></a>`Zanna.Text.Table.get_AlignCenter` | `i64()` | `rt_table_align_center` |
 | `Zanna.Text.Diff.CountChanges` | `i64(str,str)` | `rt_diff_count_changes` |
 | `Zanna.Text.Diff.Patch` | `str(str,obj)` | `rt_diff_patch` |
 | `Zanna.Text.Char.IsIdentifierStart` | `i1(str)` | `rt_text_char_is_identifier_start` |

@@ -44,6 +44,10 @@
 
 #include "rt_args.h"
 #include "rt_context.h"
+#include "rt_parse.h"
+#include "rt_seq.h"
+#include "rt_string.h"
+#include "rt_string_internal.h"
 #include "rt_context_internal.h"
 #include "rt_internal.h"
 #include "rt_string_builder.h"
@@ -977,4 +981,143 @@ void rt_env_exit(int64_t code) {
 #else
     exit((int)code);
 #endif
+}
+
+//=============================================================================
+// Flag and option parsing (ADR 0253)
+//=============================================================================
+//
+// The raw store below gives count-and-index access. Every CLI-facing program
+// then writes the same linear scan to answer "was --flag passed?" and "what
+// followed --option?" — slightly differently each time. These put one answer in
+// the runtime.
+//
+// Deliberately minimal: no spec object, no usage generation, no subcommands.
+// Those are opinionated and a program that needs them will want its own. What
+// is shared between every program is the scan.
+
+/// @brief Compare an argument against a flag name.
+/// @param arg Borrowed argument string.
+/// @param name Borrowed flag name.
+/// @return Non-zero when they match exactly.
+static int args_equals(rt_string arg, rt_string name) {
+    const char *a = arg ? rt_string_cstr(arg) : NULL;
+    const char *n = name ? rt_string_cstr(name) : NULL;
+    if (!a || !n)
+        return 0;
+    return strcmp(a, n) == 0;
+}
+
+/// @brief True when @p name appears as a standalone argument.
+/// @details Exact match only. `--verbose` does not match `--verbose=1`; use
+///          @ref rt_args_get_option for the valued form.
+/// @param name Flag to look for, including any leading dashes.
+/// @return Non-zero when present.
+int8_t rt_args_has_flag(rt_string name) {
+    int64_t count = rt_args_count();
+    for (int64_t i = 0; i < count; i++) {
+        rt_string arg = rt_args_get(i);
+        int hit = args_equals(arg, name);
+        rt_string_unref(arg);
+        if (hit)
+            return 1;
+    }
+    return 0;
+}
+
+/// @brief Value following @p name, or @p fallback when absent.
+/// @details Accepts both `--opt value` and `--opt=value`. A trailing `--opt`
+///          with nothing after it returns @p fallback rather than an empty
+///          string, so "absent" and "explicitly empty" stay distinguishable.
+/// @param name Option to look for, including any leading dashes.
+/// @param fallback Value returned when the option is absent or unvalued.
+/// @return Owned value string.
+rt_string rt_args_get_option(rt_string name, rt_string fallback) {
+    const char *n = name ? rt_string_cstr(name) : NULL;
+    if (!n)
+        return fallback ? rt_string_ref(fallback) : rt_empty_string();
+    size_t nlen = strlen(n);
+    int64_t count = rt_args_count();
+    for (int64_t i = 0; i < count; i++) {
+        rt_string arg = rt_args_get(i);
+        const char *a = arg ? rt_string_cstr(arg) : NULL;
+        if (a) {
+            if (strcmp(a, n) == 0) {
+                rt_string_unref(arg);
+                if (i + 1 < count)
+                    return rt_args_get(i + 1);
+                break;
+            }
+            if (strncmp(a, n, nlen) == 0 && a[nlen] == '=') {
+                rt_string out = rt_string_from_bytes(a + nlen + 1, strlen(a + nlen + 1));
+                rt_string_unref(arg);
+                return out;
+            }
+        }
+        rt_string_unref(arg);
+    }
+    return fallback ? rt_string_ref(fallback) : rt_empty_string();
+}
+
+/// @brief Integer value following @p name, or @p fallback.
+/// @details Parses with the same strict decimal rules as
+///          `Zanna.Core.Parse.IntOr`; anything unparseable yields @p fallback.
+/// @param name Option to look for.
+/// @param fallback Value returned when absent or unparseable.
+/// @return Parsed integer or @p fallback.
+int64_t rt_args_get_option_int(rt_string name, int64_t fallback) {
+    rt_string value = rt_args_get_option(name, NULL);
+    const char *v = value ? rt_string_cstr(value) : NULL;
+    if (!v || !v[0]) {
+        if (value)
+            rt_string_unref(value);
+        return fallback;
+    }
+    int64_t parsed = rt_parse_int_or(value, fallback);
+    rt_string_unref(value);
+    return parsed;
+}
+
+/// @brief Arguments that are neither flags nor option values.
+/// @details An argument starting with `-` is treated as a flag, and the token
+///          after a `--opt value` pair is treated as consumed. A bare `--`
+///          ends option processing: everything after it is positional, which is
+///          the convention every shell user already expects.
+/// @return Owned Seq of positional argument strings.
+void *rt_args_positionals(void) {
+    // Owning Seq: rt_args_get hands back a retained reference, and
+    // rt_seq_push_raw transfers that reference in without a second retain.
+    void *seq = rt_seq_new_owned();
+    if (!seq)
+        return NULL;
+    int64_t count = rt_args_count();
+    int only_positional = 0;
+    for (int64_t i = 0; i < count; i++) {
+        rt_string arg = rt_args_get(i);
+        const char *a = arg ? rt_string_cstr(arg) : NULL;
+        if (!a) {
+            rt_string_unref(arg);
+            continue;
+        }
+        if (!only_positional && strcmp(a, "--") == 0) {
+            only_positional = 1;
+            rt_string_unref(arg);
+            continue;
+        }
+        if (!only_positional && a[0] == '-' && a[1] != '\0') {
+            // A `--opt value` pair consumes the following token; `--opt=value`
+            // is self-contained.
+            if (!strchr(a, '=') && i + 1 < count) {
+                rt_string next = rt_args_get(i + 1);
+                const char *nx = next ? rt_string_cstr(next) : NULL;
+                if (nx && nx[0] != '-')
+                    i++;
+                rt_string_unref(next);
+            }
+            rt_string_unref(arg);
+            continue;
+        }
+        rt_seq_push_raw(seq, arg);
+    }
+    return seq;
 }

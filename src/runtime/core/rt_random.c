@@ -456,3 +456,175 @@ void rt_rand_shuffle(void *seq) {
         }
     }
 }
+
+//=============================================================================
+// Stream State: Snapshot, Restore, Fork, Derive
+//=============================================================================
+
+/// @brief Mix a 64-bit value with the splitmix64 finalizer.
+/// @details Used to derive decorrelated child seeds and to implement the
+///          stateless counter-based draw. Pure: the same input always yields
+///          the same output on every backend, which is what replay determinism
+///          requires. Not cryptographic.
+/// @param x Value to mix.
+/// @return Avalanched 64-bit result.
+static uint64_t rt_random_mix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+
+/// @brief Fold one more value into a running hash, order-sensitively.
+/// @details The multiply by an odd prime before the combine is what makes the
+///   fold asymmetric; a plain `h ^ mix(v)` would be commutative, so
+///   `HashRange(seed, seq, ...)` would collide with `HashRange(seq, seed, ...)`.
+/// @param h Running hash.
+/// @param v Value to fold in.
+/// @return Updated running hash.
+static uint64_t rt_random_mix_step(uint64_t h, uint64_t v) {
+    return rt_random_mix64((h * 0x100000001B3ULL) ^ rt_random_mix64(v));
+}
+
+/// @brief Read @p self's raw stream cursor.
+/// @details The returned value fully describes the stream's position: storing
+///          it and passing it back to @ref rt_random_set_state resumes the
+///          exact sequence. This is the save-game/replay/checkpoint primitive.
+/// @param self Runtime-managed Random handle.
+/// @return Current cursor reinterpreted as a signed 64-bit value, or zero
+///         after a returning invalid-receiver trap.
+long long rt_random_get_state(void *self) {
+    rt_random_impl *rng = as_random(self);
+    if (!rng)
+        return 0;
+    return (long long)rng->state;
+}
+
+/// @brief Restore @p self's stream cursor.
+/// @details Accepts any 64-bit pattern, including one previously produced by
+///          @ref rt_random_get_state. Every state is valid for this generator
+///          (the LCG has full period), so no normalization is applied.
+/// @param self Runtime-managed Random handle.
+/// @param state Cursor to resume from, converted modulo 2^64.
+void rt_random_set_state(void *self, long long state) {
+    rt_random_impl *rng = as_random(self);
+    if (!rng)
+        return;
+    rng->state = (uint64_t)state;
+}
+
+/// @brief Fork @p self into an independent stream at its current position.
+/// @details The clone starts where the parent is now and advances separately;
+///          neither stream perturbs the other. Useful for speculative
+///          rollouts that must not consume the caller's sequence.
+/// @param self Runtime-managed Random handle.
+/// @return New Random handle positioned at @p self's cursor, or `NULL` after a
+///         returning invalid-receiver trap or allocation failure.
+void *rt_random_clone(void *self) {
+    rt_random_impl *rng = as_random(self);
+    if (!rng)
+        return NULL;
+    return rt_random_new((long long)rng->state);
+}
+
+/// @brief Derive a decorrelated child stream from @p self and a namespace.
+/// @details The child seed is `mix64(parent_state ^ mix64(ns))`, so distinct
+///          namespaces yield streams that do not overlap in practice. The
+///          parent is **not** advanced, which makes derivation reproducible
+///          regardless of call order — the property a per-subsystem stream
+///          layout depends on.
+/// @param self Runtime-managed Random handle supplying the parent cursor.
+/// @param ns Caller-chosen namespace discriminator.
+/// @return New independent Random handle, or `NULL` after a returning
+///         invalid-receiver trap or allocation failure.
+void *rt_random_derive(void *self, long long ns) {
+    rt_random_impl *rng = as_random(self);
+    if (!rng)
+        return NULL;
+    uint64_t seed = rt_random_mix64(rng->state ^ rt_random_mix64((uint64_t)ns));
+    return rt_random_new((long long)seed);
+}
+
+/// @brief Read the effective context's shared cursor (the static-API stream).
+/// @details Lets a program checkpoint the stream that `Zanna.Math.Random`'s
+///          static functions draw from. Acquisition follows the same RNG-lock
+///          discipline as the static draws themselves.
+/// @return Current shared cursor, or zero if effective-context acquisition
+///         fails.
+long long rt_random_get_global_state(void) {
+    RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_RNG, NULL);
+    if (!ctx)
+        return 0;
+    long long value = (long long)ctx->rng_state;
+    rt_context_release_state(ctx, RT_CONTEXT_STATE_RNG);
+    return value;
+}
+
+/// @brief Restore the effective context's shared cursor.
+/// @details The write counterpart of @ref rt_random_get_global_state. Equivalent
+///          to `Seed`, but named to make checkpoint/restore intent explicit at
+///          the call site.
+/// @param state Cursor to resume from, converted modulo 2^64.
+void rt_random_set_global_state(long long state) {
+    rt_randomize_u64((uint64_t)state);
+}
+
+/// @brief Stateless uniform draw in [@p lo, @p hi] from (@p seed, @p seq, @p salt).
+/// @details Consumes no stream and mutates nothing: the result is a pure
+///          function of its arguments. This is the shape a presentation or
+///          replay layer needs when it must be reproducible under arbitrary
+///          seeking and is forbidden from owning RNG state. Bounds are
+///          swapped if inverted; equal bounds return that value.
+/// @param seed Run-level seed.
+/// @param seq Monotonic sequence counter (event index, frame, tick).
+/// @param salt Per-call-site discriminator so independent consumers of the
+///        same @p seq decorrelate.
+/// @param lo First inclusive bound.
+/// @param hi Second inclusive bound.
+/// @return Uniform value in the normalized inclusive range.
+long long rt_random_hash_range(
+    long long seed, long long seq, long long salt, long long lo, long long hi) {
+    if (lo > hi) {
+        long long tmp = lo;
+        lo = hi;
+        hi = tmp;
+    }
+    if (lo == hi)
+        return lo;
+
+    uint64_t h = rt_random_mix_step(rt_random_mix64((uint64_t)seed), (uint64_t)seq);
+    h = rt_random_mix_step(h, (uint64_t)salt);
+
+    // Width is computed unsigned so a full-range [INT64_MIN, INT64_MAX] span
+    // does not overflow; a wrapped width of zero means "every 64-bit value".
+    uint64_t width = (uint64_t)hi - (uint64_t)lo + 1ULL;
+    if (width == 0)
+        return (long long)h;
+    // Rejection-sample so every value in the range is equiprobable.
+    const uint64_t threshold = (uint64_t)(0ULL - width) % width;
+    uint64_t counter = 0;
+    while (h < threshold) {
+        counter++;
+        h = rt_random_mix_step(h, counter);
+    }
+    return (long long)((uint64_t)lo + (h % width));
+}
+
+/// @brief Instance chance test on an integer percentage.
+/// @details `percent <= 0` is always false and `percent >= 100` always true,
+///          neither of which advances @p self. Intermediate values consume one
+///          bounded draw. The integer form avoids the float rounding that makes
+///          `Chance(f64)` awkward for replayable logic.
+/// @param self Runtime-managed Random handle.
+/// @param percent Probability in percent.
+/// @return Non-zero when the draw succeeds.
+int8_t rt_rand_chance_percent_method(void *self, long long percent) {
+    if (percent <= 0)
+        return 0;
+    if (percent >= 100)
+        return 1;
+    rt_random_impl *rng = as_random(self);
+    if (!rng)
+        return 0;
+    return (int8_t)(rt_random_bounded_u64_from_state(&rng->state, 100ULL) < (uint64_t)percent);
+}

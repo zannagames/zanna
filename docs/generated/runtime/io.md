@@ -142,6 +142,8 @@ the class directly. Its public surface exposes operations including `Absolute`, 
 | <a id="zanna-io-path-extension"></a>`Extension` | `str(str)` | `Zanna.IO.Path.Extension` |
 | <a id="zanna-io-path-exedir"></a>`ExeDir` | `str()` | `Zanna.IO.Path.ExeDir` |
 | <a id="zanna-io-path-datadir"></a>`DataDir` | `str(str)` | `Zanna.IO.Path.DataDir` |
+| <a id="zanna-io-path-findupward"></a>`FindUpward` | `str(str,str,i64)` | `Zanna.IO.Path.FindUpward` |
+| <a id="zanna-io-path-resolvedataroot"></a>`ResolveDataRoot` | `str(str,str)` | `Zanna.IO.Path.ResolveDataRoot` |
 | <a id="zanna-io-path-isabsolute"></a>`IsAbsolute` | `i1(str)` | `Zanna.IO.Path.IsAbsolute` |
 | <a id="zanna-io-path-islink"></a>`IsLink` | `i1(str)` | `Zanna.IO.Path.IsLink` |
 | <a id="zanna-io-path-join"></a>`Join` | `str(str,str)` | `Zanna.IO.Path.Join` |
@@ -573,6 +575,8 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | `Zanna.IO.Path.WithExtension` | `str(str,str)` | `rt_path_with_ext` |
 | `Zanna.IO.Path.ExeDir` | `str()` | `rt_path_exe_dir_str` |
 | `Zanna.IO.Path.DataDir` | `str(str)` | `rt_path_data_dir` |
+| `Zanna.IO.Path.FindUpward` | `str(str,str,i64)` | `rt_path_find_upward` |
+| `Zanna.IO.Path.ResolveDataRoot` | `str(str,str)` | `rt_path_resolve_data_root` |
 | `Zanna.IO.Assets.Load` | `obj(str)` | `rt_asset_load` |
 | `Zanna.IO.Assets.LoadBytes` | `obj(str)` | `rt_asset_load_bytes` |
 | `Zanna.IO.Assets.Exists` | `i1(str)` | `rt_asset_exists` |

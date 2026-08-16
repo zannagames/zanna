@@ -918,6 +918,36 @@ int64_t rt_mesh3d_get_vertex_count(void *obj);
 /// @param index Zero-based vertex index.
 /// @return Fresh GC-managed Vec3 handle, or NULL for an invalid mesh or out-of-range index.
 void *rt_mesh3d_get_vertex_position(void *obj, int64_t index);
+/// @brief Minimum corner of the mesh-local axis-aligned bounding box.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+/// @brief Append @p src_obj's geometry into @p obj.
+/// @details Merges triangles so many parts can render as one draw call. Takes
+///          no transform: meshes are GC-managed with no destroy entry point, so
+///          the caller clones and transforms first
+///          (`part = src.Clone(); part.Transform(m); dst.Append(part);`),
+///          keeping that allocation explicit. Skinned and morph-target meshes
+///          are rejected rather than silently corrupted.
+/// @param obj Destination mesh, mutated in place.
+/// @param src_obj Source mesh; unchanged.
+void rt_mesh3d_append(void *obj, void *src_obj);
+void *rt_mesh3d_get_bounds_min(void *obj);
+/// @brief Maximum corner of the mesh-local axis-aligned bounding box.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_max(void *obj);
+/// @brief Centre of the mesh-local bounding box.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_center(void *obj);
+/// @brief Extent of the mesh-local bounding box along each axis.
+/// @param obj Mesh3D receiver.
+/// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.
+void *rt_mesh3d_get_bounds_size(void *obj);
+/// @brief Radius of the mesh-local bounding sphere.
+/// @param obj Mesh3D receiver.
+/// @return Bounding-sphere radius, or zero for an invalid or empty mesh.
+double rt_mesh3d_get_bounds_radius(void *obj);
 /// @brief Number of triangles currently in the mesh (== indices / 3).
 /// @param obj Borrowed Mesh3D handle.
 /// @return Non-negative triangle count, or zero for invalid input.

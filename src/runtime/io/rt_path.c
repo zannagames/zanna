@@ -41,11 +41,15 @@
  */
 
 #include "rt_path.h"
+#include "rt_args.h"
+#include "rt_dir.h"
+#include "rt_file.h"
 #include "rt_file_path.h"
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
+#include "rt_string_internal.h"
 
 #include <ctype.h>
 #include <stdint.h>
@@ -1214,4 +1218,94 @@ norm_error:
 /// @see rt_path_join For the preferred way to build paths
 rt_string rt_path_sep(void) {
     return rt_string_from_bytes(PATH_SEP_STR, 1);
+}
+
+//=============================================================================
+// Upward marker search (ADR 0253)
+//=============================================================================
+
+/// @brief Walk up from @p start_dir looking for a relative marker path.
+/// @details "Find my data directory from wherever I was launched" is a
+///          universal shipping problem, and getting it wrong fails *silently*:
+///          the program runs, finds nothing, and quietly renders placeholder
+///          content. Every project therefore writes the same bounded parent
+///          walk. Centralizing it also centralizes the bound, so a missing
+///          marker cannot turn into an unbounded climb to `/`.
+///
+///          The marker is checked as both a file and a directory, since a
+///          project root is as often identified by `assets/` as by
+///          `project.json`. The returned path is the *directory that contains
+///          the marker*, not the marker itself, because that is what callers
+///          then join against.
+/// @param start_dir Directory to start from; empty or NULL means the current
+///        working directory.
+/// @param relative_marker Path fragment to probe at each level.
+/// @param max_levels Parent levels to try above the start; clamped to 0..64.
+/// @return Owned directory path containing the marker, or the empty string when
+///         no level matched.
+rt_string rt_path_find_upward(rt_string start_dir, rt_string relative_marker, int64_t max_levels) {
+    if (!relative_marker)
+        return rt_empty_string();
+    if (max_levels < 0)
+        max_levels = 0;
+    if (max_levels > 64)
+        max_levels = 64;
+
+    // Absolutize first. A parent walk over a relative path cannot work:
+    // rt_path_dir(".") is ".", so the "stopped making progress" guard below
+    // fires on the very first level and the search silently finds nothing —
+    // precisely the silent failure this function exists to prevent.
+    rt_string start = (start_dir && rt_string_cstr(start_dir) && rt_string_cstr(start_dir)[0])
+                          ? rt_string_ref(start_dir)
+                          : rt_string_from_bytes(".", 1);
+    rt_string dir = rt_path_abs(start);
+    rt_string_unref(start);
+    if (!dir)
+        return rt_empty_string();
+
+    for (int64_t level = 0; level <= max_levels; level++) {
+        rt_string probe = rt_path_join(dir, relative_marker);
+        int found = rt_io_file_exists(probe) || rt_dir_exists(probe);
+        rt_string_unref(probe);
+        if (found)
+            return dir; // transfers ownership to the caller
+
+        rt_string parent = rt_path_dir(dir);
+        // Stop when the walk stops making progress (filesystem root, or a
+        // directory function that returns its input).
+        if (!parent || strcmp(rt_string_cstr(parent), rt_string_cstr(dir)) == 0) {
+            if (parent)
+                rt_string_unref(parent);
+            break;
+        }
+        rt_string_unref(dir);
+        dir = parent;
+    }
+    rt_string_unref(dir);
+    return rt_empty_string();
+}
+
+/// @brief Resolve a data root from an environment override, then a marker walk.
+/// @details The override wins so a packaged build or a test harness can point
+///          at an explicit tree; the walk is the developer-convenience
+///          fallback. Returning empty rather than a guess is deliberate — a
+///          caller that silently accepts a wrong root is exactly the failure
+///          this is meant to prevent.
+/// @param env_var Environment variable consulted first; may be NULL.
+/// @param relative_marker Path fragment identifying the root.
+/// @return Owned directory path, or the empty string when unresolved.
+rt_string rt_path_resolve_data_root(rt_string env_var, rt_string relative_marker) {
+    if (env_var && rt_string_cstr(env_var) && rt_string_cstr(env_var)[0]) {
+        rt_string override = rt_env_get_var(env_var);
+        if (override && rt_string_cstr(override) && rt_string_cstr(override)[0]) {
+            rt_string probe = rt_path_join(override, relative_marker);
+            int found = rt_io_file_exists(probe) || rt_dir_exists(probe);
+            rt_string_unref(probe);
+            if (found)
+                return override;
+        }
+        if (override)
+            rt_string_unref(override);
+    }
+    return rt_path_find_upward(NULL, relative_marker, 8);
 }

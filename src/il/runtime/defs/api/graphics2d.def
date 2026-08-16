@@ -162,6 +162,17 @@ RT_FUNC(ColorDesaturate,  rt_color_desaturate,  "Zanna.Graphics.Color.Desaturate
 RT_FUNC(ColorComplement,  rt_color_complement,  "Zanna.Graphics.Color.Complement",  "i64(i64)")
 RT_FUNC(ColorGrayscale,   rt_color_grayscale,   "Zanna.Graphics.Color.Grayscale",   "i64(i64)")
 RT_FUNC(ColorInvert,      rt_color_invert,      "Zanna.Graphics.Color.Invert",      "i64(i64)")
+// Additive and float-channel operations (ADR 0253). Brighten/Darken move each
+// channel by a PERCENTAGE of its remaining distance to 255/0; AddChannels
+// offsets by a constant. Indexed pixel art needs the latter — a percentage move
+// changes the spacing between a palette's tones non-linearly.
+RT_FUNC(ColorAddChannels, rt_color_add_channels, "Zanna.Graphics.Color.AddChannels", "i64(i64,i64)")
+RT_FUNC(ColorScaleRgb,    rt_color_scale_rgb,    "Zanna.Graphics.Color.ScaleRgb",    "i64(i64,f64)")
+RT_FUNC(ColorRgbF,        rt_color_rgb_f,        "Zanna.Graphics.Color.RgbF",        "i64(f64,f64,f64)")
+RT_FUNC(ColorGetRedF,     rt_color_get_red_f,    "Zanna.Graphics.Color.GetRedF",     "f64(i64)")
+RT_FUNC(ColorGetGreenF,   rt_color_get_green_f,  "Zanna.Graphics.Color.GetGreenF",   "f64(i64)")
+RT_FUNC(ColorGetBlueF,    rt_color_get_blue_f,   "Zanna.Graphics.Color.GetBlueF",    "f64(i64)")
+RT_FUNC(ColorLuma,        rt_color_luma,         "Zanna.Graphics.Color.Luma",        "f64(i64)")
 
 //=============================================================================
 // GRAPHICS - PIXELS

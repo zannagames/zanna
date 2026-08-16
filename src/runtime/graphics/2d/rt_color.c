@@ -513,6 +513,126 @@ int64_t rt_color_invert(int64_t color) {
     return rt_color_pack_rgba_like(r, g, b, a, has_alpha);
 }
 
+//=============================================================================
+// Additive and float-channel operations (ADR 0253)
+//=============================================================================
+
+/// @brief Offset every RGB channel by a signed amount, clamped to 0..255.
+/// @details Distinct from @ref rt_color_brighten / @ref rt_color_darken, which
+///          move each channel by a *percentage* of its remaining distance to
+///          255 or 0. That is the right operation for a UI tint and the wrong
+///          one for indexed pixel art, where a palette's tones are defined by a
+///          constant luminance step: a percentage move changes the spacing
+///          between them non-linearly. Both operations are needed; neither
+///          substitutes for the other.
+/// @param color Runtime color to transform.
+/// @param amount Signed per-channel offset.
+/// @return Offset color with alpha and explicit-alpha intent unchanged.
+int64_t rt_color_add_channels(int64_t color, int64_t amount) {
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    r += amount;
+    g += amount;
+    b += amount;
+    if (r < 0)
+        r = 0;
+    if (g < 0)
+        g = 0;
+    if (b < 0)
+        b = 0;
+    if (r > 255)
+        r = 255;
+    if (g > 255)
+        g = 255;
+    if (b > 255)
+        b = 255;
+    return rt_color_pack_rgba_like(r, g, b, a, has_alpha);
+}
+
+/// @brief Scale every RGB channel by a factor, clamped to 0..255.
+/// @param color Runtime color to transform.
+/// @param factor Multiplier; negative or non-finite becomes zero.
+/// @return Scaled color with alpha and explicit-alpha intent unchanged.
+int64_t rt_color_scale_rgb(int64_t color, double factor) {
+    if (!(factor > 0.0))
+        factor = 0.0;
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    double fr = (double)r * factor;
+    double fg = (double)g * factor;
+    double fb = (double)b * factor;
+    r = fr > 255.0 ? 255 : (int64_t)fr;
+    g = fg > 255.0 ? 255 : (int64_t)fg;
+    b = fb > 255.0 ? 255 : (int64_t)fb;
+    return rt_color_pack_rgba_like(r, g, b, a, has_alpha);
+}
+
+/// @brief Pack three 0..1 float channels into a runtime color.
+/// @details The packed-int side of this boundary already existed
+///          (@ref rt_color_rgb); the float side did not, so every caller
+///          feeding `Material3D.PBR` hand-wrote the divides.
+/// @param r Red in 0..1; values outside are clamped.
+/// @param g Green in 0..1.
+/// @param b Blue in 0..1.
+/// @return Packed 0xRRGGBB color.
+static int64_t color_channel_from_f64(double v) {
+    if (!(v > 0.0))
+        return 0;
+    if (v >= 1.0)
+        return 255;
+    return (int64_t)(v * 255.0 + 0.5);
+}
+
+int64_t rt_color_rgb_f(double r, double g, double b) {
+    return (color_channel_from_f64(r) << 16) | (color_channel_from_f64(g) << 8) |
+           color_channel_from_f64(b);
+}
+
+/// @brief Red channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Red divided by 255.
+double rt_color_get_red_f(int64_t color) {
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    return (double)r / 255.0;
+}
+
+/// @brief Green channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Green divided by 255.
+double rt_color_get_green_f(int64_t color) {
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    return (double)g / 255.0;
+}
+
+/// @brief Blue channel as a 0..1 float.
+/// @param color Runtime color.
+/// @return Blue divided by 255.
+double rt_color_get_blue_f(int64_t color) {
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    return (double)b / 255.0;
+}
+
+/// @brief Rec.709 relative luminance of a color, 0..1.
+/// @details Distinct from @ref rt_color_grayscale, which uses the Rec.601
+///          weights to produce a *color*. This returns the scalar a tone-mapping
+///          or contrast check wants.
+/// @param color Runtime color.
+/// @return Luminance in 0..1.
+double rt_color_luma(int64_t color) {
+    int64_t r = 0, g = 0, b = 0, a = 255;
+    int8_t has_alpha = 0;
+    rt_color_split_rgba(color, &r, &g, &b, &a, &has_alpha);
+    return (0.2126 * (double)r + 0.7152 * (double)g + 0.0722 * (double)b) / 255.0;
+}
+
 #else
 typedef int rt_color_disabled_tu_guard;
 #endif /* ZANNA_ENABLE_GRAPHICS */

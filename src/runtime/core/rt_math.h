@@ -317,6 +317,57 @@ double rt_deg(double radians);
 /// @return Equivalent angle in radians.
 double rt_rad(double degrees);
 
+
+/// @brief Hermite smoothstep of @p x across the [@p edge0, @p edge1] band.
+/// @param edge0 Band start.
+/// @param edge1 Band end.
+/// @param x Value to shape.
+/// @return Smoothly interpolated result in `[0, 1]`.
+double rt_smoothstep(double edge0, double edge1, double x);
+/// @brief Hermite smoothstep of an already-normalized @p t.
+/// @param t Normalized position; clamped to `[0, 1]`.
+/// @return `t*t*(3-2t)`.
+double rt_smoothstep01(double t);
+/// @brief Perlin's second-order smootherstep of an already-normalized @p t.
+/// @param t Normalized position; clamped to `[0, 1]`.
+/// @return `6t^5 - 15t^4 + 10t^3`.
+double rt_smootherstep01(double t);
+/// @brief Position of @p v within [@p a, @p b]; the inverse of a lerp.
+/// @param a Span start.
+/// @param b Span end.
+/// @param v Value to locate.
+/// @return Normalized (unclamped) position.
+double rt_inverse_lerp(double a, double b, double v);
+/// @brief Rescale @p v from one span onto another.
+/// @param v Value to rescale.
+/// @param inLo Source span start.
+/// @param inHi Source span end.
+/// @param outLo Destination span start.
+/// @param outHi Destination span end.
+/// @return Rescaled (unclamped) value.
+double rt_remap(double v, double inLo, double inHi, double outLo, double outHi);
+/// @brief Bit-exact integer linear interpolation.
+/// @param a Start value.
+/// @param b End value.
+/// @param num Interpolation numerator.
+/// @param den Interpolation denominator; non-positive returns @p a.
+/// @return `a + (b - a) * num / den` in exact integer arithmetic.
+long long rt_lerp_i64(long long a, long long b, long long num, long long den);
+/// @brief Avalanche one integer; stable across runs, backends, and versions.
+/// @param x Value to mix.
+/// @return Mixed value.
+long long rt_math_mix1(long long x);
+/// @brief Combine two integers; order-sensitive and cross-run stable.
+/// @param a First input.
+/// @param b Second input.
+/// @return Combined value.
+long long rt_math_mix2(long long a, long long b);
+/// @brief Combine three integers; the (seed, sequence, salt) shape.
+/// @param a First input.
+/// @param b Second input.
+/// @param c Third input.
+/// @return Combined value.
+long long rt_math_mix3(long long a, long long b, long long c);
 #ifdef __cplusplus
 }
 #endif

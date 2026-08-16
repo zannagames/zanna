@@ -246,6 +246,106 @@ void rt_smoothvalue_update(rt_smoothvalue sv) {
     }
 }
 
+
+//=============================================================================
+// Time-Constant Damping (ADR 0250)
+//=============================================================================
+//
+// `Update()` applies one exponential step per call, so how fast a value chases
+// its target depends on the frame rate. A 144 Hz machine, a 30 Hz machine, and
+// a fixed-step headless capture all converge differently — which makes the
+// result unusable for a reproducible camera or a paced HUD.
+//
+// `UpdateMs(dt)` instead uses the standard frame-rate-independent form
+// `f = dt / (dt + tau)`, where `tau` is a time constant in milliseconds: the
+// value covers ~63% of its remaining distance every `tau`. Same dt sequence,
+// same result, on every machine.
+
+/// @brief Advance the smoothing by @p dt_ms using a time-constant response.
+/// @details `tau` is taken from the smoothing factor so a value configured the
+///          old way still behaves sensibly: `tau_ms = smoothing / (1 -
+///          smoothing) * 16.667`, i.e. the millisecond time constant that
+///          reproduces the current per-frame factor at 60 Hz. Callers wanting
+///          an explicit time constant should use
+///          @ref rt_smoothvalue_set_time_constant_ms.
+///
+///          A non-positive @p dt_ms does not advance. A `tau` of zero snaps to
+///          the target, matching `smoothing == 0`.
+/// @param sv Borrowed SmoothValue handle.
+/// @param dt_ms Elapsed milliseconds since the previous call.
+void rt_smoothvalue_update_ms(rt_smoothvalue sv, int64_t dt_ms) {
+    sv = checked_smoothvalue(sv, "SmoothValue.UpdateMs: expected Zanna.Game.SmoothValue");
+    if (!sv || dt_ms <= 0)
+        return;
+
+    double tau;
+    if (sv->smoothing >= 1.0)
+        return; // never converges; matches Update()'s behaviour for smoothing == 1
+    if (sv->smoothing <= 0.0) {
+        tau = 0.0;
+    } else {
+        tau = sv->smoothing / (1.0 - sv->smoothing) * (1000.0 / 60.0);
+    }
+
+    double prev = sv->current;
+    if (tau <= 0.0) {
+        sv->current = sv->target;
+    } else {
+        double f = (double)dt_ms / ((double)dt_ms + tau);
+        sv->current = sv->current + (sv->target - sv->current) * f;
+    }
+    if (!isfinite(sv->current))
+        sv->current = sv->target;
+
+    sv->velocity = sv->current - prev;
+
+    if (fabs(sv->current - sv->target) < SMOOTH_EPSILON) {
+        sv->current = sv->target;
+        sv->velocity = 0.0;
+    }
+}
+
+/// @brief Set the damping response as an explicit millisecond time constant.
+/// @details The value covers ~63% of its remaining distance every @p tau_ms.
+///          Stored as the equivalent 60 Hz smoothing factor so `Smoothing`,
+///          `Update()`, and `UpdateMs()` stay consistent with one another.
+///          Zero snaps immediately; negative values are clamped to zero.
+/// @param sv Borrowed SmoothValue handle.
+/// @param tau_ms Time constant in milliseconds.
+void rt_smoothvalue_set_time_constant_ms(rt_smoothvalue sv, int64_t tau_ms) {
+    sv = checked_smoothvalue(sv, "SmoothValue.TimeConstantMs: expected Zanna.Game.SmoothValue");
+    if (!sv)
+        return;
+    if (tau_ms <= 0) {
+        sv->smoothing = 0.0;
+        return;
+    }
+    double tau = (double)tau_ms;
+    double frame = 1000.0 / 60.0;
+    sv->smoothing = tau / (tau + frame);
+}
+
+/// @brief Read the damping response as a millisecond time constant.
+/// @param sv Borrowed SmoothValue handle.
+/// @return Time constant in milliseconds, or zero for an immediate snap.
+int64_t rt_smoothvalue_get_time_constant_ms(rt_smoothvalue sv) {
+    sv = checked_smoothvalue(sv, "SmoothValue.TimeConstantMs: expected Zanna.Game.SmoothValue");
+    if (!sv || sv->smoothing <= 0.0)
+        return 0;
+    if (sv->smoothing >= 1.0)
+        return INT64_MAX;
+    return (int64_t)(sv->smoothing / (1.0 - sv->smoothing) * (1000.0 / 60.0) + 0.5);
+}
+
+/// @brief Snap the value to its target immediately, clearing velocity.
+/// @param sv Borrowed SmoothValue handle.
+void rt_smoothvalue_snap_to_target(rt_smoothvalue sv) {
+    sv = checked_smoothvalue(sv, "SmoothValue.SnapToTarget: expected Zanna.Game.SmoothValue");
+    if (!sv)
+        return;
+    sv->current = sv->target;
+    sv->velocity = 0.0;
+}
 /// @brief Check whether the current value has converged to the target (within epsilon).
 /// @param sv Borrowed SmoothValue handle.
 /// @return `1` when the absolute difference is below

@@ -1,0 +1,152 @@
+// Test: ADR 0249 — Random stream state, derivation, and stable integer mixing
+// Written on Zanna.Testing.Suite, which is itself part of the surface
+// under test (ADR 0251) — the harness and its first real consumer.
+module test_random_state;
+bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Math as Math;
+bind Zanna.Math.Random as Random;
+
+var fails: Integer = 0;
+func near(a: Float, b: Float) -> Boolean {
+    var d = a - b;
+    if d < 0.0 { d = 0.0 - d; }
+    return d < 0.000000001;
+}
+
+func check(cond: Boolean, msg: String) {
+    if !cond { Terminal.Say("FAIL: " + msg); fails = fails + 1; }
+}
+
+func start() {
+    // --- State snapshot / restore reproduces the sequence -------------------
+    var r = new Random(12345);
+    for i in 0..17 { r.NextInt(1000); }
+    var saved = r.State;
+    var a: List[Integer] = [];
+    for i in 0..25 { a.add(r.NextInt(1000)); }
+    r.State = saved;
+    var b: List[Integer] = [];
+    for i in 0..25 { b.add(r.NextInt(1000)); }
+    var same = true;
+    for i in 0..25 { if a.get(i) != b.get(i) { same = false; } }
+    check(same, "restore(State) must replay the identical sequence");
+    check(saved != 0, "State should be a live cursor");
+
+    // --- Clone forks at the current position --------------------------------
+    var p = new Random(999);
+    for i in 0..5 { p.NextInt(50); }
+    var c = p.Clone();
+    var pv: List[Integer] = [];
+    var cv: List[Integer] = [];
+    for i in 0..20 { pv.add(p.NextInt(50)); cv.add(c.NextInt(50)); }
+    var cloneSame = true;
+    for i in 0..20 { if pv.get(i) != cv.get(i) { cloneSame = false; } }
+    check(cloneSame, "Clone must continue the parent's sequence independently");
+
+    // --- Derive is stable, decorrelated, and does not advance the parent -----
+    var q = new Random(4242);
+    var before = q.State;
+    var d1 = q.Derive(1);
+    var d2 = q.Derive(2);
+    var d1again = q.Derive(1);
+    check(q.State == before, "Derive must not advance the parent");
+    check(d1.State == d1again.State, "Derive must be reproducible for the same namespace");
+    check(d1.State != d2.State, "different namespaces must give different streams");
+    var overlap = 0;
+    for i in 0..40 { if d1.NextInt(100000) == d2.NextInt(100000) { overlap = overlap + 1; } }
+    check(overlap < 3, "derived streams should not track each other");
+
+    // --- HashRange is stateless, deterministic, and in range -----------------
+    var h1 = Random.HashRange(7, 3, 11, 10, 20);
+    var h2 = Random.HashRange(7, 3, 11, 10, 20);
+    check(h1 == h2, "HashRange must be a pure function");
+    var inRange = true;
+    var seen: List[Integer] = [];
+    for s in 0..400 {
+        var v = Random.HashRange(7, s, 11, 10, 20);
+        if v < 10 || v > 20 { inRange = false; }
+        if !seen.has(v) { seen.add(v); }
+    }
+    check(inRange, "HashRange must stay within [lo, hi]");
+    check(seen.length() == 11, "HashRange should cover the whole range (got " +
+          Fmt.Int(seen.length()) + "/11)");
+    check(Random.HashRange(1, 1, 1, 5, 5) == 5, "degenerate range returns the bound");
+    check(Random.HashRange(1, 1, 1, 20, 10) >= 10 &&
+          Random.HashRange(1, 1, 1, 20, 10) <= 20, "inverted bounds are swapped");
+    // salt must decorrelate
+    var diff = 0;
+    for s in 0..100 {
+        if Random.HashRange(7, s, 1, 0, 999) != Random.HashRange(7, s, 2, 0, 999) {
+            diff = diff + 1;
+        }
+    }
+    check(diff > 95, "salt must decorrelate consumers (got " + Fmt.Int(diff) + "/100)");
+
+    // --- ChancePercent boundaries do not advance ----------------------------
+    var cp = new Random(77);
+    var st = cp.State;
+    check(cp.ChancePercent(0) == false, "0% is always false");
+    check(cp.ChancePercent(100) == true, "100% is always true");
+    check(cp.State == st, "clamped ends must not consume a draw");
+    var hits = 0;
+    for i in 0..1000 { if cp.ChancePercent(30) { hits = hits + 1; } }
+    check(hits > 240 && hits < 360, "30% should land near 300/1000 (got " + Fmt.Int(hits) + ")");
+
+    // --- Global stream checkpoint -------------------------------------------
+    Random.Seed(31337);
+    for i in 0..4 { Random.NextInt(10); }
+    var g = Random.GetGlobalState();
+    var ga: List[Integer] = [];
+    for i in 0..10 { ga.add(Random.NextInt(1000)); }
+    Random.SetGlobalState(g);
+    var gb: List[Integer] = [];
+    for i in 0..10 { gb.add(Random.NextInt(1000)); }
+    var gsame = true;
+    for i in 0..10 { if ga.get(i) != gb.get(i) { gsame = false; } }
+    check(gsame, "GlobalState must checkpoint the static stream");
+
+    // --- Math shaping --------------------------------------------------------
+    check(near(Math.SmoothStep01(0.0), 0.0), "smoothstep01(0)=0");
+    check(near(Math.SmoothStep01(1.0), 1.0), "smoothstep01(1)=1");
+    check(near(Math.SmoothStep01(0.5), 0.5), "smoothstep01(0.5)=0.5");
+    check(near(Math.SmoothStep01(0.0 - 3.0), 0.0), "smoothstep01 clamps low");
+    check(near(Math.SmoothStep01(9.0), 1.0), "smoothstep01 clamps high");
+    check(near(Math.SmoothStep(10.0, 20.0, 15.0), 0.5), "smoothstep midband");
+    check(near(Math.SmoothStep(10.0, 10.0, 9.0), 0.0), "degenerate band steps");
+    check(near(Math.SmoothStep(10.0, 10.0, 10.0), 1.0), "degenerate band steps at edge");
+    check(near(Math.SmootherStep01(0.5), 0.5), "smootherstep01(0.5)=0.5");
+    check(near(Math.SmootherStep01(0.0), 0.0), "smootherstep01(0)=0");
+    check(near(Math.SmootherStep01(1.0), 1.0), "smootherstep01(1)=1");
+    check(near(Math.InverseLerp(10.0, 20.0, 15.0), 0.5), "inverseLerp midpoint");
+    check(near(Math.InverseLerp(5.0, 5.0, 9.0), 0.0), "inverseLerp degenerate");
+    check(near(Math.Remap(15.0, 10.0, 20.0, 0.0, 100.0), 50.0), "remap midpoint");
+    check(Math.LerpInt(0, 100, 1, 4) == 25, "lerpInt quarter");
+    check(Math.LerpInt(0, 100, 0, 4) == 0, "lerpInt start");
+    check(Math.LerpInt(0, 100, 4, 4) == 100, "lerpInt end");
+    check(Math.LerpInt(7, 7, 3, 4) == 7, "lerpInt constant");
+    check(Math.LerpInt(5, 9, 1, 0) == 5, "lerpInt guards den<=0");
+
+    // --- Stable mixing -------------------------------------------------------
+    check(Math.Mix(5) == Math.Mix(5), "Mix is pure");
+    check(Math.Mix2(1, 2) != Math.Mix2(2, 1), "Mix2 is order-sensitive");
+    check(Math.Mix3(1, 2, 3) == Math.Mix3(1, 2, 3), "Mix3 is pure");
+    check(Math.Mix3(1, 2, 3) != Math.Mix3(3, 2, 1), "Mix3 is order-sensitive");
+    check(Math.Mix3(1, 2, 3) != Math.Mix3(2, 1, 3), "Mix3 distinguishes the first two");
+    // HashRange must not alias its own arguments (a symmetric fold would).
+    check(Random.HashRange(7, 3, 0, 0, 999999) != Random.HashRange(3, 7, 0, 0, 999999),
+          "HashRange seed/seq must not be interchangeable");
+    check(Random.HashRange(7, 0, 3, 0, 999999) != Random.HashRange(3, 0, 7, 0, 999999),
+          "HashRange seed/salt must not be interchangeable");
+    var distinct: List[Integer] = [];
+    for i in 0..500 {
+        var v = Math.Mix(i) % 64;
+        if v < 0 { v = 0 - v; }
+        if !distinct.has(v) { distinct.add(v); }
+    }
+    check(distinct.length() > 55, "Mix should spread low bits (got " +
+          Fmt.Int(distinct.length()) + "/64)");
+
+    if fails == 0 { Terminal.Say("RESULT: ok (ADR 0249 surface behaves)"); }
+    else { Terminal.Say("RESULT: fail (" + Fmt.Int(fails) + " checks)"); }
+}

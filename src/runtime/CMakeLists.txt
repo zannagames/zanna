@@ -39,6 +39,7 @@ set(RT_BASE_SOURCES
         core/rt_daterange.c
         core/rt_stopwatch.c
         core/rt_countdown.c
+        core/rt_testing.c
         core/rt_modvar.c
         core/rt_args.c
         core/rt_log.c
@@ -154,6 +155,7 @@ set(RT_TEXT_SOURCES
         text/rt_ini.c
         text/rt_guid.c
         text/rt_hash.c
+        text/rt_table.c
         text/rt_hash_util.c
         text/rt_json_parse.c
         text/rt_json_format.c

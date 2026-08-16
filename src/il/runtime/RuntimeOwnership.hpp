@@ -376,6 +376,14 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Camera3D.get_Forward" ||
            name == "Zanna.Graphics3D.Camera3D.get_Right" ||
            name == "Zanna.Graphics3D.Mesh3D.VertexPosition" ||
+           // ADR 0252: the bounds accessors snapshot the cached AABB into a
+           // fresh Vec3 each call; they do not hand out stored storage.
+           name == "Zanna.Graphics3D.Mesh3D.get_BoundsMin" ||
+           name == "Zanna.Graphics3D.Mesh3D.get_BoundsMax" ||
+           name == "Zanna.Graphics3D.Mesh3D.get_BoundsCenter" ||
+           name == "Zanna.Graphics3D.Mesh3D.get_BoundsSize" ||
+           name == "rt_mesh3d_get_bounds_min" || name == "rt_mesh3d_get_bounds_max" ||
+           name == "rt_mesh3d_get_bounds_center" || name == "rt_mesh3d_get_bounds_size" ||
            name == "Zanna.Graphics3D.Material3D.get_Color" ||
            name == "Zanna.Graphics3D.Transform3D.get_Position" ||
            name == "Zanna.Graphics3D.Transform3D.get_Scale" ||

@@ -73,6 +73,8 @@ struct rt_tween_impl {
     int8_t complete;   ///< 1 if tween has completed.
     int8_t paused;     ///< 1 if tween is paused.
     int8_t is_i64;     ///< 1 if started via StartI64 (ValueI64 reads exact endpoints).
+    int8_t ms_mode;    ///< 1 when duration/elapsed are milliseconds, not frames.
+    int8_t reduce_motion; ///< 1 to snap to the target on Start (accessibility).
 };
 
 /// @brief Safe-cast a handle to the Tween impl, trapping @p api on a class-id
@@ -224,6 +226,8 @@ rt_tween rt_tween_new(void) {
     tween->ease_type = RT_EASE_LINEAR;
     tween->running = 0;
     tween->complete = 0;
+    tween->ms_mode = 0;
+    tween->reduce_motion = 0;
     tween->paused = 0;
     tween->is_i64 = 0;
 
@@ -268,6 +272,15 @@ void rt_tween_start(rt_tween tween, double from, double to, int64_t duration, in
     tween->complete = 0;
     tween->paused = 0;
     tween->is_i64 = 0; // double-domain tween; ValueI64 falls back to rounding current
+    tween->ms_mode = 0;
+    // Accessibility: a reduce-motion tween lands on its target immediately and
+    // reports complete, so callers need no special-casing at the call site.
+    if (tween->reduce_motion) {
+        tween->elapsed = duration;
+        tween->current = to;
+        tween->running = 0;
+        tween->complete = 1;
+    }
 }
 
 /// @brief Start an integer-valued tween. The double machinery still drives eased
@@ -301,6 +314,12 @@ int8_t rt_tween_update(rt_tween tween) {
     tween = checked_tween(tween, "Tween.Update: expected Zanna.Game.Tween");
     if (!tween)
         return 0;
+    // Enforce the tween's mode: the frame-based Update() is a no-op on a tween
+    // started in millisecond mode, so a mismatched call cannot silently advance
+    // a millisecond tween by one "frame" and reinterpret its units. Mirrors the
+    // guard rt_timer_update already carries (VDOC-264).
+    if (tween->ms_mode)
+        return 0;
     if (!tween->running || tween->paused)
         return 0;
 
@@ -329,6 +348,171 @@ int8_t rt_tween_update(rt_tween tween) {
     return 0;
 }
 
+
+//=============================================================================
+// Millisecond Mode (ADR 0250)
+//=============================================================================
+//
+// `Update()` advances one *frame*, so a tween's duration is frame-count and its
+// motion is frame-rate dependent. That is fine for a fixed-step game loop and
+// useless for anything that must be reproducible under an arbitrary dt — a
+// replay, a headless capture, a paced cutscene. `Zanna.Game.Timer` already
+// carries both modes (`Start`/`Update` in frames, `StartMs`/`UpdateMs` in
+// milliseconds); this brings `Tween` to the same shape.
+//
+// The mode is sticky: `UpdateMs` is a no-op on a frame-mode tween and `Update`
+// is a no-op on a ms-mode tween, so a mismatched call cannot silently
+// reinterpret the units.
+
+/// @brief Recompute @p tween's current value from its elapsed/duration pair.
+/// @details Shared by the millisecond advance and seek paths so both agree
+///          exactly with each other. Completion pins the exact end value, which
+///          matters because easing curves need not land on 1.0 numerically.
+/// @param tween Validated, running tween.
+/// @return `1` when this call reached the duration; otherwise `0`.
+static int8_t tween_apply_elapsed(rt_tween tween) {
+    double t = (double)tween->elapsed / (double)tween->duration;
+    if (t > 1.0)
+        t = 1.0;
+    tween->current = tween_lerp_double(tween->from, tween->to, rt_tween_ease(t, tween->ease_type));
+    if (tween->elapsed >= tween->duration) {
+        tween->running = 0;
+        tween->complete = 1;
+        tween->current = tween->to;
+        return 1;
+    }
+    return 0;
+}
+
+/// @brief Start a millisecond-timed tween.
+/// @details Identical to @ref rt_tween_start except the duration is wall time,
+///          advanced by @ref rt_tween_update_ms or positioned by
+///          @ref rt_tween_seek_ms.
+/// @param tween Borrowed Tween handle.
+/// @param from Start value; non-finite becomes zero.
+/// @param to End value; non-finite becomes @p from.
+/// @param duration_ms Duration in milliseconds; values below one are clamped up.
+/// @param ease_type Easing identifier, defaulting to linear when invalid.
+void rt_tween_start_ms(
+    rt_tween tween, double from, double to, int64_t duration_ms, int64_t ease_type) {
+    rt_tween_start(tween, from, to, duration_ms, ease_type);
+    tween = checked_tween(tween, "Tween.StartMs: expected Zanna.Game.Tween");
+    if (!tween)
+        return;
+    tween->ms_mode = 1;
+}
+
+/// @brief Advance a millisecond-mode tween by @p dt_ms.
+/// @details A non-positive @p dt_ms does not advance. Elapsed time saturates
+///          rather than overflowing. No-op on a frame-mode tween.
+/// @param tween Borrowed Tween handle.
+/// @param dt_ms Elapsed milliseconds since the previous call.
+/// @return `1` only on the call that reaches the duration; otherwise `0`.
+int8_t rt_tween_update_ms(rt_tween tween, int64_t dt_ms) {
+    tween = checked_tween(tween, "Tween.UpdateMs: expected Zanna.Game.Tween");
+    if (!tween || !tween->ms_mode)
+        return 0;
+    if (!tween->running || tween->paused || dt_ms <= 0)
+        return 0;
+    if (tween->elapsed > INT64_MAX - dt_ms)
+        tween->elapsed = INT64_MAX;
+    else
+        tween->elapsed += dt_ms;
+    return tween_apply_elapsed(tween);
+}
+
+/// @brief Position a millisecond-mode tween at an absolute time.
+/// @details **Stateless with respect to the path taken**: seeking to the same
+///          millisecond always yields the same value, whatever sequence of
+///          advances or seeks preceded it. That is the property a scrubbable
+///          timeline or a fixed-step probe needs, and the reason a pure
+///          `UpdateMs` accumulator is not sufficient on its own. Seeking
+///          backwards un-completes the tween and resumes it. No-op on a
+///          frame-mode tween.
+/// @param tween Borrowed Tween handle.
+/// @param ms Absolute position in milliseconds from the start; negative clamps
+///        to zero.
+/// @return `1` when the seek lands at or past the duration; otherwise `0`.
+int8_t rt_tween_seek_ms(rt_tween tween, int64_t ms) {
+    tween = checked_tween(tween, "Tween.SeekMs: expected Zanna.Game.Tween");
+    if (!tween || !tween->ms_mode || tween->duration <= 0)
+        return 0;
+    if (ms < 0)
+        ms = 0;
+    tween->elapsed = ms;
+    tween->complete = 0;
+    tween->running = 1;
+    return tween_apply_elapsed(tween);
+}
+
+/// @brief Eased progress in permille (0..1000).
+/// @details Integer-exact, so it can drive a deterministic simulation without
+///          the backend-dependent rounding an `f64` progress would introduce.
+/// @param tween Borrowed Tween handle.
+/// @return Eased progress scaled to `[0, 1000]`, or zero for null.
+int64_t rt_tween_progress_permille(rt_tween tween) {
+    tween = checked_tween(tween, "Tween.ProgressPermille: expected Zanna.Game.Tween");
+    if (!tween || tween->duration <= 0)
+        return 0;
+    if (tween->elapsed >= tween->duration)
+        return 1000;
+    double t = (double)tween->elapsed / (double)tween->duration;
+    double eased = rt_tween_ease(t, tween->ease_type);
+    if (!isfinite(eased))
+        return 0;
+    int64_t permille = (int64_t)(eased * 1000.0 + 0.5);
+    if (permille < 0)
+        permille = 0;
+    if (permille > 1000)
+        permille = 1000;
+    return permille;
+}
+
+/// @brief Bit-exact integer interpolation at @p t_permille of the way from
+///        @p from to @p to.
+/// @details Stays in integer arithmetic end to end, so the result is identical
+///          on every backend. `t_permille` is clamped to `[0, 1000]`.
+/// @param from Start value.
+/// @param to End value.
+/// @param t_permille Position in thousandths.
+/// @return Interpolated value.
+int64_t rt_tween_lerp_int_permille(int64_t from, int64_t to, int64_t t_permille) {
+    if (t_permille <= 0)
+        return from;
+    if (t_permille >= 1000)
+        return to;
+    return from + ((to - from) * t_permille) / 1000;
+}
+
+/// @brief True when @p tween was started in millisecond mode.
+/// @param tween Borrowed Tween handle.
+/// @return Non-zero for a millisecond-mode tween.
+int8_t rt_tween_is_ms(rt_tween tween) {
+    tween = checked_tween(tween, "Tween.IsMs: expected Zanna.Game.Tween");
+    return tween ? tween->ms_mode : 0;
+}
+
+/// @brief Enable or disable the reduce-motion snap.
+/// @details When enabled, a subsequent Start lands on the target immediately
+///          and reports complete, so an accessibility preference needs no
+///          special-casing at any call site. Pairs with
+///          `Zanna.GUI.ThemePalette.SetMotionEnabled`.
+/// @param tween Borrowed Tween handle.
+/// @param on Non-zero to snap.
+void rt_tween_set_reduce_motion(rt_tween tween, int8_t on) {
+    tween = checked_tween(tween, "Tween.ReduceMotion: expected Zanna.Game.Tween");
+    if (!tween)
+        return;
+    tween->reduce_motion = on ? 1 : 0;
+}
+
+/// @brief Read the reduce-motion snap flag.
+/// @param tween Borrowed Tween handle.
+/// @return Non-zero when the snap is enabled.
+int8_t rt_tween_get_reduce_motion(rt_tween tween) {
+    tween = checked_tween(tween, "Tween.ReduceMotion: expected Zanna.Game.Tween");
+    return tween ? tween->reduce_motion : 0;
+}
 /// @brief Get the current interpolated value as a double.
 /// @param tween Borrowed Tween handle.
 /// @return Current value, or `0.0` for null.

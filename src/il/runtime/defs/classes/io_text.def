@@ -109,6 +109,8 @@ RT_CLASS_BEGIN("Zanna.IO.Path", Path, "obj", none)
     // Per-user writable data directory (created on demand):
     // %APPDATA%\<app> | ~/Library/Application Support/<app> | $XDG_DATA_HOME/<app>.
     RT_METHOD("DataDir", "str(str)", PathDataDir)
+    RT_METHOD("FindUpward", "str(str,str,i64)", PathFindUpward)
+    RT_METHOD("ResolveDataRoot", "str(str,str)", PathResolveDataRoot)
     RT_METHOD("IsAbsolute", "i1(str)", PathIsAbs)
     RT_METHOD("IsLink", "i1(str)", PathIsLink)
     RT_METHOD("Join", "str(str,str)", PathJoin)
@@ -472,6 +474,15 @@ RT_CLASS_BEGIN("Zanna.Math", Math, "obj", none)
     RT_METHOD("Truncate", "f64(f64)", MathTrunc)
     RT_METHOD("Wrap", "f64(f64,f64,f64)", MathWrap)
     RT_METHOD("WrapInt", "i64(i64,i64,i64)", MathWrapInt)
+    RT_METHOD("SmoothStep", "f64(f64,f64,f64)", MathSmoothStep)
+    RT_METHOD("SmoothStep01", "f64(f64)", MathSmoothStep01)
+    RT_METHOD("SmootherStep01", "f64(f64)", MathSmootherStep01)
+    RT_METHOD("InverseLerp", "f64(f64,f64,f64)", MathInverseLerp)
+    RT_METHOD("Remap", "f64(f64,f64,f64,f64,f64)", MathRemap)
+    RT_METHOD("LerpInt", "i64(i64,i64,i64,i64)", MathLerpInt)
+    RT_METHOD("Mix", "i64(i64)", MathMix1)
+    RT_METHOD("Mix2", "i64(i64,i64)", MathMix2)
+    RT_METHOD("Mix3", "i64(i64,i64,i64)", MathMix3)
 RT_CLASS_END()
 
 // Zanna.Math.PerlinNoise - Perlin noise generator
@@ -528,6 +539,12 @@ RT_CLASS_BEGIN("Zanna.Math.Random", Random, "obj", RandomNew)
     RT_METHOD("NextInt", "i64(i64)", RandomNextIntMethod)
     RT_METHOD("Range", "i64(i64,i64)", RandomRangeMethod)
     RT_METHOD("Seed", "void(i64)", RandomSeedMethod)
+    RT_PROP("State", "i64", RandomGetState, RandomSetState)
+    RT_METHOD("Clone", "obj<Zanna.Math.Random>()", RandomClone)
+    RT_METHOD("Derive", "obj<Zanna.Math.Random>(i64)", RandomDerive)
+    RT_METHOD("ChancePercent", "i1(i64)", RandomChancePercentMethod)
+    RT_METHOD("GetGlobalState", "i64()", RandomGetGlobalState)
+    RT_METHOD("SetGlobalState", "void(i64)", RandomSetGlobalState)
 RT_CLASS_END()
 
 // Zanna.String - built-in string type
@@ -770,6 +787,66 @@ RT_CLASS_BEGIN("Zanna.Text.Diff", Diff, "obj", none)
     RT_METHOD("Lines", "seq<str>(str,str)", DiffLines)
     RT_METHOD("Patch", "str(str,obj)", DiffPatch)
     RT_METHOD("Unified", "str(str,str,i64)", DiffUnified)
+RT_CLASS_END()
+
+// Zanna.Testing.Suite - non-fatal assertion accumulator (ADR 0251)
+/// @summary Accumulates check results and emits one machine-readable verdict.
+/// @details
+/// Unlike `Zanna.Core.Diagnostics.Assert*`, which traps on the first failure, every member here
+/// records the outcome and returns it, so a test program runs to completion and reports all
+/// failures. `Report` prints the single `RESULT:` line a runner greps; `ExitCode` gives the
+/// matching process status.
+RT_CLASS_BEGIN("Zanna.Testing.Suite", TestingSuite, "obj", TestingSuiteNew)
+    RT_PROP("Failures", "i64", TestingFailures, none)
+    RT_PROP("Checks", "i64", TestingChecks, none)
+    RT_PROP("Name", "str", TestingName, none)
+    RT_PROP("Passed", "i1", TestingPassed, none)
+    RT_METHOD("Check", "i1(i1,str)", TestingCheck)
+    RT_METHOD("EqInt", "i1(i64,i64,str)", TestingEqInt)
+    RT_METHOD("EqStr", "i1(str,str,str)", TestingEqStr)
+    RT_METHOD("EqNum", "i1(f64,f64,f64,str)", TestingEqNum)
+    RT_METHOD("InBand", "i1(f64,f64,f64,str)", TestingInBand)
+    RT_METHOD("Fail", "void(str)", TestingFail)
+    RT_METHOD("Note", "void(str)", TestingNote)
+    RT_METHOD("Report", "i1()", TestingReport)
+    RT_METHOD("ExitCode", "i64()", TestingExitCode)
+RT_CLASS_END()
+
+// Zanna.Testing.Golden - recorded-digest comparison (ADR 0251)
+/// @summary Compares generated output against a recorded SHA-256 digest.
+/// @details
+/// `Check` always prints the computed digest so a moved golden can be re-pinned by copy-paste, and
+/// treats an empty or `"UNSET"` expected value as baseline mode rather than a failure — a first run
+/// must not read as a pass.
+RT_CLASS_BEGIN("Zanna.Testing.Golden", TestingGolden, "obj", none)
+    RT_METHOD("Digest", "str(str)", TestingGoldenDigest)
+    RT_METHOD("Check", "i1(obj<Zanna.Testing.Suite>,str,str,str)", TestingGoldenCheck)
+RT_CLASS_END()
+
+// Zanna.Text.Table - fixed-width text table layout (ADR 0252)
+/// @summary Lays out rows into aligned monospace columns.
+/// @details
+/// Header and body are generated from one width declaration, so they cannot drift apart the way a
+/// hand-counted header literal does. `AddColumnAuto` sizes a column from its widest cell at render
+/// time. Widths are byte widths, matching `Zanna.String.PadLeft`/`PadRight`.
+RT_CLASS_BEGIN("Zanna.Text.Table", TextTable, "obj", TableNew)
+    RT_PROP("ColumnCount", "i64", TableColumnCount, none)
+    RT_PROP("RowCount", "i64", TableRowCount, none)
+    RT_PROP("AlignLeft", "i64", TableAlignLeft, none)
+    RT_PROP("AlignRight", "i64", TableAlignRight, none)
+    RT_PROP("AlignCenter", "i64", TableAlignCenter, none)
+    RT_METHOD("AddColumn", "i64(str,i64,i64)", TableAddColumn)
+    RT_METHOD("AddColumnAuto", "i64(str,i64)", TableAddColumnAuto)
+    RT_METHOD("SetTruncate", "void(i64,i1)", TableSetTruncate)
+    RT_METHOD("AddRow", "i64()", TableAddRow)
+    RT_METHOD("SetCell", "void(i64,i64,str)", TableSetCell)
+    RT_METHOD("GetCell", "str(i64,i64)", TableGetCell)
+    RT_METHOD("ClearRows", "void()", TableClearRows)
+    RT_METHOD("SetGutter", "void(str)", TableSetGutter)
+    RT_METHOD("RenderHeader", "str()", TableRenderHeader)
+    RT_METHOD("RenderRule", "str(str)", TableRenderRule)
+    RT_METHOD("RenderRow", "str(i64)", TableRenderRow)
+    RT_METHOD("Render", "str(i1,i1)", TableRender)
 RT_CLASS_END()
 
 // Zanna.Text.Toml - TOML config parsing and formatting
