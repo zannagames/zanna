@@ -2125,8 +2125,8 @@ Provides Sky 3D functionality for 3D rendering and scene applications.
 
 Create `Zanna.Graphics3D.Sky3D` values through its registered constructor and use the returned
 object with the instance members below. Its public surface exposes properties such as
-`Turbidity`, `Resolution`, `Dirty` and operations including `SetSunDirection`,
-`SetGroundAlbedo`, `Update`.
+`Turbidity`, `Resolution`, `Stars`, `StarIntensity`, `Dirty` and operations including
+`SetSunDirection`, `SetGroundAlbedo`, `Update`.
 
 Constructor: `Zanna.Graphics3D.Sky3D.New`
 
@@ -2136,6 +2136,8 @@ Constructor: `Zanna.Graphics3D.Sky3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-sky3d-turbidity"></a>`Turbidity` | `f64` | read/write |
 | <a id="zanna-graphics3d-sky3d-resolution"></a>`Resolution` | `i64` | read/write |
+| <a id="zanna-graphics3d-sky3d-stars"></a>`Stars` | `i1` | read/write |
+| <a id="zanna-graphics3d-sky3d-starintensity"></a>`StarIntensity` | `f64` | read/write |
 | <a id="zanna-graphics3d-sky3d-dirty"></a>`Dirty` | `i1` | read-only |
 | <a id="zanna-graphics3d-sky3d-cubemap"></a>`Cubemap` | `obj` | read-only |
 | <a id="zanna-graphics3d-sky3d-sundirection"></a>`SunDirection` | `obj<Zanna.Math.Vec3>` | read-only |

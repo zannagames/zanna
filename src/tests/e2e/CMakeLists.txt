@@ -600,6 +600,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/games/vtris/vtris.bas
             -DDEMO_NAME=vtris
             -P ${_ZANNA_E2E_DIR}/test_arm64_native_link.cmake)
@@ -610,6 +611,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/games/frogger-basic/frogger.bas
             -DDEMO_NAME=frogger
             -P ${_ZANNA_E2E_DIR}/test_arm64_native_link.cmake)
@@ -620,6 +622,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/games/centipede-basic/centipede.bas
             -DDEMO_NAME=centipede
             -P ${_ZANNA_E2E_DIR}/test_arm64_native_link.cmake)
@@ -630,6 +633,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/data_structures.bas
             -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/data_structures.bas.out
             -P ${_ZANNA_E2E_DIR}/test_arm64_comprehensive.cmake)
@@ -639,6 +643,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/oop_features.bas
             -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/oop_features.bas.out
             -P ${_ZANNA_E2E_DIR}/test_arm64_comprehensive.cmake)
@@ -648,6 +653,7 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
             -DRUNTIME_LIB=${CMAKE_BINARY_DIR}/src/runtime/libzanna_runtime.a
+            -DREGEX_ENGINE_LIB=$<TARGET_FILE:zanna_regex_engine>
             -DBAS_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/control_flow_strings.bas
             -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/control_flow_strings.bas.out
             -P ${_ZANNA_E2E_DIR}/test_arm64_comprehensive.cmake)

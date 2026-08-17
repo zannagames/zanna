@@ -21,7 +21,8 @@
 //        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
 //        docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md,
-//        docs/adr/0210-read-only-mesh-vertex-positions.md
+//        docs/adr/0210-read-only-mesh-vertex-positions.md,
+//        docs/adr/0257-sky3d-night-mode.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,10 +56,11 @@ namespace {
  * build and transform a mesh but not put one mesh's triangles into another,
  * so batching parts into a single draw call meant re-emitting every vertex
  * by hand): +1 function / +1 method. */
-// ADR 0257: Sky3D night mode adds set/get Stars + StarIntensity (2249 -> 2253).
+// ADR 0257: Sky3D night mode adds set/get Stars + StarIntensity
+// (2249 -> 2253 functions, 826 -> 828 properties).
 constexpr std::size_t kExpectedFunctionCount = 2253;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 826;
+constexpr std::size_t kExpectedPropertyCount = 828;
 constexpr std::size_t kExpectedMethodCount = 1210;
 
 bool is3DName(std::string_view name) {
@@ -254,7 +256,7 @@ int main() {
      * Y-band UV coverage into a Pixels mask — body-zone texture masking
      * for per-region character recolors, plan 55 uniforms). */
     // ADR 0257 (Sky3D night mode) reviewed 2026-08-16.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xc8e61c257ec9320b);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x9074dd2a92a16414);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

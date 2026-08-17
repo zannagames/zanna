@@ -78,3 +78,4 @@ must not read as a pass.
 | `Zanna.Testing.Suite.ExitCode` | `i64(obj)` | `rt_testing_exit_code` |
 | `Zanna.Testing.Golden.Digest` | `str(str)` | `rt_testing_golden_digest` |
 | `Zanna.Testing.Golden.Check` | `i1(obj,str,str,str)` | `rt_testing_golden_check` |
+

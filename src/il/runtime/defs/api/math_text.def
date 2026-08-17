@@ -296,7 +296,7 @@ RT_FUNC(StrLines,       rt_str_lines,        "Zanna.String.Lines",       "seq<st
 RT_FUNC(TextCharIsIdentStart, rt_text_char_is_identifier_start, "Zanna.Text.Char.IsIdentifierStart", "i1(str)", always)
 RT_FUNC(TextCharIsIdentPart,  rt_text_char_is_identifier_part,  "Zanna.Text.Char.IsIdentifierPart",  "i1(str)", always)
 RT_FUNC(TextCharIsAlnum,      rt_text_char_is_alnum,            "Zanna.Text.Char.IsAlphanumeric",           "i1(str)", always)
-RT_FUNC(TextCharIsWord,       rt_text_char_is_word,             "Zanna.Text.Char.IsWord",                   "i1(str)", always)
+RT_FUNC(TextCharIsWord,       rt_text_char_is_word,             "Zanna.Text.Char.IsWord",                   "i1(str)")
 RT_FUNC(StrStartsWith,  rt_str_starts_with,  "Zanna.String.StartsWith",  "i1(str,str)",      always)
 RT_FUNC(Substr,         rt_str_substr,           "Zanna.String.Substring",   "str(str,i64,i64)", always)
 RT_FUNC(Trim,           rt_str_trim,             "Zanna.String.Trim",        "str(str)",         always)

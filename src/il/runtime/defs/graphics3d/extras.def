@@ -224,11 +224,13 @@ RT_FUNC(Sky3DGetStarIntensity, rt_sky3d_get_star_intensity, "Zanna.Graphics3D.Sk
 /// @details
 /// Create `Zanna.Graphics3D.Sky3D` values through its registered constructor and use the returned
 /// object with the instance members below. Its public surface exposes properties such as
-/// `Turbidity`, `Resolution`, `Dirty` and operations including `SetSunDirection`,
-/// `SetGroundAlbedo`, `Update`.
+/// `Turbidity`, `Resolution`, `Stars`, `StarIntensity`, `Dirty` and operations including
+/// `SetSunDirection`, `SetGroundAlbedo`, `Update`.
 RT_CLASS_BEGIN("Zanna.Graphics3D.Sky3D", Sky3D, "obj", Sky3DNew)
     RT_PROP("Turbidity", "f64", Sky3DGetTurbidity, Sky3DSetTurbidity)
     RT_PROP("Resolution", "i64", Sky3DGetResolution, Sky3DSetResolution)
+    RT_PROP("Stars", "i1", Sky3DGetStars, Sky3DSetStars)
+    RT_PROP("StarIntensity", "f64", Sky3DGetStarIntensity, Sky3DSetStarIntensity)
     RT_PROP("Dirty", "i1", Sky3DGetDirty, none)
     RT_PROP("Cubemap", "obj", Sky3DGetCubemap, none)
     RT_PROP("SunDirection", "obj<Zanna.Math.Vec3>", Sky3DGetSunDirection, none)
