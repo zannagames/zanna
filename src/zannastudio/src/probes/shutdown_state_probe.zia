@@ -1,0 +1,55 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/shutdown_state_probe.zia
+// Purpose: Verify the Studio shutdown latch and sticky worker-drain truth.
+// Key invariants:
+//   - Exactly one caller owns teardown even when several exit signals arrive.
+//   - One failed worker drain permanently prevents a clean recovery marker.
+// Ownership/Lifetime:
+//   - The probe owns short-lived state objects and no native resources.
+// Links: zannastudio/src/app/lifecycle_controller.zia
+//
+//===----------------------------------------------------------------------===//
+
+module shutdown_state_probe;
+
+bind "../app/lifecycle_controller";
+
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var clean = new lifecycle_controller.ShutdownState();
+    if clean.Begin() == false or clean.Begin()
+       or clean.attempts != 2 or clean.completed {
+        fail("idempotent ownership");
+        return;
+    }
+    clean.RecordWorkerDrain(true);
+    if clean.MayMarkCleanExit(true) == false
+       or clean.MayMarkCleanExit(false) {
+        fail("clean exit gate");
+        return;
+    }
+    clean.Finish();
+    if clean.completed == false { fail("completion latch"); return; }
+
+    var failed = new lifecycle_controller.ShutdownState();
+    failed.Begin();
+    failed.RecordWorkerDrain(false);
+    failed.RecordWorkerDrain(true);
+    if failed.workerDrainsSucceeded or failed.MayMarkCleanExit(true) {
+        fail("failed drain was not sticky");
+        return;
+    }
+
+    Terminal.Say("RESULT: ok");
+}

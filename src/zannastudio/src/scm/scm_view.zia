@@ -9,6 +9,8 @@
 // Purpose: Coordinate asynchronous Git operations and Source Control UI state.
 // Key invariants:
 //   - Mutating Git jobs are serialized through a bounded visible queue.
+//   - Push/pull authentication stays in configured Git/SSH credential brokers;
+//     Studio never asks for or transports secret text.
 //   - Worktree diff reads are bounded and non-trapping.
 //   - Missing workspaces and non-repositories expose truthful disabled actions.
 //   - Sidebar controls wrap, remain keyboard reachable, and reflect live context.
@@ -77,6 +79,24 @@ class ScmView extends scm_view_base.ScmViewBase {
             return;
         }
         Refresh();
+    }
+
+    /// @brief Kill every Git child without scheduling a final refresh.
+    /// @details User cancellation refreshes status, but application shutdown
+    ///          must be terminal: no queued or replacement process may start
+    ///          after native GUI teardown begins.
+    expose func Shutdown() {
+        if activePtyJob != null {
+            activePtyJob.Kill();
+            activePtyJob = null;
+        }
+        if activeJob != null {
+            activeJob.Kill();
+            activeJob = null;
+        }
+        pendingJobs = [];
+        pendingDiffFile = "";
+        HideCredRow();
     }
 
     /// @brief Render the intentional no-workspace state without spawning Git.
@@ -392,8 +412,8 @@ class ScmView extends scm_view_base.ScmViewBase {
         if kind == "unstage" { StartJob(git.StartUnstage(path), "Unstaging " + path + "..."); return; }
         if kind == "stageAll" { StartJob(git.StartStageAll(), "Staging all changes..."); return; }
         if kind == "commit" { StartJob(git.StartCommit(message), "Committing..."); return; }
-        if kind == "push" { StartPtyJob(git.StartPushInteractive(), "Pushing..."); return; }
-        if kind == "pull" { StartPtyJob(git.StartPullInteractive(), "Pulling..."); return; }
+        if kind == "push" { StartJob(git.StartPush(), "Pushing..."); return; }
+        if kind == "pull" { StartJob(git.StartPull(), "Pulling..."); return; }
         if kind == "log" {
             StartJob(git.StartLog(historyLoaded, HISTORY_PAGE_SIZE), "Loading history...");
             return;
@@ -560,17 +580,9 @@ class ScmView extends scm_view_base.ScmViewBase {
         var files = scm_git.ParseCommitFiles(job.stdoutText);
         var i = 0;
         while i < files.count() {
-            var row = files.get(i);
-            var tab = Str.IndexOf(row, "\t");
-            var statusMark = row;
-            var filePath = "";
-            if tab != 0 {
-                statusMark = Str.Left(row, tab - 1);
-                filePath = Str.Trim(Str.Mid(row, tab + 1));
-            }
-            // Renames keep "old<TAB>new"; diff against the new name.
-            var tab2 = Str.IndexOf(filePath, "\t");
-            if tab2 != 0 { filePath = Str.Trim(Str.Mid(filePath, tab2 + 1)); }
+            var row = files.get(i) as scm_git.GitCommitFile;
+            var statusMark = row.status;
+            var filePath = row.path;
             if filePath == "" { i = i + 1; continue; }
             var item = statusList.AddItem("[" + Str.Left(statusMark, 1) + "] " + filePath);
             GUI.ListBox.ItemSetData(item, filePath);

@@ -1,12 +1,27 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/semantic_tokens.zia
+// Purpose: Apply compiler-classified semantic colors over lexical highlighting.
+// Key invariants:
+//   - Results apply only to their originating document path and revision.
+//   - Shared-model mode never starts a duplicate compiler analysis.
+// Ownership/Lifetime:
+//   - The controller borrows the editor and optional shared SemanticModel.
+//   - Standalone mode owns and cancels its asynchronous SemanticJob handle.
+// Links: editor/semantic_model.zia, docs/adr/0008-semantic-token-overlay.md,
+//        docs/adr/0264-shared-revision-semantic-analysis.md
+//
+//===----------------------------------------------------------------------===//
+
 module semantic_tokens;
 
-// Drives the async Zia semantic-token job (Zanna.Zia.Completion.BeginTokensForFile)
-// and applies the compiler-classified overlay on top of the lexical highlighter
-// via CodeEditor.AddSemanticToken. Zia-only; debounced on content revision, like
-// LiveDiagnostics. The overlay distinguishes parameters/fields/types/functions
-// that the purely lexical highlighter cannot, and corrects its heuristic guesses.
-
 bind "../editor/editor_engine";
+bind "../editor/semantic_model";
 bind "../editor/zia_query";
 
 bind ZiaCompletion = Zanna.Zia.Completion;
@@ -58,6 +73,7 @@ func tokenTypeForKind(kind: String) -> Integer {
 class SemanticHighlighter {
     expose Boolean enabled;
     expose String sourcePath;
+    expose semantic_model.SemanticModel sharedModel;
 
     hide Integer appliedRevision;
     hide String appliedPath;
@@ -74,6 +90,7 @@ class SemanticHighlighter {
     expose func init() {
         enabled = true;
         sourcePath = "";
+        sharedModel = null;
         appliedRevision = -1;
         appliedPath = "";
         pending = false;
@@ -85,6 +102,14 @@ class SemanticHighlighter {
         pendingJobLineOffset = 0;
     }
 
+    /// @brief Use a revision-keyed compiler snapshot shared with symbols/folding.
+    expose func SetSemanticModel(model: semantic_model.SemanticModel) {
+        sharedModel = model;
+        CancelPending();
+        appliedRevision = -1;
+        appliedPath = "";
+    }
+
     /// @brief Update the active document path; resets state on a change. Enable
     ///        (caller-controlled) gates this to Zia documents.
     expose func setSourcePath(path: String) {
@@ -93,6 +118,7 @@ class SemanticHighlighter {
             appliedRevision = -1;
             appliedPath = "";
             CancelPending();
+            if sharedModel != null { sharedModel.SetSourcePath(path); }
         }
     }
 
@@ -110,6 +136,17 @@ class SemanticHighlighter {
         if engine == null or engine.editor == null { return; }
 
         var revision = engine.GetRevision();
+        if sharedModel != null {
+            sharedModel.SetSourcePath(sourcePath);
+            sharedModel.Update(engine);
+            if sharedModel.IsReady(sourcePath, revision)
+               and (revision != appliedRevision or sourcePath != appliedPath) {
+                Apply(engine, sharedModel.readyTokens, sharedModel.readyLineOffset);
+                appliedRevision = revision;
+                appliedPath = sourcePath;
+            }
+            return;
+        }
         if pendingJob != null {
             if revision != pendingJobRevision or sourcePath != pendingJobPath {
                 CancelPending();
@@ -130,6 +167,14 @@ class SemanticHighlighter {
         if semDebounce.get_IsReady() == false { return; }
 
         StartJob(engine, revision);
+    }
+
+    /// @brief Cancel fallback token work and detach queued publication state.
+    expose func Shutdown() {
+        CancelPending();
+        sourcePath = "";
+        appliedPath = "";
+        appliedRevision = -1;
     }
 
     hide func StartJob(engine: editor_engine.EditorEngine, revision: Integer) {

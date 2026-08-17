@@ -23,6 +23,7 @@
 //        docs/adr/0165-scrollview-descendant-reveal.md,
 //        docs/adr/0167-spinner-mixed-value-state.md,
 //        docs/adr/0205-listbox-application-directed-reordering.md,
+//        docs/adr/0258-undoable-state-preserving-full-document-replacement.md,
 //        src/tools/zanna/main.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -37,10 +38,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 1161;
+constexpr std::size_t kExpectedFunctionCount = 1163;
 constexpr std::size_t kExpectedClassCount = 79;
 constexpr std::size_t kExpectedPropertyCount = 110;
-constexpr std::size_t kExpectedMethodCount = 1052;
+constexpr std::size_t kExpectedMethodCount = 1054;
 
 /// @brief Test whether a canonical runtime name belongs to the GUI boundary.
 /// @param name Function or class name from the live runtime registry.
@@ -114,6 +115,26 @@ bool checkTarget(std::string_view target) {
         return false;
     ok = require(descriptor->publicSurface, "GUI class binding target is not public") && ok;
     ok = require(!descriptor->cSymbol.empty(), "GUI class binding target has no C symbol") && ok;
+    return ok;
+}
+
+/// @brief Check one deliberately reviewed public GUI function contract.
+/// @param name Canonical registry name.
+/// @param signature Expected registry signature.
+/// @param symbol Expected native C symbol.
+/// @return True when the complete contract matches.
+bool checkFunctionContract(std::string_view name,
+                           std::string_view signature,
+                           std::string_view symbol) {
+    const il::runtime::RuntimeDescriptor *descriptor = il::runtime::findRuntimeDescriptor(name);
+    bool ok = require(descriptor != nullptr, "reviewed GUI function is not registered");
+    if (descriptor == nullptr)
+        return false;
+    ok = require(descriptor->publicSurface, "reviewed GUI function is not public") && ok;
+    ok = require(descriptor->signatureText == signature,
+                 "reviewed GUI function signature changed") &&
+         ok;
+    ok = require(descriptor->cSymbol == symbol, "reviewed GUI C symbol changed") && ok;
     return ok;
 }
 
@@ -211,9 +232,18 @@ int main() {
                  "public GUI method count changed; review and update the ABI manifest") &&
          ok;
 
+    ok = checkFunctionContract("Zanna.GUI.CodeEditor.ReplaceAllText",
+                               "i1(obj, string)",
+                               "rt_codeeditor_replace_all_text") &&
+         ok;
+    ok = checkFunctionContract("Zanna.GUI.EditorBuffer.ReplaceAllText",
+                               "i1(obj, string)",
+                               "rt_editorbuffer_replace_all_text") &&
+         ok;
+
     // Set after deliberate review of every registry row. Any future mismatch prints the new value
     // and requires an explicit count/signature/class-binding review before this constant changes.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x3eacbc0451e41985);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x127601512fcaf7dc);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: GUI ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

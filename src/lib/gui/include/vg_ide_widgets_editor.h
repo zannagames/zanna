@@ -507,6 +507,14 @@ void vg_editor_buffer_destroy(vg_editor_buffer_t *buf);
 /// @return Caller-owned string, or NULL.
 char *vg_editor_buffer_get_text(vg_editor_buffer_t *buf);
 
+/// @brief Apply an undoable complete-text replacement to a detached buffer.
+/// @details Uses the same state-preserving contract as
+///          vg_codeeditor_replace_all_text() without consuming the buffer shell.
+/// @param buf Detached buffer to update.
+/// @param text Null-terminated UTF-8 replacement; NULL means empty text.
+/// @return True when applied or already matched; false on invalid/allocation failure.
+bool vg_editor_buffer_replace_all_text(vg_editor_buffer_t *buf, const char *text);
+
 /// @brief Modified flag of a detached buffer.
 /// @param buf Detached editor buffer to query.
 /// @return True when the buffer has changed since its modified flag was cleared.
@@ -547,6 +555,17 @@ vg_codeeditor_t *vg_codeeditor_create(vg_widget_t *parent);
 /// @param editor Code editor widget.
 /// @param text   Null-terminated UTF-8 string (copied internally).
 void vg_codeeditor_set_text(vg_codeeditor_t *editor, const char *text);
+
+/// @brief Replace complete text as one undoable edit while retaining view state.
+/// @details Preserves and clamps primary/extra cursors, selections, scroll, fold
+///          regions, and prior undo history. Unlike vg_codeeditor_set_text(), the
+///          replacement itself becomes the newest undo unit. No-op for read-only
+///          editors; an identical replacement succeeds without changing revision.
+/// @param editor Code editor widget.
+/// @param text Null-terminated UTF-8 replacement; NULL means empty text.
+/// @return True when the request was applied or already matched; false on invalid,
+///         read-only, or allocation failure.
+bool vg_codeeditor_replace_all_text(vg_codeeditor_t *editor, const char *text);
 
 /// @brief Replace the entire document with an explicit byte span and clear undo/redo history.
 /// @param editor Code editor widget.
@@ -770,11 +789,15 @@ typedef struct vg_findreplacebar {
     void *regex_cb;          ///< Regex checkbox
 
     // Search state
-    vg_search_options_t options; ///< Search options
-    vg_search_match_t *matches;  ///< All matches in document
-    size_t match_count;          ///< Number of matches
-    size_t match_capacity;       ///< Match array capacity
-    size_t current_match;        ///< Index of current match
+    vg_search_options_t options;     ///< Search options
+    vg_search_match_t *matches;      ///< All matches in document
+    size_t match_count;              ///< Number of matches
+    size_t match_capacity;           ///< Match array capacity
+    size_t current_match;            ///< Index of current match
+    bool search_pending;             ///< Query edit is waiting for its debounce interval.
+    bool search_truncated;           ///< Last scan stopped at its byte or result budget.
+    float search_debounce_remaining; ///< Seconds until a pending interactive scan runs.
+    size_t search_scanned_bytes;     ///< Source bytes inspected by the last completed scan.
 
     // Target editor
     struct vg_codeeditor *target_editor; ///< Editor to search in
@@ -873,6 +896,20 @@ void vg_findreplacebar_focus(vg_findreplacebar_t *bar);
 /// @param bar  Find/replace bar.
 /// @param text Text to put in the find field (copied internally).
 void vg_findreplacebar_set_find_text(vg_findreplacebar_t *bar, const char *text);
+
+/// @brief Advance a pending debounced interactive search.
+/// @param bar Find/replace bar to advance.
+/// @param dt Elapsed seconds; invalid or negative values are ignored.
+/// @return true while another tick is needed, otherwise false.
+bool vg_findreplacebar_tick(vg_findreplacebar_t *bar, float dt);
+
+/// @brief Tick @p widget only when it is a live FindReplaceBar instance.
+/// @details Lets generic widget-tree schedulers service the custom-typed bar
+///          without allocating a public widget-type enum value.
+/// @param widget Candidate widget.
+/// @param dt Elapsed seconds.
+/// @return true while a matching bar still has pending work.
+bool vg_findreplacebar_tick_widget(vg_widget_t *widget, float dt);
 
 /// @brief Set the callback fired when the user closes the find bar.
 /// @param bar       Find/replace bar.

@@ -1234,6 +1234,20 @@ set_tests_properties(zia_smoke_zannastudio_project_compile PROPERTIES
         LABELS "zia;smoke;slow"
         TIMEOUT 180)
 
+if (UNIX)
+    add_test(NAME zannastudio_architecture_guard
+            COMMAND "${CMAKE_SOURCE_DIR}/src/zannastudio/scripts/check_architecture.sh")
+    set_tests_properties(zannastudio_architecture_guard PROPERTIES
+            LABELS "zannastudio;architecture;lint"
+            TIMEOUT 60)
+
+    add_test(NAME zannastudio_architecture_guard_self_test
+            COMMAND "${CMAKE_SOURCE_DIR}/src/zannastudio/scripts/test_check_architecture.sh")
+    set_tests_properties(zannastudio_architecture_guard_self_test PROPERTIES
+            LABELS "zannastudio;architecture;lint"
+            TIMEOUT 30)
+endif ()
+
 add_test(NAME zannastudio_notification_policy
         COMMAND "${CMAKE_COMMAND}" -P
                 "${CMAKE_SOURCE_DIR}/scripts/lint_zannastudio_notification_policy.cmake")
@@ -1267,6 +1281,14 @@ set_tests_properties(zia_zannastudio_phase2_phase3 PROPERTIES
         # so keep the probe serial and leave headroom above its bounded waits.
         RUN_SERIAL TRUE
         TIMEOUT 120)
+
+add_test(NAME zia_zannastudio_source_freshness
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/source_freshness_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_source_freshness PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;build;workspace"
+        TIMEOUT 30)
 
 add_test(NAME zia_zannastudio_editor_hot_path
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/editor_hot_path_probe.zia"
@@ -1352,6 +1374,15 @@ set_tests_properties(zia_zannastudio_tool_panel_toolbar PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;shell;console;diagnostics;requires_display"
         TIMEOUT 60)
+
+add_test(NAME zia_zannastudio_tool_panel_virtualization
+        COMMAND $<TARGET_FILE:zia>
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/tool_panel_virtualization_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_tool_panel_virtualization PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;shell;perf;requires_display"
+        TIMEOUT 90)
 
 add_test(NAME zia_zannastudio_scene_editor_2d
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_editor_2d_probe.zia"
@@ -1828,12 +1859,28 @@ set_tests_properties(zia_zannastudio_recovery PROPERTIES
         LABELS "zia;zannastudio;session"
         TIMEOUT 60)
 
+add_test(NAME zia_zannastudio_autosave_job
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/autosave_job_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_autosave_job PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;persistence;perf"
+        TIMEOUT 30)
+
 add_test(NAME zia_zannastudio_settings_migration
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/settings_migration_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_settings_migration PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;session"
+        TIMEOUT 60)
+
+add_test(NAME zia_zannastudio_keybinding_settings
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/keybinding_settings_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_keybinding_settings PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;settings;commands"
         TIMEOUT 60)
 
 add_test(NAME zia_zannastudio_project_replace
@@ -2052,6 +2099,24 @@ set_tests_properties(zia_zannastudio_formatting PROPERTIES
         LABELS "zia;zannastudio;format"
         TIMEOUT 30)
 
+add_test(NAME zia_zannastudio_text_builders
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/text_builder_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_text_builders PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;format;perf"
+        TIMEOUT 30)
+
+add_test(NAME zia_zannastudio_edge_case_corpus
+        COMMAND $<TARGET_FILE:zia>
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/edge_case_corpus_probe.zia"
+                -- --corpus-root
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/tests/corpus/edge_cases")
+set_tests_properties(zia_zannastudio_edge_case_corpus PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;corpus"
+        TIMEOUT 90)
+
 add_test(NAME zia_zannastudio_debug
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/debug_probe.zia" -- --zanna-bin $<TARGET_FILE:zanna>
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -2135,6 +2200,14 @@ add_test(NAME zia_zannastudio_basic_query_job
 set_tests_properties(zia_zannastudio_basic_query_job PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;semantic;threads"
+        TIMEOUT 60)
+
+add_test(NAME zia_zannastudio_shutdown_state
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/shutdown_state_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_shutdown_state PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;lifecycle;threads"
         TIMEOUT 60)
 
 add_test(NAME zia_zannastudio_basic_async_controllers
@@ -2528,7 +2601,8 @@ if (APPLE AND ZANNA_BASH_EXECUTABLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|
             TIMEOUT 180)
 endif ()
 
-if (ZANNA_BASH_EXECUTABLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+if (ZANNA_BASH_EXECUTABLE AND
+    CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
     add_test(NAME native_smoke_zannastudio_completion_x64
             COMMAND "${CMAKE_COMMAND}" -E env ZANNA_NATIVE_TEST_ARCH=x64
             ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/src/tests/e2e/test_zannastudio_completion_native.sh"
@@ -3553,6 +3627,56 @@ if (NOT TARGET runtime_surface_audit_bundle)
             test_basic_runtime_calls
             test_rt_graphics_surface_link
             test_rt_audio_surface_link)
+endif ()
+
+# Keep the pull-request runtime lane explicit and reviewable. This list spans
+# the C runtime contracts used most heavily by Studio, headless Studio service
+# probes, and the VM/native boundary. Adding a test to the broad runtime or
+# smoke labels cannot silently make this bounded cross-platform gate larger.
+set(ZANNA_RUNTIME_SMOKE_CI_TESTS
+        smoke_term_basic
+        smoke_basic_oop
+        test_rt_string
+        test_rt_path
+        test_rt_file_ext
+        test_rt_watcher
+        test_rt_regex
+        test_rt_compiled_pattern
+        test_rt_exec
+        test_rt_gui_ide
+        test_rt_zia_completion_stub
+        zia_smoke_vec3_mutators
+        zia_smoke_physics3d_fixed_step
+        zia_zannastudio_source_freshness
+        zia_zannastudio_safe_io
+        zia_zannastudio_autosave_job
+        zia_zannastudio_settings_migration
+        zia_zannastudio_keybinding_settings
+        zia_zannastudio_workspace_watcher
+        zia_zannastudio_text_builders
+        zia_zannastudio_edge_case_corpus
+        zia_zannastudio_basic_query_job
+        zia_zannastudio_shutdown_state)
+foreach (_test IN LISTS ZANNA_RUNTIME_SMOKE_CI_TESTS)
+    if (NOT TEST ${_test})
+        message(FATAL_ERROR
+                "Runtime smoke CI test '${_test}' is not registered")
+    endif ()
+    set_property(TEST ${_test} APPEND PROPERTY LABELS runtime-smoke-ci)
+endforeach ()
+
+if (ZANNA_BASH_EXECUTABLE AND ZANNA_BUILD_NATIVE_LINK_X86_64)
+    set(ZANNA_RUNTIME_SMOKE_CI_NATIVE_TESTS
+            native_smoke_zannastudio_completion_x64
+            native_smoke_zannastudio_safe_io_x64
+            native_smoke_zannastudio_basic_query_x64)
+    foreach (_test IN LISTS ZANNA_RUNTIME_SMOKE_CI_NATIVE_TESTS)
+        if (NOT TEST ${_test})
+            message(FATAL_ERROR
+                    "Native runtime smoke CI test '${_test}' is not registered")
+        endif ()
+        set_property(TEST ${_test} APPEND PROPERTY LABELS runtime-smoke-ci)
+    endforeach ()
 endif ()
 
 # A display label is the single source of truth for access to the host windowing

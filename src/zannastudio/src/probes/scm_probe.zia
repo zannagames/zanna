@@ -39,6 +39,7 @@ bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Str = Zanna.String;
 bind Time = Zanna.Time;
+bind Machine = Zanna.System.Machine;
 
 func pumpJob(job: scm_git.GitJob, budgetMs: Integer) -> Boolean {
     var waited = 0;
@@ -161,6 +162,22 @@ func main() {
     var st5 = git.Status();
     if entryStaged(st5, "space name.zia") == false { Terminal.Say("RESULT: fail spaced file not staged"); return; }
     if git.Commit("add spaced file") == false { Terminal.Say("RESULT: fail commit spaced file"); return; }
+
+    // POSIX permits tabs and newlines in path components. Porcelain `-z`
+    // must preserve them literally instead of splitting one file into rows.
+    if Machine.Os != "windows" {
+        var controlName = "tab\tline\nname.zia";
+        File.WriteAllText(Path.Join(dir, controlName), "module Controls;\n");
+        var controlStatus = git.Status();
+        if entryUntracked(controlStatus, controlName) == false {
+            Terminal.Say("RESULT: fail control-character path not parsed");
+            return;
+        }
+        if git.Stage(controlName) == false or git.Commit("add control path") == false {
+            Terminal.Say("RESULT: fail control-character path commit");
+            return;
+        }
+    }
 
     File.Move(Path.Join(dir, "space name.zia"), Path.Join(dir, "renamed space.zia"));
     if git.StageAll() == false { Terminal.Say("RESULT: fail stage rename"); return; }

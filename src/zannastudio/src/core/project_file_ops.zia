@@ -10,12 +10,15 @@
 // Key invariants:
 //   - Mutable paths must remain below an open workspace root.
 //   - Workspace roots and Studio's internal trash cannot trash themselves.
+//   - User-created names remain portable across every supported filesystem.
 // Ownership/Lifetime: Pure helpers; callers own all paths and filesystem state.
 // Links: zannastudio/src/core/project_manager.zia
 //
 //===----------------------------------------------------------------------===//
 
 module project_file_ops;
+
+bind "../services/path_identity";
 
 bind IO = Zanna.IO;
 bind Path = Zanna.IO.Path;
@@ -40,12 +43,12 @@ bind Time = Zanna.Time;
 /// @param name User-provided file or folder name.
 /// @return True when `name` can be joined under a selected parent directory.
 expose func IsPlainChildName(name: String) -> Boolean {
-    if name == "" or name == "." or name == ".." { return false; }
-    if Str.IndexOf(name, Path.Separator()) != 0 { return false; }
-    if Str.IndexOf(name, "/") != 0 { return false; }
-    if Str.IndexOf(name, "\\") != 0 { return false; }
-    if Str.IndexOf(name, ":") != 0 { return false; }
-    return true;
+    return path_identity.IsPortableChildName(name);
+}
+
+/// @brief Return an actionable portable-name validation error.
+expose func ChildNameError(name: String) -> String {
+    return path_identity.ChildNameError(name);
 }
 
 /// @brief Return whether a path points to a Zia source file by extension.
@@ -60,15 +63,14 @@ expose func IsZiaFile(path: String) -> Boolean {
 /// @param rootPath Absolute workspace root.
 /// @return True when `fullPath` equals the root or is below it.
 expose func IsWithinRoot(fullPath: String, rootPath: String) -> Boolean {
-    if fullPath == "" or rootPath == "" { return false; }
-    var normalizedPath = NormalizedPathKey(fullPath);
-    var normalizedRoot = NormalizedPathKey(rootPath);
-    if normalizedPath == normalizedRoot { return true; }
-    var prefix = normalizedRoot;
-    if Str.EndsWith(prefix, "/") == false {
-        prefix = prefix + "/";
-    }
-    return Str.StartsWith(normalizedPath, prefix);
+    return path_identity.IsWithinRoot(fullPath, rootPath);
+}
+
+/// @brief Detect a linked/reparse component below an opened workspace root.
+expose func HasLinkedComponent(path: String,
+                               rootPath: String,
+                               includeLeaf: Boolean) -> Boolean {
+    return path_identity.HasLinkedComponent(path, rootPath, includeLeaf);
 }
 
 /// @brief Return a collision-free project-local trash path for explorer delete.
@@ -107,13 +109,12 @@ expose func TrashPathFor(projectRoot: String, sourcePath: String) -> String {
     return "";
 }
 
-/// @brief Normalize a path into an absolute separator-independent comparison key.
+/// @brief Normalize a path into the central absolute comparison spelling.
 /// @param path Absolute or relative path spelling.
-/// @return Absolute normalized path using forward slashes.
+/// @return Absolute normalized path using the host's path semantics.
 /// @details Normalizing before containment checks closes lexical `..` escapes.
 ///          Comparisons intentionally retain case because case sensitivity is a
-///          filesystem property; Explorer paths use the root's runtime spelling.
+///          filesystem property. POSIX backslashes remain filename bytes.
 func NormalizedPathKey(path: String) -> String {
-    var normalized = Path.Normalize(Path.Absolute(path));
-    return Str.Replace(normalized, "\\", "/");
+    return path_identity.Normalize(path);
 }

@@ -23,6 +23,7 @@
 module basic_workspace_query_job;
 
 bind "../basic/semantic_scan";
+bind "../services/path_identity";
 bind "../services/safe_io";
 
 bind Async = Zanna.Threads.Async;
@@ -32,7 +33,6 @@ bind Future = Zanna.Threads.Future;
 bind Map = Zanna.Collections.Map;
 bind Monitor = Zanna.Threads.Monitor;
 bind Obj = Zanna.Core.Object;
-bind Path = Zanna.IO.Path;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
 
@@ -572,7 +572,7 @@ func PreviewFromLines(lines: Any,
 /// @brief Normalize durable paths while preserving one active untitled key.
 func CorpusPathKey(path: String) -> String {
     if path == "" { return "<active-untitled>"; }
-    return Path.Normalize(Path.Absolute(path));
+    return path_identity.Normalize(path);
 }
 
 /// @brief Create the stable result envelope consumed by the UI controller.

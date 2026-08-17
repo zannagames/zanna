@@ -11,7 +11,8 @@
 // Key invariants:
 //   - Terminal child process streams are never throttled by editor background
 //     work budgeting.
-//   - Hidden terminal startup preserves output until the panel is shown.
+//   - Every session owns bounded scrollback and pending output, including while
+//     hidden or inactive.
 //   - Session actions restore PTY focus and expose only currently valid actions.
 //
 //===----------------------------------------------------------------------===//
@@ -26,8 +27,6 @@ bind Seq = Zanna.Collections.Seq;
 bind Machine = Zanna.System.Machine;
 bind Env = Zanna.System.Environment;
 bind IO = Zanna.IO;
-
-final MAX_HIDDEN_TERMINAL_BUFFER = 200000;
 
 // ============================================================================
 // MODULE: terminal_controller  (Phase 5E — interactive terminal)
@@ -62,10 +61,6 @@ class TerminalController {
     expose Boolean didFocus;
     expose Integer lastCols;
     expose Integer lastRows;
-    expose String hiddenOutput;
-    expose Boolean hiddenOutputDropped;
-    expose Boolean hiddenHadExit;
-    expose Integer hiddenExitCode;
     // Multiple concurrent sessions. sessions[activeIdx] == sess. Each non-active
     // session drains into its own replayBuffer so its output does not back up;
     // switching to it clears the pane and replays that buffer.
@@ -80,10 +75,6 @@ class TerminalController {
         didFocus = false;
         lastCols = 0;
         lastRows = 0;
-        hiddenOutput = "";
-        hiddenOutputDropped = false;
-        hiddenHadExit = false;
-        hiddenExitCode = -1;
         newBtn = null;
         nextBtn = null;
         sess.title = "1: shell";
@@ -135,6 +126,20 @@ class TerminalController {
         didFocus = true;
     }
 
+    /// @brief Render this session's pending output exactly once.
+    hide func FlushActivePending() {
+        if pane == null or sess == null { return; }
+        var pending = sess.TakePendingOutput();
+        if pending != "" { pane.Append(pending); }
+    }
+
+    /// @brief Record a controller-authored note in per-session scrollback.
+    hide func RecordActiveOutput(text: String) {
+        if sess == null or text == "" { return; }
+        sess.RecordOutput(text);
+        if IsVisible() { FlushActivePending(); }
+    }
+
     /// @brief Working directory for newly spawned shells.
     /// @details Existing PTY children keep their process working directory. When
     ///          the workspace changes while a terminal is active, the controller
@@ -143,7 +148,7 @@ class TerminalController {
     expose func SetCwd(dir: String) {
         if dir == cwd { return; }
         if cwd != "" and dir != "" and sess.IsActive() and pane != null {
-            pane.Append("\n[workspace changed; restart terminal to use " + dir + "]\n");
+            RecordActiveOutput("\n[workspace changed; restart terminal to use " + dir + "]\n");
         }
         cwd = dir;
     }
@@ -236,10 +241,10 @@ class TerminalController {
         lastCols = TerminalCols();
         lastRows = TerminalRows();
         var ok = sess.Start(ShellPath(), ShellArgs(), cwd, lastCols, lastRows);
-        if ok == false and pane != null {
+        if ok == false {
             var reason = sess.LastError();
             if reason == "" { reason = "unknown PTY startup failure"; }
-            pane.Append("[integrated terminal unavailable: " + reason + "]\n");
+            RecordActiveOutput("[integrated terminal unavailable: " + reason + "]\n");
         }
         return ok;
     }
@@ -253,10 +258,10 @@ class TerminalController {
         lastCols = TerminalCols();
         lastRows = TerminalRows();
         var ok = sess.Restart(ShellPath(), ShellArgs(), cwd, lastCols, lastRows);
-        if ok == false and pane != null {
+        if ok == false {
             var reason = sess.LastError();
             if reason == "" { reason = "unknown PTY startup failure"; }
-            pane.Append("[integrated terminal unavailable: " + reason + "]\n");
+            RecordActiveOutput("[integrated terminal unavailable: " + reason + "]\n");
         }
         return ok;
     }
@@ -285,44 +290,6 @@ class TerminalController {
         sess.Resize(cols, rows);
     }
 
-    /// @brief Append hidden terminal output into the bounded replay buffer.
-    /// @param delta Newly drained PTY output captured while the panel is hidden.
-    /// @details The buffer is intentionally character-bounded: hidden terminals
-    ///          should not grow memory without limit, but recent output should be
-    ///          replayed when the user returns to the Terminal tab.
-    hide func BufferHiddenOutput(delta: String) {
-        if delta == "" { return; }
-        hiddenOutput = hiddenOutput + delta;
-        var len = Str.get_Length(hiddenOutput);
-        if len > MAX_HIDDEN_TERMINAL_BUFFER {
-            hiddenOutput = Str.MidLen(hiddenOutput,
-                                      len - MAX_HIDDEN_TERMINAL_BUFFER + 1,
-                                      MAX_HIDDEN_TERMINAL_BUFFER);
-            hiddenOutputDropped = true;
-        }
-    }
-
-    /// @brief Replay output drained while the terminal panel was hidden.
-    /// @details Called once the panel is visible again. Exit notifications are
-    ///          delayed with the drained output so the terminal history remains in
-    ///          chronological order from the user's perspective.
-    hide func FlushHiddenOutput() {
-        if pane == null { return; }
-        if hiddenOutputDropped {
-            pane.Append("\n[terminal output while hidden was truncated]\n");
-            hiddenOutputDropped = false;
-        }
-        if hiddenOutput != "" {
-            pane.Append(hiddenOutput);
-            hiddenOutput = "";
-        }
-        if hiddenHadExit {
-            pane.Append("\n[exited " + hiddenExitCode + "]\n");
-            hiddenHadExit = false;
-            hiddenExitCode = -1;
-        }
-    }
-
     /// @brief Drain a running PTY while the terminal panel is hidden.
     /// @details Hidden terminals are not auto-started. This only services an
     ///          already-active shell so child output does not fill OS/runtime
@@ -331,12 +298,7 @@ class TerminalController {
         didFocus = false;
         DrainInactiveSessions();
         if sess.IsActive() == false { return; }
-        var delta = sess.Update();
-        BufferHiddenOutput(delta);
-        if sess.exitedThisUpdate {
-            hiddenHadExit = true;
-            hiddenExitCode = sess.exitCode;
-        }
+        sess.Update();
     }
 
     /// @brief Drain every non-active session into its own replay buffer so
@@ -348,17 +310,7 @@ class TerminalController {
             if i != activeIdx {
                 var s = sessions.get(i) as terminal_session.TerminalSession;
                 if s.IsActive() {
-                    var delta = s.Update();
-                    if Str.get_Length(delta) > 0 {
-                        var buf = s.replayBuffer + delta;
-                        var len = Str.get_Length(buf);
-                        if len > MAX_HIDDEN_TERMINAL_BUFFER {
-                            buf = Str.MidLen(buf,
-                                             len - MAX_HIDDEN_TERMINAL_BUFFER + 1,
-                                             MAX_HIDDEN_TERMINAL_BUFFER);
-                        }
-                        s.replayBuffer = buf;
-                    }
+                    s.Update();
                 }
             }
             i = i + 1;
@@ -387,10 +339,9 @@ class TerminalController {
         didFocus = false;
         if pane != null {
             pane.Clear();
-            if sess.replayBuffer != "" {
-                pane.Append(sess.replayBuffer);
-                sess.replayBuffer = "";
-            }
+            var replay = sess.ReplayText();
+            if replay != "" { pane.Append(replay); }
+            sess.ClearPendingOutput();
         }
         UpdateButtonStates();
     }
@@ -405,18 +356,12 @@ class TerminalController {
 
         // Focus the pane the first frame it becomes visible so typing lands here.
         if didFocus == false and pane != null { pane.Focus(); didFocus = true; }
-        FlushHiddenOutput();
 
         EnsureStarted();
         ResizeIfNeeded();
 
-        var delta = sess.Update();
-        if Str.get_Length(delta) > 0 {
-            pane.Append(delta);
-        }
-        if sess.exitedThisUpdate and pane != null {
-            pane.Append("\n[exited " + sess.exitCode + "]\n");
-        }
+        sess.Update();
+        FlushActivePending();
 
         // Drain keystrokes captured by the pane and write them raw to the PTY;
         // the shell echoes them back through the output stream above.
@@ -430,11 +375,11 @@ class TerminalController {
         if killBtn != null and killBtn.WasClicked() {
             sess.Stop();
             manualStop = true;
-            pane.Append("\n[stopped]\n");
+            RecordActiveOutput("\n[stopped]\n");
             actionUsed = true;
         }
         if restartBtn != null and restartBtn.WasClicked() {
-            pane.Append("\n[restarting]\n");
+            RecordActiveOutput("\n[restarting]\n");
             RestartSession();
             actionUsed = true;
         }

@@ -1,13 +1,123 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/diagnostic_parser.zia
+// Purpose: Parse complete or streaming compiler diagnostics into Studio records.
+// Key invariants:
+//   - Stdout and stderr retain independent line carries across process chunks.
+//   - Diagnostics are published before process completion and survive output truncation.
+//   - Unterminated input and record counts remain explicitly bounded.
+//   - Byte offsets returned by string searches are sliced with byte APIs.
+// Ownership/Lifetime: Each build job owns one resettable stream parser.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/build/diagnostic.zia
+//
+//===----------------------------------------------------------------------===//
+
 module diagnostic_parser;
 
 bind "diagnostic";
 
-bind Convert = Zanna.Core.Convert;
 bind Json = Zanna.Data.Json;
 bind Map = Zanna.Collections.Map;
 bind Obj = Zanna.Core.Object;
+bind Parse = Zanna.Core.Parse;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+
+final MAX_DIAGNOSTIC_STREAM_CARRY_BYTES = 4000000;
+final MAX_DIAGNOSTIC_RECORDS = 5000;
+
+// ============================================================================
+
+/// @brief Stateful, per-stream incremental diagnostic parser.
+/// @details Process chunks may divide one UTF-8 line arbitrarily. Stdout and
+///          stderr carries stay separate so tagged output interleaving cannot
+///          splice two unrelated compiler records together.
+class DiagnosticStreamParser {
+    expose List[diagnostic.Diagnostic] records;
+    expose String stdoutCarry;
+    expose String stderrCarry;
+    expose Integer revision;
+    expose Boolean truncated;
+
+    expose func init() {
+        Reset();
+    }
+
+    expose func Reset() {
+        records = [];
+        stdoutCarry = "";
+        stderrCarry = "";
+        revision = 0;
+        truncated = false;
+    }
+
+    /// @brief Consume one ordered output chunk and publish complete records.
+    expose func Append(stream: String, text: String) {
+        if text == "" { return; }
+        if stream == "stderr" {
+            stderrCarry = Consume(stderrCarry, text);
+        } else {
+            stdoutCarry = Consume(stdoutCarry, text);
+        }
+    }
+
+    /// @brief Parse final unterminated lines at a process-stage boundary.
+    expose func Flush() {
+        if stdoutCarry != "" { ConsumeLine(stdoutCarry); }
+        if stderrCarry != "" { ConsumeLine(stderrCarry); }
+        stdoutCarry = "";
+        stderrCarry = "";
+    }
+
+    hide func Consume(carry: String, chunk: String) -> String {
+        var pending = carry + chunk;
+        var newline = Str.IndexOf(pending, "\n");
+        while newline > 0 {
+            ConsumeLine(Str.Left(pending, newline - 1));
+            pending = Str.Mid(pending, newline + 1);
+            newline = Str.IndexOf(pending, "\n");
+        }
+        if Str.get_Length(pending) > MAX_DIAGNOSTIC_STREAM_CARRY_BYTES {
+            truncated = true;
+            return "";
+        }
+        return pending;
+    }
+
+    hide func ConsumeLine(rawLine: String) {
+        if records.count() >= MAX_DIAGNOSTIC_RECORDS {
+            truncated = true;
+            return;
+        }
+        var line = rawLine;
+        if Str.Right(line, 1) == "\r" {
+            line = Str.Left(line, Str.get_Length(line) - 1);
+        }
+        var jsonRecords: List[diagnostic.Diagnostic] = [];
+        if ParseJsonDiagnosticsInto(line, jsonRecords) {
+            var i = 0;
+            while i < jsonRecords.count()
+                  and records.count() < MAX_DIAGNOSTIC_RECORDS {
+                records.add(jsonRecords.get(i));
+                revision = revision + 1;
+                i = i + 1;
+            }
+            if i < jsonRecords.count() { truncated = true; }
+            return;
+        }
+        var diag = ParseDiagnosticLine(line);
+        if diag != null {
+            records.add(diag!);
+            revision = revision + 1;
+        }
+    }
+}
 
 // ============================================================================
 // MODULE: diagnostic_parser
@@ -200,23 +310,28 @@ expose func ParseDiagnosticLine(line: String) -> diagnostic.Diagnostic? {
     }
     if sevPos == 0 { return null; }
 
-    var before = Str.Left(line, sevPos - 1);
+    var before = Str.Substring(line, 0, sevPos - 1);
     var codeStart = sevPos + Str.get_Length(": " + severity + "[");
     var msgSep = Str.IndexOfFrom(line, codeStart, "]: ");
     if msgSep == 0 { return null; }
-    var code = Str.MidLen(line, codeStart, msgSep - codeStart);
-    var msg = Str.Mid(line, msgSep + 3);
+    var code = Str.Substring(
+        line, codeStart - 1, msgSep - codeStart);
+    var msgOffset = msgSep + 2;
+    var msg = Str.Substring(
+        line, msgOffset, Str.get_Length(line) - msgOffset);
 
     var colSep = Str.LastIndexOf(before, ":");
     if colSep <= 0 { return null; }
-    var colText = Str.Mid(before, colSep + 1);
-    var pathAndLine = Str.Left(before, colSep - 1);
+    var colText = Str.Substring(
+        before, colSep, Str.get_Length(before) - colSep);
+    var pathAndLine = Str.Substring(before, 0, colSep - 1);
     var lineSep = Str.LastIndexOf(pathAndLine, ":");
     if lineSep <= 0 { return null; }
-    var lineText = Str.Mid(pathAndLine, lineSep + 1);
-    var path = Str.Left(pathAndLine, lineSep - 1);
-    var lineNo = Convert.ToInt64(lineText);
-    var colNo = Convert.ToInt64(colText);
+    var lineText = Str.Substring(
+        pathAndLine, lineSep, Str.get_Length(pathAndLine) - lineSep);
+    var path = Str.Substring(pathAndLine, 0, lineSep - 1);
+    var lineNo = Parse.IntOr(lineText, 0);
+    var colNo = Parse.IntOr(colText, 0);
     if path == "" or lineNo <= 0 or colNo <= 0 { return null; }
 
     var diag = new diagnostic.Diagnostic();

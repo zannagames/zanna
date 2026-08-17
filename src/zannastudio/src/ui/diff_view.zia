@@ -231,6 +231,9 @@ class DiffView {
         }
         renderResult = request.result;
         renderIndex = 0;
+        if renderResult.degradation != diff_engine.DIFF_DEGRADED_NONE {
+            lastError = DegradationText(renderResult.degradation);
+        }
         titleLabel.SetText(activeTitle + "  (rendering 0/"
                            + renderResult.rows.count() + ")");
     }
@@ -255,9 +258,13 @@ class DiffView {
             rowsList.AddItem("… " + (renderResult.totalRows - renderResult.rows.count())
                              + " more rows truncated");
         }
+        var suffix = "";
+        if renderResult.degradation != diff_engine.DIFF_DEGRADED_NONE {
+            suffix = "  approximate: " + DegradationText(renderResult.degradation);
+        }
         titleLabel.SetText(activeTitle + "  (~" + renderResult.changedCount
                            + "  +" + renderResult.addedCount
-                           + "  -" + renderResult.removedCount + ")");
+                           + "  -" + renderResult.removedCount + ")" + suffix);
         renderResult = null;
         renderIndex = 0;
     }
@@ -287,6 +294,23 @@ class DiffView {
         renderResult = null;
         renderIndex = 0;
         lastPumpRenderCount = 0;
+    }
+
+    /// @brief Stable user-facing explanation for an approximate diff.
+    hide func DegradationText(reason: Integer) -> String {
+        if reason == diff_engine.DIFF_DEGRADED_INPUT_LIMIT {
+            return "line limit";
+        }
+        if reason == diff_engine.DIFF_DEGRADED_EDIT_DEPTH {
+            return "edit-depth limit";
+        }
+        if reason == diff_engine.DIFF_DEGRADED_TRACE_BUDGET {
+            return "trace-memory limit";
+        }
+        if reason == diff_engine.DIFF_DEGRADED_CANCELLED {
+            return "cancelled";
+        }
+        return "bounded fallback";
     }
 
     /// @brief Fit and center the overlay in the current logical app viewport.

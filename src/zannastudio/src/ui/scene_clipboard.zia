@@ -24,6 +24,7 @@ module scene_clipboard;
 bind Parse = Zanna.Core.Parse;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: scene_clipboard
@@ -72,14 +73,15 @@ expose func EncodeTileBlock(width: Integer,
        or tiles.count() > MAX_TILE_BLOCK_CELLS {
         return "";
     }
-    var body = "";
+    var body = new StringBuilder();
     var index = 0;
     while index < tiles.count() {
-        if body != "" { body = body + ","; }
-        body = body + tiles.get(index);
+        if index > 0 { body.Append(","); }
+        body.Append("" + tiles.get(index));
         index = index + 1;
     }
-    return TILE_BLOCK_MAGIC + "\n" + width + "\n" + height + "\n" + body;
+    return TILE_BLOCK_MAGIC + "\n" + width + "\n" + height + "\n"
+           + body.ToString();
 }
 
 /// @brief Cheaply identify tile-block clipboard text.
@@ -180,7 +182,8 @@ expose func Encode(kind: String,
        or Contains(indices, primary) == false {
         return "";
     }
-    var encodedIndices = "";
+    var encodedIndices = new StringBuilder();
+    var encodedIndexCharacters = 0;
     var checked: List[Integer] = [];
     var index = 0;
     while index < indices.count() {
@@ -189,11 +192,15 @@ expose func Encode(kind: String,
            or Contains(checked, candidate) {
             return "";
         }
-        if encodedIndices != "" {
-            encodedIndices = encodedIndices + ",";
+        var candidateText = "" + candidate;
+        if index > 0 {
+            encodedIndices.Append(",");
+            encodedIndexCharacters = encodedIndexCharacters + 1;
         }
-        encodedIndices = encodedIndices + candidate;
-        if Str.get_Length(encodedIndices) > MAX_INDEX_LINE_CHARACTERS {
+        encodedIndices.Append(candidateText);
+        encodedIndexCharacters = encodedIndexCharacters
+            + Str.get_Length(candidateText);
+        if encodedIndexCharacters > MAX_INDEX_LINE_CHARACTERS {
             return "";
         }
         checked.add(candidate);
@@ -202,7 +209,7 @@ expose func Encode(kind: String,
     var encoded = CLIPBOARD_MAGIC + "\n"
         + kind + "\n"
         + primary + "\n"
-        + encodedIndices + "\n"
+        + encodedIndices.ToString() + "\n"
         + content;
     if Str.get_Length(encoded) > MAX_CLIPBOARD_CHARACTERS {
         return "";

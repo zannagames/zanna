@@ -1,3 +1,20 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/call_scan.zia
+// Purpose: Discover conservative Zia call tokens over reusable source lines.
+// Key invariants:
+//   - Strings, comments, declarations, and keyword-like calls are excluded.
+//   - Indexed scans do not re-split whole-document snapshots.
+// Ownership/Lifetime: Returned token maps are owned by their result sequence.
+// Links: zia/source_scan.zia, editor/zia_workspace_query_job.zia
+//
+//===----------------------------------------------------------------------===//
+
 module call_scan;
 
 bind "identifier_utils";
@@ -33,7 +50,20 @@ expose func OutgoingZiaCallTokens(source: String,
                                   endLine: Integer) -> Any {
     var tokens = Seq.New();
     if source == "" { return tokens; }
-    var lines = Str.Split(source, "\n");
+    return OutgoingZiaCallTokensFromLines(
+        Str.Split(source, "\n"), startLine, endLine);
+}
+
+/// @brief Collect call tokens using a reusable source-line model.
+/// @param lines Reusable source-line sequence.
+/// @param startLine 1-based inclusive start line.
+/// @param endLine 1-based inclusive end line.
+/// @return Sequence of maps with name, line, and column fields.
+expose func OutgoingZiaCallTokensFromLines(lines: Any,
+                                           startLine: Integer,
+                                           endLine: Integer) -> Any {
+    var tokens = Seq.New();
+    if lines == null { return tokens; }
     var fromLine = startLine;
     var toLine = endLine;
     if fromLine < 1 { fromLine = 1; }

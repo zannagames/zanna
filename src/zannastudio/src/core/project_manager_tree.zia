@@ -20,6 +20,7 @@ module project_manager_tree;
 bind "project" as ProjectModel;
 bind "project_file_ops";
 bind "project_bind_rewriter";
+bind "../services/path_identity";
 bind "../services/workspace_file_index";
 bind "../services/safe_io";
 bind Zanna.GUI as GUI;
@@ -75,15 +76,14 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         if self.project == null or self.project.isOpen == false {
             return OpenFolder(path);
         }
-        var normalized = Base.NormalizeAbsPath(path);
-        if Base.NormalizeAbsPath(self.project.rootPath) == normalized {
+        if path_identity.SameEntry(self.project.rootPath, path) {
             lastOperationError = "That folder is already in the workspace.";
             return false;
         }
         var i = 0;
         while i < extraRoots.count() {
             var existing = extraRoots.get(i);
-            if existing != null and Base.NormalizeAbsPath(existing.rootPath) == normalized {
+            if existing != null and path_identity.SameEntry(existing.rootPath, path) {
                 lastOperationError = "That folder is already in the workspace.";
                 return false;
             }
@@ -121,10 +121,9 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
             return false;
         }
 
-        var normalized = Base.NormalizeAbsPath(path);
         var removedRoot = "";
         if self.project != null and self.project.isOpen
-           and Base.NormalizeAbsPath(self.project.rootPath) == normalized {
+           and path_identity.SameEntry(self.project.rootPath, path) {
             removedRoot = self.project.rootPath;
             self.project.Close();
             self.project = extraRoots.get(0);
@@ -134,7 +133,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
             while i < extraRoots.count() {
                 var candidate = extraRoots.get(i);
                 if candidate != null and candidate.isOpen
-                   and Base.NormalizeAbsPath(candidate.rootPath) == normalized {
+                   and path_identity.SameEntry(candidate.rootPath, path) {
                     removedRoot = candidate.rootPath;
                     candidate.Close();
                     extraRoots.RemoveAt(i);
@@ -169,6 +168,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         extraRoots = [];
         if treeView != null { treeView.Clear(); }
         ResetFileCacheDiscovery();
+        if sourceFreshness != null { sourceFreshness.EnsureProject(""); }
         lastTrashPath = "";
         loadedTreeDirs = new List();
         treeLoadJobs = [];
@@ -192,6 +192,14 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         // before checking the widget so headless workspace refreshes are just as
         // coherent as visible Explorer refreshes.
         ResetFileCacheDiscovery();
+        if sourceFreshness != null {
+            if self.project != null and self.project.isOpen {
+                sourceFreshness.EnsureProject(self.project.rootPath);
+                sourceFreshness.InvalidateAll();
+            } else {
+                sourceFreshness.EnsureProject("");
+            }
+        }
         if treeView == null { return; }
         treeView.Clear();
 

@@ -503,6 +503,13 @@ class CompletionController extends completion_base.CompletionControllerBase {
         popup.SetVisible(false);
     }
 
+    /// @brief Cancel and drain every compiler query owned by completion.
+    /// @return True when no owned BASIC callback remains after the bounded wait.
+    expose func Shutdown() -> Boolean {
+        Hide();
+        return basicJob.CancelAndWait();
+    }
+
     /// @brief Per-frame update. Runs pending debounced queries and filters
     ///        cached candidates as the editor text changes.
     /// @return true if an event was consumed (currently always false —

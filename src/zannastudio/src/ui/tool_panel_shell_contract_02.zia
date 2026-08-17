@@ -149,7 +149,22 @@ class ToolPanelShellContract02 extends PreviousContract.ToolPanelShellContract01
                                             _item: Any,
                                             _locationData: String) {}
 
+    expose func GetSelectedToolRowData(_listBox: GUI.ListBox) -> String { return ""; }
+
     hide func ToolRowsForListBox(_listBox: GUI.ListBox) -> tool_panel_model.ToolPanelRows { return null; }
+
+    hide func CanVirtualizeToolRows(_listBox: GUI.ListBox) -> Boolean { return false; }
+
+    hide func RebuildVirtualToolRows(_listBox: GUI.ListBox,
+                                     _model: tool_panel_model.ToolPanelRows) -> Boolean {
+        return false;
+    }
+
+    hide func PublishVirtualToolRow(_listBox: GUI.ListBox,
+                                    _model: tool_panel_model.ToolPanelRows,
+                                    _row: tool_panel_model.ToolPanelRow) -> Boolean {
+        return false;
+    }
 
     hide func EnsureToolRowsCapacity(_listBox: GUI.ListBox,
                                      _model: tool_panel_model.ToolPanelRows) {}

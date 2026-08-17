@@ -115,23 +115,6 @@ static void pattern_cache_unlock(void) {
 
 #include "rt_trap.h"
 
-/// @brief Measure a C string for the engine's signed-int length domain.
-/// @param s Null-terminated string to measure.
-/// @return String length as `int`; traps and returns zero for null input or a
-///         length greater than `INT_MAX`.
-static int safe_strlen_int(const char *s) {
-    if (!s) {
-        rt_trap("Pattern: null string");
-        return 0;
-    }
-    size_t n = strlen(s);
-    if (n > (size_t)INT_MAX) {
-        rt_trap("Pattern: string too long for regex engine");
-        return 0;
-    }
-    return (int)n;
-}
-
 /// @brief Read a runtime string length for the engine's signed-int domain.
 /// @details A null runtime string is treated as empty.
 /// @param s Borrowed runtime string, or `NULL`.
@@ -233,304 +216,6 @@ static int ensure_result_capacity(
 // Memory Management
 //=============================================================================
 
-/// @brief Allocate a zero-initialized AST node of the given type.
-///
-/// Uses `calloc` so the union starts cleared (important for the
-/// `children` variant where `count`/`capacity` must be 0). Traps on
-/// OOM — there's no recovery path during pattern compile.
-/// @param type AST node discriminator to initialize.
-/// @return Newly allocated node, or `NULL` after an allocation trap.
-re_node *node_new(re_node_type type) {
-    re_node *n = (re_node *)calloc(1, sizeof(re_node));
-    if (!n) {
-        rt_trap("Pattern: memory allocation failed");
-        return NULL;
-    }
-    n->type = type;
-    n->group_index = -1;
-    return n;
-}
-
-/// @brief Recursively free an AST node and all its descendants.
-///
-/// Walks the tree depth-first: container types (concat/alt/group) free
-/// each child then their `children` array; quantifier nodes free their
-/// single child; leaf types just free themselves. Safe on NULL.
-/// @param n Root of the owned AST subtree to destroy.
-void node_free(re_node *n) {
-    if (!n)
-        return;
-
-    switch (n->type) {
-        case RE_CONCAT:
-        case RE_ALT:
-        case RE_GROUP:
-            for (int i = 0; i < n->data.children.count; i++) {
-                node_free(n->data.children.children[i]);
-            }
-            free(n->data.children.children);
-            break;
-        case RE_QUANT:
-            node_free(n->data.quant.child);
-            break;
-        default:
-            break;
-    }
-    free(n);
-}
-
-/// @brief Append a child node to a container (concat/alt/group).
-///
-/// Geometric resize (cap doubles, starting at 4) so amortized cost is
-/// O(1) per add. Traps on OOM. Caller transfers ownership of `child`
-/// to `n` — the parent's `node_free` will reclaim it.
-/// @param n Destination container node.
-/// @param child Child node whose ownership transfers on successful append.
-void children_add(re_node *n, re_node *child) {
-    if (!n || !child) {
-        rt_trap("Pattern: invalid child node");
-        return;
-    }
-    if (n->data.children.count >= n->data.children.capacity) {
-        if (n->data.children.capacity > INT_MAX / 2) {
-            rt_trap("Pattern: too many child nodes");
-            return;
-        }
-        int new_cap = n->data.children.capacity == 0 ? 4 : n->data.children.capacity * 2;
-        if ((size_t)new_cap > SIZE_MAX / sizeof(re_node *)) {
-            rt_trap("Pattern: child node allocation overflow");
-            return;
-        }
-        re_node **new_children =
-            (re_node **)realloc(n->data.children.children, new_cap * sizeof(re_node *));
-        if (!new_children) {
-            rt_trap("Pattern: memory allocation failed");
-            return;
-        }
-        n->data.children.children = new_children;
-        n->data.children.capacity = new_cap;
-    }
-    n->data.children.children[n->data.children.count++] = child;
-}
-
-/// @brief Free a compiled pattern and its AST.
-///
-/// Releases the duplicated pattern string, recursively frees the AST
-/// root, then frees the wrapper. Safe on NULL — used both by the
-/// cache eviction path and by error-recovery paths during compile.
-/// @param p Owned compiled-pattern object to destroy.
-static void pattern_free(compiled_pattern *p) {
-    if (!p)
-        return;
-    free(p->pattern_str);
-    node_free(p->root);
-    free(p);
-}
-
-/// @brief Public free entry point exposed via `rt_regex_internal.h`.
-///
-/// Thin wrapper around `pattern_free` so external callers (e.g., the
-/// cached-pattern wrapper) don't need to see the static helper.
-/// @param cp Owned compiled pattern to destroy; may be `NULL`.
-void re_free(re_compiled_pattern *cp) {
-    pattern_free(cp);
-}
-
-//=============================================================================
-// Character Class Helpers
-//=============================================================================
-
-/// @brief Set bit `ch` in a character-class bitset (no-op out of range).
-///
-/// The bitset is 256 bits (32 bytes), one per ASCII byte value. Bytes
-/// outside [0, 255] are ignored — matching of multibyte/Unicode chars
-/// happens via the negation flag in `class_test`.
-/// @param c Character-class bitmap to modify.
-/// @param ch Byte value to add.
-void class_set(re_class *c, int ch) {
-    if (ch >= 0 && ch < 256) {
-        c->bits[ch / 8] |= (1 << (ch % 8));
-    }
-}
-
-/// @brief Test whether `ch` is in the class (after applying negation).
-///
-/// Bytes outside [0, 255] match if and only if the class is negated —
-/// preserves the "negated class accepts everything not explicitly listed"
-/// semantics for arbitrary code units.
-/// @param c Character class to inspect.
-/// @param ch Candidate byte value.
-/// @return Whether @p ch belongs to the effective class.
-bool class_test(const re_class *c, int ch) {
-    if (ch < 0 || ch >= 256)
-        return c->negated;
-    bool in_class = (c->bits[ch / 8] & (1 << (ch % 8))) != 0;
-    return c->negated ? !in_class : in_class;
-}
-
-/// @brief Set every bit in the inclusive range `[from, to]`.
-/// @details Values at or above 256 are ignored; a reversed range adds nothing.
-/// @param c Character-class bitmap to modify.
-/// @param from Inclusive first byte value.
-/// @param to Inclusive final byte value.
-void class_add_range(re_class *c, int from, int to) {
-    for (int ch = from; ch <= to && ch < 256; ch++) {
-        class_set(c, ch);
-    }
-}
-
-/// @brief Return 1 when `ch` is in the base set of a lowercase shorthand.
-/// @param shorthand Lowercase shorthand discriminator: `d`, `w`, or `s`.
-/// @param ch Candidate byte value.
-/// @return `1` for membership in the ASCII shorthand set, otherwise `0`.
-static int shorthand_member(char shorthand, int ch) {
-    switch (shorthand) {
-        case 'd':
-            return ch >= '0' && ch <= '9';
-        case 'w':
-            return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                   (ch >= '0' && ch <= '9') || ch == '_';
-        case 's':
-            return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f' || ch == '\v';
-        default:
-            return 0;
-    }
-}
-
-/// @brief Apply a `\\d`/`\\D`/`\\w`/`\\W`/`\\s`/`\\S` shorthand to a class.
-///
-/// Lowercase shorthands union the matching bytes into the class bitmap;
-/// uppercase variants union the complement bytes directly. Unioning (rather
-/// than toggling the class-wide `negated` flag) keeps mixed classes like
-/// `[a\\D]` correct: complementing one member must not complement the whole
-/// class (VDOC-055). Used both inside `[...]` brackets and as standalone
-/// atoms.
-/// @param c Character-class bitmap to extend.
-/// @param shorthand One of `d`, `D`, `w`, `W`, `s`, or `S`.
-void class_add_shorthand(re_class *c, char shorthand) {
-    char base = shorthand;
-    int complement = 0;
-    if (shorthand >= 'A' && shorthand <= 'Z') {
-        base = (char)(shorthand - 'A' + 'a');
-        complement = 1;
-    }
-    for (int ch = 0; ch < 256; ch++) {
-        if (shorthand_member(base, ch) != complement)
-            class_set(c, ch);
-    }
-}
-
-/// @brief Count `RE_GROUP` nodes in a subtree (excluding the implicit group 0).
-///
-/// Used after parse to populate `cp->group_count` so callers can size
-/// match-result arrays correctly. Recurses through every container
-/// kind so nested groups are tallied.
-/// @param n Root of the AST subtree to inspect.
-/// @return Number of explicit capture-group nodes below @p n.
-static int count_groups(re_node *n) {
-    if (!n)
-        return 0;
-
-    int count = 0;
-    switch (n->type) {
-        case RE_GROUP:
-            count = 1; // This group
-            for (int i = 0; i < n->data.children.count; i++) {
-                count += count_groups(n->data.children.children[i]);
-            }
-            break;
-        case RE_CONCAT:
-        case RE_ALT:
-            for (int i = 0; i < n->data.children.count; i++) {
-                count += count_groups(n->data.children.children[i]);
-            }
-            break;
-        case RE_QUANT:
-            count = count_groups(n->data.quant.child);
-            break;
-        default:
-            break;
-    }
-    return count;
-}
-
-/// @brief Top-level compile: parse `pattern` into a `compiled_pattern`.
-///
-/// Allocates the wrapper, duplicates the pattern source for diagnostics
-/// and cache lookups, runs the parser, and counts capture groups. Traps
-/// on syntax error (via `parse_error`) or OOM. Empty patterns are
-/// represented as an empty concat (matches everywhere with zero width).
-/// @param pattern Required null-terminated pattern source.
-/// @return Newly allocated compiled pattern, or `NULL` after a syntax or
-///         allocation trap.
-static compiled_pattern *compile_pattern(const char *pattern) {
-    if (!pattern) {
-        rt_trap("Pattern: null pattern");
-        return NULL;
-    }
-
-    compiled_pattern *cp = (compiled_pattern *)calloc(1, sizeof(compiled_pattern));
-    if (!cp) {
-        rt_trap("Pattern: memory allocation failed");
-        return NULL;
-    }
-
-    cp->pattern_str = strdup(pattern);
-    if (!cp->pattern_str) {
-        free(cp);
-        rt_trap("Pattern: memory allocation failed");
-        return NULL;
-    }
-
-    parser_state p = {pattern, 0, safe_strlen_int(pattern), 0};
-
-    cp->root = parse_alternation(&p);
-
-    if (!at_end(&p)) {
-        pattern_free(cp);
-        parse_error(&p, "unexpected character");
-        return NULL;
-    }
-
-    // Handle empty pattern
-    if (!cp->root) {
-        cp->root = node_new(RE_CONCAT);
-    }
-
-    // Count capture groups
-    cp->group_count = count_groups(cp->root);
-
-    return cp;
-}
-
-/// @brief Public compile entry point — exposed via `rt_regex_internal.h`.
-///
-/// Wraps the static `compile_pattern` so external callers (the cached
-/// pattern wrapper) don't need access to the static helper.
-/// @param pattern Required null-terminated pattern source.
-/// @return Newly allocated compiled pattern, or `NULL` after a trap.
-re_compiled_pattern *re_compile(const char *pattern) {
-    return compile_pattern(pattern);
-}
-
-/// @brief Return the source pattern string a compiled pattern was built from.
-///
-/// Returns "" for NULL. Useful for cache lookup and diagnostics.
-/// @param cp Borrowed compiled pattern, or `NULL`.
-/// @return Borrowed original pattern text, or a stable empty string.
-const char *re_get_pattern(re_compiled_pattern *cp) {
-    return cp ? cp->pattern_str : "";
-}
-
-/// @brief Return the number of capture groups in the compiled pattern.
-///
-/// Counts only explicit `(...)` groups; group 0 (the whole match) is
-/// not included. Returns 0 for NULL.
-/// @param cp Borrowed compiled pattern, or `NULL`.
-/// @return Number of explicit capture groups.
-int re_group_count(re_compiled_pattern *cp) {
-    return cp ? cp->group_count : 0;
-}
 
 //=============================================================================
 // Pattern Cache (Simple LRU)
@@ -555,6 +240,7 @@ static unsigned long access_counter = 0;
 /// @return Borrowed-for-use compiled pattern with one active cache reference,
 ///         or `NULL` after compilation failure.
 static compiled_pattern *get_cached_pattern(const char *pattern_str) {
+    re_set_failure_handler(rt_trap);
     pattern_cache_lock();
 
     for (int i = 0; i < PATTERN_CACHE_SIZE; i++) {
@@ -569,7 +255,7 @@ static compiled_pattern *get_cached_pattern(const char *pattern_str) {
     }
 
     pattern_cache_unlock();
-    compiled_pattern *cp = compile_pattern(pattern_str);
+    compiled_pattern *cp = re_compile(pattern_str);
     if (!cp)
         return NULL;
     cp->cache_refs = 1;
@@ -584,7 +270,7 @@ static compiled_pattern *get_cached_pattern(const char *pattern_str) {
             compiled_pattern *found = pattern_cache[i].pattern;
             found->cache_refs++;
             pattern_cache_unlock();
-            pattern_free(cp);
+            re_free(cp);
             return found;
         }
     }
@@ -610,7 +296,7 @@ static compiled_pattern *get_cached_pattern(const char *pattern_str) {
 
     if (pattern_cache[slot].pattern) {
         pattern_cache[slot].pattern->cache_linked = false;
-        pattern_free(pattern_cache[slot].pattern);
+        re_free(pattern_cache[slot].pattern);
     }
 
     cp->cache_linked = true;
@@ -635,7 +321,7 @@ static void release_cached_pattern(compiled_pattern *cp) {
     should_free = (cp->cache_refs == 0 && !cp->cache_linked);
     pattern_cache_unlock();
     if (should_free)
-        pattern_free(cp);
+        re_free(cp);
 }
 
 //=============================================================================

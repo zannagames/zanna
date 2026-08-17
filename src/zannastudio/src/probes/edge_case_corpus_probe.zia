@@ -1,0 +1,508 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/edge_case_corpus_probe.zia
+// Purpose: Replay the versioned Studio edge-case corpus through production code.
+// Key invariants:
+//   - The manifest and every fixture are bounded before parsing or retention.
+//   - Transform cases are deterministic and idempotent where applicable.
+//   - Search and stream parsers must always make bounded forward progress.
+// Ownership/Lifetime:
+//   - The probe borrows checked-in fixtures and owns only transient results.
+// Links: zannastudio/tests/corpus/edge_cases/README.md,
+//        zannastudio/src/zia/formatters.zia
+//
+//===----------------------------------------------------------------------===//
+
+module edge_case_corpus_probe;
+
+bind "../build/diagnostic";
+bind "../build/diagnostic_parser";
+bind "../build/run_config";
+bind "../core/keybinding_settings";
+bind "../services/safe_io";
+bind "../services/search_matcher";
+bind "../zia/bind_utils";
+bind "../zia/formatters";
+bind "../zia/source_scan";
+
+bind Env = Zanna.System.Environment;
+bind Ini = Zanna.Data.Ini;
+bind Obj = Zanna.Core.Object;
+bind Parse = Zanna.Core.Parse;
+bind Path = Zanna.IO.Path;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+bind Terminal = Zanna.Terminal;
+
+final CORPUS_SCHEMA_VERSION = 1;
+final MAX_CORPUS_CASES = 128;
+final MAX_CORPUS_FILE_BYTES = 512000;
+final MAX_SEARCH_MATCHES = 64;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func argValue(name: String) -> String {
+    var i = 0;
+    while i < Env.GetArgumentCount() - 1 {
+        if Env.GetArgument(i) == name { return Env.GetArgument(i + 1); }
+        i = i + 1;
+    }
+    return "";
+}
+
+func caseSection(index: Integer) -> String {
+    return "case." + index;
+}
+
+func caseValue(ini: Any, index: Integer, key: String) -> String {
+    return Ini.Get(ini, caseSection(index), key);
+}
+
+func caseInt(ini: Any, index: Integer, key: String, fallback: Integer) -> Integer {
+    return Parse.IntOr(caseValue(ini, index, key), fallback);
+}
+
+func caseBool(ini: Any, index: Integer, key: String, fallback: Boolean) -> Boolean {
+    var value = Str.ToLower(Str.Trim(caseValue(ini, index, key)));
+    if value == "1" or value == "true" { return true; }
+    if value == "0" or value == "false" { return false; }
+    return fallback;
+}
+
+func boolText(value: Boolean) -> String {
+    if value { return "1"; }
+    return "0";
+}
+
+func safeRelativePath(relative: String) -> Boolean {
+    return relative != ""
+           and Path.IsAbsolute(relative) == false
+           and Str.Contains(relative, "..") == false
+           and Str.Contains(relative, "\r") == false
+           and Str.Contains(relative, "\n") == false;
+}
+
+func readCorpusFile(root: String, relative: String) -> String {
+    if safeRelativePath(relative) == false { return ""; }
+    var path = Path.Join(root, relative);
+    var result = safe_io.ReadAllTextBounded(path, MAX_CORPUS_FILE_BYTES);
+    if result.ok == false { return ""; }
+    return result.text;
+}
+
+func stripOneFinalNewline(text: String) -> String {
+    if Str.EndsWith(text, "\r\n") {
+        return Str.Left(text, Str.get_Length(text) - 2);
+    }
+    if Str.EndsWith(text, "\n") {
+        return Str.Left(text, Str.get_Length(text) - 1);
+    }
+    return text;
+}
+
+func applyNewlineMode(text: String, mode: String) -> String {
+    var normalized = Str.Replace(text, "\r\n", "\n");
+    if mode == "crlf" { return Str.Replace(normalized, "\n", "\r\n"); }
+    return normalized;
+}
+
+func escapedField(value: String) -> String {
+    var out = Str.Replace(value, "\\", "\\\\");
+    out = Str.Replace(out, "|", "\\|");
+    out = Str.Replace(out, "\r", "\\r");
+    out = Str.Replace(out, "\n", "\\n");
+    return out;
+}
+
+func preview(value: String) -> String {
+    var out = escapedField(value);
+    if Str.get_Length(out) > 240 { return Str.Left(out, 240) + "..."; }
+    return out;
+}
+
+func uniqueName(seen: List, name: String) -> Boolean {
+    var i = 0;
+    while i < seen.count() {
+        if Obj.ToString(seen.get(i)) == name { return false; }
+        i = i + 1;
+    }
+    seen.add(name);
+    return true;
+}
+
+func loadPair(ini: Any,
+              index: Integer,
+              root: String) -> List? {
+    var input = readCorpusFile(root, caseValue(ini, index, "input"));
+    var expected = readCorpusFile(root, caseValue(ini, index, "expected"));
+    if input == "" or expected == "" { return null; }
+    var pair = new List();
+    pair.add(input);
+    pair.add(expected);
+    return pair;
+}
+
+func runFormatCase(ini: Any,
+                   index: Integer,
+                   root: String,
+                   name: String) -> Boolean {
+    var pair = loadPair(ini, index, root);
+    if pair == null {
+        fail(name + ": unreadable formatter fixture");
+        return false;
+    }
+    var newlineMode = caseValue(ini, index, "newline");
+    var input = applyNewlineMode(Obj.ToString(pair!.get(0)), newlineMode);
+    var expected = applyNewlineMode(Obj.ToString(pair!.get(1)), newlineMode);
+    var language = caseValue(ini, index, "language");
+    var tabSize = caseInt(ini, index, "tabSize", 4);
+    var insertSpaces = caseBool(ini, index, "insertSpaces", true);
+    var actual = formatters.FormatDocumentText(
+        language, input, tabSize, insertSpaces);
+    if actual != expected {
+        fail(name + ": formatter mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    var second = formatters.FormatDocumentText(
+        language, actual, tabSize, insertSpaces);
+    if second != actual {
+        fail(name + ": formatter is not idempotent");
+        return false;
+    }
+    return true;
+}
+
+func runOrganizeBindsCase(ini: Any,
+                          index: Integer,
+                          root: String,
+                          name: String) -> Boolean {
+    var pair = loadPair(ini, index, root);
+    if pair == null {
+        fail(name + ": unreadable bind fixture");
+        return false;
+    }
+    var newlineMode = caseValue(ini, index, "newline");
+    var input = applyNewlineMode(Obj.ToString(pair!.get(0)), newlineMode);
+    var expected = applyNewlineMode(Obj.ToString(pair!.get(1)), newlineMode);
+    var actual = bind_utils.OrganizeZiaBindsText(input);
+    if actual != expected {
+        fail(name + ": bind organization mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    if bind_utils.OrganizeZiaBindsText(actual) != actual {
+        fail(name + ": bind organization is not idempotent");
+        return false;
+    }
+    return true;
+}
+
+func runIdentifierCase(ini: Any,
+                       index: Integer,
+                       root: String,
+                       name: String) -> Boolean {
+    var pair = loadPair(ini, index, root);
+    if pair == null {
+        fail(name + ": unreadable identifier fixture");
+        return false;
+    }
+    var input = stripOneFinalNewline(Obj.ToString(pair!.get(0)));
+    var expected = stripOneFinalNewline(Obj.ToString(pair!.get(1)));
+    var actual = source_scan.ReplaceIdentifierOutsideTrivia(
+        input,
+        caseValue(ini, index, "identifier"),
+        caseValue(ini, index, "replacement"));
+    if actual != expected {
+        fail(name + ": identifier rewrite mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    return true;
+}
+
+func serializeDiagnostics(records: List[diagnostic.Diagnostic],
+                          truncated: Boolean) -> String {
+    var out = new StringBuilder();
+    out.AppendLine("truncated=" + boolText(truncated));
+    out.AppendLine("count=" + records.count());
+    var i = 0;
+    while i < records.count() {
+        var item = records.get(i);
+        out.Append("record=");
+        out.Append(escapedField(item.filePath));
+        out.Append("|" + item.line + "|" + item.column + "|"
+                   + item.endLine + "|" + item.endColumn + "|"
+                   + item.severity + "|");
+        out.Append(escapedField(item.code));
+        out.Append("|");
+        out.Append(escapedField(item.message));
+        out.Append("|" + item.noteCount + "|");
+        out.Append(escapedField(item.noteSummary));
+        out.Append("|" + item.fixitCount + "|");
+        out.AppendLine(escapedField(item.fixitMessage));
+        i = i + 1;
+    }
+    return out.ToString();
+}
+
+func runDiagnosticCase(ini: Any,
+                       index: Integer,
+                       root: String,
+                       name: String) -> Boolean {
+    var input = readCorpusFile(root, caseValue(ini, index, "input"));
+    var expected = readCorpusFile(root, caseValue(ini, index, "expected"));
+    if input == "" or expected == "" {
+        fail(name + ": unreadable diagnostic fixture");
+        return false;
+    }
+
+    var records: List[diagnostic.Diagnostic] = [];
+    var truncated = false;
+    var secondaryPath = caseValue(ini, index, "input2");
+    if secondaryPath == "" {
+        records = diagnostic_parser.ParseDiagnostics(input);
+    } else {
+        var secondary = readCorpusFile(root, secondaryPath);
+        if secondary == "" {
+            fail(name + ": unreadable secondary diagnostic stream");
+            return false;
+        }
+        var parser = new diagnostic_parser.DiagnosticStreamParser();
+        var pos = 1;
+        var maxLength = Str.get_Length(input);
+        if Str.get_Length(secondary) > maxLength {
+            maxLength = Str.get_Length(secondary);
+        }
+        while pos <= maxLength {
+            if pos <= Str.get_Length(input) {
+                parser.Append("stdout", Str.MidLen(input, pos, 1));
+            }
+            if pos <= Str.get_Length(secondary) {
+                parser.Append("stderr", Str.MidLen(secondary, pos, 1));
+            }
+            pos = pos + 1;
+        }
+        parser.Flush();
+        records = parser.records;
+        truncated = parser.truncated;
+    }
+
+    var actual = serializeDiagnostics(records, truncated);
+    if actual != expected {
+        fail(name + ": diagnostic mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    return true;
+}
+
+func runSearchCase(ini: Any,
+                   index: Integer,
+                   root: String,
+                   name: String) -> Boolean {
+    var input = readCorpusFile(root, caseValue(ini, index, "input"));
+    var query = readCorpusFile(root, caseValue(ini, index, "query"));
+    var expected = readCorpusFile(root, caseValue(ini, index, "expected"));
+    if input == "" or query == "" or expected == "" {
+        fail(name + ": unreadable search fixture");
+        return false;
+    }
+    var line = stripOneFinalNewline(input);
+    var queryText = stripOneFinalNewline(query);
+    var program = search_matcher.CompileSearch(
+        queryText,
+        caseBool(ini, index, "caseSensitive", true),
+        caseBool(ini, index, "wholeWord", false),
+        caseBool(ini, index, "regex", false));
+    var out = new StringBuilder();
+    out.AppendLine("valid=" + boolText(program.valid));
+
+    var replacementPath = caseValue(ini, index, "replacementFile");
+    var replacement = "";
+    if replacementPath != "" {
+        var loadedReplacement = readCorpusFile(root, replacementPath);
+        if loadedReplacement == "" {
+            fail(name + ": unreadable replacement fixture");
+            return false;
+        }
+        replacement = stripOneFinalNewline(loadedReplacement);
+    }
+
+    if program.valid {
+        var offset = 0;
+        var count = 0;
+        while count < MAX_SEARCH_MATCHES {
+            var match = program.FindFrom(line, offset);
+            if match.matched == false { break; }
+            if match.resumeOffset <= offset {
+                fail(name + ": search did not make forward progress");
+                return false;
+            }
+            out.AppendLine("match=" + match.startCol + "|" + match.length
+                           + "|" + match.resumeOffset);
+            if count == 0 and replacementPath != "" {
+                var expansion = program.ExpandAt(
+                    line, match.startCol - 1, replacement);
+                out.AppendLine("expansion=" + boolText(expansion.ok)
+                               + "|" + escapedField(expansion.text));
+            }
+            offset = match.resumeOffset;
+            count = count + 1;
+        }
+        if count == MAX_SEARCH_MATCHES {
+            var overflow = program.FindFrom(line, offset);
+            if overflow.matched {
+                fail(name + ": search exceeded the corpus match bound");
+                return false;
+            }
+        }
+    }
+
+    var actual = out.ToString();
+    if actual != expected {
+        fail(name + ": search mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    return true;
+}
+
+func runKeybindingCase(ini: Any,
+                       index: Integer,
+                       root: String,
+                       name: String) -> Boolean {
+    var input = readCorpusFile(root, caseValue(ini, index, "input"));
+    var expected = readCorpusFile(root, caseValue(ini, index, "expected"));
+    if input == "" or expected == "" {
+        fail(name + ": unreadable keybinding fixture");
+        return false;
+    }
+    var records = new keybinding_settings.KeybindingOverrideSet();
+    records.Load(Ini.Parse(input));
+    var out = new StringBuilder();
+    out.AppendLine("structured=" + boolText(records.loadedStructured));
+    out.AppendLine("migrated=" + boolText(records.migratedLegacy));
+    out.AppendLine("rejected=" + records.rejectedRecords);
+    out.AppendLine("count=" + records.Count());
+    var i = 0;
+    while i < records.Count() {
+        out.AppendLine("record=" + escapedField(records.IdAt(i)) + "|"
+                       + escapedField(records.ShortcutAt(i)));
+        i = i + 1;
+    }
+    var actual = out.ToString();
+    if actual != expected {
+        fail(name + ": keybinding mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    return true;
+}
+
+func runArgvCase(ini: Any,
+                 index: Integer,
+                 root: String,
+                 name: String) -> Boolean {
+    var input = readCorpusFile(root, caseValue(ini, index, "input"));
+    var expected = readCorpusFile(root, caseValue(ini, index, "expected"));
+    if input == "" or expected == "" {
+        fail(name + ": unreadable argv fixture");
+        return false;
+    }
+    var args = run_config.SplitArgs(stripOneFinalNewline(input));
+    var out = new StringBuilder();
+    if args == null {
+        out.AppendLine("valid=0");
+    } else {
+        out.AppendLine("valid=1");
+        out.AppendLine("count=" + Seq.get_Count(args));
+        var i = 0;
+        while i < Seq.get_Count(args) {
+            out.AppendLine("arg=" + escapedField(Obj.ToString(Seq.Get(args, i))));
+            i = i + 1;
+        }
+    }
+    var actual = out.ToString();
+    if actual != expected {
+        fail(name + ": argv mismatch [got=" + preview(actual)
+             + " want=" + preview(expected) + "]");
+        return false;
+    }
+    return true;
+}
+
+func runCase(ini: Any,
+             index: Integer,
+             root: String,
+             name: String) -> Boolean {
+    var kind = caseValue(ini, index, "kind");
+    if kind == "format" {
+        return runFormatCase(ini, index, root, name);
+    }
+    if kind == "organize-binds" {
+        return runOrganizeBindsCase(ini, index, root, name);
+    }
+    if kind == "identifier" {
+        return runIdentifierCase(ini, index, root, name);
+    }
+    if kind == "diagnostic" {
+        return runDiagnosticCase(ini, index, root, name);
+    }
+    if kind == "search" {
+        return runSearchCase(ini, index, root, name);
+    }
+    if kind == "keybindings" {
+        return runKeybindingCase(ini, index, root, name);
+    }
+    if kind == "argv" {
+        return runArgvCase(ini, index, root, name);
+    }
+    fail(name + ": unknown corpus kind " + kind);
+    return false;
+}
+
+func main() {
+    var root = argValue("--corpus-root");
+    if root == "" or Path.IsAbsolute(root) == false {
+        fail("--corpus-root must be an absolute path");
+        return;
+    }
+    var manifestText = readCorpusFile(root, "manifest.ini");
+    if manifestText == "" {
+        fail("manifest is missing, unreadable, or oversized");
+        return;
+    }
+    var manifest = Ini.Parse(manifestText);
+    var version = Parse.IntOr(Ini.Get(manifest, "corpus", "version"), -1);
+    var count = Parse.IntOr(Ini.Get(manifest, "corpus", "count"), -1);
+    if version != CORPUS_SCHEMA_VERSION {
+        fail("unsupported corpus version " + version);
+        return;
+    }
+    if count <= 0 or count > MAX_CORPUS_CASES {
+        fail("invalid corpus case count " + count);
+        return;
+    }
+
+    var seen = new List();
+    var i = 0;
+    while i < count {
+        var name = caseValue(manifest, i, "name");
+        if name == "" or uniqueName(seen, name) == false {
+            fail("missing or duplicate case name at index " + i);
+            return;
+        }
+        if runCase(manifest, i, root, name) == false { return; }
+        i = i + 1;
+    }
+    Terminal.Say("RESULT: ok " + count + " cases");
+}

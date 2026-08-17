@@ -698,69 +698,78 @@ void rt_codeeditor_set_auto_fold_detection(void *editor, int64_t enable) {
         ce->fold_region_count = 0;
         ce->fold_region_cap = 0;
 
-        // Indent-based fold detection: a fold starts when the next line's
-        // indentation increases, and ends when it returns to the start level.
-        for (int i = 0; i < ce->line_count - 1; i++) {
-            // Count leading spaces/tabs for this line and next
-            const char *cur = ce->lines[i].text;
-            const char *nxt = ce->lines[i + 1].text;
-            int cur_indent = 0, nxt_indent = 0;
-            while (cur[cur_indent] == ' ' || cur[cur_indent] == '\t')
-                cur_indent++;
-            while (nxt[nxt_indent] == ' ' || nxt[nxt_indent] == '\t')
-                nxt_indent++;
+        // One forward pass retains every open indentation block. The previous
+        // scanner jumped to the end of an outer region and consequently never
+        // discovered nested folds.
+        struct rt_auto_fold_frame {
+            int region_index;
+            size_t base_indent;
+        };
+        struct rt_auto_fold_frame *open_regions = NULL;
+        if ((size_t)ce->line_count <= SIZE_MAX / sizeof(*open_regions))
+            open_regions = malloc((size_t)ce->line_count * sizeof(*open_regions));
 
-            // Skip blank lines
-            if ((size_t)cur_indent >= ce->lines[i].length)
-                continue;
+        if (open_regions) {
+            int open_count = 0;
+            int previous_content_line = -1;
+            size_t previous_indent = 0;
+            bool accept_new_regions = true;
 
-            // Fold region starts when indentation increases
-            if (nxt_indent > cur_indent) {
-                int start_line = i;
-                int base_indent = cur_indent;
+            for (int line_index = 0; line_index < ce->line_count; line_index++) {
+                const vg_code_line_t *line = &ce->lines[line_index];
+                size_t indent = 0;
+                while (indent < line->length &&
+                       (line->text[indent] == ' ' || line->text[indent] == '\t'))
+                    indent++;
+                if (indent == line->length)
+                    continue;
 
-                // Find end: where indentation returns to base level or below
-                int end_line = i + 1;
-                for (int j = i + 2; j < ce->line_count; j++) {
-                    const char *line = ce->lines[j].text;
-                    int indent = 0;
-                    while (line[indent] == ' ' || line[indent] == '\t')
-                        indent++;
-                    if ((size_t)indent >= ce->lines[j].length) {
-                        end_line = j; // blank line extends the fold
-                        continue;
-                    }
-                    if (indent <= base_indent)
-                        break;
-                    end_line = j;
+                while (open_count > 0 && indent <= open_regions[open_count - 1].base_indent) {
+                    int region_index = open_regions[--open_count].region_index;
+                    ce->fold_regions[region_index].end_line = line_index - 1;
                 }
 
-                if (end_line > start_line) {
-                    // Add fold region via realloc
+                if (accept_new_regions && previous_content_line >= 0 && indent > previous_indent) {
                     if (ce->fold_region_count >= ce->fold_region_cap) {
                         int new_cap = 0;
                         if (!rt_gui_next_collection_capacity_i32(ce->fold_region_cap,
                                                                  ce->fold_region_count,
                                                                  16,
                                                                  sizeof(*ce->fold_regions),
-                                                                 &new_cap))
-                            break;
-                        void *p =
-                            realloc(ce->fold_regions, (size_t)new_cap * sizeof(*ce->fold_regions));
-                        if (!p)
-                            break;
-                        ce->fold_regions = p;
-                        ce->fold_region_cap = new_cap;
+                                                                 &new_cap)) {
+                            accept_new_regions = false;
+                        } else {
+                            void *p = realloc(ce->fold_regions,
+                                              (size_t)new_cap * sizeof(*ce->fold_regions));
+                            if (!p) {
+                                accept_new_regions = false;
+                            } else {
+                                ce->fold_regions = p;
+                                ce->fold_region_cap = new_cap;
+                            }
+                        }
                     }
-                    struct vg_fold_region *r = &ce->fold_regions[ce->fold_region_count++];
-                    r->start_line = start_line;
-                    r->end_line = end_line;
-                    r->folded = false;
-
-                    // Skip past this fold region
-                    i = end_line - 1;
+                    if (accept_new_regions) {
+                        int region_index = ce->fold_region_count++;
+                        struct vg_fold_region *region = &ce->fold_regions[region_index];
+                        region->start_line = previous_content_line;
+                        region->end_line = line_index;
+                        region->folded = false;
+                        open_regions[open_count].region_index = region_index;
+                        open_regions[open_count].base_indent = previous_indent;
+                        open_count++;
+                    }
                 }
+
+                previous_content_line = line_index;
+                previous_indent = indent;
             }
+
+            while (open_count > 0) {
+                int region_index = open_regions[--open_count].region_index;
+                ce->fold_regions[region_index].end_line = ce->line_count - 1;
+            }
+            free(open_regions);
         }
     }
     vg_codeeditor_refresh_layout_state(ce);
@@ -2211,6 +2220,23 @@ void rt_editorbuffer_clear_modified(void *handle) {
         vg_editor_buffer_clear_modified(d->buf);
 }
 
+/// @brief `EditorBuffer.ReplaceAllText` — undoable state-preserving replacement.
+/// @param handle Detached EditorBuffer handle.
+/// @param text New complete buffer text.
+/// @return 1 when applied or already equal; otherwise 0.
+int64_t rt_editorbuffer_replace_all_text(void *handle, rt_string text) {
+    RT_ASSERT_MAIN_THREAD();
+    rt_editorbuffer_data_t *d = rt_editorbuffer_checked(handle);
+    if (!d || !d->buf)
+        return 0;
+    char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return 0;
+    int64_t result = vg_editor_buffer_replace_all_text(d->buf, ctext) ? 1 : 0;
+    free(ctext);
+    return result;
+}
+
 /// @brief `CodeEditor.AttachBuffer` — swap the editor's document for @p bufHandle
 ///        and return the editor's previous document as a new EditorBuffer. The
 ///        passed buffer is consumed.
@@ -2969,6 +2995,16 @@ int64_t rt_editorbuffer_is_modified(void *handle) {
 /// @param handle Ignored EditorBuffer handle.
 void rt_editorbuffer_clear_modified(void *handle) {
     (void)handle;
+}
+
+/// @brief Reject detached-buffer replacement without graphics.
+/// @param handle Ignored EditorBuffer handle.
+/// @param text Ignored runtime string.
+/// @return Always zero.
+int64_t rt_editorbuffer_replace_all_text(void *handle, rt_string text) {
+    (void)handle;
+    (void)text;
+    return 0;
 }
 
 /// @brief Reject buffer attachment because CodeEditor is unavailable without graphics.

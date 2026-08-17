@@ -98,9 +98,9 @@ std::filesystem::path runtimeArchivePath(const std::filesystem::path &buildDir,
                                          std::string_view libBaseName);
 
 /// @brief Compute the filesystem path to a non-runtime support library archive.
-/// @details Used for companion graphics/audio libraries such as zannagfx,
-///          zannagui, and zannaaud. Prefers discovered installed layouts before
-///          build-tree fallback paths.
+/// @details Used for companion libraries such as zannagfx, zannagui,
+///          zanna_regex_engine, and zannaaud. Prefers discovered installed
+///          layouts before build-tree fallback paths.
 /// @param buildDir Optional CMake build root used for development-tree probes.
 /// @param libBaseName Library name without platform prefix or extension.
 /// @return Preferred installed, build-tree, or fallback archive path. The
@@ -172,6 +172,13 @@ struct LinkContext {
 /// @param c The runtime component to check for.
 /// @return True if @p c is in the required components list.
 bool hasComponent(const LinkContext &ctx, RtComponent c);
+
+/// @brief Return whether a native link needs the shared regex-engine archive.
+/// @details Base owns Unicode word classification, Text owns Pattern APIs, and
+///          Graphics can pull the native find/replace consumer from zannagui.
+/// @param ctx Link context whose component closure has been resolved.
+/// @return True when any selected component can reference an internal `re_*` symbol.
+bool requiresRegexEngineArchive(const LinkContext &ctx);
 
 /// @brief Prepare a complete link context by scanning assembly for runtime symbols.
 /// @details Reads the assembly file at @p asmPath, scans for runtime symbols,

@@ -97,8 +97,9 @@ class ToolPanelRowHelpersLayer extends PreviousLayer.ToolPanelProblemsLayer {
         if item != null {
             GUI.ListBox.ItemSetTextColor(item, color);
         }
-        if listBox == referencesListBox and referencesRows.Count() > 0 {
-            var row = referencesRows.rows.get(referencesRows.Count() - 1);
+        var model = ToolRowsForListBox(listBox);
+        if model != null and model.Count() > 0 {
+            var row = model.rows.get(model.Count() - 1);
             row.color = color;
         }
         return item;

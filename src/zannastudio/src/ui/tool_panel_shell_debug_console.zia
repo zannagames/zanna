@@ -40,8 +40,9 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
     expose override func SetAddedToolRowLocationData(listBox: GUI.ListBox,
                                             item: Any,
                                             locationData: String) {
-        if listBox == referencesListBox and referencesRows.Count() > 0 {
-            var row = referencesRows.rows.get(referencesRows.Count() - 1);
+        var model = ToolRowsForListBox(listBox);
+        if model != null and model.Count() > 0 {
+            var row = model.rows.get(model.Count() - 1);
             row.data = locationData;
             if row.item != null {
                 GUI.ListBox.ItemSetData(row.item, locationData);
@@ -51,6 +52,23 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
         if item != null {
             GUI.ListBox.ItemSetData(item, locationData);
         }
+    }
+
+    /// @brief Return selected durable metadata in retained or virtual mode.
+    expose override func GetSelectedToolRowData(listBox: GUI.ListBox) -> String {
+        if listBox == null { return ""; }
+        var model = ToolRowsForListBox(listBox);
+        if model != null and model.virtualized {
+            var selectedIndex = listBox.SelectedIndex;
+            if selectedIndex >= 0 and selectedIndex < model.Count() {
+                var row = model.rows.get(selectedIndex);
+                if row != null { return row.data; }
+            }
+            return "";
+        }
+        var item = listBox.Selected;
+        if item == null { return ""; }
+        return GUI.ListBox.ItemGetData(item);
     }
 
     /// @brief Return the row model associated with a concrete ListBox.
@@ -66,6 +84,67 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
         return null;
     }
 
+    /// @brief Return whether one high-cardinality panel supports virtual rows.
+    hide override func CanVirtualizeToolRows(listBox: GUI.ListBox) -> Boolean {
+        return listBox == diagListBox
+            or listBox == searchListBox
+            or listBox == debugListBox;
+    }
+
+    /// @brief Replace a panel's virtual projection from its durable row model.
+    /// @details Resetting to zero clears sparse row identity before shifted
+    ///          rows are republished, avoiding duplicate stable IDs after trim.
+    hide override func RebuildVirtualToolRows(
+        listBox: GUI.ListBox,
+        model: tool_panel_model.ToolPanelRows) -> Boolean {
+        if listBox == null or model == null or model.virtualList == null
+           or CanVirtualizeToolRows(listBox) == false {
+            return false;
+        }
+        var wasVirtual = model.virtualized;
+        model.virtualList.SetCount(0);
+        model.virtualList.SetCount(model.Count());
+        var i = 0;
+        while i < model.Count() {
+            var row = model.rows.get(i);
+            if row != null {
+                model.virtualList.SetRowId(i, row.id);
+                model.virtualList.SetRowText(i, row.text);
+                row.item = null;
+            }
+            i = i + 1;
+        }
+        if model.virtualList.Bind(listBox) {
+            model.virtualized = true;
+            return true;
+        }
+        model.virtualized = wasVirtual;
+        return wasVirtual;
+    }
+
+    /// @brief Publish one appended row, activating virtualization at threshold.
+    hide override func PublishVirtualToolRow(
+        listBox: GUI.ListBox,
+        model: tool_panel_model.ToolPanelRows,
+        row: tool_panel_model.ToolPanelRow) -> Boolean {
+        if listBox == null or model == null or row == null
+           or CanVirtualizeToolRows(listBox) == false {
+            return false;
+        }
+        if model.virtualized == false {
+            if model.Count() < tool_panel_model.VIRTUALIZE_AFTER_ROWS {
+                return false;
+            }
+            return RebuildVirtualToolRows(listBox, model);
+        }
+        var index = model.Count() - 1;
+        model.virtualList.SetCount(model.Count());
+        model.virtualList.SetRowId(index, row.id);
+        model.virtualList.SetRowText(index, row.text);
+        row.item = null;
+        return true;
+    }
+
     /// @brief Trim oldest realized rows before adding another row.
     /// @param listBox Concrete ListBox that owns visible row items.
     /// @param model Bounded row model aligned with the ListBox.
@@ -73,6 +152,7 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
                                      model: tool_panel_model.ToolPanelRows) {
         if listBox == null or model == null { return; }
         var removeCount = tool_panel_model.DEFAULT_TRIM_BATCH_ROWS;
+        var removed = false;
         if removeCount < 1 { removeCount = 1; }
         while model.maxRows > 0 and model.Count() >= model.maxRows
               and removeCount > 0 {
@@ -81,7 +161,11 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
                 listBox.RemoveItem(row.item);
             }
             model.RemoveFirst();
+            removed = true;
             removeCount = removeCount - 1;
+        }
+        if removed and model.virtualized {
+            RebuildVirtualToolRows(listBox, model);
         }
     }
 

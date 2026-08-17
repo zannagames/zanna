@@ -354,7 +354,8 @@ int runExecutable(const std::filesystem::path &exePath, std::ostream &out, std::
 ///          support libraries are appended when the corresponding runtime
 ///          components are present in the link context. The GUI support library
 ///          also pulls in zanna_text_core because CodeEditor uses the shared
-///          text-buffer C ABI.
+///          text-buffer C ABI. Base, Text, and GUI consumers share the
+///          separately packaged zanna_regex_engine archive.
 /// @param ctx Runtime-component and build-directory discovery result.
 /// @param windowsDebugRuntime Optional override for the MSVC runtime flavor.
 /// @param archives Destination list extended with existing required archives.
@@ -424,6 +425,9 @@ void collectNativeLinkArchives(const common::LinkContext &ctx,
         for (const auto &lib : common::basicFrontendClosureLibs())
             appendIfExists(common::supportLibraryPath(ctx.buildDir, lib));
     }
+
+    if (common::requiresRegexEngineArchive(ctx))
+        appendIfExists(common::supportLibraryPath(ctx.buildDir, "zanna_regex_engine"));
 
     if constexpr (zanna::platform::kHostWindows) {
         const bool useDebugRuntime =

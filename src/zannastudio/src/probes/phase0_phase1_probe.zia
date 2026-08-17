@@ -42,12 +42,14 @@ bind "../app/startup_arguments";
 bind "../core/document";
 bind "../core/document_manager";
 bind "../core/project";
+bind "../core/project_file_ops";
 bind "../editor/language_service";
 bind "../editor/project_index";
 bind "../editor/scheduler";
 bind "../editor/signature";
 bind "../services/file_utils";
 bind "../services/locations";
+bind "../services/path_identity";
 bind "../services/project_templates";
 bind "../services/safe_io";
 bind "../services/workspace_edits";
@@ -127,6 +129,42 @@ func TestDocumentBehavior(ctx: DocumentsSettingsProbeContext) {
     }
     if assertTrue(File.SameFile(filePath, equivalentFilePath),
                   "runtime file identity recognizes equivalent path spellings") == false {
+        return;
+    }
+    if assertTrue(Path.SameEntry(root, Path.Join(aliasDir, ".."))
+                  and path_identity.SameEntry(root, Path.Join(aliasDir, ".."))
+                  and File.SameFile(root, root) == false,
+                  "path entry identity supports directories without widening SameFile") == false {
+        return;
+    }
+    if assertTrue(project_file_ops.IsPlainChildName("report.final.zia"),
+                  "Explorer portable-name policy rejected ordinary name: "
+                  + project_file_ops.ChildNameError("report.final.zia")) == false {
+        return;
+    }
+    if assertTrue(project_file_ops.IsPlainChildName("résumé.zia"),
+                  "Explorer portable-name policy rejected Unicode name: "
+                  + project_file_ops.ChildNameError("résumé.zia")) == false {
+        return;
+    }
+    if assertTrue(!project_file_ops.IsPlainChildName("CON")
+                  and !project_file_ops.IsPlainChildName("aux.txt")
+                  and !project_file_ops.IsPlainChildName("COM1.log")
+                  and !project_file_ops.IsPlainChildName("LPT9")
+                  and project_file_ops.ChildNameError("NUL.txt") != "",
+                  "Explorer portable-name policy rejects Windows device names") == false {
+        return;
+    }
+    if assertTrue(!project_file_ops.IsPlainChildName("bad.")
+                  and !project_file_ops.IsPlainChildName("bad ")
+                  and !project_file_ops.IsPlainChildName(".")
+                  and !project_file_ops.IsPlainChildName("..")
+                  and !project_file_ops.IsPlainChildName("bad?name")
+                  and !project_file_ops.IsPlainChildName("bad/name")
+                  and !project_file_ops.IsPlainChildName("bad" + Str.Chr(0))
+                  and !project_file_ops.IsPlainChildName("bad" + Str.Chr(1))
+                  and !project_file_ops.IsPlainChildName(Str.Repeat("a", 256)),
+                  "Explorer portable-name policy rejects invalid suffixes and bytes") == false {
         return;
     }
     var caseEquivalentFilePath = Path.Join(root, "MAIN.ZIA");
@@ -353,6 +391,19 @@ func TestSettingsBehavior(ctx: DocumentsSettingsProbeContext) {
     file_commands.SetSaveFormatOptions(true, true);
     if assertTrue(file_commands.ApplySaveTextRules("one  \n\t\nthree\t") == "one\n\nthree\n",
                   "save formatting trims trailing whitespace and final newline") == false { return; }
+    if assertTrue(
+           file_commands.ApplySaveTextRules(
+               "one  \r\ntwo\t\nthree  \nfour\t")
+               == "one\r\ntwo\nthree\nfour\n",
+           "save formatting preserves mixed line endings and uses dominant LF") == false {
+        return;
+    }
+    if assertTrue(
+           file_commands.ApplySaveTextRules("one  \rtwo\t\rthree  ")
+               == "one\rtwo\rthree\r",
+           "save formatting preserves CR-only line endings") == false {
+        return;
+    }
 
     Dir.RemoveAll(root);
 }

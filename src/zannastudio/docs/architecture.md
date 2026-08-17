@@ -113,6 +113,21 @@ Rules:
 Avoid cycles. When two modules need the same rule, move that rule down into
 `services/` or `zia/`.
 
+## Architecture Guard
+
+Run `./scripts/check_architecture.sh` from `src/zannastudio` (or invoke the
+same script from the repository root) before submitting structural changes.
+The guard validates source headers, module declarations, quoted local bind
+targets, layer direction, and per-file line budgets.
+
+Existing oversized modules and upward dependency edges are recorded with exact
+bounds in `scripts/architecture_baseline.tsv`. The baseline is a ratchet: a new
+violation, a larger file, or a new upward edge fails. When a refactor removes or
+shrinks debt, regenerate the candidate with
+`./scripts/check_architecture.sh --print-baseline`, review the diff, and commit
+the lower baseline in the same change. Do not regenerate the baseline to admit
+unrelated growth.
+
 ## Main Loop Responsibilities
 
 `main.zia` currently coordinates:

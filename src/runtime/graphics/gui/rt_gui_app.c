@@ -393,6 +393,7 @@ static bool rt_gui_tick_widget_tree(vg_widget_t *widget, float dt) {
         if (!node->visible)
             continue;
         animation_active |= vg_widget_anim_advance(node, dt * 1000.0f);
+        animation_active |= vg_findreplacebar_tick_widget(node, dt);
         if (dt <= 0.0f)
             continue;
         switch (node->type) {

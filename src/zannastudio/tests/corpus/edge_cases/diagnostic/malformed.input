@@ -1,0 +1,5 @@
+ordinary build chatter
+/tmp/a.zia:x:2: error[E1]: nonnumeric line
+/tmp/a.zia:1:0: warning[W1]: zero column
+/tmp/a.zia:1:2: error[E2 missing delimiter
+{"diagnostics":[

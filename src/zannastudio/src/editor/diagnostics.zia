@@ -28,6 +28,7 @@ bind "../editor/scheduler";
 bind "../editor/basic_query_job";
 bind "../build/diagnostic";
 bind "../services/locations";
+bind "../services/path_identity";
 bind "../editor/quick_fixes";
 bind "../services/theme_colors";
 
@@ -39,7 +40,6 @@ bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind Zanna.GUI;
 bind Str = Zanna.String;
-bind Path = Zanna.IO.Path;
 
 // ============================================================================
 // MODULE: diagnostics
@@ -529,18 +529,7 @@ class LiveDiagnostics {
     hide func IsActiveDiagnosticPath(diagPath: String) -> Boolean {
         if diagPath == "" { return true; }
         if sourcePath == "" { return false; }
-        return NormalizeDiagnosticPath(diagPath) == NormalizeDiagnosticPath(sourcePath);
-    }
-
-    /// @brief Normalize a path for active-file diagnostic comparison.
-    /// @details The compiler and editor may hand back relative, absolute, or
-    ///          differently normalized spellings of the same file. Normalizing
-    ///          both sides avoids duplicate markers caused by path spelling.
-    /// @param path Path text to normalize.
-    /// @return Absolute normalized path, or an empty string for empty input.
-    hide func NormalizeDiagnosticPath(path: String) -> String {
-        if path == "" { return ""; }
-        return Path.Normalize(Path.Absolute(path));
+        return path_identity.SameFile(diagPath, sourcePath);
     }
 
     /// @brief Force an immediate recheck on the next `update` call.
@@ -554,6 +543,14 @@ class LiveDiagnostics {
         pendingPath = "";
         pendingGeneration = 0;
         CancelPendingJob();
+    }
+
+    /// @brief Cancel scheduled diagnostics and drain the owned BASIC query.
+    expose func Shutdown() -> Boolean {
+        invalidate();
+        manualCheckPending = false;
+        manualCancellationPending = false;
+        return basicJob.CancelAndWait();
     }
 
     expose func runNow(engine: editor_engine.EditorEngine,

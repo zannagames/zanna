@@ -335,6 +335,7 @@ ctest --test-dir build -R zia_smoke_zannastudio_project_compile --output-on-fail
 ctest --test-dir build -L zannastudio --output-on-failure
 ctest --test-dir build -R zia_zannastudio_terminal --output-on-failure
 ctest --test-dir build -R zia_zannastudio_debug --output-on-failure
+ctest --test-dir build -R zia_zannastudio_edge_case_corpus --output-on-failure
 ```
 
 Display-dependent probes are labelled `requires_display`. Run them only in an

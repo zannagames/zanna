@@ -41,6 +41,7 @@ Its public surface exposes operations including `Complete`, `CompleteForFile`, `
 | <a id="zanna-zia-completion-symbolsforfile"></a>`SymbolsForFile` | `str(str,str)` | `Zanna.Zia.Completion.SymbolsForFile` |
 | <a id="zanna-zia-completion-beginsymbolsforfile"></a>`BeginSymbolsForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `Zanna.Zia.Completion.BeginSymbolsForFile` |
 | <a id="zanna-zia-completion-begintokensforfile"></a>`BeginTokensForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `Zanna.Zia.Completion.BeginTokensForFile` |
+| <a id="zanna-zia-completion-beginanalysisforfile"></a>`BeginAnalysisForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `Zanna.Zia.Completion.BeginAnalysisForFile` |
 | <a id="zanna-zia-completion-clearcache"></a>`ClearCache` | `void()` | `Zanna.Zia.Completion.ClearCache` |
 
 <a id="zanna-zia-toolchain"></a>
@@ -186,6 +187,7 @@ to compilers, language services, and generated reference documentation.
 | `Zanna.Zia.Completion.SymbolsForFile` | `str(str,str)` | `rt_zia_symbols_for_file` |
 | `Zanna.Zia.Completion.BeginSymbolsForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `rt_zia_completion_begin_symbols_for_file` |
 | `Zanna.Zia.Completion.BeginTokensForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `rt_zia_completion_begin_tokens_for_file` |
+| `Zanna.Zia.Completion.BeginAnalysisForFile` | `obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)` | `rt_zia_completion_begin_analysis_for_file` |
 | `Zanna.Zia.SemanticJob.IsDone` | `i1(obj)` | `rt_zia_semantic_job_is_done` |
 | `Zanna.Zia.SemanticJob.IsError` | `i1(obj)` | `rt_zia_semantic_job_is_error` |
 | `Zanna.Zia.SemanticJob.Error` | `obj<Zanna.Option>(obj)` | `rt_zia_semantic_job_error_option` |

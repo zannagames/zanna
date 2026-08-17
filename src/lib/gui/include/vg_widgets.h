@@ -303,7 +303,7 @@ typedef struct vg_textinput {
     float font_size;   ///< Font size
 
     size_t max_length;  ///< Maximum grapheme length (0 = unlimited)
-    bool password_mode; ///< Show dots instead of characters
+    bool password_mode; ///< Mask text and disable clipboard/undo retention
     bool read_only;     ///< Prevent text modification
     bool multiline;     ///< Allow multiple lines
 
@@ -381,9 +381,11 @@ size_t vg_textinput_get_max_length(const vg_textinput_t *input);
 
 /// @brief Enable or disable password masking without changing committed text.
 ///
-/// @details Masking is a presentation property. Stored text, selection,
-///          clipboard policy, and undo history remain intact. One mask glyph
-///          is rendered per extended grapheme cluster.
+/// @details Secure password mode renders one mask glyph per extended grapheme
+///          cluster, blocks copy/cut, and disables and scrubs undo/redo
+///          snapshots. Disabling it seeds a fresh undo baseline from the
+///          current committed text. Programmatic text access remains available
+///          to the owning application.
 /// @param input Text input widget; NULL is ignored.
 /// @param password true to mask displayed text, false to display it normally.
 void vg_textinput_set_password(vg_textinput_t *input, bool password);

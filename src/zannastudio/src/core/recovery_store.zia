@@ -318,6 +318,30 @@ class RecoveryStore {
         }
     }
 
+    /// @brief Cancel and drain recovery publication before final persistence.
+    /// @details The session lock remains claimed. Callers may clear it only
+    ///          after this succeeds and the final clean session is durable.
+    /// @return True when no worker or pending recovery request remains.
+    expose func WaitForShutdown() -> Boolean {
+        CancelAsync();
+        if activeFuture == null { return pendingRequest == null; }
+        var finished = false;
+        try {
+            finished = Future.WaitFor(activeFuture,
+                                      RECOVERY_SHUTDOWN_WAIT_MS);
+        } catch {
+            return false;
+        }
+        if finished == false { return false; }
+        var failed = Future.get_IsError(activeFuture);
+        if failed {
+            lastAsyncError = Future.get_Error(activeFuture);
+        }
+        activeFuture = null;
+        activeRequest = null;
+        return failed == false and pendingRequest == null;
+    }
+
     /// @brief Write swap files for every modified, editable document.
     /// @param docMgr Open-document set.
     /// @param engine Editor engine (for the active document's live text).
@@ -622,23 +646,9 @@ class RecoveryStore {
     /// @brief Remove the session lock and clear swaps on a clean exit.
     expose func MarkCleanExit() -> Boolean {
         if recoveryDir == "" { return false; }
-        CancelAsync();
-        if activeFuture != null {
-            // Shutdown is the one place where waiting is intentional: the lock
-            // cannot truthfully be removed while a worker still owns staging
-            // files in the recovery directory. Keep this wait bounded so a
-            // failed filesystem cannot trap Studio indefinitely during exit.
-            try {
-                if Future.WaitFor(activeFuture, RECOVERY_SHUTDOWN_WAIT_MS) == false
-                   or Future.get_IsError(activeFuture) {
-                    return false;
-                }
-            } catch {
-                return false;
-            }
-            activeFuture = null;
-            activeRequest = null;
-        }
+        // The lock cannot truthfully be removed while a worker still owns
+        // staging files in the recovery directory.
+        if WaitForShutdown() == false { return false; }
         // The lock is the commit marker: keep it until every swap is gone so a
         // crash midway through cleanup remains recoverable on the next launch.
         if ClearAll() == false { return false; }

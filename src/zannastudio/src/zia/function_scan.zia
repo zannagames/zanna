@@ -1,3 +1,20 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/function_scan.zia
+// Purpose: Provide lightweight function-boundary queries over reusable line indexes.
+// Key invariants:
+//   - Indexed variants never split or copy the whole document.
+//   - Public source wrappers preserve 1-based line coordinates.
+// Ownership/Lifetime: Callers own source strings and line sequences.
+// Links: zia/source_scan.zia, editor/semantic_model.zia
+//
+//===----------------------------------------------------------------------===//
+
 module function_scan;
 
 bind Obj = Zanna.Core.Object;
@@ -24,7 +41,16 @@ bind Str = Zanna.String;
 expose func SourceLine(source: String,
                        lineNumber: Integer) -> String {
     if source == "" { return ""; }
-    var lines = Str.Split(source, "\n");
+    return SourceLineFromLines(Str.Split(source, "\n"), lineNumber);
+}
+
+/// @brief Return one line from an already-split document model.
+/// @param lines Reusable source-line sequence.
+/// @param lineNumber 1-based line number.
+/// @return The requested line or empty when out of range.
+expose func SourceLineFromLines(lines: Any,
+                                lineNumber: Integer) -> String {
+    if lines == null { return ""; }
     if lineNumber < 1 or lineNumber > Seq.get_Count(lines) { return ""; }
     return Obj.ToString(Seq.Get(lines, lineNumber - 1));
 }
@@ -36,7 +62,14 @@ expose func SourceLine(source: String,
 expose func EnclosingZiaFunctionStartLine(source: String,
                                           lineNumber: Integer) -> Integer {
     if source == "" { return 0; }
-    var lines = Str.Split(source, "\n");
+    return EnclosingZiaFunctionStartLineFromLines(
+        Str.Split(source, "\n"), lineNumber);
+}
+
+/// @brief Find the nearest function declaration using a reusable line model.
+expose func EnclosingZiaFunctionStartLineFromLines(lines: Any,
+                                                   lineNumber: Integer) -> Integer {
+    if lines == null { return 0; }
     var i = lineNumber;
     if i > Seq.get_Count(lines) {
         i = Seq.get_Count(lines);
@@ -56,7 +89,15 @@ expose func EnclosingZiaFunctionStartLine(source: String,
 /// @return Function name, or empty when no enclosing function is found.
 expose func EnclosingZiaFunctionName(source: String,
                                      lineNumber: Integer) -> String {
-    return ZiaFunctionNameFromLine(SourceLine(source, EnclosingZiaFunctionStartLine(source, lineNumber)));
+    if source == "" { return ""; }
+    return EnclosingZiaFunctionNameFromLines(Str.Split(source, "\n"), lineNumber);
+}
+
+/// @brief Find an enclosing function name using one reusable line model.
+expose func EnclosingZiaFunctionNameFromLines(lines: Any,
+                                              lineNumber: Integer) -> String {
+    var startLine = EnclosingZiaFunctionStartLineFromLines(lines, lineNumber);
+    return ZiaFunctionNameFromLine(SourceLineFromLines(lines, startLine));
 }
 
 /// @brief Extract a function name from a declaration line.
@@ -97,7 +138,13 @@ expose func ZiaFunctionNameFromLine(line: String) -> String {
 ///         no close can be found.
 expose func ZiaFunctionEndLine(source: String,
                                startLine: Integer) -> Integer {
-    var lines = Str.Split(source, "\n");
+    return ZiaFunctionEndLineFromLines(Str.Split(source, "\n"), startLine);
+}
+
+/// @brief Find a function body close using a reusable line model.
+expose func ZiaFunctionEndLineFromLines(lines: Any,
+                                        startLine: Integer) -> Integer {
+    if lines == null { return startLine; }
     var startIdx = startLine - 1;
     if startIdx < 0 or startIdx >= Seq.get_Count(lines) { return startLine; }
 

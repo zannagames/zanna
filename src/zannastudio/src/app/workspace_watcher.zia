@@ -28,6 +28,7 @@ bind "../core/project_manager";
 bind "../editor/editor_engine";
 bind "../editor/project_index";
 bind "../services/locations";
+bind "../services/path_identity";
 bind "../services/workspace_file_index";
 
 bind IO = Zanna.IO;
@@ -38,6 +39,7 @@ bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind FileIndex = Zanna.Workspace.FileIndex;
 bind Threads = Zanna.Threads;
+bind Hash = Zanna.Crypto.Hash;
 
 final WORKSPACE_WATCHER_MAX_DIRS = 2048;
 final WORKSPACE_WATCHER_DIR_PAGE_SIZE = 64;
@@ -411,18 +413,8 @@ expose func WorkspaceWatcherCanWatchDirectory(state: WorkspaceWatcherState,
     if state == null or dirPath == "" or Dir.Exists(dirPath) == false { return false; }
     var rootIndex = WorkspaceWatcherRootIndexForPath(state, dirPath);
     if rootIndex < 0 or rootIndex >= state.rootPaths.count() { return false; }
-    var root = Path.Normalize(Path.Absolute(state.rootPaths.get(rootIndex)));
-    var current = Path.Normalize(Path.Absolute(dirPath));
-    while current != root {
-        if Path.IsLink(current) { return false; }
-        var parent = Path.Normalize(Path.Absolute(Path.Directory(current)));
-        if parent == current
-           or workspace_file_index.IsWithinRoot(parent, root) == false {
-            return false;
-        }
-        current = parent;
-    }
-    return true;
+    return path_identity.HasLinkedComponent(
+        dirPath, state.rootPaths.get(rootIndex), true) == false;
 }
 
 func ListContainsString(items: List[String],
@@ -499,6 +491,14 @@ func WatcherEventRecord(watcher: IO.Watcher,
                         eventType: Integer) -> Any {
     var event = Map.New();
     Map.SetStr(event, "path", watcher.EventPath());
+    var oldPath = "";
+    var newPath = "";
+    if eventType == watcher.EventRenamed {
+        oldPath = watcher.EventOldPath();
+        newPath = watcher.EventNewPath();
+    }
+    Map.SetStr(event, "oldPath", oldPath);
+    Map.SetStr(event, "newPath", newPath);
     var typeName = "none";
     if eventType == watcher.EventCreated {
         typeName = "created";
@@ -515,11 +515,14 @@ func WatcherEventRecord(watcher: IO.Watcher,
     Map.SetInt(event, "type", eventType);
     Map.SetInt(event, "overflowCount",
                eventType == watcher.EventOverflow ? watcher.EventOverflowCount() : 0);
-    Map.SetBool(event, "requiresRescan", eventType == watcher.EventOverflow);
+    Map.SetBool(event, "requiresRescan",
+                eventType == watcher.EventOverflow
+                or (eventType == watcher.EventRenamed
+                    and (oldPath == "" or newPath == "")));
     return event;
 }
 
-func EventsRequireFallback(events: Any) -> Boolean {
+expose func EventsRequireFallback(events: Any) -> Boolean {
     if events == null { return false; }
     var i = 0;
     while i < Seq.get_Count(events) {
@@ -549,15 +552,20 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
         var ev = Seq.Get(events, i);
         i = i + 1;
         var path = Map.GetStr(ev, "path");
+        var oldPath = Map.GetStr(ev, "oldPath");
         var typeName = Map.GetStr(ev, "typeName");
         if Map.GetBool(ev, "requiresRescan") {
             restart = true;
             continue;
         }
-        if (typeName == "deleted" or typeName == "renamed")
-           and ListContainsString(state.watcherPaths, path) {
+        if typeName == "deleted" and ListContainsString(state.watcherPaths, path) {
             restart = true;
             continue;
+        }
+        if typeName == "renamed"
+           and ((oldPath != "" and ListContainsString(state.watcherPaths, oldPath))
+                or ListContainsString(state.watcherPaths, path)) {
+            restart = true;
         }
         if path != "" and Dir.Exists(path) {
             var rootIndex = WorkspaceWatcherRootIndexForPath(state, path);
@@ -587,12 +595,12 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
 func WorkspaceWatcherRootIndexForPath(state: WorkspaceWatcherState,
                                       path: String) -> Integer {
     if state == null or path == "" { return -1; }
-    var normalized = Path.Normalize(Path.Absolute(path));
+    var normalized = path_identity.Normalize(path);
     var best = -1;
     var bestLength = -1;
     var i = 0;
     while i < state.rootPaths.count() {
-        var root = Path.Normalize(Path.Absolute(state.rootPaths.get(i)));
+        var root = path_identity.Normalize(state.rootPaths.get(i));
         if workspace_file_index.IsWithinRoot(normalized, root)
            and Str.get_Length(root) > bestLength {
             best = i;
@@ -712,9 +720,12 @@ func AccumulateWorkspaceFallbackEntry(state: WorkspaceWatcherState,
     var idPart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "id"));
     var modifiedPart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "modified"));
     var sizePart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "size"));
+    var pathPart = NormalizeWorkspaceFingerprintPart(
+        Hash.NonCryptoFast(path_identity.Normalize(Map.GetStr(entry, "path"))));
     var term = idPart;
     term = (term + modifiedPart * 31) % WORKSPACE_FINGERPRINT_MODULUS;
     term = (term + sizePart * 131) % WORKSPACE_FINGERPRINT_MODULUS;
+    term = (term + pathPart * 521) % WORKSPACE_FINGERPRINT_MODULUS;
     if Map.GetBool(entry, "isDirectory") {
         term = (term + 104729) % WORKSPACE_FINGERPRINT_MODULUS;
     }
@@ -780,7 +791,10 @@ func CompleteWorkspaceFallbackScan(shell: app_shell.AppShell,
     state.rescanThrottle.TryAcquire();
 
     if changed {
-        if projMgr != null { projMgr.RefreshTree(); }
+        if projMgr != null {
+            projMgr.InvalidateAllSourceFreshness();
+            projMgr.RefreshTree();
+        }
         ReindexAfterTreeMove(projMgr, indexer, docMgr);
         InvalidateWorkspaceLocations(shell, locStore, engine);
         if shell != null {
@@ -802,7 +816,7 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
                                   events: Any) {
     var refreshTree = false;
     var fullReindex = false;
-    var touchedIndex = false;
+    var invalidatedActiveDocument = false;
     var changed = 0;
     var i = 0;
     while i < Seq.get_Count(events) {
@@ -810,11 +824,35 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
         i = i + 1;
         changed = changed + 1;
         var eventPath = Map.GetStr(ev, "path");
+        var oldPath = Map.GetStr(ev, "oldPath");
+        var newPath = Map.GetStr(ev, "newPath");
         var typeName = Map.GetStr(ev, "typeName");
         if Map.GetBool(ev, "requiresRescan") {
+            if projMgr != null { projMgr.InvalidateAllSourceFreshness(); }
             refreshTree = true;
             fullReindex = true;
             continue;
+        }
+        if projMgr != null {
+            if eventPath != "" { projMgr.InvalidateSourceFreshnessPath(eventPath); }
+            if oldPath != "" { projMgr.InvalidateSourceFreshnessPath(oldPath); }
+            if newPath != "" { projMgr.InvalidateSourceFreshnessPath(newPath); }
+        }
+        if locStore != null {
+            if eventPath != "" { locStore.InvalidatePath(eventPath); }
+            if oldPath != "" { locStore.InvalidatePath(oldPath); }
+            if newPath != "" { locStore.InvalidatePath(newPath); }
+        }
+        if docMgr != null {
+            var activeDoc = docMgr.GetActive();
+            if activeDoc != null {
+                var activePath = activeDoc!.filePath;
+                if (eventPath != "" and path_identity.SameFile(activePath, eventPath))
+                   or (oldPath != "" and path_identity.SameFile(activePath, oldPath))
+                   or (newPath != "" and path_identity.SameFile(activePath, newPath)) {
+                    invalidatedActiveDocument = true;
+                }
+            }
         }
         if eventPath != "" and Dir.Exists(eventPath) {
             refreshTree = true;
@@ -824,15 +862,23 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
         if typeName == "created" or typeName == "deleted" or typeName == "renamed" {
             refreshTree = true;
         }
-        if eventPath != "" and Str.ToLower(Path.Extension(eventPath)) == ".zia" {
-            if indexer != null {
-                if typeName == "deleted" or typeName == "renamed" {
-                    indexer.RemoveFile(eventPath);
-                } else {
-                    indexer.UpdateFile(eventPath);
-                }
+        if indexer != null and typeName == "renamed" {
+            var removedPath = oldPath;
+            if removedPath == "" { removedPath = eventPath; }
+            if removedPath != ""
+               and Str.ToLower(Path.Extension(removedPath)) == ".zia" {
+                indexer.RemoveFile(removedPath);
             }
-            touchedIndex = true;
+            if newPath != "" and IO.File.Exists(newPath)
+               and Str.ToLower(Path.Extension(newPath)) == ".zia" {
+                indexer.UpdateFile(newPath);
+            }
+        } else if eventPath != ""
+                  and Str.ToLower(Path.Extension(eventPath)) == ".zia" {
+            if indexer != null {
+                if typeName == "deleted" { indexer.RemoveFile(eventPath); }
+                else { indexer.UpdateFile(eventPath); }
+            }
         }
     }
 
@@ -841,9 +887,13 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
     }
     if refreshTree and projMgr != null {
         projMgr.RefreshTree();
-        InvalidateWorkspaceLocations(shell, locStore, engine);
-    } else if touchedIndex and locStore != null {
-        locStore.Clear();
+        if fullReindex {
+            InvalidateWorkspaceLocations(shell, locStore, engine);
+        }
+    }
+    if invalidatedActiveDocument and engine != null and engine.editor != null {
+        engine.editor.ClearHighlights();
+        if shell != null { shell.workbench.minimap.ClearMarkers(); }
     }
     if changed > 0 {
         if shell != null {

@@ -72,6 +72,7 @@ class SearchControllerBase {
     expose Boolean caseSensitive;
     expose Boolean wholeWord;
     expose Boolean regexMode;
+    expose search_matcher.SearchProgram searchProgram;
     expose Integer fileIndex;
     expose Integer resultCount;
     expose Integer totalFiles;
@@ -116,6 +117,7 @@ class SearchControllerBase {
         caseSensitive = false;
         wholeWord = false;
         regexMode = false;
+        searchProgram = new search_matcher.SearchProgram();
         fileIndex = 0;
         resultCount = 0;
         totalFiles = 0;
@@ -548,7 +550,28 @@ class SearchControllerBase {
         if search_request.IsRunnable(request) == false { return false; }
         if paths.count() == 0 { return false; }
 
+        var compiledSearch = search_matcher.CompileSearch(
+            request.query, request.caseSensitive, request.wholeWord, request.regexMode);
+        if compiledSearch.valid == false {
+            active = false;
+            canceled = false;
+            discovering = false;
+            discoveryError = compiledSearch.error;
+            searchProgram = compiledSearch;
+            if shell != null {
+                shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
+                shell.toolPanels.AddToolStateRow(shell.toolPanels.searchListBox,
+                                                 "ERR", "search",
+                                                 "Invalid search pattern: " + compiledSearch.error,
+                                                 14707829);
+                shell.toolPanels.ShowSearchPanel();
+                shell.SetStatusLeft("Invalid search pattern: " + compiledSearch.error);
+            }
+            return false;
+        }
+
         ApplyRequest(request);
+        searchProgram = compiledSearch;
         rootPaths = paths;
         rootIgnorePatterns = ignores;
         rootSearchIndex = 0;

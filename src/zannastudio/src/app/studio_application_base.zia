@@ -39,6 +39,7 @@ bind "file_watch_controller";
 bind "focus_throttle";
 bind "explorer_action_runner";
 bind "language_tool_frame";
+bind "lifecycle_controller";
 bind "startup_arguments";
 bind "../scm/scm_view";
 bind "../scm/scm_gutter_controller";
@@ -52,6 +53,7 @@ bind "../core/recovery_store";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../editor/breadcrumb_index";
+bind "../editor/semantic_model";
 bind "../services/file_utils";
 bind "../services/locations";
 bind "../services/project_locator";
@@ -65,6 +67,7 @@ bind "../commands/diagnostic_edit_commands";
 bind "../commands/zia_workspace_commands";
 bind "../commands/main_command_dispatcher";
 bind "../commands/file_commands";
+bind "../commands/autosave_job";
 bind "../commands/view_commands";
 bind "../commands/search_commands";
 bind "../ui/diff_view";
@@ -457,6 +460,7 @@ class StudioApplicationBase {
     hide scene_context_menus_3d.SceneContextMenus3D scene3DContextMenus;
     hide completion.CompletionController completer;
     hide diagnostics.LiveDiagnostics liveDiag;
+    hide semantic_model.SemanticModel sharedSemanticModel;
     hide semantic_tokens.SemanticHighlighter semHighlighter;
     hide hover.HoverController hoverCtrl;
     hide signature.SignatureController sigCtrl;
@@ -478,11 +482,17 @@ class StudioApplicationBase {
     hide Integer prevStatusRevision;
     hide Integer prevStatusLineCount;
     hide Integer prevStatusCursorCount;
+    hide document.Document visualStatusDocument;
+    hide Integer visualStatusRevision;
+    hide Integer visualStatusSelectionCount;
+    hide Integer visualStatusZoom;
+    hide Integer visualStatusMode;
     hide Boolean didPostFirstFrameActivate;
     hide Integer startupRepaintFrames;
     hide Integer autoSaveRevision;
     hide Integer autoSaveActiveIndex;
     hide Threads.Debouncer autoSaveDebounce;
+    hide autosave_job.AutoSaveJob autoSaveJob;
     hide Integer recoveryRevision;
     hide Integer recoveryActiveIndex;
     hide Threads.Debouncer recoveryDebounce;
@@ -503,6 +513,7 @@ class StudioApplicationBase {
     hide Integer curCursorLine;
     hide Integer curCursorCol;
     hide Integer currentRevisionForSave;
+    hide lifecycle_controller.ShutdownState shutdownState;
 
 
     hide func InitializeComponents() {
@@ -541,6 +552,7 @@ class StudioApplicationBase {
             new diagnostic_edit_commands.DiagnosticActionController();
         ziaWorkspaceCommands =
             new zia_workspace_commands.ZiaWorkspaceCommandController();
+        shutdownState = new lifecycle_controller.ShutdownState();
         indexer.SetScheduler(editorScheduler);
     }
 
@@ -618,7 +630,9 @@ class StudioApplicationBase {
         // Real-time diagnostics (errors-as-you-type)
         liveDiag = new diagnostics.LiveDiagnostics();
         liveDiag.SetScheduler(editorScheduler);
+        sharedSemanticModel = new semantic_model.SemanticModel();
         semHighlighter = new semantic_tokens.SemanticHighlighter();
+        semHighlighter.SetSemanticModel(sharedSemanticModel);
 
         // Hover tooltips (type info on mouse dwell)
         hoverCtrl = new hover.HoverController();
@@ -635,6 +649,7 @@ class StudioApplicationBase {
         symbolOutline = new symbols.SymbolOutline();
         symbolOutline.setup(shell.workbench.editorArea);
         symbolOutline.SetScheduler(editorScheduler);
+        symbolOutline.SetSemanticModel(sharedSemanticModel);
 
         languageFrame = new language_tool_frame.LanguageToolFrameController();
         languageFrame.Setup(completer, liveDiag, semHighlighter, hoverCtrl,
@@ -672,8 +687,12 @@ class StudioApplicationBase {
         // ========================================================================
         appSettings = new settings.SettingsManager();
         appSettings.Load();
-        if appSettings.keybindingOverrides != "" {
-            commandRegistry.ApplyOverrides(appSettings.keybindingOverrides);
+        if appSettings.persistenceAvailable == false {
+            shell.SetStatusLeft(appSettings.persistenceWarning);
+            GUI.Toast.Warning(appSettings.persistenceWarning);
+        }
+        if appSettings.keybindings.Count() > 0 {
+            commandRegistry.ApplyOverrideSet(appSettings.keybindings);
             commandRegistry.InstallShortcuts();
             shell.ApplyCommandShortcuts(commandRegistry);
         }
@@ -938,6 +957,11 @@ class StudioApplicationBase {
         prevStatusRevision = engine.GetRevision();
         prevStatusLineCount = engine.GetLineCount();
         prevStatusCursorCount = engine.editor.GetCursorCount();
+        visualStatusDocument = null;
+        visualStatusRevision = -1;
+        visualStatusSelectionCount = -1;
+        visualStatusZoom = -1;
+        visualStatusMode = -1;
         didPostFirstFrameActivate = false;
         // Session restore and first-frame responsive layout keep moving panes and
         // docks after their earliest paints, and retained damage cannot see
@@ -949,6 +973,7 @@ class StudioApplicationBase {
             docMgr, engine, scene2DEditor, scene3DEditor);
         autoSaveActiveIndex = docMgr.activeIndex;
         autoSaveDebounce = Threads.Debouncer.New(AUTO_SAVE_IDLE_MS);
+        autoSaveJob = new autosave_job.AutoSaveJob();
         recoveryRevision = autoSaveRevision;
         recoveryActiveIndex = docMgr.activeIndex;
         recoveryDebounce = Threads.Debouncer.New(2000);
@@ -960,5 +985,89 @@ class StudioApplicationBase {
         panelSplitSaveDebounce = Threads.Debouncer.New(PANEL_SPLIT_SAVE_IDLE_MS);
         panelSplitSavePending = false;
     }
-}
 
+    /// @brief Own the one terminal transition from live frames to destroyed UI.
+    /// @details Producers are stopped before their workers are drained. Final
+    ///          state is persisted only after those bounded drains, and a failed
+    ///          drain keeps crash-recovery data marked unclean. Repeated window,
+    ///          menu, or loop-exit signals observe the same completed teardown.
+    /// @return True when every bounded background drain completed successfully.
+    hide func ShutdownApplication() -> Boolean {
+        if shutdownState == null {
+            shutdownState = new lifecycle_controller.ShutdownState();
+        }
+        if shutdownState.Begin() == false {
+            return shutdownState.completed
+                   and shutdownState.workerDrainsSucceeded;
+        }
+
+        // Stop every source of new work while the shell and borrowed models are
+        // still alive. User-facing cancellation can safely update status here.
+        if editorScheduler != null { editorScheduler.CancelAll(); }
+        if searcher != null { searcher.Cancel(shell); }
+        if scmView != null { scmView.Shutdown(); }
+        if scmGutter != null { scmGutter.Cancel(); }
+        if recoveryStore != null { recoveryStore.CancelAsync(); }
+        if sharedSemanticModel != null { sharedSemanticModel.Shutdown(); }
+        if semHighlighter != null { semHighlighter.Shutdown(); }
+
+        // Every RunOwned owner must synchronously relinquish publication before
+        // runtime and GUI handles disappear. Results are sticky: one timeout is
+        // enough to preserve the recovery marker for the next launch.
+        if autoSaveJob != null {
+            shutdownState.RecordWorkerDrain(autoSaveJob.WaitForShutdown());
+        }
+        if recoveryStore != null {
+            shutdownState.RecordWorkerDrain(recoveryStore.WaitForShutdown());
+        }
+        if diffOverlay != null {
+            shutdownState.RecordWorkerDrain(diffOverlay.Shutdown());
+        }
+        if basicWorkspaceCommands != null {
+            shutdownState.RecordWorkerDrain(
+                basicWorkspaceCommands.Shutdown());
+        }
+        if diagnosticActions != null {
+            shutdownState.RecordWorkerDrain(diagnosticActions.Shutdown());
+        }
+        if ziaWorkspaceCommands != null {
+            shutdownState.RecordWorkerDrain(ziaWorkspaceCommands.Shutdown());
+        }
+        if completer != null {
+            shutdownState.RecordWorkerDrain(completer.Shutdown());
+        }
+        if liveDiag != null {
+            shutdownState.RecordWorkerDrain(liveDiag.Shutdown());
+        }
+        if hoverCtrl != null {
+            shutdownState.RecordWorkerDrain(hoverCtrl.Shutdown());
+        }
+        if sigCtrl != null {
+            shutdownState.RecordWorkerDrain(sigCtrl.Shutdown());
+        }
+        if symbolOutline != null {
+            shutdownState.RecordWorkerDrain(symbolOutline.Shutdown());
+        }
+
+        // Process, PTY, watcher, and index handles are synchronously terminal.
+        if buildSys != null and buildSys.IsActive() { buildSys.Stop(); }
+        if dbgSession != null {
+            shutdownState.RecordWorkerDrain(dbgSession.Shutdown());
+        }
+        if terminalCtrl != null { terminalCtrl.Stop(); }
+        if fileWatchCtrl != null { fileWatchCtrl.Destroy(); }
+        workspace_watcher.StopWorkspaceWatcher(workspaceWatcherState);
+        if indexer != null { indexer.Destroy(); }
+
+        FlushWorkspaceLayout(
+            shell, engine, projMgr, activityBarCtrl, appSettings,
+            panelSplitSavePending);
+        lifecycle_controller.CleanupIdeWithWorkerStatus(
+            shell, docMgr, projMgr, engine, buildSys, dbgSession,
+            terminalCtrl, fileWatchCtrl, workspaceWatcherState, indexer,
+            breakpointStore, sessionMgr, recoveryStore,
+            shutdownState.workerDrainsSucceeded);
+        shutdownState.Finish();
+        return shutdownState.workerDrainsSucceeded;
+    }
+}

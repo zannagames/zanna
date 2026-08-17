@@ -165,11 +165,14 @@ RT_FUNC(FileMoveOver,     rt_file_move_over,         "Zanna.IO.File.MoveOver",  
 RT_FUNC(FileReadAllBytes, rt_io_file_read_all_bytes, "Zanna.IO.File.ReadAllBytes", "obj<Zanna.Collections.Bytes>(str)")
 RT_FUNC(FileReadAllLines, rt_io_file_read_all_lines, "Zanna.IO.File.ReadAllLines", "seq<str>(str)")
 RT_FUNC(FileReadAllText,  rt_io_file_read_all_text,  "Zanna.IO.File.ReadAllText",  "str(str)")
+RT_FUNC(FileReadAllTextBounded, rt_io_file_read_all_text_bounded, "Zanna.IO.File.ReadAllTextBounded", "str(str,i64)")
 RT_FUNC(FileSize,         rt_file_size,              "Zanna.IO.File.SizeBytes",         "i64(str)")
 RT_FUNC(FileTouch,        rt_file_touch,             "Zanna.IO.File.Touch",        "void(str)")
 RT_FUNC(FileWriteAllBytes, rt_io_file_write_all_bytes, "Zanna.IO.File.WriteAllBytes", "void(str,obj<Zanna.Collections.Bytes>)")
 RT_FUNC(FileWriteAllLines, rt_io_file_write_all_lines, "Zanna.IO.File.WriteAllLines", "void(str,seq<str>)")
 RT_FUNC(FileWriteAllText, rt_io_file_write_all_text, "Zanna.IO.File.WriteAllText", "void(str,str)")
+RT_FUNC(FileWriteAllTextNew, rt_io_file_write_all_text_new, "Zanna.IO.File.WriteAllTextNew", "void(str,str)")
+RT_FUNC(FileCompareExchangeAllText, rt_io_file_compare_exchange_all_text, "Zanna.IO.File.CompareExchangeAllText", "i1(str,str,str)")
 
 //=============================================================================
 // IO - PATH
@@ -180,6 +183,7 @@ RT_FUNC(PathDir,     rt_path_dir,      "Zanna.IO.Path.Directory",     "str(str)"
 RT_FUNC(PathExt,     rt_path_ext,      "Zanna.IO.Path.Extension",     "str(str)")
 RT_FUNC(PathIsAbs,   rt_path_is_abs,   "Zanna.IO.Path.IsAbsolute",   "i1(str)")
 RT_FUNC(PathIsLink,  rt_path_is_link,  "Zanna.IO.Path.IsLink",       "i1(str)")
+RT_FUNC(PathSameEntry, rt_path_same_entry, "Zanna.IO.Path.SameEntry", "i1(str,str)")
 RT_FUNC(PathJoin,    rt_path_join,     "Zanna.IO.Path.Join",    "str(str,str)")
 RT_FUNC(PathName,    rt_path_name,     "Zanna.IO.Path.Name",    "str(str)")
 RT_FUNC(PathNorm,    rt_path_norm,     "Zanna.IO.Path.Normalize",    "str(str)")
@@ -459,6 +463,8 @@ RT_FUNC(WatcherStop,       rt_watcher_stop,          "Zanna.IO.Watcher.Stop",   
 RT_FUNC(WatcherPoll,       rt_watcher_poll,          "Zanna.IO.Watcher.Poll",           "i64(obj)")
 RT_FUNC(WatcherPollFor,    rt_watcher_poll_for,      "Zanna.IO.Watcher.PollFor",        "i64(obj,i64)")
 RT_FUNC(WatcherEventPath,  rt_watcher_event_path,    "Zanna.IO.Watcher.EventPath",      "str(obj)")
+RT_FUNC(WatcherEventOldPath, rt_watcher_event_old_path, "Zanna.IO.Watcher.EventOldPath", "str(obj)")
+RT_FUNC(WatcherEventNewPath, rt_watcher_event_new_path, "Zanna.IO.Watcher.EventNewPath", "str(obj)")
 RT_FUNC(WatcherEventType,  rt_watcher_event_type,    "Zanna.IO.Watcher.EventType",      "i64(obj)")
 RT_FUNC(WatcherEventOverflowCount, rt_watcher_event_overflow_count, "Zanna.IO.Watcher.EventOverflowCount", "i64(obj)")
 RT_FUNC(WatcherEventNone,     rt_watcher_event_none,     "Zanna.IO.Watcher.get_EventNone",     "i64(obj)")

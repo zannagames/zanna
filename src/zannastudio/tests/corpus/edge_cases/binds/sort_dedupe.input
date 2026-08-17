@@ -1,0 +1,7 @@
+module demo;
+bind Z = Zanna.Z;
+bind "zeta";
+bind A = Zanna.A;
+bind "zeta";
+
+func main() {}

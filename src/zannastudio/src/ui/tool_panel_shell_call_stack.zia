@@ -29,6 +29,7 @@ bind Input = Zanna.Input;
 bind Obj = Zanna.Core.Object;
 bind Convert = Zanna.Core.Convert;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 bind "tool_panel_shell_model" as ToolPanelModel;
 bind "tool_panel_shell_debug_console" as PreviousLayer;
 
@@ -168,18 +169,21 @@ class ToolPanelCallStackLayer extends PreviousLayer.ToolPanelDebugConsoleLayer {
         if callStackRows == null or callStackRows.Count() == 0 {
             return false;
         }
-        var text = "";
+        var text = new StringBuilder();
+        var written = 0;
         var i = 0;
         while i < callStackRows.rows.count() {
             var row = callStackRows.rows.get(i);
             if row != null {
-                if text != "" { text = text + "\n"; }
-                text = text + row.text;
+                if written > 0 { text.Append("\n"); }
+                text.Append(row.text);
+                written = written + 1;
             }
             i = i + 1;
         }
-        if text == "" { return false; }
-        GUI.ClipboardText.SetText(text);
+        var result = text.ToString();
+        if result == "" { return false; }
+        GUI.ClipboardText.SetText(result);
         return true;
     }
 

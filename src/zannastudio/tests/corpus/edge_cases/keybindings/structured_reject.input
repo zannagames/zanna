@@ -1,0 +1,12 @@
+[keybindings]
+version=1
+count=5
+id.0=save
+shortcut.0=
+id.1=Bad
+shortcut.1=Ctrl+B
+id.2=build
+shortcut.2=F9
+id.3=build
+shortcut.3=F10
+shortcut.4=F1

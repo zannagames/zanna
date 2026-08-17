@@ -19,6 +19,8 @@
 
 module project_locator;
 
+bind "path_identity";
+
 bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
@@ -32,14 +34,13 @@ final MAX_PROJECT_ANCESTORS: Integer = 64;
 expose func NearestManifestRoot(documentPath: String) -> String {
     if Str.Trim(documentPath) == "" { return ""; }
     try {
-        var current = Path.Normalize(
-            Path.Absolute(Path.Directory(documentPath)));
+        var current = path_identity.Normalize(Path.Directory(documentPath));
         var visited = 0;
         while current != "" and visited < MAX_PROJECT_ANCESTORS {
             if File.Exists(Path.Join(current, "zanna.project")) {
                 return current;
             }
-            var parent = Path.Normalize(Path.Absolute(Path.Directory(current)));
+            var parent = path_identity.Normalize(Path.Directory(current));
             if parent == current or parent == "" { return ""; }
             current = parent;
             visited = visited + 1;

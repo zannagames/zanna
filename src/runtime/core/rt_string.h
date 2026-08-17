@@ -490,6 +490,12 @@ int8_t rt_text_char_is_identifier_part(rt_string s);
 /// @param s Borrowed string; null/empty returns false.
 /// @return One when the first byte is an ASCII letter or digit.
 int8_t rt_text_char_is_alnum(rt_string s);
+/// @brief Classify the first UTF-8 scalar using deterministic Unicode word rules.
+/// @details Letters, marks, numbers, connector punctuation, and join controls
+///          from Unicode 16.0 continue words. Malformed/empty input is false.
+/// @param s Borrowed string; only its first scalar is inspected.
+/// @return One for a Unicode word scalar, otherwise zero.
+int8_t rt_text_char_is_word(rt_string s);
 
 /// @brief Join sequence of strings with separator.
 /// @details Borrows rather than consumes the sequence and its elements. Null

@@ -12,8 +12,8 @@ module scm_history_probe;
 //          scm_probe, real Git processes are used because log formatting and
 //          revision addressing are external contracts.
 //
-// TEACHING-NOTE: Log records are split on ASCII RS/US separators, so subjects
-//          with tabs and quotes parse without ambiguity — one commit here
+// TEACHING-NOTE: Log records use NUL-delimited fields, so subjects with tabs,
+//          controls, and quotes parse without ambiguity — one commit here
 //          deliberately contains both.
 // ============================================================================
 
@@ -109,7 +109,7 @@ func main() {
         return;
     }
     if commits1.get(0).author != "Probe" { fail("author '" + commits1.get(0).author + "'"); return; }
-    // The awkward subject (tab + quotes) survives RS/US parsing byte-for-byte.
+    // The awkward subject (tab + quotes) survives NUL parsing byte-for-byte.
     if commits1.get(1).subject != "second\tcommit \"quoted\"" {
         fail("awkward subject was '" + commits1.get(1).subject + "'");
         return;
@@ -133,8 +133,9 @@ func main() {
     if pumpJob(filesJob, 8000) == false or filesJob.exitCode != 0 { fail("commit files"); return; }
     var files = scm_git.ParseCommitFiles(filesJob.stdoutText);
     if files.count() != 1 { fail("modify commit touched " + files.count() + " files"); return; }
-    if Str.StartsWith(files.get(0), "M") == false or Str.Contains(files.get(0), "alpha.zia") == false {
-        fail("file row was '" + files.get(0) + "'");
+    if Str.StartsWith(files.get(0).status, "M") == false
+       or files.get(0).path != "alpha.zia" {
+        fail("file row was '" + files.get(0).status + " " + files.get(0).path + "'");
         return;
     }
 

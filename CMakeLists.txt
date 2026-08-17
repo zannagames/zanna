@@ -1213,6 +1213,7 @@ list(APPEND ZANNA_PUBLIC_LIB_TARGETS
   il_transform
   il_utils
   il_vm
+  zanna_regex_engine
   zanna_text_core
   fe_common
   fe_basic
@@ -1279,6 +1280,9 @@ if (TARGET zanna_il_full)
 endif ()
 if (TARGET zanna_text_core)
   set_target_properties(zanna_text_core PROPERTIES EXPORT_NAME text_core)
+endif ()
+if (TARGET zanna_regex_engine)
+  set_target_properties(zanna_regex_engine PROPERTIES EXPORT_NAME regex_engine)
 endif ()
 
 install(TARGETS ${ZANNA_PUBLIC_LIB_TARGETS}

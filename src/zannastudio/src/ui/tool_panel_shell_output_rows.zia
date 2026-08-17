@@ -239,6 +239,9 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
         if model != null {
             EnsureToolRowsCapacity(listBox, model);
             var row = model.Add(text, color);
+            if PublishVirtualToolRow(listBox, model, row) {
+                return null;
+            }
             var item = listBox.AddItem(text);
             row.item = item;
             if color != 0 {

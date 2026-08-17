@@ -414,6 +414,7 @@ static void game3d_asset_async_job_free(rt_game3d_asset_async_job *job) {
         return;
     rt_gltf_preload_bundle_free(job->preloaded_gltf);
     free(job->preloaded_fbx_data);
+    free(job->preloaded_vscn_data);
     if (job->handle && rt_obj_release_check0(job->handle))
         rt_obj_free(job->handle);
     free(job);
@@ -474,6 +475,8 @@ static uint64_t game3d_asset_async_job_commit_cost(rt_game3d_asset_async_job *jo
     if (!job || job->error[0])
         return 0u;
     if (job->preloaded_fbx_data)
+        return 1u;
+    if (job->preloaded_vscn_data)
         return 1u;
     if (!job->preloaded_gltf)
         return 1u;
@@ -596,6 +599,13 @@ static void *game3d_asset_async_commit_load_model(rt_game3d_asset_async_job *job
                 rt_model3d_load_preloaded_fbx(handle->path, data, size, handle->asset_path);
             job->preloaded_fbx_data = NULL;
             job->preloaded_fbx_size = 0u;
+        } else if (job->preloaded_vscn_data) {
+            uint8_t *data = job->preloaded_vscn_data;
+            size_t size = job->preloaded_vscn_size;
+            loaded_model = rt_model3d_load_preloaded_vscn(
+                handle->path, (char *)data, size, handle->asset_path);
+            job->preloaded_vscn_data = NULL;
+            job->preloaded_vscn_size = 0u;
         } else {
             loaded_model = handle->asset_path ? rt_model3d_load_asset(handle->path)
                                               : rt_model3d_load(handle->path);
@@ -808,6 +818,22 @@ static void game3d_asset_async_worker(void *user_data) {
             job->preloaded_fbx_size = root_len;
             root_data = NULL;
             game3d_asset_handle_store_progress(handle, 0.10);
+        }
+    } else if (!job->asset_path && game3d_path_has_vscn_extension(path)) {
+        /* Plan 59: read VSCN/scene3d root bytes off-thread (a stadium bake
+         * can run to hundreds of MB) so the main-thread commit parses from
+         * memory instead of stalling on the file IO. A failed or empty read
+         * deliberately stages NOTHING — the commit falls back to the
+         * synchronous loader, whose diagnostics are authoritative. */
+        root_data = game3d_asset_read_file_bytes(path, &root_len);
+        if (root_data && root_len > 0u) {
+            job->preloaded_vscn_data = root_data;
+            job->preloaded_vscn_size = root_len;
+            root_data = NULL;
+            game3d_asset_handle_store_progress(handle, 0.10);
+        } else {
+            free(root_data);
+            root_data = NULL;
         }
     }
 
@@ -1433,10 +1459,9 @@ void *rt_game3d_assets_load_node_animation_asset_result(rt_string path, int64_t 
 /// @param path Runtime string containing the filesystem model path.
 /// @return New Result: ok wraps the SceneTemplate, err carries diagnostics.
 void *rt_game3d_assets_load_model_template_result(rt_string path) {
-    return game3d_load_value_to_result(
-        game3d_assets_load_template_cached_impl(
-            path, 0, "Prefab.LoadResult: failed to load model", 0),
-        "Prefab.LoadResult: failed to load model");
+    return game3d_load_value_to_result(game3d_assets_load_template_cached_impl(
+                                           path, 0, "Prefab.LoadResult: failed to load model", 0),
+                                       "Prefab.LoadResult: failed to load model");
 }
 
 /// @brief `Prefab.LoadAssetResult(name)` — Result peer of `Prefab.LoadAsset` (ADR 0233).
@@ -1605,7 +1630,8 @@ void *rt_game3d_asset_handle_get_entity(void *obj) {
 
 /// @brief Return the template result for template-mode requests, or NULL. See header.
 /// @param obj AssetHandle3D to complete if deferred and query.
-/// @return The borrowed ModelTemplate result, or NULL while pending, cancelled, failed, or wrong-mode.
+/// @return The borrowed ModelTemplate result, or NULL while pending, cancelled, failed, or
+/// wrong-mode.
 void *rt_game3d_asset_handle_get_template(void *obj) {
     rt_game3d_asset_handle *handle =
         game3d_asset_handle_checked(obj, "Game3D.AssetHandle3D.getTemplate: invalid handle");

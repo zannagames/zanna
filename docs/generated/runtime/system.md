@@ -107,7 +107,7 @@ Provides streaming external process handles.
 
 `Zanna.System.Process` exposes a registry-backed runtime surface without requiring callers to
 construct the class directly. Its public surface exposes operations including `Start`,
-`StartIn`, `StartWithEnv`.
+`StartIn`, `StartWithEnv`, `StartWithEnvOverlay`.
 
 #### Methods
 
@@ -116,6 +116,7 @@ construct the class directly. Its public surface exposes operations including `S
 | <a id="zanna-system-process-start"></a>`Start` | `obj<Zanna.System.Process.ProcessHandle>(str,obj)` | `Zanna.System.Process.Start` |
 | <a id="zanna-system-process-startin"></a>`StartIn` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str)` | `Zanna.System.Process.StartIn` |
 | <a id="zanna-system-process-startwithenv"></a>`StartWithEnv` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `Zanna.System.Process.StartWithEnv` |
+| <a id="zanna-system-process-startwithenvoverlay"></a>`StartWithEnvOverlay` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `Zanna.System.Process.StartWithEnvOverlay` |
 
 <a id="zanna-system-embedhost-embedchannel"></a>
 ### `Zanna.System.EmbedHost.EmbedChannel`
@@ -166,6 +167,7 @@ callers to construct the class directly. Its public surface exposes operations i
 | <a id="zanna-system-process-processhandle-readstdoutresult"></a>`ReadStdoutResult` | `obj<Zanna.Collections.Map>()` | `Zanna.System.Process.ProcessHandle.ReadStdoutResult` |
 | <a id="zanna-system-process-processhandle-readstderr"></a>`ReadStderr` | `str()` | `Zanna.System.Process.ProcessHandle.ReadStderr` |
 | <a id="zanna-system-process-processhandle-readstderrresult"></a>`ReadStderrResult` | `obj<Zanna.Collections.Map>()` | `Zanna.System.Process.ProcessHandle.ReadStderrResult` |
+| <a id="zanna-system-process-processhandle-readoutputresult"></a>`ReadOutputResult` | `obj<Zanna.Collections.Map>()` | `Zanna.System.Process.ProcessHandle.ReadOutputResult` |
 | <a id="zanna-system-process-processhandle-writestdin"></a>`WriteStdin` | `i64(str)` | `Zanna.System.Process.ProcessHandle.WriteStdin` |
 | <a id="zanna-system-process-processhandle-exitcode"></a>`ExitCode` | `i64()` | `Zanna.System.Process.ProcessHandle.ExitCode` |
 | <a id="zanna-system-process-processhandle-kill"></a>`Kill` | `i1()` | `Zanna.System.Process.ProcessHandle.Kill` |
@@ -317,6 +319,7 @@ construct the class directly. Its public surface exposes properties such as `Arc
 | `Zanna.System.Process.Start` | `obj<Zanna.System.Process.ProcessHandle>(str,obj)` | `rt_process_start` |
 | `Zanna.System.Process.StartIn` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str)` | `rt_process_start_in` |
 | `Zanna.System.Process.StartWithEnv` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `rt_process_start_with_env` |
+| `Zanna.System.Process.StartWithEnvOverlay` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `rt_process_start_with_env_overlay` |
 | `Zanna.System.Process.ProcessHandle.IsValid` | `i1(obj)` | `rt_process_is_valid` |
 | `Zanna.System.Process.ProcessHandle.Poll` | `i1(obj)` | `rt_process_poll` |
 | `Zanna.System.Process.ProcessHandle.IsRunning` | `i1(obj)` | `rt_process_is_running` |
@@ -324,6 +327,7 @@ construct the class directly. Its public surface exposes properties such as `Arc
 | `Zanna.System.Process.ProcessHandle.ReadStdoutResult` | `obj<Zanna.Collections.Map>(obj)` | `rt_process_read_stdout_result` |
 | `Zanna.System.Process.ProcessHandle.ReadStderr` | `str(obj)` | `rt_process_read_stderr` |
 | `Zanna.System.Process.ProcessHandle.ReadStderrResult` | `obj<Zanna.Collections.Map>(obj)` | `rt_process_read_stderr_result` |
+| `Zanna.System.Process.ProcessHandle.ReadOutputResult` | `obj<Zanna.Collections.Map>(obj)` | `rt_process_read_output_result` |
 | `Zanna.System.Process.ProcessHandle.WriteStdin` | `i64(obj,str)` | `rt_process_write_stdin` |
 | `Zanna.System.Process.ProcessHandle.ExitCode` | `i64(obj)` | `rt_process_exit_code` |
 | `Zanna.System.Process.ProcessHandle.Kill` | `i1(obj)` | `rt_process_kill` |

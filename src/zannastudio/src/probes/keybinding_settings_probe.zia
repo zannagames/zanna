@@ -1,0 +1,99 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/keybinding_settings_probe.zia
+// Purpose: Verify structured keybinding persistence, migration, and validation.
+// Key invariants:
+//   - Legacy delimiter strings migrate to bounded indexed records.
+//   - Canonical saves remove the legacy scalar and preserve explicit unbinding.
+//   - Unknown commands and invalid shortcut grammars never alter defaults.
+// Ownership/Lifetime:
+//   - The probe owns only in-memory INI, settings, and registry objects.
+// Links: zannastudio/src/core/keybinding_settings.zia,
+//        zannastudio/src/commands/command_registry.zia
+//
+//===----------------------------------------------------------------------===//
+
+module keybinding_settings_probe;
+
+bind "../commands/command_registry";
+bind "../core/keybinding_settings";
+
+bind Ini = Zanna.Data.Ini;
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var legacyIni = Ini.Parse(
+        "[settings]\n"
+        + "keybindingOverrides=save=Ctrl+Alt+S;;build=F9;;save=Ctrl+Shift+S;;broken\n");
+    var migrated = new keybinding_settings.KeybindingOverrideSet();
+    migrated.Load(legacyIni);
+    if migrated.migratedLegacy == false or migrated.loadedStructured
+       or migrated.Count() != 2 or migrated.rejectedRecords != 1
+       or migrated.ShortcutAt(migrated.Find("save")) != "Ctrl+Shift+S" {
+        fail("legacy migration");
+        return;
+    }
+    if migrated.Set("completion_trigger", "") == false {
+        fail("explicit unbinding rejected");
+        return;
+    }
+    if migrated.Set("Bad Id", "Ctrl+B")
+       or migrated.Set("valid-id", "Ctrl+X\nCtrl+Y") {
+        fail("unsafe record accepted");
+        return;
+    }
+
+    migrated.Save(legacyIni);
+    if Ini.Get(legacyIni, "keybindings", "version") != "1"
+       or Ini.Get(legacyIni, "keybindings", "count") != "3"
+       or Ini.Get(legacyIni, "settings", "keybindingOverrides") != ""
+       or Ini.Get(legacyIni, "keybindings", "id.2") != "completion_trigger"
+       or Ini.Get(legacyIni, "keybindings", "shortcut.2") != "" {
+        fail("canonical structured save");
+        return;
+    }
+
+    var roundTrip = new keybinding_settings.KeybindingOverrideSet();
+    roundTrip.Load(Ini.Parse(Ini.Format(legacyIni)));
+    if roundTrip.loadedStructured == false or roundTrip.migratedLegacy
+       or roundTrip.Count() != 3
+       or roundTrip.Find("completion_trigger") < 0 {
+        fail("structured round trip");
+        return;
+    }
+
+    // Core storage accepts bounded opaque shortcut text; the registry is the
+    // authority for command existence and runtime shortcut grammar.
+    var records = new keybinding_settings.KeybindingOverrideSet();
+    records.Set("save", "Ctrl+Alt+S");
+    records.Set("missing-command", "Ctrl+M");
+    records.Set("build", "plainword");
+    var registry = new command_registry.CommandRegistry();
+    registry.RegisterDefaults();
+    if registry.ApplyOverrideSet(records) != 1
+       or registry.rejectedOverrideCount != 2
+       or registry.ShortcutFor("save") != "Ctrl+Alt+S"
+       or registry.ShortcutFor("build") == "plainword" {
+        fail("registry validation boundary");
+        return;
+    }
+
+    var unsupported = new keybinding_settings.KeybindingOverrideSet();
+    unsupported.Load(Ini.Parse(
+        "[keybindings]\nversion=99\ncount=1\nid.0=save\nshortcut.0=Ctrl+Q\n"));
+    if unsupported.Count() != 0 or unsupported.rejectedRecords != 1 {
+        fail("unknown schema did not fail closed");
+        return;
+    }
+
+    Terminal.Say("RESULT: ok");
+}

@@ -142,8 +142,10 @@ int main() {
     assert(rt_virtual_list_bind(list, boundList) == 1);
     assert(rt_listbox_get_visible_first(boundList) == 0);
     assert(rt_listbox_get_visible_count(boundList) <= 2);
+    rt_virtual_list_set_row_text(list, 9000, rt_const_cstr("Far target"));
     rt_listbox_select_index(boundList, 9000);
     assert(rt_virtual_list_get_selected_index(list) == 9000);
+    assert(take(rt_listbox_get_selected_text(boundList)) == "Far target");
     rt_virtual_list_unbind(list);
     assert(rt_listbox_get_visible_count(boundList) == 0);
     assert(rt_listbox_set_virtual_model(boundList, list) == 1);

@@ -45,6 +45,7 @@ class DiffRequest {
     expose diff_engine.DiffBuildResult result;
     expose String reason;
     expose String error;
+    expose diff_engine.DiffCancelToken cancelToken;
 
     expose func init() {
         generation = 0;
@@ -56,6 +57,7 @@ class DiffRequest {
         result = null;
         reason = "";
         error = "";
+        cancelToken = new diff_engine.DiffCancelToken();
     }
 }
 
@@ -88,9 +90,10 @@ func RunDiff(request: DiffRequest) -> Any {
 
     var result: diff_engine.DiffBuildResult = null;
     if reason == "" and RequestIsCancelled(request) == false {
-        result = diff_engine.BuildRowsCapped(request.leftText,
-                                             request.rightText,
-                                             MAX_DIFF_ROWS);
+        result = diff_engine.BuildRowsCappedCancellable(request.leftText,
+                                                        request.rightText,
+                                                        MAX_DIFF_ROWS,
+                                                        request.cancelToken);
     }
 
     Monitor.Enter(request);
@@ -240,6 +243,7 @@ class DiffJob {
 
     hide func MarkCancelled(request: DiffRequest) {
         if request == null { return; }
+        diff_engine.Cancel(request.cancelToken);
         Monitor.Enter(request);
         if request.cancelled == false {
             request.cancelled = true;

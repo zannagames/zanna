@@ -13,8 +13,8 @@
 //          rt_regex_internal.h.
 //
 // Key invariants:
-//   - Malformed syntax is reported through parse_error; owned partial subtrees
-//     are released on parser-detected unclosed class/group paths.
+//   - Malformed syntax is recorded on parser_state; owned partial subtrees are
+//     released and the caller chooses trapping or diagnostic-return behavior.
 //   - Node allocation/teardown is owned by the core (node_new/node_free);
 //     this file only assembles nodes.
 //   - parse_alternation is the grammar entry point used by compile_pattern.
@@ -37,11 +37,7 @@
  *          release any partially constructed subtrees before returning.
  */
 
-#include "rt_regex.h"
 #include "rt_regex_internal.h"
-
-#include "rt_internal.h"
-#include "rt_trap.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -76,18 +72,17 @@ bool at_end(parser_state *p) {
     return p->pos >= p->len;
 }
 
-/// @brief Trap with a contextual parse-error message including the cursor position.
-///
-/// Used by the parser when it encounters malformed regex syntax such as an
-/// unclosed bracket/group or trailing backslash. If the active runtime trap
-/// handler resumes execution, this helper itself has no additional recovery
-/// behavior.
+/// @brief Record the first contextual parse error without trapping.
+/// @details Compilation has both a runtime path that traps and an interactive
+///          path that reports malformed input. Keeping parsing non-trapping
+///          prevents editor validation from needing setjmp-based recovery.
 /// @param p Parser state supplying the current byte position.
 /// @param msg Null-terminated diagnostic detail.
 void parse_error(parser_state *p, const char *msg) {
-    char buf[256];
-    snprintf(buf, sizeof(buf), "Pattern error at position %d: %s", p->pos, msg);
-    rt_trap(buf);
+    if (!p || p->error_message)
+        return;
+    p->error_message = msg ? msg : "invalid syntax";
+    p->error_position = p->pos;
 }
 
 /// @brief Parse a `[...]` character class (cursor positioned after the `[`).
@@ -102,6 +97,8 @@ void parse_error(parser_state *p, const char *msg) {
 /// @return Newly allocated character-class node.
 static re_node *parse_class(parser_state *p) {
     re_node *n = node_new(RE_CLASS);
+    if (!n)
+        return NULL;
     memset(n->data.char_class.bits, 0, sizeof(n->data.char_class.bits));
     n->data.char_class.negated = false;
 
@@ -168,6 +165,7 @@ static re_node *parse_class(parser_state *p) {
     if (peek(p) != ']') {
         node_free(n);
         parse_error(p, "unclosed character class");
+        return NULL;
     }
     advance(p); // consume ]
 
@@ -187,8 +185,10 @@ static re_node *parse_atom(parser_state *p) {
 
     if (c == '\\') {
         advance(p);
-        if (at_end(p))
+        if (at_end(p)) {
             parse_error(p, "trailing backslash");
+            return NULL;
+        }
 
         char esc = advance(p);
         switch (esc) {
@@ -244,13 +244,28 @@ static re_node *parse_atom(parser_state *p) {
         // number by opening parenthesis (PCRE convention).
         int group_index = p->group_counter++;
         re_node *inner = parse_alternation(p);
+        if (p->error_message) {
+            node_free(inner);
+            return NULL;
+        }
         if (peek(p) != ')') {
             node_free(inner);
             parse_error(p, "unclosed group");
+            return NULL;
         }
         advance(p);
         re_node *group = node_new(RE_GROUP);
+        if (!group) {
+            node_free(inner);
+            return NULL;
+        }
         group->group_index = group_index;
+        if (!inner)
+            inner = node_new(RE_CONCAT);
+        if (!inner) {
+            node_free(group);
+            return NULL;
+        }
         children_add(group, inner);
         return group;
     } else if (c == ')' || c == '|' || c == '*' || c == '+' || c == '?' || c == '\0') {
@@ -274,6 +289,8 @@ static re_node *parse_atom(parser_state *p) {
 ///         begins at the cursor.
 static re_node *parse_quantified(parser_state *p) {
     re_node *atom = parse_atom(p);
+    if (p->error_message)
+        return NULL;
     if (!atom)
         return NULL;
 
@@ -318,6 +335,8 @@ static re_node *parse_quantified(parser_state *p) {
 ///         sequence.
 static re_node *parse_concat(parser_state *p) {
     re_node *concat = node_new(RE_CONCAT);
+    if (!concat)
+        return NULL;
 
     while (!at_end(p)) {
         char c = peek(p);
@@ -325,6 +344,10 @@ static re_node *parse_concat(parser_state *p) {
             break;
 
         re_node *child = parse_quantified(p);
+        if (p->error_message) {
+            node_free(concat);
+            return NULL;
+        }
         if (!child)
             break;
 
@@ -357,6 +380,8 @@ static re_node *parse_concat(parser_state *p) {
 ///         entirely empty expression.
 re_node *parse_alternation(parser_state *p) {
     re_node *first = parse_concat(p);
+    if (p->error_message)
+        return NULL;
 
     if (peek(p) != '|') {
         return first;
@@ -373,6 +398,10 @@ re_node *parse_alternation(parser_state *p) {
     while (peek(p) == '|') {
         advance(p); // consume |
         re_node *branch = parse_concat(p);
+        if (p->error_message) {
+            node_free(alt);
+            return NULL;
+        }
         if (branch)
             children_add(alt, branch);
         else

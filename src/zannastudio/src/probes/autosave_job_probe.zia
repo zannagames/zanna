@@ -1,0 +1,120 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/autosave_job_probe.zia
+// Purpose: Verify autosave normalization and durable compare/exchange run on a
+//          bounded worker without clobbering a changed file.
+// Key invariants:
+//   - A valid baseline commits normalized content and publishes metadata.
+//   - A stale baseline fails closed and preserves the external replacement.
+//   - Oversized normalized snapshots are rejected before disk mutation.
+// Ownership/Lifetime:
+//   - The probe owns and removes one temporary directory and drains every job.
+// Links: zannastudio/src/commands/autosave_job.zia
+//
+//===----------------------------------------------------------------------===//
+
+module autosave_job_probe;
+
+bind "../commands/autosave_job";
+bind "../core/document";
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Hash = Zanna.Crypto.Hash;
+bind Time = Zanna.Time;
+bind Terminal = Zanna.Terminal;
+
+func drain(job: autosave_job.AutoSaveJob,
+           maxMs: Integer) -> autosave_job.AutoSaveRequest {
+    var waited = 0;
+    while job.IsBusy() and waited < maxMs {
+        job.Pump();
+        if job.IsBusy() {
+            Time.Clock.Sleep(1);
+            waited = waited + 1;
+        }
+    }
+    job.Pump();
+    return job.TakeCompleted();
+}
+
+func requestFor(path: String,
+                source: String,
+                maxBytes: Integer) -> autosave_job.AutoSaveRequest {
+    var request = new autosave_job.AutoSaveRequest();
+    request.owner = new document.Document();
+    request.sourceRevision = 7;
+    request.path = path;
+    request.sourceContent = source;
+    request.expectedModified = safe_io.Modified(path);
+    request.expectedSize = safe_io.SizeBytes(path);
+    request.expectedHash = Hash.Sha256(File.ReadAllText(path));
+    request.maxBytes = maxBytes;
+    request.trimTrailingWhitespace = true;
+    request.ensureFinalNewline = true;
+    return request;
+}
+
+func main() {
+    var root = TempFile.CreateDirWithPrefix("zannastudio_autosave_");
+    var path = Path.Join(root, "auto.zia");
+    File.WriteAllText(path, "before\n");
+
+    var job = new autosave_job.AutoSaveJob();
+    var first = requestFor(path, "after   ", 4096);
+    if job.Queue(first) == false {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - worker did not start");
+        return;
+    }
+    var firstDone = drain(job, 5000);
+    if firstDone == null or firstDone.succeeded == false
+       or firstDone.savedContent != "after\n"
+       or firstDone.committedModified < 0
+       or firstDone.committedSize != 6
+       or File.ReadAllText(path) != "after\n" {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - normalized snapshot did not commit");
+        return;
+    }
+
+    var stale = requestFor(path, "must not win\n", 4096);
+    File.WriteAllText(path, "external\n");
+    if job.Queue(stale) == false {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - stale request did not start");
+        return;
+    }
+    var staleDone = drain(job, 5000);
+    if staleDone == null or staleDone.succeeded or staleDone.conflict == false
+       or File.ReadAllText(path) != "external\n" {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - stale request clobbered external content");
+        return;
+    }
+
+    var oversized = requestFor(path, "four", 3);
+    if job.Queue(oversized) == false {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - oversized request did not reach worker");
+        return;
+    }
+    var oversizedDone = drain(job, 5000);
+    if oversizedDone == null or oversizedDone.succeeded
+       or File.ReadAllText(path) != "external\n"
+       or job.WaitForShutdown() == false {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - oversized request changed disk state");
+        return;
+    }
+
+    safe_io.DeleteDirectoryTree(root);
+    Terminal.Say("RESULT: ok");
+}

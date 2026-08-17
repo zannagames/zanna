@@ -6,13 +6,12 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/text/rt_compiled_pattern.c
-// Purpose: Implements pre-compiled regex patterns for the Zanna.Text.Pattern
-//          class. Compiles a regex string once into an internal representation
-//          and supports IsMatch, Find, FindAll, Replace, and Split operations
-//          with better performance for repeated use on the same pattern.
+// Purpose: Implements reusable regex patterns, recoverable interactive
+//          compilation, exact match ranges, capture expansion, and the legacy
+//          Pattern matching/replacement surface.
 //
 // Key invariants:
-//   - Patterns are compiled exactly once at construction; compilation errors trap.
+//   - Patterns are compiled exactly once; New traps while TryNew returns syntax errors.
 //   - The compiled form is immutable after creation; all match operations are
 //     read-only and thread-safe on the same pattern object.
 //   - Find returns the first match start and length; FindAll returns all matches.
@@ -39,16 +38,19 @@
  */
 
 #include "rt_compiled_pattern.h"
+#include "rt_box.h"
 #include "rt_object.h"
 #include "rt_regex_internal.h"
 
 #include "rt_internal.h"
 #include "rt_option.h"
+#include "rt_result.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
 #include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -124,7 +126,6 @@ typedef struct {
     re_compiled_pattern *pattern; ///< Owned immutable compiled regex state.
 } compiled_pattern_obj;
 
-
 //=============================================================================
 // Creation and Lifecycle
 //=============================================================================
@@ -144,37 +145,89 @@ static void compiled_pattern_finalizer(void *obj) {
     }
 }
 
+/// @brief Allocate a managed wrapper that takes ownership of an engine pattern.
+/// @param pattern Owned successfully compiled engine object.
+/// @return New managed wrapper, or null after freeing @p pattern on failure.
+static compiled_pattern_obj *compiled_pattern_wrap(re_compiled_pattern *pattern) {
+    if (!pattern)
+        return NULL;
+    compiled_pattern_obj *obj =
+        (compiled_pattern_obj *)rt_obj_new_i64(0, (int64_t)sizeof(compiled_pattern_obj));
+    if (!obj) {
+        re_free(pattern);
+        rt_trap("CompiledPattern: memory allocation failed");
+        return NULL;
+    }
+    obj->pattern = pattern;
+    rt_obj_set_finalizer(obj, compiled_pattern_finalizer);
+    return obj;
+}
+
+/// @brief Create a string-valued error Result from a bounded C diagnostic.
+static void *compiled_pattern_error_result(const char *message) {
+    const char *safe = message && message[0] ? message : "CompiledPattern: invalid pattern";
+    rt_string text = rt_string_from_bytes(safe, strlen(safe));
+    if (!text)
+        return NULL;
+    void *result = rt_result_err_str(text);
+    rt_str_release_maybe(text);
+    return result;
+}
+
+/// @brief Validate and compile one runtime string with recoverable syntax errors.
+static re_compiled_pattern *compiled_pattern_compile_diagnostic(rt_string pattern,
+                                                                unsigned int flags,
+                                                                char *error,
+                                                                size_t error_capacity) {
+    if (error && error_capacity > 0)
+        error[0] = '\0';
+    if (!pattern) {
+        if (error && error_capacity > 0)
+            snprintf(error, error_capacity, "CompiledPattern: null pattern");
+        return NULL;
+    }
+    const char *source = rt_string_cstr(pattern);
+    size_t length = (size_t)rt_str_len(pattern);
+    if (!source || strlen(source) != length) {
+        if (error && error_capacity > 0)
+            snprintf(error, error_capacity, "CompiledPattern: pattern contains NUL byte");
+        return NULL;
+    }
+    re_set_failure_handler(rt_trap);
+    return re_compile_diagnostic(source, flags, error, error_capacity);
+}
+
 /// @brief Compile a regex pattern for reuse (avoids recompilation on each call).
 /// @param pattern Required regex source string without embedded NUL bytes.
 /// @return New GC-managed CompiledPattern object, or NULL after a validation,
 ///         allocation, or regex-compilation trap.
 void *rt_compiled_pattern_new(rt_string pattern) {
-    if (!pattern) {
-        rt_trap("CompiledPattern: null pattern");
+    char error[256];
+    re_compiled_pattern *compiled =
+        compiled_pattern_compile_diagnostic(pattern, RE_COMPILE_DEFAULT, error, sizeof(error));
+    if (!compiled) {
+        rt_trap(error[0] ? error : "CompiledPattern: regex compilation failed");
         return NULL;
     }
-    const char *pat_str = pattern ? rt_string_cstr(pattern) : "";
-    if (!pat_str)
-        pat_str = "";
-    if (strlen(pat_str) != (size_t)rt_str_len(pattern)) {
-        rt_trap("CompiledPattern: pattern contains NUL byte");
-        return NULL;
-    }
+    return compiled_pattern_wrap(compiled);
+}
 
-    compiled_pattern_obj *obj =
-        (compiled_pattern_obj *)rt_obj_new_i64(0, (int64_t)sizeof(compiled_pattern_obj));
-    if (!obj) {
-        rt_trap("CompiledPattern: memory allocation failed");
-        return NULL;
-    }
+/// @copydoc rt_compiled_pattern_try_new
+void *rt_compiled_pattern_try_new(rt_string pattern, int8_t case_insensitive) {
+    char error[256];
+    unsigned int flags = case_insensitive ? RE_COMPILE_CASE_INSENSITIVE : RE_COMPILE_DEFAULT;
+    re_compiled_pattern *compiled =
+        compiled_pattern_compile_diagnostic(pattern, flags, error, sizeof(error));
+    if (!compiled)
+        return compiled_pattern_error_result(error);
 
-    obj->pattern = re_compile(pat_str);
-    if (!obj->pattern) {
-        rt_trap("CompiledPattern: regex compilation failed");
+    compiled_pattern_obj *obj = compiled_pattern_wrap(compiled);
+    if (!obj)
         return NULL;
-    }
-    rt_obj_set_finalizer(obj, compiled_pattern_finalizer);
-    return obj;
+    void *result = rt_result_ok(obj);
+    if (rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+    return result;
 }
 
 /// @brief Get the original regex source string that was compiled.
@@ -362,6 +415,165 @@ void *rt_compiled_pattern_find_pos_option(void *obj, rt_string text) {
     return rt_option_none();
 }
 
+/// @brief Decode one strict UTF-8 scalar and its exclusive byte end.
+static bool compiled_utf8_decode_at(
+    const char *text, int text_len, int offset, uint32_t *codepoint, int *next_offset) {
+    if (!text || !codepoint || !next_offset || offset < 0 || offset >= text_len)
+        return false;
+    const unsigned char *bytes = (const unsigned char *)text;
+    unsigned char lead = bytes[offset];
+    uint32_t value = 0;
+    int width = 0;
+    if (lead < 0x80u) {
+        value = lead;
+        width = 1;
+    } else if (lead >= 0xC2u && lead <= 0xDFu) {
+        value = lead & 0x1Fu;
+        width = 2;
+    } else if (lead >= 0xE0u && lead <= 0xEFu) {
+        value = lead & 0x0Fu;
+        width = 3;
+    } else if (lead >= 0xF0u && lead <= 0xF4u) {
+        value = lead & 0x07u;
+        width = 4;
+    } else {
+        return false;
+    }
+    if (width > text_len - offset)
+        return false;
+    for (int i = 1; i < width; i++) {
+        unsigned char byte = bytes[offset + i];
+        if ((byte & 0xC0u) != 0x80u)
+            return false;
+        value = (value << 6) | (uint32_t)(byte & 0x3Fu);
+    }
+    if ((width == 3 && value < 0x800u) || (width == 4 && value < 0x10000u) ||
+        (value >= 0xD800u && value <= 0xDFFFu) || value > 0x10FFFFu)
+        return false;
+    *codepoint = value;
+    *next_offset = offset + width;
+    return true;
+}
+
+/// @brief Test whether the scalar immediately before an offset continues a word.
+static bool compiled_word_before(const char *text, int text_len, int offset) {
+    if (!text || offset <= 0 || offset > text_len)
+        return false;
+    int start = offset - 1;
+    while (start > 0 && ((unsigned char)text[start] & 0xC0u) == 0x80u)
+        start--;
+    uint32_t codepoint = 0;
+    int next = 0;
+    return compiled_utf8_decode_at(text, text_len, start, &codepoint, &next) && next == offset &&
+           re_is_word_codepoint(codepoint);
+}
+
+/// @brief Test whether the scalar beginning at an offset continues a word.
+static bool compiled_word_at(const char *text, int text_len, int offset) {
+    if (!text || offset < 0 || offset >= text_len)
+        return false;
+    uint32_t codepoint = 0;
+    int next = 0;
+    return compiled_utf8_decode_at(text, text_len, offset, &codepoint, &next) &&
+           re_is_word_codepoint(codepoint);
+}
+
+/// @brief Find a range while optionally rejecting Unicode word-adjacent matches.
+static bool compiled_find_range(compiled_pattern_obj *obj,
+                                const char *text,
+                                int text_len,
+                                int start,
+                                bool whole_word,
+                                int *match_start,
+                                int *match_end) {
+    int cursor = start;
+    while (cursor <= text_len) {
+        int found_start = 0;
+        int found_end = 0;
+        if (!re_find_match(obj->pattern, text, text_len, cursor, &found_start, &found_end))
+            return false;
+        if (!whole_word || (!compiled_word_before(text, text_len, found_start) &&
+                            !compiled_word_at(text, text_len, found_end))) {
+            *match_start = found_start;
+            *match_end = found_end;
+            return true;
+        }
+        if (found_start >= text_len)
+            return false;
+        uint32_t ignored = 0;
+        int next = found_start + 1;
+        (void)compiled_utf8_decode_at(text, text_len, found_start, &ignored, &next);
+        if (next <= cursor)
+            next = cursor + 1;
+        cursor = next;
+    }
+    return false;
+}
+
+/// @brief Release one freshly allocated box after an aborted range build.
+static void compiled_release_box(void *box) {
+    if (box && rt_obj_release_check0(box))
+        rt_obj_free(box);
+}
+
+/// @copydoc rt_compiled_pattern_find_range_from
+void *rt_compiled_pattern_find_range_from(void *obj,
+                                          rt_string text,
+                                          int64_t start,
+                                          int8_t whole_word) {
+    void *range = rt_seq_new_owned();
+    if (!range)
+        return NULL;
+    if (!obj) {
+        rt_trap("CompiledPattern: null pattern object");
+        return range;
+    }
+
+    int text_len = safe_rt_string_len_int(text);
+    if (start < 0)
+        start = 0;
+    if (start > text_len)
+        return range;
+    const char *bytes = compiled_text_or_empty(text);
+    int match_start = 0;
+    int match_end = 0;
+    if (!compiled_find_range((compiled_pattern_obj *)obj,
+                             bytes,
+                             text_len,
+                             (int)start,
+                             whole_word != 0,
+                             &match_start,
+                             &match_end))
+        return range;
+
+    int64_t resume = match_end;
+    if (match_end == match_start) {
+        if (match_start >= text_len) {
+            resume = (int64_t)text_len + 1;
+        } else {
+            uint32_t ignored = 0;
+            int next = match_start + 1;
+            (void)compiled_utf8_decode_at(bytes, text_len, match_start, &ignored, &next);
+            resume = next;
+        }
+    }
+
+    void *start_box = rt_box_i64(match_start);
+    void *end_box = rt_box_i64(match_end);
+    void *resume_box = rt_box_i64(resume);
+    if (!start_box || !end_box || !resume_box) {
+        compiled_release_box(start_box);
+        compiled_release_box(end_box);
+        compiled_release_box(resume_box);
+        rt_trap("CompiledPattern: match range allocation failed");
+        return range;
+    }
+    rt_seq_push_raw(range, start_box);
+    rt_seq_push_raw(range, end_box);
+    rt_seq_push_raw(range, resume_box);
+    return range;
+}
+
 /// @brief Find all non-overlapping matches and return as a sequence of strings.
 /// @details Zero-width matches advance by one byte to guarantee progress.
 /// @param obj Required CompiledPattern object.
@@ -475,9 +687,9 @@ void *rt_compiled_pattern_captures_from(void *obj, rt_string text, int64_t start
         // participate in the match (start == -1) reports an empty string.
         for (int i = 0; i < num_groups; i++) {
             rt_string group = group_starts[i] >= 0
-                ? rt_string_from_bytes(txt_str + group_starts[i],
-                                       group_ends[i] - group_starts[i])
-                : rt_string_from_bytes("", 0);
+                                  ? rt_string_from_bytes(txt_str + group_starts[i],
+                                                         group_ends[i] - group_starts[i])
+                                  : rt_string_from_bytes("", 0);
             rt_seq_push(seq, (void *)group);
             rt_string_unref(group);
         }
@@ -627,6 +839,43 @@ rt_string rt_compiled_pattern_replace_first(void *obj, rt_string text, rt_string
     return out;
 }
 
+/// @copydoc rt_compiled_pattern_expand_replacement_at
+void *rt_compiled_pattern_expand_replacement_at(void *obj,
+                                                rt_string text,
+                                                int64_t start,
+                                                rt_string replacement) {
+    if (!obj)
+        return compiled_pattern_error_result("CompiledPattern: null pattern object");
+    int text_len = safe_rt_string_len_int(text);
+    if (start < 0 || start > text_len)
+        return compiled_pattern_error_result("CompiledPattern: replacement start is out of range");
+
+    const char *source = compiled_text_or_empty(text);
+    const char *replacement_bytes = compiled_text_or_empty(replacement);
+    size_t replacement_len = replacement ? (size_t)rt_str_len(replacement) : 0;
+    char *expanded = NULL;
+    size_t expanded_len = 0;
+    compiled_pattern_obj *pattern = (compiled_pattern_obj *)obj;
+    if (!re_expand_replacement(pattern->pattern,
+                               source,
+                               text_len,
+                               (int)start,
+                               replacement_bytes,
+                               replacement_len,
+                               &expanded,
+                               &expanded_len))
+        return compiled_pattern_error_result(
+            "CompiledPattern: no exact match exists at the replacement start");
+
+    rt_string value = rt_string_from_bytes(expanded, expanded_len);
+    free(expanded);
+    if (!value)
+        return NULL;
+    void *result = rt_result_ok_str(value);
+    rt_str_release_maybe(value);
+    return result;
+}
+
 //=============================================================================
 // Split Operation
 //=============================================================================
@@ -682,8 +931,7 @@ void *rt_compiled_pattern_split_n(void *obj, rt_string text, int64_t limit) {
             if (match_start >= text_len)
                 break;
             if (match_start > seg_start) {
-                rt_string part =
-                    rt_string_from_bytes(txt_str + seg_start, match_start - seg_start);
+                rt_string part = rt_string_from_bytes(txt_str + seg_start, match_start - seg_start);
                 rt_seq_push(seq, (void *)part);
                 rt_string_unref(part);
                 seg_start = match_start;

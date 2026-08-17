@@ -100,6 +100,14 @@ int64_t rt_path_is_abs(rt_string path);
 ///          missing, inaccessible, or ordinary paths without trapping.
 int64_t rt_path_is_link(rt_string path);
 
+/// @brief Compare two existing filesystem entries by stable identity.
+/// @param left First file, directory, or other stat-able entry path.
+/// @param right Second entry path.
+/// @return 1 when both paths resolve to the same entry; otherwise 0.
+/// @details Follows symbolic links/reparse points. Invalid, missing, and inaccessible operands
+///          compare unequal without trapping.
+int64_t rt_path_same_entry(rt_string left, rt_string right);
+
 /// @brief Convert a relative path to absolute.
 /// @param path Path to convert.
 /// @return Runtime-managed absolute normalized path.

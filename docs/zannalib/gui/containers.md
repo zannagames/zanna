@@ -406,6 +406,7 @@ Mouse editing supports `Shift` + click to extend the primary selection and `Ctrl
 | `SetShowFoldGutter(show)`                  | `Void(Boolean)`                  | Show or hide fold markers in the gutter  |
 | `SetShowLineNumbers(show)`                 | `Void(Boolean)`                  | Show/hide line numbers                   |
 | `SetText(text)`                            | `Void(String)`                   | Set editor content                       |
+| `ReplaceAllText(text)`                     | `Boolean(String)`                | Replace all text as one undoable edit while retaining and clamping editor state |
 | `SetTokenColor(tokenType, color)`          | `Void(Integer, Integer)`         | Set color for a token type               |
 | `ToggleFold(line)`                         | `Void(Integer)`                  | Toggle fold state at line                |
 | `Unfold(line)`                             | `Void(Integer)`                  | Unfold region at line                    |
@@ -423,6 +424,12 @@ Mouse editing supports `Shift` + click to extend the primary selection and `Ctrl
 | `GetTabSize()`               | `Integer()`        | Get current tab width in spaces                  |
 | `SetWordWrap(enabled)`       | `Void(Boolean)`    | Enable or disable word wrapping                  |
 | `GetWordWrap()`              | `Integer()`        | Read word-wrap state (`1` enabled, `0` disabled) |
+
+`SetText` establishes a new cold-load baseline and resets document editing
+state. Use `ReplaceAllText` when transforming the current document: it retains
+prior undo history, cursors, selections, folds, and scroll position and records
+the replacement as one undo unit. Detached `EditorBuffer` values expose the
+same `ReplaceAllText(text) -> Boolean` contract.
 
 #### Performance diagnostics
 

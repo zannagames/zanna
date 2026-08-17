@@ -1,3 +1,21 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/source_scan.zia
+// Purpose: Preserve the compatibility facade for focused source-analysis modules.
+// Key invariants:
+//   - Source wrappers preserve legacy behavior and coordinates.
+//   - FromLines variants reuse one caller-owned revision line model.
+// Ownership/Lifetime: Returned values follow their focused scanner contracts.
+// Links: zia/function_scan.zia, zia/call_scan.zia,
+//        docs/adr/0264-shared-revision-semantic-analysis.md
+//
+//===----------------------------------------------------------------------===//
+
 module source_scan;
 
 bind "call_scan";
@@ -30,6 +48,11 @@ expose func SourceLine(source: String,
     return function_scan.SourceLine(source, lineNumber);
 }
 
+expose func SourceLineFromLines(lines: Any,
+                                lineNumber: Integer) -> String {
+    return function_scan.SourceLineFromLines(lines, lineNumber);
+}
+
 /// @brief Find the nearest function declaration at or above a line.
 /// @param source Whole Zia document.
 /// @param lineNumber 1-based line near the cursor/selection.
@@ -39,6 +62,11 @@ expose func EnclosingZiaFunctionStartLine(source: String,
     return function_scan.EnclosingZiaFunctionStartLine(source, lineNumber);
 }
 
+expose func EnclosingZiaFunctionStartLineFromLines(lines: Any,
+                                                   lineNumber: Integer) -> Integer {
+    return function_scan.EnclosingZiaFunctionStartLineFromLines(lines, lineNumber);
+}
+
 /// @brief Find the enclosing function name for a source line.
 /// @param source Whole Zia document.
 /// @param lineNumber 1-based line inside or below a function declaration.
@@ -46,6 +74,11 @@ expose func EnclosingZiaFunctionStartLine(source: String,
 expose func EnclosingZiaFunctionName(source: String,
                                      lineNumber: Integer) -> String {
     return function_scan.EnclosingZiaFunctionName(source, lineNumber);
+}
+
+expose func EnclosingZiaFunctionNameFromLines(lines: Any,
+                                              lineNumber: Integer) -> String {
+    return function_scan.EnclosingZiaFunctionNameFromLines(lines, lineNumber);
 }
 
 /// @brief Extract a function name from a declaration line.
@@ -65,6 +98,11 @@ expose func ZiaFunctionEndLine(source: String,
     return function_scan.ZiaFunctionEndLine(source, startLine);
 }
 
+expose func ZiaFunctionEndLineFromLines(lines: Any,
+                                        startLine: Integer) -> Integer {
+    return function_scan.ZiaFunctionEndLineFromLines(lines, startLine);
+}
+
 /// @brief Collect simple call tokens in a line range.
 /// @param source Whole Zia document.
 /// @param startLine 1-based inclusive start line.
@@ -74,6 +112,12 @@ expose func OutgoingZiaCallTokens(source: String,
                                   startLine: Integer,
                                   endLine: Integer) -> Any {
     return call_scan.OutgoingZiaCallTokens(source, startLine, endLine);
+}
+
+expose func OutgoingZiaCallTokensFromLines(lines: Any,
+                                           startLine: Integer,
+                                           endLine: Integer) -> Any {
+    return call_scan.OutgoingZiaCallTokensFromLines(lines, startLine, endLine);
 }
 
 /// @brief Net brace delta for a line outside trivia.

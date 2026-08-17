@@ -454,6 +454,41 @@ class EditorEngine {
         cachedTextRevision = editor.Revision;
     }
 
+    /// @brief Apply one undoable complete-text edit without rebuilding document state.
+    /// @details Save normalization can target the focused pane, the other split pane,
+    ///          or a detached tab. The GUI primitive retains cursor/selection/fold/scroll
+    ///          state and prior undo history in every ownership form.
+    /// @return True when the document and its owning buffer accepted the text.
+    expose func ReplaceDocumentTextPreservingState(doc: document.Document,
+                                                   text: String) -> Boolean {
+        if doc == null { return false; }
+        if doc == currentDoc {
+            if editor == null or editor.ReplaceAllText(text) == false { return false; }
+            doc.content = text;
+            doc.isModified = true;
+            cachedTextSnapshot = text;
+            cachedTextRevision = editor.Revision;
+            InvalidateDocumentSync();
+            return true;
+        }
+        if splitActive and shadow != null and shadow.currentDoc == doc {
+            var owner = rightWidget;
+            if secondaryFocused { owner = leftWidget; }
+            if owner == null or owner.ReplaceAllText(text) == false { return false; }
+            doc.content = text;
+            doc.isModified = true;
+            shadow.cachedTextSnapshot = text;
+            shadow.cachedTextRevision = owner.Revision;
+            return true;
+        }
+        if doc.buffer != null {
+            if doc.buffer.ReplaceAllText(text) == false { return false; }
+        }
+        doc.content = text;
+        doc.isModified = true;
+        return true;
+    }
+
     /// @brief Resize the editor widget to (w, h) pixels.
     expose func SetSize(w: Integer, h: Integer) {
         editor.SetSize(w, h);

@@ -1077,6 +1077,7 @@ RT_CLASS_BEGIN("Zanna.Text.Char", TextChar, "none", none)
     RT_METHOD("IsIdentifierStart", "i1(str)", TextCharIsIdentStart)
     RT_METHOD("IsIdentifierPart",  "i1(str)", TextCharIsIdentPart)
     RT_METHOD("IsAlphanumeric",           "i1(str)", TextCharIsAlnum)
+    RT_METHOD("IsWord",                   "i1(str)", TextCharIsWord)
 RT_CLASS_END()
 
 //=============================================================================

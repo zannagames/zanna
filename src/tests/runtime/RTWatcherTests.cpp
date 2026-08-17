@@ -415,6 +415,56 @@ static void test_file_event_path() {
     rmdir_p(base);
 }
 
+#if RT_PLATFORM_LINUX || RT_PLATFORM_WINDOWS
+/// @brief Verify directory-child renames expose one event with both endpoints.
+static void test_directory_rename_endpoints() {
+    printf("Testing directory rename endpoints...\n");
+    const char *base = get_test_base();
+    mkdir_p(base);
+    char old_path[512];
+    char new_path[512];
+#if RT_PLATFORM_WINDOWS
+    snprintf(old_path, sizeof(old_path), "%s\\rename-old.txt", base);
+    snprintf(new_path, sizeof(new_path), "%s\\rename-new.txt", base);
+#else
+    snprintf(old_path, sizeof(old_path), "%s/rename-old.txt", base);
+    snprintf(new_path, sizeof(new_path), "%s/rename-new.txt", base);
+#endif
+    create_file(old_path);
+
+    rt_string watched_path = rt_string_from_bytes(base, strlen(base));
+    void *w = rt_watcher_new(watched_path);
+    rt_string_unref(watched_path);
+    rt_watcher_start(w);
+    wait_for_event();
+    assert(rename(old_path, new_path) == 0);
+
+    bool saw_complete_rename = false;
+    for (int i = 0; i < 20; ++i) {
+        int64_t event = rt_watcher_poll_for(w, 100);
+        if (event != RT_WATCH_EVENT_RENAMED)
+            continue;
+        rt_string primary = rt_watcher_event_path(w);
+        rt_string source = rt_watcher_event_old_path(w);
+        rt_string destination = rt_watcher_event_new_path(w);
+        saw_complete_rename = strcmp(rt_string_cstr(primary), new_path) == 0 &&
+                              strcmp(rt_string_cstr(source), old_path) == 0 &&
+                              strcmp(rt_string_cstr(destination), new_path) == 0;
+        rt_string_unref(primary);
+        rt_string_unref(source);
+        rt_string_unref(destination);
+        if (saw_complete_rename)
+            break;
+    }
+    test_result("directory rename exposes source and destination", saw_complete_rename);
+
+    rt_watcher_stop(w);
+    release_watcher(w);
+    remove_file(new_path);
+    rmdir_p(base);
+}
+#endif
+
 static void test_stop_clears_last_event() {
     printf("Testing Stop clears queued event state...\n");
 
@@ -442,6 +492,8 @@ static void test_stop_clears_last_event() {
     assert(rt_watcher_poll(w) == RT_WATCH_EVENT_NONE);
     assert(rt_watcher_event_type(w) == RT_WATCH_EVENT_NONE);
     EXPECT_TRAP(rt_watcher_event_path(w));
+    EXPECT_TRAP(rt_watcher_event_old_path(w));
+    EXPECT_TRAP(rt_watcher_event_new_path(w));
     test_result("Stop clears last event state", true);
 
     remove_file(file_path);
@@ -643,14 +695,26 @@ static void test_moved_watch_becomes_inactive() {
     assert(rename(watched_dir, moved_dir) == 0);
 
     int saw_renamed = 0;
+    int saw_source_only = 0;
     for (int i = 0; i < 20; ++i) {
         int64_t event = rt_watcher_poll_for(w, 100);
-        if (event == RT_WATCH_EVENT_RENAMED)
+        if (event == RT_WATCH_EVENT_RENAMED) {
             saw_renamed = 1;
+            rt_string primary = rt_watcher_event_path(w);
+            rt_string source = rt_watcher_event_old_path(w);
+            rt_string destination = rt_watcher_event_new_path(w);
+            saw_source_only = strcmp(rt_string_cstr(primary), watched_dir) == 0 &&
+                              strcmp(rt_string_cstr(source), watched_dir) == 0 &&
+                              rt_str_len(destination) == 0;
+            rt_string_unref(primary);
+            rt_string_unref(source);
+            rt_string_unref(destination);
+        }
         if (!rt_watcher_get_is_watching(w))
             break;
     }
     test_result("moved watch reports rename", saw_renamed != 0);
+    test_result("moved watch reports incomplete source endpoint", saw_source_only != 0);
     test_result("moved watch becomes inactive", rt_watcher_get_is_watching(w) == 0);
     rt_watcher_stop(w);
     rmdir_p(moved_dir);
@@ -696,6 +760,9 @@ int main() {
     test_poll_no_events();
     test_directory_event_path();
     test_file_event_path();
+#if RT_PLATFORM_LINUX || RT_PLATFORM_WINDOWS
+    test_directory_rename_endpoints();
+#endif
     test_stop_clears_last_event();
 #if RT_PLATFORM_LINUX
     test_file_recreate_is_detected();

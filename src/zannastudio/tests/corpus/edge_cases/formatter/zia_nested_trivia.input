@@ -1,0 +1,9 @@
+func main() {
+/* outer {
+   /* inner } */
+still comment */
+var s = "escaped \" }";
+if ready {
+act();
+}
+}

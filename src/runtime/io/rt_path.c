@@ -18,6 +18,7 @@
 //   - Join always produces a path using the native platform separator.
 //   - Ext returns the final '.' suffix including the dot, or "" if absent.
 //   - IsLink inspects the final component without following it and never traps.
+//   - SameEntry follows normal filesystem resolution and compares stable object identity.
 //   - Returned strings are runtime-managed values and never borrow input storage; empty results
 //     may use the shared empty string.
 //   - All functions are thread-safe and reentrant (no global mutable state).
@@ -28,7 +29,8 @@
 //
 // Links: src/runtime/io/rt_path.h (public API),
 //        src/runtime/io/rt_dir.c (directory create/list/remove operations),
-//        src/runtime/io/rt_file_ext.c (file-level read/write/copy helpers)
+//        src/runtime/io/rt_file_ext.c (file-level read/write/copy helpers),
+//        docs/adr/0259-stable-filesystem-entry-identity.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -65,6 +67,7 @@
  * @{ */
 #define PATH_SEP '\\'
 #define PATH_SEP_STR "\\"
+
 /** @} */
 
 /// @brief Inspect one validated native path for a Windows reparse point.
@@ -79,6 +82,55 @@ static int rt_path_is_link_cstr(const char *cpath) {
     return attributes != INVALID_FILE_ATTRIBUTES &&
            (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
+
+/// @brief Compare two existing Windows filesystem entries by stable identity.
+/// @details `FILE_FLAG_BACKUP_SEMANTICS` permits opening both files and directories. Reparse
+///          points follow normal path resolution because callers want the target entry identity.
+/// @param left First validated UTF-8 path.
+/// @param right Second validated UTF-8 path.
+/// @return 1 when both paths resolve to the same entry; otherwise 0.
+static int rt_path_same_entry_cstr(const char *left, const char *right) {
+    wchar_t *wide_left = rt_file_path_utf8_to_wide(left);
+    wchar_t *wide_right = rt_file_path_utf8_to_wide(right);
+    if (!wide_left || !wide_right) {
+        free(wide_left);
+        free(wide_right);
+        return 0;
+    }
+    HANDLE left_handle = CreateFileW(wide_left,
+                                     0,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     NULL,
+                                     OPEN_EXISTING,
+                                     FILE_FLAG_BACKUP_SEMANTICS,
+                                     NULL);
+    HANDLE right_handle = CreateFileW(wide_right,
+                                      0,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                      NULL,
+                                      OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS,
+                                      NULL);
+    free(wide_left);
+    free(wide_right);
+    if (left_handle == INVALID_HANDLE_VALUE || right_handle == INVALID_HANDLE_VALUE) {
+        if (left_handle != INVALID_HANDLE_VALUE)
+            CloseHandle(left_handle);
+        if (right_handle != INVALID_HANDLE_VALUE)
+            CloseHandle(right_handle);
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION left_info;
+    BY_HANDLE_FILE_INFORMATION right_info;
+    int same = GetFileInformationByHandle(left_handle, &left_info) &&
+               GetFileInformationByHandle(right_handle, &right_info) &&
+               left_info.dwVolumeSerialNumber == right_info.dwVolumeSerialNumber &&
+               left_info.nFileIndexHigh == right_info.nFileIndexHigh &&
+               left_info.nFileIndexLow == right_info.nFileIndexLow;
+    CloseHandle(left_handle);
+    CloseHandle(right_handle);
+    return same;
+}
 #else
 #include <sys/stat.h>
 #include <unistd.h>
@@ -86,6 +138,7 @@ static int rt_path_is_link_cstr(const char *cpath) {
  * @{ */
 #define PATH_SEP '/'
 #define PATH_SEP_STR "/"
+
 /** @} */
 
 /// @brief Inspect one validated native path without following its final component.
@@ -94,6 +147,19 @@ static int rt_path_is_link_cstr(const char *cpath) {
 static int rt_path_is_link_cstr(const char *cpath) {
     struct stat st;
     return lstat(cpath, &st) == 0 && S_ISLNK(st.st_mode);
+}
+
+/// @brief Compare two existing POSIX filesystem entries by device/inode identity.
+/// @details `stat` follows symbolic links so aliases compare as the target entry.
+/// @param left First validated native path.
+/// @param right Second validated native path.
+/// @return 1 when both paths resolve to the same entry; otherwise 0.
+static int rt_path_same_entry_cstr(const char *left, const char *right) {
+    struct stat left_stat;
+    struct stat right_stat;
+    if (stat(left, &left_stat) != 0 || stat(right, &right_stat) != 0)
+        return 0;
+    return left_stat.st_dev == right_stat.st_dev && left_stat.st_ino == right_stat.st_ino;
 }
 #endif
 
@@ -829,6 +895,23 @@ int64_t rt_path_is_link(rt_string path) {
     if (!rt_file_path_from_vstr(path, &cpath) || !cpath || cpath[0] == '\0')
         return 0;
     return rt_path_is_link_cstr(cpath);
+}
+
+/// @brief Return whether two paths resolve to the same existing filesystem entry.
+/// @details Compares stable filesystem identity for regular files, directories, and other
+///          stat-able entries. Normal path resolution follows symlinks and Windows reparse points.
+///          Invalid strings, embedded NUL bytes, missing paths, and inaccessible entries compare
+///          unequal without trapping.
+/// @param left First borrowed runtime path string.
+/// @param right Second borrowed runtime path string.
+/// @return 1 when both operands resolve to the same entry; otherwise 0.
+int64_t rt_path_same_entry(rt_string left, rt_string right) {
+    const char *left_path = NULL;
+    const char *right_path = NULL;
+    if (!rt_file_path_from_vstr(left, &left_path) || !left_path || left_path[0] == '\0' ||
+        !rt_file_path_from_vstr(right, &right_path) || !right_path || right_path[0] == '\0')
+        return 0;
+    return rt_path_same_entry_cstr(left_path, right_path) ? 1 : 0;
 }
 
 /// @brief Convert a relative path to an absolute path.

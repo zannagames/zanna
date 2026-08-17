@@ -8,8 +8,9 @@
 // File: src/lib/gui/tests/test_vg_codeeditor_behavior.c
 // Purpose: Behavioral unit tests for CodeEditor editing/interaction features
 //          that do not require a real font or window: undo coalescing of typing
-//          bursts (plan 02) and edge autoscroll during a selection drag
-//          (plan 05). Metrics are set directly on the widget struct so the tests
+//          bursts (plan 02), edge autoscroll during a selection drag (plan 05),
+//          and state-preserving full-buffer save normalization. Metrics are set
+//          directly on the widget struct so the tests
 //          run headless and deterministically.
 // Key invariants:
 //   - No font/backend dependency: char_width/line_height are set by hand.
@@ -324,8 +325,7 @@ static void test_wheel_speed_multiplier(void) {
     float at2x = e->scroll_y;
 
     check("wheel moved at 1x speed", at1x > 0.0f);
-    check("wheel speed 2x scrolls about twice as far",
-          at2x > at1x * 1.9f && at2x < at1x * 2.1f);
+    check("wheel speed 2x scrolls about twice as far", at2x > at1x * 1.9f && at2x < at1x * 2.1f);
 
     vg_set_wheel_speed(1.0f); // restore global for any later tests
     vg_widget_destroy(&e->base);
@@ -405,10 +405,65 @@ static void test_buffer_revision_independent(void) {
         vg_codeeditor_insert_text(e, "x");
     // A (detached) still reads "one".
     char *ta = vg_editor_buffer_get_text(prevA);
-    check("detached buffer unaffected by edits to the attached one",
-          ta && strcmp(ta, "one") == 0);
+    check("detached buffer unaffected by edits to the attached one", ta && strcmp(ta, "one") == 0);
     free(ta);
     vg_editor_buffer_destroy(prevA);
+    vg_widget_destroy(&e->base);
+}
+
+/// @brief Save normalization remains undoable without discarding editor state.
+static void test_replace_all_text_preserves_state(void) {
+    vg_codeeditor_t *e = vg_codeeditor_create(NULL);
+    vg_codeeditor_set_text(e, "one  \ntwo\nthree\nfour");
+    vg_codeeditor_set_cursor(e, 2, 2);
+    e->extra_cursors = calloc(1, sizeof(*e->extra_cursors));
+    e->extra_cursor_cap = 1;
+    e->extra_cursor_count = 1;
+    e->extra_cursors[0].line = 3;
+    e->extra_cursors[0].col = 3;
+    e->extra_cursors[0].selection = (vg_selection_t){3, 1, 3, 3};
+    e->extra_cursors[0].has_selection = true;
+    e->fold_regions = calloc(1, sizeof(*e->fold_regions));
+    e->fold_region_cap = 1;
+    e->fold_region_count = 1;
+    e->fold_regions[0] = (struct vg_fold_region){0, 1, true};
+    e->has_folded_lines = true;
+    e->scroll_x = 14.0f;
+    e->scroll_y = 28.0f;
+
+    check("state-preserving replacement succeeds",
+          vg_codeeditor_replace_all_text(e, "one\ntwo\nthree\nfour\n"));
+    check("replacement text applied", text_equals(e, "one\ntwo\nthree\nfour\n"));
+    check("primary cursor retained", e->cursor_line == 2 && e->cursor_col == 2);
+    check("extra cursor and selection retained",
+          e->extra_cursor_count == 1 && e->extra_cursors[0].line == 3 &&
+              e->extra_cursors[0].col == 3 && e->extra_cursors[0].has_selection);
+    check("fold retained",
+          e->fold_region_count == 1 && e->fold_regions[0].folded && e->has_folded_lines);
+    check("scroll retained", e->scroll_x == 14.0f && e->scroll_y == 28.0f);
+    vg_codeeditor_undo(e);
+    check("normalization is one undo unit", text_equals(e, "one  \ntwo\nthree\nfour"));
+
+    vg_widget_destroy(&e->base);
+}
+
+/// @brief Detached documents use the same state/history-preserving replacement.
+static void test_detached_buffer_replace_all_text(void) {
+    vg_codeeditor_t *e = vg_codeeditor_create(NULL);
+    vg_codeeditor_set_text(e, "alpha  \nbeta");
+    vg_codeeditor_set_cursor(e, 1, 2);
+    vg_editor_buffer_t *detached =
+        vg_codeeditor_swap_buffer(e, vg_editor_buffer_create("temporary"));
+    check("detached replacement succeeds",
+          vg_editor_buffer_replace_all_text(detached, "alpha\nbeta\n"));
+    char *text = vg_editor_buffer_get_text(detached);
+    check("detached replacement text applied", text && strcmp(text, "alpha\nbeta\n") == 0);
+    free(text);
+    vg_editor_buffer_t *temporary = vg_codeeditor_swap_buffer(e, detached);
+    check("detached cursor retained", e->cursor_line == 1 && e->cursor_col == 2);
+    vg_codeeditor_undo(e);
+    check("detached normalization remains undoable", text_equals(e, "alpha  \nbeta"));
+    vg_editor_buffer_destroy(temporary);
     vg_widget_destroy(&e->base);
 }
 
@@ -418,6 +473,8 @@ int main(void) {
     test_buffer_swap_preserves_undo();
     test_buffer_swap_preserves_cursor();
     test_buffer_revision_independent();
+    test_replace_all_text_preserves_state();
+    test_detached_buffer_replace_all_text();
     test_coalesce_word_is_one_undo();
     test_time_pause_breaks_unit();
     test_whitespace_word_boundary();

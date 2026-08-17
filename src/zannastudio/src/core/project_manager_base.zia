@@ -16,11 +16,14 @@
 //   - Successful mutations retarget or clear Explorer selection and expansion.
 //   - Explorer scan, natural sort, and node publication work are frame-bounded.
 //   - Published children use deterministic, case-insensitive natural ordering.
+//   - Native-artifact freshness is derived only from a complete cooperative
+//     dependency scan; incomplete/error snapshots remain explicitly unknown.
 // Ownership/Lifetime:
 //   - ProjectManager owns workspace models, caches, and path bookkeeping.
 //   - AppShell owns the injected TreeView for the complete manager lifetime.
 // Links: zannastudio/src/core/project_file_ops.zia,
-//        zannastudio/src/core/document_manager.zia
+//        zannastudio/src/core/document_manager.zia,
+//        zannastudio/src/services/source_freshness.zia
 //
 //===----------------------------------------------------------------------===//
 
@@ -29,8 +32,10 @@ module project_manager_base;
 bind "project";
 bind "project_file_ops";
 bind "project_bind_rewriter";
+bind "../services/path_identity";
 bind "../services/workspace_file_index";
 bind "../services/safe_io";
+bind "../services/source_freshness";
 bind Zanna.GUI as GUI;
 bind Obj = Zanna.Core.Object;
 bind Seq = Zanna.Collections.Seq;
@@ -39,6 +44,7 @@ bind IO = Zanna.IO;
 bind Zanna.IO.Path as Path;
 bind Zanna.IO.Dir as Dir;
 bind Zanna.String as Str;
+bind StringBuilder = Zanna.Text.StringBuilder;
 bind FileIndex = Zanna.Workspace.FileIndex;
 bind Option = Zanna.Option;
 bind "../core/document_manager";
@@ -338,7 +344,7 @@ func RelativeBindPath(importingDir: String,
 }
 
 func NormalizeAbsPath(path: String) -> String {
-    return bind_utils.NormalizeAbsPath(path);
+    return path_identity.Normalize(path);
 }
 
 func NormalizeBindSeparators(path: String) -> String {
@@ -381,6 +387,8 @@ class ProjectManagerBase {
     expose Integer fileCachePageOffset;
     /// True if the runtime index hit its safety cap during the last refresh.
     expose Boolean fileCacheTruncated;
+    /// Cooperative dependency scanner used by native run/play freshness checks.
+    expose source_freshness.SourceFreshnessScanner sourceFreshness;
     /// Destination path for the most recent explorer move-to-trash operation.
     expose String lastTrashPath;
     /// Absolute directory paths whose TreeView children have been populated.
@@ -421,6 +429,7 @@ class ProjectManagerBase {
         fileCacheRootIndex = 0;
         fileCachePageOffset = 0;
         fileCacheTruncated = false;
+        sourceFreshness = new source_freshness.SourceFreshnessScanner();
         lastTrashPath = "";
         loadedTreeDirs = new List();
         treeLoadJobs = [];
@@ -433,6 +442,52 @@ class ProjectManagerBase {
         treeRestoredSelection = false;
         lastBindRewriteCount = 0;
         lastOperationError = "";
+    }
+
+    /// @brief Advance native-build dependency discovery within a frame budget.
+    expose func PumpSourceFreshness(maxEntries: Integer) -> Integer {
+        if sourceFreshness == null { return 0; }
+        if self.project == null or self.project.isOpen == false {
+            sourceFreshness.EnsureProject("");
+            return 0;
+        }
+        sourceFreshness.EnsureProject(self.project.rootPath);
+        return sourceFreshness.Pump(maxEntries);
+    }
+
+    /// @brief Return true only when a complete reliable scan proves freshness.
+    expose func IsNativeArtifactKnownFresh(path: String) -> Boolean {
+        if sourceFreshness == null or self.project == null
+           or self.project.isOpen == false { return false; }
+        sourceFreshness.EnsureProject(self.project.rootPath);
+        return sourceFreshness.IsArtifactKnownFresh(path);
+    }
+
+    /// @brief Invalidate freshness after one filesystem change/save.
+    expose func InvalidateSourceFreshnessPath(path: String) -> Boolean {
+        if sourceFreshness == null { return false; }
+        if self.project != null and self.project.isOpen {
+            sourceFreshness.EnsureProject(self.project.rootPath);
+        }
+        return sourceFreshness.InvalidatePath(path);
+    }
+
+    /// @brief Invalidate freshness after a batch of saved/watched paths.
+    expose func InvalidateSourceFreshnessPaths(paths: Any) -> Boolean {
+        if sourceFreshness == null { return false; }
+        if self.project != null and self.project.isOpen {
+            sourceFreshness.EnsureProject(self.project.rootPath);
+        }
+        return sourceFreshness.InvalidatePaths(paths);
+    }
+
+    /// @brief Force the current snapshot to unknown before a structural rescan.
+    expose func InvalidateAllSourceFreshness() {
+        if sourceFreshness == null { return; }
+        if self.project != null and self.project.isOpen {
+            sourceFreshness.EnsureProject(self.project.rootPath);
+        }
+        sourceFreshness.InvalidateAll();
     }
 
     /// @brief Inject the TreeView widget and construct the empty Project.
@@ -513,18 +568,20 @@ class ProjectManagerBase {
     ///          root path lets them restart when a folder is added or removed,
     ///          not just when the primary root changes.
     expose func WorkspaceSignature() -> String {
-        var result = "";
+        var result = new StringBuilder();
         var roots = AllRoots();
+        var written = 0;
         var i = 0;
         while i < roots.count() {
             var root = roots.get(i);
             if root != null {
-                if result != "" { result = result + "\n"; }
-                result = result + root.rootPath;
+                if written > 0 { result.Append("\n"); }
+                result.Append(root.rootPath);
+                written = written + 1;
             }
             i = i + 1;
         }
-        return result;
+        return result.ToString();
     }
 
     /// @brief The workspace root owning @p path (longest rootPath prefix).
@@ -577,7 +634,7 @@ class ProjectManagerBase {
     expose func IsWorkspaceRootPath(path: String) -> Boolean {
         var owner = WorkspaceProjectForPath(path);
         if owner == null { return false; }
-        return NormalizeAbsPath(path) == NormalizeAbsPath(owner.rootPath);
+        return path_identity.SameEntry(path, owner.rootPath);
     }
 
     /// @brief Return whether Explorer may rename, move, or trash a path.
@@ -626,20 +683,6 @@ class ProjectManagerBase {
     func PathHasLinkedComponent(path: String,
                                 rootPath: String,
                                 includeLeaf: Boolean) -> Boolean {
-        var normalized = NormalizeAbsPath(path);
-        var root = NormalizeAbsPath(rootPath);
-        if project_file_ops.IsWithinRoot(normalized, root) == false { return true; }
-        var current = normalized;
-        if includeLeaf == false { current = NormalizeAbsPath(Path.Directory(current)); }
-        while current != root {
-            if Path.IsLink(current) { return true; }
-            var parent = NormalizeAbsPath(Path.Directory(current));
-            if parent == current
-               or project_file_ops.IsWithinRoot(parent, root) == false {
-                return true;
-            }
-            current = parent;
-        }
-        return false;
+        return path_identity.HasLinkedComponent(path, rootPath, includeLeaf);
     }
 }

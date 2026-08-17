@@ -32,6 +32,7 @@ bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
 bind Time = Zanna.Time;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: debug_session
@@ -231,38 +232,47 @@ class DebugSessionBase {
 
     hide func buildSetBreakpoints(path: String,
                                   store: breakpoints.BreakpointStore) -> String {
-        var lines = "";
+        var lines = new StringBuilder();
         var lineCount = 0;
-        var meta = "";
+        var meta = new StringBuilder();
         var metaCount = 0;
         if store != null {
             var i = 0;
             while i < store.Count() {
                 if store.GetPath(i) == path {
                     var ln = store.GetLine(i);
-                    if lineCount > 0 { lines = lines + ","; }
-                    lines = lines + ln;
+                    if lineCount > 0 { lines.Append(","); }
+                    lines.Append("" + ln);
                     lineCount = lineCount + 1;
                     var cond = store.GetCondition(i);
                     var log = store.GetLogMessage(i);
                     if cond != "" or log != "" {
-                        if metaCount > 0 { meta = meta + ","; }
-                        meta = meta + "{\"line\":" + ln;
-                        if cond != "" { meta = meta + ",\"condition\":\"" + jsonEscape(cond) + "\""; }
-                        if log != "" { meta = meta + ",\"logMessage\":\"" + jsonEscape(log) + "\""; }
-                        meta = meta + "}";
+                        if metaCount > 0 { meta.Append(","); }
+                        meta.Append("{\"line\":" + ln);
+                        if cond != "" {
+                            meta.Append(",\"condition\":\""
+                                        + jsonEscape(cond) + "\"");
+                        }
+                        if log != "" {
+                            meta.Append(",\"logMessage\":\""
+                                        + jsonEscape(log) + "\"");
+                        }
+                        meta.Append("}");
                         metaCount = metaCount + 1;
                     }
                 }
                 i = i + 1;
             }
         }
-        var out = "{\"type\":\"setBreakpoints\",\"path\":\"" + jsonEscape(path)
-            + "\",\"lines\":[" + lines + "]";
+        var out = new StringBuilder();
+        out.Append("{\"type\":\"setBreakpoints\",\"path\":\""
+                   + jsonEscape(path) + "\",\"lines\":["
+                   + lines.ToString() + "]");
         if metaCount > 0 {
-            out = out + ",\"meta\":[" + meta + "]";
+            out.Append(",\"meta\":[" + meta.ToString() + "]");
         }
-        return out + "}";
+        out.Append("}");
+        return out.ToString();
     }
 
     /// @brief Re-send the breakpoint set (with conditions/logpoints) for @p path so
@@ -603,6 +613,31 @@ class DebugSessionBase {
     expose func Terminate() -> Boolean {
         if processHandle == null { return false; }
         return RequestTerminate();
+    }
+
+    /// @brief Synchronously retire the adapter process during IDE shutdown.
+    /// @details Interactive Stop remains graceful and frame-driven. Once the
+    ///          frame loop is leaving there is no future Poll() to enforce its
+    ///          grace deadline, so final teardown kills and destroys the handle
+    ///          immediately and invalidates every adapter-owned snapshot.
+    /// @return True when no adapter handle remains.
+    expose func Shutdown() -> Boolean {
+        restartPending = false;
+        restartZannaBin = "";
+        restartPath = "";
+        if processHandle != null {
+            processHandle.Kill();
+            ReleaseProcessHandle();
+        }
+        hasSession = false;
+        stopped = false;
+        terminated = true;
+        terminateRequested = false;
+        terminateCountdown.Reset();
+        ClearStopSnapshot();
+        ClearEvaluationSnapshot();
+        ClearWatchValues();
+        return processHandle == null;
     }
 
     /// @brief Queue a restart and begin asynchronous termination of this adapter.

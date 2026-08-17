@@ -7,10 +7,11 @@
 //
 // File: tests/runtime/RTFileExtTests.cpp
 // Purpose: Validate runtime file operations in rt_file_ext.c.
-// Key invariants: File operations work correctly across platforms,
-//                 ReadBytes/WriteBytes handle binary data correctly,
-//                 ReadLines/WriteLines preserve line structure, and atomic
-//                 overwrites preserve existing file permissions, and Windows
+// Key invariants: File operations work correctly across platforms, bounded text reads reject
+//                 oversize before allocation, no-clobber writes preserve racing destinations,
+//                 compare/exchange writes reject stale snapshots without changing the file,
+//                 ReadBytes/WriteBytes handle binary data correctly, ReadLines/WriteLines preserve
+//                 line structure, atomic overwrites preserve existing permissions, and Windows
 //                 sparse files retain 64-bit seek/stat behavior beyond 2 GiB.
 // Ownership/Lifetime: Uses runtime library; tests return newly allocated
 //                     strings and objects that must be released.
@@ -174,15 +175,18 @@ static void test_same_file() {
     printf("Testing rt_file_same:\n");
 
     const char *base = get_test_base();
-    char source_path[512], alias_path[512], other_path[512];
+    char source_path[512], alias_path[512], other_path[512], directory_path[512];
     snprintf(source_path, sizeof(source_path), "%s_same_source.txt", base);
     snprintf(alias_path, sizeof(alias_path), "%s_same_alias.txt", base);
     snprintf(other_path, sizeof(other_path), "%s_same_other.txt", base);
+    snprintf(directory_path, sizeof(directory_path), "%s_same_directory", base);
     remove_file(source_path);
     remove_file(alias_path);
     remove_file(other_path);
+    rmdir_p(directory_path);
     create_test_file(source_path, "same identity");
     create_test_file(other_path, "same contents, different identity");
+    mkdir_p(directory_path);
 
     rt_string source = rt_const_cstr(source_path);
     test_result("identical path is same file", rt_file_same(source, source) == 1);
@@ -190,6 +194,8 @@ static void test_same_file() {
                 rt_file_same(source, rt_const_cstr(other_path)) == 0);
     test_result("missing path is not same file",
                 rt_file_same(source, rt_const_cstr(get_missing_path())) == 0);
+    test_result("directory is not treated as same file",
+                rt_file_same(rt_const_cstr(directory_path), rt_const_cstr(directory_path)) == 0);
 
     std::error_code linkError;
     std::filesystem::create_hard_link(source_path, alias_path, linkError);
@@ -203,6 +209,7 @@ static void test_same_file() {
     remove_file(source_path);
     remove_file(alias_path);
     remove_file(other_path);
+    rmdir_p(directory_path);
     printf("\n");
 }
 
@@ -461,6 +468,32 @@ static void test_read_regular_file_required() {
     printf("\n");
 }
 
+/// @brief Verify bounded text reads accept exact/empty limits and reject oversize or invalid caps.
+static void test_read_all_text_bounded() {
+    printf("Testing rt_io_file_read_all_text_bounded:\n");
+
+    const char *base = get_test_base();
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s_read_bounded.txt", base);
+    remove_file(file_path);
+    create_test_file(file_path, "four");
+    rt_string path = rt_const_cstr(file_path);
+
+    rt_string exact = rt_io_file_read_all_text_bounded(path, 4);
+    test_result("exact byte ceiling succeeds", rt_str_eq(exact, rt_const_cstr("four")));
+    EXPECT_TRAP(rt_io_file_read_all_text_bounded(path, 3));
+    test_result("oversize traps", true);
+    EXPECT_TRAP(rt_io_file_read_all_text_bounded(path, -1));
+    test_result("negative ceiling traps", true);
+
+    create_test_file(file_path, "");
+    rt_string empty = rt_io_file_read_all_text_bounded(path, 0);
+    test_result("empty file fits zero ceiling", rt_str_len(empty) == 0);
+
+    remove_file(file_path);
+    printf("\n");
+}
+
 /// @brief Test embedded NUL bytes are rejected before paths reach C APIs.
 static void test_embedded_nul_path_rejected() {
     printf("Testing embedded NUL path rejection:\n");
@@ -669,6 +702,57 @@ static void test_write_all_text() {
 
     remove_file(file_path);
 
+    printf("\n");
+}
+
+/// @brief Verify durable no-clobber text creation preserves an existing destination.
+static void test_write_all_text_new() {
+    printf("Testing rt_io_file_write_all_text_new:\n");
+
+    const char *base = get_test_base();
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s_write_all_text_new.txt", base);
+    remove_file(file_path);
+    rt_string path = rt_const_cstr(file_path);
+
+    rt_io_file_write_all_text_new(path, rt_const_cstr("first"));
+    test_result("missing destination created",
+                rt_str_eq(rt_io_file_read_all_text(path), rt_const_cstr("first")));
+    EXPECT_TRAP(rt_io_file_write_all_text_new(path, rt_const_cstr("replacement")));
+    test_result("existing destination preserved",
+                rt_str_eq(rt_io_file_read_all_text(path), rt_const_cstr("first")));
+
+    remove_file(file_path);
+    printf("\n");
+}
+
+/// @brief Verify whole-file compare/exchange has one stale-snapshot commit point.
+static void test_compare_exchange_all_text() {
+    printf("Testing rt_io_file_compare_exchange_all_text:\n");
+
+    const char *base = get_test_base();
+    char file_path[512];
+    snprintf(file_path, sizeof(file_path), "%s_compare_exchange.txt", base);
+    remove_file(file_path);
+    rt_string path = rt_const_cstr(file_path);
+
+    test_result("missing file matches empty snapshot",
+                rt_io_file_compare_exchange_all_text(
+                    path, rt_const_cstr(""), rt_const_cstr("revision-1")) == 1);
+    test_result("first revision committed",
+                rt_str_eq(rt_io_file_read_all_text(path), rt_const_cstr("revision-1")));
+    test_result("stale snapshot rejected",
+                rt_io_file_compare_exchange_all_text(
+                    path, rt_const_cstr(""), rt_const_cstr("lost update")) == 0);
+    test_result("rejected replacement preserved current bytes",
+                rt_str_eq(rt_io_file_read_all_text(path), rt_const_cstr("revision-1")));
+    test_result("current snapshot commits",
+                rt_io_file_compare_exchange_all_text(
+                    path, rt_const_cstr("revision-1"), rt_const_cstr("revision-2")) == 1);
+    test_result("second revision committed",
+                rt_str_eq(rt_io_file_read_all_text(path), rt_const_cstr("revision-2")));
+
+    remove_file(file_path);
     printf("\n");
 }
 
@@ -1056,12 +1140,15 @@ int main() {
     test_move_directory_source_traps();
     test_size();
     test_read_regular_file_required();
+    test_read_all_text_bounded();
     test_embedded_nul_path_rejected();
     test_read_write_bytes();
     test_read_write_lines();
     test_append();
     test_append_line();
     test_write_all_text();
+    test_write_all_text_new();
+    test_compare_exchange_all_text();
     test_read_write_all_bytes();
     test_write_all_bytes_invalid_data_traps();
     test_read_all_lines();

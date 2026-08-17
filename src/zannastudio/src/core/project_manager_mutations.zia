@@ -30,6 +30,7 @@ bind IO = Zanna.IO;
 bind Zanna.IO.Path as Path;
 bind Zanna.IO.Dir as Dir;
 bind Zanna.String as Str;
+bind StringBuilder = Zanna.Text.StringBuilder;
 bind FileIndex = Zanna.Workspace.FileIndex;
 bind Option = Zanna.Option;
 bind "document_manager";
@@ -52,6 +53,7 @@ expose func RenameSelected(newName: String,
         if oldPath == "" or newName == "" { return ""; }
         if CanMutatePath(oldPath) == false { return ""; }
         if IsPlainChildName(newName) == false {
+            lastOperationError = project_file_ops.ChildNameError(newName);
             return "";
         }
         var oldName = Path.Name(oldPath);
@@ -475,6 +477,7 @@ expose func RenameSelected(newName: String,
             var manifestRead = safe_io.ReadAllText(manifestPath);
             if manifestRead.ok == false { return false; }
             var lines = Str.Split(manifestRead.text, "\n");
+            var contentBuilder = new StringBuilder();
             var i = 0;
             while i < Seq.get_Count(lines) {
                 var line = Obj.ToString(Seq.Get(lines, i));
@@ -482,10 +485,11 @@ expose func RenameSelected(newName: String,
                     line = "entry " + rel;
                     replaced = true;
                 }
-                if i > 0 { content = content + "\n"; }
-                content = content + line;
+                if i > 0 { contentBuilder.Append("\n"); }
+                contentBuilder.Append(line);
                 i = i + 1;
             }
+            content = contentBuilder.ToString();
         }
 
         if content == "" {

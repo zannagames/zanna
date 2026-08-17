@@ -5,7 +5,13 @@
 //
 // File: zannastudio/src/probes/terminal_hidden_start_probe.zia
 // Purpose: Regression probe for the integrated terminal's hidden-panel startup
-//          guard.
+//          guard and per-session hidden-output retention.
+// Key invariants:
+//   - Pumping a hidden controller never auto-starts a terminal.
+//   - Already-running hidden sessions drain into their own bounded scrollback.
+//   - Revealing the panel renders pending output exactly once.
+// Links: zannastudio/src/terminal/terminal_controller.zia,
+//        zannastudio/src/terminal/terminal_session.zia
 //
 //===----------------------------------------------------------------------===//
 
@@ -84,8 +90,12 @@ func main() {
             i = i + 1;
         }
         ctrl.Pump();
-        if Str.IndexOf(ctrl.hiddenOutput, "termhidden789") < 0 {
+        if Str.IndexOf(ctrl.sess.replayBuffer, "termhidden789") < 0 {
             fail(shell, "hidden pump did not buffer PTY output");
+            return;
+        }
+        if Str.IndexOf(ctrl.sess.pendingOutput, "termhidden789") < 0 {
+            fail(shell, "hidden output was not pending for first render");
             return;
         }
     }
@@ -98,8 +108,12 @@ func main() {
         fail(shell, "visible pump did not attempt PTY startup");
         return;
     }
-    if ctrl.hiddenOutput != "" {
+    if ctrl.sess.pendingOutput != "" {
         fail(shell, "visible pump did not flush hidden terminal output");
+        return;
+    }
+    if Pty.IsSupported() and Str.IndexOf(ctrl.sess.replayBuffer, "termhidden789") < 0 {
+        fail(shell, "visible flush discarded session scrollback");
         return;
     }
 

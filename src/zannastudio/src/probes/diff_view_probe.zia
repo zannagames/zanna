@@ -159,6 +159,27 @@ func main() {
         return;
     }
 
+    // A bounded replace-everything fallback is never mislabeled as an exact
+    // Myers result. Keep one shared line at opposite ends so the disjoint-input
+    // fast path cannot hide the edit-depth budget.
+    var depthLeft = new Zanna.Text.StringBuilder();
+    var depthRight = new Zanna.Text.StringBuilder();
+    depthLeft.Append("shared");
+    i = 0;
+    while i < 600 {
+        depthLeft.Append("\nleft-depth-" + i);
+        depthRight.Append("right-depth-" + i + "\n");
+        i = i + 1;
+    }
+    depthRight.Append("shared");
+    var degraded = diff_engine.BuildRowsCapped(
+        depthLeft.ToString(), depthRight.ToString(), 20);
+    if degraded.degradation == diff_engine.DIFF_DEGRADED_NONE
+       or degraded.degradation == diff_engine.DIFF_DEGRADED_CANCELLED {
+        fail("bounded diff fallback did not expose degradation reason");
+        return;
+    }
+
     // The owned worker returns immediately, publishes a typed bounded result,
     // and can be drained safely during teardown.
     var job = new diff_job.DiffJob();
@@ -211,6 +232,19 @@ func main() {
        or completed!.title != "latest" or job.cancelledCount <= 0 {
         job.CancelAndWait();
         fail("diff worker latest-wins cancellation");
+        return;
+    }
+
+    // Cancellation is observed inside trace snapshots and diagonal walks, not
+    // merely after a pathological calculation has already finished.
+    var cancelJob = new diff_job.DiffJob();
+    cancelJob.Queue("cancel-heavy", depthLeft.ToString(), depthRight.ToString());
+    Clock.Sleep(1);
+    var cancelStart = Clock.NowMs();
+    if cancelJob.CancelAndWait() == false
+       or Clock.NowMs() - cancelStart > 2000
+       or cancelJob.cancelledCount != 1 {
+        fail("cooperative diff cancellation did not drain promptly");
         return;
     }
 

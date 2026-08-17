@@ -174,6 +174,31 @@ static int game3d_path_has_fbx_extension(const char *path) {
            tolower((unsigned char)dot[3]) == 'x' && dot[4] == '\0';
 }
 
+/// @brief Whether @p path ends in a VSCN scene extension (.scene3d/.vscn), case-insensitive.
+/// @param path Null-terminated path to inspect.
+/// @return 1 for `.scene3d` or `.vscn`, or 0 otherwise.
+static int game3d_path_has_vscn_extension(const char *path) {
+    static const char *const exts[] = {".scene3d", ".vscn"};
+    if (!path)
+        return 0;
+    const char *dot = strrchr(path, '.');
+    if (!dot || !dot[1])
+        return 0;
+    for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); ++i) {
+        const char *a = dot;
+        const char *b = exts[i];
+        while (*a && *b) {
+            if (tolower((unsigned char)*a) != tolower((unsigned char)*b))
+                break;
+            ++a;
+            ++b;
+        }
+        if (*a == '\0' && *b == '\0')
+            return 1;
+    }
+    return 0;
+}
+
 /// @brief Read an entire file into a malloc'd buffer (caller frees; @p out_size set). NULL on
 /// failure.
 ///

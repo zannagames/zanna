@@ -13,12 +13,10 @@
 /// option change rebuilds matches across the linked live code editor. The
 /// current match is selected in the editor and scrolled into view.
 ///
-/// Literal search is UTF-8 column-aware and supports ASCII-insensitive and
-/// whole-word modes. POSIX builds use `regcomp()` and `regexec()` for regular
-/// expressions; Windows uses the local deterministic fallback supporting
-/// literals, dot, classes, anchors, and `*`, `+`, or `?` quantifiers.
-/// Replace-all processes matches in reverse document order so earlier columns
-/// remain valid.
+/// Literal search is UTF-8 column-aware. Regex search uses the same bounded
+/// in-tree engine as `Zanna.Text.CompiledPattern` on every platform. Interactive
+/// edits are debounced and every scan has byte/result caps. Replace-all runs in
+/// reverse document order and expands `$0`, `$1`... capture references.
 ///
 /// Child widgets are owned by the widget hierarchy. The match array is owned
 /// directly by the bar.
@@ -34,14 +32,13 @@
 #include "../../include/vg_ide_widgets.h"
 #include "../../include/vg_theme.h"
 #include "../../include/vg_widgets.h"
+#include "rt_regex_internal.h"
 #include <ctype.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifndef _WIN32
-#include <regex.h>
-#endif
 
 //=============================================================================
 // Constants
@@ -53,6 +50,9 @@
 #define BUTTON_WIDTH 24
 #define PADDING 4
 #define INITIAL_MATCH_CAPACITY 64
+#define FINDREPLACEBAR_MAX_MATCHES 10000u
+#define FINDREPLACEBAR_MAX_SCAN_BYTES (16u * 1024u * 1024u)
+#define FINDREPLACEBAR_DEBOUNCE_SECONDS 0.15f
 
 //=============================================================================
 // Forward Declarations
@@ -70,24 +70,16 @@ static void findreplacebar_set_font_widget(vg_widget_t *widget, void *font, floa
 
 static void perform_search(vg_findreplacebar_t *bar);
 static void clear_matches(vg_findreplacebar_t *bar);
-static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, uint32_t end);
+static bool add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, uint32_t end);
 static const char *find_in_line(const char *text,
                                 const char *query,
                                 vg_search_options_t *options,
                                 size_t *match_len);
-#ifndef _WIN32
 static const char *find_regex_in_line(const char *text,
                                       const char *start,
-                                      regex_t *regex,
+                                      re_compiled_pattern *regex,
                                       vg_search_options_t *options,
                                       size_t *match_len);
-#else
-static const char *find_regex_in_line(const char *text,
-                                      const char *start,
-                                      const char *pattern,
-                                      vg_search_options_t *options,
-                                      size_t *match_len);
-#endif
 static void highlight_current_match(vg_findreplacebar_t *bar);
 static void update_result_text(vg_findreplacebar_t *bar);
 
@@ -196,6 +188,22 @@ static uint32_t fr_utf8_col_from_byte_offset(const char *text, size_t byte_offse
     return col;
 }
 
+/// @brief Convert a code-point column to a clamped UTF-8 byte offset.
+static size_t fr_utf8_byte_offset_from_col(const char *text, uint32_t column) {
+    if (!text)
+        return 0;
+    const char *cursor = text;
+    uint32_t current = 0;
+    while (*cursor && current < column) {
+        const char *next = fr_utf8_next(cursor);
+        if (!next || next <= cursor)
+            break;
+        cursor = next;
+        current++;
+    }
+    return (size_t)(cursor - text);
+}
+
 /// @brief Walk back from @p p to the start of the previous UTF-8 codepoint
 ///        within @p text; returns NULL if @p p is already at the start.
 /// @param text Beginning of the UTF-8 buffer.
@@ -233,17 +241,11 @@ static uint32_t fr_utf8_decode_at(const char *p, size_t max_len) {
     return 0xFFFD;
 }
 
-/// @brief True if @p cp is a word boundary (NUL, or an ASCII non-alphanumeric
-///        that is not '_'); non-ASCII is treated as a word character so
-///        whole-word search keeps accented words intact.
+/// @brief True if @p cp is a Unicode whole-word boundary.
 /// @param cp Unicode code point to classify.
-/// @return `true` when the code point forms a supported word boundary.
+/// @return `true` when the code point does not continue a Unicode word.
 static bool is_word_boundary_codepoint(uint32_t cp) {
-    if (cp == 0)
-        return true;
-    if (cp < 0x80)
-        return !isalnum((unsigned char)cp) && cp != '_';
-    return false;
+    return cp == 0 || !re_is_word_codepoint(cp);
 }
 
 /// @brief Tests whether a match is surrounded by supported word boundaries.
@@ -316,359 +318,45 @@ static const char *find_in_line(const char *text,
     return NULL;
 }
 
-#ifndef _WIN32
-/// @brief Find the next POSIX-regex match of @p regex in @p text at or after
-///        @p start, honoring the whole-word flag in @p options.
-/// @param text Full line used for whole-word boundary checks.
-/// @param start First position eligible for matching.
-/// @param regex Compiled POSIX regular expression.
-/// @param options Search options controlling whole-word validation.
-/// @param[out] match_len Receives the matched byte length on success.
-/// @return Pointer into @p text at the match, or NULL if none. (POSIX-only;
-///         Windows builds use a non-regex fallback.)
+/// @brief Find the next match with the shared bounded runtime regex engine.
+/// @details Matches, anchors, case options, and malformed-pattern behavior are
+///          identical on Windows, macOS, and Linux. Zero-width matches are
+///          returned to the caller, which owns progress between occurrences.
 static const char *find_regex_in_line(const char *text,
                                       const char *start,
-                                      regex_t *regex,
+                                      re_compiled_pattern *regex,
                                       vg_search_options_t *options,
                                       size_t *match_len) {
-    if (!text || !start || !regex || !match_len)
+    if (!text || !start || !regex || !options || !match_len || start < text)
+        return NULL;
+    size_t text_size = strlen(text);
+    size_t start_size = (size_t)(start - text);
+    if (text_size > (size_t)INT32_MAX || start_size > text_size)
         return NULL;
 
-    const char *pos = start;
-    while (*pos) {
-        regmatch_t match = {0};
-        if (regexec(regex, pos, 1, &match, 0) != 0)
+    int search_offset = (int)start_size;
+    for (;;) {
+        int match_start = 0;
+        int match_end = 0;
+        if (!re_find_match(regex, text, (int)text_size, search_offset, &match_start, &match_end) ||
+            match_start < search_offset || match_end < match_start || match_end > (int)text_size)
             return NULL;
-        if (match.rm_so < 0 || match.rm_eo < match.rm_so)
+
+        const char *found = text + match_start;
+        size_t length = (size_t)(match_end - match_start);
+        if (!options->whole_word || check_whole_word(text, found, length)) {
+            *match_len = length;
+            return found;
+        }
+
+        if (match_start >= (int)text_size)
             return NULL;
-
-        const char *found = pos + match.rm_so;
-        size_t len = (size_t)(match.rm_eo - match.rm_so);
-        if (len == 0) {
-            pos = fr_utf8_next(found);
-            continue;
-        }
-
-        if (options->whole_word && !check_whole_word(text, found, len)) {
-            pos = fr_utf8_next(found);
-            continue;
-        }
-
-        *match_len = len;
-        return found;
-    }
-
-    return NULL;
-}
-#else
-/// @brief Applies optional ASCII case folding for the Windows regex fallback.
-///
-/// @param c Byte to fold.
-/// @param case_sensitive Whether comparison must preserve ASCII case.
-/// @return Original byte or its lowercase representation.
-static int fr_regex_fold(unsigned char c, bool case_sensitive) {
-    return case_sensitive ? (int)c : tolower(c);
-}
-
-/// @brief Finds the byte after one fallback-regex atom.
-///
-/// @param pattern Pattern beginning at a literal, escape, dot, or character
-///                class.
-/// @return Pointer after the atom, or null for an incomplete class or escape.
-static const char *fr_regex_atom_end(const char *pattern) {
-    if (!pattern || !*pattern)
-        return NULL;
-    if (*pattern == '\\')
-        return pattern[1] ? pattern + 2 : NULL;
-    if (*pattern != '[')
-        return pattern + 1;
-
-    const char *p = pattern + 1;
-    if (*p == '^' || *p == '!')
-        p++;
-    if (*p == ']')
-        p++;
-    while (*p && *p != ']') {
-        if (*p == '\\' && p[1])
-            p += 2;
-        else
-            p++;
-    }
-    return *p == ']' ? p + 1 : NULL;
-}
-
-/// @brief Reads one possibly escaped byte from a fallback character class.
-///
-/// @param[in,out] cursor Current class-pattern cursor, advanced on success.
-/// @param[out] out Receives the decoded literal byte.
-/// @return `true` when a byte was read; otherwise `false`.
-static bool fr_regex_read_class_char(const char **cursor, unsigned char *out) {
-    const char *p = *cursor;
-    if (!p || !*p)
-        return false;
-    if (*p == '\\' && p[1]) {
-        *out = (unsigned char)p[1];
-        *cursor = p + 2;
-        return true;
-    }
-    *out = (unsigned char)*p;
-    *cursor = p + 1;
-    return true;
-}
-
-/// @brief Tests one byte against a fallback-regex character class.
-///
-/// @details The class may be negated and may contain inclusive byte ranges.
-///
-/// @param pattern Pattern beginning with `[`.
-/// @param ch Candidate text byte.
-/// @param case_sensitive Whether ASCII comparisons preserve case.
-/// @param[out] after Receives the byte after the closing bracket.
-/// @return `true` when a valid class accepts @p ch; otherwise `false`.
-static bool fr_regex_match_class(const char *pattern,
-                                 unsigned char ch,
-                                 bool case_sensitive,
-                                 const char **after) {
-    const char *p = pattern + 1;
-    bool negate = false;
-    bool matched = false;
-    bool valid = false;
-    if (*p == '^' || *p == '!') {
-        negate = true;
-        p++;
-    }
-
-    while (*p && *p != ']') {
-        unsigned char start = 0;
-        if (!fr_regex_read_class_char(&p, &start))
-            return false;
-
-        if (*p == '-' && p[1] && p[1] != ']') {
-            p++;
-            unsigned char end = 0;
-            if (!fr_regex_read_class_char(&p, &end))
-                return false;
-            int folded_ch = fr_regex_fold(ch, case_sensitive);
-            int folded_start = fr_regex_fold(start, case_sensitive);
-            int folded_end = fr_regex_fold(end, case_sensitive);
-            if (folded_start > folded_end) {
-                int tmp = folded_start;
-                folded_start = folded_end;
-                folded_end = tmp;
-            }
-            matched = matched || (folded_ch >= folded_start && folded_ch <= folded_end);
-        } else {
-            matched = matched ||
-                      fr_regex_fold(ch, case_sensitive) == fr_regex_fold(start, case_sensitive);
-        }
-        valid = true;
-    }
-
-    if (!valid || *p != ']')
-        return false;
-    *after = p + 1;
-    return negate ? !matched : matched;
-}
-
-/// @brief Matches one fallback-regex atom at the current text position.
-///
-/// @param pattern Atom pattern to evaluate.
-/// @param text Current non-empty text position.
-/// @param case_sensitive Whether ASCII literals preserve case.
-/// @param[out] after Receives the pattern position after the atom.
-/// @param[out] match_len Receives consumed text bytes.
-/// @return `true` when the atom matches; otherwise `false`.
-static bool fr_regex_match_atom(const char *pattern,
-                                const char *text,
-                                bool case_sensitive,
-                                const char **after,
-                                size_t *match_len) {
-    if (!pattern || !*pattern || !text || !*text)
-        return false;
-
-    if (*pattern == '.') {
-        const char *next = fr_utf8_next(text);
-        *after = pattern + 1;
-        *match_len = (size_t)(next - text);
-        return *match_len > 0;
-    }
-
-    if (*pattern == '[') {
-        if (!fr_regex_match_class(pattern, (unsigned char)*text, case_sensitive, after))
-            return false;
-        *match_len = 1;
-        return true;
-    }
-
-    if (*pattern == '\\') {
-        if (!pattern[1])
-            return false;
-        *after = pattern + 2;
-        *match_len = 1;
-        return fr_regex_fold((unsigned char)*text, case_sensitive) ==
-               fr_regex_fold((unsigned char)pattern[1], case_sensitive);
-    }
-
-    *after = pattern + 1;
-    *match_len = 1;
-    return fr_regex_fold((unsigned char)*text, case_sensitive) ==
-           fr_regex_fold((unsigned char)*pattern, case_sensitive);
-}
-
-/// @brief Matches a fallback-regex suffix at the current text position.
-///
-/// @param pattern Pattern suffix to evaluate.
-/// @param text Current text position.
-/// @param case_sensitive Whether ASCII literals preserve case.
-/// @param[out] matched_len Receives total matched byte length.
-/// @return `true` when the complete suffix matches.
-static bool fr_regex_match_here(const char *pattern,
-                                const char *text,
-                                bool case_sensitive,
-                                size_t *matched_len);
-
-/// @brief Matches a quantified atom with greedy recursive backtracking.
-///
-/// @param atom Atom to repeat.
-/// @param rest Pattern following its quantifier.
-/// @param text Current text position.
-/// @param case_sensitive Whether ASCII literals preserve case.
-/// @param min_count Minimum remaining repetitions.
-/// @param[out] matched_len Receives total bytes matched by repetition and tail.
-/// @return `true` when a permitted repetition count lets @p rest match.
-static bool fr_regex_match_repeat(const char *atom,
-                                  const char *rest,
-                                  const char *text,
-                                  bool case_sensitive,
-                                  int min_count,
-                                  size_t *matched_len) {
-    const char *after_atom = NULL;
-    size_t atom_len = 0;
-    if (fr_regex_match_atom(atom, text, case_sensitive, &after_atom, &atom_len) && atom_len > 0) {
-        size_t tail_len = 0;
-        int next_min = min_count > 0 ? min_count - 1 : 0;
-        if (fr_regex_match_repeat(
-                atom, rest, text + atom_len, case_sensitive, next_min, &tail_len)) {
-            *matched_len = atom_len + tail_len;
-            return true;
-        }
-    }
-
-    if (min_count <= 0) {
-        size_t tail_len = 0;
-        if (fr_regex_match_here(rest, text, case_sensitive, &tail_len)) {
-            *matched_len = tail_len;
-            return true;
-        }
-    }
-
-    return false;
-}
-
-/// @brief Matches a complete fallback-regex suffix at one text position.
-///
-/// @details End anchors and the `*`, `+`, and `?` quantifiers are resolved
-/// recursively; unquantified atoms consume exactly one atom match.
-///
-/// @param pattern Pattern suffix to evaluate.
-/// @param text Current text position.
-/// @param case_sensitive Whether ASCII literals preserve case.
-/// @param[out] matched_len Receives the consumed text length.
-/// @return `true` when the suffix matches; otherwise `false`.
-static bool fr_regex_match_here(const char *pattern,
-                                const char *text,
-                                bool case_sensitive,
-                                size_t *matched_len) {
-    if (!pattern)
-        return false;
-    if (*pattern == '\0') {
-        *matched_len = 0;
-        return true;
-    }
-    if (pattern[0] == '$' && pattern[1] == '\0') {
-        if (*text == '\0') {
-            *matched_len = 0;
-            return true;
-        }
-        return false;
-    }
-
-    const char *after_atom = fr_regex_atom_end(pattern);
-    if (!after_atom)
-        return false;
-
-    char quantifier = *after_atom;
-    if (quantifier == '*')
-        return fr_regex_match_repeat(pattern, after_atom + 1, text, case_sensitive, 0, matched_len);
-    if (quantifier == '+')
-        return fr_regex_match_repeat(pattern, after_atom + 1, text, case_sensitive, 1, matched_len);
-    if (quantifier == '?') {
-        const char *unused_after = NULL;
-        size_t atom_len = 0;
-        if (fr_regex_match_atom(pattern, text, case_sensitive, &unused_after, &atom_len) &&
-            atom_len > 0) {
-            size_t tail_len = 0;
-            if (fr_regex_match_here(after_atom + 1, text + atom_len, case_sensitive, &tail_len)) {
-                *matched_len = atom_len + tail_len;
-                return true;
-            }
-        }
-        return fr_regex_match_here(after_atom + 1, text, case_sensitive, matched_len);
-    }
-
-    const char *unused_after = NULL;
-    size_t atom_len = 0;
-    if (!fr_regex_match_atom(pattern, text, case_sensitive, &unused_after, &atom_len) ||
-        atom_len == 0)
-        return false;
-    size_t tail_len = 0;
-    if (!fr_regex_match_here(after_atom, text + atom_len, case_sensitive, &tail_len))
-        return false;
-    *matched_len = atom_len + tail_len;
-    return true;
-}
-
-/// @brief Finds the next Windows fallback-regex match in a line.
-///
-/// @param text Complete line used for boundary checks.
-/// @param start First text position eligible for matching.
-/// @param pattern Fallback-regex pattern.
-/// @param options Search options controlling case and whole-word checks.
-/// @param[out] match_len Receives matched byte length.
-/// @return Pointer into @p text at the next non-empty match, or null.
-static const char *find_regex_in_line(const char *text,
-                                      const char *start,
-                                      const char *pattern,
-                                      vg_search_options_t *options,
-                                      size_t *match_len) {
-    if (!text || !start || !pattern || !*pattern || !match_len)
-        return NULL;
-
-    bool anchored = pattern[0] == '^';
-    const char *search_pattern = anchored ? pattern + 1 : pattern;
-    if (anchored && start != text)
-        return NULL;
-
-    const char *pos = anchored ? text : start;
-    while (*pos) {
-        size_t len = 0;
-        if (fr_regex_match_here(search_pattern, pos, options->case_sensitive, &len) && len > 0) {
-            if (options->whole_word && !check_whole_word(text, pos, len)) {
-                if (anchored)
-                    return NULL;
-            } else {
-                *match_len = len;
-                return pos;
-            }
-        }
-        if (anchored)
+        const char *next = fr_utf8_next(found);
+        if (!next || next <= found)
             return NULL;
-        pos = fr_utf8_next(pos);
+        search_offset = (int)(next - text);
     }
-
-    return NULL;
 }
-#endif
 
 /// @brief Appends one match record, growing the owned array as needed.
 ///
@@ -676,7 +364,12 @@ static const char *find_regex_in_line(const char *text,
 /// @param line Zero-based editor line.
 /// @param start Starting UTF-8 code-point column.
 /// @param end Exclusive ending UTF-8 code-point column.
-static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, uint32_t end) {
+static bool add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, uint32_t end) {
+    if (!bar || bar->match_count >= FINDREPLACEBAR_MAX_MATCHES) {
+        if (bar)
+            bar->search_truncated = true;
+        return false;
+    }
     // Grow array if needed
     if (bar->match_count >= bar->match_capacity) {
         size_t new_cap = bar->match_capacity ? bar->match_capacity : INITIAL_MATCH_CAPACITY;
@@ -684,15 +377,15 @@ static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, u
             new_cap = INITIAL_MATCH_CAPACITY;
         while (new_cap <= bar->match_count) {
             if (new_cap > SIZE_MAX / 2)
-                return;
+                return false;
             new_cap *= 2;
         }
         if (new_cap > SIZE_MAX / sizeof(vg_search_match_t))
-            return;
+            return false;
 
         vg_search_match_t *new_matches = realloc(bar->matches, new_cap * sizeof(vg_search_match_t));
         if (!new_matches)
-            return;
+            return false;
 
         bar->matches = new_matches;
         bar->match_capacity = new_cap;
@@ -702,6 +395,7 @@ static void add_match(vg_findreplacebar_t *bar, uint32_t line, uint32_t start, u
     bar->matches[bar->match_count].start_col = start;
     bar->matches[bar->match_count].end_col = end;
     bar->match_count++;
+    return true;
 }
 
 /// @brief Validates and returns the bar's linked code editor.
@@ -727,18 +421,24 @@ static vg_codeeditor_t *findreplacebar_live_target(vg_findreplacebar_t *bar) {
 static void clear_matches(vg_findreplacebar_t *bar) {
     bar->match_count = 0;
     bar->current_match = 0;
+    bar->search_truncated = false;
+    bar->search_scanned_bytes = 0;
     bar->result_text[0] = '\0';
 }
 
 /// @brief Rescans the linked editor for the current query and options.
 ///
-/// @details Matches are rebuilt across all lines, converted from byte offsets
-/// to editor code-point columns, and the first result is highlighted. POSIX
-/// regular expressions are compiled once per scan. The optional find callback
-/// runs after search state and result text are updated.
+/// @details Matches are rebuilt across bounded source bytes, converted from
+///          byte offsets to editor code-point columns, and the first result is
+///          highlighted. Regexes compile once through the shared cross-platform
+///          engine. Zero-width matches advance by one UTF-8 scalar.
 ///
 /// @param bar Bar whose search state is rebuilt.
 static void perform_search(vg_findreplacebar_t *bar) {
+    if (!bar)
+        return;
+    bar->search_pending = false;
+    bar->search_debounce_remaining = 0.0f;
     clear_matches(bar);
 
     vg_codeeditor_t *ed = findreplacebar_live_target(bar);
@@ -755,55 +455,67 @@ static void perform_search(vg_findreplacebar_t *bar) {
         return;
     }
 
-#ifndef _WIN32
-    regex_t regex;
-    bool regex_ready = false;
+    re_compiled_pattern *regex = NULL;
     if (bar->options.use_regex) {
-        int flags = REG_EXTENDED;
+        unsigned int flags = RE_COMPILE_DEFAULT;
         if (!bar->options.case_sensitive)
-            flags |= REG_ICASE;
-        if (regcomp(&regex, query, flags) != 0) {
-            snprintf(bar->result_text, sizeof(bar->result_text), "Invalid regex");
+            flags |= RE_COMPILE_CASE_INSENSITIVE;
+        char error[256];
+        regex = re_compile_diagnostic(query, flags, error, sizeof(error));
+        if (!regex) {
+            snprintf(bar->result_text,
+                     sizeof(bar->result_text),
+                     "Invalid regex: %.46s",
+                     error[0] ? error : "invalid syntax");
+            vg_widget_invalidate(&bar->base);
             return;
         }
-        regex_ready = true;
     }
-#else
-    bool regex_ready = bar->options.use_regex;
-#endif
 
-    // Search through editor lines
+    bool stop = false;
     for (int line = 0; line < ed->line_count; line++) {
         const char *text = ed->lines[line].text;
         if (!text)
             continue;
+        size_t line_size = strlen(text);
+        if (line_size > FINDREPLACEBAR_MAX_SCAN_BYTES - bar->search_scanned_bytes) {
+            bar->search_truncated = true;
+            break;
+        }
+        bar->search_scanned_bytes += line_size;
 
         const char *pos = text;
-        size_t match_len;
-
-#ifndef _WIN32
-        while ((pos = regex_ready ? find_regex_in_line(text, pos, &regex, &bar->options, &match_len)
-                                  : find_in_line(pos, query, &bar->options, &match_len)) != NULL) {
-#else
-        while ((pos = regex_ready ? find_regex_in_line(text, pos, query, &bar->options, &match_len)
-                                  : find_in_line(pos, query, &bar->options, &match_len)) != NULL) {
-#endif
+        const char *line_end = text + line_size;
+        size_t match_len = 0;
+        while (pos <= line_end &&
+               (pos = regex ? find_regex_in_line(text, pos, regex, &bar->options, &match_len)
+                            : find_in_line(pos, query, &bar->options, &match_len)) != NULL) {
             size_t start_byte = (size_t)(pos - text);
             size_t end_byte = start_byte + match_len;
             uint32_t start_col = fr_utf8_col_from_byte_offset(text, start_byte);
             uint32_t end_col = fr_utf8_col_from_byte_offset(text, end_byte);
-            add_match(bar, (uint32_t)line, start_col, end_col);
-            // Advance past the entire match (non-overlapping). This also keeps
-            // the cursor on a UTF-8 codepoint boundary; the previous pos++ could
-            // land mid-character when the match contained multi-byte codepoints.
-            pos += match_len > 0 ? match_len : 1;
+            if (!add_match(bar, (uint32_t)line, start_col, end_col)) {
+                stop = true;
+                break;
+            }
+            if (match_len > 0) {
+                pos += match_len;
+            } else if (pos < line_end) {
+                const char *next = fr_utf8_next(pos);
+                if (!next || next <= pos) {
+                    stop = true;
+                    break;
+                }
+                pos = next;
+            } else {
+                break;
+            }
         }
+        if (stop)
+            break;
     }
 
-#ifndef _WIN32
-    if (regex_ready)
-        regfree(&regex);
-#endif
+    re_free(regex);
 
     // Update result text and highlight
     if (bar->match_count > 0) {
@@ -816,6 +528,7 @@ static void perform_search(vg_findreplacebar_t *bar) {
     if (bar->on_find) {
         bar->on_find(bar, query, &bar->options, bar->user_data);
     }
+    vg_widget_invalidate(&bar->base);
 }
 
 /// @brief Updates the human-readable match summary.
@@ -826,14 +539,16 @@ static void update_result_text(vg_findreplacebar_t *bar) {
         vg_textinput_t *find_input = (vg_textinput_t *)bar->find_input;
         const char *query = find_input ? vg_textinput_get_text(find_input) : NULL;
         if (query && *query) {
-            snprintf(bar->result_text, sizeof(bar->result_text), "No results");
+            snprintf(bar->result_text,
+                     sizeof(bar->result_text),
+                     bar->search_truncated ? "No results (scan capped)" : "No results");
         } else {
             bar->result_text[0] = '\0';
         }
     } else {
         snprintf(bar->result_text,
                  sizeof(bar->result_text),
-                 "%zu of %zu",
+                 bar->search_truncated ? "%zu of %zu+" : "%zu of %zu",
                  bar->current_match + 1,
                  bar->match_count);
     }
@@ -869,6 +584,64 @@ static void highlight_current_match(vg_findreplacebar_t *bar) {
 
     // Scroll to make match visible
     vg_codeeditor_scroll_to_line(ed, (int)match->line);
+}
+
+/// @brief Compile the bar's current regex once for a replacement operation.
+static re_compiled_pattern *compile_bar_regex(vg_findreplacebar_t *bar) {
+    if (!bar || !bar->options.use_regex)
+        return NULL;
+    vg_textinput_t *find_input = (vg_textinput_t *)bar->find_input;
+    const char *query = find_input ? vg_textinput_get_text(find_input) : NULL;
+    if (!query || !*query)
+        return NULL;
+    unsigned int flags =
+        bar->options.case_sensitive ? RE_COMPILE_DEFAULT : RE_COMPILE_CASE_INSENSITIVE;
+    char error[256];
+    return re_compile_diagnostic(query, flags, error, sizeof(error));
+}
+
+/// @brief Build the literal or capture-expanded replacement for one stored match.
+/// @details A stale span returns null instead of editing unrelated text.
+static char *replacement_for_match(vg_findreplacebar_t *bar,
+                                   vg_codeeditor_t *editor,
+                                   const vg_search_match_t *match,
+                                   re_compiled_pattern *regex,
+                                   const char *replacement) {
+    if (!bar || !editor || !match || match->line >= (uint32_t)editor->line_count)
+        return NULL;
+    if (!replacement)
+        replacement = "";
+    if (!bar->options.use_regex) {
+        size_t length = strlen(replacement);
+        if (length == SIZE_MAX)
+            return NULL;
+        char *copy = (char *)malloc(length + 1);
+        if (!copy)
+            return NULL;
+        memcpy(copy, replacement, length + 1);
+        return copy;
+    }
+
+    const char *line_text = editor->lines[match->line].text;
+    if (!regex || !line_text)
+        return NULL;
+    size_t line_length = strlen(line_text);
+    if (line_length > (size_t)INT32_MAX)
+        return NULL;
+
+    size_t start = fr_utf8_byte_offset_from_col(line_text, match->start_col);
+    char *expanded = NULL;
+    size_t expanded_length = 0;
+    bool ok = start <= (size_t)INT32_MAX && re_expand_replacement(regex,
+                                                                  line_text,
+                                                                  (int)line_length,
+                                                                  (int)start,
+                                                                  replacement,
+                                                                  strlen(replacement),
+                                                                  &expanded,
+                                                                  &expanded_length);
+    (void)expanded_length;
+    return ok ? expanded : NULL;
 }
 
 //=============================================================================
@@ -967,7 +740,13 @@ static void on_find_text_change(vg_widget_t *input, const char *text, void *user
     (void)input;
     (void)text;
     vg_findreplacebar_t *bar = (vg_findreplacebar_t *)user_data;
-    perform_search(bar);
+    if (!bar)
+        return;
+    clear_matches(bar);
+    bar->search_pending = true;
+    bar->search_debounce_remaining = FINDREPLACEBAR_DEBOUNCE_SECONDS;
+    snprintf(bar->result_text, sizeof(bar->result_text), "Searching...");
+    vg_widget_invalidate(&bar->base);
 }
 
 //=============================================================================
@@ -1281,6 +1060,8 @@ static bool findreplacebar_handle_event(vg_widget_t *widget, vg_event_t *event) 
 
         // Enter: find next
         if (event->key.key == VG_KEY_ENTER) {
+            if (bar->search_pending)
+                perform_search(bar);
             if (mods & VG_MOD_SHIFT) {
                 vg_findreplacebar_find_prev(bar);
             } else {
@@ -1464,9 +1245,24 @@ bool vg_findreplacebar_replace_current(vg_findreplacebar_t *bar) {
     if (!replace_text)
         replace_text = "";
 
-    // Delete selection (current match) and insert replacement
+    re_compiled_pattern *regex = compile_bar_regex(bar);
+    if (bar->options.use_regex && !regex) {
+        perform_search(bar);
+        return false;
+    }
+    vg_search_match_t *match = &bar->matches[bar->current_match];
+    char *expanded = replacement_for_match(bar, ed, match, regex, replace_text);
+    re_free(regex);
+    if (!expanded) {
+        perform_search(bar);
+        return false;
+    }
+
+    vg_codeeditor_set_selection(
+        ed, (int)match->line, (int)match->start_col, (int)match->line, (int)match->end_col);
     vg_codeeditor_delete_selection(ed);
-    vg_codeeditor_insert_text(ed, replace_text);
+    vg_codeeditor_insert_text(ed, expanded);
+    free(expanded);
 
     // Callback
     if (bar->on_replace) {
@@ -1499,7 +1295,31 @@ size_t vg_findreplacebar_replace_all(vg_findreplacebar_t *bar) {
     const char *find_text = vg_textinput_get_text(find_input);
     if (!replace_text)
         replace_text = "";
-    size_t replacement_count = bar->match_count;
+    if (bar->match_count > SIZE_MAX / sizeof(char *))
+        return 0;
+    char **expanded = (char **)calloc(bar->match_count, sizeof(char *));
+    if (!expanded)
+        return 0;
+    re_compiled_pattern *regex = compile_bar_regex(bar);
+    if (bar->options.use_regex && !regex) {
+        free(expanded);
+        perform_search(bar);
+        return 0;
+    }
+
+    for (size_t i = 0; i < bar->match_count; i++) {
+        expanded[i] = replacement_for_match(bar, ed, &bar->matches[i], regex, replace_text);
+        if (!expanded[i]) {
+            for (size_t j = 0; j < i; j++)
+                free(expanded[j]);
+            free(expanded);
+            re_free(regex);
+            perform_search(bar);
+            return 0;
+        }
+    }
+    re_free(regex);
+    size_t replacement_count = 0;
 
     // Replace from end to start to preserve positions
     for (size_t i = bar->match_count; i > 0; i--) {
@@ -1511,8 +1331,11 @@ size_t vg_findreplacebar_replace_all(vg_findreplacebar_t *bar) {
 
         // Replace
         vg_codeeditor_delete_selection(ed);
-        vg_codeeditor_insert_text(ed, replace_text);
+        vg_codeeditor_insert_text(ed, expanded[i - 1]);
+        free(expanded[i - 1]);
+        replacement_count++;
     }
+    free(expanded);
 
     // Callback
     if (bar->on_replace_all) {
@@ -1558,6 +1381,27 @@ void vg_findreplacebar_set_find_text(vg_findreplacebar_t *bar, const char *text)
         return;
     vg_textinput_set_text((vg_textinput_t *)bar->find_input, text);
     perform_search(bar);
+}
+
+/// @copydoc vg_findreplacebar_tick
+bool vg_findreplacebar_tick(vg_findreplacebar_t *bar, float dt) {
+    if (!bar || !bar->search_pending)
+        return false;
+    if (!isfinite(dt) || dt < 0.0f)
+        return true;
+    if (dt >= bar->search_debounce_remaining) {
+        perform_search(bar);
+        return false;
+    }
+    bar->search_debounce_remaining -= dt;
+    return true;
+}
+
+/// @copydoc vg_findreplacebar_tick_widget
+bool vg_findreplacebar_tick_widget(vg_widget_t *widget, float dt) {
+    if (!widget || !vg_widget_is_live(widget) || widget->vtable != &g_findreplacebar_vtable)
+        return false;
+    return vg_findreplacebar_tick((vg_findreplacebar_t *)widget, dt);
 }
 
 /// @brief Register a callback invoked when the bar's close button is clicked.

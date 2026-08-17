@@ -1,0 +1,3 @@
+compiler prelude {ignored}
+{"diagnostics":[{"severity":"warning","code":"W-EDGE","message":"brace } and quote \" ok","location":{"file":"/tmp/δ file.zia","line":7,"column":9},"range":{"begin":{"file":"/tmp/δ file.zia","line":7,"column":9},"end":{"file":"/tmp/δ file.zia","line":7,"column":14}},"notes":[{"message":"first note"}],"fixits":[{"message":"replace it"}]}]}
+compiler suffix } ignored

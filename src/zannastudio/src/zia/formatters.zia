@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/formatters.zia
+// Purpose: Apply conservative, deterministic indentation and whitespace edits.
+// Key invariants:
+//   - Strings and comments never contribute structural indentation.
+//   - Full-document transforms preserve the document's newline convention.
+//   - Output construction is linear in the source and indentation size.
+// Ownership/Lifetime: Pure transforms return caller-owned strings.
+// Links: zannastudio/src/zia/source_scan.zia,
+//        zannastudio/src/services/text_utils.zia
+//
+//===----------------------------------------------------------------------===//
+
 module formatters;
 
 bind "../services/text_utils";
@@ -6,6 +25,7 @@ bind "source_scan";
 bind Obj = Zanna.Core.Object;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: formatters
@@ -81,16 +101,16 @@ expose func TrimTrailingWhitespaceText(source: String) -> String {
     var eol = "\n";
     if Str.IndexOf(source, "\r\n") != 0 { eol = "\r\n"; }
     var lines = Str.Lines(source);
-    var result = "";
+    var result = new StringBuilder();
     var i = 0;
     while i < Seq.get_Count(lines) {
         var line = Obj.ToString(Seq.Get(lines, i));
         line = text_utils.TrimLineRightWhitespace(line);
-        if i > 0 { result = result + eol; }
-        result = result + line;
+        if i > 0 { result.Append(eol); }
+        result.Append(line);
         i = i + 1;
     }
-    return result;
+    return result.ToString();
 }
 
 /// @brief Format a full Zia document.
@@ -476,19 +496,20 @@ func IndentText(level: Integer,
 
     var unit = "\t";
     if insertSpaces {
-        unit = "";
+        var unitBuilder = new StringBuilder();
         var s = 0;
         while s < width {
-            unit = unit + " ";
+            unitBuilder.Append(" ");
             s = s + 1;
         }
+        unit = unitBuilder.ToString();
     }
 
-    var text = "";
+    var text = new StringBuilder();
     var i = 0;
     while i < level {
-        text = text + unit;
+        text.Append(unit);
         i = i + 1;
     }
-    return text;
+    return text.ToString();
 }

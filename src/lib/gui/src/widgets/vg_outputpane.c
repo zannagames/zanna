@@ -15,6 +15,12 @@
 //     owning its text via strdup/malloc; freed in free_output_line.
 //   - ANSI escape state (in_escape, escape_buf, current_fg/bg, ansi_bold) is
 //     preserved across append calls so multi-chunk writes render correctly.
+//   - Terminal UTF-8 scalars may span append calls; incomplete suffix bytes are
+//     retained until complete and malformed sequences render as U+FFFD.
+//   - Terminal cells use display columns: combining marks join their base and
+//     East Asian/emoji glyphs reserve a continuation cell.
+//   - Terminal keystroke and paste buffering has a fixed one-megabyte ceiling;
+//     escape sequences are accepted or refused atomically at that boundary.
 //   - scroll_locked is set when the user scrolls up; auto_scroll is suppressed
 //     until scroll_locked is cleared by vg_outputpane_scroll_to_bottom.
 //   - sel_start/end coordinates are absolute line indices into lines[]; they are
@@ -172,7 +178,10 @@ static uint32_t ansi_256_to_color(int index) {
 /// @param max_params Maximum number of parameters that can be written.
 /// @param private_mode Optional output flag set when a leading '?' is present.
 /// @return Number of parsed parameters written to @p params.
-static int ansi_parse_csi_params(const char *buffer, int *params, int max_params, bool *private_mode) {
+static int ansi_parse_csi_params(const char *buffer,
+                                 int *params,
+                                 int max_params,
+                                 bool *private_mode) {
     int count = 0;
     const char *p = buffer;
 
@@ -648,9 +657,12 @@ static vg_output_line_t *add_line(vg_outputpane_t *pane) {
 static void process_ansi_escape(vg_outputpane_t *pane) {
     int params[16];
     int param_count = 0;
-    char *buf = pane->escape_buf;
 
-    if (!pane || buf[0] != '[') {
+    if (!pane)
+        return;
+
+    char *buf = pane->escape_buf;
+    if (buf[0] != '[') {
         pane->escape_len = 0;
         pane->in_escape = false;
         return;
@@ -713,7 +725,8 @@ vg_outputpane_t *vg_outputpane_create(void) {
 static void outputpane_destroy(vg_widget_t *widget) {
     vg_outputpane_t *pane = (vg_outputpane_t *)widget;
 
-    outputpane_free_line_storage(pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
+    outputpane_free_line_storage(
+        pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
     outputpane_free_line_storage(pane->primary_lines,
                                  pane->primary_line_start,
                                  pane->primary_line_count,
@@ -879,11 +892,10 @@ static void outputpane_paint(vg_widget_t *widget, void *canvas) {
         // video) so it stays readable when editing mid-line.
         if (pane->terminal_mode && pane->has_focus && pane->caret_visible &&
             !pane->term_cursor_hidden && line_idx == (int)pane->term_cursor_line) {
-            float caret_x =
-                widget->x + 4.0f + outputpane_prefix_width(pane, line, pane->cursor_col);
-            vg_text_metrics_t cw = {0};
-            vg_font_measure_text(pane->font, pane->font_size, "M", &cw);
-            float caret_w = cw.width > 0.0f ? cw.width : pane->font_size * 0.6f;
+            int terminal_cell_width = vg_outputpane_cell_width(pane);
+            float caret_w =
+                terminal_cell_width > 0 ? (float)terminal_cell_width : pane->font_size * 0.6f;
+            float caret_x = widget->x + 4.0f + (float)pane->cursor_col * caret_w;
             vgfx_fill_rect(win,
                            (int32_t)caret_x,
                            (int32_t)line_top,
@@ -910,7 +922,8 @@ static void outputpane_paint(vg_widget_t *widget, void *canvas) {
 
 // Defined later in the Interactive Terminal Mode section; declared here for the
 // event hook below.
-static void term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t len);
+static bool term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t len);
+static bool term_queue_paste(vg_outputpane_t *pane, const char *text, size_t len);
 static int outputpane_encode_utf8(uint32_t cp, char *out);
 
 /// @brief Convert GUI modifier flags into the xterm CSI modifier parameter.
@@ -946,9 +959,8 @@ static void term_queue_csi_final_key(vg_outputpane_t *pane,
     if (mod == 1) {
         // DECSET ?1 (application cursor keys): unmodified arrows/home/end use
         // SS3 finals so full-screen apps see the sequences they asked for.
-        if (pane->app_cursor_keys &&
-            (final == 'A' || final == 'B' || final == 'C' || final == 'D' || final == 'H' ||
-             final == 'F')) {
+        if (pane->app_cursor_keys && (final == 'A' || final == 'B' || final == 'C' ||
+                                      final == 'D' || final == 'H' || final == 'F')) {
             char seq[3] = {'\x1b', 'O', final};
             term_queue_input(pane, seq, sizeof(seq));
             return;
@@ -1099,11 +1111,7 @@ static bool outputpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
             if (clip_chord && k == VG_KEY_V) {
                 char *text = vgfx_clipboard_get_text();
                 if (text) {
-                    if (pane->bracketed_paste)
-                        term_queue_input(pane, "\x1b[200~", 6);
-                    term_queue_input(pane, text, strlen(text));
-                    if (pane->bracketed_paste)
-                        term_queue_input(pane, "\x1b[201~", 6);
+                    (void)term_queue_paste(pane, text, strlen(text));
                     free(text);
                 }
                 return true;
@@ -1196,7 +1204,8 @@ static bool outputpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
     }
 
     if (event->type == VG_EVENT_MOUSE_WHEEL) {
-        float delta = event->wheel.delta_y * 30 * vg_get_wheel_speed(); // 30px per unit * sensitivity
+        float delta =
+            event->wheel.delta_y * 30 * vg_get_wheel_speed(); // 30px per unit * sensitivity
         pane->scroll_y -= delta;
 
         // Clamp scroll
@@ -1227,18 +1236,133 @@ static bool outputpane_handle_event(vg_widget_t *widget, vg_event_t *event) {
 // held as a cell array (cells[]) so \r/\b/ESC[K/cursor-moves render correctly;
 // the cells are coalesced back into styled segments after each chunk.
 
-/// @brief UTF-8 sequence length implied by a lead byte (1..4; 1 for invalid/continuation).
-/// @param c Candidate UTF-8 lead byte.
-/// @return Expected encoded length from one through four bytes.
-static int outputpane_utf8_len(unsigned char c) {
-    if (c < 0x80)
-        return 1;
-    if ((c & 0xE0) == 0xC0)
+/// @brief Decode one strict UTF-8 scalar from a bounded byte sequence.
+/// @details Overlong encodings, surrogates, out-of-range scalars, stray
+///          continuations, and impossible lead bytes are rejected. A valid
+///          prefix shorter than its declared width is reported as incomplete.
+/// @param bytes Candidate scalar bytes.
+/// @param available Bytes available at @p bytes.
+/// @param[out] scalar Decoded scalar on success.
+/// @param[out] width Encoded byte width on success or expected width when incomplete.
+/// @return 1 for valid, 0 for incomplete, or -1 for malformed.
+static int term_decode_utf8(const unsigned char *bytes,
+                            size_t available,
+                            uint32_t *scalar,
+                            size_t *width) {
+    if (!bytes || available == 0 || !scalar || !width)
+        return -1;
+
+    unsigned char lead = bytes[0];
+    size_t need = 0;
+    uint32_t value = 0;
+    if (lead < 0x80u) {
+        need = 1;
+        value = lead;
+    } else if (lead >= 0xC2u && lead <= 0xDFu) {
+        need = 2;
+        value = lead & 0x1Fu;
+    } else if (lead >= 0xE0u && lead <= 0xEFu) {
+        need = 3;
+        value = lead & 0x0Fu;
+    } else if (lead >= 0xF0u && lead <= 0xF4u) {
+        need = 4;
+        value = lead & 0x07u;
+    } else {
+        *width = 1;
+        return -1;
+    }
+
+    *width = need;
+    size_t inspect = available < need ? available : need;
+    for (size_t i = 1; i < inspect; i++) {
+        if ((bytes[i] & 0xC0u) != 0x80u)
+            return -1;
+    }
+    if (inspect > 1) {
+        if ((lead == 0xE0u && bytes[1] < 0xA0u) || (lead == 0xEDu && bytes[1] > 0x9Fu) ||
+            (lead == 0xF0u && bytes[1] < 0x90u) || (lead == 0xF4u && bytes[1] > 0x8Fu))
+            return -1;
+    }
+    if (available < need)
+        return 0;
+
+    for (size_t i = 1; i < need; i++)
+        value = (value << 6) | (uint32_t)(bytes[i] & 0x3Fu);
+    *scalar = value;
+    return 1;
+}
+
+/// @brief Return true for zero-column marks and join controls handled by terminals.
+/// @details The ranges cover the principal Unicode combining blocks plus script
+///          marks, variation selectors, emoji modifiers, tags, and ZWJ. The
+///          ranges intentionally live here rather than relying on host wcwidth,
+///          whose tables and locale behavior differ across supported platforms.
+static bool term_codepoint_is_zero_width(uint32_t cp) {
+    return (cp >= 0x0300u && cp <= 0x036Fu) || (cp >= 0x0483u && cp <= 0x0489u) ||
+           (cp >= 0x0591u && cp <= 0x05BDu) || cp == 0x05BFu || (cp >= 0x05C1u && cp <= 0x05C2u) ||
+           (cp >= 0x05C4u && cp <= 0x05C5u) || cp == 0x05C7u || (cp >= 0x0610u && cp <= 0x061Au) ||
+           (cp >= 0x064Bu && cp <= 0x065Fu) || cp == 0x0670u || (cp >= 0x06D6u && cp <= 0x06EDu) ||
+           cp == 0x0711u || (cp >= 0x0730u && cp <= 0x074Au) || (cp >= 0x07A6u && cp <= 0x07B0u) ||
+           (cp >= 0x07EBu && cp <= 0x07F3u) || (cp >= 0x0816u && cp <= 0x082Du) ||
+           (cp >= 0x0859u && cp <= 0x085Bu) || (cp >= 0x08D3u && cp <= 0x0902u) || cp == 0x093Au ||
+           cp == 0x093Cu || (cp >= 0x0941u && cp <= 0x0948u) || cp == 0x094Du ||
+           (cp >= 0x0951u && cp <= 0x0957u) || (cp >= 0x0962u && cp <= 0x0963u) ||
+           (cp >= 0x0981u && cp <= 0x0981u) || cp == 0x09BCu || (cp >= 0x09C1u && cp <= 0x09C4u) ||
+           cp == 0x09CDu || (cp >= 0x09E2u && cp <= 0x09E3u) || (cp >= 0x0A01u && cp <= 0x0A02u) ||
+           cp == 0x0A3Cu || (cp >= 0x0A41u && cp <= 0x0A42u) || (cp >= 0x0A47u && cp <= 0x0A48u) ||
+           (cp >= 0x0A4Bu && cp <= 0x0A4Du) || cp == 0x0A51u || (cp >= 0x0A70u && cp <= 0x0A71u) ||
+           cp == 0x0A75u || (cp >= 0x0ABCu && cp <= 0x0ABCu) || (cp >= 0x0AC1u && cp <= 0x0AC8u) ||
+           cp == 0x0ACDu || (cp >= 0x0AE2u && cp <= 0x0AE3u) || (cp >= 0x0B01u && cp <= 0x0B01u) ||
+           cp == 0x0B3Cu || cp == 0x0B3Fu || (cp >= 0x0B41u && cp <= 0x0B44u) || cp == 0x0B4Du ||
+           (cp >= 0x0B56u && cp <= 0x0B56u) || (cp >= 0x0B62u && cp <= 0x0B63u) || cp == 0x0B82u ||
+           cp == 0x0BC0u || cp == 0x0BCDu || (cp >= 0x0C00u && cp <= 0x0C00u) || cp == 0x0C04u ||
+           (cp >= 0x0C3Eu && cp <= 0x0C40u) || (cp >= 0x0C46u && cp <= 0x0C48u) ||
+           (cp >= 0x0C4Au && cp <= 0x0C4Du) || (cp >= 0x0C55u && cp <= 0x0C56u) ||
+           (cp >= 0x0C62u && cp <= 0x0C63u) || cp == 0x0C81u || cp == 0x0CBCu || cp == 0x0CBFu ||
+           cp == 0x0CC6u || (cp >= 0x0CCCu && cp <= 0x0CCDu) || (cp >= 0x0CE2u && cp <= 0x0CE3u) ||
+           (cp >= 0x0D00u && cp <= 0x0D01u) || (cp >= 0x0D3Bu && cp <= 0x0D3Cu) ||
+           (cp >= 0x0D41u && cp <= 0x0D44u) || cp == 0x0D4Du || (cp >= 0x0D62u && cp <= 0x0D63u) ||
+           cp == 0x0D81u || cp == 0x0DCAu || (cp >= 0x0DD2u && cp <= 0x0DD4u) || cp == 0x0DD6u ||
+           cp == 0x0E31u || (cp >= 0x0E34u && cp <= 0x0E3Au) || (cp >= 0x0E47u && cp <= 0x0E4Eu) ||
+           cp == 0x0EB1u || (cp >= 0x0EB4u && cp <= 0x0EBCu) || (cp >= 0x0EC8u && cp <= 0x0ECDu) ||
+           cp == 0x0F18u || cp == 0x0F19u || cp == 0x0F35u || cp == 0x0F37u || cp == 0x0F39u ||
+           (cp >= 0x0F71u && cp <= 0x0F84u) || (cp >= 0x0F86u && cp <= 0x0F87u) ||
+           (cp >= 0x0F8Du && cp <= 0x0FBCu) || cp == 0x0FC6u || (cp >= 0x102Du && cp <= 0x1030u) ||
+           (cp >= 0x1032u && cp <= 0x1037u) || cp == 0x1039u || cp == 0x103Au ||
+           (cp >= 0x1058u && cp <= 0x1059u) || (cp >= 0x105Eu && cp <= 0x1060u) ||
+           (cp >= 0x1071u && cp <= 0x1074u) || cp == 0x1082u || cp == 0x1085u || cp == 0x1086u ||
+           cp == 0x108Du || cp == 0x109Du || (cp >= 0x135Du && cp <= 0x135Fu) ||
+           (cp >= 0x1712u && cp <= 0x1714u) || (cp >= 0x1732u && cp <= 0x1734u) ||
+           (cp >= 0x1752u && cp <= 0x1753u) || (cp >= 0x1772u && cp <= 0x1773u) ||
+           (cp >= 0x17B4u && cp <= 0x17B5u) || (cp >= 0x17B7u && cp <= 0x17BDu) || cp == 0x17C6u ||
+           (cp >= 0x17C9u && cp <= 0x17D3u) || cp == 0x17DDu || (cp >= 0x180Bu && cp <= 0x180Du) ||
+           cp == 0x1885u || cp == 0x1886u || cp == 0x18A9u || (cp >= 0x1920u && cp <= 0x1922u) ||
+           (cp >= 0x1927u && cp <= 0x1928u) || cp == 0x1932u || (cp >= 0x1939u && cp <= 0x193Bu) ||
+           (cp >= 0x1A17u && cp <= 0x1A18u) || cp == 0x1A1Bu || cp == 0x1A56u ||
+           (cp >= 0x1A58u && cp <= 0x1A5Eu) || cp == 0x1A60u || cp == 0x1A62u ||
+           (cp >= 0x1A65u && cp <= 0x1A6Cu) || (cp >= 0x1A73u && cp <= 0x1A7Cu) || cp == 0x1A7Fu ||
+           (cp >= 0x1AB0u && cp <= 0x1AFFu) || (cp >= 0x1B00u && cp <= 0x1B03u) || cp == 0x1B34u ||
+           (cp >= 0x1B36u && cp <= 0x1B3Au) || cp == 0x1B3Cu || cp == 0x1B42u ||
+           (cp >= 0x1B6Bu && cp <= 0x1B73u) || (cp >= 0x1DC0u && cp <= 0x1DFFu) || cp == 0x200Cu ||
+           cp == 0x200Du || (cp >= 0x20D0u && cp <= 0x20FFu) || (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+           (cp >= 0xFE20u && cp <= 0xFE2Fu) || (cp >= 0x1F3FBu && cp <= 0x1F3FFu) ||
+           (cp >= 0xE0020u && cp <= 0xE007Fu) || (cp >= 0xE0100u && cp <= 0xE01EFu);
+}
+
+/// @brief Return a deterministic terminal display width for one Unicode scalar.
+/// @return Zero for combining/joining scalars, two for wide/fullwidth glyphs,
+///         otherwise one.
+static uint8_t term_codepoint_width(uint32_t cp) {
+    if (term_codepoint_is_zero_width(cp))
+        return 0;
+    if (cp >= 0x1100u &&
+        (cp <= 0x115Fu || cp == 0x2329u || cp == 0x232Au ||
+         (cp >= 0x2E80u && cp <= 0xA4CFu && cp != 0x303Fu) || (cp >= 0xAC00u && cp <= 0xD7A3u) ||
+         (cp >= 0xF900u && cp <= 0xFAFFu) || (cp >= 0xFE10u && cp <= 0xFE19u) ||
+         (cp >= 0xFE30u && cp <= 0xFE6Fu) || (cp >= 0xFF00u && cp <= 0xFF60u) ||
+         (cp >= 0xFFE0u && cp <= 0xFFE6u) || (cp >= 0x1F1E6u && cp <= 0x1F1FFu) ||
+         (cp >= 0x1F300u && cp <= 0x1FAFFu) || (cp >= 0x20000u && cp <= 0x3FFFDu)))
         return 2;
-    if ((c & 0xF0) == 0xE0)
-        return 3;
-    if ((c & 0xF8) == 0xF0)
-        return 4;
     return 1;
 }
 
@@ -1294,9 +1418,83 @@ static bool term_ensure_cells(vg_outputpane_t *pane, size_t need) {
 /// @param[out] cell Terminal cell reset in place.
 static void term_blank_cell(vg_outputpane_t *pane, vg_term_cell_t *cell) {
     cell->utf8[0] = '\0';
+    cell->codepoint = 0;
     cell->fg = pane->default_fg;
     cell->bg = 0;
+    cell->width = 1;
     cell->bold = false;
+}
+
+/// @brief Mark one slot as the non-rendering second half of a wide glyph.
+static void term_continuation_cell(vg_term_cell_t *cell, uint32_t fg, uint32_t bg, bool bold) {
+    cell->utf8[0] = '\0';
+    cell->codepoint = 0;
+    cell->fg = fg;
+    cell->bg = bg;
+    cell->width = 0;
+    cell->bold = bold;
+}
+
+static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len, uint32_t codepoint);
+
+/// @brief Find the leading cell immediately before a cursor column.
+/// @return Lead index, or SIZE_MAX when no prior glyph/blank exists.
+static size_t term_previous_lead(const vg_outputpane_t *pane, size_t col) {
+    if (!pane || col == 0 || pane->cell_count == 0)
+        return SIZE_MAX;
+    if (col > pane->cell_count)
+        return SIZE_MAX;
+    size_t index = col - 1;
+    while (index > 0 && pane->cells[index].width == 0)
+        index--;
+    return pane->cells[index].width == 0 ? SIZE_MAX : index;
+}
+
+/// @brief Blank the complete glyph occupying one display column.
+/// @details Addressing the continuation half of a wide glyph clears its lead as
+///          well, preventing later cursor edits from leaving orphan halves.
+static void term_clear_cell_span(vg_outputpane_t *pane, size_t col) {
+    if (!pane || col >= pane->cell_count)
+        return;
+    size_t lead = col;
+    while (lead > 0 && pane->cells[lead].width == 0)
+        lead--;
+    uint8_t width = pane->cells[lead].width;
+    term_blank_cell(pane, &pane->cells[lead]);
+    if (width == 2 && lead + 1 < pane->cell_count)
+        term_blank_cell(pane, &pane->cells[lead + 1]);
+}
+
+/// @brief Repair wide-cell lead/continuation invariants after column edits.
+static void term_sanitize_cells(vg_outputpane_t *pane) {
+    if (!pane)
+        return;
+    for (size_t i = 0; i < pane->cell_count; i++) {
+        vg_term_cell_t *cell = &pane->cells[i];
+        if (cell->width == 2) {
+            if (i + 1 >= pane->cell_count || pane->cells[i + 1].width != 0)
+                term_blank_cell(pane, cell);
+            else
+                i++;
+        } else if (cell->width == 0) {
+            term_blank_cell(pane, cell);
+        } else if (cell->width != 1) {
+            cell->width = 1;
+        }
+    }
+}
+
+/// @brief Append one scalar to an existing bounded grapheme cell.
+/// @return true when the complete scalar fit, false when the cluster was already full.
+static bool term_append_cell_bytes(vg_term_cell_t *cell, const char *bytes, size_t len) {
+    if (!cell || !bytes || len == 0)
+        return false;
+    size_t used = strlen(cell->utf8);
+    if (used >= sizeof(cell->utf8) || len > sizeof(cell->utf8) - used - 1)
+        return false;
+    memcpy(cell->utf8 + used, bytes, len);
+    cell->utf8[used + len] = '\0';
+    return true;
 }
 
 /// @brief Free and reset all styled segments in a logical output line.
@@ -1367,50 +1565,99 @@ static void term_load_cells_from_line(vg_outputpane_t *pane, size_t logical_line
     if (!line)
         return;
 
+    uint32_t saved_fg = pane->current_fg;
+    uint32_t saved_bg = pane->current_bg;
+    bool saved_bold = pane->ansi_bold;
+    bool saved_reverse = pane->ansi_reverse;
+    uint32_t saved_col = pane->cursor_col;
+    pane->cursor_col = 0;
+    pane->term_join_next = false;
+
     for (size_t s = 0; s < line->segment_count; s++) {
         vg_styled_segment_t *seg = &line->segments[s];
         if (!seg->text)
             continue;
+        pane->current_fg = seg->fg_color;
+        pane->current_bg = seg->bg_color;
+        pane->ansi_bold = seg->bold;
+        pane->ansi_reverse = false;
         const unsigned char *p = (const unsigned char *)seg->text;
         while (*p) {
-            int len = outputpane_utf8_len(*p);
-            int avail = 0;
-            while (avail < len && p[avail])
-                avail++;
-            if (avail < len)
-                len = avail > 0 ? avail : 1;
-            if (!term_ensure_cells(pane, pane->cell_count + 1))
-                return;
-            vg_term_cell_t *cell = &pane->cells[pane->cell_count++];
-            memcpy(cell->utf8, p, (size_t)len);
-            cell->utf8[len] = '\0';
-            cell->fg = seg->fg_color;
-            cell->bg = seg->bg_color;
-            cell->bold = seg->bold;
-            p += len;
+            size_t available = strlen((const char *)p);
+            size_t len = 1;
+            uint32_t cp = 0xFFFDu;
+            int decoded = term_decode_utf8(p, available, &cp, &len);
+            if (decoded != 1) {
+                static const char replacement[] = "\xEF\xBF\xBD";
+                term_put_glyph(pane, replacement, 3, 0xFFFDu);
+                p++;
+            } else {
+                term_put_glyph(pane, (const char *)p, (int)len, cp);
+                p += len;
+            }
         }
     }
+
+    pane->current_fg = saved_fg;
+    pane->current_bg = saved_bg;
+    pane->ansi_bold = saved_bold;
+    pane->ansi_reverse = saved_reverse;
+    pane->cursor_col = saved_col;
+    pane->term_join_next = false;
 }
 
 /// @brief Write a glyph at the cursor column (overwriting), extending with blanks as needed.
 /// @param pane Output pane whose cursor line and column are updated.
 /// @param bytes UTF-8 glyph bytes to copy.
 /// @param len Number of bytes in @p bytes, clamped to the cell representation.
-static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len) {
+/// @param codepoint Decoded Unicode scalar used for deterministic display width.
+static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len, uint32_t codepoint) {
     if (len < 1)
         len = 1;
     if (len > 4)
         len = 4;
-    size_t col = pane->cursor_col;
-    if (!term_ensure_cells(pane, col + 1))
+
+    uint8_t width = term_codepoint_width(codepoint);
+    size_t previous = term_previous_lead(pane, pane->cursor_col);
+    if (width == 0) {
+        if (previous != SIZE_MAX) {
+            (void)term_append_cell_bytes(&pane->cells[previous], bytes, (size_t)len);
+            pane->term_join_next = codepoint == 0x200Du;
+            return;
+        }
+        // A leading combining mark has no base to decorate. Retain it in one
+        // column rather than silently losing user-visible output.
+        width = 1;
+    } else if (pane->term_join_next && previous != SIZE_MAX) {
+        (void)term_append_cell_bytes(&pane->cells[previous], bytes, (size_t)len);
+        pane->term_join_next = false;
         return;
-    while (pane->cell_count <= col) {
+    } else if (codepoint >= 0x1F1E6u && codepoint <= 0x1F1FFu && previous != SIZE_MAX &&
+               pane->cells[previous].codepoint >= 0x1F1E6u &&
+               pane->cells[previous].codepoint <= 0x1F1FFu) {
+        // Regional indicators render as one two-column flag when paired.
+        (void)term_append_cell_bytes(&pane->cells[previous], bytes, (size_t)len);
+        pane->cells[previous].codepoint = 0;
+        return;
+    }
+    pane->term_join_next = false;
+
+    size_t col = pane->cursor_col;
+    size_t need = col + width;
+    if (need < col || !term_ensure_cells(pane, need))
+        return;
+    while (pane->cell_count < need) {
         term_blank_cell(pane, &pane->cells[pane->cell_count]);
         pane->cell_count++;
     }
+    term_clear_cell_span(pane, col);
+    if (width == 2)
+        term_clear_cell_span(pane, col + 1);
+
     vg_term_cell_t *cell = &pane->cells[col];
     memcpy(cell->utf8, bytes, (size_t)len);
     cell->utf8[len] = '\0';
+    cell->codepoint = codepoint;
     if (pane->ansi_reverse) {
         // SGR 7 swaps roles; a transparent background substitutes the pane's
         // own background color so reversed text stays a readable block.
@@ -1420,8 +1667,11 @@ static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len) {
         cell->fg = pane->current_fg;
         cell->bg = pane->current_bg;
     }
+    cell->width = width;
     cell->bold = pane->ansi_bold;
-    pane->cursor_col = (uint32_t)(col + 1);
+    if (width == 2)
+        term_continuation_cell(&pane->cells[col + 1], cell->fg, cell->bg, cell->bold);
+    pane->cursor_col = (uint32_t)(col + width);
 }
 
 /// @brief Rebuild the cursor line's styled segments from the cell buffer.
@@ -1439,13 +1689,18 @@ static void term_flush_cells(vg_outputpane_t *pane) {
 
     if (pane->cell_count == 0)
         return;
-    if (pane->cell_count > (SIZE_MAX - 1) / 4)
+    const size_t max_cell_bytes = VG_TERM_CELL_UTF8_CAPACITY - 1;
+    if (pane->cell_count > (SIZE_MAX - 1) / max_cell_bytes)
         return;
-    char *run = malloc(pane->cell_count * 4 + 1);
+    char *run = malloc(pane->cell_count * max_cell_bytes + 1);
     if (!run)
         return;
     size_t i = 0;
     while (i < pane->cell_count) {
+        while (i < pane->cell_count && pane->cells[i].width == 0)
+            i++;
+        if (i >= pane->cell_count)
+            break;
         uint32_t fg = pane->cells[i].fg;
         uint32_t bg = pane->cells[i].bg;
         bool bold = pane->cells[i].bold;
@@ -1453,6 +1708,8 @@ static void term_flush_cells(vg_outputpane_t *pane) {
         size_t j = i;
         for (; j < pane->cell_count; j++) {
             vg_term_cell_t *c = &pane->cells[j];
+            if (c->width == 0)
+                continue;
             if (c->fg != fg || c->bg != bg || c->bold != bold)
                 break;
             if (c->utf8[0] == '\0') {
@@ -1463,6 +1720,7 @@ static void term_flush_cells(vg_outputpane_t *pane) {
                 rl += l;
             }
         }
+        run[rl] = '\0';
         (void)outputpane_append_segment_copy(line, run, rl, fg, bg, bold);
         i = j;
     }
@@ -1485,6 +1743,7 @@ static void term_set_cursor_line_col(vg_outputpane_t *pane, size_t line, uint32_
     pane->term_cursor_line = line;
     term_load_cells_from_line(pane, line);
     pane->cursor_col = col;
+    pane->term_join_next = false;
 }
 
 /// @brief Save the current terminal cursor position.
@@ -1631,6 +1890,7 @@ static uint32_t term_next_tab_stop(const vg_outputpane_t *pane, uint32_t col) {
 static void term_newline(vg_outputpane_t *pane) {
     if (!pane)
         return;
+    pane->term_join_next = false;
     if (term_region_active(pane) && pane->term_cursor_line == term_region_bottom_abs(pane)) {
         term_scroll_range(
             pane, term_region_top_abs(pane), term_region_bottom_abs(pane), 1, /*down=*/false);
@@ -1661,7 +1921,8 @@ static void term_newline(vg_outputpane_t *pane) {
 static void term_clear_display(vg_outputpane_t *pane) {
     if (!pane)
         return;
-    outputpane_free_line_storage(pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
+    outputpane_free_line_storage(
+        pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
     pane->line_count = 0;
     pane->line_start = 0;
     pane->cell_count = 0;
@@ -1670,6 +1931,7 @@ static void term_clear_display(vg_outputpane_t *pane) {
     pane->saved_cursor_line = 0;
     pane->saved_cursor_col = 0;
     pane->cursor_col = 0;
+    pane->term_join_next = false;
     pane->scroll_y = 0;
     pane->scroll_locked = false;
     outputpane_clear_selection(pane);
@@ -1746,7 +2008,8 @@ static void term_leave_alternate_screen(vg_outputpane_t *pane) {
         return;
 
     term_flush_cells(pane);
-    outputpane_free_line_storage(pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
+    outputpane_free_line_storage(
+        pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
     free(pane->lines);
 
     pane->lines = pane->primary_lines;
@@ -1835,24 +2098,32 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
             break;
         case 'K': // erase in line
             if (p0 == 0) {
-                if (pane->cursor_col < pane->cell_count)
+                if (pane->cursor_col < pane->cell_count) {
+                    if (pane->cells[pane->cursor_col].width == 0)
+                        term_clear_cell_span(pane, pane->cursor_col);
                     pane->cell_count = pane->cursor_col;
+                    term_sanitize_cells(pane);
+                }
             } else if (p0 == 1) {
                 for (size_t i = 0; i <= pane->cursor_col && i < pane->cell_count; i++)
-                    term_blank_cell(pane, &pane->cells[i]);
+                    term_clear_cell_span(pane, i);
             } else if (p0 == 2) {
                 pane->cell_count = 0;
             }
             break;
         case 'J': // erase in display
             if (p0 == 0) {
-                if (pane->cursor_col < pane->cell_count)
+                if (pane->cursor_col < pane->cell_count) {
+                    if (pane->cells[pane->cursor_col].width == 0)
+                        term_clear_cell_span(pane, pane->cursor_col);
                     pane->cell_count = pane->cursor_col;
+                    term_sanitize_cells(pane);
+                }
                 term_clear_lines_after_cursor(pane);
             } else if (p0 == 1) {
                 term_clear_lines_before_cursor(pane);
                 for (size_t i = 0; i <= pane->cursor_col && i < pane->cell_count; i++)
-                    term_blank_cell(pane, &pane->cells[i]);
+                    term_clear_cell_span(pane, i);
             } else if (p0 == 2 || p0 == 3) {
                 term_clear_display(pane);
             }
@@ -1978,6 +2249,10 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
             size_t col = pane->cursor_col;
             if (col > pane->cell_count)
                 col = pane->cell_count;
+            if (col < pane->cell_count && pane->cells[col].width == 0)
+                term_clear_cell_span(pane, col);
+            if (n > SIZE_MAX - pane->cell_count)
+                break;
             if (!term_ensure_cells(pane, pane->cell_count + n))
                 break;
             memmove(&pane->cells[col + n],
@@ -1986,6 +2261,7 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
             for (size_t i = col; i < col + n; i++)
                 term_blank_cell(pane, &pane->cells[i]);
             pane->cell_count += n;
+            term_sanitize_cells(pane);
             break;
         }
         case 'P': { // DCH: delete n cells at the cursor, shifting left
@@ -1995,17 +2271,24 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
                 break;
             if (n > pane->cell_count - col)
                 n = pane->cell_count - col;
+            term_clear_cell_span(pane, col);
+            if (col + n < pane->cell_count && pane->cells[col + n].width == 0)
+                term_clear_cell_span(pane, col + n);
             memmove(&pane->cells[col],
                     &pane->cells[col + n],
                     (pane->cell_count - col - n) * sizeof(vg_term_cell_t));
             pane->cell_count -= n;
+            term_sanitize_cells(pane);
             break;
         }
         case 'X': { // ECH: blank n cells at the cursor in place
             size_t n = p0 > 0 ? (size_t)p0 : 1;
-            for (size_t i = pane->cursor_col; i < pane->cursor_col + n && i < pane->cell_count;
-                 i++)
-                term_blank_cell(pane, &pane->cells[i]);
+            size_t start = pane->cursor_col;
+            size_t end = pane->cell_count;
+            if (start < pane->cell_count && n < pane->cell_count - start)
+                end = start + n;
+            for (size_t i = start; i < end; i++)
+                term_clear_cell_span(pane, i);
             break;
         }
         case 'g': // TBC: 0 = clear stop at cursor, 3 = clear all stops
@@ -2022,11 +2305,8 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
                 size_t row = pane->term_cursor_line >= pane->term_origin_line
                                  ? pane->term_cursor_line - pane->term_origin_line + 1
                                  : 1;
-                int len = snprintf(reply,
-                                   sizeof(reply),
-                                   "\x1b[%zu;%uR",
-                                   row,
-                                   (unsigned)(pane->cursor_col + 1));
+                int len = snprintf(
+                    reply, sizeof(reply), "\x1b[%zu;%uR", row, (unsigned)(pane->cursor_col + 1));
                 if (len > 0)
                     term_queue_input(pane, reply, (size_t)len);
             }
@@ -2067,40 +2347,75 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
 /// @param pane Terminal-mode output pane receiving the text.
 /// @param text NUL-terminated byte stream containing UTF-8 and terminal escapes.
 static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) {
+    size_t incoming_len = strlen(text);
+    size_t carry_len = pane->utf8_carry_len;
+    if (incoming_len > SIZE_MAX - carry_len)
+        return;
+
+    unsigned char *joined = NULL;
     const unsigned char *p = (const unsigned char *)text;
-    while (*p) {
+    size_t total_len = incoming_len;
+    if (carry_len > 0) {
+        joined = malloc(carry_len + incoming_len);
+        if (!joined)
+            return;
+        memcpy(joined, pane->utf8_carry, carry_len);
+        memcpy(joined + carry_len, text, incoming_len);
+        p = joined;
+        total_len = carry_len + incoming_len;
+        pane->utf8_carry_len = 0;
+    }
+    const unsigned char *end = p + total_len;
+
+    while (p < end) {
         unsigned char c = *p;
         switch (pane->esc_state) {
             case 0: // normal
                 if (c == 0x1b) {
+                    pane->term_join_next = false;
                     pane->esc_state = 1;
                     p++;
                 } else if (c == '\n') {
+                    pane->term_join_next = false;
                     term_newline(pane);
                     p++;
                 } else if (c == '\r') {
+                    pane->term_join_next = false;
                     pane->cursor_col = 0;
                     p++;
                 } else if (c == '\b') {
+                    pane->term_join_next = false;
                     if (pane->cursor_col > 0)
                         pane->cursor_col--;
                     p++;
                 } else if (c == '\t') {
+                    pane->term_join_next = false;
                     // HT only moves the cursor (never writes glyphs), so tabbing
                     // across existing cursor-addressed content leaves it intact.
                     pane->cursor_col = term_next_tab_stop(pane, pane->cursor_col);
                     p++;
                 } else if (c < 0x20 || c == 0x7f) {
+                    pane->term_join_next = false;
                     p++; // BEL and other C0 controls: ignore
                 } else {
-                    int l = outputpane_utf8_len(c);
-                    int avail = 0;
-                    while (avail < l && p[avail])
-                        avail++;
-                    if (avail < l)
-                        l = avail > 0 ? avail : 1;
-                    term_put_glyph(pane, (const char *)p, l);
-                    p += l;
+                    size_t length = 1;
+                    uint32_t codepoint = 0xFFFDu;
+                    int decoded = term_decode_utf8(p, (size_t)(end - p), &codepoint, &length);
+                    if (decoded == 0) {
+                        size_t remaining = (size_t)(end - p);
+                        if (remaining <= sizeof(pane->utf8_carry)) {
+                            memcpy(pane->utf8_carry, p, remaining);
+                            pane->utf8_carry_len = (uint8_t)remaining;
+                        }
+                        p = end;
+                    } else if (decoded < 0) {
+                        static const char replacement[] = "\xEF\xBF\xBD";
+                        term_put_glyph(pane, replacement, 3, 0xFFFDu);
+                        p++;
+                    } else {
+                        term_put_glyph(pane, (const char *)p, (int)length, codepoint);
+                        p += length;
+                    }
                 }
                 break;
             case 1: // after ESC
@@ -2204,34 +2519,115 @@ static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) 
         }
     }
 
+    free(joined);
+
     term_flush_cells(pane);
     if (pane->auto_scroll && !pane->scroll_locked)
         vg_outputpane_scroll_to_bottom(pane);
     pane->base.needs_paint = true;
 }
 
-/// @brief Queue raw bytes for the controller to drain to the PTY (terminal keystrokes).
-/// @param pane Output pane that owns the pending-input buffer.
-/// @param bytes Raw input bytes to append.
-/// @param len Number of bytes available at @p bytes.
-static void term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t len) {
+/// @brief Ensure the bounded terminal-input queue can append @p len bytes.
+static bool term_reserve_input(vg_outputpane_t *pane, size_t len) {
+    const size_t limit = (size_t)VG_OUTPUTPANE_TERMINAL_INPUT_LIMIT;
+    if (!pane || pane->pending_len > limit || len > limit - pane->pending_len) {
+        if (pane)
+            pane->pending_input_dropped = true;
+        return false;
+    }
+    size_t need = pane->pending_len + len + 1;
+    if (need <= pane->pending_capacity)
+        return true;
+
+    size_t max_capacity = limit + 1;
+    size_t capacity = pane->pending_capacity ? pane->pending_capacity : 64;
+    while (capacity < need) {
+        if (capacity > max_capacity / 2) {
+            capacity = max_capacity;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity < need)
+        return false;
+    char *buffer = realloc(pane->pending_input, capacity);
+    if (!buffer) {
+        pane->pending_input_dropped = true;
+        return false;
+    }
+    pane->pending_input = buffer;
+    pane->pending_capacity = capacity;
+    return true;
+}
+
+/// @brief Queue one complete input unit for delivery to the PTY.
+/// @details The unit is accepted atomically or refused; partial control/escape
+///          sequences can therefore never be left at the fixed queue boundary.
+/// @return true when all bytes were queued.
+static bool term_queue_input(vg_outputpane_t *pane, const char *bytes, size_t len) {
+    if (!pane || (!bytes && len > 0))
+        return false;
     if (len == 0)
-        return;
+        return true;
     // Keep the caret solid (not mid-blink) while the user is actively typing.
     pane->caret_visible = true;
     pane->caret_blink_time = 0.0f;
-    if (pane->pending_len + len + 1 > pane->pending_capacity) {
-        size_t nc = pane->pending_capacity ? pane->pending_capacity * 2 : 64;
-        while (nc < pane->pending_len + len + 1)
-            nc *= 2;
-        char *nb = realloc(pane->pending_input, nc);
-        if (!nb)
-            return;
-        pane->pending_input = nb;
-        pane->pending_capacity = nc;
-    }
+    if (!term_reserve_input(pane, len))
+        return false;
     memcpy(pane->pending_input + pane->pending_len, bytes, len);
     pane->pending_len += len;
+    pane->pending_input[pane->pending_len] = '\0';
+    return true;
+}
+
+/// @brief Return the largest prefix no longer than @p max_len that cannot split UTF-8.
+static size_t term_utf8_prefix(const char *text, size_t len, size_t max_len) {
+    size_t keep = len < max_len ? len : max_len;
+    if (!text || keep == len)
+        return keep;
+    while (keep > 0 && (((unsigned char)text[keep] & 0xC0u) == 0x80u))
+        keep--;
+    return keep;
+}
+
+/// @brief Queue a bounded clipboard paste while preserving bracket delimiters.
+/// @details Oversized paste payloads retain the largest complete UTF-8 prefix.
+///          When bracketed-paste mode is active, the opening and closing escape
+///          sequences are reserved and copied atomically around that prefix.
+static bool term_queue_paste(vg_outputpane_t *pane, const char *text, size_t len) {
+    if (!pane || (!text && len > 0))
+        return false;
+    const char open[] = "\x1b[200~";
+    const char close[] = "\x1b[201~";
+    size_t framing = pane->bracketed_paste ? (sizeof(open) - 1) + (sizeof(close) - 1) : 0;
+    const size_t limit = (size_t)VG_OUTPUTPANE_TERMINAL_INPUT_LIMIT;
+    if (pane->pending_len > limit || framing > limit - pane->pending_len) {
+        pane->pending_input_dropped = true;
+        return false;
+    }
+
+    size_t available = limit - pane->pending_len - framing;
+    size_t keep = term_utf8_prefix(text, len, available);
+    size_t total = framing + keep;
+    if (keep < len)
+        pane->pending_input_dropped = true;
+    if (!term_reserve_input(pane, total))
+        return false;
+
+    if (pane->bracketed_paste) {
+        memcpy(pane->pending_input + pane->pending_len, open, sizeof(open) - 1);
+        pane->pending_len += sizeof(open) - 1;
+    }
+    if (keep > 0) {
+        memcpy(pane->pending_input + pane->pending_len, text, keep);
+        pane->pending_len += keep;
+    }
+    if (pane->bracketed_paste) {
+        memcpy(pane->pending_input + pane->pending_len, close, sizeof(close) - 1);
+        pane->pending_len += sizeof(close) - 1;
+    }
+    pane->pending_input[pane->pending_len] = '\0';
+    return keep == len;
 }
 
 /// @brief Enable/disable interactive terminal mode (see header).
@@ -2241,6 +2637,10 @@ void vg_outputpane_set_terminal_mode(vg_outputpane_t *pane, bool enabled) {
         return;
     if (!enabled && pane->alternate_screen)
         term_leave_alternate_screen(pane);
+    pane->utf8_carry_len = 0;
+    pane->term_join_next = false;
+    if (!enabled)
+        pane->pending_len = 0;
     pane->terminal_mode = enabled;
     if (enabled) {
         if (pane->line_count == 0)
@@ -2504,7 +2904,8 @@ void vg_outputpane_clear(vg_outputpane_t *pane) {
     if (!pane)
         return;
 
-    outputpane_free_line_storage(pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
+    outputpane_free_line_storage(
+        pane->lines, pane->line_start, pane->line_count, pane->line_capacity);
     pane->line_count = 0;
     pane->line_start = 0;
     outputpane_free_line_storage(pane->primary_lines,
@@ -2540,7 +2941,10 @@ void vg_outputpane_clear(vg_outputpane_t *pane) {
     pane->saved_cursor_col = 0;
     pane->cursor_col = 0;
     pane->cell_count = 0;
+    pane->utf8_carry_len = 0;
+    pane->term_join_next = false;
     pane->pending_len = 0;
+    pane->pending_input_dropped = false;
     if (pane->terminal_mode)
         (void)add_line(pane);
 

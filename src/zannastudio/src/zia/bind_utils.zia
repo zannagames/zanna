@@ -1,6 +1,25 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/bind_utils.zia
+// Purpose: Parse, normalize, and rewrite Zia bind declarations and paths.
+// Key invariants:
+//   - Rewrites preserve relative/extensionless import spelling where possible.
+//   - Path normalization follows the shared Studio identity policy.
+// Ownership/Lifetime: Pure helpers return caller-owned strings and collections.
+// Links: zannastudio/src/services/path_identity.zia,
+//        zannastudio/src/core/project_bind_rewriter.zia
+//
+//===----------------------------------------------------------------------===//
+
 module bind_utils;
 
 bind "../services/text_utils";
+bind "../services/path_identity";
 bind "identifier_utils";
 bind "source_scan";
 
@@ -9,6 +28,7 @@ bind Seq = Zanna.Collections.Seq;
 bind IO = Zanna.IO;
 bind Path = Zanna.IO.Path;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: bind_utils
@@ -261,7 +281,7 @@ expose func RewriteZiaBindContent(content: String,
     if content == "" { return result; }
 
     var lines = Str.Split(content, "\n");
-    var rebuilt = "";
+    var rebuilt = new StringBuilder();
     var i = 0;
     while i < Seq.get_Count(lines) {
         var line = Obj.ToString(Seq.Get(lines, i));
@@ -269,11 +289,11 @@ expose func RewriteZiaBindContent(content: String,
         if rewritten != line {
             result.count = result.count + 1;
         }
-        if i > 0 { rebuilt = rebuilt + "\n"; }
-        rebuilt = rebuilt + rewritten;
+        if i > 0 { rebuilt.Append("\n"); }
+        rebuilt.Append(rewritten);
         i = i + 1;
     }
-    result.text = rebuilt;
+    result.text = rebuilt.ToString();
     return result;
 }
 
@@ -396,7 +416,7 @@ expose func RelativeBindPath(importingDir: String,
 /// @param path Path to absolutize and normalize.
 /// @return Runtime-normalized absolute path.
 expose func NormalizeAbsPath(path: String) -> String {
-    return Path.Normalize(Path.Absolute(path));
+    return path_identity.Normalize(path);
 }
 
 /// @brief Convert path separators to source-level forward slashes.

@@ -38,6 +38,7 @@ final QUERY_COMPLETION = 2;
 final QUERY_HOVER = 3;
 final QUERY_SYMBOLS = 4;
 final QUERY_SIGNATURE = 5;
+final BASIC_QUERY_SHUTDOWN_WAIT_MS = 5000;
 
 /// @brief Immutable query input plus worker-published result state.
 /// @invariant Input fields do not change after Queue constructs the request.
@@ -218,6 +219,27 @@ class BasicQueryJob {
             coalescedCount = coalescedCount + 1;
         }
         MarkCancelled(activeRequest);
+    }
+
+    /// @brief Cancel and drain the owned callback before application teardown.
+    /// @details Interactive cancellation stays non-blocking. Shutdown must keep
+    ///          this owner alive until Async.RunOwned stops publishing into it,
+    ///          so the wait is bounded and reserved for the final lifecycle path.
+    /// @return True when no active BASIC compiler callback remains.
+    expose func CancelAndWait() -> Boolean {
+        Cancel();
+        if activeFuture == null { return true; }
+        var finished = false;
+        try {
+            finished = Future.WaitFor(activeFuture,
+                                      BASIC_QUERY_SHUTDOWN_WAIT_MS);
+        } catch {
+            return false;
+        }
+        if finished == false { return false; }
+        Pump();
+        completedRequest = null;
+        return activeFuture == null;
     }
 
     expose func IsBusy() -> Boolean {

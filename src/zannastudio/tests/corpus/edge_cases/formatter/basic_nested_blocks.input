@@ -1,0 +1,9 @@
+SUB Main()
+FOR i = 1 TO 2
+IF i = 1 THEN
+PRINT i
+ELSE
+PRINT 0
+ENDIF
+NEXT
+END SUB

@@ -10,6 +10,7 @@
 //   - Direct process startup never invokes a command shell.
 //   - Child stdin, stdout, and stderr are redirected through runtime-owned pipes.
 //   - Polling and reads are incremental; process completion is retained once observed.
+//   - Ordered output reads preserve capture order and identify each source stream.
 //   - A non-NULL environment sequence replaces the complete child environment.
 //   - Each output stream retains at most 16 MiB between reads and reports truncation.
 //
@@ -80,6 +81,21 @@ void *rt_process_start_in(rt_string program, void *args, rt_string cwd);
 ///         failure.
 void *rt_process_start_with_env(rt_string program, void *args, rt_string cwd, void *env);
 
+/// @brief Start a child with inherited environment plus explicit overrides.
+/// @details Each validated `NAME=value` entry replaces the inherited variable
+///          of the same name (case-insensitively on Windows, exactly on POSIX).
+///          Every other inherited entry is preserved. An empty or NULL overlay
+///          therefore inherits the environment unchanged.
+/// @param program Executable path or lookup name; must be nonempty.
+/// @param args Optional Seq of literal argument strings without embedded NUL.
+/// @param cwd Working directory without embedded NUL, or NULL/empty to inherit.
+/// @param overlay Optional Seq of nonempty NAME=VALUE override strings.
+/// @return New GC-managed process handle, or NULL after validation/startup failure.
+void *rt_process_start_with_env_overlay(rt_string program,
+                                        void *args,
+                                        rt_string cwd,
+                                        void *overlay);
+
 /// @brief Test whether @p handle is a started, undestroyed Process object.
 /// @details A handle remains valid after child exit so its status and buffered
 ///          output can be consumed until destruction.
@@ -129,14 +145,27 @@ rt_string rt_process_read_stderr(void *handle);
 ///         nontruncated map for an invalid handle, or NULL on map allocation failure.
 void *rt_process_read_stderr_result(void *handle);
 
+/// @brief Read both output streams as capture-ordered tagged chunks.
+/// @details Returns `{ chunks, truncated }`. Each chunk map contains integer
+///          `sequence`, string `stream` (`stdout` or `stderr`), and string
+///          `text`. This consumes the ordered view and both corresponding
+///          legacy per-stream buffers so one byte is not delivered twice to a
+///          caller that switches read APIs.
+/// @param handle Candidate process handle.
+/// @return Caller-owned result map, an empty nontruncated result for an invalid
+///         handle, or NULL on managed allocation failure.
+void *rt_process_read_output_result(void *handle);
+
 /// @brief Write bytes to the child's stdin pipe.
 /// @details Honors the runtime-string byte length, including embedded NUL.
-///          POSIX stdin is nonblocking, so a failure after progress can return a
-///          partial count.
+///          POSIX writes through a nonblocking descriptor. Windows accepts
+///          bytes into a bounded background-writer queue so a full child pipe
+///          cannot block the calling thread. A partial count means only that
+///          prefix was accepted by the runtime/OS.
 /// @param handle Candidate process handle with an open stdin pipe.
 /// @param data Bytes to write; NULL is treated as empty.
-/// @return Bytes written, zero for empty input, a positive partial count after
-///         later failure, or -1 when no byte can be written.
+/// @return Bytes accepted, zero for empty input, a positive partial count when
+///         capacity is limited, or -1 when no byte can be accepted.
 int64_t rt_process_write_stdin(void *handle, rt_string data);
 
 /// @brief Poll and return the retained process exit status.

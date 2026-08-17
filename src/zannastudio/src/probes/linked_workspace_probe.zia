@@ -24,6 +24,7 @@ module linked_workspace_probe;
 
 bind "../app/workspace_watcher";
 bind "../core/project_manager";
+bind "../services/path_identity";
 bind "../ui/app_shell";
 
 bind Env = Zanna.System.Environment;
@@ -74,16 +75,22 @@ func PumpTreeUntilIdle(projMgr: project_manager.ProjectManager) -> Boolean {
 }
 
 func main() {
-    if Env.GetArgumentCount() < 3 {
+    if Env.GetArgumentCount() < 4 {
         Terminal.Say("RESULT: fail missing linked-workspace fixture arguments");
         return;
     }
     var root = Env.GetArgument(0);
     var linkedDir = Env.GetArgument(1);
     var linkedFile = Env.GetArgument(2);
+    var outsideDir = Env.GetArgument(3);
 
     if Path.IsLink(linkedDir) == false {
         Terminal.Say("RESULT: fail fixture is not a link");
+        return;
+    }
+    if Path.SameEntry(linkedDir, outsideDir) == false
+       or path_identity.HasLinkedComponent(linkedDir, root, true) == false {
+        Terminal.Say("RESULT: fail linked identity or containment policy");
         return;
     }
 

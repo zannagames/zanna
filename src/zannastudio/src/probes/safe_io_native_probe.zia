@@ -12,6 +12,7 @@
 //   - Missing and oversized inputs return failure values rather than traps.
 //   - Atomic replacement publishes only the complete new value and removes its
 //     same-directory staging file.
+//   - Shared-state compare/exchange rejects a stale revision without data loss.
 // Ownership/Lifetime: Owns its temporary directory and test files.
 // Links: zannastudio/src/services/safe_io.zia
 //
@@ -129,6 +130,20 @@ func main() {
     var sharedState = safe_io.ReadStudioState(sharedStatePath);
     if sharedState.ok == false or sharedState.text != "[settings]\ntheme=dark\n" {
         fail("bounded Studio state did not round-trip");
+        return;
+    }
+    if safe_io.CompareExchangeStudioState(
+           sharedStatePath, sharedState.text, "[settings]\ntheme=light\n") == false {
+        fail("current Studio state revision did not commit");
+        return;
+    }
+    if safe_io.CompareExchangeStudioState(
+           sharedStatePath, sharedState.text, "[settings]\ntheme=lost\n") {
+        fail("stale Studio state revision was accepted");
+        return;
+    }
+    if File.ReadAllText(sharedStatePath) != "[settings]\ntheme=light\n" {
+        fail("stale Studio state write changed the current revision");
         return;
     }
 

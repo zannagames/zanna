@@ -1,0 +1,6 @@
+// license prelude
+module crlf_demo;
+bind Alpha = Zanna.Alpha;
+bind Zebra = Zanna.Zebra;
+
+func main() {}

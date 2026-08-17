@@ -1,0 +1,180 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/path_identity.zia
+// Purpose: Centralize Studio path normalization, identity, containment, link,
+//          and portable child-name policy.
+// Key invariants:
+//   - Missing paths keep normalized, case-preserving lexical identity.
+//   - Existing aliases compare through filesystem identity, never OS-wide folding.
+//   - Mutation containment rejects every linked descendant below an opened root.
+//   - User-created child names are valid on Windows, macOS, and Linux.
+// Ownership/Lifetime: Pure helpers; callers own all strings and filesystem state.
+// Links: docs/adr/0153-non-following-path-link-inspection.md,
+//        docs/adr/0259-stable-filesystem-entry-identity.md
+//
+//===----------------------------------------------------------------------===//
+
+module path_identity;
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+final MAX_PORTABLE_CHILD_BYTES = 255;
+
+/// @brief Produce Studio's one lexical path spelling for storage and keys.
+/// @details This operation is deliberately case-preserving and does not resolve
+///          links. On POSIX a backslash remains an ordinary filename byte.
+expose func Normalize(path: String) -> String {
+    if path == "" { return ""; }
+    return Path.Normalize(Path.Absolute(path));
+}
+
+/// @brief Compare path spellings, then stable identity for existing entries.
+/// @details The fallback handles directories, symlinks, reparse points, and
+///          case aliases according to the mounted filesystem. Missing operands
+///          compare only by normalized spelling.
+expose func SameEntry(left: String,
+                      right: String) -> Boolean {
+    if left == "" or right == "" { return false; }
+    var normalizedLeft = Normalize(left);
+    var normalizedRight = Normalize(right);
+    if normalizedLeft == normalizedRight { return true; }
+    return Path.SameEntry(normalizedLeft, normalizedRight);
+}
+
+/// @brief Compare normalized spellings or stable regular-file identity.
+expose func SameFile(left: String,
+                     right: String) -> Boolean {
+    if left == "" or right == "" { return false; }
+    var normalizedLeft = Normalize(left);
+    var normalizedRight = Normalize(right);
+    if normalizedLeft == normalizedRight { return true; }
+    return File.SameFile(normalizedLeft, normalizedRight);
+}
+
+/// @brief Test normalized separator-aware lexical containment.
+/// @details This predicate does not follow the filesystem and is valid for
+///          missing destinations. Mutation callers must additionally call
+///          HasLinkedComponent to prevent physical traversal through aliases.
+expose func IsWithinRoot(fullPath: String,
+                         rootPath: String) -> Boolean {
+    if fullPath == "" or rootPath == "" { return false; }
+    var normalizedPath = Normalize(fullPath);
+    var normalizedRoot = Normalize(rootPath);
+    if normalizedPath == normalizedRoot { return true; }
+    var prefix = normalizedRoot;
+    if Str.EndsWith(prefix, Path.Separator()) == false {
+        prefix = prefix + Path.Separator();
+    }
+    return Str.StartsWith(normalizedPath, prefix);
+}
+
+/// @brief Compute a normalized root-relative path, or preserve an outsider.
+expose func RelativePath(rootPath: String,
+                         fullPath: String) -> String {
+    if IsWithinRoot(fullPath, rootPath) == false { return fullPath; }
+    var root = Normalize(rootPath);
+    var full = Normalize(fullPath);
+    if root == full { return ""; }
+    var prefix = root;
+    if Str.EndsWith(prefix, Path.Separator()) == false {
+        prefix = prefix + Path.Separator();
+    }
+    return Str.Mid(full, Str.get_Length(prefix) + 1);
+}
+
+/// @brief Detect any symlink/reparse component below an opened root.
+/// @param path Candidate root or descendant path.
+/// @param rootPath Opened workspace root whose own link status is trusted.
+/// @param includeLeaf True to inspect the candidate itself; false for its parent.
+/// @return True for an outsider, a linked descendant, or a broken ancestor walk.
+expose func HasLinkedComponent(path: String,
+                               rootPath: String,
+                               includeLeaf: Boolean) -> Boolean {
+    var normalized = Normalize(path);
+    var root = Normalize(rootPath);
+    if IsWithinRoot(normalized, root) == false { return true; }
+    var current = normalized;
+    if includeLeaf == false { current = Normalize(Path.Directory(current)); }
+    while current != root {
+        if Path.IsLink(current) { return true; }
+        var parent = Normalize(Path.Directory(current));
+        if parent == current or IsWithinRoot(parent, root) == false {
+            return true;
+        }
+        current = parent;
+    }
+    return false;
+}
+
+/// @brief Explain why a user-provided child component is not portable.
+/// @return Empty for a safe component; otherwise a user-facing rejection reason.
+expose func ChildNameError(name: String) -> String {
+    if name == "" { return "Enter a file or folder name."; }
+    if Str.get_Length(name) > MAX_PORTABLE_CHILD_BYTES {
+        return "Names must be at most 255 UTF-8 bytes.";
+    }
+    if name == "." or name == ".." {
+        return "Choose a name other than \".\" or \"..\".";
+    }
+    if Str.IndexOf(name, "/") != 0 or Str.IndexOf(name, "\\") != 0 {
+        return "Use one name without path separators.";
+    }
+    if Str.IndexOf(name, "<") != 0 or Str.IndexOf(name, ">") != 0
+       or Str.IndexOf(name, ":") != 0 or Str.IndexOf(name, "\"") != 0
+       or Str.IndexOf(name, "|") != 0 or Str.IndexOf(name, "?") != 0
+       or Str.IndexOf(name, "*") != 0 {
+        return "Names cannot contain < > : \" / \\ | ? *.";
+    }
+    var controlCode = 0;
+    while controlCode < 32 {
+        if Str.IndexOf(name, Str.Chr(controlCode)) != 0 {
+            return "Names cannot contain control characters.";
+        }
+        controlCode = controlCode + 1;
+    }
+    if Str.IndexOf(name, Str.Chr(127)) != 0 {
+        return "Names cannot contain control characters.";
+    }
+    if Str.EndsWith(name, " ") or Str.EndsWith(name, ".") {
+        return "Names cannot end in a space or period.";
+    }
+
+    var deviceBase = name;
+    var dot = Str.IndexOf(deviceBase, ".");
+    if dot > 0 { deviceBase = Str.Left(deviceBase, dot - 1); }
+    deviceBase = Str.ToLower(deviceBase);
+    if IsReservedWindowsDevice(deviceBase) {
+        return "That name is reserved by Windows; choose another name.";
+    }
+    return "";
+}
+
+/// @brief Return whether a child component is portable across supported hosts.
+expose func IsPortableChildName(name: String) -> Boolean {
+    return ChildNameError(name) == "";
+}
+
+/// @brief Recognize Windows device aliases, including aliases with extensions.
+func IsReservedWindowsDevice(deviceBase: String) -> Boolean {
+    if deviceBase == "con" or deviceBase == "prn" or deviceBase == "aux"
+       or deviceBase == "nul" or deviceBase == "clock$"
+       or deviceBase == "conin$" or deviceBase == "conout$" {
+        return true;
+    }
+    if Str.get_Length(deviceBase) == 4 {
+        var prefix = Str.Left(deviceBase, 3);
+        var suffix = Str.Right(deviceBase, 1);
+        if (prefix == "com" or prefix == "lpt")
+           and suffix >= "1" and suffix <= "9" {
+            return true;
+        }
+    }
+    return false;
+}

@@ -12,6 +12,8 @@
 //     services; it only coordinates already-constructed services for one frame.
 //   - Budgeted work must remain cooperative and must never block shell polling,
 //     command dispatch, tab switching, or rendering indefinitely.
+//   - Project freshness discovery consumes bounded FileIndex pages and never
+//     runs recursively from a Build/Run command handler.
 // Ownership/Lifetime:
 //   - Constructed by main.zia after long-lived IDE services are created.
 //   - Lives for the same lifetime as the shell frame loop and is cleaned up by
@@ -60,6 +62,7 @@ bind Zanna.GUI;
 
 final LANGUAGE_FRAME_INDEX_FILES_PER_FRAME = 4;
 final LANGUAGE_FRAME_WORKSPACE_SYMBOL_FILES_PER_FRAME = 2;
+final LANGUAGE_FRAME_FRESHNESS_ENTRIES_PER_FRAME = 64;
 final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = 10;
 
 /// @brief Coordinates editor intelligence and background work for one frame.
@@ -267,6 +270,10 @@ class LanguageToolFrameController {
         }
         if BudgetAllows() and projMgr != null and projMgr.fileCacheRefreshing {
             projMgr.PumpFileCacheRefresh(2);
+        }
+        if BudgetAllows() and projMgr != null {
+            projMgr.PumpSourceFreshness(
+                LANGUAGE_FRAME_FRESHNESS_ENTRIES_PER_FRAME);
         }
         AddIndexPerf(perfSpan);
     }

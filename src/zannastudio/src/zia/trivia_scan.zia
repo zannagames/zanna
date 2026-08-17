@@ -6,6 +6,7 @@ bind "identifier_utils";
 bind Obj = Zanna.Core.Object;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: trivia_scan
@@ -274,7 +275,7 @@ expose func ZiaContinuationIndent(line: String,
 expose func ReplaceIdentifierOutsideTrivia(line: String,
                                            name: String,
                                            replacement: String) -> String {
-    var out = "";
+    var out = new StringBuilder();
     var pos = 1;
     var inString = false;
     var escape = false;
@@ -285,7 +286,7 @@ expose func ReplaceIdentifierOutsideTrivia(line: String,
             next = Str.MidLen(line, pos + 1, 1);
         }
         if inString {
-            out = out + ch;
+            out.Append(ch);
             if escape {
                 escape = false;
             } else if ch == "\\" {
@@ -297,32 +298,32 @@ expose func ReplaceIdentifierOutsideTrivia(line: String,
             continue;
         }
         if ch == "/" and next == "/" {
-            out = out + Str.Mid(line, pos);
-            return out;
+            out.Append(Str.Mid(line, pos));
+            return out.ToString();
         }
         if ch == "\"" {
             inString = true;
-            out = out + ch;
+            out.Append(ch);
             pos = pos + 1;
             continue;
         }
         if identifier_utils.IsIdentStart(ch) {
-            var ident = "";
+            var identStart = pos;
             while pos <= Str.get_Length(line) and identifier_utils.IsIdentPart(Str.MidLen(line, pos, 1)) {
-                ident = ident + Str.MidLen(line, pos, 1);
                 pos = pos + 1;
             }
+            var ident = Str.MidLen(line, identStart, pos - identStart);
             if ident == name {
-                out = out + replacement;
+                out.Append(replacement);
             } else {
-                out = out + ident;
+                out.Append(ident);
             }
             continue;
         }
-        out = out + ch;
+        out.Append(ch);
         pos = pos + 1;
     }
-    return out;
+    return out.ToString();
 }
 
 /// @brief Skip spaces and tabs from a 1-based position.

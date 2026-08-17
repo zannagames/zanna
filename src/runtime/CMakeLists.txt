@@ -171,8 +171,6 @@ set(RT_TEXT_SOURCES
         text/rt_password.c
         text/rt_rand.c
         text/rt_regex.c
-        text/rt_regex_parse.c
-        text/rt_regex_match.c
         text/rt_compiled_pattern.c
         text/rt_scanner.c
         text/rt_template.c
@@ -724,6 +722,8 @@ set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/oop/rt_sb_bridge.h
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/text/rt_font.h
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/common/rt_graphics.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/common/rt_basic_completion.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/graphics/common/rt_zia_completion.h
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/gui/rt_gui.h
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/gui/rt_gui_ide.h
         ${CMAKE_CURRENT_SOURCE_DIR}/graphics/input/rt_input.h
@@ -761,6 +761,7 @@ set(RT_PUBLIC_HEADERS
         ${CMAKE_CURRENT_SOURCE_DIR}/collections/rt_binbuf.h
         ${CMAKE_CURRENT_SOURCE_DIR}/text/rt_parse.h
         ${CMAKE_CURRENT_SOURCE_DIR}/text/rt_fuzzy_match.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/text/rt_compiled_pattern.h
         ${CMAKE_CURRENT_SOURCE_DIR}/io/rt_ide_primitives.h
         ${CMAKE_CURRENT_SOURCE_DIR}/io/rt_path.h
         ${CMAKE_CURRENT_SOURCE_DIR}/io/rt_dir.h
@@ -969,11 +970,12 @@ foreach (_rtlib IN LISTS ZANNA_RUNTIME_COMPONENT_LIBS)
     )
 endforeach ()
 
+target_link_libraries(zanna_rt_base PUBLIC zanna_regex_engine)
 target_link_libraries(zanna_rt_arrays PUBLIC zanna_rt_oop zanna_rt_base)
 target_link_libraries(zanna_rt_oop PUBLIC zanna_rt_base)
 target_link_libraries(zanna_rt_collections PUBLIC zanna_rt_oop zanna_rt_base)
 target_link_libraries(zanna_rt_game PUBLIC zanna_rt_collections zanna_rt_oop zanna_rt_base)
-target_link_libraries(zanna_rt_text PUBLIC zanna_rt_collections zanna_rt_base)
+target_link_libraries(zanna_rt_text PUBLIC zanna_regex_engine zanna_rt_collections zanna_rt_base)
 target_link_libraries(zanna_rt_io_fs PUBLIC zanna_rt_collections zanna_rt_oop zanna_rt_base)
 target_link_libraries(zanna_rt_exec PUBLIC zanna_rt_collections zanna_rt_base)
 target_link_libraries(zanna_rt_graphics PUBLIC zanna_rt_oop zanna_rt_base)
@@ -1023,6 +1025,7 @@ endif ()
 
 target_link_libraries(zanna_rt_threads PUBLIC Threads::Threads)
 target_link_libraries(zanna_runtime PUBLIC Threads::Threads)
+target_link_libraries(zanna_runtime PUBLIC zanna_regex_engine)
 
 # ZANNA_RC_DEBUG can be manually enabled for refcount debugging:
 # cmake -DCMAKE_CXX_FLAGS="-DZANNA_RC_DEBUG=1" ...

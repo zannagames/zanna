@@ -1,0 +1,7 @@
+func f() {
+var s = "// not comment {";
+var t = "quote: \" }";
+call( // ignored ) ] }
+a,
+b);
+}

@@ -15,6 +15,7 @@
 // Key invariants:
 //   - ReadAllText/ReadAllBytes size regular files up front and read their complete contents.
 //   - WriteAllText/WriteAllBytes/WriteLines replace files atomically.
+//   - CompareExchangeAllText serializes cooperating processes and rejects stale snapshots.
 //   - Replacing an existing regular file preserves its permission mode.
 //   - Exists returns false for directories; use Dir.Exists for those.
 //   - Copy does not overwrite the destination unless explicitly requested.
@@ -749,14 +750,13 @@ static int rt_fileext_snapshot_replaced_file(const char *path, rt_fileext_stat_t
 /// @param data Byte span to write; may be NULL only when @p len is zero.
 /// @param len Number of bytes in @p data.
 /// @param binary Nonzero to open the Windows staging descriptor in binary mode.
-/// @return 1 after the durable replacement completes; otherwise 0 after removing the sidecar
-///         when possible.
-static int rt_fileext_write_atomic_utf8(const char *path,
-                                        const uint8_t *data,
-                                        size_t len,
-                                        int binary) {
+/// @param replace Nonzero to replace the destination; zero to require a new name at commit.
+/// @return 1 after the durable commit completes; otherwise 0 after removing the sidecar when
+///         possible.
+static int rt_fileext_write_atomic_utf8(
+    const char *path, const uint8_t *data, size_t len, int binary, int replace) {
     rt_fileext_stat_t replaced_st;
-    int preserve_mode = rt_fileext_snapshot_replaced_file(path, &replaced_st);
+    int preserve_mode = replace && rt_fileext_snapshot_replaced_file(path, &replaced_st);
 
     char *tmp = NULL;
     int fd = rt_fileext_open_temp_utf8(path, binary, &tmp);
@@ -780,13 +780,224 @@ static int rt_fileext_write_atomic_utf8(const char *path,
         ok = 0;
 #endif
     if (ok)
-        ok = rt_fileext_replace_utf8(tmp, path);
+        ok = rt_fileext_commit_utf8(tmp, path, replace);
     if (ok)
         ok = rt_fileext_sync_parent_dir(path);
     if (!ok)
         (void)rt_fileext_unlink(tmp);
     free(tmp);
     return ok;
+}
+
+/// @brief State for one cooperative whole-file compare/exchange lock.
+typedef struct rt_fileext_path_lock {
+#if RT_PLATFORM_WINDOWS
+    HANDLE handle;
+    OVERLAPPED overlapped;
+#else
+    int fd;
+#endif
+} rt_fileext_path_lock;
+
+/// @brief Build the stable directory lock path for one compare/exchange destination.
+/// @details One fixed-length lock per directory avoids leaving a sidecar for every edited file and
+///          also avoids exceeding a near-limit destination component. Serializing independent
+///          compare/exchanges in one directory is an intentional conservative tradeoff. POSIX
+///          includes the effective user ID so an owner-only lock in a shared temp directory cannot
+///          deny this API to other users.
+/// @param path Null-terminated destination path.
+/// @return Allocated adjacent lock path, or NULL on overflow/allocation failure.
+static char *rt_fileext_make_lock_path(const char *path) {
+    if (!path)
+        return NULL;
+    size_t path_len = strlen(path);
+    size_t parent_len = 0;
+    for (size_t i = 0; i < path_len; ++i) {
+#if RT_PLATFORM_WINDOWS
+        if (path[i] == '/' || path[i] == '\\')
+#else
+        if (path[i] == '/')
+#endif
+            parent_len = i + 1;
+    }
+
+    char basename[64];
+#if RT_PLATFORM_WINDOWS
+    int basename_len = snprintf(basename, sizeof(basename), ".zanna-cas.lock");
+#else
+    int basename_len =
+        snprintf(basename, sizeof(basename), ".zanna-cas.%llu.lock", (unsigned long long)geteuid());
+#endif
+    if (basename_len < 0 || (size_t)basename_len >= sizeof(basename) ||
+        parent_len > SIZE_MAX - (size_t)basename_len - 1)
+        return NULL;
+    size_t cap = parent_len + (size_t)basename_len + 1;
+    char *lock_path = (char *)malloc(cap);
+    if (!lock_path)
+        return NULL;
+    if (parent_len > 0)
+        memcpy(lock_path, path, parent_len);
+    memcpy(lock_path + parent_len, basename, (size_t)basename_len + 1);
+    return lock_path;
+}
+
+/// @brief Acquire the stable whole-file compare/exchange lock beside @p path.
+/// @details Lock files intentionally persist so a waiter can never hold an unlinked object while
+///          another process creates and locks a replacement. Existing links/reparse points and
+///          non-regular entries are rejected.
+/// @param path Destination whose lock should be acquired.
+/// @param[out] lock Receives the platform lock state.
+/// @return 1 on success; otherwise 0 with no owned handle remaining.
+static int rt_fileext_path_lock_acquire(const char *path, rt_fileext_path_lock *lock) {
+    if (!path || !lock)
+        return 0;
+    char *lock_path = rt_fileext_make_lock_path(path);
+    if (!lock_path)
+        return 0;
+#if RT_PLATFORM_WINDOWS
+    lock->handle = INVALID_HANDLE_VALUE;
+    memset(&lock->overlapped, 0, sizeof(lock->overlapped));
+    wchar_t *wide = rt_file_path_utf8_to_wide(lock_path);
+    free(lock_path);
+    if (!wide)
+        return 0;
+    HANDLE handle = CreateFileW(wide,
+                                GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL,
+                                OPEN_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                                NULL);
+    free(wide);
+    if (handle == INVALID_HANDLE_VALUE)
+        return 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(handle, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0) {
+        CloseHandle(handle);
+        return 0;
+    }
+    if (!LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, MAXDWORD, MAXDWORD, &lock->overlapped)) {
+        CloseHandle(handle);
+        return 0;
+    }
+    lock->handle = handle;
+    return 1;
+#else
+    lock->fd = -1;
+    int flags = O_RDWR | O_CREAT;
+#if defined(O_NOFOLLOW)
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = rt_fileext_open(lock_path, flags, 0600);
+    free(lock_path);
+    if (fd < 0)
+        return 0;
+    rt_fileext_stat_t st;
+    if (rt_fileext_fstat(fd, &st) != 0 || !rt_fileext_is_regular_mode(st.st_mode)) {
+        close(fd);
+        return 0;
+    }
+    struct flock request;
+    memset(&request, 0, sizeof(request));
+    request.l_type = F_WRLCK;
+    request.l_whence = SEEK_SET;
+    int rc;
+    do {
+        rc = fcntl(fd, F_SETLKW, &request);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0) {
+        close(fd);
+        return 0;
+    }
+    lock->fd = fd;
+    return 1;
+#endif
+}
+
+/// @brief Release a lock acquired by rt_fileext_path_lock_acquire().
+/// @param lock Owned platform lock state.
+/// @return 1 when unlock and handle close both succeeded; otherwise 0.
+static int rt_fileext_path_lock_release(rt_fileext_path_lock *lock) {
+    if (!lock)
+        return 0;
+#if RT_PLATFORM_WINDOWS
+    if (lock->handle == INVALID_HANDLE_VALUE)
+        return 0;
+    int ok = UnlockFileEx(lock->handle, 0, MAXDWORD, MAXDWORD, &lock->overlapped) ? 1 : 0;
+    if (!CloseHandle(lock->handle))
+        ok = 0;
+    lock->handle = INVALID_HANDLE_VALUE;
+    return ok;
+#else
+    if (lock->fd < 0)
+        return 0;
+    struct flock request;
+    memset(&request, 0, sizeof(request));
+    request.l_type = F_UNLCK;
+    request.l_whence = SEEK_SET;
+    int ok = fcntl(lock->fd, F_SETLK, &request) == 0 ? 1 : 0;
+    if (close(lock->fd) != 0)
+        ok = 0;
+    lock->fd = -1;
+    return ok;
+#endif
+}
+
+/// @brief Compare one regular file with a byte snapshot without allocating its full contents.
+/// @details A missing path matches an empty snapshot. Concurrent truncation/growth is treated as
+///          mismatch; invalid/non-regular paths and read/close failures report an I/O error.
+/// @param path Destination path to inspect while its cooperative lock is held.
+/// @param expected Expected byte span; may be NULL only when @p expected_len is zero.
+/// @param expected_len Expected byte count.
+/// @return 1 for an exact match, 0 for mismatch, or -1 for an I/O/type error.
+static int rt_fileext_compare_path_bytes(const char *path,
+                                         const uint8_t *expected,
+                                         size_t expected_len) {
+    int fd = rt_fileext_open(path, O_RDONLY | RT_FILE_O_BINARY, 0);
+    if (fd < 0)
+        return errno == ENOENT ? (expected_len == 0 ? 1 : 0) : -1;
+
+    rt_fileext_stat_t st;
+    int result = 1;
+    if (rt_fileext_fstat(fd, &st) != 0 || !rt_fileext_is_regular_mode(st.st_mode)) {
+        result = -1;
+    } else if (st.st_size < 0 || (uint64_t)st.st_size != (uint64_t)expected_len) {
+        result = 0;
+    }
+
+    uint8_t buffer[16384];
+    size_t offset = 0;
+    while (result == 1 && offset < expected_len) {
+        size_t wanted = expected_len - offset;
+        if (wanted > sizeof(buffer))
+            wanted = sizeof(buffer);
+        ssize_t count;
+        do {
+            count = rt_posix_read(fd, buffer, wanted);
+        } while (count < 0 && errno == EINTR);
+        if (count < 0) {
+            result = -1;
+        } else if (count == 0 || memcmp(buffer, expected + offset, (size_t)count) != 0) {
+            result = 0;
+        } else {
+            offset += (size_t)count;
+        }
+    }
+    if (result == 1) {
+        uint8_t extra = 0;
+        ssize_t count;
+        do {
+            count = rt_posix_read(fd, &extra, 1);
+        } while (count < 0 && errno == EINTR);
+        if (count < 0)
+            result = -1;
+        else if (count != 0)
+            result = 0;
+    }
+    if (close(fd) != 0)
+        result = -1;
+    return result;
 }
 
 /// @brief Validate a path argument: trap with `context` on NULL/empty input.
@@ -834,6 +1045,13 @@ int64_t rt_file_same(rt_string left, rt_string right) {
     const char *right_path = NULL;
     if (!rt_file_path_from_vstr(left, &left_path) || !left_path || *left_path == '\0' ||
         !rt_file_path_from_vstr(right, &right_path) || !right_path || *right_path == '\0')
+        return 0;
+    rt_fileext_stat_t left_stat;
+    rt_fileext_stat_t right_stat;
+    if (rt_fileext_stat_path(left_path, &left_stat) != 0 ||
+        rt_fileext_stat_path(right_path, &right_stat) != 0 ||
+        !rt_fileext_is_regular_mode(left_stat.st_mode) ||
+        !rt_fileext_is_regular_mode(right_stat.st_mode))
         return 0;
     return rt_fileext_same_existing_file(left_path, right_path) ? 1 : 0;
 }
@@ -919,6 +1137,102 @@ rt_string rt_io_file_read_all_text(rt_string path) {
     return s;
 }
 
+/// @brief Read complete text from one descriptor under a strict byte ceiling.
+/// @details The descriptor is statted before allocation. After reading the
+///          statted size, one additional byte is probed so observed growth is
+///          rejected rather than returned as a partial file snapshot.
+/// @param path Runtime string containing the file path.
+/// @param max_bytes Maximum accepted descriptor size; negative values trap.
+/// @return Runtime string containing the exact stable file bytes.
+rt_string rt_io_file_read_all_text_bounded(rt_string path, int64_t max_bytes) {
+    const char *cpath =
+        rt_io_file_require_path(path, "Zanna.IO.File.ReadAllTextBounded: invalid file path");
+    if (max_bytes < 0) {
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: maxBytes must be nonnegative");
+        return rt_str_empty();
+    }
+
+    int fd = rt_fileext_open(cpath, O_RDONLY | RT_FILE_O_BINARY, 0);
+    if (fd < 0) {
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: failed to open file");
+        return rt_str_empty();
+    }
+
+    rt_fileext_stat_t st;
+    if (rt_fileext_fstat(fd, &st) != 0) {
+        close(fd);
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: failed to stat file");
+        return rt_str_empty();
+    }
+    if (!rt_fileext_is_regular_mode(st.st_mode)) {
+        close(fd);
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: path is not a regular file");
+        return rt_str_empty();
+    }
+    if (st.st_size < 0 || (uint64_t)st.st_size > (uint64_t)SIZE_MAX ||
+        (uint64_t)st.st_size > (uint64_t)max_bytes) {
+        close(fd);
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: file exceeds maxBytes");
+        return rt_str_empty();
+    }
+
+    size_t size = (size_t)st.st_size;
+    char *buf = size > 0 ? (char *)malloc(size) : NULL;
+    if (size > 0 && !buf) {
+        close(fd);
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: allocation failed");
+        return rt_str_empty();
+    }
+
+    size_t off = 0;
+    while (off < size) {
+        ssize_t n = rt_posix_read(fd, buf + off, size - off);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            free(buf);
+            close(fd);
+            rt_trap("Zanna.IO.File.ReadAllTextBounded: failed to read file");
+            return rt_str_empty();
+        }
+        if (n == 0) {
+            free(buf);
+            close(fd);
+            rt_trap("Zanna.IO.File.ReadAllTextBounded: file changed while reading");
+            return rt_str_empty();
+        }
+        off += (size_t)n;
+    }
+
+    uint8_t extra = 0;
+    ssize_t trailing = -1;
+    do {
+        trailing = rt_posix_read(fd, &extra, 1);
+    } while (trailing < 0 && errno == EINTR);
+    if (trailing != 0) {
+        free(buf);
+        close(fd);
+        rt_trap(trailing > 0 ? "Zanna.IO.File.ReadAllTextBounded: file changed while reading"
+                             : "Zanna.IO.File.ReadAllTextBounded: failed to read file");
+        return rt_str_empty();
+    }
+    if (close(fd) != 0) {
+        free(buf);
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: failed to close file");
+        return rt_str_empty();
+    }
+    if (size == 0)
+        return rt_str_empty();
+
+    rt_string result = rt_string_from_bytes(buf, size);
+    free(buf);
+    if (!result) {
+        rt_trap("Zanna.IO.File.ReadAllTextBounded: allocation failed");
+        return rt_str_empty();
+    }
+    return result;
+}
+
 /// What: Write @p contents to @p path, replacing the file atomically.
 /// Why:  Complement read_all_text with a simple write primitive.
 /// How:  Writes an exclusive temp sidecar, flushes it, then replaces the destination.
@@ -937,8 +1251,75 @@ void rt_io_file_write_all_text(rt_string path, rt_string contents) {
     const uint8_t *data = NULL;
     size_t len = rt_file_string_require_view(
         contents, &data, "Zanna.IO.File.WriteAllText: invalid contents");
-    if (!rt_fileext_write_atomic_utf8(cpath, data, len, 1))
+    if (!rt_fileext_write_atomic_utf8(cpath, data, len, 1, 1))
         rt_trap("Zanna.IO.File.WriteAllText: failed to write file");
+}
+
+/// @brief Durably create a text file without replacing a racing destination.
+/// @param path Runtime string containing the new destination path.
+/// @param contents Runtime string whose bytes are written verbatim.
+void rt_io_file_write_all_text_new(rt_string path, rt_string contents) {
+    const char *cpath =
+        rt_io_file_require_path(path, "Zanna.IO.File.WriteAllTextNew: invalid file path");
+
+    const uint8_t *data = NULL;
+    size_t len = rt_file_string_require_view(
+        contents, &data, "Zanna.IO.File.WriteAllTextNew: invalid contents");
+    if (!rt_fileext_write_atomic_utf8(cpath, data, len, 1, 0))
+        rt_trap("Zanna.IO.File.WriteAllTextNew: destination exists or write failed");
+}
+
+/// @brief Cooperatively compare and exchange the complete bytes of one text file.
+/// @details A stable adjacent OS lock serializes callers using this primitive. The destination is
+///          streamed against @p expected while locked and is durably replaced with @p desired only
+///          on an exact match. Missing and empty destinations intentionally share the empty
+///          expected representation. Ordinary unconditional writers do not join this protocol.
+/// @param path Runtime string containing the destination path.
+/// @param expected Runtime string containing the complete expected bytes.
+/// @param desired Runtime string containing the complete replacement bytes.
+/// @return 1 after committing @p desired; 0 for a content mismatch.
+int64_t rt_io_file_compare_exchange_all_text(rt_string path,
+                                             rt_string expected,
+                                             rt_string desired) {
+    const char *cpath =
+        rt_io_file_require_path(path, "Zanna.IO.File.CompareExchangeAllText: invalid file path");
+    const uint8_t *expected_data = NULL;
+    size_t expected_len = rt_file_string_require_view(
+        expected, &expected_data, "Zanna.IO.File.CompareExchangeAllText: invalid expected text");
+    const uint8_t *desired_data = NULL;
+    size_t desired_len = rt_file_string_require_view(
+        desired, &desired_data, "Zanna.IO.File.CompareExchangeAllText: invalid desired text");
+
+    rt_fileext_path_lock lock;
+    if (!rt_fileext_path_lock_acquire(cpath, &lock)) {
+        rt_trap("Zanna.IO.File.CompareExchangeAllText: failed to acquire lock");
+        return 0;
+    }
+    int matches = rt_fileext_compare_path_bytes(cpath, expected_data, expected_len);
+    if (matches <= 0) {
+        int released = rt_fileext_path_lock_release(&lock);
+        if (matches < 0) {
+            rt_trap("Zanna.IO.File.CompareExchangeAllText: failed to read destination");
+            return 0;
+        }
+        if (!released) {
+            rt_trap("Zanna.IO.File.CompareExchangeAllText: failed to release lock");
+            return 0;
+        }
+        return 0;
+    }
+
+    int written = rt_fileext_write_atomic_utf8(cpath, desired_data, desired_len, 1, 1);
+    int released = rt_fileext_path_lock_release(&lock);
+    if (!written) {
+        rt_trap("Zanna.IO.File.CompareExchangeAllText: failed to write destination");
+        return 0;
+    }
+    if (!released) {
+        rt_trap("Zanna.IO.File.CompareExchangeAllText: failed to release lock");
+        return 0;
+    }
+    return 1;
 }
 
 /// What: Append @p text and a newline to @p path (creating it when missing).
@@ -1152,7 +1533,7 @@ void rt_io_file_write_all_bytes(rt_string path, void *bytes) {
         rt_trap("Zanna.IO.File.WriteAllBytes: invalid Bytes data");
         return;
     }
-    if (!rt_fileext_write_atomic_utf8(cpath, src, (size_t)len, 1))
+    if (!rt_fileext_write_atomic_utf8(cpath, src, (size_t)len, 1, 1))
         rt_trap("Zanna.IO.File.WriteAllBytes: failed to write file");
 }
 

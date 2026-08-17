@@ -29,6 +29,7 @@ bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: workspace_edits
@@ -60,21 +61,21 @@ func PreviewRenameEdits(edits: Any, maxRows: Integer) -> String {
         return "No edits returned.";
     }
     var count = Seq.get_Count(edits);
-    var text = "Apply " + count + " rename edits?";
+    var text = new StringBuilder();
+    text.Append("Apply " + count + " rename edits?");
     var shown = 0;
     while shown < count and shown < maxRows {
         var edit = Seq.Get(edits, shown);
-        text = text + "\n" +
-               Map.GetStr(edit, "file") + ":" +
-               Map.GetInt(edit, "startLine") + ":" +
-               Map.GetInt(edit, "startColumn") +
-               " -> " + Map.GetStr(edit, "newText");
+        text.Append("\n" + Map.GetStr(edit, "file") + ":"
+                    + Map.GetInt(edit, "startLine") + ":"
+                    + Map.GetInt(edit, "startColumn")
+                    + " -> " + Map.GetStr(edit, "newText"));
         shown = shown + 1;
     }
     if count > maxRows {
-        text = text + "\n... and " + (count - maxRows) + " more";
+        text.Append("\n... and " + (count - maxRows) + " more");
     }
-    return text;
+    return text.ToString();
 }
 
 func ApplyRenameEdits(edits: Any,
@@ -218,7 +219,7 @@ func FormatWorkspaceEditDiagnostics(diagnostics: Any,
     if diagnostics == null or Seq.get_Count(diagnostics) == 0 {
         return fallback;
     }
-    var result = "";
+    var result = new StringBuilder();
     var i = 0;
     while i < Seq.get_Count(diagnostics) {
         var diag = Seq.Get(diagnostics, i);
@@ -234,12 +235,13 @@ func FormatWorkspaceEditDiagnostics(diagnostics: Any,
             if line > 0 { item = item + ":" + line; }
             item = item + ")";
         }
-        if result != "" { result = result + "\n"; }
-        result = result + item;
+        if i > 0 { result.Append("\n"); }
+        result.Append(item);
         i = i + 1;
     }
-    if result == "" { return fallback; }
-    return result;
+    var text = result.ToString();
+    if text == "" { return fallback; }
+    return text;
 }
 
 func ApplyEditToDocument(doc: document.Document, edit: Any) -> Boolean {
@@ -489,7 +491,7 @@ func ApplyEditToText(content: String, edit: Any) -> String {
         suffix = Str.Mid(endText, endCol);
     }
     var replacement = prefix + newText + suffix;
-    var rebuilt = "";
+    var rebuilt = new StringBuilder();
     var firstOutputLine = true;
     var i = 0;
     while i < Seq.get_Count(lines) {
@@ -504,14 +506,14 @@ func ApplyEditToText(content: String, edit: Any) -> String {
         }
         if emit {
             if firstOutputLine == false {
-                rebuilt = rebuilt + "\n";
+                rebuilt.Append("\n");
             }
-            rebuilt = rebuilt + text;
+            rebuilt.Append(text);
             firstOutputLine = false;
         }
         i = i + 1;
     }
-    return rebuilt;
+    return rebuilt.ToString();
 }
 
 func SeqContainsString(items: Any, value: String) -> Boolean {

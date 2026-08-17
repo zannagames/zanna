@@ -176,6 +176,109 @@ void vg_codeeditor_set_text(vg_codeeditor_t *editor, const char *text) {
     vg_codeeditor_set_text_bytes(editor, text, text ? strlen(text) : 0);
 }
 
+/// @brief Replace the complete document as one undoable state-preserving edit.
+/// @details The ordinary SetText cold path intentionally resets document state. Save-time
+///          normalization instead needs a regular edit: this routine temporarily removes extra
+///          cursors from the edit target set, replaces the full primary range once, and restores
+///          every cursor, selection, scroll offset, and still-valid fold. Prior history remains
+///          intact and the replacement is appended as one undo unit.
+/// @param editor Editor to update.
+/// @param text Null-terminated UTF-8 replacement, or NULL for empty text.
+/// @return True when applied or already equal; false on invalid/read-only/allocation failure.
+bool vg_codeeditor_replace_all_text(vg_codeeditor_t *editor, const char *text) {
+    if (!editor || editor->read_only)
+        return false;
+    const char *replacement = text ? text : "";
+    char *current = vg_codeeditor_get_text(editor);
+    if (!current)
+        return false;
+    bool unchanged = strcmp(current, replacement) == 0;
+    free(current);
+    if (unchanged)
+        return true;
+
+    const int saved_cursor_line = editor->cursor_line;
+    const int saved_cursor_col = editor->cursor_col;
+    const vg_selection_t saved_selection = editor->selection;
+    const bool saved_has_selection = editor->has_selection;
+    const float saved_scroll_x = editor->scroll_x;
+    const float saved_scroll_y = editor->scroll_y;
+    const int saved_extra_count = editor->extra_cursor_count;
+    struct vg_extra_cursor *saved_extra = NULL;
+    if (saved_extra_count > 0) {
+        saved_extra = malloc((size_t)saved_extra_count * sizeof(*saved_extra));
+        if (!saved_extra)
+            return false;
+        memcpy(
+            saved_extra, editor->extra_cursors, (size_t)saved_extra_count * sizeof(*saved_extra));
+    }
+
+    vg_edit_target_t target;
+    memset(&target, 0, sizeof(target));
+    target.cursor_id = 0;
+    target.cursor_line_before = editor->cursor_line;
+    target.cursor_col_before = editor->cursor_col;
+    target.start_line = 0;
+    target.start_col = 0;
+    target.end_line = editor->line_count > 0 ? editor->line_count - 1 : 0;
+    target.end_col = editor->line_count > 0 ? (int)editor->lines[target.end_line].length : 0;
+
+    uint64_t revision_before = editor->revision;
+    editor->extra_cursor_count = 0;
+    edit_history_break_coalescing(editor->history);
+    apply_edit_targets(editor, &target, 1, replacement);
+
+    editor->cursor_line = saved_cursor_line;
+    editor->cursor_col = saved_cursor_col;
+    clamp_editor_position(editor, &editor->cursor_line, &editor->cursor_col);
+    editor->selection = saved_selection;
+    clamp_editor_position(editor, &editor->selection.start_line, &editor->selection.start_col);
+    clamp_editor_position(editor, &editor->selection.end_line, &editor->selection.end_col);
+    editor->has_selection =
+        saved_has_selection && compare_positions(editor->selection.start_line,
+                                                 editor->selection.start_col,
+                                                 editor->selection.end_line,
+                                                 editor->selection.end_col) != 0;
+
+    if (saved_extra_count > 0) {
+        memcpy(
+            editor->extra_cursors, saved_extra, (size_t)saved_extra_count * sizeof(*saved_extra));
+        for (int i = 0; i < saved_extra_count; ++i) {
+            struct vg_extra_cursor *cursor = &editor->extra_cursors[i];
+            clamp_editor_position(editor, &cursor->line, &cursor->col);
+            clamp_editor_position(
+                editor, &cursor->selection.start_line, &cursor->selection.start_col);
+            clamp_editor_position(editor, &cursor->selection.end_line, &cursor->selection.end_col);
+            cursor->has_selection =
+                cursor->has_selection && compare_positions(cursor->selection.start_line,
+                                                           cursor->selection.start_col,
+                                                           cursor->selection.end_line,
+                                                           cursor->selection.end_col) != 0;
+        }
+    }
+    editor->extra_cursor_count = saved_extra_count;
+    free(saved_extra);
+
+    int valid_folds = 0;
+    editor->has_folded_lines = false;
+    for (int i = 0; i < editor->fold_region_count; ++i) {
+        struct vg_fold_region fold = editor->fold_regions[i];
+        clamp_editor_line(editor, &fold.start_line);
+        clamp_editor_line(editor, &fold.end_line);
+        if (fold.end_line <= fold.start_line)
+            continue;
+        editor->fold_regions[valid_folds++] = fold;
+        if (fold.folded)
+            editor->has_folded_lines = true;
+    }
+    editor->fold_region_count = valid_folds;
+    editor->scroll_x = saved_scroll_x;
+    editor->scroll_y = saved_scroll_y;
+    vg_codeeditor_refresh_layout_state(editor);
+    editor->base.needs_paint = true;
+    return editor->revision != revision_before;
+}
+
 // ── Incremental sync journal serialization (plan 08) ────────────────────────
 
 /// @brief Minimal growable byte buffer for delta-JSON assembly.

@@ -1,0 +1,212 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/keybinding_settings.zia
+// Purpose: Persist bounded keybinding override records in a versioned INI section.
+// Key invariants:
+//   - Command IDs and shortcut values are values, never delimiter-encoded keys.
+//   - Counts, IDs, and shortcut text are bounded before retention.
+//   - Legacy scalar overrides migrate once and are removed on the next save.
+// Ownership/Lifetime:
+//   - SettingsManager owns one in-memory set for its process lifetime.
+// Links: zannastudio/src/core/settings.zia,
+//        zannastudio/src/commands/command_registry.zia
+//
+//===----------------------------------------------------------------------===//
+
+module keybinding_settings;
+
+bind Ini = Zanna.Data.Ini;
+bind Obj = Zanna.Core.Object;
+bind Parse = Zanna.Core.Parse;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+
+final KEYBINDING_SCHEMA_VERSION = 1;
+final MAX_KEYBINDING_OVERRIDES = 256;
+final MAX_KEYBINDING_ID_CHARS = 96;
+final MAX_KEYBINDING_SHORTCUT_CHARS = 128;
+
+/// @brief Versioned, ordered set of command-to-shortcut override records.
+class KeybindingOverrideSet {
+    expose List ids;
+    expose List shortcuts;
+    expose Boolean loadedStructured;
+    expose Boolean migratedLegacy;
+    expose Integer rejectedRecords;
+
+    expose func init() {
+        Clear();
+    }
+
+    expose func Clear() {
+        ids = new List();
+        shortcuts = new List();
+        loadedStructured = false;
+        migratedLegacy = false;
+        rejectedRecords = 0;
+    }
+
+    expose func Count() -> Integer {
+        return ids.count();
+    }
+
+    expose func IdAt(index: Integer) -> String {
+        if index < 0 or index >= ids.count() { return ""; }
+        return Obj.ToString(ids.get(index));
+    }
+
+    expose func ShortcutAt(index: Integer) -> String {
+        if index < 0 or index >= shortcuts.count() { return ""; }
+        return Obj.ToString(shortcuts.get(index));
+    }
+
+    expose func Find(id: String) -> Integer {
+        var i = 0;
+        while i < ids.count() {
+            if Obj.ToString(ids.get(i)) == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Insert or replace one validated record.
+    /// @details An empty shortcut is meaningful: it explicitly unbinds the
+    ///          command. Runtime shortcut grammar validation remains the command
+    ///          registry's responsibility because core settings has no UI edge.
+    expose func Set(idText: String, shortcutText: String) -> Boolean {
+        var id = Str.Trim(idText);
+        var shortcut = Str.Trim(shortcutText);
+        if SafeId(id) == false or SafeShortcutText(shortcut) == false {
+            rejectedRecords = rejectedRecords + 1;
+            return false;
+        }
+        var existing = Find(id);
+        if existing >= 0 {
+            shortcuts.set(existing, shortcut);
+            return true;
+        }
+        if ids.count() >= MAX_KEYBINDING_OVERRIDES {
+            rejectedRecords = rejectedRecords + 1;
+            return false;
+        }
+        ids.add(id);
+        shortcuts.add(shortcut);
+        return true;
+    }
+
+    expose func Remove(id: String) -> Boolean {
+        var existing = Find(id);
+        if existing < 0 { return false; }
+        ids.RemoveAt(existing);
+        shortcuts.RemoveAt(existing);
+        return true;
+    }
+
+    /// @brief Load the versioned records or migrate the legacy scalar format.
+    expose func Load(ini: Any) {
+        Clear();
+        var versionText = Ini.Get(ini, "keybindings", "version");
+        if versionText == "" {
+            LoadLegacy(Ini.Get(ini, "settings", "keybindingOverrides"));
+            return;
+        }
+        if Parse.IntOr(versionText, -1) != KEYBINDING_SCHEMA_VERSION {
+            rejectedRecords = rejectedRecords + 1;
+            return;
+        }
+        loadedStructured = true;
+        var declaredCount = Parse.IntOr(
+            Ini.Get(ini, "keybindings", "count"), 0);
+        if declaredCount < 0 {
+            rejectedRecords = rejectedRecords + 1;
+            return;
+        }
+        var count = declaredCount;
+        if count > MAX_KEYBINDING_OVERRIDES {
+            count = MAX_KEYBINDING_OVERRIDES;
+            rejectedRecords = rejectedRecords + 1;
+        }
+        var i = 0;
+        while i < count {
+            var id = Ini.Get(ini, "keybindings", "id." + i);
+            var shortcut = Ini.Get(ini, "keybindings", "shortcut." + i);
+            Set(id, shortcut);
+            i = i + 1;
+        }
+    }
+
+    /// @brief Write canonical indexed records and retire the legacy scalar.
+    expose func Save(ini: Any) {
+        var oldCount = Parse.IntOr(
+            Ini.Get(ini, "keybindings", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        if oldCount > MAX_KEYBINDING_OVERRIDES {
+            oldCount = MAX_KEYBINDING_OVERRIDES;
+        }
+        var removeIndex = 0;
+        while removeIndex < oldCount {
+            Ini.Remove(ini, "keybindings", "id." + removeIndex);
+            Ini.Remove(ini, "keybindings", "shortcut." + removeIndex);
+            removeIndex = removeIndex + 1;
+        }
+        Ini.Set(ini, "keybindings", "version", "" + KEYBINDING_SCHEMA_VERSION);
+        Ini.Set(ini, "keybindings", "count", "" + Count());
+        var i = 0;
+        while i < Count() {
+            Ini.Set(ini, "keybindings", "id." + i, IdAt(i));
+            Ini.Set(ini, "keybindings", "shortcut." + i, ShortcutAt(i));
+            i = i + 1;
+        }
+        Ini.Remove(ini, "settings", "keybindingOverrides");
+        loadedStructured = true;
+        migratedLegacy = false;
+    }
+
+    hide func LoadLegacy(encoded: String) {
+        if encoded == "" { return; }
+        migratedLegacy = true;
+        var pairs = Str.Split(encoded, ";;");
+        var count = Seq.get_Count(pairs);
+        if count > MAX_KEYBINDING_OVERRIDES {
+            count = MAX_KEYBINDING_OVERRIDES;
+            rejectedRecords = rejectedRecords + 1;
+        }
+        var i = 0;
+        while i < count {
+            var pair = Seq.GetStr(pairs, i);
+            var eq = Str.IndexOf(pair, "=");
+            if eq > 0 {
+                Set(Str.Left(pair, eq - 1), Str.Mid(pair, eq + 1));
+            } else if pair != "" {
+                rejectedRecords = rejectedRecords + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func SafeId(id: String) -> Boolean {
+        var length = Str.get_Length(id);
+        if length <= 0 or length > MAX_KEYBINDING_ID_CHARS { return false; }
+        var i = 1;
+        while i <= length {
+            var ch = Str.MidLen(id, i, 1);
+            if Str.Contains("abcdefghijklmnopqrstuvwxyz0123456789_-.", ch)
+               == false {
+                return false;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    hide func SafeShortcutText(shortcut: String) -> Boolean {
+        return Str.get_Length(shortcut) <= MAX_KEYBINDING_SHORTCUT_CHARS
+               and Str.Contains(shortcut, "\n") == false
+               and Str.Contains(shortcut, "\r") == false;
+    }
+}

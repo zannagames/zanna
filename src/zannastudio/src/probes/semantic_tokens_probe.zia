@@ -1,3 +1,20 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/semantic_tokens_probe.zia
+// Purpose: Regress compiler-backed semantic overlays and shared revision models.
+// Key invariants:
+//   - Combined analysis exposes symbols, tokens, and diagnostics from one job.
+//   - A stable document revision never queues duplicate shared analysis.
+// Ownership/Lifetime: The probe owns its shell, editor, and semantic model.
+// Links: editor/semantic_model.zia, docs/adr/0264-shared-revision-semantic-analysis.md
+//
+//===----------------------------------------------------------------------===//
+
 module semantic_tokens_probe;
 
 // ============================================================================
@@ -14,6 +31,7 @@ module semantic_tokens_probe;
 
 bind "../ui/app_shell";
 bind "../editor/editor_engine";
+bind "../editor/semantic_model";
 
 bind ZiaCompletion = Zanna.Zia.Completion;
 bind SemanticJob = Zanna.Zia.SemanticJob;
@@ -70,7 +88,77 @@ func main() {
         + "    }\n"
         + "}\n";
 
-    // --- Test A: compiler classification distinguishes the kinds -----------
+    // --- Test A: one compiler analysis publishes every revision model channel
+    var analysisJob = ZiaCompletion.BeginAnalysisForFile(
+        "module SemanticProbe;\n" + src, "probe.zia");
+    var analysisWaited = 0;
+    while SemanticJob.IsDone(analysisJob) == false and analysisWaited < 8000 {
+        Time.Clock.Sleep(5);
+        analysisWaited = analysisWaited + 5;
+    }
+    if analysisJob == null or SemanticJob.IsDone(analysisJob) == false
+       or SemanticJob.IsError(analysisJob) or SemanticJob.Kind(analysisJob) != 7 {
+        fail(shell, "combined semantic analysis did not complete");
+        return;
+    }
+    var analysisTokens = SemanticJob.Tokens(analysisJob);
+    var analysisSymbols = SemanticJob.Symbols(analysisJob);
+    if analysisTokens == "" or Str.IndexOf(analysisSymbols, "Point\ttype") == 0 {
+        fail(shell, "combined analysis omitted symbols or tokens");
+        return;
+    }
+    if Seq.get_Count(SemanticJob.Diagnostics(analysisJob)) != 0 {
+        fail(shell, "valid combined analysis returned diagnostics");
+        return;
+    }
+
+    // --- Test B: the Studio model coalesces every stable path/revision -------
+    engine.SetText(src);
+    var shared = new semantic_model.SemanticModel();
+    shared.SetSourcePath("shared_probe.zia");
+    var modelWaited = 0;
+    while shared.IsReady("shared_probe.zia", engine.GetRevision()) == false
+          and modelWaited < 8000 {
+        shared.Update(engine);
+        Time.Clock.Sleep(5);
+        modelWaited = modelWaited + 5;
+    }
+    if shared.IsReady("shared_probe.zia", engine.GetRevision()) == false
+       or shared.readyHadError or shared.readyTokens == ""
+       or Str.IndexOf(shared.readySymbols, "Point\ttype") == 0
+       or shared.requestCount != 1 {
+        fail(shell, "shared revision model did not publish once");
+        return;
+    }
+    var stableRequestCount = shared.requestCount;
+    var stableTick = 0;
+    while stableTick < 10 {
+        shared.Update(engine);
+        stableTick = stableTick + 1;
+    }
+    if shared.requestCount != stableRequestCount {
+        fail(shell, "stable revision queued duplicate semantic work");
+        return;
+    }
+
+    var secondSource = "class Renamed {\n    expose Integer value;\n}\n";
+    engine.SetText(secondSource);
+    modelWaited = 0;
+    while shared.IsReady("shared_probe.zia", engine.GetRevision()) == false
+          and modelWaited < 8000 {
+        shared.Update(engine);
+        Time.Clock.Sleep(5);
+        modelWaited = modelWaited + 5;
+    }
+    if shared.requestCount != stableRequestCount + 1
+       or Str.IndexOf(shared.readySymbols, "Renamed\ttype") == 0
+       or Str.IndexOf(shared.readySymbols, "Point\ttype") != 0 {
+        fail(shell, "new revision did not replace the shared model");
+        return;
+    }
+    shared.Shutdown();
+
+    // --- Test C: compiler classification distinguishes the kinds -----------
     var raw = runTokens(src);
     if raw == "" {
         fail(shell, "tokens job returned empty");
@@ -93,7 +181,7 @@ func main() {
         return;
     }
 
-    // --- Test B: overlay applies + survives bad input; editor highlights ---
+    // --- Test D: overlay applies + survives bad input; editor highlights ---
     engine.SetText(src);
     engine.editor.SetLanguage("zia");
     engine.editor.AddSemanticToken(2, 14, 19, 9);    // parameter

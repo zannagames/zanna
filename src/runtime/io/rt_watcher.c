@@ -145,9 +145,12 @@ static int64_t watcher_deadline_remaining_us(int64_t deadline_us) {
 
 /// @brief A single queued file system event.
 typedef struct watcher_event {
-    int64_t type;          ///< Event type (RT_WATCH_EVENT_*)
-    void *path;            ///< Path of affected file (rt_string)
-    int64_t dropped_count; ///< Number of file-system events represented by an overflow marker
+    int64_t type;           ///< Event type (RT_WATCH_EVENT_*)
+    void *path;             ///< Path of affected file for non-rename events (rt_string)
+    void *old_path;         ///< Rename source path when reported by the backend (rt_string)
+    void *new_path;         ///< Rename destination path when reported by the backend (rt_string)
+    uint64_t rename_cookie; ///< Private backend pairing token; zero once complete/unavailable
+    int64_t dropped_count;  ///< Number of file-system events represented by an overflow marker
 } watcher_event;
 
 /// @brief Internal watcher implementation structure.
@@ -173,6 +176,8 @@ typedef struct rt_watcher_impl {
     // Last polled event
     int64_t last_event_type;
     void *last_event_path;
+    void *last_event_old_path;
+    void *last_event_new_path;
     int64_t last_overflow_count;
     int8_t has_last_event;
 
@@ -274,18 +279,32 @@ static void watcher_release_object(void *obj) {
         rt_obj_free(obj);
 }
 
+/// @brief Release all managed paths retained by one normalized event.
+/// @param event Event whose path fields are cleared; NULL is a no-op.
+static void watcher_release_event_paths(watcher_event *event) {
+    if (!event)
+        return;
+    if (event->path)
+        rt_string_unref(event->path);
+    if (event->old_path)
+        rt_string_unref(event->old_path);
+    if (event->new_path)
+        rt_string_unref(event->new_path);
+    event->path = NULL;
+    event->old_path = NULL;
+    event->new_path = NULL;
+    event->rename_cookie = 0;
+}
+
 /// @brief Release all queued event strings and reset the ring buffer to empty.
-/// @details Also clears the `last_event_path` so the watcher's finalizer can call
-///          this safely without double-releasing any string references.
+/// @details Also clears all last-event paths so the watcher's finalizer can
+///          call this safely without double-releasing any string references.
 /// @param w Watcher whose current event epoch is discarded; NULL is a no-op.
 static void watcher_clear_events(rt_watcher_impl *w) {
     if (!w)
         return;
     for (int64_t i = 0; i < WATCHER_EVENT_QUEUE_SIZE; i++) {
-        if (w->events[i].path) {
-            rt_string_unref(w->events[i].path);
-            w->events[i].path = NULL;
-        }
+        watcher_release_event_paths(&w->events[i]);
         w->events[i].type = RT_WATCH_EVENT_NONE;
         w->events[i].dropped_count = 0;
     }
@@ -295,6 +314,14 @@ static void watcher_clear_events(rt_watcher_impl *w) {
     if (w->last_event_path) {
         rt_string_unref(w->last_event_path);
         w->last_event_path = NULL;
+    }
+    if (w->last_event_old_path) {
+        rt_string_unref(w->last_event_old_path);
+        w->last_event_old_path = NULL;
+    }
+    if (w->last_event_new_path) {
+        rt_string_unref(w->last_event_new_path);
+        w->last_event_new_path = NULL;
     }
     w->last_event_type = RT_WATCH_EVENT_NONE;
     w->last_overflow_count = 0;
@@ -371,21 +398,26 @@ static rt_string watcher_string_from_owned_bytes(char *bytes, size_t len, const 
 ///          avoiding two temporary runtime-string allocations per event.
 ///          Directory watches assemble one exact-size native buffer and then
 ///          construct one runtime string. Empty self-event names resolve to the
-///          original watched path. The returned reference is owned by the
-///          caller and can be transferred directly into the event ring.
+///          original watched path. A paired rename destination may bypass the
+///          leaf filter after its source has already identified the watched
+///          file. The returned reference is owned by the caller and can be
+///          transferred directly into the event ring.
 /// @param w Valid watcher configuration.
 /// @param path Relative UTF-8 bytes from the platform backend; may be NULL.
 /// @param path_len Bounded byte count for @p path, excluding any terminator.
+/// @param allow_sibling Non-zero only for the destination of an already-matched
+///                      file rename.
 /// @return Owned full path, or NULL when a sibling does not match a file watch.
-static rt_string watcher_event_path_from_relative_n(rt_watcher_impl *w,
-                                                    const char *path,
-                                                    size_t path_len) {
+static rt_string watcher_event_path_from_relative_n_mode(rt_watcher_impl *w,
+                                                         const char *path,
+                                                         size_t path_len,
+                                                         int allow_sibling) {
     if (!w)
         return NULL;
     if (!path || path_len == 0)
         return rt_string_ref((rt_string)w->watch_path);
 
-    if (!w->is_directory && w->watch_leaf_name) {
+    if (!allow_sibling && !w->is_directory && w->watch_leaf_name) {
         rt_string leaf = (rt_string)w->watch_leaf_name;
         int64_t leaf_len = rt_str_len(leaf);
         const char *leaf_data = rt_string_cstr(leaf);
@@ -433,6 +465,17 @@ static rt_string watcher_event_path_from_relative_n(rt_watcher_impl *w,
         joined, total, "Watcher.Poll: event path allocation failed");
 }
 
+/// @brief Resolve a normal backend event name while filtering sibling files.
+/// @param w Valid watcher configuration.
+/// @param path Relative UTF-8 bytes from the platform backend; may be NULL.
+/// @param path_len Bounded byte count for @p path, excluding any terminator.
+/// @return Owned full path, or NULL for a sibling of a watched file.
+static rt_string watcher_event_path_from_relative_n(rt_watcher_impl *w,
+                                                    const char *path,
+                                                    size_t path_len) {
+    return watcher_event_path_from_relative_n_mode(w, path, path_len, 0);
+}
+
 #if RT_PLATFORM_WINDOWS
 /// @brief Resolve and release an owned Windows UTF-8 event-name buffer.
 /// @details A recovery boundary owns @p path while the full-path helper may
@@ -444,7 +487,8 @@ static rt_string watcher_event_path_from_relative_n(rt_watcher_impl *w,
 /// @return Owned event path, or NULL for a non-matching sibling.
 static rt_string watcher_event_path_from_owned_relative(rt_watcher_impl *w,
                                                         char *path,
-                                                        size_t path_len) {
+                                                        size_t path_len,
+                                                        int allow_sibling) {
     char *volatile owned_path = path;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -457,7 +501,7 @@ static rt_string watcher_event_path_from_owned_relative(rt_watcher_impl *w,
         rt_trap(saved_error);
         return NULL;
     }
-    rt_string result = watcher_event_path_from_relative_n(w, path, path_len);
+    rt_string result = watcher_event_path_from_relative_n_mode(w, path, path_len, allow_sibling);
     rt_trap_clear_recovery();
     free((void *)owned_path);
     return result;
@@ -465,20 +509,39 @@ static rt_string watcher_event_path_from_owned_relative(rt_watcher_impl *w,
 #endif
 #endif
 
-/// @brief Push an event into the ring buffer, replacing its newest slot with an overflow marker
-/// when the queue is already full.
-///
-/// The queue is a fixed-size ring of 64 events. Once full, the newest
-/// queued event and the incoming event are represented by an overflow
-/// marker in that newest slot; older queued events remain available.
-/// Takes ownership of the passed-in `path` string.
-/// Consecutive MODIFIED events for the same byte-identical path are coalesced
-/// before capacity accounting. Internal overflow counts the replaced newest
-/// event plus every incoming event, saturating at INT64_MAX.
+/// @brief Release up to three owned path references.
+/// @param path Primary path; may be NULL.
+/// @param old_path Rename source; may be NULL.
+/// @param new_path Rename destination; may be NULL.
+static void watcher_release_owned_paths(rt_string path, rt_string old_path, rt_string new_path) {
+    if (path)
+        rt_string_unref(path);
+    if (old_path)
+        rt_string_unref(old_path);
+    if (new_path)
+        rt_string_unref(new_path);
+}
+
+/// @brief Push a normalized event into the fixed-capacity ring.
+/// @details Once full, the newest queued event and each incoming event are
+///          represented by an overflow marker in the newest slot; older events
+///          remain available. Consecutive MODIFIED events for the same primary
+///          path are coalesced before capacity accounting. The function takes
+///          ownership of every passed path. Internal overflow counts the
+///          replaced newest event plus every incoming event, saturating at
+///          INT64_MAX.
 /// @param w Valid Watcher whose ring receives the event.
 /// @param type One of the @c RT_WATCH_EVENT_* discriminants.
-/// @param path Owned event-path reference transferred to the ring; may be NULL.
-static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_string path) {
+/// @param path Owned non-rename event path; may be NULL.
+/// @param old_path Owned rename source path; may be NULL.
+/// @param new_path Owned rename destination path; may be NULL.
+/// @param rename_cookie Private nonzero backend token for an incomplete rename.
+static void watcher_queue_event_paths_owned(rt_watcher_impl *w,
+                                            int64_t type,
+                                            rt_string path,
+                                            rt_string old_path,
+                                            rt_string new_path,
+                                            uint64_t rename_cookie) {
     if (type == RT_WATCH_EVENT_MODIFIED && path && w->event_count > 0) {
         int64_t newest_slot =
             (w->event_tail + WATCHER_EVENT_QUEUE_SIZE - 1) % WATCHER_EVENT_QUEUE_SIZE;
@@ -490,7 +553,7 @@ static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_strin
             const char *incoming_bytes = rt_string_cstr(path);
             if (newest_len >= 0 && newest_len == incoming_len && newest_bytes && incoming_bytes &&
                 memcmp(newest_bytes, incoming_bytes, (size_t)newest_len) == 0) {
-                rt_string_unref(path);
+                watcher_release_owned_paths(path, old_path, new_path);
                 return;
             }
         }
@@ -509,25 +572,86 @@ static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_strin
                 dropped = INT64_MAX;
             else
                 dropped = w->events[overflow_slot].dropped_count + 1;
-            if (path)
-                rt_string_unref(path);
+            watcher_release_owned_paths(path, old_path, new_path);
         } else {
             dropped = 2;
-            if (w->events[overflow_slot].path)
-                rt_string_unref(w->events[overflow_slot].path);
-            w->events[overflow_slot].path = path;
+            watcher_release_event_paths(&w->events[overflow_slot]);
+            watcher_release_owned_paths(path, old_path, new_path);
+            w->events[overflow_slot].path = rt_string_ref((rt_string)w->watch_path);
         }
         w->events[overflow_slot].type = RT_WATCH_EVENT_OVERFLOW;
+        w->events[overflow_slot].rename_cookie = 0;
         w->events[overflow_slot].dropped_count = dropped;
         return;
     }
 
     w->events[w->event_tail].type = type;
     w->events[w->event_tail].path = path;
+    w->events[w->event_tail].old_path = old_path;
+    w->events[w->event_tail].new_path = new_path;
+    w->events[w->event_tail].rename_cookie = rename_cookie;
     w->events[w->event_tail].dropped_count = type == RT_WATCH_EVENT_OVERFLOW ? 1 : 0;
     w->event_tail = (w->event_tail + 1) % WATCHER_EVENT_QUEUE_SIZE;
     w->event_count++;
 }
+
+/// @brief Queue a normal event with one primary path.
+/// @param w Valid Watcher whose ring receives the event.
+/// @param type One of the @c RT_WATCH_EVENT_* discriminants.
+/// @param path Owned event path transferred to the ring; may be NULL.
+static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_string path) {
+    watcher_queue_event_paths_owned(w, type, path, NULL, NULL, 0);
+}
+
+/// @brief Find a queued rename source awaiting a matching destination.
+/// @details Searches newest-first so a defensive duplicate backend token pairs
+///          with the most recent still-open event.
+/// @param w Valid Watcher whose live ring is searched.
+/// @param rename_cookie Nonzero backend pairing token.
+/// @return Mutable queued event, or NULL when no source remains in the ring.
+#if RT_PLATFORM_LINUX || RT_PLATFORM_WINDOWS
+static watcher_event *watcher_find_pending_rename(rt_watcher_impl *w, uint64_t rename_cookie) {
+    if (!w || rename_cookie == 0)
+        return NULL;
+    for (int64_t offset = 0; offset < w->event_count; offset++) {
+        int64_t slot =
+            (w->event_tail + WATCHER_EVENT_QUEUE_SIZE - 1 - offset) % WATCHER_EVENT_QUEUE_SIZE;
+        watcher_event *event = &w->events[slot];
+        if (event->type == RT_WATCH_EVENT_RENAMED && event->old_path && !event->new_path &&
+            event->rename_cookie == rename_cookie)
+            return event;
+    }
+    return NULL;
+}
+#endif
+
+/// @brief Queue the source endpoint of a potentially pairable rename.
+/// @param w Valid Watcher whose ring receives the event.
+/// @param old_path Owned source path transferred to the ring.
+/// @param rename_cookie Nonzero backend pairing token, or zero when unavailable.
+static void watcher_queue_rename_old_owned(rt_watcher_impl *w,
+                                           rt_string old_path,
+                                           uint64_t rename_cookie) {
+    watcher_queue_event_paths_owned(w, RT_WATCH_EVENT_RENAMED, NULL, old_path, NULL, rename_cookie);
+}
+
+/// @brief Attach a destination to its queued source, or queue a destination-only rename.
+/// @param w Valid Watcher whose ring receives or completes the event.
+/// @param new_path Owned destination path transferred to the ring.
+/// @param rename_cookie Nonzero backend pairing token, or zero when unavailable.
+#if RT_PLATFORM_LINUX || RT_PLATFORM_WINDOWS
+static void watcher_queue_rename_new_owned(rt_watcher_impl *w,
+                                           rt_string new_path,
+                                           uint64_t rename_cookie) {
+    watcher_event *pending = watcher_find_pending_rename(w, rename_cookie);
+    if (pending) {
+        pending->new_path = new_path;
+        pending->rename_cookie = 0;
+        return;
+    }
+    watcher_queue_event_paths_owned(w, RT_WATCH_EVENT_RENAMED, NULL, NULL, new_path, 0);
+}
+#endif
 
 /// @brief Queue an overflow marker for a NATIVE (kernel) queue overflow.
 /// @details The OS dropped an unknown number of events before Zanna could read
@@ -542,14 +666,20 @@ static void watcher_queue_event_owned(rt_watcher_impl *w, int64_t type, rt_strin
 static void watcher_queue_native_overflow(rt_watcher_impl *w) {
     if (w->event_count >= WATCHER_EVENT_QUEUE_SIZE) {
         int64_t slot = (w->event_tail + WATCHER_EVENT_QUEUE_SIZE - 1) % WATCHER_EVENT_QUEUE_SIZE;
-        if (!w->events[slot].path)
+        if (w->events[slot].type != RT_WATCH_EVENT_OVERFLOW) {
+            watcher_release_event_paths(&w->events[slot]);
             w->events[slot].path = rt_string_ref((rt_string)w->watch_path);
+        }
         w->events[slot].type = RT_WATCH_EVENT_OVERFLOW;
+        w->events[slot].rename_cookie = 0;
         w->events[slot].dropped_count = WATCHER_OVERFLOW_COUNT_UNKNOWN;
         return;
     }
     w->events[w->event_tail].type = RT_WATCH_EVENT_OVERFLOW;
     w->events[w->event_tail].path = rt_string_ref((rt_string)w->watch_path);
+    w->events[w->event_tail].old_path = NULL;
+    w->events[w->event_tail].new_path = NULL;
+    w->events[w->event_tail].rename_cookie = 0;
     w->events[w->event_tail].dropped_count = WATCHER_OVERFLOW_COUNT_UNKNOWN;
     w->event_tail = (w->event_tail + 1) % WATCHER_EVENT_QUEUE_SIZE;
     w->event_count++;
@@ -557,10 +687,9 @@ static void watcher_queue_native_overflow(rt_watcher_impl *w) {
 
 /// @brief Pop the oldest queued event into `*out`, transferring string ownership.
 ///
-/// Zeroes the slot's path pointer so the ring-buffer's own reference
-/// count isn't decremented when the slot is later overwritten or the
-/// watcher is finalized. The caller becomes responsible for
-/// releasing `out->path`.
+/// Zeroes all slot path pointers so the ring-buffer's own references are not
+/// decremented when the slot is later overwritten or the watcher is finalized.
+/// The caller becomes responsible for every path transferred into @p out.
 /// @param w Valid Watcher whose oldest queued event is consumed.
 /// @param out Destination that receives the event and its owned path reference.
 /// @return 1 when an event was transferred, or 0 when the ring was empty.
@@ -569,7 +698,10 @@ static int watcher_dequeue_event(rt_watcher_impl *w, watcher_event *out) {
         return 0;
 
     *out = w->events[w->event_head];
-    w->events[w->event_head].path = NULL; // Ownership transferred
+    w->events[w->event_head].path = NULL;
+    w->events[w->event_head].old_path = NULL;
+    w->events[w->event_head].new_path = NULL;
+    w->events[w->event_head].rename_cookie = 0;
     w->event_head = (w->event_head + 1) % WATCHER_EVENT_QUEUE_SIZE;
     w->event_count--;
     return 1;
@@ -594,12 +726,11 @@ static void watcher_close_inotify(rt_watcher_impl *w) {
 ///
 /// A single `read` can return multiple packed `struct inotify_event`
 /// records — the loop walks them using each event's `len` field for
-/// stride. Maps inotify's event flags to the Zanna event taxonomy:
-/// MOVED_FROM/TO/MOVE_SELF collapse to RENAMED, DELETE/DELETE_SELF to
-/// DELETED. Each event's `name` (relative to the watched dir) is
-/// converted to a full path via `watcher_event_path_from_relative`,
-/// which also discards sibling-file events when the watcher is
-/// configured for a specific file rather than a directory.
+/// stride. Maps inotify's event flags to the Zanna event taxonomy and pairs
+/// MOVED_FROM/MOVED_TO records through their kernel cookie while they remain in
+/// the internal ring. Each event's `name` (relative to the watched dir) is
+/// converted to a full path; sibling-file events are discarded unless they are
+/// the destination paired with an already-matched watched-file source.
 /// Malformed batches and terminal kernel conditions enqueue an unknown-loss
 /// overflow marker before retiring the backend.
 /// @param w Active Linux Watcher with a nonblocking inotify descriptor.
@@ -635,8 +766,6 @@ static void watcher_read_inotify_events(rt_watcher_impl *w) {
                 terminal = 1;
                 break;
             }
-            int64_t type = RT_WATCH_EVENT_NONE;
-
             // The kernel sets IN_Q_OVERFLOW (wd == -1, no name) when its own event
             // queue overflowed and events were lost. Translate it into an overflow
             // marker with an UNKNOWN loss count so clients get the documented
@@ -653,26 +782,40 @@ static void watcher_read_inotify_events(rt_watcher_impl *w) {
                 continue;
             }
 
-            if (event->mask & IN_CREATE)
-                type = RT_WATCH_EVENT_CREATED;
-            else if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
-                type = RT_WATCH_EVENT_MODIFIED;
-            else if (event->mask & (IN_DELETE | IN_DELETE_SELF))
-                type = RT_WATCH_EVENT_DELETED;
-            else if (event->mask & (IN_MOVED_FROM | IN_MOVED_TO | IN_MOVE_SELF))
-                type = RT_WATCH_EVENT_RENAMED;
+            const char *name = event->len > 0 ? event->name : NULL;
+            size_t name_len = name ? strnlen(name, (size_t)event->len) : 0;
+            if (name && name_len == (size_t)event->len) {
+                watcher_queue_native_overflow(w);
+                terminal = 1;
+                break;
+            }
 
-            if (type != RT_WATCH_EVENT_NONE) {
-                const char *name = event->len > 0 ? event->name : NULL;
-                size_t name_len = name ? strnlen(name, (size_t)event->len) : 0;
-                if (name && name_len == (size_t)event->len) {
-                    watcher_queue_native_overflow(w);
-                    terminal = 1;
-                    break;
+            if (event->mask & IN_MOVED_FROM) {
+                rt_string old_path = watcher_event_path_from_relative_n(w, name, name_len);
+                if (old_path)
+                    watcher_queue_rename_old_owned(w, old_path, (uint64_t)event->cookie);
+            } else if (event->mask & IN_MOVED_TO) {
+                uint64_t cookie = (uint64_t)event->cookie;
+                int source_matched = watcher_find_pending_rename(w, cookie) != NULL;
+                rt_string new_path =
+                    watcher_event_path_from_relative_n_mode(w, name, name_len, source_matched);
+                if (new_path)
+                    watcher_queue_rename_new_owned(w, new_path, cookie);
+            } else if (event->mask & IN_MOVE_SELF) {
+                watcher_queue_rename_old_owned(w, rt_string_ref((rt_string)w->watch_path), 0);
+            } else {
+                int64_t type = RT_WATCH_EVENT_NONE;
+                if (event->mask & IN_CREATE)
+                    type = RT_WATCH_EVENT_CREATED;
+                else if (event->mask & (IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB))
+                    type = RT_WATCH_EVENT_MODIFIED;
+                else if (event->mask & (IN_DELETE | IN_DELETE_SELF))
+                    type = RT_WATCH_EVENT_DELETED;
+                if (type != RT_WATCH_EVENT_NONE) {
+                    rt_string path = watcher_event_path_from_relative_n(w, name, name_len);
+                    if (path)
+                        watcher_queue_event_owned(w, type, path);
                 }
-                rt_string path = watcher_event_path_from_relative_n(w, name, name_len);
-                if (path)
-                    watcher_queue_event_owned(w, type, path);
             }
             if (event->mask & (IN_DELETE_SELF | IN_MOVE_SELF))
                 terminal = 1;
@@ -756,8 +899,7 @@ static void watcher_read_kqueue_events(rt_watcher_impl *w, int timeout_ms) {
         watcher_queue_event_owned(
             w, RT_WATCH_EVENT_DELETED, rt_string_ref((rt_string)w->watch_path));
     else if (event.fflags & NOTE_RENAME)
-        watcher_queue_event_owned(
-            w, RT_WATCH_EVENT_RENAMED, rt_string_ref((rt_string)w->watch_path));
+        watcher_queue_rename_old_owned(w, rt_string_ref((rt_string)w->watch_path), 0);
     else if (event.fflags & NOTE_REVOKE)
         watcher_queue_native_overflow(w);
     else if (event.fflags & NOTE_WRITE)
@@ -776,6 +918,10 @@ static void watcher_read_kqueue_events(rt_watcher_impl *w, int timeout_ms) {
 
 #if RT_PLATFORM_WINDOWS
 typedef BOOL(WINAPI *watcher_cancel_io_ex_fn)(HANDLE, LPOVERLAPPED);
+
+/// Private token used to pair the immediately-related OLD_NAME/NEW_NAME
+/// records emitted by ReadDirectoryChangesW.
+#define WATCHER_WINDOWS_RENAME_COOKIE UINT64_MAX
 
 /// @brief Request cross-thread overlapped cancellation without a static import.
 /// @details CancelIoEx is present on every supported Windows release, but the
@@ -870,7 +1016,8 @@ static void watcher_rearm_windows_or_stop(rt_watcher_impl *w, int failure_alread
 /// buffer holds a packed chain of `FILE_NOTIFY_INFORMATION` records
 /// (one per changed file, with a linked-list offset between them).
 /// Each record's FileName is UTF-16; decoded to UTF-8 via
-/// `WideCharToMultiByte`, then turned into a full path and queued.
+/// `WideCharToMultiByte`, then turned into a full path and queued. Consecutive
+/// OLD_NAME/NEW_NAME records are folded into one rename with both endpoints.
 /// After decoding, immediately re-issues the overlapped read so we
 /// never miss a window of events while the queue is being consumed.
 /// Zero-length, failed, or malformed batches produce an overflow marker so
@@ -923,6 +1070,8 @@ static void watcher_read_windows_events(rt_watcher_impl *w) {
         }
         record_bytes = header_bytes + (size_t)info->FileNameLength;
         int64_t type = RT_WATCH_EVENT_NONE;
+        int is_rename_old = 0;
+        int is_rename_new = 0;
         switch (info->Action) {
             case FILE_ACTION_ADDED:
                 type = RT_WATCH_EVENT_CREATED;
@@ -934,8 +1083,12 @@ static void watcher_read_windows_events(rt_watcher_impl *w) {
                 type = RT_WATCH_EVENT_MODIFIED;
                 break;
             case FILE_ACTION_RENAMED_OLD_NAME:
+                type = RT_WATCH_EVENT_RENAMED;
+                is_rename_old = 1;
+                break;
             case FILE_ACTION_RENAMED_NEW_NAME:
                 type = RT_WATCH_EVENT_RENAMED;
+                is_rename_new = 1;
                 break;
         }
 
@@ -954,10 +1107,19 @@ static void watcher_read_windows_events(rt_watcher_impl *w) {
                                             NULL,
                                             NULL) == utf8_len) {
                 name[utf8_len] = '\0';
-                rt_string path = watcher_event_path_from_owned_relative(w, name, (size_t)utf8_len);
+                int source_matched = is_rename_new && watcher_find_pending_rename(
+                                                          w, WATCHER_WINDOWS_RENAME_COOKIE) != NULL;
+                rt_string path = watcher_event_path_from_owned_relative(
+                    w, name, (size_t)utf8_len, source_matched);
                 name = NULL; // Ownership consumed by the helper.
-                if (path)
-                    watcher_queue_event_owned(w, type, path);
+                if (path) {
+                    if (is_rename_old)
+                        watcher_queue_rename_old_owned(w, path, WATCHER_WINDOWS_RENAME_COOKIE);
+                    else if (is_rename_new)
+                        watcher_queue_rename_new_owned(w, path, WATCHER_WINDOWS_RENAME_COOKIE);
+                    else
+                        watcher_queue_event_owned(w, type, path);
+                }
             } else {
                 malformed_batch = 1;
             }
@@ -1321,6 +1483,29 @@ int64_t rt_watcher_poll(void *obj) {
     return rt_watcher_poll_for(obj, 0);
 }
 
+/// @brief Replace the publicly visible last event with one dequeued ring event.
+/// @details Releases the previous epoch's retained paths, then transfers every
+///          path from @p event without incrementing its reference count.
+/// @param w Valid watcher receiving the event.
+/// @param event Dequeued event whose owned paths transfer to @p w.
+static void watcher_store_last_event_owned(rt_watcher_impl *w, watcher_event *event) {
+    if (w->last_event_path)
+        rt_string_unref(w->last_event_path);
+    if (w->last_event_old_path)
+        rt_string_unref(w->last_event_old_path);
+    if (w->last_event_new_path)
+        rt_string_unref(w->last_event_new_path);
+    w->last_event_type = event->type;
+    w->last_event_path = event->path;
+    w->last_event_old_path = event->old_path;
+    w->last_event_new_path = event->new_path;
+    w->last_overflow_count = event->dropped_count;
+    w->has_last_event = 1;
+    event->path = NULL;
+    event->old_path = NULL;
+    event->new_path = NULL;
+}
+
 /// @brief Bounded-wait poll: same as `_poll` but waits up to `ms` milliseconds for an event.
 /// `ms < 0` means wait forever; `ms == 0` is non-blocking. First drains the internal queue, then
 /// asks the OS via `poll`/`kqueue`/`WaitForSingleObject`, then drains the queue again.
@@ -1345,13 +1530,7 @@ int64_t rt_watcher_poll_for(void *obj, int64_t ms) {
     // First check if we have queued events
     watcher_event ev;
     if (watcher_dequeue_event(w, &ev)) {
-        // Store as last event
-        if (w->last_event_path)
-            rt_string_unref(w->last_event_path);
-        w->last_event_type = ev.type;
-        w->last_event_path = ev.path;
-        w->last_overflow_count = ev.dropped_count;
-        w->has_last_event = 1;
+        watcher_store_last_event_owned(w, &ev);
         return ev.type;
     }
     if (!w->is_watching)
@@ -1422,12 +1601,7 @@ int64_t rt_watcher_poll_for(void *obj, int64_t ms) {
 
     // Try to dequeue again after reading
     if (watcher_dequeue_event(w, &ev)) {
-        if (w->last_event_path)
-            rt_string_unref(w->last_event_path);
-        w->last_event_type = ev.type;
-        w->last_event_path = ev.path;
-        w->last_overflow_count = ev.dropped_count;
-        w->has_last_event = 1;
+        watcher_store_last_event_owned(w, &ev);
         return ev.type;
     }
 
@@ -1436,9 +1610,10 @@ int64_t rt_watcher_poll_for(void *obj, int64_t ms) {
 
 /// @brief Read the path of the most recently polled event. **Traps** if no `_poll` call
 /// has succeeded yet — the contract is "poll then ask"; not safe to call out of order.
-/// @details The returned path is retained for the caller. Start and Stop clear
-///          the prior event epoch, after which this accessor traps until
-///          another event is successfully polled.
+/// @details For a rename, the destination is preferred, then the source when a
+///          destination is unavailable. The returned path is retained for the
+///          caller. Start and Stop clear the prior event epoch, after which this
+///          accessor traps until another event is successfully polled.
 /// @param obj Watcher created on the current thread.
 /// @return Owned retained last-event path, or a fresh empty string after a trap.
 rt_string rt_watcher_event_path(void *obj) {
@@ -1457,9 +1632,58 @@ rt_string rt_watcher_event_path(void *obj) {
         return str_from_cstr("");
     }
 
-    if (w->last_event_path)
-        rt_string_ref(w->last_event_path);
-    return w->last_event_path ? w->last_event_path : str_from_cstr("");
+    rt_string path = (rt_string)(w->last_event_new_path   ? w->last_event_new_path
+                                 : w->last_event_old_path ? w->last_event_old_path
+                                                          : w->last_event_path);
+    return path ? rt_string_ref(path) : str_from_cstr("");
+}
+
+/// @brief Read the source endpoint of the most recently polled rename event.
+/// @details Returns an owned empty string for non-rename events or when the
+///          backend could not identify the source. Traps before the first
+///          successful poll in the current Start/Stop epoch.
+/// @param obj Watcher created on the current thread.
+/// @return Owned retained source path or a fresh empty string.
+rt_string rt_watcher_event_old_path(void *obj) {
+    if (!obj) {
+        rt_trap("Watcher.EventOldPath: null watcher");
+        return str_from_cstr("");
+    }
+    rt_watcher_impl *w = watcher_require(obj, "Watcher: invalid watcher");
+    if (!w)
+        return str_from_cstr("");
+    if (!watcher_require_owner(w, "Watcher.EventOldPath"))
+        return str_from_cstr("");
+    if (!w->has_last_event) {
+        rt_trap("Watcher.EventOldPath: no event polled yet");
+        return str_from_cstr("");
+    }
+    return w->last_event_old_path ? rt_string_ref((rt_string)w->last_event_old_path)
+                                  : str_from_cstr("");
+}
+
+/// @brief Read the destination endpoint of the most recently polled rename event.
+/// @details Returns an owned empty string for non-rename events or when the
+///          backend could not identify the destination. Traps before the first
+///          successful poll in the current Start/Stop epoch.
+/// @param obj Watcher created on the current thread.
+/// @return Owned retained destination path or a fresh empty string.
+rt_string rt_watcher_event_new_path(void *obj) {
+    if (!obj) {
+        rt_trap("Watcher.EventNewPath: null watcher");
+        return str_from_cstr("");
+    }
+    rt_watcher_impl *w = watcher_require(obj, "Watcher: invalid watcher");
+    if (!w)
+        return str_from_cstr("");
+    if (!watcher_require_owner(w, "Watcher.EventNewPath"))
+        return str_from_cstr("");
+    if (!w->has_last_event) {
+        rt_trap("Watcher.EventNewPath: no event polled yet");
+        return str_from_cstr("");
+    }
+    return w->last_event_new_path ? rt_string_ref((rt_string)w->last_event_new_path)
+                                  : str_from_cstr("");
 }
 
 /// @brief Read the type code of the last polled event. Returns NONE if no event has been polled.

@@ -47,7 +47,6 @@
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_asset_error.h"
-#include "rt_result.h"
 #include "rt_audio.h"
 #include "rt_box.h"
 #include "rt_canvas3d.h"
@@ -78,6 +77,7 @@
 #include "rt_platform.h"
 #include "rt_postfx3d.h"
 #include "rt_quat.h"
+#include "rt_result.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_seq.h"
@@ -163,7 +163,9 @@ static void *g_game3d_asset_commit_queue = NULL;
 #define RT_GAME3D_ASSET_COMMIT_DRAIN_BUDGET 8
 #define RT_GAME3D_ASSET_UPLOAD_BUDGET_DEFAULT_BYTES (16ull * 1024ull * 1024ull)
 #define RT_GAME3D_ASSET_UPLOAD_SLICE_BYTES (64ull * 1024ull)
-#define RT_GAME3D_ASSET_ASYNC_ROOT_BYTES_MAX (256ull * 1024ull * 1024ull)
+/* Plan 59: 256 -> 512 MiB, matching the VSCN document loader's own cap —
+ * the baked stadium scene this preload path exists for is 383 MB. */
+#define RT_GAME3D_ASSET_ASYNC_ROOT_BYTES_MAX (512ull * 1024ull * 1024ull)
 #define RT_GAME3D_STREAM_MANIFEST_MAX_BYTES (16ull * 1024ull * 1024ull)
 #if defined(__clang__) || defined(__GNUC__)
 #define GAME3D_UNUSED_PRIVATE __attribute__((unused))
@@ -2320,8 +2322,8 @@ void rt_game3d_world_step_simulation(void *obj, double step_sec) {
          * frozen frame (pause / hit-stop) reaches here as step_sec == 0 via
          * DeltaTime — honor it as a pure re-render instead of letting the
          * clamp inflate it to a default-length step. */
-        if (world->paused || world->hitstop_remaining > 0.0 ||
-            !(step_sec > 0.0) || !isfinite(step_sec)) {
+        if (world->paused || world->hitstop_remaining > 0.0 || !(step_sec > 0.0) ||
+            !isfinite(step_sec)) {
             world->dt = 0.0;
             game3d_world_paused_frame(world);
             return;
@@ -2331,8 +2333,7 @@ void rt_game3d_world_step_simulation(void *obj, double step_sec) {
             dt = RT_GAME3D_MAX_DT;
         int64_t combined_t0 = rt_clock_ticks_us();
         game3d_world_step_simulation_impl(world, dt, 0);
-        game3d_world_note_hitches(world,
-                                  (double)(rt_clock_ticks_us() - combined_t0) / 1000.0);
+        game3d_world_note_hitches(world, (double)(rt_clock_ticks_us() - combined_t0) / 1000.0);
         return;
     }
     double real_dt = game3d_clamp_dt(step_sec);

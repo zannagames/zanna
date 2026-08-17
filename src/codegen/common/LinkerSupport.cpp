@@ -121,7 +121,7 @@ std::optional<std::filesystem::path> installedLibraryPathInDir(
 
 /// @brief Source/build-tree sub-directory that produces a given support lib.
 /// @details Most companion libs land under `lib/`, but a few live where their
-///          sources are: GUI under src/lib/gui, shared text under
+///          sources are: GUI under src/lib/gui, shared text and regex under
 ///          src/common/text, frontend-common under src/frontends/common, Zia
 ///          frontend/editor archives under src/frontends/zia, and the Zia
 ///          static-link closure (the IL build/verify/transform/runtime/core/
@@ -133,7 +133,7 @@ std::optional<std::filesystem::path> installedLibraryPathInDir(
 std::filesystem::path supportLibBuildSubdir(std::string_view libBaseName) {
     if (libBaseName == "zannagui")
         return std::filesystem::path("src") / "lib" / "gui";
-    if (libBaseName == "zanna_text_core")
+    if (libBaseName == "zanna_text_core" || libBaseName == "zanna_regex_engine")
         return std::filesystem::path("src") / "common" / "text";
     if (libBaseName == "fe_common")
         return std::filesystem::path("src") / "frontends" / "common";
@@ -414,6 +414,10 @@ bool ensureRequiredTargetsBuilt(const LinkContext &ctx, std::ostream &out, std::
     for (const auto &[tgt, path] : ctx.requiredArchives) {
         if (!fileExists(path))
             missingTargets.push_back(tgt);
+    }
+    if (requiresRegexEngineArchive(ctx) &&
+        !fileExists(supportLibraryPath(ctx.buildDir, "zanna_regex_engine"))) {
+        missingTargets.push_back("zanna_regex_engine");
     }
     if (hasComponent(ctx, RtComponent::Graphics)) {
         const std::filesystem::path gfxLib = supportLibraryPath(ctx.buildDir, "zannagfx");
@@ -1034,6 +1038,12 @@ bool hasComponent(const LinkContext &ctx, RtComponent c) {
         if (rc == c)
             return true;
     return false;
+}
+
+/// @copydoc requiresRegexEngineArchive
+bool requiresRegexEngineArchive(const LinkContext &ctx) {
+    return hasComponent(ctx, RtComponent::Base) || hasComponent(ctx, RtComponent::Text) ||
+           hasComponent(ctx, RtComponent::Graphics);
 }
 
 /// @brief Common implementation: resolve components, discover archives, rebuild missing.

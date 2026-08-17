@@ -477,6 +477,7 @@ RT_CLASS_BEGIN("Zanna.GUI.EditorBuffer", GuiEditorBuffer, "obj", GuiEditorBuffer
     RT_PROP("Revision", "i64", GuiEditorBufferGetRevision, none)
     RT_METHOD("IsModified", "i1()", GuiEditorBufferIsModified)
     RT_METHOD("ClearModified", "void()", GuiEditorBufferClearModified)
+    RT_METHOD("ReplaceAllText", "i1(str)", GuiEditorBufferReplaceAllText)
 RT_CLASS_END()
 
 // Zanna.GUI.CodeEditor - code editor widget
@@ -494,6 +495,7 @@ RT_CLASS_BEGIN("Zanna.GUI.CodeEditor", GuiCodeEditor, "obj", GuiCodeEditorNew, "
     RT_PROP("CursorCol", "i64", GuiCodeEditorGetCursorCol, none)
     RT_PROP("ScrollTopLine", "i64", GuiCodeEditorGetScrollTopLine, GuiCodeEditorSetScrollTopLine)
     RT_METHOD("SetText", "void(str)", GuiCodeEditorSetText)
+    RT_METHOD("ReplaceAllText", "i1(str)", GuiCodeEditorReplaceAllText)
     RT_METHOD("SetCursor", "void(i64,i64)", GuiCodeEditorSetCursor)
     RT_METHOD("ScrollToLine", "void(i64)", GuiCodeEditorScrollToLine)
     RT_METHOD("IsModified", "i1()", GuiCodeEditorIsModified)

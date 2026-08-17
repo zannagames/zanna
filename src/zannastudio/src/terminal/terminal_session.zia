@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/terminal/terminal_session.zia
+// Purpose: Own one PTY plus its bounded scrollback and pending UI delivery.
+// Key invariants:
+//   - Every session retains its own recent scrollback, pending output, and loss flags.
+//   - Frame/runtime overflow keeps the newest suffix and makes dropped prefixes visible.
+//   - PTY handles are destroyed exactly once on stop/restart.
+// Ownership/Lifetime: TerminalController owns sessions; each session owns one PTY handle.
+// Links: zannastudio/src/terminal/terminal_controller.zia,
+//        zannastudio/src/build/bounded_output.zia
+//
+//===----------------------------------------------------------------------===//
+
 module terminal_session;
 
 bind Pty = Zanna.System.Pty;
@@ -17,6 +36,8 @@ bind Str = Zanna.String;
 // ============================================================================
 
 final MAX_TERMINAL_OUTPUT_DELTA = 65536;
+final MAX_TERMINAL_SCROLLBACK = 200000;
+final MAX_TERMINAL_PENDING = 65536;
 
 /// @brief A running PTY-backed terminal child.
 class TerminalSession {
@@ -27,7 +48,10 @@ class TerminalSession {
     expose Boolean exitedThisUpdate;
     expose String lastError;
     expose Boolean outputTruncated;
-    expose String replayBuffer; // Output accumulated while this session is not shown.
+    expose String replayBuffer; // Complete recent per-session scrollback.
+    expose String pendingOutput; // Scrollback suffix not yet rendered in the active pane.
+    expose Boolean scrollbackDropped;
+    expose Boolean pendingOutputDropped;
     expose String title;        // Display label for the terminal selector.
 
     expose func init() {
@@ -39,6 +63,9 @@ class TerminalSession {
         lastError = "";
         outputTruncated = false;
         replayBuffer = "";
+        pendingOutput = "";
+        scrollbackDropped = false;
+        pendingOutputDropped = false;
         title = "";
     }
 
@@ -83,7 +110,9 @@ class TerminalSession {
         return Start(program, args, cwd, cols, rows);
     }
 
-    /// @brief Drain available output (bounded); detect exit. @return new bytes.
+    /// @brief Drain available output, record it, and detect exit.
+    /// @return Newly recorded bytes for compatibility; UI code should consume
+    ///         TakePendingOutput so hidden/inactive output is not lost.
     expose func Update() -> String {
         exitedThisUpdate = false;
         if session == null or active == false { return ""; }
@@ -93,13 +122,24 @@ class TerminalSession {
             exitCode = session.ExitCode();
             active = false;
             exitedThisUpdate = true;
+            out = out + "\n[exited " + exitCode + "]\n";
         }
-        if Str.get_Length(out) > MAX_TERMINAL_OUTPUT_DELTA {
-            out = Str.Left(out, MAX_TERMINAL_OUTPUT_DELTA)
-                + "\n[terminal frame output truncated]\n";
+        return RecordFrameDelta(out);
+    }
+
+    /// @brief Bound and record one PTY frame while retaining its newest suffix.
+    /// @return The exact bounded delta added to scrollback/pending delivery.
+    expose func RecordFrameDelta(out: String) -> String {
+        var bounded = out;
+        if Str.get_Length(bounded) > MAX_TERMINAL_OUTPUT_DELTA {
+            var marker = "\n[terminal frame output prefix truncated]\n";
+            var keep = MAX_TERMINAL_OUTPUT_DELTA - Str.get_Length(marker);
+            if keep < 1 { keep = 1; }
+            bounded = marker + Str.Right(bounded, keep);
             outputTruncated = true;
         }
-        return out;
+        RecordOutput(bounded);
+        return bounded;
     }
 
     hide func ReadTerminalDelta() -> String {
@@ -111,6 +151,48 @@ class TerminalSession {
             out = out + "\n[terminal output truncated by runtime]\n";
         }
         return out;
+    }
+
+    /// @brief Add shell output or a controller-authored lifecycle note.
+    expose func RecordOutput(text: String) {
+        if text == "" { return; }
+        replayBuffer = replayBuffer + text;
+        var scrollLen = Str.get_Length(replayBuffer);
+        if scrollLen > MAX_TERMINAL_SCROLLBACK {
+            replayBuffer = Str.Right(replayBuffer, MAX_TERMINAL_SCROLLBACK);
+            scrollbackDropped = true;
+        }
+        pendingOutput = pendingOutput + text;
+        var pendingLen = Str.get_Length(pendingOutput);
+        if pendingLen > MAX_TERMINAL_PENDING {
+            pendingOutput = Str.Right(pendingOutput, MAX_TERMINAL_PENDING);
+            pendingOutputDropped = true;
+        }
+    }
+
+    /// @brief Consume output not yet rendered for this session.
+    expose func TakePendingOutput() -> String {
+        var out = pendingOutput;
+        pendingOutput = "";
+        if pendingOutputDropped {
+            out = "\n[terminal pending output prefix truncated]\n" + out;
+            pendingOutputDropped = false;
+        }
+        return out;
+    }
+
+    /// @brief Return the bounded scrollback snapshot for a session switch.
+    expose func ReplayText() -> String {
+        if scrollbackDropped {
+            return "\n[terminal scrollback prefix truncated]\n" + replayBuffer;
+        }
+        return replayBuffer;
+    }
+
+    /// @brief Mark all recorded output rendered after replaying the snapshot.
+    expose func ClearPendingOutput() {
+        pendingOutput = "";
+        pendingOutputDropped = false;
     }
 
     /// @brief Write raw bytes to the terminal input.

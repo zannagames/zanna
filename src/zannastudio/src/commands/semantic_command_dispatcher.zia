@@ -53,11 +53,11 @@ expose func NavigateDiagnostic(ctx: command_context.CommandContext,
     if currentDiagnosticIndex < 1 { currentDiagnosticIndex = count - 1; }
 
     ctx.shell.toolPanels.diagListBox.SelectIndex(currentDiagnosticIndex);
-    var selected = ctx.shell.toolPanels.diagListBox.Selected;
-    if selected != null {
+    var locationData = ctx.shell.toolPanels.GetSelectedProblemLocationData();
+    if locationData != "" {
         ctx.locStore.OpenLocation(
             ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs,
-            GUI.ListBox.ItemGetData(selected));
+            locationData);
     }
 }
 

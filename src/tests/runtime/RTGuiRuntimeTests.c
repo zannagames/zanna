@@ -638,6 +638,68 @@ static void test_shortcuts_are_app_scoped(void) {
     printf("test_shortcuts_are_app_scoped: PASSED\n");
 }
 
+/// @brief Verify interaction, tooltip, and theme contexts survive native app switches
+/// independently.
+/// @details Focus, capture, modal routing, hover bookkeeping, and the effective theme must restore
+///          from the owning application instead of leaking from whichever root was active last.
+static void test_widget_interaction_context_is_app_scoped(void) {
+    rt_gui_app_t app_a;
+    rt_gui_app_t app_b;
+    reset_fake_app(&app_a);
+    reset_fake_app(&app_b);
+    app_a.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    app_b.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(app_a.root && app_b.root);
+    app_a.root->user_data = &app_a;
+    app_b.root->user_data = &app_b;
+
+    vg_textinput_t *input_a = vg_textinput_create(app_a.root);
+    vg_textinput_t *input_b = vg_textinput_create(app_b.root);
+    assert(input_a && input_b);
+
+    rt_gui_activate_app(&app_a);
+    vg_widget_set_focus(&input_a->base);
+    vg_widget_set_input_capture(&input_a->base);
+    vg_widget_set_modal_root(&input_a->base);
+    vg_tooltip_manager_get()->hovered_widget = &input_a->base;
+    vg_tooltip_manager_get()->pending_show = true;
+    vg_theme_t *theme_a = vg_theme_get_current();
+    assert(theme_a == app_a.theme);
+
+    rt_gui_activate_app(&app_b);
+    assert(vg_widget_get_focused(app_b.root) == NULL);
+    assert(vg_widget_get_input_capture() == NULL);
+    assert(vg_widget_get_modal_root() == NULL);
+    assert(vg_tooltip_manager_get()->hovered_widget == NULL);
+    vg_theme_t *theme_b = vg_theme_get_current();
+    assert(theme_b == app_b.theme);
+    assert(theme_b != theme_a);
+
+    vg_widget_set_focus(&input_b->base);
+    vg_widget_set_input_capture(&input_b->base);
+    vg_widget_set_modal_root(&input_b->base);
+    vg_tooltip_manager_get()->hovered_widget = &input_b->base;
+    vg_tooltip_manager_get()->pending_show = true;
+
+    rt_gui_activate_app(&app_a);
+    assert(vg_widget_get_focused(app_a.root) == &input_a->base);
+    assert(vg_widget_get_input_capture() == &input_a->base);
+    assert(vg_widget_get_modal_root() == &input_a->base);
+    assert(vg_tooltip_manager_get()->hovered_widget == &input_a->base);
+    assert(vg_theme_get_current() == theme_a);
+
+    rt_gui_activate_app(&app_b);
+    assert(vg_widget_get_focused(app_b.root) == &input_b->base);
+    assert(vg_widget_get_input_capture() == &input_b->base);
+    assert(vg_widget_get_modal_root() == &input_b->base);
+    assert(vg_tooltip_manager_get()->hovered_widget == &input_b->base);
+    assert(vg_theme_get_current() == theme_b);
+
+    cleanup_fake_app(&app_b);
+    cleanup_fake_app(&app_a);
+    printf("test_widget_interaction_context_is_app_scoped: PASSED\n");
+}
+
 static void test_shortcut_chords_trigger_and_expire(void) {
     rt_gui_app_t app;
     reset_fake_app(&app);
@@ -872,6 +934,15 @@ static void test_textinput_runtime_exposes_complete_grapheme_editor(void) {
     assert(strcmp(rt_string_cstr(selection), selected_expected) == 0);
     rt_str_release_maybe(selection);
 
+    assert(rt_textinput_delete_selection(input) == 1);
+    assert(rt_textinput_can_undo(input) == 0);
+    assert(rt_textinput_can_redo(input) == 0);
+    assert(rt_textinput_undo(input) == 0);
+
+    rt_textinput_set_text(input, rt_const_cstr(text));
+    rt_textinput_set_password(input, 0);
+    assert(rt_textinput_is_password(input) == 0);
+    rt_textinput_select_range(input, 1, 3);
     assert(rt_textinput_delete_selection(input) == 1);
     assert(rt_textinput_can_undo(input) == 1);
     assert(rt_textinput_can_redo(input) == 0);
@@ -3502,6 +3573,41 @@ static void test_numeric_narrowing_saturates_without_undefined_behavior(void) {
     printf("test_numeric_narrowing_saturates_without_undefined_behavior: PASSED\n");
 }
 
+/// @brief Verify indentation-derived folds retain nested and sibling blocks.
+/// @details Blank lines extend their surrounding regions, and detecting an outer block must not
+///          skip candidates nested inside it.
+static void test_codeeditor_auto_fold_detection_preserves_nested_regions(void) {
+    vg_codeeditor_t *editor = vg_codeeditor_create(NULL);
+    assert(editor);
+    vg_codeeditor_set_text(editor,
+                           "root\n"
+                           "  child\n"
+                           "    grandchild\n"
+                           "    grandchild sibling\n"
+                           "  sibling\n"
+                           "    nested sibling\n"
+                           "   \n"
+                           "tail");
+
+    rt_codeeditor_set_auto_fold_detection(editor, 1);
+
+    assert(editor->fold_region_count == 3);
+    assert(editor->fold_regions[0].start_line == 0);
+    assert(editor->fold_regions[0].end_line == 6);
+    assert(editor->fold_regions[1].start_line == 1);
+    assert(editor->fold_regions[1].end_line == 3);
+    assert(editor->fold_regions[2].start_line == 4);
+    assert(editor->fold_regions[2].end_line == 6);
+
+    rt_codeeditor_fold(editor, 1);
+    assert(editor->fold_regions[1].folded);
+    assert(!editor->fold_regions[0].folded);
+    assert(!editor->fold_regions[2].folded);
+
+    vg_widget_destroy(&editor->base);
+    printf("test_codeeditor_auto_fold_detection_preserves_nested_regions: PASSED\n");
+}
+
 /// @brief Verify public GUI getters contain corrupted retained text, numbers, and enums.
 /// @details Lower toolkit state can be damaged by callbacks, stale native integrations, or memory
 ///          faults without passing through runtime setters. Public getters must still return
@@ -5890,6 +5996,8 @@ int main(void) {
     test_gui_capability_and_try_new_success();
     test_app_minimum_window_size();
     test_gui_typed_constant_ordinals();
+    test_codeeditor_auto_fold_detection_preserves_nested_regions();
+    test_widget_interaction_context_is_app_scoped();
     test_app_bound_test_harness_uses_real_runtime_paths();
     test_detached_tooltip_uses_retained_overlay_damage();
     test_deterministic_scheduler_drives_notification_deadlines();

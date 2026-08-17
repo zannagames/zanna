@@ -119,6 +119,7 @@ int main() {
     const il::runtime::RuntimeClass *pathCls = findClass("Zanna.IO.Path");
     assert(pathCls != nullptr && "Zanna.IO.Path not found in catalog");
     assert(hasMethod(*pathCls, "IsLink", "i1(str)"));
+    assert(hasMethod(*pathCls, "SameEntry", "i1(str,str)"));
 
     const il::runtime::RuntimeClass *weakRefCls = findClass("Zanna.Memory.WeakRef");
     assert(weakRefCls != nullptr && "Zanna.Memory.WeakRef not found in catalog");
@@ -137,6 +138,11 @@ int main() {
     assert(hasMethod(*systemClipboardCls, "Get", "str()"));
     assert(hasMethod(*systemClipboardCls, "Set", "void(str)"));
     assert(hasMethod(*systemClipboardCls, "HasText", "i1()"));
+
+    const il::runtime::RuntimeClass *processHandleCls =
+        findClass("Zanna.System.Process.ProcessHandle");
+    assert(processHandleCls != nullptr && "Zanna.System.Process.ProcessHandle not found");
+    assert(hasMethod(*processHandleCls, "ReadOutputResult", "obj<Zanna.Collections.Map>()"));
 
     const il::runtime::RuntimeClass *workspaceEditCls = findClass("Zanna.Workspace.Edit");
     assert(workspaceEditCls != nullptr && "Zanna.Workspace.Edit not found in catalog");

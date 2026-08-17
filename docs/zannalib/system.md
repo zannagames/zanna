@@ -424,6 +424,7 @@ environment.
 | `ReadStderr()` | `String()`   | Returns buffered stderr bytes available now, then clears them |
 | `ReadStdoutResult()` | `Map()` | Returns `text` and `truncated` for buffered stdout |
 | `ReadStderrResult()` | `Map()` | Returns `text` and `truncated` for buffered stderr |
+| `ReadOutputResult()` | `Map()` | Returns capture-ordered, stream-tagged `chunks` and `truncated` |
 | `WriteStdin(data)` | `Integer(String)` | Write bytes to stdin; return bytes accepted, or `-1` on failure |
 | `ExitCode()`   | `Integer()`  | Returns exit code; `-1` also represents running/invalid state |
 | `Kill()`       | `Boolean()`  | Requests process termination                                |
@@ -450,14 +451,18 @@ func start() {
 
     var proc = Process.Start("/bin/sh", args);
     while proc.IsRunning() {
-        var out = proc.ReadStdout();
-        var err = proc.ReadStderr();
-        if Zanna.String.get_Length(out) > 0 { Say(out); }
-        if Zanna.String.get_Length(err) > 0 { Say(err); }
+        var output = proc.ReadOutputResult();
+        var chunks = Zanna.Collections.Map.Get(output, "chunks");
+        var i = 0;
+        while i < Seq.get_Count(chunks) {
+            var chunk = Seq.Get(chunks, i);
+            Say("[" + Zanna.Collections.Map.GetStr(chunk, "stream") + "] "
+                + Zanna.Collections.Map.GetStr(chunk, "text"));
+            i = i + 1;
+        }
     }
 
-    Say(proc.ReadStdout());
-    Say(proc.ReadStderr());
+    proc.ReadOutputResult();
     Say("Exit: " + Fmt.Int(proc.Wait()));
     proc.Destroy();
 }
@@ -472,14 +477,19 @@ func start() {
   handle with code `126`/`127`.
 - `ReadStdout()` and `ReadStderr()` are non-blocking incremental reads intended for simple callers. They trap when the runtime had to truncate unread stream data.
 - `ReadStdoutResult()` and `ReadStderrResult()` are preferred for long-running tools and GUI frame loops. They return a map with `text` and `truncated` so callers can surface overflow without crashing.
-- `WriteStdin` uses non-blocking pipes on POSIX and may return a partial byte count; callers must
-  retry the remaining suffix. Null/empty data returns 0.
+- `ReadOutputResult()` preserves runtime capture order in a `chunks` sequence whose entries carry
+  `sequence`, `stream`, and `text`. It consumes both the ordered view and the corresponding legacy
+  per-stream buffers; do not mix read styles when every byte matters.
+- `WriteStdin` is nonblocking on every platform and may return a partial accepted-byte count;
+  callers must retry the remaining suffix. Windows uses a bounded process-owned writer queue so a
+  child that stops reading cannot freeze the caller. Null/empty data returns 0.
 - `ExitCode()` and `Wait()` return a negative signal number on POSIX. Consequently `-1` is
   ambiguous: it can mean running/invalid or a child terminated by signal 1.
 - `Kill()` sends a termination request (`SIGTERM` on POSIX, `TerminateProcess` on Windows) without
   waiting for exit. `Destroy()` is idempotent; POSIX allows 500 ms after `SIGTERM` before
   `SIGKILL`, while Windows terminates a live child immediately.
-- Output buffers are capped at 16 MB per stream between reads.
+- Output buffers are capped at 16 MB per stream between reads; the combined ordered queue has its
+  own 16 MB cap and reports overflow through `truncated`.
 
 ---
 

@@ -9,6 +9,7 @@
 // Purpose: Exercise Studio build, run, debug, manifest, and scene boundaries.
 // Key invariants:
 //   - Process and debugger lifecycle contracts remain deterministic headlessly.
+//   - Build chains preserve output and publish typed, incremental results.
 //   - Persistent debug state fails safely under malformed filesystem state.
 // Ownership/Lifetime: Owns all temporary projects, processes, and model values.
 // Links: zannastudio/src/build/build_system.zia,
@@ -125,6 +126,17 @@ func VerifyRunConfigurationAndProcess(
                   and Obj.ToString(Seq.Get(splitEscaped, 1)) == "single quoted"
                   and Obj.ToString(Seq.Get(splitEscaped, 2)) == "escaped token",
                   "split args preserves single quotes and escapes") == false { return false; }
+    var splitWindows = run_config.SplitArgs(
+        "run \"C:\\Program Files\\Zanna\\zanna.exe\" C:\\tmp\\main.zia \\\\server\\share \"\"");
+    if assertTrue(Seq.get_Count(splitWindows) == 5
+                  and Obj.ToString(Seq.Get(splitWindows, 1))
+                      == "C:\\Program Files\\Zanna\\zanna.exe"
+                  and Obj.ToString(Seq.Get(splitWindows, 2)) == "C:\\tmp\\main.zia"
+                  and Obj.ToString(Seq.Get(splitWindows, 3)) == "\\\\server\\share"
+                  and Obj.ToString(Seq.Get(splitWindows, 4)) == "",
+                  "split args preserves Windows paths and empty args") == false { return false; }
+    if assertTrue(run_config.SplitArgs("run \"unterminated") == null,
+                  "split args rejects unmatched quotes") == false { return false; }
 
     var projMgr = new project_manager.ProjectManager();
     projMgr.project = new project.Project();
@@ -136,6 +148,11 @@ func VerifyRunConfigurationAndProcess(
                   and custom.kind == run_config.KIND_CUSTOM
                   and Obj.ToString(Seq.Get(custom.args, 1)) == root,
                   "project run config override") == false { return false; }
+    projMgr.project.runArgs = "run \"unterminated";
+    var invalidCustom = run_config.ForDocument(run_config.ACTION_RUN, doc, projMgr);
+    if assertTrue(invalidCustom.validationError != ""
+                  and Seq.get_Count(invalidCustom.args) == 0,
+                  "invalid project arguments fail closed") == false { return false; }
 
     var buildSys = new build_system.BuildSystem();
     var diag = buildSys.ParseDiagnosticLine("C:\\tmp\\a file.zia:12:3: warning[W123]: careful");
@@ -172,6 +189,13 @@ func VerifyRunConfigurationAndProcess(
                   "default zanna resolves to an existing absolute path") == false { return false; }
     if assertTrue(buildSys.ResolveCompiler("zanna_missing_binary_zzz_404") == "",
                   "an unfindable program resolves to empty") == false { return false; }
+    var toolDir = Path.Join(spacedDir, "tools");
+    Dir.MakeAll(toolDir);
+    var localTool = Path.Join(toolDir, "project-tool");
+    File.WriteAllText(localTool, "fixture");
+    if assertTrue(buildSys.ResolveProgram(Path.Join("tools", "project-tool"),
+                                         spacedDir) == Path.Absolute(localTool),
+                  "project-relative executable resolves against job cwd") == false { return false; }
 
     var procCfg = new run_config.RunConfig();
     procCfg.name = "Probe Run";
@@ -196,6 +220,79 @@ func VerifyRunConfigurationAndProcess(
     }
     if assertTrue(buildSys.lastBuildSuccess and Str.IndexOf(buildSys.GetOutput(), "PHASE2-RUN") != 0,
                   "process job streams child output") == false { return false; }
+
+    // A two-stage job is one user-visible transaction: output, diagnostics,
+    // timing, and the typed completion survive the continuation handoff.
+    var stageOnePath = Path.Join(spacedDir, "stage_one.zia");
+    var stageTwoPath = Path.Join(spacedDir, "stage_two.zia");
+    File.WriteAllText(stageOnePath,
+        "module StageOne;\n"
+        + "func main() { Zanna.Terminal.Say(\"CHAIN-STAGE-ONE\"); }\n");
+    File.WriteAllText(stageTwoPath,
+        "module StageTwo;\n"
+        + "func main() { Zanna.Terminal.Say(\"CHAIN-STAGE-TWO\"); }\n");
+    var firstStage = new run_config.RunConfig();
+    firstStage.name = "Chain build";
+    firstStage.action = run_config.ACTION_BUILD;
+    firstStage.program = ziaBin;
+    firstStage.workingDirectory = spacedDir;
+    Seq.Push(firstStage.args, stageOnePath);
+    var secondStage = new run_config.RunConfig();
+    secondStage.name = "Chain run";
+    secondStage.action = run_config.ACTION_RUN;
+    secondStage.program = ziaBin;
+    secondStage.workingDirectory = spacedDir;
+    Seq.Push(secondStage.args, stageTwoPath);
+    firstStage.next = secondStage;
+    if assertTrue(buildSys.StartConfig(firstStage), "build chain starts") == false { return false; }
+    var chainDeadlineMs = Clock.NowMs() + 15000;
+    while buildSys.IsActive() and Clock.NowMs() < chainDeadlineMs {
+        buildSys.Update();
+        Clock.Sleep(1);
+    }
+    var chainResult = buildSys.TakeCompletedResult();
+    if assertTrue(buildSys.IsActive() == false
+                  and buildSys.processHandle == null
+                  and Str.IndexOf(buildSys.GetOutput(), "CHAIN-STAGE-ONE") != 0
+                  and Str.IndexOf(buildSys.GetOutput(), "[stage] Chain run") != 0
+                  and Str.IndexOf(buildSys.GetOutput(), "CHAIN-STAGE-TWO") != 0
+                  and chainResult != null
+                  and chainResult!.success
+                  and chainResult!.name == "Chain run",
+                  "multi-stage output and typed completion remain one chain") == false { return false; }
+
+    // Diagnostics become available while the child is still running, rather
+    // than being reconstructed from a possibly truncated log only at exit.
+    var liveDiagPath = Path.Join(spacedDir, "live_diagnostic.zia");
+    File.WriteAllText(liveDiagPath,
+        "module LiveDiagnostic;\n"
+        + "func main() {\n"
+        + "    Zanna.Terminal.Say(\"probe.zia:2:3: warning[W-LIVE]: streamed\");\n"
+        + "    Zanna.Time.Clock.Sleep(400);\n"
+        + "}\n");
+    var liveCfg = new run_config.RunConfig();
+    liveCfg.name = "Live diagnostics";
+    liveCfg.action = run_config.ACTION_BUILD;
+    liveCfg.program = ziaBin;
+    liveCfg.workingDirectory = spacedDir;
+    Seq.Push(liveCfg.args, liveDiagPath);
+    if assertTrue(buildSys.StartConfig(liveCfg), "live diagnostic job starts") == false { return false; }
+    var sawDiagnosticWhileRunning = false;
+    var liveDeadlineMs = Clock.NowMs() + 15000;
+    while buildSys.IsActive() and Clock.NowMs() < liveDeadlineMs {
+        buildSys.Update();
+        if buildSys.IsActive() and buildSys.diagnostics.count() == 1 {
+            sawDiagnosticWhileRunning = true;
+        }
+        Clock.Sleep(1);
+    }
+    var liveResult = buildSys.TakeCompletedResult();
+    if assertTrue(sawDiagnosticWhileRunning
+                  and buildSys.diagnostics.count() == 1
+                  and buildSys.diagnostics.get(0).code == "W-LIVE"
+                  and buildSys.TakeDiagnosticsChanged()
+                  and liveResult != null and liveResult!.success,
+                  "diagnostics parse incrementally and publish typed result") == false { return false; }
 
     ctx.root = root;
     ctx.spacedDir = spacedDir;
@@ -296,11 +393,14 @@ func VerifyProjectExecutionAndStop(
         return false;
     }
     var killed = buildSys.Stop();
+    var stoppedResult = buildSys.TakeCompletedResult();
     if assertTrue(killed
                   and buildSys.IsActive() == false
+                  and buildSys.processHandle == null
                   and buildSys.exitCode == -1
+                  and stoppedResult != null and stoppedResult!.stopped
                   and Str.IndexOf(buildSys.GetOutput(), "[stopped]") != 0,
-                  "stop kills long-running process") == false { return false; }
+                  "stop uses unified finalization and typed completion") == false { return false; }
 
     return true;
 }

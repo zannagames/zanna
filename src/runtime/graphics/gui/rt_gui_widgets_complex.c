@@ -1016,6 +1016,26 @@ void rt_codeeditor_set_text(void *editor, rt_string text) {
     vg_codeeditor_set_text_bytes(ce, bytes, len);
 }
 
+/// @brief Replace complete CodeEditor text as one undoable state-preserving edit.
+/// @details Unlike SetText, this retains prior history, cursors, selections, folds, and scroll.
+///          Runtime text containing embedded NUL is rejected because the incremental edit-history
+///          representation is NUL-terminated; ordinary source text remains byte-exact UTF-8.
+/// @param editor CodeEditor widget handle.
+/// @param text New complete editor text.
+/// @return 1 when applied or already equal; otherwise 0.
+int64_t rt_codeeditor_replace_all_text(void *editor, rt_string text) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_codeeditor_t *ce = rt_codeeditor_checked(editor);
+    if (!ce)
+        return 0;
+    char *ctext = rt_string_to_gui_cstr(text);
+    if (!ctext)
+        return 0;
+    int64_t result = vg_codeeditor_replace_all_text(ce, ctext) ? 1 : 0;
+    free(ctext);
+    return result;
+}
+
 /// @brief Retrieve the complete text content of a CodeEditor.
 /// @param editor CodeEditor widget handle.
 /// @return Owned newline-joined runtime string, or the canonical empty string when unavailable.
@@ -3112,6 +3132,16 @@ void *rt_codeeditor_new(void *parent) {
 void rt_codeeditor_set_text(void *editor, rt_string text) {
     (void)editor;
     (void)text;
+}
+
+/// @brief Stub: reject state-preserving replacement without graphics.
+/// @param editor Ignored CodeEditor handle.
+/// @param text Ignored runtime string.
+/// @return Always zero.
+int64_t rt_codeeditor_replace_all_text(void *editor, rt_string text) {
+    (void)editor;
+    (void)text;
+    return 0;
 }
 
 /// @brief Stub: return empty CodeEditor text without graphics.

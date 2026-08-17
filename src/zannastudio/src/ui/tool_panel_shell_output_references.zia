@@ -29,6 +29,7 @@ bind Input = Zanna.Input;
 bind Obj = Zanna.Core.Object;
 bind Convert = Zanna.Core.Convert;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 bind "tool_panel_shell_model" as ToolPanelModel;
 bind "tool_panel_shell_call_stack" as PreviousLayer;
 
@@ -167,15 +168,19 @@ class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLay
     expose override func CopyOutputText() -> Boolean {
         var text = lastBuildOutput;
         if text == "" {
+            var output = new StringBuilder();
+            var written = 0;
             var i = 0;
             while i < outputRenderedItems.count() {
                 var item = outputRenderedItems.get(i);
                 if item != null {
-                    if text != "" { text = text + "\n"; }
-                    text = text + GUI.ListBox.ItemGetText(item);
+                    if written > 0 { output.Append("\n"); }
+                    output.Append(GUI.ListBox.ItemGetText(item));
+                    written = written + 1;
                 }
                 i = i + 1;
             }
+            text = output.ToString();
         }
         if text == "" { return false; }
         GUI.ClipboardText.SetText(text);
@@ -254,22 +259,25 @@ class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLay
         if referencesRows == null or referencesResultCount <= 0 {
             return false;
         }
-        var text = "";
+        var text = new StringBuilder();
+        var written = 0;
         var i = 0;
         while i < referencesRows.rows.count() {
             var row = referencesRows.rows.get(i);
             if row != null {
-                if text != "" { text = text + "\n"; }
+                if written > 0 { text.Append("\n"); }
                 if row.isGroupHeader {
-                    text = text + row.text;
+                    text.Append(row.text);
                 } else {
-                    text = text + "  " + row.text;
+                    text.Append("  " + row.text);
                 }
+                written = written + 1;
             }
             i = i + 1;
         }
-        if text == "" { return false; }
-        GUI.ClipboardText.SetText(text);
+        var result = text.ToString();
+        if result == "" { return false; }
+        GUI.ClipboardText.SetText(result);
         return true;
     }
 

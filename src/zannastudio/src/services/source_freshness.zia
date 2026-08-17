@@ -1,0 +1,319 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/source_freshness.zia
+// Purpose: Cooperatively determine whether a native artifact is newer than all
+//          project build dependencies.
+// Key invariants:
+//   - No freshness query performs recursive filesystem work.
+//   - Partial, truncated, invalid, or metadata-failed scans report unknown.
+//   - Source languages, the project manifest, and explicit embed/pack inputs
+//     participate in the dependency maximum.
+//   - FileIndex owns safe enumeration and hard exclusions; scan work is page-bounded.
+// Ownership/Lifetime: A ProjectManager owns one scanner for its primary root.
+// Links: zannastudio/src/core/project_manager_base.zia,
+//        zannastudio/src/app/language_tool_frame.zia
+//
+//===----------------------------------------------------------------------===//
+
+module source_freshness;
+
+bind "path_identity";
+bind "safe_io";
+
+bind File = Zanna.IO.File;
+bind FileIndex = Zanna.Workspace.FileIndex;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Path = Zanna.IO.Path;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+
+final FRESHNESS_UNKNOWN = 0;
+final FRESHNESS_FRESH = 1;
+final FRESHNESS_STALE = 2;
+final MAX_PROJECT_MANIFEST_BYTES = 1000000;
+final DEFAULT_FRESHNESS_PAGE_SIZE = 128;
+
+/// @brief Page-bounded native-build dependency timestamp scanner.
+class SourceFreshnessScanner {
+    expose String rootPath;
+    expose Integer pageOffset;
+    expose Integer newestDependencyModified;
+    expose Integer entriesExamined;
+    expose Boolean scanning;
+    expose Boolean complete;
+    expose Boolean reliable;
+    expose Boolean truncated;
+    expose List assetRoots;
+    expose String statusReason;
+
+    expose func init() {
+        rootPath = "";
+        pageOffset = 0;
+        newestDependencyModified = 0;
+        entriesExamined = 0;
+        scanning = false;
+        complete = false;
+        reliable = false;
+        truncated = false;
+        assetRoots = new List();
+        statusReason = "no project";
+    }
+
+    /// @brief Select a project root, restarting only when its identity changes.
+    expose func EnsureProject(root: String) {
+        var normalized = "";
+        if root != "" { normalized = path_identity.Normalize(root); }
+        if normalized == rootPath { return; }
+        rootPath = normalized;
+        RestartScan();
+    }
+
+    /// @brief Mark the current dependency snapshot unknown and begin a new scan.
+    expose func InvalidateAll() {
+        if rootPath == "" {
+            scanning = false;
+            complete = false;
+            reliable = false;
+            statusReason = "no project";
+            return;
+        }
+        RestartScan();
+    }
+
+    /// @brief Invalidate only when a changed path can affect native compilation.
+    /// @return True when a new scan was scheduled.
+    expose func InvalidatePath(path: String) -> Boolean {
+        if rootPath == "" or path == "" { return false; }
+        var normalized = path_identity.Normalize(path);
+        if path_identity.IsWithinRoot(normalized, rootPath) == false { return false; }
+        if IsDependencyPath(normalized) == false { return false; }
+        RestartScan();
+        return true;
+    }
+
+    /// @brief Invalidate for every path in a save/event list.
+    expose func InvalidatePaths(paths: Any) -> Boolean {
+        if paths == null { return false; }
+        var invalidated = false;
+        var i = 0;
+        while i < Seq.get_Count(paths) {
+            if InvalidatePath(Obj.ToString(Seq.Get(paths, i))) {
+                invalidated = true;
+            }
+            i = i + 1;
+        }
+        return invalidated;
+    }
+
+    /// @brief Consume at most one FileIndex page of dependency metadata work.
+    /// @param maxEntries Maximum entries examined during this call.
+    /// @return Entries examined, never more than the requested positive budget.
+    expose func Pump(maxEntries: Integer) -> Integer {
+        if scanning == false or rootPath == "" { return 0; }
+        var pageSize = maxEntries;
+        if pageSize <= 0 { pageSize = DEFAULT_FRESHNESS_PAGE_SIZE; }
+
+        var oldOffset = pageOffset;
+        var page = FileIndex.Page(rootPath, "", "", false,
+                                  pageOffset, pageSize);
+        if Map.GetBool(page, "valid") == false {
+            FailScan("workspace index unavailable");
+            return 0;
+        }
+        if Map.GetBool(page, "truncated") { truncated = true; }
+
+        var entries = Map.Get(page, "entries");
+        var processed = 0;
+        while entries != null and processed < Seq.get_Count(entries) {
+            var entry = Seq.Get(entries, processed);
+            if Map.GetBool(entry, "isDirectory") == false {
+                var path = Map.GetStr(entry, "path");
+                if IsDependencyPath(path) {
+                    var stamp = safe_io.Modified(path);
+                    if stamp < 0 {
+                        reliable = false;
+                        statusReason = "dependency metadata unavailable";
+                    } else if stamp > newestDependencyModified {
+                        newestDependencyModified = stamp;
+                    }
+                }
+            }
+            processed = processed + 1;
+            entriesExamined = entriesExamined + 1;
+        }
+
+        pageOffset = Map.GetInt(page, "nextOffset");
+        if Map.GetBool(page, "done") {
+            scanning = false;
+            complete = true;
+            if truncated {
+                reliable = false;
+                statusReason = "workspace index truncated";
+            } else if reliable {
+                statusReason = "complete";
+            }
+        } else if processed == 0 and pageOffset == oldOffset {
+            FailScan("workspace index made no progress");
+        }
+        return processed;
+    }
+
+    /// @brief Compare one artifact only against a complete reliable snapshot.
+    /// @return FRESHNESS_FRESH, FRESHNESS_STALE, or FRESHNESS_UNKNOWN.
+    expose func ArtifactStatus(artifactPath: String) -> Integer {
+        if complete == false or reliable == false or truncated {
+            return FRESHNESS_UNKNOWN;
+        }
+        var artifactStamp = safe_io.Modified(artifactPath);
+        if artifactStamp < 0 { return FRESHNESS_STALE; }
+        if artifactStamp > newestDependencyModified { return FRESHNESS_FRESH; }
+        return FRESHNESS_STALE;
+    }
+
+    /// @brief Return true only for a complete, reliable, newer artifact.
+    expose func IsArtifactKnownFresh(artifactPath: String) -> Boolean {
+        return ArtifactStatus(artifactPath) == FRESHNESS_FRESH;
+    }
+
+    /// @brief Start a new empty snapshot and parse explicit asset dependencies.
+    hide func RestartScan() {
+        pageOffset = 0;
+        newestDependencyModified = 0;
+        entriesExamined = 0;
+        complete = false;
+        truncated = false;
+        assetRoots = new List();
+        reliable = rootPath != "";
+        scanning = rootPath != "";
+        statusReason = scanning ? "scanning" : "no project";
+        if scanning { LoadManifestDependencies(); }
+    }
+
+    hide func FailScan(reason: String) {
+        scanning = false;
+        complete = false;
+        reliable = false;
+        statusReason = reason;
+    }
+
+    /// @brief Return true for a compiler source, manifest, or explicit asset.
+    hide func IsDependencyPath(path: String) -> Boolean {
+        if path == "" { return false; }
+        var name = Str.ToLower(Path.Name(path));
+        if name == "zanna.project" { return true; }
+        var ext = Str.ToLower(Path.Extension(path));
+        if ext == ".zia" or ext == ".bas" or ext == ".vb" or ext == ".il" {
+            return true;
+        }
+        var i = 0;
+        while i < assetRoots.count() {
+            var assetRoot = Obj.ToString(assetRoots.get(i));
+            if path_identity.IsWithinRoot(path, assetRoot) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Parse build-time embed/pack paths from the bounded manifest text.
+    hide func LoadManifestDependencies() {
+        var manifestPath = Path.Join(rootPath, "zanna.project");
+        if File.Exists(manifestPath) == false { return; }
+        var read = safe_io.ReadAllTextBounded(manifestPath,
+                                              MAX_PROJECT_MANIFEST_BYTES);
+        if read.ok == false {
+            reliable = false;
+            statusReason = "project manifest unavailable";
+            return;
+        }
+        var lines = Str.Split(read.text, "\n");
+        var i = 0;
+        while i < Seq.get_Count(lines) {
+            var words = SplitManifestWords(Obj.ToString(Seq.Get(lines, i)));
+            i = i + 1;
+            if words == null {
+                reliable = false;
+                statusReason = "project manifest quoting invalid";
+                continue;
+            }
+            if Seq.get_Count(words) < 2 { continue; }
+            var directive = Str.ToLower(Obj.ToString(Seq.Get(words, 0)));
+            var relative = "";
+            if directive == "embed" {
+                relative = Obj.ToString(Seq.Get(words, 1));
+            } else if (directive == "pack" or directive == "pack-compressed")
+                      and Seq.get_Count(words) >= 3 {
+                relative = Obj.ToString(Seq.Get(words, 2));
+            }
+            AddAssetRoot(relative);
+        }
+    }
+
+    hide func AddAssetRoot(relative: String) {
+        if relative == "" { return; }
+        var full = path_identity.Normalize(Path.Join(rootPath, relative));
+        if path_identity.IsWithinRoot(full, rootPath) == false {
+            reliable = false;
+            statusReason = "asset dependency escapes project";
+            return;
+        }
+        var i = 0;
+        while i < assetRoots.count() {
+            if Obj.ToString(assetRoots.get(i)) == full { return; }
+            i = i + 1;
+        }
+        assetRoots.Push(full);
+    }
+}
+
+/// @brief Tokenize one manifest line with quote/comment-aware path handling.
+/// @return A List of words, or null for an unmatched quote.
+func SplitManifestWords(text: String) -> Any {
+    var words = Seq.New();
+    var token = "";
+    var quote = "";
+    var started = false;
+    var i = 1;
+    while i <= Str.get_Length(text) {
+        var ch = Str.MidLen(text, i, 1);
+        if ch == "#" and quote == "" { break; }
+        if ch == "\\" and i < Str.get_Length(text) {
+            var next = Str.MidLen(text, i + 1, 1);
+            if next == " " or next == "\t" or next == "\"" or next == "'" {
+                token = token + next;
+                started = true;
+                i = i + 1;
+            } else {
+                token = token + ch;
+                started = true;
+            }
+        } else if ch == "\"" or ch == "'" {
+            if quote == "" {
+                quote = ch;
+                started = true;
+            } else if quote == ch {
+                quote = "";
+            } else {
+                token = token + ch;
+            }
+        } else if (ch == " " or ch == "\t") and quote == "" {
+            if started {
+                Seq.Push(words, token);
+                token = "";
+                started = false;
+            }
+        } else {
+            token = token + ch;
+            started = true;
+        }
+        i = i + 1;
+    }
+    if quote != "" { return null; }
+    if started { Seq.Push(words, token); }
+    return words;
+}

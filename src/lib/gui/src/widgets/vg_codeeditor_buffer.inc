@@ -29,14 +29,37 @@
 // vg_editor_buffer_t. Keep in sync with the vg_editor_buffer_t declaration.
 /// @brief Enumerate fields transferred between an editor and a detachable document buffer.
 /// @param X Field-operation macro invoked once per transferred member.
-#define EDBUF_FIELDS(X)                                                                             \
-    X(lines) X(line_count) X(line_capacity) X(document_buffer) X(history) X(cursor_line)            \
-        X(cursor_col) X(selection) X(has_selection) X(scroll_x) X(scroll_y) X(extra_cursors)        \
-            X(extra_cursor_count) X(extra_cursor_cap) X(fold_regions) X(fold_region_count)          \
-                X(fold_region_cap) X(has_folded_lines) X(semantic_tokens) X(semantic_token_count)   \
-                    X(semantic_token_cap) X(semantic_tokens_sorted) X(highlight_spans)              \
-                        X(highlight_span_count) X(highlight_span_cap) X(highlight_spans_sorted)     \
-                            X(modified) X(revision) X(highlight_generation) X(typing_clock_ms)
+#define EDBUF_FIELDS(X)                                                                            \
+    X(lines)                                                                                       \
+    X(line_count)                                                                                  \
+    X(line_capacity)                                                                               \
+    X(document_buffer)                                                                             \
+    X(history)                                                                                     \
+    X(cursor_line)                                                                                 \
+    X(cursor_col)                                                                                  \
+    X(selection)                                                                                   \
+    X(has_selection)                                                                               \
+    X(scroll_x)                                                                                    \
+    X(scroll_y)                                                                                    \
+    X(extra_cursors)                                                                               \
+    X(extra_cursor_count)                                                                          \
+    X(extra_cursor_cap)                                                                            \
+    X(fold_regions)                                                                                \
+    X(fold_region_count)                                                                           \
+    X(fold_region_cap)                                                                             \
+    X(has_folded_lines)                                                                            \
+    X(semantic_tokens)                                                                             \
+    X(semantic_token_count)                                                                        \
+    X(semantic_token_cap)                                                                          \
+    X(semantic_tokens_sorted)                                                                      \
+    X(highlight_spans)                                                                             \
+    X(highlight_span_count)                                                                        \
+    X(highlight_span_cap)                                                                          \
+    X(highlight_spans_sorted)                                                                      \
+    X(modified)                                                                                    \
+    X(revision)                                                                                    \
+    X(highlight_generation)                                                                        \
+    X(typing_clock_ms)
 
 /// @brief Move an editor's document state into a detachable buffer.
 /// @details After field transfer, all editor-owned pointer/count groups are cleared so the widget
@@ -211,6 +234,35 @@ char *vg_editor_buffer_get_text(vg_editor_buffer_t *buf) {
     }
     out[off] = '\0';
     return out;
+}
+
+/// @brief Replace detached-buffer text through the ordinary undoable editor path.
+/// @details A temporary widget borrows the buffer's movable document fields, applies the same
+///          state-preserving full-range edit as an attached document, then moves every field back
+///          into the original shell. The caller's buffer address and ownership remain stable.
+/// @param buf Detached buffer to update.
+/// @param text Null-terminated UTF-8 replacement, or NULL for empty text.
+/// @return True when applied or already equal; false on invalid/allocation failure.
+bool vg_editor_buffer_replace_all_text(vg_editor_buffer_t *buf, const char *text) {
+    if (!buf)
+        return false;
+    vg_codeeditor_t *temporary = vg_codeeditor_create(NULL);
+    if (!temporary)
+        return false;
+    vg_editor_buffer_t *initial = calloc(1, sizeof(*initial));
+    if (!initial) {
+        vg_widget_destroy(&temporary->base);
+        return false;
+    }
+
+    editor_buffer_capture(initial, temporary);
+    editor_buffer_restore(temporary, buf);
+    bool ok = vg_codeeditor_replace_all_text(temporary, text);
+    editor_buffer_capture(buf, temporary);
+
+    vg_editor_buffer_destroy(initial);
+    vg_widget_destroy(&temporary->base);
+    return ok;
 }
 
 /// @brief Return whether a detached document has unsaved modifications.

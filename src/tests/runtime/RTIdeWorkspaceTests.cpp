@@ -23,6 +23,7 @@
 
 #include "rt_internal.h"
 #include "rt_map.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -343,7 +344,33 @@ static void test_workspace_watcher_batch() {
     void *event = rt_seq_get(batch, 0);
     assert(get_str(event, "typeName") != "none");
     assert(!get_str(event, "path").empty());
+    assert(get_str(event, "oldPath").empty());
+    assert(get_str(event, "newPath").empty());
     assert(rt_map_get_int(event, rt_const_cstr("overflowCount")) == 0);
+
+#if RT_PLATFORM_LINUX || RT_PLATFORM_WINDOWS
+    while (rt_seq_len(rt_workspace_watcher_poll_batch(watcher, 64)) > 0) {
+    }
+    fs::path old_path = root / "created.zia";
+    fs::path new_path = root / "renamed.zia";
+    fs::rename(old_path, new_path);
+    bool saw_complete_rename = false;
+    for (int attempt = 0; attempt < 30 && !saw_complete_rename; attempt++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        void *rename_batch = rt_workspace_watcher_poll_batch(watcher, 16);
+        for (int64_t i = 0; i < rt_seq_len(rename_batch); i++) {
+            void *rename_event = rt_seq_get(rename_batch, i);
+            if (get_str(rename_event, "typeName") != "renamed")
+                continue;
+            saw_complete_rename =
+                get_str(rename_event, "path") == new_path.string() &&
+                get_str(rename_event, "oldPath") == old_path.string() &&
+                get_str(rename_event, "newPath") == new_path.string() &&
+                rt_map_get_bool(rename_event, rt_const_cstr("requiresRescan")) == 0;
+        }
+    }
+    assert(saw_complete_rename);
+#endif
 
     rt_watcher_stop(watcher);
     rt_string_unref(root_s);

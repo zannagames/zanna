@@ -14,6 +14,7 @@
 #include "rt_box.h"
 #include "rt_exec.h"
 #include "rt_internal.h"
+#include "rt_map.h"
 #include "rt_process.h"
 #include "rt_pty.h"
 #include "rt_seq.h"
@@ -68,6 +69,17 @@ static void *start_shell_process_with_env(const char *script, const char *cwd, v
     const char *shells[] = {"/bin/sh", "/usr/bin/sh", nullptr};
     for (int i = 0; shells[i] != nullptr; i++) {
         void *handle = rt_process_start_with_env(
+            make_string(shells[i]), make_shell_args(script), make_string(cwd), env);
+        if (handle)
+            return handle;
+    }
+    return nullptr;
+}
+
+static void *start_shell_process_with_env_overlay(const char *script, const char *cwd, void *env) {
+    const char *shells[] = {"/bin/sh", "/usr/bin/sh", nullptr};
+    for (int i = 0; shells[i] != nullptr; i++) {
+        void *handle = rt_process_start_with_env_overlay(
             make_string(shells[i]), make_shell_args(script), make_string(cwd), env);
         if (handle)
             return handle;
@@ -363,6 +375,59 @@ static void test_process_streams_stdout_stderr() {
     assert(rt_process_is_valid(handle) == 0);
 }
 
+static void append_ordered_process_output(
+    void *result, std::string &tagged, int64_t &last_sequence, bool &saw_stdout, bool &saw_stderr) {
+    assert(result != nullptr);
+    void *chunks = rt_map_get(result, rt_const_cstr("chunks"));
+    assert(chunks != nullptr);
+    for (int64_t i = 0; i < rt_seq_len(chunks); ++i) {
+        void *chunk = rt_seq_get(chunks, i);
+        assert(chunk != nullptr);
+        int64_t sequence = rt_map_get_int(chunk, rt_const_cstr("sequence"));
+        assert(sequence > last_sequence);
+        last_sequence = sequence;
+        rt_string stream = rt_map_get_str(chunk, rt_const_cstr("stream"));
+        rt_string text = rt_map_get_str(chunk, rt_const_cstr("text"));
+        std::string stream_text(rt_string_cstr(stream), (size_t)rt_str_len(stream));
+        if (stream_text == "stdout")
+            saw_stdout = true;
+        if (stream_text == "stderr")
+            saw_stderr = true;
+        tagged.append("[").append(stream_text).append("]");
+        tagged.append(rt_string_cstr(text), (size_t)rt_str_len(text));
+        rt_str_release_maybe(stream);
+        rt_str_release_maybe(text);
+    }
+}
+
+static void test_process_ordered_tagged_output() {
+    void *handle = start_shell_process("printf 'ordered-out-1\\n'; printf 'ordered-err-1\\n' >&2; "
+                                       "printf 'ordered-out-2\\n'; printf 'ordered-err-2\\n' >&2");
+    assert(handle != nullptr);
+
+    std::string tagged;
+    int64_t last_sequence = -1;
+    bool saw_stdout = false;
+    bool saw_stderr = false;
+    for (int i = 0; i < 400; ++i) {
+        bool running = rt_process_is_running(handle) != 0;
+        append_ordered_process_output(
+            rt_process_read_output_result(handle), tagged, last_sequence, saw_stdout, saw_stderr);
+        if (!running)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    assert(rt_process_wait(handle) == 0);
+    append_ordered_process_output(
+        rt_process_read_output_result(handle), tagged, last_sequence, saw_stdout, saw_stderr);
+    assert(saw_stdout && saw_stderr);
+    assert(tagged.find("[stdout]ordered-out") != std::string::npos);
+    assert(tagged.find("[stderr]ordered-err") != std::string::npos);
+    assert(rt_str_len(rt_process_read_stdout(handle)) == 0);
+    assert(rt_str_len(rt_process_read_stderr(handle)) == 0);
+    rt_process_destroy(handle);
+}
+
 static void test_process_cwd_and_env() {
     void *env = rt_seq_new();
     rt_seq_push(env, make_string("ZANNA_PROCESS_TEST=env-ok"));
@@ -380,6 +445,29 @@ static void test_process_cwd_and_env() {
     assert(stdout_text.find("env-ok") != std::string::npos);
     rt_process_destroy(handle);
 }
+
+#if !ZANNA_HOST_WINDOWS
+static void test_process_environment_overlay() {
+    assert(setenv("ZANNA_PROCESS_OVERLAY_PARENT", "inherited", 1) == 0);
+    assert(setenv("ZANNA_PROCESS_OVERLAY_OVERRIDE", "parent", 1) == 0);
+    void *overlay = rt_seq_new();
+    rt_seq_push(overlay, make_string("ZANNA_PROCESS_OVERLAY_OVERRIDE=child"));
+    rt_seq_push(overlay, make_string("ZANNA_PROCESS_OVERLAY_NEW=added"));
+    void *handle = start_shell_process_with_env_overlay(
+        "printf '%s|%s|%s' \"$ZANNA_PROCESS_OVERLAY_PARENT\" "
+        "\"$ZANNA_PROCESS_OVERLAY_OVERRIDE\" \"$ZANNA_PROCESS_OVERLAY_NEW\"",
+        "/tmp",
+        overlay);
+    assert(handle != nullptr);
+    assert(rt_process_wait(handle) == 0);
+    std::string out;
+    append_runtime_string(out, rt_process_read_stdout(handle));
+    assert(out == "inherited|child|added");
+    rt_process_destroy(handle);
+    unsetenv("ZANNA_PROCESS_OVERLAY_PARENT");
+    unsetenv("ZANNA_PROCESS_OVERLAY_OVERRIDE");
+}
+#endif
 
 // VDOC-213: a bare program name is PATH-searched even with an explicit
 // environment, so Process resolves it the same way with or without env (adding
@@ -481,6 +569,25 @@ static void test_process_write_stdin() {
 }
 
 #if ZANNA_HOST_WINDOWS
+static int verify_windows_overlay_environment_child() {
+    wchar_t value[256];
+    if (GetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_PARENT", value, (DWORD)std::size(value)) ==
+            0 ||
+        wcscmp(value, L"inherited") != 0)
+        return 21;
+    if (GetEnvironmentVariableW(
+            L"ZANNA_PROCESS_OVERLAY_OVERRIDE", value, (DWORD)std::size(value)) == 0 ||
+        wcscmp(value, L"child") != 0)
+        return 22;
+    if (GetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_NEW", value, (DWORD)std::size(value)) ==
+            0 ||
+        wcscmp(value, L"added") != 0)
+        return 23;
+    if (GetEnvironmentVariableW(L"PATH", value, (DWORD)std::size(value)) == 0)
+        return 24;
+    return 0;
+}
+
 static int verify_windows_unicode_environment_child() {
     wchar_t value[64];
     DWORD value_len =
@@ -534,6 +641,27 @@ static std::string windows_current_executable_utf8() {
     return result;
 }
 
+static void test_windows_process_stdin_is_nonblocking() {
+    std::string executable = windows_current_executable_utf8();
+    assert(!executable.empty());
+    void *args = rt_seq_new();
+    rt_seq_push(args, make_string("--process-stdin-no-read-child"));
+    void *handle = rt_process_start(make_string(executable.c_str()), args);
+    assert(handle != nullptr);
+
+    std::string payload(2u * 1024u * 1024u, 'x');
+    rt_string input = rt_string_from_bytes(payload.data(), payload.size());
+    auto started = std::chrono::steady_clock::now();
+    int64_t accepted = rt_process_write_stdin(handle, input);
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started);
+    assert(accepted > 0);
+    assert((size_t)accepted < payload.size());
+    assert(elapsed < std::chrono::milliseconds(1000));
+    rt_process_destroy(handle);
+    printf("  PASS: test_windows_process_stdin_is_nonblocking\n");
+}
+
 static void test_windows_unicode_environment_round_trip() {
     std::string executable = windows_current_executable_utf8();
     assert(!executable.empty());
@@ -554,6 +682,27 @@ static void test_windows_unicode_environment_round_trip() {
     assert(rt_process_wait(handle) == 0);
     rt_process_destroy(handle);
     printf("  PASS: test_windows_unicode_environment_round_trip\n");
+}
+
+static void test_windows_environment_overlay() {
+    std::string executable = windows_current_executable_utf8();
+    assert(!executable.empty());
+    assert(SetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_PARENT", L"inherited"));
+    assert(SetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_OVERRIDE", L"parent"));
+    void *args = rt_seq_new();
+    rt_seq_push(args, make_string("--verify-overlay-environment"));
+    void *overlay = rt_seq_new();
+    // Windows matching is case-insensitive; this must replace the uppercase parent name.
+    rt_seq_push(overlay, make_string("zanna_process_overlay_override=child"));
+    rt_seq_push(overlay, make_string("ZANNA_PROCESS_OVERLAY_NEW=added"));
+    void *handle = rt_process_start_with_env_overlay(
+        make_string(executable.c_str()), args, make_string(""), overlay);
+    assert(handle != nullptr);
+    assert(rt_process_wait(handle) == 0);
+    rt_process_destroy(handle);
+    SetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_PARENT", nullptr);
+    SetEnvironmentVariableW(L"ZANNA_PROCESS_OVERLAY_OVERRIDE", nullptr);
+    printf("  PASS: test_windows_environment_overlay\n");
 }
 
 static void test_windows_conpty_unicode_environment_round_trip() {
@@ -600,8 +749,16 @@ int main(int argc, char **argv) {
 #if ZANNA_HOST_WINDOWS
     if (argc == 2 && strcmp(argv[1], "--verify-unicode-environment") == 0)
         return verify_windows_unicode_environment_child();
+    if (argc == 2 && strcmp(argv[1], "--verify-overlay-environment") == 0)
+        return verify_windows_overlay_environment_child();
+    if (argc == 2 && strcmp(argv[1], "--process-stdin-no-read-child") == 0) {
+        Sleep(5000);
+        return 0;
+    }
     test_windows_unicode_environment_round_trip();
+    test_windows_environment_overlay();
     test_windows_conpty_unicode_environment_round_trip();
+    test_windows_process_stdin_is_nonblocking();
     return 0;
 #else
     (void)argc;
@@ -635,8 +792,12 @@ int main(int argc, char **argv) {
 
     // Streaming Process handle coverage.
     test_process_streams_stdout_stderr();
+    test_process_ordered_tagged_output();
     test_process_write_stdin();
     test_process_cwd_and_env();
+#if !ZANNA_HOST_WINDOWS
+    test_process_environment_overlay();
+#endif
     test_process_bare_name_path_search_with_env();
     test_process_accepts_boxed_args_from_object_abi();
     test_process_empty_incremental_read();

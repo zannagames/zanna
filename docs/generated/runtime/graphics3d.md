@@ -3908,6 +3908,10 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-sky3d-get-dirty"></a>`Zanna.Graphics3D.Sky3D.get_Dirty` | `i1(obj)` | `rt_sky3d_get_dirty` |
 | `Zanna.Graphics3D.Sky3D.Update` | `i1(obj,obj)` | `rt_sky3d_update` |
 | <a id="zanna-graphics3d-sky3d-get-cubemap"></a>`Zanna.Graphics3D.Sky3D.get_Cubemap` | `obj(obj)` | `rt_sky3d_get_cubemap` |
+| <a id="zanna-graphics3d-sky3d-set-stars"></a>`Zanna.Graphics3D.Sky3D.set_Stars` | `void(obj,i1)` | `rt_sky3d_set_stars` |
+| <a id="zanna-graphics3d-sky3d-get-stars"></a>`Zanna.Graphics3D.Sky3D.get_Stars` | `i1(obj)` | `rt_sky3d_get_stars` |
+| <a id="zanna-graphics3d-sky3d-set-starintensity"></a>`Zanna.Graphics3D.Sky3D.set_StarIntensity` | `void(obj,f64)` | `rt_sky3d_set_star_intensity` |
+| <a id="zanna-graphics3d-sky3d-get-starintensity"></a>`Zanna.Graphics3D.Sky3D.get_StarIntensity` | `f64(obj)` | `rt_sky3d_get_star_intensity` |
 | `Zanna.Graphics3D.TimeOfDay3D.New` | `obj()` | `rt_timeofday3d_new` |
 | <a id="zanna-graphics3d-timeofday3d-set-hours"></a>`Zanna.Graphics3D.TimeOfDay3D.set_Hours` | `void(obj,f64)` | `rt_timeofday3d_set_hours` |
 | <a id="zanna-graphics3d-timeofday3d-get-hours"></a>`Zanna.Graphics3D.TimeOfDay3D.get_Hours` | `f64(obj)` | `rt_timeofday3d_get_hours` |

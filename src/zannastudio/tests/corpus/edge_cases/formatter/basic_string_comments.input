@@ -1,0 +1,5 @@
+IF ready THEN ' ELSE ENDIF inside comment
+PRINT "ENDIF ELSE"
+ENDIF
+IF ready THEN PRINT "one line"
+PRINT "after"

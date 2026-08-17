@@ -1,4 +1,24 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/workspace_file_index.zia
+// Purpose: Share bounded workspace discovery, containment, and de-duplication.
+// Key invariants:
+//   - FileIndex paging is authoritative for project ignore behavior.
+//   - Paths cross the service boundary as normalized absolute spellings.
+// Ownership/Lifetime: Returned lists/maps are caller-owned runtime values.
+// Links: zannastudio/src/services/path_identity.zia,
+//        zannastudio/src/core/project_manager.zia
+//
+//===----------------------------------------------------------------------===//
+
 module workspace_file_index;
+
+bind "path_identity";
 
 bind FileIndex = Zanna.Workspace.FileIndex;
 bind Map = Zanna.Collections.Map;
@@ -39,13 +59,7 @@ final WORKSPACE_FILE_INDEX_PAGE_SIZE = 512;
 ///          just been renamed or paths discovered from a cache.
 expose func IsWithinRoot(fullPath: String,
                          rootPath: String) -> Boolean {
-    if fullPath == "" or rootPath == "" { return false; }
-    if fullPath == rootPath { return true; }
-    var prefix = rootPath;
-    if Str.EndsWith(prefix, Path.Separator()) == false {
-        prefix = prefix + Path.Separator();
-    }
-    return Str.StartsWith(fullPath, prefix);
+    return path_identity.IsWithinRoot(fullPath, rootPath);
 }
 
 /// @brief Compute a workspace-relative path using platform separators.
@@ -58,15 +72,7 @@ expose func IsWithinRoot(fullPath: String,
 ///          relative path convention.
 expose func RelativePath(rootPath: String,
                          fullPath: String) -> String {
-    if rootPath == "" or fullPath == "" { return fullPath; }
-    var prefix = rootPath;
-    if Str.EndsWith(prefix, Path.Separator()) == false {
-        prefix = prefix + Path.Separator();
-    }
-    if Str.StartsWith(fullPath, prefix) {
-        return Str.Mid(fullPath, Str.get_Length(prefix) + 1);
-    }
-    return fullPath;
+    return path_identity.RelativePath(rootPath, fullPath);
 }
 
 /// @brief Return true for default-hidden directory names.
@@ -253,6 +259,5 @@ expose func ListContains(items: List,
 /// @param path Absolute or relative file path spelling.
 /// @return Absolute normalized key suitable for path de-duplication.
 func PathKey(path: String) -> String {
-    if path == "" { return ""; }
-    return Path.Normalize(Path.Absolute(path));
+    return path_identity.Normalize(path);
 }

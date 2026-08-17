@@ -25,6 +25,7 @@ bind "../app/file_watch_controller";
 bind "../core/document";
 bind "../core/document_manager";
 bind "../core/project_manager";
+bind "../services/locations";
 bind "../services/safe_io";
 
 bind File = Zanna.IO.File;
@@ -47,8 +48,19 @@ func watcherEvent(path: String,
                   requiresRescan: Boolean) -> Any {
     var event = Map.New();
     Map.SetStr(event, "path", path);
+    Map.SetStr(event, "oldPath", "");
+    Map.SetStr(event, "newPath", "");
     Map.SetStr(event, "typeName", typeName);
     Map.SetBool(event, "requiresRescan", requiresRescan);
+    return event;
+}
+
+func renameEvent(oldPath: String,
+                 newPath: String) -> Any {
+    var event = watcherEvent(newPath, "renamed",
+                             oldPath == "" or newPath == "");
+    Map.SetStr(event, "oldPath", oldPath);
+    Map.SetStr(event, "newPath", newPath);
     return event;
 }
 
@@ -177,6 +189,41 @@ func VerifyWorkspaceWatchers(
     var root = ctx.root;
     var projMgr = ctx.projMgr;
 
+    // A rename can preserve every metadata field. The fallback digest must
+    // therefore include normalized path identity, not only id/time/size.
+    var fingerprintState = new workspace_watcher.WorkspaceWatcherState();
+    var fingerprintEntry = Map.New();
+    Map.SetInt(fingerprintEntry, "id", 77);
+    Map.SetInt(fingerprintEntry, "modified", 88);
+    Map.SetInt(fingerprintEntry, "size", 99);
+    Map.SetBool(fingerprintEntry, "isDirectory", false);
+    Map.SetStr(fingerprintEntry, "path", Path.Join(root, "before.zia"));
+    workspace_watcher.AccumulateWorkspaceFallbackEntry(fingerprintState,
+                                                        fingerprintEntry);
+    var beforePathFingerprint = fingerprintState.fallbackCurrentFingerprint;
+    fingerprintState.fallbackCurrentFingerprint = 0;
+    Map.SetStr(fingerprintEntry, "path", Path.Join(root, "after.zia"));
+    workspace_watcher.AccumulateWorkspaceFallbackEntry(fingerprintState,
+                                                        fingerprintEntry);
+    if fingerprintState.fallbackCurrentFingerprint == beforePathFingerprint {
+        fail(fingerprintState, root, "fallback fingerprint omitted entry path");
+        return false;
+    }
+
+    var narrowLocations = new locations.LocationStore();
+    var staleId = narrowLocations.Add(Path.Join(root, "folder_1/stale.zia"),
+                                      1, 1, 1, 2, locations.KIND_SEARCH, "stale");
+    var keptId = narrowLocations.Add(Path.Join(root, "folder_2/kept.zia"),
+                                     1, 1, 1, 2, locations.KIND_SEARCH, "kept");
+    var nextLocationId = narrowLocations.nextId;
+    if narrowLocations.InvalidatePath(Path.Join(root, "folder_1")) != 1
+       or narrowLocations.Get(staleId) != null
+       or narrowLocations.Get(keptId) == null
+       or narrowLocations.nextId != nextLocationId {
+        fail(fingerprintState, root, "path-scoped location invalidation widened scope");
+        return false;
+    }
+
     var state = new workspace_watcher.WorkspaceWatcherState();
     workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
     if state.watchers.count() <= 0 or state.watchers.count() > 65
@@ -224,6 +271,21 @@ func VerifyWorkspaceWatchers(
     }
     if state.discoveryActive or state.watchers.count() != watcherCount {
         fail(state, root, "additive topology discovery did not preserve watchers");
+        return false;
+    }
+    var completeRenameEvents = Seq.New();
+    Seq.Push(completeRenameEvents,
+             renameEvent(root, Path.Join(root, "renamed-root")));
+    if workspace_watcher.EventsRequireFallback(completeRenameEvents)
+       or workspace_watcher.ObserveWorkspaceTopologyEvents(state,
+                                                            completeRenameEvents) == false {
+        fail(state, root, "complete rename endpoints were not handled narrowly");
+        return false;
+    }
+    var incompleteRenameEvents = Seq.New();
+    Seq.Push(incompleteRenameEvents, renameEvent(root, ""));
+    if workspace_watcher.EventsRequireFallback(incompleteRenameEvents) == false {
+        fail(state, root, "incomplete rename did not request a conservative rescan");
         return false;
     }
     var overflowEvents = Seq.New();

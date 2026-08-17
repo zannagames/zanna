@@ -9,6 +9,8 @@
 // Purpose: Stateless workspace, symbol, path-filter, text-match, and result helpers.
 // Key invariants:
 //   - Disk reads and result publication honor the same bounded search limits as the controller.
+//   - Text result rows retain the full scanned-content revision and exact line
+//     context required by delayed replacement.
 // Ownership/Lifetime:
 //   - Helpers borrow project, document, location, and shell state only for each call.
 // Links: zannastudio/src/services/search_matcher.zia, zannastudio/src/services/search_paths.zia
@@ -48,6 +50,7 @@ bind Obj = Zanna.Core.Object;
 bind Map = Zanna.Collections.Map;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
+bind Hash = Zanna.Crypto.Hash;
 
 final SEARCH_FILES_PER_FRAME = 16;
 final SEARCH_BYTES_PER_FRAME = 2000000;
@@ -56,6 +59,33 @@ final MAX_SEARCH_FILE_BYTES = 2000000;
 final MAX_SEARCH_RESULTS = 5000;
 final SEARCH_MODE_TEXT: Integer = 1;
 final SEARCH_MODE_WORKSPACE_SYMBOLS: Integer = 2;
+
+/// @brief One bounded source materialization used by text and symbol search.
+class SearchContentResult {
+    expose Boolean ok;
+    expose String text;
+    expose String error;
+
+    expose func init() {
+        ok = false;
+        text = "";
+        error = "";
+    }
+}
+
+/// @brief Result of searching one file without conflating I/O failure and no match.
+class SearchFileResult {
+    expose Boolean ok;
+    expose Integer matches;
+    expose String error;
+
+    expose func init() {
+        ok = false;
+        matches = 0;
+        error = "";
+    }
+}
+
 /// @brief Build a human-readable label for the current project search scope.
 /// @param projMgr Project manager whose roots are being searched.
 /// @return Primary root path for single-root workspaces, or "workspace (N roots)".
@@ -238,9 +268,10 @@ func WorkspaceSymbolFiles(projMgr: project_manager.ProjectManager,
 ///          compiler query on the UI thread.
 func WorkspaceSymbolContentForPath(docMgr: document_manager.DocumentManager,
                                    filePath: String) -> String {
-    var content = contentForPath(docMgr, filePath);
-    if Str.get_Length(content) > MAX_SEARCH_FILE_BYTES { return ""; }
-    return content;
+    var source = contentResultForPath(docMgr, filePath);
+    if source.ok == false
+       or Str.get_Length(source.text) > MAX_SEARCH_FILE_BYTES { return ""; }
+    return source.text;
 }
 
 /// @brief Add matching Zia declarations for one bounded source file.
@@ -293,7 +324,8 @@ func AddZiaWorkspaceSymbols(shell: app_shell.AppShell,
         var locId = locStore.Add(filePath, symbolLine, 1,
                                  symbolLine, 1 + Str.get_Length(name),
                                  locations.KIND_SYMBOL, name);
-        GUI.ListBox.ItemSetData(item, locId);
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.searchListBox, item, locId);
         count = count + 1;
     }
     return count;
@@ -336,7 +368,8 @@ func AddBasicWorkspaceSymbols(shell: app_shell.AppShell,
                                  Map.GetIntOr(decl, "endColumn",
                                               Map.GetInt(decl, "column") + Str.get_Length(name)),
                                  locations.KIND_SYMBOL, name);
-        GUI.ListBox.ItemSetData(item, locId);
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.searchListBox, item, locId);
         count = count + 1;
     }
     return count;
@@ -389,17 +422,62 @@ func searchOneFile(shell: app_shell.AppShell,
                    docMgr: document_manager.DocumentManager,
                    locStore: locations.LocationStore,
                    maxResults: Integer) -> Integer {
+    var program = search_matcher.CompileSearch(query, caseSensitive,
+                                               wholeWord, regexMode);
+    if program.valid == false { return 0; }
+    return searchOneFileWithProgram(shell, filePath, program,
+                                    docMgr, locStore, maxResults);
+}
+
+/// @brief Search one file with a request-owned compiled matcher.
+/// @details Publishes every non-overlapping occurrence on each line, including
+///          zero-width matches. The runtime-provided resume offset guarantees
+///          Unicode-safe progress without recompiling the query.
+func searchOneFileWithProgram(shell: app_shell.AppShell,
+                              filePath: String,
+                              program: search_matcher.SearchProgram,
+                              docMgr: document_manager.DocumentManager,
+                              locStore: locations.LocationStore,
+                              maxResults: Integer) -> Integer {
+    return searchOneFileWithProgramResult(shell, filePath, program, docMgr,
+                                          locStore, maxResults).matches;
+}
+
+/// @brief Search one file and preserve bounded-read failures as ordinary data.
+/// @details An empty file is a successful source. A missing, unreadable, raced,
+///          or oversized closed file is an explicit failure so a controller
+///          cannot publish a silently incomplete result set.
+func searchOneFileWithProgramResult(
+    shell: app_shell.AppShell,
+    filePath: String,
+    program: search_matcher.SearchProgram,
+    docMgr: document_manager.DocumentManager,
+    locStore: locations.LocationStore,
+    maxResults: Integer) -> SearchFileResult {
+    var result = new SearchFileResult();
+    if maxResults <= 0 or program == null or program.valid == false {
+        result.error = "search program is unavailable";
+        return result;
+    }
+    var source = contentResultForPath(docMgr, filePath);
+    if source.ok == false {
+        result.error = source.error;
+        return result;
+    }
     var count = 0;
-    if maxResults <= 0 { return 0; }
-    var content = contentForPath(docMgr, filePath);
+    var content = source.text;
+    var sourceRevision = Hash.Sha256(content);
     var contentLines = Str.Split(content, "\n");
     var lineNum = 0;
     var addedHeader = false;
     while lineNum < Seq.get_Count(contentLines) and count < maxResults {
         var line = Obj.ToString(Seq.Get(contentLines, lineNum));
         lineNum = lineNum + 1;
-        var match = FindLineMatch(line, query, caseSensitive, wholeWord, regexMode);
-        if match.matched and count < maxResults {
+        var offset = 0;
+        var lineLength = Str.get_Length(line);
+        while offset <= lineLength and count < maxResults {
+            var match = search_matcher.FindLineMatchFrom(line, offset, program);
+            if match.matched == false { break; }
             if addedHeader == false {
                 shell.toolPanels.AddToolGroupHeader(shell.toolPanels.searchListBox, Path.Name(filePath), filePath);
                 addedHeader = true;
@@ -408,14 +486,18 @@ func searchOneFile(shell: app_shell.AppShell,
             var item = shell.toolPanels.AddToolLocationRow(shell.toolPanels.searchListBox, "match", "text",
                                                 "" + lineNum + ":" + match.startCol,
                                                 "", resultText, "");
-            var locId = locStore.Add(filePath, lineNum, match.startCol,
-                                     lineNum, match.startCol + match.length,
-                                     locations.KIND_SEARCH, Str.Trim(line));
-            GUI.ListBox.ItemSetData(item, locId);
+            var locId = locStore.AddSearch(filePath, lineNum, match.startCol,
+                                           lineNum, match.startCol + match.length,
+                                           Str.Trim(line), sourceRevision, line);
+            shell.toolPanels.SetAddedToolRowLocationData(
+                shell.toolPanels.searchListBox, item, locId);
             count = count + 1;
+            offset = match.resumeOffset;
         }
     }
-    return count;
+    result.ok = true;
+    result.matches = count;
+    return result;
 }
 
 func QuickOpenScore(relativePath: String, query: String) -> Integer {
@@ -423,18 +505,41 @@ func QuickOpenScore(relativePath: String, query: String) -> Integer {
 }
 
 func contentForPath(docMgr: document_manager.DocumentManager, filePath: String) -> String {
-    if docMgr == null {
-        var readResult = safe_io.ReadAllTextBounded(filePath, MAX_SEARCH_FILE_BYTES);
-        if readResult.ok { return readResult.text; }
-        return "";
+    var result = contentResultForPath(docMgr, filePath);
+    if result.ok { return result.text; }
+    return "";
+}
+
+/// @brief Materialize live or on-disk search source under the hard file cap.
+func contentResultForPath(docMgr: document_manager.DocumentManager,
+                          filePath: String) -> SearchContentResult {
+    var result = new SearchContentResult();
+    if filePath == "" {
+        result.error = "search source path is empty";
+        return result;
     }
-    var idx = docMgr.FindByPath(filePath);
-    if idx >= 0 {
-        return docMgr.documents.get(idx).content;
+    if docMgr != null {
+        var idx = docMgr.FindByPath(filePath);
+        if idx >= 0 {
+            result.text = docMgr.documents.get(idx).content;
+            if Str.get_Length(result.text) > MAX_SEARCH_FILE_BYTES {
+                result.text = "";
+                result.error = "search source exceeds the file byte budget: " + filePath;
+                return result;
+            }
+            result.ok = true;
+            return result;
+        }
     }
     var readResult = safe_io.ReadAllTextBounded(filePath, MAX_SEARCH_FILE_BYTES);
-    if readResult.ok { return readResult.text; }
-    return "";
+    if readResult.ok == false {
+        result.error = "search source is unavailable, unreadable, or changed while reading: "
+                       + filePath;
+        return result;
+    }
+    result.ok = true;
+    result.text = readResult.text;
+    return result;
 }
 
 func LineMatches(line: String,

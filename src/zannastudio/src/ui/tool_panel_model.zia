@@ -18,6 +18,8 @@
 
 module tool_panel_model;
 
+bind Zanna.GUI as GUI;
+
 // ============================================================================
 // MODULE: tool_panel_model
 // PURPOSE: Shared identifiers for the dockable tool-panel strip.
@@ -66,6 +68,9 @@ final DEFAULT_TAB_ORDER =
 
 final DEFAULT_MAX_ROWS = 5000;
 final DEFAULT_TRIM_BATCH_ROWS = 128;
+final VIRTUALIZE_AFTER_ROWS = 256;
+final VIRTUAL_ROW_HEIGHT = 18;
+final VIRTUAL_VIEWPORT_HEIGHT = 320;
 
 /// @brief One structured diagnostic retained independently of ListBox rows.
 /// @details Filtering rebuilds concrete rows, so navigation/action metadata must
@@ -120,22 +125,32 @@ class ToolPanelRow {
     }
 }
 
-/// @brief Bounded row model for ListBox-backed tool panels.
-/// @details The current GUI backend still realizes rows in a ListBox, but this
-///          model gives every panel a capped, stable-id data source so future
-///          viewport-only realization can swap in without changing command code.
+/// @brief Bounded row model for retained and viewport-backed tool panels.
+/// @details Small panels keep concrete row handles for styling compatibility.
+///          High-cardinality panels bind `virtualList` and realize only their
+///          visible viewport while durable text/data remains in `rows`.
 class ToolPanelRows {
     expose List[ToolPanelRow] rows;
     expose Integer nextId;
     expose Integer maxRows;
+    expose GUI.VirtualList virtualList;
+    expose Boolean virtualized;
 
     expose func init() {
         rows = [];
         nextId = 1;
         maxRows = DEFAULT_MAX_ROWS;
+        virtualList = GUI.VirtualList.New(
+            0, VIRTUAL_ROW_HEIGHT, VIRTUAL_VIEWPORT_HEIGHT);
+        virtualized = false;
     }
 
     expose func Clear() {
+        if virtualList != null {
+            virtualList.Unbind();
+            virtualList.SetCount(0);
+        }
+        virtualized = false;
         rows = [];
         nextId = 1;
     }

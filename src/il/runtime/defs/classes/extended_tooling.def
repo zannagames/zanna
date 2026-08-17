@@ -577,6 +577,7 @@ RT_CLASS_BEGIN("Zanna.Zia.Completion", ZiaCompletion, "none", none)
     RT_METHOD("SymbolsForFile", "str(str,str)",         ZiaSymbolsForFile)
     RT_METHOD("BeginSymbolsForFile", "obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)", ZiaCompletionBeginSymbolsForFile)
     RT_METHOD("BeginTokensForFile", "obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)", ZiaCompletionBeginTokensForFile)
+    RT_METHOD("BeginAnalysisForFile", "obj<Zanna.Zia.SemanticJob.SemanticJobHandle>(str,str)", ZiaCompletionBeginAnalysisForFile)
     RT_METHOD("ClearCache",     "void()",               ZiaCompletionClearCache)
 RT_CLASS_END()
 

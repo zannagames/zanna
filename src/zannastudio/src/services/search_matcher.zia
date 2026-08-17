@@ -1,59 +1,185 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/search_matcher.zia
+// Purpose: Compile and execute reusable literal/regex search programs.
+// Key invariants:
+//   - Literal and regex modes share Zanna.Text.CompiledPattern.
+//   - Malformed interactive regexes return diagnostics rather than trapping.
+//   - Match coordinates are one-based byte columns; resume offsets are
+//     zero-based bytes and always make UTF-8-safe progress for zero-width hits.
+//   - Whole-word checks use the runtime's deterministic Unicode table.
+// Ownership/Lifetime:
+//   - Search controllers own one SearchProgram per request; helpers borrow it.
+// Links: zannastudio/src/commands/search_commands_support.zia,
+//        runtime/text/rt_compiled_pattern.c
+//
+//===----------------------------------------------------------------------===//
+
 module search_matcher;
 
 bind Str = Zanna.String;
+bind Seq = Zanna.Collections.Seq;
+bind Box = Zanna.Core.Box;
+bind Pattern = Zanna.Text.Pattern;
+bind CompiledPattern = Zanna.Text.CompiledPattern;
+bind TextChar = Zanna.Text.Char;
 
-// ============================================================================
-// MODULE: search_matcher
-// PURPOSE: Pure line-matching helpers for project search.
-//
-// WHERE-THIS-FITS: commands/search_commands.zia owns prompts, scheduling, and
-//          output-panel updates. This module owns only the "does this line
-//          match?" decision and the tiny editor-search regex subset. Keeping
-//          that logic pure makes it easy to probe without constructing UI.
-//
-// TEACHING-NOTE: The matcher deliberately returns 1-based columns because the
-//          rest of the IDE, LocationStore, and user-facing line/column labels
-//          use editor coordinates rather than zero-based string offsets.
-// ============================================================================
-
-/// @brief Result object returned by every search matcher.
-/// @details `matched` indicates success. `startCol` and `length` are meaningful
-///          only when `matched` is true and use 1-based editor coordinates.
+/// @brief One exact line match and the offset for the next non-overlapping query.
 class SearchMatch {
     expose Boolean matched;
     expose Integer startCol;
     expose Integer length;
+    expose Integer resumeOffset;
 
-    /// @brief Initialize an empty no-match result.
-    /// @details A default `startCol` of 1 keeps legacy callers that display a
-    ///          fallback column from showing column zero.
     expose func init() {
         matched = false;
         startCol = 1;
         length = 0;
+        resumeOffset = 0;
     }
 }
 
-/// @brief Test whether a line contains a literal query.
-/// @param line Source line to search.
-/// @param query Literal query text.
-/// @param caseSensitive Whether case must match exactly.
-/// @param wholeWord Whether matches must be bounded by non-identifier chars.
-/// @return True when the line contains a matching query occurrence.
+/// @brief Result of expanding one replacement template at an exact match.
+class SearchExpansion {
+    expose Boolean ok;
+    expose String text;
+    expose String error;
+
+    expose func init() {
+        ok = false;
+        text = "";
+        error = "";
+    }
+}
+
+/// @brief Immutable search options plus one reusable compiled engine object.
+class SearchProgram {
+    expose Boolean valid;
+    expose String error;
+    expose String query;
+    expose Boolean caseSensitive;
+    expose Boolean wholeWord;
+    expose Boolean regexMode;
+    expose CompiledPattern compiled;
+
+    expose func init() {
+        valid = false;
+        error = "";
+        query = "";
+        caseSensitive = false;
+        wholeWord = false;
+        regexMode = false;
+        compiled = null;
+    }
+
+    /// @brief Find the next match at or after a zero-based byte offset.
+    expose func FindFrom(line: String, startOffset: Integer) -> SearchMatch {
+        var match = new SearchMatch();
+        if valid == false or compiled == null { return match; }
+        var range = compiled.FindRangeFrom(line, startOffset, wholeWord);
+        if range == null or Seq.get_Count(range) < 3 { return match; }
+
+        var startByte = Box.ToI64(Seq.Get(range, 0));
+        var endByte = Box.ToI64(Seq.Get(range, 1));
+        var resume = Box.ToI64(Seq.Get(range, 2));
+        if startByte < 0 or endByte < startByte or resume <= startByte {
+            return match;
+        }
+        match.matched = true;
+        match.startCol = startByte + 1;
+        match.length = endByte - startByte;
+        match.resumeOffset = resume;
+        return match;
+    }
+
+    /// @brief Expand replacement captures at a previously returned match.
+    expose func ExpandAt(line: String,
+                         startOffset: Integer,
+                         replacement: String) -> SearchExpansion {
+        var expansion = new SearchExpansion();
+        if valid == false or compiled == null {
+            expansion.error = "search pattern is not compiled";
+            return expansion;
+        }
+        if regexMode == false {
+            expansion.ok = true;
+            expansion.text = replacement;
+            return expansion;
+        }
+        var expanded = compiled.ExpandReplacementAt(line, startOffset, replacement);
+        if expanded == null or expanded.IsOk == false {
+            expansion.error = "replacement no longer matches the searched line";
+            if expanded != null { expansion.error = expanded.UnwrapErrStr(); }
+            return expansion;
+        }
+        expansion.ok = true;
+        expansion.text = expanded.UnwrapStr();
+        return expansion;
+    }
+}
+
+/// @brief Compile a request once, escaping literal queries into the shared regex language.
+expose func CompileSearch(query: String,
+                          caseSensitive: Boolean,
+                          wholeWord: Boolean,
+                          regexMode: Boolean) -> SearchProgram {
+    var program = new SearchProgram();
+    program.query = query;
+    program.caseSensitive = caseSensitive;
+    program.wholeWord = wholeWord;
+    program.regexMode = regexMode;
+    if query == "" {
+        program.error = "search query is empty";
+        return program;
+    }
+
+    var source = query;
+    if regexMode == false { source = Pattern.Escape(query); }
+    var attempted = CompiledPattern.TryNew(source, caseSensitive == false);
+    if attempted == null or attempted.IsOk == false {
+        program.error = "invalid regular expression";
+        if attempted != null { program.error = attempted.UnwrapErrStr(); }
+        return program;
+    }
+    program.compiled = attempted.Unwrap() as CompiledPattern;
+    if program.compiled == null {
+        program.error = "compiled search pattern is unavailable";
+        return program;
+    }
+    program.valid = true;
+    return program;
+}
+
+/// @brief Find the next match using a request-owned compiled program.
+expose func FindLineMatchFrom(line: String,
+                              startOffset: Integer,
+                              program: SearchProgram) -> SearchMatch {
+    if program == null { return new SearchMatch(); }
+    return program.FindFrom(line, startOffset);
+}
+
+/// @brief Compile and find the first line match for compatibility callers.
+expose func FindLineMatch(line: String,
+                          query: String,
+                          caseSensitive: Boolean,
+                          wholeWord: Boolean,
+                          regexMode: Boolean) -> SearchMatch {
+    var program = CompileSearch(query, caseSensitive, wholeWord, regexMode);
+    return program.FindFrom(line, 0);
+}
+
 expose func LineMatches(line: String,
                         query: String,
                         caseSensitive: Boolean,
                         wholeWord: Boolean) -> Boolean {
-    return LineMatchesWithMode(line, query, caseSensitive, wholeWord, false);
+    return FindLineMatch(line, query, caseSensitive, wholeWord, false).matched;
 }
 
-/// @brief Test whether a line matches either literal or regex search mode.
-/// @param line Source line to search.
-/// @param query Literal text or compact regex pattern.
-/// @param caseSensitive Whether case must match exactly.
-/// @param wholeWord Whether matches must be bounded by non-identifier chars.
-/// @param regexMode Whether to interpret `query` as the editor-search regex.
-/// @return True when a matching occurrence exists.
 expose func LineMatchesWithMode(line: String,
                                 query: String,
                                 caseSensitive: Boolean,
@@ -62,21 +188,10 @@ expose func LineMatchesWithMode(line: String,
     return FindLineMatch(line, query, caseSensitive, wholeWord, regexMode).matched;
 }
 
-/// @brief Find the first literal match column in a line.
-/// @param line Source line to search.
-/// @param query Literal query text.
-/// @param caseSensitive Whether case must match exactly.
-/// @return 1-based start column, or 1 when no match exists.
 expose func MatchColumn(line: String, query: String, caseSensitive: Boolean) -> Integer {
     return MatchColumnWithMode(line, query, caseSensitive, false);
 }
 
-/// @brief Find the first match column in literal or regex mode.
-/// @param line Source line to search.
-/// @param query Literal text or compact regex pattern.
-/// @param caseSensitive Whether case must match exactly.
-/// @param regexMode Whether to interpret `query` as the editor-search regex.
-/// @return 1-based start column, or 1 when no match exists.
 expose func MatchColumnWithMode(line: String,
                                 query: String,
                                 caseSensitive: Boolean,
@@ -86,12 +201,6 @@ expose func MatchColumnWithMode(line: String,
     return match.startCol;
 }
 
-/// @brief Find the first match length in literal or regex mode.
-/// @param line Source line to search.
-/// @param query Literal text or compact regex pattern.
-/// @param caseSensitive Whether case must match exactly.
-/// @param regexMode Whether to interpret `query` as the editor-search regex.
-/// @return Matched character count, or zero when no match exists.
 expose func MatchLengthWithMode(line: String,
                                 query: String,
                                 caseSensitive: Boolean,
@@ -101,324 +210,35 @@ expose func MatchLengthWithMode(line: String,
     return match.length;
 }
 
-/// @brief Find the first line match in the requested search mode.
-/// @param line Source line to search.
-/// @param query Literal text or compact regex pattern.
-/// @param caseSensitive Whether case must match exactly.
-/// @param wholeWord Whether matches must be bounded by non-identifier chars.
-/// @param regexMode Whether to interpret `query` as the editor-search regex.
-/// @return Match result with 1-based coordinates.
-expose func FindLineMatch(line: String,
-                          query: String,
-                          caseSensitive: Boolean,
-                          wholeWord: Boolean,
-                          regexMode: Boolean) -> SearchMatch {
-    if regexMode {
-        return FindRegexLineMatch(line, query, caseSensitive, wholeWord);
-    }
-    return FindLiteralLineMatch(line, query, caseSensitive, wholeWord);
-}
-
-/// @brief Find the first literal query occurrence in a line.
-/// @param line Source line to search.
-/// @param query Literal query text.
-/// @param caseSensitive Whether case must match exactly.
-/// @param wholeWord Whether matches must be bounded by non-identifier chars.
-/// @return Match result with 1-based coordinates.
 expose func FindLiteralLineMatch(line: String,
                                  query: String,
                                  caseSensitive: Boolean,
                                  wholeWord: Boolean) -> SearchMatch {
-    var match = new SearchMatch();
-    if query == "" { return match; }
-
-    var hay = line;
-    var needle = query;
-    if caseSensitive == false {
-        hay = Str.ToLower(hay);
-        needle = Str.ToLower(needle);
-    }
-    var idx = Str.IndexOf(hay, needle);
-    while idx != 0 {
-        if wholeWord == false or IsWholeWordMatch(hay, idx, Str.get_Length(needle)) {
-            match.matched = true;
-            match.startCol = idx;
-            match.length = Str.get_Length(needle);
-            return match;
-        }
-        idx = Str.IndexOfFrom(hay, idx + 1, needle);
-    }
-    return match;
+    return FindLineMatch(line, query, caseSensitive, wholeWord, false);
 }
 
-/// @brief Find the first compact-regex occurrence in a line.
-/// @param line Source line to search.
-/// @param query Regex pattern using the editor-search subset.
-/// @param caseSensitive Whether case must match exactly.
-/// @param wholeWord Whether matches must be bounded by non-identifier chars.
-/// @return Match result with 1-based coordinates.
 expose func FindRegexLineMatch(line: String,
                                query: String,
                                caseSensitive: Boolean,
                                wholeWord: Boolean) -> SearchMatch {
-    var match = new SearchMatch();
-    if query == "" { return match; }
-
-    var text = line;
-    var pattern = query;
-    if caseSensitive == false {
-        text = Str.ToLower(text);
-        pattern = Str.ToLower(pattern);
-    }
-
-    var textLen = Str.get_Length(text);
-    if Str.StartsWith(pattern, "^") {
-        var anchoredEnd = RegexMatchHere(text, pattern, 1, 2);
-        if anchoredEnd > 1 {
-            var anchoredLen = anchoredEnd - 1;
-            if wholeWord == false or IsWholeWordMatch(text, 1, anchoredLen) {
-                match.matched = true;
-                match.startCol = 1;
-                match.length = anchoredLen;
-            }
-        }
-        return match;
-    }
-
-    var startCol = 1;
-    while startCol <= textLen {
-        var endCol = RegexMatchHere(text, pattern, startCol, 1);
-        if endCol > startCol {
-            var length = endCol - startCol;
-            if wholeWord == false or IsWholeWordMatch(text, startCol, length) {
-                match.matched = true;
-                match.startCol = startCol;
-                match.length = length;
-                return match;
-            }
-        }
-        startCol = startCol + 1;
-    }
-    return match;
+    return FindLineMatch(line, query, caseSensitive, wholeWord, true);
 }
 
-/// @brief Match a pattern suffix at a specific text position.
-/// @param text Search text after any case normalization.
-/// @param pattern Search pattern after any case normalization.
-/// @param textPos 1-based text position to test.
-/// @param patternPos 1-based pattern position to test.
-/// @return One-past-end text position on success, or zero on failure.
-func RegexMatchHere(text: String,
-                    pattern: String,
-                    textPos: Integer,
-                    patternPos: Integer) -> Integer {
-    var patternLen = Str.get_Length(pattern);
-    if patternPos > patternLen { return textPos; }
-
-    var ch = Str.MidLen(pattern, patternPos, 1);
-    if ch == "$" and patternPos == patternLen {
-        if textPos > Str.get_Length(text) { return textPos; }
-        return 0;
-    }
-
-    var atomEnd = RegexAtomEnd(pattern, patternPos);
-    var quant = "";
-    if atomEnd <= patternLen {
-        var q = Str.MidLen(pattern, atomEnd, 1);
-        if q == "*" or q == "+" or q == "?" {
-            quant = q;
-        }
-    }
-
-    var nextPattern = atomEnd;
-    if quant != "" { nextPattern = atomEnd + 1; }
-
-    if quant == "?" {
-        if RegexAtomMatchesAt(text, textPos, pattern, patternPos) {
-            var oneEnd = RegexMatchHere(text, pattern, textPos + 1, nextPattern);
-            if oneEnd != 0 { return oneEnd; }
-        }
-        return RegexMatchHere(text, pattern, textPos, nextPattern);
-    }
-    if quant == "*" {
-        return RegexMatchRepeat(text, pattern, textPos, patternPos, nextPattern, 0);
-    }
-    if quant == "+" {
-        return RegexMatchRepeat(text, pattern, textPos, patternPos, nextPattern, 1);
-    }
-
-    if RegexAtomMatchesAt(text, textPos, pattern, patternPos) == false {
-        return 0;
-    }
-    return RegexMatchHere(text, pattern, textPos + 1, nextPattern);
+/// @brief Test a byte range against Unicode whole-word boundaries.
+/// @details Compatibility helper implemented through the same compiled engine,
+///          avoiding mixed byte/codepoint indexing in Zia string helpers.
+expose func IsWholeWordMatch(text: String,
+                             startCol: Integer,
+                             len: Integer) -> Boolean {
+    if startCol < 1 or len < 0 { return false; }
+    var query = Str.Substring(text, startCol - 1, len);
+    if Str.get_Length(query) != len { return false; }
+    var program = CompileSearch(query, true, true, false);
+    var match = program.FindFrom(text, startCol - 1);
+    return match.matched and match.startCol == startCol and match.length == len;
 }
 
-/// @brief Match a quantified atom and backtrack into the remaining pattern.
-/// @param text Search text after any case normalization.
-/// @param pattern Search pattern after any case normalization.
-/// @param textPos 1-based text position where the atom starts.
-/// @param atomPos 1-based pattern position of the repeated atom.
-/// @param nextPattern 1-based pattern position after the quantifier.
-/// @param minCount Minimum number of atom repetitions required.
-/// @return One-past-end text position on success, or zero on failure.
-func RegexMatchRepeat(text: String,
-                      pattern: String,
-                      textPos: Integer,
-                      atomPos: Integer,
-                      nextPattern: Integer,
-                      minCount: Integer) -> Integer {
-    var maxCount = 0;
-    var probe = textPos;
-    while RegexAtomMatchesAt(text, probe, pattern, atomPos) {
-        maxCount = maxCount + 1;
-        probe = probe + 1;
-    }
-
-    var count = maxCount;
-    while count >= minCount {
-        var endCol = RegexMatchHere(text, pattern, textPos + count, nextPattern);
-        if endCol != 0 { return endCol; }
-        count = count - 1;
-    }
-    return 0;
-}
-
-/// @brief Return the pattern position immediately after one regex atom.
-/// @param pattern Search pattern.
-/// @param patternPos 1-based position of the atom start.
-/// @return 1-based position after the atom.
-func RegexAtomEnd(pattern: String, patternPos: Integer) -> Integer {
-    var patternLen = Str.get_Length(pattern);
-    var ch = Str.MidLen(pattern, patternPos, 1);
-    if ch == "\\" {
-        if patternPos < patternLen { return patternPos + 2; }
-        return patternPos + 1;
-    }
-    if ch == "[" {
-        var classEnd = RegexClassEnd(pattern, patternPos);
-        if classEnd != 0 { return classEnd + 1; }
-    }
-    return patternPos + 1;
-}
-
-/// @brief Test whether one regex atom matches a character at a text position.
-/// @param text Search text after any case normalization.
-/// @param textPos 1-based character position in `text`.
-/// @param pattern Search pattern after any case normalization.
-/// @param patternPos 1-based position of the atom start.
-/// @return True when the atom matches the text character.
-func RegexAtomMatchesAt(text: String,
-                        textPos: Integer,
-                        pattern: String,
-                        patternPos: Integer) -> Boolean {
-    if textPos > Str.get_Length(text) { return false; }
-    var textCh = Str.MidLen(text, textPos, 1);
-    var patternLen = Str.get_Length(pattern);
-    var patCh = Str.MidLen(pattern, patternPos, 1);
-    if patCh == "." { return true; }
-    if patCh == "\\" {
-        if patternPos < patternLen {
-            return textCh == Str.MidLen(pattern, patternPos + 1, 1);
-        }
-        return textCh == "\\";
-    }
-    if patCh == "[" {
-        var classEnd = RegexClassEnd(pattern, patternPos);
-        if classEnd != 0 {
-            return RegexClassMatches(textCh, pattern, patternPos, classEnd);
-        }
-    }
-    return textCh == patCh;
-}
-
-/// @brief Find the closing bracket for a regex character class.
-/// @param pattern Search pattern.
-/// @param patternPos 1-based position of the opening `[`.
-/// @return 1-based closing bracket position, or zero if unterminated.
-func RegexClassEnd(pattern: String, patternPos: Integer) -> Integer {
-    var i = patternPos + 1;
-    var patternLen = Str.get_Length(pattern);
-    if i <= patternLen and Str.MidLen(pattern, i, 1) == "^" {
-        i = i + 1;
-    }
-    while i <= patternLen {
-        var ch = Str.MidLen(pattern, i, 1);
-        if ch == "]" { return i; }
-        if ch == "\\" and i < patternLen {
-            i = i + 2;
-        } else {
-            i = i + 1;
-        }
-    }
-    return 0;
-}
-
-/// @brief Test one character against a regex character class.
-/// @param textCh Single character from the search text.
-/// @param pattern Search pattern.
-/// @param patternPos 1-based position of the opening `[`.
-/// @param classEnd 1-based position of the closing `]`.
-/// @return True when the class accepts the character.
-func RegexClassMatches(textCh: String,
-                       pattern: String,
-                       patternPos: Integer,
-                       classEnd: Integer) -> Boolean {
-    var negate = false;
-    var i = patternPos + 1;
-    if i < classEnd and Str.MidLen(pattern, i, 1) == "^" {
-        negate = true;
-        i = i + 1;
-    }
-
-    var matched = false;
-    while i < classEnd {
-        var startCh = Str.MidLen(pattern, i, 1);
-        if startCh == "\\" and i + 1 < classEnd {
-            i = i + 1;
-            startCh = Str.MidLen(pattern, i, 1);
-        }
-
-        if i + 2 < classEnd and Str.MidLen(pattern, i + 1, 1) == "-" {
-            var endCh = Str.MidLen(pattern, i + 2, 1);
-            if textCh >= startCh and textCh <= endCh {
-                matched = true;
-            }
-            i = i + 3;
-        } else {
-            if textCh == startCh { matched = true; }
-            i = i + 1;
-        }
-    }
-
-    if negate { return matched == false; }
-    return matched;
-}
-
-/// @brief Test whether a match is bounded by non-identifier characters.
-/// @param text Search text after any case normalization.
-/// @param startCol 1-based match start column.
-/// @param len Matched character count.
-/// @return True when both sides are identifier boundaries.
-func IsWholeWordMatch(text: String, startCol: Integer, len: Integer) -> Boolean {
-    var beforeOk = true;
-    var afterOk = true;
-    if startCol > 1 {
-        beforeOk = IsIdentifierChar(Str.MidLen(text, startCol - 1, 1)) == false;
-    }
-    var afterCol = startCol + len;
-    if afterCol <= Str.get_Length(text) {
-        afterOk = IsIdentifierChar(Str.MidLen(text, afterCol, 1)) == false;
-    }
-    return beforeOk and afterOk;
-}
-
-/// @brief Test whether a character is part of an identifier token.
-/// @param ch Single character to classify.
-/// @return True for ASCII letters, digits, and underscore.
-func IsIdentifierChar(ch: String) -> Boolean {
-    if ch >= "a" and ch <= "z" { return true; }
-    if ch >= "A" and ch <= "Z" { return true; }
-    if ch >= "0" and ch <= "9" { return true; }
-    if ch == "_" { return true; }
-    return false;
+/// @brief Classify the first scalar of a string using Unicode word rules.
+expose func IsIdentifierChar(ch: String) -> Boolean {
+    return TextChar.IsWord(ch);
 }

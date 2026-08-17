@@ -6,11 +6,12 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/probes/project_replace_probe.zia
-// Purpose: Regress safe, generation-scoped, cooperative project replacement.
+// Purpose: Regress revision-bound, transactional, cooperative project replacement.
 // Key invariants:
 //   - Interactive replacement never performs file I/O in its start callback.
-//   - Each pump changes at most the documented bounded file batch.
-//   - Old/future search generations and pathological lines are never changed.
+//   - Each pump prepares at most the documented bounded file batch.
+//   - Cancellation and any stale target leave every planned file unchanged.
+//   - Closed-file commits consume exact expected revisions.
 // Ownership/Lifetime: The probe owns all temporary files and controllers.
 // Links: zannastudio/src/commands/replace_commands.zia,
 //        zannastudio/src/commands/search_commands.zia
@@ -36,9 +37,27 @@ bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Terminal = Zanna.Terminal;
 bind Str = Zanna.String;
+bind Hash = Zanna.Crypto.Hash;
+bind Seq = Zanna.Collections.Seq;
 
 func fail(reason: String) {
     Terminal.Say("RESULT: fail " + reason);
+}
+
+/// @brief Add one synthetic result with the same snapshot data as real search.
+func addSearch(store: locations.LocationStore,
+               path: String,
+               line: Integer,
+               column: Integer,
+               endColumn: Integer,
+               source: String) {
+    var lines = Str.Split(source, "\n");
+    var lineText = "";
+    if line >= 1 and line <= Seq.get_Count(lines) {
+        lineText = Seq.GetStr(lines, line - 1);
+    }
+    store.AddSearch(path, line, column, line, endColumn, Str.Trim(lineText),
+                    Hash.Sha256(source), lineText);
 }
 
 func main() {
@@ -46,16 +65,13 @@ func main() {
 
     // Closed file: two matches on one line, one on another.
     var alpha = Path.Join(root, "alpha.zia");
-    File.WriteAllText(alpha, "old plus old\nkeep\nvalue old here\n");
-    // Closed file with a line that will DRIFT before apply (no match anymore).
-    var beta = Path.Join(root, "beta.zia");
-    File.WriteAllText(beta, "nothing matching anymore\n");
+    var alphaSource = "old plus old\nkeep\nvalue old here\n";
+    File.WriteAllText(alpha, alphaSource);
 
     var locStore = new locations.LocationStore();
-    locStore.Add(alpha, 1, 1, 1, 4, locations.KIND_SEARCH, "old plus old");
-    locStore.Add(alpha, 3, 7, 3, 10, locations.KIND_SEARCH, "value old here");
-    locStore.Add(alpha, 3, 7, 3, 10, locations.KIND_SEARCH, "duplicate row");
-    locStore.Add(beta, 1, 1, 1, 4, locations.KIND_SEARCH, "stale");
+    addSearch(locStore, alpha, 1, 1, 4, alphaSource);
+    addSearch(locStore, alpha, 3, 7, 10, alphaSource);
+    addSearch(locStore, alpha, 3, 7, 10, alphaSource);
 
     var docMgr = new document_manager.DocumentManager();
     var summary = replace_commands.ReplaceAllFromResults(
@@ -66,19 +82,36 @@ func main() {
         fail("alpha content wrong: " + alphaText);
         return;
     }
-    var betaText = File.ReadAllText(beta);
-    if betaText != "nothing matching anymore\n" {
-        fail("drifted beta must stay untouched");
-        return;
-    }
     if Str.Contains(summary, "3 match(es)") == false {
         fail("summary should report 3 replacements: " + summary);
         return;
     }
 
+    // A result-line that still contains the query but belongs to a different
+    // source revision must abort the whole batch before the first mutation.
+    var beta = Path.Join(root, "beta.zia");
+    var betaSource = "old original context\n";
+    File.WriteAllText(beta, betaSource);
+    var transactionGuard = Path.Join(root, "transaction_guard.zia");
+    var guardSource = "old guard\n";
+    File.WriteAllText(transactionGuard, guardSource);
+    var staleLocations = new locations.LocationStore();
+    addSearch(staleLocations, transactionGuard, 1, 1, 4, guardSource);
+    addSearch(staleLocations, beta, 1, 1, 4, betaSource);
+    File.WriteAllText(beta, "old newly introduced context\n");
+    var staleSummary = replace_commands.ReplaceAllFromResults(
+        staleLocations, docMgr, null, "old", "new", true, false, false);
+    if File.ReadAllText(transactionGuard) != guardSource
+       or File.ReadAllText(beta) != "old newly introduced context\n"
+       or Str.Contains(staleSummary, "no files changed") == false {
+        fail("stale revision must abort the complete transaction: " + staleSummary);
+        return;
+    }
+
     // Open (inactive) document: buffer updates and marks modified; disk stays.
     var gamma = Path.Join(root, "gamma.zia");
-    File.WriteAllText(gamma, "open old buffer\n");
+    var gammaSource = "open old buffer\n";
+    File.WriteAllText(gamma, gammaSource);
     var doc = docMgr.OpenFile(gamma);
     if doc == null {
         fail("could not open gamma");
@@ -86,7 +119,7 @@ func main() {
     }
     doc.isModified = false;
     var locStore2 = new locations.LocationStore();
-    locStore2.Add(gamma, 1, 6, 1, 9, locations.KIND_SEARCH, "open old buffer");
+    addSearch(locStore2, gamma, 1, 6, 9, gammaSource);
     replace_commands.ReplaceAllFromResults(
         locStore2, docMgr, null, "old", "new", true, false, false);
     if Str.Contains(doc.content, "open new buffer") == false {
@@ -110,9 +143,10 @@ func main() {
 
     // Whole-word option respected at apply time.
     var delta = Path.Join(root, "delta.zia");
-    File.WriteAllText(delta, "scold old\n");
+    var deltaSource = "scold old\n";
+    File.WriteAllText(delta, deltaSource);
     var locStore3 = new locations.LocationStore();
-    locStore3.Add(delta, 1, 7, 1, 10, locations.KIND_SEARCH, "scold old");
+    addSearch(locStore3, delta, 1, 7, 10, deltaSource);
     replace_commands.ReplaceAllFromResults(
         locStore3, docMgr, null, "old", "new", true, true, false);
     if File.ReadAllText(delta) != "scold new\n" {
@@ -124,25 +158,23 @@ func main() {
     // returns before touching disk, and applies no more than two files/pump.
     var slicedLocations = new locations.LocationStore();
     var oldGeneration = Path.Join(root, "old_generation.zia");
-    File.WriteAllText(oldGeneration, "old\n");
-    slicedLocations.Add(oldGeneration, 1, 1, 1, 4,
-                        locations.KIND_SEARCH, "old");
+    var oneMatchSource = "old\n";
+    File.WriteAllText(oldGeneration, oneMatchSource);
+    addSearch(slicedLocations, oldGeneration, 1, 1, 4, oneMatchSource);
     var firstCurrentId = slicedLocations.nextId;
     var slicePaths = new List();
     var sliceIndex = 0;
     while sliceIndex < 5 {
         var slicePath = Path.Join(root, "slice_" + sliceIndex + ".zia");
-        File.WriteAllText(slicePath, "old\n");
+        File.WriteAllText(slicePath, oneMatchSource);
         slicePaths.Push(slicePath);
-        slicedLocations.Add(slicePath, 1, 1, 1, 4,
-                            locations.KIND_SEARCH, "old");
+        addSearch(slicedLocations, slicePath, 1, 1, 4, oneMatchSource);
         sliceIndex = sliceIndex + 1;
     }
     var lastCurrentId = slicedLocations.nextId - 1;
     var futureGeneration = Path.Join(root, "future_generation.zia");
-    File.WriteAllText(futureGeneration, "old\n");
-    slicedLocations.Add(futureGeneration, 1, 1, 1, 4,
-                        locations.KIND_SEARCH, "old");
+    File.WriteAllText(futureGeneration, oneMatchSource);
+    addSearch(slicedLocations, futureGeneration, 1, 1, 4, oneMatchSource);
 
     var controller = new replace_commands.ProjectReplaceController();
     if controller.StartFromResults(slicedLocations, firstCurrentId,
@@ -160,6 +192,14 @@ func main() {
        or controller.lastPumpFileCount > 2 or controller.fileIndex > 2 {
         fail("cooperative replace exceeded one-frame file budget");
         return;
+    }
+    sliceIndex = 0;
+    while sliceIndex < slicePaths.count() {
+        if File.ReadAllText(slicePaths.get(sliceIndex) as String) != oneMatchSource {
+            fail("preparation pump published a partial transaction");
+            return;
+        }
+        sliceIndex = sliceIndex + 1;
     }
     while controller.active {
         controller.Pump(docMgr, null);
@@ -187,17 +227,16 @@ func main() {
         return;
     }
 
-    // Stop is cooperative too: completed files remain explicit, while later
-    // plans are never touched after cancellation.
+    // Stop is cooperative too: prepared files and later plans all remain
+    // untouched because cancellation occurs before the commit boundary.
     var cancelLocations = new locations.LocationStore();
     var cancelPaths = new List();
     sliceIndex = 0;
     while sliceIndex < 5 {
         var cancelPath = Path.Join(root, "cancel_" + sliceIndex + ".zia");
-        File.WriteAllText(cancelPath, "old\n");
+        File.WriteAllText(cancelPath, oneMatchSource);
         cancelPaths.Push(cancelPath);
-        cancelLocations.Add(cancelPath, 1, 1, 1, 4,
-                            locations.KIND_SEARCH, "old");
+        addSearch(cancelLocations, cancelPath, 1, 1, 4, oneMatchSource);
         sliceIndex = sliceIndex + 1;
     }
     var cancelController = new replace_commands.ProjectReplaceController();
@@ -207,10 +246,18 @@ func main() {
     cancelController.Pump(docMgr, null);
     var cancelSummary = cancelController.Cancel();
     cancelController.Pump(docMgr, null);
-    if cancelController.active or Str.Contains(cancelSummary, "stopped") == false
-       or File.ReadAllText(cancelPaths.get(4) as String) != "old\n" {
+    if cancelController.active
+       or Str.Contains(cancelSummary, "no files changed") == false {
         fail("cooperative replacement cancellation did not stop later files");
         return;
+    }
+    sliceIndex = 0;
+    while sliceIndex < cancelPaths.count() {
+        if File.ReadAllText(cancelPaths.get(sliceIndex) as String) != oneMatchSource {
+            fail("canceled replacement published a prepared file");
+            return;
+        }
+        sliceIndex = sliceIndex + 1;
     }
 
     // More than the per-line replacement ceiling cancels that whole file,
@@ -225,12 +272,11 @@ func main() {
     var denseText = denseBuilder.ToString() + "\n";
     File.WriteAllText(densePath, denseText);
     var denseLocations = new locations.LocationStore();
-    denseLocations.Add(densePath, 1, 1, 1, 4,
-                       locations.KIND_SEARCH, "old");
+    addSearch(denseLocations, densePath, 1, 1, 4, denseText);
     var denseSummary = replace_commands.ReplaceAllFromResults(
         denseLocations, docMgr, null, "old", "new", true, false, false);
     if File.ReadAllText(densePath) != denseText
-       or Str.Contains(denseSummary, "1 unavailable") == false {
+       or Str.Contains(denseSummary, "no files changed") == false {
         fail("dense line should be skipped as one atomic file");
         return;
     }

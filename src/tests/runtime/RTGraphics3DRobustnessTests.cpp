@@ -385,6 +385,8 @@ struct SkyView {
     double ground_albedo[3];
     int64_t resolution;
     int8_t dirty;
+    int8_t stars_enabled;  /* ADR 0257 */
+    double star_intensity; /* ADR 0257 */
     void *cubemap;
 };
 

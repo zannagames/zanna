@@ -135,6 +135,17 @@ void *rt_model3d_load_preloaded_gltf(rt_string path,
 /// @param preloaded_size Byte count of @p preloaded_data.
 /// @param load_assets Nonzero to use asset-manager dependency behavior.
 /// @return New Model3D handle, or NULL on failure; input bytes are consumed in either case.
+/// @brief Build a Model3D from VSCN/scene3d document bytes read off-thread (buffer consumed).
+/// @param path Logical .scene3d/.vscn source path.
+/// @param preloaded_text Owned document bytes, consumed by this call.
+/// @param preloaded_len Number of bytes in @p preloaded_text.
+/// @param load_assets Nonzero to retain asset-manager dependency behavior.
+/// @return Owned Model3D on success, or NULL on recoverable failure.
+void *rt_model3d_load_preloaded_vscn(rt_string path,
+                                     char *preloaded_text,
+                                     size_t preloaded_len,
+                                     int load_assets);
+
 void *rt_model3d_load_preloaded_fbx(rt_string path,
                                     uint8_t *preloaded_data,
                                     size_t preloaded_size,

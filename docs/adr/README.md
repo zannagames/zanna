@@ -106,6 +106,14 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0252](0252-text-table-layout.md) — `Zanna.Text.Table` and `Mesh3D` Bounds/Merge
 - [ADR 0253](0253-runtime-completions-color-args-path.md) — Runtime Completions — Additive Colour, CLI Arguments, Data-Root Search
 - [ADR 0254](0254-comparator-ordering-belongs-in-the-frontend.md) — Comparator Ordering Belongs in the Frontend, Not a Runtime Callback
+- [ADR 0255](0255-bounded-and-no-clobber-whole-file-text-io.md) — Bound and Reserve Whole-File Text I/O in the Runtime
+- [ADR 0256](0256-cooperative-whole-file-compare-exchange.md) — Cooperatively Compare and Exchange Whole-File Text
+- [ADR 0259](0259-stable-filesystem-entry-identity.md) — Expose Stable Identity for Every Filesystem Entry
+- [ADR 0261](0261-shared-compiled-pattern-engine-and-unicode-word-boundaries.md) — Share the Compiled Pattern Engine and Unicode Word Boundaries
+- [ADR 0262](0262-process-environment-overlays-and-external-credential-brokers.md) — Overlay Process Environments and Delegate Credentials to External Brokers
+- [ADR 0263](0263-paired-filesystem-rename-events.md) — Expose Paired Filesystem Rename Endpoints
+- [ADR 0264](0264-shared-revision-semantic-analysis.md) — Share One Semantic Analysis per Editor Revision
+- [ADR 0265](0265-canonical-language-service-c-abi-headers.md) — Keep One Canonical C Header per Language Service
 
 ## GUI & IDE
 
@@ -121,6 +129,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0016](0016-pty-runtime-surface.md) — PTY Runtime Surface (Zanna.System.Pty) and Integrated Terminal
 - [ADR 0018](0018-gui-command-binding-runtime-surface.md) — GUI Command Binding (Zanna.GUI.Command / CommandRegistry)
 - [ADR 0019](0019-gui-text-cell-metrics-runtime-surface.md) — GUI Text/Cell Metrics (Zanna.GUI.OutputPane measurement)
+- [ADR 0258](0258-undoable-state-preserving-full-document-replacement.md) — Make Full-Document Editor Replacement Undoable and State-Preserving
 - [ADR 0021](0021-gui-app-logical-unit-helpers.md) — HiDPI Logical-Unit Helpers (Zanna.GUI.App)
 - [ADR 0022](0022-gui-layout-conveniences.md) — GUI Layout Conveniences (panel centering + Zanna.GUI.Grid)
 - [ADR 0023](0023-gui-popuplist-widget.md) — Caret-Anchored Filtered Popup (Zanna.GUI.PopupList)
@@ -153,6 +162,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0224](0224-bounded-viewport-presentation-budget.md) — Bounded Viewport Presentation Budget and Zero-Allocation Readback
 - [ADR 0225](0225-play-loop-and-embedded-play.md) — Run Profile, Build-Launch Chain, Scene Watch, and Embedded Play
 - [ADR 0226](0226-virtual-scene-hierarchy.md) — Virtual Scene Hierarchy Model
+- [ADR 0266](0266-ratcheted-studio-architecture-guard.md) — Ratchet Zanna Studio Architecture Debt
 
 ## Graphics3D & Game Systems
 
@@ -244,9 +254,11 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0246](0246-opengl-shadow-atlas.md) — OpenGL Shadow Atlas: Close GAP-8 Without a Per-Context Capability
 - [ADR 0247](0247-3d-display-transfer-contract.md) — 3D Display-Transfer Contract (Scene-Linear Targets, Single Encode)
 - [ADR 0248](0248-world3d-fog-argument-order.md) — Align World3D.SetFog with Canvas3D's Argument Order; Add ClearFog
+- [ADR 0260](0260-ordered-nonblocking-process-streaming.md) — Preserve Process Stream Order and Keep Windows Input Nonblocking
 
 ## Release & Packaging
 
+- [ADR 0267](0267-windows-linux-runtime-smoke-ci.md) — Gate Windows and Linux Runtime Smoke Regressions
 - [ADR 0025](0025-windows-release-installer-workflow.md) — Windows Release Installer Workflow
 - [ADR 0073](0073-cross-platform-installer-release-pipeline.md) — Cross-Platform Installer Release Pipeline
 - [ADR 0103](0103-windows-developer-installer-v2.md) — Windows Developer Installer v2

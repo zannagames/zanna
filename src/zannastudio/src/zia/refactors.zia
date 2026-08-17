@@ -1,3 +1,20 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/refactors.zia
+// Purpose: Apply conservative, trivia-aware local Zia source transformations.
+// Key invariants:
+//   - Unsafe or incomplete transformations return the original source.
+//   - Each operation builds and reuses one source-line model.
+// Ownership/Lifetime: Returned strings are independent transformation results.
+// Links: zia/source_scan.zia, services/text_utils.zia
+//
+//===----------------------------------------------------------------------===//
+
 module refactors;
 
 bind "../services/text_utils";
@@ -44,10 +61,11 @@ expose func InlineLocalVariableText(source: String,
     var expr = InlineLocalExpressionFromLine(declLine);
     if name == "" or expr == "" { return source; }
 
-    var funcStart = source_scan.EnclosingZiaFunctionStartLine(source, declarationLine + 1);
+    var funcStart = source_scan.EnclosingZiaFunctionStartLineFromLines(
+        lines, declarationLine + 1);
     var funcEnd = count;
     if funcStart > 0 {
-        funcEnd = source_scan.ZiaFunctionEndLine(source, funcStart);
+        funcEnd = source_scan.ZiaFunctionEndLineFromLines(lines, funcStart);
     }
     if funcEnd <= declarationLine + 1 { return source; }
 
@@ -102,11 +120,12 @@ expose func ExtractLocalVariableText(source: String,
     var count = Seq.get_Count(lines);
     if startLine < 0 or startLine >= count { return source; }
 
-    var funcStart = source_scan.EnclosingZiaFunctionStartLine(source, startLine + 1);
+    var funcStart = source_scan.EnclosingZiaFunctionStartLineFromLines(
+        lines, startLine + 1);
     if funcStart <= 0 { return source; }
-    var funcEnd = source_scan.ZiaFunctionEndLine(source, funcStart);
+    var funcEnd = source_scan.ZiaFunctionEndLineFromLines(lines, funcStart);
     if startLine + 1 <= funcStart or startLine + 1 >= funcEnd { return source; }
-    if ZiaFunctionContainsIdentifier(source, funcStart, funcEnd, name) {
+    if ZiaFunctionContainsIdentifierFromLines(lines, funcStart, funcEnd, name) {
         return source;
     }
 
@@ -184,11 +203,12 @@ expose func ExtractFunctionText(source: String,
     if startCol > text_utils.LeadingWhitespaceLength(firstLine) { return source; }
     if endCol < Str.get_Length(lastLine) { return source; }
 
-    var funcStart = source_scan.EnclosingZiaFunctionStartLine(source, rangeStart + 1);
+    var funcStart = source_scan.EnclosingZiaFunctionStartLineFromLines(
+        lines, rangeStart + 1);
     if funcStart <= 0 { return source; }
-    var funcEnd = source_scan.ZiaFunctionEndLine(source, funcStart);
+    var funcEnd = source_scan.ZiaFunctionEndLineFromLines(lines, funcStart);
     if rangeStart + 1 <= funcStart or rangeEnd + 1 >= funcEnd { return source; }
-    if ZiaFunctionNameExists(source, name) { return source; }
+    if ZiaFunctionNameExistsInLines(lines, name) { return source; }
 
     if ExtractFunctionSelectionIsSafe(lines, funcStart, funcEnd, rangeStart, rangeEnd) == false {
         return source;
@@ -269,9 +289,8 @@ expose func InlineLocalExpressionFromLine(line: String) -> String {
 /// @param source Full Zia source text.
 /// @param name Candidate function name.
 /// @return True when any function declaration uses name.
-func ZiaFunctionNameExists(source: String,
-                           name: String) -> Boolean {
-    var lines = Str.Split(source, "\n");
+func ZiaFunctionNameExistsInLines(lines: Any,
+                                  name: String) -> Boolean {
     var i = 0;
     while i < Seq.get_Count(lines) {
         if source_scan.ZiaFunctionNameFromLine(Obj.ToString(Seq.Get(lines, i))) == name {
@@ -371,11 +390,10 @@ func LineUsesAnyIdentifier(line: String,
 /// @param endLine One-based last function line.
 /// @param name Identifier to find.
 /// @return True when name appears outside comments and strings.
-func ZiaFunctionContainsIdentifier(source: String,
-                                   startLine: Integer,
-                                   endLine: Integer,
-                                   name: String) -> Boolean {
-    var lines = Str.Split(source, "\n");
+func ZiaFunctionContainsIdentifierFromLines(lines: Any,
+                                            startLine: Integer,
+                                            endLine: Integer,
+                                            name: String) -> Boolean {
     var i = startLine - 1;
     if i < 0 { i = 0; }
     var last = endLine - 1;

@@ -79,6 +79,7 @@ ctest --test-dir build -L golden           # Golden file tests only
 ctest --test-dir build -L "vm"             # VM tests only
 ctest --test-dir build -L audit            # Local structural/source-health audits
 ctest --test-dir build -L slow             # Opt-in long-running tests only
+ctest --test-dir build -L runtime-smoke-ci # Bounded Windows/Linux runtime gate
 
 # Run a specific test
 ctest --test-dir build -R test_zia_lexer
@@ -173,6 +174,7 @@ categories use the same lowercase grammar on every platform.
 | `il` | 196 | IL core (parsing, serialization, verification, analysis, transforms) |
 | `vm` | 112 | VM runtime (opcodes, traps, debugging, concurrency) |
 | `runtime` | 373 | C runtime library (strings, collections, I/O, math, graphics, etc.) |
+| `runtime-smoke-ci` | platform-dependent | Bounded headless Studio-supporting runtime lane used on Windows and Linux CI |
 | `codegen` | 125 | Code generation (x86_64, AArch64, linker, binary encoding) |
 | `oop` | 31 | Object-oriented programming (classes, inheritance, interfaces) |
 | `golden` | 203 | Golden file regression (diagnostic messages, IL/optimizer output) |

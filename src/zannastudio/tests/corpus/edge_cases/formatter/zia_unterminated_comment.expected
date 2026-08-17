@@ -1,0 +1,4 @@
+func f() {
+    /* comment {
+  raw spacing
+var x = 1;

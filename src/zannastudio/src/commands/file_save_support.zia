@@ -9,7 +9,10 @@
 // Purpose: Normalize save text and synchronize editor/document presentation.
 // Key invariants:
 //   - Visual scene serializers are never rewritten by text-save preferences.
-//   - Save normalization preserves active cursor and scroll position.
+//   - Save normalization is one undoable buffer edit and preserves cursors,
+//     selections, folds, scroll, and prior history for active and detached tabs.
+//   - Existing LF, CRLF, and CR terminators are preserved per line; only a newly
+//     appended final terminator uses the documented dominant-style policy.
 //   - External-change confirmation reports the exact observed disk state.
 // Ownership/Lifetime:
 //   - Module state owns save-format preferences; all UI/model objects are borrowed.
@@ -52,48 +55,89 @@ func NormalizeDocumentForSave(docMgr: document_manager.DocumentManager,
     if file_utils.IsVisualKind(doc.kind) { return; }
     var normalized = ApplySaveTextRules(doc.content);
     if normalized != doc.content {
-        doc.content = normalized;
-        doc.isModified = true;
-        if index == docMgr.activeIndex and engine != null and engine.editor != null {
-            var cursorLine = engine.GetCursorLine();
-            var cursorCol = engine.GetCursorCol();
-            var scrollLine = engine.GetScrollLine();
-            engine.SetText(normalized);
-            if cursorLine > 0 and cursorCol > 0 {
-                engine.editor.SetCursor(cursorLine - 1, cursorCol - 1);
+        if engine != null {
+            if engine.ReplaceDocumentTextPreservingState(doc, normalized) == false {
+                return;
             }
-            if scrollLine > 1 {
-                engine.editor.ScrollTopLine = scrollLine - 1;
-            }
+        } else {
+            doc.content = normalized;
+            doc.isModified = true;
         }
     }
 }
 
 func ApplySaveTextRules(text: String) -> String {
-    var result = text;
-    var eol = "\n";
-    if Str.IndexOf(text, "\r\n") != 0 { eol = "\r\n"; }
+    return ApplySaveTextRulesWithOptions(text,
+                                         trimTrailingWhitespaceOnSave,
+                                         ensureFinalNewlineOnSave);
+}
 
-    if trimTrailingWhitespaceOnSave {
-        var lines = Str.Split(result, "\n");
-        result = "";
-        var i = 0;
-        while i < Seq.get_Count(lines) {
-            var line = Obj.ToString(Seq.Get(lines, i));
-            if Str.EndsWith(line, "\r") {
-                line = Str.Left(line, Str.get_Length(line) - 1);
-            }
-            line = TrimLineRightWhitespace(line);
-            if i > 0 { result = result + eol; }
-            result = result + line;
-            i = i + 1;
-        }
+/// @brief Apply one immutable save-policy snapshot, including on worker threads.
+func ApplySaveTextRulesWithOptions(text: String,
+                                   trimWhitespace: Boolean,
+                                   finalNewline: Boolean) -> String {
+    var result = text;
+    if trimWhitespace {
+        result = TrimTrailingWhitespacePreservingEol(result);
     }
 
-    if ensureFinalNewlineOnSave and Str.EndsWith(result, "\n") == false {
-        result = result + eol;
+    if finalNewline and Str.EndsWith(result, "\n") == false
+       and Str.EndsWith(result, "\r") == false {
+        result = result + PreferredFinalEol(result);
     }
     return result;
+}
+
+func TrimTrailingWhitespaceOnSaveEnabled() -> Boolean {
+    return trimTrailingWhitespaceOnSave;
+}
+
+func EnsureFinalNewlineOnSaveEnabled() -> Boolean {
+    return ensureFinalNewlineOnSave;
+}
+
+/// @brief Trim line suffixes while retaining every original line terminator.
+/// @details Split preserves trailing empty segments. LF partitions identify LF
+///          versus CRLF, and an inner CR split preserves legacy CR-only lines.
+func TrimTrailingWhitespacePreservingEol(text: String) -> String {
+    var output = new Zanna.Text.StringBuilder();
+    var lfParts = Str.Split(text, "\n");
+    var i = 0;
+    while i < Seq.get_Count(lfParts) {
+        var line = Obj.ToString(Seq.Get(lfParts, i));
+        var terminator = "";
+        if i + 1 < Seq.get_Count(lfParts) {
+            terminator = "\n";
+            if Str.EndsWith(line, "\r") {
+                line = Str.Left(line, Str.get_Length(line) - 1);
+                terminator = "\r\n";
+            }
+        }
+
+        var crParts = Str.Split(line, "\r");
+        var j = 0;
+        while j < Seq.get_Count(crParts) {
+            output.Append(TrimLineRightWhitespace(
+                Obj.ToString(Seq.Get(crParts, j))));
+            if j + 1 < Seq.get_Count(crParts) { output.Append("\r"); }
+            j = j + 1;
+        }
+        if terminator != "" { output.Append(terminator); }
+        i = i + 1;
+    }
+    return output.ToString();
+}
+
+/// @brief Choose only the terminator appended to a file that lacks one.
+/// @details The most frequent existing style wins; ties and files without an
+///          existing terminator use LF. Existing terminators are never changed.
+func PreferredFinalEol(text: String) -> String {
+    var crlfCount = Str.Count(text, "\r\n");
+    var lfCount = Str.Count(text, "\n") - crlfCount;
+    var crCount = Str.Count(text, "\r") - crlfCount;
+    if crlfCount > lfCount and crlfCount >= crCount { return "\r\n"; }
+    if crCount > lfCount and crCount > crlfCount { return "\r"; }
+    return "\n";
 }
 
 func TrimLineRightWhitespace(line: String) -> String {
@@ -154,7 +198,8 @@ func SaveEditorState(docMgr: document_manager.DocumentManager,
 }
 
 /// @brief Build the right-aligned status-bar label "Lang | EOL".
-/// @details Detects EOL by searching for "\r\n"; presence => CRLF, else LF.
+/// @details Reports Mixed rather than implying that one observed CRLF controls
+///          the complete document.
 func DocStatusLabel(doc: document.Document) -> String {
     if doc.kind == file_utils.DOC_KIND_SCENE_2D {
         return "2D Scene  |  Visual";
@@ -167,8 +212,21 @@ func DocStatusLabel(doc: document.Document) -> String {
     if doc.language == "basic" { lang = "Basic"; }
     if doc.language == "scene" { lang = "Scene"; }
 
+    var crlfCount = Str.Count(doc.content, "\r\n");
+    var lfCount = Str.Count(doc.content, "\n") - crlfCount;
+    var crCount = Str.Count(doc.content, "\r") - crlfCount;
+    var styles = 0;
+    if crlfCount > 0 { styles = styles + 1; }
+    if lfCount > 0 { styles = styles + 1; }
+    if crCount > 0 { styles = styles + 1; }
     var eol = "LF";
-    if Str.IndexOf(doc.content, "\r\n") != 0 { eol = "CRLF"; }
+    if styles > 1 {
+        eol = "Mixed";
+    } else if crlfCount > 0 {
+        eol = "CRLF";
+    } else if crCount > 0 {
+        eol = "CR";
+    }
 
     if doc.isReadOnlyPreview {
         return lang + "  |  Read-only preview";

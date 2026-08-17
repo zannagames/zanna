@@ -324,6 +324,12 @@ class SignatureController {
         activeOverloadIndex = 0;
     }
 
+    /// @brief Hide signature UI and drain its owned BASIC query before teardown.
+    expose func Shutdown() -> Boolean {
+        Hide();
+        return basicJob.CancelAndWait();
+    }
+
     expose func NextOverload() -> Boolean {
         return NavigateOverload(1);
     }

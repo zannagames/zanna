@@ -131,8 +131,8 @@ expose func Setup(path: String) {
         ClearStaleSessionFiles(state);
         SaveRecentProjects(state.ini, projMgr);
         SaveRecentFiles(state.ini, docMgr);
-        return safe_io.WriteStudioState(
-            settingsPath, Ini.Format(state.ini));
+        return safe_io.CompareExchangeStudioState(
+            settingsPath, state.sourceText, Ini.Format(state.ini));
     }
 
     /// @brief Read shared state and prepare workspace/document priorities.
@@ -147,6 +147,7 @@ expose func Setup(path: String) {
             content = readResult.text;
         }
         var state = new SessionSaveState();
+        state.sourceText = content;
         state.ini = Ini.Parse(content);
         state.previousCount =
             Parse.IntOr(Ini.Get(state.ini, "session", "count"), 0);
@@ -397,7 +398,8 @@ expose func Setup(path: String) {
         }
         var ini = Ini.Parse(content);
         PrependRecentFile(ini, path);
-        return safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+        return safe_io.CompareExchangeStudioState(
+            settingsPath, content, Ini.Format(ini));
     }
 
     /// @brief Put one valid workspace folder at the front of recent history.
@@ -419,7 +421,8 @@ expose func Setup(path: String) {
         }
         var ini = Ini.Parse(content);
         PrependRecentProject(ini, canonicalPath);
-        return safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+        return safe_io.CompareExchangeStudioState(
+            settingsPath, content, Ini.Format(ini));
     }
 
     /// @brief Remove missing and duplicate workspace folders from recent history.
@@ -541,6 +544,7 @@ expose func Setup(path: String) {
         if Ini.Get(ini, "settings", "restoreSession") == "0" { return job; }
 
         job.ini = ini;
+        job.sourceText = readResult.text;
         job.docMgr = docMgr;
         job.projMgr = projMgr;
         job.tabs = tabs;
@@ -653,6 +657,7 @@ expose func Setup(path: String) {
         job.active = false;
         job.lastPumpCount = 0;
         job.ini = null;
+        job.sourceText = "";
         job.docMgr = null;
         job.projMgr = null;
         job.tabs = null;
@@ -803,11 +808,13 @@ expose func Setup(path: String) {
             if job.tabs != null { job.tabs.SetActive(activeIdx); }
         }
         if job.prunedSession and job.ini != null {
-            safe_io.WriteStudioState(settingsPath, Ini.Format(job.ini));
+            safe_io.CompareExchangeStudioState(
+                settingsPath, job.sourceText, Ini.Format(job.ini));
         }
         job.active = false;
         job.lastPumpCount = 0;
         job.ini = null;
+        job.sourceText = "";
         job.docMgr = null;
         job.projMgr = null;
         job.tabs = null;

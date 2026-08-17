@@ -1,0 +1,179 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/source_freshness_probe.zia
+// Purpose: Regress cooperative, conservative native-artifact freshness scans.
+// Key invariants:
+//   - A partial or invalid scan can never classify an artifact as fresh.
+//   - Zia, BASIC/VB, IL, manifests, and explicit embed/pack inputs invalidate.
+//   - Runtime-loaded scene and unrelated documentation changes do not force a
+//     native rebuild unless explicitly named as build-time assets.
+// Ownership/Lifetime: The probe owns and removes its temporary project roots.
+// Links: zannastudio/src/services/source_freshness.zia
+//
+//===----------------------------------------------------------------------===//
+
+module source_freshness_probe;
+
+bind "../services/source_freshness";
+
+bind Clock = Zanna.Time.Clock;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func Finish(scanner: source_freshness.SourceFreshnessScanner) -> Boolean {
+    var turns = 0;
+    while scanner.scanning and turns < 10000 {
+        scanner.Pump(1);
+        turns = turns + 1;
+    }
+    return scanner.complete;
+}
+
+func Fail(root: String, invalidRoot: String, reason: String) {
+    try { if root != "" { Dir.RemoveAll(root); } } catch {}
+    try { if invalidRoot != "" { Dir.RemoveAll(invalidRoot); } } catch {}
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var root = TempFile.CreateDirWithPrefix("zannastudio_freshness_");
+    var invalidRoot = "";
+    var assets = Path.Join(root, "assets");
+    var packs = Path.Join(root, "packs");
+    Dir.MakeAll(assets);
+    Dir.MakeAll(packs);
+
+    var mainPath = Path.Join(root, "main.zia");
+    var basicPath = Path.Join(root, "support.bas");
+    var vbPath = Path.Join(root, "legacy.vb");
+    var ilPath = Path.Join(root, "generated.il");
+    var scenePath = Path.Join(root, "level.scene2d");
+    var notesPath = Path.Join(root, "README.md");
+    var embeddedPath = Path.Join(assets, "payload.bin");
+    var packedPath = Path.Join(packs, "payload.custom");
+    var manifestPath = Path.Join(root, "zanna.project");
+    var artifactPath = Path.Join(root, "game-native");
+
+    File.WriteAllText(mainPath, "func main() {}\n");
+    File.WriteAllText(basicPath, "PRINT 1\n");
+    File.WriteAllText(vbPath, "PRINT 2\n");
+    File.WriteAllText(ilPath, "module @probe\n");
+    File.WriteAllText(scenePath, "{\"version\":1}\n");
+    File.WriteAllText(notesPath, "notes\n");
+    File.WriteAllText(embeddedPath, "embedded-v1\n");
+    File.WriteAllText(packedPath, "packed-v1\n");
+    File.WriteAllText(
+        manifestPath,
+        "name freshness-probe\nentry main.zia\n"
+        + "embed \"assets/payload.bin\"\n"
+        + "pack bundle \"packs\"\n");
+
+    var scanner = new source_freshness.SourceFreshnessScanner();
+    scanner.EnsureProject(root);
+    if scanner.ArtifactStatus(artifactPath)
+       != source_freshness.FRESHNESS_UNKNOWN {
+        Fail(root, invalidRoot, "unstarted scan was not unknown");
+        return;
+    }
+    scanner.Pump(1);
+    if scanner.ArtifactStatus(artifactPath)
+       != source_freshness.FRESHNESS_UNKNOWN {
+        Fail(root, invalidRoot, "partial scan was not unknown");
+        return;
+    }
+    if Finish(scanner) == false or scanner.reliable == false {
+        Fail(root, invalidRoot, "complete dependency scan failed");
+        return;
+    }
+    if scanner.ArtifactStatus(artifactPath)
+       != source_freshness.FRESHNESS_STALE {
+        Fail(root, invalidRoot, "missing artifact was not stale");
+        return;
+    }
+
+    Clock.Sleep(1100);
+    File.WriteAllText(artifactPath, "binary-v1\n");
+    if scanner.IsArtifactKnownFresh(artifactPath) == false {
+        Fail(root, invalidRoot, "new artifact was not fresh");
+        return;
+    }
+
+    Clock.Sleep(1100);
+    File.WriteAllText(basicPath, "PRINT 3\n");
+    if scanner.InvalidatePath(basicPath) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_UNKNOWN {
+        Fail(root, invalidRoot, "BASIC change did not invalidate to unknown");
+        return;
+    }
+    if Finish(scanner) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_STALE {
+        Fail(root, invalidRoot, "BASIC dependency was not included");
+        return;
+    }
+
+    Clock.Sleep(1100);
+    File.WriteAllText(artifactPath, "binary-v2\n");
+    if scanner.IsArtifactKnownFresh(artifactPath) == false {
+        Fail(root, invalidRoot, "rebuilt artifact was not fresh");
+        return;
+    }
+    if scanner.InvalidatePath(scenePath)
+       or scanner.InvalidatePath(notesPath) {
+        Fail(root, invalidRoot, "runtime/unrelated files invalidated native build");
+        return;
+    }
+    if scanner.InvalidatePath(vbPath) == false
+       or Finish(scanner) == false {
+        Fail(root, invalidRoot, "VB source was not a dependency");
+        return;
+    }
+    if scanner.InvalidatePath(ilPath) == false
+       or Finish(scanner) == false {
+        Fail(root, invalidRoot, "IL source was not a dependency");
+        return;
+    }
+    if scanner.InvalidatePath(packedPath) == false
+       or Finish(scanner) == false {
+        Fail(root, invalidRoot, "pack directory was not a dependency");
+        return;
+    }
+
+    Clock.Sleep(1100);
+    File.WriteAllText(embeddedPath, "embedded-v2\n");
+    if scanner.InvalidatePath(embeddedPath) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_UNKNOWN
+       or Finish(scanner) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_STALE {
+        Fail(root, invalidRoot, "embedded asset was not tracked conservatively");
+        return;
+    }
+
+    invalidRoot = TempFile.CreateDirWithPrefix("zannastudio_freshness_bad_");
+    File.WriteAllText(Path.Join(invalidRoot, "main.zia"), "func main() {}\n");
+    File.WriteAllText(Path.Join(invalidRoot, "zanna.project"),
+                      "name bad\nembed \"unterminated\n");
+    var invalid = new source_freshness.SourceFreshnessScanner();
+    invalid.EnsureProject(invalidRoot);
+    Finish(invalid);
+    if invalid.ArtifactStatus(Path.Join(invalidRoot, "game"))
+       != source_freshness.FRESHNESS_UNKNOWN {
+        Fail(root, invalidRoot, "invalid manifest scan was not unknown");
+        return;
+    }
+
+    Dir.RemoveAll(root);
+    Dir.RemoveAll(invalidRoot);
+    Terminal.Say("RESULT: ok");
+}

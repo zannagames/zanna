@@ -1,0 +1,119 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/text_builder_probe.zia
+// Purpose: Guard linear builders used by Studio's large text transformations.
+// Key invariants:
+//   - Large joins, clipboard envelopes, token rewrites, and workspace edits
+//     preserve exact content without repeated immutable-string accumulation.
+//   - The aggregate transform remains bounded enough for an interactive command.
+// Ownership/Lifetime:
+//   - The probe owns only temporary strings, lists, maps, and builders.
+// Links: zannastudio/src/services/text_utils.zia,
+//        zannastudio/src/ui/scene_clipboard.zia
+//
+//===----------------------------------------------------------------------===//
+
+module text_builder_probe;
+
+bind "../services/text_utils";
+bind "../services/workspace_edits";
+bind "../ui/scene_clipboard";
+bind "../zia/trivia_scan";
+
+bind Clock = Zanna.Time.Clock;
+bind Map = Zanna.Collections.Map;
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+bind Terminal = Zanna.Terminal;
+
+final LARGE_JOIN_ITEMS = 6000;
+final LARGE_TILE_CELLS = 16384;
+final LARGE_SOURCE_LINES = 4000;
+final MAX_AGGREGATE_TRANSFORM_MS = 10000;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var started = Clock.NowMs();
+
+    var values = new List();
+    var i = 0;
+    while i < LARGE_JOIN_ITEMS {
+        values.add("abcdefghij");
+        i = i + 1;
+    }
+    var joined = text_utils.JoinStringList(values, "|");
+    if Str.get_Length(joined) != LARGE_JOIN_ITEMS * 10
+                                  + LARGE_JOIN_ITEMS - 1
+       or Str.StartsWith(joined, "abcdefghij|abcdefghij") == false
+       or Str.EndsWith(joined, "|abcdefghij") == false {
+        fail("large list join");
+        return;
+    }
+
+    var tiles: List[Integer] = [];
+    i = 0;
+    while i < LARGE_TILE_CELLS {
+        tiles.add(i % 10);
+        i = i + 1;
+    }
+    var tileText = scene_clipboard.EncodeTileBlock(128, 128, tiles);
+    if scene_clipboard.HasTileBlock(tileText) == false
+       or Str.StartsWith(
+              tileText,
+              "ZANNA_STUDIO_TILE_BLOCK_V1\n128\n128\n0,1,2,3") == false
+       or Str.EndsWith(tileText, ",3") == false {
+        fail("large tile clipboard");
+        return;
+    }
+
+    var tokenLine = new StringBuilder();
+    i = 0;
+    while i < 2500 {
+        tokenLine.Append("token + ");
+        i = i + 1;
+    }
+    tokenLine.Append("\"token\" // token");
+    var rewritten = trivia_scan.ReplaceIdentifierOutsideTrivia(
+        tokenLine.ToString(), "token", "renamed");
+    if Str.StartsWith(rewritten, "renamed + renamed + ") == false
+       or Str.EndsWith(rewritten, "\"token\" // token") == false {
+        fail("large identifier rewrite");
+        return;
+    }
+
+    var source = new StringBuilder();
+    i = 1;
+    while i <= LARGE_SOURCE_LINES {
+        if i == 2000 { source.AppendLine("old"); }
+        else { source.AppendLine("line " + i); }
+        i = i + 1;
+    }
+    var edit = Map.New();
+    Map.SetInt(edit, "startLine", 2000);
+    Map.SetInt(edit, "startColumn", 1);
+    Map.SetInt(edit, "endLine", 2000);
+    Map.SetInt(edit, "endColumn", 4);
+    Map.SetStr(edit, "newText", "new");
+    var edited = workspace_edits.ApplyEditToText(source.ToString(), edit);
+    if Str.Contains(edited, "\nnew\n") == false
+       or Str.Contains(edited, "\nold\n") {
+        fail("large workspace edit rebuild");
+        return;
+    }
+
+    var elapsed = Clock.NowMs() - started;
+    if elapsed > MAX_AGGREGATE_TRANSFORM_MS {
+        fail("large transforms exceeded " + MAX_AGGREGATE_TRANSFORM_MS
+             + "ms: " + elapsed);
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

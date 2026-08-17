@@ -39,6 +39,7 @@
 
 #include "rt_ascii.h"
 #include "rt_internal.h"
+#include "rt_regex_internal.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
@@ -608,6 +609,32 @@ int8_t rt_text_char_is_alnum(rt_string s) {
         return 0;
     unsigned char ch = (unsigned char)c;
     return (rt_char_is_ascii_alpha(ch) || rt_char_is_ascii_digit(ch)) ? 1 : 0;
+}
+
+/// @copydoc rt_text_char_is_word
+int8_t rt_text_char_is_word(rt_string s) {
+    if (!rt_string_arg_valid_(s, "Text.Char.IsWord: invalid string") || !s)
+        return 0;
+    const char *bytes = rt_string_cstr(s);
+    size_t length = rt_string_len_bytes(s);
+    size_t width = rt_utf8_strict_step(bytes, length);
+    if (!bytes || width == 0)
+        return 0;
+
+    const unsigned char *input = (const unsigned char *)bytes;
+    uint32_t codepoint = 0;
+    if (width == 1) {
+        codepoint = input[0];
+    } else if (width == 2) {
+        codepoint = ((uint32_t)(input[0] & 0x1Fu) << 6) | (uint32_t)(input[1] & 0x3Fu);
+    } else if (width == 3) {
+        codepoint = ((uint32_t)(input[0] & 0x0Fu) << 12) | ((uint32_t)(input[1] & 0x3Fu) << 6) |
+                    (uint32_t)(input[2] & 0x3Fu);
+    } else {
+        codepoint = ((uint32_t)(input[0] & 0x07u) << 18) | ((uint32_t)(input[1] & 0x3Fu) << 12) |
+                    ((uint32_t)(input[2] & 0x3Fu) << 6) | (uint32_t)(input[3] & 0x3Fu);
+    }
+    return re_is_word_codepoint(codepoint) ? 1 : 0;
 }
 
 /// @brief Join the string elements of @p seq with @p sep between them.

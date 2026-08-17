@@ -6,8 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/runtime/RTRegexTests.cpp
-// Purpose: Validate rt_regex / rt_pattern_* API (Zanna.Text.Regex).
-// Key invariants: is_match, find, replace, split, escape all behave correctly.
+// Purpose: Validate rt_regex / rt_pattern_* API (Zanna.Text.Regex) and the
+//          shared diagnostic regex engine used by runtime and GUI search.
+// Key invariants: Public pattern operations, recoverable compilation, option
+//                 parity, zero-width anchors, and capture expansion are sound.
 // Ownership/Lifetime: Returned rt_string values are released after each test.
 //
 //===----------------------------------------------------------------------===//
@@ -15,11 +17,13 @@
 #include "zanna/runtime/rt.h"
 
 #include "rt_regex.h"
+#include "rt_regex_internal.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void check(const char *label, int ok) {
@@ -164,6 +168,64 @@ static void test_escape(void) {
     rt_string_unref(variant);
 }
 
+static int diagnostic_failure_count = 0;
+
+static void count_engine_failure(const char *message) {
+    (void)message;
+    diagnostic_failure_count++;
+}
+
+static void test_shared_engine(void) {
+    printf("shared diagnostic engine:\n");
+    diagnostic_failure_count = 0;
+    re_set_failure_handler(count_engine_failure);
+
+    char error[128];
+    re_compiled_pattern *invalid =
+        re_compile_diagnostic("[abc", RE_COMPILE_DEFAULT, error, sizeof(error));
+    check("malformed pattern is recoverable", invalid == NULL);
+    check("malformed pattern has a useful diagnostic", strstr(error, "unclosed") != NULL);
+    check("syntax diagnostic does not invoke fatal callback", diagnostic_failure_count == 0);
+
+    re_compiled_pattern *folded =
+        re_compile_diagnostic("[a-c]+z", RE_COMPILE_CASE_INSENSITIVE, error, sizeof(error));
+    check("case-insensitive pattern compiles", folded != NULL);
+    int match_start = -1;
+    int match_end = -1;
+    check("case-insensitive literal and class share options",
+          re_find_match(folded, "xxABCZ", 6, 0, &match_start, &match_end) && match_start == 2 &&
+              match_end == 6);
+    re_free(folded);
+
+    re_compiled_pattern *anchors =
+        re_compile_diagnostic("^|$", RE_COMPILE_DEFAULT, error, sizeof(error));
+    check("zero-width anchor pattern compiles", anchors != NULL);
+    check("start anchor returns its zero-width span",
+          re_find_match(anchors, "x", 1, 0, &match_start, &match_end) && match_start == 0 &&
+              match_end == 0);
+    check("end anchor remains discoverable after explicit progress",
+          re_find_match(anchors, "x", 1, 1, &match_start, &match_end) && match_start == 1 &&
+              match_end == 1);
+    re_free(anchors);
+
+    re_compiled_pattern *captures =
+        re_compile_diagnostic("(a+)(b)", RE_COMPILE_DEFAULT, error, sizeof(error));
+    check("capture pattern compiles", captures != NULL);
+    char *expanded = NULL;
+    size_t expanded_len = 0;
+    const char *replacement = "$2-$1-$$-$&-${1}-$9";
+    check("capture replacement expands exact match",
+          re_expand_replacement(
+              captures, "aaab", 4, 0, replacement, strlen(replacement), &expanded, &expanded_len));
+    check("capture replacement syntax is deterministic",
+          expanded && expanded_len == strlen("b-aaa-$-aaab-aaa-$9") &&
+              strcmp(expanded, "b-aaa-$-aaab-aaa-$9") == 0);
+    free(expanded);
+    re_free(captures);
+
+    re_set_failure_handler(NULL);
+}
+
 int main(void) {
     printf("=== RTRegexTests ===\n");
     test_is_match();
@@ -172,6 +234,7 @@ int main(void) {
     test_find_all();
     test_split();
     test_escape();
+    test_shared_engine();
     printf("All regex tests passed.\n");
     return 0;
 }

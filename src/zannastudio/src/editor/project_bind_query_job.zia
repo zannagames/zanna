@@ -24,6 +24,7 @@
 module project_bind_query_job;
 
 bind "../services/safe_io";
+bind "../services/path_identity";
 bind "../zia/bind_utils";
 
 bind Async = Zanna.Threads.Async;
@@ -301,8 +302,7 @@ func AddSourceCandidate(state: ProjectBindScanState,
 }
 
 func PathKey(path: String) -> String {
-    if path == "" { return ""; }
-    return Path.Normalize(Path.Absolute(path));
+    return path_identity.Normalize(path);
 }
 
 /// @brief Test whether an exact path or case-only alias was already scanned.
@@ -316,7 +316,7 @@ func HasSeenPath(state: ProjectBindScanState,
     if Map.Has(state.seen, key) { return true; }
     var folded = Str.ToLower(key);
     if Map.Has(state.foldedSeen, folded) == false { return false; }
-    return File.SameFile(key, Map.GetStr(state.foldedSeen, folded));
+    return path_identity.SameFile(key, Map.GetStr(state.foldedSeen, folded));
 }
 
 /// @brief Remember a case-preserving key and its first folded spelling.

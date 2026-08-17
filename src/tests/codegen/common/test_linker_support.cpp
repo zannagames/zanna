@@ -174,6 +174,32 @@ TEST(LinkerSupport, BuildDirViaEnvVar) {
     fs::remove_all(tmpRoot);
 }
 
+TEST(LinkerSupport, SharedRegexEngineUsesCommonTextBuildDirectory) {
+    namespace fs = std::filesystem;
+    const fs::path buildDir = fs::path("build") / "linker-support-layout";
+    const fs::path expected =
+        buildDir / "src" / "common" / "text" / archiveFileName("zanna_regex_engine");
+
+    EXPECT_EQ(supportLibraryPath(buildDir, "zanna_regex_engine").lexically_normal(),
+              expected.lexically_normal());
+}
+
+TEST(LinkerSupport, RuntimeAndGuiComponentsRequireSharedRegexEngine) {
+    LinkContext ctx;
+    EXPECT_FALSE(requiresRegexEngineArchive(ctx));
+
+    ctx.requiredComponents.push_back(zanna::codegen::RtComponent::Base);
+    EXPECT_TRUE(requiresRegexEngineArchive(ctx));
+    ctx.requiredComponents.clear();
+
+    ctx.requiredComponents.push_back(zanna::codegen::RtComponent::Text);
+    EXPECT_TRUE(requiresRegexEngineArchive(ctx));
+    ctx.requiredComponents.clear();
+
+    ctx.requiredComponents.push_back(zanna::codegen::RtComponent::Graphics);
+    EXPECT_TRUE(requiresRegexEngineArchive(ctx));
+}
+
 TEST(LinkerSupport, ArchiveClosureAddsTextForBaseStringIntern) {
     LinkContext ctx;
     std::ostringstream out;

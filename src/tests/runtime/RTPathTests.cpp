@@ -10,10 +10,12 @@
 // Key invariants: Path operations handle both Unix and Windows separators,
 //                 normalize removes redundant components, and absolute detection
 //                 considers platform conventions. Link inspection does not
-//                 follow the final filesystem component.
+//                 follow the final filesystem component, while SameEntry follows
+//                 aliases and compares stable file or directory identity.
 // Ownership/Lifetime: Uses runtime library; tests release newly allocated strings
 //                     and remove their temporary filesystem fixtures.
-// Links: src/runtime/io/rt_path.c, docs/zannalib/io/files.md
+// Links: src/runtime/io/rt_path.c, docs/zannalib/io/files.md,
+//        docs/adr/0259-stable-filesystem-entry-identity.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -334,7 +336,7 @@ static void test_sep() {
     printf("\n");
 }
 
-/// @brief Test non-trapping final-component link inspection.
+/// @brief Test non-trapping link inspection and stable filesystem-entry identity.
 static void test_is_link() {
     printf("Testing rt_path_is_link:\n");
     namespace fs = std::filesystem;
@@ -343,20 +345,39 @@ static void test_is_link() {
     fs::path root = fs::temp_directory_path(ec) / ("zanna_path_link_" + std::to_string(nonce));
     test_result("temporary path available", !ec && fs::create_directories(root, ec));
     fs::path target = root / "target.txt";
+    fs::path other = root / "other.txt";
     fs::path link = root / "target-link";
     std::ofstream(target.string()) << "target";
+    std::ofstream(other.string()) << "other";
     const std::string targetText = target.string();
+    const std::string otherText = other.string();
     const std::string linkText = link.string();
     const std::string missingText = (root / "missing").string();
+    const std::string rootText = root.string();
 
     test_result("ordinary file is not link",
                 rt_path_is_link(rt_const_cstr(targetText.c_str())) == 0);
     test_result("missing path is not link",
                 rt_path_is_link(rt_const_cstr(missingText.c_str())) == 0);
+    test_result("identical file path is same entry",
+                rt_path_same_entry(rt_const_cstr(targetText.c_str()),
+                                   rt_const_cstr(targetText.c_str())) == 1);
+    test_result("different files are different entries",
+                rt_path_same_entry(rt_const_cstr(targetText.c_str()),
+                                   rt_const_cstr(otherText.c_str())) == 0);
+    test_result(
+        "directory identity is supported",
+        rt_path_same_entry(rt_const_cstr(rootText.c_str()), rt_const_cstr(rootText.c_str())) == 1);
+    test_result("missing entry compares unequal",
+                rt_path_same_entry(rt_const_cstr(targetText.c_str()),
+                                   rt_const_cstr(missingText.c_str())) == 0);
     fs::create_symlink(target, link, ec);
     if (!ec) {
         test_result("symbolic link detected",
                     rt_path_is_link(rt_const_cstr(linkText.c_str())) == 1);
+        test_result("same-entry identity follows symbolic links",
+                    rt_path_same_entry(rt_const_cstr(targetText.c_str()),
+                                       rt_const_cstr(linkText.c_str())) == 1);
     } else {
         printf("  symbolic link detected: SKIP (%s)\n", ec.message().c_str());
     }

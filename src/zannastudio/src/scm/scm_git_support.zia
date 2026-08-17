@@ -67,8 +67,8 @@ expose func FailureHint(kind: String,
        or Str.IndexOf(text, "could not read username") != 0
        or Str.IndexOf(text, "authentication failed") != 0
        or Str.IndexOf(text, "gcm_interactive") != 0 {
-        return "Authentication needed. Open a terminal for this repository and run git "
-            + kind + " to complete sign-in, then refresh Source Control.";
+        return "Authentication needed. Configure Git Credential Manager (or another credential helper), an askpass broker, or an SSH agent, then retry git "
+            + kind + ". Zanna Studio does not collect repository passwords.";
     }
     if Str.IndexOf(text, "conflict") != 0
        or Str.IndexOf(text, "merge failed") != 0

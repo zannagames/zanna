@@ -24,6 +24,7 @@ module diff_engine;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
+bind Monitor = Zanna.Threads.Monitor;
 
 final DIFF_MAX_TOTAL_LINES = 20000;
 final DIFF_MAX_EDIT_DEPTH = 512;
@@ -34,6 +35,33 @@ final ROW_SAME = 0;
 final ROW_CHANGED = 1;
 final ROW_ADDED = 2;   // Present only on the right side.
 final ROW_REMOVED = 3; // Present only on the left side.
+
+/// Exactness/degradation reason for an aligned diff result.
+final DIFF_DEGRADED_NONE = 0;
+final DIFF_DEGRADED_INPUT_LIMIT = 1;
+final DIFF_DEGRADED_EDIT_DEPTH = 2;
+final DIFF_DEGRADED_TRACE_BUDGET = 3;
+final DIFF_DEGRADED_CANCELLED = 4;
+
+/// @brief Monitor-protected cooperative cancellation shared with a worker owner.
+class DiffCancelToken {
+    expose Boolean cancelled;
+
+    expose func init() {
+        cancelled = false;
+    }
+}
+
+/// @brief Matched line pairs plus an explicit algorithm degradation reason.
+class DiffMatchResult {
+    expose List pairs;
+    expose Integer degradation;
+
+    expose func init() {
+        pairs = new List();
+        degradation = DIFF_DEGRADED_NONE;
+    }
+}
 
 /// @brief One aligned side-by-side row.
 class DiffRow {
@@ -61,6 +89,7 @@ class DiffBuildResult {
     expose Integer addedCount;
     expose Integer removedCount;
     expose Boolean truncated;
+    expose Integer degradation;
 
     expose func init() {
         rows = new List();
@@ -70,7 +99,25 @@ class DiffBuildResult {
         addedCount = 0;
         removedCount = 0;
         truncated = false;
+        degradation = DIFF_DEGRADED_NONE;
     }
+}
+
+/// @brief Request cooperative cancellation from another thread.
+expose func Cancel(token: DiffCancelToken) {
+    if token == null { return; }
+    Monitor.Enter(token);
+    token.cancelled = true;
+    Monitor.Exit(token);
+}
+
+/// @brief Read a cancellation token under its monitor.
+func IsCancelled(token: DiffCancelToken) -> Boolean {
+    if token == null { return false; }
+    Monitor.Enter(token);
+    var cancelled = token.cancelled;
+    Monitor.Exit(token);
+    return cancelled;
 }
 
 /// @brief Return true when the two line sequences share an exact value.
@@ -78,19 +125,27 @@ class DiffBuildResult {
 ///          up front avoids building an edit trace whose result is known to be
 ///          empty. This is especially important on interpreted backends where
 ///          each boxed trace-cell operation carries runtime-bridge overhead.
-func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
+func LinesShareValueCancellable(aLines: Any,
+                                bLines: Any,
+                                token: DiffCancelToken) -> Boolean {
     var seen = Map.New();
     var i = 0;
     while i < Seq.get_Count(aLines) {
+        if i % 128 == 0 and IsCancelled(token) { return false; }
         Map.SetBool(seen, Seq.GetStr(aLines, i), true);
         i = i + 1;
     }
     i = 0;
     while i < Seq.get_Count(bLines) {
+        if i % 128 == 0 and IsCancelled(token) { return false; }
         if Map.Has(seen, Seq.GetStr(bLines, i)) { return true; }
         i = i + 1;
     }
     return false;
+}
+
+func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
+    return LinesShareValueCancellable(aLines, bLines, null);
 }
 
 /// @brief Longest-common-subsequence length table row walker (Myers greedy).
@@ -98,17 +153,29 @@ func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
 ///          bIndex) marking matched line pairs, in order. Inputs beyond the
 ///          bound fall back to "no matches" (full replace) to stay bounded.
 func MatchedPairs(aLines: Any, bLines: Any) -> List {
-    var pairs: List = [];
+    return MatchedPairsCancellable(aLines, bLines, null).pairs;
+}
+
+/// @brief Compute Myers pairs with explicit fallback and cancellation state.
+func MatchedPairsCancellable(aLines: Any,
+                             bLines: Any,
+                             token: DiffCancelToken) -> DiffMatchResult {
+    var outcome = new DiffMatchResult();
+    var pairs = outcome.pairs;
     var aCount = Seq.get_Count(aLines);
     var bCount = Seq.get_Count(bLines);
     if aCount == 0 or bCount == 0 {
-        return pairs;
+        return outcome;
     }
     if aCount + bCount > DIFF_MAX_TOTAL_LINES {
-        return pairs; // Bounded: degrade to replace-everything.
+        outcome.degradation = DIFF_DEGRADED_INPUT_LIMIT;
+        return outcome; // Bounded: degrade to replace-everything.
     }
-    if LinesShareValue(aLines, bLines) == false {
-        return pairs;
+    if LinesShareValueCancellable(aLines, bLines, token) == false {
+        if IsCancelled(token) {
+            outcome.degradation = DIFF_DEGRADED_CANCELLED;
+        }
+        return outcome;
     }
 
     // Myers greedy forward search recording the middle-snake-free trace.
@@ -118,6 +185,10 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
     var v: List = [];
     var fill = 0;
     while fill < vSize {
+        if fill % 256 == 0 and IsCancelled(token) {
+            outcome.degradation = DIFF_DEGRADED_CANCELLED;
+            return outcome;
+        }
         v.add(0);
         fill = fill + 1;
     }
@@ -125,14 +196,26 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
     var d = 0;
     var solved = false;
     while d <= maxD and solved == false {
-        if d > DIFF_MAX_EDIT_DEPTH
-           or (d + 1) * vSize > DIFF_MAX_TRACE_CELLS {
-            return pairs;
+        if IsCancelled(token) {
+            outcome.degradation = DIFF_DEGRADED_CANCELLED;
+            return outcome;
+        }
+        if d > DIFF_MAX_EDIT_DEPTH {
+            outcome.degradation = DIFF_DEGRADED_EDIT_DEPTH;
+            return outcome;
+        }
+        if (d + 1) * vSize > DIFF_MAX_TRACE_CELLS {
+            outcome.degradation = DIFF_DEGRADED_TRACE_BUDGET;
+            return outcome;
         }
         // Snapshot v for backtracking.
         var snapshot: List = [];
         var s = 0;
         while s < vSize {
+            if s % 256 == 0 and IsCancelled(token) {
+                outcome.degradation = DIFF_DEGRADED_CANCELLED;
+                return outcome;
+            }
             snapshot.add(v.get(s) as Integer);
             s = s + 1;
         }
@@ -140,6 +223,10 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
 
         var k = 0 - d;
         while k <= d {
+            if (k + d) % 64 == 0 and IsCancelled(token) {
+                outcome.degradation = DIFF_DEGRADED_CANCELLED;
+                return outcome;
+            }
             var x = 0;
             if k == 0 - d or (k != d and (v.get(offset + k - 1) as Integer) < (v.get(offset + k + 1) as Integer)) {
                 x = v.get(offset + k + 1) as Integer;
@@ -147,10 +234,16 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
                 x = (v.get(offset + k - 1) as Integer) + 1;
             }
             var y = x - k;
+            var diagonalSteps = 0;
             while x < aCount and y < bCount
                   and Seq.GetStr(aLines, x) == Seq.GetStr(bLines, y) {
                 x = x + 1;
                 y = y + 1;
+                diagonalSteps = diagonalSteps + 1;
+                if diagonalSteps % 256 == 0 and IsCancelled(token) {
+                    outcome.degradation = DIFF_DEGRADED_CANCELLED;
+                    return outcome;
+                }
             }
             v.set(offset + k, x);
             if x >= aCount and y >= bCount {
@@ -163,7 +256,8 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
         }
     }
     if solved == false {
-        return pairs;
+        outcome.degradation = DIFF_DEGRADED_EDIT_DEPTH;
+        return outcome;
     }
 
     // Backtrack from (aCount, bCount) through the recorded traces.
@@ -172,6 +266,10 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
     var cy = bCount;
     var depth = d;
     while depth > 0 {
+        if depth % 64 == 0 and IsCancelled(token) {
+            outcome.degradation = DIFF_DEGRADED_CANCELLED;
+            return outcome;
+        }
         var vs = trace.get(depth) as List;
         var ck = cx - cy;
         var prevK = 0;
@@ -211,7 +309,7 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
         pairs.add(matched.get(idx) as Integer);
         idx = idx - 1;
     }
-    return pairs;
+    return outcome;
 }
 
 /// @brief Count and optionally retain one aligned row.
@@ -259,15 +357,31 @@ expose func BuildRows(leftText: String, rightText: String) -> List {
 expose func BuildRowsCapped(leftText: String,
                             rightText: String,
                             maxRows: Integer) -> DiffBuildResult {
+    return BuildRowsCappedCancellable(leftText, rightText, maxRows, null);
+}
+
+/// @brief Build bounded rows and stop promptly when @p token is cancelled.
+expose func BuildRowsCappedCancellable(
+    leftText: String,
+    rightText: String,
+    maxRows: Integer,
+    token: DiffCancelToken) -> DiffBuildResult {
     var aLines = Str.Split(leftText, "\n");
     var bLines = Str.Split(rightText, "\n");
-    var pairs = MatchedPairs(aLines, bLines);
+    var matched = MatchedPairsCancellable(aLines, bLines, token);
+    var pairs = matched.pairs;
     var result = new DiffBuildResult();
+    result.degradation = matched.degradation;
+    if result.degradation == DIFF_DEGRADED_CANCELLED { return result; }
 
     var aIndex = 0;
     var bIndex = 0;
     var p = 0;
     while p <= pairs.count() {
+        if p % 128 == 0 and IsCancelled(token) {
+            result.degradation = DIFF_DEGRADED_CANCELLED;
+            return result;
+        }
         var pairA = Seq.get_Count(aLines);
         var pairB = Seq.get_Count(bLines);
         if p < pairs.count() {

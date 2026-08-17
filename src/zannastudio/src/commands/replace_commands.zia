@@ -6,12 +6,14 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/commands/replace_commands.zia
-// Purpose: Bounded project-wide replacement over one completed search run.
+// Purpose: Transactional, revision-bound project replacement over one completed search run.
 // Key invariants:
-//   - Replacement re-matches every recorded line at apply time with the same
-//     query/options, so stale results never corrupt drifted lines.
-//   - Interactive replacement processes only a small number of files per frame.
-//   - Closed-file reads are size-bounded and revalidated before atomic writes.
+//   - Every result is bound to the complete content revision and exact line
+//     context scanned, so delayed work cannot consume a newly introduced match.
+//   - Interactive preparation processes only a small number of files per frame.
+//   - No target mutates until every file is staged and revalidated.
+//   - Closed-file commits use exact-content compare/exchange and rollback prior
+//     commits if a later target loses its revision race.
 //   - Open documents are edited through their in-memory buffers (the active
 //     document through the undoable editor path); only closed files are
 //     written directly to disk.
@@ -38,6 +40,7 @@ bind StringBuilder = Zanna.Text.StringBuilder;
 bind Map = Zanna.Collections.Map;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
+bind Hash = Zanna.Crypto.Hash;
 
 final MAX_REPLACE_LOCATIONS = 5000;
 final MAX_REPLACE_FILE_BYTES = 2000000;
@@ -52,6 +55,7 @@ class ReplaceOutcome {
     expose Integer filesFailed;
     expose Integer filesProcessed;
     expose Boolean lineLimitReached;
+    expose String error;
 
     expose func init() {
         replacements = 0;
@@ -59,6 +63,7 @@ class ReplaceOutcome {
         filesFailed = 0;
         filesProcessed = 0;
         lineLimitReached = false;
+        error = "";
     }
 }
 
@@ -67,19 +72,87 @@ class ReplaceFilePlan {
     expose String filePath;
     expose List lineNumbers;
     expose Any seenLines;
+    expose Any expectedLines;
+    expose String sourceRevision;
+    expose Boolean snapshotValid;
 
     expose func init() {
         filePath = "";
         lineNumbers = new List();
         seenLines = Map.New();
+        expectedLines = Map.New();
+        sourceRevision = "";
+        snapshotValid = true;
     }
 
-    expose func AddLine(line: Integer) {
-        if line < 1 { return; }
+    expose func AddLine(line: Integer,
+                        expectedLine: String,
+                        revision: String) {
+        if line < 1 {
+            snapshotValid = false;
+            return;
+        }
+        if revision == "" {
+            snapshotValid = false;
+        } else if sourceRevision == "" {
+            sourceRevision = revision;
+        } else if sourceRevision != revision {
+            snapshotValid = false;
+        }
         var key = "" + line;
-        if Map.Has(seenLines, key) { return; }
+        if Map.Has(seenLines, key) {
+            if Map.GetStr(expectedLines, key) != expectedLine {
+                snapshotValid = false;
+            }
+            return;
+        }
         Map.SetBool(seenLines, key, true);
+        Map.SetStr(expectedLines, key, expectedLine);
         lineNumbers.Push(line);
+    }
+}
+
+/// @brief Fully computed mutation retained until the transaction commits.
+class PreparedReplaceFile {
+    expose Boolean valid;
+    expose String error;
+    expose String filePath;
+    expose Boolean openDocument;
+    expose String originalText;
+    expose String replacementText;
+    expose Integer replacementCount;
+    expose Boolean committed;
+    expose Boolean oldModified;
+    expose Boolean oldHasPendingUndo;
+    expose String oldPendingUndoContent;
+    expose String oldPendingUndoLabel;
+
+    expose func init() {
+        valid = false;
+        error = "";
+        filePath = "";
+        openDocument = false;
+        originalText = "";
+        replacementText = "";
+        replacementCount = 0;
+        committed = false;
+        oldModified = false;
+        oldHasPendingUndo = false;
+        oldPendingUndoContent = "";
+        oldPendingUndoLabel = "";
+    }
+}
+
+/// @brief Result of the indivisible commit phase.
+class ReplaceCommitResult {
+    expose Boolean success;
+    expose Boolean rollbackComplete;
+    expose String message;
+
+    expose func init() {
+        success = false;
+        rollbackComplete = true;
+        message = "";
     }
 }
 
@@ -97,8 +170,8 @@ class ReplacePlanSet {
 }
 
 /// @brief Replace every match of @p query in one line.
-/// @details Loops FindLineMatch and splices; an empty-width match aborts the
-///          loop so malformed regexes can never spin.
+/// @details Compiles once for this compatibility entry point, then preserves
+///          capture expansion, anchors, and UTF-8-safe zero-width progress.
 /// @return The rewritten line (unchanged when nothing matched).
 expose func ReplaceAllInLine(line: String,
                              query: String,
@@ -107,28 +180,66 @@ expose func ReplaceAllInLine(line: String,
                              wholeWord: Boolean,
                              regexMode: Boolean,
                              counter: ReplaceOutcome) -> String {
-    var result = "";
-    var rest = line;
+    var program = search_matcher.CompileSearch(query, caseSensitive,
+                                               wholeWord, regexMode);
+    if program.valid == false {
+        if counter != null { counter.error = program.error; }
+        return line;
+    }
+    return ReplaceAllInLineWithProgram(line, replacement, program, counter);
+}
+
+/// @brief Replace all matches using one request-owned compiled search program.
+/// @details The full original line remains the regex subject, preserving
+///          anchors and capture ranges. Source slices use byte offsets and
+///          zero-width matches advance via the runtime-provided resume offset.
+func ReplaceAllInLineWithProgram(line: String,
+                                 replacement: String,
+                                 program: search_matcher.SearchProgram,
+                                 counter: ReplaceOutcome) -> String {
+    if program == null or program.valid == false {
+        if counter != null { counter.error = "search pattern is not compiled"; }
+        return line;
+    }
+    var result = new StringBuilder();
+    var sourceCursor = 0;
+    var searchOffset = 0;
+    var lineLength = Str.get_Length(line);
     var iterations = 0;
     while iterations < MAX_REPLACEMENTS_PER_LINE {
         iterations = iterations + 1;
-        var found = search_matcher.FindLineMatch(rest, query, caseSensitive, wholeWord, regexMode);
-        if found.matched == false or found.length <= 0 {
-            return result + rest;
+        var found = search_matcher.FindLineMatchFrom(line, searchOffset, program);
+        if found.matched == false {
+            result.Append(Str.Substring(line, sourceCursor,
+                                        lineLength - sourceCursor));
+            return result.ToString();
         }
-        var before = Str.Left(rest, found.startCol - 1);
-        result = result + before + replacement;
-        rest = Str.Mid(rest, found.startCol + found.length);
+        var startOffset = found.startCol - 1;
+        if startOffset < sourceCursor or startOffset > lineLength {
+            if counter != null { counter.error = "search returned an invalid replacement range"; }
+            return line;
+        }
+        var expanded = program.ExpandAt(line, startOffset, replacement);
+        if expanded.ok == false {
+            if counter != null { counter.error = expanded.error; }
+            return line;
+        }
+        result.Append(Str.Substring(line, sourceCursor,
+                                    startOffset - sourceCursor));
+        result.Append(expanded.text);
+        sourceCursor = startOffset + found.length;
+        searchOffset = found.resumeOffset;
         if counter != null { counter.replacements = counter.replacements + 1; }
     }
     if counter != null {
-        var remaining = search_matcher.FindLineMatch(rest, query, caseSensitive,
-                                                     wholeWord, regexMode);
-        if remaining.matched and remaining.length > 0 {
+        var remaining = search_matcher.FindLineMatchFrom(line, searchOffset, program);
+        if remaining.matched {
             counter.lineLimitReached = true;
         }
     }
-    return result + rest;
+    result.Append(Str.Substring(line, sourceCursor,
+                                lineLength - sourceCursor));
+    return result.ToString();
 }
 
 /// @brief Rewrite the recorded match lines of one file's content.
@@ -137,11 +248,8 @@ expose func ReplaceAllInLine(line: String,
 /// @return Rewritten full text.
 func ReplaceInContent(content: String,
                       lineNumbers: List,
-                      query: String,
                       replacement: String,
-                      caseSensitive: Boolean,
-                      wholeWord: Boolean,
-                      regexMode: Boolean,
+                      program: search_matcher.SearchProgram,
                       counter: ReplaceOutcome) -> String {
     var lines = Str.Split(content, "\n");
     var lineCount = Seq.get_Count(lines);
@@ -156,9 +264,8 @@ func ReplaceInContent(content: String,
     while index < lineCount {
         var text = Seq.GetStr(lines, index);
         if Map.Has(selectedLines, "" + (index + 1)) {
-            text = ReplaceAllInLine(text, query, replacement,
-                                    caseSensitive, wholeWord, regexMode, counter);
-            if counter != null and counter.lineLimitReached {
+            text = ReplaceAllInLineWithProgram(text, replacement, program, counter);
+            if counter != null and (counter.lineLimitReached or counter.error != "") {
                 return content;
             }
         }
@@ -204,109 +311,259 @@ func BuildPlansFromResults(locStore: locations.LocationStore,
         } else {
             plan = result.files.get(planIndex) as ReplaceFilePlan;
         }
-        plan.AddLine(loc.line);
+        plan.AddLine(loc.line, loc.sourceLineText, loc.sourceRevision);
     }
     return result;
 }
 
-/// @brief Apply one pre-grouped file plan without touching any other file.
-/// @details This is the unit of cooperative UI work. Closed files are read
-///          under the same ceiling as search, then reread immediately before
-///          an atomic replacement. Open buffers never write their disk copies.
-func ApplyFilePlan(plan: ReplaceFilePlan,
-                   docMgr: document_manager.DocumentManager,
-                   engine: editor_engine.EditorEngine,
-                   query: String,
-                   replacement: String,
-                   caseSensitive: Boolean,
-                   wholeWord: Boolean,
-                   regexMode: Boolean,
-                   outcome: ReplaceOutcome) {
-    if plan == null or outcome == null { return; }
-    outcome.filesProcessed = outcome.filesProcessed + 1;
-    var filePath = plan.filePath;
-    var before = outcome.replacements;
-    outcome.lineLimitReached = false;
+/// @brief Verify the complete revision and every exact result-line context.
+func PlanMatchesSource(plan: ReplaceFilePlan, content: String) -> Boolean {
+    if plan == null or plan.snapshotValid == false
+       or plan.sourceRevision == ""
+       or Hash.Sha256(content) != plan.sourceRevision {
+        return false;
+    }
+    var lines = Str.Split(content, "\n");
+    var lineCount = Seq.get_Count(lines);
+    var i = 0;
+    while i < plan.lineNumbers.count() {
+        var line = plan.lineNumbers.get(i) as Integer;
+        if line < 1 or line > lineCount { return false; }
+        var actual = Seq.GetStr(lines, line - 1);
+        if actual != Map.GetStr(plan.expectedLines, "" + line) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// @brief Compute one file's complete replacement without mutating any target.
+/// @details This is the bounded cooperative unit. The returned object owns the
+///          exact original and replacement revisions needed by commit/rollback.
+func PrepareFilePlan(plan: ReplaceFilePlan,
+                     docMgr: document_manager.DocumentManager,
+                     engine: editor_engine.EditorEngine,
+                     replacement: String,
+                     program: search_matcher.SearchProgram) -> PreparedReplaceFile {
+    var prepared = new PreparedReplaceFile();
+    if plan == null or plan.filePath == "" {
+        prepared.error = "invalid replacement target";
+        return prepared;
+    }
+    prepared.filePath = plan.filePath;
+    if plan.snapshotValid == false or plan.sourceRevision == "" {
+        prepared.error = "search results are missing a stable source revision";
+        return prepared;
+    }
 
     var docIndex = -1;
-    if docMgr != null { docIndex = docMgr.FindByPath(filePath); }
-    var doc: document.Document? = null;
-    if docIndex >= 0 { doc = docMgr.GetDocument(docIndex); }
-    if doc != null {
-        var isActive = docMgr.activeIndex == docIndex;
-        var content = doc!.content;
-        if isActive and engine != null and engine.editor != null {
+    if docMgr != null { docIndex = docMgr.FindByPath(plan.filePath); }
+    var content = "";
+    if docIndex >= 0 {
+        var doc = docMgr.GetDocument(docIndex);
+        if doc == null or doc!.isReadOnlyPreview {
+            prepared.error = "open document is unavailable or read-only: " + plan.filePath;
+            return prepared;
+        }
+        prepared.openDocument = true;
+        content = doc!.content;
+        if docMgr.activeIndex == docIndex and engine != null and engine.editor != null {
             content = engine.editor.Text;
         }
-        if Str.get_Length(content) > MAX_REPLACE_FILE_BYTES {
-            outcome.filesFailed = outcome.filesFailed + 1;
-            return;
+        prepared.oldModified = doc!.isModified;
+        prepared.oldHasPendingUndo = doc!.hasPendingWorkspaceUndo;
+        prepared.oldPendingUndoContent = doc!.pendingWorkspaceUndoContent;
+        prepared.oldPendingUndoLabel = doc!.pendingWorkspaceUndoLabel;
+    } else {
+        if IO.File.Exists(plan.filePath) == false {
+            prepared.error = "file is unavailable: " + plan.filePath;
+            return prepared;
         }
-        var updated = ReplaceInContent(content, plan.lineNumbers, query, replacement,
-                                       caseSensitive, wholeWord, regexMode, outcome);
-        if outcome.lineLimitReached {
-            outcome.replacements = before;
-            outcome.filesFailed = outcome.filesFailed + 1;
-            return;
+        var readResult = safe_io.ReadAllTextBounded(plan.filePath,
+                                                    MAX_REPLACE_FILE_BYTES);
+        if readResult.ok == false {
+            prepared.error = "file is unreadable or oversized: " + plan.filePath;
+            return prepared;
         }
-        if outcome.replacements <= before { return; }
+        content = readResult.text;
+    }
 
-        if isActive and engine != null and engine.editor != null {
-            if editor_document_edit.ReplaceWholeDocument(engine, updated) == false {
-                outcome.replacements = before;
-                outcome.filesFailed = outcome.filesFailed + 1;
-                return;
+    if Str.get_Length(content) > MAX_REPLACE_FILE_BYTES {
+        prepared.error = "file exceeds the replacement byte budget: " + plan.filePath;
+        return prepared;
+    }
+    if PlanMatchesSource(plan, content) == false {
+        prepared.error = "file changed since search: " + plan.filePath;
+        return prepared;
+    }
+
+    var counter = new ReplaceOutcome();
+    var updated = ReplaceInContent(content, plan.lineNumbers, replacement,
+                                   program, counter);
+    if counter.error != "" {
+        prepared.error = "replacement expansion failed: " + counter.error;
+        return prepared;
+    }
+    if counter.lineLimitReached {
+        prepared.error = "a result line exceeds the replacement limit: " + plan.filePath;
+        return prepared;
+    }
+    if counter.replacements <= 0 or updated == content {
+        prepared.error = "recorded matches no longer resolve: " + plan.filePath;
+        return prepared;
+    }
+    if Str.get_Length(updated) > MAX_REPLACE_FILE_BYTES {
+        prepared.error = "replacement would exceed the file byte budget: " + plan.filePath;
+        return prepared;
+    }
+
+    prepared.originalText = content;
+    prepared.replacementText = updated;
+    prepared.replacementCount = counter.replacements;
+    prepared.valid = true;
+    return prepared;
+}
+
+/// @brief Revalidate a staged item immediately before the first mutation.
+func PreparedRevisionStillCurrent(item: PreparedReplaceFile,
+                                  docMgr: document_manager.DocumentManager,
+                                  engine: editor_engine.EditorEngine) -> Boolean {
+    if item == null or item.valid == false { return false; }
+    var docIndex = -1;
+    if docMgr != null { docIndex = docMgr.FindByPath(item.filePath); }
+    if item.openDocument {
+        if docIndex < 0 { return false; }
+        var doc = docMgr.GetDocument(docIndex);
+        if doc == null or doc!.isReadOnlyPreview
+           or doc!.isModified != item.oldModified
+           or doc!.hasPendingWorkspaceUndo != item.oldHasPendingUndo
+           or doc!.pendingWorkspaceUndoContent != item.oldPendingUndoContent
+           or doc!.pendingWorkspaceUndoLabel != item.oldPendingUndoLabel {
+            return false;
+        }
+        var current = doc!.content;
+        if docMgr.activeIndex == docIndex and engine != null and engine.editor != null {
+            current = engine.editor.Text;
+        }
+        return current == item.originalText;
+    }
+    if docIndex >= 0 or IO.File.Exists(item.filePath) == false { return false; }
+    var readResult = safe_io.ReadAllTextBounded(item.filePath,
+                                                MAX_REPLACE_FILE_BYTES);
+    return readResult.ok and readResult.text == item.originalText;
+}
+
+/// @brief Restore closed files already committed by this transaction.
+/// @return False if another writer changed a committed result before rollback.
+func RollbackCommittedFiles(prepared: List) -> Boolean {
+    var complete = true;
+    var i = prepared.count() - 1;
+    while i >= 0 {
+        var item = prepared.get(i) as PreparedReplaceFile;
+        if item.committed {
+            if safe_io.CompareExchangeTextFile(item.filePath,
+                                               item.replacementText,
+                                               item.originalText,
+                                               MAX_REPLACE_FILE_BYTES) == false {
+                complete = false;
+            } else {
+                item.committed = false;
             }
-        } else {
-            if doc!.hasPendingWorkspaceUndo == false {
-                doc!.pendingWorkspaceUndoContent = doc!.content;
+        }
+        i = i - 1;
+    }
+    return complete;
+}
+
+/// @brief Apply an active-editor replacement without propagating GUI traps.
+func TryReplaceActiveDocument(engine: editor_engine.EditorEngine,
+                              text: String) -> Boolean {
+    try {
+        return editor_document_edit.ReplaceWholeDocument(engine, text);
+    } catch {
+        return false;
+    }
+    return false;
+}
+
+/// @brief Commit every staged target as one best-effort filesystem transaction.
+/// @details All revisions are checked before mutation. Closed files then use
+///          locked compare/exchange; a failure rolls back prior commits. Open
+///          buffers publish only after every disk target commits successfully.
+func CommitPreparedTransaction(prepared: List,
+                               docMgr: document_manager.DocumentManager,
+                               engine: editor_engine.EditorEngine,
+                               outcome: ReplaceOutcome) -> ReplaceCommitResult {
+    var result = new ReplaceCommitResult();
+    var i = 0;
+    while i < prepared.count() {
+        if PreparedRevisionStillCurrent(prepared.get(i) as PreparedReplaceFile,
+                                        docMgr, engine) == false {
+            result.message = "a target changed during replacement preparation";
+            return result;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < prepared.count() {
+        var item = prepared.get(i) as PreparedReplaceFile;
+        if item.openDocument == false {
+            if safe_io.CompareExchangeTextFile(item.filePath,
+                                               item.originalText,
+                                               item.replacementText,
+                                               MAX_REPLACE_FILE_BYTES) == false {
+                result.rollbackComplete = RollbackCommittedFiles(prepared);
+                result.message = "a closed file lost its revision race";
+                return result;
+            }
+            item.committed = true;
+        }
+        i = i + 1;
+    }
+
+    // Publish the one active editor before changing detached document models.
+    // The GUI operation is undoable and preserves editor state.
+    i = 0;
+    while i < prepared.count() {
+        var activeItem = prepared.get(i) as PreparedReplaceFile;
+        if activeItem.openDocument and docMgr != null {
+            var activeIndex = docMgr.FindByPath(activeItem.filePath);
+            if activeIndex >= 0 and docMgr.activeIndex == activeIndex
+               and engine != null and engine.editor != null {
+                if TryReplaceActiveDocument(engine,
+                                            activeItem.replacementText) == false {
+                    result.rollbackComplete = RollbackCommittedFiles(prepared);
+                    result.message = "the active editor rejected the replacement";
+                    return result;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < prepared.count() {
+        var committedItem = prepared.get(i) as PreparedReplaceFile;
+        if committedItem.openDocument and docMgr != null {
+            var docIndex = docMgr.FindByPath(committedItem.filePath);
+            var doc = docMgr.GetDocument(docIndex);
+            var editorBacked = docIndex == docMgr.activeIndex
+                               and engine != null and engine.editor != null;
+            if editorBacked == false and doc!.hasPendingWorkspaceUndo == false {
+                doc!.pendingWorkspaceUndoContent = committedItem.originalText;
                 doc!.pendingWorkspaceUndoLabel = "Replace All";
                 doc!.hasPendingWorkspaceUndo = true;
             }
+            doc!.content = committedItem.replacementText;
+            doc!.isModified = true;
         }
-        doc!.content = updated;
-        doc!.isModified = true;
+        outcome.replacements = outcome.replacements + committedItem.replacementCount;
         outcome.filesChanged = outcome.filesChanged + 1;
-        return;
+        i = i + 1;
     }
-
-    if IO.File.Exists(filePath) == false {
-        outcome.filesFailed = outcome.filesFailed + 1;
-        return;
-    }
-    var beforeMtime = safe_io.Modified(filePath);
-    var readResult = safe_io.ReadAllTextBounded(filePath,
-                                                MAX_REPLACE_FILE_BYTES);
-    var afterMtime = safe_io.Modified(filePath);
-    if readResult.ok == false or beforeMtime < 0 or afterMtime != beforeMtime {
-        outcome.filesFailed = outcome.filesFailed + 1;
-        return;
-    }
-
-    var diskContent = readResult.text;
-    var updatedDisk = ReplaceInContent(diskContent, plan.lineNumbers, query,
-                                       replacement, caseSensitive, wholeWord,
-                                       regexMode, outcome);
-    if outcome.lineLimitReached {
-        outcome.replacements = before;
-        outcome.filesFailed = outcome.filesFailed + 1;
-        return;
-    }
-    if outcome.replacements <= before { return; }
-
-    // Re-read immediately before the atomic replacement. Search results are
-    // advisory and must never overwrite a file that changed during this pass.
-    var stableMtime = safe_io.Modified(filePath);
-    var stableRead = safe_io.ReadAllTextBounded(filePath,
-                                                MAX_REPLACE_FILE_BYTES);
-    if stableMtime != afterMtime or stableRead.ok == false
-       or stableRead.text != diskContent
-       or safe_io.WriteAllText(filePath, updatedDisk) == false {
-        outcome.replacements = before;
-        outcome.filesFailed = outcome.filesFailed + 1;
-        return;
-    }
-    outcome.filesChanged = outcome.filesChanged + 1;
+    result.success = true;
+    result.message = "replacement transaction committed";
+    return result;
 }
 
 /// @brief Format one replacement outcome for status and toast surfaces.
@@ -322,9 +579,9 @@ func FormatOutcome(outcome: ReplaceOutcome) -> String {
 }
 
 /// @brief Frame-sliced owner for user-facing project replacement.
-/// @details Planning copies only file paths and line numbers. Pump then applies
-///          at most REPLACE_FILES_PER_FRAME plans, so a large result set cannot
-///          monopolize the event loop in one button callback.
+/// @details Planning copies revision-bound result context. Pump stages at most
+///          REPLACE_FILES_PER_FRAME files; only after every stage succeeds does
+///          one non-yielding commit publish the transaction.
 class ProjectReplaceController {
     expose Boolean active;
     expose Boolean completionReady;
@@ -332,12 +589,14 @@ class ProjectReplaceController {
     expose Integer fileIndex;
     expose Integer lastPumpFileCount;
     expose List plans;
+    expose List prepared;
     expose ReplaceOutcome outcome;
     expose String query;
     expose String replacement;
     expose Boolean caseSensitive;
     expose Boolean wholeWord;
     expose Boolean regexMode;
+    expose search_matcher.SearchProgram searchProgram;
     expose String lastSummary;
 
     expose func init() {
@@ -347,12 +606,14 @@ class ProjectReplaceController {
         fileIndex = 0;
         lastPumpFileCount = 0;
         plans = new List();
+        prepared = new List();
         outcome = new ReplaceOutcome();
         query = "";
         replacement = "";
         caseSensitive = false;
         wholeWord = false;
         regexMode = false;
+        searchProgram = new search_matcher.SearchProgram();
         lastSummary = "";
     }
 
@@ -366,6 +627,13 @@ class ProjectReplaceController {
                                  requestedWholeWord: Boolean,
                                  requestedRegex: Boolean) -> Boolean {
         if active or requestedQuery == "" { return false; }
+        var compiledSearch = search_matcher.CompileSearch(
+            requestedQuery, requestedCase, requestedWholeWord, requestedRegex);
+        if compiledSearch.valid == false {
+            lastSummary = "Replace canceled: invalid search pattern: "
+                          + compiledSearch.error;
+            return false;
+        }
         var planSet = BuildPlansFromResults(locStore, firstLocationId,
                                             lastLocationId,
                                             MAX_REPLACE_LOCATIONS);
@@ -377,14 +645,25 @@ class ProjectReplaceController {
             lastSummary = "Replace: no current search results";
             return false;
         }
+        var planIndex = 0;
+        while planIndex < planSet.files.count() {
+            var plan = planSet.files.get(planIndex) as ReplaceFilePlan;
+            if plan.snapshotValid == false or plan.sourceRevision == "" {
+                lastSummary = "Replace canceled: search results have no stable source revision; run Search again";
+                return false;
+            }
+            planIndex = planIndex + 1;
+        }
 
         plans = planSet.files;
+        prepared = new List();
         outcome = new ReplaceOutcome();
         query = requestedQuery;
         replacement = requestedReplacement;
         caseSensitive = requestedCase;
         wholeWord = requestedWholeWord;
         regexMode = requestedRegex;
+        searchProgram = compiledSearch;
         fileIndex = 0;
         lastPumpFileCount = 0;
         lastSummary = "";
@@ -394,7 +673,7 @@ class ProjectReplaceController {
         return true;
     }
 
-    /// @brief Apply a bounded file batch and report whether the run just ended.
+    /// @brief Stage a bounded file batch, then atomically publish all staged work.
     expose func Pump(docMgr: document_manager.DocumentManager,
                      engine: editor_engine.EditorEngine) -> Boolean {
         lastPumpFileCount = 0;
@@ -404,23 +683,45 @@ class ProjectReplaceController {
             var plan = plans.get(fileIndex) as ReplaceFilePlan;
             fileIndex = fileIndex + 1;
             lastPumpFileCount = lastPumpFileCount + 1;
-            ApplyFilePlan(plan, docMgr, engine, query, replacement,
-                          caseSensitive, wholeWord, regexMode, outcome);
+            outcome.filesProcessed = outcome.filesProcessed + 1;
+            var item = PrepareFilePlan(plan, docMgr, engine, replacement,
+                                       searchProgram);
+            if item.valid == false {
+                outcome.filesFailed = outcome.filesFailed + 1;
+                active = false;
+                completionReady = true;
+                lastSummary = "Replace canceled before commit: " + item.error
+                              + "; no files changed";
+                return true;
+            }
+            prepared.Push(item);
         }
         if fileIndex < plans.count() { return false; }
+
+        var committed = CommitPreparedTransaction(prepared, docMgr, engine, outcome);
         active = false;
         completionReady = true;
-        lastSummary = FormatOutcome(outcome);
+        if committed.success {
+            lastSummary = FormatOutcome(outcome);
+        } else if committed.rollbackComplete {
+            outcome.filesFailed = outcome.filesFailed + 1;
+            lastSummary = "Replace transaction canceled: " + committed.message
+                          + "; no files changed";
+        } else {
+            outcome.filesFailed = outcome.filesFailed + 1;
+            lastSummary = "Replace transaction failed: " + committed.message
+                          + "; rollback was incomplete—review changed files";
+        }
         return true;
     }
 
-    /// @brief Stop before the next file and preserve already completed changes.
+    /// @brief Stop preparation before commit; no target has changed yet.
     expose func Cancel() -> String {
         if active == false { return ""; }
         active = false;
         canceled = true;
         completionReady = false;
-        lastSummary = FormatOutcome(outcome) + "; replacement stopped";
+        lastSummary = "Replace canceled before commit; no files changed";
         return lastSummary;
     }
 
@@ -432,6 +733,7 @@ class ProjectReplaceController {
         fileIndex = 0;
         lastPumpFileCount = 0;
         plans = new List();
+        prepared = new List();
     }
 
     expose func IsBusy() -> Boolean { return active; }
@@ -444,10 +746,8 @@ class ProjectReplaceController {
 }
 
 /// @brief Apply replace-all across the current search results.
-/// @details Groups KIND_SEARCH locations by file; every recorded line is
-///          re-matched at apply time. The active document goes through the
-///          undoable whole-document editor path; other open documents update
-///          their buffers and mark modified; closed files rewrite on disk.
+/// @details The synchronous facade drives the same prepare/revalidate/commit
+///          transaction used by the frame-sliced UI controller.
 /// @param locStore Location store populated by the last search run.
 /// @param docMgr Document manager (open-buffer routing).
 /// @param engine Editor engine (undoable active-document path).
@@ -463,18 +763,15 @@ expose func ReplaceAllFromResults(locStore: locations.LocationStore,
     if locStore == null or query == "" {
         return "Replace: nothing to do";
     }
-    var planSet = BuildPlansFromResults(locStore, 0, 0,
-                                        MAX_REPLACE_LOCATIONS);
-    if planSet.truncated {
-        return "Replace canceled: the result set exceeds the safety limit";
+    var controller = new ProjectReplaceController();
+    if controller.StartFromResults(locStore, 0, 0, query, replacement,
+                                   caseSensitive, wholeWord, regexMode) == false {
+        return controller.lastSummary;
     }
-    var outcome = new ReplaceOutcome();
-    var f = 0;
-    while f < planSet.files.count() {
-        ApplyFilePlan(planSet.files.get(f) as ReplaceFilePlan,
-                      docMgr, engine, query, replacement,
-                      caseSensitive, wholeWord, regexMode, outcome);
-        f = f + 1;
+    while controller.IsBusy() {
+        controller.Pump(docMgr, engine);
     }
-    return FormatOutcome(outcome);
+    var summary = controller.TakeSummary();
+    if summary == "" { summary = controller.lastSummary; }
+    return summary;
 }

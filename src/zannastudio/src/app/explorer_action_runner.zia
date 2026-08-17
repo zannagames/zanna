@@ -408,10 +408,9 @@ func SynchronizeDocumentMutationUI(shell: app_shell.AppShell,
 func ValidateExplorerChildName(shell: app_shell.AppShell,
                                overlay: explorer_actions.ExplorerActionOverlay,
                                name: String) -> Boolean {
-    if context_menus.IsSafeChildName(name) {
-        return true;
-    }
-    overlay.Reject(shell, "Use a plain name, not a path.");
+    var reason = context_menus.ChildNameError(name);
+    if reason == "" { return true; }
+    overlay.Reject(shell, reason);
     return false;
 }
 

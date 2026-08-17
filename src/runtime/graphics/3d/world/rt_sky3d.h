@@ -95,6 +95,26 @@ void *rt_sky3d_get_sun_direction(void *sky);
 /// @return Newly allocated albedo snapshot; origin for an invalid handle.
 void *rt_sky3d_get_ground_albedo(void *sky);
 
+/// @brief Enable or disable the deterministic night star field; marks dirty on change.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @param enabled Non-zero draws the fixed star catalog once the sun sets.
+void rt_sky3d_set_stars(void *obj, int8_t enabled);
+
+/// @brief Report whether the night star field is enabled.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return 1 when stars render at night, otherwise 0.
+int8_t rt_sky3d_get_stars(void *obj);
+
+/// @brief Set the star-splat brightness multiplier, clamped to [0, 4].
+/// @param obj Sky3D handle; invalid handles trap.
+/// @param intensity Brightness multiplier applied to every star.
+void rt_sky3d_set_star_intensity(void *obj, double intensity);
+
+/// @brief Report the star-splat brightness multiplier.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return Star brightness multiplier in [0, 4].
+double rt_sky3d_get_star_intensity(void *obj);
+
 #ifdef __cplusplus
 }
 #endif

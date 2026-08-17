@@ -24,6 +24,7 @@ module symbols;
 bind "../editor/editor_engine";
 bind "../editor/scheduler";
 bind "../editor/basic_query_job";
+bind "../editor/semantic_model";
 bind "../ui/app_shell";
 
 bind ZiaCompletion = Zanna.Zia.Completion;
@@ -89,6 +90,7 @@ class SymbolOutline {
     expose Boolean semanticFoldingEnabled;
     expose String foldedPath;
     expose Integer foldedRevision;
+    expose semantic_model.SemanticModel sharedModel;
 
     /// @brief Initialize hidden with empty caches.
     expose func init() {
@@ -110,10 +112,21 @@ class SymbolOutline {
         semanticFoldingEnabled = false;
         foldedPath = "";
         foldedRevision = -1;
+        sharedModel = null;
     }
 
     expose func SetScheduler(value: scheduler.EditorScheduler) {
         workScheduler = value;
+    }
+
+    /// @brief Reuse one compiler analysis for outline, folding, and token consumers.
+    expose func SetSemanticModel(model: semantic_model.SemanticModel) {
+        sharedModel = model;
+        CancelPendingJob();
+        lastPath = "";
+        lastRevision = -1;
+        foldedPath = "";
+        foldedRevision = -1;
     }
 
     /// @brief Switch symbol/folding backends and invalidate the old mode's
@@ -231,6 +244,16 @@ class SymbolOutline {
         if revision == lastRevision and sourcePath == lastPath {
             if semanticFoldingEnabled == false { return; }
             if revision == foldedRevision and sourcePath == foldedPath { return; }
+        }
+
+        if isBasic == false and sharedModel != null {
+            sharedModel.SetSourcePath(sourcePath);
+            sharedModel.Update(engine);
+            if sharedModel.IsReady(sourcePath, revision) == false { return; }
+            ApplySymbols(engine, sharedModel.readySymbols,
+                         sharedModel.readyLineOffset, sharedModel.readySource,
+                         sourcePath, revision);
+            return;
         }
 
         if workScheduler != null {
@@ -384,6 +407,12 @@ class SymbolOutline {
                 }
             }
         }
+    }
+
+    /// @brief Cancel symbol/folding work and drain the owned BASIC query.
+    expose func Shutdown() -> Boolean {
+        CancelPendingJob();
+        return basicJob.CancelAndWait();
     }
 
     hide func CancelPendingJob() {

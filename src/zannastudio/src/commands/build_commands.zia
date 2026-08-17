@@ -13,6 +13,8 @@
 //   - Current-file targets must be saved, editable documents.
 //   - At most one build/run job is active at a time.
 //   - Completion remains on durable Build result surfaces without a popup.
+//   - Native build elision requires a complete reliable background dependency
+//     snapshot; unknown freshness always takes the build path.
 // Ownership/Lifetime:
 //   - This stateless module borrows shell, document, project, and job models.
 // Links: zannastudio/src/build/build_system.zia,
@@ -108,6 +110,13 @@ func ReportCanceledExecution(shell: app_shell.AppShell,
     }
 }
 
+/// @brief Narrowly invalidate native freshness for files written by preflight.
+func InvalidateSavedBuildInputs(projMgr: project_manager.ProjectManager,
+                                result: file_commands.SaveAllResult) {
+    if projMgr == null or result == null { return; }
+    projMgr.InvalidateSourceFreshnessPaths(result.savedPaths);
+}
+
 /// @brief Start a prepared build/run config and synchronize visible job state.
 func StartExecutionConfig(shell: app_shell.AppShell,
                           buildSys: build_system.BuildSystem,
@@ -156,6 +165,7 @@ func handleBuild(shell: app_shell.AppShell,
         ReportCanceledExecution(shell, "Build", saveResult);
         return;
     }
+    InvalidateSavedBuildInputs(projMgr, saveResult);
     file_commands.SaveEditorState(docMgr, engine);
     buildDoc = docMgr.GetActive();
     var cfg = run_config.ForDocument(run_config.ACTION_BUILD, null, projMgr);
@@ -190,6 +200,7 @@ func handleBuildAndRun(shell: app_shell.AppShell,
         ReportCanceledExecution(shell, "Run", saveResult);
         return;
     }
+    InvalidateSavedBuildInputs(projMgr, saveResult);
     file_commands.SaveEditorState(docMgr, engine);
     runDoc = docMgr.GetActive();
     var cfg = run_config.ForDocument(run_config.ACTION_RUN, null, projMgr);
@@ -248,6 +259,7 @@ func handleRunScene(shell: app_shell.AppShell,
         ReportCanceledExecution(shell, "Run Scene", saveResult);
         return;
     }
+    InvalidateSavedBuildInputs(projMgr, saveResult);
     file_commands.SaveEditorState(docMgr, engine);
     sceneDoc = docMgr.GetActive();
     if sceneDoc == null or sceneDoc!.isModified {
@@ -329,6 +341,7 @@ expose func handlePlayScene(shell: app_shell.AppShell,
         ReportCanceledExecution(shell, "Play Scene", saveResult);
         return;
     }
+    InvalidateSavedBuildInputs(projMgr, saveResult);
     if projMgr.project == null
        or projMgr.project.runProfile != "native" {
         // VM profile: run the project entry under the interpreter with
@@ -381,7 +394,7 @@ expose func handlePlayScene(shell: app_shell.AppShell,
     var chain = run_config.ForNativeScene(
         root, projectName, sceneDoc!.filePath, binaryPath, env);
     if File.Exists(binaryPath)
-       and File.Modified(binaryPath) > NewestSourceModified(root) {
+       and projMgr.IsNativeArtifactKnownFresh(binaryPath) {
         shell.SetStatusLeft(
             "Binary is fresh; playing " + projectName + " embedded");
         StartExecutionConfig(shell, buildSys, locStore, chain.next);
@@ -408,7 +421,7 @@ func StartNativeSceneRun(shell: app_shell.AppShell,
     var chain = run_config.ForNativeScene(
         root, projectName, scenePath, binaryPath, null);
     if File.Exists(binaryPath)
-       and File.Modified(binaryPath) > NewestSourceModified(root) {
+       and projMgr.IsNativeArtifactKnownFresh(binaryPath) {
         // Scene-only iteration: the binary is newer than every source
         // file, so skip straight to the launch stage.
         shell.SetStatusLeft(
@@ -441,49 +454,6 @@ expose func NoteSceneWatchReload(shell: app_shell.AppShell,
         + " — the running game will reload it");
 }
 
-/// @brief Newest modification time across bounded project source files.
-/// @details Walks at most 6 levels and 2,000 files; hidden and
-///          .zanna-studio directories are skipped so run artifacts never
-///          look like source edits.
-func NewestSourceModified(root: String) -> Integer {
-    var newest = 0;
-    var pending: List[String] = [];
-    var depths: List[Integer] = [];
-    pending.add(root);
-    depths.add(0);
-    var visited = 0;
-    while pending.count() > 0 and visited < 2000 {
-        var dirPath = pending.get(pending.count() - 1);
-        var depth = depths.get(depths.count() - 1);
-        pending.removeAt(pending.count() - 1);
-        depths.removeAt(depths.count() - 1);
-        var files = Dir.Files(dirPath);
-        var index = 0;
-        while index < Seq.get_Count(files) and visited < 2000 {
-            var name = Seq.GetStr(files, index);
-            index = index + 1;
-            if Str.Right(name, 4) != ".zia"
-               and name != "zanna.project" {
-                continue;
-            }
-            visited = visited + 1;
-            var stamp = File.Modified(Path.Join(dirPath, name));
-            if stamp > newest { newest = stamp; }
-        }
-        if depth >= 6 { continue; }
-        var dirs = Dir.Dirs(dirPath);
-        var dirIndex = 0;
-        while dirIndex < Seq.get_Count(dirs) {
-            var childName = Seq.GetStr(dirs, dirIndex);
-            dirIndex = dirIndex + 1;
-            if Str.Left(childName, 1) == "." { continue; }
-            pending.add(Path.Join(dirPath, childName));
-            depths.add(depth + 1);
-        }
-    }
-    return newest;
-}
-
 func handleStop(shell: app_shell.AppShell,
                 buildSys: build_system.BuildSystem) {
     if buildSys.Stop() {
@@ -506,23 +476,42 @@ func UpdateJob(shell: app_shell.AppShell,
         if outputDelta != "" {
             shell.toolPanels.UpdateBuildOutput(outputDelta);
         }
+        if buildSys.IsActive() and buildSys.TakeDiagnosticsChanged() {
+            // Streaming parser records are safe to publish before exit; this
+            // keeps long compiler jobs actionable and avoids depending on the
+            // bounded final output buffer for diagnostic recovery.
+            UpdateDiagnostics(shell, buildSys, locStore);
+        }
         if buildSys.IsActive() == false {
             shell.SetBuildJobActive(false, "");
+            var finished = buildSys.TakeCompletedResult();
             var errs = buildSys.GetErrorCount();
             var warns = buildSys.GetWarningCount();
-            if buildSys.lastBuildSuccess {
-                var okMsg = buildSys.activeName + " succeeded in " + buildSys.GetBuildTime();
+            var succeeded = buildSys.lastBuildSuccess;
+            var resultName = buildSys.activeName;
+            var resultDuration = buildSys.GetBuildTime();
+            var resultExitCode = buildSys.exitCode;
+            if finished != null {
+                errs = finished!.errorCount;
+                warns = finished!.warningCount;
+                succeeded = finished!.success;
+                resultName = finished!.name;
+                resultDuration = finished!.duration;
+                resultExitCode = finished!.exitCode;
+            }
+            if succeeded {
+                var okMsg = resultName + " succeeded in " + resultDuration;
                 if warns > 0 {
                     okMsg = okMsg + " — " + countLabel(warns, "warning");
                 }
                 shell.SetStatusLeft(okMsg);
             } else {
                 var detail = problemSummary(errs, warns);
-                var failMsg = buildSys.activeName + " failed in " + buildSys.GetBuildTime();
+                var failMsg = resultName + " failed in " + resultDuration;
                 if detail != "" {
                     failMsg = failMsg + " — " + detail;
                 } else {
-                    failMsg = failMsg + " (exit " + buildSys.exitCode + ")";
+                    failMsg = failMsg + " (exit " + resultExitCode + ")";
                 }
                 shell.SetStatusLeft(failMsg);
             }

@@ -86,6 +86,7 @@ Current Zanna Studio-related CTest entries are registered in
 | `zia_zannastudio_context_menu` | Context menu routing and enabled state. | `zia;zannastudio;context-menu;requires_display` |
 | `zia_zannastudio_syntax_render` | Syntax rendering path. | `zia;zannastudio;syntax;requires_display` |
 | `zia_zannastudio_formatting` | Formatting commands and helpers. | `zia;zannastudio;format` |
+| `zia_zannastudio_edge_case_corpus` | Versioned file-backed formatter, bind, trivia, diagnostics, search, keybinding, and argv adversarial corpus, including CRLF, Unicode, malformed input, and byte-chunked duplex streams. | `zia;zannastudio;corpus` |
 | `zia_zannastudio_debug` | VM-backed debug adapter integration. | `zia;zannastudio;debug` |
 | `zia_zannastudio_semantic_tokens` | Semantic token rendering behavior. | `zia;zannastudio;semantic;requires_display` |
 | `zia_zannastudio_console_search` | Output panel helpers, contextual notification eligibility, dynamic surface Edit-menu state, docked search panel, workspace-symbol discovery, and Quick Open ranking. | `zia;zannastudio;console;search;requires_display` |
@@ -113,6 +114,12 @@ Run non-display Zanna Studio tests in a headless environment:
 
 ```sh
 ctest --test-dir build -L zannastudio -LE requires_display --output-on-failure
+```
+
+Replay only the shared adversarial corpus:
+
+```sh
+ctest --test-dir build -R '^zia_zannastudio_edge_case_corpus$' --output-on-failure
 ```
 
 Run display-dependent editor and UI probes:

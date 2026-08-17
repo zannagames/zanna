@@ -105,6 +105,8 @@ target_link_libraries(zannagui
         PUBLIC
         zannagfx
         zanna_text_core
+        PRIVATE
+        zanna_regex_engine
 )
 
 # Native dialog + shell services on Windows

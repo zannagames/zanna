@@ -241,7 +241,8 @@ static int linkToExe(const std::string &asmPath,
 ///          them to be present. Graphics and Audio support libraries are
 ///          appended when the link context declares those components. The GUI
 ///          support library also pulls in zanna_text_core because CodeEditor
-///          uses the shared text-buffer C ABI.
+///          uses the shared text-buffer C ABI. Base, Text, and GUI consumers
+///          share the separately packaged zanna_regex_engine archive.
 /// @param ctx Link context produced by prepareLinkContext/prepareLinkContextFromSymbols.
 /// @param targetPlatform Requested OS platform; Host is resolved through targetLinkPlatform().
 /// @param windowsDebugRuntime Optional Windows CRT flavor override.
@@ -305,6 +306,9 @@ static void collectNativeLinkArchives(const common::LinkContext &ctx,
         for (const auto &lib : common::basicFrontendClosureLibs())
             appendIfExists(common::supportLibraryPath(ctx.buildDir, lib));
     }
+
+    if (common::requiresRegexEngineArchive(ctx))
+        appendIfExists(common::supportLibraryPath(ctx.buildDir, "zanna_regex_engine"));
 
     if (targetLinkPlatform(targetPlatform) == linker::LinkPlatform::Windows) {
         const bool useDebugRuntime =

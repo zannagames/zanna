@@ -9,6 +9,8 @@
 // Purpose: Coordinate asynchronous Git operations and Source Control UI state.
 // Key invariants:
 //   - Mutating Git jobs are serialized through a bounded visible queue.
+//   - Network credentials remain in configured Git/SSH brokers and never enter
+//     a Studio text field.
 //   - Worktree diff reads are bounded and non-trapping.
 //   - Missing workspaces and non-repositories expose truthful disabled actions.
 //   - Sidebar controls wrap, remain keyboard reachable, and reflect live context.
@@ -46,9 +48,10 @@ bind Input = Zanna.Input;
 //     background, then enqueue a fresh status snapshot when they complete.
 //   * STRUCTURED ROW DATA. The selected row stores the repo-relative path (or
 //     sha, in history mode), so commands never parse display labels.
-//   * NETWORK OPS RUN ON A PTY. Push/pull go through GitPtyJob so credential
-//     prompts stream into the panel and are answered with an in-app (masked)
-//     input — no external askpass helper (plan 11).
+//   * NETWORK OPS USE CREDENTIAL BROKERS. Push/pull inherit Git Credential
+//     Manager, credential-helper, askpass, SSH-agent, proxy, and certificate
+//     configuration through a process environment overlay. Studio does not
+//     collect password or passphrase text.
 // ============================================================================
 
 final HISTORY_PAGE_SIZE = 50;
@@ -167,10 +170,12 @@ class ScmViewBase {
         cancelBtn.SetTooltip("Cancel the active Git job and queued operations");
         pushBtn = GUI.Button.New(topRow, "Push");
         pushBtn.SetAccessibleName("Push repository");
-        pushBtn.SetTooltip("Push the current branch");
+        pushBtn.SetTooltip(
+            "Push using the configured Git credential helper or SSH agent");
         pullBtn = GUI.Button.New(topRow, "Pull");
         pullBtn.SetAccessibleName("Pull repository");
-        pullBtn.SetTooltip("Pull the current branch");
+        pullBtn.SetTooltip(
+            "Pull using the configured Git credential helper or SSH agent");
         historyBtn = GUI.Button.New(topRow, "History");
         historyBtn.SetAccessibleName("Toggle repository history");
         historyBtn.SetTooltip("Switch between changes and commit history");

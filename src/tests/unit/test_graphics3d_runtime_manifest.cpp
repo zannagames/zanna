@@ -55,7 +55,8 @@ namespace {
  * build and transform a mesh but not put one mesh's triangles into another,
  * so batching parts into a single draw call meant re-emitting every vertex
  * by hand): +1 function / +1 method. */
-constexpr std::size_t kExpectedFunctionCount = 2249;
+// ADR 0257: Sky3D night mode adds set/get Stars + StarIntensity (2249 -> 2253).
+constexpr std::size_t kExpectedFunctionCount = 2253;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 826;
 constexpr std::size_t kExpectedMethodCount = 1210;
@@ -252,7 +253,8 @@ int main() {
      * Rehashed 2026-08-15: Mesh3D.RasterizeUvMaskY added (bind-pose
      * Y-band UV coverage into a Pixels mask — body-zone texture masking
      * for per-region character recolors, plan 55 uniforms). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x13e1a31028da0a8f);
+    // ADR 0257 (Sky3D night mode) reviewed 2026-08-16.
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xc8e61c257ec9320b);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

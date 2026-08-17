@@ -678,7 +678,9 @@ rt_string rt_listbox_get_selected_text(void *listbox) {
     if (lb->virtual_mode) {
         if (lb->selection_bitmap && lb->data_provider) {
             for (size_t i = 0; i < lb->total_item_count && i < lb->selection_bitmap_size; ++i) {
-                if (!lb->selection_bitmap[i])
+                size_t byte_index = i >> 3u;
+                uint8_t bit_mask = (uint8_t)(1u << (i & 7u));
+                if ((lb->selection_bitmap[byte_index] & bit_mask) == 0u)
                     continue;
                 const char *text = "";
                 lb->data_provider(&lb->base, i, &text, NULL, lb->data_provider_user_data);

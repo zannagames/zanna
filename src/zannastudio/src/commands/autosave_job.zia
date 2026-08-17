@@ -1,0 +1,226 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/autosave_job.zia
+// Purpose: Persist immutable autosave snapshots away from Studio's UI thread.
+// Key invariants:
+//   - Workers never read or mutate editor, document-manager, or GUI objects.
+//   - The disk baseline is validated before an exact compare/exchange commit.
+//   - At most one request is active; later edits remain dirty and debounce again.
+// Ownership/Lifetime:
+//   - AutoSaveJob owns its request until Async.RunOwned completes.
+//   - The request retains its Document only for UI-thread completion identity.
+// Links: zannastudio/src/main.zia,
+//        zannastudio/src/commands/file_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module autosave_job;
+
+bind "../core/document";
+bind "../services/safe_io";
+bind "file_save_support";
+
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+bind Hash = Zanna.Crypto.Hash;
+bind Str = Zanna.String;
+
+final AUTOSAVE_SHUTDOWN_WAIT_MS = 5000;
+
+/// @brief Immutable autosave input plus worker-published completion details.
+/// @details `owner` is retained only so the UI thread can reject a closed or
+///          retargeted document; RunAutoSaveSnapshot deliberately never reads it.
+class AutoSaveRequest {
+    expose document.Document owner;
+    expose Integer sourceRevision;
+    expose String path;
+    expose String sourceContent;
+    expose String savedContent;
+    expose Integer expectedModified;
+    expose Integer expectedSize;
+    expose String expectedHash;
+    expose Integer maxBytes;
+    expose Boolean trimTrailingWhitespace;
+    expose Boolean ensureFinalNewline;
+    expose Boolean succeeded;
+    expose Boolean conflict;
+    expose String error;
+    expose Integer committedModified;
+    expose Integer committedSize;
+
+    expose func init() {
+        owner = null;
+        sourceRevision = 0;
+        path = "";
+        sourceContent = "";
+        savedContent = "";
+        expectedModified = -1;
+        expectedSize = -1;
+        expectedHash = "";
+        maxBytes = 0;
+        trimTrailingWhitespace = false;
+        ensureFinalNewline = true;
+        succeeded = false;
+        conflict = false;
+        error = "";
+        committedModified = -1;
+        committedSize = -1;
+    }
+}
+
+/// @brief Validate and persist one immutable autosave request.
+/// @details All normalization, hashing, reads, staging, flushes, and rename work
+///          happens on this worker. The exact disk text read after metadata/hash
+///          validation becomes the compare/exchange precondition, closing the
+///          final external-edit race.
+func RunAutoSaveSnapshot(request: AutoSaveRequest) -> Any {
+    if request == null { return request; }
+    request.savedContent = file_save_support.ApplySaveTextRulesWithOptions(
+        request.sourceContent,
+        request.trimTrailingWhitespace,
+        request.ensureFinalNewline);
+    if request.path == "" or request.maxBytes < 0
+       or Str.get_Length(request.savedContent) > request.maxBytes {
+        request.error = "Autosave snapshot exceeds the file budget";
+        return request;
+    }
+
+    var beforeModified = safe_io.Modified(request.path);
+    var beforeSize = safe_io.SizeBytes(request.path);
+    if beforeModified < 0 or beforeSize < 0
+       or beforeModified != request.expectedModified
+       or beforeSize != request.expectedSize
+       or request.expectedHash == "" {
+        request.conflict = true;
+        request.error = "File changed before autosave";
+        return request;
+    }
+
+    var readResult = safe_io.ReadAllTextBounded(request.path,
+                                                request.maxBytes);
+    if readResult.ok == false {
+        request.error = "Could not read the file for autosave";
+        return request;
+    }
+    var existing = readResult.text;
+    if safe_io.Modified(request.path) != beforeModified
+       or safe_io.SizeBytes(request.path) != beforeSize
+       or Hash.Sha256(existing) != request.expectedHash {
+        request.conflict = true;
+        request.error = "File changed during autosave validation";
+        return request;
+    }
+
+    if existing != request.savedContent
+       and safe_io.CompareExchangeTextFile(request.path,
+                                           existing,
+                                           request.savedContent,
+                                           request.maxBytes) == false {
+        request.conflict = true;
+        request.error = "File changed before autosave commit";
+        return request;
+    }
+    request.committedModified = safe_io.Modified(request.path);
+    request.committedSize = safe_io.SizeBytes(request.path);
+    if request.committedModified < 0 or request.committedSize < 0 {
+        request.error = "Could not verify autosave commit";
+        return request;
+    }
+    request.succeeded = true;
+    request.error = "";
+    return request;
+}
+
+/// @brief Single-flight background autosave owner.
+class AutoSaveJob {
+    expose AutoSaveRequest activeRequest;
+    expose AutoSaveRequest completedRequest;
+    expose Any activeFuture;
+    expose Integer startedCount;
+    expose Integer completedCount;
+    expose Integer failedCount;
+    expose String lastError;
+
+    expose func init() {
+        activeRequest = null;
+        completedRequest = null;
+        activeFuture = null;
+        startedCount = 0;
+        completedCount = 0;
+        failedCount = 0;
+        lastError = "";
+    }
+
+    /// @brief Start one request; returns false while another snapshot is active.
+    expose func Queue(request: AutoSaveRequest) -> Boolean {
+        if request == null or activeFuture != null { return false; }
+        completedRequest = null;
+        activeRequest = request;
+        try {
+            activeFuture = Async.RunOwned(&RunAutoSaveSnapshot, request);
+        } catch {
+            activeFuture = null;
+        }
+        if activeFuture == null {
+            request.error = "Could not start autosave worker";
+            completedRequest = request;
+            activeRequest = null;
+            lastError = request.error;
+            failedCount = failedCount + 1;
+            return false;
+        }
+        startedCount = startedCount + 1;
+        return true;
+    }
+
+    /// @brief Publish a completed worker without blocking the frame loop.
+    expose func Pump() -> Boolean {
+        if activeFuture != null and Future.get_IsDone(activeFuture) {
+            var finished = activeRequest;
+            if Future.get_IsError(activeFuture) {
+                finished.succeeded = false;
+                finished.error = Future.get_Error(activeFuture);
+            }
+            completedRequest = finished;
+            completedCount = completedCount + 1;
+            if finished.succeeded {
+                lastError = "";
+            } else {
+                failedCount = failedCount + 1;
+                lastError = finished.error;
+            }
+            activeFuture = null;
+            activeRequest = null;
+        }
+        return completedRequest != null;
+    }
+
+    expose func TakeCompleted() -> AutoSaveRequest {
+        var request = completedRequest;
+        completedRequest = null;
+        return request;
+    }
+
+    expose func IsBusy() -> Boolean {
+        return activeFuture != null;
+    }
+
+    /// @brief Drain a bounded active write before runtime teardown.
+    expose func WaitForShutdown() -> Boolean {
+        if activeFuture == null { return true; }
+        var finished = false;
+        try {
+            finished = Future.WaitFor(activeFuture, AUTOSAVE_SHUTDOWN_WAIT_MS);
+        } catch {
+            return false;
+        }
+        if finished == false { return false; }
+        Pump();
+        return activeFuture == null;
+    }
+}

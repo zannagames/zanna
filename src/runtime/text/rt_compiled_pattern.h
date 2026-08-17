@@ -8,7 +8,7 @@
 // recompilation overhead, supporting find, capture, replace, and split.
 //
 // Key invariants:
-//   - Pattern compilation traps on invalid syntax.
+//   - The constructor traps on invalid syntax; TryNew returns a diagnostic Result.
 //   - Compiled patterns are opaque objects managed by the runtime object system.
 //   - Match results use Seq containers for multi-capture returns.
 //   - Replace and ReplaceFirst perform literal replacement through separate APIs.
@@ -50,6 +50,12 @@ extern "C" {
 /// @return New GC-managed opaque CompiledPattern object, or NULL after a
 ///         validation, allocation, or syntax trap.
 void *rt_compiled_pattern_new(rt_string pattern);
+
+/// @brief Compile a regex without trapping for malformed user syntax.
+/// @param pattern Required regex source string without embedded NUL bytes.
+/// @param case_insensitive Nonzero enables deterministic ASCII case folding.
+/// @return Caller-owned Result containing a CompiledPattern or an error string.
+void *rt_compiled_pattern_try_new(rt_string pattern, int8_t case_insensitive);
 
 /// @brief Get the original pattern string.
 /// @param obj CompiledPattern object, or NULL.
@@ -109,6 +115,22 @@ int64_t rt_compiled_pattern_find_pos(void *obj, rt_string text);
 /// @return Caller-owned Zanna.Option containing the first byte offset, or None.
 void *rt_compiled_pattern_find_pos_option(void *obj, rt_string text);
 
+/// @brief Find one match range at or after a byte offset.
+/// @details The returned sequence is empty for no match, otherwise contains
+///          `[start, end, resume]` as boxed byte offsets. `resume` equals end
+///          for consuming matches and advances one complete UTF-8 scalar for a
+///          zero-width match. Whole-word checks use deterministic Unicode 16.0
+///          letter/mark/number/connector rules.
+/// @param obj Required CompiledPattern object.
+/// @param text Text to search; NULL is treated as empty.
+/// @param start Zero-based starting byte offset; negatives clamp to zero.
+/// @param whole_word Nonzero rejects matches touching Unicode word scalars.
+/// @return Caller-owned owning Seq of zero or three boxed integers.
+void *rt_compiled_pattern_find_range_from(void *obj,
+                                          rt_string text,
+                                          int64_t start,
+                                          int8_t whole_word);
+
 /// @brief Find all non-overlapping matches.
 /// @details Zero-width matches advance one byte to guarantee progress.
 /// @param obj Required CompiledPattern object.
@@ -154,6 +176,19 @@ rt_string rt_compiled_pattern_replace(void *obj, rt_string text, rt_string repla
 /// @return Newly allocated string with the first match replaced, or a fresh copy
 ///         of the input when no match exists.
 rt_string rt_compiled_pattern_replace_first(void *obj, rt_string text, rt_string replacement);
+
+/// @brief Expand capture references for the exact match beginning at a byte offset.
+/// @details Supports `$$`, `$&`, `$0`, `$1`, and `${1}` syntax. A missing exact
+///          match returns Err rather than searching later text.
+/// @param obj Required CompiledPattern object.
+/// @param text Full source text; NULL is treated as empty.
+/// @param start Expected zero-based full-match start.
+/// @param replacement Replacement template; NULL is treated as empty.
+/// @return Caller-owned Result containing the expanded String or an error String.
+void *rt_compiled_pattern_expand_replacement_at(void *obj,
+                                                rt_string text,
+                                                int64_t start,
+                                                rt_string replacement);
 
 //=============================================================================
 // Split Operation

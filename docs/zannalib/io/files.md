@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-16
 ---
 
 # Files & Directories
@@ -24,7 +24,10 @@ File system operations.
 | `Exists(path)`                | `Boolean(String)`      | Returns true only if the path exists and is a regular file                               |
 | `SameFile(left, right)`       | `Boolean(String, String)` | Returns true when both paths resolve to the same existing regular file identity       |
 | `ReadAllText(path)`           | `String(String)`       | Reads the entire file contents as a string; traps on I/O errors                           |
+| `ReadAllTextBounded(path, maxBytes)` | `String(String, Integer)` | Opens once and reads the complete file only when its byte size does not exceed the nonnegative ceiling |
 | `WriteAllText(path, content)` | `Void(String, String)` | Atomically replaces a text file with new contents                                          |
+| `WriteAllTextNew(path, content)` | `Void(String, String)` | Atomically creates a durable text file and traps rather than replacing an existing destination |
+| `CompareExchangeAllText(path, expected, desired)` | `Boolean(String, String, String)` | Atomically replaces a text file only when its complete current bytes match `expected` |
 | `Delete(path)`                | `Void(String)`         | Deletes a file; missing files are ignored, other failures trap                            |
 | `Copy(src, dst)`              | `Void(String, String)` | Copies a file from src to dst; traps if `dst` already exists or both paths name the same file |
 | `Move(src, dst)`              | `Void(String, String)` | Moves or renames a file; traps if `dst` already exists                                    |
@@ -53,8 +56,12 @@ File system operations.
   false rather than trapping. It therefore handles hard links, symlinks, and case-equivalent
   spellings without incorrectly folding distinct files on a case-sensitive filesystem.
 - Path strings with embedded NUL bytes are rejected before reaching platform file APIs.
-- `ReadAllText`, `ReadAllBytes`, and `ReadAllLines` require a regular file and trap on directories, special files, I/O errors, or unexpected short reads if the file changes while being read.
-- `WriteAllText`, `WriteAllBytes`, `WriteBytes`, and `WriteLines` write to an exclusive temporary file in the destination directory and then replace the live file. Failed writes trap instead of silently leaving a partial overwrite behind. Temporary sidecar names are unpredictable and do not include process memory addresses.
+- `ReadAllText`, `ReadAllTextBounded`, `ReadAllBytes`, and `ReadAllLines` require a regular file and trap on directories, special files, I/O errors, or unexpected short reads if the file changes while being read. `ReadAllTextBounded` also rejects negative ceilings, sizes above the ceiling before allocation, and observed trailing data.
+- `WriteAllText`, `WriteAllTextNew`, `WriteAllBytes`, `WriteBytes`, and `WriteLines` write to an exclusive temporary file in the destination directory, durably flush it, and atomically commit it. `WriteAllTextNew` uses a no-clobber commit and preserves any destination that appears before commit. Failed writes trap instead of silently leaving a partial file behind. Temporary sidecar names are unpredictable and do not include process memory addresses.
+- `CompareExchangeAllText` serializes cooperating processes with a stable adjacent lock file,
+  compares the destination byte-for-byte, and commits through the same durable atomic writer only
+  on a match. A missing file matches an empty expected string. A mismatch returns `false`; I/O
+  failure traps. Callers should use one normalized path spelling for a shared destination.
 - `Copy` and `Move` never overwrite an existing destination. `MoveOver` is the explicit replacement operation; it first attempts an in-place replace/rename and only falls back to copy-plus-delete when the source and destination are on different filesystems or volumes.
 - `Copy` preserves regular-file permission bits and modification/access times where the platform exposes them. Cross-device `Move` uses the same copy path before deleting the source.
 - `Size` and `Modified` return `-1` for missing paths, directories, and special files. A real zero-byte file still reports size `0`.
@@ -629,6 +636,7 @@ Cross-platform path manipulation utilities. On Windows, both `/` and `\` are tre
 | `WithExtension(path, ext)` | `String(String, String)` | Replaces the extension of a path                      |
 | `IsAbsolute(path)`   | `Boolean(String)`        | Returns true if the path is absolute                        |
 | `IsLink(path)`       | `Boolean(String)`        | Returns true if the final component is a symlink/reparse point |
+| `SameEntry(left, right)` | `Boolean(String, String)` | Compares stable identity for existing files or directories |
 | `Absolute(path)`     | `String(String)`         | Converts a relative path to absolute                        |
 | `ExeDir()`           | `String()`               | Returns the directory containing the running executable     |
 | `DataDir(app)`       | `String(String)`         | Per-user writable data directory for `app` (created on demand) |
@@ -653,6 +661,11 @@ exist and do not resolve symbolic links.
 `IsLink()` inspects the final component without following it. It recognizes POSIX symbolic
 links and Windows reparse points (including directory junctions), and returns false rather than
 trapping for invalid, missing, inaccessible, or ordinary paths.
+
+`SameEntry()` follows normal filesystem resolution and compares stable entry
+identity, including directories and link/case aliases supported by the mounted
+filesystem. It returns false for invalid, missing, or inaccessible operands.
+Use `File.SameFile()` when both operands must specifically be regular files.
 
 ### Zia Example
 

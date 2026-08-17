@@ -32,5 +32,31 @@ func start() {
     // Night sun (below horizon) must be darker than noon at the zenith face.
     sky.SetSunDirection(Vec3.New(0.0, -1.0, 0.0));
     sky.Update(null);
+    // Plan 59: the deterministic night star field — the toggle marks
+    // dirty, regenerates cleanly at night, round-trips its intensity
+    // clamp, and stays stable across resolutions.
+    sky.Stars = true;
+    if (sky.Dirty == false) {
+        Terminal.Say("FAIL: enabling stars should mark the sky dirty");
+        return;
+    }
+    if (sky.Update(null) == false) {
+        Terminal.Say("FAIL: starfield night update failed");
+        return;
+    }
+    sky.StarIntensity = 9.0;
+    if (sky.StarIntensity > 4.0) {
+        Terminal.Say("FAIL: star intensity clamp missing");
+        return;
+    }
+    sky.Resolution = 128;
+    if (sky.Update(null) == false) {
+        Terminal.Say("FAIL: starfield update at 128 failed");
+        return;
+    }
+    if (sky.Stars == false) {
+        Terminal.Say("FAIL: star toggle did not persist");
+        return;
+    }
     Terminal.Say("PASS");
 }

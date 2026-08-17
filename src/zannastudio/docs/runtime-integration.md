@@ -114,6 +114,7 @@ until the UI uses virtual row realization end to end.
 Zanna Studio uses:
 
 - `StartWithEnv(program, args, cwd, env)`.
+- `ReadOutputResult()` for ordered, stream-tagged build output.
 - `ReadStdoutResult()`.
 - `ReadStderrResult()`.
 - `WriteStdin()`.
@@ -125,8 +126,11 @@ Zanna Studio uses:
 Important constraints:
 
 - Jobs are started with explicit argv sequences, not shell strings.
-- The process runtime does not search `PATH` for bare executables in the way a
-  shell would, so Zanna Studio resolves the `zanna` and `git` paths before launch.
+- Process startup PATH-searches bare names, while Studio additionally resolves
+  installed/developer `zanna` layouts and project-relative manifest tools so
+  launch behavior is independent of Studio's own current directory.
+- Windows stdin is accepted through a bounded background writer; UI frame code
+  never performs a potentially blocking pipe write.
 - IDE-side retained output is bounded to avoid runaway memory usage.
 - Runtime process buffers are finite. Zanna Studio uses result reads so overflow
   returns `{ text, truncated }` instead of trapping the IDE; callers append a

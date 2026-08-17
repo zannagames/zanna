@@ -460,11 +460,12 @@ RT_CLASS_END()
 /// @details
 /// `Zanna.System.Process` exposes a registry-backed runtime surface without requiring callers to
 /// construct the class directly. Its public surface exposes operations including `Start`,
-/// `StartIn`, `StartWithEnv`.
+/// `StartIn`, `StartWithEnv`, `StartWithEnvOverlay`.
 RT_CLASS_BEGIN("Zanna.System.Process", Process, "obj", none)
     RT_METHOD("Start", "obj<Zanna.System.Process.ProcessHandle>(str,obj)", ProcessStart)
     RT_METHOD("StartIn", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str)", ProcessStartIn)
     RT_METHOD("StartWithEnv", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)", ProcessStartWithEnv)
+    RT_METHOD("StartWithEnvOverlay", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)", ProcessStartWithEnvOverlay)
 RT_CLASS_END()
 
 // Zanna.System.EmbedHost.EmbedChannel - embedded play frame/input channel (ADR 0225).
@@ -504,6 +505,7 @@ RT_CLASS_BEGIN("Zanna.System.Process.ProcessHandle", ProcessHandle, "obj", none)
     RT_METHOD("ReadStdoutResult", "obj<Zanna.Collections.Map>()", ProcessReadStdoutResult)
     RT_METHOD("ReadStderr", "str()", ProcessReadStderr)
     RT_METHOD("ReadStderrResult", "obj<Zanna.Collections.Map>()", ProcessReadStderrResult)
+    RT_METHOD("ReadOutputResult", "obj<Zanna.Collections.Map>()", ProcessReadOutputResult)
     RT_METHOD("WriteStdin", "i64(str)", ProcessWriteStdin)
     RT_METHOD("ExitCode", "i64()", ProcessExitCode)
     RT_METHOD("Kill", "i1()", ProcessKill)

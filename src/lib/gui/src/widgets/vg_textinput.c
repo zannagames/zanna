@@ -84,6 +84,52 @@ static vg_widget_vtable_t g_textinput_vtable = {.destroy = textinput_destroy,
 // Helper Functions
 //=============================================================================
 
+/// @brief Overwrite sensitive bytes through a volatile pointer.
+/// @details The volatile writes prevent the compiler from deleting the scrub
+///          as an apparently dead store immediately before release.
+/// @param memory Writable storage to clear; NULL is ignored.
+/// @param length Number of bytes to overwrite.
+static void textinput_secure_zero(void *memory, size_t length) {
+    if (!memory)
+        return;
+    volatile unsigned char *bytes = (volatile unsigned char *)memory;
+    while (length > 0) {
+        *bytes++ = 0;
+        length--;
+    }
+}
+
+/// @brief Scrub a known-size allocation and release it.
+/// @param memory Owned storage to clear and free; NULL is ignored.
+/// @param length Number of allocated bytes safe to overwrite.
+static void textinput_secure_free(void *memory, size_t length) {
+    if (!memory)
+        return;
+    textinput_secure_zero(memory, length);
+    free(memory);
+}
+
+/// @brief Scrub and release one owned NUL-terminated string.
+/// @param text Owned string to clear and free; NULL is ignored.
+static void textinput_secure_free_string(char *text) {
+    if (!text)
+        return;
+    textinput_secure_free(text, strlen(text) + 1u);
+}
+
+/// @brief Release a temporary string using secure scrubbing in password mode.
+/// @param input Text input whose security mode controls release policy.
+/// @param text Owned temporary buffer; NULL is ignored.
+/// @param allocation_bytes Number of allocated bytes safe to overwrite.
+static void textinput_release_temporary(const vg_textinput_t *input,
+                                        char *text,
+                                        size_t allocation_bytes) {
+    if (input && input->password_mode)
+        textinput_secure_free(text, allocation_bytes);
+    else
+        free(text);
+}
+
 /// @brief Grows input->text to hold at least @p needed bytes, doubling from
 /// TEXTINPUT_INITIAL_CAPACITY.
 /// @param input Text input owning the mutable buffer.
@@ -103,7 +149,17 @@ static bool ensure_capacity(vg_textinput_t *input, size_t needed) {
         new_capacity *= TEXTINPUT_GROWTH_FACTOR;
     }
 
-    char *new_text = realloc(input->text, new_capacity);
+    char *new_text = NULL;
+    if (input->password_mode && input->text) {
+        new_text = malloc(new_capacity);
+        if (!new_text)
+            return false;
+        memcpy(new_text, input->text, input->text_len + 1u);
+        textinput_secure_zero(input->text, input->text_capacity);
+        free(input->text);
+    } else {
+        new_text = realloc(input->text, new_capacity);
+    }
     if (!new_text)
         return false;
 
@@ -465,7 +521,7 @@ static void textinput_clear_undo_history(vg_textinput_t *input) {
     if (!input)
         return;
     for (int i = 0; i < TEXTINPUT_UNDO_CAPACITY; i++) {
-        free(input->undo_stack[i]);
+        textinput_secure_free_string(input->undo_stack[i]);
         input->undo_stack[i] = NULL;
         input->undo_cursors[i] = 0;
     }
@@ -481,6 +537,8 @@ static void textinput_reset_undo_history(vg_textinput_t *input) {
     if (!input)
         return;
     textinput_clear_undo_history(input);
+    if (input->password_mode)
+        return;
     if (input->text && input->text_len >= TEXTINPUT_UNDO_MAX_BYTES)
         return;
     input->undo_stack[0] = vg_strdup(input->text ? input->text : "");
@@ -1035,6 +1093,7 @@ static void textinput_destroy(vg_widget_t *widget) {
         (void)vgfx_set_text_input_enabled((vgfx_window_t)input->platform_window, 0);
 
     if (input->text) {
+        textinput_secure_zero(input->text, input->text_capacity);
         free(input->text);
         input->text = NULL;
     }
@@ -1044,11 +1103,7 @@ static void textinput_destroy(vg_widget_t *widget) {
         input->placeholder = NULL;
     }
 
-    // Free undo ring-buffer snapshots
-    for (int i = 0; i < TEXTINPUT_UNDO_CAPACITY; i++) {
-        free(input->undo_stack[i]);
-        input->undo_stack[i] = NULL;
-    }
+    textinput_clear_undo_history(input);
 }
 
 /// @brief VTable measure: sizes to theme height (single-line) or line_height×lines+12 (multiline).
@@ -1576,7 +1631,7 @@ static size_t textinput_undo_total_bytes(const vg_textinput_t *input) {
 static void textinput_evict_oldest_undo(vg_textinput_t *input) {
     if (!input || input->undo_count <= 0)
         return;
-    free(input->undo_stack[0]);
+    textinput_secure_free_string(input->undo_stack[0]);
     if (input->undo_count > 1) {
         memmove(input->undo_stack,
                 input->undo_stack + 1,
@@ -1599,6 +1654,11 @@ static void textinput_push_undo(vg_textinput_t *input) {
     if (!input)
         return;
 
+    if (input->password_mode) {
+        textinput_clear_undo_history(input);
+        return;
+    }
+
     if (input->text && input->text_len >= TEXTINPUT_UNDO_MAX_BYTES) {
         textinput_clear_undo_history(input);
         return;
@@ -1620,14 +1680,14 @@ static void textinput_push_undo(vg_textinput_t *input) {
     // Truncate redo future: free entries above the current position
     while (input->undo_count > input->undo_pos + 1) {
         input->undo_count--;
-        free(input->undo_stack[input->undo_count]);
+        textinput_secure_free_string(input->undo_stack[input->undo_count]);
         input->undo_stack[input->undo_count] = NULL;
     }
 
     // Deduplicate: skip if current text already matches the top snapshot
     if (input->undo_stack[input->undo_pos] &&
         strcmp(input->undo_stack[input->undo_pos], current_text) == 0) {
-        free(snapshot);
+        textinput_secure_free_string(snapshot);
         return;
     }
 
@@ -1636,7 +1696,7 @@ static void textinput_push_undo(vg_textinput_t *input) {
 
     // Ring overflow: evict the oldest entry by shifting everything down by one
     if (input->undo_pos >= TEXTINPUT_UNDO_CAPACITY) {
-        free(input->undo_stack[0]);
+        textinput_secure_free_string(input->undo_stack[0]);
         memmove(input->undo_stack,
                 input->undo_stack + 1,
                 (TEXTINPUT_UNDO_CAPACITY - 1) * sizeof(char *));
@@ -1660,7 +1720,7 @@ static void textinput_push_undo(vg_textinput_t *input) {
 /// @brief Restore the previous committed snapshot and emit one text-change edge.
 /// @copydetails vg_textinput_undo
 bool vg_textinput_undo(vg_textinput_t *input) {
-    if (!input || input->read_only || input->undo_pos <= 0)
+    if (!input || input->read_only || input->password_mode || input->undo_pos <= 0)
         return false; // Already at the oldest snapshot
     vg_textinput_composition_cancel(input);
 
@@ -1689,7 +1749,8 @@ bool vg_textinput_undo(vg_textinput_t *input) {
 /// @brief Reapply the next committed snapshot and emit one text-change edge.
 /// @copydetails vg_textinput_redo
 bool vg_textinput_redo(vg_textinput_t *input) {
-    if (!input || input->read_only || input->undo_pos >= input->undo_count - 1)
+    if (!input || input->read_only || input->password_mode ||
+        input->undo_pos >= input->undo_count - 1)
         return false; // Already at the newest snapshot
     vg_textinput_composition_cancel(input);
 
@@ -1718,13 +1779,13 @@ bool vg_textinput_redo(vg_textinput_t *input) {
 /// @brief Return whether an older committed snapshot is available.
 /// @copydetails vg_textinput_can_undo
 bool vg_textinput_can_undo(const vg_textinput_t *input) {
-    return input && !input->read_only && input->undo_pos > 0;
+    return input && !input->read_only && !input->password_mode && input->undo_pos > 0;
 }
 
 /// @brief Return whether a newer committed snapshot is available.
 /// @copydetails vg_textinput_can_redo
 bool vg_textinput_can_redo(const vg_textinput_t *input) {
-    return input && !input->read_only && input->undo_pos >= 0 &&
+    return input && !input->read_only && !input->password_mode && input->undo_pos >= 0 &&
            input->undo_pos < input->undo_count - 1;
 }
 
@@ -1918,7 +1979,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
             if (has_ctrl) {
                 switch (event->key.key) {
                     case VG_KEY_C: // Copy
-                        if (input->selection_start != input->selection_end) {
+                        if (!input->password_mode &&
+                            input->selection_start != input->selection_end) {
                             char *selection = vg_textinput_get_selection(input);
                             if (selection) {
                                 vgfx_clipboard_set_text(selection);
@@ -1929,7 +1991,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                         return true;
 
                     case VG_KEY_X: // Cut
-                        if (!input->read_only && input->selection_start != input->selection_end) {
+                        if (!input->password_mode && !input->read_only &&
+                            input->selection_start != input->selection_end) {
                             char *selection = vg_textinput_get_selection(input);
                             if (selection) {
                                 vgfx_clipboard_set_text(selection);
@@ -1947,7 +2010,10 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                             char *text = vgfx_clipboard_get_text();
                             if (text) {
                                 vg_textinput_insert_text(input, text);
-                                free(text);
+                                if (input->password_mode)
+                                    textinput_secure_free_string(text);
+                                else
+                                    free(text);
                             }
                         }
                         if (!textinput_ref_is_live(input, input_id))
@@ -2402,6 +2468,7 @@ void vg_textinput_set_text(vg_textinput_t *input, const char *text) {
     char *clean = textinput_sanitize_utf8_copy(text, text ? strlen(text) : 0, &len, &chars);
     if (!clean)
         return;
+    size_t clean_allocation_bytes = len + 1u;
 
     if (input->max_length > 0 && vg_grapheme_count(clean, len) > input->max_length) {
         len = vg_grapheme_byte_offset(clean, len, input->max_length);
@@ -2412,12 +2479,14 @@ void vg_textinput_set_text(vg_textinput_t *input, const char *text) {
     bool changed = strcmp(input->text ? input->text : "", clean) != 0;
 
     if (len > SIZE_MAX - 1 || !ensure_capacity(input, len + 1) || !input->text) {
-        free(clean);
+        textinput_release_temporary(input, clean, clean_allocation_bytes);
         return;
     }
 
+    if (input->password_mode)
+        textinput_secure_zero(input->text, input->text_capacity);
     memcpy(input->text, clean, len + 1);
-    free(clean);
+    textinput_release_temporary(input, clean, clean_allocation_bytes);
     textinput_clear_composition(input);
     input->text_len = len;
     textinput_refresh_text_metrics(input);
@@ -2479,17 +2548,18 @@ size_t vg_textinput_get_max_length(const vg_textinput_t *input) {
     return input ? input->max_length : 0;
 }
 
-/// @brief Toggle presentation-only password masking.
+/// @brief Toggle secure password masking and history/clipboard policy.
 /// @copydetails vg_textinput_set_password
 void vg_textinput_set_password(vg_textinput_t *input, bool password) {
     if (!input || input->password_mode == password)
         return;
     input->password_mode = password;
+    textinput_reset_undo_history(input);
     input->base.needs_paint = true;
     vg_widget_note_revision(&input->base);
 }
 
-/// @brief Return whether presentation-only password masking is active.
+/// @brief Return whether secure password mode is active.
 /// @copydetails vg_textinput_is_password
 bool vg_textinput_is_password(const vg_textinput_t *input) {
     return input && input->password_mode;
@@ -2706,8 +2776,9 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
     char *clean = textinput_sanitize_utf8_copy(text, strlen(text), &insert_len, &insert_chars);
     if (!clean)
         return;
+    size_t clean_allocation_bytes = insert_len + 1u;
     if (insert_len == 0 || insert_chars == 0) {
-        free(clean);
+        textinput_release_temporary(input, clean, clean_allocation_bytes);
         return;
     }
 
@@ -2736,7 +2807,7 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
         current_graphemes =
             current_graphemes > delete_graphemes ? current_graphemes - delete_graphemes : 0;
         if (current_graphemes >= input->max_length) {
-            free(clean);
+            textinput_release_temporary(input, clean, clean_allocation_bytes);
             return;
         }
         size_t insert_graphemes = vg_grapheme_count(clean, insert_len);
@@ -2744,7 +2815,7 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
             size_t remaining_graphemes = input->max_length - current_graphemes;
             insert_len = vg_grapheme_byte_offset(clean, insert_len, remaining_graphemes);
             if (insert_len == 0) {
-                free(clean);
+                textinput_release_temporary(input, clean, clean_allocation_bytes);
                 return;
             }
             clean[insert_len] = '\0';
@@ -2752,15 +2823,16 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
         }
     }
 
+    size_t old_len = input->text_len;
     size_t base_len = input->text_len >= delete_bytes ? input->text_len - delete_bytes : 0;
     if (base_len > SIZE_MAX - 1 || insert_len > SIZE_MAX - base_len - 1) {
-        free(clean);
+        textinput_release_temporary(input, clean, clean_allocation_bytes);
         return;
     }
     size_t new_len = base_len + insert_len;
 
     if (!ensure_capacity(input, new_len + 1)) {
-        free(clean);
+        textinput_release_temporary(input, clean, clean_allocation_bytes);
         return;
     }
 
@@ -2781,7 +2853,9 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
 
     // Insert text
     memcpy(input->text + selection_start_byte, clean, insert_len);
-    free(clean);
+    textinput_release_temporary(input, clean, clean_allocation_bytes);
+    if (input->password_mode && new_len < old_len)
+        textinput_secure_zero(input->text + new_len + 1u, old_len - new_len);
     input->text_len = new_len;
     textinput_refresh_text_metrics(input);
     input->cursor_pos = textinput_snap_char_pos_forward(input, input->cursor_pos + insert_chars);
@@ -2831,9 +2905,12 @@ static void textinput_delete_selection_internal(vg_textinput_t *input, bool noti
     size_t start_byte = textinput_byte_offset(input, start);
     size_t end_byte = textinput_byte_offset(input, end);
 
+    size_t old_len = input->text_len;
     memmove(input->text + start_byte, input->text + end_byte, input->text_len - end_byte + 1);
 
     input->text_len -= (end_byte - start_byte);
+    if (input->password_mode)
+        textinput_secure_zero(input->text + input->text_len + 1u, old_len - input->text_len);
     textinput_refresh_text_metrics(input);
     input->cursor_pos = start;
     input->selection_start = start;
@@ -2931,7 +3008,10 @@ uint64_t vg_textinput_get_revision(const vg_textinput_t *input) {
 static void textinput_clear_composition(vg_textinput_t *input) {
     if (!input)
         return;
-    free(input->composition_text);
+    if (input->password_mode)
+        textinput_secure_free_string(input->composition_text);
+    else
+        free(input->composition_text);
     input->composition_text = NULL;
     input->composition_text_len = 0;
     input->composition_start = 0;
@@ -2994,7 +3074,10 @@ bool vg_textinput_composition_update(vg_textinput_t *input,
     if (selection_length > grapheme_count - selection_start)
         selection_length = grapheme_count - selection_start;
 
-    free(input->composition_text);
+    if (input->password_mode)
+        textinput_secure_free_string(input->composition_text);
+    else
+        free(input->composition_text);
     input->composition_text = clean;
     input->composition_text_len = text_len;
     input->composition_sel_start = selection_start;

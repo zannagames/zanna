@@ -258,7 +258,8 @@ class BreakpointStore {
             Map.Remove(ini, "breakpoint." + i);
             i = i + 1;
         }
-        return safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+        return safe_io.CompareExchangeStudioState(
+            settingsPath, content, Ini.Format(ini));
     }
 
     expose func ApplyToEditor(engine: editor_engine.EditorEngine,

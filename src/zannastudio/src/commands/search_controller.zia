@@ -249,8 +249,10 @@ class SearchController extends search_controller_base.SearchControllerBase {
         while discovering and rootSearchIndex < rootPaths.count() and processed < pageSize {
             var currentRoot = CurrentDiscoveryRoot();
             if currentRoot == "" or Dir.Exists(currentRoot) == false {
-                AdvanceDiscoveryRoot();
-                continue;
+                discoveryError = "Search file discovery root is unavailable: " + currentRoot;
+                discovering = false;
+                active = false;
+                break;
             }
             var oldOffset = discoveryOffset;
             var page = FileIndex.Page(currentRoot,
@@ -259,9 +261,21 @@ class SearchController extends search_controller_base.SearchControllerBase {
                                       false,
                                       discoveryOffset,
                                       pageSize - processed);
-            if Map.GetBool(page, "valid") == false {
-                AdvanceDiscoveryRoot();
-                continue;
+            var diagnostics = Map.Get(page, "diagnostics");
+            if Map.GetBool(page, "valid") == false
+               or (diagnostics != null and Seq.get_Count(diagnostics) > 0) {
+                var detail = "workspace file-index traversal failed";
+                if diagnostics != null and Seq.get_Count(diagnostics) > 0 {
+                    var firstDiagnostic = Seq.Get(diagnostics, 0);
+                    if Map.GetStr(firstDiagnostic, "message") != "" {
+                        detail = Map.GetStr(firstDiagnostic, "message");
+                    }
+                }
+                discoveryError = "Search file discovery failed for " + currentRoot
+                                 + ": " + detail;
+                discovering = false;
+                active = false;
+                break;
             }
             var entries = Map.Get(page, "entries");
             var entryCount = 0;
@@ -285,7 +299,10 @@ class SearchController extends search_controller_base.SearchControllerBase {
             if Map.GetBool(page, "done") {
                 AdvanceDiscoveryRoot();
             } else if i == 0 and discoveryOffset == oldOffset {
-                AdvanceDiscoveryRoot();
+                discoveryError = "Search file discovery stalled for " + currentRoot;
+                discovering = false;
+                active = false;
+                break;
             }
             totalFiles = files.count();
         }
@@ -318,10 +335,21 @@ class SearchController extends search_controller_base.SearchControllerBase {
             if IO.File.Exists(filePath) == false {
                 fileIndex = fileIndex + 1;
                 scanned = scanned + 1;
-                continue;
+                discoveryError = "Search source disappeared: " + filePath;
+                discovering = false;
+                active = false;
+                break;
             }
             var contentBytes = SearchSupport.SearchContentSize(docMgr, filePath);
-            if contentBytes < 0 or contentBytes > MAX_SEARCH_FILE_BYTES {
+            if contentBytes < 0 {
+                fileIndex = fileIndex + 1;
+                scanned = scanned + 1;
+                discoveryError = "Search source metadata is unavailable: " + filePath;
+                discovering = false;
+                active = false;
+                break;
+            }
+            if contentBytes > MAX_SEARCH_FILE_BYTES {
                 fileIndex = fileIndex + 1;
                 scanned = scanned + 1;
                 skippedLargeFiles = skippedLargeFiles + 1;
@@ -333,9 +361,16 @@ class SearchController extends search_controller_base.SearchControllerBase {
             fileIndex = fileIndex + 1;
             scanned = scanned + 1;
             scannedBytes = scannedBytes + contentBytes;
-            resultCount = resultCount + SearchSupport.searchOneFile(shell, filePath, query, caseSensitive, wholeWord,
-                                                      regexMode, docMgr, locStore,
-                                                      MAX_SEARCH_RESULTS - resultCount);
+            var fileResult = SearchSupport.searchOneFileWithProgramResult(
+                shell, filePath, searchProgram, docMgr, locStore,
+                MAX_SEARCH_RESULTS - resultCount);
+            if fileResult.ok == false {
+                discoveryError = fileResult.error;
+                discovering = false;
+                active = false;
+                break;
+            }
+            resultCount = resultCount + fileResult.matches;
             if resultCount >= MAX_SEARCH_RESULTS {
                 resultLimitReached = true;
                 discovering = false;
@@ -346,7 +381,8 @@ class SearchController extends search_controller_base.SearchControllerBase {
         lastPumpByteCount = scannedBytes;
         UpdateResultLocationRange(locStore);
 
-        if resultLimitReached or (discovering == false and fileIndex >= files.count()) {
+        if discoveryError != "" or resultLimitReached
+           or (discovering == false and fileIndex >= files.count()) {
             active = false;
             if discoveryError != "" {
                 shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
@@ -479,7 +515,16 @@ class SearchController extends search_controller_base.SearchControllerBase {
                 continue;
             }
             var contentBytes = SearchSupport.SearchContentSize(docMgr, filePath);
-            if contentBytes < 0 or contentBytes > MAX_SEARCH_FILE_BYTES {
+            if contentBytes < 0 {
+                fileIndex = fileIndex + 1;
+                scanned = scanned + 1;
+                discoveryError = "Workspace-symbol source metadata is unavailable: "
+                                 + filePath;
+                discovering = false;
+                active = false;
+                break;
+            }
+            if contentBytes > MAX_SEARCH_FILE_BYTES {
                 fileIndex = fileIndex + 1;
                 scanned = scanned + 1;
                 skippedLargeFiles = skippedLargeFiles + 1;
@@ -491,8 +536,14 @@ class SearchController extends search_controller_base.SearchControllerBase {
             fileIndex = fileIndex + 1;
             scanned = scanned + 1;
             scannedBytes = scannedBytes + contentBytes;
-            var content = SearchSupport.WorkspaceSymbolContentForPath(docMgr, filePath);
-            if content == "" { continue; }
+            var source = SearchSupport.contentResultForPath(docMgr, filePath);
+            if source.ok == false {
+                discoveryError = source.error;
+                discovering = false;
+                active = false;
+                break;
+            }
+            var content = source.text;
 
             var remaining = MAX_SEARCH_RESULTS - resultCount;
             if remaining <= 0 {
@@ -517,9 +568,16 @@ class SearchController extends search_controller_base.SearchControllerBase {
         lastPumpFileCount = scanned;
         lastPumpByteCount = scannedBytes;
 
-        if resultLimitReached or (discovering == false and fileIndex >= files.count()) {
+        if discoveryError != "" or resultLimitReached
+           or (discovering == false and fileIndex >= files.count()) {
             active = false;
-            if resultCount > 0 {
+            if discoveryError != "" {
+                shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
+                shell.toolPanels.AddToolStateRow(shell.toolPanels.searchListBox,
+                                                 "ERR", "symbol",
+                                                 discoveryError, 14707829);
+                shell.SetStatusLeft(discoveryError);
+            } else if resultCount > 0 {
                 var doneText = "Found " + resultCount
                     + " workspace symbols for '" + query + "'";
                 if resultLimitReached {

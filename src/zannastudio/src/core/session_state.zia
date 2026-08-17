@@ -43,6 +43,7 @@ bind "project_manager";
 bind "document";
 bind "../editor/editor_tabs";
 bind "../services/file_utils";
+bind "../services/path_identity";
 bind "../services/safe_io";
 
 bind Ini = Zanna.Data.Ini;
@@ -94,6 +95,7 @@ expose func IsSplitDocumentEligible(doc: document.Document) -> Boolean {
 ///          main advances the job between event polls and renders.
 class SessionRestoreJob {
     expose Any ini;
+    expose String sourceText;
     expose document_manager.DocumentManager docMgr;
     expose project_manager.ProjectManager projMgr;
     expose editor_tabs.EditorTabs tabs;
@@ -122,6 +124,7 @@ class SessionRestoreJob {
 
     expose func init() {
         ini = null;
+        sourceText = "";
         docMgr = null;
         projMgr = null;
         tabs = null;
@@ -156,6 +159,7 @@ class SessionRestoreJob {
 ///          remain one ordered transaction without one monolithic writer.
 class SessionSaveState {
     expose Any ini;
+    expose String sourceText;
     expose Integer previousCount;
     expose Integer workspaceRootCount;
     expose String projectRoot;
@@ -179,6 +183,7 @@ class SessionSaveState {
 
     expose func init() {
         ini = null;
+        sourceText = "";
         previousCount = 0;
         workspaceRootCount = 0;
         projectRoot = "";
@@ -677,7 +682,8 @@ hide func WriteSceneWorkspaceState(ini: Any,
         if readResult.ok == false { return; }
         var ini = Ini.Parse(readResult.text);
         if PruneRecentProjectsInIni(ini) {
-            safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+            safe_io.CompareExchangeStudioState(
+                settingsPath, readResult.text, Ini.Format(ini));
         }
     }
 
@@ -723,7 +729,8 @@ hide func WriteSceneWorkspaceState(ini: Any,
         if readResult.ok == false { return; }
         var ini = Ini.Parse(readResult.text);
         if PruneRecentFilesInIni(ini) {
-            safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+            safe_io.CompareExchangeStudioState(
+                settingsPath, readResult.text, Ini.Format(ini));
         }
     }
 
@@ -764,7 +771,9 @@ hide func WriteSceneWorkspaceState(ini: Any,
     hide func StringSeqContains(items: Any, path: String) -> Boolean {
         var i = 0;
         while i < Seq.get_Count(items) {
-            if Obj.ToString(Seq.Get(items, i)) == path { return true; }
+            if path_identity.SameEntry(Obj.ToString(Seq.Get(items, i)), path) {
+                return true;
+            }
             i = i + 1;
         }
         return false;
@@ -779,7 +788,7 @@ hide func WriteSceneWorkspaceState(ini: Any,
     hide func CanonicalRecentPath(path: String) -> String {
         if path == "" { return ""; }
         try {
-            return Path.Normalize(Path.Absolute(path));
+            return path_identity.Normalize(path);
         } catch {
             return "";
         }

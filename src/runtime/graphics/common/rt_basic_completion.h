@@ -35,7 +35,7 @@
 #ifndef ZANNA_RT_BASIC_COMPLETION_H
 #define ZANNA_RT_BASIC_COMPLETION_H
 
-#include "runtime/core/rt_string.h"
+#include "rt_string.h"
 
 #include <stdint.h>
 

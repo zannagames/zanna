@@ -14,8 +14,9 @@
 //   - These helpers preserve the runtime primitives' no-overwrite semantics.
 //   - Atomic staging names stay short regardless of the user filename.
 //   - Shared Studio state is size-bounded before reads and atomically replaced
-//     so malformed files cannot stall startup and interrupted writes keep the
-//     previous complete settings/session snapshot.
+//     with expected-revision compare/exchange so malformed files cannot stall
+//     startup, interrupted writes keep the previous complete snapshot, and a
+//     second Studio instance cannot silently overwrite a newer revision.
 // Ownership/Lifetime: Stateless; all paths and content remain caller-owned.
 // Links: zannastudio/src/core/project_manager.zia,
 //        zannastudio/src/core/document_manager.zia,
@@ -92,20 +93,14 @@ expose func ReadAllText(path: String) -> TextReadResult {
 }
 
 /// @brief Read complete text only when the file fits within a caller-owned cap.
-/// @details Metadata is checked before and after the read so a growing file is
-///          rejected instead of unexpectedly consuming unbounded memory.
+/// @details The runtime opens once and rejects the descriptor size before
+///          allocation, removing the pathname stat/read race from this adapter.
 expose func ReadAllTextBounded(path: String, maxBytes: Integer) -> TextReadResult {
     var result = new TextReadResult();
     if path == "" or maxBytes < 0 { return result; }
     try {
-        var beforeSize = File.SizeBytes(path);
-        if beforeSize < 0 or beforeSize > maxBytes { return result; }
-        var text = File.ReadAllText(path);
-        var afterSize = File.SizeBytes(path);
-        if afterSize >= 0 and afterSize <= maxBytes and afterSize == beforeSize {
-            result.text = text;
-            result.ok = true;
-        }
+        result.text = File.ReadAllTextBounded(path, maxBytes);
+        result.ok = true;
     } catch {
         result.ok = false;
         result.text = "";
@@ -324,20 +319,16 @@ hide func IsSafeStagingPurpose(purpose: String) -> Boolean {
 }
 
 /// @brief Atomically create a new text file without replacing a destination.
-/// @details Content is staged beside the destination and committed through the
-///          runtime's cross-platform no-overwrite move.
+/// @details The runtime exclusively stages, durably flushes, and commits with
+///          no-clobber semantics at one cross-platform linearization point.
 expose func CreateTextFile(path: String, content: String) -> Boolean {
     if path == "" or File.Exists(path) { return false; }
-    var dir = Path.Directory(path);
-    if dir == "" or Dir.Exists(dir) == false { return false; }
-    var tempPath = SiblingTempPath(path, "create");
-    if tempPath == "" { return false; }
-    if WriteAllText(tempPath, content) == false {
-        DeleteFile(tempPath);
+    if Path.Directory(path) == "" or Dir.Exists(Path.Directory(path)) == false {
         return false;
     }
-    if File.Exists(path) or MoveFile(tempPath, path) == false {
-        DeleteFile(tempPath);
+    try {
+        File.WriteAllTextNew(path, content);
+    } catch {
         return false;
     }
     return File.Exists(path);
@@ -384,37 +375,60 @@ expose func WriteAllText(path: String, content: String) -> Boolean {
 }
 
 /// @brief Atomically replace one text file through a same-directory staging file.
-/// @details Staging beside the destination keeps the commit on one filesystem.
-///          A failed write/move removes its explicit staging file and leaves the
-///          previous destination untouched.
+/// @details File.WriteAllText already uses exclusive same-directory staging,
+///          durable flush, atomic replacement, and parent-directory sync.
 expose func WriteAllTextAtomic(path: String, content: String) -> Boolean {
     if path == "" { return false; }
     var directory = Path.Directory(path);
     if directory == "" or Dir.Exists(directory) == false { return false; }
 
     if Path.Name(path) == "" { return false; }
-    var stagingPath = SiblingTempPath(path, "write");
-    if stagingPath == "" { return false; }
-    if WriteAllText(stagingPath, content) == false {
-        DeleteFile(stagingPath);
-        return false;
-    }
-
-    var committed = false;
-    if File.Exists(path) {
-        committed = MoveFileOver(stagingPath, path);
-    } else {
-        committed = MoveFile(stagingPath, path);
-    }
-    if committed == false { DeleteFile(stagingPath); }
-    return committed and File.Exists(path);
+    return WriteAllText(path, content);
 }
 
 /// @brief Atomically persist shared Studio state when it fits the global cap.
+/// @details Zanna.String.Length is a UTF-8 byte count, so this matches the
+///          bounded reader even for non-ASCII settings and recovery text.
 /// @return False without touching the destination when content is oversized.
 expose func WriteStudioState(path: String, content: String) -> Boolean {
     if Str.get_Length(content) > MAX_STUDIO_STATE_BYTES { return false; }
     return WriteAllTextAtomic(path, content);
+}
+
+/// @brief Commit shared Studio state only when its complete bytes are unchanged.
+/// @details The runtime serializes cooperating processes through an OS lock and
+///          performs the comparison and durable replacement under that lock.
+///          Callers should surface false as a stale-revision or I/O failure and
+///          may rebuild their owned section from a fresh bounded read before retrying.
+/// @return True only when `replacement` was committed from `expected`.
+expose func CompareExchangeStudioState(path: String,
+                                       expected: String,
+                                       replacement: String) -> Boolean {
+    return CompareExchangeTextFile(path, expected, replacement,
+                                   MAX_STUDIO_STATE_BYTES);
+}
+
+/// @brief Commit a bounded text file only from the exact expected byte revision.
+/// @details This is the generic Studio wrapper around the runtime's locked,
+///          durable compare/exchange primitive. It closes the race between an
+///          advisory re-read and a later replacement write.
+/// @param maxBytes Inclusive UTF-8 byte ceiling for both revisions.
+/// @return True only when `replacement` was committed from `expected`.
+expose func CompareExchangeTextFile(path: String,
+                                    expected: String,
+                                    replacement: String,
+                                    maxBytes: Integer) -> Boolean {
+    if path == "" or maxBytes < 0 { return false; }
+    if Str.get_Length(expected) > maxBytes
+       or Str.get_Length(replacement) > maxBytes {
+        return false;
+    }
+    try {
+        return File.CompareExchangeAllText(path, expected, replacement);
+    } catch {
+        return false;
+    }
+    return false;
 }
 
 /// @brief Delete an existing regular file without propagating cleanup traps.

@@ -122,6 +122,22 @@ int64_t rt_watcher_poll_for(void *obj, int64_t ms);
 ///         the current Start/Stop epoch.
 rt_string rt_watcher_event_path(void *obj);
 
+/// @brief Get the source endpoint of the last polled rename event.
+/// @details Returns an owned empty string for non-rename events or when the
+///          native backend did not report a source. Traps unless called from
+///          the construction thread.
+/// @param obj Opaque Watcher object pointer.
+/// @return Owned retained source path, or an owned empty string.
+rt_string rt_watcher_event_old_path(void *obj);
+
+/// @brief Get the destination endpoint of the last polled rename event.
+/// @details Returns an owned empty string for non-rename events or when the
+///          native backend did not report a destination. Traps unless called
+///          from the construction thread.
+/// @param obj Opaque Watcher object pointer.
+/// @return Owned retained destination path, or an owned empty string.
+rt_string rt_watcher_event_new_path(void *obj);
+
 /// @brief Get the type of the last polled event.
 /// @details Traps unless called from the construction thread.
 /// @param obj Opaque Watcher object pointer.

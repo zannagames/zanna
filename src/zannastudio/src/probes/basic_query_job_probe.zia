@@ -183,6 +183,17 @@ func main() {
         return;
     }
 
+    // Final teardown has a stronger contract than interactive Cancel: the
+    // owner must not be released while its RunOwned callback can still publish.
+    var shutdown = new basic_query_job.BasicQueryJob();
+    shutdown.Queue(basic_query_job.QUERY_DIAGNOSTICS,
+                   sourceBuilder.ToString(), "shutdown.bas", 0, 0);
+    if shutdown.CancelAndWait() == false or shutdown.IsBusy()
+       or shutdown.HasCompleted() {
+        fail("shutdown did not drain owned callback");
+        return;
+    }
+
     var invalid = new basic_query_job.BasicQueryJob();
     invalid.Queue(999, "", "invalid.bas", 0, 0);
     var invalidRequest = waitForCompletion(invalid);

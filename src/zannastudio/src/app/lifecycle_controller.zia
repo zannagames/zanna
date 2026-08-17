@@ -53,6 +53,48 @@ bind Zanna.GUI;
 //          their own finalizer.
 // ============================================================================
 
+/// @brief Idempotency and clean-exit truth for the process shutdown boundary.
+/// @details The application owner begins this latch before stopping producers.
+///          Every bounded worker drain is folded into one sticky result. This
+///          keeps a second exit signal from destroying native resources twice
+///          and prevents recovery data from being cleared after a failed drain.
+class ShutdownState {
+    expose Boolean started;
+    expose Boolean completed;
+    expose Boolean workerDrainsSucceeded;
+    expose Integer attempts;
+
+    expose func init() {
+        started = false;
+        completed = false;
+        workerDrainsSucceeded = true;
+        attempts = 0;
+    }
+
+    /// @brief Claim shutdown ownership exactly once.
+    expose func Begin() -> Boolean {
+        attempts = attempts + 1;
+        if started { return false; }
+        started = true;
+        return true;
+    }
+
+    /// @brief Fold one worker's bounded drain result into the shutdown truth.
+    expose func RecordWorkerDrain(succeeded: Boolean) {
+        if succeeded == false { workerDrainsSucceeded = false; }
+    }
+
+    /// @brief Mark native and persistent teardown complete.
+    expose func Finish() {
+        completed = true;
+    }
+
+    /// @brief Return whether recovery state may truthfully be retired.
+    expose func MayMarkCleanExit(sessionSaved: Boolean) -> Boolean {
+        return started and workerDrainsSucceeded and sessionSaved;
+    }
+}
+
 /// @brief Stop all long-lived IDE services and persist final state before exit.
 /// @details Used for normal loop termination, File > Exit, and window-manager
 ///          close requests so no path can bypass build/debug cancellation,
@@ -71,19 +113,21 @@ bind Zanna.GUI;
 /// @param breakpointStore Breakpoint persistence store.
 /// @param sessionMgr Session persistence store.
 /// @param recoveryStore Crash-recovery store whose lock is retired last.
-expose func CleanupIde(shell: app_shell.AppShell,
-                       docMgr: document_manager.DocumentManager,
-                       projMgr: project_manager.ProjectManager,
-                       engine: editor_engine.EditorEngine,
-                       buildSys: build_system.BuildSystem,
-                       dbgSession: debug_session.DebugSession,
-                       terminalCtrl: terminal_controller.TerminalController,
-                       fileWatchCtrl: file_watch_controller.FileWatchController,
-                       workspaceWatcherState: workspace_watcher.WorkspaceWatcherState,
-                       indexer: project_index.ProjectIndexer,
-                       breakpointStore: breakpoints.BreakpointStore,
-                       sessionMgr: session.SessionManager,
-                       recoveryStore: recovery_store.RecoveryStore) {
+expose func CleanupIdeWithWorkerStatus(
+    shell: app_shell.AppShell,
+    docMgr: document_manager.DocumentManager,
+    projMgr: project_manager.ProjectManager,
+    engine: editor_engine.EditorEngine,
+    buildSys: build_system.BuildSystem,
+    dbgSession: debug_session.DebugSession,
+    terminalCtrl: terminal_controller.TerminalController,
+    fileWatchCtrl: file_watch_controller.FileWatchController,
+    workspaceWatcherState: workspace_watcher.WorkspaceWatcherState,
+    indexer: project_index.ProjectIndexer,
+    breakpointStore: breakpoints.BreakpointStore,
+    sessionMgr: session.SessionManager,
+    recoveryStore: recovery_store.RecoveryStore,
+    workerDrainsSucceeded: Boolean) {
     file_commands.SaveEditorState(docMgr, engine);
     if breakpointStore != null {
         if breakpointStore.Save() == false and shell != null {
@@ -113,8 +157,8 @@ expose func CleanupIde(shell: app_shell.AppShell,
     if buildSys != null and buildSys.IsActive() {
         buildSys.Stop();
     }
-    if dbgSession != null and dbgSession.IsActive() {
-        dbgSession.Terminate();
+    if dbgSession != null {
+        dbgSession.Shutdown();
     }
     if terminalCtrl != null {
         terminalCtrl.Stop();
@@ -129,12 +173,37 @@ expose func CleanupIde(shell: app_shell.AppShell,
     // Keep the lock until all persistent state is written and background
     // services are stopped. A process failure before this point must remain
     // recoverable on the next launch.
-    if recoveryStore != null and sessionSaved {
-        recoveryStore.MarkCleanExit();
+    if recoveryStore != null and sessionSaved and workerDrainsSucceeded {
+        if recoveryStore.MarkCleanExit() == false and shell != null {
+            shell.SetStatusLeft("Could not retire recovery data; it was retained");
+        }
     }
     if shell != null {
         shell.Destroy();
     }
+}
+
+/// @brief Compatibility cleanup entry for callers without background workers.
+/// @details Application code must use CleanupIdeWithWorkerStatus so a failed
+///          drain retains recovery data. Probes and small embeddings that own no
+///          asynchronous Studio services keep the compact original surface.
+expose func CleanupIde(shell: app_shell.AppShell,
+                       docMgr: document_manager.DocumentManager,
+                       projMgr: project_manager.ProjectManager,
+                       engine: editor_engine.EditorEngine,
+                       buildSys: build_system.BuildSystem,
+                       dbgSession: debug_session.DebugSession,
+                       terminalCtrl: terminal_controller.TerminalController,
+                       fileWatchCtrl: file_watch_controller.FileWatchController,
+                       workspaceWatcherState: workspace_watcher.WorkspaceWatcherState,
+                       indexer: project_index.ProjectIndexer,
+                       breakpointStore: breakpoints.BreakpointStore,
+                       sessionMgr: session.SessionManager,
+                       recoveryStore: recovery_store.RecoveryStore) {
+    CleanupIdeWithWorkerStatus(
+        shell, docMgr, projMgr, engine, buildSys, dbgSession, terminalCtrl,
+        fileWatchCtrl, workspaceWatcherState, indexer, breakpointStore,
+        sessionMgr, recoveryStore, true);
 }
 
 /// @brief Open the non-modal condition/logpoint editor for the cursor line.

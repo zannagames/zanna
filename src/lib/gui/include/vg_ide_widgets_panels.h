@@ -12,6 +12,9 @@
 //   - All create functions return NULL on allocation failure.
 //   - String parameters are copied internally unless documented otherwise.
 //   - SplitPane divider positions are stored as fractions in [0.0, 1.0].
+//   - Terminal output preserves split UTF-8 sequences and models zero-, one-,
+//     and two-column glyphs without splitting wide-cell continuations.
+//   - Queued terminal input is bounded by VG_OUTPUTPANE_TERMINAL_INPUT_LIMIT.
 // Ownership/Lifetime:
 //   - Widgets are owned by their parent in the widget tree.
 // Links: lib/gui/include/vg_ide_widgets_common.h,
@@ -487,12 +490,20 @@ typedef struct vg_output_line {
     uint64_t timestamp;            ///< When line was added
 } vg_output_line_t;
 
+/// @brief Maximum queued terminal keystroke/paste bytes awaiting PTY delivery.
+#define VG_OUTPUTPANE_TERMINAL_INPUT_LIMIT (1024u * 1024u)
+
+/// @brief Maximum UTF-8 bytes retained for one terminal grapheme cluster.
+#define VG_TERM_CELL_UTF8_CAPACITY 33u
+
 /// @brief One terminal grid cell (interactive terminal mode): a UTF-8 glyph + style.
 typedef struct vg_term_cell {
-    char utf8[5]; ///< UTF-8 bytes of the glyph (nul-terminated); empty = space
-    uint32_t fg;  ///< Foreground color
-    uint32_t bg;  ///< Background color
-    bool bold;    ///< Bold attribute
+    char utf8[VG_TERM_CELL_UTF8_CAPACITY]; ///< Grapheme bytes; empty = blank/continuation.
+    uint32_t codepoint;                    ///< Leading scalar, or zero for blank/continuation.
+    uint32_t fg;                           ///< Foreground color.
+    uint32_t bg;                           ///< Background color.
+    uint8_t width;                         ///< Display width: 1/2 for a lead, 0 continuation.
+    bool bold;                             ///< Bold attribute.
 } vg_term_cell_t;
 
 /// @brief OutputPane widget structure
@@ -540,23 +551,27 @@ typedef struct vg_outputpane {
     // pane uses a cursor-position overwrite model (so \r, \b, ESC[K, cursor moves render),
     // a full escape state machine (OSC / ESC7-8 / charset are swallowed, not leaked),
     // and captures keystrokes into pending_input for the controller to drain to a PTY.
-    bool terminal_mode;        ///< Cursor-position overwrite + keyboard capture active
-    bool has_focus;            ///< Pane currently holds keyboard focus (terminal caret)
-    int esc_state;             ///< Terminal escape parser state
-                               ///< (0=normal,1=esc,2=csi,3=osc,4=charset,5=osc-esc)
-    size_t term_cursor_line;   ///< Logical output line holding the terminal cursor
-    size_t term_origin_line;   ///< Logical top row used for CSI row/column addressing
-    size_t saved_cursor_line;  ///< Saved terminal cursor line for ESC7/ESC8 and CSI s/u
-    uint32_t saved_cursor_col; ///< Saved terminal cursor column for ESC7/ESC8 and CSI s/u
-    uint32_t cursor_col;       ///< Cursor column on term_cursor_line (terminal mode)
-    vg_term_cell_t *cells;     ///< Cells for term_cursor_line (terminal mode)
-    size_t cell_count;         ///< Cells on term_cursor_line
-    size_t cell_capacity;      ///< Allocated cell capacity
-    char *pending_input;       ///< Keystroke bytes awaiting drain to the PTY
-    size_t pending_len;        ///< Bytes queued in pending_input
-    size_t pending_capacity;   ///< Allocated pending_input capacity
-    float caret_blink_time;    ///< Accumulated time toward the next caret blink toggle
-    bool caret_visible;        ///< Current caret on/off phase (terminal mode)
+    bool terminal_mode;         ///< Cursor-position overwrite + keyboard capture active
+    bool has_focus;             ///< Pane currently holds keyboard focus (terminal caret)
+    int esc_state;              ///< Terminal escape parser state
+                                ///< (0=normal,1=esc,2=csi,3=osc,4=charset,5=osc-esc)
+    size_t term_cursor_line;    ///< Logical output line holding the terminal cursor
+    size_t term_origin_line;    ///< Logical top row used for CSI row/column addressing
+    size_t saved_cursor_line;   ///< Saved terminal cursor line for ESC7/ESC8 and CSI s/u
+    uint32_t saved_cursor_col;  ///< Saved terminal cursor column for ESC7/ESC8 and CSI s/u
+    uint32_t cursor_col;        ///< Cursor column on term_cursor_line (terminal mode)
+    vg_term_cell_t *cells;      ///< Cells for term_cursor_line (terminal mode)
+    size_t cell_count;          ///< Cells on term_cursor_line
+    size_t cell_capacity;       ///< Allocated cell capacity
+    char utf8_carry[4];         ///< Incomplete terminal-output UTF-8 scalar across appends.
+    uint8_t utf8_carry_len;     ///< Bytes currently retained in utf8_carry.
+    bool term_join_next;        ///< A trailing ZWJ joins the next scalar to the prior cell.
+    char *pending_input;        ///< Keystroke bytes awaiting drain to the PTY
+    size_t pending_len;         ///< Bytes queued in pending_input
+    size_t pending_capacity;    ///< Allocated pending_input capacity
+    bool pending_input_dropped; ///< True after a complete input unit was refused at the bound.
+    float caret_blink_time;     ///< Accumulated time toward the next caret blink toggle
+    bool caret_visible;         ///< Current caret on/off phase (terminal mode)
 
     // Alternate-screen preservation. CSI ?1047/1049 h swaps the active terminal
     // buffer into an empty full-screen buffer; CSI ?1047/1049 l restores it.

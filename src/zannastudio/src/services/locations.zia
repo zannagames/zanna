@@ -10,6 +10,8 @@
 // Key invariants:
 //   - Display text is never parsed to recover a source location.
 //   - A failed target open never moves the caret in an unrelated document.
+//   - Search locations can retain an immutable source revision and exact line
+//     context so later transformations reject stale result rows.
 // Ownership/Lifetime:
 //   - Callers own each LocationStore and clear it with the related result rows.
 // Links: zannastudio/src/commands/file_commands.zia,
@@ -18,6 +20,8 @@
 //===----------------------------------------------------------------------===//
 
 module locations;
+
+bind "path_identity";
 
 bind "../core/document_manager";
 bind "../editor/editor_engine";
@@ -28,7 +32,6 @@ bind "../ui/app_shell";
 bind Zanna.GUI;
 bind Convert = Zanna.Core.Convert;
 bind Str = Zanna.String;
-bind Path = Zanna.IO.Path;
 
 final KIND_SEARCH = 1;
 final KIND_DIAGNOSTIC = 2;
@@ -59,6 +62,8 @@ class Location {
     expose Integer endColumn;
     expose Integer kind;
     expose String message;
+    expose String sourceRevision;
+    expose String sourceLineText;
 
     expose func init() {
         id = 0;
@@ -69,6 +74,8 @@ class Location {
         endColumn = 1;
         kind = 0;
         message = "";
+        sourceRevision = "";
+        sourceLineText = "";
     }
 }
 
@@ -84,6 +91,32 @@ class LocationStore {
     expose func Clear() {
         items = [];
         nextId = 1;
+    }
+
+    /// @brief Remove targets for one file or descendant subtree only.
+    /// @details IDs of unaffected locations remain stable and `nextId` remains
+    ///          monotonic, so rows owned by other result sets keep resolving
+    ///          without risking reuse of an invalidated id.
+    /// @param path File or directory path changed by the workspace watcher.
+    /// @return Number of removed locations.
+    expose func InvalidatePath(path: String) -> Integer {
+        if path == "" { return 0; }
+        var retained: List[Location] = [];
+        var removed = 0;
+        var i = 0;
+        while i < items.count() {
+            var loc = items.get(i);
+            if loc.filePath != ""
+               and (path_identity.SameFile(loc.filePath, path)
+                    or path_identity.IsWithinRoot(loc.filePath, path)) {
+                removed = removed + 1;
+            } else {
+                retained.add(loc);
+            }
+            i = i + 1;
+        }
+        items = retained;
+        return removed;
     }
 
     expose func Add(filePath: String,
@@ -105,6 +138,29 @@ class LocationStore {
         items.add(loc);
         nextId = nextId + 1;
         return "" + loc.id;
+    }
+
+    /// @brief Add a search result bound to the complete source snapshot scanned.
+    /// @details `sourceRevision` is a content-derived revision token and
+    ///          `sourceLineText` is the exact, untrimmed line. Keeping both on
+    ///          the structured location prevents delayed replace commands from
+    ///          treating a newly introduced match as the original result.
+    expose func AddSearch(filePath: String,
+                          line: Integer,
+                          column: Integer,
+                          endLine: Integer,
+                          endColumn: Integer,
+                          message: String,
+                          sourceRevision: String,
+                          sourceLineText: String) -> String {
+        var idText = Add(filePath, line, column, endLine, endColumn,
+                         KIND_SEARCH, message);
+        var loc = Get(idText);
+        if loc != null {
+            loc!.sourceRevision = sourceRevision;
+            loc!.sourceLineText = sourceLineText;
+        }
+        return idText;
     }
 
     expose func Get(idText: String) -> Location? {
@@ -169,9 +225,7 @@ func OpenResolvedLocation(shell: app_shell.AppShell,
 /// @param b Second path.
 /// @return True when both paths normalize to the same file spelling.
 func SameLocationPath(a: String, b: String) -> Boolean {
-    if a == b { return true; }
-    if a == "" or b == "" { return false; }
-    return Path.Normalize(Path.Absolute(a)) == Path.Normalize(Path.Absolute(b));
+    return path_identity.SameFile(a, b);
 }
 
 func IsLocationData(data: String) -> Boolean {

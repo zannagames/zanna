@@ -1657,6 +1657,8 @@ Important probe groups:
 - `scene_viewport_picking_routing_probe.zia`: 3D history, command-menu, and
   dock pointer routing.
 - `phase2_phase3_probe.zia`: build/run/debug boundary and scene data contracts.
+- `edge_case_corpus_probe.zia`: bounded replay of the versioned file-backed
+  formatter, trivia, diagnostics, search, settings, and argv edge-case corpus.
 - `editor_hot_path_probe.zia`: editor performance and copy/layout/index guards.
 - `intellisense_probe.zia`: completion, diagnostics, hover, signature behavior.
 - `console_search_probe.zia`: output/search/Quick Open helpers.

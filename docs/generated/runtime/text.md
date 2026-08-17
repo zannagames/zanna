@@ -44,6 +44,7 @@ Its public surface exposes operations including `IsIdentifierStart`, `IsIdentifi
 | <a id="zanna-text-char-isidentifierstart"></a>`IsIdentifierStart` | `i1(str)` | `Zanna.Text.Char.IsIdentifierStart` |
 | <a id="zanna-text-char-isidentifierpart"></a>`IsIdentifierPart` | `i1(str)` | `Zanna.Text.Char.IsIdentifierPart` |
 | <a id="zanna-text-char-isalphanumeric"></a>`IsAlphanumeric` | `i1(str)` | `Zanna.Text.Char.IsAlphanumeric` |
+| <a id="zanna-text-char-isword"></a>`IsWord` | `i1(str)` | `Zanna.Text.Char.IsWord` |
 
 <a id="zanna-text-fmt"></a>
 ### `Zanna.Text.Fmt`
@@ -321,8 +322,9 @@ construct the class directly. Its public surface exposes operations including `I
 Provides pre-compiled regex for efficient repeated use.
 
 Create `Zanna.Text.CompiledPattern` values through its registered constructor and use the
-returned object with the instance members below. Its public surface exposes properties such as
-`Pattern` and operations including `IsMatch`, `Find`, `FindFrom`, `FindPos`.
+returned object with the instance members below. `TryNew` reports malformed
+interactive patterns without trapping; `FindRangeFrom` and
+`ExpandReplacementAt` support bounded editor-search workflows.
 
 Constructor: `Zanna.Text.CompiledPattern.New`
 
@@ -336,15 +338,18 @@ Constructor: `Zanna.Text.CompiledPattern.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
+| <a id="zanna-text-compiledpattern-trynew"></a>`TryNew` | `obj<Zanna.Result>(str,i1)` | `Zanna.Text.CompiledPattern.TryNew` |
 | <a id="zanna-text-compiledpattern-ismatch"></a>`IsMatch` | `i1(str)` | `Zanna.Text.CompiledPattern.IsMatch` |
 | <a id="zanna-text-compiledpattern-find"></a>`Find` | `obj<Zanna.Option>(str)` | `Zanna.Text.CompiledPattern.Find` |
 | <a id="zanna-text-compiledpattern-findfrom"></a>`FindFrom` | `obj<Zanna.Option>(str,i64)` | `Zanna.Text.CompiledPattern.FindFrom` |
 | <a id="zanna-text-compiledpattern-findpos"></a>`FindPos` | `obj<Zanna.Option>(str)` | `Zanna.Text.CompiledPattern.FindPos` |
+| <a id="zanna-text-compiledpattern-findrangefrom"></a>`FindRangeFrom` | `seq<i64>(str,i64,i1)` | `Zanna.Text.CompiledPattern.FindRangeFrom` |
 | <a id="zanna-text-compiledpattern-findall"></a>`FindAll` | `seq<str>(str)` | `Zanna.Text.CompiledPattern.FindAll` |
 | <a id="zanna-text-compiledpattern-captures"></a>`Captures` | `seq<str>(str)` | `Zanna.Text.CompiledPattern.Captures` |
 | <a id="zanna-text-compiledpattern-capturesfrom"></a>`CapturesFrom` | `seq<str>(str,i64)` | `Zanna.Text.CompiledPattern.CapturesFrom` |
 | <a id="zanna-text-compiledpattern-replace"></a>`Replace` | `str(str,str)` | `Zanna.Text.CompiledPattern.Replace` |
 | <a id="zanna-text-compiledpattern-replacefirst"></a>`ReplaceFirst` | `str(str,str)` | `Zanna.Text.CompiledPattern.ReplaceFirst` |
+| <a id="zanna-text-compiledpattern-expandreplacementat"></a>`ExpandReplacementAt` | `obj<Zanna.Result>(str,i64,str)` | `Zanna.Text.CompiledPattern.ExpandReplacementAt` |
 | <a id="zanna-text-compiledpattern-split"></a>`Split` | `seq<str>(str)` | `Zanna.Text.CompiledPattern.Split` |
 | `Split` | `seq<str>(str,i64)` | `Zanna.Text.CompiledPattern.SplitLimited` |
 | <a id="zanna-text-compiledpattern-new"></a>`New` | `obj(str)` | `Zanna.Text.CompiledPattern.New` |
@@ -502,6 +507,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Char.IsIdentifierStart` | `i1(str)` | `rt_text_char_is_identifier_start` |
 | `Zanna.Text.Char.IsIdentifierPart` | `i1(str)` | `rt_text_char_is_identifier_part` |
 | `Zanna.Text.Char.IsAlphanumeric` | `i1(str)` | `rt_text_char_is_alnum` |
+| `Zanna.Text.Char.IsWord` | `i1(str)` | `rt_text_char_is_word` |
 | `Zanna.Text.Pluralize.Plural` | `str(str)` | `rt_pluralize` |
 | `Zanna.Text.Pluralize.Singular` | `str(str)` | `rt_singularize` |
 | `Zanna.Text.Pluralize.Count` | `str(i64,str)` | `rt_pluralize_count` |
@@ -563,16 +569,19 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Pattern.Split` | `seq<str>(str,str)` | `rt_pattern_split` |
 | `Zanna.Text.Pattern.Escape` | `str(str)` | `rt_pattern_escape` |
 | `Zanna.Text.CompiledPattern.New` | `obj(str)` | `rt_compiled_pattern_new` |
+| `Zanna.Text.CompiledPattern.TryNew` | `obj<Zanna.Result>(str,i1)` | `rt_compiled_pattern_try_new` |
 | <a id="zanna-text-compiledpattern-get-pattern"></a>`Zanna.Text.CompiledPattern.get_Pattern` | `str(obj)` | `rt_compiled_pattern_get_pattern` |
 | `Zanna.Text.CompiledPattern.IsMatch` | `i1(obj,str)` | `rt_compiled_pattern_is_match` |
 | `Zanna.Text.CompiledPattern.Find` | `obj<Zanna.Option>(obj,str)` | `rt_compiled_pattern_find_option` |
 | `Zanna.Text.CompiledPattern.FindFrom` | `obj<Zanna.Option>(obj,str,i64)` | `rt_compiled_pattern_find_from_option` |
 | `Zanna.Text.CompiledPattern.FindPos` | `obj<Zanna.Option>(obj,str)` | `rt_compiled_pattern_find_pos_option` |
+| `Zanna.Text.CompiledPattern.FindRangeFrom` | `seq<i64>(obj,str,i64,i1)` | `rt_compiled_pattern_find_range_from` |
 | `Zanna.Text.CompiledPattern.FindAll` | `seq<str>(obj,str)` | `rt_compiled_pattern_find_all` |
 | `Zanna.Text.CompiledPattern.Captures` | `seq<str>(obj,str)` | `rt_compiled_pattern_captures` |
 | `Zanna.Text.CompiledPattern.CapturesFrom` | `seq<str>(obj,str,i64)` | `rt_compiled_pattern_captures_from` |
 | `Zanna.Text.CompiledPattern.Replace` | `str(obj,str,str)` | `rt_compiled_pattern_replace` |
 | `Zanna.Text.CompiledPattern.ReplaceFirst` | `str(obj,str,str)` | `rt_compiled_pattern_replace_first` |
+| `Zanna.Text.CompiledPattern.ExpandReplacementAt` | `obj<Zanna.Result>(obj,str,i64,str)` | `rt_compiled_pattern_expand_replacement_at` |
 | `Zanna.Text.CompiledPattern.Split` | `seq<str>(obj,str)` | `rt_compiled_pattern_split` |
 | <a id="zanna-text-compiledpattern-splitlimited"></a>`Zanna.Text.CompiledPattern.SplitLimited` | `seq<str>(obj,str,i64)` | `rt_compiled_pattern_split_n` |
 | `Zanna.Text.Scanner.New` | `obj(str)` | `rt_scanner_new` |

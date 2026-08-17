@@ -5,12 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Purpose: Tests for Zanna.Text.CompiledPattern — regex compilation,
-//   matching, find, replace, and split operations.
+// Purpose: Tests for Zanna.Text.CompiledPattern compilation, diagnostic
+//          construction, ranges, captures, replacement, and splitting.
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_box.h"
 #include "rt_compiled_pattern.h"
+#include "rt_result.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -412,8 +414,68 @@ static void test_nul_pattern_rejected() {
     test_result(trapped, "New traps on NUL-containing pattern");
 }
 
+static int64_t range_value(void *range, int64_t index) {
+    return rt_unbox_i64(rt_seq_get(range, index));
+}
+
+static void test_diagnostic_ranges_and_expansion() {
+    void *bad = rt_compiled_pattern_try_new(rt_const_cstr("[abc"), 0);
+    test_result(bad && rt_result_is_err(bad), "TryNew: malformed syntax returns Err");
+    test_result(strstr(rt_string_cstr(rt_result_unwrap_err_str(bad)), "unclosed") != nullptr,
+                "TryNew: malformed syntax retains diagnostic");
+
+    void *folded_result = rt_compiled_pattern_try_new(rt_const_cstr("[a-c]+z"), 1);
+    test_result(folded_result && rt_result_is_ok(folded_result),
+                "TryNew: valid case-insensitive pattern returns Ok");
+    void *folded = rt_result_unwrap(folded_result);
+    test_result(rt_compiled_pattern_is_match(folded, rt_const_cstr("ABCZ")),
+                "TryNew: case option reaches literal and class matching");
+
+    void *word_result = rt_compiled_pattern_try_new(rt_const_cstr("t"), 0);
+    void *word = rt_result_unwrap(word_result);
+    rt_string unicode = rt_const_cstr("été t—t");
+    void *range = rt_compiled_pattern_find_range_from(word, unicode, 0, 1);
+    test_result(rt_seq_len(range) == 3 && range_value(range, 0) == 6 &&
+                    range_value(range, 1) == 7 && range_value(range, 2) == 7,
+                "FindRangeFrom: Unicode letters block an interior word match");
+    range = rt_compiled_pattern_find_range_from(word, unicode, 7, 1);
+    test_result(rt_seq_len(range) == 3 && range_value(range, 0) == 10 &&
+                    range_value(range, 1) == 11,
+                "FindRangeFrom: Unicode punctuation forms a word boundary");
+
+    void *anchors = rt_compiled_pattern_new(rt_const_cstr("^|$"));
+    range = rt_compiled_pattern_find_range_from(anchors, rt_const_cstr("x"), 0, 0);
+    test_result(rt_seq_len(range) == 3 && range_value(range, 0) == 0 &&
+                    range_value(range, 1) == 0 && range_value(range, 2) == 1,
+                "FindRangeFrom: zero-width start anchor supplies UTF-8 resume");
+    range = rt_compiled_pattern_find_range_from(anchors, rt_const_cstr("x"), 1, 0);
+    test_result(rt_seq_len(range) == 3 && range_value(range, 0) == 1 &&
+                    range_value(range, 1) == 1 && range_value(range, 2) == 2,
+                "FindRangeFrom: zero-width end anchor supplies terminal resume");
+
+    void *captures = rt_compiled_pattern_new(rt_const_cstr("(item)-(\\d+)"));
+    void *expanded = rt_compiled_pattern_expand_replacement_at(
+        captures, rt_const_cstr("item-42"), 0, rt_const_cstr("$2:$1:$$:$&"));
+    test_result(expanded && rt_result_is_ok(expanded),
+                "ExpandReplacementAt: exact capture match succeeds");
+    test_result(strcmp(rt_string_cstr(rt_result_unwrap_str(expanded)), "42:item:$:item-42") == 0,
+                "ExpandReplacementAt: capture syntax expands deterministically");
+    expanded = rt_compiled_pattern_expand_replacement_at(
+        captures, rt_const_cstr("x item-42"), 0, rt_const_cstr("$1"));
+    test_result(expanded && rt_result_is_err(expanded),
+                "ExpandReplacementAt: later match is not accepted as exact");
+
+    test_result(rt_text_char_is_word(rt_const_cstr("é")),
+                "Text.Char.IsWord: Unicode letter is a word scalar");
+    test_result(rt_text_char_is_word(rt_const_cstr("́")),
+                "Text.Char.IsWord: combining mark is a word scalar");
+    test_result(!rt_text_char_is_word(rt_const_cstr("—")),
+                "Text.Char.IsWord: Unicode punctuation is a boundary");
+}
+
 int main() {
     test_nul_pattern_rejected();
+    test_diagnostic_ranges_and_expansion();
     test_zero_width_replace_split();
     test_captures_backtracking_and_numbering();
     // Basic matching

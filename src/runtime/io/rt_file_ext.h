@@ -6,16 +6,19 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/io/rt_file_ext.h
-// Purpose: High-level static file operations for Zanna.IO.File, providing ReadAllText,
-// WriteAllText, ReadAllLines, AppendText, Copy, Move, Delete, and Exists.
+// Purpose: High-level static file operations for Zanna.IO.File, providing bounded and complete
+// text reads, atomic replace/no-clobber writes, lines, append, copy, move, delete, and predicates.
 //
 // Key invariants:
 //   - Runtime path strings are converted through the platform path adapter.
 //   - Text functions preserve runtime-string bytes verbatim; they do not validate or transcode
 //     UTF-8.
 //   - ReadAllLines recognizes LF, CR, and CRLF and strips those terminators.
-//   - Whole-file writers stage beside the destination, durably flush, atomically replace, and
-//     preserve the supported permission mode of an existing regular file.
+//   - Whole-file writers stage beside the destination, durably flush, and atomically commit;
+//     replacement preserves the supported permission mode of an existing regular file.
+//   - CompareExchangeAllText serializes cooperating processes through a stable adjacent lock
+//     and replaces the destination only when its complete bytes equal the expected snapshot.
+//   - Bounded reads reject oversized files on the opened descriptor before allocating.
 //   - File predicates and metadata queries accept only regular files, not directories.
 //
 // Ownership/Lifetime:
@@ -73,12 +76,36 @@ int64_t rt_file_same(rt_string left, rt_string right);
 ///         file.
 rt_string rt_io_file_read_all_text(rt_string path);
 
+/// @brief Read an entire regular file under a caller-owned byte ceiling.
+/// @details Opens once, rejects negative limits and descriptor sizes above @p max_bytes before
+///          allocation, and traps on concurrent truncation or observed growth.
+/// @param path Runtime path string to read.
+/// @param max_bytes Maximum permitted file bytes, including zero for an empty-only read.
+/// @return Runtime string containing the complete bounded file.
+rt_string rt_io_file_read_all_text_bounded(rt_string path, int64_t max_bytes);
+
 /// @brief Atomically replace a file with string contents.
 /// @details Writes @p contents verbatim, durably commits the replacement, preserves the supported
 ///          permission mode when @p path already names a regular file, and traps on failure.
 /// @param path Runtime destination path.
 /// @param contents Runtime string bytes to write.
 void rt_io_file_write_all_text(rt_string path, rt_string contents);
+
+/// @brief Atomically create a new file with string contents without clobbering.
+/// @details Uses durable adjacent staging and traps if the destination exists at commit time.
+/// @param path Runtime destination path that must not exist.
+/// @param contents Runtime string bytes to write.
+void rt_io_file_write_all_text_new(rt_string path, rt_string contents);
+
+/// @brief Atomically replace text only when the current bytes equal an expected snapshot.
+/// @details Cooperating callers are serialized through a stable adjacent lock file. A missing
+///          destination compares equal to an empty expected string. Mismatch returns false without
+///          changing the destination; invalid arguments and I/O failures trap.
+/// @param path Runtime destination path.
+/// @param expected Complete bytes the current file is expected to contain.
+/// @param desired Complete replacement bytes to commit after a match.
+/// @return 1 when @p desired was committed; 0 for an expected-content mismatch.
+int64_t rt_io_file_compare_exchange_all_text(rt_string path, rt_string expected, rt_string desired);
 
 /// @brief Append a line of text to a file.
 /// @details Appends @p text followed by a single '\n' byte. Creates the file

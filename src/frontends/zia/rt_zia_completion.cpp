@@ -800,6 +800,7 @@ enum class SemanticJobKind : int64_t {
     Symbols = 4,
     Diagnostics = 5,
     Tokens = 6,
+    Analysis = 7,
 };
 
 struct IndexedSource {
@@ -2371,6 +2372,21 @@ void *hoverInfoMap(std::string_view display,
 /// @param source Full source buffer.
 /// @param path Virtual source path.
 /// @return Value records safe to retain outside the compiler/source-manager lifetime.
+std::vector<DiagnosticRecord> diagnosticRecordsForAnalysis(const AnalysisResult &result,
+                                                           const il::support::SourceManager &sm,
+                                                           const std::string &path) {
+    const std::string sourcePath = sourcePathForFile(result.fileId, sm, path);
+    std::vector<DiagnosticRecord> records;
+    records.reserve(result.diagnostics.diagnostics().size());
+    for (const auto &diagnostic : result.diagnostics.diagnostics())
+        records.push_back(diagnosticToRecord(diagnostic, sm, sourcePath));
+    return records;
+}
+
+/// @brief Analyze source and snapshot its diagnostics for an asynchronous job.
+/// @param source Full source buffer.
+/// @param path Virtual source path.
+/// @return Value records safe to retain outside the compiler/source-manager lifetime.
 std::vector<DiagnosticRecord> diagnosticRecordsForSource(const std::string &source,
                                                          const std::string &path) {
     il::support::SourceManager sm;
@@ -2378,15 +2394,8 @@ std::vector<DiagnosticRecord> diagnosticRecordsForSource(const std::string &sour
     CompilerOptions opts{};
 
     auto result = parseAndAnalyze(input, opts, sm);
-    if (!result)
-        return {};
-
-    const std::string sourcePath = sourcePathForFile(result->fileId, sm, path);
-    std::vector<DiagnosticRecord> records;
-    records.reserve(result->diagnostics.diagnostics().size());
-    for (const auto &diagnostic : result->diagnostics.diagnostics())
-        records.push_back(diagnosticToRecord(diagnostic, sm, sourcePath));
-    return records;
+    return result ? diagnosticRecordsForAnalysis(*result, sm, path)
+                  : std::vector<DiagnosticRecord>{};
 }
 
 /// @brief Compute hover display for the identifier at an editor position.
@@ -2455,21 +2464,14 @@ std::string hoverForSource(const std::string &source,
 /// @return Tab-separated `line start end kind` rows in zero-based editor coordinates.
 /// @details This performs compiler-only work suitable for a worker thread.
 ///          Unresolved identifiers are omitted so lexical highlighting remains visible.
-std::string tokensForSource(const std::string &source, const std::string &path) {
-    il::support::SourceManager sm;
-    CompilerInput input{.source = source, .path = path};
-    CompilerOptions opts{};
-    uint32_t fileId = sm.addFile(path);
-    input.fileId = fileId;
-
-    auto result = parseAndAnalyze(input, opts, sm);
-    if (!result || !result->sema)
+std::string tokensForAnalysis(const std::string &source, const AnalysisResult &result) {
+    if (!result.sema)
         return {};
 
     std::ostringstream out;
-    for (const auto &token : lexIdentifierTokens(source, result->fileId)) {
-        const ScopedSymbol *scoped = result->sema->findSymbolAtPosition(
-            token.text, result->fileId, token.loc.line, token.loc.column);
+    for (const auto &token : lexIdentifierTokens(source, result.fileId)) {
+        const ScopedSymbol *scoped = result.sema->findSymbolAtPosition(
+            token.text, result.fileId, token.loc.line, token.loc.column);
         if (!scoped)
             continue;
         std::string kind = symbolKindName(scoped->symbol.kind);
@@ -2481,29 +2483,35 @@ std::string tokensForSource(const std::string &source, const std::string &path) 
     return out.str();
 }
 
+/// @brief Analyze and classify resolved identifiers for the editor overlay.
+/// @param source Full source buffer.
+/// @param path Virtual source path.
+/// @return Tab-separated semantic-token rows.
+std::string tokensForSource(const std::string &source, const std::string &path) {
+    il::support::SourceManager sm;
+    CompilerInput input{.source = source, .path = path};
+    CompilerOptions opts{};
+    input.fileId = sm.addFile(path);
+    auto result = parseAndAnalyze(input, opts, sm);
+    return result ? tokensForAnalysis(source, *result) : std::string{};
+}
+
 /// @brief Collect document-local global symbols for the editor outline.
 /// @param source Full source buffer.
 /// @param path Virtual source path.
 /// @return Tab-separated `name kind type line` rows.
-std::string symbolsForSource(const std::string &source, const std::string &path) {
-    il::support::SourceManager sm;
-    CompilerInput input{.source = source, .path = path};
-    CompilerOptions opts{};
-    uint32_t fileId = sm.addFile(path);
-    input.fileId = fileId;
-
-    auto result = parseAndAnalyze(input, opts, sm);
-    if (!result || !result->sema)
+std::string symbolsForAnalysis(const AnalysisResult &result) {
+    if (!result.sema)
         return {};
 
     std::ostringstream out;
-    auto globals = result->sema->getGlobalSymbols();
+    auto globals = result.sema->getGlobalSymbols();
     for (const auto &sym : globals) {
         // Document symbols cover THIS file only (VDOC-110): runtime-registry
         // entries have no declaration and imported exports carry a foreign
         // file id; both would otherwise leak registry-sized payloads and
         // wrong-document outline locations into the four-field protocol.
-        if (!sym.decl || sym.decl->loc.file_id != fileId)
+        if (!sym.decl || sym.decl->loc.file_id != result.fileId)
             continue;
         std::string kindStr;
         switch (sym.kind) {
@@ -2533,6 +2541,19 @@ std::string symbolsForSource(const std::string &source, const std::string &path)
     // of this document (VDOC-110).
 
     return out.str();
+}
+
+/// @brief Analyze and collect document-local global symbols.
+/// @param source Full source buffer.
+/// @param path Virtual source path.
+/// @return Tab-separated document-symbol rows.
+std::string symbolsForSource(const std::string &source, const std::string &path) {
+    il::support::SourceManager sm;
+    CompilerInput input{.source = source, .path = path};
+    CompilerOptions opts{};
+    input.fileId = sm.addFile(path);
+    auto result = parseAndAnalyze(input, opts, sm);
+    return result ? symbolsForAnalysis(*result) : std::string{};
 }
 
 /// @brief Start a detached, capacity-limited semantic worker job.
@@ -2614,6 +2635,7 @@ void *rt_zia_completion_begin_hover_info_for_file(rt_string source,
                                                   int64_t col);
 void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_string file_path);
 void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_path);
+void *rt_zia_completion_begin_analysis_for_file(rt_string source, rt_string file_path);
 void *rt_zia_toolchain_begin_check_for_file(rt_string source, rt_string file_path);
 int8_t rt_zia_semantic_job_is_done(void *handle);
 int8_t rt_zia_semantic_job_is_error(void *handle);
@@ -3205,6 +3227,41 @@ void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_p
         });
 }
 
+/// @brief Begin one asynchronous analysis that publishes symbols, tokens, and diagnostics.
+/// @details The source is parsed and semantically analyzed exactly once. Consumers may read all
+///          three result channels from the completed Analysis job, avoiding independent compiler
+///          passes for the same editor revision.
+/// @param source Borrowed runtime source text, copied before the worker starts.
+/// @param file_path Borrowed source path, copied before the worker starts.
+/// @return Owned semantic-job handle, or nullptr when handle allocation fails.
+void *rt_zia_completion_begin_analysis_for_file(rt_string source, rt_string file_path) {
+    std::string sourceStr = toStdString(source);
+    std::string pathStr = editorPathOrDefault(file_path);
+    return startSemanticJob(
+        SemanticJobKind::Analysis,
+        /// @brief Computes the shared revision analysis into one semantic job.
+        /// @param job Job result storage.
+        [sourceStr = std::move(sourceStr), pathStr = std::move(pathStr)](SemanticJob &job) {
+            il::support::SourceManager sm;
+            CompilerInput input{.source = sourceStr, .path = pathStr};
+            CompilerOptions opts{};
+            input.fileId = sm.addFile(pathStr);
+            auto result = parseAndAnalyze(input, opts, sm);
+            if (!result)
+                return;
+
+            std::string symbols = symbolsForAnalysis(*result);
+            std::string tokens = tokensForAnalysis(sourceStr, *result);
+            auto diagnostics = diagnosticRecordsForAnalysis(*result, sm, pathStr);
+            std::lock_guard<std::mutex> lock(job.mutex);
+            if (!job.cancelled.load(std::memory_order_acquire)) {
+                job.symbols = std::move(symbols);
+                job.tokens = std::move(tokens);
+                job.diagnostics = std::move(diagnostics);
+            }
+        });
+}
+
 /// @brief Begin asynchronous structured diagnostic analysis.
 /// @param source Borrowed runtime source text, copied before the worker starts.
 /// @param file_path Borrowed source path, copied before the worker starts.
@@ -3346,7 +3403,8 @@ void *rt_zia_semantic_job_hover_info(void *handle) {
 /// @return Owned serialized symbol string, empty until ready or on mismatch/error.
 rt_string rt_zia_semantic_job_symbols(void *handle) {
     auto job = asSemanticJob(handle);
-    if (!job || !job->done.load(std::memory_order_acquire) || job->kind != SemanticJobKind::Symbols)
+    if (!job || !job->done.load(std::memory_order_acquire) ||
+        (job->kind != SemanticJobKind::Symbols && job->kind != SemanticJobKind::Analysis))
         return rt_str_empty();
     std::lock_guard<std::mutex> lock(job->mutex);
     if (!job->error.empty())
@@ -3359,7 +3417,8 @@ rt_string rt_zia_semantic_job_symbols(void *handle) {
 /// @return Owned serialized token string, empty until ready or on mismatch/error.
 rt_string rt_zia_semantic_job_tokens(void *handle) {
     auto job = asSemanticJob(handle);
-    if (!job || !job->done.load(std::memory_order_acquire) || job->kind != SemanticJobKind::Tokens)
+    if (!job || !job->done.load(std::memory_order_acquire) ||
+        (job->kind != SemanticJobKind::Tokens && job->kind != SemanticJobKind::Analysis))
         return rt_str_empty();
     std::lock_guard<std::mutex> lock(job->mutex);
     if (!job->error.empty())
@@ -3373,7 +3432,7 @@ rt_string rt_zia_semantic_job_tokens(void *handle) {
 void *rt_zia_semantic_job_diagnostics(void *handle) {
     auto job = asSemanticJob(handle);
     if (!job || !job->done.load(std::memory_order_acquire) ||
-        job->kind != SemanticJobKind::Diagnostics)
+        (job->kind != SemanticJobKind::Diagnostics && job->kind != SemanticJobKind::Analysis))
         return rt_seq_new_owned();
     std::lock_guard<std::mutex> lock(job->mutex);
     if (!job->error.empty())

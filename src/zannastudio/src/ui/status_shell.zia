@@ -35,6 +35,8 @@ class StatusShell {
     expose GUI.StatusBarItem taskItem;
     expose GUI.StatusBarItem diagnosticsItem;
     expose String lastLeftStatus;
+    expose String lastCenterStatus;
+    expose String lastRightStatus;
     expose String lastDiagnosticsStatus;
     expose Integer lastDiagnosticsColor;
     expose String lastProjectStatus;
@@ -58,6 +60,8 @@ class StatusShell {
         taskItem = null;
         diagnosticsItem = null;
         lastLeftStatus = "Ready";
+        lastCenterStatus = "Ln 1, Col 1";
+        lastRightStatus = "Zanna Studio";
         lastDiagnosticsStatus = "Diagnostics: clean";
         lastDiagnosticsColor = tool_panel_text.SuccessColor();
         lastProjectStatus = "No project";
@@ -76,7 +80,7 @@ class StatusShell {
     expose func Build(parent: GUI.VBox) {
         statusBar = GUI.StatusBar.New(parent);
         statusBar.SetLeftText(lastLeftStatus);
-        cursorItem = statusBar.AddText("Ln 1, Col 1", 1);
+        cursorItem = statusBar.AddText(lastCenterStatus, 1);
         projectItem = statusBar.AddText("No project", 2);
         projectItem.SetTooltip("Active project");
         indexItem = statusBar.AddText("Workspace index idle", 2);
@@ -91,7 +95,7 @@ class StatusShell {
         diagnosticsItem.SetTextColor(tool_panel_text.SuccessColor());
         diagnosticsItem.SetIconName("check");
         diagnosticsItem.SetTooltip("Live diagnostics summary");
-        statusBar.SetRightText("Zanna Studio");
+        statusBar.SetRightText(lastRightStatus);
         ApplyItemVisibility();
     }
 
@@ -117,12 +121,16 @@ class StatusShell {
     /// @brief Set the cursor-position status text.
     /// @param text Cursor-position display text.
     expose func SetStatusCenter(text: String) {
+        if text == lastCenterStatus { return; }
+        lastCenterStatus = text;
         if cursorItem != null { cursorItem.SetText(text); }
     }
 
     /// @brief Set the status bar's right text.
     /// @param text Right-zone summary text.
     expose func SetStatusRight(text: String) {
+        if text == lastRightStatus { return; }
+        lastRightStatus = text;
         if statusBar != null { statusBar.SetRightText(text); }
     }
 

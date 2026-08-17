@@ -407,6 +407,12 @@ class HoverController {
         waiting = false;
     }
 
+    /// @brief Hide hover UI and drain its owned BASIC query before teardown.
+    expose func Shutdown() -> Boolean {
+        hideTooltip();
+        return basicJob.CancelAndWait();
+    }
+
     hide func CancelPendingJob() {
         if pendingJob != null {
             SemanticJob.Cancel(pendingJob);

@@ -1327,7 +1327,7 @@ static bool toolbar_forward_popup_event(vg_toolbar_t *tb, vg_event_t *event) {
 /// @param item Item to measure.
 /// @return Intrinsic width in layout units.
 static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
-    if (item && !item->visible)
+    if (!tb || !item || !item->visible)
         return 0.0f;
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
@@ -1380,7 +1380,7 @@ static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
 /// @param item Item to measure.
 /// @return Intrinsic height in layout units.
 static float get_item_height(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
-    if (item && !item->visible)
+    if (!tb || !item || !item->visible)
         return 0.0f;
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
@@ -1755,12 +1755,8 @@ static bool toolbar_draw_vector_icon(
     if (icon_id == VG_ICON_VECTOR_INVALID)
         return false;
     uint32_t icon_color = toolbar_vector_icon_color(cp, color, enabled);
-    vg_icon_vector_draw(win,
-                        icon_id,
-                        (int32_t)(bx + 0.5f),
-                        (int32_t)(by + 0.5f),
-                        (int32_t)(sz + 0.5f),
-                        icon_color);
+    vg_icon_vector_draw(
+        win, icon_id, (int32_t)(bx + 0.5f), (int32_t)(by + 0.5f), (int32_t)(sz + 0.5f), icon_color);
     return true;
 }
 

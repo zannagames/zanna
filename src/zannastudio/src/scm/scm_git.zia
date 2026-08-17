@@ -10,7 +10,9 @@
 //          jobs and parse their structured output for Studio source control.
 // Key invariants:
 //   - UI callers start and pump GitJob instances; they never wait in-frame.
-//   - Child environments disable terminal prompts, editors, and pagers.
+//   - Environment overlays preserve configured credential brokers, agents,
+//     proxies, certificates, locale, and platform process requirements.
+//   - Studio never receives or stores a password/passphrase response.
 //   - Captured stdout and stderr remain bounded for hostile or noisy commands.
 // Ownership/Lifetime:
 //   - Git owns repository/tool resolution; each returned GitJob owns one child
@@ -111,6 +113,19 @@ class GitCommit {
     }
 }
 
+/// @brief One path record from a commit's NUL-delimited name-status stream.
+class GitCommitFile {
+    expose String status;
+    expose String path;
+    expose String oldPath;
+
+    expose func init() {
+        status = "";
+        path = "";
+        oldPath = "";
+    }
+}
+
 /// @brief One asynchronous git process and its captured streams.
 class GitJob {
     expose Process.ProcessHandle handle;
@@ -154,7 +169,7 @@ class GitJob {
         exitCode = -1;
         stdoutTruncated = false;
         stderrTruncated = false;
-        handle = Process.StartWithEnv(program, args, cwd, env);
+        handle = Process.StartWithEnvOverlay(program, args, cwd, env);
         if handle == null or handle.IsValid() == false {
             handle = null;
             running = false;
@@ -378,11 +393,26 @@ expose func PromptWantsMask(prompt: String) -> Boolean {
 }
 
 /// @brief Parse `git log` output produced by StartLog into commit rows.
-/// @details Records are separated by ASCII RS (30) and fields by US (31), so
-///          subjects containing any printable text parse unambiguously.
+/// @details Git forbids NUL in commit metadata, making four NUL-delimited fields
+///          unambiguous even when author/subject text contains tabs or controls.
+///          The former RS/US representation remains readable for compatibility.
 expose func ParseLog(text: String) -> List[GitCommit] {
     var commits: List[GitCommit] = [];
     if text == "" { return commits; }
+    if Str.IndexOf(text, Str.Chr(0)) != 0 {
+        var fields = Str.Split(text, Str.Chr(0));
+        var fieldIndex = 0;
+        while fieldIndex + 3 < Seq.get_Count(fields) {
+            var c = new GitCommit();
+            c.sha = Str.Trim(Obj.ToString(Seq.Get(fields, fieldIndex)));
+            c.author = Obj.ToString(Seq.Get(fields, fieldIndex + 1));
+            c.date = Obj.ToString(Seq.Get(fields, fieldIndex + 2));
+            c.subject = Obj.ToString(Seq.Get(fields, fieldIndex + 3));
+            if c.sha != "" { commits.Push(c); }
+            fieldIndex = fieldIndex + 4;
+        }
+        return commits;
+    }
     var records = Str.Split(text, Str.Chr(30));
     var i = 0;
     while i < Seq.get_Count(records) {
@@ -401,25 +431,37 @@ expose func ParseLog(text: String) -> List[GitCommit] {
     return commits;
 }
 
-/// @brief Parse `git show --name-status` output into "STATUS<tab>path" rows.
-/// @details The pretty header (sha/author/date/subject joined by US) occupies
-///          the first line; name-status rows follow after a blank line. Rename
-///          rows keep both paths joined by a tab.
-expose func ParseCommitFiles(text: String) -> List[String] {
-    var files: List[String] = [];
-    var lines = Str.Split(text, "\n");
-    var i = 0;
-    while i < Seq.get_Count(lines) {
-        var line = Obj.ToString(Seq.Get(lines, i));
+/// @brief Parse one NUL-delimited `git show --name-status -z` stream.
+/// @details The first four tokens are the pretty header. Each ordinary status
+///          owns one path token; rename/copy statuses own old and new path
+///          tokens. Structured records preserve tabs and newlines in paths.
+expose func ParseCommitFiles(text: String) -> List[GitCommitFile] {
+    var files: List[GitCommitFile] = [];
+    if text == "" { return files; }
+    var tokens = Str.Split(text, Str.Chr(0));
+    var i = 4;
+    while i < Seq.get_Count(tokens) {
+        var status = Str.Trim(Obj.ToString(Seq.Get(tokens, i)));
         i = i + 1;
-        line = Str.Replace(line, "\r", "");
-        if line == "" { continue; }
-        if Str.IndexOf(line, Str.Chr(31)) != 0 { continue; } // pretty header row
-        var first = Str.Left(line, 1);
-        if first == "A" or first == "M" or first == "D" or first == "R"
-           or first == "C" or first == "T" {
-            files.Push(line);
+        if status == "" { continue; }
+        var first = Str.Left(status, 1);
+        if first != "A" and first != "M" and first != "D"
+           and first != "R" and first != "C" and first != "T" {
+            continue;
         }
+        var file = new GitCommitFile();
+        file.status = status;
+        if first == "R" or first == "C" {
+            if i + 1 >= Seq.get_Count(tokens) { break; }
+            file.oldPath = Obj.ToString(Seq.Get(tokens, i));
+            file.path = Obj.ToString(Seq.Get(tokens, i + 1));
+            i = i + 2;
+        } else {
+            if i >= Seq.get_Count(tokens) { break; }
+            file.path = Obj.ToString(Seq.Get(tokens, i));
+            i = i + 1;
+        }
+        if file.path != "" { files.Push(file); }
     }
     return files;
 }
@@ -460,6 +502,7 @@ class Git {
         Seq.Push(args, "status");
         Seq.Push(args, "--porcelain=v2");
         Seq.Push(args, "--branch");
+        Seq.Push(args, "-z");
         Seq.Push(args, "--renames");
         return StartCommand("status", args, "", false);
     }
@@ -561,16 +604,15 @@ class Git {
     /// @brief Start a lazily-paged `git log` (plan 11 history view).
     /// @param skip Commits to skip (paging offset).
     /// @param count Maximum commits to return for this page.
-    /// @details Fields are separated with the ASCII unit separator and records
-    ///          with the record separator so subjects containing tabs, quotes,
-    ///          or newlines parse without ambiguity (see ParseLog).
+    /// @details Four NUL-delimited fields make every Git-permitted author and
+    ///          subject byte unambiguous (see ParseLog).
     expose func StartLog(skip: Integer, count: Integer) -> GitJob {
         var args = Seq.New();
         Seq.Push(args, "log");
         Seq.Push(args, "--skip=" + skip);
         Seq.Push(args, "--max-count=" + count);
         Seq.Push(args, "--date=short");
-        Seq.Push(args, "--pretty=format:%H%x1f%an%x1f%ad%x1f%s%x1e");
+        Seq.Push(args, "--pretty=format:%H%x00%an%x00%ad%x00%s%x00");
         return StartCommand("log", args, "" + skip, false);
     }
 
@@ -579,7 +621,8 @@ class Git {
         var args = Seq.New();
         Seq.Push(args, "show");
         Seq.Push(args, "--name-status");
-        Seq.Push(args, "--pretty=format:%H%x1f%an%x1f%ad%x1f%s");
+        Seq.Push(args, "-z");
+        Seq.Push(args, "--pretty=format:%H%x00%an%x00%ad%x00%s%x00");
         Seq.Push(args, "--date=short");
         Seq.Push(args, sha);
         return StartCommand("logfiles", args, sha, false);
@@ -684,34 +727,16 @@ class Git {
         return job;
     }
 
-    /// @brief Build the environment for non-interactive Git subprocesses.
-    /// @details `Process.StartWithEnv` receives a complete child environment, not
-    ///          a delta. Preserve common inherited variables that Git, credential
-    ///          helpers, SSH, and temporary-file handling need, then add controls
-    ///          that prevent push/pull/commit from blocking on terminal prompts or
-    ///          launching an editor inside the GUI process.
-    /// @return Sequence of `NAME=value` strings suitable for Process.StartWithEnv.
+    /// @brief Build the small environment overlay for Git subprocesses.
+    /// @details Process preserves the complete parent environment, including
+    ///          configured Git Credential Manager/credential helpers, askpass,
+    ///          SSH agents, proxies, certificate paths, locale, and Windows
+    ///          process variables. Only UI-hostile terminal/editor/pager behavior
+    ///          is overridden. Secrets stay inside the configured broker.
+    /// @return Sequence of `NAME=value` overrides for StartWithEnvOverlay.
     hide func GitEnvironment() -> Any {
         var env = Seq.New();
-        CopyEnvIfPresent(env, "PATH");
-        CopyEnvIfPresent(env, "HOME");
-        CopyEnvIfPresent(env, "USER");
-        CopyEnvIfPresent(env, "LOGNAME");
-        CopyEnvIfPresent(env, "USERPROFILE");
-        CopyEnvIfPresent(env, "HOMEDRIVE");
-        CopyEnvIfPresent(env, "HOMEPATH");
-        CopyEnvIfPresent(env, "SystemRoot");
-        CopyEnvIfPresent(env, "WINDIR");
-        CopyEnvIfPresent(env, "TEMP");
-        CopyEnvIfPresent(env, "TMP");
-        CopyEnvIfPresent(env, "TMPDIR");
-        CopyEnvIfPresent(env, "SSH_AUTH_SOCK");
-        CopyEnvIfPresent(env, "SSH_AGENT_PID");
-        CopyEnvIfPresent(env, "TERM");
         Seq.Push(env, "GIT_TERMINAL_PROMPT=0");
-        Seq.Push(env, "GCM_INTERACTIVE=Never");
-        Seq.Push(env, "GIT_ASKPASS=");
-        Seq.Push(env, "SSH_ASKPASS=");
         Seq.Push(env, "GIT_MERGE_AUTOEDIT=no");
         Seq.Push(env, "GIT_PAGER=cat");
         Seq.Push(env, "PAGER=cat");
@@ -826,6 +851,35 @@ class Git {
 
     hide func ParseStatus(out: String) -> GitStatus {
         var st = new GitStatus();
+        if Str.IndexOf(out, Str.Chr(0)) != 0 {
+            var records = Str.Split(out, Str.Chr(0));
+            var recordIndex = 0;
+            while recordIndex < Seq.get_Count(records) {
+                var record = Obj.ToString(Seq.Get(records, recordIndex));
+                recordIndex = recordIndex + 1;
+                if record == "" { continue; }
+                if Str.StartsWith(record, "# branch.head ") {
+                    st.branch = Str.Trim(
+                        Str.Mid(record, Str.get_Length("# branch.head ") + 1));
+                    if st.branch == "(detached)" { st.branch = ""; }
+                    continue;
+                }
+                if Str.StartsWith(record, "2 ") {
+                    if recordIndex >= Seq.get_Count(records) { continue; }
+                    var oldPath = Obj.ToString(Seq.Get(records, recordIndex));
+                    recordIndex = recordIndex + 1;
+                    var renamed = ParseTrackedLine(record, 9, true);
+                    if renamed != null {
+                        renamed.oldPath = oldPath;
+                        st.entries.Push(renamed);
+                    }
+                    continue;
+                }
+                var entry = ParseStatusLine(record);
+                if entry != null { st.entries.Push(entry); }
+            }
+            return st;
+        }
         var lines = Str.Split(out, "\n");
         var i = 0;
         while i < Seq.get_Count(lines) {

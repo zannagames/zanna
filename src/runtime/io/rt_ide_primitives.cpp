@@ -2012,9 +2012,12 @@ int8_t rt_workspace_file_index_should_ignore(rt_string root_s,
 }
 
 /// @brief Poll up to a bounded number of events from a workspace watcher.
-/// @details Converts each event into a map containing path, numeric/type-name fields, overflow
-///          count, and a rescan flag. Nonpositive limits default to 64; polling stops at the first
-///          `NONE` event. Null watchers and caught exceptions return an empty sequence.
+/// @details Converts each event into a map containing its primary path, explicit
+///          old/new rename endpoints, numeric/type-name fields, overflow count,
+///          and a rescan flag. A rename missing either endpoint requires a
+///          conservative rescan. Nonpositive limits default to 64; polling
+///          stops at the first `NONE` event. Null watchers and caught exceptions
+///          return an empty sequence.
 /// @param watcher Borrowed opaque watcher handle.
 /// @param max_events Maximum events to poll, or a nonpositive value for the default batch size.
 /// @return Fresh owning Seq of watcher event maps.
@@ -2033,14 +2036,28 @@ void *rt_workspace_watcher_poll_batch(void *watcher, int64_t max_events) {
             rt_string path = rt_watcher_event_path(watcher);
             mapSetStr(event, "path", toStd(path));
             rt_string_unref(path);
+            std::string oldPath;
+            std::string newPath;
+            if (type == RT_WATCH_EVENT_RENAMED) {
+                rt_string oldPathValue = rt_watcher_event_old_path(watcher);
+                rt_string newPathValue = rt_watcher_event_new_path(watcher);
+                oldPath = toStd(oldPathValue);
+                newPath = toStd(newPathValue);
+                rt_string_unref(oldPathValue);
+                rt_string_unref(newPathValue);
+            }
+            mapSetStr(event, "oldPath", oldPath);
+            mapSetStr(event, "newPath", newPath);
             mapSetStr(event, "typeName", eventTypeName(type));
             rt_map_set_int(event, rt_const_cstr("type"), type);
             rt_map_set_int(
                 event,
                 rt_const_cstr("overflowCount"),
                 type == RT_WATCH_EVENT_OVERFLOW ? rt_watcher_event_overflow_count(watcher) : 0);
-            rt_map_set_bool(
-                event, rt_const_cstr("requiresRescan"), type == RT_WATCH_EVENT_OVERFLOW ? 1 : 0);
+            int requiresRescan =
+                type == RT_WATCH_EVENT_OVERFLOW ||
+                (type == RT_WATCH_EVENT_RENAMED && (oldPath.empty() || newPath.empty()));
+            rt_map_set_bool(event, rt_const_cstr("requiresRescan"), requiresRescan ? 1 : 0);
             seqPushOwned(events, event);
         }
         return events;

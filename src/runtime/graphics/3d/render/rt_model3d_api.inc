@@ -649,32 +649,66 @@ int64_t rt_model3d_limit_texture_dim(void *obj, int64_t max_dim) {
     safe_materials = model_clamped_array_count(
         model->materials, model->material_count, model->material_capacity);
     for (int32_t i = 0; i < safe_materials; i++) {
-        rt_material3d *material =
-            (rt_material3d *)rt_g3d_checked_or_null(model->materials[i], RT_G3D_MATERIAL3D_CLASS_ID);
+        rt_material3d *material = (rt_material3d *)rt_g3d_checked_or_null(
+            model->materials[i], RT_G3D_MATERIAL3D_CLASS_ID);
         if (!material)
             continue;
-        rewritten += model_limit_texture_slot(model->materials[i], material->texture,
-                                              rt_material3d_set_texture, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
-        rewritten += model_limit_texture_slot(model->materials[i], material->normal_map,
-                                              rt_material3d_set_normal_map, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
-        rewritten += model_limit_texture_slot(model->materials[i], material->specular_map,
-                                              rt_material3d_set_specular_map, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
-        rewritten += model_limit_texture_slot(model->materials[i], material->emissive_map,
-                                              rt_material3d_set_emissive_map, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->texture,
+                                              rt_material3d_set_texture,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->normal_map,
+                                              rt_material3d_set_normal_map,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->specular_map,
+                                              rt_material3d_set_specular_map,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->emissive_map,
+                                              rt_material3d_set_emissive_map,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
         rewritten += model_limit_texture_slot(model->materials[i],
                                               material->metallic_roughness_map,
-                                              rt_material3d_set_metallic_roughness_map, max_dim,
-                                              seen_src, seen_dst, &seen_count, 64);
-        rewritten += model_limit_texture_slot(model->materials[i], material->ao_map,
-                                              rt_material3d_set_ao_map, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
-        rewritten += model_limit_texture_slot(model->materials[i], material->lightmap,
-                                              rt_material3d_set_lightmap, max_dim, seen_src,
-                                              seen_dst, &seen_count, 64);
+                                              rt_material3d_set_metallic_roughness_map,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->ao_map,
+                                              rt_material3d_set_ao_map,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
+        rewritten += model_limit_texture_slot(model->materials[i],
+                                              material->lightmap,
+                                              rt_material3d_set_lightmap,
+                                              max_dim,
+                                              seen_src,
+                                              seen_dst,
+                                              &seen_count,
+                                              64);
     }
     return rewritten;
 }
@@ -799,6 +833,34 @@ void *rt_model3d_load_preloaded_gltf(rt_string path,
 /// @param preloaded_size Byte count of @p preloaded_data.
 /// @param load_assets Nonzero to use asset-manager loading behavior.
 /// @return New Model3D handle, or NULL on failure.
+/// @brief Build a Model3D from VSCN/scene3d document bytes that were read off-thread.
+/// @details Parses the owned byte buffer through the ADR 0190 text path (no file
+///          IO on this thread); a non-VSCN extension falls back to a normal load.
+///          The buffer is always freed by this call.
+/// @param path Logical .scene3d/.vscn source path (prefab base + diagnostics).
+/// @param preloaded_text Owned document bytes, consumed by this call.
+/// @param preloaded_len Number of bytes in @p preloaded_text.
+/// @param load_assets Nonzero to retain asset-manager dependency behavior.
+/// @return Owned Model3D on success, or NULL on recoverable failure.
+void *rt_model3d_load_preloaded_vscn(rt_string path,
+                                     char *preloaded_text,
+                                     size_t preloaded_len,
+                                     int load_assets) {
+    const char *path_cstr = path ? rt_string_cstr(path) : NULL;
+    if (!path_cstr ||
+        !(model_has_ext(path_cstr, ".scene3d") || model_has_ext(path_cstr, ".vscn")) ||
+        !preloaded_text || preloaded_len == 0u) {
+        free(preloaded_text);
+        return load_assets ? rt_model3d_load_asset(path) : rt_model3d_load(path);
+    }
+    {
+        void *model = rt_model3d_load_impl(
+            path, load_assets ? 1 : 0, NULL, 0, NULL, NULL, 0, preloaded_text, preloaded_len);
+        free(preloaded_text);
+        return model;
+    }
+}
+
 void *rt_model3d_load_preloaded_fbx(rt_string path,
                                     uint8_t *preloaded_data,
                                     size_t preloaded_size,

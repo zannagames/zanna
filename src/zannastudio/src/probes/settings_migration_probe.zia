@@ -1,3 +1,21 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/settings_migration_probe.zia
+// Purpose: Verify legacy settings migration and safe persistence-root policy.
+// Key invariants:
+//   - Migration copies legacy settings and recovery state without deleting it.
+//   - A missing user home disables persistence instead of using the working
+//     directory.
+// Ownership/Lifetime: The probe owns and removes only runtime temporary roots.
+// Links: zannastudio/src/core/settings.zia
+//
+//===----------------------------------------------------------------------===//
+
 module settings_migration_probe;
 
 // ============================================================================
@@ -50,6 +68,16 @@ func newDirFor(root: String) -> String {
 func main() {
     var root = TempFile.CreateDirWithPrefix("zannastudio_migration_");
 
+    // A missing native home must fail closed. In particular, it must not turn
+    // the process working directory into a persistent configuration root.
+    var unavailable = new settings.SettingsManager();
+    unavailable.SetupPathFromHome("");
+    if unavailable.persistenceAvailable or unavailable.settingsDir != ""
+        or unavailable.settingsPath != "" or unavailable.persistenceWarning == "" {
+        fail("missing home did not disable persistence explicitly");
+        return;
+    }
+
     // Sandbox every environment root SetupPath and LegacySettingsDir consult.
     Env.SetVariable("HOME", root);
     Env.SetVariable("APPDATA", Path.Join(Path.Join(root, "AppData"), "Roaming"));
@@ -69,6 +97,11 @@ func main() {
     // First launch after the rename migrates by copy.
     var mgr = new settings.SettingsManager();
     mgr.SetupPath();
+
+    if mgr.persistenceAvailable == false or mgr.persistenceWarning != "" {
+        fail("sandboxed user home should enable persistence");
+        return;
+    }
 
     var newDir = newDirFor(root);
     var newSettings = Path.Join(newDir, "settings.ini");

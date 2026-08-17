@@ -1,3 +1,23 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/build_system.zia
+// Purpose: Own bounded asynchronous build/run process state and output.
+// Key invariants:
+//   - Invalid launch configurations fail before a process is created.
+//   - Process output and deltas remain within explicit memory ceilings.
+//   - Multi-stage jobs retain one output/diagnostic/timing chain.
+//   - Every terminal path drains, destroys, and publishes one typed result.
+// Ownership/Lifetime: BuildSystem owns active process handles and output state.
+// Links: zannastudio/src/build/run_config.zia,
+//        zannastudio/src/build/bounded_output.zia
+//
+//===----------------------------------------------------------------------===//
+
 module build_system;
 
 bind "bounded_output";
@@ -30,6 +50,31 @@ bind Zanna.IO as IO;
 final MAX_BUILD_OUTPUT_CHARS = 250000;
 final MAX_BUILD_OUTPUT_DELTA_CHARS = 65536;
 
+/// @brief Immutable terminal snapshot consumed by the Studio frame loop.
+class BuildJobResult {
+    expose Boolean success;
+    expose Boolean stopped;
+    expose Integer exitCode;
+    expose String action;
+    expose String name;
+    expose String duration;
+    expose String output;
+    expose Integer errorCount;
+    expose Integer warningCount;
+
+    expose func init() {
+        success = false;
+        stopped = false;
+        exitCode = -1;
+        action = "";
+        name = "";
+        duration = "";
+        output = "";
+        errorCount = 0;
+        warningCount = 0;
+    }
+}
+
 class BuildSystem {
     // Build state
     expose Boolean isBuilding;
@@ -49,6 +94,9 @@ class BuildSystem {
     expose String activeName;
     expose run_config.RunConfig activeConfig;
     expose Process.ProcessHandle processHandle;
+    expose BuildJobResult completedResult;
+    expose diagnostic_parser.DiagnosticStreamParser diagnosticStream;
+    expose Integer reportedDiagnosticRevision;
 
     // Parsed diagnostics
     expose List[diagnostic.Diagnostic] diagnostics;
@@ -67,6 +115,9 @@ class BuildSystem {
         activeName = "";
         activeConfig = null;
         processHandle = null;
+        completedResult = null;
+        diagnosticStream = new diagnostic_parser.DiagnosticStreamParser();
+        reportedDiagnosticRevision = 0;
         diagnostics = [];
     }
 
@@ -75,31 +126,30 @@ class BuildSystem {
     }
 
     expose func StartConfig(cfg: run_config.RunConfig) -> Boolean {
+        if cfg == null or IsActive() { return false; }
+        return StartStage(cfg, false);
+    }
+
+    /// @brief Launch one stage, optionally preserving the owning job chain.
+    func StartStage(cfg: run_config.RunConfig,
+                    preserveChain: Boolean) -> Boolean {
         if cfg == null { return false; }
-        if IsActive() { return false; }
 
         activeConfig = cfg;
         activeAction = cfg.action;
         activeName = cfg.name;
-        buildOutput = "";
-        outputDelta = "";
-        diagnostics = [];
+        if preserveChain == false {
+            buildOutput = "";
+            outputDelta = "";
+            diagnosticStream.Reset();
+            diagnostics = diagnosticStream.records;
+            reportedDiagnosticRevision = 0;
+            completedResult = null;
+            startMs = Zanna.Time.Clock.NowMs();
+        }
         exitCode = -1;
         lastBuildSuccess = false;
         lastBuildTime = "";
-        startMs = Zanna.Time.Clock.NowMs();
-
-        // The Process runtime spawns via execve(), which neither searches PATH nor
-        // resolves a bare name against anything except the child's working directory
-        // (the edited file's folder). Resolve an absolute path up front so a build
-        // actually starts, and report a precise error instead of a silent exit 127.
-        var resolved = ResolveCompiler(cfg.program);
-        if resolved == "" {
-            buildOutput = CompilerNotFoundMessage(cfg.program);
-            Finish(-1);
-            return false;
-        }
-        compilerPath = resolved;
 
         if cfg.action == run_config.ACTION_BUILD {
             isBuilding = true;
@@ -109,10 +159,28 @@ class BuildSystem {
             isRunning = true;
         }
 
+        if cfg.validationError != "" {
+            AppendOutput("Invalid run configuration: " + cfg.validationError + "\n");
+            FinalizeJob(-1, false);
+            return false;
+        }
+
+        // The Process runtime spawns via execve(), which neither searches PATH nor
+        // resolves a bare name against anything except the child's working directory
+        // (the edited file's folder). Resolve an absolute path up front so a build
+        // actually starts, and report a precise error instead of a silent exit 127.
+        var resolved = ResolveProgram(cfg.program, cfg.workingDirectory);
+        if resolved == "" {
+            AppendOutput(CompilerNotFoundMessage(cfg.program));
+            FinalizeJob(-1, false);
+            return false;
+        }
+        compilerPath = resolved;
+
         processHandle = Process.StartWithEnv(resolved, cfg.args, cfg.workingDirectory, cfg.env);
         if processHandle == null or processHandle.IsValid() == false {
-            buildOutput = "Could not start process: " + cfg.program;
-            Finish(-1);
+            AppendOutput("Could not start process: " + cfg.program + "\n");
+            FinalizeJob(-1, false);
             return false;
         }
         return true;
@@ -129,11 +197,20 @@ class BuildSystem {
     ///          project-supplied programs are resolved on their own merits and are
     ///          never silently replaced by zanna.
     expose func ResolveCompiler(preferred: String) -> String {
+        return ResolveProgram(preferred, "");
+    }
+
+    /// @brief Resolve a program with project-relative paths anchored to its cwd.
+    /// @details Custom manifest tools are commonly stored under the workspace.
+    ///          Trying the explicit working directory before PATH makes those
+    ///          paths independent of the directory used to launch Studio.
+    expose func ResolveProgram(preferred: String,
+                               workingDirectory: String) -> String {
         var name = preferred;
         if name == "" { name = "zanna"; }
 
         if name != "zanna" {
-            return ResolveBinary(name);
+            return ResolveBinaryFrom(name, workingDirectory);
         }
 
         var exe = ExeName();
@@ -174,16 +251,29 @@ class BuildSystem {
         }
 
         // 5. Manual PATH scan (execve won't do it for us).
-        return ResolveBinary(exe);
+        return ResolveBinaryFrom(exe, "");
     }
 
     /// @brief Resolve a single binary name to an absolute path: an absolute path is
     ///        used as-is when it exists; a bare name is searched on PATH.
     func ResolveBinary(name: String) -> String {
+        return ResolveBinaryFrom(name, "");
+    }
+
+    /// @brief Resolve an absolute, working-directory-relative, or PATH program.
+    func ResolveBinaryFrom(name: String,
+                           workingDirectory: String) -> String {
         if name == "" { return ""; }
         if Path.IsAbsolute(name) {
             if IO.File.Exists(name) { return name; }
             return "";
+        }
+        if workingDirectory != "" {
+            var local = Path.Normalize(Path.Join(workingDirectory, name));
+            if IO.File.Exists(local) { return Path.Absolute(local); }
+            if Machine.Os == "windows" and IO.File.Exists(local + ".exe") {
+                return Path.Absolute(local + ".exe");
+            }
         }
         var pathVar = EnvValue("PATH");
         if pathVar == "" { return ""; }
@@ -192,8 +282,14 @@ class BuildSystem {
         while i < Seq.get_Count(entries) {
             var entry = Obj.ToString(Seq.Get(entries, i));
             if entry != "" {
+                if Path.IsAbsolute(entry) == false and workingDirectory != "" {
+                    entry = Path.Join(workingDirectory, entry);
+                }
                 var cand = Path.Join(entry, name);
                 if IO.File.Exists(cand) { return Path.Absolute(cand); }
+                if Machine.Os == "windows" and IO.File.Exists(cand + ".exe") {
+                    return Path.Absolute(cand + ".exe");
+                }
             }
             i = i + 1;
         }
@@ -225,50 +321,54 @@ class BuildSystem {
 
     expose func Update() -> Boolean {
         if processHandle == null { return false; }
-        AppendReadResult(processHandle.ReadStdoutResult(), "stdout");
-        AppendReadResult(processHandle.ReadStderrResult(), "stderr");
+        DrainProcessOutput();
 
         if processHandle.IsRunning() {
             return true;
         }
-        AppendReadResult(processHandle.ReadStdoutResult(), "stdout");
-        AppendReadResult(processHandle.ReadStderrResult(), "stderr");
+        DrainProcessOutput();
         var finishedCode = processHandle.ExitCode();
-        processHandle.Destroy();
-        processHandle = null;
         // A successful stage hands off to its continuation in the same
         // job slot (build-then-launch chains, ADR 0225).
         if finishedCode == 0 and activeConfig != null
            and activeConfig.next != null {
             var continuation = activeConfig.next;
-            activeConfig = null;
-            buildOutput = buildOutput
-                + "\n[stage] " + continuation.name + "\n";
-            if StartConfig(continuation) { return true; }
+            ReleaseProcessHandle();
+            diagnosticStream.Flush();
+            diagnostics = diagnosticStream.records;
+            AppendOutput("\n[stage] " + continuation.name + "\n");
+            if StartStage(continuation, true) { return true; }
             return false;
         }
-        Finish(finishedCode);
+        FinalizeJob(finishedCode, false);
         return false;
     }
 
     expose func Stop() -> Boolean {
         if processHandle == null { return false; }
         var killed = processHandle.Kill();
-        AppendReadResult(processHandle.ReadStdoutResult(), "stdout");
-        AppendReadResult(processHandle.ReadStderrResult(), "stderr");
-        Finish(-1);
-        processHandle.Destroy();
-        processHandle = null;
         AppendOutput("\n[stopped]\n");
+        FinalizeJob(-1, true);
         return killed;
     }
 
-    func AppendReadResult(result: Any,
-                          streamName: String) {
-        if result == null { return; }
-        AppendOutput(Map.GetStr(result, "text"));
+    /// @brief Drain both streams through one parser/output path.
+    func DrainProcessOutput() {
+        if processHandle == null { return; }
+        var result = processHandle.ReadOutputResult();
+        var chunks = Map.Get(result, "chunks");
+        var i = 0;
+        while chunks != null and i < Seq.get_Count(chunks) {
+            var chunk = Seq.Get(chunks, i);
+            var streamName = Map.GetStr(chunk, "stream");
+            var text = Map.GetStr(chunk, "text");
+            AppendOutput(text);
+            diagnosticStream.Append(streamName, text);
+            i = i + 1;
+        }
+        diagnostics = diagnosticStream.records;
         if Map.GetBool(result, "truncated") {
-            AppendOutput("\n[" + streamName + " output truncated by runtime]\n");
+            AppendOutput("\n[ordered process output truncated by runtime]\n");
         }
     }
 
@@ -282,13 +382,36 @@ class BuildSystem {
                                             MAX_BUILD_OUTPUT_DELTA_CHARS);
     }
 
-    func Finish(code: Integer) {
+    /// @brief Release the active runtime handle exactly once.
+    func ReleaseProcessHandle() {
+        if processHandle == null { return; }
+        processHandle.Destroy();
+        processHandle = null;
+    }
+
+    /// @brief Unified terminal path for launch failure, exit, and cancellation.
+    func FinalizeJob(code: Integer,
+                     stopped: Boolean) {
+        DrainProcessOutput();
+        ReleaseProcessHandle();
+        diagnosticStream.Flush();
+        diagnostics = diagnosticStream.records;
         exitCode = code;
         isBuilding = false;
         isRunning = false;
         lastBuildSuccess = code == 0;
         lastBuildTime = FormatDuration(Zanna.Time.Clock.NowMs() - startMs);
-        ParseBuildOutput();
+        var result = new BuildJobResult();
+        result.success = lastBuildSuccess;
+        result.stopped = stopped;
+        result.exitCode = code;
+        result.action = activeAction;
+        result.name = activeName;
+        result.duration = lastBuildTime;
+        result.output = buildOutput;
+        result.errorCount = GetErrorCount();
+        result.warningCount = GetWarningCount();
+        completedResult = result;
     }
 
     /// @brief Format an elapsed millisecond count as a readable duration: "850ms"
@@ -303,14 +426,22 @@ class BuildSystem {
         return "" + whole + "." + frac + "s";
     }
 
-    // Parse build output for diagnostics (error/warning lines).
-    // Populates `diagnostics` list. Success is determined by exit code in callers.
-    func ParseBuildOutput() {
-        diagnostics = diagnostic_parser.ParseDiagnostics(buildOutput);
-    }
-
     expose func ParseDiagnosticLine(line: String) -> diagnostic.Diagnostic? {
         return diagnostic_parser.ParseDiagnosticLine(line);
+    }
+
+    /// @brief Consume the typed completion snapshot once.
+    expose func TakeCompletedResult() -> BuildJobResult? {
+        var result = completedResult;
+        completedResult = null;
+        return result;
+    }
+
+    /// @brief Report whether streaming diagnostics changed since the last take.
+    expose func TakeDiagnosticsChanged() -> Boolean {
+        if diagnosticStream.revision == reportedDiagnosticRevision { return false; }
+        reportedDiagnosticRevision = diagnosticStream.revision;
+        return true;
     }
 
     // Get the number of errors.

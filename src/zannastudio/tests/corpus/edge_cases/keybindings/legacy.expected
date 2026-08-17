@@ -1,0 +1,6 @@
+structured=0
+migrated=1
+rejected=2
+count=2
+record=save|Ctrl+Shift+S
+record=build|F9

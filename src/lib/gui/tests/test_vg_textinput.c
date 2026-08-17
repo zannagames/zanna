@@ -140,6 +140,42 @@ static void test_limits_and_modes(void) {
     vg_widget_destroy(&input->base);
 }
 
+/// @brief Verify password mode blocks clipboard extraction and retained history.
+static void test_password_mode_secures_clipboard_and_history(void) {
+    vg_textinput_t *input = vg_textinput_create(NULL);
+    REQUIRE(input != NULL);
+    vg_textinput_set_text(input, "secret");
+    REQUIRE(input->undo_count == 1);
+
+    vgfx_clipboard_set_text("sentinel");
+    vg_textinput_set_password(input, true);
+    REQUIRE(input->undo_count == 0);
+    REQUIRE(!vg_textinput_can_undo(input));
+    REQUIRE(!vg_textinput_can_redo(input));
+
+    vg_textinput_select_all(input);
+    REQUIRE(send_key(input, VG_KEY_C, VG_MOD_CTRL));
+    char *clipboard = vgfx_clipboard_get_text();
+    REQUIRE(clipboard != NULL);
+    REQUIRE(strcmp(clipboard, "sentinel") == 0);
+    free(clipboard);
+
+    REQUIRE(send_key(input, VG_KEY_X, VG_MOD_CTRL));
+    REQUIRE(strcmp(vg_textinput_get_text(input), "secret") == 0);
+    REQUIRE(vg_textinput_insert_text(input, "!") == true);
+    REQUIRE(input->undo_count == 0);
+    REQUIRE(!vg_textinput_undo(input));
+
+    vg_textinput_set_password(input, false);
+    REQUIRE(input->undo_count == 1);
+    REQUIRE(!vg_textinput_can_undo(input));
+    REQUIRE(vg_textinput_insert_text(input, "x"));
+    REQUIRE(vg_textinput_can_undo(input));
+
+    vgfx_clipboard_set_text("");
+    vg_widget_destroy(&input->base);
+}
+
 /// @brief Verify history availability, independent edges, and monotonic revision state.
 static void test_history_and_independent_edges(void) {
     vg_textinput_t *input = vg_textinput_create(NULL);
@@ -301,6 +337,7 @@ static void test_platform_ime_event_bridge(void) {
 int main(void) {
     test_grapheme_indices_and_keyboard_deletion();
     test_limits_and_modes();
+    test_password_mode_secures_clipboard_and_history();
     test_history_and_independent_edges();
     test_oversized_text_disables_snapshot_history();
     test_atomic_ime_composition();

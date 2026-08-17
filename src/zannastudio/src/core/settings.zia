@@ -12,10 +12,14 @@
 //   - Defaults remain valid when settings are missing or malformed.
 //   - Platform paths come from the runtime Machine capability, not Unix-only
 //     environment assumptions.
+//   - An unavailable user home disables persistence explicitly; Studio never
+//     writes settings or recovery data relative to its launch directory.
 //   - Oversized shared state is rejected before parsing, and successful saves
 //     replace the prior complete file atomically.
 //   - Workspace visibility, sidebar placement/view, and panel selection accept
 //     only built-in stable IDs; grouped panel layout is bounded before replay.
+//   - Keybindings use bounded versioned records; the legacy delimiter scalar is
+//     read only for migration and removed on the next successful save.
 // Ownership/Lifetime: SettingsManager owns only value state, never OS handles.
 // Links: zannastudio/src/app/settings_applier.zia,
 //        zannastudio/src/core/session.zia
@@ -35,6 +39,7 @@ bind Obj = Zanna.Core.Object;
 bind Str = Zanna.String;
 bind Zanna.GUI as GUI;
 bind "../services/safe_io";
+bind "keybinding_settings";
 
 // ============================================================================
 // MODULE: settings
@@ -87,7 +92,8 @@ class SettingsManager {
     expose String  fontPath;       // Optional custom .ttf/.ttc path; "" = default fallback chain.
     expose String  theme;          // "dark" or "light".
     expose Boolean minimapVisible; // Whether the minimap panel is shown.
-    expose String keybindingOverrides; // "id=shortcut;;..." user deltas (plan 08).
+    expose keybinding_settings.KeybindingOverrideSet keybindings;
+    expose String keybindingOverrides; // Legacy scalar retained only for migration visibility.
     expose Boolean autoCheckOnSave;// Legacy key: whether live diagnostics run on edit.
     expose Boolean codeFolding;    // Whether the editor offers code-folding regions.
     expose Boolean statusBarVisible; // Whether the status bar is shown.
@@ -125,6 +131,8 @@ class SettingsManager {
     expose Integer uiZoomPercent;  // Whole-UI zoom percentage (50..300; 100 = default).
     expose String  settingsDir;    // Platform ZannaStudio config dir (resolved at SetupPath).
     expose String  settingsPath;   // settingsDir/settings.ini.
+    expose Boolean persistenceAvailable; // False when no safe per-user root can be resolved.
+    expose String  persistenceWarning; // User-visible explanation when persistence is disabled.
 
     /// @brief Initialize with defaults. Call SetupPath then Load to
     ///        populate from disk.
@@ -136,6 +144,7 @@ class SettingsManager {
         // O(1) per-line lookups), so it defaults on; the editor hot-path perf
         // probe guards the cost on large buffers.
         minimapVisible = true;
+        keybindings = new keybinding_settings.KeybindingOverrideSet();
         keybindingOverrides = "";
         autoCheckOnSave = true;
         codeFolding    = true;
@@ -175,6 +184,8 @@ class SettingsManager {
         uiZoomPercent  = 100;
         settingsDir    = "";
         settingsPath   = "";
+        persistenceAvailable = true;
+        persistenceWarning = "";
     }
 
     /// @brief Resolve `settingsDir` and `settingsPath` from platform config roots.
@@ -187,13 +198,25 @@ class SettingsManager {
     ///          intact so an older build can still find it. When the copy
     ///          cannot produce a usable settings file, the legacy directory is
     ///          adopted in place, matching the pre-rename fallback behaviour.
-    /// @note Falls back to "." if the runtime cannot resolve a native user home
-    ///       (rare; happens in some containerised environments). Idempotent.
+    /// @note Persistence is disabled if the runtime cannot resolve a native
+    ///       user home. Idempotent.
     expose func SetupPath() {
-        var home = Machine.Home;
-        if home == "" {
-            home = ".";
-        }
+        SetupPathFromHome(Machine.Home);
+    }
+
+    /// @brief Resolve persistent paths from an explicit user-home directory.
+    /// @details This deterministic entry point lets startup policy be verified
+    ///          without mutating process-global environment state.
+    expose func SetupPathFromHome(home: String) {
+        settingsDir = "";
+        settingsPath = "";
+        persistenceAvailable = false;
+        persistenceWarning =
+            "User home is unavailable; settings, sessions, breakpoints, and recovery are disabled";
+        if home == "" { return; }
+
+        persistenceAvailable = true;
+        persistenceWarning = "";
         settingsDir = PreferredSettingsDir(home);
         settingsPath = Path.Join(settingsDir, "settings.ini");
         if IO.File.Exists(settingsPath) {
@@ -260,10 +283,9 @@ class SettingsManager {
             minimapVisible = mmStr == "1";
         }
 
-        var kbStr = Ini.Get(ini, "settings", "keybindingOverrides");
-        if kbStr != "" {
-            keybindingOverrides = kbStr;
-        }
+        keybindingOverrides = Ini.Get(
+            ini, "settings", "keybindingOverrides");
+        keybindings.Load(ini);
 
         var acStr = Ini.Get(ini, "settings", "autoCheck");
         if acStr != "" {
@@ -512,7 +534,8 @@ class SettingsManager {
         } else {
             Ini.Set(ini, "settings", "minimap", "0");
         }
-        Ini.Set(ini, "settings", "keybindingOverrides", keybindingOverrides);
+        keybindings.Save(ini);
+        keybindingOverrides = "";
         if autoCheckOnSave {
             Ini.Set(ini, "settings", "autoCheck", "1");
         } else {
@@ -625,7 +648,8 @@ class SettingsManager {
         Ini.Set(ini, "settings", "completionDelayMs", "" + completionDelayMs);
         Ini.Set(ini, "settings", "uiZoomPercent", "" + uiZoomPercent);
         var formattedContent = Ini.Format(ini);
-        return safe_io.WriteStudioState(settingsPath, formattedContent);
+        return safe_io.CompareExchangeStudioState(
+            settingsPath, content, formattedContent);
     }
 
     /// @brief Apply the loaded theme via Zanna.GUI.Theme.SetDark/SetLight.

@@ -1,11 +1,29 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/terminal_multi_probe.zia
+// Purpose: Validate multi-terminal selection and per-session scrollback ownership.
+// Key invariants:
+//   - Session switches preserve each session's bounded scrollback.
+//   - A switch renders the selected snapshot and consumes only pending delivery.
+//   - Invalid selection indices cannot change the active session.
+// Links: zannastudio/src/terminal/terminal_controller.zia,
+//        zannastudio/src/terminal/terminal_session.zia
+//
+//===----------------------------------------------------------------------===//
+
 module terminal_multi_probe;
 
 // ============================================================================
 // MODULE: terminal_multi_probe
 // PURPOSE: Validate plan 15 — multiple integrated terminal sessions. Exercises
 //          the controller's session list, New/Switch operations, title
-//          numbering, out-of-range guards, and the replay-buffer clear-on-switch
-//          path. PTY startup is not required (session bookkeeping is independent
+//          numbering, out-of-range guards, and retained scrollback replay on
+//          switch. PTY startup is not required (session bookkeeping is independent
 //          of whether a shell actually launches), so this runs headless.
 //
 // WHERE-THIS-FITS: TerminalController owns a List of TerminalSession objects with
@@ -18,6 +36,7 @@ bind "../terminal/terminal_controller";
 bind "../terminal/terminal_session";
 
 bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
 
 func fail(shell: app_shell.AppShell, reason: String) {
     shell.Destroy();
@@ -60,12 +79,49 @@ func main() {
     ctrl.SwitchTo(-1);
     if ctrl.activeIdx != 0 { fail(shell, "SwitchTo(-1) moved activeIdx"); return; }
 
-    // A background session's replay buffer is flushed and cleared on switch-in.
+    // A background session's pending suffix is consumed on switch-in, while its
+    // complete recent scrollback remains available for later switches.
     var s1 = ctrl.sessions.get(1) as terminal_session.TerminalSession;
-    s1.replayBuffer = "REPLAYME";
+    s1.RecordOutput("REPLAYME");
     ctrl.SwitchTo(1);
     if ctrl.activeIdx != 1 { fail(shell, "SwitchTo(1) activeIdx!=1"); return; }
-    if s1.replayBuffer != "" { fail(shell, "replayBuffer not cleared on switch"); return; }
+    if s1.replayBuffer != "REPLAYME" { fail(shell, "switch discarded scrollback"); return; }
+    if s1.pendingOutput != "" { fail(shell, "switch did not consume pending output"); return; }
+
+    // Frame overflow and long-hidden output retain the newest suffix, with
+    // independent scrollback/pending loss state and visible consumption markers.
+    var bounded = new terminal_session.TerminalSession();
+    var frame = "FRAME-HEAD" + Str.Repeat("f", terminal_session.MAX_TERMINAL_OUTPUT_DELTA)
+                + "FRAME-TAIL";
+    var kept = bounded.RecordFrameDelta(frame);
+    if Str.get_Length(kept) > terminal_session.MAX_TERMINAL_OUTPUT_DELTA
+       or Str.StartsWith(kept, "\n[terminal frame output prefix truncated]\n") == false
+       or Str.EndsWith(kept, "FRAME-TAIL") == false
+       or bounded.outputTruncated == false {
+        fail(shell, "frame bound did not preserve newest PTY suffix"); return;
+    }
+    bounded.RecordOutput(
+        "SCROLL-HEAD" + Str.Repeat("s", terminal_session.MAX_TERMINAL_SCROLLBACK)
+        + "SCROLL-TAIL");
+    if Str.get_Length(bounded.replayBuffer) > terminal_session.MAX_TERMINAL_SCROLLBACK
+       or Str.EndsWith(bounded.replayBuffer, "SCROLL-TAIL") == false
+       or bounded.scrollbackDropped == false
+       or Str.get_Length(bounded.pendingOutput) > terminal_session.MAX_TERMINAL_PENDING
+       or Str.EndsWith(bounded.pendingOutput, "SCROLL-TAIL") == false
+       or bounded.pendingOutputDropped == false {
+        fail(shell, "per-session output caps did not retain suffix/state"); return;
+    }
+    var pending = bounded.TakePendingOutput();
+    if Str.StartsWith(pending, "\n[terminal pending output prefix truncated]\n") == false
+       or Str.EndsWith(pending, "SCROLL-TAIL") == false
+       or bounded.pendingOutput != "" {
+        fail(shell, "pending loss marker/consumption was inconsistent"); return;
+    }
+    var replay = bounded.ReplayText();
+    if Str.StartsWith(replay, "\n[terminal scrollback prefix truncated]\n") == false
+       or Str.EndsWith(replay, "SCROLL-TAIL") == false {
+        fail(shell, "scrollback replay marker/suffix was inconsistent"); return;
+    }
 
     // Next-terminal cycling wraps around the session list.
     var count = ctrl.sessions.count();

@@ -3275,6 +3275,157 @@ TEST(findreplace_whole_word_does_not_match_inside_utf8_word) {
     vg_widget_destroy(&ed->base);
 }
 
+/// @brief Studio search uses one recoverable regex implementation on every
+/// platform and reports malformed interactive input without terminating.
+TEST(findreplace_regex_reports_malformed_pattern) {
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, "abc");
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_search_options_t options = {0};
+    options.use_regex = true;
+    vg_findreplacebar_set_options(bar, &options);
+    vg_findreplacebar_find(bar, "[abc");
+
+    ASSERT_EQ(bar->match_count, (size_t)0);
+    ASSERT_TRUE(strncmp(bar->result_text, "Invalid regex:", 14) == 0);
+    ASSERT_FALSE(bar->search_pending);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
+/// @brief Case-insensitive literals and classes behave identically through
+/// the shared engine rather than platform-specific regex libraries.
+TEST(findreplace_regex_case_insensitive_class_and_literal_match) {
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, "xxABCZ yyabcz");
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_search_options_t options = {0};
+    options.use_regex = true;
+    options.case_sensitive = false;
+    vg_findreplacebar_set_options(bar, &options);
+    vg_findreplacebar_find(bar, "[a-c]+z");
+
+    ASSERT_EQ(bar->match_count, (size_t)2);
+    ASSERT_EQ(bar->matches[0].start_col, (uint32_t)2);
+    ASSERT_EQ(bar->matches[0].end_col, (uint32_t)6);
+    ASSERT_EQ(bar->matches[1].start_col, (uint32_t)9);
+    ASSERT_EQ(bar->matches[1].end_col, (uint32_t)13);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
+/// @brief Zero-width alternatives are retained and the scan makes explicit
+/// UTF-8 progress so both line anchors are discoverable without looping.
+TEST(findreplace_regex_zero_width_anchors_progress) {
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, "x");
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_search_options_t options = {0};
+    options.use_regex = true;
+    vg_findreplacebar_set_options(bar, &options);
+    vg_findreplacebar_find(bar, "^|$");
+
+    ASSERT_EQ(bar->match_count, (size_t)2);
+    ASSERT_EQ(bar->matches[0].start_col, (uint32_t)0);
+    ASSERT_EQ(bar->matches[0].end_col, (uint32_t)0);
+    ASSERT_EQ(bar->matches[1].start_col, (uint32_t)1);
+    ASSERT_EQ(bar->matches[1].end_col, (uint32_t)1);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
+/// @brief Human typing is debounced while programmatic find operations remain
+/// immediate for command and test callers.
+TEST(findreplace_interactive_typing_is_debounced) {
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, "alpha beta");
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_textinput_set_text((vg_textinput_t *)bar->find_input, "alpha");
+
+    ASSERT_TRUE(bar->search_pending);
+    ASSERT_EQ(bar->match_count, (size_t)0);
+    ASSERT_TRUE(vg_findreplacebar_tick(bar, 0.10f));
+    ASSERT_TRUE(bar->search_pending);
+    ASSERT_FALSE(vg_findreplacebar_tick(bar, 0.06f));
+    ASSERT_FALSE(bar->search_pending);
+    ASSERT_EQ(bar->match_count, (size_t)1);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
+/// @brief Regex replacement expands numbered, full-match, and escaped-dollar
+/// references before mutating the editor.
+TEST(findreplace_regex_replace_all_expands_captures) {
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, "item-12 item-34");
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_search_options_t options = {0};
+    options.use_regex = true;
+    vg_findreplacebar_set_options(bar, &options);
+    vg_findreplacebar_find(bar, "(item)-([0-9]+)");
+    vg_textinput_set_text((vg_textinput_t *)bar->replace_input, "$2:$1:$$:$&");
+
+    ASSERT_EQ(vg_findreplacebar_replace_all(bar), (size_t)2);
+    char *text = vg_codeeditor_get_text(ed);
+    ASSERT_NOT_NULL(text);
+    ASSERT_TRUE(strcmp(text, "12:item:$:item-12 34:item:$:item-34") == 0);
+    free(text);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
+/// @brief Match collection stops exactly at its public budget and exposes
+/// truncation instead of allocating without bound.
+TEST(findreplace_search_enforces_match_cap) {
+    const size_t input_length = 10001;
+    char *input = (char *)malloc(input_length + 1);
+    ASSERT_NOT_NULL(input);
+    memset(input, 'a', input_length);
+    input[input_length] = '\0';
+
+    vg_codeeditor_t *ed = vg_codeeditor_create(NULL);
+    ASSERT_NOT_NULL(ed);
+    vg_codeeditor_set_text(ed, input);
+    free(input);
+
+    vg_findreplacebar_t *bar = vg_findreplacebar_create();
+    ASSERT_NOT_NULL(bar);
+    vg_findreplacebar_set_target(bar, ed);
+    vg_findreplacebar_find(bar, "a");
+
+    ASSERT_EQ(bar->match_count, (size_t)10000);
+    ASSERT_TRUE(bar->search_truncated);
+    ASSERT_TRUE(strchr(bar->result_text, '+') != NULL);
+
+    vg_widget_destroy(&bar->base);
+    vg_widget_destroy(&ed->base);
+}
+
 /// @brief R6 — append_line, select_all, clear, and max_lines=0 all leave line_count and
 /// has_selection consistent.
 TEST(outputpane_append_line_and_clear_keep_line_state_consistent) {
@@ -5862,6 +6013,12 @@ int main(void) {
     RUN(filedialog_create_always_has_current_path);
     RUN(textinput_null_font_preserves_existing_font_and_invalid_tick_is_ignored);
     RUN(findreplace_whole_word_does_not_match_inside_utf8_word);
+    RUN(findreplace_regex_reports_malformed_pattern);
+    RUN(findreplace_regex_case_insensitive_class_and_literal_match);
+    RUN(findreplace_regex_zero_width_anchors_progress);
+    RUN(findreplace_interactive_typing_is_debounced);
+    RUN(findreplace_regex_replace_all_expands_captures);
+    RUN(findreplace_search_enforces_match_cap);
 
     printf("\nRound 9 - Zanna.GUI class correctness audit fixes\n");
     RUN(platform_event_translation_preserves_focus_unknown_and_modifiers);

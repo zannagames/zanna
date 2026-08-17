@@ -367,6 +367,14 @@ void *rt_zia_completion_begin_symbols_for_file(rt_string source, rt_string file_
 /// @return Opaque semantic-job handle.
 void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_string file_path);
 
+/// @brief Start one path-aware analysis producing symbols, semantic tokens, and diagnostics.
+/// @details The compiler parses and binds the supplied snapshot once. The completed job supports
+///          `SemanticJob.Symbols`, `SemanticJob.Tokens`, and `SemanticJob.Diagnostics`.
+/// @param source Zia source text.
+/// @param file_path Source path used for relative resolution and diagnostics.
+/// @return Opaque semantic-job handle.
+void *rt_zia_completion_begin_analysis_for_file(rt_string source, rt_string file_path);
+
 /// @brief Return whether a semantic background job has completed.
 /// @param handle Semantic-job handle.
 /// @return `1` when the job is complete; otherwise `0`.

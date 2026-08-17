@@ -606,6 +606,11 @@ typedef struct rt_game3d_asset_async_job {
     rt_gltf_preload_bundle *preloaded_gltf;
     uint8_t *preloaded_fbx_data;
     size_t preloaded_fbx_size;
+    /* Plan 59 / ADR 0257 companion: VSCN/scene3d root bytes read off-thread
+     * so the main-thread commit parses from memory instead of doing the
+     * (potentially hundreds of MB) file IO itself. */
+    uint8_t *preloaded_vscn_data;
+    size_t preloaded_vscn_size;
     uint64_t cache_generation;
     uint64_t upload_total_bytes;
     uint64_t upload_prepared_bytes;

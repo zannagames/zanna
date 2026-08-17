@@ -155,17 +155,18 @@ func RunZiaWorkspaceQuery(request: ZiaWorkspaceQueryRequest) -> Any {
 /// @brief Resolve bounded call tokens in the active function through the index.
 func CollectOutgoingDefinitions(request: ZiaWorkspaceQueryRequest) -> Any {
     var result = Seq.New();
-    var startLine = source_scan.EnclosingZiaFunctionStartLine(request.source,
-                                                              request.line);
+    var lines = Str.Split(request.source, "\n");
+    var startLine = source_scan.EnclosingZiaFunctionStartLineFromLines(
+        lines, request.line);
     if startLine <= 0 {
         request.reason = "no_enclosing_function";
         return result;
     }
-    var endLine = source_scan.ZiaFunctionEndLine(request.source, startLine);
+    var endLine = source_scan.ZiaFunctionEndLineFromLines(lines, startLine);
     var caller = source_scan.ZiaFunctionNameFromLine(
-        source_scan.SourceLine(request.source, startLine));
-    var tokens = source_scan.OutgoingZiaCallTokens(request.source, startLine,
-                                                   endLine);
+        source_scan.SourceLineFromLines(lines, startLine));
+    var tokens = source_scan.OutgoingZiaCallTokensFromLines(
+        lines, startLine, endLine);
     if tokens == null { return result; }
     var count = Seq.get_Count(tokens);
     if count > ZIA_MAX_OUTGOING_TOKENS {

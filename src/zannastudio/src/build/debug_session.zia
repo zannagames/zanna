@@ -33,6 +33,7 @@ bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
 bind Time = Zanna.Time;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: debug_session
@@ -440,32 +441,38 @@ class DebugSession extends debug_session_base.DebugSessionBase {
     }
 
     hide func formatStopped(ev: Any) -> String {
-        var text = "[debug] stopped (" + lastReason + ") at "
-            + activePath + ":" + lastLine + "\n";
+        var text = new StringBuilder();
+        text.Append("[debug] stopped (" + lastReason + ") at "
+                    + activePath + ":" + lastLine + "\n");
 
         var frames = Map.Get(ev, "frames");
         if frames != null and Seq.get_Count(frames) > 0 {
-            text = text + "\nCall stack:\n";
+            text.Append("\nCall stack:\n");
             var i = 0;
             while i < Seq.get_Count(frames) {
                 var f = Seq.Get(frames, i);
-                text = text + "  #" + i + " " + Zanna.Collections.Map.GetStr(f, "function")
-                    + " " + Zanna.Collections.Map.GetStr(f, "path") + ":" + Zanna.Collections.Map.GetInt(f, "line") + "\n";
+                text.Append("  #" + i + " "
+                            + Zanna.Collections.Map.GetStr(f, "function")
+                            + " " + Zanna.Collections.Map.GetStr(f, "path")
+                            + ":" + Zanna.Collections.Map.GetInt(f, "line")
+                            + "\n");
                 i = i + 1;
             }
         }
 
         var locals = Map.Get(ev, "locals");
         if locals != null and Seq.get_Count(locals) > 0 {
-            text = text + "\nLocals:\n";
+            text.Append("\nLocals:\n");
             var j = 0;
             while j < Seq.get_Count(locals) {
                 var l = Seq.Get(locals, j);
-                text = text + "  " + Zanna.Collections.Map.GetStr(l, "name") + " = "
-                    + Zanna.Collections.Map.GetStr(l, "value") + " : " + Zanna.Collections.Map.GetStr(l, "type") + "\n";
+                text.Append("  " + Zanna.Collections.Map.GetStr(l, "name")
+                            + " = " + Zanna.Collections.Map.GetStr(l, "value")
+                            + " : " + Zanna.Collections.Map.GetStr(l, "type")
+                            + "\n");
                 j = j + 1;
             }
         }
-        return text;
+        return text.ToString();
     }
 }

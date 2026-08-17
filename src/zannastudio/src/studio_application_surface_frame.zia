@@ -21,7 +21,6 @@ module studio_application_surface_frame;
 bind "ui/ide_overlays";
 bind "ui/command_input";
 bind "app/context_menu_dispatcher";
-bind "app/lifecycle_controller";
 bind "app/settings_applier";
 bind "core/project";
 bind "editor/symbols";
@@ -214,16 +213,7 @@ class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
         scene3DEditor.SetFocusModeActive(sceneFocusActive);
         if shell.WasCloseRequested() {
             if file_commands.handleExit(shell, docMgr, engine) {
-                StudioBase.FlushWorkspaceLayout(
-                    shell, engine, projMgr, activityBarCtrl, appSettings,
-                    panelSplitSavePending);
-                diffOverlay.Shutdown();
-                basicWorkspaceCommands.Shutdown();
-                diagnosticActions.Shutdown();
-                ziaWorkspaceCommands.Shutdown();
-                lifecycle_controller.CleanupIde(shell, docMgr, projMgr, engine, buildSys, dbgSession,
-                                                terminalCtrl, fileWatchCtrl, workspaceWatcherState,
-                                                indexer, breakpointStore, sessionMgr, recoveryStore);
+                ShutdownApplication();
                 return true;
             }
         }

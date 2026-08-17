@@ -21,7 +21,6 @@ module zannastudio;
 bind "ui/ide_overlays";
 bind "ui/command_input";
 bind "app/context_menu_dispatcher";
-bind "app/lifecycle_controller";
 bind "app/settings_applier";
 bind "core/project";
 bind "editor/symbols";
@@ -96,16 +95,7 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         if main_command_dispatcher.DispatchCommandContext(commandContext,
                                                           cpSelected,
                                                           suppressTreeOpen) {
-            StudioBase.FlushWorkspaceLayout(
-                shell, engine, projMgr, activityBarCtrl, appSettings,
-                panelSplitSavePending);
-            diffOverlay.Shutdown();
-            basicWorkspaceCommands.Shutdown();
-            diagnosticActions.Shutdown();
-            ziaWorkspaceCommands.Shutdown();
-            lifecycle_controller.CleanupIde(shell, docMgr, projMgr, engine, buildSys, dbgSession,
-                                            terminalCtrl, fileWatchCtrl, workspaceWatcherState,
-                                            indexer, breakpointStore, sessionMgr, recoveryStore);
+            ShutdownApplication();
             return true;
         }
 
@@ -144,9 +134,9 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
 
         // Diagnostics panel: click to navigate to error line
         if shell.toolPanels.diagListBox.WasSelectionChanged() {
-            var selItem = shell.toolPanels.diagListBox.Selected;
-            if selItem != null {
-                locStore.OpenLocation(shell, docMgr, engine, tabs, GUI.ListBox.ItemGetData(selItem));
+            var diagnosticData = shell.toolPanels.GetSelectedProblemLocationData();
+            if diagnosticData != "" {
+                locStore.OpenLocation(shell, docMgr, engine, tabs, diagnosticData);
             }
         }
 
@@ -166,21 +156,17 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
             }
         }
         if shell.toolPanels.searchListBox.WasSelectionChanged() {
-            var searchItem = shell.toolPanels.searchListBox.Selected;
-            if searchItem != null {
-                var searchData = GUI.ListBox.ItemGetData(searchItem);
-                if locations.IsLocationData(searchData) {
-                    locStore.OpenLocation(shell, docMgr, engine, tabs, searchData);
-                }
+            var searchData = shell.toolPanels.GetSelectedToolRowData(
+                shell.toolPanels.searchListBox);
+            if locations.IsLocationData(searchData) {
+                locStore.OpenLocation(shell, docMgr, engine, tabs, searchData);
             }
         }
         if shell.toolPanels.referencesListBox.WasSelectionChanged() {
-            var refItem = shell.toolPanels.referencesListBox.Selected;
-            if refItem != null {
-                var refData = GUI.ListBox.ItemGetData(refItem);
-                if locations.IsLocationData(refData) {
-                    locStore.OpenLocation(shell, docMgr, engine, tabs, refData);
-                }
+            var refData = shell.toolPanels.GetSelectedToolRowData(
+                shell.toolPanels.referencesListBox);
+            if locations.IsLocationData(refData) {
+                locStore.OpenLocation(shell, docMgr, engine, tabs, refData);
             }
         }
         if shell.toolPanels.callStackListBox.WasSelectionChanged() {
@@ -320,8 +306,7 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
                         shell.SetStatusLeft("Keybinding was not changed");
                         GUI.Toast.Warning("Invalid keyboard shortcut");
                     } else {
-                        appSettings.keybindingOverrides = commandRegistry.UpsertOverride(
-                            appSettings.keybindingOverrides, keyId, newShortcut);
+                        appSettings.keybindings.Set(keyId, newShortcut);
                         var keyEntry = commandRegistry.Find(keyId);
                         if keyEntry != null { keyEntry.shortcut = newShortcut; }
                         commandRegistry.InstallShortcuts();
@@ -345,8 +330,7 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
                and overlays.keybindingClearButton.WasClicked() {
                 var resetId = overlays.SelectedKeybindingId();
                 if resetId != "" {
-                    appSettings.keybindingOverrides = commandRegistry.RemoveOverride(
-                        appSettings.keybindingOverrides, resetId);
+                    appSettings.keybindings.Remove(resetId);
                     var resetEntry = commandRegistry.Find(resetId);
                     if resetEntry != null {
                         resetEntry.shortcut = commandRegistry.DefaultShortcutFor(resetId);
@@ -624,6 +608,20 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         var autoDoc = docMgr.GetActive();
         currentRevisionForSave = StudioBase.ActiveContentRevision(
             docMgr, engine, scene2DEditor, scene3DEditor);
+        autoSaveJob.Pump();
+        var completedAutoSave = autoSaveJob.TakeCompleted();
+        if completedAutoSave != null {
+            var currentBecameClean = file_commands.CompleteAutoSave(
+                shell, docMgr, engine, tabs, completedAutoSave,
+                currentRevisionForSave);
+            if currentBecameClean {
+                currentRevisionForSave = StudioBase.ActiveContentRevision(
+                    docMgr, engine, scene2DEditor, scene3DEditor);
+                autoSaveRevision = currentRevisionForSave;
+                autoSaveDebounce.Reset();
+                fileWatchCtrl.ResetPendingReload();
+            }
+        }
         if appSettings.autoSave and autoDoc != null and autoDoc!.isNew == false {
             if docMgr.activeIndex != autoSaveActiveIndex {
                 autoSaveActiveIndex = docMgr.activeIndex;
@@ -633,13 +631,14 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
             } else if currentRevisionForSave != autoSaveRevision {
                 autoSaveRevision = currentRevisionForSave;
                 autoSaveDebounce.Signal();
-            } else if autoSaveDebounce.get_IsReady() and autoDoc!.isModified {
-                if file_commands.AutoSaveActive(shell, docMgr, engine, tabs) {
-                    autoSaveRevision = StudioBase.ActiveContentRevision(
-                        docMgr, engine, scene2DEditor, scene3DEditor);
-                    autoSaveDebounce.Reset();
-                    fileWatchCtrl.ResetPendingReload();
-                }
+            } else if autoSaveDebounce.get_IsReady() and autoDoc!.isModified
+                      and autoSaveJob.IsBusy() == false {
+                file_commands.QueueAutoSaveActive(
+                    autoSaveJob, shell, docMgr, engine,
+                    currentRevisionForSave);
+                // A failed/conflicted request must not retry every frame. A tab
+                // transition or a later content revision signals a fresh pass.
+                autoSaveDebounce.Reset();
             }
         } else {
             autoSaveActiveIndex = docMgr.activeIndex;
@@ -706,25 +705,46 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         var statusLineCount = engine.GetLineCount();
         var statusCursorCount = engine.editor.GetCursorCount();
         if textEditorContextAvailable == false and activeVisualDoc != null {
-            var visualStatus = "Visual scene";
+            var nextVisualRevision = currentRevisionForSave;
+            var nextVisualSelectionCount = 0;
+            var nextVisualZoom = 0;
+            var nextVisualMode = -1;
             if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D
                and scene2DEditor.scene != null {
-                visualStatus = "Canvas " + scene2DEditor.scene.Width
-                    + " × " + scene2DEditor.scene.Height
-                    + "  |  Layers " + scene2DEditor.scene.LayerCount()
-                    + "  |  Objects " + scene2DEditor.scene.ObjectCount()
-                    + "  |  Selected "
-                    + scene2DEditor.selectedObjects.count()
-                    + "  |  Zoom " + scene2DEditor.zoomPercent + "%";
+                nextVisualSelectionCount = scene2DEditor.selectedObjects.count();
+                nextVisualZoom = scene2DEditor.zoomPercent;
             } else if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D
                       and scene3DEditor.scene != null {
-                visualStatus = "Hierarchy " + (scene3DEditor.scene.NodeCount - 1)
-                    + " node(s)  |  Selected "
-                    + scene3DEditor.selectedIndices.count()
-                    + "  |  " + scene3DEditor.EffectiveViewportMode()
-                    + "  |  VSCN";
+                nextVisualSelectionCount = scene3DEditor.selectedIndices.count();
+                nextVisualMode = scene3DEditor.EffectiveViewportMode();
             }
-            shell.SetStatusCenter(visualStatus);
+            if visualStatusDocument != activeVisualDoc!
+               or visualStatusRevision != nextVisualRevision
+               or visualStatusSelectionCount != nextVisualSelectionCount
+               or visualStatusZoom != nextVisualZoom
+               or visualStatusMode != nextVisualMode {
+                var visualStatus = "Visual scene";
+                if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D
+                   and scene2DEditor.scene != null {
+                    visualStatus = "Canvas " + scene2DEditor.scene.Width
+                        + " × " + scene2DEditor.scene.Height
+                        + "  |  Layers " + scene2DEditor.scene.LayerCount()
+                        + "  |  Objects " + scene2DEditor.scene.ObjectCount()
+                        + "  |  Selected " + nextVisualSelectionCount
+                        + "  |  Zoom " + nextVisualZoom + "%";
+                } else if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D
+                          and scene3DEditor.scene != null {
+                    visualStatus = "Hierarchy " + (scene3DEditor.scene.NodeCount - 1)
+                        + " node(s)  |  Selected " + nextVisualSelectionCount
+                        + "  |  " + nextVisualMode + "  |  VSCN";
+                }
+                shell.SetStatusCenter(visualStatus);
+                visualStatusDocument = activeVisualDoc!;
+                visualStatusRevision = nextVisualRevision;
+                visualStatusSelectionCount = nextVisualSelectionCount;
+                visualStatusZoom = nextVisualZoom;
+                visualStatusMode = nextVisualMode;
+            }
         } else if curCursorLine != prevCursorLine or curCursorCol != prevCursorCol
            or statusRevision != prevStatusRevision
            or statusLineCount != prevStatusLineCount
@@ -734,6 +754,9 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
                 cursorText = cursorText + "  |  Cursors: " + statusCursorCount;
             }
             shell.SetStatusCenter(cursorText);
+        }
+        if textEditorContextAvailable or activeVisualDoc == null {
+            visualStatusDocument = null;
         }
         // Breadcrumb symbol segment: incrementally scan only as far as the
         // current caret, with a strict per-frame line budget. The former path
@@ -811,21 +834,7 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
     }
 
     hide func Cleanup() {
-        // ========================================================================
-        // Cleanup
-        // ========================================================================
-        scmGutter.Cancel();
-        recoveryStore.CancelAsync();
-        diffOverlay.Shutdown();
-        basicWorkspaceCommands.Shutdown();
-        diagnosticActions.Shutdown();
-        ziaWorkspaceCommands.Shutdown();
-        StudioBase.FlushWorkspaceLayout(
-            shell, engine, projMgr, activityBarCtrl, appSettings,
-            panelSplitSavePending);
-        lifecycle_controller.CleanupIde(shell, docMgr, projMgr, engine, buildSys, dbgSession,
-                                        terminalCtrl, fileWatchCtrl, workspaceWatcherState,
-                                        indexer, breakpointStore, sessionMgr, recoveryStore);
+        ShutdownApplication();
     }
 
     expose func Run() {

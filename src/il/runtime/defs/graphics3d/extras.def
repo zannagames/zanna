@@ -214,6 +214,11 @@ RT_FUNC(Sky3DGetResolution,  rt_sky3d_get_resolution,     "Zanna.Graphics3D.Sky3
 RT_FUNC(Sky3DGetDirty,       rt_sky3d_get_dirty,          "Zanna.Graphics3D.Sky3D.get_Dirty",        "i1(obj)")
 RT_FUNC(Sky3DUpdate,         rt_sky3d_update,             "Zanna.Graphics3D.Sky3D.Update",           "i1(obj,obj)")
 RT_FUNC(Sky3DGetCubemap,     rt_sky3d_get_cubemap,        "Zanna.Graphics3D.Sky3D.get_Cubemap",      "obj(obj)")
+// Plan 59 (baseball night look): deterministic night star field + moon.
+RT_FUNC(Sky3DSetStars,       rt_sky3d_set_stars,          "Zanna.Graphics3D.Sky3D.set_Stars",        "void(obj,i1)")
+RT_FUNC(Sky3DGetStars,       rt_sky3d_get_stars,          "Zanna.Graphics3D.Sky3D.get_Stars",        "i1(obj)")
+RT_FUNC(Sky3DSetStarIntensity, rt_sky3d_set_star_intensity, "Zanna.Graphics3D.Sky3D.set_StarIntensity", "void(obj,f64)")
+RT_FUNC(Sky3DGetStarIntensity, rt_sky3d_get_star_intensity, "Zanna.Graphics3D.Sky3D.get_StarIntensity", "f64(obj)")
 
 /// @summary Provides Sky 3D functionality for 3D rendering and scene applications.
 /// @details

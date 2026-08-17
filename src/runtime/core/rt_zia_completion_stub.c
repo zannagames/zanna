@@ -721,6 +721,16 @@ RT_WEAK void *rt_zia_completion_begin_tokens_for_file(rt_string source, rt_strin
     return NULL;
 }
 
+/// @brief Weak stub: shared semantic analysis is unavailable; return null job.
+/// @param source Borrowed source; ignored.
+/// @param file_path Borrowed path; ignored.
+/// @return Always `NULL`.
+RT_WEAK void *rt_zia_completion_begin_analysis_for_file(rt_string source, rt_string file_path) {
+    (void)source;
+    (void)file_path;
+    return NULL;
+}
+
 /// @brief Weak stub: no async job is considered done.
 /// @param handle Opaque job; ignored.
 /// @return Always zero, including for NULL.

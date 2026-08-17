@@ -369,6 +369,7 @@ RT_FUNC(GuiSplitPaneGetSecond, rt_splitpane_get_second, "Zanna.GUI.SplitPane.get
 
 RT_FUNC(GuiCodeEditorNew, rt_codeeditor_new, "Zanna.GUI.CodeEditor.New", "obj(obj)")
 RT_FUNC(GuiCodeEditorSetText, rt_codeeditor_set_text, "Zanna.GUI.CodeEditor.SetText", "void(obj,str)")
+RT_FUNC(GuiCodeEditorReplaceAllText, rt_codeeditor_replace_all_text, "Zanna.GUI.CodeEditor.ReplaceAllText", "i1(obj,str)")
 RT_FUNC(GuiCodeEditorGetText, rt_codeeditor_get_text, "Zanna.GUI.CodeEditor.get_Text", "str(obj)")
 RT_FUNC(GuiCodeEditorGetRevision, rt_codeeditor_get_revision, "Zanna.GUI.CodeEditor.get_Revision", "i64(obj)")
 RT_FUNC(GuiCodeEditorTakeDeltas, rt_codeeditor_take_deltas, "Zanna.GUI.CodeEditor.TakeDeltas", "str(obj,i64)")

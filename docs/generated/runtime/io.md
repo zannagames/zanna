@@ -117,11 +117,14 @@ the class directly. Its public surface exposes operations including `Append`, `A
 | <a id="zanna-io-file-readallbytes"></a>`ReadAllBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.File.ReadAllBytes` |
 | <a id="zanna-io-file-readalllines"></a>`ReadAllLines` | `seq<str>(str)` | `Zanna.IO.File.ReadAllLines` |
 | <a id="zanna-io-file-readalltext"></a>`ReadAllText` | `str(str)` | `Zanna.IO.File.ReadAllText` |
+| <a id="zanna-io-file-readalltextbounded"></a>`ReadAllTextBounded` | `str(str,i64)` | `Zanna.IO.File.ReadAllTextBounded` |
 | <a id="zanna-io-file-sizebytes"></a>`SizeBytes` | `i64(str)` | `Zanna.IO.File.SizeBytes` |
 | <a id="zanna-io-file-touch"></a>`Touch` | `void(str)` | `Zanna.IO.File.Touch` |
 | <a id="zanna-io-file-writeallbytes"></a>`WriteAllBytes` | `void(str,obj<Zanna.Collections.Bytes>)` | `Zanna.IO.File.WriteAllBytes` |
 | <a id="zanna-io-file-writealllines"></a>`WriteAllLines` | `void(str,seq<str>)` | `Zanna.IO.File.WriteAllLines` |
 | <a id="zanna-io-file-writealltext"></a>`WriteAllText` | `void(str,str)` | `Zanna.IO.File.WriteAllText` |
+| <a id="zanna-io-file-writealltextnew"></a>`WriteAllTextNew` | `void(str,str)` | `Zanna.IO.File.WriteAllTextNew` |
+| <a id="zanna-io-file-compareexchangealltext"></a>`CompareExchangeAllText` | `i1(str,str,str)` | `Zanna.IO.File.CompareExchangeAllText` |
 | <a id="zanna-io-file-moveover"></a>`MoveOver` | `void(str,str)` | `Zanna.IO.File.MoveOver` |
 
 <a id="zanna-io-path"></a>
@@ -146,6 +149,7 @@ the class directly. Its public surface exposes operations including `Absolute`, 
 | <a id="zanna-io-path-resolvedataroot"></a>`ResolveDataRoot` | `str(str,str)` | `Zanna.IO.Path.ResolveDataRoot` |
 | <a id="zanna-io-path-isabsolute"></a>`IsAbsolute` | `i1(str)` | `Zanna.IO.Path.IsAbsolute` |
 | <a id="zanna-io-path-islink"></a>`IsLink` | `i1(str)` | `Zanna.IO.Path.IsLink` |
+| <a id="zanna-io-path-sameentry"></a>`SameEntry` | `i1(str,str)` | `Zanna.IO.Path.SameEntry` |
 | <a id="zanna-io-path-join"></a>`Join` | `str(str,str)` | `Zanna.IO.Path.Join` |
 | <a id="zanna-io-path-name"></a>`Name` | `str(str)` | `Zanna.IO.Path.Name` |
 | <a id="zanna-io-path-normalize"></a>`Normalize` | `str(str)` | `Zanna.IO.Path.Normalize` |
@@ -450,6 +454,8 @@ Constructor: `Zanna.IO.Watcher.New`
 | <a id="zanna-io-watcher-poll"></a>`Poll` | `i64()` | `Zanna.IO.Watcher.Poll` |
 | <a id="zanna-io-watcher-pollfor"></a>`PollFor` | `i64(i64)` | `Zanna.IO.Watcher.PollFor` |
 | <a id="zanna-io-watcher-eventpath"></a>`EventPath` | `str()` | `Zanna.IO.Watcher.EventPath` |
+| <a id="zanna-io-watcher-eventoldpath"></a>`EventOldPath` | `str()` | `Zanna.IO.Watcher.EventOldPath` |
+| <a id="zanna-io-watcher-eventnewpath"></a>`EventNewPath` | `str()` | `Zanna.IO.Watcher.EventNewPath` |
 | <a id="zanna-io-watcher-eventtype"></a>`EventType` | `i64()` | `Zanna.IO.Watcher.EventType` |
 | <a id="zanna-io-watcher-eventoverflowcount"></a>`EventOverflowCount` | `i64()` | `Zanna.IO.Watcher.EventOverflowCount` |
 | <a id="zanna-io-watcher-new"></a>`New` | `obj(str)` | `Zanna.IO.Watcher.New` |
@@ -557,16 +563,20 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | `Zanna.IO.File.ReadAllBytes` | `obj<Zanna.Collections.Bytes>(str)` | `rt_io_file_read_all_bytes` |
 | `Zanna.IO.File.ReadAllLines` | `seq<str>(str)` | `rt_io_file_read_all_lines` |
 | `Zanna.IO.File.ReadAllText` | `str(str)` | `rt_io_file_read_all_text` |
+| `Zanna.IO.File.ReadAllTextBounded` | `str(str,i64)` | `rt_io_file_read_all_text_bounded` |
 | `Zanna.IO.File.SizeBytes` | `i64(str)` | `rt_file_size` |
 | `Zanna.IO.File.Touch` | `void(str)` | `rt_file_touch` |
 | `Zanna.IO.File.WriteAllBytes` | `void(str,obj<Zanna.Collections.Bytes>)` | `rt_io_file_write_all_bytes` |
 | `Zanna.IO.File.WriteAllLines` | `void(str,seq<str>)` | `rt_io_file_write_all_lines` |
 | `Zanna.IO.File.WriteAllText` | `void(str,str)` | `rt_io_file_write_all_text` |
+| `Zanna.IO.File.WriteAllTextNew` | `void(str,str)` | `rt_io_file_write_all_text_new` |
+| `Zanna.IO.File.CompareExchangeAllText` | `i1(str,str,str)` | `rt_io_file_compare_exchange_all_text` |
 | `Zanna.IO.Path.Absolute` | `str(str)` | `rt_path_abs` |
 | `Zanna.IO.Path.Directory` | `str(str)` | `rt_path_dir` |
 | `Zanna.IO.Path.Extension` | `str(str)` | `rt_path_ext` |
 | `Zanna.IO.Path.IsAbsolute` | `i1(str)` | `rt_path_is_abs` |
 | `Zanna.IO.Path.IsLink` | `i1(str)` | `rt_path_is_link` |
+| `Zanna.IO.Path.SameEntry` | `i1(str,str)` | `rt_path_same_entry` |
 | `Zanna.IO.Path.Join` | `str(str,str)` | `rt_path_join` |
 | `Zanna.IO.Path.Name` | `str(str)` | `rt_path_name` |
 | `Zanna.IO.Path.Normalize` | `str(str)` | `rt_path_norm` |
@@ -718,6 +728,8 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | `Zanna.IO.Watcher.Poll` | `i64(obj)` | `rt_watcher_poll` |
 | `Zanna.IO.Watcher.PollFor` | `i64(obj,i64)` | `rt_watcher_poll_for` |
 | `Zanna.IO.Watcher.EventPath` | `str(obj)` | `rt_watcher_event_path` |
+| `Zanna.IO.Watcher.EventOldPath` | `str(obj)` | `rt_watcher_event_old_path` |
+| `Zanna.IO.Watcher.EventNewPath` | `str(obj)` | `rt_watcher_event_new_path` |
 | `Zanna.IO.Watcher.EventType` | `i64(obj)` | `rt_watcher_event_type` |
 | `Zanna.IO.Watcher.EventOverflowCount` | `i64(obj)` | `rt_watcher_event_overflow_count` |
 | <a id="zanna-io-watcher-get-eventnone"></a>`Zanna.IO.Watcher.get_EventNone` | `i64(obj)` | `rt_watcher_event_none` |

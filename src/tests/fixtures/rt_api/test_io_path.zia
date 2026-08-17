@@ -1,3 +1,19 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: tests/fixtures/rt_api/test_io_path.zia
+// Purpose: Smoke the typed Zia IO Path, File, and Dir runtime surfaces.
+// Key invariants: Registry-backed calls type-check and execute through the VM.
+// Ownership/Lifetime: The fixture creates and deletes one local temporary file.
+// Links: src/il/runtime/defs/classes/io_text.def,
+//        docs/adr/0259-stable-filesystem-entry-identity.md
+//
+//===----------------------------------------------------------------------===//
+
 module TestIoPath;
 bind Zanna.IO.Path;
 bind Zanna.IO.File;
@@ -16,6 +32,7 @@ func start() {
     SayBool(IsAbsolute("C:\\foo"));
     SayBool(IsAbsolute("foo"));
     Say(Normalize("a/b/../c"));
+    SayBool(SameEntry(".", "."));
 
     // File write/read round-trip
     var tmp = "_rt_api_test_tmp.txt";

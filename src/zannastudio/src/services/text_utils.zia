@@ -2,6 +2,7 @@ module text_utils;
 
 bind Obj = Zanna.Core.Object;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: text_utils
@@ -57,16 +58,16 @@ expose func TrimLineRightWhitespace(line: String) -> String {
 ///          boxed element through `Obj.ToString`, which is the correct way to
 ///          join a `List`.
 expose func JoinStringList(items: List, separator: String) -> String {
-    var result = "";
+    var result = new StringBuilder();
     var i = 0;
     while i < items.count() {
         if i > 0 {
-            result = result + separator;
+            result.Append(separator);
         }
-        result = result + Obj.ToString(items.get(i));
+        result.Append(Obj.ToString(items.get(i)));
         i = i + 1;
     }
-    return result;
+    return result.ToString();
 }
 
 /// @brief Return true when a string list contains a value.

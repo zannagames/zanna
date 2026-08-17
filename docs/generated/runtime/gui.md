@@ -1403,6 +1403,7 @@ Constructor: `Zanna.GUI.EditorBuffer.New`
 |---|---|---|
 | <a id="zanna-gui-editorbuffer-ismodified"></a>`IsModified` | `i1()` | `Zanna.GUI.EditorBuffer.IsModified` |
 | <a id="zanna-gui-editorbuffer-clearmodified"></a>`ClearModified` | `void()` | `Zanna.GUI.EditorBuffer.ClearModified` |
+| <a id="zanna-gui-editorbuffer-replacealltext"></a>`ReplaceAllText` | `i1(str)` | `Zanna.GUI.EditorBuffer.ReplaceAllText` |
 | <a id="zanna-gui-editorbuffer-new"></a>`New` | `obj(str)` | `Zanna.GUI.EditorBuffer.New` |
 
 <a id="zanna-gui-codeeditor"></a>
@@ -1433,6 +1434,7 @@ Constructor: `Zanna.GUI.CodeEditor.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-gui-codeeditor-settext"></a>`SetText` | `void(str)` | `Zanna.GUI.CodeEditor.SetText` |
+| <a id="zanna-gui-codeeditor-replacealltext"></a>`ReplaceAllText` | `i1(str)` | `Zanna.GUI.CodeEditor.ReplaceAllText` |
 | <a id="zanna-gui-codeeditor-setcursor"></a>`SetCursor` | `void(i64,i64)` | `Zanna.GUI.CodeEditor.SetCursor` |
 | <a id="zanna-gui-codeeditor-scrolltoline"></a>`ScrollToLine` | `void(i64)` | `Zanna.GUI.CodeEditor.ScrollToLine` |
 | <a id="zanna-gui-codeeditor-ismodified"></a>`IsModified` | `i1()` | `Zanna.GUI.CodeEditor.IsModified` |
@@ -2760,6 +2762,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-splitpane-get-second"></a>`Zanna.GUI.SplitPane.get_Second` | `obj<Zanna.GUI.Widget>(obj)` | `rt_splitpane_get_second` |
 | `Zanna.GUI.CodeEditor.New` | `obj(obj)` | `rt_codeeditor_new` |
 | `Zanna.GUI.CodeEditor.SetText` | `void(obj,str)` | `rt_codeeditor_set_text` |
+| `Zanna.GUI.CodeEditor.ReplaceAllText` | `i1(obj,str)` | `rt_codeeditor_replace_all_text` |
 | <a id="zanna-gui-codeeditor-get-text"></a>`Zanna.GUI.CodeEditor.get_Text` | `str(obj)` | `rt_codeeditor_get_text` |
 | <a id="zanna-gui-codeeditor-get-revision"></a>`Zanna.GUI.CodeEditor.get_Revision` | `i64(obj)` | `rt_codeeditor_get_revision` |
 | `Zanna.GUI.CodeEditor.TakeDeltas` | `str(obj,i64)` | `rt_codeeditor_take_deltas` |
@@ -3281,6 +3284,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-editorbuffer-get-revision"></a>`Zanna.GUI.EditorBuffer.get_Revision` | `i64(obj)` | `rt_editorbuffer_get_revision` |
 | `Zanna.GUI.EditorBuffer.IsModified` | `i1(obj)` | `rt_editorbuffer_is_modified` |
 | `Zanna.GUI.EditorBuffer.ClearModified` | `void(obj)` | `rt_editorbuffer_clear_modified` |
+| `Zanna.GUI.EditorBuffer.ReplaceAllText` | `i1(obj,str)` | `rt_editorbuffer_replace_all_text` |
 | `Zanna.GUI.CodeEditor.SetShowIndentGuides` | `void(obj,i1)` | `rt_codeeditor_set_show_indent_guides` |
 | `Zanna.GUI.CodeEditor.GetShowIndentGuides` | `i64(obj)` | `rt_codeeditor_get_show_indent_guides` |
 | `Zanna.GUI.CodeEditor.SetReadOnly` | `void(obj,i1)` | `rt_codeeditor_set_read_only` |

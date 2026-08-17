@@ -43,6 +43,7 @@ bind Obj = Zanna.Core.Object;
 bind Convert = Zanna.Core.Convert;
 bind Terminal = Zanna.Terminal;
 bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
 bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Str = Zanna.String;
@@ -94,6 +95,28 @@ expose func VerifyOverlayResetAndSearchHelpers(ctx: Probe.ConsoleSearchProbeCont
     }
     if search_commands.LineMatchesWithMode("func main()", "^func [a-z]+\\(\\)$", false, false, true) == false {
         Probe.fail(shell, "regex anchors and escapes");
+        return false;
+    }
+    if search_commands.LineMatchesWithMode("été t—t", "été", true, true, false) == false
+       or search_commands.LineMatchesWithMode("été", "té", true, true, false) {
+        Probe.fail(shell, "Unicode whole-word boundaries");
+        return false;
+    }
+    var captureOutcome = new replace_commands.ReplaceOutcome();
+    var captureText = replace_commands.ReplaceAllInLine(
+        "needle = 42; needle = 7", "(needle) = ([0-9]+)",
+        "$2:$1", true, false, true, captureOutcome);
+    if captureText != "42:needle; 7:needle"
+       or captureOutcome.replacements != 2
+       or captureOutcome.error != "" {
+        Probe.fail(shell, "regex capture-expanding replacement");
+        return false;
+    }
+    var anchorOutcome = new replace_commands.ReplaceOutcome();
+    var anchored = replace_commands.ReplaceAllInLine(
+        "abc", "^|$", "_", true, false, true, anchorOutcome);
+    if anchored != "_abc_" or anchorOutcome.replacements != 2 {
+        Probe.fail(shell, "zero-width replacement progress");
         return false;
     }
     if search_commands.QuickOpenScore("src/main.zia", "main.zia") != 1 {
@@ -191,6 +214,66 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
     }
     if byteBudgetSearch.resultCount != 3 {
         Probe.fail(shell, "byte-budget search lost results");
+        return false;
+    }
+
+    // Search publishes each occurrence, not merely one row per matching line,
+    // and zero-width anchors advance without skipping the end-of-line match.
+    var occurrenceRoot = TempFile.CreateDirWithPrefix("zannastudio_search_occurrences_");
+    File.WriteAllText(Path.Join(occurrenceRoot, "many.txt"),
+                      "needle needle needle");
+    var occurrenceSearch = new search_commands.SearchController();
+    var occurrenceLocs = new locations.LocationStore();
+    if occurrenceSearch.StartDirect(shell, occurrenceRoot, "needle", ".txt",
+                                    true, false) == false {
+        Probe.fail(shell, "multi-occurrence search did not start");
+        return false;
+    }
+    while occurrenceSearch.active {
+        occurrenceSearch.Pump(shell, docMgr, occurrenceLocs);
+    }
+    if occurrenceSearch.resultCount != 3 or occurrenceLocs.items.count() != 3 {
+        Probe.fail(shell, "search did not publish every line occurrence");
+        return false;
+    }
+    var anchorSearch = new search_commands.SearchController();
+    var anchorLocs = new locations.LocationStore();
+    if anchorSearch.StartDirectWithSearchMode(
+           shell, occurrenceRoot, "^|$", ".txt", true, false, true, "", "") == false {
+        Probe.fail(shell, "zero-width search did not start");
+        return false;
+    }
+    while anchorSearch.active {
+        anchorSearch.Pump(shell, docMgr, anchorLocs);
+    }
+    if anchorSearch.resultCount != 2 or anchorLocs.items.count() != 2 {
+        Probe.fail(shell, "zero-width search lost an anchor occurrence");
+        return false;
+    }
+
+    var malformedSearch = new search_commands.SearchController();
+    if malformedSearch.StartDirectWithSearchMode(
+           shell, occurrenceRoot, "[", ".txt", true, false, true, "", "")
+       or malformedSearch.active or malformedSearch.discoveryError == "" {
+        Probe.fail(shell, "malformed regex was not an explicit recoverable error");
+        return false;
+    }
+
+    // If a root disappears after request acceptance, the result must be marked
+    // incomplete rather than silently reported as a clean no-match search.
+    var disappearingRoot = TempFile.CreateDirWithPrefix("zannastudio_search_disappearing_");
+    File.WriteAllText(Path.Join(disappearingRoot, "gone.txt"), "needle");
+    var disappearingSearch = new search_commands.SearchController();
+    var disappearingLocs = new locations.LocationStore();
+    if disappearingSearch.StartDirect(shell, disappearingRoot, "needle", ".txt",
+                                      true, false) == false {
+        Probe.fail(shell, "disappearing-root search did not start");
+        return false;
+    }
+    Dir.RemoveAll(disappearingRoot);
+    disappearingSearch.Pump(shell, docMgr, disappearingLocs);
+    if disappearingSearch.active or disappearingSearch.discoveryError == "" {
+        Probe.fail(shell, "file-index failure was reported as a complete search");
         return false;
     }
 

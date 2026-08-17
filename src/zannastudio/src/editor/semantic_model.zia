@@ -1,0 +1,189 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/semantic_model.zia
+// Purpose: Own one compiler-backed semantic snapshot per active document revision.
+// Key invariants:
+//   - At most one analysis job is live for the active path and revision.
+//   - Results publish only when path and revision still match the editor.
+//   - Symbols, tokens, and diagnostics originate from the same compiler analysis.
+// Ownership/Lifetime:
+//   - Studio owns one model for its active text-editor lifetime.
+//   - The model owns and cancels its asynchronous SemanticJob handle.
+// Links: editor/semantic_tokens.zia, editor/symbols.zia,
+//        docs/adr/0264-shared-revision-semantic-analysis.md
+//
+//===----------------------------------------------------------------------===//
+
+module semantic_model;
+
+bind "editor_engine";
+bind "zia_query";
+
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind SemanticJob = Zanna.Zia.SemanticJob;
+bind Threads = Zanna.Threads;
+
+final SHARED_SEMANTIC_DEBOUNCE_MS = 350;
+
+/// @brief Revision-keyed compiler snapshot shared by semantic editor features.
+class SemanticModel {
+    expose String sourcePath;
+    expose String readyPath;
+    expose Integer readyRevision;
+    expose String readySource;
+    expose Integer readyLineOffset;
+    expose String readySymbols;
+    expose String readyTokens;
+    expose Boolean readyHadError;
+    expose Integer requestCount;
+    expose Integer publishCount;
+
+    hide Any pendingJob;
+    hide String pendingPath;
+    hide Integer pendingRevision;
+    hide String pendingSource;
+    hide Integer pendingLineOffset;
+    hide String queuedPath;
+    hide Integer queuedRevision;
+    hide Threads.Debouncer debounce;
+
+    expose func init() {
+        sourcePath = "";
+        readyPath = "";
+        readyRevision = -1;
+        readySource = "";
+        readyLineOffset = 0;
+        readySymbols = "";
+        readyTokens = "";
+        readyHadError = false;
+        requestCount = 0;
+        publishCount = 0;
+        pendingJob = null;
+        pendingPath = "";
+        pendingRevision = -1;
+        pendingSource = "";
+        pendingLineOffset = 0;
+        queuedPath = "";
+        queuedRevision = -1;
+        debounce = Threads.Debouncer.New(SHARED_SEMANTIC_DEBOUNCE_MS);
+    }
+
+    /// @brief Change the active source identity and cancel stale work.
+    expose func SetSourcePath(path: String) {
+        if path == sourcePath { return; }
+        sourcePath = path;
+        CancelPending();
+        queuedPath = "";
+        queuedRevision = -1;
+    }
+
+    /// @brief True when the published model exactly matches a source identity.
+    expose func IsReady(path: String, revision: Integer) -> Boolean {
+        return readyPath == path and readyRevision == revision;
+    }
+
+    /// @brief Advance debounce, worker polling, and stale-result rejection.
+    expose func Update(engine: editor_engine.EditorEngine) {
+        if engine == null or engine.editor == null or sourcePath == "" { return; }
+        var revision = engine.GetRevision();
+
+        if pendingJob != null {
+            if sourcePath != pendingPath or revision != pendingRevision {
+                CancelPending();
+            } else {
+                PollPending(engine);
+                return;
+            }
+        }
+        if IsReady(sourcePath, revision) { return; }
+
+        if queuedPath != sourcePath or queuedRevision != revision {
+            queuedPath = sourcePath;
+            queuedRevision = revision;
+            debounce.Signal();
+            return;
+        }
+        if debounce.get_IsReady() == false { return; }
+        Start(engine, revision);
+    }
+
+    /// @brief Cancel any owned worker and invalidate queued debounce state.
+    expose func Shutdown() {
+        CancelPending();
+        queuedPath = "";
+        queuedRevision = -1;
+    }
+
+    hide func Start(engine: editor_engine.EditorEngine, revision: Integer) {
+        var source = engine.GetTextSnapshot();
+        var querySource = zia_query.WrapForQuery(source);
+        var lineOffset = zia_query.LineOffset(source);
+        var job = ZiaCompletion.BeginAnalysisForFile(querySource, sourcePath);
+        if job == null {
+            Publish(sourcePath, revision, source, lineOffset, "", "", true);
+            return;
+        }
+        pendingJob = job;
+        pendingPath = sourcePath;
+        pendingRevision = revision;
+        pendingSource = source;
+        pendingLineOffset = lineOffset;
+        requestCount = requestCount + 1;
+        debounce.Reset();
+    }
+
+    hide func PollPending(engine: editor_engine.EditorEngine) {
+        if pendingJob == null or SemanticJob.IsDone(pendingJob) == false { return; }
+        var job = pendingJob;
+        var path = pendingPath;
+        var revision = pendingRevision;
+        var source = pendingSource;
+        var lineOffset = pendingLineOffset;
+        pendingJob = null;
+        pendingPath = "";
+        pendingRevision = -1;
+        pendingSource = "";
+        pendingLineOffset = 0;
+
+        if engine.GetRevision() != revision or sourcePath != path { return; }
+        if SemanticJob.IsError(job) {
+            Publish(path, revision, source, lineOffset, "", "", true);
+            return;
+        }
+        Publish(path, revision, source, lineOffset,
+                SemanticJob.Symbols(job), SemanticJob.Tokens(job), false);
+    }
+
+    hide func Publish(path: String,
+                      revision: Integer,
+                      source: String,
+                      lineOffset: Integer,
+                      symbols: String,
+                      tokens: String,
+                      hadError: Boolean) {
+        readyPath = path;
+        readyRevision = revision;
+        readySource = source;
+        readyLineOffset = lineOffset;
+        readySymbols = symbols;
+        readyTokens = tokens;
+        readyHadError = hadError;
+        publishCount = publishCount + 1;
+    }
+
+    hide func CancelPending() {
+        if pendingJob != null {
+            SemanticJob.Cancel(pendingJob);
+            pendingJob = null;
+        }
+        pendingPath = "";
+        pendingRevision = -1;
+        pendingSource = "";
+        pendingLineOffset = 0;
+    }
+}

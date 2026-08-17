@@ -1,3 +1,21 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/run_config.zia
+// Purpose: Resolve project/document build and run requests into argv configs.
+// Key invariants:
+//   - Argument parsing never invokes a shell or consumes literal path backslashes.
+//   - Unmatched quotes fail closed before default arguments are synthesized.
+// Ownership/Lifetime: Each RunConfig owns its argument/environment snapshots.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/core/project.zia
+//
+//===----------------------------------------------------------------------===//
+
 module run_config;
 
 bind "../core/document";
@@ -38,6 +56,7 @@ class RunConfig {
     expose Any env;
     expose String problemMatcher;
     expose String targetPath;
+    expose String validationError;
     /// Optional continuation started when this config exits 0 (ADR 0225).
     expose RunConfig next;
 
@@ -51,6 +70,7 @@ class RunConfig {
         env = null;
         problemMatcher = "zanna";
         targetPath = "";
+        validationError = "";
         next = null;
     }
 }
@@ -127,7 +147,7 @@ func ForDocument(action: String,
     }
 
     if cfg.program == "" { cfg.program = "zanna"; }
-    if Seq.get_Count(cfg.args) == 0 {
+    if cfg.validationError == "" and Seq.get_Count(cfg.args) == 0 {
         if action == ACTION_BUILD {
             Seq.Push(cfg.args, "build");
         } else {
@@ -158,13 +178,25 @@ func ApplyProjectOverrides(cfg: RunConfig,
     if cfg.action == ACTION_BUILD {
         if proj.buildProgram != "" { cfg.program = proj.buildProgram; }
         if proj.buildArgs != "" {
-            cfg.args = SplitArgsWithTarget(proj.buildArgs, cfg.targetPath);
+            var buildArgs = SplitArgsWithTarget(proj.buildArgs, cfg.targetPath);
+            if buildArgs == null {
+                cfg.validationError = "Build arguments contain an unmatched quote.";
+                cfg.args = Seq.New();
+            } else {
+                cfg.args = buildArgs;
+            }
             cfg.kind = KIND_CUSTOM;
         }
     } else {
         if proj.runProgram != "" { cfg.program = proj.runProgram; }
         if proj.runArgs != "" {
-            cfg.args = SplitArgsWithTarget(proj.runArgs, cfg.targetPath);
+            var runArgs = SplitArgsWithTarget(proj.runArgs, cfg.targetPath);
+            if runArgs == null {
+                cfg.validationError = "Run arguments contain an unmatched quote.";
+                cfg.args = Seq.New();
+            } else {
+                cfg.args = runArgs;
+            }
             cfg.kind = KIND_CUSTOM;
         }
     }
@@ -172,6 +204,7 @@ func ApplyProjectOverrides(cfg: RunConfig,
 
 func SplitArgsWithTarget(text: String, targetPath: String) -> Any {
     var items = SplitArgs(text);
+    if items == null { return null; }
     var out = Seq.New();
     var i = 0;
     while i < Seq.get_Count(items) {
@@ -187,46 +220,58 @@ func SplitArgsWithTarget(text: String, targetPath: String) -> Any {
 
 /// @brief Split a project run/build argument string into an argv sequence.
 /// @details Supports whitespace-delimited tokens, single and double quoted
-///          spans, and backslash escapes inside or outside quotes. This keeps
-///          project manifests compatible with paths containing spaces without
-///          invoking a shell or doing platform-specific command parsing.
+///          spans, and targeted backslash escapes for whitespace and quotes.
+///          Other backslashes remain literal so Windows drive and UNC paths
+///          round-trip without invoking a shell or platform command parser.
+///          Empty quoted tokens are retained and unmatched quotes fail closed.
 /// @param text User-authored argument string from zanna.project.
-/// @return Seq of argv tokens with quotes removed and escapes resolved.
+/// @return Seq of argv tokens with quotes removed, or null for unmatched quotes.
 func SplitArgs(text: String) -> Any {
     var items = Seq.New();
     var token = "";
     var quote = "";
-    var escaping = false;
+    var tokenStarted = false;
     var i = 1;
     while i <= Str.get_Length(text) {
         var ch = Str.MidLen(text, i, 1);
-        if escaping {
-            token = token + ch;
-            escaping = false;
-        } else if ch == "\\" {
-            escaping = true;
+        if ch == "\\" {
+            if i < Str.get_Length(text) {
+                var next = Str.MidLen(text, i + 1, 1);
+                if next == " " or next == "\t" or next == "\"" or next == "'" {
+                    token = token + next;
+                    tokenStarted = true;
+                    i = i + 1;
+                } else {
+                    token = token + "\\";
+                    tokenStarted = true;
+                }
+            } else {
+                token = token + "\\";
+                tokenStarted = true;
+            }
         } else if ch == "\"" or ch == "'" {
             if quote == "" {
                 quote = ch;
+                tokenStarted = true;
             } else if quote == ch {
                 quote = "";
             } else {
                 token = token + ch;
             }
         } else if (ch == " " or ch == "\t") and quote == "" {
-            if token != "" {
+            if tokenStarted {
                 Seq.Push(items, token);
                 token = "";
+                tokenStarted = false;
             }
         } else {
             token = token + ch;
+            tokenStarted = true;
         }
         i = i + 1;
     }
-    if escaping {
-        token = token + "\\";
-    }
-    if token != "" {
+    if quote != "" { return null; }
+    if tokenStarted {
         Seq.Push(items, token);
     }
     return items;

@@ -1,0 +1,7 @@
+valid=1
+count=5
+arg=run
+arg=C:\\Program Files\\Zanna\\zanna.exe
+arg=C:\\tmp\\main.zia
+arg=\\\\server\\share
+arg=

@@ -75,6 +75,7 @@ std::vector<std::filesystem::path> collectAuditArchives(const std::filesystem::p
 
     appendIfExists(supportLibraryPath(buildDir, "zannagui"));
     appendIfExists(supportLibraryPath(buildDir, "zanna_text_core"));
+    appendIfExists(supportLibraryPath(buildDir, "zanna_regex_engine"));
     appendIfExists(supportLibraryPath(buildDir, "zannagfx"));
     appendIfExists(supportLibraryPath(buildDir, "zannaaud"));
     return paths;

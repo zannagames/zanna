@@ -40,11 +40,7 @@
  *          alternative paths are explored.
  */
 
-#include "rt_regex.h"
 #include "rt_regex_internal.h"
-
-#include "rt_internal.h"
-#include "rt_trap.h"
 
 #include <ctype.h>
 #include <limits.h>
@@ -68,7 +64,32 @@ typedef struct {
     int start_pos; // Start position for this match attempt
     int steps;     // Backtracking step counter
     int max_steps; // Step limit (0 = unlimited)
+    unsigned int flags;
 } match_context;
+
+/// @brief Fold one ASCII letter for deterministic case-insensitive matching.
+static unsigned char regex_ascii_fold(unsigned char ch) {
+    return ch >= 'A' && ch <= 'Z' ? (unsigned char)(ch - 'A' + 'a') : ch;
+}
+
+/// @brief Compare literal bytes using compiled-pattern options.
+static bool regex_literal_equal(unsigned char left, unsigned char right, unsigned int flags) {
+    if ((flags & RE_COMPILE_CASE_INSENSITIVE) != 0)
+        return regex_ascii_fold(left) == regex_ascii_fold(right);
+    return left == right;
+}
+
+/// @brief Test a class while applying ASCII case equivalence before negation.
+static bool regex_class_matches(const re_class *cls, unsigned char ch, unsigned int flags) {
+    bool member = (cls->bits[ch / 8] & (uint8_t)(1u << (ch % 8))) != 0;
+    if ((flags & RE_COMPILE_CASE_INSENSITIVE) != 0 &&
+        ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z'))) {
+        unsigned char counterpart = ch >= 'A' && ch <= 'Z' ? (unsigned char)(ch - 'A' + 'a')
+                                                           : (unsigned char)(ch - 'a' + 'A');
+        member = member || (cls->bits[counterpart / 8] & (uint8_t)(1u << (counterpart % 8))) != 0;
+    }
+    return cls->negated ? !member : member;
+}
 
 // Forward declarations
 static bool match_node(match_context *ctx, re_node *n, int pos, int *end_pos);
@@ -140,17 +161,17 @@ static int *alloc_match_positions(int text_len, int pos, int *capacity_out) {
     if (capacity_out)
         *capacity_out = 0;
     if (pos < 0 || pos > text_len) {
-        rt_trap("Pattern: invalid match position");
+        re_report_failure("Pattern: invalid match position");
         return NULL;
     }
     size_t capacity = (size_t)(text_len - pos) + 2;
     if (capacity > (size_t)INT_MAX || capacity > SIZE_MAX / sizeof(int)) {
-        rt_trap("Pattern: position allocation overflow");
+        re_report_failure("Pattern: position allocation overflow");
         return NULL;
     }
     int *positions = (int *)malloc(sizeof(int) * capacity);
     if (!positions) {
-        rt_trap("Pattern: memory allocation failed");
+        re_report_failure("Pattern: memory allocation failed");
         return NULL;
     }
     if (capacity_out)
@@ -192,7 +213,7 @@ static int collect_node_positions(
         case RE_ALT: {
             unsigned char *seen = (unsigned char *)calloc((size_t)ctx->text_len + 1, 1);
             if (!seen) {
-                rt_trap("Pattern: memory allocation failed");
+                re_report_failure("Pattern: memory allocation failed");
                 return 0;
             }
             for (int i = 0; i < n->data.children.count; i++) {
@@ -202,8 +223,7 @@ static int collect_node_positions(
                     free(seen);
                     return 0;
                 }
-                int cnt =
-                    collect_node_positions(ctx, n->data.children.children[i], pos, tmp, cap);
+                int cnt = collect_node_positions(ctx, n->data.children.children[i], pos, tmp, cap);
                 for (int j = 0; j < cnt; j++)
                     if (tmp[j] >= pos && tmp[j] <= ctx->text_len)
                         seen[tmp[j]] = 1;
@@ -224,7 +244,7 @@ static int collect_node_positions(
             if (!cur || !nxt) {
                 free(cur);
                 free(nxt);
-                rt_trap("Pattern: memory allocation failed");
+                re_report_failure("Pattern: memory allocation failed");
                 return 0;
             }
             cur[pos] = 1;
@@ -345,7 +365,9 @@ static bool match_node(match_context *ctx, re_node *n, int pos, int *end_pos) {
 
     switch (n->type) {
         case RE_LITERAL:
-            if (pos < ctx->text_len && ctx->text[pos] == n->data.literal) {
+            if (pos < ctx->text_len && regex_literal_equal((unsigned char)ctx->text[pos],
+                                                           (unsigned char)n->data.literal,
+                                                           ctx->flags)) {
                 *end_pos = pos + 1;
                 return true;
             }
@@ -373,8 +395,9 @@ static bool match_node(match_context *ctx, re_node *n, int pos, int *end_pos) {
             return false;
 
         case RE_CLASS:
-            if (pos < ctx->text_len &&
-                class_test(&n->data.char_class, (unsigned char)ctx->text[pos])) {
+            if (pos < ctx->text_len && regex_class_matches(&n->data.char_class,
+                                                           (unsigned char)ctx->text[pos],
+                                                           ctx->flags)) {
                 *end_pos = pos + 1;
                 return true;
             }
@@ -438,11 +461,11 @@ static bool match_concat_from(
         // parentheses can backtrack against the following syntax (VDOC-056).
         bool greedy = child->type == RE_QUANT ? child->data.quant.greedy : true;
 
-    int capacity = 0;
-    int *positions = alloc_match_positions(ctx->text_len, pos, &capacity);
-    if (!positions)
-        return false;
-    int num = collect_node_positions(ctx, child, pos, positions, capacity);
+        int capacity = 0;
+        int *positions = alloc_match_positions(ctx->text_len, pos, &capacity);
+        if (!positions)
+            return false;
+        int num = collect_node_positions(ctx, child, pos, positions, capacity);
 
         bool found = false;
         if (greedy) {
@@ -492,7 +515,7 @@ static bool find_match(compiled_pattern *cp,
                        int start_from,
                        int *match_start,
                        int *match_end) {
-    match_context ctx = {text, text_len, 0, 0, RE_MAX_STEPS};
+    match_context ctx = {text, text_len, 0, 0, RE_MAX_STEPS, cp->flags};
 
     for (int i = start_from; i <= text_len; i++) {
         ctx.start_pos = i;
@@ -550,6 +573,7 @@ typedef struct {
     int max_steps;
     int depth;
     int accept_end;
+    unsigned int flags;
 } match_context_groups;
 
 /// @brief Continuation frame for the capture matcher.
@@ -561,6 +585,7 @@ typedef struct {
 /// depends on `fn` (seq: children/count/index; quant: count=iterations,
 /// index=previous position; group: aux=group start).
 typedef struct gcont gcont;
+
 struct gcont {
     /// @brief Resume one capture-aware matcher continuation frame.
     /// @param ctx Mutable capture-matching context.
@@ -661,11 +686,11 @@ static bool simple_match_at(const match_context_groups *ctx, const re_node *chil
     unsigned char ch = (unsigned char)ctx->text[pos];
     switch (child->type) {
         case RE_LITERAL:
-            return (char)ch == child->data.literal;
+            return regex_literal_equal(ch, (unsigned char)child->data.literal, ctx->flags);
         case RE_DOT:
             return ch != '\n';
         case RE_CLASS:
-            return class_test(&child->data.char_class, ch);
+            return regex_class_matches(&child->data.char_class, ch, ctx->flags);
         default:
             return false;
     }
@@ -763,7 +788,9 @@ static bool gc_group_end(match_context_groups *ctx, int pos, const gcont *self) 
 static bool match_node_g_inner(match_context_groups *ctx, re_node *n, int pos, const gcont *k) {
     switch (n->type) {
         case RE_LITERAL:
-            if (pos < ctx->text_len && ctx->text[pos] == n->data.literal)
+            if (pos < ctx->text_len && regex_literal_equal((unsigned char)ctx->text[pos],
+                                                           (unsigned char)n->data.literal,
+                                                           ctx->flags))
                 return gapply(ctx, pos + 1, k);
             return false;
 
@@ -780,7 +807,7 @@ static bool match_node_g_inner(match_context_groups *ctx, re_node *n, int pos, c
 
         case RE_CLASS:
             if (pos < ctx->text_len &&
-                class_test(&n->data.char_class, (unsigned char)ctx->text[pos]))
+                regex_class_matches(&n->data.char_class, (unsigned char)ctx->text[pos], ctx->flags))
                 return gapply(ctx, pos + 1, k);
             return false;
 
@@ -859,7 +886,7 @@ static bool find_match_groups(compiled_pattern *cp,
                               int max_groups,
                               int *num_groups) {
     match_context_groups ctx = {
-        text, text_len, 0, group_starts, group_ends, max_groups, 0, RE_MAX_STEPS, 0, 0};
+        text, text_len, 0, group_starts, group_ends, max_groups, 0, RE_MAX_STEPS, 0, 0, cp->flags};
     int report_groups = cp->group_count < max_groups ? cp->group_count : max_groups;
 
     for (int i = start_from; i <= text_len; i++) {
@@ -916,4 +943,207 @@ bool re_find_match_with_groups(re_compiled_pattern *cp,
                              group_ends,
                              max_groups,
                              num_groups);
+}
+
+/// @brief Append bytes to a capture-expansion buffer with checked growth.
+static bool regex_expand_append(
+    char **buffer, size_t *length, size_t *capacity, const char *bytes, size_t byte_count) {
+    if (*length == SIZE_MAX || byte_count > SIZE_MAX - *length - 1) {
+        re_report_failure("Pattern: replacement length overflow");
+        return false;
+    }
+    size_t needed = *length + byte_count + 1;
+    if (needed > *capacity) {
+        size_t grown = *capacity ? *capacity : 32;
+        while (grown < needed) {
+            if (grown > SIZE_MAX / 2) {
+                grown = needed;
+                break;
+            }
+            grown *= 2;
+        }
+        char *next = (char *)realloc(*buffer, grown);
+        if (!next) {
+            re_report_failure("Pattern: memory allocation failed");
+            return false;
+        }
+        *buffer = next;
+        *capacity = grown;
+    }
+    if (byte_count > 0)
+        memcpy(*buffer + *length, bytes, byte_count);
+    *length += byte_count;
+    (*buffer)[*length] = '\0';
+    return true;
+}
+
+/// @copydoc re_expand_replacement
+bool re_expand_replacement(re_compiled_pattern *cp,
+                           const char *text,
+                           int text_len,
+                           int expected_start,
+                           const char *replacement,
+                           size_t replacement_len,
+                           char **output,
+                           size_t *output_len) {
+    if (output)
+        *output = NULL;
+    if (output_len)
+        *output_len = 0;
+    if (!cp || !text || text_len < 0 || expected_start < 0 || expected_start > text_len ||
+        (!replacement && replacement_len > 0) || !output || !output_len)
+        return false;
+
+    int group_capacity = re_group_count(cp);
+    int *group_starts = NULL;
+    int *group_ends = NULL;
+    if (group_capacity > 0) {
+        if ((size_t)group_capacity > SIZE_MAX / sizeof(int)) {
+            re_report_failure("Pattern: capture allocation overflow");
+            return false;
+        }
+        group_starts = (int *)malloc(sizeof(int) * (size_t)group_capacity);
+        group_ends = (int *)malloc(sizeof(int) * (size_t)group_capacity);
+        if (!group_starts || !group_ends) {
+            free(group_starts);
+            free(group_ends);
+            re_report_failure("Pattern: memory allocation failed");
+            return false;
+        }
+    }
+
+    int actual_start = 0;
+    int actual_end = 0;
+    int group_count = 0;
+    bool matched = re_find_match_with_groups(cp,
+                                             text,
+                                             text_len,
+                                             expected_start,
+                                             &actual_start,
+                                             &actual_end,
+                                             group_starts,
+                                             group_ends,
+                                             group_capacity,
+                                             &group_count);
+    if (!matched || actual_start != expected_start) {
+        free(group_starts);
+        free(group_ends);
+        return false;
+    }
+
+    char *expanded = NULL;
+    size_t expanded_len = 0;
+    size_t expanded_capacity = 0;
+    size_t i = 0;
+    while (i < replacement_len) {
+        if (replacement[i] != '$') {
+            if (!regex_expand_append(
+                    &expanded, &expanded_len, &expanded_capacity, replacement + i, 1))
+                goto fail;
+            i++;
+            continue;
+        }
+
+        size_t token_start = i;
+        if (i + 1 >= replacement_len) {
+            if (!regex_expand_append(&expanded, &expanded_len, &expanded_capacity, "$", 1))
+                goto fail;
+            i++;
+            continue;
+        }
+        if (replacement[i + 1] == '$') {
+            if (!regex_expand_append(&expanded, &expanded_len, &expanded_capacity, "$", 1))
+                goto fail;
+            i += 2;
+            continue;
+        }
+
+        int group = -1;
+        size_t token_end = i + 1;
+        if (replacement[i + 1] == '&') {
+            group = 0;
+            token_end = i + 2;
+        } else if (replacement[i + 1] == '{') {
+            size_t j = i + 2;
+            int value = 0;
+            bool has_digit = false;
+            bool overflow = false;
+            while (j < replacement_len && replacement[j] >= '0' && replacement[j] <= '9') {
+                has_digit = true;
+                int digit = replacement[j] - '0';
+                if (value > (INT_MAX - digit) / 10)
+                    overflow = true;
+                else
+                    value = value * 10 + digit;
+                j++;
+            }
+            if (has_digit && !overflow && j < replacement_len && replacement[j] == '}') {
+                group = value;
+                token_end = j + 1;
+            }
+        } else if (replacement[i + 1] >= '0' && replacement[i + 1] <= '9') {
+            size_t j = i + 1;
+            int value = 0;
+            bool overflow = false;
+            while (j < replacement_len && replacement[j] >= '0' && replacement[j] <= '9') {
+                int digit = replacement[j] - '0';
+                if (value > (INT_MAX - digit) / 10)
+                    overflow = true;
+                else
+                    value = value * 10 + digit;
+                j++;
+            }
+            if (!overflow) {
+                group = value;
+                token_end = j;
+            }
+        }
+
+        if (group < 0) {
+            if (!regex_expand_append(&expanded, &expanded_len, &expanded_capacity, "$", 1))
+                goto fail;
+            i++;
+            continue;
+        }
+
+        int capture_start = -1;
+        int capture_end = -1;
+        if (group == 0) {
+            capture_start = actual_start;
+            capture_end = actual_end;
+        } else if (group <= group_count) {
+            capture_start = group_starts[group - 1];
+            capture_end = group_ends[group - 1];
+        }
+        if (capture_start >= 0 && capture_end >= capture_start) {
+            if (!regex_expand_append(&expanded,
+                                     &expanded_len,
+                                     &expanded_capacity,
+                                     text + capture_start,
+                                     (size_t)(capture_end - capture_start)))
+                goto fail;
+        } else if (group > group_count) {
+            if (!regex_expand_append(&expanded,
+                                     &expanded_len,
+                                     &expanded_capacity,
+                                     replacement + token_start,
+                                     token_end - token_start))
+                goto fail;
+        }
+        i = token_end;
+    }
+
+    if (!expanded && !regex_expand_append(&expanded, &expanded_len, &expanded_capacity, "", 0))
+        goto fail;
+    free(group_starts);
+    free(group_ends);
+    *output = expanded;
+    *output_len = expanded_len;
+    return true;
+
+fail:
+    free(group_starts);
+    free(group_ends);
+    free(expanded);
+    return false;
 }

@@ -365,6 +365,18 @@ class EditorScheduler {
         if kind == JOB_QUICK_OPEN_REFRESH { quickOpenJob.Cancel(); SyncLegacyJob(kind, quickOpenJob); return; }
     }
 
+    /// @brief Cancel every deferred producer before owned workers are drained.
+    expose func CancelAll() {
+        Cancel(JOB_DIAGNOSTICS);
+        Cancel(JOB_COMPLETION);
+        Cancel(JOB_SIGNATURE);
+        Cancel(JOB_HOVER);
+        Cancel(JOB_SYMBOLS);
+        Cancel(JOB_INDEX_SYNC);
+        Cancel(JOB_SEARCH);
+        Cancel(JOB_QUICK_OPEN_REFRESH);
+    }
+
     expose func Complete(kind: Integer) {
         completedTotal = completedTotal + 1;
         lastCompletedKind = kind;

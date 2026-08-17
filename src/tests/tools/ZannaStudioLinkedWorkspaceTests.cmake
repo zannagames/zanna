@@ -14,6 +14,7 @@
 # Cross-platform touchpoints: CMake creates the native symbolic link; platforms
 #                             that deny link creation report a clean skip.
 # Links: docs/adr/0153-non-following-path-link-inspection.md
+#        docs/adr/0259-stable-filesystem-entry-identity.md
 #
 #===----------------------------------------------------------------------===#
 
@@ -43,7 +44,7 @@ endif()
 
 execute_process(
   COMMAND "${ZIA_EXECUTABLE}" "${PROBE_SOURCE}" --
-          "${_workspace}" "${_linked_dir}" "${_linked_file}"
+          "${_workspace}" "${_linked_dir}" "${_linked_file}" "${_outside}"
   RESULT_VARIABLE _probe_result
   OUTPUT_VARIABLE _probe_stdout
   ERROR_VARIABLE _probe_stderr

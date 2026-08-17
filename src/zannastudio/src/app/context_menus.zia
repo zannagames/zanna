@@ -21,6 +21,7 @@ module context_menus;
 
 bind "../ui/app_shell";
 bind "../core/project_manager";
+bind "../core/project_file_ops";
 bind "../editor/editor_engine";
 bind "../editor/language_service";
 bind "../build/debug_session";
@@ -272,10 +273,10 @@ expose func RevealPath(path: String) {
 ///          Rejecting separators, drive separators, and dot directory aliases
 ///          prevents accidental path traversal while preserving the feature.
 expose func IsSafeChildName(name: String) -> Boolean {
-    if name == "" or name == "." or name == ".." { return false; }
-    if Str.IndexOf(name, Path.Separator()) != 0 { return false; }
-    if Str.IndexOf(name, "/") != 0 { return false; }
-    if Str.IndexOf(name, "\\") != 0 { return false; }
-    if Str.IndexOf(name, ":") != 0 { return false; }
-    return true;
+    return project_file_ops.IsPlainChildName(name);
+}
+
+/// @brief Explain why an Explorer child name is not cross-platform safe.
+expose func ChildNameError(name: String) -> String {
+    return project_file_ops.ChildNameError(name);
 }

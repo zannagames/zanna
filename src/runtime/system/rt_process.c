@@ -12,6 +12,7 @@
 // Key invariants:
 //   - Start returns NULL when the process cannot be spawned.
 //   - Output reads are non-blocking and incremental.
+//   - Ordered reads preserve capture order and tag every stdout/stderr chunk.
 //   - Poll/IsRunning reap the process once and preserve the exit code.
 //   - Destroy is idempotent and closes all OS handles.
 //   - A non-null environment sequence replaces the complete child environment.
@@ -77,6 +78,10 @@ extern char **environ;
 #define PROCESS_BUFFER_INITIAL_SIZE 4096
 /// @brief Maximum retained bytes per stdout or stderr buffer.
 #define PROCESS_BUFFER_MAX_SIZE (16 * 1024 * 1024)
+/// @brief Maximum retained bytes in the ordered combined-output queue.
+#define PROCESS_ORDERED_OUTPUT_MAX_SIZE (16 * 1024 * 1024)
+/// @brief Maximum stdin bytes accepted ahead of the Windows writer thread.
+#define PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE (1024 * 1024)
 /// @brief Maximum time finalization waits for an asynchronously terminated Windows child.
 #define PROCESS_WINDOWS_TERMINATE_WAIT_MS 5000u
 
@@ -90,6 +95,20 @@ typedef struct process_buffer {
     size_t cap;    ///< Allocated byte capacity of @c data.
     int truncated; ///< Whether bytes were discarded since the previous take.
 } process_buffer;
+
+enum process_output_stream {
+    PROCESS_OUTPUT_STDOUT = 1,
+    PROCESS_OUTPUT_STDERR = 2,
+};
+
+/// @brief One capture-ordered, stream-tagged output chunk.
+typedef struct process_output_chunk {
+    struct process_output_chunk *next;
+    char *data;
+    size_t len;
+    uint64_t sequence;
+    int stream;
+} process_output_chunk;
 
 /// @brief Temporary NULL-terminated C-string vector for argv or envp.
 /// @details The vector owns references to runtime strings whose byte pointers
@@ -111,6 +130,11 @@ typedef struct rt_process_impl {
     int64_t exit_code;
     process_buffer stdout_buf;
     process_buffer stderr_buf;
+    process_output_chunk *output_head;
+    process_output_chunk *output_tail;
+    size_t output_bytes;
+    uint64_t next_output_sequence;
+    int output_truncated;
 
 #if defined(_WIN32)
     HANDLE process;
@@ -118,6 +142,15 @@ typedef struct rt_process_impl {
     HANDLE stdout_read;
     HANDLE stderr_read;
     HANDLE stdin_write;
+    HANDLE stdin_thread;
+    HANDLE stdin_event;
+    CRITICAL_SECTION stdin_lock;
+    char *stdin_queue;
+    size_t stdin_queue_len;
+    size_t stdin_queue_cap;
+    int stdin_lock_initialized;
+    int stdin_shutdown;
+    int stdin_failed;
 #else
     pid_t pid;
     int stdout_fd;
@@ -127,6 +160,13 @@ typedef struct rt_process_impl {
 } rt_process_impl;
 
 static void process_finalize(void *obj);
+static void process_close(rt_process_impl *proc);
+
+/// @brief Release one local reference to a managed runtime object.
+static void process_release_object(void *object) {
+    if (object && rt_obj_release_check0(object))
+        rt_obj_free(object);
+}
 
 /// @brief Allocate an empty runtime string for process API fallbacks.
 /// @return Newly allocated empty runtime string owned by the caller.
@@ -343,6 +383,130 @@ static void buffer_free(process_buffer *buf) {
     buf->truncated = 0;
 }
 
+/// @brief Mark all bytes in a retained stream buffer consumed without freeing capacity.
+static void buffer_discard(process_buffer *buf) {
+    if (!buf)
+        return;
+    buf->len = 0;
+    buf->truncated = 0;
+}
+
+/// @brief Append one observed stream read to the bounded ordered queue.
+/// @details Adjacent reads from the same stream are coalesced without crossing
+///          a stream boundary. Queue allocation failure is reported as
+///          truncation because the independent legacy stream buffers remain
+///          available and process polling must not fail solely for tagging.
+static void ordered_output_append(rt_process_impl *proc, int stream, const char *data, size_t len) {
+    if (!proc || !data || len == 0)
+        return;
+    if (proc->output_bytes >= PROCESS_ORDERED_OUTPUT_MAX_SIZE) {
+        proc->output_truncated = 1;
+        return;
+    }
+    if (len > PROCESS_ORDERED_OUTPUT_MAX_SIZE - proc->output_bytes) {
+        len = PROCESS_ORDERED_OUTPUT_MAX_SIZE - proc->output_bytes;
+        proc->output_truncated = 1;
+    }
+    if (len == 0)
+        return;
+
+    process_output_chunk *tail = proc->output_tail;
+    if (tail && tail->stream == stream && len <= SIZE_MAX - tail->len) {
+        char *grown = (char *)realloc(tail->data, tail->len + len);
+        if (!grown) {
+            proc->output_truncated = 1;
+            return;
+        }
+        memcpy(grown + tail->len, data, len);
+        tail->data = grown;
+        tail->len += len;
+        proc->output_bytes += len;
+        return;
+    }
+
+    process_output_chunk *chunk = (process_output_chunk *)calloc(1, sizeof(*chunk));
+    if (!chunk) {
+        proc->output_truncated = 1;
+        return;
+    }
+    chunk->data = (char *)malloc(len);
+    if (!chunk->data) {
+        free(chunk);
+        proc->output_truncated = 1;
+        return;
+    }
+    memcpy(chunk->data, data, len);
+    chunk->len = len;
+    chunk->stream = stream;
+    chunk->sequence = proc->next_output_sequence++;
+    if (proc->output_tail)
+        proc->output_tail->next = chunk;
+    else
+        proc->output_head = chunk;
+    proc->output_tail = chunk;
+    proc->output_bytes += len;
+}
+
+/// @brief Free every retained ordered-output chunk.
+static void ordered_output_free(rt_process_impl *proc) {
+    if (!proc)
+        return;
+    process_output_chunk *chunk = proc->output_head;
+    while (chunk) {
+        process_output_chunk *next = chunk->next;
+        free(chunk->data);
+        free(chunk);
+        chunk = next;
+    }
+    proc->output_head = NULL;
+    proc->output_tail = NULL;
+    proc->output_bytes = 0;
+    proc->output_truncated = 0;
+}
+
+/// @brief Consume ordered output as `{ chunks, truncated }`.
+/// @details `chunks` is an owning Seq of maps with `sequence`, `stream`, and
+///          `text`. The native queue is cleared only after its content has been
+///          copied into managed values.
+static void *ordered_output_take_result(rt_process_impl *proc) {
+    void *result = rt_map_new();
+    void *chunks = rt_seq_new_owned();
+    if (!result || !chunks) {
+        process_release_object(result);
+        process_release_object(chunks);
+        return NULL;
+    }
+
+    for (process_output_chunk *chunk = proc ? proc->output_head : NULL; chunk;
+         chunk = chunk->next) {
+        void *entry = rt_map_new();
+        rt_string text = rt_string_from_bytes(chunk->data, chunk->len);
+        if (!entry || !text) {
+            process_release_object(entry);
+            rt_str_release_maybe(text);
+            process_release_object(chunks);
+            process_release_object(result);
+            return NULL;
+        }
+        rt_map_set_int(entry, rt_const_cstr("sequence"), (int64_t)chunk->sequence);
+        map_set_string_owned(
+            entry,
+            "stream",
+            rt_const_cstr(chunk->stream == PROCESS_OUTPUT_STDERR ? "stderr" : "stdout"));
+        map_set_string_owned(entry, "text", text);
+        rt_str_release_maybe(text);
+        rt_seq_push(chunks, entry);
+        process_release_object(entry);
+    }
+
+    rt_map_set(result, rt_const_cstr("chunks"), chunks);
+    rt_map_set_bool(result, rt_const_cstr("truncated"), proc && proc->output_truncated ? 1 : 0);
+    process_release_object(chunks);
+    if (proc)
+        ordered_output_free(proc);
+    return result;
+}
+
 /// @brief Build a temporary C-string vector from a runtime string sequence.
 /// @details Optionally prepends the borrowed @p first pointer, retains every
 ///          sequence string whose byte view enters the vector, and appends a
@@ -424,6 +588,8 @@ static rt_process_impl *process_alloc(void) {
     proc->stdout_read = NULL;
     proc->stderr_read = NULL;
     proc->stdin_write = NULL;
+    proc->stdin_thread = NULL;
+    proc->stdin_event = NULL;
 #else
     proc->pid = -1;
     proc->stdout_fd = -1;
@@ -823,6 +989,126 @@ fail:
     return NULL;
 }
 
+/// @brief Duplicate one NUL-terminated UTF-16 environment entry.
+static wchar_t *process_wide_string_dup(const wchar_t *text) {
+    if (!text)
+        return NULL;
+    size_t len = wcslen(text);
+    if (len == SIZE_MAX || len + 1 > SIZE_MAX / sizeof(wchar_t))
+        return NULL;
+    wchar_t *copy = (wchar_t *)malloc((len + 1) * sizeof(wchar_t));
+    if (copy)
+        memcpy(copy, text, (len + 1) * sizeof(wchar_t));
+    return copy;
+}
+
+/// @brief Count entries in a double-NUL-terminated Windows environment block.
+static size_t process_wide_env_count(const wchar_t *block) {
+    size_t count = 0;
+    for (const wchar_t *entry = block; entry && *entry; entry += wcslen(entry) + 1)
+        count++;
+    return count;
+}
+
+/// @brief Test whether an overlay block replaces one inherited environment name.
+static int process_wide_env_overlay_contains(const wchar_t *overlay, const wchar_t *entry) {
+    for (const wchar_t *candidate = overlay; candidate && *candidate;
+         candidate += wcslen(candidate) + 1) {
+        if (env_entry_names_equal_wide(candidate, entry))
+            return 1;
+    }
+    return 0;
+}
+
+/// @brief Build a sorted Windows environment block by overlaying the parent block.
+/// @details Drive-current-directory pseudo entries beginning with '=' are
+///          retained and cannot be named by the validated public overlay. Each
+///          ordinary inherited name is removed when an overlay entry replaces
+///          it under Windows' case-insensitive comparison rules.
+static wchar_t *build_env_overlay_block_wide(void *env) {
+    if (!env)
+        return NULL;
+    wchar_t *overlay_block = build_env_block_wide(env);
+    if (!overlay_block)
+        return NULL;
+    LPWCH inherited_block = GetEnvironmentStringsW();
+    if (!inherited_block) {
+        free(overlay_block);
+        return NULL;
+    }
+
+    size_t inherited_count = process_wide_env_count(inherited_block);
+    size_t overlay_count = process_wide_env_count(overlay_block);
+    if (inherited_count > SIZE_MAX - overlay_count ||
+        inherited_count + overlay_count > SIZE_MAX / sizeof(wchar_t *)) {
+        FreeEnvironmentStringsW(inherited_block);
+        free(overlay_block);
+        return NULL;
+    }
+    size_t capacity = inherited_count + overlay_count;
+    wchar_t **entries = capacity ? (wchar_t **)calloc(capacity, sizeof(*entries)) : NULL;
+    if (capacity && !entries) {
+        FreeEnvironmentStringsW(inherited_block);
+        free(overlay_block);
+        return NULL;
+    }
+
+    size_t count = 0;
+    for (const wchar_t *entry = inherited_block; *entry; entry += wcslen(entry) + 1) {
+        if (*entry != L'=' && process_wide_env_overlay_contains(overlay_block, entry))
+            continue;
+        entries[count] = process_wide_string_dup(entry);
+        if (!entries[count++])
+            goto fail;
+    }
+    for (const wchar_t *entry = overlay_block; *entry; entry += wcslen(entry) + 1) {
+        entries[count] = process_wide_string_dup(entry);
+        if (!entries[count++])
+            goto fail;
+    }
+    FreeEnvironmentStringsW(inherited_block);
+    inherited_block = NULL;
+    free(overlay_block);
+    overlay_block = NULL;
+
+    if (count > 1)
+        qsort(entries, count, sizeof(*entries), compare_env_entry_wide);
+    size_t total_wchars = 1;
+    for (size_t i = 0; i < count; i++) {
+        if (i > 0 && env_entry_names_equal_wide(entries[i - 1], entries[i]))
+            goto fail;
+        size_t len = wcslen(entries[i]);
+        if (len == SIZE_MAX || total_wchars > SIZE_MAX - len - 1)
+            goto fail;
+        total_wchars += len + 1;
+    }
+    if (total_wchars == SIZE_MAX || total_wchars + 1 > SIZE_MAX / sizeof(wchar_t))
+        goto fail;
+    wchar_t *block = (wchar_t *)calloc(total_wchars + 1, sizeof(wchar_t));
+    if (!block)
+        goto fail;
+    wchar_t *out = block;
+    for (size_t i = 0; i < count; i++) {
+        size_t len = wcslen(entries[i]);
+        memcpy(out, entries[i], len * sizeof(wchar_t));
+        out += len + 1;
+        free(entries[i]);
+    }
+    free(entries);
+    return block;
+
+fail:
+    if (inherited_block)
+        FreeEnvironmentStringsW(inherited_block);
+    free(overlay_block);
+    if (entries) {
+        for (size_t i = 0; i < count; i++)
+            free(entries[i]);
+    }
+    free(entries);
+    return NULL;
+}
+
 /// @brief Create a Windows pipe whose write end is inherited by the child.
 /// @details Both ends are initially inheritable; the parent-side read handle is
 ///          then made noninheritable for stdout or stderr capture.
@@ -879,37 +1165,168 @@ static void close_handle(HANDLE *handle) {
     }
 }
 
-/// @brief Nonblockingly drain immediately available bytes from a Windows pipe.
-/// @details Uses PeekNamedPipe before each bounded read. EOF/API failure closes
-///          the read handle; buffer allocation failure traps and also closes it.
-/// @param read_pipe Address of the owned parent read handle.
-/// @param buf Destination bounded output buffer.
-static void drain_pipe(HANDLE *read_pipe, process_buffer *buf) {
-    if (!read_pipe || !*read_pipe)
-        return;
-
+/// @brief Background writer that keeps synchronous anonymous-pipe writes off the UI thread.
+static DWORD WINAPI process_stdin_writer_main(LPVOID context) {
+    rt_process_impl *proc = (rt_process_impl *)context;
+    if (!proc)
+        return 1;
     for (;;) {
-        DWORD available = 0;
-        if (!PeekNamedPipe(*read_pipe, NULL, 0, NULL, &available, NULL)) {
-            close_handle(read_pipe);
-            return;
-        }
-        if (available == 0)
-            return;
+        DWORD wait_result = WaitForSingleObject(proc->stdin_event, INFINITE);
+        if (wait_result != WAIT_OBJECT_0)
+            return 1;
+        for (;;) {
+            char chunk[4096];
+            size_t chunk_len = 0;
+            EnterCriticalSection(&proc->stdin_lock);
+            if (proc->stdin_shutdown) {
+                LeaveCriticalSection(&proc->stdin_lock);
+                return 0;
+            }
+            chunk_len =
+                proc->stdin_queue_len < sizeof(chunk) ? proc->stdin_queue_len : sizeof(chunk);
+            if (chunk_len > 0)
+                memcpy(chunk, proc->stdin_queue, chunk_len);
+            LeaveCriticalSection(&proc->stdin_lock);
+            if (chunk_len == 0)
+                break;
 
-        char chunk[4096];
-        DWORD to_read = available < sizeof(chunk) ? available : (DWORD)sizeof(chunk);
-        DWORD read_count = 0;
-        if (!ReadFile(*read_pipe, chunk, to_read, &read_count, NULL) || read_count == 0) {
-            close_handle(read_pipe);
-            return;
-        }
-        if (!buffer_append(buf, chunk, read_count)) {
-            rt_trap("Process: output buffer allocation failed");
-            close_handle(read_pipe);
-            return;
+            DWORD written = 0;
+            BOOL ok = WriteFile(proc->stdin_write, chunk, (DWORD)chunk_len, &written, NULL);
+            EnterCriticalSection(&proc->stdin_lock);
+            if (!ok || written == 0 || written > proc->stdin_queue_len) {
+                proc->stdin_failed = 1;
+                proc->stdin_queue_len = 0;
+                LeaveCriticalSection(&proc->stdin_lock);
+                return 1;
+            }
+            size_t remaining = proc->stdin_queue_len - (size_t)written;
+            if (remaining > 0)
+                memmove(proc->stdin_queue, proc->stdin_queue + written, remaining);
+            proc->stdin_queue_len = remaining;
+            LeaveCriticalSection(&proc->stdin_lock);
         }
     }
+}
+
+/// @brief Start the bounded Windows stdin writer owned by one process handle.
+static int process_stdin_writer_start(rt_process_impl *proc) {
+    if (!proc || !proc->stdin_write)
+        return 0;
+    InitializeCriticalSection(&proc->stdin_lock);
+    proc->stdin_lock_initialized = 1;
+    proc->stdin_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!proc->stdin_event)
+        return 0;
+    proc->stdin_thread = CreateThread(NULL, 0, process_stdin_writer_main, proc, 0, NULL);
+    return proc->stdin_thread != NULL;
+}
+
+/// @brief Stop, join, and release the Windows stdin writer.
+static void process_stdin_writer_close(rt_process_impl *proc) {
+    if (!proc)
+        return;
+    if (proc->stdin_lock_initialized) {
+        EnterCriticalSection(&proc->stdin_lock);
+        proc->stdin_shutdown = 1;
+        LeaveCriticalSection(&proc->stdin_lock);
+    }
+    if (proc->stdin_event)
+        SetEvent(proc->stdin_event);
+    if (proc->stdin_thread) {
+        (void)CancelSynchronousIo(proc->stdin_thread);
+        DWORD waited = WaitForSingleObject(proc->stdin_thread, PROCESS_WINDOWS_TERMINATE_WAIT_MS);
+        if (waited != WAIT_OBJECT_0)
+            rt_trap("Process: bounded stdin writer shutdown failed");
+    }
+    close_handle(&proc->stdin_thread);
+    close_handle(&proc->stdin_event);
+    free(proc->stdin_queue);
+    proc->stdin_queue = NULL;
+    proc->stdin_queue_len = 0;
+    proc->stdin_queue_cap = 0;
+    if (proc->stdin_lock_initialized) {
+        DeleteCriticalSection(&proc->stdin_lock);
+        proc->stdin_lock_initialized = 0;
+    }
+}
+
+/// @brief Nonblockingly enqueue bytes for the Windows stdin writer.
+static int64_t process_stdin_enqueue(rt_process_impl *proc, const char *bytes, size_t len) {
+    if (!proc || !bytes || len == 0 || !proc->stdin_lock_initialized || !proc->stdin_thread ||
+        !proc->stdin_event)
+        return len == 0 ? 0 : -1;
+
+    EnterCriticalSection(&proc->stdin_lock);
+    if (proc->stdin_shutdown || proc->stdin_failed || !proc->stdin_write) {
+        LeaveCriticalSection(&proc->stdin_lock);
+        return -1;
+    }
+    size_t available = PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE - proc->stdin_queue_len;
+    size_t accepted = len < available ? len : available;
+    if (accepted == 0) {
+        LeaveCriticalSection(&proc->stdin_lock);
+        return -1;
+    }
+    size_t needed = proc->stdin_queue_len + accepted;
+    if (needed > proc->stdin_queue_cap) {
+        size_t capacity = proc->stdin_queue_cap ? proc->stdin_queue_cap : 4096u;
+        while (capacity < needed && capacity < PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE)
+            capacity *= 2u;
+        if (capacity > PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE)
+            capacity = PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE;
+        char *grown = (char *)realloc(proc->stdin_queue, capacity);
+        if (!grown) {
+            LeaveCriticalSection(&proc->stdin_lock);
+            return -1;
+        }
+        proc->stdin_queue = grown;
+        proc->stdin_queue_cap = capacity;
+    }
+    memcpy(proc->stdin_queue + proc->stdin_queue_len, bytes, accepted);
+    proc->stdin_queue_len += accepted;
+    LeaveCriticalSection(&proc->stdin_lock);
+    SetEvent(proc->stdin_event);
+    return (int64_t)accepted;
+}
+
+/// @brief Nonblockingly read one available chunk from a Windows pipe.
+/// @details Uses PeekNamedPipe before the bounded read. EOF/API failure closes
+///          the read handle; buffer allocation failure traps and also closes it.
+///          Returning after one chunk lets process_drain alternate streams.
+/// @param read_pipe Address of the owned parent read handle.
+/// @param buf Destination bounded output buffer.
+/// @param proc Owning process whose ordered output queue receives the chunk.
+/// @param stream PROCESS_OUTPUT_STDOUT or PROCESS_OUTPUT_STDERR.
+/// @return 1 when bytes were captured, otherwise 0.
+static int drain_pipe_once(HANDLE *read_pipe,
+                           process_buffer *buf,
+                           rt_process_impl *proc,
+                           int stream) {
+    if (!read_pipe || !*read_pipe)
+        return 0;
+
+    DWORD available = 0;
+    if (!PeekNamedPipe(*read_pipe, NULL, 0, NULL, &available, NULL)) {
+        close_handle(read_pipe);
+        return 0;
+    }
+    if (available == 0)
+        return 0;
+
+    char chunk[4096];
+    DWORD to_read = available < sizeof(chunk) ? available : (DWORD)sizeof(chunk);
+    DWORD read_count = 0;
+    if (!ReadFile(*read_pipe, chunk, to_read, &read_count, NULL) || read_count == 0) {
+        close_handle(read_pipe);
+        return 0;
+    }
+    if (!buffer_append(buf, chunk, read_count)) {
+        rt_trap("Process: output buffer allocation failed");
+        close_handle(read_pipe);
+        return 0;
+    }
+    ordered_output_append(proc, stream, chunk, read_count);
+    return 1;
 }
 
 /// @brief Drain immediately available Windows stdout and stderr data.
@@ -917,8 +1334,15 @@ static void drain_pipe(HANDLE *read_pipe, process_buffer *buf) {
 static void process_drain(rt_process_impl *proc) {
     if (!proc)
         return;
-    drain_pipe(&proc->stdout_read, &proc->stdout_buf);
-    drain_pipe(&proc->stderr_read, &proc->stderr_buf);
+    for (;;) {
+        int progressed = 0;
+        progressed |=
+            drain_pipe_once(&proc->stdout_read, &proc->stdout_buf, proc, PROCESS_OUTPUT_STDOUT);
+        progressed |=
+            drain_pipe_once(&proc->stderr_read, &proc->stderr_buf, proc, PROCESS_OUTPUT_STDERR);
+        if (!progressed)
+            return;
+    }
 }
 
 /// @brief Poll or wait for a Windows child while continuously draining output.
@@ -976,10 +1400,8 @@ static void process_poll_internal(rt_process_impl *proc, int wait) {
 ///        NULL means inherit.
 /// @return New GC-managed running process object, or NULL on validation,
 ///         allocation, conversion, pipe, startup, or CreateProcess failure.
-static rt_process_impl *process_start_impl(rt_string program,
-                                           void *args,
-                                           rt_string cwd,
-                                           void *env) {
+static rt_process_impl *process_start_impl(
+    rt_string program, void *args, rt_string cwd, void *env, int overlay_environment) {
     const char *program_text = NULL;
     const char *cwd_text = NULL;
     size_t program_len = 0;
@@ -1018,7 +1440,8 @@ static rt_process_impl *process_start_impl(rt_string program,
         return NULL;
     }
 
-    wchar_t *env_block = build_env_block_wide(env);
+    wchar_t *env_block =
+        overlay_environment ? build_env_overlay_block_wide(env) : build_env_block_wide(env);
     if (env && !env_block) {
         free(wprogram);
         free(wcmdline);
@@ -1122,6 +1545,11 @@ static rt_process_impl *process_start_impl(rt_string program,
     proc->stdout_read = stdout_read;
     proc->stderr_read = stderr_read;
     proc->stdin_write = stdin_write;
+    if (!process_stdin_writer_start(proc)) {
+        process_close(proc);
+        process_release_object(proc);
+        return NULL;
+    }
     return proc;
 }
 
@@ -1207,15 +1635,19 @@ static void set_nonblocking(int fd) {
         (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
-/// @brief Drain all immediately available bytes from a nonblocking descriptor.
+/// @brief Read one available chunk from a nonblocking descriptor.
 /// @details Retries interrupted reads, leaves the descriptor open on EAGAIN,
 ///          and closes it on EOF, other read errors, or output-buffer
-///          allocation failure. Allocation failure also raises a runtime trap.
+///          allocation failure. Returning after one chunk lets the caller
+///          alternate stdout and stderr. Allocation failure raises a trap.
 /// @param fd Address of the owned stdout or stderr descriptor.
 /// @param buf Destination bounded output buffer.
-static void drain_fd(int *fd, process_buffer *buf) {
+/// @param proc Owning process whose ordered output queue receives the chunk.
+/// @param stream PROCESS_OUTPUT_STDOUT or PROCESS_OUTPUT_STDERR.
+/// @return 1 when bytes were captured, otherwise 0.
+static int drain_fd_once(int *fd, process_buffer *buf, rt_process_impl *proc, int stream) {
     if (!fd || *fd < 0)
-        return;
+        return 0;
 
     for (;;) {
         char chunk[4096];
@@ -1224,20 +1656,21 @@ static void drain_fd(int *fd, process_buffer *buf) {
             if (!buffer_append(buf, chunk, (size_t)count)) {
                 rt_trap("Process: output buffer allocation failed");
                 close_fd(fd);
-                return;
+                return 0;
             }
-            continue;
+            ordered_output_append(proc, stream, chunk, (size_t)count);
+            return 1;
         }
         if (count == 0) {
             close_fd(fd);
-            return;
+            return 0;
         }
         if (errno == EINTR)
             continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return;
+            return 0;
         close_fd(fd);
-        return;
+        return 0;
     }
 }
 
@@ -1246,8 +1679,15 @@ static void drain_fd(int *fd, process_buffer *buf) {
 static void process_drain(rt_process_impl *proc) {
     if (!proc)
         return;
-    drain_fd(&proc->stdout_fd, &proc->stdout_buf);
-    drain_fd(&proc->stderr_fd, &proc->stderr_buf);
+    for (;;) {
+        int progressed = 0;
+        progressed |=
+            drain_fd_once(&proc->stdout_fd, &proc->stdout_buf, proc, PROCESS_OUTPUT_STDOUT);
+        progressed |=
+            drain_fd_once(&proc->stderr_fd, &proc->stderr_buf, proc, PROCESS_OUTPUT_STDERR);
+        if (!progressed)
+            return;
+    }
 }
 
 /// @brief Normalize a POSIX wait status for the Process API.
@@ -1408,6 +1848,81 @@ static int process_resolve_program_path(const char *program,
     return 1;
 }
 
+/// @brief Return the nonempty name length of one POSIX `NAME=value` entry.
+static size_t process_env_name_length(const char *entry) {
+    if (!entry)
+        return 0;
+    const char *equals = strchr(entry, '=');
+    return equals && equals != entry ? (size_t)(equals - entry) : 0;
+}
+
+/// @brief Compare POSIX environment names using native case-sensitive rules.
+static int process_env_names_equal(const char *left, const char *right) {
+    size_t left_len = process_env_name_length(left);
+    size_t right_len = process_env_name_length(right);
+    return left_len > 0 && left_len == right_len && memcmp(left, right, left_len) == 0;
+}
+
+/// @brief Build an environment vector by overlaying retained runtime strings.
+/// @details Inherited pointers remain borrowed from `environ` until spawn; the
+///          aggregate owns only the overlay string references and pointer array.
+static process_string_vector build_env_overlay_vector(void *env) {
+    process_string_vector result;
+    memset(&result, 0, sizeof(result));
+    process_string_vector overlay = build_string_vector(NULL, env, 0);
+    if (!overlay.values)
+        return result;
+
+    size_t overlay_count = 0;
+    while (overlay.values[overlay_count])
+        overlay_count++;
+    for (size_t i = 0; i < overlay_count; i++) {
+        for (size_t j = i + 1; j < overlay_count; j++) {
+            if (process_env_names_equal(overlay.values[i], overlay.values[j])) {
+                free_string_vector(&overlay);
+                return result;
+            }
+        }
+    }
+
+    size_t inherited_count = 0;
+    while (environ && environ[inherited_count])
+        inherited_count++;
+    if (inherited_count > SIZE_MAX - overlay_count - 1 ||
+        inherited_count + overlay_count + 1 > SIZE_MAX / sizeof(char *)) {
+        free_string_vector(&overlay);
+        return result;
+    }
+    result.values = (char **)calloc(inherited_count + overlay_count + 1, sizeof(*result.values));
+    if (!result.values) {
+        free_string_vector(&overlay);
+        return result;
+    }
+
+    size_t at = 0;
+    for (size_t i = 0; i < inherited_count; i++) {
+        int shadowed = 0;
+        for (size_t j = 0; j < overlay_count; j++) {
+            if (process_env_names_equal(environ[i], overlay.values[j])) {
+                shadowed = 1;
+                break;
+            }
+        }
+        if (!shadowed)
+            result.values[at++] = environ[i];
+    }
+    for (size_t i = 0; i < overlay_count; i++)
+        result.values[at++] = overlay.values[i];
+    result.values[at] = NULL;
+    result.owned_strings = overlay.owned_strings;
+    result.owned_count = overlay.owned_count;
+    overlay.owned_strings = NULL;
+    overlay.owned_count = 0;
+    free(overlay.values);
+    overlay.values = NULL;
+    return result;
+}
+
 /// @brief Start a redirected POSIX child process.
 /// @details Validates OS-bound strings, constructs retained argv/envp vectors,
 ///          creates close-on-exec pipes for all standard streams, optionally
@@ -1422,10 +1937,8 @@ static int process_resolve_program_path(const char *program,
 ///        NULL means inherit.
 /// @return New GC-managed running process object, or NULL on validation,
 ///         allocation, path, pipe, spawn-action, or posix_spawn failure.
-static rt_process_impl *process_start_impl(rt_string program,
-                                           void *args,
-                                           rt_string cwd,
-                                           void *env) {
+static rt_process_impl *process_start_impl(
+    rt_string program, void *args, rt_string cwd, void *env, int overlay_environment) {
     const char *program_text = NULL;
     const char *cwd_text = NULL;
     size_t program_len = 0;
@@ -1457,7 +1970,8 @@ static rt_process_impl *process_start_impl(rt_string program,
     process_string_vector envp;
     memset(&envp, 0, sizeof(envp));
     if (env)
-        envp = build_string_vector(NULL, env, 0);
+        envp =
+            overlay_environment ? build_env_overlay_vector(env) : build_string_vector(NULL, env, 0);
     if (env && !envp.values) {
         free_string_vector(&argv);
         rt_trap("Process.Start: environment allocation failed");
@@ -1613,6 +2127,7 @@ static void process_close(rt_process_impl *proc) {
         }
     }
     process_drain(proc);
+    process_stdin_writer_close(proc);
     close_handle(&proc->stdout_read);
     close_handle(&proc->stderr_read);
     close_handle(&proc->stdin_write);
@@ -1637,6 +2152,7 @@ static void process_close(rt_process_impl *proc) {
 
     buffer_free(&proc->stdout_buf);
     buffer_free(&proc->stderr_buf);
+    ordered_output_free(proc);
     proc->running = 0;
     proc->started = 0;
     proc->destroyed = 1;
@@ -1681,7 +2197,19 @@ void *rt_process_start_in(rt_string program, void *args, rt_string cwd) {
 /// @return New GC-managed process handle with redirected stdin/stdout/stderr, or
 ///         NULL when validation or startup fails.
 void *rt_process_start_with_env(rt_string program, void *args, rt_string cwd, void *env) {
-    return process_start_impl(program, args, cwd, env);
+    return process_start_impl(program, args, cwd, env, 0);
+}
+
+/// @brief Start a child with inherited environment plus validated overrides.
+/// @details Unlike StartWithEnv, this additive entry point preserves every
+///          inherited variable not named by the overlay. The platform adapter
+///          applies native environment-name comparison rules and constructs a
+///          complete child block/vector before spawn.
+void *rt_process_start_with_env_overlay(rt_string program,
+                                        void *args,
+                                        rt_string cwd,
+                                        void *overlay) {
+    return process_start_impl(program, args, cwd, overlay, 1);
 }
 
 /// @brief Test whether an object is an initialized, undestroyed process handle.
@@ -1772,16 +2300,39 @@ void *rt_process_read_stderr_result(void *handle) {
     return buffer_take_result(&proc->stderr_buf);
 }
 
+/// @brief Consume capture-ordered stdout/stderr chunks without trapping.
+/// @details The returned map contains an ordered `chunks` sequence. Each entry
+///          has integer `sequence`, string `stream` (`stdout` or `stderr`), and
+///          string `text`; top-level `truncated` reports combined-queue loss.
+///          Corresponding legacy per-stream buffers are consumed too, so a
+///          caller cannot accidentally receive the same bytes twice.
+/// @param handle Candidate process handle.
+/// @return Caller-owned result map, including an empty result for an invalid
+///         handle, or NULL when managed result allocation fails.
+void *rt_process_read_output_result(void *handle) {
+    rt_process_impl *proc = process_checked(handle);
+    if (!proc || !proc->started || proc->destroyed)
+        return ordered_output_take_result(NULL);
+    process_drain(proc);
+    void *result = ordered_output_take_result(proc);
+    if (result) {
+        buffer_discard(&proc->stdout_buf);
+        buffer_discard(&proc->stderr_buf);
+    }
+    return result;
+}
+
 /// @brief Write all possible bytes to the redirected child stdin stream.
 /// @details Runtime-string length is honored, so embedded NUL bytes are written.
-///          Windows writes bounded chunks; POSIX suppresses only the SIGPIPE
-///          attributable to this write and uses a nonblocking descriptor.
+///          Windows enqueues into a bounded background writer so a child that
+///          stops reading can never block the caller/UI thread. POSIX suppresses
+///          only the SIGPIPE attributable to this write and uses a nonblocking
+///          descriptor.
 /// @param handle Candidate running or exited process handle with an open stdin
 ///        pipe.
 /// @param data Runtime byte string; NULL is treated as empty.
-/// @return Number of bytes written, zero for empty input, a positive partial
-///         count when a later write fails or would block, or -1 when no byte can
-///         be written.
+/// @return Number of bytes accepted, zero for empty input, a positive partial
+///         count when capacity is limited, or -1 when no byte can be accepted.
 int64_t rt_process_write_stdin(void *handle, rt_string data) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
@@ -1793,18 +2344,7 @@ int64_t rt_process_write_stdin(void *handle, rt_string data) {
         return 0;
 
 #if defined(_WIN32)
-    if (!proc->stdin_write)
-        return -1;
-    size_t off = 0;
-    while (off < len) {
-        size_t remaining = len - off;
-        DWORD chunk = remaining > 0x40000000u ? 0x40000000u : (DWORD)remaining;
-        DWORD written = 0;
-        if (!WriteFile(proc->stdin_write, bytes + off, chunk, &written, NULL) || written == 0)
-            return off > 0 ? (int64_t)off : -1;
-        off += written;
-    }
-    return (int64_t)off;
+    return process_stdin_enqueue(proc, bytes, len);
 #else
     if (proc->stdin_fd < 0)
         return -1;

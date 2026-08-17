@@ -64,7 +64,9 @@ typedef struct rt_sky3d {
     double ground_albedo[3];
     int64_t resolution;
     int8_t dirty;
-    void *cubemap; /* retained generated CubeMap3D */
+    int8_t stars_enabled;  /* plan 59 / ADR: deterministic night star field */
+    double star_intensity; /* 0..4 multiplier on the star splats */
+    void *cubemap;         /* retained generated CubeMap3D */
 } rt_sky3d;
 
 /// @brief Release a retained cubemap only when its runtime class is still valid.
@@ -108,6 +110,8 @@ void *rt_sky3d_new(void) {
     sky->turbidity = 2.5;
     sky->ground_albedo[0] = sky->ground_albedo[1] = sky->ground_albedo[2] = 0.25;
     sky->resolution = 64;
+    sky->stars_enabled = 0;
+    sky->star_intensity = 1.0;
     sky->dirty = 1;
     return sky;
 }
@@ -246,6 +250,53 @@ int8_t rt_sky3d_get_dirty(void *obj) {
     return sky ? sky->dirty : 0;
 }
 
+/// @brief Enable or disable the deterministic night star field; marks dirty on change.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @param enabled Non-zero draws the fixed star catalog once the sun sets.
+void rt_sky3d_set_stars(void *obj, int8_t enabled) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.set_Stars: invalid sky");
+    if (!sky)
+        return;
+    int8_t want = enabled ? 1 : 0;
+    if (sky->stars_enabled != want) {
+        sky->stars_enabled = want;
+        sky->dirty = 1;
+    }
+}
+
+/// @brief Report whether the night star field is enabled.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return 1 when stars render at night, otherwise 0.
+int8_t rt_sky3d_get_stars(void *obj) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Stars: invalid sky");
+    return sky ? sky->stars_enabled : 0;
+}
+
+/// @brief Set the star-splat brightness multiplier, clamped to [0, 4].
+/// @param obj Sky3D handle; invalid handles trap.
+/// @param intensity Brightness multiplier applied to every star.
+void rt_sky3d_set_star_intensity(void *obj, double intensity) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.set_StarIntensity: invalid sky");
+    if (!sky || !isfinite(intensity))
+        return;
+    if (intensity < 0.0)
+        intensity = 0.0;
+    if (intensity > 4.0)
+        intensity = 4.0;
+    if (sky->star_intensity != intensity) {
+        sky->star_intensity = intensity;
+        sky->dirty = 1;
+    }
+}
+
+/// @brief Report the star-splat brightness multiplier.
+/// @param obj Sky3D handle; invalid handles trap.
+/// @return Star brightness multiplier in [0, 4].
+double rt_sky3d_get_star_intensity(void *obj) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_StarIntensity: invalid sky");
+    return sky ? sky->star_intensity : 0.0;
+}
+
 /// @brief Analytic sky radiance for a view direction (gradient + sun + night fade).
 /// @details Simplified two-band model (recorded per plan section 8): a
 ///   zenith/horizon gradient whose colors follow sun elevation (blue day, warm
@@ -274,7 +325,10 @@ static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[
     double haze = (sky->turbidity - 1.0) / 9.0;
     double zenith[3] = {0.10 + 0.12 * haze, 0.28 + 0.10 * haze, 0.62};
     double horizon[3] = {0.55 + 0.25 * haze, 0.68 + 0.15 * haze, 0.85};
-    double night[3] = {0.012, 0.014, 0.03};
+    /* Plan 59: the night is a gradient too — a slightly lifted horizon
+     * band keeps the skyline readable instead of one flat near-black. */
+    double night_zenith[3] = {0.012, 0.014, 0.03};
+    double night_horizon[3] = {0.030, 0.035, 0.060};
     double sunset[3] = {0.95, 0.45, 0.18};
     double cos_sun = dir[0] * sky->sun_dir[0] + dir[1] * sky->sun_dir[1] + dir[2] * sky->sun_dir[2];
     double t = pow(1.0 - dir[1], 2.0); /* horizon weight */
@@ -284,7 +338,8 @@ static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[
         /* Sunset tint pools on the horizon toward the sun. */
         double sun_side = cos_sun > 0.0 ? cos_sun : 0.0;
         day_col += (sunset[c] - day_col) * dusk * t * sun_side * 0.8;
-        base[c] = night[c] + (day_col - night[c]) * day;
+        double night_col = night_zenith[c] + (night_horizon[c] - night_zenith[c]) * t;
+        base[c] = night_col + (day_col - night_col) * day;
     }
 
     /* Sun halo (Mie-inspired forward lobe) + disc splat. */
@@ -292,8 +347,15 @@ static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[
     double disc = cos_sun > 0.9995 ? 1.0 : 0.0;
     double sun_strength = day * (0.35 + 0.65 * (1.0 - haze));
     double sun_col[3] = {1.0, 0.92 - 0.35 * dusk, 0.80 - 0.55 * dusk};
+    /* Plan 59: at night the same direction splats a cool dim MOON disc
+     * (the caller points sun_dir at the moon) — narrower halo, low
+     * strength so post bloom does not flare it. */
+    double moon_strength = (1.0 - day) * 0.30;
+    double moon_halo = cos_sun > 0.0 ? pow(cos_sun, 512.0) : 0.0;
+    double moon_col[3] = {0.90, 0.95, 1.00};
     for (int c = 0; c < 3; ++c) {
         out[c] = base[c] + sun_col[c] * (halo * 0.6 + disc * 4.0) * sun_strength;
+        out[c] += moon_col[c] * (moon_halo * 0.4 + disc * 2.2) * moon_strength;
         if (out[c] > 4.0)
             out[c] = 4.0;
     }
@@ -344,6 +406,126 @@ static void sky3d_face_dir(int face, double u, double v, double out[3]) {
     out[2] /= len;
 }
 
+/// @brief Map an outward direction to its cubemap face and [-1,1] face coords.
+/// @details Exact inverse of `sky3d_face_dir`'s per-face frames.
+/// @param dir Normalized outward direction.
+/// @param face Receives the face index (CubeMap3D order).
+/// @param u Receives the horizontal face coordinate in [-1, 1].
+/// @param v Receives the vertical face coordinate in [-1, 1].
+static void sky3d_dir_to_face(const double dir[3], int *face, double *u, double *v) {
+    double ax = fabs(dir[0]), ay = fabs(dir[1]), az = fabs(dir[2]);
+    if (ax >= ay && ax >= az) {
+        if (dir[0] > 0.0) {
+            *face = 0;
+            *u = -dir[2] / ax;
+            *v = -dir[1] / ax;
+        } else {
+            *face = 1;
+            *u = dir[2] / ax;
+            *v = -dir[1] / ax;
+        }
+    } else if (ay >= ax && ay >= az) {
+        if (dir[1] > 0.0) {
+            *face = 2;
+            *u = dir[0] / ay;
+            *v = dir[2] / ay;
+        } else {
+            *face = 3;
+            *u = dir[0] / ay;
+            *v = -dir[2] / ay;
+        }
+    } else {
+        if (dir[2] > 0.0) {
+            *face = 4;
+            *u = dir[0] / az;
+            *v = -dir[1] / az;
+        } else {
+            *face = 5;
+            *u = -dir[0] / az;
+            *v = -dir[1] / az;
+        }
+    }
+}
+
+/// @brief Max-blend one star texel into a face buffer.
+/// @param impl Face pixel buffer.
+/// @param dim Face dimension in texels.
+/// @param x Texel column; out-of-range writes are dropped.
+/// @param y Texel row; out-of-range writes are dropped.
+/// @param b Star brightness in [0, 1] (cool-white tinted).
+static void sky3d_star_texel(rt_pixels_impl *impl, int64_t dim, int64_t x, int64_t y, double b) {
+    if (!impl || x < 0 || y < 0 || x >= dim || y >= dim)
+        return;
+    if (b <= 0.0)
+        return;
+    if (b > 1.0)
+        b = 1.0;
+    uint32_t old = impl->data[(size_t)y * (size_t)dim + (size_t)x];
+    int64_t sr = (int64_t)(b * 0.90 * 255.0 + 0.5);
+    int64_t sg = (int64_t)(b * 0.95 * 255.0 + 0.5);
+    int64_t sb = (int64_t)(b * 255.0 + 0.5);
+    int64_t r = (int64_t)((old >> 24) & 0xFFu);
+    int64_t g = (int64_t)((old >> 16) & 0xFFu);
+    int64_t bl = (int64_t)((old >> 8) & 0xFFu);
+    if (sr > r)
+        r = sr;
+    if (sg > g)
+        g = sg;
+    if (sb > bl)
+        bl = sb;
+    impl->data[(size_t)y * (size_t)dim + (size_t)x] =
+        (uint32_t)((r << 24) | (g << 16) | (bl << 8) | 0xFFu);
+}
+
+/// @brief Splat the fixed deterministic star catalog into generated faces.
+/// @details Catalog-then-splat (not per-texel hash) so the field is stable
+///   across face resolutions: ~600 LCG-derived upper-hemisphere directions in
+///   three magnitude tiers, faded by the day factor so dusk transitions stay
+///   sane. Pure function of the authored parameters — determinism holds.
+/// @param sky Sky parameters (star toggle/intensity, sun elevation).
+/// @param faces Six freshly generated face buffers.
+/// @param dim Face dimension in texels.
+static void sky3d_splat_stars(const rt_sky3d *sky, void **faces, int64_t dim) {
+    if (!sky->stars_enabled)
+        return;
+    double sun_elev = sky->sun_dir[1];
+    double day = sun_elev <= -0.15 ? 0.0 : (sun_elev >= 0.25 ? 1.0 : (sun_elev + 0.15) / 0.40);
+    double fade = (1.0 - day) * sky->star_intensity;
+    if (fade <= 0.0)
+        return;
+    uint32_t st = 0x9E3779B9u;
+    for (int i = 0; i < 600; ++i) {
+        st = st * 1664525u + 1013904223u;
+        double u1 = (double)(st >> 8) / 16777216.0;
+        st = st * 1664525u + 1013904223u;
+        double u2 = (double)(st >> 8) / 16777216.0;
+        st = st * 1664525u + 1013904223u;
+        double u3 = (double)(st >> 8) / 16777216.0;
+        double y = 0.03 + 0.97 * u1; /* upper hemisphere, off the horizon */
+        double r = sqrt(fmax(0.0, 1.0 - y * y));
+        double az = u2 * 6.283185307179586;
+        double dir[3] = {r * cos(az), y, r * sin(az)};
+        double mag = u3 < 0.70 ? 0.30 : (u3 < 0.95 ? 0.55 : 1.0);
+        int face = 0;
+        double fu = 0.0, fv = 0.0;
+        sky3d_dir_to_face(dir, &face, &fu, &fv);
+        rt_pixels_impl *impl = rt_pixels_checked_impl_or_null(faces[face]);
+        if (!impl)
+            continue;
+        int64_t px = (int64_t)((fu * 0.5 + 0.5) * (double)dim);
+        int64_t py = (int64_t)((fv * 0.5 + 0.5) * (double)dim);
+        double b = mag * fade;
+        sky3d_star_texel(impl, dim, px, py, b);
+        if (mag >= 1.0) {
+            /* The brightest tier gets a faint 4-neighbor cross. */
+            sky3d_star_texel(impl, dim, px + 1, py, b * 0.35);
+            sky3d_star_texel(impl, dim, px - 1, py, b * 0.35);
+            sky3d_star_texel(impl, dim, px, py + 1, b * 0.35);
+            sky3d_star_texel(impl, dim, px, py - 1, b * 0.35);
+        }
+    }
+}
+
 /// @brief Regenerate the sky cubemap if dirty and install it as @p canvas's skybox.
 /// @details Installing through the normal skybox path re-triggers the existing lazy
 ///   IBL rebuild, so environment lighting follows the sky for free. Passing a NULL
@@ -366,6 +548,10 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
     }
     if (!isfinite(sky->turbidity) || sky->turbidity < 1.0 || sky->turbidity > 10.0) {
         sky->turbidity = 2.5;
+        sky->dirty = 1;
+    }
+    if (!isfinite(sky->star_intensity) || sky->star_intensity < 0.0 || sky->star_intensity > 4.0) {
+        sky->star_intensity = 1.0;
         sky->dirty = 1;
     }
     for (int lane = 0; lane < 3; ++lane) {
@@ -438,6 +624,14 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
                 }
             }
             pixels_touch(face);
+        }
+        if (ok) {
+            sky3d_splat_stars(sky, faces, dim);
+            for (int f = 0; f < 6; ++f) {
+                rt_pixels_impl *fi = rt_pixels_checked_impl_or_null(faces[f]);
+                if (fi)
+                    pixels_touch(fi);
+            }
         }
         if (ok) {
             void *cubemap =

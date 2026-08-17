@@ -1,0 +1,89 @@
+name: Windows and Linux Runtime Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-runtime-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      ZANNA_BUILD_DIR: build
+      ZANNA_BUILD_TYPE: Debug
+      ZANNA_CMAKE_GENERATOR: Ninja
+      ZANNA_CTEST_JOBS: "2"
+      ZANNA_CTEST_TIMEOUT: "240"
+      ZANNA_RUN_SLOW_TESTS: "1"
+      ZANNA_TEST_LABEL: runtime-smoke-ci
+      ZANNA_SKIP_AUDIT: "1"
+      ZANNA_SKIP_INSTALL: "1"
+      ZANNA_SKIP_LINT: "1"
+      ZANNA_SKIP_SMOKE: "1"
+      ZANNA_SKIP_STUDIO: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ninja-build
+
+      - name: Build and run the bounded runtime smoke lane
+        shell: bash
+        run: ./scripts/build_zanna_linux.sh
+
+      - name: Upload CTest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-runtime-smoke-ctest-log
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-runtime-smoke:
+    runs-on: windows-2025
+    timeout-minutes: 65
+    env:
+      ZANNA_BUILD_DIR: build
+      ZANNA_BUILD_TYPE: Debug
+      ZANNA_CTEST_JOBS: "2"
+      ZANNA_CTEST_TIMEOUT: "240"
+      ZANNA_RUN_SLOW_TESTS: "1"
+      ZANNA_TEST_LABEL: runtime-smoke-ci
+      ZANNA_SKIP_AUDIT: "1"
+      ZANNA_SKIP_INSTALL: "1"
+      ZANNA_SKIP_LINT: "1"
+      ZANNA_SKIP_SMOKE: "1"
+      ZANNA_SKIP_STUDIO: "1"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Build and run the bounded runtime smoke lane
+        shell: pwsh
+        run: .\scripts\build_zanna_win.ps1
+
+      - name: Upload CTest failure log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-runtime-smoke-ctest-log
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7

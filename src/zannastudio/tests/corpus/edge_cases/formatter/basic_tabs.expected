@@ -1,0 +1,5 @@
+WHILE ready
+	IF value THEN
+		PRINT value
+	ENDIF
+WEND

@@ -1,0 +1,7 @@
+[settings]
+keybindingOverrides=save=Ctrl+S
+[keybindings]
+version=99
+count=1
+id.0=build
+shortcut.0=F9

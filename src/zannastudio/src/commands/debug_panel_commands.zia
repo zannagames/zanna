@@ -32,6 +32,7 @@ bind "../build/build_system";
 bind "../commands/file_commands";
 bind "../ui/run_debug_view";
 bind "../services/file_utils";
+bind "../services/path_identity";
 bind "../services/theme_colors";
 
 bind Zanna.GUI;
@@ -379,11 +380,7 @@ hide func IndentForDepth(depth: Integer) -> String {
 ///          those cases without the false positives caused by suffix matching
 ///          similarly named files in different directories.
 func SamePath(a: String, b: String) -> Boolean {
-    if a == b { return true; }
-    if a == "" or b == "" { return false; }
-    var na = Path.Normalize(Path.Absolute(a));
-    var nb = Path.Normalize(Path.Absolute(b));
-    return na == nb;
+    return path_identity.SameFile(a, b);
 }
 
 func OpenStopLocation(shell: app_shell.AppShell,

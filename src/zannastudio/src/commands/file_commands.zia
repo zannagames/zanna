@@ -11,6 +11,8 @@
 // Key invariants:
 //   - Destructive transitions honor dirty-buffer confirmation.
 //   - Only validated editable text paths enter the editor through UI commands.
+//   - Execution-save results identify every successfully written path so
+//     dependency caches can invalidate narrowly before a run.
 // Ownership/Lifetime:
 //   - This stateless command module borrows all shell and model objects.
 // Links: zannastudio/src/core/document_manager.zia,
@@ -28,6 +30,7 @@ bind "../core/recovery_store";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../services/file_utils";
+bind "../commands/autosave_job";
 bind "../commands/file_save_support";
 
 bind Zanna.GUI;
@@ -54,6 +57,7 @@ class SaveAllResult {
     expose Boolean success;
     expose Boolean canceled;
     expose Integer savedCount;
+    expose List savedPaths;
     expose String message;
 
     /// @brief Initialize to a failed/no-op result until a handler marks success.
@@ -61,6 +65,7 @@ class SaveAllResult {
         success = false;
         canceled = false;
         savedCount = 0;
+        savedPaths = new List();
         message = "";
     }
 }
@@ -337,6 +342,7 @@ func handleSaveAll(shell: app_shell.AppShell,
                         tabs.SetModified(i, false);
                         engine.ClearDocumentModified(doc);
                         savedCount = savedCount + 1;
+                        result.savedPaths.Push(doc.filePath);
                         SyncRecoverySwaps(docMgr, engine);
                     } else {
                         result.savedCount = savedCount;
@@ -366,6 +372,7 @@ func handleSaveAll(shell: app_shell.AppShell,
                     tabs.SetModified(i, false);
                     engine.ClearDocumentModified(doc);
                     savedCount = savedCount + 1;
+                    result.savedPaths.Push(doc.filePath);
                     SyncRecoverySwaps(docMgr, engine);
                 } else {
                     result.savedCount = savedCount;
@@ -419,6 +426,7 @@ func handleSaveForExecution(shell: app_shell.AppShell,
     if handleSave(shell, docMgr, engine, tabs) {
         result.success = true;
         result.savedCount = 1;
+        result.savedPaths.Push(doc!.filePath);
         result.message = "Saved active file";
         return result;
     }
@@ -646,6 +654,114 @@ func AutoSaveActive(shell: app_shell.AppShell,
         shell.SetStatusLeft("Auto-saved: " + doc.fileName);
         SyncRecoverySwaps(docMgr, engine);
         return true;
+    }
+    return false;
+}
+
+/// @brief Snapshot the active document and start a background autosave.
+/// @details The UI thread only synchronizes the immutable editor snapshot and
+///          captures its revision/baseline. Normalization, hashing, disk reads,
+///          compare/exchange, flush, and rename execute in AutoSaveJob.
+func QueueAutoSaveActive(job: autosave_job.AutoSaveJob,
+                         shell: app_shell.AppShell,
+                         docMgr: document_manager.DocumentManager,
+                         engine: editor_engine.EditorEngine,
+                         sourceRevision: Integer) -> Boolean {
+    if job == null or shell == null or docMgr == null or engine == null
+       or job.IsBusy() {
+        return false;
+    }
+    SaveEditorState(docMgr, engine);
+    var doc = docMgr.GetActive();
+    if doc == null or doc!.isNew or doc!.isModified == false
+       or doc!.isReadOnlyPreview or doc!.filePath == "" {
+        return false;
+    }
+    if docMgr.HasExternalChangeForSave(docMgr.activeIndex) {
+        shell.SetStatusLeft(
+            "Auto-save paused: " + docMgr.ExternalStateMessage(docMgr.activeIndex));
+        return false;
+    }
+
+    var request = new autosave_job.AutoSaveRequest();
+    request.owner = doc!;
+    request.sourceRevision = sourceRevision;
+    request.path = doc!.filePath;
+    request.sourceContent = doc!.content;
+    request.expectedModified = doc!.lastModifiedOnDisk;
+    request.expectedSize = doc!.lastSizeOnDisk;
+    request.expectedHash = doc!.lastContentHashOnDisk;
+    request.maxBytes = document_manager.MaxOpenBytesForPath(doc!.filePath);
+    request.trimTrailingWhitespace =
+        file_save_support.TrimTrailingWhitespaceOnSaveEnabled();
+    request.ensureFinalNewline =
+        file_save_support.EnsureFinalNewlineOnSaveEnabled();
+    return job.Queue(request);
+}
+
+/// @brief Reconcile one completed autosave with the current editor revision.
+/// @details A successful older snapshot advances the known disk baseline but
+///          deliberately leaves newer edits dirty. Save normalization is
+///          applied to the buffer only when the original revision is still
+///          current, preserving editor state through the normal transaction.
+/// @return True only when the current live document became clean.
+func CompleteAutoSave(shell: app_shell.AppShell,
+                      docMgr: document_manager.DocumentManager,
+                      engine: editor_engine.EditorEngine,
+                      tabs: editor_tabs.EditorTabs,
+                      request: autosave_job.AutoSaveRequest,
+                      currentRevision: Integer) -> Boolean {
+    if request == null or docMgr == null { return false; }
+    var doc = request.owner;
+    var index = docMgr.IndexOfDocument(doc);
+    if index < 0 or doc.filePath != request.path { return false; }
+    if request.succeeded == false {
+        if request.conflict {
+            docMgr.RefreshExternalState(index, document.EXTERNAL_STATE_CLEAN, "");
+            if shell != null {
+                shell.SetStatusLeft(
+                    "Auto-save paused: " + docMgr.ExternalStateMessage(index));
+            }
+        } else if shell != null {
+            shell.SetStatusLeft("Auto-save failed: " + request.error);
+        }
+        return false;
+    }
+
+    var stillCurrent = doc.content == request.sourceContent;
+    if engine != null and engine.currentDoc == doc {
+        stillCurrent = stillCurrent and currentRevision == request.sourceRevision
+                       and engine.GetTextSnapshot() == request.sourceContent;
+    }
+    if stillCurrent and request.savedContent != request.sourceContent {
+        stillCurrent = engine != null
+                       and engine.ReplaceDocumentTextPreservingState(
+                           doc, request.savedContent);
+    }
+
+    index = docMgr.AcknowledgeBackgroundSave(
+        doc,
+        request.savedContent,
+        request.committedModified,
+        request.committedSize,
+        stillCurrent);
+    if index < 0 {
+        docMgr.RefreshExternalState(docMgr.IndexOfDocument(doc),
+                                    document.EXTERNAL_STATE_CLEAN,
+                                    "");
+        if shell != null { shell.SetStatusLeft("Auto-save result became stale"); }
+        return false;
+    }
+
+    if stillCurrent {
+        if tabs != null { tabs.SetModified(index, false); }
+        if engine != null and engine.currentDoc == doc { engine.ClearModified(); }
+        if shell != null { shell.SetStatusLeft("Auto-saved: " + doc.fileName); }
+        SyncRecoverySwaps(docMgr, engine);
+        return true;
+    }
+    if shell != null {
+        shell.SetStatusLeft("Auto-saved an earlier revision; newer edits remain");
     }
     return false;
 }
