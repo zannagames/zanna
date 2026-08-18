@@ -1835,9 +1835,14 @@ void rt_mesh3d_recalc_normals(void *obj) {
 ///   identified by the bind-pose HEIGHT of the geometry that samples it, letting
 ///   per-region recolors (jersey vs pants) work on atlases whose colors alone
 ///   cannot be separated. UVs map to texels exactly like the samplers do
-///   (u * width, v * height, repeat-wrapped); a triangle is included only when
-///   all three vertices sit inside the Y band. The mask must be an ordinary
-///   Pixels object; it is mutated in place.
+///   (u * width, v * height, repeat-wrapped); a triangle is included when its
+///   Y range intersects the band (an all-verts-in-band rule dropped every
+///   straddling triangle, leaving unmasked belts at the band edges).
+///   Rasterization is CONSERVATIVE — each edge function is relaxed by half a
+///   texel so any texel the triangle touches is covered; texel-center sampling
+///   left a one-texel unmasked seam along every shared UV edge (the "cracked
+///   jersey" tint artifact). The mask must be an ordinary Pixels object; it is
+///   mutated in place.
 /// @param obj Mesh3D receiver; invalid handles are ignored.
 /// @param mask_pixels Pixels handle receiving the coverage (any size).
 /// @param y_min Inclusive lower object-space Y bound.
@@ -1864,10 +1869,21 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
         double area;
         if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
             continue;
-        if (m->vertices[i0].pos[1] < y_min || m->vertices[i0].pos[1] > y_max ||
-            m->vertices[i1].pos[1] < y_min || m->vertices[i1].pos[1] > y_max ||
-            m->vertices[i2].pos[1] < y_min || m->vertices[i2].pos[1] > y_max)
-            continue;
+        {
+            /* Include the triangle when its Y range INTERSECTS the band. */
+            double ty_min = m->vertices[i0].pos[1];
+            double ty_max = ty_min;
+            if (m->vertices[i1].pos[1] < ty_min)
+                ty_min = m->vertices[i1].pos[1];
+            if (m->vertices[i1].pos[1] > ty_max)
+                ty_max = m->vertices[i1].pos[1];
+            if (m->vertices[i2].pos[1] < ty_min)
+                ty_min = m->vertices[i2].pos[1];
+            if (m->vertices[i2].pos[1] > ty_max)
+                ty_max = m->vertices[i2].pos[1];
+            if (ty_max < y_min || ty_min > y_max)
+                continue;
+        }
         /* Repeat-wrap each UV into [0,1) (the atlases in scope never span the
          * seam), then scale onto the texel grid. */
         ax = ((double)m->vertices[i0].uv[0] - floor((double)m->vertices[i0].uv[0])) * (double)w;
@@ -1903,10 +1919,18 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
         if (!isfinite(area) || (area > -1e-9 && area < 1e-9))
             continue;
         {
-            int64_t x_lo = (int64_t)floor(min_x);
-            int64_t x_hi = (int64_t)ceil(max_x);
-            int64_t y_lo = (int64_t)floor(min_y);
-            int64_t y_hi = (int64_t)ceil(max_y);
+            /* Conservative bias per edge: half a texel scaled by the edge's
+             * L1 extent relaxes each edge function so every texel whose
+             * SQUARE the triangle overlaps is covered, not just texels whose
+             * center lands inside. Adjacent triangles then share seam texels
+             * instead of both skipping them. */
+            double b0 = 0.5 * (fabs(bx - ax) + fabs(by - ay));
+            double b1 = 0.5 * (fabs(cx - bx) + fabs(cy - by));
+            double b2 = 0.5 * (fabs(ax - cx) + fabs(ay - cy));
+            int64_t x_lo = (int64_t)floor(min_x) - 1;
+            int64_t x_hi = (int64_t)ceil(max_x) + 1;
+            int64_t y_lo = (int64_t)floor(min_y) - 1;
+            int64_t y_hi = (int64_t)ceil(max_y) + 1;
             if (x_lo < 0)
                 x_lo = 0;
             if (y_lo < 0)
@@ -1923,10 +1947,10 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
                     double w1 = (cx - bx) * (sy - by) - (cy - by) * (sx - bx);
                     double w2 = (ax - cx) * (sy - cy) - (ay - cy) * (sx - cx);
                     if (area > 0.0) {
-                        if (w0 < 0.0 || w1 < 0.0 || w2 < 0.0)
+                        if (w0 < -b0 || w1 < -b1 || w2 < -b2)
                             continue;
                     } else {
-                        if (w0 > 0.0 || w1 > 0.0 || w2 > 0.0)
+                        if (w0 > b0 || w1 > b1 || w2 > b2)
                             continue;
                     }
                     rt_pixels_set_rgba(mask_pixels, px, py, (int64_t)0xFFFFFFFFu);

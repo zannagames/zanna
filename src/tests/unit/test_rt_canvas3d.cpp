@@ -664,6 +664,40 @@ static void test_mesh_add_vertex_triangle() {
     PASS();
 }
 
+static void test_mesh_rasterize_uv_mask_conservative() {
+    TEST("Mesh3D.RasterizeUvMaskY covers touched texels and band-straddling triangles");
+    void *m = rt_mesh3d_new();
+    // Triangle inside the Y band whose UV footprint touches texel (0,0)'s
+    // square without containing its center (texel coords: (0.64,0.64),
+    // (3.36,0.64), (0.64,3.36) on an 8x8 mask). Center-point sampling left
+    // such texels unmasked — the seam/crack artifact.
+    rt_mesh3d_add_vertex(m, 0, 1.0, 0, 0, 1, 0, 0.08, 0.08);
+    rt_mesh3d_add_vertex(m, 1, 1.0, 0, 0, 1, 0, 0.42, 0.08);
+    rt_mesh3d_add_vertex(m, 0, 1.0, 1, 0, 1, 0, 0.08, 0.42);
+    rt_mesh3d_add_triangle(m, 0, 1, 2);
+    // Triangle STRADDLING the band's lower edge (one vertex below y_min):
+    // the old all-verts-in-band rule dropped it wholesale. UV footprint
+    // owns the mask's lower-right quadrant.
+    rt_mesh3d_add_vertex(m, 0, 0.2, 0, 0, 1, 0, 0.60, 0.60);
+    rt_mesh3d_add_vertex(m, 1, 1.5, 0, 0, 1, 0, 0.95, 0.60);
+    rt_mesh3d_add_vertex(m, 0, 1.5, 1, 0, 1, 0, 0.60, 0.95);
+    rt_mesh3d_add_triangle(m, 3, 4, 5);
+    // Triangle entirely BELOW the band: must stay excluded. UV footprint
+    // owns the upper-right quadrant.
+    rt_mesh3d_add_vertex(m, 0, 0.1, 0, 0, 1, 0, 0.60, 0.10);
+    rt_mesh3d_add_vertex(m, 1, 0.2, 0, 0, 1, 0, 0.95, 0.10);
+    rt_mesh3d_add_vertex(m, 0, 0.2, 1, 0, 1, 0, 0.60, 0.35);
+    rt_mesh3d_add_triangle(m, 6, 7, 8);
+    void *mask = rt_pixels_new(8, 8);
+    rt_mesh3d_rasterize_uv_mask_y(m, mask, 0.5, 2.0);
+    EXPECT_EQ(rt_pixels_get_rgba(mask, 0, 0), (int64_t)0xFFFFFFFF);
+    EXPECT_EQ(rt_pixels_get_rgba(mask, 1, 1), (int64_t)0xFFFFFFFF);
+    EXPECT_EQ(rt_pixels_get_rgba(mask, 5, 5), (int64_t)0xFFFFFFFF);
+    EXPECT_EQ(rt_pixels_get_rgba(mask, 7, 7), 0);
+    EXPECT_EQ(rt_pixels_get_rgba(mask, 6, 1), 0);
+    PASS();
+}
+
 static void test_mesh_vertex_position_readback() {
     TEST("Mesh3D.VertexPosition preserves precision and rejects invalid indices");
     void *m = rt_mesh3d_new();
@@ -11330,6 +11364,7 @@ int main() {
     /* Mesh3D — basic */
     test_mesh_empty();
     test_mesh_add_vertex_triangle();
+    test_mesh_rasterize_uv_mask_conservative();
     test_mesh_vertex_position_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();
     test_mesh_mutations_restore_residency_and_counts_are_clamped();

@@ -217,6 +217,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0145](0145-complete-fbx-evaluation-and-native-lights.md) — Complete FBX Evaluation and Native Authored Lights
 - [ADR 0146](0146-vscn-v5-source-texture-containers.md) — Preserve Source Texture Containers in VSCN v5
 - [ADR 0157](0157-material-texture-pixel-inspection.md) — Expose Read-Only Material Texture Pixels for Authoring Tools
+- [ADR 0269](0269-pixels-dilate-masked.md) — Pixels.DilateMasked UV-Atlas Gutter Dilation
 - [ADR 0158](0158-scene-level-property-authoring.md) — Make Scene-Level Properties Fully Authorable
 - [ADR 0159](0159-typed-scenenode-metadata-and-vscn-v6.md) — Add Typed SceneNode Metadata and VSCN v6
 - [ADR 0160](0160-project-scene-component-schemas.md) — Add Project Scene Component Schemas

@@ -1375,6 +1375,90 @@ void rt_pixels_recolor_masked(
     pixels_touch(p);
 }
 
+/// @brief Grow covered texels outward into uncovered gutters (see rt_pixels.h).
+/// One frontier byte-buffer per pass keeps growth uniform: a texel covered
+/// this pass never feeds another texel in the same pass.
+void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DilateMasked: null pixels");
+    rt_pixels_impl *m = rt_pixels_checked_impl(mask, "Pixels.DilateMasked: null mask");
+    int64_t w;
+    int64_t h;
+    int64_t count;
+    uint8_t *cov;
+    uint8_t *next;
+    if (!p || !p->data || !m || !m->data)
+        return;
+    if (p->width != m->width || p->height != m->height)
+        return;
+    if (passes <= 0)
+        return;
+    if (passes > 256)
+        passes = 256;
+    w = p->width;
+    h = p->height;
+    count = w * h;
+    if (count <= 0)
+        return;
+    cov = (uint8_t *)malloc((size_t)count);
+    next = (uint8_t *)malloc((size_t)count);
+    if (!cov || !next) {
+        free(cov);
+        free(next);
+        return;
+    }
+    for (int64_t i = 0; i < count; i++)
+        cov[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
+    for (int64_t pass = 0; pass < passes; pass++) {
+        int64_t grew = 0;
+        memcpy(next, cov, (size_t)count);
+        for (int64_t y = 0; y < h; y++) {
+            for (int64_t x = 0; x < w; x++) {
+                int64_t idx = y * w + x;
+                int64_t sr = 0;
+                int64_t sg = 0;
+                int64_t sb = 0;
+                int64_t sa = 0;
+                int64_t n = 0;
+                if (cov[idx])
+                    continue;
+                for (int64_t dy = -1; dy <= 1; dy++) {
+                    for (int64_t dx = -1; dx <= 1; dx++) {
+                        int64_t nx = x + dx;
+                        int64_t ny = y + dy;
+                        int64_t nidx;
+                        uint32_t texel;
+                        if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                            continue;
+                        nidx = ny * w + nx;
+                        if (!cov[nidx])
+                            continue;
+                        texel = p->data[nidx];
+                        sr += (int64_t)((texel >> 24) & 0xFFu);
+                        sg += (int64_t)((texel >> 16) & 0xFFu);
+                        sb += (int64_t)((texel >> 8) & 0xFFu);
+                        sa += (int64_t)(texel & 0xFFu);
+                        n++;
+                    }
+                }
+                if (n == 0)
+                    continue;
+                p->data[idx] = ((uint32_t)(sr / n) << 24) | ((uint32_t)(sg / n) << 16) |
+                               ((uint32_t)(sb / n) << 8) | (uint32_t)(sa / n);
+                m->data[idx] = 0xFFFFFFFFu;
+                next[idx] = 1u;
+                grew = 1;
+            }
+        }
+        memcpy(cov, next, (size_t)count);
+        if (!grew)
+            break;
+    }
+    free(cov);
+    free(next);
+    pixels_touch(p);
+    pixels_touch(m);
+}
+
 /// @brief Luminance-band tint restricted to a coverage mask and to near-neutral
 ///   texels. Same blend as rt_pixels_tint_luminance_masked, with two extra
 ///   gates: the mask (any non-zero RGB at the scaled coordinate) must cover

@@ -126,6 +126,19 @@ void rt_pixels_tint_masked_neutral(
 void rt_pixels_recolor_masked(
     void *pixels, int64_t target_rgb, int64_t ref_rgb, int64_t tolerance);
 
+/// @brief Grow covered texels into uncovered neighbors (UV-atlas gutter fill).
+/// @details Each pass assigns every uncovered texel with at least one covered
+///   8-neighbor the average color of those covered neighbors, then marks it
+///   covered. Coverage comes from @p mask (any non-zero RGB = covered) and the
+///   mask is updated in place as coverage grows. Mip generation on an atlas
+///   whose gutters keep the background color bleeds that background into every
+///   island edge at minification; dilating island colors outward first makes
+///   the mip averages stay island-colored.
+/// @param pixels Atlas to dilate in place (0xRRGGBBAA texels).
+/// @param mask Coverage mask; must match @p pixels dimensions exactly.
+/// @param passes Dilation ring width in texels (clamped to [0, 256]).
+void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes);
+
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.

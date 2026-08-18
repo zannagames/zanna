@@ -2120,6 +2120,29 @@ static void test_recolor_masked_color_class() {
     printf("test_recolor_masked_color_class: PASSED\n");
 }
 
+static void test_dilate_masked_gutter_fill() {
+    /* 5x1 strip: covered red texel at x=0, uncovered black gutter after. */
+    void *p = rt_pixels_new(5, 1);
+    void *m = rt_pixels_new(5, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0xC80000FF);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+
+    rt_pixels_dilate_masked(p, m, 2);
+
+    /* Two passes grow two texels; each copies its lone covered neighbor. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0xC80000FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0xC80000FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0u);
+    /* The mask records the growth. */
+    assert((uint32_t)rt_pixels_get_rgba(m, 2, 0) == 0xFFFFFFFFu);
+    assert((uint32_t)rt_pixels_get_rgba(m, 3, 0) == 0u);
+    /* Dimension mismatch is a documented no-op. */
+    void *wrong = rt_pixels_new(2, 2);
+    rt_pixels_dilate_masked(p, wrong, 4);
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0u);
+    printf("test_dilate_masked_gutter_fill: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -2291,6 +2314,7 @@ int main() {
     // BlendPixel
     test_tint_luminance_masked_keeps_handle_valid();
     test_recolor_masked_color_class();
+    test_dilate_masked_gutter_fill();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();
