@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-30
+last-verified: 2026-08-17
 ---
 
 # ADR 0024: Text/Editing Helpers (Zanna.Text.Char + CodeEditor.InsertAndPlaceCursor)
@@ -10,7 +10,7 @@ last-verified: 2026-06-30
 
 Accepted (runtime implemented; Zanna Studio is the intended first consumer). Driven by
 the GUI runtime-additions review, recommendation **R7**
-(`misc/plans/zannastudio/gui-runtime-additions.md`).
+(review document retired 2026-07-15; the recommendation ids are the surviving record).
 
 ## Context
 

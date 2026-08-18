@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-29
+last-verified: 2026-08-17
 ---
 
 # ADR 0224: Bounded Viewport Presentation Budget and Zero-Allocation Readback

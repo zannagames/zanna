@@ -684,3 +684,18 @@ zanna_add_ctest(vm_comprehensive_control_flow_strings
         -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/comprehensive/control_flow_strings.bas.out
         -P ${CMAKE_SOURCE_DIR}/src/tests/e2e/test_basic_math_phase1.cmake)
 zanna_set_test_labels(vm_comprehensive_control_flow_strings vm comprehensive)
+
+# ── Mixed-language interop (ADR 0268) ────────────────────────────────────────
+# Each case runs a `lang mixed` project end to end and compares stdout. They pin
+# the contract documented in docs/languages/interop.md: symbols spelled the same
+# way on both sides resolve in either direction, and a library module's
+# top-level initialization still runs.
+foreach (_interop_case basic_entry zia_entry library_init)
+    zanna_add_ctest(interop_mixed_${_interop_case}
+            ${CMAKE_COMMAND}
+            -DILC=$<TARGET_FILE:zanna>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/src/tests/e2e/interop/${_interop_case}
+            -DEXPECT_FILE=${CMAKE_SOURCE_DIR}/src/tests/e2e/interop/${_interop_case}/expected.out
+            -P ${CMAKE_SOURCE_DIR}/src/tests/e2e/test_interop_project.cmake)
+    zanna_set_test_labels(interop_mixed_${_interop_case} e2e vm)
+endforeach ()

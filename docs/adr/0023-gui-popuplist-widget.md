@@ -10,7 +10,7 @@ last-verified: 2026-06-30
 
 Accepted (runtime implemented; Zanna Studio's completion popup is the intended first
 consumer). Driven by the GUI runtime-additions review, recommendation **R6**
-(`misc/plans/zannastudio/gui-runtime-additions.md`).
+(review document retired 2026-07-15; the recommendation ids are the surviving record).
 
 ## Context
 

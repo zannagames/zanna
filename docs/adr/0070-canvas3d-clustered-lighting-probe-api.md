@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-09
+last-verified: 2026-08-17
 ---
 
 # ADR 0070: Canvas3D Clustered Lighting Probe API

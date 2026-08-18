@@ -1,7 +1,7 @@
 ---
 status: draft
 audience: contributors
-last-verified: 2026-08-03
+last-verified: 2026-08-17
 ---
 
 # ADR 0240: Linux GPU Direction — OpenGL Parity over Vulkan

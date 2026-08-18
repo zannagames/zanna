@@ -214,7 +214,7 @@ The `camera` and `lighting` sections carry scene-global settings as typed
 `int`/`string` fields
 ([ADR 0177](../../adr/0177-scene-camera-and-lighting-sections.md)). Application
 stays game-owned: read the fields and configure your own
-`Zanna.Graphics2D.Camera` and `Zanna.Game2D.Lighting2D` instances. Placed
+`Zanna.Graphics.Camera` and `Zanna.Game.Lighting2D` instances. Placed
 point lights are ordinary objects carrying a project `light` component, not
 section entries.
 

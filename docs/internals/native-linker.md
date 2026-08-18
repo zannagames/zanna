@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Native Linker — Object File Linking & Executable Generation
@@ -69,7 +69,7 @@ Native-link regressions are caught in three layers:
 
 1. `test_linker_platform_import_planners` validates the curated symbol-to-dylib/DLL mapping logic.
 2. `test_linker_runtime_import_audit` scans every member of the built runtime and support archives on the host and fails on any unresolved import that is not explicitly classified by the native-link policy.
-3. `scripts/run_cross_platform_smoke.sh` runs the archive-wide audit plus host-native demo smokes such as `native_smoke_3dbowling_build_arm64` when the current host supports them.
+3. `scripts/run_cross_platform_smoke.sh` runs the archive-wide audit plus host-native smokes such as `native_smoke_chess_ai_arm64`, `native_smoke_crackman_movement_arm64`, and `native_smoke_zannastudio_completion_arm64` when the current host supports them.
 
 On macOS, the planner keeps framework rules ordered from most-specific to broad prefixes. For example,
 `CGImageSource*` imports bind to `ImageIO.framework` before the generic CoreGraphics `CG*` rule.

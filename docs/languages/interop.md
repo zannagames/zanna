@@ -1,6 +1,6 @@
 ---
 status: active
-audience: developers, users
+audience: public
 last-verified: 2026-07-26
 ---
 
@@ -140,6 +140,23 @@ my-project/
 3. All `.bas` files are compiled together as the BASIC module
 4. The IL linker merges both modules into a single module
 5. The merged module is verified and executed normally
+
+---
+
+## Symbol Names
+
+Write the symbol the same way on both sides — `Factorial` in Zia and
+`Factorial` in BASIC — and it resolves in either direction.
+
+Zanna BASIC is case-insensitive and canonicalizes identifiers to upper case, so
+a BASIC module emits `@FACTORIAL` where Zia emits `@Factorial`. The linker
+resolves that difference: when an import does not match a definition exactly, it
+retries ignoring case and binds a unique match
+([ADR 0268](../adr/0268-cross-language-symbol-resolution.md)).
+
+Two definitions differing only by case are reported as an ambiguous import
+rather than resolved arbitrarily, so a case-sensitive frontend cannot rely on
+case alone to distinguish two symbols that cross a module boundary.
 
 ---
 

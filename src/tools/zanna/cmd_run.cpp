@@ -75,6 +75,63 @@ std::string lowerAscii(std::string value) {
     return value;
 }
 
+/// @brief Convert a library-side module's `main` into a module initializer.
+/// @details A mixed-language project has exactly one program entry, but every BASIC module
+///          emits `@main` to carry its top-level statements — module `__mod_init` calls and
+///          global initialization included. Linking that directly against the entry module's
+///          `@main` is a duplicate-definition error, and simply dropping it would silently
+///          skip the library's initialization. Renaming it and wrapping it in a `() -> void`
+///          initializer preserves the work and lets the linker run it before the entry's
+///          `main`, which is the same ordering a single-language build produces.
+/// @param module Library-side module rewritten in place.
+/// @param index Library ordinal used to keep synthesized names unique.
+void convertLibraryMainToInitializer(il::core::Module &module, size_t index) {
+    const std::string suffix = "$mixedlib" + std::to_string(index);
+    const std::string bodyName = "__zanna_lib_main" + suffix;
+    const std::string initName = "__zanna_lib_init" + suffix;
+
+    il::core::Function *libMain = nullptr;
+    for (auto &fn : module.functions) {
+        if (fn.name == "main" && fn.linkage != il::core::Linkage::Import) {
+            libMain = &fn;
+            break;
+        }
+    }
+    if (!libMain)
+        return;
+
+    libMain->name = bodyName;
+    libMain->linkage = il::core::Linkage::Internal;
+
+    // Wrap rather than rewrite: the body keeps its own return type and terminators.
+    il::core::Function initializer;
+    initializer.name = initName;
+    initializer.retType = il::core::Type(il::core::Type::Kind::Void);
+    initializer.linkage = il::core::Linkage::Internal;
+    initializer.moduleInitializer = true;
+
+    il::core::BasicBlock entry;
+    entry.label = "entry";
+
+    il::core::Instr call;
+    call.op = il::core::Opcode::Call;
+    call.type = libMain->retType;
+    call.setDirectCallee(bodyName);
+    if (libMain->retType.kind != il::core::Type::Kind::Void)
+        call.result = 0;
+    entry.instructions.push_back(std::move(call));
+
+    il::core::Instr ret;
+    ret.op = il::core::Opcode::Ret;
+    ret.type = il::core::Type(il::core::Type::Kind::Void);
+    entry.instructions.push_back(std::move(ret));
+
+    initializer.blocks.push_back(std::move(entry));
+    if (libMain->retType.kind != il::core::Type::Kind::Void)
+        initializer.valueNames.assign(1, "discarded");
+    module.functions.push_back(std::move(initializer));
+}
+
 /// @brief Pick a deterministic entry source for the non-entry side of a mixed project.
 /// @details Mixed-language manifests have one true executable entry. The other language may still
 ///          need a file to seed frontend compilation. This helper keeps the historical behavior of
@@ -1040,6 +1097,7 @@ il::support::Expected<CompiledProjectModule> compileMixedProject(
             il::link::generateBooleanThunks(entryResult.value().module, libResult.value().module);
         for (auto &thunk : thunks)
             entryResult.value().module.functions.push_back(std::move(thunk.thunk));
+        convertLibraryMainToInitializer(libResult.value().module, libraryModules.size());
         libraryModules.push_back(std::move(libResult.value().module));
     }
 
@@ -1052,11 +1110,18 @@ il::support::Expected<CompiledProjectModule> compileMixedProject(
 
     auto linkResult = il::link::linkModules(std::move(modules));
     if (!linkResult.succeeded()) {
-        std::string errMsg = "link errors:";
-        for (const auto &e : linkResult.errors)
-            errMsg += "\n  " + e;
-        return il::support::Expected<CompiledProjectModule>(
-            il::support::Diagnostic{il::support::Severity::Error, errMsg, {}, {}});
+        // Diagnostics render on one line, so join rather than embedding newlines.
+        std::string errMsg = "linking mixed-language modules failed: ";
+        for (size_t e = 0; e < linkResult.errors.size(); ++e) {
+            if (e != 0)
+                errMsg += "; ";
+            errMsg += linkResult.errors[e];
+        }
+        il::support::Diagnostic diag{il::support::Severity::Error, errMsg, {}, {}};
+        // The caller assumes every compile*Project has already reported; without
+        // this the whole failure is a silent exit status.
+        ilc::printDiagnostic(diag, std::cerr, &sm, shared.diagnosticFormat);
+        return il::support::Expected<CompiledProjectModule>(std::move(diag));
     }
 
     CompiledProjectModule compiled{std::move(linkResult.module), false};
@@ -1068,8 +1133,10 @@ il::support::Expected<CompiledProjectModule> compileMixedProject(
         pm.enableParallelFunctionPasses(shouldEnableParallelFunctionPasses(shared));
         const std::string pipelineId = (project.optimizeLevel == "O2") ? "O2" : "O1";
         if (!pm.runPipeline(compiled.module, pipelineId)) {
-            return il::support::Expected<CompiledProjectModule>(il::support::Diagnostic{
-                il::support::Severity::Error, "linked mixed-module optimization failed", {}, {}});
+            il::support::Diagnostic diag{
+                il::support::Severity::Error, "linked mixed-module optimization failed", {}, {}};
+            ilc::printDiagnostic(diag, std::cerr, &sm, shared.diagnosticFormat);
+            return il::support::Expected<CompiledProjectModule>(std::move(diag));
         }
     }
 

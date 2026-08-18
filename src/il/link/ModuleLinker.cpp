@@ -110,12 +110,24 @@ std::unordered_map<std::string, FunctionRef> buildExportIndex(const std::vector<
     return index;
 }
 
+/// @brief Fold an ASCII symbol name to lower case for case-insensitive matching.
+/// @param name Symbol name to fold.
+/// @return Lower-cased copy; non-ASCII bytes are passed through unchanged.
+std::string foldSymbolCase(std::string_view name) {
+    std::string folded;
+    folded.reserve(name.size());
+    for (unsigned char ch : name)
+        folded.push_back(static_cast<char>(
+            (ch >= 'A' && ch <= 'Z') ? static_cast<unsigned char>(ch - 'A' + 'a') : ch));
+    return folded;
+}
+
 /// @brief Build an index of all exported global names to their input locations.
 /// @param modules Modules whose global exports are indexed.
 /// @param errors Destination for duplicate-export diagnostics.
 /// @return Map from exported global name to its unique input location.
-std::unordered_map<std::string, GlobalRef>
-buildGlobalExportIndex(const std::vector<Module> &modules, std::vector<std::string> &errors) {
+std::unordered_map<std::string, GlobalRef> buildGlobalExportIndex(
+    const std::vector<Module> &modules, std::vector<std::string> &errors) {
     std::unordered_map<std::string, GlobalRef> index;
     for (size_t i = 0; i < modules.size(); ++i) {
         for (size_t g = 0; g < modules[i].globals.size(); ++g) {
@@ -291,8 +303,8 @@ LinkResult linkModules(std::vector<Module> modules) {
         std::unordered_set<std::string> names;
         for (const auto &fn : modules[i].functions) {
             if (!names.insert(fn.name).second) {
-                result.errors.push_back("duplicate function in module " +
-                                        std::to_string(i) + ": @" + fn.name);
+                result.errors.push_back("duplicate function in module " + std::to_string(i) +
+                                        ": @" + fn.name);
             }
         }
     }
@@ -336,6 +348,26 @@ LinkResult linkModules(std::vector<Module> modules) {
         if (fn.linkage != Linkage::Import)
             entryDefinitions.emplace(fn.name, &fn);
     }
+    // Case-folded view of every definition an import may bind to. Zanna BASIC is
+    // a case-insensitive language and canonicalizes identifiers to upper case, so
+    // a BASIC symbol crossing a module boundary cannot be matched exactly against
+    // the source spelling a case-sensitive frontend emits. This index is only
+    // consulted after exact resolution fails, and only a unique candidate is
+    // accepted, so it can never change how an already-resolving link binds.
+    std::unordered_map<std::string, std::vector<const Function *>> caseFoldedDefinitions;
+    for (const auto &entry : exportIndex) {
+        const Function *fn =
+            &modules[entry.second.moduleIndex].functions[entry.second.functionIndex];
+        caseFoldedDefinitions[foldSymbolCase(entry.first)].push_back(fn);
+    }
+    for (const auto &fn : modules[static_cast<size_t>(entryIdx)].functions) {
+        if (fn.linkage == Linkage::Import)
+            continue;
+        auto &bucket = caseFoldedDefinitions[foldSymbolCase(fn.name)];
+        if (std::find(bucket.begin(), bucket.end(), &fn) == bucket.end())
+            bucket.push_back(&fn);
+    }
+
     std::unordered_map<std::string, const Global *> entryGlobalDefinitions;
     entryGlobalDefinitions.reserve(modules[static_cast<size_t>(entryIdx)].globals.size());
     for (const auto &global : modules[static_cast<size_t>(entryIdx)].globals) {
@@ -350,8 +382,8 @@ LinkResult linkModules(std::vector<Module> modules) {
             const Global *definition = nullptr;
             if (auto exported = globalExportIndex.find(global.name);
                 exported != globalExportIndex.end()) {
-                definition = &modules[exported->second.moduleIndex]
-                                  .globals[exported->second.globalIndex];
+                definition =
+                    &modules[exported->second.moduleIndex].globals[exported->second.globalIndex];
             } else if (auto entry = entryGlobalDefinitions.find(global.name);
                        entry != entryGlobalDefinitions.end()) {
                 definition = entry->second;
@@ -422,10 +454,39 @@ LinkResult linkModules(std::vector<Module> modules) {
                 definition = entryIt->second;
             }
 
+            // Cross-language fallback: bind a case-insensitive match when it is
+            // unambiguous. Ambiguity stays an error rather than an arbitrary pick.
+            bool boundByCaseFold = false;
+            if (!definition) {
+                auto foldedIt = caseFoldedDefinitions.find(foldSymbolCase(fn.name));
+                if (foldedIt != caseFoldedDefinitions.end()) {
+                    if (foldedIt->second.size() == 1) {
+                        definition = foldedIt->second.front();
+                        boundByCaseFold = true;
+                    } else if (foldedIt->second.size() > 1) {
+                        std::string names;
+                        for (const auto *candidate : foldedIt->second) {
+                            if (!names.empty())
+                                names += ", ";
+                            names += "@" + candidate->name;
+                        }
+                        result.errors.push_back("ambiguous import: @" + fn.name +
+                                                " matches multiple definitions ignoring case (" +
+                                                names + ")");
+                        continue;
+                    }
+                }
+            }
+
             if (!definition) {
                 result.errors.push_back("unresolved import: @" + fn.name);
                 continue;
             }
+
+            // A case-folded binding must redirect call sites to the real name;
+            // an exact match already refers to it.
+            if (boundByCaseFold)
+                functionRenameMaps[i][fn.name] = definition->name;
 
             if (sameSignature(fn, *definition))
                 continue;

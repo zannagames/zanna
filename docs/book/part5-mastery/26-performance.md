@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Chapter 26: Performance
@@ -219,14 +219,14 @@ The `--profile` flag enables both instruction counting and wall-clock timing in 
 You can also use the individual flags for more targeted analysis:
 
 ```bash
-# Instruction count only (via zanna -run for IL files)
-zanna -run --count program.il
+# Instruction count only (via ilrun for IL files)
+ilrun program.il --count
 
 # Wall-clock timing only
-zanna -run --time program.il
+ilrun program.il --time
 
 # Both (equivalent to --profile)
-zanna -run --count --time program.il
+ilrun program.il --count --time
 ```
 
 ### Using Zanna's Diagnostic Flags

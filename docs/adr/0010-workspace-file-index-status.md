@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-25
+last-verified: 2026-08-17
 ---
 
 # ADR 0010: Workspace File Index Status Runtime API

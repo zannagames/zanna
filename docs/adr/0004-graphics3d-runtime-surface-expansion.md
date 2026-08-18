@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-06-27
+last-verified: 2026-08-17
 ---
 
 # ADR 0004: Graphics3D Runtime Surface Expansion Uses Registry-Only Semantics

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-17
+last-verified: 2026-08-17
 ---
 
 # ADR 0126: Make HTTP Client Identity and Ownership Transactional

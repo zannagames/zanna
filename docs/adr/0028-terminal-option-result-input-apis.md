@@ -1,14 +1,18 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-02
+last-verified: 2026-08-17
 ---
 
 # ADR 0028: Terminal Option and Result Input APIs
 
 ## Status
 
-Accepted
+Superseded in part — the four APIs added here (`TryReadLine`, `TryAsk`,
+`ReadLineResult`, `AskResult`) remain the registered public terminal-input
+surface, but the public-surface standardization retired `Zanna.Terminal.Ask`
+and `Zanna.Terminal.InputLine`. Only `Zanna.Terminal.ReadLine` survives from
+the nullable trio named in the Decision below (VDOC-287).
 
 ## Context
 

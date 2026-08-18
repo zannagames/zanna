@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-29
+last-verified: 2026-08-17
 ---
 
 # Graphics 2D Runtime Correctness Audit (July 2026)

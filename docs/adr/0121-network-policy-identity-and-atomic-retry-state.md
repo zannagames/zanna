@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-17
+last-verified: 2026-08-17
 ---
 
 # ADR 0121: Give Network Policies Stable Identity and Atomic Retry State

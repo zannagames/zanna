@@ -10,7 +10,7 @@ last-verified: 2026-06-29
 
 Accepted (runtime implemented; Zanna Studio is the intended first consumer). Driven
 by the GUI runtime-additions review, recommendation **R1**
-(`misc/plans/zannastudio/gui-runtime-additions.md`).
+(review document retired 2026-07-15; the recommendation ids are the surviving record).
 
 ## Context
 

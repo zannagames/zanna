@@ -264,6 +264,8 @@ void SemanticAnalyzer::analyzeProcedureCommon(const Proc &proc,
 ///          suffix conflicting with an explicit return type emits `B4006`.
 ///          Common body traversal then requires explicit/VB-style result flow,
 ///          emitting `B1007` at END FUNCTION or the declaration when missing.
+///          Foreign (`DECLARE FOREIGN FUNCTION`) declarations are bodyless
+///          imports and are exempt from the result-flow requirement.
 ///          All active-function and namespace state is restored afterward.
 /// @param f Function declaration borrowed during analysis.
 void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
@@ -303,6 +305,12 @@ void SemanticAnalyzer::analyzeProc(const FunctionDecl &f) {
     analyzeProcedureCommon(
         f,
         [this](const FunctionDecl &func) {
+            // DECLARE FOREIGN FUNCTION has no body by construction; the result
+            // is produced by the defining module, so result flow is not this
+            // declaration's obligation.
+            if (func.isForeign)
+                return;
+
             if (mustReturn(func.body))
                 return;
 

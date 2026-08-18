@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-24
+last-verified: 2026-08-17
 ---
 
 # ADR 0177: Add Scene Camera and Lighting Section Contracts
@@ -18,8 +18,8 @@ Games therefore hardcode camera configuration and lighting atmosphere in code
 even when every value is plain per-scene data — Xenoscape configures regional
 darkness in `lighting.zia` and camera behavior in `camera.zia` while its scene
 metadata lives elsewhere. The runtime already has the consuming classes:
-`Zanna.Graphics2D.Camera` (bounds, deadzone, smooth-follow, zoom) and
-`Zanna.Game2D.Lighting2D` (darkness, tint, player light, dynamic lights).
+`Zanna.Graphics.Camera` (bounds, deadzone, smooth-follow, zoom) and
+`Zanna.Game.Lighting2D` (darkness, tint, player light, dynamic lights).
 
 Placed point lights do not belong in a section: they are positioned scene
 content that should get placement, dragging, undo, clipboard, and hierarchy

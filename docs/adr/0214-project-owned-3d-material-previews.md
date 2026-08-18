@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-28
+last-verified: 2026-08-17
 ---
 
 # ADR 0214: Render Project-Owned 3D Material Previews

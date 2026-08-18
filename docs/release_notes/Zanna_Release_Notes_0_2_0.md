@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-03-28
+last-verified: 2026-08-17
 ---
 
 # Zanna Compiler Platform - Release Notes

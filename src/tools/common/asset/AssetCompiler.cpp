@@ -59,7 +59,9 @@ namespace fs = std::filesystem;
 
 namespace zanna::asset {
 namespace {
-constexpr std::uintmax_t kMaxAssetFileBytes = 256ULL * 1024ULL * 1024ULL;
+// Baked VSCN stadiums can legitimately exceed 256 MiB. Keep the compiler's
+// source-entry ceiling aligned with the runtime VSCN and async-loader guards.
+constexpr std::uintmax_t kMaxAssetFileBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaxAssetCacheEntries = 64;
 constexpr std::size_t kMaxAssetFileCacheEntries = 128;
 constexpr std::uintmax_t kMaxAssetFileCacheBytes = 512ULL * 1024ULL * 1024ULL;
@@ -362,7 +364,7 @@ static bool readFile(const fs::path &path, std::vector<uint8_t> &out, std::strin
         return false;
     }
     if (size > kMaxAssetFileBytes) {
-        err = "asset file too large: " + zanna::filesystem::pathToUtf8(path) + " (limit: 256 MB)";
+        err = "asset file too large: " + zanna::filesystem::pathToUtf8(path) + " (limit: 512 MB)";
         return false;
     }
     const auto mtime = fs::last_write_time(path, ec);

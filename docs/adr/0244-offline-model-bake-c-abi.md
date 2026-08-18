@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-08
+last-verified: 2026-08-17
 ---
 
 # ADR 0244: Classify Offline Model Bake Helpers as Internal C ABI

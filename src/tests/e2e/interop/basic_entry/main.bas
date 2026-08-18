@@ -1,0 +1,3 @@
+DECLARE FOREIGN FUNCTION Factorial(n AS LONG) AS LONG
+
+PRINT Factorial(10)

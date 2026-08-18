@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-27
+last-verified: 2026-08-17
 ---
 
 # ADR 0213: Render Runtime-Backed Water Preview Layers

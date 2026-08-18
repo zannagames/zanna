@@ -1,7 +1,7 @@
 ---
 status: completed
 audience: contributors
-last-verified: 2026-08-02
+last-verified: 2026-08-17
 ---
 
 # Graphics3D Core Runtime Deep Audit (2026-08)

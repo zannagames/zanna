@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Zanna BASIC — Tutorial
@@ -463,6 +463,7 @@ PRINT #1, "Hello, file!"
 PRINT #1, "Line 2"
 CLOSE #1
 
+DIM L$
 OPEN "output.txt" FOR INPUT AS #2
 WHILE NOT EOF(#2)
   LINE INPUT #2, L$
@@ -540,6 +541,7 @@ LINE INPUT "Destination file: ", DEST$
 
 ON ERROR GOTO CopyErr
 
+DIM LINE$
 OPEN SOURCE$ FOR INPUT AS #1
 OPEN DEST$ FOR OUTPUT AS #2
 

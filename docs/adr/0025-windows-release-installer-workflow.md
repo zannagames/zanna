@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-01
+last-verified: 2026-08-17
 ---
 
 # ADR 0025: Windows Release Installer Workflow

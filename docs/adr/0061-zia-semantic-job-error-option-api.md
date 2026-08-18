@@ -1,13 +1,20 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-02
+last-verified: 2026-08-17
 ---
 
 # ADR 0061: Zia SemanticJob Error Option API
 
 Date: 2026-07-02
-Status: Accepted
+
+## Status
+
+Superseded — the public-surface standardization folded the Option-returning
+accessor into the canonical name instead of registering a second one.
+`Zanna.Zia.SemanticJob.Error` is now registered as `obj<Zanna.Option>(obj)`
+backed by `rt_zia_semantic_job_error_option`; there is no separate
+`ErrorOption` row and no string-returning `Error` row (VDOC-288).
 
 ## Context
 

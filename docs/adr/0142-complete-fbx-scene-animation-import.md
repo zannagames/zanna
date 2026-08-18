@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-20
+last-verified: 2026-08-17
 ---
 
 # ADR 0142: Complete FBX Scene and Animation Import

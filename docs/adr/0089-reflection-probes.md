@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-11
+last-verified: 2026-08-17
 ---
 
 # ADR 0089: Local Reflection Probes (Capture Core)

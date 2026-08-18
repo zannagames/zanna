@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-29
+last-verified: 2026-08-17
 ---
 
 # ADR 0229: Bound Native GZIP Decoding Before Output Allocation

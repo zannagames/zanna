@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Audio
@@ -277,7 +277,7 @@ IF NOT Zanna.Core.Object.RefEquals(bgMusic, NOTHING) THEN
         PRINT "Position: "; bgMusic.Position; " / "; bgMusic.Duration
 
         ' Pause/resume with space bar
-        IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Keyboard.KeySpace) THEN
+        IF Zanna.Input.Keyboard.WasPressed(Zanna.Input.Key.Space) THEN
             IF bgMusic.IsPlaying() THEN
                 bgMusic.Pause()
             ELSE

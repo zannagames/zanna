@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # ADR 0201: Add Project-Owned 3D Lens and Atmosphere Previews

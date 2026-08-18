@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-13
+last-verified: 2026-08-17
 ---
 
 # ADR 0248: Align World3D.SetFog with Canvas3D's Argument Order; Add ClearFog

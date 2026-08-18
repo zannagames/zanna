@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-16
+last-verified: 2026-08-17
 ---
 
 # ADR 0252: `Zanna.Text.Table` and `Mesh3D` Bounds/Merge
@@ -30,7 +30,7 @@ of `Fmt.IntPad(x, 4, " ")` calls in sync with that literal by eye. The Legacy
 Baseball audit measured ~420 lines of this across seven writers, with headers
 like
 
-```
+```text
 "Player                  PA  AB   R   H  2B  3B  HR RBI  BB  SO   AVG   OBP   SLG"
 ```
 

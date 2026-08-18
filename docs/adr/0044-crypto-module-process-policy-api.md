@@ -1,14 +1,21 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-02
+last-verified: 2026-08-17
 ---
 
 # ADR 0044: Crypto Module Process Policy API
 
 ## Status
 
-Accepted
+Superseded — the public-surface standardization moved this surface into the
+`Zanna.Crypto.Compliance` namespace and retired the short `EnableApprovedMode`,
+`DisableApprovedMode`, and `IsApprovedMode` compatibility rows. The registered
+names are `Zanna.Crypto.Compliance.EnableApprovedModeForProcess`,
+`DisableApprovedModeForProcess`, `IsApprovedModeForProcess`, and `Status`;
+nothing under `Zanna.Crypto.Module` resolves. The backing C symbols keep their
+`rt_crypto_module_*` spelling, and ADR 0231 later tightened their accepted
+policy identifiers (VDOC-286).
 
 ## Context
 

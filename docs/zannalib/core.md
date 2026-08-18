@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Core Types
@@ -124,7 +124,7 @@ Boxing helpers for storing primitive values in generic collections. Boxed values
 - `EqF64(box, value)` is the raw-value convenience comparison and follows IEEE `==`; unlike
   box-to-box equality, `EqF64(Box.F64(NaN), NaN)` is false.
 - `ValueType(size)` and `ValueTypeAddField(...)` are compiler/runtime hooks. New user code should call `Zanna.Runtime.Unsafe.ValueType` and `Zanna.Runtime.Unsafe.ValueTypeAddField` only when intentionally integrating with boxed value-type payloads.
-- `Zanna.Core.ValueType` is the catalog/introspection class for boxed value-type payloads. The compiler copies the inline payload into heap storage, then registers managed object/string fields with the unsafe value-type field registration hook so boxed structs retain referenced values, participate in GC traversal, and release fields when finalized. Registering the same offset with the same field kind is idempotent and does not touch the current slot's reference count; registering the same offset with a different kind traps. When `retainNow` is true, the current slot value is validated before it is retained. If the value-type object already has a finalizer, managed-field cleanup chains it instead of replacing it.
+- `Zanna.Runtime.Unsafe.ValueType` is the catalog/introspection hook for boxed value-type payloads. The compiler copies the inline payload into heap storage, then registers managed object/string fields with the unsafe value-type field registration hook so boxed structs retain referenced values, participate in GC traversal, and release fields when finalized. Registering the same offset with the same field kind is idempotent and does not touch the current slot's reference count; registering the same offset with a different kind traps. When `retainNow` is true, the current slot value is validated before it is retained. If the value-type object already has a finalizer, managed-field cleanup chains it instead of replacing it.
 
 ### Zia Example
 
@@ -634,7 +634,7 @@ PRINT parts.Count                         ' Output: 3
 PRINT Zanna.String.Join("-", parts)   ' Output: "a-b-c"
 
 ' Comparison
-PRINT "abc".Cmp("abd")                 ' Output: -1
+PRINT "abc".Compare("abd")             ' Output: -1
 PRINT "ABC".CompareIgnoreCase("abc")           ' Output: 0
 ```
 

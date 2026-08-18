@@ -1,7 +1,7 @@
 ---
 status: draft
 audience: contributors
-last-verified: 2026-08-04
+last-verified: 2026-08-17
 ---
 
 # ADR 0241: Externalize Large Demos to the zannademos Repository

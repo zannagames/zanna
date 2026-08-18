@@ -201,9 +201,11 @@ TEST(ModuleLinker, EntryGlobalWinsRegardlessOfInputOrder) {
     auto result = il::link::linkModules({library, entry});
     ASSERT_TRUE(result.succeeded());
     ASSERT_EQ(result.module.globals.size(), 2u);
-    EXPECT_TRUE(std::any_of(result.module.globals.begin(), result.module.globals.end(),
+    EXPECT_TRUE(std::any_of(result.module.globals.begin(),
+                            result.module.globals.end(),
                             [](const Global &g) { return g.name == "state" && g.init == "2"; }));
-    EXPECT_TRUE(std::any_of(result.module.globals.begin(), result.module.globals.end(),
+    EXPECT_TRUE(std::any_of(result.module.globals.begin(),
+                            result.module.globals.end(),
                             [](const Global &g) { return g.name != "state" && g.init == "1"; }));
 }
 
@@ -790,6 +792,95 @@ TEST(ModuleLinker, InternalRenameUpdatesFunctionAddressesInBranchArgs) {
     ASSERT_EQ(linkedBr.brArgs.front().size(), 1u);
     ASSERT_EQ(linkedBr.brArgs.front().front().kind, Value::Kind::GlobalAddr);
     EXPECT_EQ(linkedBr.brArgs.front().front().str, "m1$helper");
+}
+
+// --- ADR 0268: cross-language symbol resolution -----------------------------
+
+TEST(ModuleLinker, ImportResolvesToUniqueCaseInsensitiveExport) {
+    // Zanna BASIC upper-cases identifiers, so a BASIC import cannot match a
+    // case-preserving export exactly. A unique case-folded match binds instead.
+    Module a;
+    a.functions.push_back(makeI64Func("main", Linkage::Internal));
+    a.functions.push_back(makeI64Func("FACTORIAL", Linkage::Import));
+
+    Module b;
+    b.functions.push_back(makeI64Func("Factorial", Linkage::Export, 42));
+
+    std::vector<Module> modules;
+    modules.push_back(std::move(a));
+    modules.push_back(std::move(b));
+
+    auto result = il::link::linkModules(std::move(modules));
+    ASSERT_TRUE(result.succeeded());
+    // The definition keeps its own spelling; the import stub is dropped.
+    EXPECT_TRUE(hasFunction(result.module, "Factorial"));
+    EXPECT_FALSE(hasFunction(result.module, "FACTORIAL"));
+    EXPECT_EQ(countFunctions(result.module), 2u);
+}
+
+TEST(ModuleLinker, CaseInsensitiveImportRewritesCallSites) {
+    // Binding by case fold must also redirect callers to the real name,
+    // otherwise the call would dangle after the import stub is dropped.
+    Module a;
+    a.functions.push_back(makeI64Func("main", Linkage::Internal));
+    a.functions.push_back(makeVoidFunc("HELPER", Linkage::Import));
+    a.functions.push_back(makeCaller("useHelper", "HELPER"));
+
+    Module b;
+    b.functions.push_back(makeVoidFunc("Helper", Linkage::Export));
+
+    std::vector<Module> modules;
+    modules.push_back(std::move(a));
+    modules.push_back(std::move(b));
+
+    auto result = il::link::linkModules(std::move(modules));
+    ASSERT_TRUE(result.succeeded());
+    const Function *caller = findFunction(result.module, "useHelper");
+    ASSERT_TRUE(caller != nullptr);
+    ASSERT_FALSE(caller->blocks.empty());
+    ASSERT_FALSE(caller->blocks.front().instructions.empty());
+    EXPECT_EQ(caller->blocks.front().instructions.front().callee, std::string("Helper"));
+}
+
+TEST(ModuleLinker, AmbiguousCaseInsensitiveImportFails) {
+    // Two definitions differing only by case must not be resolved arbitrarily.
+    Module a;
+    a.functions.push_back(makeI64Func("main", Linkage::Internal));
+    a.functions.push_back(makeI64Func("VALUE", Linkage::Import));
+
+    Module b;
+    b.functions.push_back(makeI64Func("Value", Linkage::Export, 1));
+    b.functions.push_back(makeI64Func("value", Linkage::Export, 2));
+
+    std::vector<Module> modules;
+    modules.push_back(std::move(a));
+    modules.push_back(std::move(b));
+
+    auto result = il::link::linkModules(std::move(modules));
+    EXPECT_FALSE(result.succeeded());
+    ASSERT_FALSE(result.errors.empty());
+    EXPECT_TRUE(result.errors[0].find("ambiguous import") != std::string::npos);
+}
+
+TEST(ModuleLinker, ExactMatchWinsOverCaseInsensitiveCandidate) {
+    // The fallback is consulted only after exact resolution fails, so an exact
+    // match must never be diverted to a differently-cased definition.
+    Module a;
+    a.functions.push_back(makeI64Func("main", Linkage::Internal));
+    a.functions.push_back(makeI64Func("Value", Linkage::Import));
+
+    Module b;
+    b.functions.push_back(makeI64Func("Value", Linkage::Export, 1));
+    b.functions.push_back(makeI64Func("VALUE", Linkage::Export, 2));
+
+    std::vector<Module> modules;
+    modules.push_back(std::move(a));
+    modules.push_back(std::move(b));
+
+    auto result = il::link::linkModules(std::move(modules));
+    ASSERT_TRUE(result.succeeded());
+    EXPECT_TRUE(hasFunction(result.module, "Value"));
+    EXPECT_TRUE(hasFunction(result.module, "VALUE"));
 }
 
 int main() {

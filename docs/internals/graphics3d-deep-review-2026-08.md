@@ -1,6 +1,6 @@
 ---
 status: proposed
-audience: developers
+audience: contributors
 last-verified: 2026-08-03
 ---
 

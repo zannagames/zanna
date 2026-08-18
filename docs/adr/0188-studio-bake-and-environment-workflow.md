@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-24
+last-verified: 2026-08-17
 ---
 
 # ADR 0188: Add the Studio Bake and Environment Workflow

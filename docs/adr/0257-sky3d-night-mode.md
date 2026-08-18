@@ -1,4 +1,10 @@
-# ADR 0257 — Sky3D night mode: deterministic star field, night gradient, moon disc
+---
+status: active
+audience: contributors
+last-verified: 2026-08-16
+---
+
+# ADR 0257: Sky3D Night Mode — Deterministic Star Field, Night Gradient, and Moon Disc
 
 ## Status
 

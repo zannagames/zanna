@@ -1,7 +1,7 @@
 ---
 status: complete
-audience: developers
-last-verified: 2026-08-14
+audience: contributors
+last-verified: 2026-08-17
 ---
 
 # Windows Runtime Reliability Audit

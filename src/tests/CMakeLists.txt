@@ -760,6 +760,10 @@ zanna_add_test(test_basic_semantic_new_ctor
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_basic_semantic_new_ctor.cpp
         LIBS fe_basic)
 
+zanna_add_test(test_basic_declare_foreign
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_basic_declare_foreign.cpp
+        LIBS fe_basic)
+
 zanna_add_test(test_run_process_quotes
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/test_run_process_quotes.cpp
         LIBS zanna_common)

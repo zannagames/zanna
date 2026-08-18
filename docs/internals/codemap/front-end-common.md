@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # CODEMAP: Frontend Common
@@ -60,12 +60,14 @@ Shared utilities (`src/frontends/common/`) used across all language frontends.
 | `DiagnosticFormatter.hpp`  | Source-line extraction, caret, severity display |
 | `DiagnosticHelpers.hpp`    | Common diagnostic formatting helpers           |
 
-## Runtime Registry
+## Runtime Metadata
 
-| File                  | Purpose                             |
-|-----------------------|-------------------------------------|
-| `RuntimeRegistry.cpp` | Runtime function registry impl      |
-| `RuntimeRegistry.hpp` | Runtime function signature registry |
+| File                          | Purpose                                                     |
+|-------------------------------|-------------------------------------------------------------|
+| `CollectionMethodCatalog.cpp` | Shared collection method catalog implementation             |
+| `CollectionMethodCatalog.hpp` | Collection method names, dispatch ids, and return categories |
+| `RuntimeMethodResolver.cpp`   | Runtime method lookup and overload ranking implementation   |
+| `RuntimeMethodResolver.hpp`   | Frontend-neutral runtime method lookup and overload resolution |
 
 ## General Utilities
 

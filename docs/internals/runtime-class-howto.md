@@ -1,6 +1,6 @@
 ---
 status: active
-audience: developers
+audience: contributors
 last-verified: 2026-07-26
 ---
 

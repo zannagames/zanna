@@ -1,7 +1,7 @@
 ---
 status: completed
 audience: contributors
-last-verified: 2026-08-01
+last-verified: 2026-08-17
 ---
 
 # Graphics3D Runtime Correctness Audit (2026-08)

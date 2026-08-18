@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Cryptography
@@ -47,7 +47,7 @@ AES utilities: authenticated AES-128-GCM/AES-256-GCM for `Bytes` and password-en
 ### Notes
 
 - `EncryptAuth`/`DecryptAuth` accept a 16-byte AES-128 key or a 32-byte AES-256 key and bind the `[magic(4)][nonce(12)]` header plus caller-provided AAD into the GCM tag. New robust code should prefer `DecryptAuthResult` or `TryDecryptAuth` so wrong keys, wrong AAD, malformed frames, and modified ciphertext are explicit values.
-- `Encrypt`/`Decrypt` remain as AES-CBC compatibility helpers and are also available as `Zanna.Crypto.Legacy.Aes.EncryptCBC` and `DecryptCbc`. CBC ciphertext is not authenticated; prefer `EncryptAuth`, `EncryptStr`, or `Zanna.Crypto.Cipher`.
+- Raw AES-CBC lives in the `Zanna.Crypto.Legacy.Aes` namespace as `EncryptCbc` and `DecryptCbc`; the former `Zanna.Crypto.Aes.Encrypt`/`Decrypt` spellings were retired by the public-surface standardization. CBC ciphertext is not authenticated; prefer `EncryptAuth`, `EncryptStr`, or `Zanna.Crypto.Cipher`.
 - `EncryptStr` rejects empty passwords, derives an AES-128 key from the password using PBKDF2-HMAC-SHA256 with a random salt and a 300,000-iteration default, and authenticates its header as AAD
 - `EncryptStr` output format is `[magic(4)][iterations(4)][salt(16)][nonce(12)][ciphertext][tag(16)]`
 - `DecryptStr` can read older `[IV(16)][AES-CBC ciphertext]` payloads, dispatching on the first
@@ -525,7 +525,7 @@ AES-CBC compatibility helpers. CBC mode is not authenticated and must not be use
 | `DecryptCbcResult(data, key, iv)` | `Result(Bytes)` | AES-CBC decrypt with diagnostic failure |
 | `TryDecryptCbc(data, key, iv)` | `Option(Bytes)` | AES-CBC decrypt without diagnostics |
 
-The old `Zanna.Crypto.Aes.Encrypt`, `Decrypt`, `DecryptResult`, and `TryDecrypt` names remain as compatibility aliases.
+The former `Zanna.Crypto.Aes.Encrypt`, `Decrypt`, `DecryptResult`, and `TryDecrypt` spellings are no longer registered; use the `Zanna.Crypto.Legacy.Aes` names above.
 
 Keys must be 16 or 32 bytes and IVs must be 16 bytes. These helpers are disabled in approved mode.
 They provide confidentiality only: callers must supply a fresh unpredictable IV and a separate

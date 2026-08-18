@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-30
+last-verified: 2026-08-17
 ---
 
 # ADR 0231: Fail Closed on Unknown Crypto Policy Identifiers

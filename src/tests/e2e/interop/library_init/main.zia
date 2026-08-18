@@ -1,0 +1,9 @@
+module Main;
+
+bind Zanna.Terminal;
+
+foreign func GetG() -> Integer;
+
+func start() {
+    SayInt(GetG());
+}

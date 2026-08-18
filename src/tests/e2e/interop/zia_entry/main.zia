@@ -1,0 +1,9 @@
+module Main;
+
+bind Zanna.Terminal;
+
+foreign func Factorial(n: Integer) -> Integer;
+
+func start() {
+    SayInt(Factorial(10));
+}

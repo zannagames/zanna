@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-03
+last-verified: 2026-08-17
 ---
 
 # 2D Shapes, Text, And UI

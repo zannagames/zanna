@@ -1,7 +1,7 @@
 ---
 status: completed
 audience: contributors
-last-verified: 2026-07-31
+last-verified: 2026-08-17
 ---
 
 # Graphics3D Light Baker Correctness Audit (2026-07)

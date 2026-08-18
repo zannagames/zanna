@@ -10,7 +10,7 @@ last-verified: 2026-06-30
 
 Accepted (runtime implemented; Zanna Studio's modal overlays and tool/data panels are
 the intended first consumers). Driven by the GUI runtime-additions review,
-recommendation **R5** (`misc/plans/zannastudio/gui-runtime-additions.md`).
+recommendation **R5** (review document retired 2026-07-15; the recommendation ids are the surviving record).
 
 ## Context
 

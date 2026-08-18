@@ -1,12 +1,12 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # Example Games Gallery
 
-> 15 complete games demonstrating the Zanna Game Engine at every scale.
+> 11 complete games demonstrating the Zanna Game Engine at every scale.
 
 **Part of [Zanna Game Engine](../README.md)**
 
@@ -25,9 +25,9 @@ a complete, runnable project.
 
 #### XENOSCAPE
 
-**Genre:** Metroidvania sidescroller | **Language:** Zia | **LOC:** 17,005 across 26 files
+**Genre:** Metroidvania sidescroller | **Language:** Zia | **LOC:** 38,802 across 68 files
 
-The flagship game demo showcasing the full Zanna game engine. Features 25+ enemy types, 10 JSON-based levels, parallax scrolling, particle effects, lighting, abilities (dash, charge, ground pound), world map, save system, achievement tracking, and 11 WAV sound files.
+The flagship game demo showcasing the full Zanna game engine. Features 25+ enemy types, 10 authored levels, parallax scrolling, particle effects, lighting, abilities (dash, charge, ground pound), world map, save system, achievement tracking, and 12 WAV sound files.
 
 **Engine features demonstrated:**
 Canvas, Entity, Behavior, AnimStateMachine, PlatformerController, Camera (smooth follow + parallax), Tilemap, SpriteBatch, SoundBank + Synth, ScreenFX (shake, fade, transitions), ParticleEmitter, Lighting2D, StateMachine, SceneManager, LevelDocument, Config, GameUI, Dialogue, Timer, ObjectPool, AchievementTracker, DebugOverlay
@@ -40,7 +40,7 @@ Canvas, Entity, Behavior, AnimStateMachine, PlatformerController, Camera (smooth
 
 #### Chess
 
-**Genre:** Board game with AI | **Language:** Zia | **LOC:** 4,000+ across 15+ files
+**Genre:** Board game with AI | **Language:** Zia | **LOC:** 8,219 across 24 files
 
 Chess with full move validation, check/checkmate detection, save slots, clocks, built-in lessons, settings, achievements, and an alpha-beta AI opponent. Demonstrates Canvas rendering for board games, turn-based game logic, persistence, audio, and StateMachine-driven game flow.
 
@@ -52,9 +52,9 @@ Chess with full move validation, check/checkmate detection, save slots, clocks, 
 
 #### Centipede
 
-**Genre:** Arcade shooter | **Language:** Zia | **LOC:** 2,553 across 10 files
+**Genre:** Arcade shooter | **Language:** Zia | **LOC:** 2,552 across 12 files
 
-Centipede clone with 6 enemy types (centipede segments, spider, flea, scorpion), mushroom field, grid-based movement, and particle explosions.
+Centipede clone with four enemy types (centipede segments, spider, flea, scorpion), a mushroom field, grid-based movement, and particle explosions.
 
 **Engine features:** Canvas, Grid2D, Timer, SmoothValue, ScreenFX, ParticleEmitter, StateMachine, Input.Action
 
@@ -64,7 +64,7 @@ Centipede clone with 6 enemy types (centipede segments, spider, flea, scorpion),
 
 #### Crackman
 
-**Genre:** Arcade | **Language:** Zia | **LOC:** 2,230 across 9 files
+**Genre:** Arcade | **Language:** Zia | **LOC:** 7,042 across 30 files
 
 Crackman maze chase with smart ghost AI (scatter/chase/frightened modes), dot collection, power pellets, fruit bonuses, and multiple game modes.
 
@@ -76,7 +76,7 @@ Crackman maze chase with smart ghost AI (scatter/chase/frightened modes), dot co
 
 #### Frogger
 
-**Genre:** Arcade | **Language:** Zia | **LOC:** ~1,500
+**Genre:** Arcade | **Language:** Zia | **LOC:** 752 in 1 file
 
 Classic Frogger with traffic lanes, grid-based movement, and AI-controlled cars.
 
@@ -90,9 +90,9 @@ Classic Frogger with traffic lanes, grid-based movement, and AI-controlled cars.
 
 #### Graphics Show
 
-**Genre:** Visual demo collection | **Language:** Zia | **LOC:** 8,000+ across 10+ files
+**Genre:** Visual demo collection | **Language:** Zia | **LOC:** 3,675 across 14 files
 
-A menu-driven collection of 10 visual demos: starfield with parallax, Matrix rain, plasma effect, particle systems, bouncing physics, Snake game, fireworks, Sierpinski fractal, color palette showcase.
+A menu-driven collection of eight visual demos: starfield, Matrix rain, plasma effect, particle fountain, bouncing balls, Snake, fireworks, and fractals (Sierpinski, Mandelbrot, and tree).
 
 **Engine features:** Canvas (all primitives), Randomization, Math, ParticleEmitter, Physics, Timer
 
@@ -102,7 +102,7 @@ A menu-driven collection of 10 visual demos: starfield with parallax, Matrix rai
 
 #### Fade Test
 
-**Genre:** Test harness | **Language:** Zia | **LOC:** 168
+**Genre:** Test harness | **Language:** Zia | **LOC:** 167
 
 Minimal test for ScreenFX fade and full-screen canvas coverage. Useful as a reference for how to apply screen overlays.
 
@@ -118,10 +118,10 @@ These games use Zanna BASIC and render with ANSI terminal graphics (no Canvas). 
 
 | Game | LOC | Files | Description |
 |------|-----|-------|-------------|
-| [VTris](../../../examples/games/vtris/) | 1,132 | 4 | Tetris with full rules, line clearing, high scores. Demonstrates 2D arrays, matrix rotation, class composition. |
-| [Frogger BASIC](../../../examples/games/frogger-basic/) | 1,320 | 4 | Frogger clone. Stress test for object lifetime and nested references (Frog contains Position). |
-| [Pac-Man BASIC](https://github.com/zannagames/zannademos/tree/main/games/pacman-basic) | 450 | 5 | Pac-Man-style maze chase with ghost pathfinding and ANSI color maze rendering. |
-| [Centipede BASIC](../../../examples/games/centipede-basic/) | 450 | 5 | Centipede clone with class-based entity architecture. |
+| [VTris](../../../examples/games/vtris/) | 1,721 | 4 | Tetris with full rules, line clearing, high scores. Demonstrates 2D arrays, matrix rotation, class composition. |
+| [Frogger BASIC](../../../examples/games/frogger-basic/) | 1,691 | 4 | Frogger clone. Stress test for object lifetime and nested references (Frog contains Position). |
+| [Pac-Man BASIC](https://github.com/zannagames/zannademos/tree/main/games/pacman-basic) | 1,514 | 5 | Pac-Man-style maze chase with ghost pathfinding and ANSI color maze rendering. |
+| [Centipede BASIC](../../../examples/games/centipede-basic/) | 1,688 | 5 | Centipede clone with class-based entity architecture. |
 
 ---
 
@@ -153,9 +153,9 @@ Which example games demonstrate which engine systems:
 | SceneManager | x | | | | |
 | LevelDocument | x | | | | |
 | Config | x | x | x | x | |
-| Lighting2D | x | | | | | |
-| Save System | x | | | | | |
-| Achievements | x | | | | | |
+| Lighting2D | x | | | | |
+| Save System | x | | | | |
+| Achievements | x | | | | |
 
 ---
 
@@ -168,6 +168,7 @@ Two guided walkthroughs are planned but are not yet part of the documentation se
 
 Until those are written, use the linked complete examples above and the
 [game-library guides](../../zannalib/game/README.md).
+
 ---
 
 ## See Also

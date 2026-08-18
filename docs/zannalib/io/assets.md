@@ -134,7 +134,8 @@ even if another thread unmounts that path.
 ZPAK (Zanna Pack Archive) is a little-endian binary container: a fixed 32-byte header, stored entry
 payloads, then a variable table of contents (TOC). The same bytes are used for embedded read-only
 blobs and standalone `.zpak` files. Current writers emit version 2; the runtime continues to read
-version 1 packs.
+version 1 packs. Build-time `embed`, `pack`, and `pack-compressed` source entries are individually
+limited to 512 MiB; this is a runaway-input guard rather than a recommended asset size.
 
 ### Header (versions 1 and 2)
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-08-17
 ---
 
 # CODEMAP: IL Build
@@ -79,7 +79,7 @@ Module m;
 IRBuilder builder(m);
 
 // Declare external function
-builder.addExtern("rt_print", Type(Type::Kind::Void), {Type(Type::Kind::Str)});
+builder.addExtern("rt_print_str", Type(Type::Kind::Void), {Type(Type::Kind::Str)});
 
 // Define a function
 auto &fn = builder.startFunction("main", Type(Type::Kind::I64), {});

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-29
+last-verified: 2026-08-17
 ---
 
 # ADR 0226: Virtual Scene Hierarchy Model
@@ -78,7 +78,7 @@ also exercises real depth.
 
 - Hierarchy scale is bounded by the id-keyed C model, not retained
   widgets; a 65,536-row document opens unclipped and one row past the
-  ceiling clips truthfully (`scene_capacity_65k` slow probe). The
+  ceiling clips truthfully (`zia_zannastudio_scene_capacity_65k` slow probe). The
   2,000-node probe's tripwires tightened from 120 s to 30 s open /
   15 s edit / 15 s undo with `METRIC:` lines for trend reading.
 - Expansion capture reads the model's visible rows: an expanded row
@@ -95,7 +95,8 @@ also exercises real depth.
 ## Verification
 
 `test_gui_runtime_manifest` re-baselined (1161 functions / 1052
-methods); `zia_zannastudio_scene_editor_3d`, `scene_hierarchy_affordances`,
-light/camera/collider authoring probes, `scene_capacity` and the new
-`scene_capacity_65k` cover selection, drops, rename, badges, icons,
+methods); `zia_zannastudio_scene_editor_3d`,
+`zia_zannastudio_scene_hierarchy_affordances`, light/camera/collider authoring
+probes, `zia_zannastudio_scene_capacity` and the new
+`zia_zannastudio_scene_capacity_65k` cover selection, drops, rename, badges, icons,
 clipping, and budgets.

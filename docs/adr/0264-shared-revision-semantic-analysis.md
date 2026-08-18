@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-16
+last-verified: 2026-08-17
 ---
 
 # ADR 0264: Share One Semantic Analysis per Editor Revision

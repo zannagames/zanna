@@ -10,7 +10,7 @@ last-verified: 2026-06-30
 
 Accepted (runtime implemented; Zanna Studio's terminal and tool panels are the
 intended first consumers). Driven by the GUI runtime-additions review,
-recommendation **R2** (`misc/plans/zannastudio/gui-runtime-additions.md`).
+recommendation **R2** (review document retired 2026-07-15; the recommendation ids are the surviving record).
 
 ## Context
 

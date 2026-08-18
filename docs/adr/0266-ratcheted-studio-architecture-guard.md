@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-16
+last-verified: 2026-08-17
 ---
 
 # ADR 0266: Ratchet Zanna Studio Architecture Debt
@@ -34,7 +34,7 @@ fully documented new source file failed.
 ## Decision
 
 - Keep the target line budgets, but record every current over-budget file and
-  its exact current line count in `scripts/architecture_baseline.tsv`.
+  its exact current line count in `src/zannastudio/scripts/architecture_baseline.tsv`.
 - Treat that file as a ratchet, not an exemption list. Growth, new debt, stale
   entries, and improvements whose lower bound has not been recorded all fail.
   `--print-baseline` emits the deterministic baseline after an intentional

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-16
+last-verified: 2026-08-17
 ---
 
 # Architecture Decision Records
@@ -18,10 +18,12 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0118](0118-rename-zannaide-to-zanna-studio.md) — Rename ZannaIDE to Zanna Studio
 - [ADR 0217](0217-modular-zia-import-graph-capacity.md) — Raise Bounded Zia Import Graph Capacity
 - [ADR 0218](0218-zanna-studio-source-module-boundaries.md) — Bound Zanna Studio Source Modules and Functions
+- [ADR 0241](0241-demo-showcase-externalization.md) — Externalize Large Demos to the zannademos Repository
 
 ## IL & Optimizer
 
 - [ADR 0003](0003-il-linkage-and-module-linking.md) — IL Linkage and Module Linking
+- [ADR 0268](0268-cross-language-symbol-resolution.md) — Resolve Cross-Language Symbols by Case-Insensitive Fallback
 - [ADR 0005](0005-resume-token-provenance.md) — Resume Tokens Are Handler-Provenance Capabilities
 - [ADR 0026](0026-range-analysis-demotion-proofs.md) — Whole-Function Range Analysis for Checked-Arithmetic Demotion Proofs
 - [ADR 0063](0063-il-select-and-if-conversion.md) — IL `select` Opcode and If-Conversion
@@ -163,6 +165,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0225](0225-play-loop-and-embedded-play.md) — Run Profile, Build-Launch Chain, Scene Watch, and Embedded Play
 - [ADR 0226](0226-virtual-scene-hierarchy.md) — Virtual Scene Hierarchy Model
 - [ADR 0266](0266-ratcheted-studio-architecture-guard.md) — Ratchet Zanna Studio Architecture Debt
+- [ADR 0234](0234-studio-prefab-extraction-and-authoring-round-two.md) — Studio Prefab Extraction, Placed Imports, and Play-Input Completion
+- [ADR 0236](0236-studio-3d-authoring-round-three.md) — Studio 3D Authoring Round Three
 
 ## Graphics3D & Game Systems
 
@@ -247,6 +251,13 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0194](0194-scene-watch-hot-reload.md) — The --scene-watch Hot-Reload Contract
 - [ADR 0195](0195-2d-layer-opacity.md) — Optional 2D Layer Opacity
 - [ADR 0227](0227-3d-api-symmetry-readback-and-scene-diagnostics.md) — 3D API Symmetry, Readback, and Scene Diagnostics
+- [ADR 0233](0233-3d-api-symmetry-round-two.md) — 3D API Symmetry Round Two: Input, Physics Knobs, and Full Readback
+- [ADR 0235](0235-3d-runtime-additions-round-three.md) — 3D Runtime Additions Round Three
+- [ADR 0237](0237-vscn-v8-asset-references.md) — VSCN v8 External Asset References
+- [ADR 0238](0238-material-shader-extensibility.md) — Material and Shader Extensibility Direction
+- [ADR 0239](0239-vm-callback-policy-3d.md) — VM Callback Policy for the 3D Surface
+- [ADR 0240](0240-linux-gpu-direction.md) — Linux GPU Direction: OpenGL Parity over Vulkan
+- [ADR 0257](0257-sky3d-night-mode.md) — Sky3D Night Mode: Star Field, Night Gradient, and Moon Disc
 - [ADR 0242](0242-canvas3d-window-adoption.md) — Adopt a Canvas Window through an Exclusive Retained Loan
 - [ADR 0243](0243-animation3d-mirror.md) — Mirror Animation3D Clips across the Sagittal Plane
 - [ADR 0244](0244-offline-model-bake-c-abi.md) — Classify Offline Model Bake Helpers as Internal C ABI

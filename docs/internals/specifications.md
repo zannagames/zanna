@@ -1,6 +1,6 @@
 ---
 status: active
-audience: internal
+audience: contributors
 last-verified: 2026-07-26
 ---
 
