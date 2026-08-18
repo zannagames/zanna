@@ -290,13 +290,27 @@ typedef struct {
     int32_t bloom_tex_enabled;
     float _pad0;
     float _pad1;
+    /* Plan 61: COLOR_LUT pass (one full HLSL register appended). */
+    int32_t lut_enabled;
+    float lut_blend;
+    float _pad2;
+    float _pad3;
+    /* Plan 61 / ADR 0271: sharpen pass (one full HLSL register appended). */
+    int32_t sharpen_enabled;
+    float sharpen_amount;
+    float _pad4;
+    float _pad5;
 } d3d_postfx_cb_t;
 
 _Static_assert(offsetof(d3d_postfx_cb_t, inv_resolution) == 144u,
                "D3D11 PostFX cbuffer matrices must end on an HLSL register boundary");
 _Static_assert(offsetof(d3d_postfx_cb_t, scene_is_hdr) == 252u,
                "D3D11 PostFX tail flags must match their HLSL offsets");
-_Static_assert(sizeof(d3d_postfx_cb_t) == 272u, "D3D11 PostFX cbuffer must match its HLSL layout");
+_Static_assert(offsetof(d3d_postfx_cb_t, lut_enabled) == 272u,
+               "D3D11 PostFX LUT block must start on an HLSL register boundary");
+_Static_assert(offsetof(d3d_postfx_cb_t, sharpen_enabled) == 288u,
+               "D3D11 PostFX sharpen block must start on an HLSL register boundary");
+_Static_assert(sizeof(d3d_postfx_cb_t) == 304u, "D3D11 PostFX cbuffer must match its HLSL layout");
 
 /* Plan 05: bloom pass constants (must match HLSL BloomCB). */
 /// @brief CPU mirror of the bloom downsample/upsample pass constants.
@@ -521,6 +535,13 @@ typedef struct {
     int32_t bloom_base_height;
     /* Transient: mip-0 SRV bound at t4 while a chain pass composites bloom. */
     ID3D11ShaderResourceView *postfx_current_bloom_srv;
+    /* Plan 61: cached 256x16 COLOR_LUT strip bound at t5; (key, revision)
+     * mirror the snapshot's (texel pointer, pixels generation) so a
+     * re-authored LUT re-uploads. */
+    ID3D11Texture2D *postfx_lut_tex;
+    ID3D11ShaderResourceView *postfx_lut_srv;
+    uintptr_t postfx_lut_key;
+    uint64_t postfx_lut_revision;
     /* Plan 05: TAA ping-pong history (RGBA16F, persisted across frames) + jitter state. */
     ID3D11Texture2D *taa_history_tex[2];
     ID3D11RenderTargetView *taa_history_rtv[2];

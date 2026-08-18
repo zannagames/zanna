@@ -796,6 +796,21 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
                 "from the source pixel format");
     EXPECT_TRUE(strstr(source, "ctx, source_texture, safe_snapshot.bloom_threshold") != NULL,
                 "Metal bloom consumes the current ordered-chain source");
+    EXPECT_TRUE(strstr(source, "float luma = dot(color, float3(0.2126,0.7152,0.0722));") != NULL,
+                "Metal color-grade saturation weights luma with Rec.709 — matching the CPU "
+                "reference (rt_postfx3d grade path), so software captures and the live frame "
+                "grade identically (plan 61 P2a parity)");
+    EXPECT_TRUE(
+        strstr(source, "acc += wgt * lutTex.read(uint2(bb * 16 + rr, ") != NULL &&
+            strstr(source, "id<MTLTexture> lut_texture = metal_ensure_postfx_lut_texture") !=
+                NULL &&
+            strstr(source, "if (!lut_texture)\n        params.lutEnabled = 0;") != NULL,
+        "Metal COLOR_LUT pass replicates the CPU tile sampler (blue tile, red x, green y) "
+        "and force-disables when the strip upload is unavailable (plan 61 P3)");
+    EXPECT_TRUE(strstr(source, "color = clamp(color + p.sharpenAmount * (color - ") != NULL &&
+                    strstr(source, "shLo, shHi);") != NULL,
+                "Metal sharpen is the clamped unsharp mask — edge gain bounded by the local "
+                "5-tap min/max (ADR 0271)");
     EXPECT_TRUE(strstr(source, "if (!resolved)\n                    return nil;") != NULL &&
                     strstr(source, "if (!output_texture)\n                    return nil;") != NULL,
                 "Metal propagates temporal and reflection encoder failures");

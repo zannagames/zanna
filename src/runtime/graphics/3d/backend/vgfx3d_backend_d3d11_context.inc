@@ -1148,6 +1148,8 @@ static void d3d11_destroy_ctx(void *ctx_ptr) {
     d3d11_destroy_shadow_targets(ctx);
     d3d11_destroy_rtt_targets(ctx);
     d3d11_destroy_scene_targets(ctx);
+    SAFE_RELEASE(ctx->postfx_lut_srv);
+    SAFE_RELEASE(ctx->postfx_lut_tex);
     vgfx3d_postfx_chain_free(&ctx->gpu_postfx_chain);
 
     SAFE_RELEASE(ctx->frame_time_end_query);

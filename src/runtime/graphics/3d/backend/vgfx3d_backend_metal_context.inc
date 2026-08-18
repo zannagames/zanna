@@ -1074,6 +1074,12 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                         "    int tonemapExplicit;\n"
                         "    int bloomTexEnabled;\n"
                         "    int taaPad;\n"
+                        "    int lutEnabled;\n"
+                        "    float lutBlend;\n"
+                        "    float2 lutPad;\n"
+                        "    int sharpenEnabled;\n"
+                        "    float sharpenAmount;\n"
+                        "    float2 sharpenPad;\n"
                         "};\n"
                         "vertex FullscreenVert fullscreen_vs(uint vid [[vertex_id]]) {\n"
                         "    float2 positions[4] = {float2(-1,-1), float2(1,-1), float2(-1,1), "
@@ -1237,6 +1243,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "    texture2d<float> motionTex [[texture(2)]],\n"
                               "    texture2d<float> overlayTex [[texture(3)]],\n"
                               "    texture2d<float> bloomTex [[texture(4)]],\n"
+                              "    texture2d<float> lutTex [[texture(5)]],\n"
                               "    sampler s [[sampler(0)]],\n"
                               "    constant PostFXParams &p [[buffer(0)]]) {\n"
                               "    float3 color = sampleScene(sceneTex, s, in.uv);\n"
@@ -1302,9 +1309,56 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "    if (p.colorGradeEnabled) {\n"
                               "        color = (color - 0.5) * p.cgContrast + 0.5;\n"
                               "        color += p.cgBright;\n"
-                              "        float luma = dot(color, float3(0.299,0.587,0.114));\n"
+                              /* Rec.709 grade luma — must match the CPU reference
+                               * (rt_postfx3d grade path); FXAA keeps its own weights. */
+                              "        float luma = dot(color, float3(0.2126,0.7152,0.0722));\n"
                               "        color = mix(float3(luma), color, p.cgSat);\n"
                               "        color = clamp(color, 0.0, 1.0);\n"
+                              "    }\n"],
+                /* (chunk split keeps each literal under the C99 4095-char cap) */
+                [NSString stringWithUTF8String:
+                              /* Plan 61: 3D LUT grade from the 256x16 strip (16 tiles of
+                               * 16x16: x = red, y = green, tile = blue), 8-corner
+                               * trilinear via integer reads — replicates the CPU
+                               * reference sampler (rt_postfx3d apply_color_lut_cpu)
+                               * texel-for-texel. */
+                              "    if (p.lutEnabled != 0) {\n"
+                              "        float3 lc = clamp(color, 0.0, 1.0) * 15.0;\n"
+                              "        int3 l0 = int3(lc);\n"
+                              "        int3 l1 = min(l0 + 1, 15);\n"
+                              "        float3 lt = lc - float3(l0);\n"
+                              "        float3 acc = float3(0.0);\n"
+                              "        for (int corner = 0; corner < 8; corner++) {\n"
+                              "            int rr = (corner & 1) != 0 ? l1.x : l0.x;\n"
+                              "            int gg = (corner & 2) != 0 ? l1.y : l0.y;\n"
+                              "            int bb = (corner & 4) != 0 ? l1.z : l0.z;\n"
+                              "            float wgt = ((corner & 1) != 0 ? lt.x : 1.0 - lt.x) *\n"
+                              "                        ((corner & 2) != 0 ? lt.y : 1.0 - lt.y) *\n"
+                              "                        ((corner & 4) != 0 ? lt.z : 1.0 - lt.z);\n"
+                              "            acc += wgt * lutTex.read(uint2(bb * 16 + rr, "
+                              "gg)).rgb;\n"
+                              "        }\n"
+                              "        color = mix(color, acc, p.lutBlend);\n"
+                              "    }\n"
+                              /* Plan 61 / ADR 0271: clamped unsharp mask — edge gain
+                               * bounded by the local 5-tap min/max so no ringing halos.
+                               * Neighbors come from the pass source (per-pass authoring:
+                               * a sharpen entry runs alone, so color == source here). */
+                              "    if (p.sharpenEnabled != 0) {\n"
+                              "        float3 shN = sampleScene(sceneTex, s, in.uv + "
+                              "float2(0.0, -p.invResolution.y));\n"
+                              "        float3 shS = sampleScene(sceneTex, s, in.uv + "
+                              "float2(0.0, p.invResolution.y));\n"
+                              "        float3 shE = sampleScene(sceneTex, s, in.uv + "
+                              "float2(p.invResolution.x, 0.0));\n"
+                              "        float3 shW = sampleScene(sceneTex, s, in.uv + "
+                              "float2(-p.invResolution.x, 0.0));\n"
+                              "        float3 shLo = min(color, min(min(shN, shS), "
+                              "min(shE, shW)));\n"
+                              "        float3 shHi = max(color, max(max(shN, shS), "
+                              "max(shE, shW)));\n"
+                              "        color = clamp(color + p.sharpenAmount * (color - "
+                              "(shN + shS + shE + shW) * 0.25), shLo, shHi);\n"
                               "    }\n"
                               "    if (p.vignetteEnabled) {\n"
                               /* Pixel-space distance over the half-diagonal so the falloff is

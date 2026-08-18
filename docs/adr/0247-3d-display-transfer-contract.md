@@ -86,6 +86,20 @@ recording the crushed output as intended.
 - No IL opcode, runtime registry method, language grammar, or serialized
   format changes. Rebuild required; no data migration.
 
+## Amendments
+
+- **2026-08-18 — color-grade luma is Rec.709 on every path.** The CPU
+  reference always weighted the grade's saturation term with Rec.709
+  (`rt_postfx3d.c` `luminance()`), but all three GPU backends used Rec.601
+  (0.299/0.587/0.114), so an identical `AddColorGrade` produced different
+  hues on the software captures and the live frame — the software gate was
+  not an honest proxy for the shipped image. The Metal/OpenGL/D3D11 grade
+  paths now weight luma with Rec.709 (D3D11 via a dedicated `gradeLuma()`
+  helper so the FXAA edge detector keeps its previous weights, byte-for-byte).
+  The backend shared tests pin the 709 constants in each grade path. FXAA
+  luma weights remain per-implementation (CPU 709, GPU 601) — an edge
+  detector, not part of the color contract.
+
 ## Links
 
 - `src/runtime/graphics/3d/render/rt_postfx3d.c` — software chain entry

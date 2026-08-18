@@ -250,6 +250,11 @@
 /* MTL-11: Post-processing state */
 @property(nonatomic, strong) id<MTLTexture> postfxColorTexture;
 @property(nonatomic, strong) id<MTLTexture> postfxScratchTexture;
+/* Plan 61: cached 256x16 COLOR_LUT strip; (key, revision) mirror the snapshot's
+ * (texel pointer, pixels generation) so a re-authored LUT re-uploads. */
+@property(nonatomic, strong) id<MTLTexture> postfxLutTexture;
+@property(nonatomic) uintptr_t postfxLutKey;
+@property(nonatomic) uint64_t postfxLutRevision;
 /* ADR 0247 / V1b: the ping-pong intermediates are RGBA16F so pre-tonemap
  * passes keep >1.0 energy (ACES gets its shoulder); the final image resolves
  * into this BGRA8 target because the present path blits format-matched. */

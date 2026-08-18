@@ -2143,6 +2143,46 @@ static void test_dilate_masked_gutter_fill() {
     printf("test_dilate_masked_gutter_fill: PASSED\n");
 }
 
+static void test_dilate_masked_id_map_growth() {
+    /* Pins the ID-map contract the actor jersey-mask growth relies on:
+     * running DilateMasked with an identity image (white = in-band,
+     * zero = out-of-band) as the PIXELS argument and the full UV
+     * coverage as the MASK argument must (a) never write a covered
+     * texel, (b) grow white-adjacent gutters to non-zero, (c) grow
+     * gutters reachable only through zero-valued covered texels to
+     * zero while still stamping them into the mask. */
+    void *p = rt_pixels_new(5, 1);
+    void *m = rt_pixels_new(5, 1);
+    rt_pixels_set_rgba(p, 1, 0, 0xFFFFFFFF); /* in-band, covered */
+    /* x=2 stays zero: out-of-band but covered (pants). */
+    rt_pixels_set_rgba(m, 1, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 2, 0, 0xFFFFFFFF);
+
+    rt_pixels_dilate_masked(p, m, 2);
+
+    /* Gutter beside the white texel goes white. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0xFFFFFFFFu);
+    /* Covered zero texel is never overwritten by its white neighbor. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0u);
+    /* Gutters grown only from the zero texel stay zero yet are stamped
+     * covered — the growth front still advances through them. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0u);
+    assert((uint32_t)rt_pixels_get_rgba(p, 4, 0) == 0u);
+    assert((uint32_t)rt_pixels_get_rgba(m, 3, 0) == 0xFFFFFFFFu);
+    assert((uint32_t)rt_pixels_get_rgba(m, 4, 0) == 0xFFFFFFFFu);
+
+    /* A gutter contested by white and zero fronts averages non-zero,
+     * so contested seam texels end up tint-eligible. */
+    void *p2 = rt_pixels_new(3, 1);
+    void *m2 = rt_pixels_new(3, 1);
+    rt_pixels_set_rgba(p2, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m2, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m2, 2, 0, 0xFFFFFFFF);
+    rt_pixels_dilate_masked(p2, m2, 1);
+    assert((uint32_t)rt_pixels_get_rgba(p2, 1, 0) == 0x7F7F7F7Fu);
+    printf("test_dilate_masked_id_map_growth: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -2315,6 +2355,7 @@ int main() {
     test_tint_luminance_masked_keeps_handle_valid();
     test_recolor_masked_color_class();
     test_dilate_masked_gutter_fill();
+    test_dilate_masked_id_map_growth();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

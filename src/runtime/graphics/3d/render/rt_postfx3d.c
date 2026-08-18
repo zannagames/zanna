@@ -93,6 +93,7 @@ typedef enum {
     POSTFX_AUTO_EXPOSURE, /* mirrors VGFX3D_POSTFX_EFFECT_AUTO_EXPOSURE */
     POSTFX_COLOR_LUT,     /* mirrors VGFX3D_POSTFX_EFFECT_COLOR_LUT */
     POSTFX_SUN_SHAFTS,    /* mirrors VGFX3D_POSTFX_EFFECT_SUN_SHAFTS */
+    POSTFX_SHARPEN,       /* Plan 61 / ADR 0271: mirrors VGFX3D_POSTFX_EFFECT_SHARPEN */
 } postfx_type_t;
 
 typedef struct {
@@ -169,6 +170,10 @@ typedef struct {
             float decay;
             int32_t samples;
         } sun_shafts;
+
+        struct {
+            float amount;
+        } sharpen;
     } p;
 } postfx_entry_t;
 
@@ -556,7 +561,7 @@ static int postfx3d_worker_pool_owner_is_valid(const rt_postfx3d *fx) {
 static int postfx3d_sanitize_effect_entry(postfx_entry_t *entry) {
     float min_ev;
     float max_ev;
-    if (!entry || entry->type < POSTFX_BLOOM || entry->type > POSTFX_SUN_SHAFTS)
+    if (!entry || entry->type < POSTFX_BLOOM || entry->type > POSTFX_SHARPEN)
         return 0;
     entry->enabled = entry->enabled ? 1 : 0;
     switch (entry->type) {
@@ -640,6 +645,9 @@ static int postfx3d_sanitize_effect_entry(postfx_entry_t *entry) {
             entry->p.sun_shafts.decay =
                 sanitize_range_f32(entry->p.sun_shafts.decay, 0.92f, 0.001f, 0.999f);
             entry->p.sun_shafts.samples = clamp_i64_to_i32(entry->p.sun_shafts.samples, 8, 48);
+            break;
+        case POSTFX_SHARPEN:
+            entry->p.sharpen.amount = sanitize_range_f32(entry->p.sharpen.amount, 0.4f, 0.0f, 1.0f);
             break;
     }
     return 1;
@@ -1116,10 +1124,12 @@ static int vgfx3d_postfx_chain_reserve(vgfx3d_postfx_chain_t *chain, int32_t nee
 /// effects, NULL inputs, or unknown effect types so the backend never walks partial data.
 /// The snapshot is a stable, flat struct so GPU shaders don't have to chase the internal
 /// tagged union.
+/// @param fx Chain owning per-chain payloads (the retained LUT Pixels); may be NULL.
 /// @param e Internal effect entry to translate.
 /// @param[out] out_effect Destination backend descriptor.
 /// @return 1 when a supported enabled effect was written, or 0 when the entry must be skipped.
-static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
+static int vgfx3d_postfx_fill_effect_snapshot(const rt_postfx3d *fx,
+                                              const postfx_entry_t *e,
                                               vgfx3d_postfx_effect_desc_t *out_effect) {
     postfx_entry_t safe_entry;
     vgfx3d_postfx_snapshot_t snapshot;
@@ -1189,8 +1199,27 @@ static int vgfx3d_postfx_fill_effect_snapshot(const postfx_entry_t *e,
             snapshot.ssr_max_roughness = e->p.ssr.max_roughness;
             snapshot.ssr_steps = e->p.ssr.steps;
             break;
+        case POSTFX_COLOR_LUT: {
+            /* Plan 61 (plan-59 B10): the ordered snapshot now carries the
+             * chain-retained LUT strip so GPU backends can grade instead of
+             * encoding a silent passthrough pass. A missing/malformed LUT
+             * keeps the discriminator with the payload disabled. */
+            rt_pixels_impl *lut = fx ? rt_pixels_checked_impl_or_null(fx->lut_pixels) : NULL;
+            if (lut && lut->data && lut->width == 256 && lut->height == 16) {
+                snapshot.color_lut_enabled = 1;
+                snapshot.color_lut_blend = e->p.color_lut.blend;
+                snapshot.color_lut_texels = lut->data;
+                snapshot.color_lut_width = lut->width;
+                snapshot.color_lut_height = lut->height;
+                snapshot.color_lut_revision = rt_pixels_generation(fx->lut_pixels);
+            }
+            break;
+        }
+        case POSTFX_SHARPEN:
+            snapshot.sharpen_enabled = 1;
+            snapshot.sharpen_amount = e->p.sharpen.amount;
+            break;
         case POSTFX_AUTO_EXPOSURE:
-        case POSTFX_COLOR_LUT:
         case POSTFX_SUN_SHAFTS:
             /* These software-reference effects do not yet have legacy flat-snapshot parameter
              * slots. Preserve their ordered discriminator instead of silently deleting them. */
@@ -1664,6 +1693,90 @@ static void apply_fxaa(rt_postfx3d *fx,
     /* Bands only READ buf and write disjoint rows of out, so the pass stays
      * order-independent exactly like the serial copy-out/copy-back version. */
     postfx_run_bands(fx, h, apply_fxaa_rows, &ctx);
+    memcpy(buf, out, bytes);
+}
+
+/// @brief Sharpen band context (Plan 61 / ADR 0271): unsharp mask over the four
+/// axis neighbours, clamped to the local 5-tap min/max so edges gain micro-contrast
+/// without ringing halos. Reads `buf`, writes disjoint rows of `out` (the same
+/// order-independent copy-out contract as FXAA).
+typedef struct {
+    const float *buf;
+    float *out;
+    int32_t w;
+    int32_t h;
+    float amount;
+} postfx_sharpen_band_ctx;
+
+/// @brief Sharpen one row band.
+/// @param ctx_ptr Pointer to a fully initialized `postfx_sharpen_band_ctx`.
+/// @param band_y0 Inclusive first row assigned to the band.
+/// @param band_y1 Exclusive row limit assigned to the band.
+static void apply_sharpen_rows(void *ctx_ptr, int32_t band_y0, int32_t band_y1) {
+    const postfx_sharpen_band_ctx *bc = (const postfx_sharpen_band_ctx *)ctx_ptr;
+    const float *buf = bc->buf;
+    float *out = bc->out;
+    int32_t w = bc->w;
+    int32_t h = bc->h;
+    float amount = bc->amount;
+    int32_t y_begin = band_y0 < 1 ? 1 : band_y0;
+    int32_t y_end = band_y1 > h - 1 ? h - 1 : band_y1;
+    for (int32_t y = y_begin; y < y_end; y++)
+        for (int32_t x = 1; x < w - 1; x++) {
+            size_t ci = ((size_t)y * (size_t)w + (size_t)x) * 3u;
+            for (int c = 0; c < 3; c++) {
+                float center = buf[ci + (size_t)c];
+                float n = buf[ci - (size_t)w * 3u + (size_t)c];
+                float s = buf[ci + (size_t)w * 3u + (size_t)c];
+                float e = buf[ci + 3u + (size_t)c];
+                float wv = buf[ci - 3u + (size_t)c];
+                float lo = center;
+                float hi = center;
+                if (n < lo)
+                    lo = n;
+                if (s < lo)
+                    lo = s;
+                if (e < lo)
+                    lo = e;
+                if (wv < lo)
+                    lo = wv;
+                if (n > hi)
+                    hi = n;
+                if (s > hi)
+                    hi = s;
+                if (e > hi)
+                    hi = e;
+                if (wv > hi)
+                    hi = wv;
+                float sharpened = center + amount * (center - (n + s + e + wv) * 0.25f);
+                out[ci + (size_t)c] = clampf(sharpened, lo, hi);
+            }
+        }
+}
+
+/// @brief Apply the clamped unsharp-mask sharpen through a copy-out buffer.
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param buf Packed RGB framebuffer modified in place after filtering.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param amount Edge gain in `[0, 1]` (0 is identity).
+/// @param scratch Reusable allocation supplying the copy-out buffer.
+static void apply_sharpen(
+    rt_postfx3d *fx, float *buf, int32_t w, int32_t h, float amount, postfx_scratch_t *scratch) {
+    size_t bytes;
+    postfx_sharpen_band_ctx ctx;
+    if (amount <= 0.0f || !postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
+        return;
+    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
+    if (!out)
+        return;
+    memcpy(out, buf, bytes);
+    ctx.buf = buf;
+    ctx.out = out;
+    ctx.w = w;
+    ctx.h = h;
+    ctx.amount = amount;
+    postfx_run_bands(fx, h, apply_sharpen_rows, &ctx);
     memcpy(buf, out, bytes);
 }
 
@@ -2950,6 +3063,9 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
             case POSTFX_COLOR_LUT:
                 apply_color_lut_cpu(fx, fbuf, w, h, e->p.color_lut.blend);
                 break;
+            case POSTFX_SHARPEN:
+                apply_sharpen(fx, fbuf, w, h, e->p.sharpen.amount, &scratch);
+                break;
             case POSTFX_SUN_SHAFTS:
                 if (scene)
                     apply_sun_shafts_cpu(fbuf,
@@ -3475,6 +3591,11 @@ int64_t rt_postfx3d_effect_kind_sun_shafts(void) {
     return (int64_t)POSTFX_SUN_SHAFTS;
 }
 
+/// @brief PostFXEffectKind.Sharpen constant.
+int64_t rt_postfx3d_effect_kind_sharpen(void) {
+    return (int64_t)POSTFX_SHARPEN;
+}
+
 /*==========================================================================
  * Canvas3D integration
  *=========================================================================*/
@@ -3887,6 +4008,26 @@ void rt_postfx3d_add_sun_shafts(void *obj, double intensity, double decay, int64
     e->p.sun_shafts.samples = clamp_i64_to_i32(samples, 8, 48);
 }
 
+/// @brief Append a clamped unsharp-mask sharpen pass (Plan 61 / ADR 0271): each
+/// channel gains `amount * (center - avg4(N,S,E,W))`, clamped to the local 5-tap
+/// min/max so edges gain micro-contrast without ringing halos. Recovers the acuity
+/// the FXAA/TAA blur and any render-scale upscale cost. Display-referred when
+/// authored after the tonemap.
+/// @param obj PostFX3D chain receiving the effect.
+/// @param amount Edge gain clamped to `[0, 1]` (0 is identity).
+void rt_postfx3d_add_sharpen(void *obj, double amount) {
+    postfx_entry_t *e;
+    rt_postfx3d *fx = postfx3d_checked(obj);
+    if (!fx)
+        return;
+    e = postfx_append_entry(fx);
+    if (!e)
+        return;
+    e->type = POSTFX_SHARPEN;
+    e->enabled = 1;
+    e->p.sharpen.amount = sanitize_range_f32(amount, 0.4f, 0.0f, 1.0f);
+}
+
 /// @brief Build the identity 256x16 LUT strip. Screenshot it composited over a
 /// reference frame, grade the screenshot in any editor, crop the strip back out,
 /// and feed it to AddColorLUT — that is the whole grading workflow.
@@ -4096,7 +4237,7 @@ int vgfx3d_postfx_chain_copy(vgfx3d_postfx_chain_t *dst, const vgfx3d_postfx_cha
     }
     for (int32_t i = 0; i < src->effect_count; i++) {
         if (src->effects[i].type < (int32_t)VGFX3D_POSTFX_EFFECT_BLOOM ||
-            src->effects[i].type > (int32_t)VGFX3D_POSTFX_EFFECT_SUN_SHAFTS) {
+            src->effects[i].type > (int32_t)VGFX3D_POSTFX_EFFECT_SHARPEN) {
             vgfx3d_postfx_chain_reset(dst);
             return 0;
         }
@@ -4166,7 +4307,8 @@ int vgfx3d_postfx_get_chain(void *postfx, vgfx3d_postfx_chain_t *out) {
     out->enabled = 1;
     out->effect_count = 0;
     for (int32_t i = 0; i < effect_count; i++) {
-        if (!vgfx3d_postfx_fill_effect_snapshot(&fx->effects[i], &out->effects[out->effect_count]))
+        if (!vgfx3d_postfx_fill_effect_snapshot(
+                fx, &fx->effects[i], &out->effects[out->effect_count]))
             continue;
         out->effect_count++;
     }
@@ -4208,7 +4350,7 @@ int vgfx3d_postfx_get_snapshot(void *postfx, vgfx3d_postfx_snapshot_t *out) {
 
     for (int32_t i = 0; i < effect_count; i++) {
         vgfx3d_postfx_effect_desc_t effect;
-        if (!vgfx3d_postfx_fill_effect_snapshot(&fx->effects[i], &effect))
+        if (!vgfx3d_postfx_fill_effect_snapshot(fx, &fx->effects[i], &effect))
             continue;
         if (effect.type > (int32_t)POSTFX_SSR)
             continue;

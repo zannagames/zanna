@@ -184,8 +184,14 @@ static void test_tonemap_toe_monotone_lift(void) {
             break;
         }
         postfx_set_two_pixels(fixture.target,
-                              (uint8_t)v, (uint8_t)v, (uint8_t)v, 255,
-                              (uint8_t)v, (uint8_t)v, (uint8_t)v, 255);
+                              (uint8_t)v,
+                              (uint8_t)v,
+                              (uint8_t)v,
+                              255,
+                              (uint8_t)v,
+                              (uint8_t)v,
+                              (uint8_t)v,
+                              255);
         rt_postfx3d_add_tonemap(fx, 2, 1.10);
         rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
         rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
@@ -263,6 +269,60 @@ static void test_color_lut_uses_packed_rgb_pixels(void) {
     postfx_cpu_fixture_free(&fixture);
 }
 
+static void test_sharpen_steepens_soft_edges_without_halos(void) {
+    /* Plan 61 / ADR 0271: on a 3x3 target holding a soft horizontal ramp
+     * (51, 89, 166 per row), full-amount sharpen darkens the interior pixel
+     * toward the edge's dark side but never past the local 5-tap minimum,
+     * and border pixels ride the byte-exact tonemap-less passthrough. */
+    void *target_obj = rt_rendertarget3d_new(3, 3);
+    rt_rendertarget3d *target_wrapper = (rt_rendertarget3d *)target_obj;
+    vgfx3d_rendertarget_t *target = target_wrapper ? target_wrapper->target : NULL;
+    void *canvas_obj = target_obj ? rt_canvas3d_new_offscreen(target_obj) : NULL;
+    void *fx = rt_postfx3d_new();
+    static const uint8_t kRamp[3] = {51, 89, 166};
+
+    EXPECT_TRUE(target && target->color_buf && canvas_obj && fx, "Sharpen fixture initializes");
+    if (!target || !target->color_buf || !canvas_obj || !fx) {
+        (void)rt_memory_release(fx);
+        (void)rt_memory_release(canvas_obj);
+        (void)rt_memory_release(target_obj);
+        return;
+    }
+    (void)vgfx3d_rendertarget_ensure_depth(target);
+    if (target->depth_buf)
+        for (int i = 0; i < 9; i++)
+            target->depth_buf[i] = 0.0f;
+    for (int y = 0; y < 3; y++)
+        for (int x = 0; x < 3; x++) {
+            uint8_t *px = &target->color_buf[(size_t)(y * 3 + x) * 4u];
+            px[0] = kRamp[x];
+            px[1] = kRamp[x];
+            px[2] = kRamp[x];
+            px[3] = 255;
+        }
+
+    rt_postfx3d_add_sharpen(fx, 1.0);
+    rt_canvas3d_set_post_fx(canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(canvas_obj);
+
+    {
+        /* Interior (1,1): avg4 = (89+89+51+166)/4 = 98.75 -> out ~79. */
+        const uint8_t *center = &target->color_buf[(size_t)(1 * 3 + 1) * 4u];
+        EXPECT_TRUE(center[0] >= 77 && center[0] <= 81 && center[0] < 89,
+                    "Sharpen steepens the soft edge's dark side (center ~79)");
+        EXPECT_TRUE(center[0] == center[1] && center[1] == center[2],
+                    "Sharpen treats the neutral ramp channel-uniformly");
+        EXPECT_TRUE(center[3] == 255, "Sharpen preserves alpha");
+        EXPECT_TRUE(target->color_buf[0] == 51 && target->color_buf[8] == 166,
+                    "Border pixels stay byte-exact (edge-guarded pass)");
+        EXPECT_TRUE(center[0] >= 51, "Sharpen never undershoots the local 5-tap minimum");
+    }
+
+    (void)rt_memory_release(fx);
+    (void)rt_memory_release(canvas_obj);
+    (void)rt_memory_release(target_obj);
+}
+
 static void test_auto_exposure_samples_packed_luminance(void) {
     PostFXCPUFixture fixture = postfx_cpu_fixture_new();
     void *fx = rt_postfx3d_new();
@@ -323,6 +383,7 @@ int main(void) {
     test_color_lut_uses_packed_rgb_pixels();
     test_auto_exposure_samples_packed_luminance();
     test_taa_history_uses_packed_rgb_pixels();
+    test_sharpen_steepens_soft_edges_without_halos();
 
     printf("rt_postfx3d CPU tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

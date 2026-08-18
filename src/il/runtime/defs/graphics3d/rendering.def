@@ -776,6 +776,7 @@ RT_FUNC(Material3DSetNormalScale,  rt_material3d_set_normal_scale,  "Zanna.Graph
 RT_FUNC(Material3DGetNormalScale,  rt_material3d_get_normal_scale,  "Zanna.Graphics3D.Material3D.get_NormalScale", "f64(obj)")
 RT_FUNC(Material3DSetAnisotropy,   rt_material3d_set_anisotropy,   "Zanna.Graphics3D.Material3D.set_Anisotropy",  "void(obj,i64)")
 RT_FUNC(Material3DGetAnisotropy,   rt_material3d_get_anisotropy,   "Zanna.Graphics3D.Material3D.get_Anisotropy",  "i64(obj)")
+RT_FUNC(Material3DSetTextureFilters, rt_material3d_set_texture_filters, "Zanna.Graphics3D.Material3D.SetTextureFilters", "void(obj,i64,i64,i64)")
 RT_FUNC(Material3DSetAlphaMode,    rt_material3d_set_alpha_mode,    "Zanna.Graphics3D.Material3D.set_AlphaMode",   "void(obj,i64)")
 RT_FUNC(Material3DGetAlphaMode,    rt_material3d_get_alpha_mode,    "Zanna.Graphics3D.Material3D.get_AlphaMode",   "i64(obj)")
 RT_FUNC(Material3DSetShadowMode,   rt_material3d_set_shadow_mode,   "Zanna.Graphics3D.Material3D.set_ShadowMode",  "void(obj,i64)")
@@ -827,6 +828,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Material3D", Material3D, "obj", Material3DNew)
     RT_PROP("EmissiveIntensity", "f64", Material3DGetEmissiveIntensity, Material3DSetEmissiveIntensity)
     RT_PROP("NormalScale", "f64", Material3DGetNormalScale, Material3DSetNormalScale)
     RT_PROP("Anisotropy", "i64", Material3DGetAnisotropy, Material3DSetAnisotropy)
+    // Plan 61 / ADR 0272: sampler filters for every texture slot —
+    // min/mag 0=Linear 1=Nearest; mip 0=None 1=Nearest 2=Linear (trilinear).
+    RT_METHOD("SetTextureFilters", "void(i64,i64,i64)", Material3DSetTextureFilters)
     RT_PROP("AlphaMode", "i64", Material3DGetAlphaMode, Material3DSetAlphaMode)
     RT_PROP("ShadowMode", "i64", Material3DGetShadowMode, Material3DSetShadowMode)
     RT_PROP("DoubleSided", "i1", Material3DGetDoubleSided, Material3DSetDoubleSided)

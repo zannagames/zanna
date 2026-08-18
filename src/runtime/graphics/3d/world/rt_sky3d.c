@@ -321,10 +321,19 @@ static void sky3d_radiance(const rt_sky3d *sky, const double dir[3], double out[
         return;
     }
 
-    /* Base gradient: zenith and horizon colors by day/dusk mix. */
+    /* Base gradient: zenith and horizon colors by day/dusk mix.
+     * Plan 61 P2b: the old horizon band ({0.55+0.25h, 0.68+0.15h, 0.85})
+     * was ~30% saturated at default turbidity — nearly achromatic, and it
+     * dominates both the visible sky at broadcast framings and the IBL SH
+     * projection, washing the ambient term everywhere. The retuned bands
+     * hold a real blue at clear air (~52% horizon saturation at turbidity
+     * 1.4) while the steeper haze slopes preserve the model's intent:
+     * rising turbidity still drags both bands toward white (turbidity 10
+     * lands near {0.70, 0.79, 0.86}). Night, sunset, sun/moon, and ground
+     * terms are untouched. */
     double haze = (sky->turbidity - 1.0) / 9.0;
-    double zenith[3] = {0.10 + 0.12 * haze, 0.28 + 0.10 * haze, 0.62};
-    double horizon[3] = {0.55 + 0.25 * haze, 0.68 + 0.15 * haze, 0.85};
+    double zenith[3] = {0.06 + 0.11 * haze, 0.22 + 0.11 * haze, 0.58};
+    double horizon[3] = {0.40 + 0.30 * haze, 0.57 + 0.22 * haze, 0.86};
     /* Plan 59: the night is a gradient too — a slightly lifted horizon
      * band keeps the skyline readable instead of one flat near-black. */
     double night_zenith[3] = {0.012, 0.014, 0.03};

@@ -2184,6 +2184,26 @@ static void test_d3d11_backend_source_contracts(void) {
         return;
     EXPECT_TRUE(strstr(source, "vgfx3d_sanitize_draw_command(cmd, &safe_cmd)") != NULL,
                 "D3D11 sanitizes draw snapshots before native upload");
+    EXPECT_TRUE(
+        contains_text(
+            d3d11_postfx_shader_source,
+            "float gradeLuma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }") &&
+            contains_text(d3d11_postfx_shader_source, "float l = gradeLuma(color);"),
+        "D3D11 color-grade saturation weights luma with Rec.709 via a dedicated helper — "
+        "matching the CPU reference while FXAA keeps the shared luminance() weights "
+        "(plan 61 P2a parity)");
+    EXPECT_TRUE(contains_text(d3d11_postfx_shader_source,
+                              "acc += wgt * lutTex.Load(int3(bb * 16 + rr, gg, 0)).rgb;") &&
+                    strstr(source, "lut_srv = d3d11_ensure_postfx_lut_srv(ctx, snapshot);") !=
+                        NULL &&
+                    strstr(source, "if (!lut_srv)\n        postfx_data.lut_enabled = 0;") != NULL,
+                "D3D11 COLOR_LUT pass replicates the CPU tile sampler and force-disables when "
+                "the strip upload is unavailable (plan 61 P3)");
+    EXPECT_TRUE(contains_text(d3d11_postfx_shader_source,
+                              "return clamp(color + sharpenAmount * (color - ") &&
+                    contains_text(d3d11_postfx_shader_source, "shLo, shHi);"),
+                "D3D11 sharpen is the clamped unsharp mask — edge gain bounded by the local "
+                "5-tap min/max (ADR 0271)");
     EXPECT_TRUE(count_text(source, "vgfx3d_d3d11_draw_submission_is_ready(") >= 4,
                 "D3D11 gates regular, instanced, skybox, and begin-frame target submission");
     EXPECT_TRUE(strstr(source, "vgfx3d_d3d11_target_binding_is_usable(") != NULL &&

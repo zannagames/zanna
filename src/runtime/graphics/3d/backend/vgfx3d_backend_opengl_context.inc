@@ -271,9 +271,9 @@ static int gl_compile_context_shaders(gl_shader_set_t *shaders, int zero_to_one_
     shaders->taa_fs = compile_shader(GL_FRAGMENT_SHADER, glsl_taa_fragment_src, zero_to_one_clip);
     shaders->ssr_fs = compile_shader(GL_FRAGMENT_SHADER, glsl_ssr_fragment_src, zero_to_one_clip);
     return shaders->vs && shaders->fs && shaders->unlit_fs && shaders->shadow_vs &&
-           shaders->shadow_fs &&
-           shaders->postfx_vs && shaders->postfx_fs && shaders->skybox_vs && shaders->skybox_fs &&
-           shaders->bloom_down_fs && shaders->bloom_up_fs && shaders->taa_fs && shaders->ssr_fs;
+           shaders->shadow_fs && shaders->postfx_vs && shaders->postfx_fs && shaders->skybox_vs &&
+           shaders->skybox_fs && shaders->bloom_down_fs && shaders->bloom_up_fs &&
+           shaders->taa_fs && shaders->ssr_fs;
 }
 
 /// @brief Delete all shaders in a temporary context shader bundle.
@@ -322,8 +322,8 @@ static int gl_link_context_programs(gl_context_t *ctx, const gl_shader_set_t *sh
     ctx->taa_program = link_program(shaders->postfx_vs, shaders->taa_fs);
     ctx->ssr_program = link_program(shaders->postfx_vs, shaders->ssr_fs);
     return ctx->program && ctx->unlit_program && ctx->shadow_program && ctx->postfx_program &&
-           ctx->skybox_program &&
-           ctx->bloom_down_program && ctx->bloom_up_program && ctx->taa_program && ctx->ssr_program;
+           ctx->skybox_program && ctx->bloom_down_program && ctx->bloom_up_program &&
+           ctx->taa_program && ctx->ssr_program;
 }
 
 /// @brief Delete shader programs created during context setup.
@@ -396,6 +396,7 @@ static void gl_bind_default_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->postfx_uSceneDepthTex, 1);
     gl.Uniform1i(ctx->postfx_uSceneMotionTex, 2);
     gl.Uniform1i(ctx->postfx_uBloomTex, 3);
+    gl.Uniform1i(ctx->postfx_uLutTex, 4);
 
     gl.UseProgram(ctx->bloom_down_program);
     gl.Uniform1i(ctx->bloom_down_uSrcTex, 0);
@@ -798,33 +799,46 @@ static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
         return NULL;
     ctx->vgfx_win = win;
     if (handles.backend == VGFX_NATIVE_BACKEND_WAYLAND) {
-        ctx->egl_binding =
-            vgfx3d_egl_wayland_create(handles.display, handles.surface, w, h);
+        ctx->egl_binding = vgfx3d_egl_wayland_create(handles.display, handles.surface, w, h);
     }
 #if !defined(ZANNA_GRAPHICS_WAYLAND)
     else {
         ctx->display = (Display *)handles.display;
         ctx->window = (Window)handles.window;
-        int fb_attribs[] = {GLX_RENDER_TYPE, GLX_RGBA_BIT, GLX_DRAWABLE_TYPE, GLX_WINDOW_BIT,
-                            GLX_DOUBLEBUFFER, 1, GLX_RED_SIZE, 8, GLX_GREEN_SIZE, 8,
-                            GLX_BLUE_SIZE, 8, GLX_DEPTH_SIZE, 24, 0};
+        int fb_attribs[] = {GLX_RENDER_TYPE,
+                            GLX_RGBA_BIT,
+                            GLX_DRAWABLE_TYPE,
+                            GLX_WINDOW_BIT,
+                            GLX_DOUBLEBUFFER,
+                            1,
+                            GLX_RED_SIZE,
+                            8,
+                            GLX_GREEN_SIZE,
+                            8,
+                            GLX_BLUE_SIZE,
+                            8,
+                            GLX_DEPTH_SIZE,
+                            24,
+                            0};
         int fb_count = 0;
-        GLXFBConfig *configs = glx.ChooseFBConfig(
-            ctx->display, DefaultScreen(ctx->display), fb_attribs, &fb_count);
+        GLXFBConfig *configs =
+            glx.ChooseFBConfig(ctx->display, DefaultScreen(ctx->display), fb_attribs, &fb_count);
         if (configs && fb_count > 0) {
             GLXFBConfig chosen =
                 gl_pick_matching_fb_config(ctx->display, ctx->window, configs, fb_count);
             if (chosen && glx.CreateContextAttribsARB) {
-                const int ctx_attribs[] = {GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-                                           GLX_CONTEXT_MINOR_VERSION_ARB, 3,
+                const int ctx_attribs[] = {GLX_CONTEXT_MAJOR_VERSION_ARB,
+                                           3,
+                                           GLX_CONTEXT_MINOR_VERSION_ARB,
+                                           3,
                                            GLX_CONTEXT_PROFILE_MASK_ARB,
-                                           GLX_CONTEXT_CORE_PROFILE_BIT_ARB, 0};
-                ctx->glxCtx = glx.CreateContextAttribsARB(
-                    ctx->display, chosen, NULL, 1, ctx_attribs);
+                                           GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
+                                           0};
+                ctx->glxCtx =
+                    glx.CreateContextAttribsARB(ctx->display, chosen, NULL, 1, ctx_attribs);
             }
             if (chosen && !ctx->glxCtx)
-                ctx->glxCtx =
-                    glx.CreateNewContext(ctx->display, chosen, GLX_RGBA_TYPE, NULL, 1);
+                ctx->glxCtx = glx.CreateNewContext(ctx->display, chosen, GLX_RGBA_TYPE, NULL, 1);
             XFree(configs);
         }
         if (ctx->glxCtx)
@@ -972,6 +986,10 @@ static void gl_destroy_ctx(void *ctx_ptr) {
     destroy_scene_targets(ctx);
     destroy_postfx_readback_target(ctx);
     destroy_postfx_scratch_target(ctx);
+    if (ctx->postfx_lut_tex) {
+        gl.DeleteTextures(1, &ctx->postfx_lut_tex);
+        ctx->postfx_lut_tex = 0;
+    }
     destroy_present_target(ctx);
     destroy_bloom_targets(ctx);
     destroy_taa_targets(ctx);

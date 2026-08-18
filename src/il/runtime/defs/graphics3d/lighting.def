@@ -870,6 +870,7 @@ RT_FUNC(PostFX3DAddTonemap,     rt_postfx3d_add_tonemap,     "Zanna.Graphics3D.P
 RT_FUNC(PostFX3DAddFXAA,        rt_postfx3d_add_fxaa,        "Zanna.Graphics3D.PostFX3D.AddFxaa",        "void(obj)")
 RT_FUNC(PostFX3DAddColorGrade,  rt_postfx3d_add_color_grade, "Zanna.Graphics3D.PostFX3D.AddColorGrade",  "void(obj,f64,f64,f64)")
 RT_FUNC(PostFX3DAddVignette,    rt_postfx3d_add_vignette,    "Zanna.Graphics3D.PostFX3D.AddVignette",    "void(obj,f64,f64)")
+RT_FUNC(PostFX3DAddSharpen,     rt_postfx3d_add_sharpen,     "Zanna.Graphics3D.PostFX3D.AddSharpen",     "void(obj,f64)")
 RT_FUNC(PostFX3DSetEnabled,     rt_postfx3d_set_enabled,     "Zanna.Graphics3D.PostFX3D.set_IsEnabled",    "void(obj,i1)")
 RT_FUNC(PostFX3DGetEnabled,     rt_postfx3d_get_enabled,     "Zanna.Graphics3D.PostFX3D.get_IsEnabled",    "i1(obj)")
 RT_FUNC(PostFX3DClear,          rt_postfx3d_clear,           "Zanna.Graphics3D.PostFX3D.Clear",          "void(obj)")
@@ -899,6 +900,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PostFX3D", PostFX3D, "obj", PostFX3DNew)
     RT_METHOD("AddFxaa", "void()", PostFX3DAddFXAA)
     RT_METHOD("AddColorGrade", "void(f64,f64,f64)", PostFX3DAddColorGrade)
     RT_METHOD("AddVignette", "void(f64,f64)", PostFX3DAddVignette)
+    // Plan 61 / ADR 0271: clamped unsharp mask (amount 0..1) — recovers the
+    // acuity FXAA/TAA blur and render-scale upscales cost.
+    RT_METHOD("AddSharpen", "void(f64)", PostFX3DAddSharpen)
     RT_METHOD("Clear", "void()", PostFX3DClear)
     // Chain enumeration: index order is application order; kinds are the
     // Zanna.Graphics3D.PostFXEffectKind constants.
@@ -927,6 +931,7 @@ RT_FUNC(PostFXEffectKindSsr,          rt_postfx3d_effect_kind_ssr,           "Za
 RT_FUNC(PostFXEffectKindAutoExposure, rt_postfx3d_effect_kind_auto_exposure, "Zanna.Graphics3D.PostFXEffectKind.get_AutoExposure", "i64()")
 RT_FUNC(PostFXEffectKindColorLut,     rt_postfx3d_effect_kind_color_lut,     "Zanna.Graphics3D.PostFXEffectKind.get_ColorLut",     "i64()")
 RT_FUNC(PostFXEffectKindSunShafts,    rt_postfx3d_effect_kind_sun_shafts,    "Zanna.Graphics3D.PostFXEffectKind.get_SunShafts",    "i64()")
+RT_FUNC(PostFXEffectKindSharpen,      rt_postfx3d_effect_kind_sharpen,       "Zanna.Graphics3D.PostFXEffectKind.get_Sharpen",      "i64()")
 
 /// @summary Provides Post FX Effect Kind constants identifying entries in a PostFX3D chain.
 /// @details
@@ -947,6 +952,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PostFXEffectKind", PostFXEffectKind, "none", no
     RT_PROP("AutoExposure", "i64", PostFXEffectKindAutoExposure, none)
     RT_PROP("ColorLut", "i64", PostFXEffectKindColorLut, none)
     RT_PROP("SunShafts", "i64", PostFXEffectKindSunShafts, none)
+    RT_PROP("Sharpen", "i64", PostFXEffectKindSharpen, none)
 RT_CLASS_END()
 
 // Ray3D — raycasting

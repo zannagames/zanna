@@ -511,6 +511,22 @@ static void test_opengl_source_contracts_are_context_safe(void) {
                 "OpenGL invalidates stale probe results before mapping new PBO data");
     EXPECT_TRUE(strstr(source, "vgfx3d_sanitize_postfx_snapshot(snapshot, &safe_snapshot)") != NULL,
                 "OpenGL post-FX uniforms sanitize malformed snapshots");
+    EXPECT_TRUE(strstr(source, "float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));") != NULL,
+                "OpenGL color-grade saturation weights luma with Rec.709 — matching the CPU "
+                "reference (rt_postfx3d grade path; plan 61 P2a parity). FXAA edge luma keeps "
+                "its own weights");
+    EXPECT_TRUE(
+        strstr(source, "acc += wgt * texelFetch(uLutTex, ivec2(bb * 16 + rr, gg), 0).rgb;") !=
+                NULL &&
+            strstr(source, "GLuint lut_tex = gl_ensure_postfx_lut_texture(ctx, snapshot);") !=
+                NULL &&
+            strstr(source, "gl.Uniform1i(ctx->postfx_uLutEnabled, lut_tex ? 1 : 0);") != NULL,
+        "OpenGL COLOR_LUT pass replicates the CPU tile sampler and force-disables when "
+        "the strip upload is unavailable (plan 61 P3)");
+    EXPECT_TRUE(strstr(source, "color = clamp(color + uSharpenAmount * (color - ") != NULL &&
+                    strstr(source, "shLo, shHi);") != NULL,
+                "OpenGL sharpen is the clamped unsharp mask — edge gain bounded by the local "
+                "5-tap min/max (ADR 0271)");
     EXPECT_TRUE(strstr(source, "vgfx3d_cluster_table_is_usable(table, expected_revision") != NULL,
                 "OpenGL clustered-light uploads validate revision and offset/index metadata");
     EXPECT_TRUE(strstr(source, "gl.FenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)") != NULL &&

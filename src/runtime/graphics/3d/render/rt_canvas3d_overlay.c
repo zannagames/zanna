@@ -572,7 +572,9 @@ void rt_canvas3d_draw_point3d(void *obj, void *pos, int64_t color, int64_t size)
 /// @param y Top edge in logical pixels.
 /// @param w Width in logical pixels.
 /// @param h Height in logical pixels.
-/// @param color Packed RGB runtime color.
+/// @param color Packed RGB runtime color. Any high (alpha) byte is ignored and
+/// the rectangle draws fully opaque — use rt_canvas3d_draw_rect2d_alpha for
+/// translucency.
 void rt_canvas3d_draw_rect2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t h, int64_t color) {
     int8_t started_temp_frame = 0;
 

@@ -1258,8 +1258,7 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
 
     /* Growing invalidates every layer at once, so drop the whole array and all
      * per-slot FBOs rather than leaving slots pointing at a stale texture. */
-    if (ctx->shadow_array_tex &&
-        (ctx->shadow_array_width != w || ctx->shadow_array_height != h)) {
+    if (ctx->shadow_array_tex && (ctx->shadow_array_width != w || ctx->shadow_array_height != h)) {
         destroy_shadow_targets(ctx);
     }
 
@@ -1302,8 +1301,8 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
         GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, ctx->shadow_array_tex, 0, (GLint)slot);
     gl.DrawBuffer(GL_NONE);
     gl.ReadBuffer(GL_NONE);
-    if (!candidate_fbo ||
-        gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
+    if (!candidate_fbo || gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        !gl_upload_ok()) {
         if (candidate_fbo)
             gl.DeleteFramebuffers(1, &candidate_fbo);
         gl_restore_framebuffer_state(&saved);
@@ -1524,6 +1523,10 @@ static void gl_apply_postfx_uniforms(gl_context_t *ctx,
         gl.Uniform1i(ctx->postfx_uMotionBlurEnabled, 0);
         gl.Uniform1f(ctx->postfx_uMotionBlurIntensity, 0.0f);
         gl.Uniform1i(ctx->postfx_uMotionBlurSamples, 0);
+        gl.Uniform1i(ctx->postfx_uLutEnabled, 0);
+        gl.Uniform1f(ctx->postfx_uLutBlend, 0.0f);
+        gl.Uniform1i(ctx->postfx_uSharpenEnabled, 0);
+        gl.Uniform1f(ctx->postfx_uSharpenAmount, 0.0f);
         return;
     }
 
@@ -1577,6 +1580,56 @@ static void gl_apply_postfx_uniforms(gl_context_t *ctx,
                  isfinite(snapshot->motion_blur_intensity) ? snapshot->motion_blur_intensity
                                                            : 0.0f);
     gl.Uniform1i(ctx->postfx_uMotionBlurSamples, motion_samples);
+    /* Plan 61: LUT payload validity is re-checked at bind time
+     * (gl_ensure_postfx_lut_texture); the flag alone rides the uniforms. */
+    gl.Uniform1i(ctx->postfx_uLutEnabled, snapshot->color_lut_enabled ? 1 : 0);
+    gl.Uniform1f(ctx->postfx_uLutBlend,
+                 isfinite(snapshot->color_lut_blend) ? snapshot->color_lut_blend : 1.0f);
+    gl.Uniform1i(ctx->postfx_uSharpenEnabled, snapshot->sharpen_enabled ? 1 : 0);
+    gl.Uniform1f(ctx->postfx_uSharpenAmount,
+                 isfinite(snapshot->sharpen_amount) ? snapshot->sharpen_amount : 0.0f);
+}
+
+/// @brief Return the cached 256x16 COLOR_LUT texture for @p snapshot, uploading when the
+/// snapshot's (texel pointer, revision) cache key changes.
+/// @details The texel pointer is borrowed from the chain-retained LUT Pixels and packed
+///          0xRRGGBBAA per texel; bytes are swizzled into RGBA8 staging before upload so
+///          host endianness never leaks into the texture. Returns 0 when the snapshot
+///          carries no usable LUT payload or allocation fails.
+/// @param ctx Borrowed OpenGL context owning the cache slot.
+/// @param snapshot Borrowed effect snapshot, or NULL.
+/// @return The ready GL texture name, or 0 when unavailable.
+static GLuint gl_ensure_postfx_lut_texture(gl_context_t *ctx,
+                                           const vgfx3d_postfx_snapshot_t *snapshot) {
+    uint8_t staging[256 * 16 * 4];
+
+    if (!ctx || !snapshot || !snapshot->color_lut_enabled || !snapshot->color_lut_texels ||
+        snapshot->color_lut_width != 256 || snapshot->color_lut_height != 16)
+        return 0;
+    if (ctx->postfx_lut_tex && ctx->postfx_lut_key == (uintptr_t)snapshot->color_lut_texels &&
+        ctx->postfx_lut_revision == snapshot->color_lut_revision)
+        return ctx->postfx_lut_tex;
+    if (!ctx->postfx_lut_tex)
+        gl.GenTextures(1, &ctx->postfx_lut_tex);
+    if (!ctx->postfx_lut_tex)
+        return 0;
+    for (int32_t i = 0; i < 256 * 16; i++) {
+        uint32_t t = snapshot->color_lut_texels[i];
+        staging[i * 4 + 0] = (uint8_t)((t >> 24) & 0xFFu);
+        staging[i * 4 + 1] = (uint8_t)((t >> 16) & 0xFFu);
+        staging[i * 4 + 2] = (uint8_t)((t >> 8) & 0xFFu);
+        staging[i * 4 + 3] = (uint8_t)(t & 0xFFu);
+    }
+    gl.BindTexture(GL_TEXTURE_2D, ctx->postfx_lut_tex);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 256, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, staging);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.BindTexture(GL_TEXTURE_2D, 0);
+    ctx->postfx_lut_key = (uintptr_t)snapshot->color_lut_texels;
+    ctx->postfx_lut_revision = snapshot->color_lut_revision;
+    return ctx->postfx_lut_tex;
 }
 
 /// @brief Composite the offscreen scene texture onto a target FBO via post-FX.
@@ -1638,6 +1691,15 @@ static int gl_draw_texture_to_target(gl_context_t *ctx,
                       ctx->postfx_current_bloom_tex ? ctx->postfx_current_bloom_tex
                                                     : ctx->default_white_tex);
     gl_apply_postfx_uniforms(ctx, snapshot, source_width, source_height);
+    {
+        /* Plan 61: bind the cached LUT strip; a failed upload force-disables
+         * the pass so the shader never grades toward the fallback texture. */
+        GLuint lut_tex = gl_ensure_postfx_lut_texture(ctx, snapshot);
+        gl.Uniform1i(ctx->postfx_uLutTex, 4);
+        gl.Uniform1i(ctx->postfx_uLutEnabled, lut_tex ? 1 : 0);
+        bind_texture_unit(
+            ctx->postfx_uLutTex, 4, GL_TEXTURE_2D, lut_tex ? lut_tex : ctx->default_white_tex);
+    }
     gl.DrawArrays(GL_TRIANGLES, 0, 3);
     ok = gl_drain_errors("postfx draw");
     gl_restore_framebuffer_state(&saved);

@@ -830,6 +830,12 @@ typedef struct {
     int8_t bloom_hdr;
     /* Transient: mip-0 result bound as uBloomTex while a chain pass composites bloom. */
     GLuint postfx_current_bloom_tex;
+    /* Plan 61: cached 256x16 COLOR_LUT strip; (key, revision) mirror the
+     * snapshot's (texel pointer, pixels generation) so re-authored LUTs
+     * re-upload. */
+    GLuint postfx_lut_tex;
+    uintptr_t postfx_lut_key;
+    uint64_t postfx_lut_revision;
     /* Plan 05: TAA ping-pong history (RGBA16F, persisted across frames) + jitter state. */
     GLuint taa_history_tex[2];
     GLuint taa_history_fbo[2];
@@ -981,8 +987,7 @@ typedef struct {
     GLint uInstanceBoneStride;
     GLint uHasPrevModelMatrix, uHasPrevInstanceMatrices, uHasPrevSkinning, uHasPrevMorphWeights;
     GLint uMorphWeights, uPrevMorphWeights, uMorphDeltas, uMorphNormalDeltas, uHasMorphNormalDeltas;
-    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray,
-        uEnvMap, uBrdfLut;
+    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray, uEnvMap, uBrdfLut;
     GLint uMetallicRoughnessTex, uAOTex;
     GLint uSplatTex, uSplatLayer0, uSplatLayer1, uSplatLayer2, uSplatLayer3, uSplatScales;
     GLint uLightType[VGFX3D_MAX_LIGHTS], uLightShadowIndex[VGFX3D_MAX_LIGHTS],
@@ -1018,6 +1023,10 @@ typedef struct {
     GLint postfx_uMotionBlurEnabled, postfx_uMotionBlurIntensity, postfx_uMotionBlurSamples;
     GLint postfx_uCameraPos, postfx_uInvViewProjection, postfx_uPrevViewProjection;
     GLint postfx_uSceneHdr, postfx_uTonemapExplicit, postfx_uBloomTex, postfx_uBloomTexEnabled;
+    /* Plan 61: COLOR_LUT pass uniforms. */
+    GLint postfx_uLutEnabled, postfx_uLutBlend, postfx_uLutTex;
+    /* Plan 61 / ADR 0271: sharpen pass uniforms. */
+    GLint postfx_uSharpenEnabled, postfx_uSharpenAmount;
 
     GLint bloom_down_uSrcTex, bloom_down_uSrcInvSize, bloom_down_uThreshold, bloom_down_uFirstPass;
     GLint bloom_up_uSrcTex, bloom_up_uSrcInvSize;
@@ -1306,7 +1315,8 @@ static int gl_buffer_token_valid_for(GLuint framebuffer, GLenum buffer) {
     if (buffer == GL_NONE)
         return 1;
     if (framebuffer == 0)
-        return buffer != GL_NONE && (buffer < GL_COLOR_ATTACHMENT0 || buffer > GL_COLOR_ATTACHMENT15);
+        return buffer != GL_NONE &&
+               (buffer < GL_COLOR_ATTACHMENT0 || buffer > GL_COLOR_ATTACHMENT15);
     return buffer >= GL_COLOR_ATTACHMENT0 && buffer <= GL_COLOR_ATTACHMENT15;
 }
 
@@ -1501,23 +1511,20 @@ static int load_gl(int wayland_binding) {
     gl_wayland_binding = wayland_binding ? 1 : 0;
 
 #define LOAD(name)                                                                                 \
-    gl.name =                                                                                      \
-        RT_FN_PTR_CAST((__typeof__(gl.name))dlsym(gl.lib, "gl" #name));                            \
+    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))dlsym(gl.lib, "gl" #name));                      \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
     }
 #define LOADX(name)                                                                                \
-    glx.name =                                                                                     \
-        RT_FN_PTR_CAST((__typeof__(glx.name))dlsym(gl.lib, "glX" #name));                          \
+    glx.name = RT_FN_PTR_CAST((__typeof__(glx.name))dlsym(gl.lib, "glX" #name));                   \
     if (!glx.name) {                                                                               \
         missing_symbol = "glX" #name;                                                              \
         goto fail;                                                                                 \
     }
 #if defined(ZANNA_GRAPHICS_WAYLAND)
 #define LOADP(name)                                                                                \
-    gl.name =                                                                                      \
-        RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));              \
+    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));        \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
@@ -1525,13 +1532,12 @@ static int load_gl(int wayland_binding) {
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
 #define LOADP(name)                                                                                \
     if (gl_wayland_binding)                                                                        \
-        gl.name =                                                                                  \
-            RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));          \
+        gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));    \
     else                                                                                           \
         gl.name = RT_FN_PTR_CAST(                                                                  \
             (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));           \
     if (!gl.name) {                                                                                \
-        missing_symbol = "gl" #name;                                                              \
+        missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
     }
 #else
@@ -1552,8 +1558,7 @@ static int load_gl(int wayland_binding) {
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
 #define LOADP_OPTIONAL(name)                                                                       \
     if (gl_wayland_binding)                                                                        \
-        gl.name =                                                                                  \
-            RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));          \
+        gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));    \
     else                                                                                           \
         gl.name = RT_FN_PTR_CAST(                                                                  \
             (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));
@@ -1665,8 +1670,8 @@ static int load_gl(int wayland_binding) {
         (PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC)vgfx3d_egl_wayland_get_proc("glCompressedTexSubImage2D"));
 #elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
     if (gl_wayland_binding) {
-        gl.CompressedTexImage2D = (PFNGLCOMPRESSEDTEXIMAGE2DPROC)vgfx3d_egl_wayland_get_proc(
-            "glCompressedTexImage2D");
+        gl.CompressedTexImage2D =
+            (PFNGLCOMPRESSEDTEXIMAGE2DPROC)vgfx3d_egl_wayland_get_proc("glCompressedTexImage2D");
         gl.CompressedTexSubImage2D = (PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC)vgfx3d_egl_wayland_get_proc(
             "glCompressedTexSubImage2D");
     } else {
@@ -1722,8 +1727,7 @@ static int load_gl(int wayland_binding) {
         gl.GetStringi =
             (PFNGLGETSTRINGIPROC)glx.GetProcAddress((const unsigned char *)"glGetStringi");
 #else
-    gl.GetStringi =
-        (PFNGLGETSTRINGIPROC)glx.GetProcAddress((const unsigned char *)"glGetStringi");
+    gl.GetStringi = (PFNGLGETSTRINGIPROC)glx.GetProcAddress((const unsigned char *)"glGetStringi");
 #endif
 
 #undef LOAD

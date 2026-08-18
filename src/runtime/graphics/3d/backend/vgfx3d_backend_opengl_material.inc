@@ -1196,6 +1196,11 @@ static void query_postfx_uniforms(gl_context_t *ctx) {
     ctx->postfx_uTonemapExplicit = gl.GetUniformLocation(ctx->postfx_program, "uTonemapExplicit");
     ctx->postfx_uBloomTex = gl.GetUniformLocation(ctx->postfx_program, "uBloomTex");
     ctx->postfx_uBloomTexEnabled = gl.GetUniformLocation(ctx->postfx_program, "uBloomTexEnabled");
+    ctx->postfx_uLutEnabled = gl.GetUniformLocation(ctx->postfx_program, "uLutEnabled");
+    ctx->postfx_uLutBlend = gl.GetUniformLocation(ctx->postfx_program, "uLutBlend");
+    ctx->postfx_uLutTex = gl.GetUniformLocation(ctx->postfx_program, "uLutTex");
+    ctx->postfx_uSharpenEnabled = gl.GetUniformLocation(ctx->postfx_program, "uSharpenEnabled");
+    ctx->postfx_uSharpenAmount = gl.GetUniformLocation(ctx->postfx_program, "uSharpenAmount");
 }
 
 /// @brief Cache uniform locations for the Plan 05 bloom-chain and TAA pass programs.

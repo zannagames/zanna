@@ -956,6 +956,71 @@ static void d3d11_bind_postfx_target(d3d11_context_t *ctx,
 /// @param height            Viewport height in pixels.
 /// @param snapshot          Per-effect uniform data written into the postfx cbuffer.
 /// @return 1 on success, 0 if any parameter is invalid or the cbuffer update failed.
+/// @brief Return the cached 256x16 COLOR_LUT SRV for @p snapshot, uploading when the
+/// snapshot's (texel pointer, revision) cache key changes.
+/// @details The texel pointer is borrowed from the chain-retained LUT Pixels and packed
+///          0xRRGGBBAA per texel; bytes are swizzled into RGBA8 staging before the
+///          immutable-texture upload so host endianness never leaks into the texture.
+///          Returns NULL when the snapshot carries no usable LUT payload or creation fails.
+/// @param ctx Borrowed D3D11 context owning the cache slot.
+/// @param snapshot Borrowed effect snapshot, or NULL.
+/// @return The ready SRV, or NULL when unavailable.
+static ID3D11ShaderResourceView *d3d11_ensure_postfx_lut_srv(
+    d3d11_context_t *ctx, const vgfx3d_postfx_snapshot_t *snapshot) {
+    uint8_t staging[256 * 16 * 4];
+    D3D11_TEXTURE2D_DESC desc;
+    D3D11_SUBRESOURCE_DATA init;
+    ID3D11Texture2D *tex = NULL;
+    ID3D11ShaderResourceView *srv = NULL;
+    HRESULT hr;
+
+    if (!ctx || !ctx->device || !snapshot || !snapshot->color_lut_enabled ||
+        !snapshot->color_lut_texels || snapshot->color_lut_width != 256 ||
+        snapshot->color_lut_height != 16)
+        return NULL;
+    if (ctx->postfx_lut_srv && ctx->postfx_lut_key == (uintptr_t)snapshot->color_lut_texels &&
+        ctx->postfx_lut_revision == snapshot->color_lut_revision)
+        return ctx->postfx_lut_srv;
+
+    for (int32_t i = 0; i < 256 * 16; i++) {
+        uint32_t t = snapshot->color_lut_texels[i];
+        staging[i * 4 + 0] = (uint8_t)((t >> 24) & 0xFFu);
+        staging[i * 4 + 1] = (uint8_t)((t >> 16) & 0xFFu);
+        staging[i * 4 + 2] = (uint8_t)((t >> 8) & 0xFFu);
+        staging[i * 4 + 3] = (uint8_t)(t & 0xFFu);
+    }
+    memset(&desc, 0, sizeof(desc));
+    desc.Width = 256;
+    desc.Height = 16;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    memset(&init, 0, sizeof(init));
+    init.pSysMem = staging;
+    init.SysMemPitch = 256 * 4;
+    hr = ID3D11Device_CreateTexture2D(ctx->device, &desc, &init, &tex);
+    if (FAILED(hr) || !tex) {
+        d3d11_log_hresult("CreateTexture2D(postfx LUT)", hr);
+        return NULL;
+    }
+    hr = ID3D11Device_CreateShaderResourceView(ctx->device, (ID3D11Resource *)tex, NULL, &srv);
+    if (FAILED(hr) || !srv) {
+        d3d11_log_hresult("CreateShaderResourceView(postfx LUT)", hr);
+        SAFE_RELEASE(tex);
+        return NULL;
+    }
+    SAFE_RELEASE(ctx->postfx_lut_srv);
+    SAFE_RELEASE(ctx->postfx_lut_tex);
+    ctx->postfx_lut_tex = tex;
+    ctx->postfx_lut_srv = srv;
+    ctx->postfx_lut_key = (uintptr_t)snapshot->color_lut_texels;
+    ctx->postfx_lut_revision = snapshot->color_lut_revision;
+    return ctx->postfx_lut_srv;
+}
+
 static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
                                   ID3D11ShaderResourceView *source_color_srv,
                                   ID3D11RenderTargetView *dest_rtv,
@@ -963,8 +1028,9 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
                                   int32_t height,
                                   const vgfx3d_postfx_snapshot_t *snapshot) {
     d3d_postfx_cb_t postfx_data;
-    ID3D11ShaderResourceView *srvs[5];
-    ID3D11ShaderResourceView *null_srvs[5] = {NULL, NULL, NULL, NULL, NULL};
+    ID3D11ShaderResourceView *srvs[6];
+    ID3D11ShaderResourceView *null_srvs[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
+    ID3D11ShaderResourceView *lut_srv;
     float blend_factor[4] = {0, 0, 0, 0};
     HRESULT hr;
 
@@ -973,6 +1039,11 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
         return 0;
 
     d3d11_prepare_postfx_data(ctx, snapshot, &postfx_data);
+    /* Plan 61: a failed LUT upload force-disables the pass so the shader
+     * never grades toward an unbound slot. */
+    lut_srv = d3d11_ensure_postfx_lut_srv(ctx, snapshot);
+    if (!lut_srv)
+        postfx_data.lut_enabled = 0;
     hr = d3d11_update_constant_buffer(ctx, ctx->cb_postfx, &postfx_data, sizeof(postfx_data));
     if (FAILED(hr)) {
         d3d11_log_hresult("Map(cbPostFX)", hr);
@@ -985,6 +1056,7 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
     srvs[2] = ctx->scene_motion_srv;
     srvs[3] = NULL;
     srvs[4] = ctx->postfx_current_bloom_srv; /* Plan 05 bloom mip-chain result (may be NULL) */
+    srvs[5] = lut_srv;                       /* Plan 61 COLOR_LUT strip (may be NULL) */
     ID3D11DeviceContext_IASetInputLayout(ctx->ctx, NULL);
     ID3D11DeviceContext_IASetPrimitiveTopology(ctx->ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_postfx, NULL, 0);
@@ -993,13 +1065,13 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 0, 1, &ctx->cb_postfx);
     if (ctx->linear_clamp_sampler)
         ID3D11DeviceContext_PSSetSamplers(ctx->ctx, 0, 1, &ctx->linear_clamp_sampler);
-    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 5, srvs);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 6, srvs);
     ID3D11DeviceContext_RSSetState(ctx->ctx, ctx->rs_solid_no_cull);
     ID3D11DeviceContext_OMSetDepthStencilState(ctx->ctx, NULL, 0);
     ID3D11DeviceContext_OMSetBlendState(
         ctx->ctx, ctx->blend_state_opaque, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
-    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 5, null_srvs);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 6, null_srvs);
     return SUCCEEDED(d3d11_device_status_after_void_command(ctx, "Draw(post-FX pass)")) ? 1 : 0;
 }
 

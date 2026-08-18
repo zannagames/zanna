@@ -1358,6 +1358,14 @@ static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
         vgfx3d_d3d11_clamp_float_param(snapshot->motion_blur_intensity, 0.0f, 1000000.0f, 0.0f);
     postfx_data->motion_blur_samples =
         vgfx3d_d3d11_clamp_int_param(snapshot->motion_blur_samples, 2, 8);
+    /* Plan 61: the pass encoder re-validates against the actual SRV and
+     * force-disables on upload failure (d3d11_draw_postfx_pass). */
+    postfx_data->lut_enabled = snapshot->color_lut_enabled ? 1 : 0;
+    postfx_data->lut_blend =
+        vgfx3d_d3d11_clamp_float_param(snapshot->color_lut_blend, 0.0f, 1.0f, 1.0f);
+    postfx_data->sharpen_enabled = snapshot->sharpen_enabled ? 1 : 0;
+    postfx_data->sharpen_amount =
+        vgfx3d_d3d11_clamp_float_param(snapshot->sharpen_amount, 0.0f, 1.0f, 0.0f);
 }
 
 /// @brief Bind every texture / cubemap SRV the shader expects (PS slots 0..15).

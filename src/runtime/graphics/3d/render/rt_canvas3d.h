@@ -1499,6 +1499,17 @@ void rt_material3d_set_anisotropy(void *obj, int64_t anisotropy);
 /// @param obj Borrowed Material3D handle.
 /// @return Stored anisotropy ratio, or 1 for invalid input.
 int64_t rt_material3d_get_anisotropy(void *obj);
+/// @brief Set the sampler filters for every texture slot (Plan 61 / ADR 0272).
+/// @param obj Borrowed Material3D handle.
+/// @param min_filter Minification: 0=Linear, 1=Nearest (out of range = Linear).
+/// @param mag_filter Magnification: 0=Linear, 1=Nearest (out of range = Linear).
+/// @param mip_filter Mip selection: 0=None, 1=Nearest, 2=Linear (trilinear);
+///        out of range = None. Mip modes engage only when the bound texture
+///        carries a mip chain (the backends already generate one).
+void rt_material3d_set_texture_filters(void *obj,
+                                       int64_t min_filter,
+                                       int64_t mag_filter,
+                                       int64_t mip_filter);
 /// @brief Set alpha mode: 0=Opaque, 1=Mask (alpha test), 2=Blend (transparent).
 /// @param obj Borrowed Material3D handle.
 /// @param mode One of the `RT_MATERIAL3D_ALPHA_MODE_*` constants.

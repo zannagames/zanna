@@ -27,6 +27,8 @@
 #include <string.h>
 
 extern int64_t rt_memory_release(void *obj);
+extern void vgfx3d_sanitize_postfx_snapshot(const struct vgfx3d_postfx_snapshot *src,
+                                            struct vgfx3d_postfx_snapshot *dst);
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -589,6 +591,52 @@ static void test_retained_effect_entries_are_repaired_before_export(void) {
     (void)rt_memory_release(lut);
 }
 
+static void test_color_lut_snapshot_carries_payload(void) {
+    void *fx = rt_postfx3d_new();
+    vgfx3d_postfx_chain_t chain = {0};
+    vgfx3d_postfx_snapshot_t malformed;
+    vgfx3d_postfx_snapshot_t safe;
+    void *lut = rt_postfx3d_make_identity_lut();
+    const vgfx3d_postfx_snapshot_t *snap = NULL;
+
+    /* Plan 61 (plan-59 B10): the ordered chain snapshot must hand backends the
+     * retained LUT strip so the GPU pass can grade instead of no-opping. */
+    rt_postfx3d_add_tonemap(fx, 2, 1.0);
+    rt_postfx3d_add_color_lut(fx, lut, 0.75);
+    EXPECT_TRUE(vgfx3d_postfx_get_chain(fx, &chain) == 1 && chain.effect_count == 2 &&
+                    chain.effects[1].type == VGFX3D_POSTFX_EFFECT_COLOR_LUT,
+                "Color-LUT entry exports through the ordered chain");
+    snap = &chain.effects[1].snapshot;
+    EXPECT_TRUE(snap->color_lut_enabled == 1, "Color-LUT snapshot payload is enabled");
+    EXPECT_NEARF(snap->color_lut_blend, 0.75f, 1e-6f, "Color-LUT snapshot carries the blend");
+    EXPECT_TRUE(snap->color_lut_texels != NULL && snap->color_lut_width == 256 &&
+                    snap->color_lut_height == 16,
+                "Color-LUT snapshot points at the 256x16 strip");
+    EXPECT_TRUE(snap->color_lut_texels != NULL && snap->color_lut_texels[0] == 0x000000FFu &&
+                    snap->color_lut_texels[(size_t)15 * 256u + 255u] == 0xFFFFFFFFu,
+                "Color-LUT snapshot texels read the identity strip in 0xRRGGBBAA packing");
+
+    /* The shared backend sanitizer must disable any malformed payload. */
+    memset(&malformed, 0, sizeof(malformed));
+    malformed.enabled = 1;
+    malformed.color_lut_enabled = 1;
+    malformed.color_lut_blend = 0.5f;
+    malformed.color_lut_texels = snap->color_lut_texels;
+    malformed.color_lut_width = 64; /* wrong layout */
+    malformed.color_lut_height = 16;
+    vgfx3d_sanitize_postfx_snapshot(&malformed, &safe);
+    EXPECT_TRUE(safe.color_lut_enabled == 0 && safe.color_lut_texels == NULL,
+                "Sanitizer disables a Color-LUT payload with the wrong strip layout");
+    vgfx3d_sanitize_postfx_snapshot(snap, &safe);
+    EXPECT_TRUE(safe.color_lut_enabled == 1 && safe.color_lut_texels == snap->color_lut_texels &&
+                    safe.color_lut_width == 256 && safe.color_lut_height == 16,
+                "Sanitizer passes a well-formed Color-LUT payload through");
+
+    vgfx3d_postfx_chain_free(&chain);
+    (void)rt_memory_release(fx);
+    (void)rt_memory_release(lut);
+}
+
 static void test_invalid_retained_effect_kind_is_compacted(void) {
     void *fx = rt_postfx3d_new();
     PostFX3DTestLayout *layout = (PostFX3DTestLayout *)fx;
@@ -778,6 +826,7 @@ int main(void) {
     test_private_effect_count_corruption_is_bounded();
     test_private_effect_storage_mirrors_are_not_ownership_authority();
     test_retained_effect_entries_are_repaired_before_export();
+    test_color_lut_snapshot_carries_payload();
     test_invalid_retained_effect_kind_is_compacted();
     test_effect_chain_has_a_bounded_policy_limit();
     test_backend_chain_ownership_metadata_rejects_borrowed_storage();

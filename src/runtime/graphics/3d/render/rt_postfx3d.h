@@ -136,6 +136,8 @@ int64_t rt_postfx3d_effect_kind_auto_exposure(void);
 int64_t rt_postfx3d_effect_kind_color_lut(void);
 /// @brief PostFXEffectKind.SunShafts constant.
 int64_t rt_postfx3d_effect_kind_sun_shafts(void);
+/// @brief PostFXEffectKind.Sharpen constant.
+int64_t rt_postfx3d_effect_kind_sharpen(void);
 
 /// @brief Bind a PostFX chain to a Canvas3D for automatic application during Flip to the active
 /// output.
@@ -271,6 +273,23 @@ typedef struct vgfx3d_postfx_snapshot {
     float ssr_intensity;
     float ssr_max_roughness;
     int32_t ssr_steps;
+    /* Plan 61 (closes plan-59 B10): 3D LUT grade payload (appended; ABI-stable
+     * extension). `color_lut_texels` points at the chain-retained 256x16 strip
+     * (16 tiles of 16x16: x = red, y = green, tile = blue), packed 0xRRGGBBAA
+     * per texel exactly as `rt_pixels` stores it; it stays valid while the
+     * chain retains the LUT Pixels (released on Clear/destroy/replacement).
+     * Backends must treat (pointer, revision) as a texture cache key —
+     * re-upload when either changes — and never free the pointer. */
+    int8_t color_lut_enabled;
+    float color_lut_blend;
+    const uint32_t *color_lut_texels;
+    int32_t color_lut_width;
+    int32_t color_lut_height;
+    uint64_t color_lut_revision;
+    /* Plan 61 / ADR 0271: clamped unsharp-mask sharpen (appended; ABI-stable
+     * extension). */
+    int8_t sharpen_enabled;
+    float sharpen_amount;
 } vgfx3d_postfx_snapshot_t;
 
 /// @brief Discriminator identifying which post-processing effect a chain entry describes.
@@ -288,6 +307,7 @@ typedef enum {
     VGFX3D_POSTFX_EFFECT_AUTO_EXPOSURE, /* Track E doc 07: eye adaptation */
     VGFX3D_POSTFX_EFFECT_COLOR_LUT,     /* Track E doc 07: 3D LUT grading */
     VGFX3D_POSTFX_EFFECT_SUN_SHAFTS,    /* Track E doc 07: screen-space god rays */
+    VGFX3D_POSTFX_EFFECT_SHARPEN,       /* Plan 61 / ADR 0271: clamped unsharp mask */
 } vgfx3d_postfx_effect_kind_t;
 
 /// @brief One ordered chain entry: an effect kind plus its parameter snapshot.
@@ -348,6 +368,11 @@ void *rt_postfx3d_make_identity_lut(void);
 /// @param decay Per-sample attenuation in the open unit interval.
 /// @param samples Requested radial sample count, clamped to at most forty-eight.
 void rt_postfx3d_add_sun_shafts(void *obj, double intensity, double decay, int64_t samples);
+
+/// @brief Append a clamped unsharp-mask sharpen pass (Plan 61 / ADR 0271).
+/// @param obj PostFX3D chain receiving the effect.
+/// @param amount Edge gain clamped to `[0, 1]` (0 is identity).
+void rt_postfx3d_add_sharpen(void *obj, double amount);
 
 /// @brief Report whether a chain contains effects requiring scene depth or motion inputs.
 /// @param postfx Candidate gameplay-facing PostFX3D chain.

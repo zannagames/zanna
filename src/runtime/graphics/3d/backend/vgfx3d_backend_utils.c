@@ -720,7 +720,7 @@ int vgfx3d_postfx_chain_is_usable(const struct vgfx3d_postfx_chain *chain) {
         return 0;
     for (int32_t index = 0; index < chain->effect_count; index++) {
         if (chain->effects[index].type < (int32_t)VGFX3D_POSTFX_EFFECT_BLOOM ||
-            chain->effects[index].type > (int32_t)VGFX3D_POSTFX_EFFECT_SUN_SHAFTS)
+            chain->effects[index].type > (int32_t)VGFX3D_POSTFX_EFFECT_SHARPEN)
             return 0;
     }
     return 1;
@@ -787,6 +787,19 @@ void vgfx3d_sanitize_postfx_snapshot(const struct vgfx3d_postfx_snapshot *src,
         dst->ssr_steps = 8;
     else if (src->ssr_steps > 48)
         dst->ssr_steps = 48;
+    dst->sharpen_enabled = src->sharpen_enabled != 0;
+    dst->sharpen_amount = vgfx3d_clamp_float_param(src->sharpen_amount, 0.0f, 1.0f, 0.4f);
+    /* Plan 61: LUT payload is usable only when the strip pointer and the exact
+     * 256x16 tile layout survive together — anything else disables the pass. */
+    dst->color_lut_enabled = src->color_lut_enabled != 0 && src->color_lut_texels != NULL &&
+                             src->color_lut_width == 256 && src->color_lut_height == 16;
+    dst->color_lut_blend = vgfx3d_clamp_float_param(src->color_lut_blend, 0.0f, 1.0f, 1.0f);
+    if (!dst->color_lut_enabled) {
+        dst->color_lut_texels = NULL;
+        dst->color_lut_width = 0;
+        dst->color_lut_height = 0;
+        dst->color_lut_revision = 0;
+    }
 }
 
 /// @brief Convert one reversed-Z depth sample into the backend hook's canonical convention.

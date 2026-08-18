@@ -58,10 +58,12 @@ namespace {
  * by hand): +1 function / +1 method. */
 // ADR 0257: Sky3D night mode adds set/get Stars + StarIntensity
 // (2249 -> 2253 functions, 826 -> 828 properties).
-constexpr std::size_t kExpectedFunctionCount = 2253;
+// ADRs 0271/0272 (PostFX3D.AddSharpen + PostFXEffectKind.Sharpen +
+// Material3D.SetTextureFilters) reviewed 2026-08-18.
+constexpr std::size_t kExpectedFunctionCount = 2256;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 828;
-constexpr std::size_t kExpectedMethodCount = 1210;
+constexpr std::size_t kExpectedPropertyCount = 829;
+constexpr std::size_t kExpectedMethodCount = 1212;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -255,8 +257,8 @@ int main() {
      * Rehashed 2026-08-15: Mesh3D.RasterizeUvMaskY added (bind-pose
      * Y-band UV coverage into a Pixels mask — body-zone texture masking
      * for per-region character recolors, plan 55 uniforms). */
-    // ADR 0257 (Sky3D night mode) reviewed 2026-08-16.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x9074dd2a92a16414);
+    // ADRs 0271/0272 (Sharpen postfx + Material3D texture filters) reviewed 2026-08-18.
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x8d6129899e05da62);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

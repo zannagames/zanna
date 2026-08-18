@@ -1604,6 +1604,14 @@ typedef struct {
     int32_t tonemapExplicit;
     int32_t bloomTexEnabled;
     int32_t taaPad;
+    /* Plan 61: GPU COLOR_LUT pass (16-byte block keeps the MSL size in sync). */
+    int32_t lutEnabled;
+    float lutBlend;
+    float lutPad[2];
+    /* Plan 61 / ADR 0271: clamped unsharp-mask sharpen (16-byte block). */
+    int32_t sharpenEnabled;
+    float sharpenAmount;
+    float sharpenPad[2];
 } mtl_postfx_params_t;
 
 /* C-side bloom pass params (must match MSL BloomParams). */
@@ -1749,6 +1757,59 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
     params->motionBlurEnabled = postfx->motion_blur_enabled ? 1 : 0;
     params->motionBlurIntensity = postfx->motion_blur_intensity;
     params->motionBlurSamples = postfx->motion_blur_samples;
+    params->lutEnabled = postfx->color_lut_enabled ? 1 : 0;
+    params->lutBlend = postfx->color_lut_blend;
+    params->sharpenEnabled = postfx->sharpen_enabled ? 1 : 0;
+    params->sharpenAmount = postfx->sharpen_amount;
+}
+
+/// @brief Return the cached 256x16 COLOR_LUT texture for @p postfx, uploading when the
+/// snapshot's (texel pointer, revision) cache key changes.
+/// @details The texel pointer is borrowed from the chain-retained LUT Pixels and packed
+///          0xRRGGBBAA per texel; bytes are swizzled into RGBA8 staging before upload so
+///          host endianness never leaks into the texture. Returns nil when the snapshot
+///          carries no usable LUT payload.
+/// @param ctx Borrowed Metal context owning the cache slot.
+/// @param postfx Borrowed sanitized effect snapshot, or NULL.
+/// @return The ready LUT texture, or nil when unavailable.
+static id<MTLTexture> metal_ensure_postfx_lut_texture(VGFXMetalContext *ctx,
+                                                      const vgfx3d_postfx_snapshot_t *postfx) {
+    uint8_t staging[256 * 16 * 4];
+    id<MTLTexture> tex;
+
+    if (!ctx || !postfx || !postfx->color_lut_enabled || !postfx->color_lut_texels ||
+        postfx->color_lut_width != 256 || postfx->color_lut_height != 16)
+        return nil;
+    if (ctx.postfxLutTexture && ctx.postfxLutKey == (uintptr_t)postfx->color_lut_texels &&
+        ctx.postfxLutRevision == postfx->color_lut_revision)
+        return ctx.postfxLutTexture;
+
+    /* Always upload into a fresh texture: an in-flight frame may still read
+     * the previous one (command buffers retain it; ARC reclaims after). */
+    tex = metal_new_color_texture(ctx,
+                                  256,
+                                  16,
+                                  MTLPixelFormatRGBA8Unorm,
+                                  MTLTextureUsageShaderRead,
+                                  MTLStorageModeShared,
+                                  NO);
+    if (!tex)
+        return nil;
+    for (int32_t i = 0; i < 256 * 16; i++) {
+        uint32_t t = postfx->color_lut_texels[i];
+        staging[i * 4 + 0] = (uint8_t)((t >> 24) & 0xFFu);
+        staging[i * 4 + 1] = (uint8_t)((t >> 16) & 0xFFu);
+        staging[i * 4 + 2] = (uint8_t)((t >> 8) & 0xFFu);
+        staging[i * 4 + 3] = (uint8_t)(t & 0xFFu);
+    }
+    [tex replaceRegion:MTLRegionMake2D(0, 0, 256, 16)
+           mipmapLevel:0
+             withBytes:staging
+           bytesPerRow:256 * 4];
+    ctx.postfxLutTexture = tex;
+    ctx.postfxLutKey = (uintptr_t)postfx->color_lut_texels;
+    ctx.postfxLutRevision = postfx->color_lut_revision;
+    return tex;
 }
 
 /// @brief Encode one full-screen post-processing pass, sampling @p source into a new output
@@ -1808,6 +1869,11 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
         [pfxEncoder setFragmentTexture:ctx.overlayColorTexture atIndex:3];
     [pfxEncoder setFragmentTexture:(bloom_tex_enabled ? bloom_texture : ctx.defaultTexture)
                            atIndex:4];
+    /* Plan 61: COLOR_LUT strip (cached upload); the default texture keeps the
+     * slot bound when this pass carries no LUT, and a failed upload
+     * force-disables the pass so the shader never grades toward it. */
+    id<MTLTexture> lut_texture = metal_ensure_postfx_lut_texture(ctx, postfx);
+    [pfxEncoder setFragmentTexture:(lut_texture ? lut_texture : ctx.defaultTexture) atIndex:5];
     [pfxEncoder setFragmentSamplerState:(ctx.sharedSampler ? ctx.sharedSampler : ctx.defaultSampler)
                                 atIndex:0];
 
@@ -1819,6 +1885,8 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
                              source_texture.width,
                              source_texture.height,
                              &params);
+    if (!lut_texture)
+        params.lutEnabled = 0;
     [pfxEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
 
     [pfxEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
@@ -2070,9 +2138,13 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
                 if (!output_texture)
                     return nil;
             } else {
-                output_texture =
-                    metal_encode_postfx_pass(ctx, source_texture, target_texture, &safe_snapshot,
-                                             0, bloom_texture, !tonemapped_yet);
+                output_texture = metal_encode_postfx_pass(ctx,
+                                                          source_texture,
+                                                          target_texture,
+                                                          &safe_snapshot,
+                                                          0,
+                                                          bloom_texture,
+                                                          !tonemapped_yet);
                 /* This pass encoded to display space iff it ran a real tone
                  * curve, or the explicit "tonemap off" output transform on
                  * still-linear input. */

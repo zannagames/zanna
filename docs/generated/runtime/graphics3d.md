@@ -495,6 +495,7 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics3d-material3d-getcustomparam"></a>`GetCustomParam` | `f64(i64)` | `Zanna.Graphics3D.Material3D.GetCustomParam` |
+| <a id="zanna-graphics3d-material3d-settexturefilters"></a>`SetTextureFilters` | `void(i64,i64,i64)` | `Zanna.Graphics3D.Material3D.SetTextureFilters` |
 | <a id="zanna-graphics3d-material3d-fromcolor"></a>`FromColor` | `obj(f64,f64,f64)` | `Zanna.Graphics3D.Material3D.FromColor` |
 | <a id="zanna-graphics3d-material3d-textured"></a>`Textured` | `obj(obj)` | `Zanna.Graphics3D.Material3D.Textured` |
 | <a id="zanna-graphics3d-material3d-pbr"></a>`PBR` | `obj(f64,f64,f64)` | `Zanna.Graphics3D.Material3D.PBR` |
@@ -1171,6 +1172,7 @@ Constructor: `Zanna.Graphics3D.PostFX3D.New`
 | <a id="zanna-graphics3d-postfx3d-addfxaa"></a>`AddFxaa` | `void()` | `Zanna.Graphics3D.PostFX3D.AddFxaa` |
 | <a id="zanna-graphics3d-postfx3d-addcolorgrade"></a>`AddColorGrade` | `void(f64,f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddColorGrade` |
 | <a id="zanna-graphics3d-postfx3d-addvignette"></a>`AddVignette` | `void(f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddVignette` |
+| <a id="zanna-graphics3d-postfx3d-addsharpen"></a>`AddSharpen` | `void(f64)` | `Zanna.Graphics3D.PostFX3D.AddSharpen` |
 | <a id="zanna-graphics3d-postfx3d-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.PostFX3D.Clear` |
 | <a id="zanna-graphics3d-postfx3d-geteffectkind"></a>`GetEffectKind` | `i64(i64)` | `Zanna.Graphics3D.PostFX3D.GetEffectKind` |
 | <a id="zanna-graphics3d-postfx3d-removeeffectat"></a>`RemoveEffectAt` | `i1(i64)` | `Zanna.Graphics3D.PostFX3D.RemoveEffectAt` |
@@ -1209,6 +1211,7 @@ surface exposes properties such as `Bloom`, `Tonemap`, `Ssao`, `SunShafts`.
 | <a id="zanna-graphics3d-postfxeffectkind-autoexposure"></a>`AutoExposure` | `i64` | read-only |
 | <a id="zanna-graphics3d-postfxeffectkind-colorlut"></a>`ColorLut` | `i64` | read-only |
 | <a id="zanna-graphics3d-postfxeffectkind-sunshafts"></a>`SunShafts` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-sharpen"></a>`Sharpen` | `i64` | read-only |
 
 <a id="zanna-graphics3d-ray3d"></a>
 ### `Zanna.Graphics3D.Ray3D`
@@ -3039,6 +3042,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-material3d-get-normalscale"></a>`Zanna.Graphics3D.Material3D.get_NormalScale` | `f64(obj)` | `rt_material3d_get_normal_scale` |
 | <a id="zanna-graphics3d-material3d-set-anisotropy"></a>`Zanna.Graphics3D.Material3D.set_Anisotropy` | `void(obj,i64)` | `rt_material3d_set_anisotropy` |
 | <a id="zanna-graphics3d-material3d-get-anisotropy"></a>`Zanna.Graphics3D.Material3D.get_Anisotropy` | `i64(obj)` | `rt_material3d_get_anisotropy` |
+| `Zanna.Graphics3D.Material3D.SetTextureFilters` | `void(obj,i64,i64,i64)` | `rt_material3d_set_texture_filters` |
 | <a id="zanna-graphics3d-material3d-set-alphamode"></a>`Zanna.Graphics3D.Material3D.set_AlphaMode` | `void(obj,i64)` | `rt_material3d_set_alpha_mode` |
 | <a id="zanna-graphics3d-material3d-get-alphamode"></a>`Zanna.Graphics3D.Material3D.get_AlphaMode` | `i64(obj)` | `rt_material3d_get_alpha_mode` |
 | <a id="zanna-graphics3d-material3d-set-shadowmode"></a>`Zanna.Graphics3D.Material3D.set_ShadowMode` | `void(obj,i64)` | `rt_material3d_set_shadow_mode` |
@@ -3415,6 +3419,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.PostFX3D.AddFxaa` | `void(obj)` | `rt_postfx3d_add_fxaa` |
 | `Zanna.Graphics3D.PostFX3D.AddColorGrade` | `void(obj,f64,f64,f64)` | `rt_postfx3d_add_color_grade` |
 | `Zanna.Graphics3D.PostFX3D.AddVignette` | `void(obj,f64,f64)` | `rt_postfx3d_add_vignette` |
+| `Zanna.Graphics3D.PostFX3D.AddSharpen` | `void(obj,f64)` | `rt_postfx3d_add_sharpen` |
 | <a id="zanna-graphics3d-postfx3d-set-isenabled"></a>`Zanna.Graphics3D.PostFX3D.set_IsEnabled` | `void(obj,i1)` | `rt_postfx3d_set_enabled` |
 | <a id="zanna-graphics3d-postfx3d-get-isenabled"></a>`Zanna.Graphics3D.PostFX3D.get_IsEnabled` | `i1(obj)` | `rt_postfx3d_get_enabled` |
 | `Zanna.Graphics3D.PostFX3D.Clear` | `void(obj)` | `rt_postfx3d_clear` |
@@ -3436,6 +3441,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-postfxeffectkind-get-autoexposure"></a>`Zanna.Graphics3D.PostFXEffectKind.get_AutoExposure` | `i64()` | `rt_postfx3d_effect_kind_auto_exposure` |
 | <a id="zanna-graphics3d-postfxeffectkind-get-colorlut"></a>`Zanna.Graphics3D.PostFXEffectKind.get_ColorLut` | `i64()` | `rt_postfx3d_effect_kind_color_lut` |
 | <a id="zanna-graphics3d-postfxeffectkind-get-sunshafts"></a>`Zanna.Graphics3D.PostFXEffectKind.get_SunShafts` | `i64()` | `rt_postfx3d_effect_kind_sun_shafts` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-sharpen"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Sharpen` | `i64()` | `rt_postfx3d_effect_kind_sharpen` |
 | `Zanna.Graphics3D.Ray3D.IntersectTriangle` | `f64(obj,obj,obj,obj,obj)` | `rt_ray3d_intersect_triangle` |
 | `Zanna.Graphics3D.Ray3D.IntersectTriangleCull` | `f64(obj,obj,obj,obj,obj,i1)` | `rt_ray3d_intersect_triangle_cull` |
 | `Zanna.Graphics3D.Ray3D.IntersectMesh` | `obj(obj,obj,obj,obj)` | `rt_ray3d_intersect_mesh` |

@@ -1613,6 +1613,47 @@ void rt_material3d_set_anisotropy(void *obj, int64_t anisotropy) {
         mat->texture_slot_anisotropy[slot] = sanitized;
 }
 
+/// @brief Set the sampler filters for every texture slot (Plan 61 / ADR 0272).
+/// @details Pixels-sourced textures default to `MIP_FILTER_NONE`, which
+///   renders base-level-only even though the backends generate mip chains —
+///   distance shimmer on any tiled surface. This public setter lets authored
+///   materials opt into trilinear (or any filter combination) without going
+///   through the importer-only sampler-axes boundary. Out-of-range values
+///   fall back to the slot defaults (Linear/Linear/None) rather than trapping.
+/// @param obj Material3D receiver.
+/// @param min_filter Minification: 0=Linear, 1=Nearest.
+/// @param mag_filter Magnification: 0=Linear, 1=Nearest.
+/// @param mip_filter Mip selection: 0=None, 1=Nearest, 2=Linear.
+void rt_material3d_set_texture_filters(void *obj,
+                                       int64_t min_filter,
+                                       int64_t mag_filter,
+                                       int64_t mip_filter) {
+    rt_material3d *mat = material_checked(obj);
+    int32_t min_f;
+    int32_t mag_f;
+    int32_t mip_f;
+    if (!mat)
+        return;
+    min_f = (min_filter == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST)
+                ? RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
+                : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
+    mag_f = (mag_filter == RT_MATERIAL3D_TEXTURE_FILTER_NEAREST)
+                ? RT_MATERIAL3D_TEXTURE_FILTER_NEAREST
+                : RT_MATERIAL3D_TEXTURE_FILTER_LINEAR;
+    mip_f = (mip_filter == RT_MATERIAL3D_TEXTURE_MIP_FILTER_NEAREST ||
+             mip_filter == RT_MATERIAL3D_TEXTURE_MIP_FILTER_LINEAR)
+                ? (int32_t)mip_filter
+                : RT_MATERIAL3D_TEXTURE_MIP_FILTER_NONE;
+    for (int slot = 0; slot < RT_MATERIAL3D_TEXTURE_SLOT_COUNT; slot++) {
+        mat->texture_slot_min_filter[slot] = min_f;
+        mat->texture_slot_mag_filter[slot] = mag_f;
+        mat->texture_slot_mip_filter[slot] = mip_f;
+    }
+    mat->texture_min_filter = min_f;
+    mat->texture_mag_filter = mag_f;
+    mat->texture_mip_filter = mip_f;
+}
+
 /// @brief Read material texture anisotropy, clamped to the public [1,16] range.
 /// @param obj Material3D receiver.
 /// @return Sanitized anisotropy level, or one for an invalid material.
