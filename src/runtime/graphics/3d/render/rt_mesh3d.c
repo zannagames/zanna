@@ -1960,6 +1960,139 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
     }
 }
 
+/// @brief Rasterize per-texel INTERPOLATED bind-pose Y into UV space (see
+///   rt_canvas3d.h). Identical triangle setup and conservative coverage to
+///   rt_mesh3d_rasterize_uv_mask_y; instead of stamping a flat mask, each
+///   covered texel receives the barycentric Y at its center (clamped to the
+///   triangle's own Y range so conservative-bias texels just outside an edge
+///   stay honest), mapped [y_min, y_max] -> luminance 1..255. Overlapping
+///   triangles last-win — the atlases in scope pack disjoint charts.
+void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min, double y_max) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    int64_t w;
+    int64_t h;
+    uint32_t vertex_count;
+    uint32_t index_count;
+    double y_span;
+    if (!m || !height_pixels)
+        return;
+    w = rt_pixels_width(height_pixels);
+    h = rt_pixels_height(height_pixels);
+    if (w <= 0 || h <= 0)
+        return;
+    y_span = y_max - y_min;
+    if (!isfinite(y_span) || y_span <= 0.0)
+        return;
+    rt_mesh3d_repair_geometry_counts(m);
+    vertex_count = rt_mesh3d_safe_vertex_count(m);
+    index_count = rt_mesh3d_safe_index_count(m);
+    for (uint32_t i = 0; i + 2 < index_count; i += 3) {
+        uint32_t i0 = m->indices[i], i1 = m->indices[i + 1], i2 = m->indices[i + 2];
+        double ax, ay, bx, by, cx, cy;
+        double y0, y1, y2, ty_min, ty_max;
+        double min_x, max_x, min_y, max_y;
+        double area;
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
+            continue;
+        y0 = m->vertices[i0].pos[1];
+        y1 = m->vertices[i1].pos[1];
+        y2 = m->vertices[i2].pos[1];
+        ty_min = y0;
+        ty_max = y0;
+        if (y1 < ty_min)
+            ty_min = y1;
+        if (y1 > ty_max)
+            ty_max = y1;
+        if (y2 < ty_min)
+            ty_min = y2;
+        if (y2 > ty_max)
+            ty_max = y2;
+        ax = ((double)m->vertices[i0].uv[0] - floor((double)m->vertices[i0].uv[0])) * (double)w;
+        ay = ((double)m->vertices[i0].uv[1] - floor((double)m->vertices[i0].uv[1])) * (double)h;
+        bx = ((double)m->vertices[i1].uv[0] - floor((double)m->vertices[i1].uv[0])) * (double)w;
+        by = ((double)m->vertices[i1].uv[1] - floor((double)m->vertices[i1].uv[1])) * (double)h;
+        cx = ((double)m->vertices[i2].uv[0] - floor((double)m->vertices[i2].uv[0])) * (double)w;
+        cy = ((double)m->vertices[i2].uv[1] - floor((double)m->vertices[i2].uv[1])) * (double)h;
+        if (!isfinite(ax) || !isfinite(ay) || !isfinite(bx) || !isfinite(by) || !isfinite(cx) ||
+            !isfinite(cy))
+            continue;
+        min_x = ax;
+        max_x = ax;
+        min_y = ay;
+        max_y = ay;
+        if (bx < min_x)
+            min_x = bx;
+        if (bx > max_x)
+            max_x = bx;
+        if (cx < min_x)
+            min_x = cx;
+        if (cx > max_x)
+            max_x = cx;
+        if (by < min_y)
+            min_y = by;
+        if (by > max_y)
+            max_y = by;
+        if (cy < min_y)
+            min_y = cy;
+        if (cy > max_y)
+            max_y = cy;
+        area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (!isfinite(area) || (area > -1e-9 && area < 1e-9))
+            continue;
+        {
+            double b0 = 0.5 * (fabs(bx - ax) + fabs(by - ay));
+            double b1 = 0.5 * (fabs(cx - bx) + fabs(cy - by));
+            double b2 = 0.5 * (fabs(ax - cx) + fabs(ay - cy));
+            int64_t x_lo = (int64_t)floor(min_x) - 1;
+            int64_t x_hi = (int64_t)ceil(max_x) + 1;
+            int64_t y_lo = (int64_t)floor(min_y) - 1;
+            int64_t y_hi = (int64_t)ceil(max_y) + 1;
+            if (x_lo < 0)
+                x_lo = 0;
+            if (y_lo < 0)
+                y_lo = 0;
+            if (x_hi > w - 1)
+                x_hi = w - 1;
+            if (y_hi > h - 1)
+                y_hi = h - 1;
+            for (int64_t py = y_lo; py <= y_hi; py++) {
+                for (int64_t px = x_lo; px <= x_hi; px++) {
+                    double sx = (double)px + 0.5;
+                    double sy = (double)py + 0.5;
+                    double w0 = (bx - ax) * (sy - ay) - (by - ay) * (sx - ax);
+                    double w1 = (cx - bx) * (sy - by) - (cy - by) * (sx - bx);
+                    double w2 = (ax - cx) * (sy - cy) - (ay - cy) * (sx - cx);
+                    double yv;
+                    int64_t v;
+                    uint32_t texel;
+                    if (area > 0.0) {
+                        if (w0 < -b0 || w1 < -b1 || w2 < -b2)
+                            continue;
+                    } else {
+                        if (w0 > b0 || w1 > b1 || w2 > b2)
+                            continue;
+                    }
+                    /* Edge weights are proportional to the OPPOSITE vertex's
+                     * barycentric coordinate: w0 (edge a->b) pairs with c,
+                     * w1 (edge b->c) with a, w2 (edge c->a) with b. */
+                    yv = (w1 * y0 + w2 * y1 + w0 * y2) / area;
+                    if (yv < ty_min)
+                        yv = ty_min;
+                    if (yv > ty_max)
+                        yv = ty_max;
+                    v = (int64_t)(1.0 + 254.0 * (yv - y_min) / y_span + 0.5);
+                    if (v < 1)
+                        v = 1;
+                    if (v > 255)
+                        v = 255;
+                    texel = ((uint32_t)v << 24) | ((uint32_t)v << 16) | ((uint32_t)v << 8) | 0xFFu;
+                    rt_pixels_set_rgba(height_pixels, px, py, (int64_t)texel);
+                }
+            }
+        }
+    }
+}
+
 /// @brief Compute per-vertex normals from the mesh's triangle faces when the source provided
 ///   none, accumulating area-weighted face normals and normalizing. Traps on accumulator
 ///   allocation overflow.

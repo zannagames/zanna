@@ -62,6 +62,31 @@ Two new native Pixels ops, registered beside the ADR-0269 family:
    target performs the one-time "whiten authored navy regions" atlas
    preparation. Alpha untouched.
 
+## Amendment (2026-08-19): `Mesh3D.RasterizeUvHeight`
+
+The band rasterizer (`RasterizeUvMaskY`, ADR 0269 family) includes every
+triangle whose Y range INTERSECTS the band, so classification boundaries
+derived from bands are triangle-granular (±6 cm on the actor meshes) —
+the jagged hem/shoulder cuts. New op
+`Zanna.Graphics3D.Mesh3D.RasterizeUvHeight(pixels, yMin, yMax)`
+(`rt_mesh3d_rasterize_uv_height`): identical triangle setup and
+conservative half-texel coverage, but each covered texel receives the
+BARYCENTRIC-INTERPOLATED object-space Y at its center (clamped to the
+triangle's own Y range), mapped `[yMin, yMax] -> luminance 1..255`
+(0 = uncovered). Overlapping triangles last-win (charts are disjoint).
+Callers threshold the height map per TEXEL — garment cuts become exact.
+One Graphics3D ABI entry + method; the pinned graphics3d manifest is
+re-pinned deliberately with this ADR as the review record.
+
+Also added: `Zanna.Graphics.Pixels.StampNonZero(src)`
+(`rt_pixels_stamp_nonzero`) — copy every src texel with non-zero RGB
+over the receiver (same dims; mismatch no-op). The sparse-layer stamp:
+the offline mask generator computes garment-fabric-sourced fills for the
+AI bakes' pure-black occlusion holes (a DilateOwner whose fill domain is
+the garment masks only) and ships them as a mostly-zero heal layer; the
+runtime applies it in one native pass before padding and tinting.
+Pixels 2D surface — unpinned, no manifest churn.
+
 ## Consequences
 
 - Two more Pixels ABI entries (`void(obj,obj,i64)` and

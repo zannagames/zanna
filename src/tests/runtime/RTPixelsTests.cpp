@@ -2288,6 +2288,26 @@ static void test_colorize_masked_strength_and_alpha() {
     printf("test_colorize_masked_strength_and_alpha: PASSED\n");
 }
 
+static void test_stamp_nonzero_copies_sparse_layer() {
+    void *p = rt_pixels_new(3, 1);
+    void *layer = rt_pixels_new(3, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x101010FF);
+    rt_pixels_set_rgba(p, 1, 0, 0x202020FF);
+    rt_pixels_set_rgba(p, 2, 0, 0x303030FF);
+    /* Layer patches only the middle texel; zero-RGB texels pass through. */
+    rt_pixels_set_rgba(layer, 1, 0, 0xC8C8C8FF);
+    rt_pixels_stamp_nonzero(p, layer);
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0x101010FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0xC8C8C8FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0x303030FFu);
+    /* Dimension mismatch is a documented no-op. */
+    void *wrong = rt_pixels_new(2, 2);
+    rt_pixels_set_rgba(wrong, 0, 0, 0xFFFFFFFF);
+    rt_pixels_stamp_nonzero(p, wrong);
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0x101010FFu);
+    printf("test_stamp_nonzero_copies_sparse_layer: PASSED\n");
+}
+
 static void test_colorize_masked_mask_scale() {
     /* A half-width mask scales proportionally: its covered left half
      * gates the pixels' left half. */
@@ -2484,6 +2504,7 @@ int main() {
     test_colorize_masked_shade();
     test_colorize_masked_strength_and_alpha();
     test_colorize_masked_mask_scale();
+    test_stamp_nonzero_copies_sparse_layer();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

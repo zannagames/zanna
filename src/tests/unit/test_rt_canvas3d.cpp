@@ -698,6 +698,48 @@ static void test_mesh_rasterize_uv_mask_conservative() {
     PASS();
 }
 
+static void test_mesh_rasterize_uv_height_interpolates() {
+    TEST("Mesh3D.RasterizeUvHeight writes per-texel interpolated Y (1..255)");
+    void *m = rt_mesh3d_new();
+    // A quad whose object-space Y rises linearly with V: y=0 along the
+    // top edge (v=0.2), y=1 along the bottom edge (v=0.8), UV footprint
+    // in the middle of a 32x32 map so border texels stay uncovered.
+    rt_mesh3d_add_vertex(m, 0, 0.0, 0, 0, 1, 0, 0.20, 0.20);
+    rt_mesh3d_add_vertex(m, 1, 0.0, 0, 0, 1, 0, 0.80, 0.20);
+    rt_mesh3d_add_vertex(m, 0, 1.0, 0, 0, 1, 0, 0.20, 0.80);
+    rt_mesh3d_add_vertex(m, 1, 1.0, 0, 0, 1, 0, 0.80, 0.80);
+    rt_mesh3d_add_triangle(m, 0, 1, 2);
+    rt_mesh3d_add_triangle(m, 1, 3, 2);
+    void *hm = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_height(m, hm, 0.0, 1.0);
+    // Uncovered border stays zero.
+    EXPECT_EQ(rt_pixels_get_rgba(hm, 1, 1), 0);
+    // Values rise monotonically down the map (Y rises with V).
+    int64_t lo = rt_pixels_get_rgba(hm, 16, 8) >> 24 & 0xFF;
+    int64_t mid = rt_pixels_get_rgba(hm, 16, 16) >> 24 & 0xFF;
+    int64_t hi = rt_pixels_get_rgba(hm, 16, 24) >> 24 & 0xFF;
+    EXPECT_TRUE(lo > 0, "covered texel writes a non-zero height");
+    EXPECT_TRUE(mid > lo, "height rises monotonically down the ramp");
+    EXPECT_TRUE(hi > mid, "height keeps rising toward the bottom edge");
+    // The interpolated value matches the analytic ramp: texel row py
+    // samples v=(py+0.5)/32, y=(v-0.2)/0.6, luminance 1+254*y (+-6 for
+    // the conservative edge relax + rounding).
+    int64_t expect_mid = 1 + (int64_t)(254.0 * (((16.5 / 32.0) - 0.2) / 0.6) + 0.5);
+    EXPECT_TRUE(mid - expect_mid < 6 && expect_mid - mid < 6,
+                "interpolated height matches the analytic ramp within 6");
+    // Alpha is opaque on covered texels.
+    EXPECT_EQ(rt_pixels_get_rgba(hm, 16, 16) & 0xFF, 0xFF);
+    // Thresholding the height map reproduces the band op's interior: a
+    // texel whose height maps above y=0.5 is inside the [0.5, 1.0] band.
+    void *band = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_mask_y(m, band, 0.5, 1.0);
+    int64_t hv = rt_pixels_get_rgba(hm, 16, 24) >> 24 & 0xFF;
+    // y ~0.77 -> well above the 0.5 threshold (128).
+    EXPECT_TRUE(hv > 128, "band-interior texel maps above the threshold");
+    EXPECT_EQ(rt_pixels_get_rgba(band, 16, 24), (int64_t)0xFFFFFFFF);
+    PASS();
+}
+
 static void test_mesh_vertex_position_readback() {
     TEST("Mesh3D.VertexPosition preserves precision and rejects invalid indices");
     void *m = rt_mesh3d_new();
@@ -11365,6 +11407,7 @@ int main() {
     test_mesh_empty();
     test_mesh_add_vertex_triangle();
     test_mesh_rasterize_uv_mask_conservative();
+    test_mesh_rasterize_uv_height_interpolates();
     test_mesh_vertex_position_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();
     test_mesh_mutations_restore_residency_and_counts_are_clamped();

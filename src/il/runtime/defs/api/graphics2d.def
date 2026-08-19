@@ -203,6 +203,7 @@ RT_FUNC(PixelsRecolorMasked, rt_pixels_recolor_masked, "Zanna.Graphics.Pixels.Re
 RT_FUNC(PixelsDilateMasked, rt_pixels_dilate_masked, "Zanna.Graphics.Pixels.DilateMasked", "void(obj,obj,i64)")
 RT_FUNC(PixelsDilateOwner, rt_pixels_dilate_owner, "Zanna.Graphics.Pixels.DilateOwner", "void(obj,obj,i64)")
 RT_FUNC(PixelsColorizeMasked, rt_pixels_colorize_masked, "Zanna.Graphics.Pixels.ColorizeMasked", "void(obj,obj,i64,i64,f64,f64)")
+RT_FUNC(PixelsStampNonZero, rt_pixels_stamp_nonzero, "Zanna.Graphics.Pixels.StampNonZero", "void(obj,obj)")
 RT_FUNC(PixelsTintMaskedNeutral, rt_pixels_tint_masked_neutral, "Zanna.Graphics.Pixels.TintMaskedNeutral", "void(obj,obj,i64,f64,i64,i64,i64)")
 RT_FUNC(PixelsFlipV,     rt_pixels_flip_v,     "Zanna.Graphics.Pixels.FlipV",     "obj(obj)")
 RT_FUNC(PixelsRotateCW,  rt_pixels_rotate_cw,  "Zanna.Graphics.Pixels.RotateClockwise",  "obj(obj)")

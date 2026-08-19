@@ -60,10 +60,14 @@ namespace {
 // (2249 -> 2253 functions, 826 -> 828 properties).
 // ADRs 0271/0272 (PostFX3D.AddSharpen + PostFXEffectKind.Sharpen +
 // Material3D.SetTextureFilters) reviewed 2026-08-18.
-constexpr std::size_t kExpectedFunctionCount = 2256;
+// ADR 0273 amendment (2026-08-19): Mesh3D.RasterizeUvHeight — per-texel
+// interpolated bind-Y rasterization for texel-exact garment
+// classification (the band op includes whole straddling triangles):
+// +1 function / +1 method.
+constexpr std::size_t kExpectedFunctionCount = 2257;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 829;
-constexpr std::size_t kExpectedMethodCount = 1212;
+constexpr std::size_t kExpectedMethodCount = 1213;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -258,7 +262,8 @@ int main() {
      * Y-band UV coverage into a Pixels mask — body-zone texture masking
      * for per-region character recolors, plan 55 uniforms). */
     // ADRs 0271/0272 (Sharpen postfx + Material3D texture filters) reviewed 2026-08-18.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x8d6129899e05da62);
+    // Re-pinned 2026-08-19 (ADR 0273 amendment: Mesh3D.RasterizeUvHeight).
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x2f7dc08f443596a9);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

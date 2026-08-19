@@ -171,6 +171,13 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes);
 void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
                                double max_shade, double strength);
 
+/// @brief Copy every texel of @p src whose RGB is non-zero over the
+///   receiver (same dimensions; mismatch is a no-op). The sparse-layer
+///   stamp: offline tools bake per-texel patches (e.g. garment-sourced
+///   fills for the AI bakes' black occlusion holes) into a mostly-zero
+///   layer, and the runtime applies them in one native pass.
+void rt_pixels_stamp_nonzero(void *pixels, void *src);
+
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.

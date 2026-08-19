@@ -1035,6 +1035,19 @@ void rt_mesh3d_recalc_normals(void *obj);
 /// @param y_min Inclusive lower object-space Y bound.
 /// @param y_max Inclusive upper object-space Y bound.
 void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, double y_max);
+
+/// @brief Rasterize the mesh's triangles into UV space writing the
+///        BARYCENTRIC-INTERPOLATED object-space Y per texel (see
+///        rt_mesh3d.c). [y_min, y_max] maps to luminance 1..255
+///        (0 = uncovered); same conservative half-texel coverage as
+///        rt_mesh3d_rasterize_uv_mask_y; overlapping triangles last-win.
+///        Gives callers texel-exact height classification where the band
+///        op could only include whole straddling triangles.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param height_pixels Pixels handle receiving the height map (any size).
+/// @param y_min Object-space Y mapping to luminance 1.
+/// @param y_max Object-space Y mapping to luminance 255 (> y_min).
+void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min, double y_max);
 /// @brief Deep copy the mesh (independent storage; safe to mutate the clone).
 /// @param obj Borrowed source Mesh3D handle.
 /// @return New independent GC-managed Mesh3D, or NULL on invalid input or allocation failure.

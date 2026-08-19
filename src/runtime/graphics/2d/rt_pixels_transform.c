@@ -1592,6 +1592,24 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
     pixels_touch(m);
 }
 
+/// @brief Sparse-layer stamp: copy src texels with non-zero RGB (see
+///   rt_pixels.h).
+void rt_pixels_stamp_nonzero(void *pixels, void *src) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.StampNonZero: null pixels");
+    rt_pixels_impl *s = rt_pixels_checked_impl(src, "Pixels.StampNonZero: null src");
+    int64_t count;
+    if (!p || !p->data || !s || !s->data)
+        return;
+    if (p->width != s->width || p->height != s->height)
+        return;
+    count = p->width * p->height;
+    for (int64_t i = 0; i < count; i++) {
+        if ((s->data[i] & 0xFFFFFF00u) != 0u)
+            p->data[i] = s->data[i];
+    }
+    pixels_touch(p);
+}
+
 /// @brief Mask-scoped shade-preserving colorize (see rt_pixels.h).
 /// rt_pixels_recolor_masked's interior formula with the color-class gates
 /// replaced by an explicit mask, an explicit reference luminance, and an
