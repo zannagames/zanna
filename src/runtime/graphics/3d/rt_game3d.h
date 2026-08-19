@@ -1088,6 +1088,29 @@ void *rt_game3d_entity_attach_to_bone_offset(void *entity,
                                              double offset_x,
                                              double offset_y,
                                              double offset_z);
+/// @brief Fluent: attach a child entity to a named bone with a bone-space
+///   offset and a bone-space rotation in Euler degrees (ADR 0274). The
+///   rotation composes after the bone pose during socket sync, so a held prop
+///   can cock or roll in the hand without baking the tilt into its mesh.
+/// @param entity Entity3D instance used by the operation.
+/// @param child Value supplied for the child argument.
+/// @param bone_name Value supplied for the bone name argument.
+/// @param offset_x Value supplied for the offset x argument.
+/// @param offset_y Value supplied for the offset y argument.
+/// @param offset_z Value supplied for the offset z argument.
+/// @param rot_x_deg Bone-space X rotation in degrees.
+/// @param rot_y_deg Bone-space Y rotation in degrees.
+/// @param rot_z_deg Bone-space Z rotation in degrees.
+/// @return The runtime handle described above, or NULL when unavailable.
+void *rt_game3d_entity_attach_to_bone_offset_rotated(void *entity,
+                                                     void *child,
+                                                     rt_string bone_name,
+                                                     double offset_x,
+                                                     double offset_y,
+                                                     double offset_z,
+                                                     double rot_x_deg,
+                                                     double rot_y_deg,
+                                                     double rot_z_deg);
 /// @brief Fluent: remove this entity's bone-socket binding (stays parented).
 /// @param entity Entity3D instance used by the operation.
 /// @return The runtime handle described above, or NULL when unavailable.

@@ -46,6 +46,7 @@
 #include "rt_heap.h"
 #include "rt_instbatch3d.h"
 #include "rt_mat4.h"
+#include "rt_morphtarget3d.h"
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_quat.h"

@@ -169,6 +169,22 @@ const float *rt_morphtarget3d_get_packed_normal_deltas(void *mt);
 /// @param[in] mt MorphTarget3D to inspect.
 /// @return `1` when any safe shape owns tangent storage; otherwise `0`.
 int64_t rt_morphtarget3d_has_tangent_deltas(void *mt);
+/// @brief Blend active shapes over a base vertex array into a destination copy.
+/// @details CPU pre-pass so deformation composes morph-then-skin exactly like
+///          the GPU vertex path; the CPU-skinning fallback calls it before
+///          palette skinning. Both pointers are `vgfx3d_vertex_t` arrays of
+///          @p vertex_count entries, typed `void *` to keep this header free
+///          of vgfx3d types. The destination is written only on success.
+/// @param[in,out] morph MorphTarget3D whose vertex count must match.
+/// @param[in] src_vertices Base bind-space vertex array.
+/// @param[out] dst_vertices Destination receiving base plus weighted deltas.
+/// @param[in] vertex_count Number of vertices in both arrays.
+/// @return One when a blend was written; zero when the caller should use the
+///         base vertices unchanged.
+int8_t rt_morphtarget3d_blend_vertices_internal(void *morph,
+                                                const void *src_vertices,
+                                                void *dst_vertices,
+                                                uint32_t vertex_count);
 /// @brief Nonzero change generation that bumps whenever any delta changes.
 /// @details Wrap from `UINT64_MAX` returns to one, deliberately skipping zero
 ///          so caches can reserve zero for “never observed.”

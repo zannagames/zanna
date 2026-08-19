@@ -698,6 +698,8 @@ void rt_scene_node3d_attach_to_bone(void *node,
 /// @brief Remove any bone-socket binding; the node keeps its last transform.
 /// @param node Borrowed SceneNode3D handle.
 void rt_scene_node3d_detach_bone_socket(void *node);
+void rt_scene_node3d_set_bone_socket_rotation(
+    void *node, double qx, double qy, double qz, double qw);
 
 /// @brief Get the bound Body3D (NULL if none).
 /// @param node Borrowed SceneNode3D handle.

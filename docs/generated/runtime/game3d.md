@@ -267,6 +267,7 @@ Constructor: `Zanna.Game3D.Entity3D.New`
 | <a id="zanna-game3d-entity3d-attachanimator"></a>`AttachAnimator` | `obj(obj)` | `Zanna.Game3D.Entity3D.AttachAnimator` |
 | <a id="zanna-game3d-entity3d-attachtobone"></a>`AttachToBone` | `obj(obj,str)` | `Zanna.Game3D.Entity3D.AttachToBone` |
 | <a id="zanna-game3d-entity3d-attachtoboneoffset"></a>`AttachToBoneOffset` | `obj(obj,str,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffset` |
+| <a id="zanna-game3d-entity3d-attachtoboneoffsetrotated"></a>`AttachToBoneOffsetRotated` | `obj(obj,str,f64,f64,f64,f64,f64,f64)` | `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` |
 | <a id="zanna-game3d-entity3d-detachfrombone"></a>`DetachFromBone` | `obj()` | `Zanna.Game3D.Entity3D.DetachFromBone` |
 | <a id="zanna-game3d-entity3d-attachbehavior"></a>`AttachBehavior` | `obj(obj)` | `Zanna.Game3D.Entity3D.AttachBehavior` |
 | <a id="zanna-game3d-entity3d-applyimpulse"></a>`ApplyImpulse` | `void(f64,f64,f64)` | `Zanna.Game3D.Entity3D.ApplyImpulse` |
@@ -1952,6 +1953,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | <a id="zanna-game3d-hitchsource-get-frametotal"></a>`Zanna.Game3D.HitchSource.get_FrameTotal` | `i64()` | `rt_game3d_hitchsource_frame_total` |
 | `Zanna.Game3D.Entity3D.AttachToBone` | `obj(obj,obj,str)` | `rt_game3d_entity_attach_to_bone` |
 | `Zanna.Game3D.Entity3D.AttachToBoneOffset` | `obj(obj,obj,str,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset` |
+| `Zanna.Game3D.Entity3D.AttachToBoneOffsetRotated` | `obj(obj,obj,str,f64,f64,f64,f64,f64,f64)` | `rt_game3d_entity_attach_to_bone_offset_rotated` |
 | `Zanna.Game3D.Entity3D.DetachFromBone` | `obj(obj)` | `rt_game3d_entity_detach_from_bone` |
 | `Zanna.Game3D.Entity3D.AttachBehavior` | `obj(obj,obj)` | `rt_game3d_entity_attach_behavior` |
 | <a id="zanna-game3d-entity3d-get-behavior"></a>`Zanna.Game3D.Entity3D.get_Behavior` | `obj<Zanna.Game3D.Behavior3D>(obj)` | `rt_game3d_entity_get_behavior` |

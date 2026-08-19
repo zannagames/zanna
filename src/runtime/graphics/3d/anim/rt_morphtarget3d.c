@@ -1502,11 +1502,14 @@ static float morphtarget_accumulate_lane(float base, float weight, float delta) 
 ///        re-normalize affected directions, and replace any non-finite position with the base.
 /// @details Pure CPU blend extracted from morphtarget_draw_mesh_matrix; weights are pre-sanitized.
 /// @param[in] mt Morph target providing aligned shape channels and weights.
-/// @param[in] m Base mesh providing vertices and vertex count.
+/// @param[in] base_vertices Base vertex array the blend falls back to for
+///                          non-finite results and direction re-normalization.
+/// @param[in] vertex_count Number of vertices in both arrays.
 /// @param[in] shape_count Safe number of shapes to accumulate.
 /// @param[in,out] morphed Writable base-initialized vertex array.
 static void morphtarget_accumulate_morphed_vertices(rt_morphtarget3d *mt,
-                                                    const rt_mesh3d *m,
+                                                    const vgfx3d_vertex_t *base_vertices,
+                                                    uint32_t vertex_count,
                                                     int32_t shape_count,
                                                     vgfx3d_vertex_t *morphed) {
     int has_normal_deltas = 0;
@@ -1524,7 +1527,7 @@ static void morphtarget_accumulate_morphed_vertices(rt_morphtarget3d *mt,
         if (!pd)
             continue;
 
-        for (uint32_t v = 0; v < m->vertex_count; v++) {
+        for (uint32_t v = 0; v < vertex_count; v++) {
             size_t base = (size_t)v * 3u;
             morphed[v].pos[0] = morphtarget_accumulate_lane(morphed[v].pos[0], w, pd[base + 0]);
             morphed[v].pos[1] = morphtarget_accumulate_lane(morphed[v].pos[1], w, pd[base + 1]);
@@ -1553,27 +1556,63 @@ static void morphtarget_accumulate_morphed_vertices(rt_morphtarget3d *mt,
 
     /* Re-normalize normals if any shape had normal deltas */
     if (has_normal_deltas) {
-        for (uint32_t v = 0; v < m->vertex_count; v++) {
+        for (uint32_t v = 0; v < vertex_count; v++) {
             float *n = morphed[v].normal;
-            morphtarget_normalize3_or_copy(n, m->vertices[v].normal);
+            morphtarget_normalize3_or_copy(n, base_vertices[v].normal);
         }
     }
 
     if (has_tangent_deltas) {
-        for (uint32_t v = 0; v < m->vertex_count; v++) {
+        for (uint32_t v = 0; v < vertex_count; v++) {
             float *t = morphed[v].tangent;
-            morphtarget_normalize3_or_copy(t, m->vertices[v].tangent);
+            morphtarget_normalize3_or_copy(t, base_vertices[v].tangent);
         }
     }
 
-    for (uint32_t v = 0; v < m->vertex_count; v++) {
+    for (uint32_t v = 0; v < vertex_count; v++) {
         if (!isfinite(morphed[v].pos[0]) || !isfinite(morphed[v].pos[1]) ||
             !isfinite(morphed[v].pos[2])) {
             for (int lane = 0; lane < 3; ++lane)
                 morphed[v].pos[lane] =
-                    isfinite(m->vertices[v].pos[lane]) ? m->vertices[v].pos[lane] : 0.0f;
+                    isfinite(base_vertices[v].pos[lane]) ? base_vertices[v].pos[lane] : 0.0f;
         }
     }
+}
+
+/// @brief Blend a container's active shapes over @p src_vertices into @p dst_vertices.
+/// @details CPU pre-pass for deformation paths that must compose exactly like
+///          the GPU vertex shader: morph the bind-space vertices FIRST, then
+///          skin. The CPU-skinning fallback calls this before palette skinning;
+///          without it, bind-space deltas were applied to already-posed
+///          vertices and pointed the wrong way once a bone left its bind
+///          orientation. Both arrays are `vgfx3d_vertex_t[vertex_count]`
+///          (passed as `void *` to keep this header vgfx3d-free). Weights are
+///          sanitized in place; the copy happens only when a blend will run.
+/// @param[in] morph MorphTarget3D whose vertex count must equal @p vertex_count.
+/// @param[in] src_vertices Base bind-space vertex array.
+/// @param[out] dst_vertices Destination array receiving base plus weighted deltas.
+/// @return One when @p dst_vertices holds a blended copy; zero (destination
+///         untouched) for invalid handles, a count mismatch, or no shape with
+///         an effective weight — callers then skin @p src_vertices directly.
+int8_t rt_morphtarget3d_blend_vertices_internal(void *morph,
+                                                const void *src_vertices,
+                                                void *dst_vertices,
+                                                uint32_t vertex_count) {
+    rt_morphtarget3d *mt = morphtarget_checked(morph);
+    const vgfx3d_vertex_t *src = (const vgfx3d_vertex_t *)src_vertices;
+    vgfx3d_vertex_t *dst = (vgfx3d_vertex_t *)dst_vertices;
+    if (!mt || !src || !dst || vertex_count == 0)
+        return 0;
+    morphtarget_repair_shape_table(mt);
+    morphtarget_sanitize_weights(mt);
+    int32_t shape_count = morphtarget_safe_shape_count(mt);
+    if ((uint32_t)mt->vertex_count != vertex_count)
+        return 0;
+    if (!morphtarget_has_active_position_deltas(mt))
+        return 0;
+    memcpy(dst, src, (size_t)vertex_count * sizeof(vgfx3d_vertex_t));
+    morphtarget_accumulate_morphed_vertices(mt, src, vertex_count, shape_count, dst);
+    return 1;
 }
 
 /// @brief Submit a mesh draw with morph-target blend applied on GPU or CPU.
@@ -1719,7 +1758,7 @@ static void morphtarget_draw_mesh_matrix(void *canvas,
     memcpy(morphed, m->vertices, (size_t)m->vertex_count * sizeof(vgfx3d_vertex_t));
 
     /* Accumulate weighted deltas, re-normalize, and sanitize non-finite positions (CPU morph). */
-    morphtarget_accumulate_morphed_vertices(mt, m, shape_count, morphed);
+    morphtarget_accumulate_morphed_vertices(mt, m->vertices, m->vertex_count, shape_count, morphed);
 
     int mesh_was_tracked = 0;
     if (rt_heap_is_payload(mesh)) {

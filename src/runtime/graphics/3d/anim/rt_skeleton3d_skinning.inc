@@ -362,7 +362,24 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
     if (!skinned)
         return;
 
-    vgfx3d_skin_vertices_extra(mesh->vertices,
+    /* An attached MorphTarget3D must blend BEFORE skinning — the GPU vertex
+     * path composes morph-then-palette, and bind-space deltas applied to
+     * already-posed vertices point the wrong way once a bone leaves its bind
+     * orientation. Pre-blend into scratch here and clear the mesh copy's
+     * morph binding below so the keyed draw never re-applies it post-skin. */
+    const vgfx3d_vertex_t *skin_src = mesh->vertices;
+    int morph_consumed = 0;
+    if (mesh->morph_targets_ref && mesh->morph_deltas == NULL && mesh->morph_weights == NULL &&
+        mesh->morph_shape_count == 0) {
+        vgfx3d_vertex_t *morphed = (vgfx3d_vertex_t *)canvas3d_frame_arena_alloc(
+            c, (size_t)mesh->vertex_count * sizeof(vgfx3d_vertex_t));
+        if (morphed && rt_morphtarget3d_blend_vertices_internal(
+                           mesh->morph_targets_ref, mesh->vertices, morphed, mesh->vertex_count))
+            skin_src = morphed;
+        morph_consumed = 1;
+    }
+
+    vgfx3d_skin_vertices_extra(skin_src,
                                skinned,
                                mesh->vertex_count,
                                bone_palette,
@@ -371,6 +388,14 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
                                &c->skinning_scratch);
 
     rt_mesh3d tmp = *mesh;
+    if (morph_consumed) {
+        tmp.morph_targets_ref = NULL;
+        tmp.morph_deltas = NULL;
+        tmp.morph_normal_deltas = NULL;
+        tmp.morph_weights = NULL;
+        tmp.prev_morph_weights = NULL;
+        tmp.morph_shape_count = 0;
+    }
     tmp.vertices = skinned;
     tmp.positions64 = NULL;
     tmp.bone_palette = NULL;

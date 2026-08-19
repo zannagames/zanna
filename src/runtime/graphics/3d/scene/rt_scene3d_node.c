@@ -1586,6 +1586,41 @@ void rt_scene_node3d_attach_to_bone(void *obj,
     node->socket_offset_quat[3] = 1.0;
 }
 
+/// @brief Set the bone-socket rotation offset as a bone-space quaternion (ADR 0274).
+/// @details Composes bone-locally after the bone pose during socket sync
+///   (`world = parentWorld x bonePose x socketOffset`), so a socketed prop can
+///   cock or roll in the hand without re-baking its mesh. AttachToBone resets
+///   the socket rotation to identity — call this after attaching. The stored
+///   quaternion is normalized; non-finite or near-zero inputs trap without
+///   mutation. Setting it on a node with no socket binding is allowed (it
+///   simply takes effect on the next attach-free sync no-op) so callers can
+///   order the two calls freely within a frame.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param qx Quaternion X component.
+/// @param qy Quaternion Y component.
+/// @param qz Quaternion Z component.
+/// @param qw Quaternion W component.
+void rt_scene_node3d_set_bone_socket_rotation(
+    void *obj, double qx, double qy, double qz, double qw) {
+    rt_scene_node3d *node = scene_node3d_checked(obj);
+    double len;
+    if (!node)
+        return;
+    if (!isfinite(qx) || !isfinite(qy) || !isfinite(qz) || !isfinite(qw)) {
+        rt_trap("SceneNode3D.SetBoneSocketRotation: quaternion must contain finite values");
+        return;
+    }
+    len = sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (!(len > 1e-6)) {
+        rt_trap("SceneNode3D.SetBoneSocketRotation: quaternion must be non-zero");
+        return;
+    }
+    node->socket_offset_quat[0] = qx / len;
+    node->socket_offset_quat[1] = qy / len;
+    node->socket_offset_quat[2] = qz / len;
+    node->socket_offset_quat[3] = qw / len;
+}
+
 /// @brief Remove any bone-socket binding; the node keeps its last transform.
 /// @param obj Borrowed SceneNode3D handle.
 void rt_scene_node3d_detach_bone_socket(void *obj) {

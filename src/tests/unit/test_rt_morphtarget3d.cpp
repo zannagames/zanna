@@ -18,8 +18,13 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef ZANNA_ENABLE_GRAPHICS
+#define ZANNA_ENABLE_GRAPHICS 1
+#endif
+
 #include "rt.hpp"
 #include "rt_canvas3d.h"
+#include "rt_canvas3d_internal.h"
 #include "rt_internal.h"
 #include "rt_morphtarget3d.h"
 #include "rt_string.h"
@@ -580,6 +585,57 @@ static void test_mesh_clone_deep_copy_releases_original_morph_target_on_clear() 
                 "Destroying the clone does not release the source morph target a second time");
 }
 
+static void test_blend_vertices_internal_blends_base_plus_weighted_deltas() {
+    void *mt = rt_morphtarget3d_new(2);
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("fist"));
+    rt_morphtarget3d_set_delta(mt, 0, 0, 1.0, 2.0, 3.0);
+    rt_morphtarget3d_set_delta(mt, 0, 1, -4.0, 0.5, 0.0);
+    rt_morphtarget3d_set_weight(mt, 0, 0.5);
+
+    vgfx3d_vertex_t src[2];
+    vgfx3d_vertex_t dst[2];
+    memset(src, 0, sizeof(src));
+    memset(dst, 0xCD, sizeof(dst));
+    src[0].pos[0] = 10.0f;
+    src[0].pos[1] = 20.0f;
+    src[0].pos[2] = 30.0f;
+    src[0].bone_indices[0] = 7;
+    src[0].bone_weights[0] = 1.0f;
+    src[1].pos[0] = -1.0f;
+
+    int8_t blended = rt_morphtarget3d_blend_vertices_internal(mt, src, dst, 2);
+    EXPECT_TRUE(blended == 1, "blend_vertices_internal reports a blend");
+    EXPECT_NEAR(dst[0].pos[0], 10.5f, 1e-6, "v0.x = base + w*delta");
+    EXPECT_NEAR(dst[0].pos[1], 21.0f, 1e-6, "v0.y = base + w*delta");
+    EXPECT_NEAR(dst[0].pos[2], 31.5f, 1e-6, "v0.z = base + w*delta");
+    EXPECT_NEAR(dst[1].pos[0], -3.0f, 1e-6, "v1.x = base + w*delta");
+    EXPECT_TRUE(dst[0].bone_indices[0] == 7, "skinning indices copied through");
+    EXPECT_NEAR(dst[0].bone_weights[0], 1.0f, 1e-6, "skinning weights copied through");
+}
+
+static void test_blend_vertices_internal_rejects_inactive_and_mismatched() {
+    void *mt = rt_morphtarget3d_new(2);
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("dormant"));
+    rt_morphtarget3d_set_delta(mt, 0, 0, 5.0, 5.0, 5.0);
+    rt_morphtarget3d_set_weight(mt, 0, 0.0);
+
+    vgfx3d_vertex_t src[2];
+    vgfx3d_vertex_t dst[2];
+    memset(src, 0, sizeof(src));
+    memset(dst, 0xCD, sizeof(dst));
+
+    EXPECT_TRUE(rt_morphtarget3d_blend_vertices_internal(mt, src, dst, 2) == 0,
+                "zero-weight shapes report no blend");
+    EXPECT_TRUE(dst[0].pos[0] != 0.0f, "no-blend leaves the destination untouched");
+    rt_morphtarget3d_set_weight(mt, 0, 1.0);
+    EXPECT_TRUE(rt_morphtarget3d_blend_vertices_internal(mt, src, dst, 3) == 0,
+                "vertex-count mismatch reports no blend");
+    EXPECT_TRUE(rt_morphtarget3d_blend_vertices_internal(nullptr, src, dst, 2) == 0,
+                "null morph reports no blend");
+    EXPECT_TRUE(rt_morphtarget3d_blend_vertices_internal(mt, nullptr, dst, 2) == 0,
+                "null source reports no blend");
+}
+
 int main() {
     test_create();
     test_gpu_morph_budget_is_64();
@@ -606,6 +662,8 @@ int main() {
     test_owned_storage_repairs_pointer_count_vertex_and_name_corruption();
     test_morphtarget_finalizer_uses_owned_identities_only();
     test_mesh_clone_deep_copy_releases_original_morph_target_on_clear();
+    test_blend_vertices_internal_blends_base_plus_weighted_deltas();
+    test_blend_vertices_internal_rejects_inactive_and_mismatched();
 
     printf("MorphTarget3D tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

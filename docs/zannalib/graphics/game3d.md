@@ -1016,6 +1016,11 @@ and drives the child's world transform from the named bone's composited pose
 every simulation step — the standard way to put a weapon in a hand or a hat on
 a head. The entity must have an attached `Animator3D` whose controller has a
 skeleton containing the bone; unknown names trap with a clear message.
+`Entity3D.AttachToBoneOffsetRotated(child, boneName, ox, oy, oz, rxDeg, ryDeg,
+rzDeg)` additionally applies a bone-space rotation offset (Euler degrees, the
+`SetRotationEuler` convention) that composes after the bone pose — socket sync
+overwrites the child's own local rotation every frame, so this is the way to
+cock or roll a held prop without baking the tilt into its mesh (ADR 0274).
 `Entity3D.DetachFromBone()` stops the tracking (the child keeps its last pose
 and stays parented). The lower-level form is
 `Graphics3D.SceneNode.AttachToBone(animator, boneIndex, ox, oy, oz)`.

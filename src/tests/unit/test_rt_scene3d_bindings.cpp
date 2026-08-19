@@ -58,6 +58,12 @@ extern void rt_mesh3d_set_bone_weights(void *mesh,
                                        double w3);
 extern void *rt_camera3d_new(double fov, double aspect, double near, double far);
 extern void rt_camera3d_look_at(void *cam, void *eye, void *target, void *up);
+extern void *rt_morphtarget3d_new(int64_t vertex_count);
+extern int64_t rt_morphtarget3d_add_shape(void *mt, rt_string name);
+extern void rt_morphtarget3d_set_delta(
+    void *mt, int64_t shape, int64_t vertex, double dx, double dy, double dz);
+extern void rt_morphtarget3d_set_weight(void *mt, int64_t shape, double weight);
+extern void rt_mesh3d_set_morph_targets(void *mesh, void *morph_targets);
 }
 
 static int tests_passed = 0;
@@ -425,11 +431,78 @@ static void test_scene_draw_cpu_skins_bound_animators_for_software_backend() {
     rt_scene3d_add(scene, node);
     rt_scene3d_draw(scene, &canvas, camera);
 
-    EXPECT_TRUE(g_submit_count == 1, "SceneGraph.Draw still submits one draw on the software backend");
+    EXPECT_TRUE(g_submit_count == 1,
+                "SceneGraph.Draw still submits one draw on the software backend");
     EXPECT_TRUE(g_last_vertices != ((rt_mesh3d *)mesh)->vertices,
                 "SceneGraph.Draw CPU-skins bound animators on the software backend");
     EXPECT_TRUE(g_last_bone_palette == nullptr && g_last_bone_count == 0,
                 "SceneGraph.Draw clears GPU skinning payloads after CPU fallback");
+}
+
+static void test_scene_draw_cpu_skin_applies_attached_morph_before_skinning() {
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *eye = rt_vec3_new(0.0, 0.0, 5.0);
+    void *target = rt_vec3_new(0.0, 0.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    void *skel = rt_skeleton3d_new();
+    void *controller;
+    void *anim;
+    void *morph;
+    int64_t shape;
+    float base_y;
+
+    backend.name = "software";
+    backend.begin_frame = test_begin_frame;
+    backend.end_frame = test_end_frame;
+    backend.submit_draw = test_submit_draw;
+    init_test_canvas(&canvas, &backend);
+    rt_camera3d_look_at(camera, eye, target, up);
+    g_submit_count = 0;
+    g_last_vertices = nullptr;
+
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    anim = make_anim("walk", 0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("walk"), anim);
+    rt_anim_controller3d_play(controller, rt_const_cstr("walk"));
+    rt_anim_controller3d_update(controller, 0.25);
+
+    ((rt_mesh3d *)mesh)->bone_count = 1;
+    rt_mesh3d_set_bone_weights(mesh, 0, 0, 1.0, 0, 0.0, 0, 0.0, 0, 0.0);
+    base_y = ((rt_mesh3d *)mesh)->vertices[0].pos[1];
+
+    morph = rt_morphtarget3d_new((int64_t)((rt_mesh3d *)mesh)->vertex_count);
+    shape = rt_morphtarget3d_add_shape(morph, rt_const_cstr("fist"));
+    rt_morphtarget3d_set_delta(morph, shape, 0, 0.0, 3.0, 0.0);
+    rt_morphtarget3d_set_weight(morph, shape, 1.0);
+    rt_mesh3d_set_morph_targets(mesh, morph);
+
+    rt_scene_node3d_set_mesh(node, mesh);
+    rt_scene_node3d_set_material(node, material);
+    rt_scene_node3d_bind_animator(node, controller);
+    rt_scene3d_add(scene, node);
+    rt_scene3d_draw(scene, &canvas, camera);
+
+    EXPECT_TRUE(g_submit_count == 1, "morph+skin scene draw submits one draw");
+    EXPECT_TRUE(g_last_vertices != nullptr, "morph+skin scene draw captures vertices");
+    if (g_last_vertices) {
+        /* Morph first (+3 y on vertex 0), then skin (bone at +0.25 x). */
+        EXPECT_NEAR(g_last_vertices[0].pos[1],
+                    base_y + 3.0f,
+                    1e-4,
+                    "CPU-skin fallback applies the attached morph delta before skinning");
+        EXPECT_NEAR(g_last_vertices[0].pos[0],
+                    ((rt_mesh3d *)mesh)->vertices[0].pos[0] + 0.25f,
+                    1e-4,
+                    "CPU-skin fallback still applies the bone palette");
+    }
 }
 
 static void test_scene_draw_preserves_large_bound_animator_palettes_on_gpu_backends() {
@@ -586,6 +659,61 @@ static void test_bone_socket_follows_animated_bone() {
     EXPECT_NEAR(y, 1.5, 1e-5, "detached socket no longer tracks the bone");
 }
 
+/// ADR 0274: a socket rotation offset composes bone-locally after the bone
+/// pose, the socket position is unaffected, and a re-attach resets the
+/// rotation to identity.
+static void test_bone_socket_rotation_offset() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("hand"), 0, rt_mat4_identity());
+    /* Bone 1 holds a static pose at (1,0,0), identity orientation. */
+    void *anim = make_anim("hold", 1, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("hold"), anim);
+    rt_anim_controller3d_play(controller, rt_const_cstr("hold"));
+    rt_anim_controller3d_update(controller, 0.0);
+
+    void *scene = rt_scene3d_new();
+    void *character = rt_scene_node3d_new();
+    void *socket = rt_scene_node3d_new();
+    double x;
+    double y;
+    double z;
+    const double h = 0.70710678118654752;
+
+    rt_scene3d_add(scene, character);
+    rt_scene_node3d_set_position(character, 5.0, 0.0, 0.0);
+    rt_scene_node3d_try_add_child(character, socket);
+
+    rt_scene_node3d_attach_to_bone(socket, controller, 1, 0.0, 0.5, 0.0);
+    rt_scene_node3d_set_bone_socket_rotation(socket, 0.0, 0.0, h, h);
+    rt_scene3d_sync_bindings(scene, 0.0);
+
+    socket_world_pos(socket, &x, &y, &z);
+    EXPECT_NEAR(x, 6.0, 1e-5, "socket rotation leaves the offset position alone (x)");
+    EXPECT_NEAR(y, 0.5, 1e-5, "socket rotation leaves the offset position alone (y)");
+
+    void *rot = rt_scene_node3d_get_rotation(socket);
+    EXPECT_TRUE(rot != nullptr, "socketed node exposes a rotation");
+    EXPECT_NEAR(
+        std::fabs(rt_quat_z(rot)), h, 1e-5, "socket rotation composes onto the bone pose (z)");
+    EXPECT_NEAR(
+        std::fabs(rt_quat_w(rot)), h, 1e-5, "socket rotation composes onto the bone pose (w)");
+
+    /* Non-normalized input is normalized on store. */
+    rt_scene_node3d_set_bone_socket_rotation(socket, 0.0, 0.0, 2.0, 2.0);
+    rt_scene3d_sync_bindings(scene, 0.0);
+    rot = rt_scene_node3d_get_rotation(socket);
+    EXPECT_NEAR(std::fabs(rt_quat_z(rot)), h, 1e-5, "socket rotation input is normalized");
+
+    /* Re-attaching resets the socket rotation to identity. */
+    rt_scene_node3d_attach_to_bone(socket, controller, 1, 0.0, 0.5, 0.0);
+    rt_scene3d_sync_bindings(scene, 0.0);
+    rot = rt_scene_node3d_get_rotation(socket);
+    EXPECT_NEAR(rt_quat_z(rot), 0.0, 1e-5, "re-attach resets the socket rotation (z)");
+    EXPECT_NEAR(std::fabs(rt_quat_w(rot)), 1.0, 1e-5, "re-attach resets the socket rotation (w)");
+}
+
 /// ZB-15: the parent's world scale must apply to the model-space bone pose.
 /// A centimetre-rigged model drawn under an entity-level unit scale otherwise
 /// lands its socketed props ~30x away from the hand (world = T x R x S).
@@ -631,10 +759,12 @@ int main() {
     test_animator_root_motion_applies_rotation_delta();
     test_scene_draw_uses_bound_animator_palette();
     test_scene_draw_cpu_skins_bound_animators_for_software_backend();
+    test_scene_draw_cpu_skin_applies_attached_morph_before_skinning();
     test_scene_draw_preserves_large_bound_animator_palettes_on_gpu_backends();
     test_node_animator_rebind_clears_previous_node_owner();
     test_clear_animator_binding_clears_node_animator();
     test_bone_socket_follows_animated_bone();
+    test_bone_socket_rotation_offset();
     test_bone_socket_scales_with_parent();
 
     std::printf("SceneGraph binding tests: %d/%d passed\n", tests_passed, tests_run);

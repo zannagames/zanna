@@ -1419,6 +1419,63 @@ void *rt_game3d_entity_attach_to_bone(void *obj, void *child_obj, rt_string bone
     return rt_game3d_entity_attach_to_bone_offset(obj, child_obj, bone_name, 0.0, 0.0, 0.0);
 }
 
+/// @brief Attach a child entity to a named bone with a bone-space offset AND a
+///   bone-space rotation (Euler degrees) — ADR 0274.
+/// @details The rotation composes after the bone pose during socket sync, so a
+///   held prop can cock or roll in the hand without baking the tilt into its
+///   mesh (the pre-0274 workaround; socket sync overwrites the child's own
+///   local rotation every frame, so SetRotationEuler on the child never
+///   worked). Angles follow the SetRotationEuler convention (degrees,
+///   pitch/yaw/roll) and are clamped to the same magnitude bound. On any
+///   attach failure the socket (and its rotation) is left unset.
+/// @param obj Parent Entity3D whose animator supplies the skeleton.
+/// @param child_obj Child Entity3D to parent and socket.
+/// @param bone_name Runtime string naming a skeleton bone.
+/// @param offset_x Bone-space X offset.
+/// @param offset_y Bone-space Y offset.
+/// @param offset_z Bone-space Z offset.
+/// @param rot_x_deg Bone-space X rotation in degrees.
+/// @param rot_y_deg Bone-space Y rotation in degrees.
+/// @param rot_z_deg Bone-space Z rotation in degrees.
+/// @return @p obj for fluent chaining.
+void *rt_game3d_entity_attach_to_bone_offset_rotated(void *obj,
+                                                     void *child_obj,
+                                                     rt_string bone_name,
+                                                     double offset_x,
+                                                     double offset_y,
+                                                     double offset_z,
+                                                     double rot_x_deg,
+                                                     double rot_y_deg,
+                                                     double rot_z_deg) {
+    rt_game3d_entity *entity;
+    rt_game3d_entity *child;
+    void *child_node;
+    void *quat;
+
+    rt_game3d_entity_attach_to_bone_offset(obj, child_obj, bone_name, offset_x, offset_y, offset_z);
+    entity = game3d_entity_checked(obj, "Game3D.Entity3D.attachToBone: invalid entity");
+    child =
+        game3d_entity_checked(child_obj, "Game3D.Entity3D.attachToBone: child must be Entity3D");
+    if (!entity || !child || child->parent != entity)
+        return obj; /* attach failed and already trapped/reported */
+    child_node = game3d_entity_node_ref(child);
+    if (!child_node)
+        return obj;
+    {
+        const double deg = 3.14159265358979323846 / 180.0;
+        rot_x_deg = game3d_clamp_abs_or(rot_x_deg, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+        rot_y_deg = game3d_clamp_abs_or(rot_y_deg, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+        rot_z_deg = game3d_clamp_abs_or(rot_z_deg, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+        quat = rt_quat_from_euler(rot_x_deg * deg, rot_y_deg * deg, rot_z_deg * deg);
+        if (quat) {
+            rt_scene_node3d_set_bone_socket_rotation(
+                child_node, rt_quat_x(quat), rt_quat_y(quat), rt_quat_z(quat), rt_quat_w(quat));
+        }
+        game3d_release_ref(&quat);
+    }
+    return obj;
+}
+
 /// @brief Build (lazily, cached) and activate a ragdoll from the entity's
 ///   animator skeleton against the owning world's physics. Returns the
 ///   Ragdoll3D handle, or NULL when the entity lacks an animator/skeleton,
