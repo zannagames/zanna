@@ -3875,6 +3875,58 @@ static void test_auto_lod_uses_screen_error_selection() {
                 "SceneNode.SetAutoLod(false) restores authored distance thresholds");
 }
 
+static void test_auto_lod_radius_uses_world_scale() {
+    /* Same fixture as the screen-error selection test, but the node is
+     * scaled 4x: the WORLD radius (the contract of scene3d_auto_lod_mesh)
+     * quadruples, the projected size re-crosses the screen-error
+     * threshold, and LOD0 must draw. Before the fix the cull path passed
+     * the LOCAL-space radius, so scaled models under-reported projected
+     * size by their node scale and auto-LOD stuck on coarse levels (the
+     * 3.28x-scaled stadium shell). */
+    vgfx3d_backend_t backend = {};
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = scene_test_begin_frame;
+    backend.end_frame = scene_test_end_frame;
+    backend.submit_draw = scene_test_submit_draw;
+
+    rt_canvas3d canvas;
+    init_scene_test_canvas(&canvas, &backend);
+    canvas.width = 100;
+    canvas.height = 100;
+    reset_scene_capture();
+
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    void *base_mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    void *lod_mesh = rt_mesh3d_new();
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *eye = rt_vec3_new(0.0, 0.0, 25.0);
+    void *target = rt_vec3_new(0.0, 0.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+
+    rt_mesh3d_add_vertex(lod_mesh, -0.25, -0.25, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(lod_mesh, 0.25, -0.25, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0);
+    rt_mesh3d_add_vertex(lod_mesh, 0.0, 0.25, 0.0, 0.0, 0.0, 1.0, 0.5, 1.0);
+    rt_mesh3d_add_triangle(lod_mesh, 0, 1, 2);
+
+    rt_scene_node3d_set_mesh(node, base_mesh);
+    rt_scene_node3d_set_material(node, material);
+    rt_scene_node3d_add_lod(node, 1000.0, lod_mesh);
+    rt_scene_node3d_set_scale(node, 4.0, 4.0, 4.0);
+    rt_scene3d_add(scene, node);
+    rt_camera3d_look_at(camera, eye, target, up);
+
+    rt_scene_node3d_set_auto_lod(node, 1, 16.0);
+    rt_scene3d_draw(scene, &canvas, camera);
+    EXPECT_TRUE(g_scene_submit_count == 1,
+                "SceneGraph draws the scaled auto-LOD fixture");
+    EXPECT_TRUE(g_scene_last_vertex_count != 3,
+                "auto-LOD projects the WORLD-space radius: a 4x-scaled node "
+                "re-crosses the screen-error threshold and keeps LOD0");
+}
+
 static void test_lod_residency_falls_back_and_reports_bytes() {
     vgfx3d_backend_t backend = {};
     backend.name = "opengl";
@@ -5429,6 +5481,7 @@ int main(int argc, char **argv) {
     test_frustum_culled_count_initial();
     test_lod_culling_uses_stable_union_mesh_bounds();
     test_auto_lod_uses_screen_error_selection();
+    test_auto_lod_radius_uses_world_scale();
     test_lod_residency_falls_back_and_reports_bytes();
     test_impostor_proxy_draws_textured_quad();
     test_scene_draw_rejects_corrupt_draw_handles();

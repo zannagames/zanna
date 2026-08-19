@@ -2183,6 +2183,127 @@ static void test_dilate_masked_id_map_growth() {
     printf("test_dilate_masked_id_map_growth: PASSED\n");
 }
 
+static void test_dilate_owner_exact_copy() {
+    /* Owner growth copies EXACT values — a 255-vs-0 label front never
+     * decays (the averaging op truncates it within a few rings), and a
+     * covered texel is never overwritten. */
+    void *p = rt_pixels_new(5, 1);
+    void *m = rt_pixels_new(5, 1);
+    rt_pixels_set_rgba(p, 1, 0, 0xFFFFFFFF); /* in-region label, covered */
+    /* x=2 stays zero: out-of-region but covered. */
+    rt_pixels_set_rgba(m, 1, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 2, 0, 0xFFFFFFFF);
+
+    rt_pixels_dilate_owner(p, m, 2);
+
+    /* Gutter beside the white label copies EXACT white. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0xFFFFFFFFu);
+    /* Covered zero texel is never overwritten. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0u);
+    /* Gutters owned by the zero region copy exact zero, stamped covered. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0u);
+    assert((uint32_t)rt_pixels_get_rgba(p, 4, 0) == 0u);
+    assert((uint32_t)rt_pixels_get_rgba(m, 3, 0) == 0xFFFFFFFFu);
+    assert((uint32_t)rt_pixels_get_rgba(m, 4, 0) == 0xFFFFFFFFu);
+    printf("test_dilate_owner_exact_copy: PASSED\n");
+}
+
+static void test_dilate_owner_tie_determinism() {
+    /* A gutter contested by two fronts resolves by the FIXED neighbor scan
+     * order — the left (dx=-1) owner wins over the right, exactly, with no
+     * averaging. */
+    void *p = rt_pixels_new(3, 1);
+    void *m = rt_pixels_new(3, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0xFFFFFFFF);
+    /* x=2 covered, value zero. */
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 2, 0, 0xFFFFFFFF);
+    rt_pixels_dilate_owner(p, m, 1);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0xFFFFFFFFu);
+    printf("test_dilate_owner_tie_determinism: PASSED\n");
+}
+
+static void test_dilate_owner_full_fill() {
+    /* passes <= 0 runs to convergence: every texel takes its nearest
+     * owner's exact color and the whole mask stamps covered. */
+    void *p = rt_pixels_new(7, 1);
+    void *m = rt_pixels_new(7, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0xC80000FF);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_dilate_owner(p, m, 0);
+    for (int x = 0; x < 7; x++) {
+        assert((uint32_t)rt_pixels_get_rgba(p, x, 0) == 0xC80000FFu);
+        assert((uint32_t)rt_pixels_get_rgba(m, x, 0) == 0xFFFFFFFFu);
+    }
+    printf("test_dilate_owner_full_fill: PASSED\n");
+}
+
+static void test_dilate_owner_dim_mismatch_noop() {
+    void *p = rt_pixels_new(5, 1);
+    void *m = rt_pixels_new(2, 2);
+    rt_pixels_set_rgba(p, 0, 0, 0xC80000FF);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_dilate_owner(p, m, 4);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0u);
+    printf("test_dilate_owner_dim_mismatch_noop: PASSED\n");
+}
+
+static void test_colorize_masked_shade() {
+    /* The cap case that motivated the op: authored navy (6,13,34) has
+     * lum 13; with ref_lum 13 it must land EXACTLY on the target, and a
+     * 2x-brighter texel doubles the target under the explicit clamp
+     * (the fixed-ref op crushed the whole cap to ~0.45x target). */
+    void *p = rt_pixels_new(3, 1);
+    void *m = rt_pixels_new(3, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x060D22FF); /* navy, lum 13 */
+    rt_pixels_set_rgba(p, 1, 0, 0x0C1A44FF); /* 2x navy, lum 26 */
+    rt_pixels_set_rgba(p, 2, 0, 0x060D22FF); /* outside the mask */
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 1, 0, 0xFFFFFFFF);
+
+    rt_pixels_colorize_masked(p, m, 0x1F4A36, 13, 2.8, 1.0);
+
+    /* shade == 1.0 -> exact target (31,74,54). */
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0x1F4A36FFu);
+    /* shade == 2.0 -> exactly doubled target. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0x3E946CFFu);
+    /* Uncovered texel untouched. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0x060D22FFu);
+    printf("test_colorize_masked_shade: PASSED\n");
+}
+
+static void test_colorize_masked_strength_and_alpha() {
+    void *p = rt_pixels_new(1, 1);
+    void *m = rt_pixels_new(1, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x060D2280); /* navy at alpha 0x80 */
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_colorize_masked(p, m, 0x1F4A36, 13, 2.8, 0.5);
+    uint32_t out = (uint32_t)rt_pixels_get_rgba(p, 0, 0);
+    /* Half blend: (6+31)/2, (13+74)/2, (34+54)/2 (integer floors). */
+    assert(((out >> 24) & 0xFFu) == 18u);
+    assert(((out >> 16) & 0xFFu) == 43u);
+    assert(((out >> 8) & 0xFFu) == 44u);
+    /* Alpha preserved. */
+    assert((out & 0xFFu) == 0x80u);
+    printf("test_colorize_masked_strength_and_alpha: PASSED\n");
+}
+
+static void test_colorize_masked_mask_scale() {
+    /* A half-width mask scales proportionally: its covered left half
+     * gates the pixels' left half. */
+    void *p = rt_pixels_new(4, 1);
+    void *m = rt_pixels_new(2, 1);
+    for (int x = 0; x < 4; x++)
+        rt_pixels_set_rgba(p, x, 0, 0x060D22FF);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_colorize_masked(p, m, 0x1F4A36, 13, 2.8, 1.0);
+    assert((uint32_t)rt_pixels_get_rgba(p, 0, 0) == 0x1F4A36FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0x1F4A36FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 2, 0) == 0x060D22FFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 3, 0) == 0x060D22FFu);
+    printf("test_colorize_masked_mask_scale: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -2356,6 +2477,13 @@ int main() {
     test_recolor_masked_color_class();
     test_dilate_masked_gutter_fill();
     test_dilate_masked_id_map_growth();
+    test_dilate_owner_exact_copy();
+    test_dilate_owner_tie_determinism();
+    test_dilate_owner_full_fill();
+    test_dilate_owner_dim_mismatch_noop();
+    test_colorize_masked_shade();
+    test_colorize_masked_strength_and_alpha();
+    test_colorize_masked_mask_scale();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

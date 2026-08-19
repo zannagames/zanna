@@ -139,6 +139,38 @@ void rt_pixels_recolor_masked(
 /// @param passes Dilation ring width in texels (clamped to [0, 256]).
 void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes);
 
+/// @brief Grow covered texels into uncovered neighbors by EXACT owner copy.
+/// @details Like rt_pixels_dilate_masked, but each claimed texel copies the
+///   exact RGBA of its first covered 8-neighbor in the fixed (dy,dx) scan
+///   order (-1,-1)..(1,1) instead of averaging — values never decay, so a
+///   binary label map and its atlas share one deterministic watershed
+///   topology (the averaging op truncates a 255-vs-0 label front to zero
+///   within a few rings). Ring-synchronous: a texel claimed in a ring never
+///   feeds another claim in the same ring.
+/// @param pixels Atlas or label map to grow in place (0xRRGGBBAA texels).
+/// @param mask Coverage mask; must match @p pixels dimensions exactly;
+///   updated in place (claimed texels stamp 0xFFFFFFFF).
+/// @param passes Ring count; <= 0 runs to convergence (full-surface fill).
+void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes);
+
+/// @brief Mask-scoped shade-preserving colorize with an explicit reference
+///   luminance and shade clamp.
+/// @details rt_pixels_recolor_masked's interior formula with the color-class
+///   gates replaced by an explicit coverage mask: for each texel covered by
+///   @p mask (any non-zero RGB at the proportionally scaled coordinate),
+///   `shade = lum / ref_lum` (clamped to @p max_shade) and the texel blends
+///   toward `target * shade` by @p strength. Alpha untouched. Dark authored
+///   regions (a navy cap, ref_lum ~13) reach any bright target at full
+///   brightness — the fixed ref/1.5-clamp op crushed them near black.
+/// @param pixels Borrowed Pixels handle mutated in place.
+/// @param mask Coverage mask; any size (coordinates scale proportionally).
+/// @param rgb Packed 0xRRGGBB target color.
+/// @param ref_lum Reference luminance mapping to `target` exactly (>= 1).
+/// @param max_shade Upper clamp for the shade ratio (invalid/<=0 -> 1.5).
+/// @param strength Blend strength, clamped to [0, 1].
+void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
+                               double max_shade, double strength);
+
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.

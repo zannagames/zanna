@@ -266,6 +266,8 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-tintluminancemasked"></a>`TintLuminanceMasked` | `void(i64,f64,i64,i64)` | `Zanna.Graphics.Pixels.TintLuminanceMasked` |
 | <a id="zanna-graphics-pixels-recolormasked"></a>`RecolorMasked` | `void(i64,i64,i64)` | `Zanna.Graphics.Pixels.RecolorMasked` |
 | <a id="zanna-graphics-pixels-dilatemasked"></a>`DilateMasked` | `void(obj,i64)` | `Zanna.Graphics.Pixels.DilateMasked` |
+| <a id="zanna-graphics-pixels-dilateowner"></a>`DilateOwner` | `void(obj,i64)` | `Zanna.Graphics.Pixels.DilateOwner` |
+| <a id="zanna-graphics-pixels-colorizemasked"></a>`ColorizeMasked` | `void(obj,i64,i64,f64,f64)` | `Zanna.Graphics.Pixels.ColorizeMasked` |
 | <a id="zanna-graphics-pixels-tintmaskedneutral"></a>`TintMaskedNeutral` | `void(obj,i64,f64,i64,i64,i64)` | `Zanna.Graphics.Pixels.TintMaskedNeutral` |
 | <a id="zanna-graphics-pixels-flipv"></a>`FlipV` | `obj()` | `Zanna.Graphics.Pixels.FlipV` |
 | <a id="zanna-graphics-pixels-rotateclockwise"></a>`RotateClockwise` | `obj()` | `Zanna.Graphics.Pixels.RotateClockwise` |
@@ -1700,6 +1702,8 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.TintLuminanceMasked` | `void(obj,i64,f64,i64,i64)` | `rt_pixels_tint_luminance_masked` |
 | `Zanna.Graphics.Pixels.RecolorMasked` | `void(obj,i64,i64,i64)` | `rt_pixels_recolor_masked` |
 | `Zanna.Graphics.Pixels.DilateMasked` | `void(obj,obj,i64)` | `rt_pixels_dilate_masked` |
+| `Zanna.Graphics.Pixels.DilateOwner` | `void(obj,obj,i64)` | `rt_pixels_dilate_owner` |
+| `Zanna.Graphics.Pixels.ColorizeMasked` | `void(obj,obj,i64,i64,f64,f64)` | `rt_pixels_colorize_masked` |
 | `Zanna.Graphics.Pixels.TintMaskedNeutral` | `void(obj,obj,i64,f64,i64,i64,i64)` | `rt_pixels_tint_masked_neutral` |
 | `Zanna.Graphics.Pixels.FlipV` | `obj(obj)` | `rt_pixels_flip_v` |
 | `Zanna.Graphics.Pixels.RotateClockwise` | `obj(obj)` | `rt_pixels_rotate_cw` |

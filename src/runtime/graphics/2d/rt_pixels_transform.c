@@ -1459,6 +1459,217 @@ void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes) {
     pixels_touch(m);
 }
 
+/// @brief Grow covered texels into gutters by exact nearest-owner copy
+///   (see rt_pixels.h).
+/// Ring-synchronous multi-source growth over frontier lists: every ring's
+/// claims read only the PREVIOUS ring's coverage, and a claimed texel copies
+/// the exact RGBA of its first covered neighbor in the fixed (dy,dx) scan
+/// order — so the result is deterministic regardless of candidate
+/// processing order, values never average, and a binary label map grown
+/// alongside an albedo shares its exact watershed topology.
+void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DilateOwner: null pixels");
+    rt_pixels_impl *m = rt_pixels_checked_impl(mask, "Pixels.DilateOwner: null mask");
+    int64_t w;
+    int64_t h;
+    int64_t count;
+    uint8_t *cov;
+    uint8_t *pending;
+    int32_t *cand;
+    int32_t *claimed;
+    int64_t cand_n;
+    int64_t claimed_n;
+    if (!p || !p->data || !m || !m->data)
+        return;
+    if (p->width != m->width || p->height != m->height)
+        return;
+    w = p->width;
+    h = p->height;
+    count = w * h;
+    if (count <= 0 || count > 0x7FFFFFFF)
+        return;
+    if (passes <= 0 || passes > count)
+        passes = count; /* convergence bound: one ring can never exceed count */
+    cov = (uint8_t *)malloc((size_t)count);
+    pending = (uint8_t *)malloc((size_t)count);
+    cand = (int32_t *)malloc((size_t)count * sizeof(int32_t));
+    claimed = (int32_t *)malloc((size_t)count * sizeof(int32_t));
+    if (!cov || !pending || !cand || !claimed) {
+        free(cov);
+        free(pending);
+        free(cand);
+        free(claimed);
+        return;
+    }
+    memset(pending, 0, (size_t)count);
+    for (int64_t i = 0; i < count; i++)
+        cov[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
+    /* Seed candidates: every uncovered texel with a covered 8-neighbor. */
+    cand_n = 0;
+    for (int64_t y = 0; y < h; y++) {
+        for (int64_t x = 0; x < w; x++) {
+            int64_t idx = y * w + x;
+            int found = 0;
+            if (cov[idx])
+                continue;
+            for (int64_t dy = -1; dy <= 1 && !found; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    if (cov[ny * w + nx]) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                pending[idx] = 1u;
+                cand[cand_n++] = (int32_t)idx;
+            }
+        }
+    }
+    for (int64_t pass = 0; pass < passes && cand_n > 0; pass++) {
+        claimed_n = 0;
+        /* Resolve every candidate against the previous ring's coverage.
+           Each candidate independently picks its FIRST covered neighbor in
+           the fixed scan order, so processing order cannot matter. */
+        for (int64_t c = 0; c < cand_n; c++) {
+            int64_t idx = cand[c];
+            int64_t x = idx % w;
+            int64_t y = idx / w;
+            int done = 0;
+            for (int64_t dy = -1; dy <= 1 && !done; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    int64_t nidx;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    nidx = ny * w + nx;
+                    if (!cov[nidx])
+                        continue;
+                    p->data[idx] = p->data[nidx];
+                    m->data[idx] = 0xFFFFFFFFu;
+                    claimed[claimed_n++] = (int32_t)idx;
+                    done = 1;
+                    break;
+                }
+            }
+            pending[idx] = 0u;
+        }
+        /* Ring barrier: coverage advances only after every claim resolved. */
+        for (int64_t c = 0; c < claimed_n; c++)
+            cov[claimed[c]] = 1u;
+        /* Next ring's candidates: uncovered neighbors of this ring's claims. */
+        cand_n = 0;
+        for (int64_t c = 0; c < claimed_n; c++) {
+            int64_t idx = claimed[c];
+            int64_t x = idx % w;
+            int64_t y = idx / w;
+            for (int64_t dy = -1; dy <= 1; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    int64_t nidx;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    nidx = ny * w + nx;
+                    if (cov[nidx] || pending[nidx])
+                        continue;
+                    pending[nidx] = 1u;
+                    cand[cand_n++] = (int32_t)nidx;
+                }
+            }
+        }
+    }
+    free(cov);
+    free(pending);
+    free(cand);
+    free(claimed);
+    pixels_touch(p);
+    pixels_touch(m);
+}
+
+/// @brief Mask-scoped shade-preserving colorize (see rt_pixels.h).
+/// rt_pixels_recolor_masked's interior formula with the color-class gates
+/// replaced by an explicit mask, an explicit reference luminance, and an
+/// explicit shade clamp — dark authored regions reach bright targets.
+void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
+                               double max_shade, double strength) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.ColorizeMasked: null pixels");
+    rt_pixels_impl *mk = rt_pixels_checked_impl(mask, "Pixels.ColorizeMasked: null mask");
+    int64_t tr;
+    int64_t tg;
+    int64_t tb;
+    if (!p || !p->data || !mk || !mk->data)
+        return;
+    if (mk->width <= 0 || mk->height <= 0)
+        return;
+    if (!isfinite(strength))
+        return;
+    if (strength < 0.0)
+        strength = 0.0;
+    if (strength > 1.0)
+        strength = 1.0;
+    if (ref_lum < 1)
+        ref_lum = 1;
+    if (!isfinite(max_shade) || max_shade <= 0.0)
+        max_shade = 1.5; /* rt_pixels_recolor_masked parity */
+    if (max_shade > 16.0)
+        max_shade = 16.0;
+    tr = (rgb >> 16) & 0xFF;
+    tg = (rgb >> 8) & 0xFF;
+    tb = rgb & 0xFF;
+    for (int64_t y = 0; y < p->height; y++) {
+        int64_t my = y * mk->height / p->height;
+        for (int64_t x = 0; x < p->width; x++) {
+            int64_t mx = x * mk->width / p->width;
+            uint32_t mtex = mk->data[(size_t)my * (size_t)mk->width + (size_t)mx];
+            uint32_t texel;
+            int64_t pr;
+            int64_t pg;
+            int64_t pb;
+            uint32_t pa;
+            int64_t lum;
+            double shade;
+            double cr;
+            double cg;
+            double cb;
+            int64_t nr;
+            int64_t ng;
+            int64_t nb;
+            if ((mtex >> 8) == 0u) /* RGB all zero = uncovered */
+                continue;
+            texel = p->data[(size_t)y * (size_t)p->width + (size_t)x];
+            pr = (texel >> 24) & 0xFF;
+            pg = (texel >> 16) & 0xFF;
+            pb = (texel >> 8) & 0xFF;
+            pa = texel & 0xFF;
+            lum = (pr * 77 + pg * 150 + pb * 29) / 256;
+            shade = (double)lum / (double)ref_lum;
+            if (shade > max_shade)
+                shade = max_shade;
+            cr = (double)tr * shade;
+            cg = (double)tg * shade;
+            cb = (double)tb * shade;
+            if (cr > 255.0)
+                cr = 255.0;
+            if (cg > 255.0)
+                cg = 255.0;
+            if (cb > 255.0)
+                cb = 255.0;
+            nr = (int64_t)((double)pr * (1.0 - strength) + cr * strength);
+            ng = (int64_t)((double)pg * (1.0 - strength) + cg * strength);
+            nb = (int64_t)((double)pb * (1.0 - strength) + cb * strength);
+            p->data[(size_t)y * (size_t)p->width + (size_t)x] =
+                ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
+        }
+    }
+    pixels_touch(p);
+}
+
 /// @brief Luminance-band tint restricted to a coverage mask and to near-neutral
 ///   texels. Same blend as rt_pixels_tint_luminance_masked, with two extra
 ///   gates: the mask (any non-zero RGB at the scaled coordinate) must cover

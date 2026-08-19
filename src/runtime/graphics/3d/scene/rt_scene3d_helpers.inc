@@ -1566,6 +1566,30 @@ static void scene_world_point_d(const double *world_matrix, const float local[3]
     out[2] = scene3d_clamp_abs_or(z, 0.0);
 }
 
+/// @brief Largest world axis scale of a TRS world matrix (max basis-column
+///   norm; layout as scene_world_point_d: translation at [3]/[7]/[11]).
+///   Non-finite or degenerate matrices return 1.0 so callers scaling a
+///   local-space radius stay conservative rather than collapsing it.
+static double scene3d_matrix_max_axis_scale(const double *m) {
+    double sx;
+    double sy;
+    double sz;
+    double best;
+    if (!m || !scene3d_matrix_is_finite(m))
+        return 1.0;
+    sx = sqrt(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]);
+    sy = sqrt(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
+    sz = sqrt(m[2] * m[2] + m[6] * m[6] + m[10] * m[10]);
+    best = sx;
+    if (sy > best)
+        best = sy;
+    if (sz > best)
+        best = sz;
+    if (!isfinite(best) || best <= 0.0)
+        return 1.0;
+    return best;
+}
+
 /// @brief Normalize a float[3] vector in-place, substituting a caller-supplied fallback
 ///        direction when the vector is degenerate (zero-length or non-finite magnitude).
 /// @details Used to normalize light direction vectors that have been transformed into

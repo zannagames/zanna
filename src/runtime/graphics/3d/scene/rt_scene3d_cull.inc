@@ -390,8 +390,14 @@ static void *scene3d_resolve_draw_mesh(rt_scene_node3d *current,
             camera_distance = dist;
             has_camera_distance = 1;
             if (draw_mesh && current->auto_lod_enabled && scene3d_node_lod_count(current) > 0) {
+                /* scene3d_auto_lod_mesh's contract takes the WORLD-space
+                 * bounds radius; scene_mesh_bounds returned LOCAL space, so
+                 * every scaled model under-reported its projected size by
+                 * its node scale and auto-LOD selected too-coarse levels. */
+                double world_radius =
+                    (double)base_radius * scene3d_matrix_max_axis_scale(current->world_matrix);
                 void *auto_mesh =
-                    scene3d_auto_lod_mesh(current, canvas, cam, lod_state, base_radius, dist);
+                    scene3d_auto_lod_mesh(current, canvas, cam, lod_state, world_radius, dist);
                 if (auto_mesh)
                     draw_mesh = auto_mesh;
             }
