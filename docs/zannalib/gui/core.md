@@ -136,6 +136,8 @@ Main application class that manages the window and widget tree.
 | `GetDroppedFileCount()` | `Integer()`          | Number of files in the current drop event |
 | `Poll()`                | `Void()`             | Poll events and update widget states     |
 | `PollWait(timeoutMs)`   | `Boolean(Integer)`   | Wait up to 0–1000 ms for events, then poll; true when input woke the wait |
+| `WatchProcess(process)` | `Boolean(ProcessHandle)` | Wake `PollWait` when the process has output or exits |
+| `WatchPty(session)`     | `Boolean(PtySession)` | Wake `PollWait` when the PTY has output or exits |
 | `Render()`              | `Void()`             | Render all widgets to the window         |
 | `SetFont(font, size)`   | `Void(Font, Double)` | Set default font for all widgets         |
 | `WasFileDropped()`      | `Boolean()`          | True if files were dropped on the window this frame |
@@ -147,6 +149,12 @@ Code/output controls retain the theme's monospace role and titled group boxes us
 reclaims it automatically after a later safe presentation generation. `SetFont()` and widget-level
 `SetFont(font, size)` calls accept live managed or legacy Font handles; stale, destroyed, and
 arbitrary object handles are ignored.
+
+`WatchProcess()` and `WatchPty()` attach a lifetime-safe activity monitor to a live runtime
+handle. Readiness posts a harmless native wake event; callbacks never execute Zia or mutate widgets
+from the monitor thread. The methods return false if a monitor cannot be installed, allowing an
+application to retain a bounded polling fallback. Destroying the App invalidates its wake target
+before any window or producer is released.
 
 ### Window Management
 

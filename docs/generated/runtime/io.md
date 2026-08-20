@@ -112,6 +112,7 @@ the class directly. Its public surface exposes operations including `Append`, `A
 | <a id="zanna-io-file-delete"></a>`Delete` | `void(str)` | `Zanna.IO.File.Delete` |
 | <a id="zanna-io-file-exists"></a>`Exists` | `i1(str)` | `Zanna.IO.File.Exists` |
 | <a id="zanna-io-file-samefile"></a>`SameFile` | `i1(str,str)` | `Zanna.IO.File.SameFile` |
+| <a id="zanna-io-file-identitykey"></a>`IdentityKey` | `str(str)` | `Zanna.IO.File.IdentityKey` |
 | <a id="zanna-io-file-modified"></a>`Modified` | `i64(str)` | `Zanna.IO.File.Modified` |
 | <a id="zanna-io-file-move"></a>`Move` | `void(str,str)` | `Zanna.IO.File.Move` |
 | <a id="zanna-io-file-readallbytes"></a>`ReadAllBytes` | `obj<Zanna.Collections.Bytes>(str)` | `Zanna.IO.File.ReadAllBytes` |
@@ -522,6 +523,23 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | <a id="zanna-io-archive-iszip"></a>`IsZip` | `i1(str)` | `Zanna.IO.Archive.IsZip` |
 | <a id="zanna-io-archive-iszipbytes"></a>`IsZipBytes` | `i1(obj)` | `Zanna.IO.Archive.IsZipBytes` |
 
+<a id="zanna-io-filelease"></a>
+### `Zanna.IO.FileLease`
+
+Holds one nonblocking exclusive lease on a persistent lock file.
+
+`TryAcquire` creates the marker when needed and returns null while another
+process owns it. The OS lease remains held until `Release` or finalization;
+callers decide when it is safe to delete the persistent marker itself.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-io-filelease-tryacquire"></a>`TryAcquire` | `obj<Zanna.IO.FileLease>(str)` | `Zanna.IO.FileLease.TryAcquire` |
+| <a id="zanna-io-filelease-isvalid"></a>`IsValid` | `i1()` | `Zanna.IO.FileLease.IsValid` |
+| <a id="zanna-io-filelease-release"></a>`Release` | `void()` | `Zanna.IO.FileLease.Release` |
+
 ## Functions
 
 | Function | Signature | Runtime symbol |
@@ -557,6 +575,7 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | `Zanna.IO.File.Delete` | `void(str)` | `rt_io_file_delete` |
 | `Zanna.IO.File.Exists` | `i1(str)` | `rt_io_file_exists` |
 | `Zanna.IO.File.SameFile` | `i1(str,str)` | `rt_file_same` |
+| `Zanna.IO.File.IdentityKey` | `str(str)` | `rt_file_identity_key` |
 | `Zanna.IO.File.Modified` | `i64(str)` | `rt_file_modified` |
 | `Zanna.IO.File.Move` | `void(str,str)` | `rt_file_move` |
 | `Zanna.IO.File.MoveOver` | `void(str,str)` | `rt_file_move_over` |
@@ -571,6 +590,9 @@ construct the class directly. Its public surface exposes properties such as `Pat
 | `Zanna.IO.File.WriteAllText` | `void(str,str)` | `rt_io_file_write_all_text` |
 | `Zanna.IO.File.WriteAllTextNew` | `void(str,str)` | `rt_io_file_write_all_text_new` |
 | `Zanna.IO.File.CompareExchangeAllText` | `i1(str,str,str)` | `rt_io_file_compare_exchange_all_text` |
+| `Zanna.IO.FileLease.TryAcquire` | `obj<Zanna.IO.FileLease>(str)` | `rt_file_lease_try_acquire` |
+| `Zanna.IO.FileLease.IsValid` | `i1(obj)` | `rt_file_lease_is_valid` |
+| `Zanna.IO.FileLease.Release` | `void(obj)` | `rt_file_lease_release` |
 | `Zanna.IO.Path.Absolute` | `str(str)` | `rt_path_abs` |
 | `Zanna.IO.Path.Directory` | `str(str)` | `rt_path_dir` |
 | `Zanna.IO.Path.Extension` | `str(str)` | `rt_path_ext` |

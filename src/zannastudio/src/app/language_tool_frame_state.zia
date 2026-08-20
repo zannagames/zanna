@@ -1,0 +1,79 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/language_tool_frame_state.zia
+// Purpose: Own the service references and frame-local language-tool snapshot.
+// Key invariants:
+//   - The frame controller borrows services and never extends their lifetime.
+//   - Cursor, focus, and publication caches describe only the current frame.
+// Ownership/Lifetime: Studio owns the derived controller for the frame loop.
+// Links: zannastudio/src/app/language_tool_frame.zia
+//
+//===----------------------------------------------------------------------===//
+
+module language_tool_frame_state;
+
+bind "../core/document";
+bind "../editor/completion";
+bind "../editor/diagnostics";
+bind "../editor/hover";
+bind "../editor/inlay_hints";
+bind "../editor/language_service";
+bind "../editor/perf_monitor";
+bind "../editor/project_index";
+bind "../editor/scheduler";
+bind "../editor/semantic_tokens";
+bind "../editor/signature";
+bind "../editor/symbols";
+
+class LanguageToolFrameState {
+    expose completion.CompletionController completer;
+    expose diagnostics.LiveDiagnostics liveDiag;
+    expose semantic_tokens.SemanticHighlighter semHighlighter;
+    expose hover.HoverController hoverCtrl;
+    expose signature.SignatureController sigCtrl;
+    expose inlay_hints.InlayHintController inlayCtrl;
+    expose symbols.SymbolOutline symbolOutline;
+    expose project_index.ProjectIndexer indexer;
+    expose scheduler.EditorScheduler editorScheduler;
+    expose perf_monitor.PerfMonitor perfMon;
+    expose language_service.LanguageService activeService;
+    expose document.Document activeDocument;
+    expose String typedThisFrame;
+    expose Boolean editorInputActive;
+    expose Integer curCursorLine;
+    expose Integer curCursorCol;
+    expose Integer frameWorkStartMs;
+    expose Integer nextBackgroundLane;
+    hide String lastWorkspaceIndexStatus;
+    hide String lastBreakpointPath;
+    hide Integer lastBreakpointVersion;
+
+    expose func InitializeState() {
+        completer = null;
+        liveDiag = null;
+        semHighlighter = null;
+        hoverCtrl = null;
+        sigCtrl = null;
+        inlayCtrl = null;
+        symbolOutline = null;
+        indexer = null;
+        editorScheduler = null;
+        perfMon = null;
+        activeService = null;
+        activeDocument = null;
+        typedThisFrame = "";
+        editorInputActive = false;
+        curCursorLine = 1;
+        curCursorCol = 1;
+        frameWorkStartMs = 0;
+        nextBackgroundLane = 0;
+        lastWorkspaceIndexStatus = "";
+        lastBreakpointPath = "";
+        lastBreakpointVersion = -1;
+    }
+}

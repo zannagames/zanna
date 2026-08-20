@@ -1,0 +1,188 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/studio_document_frame.zia
+// Purpose: Coordinate tab state, autosave, recovery, and document watchers.
+// Key invariants:
+//   - Pane focus is reconciled before dirty, autosave, and recovery snapshots.
+//   - Autosave retries only after a new content revision or tab transition.
+//   - Recovery and child-process drains continue while the window is unfocused.
+// Ownership/Lifetime:
+//   - Inherited application state owns all controllers and background jobs.
+// Links: zannastudio/src/studio_application_surface_frame.zia,
+//        zannastudio/src/main.zia
+//
+//===----------------------------------------------------------------------===//
+
+module studio_document_frame;
+
+bind "../studio_application_surface_frame" as SurfaceFrame;
+bind "studio_application_base" as StudioBase;
+bind "editor_split_orchestration" as EditorSplit;
+bind "workspace_watcher";
+bind "../commands/file_commands";
+
+class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfaceFrame {
+    /// @brief Open or return the Output model's independent native host.
+    hide func ToggleDetachedOutputWindow() -> Boolean {
+        if detachedToolHost.IsOpen() {
+            detachedToolModel.Close();
+            detachedToolHost.Destroy(shell.app);
+            shell.toolPanels.ShowOutputPanel();
+            return false;
+        }
+        detachedToolModel.OpenOutput(
+            shell.toolPanels.lastBuildOutput,
+            shell.toolPanels.outputContentGeneration,
+            shell.toolPanels.outputResetGeneration);
+        if detachedToolHost.Open(detachedToolModel, shell.app) == false {
+            detachedToolModel.Close();
+            return false;
+        }
+        shell.toolPanels.HideOutputPanel();
+        return true;
+    }
+
+    /// @brief Synchronize and render the optional secondary native window.
+    hide func PumpDetachedToolWindowFrame() {
+        if detachedToolHost.IsOpen() == false { return; }
+        detachedToolModel.SyncOutput(
+            shell.toolPanels.lastBuildOutput,
+            shell.toolPanels.outputContentGeneration,
+            shell.toolPanels.outputResetGeneration);
+        // Output producers may request their ordinary panel as chunks arrive.
+        // Keep it detached before the primary workbench paints this frame.
+        shell.toolPanels.HideOutputPanel();
+        detachedToolHost.Pump(detachedToolModel, shell.app);
+        if detachedToolHost.TakeReturnRequested() {
+            shell.toolPanels.ShowOutputPanel();
+        }
+    }
+
+    /// @brief Reconcile tabs, dirty state, and the coalescing autosave worker.
+    hide func PumpTabsAndAutoSaveFrame() {
+        // Same-document panes share one mutable GUI buffer. Publish edits from
+        // its focused owner and refresh the independently scrolled mirror
+        // before dirty tracking, autosave, recovery, or semantic snapshots.
+        engine.SynchronizeSharedDocumentViews();
+
+        if shell.workbench.tabBar.WasReordered() {
+            var reorderFrom = shell.workbench.tabBar.GetReorderedFrom();
+            var reorderTo = shell.workbench.tabBar.GetReorderedTo();
+            docMgr.MoveDocument(reorderFrom, reorderTo);
+        }
+        if shell.workbench.tabBar.WasChanged() {
+            var newIdx = shell.workbench.tabBar.GetActiveIndex();
+            if newIdx >= 0 and newIdx < docMgr.GetCount()
+               and newIdx != docMgr.activeIndex {
+                file_commands.SaveEditorState(docMgr, engine);
+                docMgr.SetActive(newIdx);
+                var switchDoc = docMgr.GetActive();
+                if switchDoc != null {
+                    engine.LoadDocument(switchDoc);
+                    shell.SelectSurface(switchDoc.kind);
+                    if switchDoc.isNew { shell.SetBreadcrumbPath(""); }
+                    else { shell.SetBreadcrumbPath(switchDoc.filePath); }
+                    shell.SetStatusRight(file_commands.DocStatusLabel(switchDoc));
+                    shell.SetStatusLeft("Switched to: " + switchDoc.fileName);
+                    fileWatchCtrl.ResetPendingReload();
+                }
+            }
+        }
+
+        EditorSplit.ReconcilePaneFocus(shell, docMgr, engine, tabs, completer);
+
+        if engine != null and docMgr != null and docMgr.GetCount() > 0
+           and engine.IsModified() {
+            var curDoc = docMgr.GetActive();
+            if curDoc != null {
+                var doc = curDoc!;
+                if doc.isReadOnlyPreview {
+                    engine.ClearModified();
+                    tabs.SetModified(docMgr.activeIndex, false);
+                } else if doc.isModified == false {
+                    doc.isModified = true;
+                    tabs.SetModified(docMgr.activeIndex, true);
+                }
+            }
+        }
+
+        var autoDoc = docMgr.GetActive();
+        currentRevisionForSave = StudioBase.ActiveContentRevision(
+            docMgr, engine, scene2DEditor, scene3DEditor);
+        autoSaveJob.Pump();
+        var completedAutoSave = autoSaveJob.TakeCompleted();
+        if completedAutoSave != null {
+            var currentBecameClean = file_commands.CompleteAutoSave(
+                shell, docMgr, engine, tabs, completedAutoSave,
+                currentRevisionForSave);
+            if currentBecameClean {
+                currentRevisionForSave = StudioBase.ActiveContentRevision(
+                    docMgr, engine, scene2DEditor, scene3DEditor);
+                autoSaveRevision = currentRevisionForSave;
+                autoSaveDebounce.Reset();
+                fileWatchCtrl.ResetPendingReload();
+            }
+        }
+        if appSettings.autoSave and autoDoc != null and autoDoc!.isNew == false {
+            if docMgr.activeIndex != autoSaveActiveIndex {
+                autoSaveActiveIndex = docMgr.activeIndex;
+                autoSaveRevision = currentRevisionForSave;
+                if autoDoc!.isModified { autoSaveDebounce.Signal(); }
+                else { autoSaveDebounce.Reset(); }
+            } else if currentRevisionForSave != autoSaveRevision {
+                autoSaveRevision = currentRevisionForSave;
+                autoSaveDebounce.Signal();
+            } else if autoSaveDebounce.get_IsReady() and autoDoc!.isModified
+                      and autoSaveJob.IsBusy() == false {
+                file_commands.QueueAutoSaveActive(
+                    autoSaveJob, shell, docMgr, engine, currentRevisionForSave);
+                autoSaveDebounce.Reset();
+            }
+        } else {
+            autoSaveActiveIndex = docMgr.activeIndex;
+            autoSaveRevision = currentRevisionForSave;
+            autoSaveDebounce.Reset();
+        }
+    }
+
+    /// @brief Pump background document persistence, gutter, and watch services.
+    hide func PumpRecoveryAndWatchersFrame() {
+        recoveryStore.PumpAsync();
+        if currentRevisionForSave != recoveryRevision
+           or docMgr.activeIndex != recoveryActiveIndex {
+            recoveryRevision = currentRevisionForSave;
+            recoveryActiveIndex = docMgr.activeIndex;
+            recoveryDebounce.Signal();
+        } else if recoveryDebounce.get_IsReady() {
+            recoveryStore.QueueSwaps(docMgr, engine);
+            recoveryDebounce.Reset();
+        }
+
+        if textEditorContextAvailable { scmGutter.Pump(engine, docMgr, projMgr); }
+        if allowBackground and textEditorContextAvailable {
+            if docMgr.activeIndex != scmGutterActiveIndex {
+                scmGutterActiveIndex = docMgr.activeIndex;
+                scmGutter.RefreshActive(engine, docMgr, projMgr);
+            } else if currentRevisionForSave != scmGutterRevision {
+                scmGutterRevision = currentRevisionForSave;
+                scmGutterDebounce.Signal();
+            } else if scmGutterDebounce.get_IsReady() {
+                scmGutter.RefreshActive(engine, docMgr, projMgr);
+                scmGutterDebounce.Reset();
+            }
+        }
+
+        if allowBackground {
+            fileWatchCtrl.Pump(
+                shell, docMgr, StudioBase.OPEN_DOC_EXTERNAL_POLL_MS);
+            workspace_watcher.PumpWorkspaceWatcher(
+                shell, projMgr, docMgr, indexer, locStore, engine,
+                workspaceWatcherState);
+        }
+    }
+}

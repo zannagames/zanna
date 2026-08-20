@@ -438,6 +438,7 @@ RT_FUNC(CodecBase64Dec, rt_codec_base64_dec, "Zanna.Text.Codec.Base64Decode", "s
 RT_FUNC(CodecBase64Enc, rt_codec_base64_enc, "Zanna.Text.Codec.Base64Encode", "str(str)")
 RT_FUNC(CodecHexDec,    rt_codec_hex_dec,    "Zanna.Text.Codec.HexDecode",    "str(str)")
 RT_FUNC(CodecHexEnc,    rt_codec_hex_enc,    "Zanna.Text.Codec.HexEncode",    "str(str)")
+RT_FUNC(CodecIsValidUtf8, rt_codec_is_valid_utf8, "Zanna.Text.Codec.IsValidUtf8", "i1(str)")
 RT_FUNC(CodecUrlDecode, rt_codec_url_decode, "Zanna.Text.Codec.UrlDecode", "str(str)")
 RT_FUNC(CodecUrlEncode, rt_codec_url_encode, "Zanna.Text.Codec.UrlEncode", "str(str)")
 

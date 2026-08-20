@@ -179,6 +179,22 @@ void test_headless_clipboard_round_trip(void) {
     TEST_END();
 }
 
+void test_event_wait_explicit_wake(void) {
+    TEST_BEGIN("Event Wait Returns For Explicit Wake");
+
+    vgfx_window_params_t params = vgfx_window_params_default();
+    vgfx_window_t win = vgfx_create_window(&params);
+    ASSERT_NOT_NULL(win);
+    vgfx_mock_set_time_ms(1000);
+    ASSERT_EQ(vgfx_wake_events(win), 1);
+    ASSERT_EQ(vgfx_wait_events(win, 5000), 1);
+    ASSERT_EQ(vgfx_mock_get_time_ms(), 1000);
+    ASSERT_EQ(vgfx_wait_events(win, 0), 0);
+
+    vgfx_destroy_window(win);
+    TEST_END();
+}
+
 void test_headless_native_handles_are_typed_none(void) {
     TEST_BEGIN("Audit: Headless Native Handles Are Typed None");
 
@@ -245,6 +261,7 @@ int main(void) {
     test_hidpi_resize_reports_physical_and_logical_size();
     test_monitor_size_allows_null_window();
     test_headless_clipboard_round_trip();
+    test_event_wait_explicit_wake();
     test_headless_native_handles_are_typed_none();
     test_text_input_state_contract();
 

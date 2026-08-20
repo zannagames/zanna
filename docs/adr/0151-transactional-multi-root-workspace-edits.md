@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-22
+last-verified: 2026-08-20
 ---
 
 # ADR 0151: Bound Transactional Workspace Edits to Explicit Multiple Roots
@@ -52,3 +52,23 @@ but any closed-file edit is rejected when no workspace root is available.
   unconditional text lowercasing.
 - The runtime registry, C header, generated API reference, Studio call sites,
   and runtime/Studio regression coverage must evolve together.
+
+## 2026-08-20 Amendment: Anchor Rooted Transactions to Directory Handles
+
+Canonical containment alone left a path-component race between validation and
+the later staging/rename operations. Rooted transactions now traverse every
+component without following links and keep the verified parent anchored for the
+transaction. POSIX performs reads and mutations with descriptor-relative
+`openat`, `renameat`, and `unlinkat`; Windows retains non-reparse ancestor
+handles without delete sharing and renames already-open file handles relative
+to the retained parent. A component swapped to a symlink after preparation is
+rejected before staging or commit.
+
+Replacement metadata is also fail-closed and complete for writable platform
+state. POSIX copies owner/group, mode, all bounded xattrs (including ACL and
+security namespaces), and filesystem flags. Windows stages with `CopyFileW`,
+rewrites only the unnamed data stream, and explicitly restores owner/group,
+DACL, and attributes, retaining alternate streams, resource attributes,
+compression, encryption, object metadata, and timestamps. The regression suite
+pins a post-prepare symlink swap, ownership/mode/xattr/flag retention, and the
+Windows alternate-stream and attribute cases.

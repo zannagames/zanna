@@ -95,6 +95,7 @@ construct the class directly. Its public surface exposes operations including `B
 | <a id="zanna-text-codec-base64encode"></a>`Base64Encode` | `str(str)` | `Zanna.Text.Codec.Base64Encode` |
 | <a id="zanna-text-codec-hexdecode"></a>`HexDecode` | `str(str)` | `Zanna.Text.Codec.HexDecode` |
 | <a id="zanna-text-codec-hexencode"></a>`HexEncode` | `str(str)` | `Zanna.Text.Codec.HexEncode` |
+| <a id="zanna-text-codec-isvalidutf8"></a>`IsValidUtf8` | `i1(str)` | `Zanna.Text.Codec.IsValidUtf8` |
 | <a id="zanna-text-codec-urldecode"></a>`UrlDecode` | `str(str)` | `Zanna.Text.Codec.UrlDecode` |
 | <a id="zanna-text-codec-urlencode"></a>`UrlEncode` | `str(str)` | `Zanna.Text.Codec.UrlEncode` |
 
@@ -532,6 +533,7 @@ construct the class directly. Its public surface exposes operations including `P
 | `Zanna.Text.Codec.Base64Encode` | `str(str)` | `rt_codec_base64_enc` |
 | `Zanna.Text.Codec.HexDecode` | `str(str)` | `rt_codec_hex_dec` |
 | `Zanna.Text.Codec.HexEncode` | `str(str)` | `rt_codec_hex_enc` |
+| `Zanna.Text.Codec.IsValidUtf8` | `i1(str)` | `rt_codec_is_valid_utf8` |
 | `Zanna.Text.Codec.UrlDecode` | `str(str)` | `rt_codec_url_decode` |
 | `Zanna.Text.Codec.UrlEncode` | `str(str)` | `rt_codec_url_encode` |
 | `Zanna.Text.FuzzyMatch.Score` | `i64(str,str)` | `rt_fuzzy_match_score` |

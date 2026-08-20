@@ -19,6 +19,7 @@
 module workspace_file_index;
 
 bind "path_identity";
+bind "workspace_file_cursor";
 
 bind FileIndex = Zanna.Workspace.FileIndex;
 bind Map = Zanna.Collections.Map;
@@ -129,7 +130,7 @@ expose func ShouldIgnorePath(rootPath: String,
 /// @return List of absolute file paths.
 /// @details The returned List contains only file entries. Directory entries from
 ///          the runtime index are filtered here so callers share one simple shape.
-///          The implementation consumes FileIndex.Page rather than Enumerate so
+///          The implementation consumes an explicit FileIndexCursor rather than Enumerate so
 ///          compatibility callers do not force the runtime to allocate a complete
 ///          workspace entry sequence in one call.
 expose func EnumerateFiles(rootPath: String,
@@ -138,16 +139,15 @@ expose func EnumerateFiles(rootPath: String,
     var result = new List();
     if rootPath == "" { return result; }
     var seen = Map.New();
-    var offset = 0;
+    var cursor = new workspace_file_cursor.WorkspaceFileCursor();
+    if cursor.Open(rootPath, fileKinds, ignorePatterns, false) == false {
+        return result;
+    }
     var done = false;
     while done == false {
-        var page = FileIndex.Page(rootPath,
-                                  fileKinds,
-                                  ignorePatterns,
-                                  false,
-                                  offset,
-                                  WORKSPACE_FILE_INDEX_PAGE_SIZE);
+        var page = cursor.Next(WORKSPACE_FILE_INDEX_PAGE_SIZE);
         if Map.GetBool(page, "valid") == false {
+            cursor.Destroy();
             return result;
         }
         var entries = Map.Get(page, "entries");
@@ -164,12 +164,13 @@ expose func EnumerateFiles(rootPath: String,
                 i = i + 1;
             }
         }
-        offset = Map.GetInt(page, "nextOffset");
         done = Map.GetBool(page, "done");
         if emitted == 0 and done == false {
+            cursor.Destroy();
             return result;
         }
     }
+    cursor.Destroy();
     return result;
 }
 

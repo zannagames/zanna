@@ -1,0 +1,145 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/process_reaper.zia
+// Purpose: Retire blocking Process and PTY handles away from Studio's UI thread.
+// Key invariants:
+//   - Queueing a valid handle never calls Destroy on the submitting thread.
+//   - Async.RunOwned retains each handle until its worker finishes destruction.
+//   - Shutdown waiting has one absolute deadline across every retired handle.
+// Ownership/Lifetime:
+//   - ProcessReaper owns request/future records; workers own retained handles.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/terminal/terminal_session.zia
+//
+//===----------------------------------------------------------------------===//
+
+module process_reaper;
+
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+bind Process = Zanna.System.Process;
+bind Pty = Zanna.System.Pty;
+bind Clock = Zanna.Time.Clock;
+
+final RETIRED_PROCESS = 1;
+final RETIRED_PTY = 2;
+final REAPER_SHUTDOWN_WAIT_MS = 6000;
+
+/// @brief One queued or worker-owned native-handle destruction request.
+class RetiredHandle {
+    expose Integer kind;
+    expose Any handle;
+    expose Any future;
+
+    expose func init() {
+        kind = 0;
+        handle = null;
+        future = null;
+    }
+}
+
+/// @brief Blocking Process.Destroy worker callback.
+func DestroyProcessOnWorker(handle: Process.ProcessHandle) -> Any {
+    if handle != null { handle.Destroy(); }
+    return null;
+}
+
+/// @brief Blocking PtySession.Destroy worker callback.
+func DestroyPtyOnWorker(handle: Pty.PtySession) -> Any {
+    if handle != null { handle.Destroy(); }
+    return null;
+}
+
+/// @brief Own deferred native process/PTY destruction futures.
+class ProcessReaper {
+    hide List[RetiredHandle] requests;
+    expose Integer queuedCount;
+    expose Integer completedCount;
+    expose Integer failedCount;
+    expose String lastError;
+
+    expose func init() {
+        requests = [];
+        queuedCount = 0;
+        completedCount = 0;
+        failedCount = 0;
+        lastError = "";
+    }
+
+    /// @brief Transfer one process handle to the deferred-destruction queue.
+    expose func RetireProcess(handle: Process.ProcessHandle) {
+        if handle == null { return; }
+        var request = new RetiredHandle();
+        request.kind = RETIRED_PROCESS;
+        request.handle = handle;
+        requests.add(request);
+        queuedCount = queuedCount + 1;
+        StartRequest(request);
+    }
+
+    /// @brief Transfer one PTY handle to the deferred-destruction queue.
+    expose func RetirePty(handle: Pty.PtySession) {
+        if handle == null { return; }
+        var request = new RetiredHandle();
+        request.kind = RETIRED_PTY;
+        request.handle = handle;
+        requests.add(request);
+        queuedCount = queuedCount + 1;
+        StartRequest(request);
+    }
+
+    /// @brief Publish completed futures and retry transient scheduling failures.
+    expose func Pump() {
+        var i = requests.count() - 1;
+        while i >= 0 {
+            var request = requests.get(i) as RetiredHandle;
+            if request.future == null {
+                StartRequest(request);
+            } else if Future.get_IsDone(request.future) {
+                if Future.get_IsError(request.future) {
+                    failedCount = failedCount + 1;
+                    lastError = Future.get_Error(request.future);
+                } else {
+                    completedCount = completedCount + 1;
+                }
+                requests.removeAt(i);
+            }
+            i = i - 1;
+        }
+    }
+
+    expose func PendingCount() -> Integer { return requests.count(); }
+
+    /// @brief Wait for all handle-only workers under one total deadline.
+    /// @return True when no deferred native handle remains.
+    expose func WaitForShutdown() -> Boolean {
+        var deadline = Clock.NowMs() + REAPER_SHUTDOWN_WAIT_MS;
+        while requests.count() > 0 and Clock.NowMs() < deadline {
+            Pump();
+            if requests.count() > 0 { Clock.Sleep(5); }
+        }
+        Pump();
+        return requests.count() == 0;
+    }
+
+    hide func StartRequest(request: RetiredHandle) {
+        if request == null or request.future != null or request.handle == null {
+            return;
+        }
+        var future: Any = null;
+        if request.kind == RETIRED_PROCESS {
+            future = Async.RunOwned(DestroyProcessOnWorker, request.handle);
+        } else if request.kind == RETIRED_PTY {
+            future = Async.RunOwned(DestroyPtyOnWorker, request.handle);
+        }
+        if future != null {
+            request.future = future;
+            request.handle = null;
+        }
+    }
+}

@@ -2146,6 +2146,16 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     return result == WAIT_OBJECT_0 ? 1 : 0;
 }
 
+/// @copydoc vgfx_platform_wake_events
+int vgfx_platform_wake_events(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return 0;
+    vgfx_win32_data *w32 = (vgfx_win32_data *)win->platform_data;
+    if (!w32->hwnd)
+        return 0;
+    return PostMessageW(w32->hwnd, WM_NULL, 0, 0) != 0 ? 1 : 0;
+}
+
 /// @brief Drain pending Win32 messages for one native window.
 /// @details Removes matching messages with PeekMessageW, translates keyboard
 ///          text messages, and dispatches each through `vgfx_win32_wndproc`,

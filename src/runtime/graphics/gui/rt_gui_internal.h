@@ -144,6 +144,7 @@ typedef enum {
 typedef struct {
     uint64_t magic;
     vgfx_window_t window;      ///< Underlying graphics window handle.
+    struct rt_activity_wake_target *activity_wake; ///< Ref-counted worker-to-event wake bridge.
     vg_widget_t *root;         ///< Root widget container for the UI hierarchy.
     vg_font_t *default_font;   ///< Regular proportional default font (lazily loaded).
     float default_font_size;   ///< Default font size in logical points.

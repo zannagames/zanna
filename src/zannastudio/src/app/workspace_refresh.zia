@@ -1,0 +1,75 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/workspace_refresh.zia
+// Purpose: Apply shared semantic-index and navigation invalidation after moves.
+// Key invariants:
+//   - Project workspaces reopen their semantic root after topology mutations.
+//   - Derived locations and highlights never outlive invalid source paths.
+// Ownership/Lifetime: Stateless helpers borrow all Studio models and widgets.
+// Links: zannastudio/src/app/workspace_watcher.zia,
+//        zannastudio/src/app/explorer_action_runner.zia
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_refresh;
+
+bind "../ui/app_shell";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../editor/editor_engine";
+bind "../editor/project_index";
+bind "../services/locations";
+bind "../services/path_identity";
+
+/// @brief Refresh the semantic index after a tree mutation.
+expose func ReindexAfterTreeMove(
+    projMgr: project_manager.ProjectManager,
+    indexer: project_index.ProjectIndexer,
+    docMgr: document_manager.DocumentManager) {
+    if indexer == null { return; }
+    if projMgr != null and projMgr.project != null and projMgr.project.isOpen {
+        indexer.OpenProject(projMgr, docMgr);
+        return;
+    }
+    indexer.SyncOpenDocuments(docMgr);
+}
+
+/// @brief Retire derived navigation and highlight state after topology changes.
+expose func InvalidateWorkspaceLocations(
+    shell: app_shell.AppShell,
+    locStore: locations.LocationStore,
+    engine: editor_engine.EditorEngine) {
+    if locStore != null { locStore.Clear(); }
+    if shell != null {
+        shell.toolPanels.ClearProblemsPanel();
+        shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
+        shell.toolPanels.HideSearchPanel();
+        shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+        shell.toolPanels.HideReferencesPanel();
+        shell.workbench.minimap.ClearMarkers();
+    }
+    if engine != null and engine.editor != null {
+        engine.editor.ClearHighlights();
+    }
+}
+
+/// @brief Preserve the active dirty widget snapshot before a disk event queues.
+expose func CaptureDirtyOpenDocument(
+    docMgr: document_manager.DocumentManager,
+    engine: editor_engine.EditorEngine,
+    path: String) {
+    if docMgr == null or engine == null or engine.editor == null or path == "" {
+        return;
+    }
+    var active = docMgr.GetActive();
+    if active == null { return; }
+    var doc = active!;
+    if doc.isModified and path_identity.SameFile(doc.filePath, path) {
+        doc.content = engine.GetTextSnapshot();
+    }
+}

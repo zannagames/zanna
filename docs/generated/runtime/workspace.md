@@ -23,6 +23,26 @@ Its public surface exposes operations including `Enumerate`, `Page`, `Status`, `
 | <a id="zanna-workspace-fileindex-status"></a>`Status` | `obj<Zanna.Collections.Map>(str,str,str,i1)` | `Zanna.Workspace.FileIndex.Status` |
 | <a id="zanna-workspace-fileindex-shouldignore"></a>`ShouldIgnore` | `i1(str,str,str)` | `Zanna.Workspace.FileIndex.ShouldIgnore` |
 
+<a id="zanna-workspace-fileindexcursor"></a>
+### `Zanna.Workspace.FileIndexCursor`
+
+Provides explicitly owned, generation-tagged workspace traversals.
+
+`Zanna.Workspace.FileIndexCursor` retains one traversal until `Destroy`; callers use
+`Generation` to reject pages from an obsolete cursor after resetting discovery.
+
+Constructor: `Zanna.Workspace.FileIndexCursor.New`
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-workspace-fileindexcursor-new"></a>`New` | `obj(str,str,str,i1)` | `Zanna.Workspace.FileIndexCursor.New` |
+| <a id="zanna-workspace-fileindexcursor-isvalid"></a>`IsValid` | `i1(obj)` | `Zanna.Workspace.FileIndexCursor.IsValid` |
+| <a id="zanna-workspace-fileindexcursor-generation"></a>`Generation` | `i64(obj)` | `Zanna.Workspace.FileIndexCursor.Generation` |
+| <a id="zanna-workspace-fileindexcursor-next"></a>`Next` | `obj<Zanna.Collections.Map>(obj,i64)` | `Zanna.Workspace.FileIndexCursor.Next` |
+| <a id="zanna-workspace-fileindexcursor-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Workspace.FileIndexCursor.Destroy` |
+
 <a id="zanna-workspace-workspacewatcher"></a>
 ### `Zanna.Workspace.WorkspaceWatcher`
 
@@ -43,8 +63,9 @@ Its public surface exposes operations including `PollBatch`.
 Provides Edit constants and static operations for workspace tooling.
 
 `Zanna.Workspace.Edit` is a static runtime surface and does not require an instance. Its public
-Its public surface exposes operations including `Validate`, `Apply`, `ValidateInRoot`,
-`ApplyInRoot`, `ValidateInRoots`, and `ApplyInRoots`.
+Its public surface exposes legacy one-shot validation/application plus explicitly owned
+prepared transactions. Prepared transactions retain one immutable validation snapshot and
+narrow commit races without repeating target reads.
 
 #### Methods
 
@@ -52,10 +73,30 @@ Its public surface exposes operations including `Validate`, `Apply`, `ValidateIn
 |---|---|---|
 | <a id="zanna-workspace-edit-validate"></a>`Validate` | `obj<Zanna.Collections.Map>(obj)` | `Zanna.Workspace.Edit.Validate` |
 | <a id="zanna-workspace-edit-apply"></a>`Apply` | `obj<Zanna.Collections.Map>(obj)` | `Zanna.Workspace.Edit.Apply` |
+| <a id="zanna-workspace-edit-prepare"></a>`Prepare` | `obj<Zanna.Workspace.PreparedEdit>(obj)` | `Zanna.Workspace.Edit.Prepare` |
 | <a id="zanna-workspace-edit-validateinroot"></a>`ValidateInRoot` | `obj<Zanna.Collections.Map>(obj,str)` | `Zanna.Workspace.Edit.ValidateInRoot` |
 | <a id="zanna-workspace-edit-applyinroot"></a>`ApplyInRoot` | `obj<Zanna.Collections.Map>(obj,str)` | `Zanna.Workspace.Edit.ApplyInRoot` |
+| <a id="zanna-workspace-edit-prepareinroot"></a>`PrepareInRoot` | `obj<Zanna.Workspace.PreparedEdit>(obj,str)` | `Zanna.Workspace.Edit.PrepareInRoot` |
 | <a id="zanna-workspace-edit-validateinroots"></a>`ValidateInRoots` | `obj<Zanna.Collections.Map>(obj,obj)` | `Zanna.Workspace.Edit.ValidateInRoots` |
 | <a id="zanna-workspace-edit-applyinroots"></a>`ApplyInRoots` | `obj<Zanna.Collections.Map>(obj,obj)` | `Zanna.Workspace.Edit.ApplyInRoots` |
+| <a id="zanna-workspace-edit-prepareinroots"></a>`PrepareInRoots` | `obj<Zanna.Workspace.PreparedEdit>(obj,obj)` | `Zanna.Workspace.Edit.PrepareInRoots` |
+
+<a id="zanna-workspace-preparededit"></a>
+### `Zanna.Workspace.PreparedEdit`
+
+Provides explicit lifecycle operations for a prepared workspace-edit transaction.
+
+A prepared edit is immutable and one-shot. `Result` clones its validation diagnostics,
+`Apply` consumes it, and `Destroy` releases retained source images without changing files.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-workspace-preparededit-isvalid"></a>`IsValid` | `i1(obj)` | `Zanna.Workspace.PreparedEdit.IsValid` |
+| <a id="zanna-workspace-preparededit-result"></a>`Result` | `obj<Zanna.Collections.Map>(obj)` | `Zanna.Workspace.PreparedEdit.Result` |
+| <a id="zanna-workspace-preparededit-apply"></a>`Apply` | `obj<Zanna.Collections.Map>(obj)` | `Zanna.Workspace.PreparedEdit.Apply` |
+| <a id="zanna-workspace-preparededit-destroy"></a>`Destroy` | `void(obj)` | `Zanna.Workspace.PreparedEdit.Destroy` |
 
 ## Functions
 
@@ -65,11 +106,23 @@ Its public surface exposes operations including `Validate`, `Apply`, `ValidateIn
 | `Zanna.Workspace.FileIndex.Page` | `obj<Zanna.Collections.Map>(str,str,str,i1,i64,i64)` | `rt_workspace_file_index_page` |
 | `Zanna.Workspace.FileIndex.Status` | `obj<Zanna.Collections.Map>(str,str,str,i1)` | `rt_workspace_file_index_status` |
 | `Zanna.Workspace.FileIndex.ShouldIgnore` | `i1(str,str,str)` | `rt_workspace_file_index_should_ignore` |
+| `Zanna.Workspace.FileIndexCursor.New` | `obj(str,str,str,i1)` | `rt_workspace_file_index_cursor_new` |
+| `Zanna.Workspace.FileIndexCursor.IsValid` | `i1(obj)` | `rt_workspace_file_index_cursor_is_valid` |
+| `Zanna.Workspace.FileIndexCursor.Generation` | `i64(obj)` | `rt_workspace_file_index_cursor_generation` |
+| `Zanna.Workspace.FileIndexCursor.Next` | `obj<Zanna.Collections.Map>(obj,i64)` | `rt_workspace_file_index_cursor_next` |
+| `Zanna.Workspace.FileIndexCursor.Destroy` | `void(obj)` | `rt_workspace_file_index_cursor_destroy` |
 | `Zanna.Workspace.WorkspaceWatcher.PollBatch` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_workspace_watcher_poll_batch` |
 | `Zanna.Workspace.Edit.Validate` | `obj<Zanna.Collections.Map>(obj)` | `rt_workspace_edit_validate` |
 | `Zanna.Workspace.Edit.Apply` | `obj<Zanna.Collections.Map>(obj)` | `rt_workspace_edit_apply` |
+| `Zanna.Workspace.Edit.Prepare` | `obj<Zanna.Workspace.PreparedEdit>(obj)` | `rt_workspace_edit_prepare` |
 | `Zanna.Workspace.Edit.ValidateInRoot` | `obj<Zanna.Collections.Map>(obj,str)` | `rt_workspace_edit_validate_in_root` |
 | `Zanna.Workspace.Edit.ApplyInRoot` | `obj<Zanna.Collections.Map>(obj,str)` | `rt_workspace_edit_apply_in_root` |
+| `Zanna.Workspace.Edit.PrepareInRoot` | `obj<Zanna.Workspace.PreparedEdit>(obj,str)` | `rt_workspace_edit_prepare_in_root` |
 | `Zanna.Workspace.Edit.ValidateInRoots` | `obj<Zanna.Collections.Map>(obj,obj)` | `rt_workspace_edit_validate_in_roots` |
 | `Zanna.Workspace.Edit.ApplyInRoots` | `obj<Zanna.Collections.Map>(obj,obj)` | `rt_workspace_edit_apply_in_roots` |
+| `Zanna.Workspace.Edit.PrepareInRoots` | `obj<Zanna.Workspace.PreparedEdit>(obj,obj)` | `rt_workspace_edit_prepare_in_roots` |
+| `Zanna.Workspace.PreparedEdit.IsValid` | `i1(obj)` | `rt_workspace_edit_prepared_is_valid` |
+| `Zanna.Workspace.PreparedEdit.Result` | `obj<Zanna.Collections.Map>(obj)` | `rt_workspace_edit_prepared_result` |
+| `Zanna.Workspace.PreparedEdit.Apply` | `obj<Zanna.Collections.Map>(obj)` | `rt_workspace_edit_prepared_apply` |
+| `Zanna.Workspace.PreparedEdit.Destroy` | `void(obj)` | `rt_workspace_edit_prepared_destroy` |
 

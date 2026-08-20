@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "common/PlatformCapabilities.hpp"
+#include "rt_activity_wake.h"
 #include "rt_box.h"
 #include "rt_exec.h"
 #include "rt_internal.h"
@@ -21,6 +22,7 @@
 #include "rt_string.h"
 
 #include <cassert>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +34,10 @@
 #if ZANNA_HOST_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <unistd.h>
 #endif
 
 extern "C" void vm_trap(const char *msg) {
@@ -86,6 +92,82 @@ static void *start_shell_process_with_env_overlay(const char *script, const char
     }
     return nullptr;
 }
+
+static void record_activity_wake(void *context) {
+    auto *count = static_cast<std::atomic<int> *>(context);
+    count->fetch_add(1, std::memory_order_release);
+}
+
+#if !ZANNA_HOST_WINDOWS
+static void test_process_activity_wake() {
+    void *handle = start_shell_process("sleep 1; printf activity-wake");
+    assert(handle != nullptr);
+    std::atomic<int> wakes{0};
+    rt_activity_wake_target *target = rt_activity_wake_new(record_activity_wake, &wakes);
+    assert(target != nullptr);
+    assert(rt_process_set_activity_wake(handle, target) == 1);
+    rt_activity_wake_release(target);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (wakes.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    assert(wakes.load(std::memory_order_acquire) > 0);
+    assert(rt_process_wait(handle) == 0);
+    std::string output;
+    append_runtime_string(output, rt_process_read_stdout(handle));
+    assert(output.find("activity-wake") != std::string::npos);
+    rt_process_destroy(handle);
+
+    // Closing both output streams before exit must produce one drain wake, not
+    // a POLLHUP wake loop for the remainder of the child lifetime.
+    handle = start_shell_process("exec 1>&- 2>&-; sleep 1");
+    assert(handle != nullptr);
+    wakes.store(0, std::memory_order_release);
+    target = rt_activity_wake_new(record_activity_wake, &wakes);
+    assert(target != nullptr);
+    assert(rt_process_set_activity_wake(handle, target) == 1);
+    rt_activity_wake_release(target);
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (wakes.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    assert(wakes.load(std::memory_order_acquire) > 0);
+    append_runtime_string(output, rt_process_read_stdout(handle));
+    append_runtime_string(output, rt_process_read_stderr(handle));
+    const int wakes_after_hup = wakes.load(std::memory_order_acquire);
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    assert(wakes.load(std::memory_order_acquire) == wakes_after_hup);
+    rt_process_destroy(handle);
+}
+
+static void test_pty_activity_wake() {
+    if (!rt_pty_is_supported())
+        return;
+    void *handle = rt_pty_open(make_string("/bin/sh"),
+                               make_shell_args("sleep 1; printf pty-activity-wake"),
+                               make_string(""),
+                               nullptr,
+                               80,
+                               24);
+    assert(handle != nullptr);
+    std::atomic<int> wakes{0};
+    rt_activity_wake_target *target = rt_activity_wake_new(record_activity_wake, &wakes);
+    assert(target != nullptr);
+    assert(rt_pty_set_activity_wake(handle, target) == 1);
+    rt_activity_wake_release(target);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (wakes.load(std::memory_order_acquire) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    assert(wakes.load(std::memory_order_acquire) > 0);
+    assert(rt_pty_wait(handle) == 0);
+    std::string output;
+    append_runtime_string(output, rt_pty_read(handle));
+    assert(output.find("pty-activity-wake") != std::string::npos);
+    rt_pty_destroy(handle);
+}
+#endif
 
 static void test_shell_true() {
     // "true" command should return 0
@@ -539,6 +621,36 @@ static void test_process_kill() {
     rt_process_destroy(handle);
 }
 
+#if !ZANNA_HOST_WINDOWS
+static void test_process_kill_terminates_descendants() {
+    void *handle = start_shell_process("sleep 30 & child=$!; printf '%s\\n' \"$child\"; wait");
+    assert(handle != nullptr);
+
+    std::string output;
+    for (int i = 0; i < 400 && output.find('\n') == std::string::npos; ++i) {
+        append_runtime_string(output, rt_process_read_stdout(handle));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    char *end = nullptr;
+    long descendant = std::strtol(output.c_str(), &end, 10);
+    assert(descendant > 1 && end != output.c_str());
+    assert(kill((pid_t)descendant, 0) == 0);
+
+    assert(rt_process_kill(handle) == 1);
+    assert(rt_process_wait(handle) != 0);
+    bool descendant_gone = false;
+    for (int i = 0; i < 400; ++i) {
+        if (kill((pid_t)descendant, 0) != 0 && errno == ESRCH) {
+            descendant_gone = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    assert(descendant_gone);
+    rt_process_destroy(handle);
+}
+#endif
+
 static void test_process_write_stdin() {
     // A child that reads one line from stdin and echoes it back proves the new
     // WriteStdin pipe carries data into the child.
@@ -802,6 +914,11 @@ int main(int argc, char **argv) {
     test_process_accepts_boxed_args_from_object_abi();
     test_process_empty_incremental_read();
     test_process_kill();
+#if !ZANNA_HOST_WINDOWS
+    test_process_kill_terminates_descendants();
+    test_process_activity_wake();
+    test_pty_activity_wake();
+#endif
 
     return 0;
 }

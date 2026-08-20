@@ -1,0 +1,122 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/diagnostic_stream_probe.zia
+// Purpose: Exercise bounded, byte-safe incremental diagnostic publication.
+// Key invariants:
+//   - UTF-8 records may be split at arbitrary process-chunk byte boundaries.
+//   - JSON decode retains at most the documented diagnostic-record limit.
+//   - Stable IDs and UI publication cursors advance once per job generation.
+// Links: zannastudio/src/build/diagnostic_parser.zia,
+//        zannastudio/src/build/build_system.zia
+//
+//===----------------------------------------------------------------------===//
+
+module diagnostic_stream_probe;
+
+bind "../build/build_system";
+bind "../build/diagnostic_parser";
+
+bind Codec = Zanna.Text.Codec;
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+bind Terminal = Zanna.Terminal;
+
+func Fail(message: String) {
+    Terminal.Say("RESULT: fail " + message);
+}
+
+func VerifyUtf8ChunkCursor() -> Boolean {
+    var parser = new diagnostic_parser.DiagnosticStreamParser();
+    var source = "unicode.zia:4:7: warning[W-UTF8]: café 世界\n";
+    var offset = 0;
+    while offset < Str.get_Length(source) {
+        // Substring is byte-indexed, intentionally cutting inside UTF-8.
+        parser.Append("stderr", Str.Substring(source, offset, 1));
+        offset = offset + 1;
+    }
+    if parser.records.count() != 1
+       or parser.records.get(0).message != "café 世界"
+       or Codec.IsValidUtf8(parser.records.get(0).message) == false
+       or parser.records.get(0).stableId != "diagnostic:1:1"
+       or parser.truncated {
+        Fail("byte-split UTF-8 record");
+        return false;
+    }
+    return true;
+}
+
+func VerifyJsonRecordLimit() -> Boolean {
+    var encoded = new StringBuilder();
+    encoded.Append("{\"diagnostics\":[");
+    var i = 0;
+    while i < diagnostic_parser.MAX_DIAGNOSTIC_RECORDS + 2 {
+        if i > 0 { encoded.Append(","); }
+        encoded.Append(
+            "{\"severity\":\"warning\",\"code\":\"W-LIMIT\","
+            + "\"message\":\"bounded\",\"location\":{"
+            + "\"file\":\"limit.zia\",\"line\":1,\"column\":1}}");
+        i = i + 1;
+    }
+    encoded.Append("]}");
+
+    var parser = new diagnostic_parser.DiagnosticStreamParser();
+    parser.Append("stdout", encoded.ToString());
+    parser.Flush();
+    if parser.records.count() != diagnostic_parser.MAX_DIAGNOSTIC_RECORDS
+       or parser.revision != diagnostic_parser.MAX_DIAGNOSTIC_RECORDS
+       or parser.truncated == false
+       or parser.recordLimitReached == false
+       or parser.carryLimitReached
+       or parser.records.get(0).stableId != "diagnostic:1:1"
+       or parser.records.get(parser.records.count() - 1).stableId
+            != "diagnostic:1:5000" {
+        Fail("bounded JSON record decode");
+        return false;
+    }
+    return true;
+}
+
+func VerifyPublicationCursor() -> Boolean {
+    var build = new build_system.BuildSystem();
+    if build.TakeDiagnosticPublicationReset() == false
+       or build.FirstUnpublishedDiagnosticIndex() != 0 {
+        Fail("initial publication generation");
+        return false;
+    }
+    build.diagnosticStream.Append(
+        "stderr", "one.zia:1:1: warning[W-ONE]: first\n");
+    build.diagnostics = build.diagnosticStream.records;
+    if build.FirstUnpublishedDiagnosticIndex() != 0 {
+        Fail("first unpublished diagnostic");
+        return false;
+    }
+    build.MarkDiagnosticsPublished();
+    build.diagnosticStream.Append(
+        "stderr", "two.zia:2:2: warning[W-TWO]: second\n");
+    build.diagnostics = build.diagnosticStream.records;
+    if build.FirstUnpublishedDiagnosticIndex() != 1
+       or build.TakeDiagnosticPublicationReset() {
+        Fail("incremental publication suffix");
+        return false;
+    }
+    build.diagnosticStream.Reset();
+    build.diagnostics = build.diagnosticStream.records;
+    if build.TakeDiagnosticPublicationReset() == false
+       or build.FirstUnpublishedDiagnosticIndex() != 0 {
+        Fail("new publication generation reset");
+        return false;
+    }
+    return true;
+}
+
+func main() {
+    if VerifyUtf8ChunkCursor() == false { return; }
+    if VerifyJsonRecordLimit() == false { return; }
+    if VerifyPublicationCursor() == false { return; }
+    Terminal.Say("RESULT: ok");
+}

@@ -1363,6 +1363,14 @@ set_tests_properties(zia_zannastudio_split_editor PROPERTIES
         LABELS "zia;zannastudio;editor;shell;requires_display"
         TIMEOUT 60)
 
+add_test(NAME zia_zannastudio_native_tool_window
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/native_tool_window_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_native_tool_window PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;shell;windowing;requires_display"
+        TIMEOUT 60)
+
 add_test(NAME zia_zannastudio_bottom_panel
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/bottom_panel_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -2038,6 +2046,14 @@ set_tests_properties(zia_zannastudio_terminal PROPERTIES
         LABELS "zia;zannastudio;terminal"
         TIMEOUT 30)
 
+add_test(NAME zia_zannastudio_process_reaper
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/process_reaper_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_process_reaper PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;process"
+        TIMEOUT 30)
+
 add_test(NAME zia_zannastudio_terminal_open
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/terminal_open_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -2120,6 +2136,31 @@ set_tests_properties(zia_zannastudio_edge_case_corpus PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;corpus"
         TIMEOUT 90)
+
+add_test(NAME zia_zannastudio_diagnostic_stream
+        COMMAND $<TARGET_FILE:zia>
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/diagnostic_stream_probe.zia")
+set_tests_properties(zia_zannastudio_diagnostic_stream PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;build;diagnostics"
+        TIMEOUT 60)
+
+add_test(NAME zia_zannastudio_runtime_policy_perf
+        COMMAND $<TARGET_FILE:zia>
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/runtime_policy_perf_probe.zia")
+set_tests_properties(zia_zannastudio_runtime_policy_perf PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;perf;lifecycle"
+        TIMEOUT 30)
+
+add_test(NAME zia_zannastudio_platform_signoff_manifest
+        COMMAND $<TARGET_FILE:zia>
+                "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/platform_signoff_manifest_probe.zia"
+                -- --manifest "${CMAKE_SOURCE_DIR}/src/zannastudio/tests/platform_signoff.tsv")
+set_tests_properties(zia_zannastudio_platform_signoff_manifest PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;platform;signoff"
+        TIMEOUT 30)
 
 add_test(NAME zia_zannastudio_debug
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/debug_probe.zia" -- --zanna-bin $<TARGET_FILE:zanna>

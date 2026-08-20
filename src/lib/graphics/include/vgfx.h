@@ -20,6 +20,8 @@
 // - Direct framebuffer access for maximum flexibility
 // - Thread-safe event queue for input produced by platform callbacks
 //
+// Links: docs/adr/0281-event-driven-process-pty-gui-wakes.md
+//
 // Supported platforms:
 // - macOS (Cocoa/AppKit backend)
 // - Linux (X11 backend)
@@ -529,6 +531,14 @@ int vgfx_pump_events(vgfx_window_t window);
 /// @param timeout_ms Maximum wait in milliseconds (0 returns immediately).
 /// @return 1 if events are (probably) available, 0 on timeout.
 int vgfx_wait_events(vgfx_window_t window, int32_t timeout_ms);
+
+/// @brief Wake a thread blocked in @ref vgfx_wait_events for this window.
+/// @details Safe to call from a worker while the owning thread is waiting. The
+///          wake is only a scheduling hint and does not create a public input
+///          event; callers still run their ordinary event pump afterward.
+/// @param window Live window whose native wait should be interrupted.
+/// @return 1 when the backend accepted the wake request, otherwise 0.
+int vgfx_wake_events(vgfx_window_t window);
 
 /// @brief Enable or disable native text input for the focused editor in a window.
 /// @details Disabling cancels any active native preedit. This does not affect raw key events.

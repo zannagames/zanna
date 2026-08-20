@@ -1,0 +1,43 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/problems_quick_fix.zia
+// Purpose: Route a selected Problems action through its durable source anchor.
+// Key invariants:
+//   - Filtered row presentation never replaces structured location metadata.
+// Ownership/Lifetime: Stateless helper borrowing Studio models and controller.
+// Links: zannastudio/src/commands/diagnostic_edit_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module problems_quick_fix;
+
+bind "../commands/diagnostic_edit_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../services/locations";
+bind "../ui/app_shell";
+
+/// @brief Execute one edge-triggered Problems quick-fix request.
+expose func Handle(
+    shell: app_shell.AppShell,
+    docMgr: document_manager.DocumentManager,
+    engine: editor_engine.EditorEngine,
+    tabs: editor_tabs.EditorTabs,
+    projMgr: project_manager.ProjectManager,
+    locStore: locations.LocationStore,
+    controller: diagnostic_edit_commands.DiagnosticActionController) {
+    if shell == null or controller == null
+       or shell.toolPanels.ProblemsQuickFixWasRequested() == false {
+        return;
+    }
+    diagnostic_edit_commands.StartSelectedProblemAction(
+        controller, shell, docMgr, engine, tabs, projMgr, locStore);
+    shell.toolPanels.SetProblemsActionBusy(controller.IsBusy());
+}

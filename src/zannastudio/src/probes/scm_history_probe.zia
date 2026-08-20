@@ -4,11 +4,11 @@ module scm_history_probe;
 // MODULE: scm_history_probe
 // PURPOSE: Headless probe for the plan-11 SCM depth layer: lazily-paged
 //          `git log` parsing, per-commit file lists, revision content fetch
-//          (the two halves of the commit diff view), and the pure credential
-//          prompt detector used by interactive push/pull.
+//          (the two halves of the commit diff view), byte-exact porcelain paths,
+//          and incomplete-status rejection.
 //
 // WHERE-THIS-FITS: scm_git.zia owns the command layer; scm_view.zia consumes
-//          these primitives for the History mode and the credential row. Like
+//          these primitives for History and virtualized status rows. Like
 //          scm_probe, real Git processes are used because log formatting and
 //          revision addressing are external contracts.
 //
@@ -152,15 +152,29 @@ func main() {
     if pumpJob(missingJob, 8000) == false { fail("missing show did not finish"); return; }
     if missingJob.exitCode == 0 { fail("parent beta.zia unexpectedly existed"); return; }
 
-    // ── Credential prompt detector (pure; no network involved) ───────────────
-    if scm_git.DetectPrompt("Counting objects: done.\n") != "" { fail("prompt on complete line"); return; }
-    if scm_git.DetectPrompt("Username for 'https://example.com':") == "" { fail("username prompt missed"); return; }
-    if scm_git.DetectPrompt("Password for 'https://user@example.com':") == "" { fail("password prompt missed"); return; }
-    if scm_git.DetectPrompt("Enter passphrase for key '/home/u/.ssh/id_ed25519':") == "" { fail("passphrase prompt missed"); return; }
-    if scm_git.DetectPrompt("remote: Enumerating objects") != "" { fail("false prompt on progress line"); return; }
-    if scm_git.PromptWantsMask("Username for 'https://example.com':") { fail("username should not mask"); return; }
-    if scm_git.PromptWantsMask("Password for 'https://example.com':") == false { fail("password should mask"); return; }
-    if scm_git.PromptWantsMask("Enter passphrase for key:") == false { fail("passphrase should mask"); return; }
+    // Porcelain-v2 `-z` paths are byte payloads, not whitespace-delimited text.
+    var awkwardPath = " leading and trailing ";
+    var exactStatus = git.StatusFromOutputState(
+        "? " + awkwardPath + Str.Chr(0), "", 0, false);
+    if exactStatus.complete == false or exactStatus.entries.count() != 1
+       or exactStatus.entries.get(0).path != awkwardPath {
+        fail("porcelain path bytes were changed");
+        return;
+    }
+    if scm_git.DisplayPath("line\nbreak") != "line\\nbreak" {
+        fail("display path controls were not escaped");
+        return;
+    }
+
+    // A locally or natively truncated status stream must never become a partial
+    // repository snapshot that hides suffix entries.
+    var incomplete = git.StatusFromOutputState(
+        "? partial" + Str.Chr(0), "", 0, true);
+    if incomplete.complete or incomplete.isRepo or incomplete.truncated == false
+       or incomplete.entries.count() != 0 {
+        fail("truncated status was accepted");
+        return;
+    }
 
     Terminal.Say("RESULT: ok");
 }

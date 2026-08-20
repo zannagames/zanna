@@ -3,6 +3,10 @@
 This document lists the current automated probes, useful CTest invocations, and
 manual checks for Zanna Studio.
 
+The focused closeout set and per-recommendation evidence for the 70-item
+Studio/runtime audit are recorded in
+[audit-70-implementation.md](audit-70-implementation.md).
+
 ## Build First
 
 For repository changes, use the repository build scripts rather than raw CMake
@@ -42,7 +46,7 @@ Current Zanna Studio-related CTest entries are registered in
 | `zia_zannastudio_bottom_panel` | Real pointer docking for the primary sidebar and primary tool group, simultaneous left/bottom/right/floating tool groups, floating move/resize/edge-redock and bounds persistence, direct per-tool movement, focus/collapse safety, mirrored size persistence, movable tabs, compact target containment, and reset hygiene. | `zia;zannastudio;shell;requires_display` |
 | `zia_zannastudio_multi_root` | Multi-root workspace behavior. | `zia;zannastudio;multi-root;requires_display` |
 | `zia_zannastudio_scm` | Git Source Control command layer, async job pump, and spaces/rename/real-unmerged-row parsing. | `zia;zannastudio;scm` |
-| `zia_zannastudio_scm_history` | Paged history, per-commit files/diffs, and credential-prompt classification. | `zia;zannastudio;scm` |
+| `zia_zannastudio_scm_history` | Paged history, per-commit files/diffs, and noninteractive authentication-failure classification. | `zia;zannastudio;scm` |
 | `zia_zannastudio_scm_view` | Responsive live action state, real pointer staging, focused-Enter commits, and a real conflict edit/Stage/commit workflow. | `zia;zannastudio;scm;shell;requires_display` |
 | `zia_zannastudio_tool_panel_toolbar` | Live Problems/Output/References controls, structured and grouped filtering, durable navigation data, quick-fix request routing, real pointer actions, and zoomed side-dock containment. | `zia;zannastudio;shell;console;diagnostics;requires_display` |
 | `zia_zannastudio_debug_tool_surfaces` | State-aware Call Stack and Debug Console controls, durable filtered-frame navigation, clearable program output, real pointer actions, and zoomed side-dock containment. | `zia;zannastudio;debug;shell;console;requires_display` |
@@ -186,6 +190,13 @@ Zanna Studio probes live in `zannastudio/src/probes/`.
 | `smoke_probe.zia` | Basic app compile/runtime smoke. |
 | `phase0_phase1_probe.zia` | Documents, commands, sessions, language gates, surface-aware standard Edit command gates, workspace edits. |
 | `phase2_phase3_probe.zia` | Build/run/debug boundary and scene data contracts. |
+| `split_editor_probe.zia` | Same-document two-view ownership, revision-gated mirrors, independent view coordinates, undo preservation across focus transfer, convergence, and close. |
+| `editor_depth_probe.zia` | Durable split/session depth, including equal pane indices restoring one shared Document. |
+| `native_tool_window_probe.zia` | Independent native App lifecycle, bounded append/reset synchronization, primary-App restoration, and return-to-workbench close behavior. |
+| `runtime_policy_perf_probe.zia` | Absolute deadlines, adaptive wait policy, and bounded frame-work fairness. |
+| `process_reaper_probe.zia` | Timed process shutdown escalation and owned-handle draining. |
+| `diagnostic_stream_probe.zia` | Chunked diagnostic parsing across split records and bounded malformed input. |
+| `platform_signoff_manifest_probe.zia` | Exact three-platform release-matrix schema, scenario coverage, evidence rules, and strict-completion gate. |
 | `editor_hot_path_probe.zia` | Editor copy/layout/index performance hot paths. |
 | `intellisense_probe.zia` | Completion and language-service UI behavior. |
 | `file_tree_probe.zia` | Explorer behavior. |
@@ -193,7 +204,7 @@ Zanna Studio probes live in `zannastudio/src/probes/`.
 | `bottom_panel_probe.zia` | Pointer-driven primary-sidebar/tool-strip docking, floating move/resize/edge-redock and persisted bounds, focus/collapse safety, mirrored persisted sizing, tool-tab order, compact targets, and reset hygiene. |
 | `multi_root_file_tree_probe.zia` | Multi-root workspace behavior. |
 | `scm_probe.zia` | Git command layer, async status jobs, paths with spaces, staged renames, and realistic porcelain-v2 unmerged rows. |
-| `scm_history_probe.zia` | Paged history, commit files/revisions, and credential-prompt classification. |
+| `scm_history_probe.zia` | Paged history, commit files/revisions, and noninteractive authentication-failure classification. |
 | `scm_view_probe.zia` | Real-Git responsive controls, action enablement, pointer staging, Enter commits, and conflict recovery guidance. |
 | `terminal_probe.zia` | Terminal session/controller core behavior. |
 | `terminal_open_probe.zia` | Terminal panel start/open behavior. |
@@ -380,7 +391,7 @@ Known areas needing stronger tests:
   precise-surface fallback, live canonical/history isolation, single release
   transactions, and exact Escape/undo restoration.
 - Source Control status, staging, commit, paged history, per-commit diffs,
-  credential-prompt detection, narrow layout, and a real content-conflict
+  authentication-failure guidance, narrow layout, and a real content-conflict
   recovery are probe-covered (`scm_probe`, `scm_history_probe`,
   `scm_view_probe`); a real credentialed push plus rename/multi-file conflict
   recovery still need manual passes.
@@ -395,3 +406,9 @@ Known areas needing stronger tests:
   `zia_zannastudio_debug_fields`; struct-payload expansion and a dedicated
   watch-management panel are not present.
 - Accessibility and keyboard-focus behavior need more systematic checks.
+
+These manual/platform gaps are release-controlled by
+[platform-signoff.md](platform-signoff.md) and the validated
+`tests/platform_signoff.tsv` manifest. The schema probe passes when coverage is
+complete and truthful; its `--require-complete` mode intentionally fails until
+all 42 applicable Windows/macOS/Linux rows contain dated pass evidence.

@@ -96,6 +96,18 @@ func EnsureFinalNewlineOnSaveEnabled() -> Boolean {
     return ensureFinalNewlineOnSave;
 }
 
+/// @brief Publish the typed failure retained after a document save attempt.
+/// @return Complete status text for single-save and batch-save callers.
+func ReportSaveFailure(shell: app_shell.AppShell,
+                       docMgr: document_manager.DocumentManager,
+                       fileName: String) -> String {
+    var reason = docMgr.SaveFailureMessage("The file could not be saved.");
+    var message = "Could not save " + fileName + ": " + reason;
+    shell.SetStatusLeft(message);
+    GUI.Toast.Error(reason);
+    return message;
+}
+
 /// @brief Trim line suffixes while retaining every original line terminator.
 /// @details Split preserves trailing empty segments. LF partitions identify LF
 ///          versus CRLF, and an inner CR split preserves legacy CR-only lines.

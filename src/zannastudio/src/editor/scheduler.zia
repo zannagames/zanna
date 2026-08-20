@@ -1,4 +1,25 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/scheduler.zia
+// Purpose: Registry-backed debounce scheduling for Studio editor jobs.
+// Key invariants:
+//   - Every job kind has exactly one ScheduledJob record as its source of truth.
+//   - Queue/cancel generation changes invalidate stale asynchronous results.
+//   - Deadlines are absolute monotonic millisecond values.
+// Ownership/Lifetime: EditorScheduler owns its fixed job registry.
+// Links: zannastudio/src/app/language_tool_frame.zia,
+//        zannastudio/src/editor/diagnostics.zia
+//
+//===----------------------------------------------------------------------===//
+
 module scheduler;
+
+bind Clock = Zanna.Time.Clock;
 
 final JOB_DIAGNOSTICS = 1;
 final JOB_COMPLETION = 2;
@@ -8,6 +29,7 @@ final JOB_SYMBOLS = 5;
 final JOB_INDEX_SYNC = 6;
 final JOB_SEARCH = 7;
 final JOB_QUICK_OPEN_REFRESH = 8;
+final JOB_KIND_COUNT = 8;
 
 final SCHED_DIAGNOSTICS_IDLE_MS = 500;
 final SCHED_COMPLETION_DEBOUNCE_MS = 180;
@@ -18,32 +40,23 @@ final SCHED_INDEX_IDLE_MS = 350;
 final SCHED_SEARCH_IDLE_MS = 50;
 final SCHED_QUICK_OPEN_REFRESH_MS = 100;
 
-// ============================================================================
-// MODULE: scheduler
-// PURPOSE: Debounced editor background task scheduler.
-//
-// WHERE-THIS-FITS: Completion, diagnostics, hover, symbols, search, and indexing
-//          controllers queue short-lived work here instead of each owning a
-//          separate debounce implementation.
-//
-// TEACHING-NOTE: Scheduler state is a small record repeated per job kind. The
-//          ScheduledJob class gives that repeated state a name while the legacy
-//          exposed fields remain synchronized for compatibility with probes.
-// ============================================================================
-
-/// @brief Debounced state for one scheduler job kind.
-/// @details A queued job is identified by path and document revision. The
-///          generation increments whenever the job is queued or canceled so
-///          async work can cheaply decide whether its result is stale.
+/// @brief Complete state and metadata for one scheduler job kind.
 class ScheduledJob {
+    expose Integer kind;
+    expose String name;
+    expose Integer defaultDelayMs;
     expose Boolean queued;
     expose String path;
     expose Integer revision;
     expose Integer dueMs;
     expose Integer generation;
 
-    /// @brief Initialize an idle scheduled job.
-    expose func init() {
+    expose func init(jobKind: Integer,
+                     jobName: String,
+                     delayMs: Integer) {
+        kind = jobKind;
+        name = jobName;
+        defaultDelayMs = delayMs;
         queued = false;
         path = "";
         revision = -1;
@@ -51,11 +64,6 @@ class ScheduledJob {
         generation = 0;
     }
 
-    /// @brief Queue or replace this job with a new debounce deadline.
-    /// @param jobPath Source path associated with the work.
-    /// @param jobRevision Editor revision associated with the work.
-    /// @param dueAtMs Absolute tick count when the work becomes due.
-    /// @return New generation token for this queued job.
     expose func Queue(jobPath: String,
                       jobRevision: Integer,
                       dueAtMs: Integer) -> Integer {
@@ -64,108 +72,33 @@ class ScheduledJob {
         revision = jobRevision;
         dueMs = dueAtMs;
         generation = generation + 1;
+        if generation <= 0 { generation = 1; }
         return generation;
     }
 
-    /// @brief Test whether this job is queued for a specific document state.
-    /// @param jobPath Expected source path.
-    /// @param jobRevision Expected editor revision.
-    /// @return True when queued path and revision both match.
     expose func Matches(jobPath: String,
                         jobRevision: Integer) -> Boolean {
         return queued and path == jobPath and revision == jobRevision;
     }
 
-    /// @brief Test whether this job is queued and past its deadline.
-    /// @param nowMs Current tick count.
-    /// @param jobPath Expected source path.
-    /// @param jobRevision Expected editor revision.
-    /// @return True when the matching job is due.
     expose func IsDue(nowMs: Integer,
                       jobPath: String,
                       jobRevision: Integer) -> Boolean {
         return Matches(jobPath, jobRevision) and nowMs >= dueMs;
     }
 
-    /// @brief Cancel this job and invalidate any outstanding generation token.
     expose func Cancel() {
         queued = false;
         generation = generation + 1;
+        if generation <= 0 { generation = 1; }
     }
 
-    /// @brief Mark this job complete without invalidating its generation token.
-    expose func Complete() {
-        queued = false;
-    }
+    expose func Complete() { queued = false; }
 }
 
+/// @brief Fixed registry of all debounce-scheduled editor work.
 class EditorScheduler {
-    expose Integer diagnosticsIdleMs;
-    expose Integer completionDebounceMs;
-    expose Integer signatureDebounceMs;
-    expose Integer hoverDwellMs;
-    expose Integer symbolsIdleMs;
-    expose Integer indexIdleMs;
-    expose Integer searchIdleMs;
-    expose Integer quickOpenRefreshMs;
-
-    expose Boolean diagnosticsQueued;
-    expose String diagnosticsPath;
-    expose Integer diagnosticsRevision;
-    expose Integer diagnosticsDueMs;
-    expose Integer diagnosticsGeneration;
-
-    expose Boolean completionQueued;
-    expose String completionPath;
-    expose Integer completionRevision;
-    expose Integer completionDueMs;
-    expose Integer completionGeneration;
-
-    expose Boolean signatureQueued;
-    expose String signaturePath;
-    expose Integer signatureRevision;
-    expose Integer signatureDueMs;
-    expose Integer signatureGeneration;
-
-    expose Boolean hoverQueued;
-    expose String hoverPath;
-    expose Integer hoverRevision;
-    expose Integer hoverDueMs;
-    expose Integer hoverGeneration;
-
-    expose Boolean symbolsQueued;
-    expose String symbolsPath;
-    expose Integer symbolsRevision;
-    expose Integer symbolsDueMs;
-    expose Integer symbolsGeneration;
-
-    expose Boolean indexQueued;
-    expose String indexPath;
-    expose Integer indexRevision;
-    expose Integer indexDueMs;
-    expose Integer indexGeneration;
-
-    expose Boolean searchQueued;
-    expose String searchPath;
-    expose Integer searchRevision;
-    expose Integer searchDueMs;
-    expose Integer searchGeneration;
-
-    expose Boolean quickOpenQueued;
-    expose String quickOpenPath;
-    expose Integer quickOpenRevision;
-    expose Integer quickOpenDueMs;
-    expose Integer quickOpenGeneration;
-
-    expose ScheduledJob diagnosticsJob;
-    expose ScheduledJob completionJob;
-    expose ScheduledJob signatureJob;
-    expose ScheduledJob hoverJob;
-    expose ScheduledJob symbolsJob;
-    expose ScheduledJob indexJob;
-    expose ScheduledJob searchJob;
-    expose ScheduledJob quickOpenJob;
-
+    expose List[ScheduledJob] jobs;
     expose Integer queuedTotal;
     expose Integer completedTotal;
     expose Integer canceledTotal;
@@ -173,32 +106,24 @@ class EditorScheduler {
     expose Integer lastCompletedKind;
 
     expose func init() {
-        diagnosticsIdleMs = SCHED_DIAGNOSTICS_IDLE_MS;
-        completionDebounceMs = SCHED_COMPLETION_DEBOUNCE_MS;
-        signatureDebounceMs = SCHED_SIGNATURE_DEBOUNCE_MS;
-        hoverDwellMs = SCHED_HOVER_DWELL_MS;
-        symbolsIdleMs = SCHED_SYMBOLS_IDLE_MS;
-        indexIdleMs = SCHED_INDEX_IDLE_MS;
-        searchIdleMs = SCHED_SEARCH_IDLE_MS;
-        quickOpenRefreshMs = SCHED_QUICK_OPEN_REFRESH_MS;
-
-        diagnosticsJob = new ScheduledJob();
-        completionJob = new ScheduledJob();
-        signatureJob = new ScheduledJob();
-        hoverJob = new ScheduledJob();
-        symbolsJob = new ScheduledJob();
-        indexJob = new ScheduledJob();
-        searchJob = new ScheduledJob();
-        quickOpenJob = new ScheduledJob();
-
-        diagnosticsQueued = false; diagnosticsPath = ""; diagnosticsRevision = -1; diagnosticsDueMs = 0; diagnosticsGeneration = 0;
-        completionQueued = false; completionPath = ""; completionRevision = -1; completionDueMs = 0; completionGeneration = 0;
-        signatureQueued = false; signaturePath = ""; signatureRevision = -1; signatureDueMs = 0; signatureGeneration = 0;
-        hoverQueued = false; hoverPath = ""; hoverRevision = -1; hoverDueMs = 0; hoverGeneration = 0;
-        symbolsQueued = false; symbolsPath = ""; symbolsRevision = -1; symbolsDueMs = 0; symbolsGeneration = 0;
-        indexQueued = false; indexPath = ""; indexRevision = -1; indexDueMs = 0; indexGeneration = 0;
-        searchQueued = false; searchPath = ""; searchRevision = -1; searchDueMs = 0; searchGeneration = 0;
-        quickOpenQueued = false; quickOpenPath = ""; quickOpenRevision = -1; quickOpenDueMs = 0; quickOpenGeneration = 0;
+        jobs = [];
+        jobs.add(new ScheduledJob(
+            JOB_DIAGNOSTICS, "diagnostics", SCHED_DIAGNOSTICS_IDLE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_COMPLETION, "completion", SCHED_COMPLETION_DEBOUNCE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_SIGNATURE, "signature", SCHED_SIGNATURE_DEBOUNCE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_HOVER, "hover", SCHED_HOVER_DWELL_MS));
+        jobs.add(new ScheduledJob(
+            JOB_SYMBOLS, "symbols", SCHED_SYMBOLS_IDLE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_INDEX_SYNC, "index", SCHED_INDEX_IDLE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_SEARCH, "search", SCHED_SEARCH_IDLE_MS));
+        jobs.add(new ScheduledJob(
+            JOB_QUICK_OPEN_REFRESH, "quick open",
+            SCHED_QUICK_OPEN_REFRESH_MS));
         queuedTotal = 0;
         completedTotal = 0;
         canceledTotal = 0;
@@ -206,242 +131,160 @@ class EditorScheduler {
         lastCompletedKind = 0;
     }
 
+    /// @brief Resolve one job kind from the sole registry.
+    expose func Job(kind: Integer) -> ScheduledJob? {
+        if kind < 1 or kind > jobs.count() { return null; }
+        var job = jobs.get(kind - 1) as ScheduledJob;
+        if job == null or job.kind != kind { return null; }
+        return job;
+    }
+
     expose func DefaultDelay(kind: Integer) -> Integer {
-        if kind == JOB_DIAGNOSTICS { return diagnosticsIdleMs; }
-        if kind == JOB_COMPLETION { return completionDebounceMs; }
-        if kind == JOB_SIGNATURE { return signatureDebounceMs; }
-        if kind == JOB_HOVER { return hoverDwellMs; }
-        if kind == JOB_SYMBOLS { return symbolsIdleMs; }
-        if kind == JOB_INDEX_SYNC { return indexIdleMs; }
-        if kind == JOB_SEARCH { return searchIdleMs; }
-        if kind == JOB_QUICK_OPEN_REFRESH { return quickOpenRefreshMs; }
-        return 0;
+        var job = Job(kind);
+        if job == null { return 0; }
+        return job!.defaultDelayMs;
     }
 
     expose func Configure(diagnosticsDelay: Integer,
                           completionDelay: Integer) {
-        var diag = diagnosticsDelay;
-        var complete = completionDelay;
-        if diag < 100 { diag = 100; }
-        if diag > 5000 { diag = 5000; }
-        if complete < 0 { complete = 0; }
-        if complete > 2000 { complete = 2000; }
-        diagnosticsIdleMs = diag;
-        completionDebounceMs = complete;
-    }
-
-    /// @brief Mirror one typed job record into the legacy public fields.
-    /// @details New code should prefer the `*Job` records. The original fields
-    ///          remain synchronized so existing probes and status checks can
-    ///          keep using their current names during the migration.
-    /// @param kind One JOB_* constant identifying which legacy field set to copy.
-    /// @param job Typed job state to mirror.
-    hide func SyncLegacyJob(kind: Integer,
-                            job: ScheduledJob) {
-        if kind == JOB_DIAGNOSTICS {
-            diagnosticsQueued = job.queued; diagnosticsPath = job.path; diagnosticsRevision = job.revision; diagnosticsDueMs = job.dueMs; diagnosticsGeneration = job.generation; return;
+        var diagnostics = diagnosticsDelay;
+        var completion = completionDelay;
+        if diagnostics < 100 { diagnostics = 100; }
+        if diagnostics > 5000 { diagnostics = 5000; }
+        if completion < 0 { completion = 0; }
+        if completion > 2000 { completion = 2000; }
+        var diagnosticsJob = Job(JOB_DIAGNOSTICS);
+        var completionJob = Job(JOB_COMPLETION);
+        if diagnosticsJob != null {
+            diagnosticsJob!.defaultDelayMs = diagnostics;
         }
-        if kind == JOB_COMPLETION {
-            completionQueued = job.queued; completionPath = job.path; completionRevision = job.revision; completionDueMs = job.dueMs; completionGeneration = job.generation; return;
-        }
-        if kind == JOB_SIGNATURE {
-            signatureQueued = job.queued; signaturePath = job.path; signatureRevision = job.revision; signatureDueMs = job.dueMs; signatureGeneration = job.generation; return;
-        }
-        if kind == JOB_HOVER {
-            hoverQueued = job.queued; hoverPath = job.path; hoverRevision = job.revision; hoverDueMs = job.dueMs; hoverGeneration = job.generation; return;
-        }
-        if kind == JOB_SYMBOLS {
-            symbolsQueued = job.queued; symbolsPath = job.path; symbolsRevision = job.revision; symbolsDueMs = job.dueMs; symbolsGeneration = job.generation; return;
-        }
-        if kind == JOB_INDEX_SYNC {
-            indexQueued = job.queued; indexPath = job.path; indexRevision = job.revision; indexDueMs = job.dueMs; indexGeneration = job.generation; return;
-        }
-        if kind == JOB_SEARCH {
-            searchQueued = job.queued; searchPath = job.path; searchRevision = job.revision; searchDueMs = job.dueMs; searchGeneration = job.generation; return;
-        }
-        if kind == JOB_QUICK_OPEN_REFRESH {
-            quickOpenQueued = job.queued; quickOpenPath = job.path; quickOpenRevision = job.revision; quickOpenDueMs = job.dueMs; quickOpenGeneration = job.generation; return;
+        if completionJob != null {
+            completionJob!.defaultDelayMs = completion;
         }
     }
 
-    /// @brief Queue one typed job and synchronize its legacy fields.
-    /// @param kind One JOB_* constant.
-    /// @param job Job record to queue.
-    /// @param path Source path associated with the work.
-    /// @param revision Editor revision associated with the work.
-    /// @param due Absolute tick count when the work becomes due.
-    /// @return New generation token for the queued job.
-    hide func QueueJob(kind: Integer,
-                       job: ScheduledJob,
-                       path: String,
-                       revision: Integer,
-                       due: Integer) -> Integer {
-        var generation = job.Queue(path, revision, due);
-        SyncLegacyJob(kind, job);
-        return generation;
-    }
-
-    expose func Queue(kind: Integer, path: String, revision: Integer, delayMs: Integer) -> Integer {
+    expose func Queue(kind: Integer,
+                      path: String,
+                      revision: Integer,
+                      delayMs: Integer) -> Integer {
+        var job = Job(kind);
+        if job == null { return 0; }
         var delay = delayMs;
-        if delay < 0 { delay = DefaultDelay(kind); }
-        var due = Zanna.Time.Clock.NowMs() + delay;
+        if delay < 0 { delay = job!.defaultDelayMs; }
+        if delay < 0 { delay = 0; }
         queuedTotal = queuedTotal + 1;
         lastQueuedKind = kind;
-
-        if kind == JOB_DIAGNOSTICS { return QueueJob(kind, diagnosticsJob, path, revision, due); }
-        if kind == JOB_COMPLETION { return QueueJob(kind, completionJob, path, revision, due); }
-        if kind == JOB_SIGNATURE { return QueueJob(kind, signatureJob, path, revision, due); }
-        if kind == JOB_HOVER { return QueueJob(kind, hoverJob, path, revision, due); }
-        if kind == JOB_SYMBOLS { return QueueJob(kind, symbolsJob, path, revision, due); }
-        if kind == JOB_INDEX_SYNC { return QueueJob(kind, indexJob, path, revision, due); }
-        if kind == JOB_SEARCH { return QueueJob(kind, searchJob, path, revision, due); }
-        if kind == JOB_QUICK_OPEN_REFRESH { return QueueJob(kind, quickOpenJob, path, revision, due); }
-        return 0;
+        return job!.Queue(path, revision, Clock.NowMs() + delay);
     }
 
-    expose func IsQueued(kind: Integer, path: String, revision: Integer) -> Boolean {
-        if kind == JOB_DIAGNOSTICS { return diagnosticsJob.Matches(path, revision); }
-        if kind == JOB_COMPLETION { return completionJob.Matches(path, revision); }
-        if kind == JOB_SIGNATURE { return signatureJob.Matches(path, revision); }
-        if kind == JOB_HOVER { return hoverJob.Matches(path, revision); }
-        if kind == JOB_SYMBOLS { return symbolsJob.Matches(path, revision); }
-        if kind == JOB_INDEX_SYNC { return indexJob.Matches(path, revision); }
-        if kind == JOB_SEARCH { return searchJob.Matches(path, revision); }
-        if kind == JOB_QUICK_OPEN_REFRESH { return quickOpenJob.Matches(path, revision); }
-        return false;
+    expose func IsQueued(kind: Integer,
+                         path: String,
+                         revision: Integer) -> Boolean {
+        var job = Job(kind);
+        return job != null and job!.Matches(path, revision);
     }
 
-    expose func IsDue(kind: Integer, path: String, revision: Integer) -> Boolean {
-        var now = Zanna.Time.Clock.NowMs();
-        if kind == JOB_DIAGNOSTICS { return diagnosticsJob.IsDue(now, path, revision); }
-        if kind == JOB_COMPLETION { return completionJob.IsDue(now, path, revision); }
-        if kind == JOB_SIGNATURE { return signatureJob.IsDue(now, path, revision); }
-        if kind == JOB_HOVER { return hoverJob.IsDue(now, path, revision); }
-        if kind == JOB_SYMBOLS { return symbolsJob.IsDue(now, path, revision); }
-        if kind == JOB_INDEX_SYNC { return indexJob.IsDue(now, path, revision); }
-        if kind == JOB_SEARCH { return searchJob.IsDue(now, path, revision); }
-        if kind == JOB_QUICK_OPEN_REFRESH { return quickOpenJob.IsDue(now, path, revision); }
-        return false;
+    expose func IsDue(kind: Integer,
+                      path: String,
+                      revision: Integer) -> Boolean {
+        var job = Job(kind);
+        return job != null and job!.IsDue(Clock.NowMs(), path, revision);
     }
 
     expose func CurrentGeneration(kind: Integer) -> Integer {
-        if kind == JOB_DIAGNOSTICS { return diagnosticsJob.generation; }
-        if kind == JOB_COMPLETION { return completionJob.generation; }
-        if kind == JOB_SIGNATURE { return signatureJob.generation; }
-        if kind == JOB_HOVER { return hoverJob.generation; }
-        if kind == JOB_SYMBOLS { return symbolsJob.generation; }
-        if kind == JOB_INDEX_SYNC { return indexJob.generation; }
-        if kind == JOB_SEARCH { return searchJob.generation; }
-        if kind == JOB_QUICK_OPEN_REFRESH { return quickOpenJob.generation; }
-        return 0;
+        var job = Job(kind);
+        if job == null { return 0; }
+        return job!.generation;
     }
 
     expose func QueuedGeneration(kind: Integer) -> Integer {
-        if kind == JOB_DIAGNOSTICS and diagnosticsJob.queued { return diagnosticsJob.generation; }
-        if kind == JOB_COMPLETION and completionJob.queued { return completionJob.generation; }
-        if kind == JOB_SIGNATURE and signatureJob.queued { return signatureJob.generation; }
-        if kind == JOB_HOVER and hoverJob.queued { return hoverJob.generation; }
-        if kind == JOB_SYMBOLS and symbolsJob.queued { return symbolsJob.generation; }
-        if kind == JOB_INDEX_SYNC and indexJob.queued { return indexJob.generation; }
-        if kind == JOB_SEARCH and searchJob.queued { return searchJob.generation; }
-        if kind == JOB_QUICK_OPEN_REFRESH and quickOpenJob.queued { return quickOpenJob.generation; }
-        return 0;
+        var job = Job(kind);
+        if job == null or job!.queued == false { return 0; }
+        return job!.generation;
     }
 
-    expose func IsCurrent(kind: Integer, generation: Integer) -> Boolean {
-        if generation <= 0 { return false; }
-        return CurrentGeneration(kind) == generation;
+    expose func IsCurrent(kind: Integer,
+                          generation: Integer) -> Boolean {
+        return generation > 0 and CurrentGeneration(kind) == generation;
     }
 
     expose func Cancel(kind: Integer) {
+        var job = Job(kind);
+        if job == null { return; }
+        job!.Cancel();
         canceledTotal = canceledTotal + 1;
-        if kind == JOB_DIAGNOSTICS { diagnosticsJob.Cancel(); SyncLegacyJob(kind, diagnosticsJob); return; }
-        if kind == JOB_COMPLETION { completionJob.Cancel(); SyncLegacyJob(kind, completionJob); return; }
-        if kind == JOB_SIGNATURE { signatureJob.Cancel(); SyncLegacyJob(kind, signatureJob); return; }
-        if kind == JOB_HOVER { hoverJob.Cancel(); SyncLegacyJob(kind, hoverJob); return; }
-        if kind == JOB_SYMBOLS { symbolsJob.Cancel(); SyncLegacyJob(kind, symbolsJob); return; }
-        if kind == JOB_INDEX_SYNC { indexJob.Cancel(); SyncLegacyJob(kind, indexJob); return; }
-        if kind == JOB_SEARCH { searchJob.Cancel(); SyncLegacyJob(kind, searchJob); return; }
-        if kind == JOB_QUICK_OPEN_REFRESH { quickOpenJob.Cancel(); SyncLegacyJob(kind, quickOpenJob); return; }
     }
 
-    /// @brief Cancel every deferred producer before owned workers are drained.
     expose func CancelAll() {
-        Cancel(JOB_DIAGNOSTICS);
-        Cancel(JOB_COMPLETION);
-        Cancel(JOB_SIGNATURE);
-        Cancel(JOB_HOVER);
-        Cancel(JOB_SYMBOLS);
-        Cancel(JOB_INDEX_SYNC);
-        Cancel(JOB_SEARCH);
-        Cancel(JOB_QUICK_OPEN_REFRESH);
+        var i = 0;
+        while i < jobs.count() {
+            var job = jobs.get(i) as ScheduledJob;
+            job.Cancel();
+            canceledTotal = canceledTotal + 1;
+            i = i + 1;
+        }
     }
 
     expose func Complete(kind: Integer) {
+        var job = Job(kind);
+        if job == null { return; }
+        job!.Complete();
         completedTotal = completedTotal + 1;
         lastCompletedKind = kind;
-        if kind == JOB_DIAGNOSTICS { diagnosticsJob.Complete(); SyncLegacyJob(kind, diagnosticsJob); return; }
-        if kind == JOB_COMPLETION { completionJob.Complete(); SyncLegacyJob(kind, completionJob); return; }
-        if kind == JOB_SIGNATURE { signatureJob.Complete(); SyncLegacyJob(kind, signatureJob); return; }
-        if kind == JOB_HOVER { hoverJob.Complete(); SyncLegacyJob(kind, hoverJob); return; }
-        if kind == JOB_SYMBOLS { symbolsJob.Complete(); SyncLegacyJob(kind, symbolsJob); return; }
-        if kind == JOB_INDEX_SYNC { indexJob.Complete(); SyncLegacyJob(kind, indexJob); return; }
-        if kind == JOB_SEARCH { searchJob.Complete(); SyncLegacyJob(kind, searchJob); return; }
-        if kind == JOB_QUICK_OPEN_REFRESH { quickOpenJob.Complete(); SyncLegacyJob(kind, quickOpenJob); return; }
     }
 
-    /// @brief Count currently queued background work items.
-    /// @return Number of job kinds with a pending debounced task.
     expose func QueuedCount() -> Integer {
-        var n = 0;
-        if diagnosticsJob.queued { n = n + 1; }
-        if completionJob.queued { n = n + 1; }
-        if signatureJob.queued { n = n + 1; }
-        if hoverJob.queued { n = n + 1; }
-        if symbolsJob.queued { n = n + 1; }
-        if indexJob.queued { n = n + 1; }
-        if searchJob.queued { n = n + 1; }
-        if quickOpenJob.queued { n = n + 1; }
-        return n;
+        var count = 0;
+        var i = 0;
+        while i < jobs.count() {
+            var job = jobs.get(i) as ScheduledJob;
+            if job.queued { count = count + 1; }
+            i = i + 1;
+        }
+        return count;
     }
 
-    /// @brief Return a compact name for a scheduler kind.
-    /// @param kind One of JOB_*.
-    /// @return Lowercase display name used in status text.
+    /// @brief Earliest absolute deadline among queued jobs, or zero when idle.
+    expose func EarliestDueMs() -> Integer {
+        var earliest = 0;
+        var i = 0;
+        while i < jobs.count() {
+            var job = jobs.get(i) as ScheduledJob;
+            if job.queued and (earliest == 0 or job.dueMs < earliest) {
+                earliest = job.dueMs;
+            }
+            i = i + 1;
+        }
+        return earliest;
+    }
+
     expose func KindName(kind: Integer) -> String {
-        if kind == JOB_DIAGNOSTICS { return "diagnostics"; }
-        if kind == JOB_COMPLETION { return "completion"; }
-        if kind == JOB_SIGNATURE { return "signature"; }
-        if kind == JOB_HOVER { return "hover"; }
-        if kind == JOB_SYMBOLS { return "symbols"; }
-        if kind == JOB_INDEX_SYNC { return "index"; }
-        if kind == JOB_SEARCH { return "search"; }
-        if kind == JOB_QUICK_OPEN_REFRESH { return "quick open"; }
-        return "idle";
+        var job = Job(kind);
+        if job == null { return "idle"; }
+        return job!.name;
     }
 
-    /// @brief Return the highest-priority queued job kind.
-    /// @details Priorities favor visible editor feedback first, then navigation
-    ///          and indexing. This does not reorder existing debounce behavior
-    ///          yet; it exposes the same priority model to status and future
-    ///          queue-based scheduling work.
     expose func NextQueuedKind() -> Integer {
-        if completionJob.queued { return JOB_COMPLETION; }
-        if signatureJob.queued { return JOB_SIGNATURE; }
-        if diagnosticsJob.queued { return JOB_DIAGNOSTICS; }
-        if hoverJob.queued { return JOB_HOVER; }
-        if searchJob.queued { return JOB_SEARCH; }
-        if quickOpenJob.queued { return JOB_QUICK_OPEN_REFRESH; }
-        if symbolsJob.queued { return JOB_SYMBOLS; }
-        if indexJob.queued { return JOB_INDEX_SYNC; }
+        if IsKindQueued(JOB_COMPLETION) { return JOB_COMPLETION; }
+        if IsKindQueued(JOB_SIGNATURE) { return JOB_SIGNATURE; }
+        if IsKindQueued(JOB_DIAGNOSTICS) { return JOB_DIAGNOSTICS; }
+        if IsKindQueued(JOB_HOVER) { return JOB_HOVER; }
+        if IsKindQueued(JOB_SEARCH) { return JOB_SEARCH; }
+        if IsKindQueued(JOB_QUICK_OPEN_REFRESH) { return JOB_QUICK_OPEN_REFRESH; }
+        if IsKindQueued(JOB_SYMBOLS) { return JOB_SYMBOLS; }
+        if IsKindQueued(JOB_INDEX_SYNC) { return JOB_INDEX_SYNC; }
         return 0;
     }
 
-    /// @brief Human-readable scheduler summary for status surfaces.
-    /// @return Short text such as "Tasks: idle" or "Tasks: 3 queued (completion)".
     expose func StatusText() -> String {
-        var n = QueuedCount();
-        if n <= 0 { return "Tasks: idle"; }
-        return "Tasks: " + n + " queued (" + KindName(NextQueuedKind()) + ")";
+        var count = QueuedCount();
+        if count <= 0 { return "Tasks: idle"; }
+        return "Tasks: " + count + " queued ("
+               + KindName(NextQueuedKind()) + ")";
+    }
+
+    hide func IsKindQueued(kind: Integer) -> Boolean {
+        var job = Job(kind);
+        return job != null and job!.queued;
     }
 }

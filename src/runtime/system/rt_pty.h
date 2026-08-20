@@ -20,7 +20,8 @@
 //   - Open returns a GC-managed session object; Destroy invalidates it and is idempotent.
 //   - Returned strings, maps, and Result objects are new caller-owned runtime values.
 //
-// Links: src/runtime/system/rt_pty.c (implementation)
+// Links: src/runtime/system/rt_pty.c (implementation),
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,6 +39,8 @@
 #include "rt_string.h"
 
 #include <stdint.h>
+
+struct rt_activity_wake_target;
 
 /// @brief Runtime class identifier assigned to Zanna.System.Pty sessions.
 #define RT_PTY_CLASS_ID INT64_C(-0x440202)
@@ -101,6 +104,10 @@ rt_string rt_pty_last_error(void);
 /// @param handle Candidate opaque runtime object.
 /// @return 1 for a valid session handle, otherwise 0.
 int64_t rt_pty_is_valid(void *handle);
+
+/// @brief Attach a ref-counted event-loop target for PTY output/exit activity.
+/// @details Internal GUI bridge used by App.WatchPty.
+int64_t rt_pty_set_activity_wake(void *handle, struct rt_activity_wake_target *target);
 
 /// @brief Nonblockingly drain terminal output and poll child completion.
 /// @param handle Candidate PTY session handle.

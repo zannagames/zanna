@@ -161,6 +161,7 @@ typedef struct {
     Window window;          ///< Native X11 window handle
     GC gc;                  ///< Graphics context for drawing
     Atom wm_delete_window;  ///< Atom for WM_DELETE_WINDOW protocol
+    Atom event_wake;        ///< Private client message used to interrupt waits
     XImage *ximage;         ///< XImage wrapper for presentation buffer
     uint8_t *ximage_buf;    ///< BGRA presentation buffer (R↔B swizzled from win->pixels)
     Visual *visual;         ///< Visual used for window and XImage
@@ -1717,6 +1718,7 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
 
     /* Set up WM_DELETE_WINDOW protocol (intercept close button) */
     x11->wm_delete_window = XInternAtom(x11->display, "WM_DELETE_WINDOW", False);
+    x11->event_wake = XInternAtom(x11->display, "_ZANNA_EVENT_WAKE", False);
     XSetWMProtocols(x11->display, x11->window, &x11->wm_delete_window, 1);
 
     /* Set up XDND (drag-and-drop) protocol */
@@ -1734,7 +1736,8 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
     x11->targets_atom = XInternAtom(x11->display, "TARGETS", False);
     x11->incr_atom = XInternAtom(x11->display, "INCR", False);
     x11->clipboard_property_atom = XInternAtom(x11->display, "ZANNAGFX_CLIPBOARD", False);
-    if (x11->wm_delete_window == None || x11->xdnd_aware == None || x11->xdnd_enter == None ||
+    if (x11->wm_delete_window == None || x11->event_wake == None ||
+        x11->xdnd_aware == None || x11->xdnd_enter == None ||
         x11->xdnd_position == None || x11->xdnd_status == None || x11->xdnd_drop == None ||
         x11->xdnd_finished == None || x11->xdnd_selection == None || x11->xdnd_type_list == None ||
         x11->text_uri_list == None || x11->clipboard_atom == None ||
@@ -2166,6 +2169,24 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
         r = poll(&pfd, 1, timeout_ms);
     } while (r < 0 && errno == EINTR);
     return r > 0 && (pfd.revents & POLLIN) != 0 ? 1 : 0;
+}
+
+/// @copydoc vgfx_platform_wake_events
+int vgfx_platform_wake_events(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return 0;
+    vgfx_x11_data *x11 = (vgfx_x11_data *)win->platform_data;
+    if (!x11->display || !x11->window)
+        return 0;
+    XEvent event = {0};
+    event.xclient.type = ClientMessage;
+    event.xclient.display = x11->display;
+    event.xclient.window = x11->window;
+    event.xclient.message_type = x11->event_wake;
+    event.xclient.format = 32;
+    int sent = XSendEvent(x11->display, x11->window, False, NoEventMask, &event);
+    XFlush(x11->display);
+    return sent != 0 ? 1 : 0;
 }
 
 /// @brief Process pending X11 events and translate them to ZannaGFX state.

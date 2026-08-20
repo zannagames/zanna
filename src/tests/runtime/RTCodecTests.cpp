@@ -6,8 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/runtime/RTCodecTests.cpp
-// Purpose: Validate Zanna.Text.Codec runtime functions for URL, Base64, and Hex encoding.
-// Key invariants: All encoding functions are reversible; invalid input traps appropriately.
+// Purpose: Validate Zanna.Text.Codec URL, Base64, Hex, and strict UTF-8 helpers.
+// Key invariants: Encodings are reversible; invalid encoded input traps; UTF-8
+// validation rejects non-scalar and noncanonical byte sequences without trapping.
 // Links: docs/zannalib.md
 
 #include "rt_codec.h"
@@ -28,6 +29,44 @@ static void test_result(const char *name, bool passed) {
 static bool bytes_eq(rt_string s, const char *expected, size_t expected_len) {
     return rt_str_len(s) == (int64_t)expected_len &&
            memcmp(rt_string_cstr(s), expected, expected_len) == 0;
+}
+
+//=============================================================================
+// Strict UTF-8 Validation Tests
+//=============================================================================
+
+static void test_utf8_validation() {
+    printf("Testing Codec.IsValidUtf8:\n");
+
+    test_result("Empty string is valid", rt_codec_is_valid_utf8(rt_const_cstr("")) == 1);
+    test_result("ASCII is valid", rt_codec_is_valid_utf8(rt_const_cstr("plain text")) == 1);
+    test_result("Multibyte scalars are valid",
+                rt_codec_is_valid_utf8(rt_const_cstr("caf\xC3\xA9 \xF0\x9F\x8C\x8D")) == 1);
+
+    const char embedded_nul[] = {'a', '\0', 'b'};
+    test_result("Embedded U+0000 is valid UTF-8",
+                rt_codec_is_valid_utf8(rt_string_from_bytes(embedded_nul, sizeof(embedded_nul))) ==
+                    1);
+
+    const char bare_continuation[] = {(char)0x80};
+    const char overlong[] = {(char)0xC0, (char)0xAF};
+    const char surrogate[] = {(char)0xED, (char)0xA0, (char)0x80};
+    const char truncated[] = {(char)0xF0, (char)0x9F, (char)0x8C};
+    const char too_large[] = {(char)0xF4, (char)0x90, (char)0x80, (char)0x80};
+    test_result("Bare continuation is rejected",
+                rt_codec_is_valid_utf8(
+                    rt_string_from_bytes(bare_continuation, sizeof(bare_continuation))) == 0);
+    test_result("Overlong sequence is rejected",
+                rt_codec_is_valid_utf8(rt_string_from_bytes(overlong, sizeof(overlong))) == 0);
+    test_result("UTF-16 surrogate is rejected",
+                rt_codec_is_valid_utf8(rt_string_from_bytes(surrogate, sizeof(surrogate))) == 0);
+    test_result("Truncated sequence is rejected",
+                rt_codec_is_valid_utf8(rt_string_from_bytes(truncated, sizeof(truncated))) == 0);
+    test_result("Code point above U+10FFFF is rejected",
+                rt_codec_is_valid_utf8(rt_string_from_bytes(too_large, sizeof(too_large))) == 0);
+    test_result("Null runtime handle is rejected", rt_codec_is_valid_utf8(nullptr) == 0);
+
+    printf("\n");
 }
 
 //=============================================================================
@@ -422,6 +461,8 @@ static void test_hex_roundtrip() {
 
 int main() {
     printf("=== RT Codec Tests ===\n\n");
+
+    test_utf8_validation();
 
     // URL encoding tests
     test_url_encode_basic();

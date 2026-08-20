@@ -1,0 +1,425 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/project_index_updates.zia
+// Purpose: Maintain open-buffer overlays and queued file-content index updates.
+// Key invariants:
+//   - Dirty open buffers remain authoritative over watcher disk events.
+//   - Closed overlays are pruned and transient reads retry before removal.
+// Ownership/Lifetime: Inherited ProjectIndexer state owns all retained snapshots.
+// Links: zannastudio/src/editor/project_index.zia,
+//        zannastudio/src/editor/project_index_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_index_updates;
+
+bind "project_index_state" as State;
+bind "../core/document";
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../editor/scheduler";
+bind "../services/safe_io";
+
+bind ProjectIndex = Zanna.Zia.ProjectIndex;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind IO = Zanna.IO;
+bind Str = Zanna.String;
+bind Hash = Zanna.Crypto.Hash;
+
+final INDEX_MAX_SOURCE_BYTES = State.INDEX_MAX_SOURCE_BYTES;
+final INDEX_IDLE_MS = State.INDEX_IDLE_MS;
+final INDEX_MAX_PENDING_FILE_UPDATES = State.INDEX_MAX_PENDING_FILE_UPDATES;
+final INDEX_READ_RETRY_LIMIT = State.INDEX_READ_RETRY_LIMIT;
+final INDEX_FILE_UPDATE = State.INDEX_FILE_UPDATE;
+final INDEX_FILE_REMOVE = State.INDEX_FILE_REMOVE;
+
+class ProjectIndexUpdateLayer extends State.ProjectIndexState {
+    expose func SyncOpenDocuments(docMgr: document_manager.DocumentManager) {
+        if valid == false or docMgr == null { return; }
+        PruneClosedOpenDocuments(docMgr);
+        var i = 0;
+        while i < docMgr.GetCount() {
+            var doc = docMgr.documents.get(i);
+            if doc.language == "zia" and doc.filePath != "" {
+                SyncOpenDocument(doc, false);
+            }
+            i = i + 1;
+        }
+    }
+
+    expose func FindSyncedOpenPath(path: String) -> Integer {
+        var target = NormalizePath(path);
+        var i = 0;
+        while i < syncedOpenPaths.count() {
+            if NormalizePath(Obj.ToString(syncedOpenPaths.get(i))) == target {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    expose func SyncActiveNow(docMgr: document_manager.DocumentManager,
+                              engine: editor_engine.EditorEngine) -> Boolean {
+        if valid == false or docMgr == null or engine == null or engine.editor == null { return false; }
+        var active = docMgr.GetActive();
+        if active == null { return false; }
+        var doc = active!;
+        if doc.language != "zia" or doc.filePath == "" { return false; }
+
+        var revision = engine.GetRevision();
+        if doc.filePath == syncedActivePath and revision == syncedActiveRevision { return false; }
+
+        doc.content = engine.GetTextSnapshot();
+        SyncOpenDocument(doc, true);
+        syncedActivePath = doc.filePath;
+        syncedActiveRevision = revision;
+        pendingActivePath = "";
+        pendingActiveRevision = -1;
+        pendingSinceMs = 0;
+        return true;
+    }
+
+    expose func SyncActiveWhenIdle(docMgr: document_manager.DocumentManager,
+                                   engine: editor_engine.EditorEngine) -> Boolean {
+        if valid == false or docMgr == null or engine == null or engine.editor == null { return false; }
+        var active = docMgr.GetActive();
+        if active == null { return false; }
+        var doc = active!;
+        if doc.language != "zia" or doc.filePath == "" { return false; }
+
+        var revision = engine.GetRevision();
+        if doc.filePath == syncedActivePath and revision == syncedActiveRevision { return false; }
+
+        if workScheduler != null {
+            if workScheduler.IsQueued(scheduler.JOB_INDEX_SYNC, doc.filePath, revision) == false {
+                workScheduler.Queue(scheduler.JOB_INDEX_SYNC, doc.filePath, revision, -1);
+                pendingActivePath = doc.filePath;
+                pendingActiveRevision = revision;
+                return false;
+            }
+            if workScheduler.IsDue(scheduler.JOB_INDEX_SYNC, doc.filePath, revision) == false {
+                return false;
+            }
+            workScheduler.Complete(scheduler.JOB_INDEX_SYNC);
+        } else {
+            var now = Zanna.Time.Clock.NowMs();
+            if doc.filePath != pendingActivePath or revision != pendingActiveRevision {
+                pendingActivePath = doc.filePath;
+                pendingActiveRevision = revision;
+                pendingSinceMs = now;
+                return false;
+            }
+            if now - pendingSinceMs < INDEX_IDLE_MS {
+                return false;
+            }
+        }
+        return SyncActiveNow(docMgr, engine);
+    }
+
+    expose func RemoveFile(path: String) {
+        if valid == false { return; }
+        ProjectIndex.RemoveFile(handle, path);
+        contentGeneration = contentGeneration + 1;
+    }
+
+    expose func UpdateFile(path: String) {
+        QueueFileUpdate(path, false, null);
+    }
+
+    /// @brief Coalesce one watcher-driven refresh for bounded later execution.
+    /// @param path Absolute Zia source path.
+    /// @param remove True for a deletion, false to read current content.
+    /// @param docMgr Open documents consulted at dequeue time so live buffers win.
+    expose func QueueFileUpdate(path: String,
+                                remove: Boolean,
+                                docMgr: document_manager.DocumentManager) {
+        if valid == false or path == "" { return; }
+        if docMgr != null { pendingFileUpdateDocuments = docMgr; }
+        var queued = FindPendingFileUpdate(path);
+        var action = remove ? INDEX_FILE_REMOVE : INDEX_FILE_UPDATE;
+        if queued >= 0 {
+            pendingFileUpdateActions.set(queued, action);
+            pendingFileUpdateAttempts.set(queued, 0);
+            return;
+        }
+        if PendingFileUpdateCount() >= INDEX_MAX_PENDING_FILE_UPDATES {
+            ResetPendingFileUpdates();
+            workspaceIndexComplete = false;
+            workspaceIndexTruncated = false;
+            workspaceIndexStatusMessage =
+                "Workspace index refresh overflow; rebuilding";
+            return;
+        }
+        pendingFileUpdatePaths.Push(path);
+        pendingFileUpdateActions.Push(action);
+        pendingFileUpdateAttempts.Push(0);
+    }
+
+    /// @brief Return whether watcher/file-command refresh work is queued.
+    expose func HasPendingFileUpdates() -> Boolean {
+        return pendingFileUpdatePos < pendingFileUpdatePaths.count();
+    }
+
+    /// @brief Remove overlay identities for closed tabs and restore disk state cooperatively.
+    hide func PruneClosedOpenDocuments(docMgr: document_manager.DocumentManager) {
+        var i = syncedOpenPaths.count() - 1;
+        while i >= 0 {
+            var path = syncedOpenPaths.get(i);
+            if FindOpenZiaDocument(docMgr, path) < 0 {
+                ProjectIndex.RemoveFile(handle, path);
+                contentGeneration = contentGeneration + 1;
+                syncedOpenPaths.removeAt(i);
+                syncedOpenHashes.removeAt(i);
+                syncedOpenBytes.removeAt(i);
+                QueueFileUpdate(path, IO.File.Exists(path) == false, docMgr);
+            }
+            i = i - 1;
+        }
+    }
+
+    /// @brief Locate one open Zia document by normalized path identity.
+    hide func FindOpenZiaDocument(docMgr: document_manager.DocumentManager,
+                                  path: String) -> Integer {
+        if docMgr == null or path == "" { return -1; }
+        var target = NormalizePath(path);
+        var i = 0;
+        while i < docMgr.GetCount() {
+            var doc = docMgr.documents.get(i);
+            if doc.language == "zia" and doc.filePath != ""
+               and NormalizePath(doc.filePath) == target {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Synchronize one live document without retaining a second source copy.
+    hide func SyncOpenDocument(doc: document.Document,
+                               force: Boolean) -> Boolean {
+        if doc == null or doc.filePath == "" or doc.language != "zia" { return false; }
+        var sourceBytes = Str.get_Length(doc.content);
+        var sourceHash = Hash.Sha256(doc.content);
+        var syncedIdx = FindSyncedOpenPath(doc.filePath);
+        if force == false and syncedIdx >= 0
+           and syncedOpenHashes.get(syncedIdx) == sourceHash
+           and syncedOpenBytes.get(syncedIdx) == sourceBytes {
+            return false;
+        }
+        if ShouldIndexContent(doc.content) {
+            ProjectIndex.UpdateFile(handle, doc.filePath, doc.content);
+            TrackUpdate(doc.content);
+        } else {
+            ProjectIndex.RemoveFile(handle, doc.filePath);
+            contentGeneration = contentGeneration + 1;
+            MarkWorkspaceIndexIncomplete(
+                "Workspace index skipped oversized open file "
+                + IO.Path.Name(doc.filePath));
+        }
+        RecordSyncedOpenDocument(doc.filePath, sourceHash, sourceBytes);
+        syncCount = syncCount + 1;
+        return true;
+    }
+
+    /// @brief Record only compact identity metadata for a runtime-owned source snapshot.
+    hide func RecordSyncedOpenDocument(path: String,
+                                       sourceHash: String,
+                                       sourceBytes: Integer) {
+        var syncedIdx = FindSyncedOpenPath(path);
+        if syncedIdx >= 0 {
+            syncedOpenPaths.set(syncedIdx, path);
+            syncedOpenHashes.set(syncedIdx, sourceHash);
+            syncedOpenBytes.set(syncedIdx, sourceBytes);
+            return;
+        }
+        syncedOpenPaths.Push(path);
+        syncedOpenHashes.Push(sourceHash);
+        syncedOpenBytes.Push(sourceBytes);
+    }
+
+    /// @brief Consume coalesced file refreshes under the language-frame budget.
+    hide func PumpPendingFileUpdates(maxFiles: Integer,
+                                     maxBytes: Integer) -> Integer {
+        lastPendingUpdateBytes = 0;
+        if HasPendingFileUpdates() == false { return 0; }
+        var processed = 0;
+        var batchEnd = pendingFileUpdatePaths.count();
+        while pendingFileUpdatePos < batchEnd and processed < maxFiles {
+            var path = pendingFileUpdatePaths.get(pendingFileUpdatePos);
+            var action = pendingFileUpdateActions.get(pendingFileUpdatePos);
+            var attempts = pendingFileUpdateAttempts.get(pendingFileUpdatePos);
+            var openIndex = FindOpenZiaDocument(pendingFileUpdateDocuments, path);
+            var useOpenBuffer = false;
+            var estimatedBytes = 0;
+            if openIndex >= 0 {
+                var openDoc = pendingFileUpdateDocuments.documents.get(openIndex);
+                useOpenBuffer = openDoc.isModified or openDoc.isNew;
+                if useOpenBuffer { estimatedBytes = Str.get_Length(openDoc.content); }
+            }
+            if useOpenBuffer == false and action == INDEX_FILE_UPDATE {
+                estimatedBytes = safe_io.SizeBytes(path);
+            }
+            if processed > 0 and estimatedBytes > 0
+               and lastPendingUpdateBytes + estimatedBytes > maxBytes {
+                break;
+            }
+
+            pendingFileUpdatePos = pendingFileUpdatePos + 1;
+            processed = processed + 1;
+            if useOpenBuffer {
+                var dirtyDoc = pendingFileUpdateDocuments.documents.get(openIndex);
+                SyncOpenDocument(dirtyDoc, true);
+                lastPendingUpdateBytes = lastPendingUpdateBytes
+                                         + Str.get_Length(dirtyDoc.content);
+                continue;
+            }
+            if action == INDEX_FILE_REMOVE {
+                ProjectIndex.RemoveFile(handle, path);
+                contentGeneration = contentGeneration + 1;
+                continue;
+            }
+            if estimatedBytes > INDEX_MAX_SOURCE_BYTES {
+                ProjectIndex.RemoveFile(handle, path);
+                contentGeneration = contentGeneration + 1;
+                MarkWorkspaceIndexIncomplete(
+                    "Workspace index skipped oversized file "
+                    + IO.Path.Name(path));
+                continue;
+            }
+            var readResult = safe_io.ReadAllTextBounded(path, INDEX_MAX_SOURCE_BYTES);
+            if readResult.ok and ShouldIndexContent(readResult.text) {
+                ProjectIndex.UpdateFile(handle, path, readResult.text);
+                TrackUpdate(readResult.text);
+                lastPendingUpdateBytes = lastPendingUpdateBytes
+                                         + Str.get_Length(readResult.text);
+                continue;
+            }
+            attempts = attempts + 1;
+            if attempts < INDEX_READ_RETRY_LIMIT {
+                pendingFileUpdatePaths.Push(path);
+                pendingFileUpdateActions.Push(action);
+                pendingFileUpdateAttempts.Push(attempts);
+            } else {
+                ProjectIndex.RemoveFile(handle, path);
+                contentGeneration = contentGeneration + 1;
+                MarkWorkspaceIndexIncomplete(
+                    "Workspace index could not read " + IO.Path.Name(path)
+                    + " after " + INDEX_READ_RETRY_LIMIT + " attempts");
+            }
+        }
+        CompactPendingFileUpdates();
+        return processed;
+    }
+
+    /// @brief Find a not-yet-consumed coalesced update by normalized path.
+    hide func FindPendingFileUpdate(path: String) -> Integer {
+        var target = NormalizePath(path);
+        var i = pendingFileUpdatePos;
+        while i < pendingFileUpdatePaths.count() {
+            if NormalizePath(pendingFileUpdatePaths.get(i)) == target { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    hide func PendingFileUpdateCount() -> Integer {
+        return pendingFileUpdatePaths.count() - pendingFileUpdatePos;
+    }
+
+    /// @brief Release consumed queue prefixes so long sessions stay allocation-bounded.
+    hide func CompactPendingFileUpdates() {
+        if pendingFileUpdatePos >= pendingFileUpdatePaths.count() {
+            ResetPendingFileUpdates();
+            return;
+        }
+        if pendingFileUpdatePos < 512
+           or pendingFileUpdatePos * 2 < pendingFileUpdatePaths.count() {
+            return;
+        }
+        var paths: List[String] = new List();
+        var actions: List[Integer] = new List();
+        var attempts: List[Integer] = new List();
+        var i = pendingFileUpdatePos;
+        while i < pendingFileUpdatePaths.count() {
+            paths.Push(pendingFileUpdatePaths.get(i));
+            actions.Push(pendingFileUpdateActions.get(i));
+            attempts.Push(pendingFileUpdateAttempts.get(i));
+            i = i + 1;
+        }
+        pendingFileUpdatePaths = paths;
+        pendingFileUpdateActions = actions;
+        pendingFileUpdateAttempts = attempts;
+        pendingFileUpdatePos = 0;
+    }
+
+    hide func ResetPendingFileUpdates() {
+        pendingFileUpdatePaths = new List();
+        pendingFileUpdateActions = new List();
+        pendingFileUpdateAttempts = new List();
+        pendingFileUpdatePos = 0;
+    }
+
+    /// @brief Record one transient enumeration read failure for a later frame.
+    /// @return True while another attempt remains.
+    hide func DeferIndexReadFailure(pathKey: String) -> Boolean {
+        var attempts = Map.GetIntOr(pendingIndexReadAttempts, pathKey, 0) + 1;
+        Map.SetInt(pendingIndexReadAttempts, pathKey, attempts);
+        return attempts < INDEX_READ_RETRY_LIMIT;
+    }
+
+    /// @brief Retire an enumeration entry only after its retry budget is exhausted.
+    hide func FinalizeIndexReadFailure(path: String,
+                                       pathKey: String) {
+        MarkWorkspaceIndexIncomplete(
+            "Workspace index could not read " + IO.Path.Name(path)
+            + " after " + INDEX_READ_RETRY_LIMIT + " attempts");
+        ProjectIndex.RemoveFile(handle, path);
+        contentGeneration = contentGeneration + 1;
+        Map.SetBool(pendingIndexSeenPaths, pathKey, true);
+        if Map.Has(pendingIndexReadAttempts, pathKey) {
+            Map.Remove(pendingIndexReadAttempts, pathKey);
+        }
+        pendingIndexPos = pendingIndexPos + 1;
+    }
+
+    hide func ShouldIndexContent(content: String) -> Boolean {
+        return Str.get_Length(content) <= INDEX_MAX_SOURCE_BYTES;
+    }
+
+    hide func NormalizePath(path: String) -> String {
+        if path == "" { return ""; }
+        return IO.Path.Normalize(IO.Path.Absolute(path));
+    }
+
+    hide func TrackUpdate(content: String) {
+        updateCount = updateCount + 1;
+        updateBytes = updateBytes + Str.get_Length(content);
+        contentGeneration = contentGeneration + 1;
+    }
+    /// @brief Mark the current workspace index partial once.
+    hide func MarkWorkspaceIndexIncomplete(message: String) {
+        workspaceIndexTruncated = true;
+        if workspaceIndexStatusMessage == "" {
+            workspaceIndexStatusMessage = message;
+        }
+    }
+
+    /// @brief End paging after a hard file or aggregate source limit.
+    hide func StopWorkspaceEnumeration() {
+        if pendingIndexCursor != null { pendingIndexCursor.Destroy(); }
+        pendingIndexFiles = null;
+        pendingIndexPos = 0;
+        pendingIndexRootIndex = rootPaths.count();
+        pendingIndexOffset = 0;
+        pendingIndexDone = true;
+        indexing = false;
+        workspaceIndexComplete = true;
+    }
+}

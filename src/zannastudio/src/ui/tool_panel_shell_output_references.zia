@@ -147,6 +147,7 @@ class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLay
         if outputListBox != null { outputListBox.Clear(); }
         ResetOutputRows();
         lastBuildOutput = "";
+        NoteOutputContentChanged(true);
         outputPartialLine = "";
         outputPartialItem = null;
         outputPaneMode = true;

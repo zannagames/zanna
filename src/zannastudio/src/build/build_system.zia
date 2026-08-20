@@ -23,16 +23,15 @@ module build_system;
 bind "bounded_output";
 bind "diagnostic";
 bind "diagnostic_parser";
+bind "diagnostic_publication";
+bind "executable_resolver";
 bind "run_config";
-bind Zanna.String as Str;
+bind "../services/process_reaper";
 bind Zanna.Collections.Seq as Seq;
 bind Zanna.Collections.Map as Map;
-bind Zanna.Core.Object as Obj;
 bind Zanna.System.Process as Process;
-bind Zanna.System.Environment as Env;
-bind Zanna.System.Machine as Machine;
-bind Zanna.IO.Path as Path;
-bind Zanna.IO as IO;
+bind Zanna.GUI as GUI;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: build_system
@@ -97,6 +96,11 @@ class BuildSystem {
     expose BuildJobResult completedResult;
     expose diagnostic_parser.DiagnosticStreamParser diagnosticStream;
     expose Integer reportedDiagnosticRevision;
+    hide diagnostic_publication.DiagnosticPublicationCursor publicationCursor;
+    expose Boolean diagnosticTruncationReported;
+    expose process_reaper.ProcessReaper processReaper;
+    hide GUI.App wakeApp;
+    hide Boolean activityWakeAttached;
 
     // Parsed diagnostics
     expose List[diagnostic.Diagnostic] diagnostics;
@@ -118,7 +122,20 @@ class BuildSystem {
         completedResult = null;
         diagnosticStream = new diagnostic_parser.DiagnosticStreamParser();
         reportedDiagnosticRevision = 0;
+        publicationCursor = new diagnostic_publication.DiagnosticPublicationCursor();
+        diagnosticTruncationReported = false;
+        processReaper = new process_reaper.ProcessReaper();
+        wakeApp = null;
+        activityWakeAttached = false;
         diagnostics = [];
+    }
+
+    /// @brief Select the App whose native wait receives process activity wakes.
+    expose func SetWakeApp(value: GUI.App) { wakeApp = value; }
+
+    /// @brief Report whether active process I/O still needs timer polling.
+    expose func NeedsActivityPolling() -> Boolean {
+        return IsActive() and activityWakeAttached == false;
     }
 
     expose func IsActive() -> Boolean {
@@ -144,6 +161,7 @@ class BuildSystem {
             diagnosticStream.Reset();
             diagnostics = diagnosticStream.records;
             reportedDiagnosticRevision = 0;
+            diagnosticTruncationReported = false;
             completedResult = null;
             startMs = Zanna.Time.Clock.NowMs();
         }
@@ -169,157 +187,44 @@ class BuildSystem {
         // resolves a bare name against anything except the child's working directory
         // (the edited file's folder). Resolve an absolute path up front so a build
         // actually starts, and report a precise error instead of a silent exit 127.
-        var resolved = ResolveProgram(cfg.program, cfg.workingDirectory);
-        if resolved == "" {
-            AppendOutput(CompilerNotFoundMessage(cfg.program));
+        var resolution = executable_resolver.Resolve(
+            cfg.program, cfg.workingDirectory);
+        if resolution.IsResolved() == false {
+            AppendOutput(resolution.error);
             FinalizeJob(-1, false);
             return false;
         }
-        compilerPath = resolved;
+        compilerPath = resolution.path;
 
-        processHandle = Process.StartWithEnv(resolved, cfg.args, cfg.workingDirectory, cfg.env);
+        // Run/build configuration variables are overrides, not a hermetic
+        // environment. Preserve PATH, locale, proxy/certificate settings, and
+        // platform loader state; embedded Play otherwise launched with only its
+        // two ZANNA_* variables and could fail before producing a frame.
+        processHandle = Process.StartWithEnvOverlay(
+            resolution.path, cfg.args, cfg.workingDirectory, cfg.env);
         if processHandle == null or processHandle.IsValid() == false {
             AppendOutput("Could not start process: " + cfg.program + "\n");
             FinalizeJob(-1, false);
             return false;
         }
+        activityWakeAttached = wakeApp != null
+            and wakeApp.WatchProcess(processHandle);
         return true;
     }
 
-    // ----------------------------------------------------------------------
-    // Compiler resolution
-    // ----------------------------------------------------------------------
-
-    /// @brief Resolve a runnable absolute path for the requested program.
-    /// @details For the default "zanna" compiler, searches an explicit override,
-    ///          the IDE's own folder (installed layout), the developer build tree,
-    ///          and finally PATH. Returns "" when nothing is found. Custom
-    ///          project-supplied programs are resolved on their own merits and are
-    ///          never silently replaced by zanna.
+    /// @brief Resolve a runnable path through the shared typed resolver.
     expose func ResolveCompiler(preferred: String) -> String {
-        return ResolveProgram(preferred, "");
+        return executable_resolver.Resolve(preferred, "").path;
     }
 
-    /// @brief Resolve a program with project-relative paths anchored to its cwd.
-    /// @details Custom manifest tools are commonly stored under the workspace.
-    ///          Trying the explicit working directory before PATH makes those
-    ///          paths independent of the directory used to launch Studio.
     expose func ResolveProgram(preferred: String,
                                workingDirectory: String) -> String {
-        var name = preferred;
-        if name == "" { name = "zanna"; }
-
-        if name != "zanna" {
-            return ResolveBinaryFrom(name, workingDirectory);
-        }
-
-        var exe = ExeName();
-
-        // 1. Explicit override wins. Absolutise it: execve resolves a relative
-        //    path against the child's working directory (the edited file's folder),
-        //    not the IDE's, so a relative override would point at the wrong place.
-        var envBin = EnvValue("ZANNA_BINARY");
-        if envBin != "" and IO.File.Exists(envBin) {
-            return Path.Absolute(envBin);
-        }
-
-        // 2. Installed layout: zanna ships next to the IDE binary.
-        var exeDir = Path.ExeDir();
-        if exeDir != "" {
-            var colocated = Path.Join(exeDir, exe);
-            if IO.File.Exists(colocated) {
-                return colocated;
-            }
-            // 3. Developer build tree (src/zannastudio/bin -> build/src/tools/zanna).
-            var devA = Path.Normalize(Path.Join(exeDir, Path.Join("../../build/src/tools/zanna", exe)));
-            if IO.File.Exists(devA) {
-                return devA;
-            }
-            var devB = Path.Normalize(Path.Join(exeDir, Path.Join("../build/src/tools/zanna", exe)));
-            if IO.File.Exists(devB) {
-                return devB;
-            }
-        }
-
-        // 4. Explicit build directory (honours the build scripts' ZANNA_BUILD_DIR).
-        var buildDir = EnvValue("ZANNA_BUILD_DIR");
-        if buildDir != "" {
-            var fromBuild = Path.Normalize(Path.Join(buildDir, Path.Join("src/tools/zanna", exe)));
-            if IO.File.Exists(fromBuild) {
-                return fromBuild;
-            }
-        }
-
-        // 5. Manual PATH scan (execve won't do it for us).
-        return ResolveBinaryFrom(exe, "");
-    }
-
-    /// @brief Resolve a single binary name to an absolute path: an absolute path is
-    ///        used as-is when it exists; a bare name is searched on PATH.
-    func ResolveBinary(name: String) -> String {
-        return ResolveBinaryFrom(name, "");
-    }
-
-    /// @brief Resolve an absolute, working-directory-relative, or PATH program.
-    func ResolveBinaryFrom(name: String,
-                           workingDirectory: String) -> String {
-        if name == "" { return ""; }
-        if Path.IsAbsolute(name) {
-            if IO.File.Exists(name) { return name; }
-            return "";
-        }
-        if workingDirectory != "" {
-            var local = Path.Normalize(Path.Join(workingDirectory, name));
-            if IO.File.Exists(local) { return Path.Absolute(local); }
-            if Machine.Os == "windows" and IO.File.Exists(local + ".exe") {
-                return Path.Absolute(local + ".exe");
-            }
-        }
-        var pathVar = EnvValue("PATH");
-        if pathVar == "" { return ""; }
-        var entries = Str.Split(pathVar, ListSep());
-        var i = 0;
-        while i < Seq.get_Count(entries) {
-            var entry = Obj.ToString(Seq.Get(entries, i));
-            if entry != "" {
-                if Path.IsAbsolute(entry) == false and workingDirectory != "" {
-                    entry = Path.Join(workingDirectory, entry);
-                }
-                var cand = Path.Join(entry, name);
-                if IO.File.Exists(cand) { return Path.Absolute(cand); }
-                if Machine.Os == "windows" and IO.File.Exists(cand + ".exe") {
-                    return Path.Absolute(cand + ".exe");
-                }
-            }
-            i = i + 1;
-        }
-        return "";
-    }
-
-    func EnvValue(key: String) -> String {
-        if Env.HasVariable(key) == false { return ""; }
-        return Env.GetVariable(key);
-    }
-
-    func ExeName() -> String {
-        if Machine.Os == "windows" { return "zanna.exe"; }
-        return "zanna";
-    }
-
-    func ListSep() -> String {
-        if Machine.Os == "windows" { return ";"; }
-        return ":";
-    }
-
-    func CompilerNotFoundMessage(requested: String) -> String {
-        var name = requested;
-        if name == "" { name = "zanna"; }
-        return "Could not find the '" + name + "' compiler.\n"
-            + "Searched ZANNA_BINARY, the IDE folder, the build tree, and PATH.\n"
-            + "Fix: add zanna to your PATH, or set ZANNA_BINARY=/full/path/to/zanna.";
+        return executable_resolver.Resolve(
+            preferred, workingDirectory).path;
     }
 
     expose func Update() -> Boolean {
+        processReaper.Pump();
         if processHandle == null { return false; }
         DrainProcessOutput();
 
@@ -357,16 +262,19 @@ class BuildSystem {
         if processHandle == null { return; }
         var result = processHandle.ReadOutputResult();
         var chunks = Map.Get(result, "chunks");
+        var frameOutput = new StringBuilder();
         var i = 0;
         while chunks != null and i < Seq.get_Count(chunks) {
             var chunk = Seq.Get(chunks, i);
             var streamName = Map.GetStr(chunk, "stream");
             var text = Map.GetStr(chunk, "text");
-            AppendOutput(text);
+            frameOutput.Append(text);
             diagnosticStream.Append(streamName, text);
             i = i + 1;
         }
+        AppendOutput(frameOutput.ToString());
         diagnostics = diagnosticStream.records;
+        ReportDiagnosticTruncation();
         if Map.GetBool(result, "truncated") {
             AppendOutput("\n[ordered process output truncated by runtime]\n");
         }
@@ -382,11 +290,35 @@ class BuildSystem {
                                             MAX_BUILD_OUTPUT_DELTA_CHARS);
     }
 
+    /// @brief Publish parser limits once in the durable build output.
+    func ReportDiagnosticTruncation() {
+        if diagnosticTruncationReported or diagnosticStream.truncated == false {
+            return;
+        }
+        diagnosticTruncationReported = true;
+        if diagnosticStream.recordLimitReached {
+            AppendOutput("\n[diagnostics truncated: showing the first "
+                         + diagnostic_parser.MAX_DIAGNOSTIC_RECORDS
+                         + " records]\n");
+        } else {
+            AppendOutput("\n[diagnostic record discarded: unterminated input exceeded "
+                         + diagnostic_parser.MAX_DIAGNOSTIC_STREAM_CARRY_BYTES
+                         + " bytes]\n");
+        }
+    }
+
     /// @brief Release the active runtime handle exactly once.
     func ReleaseProcessHandle() {
         if processHandle == null { return; }
-        processHandle.Destroy();
+        processReaper.RetireProcess(processHandle);
         processHandle = null;
+        activityWakeAttached = false;
+    }
+
+    /// @brief Stop active work and drain handle-only destruction workers.
+    expose func Shutdown() -> Boolean {
+        if IsActive() { Stop(); }
+        return processReaper.WaitForShutdown();
     }
 
     /// @brief Unified terminal path for launch failure, exit, and cancellation.
@@ -396,6 +328,7 @@ class BuildSystem {
         ReleaseProcessHandle();
         diagnosticStream.Flush();
         diagnostics = diagnosticStream.records;
+        ReportDiagnosticTruncation();
         exitCode = code;
         isBuilding = false;
         isRunning = false;
@@ -442,6 +375,24 @@ class BuildSystem {
         if diagnosticStream.revision == reportedDiagnosticRevision { return false; }
         reportedDiagnosticRevision = diagnosticStream.revision;
         return true;
+    }
+
+    /// @brief Begin one UI publication generation after a new root job.
+    /// @return True exactly once when callers must retire prior Problems rows.
+    expose func TakeDiagnosticPublicationReset() -> Boolean {
+        return publicationCursor.TakeReset(diagnosticStream.generation);
+    }
+
+    /// @brief Index of the first diagnostic not yet published to Problems.
+    expose func FirstUnpublishedDiagnosticIndex() -> Integer {
+        return publicationCursor.FirstUnpublished(
+            diagnosticStream.generation, diagnostics.count());
+    }
+
+    /// @brief Commit all currently parsed diagnostics as published.
+    expose func MarkDiagnosticsPublished() {
+        publicationCursor.MarkPublished(
+            diagnosticStream.generation, diagnostics.count());
     }
 
     // Get the number of errors.

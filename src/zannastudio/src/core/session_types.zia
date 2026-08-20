@@ -1,0 +1,76 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_types.zia
+// Purpose: Own value-only state records for bounded session save and restore jobs.
+// Key invariants:
+//   - Restore progress, budgets, prune intent, and borrowed models share one record.
+//   - Save reservations and written-slot identities remain one transaction record.
+// Ownership/Lifetime:
+//   - Callers own records; live document/project/tab references are borrowed.
+// Links: zannastudio/src/core/session_state.zia,
+//        zannastudio/src/core/session_restore_layer.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_types;
+
+bind "document";
+
+/// @brief Mutable transaction state for one bounded session write.
+/// @details Helpers share this value-only record so document reservation,
+///          recovery budgets, active-tab identity, and split-pane identity
+///          remain one ordered transaction without one monolithic writer.
+class SessionSaveState {
+    expose Any ini;
+    expose String sourceText;
+    expose Integer previousCount;
+    expose Integer workspaceRootCount;
+    expose String projectRoot;
+    expose String activePath;
+    expose document.Document? activeDocument;
+    expose Integer persistedActiveIndex;
+    expose Boolean activeEligible;
+    expose Integer activeRecoveryReserve;
+    expose Boolean activeWritten;
+    expose Integer recoveryCharsWritten;
+    expose Boolean structuredSplitRequested;
+    expose Boolean splitFirstEligible;
+    expose Boolean splitSecondEligible;
+    expose Boolean splitFirstWritten;
+    expose Boolean splitSecondWritten;
+    expose Integer splitFirstWrittenIndex;
+    expose Integer splitSecondWrittenIndex;
+    expose Integer written;
+    expose Boolean currentWriteRecovery;
+    expose Integer currentRecoveryChars;
+
+    expose func init() {
+        ini = null;
+        sourceText = "";
+        previousCount = 0;
+        workspaceRootCount = 0;
+        projectRoot = "";
+        activePath = "";
+        activeDocument = null;
+        persistedActiveIndex = -1;
+        activeEligible = false;
+        activeRecoveryReserve = 0;
+        activeWritten = false;
+        recoveryCharsWritten = 0;
+        structuredSplitRequested = false;
+        splitFirstEligible = false;
+        splitSecondEligible = false;
+        splitFirstWritten = false;
+        splitSecondWritten = false;
+        splitFirstWrittenIndex = -1;
+        splitSecondWrittenIndex = -1;
+        written = 0;
+        currentWriteRecovery = false;
+        currentRecoveryChars = 0;
+    }
+}

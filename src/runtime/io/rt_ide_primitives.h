@@ -57,6 +57,37 @@ void *rt_workspace_file_index_enumerate(rt_string root,
                                         rt_string excludes_csv,
                                         int8_t include_dirs);
 
+/// @brief Create an explicitly owned recursive workspace traversal.
+/// @param root Borrowed workspace root path.
+/// @param extensions_csv Delimited extension allow-list.
+/// @param excludes_csv Delimited additional ignore patterns.
+/// @param include_dirs Non-zero to emit matching directories.
+/// @return Opaque cursor handle, or NULL when the root/traversal is invalid.
+void *rt_workspace_file_index_cursor_new(rt_string root,
+                                         rt_string extensions_csv,
+                                         rt_string excludes_csv,
+                                         int8_t include_dirs);
+
+/// @brief Test whether an explicit workspace traversal handle is valid.
+/// @param handle Borrowed cursor handle.
+/// @return Non-zero for a non-NULL cursor.
+int8_t rt_workspace_file_index_cursor_is_valid(void *handle);
+
+/// @brief Return the immutable generation assigned to a traversal handle.
+/// @param handle Borrowed cursor handle.
+/// @return Positive generation, or zero for NULL.
+int64_t rt_workspace_file_index_cursor_generation(void *handle);
+
+/// @brief Advance an explicit traversal by one bounded page.
+/// @param handle Borrowed cursor handle.
+/// @param limit Maximum entries to emit, clamped to 1..4096.
+/// @return Fresh result map tagged with the cursor generation.
+void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit);
+
+/// @brief Destroy an explicit traversal handle.
+/// @param handle Owned cursor handle; NULL is accepted.
+void rt_workspace_file_index_cursor_destroy(void *handle);
+
 /// @brief Return one bounded page of workspace file-index entries.
 /// @details Applies the same validation, extension filtering, ignore rules, and
 ///          entry cap as @ref rt_workspace_file_index_enumerate, but emits at
@@ -135,6 +166,40 @@ void *rt_project_manifest_parse_text(rt_string text);
 /// @param path Borrowed runtime path of the manifest.
 /// @return Fresh parsed manifest map, or an invalid default manifest with diagnostics on failure.
 void *rt_project_manifest_parse_file(rt_string path);
+
+/// @brief Prepare an unrooted workspace edit batch without changing files.
+/// @details Reads each target once and retains immutable original bytes, stable
+///          file identities, canonical ranges, and diagnostics for one later
+///          apply. The explicit handle must be destroyed by the caller.
+/// @param edits Borrowed Seq of edit maps. `wholeFile=true` replaces a complete
+///              target and may carry expectedMtime/expectedSize/expectedHash/maxBytes.
+/// @return Owned prepared handle, including for failed validation.
+void *rt_workspace_edit_prepare(void *edits);
+
+/// @brief Prepare an edit batch constrained to one workspace root.
+/// @param edits Borrowed Seq of edit maps.
+/// @param root Existing directory that bounds all canonical targets.
+/// @return Owned prepared handle, including for failed validation.
+void *rt_workspace_edit_prepare_in_root(void *edits, rt_string root);
+
+/// @brief Prepare an edit batch constrained to multiple workspace roots.
+/// @param edits Borrowed Seq of edit maps.
+/// @param roots Borrowed Seq of workspace-root strings.
+/// @return Owned prepared handle, including for failed validation.
+void *rt_workspace_edit_prepare_in_roots(void *edits, void *roots);
+
+/// @brief Test whether a prepared handle is valid and not yet consumed.
+int8_t rt_workspace_edit_prepared_is_valid(void *handle);
+
+/// @brief Clone a prepared handle's immutable validation result map.
+void *rt_workspace_edit_prepared_result(void *handle);
+
+/// @brief Consume and transactionally apply one prepared edit handle.
+/// @return Fresh result map containing validation fields and `appliedFiles`.
+void *rt_workspace_edit_prepared_apply(void *handle);
+
+/// @brief Destroy an explicit prepared edit handle; NULL is accepted.
+void rt_workspace_edit_prepared_destroy(void *handle);
 
 /// @brief Validate an unrooted workspace edit batch without changing files.
 /// @param edits Borrowed Seq of edit maps with file, range, replacement, and optional version

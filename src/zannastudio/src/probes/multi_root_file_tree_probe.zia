@@ -390,7 +390,7 @@ func VerifyWorkspaceTransitions(ctx: MultiRootProbeContext) -> Boolean {
         return false;
     }
     scm.Refresh();
-    if scm.activeJob != null or scm.activePtyJob != null {
+    if scm.activeJob != null {
         fail(shell, "closed workspace allowed an unscoped git refresh");
         return false;
     }

@@ -19,7 +19,8 @@
 //   - Destroy is idempotent, terminates a live child, and invalidates the handle.
 //   - Returned strings and result maps are new caller-owned runtime values.
 //
-// Links: src/runtime/system/rt_process.c (implementation)
+// Links: src/runtime/system/rt_process.c (implementation),
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,6 +38,8 @@
 #include "rt_string.h"
 
 #include <stdint.h>
+
+struct rt_activity_wake_target;
 
 /// @brief Runtime class identifier assigned to Zanna.System.Process handles.
 #define RT_PROCESS_CLASS_ID INT64_C(-0x440201)
@@ -102,6 +105,14 @@ void *rt_process_start_with_env_overlay(rt_string program,
 /// @param handle Candidate opaque runtime object.
 /// @return 1 for a valid process handle, otherwise 0.
 int64_t rt_process_is_valid(void *handle);
+
+/// @brief Attach a ref-counted event-loop target for output/exit activity.
+/// @details Internal GUI bridge used by App.WatchProcess. Replacing a target
+///          stops the previous monitor before releasing its reference.
+/// @param handle Candidate live Process object.
+/// @param target Borrowed target retained on success.
+/// @return 1 when the monitor is active, otherwise 0.
+int64_t rt_process_set_activity_wake(void *handle, struct rt_activity_wake_target *target);
 
 /// @brief Nonblockingly drain output and poll for process completion.
 /// @param handle Candidate process handle.
@@ -174,9 +185,10 @@ int64_t rt_process_write_stdin(void *handle, rt_string data);
 ///         running, after status failure, or for an invalid handle.
 int64_t rt_process_exit_code(void *handle);
 
-/// @brief Request process termination.
-/// @details Sends SIGTERM on POSIX or requests Windows termination with status
-///          1. This call does not wait for completion.
+/// @brief Request termination of the owned process tree.
+/// @details Signals the dedicated process group on POSIX or terminates the
+///          per-handle Job Object on Windows. This call does not wait for
+///          completion.
 /// @param handle Candidate process handle.
 /// @return 1 when the OS accepted the request, otherwise 0.
 int64_t rt_process_kill(void *handle);

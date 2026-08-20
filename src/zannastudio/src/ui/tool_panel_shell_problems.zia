@@ -206,6 +206,30 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
                            code: String,
                            message: String,
                            action: String) -> Any {
+        return AddProblemStable("", severity, source, filePath, line, column,
+                                code, message, action);
+    }
+
+    /// @brief Append one identity-stable diagnostic without rebuilding peers.
+    /// @details A repeated stable ID is ignored so retries and overlapping
+    ///          publication edges cannot duplicate Problems rows.
+    expose override func AddProblemStable(stableId: String,
+                                          severity: String,
+                                          source: String,
+                                          filePath: String,
+                                          line: Integer,
+                                          column: Integer,
+                                          code: String,
+                                          message: String,
+                                          action: String) -> Any {
+        if stableId != "" {
+            var existingIndex = 0;
+            while existingIndex < problemRecords.count() {
+                var existing = problemRecords.get(existingIndex);
+                if existing.stableId == stableId { return null; }
+                existingIndex = existingIndex + 1;
+            }
+        }
         if problemRecords.count() >= tool_panel_model.DEFAULT_MAX_ROWS {
             var oldest = problemRecords.get(0);
             DecrementProblemSeverityCount(oldest);
@@ -214,6 +238,7 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
         }
 
         var record = new tool_panel_model.ProblemRecord();
+        record.stableId = stableId;
         record.severity = severity;
         record.source = source;
         record.filePath = filePath;

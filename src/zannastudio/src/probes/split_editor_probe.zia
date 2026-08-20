@@ -100,13 +100,49 @@ func VerifySplitOwnership(
         return false;
     }
 
-    // A single Document cannot be cloned into two independent live buffers.
-    if engine.SplitRight(primary) {
-        fail(shell, "same-document split was accepted");
+    // Same-document views share one mutable buffer/undo owner. The inactive
+    // pane mirrors canonical text while retaining independent view position.
+    if engine.SplitRight(primary) == false
+       or engine.sharedDocumentSplit == false {
+        fail(shell, "same-document split was rejected");
         return false;
     }
-    if engine.PaneCount() != 1 {
-        fail(shell, "rejected split changed layout");
+    if engine.PrimaryDocument() != primary
+       or engine.SecondaryDocument() != primary
+       or engine.rightWidget.GetReadOnly() == 0 {
+        fail(shell, "shared split did not publish one read-only mirror");
+        return false;
+    }
+    engine.editor.SetCursor(1, 8);
+    engine.editor.InsertAtCursor(" shared");
+    if engine.SynchronizeSharedDocumentViews() == false
+       or engine.rightWidget.Text != engine.leftWidget.Text
+       or primary.content != engine.leftWidget.Text
+       or primary.sharedBuffer.viewCount != 2 {
+        fail(shell, "shared edit did not reach the inactive mirror");
+        return false;
+    }
+    engine.rightWidget.SetCursor(0, 2);
+    engine.FocusOtherPane();
+    if engine.secondaryFocused == false or engine.currentDoc != primary
+       or engine.editor != engine.rightWidget
+       or engine.rightWidget.GetReadOnly() != 0
+       or engine.leftWidget.GetReadOnly() == 0
+       or engine.editor.CursorLine != 0 or engine.editor.CursorCol != 2
+       or engine.editor.CanUndo() == false {
+        fail(shell, "canonical buffer ownership did not move with focus");
+        return false;
+    }
+    engine.editor.Undo();
+    engine.SynchronizeSharedDocumentViews();
+    if engine.leftWidget.Text != primary.content
+       or engine.rightWidget.Text != primary.content {
+        fail(shell, "shared undo did not converge both views");
+        return false;
+    }
+    engine.CloseSplit();
+    if engine.PaneCount() != 1 or primary.sharedBuffer.IsShared() {
+        fail(shell, "shared split close retained a second owner");
         return false;
     }
 

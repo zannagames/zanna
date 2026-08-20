@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-17
+last-verified: 2026-08-20
 ---
 
 # Architecture Decision Records
@@ -41,6 +41,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0001](0001-builtin-signatures-from-registry.md) — Derive BASIC Builtin Signatures from Registry
 - [ADR 0017](0017-string-lines-runtime-function.md) — CRLF-Aware Line Splitting (Zanna.String.Lines)
 - [ADR 0027](0027-runtime-api-contract-metadata.md) — Add Contract Metadata to the Runtime API Dump
+- [ADR 0277](0277-strict-utf8-codec-validation.md) — Expose Strict Whole-String UTF-8 Validation
+- [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API
 - [ADR 0030](0030-runtime-memory-and-gc-namespaces.md) — Runtime Memory and GC Namespaces
@@ -111,23 +113,28 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0255](0255-bounded-and-no-clobber-whole-file-text-io.md) — Bound and Reserve Whole-File Text I/O in the Runtime
 - [ADR 0256](0256-cooperative-whole-file-compare-exchange.md) — Cooperatively Compare and Exchange Whole-File Text
 - [ADR 0259](0259-stable-filesystem-entry-identity.md) — Expose Stable Identity for Every Filesystem Entry
+- [ADR 0282](0282-opaque-regular-file-identity-keys.md) — Expose Opaque Regular-File Identity Keys
 - [ADR 0261](0261-shared-compiled-pattern-engine-and-unicode-word-boundaries.md) — Share the Compiled Pattern Engine and Unicode Word Boundaries
 - [ADR 0262](0262-process-environment-overlays-and-external-credential-brokers.md) — Overlay Process Environments and Delegate Credentials to External Brokers
 - [ADR 0263](0263-paired-filesystem-rename-events.md) — Expose Paired Filesystem Rename Endpoints
 - [ADR 0264](0264-shared-revision-semantic-analysis.md) — Share One Semantic Analysis per Editor Revision
 - [ADR 0265](0265-canonical-language-service-c-abi-headers.md) — Keep One Canonical C Header per Language Service
+- [ADR 0276](0276-process-lifetime-file-leases-and-isolated-studio-recovery.md) — Add Process-Lifetime File Leases and Isolate Studio Recovery
+- [ADR 0281](0281-event-driven-process-pty-gui-wakes.md) — Wake GUI Event Loops for Process and PTY Activity
 
 ## GUI & IDE
 
 - [ADR 0007](0007-codeeditor-syntax-surface-expansion.md) — CodeEditor Syntax Surface Expansion Uses Registry-Only Semantics
 - [ADR 0008](0008-semantic-token-overlay.md) — Semantic Token Overlay Uses Registry-Only Semantics
 - [ADR 0009](0009-debug-evaluate-protocol.md) — Debug Adapter Evaluate Protocol Extension
+- [ADR 0275](0275-correlated-bounded-debug-adapter-queries.md) — Correlate and Bound Debug Adapter Queries
 - [ADR 0010](0010-workspace-file-index-status.md) — Workspace File Index Status Runtime API
 - [ADR 0011](0011-codeeditor-editing-runtime-api.md) — CodeEditor Editing Runtime API
 - [ADR 0012](0012-debug-conditional-breakpoints-logpoints.md) — Debug Conditional Breakpoints and Logpoints
 - [ADR 0013](0013-editor-input-popup-runtime-surface.md) — Editor Input and Popup Runtime Surface
 - [ADR 0014](0014-basic-language-service-runtime-bridge.md) — Zanna BASIC Language-Service Runtime Bridge
 - [ADR 0015](0015-workspace-file-index-paging.md) — Workspace File Index Paging
+- [ADR 0278](0278-explicit-workspace-file-index-cursors.md) — Explicit Workspace File-Index Cursors and Precise Fallback Identity
 - [ADR 0016](0016-pty-runtime-surface.md) — PTY Runtime Surface (Zanna.System.Pty) and Integrated Terminal
 - [ADR 0018](0018-gui-command-binding-runtime-surface.md) — GUI Command Binding (Zanna.GUI.Command / CommandRegistry)
 - [ADR 0019](0019-gui-text-cell-metrics-runtime-surface.md) — GUI Text/Cell Metrics (Zanna.GUI.OutputPane measurement)
@@ -151,6 +158,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0152](0152-stable-file-identity-for-editor-documents.md) — Use Stable File Identity for Editor Document De-duplication
 - [ADR 0153](0153-non-following-path-link-inspection.md) — Reject Linked Descendants at Explorer Boundaries
 - [ADR 0154](0154-single-owner-split-editor-documents.md) — Give Split-Editor Documents One Live Buffer Owner
+- [ADR 0279](0279-shared-document-views-and-native-tool-hosts.md) — Share One Mutable Document Buffer and Separate Native Tool Hosts
 - [ADR 0156](0156-listbox-selected-row-data.md) — Expose Selected ListBox Row Data
 - [ADR 0163](0163-stable-multiselect-and-row-aware-treeview-editing.md) — Add Stable Multi-Select and Row-Aware TreeView Editing
 - [ADR 0165](0165-scrollview-descendant-reveal.md) — Expose ScrollView Descendant Reveal
@@ -283,6 +291,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0155](0155-map-msvc-float-classification-to-ucrt.md) — Map MSVC Float Classification to UCRT
 - [ADR 0175](0175-zanna-games-windows-installer-experience.md) — Give Windows Setup a Native Zanna Games Experience
 - [ADR 0196](0196-map-windows-runtime-hardening-imports.md) — Map Windows Runtime Hardening Imports
+- [ADR 0283](0283-map-workspace-and-process-posix-imports.md) — Map Workspace Durability and Process Ownership POSIX Imports
 - [ADR 0197](0197-project-owned-2d-object-preview-profiles.md) — Add Project-Owned 2D Object Preview Profiles
 - [ADR 0198](0198-project-owned-3d-scene-preview-profiles.md) — Add Project-Owned 3D Scene Preview Profiles
 - [ADR 0199](0199-project-owned-3d-node-prefab-previews.md) — Add Project-Owned 3D Node Prefab Previews

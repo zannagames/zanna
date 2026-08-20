@@ -21,6 +21,7 @@
 module workspace_watcher_probe;
 
 bind "../app/workspace_watcher";
+bind "../app/workspace_watcher_fallback";
 bind "../app/file_watch_controller";
 bind "../core/document";
 bind "../core/document_manager";
@@ -198,13 +199,13 @@ func VerifyWorkspaceWatchers(
     Map.SetInt(fingerprintEntry, "size", 99);
     Map.SetBool(fingerprintEntry, "isDirectory", false);
     Map.SetStr(fingerprintEntry, "path", Path.Join(root, "before.zia"));
-    workspace_watcher.AccumulateWorkspaceFallbackEntry(fingerprintState,
-                                                        fingerprintEntry);
+    workspace_watcher_fallback.Accumulate(fingerprintState,
+                                           fingerprintEntry);
     var beforePathFingerprint = fingerprintState.fallbackCurrentFingerprint;
     fingerprintState.fallbackCurrentFingerprint = 0;
     Map.SetStr(fingerprintEntry, "path", Path.Join(root, "after.zia"));
-    workspace_watcher.AccumulateWorkspaceFallbackEntry(fingerprintState,
-                                                        fingerprintEntry);
+    workspace_watcher_fallback.Accumulate(fingerprintState,
+                                           fingerprintEntry);
     if fingerprintState.fallbackCurrentFingerprint == beforePathFingerprint {
         fail(fingerprintState, root, "fallback fingerprint omitted entry path");
         return false;
@@ -274,12 +275,23 @@ func VerifyWorkspaceWatchers(
         return false;
     }
     var completeRenameEvents = Seq.New();
+    var renamedDirectory = Path.Join(root, "folder_1");
     Seq.Push(completeRenameEvents,
-             renameEvent(root, Path.Join(root, "renamed-root")));
+             renameEvent(renamedDirectory, Path.Join(root, "renamed-folder")));
     if workspace_watcher.EventsRequireFallback(completeRenameEvents)
        or workspace_watcher.ObserveWorkspaceTopologyEvents(state,
-                                                            completeRenameEvents) == false {
+                                                            completeRenameEvents) == false
+       or state.watchers.count() < watcherCount - 1 {
         fail(state, root, "complete rename endpoints were not handled narrowly");
+        return false;
+    }
+    rounds = 0;
+    while state.discoveryActive and rounds < 16 {
+        workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
+        rounds = rounds + 1;
+    }
+    if state.discoveryActive or state.watchers.count() != watcherCount {
+        fail(state, root, "renamed subtree reconciliation dropped unrelated watchers");
         return false;
     }
     var incompleteRenameEvents = Seq.New();
@@ -294,13 +306,28 @@ func VerifyWorkspaceWatchers(
         fail(state, root, "overflow did not request cooperative rediscovery");
         return false;
     }
+    if state.watchers.count() != watcherCount {
+        fail(state, root, "overflow dropped live watcher coverage");
+        return false;
+    }
+    rounds = 0;
+    while state.discoveryActive and rounds < 16 {
+        workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
+        rounds = rounds + 1;
+    }
 
     state.degraded = true;
     state.rescanThrottle.Reset();
     workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
     if state.fallbackScanActive == false or state.fallbackPageOffset <= 0
        or state.fallbackPageOffset > 256 {
-        fail(state, root, "fallback scan was not page-bounded");
+        fail(state, root, "fallback scan was not page-bounded"
+             + ": active=" + state.fallbackScanActive
+             + " offset=" + state.fallbackPageOffset
+             + " root=" + state.fallbackRootIndex
+             + " discovery=" + state.discoveryActive
+             + " roots=" + state.rootPaths.count()
+             + " degraded=" + state.degraded);
         return false;
     }
     rounds = 0;
@@ -315,7 +342,10 @@ func VerifyWorkspaceWatchers(
     }
 
     var firstFingerprint = state.lastFingerprint;
-    File.WriteAllText(Path.Join(root, "file_0.zia"), "module WatchProbeChanged;\n");
+    // Keep the exact byte length and rewrite immediately. Nanosecond metadata
+    // plus bounded content sampling must detect what whole-second mtime+size
+    // aggregation could miss.
+    File.WriteAllText(Path.Join(root, "file_0.zia"), "module MatchProbe;\n");
     state.rescanThrottle.Reset();
     workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
     rounds = 0;

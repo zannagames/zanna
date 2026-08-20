@@ -1,0 +1,27 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_tab_sink.zia
+// Purpose: Define the view-neutral tab updates emitted by session restoration.
+// Key invariants:
+//   - Core session code depends only on this narrow downward-facing contract.
+//   - Implementations retain ownership of any GUI widgets they update.
+// Ownership/Lifetime: Restore jobs borrow a caller-owned sink for their lifetime.
+// Links: zannastudio/src/core/session_restore_layer.zia,
+//        zannastudio/src/editor/editor_tabs.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_tab_sink;
+
+/// @brief Minimal tab presentation contract needed during session restoration.
+interface SessionTabSink {
+    func AddTab(name: String, closeable: Integer);
+    func SetActive(index: Integer);
+    func SetTooltip(index: Integer, tooltip: String);
+    func SetModified(index: Integer, modified: Boolean);
+}

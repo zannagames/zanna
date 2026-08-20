@@ -33,7 +33,8 @@
 //        src/lib/gui/include/vg_widgets.h,
 //        docs/adr/0163-stable-multiselect-and-row-aware-treeview-editing.md,
 //        docs/adr/0165-scrollview-descendant-reveal.md,
-//        docs/adr/0167-spinner-mixed-value-state.md
+//        docs/adr/0167-spinner-mixed-value-state.md,
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -146,6 +147,12 @@ void rt_gui_app_poll(void *app);
 /// @param timeout_ms Maximum idle wait in ms (clamped to [0, 1000]).
 /// @return 1 if events arrived, 0 on timeout.
 int64_t rt_gui_app_poll_wait(void *app, int64_t timeout_ms);
+
+/// @brief Wake this app's event wait when the selected Process has output or exits.
+int64_t rt_gui_app_watch_process(void *app, void *process);
+
+/// @brief Wake this app's event wait when the selected PTY has output or exits.
+int64_t rt_gui_app_watch_pty(void *app, void *pty);
 
 /// @brief Render all widgets to the window.
 /// @param app GUI application handle.

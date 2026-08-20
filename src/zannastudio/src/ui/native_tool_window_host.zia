@@ -1,0 +1,159 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/native_tool_window_host.zia
+// Purpose: Host detached tool models in an independent native GUI App window.
+// Key invariants:
+//   - Widget construction occurs only while the secondary App is current.
+//   - Every pump restores the primary App before returning to Studio code.
+//   - Append-only output publishes only the unseen suffix; reset generations
+//     clear the host before replaying a bounded replacement snapshot.
+//   - Closing the secondary window never closes the primary workbench.
+// Ownership/Lifetime:
+//   - This host owns the secondary App and its complete widget tree.
+// Links: zannastudio/src/ui/tool_window_model.zia,
+//        zannastudio/src/app/studio_application_base.zia
+//
+//===----------------------------------------------------------------------===//
+
+module native_tool_window_host;
+
+bind "tool_window_model";
+bind Zanna.GUI as GUI;
+bind Zanna.String as Str;
+
+class NativeToolWindowHost {
+    expose GUI.App app;
+    expose GUI.Label titleLabel;
+    expose GUI.Button returnButton;
+    expose GUI.OutputPane outputPane;
+    expose Boolean returnRequested;
+    hide Integer renderedGeneration;
+    hide Integer renderedResetGeneration;
+    hide Integer renderedLength;
+
+    expose func init() {
+        app = null;
+        titleLabel = null;
+        returnButton = null;
+        outputPane = null;
+        returnRequested = false;
+        renderedGeneration = -1;
+        renderedResetGeneration = -1;
+        renderedLength = 0;
+    }
+
+    expose func IsOpen() -> Boolean { return app != null; }
+
+    /// @brief Create the native host lazily and bind it to @p model.
+    expose func Open(model: tool_window_model.ToolWindowModel,
+                     primaryApp: GUI.App) -> Boolean {
+        if model == null or model.active == false { return false; }
+        if app == null {
+            app = GUI.App.New("Zanna Studio — " + model.title, 760, 520);
+            if app == null {
+                if primaryApp != null { primaryApp.MakeCurrent(); }
+                return false;
+            }
+            app.SetPreventClose(true);
+            app.SetMinimumSize(360, 240);
+            var root = GUI.VBox.New();
+            root.SetSpacing(0.0);
+            root.SetPadding(0.0);
+            root.SetFlex(1.0);
+            app.Root.AddChild(root);
+
+            var header = GUI.HBox.New();
+            header.SetSpacing(6.0);
+            header.SetPadding(6.0);
+            root.AddChild(header);
+            titleLabel = GUI.Label.New(header, model.title);
+            titleLabel.SetFlex(1.0);
+            titleLabel.SetAccessibleName("Detached " + model.title + " tool");
+            returnButton = GUI.Button.New(header, "Return to Workbench");
+            returnButton.SetAccessibleName("Return detached tool to workbench");
+
+            outputPane = GUI.OutputPane.New(root);
+            outputPane.SetFlex(1.0);
+            outputPane.SetMaxLines(10000);
+            outputPane.SetAutoScroll(true);
+            outputPane.SetAccessibleName("Detached build output");
+            renderedGeneration = -1;
+            renderedResetGeneration = -1;
+            renderedLength = 0;
+        }
+        SyncModel(model);
+        app.Activate();
+        if primaryApp != null { primaryApp.MakeCurrent(); }
+        return true;
+    }
+
+    /// @brief Pump, synchronize, and paint one secondary-window frame.
+    expose func Pump(model: tool_window_model.ToolWindowModel,
+                     primaryApp: GUI.App) {
+        if app == null { return; }
+        app.MakeCurrent();
+        app.Poll();
+        if app.WasCloseRequested()
+           or (returnButton != null and returnButton.WasClicked())
+           or model == null or model.active == false {
+            returnRequested = true;
+            if model != null { model.Close(); }
+            Destroy(null);
+            if primaryApp != null { primaryApp.MakeCurrent(); }
+            return;
+        }
+        SyncModel(model);
+        app.Render();
+        if primaryApp != null { primaryApp.MakeCurrent(); }
+    }
+
+    /// @brief Incrementally project the host-neutral model into widgets.
+    hide func SyncModel(model: tool_window_model.ToolWindowModel) {
+        if model == null or outputPane == null
+           or renderedGeneration == model.contentGeneration {
+            return;
+        }
+        var length = Str.get_Length(model.content);
+        if renderedResetGeneration != model.resetGeneration
+           or renderedLength > length {
+            outputPane.Clear();
+            renderedLength = 0;
+            renderedResetGeneration = model.resetGeneration;
+        }
+        if length > renderedLength {
+            outputPane.Append(
+                Str.Substring(model.content,
+                              renderedLength,
+                              length - renderedLength));
+            renderedLength = length;
+        }
+        renderedGeneration = model.contentGeneration;
+    }
+
+    /// @brief Consume one native close/return edge.
+    expose func TakeReturnRequested() -> Boolean {
+        var requested = returnRequested;
+        returnRequested = false;
+        return requested;
+    }
+
+    /// @brief Destroy the secondary App and restore the primary App context.
+    expose func Destroy(primaryApp: GUI.App) {
+        if app != null {
+            app.Destroy();
+            app = null;
+        }
+        titleLabel = null;
+        returnButton = null;
+        outputPane = null;
+        renderedGeneration = -1;
+        renderedResetGeneration = -1;
+        renderedLength = 0;
+        if primaryApp != null { primaryApp.MakeCurrent(); }
+    }
+}

@@ -20,97 +20,35 @@
 module document_manager_base;
 
 bind "document";
+bind "document_disk_state";
+bind "document_save_transaction";
+bind "text_admission";
 bind "../services/file_utils";
-bind "../services/safe_io";
+bind "../services/safe_io_results";
 
-bind Obj = Zanna.Core.Object;
 bind IO = Zanna.IO;
-bind BinFile = Zanna.IO.BinFile;
 bind Path = Zanna.IO.Path;
-bind Str = Zanna.String;
-bind Map = Zanna.Collections.Map;
-bind Seq = Zanna.Collections.Seq;
-bind WorkspaceEdit = Zanna.Workspace.Edit;
-bind Hash = Zanna.Crypto.Hash;
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 
-final MAX_TEXT_OPEN_BYTES = 4000000;
-final MAX_SCENE3D_OPEN_BYTES = 64000000;
-final TEXT_SNIFF_BYTES = 4096;
-
 /// @brief Return the bounded in-memory document budget for one durable path.
-/// @details Embedded VSCN meshes and materials are legitimately larger than
-///          source files, while every other editor surface keeps the tighter
-///          text budget to protect interactive latency.
 func MaxOpenBytesForPath(path: String) -> Integer {
-    if file_utils.DetectKind(path) == file_utils.DOC_KIND_SCENE_3D {
-        return MAX_SCENE3D_OPEN_BYTES;
-    }
-    return MAX_TEXT_OPEN_BYTES;
+    return text_admission.MaxOpenBytesForPath(path);
 }
 
 /// @brief Explain why a path cannot enter the Studio text editor.
-/// @details File extensions catch known binary formats, while a bounded prefix
-///          scan catches extensionless executables and other binary payloads.
-///          NUL bytes also reject unsupported UTF-16 input rather than silently
-///          corrupting it through the UTF-8 text pipeline.
+/// @details Admission validates one complete bounded snapshot as strict UTF-8
+///          and NUL-free text before that same snapshot enters an editor.
 /// @param path Candidate file path.
 /// @return Empty string for editable text, otherwise a user-facing reason.
 expose func TextOpenBlockReason(path: String) -> String {
-    if path == "" or !IO.File.Exists(path) {
-        return "The file no longer exists.";
-    }
-    if file_utils.DetectKind(path) == file_utils.DOC_KIND_BINARY_UNSUPPORTED {
-        return "Binary files cannot be opened in the text editor.";
-    }
-    var size = safe_io.SizeBytes(path);
-    if size < 0 {
-        return "The file could not be read.";
-    }
-    var maxBytes = MaxOpenBytesForPath(path);
-    if size > maxBytes {
-        if maxBytes == MAX_SCENE3D_OPEN_BYTES {
-            return "3D scene assets larger than 64 MB cannot be opened in Studio.";
-        }
-        return "Files larger than 4 MB cannot be opened in the text editor.";
-    }
-    if HasNulByteInPrefix(path) {
-        return "Binary or unreadable files cannot be opened in the text editor.";
-    }
-    return "";
+    return text_admission.TextOpenBlockReason(path);
 }
 
 /// @brief Return whether a durable path is safe to edit and restore as text.
 /// @param path Candidate file path.
 /// @return True only for existing, bounded, non-binary files.
 expose func IsEditableTextFile(path: String) -> Boolean {
-    return TextOpenBlockReason(path) == "";
-}
-
-/// @brief Detect binary content without loading an entire file.
-/// @param path Existing regular file path.
-/// @return True when the first 4 KiB contains a NUL byte.
-hide func HasNulByteInPrefix(path: String) -> Boolean {
-    if path == "" or IO.File.Exists(path) == false { return false; }
-    try {
-        var stream = BinFile.Open(path, "rb");
-        defer stream.Close();
-        var remaining = safe_io.SizeBytes(path);
-        if remaining < 0 { return true; }
-        if remaining > TEXT_SNIFF_BYTES { remaining = TEXT_SNIFF_BYTES; }
-        var found = false;
-        var i = 0;
-        while i < remaining and !found {
-            if stream.ReadByte() == 0 { found = true; }
-            i = i + 1;
-        }
-        return found;
-    } catch {
-        // A path that vanished or became unreadable during the bounded sniff is
-        // not safe to admit into an editable buffer.
-        return true;
-    }
-    return true;
+    return text_admission.IsEditableTextFile(path);
 }
 
 // ============================================================================
@@ -159,6 +97,9 @@ class DocumentManagerBase {
     expose Integer activeIndex;                // Index of active document (-1 = none).
     expose Integer untitledCount;              // Monotonic counter for "Untitled N" naming.
     expose List recentlyClosedPaths;           // Most-recently closed named files.
+    expose String lastSaveError;                // Actionable detail for the latest failed save.
+    expose Integer lastSaveFailureCode;         // Stable safe_io_results category.
+    expose Boolean lastSaveRetryable;           // Whether an immediate retry may succeed.
 
     /// @brief Initialize with no open documents.
     expose func init() {
@@ -171,6 +112,7 @@ class DocumentManagerBase {
         activeIndex = -1;
         untitledCount = 0;
         recentlyClosedPaths = [];
+        ClearSaveFailure();
     }
 
     /// @brief Create a new untitled document and activate it.
@@ -244,19 +186,13 @@ class DocumentManagerBase {
         doc.fileName = Path.Name(canonicalPath);
         doc.language = file_utils.DetectLanguage(canonicalPath);
         doc.kind = file_utils.DetectKind(canonicalPath);
-        var blockReason = TextOpenBlockReason(canonicalPath);
+        var admission = text_admission.ReadEditableText(canonicalPath);
+        var blockReason = admission.reason;
         doc.isReadOnlyPreview = blockReason != "";
         if doc.isReadOnlyPreview {
             doc.content = BlockedPreviewText(canonicalPath, blockReason);
         } else {
-            var readResult = safe_io.ReadAllTextBounded(canonicalPath,
-                                                        MaxOpenBytesForPath(canonicalPath));
-            if readResult.ok {
-                doc.content = readResult.text;
-            } else {
-                doc.isReadOnlyPreview = true;
-                doc.content = BlockedPreviewText(canonicalPath, "The file could not be read.");
-            }
+            doc.content = admission.text;
         }
         doc.isNew = false;
         doc.isModified = false;
@@ -293,11 +229,43 @@ class DocumentManagerBase {
         return doc;
     }
 
+    /// @brief Clear the typed outcome retained for the latest save attempt.
+    hide func ClearSaveFailure() {
+        lastSaveError = "";
+        lastSaveFailureCode = safe_io_results.IO_FAILURE_NONE;
+        lastSaveRetryable = false;
+    }
+
+    /// @brief Retain one typed filesystem mutation failure for command UI.
+    hide func SetSaveFailure(result: safe_io_results.MutationResult) {
+        if result == null {
+            lastSaveError = "The file could not be saved.";
+            lastSaveFailureCode = safe_io_results.IO_FAILURE_IO;
+            lastSaveRetryable = false;
+            return;
+        }
+        lastSaveError = result.message;
+        if result.detail != "" { lastSaveError = lastSaveError + " " + result.detail; }
+        lastSaveFailureCode = result.code;
+        lastSaveRetryable = result.retryable;
+    }
+
+    /// @brief Return the actionable latest save failure or a caller fallback.
+    expose func SaveFailureMessage(fallback: String) -> String {
+        if lastSaveError != "" { return lastSaveError; }
+        return fallback;
+    }
+
     /// @brief Save the active document to its existing path.
     /// @return false if no active document or it's untitled (no path
     ///         to save to — caller should fall back to SaveAs).
     expose func SaveActive() -> Boolean {
-        if activeIndex < 0 { return false; }
+        ClearSaveFailure();
+        if activeIndex < 0 {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", "", "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
         return SaveDocument(activeIndex);
     }
 
@@ -310,11 +278,23 @@ class DocumentManagerBase {
     }
 
     expose func SaveDocument(index: Integer) -> Boolean {
-        if index < 0 or index >= documents.count() { return false; }
+        ClearSaveFailure();
+        if index < 0 or index >= documents.count() {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", "", "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
         var doc = documents.get(index);
-        if doc.isNew { return false; }
-        if doc.isReadOnlyPreview { return false; }
-        if IO.File.Exists(doc.filePath) == false { return false; }
+        if doc.isNew or doc.isReadOnlyPreview {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", doc.filePath, "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
+        if IO.File.Exists(doc.filePath) == false {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", doc.filePath, "", safe_io_results.IO_FAILURE_NOT_FOUND));
+            return false;
+        }
         if WriteExistingTextAtomically(doc.filePath, doc.content,
                                        doc.lastModifiedOnDisk,
                                        doc.lastSizeOnDisk,
@@ -333,21 +313,38 @@ class DocumentManagerBase {
     ///          absent; a file that appeared after the prompt is never clobbered.
     expose func SaveDocumentAfterExternalConfirmation(index: Integer,
                                                        observedState: Integer) -> Boolean {
+        ClearSaveFailure();
         if observedState == document.EXTERNAL_STATE_CLEAN {
             return SaveDocument(index);
         }
-        if index < 0 or index >= documents.count() { return false; }
+        if index < 0 or index >= documents.count() {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", "", "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
         var doc = documents.get(index);
-        if doc.isNew or doc.isReadOnlyPreview or doc.filePath == "" { return false; }
+        if doc.isNew or doc.isReadOnlyPreview or doc.filePath == "" {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-file", doc.filePath, "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
 
         var saved = false;
         if observedState == document.EXTERNAL_STATE_CHANGED {
-            if IO.File.Exists(doc.filePath) == false { return false; }
+            if IO.File.Exists(doc.filePath) == false {
+                SetSaveFailure(safe_io_results.Failure(
+                    "save-file", doc.filePath, "", safe_io_results.IO_FAILURE_NOT_FOUND));
+                return false;
+            }
             saved = WriteExistingTextAtomically(doc.filePath, doc.content, -1, -1, "");
         } else if observedState == document.EXTERNAL_STATE_MISSING
                   or observedState == document.EXTERNAL_STATE_DELETED
                   or observedState == document.EXTERNAL_STATE_RENAMED {
-            if IO.File.Exists(doc.filePath) { return false; }
+            if IO.File.Exists(doc.filePath) {
+                SetSaveFailure(safe_io_results.Failure(
+                    "save-file", doc.filePath, "", safe_io_results.IO_FAILURE_CONFLICT));
+                return false;
+            }
             saved = WriteNewTextAtomically(doc.filePath, doc.content);
         }
         if saved == false { return false; }
@@ -363,9 +360,18 @@ class DocumentManagerBase {
     ///        extension.
     /// @return false if no active document.
     expose func SaveAs(path: String) -> Boolean {
-        if activeIndex < 0 { return false; }
+        ClearSaveFailure();
+        if activeIndex < 0 {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-as", path, "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
         var doc = documents.get(activeIndex);
-        if doc.isReadOnlyPreview { return false; }
+        if doc.isReadOnlyPreview {
+            SetSaveFailure(safe_io_results.Failure(
+                "save-as", path, "", safe_io_results.IO_FAILURE_INVALID));
+            return false;
+        }
         var normalizedInput = path;
         if file_utils.IsVisualKind(doc.kind)
            and Path.Extension(normalizedInput) == "" {
@@ -373,7 +379,13 @@ class DocumentManagerBase {
                 + file_utils.DefaultExtensionForKind(doc.kind);
         }
         var canonicalPath = NormalizeDocumentPath(normalizedInput);
-        if SaveAsBlockReason(activeIndex, canonicalPath) != "" { return false; }
+        var blockReason = SaveAsBlockReason(activeIndex, canonicalPath);
+        if blockReason != "" {
+            lastSaveError = blockReason;
+            lastSaveFailureCode = safe_io_results.IO_FAILURE_CONFLICT;
+            lastSaveRetryable = false;
+            return false;
+        }
         if WriteTextForSaveAs(canonicalPath, doc.content) == false {
             return false;
         }
@@ -462,11 +474,12 @@ class DocumentManagerBase {
         return count;
     }
 
-    /// @brief Replace an existing file through the runtime transactional edit path.
-    /// @details `Zanna.Workspace.Edit.ApplyInRoot` validates the current file,
-    ///          stages a same-directory temporary file, commits with rename, and
-    ///          rolls back if a later target fails. DocumentManager uses it for
-    ///          ordinary saves so a failed write does not leave a truncated file.
+    /// @brief Replace an existing file through one prepared runtime transaction.
+    /// @details The runtime performs the bounded read, metadata/hash validation,
+    ///          range preparation, staging, identity/content recheck, and atomic
+    ///          commit. Studio never repeats that read or turns complete text
+    ///          into line/column edits. The explicit token is destroyed on every
+    ///          outcome and can be applied only once.
     /// @param path Existing file to replace.
     /// @param content Complete new file contents.
     /// @return true when the runtime reports a successful replacement.
@@ -475,41 +488,12 @@ class DocumentManagerBase {
                                           expectedMtime: Integer,
                                           expectedSize: Integer,
                                           expectedHash: String) -> Boolean {
-        if path == "" or IO.File.Exists(path) == false { return false; }
-        var root = Path.Directory(path);
-        if root == "" { return false; }
-        var beforeMtime = safe_io.Modified(path);
-        var beforeSize = safe_io.SizeBytes(path);
-        if beforeMtime < 0 or beforeSize < 0 { return false; }
-        if expectedMtime >= 0 and beforeMtime != expectedMtime { return false; }
-        if expectedSize >= 0 and beforeSize != expectedSize { return false; }
-        var readResult = safe_io.ReadAllTextBounded(path,
-                                                    MaxOpenBytesForPath(path));
-        if readResult.ok == false { return false; }
-        var existingText = readResult.text;
-        if IO.File.Exists(path) == false
-           or safe_io.Modified(path) != beforeMtime
-           or safe_io.SizeBytes(path) != beforeSize {
-            return false;
-        }
-        if expectedHash != "" and Hash.Sha256(existingText) != expectedHash {
-            return false;
-        }
-
-        var edit = Map.New();
-        Map.SetStr(edit, "file", Path.Name(path));
-        Map.SetInt(edit, "startLine", 1);
-        Map.SetInt(edit, "startColumn", 1);
-        Map.SetInt(edit, "endLine", EndLineForText(existingText));
-        Map.SetInt(edit, "endColumn", EndColumnForText(existingText));
-        Map.SetStr(edit, "newText", content);
-        Map.SetInt(edit, "expectedMtime", beforeMtime);
-        Map.SetInt(edit, "expectedSize", beforeSize);
-
-        var edits = Seq.New();
-        Seq.Push(edits, edit);
-        var result = WorkspaceEdit.ApplyInRoot(edits, root);
-        return Map.GetBool(result, "success");
+        ClearSaveFailure();
+        var result = document_save_transaction.Replace(
+            path, content, expectedMtime, expectedSize, expectedHash,
+            MaxOpenBytesForPath(path));
+        if result.ok == false { SetSaveFailure(result); }
+        return result.ok;
     }
 
     /// @brief Persist Save As content without mutating document state first.
@@ -521,36 +505,21 @@ class DocumentManagerBase {
     /// @param content Complete text to save.
     /// @return True when the destination now contains @p content.
     hide func WriteTextForSaveAs(path: String, content: String) -> Boolean {
-        if path == "" { return false; }
-        if IO.File.Exists(path) {
-            return WriteExistingTextAtomically(path, content, -1, -1, "");
-        }
-        return WriteNewTextAtomically(path, content);
+        ClearSaveFailure();
+        var result = document_save_transaction.SaveAs(
+            path, content, MaxOpenBytesForPath(path));
+        if result.ok == false { SetSaveFailure(result); }
+        return result.ok;
     }
 
     /// @brief Atomically create a destination that is still absent.
-    /// @details A final existence check avoids turning a Save As/create race
-    ///          into an overwrite. `File.Move` itself is no-replace on every
-    ///          supported platform.
+    /// @details The runtime owns exclusive staging and the no-clobber commit,
+    ///          so a destination racing into existence is never overwritten.
     hide func WriteNewTextAtomically(path: String, content: String) -> Boolean {
-        if path == "" or IO.File.Exists(path) { return false; }
-        var dir = Path.Directory(path);
-        if dir == "" { return false; }
-        var tempPath = safe_io.SiblingTempPath(path, "save");
-        if tempPath == "" { return false; }
-        if safe_io.WriteAllText(tempPath, content) == false {
-            safe_io.DeleteFile(tempPath);
-            return false;
-        }
-        if IO.File.Exists(path) {
-            safe_io.DeleteFile(tempPath);
-            return false;
-        }
-        if safe_io.MoveFile(tempPath, path) == false or IO.File.Exists(path) == false {
-            safe_io.DeleteFile(tempPath);
-            return false;
-        }
-        return true;
+        ClearSaveFailure();
+        var result = document_save_transaction.Create(path, content);
+        if result.ok == false { SetSaveFailure(result); }
+        return result.ok;
     }
 
     /// @brief Refresh a document's saved on-disk metadata after load/save.
@@ -558,72 +527,19 @@ class DocumentManagerBase {
     ///          every successful disk synchronization must update both fields.
     /// @param doc Document whose `filePath` points at the synchronized file.
     hide func RefreshDiskMetadata(doc: document.Document) {
-        if doc == null or doc.filePath == "" or IO.File.Exists(doc.filePath) == false {
-            return;
-        }
-        var diskText = "";
-        if doc.isReadOnlyPreview == false and IsEditableTextFile(doc.filePath) {
-            var readResult = safe_io.ReadAllTextBounded(doc.filePath,
-                                                        MaxOpenBytesForPath(doc.filePath));
-            if readResult.ok { diskText = readResult.text; }
-        }
-        RefreshDiskMetadataFromKnownText(doc, diskText);
+        document_disk_state.Refresh(doc);
     }
 
     /// @brief Refresh metadata from text already known to match the disk file.
     hide func RefreshDiskMetadataFromKnownText(doc: document.Document,
                                                diskText: String) {
-        if doc == null or doc.filePath == "" or IO.File.Exists(doc.filePath) == false {
-            return;
-        }
-        var modified = safe_io.Modified(doc.filePath);
-        var size = safe_io.SizeBytes(doc.filePath);
-        if modified < 0 or size < 0 {
-            doc.lastModifiedOnDisk = 0;
-            doc.lastSizeOnDisk = 0;
-            doc.lastContentHashOnDisk = "";
-            return;
-        }
-        doc.lastModifiedOnDisk = modified;
-        doc.lastSizeOnDisk = size;
-        doc.lastContentHashOnDisk = "";
-        if doc.isReadOnlyPreview == false {
-            doc.lastContentHashOnDisk = Hash.Sha256(diskText);
-        }
+        document_disk_state.RefreshFromKnownText(doc, diskText);
     }
 
     /// @brief Clear all remembered external-disk conflict state for @p doc.
     /// @details Called after successful load, reload, save, and path retargeting.
     hide func ClearExternalState(doc: document.Document) {
-        if doc == null { return; }
-        doc.externalChangeNotified = false;
-        doc.externalState = document.EXTERNAL_STATE_CLEAN;
-        doc.externalMessage = "";
-    }
-
-    /// @brief Compute the last 1-based line number for a full-file edit range.
-    /// @details This string-based form lets save operations read the old file
-    ///          once and derive both end coordinates from the same snapshot.
-    /// @param text Current file contents.
-    /// @return Last line number in the runtime workspace-edit coordinate system.
-    hide func EndLineForText(text: String) -> Integer {
-        var lines = Str.Split(text, "\n");
-        var count = Seq.get_Count(lines);
-        if count <= 0 { return 1; }
-        return count;
-    }
-
-    /// @brief Compute the exclusive end column for a full-file edit range.
-    /// @details Uses the last line of an already-read file snapshot so callers
-    ///          avoid a second full-file read during ordinary save operations.
-    /// @param text Current file contents.
-    /// @return Exclusive 1-based end column for the final line.
-    hide func EndColumnForText(text: String) -> Integer {
-        var lines = Str.Split(text, "\n");
-        var count = Seq.get_Count(lines);
-        if count <= 0 { return 1; }
-        var last = Obj.ToString(Seq.Get(lines, count - 1));
-        return Str.get_Length(last) + 1;
+        document_disk_state.ClearExternal(doc);
     }
 
     expose func HasExternalChange(index: Integer) -> Boolean {
@@ -640,24 +556,10 @@ class DocumentManagerBase {
 
     /// @brief Return the strong disk state used immediately before saving.
     expose func ExternalStateForSave(index: Integer) -> Integer {
-        var state = ExternalState(index);
-        if state != document.EXTERNAL_STATE_CLEAN { return state; }
-        if index < 0 or index >= documents.count() { return state; }
-        var doc = documents.get(index);
-        if doc == null or doc.isNew or doc.filePath == ""
-           or doc.lastContentHashOnDisk == "" {
-            return state;
+        if index < 0 or index >= documents.count() {
+            return document.EXTERNAL_STATE_CLEAN;
         }
-        if IsEditableTextFile(doc.filePath) == false {
-            return document.EXTERNAL_STATE_CHANGED;
-        }
-        var readResult = safe_io.ReadAllTextBounded(doc.filePath,
-                                                    MaxOpenBytesForPath(doc.filePath));
-        if readResult.ok == false
-           or Hash.Sha256(readResult.text) != doc.lastContentHashOnDisk {
-            return document.EXTERNAL_STATE_CHANGED;
-        }
-        return state;
+        return document_disk_state.ExternalStateForSave(documents.get(index));
     }
 
     /// @brief Return the current disk state for an open document.
@@ -665,25 +567,7 @@ class DocumentManagerBase {
     ///          whether the path exists and whether its timestamp or size changed.
     expose func ExternalState(index: Integer) -> Integer {
         if index < 0 or index >= documents.count() { return document.EXTERNAL_STATE_CLEAN; }
-        var doc = documents.get(index);
-        if doc == null or doc.isNew or doc.filePath == "" { return document.EXTERNAL_STATE_CLEAN; }
-        if doc.externalState != document.EXTERNAL_STATE_CLEAN {
-            return doc.externalState;
-        }
-        if IO.File.Exists(doc.filePath) == false {
-            return document.EXTERNAL_STATE_MISSING;
-        }
-        if doc.lastModifiedOnDisk > 0 {
-            var current = safe_io.Modified(doc.filePath);
-            var currentSize = safe_io.SizeBytes(doc.filePath);
-            if current < 0 or currentSize < 0 {
-                return document.EXTERNAL_STATE_CHANGED;
-            }
-            if current != doc.lastModifiedOnDisk or currentSize != doc.lastSizeOnDisk {
-                return document.EXTERNAL_STATE_CHANGED;
-            }
-        }
-        return document.EXTERNAL_STATE_CLEAN;
+        return document_disk_state.ExternalState(documents.get(index));
     }
 
     /// @brief Mark an open document with a watcher-derived disk state.
@@ -691,11 +575,7 @@ class DocumentManagerBase {
                                   state: Integer,
                                   message: String) {
         if index < 0 or index >= documents.count() { return; }
-        var doc = documents.get(index);
-        if doc == null { return; }
-        doc.externalState = state;
-        doc.externalMessage = message;
-        doc.externalChangeNotified = true;
+        document_disk_state.MarkExternal(documents.get(index), state, message);
     }
 
     /// @brief Refresh and remember the current disk state for @p index.
@@ -722,23 +602,7 @@ class DocumentManagerBase {
     /// @brief User-facing label for the current external disk state.
     expose func ExternalStateMessage(index: Integer) -> String {
         if index < 0 or index >= documents.count() { return ""; }
-        var doc = documents.get(index);
-        if doc == null { return ""; }
-        if doc.externalMessage != "" { return doc.externalMessage; }
-        var state = ExternalState(index);
-        if state == document.EXTERNAL_STATE_CHANGED {
-            return doc.fileName + " changed on disk";
-        }
-        if state == document.EXTERNAL_STATE_DELETED {
-            return doc.fileName + " was deleted on disk";
-        }
-        if state == document.EXTERNAL_STATE_RENAMED {
-            return doc.fileName + " was renamed or moved on disk";
-        }
-        if state == document.EXTERNAL_STATE_MISSING {
-            return doc.fileName + " is missing on disk";
-        }
-        return "";
+        return document_disk_state.Message(documents.get(index));
     }
 
     /// @brief Reload an existing document through the same safety rules as OpenFile.
@@ -753,16 +617,14 @@ class DocumentManagerBase {
         if IO.File.Exists(doc.filePath) == false { return false; }
         doc.language = file_utils.DetectLanguage(doc.filePath);
         doc.kind = file_utils.DetectKind(doc.filePath);
-        var blockReason = TextOpenBlockReason(doc.filePath);
+        var admission = text_admission.ReadEditableText(doc.filePath);
+        var blockReason = admission.reason;
         if blockReason != "" {
             doc.isReadOnlyPreview = true;
             doc.content = BlockedPreviewText(doc.filePath, blockReason);
         } else {
-            var readResult = safe_io.ReadAllTextBounded(doc.filePath,
-                                                        MaxOpenBytesForPath(doc.filePath));
-            if readResult.ok == false { return false; }
             doc.isReadOnlyPreview = false;
-            doc.content = readResult.text;
+            doc.content = admission.text;
         }
         RefreshDiskMetadataFromKnownText(doc, doc.content);
         doc.isModified = false;

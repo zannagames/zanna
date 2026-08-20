@@ -20,27 +20,35 @@
 module project_index;
 
 bind "../core/document_manager";
+bind "../core/document";
 bind "../core/project_manager";
 bind "../editor/editor_engine";
 bind "../editor/scheduler";
 bind "../services/safe_io";
+bind "../services/workspace_file_cursor";
+bind "project_index_state" as State;
+bind "project_index_enumeration" as Implementation;
 
 bind ProjectIndex = Zanna.Zia.ProjectIndex;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind Obj = Zanna.Core.Object;
 bind IO = Zanna.IO;
 bind Str = Zanna.String;
+bind Hash = Zanna.Crypto.Hash;
 
-final INDEX_IDLE_MS = 350;
-final INDEX_FILES_PER_FRAME = 8;
-final INDEX_MAX_SOURCE_BYTES = 200000;
-final INDEX_MAX_BYTES_PER_FRAME = 500000;
-final INDEX_ENUM_CAP = 100000;
-final INDEX_FILE_PAGE_SIZE = 512;
-final INDEX_MAX_WORKSPACE_FILES = 20000;
-final INDEX_MAX_WORKSPACE_SOURCE_BYTES = 64000000;
+final INDEX_IDLE_MS = State.INDEX_IDLE_MS;
+final INDEX_FILES_PER_FRAME = State.INDEX_FILES_PER_FRAME;
+final INDEX_MAX_SOURCE_BYTES = State.INDEX_MAX_SOURCE_BYTES;
+final INDEX_MAX_BYTES_PER_FRAME = State.INDEX_MAX_BYTES_PER_FRAME;
+final INDEX_ENUM_CAP = State.INDEX_ENUM_CAP;
+final INDEX_FILE_PAGE_SIZE = State.INDEX_FILE_PAGE_SIZE;
+final INDEX_MAX_WORKSPACE_FILES = State.INDEX_MAX_WORKSPACE_FILES;
+final INDEX_MAX_WORKSPACE_SOURCE_BYTES = State.INDEX_MAX_WORKSPACE_SOURCE_BYTES;
+final INDEX_READ_RETRY_LIMIT = State.INDEX_READ_RETRY_LIMIT;
+final INDEX_MAX_PENDING_FILE_UPDATES = State.INDEX_MAX_PENDING_FILE_UPDATES;
+final INDEX_FILE_UPDATE = State.INDEX_FILE_UPDATE;
+final INDEX_FILE_REMOVE = State.INDEX_FILE_REMOVE;
 
 // ============================================================================
 // MODULE: project_index
@@ -57,73 +65,8 @@ final INDEX_MAX_WORKSPACE_SOURCE_BYTES = 64000000;
 //          for the UI.
 // ============================================================================
 
-class ProjectIndexer {
-    expose Any handle;
-    expose String rootPath;
-    expose String workspaceSignature;
-    expose List rootPaths;
-    expose List rootIgnorePatterns;
-    expose Boolean valid;
-    expose String syncedActivePath;
-    expose Integer syncedActiveRevision;
-    expose String pendingActivePath;
-    expose Integer pendingActiveRevision;
-    expose Integer pendingSinceMs;
-    expose Integer syncCount;
-    expose Any pendingIndexFiles;
-    expose Integer pendingIndexPos;
-    expose Integer pendingIndexRootIndex;
-    expose Integer pendingIndexOffset;
-    expose Boolean pendingIndexDone;
-    expose Boolean indexing;
-    expose Boolean workspaceIndexComplete;
-    expose Integer indexedFileCount;
-    expose Integer workspaceIndexEntryCount;
-    expose Integer workspaceIndexConsideredCount;
-    expose Integer workspaceIndexSourceBytes;
-    expose Boolean workspaceIndexTruncated;
-    expose String workspaceIndexStatusMessage;
-    expose Any pendingIndexSeenPaths;
-    expose scheduler.EditorScheduler workScheduler;
-    expose List syncedOpenPaths;
-    expose List syncedOpenContents;
-    expose Integer updateCount;
-    expose Integer updateBytes;
-    expose Integer contentGeneration;
-
-    expose func init() {
-        handle = null;
-        rootPath = "";
-        workspaceSignature = "";
-        rootPaths = new List();
-        rootIgnorePatterns = new List();
-        valid = false;
-        syncedActivePath = "";
-        syncedActiveRevision = -1;
-        pendingActivePath = "";
-        pendingActiveRevision = -1;
-        pendingSinceMs = 0;
-        syncCount = 0;
-        pendingIndexFiles = null;
-        pendingIndexPos = 0;
-        pendingIndexRootIndex = 0;
-        pendingIndexOffset = 0;
-        pendingIndexDone = true;
-        indexing = false;
-        workspaceIndexComplete = false;
-        indexedFileCount = 0;
-        workspaceIndexEntryCount = 0;
-        workspaceIndexConsideredCount = 0;
-        workspaceIndexSourceBytes = 0;
-        workspaceIndexTruncated = false;
-        workspaceIndexStatusMessage = "";
-        pendingIndexSeenPaths = Map.New();
-        syncedOpenPaths = new List();
-        syncedOpenContents = new List();
-        updateCount = 0;
-        updateBytes = 0;
-        contentGeneration = 0;
-    }
+class ProjectIndexer extends Implementation.ProjectIndexEnumerationLayer {
+    expose func init() { InitializeState(); }
 
     expose func SetScheduler(value: scheduler.EditorScheduler) {
         workScheduler = value;
@@ -191,6 +134,7 @@ class ProjectIndexer {
         rootIgnorePatterns.Push("");
         handle = ProjectIndex.New(root);
         valid = ProjectIndex.IsValid(handle);
+        pendingFileUpdateDocuments = docMgr;
         if valid {
             SyncOpenDocuments(docMgr);
         }
@@ -215,6 +159,8 @@ class ProjectIndexer {
         pendingIndexPos = 0;
         pendingIndexRootIndex = 0;
         pendingIndexOffset = 0;
+        if pendingIndexCursor != null { pendingIndexCursor.Destroy(); }
+        pendingIndexCursor = new workspace_file_cursor.WorkspaceFileCursor();
         pendingIndexDone = true;
         indexing = false;
         workspaceIndexComplete = false;
@@ -225,8 +171,16 @@ class ProjectIndexer {
         workspaceIndexTruncated = false;
         workspaceIndexStatusMessage = "";
         pendingIndexSeenPaths = Map.New();
+        pendingIndexReadAttempts = Map.New();
         syncedOpenPaths = new List();
-        syncedOpenContents = new List();
+        syncedOpenHashes = new List();
+        syncedOpenBytes = new List();
+        pendingFileUpdatePaths = new List();
+        pendingFileUpdateActions = new List();
+        pendingFileUpdateAttempts = new List();
+        pendingFileUpdatePos = 0;
+        pendingFileUpdateDocuments = null;
+        lastPendingUpdateBytes = 0;
         contentGeneration = 0;
     }
 
@@ -244,7 +198,9 @@ class ProjectIndexer {
         workspaceIndexTruncated = false;
         workspaceIndexStatusMessage = "";
         pendingIndexSeenPaths = Map.New();
+        pendingIndexReadAttempts = Map.New();
         pendingIndexOffset = 0;
+        if pendingIndexCursor != null { pendingIndexCursor.Destroy(); }
         pendingIndexRootIndex = 0;
         pendingIndexDone = false;
         pendingIndexPos = 0;
@@ -255,26 +211,31 @@ class ProjectIndexer {
             workspaceIndexComplete = true;
             return;
         }
-        FetchNextIndexPage();
-        if pendingIndexFiles == null {
-            pendingIndexPos = 0;
-            indexing = false;
-            workspaceIndexComplete = true;
-            return;
-        }
         indexing = true;
         workspaceIndexComplete = false;
     }
 
     expose func PumpIndex(maxFiles: Integer) -> Integer {
-        if valid == false or indexing == false or pendingIndexFiles == null { return 0; }
+        if valid == false { return 0; }
         var limit = maxFiles;
         if limit <= 0 { limit = 8; }
 
-        var processed = 0;
-        var bytesThisFrame = 0;
+        var processed = PumpPendingFileUpdates(limit, INDEX_MAX_BYTES_PER_FRAME);
+        var bytesThisFrame = lastPendingUpdateBytes;
+        if processed >= limit or indexing == false {
+            return processed;
+        }
         while processed < limit {
-            if pendingIndexFiles == null { break; }
+            if pendingIndexFiles == null {
+                FetchNextIndexPage(limit - processed);
+                if pendingIndexFiles == null {
+                    if pendingIndexDone {
+                        indexing = false;
+                        workspaceIndexComplete = true;
+                    }
+                    break;
+                }
+            }
             var total = Seq.get_Count(pendingIndexFiles);
             if pendingIndexPos >= total {
                 if pendingIndexDone {
@@ -284,7 +245,7 @@ class ProjectIndexer {
                     workspaceIndexComplete = true;
                     break;
                 }
-                FetchNextIndexPage();
+                FetchNextIndexPage(limit - processed);
                 if pendingIndexFiles == null or Seq.get_Count(pendingIndexFiles) == 0 {
                     if pendingIndexDone {
                         indexing = false;
@@ -305,23 +266,24 @@ class ProjectIndexer {
                 processed = processed + 1;
                 continue;
             }
-            Map.SetBool(pendingIndexSeenPaths, pathKey, true);
-            workspaceIndexConsideredCount = workspaceIndexConsideredCount + 1;
-            if workspaceIndexConsideredCount > INDEX_MAX_WORKSPACE_FILES {
-                MarkWorkspaceIndexIncomplete(
-                    "Workspace index exceeds " + INDEX_MAX_WORKSPACE_FILES
-                    + " Zia files");
-                StopWorkspaceEnumeration();
-                break;
+            if Map.Has(pendingIndexReadAttempts, pathKey) == false {
+                workspaceIndexConsideredCount = workspaceIndexConsideredCount + 1;
+                if workspaceIndexConsideredCount > INDEX_MAX_WORKSPACE_FILES {
+                    MarkWorkspaceIndexIncomplete(
+                        "Workspace index exceeds " + INDEX_MAX_WORKSPACE_FILES
+                        + " Zia files");
+                    StopWorkspaceEnumeration();
+                    break;
+                }
             }
             if size < 0 {
-                MarkWorkspaceIndexIncomplete(
-                    "Workspace index could not inspect " + IO.Path.Name(path));
-                ProjectIndex.RemoveFile(handle, path);
-                contentGeneration = contentGeneration + 1;
-                pendingIndexPos = pendingIndexPos + 1;
-                processed = processed + 1;
-                continue;
+                size = safe_io.SizeBytes(path);
+                if size < 0 {
+                    processed = processed + 1;
+                    if DeferIndexReadFailure(pathKey) { break; }
+                    FinalizeIndexReadFailure(path, pathKey);
+                    continue;
+                }
             }
             if size > INDEX_MAX_SOURCE_BYTES {
                 MarkWorkspaceIndexIncomplete(
@@ -329,6 +291,7 @@ class ProjectIndexer {
                     + IO.Path.Name(path));
                 ProjectIndex.RemoveFile(handle, path);
                 contentGeneration = contentGeneration + 1;
+                Map.SetBool(pendingIndexSeenPaths, pathKey, true);
                 pendingIndexPos = pendingIndexPos + 1;
                 processed = processed + 1;
                 continue;
@@ -337,14 +300,9 @@ class ProjectIndexer {
                and bytesThisFrame + size > INDEX_MAX_BYTES_PER_FRAME {
                 break;
             }
-            pendingIndexPos = pendingIndexPos + 1;
-            processed = processed + 1;
-            if size > 0 { bytesThisFrame = bytesThisFrame + size; }
             var syncedOpenIndex = FindSyncedOpenPath(path);
             if syncedOpenIndex >= 0 {
-                var openContent = Obj.ToString(
-                    syncedOpenContents.get(syncedOpenIndex));
-                var openBytes = Str.get_Length(openContent);
+                var openBytes = syncedOpenBytes.get(syncedOpenIndex);
                 if openBytes > INDEX_MAX_SOURCE_BYTES {
                     MarkWorkspaceIndexIncomplete(
                         "Workspace index skipped oversized open file "
@@ -360,6 +318,13 @@ class ProjectIndexer {
                                                 + openBytes;
                     indexedFileCount = indexedFileCount + 1;
                 }
+                Map.SetBool(pendingIndexSeenPaths, pathKey, true);
+                if Map.Has(pendingIndexReadAttempts, pathKey) {
+                    Map.Remove(pendingIndexReadAttempts, pathKey);
+                }
+                pendingIndexPos = pendingIndexPos + 1;
+                processed = processed + 1;
+                if size > 0 { bytesThisFrame = bytesThisFrame + size; }
                 continue;
             }
             if IO.File.Exists(path) {
@@ -378,12 +343,22 @@ class ProjectIndexer {
                     workspaceIndexSourceBytes = workspaceIndexSourceBytes
                                                 + sourceBytes;
                     indexedFileCount = indexedFileCount + 1;
+                    Map.SetBool(pendingIndexSeenPaths, pathKey, true);
+                    if Map.Has(pendingIndexReadAttempts, pathKey) {
+                        Map.Remove(pendingIndexReadAttempts, pathKey);
+                    }
+                    pendingIndexPos = pendingIndexPos + 1;
+                    processed = processed + 1;
+                    if sourceBytes > 0 { bytesThisFrame = bytesThisFrame + sourceBytes; }
                 } else {
-                    MarkWorkspaceIndexIncomplete(
-                        "Workspace index could not read " + IO.Path.Name(path));
-                    ProjectIndex.RemoveFile(handle, path);
-                    contentGeneration = contentGeneration + 1;
+                    processed = processed + 1;
+                    if DeferIndexReadFailure(pathKey) { break; }
+                    FinalizeIndexReadFailure(path, pathKey);
                 }
+            } else {
+                processed = processed + 1;
+                if DeferIndexReadFailure(pathKey) { break; }
+                FinalizeIndexReadFailure(path, pathKey);
             }
         }
         if pendingIndexFiles != null
@@ -425,9 +400,17 @@ class ProjectIndexer {
     expose func PrepareWorkspaceQuery(maxFiles: Integer) -> Boolean {
         if valid == false { return false; }
         EnsureWorkspaceIndexStarted();
-        if workspaceIndexComplete { return true; }
-        PumpIndex(maxFiles);
-        return workspaceIndexComplete;
+        if HasPendingFileUpdates() or IsWorkspaceQueryReady() == false {
+            PumpIndex(maxFiles);
+        }
+        if HasPendingFileUpdates() { return false; }
+        return IsWorkspaceQueryReady();
+    }
+
+    /// @brief Return the single authoritative readiness definition for semantic queries.
+    /// @return True only for a complete, non-truncated workspace corpus.
+    expose func IsWorkspaceQueryReady() -> Boolean {
+        return workspaceIndexComplete and workspaceIndexTruncated == false;
     }
 
     /// @brief Human-readable workspace indexing progress for status surfaces.
@@ -464,317 +447,11 @@ class ProjectIndexer {
         FinishPendingIndex();
     }
 
-    expose func SyncOpenDocuments(docMgr: document_manager.DocumentManager) {
-        if valid == false or docMgr == null { return; }
-        var i = 0;
-        while i < docMgr.GetCount() {
-            var doc = docMgr.documents.get(i);
-            if doc.language == "zia" and doc.filePath != "" {
-                var syncedIdx = FindSyncedOpenPath(doc.filePath);
-                var needsSync = true;
-                if syncedIdx >= 0 and Obj.ToString(syncedOpenContents.get(syncedIdx)) == doc.content {
-                    needsSync = false;
-                }
-                if needsSync {
-                    if ShouldIndexContent(doc.content) {
-                        ProjectIndex.UpdateFile(handle, doc.filePath, doc.content);
-                        TrackUpdate(doc.content);
-                    } else {
-                        ProjectIndex.RemoveFile(handle, doc.filePath);
-                        contentGeneration = contentGeneration + 1;
-                        MarkWorkspaceIndexIncomplete(
-                            "Workspace index skipped oversized open file "
-                            + IO.Path.Name(doc.filePath));
-                    }
-                    if syncedIdx >= 0 {
-                        syncedOpenPaths.removeAt(syncedIdx);
-                        syncedOpenContents.removeAt(syncedIdx);
-                    }
-                    syncedOpenPaths.add(doc.filePath);
-                    syncedOpenContents.add(SnapshotContent(doc.content));
-                    syncCount = syncCount + 1;
-                }
-            }
-            i = i + 1;
-        }
-    }
-
-    expose func FindSyncedOpenPath(path: String) -> Integer {
-        var target = NormalizePath(path);
-        var i = 0;
-        while i < syncedOpenPaths.count() {
-            if NormalizePath(Obj.ToString(syncedOpenPaths.get(i))) == target {
-                return i;
-            }
-            i = i + 1;
-        }
-        return -1;
-    }
-
-    expose func SyncActiveNow(docMgr: document_manager.DocumentManager,
-                              engine: editor_engine.EditorEngine) -> Boolean {
-        if valid == false or docMgr == null or engine == null or engine.editor == null { return false; }
-        var active = docMgr.GetActive();
-        if active == null { return false; }
-        var doc = active!;
-        if doc.language != "zia" or doc.filePath == "" { return false; }
-
-        var revision = engine.GetRevision();
-        if doc.filePath == syncedActivePath and revision == syncedActiveRevision { return false; }
-
-        doc.content = engine.GetTextSnapshot();
-        if ShouldIndexContent(doc.content) {
-            ProjectIndex.UpdateFile(handle, doc.filePath, doc.content);
-            TrackUpdate(doc.content);
-        } else {
-            ProjectIndex.RemoveFile(handle, doc.filePath);
-            contentGeneration = contentGeneration + 1;
-            MarkWorkspaceIndexIncomplete(
-                "Workspace index skipped oversized open file "
-                + IO.Path.Name(doc.filePath));
-        }
-        var syncedIdx = FindSyncedOpenPath(doc.filePath);
-        if syncedIdx >= 0 {
-            syncedOpenPaths.removeAt(syncedIdx);
-            syncedOpenContents.removeAt(syncedIdx);
-        }
-        syncedOpenPaths.add(doc.filePath);
-        syncedOpenContents.add(SnapshotContent(doc.content));
-        syncedActivePath = doc.filePath;
-        syncedActiveRevision = revision;
-        pendingActivePath = "";
-        pendingActiveRevision = -1;
-        pendingSinceMs = 0;
-        syncCount = syncCount + 1;
-        return true;
-    }
-
-    expose func SyncActiveWhenIdle(docMgr: document_manager.DocumentManager,
-                                   engine: editor_engine.EditorEngine) -> Boolean {
-        if valid == false or docMgr == null or engine == null or engine.editor == null { return false; }
-        var active = docMgr.GetActive();
-        if active == null { return false; }
-        var doc = active!;
-        if doc.language != "zia" or doc.filePath == "" { return false; }
-
-        var revision = engine.GetRevision();
-        if doc.filePath == syncedActivePath and revision == syncedActiveRevision { return false; }
-
-        if workScheduler != null {
-            if workScheduler.IsQueued(scheduler.JOB_INDEX_SYNC, doc.filePath, revision) == false {
-                workScheduler.Queue(scheduler.JOB_INDEX_SYNC, doc.filePath, revision, -1);
-                pendingActivePath = doc.filePath;
-                pendingActiveRevision = revision;
-                return false;
-            }
-            if workScheduler.IsDue(scheduler.JOB_INDEX_SYNC, doc.filePath, revision) == false {
-                return false;
-            }
-            workScheduler.Complete(scheduler.JOB_INDEX_SYNC);
-        } else {
-            var now = Zanna.Time.Clock.NowMs();
-            if doc.filePath != pendingActivePath or revision != pendingActiveRevision {
-                pendingActivePath = doc.filePath;
-                pendingActiveRevision = revision;
-                pendingSinceMs = now;
-                return false;
-            }
-            if now - pendingSinceMs < INDEX_IDLE_MS {
-                return false;
-            }
-        }
-        return SyncActiveNow(docMgr, engine);
-    }
-
-    expose func RemoveFile(path: String) {
-        if valid == false { return; }
-        ProjectIndex.RemoveFile(handle, path);
-        contentGeneration = contentGeneration + 1;
-        workspaceIndexComplete = false;
-    }
-
-    expose func UpdateFile(path: String) {
-        if valid == false or path == "" { return; }
-        if IO.File.Exists(path) {
-            var readResult = safe_io.ReadAllTextBounded(path, INDEX_MAX_SOURCE_BYTES);
-            if readResult.ok and ShouldIndexContent(readResult.text) {
-                ProjectIndex.UpdateFile(handle, path, readResult.text);
-                TrackUpdate(readResult.text);
-                workspaceIndexComplete = false;
-            } else {
-                ProjectIndex.RemoveFile(handle, path);
-                contentGeneration = contentGeneration + 1;
-                workspaceIndexComplete = false;
-                MarkWorkspaceIndexIncomplete(
-                    "Workspace index could not read " + IO.Path.Name(path));
-            }
-        }
-    }
-
-    hide func ShouldIndexContent(content: String) -> Boolean {
-        return Str.get_Length(content) <= INDEX_MAX_SOURCE_BYTES;
-    }
-
-    hide func SnapshotContent(content: String) -> String {
-        if content == "" { return ""; }
-        return Str.MidLen(content, 1, Str.get_Length(content));
-    }
-
-    hide func NormalizePath(path: String) -> String {
-        if path == "" { return ""; }
-        return IO.Path.Normalize(IO.Path.Absolute(path));
-    }
-
-    hide func TrackUpdate(content: String) {
-        updateCount = updateCount + 1;
-        updateBytes = updateBytes + Str.get_Length(content);
-        contentGeneration = contentGeneration + 1;
-    }
-
-    /// @brief Fetch the next bounded runtime file-index page.
-    /// @details `FileIndex.Page` applies the same hard excludes, `.gitignore`,
-    ///          and extension filters as `Enumerate` while bounding allocation.
-    ///          The indexer keeps only one page of entry maps live at a time and
-    ///          advances `pendingIndexOffset` from the returned `nextOffset`.
-    hide func FetchNextIndexPage() {
-        if valid == false or rootPaths.count() == 0 {
-            pendingIndexFiles = null;
-            pendingIndexDone = true;
-            return;
-        }
-        while pendingIndexRootIndex < rootPaths.count() {
-            var currentRoot = CurrentIndexRoot();
-            if currentRoot == "" {
-                AdvanceIndexRoot();
-                continue;
-            }
-            var page = FileIndex.Page(currentRoot, ".zia", CurrentIndexIgnores(), false,
-                                      pendingIndexOffset, INDEX_FILE_PAGE_SIZE);
-            if Map.GetBool(page, "valid") == false {
-                MarkWorkspaceIndexIncomplete(
-                    "Workspace index could not enumerate "
-                    + IO.Path.Name(currentRoot));
-                AdvanceIndexRoot();
-                continue;
-            }
-            pendingIndexFiles = Map.Get(page, "entries");
-            pendingIndexPos = 0;
-            pendingIndexOffset = Map.GetInt(page, "nextOffset");
-            pendingIndexDone = false;
-            workspaceIndexEntryCount = workspaceIndexEntryCount + PageEntryCount(pendingIndexFiles);
-            if Map.GetBool(page, "truncated") {
-                MarkWorkspaceIndexIncomplete(
-                    "Workspace index truncated at " + INDEX_ENUM_CAP
-                    + " file(s)");
-            }
-            if Map.GetBool(page, "done") {
-                AdvanceIndexRoot();
-                if pendingIndexRootIndex >= rootPaths.count() {
-                    pendingIndexDone = true;
-                }
-            }
-            return;
-        }
-        pendingIndexFiles = null;
-        pendingIndexDone = true;
-    }
-
-    /// @brief Return the root currently being paged for workspace indexing.
-    /// @return Absolute root path, or empty when all roots are consumed.
-    hide func CurrentIndexRoot() -> String {
-        if pendingIndexRootIndex < 0 or pendingIndexRootIndex >= rootPaths.count() { return ""; }
-        return Obj.ToString(rootPaths.get(pendingIndexRootIndex));
-    }
-
-    /// @brief Return ignore patterns for the current indexing root.
-    /// @return Comma-separated ignore pattern list aligned with rootPaths.
-    hide func CurrentIndexIgnores() -> String {
-        if pendingIndexRootIndex < 0 or pendingIndexRootIndex >= rootIgnorePatterns.count() {
-            return "";
-        }
-        return Obj.ToString(rootIgnorePatterns.get(pendingIndexRootIndex));
-    }
-
-    /// @brief Advance workspace indexing to the next root and reset the page offset.
-    hide func AdvanceIndexRoot() {
-        pendingIndexRootIndex = pendingIndexRootIndex + 1;
-        pendingIndexOffset = 0;
-    }
-
-    /// @brief Count entries in a FileIndex.Page result sequence.
-    /// @param entries Sequence returned by FileIndex.Page, or null.
-    /// @return Number of entries in the page.
-    hide func PageEntryCount(entries: Any) -> Integer {
-        if entries == null { return 0; }
-        return Seq.get_Count(entries);
-    }
-
-    /// @brief Account for live open-document overlays before disk paging.
-    /// @return False when open buffers alone exhaust a hard workspace budget.
-    hide func SeedOpenDocumentBudget() -> Boolean {
-        var i = 0;
-        while i < syncedOpenPaths.count() {
-            var path = Obj.ToString(syncedOpenPaths.get(i));
-            var key = NormalizePath(path);
-            if Map.Has(pendingIndexSeenPaths, key) == false {
-                Map.SetBool(pendingIndexSeenPaths, key, true);
-                workspaceIndexConsideredCount = workspaceIndexConsideredCount + 1;
-                if workspaceIndexConsideredCount > INDEX_MAX_WORKSPACE_FILES {
-                    MarkWorkspaceIndexIncomplete(
-                        "Workspace index exceeds " + INDEX_MAX_WORKSPACE_FILES
-                        + " Zia files");
-                    return false;
-                }
-                var content = Obj.ToString(syncedOpenContents.get(i));
-                var sourceBytes = Str.get_Length(content);
-                if sourceBytes > INDEX_MAX_SOURCE_BYTES {
-                    MarkWorkspaceIndexIncomplete(
-                        "Workspace index skipped oversized open file "
-                        + IO.Path.Name(path));
-                } else {
-                    if workspaceIndexSourceBytes + sourceBytes
-                       > INDEX_MAX_WORKSPACE_SOURCE_BYTES {
-                        MarkWorkspaceIndexIncomplete(
-                            "Workspace index exceeds the 64 MB source budget");
-                        return false;
-                    }
-                    workspaceIndexSourceBytes = workspaceIndexSourceBytes
-                                                + sourceBytes;
-                    indexedFileCount = indexedFileCount + 1;
-                }
-            }
-            i = i + 1;
-        }
-        return true;
-    }
-
-    /// @brief Mark the current workspace index partial while preserving its
-    ///        first actionable status message.
-    hide func MarkWorkspaceIndexIncomplete(message: String) {
-        workspaceIndexTruncated = true;
-        if workspaceIndexStatusMessage == "" {
-            workspaceIndexStatusMessage = message;
-        }
-    }
-
-    /// @brief End paging after a hard file or aggregate source limit.
-    hide func StopWorkspaceEnumeration() {
-        pendingIndexFiles = null;
-        pendingIndexPos = 0;
-        pendingIndexRootIndex = rootPaths.count();
-        pendingIndexOffset = 0;
-        pendingIndexDone = true;
-        indexing = false;
-        workspaceIndexComplete = true;
-    }
-
     expose func Definition(path: String,
                            source: String,
                            line: Integer,
                            col: Integer) -> Any {
-        if valid == false { return null; }
-        EnsureWorkspaceIndexStarted();
-        if workspaceIndexComplete == false { PumpIndex(INDEX_FILES_PER_FRAME); }
+        if PrepareWorkspaceQuery(INDEX_FILES_PER_FRAME) == false { return null; }
         return ProjectIndex.Definition(handle, path, source, line, col);
     }
 
@@ -782,9 +459,7 @@ class ProjectIndexer {
                            source: String,
                            line: Integer,
                            col: Integer) -> Any {
-        if valid == false { return null; }
-        EnsureWorkspaceIndexStarted();
-        if workspaceIndexComplete == false { PumpIndex(INDEX_FILES_PER_FRAME); }
+        if PrepareWorkspaceQuery(INDEX_FILES_PER_FRAME) == false { return null; }
         return ProjectIndex.References(handle, path, source, line, col);
     }
 
@@ -793,9 +468,7 @@ class ProjectIndexer {
                             line: Integer,
                             col: Integer,
                             newName: String) -> Any {
-        if valid == false { return null; }
-        EnsureWorkspaceIndexStarted();
-        if workspaceIndexComplete == false { PumpIndex(INDEX_FILES_PER_FRAME); }
+        if PrepareWorkspaceQuery(INDEX_FILES_PER_FRAME) == false { return null; }
         return ProjectIndex.RenameEdits(handle, path, source, line, col, newName);
     }
 

@@ -1,0 +1,81 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/workspace_file_cursor.zia
+// Purpose: Own one generation-tagged native workspace file-index traversal.
+// Key invariants:
+//   - Every successful Open has exactly one matching Destroy.
+//   - Pages from a different traversal generation are rejected as stale.
+//   - Callers retain only one bounded result page at a time.
+// Ownership/Lifetime: The enclosing Studio controller owns this wrapper and
+//                     must call Destroy when resetting or shutting down.
+// Links: docs/adr/0278-explicit-workspace-file-index-cursors.md,
+//        zannastudio/src/services/workspace_file_index.zia
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_file_cursor;
+
+bind Cursor = Zanna.Workspace.FileIndexCursor;
+bind Map = Zanna.Collections.Map;
+
+/// @brief RAII-style Studio wrapper for the explicit runtime cursor protocol.
+class WorkspaceFileCursor {
+    expose Any handle;
+    expose Integer generation;
+    expose Boolean valid;
+
+    expose func init() {
+        handle = null;
+        generation = 0;
+        valid = false;
+    }
+
+    /// @brief Replace any prior traversal with a fresh generation.
+    expose func Open(root: String,
+                     extensions: String,
+                     excludes: String,
+                     includeDirectories: Boolean) -> Boolean {
+        Destroy();
+        handle = Cursor.New(root, extensions, excludes, includeDirectories);
+        valid = Cursor.IsValid(handle);
+        if valid {
+            generation = Cursor.Generation(handle);
+            if generation <= 0 {
+                Destroy();
+                return false;
+            }
+        }
+        return valid;
+    }
+
+    /// @brief Advance one page and reject cross-generation output.
+    expose func Next(limit: Integer) -> Any {
+        var page = Cursor.Next(handle, limit);
+        if valid == false { return page; }
+        if Map.GetInt(page, "generation") != generation {
+            Map.SetBool(page, "valid", false);
+            Map.SetBool(page, "stale", true);
+            Destroy();
+        }
+        return page;
+    }
+
+    expose func IsOpen() -> Boolean {
+        return valid and handle != null;
+    }
+
+    /// @brief Release the native iterator and its directory handles.
+    expose func Destroy() {
+        if handle != null {
+            Cursor.Destroy(handle);
+        }
+        handle = null;
+        generation = 0;
+        valid = false;
+    }
+}

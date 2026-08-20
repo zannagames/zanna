@@ -76,6 +76,7 @@ final VIRTUAL_VIEWPORT_HEIGHT = 320;
 /// @details Filtering rebuilds concrete rows, so navigation/action metadata must
 ///          live in this durable record rather than in a retired item handle.
 class ProblemRecord {
+    expose String stableId;
     expose String severity;
     expose String source;
     expose String filePath;
@@ -87,6 +88,7 @@ class ProblemRecord {
     expose String locationData;
 
     expose func init() {
+        stableId = "";
         severity = "";
         source = "";
         filePath = "";

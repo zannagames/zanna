@@ -1,0 +1,110 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/search_controller_state.zia
+// Purpose: Own bounded project-search request, discovery, and publication state.
+// Key invariants:
+//   - One active request owns one explicit discovery cursor and result ID range.
+//   - File, byte, directory, and result counters reset atomically per request.
+// Ownership/Lifetime: SearchController owns this inherited state for Studio life.
+// Links: zannastudio/src/commands/search_controller_base.zia,
+//        zannastudio/src/commands/search_controller.zia
+//
+//===----------------------------------------------------------------------===//
+
+module search_controller_state;
+
+bind "replace_commands";
+bind "../services/search_matcher";
+bind "../services/workspace_file_cursor";
+bind "search_commands_support" as SearchSupport;
+
+bind Map = Zanna.Collections.Map;
+
+class SearchControllerState {
+    expose Boolean active;
+    expose Boolean canceled;
+    expose replace_commands.ProjectReplaceController replacer;
+    expose Integer mode;
+    expose String root;
+    expose String query;
+    expose String fileKinds;
+    expose String ignorePatterns;
+    expose String includeGlobs;
+    expose String excludeGlobs;
+    expose Boolean caseSensitive;
+    expose Boolean wholeWord;
+    expose Boolean regexMode;
+    expose search_matcher.SearchProgram searchProgram;
+    expose Integer fileIndex;
+    expose Integer resultCount;
+    expose Integer totalFiles;
+    expose List files;
+    expose Any filesSeen;
+    expose Boolean discovering;
+    expose List pendingDirs;
+    expose Integer directoriesScanned;
+    expose Integer discoveryOffset;
+    expose workspace_file_cursor.WorkspaceFileCursor discoveryCursor;
+    expose Boolean discoveryTruncated;
+    expose String discoveryError;
+    expose Integer skippedLargeFiles;
+    expose Boolean resultLimitReached;
+    expose String panelRoot;
+    expose String panelIgnorePatterns;
+    expose Boolean panelUseWorkspace;
+    expose List rootPaths;
+    expose List rootIgnorePatterns;
+    expose Integer rootSearchIndex;
+    expose Integer lastPumpFileCount;
+    expose Integer lastPumpByteCount;
+    expose Integer resultLocationFirstId;
+    expose Integer resultLocationLastId;
+    expose Boolean resultLocationRangePending;
+
+    expose func InitializeState() {
+        active = false;
+        canceled = false;
+        replacer = new replace_commands.ProjectReplaceController();
+        mode = SearchSupport.SEARCH_MODE_TEXT;
+        root = "";
+        query = "";
+        fileKinds = "";
+        ignorePatterns = "";
+        includeGlobs = "";
+        excludeGlobs = "";
+        caseSensitive = false;
+        wholeWord = false;
+        regexMode = false;
+        searchProgram = new search_matcher.SearchProgram();
+        fileIndex = 0;
+        resultCount = 0;
+        totalFiles = 0;
+        files = new List();
+        filesSeen = Map.New();
+        discovering = false;
+        pendingDirs = new List();
+        directoriesScanned = 0;
+        discoveryOffset = 0;
+        discoveryCursor = new workspace_file_cursor.WorkspaceFileCursor();
+        discoveryTruncated = false;
+        discoveryError = "";
+        skippedLargeFiles = 0;
+        resultLimitReached = false;
+        panelRoot = "";
+        panelIgnorePatterns = "";
+        panelUseWorkspace = false;
+        rootPaths = new List();
+        rootIgnorePatterns = new List();
+        rootSearchIndex = 0;
+        lastPumpFileCount = 0;
+        lastPumpByteCount = 0;
+        resultLocationFirstId = 0;
+        resultLocationLastId = 0;
+        resultLocationRangePending = false;
+    }
+}

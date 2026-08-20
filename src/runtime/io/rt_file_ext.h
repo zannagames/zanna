@@ -20,18 +20,20 @@
 //     and replaces the destination only when its complete bytes equal the expected snapshot.
 //   - Bounded reads reject oversized files on the opened descriptor before allocating.
 //   - File predicates and metadata queries accept only regular files, not directories.
+//   - IdentityKey returns an opaque alias-stable key only for a live regular file.
 //
 // Ownership/Lifetime:
 //   - Input runtime strings, Bytes, and Seq objects are borrowed for each call.
 //   - ReadAllBytes and ReadAllLines return fresh runtime-managed objects. ReadAllText returns a
 //     runtime-managed string reference and may use the shared empty string for an empty file.
 //   - Mutating and whole-file read operations report invalid input and I/O failure by trapping.
-//     Exists, Same, Size, and Modified are deliberately non-trapping predicates/queries.
+//     Exists, Same, IdentityKey, Size, and Modified are deliberately non-trapping queries.
 //
 // Links: src/runtime/io/rt_file_ext.c (implementation),
 //        src/runtime/io/rt_file_io.c (low-level handle operations),
 //        src/runtime/io/rt_file_path.h (platform path conversion),
-//        src/runtime/core/rt_string.h (runtime string representation)
+//        src/runtime/core/rt_string.h (runtime string representation),
+//        docs/adr/0282-opaque-regular-file-identity-keys.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -67,6 +69,15 @@ int64_t rt_io_file_exists(rt_string path);
 /// @param right Second runtime path to compare.
 /// @return 1 when both paths resolve to the same existing file; otherwise 0.
 int64_t rt_file_same(rt_string left, rt_string right);
+
+/// @brief Return an opaque stable key for one existing regular file.
+/// @details Distinct path spellings, case aliases, symbolic links, and hard links that resolve to
+///          the same live file return the same key. The key is stable only for that filesystem
+///          object's lifetime and must not be parsed. Invalid, missing, inaccessible, directory,
+///          and other non-regular paths return the shared empty string without trapping.
+/// @param path Runtime path string to inspect.
+/// @return Opaque nonempty identity key for an existing regular file, or the shared empty string.
+rt_string rt_file_identity_key(rt_string path);
 
 /// @brief Read an entire regular file into a runtime string.
 /// @details Preserves the file bytes verbatim without decoding or newline conversion. Invalid
@@ -106,6 +117,25 @@ void rt_io_file_write_all_text_new(rt_string path, rt_string contents);
 /// @param desired Complete replacement bytes to commit after a match.
 /// @return 1 when @p desired was committed; 0 for an expected-content mismatch.
 int64_t rt_io_file_compare_exchange_all_text(rt_string path, rt_string expected, rt_string desired);
+
+/// @brief Try to acquire an exclusive process-lifetime lease on a regular lock file.
+/// @details Creates the lock file when absent, rejects links/special entries, and never blocks.
+///          The returned managed handle keeps the OS lock held until Release or finalization;
+///          a second handle in the same process is also rejected.
+/// @param path Runtime path of the persistent lock file.
+/// @return Fresh FileLease handle on success; NULL when another process owns the lease or the
+///         path cannot be safely opened.
+void *rt_file_lease_try_acquire(rt_string path);
+
+/// @brief Test whether a FileLease still owns its operating-system lock.
+/// @param handle Candidate managed FileLease object.
+/// @return 1 only for a live, unreleased lease; otherwise 0.
+int64_t rt_file_lease_is_valid(void *handle);
+
+/// @brief Release a held file lease without deleting its persistent lock file.
+/// @details Idempotent for a valid FileLease object; invalid object kinds trap.
+/// @param handle Managed FileLease returned by TryAcquire.
+void rt_file_lease_release(void *handle);
 
 /// @brief Append a line of text to a file.
 /// @details Appends @p text followed by a single '\n' byte. Creates the file

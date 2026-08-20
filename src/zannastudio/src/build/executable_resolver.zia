@@ -1,0 +1,146 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/executable_resolver.zia
+// Purpose: Resolve process executables and return structured launch failures.
+// Key invariants:
+//   - Project-relative tools resolve against the configured working directory.
+//   - The default compiler searches override, install, build, then PATH order.
+//   - Resolution never silently substitutes zanna for a custom program.
+// Ownership/Lifetime: Stateless; returned results own only immutable strings.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/build/debug_session_base.zia
+//
+//===----------------------------------------------------------------------===//
+
+module executable_resolver;
+
+bind Str = Zanna.String;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Env = Zanna.System.Environment;
+bind Machine = Zanna.System.Machine;
+bind Path = Zanna.IO.Path;
+bind IO = Zanna.IO;
+
+/// @brief Typed executable-resolution outcome for process launch diagnostics.
+class ExecutableResolution {
+    expose String requested;
+    expose String path;
+    expose String error;
+
+    expose func init() {
+        requested = "";
+        path = "";
+        error = "";
+    }
+
+    expose func IsResolved() -> Boolean { return path != ""; }
+}
+
+/// @brief Resolve one configured executable without launching it.
+expose func Resolve(preferred: String,
+                    workingDirectory: String) -> ExecutableResolution {
+    var result = new ExecutableResolution();
+    result.requested = preferred;
+    if result.requested == "" { result.requested = "zanna"; }
+    if result.requested == "zanna" {
+        result.path = ResolveZanna();
+    } else {
+        result.path = ResolveBinaryFrom(
+            result.requested, workingDirectory);
+    }
+    if result.path == "" { result.error = NotFoundMessage(result.requested); }
+    return result;
+}
+
+/// @brief Resolve the default compiler using stable precedence.
+hide func ResolveZanna() -> String {
+    var executable = ExeName();
+    var explicitBinary = EnvValue("ZANNA_BINARY");
+    if explicitBinary != "" and IO.File.Exists(explicitBinary) {
+        return Path.Absolute(explicitBinary);
+    }
+
+    var executableDir = Path.ExeDir();
+    if executableDir != "" {
+        var colocated = Path.Join(executableDir, executable);
+        if IO.File.Exists(colocated) { return colocated; }
+        var developerA = Path.Normalize(Path.Join(
+            executableDir, Path.Join("../../build/src/tools/zanna", executable)));
+        if IO.File.Exists(developerA) { return developerA; }
+        var developerB = Path.Normalize(Path.Join(
+            executableDir, Path.Join("../build/src/tools/zanna", executable)));
+        if IO.File.Exists(developerB) { return developerB; }
+    }
+
+    var buildDir = EnvValue("ZANNA_BUILD_DIR");
+    if buildDir != "" {
+        var fromBuild = Path.Normalize(Path.Join(
+            buildDir, Path.Join("src/tools/zanna", executable)));
+        if IO.File.Exists(fromBuild) { return fromBuild; }
+    }
+    return ResolveBinaryFrom(executable, "");
+}
+
+/// @brief Resolve an absolute, working-directory-relative, or PATH program.
+hide func ResolveBinaryFrom(name: String,
+                            workingDirectory: String) -> String {
+    if name == "" { return ""; }
+    if Path.IsAbsolute(name) {
+        if IO.File.Exists(name) { return name; }
+        return "";
+    }
+    if workingDirectory != "" {
+        var local = Path.Normalize(Path.Join(workingDirectory, name));
+        if IO.File.Exists(local) { return Path.Absolute(local); }
+        if Machine.Os == "windows" and IO.File.Exists(local + ".exe") {
+            return Path.Absolute(local + ".exe");
+        }
+    }
+    var pathValue = EnvValue("PATH");
+    if pathValue == "" { return ""; }
+    var entries = Str.Split(pathValue, ListSeparator());
+    var i = 0;
+    while i < Seq.get_Count(entries) {
+        var entry = Obj.ToString(Seq.Get(entries, i));
+        if entry != "" {
+            if Path.IsAbsolute(entry) == false and workingDirectory != "" {
+                entry = Path.Join(workingDirectory, entry);
+            }
+            var candidate = Path.Join(entry, name);
+            if IO.File.Exists(candidate) { return Path.Absolute(candidate); }
+            if Machine.Os == "windows"
+               and IO.File.Exists(candidate + ".exe") {
+                return Path.Absolute(candidate + ".exe");
+            }
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+hide func EnvValue(key: String) -> String {
+    if Env.HasVariable(key) == false { return ""; }
+    return Env.GetVariable(key);
+}
+
+hide func ExeName() -> String {
+    if Machine.Os == "windows" { return "zanna.exe"; }
+    return "zanna";
+}
+
+hide func ListSeparator() -> String {
+    if Machine.Os == "windows" { return ";"; }
+    return ":";
+}
+
+hide func NotFoundMessage(requested: String) -> String {
+    return "Could not find the '" + requested + "' compiler.\n"
+        + "Searched ZANNA_BINARY, the IDE folder, the build tree, and PATH.\n"
+        + "Fix: add it to PATH or configure an absolute executable path.";
+}

@@ -28,6 +28,7 @@ bind Obj = Zanna.Core.Object;
 bind Parse = Zanna.Core.Parse;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
 
 final MAX_DIAGNOSTIC_STREAM_CARRY_BYTES = 4000000;
 final MAX_DIAGNOSTIC_RECORDS = 5000;
@@ -40,10 +41,14 @@ final MAX_DIAGNOSTIC_RECORDS = 5000;
 ///          splice two unrelated compiler records together.
 class DiagnosticStreamParser {
     expose List[diagnostic.Diagnostic] records;
-    expose String stdoutCarry;
-    expose String stderrCarry;
+    hide StringBuilder stdoutCarry;
+    hide StringBuilder stderrCarry;
     expose Integer revision;
+    expose Integer generation;
+    expose Integer nextRecordId;
     expose Boolean truncated;
+    expose Boolean recordLimitReached;
+    expose Boolean carryLimitReached;
 
     expose func init() {
         Reset();
@@ -51,71 +56,125 @@ class DiagnosticStreamParser {
 
     expose func Reset() {
         records = [];
-        stdoutCarry = "";
-        stderrCarry = "";
+        stdoutCarry = new StringBuilder();
+        stderrCarry = new StringBuilder();
         revision = 0;
+        generation = generation + 1;
+        if generation <= 0 { generation = 1; }
+        nextRecordId = 1;
         truncated = false;
+        recordLimitReached = false;
+        carryLimitReached = false;
     }
 
     /// @brief Consume one ordered output chunk and publish complete records.
     expose func Append(stream: String, text: String) {
         if text == "" { return; }
         if stream == "stderr" {
-            stderrCarry = Consume(stderrCarry, text);
+            Consume(stderrCarry, text);
         } else {
-            stdoutCarry = Consume(stdoutCarry, text);
+            Consume(stdoutCarry, text);
         }
     }
 
     /// @brief Parse final unterminated lines at a process-stage boundary.
     expose func Flush() {
-        if stdoutCarry != "" { ConsumeLine(stdoutCarry); }
-        if stderrCarry != "" { ConsumeLine(stderrCarry); }
-        stdoutCarry = "";
-        stderrCarry = "";
+        FlushCarry(stdoutCarry);
+        FlushCarry(stderrCarry);
     }
 
-    hide func Consume(carry: String, chunk: String) -> String {
-        var pending = carry + chunk;
-        var newline = Str.IndexOf(pending, "\n");
+    /// @brief Scan one chunk by byte cursor without rebuilding prior carry.
+    hide func Consume(carry: StringBuilder, chunk: String) {
+        if carry == null { return; }
+        var lineStart = 1;
+        var newline = Str.IndexOfFrom(chunk, lineStart, "\n");
         while newline > 0 {
-            ConsumeLine(Str.Left(pending, newline - 1));
-            pending = Str.Mid(pending, newline + 1);
-            newline = Str.IndexOf(pending, "\n");
+            if newline > lineStart {
+                carry.Append(Str.Substring(
+                    chunk, lineStart - 1, newline - lineStart));
+            }
+            ConsumeLine(carry.ToString());
+            carry.Clear();
+            lineStart = newline + 1;
+            newline = Str.IndexOfFrom(chunk, lineStart, "\n");
         }
-        if Str.get_Length(pending) > MAX_DIAGNOSTIC_STREAM_CARRY_BYTES {
+        var chunkBytes = Str.get_Length(chunk);
+        if lineStart <= chunkBytes {
+            carry.Append(Str.Substring(
+                chunk, lineStart - 1, chunkBytes - lineStart + 1));
+        }
+        if carry.Length > MAX_DIAGNOSTIC_STREAM_CARRY_BYTES {
             truncated = true;
-            return "";
+            carryLimitReached = true;
+            carry.Clear();
         }
-        return pending;
+    }
+
+    hide func FlushCarry(carry: StringBuilder) {
+        if carry == null or carry.Length <= 0 { return; }
+        ConsumeLine(carry.ToString());
+        carry.Clear();
     }
 
     hide func ConsumeLine(rawLine: String) {
         if records.count() >= MAX_DIAGNOSTIC_RECORDS {
             truncated = true;
+            recordLimitReached = true;
             return;
         }
         var line = rawLine;
-        if Str.Right(line, 1) == "\r" {
-            line = Str.Left(line, Str.get_Length(line) - 1);
+        var lineBytes = Str.get_Length(line);
+        if lineBytes > 0
+           and Str.Substring(line, lineBytes - 1, 1) == "\r" {
+            line = Str.Substring(line, 0, lineBytes - 1);
         }
-        var jsonRecords: List[diagnostic.Diagnostic] = [];
-        if ParseJsonDiagnosticsInto(line, jsonRecords) {
-            var i = 0;
-            while i < jsonRecords.count()
-                  and records.count() < MAX_DIAGNOSTIC_RECORDS {
-                records.add(jsonRecords.get(i));
-                revision = revision + 1;
-                i = i + 1;
+        var remaining = MAX_DIAGNOSTIC_RECORDS - records.count();
+        var jsonResult = ParseJsonDiagnosticsBounded(
+            line, records, remaining);
+        if jsonResult.found {
+            AssignStableIds(records.count() - jsonResult.addedCount);
+            revision = revision + jsonResult.addedCount;
+            if jsonResult.truncated {
+                truncated = true;
+                recordLimitReached = true;
             }
-            if i < jsonRecords.count() { truncated = true; }
             return;
         }
         var diag = ParseDiagnosticLine(line);
         if diag != null {
+            AssignStableId(diag!);
             records.add(diag!);
             revision = revision + 1;
         }
+    }
+
+    /// @brief Assign IDs to records appended by one bounded JSON decode.
+    hide func AssignStableIds(firstIndex: Integer) {
+        var index = firstIndex;
+        if index < 0 { index = 0; }
+        while index < records.count() {
+            AssignStableId(records.get(index));
+            index = index + 1;
+        }
+    }
+
+    hide func AssignStableId(item: diagnostic.Diagnostic) {
+        if item == null or item.stableId != "" { return; }
+        item.stableId = "diagnostic:" + generation + ":" + nextRecordId;
+        nextRecordId = nextRecordId + 1;
+    }
+}
+
+/// @brief Bounded JSON-diagnostic decode outcome.
+class JsonDiagnosticParseResult {
+    expose Boolean found;
+    expose Boolean truncated;
+    expose Integer addedCount;
+
+    expose func init() {
+        found = false;
+        truncated = false;
+        addedCount = 0;
     }
 }
 
@@ -138,18 +197,28 @@ class DiagnosticStreamParser {
 ///         `path:line:col: severity[code]: message` text lines.
 expose func ParseDiagnostics(text: String) -> List[diagnostic.Diagnostic] {
     var records: List[diagnostic.Diagnostic] = [];
-    if ParseJsonDiagnosticsInto(text, records) {
+    var jsonResult = ParseJsonDiagnosticsBounded(
+        text, records, MAX_DIAGNOSTIC_RECORDS);
+    if jsonResult.found {
         return records;
     }
 
-    var lines = Str.Split(text, "\n");
-    var i = 0;
-    while i < Seq.get_Count(lines) {
-        var diag = ParseDiagnosticLine(Obj.ToString(Seq.Get(lines, i)));
+    var lineStart = 1;
+    var newline = Str.IndexOfFrom(text, lineStart, "\n");
+    var textBytes = Str.get_Length(text);
+    while lineStart <= textBytes
+          and records.count() < MAX_DIAGNOSTIC_RECORDS {
+        var lineEnd = newline;
+        if lineEnd == 0 { lineEnd = textBytes + 1; }
+        var line = Str.Substring(
+            text, lineStart - 1, lineEnd - lineStart);
+        var diag = ParseDiagnosticLine(line);
         if diag != null {
             records.add(diag);
         }
-        i = i + 1;
+        if newline == 0 { break; }
+        lineStart = newline + 1;
+        newline = Str.IndexOfFrom(text, lineStart, "\n");
     }
     return records;
 }
@@ -162,29 +231,39 @@ expose func ParseDiagnostics(text: String) -> List[diagnostic.Diagnostic] {
 /// @param text Complete captured build output.
 /// @param out Mutable list receiving parsed diagnostic records.
 /// @return True when a JSON diagnostics object was found and consumed.
-func ParseJsonDiagnosticsInto(text: String,
-                              out: List[diagnostic.Diagnostic]) -> Boolean {
+func ParseJsonDiagnosticsBounded(
+    text: String,
+    out: List[diagnostic.Diagnostic],
+    maxRecords: Integer) -> JsonDiagnosticParseResult {
+    var result = new JsonDiagnosticParseResult();
     var start = Str.IndexOf(text, "{\"diagnostics\"");
-    if start == 0 { return false; }
+    if start == 0 { return result; }
     var endPos = JsonObjectEnd(text, start);
-    if endPos <= 0 { return false; }
-    var jsonText = Str.MidLen(text, start, endPos - start + 1);
-    if Json.IsValid(jsonText) == false { return false; }
+    if endPos <= 0 { return result; }
+    var jsonText = Str.Substring(
+        text, start - 1, endPos - start + 1);
+    if Json.IsValid(jsonText) == false { return result; }
 
     var root = Json.Parse(jsonText);
     var records = Map.Get(root, "diagnostics");
-    if records == null { return false; }
+    if records == null { return result; }
+    result.found = true;
 
+    var limit = maxRecords;
+    if limit < 0 { limit = 0; }
+    var count = Seq.get_Count(records);
     var i = 0;
-    while i < Seq.get_Count(records) {
+    while i < count and result.addedCount < limit {
         var record = Seq.Get(records, i);
         var diag = DiagnosticFromJsonRecord(record);
         if diag != null {
             out.add(diag);
+            result.addedCount = result.addedCount + 1;
         }
         i = i + 1;
     }
-    return true;
+    if i < count { result.truncated = true; }
+    return result;
 }
 
 /// @brief Find the balanced end of a JSON object embedded in process output.
@@ -201,7 +280,7 @@ func JsonObjectEnd(text: String, start: Integer) -> Integer {
     var escaped = false;
     var pos = start;
     while pos <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, pos, 1);
+        var ch = Str.Substring(text, pos - 1, 1);
         if inString {
             if escaped {
                 escaped = false;

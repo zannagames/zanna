@@ -118,6 +118,16 @@ class ToolPanelShellContract02 extends PreviousContract.ToolPanelShellContract01
 
     expose func HasOutputContent() -> Boolean { return false; }
 
+    expose func AddProblemStable(_stableId: String,
+                                 _severity: String,
+                                 _source: String,
+                                 _filePath: String,
+                                 _line: Integer,
+                                 _column: Integer,
+                                 _code: String,
+                                 _message: String,
+                                 _action: String) -> Any { return null; }
+
     expose func ClearToolRows(_listBox: GUI.ListBox) {}
 
     expose func AddToolPlainRow(_listBox: GUI.ListBox,

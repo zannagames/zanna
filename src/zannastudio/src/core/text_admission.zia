@@ -1,0 +1,117 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/text_admission.zia
+// Purpose: Admit one bounded, complete, strict UTF-8 file snapshot into Studio.
+// Key invariants:
+//   - A successful result owns exactly the bytes that were validated.
+//   - Known binary extensions, oversized files, malformed UTF-8, and embedded
+//     NUL bytes never enter an editable document buffer.
+// Ownership/Lifetime:
+//   - Results own their immutable String snapshot; input paths remain borrowed.
+// Links: zannastudio/src/core/document_manager_base.zia,
+//        docs/adr/0277-strict-utf8-codec-validation.md
+//
+//===----------------------------------------------------------------------===//
+
+module text_admission;
+
+bind "../services/file_utils";
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Codec = Zanna.Text.Codec;
+bind Str = Zanna.String;
+
+final MAX_TEXT_OPEN_BYTES = 4000000;
+final MAX_SCENE3D_OPEN_BYTES = 64000000;
+
+/// @brief One complete text-admission decision and its validated snapshot.
+class TextAdmissionResult {
+    expose Boolean ok;
+    expose String text;
+    expose String reason;
+
+    expose func init() {
+        ok = false;
+        text = "";
+        reason = "The file could not be read.";
+    }
+}
+
+/// @brief Return the bounded in-memory document budget for one durable path.
+/// @details Embedded VSCN meshes and materials are legitimately larger than
+///          source files, while every other editor surface keeps the tighter
+///          text budget to protect interactive latency.
+expose func MaxOpenBytesForPath(path: String) -> Integer {
+    if file_utils.DetectKind(path) == file_utils.DOC_KIND_SCENE_3D {
+        return MAX_SCENE3D_OPEN_BYTES;
+    }
+    return MAX_TEXT_OPEN_BYTES;
+}
+
+/// @brief Read and validate the exact complete snapshot admitted to the editor.
+/// @details The bounded runtime read checks the opened descriptor before
+///          allocation. Validation then examines every returned byte, avoiding
+///          prefix-sniff gaps and a second pathname read between check and use.
+/// @param path Candidate durable file path.
+/// @return Validated content on success, otherwise a user-facing block reason.
+expose func ReadEditableText(path: String) -> TextAdmissionResult {
+    var result = new TextAdmissionResult();
+    if path == "" or File.Exists(path) == false {
+        result.reason = "The file no longer exists.";
+        return result;
+    }
+    if file_utils.DetectKind(path) == file_utils.DOC_KIND_BINARY_UNSUPPORTED {
+        result.reason = "Binary files cannot be opened in the text editor.";
+        return result;
+    }
+
+    var size = safe_io.SizeBytes(path);
+    if size < 0 {
+        result.reason = "The file could not be read.";
+        return result;
+    }
+    var maxBytes = MaxOpenBytesForPath(path);
+    if size > maxBytes {
+        if maxBytes == MAX_SCENE3D_OPEN_BYTES {
+            result.reason = "3D scene assets larger than 64 MB cannot be opened in Studio.";
+        } else {
+            result.reason = "Files larger than 4 MB cannot be opened in the text editor.";
+        }
+        return result;
+    }
+
+    var readResult = safe_io.ReadAllTextBounded(path, maxBytes);
+    if readResult.ok == false {
+        result.reason = "The file could not be read.";
+        return result;
+    }
+    if Codec.IsValidUtf8(readResult.text) == false {
+        result.reason = "The file is not valid UTF-8 text.";
+        return result;
+    }
+    if Str.IndexOf(readResult.text, Str.Chr(0)) != 0 {
+        result.reason = "Text files containing NUL bytes cannot be opened in Studio.";
+        return result;
+    }
+
+    result.ok = true;
+    result.text = readResult.text;
+    result.reason = "";
+    return result;
+}
+
+/// @brief Explain why a path cannot enter the Studio text editor.
+expose func TextOpenBlockReason(path: String) -> String {
+    return ReadEditableText(path).reason;
+}
+
+/// @brief Return whether a durable path is safe to edit and restore as text.
+expose func IsEditableTextFile(path: String) -> Boolean {
+    return ReadEditableText(path).ok;
+}

@@ -30,6 +30,10 @@ bind "../editor/project_index";
 bind "../services/locations";
 bind "../services/path_identity";
 bind "../services/workspace_file_index";
+bind "../services/workspace_file_cursor";
+bind "workspace_refresh";
+bind "workspace_watcher_fallback";
+bind "workspace_watcher_state";
 
 bind IO = Zanna.IO;
 bind Path = Zanna.IO.Path;
@@ -37,17 +41,12 @@ bind Dir = Zanna.IO.Dir;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
-bind FileIndex = Zanna.Workspace.FileIndex;
-bind Threads = Zanna.Threads;
-bind Hash = Zanna.Crypto.Hash;
 
 final WORKSPACE_WATCHER_MAX_DIRS = 2048;
 final WORKSPACE_WATCHER_DIR_PAGE_SIZE = 64;
 final WORKSPACE_WATCHER_DIRECTORY_FILTER = ".__zanna_watcher_directory_only__";
 final WORKSPACE_WATCHERS_PER_FRAME = 32;
 final WORKSPACE_WATCHER_EVENTS_PER_FRAME = 32;
-final WORKSPACE_FALLBACK_PAGE_SIZE = 256;
-final WORKSPACE_FINGERPRINT_MODULUS = 2000000011;
 
 // ============================================================================
 // MODULE: workspace_watcher
@@ -69,67 +68,9 @@ final WORKSPACE_FINGERPRINT_MODULUS = 2000000011;
 /// @details Zia scalar parameters are passed by value, so project watcher
 ///          lifecycle state is grouped into this object and updated by
 ///          `PumpWorkspaceWatcher`.
-class WorkspaceWatcherState {
-    expose IO.Watcher watcher;
-    expose List[IO.Watcher] watchers;
-    expose List[String] watcherPaths;
-    expose Boolean watching;
-    expose Boolean degraded;
-    expose String rootPath;
-    expose String rootSignature;
-    expose List[String] rootPaths;
-    expose List[String] rootIgnorePatterns;
-    expose List lastEntryCounts;
-    expose List lastFingerprints;
-    expose Integer watcherPollPos;
-    expose Threads.Throttler rescanThrottle;
-    expose Integer lastEntryCount;
-    expose Integer lastFingerprint;
-    expose Boolean discoveryActive;
-    expose Integer discoveryRootIndex;
-    expose Integer discoveryPageOffset;
-    expose Boolean discoveryRootAdded;
-    expose Boolean fallbackScanActive;
-    expose Boolean fallbackBaselineReady;
-    expose Integer fallbackRootIndex;
-    expose Integer fallbackPageOffset;
-    expose Integer fallbackCurrentCount;
-    expose Integer fallbackCurrentFingerprint;
-    expose List fallbackEntryCounts;
-    expose List fallbackFingerprints;
-    expose Integer lastWatcherPollCount;
-
-    /// @brief Initialize as detached from any workspace root.
-    expose func init() {
-        watcher = null;
-        watchers = new List();
-        watcherPaths = new List();
-        watching = false;
-        degraded = false;
-        rootPath = "";
-        rootSignature = "";
-        rootPaths = new List();
-        rootIgnorePatterns = new List();
-        lastEntryCounts = new List();
-        lastFingerprints = new List();
-        watcherPollPos = 0;
-        rescanThrottle = Threads.Throttler.New(3000);
-        lastEntryCount = -1;
-        lastFingerprint = 0;
-        discoveryActive = false;
-        discoveryRootIndex = 0;
-        discoveryPageOffset = 0;
-        discoveryRootAdded = false;
-        fallbackScanActive = false;
-        fallbackBaselineReady = false;
-        fallbackRootIndex = 0;
-        fallbackPageOffset = 0;
-        fallbackCurrentCount = 0;
-        fallbackCurrentFingerprint = 0;
-        fallbackEntryCounts = new List();
-        fallbackFingerprints = new List();
-        lastWatcherPollCount = 0;
-    }
+class WorkspaceWatcherState extends
+    workspace_watcher_state.WorkspaceWatcherState {
+    expose func init() { InitializeState(); }
 }
 
 /// @brief Keep recursive workspace directory watchers aligned to the open project.
@@ -164,7 +105,8 @@ expose func PumpWorkspaceWatcher(shell: app_shell.AppShell,
     PumpWorkspaceWatcherDiscovery(state, projMgr);
     PollWorkspaceWatchers(shell, projMgr, docMgr, indexer, locStore, engine, state);
     if state.degraded {
-        PumpWorkspaceWatcherFallbackScan(shell, projMgr, docMgr, indexer, locStore, engine, state);
+        workspace_watcher_fallback.Pump(
+            shell, projMgr, docMgr, indexer, locStore, engine, state);
     }
 }
 
@@ -194,6 +136,7 @@ expose func StopWorkspaceWatcher(state: WorkspaceWatcherState) {
     state.rootIgnorePatterns = new List();
     state.lastEntryCounts = new List();
     state.lastFingerprints = new List();
+    state.lastSecondaryFingerprints = new List();
     state.watcherPollPos = 0;
     state.rescanThrottle.Reset();
     state.lastEntryCount = -1;
@@ -202,14 +145,20 @@ expose func StopWorkspaceWatcher(state: WorkspaceWatcherState) {
     state.discoveryRootIndex = 0;
     state.discoveryPageOffset = 0;
     state.discoveryRootAdded = false;
+    if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
+    state.discoveryCursor = new workspace_file_cursor.WorkspaceFileCursor();
     state.fallbackScanActive = false;
     state.fallbackBaselineReady = false;
     state.fallbackRootIndex = 0;
     state.fallbackPageOffset = 0;
+    if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
+    state.fallbackCursor = new workspace_file_cursor.WorkspaceFileCursor();
     state.fallbackCurrentCount = 0;
     state.fallbackCurrentFingerprint = 0;
+    state.fallbackCurrentSecondaryFingerprint = 0;
     state.fallbackEntryCounts = new List();
     state.fallbackFingerprints = new List();
+    state.fallbackSecondaryFingerprints = new List();
     state.lastWatcherPollCount = 0;
 }
 
@@ -261,6 +210,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
     if state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
         state.degraded = true;
         state.discoveryActive = false;
+        if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
         return 0;
     }
 
@@ -287,12 +237,16 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
     if rootIndex < state.rootIgnorePatterns.count() {
         ignores = state.rootIgnorePatterns.get(rootIndex);
     }
-    var page = FileIndex.Page(root,
-                              WORKSPACE_WATCHER_DIRECTORY_FILTER,
-                              ignores,
-                              true,
-                              state.discoveryPageOffset,
-                              WORKSPACE_WATCHER_DIR_PAGE_SIZE);
+    if state.discoveryCursor.IsOpen() == false
+       and state.discoveryCursor.Open(root,
+                                      WORKSPACE_WATCHER_DIRECTORY_FILTER,
+                                      ignores,
+                                      true) == false {
+        state.degraded = true;
+        AdvanceWatcherDiscoveryRoot(state);
+        return added;
+    }
+    var page = state.discoveryCursor.Next(WORKSPACE_WATCHER_DIR_PAGE_SIZE);
     if Map.GetBool(page, "valid") == false {
         state.degraded = true;
         AdvanceWatcherDiscoveryRoot(state);
@@ -311,6 +265,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
                 var alreadyKnown = ListContainsString(state.watcherPaths, dirPath);
                 if AddDirectoryWatcher(state, dirPath) == false {
                     state.discoveryActive = false;
+                    state.discoveryCursor.Destroy();
                     return added;
                 }
                 if alreadyKnown == false { added = added + 1; }
@@ -319,6 +274,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
         if state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
             state.degraded = true;
             state.discoveryActive = false;
+            state.discoveryCursor.Destroy();
             return added;
         }
     }
@@ -339,6 +295,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
 
 /// @brief Advance cooperative watcher discovery to the next workspace root.
 func AdvanceWatcherDiscoveryRoot(state: WorkspaceWatcherState) {
+    if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
     state.discoveryRootIndex = state.discoveryRootIndex + 1;
     state.discoveryPageOffset = 0;
     state.discoveryRootAdded = false;
@@ -350,8 +307,7 @@ func AdvanceWatcherDiscoveryRoot(state: WorkspaceWatcherState) {
 
 /// @brief Request an additive directory pass without dropping live watchers.
 func BeginAdditiveWatcherDiscovery(state: WorkspaceWatcherState) {
-    if state == null or state.discoveryActive
-       or state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
+    if state == null or state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
         return;
     }
     // Do not resume a metadata snapshot across a topology change. The runtime
@@ -362,6 +318,9 @@ func BeginAdditiveWatcherDiscovery(state: WorkspaceWatcherState) {
     state.fallbackPageOffset = 0;
     state.fallbackCurrentCount = 0;
     state.fallbackCurrentFingerprint = 0;
+    state.fallbackCurrentSecondaryFingerprint = 0;
+    if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
+    if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
     state.discoveryRootIndex = 0;
     state.discoveryPageOffset = 0;
     state.discoveryRootAdded = false;
@@ -441,10 +400,11 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
     if state.watchers.count() == 0 { return 0; }
     var changed = 0;
     var polled = 0;
-    var total = state.watchers.count();
-    var restartDiscovery = false;
-    while polled < WORKSPACE_WATCHERS_PER_FRAME and polled < total
+    var initialTotal = state.watchers.count();
+    while polled < WORKSPACE_WATCHERS_PER_FRAME and polled < initialTotal
           and changed < WORKSPACE_WATCHER_EVENTS_PER_FRAME {
+        var total = state.watchers.count();
+        if total == 0 { break; }
         if state.watcherPollPos >= total { state.watcherPollPos = 0; }
         var watcher = state.watchers.get(state.watcherPollPos);
         state.watcherPollPos = state.watcherPollPos + 1;
@@ -472,16 +432,11 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
             if EventsRequireFallback(events) {
                 state.degraded = true;
             }
-            if ObserveWorkspaceTopologyEvents(state, events) {
-                restartDiscovery = true;
-            }
+            ObserveWorkspaceTopologyEvents(state, events);
             HandleWorkspaceWatcherEvents(shell, projMgr, docMgr, indexer, locStore, engine, events);
         }
     }
     state.lastWatcherPollCount = polled;
-    if restartDiscovery {
-        StartWorkspaceWatchers(state, projMgr);
-    }
     return changed;
 }
 
@@ -539,13 +494,15 @@ expose func EventsRequireFallback(events: Any) -> Boolean {
 /// @details Linux/Windows commonly report a new child path, while macOS kqueue
 ///          reports the watched parent directory. Either shape schedules a
 ///          bounded additive FileIndex pass while retaining existing watchers.
-///          A watched directory that was deleted/renamed, or an overflow event,
-///          requests a fresh cooperative pass after the current poll batch.
-/// @return True when the live watcher set must be restarted cooperatively.
+///          Deleted or renamed directory subtrees remove only their affected
+///          watchers. Overflow and topology changes schedule a fresh additive
+///          pass without creating an interval where unrelated paths are
+///          unwatched.
+/// @return True when the batch changed or may have changed directory topology.
 expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
                                            events: Any) -> Boolean {
     if state == null or events == null { return false; }
-    var restart = false;
+    var topologyChanged = false;
     var requestAdditiveDiscovery = false;
     var i = 0;
     while i < Seq.get_Count(events) {
@@ -553,27 +510,40 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
         i = i + 1;
         var path = Map.GetStr(ev, "path");
         var oldPath = Map.GetStr(ev, "oldPath");
+        var newPath = Map.GetStr(ev, "newPath");
         var typeName = Map.GetStr(ev, "typeName");
         if Map.GetBool(ev, "requiresRescan") {
-            restart = true;
+            if oldPath != "" {
+                RemoveDirectoryWatchersAtOrBelow(state, oldPath);
+            }
+            topologyChanged = true;
+            requestAdditiveDiscovery = true;
             continue;
         }
-        if typeName == "deleted" and ListContainsString(state.watcherPaths, path) {
-            restart = true;
-            continue;
+        if typeName == "deleted" {
+            var removed = RemoveDirectoryWatchersAtOrBelow(state, path);
+            if removed > 0 {
+                topologyChanged = true;
+                requestAdditiveDiscovery = true;
+            }
         }
-        if typeName == "renamed"
-           and ((oldPath != "" and ListContainsString(state.watcherPaths, oldPath))
-                or ListContainsString(state.watcherPaths, path)) {
-            restart = true;
+        if typeName == "renamed" {
+            var renamedFrom = oldPath;
+            if renamedFrom == "" { renamedFrom = path; }
+            if RemoveDirectoryWatchersAtOrBelow(state, renamedFrom) > 0 {
+                topologyChanged = true;
+            }
+            requestAdditiveDiscovery = true;
         }
-        if path != "" and Dir.Exists(path) {
-            var rootIndex = WorkspaceWatcherRootIndexForPath(state, path);
+        var candidatePath = path;
+        if typeName == "renamed" and newPath != "" { candidatePath = newPath; }
+        if candidatePath != "" and Dir.Exists(candidatePath) {
+            var rootIndex = WorkspaceWatcherRootIndexForPath(state, candidatePath);
             if rootIndex >= 0
-               and WorkspaceWatcherCanWatchDirectory(state, path)
-               and WorkspaceWatcherDirectoryIgnored(state, rootIndex, path) == false {
-                var known = ListContainsString(state.watcherPaths, path);
-                if AddDirectoryWatcher(state, path) == false {
+               and WorkspaceWatcherCanWatchDirectory(state, candidatePath)
+               and WorkspaceWatcherDirectoryIgnored(state, rootIndex, candidatePath) == false {
+                var known = ListContainsString(state.watcherPaths, candidatePath);
+                if AddDirectoryWatcher(state, candidatePath) == false {
                     continue;
                 }
                 // A directory event may name a newly-created child (Linux and
@@ -581,6 +551,7 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
                 // cases, a bounded additive FileIndex pass discovers any new
                 // nested directories without allocating an unbounded immediate
                 // child list on the input frame.
+                if known == false { topologyChanged = true; }
                 if known == false or typeName == "modified" or typeName == "created" {
                     requestAdditiveDiscovery = true;
                 }
@@ -588,7 +559,39 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
         }
     }
     if requestAdditiveDiscovery { BeginAdditiveWatcherDiscovery(state); }
-    return restart;
+    return topologyChanged;
+}
+
+/// @brief Stop and remove watchers rooted at one deleted or renamed subtree.
+/// @details Unrelated watcher handles stay live. Reverse iteration keeps paired
+///          watcher/path lists aligned while removals occur.
+/// @param state Mutable watcher state.
+/// @param subtreePath Former directory path whose watcher coverage is obsolete.
+/// @return Number of watcher handles removed.
+expose func RemoveDirectoryWatchersAtOrBelow(state: WorkspaceWatcherState,
+                                             subtreePath: String) -> Integer {
+    if state == null or subtreePath == "" { return 0; }
+    var normalizedSubtree = path_identity.Normalize(subtreePath);
+    var removed = 0;
+    var i = state.watcherPaths.count() - 1;
+    while i >= 0 {
+        var watcherPath = path_identity.Normalize(state.watcherPaths.get(i));
+        if workspace_file_index.IsWithinRoot(watcherPath, normalizedSubtree) {
+            var staleWatcher = state.watchers.get(i);
+            if staleWatcher != null { staleWatcher.Stop(); }
+            state.watchers.removeAt(i);
+            state.watcherPaths.removeAt(i);
+            removed = removed + 1;
+        }
+        i = i - 1;
+    }
+    if state.watcherPollPos > state.watchers.count() {
+        state.watcherPollPos = state.watchers.count();
+    }
+    state.watcher = null;
+    if state.watchers.count() > 0 { state.watcher = state.watchers.get(0); }
+    state.watching = state.watchers.count() > 0;
+    return removed;
 }
 
 /// @brief Find the longest configured workspace root containing @p path.
@@ -626,181 +629,6 @@ func WorkspaceWatcherDirectoryIgnored(state: WorkspaceWatcherState,
                                                  path,
                                                  true,
                                                  ignores);
-}
-
-/// @brief Periodically rescan workspace structure when native watcher is quiet.
-/// @details Each call consumes at most one bounded FileIndex page. This avoids
-///          the former synchronous FileIndex.Status traversal, which could freeze
-///          Open Folder and repeat that freeze every three seconds in a capped
-///          workspace. Entry count plus a stable metadata aggregate detects the
-///          same structural and modification classes incrementally.
-/// @param shell Workbench shell for user-visible status.
-/// @param projMgr Project tree manager to refresh.
-/// @param docMgr Document manager whose open documents are re-synced.
-/// @param indexer Semantic project index to rebuild.
-/// @param locStore Stored locations invalidated by tree/index rebuilds.
-/// @param engine Editor engine used by location invalidation.
-/// @param state Watcher state carrying the last fallback snapshot.
-func PumpWorkspaceWatcherFallbackScan(shell: app_shell.AppShell,
-                                      projMgr: project_manager.ProjectManager,
-                                      docMgr: document_manager.DocumentManager,
-                                      indexer: project_index.ProjectIndexer,
-                                      locStore: locations.LocationStore,
-                                      engine: editor_engine.EditorEngine,
-                                      state: WorkspaceWatcherState) {
-    if state == null or state.rootPaths.count() == 0 { return; }
-    if state.discoveryActive { return; }
-    if state.fallbackScanActive == false {
-        if state.rescanThrottle.TryAcquire() == false { return; }
-        BeginWorkspaceFallbackScan(state);
-    }
-    if state.fallbackRootIndex >= state.rootPaths.count() {
-        CompleteWorkspaceFallbackScan(shell, projMgr, docMgr, indexer,
-                                      locStore, engine, state);
-        return;
-    }
-
-    var rootIndex = state.fallbackRootIndex;
-    var root = state.rootPaths.get(rootIndex);
-    var ignores = "";
-    if rootIndex < state.rootIgnorePatterns.count() {
-        ignores = state.rootIgnorePatterns.get(rootIndex);
-    }
-    var page = FileIndex.Page(root,
-                              "",
-                              ignores,
-                              true,
-                              state.fallbackPageOffset,
-                              WORKSPACE_FALLBACK_PAGE_SIZE);
-    if Map.GetBool(page, "valid") == false {
-        state.degraded = true;
-        FinishWorkspaceFallbackRoot(state);
-        return;
-    }
-    var entries = Map.Get(page, "entries");
-    var entryCount = 0;
-    if entries != null { entryCount = Seq.get_Count(entries); }
-    var i = 0;
-    while entries != null and i < entryCount {
-        AccumulateWorkspaceFallbackEntry(state, Seq.Get(entries, i));
-        i = i + 1;
-    }
-    state.fallbackPageOffset = Map.GetInt(page, "nextOffset");
-    var done = Map.GetBool(page, "done");
-    if Map.GetBool(page, "truncated") {
-        state.degraded = true;
-        done = true;
-    }
-    if entryCount == 0 and done == false {
-        state.degraded = true;
-        done = true;
-    }
-    if done { FinishWorkspaceFallbackRoot(state); }
-    if state.fallbackRootIndex >= state.rootPaths.count() {
-        CompleteWorkspaceFallbackScan(shell, projMgr, docMgr, indexer,
-                                      locStore, engine, state);
-    }
-}
-
-/// @brief Reset one cooperative fallback traversal.
-func BeginWorkspaceFallbackScan(state: WorkspaceWatcherState) {
-    state.fallbackScanActive = true;
-    state.fallbackRootIndex = 0;
-    state.fallbackPageOffset = 0;
-    state.fallbackCurrentCount = 0;
-    state.fallbackCurrentFingerprint = 0;
-    state.fallbackEntryCounts = new List();
-    state.fallbackFingerprints = new List();
-}
-
-/// @brief Fold one FileIndex row into a bounded, order-independent metadata key.
-func AccumulateWorkspaceFallbackEntry(state: WorkspaceWatcherState,
-                                      entry: Any) {
-    if state == null or entry == null { return; }
-    var idPart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "id"));
-    var modifiedPart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "modified"));
-    var sizePart = NormalizeWorkspaceFingerprintPart(Map.GetInt(entry, "size"));
-    var pathPart = NormalizeWorkspaceFingerprintPart(
-        Hash.NonCryptoFast(path_identity.Normalize(Map.GetStr(entry, "path"))));
-    var term = idPart;
-    term = (term + modifiedPart * 31) % WORKSPACE_FINGERPRINT_MODULUS;
-    term = (term + sizePart * 131) % WORKSPACE_FINGERPRINT_MODULUS;
-    term = (term + pathPart * 521) % WORKSPACE_FINGERPRINT_MODULUS;
-    if Map.GetBool(entry, "isDirectory") {
-        term = (term + 104729) % WORKSPACE_FINGERPRINT_MODULUS;
-    }
-    state.fallbackCurrentFingerprint =
-        (state.fallbackCurrentFingerprint + term) % WORKSPACE_FINGERPRINT_MODULUS;
-    state.fallbackCurrentCount = state.fallbackCurrentCount + 1;
-}
-
-/// @brief Normalize a signed metadata value into the fallback modulus.
-func NormalizeWorkspaceFingerprintPart(value: Integer) -> Integer {
-    var result = value % WORKSPACE_FINGERPRINT_MODULUS;
-    if result < 0 { result = result + WORKSPACE_FINGERPRINT_MODULUS; }
-    return result;
-}
-
-/// @brief Commit the current root aggregate and advance the fallback cursor.
-func FinishWorkspaceFallbackRoot(state: WorkspaceWatcherState) {
-    state.fallbackEntryCounts.Push(state.fallbackCurrentCount);
-    state.fallbackFingerprints.Push(state.fallbackCurrentFingerprint);
-    state.fallbackRootIndex = state.fallbackRootIndex + 1;
-    state.fallbackPageOffset = 0;
-    state.fallbackCurrentCount = 0;
-    state.fallbackCurrentFingerprint = 0;
-}
-
-/// @brief Compare and publish one completed cooperative fallback snapshot.
-func CompleteWorkspaceFallbackScan(shell: app_shell.AppShell,
-                                   projMgr: project_manager.ProjectManager,
-                                   docMgr: document_manager.DocumentManager,
-                                   indexer: project_index.ProjectIndexer,
-                                   locStore: locations.LocationStore,
-                                   engine: editor_engine.EditorEngine,
-                                   state: WorkspaceWatcherState) {
-    var changed = false;
-    if state.fallbackBaselineReady
-       and state.lastEntryCounts.count() == state.fallbackEntryCounts.count()
-       and state.lastFingerprints.count() == state.fallbackFingerprints.count() {
-        var i = 0;
-        while i < state.fallbackEntryCounts.count() {
-            if state.lastEntryCounts.get(i) != state.fallbackEntryCounts.get(i)
-               or state.lastFingerprints.get(i) != state.fallbackFingerprints.get(i) {
-                changed = true;
-            }
-            i = i + 1;
-        }
-    } else if state.fallbackBaselineReady {
-        changed = true;
-    }
-    state.lastEntryCounts = state.fallbackEntryCounts;
-    state.lastFingerprints = state.fallbackFingerprints;
-    state.fallbackBaselineReady = true;
-    state.fallbackScanActive = false;
-    if state.lastEntryCounts.count() > 0 {
-        state.lastEntryCount = state.lastEntryCounts.get(0);
-        state.lastFingerprint = state.lastFingerprints.get(0);
-    } else {
-        state.lastEntryCount = -1;
-        state.lastFingerprint = 0;
-    }
-    // Measure the next interval from completion, not from the beginning of a
-    // long scan; otherwise a large workspace would rescan continuously.
-    state.rescanThrottle.Reset();
-    state.rescanThrottle.TryAcquire();
-
-    if changed {
-        if projMgr != null {
-            projMgr.InvalidateAllSourceFreshness();
-            projMgr.RefreshTree();
-        }
-        ReindexAfterTreeMove(projMgr, indexer, docMgr);
-        InvalidateWorkspaceLocations(shell, locStore, engine);
-        if shell != null {
-            shell.SetStatusLeft("Workspace changed: refreshed nested files");
-        }
-    }
 }
 
 /// @brief Apply a batch of project-root watcher events to UI and index state.
@@ -867,28 +695,36 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
             if removedPath == "" { removedPath = eventPath; }
             if removedPath != ""
                and Str.ToLower(Path.Extension(removedPath)) == ".zia" {
-                indexer.RemoveFile(removedPath);
+                workspace_refresh.CaptureDirtyOpenDocument(
+                    docMgr, engine, removedPath);
+                indexer.QueueFileUpdate(removedPath, true, docMgr);
             }
             if newPath != "" and IO.File.Exists(newPath)
                and Str.ToLower(Path.Extension(newPath)) == ".zia" {
-                indexer.UpdateFile(newPath);
+                workspace_refresh.CaptureDirtyOpenDocument(
+                    docMgr, engine, newPath);
+                indexer.QueueFileUpdate(newPath, false, docMgr);
             }
         } else if eventPath != ""
                   and Str.ToLower(Path.Extension(eventPath)) == ".zia" {
             if indexer != null {
-                if typeName == "deleted" { indexer.RemoveFile(eventPath); }
-                else { indexer.UpdateFile(eventPath); }
+                workspace_refresh.CaptureDirtyOpenDocument(
+                    docMgr, engine, eventPath);
+                indexer.QueueFileUpdate(eventPath,
+                                        typeName == "deleted",
+                                        docMgr);
             }
         }
     }
 
     if fullReindex {
-        ReindexAfterTreeMove(projMgr, indexer, docMgr);
+        workspace_refresh.ReindexAfterTreeMove(projMgr, indexer, docMgr);
     }
     if refreshTree and projMgr != null {
         projMgr.RefreshTree();
         if fullReindex {
-            InvalidateWorkspaceLocations(shell, locStore, engine);
+            workspace_refresh.InvalidateWorkspaceLocations(
+                shell, locStore, engine);
         }
     }
     if invalidatedActiveDocument and engine != null and engine.editor != null {
@@ -902,44 +738,10 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
     }
 }
 
-/// @brief Refresh the semantic index after a tree mutation.
-/// @param projMgr Project manager that may own an open project root.
-/// @param indexer Semantic project indexer to update.
-/// @param docMgr Open documents that seed the index when no project is open.
-/// @details Project workspaces are reopened from the root so added/removed files
-///          are reflected. No-project sessions fall back to indexing open tabs.
-expose func ReindexAfterTreeMove(projMgr: project_manager.ProjectManager,
-                          indexer: project_index.ProjectIndexer,
-                          docMgr: document_manager.DocumentManager) {
-    if indexer == null { return; }
-    if projMgr != null and projMgr.project != null and projMgr.project.isOpen {
-        indexer.OpenProject(projMgr, docMgr);
-        return;
-    }
-    indexer.SyncOpenDocuments(docMgr);
-}
-
-/// @brief Clear cached problem/search/reference locations after workspace changes.
-/// @param shell Workbench shell whose panels and minimap markers are cleared.
-/// @param locStore Central location store used by diagnostics and search panels.
-/// @param engine Editor engine whose transient highlights are cleared.
-/// @details File moves and deletes can make old line locations point at the wrong
-///          source. Clearing all derived markers is safer than leaving stale UI.
-expose func InvalidateWorkspaceLocations(shell: app_shell.AppShell,
-                                  locStore: locations.LocationStore,
-                                  engine: editor_engine.EditorEngine) {
-    if locStore != null {
-        locStore.Clear();
-    }
-    if shell != null {
-        shell.toolPanels.ClearProblemsPanel();
-        shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
-        shell.toolPanels.HideSearchPanel();
-        shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
-        shell.toolPanels.HideReferencesPanel();
-        shell.workbench.minimap.ClearMarkers();
-    }
-    if engine != null and engine.editor != null {
-        engine.editor.ClearHighlights();
-    }
+/// @brief Compatibility facade for command-layer workspace invalidation.
+expose func InvalidateWorkspaceLocations(
+    shell: app_shell.AppShell,
+    locStore: locations.LocationStore,
+    engine: editor_engine.EditorEngine) {
+    workspace_refresh.InvalidateWorkspaceLocations(shell, locStore, engine);
 }

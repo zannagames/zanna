@@ -26,10 +26,10 @@ module project_bind_query_job;
 bind "../services/safe_io";
 bind "../services/path_identity";
 bind "../zia/bind_utils";
+bind "../services/workspace_file_cursor";
 
 bind Async = Zanna.Threads.Async;
 bind File = Zanna.IO.File;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Future = Zanna.Threads.Future;
 bind Map = Zanna.Collections.Map;
 bind Monitor = Zanna.Threads.Monitor;
@@ -179,12 +179,21 @@ func ScanRoot(request: ProjectBindQueryRequest,
               rootPath: String,
               ignorePatterns: String) {
     if rootPath == "" { return; }
-    var offset = 0;
+    var cursor = new workspace_file_cursor.WorkspaceFileCursor();
+    if cursor.Open(rootPath, ".zia", ignorePatterns, false) == false {
+        state.error = "workspace_unavailable";
+        state.stop = true;
+        return;
+    }
     var done = false;
     while done == false and state.stop == false {
-        if RequestIsCancelled(request) { return; }
-        var page = ReadFileIndexPage(rootPath, ignorePatterns, offset);
+        if RequestIsCancelled(request) {
+            cursor.Destroy();
+            return;
+        }
+        var page = cursor.Next(BIND_FILE_INDEX_PAGE_SIZE);
         if page == null or Map.GetBool(page, "valid") == false {
+            cursor.Destroy();
             state.error = "workspace_unavailable";
             state.stop = true;
             return;
@@ -203,27 +212,15 @@ func ScanRoot(request: ProjectBindQueryRequest,
                 }
             }
         }
-        offset = Map.GetInt(page, "nextOffset");
         done = Map.GetBool(page, "done");
         if emitted == 0 and done == false {
+            cursor.Destroy();
             state.error = "workspace_unavailable";
             state.stop = true;
             return;
         }
     }
-}
-
-/// @brief Convert a runtime file-index trap into an unavailable page.
-func ReadFileIndexPage(rootPath: String,
-                       ignorePatterns: String,
-                       offset: Integer) -> Any {
-    try {
-        return FileIndex.Page(rootPath, ".zia", ignorePatterns, false,
-                              offset, BIND_FILE_INDEX_PAGE_SIZE);
-    } catch {
-        return null;
-    }
-    return null;
+    cursor.Destroy();
 }
 
 /// @brief Add one stable bounded closed file to the uniqueness scan.

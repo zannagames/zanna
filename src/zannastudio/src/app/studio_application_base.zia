@@ -32,7 +32,8 @@ bind "../ui/scene_editor_2d";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_2d";
 bind "../ui/scene_panels_3d";
-bind "build_info";
+bind "../ui/tool_window_model";
+bind "../ui/native_tool_window_host";
 bind "command_palette_controller";
 bind "workspace_watcher";
 bind "file_watch_controller";
@@ -41,6 +42,8 @@ bind "explorer_action_runner";
 bind "language_tool_frame";
 bind "lifecycle_controller";
 bind "startup_arguments";
+bind "studio_runtime_policy" as RuntimePolicy;
+bind "editor_split_orchestration" as EditorSplit;
 bind "../scm/scm_view";
 bind "../scm/scm_gutter_controller";
 bind "../terminal/terminal_controller";
@@ -73,9 +76,6 @@ bind "../commands/search_commands";
 bind "../ui/diff_view";
 
 bind Zanna.GUI;
-bind Env = Zanna.System.Environment;
-bind Terminal = Zanna.Terminal;
-bind Str = Zanna.String;
 bind Threads = Zanna.Threads;
 
 final MOUSE_BUTTON_RIGHT = 1;
@@ -85,36 +85,13 @@ final WIN_HEIGHT = 800;
 final WINDOW_SIZE_PERCENT = 72;  // % of monitor size on first launch.
 final AUTO_SAVE_IDLE_MS = 1500;
 final OPEN_DOC_EXTERNAL_POLL_MS = 1000;
-final POLL_WAIT_BACKGROUND_MS = 8;
-final POLL_WAIT_IDLE_FOCUSED_MS = 50;
-final POLL_WAIT_IDLE_UNFOCUSED_MS = 150;
 final BREADCRUMB_SCAN_LINES_PER_FRAME = 256;
 final SESSION_RESTORE_ENTRIES_PER_PAINT = 1;
+final SESSION_RESTORE_BYTES_PER_PAINT = 4194304;
+final SESSION_RESTORE_MILLIS_PER_PAINT = 8;
 final RECOVERY_SCAN_ENTRIES_PER_PAINT = 1;
 final PANEL_SPLIT_SAVE_IDLE_MS = 600;
 
-
-/// @brief Route the selected Problems quick fix through its real source anchor.
-/// @details Filtering rebuilds ListBox rows, so the tool-panel model supplies
-///          durable action/location metadata. Opening that location first makes
-///          the existing asynchronous diagnostic controller validate and edit
-///          exactly the diagnostic the user selected.
-func HandleProblemsQuickFix(
-    shell: app_shell.AppShell,
-    docMgr: document_manager.DocumentManager,
-    engine: editor_engine.EditorEngine,
-    tabs: editor_tabs.EditorTabs,
-    projMgr: project_manager.ProjectManager,
-    locStore: locations.LocationStore,
-    controller: diagnostic_edit_commands.DiagnosticActionController) {
-    if shell == null or controller == null
-       or shell.toolPanels.ProblemsQuickFixWasRequested() == false {
-        return;
-    }
-    diagnostic_edit_commands.StartSelectedProblemAction(
-        controller, shell, docMgr, engine, tabs, projMgr, locStore);
-    shell.toolPanels.SetProblemsActionBusy(controller.IsBusy());
-}
 
 /// @brief Return whether the active document owns the visible CodeEditor.
 func ActiveUsesTextEditor(docMgr: document_manager.DocumentManager) -> Boolean {
@@ -232,151 +209,14 @@ func FlushWorkspaceLayout(shell: app_shell.AppShell,
     if shouldSave { appSettings.Save(); }
 }
 
-/// @brief Re-point the focused-pane controllers at engine.editor after a split
-///        or focus change. Minimap and find bar bind the widget directly; the
-///        completion controller re-syncs via SetEngine. Hover and signature read
-///        engine.editor fresh each frame, so they need no explicit re-bind.
-func RebindFocusedPane(shell: app_shell.AppShell,
-                       engine: editor_engine.EditorEngine,
-                       completer: completion.CompletionController) {
-    if shell == null or engine == null { return; }
-    if shell.workbench.minimap != null { shell.workbench.minimap.BindEditor(engine.editor); }
-    if shell.workbench.findBar != null { shell.workbench.findBar.BindEditor(engine.editor); }
-    if completer != null { completer.SetEngine(engine); }
-}
-
-/// @brief Select a distinct open document for a new secondary pane.
-func SplitCompanionDocument(docMgr: document_manager.DocumentManager,
-                            primary: document.Document) -> document.Document? {
-    if docMgr == null or editor_engine.IsSplitDocumentEligible(primary) == false {
-        return null;
-    }
-    var i = 0;
-    while i < docMgr.GetCount() {
-        var candidate = docMgr.GetDocument(i);
-        if candidate != null and candidate! != primary
-           and editor_engine.IsSplitDocumentEligible(candidate!) {
-            return candidate;
-        }
-        i = i + 1;
-    }
-    return null;
-}
-
-/// @brief Open a safe two-document split, optionally explaining rejection.
-func OpenSplitWithCompanion(shell: app_shell.AppShell,
-                            docMgr: document_manager.DocumentManager,
-                            engine: editor_engine.EditorEngine,
-                            notifyOnFailure: Boolean) -> Boolean {
-    var companion = SplitCompanionDocument(docMgr, engine.currentDoc);
-    if companion == null {
-        if notifyOnFailure {
-            var reason = "Open a second file before splitting the editor";
-            shell.SetStatusLeft(reason);
-        }
-        return false;
-    }
-    return engine.SplitRight(companion!);
-}
-
-/// @brief Align the global document/tab model with the physically focused pane.
-func SyncFocusedPaneSelection(shell: app_shell.AppShell,
-                              docMgr: document_manager.DocumentManager,
-                              engine: editor_engine.EditorEngine,
-                              tabs: editor_tabs.EditorTabs) -> Boolean {
-    if shell == null or docMgr == null or engine == null or tabs == null
-       or engine.currentDoc == null {
-        return false;
-    }
-    var focused = engine.currentDoc;
-    var focusedIndex = docMgr.SetActiveDocument(focused);
-    if focusedIndex < 0 { return false; }
-    tabs.SetActive(focusedIndex);
-
-    // FocusOtherPane captures the pane it leaves. Reflect that dirty state even
-    // when typing and native focus movement arrived in the same frame.
-    var i = 0;
-    while i < docMgr.GetCount() {
-        var doc = docMgr.GetDocument(i);
-        if doc != null { tabs.SetModified(i, doc!.isModified); }
-        i = i + 1;
-    }
-
-    shell.SelectSurface(focused.kind);
-    if focused.isNew { shell.SetBreadcrumbPath(""); }
-    else { shell.SetBreadcrumbPath(focused.filePath); }
-    shell.SetStatusRight(file_commands.DocStatusLabel(focused));
-    return true;
-}
-
-/// @brief Rebuild an exact durable left/right editor arrangement.
-/// @details The session maps durable file slots back to Document identities
-///          during validation. Startup therefore never substitutes a different
-///          tab when one saved pane owner is missing or rejected.
-func OpenRestoredSplit(docMgr: document_manager.DocumentManager,
-                       engine: editor_engine.EditorEngine,
-                       tabs: editor_tabs.EditorTabs,
-                       sessionMgr: session.SessionManager) -> Boolean {
-    if docMgr == null or engine == null or tabs == null or sessionMgr == null {
-        return false;
-    }
-    var first = sessionMgr.RestoredSplitFirstDocument();
-    var second = sessionMgr.RestoredSplitSecondDocument();
-    if first == null or second == null or first! == second!
-       or editor_engine.IsSplitDocumentEligible(first!) == false
-       or editor_engine.IsSplitDocumentEligible(second!) == false {
-        return false;
-    }
-    var firstIndex = docMgr.SetActiveDocument(first!);
-    if firstIndex < 0 { return false; }
-    tabs.SetActive(firstIndex);
-    engine.LoadDocument(first!);
-    if engine.SplitRight(second!) == false { return false; }
-    if sessionMgr.splitSecondFocused {
-        engine.FocusOtherPane();
-    }
-    return true;
-}
-
-/// @brief Consume and publish an engine-level pane focus transition.
-func ReconcilePaneFocus(shell: app_shell.AppShell,
-                        docMgr: document_manager.DocumentManager,
-                        engine: editor_engine.EditorEngine,
-                        tabs: editor_tabs.EditorTabs,
-                        completer: completion.CompletionController) {
-    if engine == null or engine.ConsumePaneFocusChanged() == false { return; }
-    SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
-    RebindFocusedPane(shell, engine, completer);
-}
-
-func hasArg(name: String) -> Boolean {
-    var i = 0;
-    while i < Env.GetArgumentCount() {
-        if Env.GetArgument(i) == name { return true; }
-        i = i + 1;
-    }
-    return false;
-}
-
 func handleCommandLine() -> Boolean {
-    if hasArg("--version") {
-        Terminal.Say(build_info.BuildSummary());
-        return true;
-    }
-    if hasArg("--help") or hasArg("-h") {
-        Terminal.Say("Usage: zannastudio [--version] [--help] [file]");
-        return true;
-    }
-    return false;
+    return RuntimePolicy.HandleCommandLine();
 }
 
 func envFlagEnabled(name: String) -> Boolean {
-    if Env.HasVariable(name) == false { return false; }
-    var v = Str.ToLower(Env.GetVariable(name));
-    return v == "1" or v == "true" or v == "yes" or v == "on";
+    return RuntimePolicy.EnvFlagEnabled(name);
 }
 
-/// @brief Compute how long the next PollWait may sleep without delaying live work.
 func computePollWaitMs(shell: app_shell.AppShell,
                        focusThrottle: focus_throttle.FocusThrottle,
                        buildSys: build_system.BuildSystem,
@@ -384,29 +224,10 @@ func computePollWaitMs(shell: app_shell.AppShell,
                        terminalCtrl: terminal_controller.TerminalController,
                        editorScheduler: scheduler.EditorScheduler,
                        indexer: project_index.ProjectIndexer,
-                       projMgr: project_manager.ProjectManager,
-                       overlays: ide_overlays.IdeOverlays) -> Integer {
-    if shell == null { return 0; }
-    if buildSys != null and buildSys.IsActive() { return 0; }
-    if dbgSession != null and dbgSession.IsActive() { return 0; }
-    if terminalCtrl != null and terminalCtrl.HasActiveSession() { return 0; }
-    if shell.commandPalette != null and shell.commandPalette.IsVisible() { return 0; }
-    if overlays != null and (overlays.settingsVisible or overlays.aboutVisible) { return 0; }
-
-    if editorScheduler != null and editorScheduler.QueuedCount() > 0 {
-        return POLL_WAIT_BACKGROUND_MS;
-    }
-    if indexer != null and indexer.indexing {
-        return POLL_WAIT_BACKGROUND_MS;
-    }
-    if projMgr != null and projMgr.fileCacheRefreshing {
-        return POLL_WAIT_BACKGROUND_MS;
-    }
-
-    if focusThrottle != null and focusThrottle.focused == false {
-        return POLL_WAIT_IDLE_UNFOCUSED_MS;
-    }
-    return POLL_WAIT_IDLE_FOCUSED_MS;
+                       projMgr: project_manager.ProjectManager) -> Integer {
+    return RuntimePolicy.ComputePollWaitMs(
+        shell, focusThrottle, buildSys, dbgSession, terminalCtrl,
+        editorScheduler, indexer, projMgr);
 }
 
 /// @brief Return whether sidebar visibility has meaningful persistent context.
@@ -514,6 +335,8 @@ class StudioApplicationBase {
     hide Integer curCursorCol;
     hide Integer currentRevisionForSave;
     hide lifecycle_controller.ShutdownState shutdownState;
+    hide tool_window_model.ToolWindowModel detachedToolModel;
+    hide native_tool_window_host.NativeToolWindowHost detachedToolHost;
 
 
     hide func InitializeComponents() {
@@ -553,11 +376,16 @@ class StudioApplicationBase {
         ziaWorkspaceCommands =
             new zia_workspace_commands.ZiaWorkspaceCommandController();
         shutdownState = new lifecycle_controller.ShutdownState();
+        detachedToolModel = new tool_window_model.ToolWindowModel();
+        detachedToolHost = new native_tool_window_host.NativeToolWindowHost();
         indexer.SetScheduler(editorScheduler);
     }
 
     hide func BuildShellAndOverlays() {
         shell.Build("Zanna Studio", WIN_WIDTH, WIN_HEIGHT);
+        buildSys.SetWakeApp(shell.app);
+        dbgSession.SetWakeApp(shell.app);
+        terminalCtrl.SetWakeApp(shell.app);
         view_commands.applyShellFont(shell);
         shell.ApplyWorkbenchWindowConstraints();
         shell.CenterAndSize(WINDOW_SIZE_PERCENT);
@@ -730,13 +558,20 @@ class StudioApplicationBase {
                 restoreJob = sessionMgr.BeginRestore(docMgr, projMgr, tabs);
             }
             while restoreJob.active {
-                sessionMgr.PumpRestore(restoreJob, SESSION_RESTORE_ENTRIES_PER_PAINT);
+                sessionMgr.PumpRestoreBudgeted(
+                    restoreJob, SESSION_RESTORE_ENTRIES_PER_PAINT,
+                    SESSION_RESTORE_BYTES_PER_PAINT,
+                    SESSION_RESTORE_MILLIS_PER_PAINT);
                 var restoreProgress = sessionMgr.RestoreProgressText(restoreJob);
                 welcomeView.SetStartupProgress(restoreProgress);
                 shell.SetStatusLeft(restoreProgress);
                 shell.Poll();
                 shell.Render();
             }
+            if restoreJob.pruneCommitFailed { GUI.Toast.Warning(
+                "Could not persist cleanup of stale session entries"); }
+            if restoreJob.restoreError != "" { GUI.Toast.Warning(
+                "Session restore stopped safely: " + restoreJob.restoreError); }
             restoredCount = restoreJob.restoredCount;
             restoreSplitRequested = sessionMgr.splitActive;
         }
@@ -859,18 +694,20 @@ class StudioApplicationBase {
                     and sessionMgr.RestoredSplitSecondDocument() != null;
                 var exactSplitOpened = false;
                 if exactSplitAvailable {
-                    exactSplitOpened = OpenRestoredSplit(
+                    exactSplitOpened = EditorSplit.OpenRestoredSplit(
                         docMgr, engine, tabs, sessionMgr);
                 }
                 if exactSplitOpened == false {
                     engine.LoadDocument(restoredDoc);
                 }
                 if restoreSplitRequested and exactSplitAvailable == false {
-                    OpenSplitWithCompanion(shell, docMgr, engine, false);
+                    EditorSplit.OpenSplitWithCompanion(
+                        shell, docMgr, engine, false);
                 }
-                SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+                EditorSplit.SyncFocusedPaneSelection(
+                    shell, docMgr, engine, tabs);
                 engine.ConsumePaneFocusChanged();
-                RebindFocusedPane(shell, engine, completer);
+                EditorSplit.RebindFocusedPane(shell, engine, completer);
             }
         }
 
@@ -997,16 +834,19 @@ class StudioApplicationBase {
             shutdownState = new lifecycle_controller.ShutdownState();
         }
         if shutdownState.Begin() == false {
-            return shutdownState.completed
-                   and shutdownState.workerDrainsSucceeded;
+            return shutdownState.completed;
         }
 
         // Stop every source of new work while the shell and borrowed models are
         // still alive. User-facing cancellation can safely update status here.
         if editorScheduler != null { editorScheduler.CancelAll(); }
         if searcher != null { searcher.Cancel(shell); }
-        if scmView != null { scmView.Shutdown(); }
-        if scmGutter != null { scmGutter.Cancel(); }
+        if scmView != null {
+            shutdownState.RecordWorkerDrain(scmView.Shutdown());
+        }
+        if scmGutter != null {
+            shutdownState.RecordWorkerDrain(scmGutter.Shutdown());
+        }
         if recoveryStore != null { recoveryStore.CancelAsync(); }
         if sharedSemanticModel != null { sharedSemanticModel.Shutdown(); }
         if semHighlighter != null { semHighlighter.Shutdown(); }
@@ -1048,26 +888,37 @@ class StudioApplicationBase {
         if symbolOutline != null {
             shutdownState.RecordWorkerDrain(symbolOutline.Shutdown());
         }
-
-        // Process, PTY, watcher, and index handles are synchronously terminal.
-        if buildSys != null and buildSys.IsActive() { buildSys.Stop(); }
-        if dbgSession != null {
-            shutdownState.RecordWorkerDrain(dbgSession.Shutdown());
+        if perfMon != null {
+            shutdownState.RecordWorkerDrain(perfMon.Shutdown());
         }
-        if terminalCtrl != null { terminalCtrl.Stop(); }
-        if fileWatchCtrl != null { fileWatchCtrl.Destroy(); }
-        workspace_watcher.StopWorkspaceWatcher(workspaceWatcherState);
-        if indexer != null { indexer.Destroy(); }
+
+        // A timed-out worker may still borrow editor, project, runtime, or GUI
+        // state. Keep every dependency alive and let the next exit signal retry.
+        if shutdownState.currentAttemptSucceeded == false {
+            if shell != null {
+                shell.SetStatusLeft(
+                    "Waiting for background work before closing Studio");
+            }
+            shutdownState.ReleaseForRetry();
+            return false;
+        }
 
         FlushWorkspaceLayout(
             shell, engine, projMgr, activityBarCtrl, appSettings,
             panelSplitSavePending);
-        lifecycle_controller.CleanupIdeWithWorkerStatus(
-            shell, docMgr, projMgr, engine, buildSys, dbgSession,
-            terminalCtrl, fileWatchCtrl, workspaceWatcherState, indexer,
-            breakpointStore, sessionMgr, recoveryStore,
-            shutdownState.workerDrainsSucceeded);
+        if detachedToolHost != null {
+            detachedToolHost.Destroy(shell.app);
+        }
+        if lifecycle_controller.CleanupIdeWithWorkerStatus(
+               shell, docMgr, projMgr, engine, buildSys, dbgSession,
+               terminalCtrl, fileWatchCtrl, workspaceWatcherState, indexer,
+               breakpointStore, sessionMgr, recoveryStore,
+               shutdownState.workerDrainsSucceeded) == false {
+            shutdownState.RecordWorkerDrain(false);
+            shutdownState.ReleaseForRetry();
+            return false;
+        }
         shutdownState.Finish();
-        return shutdownState.workerDrainsSucceeded;
+        return true;
     }
 }

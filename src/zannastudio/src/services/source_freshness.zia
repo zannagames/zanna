@@ -24,9 +24,9 @@ module source_freshness;
 
 bind "path_identity";
 bind "safe_io";
+bind "workspace_file_cursor";
 
 bind File = Zanna.IO.File;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Map = Zanna.Collections.Map;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
@@ -43,6 +43,7 @@ final DEFAULT_FRESHNESS_PAGE_SIZE = 128;
 class SourceFreshnessScanner {
     expose String rootPath;
     expose Integer pageOffset;
+    expose workspace_file_cursor.WorkspaceFileCursor fileCursor;
     expose Integer newestDependencyModified;
     expose Integer entriesExamined;
     expose Boolean scanning;
@@ -55,6 +56,7 @@ class SourceFreshnessScanner {
     expose func init() {
         rootPath = "";
         pageOffset = 0;
+        fileCursor = new workspace_file_cursor.WorkspaceFileCursor();
         newestDependencyModified = 0;
         entriesExamined = 0;
         scanning = false;
@@ -119,9 +121,13 @@ class SourceFreshnessScanner {
         var pageSize = maxEntries;
         if pageSize <= 0 { pageSize = DEFAULT_FRESHNESS_PAGE_SIZE; }
 
+        if fileCursor.IsOpen() == false
+           and fileCursor.Open(rootPath, "", "", false) == false {
+            FailScan("workspace index unavailable");
+            return 0;
+        }
         var oldOffset = pageOffset;
-        var page = FileIndex.Page(rootPath, "", "", false,
-                                  pageOffset, pageSize);
+        var page = fileCursor.Next(pageSize);
         if Map.GetBool(page, "valid") == false {
             FailScan("workspace index unavailable");
             return 0;
@@ -150,6 +156,7 @@ class SourceFreshnessScanner {
 
         pageOffset = Map.GetInt(page, "nextOffset");
         if Map.GetBool(page, "done") {
+            fileCursor.Destroy();
             scanning = false;
             complete = true;
             if truncated {
@@ -183,6 +190,7 @@ class SourceFreshnessScanner {
 
     /// @brief Start a new empty snapshot and parse explicit asset dependencies.
     hide func RestartScan() {
+        if fileCursor != null { fileCursor.Destroy(); }
         pageOffset = 0;
         newestDependencyModified = 0;
         entriesExamined = 0;
@@ -196,6 +204,7 @@ class SourceFreshnessScanner {
     }
 
     hide func FailScan(reason: String) {
+        if fileCursor != null { fileCursor.Destroy(); }
         scanning = false;
         complete = false;
         reliable = false;

@@ -34,10 +34,11 @@ bind "project_file_ops";
 bind "project_bind_rewriter";
 bind "../services/path_identity";
 bind "../services/workspace_file_index";
+bind "../services/workspace_file_cursor";
 bind "../services/safe_io";
 bind "../services/source_freshness";
+bind "project_tree_sort" as TreeSort;
 bind Zanna.GUI as GUI;
-bind Obj = Zanna.Core.Object;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind IO = Zanna.IO;
@@ -45,241 +46,9 @@ bind Zanna.IO.Path as Path;
 bind Zanna.IO.Dir as Dir;
 bind Zanna.String as Str;
 bind StringBuilder = Zanna.Text.StringBuilder;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Option = Zanna.Option;
 bind "../core/document_manager";
 bind "../zia/bind_utils";
-
-// Tree rows now carry real vector icons (plan 04 follow-up), so the text
-// prefixes that used to stand in for them are empty. The label helpers remain
-// the single decoration point if a future mode needs prefixes again.
-final TREE_ROOT_PREFIX = "";
-final TREE_FOLDER_PREFIX = "";
-final TREE_FILE_PREFIX = "";
-final MAX_TREE_REFRESH_EXPANDED_DIRS = 128;
-final TREE_DIRECTORY_PAGE_SIZE = 128;
-final TREE_INITIAL_WORK_BUDGET = 2048;
-final TREE_FRAME_WORK_BUDGET = 512;
-final TREE_LOAD_SCAN = 0;
-final TREE_LOAD_SORT_DIRECTORIES = 1;
-final TREE_LOAD_SORT_FILES = 2;
-final TREE_LOAD_PUBLISH_DIRECTORIES = 3;
-final TREE_LOAD_PUBLISH_FILES = 4;
-
-/// @brief Return whether a one-character string is an ASCII decimal digit.
-/// @param ch Candidate character extracted from a filename.
-/// @return True only for `0` through `9`.
-func IsNaturalSortDigit(ch: String) -> Boolean {
-    return Str.get_Length(ch) == 1 and Str.IndexOf("0123456789", ch) > 0;
-}
-
-/// @brief Compare two Explorer names using case-insensitive natural ordering.
-/// @details Consecutive digit runs compare by numeric magnitude without parsing
-///          into a bounded integer, so arbitrarily long filenames stay safe.
-///          Equal numeric values prefer fewer leading zeroes, followed by an
-///          ordinal case-sensitive tie-break for deterministic output.
-/// @param left First filename.
-/// @param right Second filename.
-/// @return Negative, zero, or positive according to natural display order.
-expose func NaturalNameCompare(left: String, right: String) -> Integer {
-    var leftKey = Str.ToLower(left);
-    var rightKey = Str.ToLower(right);
-    var leftLength = Str.get_Length(leftKey);
-    var rightLength = Str.get_Length(rightKey);
-    var leftIndex = 0;
-    var rightIndex = 0;
-
-    while leftIndex < leftLength and rightIndex < rightLength {
-        var leftChar = Str.Substring(leftKey, leftIndex, 1);
-        var rightChar = Str.Substring(rightKey, rightIndex, 1);
-        var leftDigit = IsNaturalSortDigit(leftChar);
-        var rightDigit = IsNaturalSortDigit(rightChar);
-
-        if leftDigit and rightDigit {
-            var leftEnd = leftIndex;
-            while leftEnd < leftLength
-                  and IsNaturalSortDigit(Str.Substring(leftKey, leftEnd, 1)) {
-                leftEnd = leftEnd + 1;
-            }
-            var rightEnd = rightIndex;
-            while rightEnd < rightLength
-                  and IsNaturalSortDigit(Str.Substring(rightKey, rightEnd, 1)) {
-                rightEnd = rightEnd + 1;
-            }
-
-            var leftSignificant = leftIndex;
-            while leftSignificant + 1 < leftEnd
-                  and Str.Substring(leftKey, leftSignificant, 1) == "0" {
-                leftSignificant = leftSignificant + 1;
-            }
-            var rightSignificant = rightIndex;
-            while rightSignificant + 1 < rightEnd
-                  and Str.Substring(rightKey, rightSignificant, 1) == "0" {
-                rightSignificant = rightSignificant + 1;
-            }
-
-            var leftDigits = leftEnd - leftSignificant;
-            var rightDigits = rightEnd - rightSignificant;
-            if leftDigits != rightDigits {
-                return leftDigits - rightDigits;
-            }
-
-            var numberCompare = Str.Compare(
-                Str.Substring(leftKey, leftSignificant, leftDigits),
-                Str.Substring(rightKey, rightSignificant, rightDigits));
-            if numberCompare != 0 { return numberCompare; }
-
-            var leftRunLength = leftEnd - leftIndex;
-            var rightRunLength = rightEnd - rightIndex;
-            if leftRunLength != rightRunLength {
-                return leftRunLength - rightRunLength;
-            }
-
-            leftIndex = leftEnd;
-            rightIndex = rightEnd;
-            continue;
-        }
-
-        var charCompare = Str.Compare(leftChar, rightChar);
-        if charCompare != 0 { return charCompare; }
-        leftIndex = leftIndex + 1;
-        rightIndex = rightIndex + 1;
-    }
-
-    if leftIndex < leftLength { return 1; }
-    if rightIndex < rightLength { return 0 - 1; }
-    return Str.Compare(left, right);
-}
-
-/// @brief Return a stable naturally sorted copy of an Explorer name list.
-/// @details Uses an iterative merge sort to keep large directories O(n log n)
-///          while avoiding recursion depth and leaving the runtime-owned input
-///          list untouched.
-/// @param items String-like filename entries to order.
-/// @return New list ordered with @ref NaturalNameCompare.
-expose func NaturalSortNames(items: List) -> List {
-    var state = BeginIncrementalNameSort(items);
-    while state.done == false {
-        PumpIncrementalNameSort(state, 4096);
-    }
-    return state.source;
-}
-
-/// @brief Mutable bottom-up merge-sort state for frame-budgeted Explorer work.
-/// @details One pump moves a bounded number of names. This keeps sorting a very
-///          large flat directory from becoming a second UI stall after bounded
-///          filesystem enumeration completes.
-class IncrementalNameSort {
-    expose List source;
-    expose List merged;
-    expose Integer width;
-    expose Integer start;
-    expose Integer middle;
-    expose Integer finish;
-    expose Integer left;
-    expose Integer right;
-    expose Boolean runActive;
-    expose Boolean done;
-
-    expose func init() {
-        source = new List();
-        merged = new List();
-        width = 1;
-        start = 0;
-        middle = 0;
-        finish = 0;
-        left = 0;
-        right = 0;
-        runActive = false;
-        done = true;
-    }
-}
-
-/// @brief Begin an incremental natural-name sort over a private list copy.
-func BeginIncrementalNameSort(items: List) -> IncrementalNameSort {
-    var state = new IncrementalNameSort();
-    for item in items { state.source.Push(item); }
-    state.done = state.source.count() <= 1;
-    return state;
-}
-
-/// @brief Advance a natural-name merge sort by at most @p maxMoves items.
-/// @param state Sort state returned by BeginIncrementalNameSort.
-/// @param maxMoves Maximum list elements to merge in this call.
-/// @return Number of elements moved during this call.
-func PumpIncrementalNameSort(state: IncrementalNameSort,
-                             maxMoves: Integer) -> Integer {
-    if state == null or state.done or maxMoves <= 0 { return 0; }
-    var moved = 0;
-    while state.done == false and moved < maxMoves {
-        var count = state.source.count();
-        if state.runActive == false {
-            if state.start >= count {
-                state.source = state.merged;
-                state.merged = new List();
-                state.width = state.width * 2;
-                state.start = 0;
-                count = state.source.count();
-                if state.width >= count {
-                    state.done = true;
-                    break;
-                }
-            }
-            state.middle = state.start + state.width;
-            if state.middle > count { state.middle = count; }
-            state.finish = state.middle + state.width;
-            if state.finish > count { state.finish = count; }
-            state.left = state.start;
-            state.right = state.middle;
-            state.runActive = true;
-        }
-
-        if state.left >= state.middle and state.right >= state.finish {
-            state.start = state.finish;
-            state.runActive = false;
-            continue;
-        }
-        if state.right >= state.finish
-           or (state.left < state.middle
-               and NaturalNameCompare(Obj.ToString(state.source.get(state.left)),
-                                      Obj.ToString(state.source.get(state.right))) <= 0) {
-            state.merged.Push(state.source.get(state.left));
-            state.left = state.left + 1;
-        } else {
-            state.merged.Push(state.source.get(state.right));
-            state.right = state.right + 1;
-        }
-        moved = moved + 1;
-    }
-    return moved;
-}
-
-/// @brief One queued immediate-directory scan/sort/publication job.
-class ExplorerTreeLoad {
-    expose String dirPath;
-    expose String normalizedDir;
-    expose Any parentNode;
-    expose Integer offset;
-    expose Integer stage;
-    expose Integer publishIndex;
-    expose List directories;
-    expose List files;
-    expose IncrementalNameSort directorySort;
-    expose IncrementalNameSort fileSort;
-
-    expose func init() {
-        dirPath = "";
-        normalizedDir = "";
-        parentNode = null;
-        offset = 0;
-        stage = TREE_LOAD_SCAN;
-        publishIndex = 0;
-        directories = new List();
-        files = new List();
-        directorySort = new IncrementalNameSort();
-        fileSort = new IncrementalNameSort();
-    }
-}
 
 // ============================================================================
 // MODULE: project_manager
@@ -381,10 +150,12 @@ class ProjectManagerBase {
     expose Boolean fileCacheRefreshing;
     /// Number of directories scanned by the current cache refresh.
     expose Integer fileCacheDirsScanned;
-    /// Root index currently being paged by FileIndex.Page.
+    /// Root index currently being traversed by FileIndexCursor.
     expose Integer fileCacheRootIndex;
-    /// Runtime FileIndex.Page offset within the current root.
+    /// Diagnostic entry offset within the current explicit traversal.
     expose Integer fileCachePageOffset;
+    /// Explicit generation-tagged traversal for the current file-cache root.
+    expose workspace_file_cursor.WorkspaceFileCursor fileCacheCursor;
     /// True if the runtime index hit its safety cap during the last refresh.
     expose Boolean fileCacheTruncated;
     /// Cooperative dependency scanner used by native run/play freshness checks.
@@ -394,7 +165,7 @@ class ProjectManagerBase {
     /// Absolute directory paths whose TreeView children have been populated.
     expose List loadedTreeDirs;
     /// FIFO of bounded immediate-directory Explorer jobs.
-    expose List[ExplorerTreeLoad] treeLoadJobs;
+    expose List[TreeSort.ExplorerTreeLoad] treeLoadJobs;
     /// Total raw directory entries consumed by the current Explorer generation.
     expose Integer treeEntriesScanned;
     /// Raw directory entries consumed by the most recent tree pump.
@@ -428,6 +199,7 @@ class ProjectManagerBase {
         fileCacheDirsScanned = 0;
         fileCacheRootIndex = 0;
         fileCachePageOffset = 0;
+        fileCacheCursor = new workspace_file_cursor.WorkspaceFileCursor();
         fileCacheTruncated = false;
         sourceFreshness = new source_freshness.SourceFreshnessScanner();
         lastTrashPath = "";

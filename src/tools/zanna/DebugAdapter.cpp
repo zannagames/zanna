@@ -9,8 +9,8 @@
 /// @brief Implements Zanna Studio's interactive VM-backed debug adapter.
 ///
 /// Breakpoint, stop, stepping, evaluation, and variable-expansion events are emitted as sentinel-
-/// prefixed compact JSON lines on stderr, leaving debuggee stdout and stderr intact. Commands arrive
-/// as newline-delimited JSON on stdin and are queued by a background reader.
+/// prefixed compact JSON lines on stderr, leaving debuggee stdout and stderr intact. Commands
+/// arrive as newline-delimited JSON on stdin and are queued by a background reader.
 //
 //===----------------------------------------------------------------------===//
 #include "tools/zanna/DebugAdapter.hpp"
@@ -235,11 +235,13 @@ JsonValue stoppedEvent(const il::vm::DebugStopInfo &info) {
 /// @param varRef Stop-scoped composite reference.
 /// @param start Zero-based child offset, clamped to zero.
 /// @param count Maximum child count; nonpositive values select the default page size.
+/// @param requestId Positive client correlation id echoed in the response.
 /// @return Adapter @c variables response.
 JsonValue variablesEvent(const il::vm::DebugStopInfo &info,
                          int64_t varRef,
                          int64_t start,
-                         int64_t count) {
+                         int64_t count,
+                         int64_t requestId) {
     JsonValue::ArrayType vars;
     if (info.vars && varRef > 0) {
         if (start < 0)
@@ -258,6 +260,7 @@ JsonValue variablesEvent(const il::vm::DebugStopInfo &info,
     }
     return JsonValue::object({
         {"type", JsonValue("variables")},
+        {"requestId", JsonValue(requestId)},
         {"varRef", JsonValue(varRef)},
         {"start", JsonValue(start)},
         {"vars", JsonValue::array(std::move(vars))},
@@ -327,13 +330,17 @@ std::string debugValueType(const zanna::dbgexpr::Value &value) {
 ///          show an unavailable expression instead of a stale value.
 /// @param info Current VM stop containing visible locals.
 /// @param expr Expression text received from the IDE.
+/// @param requestId Positive client correlation id echoed in the response.
 /// @return Adapter @c evaluated event with a scalar value or @c ok set to false.
-JsonValue evaluatedEvent(const il::vm::DebugStopInfo &info, const std::string &expr) {
+JsonValue evaluatedEvent(const il::vm::DebugStopInfo &info,
+                         const std::string &expr,
+                         int64_t requestId) {
     auto resolve = localResolver(info);
     zanna::dbgexpr::Value value = zanna::dbgexpr::Eval(expr, resolve).run();
     if (!value.isErr())
         return JsonValue::object({
             {"type", JsonValue("evaluated")},
+            {"requestId", JsonValue(requestId)},
             {"expr", JsonValue(expr)},
             {"value", JsonValue(value.str())},
             {"valueType", JsonValue(debugValueType(value))},
@@ -345,6 +352,7 @@ JsonValue evaluatedEvent(const il::vm::DebugStopInfo &info, const std::string &e
         });
     return JsonValue::object({
         {"type", JsonValue("evaluated")},
+        {"requestId", JsonValue(requestId)},
         {"expr", JsonValue(expr)},
         {"value", JsonValue("")},
         {"valueType", JsonValue("")},
@@ -452,7 +460,10 @@ class AdapterFrontend : public il::vm::DebugFrontend {
             }
             if (type == "evaluate") {
                 // Watch/hover query: report the value and stay stopped.
-                chan_.emit(evaluatedEvent(info, (*cmd)["expr"].asString()));
+                const JsonValue *requestId = cmd->get("requestId");
+                if (requestId && requestId->asInt() > 0) {
+                    chan_.emit(evaluatedEvent(info, (*cmd)["expr"].asString(), requestId->asInt()));
+                }
                 continue;
             }
             if (type == "variables") {
@@ -465,7 +476,9 @@ class AdapterFrontend : public il::vm::DebugFrontend {
                     start = s->asInt();
                 if (const JsonValue *c = cmd->get("count"))
                     count = c->asInt();
-                chan_.emit(variablesEvent(info, ref, start, count));
+                const JsonValue *requestId = cmd->get("requestId");
+                if (requestId && requestId->asInt() > 0)
+                    chan_.emit(variablesEvent(info, ref, start, count, requestId->asInt()));
                 continue;
             }
             if (type == "terminate") {

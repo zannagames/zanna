@@ -10,6 +10,10 @@ Date: 2026-07-22
 
 Status: Accepted
 
+> The distinct-document safety contract remains active. ADR 0279 supersedes
+> the same-document limitation by moving one canonical mutable buffer between
+> views instead of attaching two independent buffers.
+
 ## Context
 
 `Zanna.GUI.EditorBuffer` is a single-owner editor-state object. Zanna Studio's

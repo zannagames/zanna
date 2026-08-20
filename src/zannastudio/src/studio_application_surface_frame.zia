@@ -39,14 +39,17 @@ bind IO = Zanna.IO;
 bind Machine = Zanna.System.Machine;
 bind Str = Zanna.String;
 bind "app/studio_application_base" as StudioBase;
+bind "app/editor_split_orchestration" as EditorSplit;
 
 class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
 
     hide func PumpSurfaceFrame() -> Boolean {
-        perfMon.BeginFrame();
+        var waitSpan = perfMon.StartSpan();
         shell.PollWait(StudioBase.computePollWaitMs(shell, focusThrottle, buildSys,
                                          dbgSession, terminalCtrl, editorScheduler,
-                                         indexer, projMgr, overlays));
+                                         indexer, projMgr));
+        perfMon.AddEventWait(waitSpan);
+        perfMon.BeginFrame();
 
         // Ration background work (indexing, budgeted tools, workspace watching)
         // when the window is unfocused. Input, rendering, process streams
@@ -77,9 +80,9 @@ class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
         curDocCount = docMgr.GetCount();
         var activeBeforeSplitRepair = docMgr.GetActive();
         if engine.ReconcileSplitEligibility(activeBeforeSplitRepair) {
-            StudioBase.SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+            EditorSplit.SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
             engine.ConsumePaneFocusChanged();
-            StudioBase.RebindFocusedPane(shell, engine, completer);
+            EditorSplit.RebindFocusedPane(shell, engine, completer);
         }
         textEditorContextAvailable = StudioBase.ActiveUsesTextEditor(docMgr);
         hasBuildTarget = build_commands.HasExecutionTarget(docMgr, projMgr);
@@ -213,8 +216,7 @@ class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
         scene3DEditor.SetFocusModeActive(sceneFocusActive);
         if shell.WasCloseRequested() {
             if file_commands.handleExit(shell, docMgr, engine) {
-                ShutdownApplication();
-                return true;
+                return ShutdownApplication();
             }
         }
         return false;
@@ -273,7 +275,7 @@ class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
         commandRegistry.SetSplitEditorContext(
             textEditorContextAvailable
                 and engine.PaneCount() < 2
-                and StudioBase.SplitCompanionDocument(docMgr, engine.currentDoc) != null,
+                and editor_engine.IsSplitDocumentEligible(engine.currentDoc),
             engine.PaneCount() == 2);
         var canUndoSurface = false;
         var canRedoSurface = false;

@@ -1,0 +1,66 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/process_reaper_probe.zia
+// Purpose: Prove live child destruction leaves the submitting UI-style thread.
+// Key invariants:
+//   - Queueing a stubborn live process completes well below Destroy's grace wait.
+//   - The reaper's bounded shutdown observes completed, error-free retirement.
+// Links: zannastudio/src/services/process_reaper.zia,
+//        runtime/system/rt_process.c
+//
+//===----------------------------------------------------------------------===//
+
+module process_reaper_probe;
+
+bind "../services/process_reaper";
+
+bind Process = Zanna.System.Process;
+bind Machine = Zanna.System.Machine;
+bind Env = Zanna.System.Environment;
+bind Seq = Zanna.Collections.Seq;
+bind Clock = Zanna.Time.Clock;
+bind Terminal = Zanna.Terminal;
+
+func main() {
+    var program = "/bin/sh";
+    var args = Seq.New();
+    if Machine.Os == "windows" {
+        program = Env.GetVariable("COMSPEC");
+        if program == "" { program = "cmd.exe"; }
+        Seq.Push(args, "/d");
+        Seq.Push(args, "/s");
+        Seq.Push(args, "/c");
+        Seq.Push(args, "ping 127.0.0.1 -n 4 >nul");
+    } else {
+        Seq.Push(args, "-c");
+        Seq.Push(args, "trap '' TERM; sleep 2");
+    }
+
+    var handle = Process.Start(program, args);
+    if handle == null or handle.IsValid() == false {
+        Terminal.Say("RESULT: fail child launch");
+        return;
+    }
+
+    var reaper = new process_reaper.ProcessReaper();
+    var started = Clock.NowMs();
+    reaper.RetireProcess(handle);
+    var queueElapsed = Clock.NowMs() - started;
+    if queueElapsed > 250 or reaper.PendingCount() != 1 {
+        Terminal.Say("RESULT: fail queue blocked " + queueElapsed + "ms");
+        return;
+    }
+    if reaper.WaitForShutdown() == false
+       or reaper.PendingCount() != 0
+       or reaper.completedCount != 1
+       or reaper.failedCount != 0 {
+        Terminal.Say("RESULT: fail reaper drain " + reaper.lastError);
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

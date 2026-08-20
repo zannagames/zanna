@@ -29,12 +29,37 @@
 
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+
+#if RT_PLATFORM_WINDOWS
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if RT_PLATFORM_LINUX
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
+#endif
+
+#if RT_PLATFORM_LINUX || RT_PLATFORM_MACOS
+#include <sys/xattr.h>
+#endif
+
+#if RT_PLATFORM_MACOS && defined(_POSIX_C_SOURCE)
+extern "C" int chflags(const char *, uint32_t);
+#endif
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -80,6 +105,15 @@ static bool seq_contains_relative(void *seq, const std::string &rel) {
             return true;
     }
     return false;
+}
+
+static void *seq_find_relative(void *seq, const std::string &rel) {
+    for (int64_t i = 0; i < rt_seq_len(seq); i++) {
+        void *entry = rt_seq_get(seq, i);
+        if (get_str(entry, "relativePath") == rel)
+            return entry;
+    }
+    return nullptr;
 }
 
 static void test_directory_page() {
@@ -184,6 +218,65 @@ static void test_file_index_and_ignore() {
     assert(rt_map_get_bool(second_page, rt_const_cstr("done")) == 1);
     void *second_entries = rt_map_get(second_page, rt_const_cstr("entries"));
     assert(rt_seq_len(first_entries) + rt_seq_len(second_entries) == rt_seq_len(entries));
+
+    void *cursor = rt_workspace_file_index_cursor_new(
+        root_s, rt_const_cstr(".zia,.png,.tmp"), rt_const_cstr(""), 1);
+    assert(rt_workspace_file_index_cursor_is_valid(cursor) == 1);
+    const int64_t cursor_generation = rt_workspace_file_index_cursor_generation(cursor);
+    assert(cursor_generation > 0);
+    void *cursor_first = rt_workspace_file_index_cursor_next(cursor, 2);
+    assert(rt_map_get_bool(cursor_first, rt_const_cstr("valid")) == 1);
+    assert(rt_map_get_int(cursor_first, rt_const_cstr("generation")) == cursor_generation);
+    assert(rt_map_get_int(cursor_first, rt_const_cstr("emitted")) == 2);
+
+    // More than the former eight-cache-entry limit cannot evict an explicitly
+    // owned traversal. Every independent cursor also receives its own generation.
+    std::vector<void *> interleaved;
+    std::set<int64_t> generations;
+    for (int i = 0; i < 12; ++i) {
+        void *other =
+            rt_workspace_file_index_cursor_new(root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+        assert(other != nullptr);
+        generations.insert(rt_workspace_file_index_cursor_generation(other));
+        void *other_page = rt_workspace_file_index_cursor_next(other, 1);
+        assert(rt_map_get_bool(other_page, rt_const_cstr("valid")) == 1);
+        interleaved.push_back(other);
+    }
+    assert(generations.size() == interleaved.size());
+    void *cursor_rest = rt_workspace_file_index_cursor_next(cursor, 4096);
+    assert(rt_map_get_int(cursor_rest, rt_const_cstr("generation")) == cursor_generation);
+    assert(rt_map_get_bool(cursor_rest, rt_const_cstr("done")) == 1);
+    assert(rt_map_get_int(cursor_first, rt_const_cstr("emitted")) +
+               rt_map_get_int(cursor_rest, rt_const_cstr("emitted")) ==
+           rt_seq_len(entries));
+    for (void *other : interleaved)
+        rt_workspace_file_index_cursor_destroy(other);
+    rt_workspace_file_index_cursor_destroy(cursor);
+
+    // Fallback-watcher pages request all extensions plus directories. Those
+    // rows include precise metadata and a bounded content sample so a same-size
+    // rewrite inside one whole-second timestamp cannot disappear.
+    void *fingerprint_page =
+        rt_workspace_file_index_page(root_s, rt_const_cstr(""), rt_const_cstr(""), 1, 0, 4096);
+    assert(rt_map_get_bool(fingerprint_page, rt_const_cstr("valid")) == 1);
+    assert(rt_map_get_bool(fingerprint_page, rt_const_cstr("done")) == 1);
+    void *fingerprint_entries = rt_map_get(fingerprint_page, rt_const_cstr("entries"));
+    void *main_entry = seq_find_relative(fingerprint_entries, "src/main.zia");
+    assert(main_entry != nullptr);
+    assert(rt_map_get_int(main_entry, rt_const_cstr("size")) > 0);
+    assert(rt_map_get_int(main_entry, rt_const_cstr("modifiedNs")) != -1);
+    const int64_t first_sample = rt_map_get_int(main_entry, rt_const_cstr("sampleHash"));
+    assert(first_sample >= 0);
+
+    write_file(root / "src/main.zia", "module Mine;\n");
+    void *rewritten_page =
+        rt_workspace_file_index_page(root_s, rt_const_cstr(""), rt_const_cstr(""), 1, 0, 4096);
+    void *rewritten_entries = rt_map_get(rewritten_page, rt_const_cstr("entries"));
+    void *rewritten_main = seq_find_relative(rewritten_entries, "src/main.zia");
+    assert(rewritten_main != nullptr);
+    assert(rt_map_get_int(rewritten_main, rt_const_cstr("size")) ==
+           rt_map_get_int(main_entry, rt_const_cstr("size")));
+    assert(rt_map_get_int(rewritten_main, rt_const_cstr("sampleHash")) != first_sample);
 
     rt_string invalid_root = s((root / "missing-page").string());
     void *invalid_page = rt_workspace_file_index_page(
@@ -407,12 +500,106 @@ static void add_workspace_root(void *seq, const fs::path &root) {
     rt_string_unref(root_s);
 }
 
+/// @brief Append one complete-file replacement for prepared-save coverage.
+static void add_whole_file_edit(void *seq,
+                                const fs::path &file,
+                                const std::string &text,
+                                int64_t expected_size,
+                                int64_t max_bytes) {
+    void *edit = rt_map_new();
+    rt_string path_s = s(file.string());
+    rt_string text_s = s(text);
+    rt_map_set_str(edit, rt_const_cstr("file"), path_s);
+    rt_map_set_bool(edit, rt_const_cstr("wholeFile"), 1);
+    rt_map_set_str(edit, rt_const_cstr("newText"), text_s);
+    rt_map_set_int(edit, rt_const_cstr("expectedSize"), expected_size);
+    rt_map_set_int(edit, rt_const_cstr("maxBytes"), max_bytes);
+    rt_seq_push(seq, edit);
+    rt_string_unref(path_s);
+    rt_string_unref(text_s);
+}
+
 static void test_workspace_edits() {
     fs::path root = temp_root();
     fs::path a = root / "a.zia";
     fs::path b = root / "b.zia";
     write_file(a, "one\ntwo\n");
     write_file(b, "alpha\nbeta\n");
+
+#if !RT_PLATFORM_WINDOWS
+    bool permission_fixture = false;
+    const fs::perms expected_permissions =
+        fs::perms::owner_read | fs::perms::owner_write | fs::perms::group_read;
+    std::error_code permission_ec;
+    fs::permissions(a, expected_permissions, fs::perm_options::replace, permission_ec);
+    permission_fixture = !permission_ec;
+    struct stat ownership_before{};
+    const bool ownership_fixture = stat(a.c_str(), &ownership_before) == 0;
+#if RT_PLATFORM_MACOS
+    constexpr uint32_t kUserNoDumpFlag = 0x00000001u;
+    bool file_flags_fixture =
+        chflags(a.c_str(), ownership_before.st_flags | kUserNoDumpFlag) == 0;
+    struct stat flags_before{};
+    file_flags_fixture = file_flags_fixture && stat(a.c_str(), &flags_before) == 0;
+#elif RT_PLATFORM_LINUX
+    bool file_flags_fixture = false;
+    int flags_fd = open(a.c_str(), O_RDONLY);
+    int flags_before = 0;
+    if (flags_fd >= 0 && ioctl(flags_fd, FS_IOC_GETFLAGS, &flags_before) == 0) {
+        int desired_flags = flags_before | FS_NODUMP_FL;
+        file_flags_fixture = ioctl(flags_fd, FS_IOC_SETFLAGS, &desired_flags) == 0;
+        if (file_flags_fixture)
+            flags_before = desired_flags;
+    }
+    if (flags_fd >= 0)
+        close(flags_fd);
+#else
+    const bool file_flags_fixture = false;
+#endif
+#else
+    const std::wstring alternate_stream = a.wstring() + L":zanna-workspace-edit";
+    HANDLE stream_handle = CreateFileW(alternate_stream.c_str(),
+                                       GENERIC_WRITE,
+                                       0,
+                                       nullptr,
+                                       CREATE_ALWAYS,
+                                       FILE_ATTRIBUTE_NORMAL,
+                                       nullptr);
+    const char stream_payload[] = "alternate-metadata";
+    bool alternate_stream_fixture = false;
+    if (stream_handle != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        alternate_stream_fixture =
+            WriteFile(stream_handle,
+                      stream_payload,
+                      static_cast<DWORD>(sizeof(stream_payload)),
+                      &written,
+                      nullptr) != 0 &&
+            written == sizeof(stream_payload);
+        CloseHandle(stream_handle);
+    }
+    DWORD original_attributes = GetFileAttributesW(a.wstring().c_str());
+    bool attribute_fixture = original_attributes != INVALID_FILE_ATTRIBUTES &&
+                             SetFileAttributesW(a.wstring().c_str(),
+                                                original_attributes |
+                                                    FILE_ATTRIBUTE_HIDDEN) != 0;
+#endif
+
+#if RT_PLATFORM_LINUX || RT_PLATFORM_MACOS
+    const char metadata_value[] = "zanna-workspace-edit";
+    bool xattr_fixture = false;
+#if RT_PLATFORM_LINUX
+    const char *metadata_name = "user.zanna.workspace-edit";
+    xattr_fixture =
+        setxattr(a.c_str(), metadata_name, metadata_value, sizeof(metadata_value), 0) == 0;
+#elif RT_PLATFORM_MACOS
+    const char *metadata_name = "com.zanna.workspace-edit";
+    xattr_fixture =
+        setxattr(
+            a.c_str(), metadata_name, metadata_value, sizeof(metadata_value), 0, XATTR_NOFOLLOW) ==
+        0;
+#endif
+#endif
 
     void *edits = rt_seq_new_owned();
     add_edit(edits, a, 2, 1, 2, 4, "TWO");
@@ -424,12 +611,173 @@ static void test_workspace_edits() {
     assert(rt_map_get_bool(applied, rt_const_cstr("success")) == 1);
     assert(read_file(a) == "one\nTWO\n");
     assert(read_file(b) == "ALPHA\nbeta\n");
+#if !RT_PLATFORM_WINDOWS
+    if (permission_fixture) {
+        std::error_code status_ec;
+        const fs::perms actual_permissions = fs::status(a, status_ec).permissions();
+        assert(!status_ec);
+        assert((actual_permissions & fs::perms::mask) == expected_permissions);
+    }
+    if (ownership_fixture) {
+        struct stat ownership_after{};
+        assert(stat(a.c_str(), &ownership_after) == 0);
+        assert(ownership_after.st_uid == ownership_before.st_uid);
+        assert(ownership_after.st_gid == ownership_before.st_gid);
+    }
+#if RT_PLATFORM_MACOS
+    if (file_flags_fixture) {
+        struct stat flags_after{};
+        assert(stat(a.c_str(), &flags_after) == 0);
+        assert(flags_after.st_flags == flags_before.st_flags);
+    }
+#elif RT_PLATFORM_LINUX
+    if (file_flags_fixture) {
+        int flags_after_fd = open(a.c_str(), O_RDONLY);
+        int flags_after = 0;
+        assert(flags_after_fd >= 0);
+        assert(ioctl(flags_after_fd, FS_IOC_GETFLAGS, &flags_after) == 0);
+        close(flags_after_fd);
+        assert((flags_after & FS_FL_USER_MODIFIABLE) ==
+               (flags_before & FS_FL_USER_MODIFIABLE));
+    }
+#endif
+#else
+    if (attribute_fixture) {
+        DWORD actual_attributes = GetFileAttributesW(a.wstring().c_str());
+        assert(actual_attributes != INVALID_FILE_ATTRIBUTES);
+        assert((actual_attributes & FILE_ATTRIBUTE_HIDDEN) != 0);
+    }
+    if (alternate_stream_fixture) {
+        HANDLE actual_stream = CreateFileW(alternate_stream.c_str(),
+                                           GENERIC_READ,
+                                           FILE_SHARE_READ,
+                                           nullptr,
+                                           OPEN_EXISTING,
+                                           FILE_ATTRIBUTE_NORMAL,
+                                           nullptr);
+        assert(actual_stream != INVALID_HANDLE_VALUE);
+        char actual_payload[sizeof(stream_payload)] = {};
+        DWORD actual_read = 0;
+        assert(ReadFile(actual_stream,
+                        actual_payload,
+                        static_cast<DWORD>(sizeof(actual_payload)),
+                        &actual_read,
+                        nullptr) != 0);
+        CloseHandle(actual_stream);
+        assert(actual_read == sizeof(stream_payload));
+        assert(std::string(actual_payload, sizeof(actual_payload)) ==
+               std::string(stream_payload, sizeof(stream_payload)));
+    }
+#endif
+#if RT_PLATFORM_LINUX || RT_PLATFORM_MACOS
+    if (xattr_fixture) {
+        char metadata_buffer[64] = {};
+#if RT_PLATFORM_LINUX
+        const ssize_t metadata_size =
+            getxattr(a.c_str(), metadata_name, metadata_buffer, sizeof(metadata_buffer));
+#else
+        const ssize_t metadata_size = getxattr(
+            a.c_str(), metadata_name, metadata_buffer, sizeof(metadata_buffer), 0, XATTR_NOFOLLOW);
+#endif
+        assert(metadata_size == static_cast<ssize_t>(sizeof(metadata_value)));
+        assert(std::string(metadata_buffer, sizeof(metadata_value)) ==
+               std::string(metadata_value, sizeof(metadata_value)));
+    }
+#endif
 
     // VDOC-196: a successful apply leaves no `.zanna-edit-*` temp/backup sidecars
     // behind (backups are reserved with unpredictable names and cleaned up).
     for (const auto &entry : fs::directory_iterator(root)) {
         const std::string name = entry.path().filename().string();
         assert(name.find(".zanna-edit-") == std::string::npos);
+    }
+
+    // The opaque ABI must reject maps and other object kinds instead of
+    // interpreting rt_seq_len == -1 as an empty, successful edit batch.
+    void *not_edits = rt_map_new();
+    void *wrong_type = rt_workspace_edit_validate(not_edits);
+    assert(rt_map_get_bool(wrong_type, rt_const_cstr("success")) == 0);
+    assert(rt_map_get_int(wrong_type, rt_const_cstr("editCount")) == 0);
+    assert(rt_seq_len(rt_map_get(wrong_type, rt_const_cstr("diagnostics"))) == 1);
+    void *wrong_apply = rt_workspace_edit_apply(not_edits);
+    assert(rt_map_get_bool(wrong_apply, rt_const_cstr("success")) == 0);
+    assert(rt_map_get_int(wrong_apply, rt_const_cstr("appliedFiles")) == 0);
+
+    // Workspace coordinates are one-based UTF-8 byte columns. Replacing text
+    // after a multi-byte codepoint must neither split nor shift the edit range.
+    write_file(a, "prefix caf\xC3\xA9 suffix\n");
+    void *unicode = rt_seq_new_owned();
+    add_edit(unicode, a, 1, 8, 1, 13, "tea");
+    void *unicode_applied = rt_workspace_edit_apply(unicode);
+    assert(rt_map_get_bool(unicode_applied, rt_const_cstr("success")) == 1);
+    assert(read_file(a) == "prefix tea suffix\n");
+
+    // A prepared whole-file save owns one immutable validation snapshot. A
+    // same-size external rewrite after preparation must abort at commit, while
+    // a fresh token applies exactly once and remains explicitly destroyable.
+    fs::path prepared_file = root / "prepared.zia";
+    write_file(prepared_file, "old-a\n");
+    void *stale_edits = rt_seq_new_owned();
+    add_whole_file_edit(stale_edits, prepared_file, "saved\n", 6, 1024);
+    void *stale_prepared = rt_workspace_edit_prepare(stale_edits);
+    assert(rt_workspace_edit_prepared_is_valid(stale_prepared) == 1);
+    void *stale_validation = rt_workspace_edit_prepared_result(stale_prepared);
+    assert(rt_map_get_bool(stale_validation, rt_const_cstr("success")) == 1);
+    write_file(prepared_file, "old-b\n");
+    void *stale_apply = rt_workspace_edit_prepared_apply(stale_prepared);
+    assert(rt_map_get_bool(stale_apply, rt_const_cstr("success")) == 0);
+    assert(read_file(prepared_file) == "old-b\n");
+    assert(rt_workspace_edit_prepared_is_valid(stale_prepared) == 0);
+    rt_workspace_edit_prepared_destroy(stale_prepared);
+
+    void *fresh_edits = rt_seq_new_owned();
+    add_whole_file_edit(fresh_edits, prepared_file, "saved\n", 6, 1024);
+    void *fresh_prepared = rt_workspace_edit_prepare(fresh_edits);
+    assert(rt_workspace_edit_prepared_is_valid(fresh_prepared) == 1);
+    void *fresh_apply = rt_workspace_edit_prepared_apply(fresh_prepared);
+    assert(rt_map_get_bool(fresh_apply, rt_const_cstr("success")) == 1);
+    assert(rt_map_get_int(fresh_apply, rt_const_cstr("appliedFiles")) == 1);
+    assert(read_file(prepared_file) == "saved\n");
+    void *second_apply = rt_workspace_edit_prepared_apply(fresh_prepared);
+    assert(rt_map_get_bool(second_apply, rt_const_cstr("success")) == 0);
+    rt_workspace_edit_prepared_destroy(fresh_prepared);
+
+    void *limited_edits = rt_seq_new_owned();
+    add_whole_file_edit(limited_edits, prepared_file, "too large", 6, 4);
+    void *limited_prepared = rt_workspace_edit_prepare(limited_edits);
+    assert(rt_workspace_edit_prepared_is_valid(limited_prepared) == 0);
+    rt_workspace_edit_prepared_destroy(limited_prepared);
+
+    // A sparse target beyond the transaction's per-file budget must be
+    // rejected from metadata alone, before the runtime allocates or reads it.
+    fs::path oversized = root / "oversized.zia";
+    write_file(oversized, "x");
+    std::error_code resize_ec;
+    fs::resize_file(oversized, 64u * 1024u * 1024u + 1u, resize_ec);
+    if (!resize_ec) {
+        void *oversized_edits = rt_seq_new_owned();
+        add_edit(oversized_edits, oversized, 1, 1, 1, 2, "y");
+        void *oversized_result = rt_workspace_edit_validate(oversized_edits);
+        assert(rt_map_get_bool(oversized_result, rt_const_cstr("success")) == 0);
+    }
+    fs::remove(oversized);
+
+    // Two directory entries for one inode/file ID are ambiguous under atomic
+    // replacement (which would break the hard-link relationship). Reject the
+    // complete batch instead of silently editing only one alias.
+    fs::path hardlink_source = root / "hardlink-source.zia";
+    fs::path hardlink_alias = root / "hardlink-alias.zia";
+    write_file(hardlink_source, "left right\n");
+    std::error_code hardlink_ec;
+    fs::create_hard_link(hardlink_source, hardlink_alias, hardlink_ec);
+    if (!hardlink_ec) {
+        void *hardlink_edits = rt_seq_new_owned();
+        add_edit(hardlink_edits, hardlink_source, 1, 1, 1, 5, "LEFT");
+        add_edit(hardlink_edits, hardlink_alias, 1, 6, 1, 11, "RIGHT");
+        void *hardlink_result = rt_workspace_edit_apply(hardlink_edits);
+        assert(rt_map_get_bool(hardlink_result, rt_const_cstr("success")) == 0);
+        assert(read_file(hardlink_source) == "left right\n");
+        assert(read_file(hardlink_alias) == "left right\n");
     }
 
     write_file(a, "abcdef\n");
@@ -448,6 +796,43 @@ static void test_workspace_edits() {
     void *rooted_applied = rt_workspace_edit_apply_in_root(rooted, root_s);
     assert(rt_map_get_bool(rooted_applied, rt_const_cstr("success")) == 1);
     assert(read_file(a) == "FIRST\nsecond\n");
+
+    // A prepared rooted transaction must not follow a directory component
+    // swapped to a symlink between validation and commit. The retained-root,
+    // no-follow reopen fails closed and neither the moved original nor the
+    // outside lookalike is changed.
+    fs::path secure_dir = root / "secure-dir";
+    fs::path held_dir = root / "secure-dir-held";
+    fs::path secure_file = secure_dir / "guarded.zia";
+    fs::path outside_dir =
+        root.parent_path() / (root.filename().string() + "_symlink_target");
+    fs::path outside_guarded = outside_dir / "guarded.zia";
+    write_file(secure_file, "inside\n");
+    write_file(outside_guarded, "outside\n");
+    void *guarded_edits = rt_seq_new_owned();
+    add_edit(guarded_edits,
+             fs::path("secure-dir/guarded.zia"),
+             1,
+             1,
+             1,
+             7,
+             "MUTATE");
+    void *guarded_prepared = rt_workspace_edit_prepare_in_root(guarded_edits, root_s);
+    assert(rt_workspace_edit_prepared_is_valid(guarded_prepared) == 1);
+    std::error_code swap_ec;
+    fs::rename(secure_dir, held_dir, swap_ec);
+    assert(!swap_ec);
+    fs::create_directory_symlink(outside_dir, secure_dir, swap_ec);
+    if (!swap_ec) {
+        void *guarded_result = rt_workspace_edit_prepared_apply(guarded_prepared);
+        assert(rt_map_get_bool(guarded_result, rt_const_cstr("success")) == 0);
+        assert(read_file(held_dir / "guarded.zia") == "inside\n");
+        assert(read_file(outside_guarded) == "outside\n");
+        fs::remove(secure_dir, swap_ec);
+    }
+    rt_workspace_edit_prepared_destroy(guarded_prepared);
+    fs::rename(held_dir, secure_dir, swap_ec);
+    fs::remove_all(outside_dir);
 
     void *size_mismatch = rt_seq_new_owned();
     add_edit(size_mismatch, fs::path("a.zia"), 1, 1, 1, 6, "first", 999);

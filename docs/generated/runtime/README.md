@@ -16,14 +16,14 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Diagnostics](diagnostics.md) | 3 | 20 |
 | [Error](error.md) | 0 | 3 |
 | [Functional](functional.md) | 2 | 33 |
-| [GUI](gui.md) | 79 | 1163 |
+| [GUI](gui.md) | 79 | 1165 |
 | [Game](game.md) | 52 | 793 |
 | [Game2D](game2d.md) | 1 | 143 |
 | [Game3D](game3d.md) | 61 | 817 |
 | [Graphics](graphics.md) | 48 | 593 |
 | [Graphics2D](graphics2d.md) | 4 | 109 |
 | [Graphics3D](graphics3d.md) | 70 | 1441 |
-| [IO](io.md) | 16 | 241 |
+| [IO](io.md) | 17 | 245 |
 | [Input](input.md) | 7 | 265 |
 | [Localization](localization.md) | 10 | 121 |
 | [Math](math.md) | 12 | 284 |
@@ -37,8 +37,8 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [System](system.md) | 12 | 94 |
 | [Terminal](terminal.md) | 1 | 24 |
 | [Testing](testing.md) | 2 | 16 |
-| [Text](text.md) | 18 | 174 |
+| [Text](text.md) | 18 | 175 |
 | [Threads](threads.md) | 18 | 162 |
 | [Time](time.md) | 9 | 117 |
-| [Workspace](workspace.md) | 3 | 11 |
+| [Workspace](workspace.md) | 5 | 23 |
 | [Zia](zia.md) | 7 | 56 |

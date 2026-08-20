@@ -30,6 +30,7 @@ bind "../core/recovery_store";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../services/file_utils";
+bind "../services/path_identity";
 bind "../commands/autosave_job";
 bind "../commands/file_save_support";
 
@@ -221,8 +222,8 @@ func handleSave(shell: app_shell.AppShell,
             if savePath != "" {
                 NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
                 if docMgr.SaveAs(savePath) == false {
-                    shell.SetStatusLeft("Save failed: " + saveDoc.fileName);
-                    GUI.Toast.Error("Save failed");
+                    file_save_support.ReportSaveFailure(
+                        shell, docMgr, saveDoc.fileName);
                     return false;
                 }
                 tabs.SetTitle(docMgr.activeIndex, saveDoc.fileName);
@@ -242,8 +243,8 @@ func handleSave(shell: app_shell.AppShell,
             if confirmOverwriteExternal(shell, docMgr, docMgr.activeIndex, externalState) {
                 NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
                 if docMgr.SaveActiveAfterExternalConfirmation(externalState) == false {
-                    shell.SetStatusLeft("Save failed: " + saveDoc.fileName);
-                    GUI.Toast.Error("Save failed");
+                    file_save_support.ReportSaveFailure(
+                        shell, docMgr, saveDoc.fileName);
                     return false;
                 }
                 tabs.SetModified(docMgr.activeIndex, false);
@@ -282,8 +283,8 @@ func handleSaveAs(shell: app_shell.AppShell,
             }
             NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
             if docMgr.SaveAs(saveAsPath) == false {
-                shell.SetStatusLeft("Save As failed: " + saveAsDoc.fileName);
-                GUI.Toast.Error("Save As failed");
+                file_save_support.ReportSaveFailure(
+                    shell, docMgr, saveAsDoc.fileName);
                 return false;
             }
             tabs.SetTitle(docMgr.activeIndex, saveAsDoc.fileName);
@@ -346,9 +347,8 @@ func handleSaveAll(shell: app_shell.AppShell,
                         SyncRecoverySwaps(docMgr, engine);
                     } else {
                         result.savedCount = savedCount;
-                        result.message = "Save failed: " + doc.fileName;
-                        shell.SetStatusLeft(result.message);
-                        GUI.Toast.Error(result.message);
+                        result.message = file_save_support.ReportSaveFailure(
+                            shell, docMgr, doc.fileName);
                         return result;
                     }
                 } else {
@@ -376,9 +376,8 @@ func handleSaveAll(shell: app_shell.AppShell,
                     SyncRecoverySwaps(docMgr, engine);
                 } else {
                     result.savedCount = savedCount;
-                    result.message = "Save failed: " + doc.fileName;
-                    shell.SetStatusLeft(result.message);
-                    GUI.Toast.Error("Save failed");
+                    result.message = file_save_support.ReportSaveFailure(
+                        shell, docMgr, doc.fileName);
                     return result;
                 }
             }
@@ -991,8 +990,8 @@ func SaveDirtyDocumentsForClose(shell: app_shell.AppShell,
                     }
                     NormalizeDocumentForSave(docMgr, engine, i);
                     if docMgr.SaveDocumentAs(i, savePath) == false {
-                        shell.SetStatusLeft("Save failed: " + doc.fileName);
-                        GUI.Toast.Error("Save failed");
+                        file_save_support.ReportSaveFailure(
+                            shell, docMgr, doc.fileName);
                         return false;
                     }
                 } else {
@@ -1002,8 +1001,8 @@ func SaveDirtyDocumentsForClose(shell: app_shell.AppShell,
                     }
                     NormalizeDocumentForSave(docMgr, engine, i);
                     if docMgr.SaveDocumentAfterExternalConfirmation(i, externalState) == false {
-                        shell.SetStatusLeft("Save failed: " + doc.fileName);
-                        GUI.Toast.Error("Save failed");
+                        file_save_support.ReportSaveFailure(
+                            shell, docMgr, doc.fileName);
                         return false;
                     }
                 }
@@ -1054,8 +1053,7 @@ func SaveDirtyDocumentsUnderPath(shell: app_shell.AppShell,
 /// @brief Return true when a document path is the selected file or inside a directory.
 func DocumentIsUnderPath(doc: document.Document, path: String) -> Boolean {
     if doc == null or path == "" or doc.filePath == "" { return false; }
-    if doc.filePath == path { return true; }
-    return Str.StartsWith(doc.filePath, path + Path.Separator());
+    return path_identity.IsWithinRoot(doc.filePath, path);
 }
 
 func confirmOverwriteExternal(shell: app_shell.AppShell,

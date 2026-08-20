@@ -1,11 +1,11 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-16
+last-verified: 2026-08-20
 ---
 
 # Files & Directories
-> File, BinFile, TempFile, Dir, Path, Glob
+> File, FileLease, BinFile, TempFile, Dir, Path, Glob
 
 **Part of [Zanna Runtime Library](../README.md) › [Input & Output](README.md)**
 
@@ -23,6 +23,7 @@ File system operations.
 |-------------------------------|------------------------|-------------------------------------------------------------------------------------------|
 | `Exists(path)`                | `Boolean(String)`      | Returns true only if the path exists and is a regular file                               |
 | `SameFile(left, right)`       | `Boolean(String, String)` | Returns true when both paths resolve to the same existing regular file identity       |
+| `IdentityKey(path)`           | `String(String)`       | Returns an opaque alias-stable key for an existing regular file, or empty              |
 | `ReadAllText(path)`           | `String(String)`       | Reads the entire file contents as a string; traps on I/O errors                           |
 | `ReadAllTextBounded(path, maxBytes)` | `String(String, Integer)` | Opens once and reads the complete file only when its byte size does not exceed the nonnegative ceiling |
 | `WriteAllText(path, content)` | `Void(String, String)` | Atomically replaces a text file with new contents                                          |
@@ -55,6 +56,10 @@ File system operations.
   or device/inode pairs on POSIX. Missing, inaccessible, malformed, and non-file paths return
   false rather than trapping. It therefore handles hard links, symlinks, and case-equivalent
   spellings without incorrectly folding distinct files on a case-sensitive filesystem.
+- `IdentityKey` applies the same followed regular-file identity in a form suitable for
+  short-lived map keys and grouping. Aliases of one live file return the same nonempty value;
+  missing, inaccessible, malformed, directory, and special-file paths return empty. The key's
+  representation is unspecified, can be reused after deletion, and must not be parsed or stored.
 - Path strings with embedded NUL bytes are rejected before reaching platform file APIs.
 - `ReadAllText`, `ReadAllTextBounded`, `ReadAllBytes`, and `ReadAllLines` require a regular file and trap on directories, special files, I/O errors, or unexpected short reads if the file changes while being read. `ReadAllTextBounded` also rejects negative ceilings, sizes above the ceiling before allocation, and observed trailing data.
 - `WriteAllText`, `WriteAllTextNew`, `WriteAllBytes`, `WriteBytes`, and `WriteLines` write to an exclusive temporary file in the destination directory, durably flush it, and atomically commit it. `WriteAllTextNew` uses a no-clobber commit and preserves any destination that appears before commit. Failed writes trap instead of silently leaving a partial file behind. Temporary sidecar names are unpredictable and do not include process memory addresses.
@@ -194,6 +199,39 @@ Zanna.IO.File.Touch("marker.txt")
 ```
 
 ---
+
+## Zanna.IO.FileLease
+
+A managed, process-lifetime exclusive lease on a persistent regular-file
+marker. This is intended for ownership protocols such as crash-recovery
+namespaces; it is not a replacement for atomic content updates.
+
+| Member | Signature | Description |
+|---|---|---|
+| `TryAcquire(path)` | `FileLease?(String)` | Creates or opens `path` and immediately acquires its exclusive OS lease; returns null on contention or unsafe/unavailable paths |
+| `IsValid()` | `Boolean()` | True while this handle still owns the lease |
+| `Release()` | `Void()` | Idempotently releases the OS lease without deleting the marker |
+
+The marker must remain at one stable path and must not be atomically replaced
+while leased, because replacement would create a different filesystem entry.
+Windows uses a nonblocking whole-file lock and rejects reparse points. POSIX
+uses a nonblocking `flock` on a no-follow, close-on-exec, single-link regular
+file. Both reject another independent lease in the same process. Finalization
+releases a forgotten handle, but deterministic ownership
+protocols should call `Release` explicitly and delete the marker only after
+their durable cleanup succeeds. See ADR 0276.
+
+```zia
+bind Lease = Zanna.IO.FileLease;
+bind File = Zanna.IO.File;
+
+var owner = Lease.TryAcquire("state/session.lock");
+if owner != null {
+    // This process exclusively owns the session marker.
+    owner.Release();
+    File.Delete("state/session.lock");
+}
+```
 
 ## Zanna.IO.BinFile
 
@@ -975,22 +1013,61 @@ Transactional multi-file text edit validation and application.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Validate(edits)` | `Map(Seq)` | Check edit records without writing files |
-| `Apply(edits)` | `Map(Seq)` | Revalidate, stage, and apply edits |
+| `Apply(edits)` | `Map(Seq)` | Prepare once, stage, and apply edits |
+| `Prepare(edits)` | `PreparedEdit(Seq)` | Read and validate once into an explicit transaction |
 | `ValidateInRoot(edits, root)` | `Map(Seq, String)` | Validate while rejecting targets outside an existing workspace root |
 | `ApplyInRoot(edits, root)` | `Map(Seq, String)` | Apply with the same workspace-root boundary |
+| `PrepareInRoot(edits, root)` | `PreparedEdit(Seq, String)` | Prepare with the same workspace-root boundary |
+| `ValidateInRoots(edits, roots)` | `Map(Seq, Seq)` | Validate one batch against multiple explicit workspace roots |
+| `ApplyInRoots(edits, roots)` | `Map(Seq, Seq)` | Apply one all-or-nothing batch spanning explicit workspace roots |
+| `PrepareInRoots(edits, roots)` | `PreparedEdit(Seq, Seq)` | Prepare one batch spanning explicit workspace roots |
 
-Each edit record is a `Map` with `file`, `startLine`, `startColumn`, `endLine`, `endColumn`, `newText`, and optional `expectedMtime` / `expectedSize`. Line and column values are 1-based byte positions. Validation results contain `success`, `editCount`, and `diagnostics`; apply results add `appliedFiles`.
+Each ranged edit record is a `Map` with `file`, `startLine`, `startColumn`, `endLine`,
+`endColumn`, `newText`, and optional `expectedMtime` / `expectedSize`. Line and column values are
+1-based byte positions. A record with `wholeFile=true` replaces the complete target without line
+splitting and may additionally specify `expectedHash` and `maxBytes`; it must be the only edit for
+that file. Validation results contain `success`, `editCount`, and `diagnostics`; apply results add
+`appliedFiles`.
 
-Validation rejects missing files, invalid ranges, overlapping edits in the same file, and stale expected metadata. Apply revalidates immediately before writing, stages every changed file beside its target, and commits each replacement with same-directory renames. If a later commit fails, rollback is best-effort; callers must still inspect `success` and diagnostics rather than treating a multi-file batch as a crash-proof filesystem transaction.
+`Zanna.Workspace.PreparedEdit` has static `IsValid(handle)`, `Result(handle)`, `Apply(handle)`,
+and `Destroy(handle)` operations. A handle is immutable and one-shot: `Apply` consumes it, a
+second apply fails, and callers must always destroy it. `Result` clones the preparation
+diagnostics without rereading files.
+
+Validation requires a real `Seq` and rejects missing/non-regular files, invalid ranges, overlapping
+edits in the same file, stale expected metadata, and ambiguous hard-link aliases in one batch.
+Targets are canonicalized even for the legacy unrooted methods. One call accepts at most 100,000
+edits and 20,000 files; each source/output file is capped at 64 MiB, aggregate source and output
+at 256 MiB, and aggregate replacement text at 128 MiB. Files are sized before allocation and an
+observed short read or trailing growth rejects the snapshot.
+
+Apply prepares once, stages every changed file beside its target, and commits each replacement
+with same-directory renames. POSIX ownership, permission/special-mode bits, bounded extended
+attributes (including ACL/security namespaces), and platform file flags are retained. Windows
+staging uses the native complete-file copy path before rewriting only the unnamed data stream, so
+alternate streams, extended/resource attributes, compression, encryption, object metadata,
+timestamps, owner/group, DACL, and DOS attributes survive replacement. Metadata-copy failure
+aborts before commit rather than silently stripping it. If a later
+commit fails, rollback appends `edit.rollback` diagnostics. Any original that cannot be restored
+remains at the reported backup path instead of being deleted; callers must still inspect `success`
+and diagnostics rather than treating a multi-file batch as a crash-proof filesystem transaction.
 Immediately before replacing each live target the commit phase re-reads the file and confirms it
-still matches the content validated earlier; if an external editor, formatter, or process changed
-it during staging, the whole batch is aborted with an `edit target changed since validation`
-diagnostic and rolled back, so newer content is not silently overwritten. (The recheck is
-content-based; a rooted transaction whose path *component* is swapped for another during the
-window is not yet fully guarded — full protection needs handle-relative commits.) Temp and backup sidecar names are unpredictable (a per-process keyed hash of an atomic counter),
+still matches both the content and stable file identity validated earlier; if an external editor,
+formatter, or process changed or exchanged it during staging, the whole batch is aborted with an
+`edit target changed since validation` diagnostic and rolled back, so newer content is not
+silently overwritten. Root-bounded methods traverse verified, non-link directory components and
+perform every read, sidecar creation, rename, rollback, cleanup, and directory flush relative to
+retained parent handles/descriptors. Windows retains ancestor handles without delete sharing;
+POSIX uses no-follow `openat`/`renameat`/`unlinkat` operations. Swapping a validated component to a
+symlink therefore fails closed instead of redirecting a commit outside the workspace. Legacy
+unrooted methods retain their compatibility behavior and should be used only for already-trusted
+absolute targets. Temp
+and backup sidecar names are unpredictable (a per-process keyed hash of an atomic counter),
 and each backup is exclusively reserved (`O_EXCL` / `CREATE_NEW`) before the commit rename, so a
 stale artifact or racing process cannot make the rename clobber unrelated data; a successful apply
-leaves no sidecars behind.
+leaves no sidecars behind. Windows renames the already-open target handle over the reserved backup
+relative to the retained parent, matching POSIX `renameat` behavior instead of failing merely
+because the reservation exists.
 
 ---
 

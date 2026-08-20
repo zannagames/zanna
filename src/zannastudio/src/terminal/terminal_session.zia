@@ -19,10 +19,14 @@
 
 module terminal_session;
 
+bind "../services/process_reaper";
+
 bind Pty = Zanna.System.Pty;
+bind Bytes = Zanna.Collections.Bytes;
 bind Map = Zanna.Collections.Map;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
+bind GUI = Zanna.GUI;
 
 // ============================================================================
 // MODULE: terminal_session  (Phase 5D — integrated terminal)
@@ -38,6 +42,156 @@ bind Str = Zanna.String;
 final MAX_TERMINAL_OUTPUT_DELTA = 65536;
 final MAX_TERMINAL_SCROLLBACK = 200000;
 final MAX_TERMINAL_PENDING = 65536;
+final MAX_TERMINAL_INPUT_PENDING = 1024 * 1024;
+
+/// @brief Fixed-capacity UTF-8-aware byte ring for terminal output.
+/// @details Appends copy only the incoming bytes. Overflow advances the head to
+///          the next code-point boundary, and incomplete trailing code points
+///          remain buffered until a later PTY read completes them. A contiguous
+///          String is allocated only when the UI consumes or replays output.
+class BoundedTerminalText {
+    hide Any storage;
+    hide Integer head;
+    expose Integer byteCount;
+    expose Integer maxBytes;
+    expose Boolean dropped;
+
+    expose func init(maximumBytes: Integer) {
+        maxBytes = maximumBytes;
+        if maxBytes < 1 { maxBytes = 1; }
+        storage = Bytes.New(maxBytes);
+        head = 0;
+        byteCount = 0;
+        dropped = false;
+    }
+
+    hide func ByteAt(offset: Integer) -> Integer {
+        return Bytes.Get(storage, (head + offset) % maxBytes);
+    }
+
+    hide func IsContinuation(value: Integer) -> Boolean {
+        return value >= 0x80 and value <= 0xBF;
+    }
+
+    /// @brief Remove any partial leading code point created by overflow.
+    hide func NormalizeHead() {
+        while byteCount > 0 and IsContinuation(ByteAt(0)) {
+            head = (head + 1) % maxBytes;
+            byteCount = byteCount - 1;
+            dropped = true;
+        }
+    }
+
+    hide func CopyToTail(input: Any, sourceOffset: Integer, count: Integer) {
+        if count <= 0 { return; }
+        var tail = (head + byteCount) % maxBytes;
+        var firstCount = count;
+        if firstCount > maxBytes - tail { firstCount = maxBytes - tail; }
+        Bytes.Copy(storage, tail, input, sourceOffset, firstCount);
+        var remaining = count - firstCount;
+        if remaining > 0 {
+            Bytes.Copy(storage, 0, input, sourceOffset + firstCount, remaining);
+        }
+        byteCount = byteCount + count;
+    }
+
+    expose func Append(text: String) {
+        if text == "" { return; }
+        var input = Bytes.FromStr(text);
+        var inputBytes = Bytes.get_Length(input);
+        if inputBytes >= maxBytes {
+            if byteCount > 0 or inputBytes > maxBytes { dropped = true; }
+            Bytes.Copy(storage, 0, input, inputBytes - maxBytes, maxBytes);
+            head = 0;
+            byteCount = maxBytes;
+            NormalizeHead();
+            return;
+        }
+        var overflow = byteCount + inputBytes - maxBytes;
+        if overflow > 0 {
+            head = (head + overflow) % maxBytes;
+            byteCount = byteCount - overflow;
+            dropped = true;
+            NormalizeHead();
+        }
+        CopyToTail(input, 0, inputBytes);
+    }
+
+    /// @brief Count bytes ending at the last complete UTF-8 sequence.
+    /// @details Malformed interior bytes make byte-wise progress so terminal
+    ///          output remains observable; only an incomplete trailing sequence
+    ///          is withheld for the next append.
+    hide func CompletePrefixBytes() -> Integer {
+        var i = 0;
+        while i < byteCount {
+            var lead = ByteAt(i);
+            var width = 1;
+            if lead >= 0xC2 and lead <= 0xDF {
+                width = 2;
+            } else if lead >= 0xE0 and lead <= 0xEF {
+                width = 3;
+            } else if lead >= 0xF0 and lead <= 0xF4 {
+                width = 4;
+            } else if IsContinuation(lead) {
+                i = i + 1;
+                continue;
+            }
+            if i + width > byteCount { return i; }
+            var validShape = true;
+            var j = 1;
+            while j < width {
+                if IsContinuation(ByteAt(i + j)) == false { validShape = false; }
+                j = j + 1;
+            }
+            if validShape { i = i + width; } else { i = i + 1; }
+        }
+        return byteCount;
+    }
+
+    hide func PrefixText(count: Integer) -> String {
+        if count <= 0 { return ""; }
+        var output = Bytes.New(count);
+        var firstCount = count;
+        if firstCount > maxBytes - head { firstCount = maxBytes - head; }
+        Bytes.Copy(output, 0, storage, head, firstCount);
+        var remaining = count - firstCount;
+        if remaining > 0 { Bytes.Copy(output, firstCount, storage, 0, remaining); }
+        return Bytes.ToStr(output);
+    }
+
+    hide func DropPrefix(count: Integer) {
+        if count <= 0 { return; }
+        var removeCount = count;
+        if removeCount > byteCount { removeCount = byteCount; }
+        head = (head + removeCount) % maxBytes;
+        byteCount = byteCount - removeCount;
+    }
+
+    expose func Text() -> String {
+        return PrefixText(CompletePrefixBytes());
+    }
+
+    /// @brief Consume complete text while retaining a split trailing code point.
+    expose func TakeText() -> String {
+        var count = CompletePrefixBytes();
+        var output = PrefixText(count);
+        DropPrefix(count);
+        dropped = false;
+        return output;
+    }
+
+    /// @brief Discard rendered complete text but retain a split trailing code point.
+    expose func DiscardVisible() {
+        DropPrefix(CompletePrefixBytes());
+        dropped = false;
+    }
+
+    expose func Clear() {
+        head = 0;
+        byteCount = 0;
+        dropped = false;
+    }
+}
 
 /// @brief A running PTY-backed terminal child.
 class TerminalSession {
@@ -48,11 +202,18 @@ class TerminalSession {
     expose Boolean exitedThisUpdate;
     expose String lastError;
     expose Boolean outputTruncated;
-    expose String replayBuffer; // Complete recent per-session scrollback.
-    expose String pendingOutput; // Scrollback suffix not yet rendered in the active pane.
+    hide BoundedTerminalText replayStore;
+    hide BoundedTerminalText pendingStore;
     expose Boolean scrollbackDropped;
     expose Boolean pendingOutputDropped;
-    expose String title;        // Display label for the terminal selector.
+    hide String pendingInput;
+    expose String title; // Display label for the terminal selector.
+    expose Boolean manualStop;
+    expose Integer lastCols;
+    expose Integer lastRows;
+    hide process_reaper.ProcessReaper processReaper;
+    hide GUI.App wakeApp;
+    expose Boolean activityWakeAttached;
 
     expose func init() {
         session = null;
@@ -62,11 +223,31 @@ class TerminalSession {
         exitedThisUpdate = false;
         lastError = "";
         outputTruncated = false;
-        replayBuffer = "";
-        pendingOutput = "";
+        replayStore = new BoundedTerminalText(MAX_TERMINAL_SCROLLBACK);
+        pendingStore = new BoundedTerminalText(MAX_TERMINAL_PENDING);
         scrollbackDropped = false;
         pendingOutputDropped = false;
+        pendingInput = "";
         title = "";
+        manualStop = false;
+        lastCols = 0;
+        lastRows = 0;
+        processReaper = null;
+        wakeApp = null;
+        activityWakeAttached = false;
+    }
+
+    /// @brief Route later handle destruction through a UI-safe shared reaper.
+    expose func SetProcessReaper(value: process_reaper.ProcessReaper) {
+        processReaper = value;
+    }
+
+    /// @brief Select the App whose native wait receives PTY activity wakes.
+    expose func SetWakeApp(value: GUI.App) { wakeApp = value; }
+
+    /// @brief Report whether this active PTY still needs timer polling.
+    expose func NeedsActivityPolling() -> Boolean {
+        return active and activityWakeAttached == false;
     }
 
     /// @brief Open a PTY-backed child. @return true when the session is live.
@@ -93,9 +274,14 @@ class TerminalSession {
             session = null;
             return false;
         }
+        activityWakeAttached = wakeApp != null and wakeApp.WatchPty(session);
         active = true;
         exitCode = -1;
         outputTruncated = false;
+        pendingInput = "";
+        manualStop = false;
+        lastCols = cols;
+        lastRows = rows;
         return true;
     }
 
@@ -106,6 +292,7 @@ class TerminalSession {
     /// @return true when the replacement session is live.
     expose func Restart(program: String, args: Any, cwd: String, cols: Integer, rows: Integer) -> Boolean {
         Stop();
+        manualStop = false;
         started = false;
         return Start(program, args, cwd, cols, rows);
     }
@@ -116,12 +303,17 @@ class TerminalSession {
     expose func Update() -> String {
         exitedThisUpdate = false;
         if session == null or active == false { return ""; }
+        FlushInput();
         var out = ReadTerminalDelta();
         if session.IsRunning() == false {
             out = out + ReadTerminalDelta();
             exitCode = session.ExitCode();
             active = false;
             exitedThisUpdate = true;
+            if pendingInput != "" {
+                pendingInput = "";
+                out = out + "\n[terminal exited before queued input was sent]\n";
+            }
             out = out + "\n[exited " + exitCode + "]\n";
         }
         return RecordFrameDelta(out);
@@ -135,7 +327,9 @@ class TerminalSession {
             var marker = "\n[terminal frame output prefix truncated]\n";
             var keep = MAX_TERMINAL_OUTPUT_DELTA - Str.get_Length(marker);
             if keep < 1 { keep = 1; }
-            bounded = marker + Str.Right(bounded, keep);
+            var suffix = new BoundedTerminalText(keep);
+            suffix.Append(bounded);
+            bounded = marker + suffix.Text();
             outputTruncated = true;
         }
         RecordOutput(bounded);
@@ -156,60 +350,87 @@ class TerminalSession {
     /// @brief Add shell output or a controller-authored lifecycle note.
     expose func RecordOutput(text: String) {
         if text == "" { return; }
-        replayBuffer = replayBuffer + text;
-        var scrollLen = Str.get_Length(replayBuffer);
-        if scrollLen > MAX_TERMINAL_SCROLLBACK {
-            replayBuffer = Str.Right(replayBuffer, MAX_TERMINAL_SCROLLBACK);
-            scrollbackDropped = true;
-        }
-        pendingOutput = pendingOutput + text;
-        var pendingLen = Str.get_Length(pendingOutput);
-        if pendingLen > MAX_TERMINAL_PENDING {
-            pendingOutput = Str.Right(pendingOutput, MAX_TERMINAL_PENDING);
-            pendingOutputDropped = true;
-        }
+        replayStore.Append(text);
+        pendingStore.Append(text);
+        scrollbackDropped = replayStore.dropped;
+        pendingOutputDropped = pendingStore.dropped;
     }
 
     /// @brief Consume output not yet rendered for this session.
     expose func TakePendingOutput() -> String {
-        var out = pendingOutput;
-        pendingOutput = "";
-        if pendingOutputDropped {
+        var hadDroppedPrefix = pendingOutputDropped;
+        var out = pendingStore.TakeText();
+        if hadDroppedPrefix {
             out = "\n[terminal pending output prefix truncated]\n" + out;
-            pendingOutputDropped = false;
         }
+        pendingOutputDropped = false;
         return out;
     }
 
     /// @brief Return the bounded scrollback snapshot for a session switch.
     expose func ReplayText() -> String {
+        var replay = replayStore.Text();
         if scrollbackDropped {
-            return "\n[terminal scrollback prefix truncated]\n" + replayBuffer;
+            return "\n[terminal scrollback prefix truncated]\n" + replay;
         }
-        return replayBuffer;
+        return replay;
     }
+
+    /// @brief Return queued, not-yet-rendered output without consuming it.
+    expose func PeekPendingOutput() -> String { return pendingStore.Text(); }
+
+    expose func ReplayBytes() -> Integer { return replayStore.byteCount; }
+    expose func PendingBytes() -> Integer { return pendingStore.byteCount; }
 
     /// @brief Mark all recorded output rendered after replaying the snapshot.
     expose func ClearPendingOutput() {
-        pendingOutput = "";
+        pendingStore.DiscardVisible();
         pendingOutputDropped = false;
     }
 
-    /// @brief Write raw bytes to the terminal input.
-    expose func Send(text: String) {
-        if session == null or active == false { return; }
-        session.Write(text);
+    /// @brief Retry queued PTY input without blocking or dropping a suffix.
+    hide func FlushInput() -> Boolean {
+        if pendingInput == "" { return true; }
+        if session == null or active == false { return false; }
+        var accepted = session.Write(pendingInput);
+        if accepted <= 0 { return false; }
+        var length = Str.get_Length(pendingInput);
+        if accepted >= length {
+            pendingInput = "";
+            return true;
+        }
+        pendingInput = Str.Substring(pendingInput, accepted, length - accepted);
+        return false;
+    }
+
+    /// @brief Queue raw bytes for nonblocking terminal input delivery.
+    /// @return True when every byte entered the bounded retry queue.
+    expose func Send(text: String) -> Boolean {
+        if session == null or active == false { return false; }
+        if text == "" { return true; }
+        FlushInput();
+        var currentBytes = Str.get_Length(pendingInput);
+        var textBytes = Str.get_Length(text);
+        if textBytes > MAX_TERMINAL_INPUT_PENDING - currentBytes {
+            return false;
+        }
+        pendingInput = pendingInput + text;
+        FlushInput();
+        return true;
     }
 
     /// @brief Write a line (appends newline) to the terminal input.
-    expose func SendLine(text: String) {
-        Send(text + "\n");
+    expose func SendLine(text: String) -> Boolean {
+        return Send(text + "\n");
     }
 
     /// @brief Resize the terminal window.
-    expose func Resize(cols: Integer, rows: Integer) {
-        if session == null or active == false { return; }
-        session.Resize(cols, rows);
+    expose func Resize(cols: Integer, rows: Integer) -> Boolean {
+        if session == null or active == false { return false; }
+        if session.Resize(cols, rows) == false { return false; }
+        lastCols = cols;
+        lastRows = rows;
+        return true;
     }
 
     /// @brief Terminate the child, release the session, and clear restart state.
@@ -217,10 +438,24 @@ class TerminalSession {
     ///          session latch here lets explicit Run/Restart actions create a
     ///          fresh PTY after Stop.
     expose func Stop() {
-        if session == null { return; }
+        pendingInput = "";
+        manualStop = true;
+        lastCols = 0;
+        lastRows = 0;
+        if session == null {
+            active = false;
+            started = false;
+            exitedThisUpdate = false;
+            return;
+        }
         session.Kill();
-        session.Destroy();
+        if processReaper != null {
+            processReaper.RetirePty(session);
+        } else {
+            session.Destroy();
+        }
         session = null;
+        activityWakeAttached = false;
         active = false;
         started = false;
         exitedThisUpdate = false;

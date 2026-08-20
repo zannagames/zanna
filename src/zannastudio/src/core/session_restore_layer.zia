@@ -1,0 +1,597 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_restore_layer.zia
+// Purpose: Parse, budget, materialize, and conditionally prune session restore state.
+// Key invariants:
+//   - Restore work obeys entry, byte, and elapsed-time budgets.
+//   - Invalid slots are pruned only when their complete fingerprint is unchanged.
+//   - Large Base64 recovery records decode off the UI thread from immutable input.
+// Ownership/Lifetime:
+//   - Restore jobs borrow live models until completion or explicit cancellation.
+// Links: zannastudio/src/core/session_manager.zia,
+//        zannastudio/src/core/session_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_restore_layer;
+bind "document_manager";
+bind "project_manager";
+bind "document";
+bind "session_tab_sink";
+bind "session_restore_helpers" as RestoreHelpers;
+bind "session_recovery_decode" as RecoveryDecode;
+bind "session_history_layer" as History;
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "session_state" as State;
+bind Ini = Zanna.Data.Ini;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Parse = Zanna.Core.Parse;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+bind Time = Zanna.Time;
+bind Hash = Zanna.Crypto.Hash;
+bind Thread = Zanna.Threads.Thread;
+final MAX_SESSION_WORKSPACE_ROOTS = State.MAX_SESSION_WORKSPACE_ROOTS;
+final MAX_SESSION_FILES = State.MAX_SESSION_FILES;
+final DEFAULT_SESSION_RESTORE_BYTES = 4194304;
+final DEFAULT_SESSION_RESTORE_MILLIS = 8;
+final MAX_SESSION_PRUNE_ATTEMPTS = 3;
+type SessionRestoreJob = State.SessionRestoreJob;
+
+/// @brief Resumable session restoration layered over durable session helpers.
+class SessionRestoreLayer extends History.SessionHistoryLayer {
+    /// @brief Restore a complete session through the compatibility blocking API.
+    /// @details Main uses BeginRestore/PumpRestore so the native window can poll
+    ///          and repaint between batches. Tests and non-UI callers retain the
+    ///          original all-at-once result through this wrapper.
+    expose func Restore(docMgr: document_manager.DocumentManager,
+                        projMgr: project_manager.ProjectManager,
+                        tabs: session_tab_sink.SessionTabSink) -> Integer {
+        var job = BeginRestore(docMgr, projMgr, tabs);
+        while job.active {
+            if PumpRestore(job, 64) == 0 and job.active {
+                Thread.Yield();
+            }
+        }
+        return job.restoredCount;
+    }
+    /// @brief Parse durable session state without opening roots or documents yet.
+    /// @param docMgr Destination document model.
+    /// @param projMgr Destination workspace model, or null to skip workspace roots.
+    /// @param tabs Optional visual tab controller.
+    /// @return A resumable job; inactive means there was nothing safe to restore.
+    expose func BeginRestore(docMgr: document_manager.DocumentManager,
+                             projMgr: project_manager.ProjectManager,
+                             tabs: session_tab_sink.SessionTabSink) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, projMgr, tabs, false);
+    }
+    /// @brief Parse only dirty-buffer recovery for an explicit-file launch.
+    /// @details A command-line/Open With target owns the new workspace. Clean
+    ///          tabs, split ownership, and prior workspace roots are skipped,
+    ///          while bounded unsaved buffers remain protected from data loss.
+    /// @param docMgr Destination document model.
+    /// @param tabs Optional visual tab controller.
+    /// @return Resumable recovery scan with the same caller-budgeted contract.
+    expose func BeginRecoveryRestore(
+        docMgr: document_manager.DocumentManager,
+        tabs: session_tab_sink.SessionTabSink) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, null, tabs, true);
+    }
+    /// @brief Shared parser for complete and dirty-buffer-only restore passes.
+    hide func BeginRestoreInternal(
+        docMgr: document_manager.DocumentManager,
+        projMgr: project_manager.ProjectManager,
+        tabs: session_tab_sink.SessionTabSink,
+        recoveryOnly: Boolean) -> SessionRestoreJob {
+        var job = new SessionRestoreJob();
+        restoredSplitFirstDocument = null;
+        restoredSplitSecondDocument = null;
+        splitSecondFocused = false;
+        if settingsPath == "" or docMgr == null { return job; }
+        if IO.File.Exists(settingsPath) == false { return job; }
+
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return job; }
+        var ini = Ini.Parse(readResult.text);
+        splitActive = Ini.Get(ini, "session", "splitActive") == "1";
+        if Ini.Get(ini, "settings", "restoreSession") == "0" { return job; }
+
+        job.ini = ini;
+        job.sourceText = readResult.text;
+        job.docMgr = docMgr;
+        job.projMgr = projMgr;
+        job.tabs = tabs;
+        job.recoveryOnly = recoveryOnly;
+        job.activePath = Ini.Get(ini, "session", "activePath");
+
+        var restoreProject = Ini.Get(ini, "settings", "restoreLastProject") != "0";
+        var workspaceRootCountText = Ini.Get(ini, "session", "workspaceRootCount");
+        if recoveryOnly == false
+           and restoreProject and projMgr != null and workspaceRootCountText != "" {
+            job.indexedWorkspaceRoots = true;
+            job.workspaceRootCount = Parse.IntOr(workspaceRootCountText, 0);
+            if job.workspaceRootCount < 0 { job.workspaceRootCount = 0; }
+            if job.workspaceRootCount > MAX_SESSION_WORKSPACE_ROOTS {
+                job.workspaceRootCount = MAX_SESSION_WORKSPACE_ROOTS;
+            }
+        } else if recoveryOnly == false and restoreProject and projMgr != null {
+            job.legacyProjectRoot = Ini.Get(ini, "session", "projectRoot");
+            job.legacyRootProcessed = job.legacyProjectRoot == "";
+        }
+
+        job.fileCount = Parse.IntOr(Ini.Get(ini, "session", "count"), 0);
+        if job.fileCount < 0 { job.fileCount = 0; }
+        if job.fileCount > MAX_SESSION_FILES { job.fileCount = MAX_SESSION_FILES; }
+
+        var splitFirstIndexText = Ini.Get(ini, "session", "splitFirstIndex");
+        var splitSecondIndexText = Ini.Get(ini, "session", "splitSecondIndex");
+        job.structuredSplitRequested = recoveryOnly == false and splitActive
+            and (splitFirstIndexText != "" or splitSecondIndexText != "");
+        if job.structuredSplitRequested {
+            job.splitFirstIndex = Parse.IntOr(splitFirstIndexText, -1);
+            job.splitSecondIndex = Parse.IntOr(splitSecondIndexText, -1);
+            job.splitSecondFocused =
+                Ini.Get(ini, "session", "splitSecondFocused") == "1";
+        }
+
+        var rootWork = job.workspaceRootCount;
+        if job.indexedWorkspaceRoots == false and job.legacyRootProcessed == false {
+            rootWork = 1;
+        }
+        job.totalWork = rootWork + job.fileCount;
+        job.active = job.totalWork > 0;
+        if job.active == false {
+            FinalizeRestore(job);
+        }
+        if recoveryOnly {
+            splitActive = false;
+            splitSecondFocused = false;
+        }
+        return job;
+    }
+    /// @brief Advance one restore job under default entry, byte, and time caps.
+    expose func PumpRestore(job: SessionRestoreJob,
+                            maxEntries: Integer) -> Integer {
+        return PumpRestoreBudgeted(job, maxEntries,
+                                   DEFAULT_SESSION_RESTORE_BYTES,
+                                   DEFAULT_SESSION_RESTORE_MILLIS);
+    }
+    /// @brief Advance restore work under absolute entry, byte, and time budgets.
+    /// @details One first entry is allowed to exceed the byte estimate so every
+    ///          valid job makes progress; later entries wait for another paint.
+    expose func PumpRestoreBudgeted(job: SessionRestoreJob,
+                                    maxEntries: Integer,
+                                    maxBytes: Integer,
+                                    maxMillis: Integer) -> Integer {
+        if job == null or job.active == false { return 0; }
+        var limit = maxEntries;
+        if limit <= 0 { limit = 1; }
+        var byteLimit = maxBytes;
+        if byteLimit <= 0 { byteLimit = 1; }
+        var timeLimit = maxMillis;
+        if timeLimit <= 0 { timeLimit = 1; }
+        var startedAt = Time.Clock.NowMs();
+        var processed = 0;
+        var processedBytes = 0;
+        job.budgetYielded = false;
+
+        while processed < limit
+              and job.workspaceRootIndex < job.workspaceRootCount
+              and RestoreTimeAvailable(startedAt, timeLimit, processed) {
+            var workspaceRoot = Ini.Get(job.ini, "session",
+                                        "workspaceRoot." + job.workspaceRootIndex);
+            var rootBytes = Str.get_Length(workspaceRoot);
+            if processed > 0 and processedBytes + rootBytes > byteLimit {
+                job.budgetYielded = true;
+                break;
+            }
+            job.workspaceRootIndex = job.workspaceRootIndex + 1;
+            processed = processed + 1;
+            processedBytes = processedBytes + rootBytes;
+            job.completedWork = job.completedWork + 1;
+            if workspaceRoot == "" or Dir.Exists(workspaceRoot) == false
+               or job.projMgr == null {
+                continue;
+            }
+            if job.restoredWorkspaceRoot == false {
+                job.restoredWorkspaceRoot = job.projMgr.OpenFolder(workspaceRoot);
+            } else {
+                job.projMgr.AddFolderToWorkspace(workspaceRoot);
+            }
+        }
+
+        if processed < limit and job.workspaceRootIndex >= job.workspaceRootCount
+           and job.legacyRootProcessed == false
+           and RestoreTimeAvailable(startedAt, timeLimit, processed) {
+            var legacyBytes = Str.get_Length(job.legacyProjectRoot);
+            if processed > 0 and processedBytes + legacyBytes > byteLimit {
+                job.budgetYielded = true;
+            } else {
+            job.legacyRootProcessed = true;
+            processed = processed + 1;
+            processedBytes = processedBytes + legacyBytes;
+            job.completedWork = job.completedWork + 1;
+            if job.projMgr != null and job.legacyProjectRoot != ""
+               and Dir.Exists(job.legacyProjectRoot) {
+                job.restoredWorkspaceRoot = job.projMgr.OpenFolder(job.legacyProjectRoot);
+            }
+            }
+        }
+
+        while processed < limit and job.workspaceRootIndex >= job.workspaceRootCount
+              and job.legacyRootProcessed and job.fileIndex < job.fileCount
+              and RestoreTimeAvailable(startedAt, timeLimit, processed) {
+            var entryBytes = EstimateRestoreEntryBytes(job, job.fileIndex);
+            if processed > 0 and processedBytes + entryBytes > byteLimit {
+                job.budgetYielded = true;
+                break;
+            }
+            if RestoreOneSessionFile(job, job.fileIndex) == false {
+                if job.active { job.budgetYielded = true; }
+                break;
+            }
+            job.fileIndex = job.fileIndex + 1;
+            processed = processed + 1;
+            processedBytes = processedBytes + entryBytes;
+            job.completedWork = job.completedWork + 1;
+        }
+        job.lastPumpCount = processed;
+        job.lastPumpBytes = processedBytes;
+        job.totalBytesProcessed = job.totalBytesProcessed + processedBytes;
+        job.lastPumpElapsedMs = Time.Clock.NowMs() - startedAt;
+        if processed < limit and job.active
+           and job.lastPumpElapsedMs >= timeLimit {
+            job.budgetYielded = true;
+        }
+
+        if job.workspaceRootIndex >= job.workspaceRootCount
+           and job.legacyRootProcessed and job.fileIndex >= job.fileCount {
+            FinalizeRestore(job);
+        }
+        if processed == 0 and job.active
+           and job.recoveryDecodeFuture != null {
+            Thread.Yield();
+        }
+        return processed;
+    }
+
+    hide func RestoreTimeAvailable(startedAt: Integer,
+                                   maxMillis: Integer,
+                                   processed: Integer) -> Boolean {
+        return processed == 0
+            or Time.Clock.NowMs() - startedAt < maxMillis;
+    }
+
+    /// @brief Estimate bytes that one slot may read or decode this paint.
+    hide func EstimateRestoreEntryBytes(job: SessionRestoreJob,
+                                        index: Integer) -> Integer {
+        if job == null or job.ini == null { return 0; }
+        var section = "session.file." + index;
+        var estimate = Str.get_Length(Ini.Get(job.ini, section, "recovery"));
+        var path = Ini.Get(job.ini, section, "path");
+        if path != "" {
+            var diskBytes = safe_io.SizeBytes(path);
+            if diskBytes > 0 { estimate = estimate + diskBytes; }
+        }
+        return estimate;
+    }
+
+    /// @brief Stop a partial restore without mutating any remaining entries.
+    expose func CancelRestore(job: SessionRestoreJob) {
+        if job == null { return; }
+        job.active = false;
+        job.lastPumpCount = 0;
+        RecoveryDecode.ClearDecodeState(job);
+        job.ini = null;
+        job.sourceText = "";
+        job.docMgr = null;
+        job.projMgr = null;
+        job.tabs = null;
+    }
+
+    /// @brief Compact progress text for the painted startup surface.
+    expose func RestoreProgressText(job: SessionRestoreJob) -> String {
+        if job == null or job.totalWork <= 0 { return "Restoring your workspace..."; }
+        if job.restoreError != "" { return "Session restore stopped: " + job.restoreError; }
+        if job.recoveryOnly {
+            return "Recovering unsaved tabs: "
+                + job.completedWork + "/" + job.totalWork;
+        }
+        return "Restoring your workspace: " + job.completedWork + "/" + job.totalWork;
+    }
+
+    /// @brief Restore one indexed document/recovery slot into live models.
+    hide func RestoreOneSessionFile(job: SessionRestoreJob,
+                                    index: Integer) -> Boolean {
+        var section = "session.file." + index;
+        var originalSlotFingerprint = SessionSlotFingerprint(job.ini, section);
+        var path = Ini.Get(job.ini, section, "path");
+        var recoveryModified = Ini.Get(job.ini, section, "recoveryModified") == "1";
+        if job.recoveryOnly and recoveryModified == false { return true; }
+        var encodedRecovery = Ini.Get(job.ini, section, "recovery");
+        var recoveryEncoding = Ini.Get(job.ini, section, "recoveryEncoding");
+        var explicitPresence = Ini.Get(job.ini, section, "recoveryPresent");
+        var recoveryPayload = RecoveryDecode.DecodeForSlot(
+            job, index, encodedRecovery, recoveryEncoding,
+            recoveryModified, explicitPresence);
+        if recoveryPayload == null { return false; }
+        var recovery = recoveryPayload.text;
+        if path != "" and document_manager.IsEditableTextFile(path) {
+            var documentCountBefore = job.docMgr.GetCount();
+            var doc = job.docMgr.OpenFile(path);
+            if job.docMgr.GetCount() == documentCountBefore {
+                // Legacy settings may spell one file as both relative and
+                // absolute. Keep only one canonical path owner.
+                if recoveryModified and recoveryPayload.valid
+                   and RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                            section, path, recovery,
+                                            recoveryPayload.present) {
+                    MarkSessionPrune(
+                        job, section, "detach", originalSlotFingerprint);
+                    Ini.Set(job.ini, section, "path", "");
+                    var duplicateDraft = job.docMgr.GetActive();
+                    if duplicateDraft != null {
+                        RestoreHelpers.RecordRestoredSplitDocument(
+                            job, index, duplicateDraft!);
+                    }
+                    job.restoredCount = job.restoredCount + 1;
+                } else {
+                    MarkSessionPrune(
+                        job, section, "clear", originalSlotFingerprint);
+                    ClearSessionFile(job.ini, section);
+                }
+                job.prunedSession = true;
+            } else {
+                doc.kind = file_utils.DetectKind(doc.filePath);
+                if recoveryModified and recoveryPayload.valid {
+                    doc.content = recovery;
+                    doc.isModified = true;
+                }
+                doc.cursorLine = Parse.IntOr(Ini.Get(job.ini, section, "cursorLine"), 1);
+                doc.cursorCol = Parse.IntOr(Ini.Get(job.ini, section, "cursorCol"), 1);
+                doc.scrollLine = Parse.IntOr(Ini.Get(job.ini, section, "scrollLine"), 1);
+                if doc.cursorLine <= 0 { doc.cursorLine = 1; }
+                if doc.cursorCol <= 0 { doc.cursorCol = 1; }
+                if doc.scrollLine <= 0 { doc.scrollLine = 1; }
+                RestoreSceneWorkspaceState(job.ini, section, doc);
+                if job.tabs != null {
+                    job.tabs.AddTab(doc.fileName, 1);
+                    job.tabs.SetTooltip(job.docMgr.activeIndex, doc.filePath);
+                    if doc.isModified {
+                        job.tabs.SetModified(job.docMgr.activeIndex, true);
+                    }
+                }
+                RestoreHelpers.RecordRestoredSplitDocument(job, index, doc);
+                job.restoredCount = job.restoredCount + 1;
+            }
+        } else if path != "" {
+            if recoveryModified and recoveryPayload.valid
+               and RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                        section, path, recovery,
+                                        recoveryPayload.present) {
+                // Preserve recovery text but detach it from the unsafe origin.
+                MarkSessionPrune(
+                    job, section, "detach", originalSlotFingerprint);
+                Ini.Set(job.ini, section, "path", "");
+                var missingDraft = job.docMgr.GetActive();
+                if missingDraft != null {
+                    RestoreHelpers.RecordRestoredSplitDocument(
+                        job, index, missingDraft!);
+                }
+                job.restoredCount = job.restoredCount + 1;
+            } else {
+                MarkSessionPrune(
+                    job, section, "clear", originalSlotFingerprint);
+                ClearSessionFile(job.ini, section);
+            }
+            if job.activePath == path {
+                job.prunedActivePath = job.activePath;
+                job.activePath = "";
+                Ini.Set(job.ini, "session", "activePath", "");
+            }
+            job.prunedSession = true;
+        } else if RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                       section, path, recovery,
+                                       recoveryPayload.valid
+                                           and recoveryPayload.present) {
+            var untitledDraft = job.docMgr.GetActive();
+            if untitledDraft != null {
+                RestoreHelpers.RecordRestoredSplitDocument(
+                    job, index, untitledDraft!);
+            }
+            job.restoredCount = job.restoredCount + 1;
+        }
+        return true;
+    }
+
+    /// @brief Apply active-tab selection and persist any rejected-slot cleanup.
+    hide func FinalizeRestore(job: SessionRestoreJob) {
+        if job == null { return; }
+        if job.structuredSplitRequested {
+            if job.splitFirstDocument != null
+               and job.splitSecondDocument != null
+               and State.IsSplitDocumentEligible(job.splitFirstDocument)
+               and State.IsSplitDocumentEligible(job.splitSecondDocument) {
+                restoredSplitFirstDocument = job.splitFirstDocument;
+                restoredSplitSecondDocument = job.splitSecondDocument;
+                splitSecondFocused = job.splitSecondFocused;
+            } else {
+                // A structured session is authoritative. If either pane owner
+                // disappeared or was rejected, remain single-pane instead of
+                // guessing an unrelated companion document.
+                restoredSplitFirstDocument = null;
+                restoredSplitSecondDocument = null;
+                splitActive = false;
+                splitSecondFocused = false;
+            }
+        }
+        if job.restoredCount > 0 and job.docMgr != null {
+            var activeIdx = -1;
+            if job.activePath != "" {
+                activeIdx = job.docMgr.FindByPath(job.activePath);
+            }
+            if activeIdx < 0 and job.ini != null {
+                activeIdx = Parse.IntOr(Ini.Get(job.ini, "session", "activeIndex"), 0);
+            }
+            if activeIdx < 0 or activeIdx >= job.docMgr.GetCount() {
+                activeIdx = 0;
+            }
+            job.docMgr.SetActive(activeIdx);
+            if job.tabs != null { job.tabs.SetActive(activeIdx); }
+        }
+        if job.prunedSession and job.ini != null {
+            job.pruneCommitFailed = CommitPrunedSession(job) == false;
+        }
+        job.active = false;
+        job.lastPumpCount = 0;
+        RecoveryDecode.ClearDecodeState(job);
+        job.ini = null;
+        job.sourceText = "";
+        job.docMgr = null;
+        job.projMgr = null;
+        job.tabs = null;
+    }
+
+    /// @brief Record one conditional prune before mutating the parsed snapshot.
+    hide func MarkSessionPrune(job: SessionRestoreJob,
+                               section: String,
+                               action: String,
+                               expectedFingerprint: String) {
+        if job == null or job.ini == null or section == "" { return; }
+        var i = 0;
+        while i < job.prunedSections.count() {
+            if Obj.ToString(job.prunedSections.get(i)) == section { return; }
+            i = i + 1;
+        }
+        job.prunedSections.add(section);
+        job.pruneActions.add(action);
+        job.pruneFingerprints.add(expectedFingerprint);
+    }
+
+    /// @brief Retry stale pruning by merging only unchanged invalid slots.
+    hide func CommitPrunedSession(job: SessionRestoreJob) -> Boolean {
+        var attempt = 0;
+        var expected = job.sourceText;
+        var candidate = job.ini;
+        while attempt < MAX_SESSION_PRUNE_ATTEMPTS {
+            if attempt > 0 {
+                var readResult = safe_io.ReadStudioState(settingsPath);
+                if readResult.ok == false {
+                    attempt = attempt + 1;
+                    continue;
+                }
+                expected = readResult.text;
+                candidate = Ini.Parse(expected);
+                ApplySessionPrunes(job, candidate);
+            }
+            if safe_io.CompareExchangeStudioState(
+                   settingsPath, expected, Ini.Format(candidate)) {
+                return true;
+            }
+            attempt = attempt + 1;
+        }
+        return false;
+    }
+
+    hide func ApplySessionPrunes(job: SessionRestoreJob, ini: Any) {
+        var i = 0;
+        while i < job.prunedSections.count() {
+            var section = Obj.ToString(job.prunedSections.get(i));
+            var expected = Obj.ToString(job.pruneFingerprints.get(i));
+            if SessionSlotFingerprint(ini, section) == expected {
+                var action = Obj.ToString(job.pruneActions.get(i));
+                if action == "detach" {
+                    Ini.Set(ini, section, "path", "");
+                } else if action == "clear" {
+                    ClearSessionFile(ini, section);
+                }
+            }
+            i = i + 1;
+        }
+        if job.prunedActivePath != ""
+           and Ini.Get(ini, "session", "activePath") == job.prunedActivePath {
+            Ini.Set(ini, "session", "activePath", "");
+        }
+    }
+
+    hide func SessionSlotFingerprint(ini: Any,
+                                     section: String) -> String {
+        var source = FingerprintField(Ini.Get(ini, section, "path"))
+            + FingerprintField(Ini.Get(ini, section, "name"))
+            + FingerprintField(Ini.Get(ini, section, "kind"))
+            + FingerprintField(Ini.Get(ini, section, "recovery"))
+            + FingerprintField(Ini.Get(ini, section, "recoveryEncoding"))
+            + FingerprintField(Ini.Get(ini, section, "recoveryModified"))
+            + FingerprintField(Ini.Get(ini, section, "recoveryPresent"));
+        return Hash.Sha256(source);
+    }
+
+    hide func FingerprintField(value: String) -> String {
+        return Str.get_Length(value) + ":" + value + "\n";
+    }
+
+    /// @brief Restore bounded recovery text as an unsaved draft document.
+    /// @details Used for ordinary untitled recovery and as the data-preserving
+    ///          fallback when a named file disappeared or became unsupported.
+    /// @return True when a draft was added.
+    hide func RestoreRecoveryDraft(docMgr: document_manager.DocumentManager,
+                                   tabs: session_tab_sink.SessionTabSink,
+                                   ini: Any,
+                                   section: String,
+                                   originalPath: String,
+                                   recovery: String,
+                                   recoveryPresent: Boolean) -> Boolean {
+        if recoveryPresent == false { return false; }
+        var draft = docMgr.NewDocument();
+        var savedName = Ini.Get(ini, section, "name");
+        if savedName == "" and originalPath != "" {
+            savedName = Path.Name(originalPath) + " (Recovered)";
+            Ini.Set(ini, section, "name", savedName);
+        }
+        if savedName != "" { draft.fileName = savedName; }
+        draft.content = recovery;
+        var savedKindName = Ini.Get(ini, section, "kind");
+        if savedKindName == "" {
+            draft.kind = file_utils.DOC_KIND_CODE;
+        } else {
+            draft.kind = file_utils.KindFromName(savedKindName);
+            if draft.kind == file_utils.DOC_KIND_BINARY_UNSUPPORTED {
+                draft.kind = file_utils.DOC_KIND_CODE;
+            }
+        }
+        var languagePath = originalPath;
+        if languagePath == "" { languagePath = savedName; }
+        draft.language = file_utils.DetectLanguage(languagePath);
+        if draft.kind == file_utils.DOC_KIND_SCENE_2D {
+            draft.language = "scene";
+        } else if draft.kind == file_utils.DOC_KIND_SCENE_3D {
+            draft.language = "scene3d";
+        } else if draft.kind == file_utils.DOC_KIND_CODE
+                  and draft.language != "basic" {
+            draft.language = "zia";
+        }
+        draft.isNew = true;
+        draft.isModified = true;
+        draft.cursorLine = Parse.IntOr(Ini.Get(ini, section, "cursorLine"), 1);
+        draft.cursorCol = Parse.IntOr(Ini.Get(ini, section, "cursorCol"), 1);
+        draft.scrollLine = Parse.IntOr(Ini.Get(ini, section, "scrollLine"), 1);
+        if draft.cursorLine <= 0 { draft.cursorLine = 1; }
+        if draft.cursorCol <= 0 { draft.cursorCol = 1; }
+        if draft.scrollLine <= 0 { draft.scrollLine = 1; }
+        RestoreSceneWorkspaceState(ini, section, draft);
+        if tabs != null {
+            tabs.AddTab(draft.fileName, 1);
+            tabs.SetModified(docMgr.activeIndex, true);
+        }
+        return true;
+    }
+
+}

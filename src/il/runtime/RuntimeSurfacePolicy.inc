@@ -134,6 +134,10 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/3d/backend/vgfx3d_backend_
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/io/rt_dir_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/io/rt_file.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/io/rt_file_path.h")
+// Ref-counted worker-to-event wake targets are an implementation bridge shared
+// by Process, PTY, and GUI App. Scripts attach sources through App.WatchProcess
+// and App.WatchPty rather than calling the callback lifetime machinery directly.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/system/rt_activity_wake.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_http2.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_entropy_platform.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_network_internal.h")
@@ -358,6 +362,10 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_videowidget_update_app")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_gui_test_harness_clear_events")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_gui_test_harness_event_at")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_gui_test_harness_event_count")
+// Process/PTy wake-target setters back the public App watch methods from ADR
+// 0281; exposing them directly would leak the internal callback target type.
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_process_set_activity_wake")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_pty_set_activity_wake")
 
 // Managed replacements for legacy raw-pointer runtime surfaces. These entries
 // keep the frontend API names present while routing them to object, Option,

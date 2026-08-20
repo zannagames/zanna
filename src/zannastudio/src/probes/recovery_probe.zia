@@ -10,6 +10,8 @@
 //          recovery pruning, and clean shutdown state.
 // Key invariants:
 //   - Modified buffers survive an unclean exit.
+//   - Live concurrent instances are excluded and cleanup stays namespace-local.
+//   - Document nonces and validated metadata distinguish identical display names.
 //   - Coalesced workers publish the newest immutable snapshot without blocking
 //     the caller or recreating a swap after save/close reconciliation.
 //   - Saved, discarded, or closed buffers cannot resurrect stale swap text.
@@ -38,6 +40,8 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind TempFile = Zanna.IO.TempFile;
 bind Ini = Zanna.Data.Ini;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
 bind Terminal = Zanna.Terminal;
 bind Str = Zanna.String;
 bind Time = Zanna.Time;
@@ -93,14 +97,34 @@ func VerifySynchronousRecovery(
     // A modified untitled document.
     var docMgr = new document_manager.DocumentManager();
     var doc = docMgr.NewDocument();
+    doc.fileName = "same untitled name";
     doc.content = "recovered text\nsecond line";
     doc.isModified = true;
+    var sameNameDoc = docMgr.NewDocument();
+    sameNameDoc.fileName = "same untitled name";
+    sameNameDoc.content = "independent same-name recovery";
+    sameNameDoc.isModified = true;
     if store.WriteSwaps(docMgr, null) == false {
         fail("modified swap write failed");
         return false;
     }
 
-    // Simulate a crash: a fresh store over the same dir sees the leftover lock.
+    // A second live Studio must neither report nor enumerate the first
+    // instance's leased namespace.
+    var livePeer = new recovery_store.RecoveryStore();
+    if livePeer.Setup(settingsDir) == false or livePeer.uncleanExit
+       or livePeer.CollectRecovered().count() != 0 {
+        fail("live recovery namespace was mistaken for an abandoned session");
+        return false;
+    }
+    if livePeer.MarkCleanExit() == false {
+        fail("live peer clean exit failed");
+        return false;
+    }
+
+    // Simulate abrupt process teardown: the OS releases the lease while its
+    // complete namespace and persistent marker remain.
+    store.ReleaseOwnershipWithoutCleanup();
     var store2 = new recovery_store.RecoveryStore();
     if store2.Setup(settingsDir) == false {
         fail("second recovery setup failed");
@@ -111,13 +135,17 @@ func VerifySynchronousRecovery(
         return false;
     }
     var recovered = store2.CollectRecovered();
-    if recovered.count() != 1 {
-        fail("expected 1 recovered doc, got " + recovered.count());
+    if recovered.count() != 2 {
+        fail("expected 2 recovered docs, got " + recovered.count());
         return false;
     }
-    var rec = recovered.get(0) as recovery_store.RecoveryRecord;
-    if rec.content != "recovered text\nsecond line" {
-        fail("recovered content mismatch");
+    var firstRec = recovered.get(0) as recovery_store.RecoveryRecord;
+    var secondRec = recovered.get(1) as recovery_store.RecoveryRecord;
+    if firstRec.content == secondRec.content
+       or firstRec.instanceId == "" or firstRec.documentId == ""
+       or secondRec.instanceId != firstRec.instanceId
+       or secondRec.documentId == firstRec.documentId {
+        fail("same-name documents did not retain distinct validated identities");
         return false;
     }
 
@@ -143,14 +171,22 @@ func VerifySynchronousRecovery(
     var scanJob = pagedStore.BeginRecoveryScan(true);
     var scanPumps = 0;
     var scanBounded = true;
-    while scanJob.active and scanPumps < 20 {
+    var sawPayloadWorker = false;
+    var scanWaitMs = 0;
+    while scanJob.active and scanWaitMs < 2000 {
         var scanned = pagedStore.PumpRecoveryScan(scanJob, 2);
-        if scanned <= 0 or scanned > 2 or scanJob.lastPumpCount > 2 {
+        if scanned < 0 or scanned > 2 or scanJob.lastPumpCount > 2 {
             scanBounded = false;
+        }
+        if scanJob.payloadFuture != null {
+            sawPayloadWorker = true;
+            Time.Clock.Sleep(1);
+            scanWaitMs = scanWaitMs + 1;
         }
         scanPumps = scanPumps + 1;
     }
     if scanBounded == false or scanJob.active or scanPumps <= 1
+       or sawPayloadWorker == false
        or scanJob.records.count() != 1
        or (scanJob.records.get(0) as recovery_store.RecoveryRecord).content
           != "paged recovered text"
@@ -163,15 +199,11 @@ func VerifySynchronousRecovery(
         return false;
     }
 
-    // A successful save/reload transition clears isModified. Its older swap
-    // must be retired immediately or a later crash could resurrect stale text.
-    doc.isModified = false;
-    if store2.PruneStaleSwaps(docMgr) == false {
-        fail("stale swap pruning failed");
-        return false;
-    }
+    // Once restored/discarded, only namespaces that this process explicitly
+    // claimed may be removed; the live-peer namespace was already clean.
+    if store2.ClearAll() == false { fail("claimed recovery cleanup failed"); return false; }
     if store2.CollectRecovered().count() != 0 {
-        fail("stale swap survived saved document pruning");
+        fail("claimed stale swap survived cleanup");
         return false;
     }
 
@@ -388,6 +420,9 @@ func VerifyRecoveryFailureRetention(
                                     new project_manager.ProjectManager(), null,
                                     null, null, null, null, null, null,
                                     null, failingSession, retainedStore);
+    // Cleanup correctly kept the lease/data because session persistence failed;
+    // model the process ending before a replacement instance inspects it.
+    retainedStore.ReleaseOwnershipWithoutCleanup();
     var retainedCheck = new recovery_store.RecoveryStore();
     if retainedCheck.Setup(retainedDir) == false
        or retainedCheck.uncleanExit == false

@@ -397,6 +397,7 @@ Streaming child-process control for tools, build jobs, and long-running IDE task
 | `Start(program, args)`         | `ProcessHandle(String, Seq)` | Start a process with inherited cwd and environment   |
 | `StartIn(program, args, cwd)`  | `ProcessHandle(String, Seq, String)` | Start a process in a working directory        |
 | `StartWithEnv(program, args, cwd, env)` | `ProcessHandle(String, Seq, String, Seq)` | Start with explicit cwd and environment |
+| `StartWithEnvOverlay(program, args, cwd, env)` | `ProcessHandle(String, Seq, String, Seq)` | Start with inherited environment plus overrides |
 
 `args` is a `Seq` of argument strings and does not include the program name. `env` is either `NULL` to inherit the
 current environment or a `Seq` of `KEY=value` strings. `cwd` may be `NULL` or empty to inherit the current working
@@ -413,6 +414,11 @@ child with `CREATE_UNICODE_ENVIRONMENT`, so non-ASCII values are delivered intac
 are case-insensitive; duplicate names are rejected rather than allowing an ambiguous child
 environment.
 
+`StartWithEnvOverlay` retains the parent environment and replaces only the
+listed names (case-sensitively on POSIX and case-insensitively on Windows). It
+is the appropriate default for IDE tools that must retain PATH, locale, proxy,
+certificate, loader, credential-helper, and agent configuration.
+
 ### Zanna.System.Process.ProcessHandle
 
 | Method         | Signature    | Description                                                  |
@@ -427,9 +433,13 @@ environment.
 | `ReadOutputResult()` | `Map()` | Returns capture-ordered, stream-tagged `chunks` and `truncated` |
 | `WriteStdin(data)` | `Integer(String)` | Write bytes to stdin; return bytes accepted, or `-1` on failure |
 | `ExitCode()`   | `Integer()`  | Returns exit code; `-1` also represents running/invalid state |
-| `Kill()`       | `Boolean()`  | Requests process termination                                |
+| `Kill()`       | `Boolean()`  | Requests termination of the owned process tree               |
 | `Wait()`       | `Integer()`  | Blocks until process exit and returns the exit code          |
-| `Destroy()`    | `Void()`     | Closes process resources; terminates a still-running child   |
+| `Destroy()`    | `Void()`     | Closes resources and terminates remaining owned descendants  |
+
+Each handle isolates its child in a POSIX process group or Windows Job Object.
+`Kill()` and `Destroy()` therefore cover ordinary descendants created by build,
+run, debugger, and tool processes instead of stopping only the direct child.
 
 ### Zia Example
 
@@ -490,6 +500,10 @@ func start() {
   `SIGKILL`, while Windows terminates a live child immediately.
 - Output buffers are capped at 16 MB per stream between reads; the combined ordered queue has its
   own 16 MB cap and reports overflow through `truncated`.
+- A GUI event loop can attach the handle with `Zanna.GUI.App.WatchProcess()`. Output readiness and
+  exit then wake `App.PollWait()` through a coalesced native event; no Zia callback runs on the
+  monitor thread. The Boolean result lets callers retain bounded polling only when attachment
+  cannot be installed.
 
 ---
 
@@ -567,6 +581,10 @@ termination grace period.
 `Resize` returns `TRUE` only when the backend actually applied the new size (`TIOCSWINSZ` on POSIX,
 `ResizePseudoConsole` on Windows). A backend failure returns `FALSE` and records the OS diagnostic
 in `LastError`, so it is a real confirmation of the OS resize rather than an accepted-request flag.
+
+A GUI event loop can attach a live session with `Zanna.GUI.App.WatchPty()`. Terminal output and
+child exit then wake `App.PollWait()` through the same coalesced, lifetime-safe native wake path;
+the Boolean return value selects a bounded polling fallback if attachment is unavailable.
 
 ---
 

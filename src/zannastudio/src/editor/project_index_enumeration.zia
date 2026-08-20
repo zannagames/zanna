@@ -1,0 +1,169 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/project_index_enumeration.zia
+// Purpose: Page explicit workspace cursors and account semantic-index budgets.
+// Key invariants:
+//   - Only one bounded cursor page is retained and fetched on demand.
+//   - Open-document overlays are counted before disk traversal.
+// Ownership/Lifetime: Borrows the explicit cursor owned by ProjectIndexer state.
+// Links: zannastudio/src/editor/project_index.zia,
+//        zannastudio/src/editor/project_index_updates.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_index_enumeration;
+
+bind "project_index_state" as State;
+bind "project_index_updates" as PreviousLayer;
+
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind IO = Zanna.IO;
+
+final INDEX_ENUM_CAP = State.INDEX_ENUM_CAP;
+final INDEX_FILE_PAGE_SIZE = State.INDEX_FILE_PAGE_SIZE;
+final INDEX_MAX_SOURCE_BYTES = State.INDEX_MAX_SOURCE_BYTES;
+final INDEX_MAX_WORKSPACE_FILES = State.INDEX_MAX_WORKSPACE_FILES;
+final INDEX_MAX_WORKSPACE_SOURCE_BYTES =
+    State.INDEX_MAX_WORKSPACE_SOURCE_BYTES;
+
+class ProjectIndexEnumerationLayer extends
+    PreviousLayer.ProjectIndexUpdateLayer {
+    /// @brief Fetch the next bounded runtime file-index cursor page.
+    /// @details `FileIndexCursor` applies the same hard excludes, `.gitignore`,
+    ///          and extension filters as `Enumerate` while bounding allocation.
+    ///          The indexer keeps only one page of entry maps live at a time and
+    ///          retains one explicit traversal generation per root.
+    hide func FetchNextIndexPage(maxEntries: Integer) {
+        if valid == false or rootPaths.count() == 0 {
+            pendingIndexFiles = null;
+            pendingIndexDone = true;
+            return;
+        }
+        while pendingIndexRootIndex < rootPaths.count() {
+            var currentRoot = CurrentIndexRoot();
+            if currentRoot == "" {
+                AdvanceIndexRoot();
+                continue;
+            }
+            if pendingIndexCursor.IsOpen() == false
+               and pendingIndexCursor.Open(currentRoot,
+                                           ".zia",
+                                           CurrentIndexIgnores(),
+                                           false) == false {
+                MarkWorkspaceIndexIncomplete(
+                    "Workspace index could not open traversal for "
+                    + IO.Path.Name(currentRoot));
+                AdvanceIndexRoot();
+                continue;
+            }
+            var pageSize = maxEntries;
+            if pageSize < 1 { pageSize = 1; }
+            if pageSize > INDEX_FILE_PAGE_SIZE {
+                pageSize = INDEX_FILE_PAGE_SIZE;
+            }
+            var page = pendingIndexCursor.Next(pageSize);
+            if Map.GetBool(page, "valid") == false {
+                MarkWorkspaceIndexIncomplete(
+                    "Workspace index could not enumerate "
+                    + IO.Path.Name(currentRoot));
+                AdvanceIndexRoot();
+                continue;
+            }
+            pendingIndexFiles = Map.Get(page, "entries");
+            pendingIndexPos = 0;
+            pendingIndexOffset = Map.GetInt(page, "nextOffset");
+            pendingIndexDone = false;
+            workspaceIndexEntryCount = workspaceIndexEntryCount + PageEntryCount(pendingIndexFiles);
+            if Map.GetBool(page, "truncated") {
+                MarkWorkspaceIndexIncomplete(
+                    "Workspace index truncated at " + INDEX_ENUM_CAP
+                    + " file(s)");
+            }
+            if Map.GetBool(page, "done") {
+                AdvanceIndexRoot();
+                if pendingIndexRootIndex >= rootPaths.count() {
+                    pendingIndexDone = true;
+                }
+            }
+            return;
+        }
+        pendingIndexFiles = null;
+        pendingIndexDone = true;
+    }
+
+    /// @brief Return the root currently being paged for workspace indexing.
+    /// @return Absolute root path, or empty when all roots are consumed.
+    hide func CurrentIndexRoot() -> String {
+        if pendingIndexRootIndex < 0 or pendingIndexRootIndex >= rootPaths.count() { return ""; }
+        return Obj.ToString(rootPaths.get(pendingIndexRootIndex));
+    }
+
+    /// @brief Return ignore patterns for the current indexing root.
+    /// @return Comma-separated ignore pattern list aligned with rootPaths.
+    hide func CurrentIndexIgnores() -> String {
+        if pendingIndexRootIndex < 0 or pendingIndexRootIndex >= rootIgnorePatterns.count() {
+            return "";
+        }
+        return Obj.ToString(rootIgnorePatterns.get(pendingIndexRootIndex));
+    }
+
+    /// @brief Advance workspace indexing to the next root and reset the page offset.
+    hide func AdvanceIndexRoot() {
+        if pendingIndexCursor != null { pendingIndexCursor.Destroy(); }
+        pendingIndexRootIndex = pendingIndexRootIndex + 1;
+        pendingIndexOffset = 0;
+    }
+
+    /// @brief Count entries in a FileIndexCursor page result sequence.
+    /// @param entries Sequence returned by FileIndexCursor.Next, or null.
+    /// @return Number of entries in the page.
+    hide func PageEntryCount(entries: Any) -> Integer {
+        if entries == null { return 0; }
+        return Seq.get_Count(entries);
+    }
+
+    /// @brief Account for live open-document overlays before disk paging.
+    /// @return False when open buffers alone exhaust a hard workspace budget.
+    hide func SeedOpenDocumentBudget() -> Boolean {
+        var i = 0;
+        while i < syncedOpenPaths.count() {
+            var path = Obj.ToString(syncedOpenPaths.get(i));
+            var key = NormalizePath(path);
+            if Map.Has(pendingIndexSeenPaths, key) == false {
+                Map.SetBool(pendingIndexSeenPaths, key, true);
+                workspaceIndexConsideredCount = workspaceIndexConsideredCount + 1;
+                if workspaceIndexConsideredCount > INDEX_MAX_WORKSPACE_FILES {
+                    MarkWorkspaceIndexIncomplete(
+                        "Workspace index exceeds " + INDEX_MAX_WORKSPACE_FILES
+                        + " Zia files");
+                    return false;
+                }
+                var sourceBytes = syncedOpenBytes.get(i);
+                if sourceBytes > INDEX_MAX_SOURCE_BYTES {
+                    MarkWorkspaceIndexIncomplete(
+                        "Workspace index skipped oversized open file "
+                        + IO.Path.Name(path));
+                } else {
+                    if workspaceIndexSourceBytes + sourceBytes
+                       > INDEX_MAX_WORKSPACE_SOURCE_BYTES {
+                        MarkWorkspaceIndexIncomplete(
+                            "Workspace index exceeds the 64 MB source budget");
+                        return false;
+                    }
+                    workspaceIndexSourceBytes = workspaceIndexSourceBytes
+                                                + sourceBytes;
+                    indexedFileCount = indexedFileCount + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+}

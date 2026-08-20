@@ -17,17 +17,17 @@
 
 module project_manager;
 
-bind "project_manager_base" as Base;
+bind "project_tree_sort" as TreeSort;
 bind "project_manager_mutations" as Implementation;
 
 /// @brief Compare Explorer names using deterministic natural ordering.
 expose func NaturalNameCompare(left: String, right: String) -> Integer {
-    return Base.NaturalNameCompare(left, right);
+    return TreeSort.NaturalNameCompare(left, right);
 }
 
 /// @brief Return a naturally sorted copy of Explorer names.
 expose func NaturalSortNames(items: List) -> List {
-    return Base.NaturalSortNames(items);
+    return TreeSort.NaturalSortNames(items);
 }
 
 /// @brief Public workspace and Explorer controller.

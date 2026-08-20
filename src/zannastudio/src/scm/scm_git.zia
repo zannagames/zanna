@@ -27,9 +27,9 @@ module scm_git;
 bind "../scm/scm_git_support";
 
 bind "../build/bounded_output";
+bind "../services/process_reaper";
 
 bind Process = Zanna.System.Process;
-bind Pty = Zanna.System.Pty;
 bind Env = Zanna.System.Environment;
 bind Machine = Zanna.System.Machine;
 bind IO = Zanna.IO;
@@ -39,6 +39,7 @@ bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Time = Zanna.Time;
+bind Codec = Zanna.Text.Codec;
 
 final MAX_GIT_STDOUT_CHARS = 500000;
 final MAX_GIT_STDERR_CHARS = 120000;
@@ -86,12 +87,16 @@ class GitEntry {
 /// @brief Parsed `git status --porcelain=v2 --branch` snapshot for one repo.
 class GitStatus {
     expose Boolean isRepo;
+    expose Boolean complete;
+    expose Boolean truncated;
     expose String branch;
     expose List[GitEntry] entries;
     expose String errorText;
 
     expose func init() {
         isRepo = false;
+        complete = false;
+        truncated = false;
         branch = "";
         entries = [];
         errorText = "";
@@ -139,6 +144,8 @@ class GitJob {
     expose Boolean started;
     expose Boolean stdoutTruncated;
     expose Boolean stderrTruncated;
+    expose Integer repositoryGeneration;
+    expose process_reaper.ProcessReaper processReaper;
 
     expose func init() {
         handle = null;
@@ -152,6 +159,12 @@ class GitJob {
         started = false;
         stdoutTruncated = false;
         stderrTruncated = false;
+        repositoryGeneration = 0;
+        processReaper = null;
+    }
+
+    expose func SetProcessReaper(value: process_reaper.ProcessReaper) {
+        processReaper = value;
     }
 
     expose func Start(program: String,
@@ -183,6 +196,7 @@ class GitJob {
     }
 
     expose func Pump() -> Boolean {
+        if processReaper != null { processReaper.Pump(); }
         if handle == null { running = false; return false; }
         Drain();
         if handle.IsRunning() {
@@ -191,8 +205,7 @@ class GitJob {
         }
         Drain();
         exitCode = handle.ExitCode();
-        handle.Destroy();
-        handle = null;
+        ReleaseHandle();
         running = false;
         return false;
     }
@@ -213,14 +226,28 @@ class GitJob {
         var ok = handle.Kill();
         Drain();
         exitCode = -1;
-        handle.Destroy();
-        handle = null;
+        ReleaseHandle();
         running = false;
         return ok;
     }
 
+    hide func ReleaseHandle() {
+        if handle == null { return; }
+        if processReaper != null {
+            processReaper.RetireProcess(handle);
+        } else {
+            handle.Destroy();
+        }
+        handle = null;
+    }
+
     expose func Success() -> Boolean {
         return started and running == false and exitCode == 0;
+    }
+
+    /// @brief True when stdout is safe to parse as a complete structured stream.
+    expose func HasCompleteStdout() -> Boolean {
+        return Success() and stdoutTruncated == false;
     }
 
     expose func CombinedOutput() -> String {
@@ -239,6 +266,10 @@ class GitJob {
         if result == null { return; }
         var out = Map.GetStr(result, "text");
         if out != "" {
+            if Str.get_Length(out) > MAX_GIT_STDOUT_CHARS
+               or Str.get_Length(stdoutText) > MAX_GIT_STDOUT_CHARS - Str.get_Length(out) {
+                stdoutTruncated = true;
+            }
             stdoutText = bounded_output.Append(stdoutText, out,
                                                "[git stdout truncated]\n",
                                                MAX_GIT_STDOUT_CHARS);
@@ -256,6 +287,10 @@ class GitJob {
         if result == null { return; }
         var err = Map.GetStr(result, "text");
         if err != "" {
+            if Str.get_Length(err) > MAX_GIT_STDERR_CHARS
+               or Str.get_Length(stderrText) > MAX_GIT_STDERR_CHARS - Str.get_Length(err) {
+                stderrTruncated = true;
+            }
             stderrText = bounded_output.Append(stderrText, err,
                                                "[git stderr truncated]\n",
                                                MAX_GIT_STDERR_CHARS);
@@ -268,128 +303,6 @@ class GitJob {
                                                MAX_GIT_STDERR_CHARS);
         }
     }
-}
-
-/// @brief One PTY-backed interactive git process (push/pull) whose credential
-///        prompts are detected in the merged output and answered in-app.
-/// @details The child controls terminal echo, so secrets typed through
-///          SendInput are not echoed back by password prompts. Output is
-///          bounded like GitJob streams.
-class GitPtyJob {
-    expose Pty.PtySession session;
-    expose String kind;
-    expose String outputText;   // merged stdout+stderr (bounded)
-    expose String lastDelta;    // bytes drained by the most recent Pump
-    expose Integer exitCode;
-    expose Boolean running;
-    expose Boolean started;
-    expose String promptText;   // non-empty while git waits for an answer
-
-    expose func init() {
-        session = null;
-        kind = "";
-        outputText = "";
-        lastDelta = "";
-        exitCode = -1;
-        running = false;
-        started = false;
-        promptText = "";
-    }
-
-    expose func Start(program: String, args: Any, cwd: String,
-                      jobKind: String, env: Any) -> Boolean {
-        kind = jobKind;
-        outputText = "";
-        lastDelta = "";
-        exitCode = -1;
-        promptText = "";
-        if Pty.IsSupported() == false {
-            outputText = "PTY support is not available on this platform";
-            return false;
-        }
-        var opened = Pty.OpenResult(program, args, cwd, env, 120, 12);
-        if not opened.IsOk {
-            outputText = opened.UnwrapErrStr();
-            if outputText == "" { outputText = "Could not start interactive git"; }
-            return false;
-        }
-        session = opened.Unwrap();
-        if session.IsValid() == false {
-            outputText = "PTY session handle was invalid";
-            session = null;
-            return false;
-        }
-        running = true;
-        started = true;
-        return true;
-    }
-
-    /// @brief Drain output, refresh prompt detection, and detect exit.
-    /// @return True while the child is still running.
-    expose func Pump() -> Boolean {
-        lastDelta = "";
-        if session == null { running = false; return false; }
-        lastDelta = Drain();
-        if session.IsRunning() {
-            promptText = DetectPrompt(outputText);
-            running = true;
-            return true;
-        }
-        lastDelta = lastDelta + Drain();
-        exitCode = session.ExitCode();
-        session.Destroy();
-        session = null;
-        running = false;
-        promptText = "";
-        return false;
-    }
-
-    /// @brief Answer the pending prompt (a newline is appended).
-    expose func SendInput(text: String) {
-        if session == null or running == false { return; }
-        session.Write(text + "\n");
-        promptText = "";
-    }
-
-    expose func Kill() {
-        if session == null { return; }
-        session.Kill();
-        session.Destroy();
-        session = null;
-        running = false;
-        promptText = "";
-        exitCode = -1;
-    }
-
-    expose func Success() -> Boolean {
-        return started and running == false and exitCode == 0;
-    }
-
-    expose func IsWaitingForInput() -> Boolean {
-        return running and promptText != "";
-    }
-
-    hide func Drain() -> String {
-        if session == null { return ""; }
-        var result = session.ReadResult();
-        var out = Map.GetStr(result, "text");
-        if out != "" {
-            outputText = bounded_output.Append(outputText, out,
-                                               "[git output truncated]\n",
-                                               MAX_GIT_STDOUT_CHARS);
-        }
-        return out;
-    }
-}
-
-/// @brief Detect a credential or confirmation prompt at the PTY output tail.
-expose func DetectPrompt(text: String) -> String {
-    return scm_git_support.DetectPrompt(text);
-}
-
-/// @brief True when a credential prompt asks for a secret.
-expose func PromptWantsMask(prompt: String) -> Boolean {
-    return scm_git_support.PromptWantsMask(prompt);
 }
 
 /// @brief Parse `git log` output produced by StartLog into commit rows.
@@ -466,22 +379,43 @@ expose func ParseCommitFiles(text: String) -> List[GitCommitFile] {
     return files;
 }
 
+/// @brief Produce a safe UI label without changing the byte-exact Git path.
+/// @details Commands and row data retain the original path. Only presentation
+///          escapes controls; malformed UTF-8 receives a stable placeholder so
+///          the renderer never interprets arbitrary filename bytes as text.
+expose func DisplayPath(path: String) -> String {
+    if Codec.IsValidUtf8(path) == false { return "<non-UTF-8 filename>"; }
+    var display = Str.Replace(path, "\\", "\\\\");
+    display = Str.Replace(display, "\r", "\\r");
+    display = Str.Replace(display, "\n", "\\n");
+    display = Str.Replace(display, "\t", "\\t");
+    display = Str.Replace(display, Str.Chr(0), "\\0");
+    return display;
+}
+
 /// @brief git command layer bound to one repository root.
 class Git {
     expose String repo;
     expose String gitPath;
     expose Integer lastExit;
     expose String lastError;
+    expose process_reaper.ProcessReaper processReaper;
 
     expose func init() {
         repo = "";
         gitPath = "";
         lastExit = 0;
         lastError = "";
+        processReaper = new process_reaper.ProcessReaper();
     }
 
     expose func SetRepo(path: String) {
+        processReaper.Pump();
         repo = path;
+    }
+
+    expose func Shutdown() -> Boolean {
+        return processReaper.WaitForShutdown();
     }
 
     expose func ResolveGit() -> String {
@@ -518,6 +452,9 @@ class Git {
                           staged: Boolean) -> GitJob {
         var args = Seq.New();
         Seq.Push(args, "diff");
+        Seq.Push(args, "--no-ext-diff");
+        Seq.Push(args, "--no-textconv");
+        Seq.Push(args, "--no-color");
         if staged { Seq.Push(args, "--cached"); }
         Seq.Push(args, "--");
         Seq.Push(args, path);
@@ -581,10 +518,47 @@ class Git {
         return StartCommand("push", args, "", false);
     }
 
-    expose func StartPull() -> GitJob {
+    expose func StartFetch() -> GitJob {
+        var args = Seq.New();
+        Seq.Push(args, "fetch");
+        Seq.Push(args, "--prune");
+        return StartCommand("fetch", args, "", false);
+    }
+
+    /// @brief Pull with an explicit integration policy, never ambient config.
+    /// @param strategy One of `ff`, `merge`, or `rebase`.
+    expose func StartPullStrategy(strategy: String) -> GitJob {
         var args = Seq.New();
         Seq.Push(args, "pull");
-        return StartCommand("pull", args, "", false);
+        var kind = "pullFf";
+        if strategy == "merge" {
+            Seq.Push(args, "--no-rebase");
+            kind = "pullMerge";
+        } else if strategy == "rebase" {
+            Seq.Push(args, "--rebase");
+            kind = "pullRebase";
+        } else {
+            Seq.Push(args, "--ff-only");
+        }
+        return StartCommand(kind, args, "", false);
+    }
+
+    expose func StartPull() -> GitJob {
+        return StartPullStrategy("ff");
+    }
+
+    expose func StartMergeAbort() -> GitJob {
+        var args = Seq.New();
+        Seq.Push(args, "merge");
+        Seq.Push(args, "--abort");
+        return StartCommand("mergeAbort", args, "", false);
+    }
+
+    expose func StartRebaseAbort() -> GitJob {
+        var args = Seq.New();
+        Seq.Push(args, "rebase");
+        Seq.Push(args, "--abort");
+        return StartCommand("rebaseAbort", args, "", false);
     }
 
     expose func StartCheckout(branchName: String) -> GitJob {
@@ -639,76 +613,12 @@ class Git {
         return StartCommand(jobKind, args, path, false);
     }
 
-    /// @brief Start an interactive (PTY-backed) network operation such as push
-    ///        or pull so git can ask for credentials (plan 11).
-    /// @details Unlike StartCommand jobs, the PTY environment leaves terminal
-    ///          prompting enabled; the view detects prompt lines in the merged
-    ///          output and answers through GitPtyJob.SendInput.
-    expose func StartInteractive(kind: String, args: Any) -> GitPtyJob {
-        var job = new GitPtyJob();
-        lastError = "";
-        if repo == "" {
-            lastError = "No repository is open";
-            job.outputText = lastError;
-            return job;
-        }
-        var program = ResolveGit();
-        if program == "" {
-            lastError = "Could not find git. Add git to PATH or set ZANNA_GIT_BINARY.";
-            job.outputText = lastError;
-            return job;
-        }
-        if job.Start(program, args, repo, kind, GitInteractiveEnvironment()) == false {
-            lastError = job.outputText;
-        }
-        return job;
-    }
-
-    /// @brief Interactive push (credentials answered in-app when prompted).
-    expose func StartPushInteractive() -> GitPtyJob {
-        var args = Seq.New();
-        Seq.Push(args, "push");
-        return StartInteractive("push", args);
-    }
-
-    /// @brief Interactive pull (credentials answered in-app when prompted).
-    expose func StartPullInteractive() -> GitPtyJob {
-        var args = Seq.New();
-        Seq.Push(args, "pull");
-        return StartInteractive("pull", args);
-    }
-
-    /// @brief Environment for PTY-backed git: identical inheritance to the
-    ///        non-interactive set, but terminal prompting stays enabled so
-    ///        credential questions surface in-app instead of failing.
-    hide func GitInteractiveEnvironment() -> Any {
-        var env = Seq.New();
-        CopyEnvIfPresent(env, "PATH");
-        CopyEnvIfPresent(env, "HOME");
-        CopyEnvIfPresent(env, "USER");
-        CopyEnvIfPresent(env, "LOGNAME");
-        CopyEnvIfPresent(env, "USERPROFILE");
-        CopyEnvIfPresent(env, "HOMEDRIVE");
-        CopyEnvIfPresent(env, "HOMEPATH");
-        CopyEnvIfPresent(env, "SystemRoot");
-        CopyEnvIfPresent(env, "WINDIR");
-        CopyEnvIfPresent(env, "TEMP");
-        CopyEnvIfPresent(env, "TMP");
-        CopyEnvIfPresent(env, "TMPDIR");
-        CopyEnvIfPresent(env, "SSH_AUTH_SOCK");
-        CopyEnvIfPresent(env, "SSH_AGENT_PID");
-        Seq.Push(env, "TERM=dumb");
-        Seq.Push(env, "GIT_MERGE_AUTOEDIT=no");
-        Seq.Push(env, "GIT_PAGER=cat");
-        Seq.Push(env, "PAGER=cat");
-        return env;
-    }
-
     hide func StartCommand(kind: String,
                            args: Any,
                            path: String,
                            staged: Boolean) -> GitJob {
         var job = new GitJob();
+        job.SetProcessReaper(processReaper);
         lastError = "";
         if repo == "" {
             lastError = "No repository is open";
@@ -743,26 +653,28 @@ class Git {
         return env;
     }
 
-    /// @brief Append one inherited environment variable to a child environment.
-    /// @details Empty and missing values are skipped so the child environment does
-    ///          not gain malformed assignments. Values are copied verbatim because
-    ///          the process runtime validates the final `NAME=value` string.
-    /// @param env Mutable sequence receiving assignments.
-    /// @param name Environment variable name to copy when present.
-    hide func CopyEnvIfPresent(env: Any,
-                               name: String) {
-        if env == null or name == "" { return; }
-        if Env.HasVariable(name) == false { return; }
-        var value = Env.GetVariable(name);
-        if value == "" { return; }
-        Seq.Push(env, name + "=" + value);
-    }
-
     expose func StatusFromOutput(stdoutText: String,
                                  stderrText: String,
                                  exitCode: Integer) -> GitStatus {
+        return StatusFromOutputState(stdoutText, stderrText, exitCode, false);
+    }
+
+    /// @brief Build a status snapshot, rejecting any incomplete porcelain stream.
+    expose func StatusFromOutputState(stdoutText: String,
+                                      stderrText: String,
+                                      exitCode: Integer,
+                                      truncated: Boolean) -> GitStatus {
+        if truncated {
+            var incomplete = new GitStatus();
+            incomplete.truncated = true;
+            incomplete.complete = false;
+            incomplete.errorText =
+                "Repository status exceeded the capture limit; no partial state was applied";
+            return incomplete;
+        }
         var st = ParseStatus(stdoutText);
         st.isRepo = exitCode == 0;
+        st.complete = exitCode == 0;
         st.errorText = stderrText;
         if exitCode != 0 and st.errorText == "" {
             st.errorText = "git status failed with exit code " + exitCode;
@@ -770,11 +682,19 @@ class Git {
         return st;
     }
 
+    expose func StatusFromJob(job: GitJob) -> GitStatus {
+        if job == null {
+            return StatusFromOutputState("", "git status did not start", -1, false);
+        }
+        return StatusFromOutputState(
+            job.stdoutText, job.stderrText, job.exitCode, job.stdoutTruncated);
+    }
+
     expose func Status() -> GitStatus {
         var job = StartStatus();
         job.Wait();
         lastExit = job.exitCode;
-        return StatusFromOutput(job.stdoutText, job.stderrText, job.exitCode);
+        return StatusFromJob(job);
     }
 
     expose func Diff(path: String,
@@ -868,14 +788,14 @@ class Git {
                     if recordIndex >= Seq.get_Count(records) { continue; }
                     var oldPath = Obj.ToString(Seq.Get(records, recordIndex));
                     recordIndex = recordIndex + 1;
-                    var renamed = ParseTrackedLine(record, 9, true);
+                    var renamed = ParseTrackedLine(record, 9, true, true);
                     if renamed != null {
                         renamed.oldPath = oldPath;
                         st.entries.Push(renamed);
                     }
                     continue;
                 }
-                var entry = ParseStatusLine(record);
+                var entry = ParseStatusLine(record, true);
                 if entry != null { st.entries.Push(entry); }
             }
             return st;
@@ -891,7 +811,7 @@ class Git {
                 if st.branch == "(detached)" { st.branch = ""; }
                 continue;
             }
-            var e = ParseStatusLine(line);
+            var e = ParseStatusLine(line, false);
             if e != null {
                 st.entries.Push(e);
             }
@@ -899,24 +819,25 @@ class Git {
         return st;
     }
 
-    hide func ParseStatusLine(line: String) -> GitEntry {
+    hide func ParseStatusLine(line: String,
+                              exactPaths: Boolean) -> GitEntry {
         if Str.StartsWith(line, "? ") {
             var e = new GitEntry();
             e.index = "?";
             e.worktree = "?";
-            e.path = UnquotePath(Str.Mid(line, 3));
+            e.path = DecodePath(Str.Mid(line, 3), exactPaths);
             e.untracked = true;
             e.staged = false;
             return e;
         }
         if Str.StartsWith(line, "1 ") {
-            return ParseTrackedLine(line, 8, false);
+            return ParseTrackedLine(line, 8, false, exactPaths);
         }
         if Str.StartsWith(line, "2 ") {
-            return ParseTrackedLine(line, 9, true);
+            return ParseTrackedLine(line, 9, true, exactPaths);
         }
         if Str.StartsWith(line, "u ") {
-            return ParseUnmergedLine(line);
+            return ParseUnmergedLine(line, exactPaths);
         }
         return null;
     }
@@ -927,37 +848,39 @@ class Git {
     /// @details Unmerged rows have more metadata fields than ordinary rows:
     ///          `u XY sub m1 m2 m3 mW h1 h2 h3 path`. The UI primarily needs
     ///          XY and path so it can surface conflict state without parsing labels.
-    hide func ParseUnmergedLine(line: String) -> GitEntry {
+    hide func ParseUnmergedLine(line: String,
+                                exactPaths: Boolean) -> GitEntry {
         if Str.get_Length(line) < 5 { return null; }
         var e = new GitEntry();
         e.index = Str.MidLen(line, 3, 1);
         e.worktree = Str.MidLen(line, 4, 1);
         e.staged = false;
         e.conflicted = true;
-        e.path = UnquotePath(RestAfterFields(line, 10));
+        e.path = DecodePath(RestAfterFields(line, 10), exactPaths);
         if e.path == "" { return null; }
         return e;
     }
 
     hide func ParseTrackedLine(line: String,
                                pathField: Integer,
-                               renamed: Boolean) -> GitEntry {
+                               renamed: Boolean,
+                               exactPaths: Boolean) -> GitEntry {
         var e = new GitEntry();
         e.index = Str.MidLen(line, 3, 1);
         e.worktree = Str.MidLen(line, 4, 1);
         e.staged = e.index != ".";
         e.renamed = renamed;
         var pathText = RestAfterFields(line, pathField);
-        if renamed {
+        if renamed and exactPaths == false {
             var parts = Str.Split(pathText, "\t");
             if Seq.get_Count(parts) > 0 {
-                e.path = UnquotePath(Obj.ToString(Seq.Get(parts, 0)));
+                e.path = DecodePath(Obj.ToString(Seq.Get(parts, 0)), false);
             }
             if Seq.get_Count(parts) > 1 {
-                e.oldPath = UnquotePath(Obj.ToString(Seq.Get(parts, 1)));
+                e.oldPath = DecodePath(Obj.ToString(Seq.Get(parts, 1)), false);
             }
         } else {
-            e.path = UnquotePath(pathText);
+            e.path = DecodePath(pathText, exactPaths);
         }
         return e;
     }
@@ -983,7 +906,10 @@ class Git {
         return Str.Mid(line, pos);
     }
 
-    hide func UnquotePath(pathText: String) -> String {
+    /// @brief Decode line-mode quoted paths or preserve `-z` path bytes exactly.
+    hide func DecodePath(pathText: String,
+                         exact: Boolean) -> String {
+        if exact { return pathText; }
         var p = Str.Trim(pathText);
         if Str.get_Length(p) >= 2 and Str.Left(p, 1) == "\""
            and Str.MidLen(p, Str.get_Length(p), 1) == "\"" {

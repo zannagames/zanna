@@ -5,12 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Unit tests for Zia interface dispatch via runtime itable lookup.
-//
-// Verifies that:
-// 1. Interfaces with implementors emit __zia_iface_init with itable registration
-// 2. Interface method calls emit rt_get_interface_impl + call.indirect
-// 3. Multiple interface implementations dispatch correctly
+// File: src/tests/zia/test_zia_iface_dispatch.cpp
+// Purpose: Verify Zia interface dispatch and generated runtime type initialization.
+// Key invariants:
+//   - Interface calls lower through runtime itable lookup and call.indirect.
+//   - Classes and interfaces register before their itables are bound.
+//   - Large class registries are partitioned into ordered, bounded helpers.
+// Ownership/Lifetime:
+//   - Every compiler result and synthesized source buffer is test-owned.
+// Cross-platform touchpoints:
+//   - Tests inspect target-neutral IL so batching remains valid for every native backend.
+// Links: src/frontends/zia/Lowerer_Decl_Types.cpp,
+//        src/codegen/aarch64/LoweringContext.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -264,6 +270,61 @@ func start() {
     EXPECT_TRUE(hasFunction(result.module, "INamed.label"));
     EXPECT_TRUE(hasCall(result.module, "INamed.label", "rt_get_interface_impl"));
     EXPECT_TRUE(hasCall(result.module, "__zia_iface_init", "rt_bind_interface"));
+}
+
+/// @brief A large application's class registry is emitted through bounded helpers instead of
+///        one native-backend-hostile initializer with tens of thousands of virtual registers.
+TEST(ZiaIfaceDispatch, LargeClassRegistryUsesBoundedInitializationHelpers) {
+    SourceManager sm;
+    constexpr int kClassCount = 700;
+    std::string source = R"(
+module LargeRegistry;
+
+interface IMarker {
+    func marker() -> Integer;
+}
+)";
+    source.reserve(160000);
+    for (int i = 0; i < kClassCount; ++i) {
+        const std::string suffix = std::to_string(i);
+        source += "class RegistryType" + suffix + " {\n";
+        source += "    expose func first() -> Integer { return " + suffix + "; }\n";
+        source += "    expose func second() -> Integer { return " + suffix + "; }\n";
+        source += "}\n";
+    }
+    source += "func start() {}\n";
+
+    CompilerInput input{.source = source, .path = "large_iface_registry.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    if (!result.succeeded())
+        dumpDiags(result);
+    ASSERT_TRUE(result.succeeded());
+
+    size_t helperCount = 0;
+    size_t registrationCount = 0;
+    bool initializerCallsHelper = false;
+    for (const auto &fn : result.module.functions) {
+        const bool isHelper = fn.name.rfind("__zia_class_init_", 0) == 0;
+        if (isHelper)
+            ++helperCount;
+        for (const auto &block : fn.blocks) {
+            for (const auto &instr : block.instructions) {
+                if (instr.op != il::core::Opcode::Call)
+                    continue;
+                if (isHelper && instr.callee == "rt_register_class_with_base_rs")
+                    ++registrationCount;
+                if (fn.name == "__zia_iface_init" &&
+                    instr.callee.rfind("__zia_class_init_", 0) == 0) {
+                    initializerCallsHelper = true;
+                }
+            }
+        }
+    }
+
+    EXPECT_TRUE(helperCount > 1);
+    EXPECT_TRUE(initializerCallsHelper);
+    EXPECT_EQ(static_cast<size_t>(kClassCount), registrationCount);
 }
 
 /// @brief No interfaces defined — no __zia_iface_init emitted.

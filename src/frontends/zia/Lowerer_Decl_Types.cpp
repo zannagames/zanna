@@ -4,18 +4,27 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
-///
-/// @file Lowerer_Decl_Types.cpp
-/// @brief Registers Zia aggregate layouts and emits interface-dispatch
-///        initialization.
-///
-/// @details The layout pre-pass records structs, classes, and interfaces before
-///          bodies are lowered, computes aligned inline field offsets, assigns
-///          runtime identifiers, and builds virtual/interface slot metadata.
-///          Generic struct and class layouts are instantiated and cached on
-///          demand. This file also emits value-type interface adapters and
-///          exports class-field layouts for debugger memory inspection.
-///
+//
+// File: src/frontends/zia/Lowerer_Decl_Types.cpp
+// Purpose: Register Zia aggregate layouts and emit runtime type/interface
+//          initialization.
+// Key invariants:
+//   - Aggregate layouts are registered before bodies are lowered.
+//   - Base classes are registered before derived classes.
+//   - Large class-registration sequences are partitioned into ordered helpers
+//     so native backends never receive one unbounded initializer function.
+//   - Interface tables are populated only after their classes and interfaces
+//     have been registered.
+// Ownership/Lifetime:
+//   - Lowered metadata is owned by the Lowerer and destination IL module.
+//   - AST declarations and semantic types are borrowed for the lowering pass.
+// Cross-platform touchpoints:
+//   - Generated IL is target-neutral; pointer-sized tables use the canonical
+//     machine-word layout expected by every native backend.
+// Links: src/frontends/zia/Lowerer.hpp,
+//        src/codegen/aarch64/LoweringContext.hpp,
+//        src/tests/zia/test_zia_iface_dispatch.cpp
+//
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Lowerer.hpp"
@@ -321,6 +330,12 @@ void Lowerer::emitVtable(const ClassTypeInfo & /*info*/) {
 //=============================================================================
 
 namespace {
+/// @brief Maximum estimated IL-result cost emitted into one class-registration function.
+/// @details Native backends use function-local virtual-register namespaces. Keeping generated
+///          registration helpers bounded prevents large applications from exhausting those
+///          namespaces while retaining direct initialization for ordinary-sized modules.
+constexpr size_t kClassRegistrationBatchCost = 2048;
+
 /// @brief Compose the cache key identifying a struct→interface→method adapter.
 /// @param structName Qualified name of the implementing value type.
 /// @param ifaceName Qualified name of the target interface.
@@ -370,16 +385,6 @@ void Lowerer::emitItableInit() {
         }
     }
 
-    // Create __zia_iface_init() function
-    auto &fn = builder_->startFunction("__zia_iface_init", Type(Type::Kind::Void), {});
-    fn.moduleInitializer = true;
-    currentFunc_ = &fn;
-    definedFunctions_.insert("__zia_iface_init");
-    blockMgr_.bind(builder_.get(), &fn);
-    // Create entry block
-    builder_->createBlock(fn, "entry_0", {});
-    setBlock(fn.blocks.size() - 1);
-
     // Phase 1: Register each class before interface bindings reference it.
     std::vector<std::string> classOrder;
     std::unordered_set<std::string> visitedClasses;
@@ -399,10 +404,25 @@ void Lowerer::emitItableInit() {
     for (const auto &entry : classTypes_)
         visitClass(entry.first);
 
-    for (const auto &className : classOrder) {
+    /// @brief Starts an empty, parameterless initialization function and binds the IL builder.
+    /// @param name Compiler-reserved function name.
+    /// @param moduleInitializer Whether the function is an automatic module initializer.
+    auto startInitFunction = [&](const std::string &name, bool moduleInitializer) {
+        auto &initFn = builder_->startFunction(name, Type(Type::Kind::Void), {});
+        initFn.moduleInitializer = moduleInitializer;
+        currentFunc_ = &initFn;
+        definedFunctions_.insert(name);
+        blockMgr_.bind(builder_.get(), &initFn);
+        builder_->createBlock(initFn, "entry_0", {});
+        setBlock(initFn.blocks.size() - 1);
+    };
+
+    /// @brief Emits one class's vtable allocation/population and runtime registration.
+    /// @param className Qualified registered class name.
+    auto emitClassRegistration = [&](const std::string &className) {
         auto classIt = classTypes_.find(className);
         if (classIt == classTypes_.end())
-            continue;
+            return;
         const ClassTypeInfo &classInfo = classIt->second;
 
         const size_t slotCount = classInfo.vtable.size();
@@ -435,6 +455,58 @@ void Lowerer::emitItableInit() {
                   qnameStr,
                   Value::constInt(static_cast<int64_t>(slotCount)),
                   Value::constInt(baseClassId)});
+    };
+
+    size_t totalClassRegistrationCost = 0;
+    for (const auto &className : classOrder) {
+        auto classIt = classTypes_.find(className);
+        if (classIt != classTypes_.end())
+            totalClassRegistrationCost += 2 + classIt->second.vtable.size();
+    }
+
+    std::vector<std::string> classInitHelpers;
+    if (totalClassRegistrationCost > kClassRegistrationBatchCost) {
+        size_t batchBegin = 0;
+        size_t batchCost = 0;
+        size_t helperIndex = 0;
+
+        /// @brief Emits one bounded helper for the half-open class-order range.
+        /// @param begin First class index to register.
+        /// @param end One-past-last class index to register.
+        auto emitClassBatch = [&](size_t begin, size_t end) {
+            const std::string helperName = "__zia_class_init_" + std::to_string(helperIndex++);
+            classInitHelpers.push_back(helperName);
+            startInitFunction(helperName, false);
+            for (size_t i = begin; i < end; ++i)
+                emitClassRegistration(classOrder[i]);
+            emitRetVoid();
+        };
+
+        for (size_t i = 0; i < classOrder.size(); ++i) {
+            auto classIt = classTypes_.find(classOrder[i]);
+            const size_t classCost =
+                classIt == classTypes_.end() ? 0 : 2 + classIt->second.vtable.size();
+            if (i > batchBegin && batchCost + classCost > kClassRegistrationBatchCost) {
+                emitClassBatch(batchBegin, i);
+                batchBegin = i;
+                batchCost = 0;
+            }
+            batchCost += classCost;
+        }
+        if (batchBegin < classOrder.size())
+            emitClassBatch(batchBegin, classOrder.size());
+    }
+
+    // The public initializer remains the single ordered entry point. Small
+    // modules retain direct registration to keep their IL compact; large ones
+    // call the bounded helpers emitted above.
+    startInitFunction("__zia_iface_init", true);
+    if (classInitHelpers.empty()) {
+        for (const auto &className : classOrder)
+            emitClassRegistration(className);
+    } else {
+        for (const auto &helperName : classInitHelpers)
+            emitCall(helperName, {});
     }
 
     for (const auto &[structName, structInfo] : structTypes_) {

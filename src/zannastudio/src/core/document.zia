@@ -20,6 +20,8 @@
 //     changes canonical scene metadata, visibility, or history.
 //   - New scene tabs start with compact supporting panes and a dominant
 //     canvas/viewport; restored tabs retain their own divider choices.
+//   - recoveryId is a process-local collision-resistant nonce assigned lazily
+//     by RecoveryStore and is never derived from a user-visible filename.
 // Ownership/Lifetime:
 //   - DocumentManager owns instances for the lifetime of their editor tabs.
 // Links: zannastudio/src/core/document_manager.zia,
@@ -50,6 +52,7 @@ module document;
 // ============================================================================
 
 bind "../services/file_utils";
+bind "document_buffer";
 
 bind Zanna.GUI as GUI;
 
@@ -256,6 +259,7 @@ class Document {
     expose String filePath;            // Absolute path; "" for untitled.
     expose String fileName;            // Display name in the tab.
     expose String content;             // Full text snapshot (kept in sync on save/switch).
+    expose document_buffer.SharedDocumentBuffer sharedBuffer;
     expose GUI.EditorBuffer buffer;    // Detached editor state while inactive; null when active
                                        // (content lives in the shared editor widget) or unopened.
     expose String language;            // "zia", "basic", "text".
@@ -277,12 +281,14 @@ class Document {
     expose String pendingWorkspaceUndoLabel;   // User-facing name of the pending edit.
     expose Scene2DWorkspaceState scene2DWorkspace; // Per-tab 2D canvas/inspector state.
     expose Scene3DWorkspaceState scene3DWorkspace; // Per-tab 3D camera/inspector state.
+    expose String recoveryId;          // Stable nonce for this live recovery owner.
 
     /// @brief Initialize as an untitled, empty, plain-text document.
     expose func init() {
         filePath = "";
         fileName = "Untitled";
         content = "";
+        sharedBuffer = new document_buffer.SharedDocumentBuffer();
         buffer = null;
         language = "text";
         kind = file_utils.DOC_KIND_TEXT;
@@ -303,5 +309,19 @@ class Document {
         pendingWorkspaceUndoLabel = "";
         scene2DWorkspace = new Scene2DWorkspaceState();
         scene3DWorkspace = new Scene3DWorkspaceState();
+        recoveryId = "";
+    }
+
+    /// @brief Publish canonical text through the shared-buffer owner.
+    /// @details Document.content remains a compatibility mirror for scene and
+    ///          older command code; text editor views use sharedBuffer identity.
+    expose func PublishText(text: String, ownerView: Integer) -> Boolean {
+        content = text;
+        return sharedBuffer.Publish(text, ownerView);
+    }
+
+    /// @brief Reconcile a compatibility write before opening shared views.
+    expose func ReconcileSharedText() -> Boolean {
+        return sharedBuffer.Adopt(content);
     }
 }

@@ -6,9 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/scm/scm_git_support.zia
-// Purpose: Detect Git prompts and classify common command failures.
+// Purpose: Classify common noninteractive Git command failures.
 // Key invariants:
-//   - Prompt detection only considers an unterminated final output line.
+//   - Authentication guidance never asks Studio to collect secret text.
 //   - Unknown failures preserve raw output without speculative guidance.
 // Ownership/Lifetime: Stateless text helpers own no process or repository state.
 // Links: zannastudio/src/scm/scm_git.zia,
@@ -19,37 +19,6 @@
 module scm_git_support;
 
 bind Str = Zanna.String;
-
-/// @brief Detect a credential/confirmation prompt at the tail of PTY output.
-/// @details A prompt is an unterminated final line matching the patterns git,
-///          git-credential, and ssh actually emit. Detection is heuristic and
-///          fails open: unmatched output simply streams to the panel.
-/// @param text Merged PTY output so far.
-/// @return The prompt line (trimmed) when one is pending, else empty.
-expose func DetectPrompt(text: String) -> String {
-    if text == "" { return ""; }
-    if Str.EndsWith(text, "\n") { return ""; }
-    var tail = text;
-    var nl = Str.LastIndexOf(text, "\n");
-    if nl != 0 { tail = Str.Mid(text, nl + 1); }
-    tail = Str.Trim(Str.Replace(tail, "\r", ""));
-    if tail == "" { return ""; }
-    var lower = Str.ToLower(tail);
-    if Str.IndexOf(lower, "username for") != 0 { return tail; }
-    if Str.IndexOf(lower, "password for") != 0 { return tail; }
-    if Str.IndexOf(lower, "passphrase") != 0 { return tail; }
-    if Str.EndsWith(lower, "password:") { return tail; }
-    if Str.IndexOf(lower, "are you sure you want to continue connecting") != 0 { return tail; }
-    return "";
-}
-
-/// @brief True when @p prompt asks for a secret (mask the input field).
-expose func PromptWantsMask(prompt: String) -> Boolean {
-    var lower = Str.ToLower(prompt);
-    if Str.IndexOf(lower, "password") != 0 { return true; }
-    if Str.IndexOf(lower, "passphrase") != 0 { return true; }
-    return false;
-}
 
 /// @brief Classify common Git failures into short user-actionable guidance.
 /// @details Source Control still preserves raw stdout/stderr in the output pane.

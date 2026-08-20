@@ -30,7 +30,8 @@
 //   - Windows: ConPTY (CreatePseudoConsole/ResizePseudoConsole/ClosePseudoConsole)
 //     resolved dynamically and thread-safely (Windows 10 1809+).
 //
-// Links: src/runtime/system/rt_pty.h, src/runtime/system/rt_process.c
+// Links: src/runtime/system/rt_pty.h, src/runtime/system/rt_process.c,
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,6 +50,7 @@
 
 #include "rt_pty.h"
 
+#include "rt_activity_wake.h"
 #include "rt_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
@@ -79,6 +81,8 @@ typedef HRESULT(WINAPI *pty_resize_pseudoconsole_fn)(void *, COORD);
 typedef VOID(WINAPI *pty_close_pseudoconsole_fn)(void *);
 #else
 #include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
@@ -126,6 +130,11 @@ typedef struct rt_pty_impl {
     int8_t destroyed;
     int64_t exit_code;
     pty_buffer output_buf;
+    rt_activity_wake_target *activity_wake;
+    volatile int activity_monitor_stop;
+    volatile int activity_monitor_armed;
+    volatile int output_activity_closed;
+    int activity_monitor_started;
 
 #if defined(_WIN32)
     HANDLE process;
@@ -133,13 +142,22 @@ typedef struct rt_pty_impl {
     HANDLE input_write; // parent -> child
     HANDLE output_read; // child -> parent
     void *hpc;          // HPCON
+    HANDLE activity_thread;
+    HANDLE activity_stop_event;
+    HANDLE activity_rearm_event;
 #else
     pid_t pid;
     int master_fd;
+    pthread_t activity_thread;
+    int activity_control_read;
+    int activity_control_write;
 #endif
 } rt_pty_impl;
 
 static void pty_finalize(void *obj);
+static int pty_activity_monitor_start(rt_pty_impl *pty);
+static void pty_activity_monitor_stop(rt_pty_impl *pty);
+static void pty_activity_rearm(rt_pty_impl *pty);
 // Thread-local so concurrent Open/OpenResult/IsSupported calls on different
 // threads never tear each other's diagnostic or clobber it — the buffer was a
 // plain process-global written with snprintf from every path (VDOC-215). Each
@@ -453,9 +471,14 @@ static rt_pty_impl *pty_alloc(void) {
     pty->input_write = NULL;
     pty->output_read = NULL;
     pty->hpc = NULL;
+    pty->activity_thread = NULL;
+    pty->activity_stop_event = NULL;
+    pty->activity_rearm_event = NULL;
 #else
     pty->pid = -1;
     pty->master_fd = -1;
+    pty->activity_control_read = -1;
+    pty->activity_control_write = -1;
 #endif
     rt_obj_set_finalizer(pty, pty_finalize);
     return pty;
@@ -544,6 +567,96 @@ static void close_handle(HANDLE *h) {
         CloseHandle(*h);
         *h = NULL;
     }
+}
+
+/// @brief Monitor ConPTY output readiness and process exit off the UI thread.
+static DWORD WINAPI pty_activity_monitor_main(LPVOID context) {
+    rt_pty_impl *pty = (rt_pty_impl *)context;
+    if (!pty)
+        return 1;
+    HANDLE waits[2] = {pty->activity_stop_event, pty->process};
+    for (;;) {
+        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return 0;
+        if (!rt_atomic_load_i32(&pty->activity_monitor_armed, __ATOMIC_ACQUIRE)) {
+            HANDLE paused[2] = {pty->activity_stop_event, pty->activity_rearm_event};
+            DWORD resumed = WaitForMultipleObjects(2, paused, FALSE, INFINITE);
+            if (resumed == WAIT_OBJECT_0 || resumed == WAIT_FAILED)
+                return 0;
+            continue;
+        }
+        DWORD available = 0;
+        int pipe_activity = 0;
+        if (pty->output_read &&
+            !rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE)) {
+            if (!PeekNamedPipe(pty->output_read, NULL, 0, NULL, &available, NULL)) {
+                pipe_activity =
+                    !rt_atomic_exchange_i32(&pty->output_activity_closed, 1, __ATOMIC_ACQ_REL);
+            } else {
+                pipe_activity = available > 0;
+            }
+        }
+        int exited = pty->process && WaitForSingleObject(pty->process, 0) == WAIT_OBJECT_0;
+        if (pipe_activity || exited) {
+            if (rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+                rt_activity_wake_signal(pty->activity_wake);
+            if (exited)
+                return 0;
+            continue;
+        }
+        DWORD waited = WaitForMultipleObjects(2, waits, FALSE, 16);
+        if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED)
+            return 0;
+        if (waited == WAIT_OBJECT_0 + 1) {
+            if (rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+                rt_activity_wake_signal(pty->activity_wake);
+            return 0;
+        }
+    }
+}
+
+static int pty_activity_monitor_start(rt_pty_impl *pty) {
+    if (!pty || pty->activity_monitor_started)
+        return pty && pty->activity_monitor_started;
+    pty->activity_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    pty->activity_rearm_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!pty->activity_stop_event || !pty->activity_rearm_event) {
+        close_handle(&pty->activity_stop_event);
+        close_handle(&pty->activity_rearm_event);
+        return 0;
+    }
+    rt_atomic_store_i32(&pty->activity_monitor_stop, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    pty->activity_thread = CreateThread(NULL, 0, pty_activity_monitor_main, pty, 0, NULL);
+    if (!pty->activity_thread) {
+        close_handle(&pty->activity_stop_event);
+        close_handle(&pty->activity_rearm_event);
+        return 0;
+    }
+    pty->activity_monitor_started = 1;
+    return 1;
+}
+
+static void pty_activity_monitor_stop(rt_pty_impl *pty) {
+    if (!pty || !pty->activity_monitor_started)
+        return;
+    rt_atomic_store_i32(&pty->activity_monitor_stop, 1, __ATOMIC_RELEASE);
+    SetEvent(pty->activity_stop_event);
+    (void)WaitForSingleObject(pty->activity_thread, INFINITE);
+    close_handle(&pty->activity_thread);
+    close_handle(&pty->activity_stop_event);
+    close_handle(&pty->activity_rearm_event);
+    pty->activity_monitor_started = 0;
+    rt_activity_wake_release(pty->activity_wake);
+    pty->activity_wake = NULL;
+}
+
+static void pty_activity_rearm(rt_pty_impl *pty) {
+    if (!pty || !pty->activity_monitor_started ||
+        rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
+        return;
+    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    SetEvent(pty->activity_rearm_event);
 }
 
 /// @brief Convert a NUL-terminated UTF-8 string to strict UTF-16.
@@ -964,20 +1077,25 @@ static void pty_drain(rt_pty_impl *pty) {
         return;
     for (;;) {
         DWORD avail = 0;
-        if (!PeekNamedPipe(pty->output_read, NULL, 0, NULL, &avail, NULL))
-            return;
+        if (!PeekNamedPipe(pty->output_read, NULL, 0, NULL, &avail, NULL)) {
+            rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
+            break;
+        }
         if (avail == 0)
-            return;
+            break;
         char chunk[4096];
         DWORD want = avail > sizeof(chunk) ? (DWORD)sizeof(chunk) : avail;
         DWORD got = 0;
-        if (!ReadFile(pty->output_read, chunk, want, &got, NULL) || got == 0)
-            return;
+        if (!ReadFile(pty->output_read, chunk, want, &got, NULL) || got == 0) {
+            rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
+            break;
+        }
         if (!buffer_append(&pty->output_buf, chunk, (size_t)got)) {
             rt_trap("Pty: output buffer allocation failed");
-            return;
+            break;
         }
     }
+    pty_activity_rearm(pty);
 }
 
 /// @brief Poll or wait for Windows PTY child completion.
@@ -1067,6 +1185,7 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
 static void pty_close(rt_pty_impl *pty) {
     if (!pty || pty->destroyed)
         return;
+    pty_activity_monitor_stop(pty);
     pty_poll_internal(pty, 0);
     if (pty->running && pty->process) {
         DWORD exit_code = STILL_ACTIVE;
@@ -1143,6 +1262,110 @@ static void close_fd(int *fd) {
         close(*fd);
         *fd = -1;
     }
+}
+
+static void pty_activity_control_signal(rt_pty_impl *pty) {
+    if (!pty || pty->activity_control_write < 0)
+        return;
+    const unsigned char byte = 1;
+    ssize_t result;
+    do {
+        result = write(pty->activity_control_write, &byte, 1);
+    } while (result < 0 && errno == EINTR);
+    (void)result;
+}
+
+static void pty_activity_control_drain(rt_pty_impl *pty) {
+    if (!pty || pty->activity_control_read < 0)
+        return;
+    unsigned char bytes[64];
+    while (read(pty->activity_control_read, bytes, sizeof(bytes)) > 0) {
+    }
+}
+
+/// @brief Block on one PTY master and emit one wake per main-thread drain.
+static void *pty_activity_monitor_main(void *context) {
+    rt_pty_impl *pty = (rt_pty_impl *)context;
+    if (!pty)
+        return NULL;
+    for (;;) {
+        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return NULL;
+        int armed = rt_atomic_load_i32(&pty->activity_monitor_armed, __ATOMIC_ACQUIRE);
+        struct pollfd descriptors[2];
+        nfds_t count = 1;
+        descriptors[0] =
+            (struct pollfd){.fd = pty->activity_control_read, .events = POLLIN, .revents = 0};
+        if (armed && pty->master_fd >= 0 &&
+            !rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE))
+            descriptors[count++] =
+                (struct pollfd){.fd = pty->master_fd, .events = POLLIN, .revents = 0};
+        int result;
+        do {
+            result = poll(descriptors, count, -1);
+        } while (result < 0 && errno == EINTR);
+        if (result < 0)
+            return NULL;
+        if (descriptors[0].revents != 0)
+            pty_activity_control_drain(pty);
+        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return NULL;
+        if (count > 1 &&
+            (descriptors[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) &&
+            rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+            rt_activity_wake_signal(pty->activity_wake);
+    }
+}
+
+static int pty_activity_monitor_start(rt_pty_impl *pty) {
+    if (!pty || pty->activity_monitor_started)
+        return pty && pty->activity_monitor_started;
+    int control[2] = {-1, -1};
+    if (pipe(control) != 0)
+        return 0;
+    for (int i = 0; i < 2; ++i) {
+        int descriptor_flags = fcntl(control[i], F_GETFD, 0);
+        int status_flags = fcntl(control[i], F_GETFL, 0);
+        if (descriptor_flags < 0 || status_flags < 0 ||
+            fcntl(control[i], F_SETFD, descriptor_flags | FD_CLOEXEC) != 0 ||
+            fcntl(control[i], F_SETFL, status_flags | O_NONBLOCK) != 0) {
+            close(control[0]);
+            close(control[1]);
+            return 0;
+        }
+    }
+    pty->activity_control_read = control[0];
+    pty->activity_control_write = control[1];
+    rt_atomic_store_i32(&pty->activity_monitor_stop, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    if (pthread_create(&pty->activity_thread, NULL, pty_activity_monitor_main, pty) != 0) {
+        close_fd(&pty->activity_control_read);
+        close_fd(&pty->activity_control_write);
+        return 0;
+    }
+    pty->activity_monitor_started = 1;
+    return 1;
+}
+
+static void pty_activity_monitor_stop(rt_pty_impl *pty) {
+    if (!pty || !pty->activity_monitor_started)
+        return;
+    rt_atomic_store_i32(&pty->activity_monitor_stop, 1, __ATOMIC_RELEASE);
+    pty_activity_control_signal(pty);
+    (void)pthread_join(pty->activity_thread, NULL);
+    close_fd(&pty->activity_control_read);
+    close_fd(&pty->activity_control_write);
+    pty->activity_monitor_started = 0;
+    rt_activity_wake_release(pty->activity_wake);
+    pty->activity_wake = NULL;
+}
+
+static void pty_activity_rearm(rt_pty_impl *pty) {
+    if (!pty || !pty->activity_monitor_started ||
+        rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
+        return;
+    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    pty_activity_control_signal(pty);
 }
 
 /// @brief Best-effort report a pre-exec child error to the parent.
@@ -1241,24 +1464,30 @@ static void pty_drain(rt_pty_impl *pty) {
         if (count > 0) {
             if (!buffer_append(&pty->output_buf, chunk, (size_t)count)) {
                 rt_trap("Pty: output buffer allocation failed");
-                close_fd(&pty->master_fd);
-                return;
+                if (!pty->activity_monitor_started)
+                    close_fd(&pty->master_fd);
+                break;
             }
             continue;
         }
         if (count == 0) {
             // EOF on the master means the child closed the slave (exited).
-            close_fd(&pty->master_fd);
-            return;
+            rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
+            if (!pty->activity_monitor_started)
+                close_fd(&pty->master_fd);
+            break;
         }
         if (errno == EINTR)
             continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK)
-            return;
+            break;
         // A closed slave surfaces as EIO on the master once the child is gone.
-        close_fd(&pty->master_fd);
-        return;
+        rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
+        if (!pty->activity_monitor_started)
+            close_fd(&pty->master_fd);
+        break;
     }
+    pty_activity_rearm(pty);
 }
 
 /// @brief Normalize a POSIX wait status for the PTY API.
@@ -1642,6 +1871,7 @@ static rt_pty_impl *pty_open_impl(
 static void pty_close(rt_pty_impl *pty) {
     if (!pty || pty->destroyed)
         return;
+    pty_activity_monitor_stop(pty);
     if (pty->running && pty->pid > 0) {
         if (!pty_signal_session(pty->pid, SIGTERM))
             pty_set_last_errno("PTY SIGTERM failed");
@@ -1772,6 +2002,21 @@ rt_string rt_pty_last_error(void) {
 int64_t rt_pty_is_valid(void *handle) {
     rt_pty_impl *pty = pty_checked(handle);
     return pty && pty->started && !pty->destroyed ? 1 : 0;
+}
+
+/// @brief Attach a lifetime-safe output/exit wake target to a live PTY.
+int64_t rt_pty_set_activity_wake(void *handle, rt_activity_wake_target *target) {
+    rt_pty_impl *pty = pty_checked(handle);
+    if (!pty || !target || !pty->started || pty->destroyed)
+        return 0;
+    pty_activity_monitor_stop(pty);
+    pty->activity_wake = rt_activity_wake_retain(target);
+    if (!pty->activity_wake || !pty_activity_monitor_start(pty)) {
+        rt_activity_wake_release(pty->activity_wake);
+        pty->activity_wake = NULL;
+        return 0;
+    }
+    return 1;
 }
 
 /// @brief Nonblockingly drain terminal output and check child completion.

@@ -341,7 +341,8 @@ func handleZoomReset(shell: app_shell.AppShell,
     appSettings.fontSize = settings.DEFAULT_FONT_SIZE;
     applyEditorFont(engine, appSettings);
     PersistSettings(shell, appSettings);
-    shell.SetStatusLeft("Font size reset to " + settings.DEFAULT_FONT_SIZE);
+    shell.SetStatusLeft("Font size reset to "
+                        + Obj.ToString(settings.DEFAULT_FONT_SIZE));
 }
 
 /// @brief Clamp the whole-UI zoom percentage to the legible range [50, 300].

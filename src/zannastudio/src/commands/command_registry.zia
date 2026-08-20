@@ -828,7 +828,7 @@ class CommandRegistry {
             if editorSplitActive {
                 return "Close the current editor split before opening another.";
             }
-            return "Open another source or text document before splitting the editor.";
+            return "Open an editable source or text document before splitting the editor.";
         }
         if (cmd.id == "focusotherpane" or cmd.id == "closesplit")
            and editorSplitActive == false {

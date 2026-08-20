@@ -78,6 +78,7 @@ typedef struct {
     int fullscreen;  ///< Per-window fullscreen state
     int pending_head;
     int pending_tail;
+    int wake_pending;
     vgfx_event_t pending_events[VGFX_MOCK_PENDING_QUEUE_SLOTS];
 } vgfx_mock_platform;
 
@@ -329,13 +330,34 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (!win || !win->platform_data)
         return 0;
     vgfx_mock_platform *platform = (vgfx_mock_platform *)win->platform_data;
+    vgfx_internal_event_lock(win);
+    int was_woken = platform->wake_pending;
+    platform->wake_pending = 0;
+    vgfx_internal_event_unlock(win);
+    if (was_woken)
+        return 1;
     /* Events already pending: return immediately. */
     if (platform->pending_head != platform->pending_tail)
         return 1;
     if (timeout_ms > 0)
         vgfx_platform_sleep_ms(timeout_ms);
     /* An event may have been injected concurrently while we slept. */
-    return platform->pending_head != platform->pending_tail ? 1 : 0;
+    vgfx_internal_event_lock(win);
+    was_woken = platform->wake_pending;
+    platform->wake_pending = 0;
+    vgfx_internal_event_unlock(win);
+    return was_woken || platform->pending_head != platform->pending_tail ? 1 : 0;
+}
+
+/// @copydoc vgfx_platform_wake_events
+int vgfx_platform_wake_events(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return 0;
+    vgfx_mock_platform *platform = (vgfx_mock_platform *)win->platform_data;
+    vgfx_internal_event_lock(win);
+    platform->wake_pending = 1;
+    vgfx_internal_event_unlock(win);
+    return 1;
 }
 
 /// @brief Transfer injected mock events into core window state and queue.

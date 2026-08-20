@@ -57,6 +57,27 @@ func fail(reason: String) {
     Terminal.Say("RESULT: fail " + reason);
 }
 
+/// @brief Verify bounded control framing before launching a real adapter.
+func VerifyProtocolFraming() -> Boolean {
+    var session = new debug_session.DebugSession();
+    session.AcceptAdapterControlText("@@VDBG@@ {not-json}\n");
+    if Str.IndexOf(session.programOutput,
+                   "malformed debug control JSON discarded") == 0 {
+        fail("malformed debug control JSON was silently discarded");
+        return false;
+    }
+
+    session.ClearProgramOutput();
+    session.AcceptAdapterControlText(
+        "@@VDBG@@ " + Str.Repeat("x", 1024 * 1024 + 1) + "\n");
+    if Str.IndexOf(session.programOutput,
+                   "oversized debug control line discarded") == 0 {
+        fail("oversized debug control record reached the parser");
+        return false;
+    }
+    return true;
+}
+
 /// @brief Poll the session until it stops or terminates, or the budget elapses.
 func pollUntilSettled(session: debug_session.DebugSession, budgetMs: Integer) {
     var waited = 0;
@@ -449,6 +470,7 @@ func VerifyConditionalBreakpointsAndLogpoints(
 }
 
 func main() {
+    if VerifyProtocolFraming() == false { return; }
     var ctx = new DebugProbeContext();
     if VerifyZiaBreakpointState(ctx) == false { return; }
     if VerifyZiaStepping(ctx) == false { return; }

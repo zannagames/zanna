@@ -1,0 +1,73 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_window_model.zia
+// Purpose: Window-host-neutral state for a detached Studio tool surface.
+// Key invariants:
+//   - Model revisions come from the owning tool model, not repaint frequency.
+//   - Reset generations distinguish append-only output from replacement.
+//   - No native App or Widget handle enters this model.
+// Ownership/Lifetime:
+//   - StudioApplication owns one model; any native host borrows it per frame.
+// Links: zannastudio/src/ui/native_tool_window_host.zia,
+//        zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_window_model;
+
+final TOOL_WINDOW_NONE = 0;
+final TOOL_WINDOW_OUTPUT = 1;
+
+/// @brief Host-independent projection of one detached workbench tool.
+class ToolWindowModel {
+    expose Integer toolKind;
+    expose String title;
+    expose String content;
+    expose Integer contentGeneration;
+    expose Integer resetGeneration;
+    expose Boolean active;
+
+    expose func init() {
+        toolKind = TOOL_WINDOW_NONE;
+        title = "";
+        content = "";
+        contentGeneration = -1;
+        resetGeneration = -1;
+        active = false;
+    }
+
+    expose func OpenOutput(text: String,
+                           generation: Integer,
+                           reset: Integer) {
+        toolKind = TOOL_WINDOW_OUTPUT;
+        title = "Output";
+        content = text;
+        contentGeneration = generation;
+        resetGeneration = reset;
+        active = true;
+    }
+
+    /// @brief Synchronize from the durable Output model without widget reads.
+    expose func SyncOutput(text: String,
+                           generation: Integer,
+                           reset: Integer) -> Boolean {
+        if active == false or toolKind != TOOL_WINDOW_OUTPUT { return false; }
+        if contentGeneration == generation and resetGeneration == reset {
+            return false;
+        }
+        content = text;
+        contentGeneration = generation;
+        resetGeneration = reset;
+        return true;
+    }
+
+    expose func Close() {
+        active = false;
+        toolKind = TOOL_WINDOW_NONE;
+    }
+}

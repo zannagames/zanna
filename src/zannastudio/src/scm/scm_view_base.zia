@@ -69,11 +69,13 @@ class PendingAction {
     expose String kind;
     expose String path;
     expose String message;
+    expose Integer repositoryGeneration;
 
     expose func init() {
         kind = "";
         path = "";
         message = "";
+        repositoryGeneration = 0;
     }
 }
 
@@ -81,7 +83,6 @@ class PendingAction {
 class ScmViewBase {
     expose scm_git.Git git;
     expose scm_git.GitJob activeJob;
-    expose scm_git.GitPtyJob activePtyJob;
     expose GUI.VBox host;
     expose GUI.Label branchLabel;
     expose GUI.Label statusLabel;
@@ -90,24 +91,21 @@ class ScmViewBase {
     expose GUI.TextInput commitInput;
     expose GUI.Button refreshBtn;
     expose GUI.Button cancelBtn;
+    expose GUI.Button fetchBtn;
     expose GUI.Button pushBtn;
     expose GUI.Button pullBtn;
+    expose GUI.Dropdown pullStrategy;
     expose GUI.Button historyBtn;
     expose GUI.Button loadMoreBtn;
     expose GUI.Button stageBtn;
     expose GUI.Button unstageBtn;
     expose GUI.Button stageAllBtn;
+    expose GUI.Button abortOperationBtn;
     expose GUI.Flex stageRow;
     expose GUI.Flex commitRow;
     expose GUI.Button commitBtn;
     expose GUI.OutputPane diffPane;
     expose GUI.Button sideBySideButton;
-    expose GUI.VBox credRow;
-    expose GUI.Flex credActionRow;
-    expose GUI.Label credLabel;
-    expose GUI.TextInput credInput;
-    expose GUI.Button credSendBtn;
-    expose GUI.Button credCancelBtn;
     expose diff_view.DiffView diffOverlay;
     expose Boolean ready;
     expose Boolean repoReady;
@@ -120,8 +118,14 @@ class ScmViewBase {
     expose String historySha;     // commit backing commitfiles mode
     expose String pendingOldText; // stash between showold and shownew jobs
     expose String pendingDiffFile;
+    expose String pendingDiffStatus;
     expose scm_git.GitStatus lastStatus;
     expose Boolean compactControls;
+    expose Integer repositoryGeneration;
+    expose String operationState;
+    expose GUI.VirtualList statusRows;
+    expose List[String] statusRowData;
+    expose List[String] statusRowMeta;
 
     expose func init() {
         InitializeState();
@@ -131,7 +135,6 @@ class ScmViewBase {
     expose func InitializeState() {
         git = new scm_git.Git();
         activeJob = null;
-        activePtyJob = null;
         host = null;
         ready = false;
         repoReady = false;
@@ -144,8 +147,14 @@ class ScmViewBase {
         historySha = "";
         pendingOldText = "";
         pendingDiffFile = "";
+        pendingDiffStatus = "";
         lastStatus = new scm_git.GitStatus();
         compactControls = false;
+        repositoryGeneration = 0;
+        operationState = "idle";
+        statusRows = GUI.VirtualList.New(0, 18, 100);
+        statusRowData = [];
+        statusRowMeta = [];
     }
 
     /// @brief Build the Source Control widgets into @p host.
@@ -168,6 +177,9 @@ class ScmViewBase {
         cancelBtn = GUI.Button.New(topRow, "Cancel");
         cancelBtn.SetAccessibleName("Cancel source control jobs");
         cancelBtn.SetTooltip("Cancel the active Git job and queued operations");
+        fetchBtn = GUI.Button.New(topRow, "Fetch");
+        fetchBtn.SetAccessibleName("Fetch repository remotes");
+        fetchBtn.SetTooltip("Fetch and prune remote tracking references");
         pushBtn = GUI.Button.New(topRow, "Push");
         pushBtn.SetAccessibleName("Push repository");
         pushBtn.SetTooltip(
@@ -175,7 +187,14 @@ class ScmViewBase {
         pullBtn = GUI.Button.New(topRow, "Pull");
         pullBtn.SetAccessibleName("Pull repository");
         pullBtn.SetTooltip(
-            "Pull using the configured Git credential helper or SSH agent");
+            "Fetch and integrate using the selected explicit strategy");
+        pullStrategy = GUI.Dropdown.New(topRow);
+        pullStrategy.SetAccessibleName("Pull integration strategy");
+        pullStrategy.SetTooltip("Choose fast-forward only, merge, or rebase");
+        pullStrategy.AddItem("Fast-forward only");
+        pullStrategy.AddItem("Merge");
+        pullStrategy.AddItem("Rebase");
+        pullStrategy.SetSelected(0);
         historyBtn = GUI.Button.New(topRow, "History");
         historyBtn.SetAccessibleName("Toggle repository history");
         historyBtn.SetTooltip("Switch between changes and commit history");
@@ -187,6 +206,7 @@ class ScmViewBase {
         statusList = GUI.ListBox.New(host);
         statusList.SetFlex(1.0);
         statusList.SetAccessibleName("Source control changes and history");
+        if statusRows != null { statusRows.Bind(statusList); }
 
         stageRow = GUI.Flex.New();
         stageRow.SetDirection(GUI.FlexDirection.Row);
@@ -204,6 +224,10 @@ class ScmViewBase {
         stageAllBtn = GUI.Button.New(stageRow, "Stage All");
         stageAllBtn.SetAccessibleName("Stage all changes");
         stageAllBtn.SetTooltip("Stage every current worktree change");
+        abortOperationBtn = GUI.Button.New(stageRow, "Abort Operation");
+        abortOperationBtn.SetAccessibleName("Abort merge or rebase");
+        abortOperationBtn.SetTooltip("Abort the active merge or rebase operation");
+        abortOperationBtn.SetVisible(false);
 
         commitRow = GUI.Flex.New();
         commitRow.SetDirection(GUI.FlexDirection.Row);
@@ -221,32 +245,6 @@ class ScmViewBase {
         commitBtn.SetStyle(1);
         commitBtn.SetAccessibleName("Commit staged changes");
         commitBtn.SetTooltip("Commit staged changes with this message (Enter)");
-
-        // Credential prompt row: hidden until an interactive push/pull asks a
-        // question; the input masks itself for password/passphrase prompts.
-        credRow = GUI.VBox.New();
-        credRow.SetSpacing(4.0);
-        host.AddChild(credRow);
-        credLabel = GUI.Label.New(credRow, "");
-        credActionRow = GUI.Flex.New();
-        credActionRow.SetDirection(GUI.FlexDirection.Row);
-        credActionRow.SetWrap(GUI.FlexWrap.Wrap);
-        credActionRow.SetAlign(GUI.Align.Center);
-        credActionRow.SetGap(4.0);
-        credRow.AddChild(credActionRow);
-        credInput = GUI.TextInput.New(credActionRow);
-        credInput.SetFlex(1.0);
-        credInput.SetPreferredSize(120.0, 0.0);
-        credInput.SetAccessibleName("Git credential response");
-        credInput.SetTooltip("Response to the active Git prompt (Enter)");
-        credSendBtn = GUI.Button.New(credActionRow, "Send");
-        credSendBtn.SetStyle(1);
-        credSendBtn.SetAccessibleName("Send Git credential response");
-        credSendBtn.SetTooltip("Send this response to Git (Enter)");
-        credCancelBtn = GUI.Button.New(credActionRow, "Abort");
-        credCancelBtn.SetAccessibleName("Abort interactive Git operation");
-        credCancelBtn.SetTooltip("Abort the active push or pull");
-        credRow.SetVisible(false);
 
         sideBySideButton = GUI.Button.New(host, "Side-by-Side Diff");
         sideBySideButton.SetIconName("split");

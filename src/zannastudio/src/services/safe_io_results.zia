@@ -1,0 +1,174 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/safe_io_results.zia
+// Purpose: Represent and classify non-trapping Studio filesystem failures.
+// Key invariants:
+//   - Every failed mutation has one stable category and a user-facing message.
+//   - Runtime trap detail is retained for diagnostics without becoming UI text.
+//   - Retryability is explicit rather than inferred independently by callers.
+// Ownership/Lifetime:
+//   - Result objects own copied strings; referenced paths remain caller-owned.
+// Links: zannastudio/src/services/safe_io.zia,
+//        zannastudio/src/app/explorer_action_runner.zia
+//
+//===----------------------------------------------------------------------===//
+
+module safe_io_results;
+
+bind Str = Zanna.String;
+
+final IO_FAILURE_NONE = 0;
+final IO_FAILURE_INVALID = 1;
+final IO_FAILURE_NOT_FOUND = 2;
+final IO_FAILURE_ALREADY_EXISTS = 3;
+final IO_FAILURE_PERMISSION = 4;
+final IO_FAILURE_NO_SPACE = 5;
+final IO_FAILURE_BUSY = 6;
+final IO_FAILURE_CONFLICT = 7;
+final IO_FAILURE_LIMIT = 8;
+final IO_FAILURE_IO = 9;
+
+/// @brief Typed outcome of one filesystem mutation.
+class MutationResult {
+    expose Boolean ok;
+    expose Integer code;
+    expose Boolean retryable;
+    expose String operation;
+    expose String path;
+    expose String otherPath;
+    expose String message;
+    expose String detail;
+    expose String runtimeKind;
+    expose Integer runtimeCode;
+
+    expose func init() {
+        ok = false;
+        code = IO_FAILURE_IO;
+        retryable = false;
+        operation = "";
+        path = "";
+        otherPath = "";
+        message = "The filesystem operation failed.";
+        detail = "";
+        runtimeKind = "";
+        runtimeCode = 0;
+    }
+}
+
+/// @brief Construct a successful mutation result.
+expose func Success(operation: String,
+                    path: String,
+                    otherPath: String) -> MutationResult {
+    var result = NewMutationResult(operation, path, otherPath);
+    result.ok = true;
+    result.code = IO_FAILURE_NONE;
+    result.message = "";
+    return result;
+}
+
+/// @brief Construct a known precondition or conflict failure.
+expose func Failure(operation: String,
+                    path: String,
+                    otherPath: String,
+                    code: Integer) -> MutationResult {
+    var result = NewMutationResult(operation, path, otherPath);
+    SetCategory(result, code);
+    return result;
+}
+
+/// @brief Classify a caught runtime filesystem trap without discarding detail.
+/// @details Post-failure existence observations disambiguate destination races
+///          even when an older runtime primitive emitted a generic trap string.
+expose func CaughtFailure(operation: String,
+                          path: String,
+                          otherPath: String,
+                          sourceExists: Boolean,
+                          destinationExists: Boolean,
+                          runtimeKind: String,
+                          runtimeCode: Integer,
+                          detail: String) -> MutationResult {
+    var result = NewMutationResult(operation, path, otherPath);
+    result.detail = detail;
+    result.runtimeKind = runtimeKind;
+    result.runtimeCode = runtimeCode;
+    var lower = Str.ToLower(detail);
+    var code = IO_FAILURE_IO;
+    if destinationExists and otherPath != "" {
+        code = IO_FAILURE_ALREADY_EXISTS;
+    } else if sourceExists == false and path != "" {
+        code = IO_FAILURE_NOT_FOUND;
+    } else if HasAny(lower, "permission denied", "access denied", "operation not permitted")
+              or Str.Contains(lower, "privilege") {
+        code = IO_FAILURE_PERMISSION;
+    } else if HasAny(lower, "no space", "disk full", "not enough space") {
+        code = IO_FAILURE_NO_SPACE;
+    } else if HasAny(lower, "sharing violation", "resource busy", "temporarily unavailable")
+              or Str.Contains(lower, "another process")
+              or Str.Contains(lower, "failed to acquire lock") {
+        code = IO_FAILURE_BUSY;
+    } else if Str.Contains(lower, "already exists")
+              or Str.Contains(lower, "destination exists") {
+        code = IO_FAILURE_ALREADY_EXISTS;
+    } else if Str.Contains(lower, "not found")
+              or Str.Contains(lower, "no such file") {
+        code = IO_FAILURE_NOT_FOUND;
+    } else if Str.Contains(lower, "too large")
+              or Str.Contains(lower, "exceeds") {
+        code = IO_FAILURE_LIMIT;
+    }
+    SetCategory(result, code);
+    return result;
+}
+
+/// @brief Construct a generic result shell with operation context.
+hide func NewMutationResult(operation: String,
+                            path: String,
+                            otherPath: String) -> MutationResult {
+    var result = new MutationResult();
+    result.operation = operation;
+    result.path = path;
+    result.otherPath = otherPath;
+    return result;
+}
+
+/// @brief Apply one stable category's UI and retry policy.
+hide func SetCategory(result: MutationResult, code: Integer) {
+    result.code = code;
+    result.retryable = false;
+    if code == IO_FAILURE_INVALID {
+        result.message = "The selected path is invalid.";
+    } else if code == IO_FAILURE_NOT_FOUND {
+        result.message = "The source no longer exists.";
+    } else if code == IO_FAILURE_ALREADY_EXISTS {
+        result.message = "The destination already exists.";
+    } else if code == IO_FAILURE_PERMISSION {
+        result.message = "Permission was denied for this filesystem operation.";
+    } else if code == IO_FAILURE_NO_SPACE {
+        result.message = "The destination does not have enough free space.";
+    } else if code == IO_FAILURE_BUSY {
+        result.message = "The file is busy in another process; try again.";
+        result.retryable = true;
+    } else if code == IO_FAILURE_CONFLICT {
+        result.message = "The file changed before the operation could commit; retry it.";
+        result.retryable = true;
+    } else if code == IO_FAILURE_LIMIT {
+        result.message = "The filesystem operation exceeded its safety limit.";
+    } else {
+        result.message = "The filesystem operation failed.";
+    }
+}
+
+/// @brief Check three diagnostic fragments without allocating a collection.
+hide func HasAny(text: String,
+                 first: String,
+                 second: String,
+                 third: String) -> Boolean {
+    return Str.Contains(text, first)
+        or Str.Contains(text, second)
+        or Str.Contains(text, third);
+}

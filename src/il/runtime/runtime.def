@@ -220,3 +220,4 @@
 #include "defs/game3d/world.def"
 #include "defs/game3d/assets_ai.def"
 #include "defs/graphics3d/extras.def"
+#include "defs/classes/file_lease.def"

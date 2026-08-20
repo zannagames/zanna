@@ -1,0 +1,124 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/settings_save_layer.zia
+// Purpose: Persist Studio-owned settings sections with bounded CAS retries.
+// Key invariants:
+//   - Every retry merges settings into a freshly read complete shared state.
+//   - Session, history, breakpoint, and unknown sections remain untouched.
+// Ownership/Lifetime:
+//   - The layer borrows inherited values and owns no native handles.
+// Links: zannastudio/src/core/settings.zia,
+//        zannastudio/src/services/safe_io.zia
+//
+//===----------------------------------------------------------------------===//
+
+module settings_save_layer;
+
+bind "settings_state" as State;
+bind "../services/safe_io";
+
+bind Ini = Zanna.Data.Ini;
+bind File = Zanna.IO.File;
+
+final MAX_SETTINGS_SAVE_ATTEMPTS = 3;
+
+/// @brief Durable save behavior layered over the preference state schema.
+class SettingsSaveLayer extends State.SettingsState {
+    /// @brief Resolve settings paths before save; implemented by the load layer.
+    expose func SetupPath() {}
+
+    /// @brief Persist the settings section while preserving all other sections.
+    expose func Save() -> Boolean {
+        if settingsPath == "" { SetupPath(); }
+        if settingsDir == "" or settingsPath == "" { return false; }
+        if safe_io.MakeAll(settingsDir) == false { return false; }
+
+        var attempt = 0;
+        while attempt < MAX_SETTINGS_SAVE_ATTEMPTS {
+            var content = "";
+            if File.Exists(settingsPath) {
+                var readResult = safe_io.ReadStudioState(settingsPath);
+                if readResult.ok == false {
+                    attempt = attempt + 1;
+                    continue;
+                }
+                content = readResult.text;
+            }
+            var ini = Ini.Parse(content);
+            WriteSettingsSection(ini);
+            if safe_io.CompareExchangeStudioState(
+                   settingsPath, content, Ini.Format(ini)) {
+                return true;
+            }
+            attempt = attempt + 1;
+        }
+        return false;
+    }
+
+    /// @brief Replace only keys owned by SettingsManager in one parsed state.
+    hide func WriteSettingsSection(ini: Any) {
+        Ini.Set(ini, "settings", "fontSize", "" + fontSize);
+        Ini.Set(ini, "settings", "fontPath", fontPath);
+        Ini.Set(ini, "settings", "theme", theme);
+        Ini.Set(ini, "settings", "minimap", BoolText(minimapVisible));
+        keybindings.Save(ini);
+        keybindingOverrides = "";
+        Ini.Set(ini, "settings", "autoCheck", BoolText(autoCheckOnSave));
+        Ini.Set(ini, "settings", "codeFolding", BoolText(codeFolding));
+        Ini.Set(ini, "settings", "statusBarVisible", BoolText(statusBarVisible));
+        Ini.Set(ini, "settings", "fullscreen", BoolText(fullscreen));
+        Ini.Set(ini, "settings", "wordWrap", BoolText(wordWrap));
+        Ini.Set(ini, "settings", "renderWhitespace", "" + renderWhitespaceMode);
+        Ini.Set(ini, "settings", "wheelSpeed", "" + wheelSpeedPct);
+        Ini.Set(ini, "settings", "bottomPanelSplit", "" + bottomPanelSplitPct);
+        Ini.Set(ini, "settings", "panelDockPosition", panelDockPosition);
+        Ini.Set(ini, "settings", "toolPanelGroupLayout", toolPanelGroupLayout);
+        Ini.Set(ini, "settings", "sidePanelWidth", "" + sidePanelWidthPct);
+        Ini.Set(ini, "settings", "floatingToolPanelX", "" + floatingToolPanelX);
+        Ini.Set(ini, "settings", "floatingToolPanelY", "" + floatingToolPanelY);
+        Ini.Set(ini, "settings", "floatingToolPanelWidth", "" + floatingToolPanelWidth);
+        Ini.Set(ini, "settings", "floatingToolPanelHeight", "" + floatingToolPanelHeight);
+        if primarySidebarPosition != "left" and primarySidebarPosition != "right" {
+            primarySidebarPosition = "left";
+        }
+        Ini.Set(ini, "settings", "primarySidebarPosition", primarySidebarPosition);
+        Ini.Set(ini, "settings", "sidebarWidth", "" + sidebarWidthPct);
+        Ini.Set(ini, "settings", "sidebarVisible", BoolText(sidebarVisible));
+        if State.IsValidSidebarViewId(activeSidebarViewId) == false {
+            activeSidebarViewId = "explorer";
+        }
+        Ini.Set(ini, "settings", "activeSidebarView", activeSidebarViewId);
+        Ini.Set(ini, "settings", "editorSplit", "" + editorSplitPct);
+        Ini.Set(ini, "settings", "toolPanelTabOrder", toolPanelTabOrder);
+        if State.IsValidActiveToolPanelId(activeToolPanelId) == false {
+            activeToolPanelId = "none";
+        }
+        Ini.Set(ini, "settings", "activeToolPanel", activeToolPanelId);
+        Ini.Set(ini, "settings", "lineNumbers", BoolText(lineNumbers));
+        Ini.Set(ini, "settings", "insertSpaces", BoolText(insertSpaces));
+        Ini.Set(ini, "settings", "trimTrailingWhitespace",
+                BoolText(trimTrailingWhitespace));
+        Ini.Set(ini, "settings", "ensureFinalNewline", BoolText(ensureFinalNewline));
+        Ini.Set(ini, "settings", "autoSave", BoolText(autoSave));
+        Ini.Set(ini, "settings", "saveAllBeforeBuild", BoolText(saveAllBeforeBuild));
+        Ini.Set(ini, "settings", "restoreSession", BoolText(restoreSession));
+        Ini.Set(ini, "settings", "restoreLastProject", BoolText(restoreLastProject));
+        Ini.Set(ini, "settings", "confirmOnExitWithUnsavedChanges",
+                BoolText(confirmOnExitWithUnsavedChanges));
+        Ini.Set(ini, "settings", "tabWidth", "" + tabWidth);
+        Ini.Set(ini, "settings", "diagnosticsDelayMs", "" + diagnosticsDelayMs);
+        Ini.Set(ini, "settings", "completionDelayMs", "" + completionDelayMs);
+        Ini.Set(ini, "settings", "uiZoomPercent", "" + uiZoomPercent);
+    }
+
+    /// @brief Serialize one Boolean in the settings file's stable 1/0 form.
+    hide func BoolText(value: Boolean) -> String {
+        if value { return "1"; }
+        return "0";
+    }
+}

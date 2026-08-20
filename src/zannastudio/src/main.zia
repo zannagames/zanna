@@ -38,10 +38,13 @@ bind Zanna.GUI;
 bind IO = Zanna.IO;
 bind Machine = Zanna.System.Machine;
 bind Str = Zanna.String;
+bind Clock = Zanna.Time.Clock;
 bind "app/studio_application_base" as StudioBase;
-bind "studio_application_surface_frame" as SurfaceFrame;
+bind "app/problems_quick_fix";
+bind "app/editor_split_orchestration" as EditorSplit;
+bind "app/studio_document_frame" as DocumentFrame;
 
-class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
+class StudioApplication extends DocumentFrame.StudioApplicationDocumentFrame {
     hide func PumpCommandFrame() -> Boolean {
         // ====================================================================
         // Command Palette + trigger source detection
@@ -95,16 +98,16 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         if main_command_dispatcher.DispatchCommandContext(commandContext,
                                                           cpSelected,
                                                           suppressTreeOpen) {
-            ShutdownApplication();
-            return true;
+            return ShutdownApplication();
         }
 
         // Split-editor commands. Handled here (not the dispatcher) so the
         // focused-pane controllers can be re-bound with `completer` in scope.
         if dispatch_helpers.TriggeredNoMenu("spliteditorright", cpSelected) {
             if engine.PaneCount() < 2 {
-                if StudioBase.OpenSplitWithCompanion(shell, docMgr, engine, true) {
-                    StudioBase.RebindFocusedPane(shell, engine, completer);
+                if engine.currentDoc != null
+                   and engine.SplitRight(engine.currentDoc) {
+                    EditorSplit.RebindFocusedPane(shell, engine, completer);
                 }
             }
         }
@@ -114,10 +117,17 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         if dispatch_helpers.TriggeredNoMenu("closesplit", cpSelected) {
             engine.CloseSplit();
         }
+        if dispatch_helpers.TriggeredNoMenu("detachoutputwindow", cpSelected) {
+            if ToggleDetachedOutputWindow() {
+                shell.SetStatusLeft("Output moved to a native window");
+            } else if detachedToolHost.IsOpen() == false {
+                shell.SetStatusLeft("Output returned to the workbench");
+            }
+        }
         // Click-to-focus: when the other pane gains keyboard focus, retarget the
         // focused-pane controllers to it.
         engine.SyncFocusFromWidgets();
-        StudioBase.ReconcilePaneFocus(shell, docMgr, engine, tabs, completer);
+        EditorSplit.ReconcilePaneFocus(shell, docMgr, engine, tabs, completer);
 
         // FindBar per-frame updates
         if shell.workbench.findBar.IsVisible() {
@@ -181,8 +191,8 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         if shell.toolPanels.TakeDebugConsoleClearRequest() {
             debug_commands.handleClearDebugConsole(shell, dbgSession);
         }
-        StudioBase.HandleProblemsQuickFix(shell, docMgr, engine, tabs, projMgr, locStore,
-                               diagnosticActions);
+        problems_quick_fix.Handle(shell, docMgr, engine, tabs, projMgr, locStore,
+                                  diagnosticActions);
         return false;
     }
 
@@ -507,6 +517,19 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
                     "Use a valid identifier and save the source file before renaming.");
             }
         }
+        if commandInputAction == command_input.COMMAND_INPUT_RENAME_TERMINAL {
+            if commandContext.terminalCtrl != null
+               and commandContext.terminalCtrl.RenameActiveSession(
+                   commandInputOverlay.ReadValue()) {
+                shell.SetStatusLeft(
+                    "Renamed terminal to " + commandContext.terminalCtrl.sess.title);
+                commandInputOverlay.Finish();
+            } else {
+                commandInputOverlay.Reject(
+                    shell,
+                    "Use a non-empty UTF-8 name of at most 128 bytes.");
+            }
+        }
         if commandInputAction == command_input.COMMAND_INPUT_EXTRACT_LOCAL {
             if edit_commands.handleExtractLocalVariableText(
                    shell, docMgr, engine, commandInputOverlay.ReadValue()) {
@@ -546,155 +569,10 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
             if PumpCommandInputFrame() { continue; }
             PumpTabsAndAutoSaveFrame();
             PumpRecoveryAndWatchersFrame();
+            PumpDetachedToolWindowFrame();
             UpdateStatusAndRenderFrame();
         }
         return false;
-    }
-
-    hide func PumpTabsAndAutoSaveFrame() {
-        // ====================================================================
-        // Tab switching
-        // ====================================================================
-        if shell.workbench.tabBar.WasReordered() {
-            var reorderFrom = shell.workbench.tabBar.GetReorderedFrom();
-            var reorderTo = shell.workbench.tabBar.GetReorderedTo();
-            docMgr.MoveDocument(reorderFrom, reorderTo);
-        }
-        if shell.workbench.tabBar.WasChanged() {
-            var newIdx = shell.workbench.tabBar.GetActiveIndex();
-            if newIdx >= 0 and newIdx < docMgr.GetCount() and newIdx != docMgr.activeIndex {
-                file_commands.SaveEditorState(docMgr, engine);
-                docMgr.SetActive(newIdx);
-                var switchDoc = docMgr.GetActive();
-                if switchDoc != null {
-                    engine.LoadDocument(switchDoc);
-                    shell.SelectSurface(switchDoc.kind);
-                    if switchDoc.isNew {
-                        shell.SetBreadcrumbPath("");
-                    } else {
-                        shell.SetBreadcrumbPath(switchDoc.filePath);
-                    }
-                    shell.SetStatusRight(file_commands.DocStatusLabel(switchDoc));
-                    shell.SetStatusLeft("Switched to: " + switchDoc.fileName);
-                    fileWatchCtrl.ResetPendingReload();
-                }
-            }
-        }
-
-        // A tab/open/navigation request may have targeted the document already
-        // owned by the other pane. LoadDocument focuses that owner; publish the
-        // transition before dirty tracking, auto-save, recovery, and watchers.
-        StudioBase.ReconcilePaneFocus(shell, docMgr, engine, tabs, completer);
-
-        // ====================================================================
-        // Track modified state
-        // ====================================================================
-        if engine != null and docMgr != null and docMgr.GetCount() > 0 {
-            if engine.IsModified() {
-                var curDoc = docMgr.GetActive();
-                if curDoc != null {
-                    var doc = curDoc!;
-                    if doc.isReadOnlyPreview {
-                        engine.ClearModified();
-                        tabs.SetModified(docMgr.activeIndex, false);
-                    } else if doc.isModified == false {
-                        doc.isModified = true;
-                        tabs.SetModified(docMgr.activeIndex, true);
-                    }
-                }
-            }
-        }
-
-        var autoDoc = docMgr.GetActive();
-        currentRevisionForSave = StudioBase.ActiveContentRevision(
-            docMgr, engine, scene2DEditor, scene3DEditor);
-        autoSaveJob.Pump();
-        var completedAutoSave = autoSaveJob.TakeCompleted();
-        if completedAutoSave != null {
-            var currentBecameClean = file_commands.CompleteAutoSave(
-                shell, docMgr, engine, tabs, completedAutoSave,
-                currentRevisionForSave);
-            if currentBecameClean {
-                currentRevisionForSave = StudioBase.ActiveContentRevision(
-                    docMgr, engine, scene2DEditor, scene3DEditor);
-                autoSaveRevision = currentRevisionForSave;
-                autoSaveDebounce.Reset();
-                fileWatchCtrl.ResetPendingReload();
-            }
-        }
-        if appSettings.autoSave and autoDoc != null and autoDoc!.isNew == false {
-            if docMgr.activeIndex != autoSaveActiveIndex {
-                autoSaveActiveIndex = docMgr.activeIndex;
-                autoSaveRevision = currentRevisionForSave;
-                if autoDoc!.isModified { autoSaveDebounce.Signal(); }
-                else { autoSaveDebounce.Reset(); }
-            } else if currentRevisionForSave != autoSaveRevision {
-                autoSaveRevision = currentRevisionForSave;
-                autoSaveDebounce.Signal();
-            } else if autoSaveDebounce.get_IsReady() and autoDoc!.isModified
-                      and autoSaveJob.IsBusy() == false {
-                file_commands.QueueAutoSaveActive(
-                    autoSaveJob, shell, docMgr, engine,
-                    currentRevisionForSave);
-                // A failed/conflicted request must not retry every frame. A tab
-                // transition or a later content revision signals a fresh pass.
-                autoSaveDebounce.Reset();
-            }
-        } else {
-            autoSaveActiveIndex = docMgr.activeIndex;
-            autoSaveRevision = currentRevisionForSave;
-            autoSaveDebounce.Reset();
-        }
-    }
-
-    hide func PumpRecoveryAndWatchersFrame() {
-        // Crash-recovery swaps: immutable editor snapshots are queued after
-        // edits settle, then all filesystem work runs on a coalescing worker.
-        // Pump every frame even while unfocused so completed worker state and a
-        // newer pending snapshot cannot remain stranded. Track the active tab
-        // separately because two swapped editor buffers may share a revision.
-        recoveryStore.PumpAsync();
-        if currentRevisionForSave != recoveryRevision
-           or docMgr.activeIndex != recoveryActiveIndex {
-            recoveryRevision = currentRevisionForSave;
-            recoveryActiveIndex = docMgr.activeIndex;
-            recoveryDebounce.Signal();
-        } else if recoveryDebounce.get_IsReady() {
-            recoveryStore.QueueSwaps(docMgr, engine);
-            recoveryDebounce.Reset();
-        }
-
-        // SCM gutter change bars: the child is drained every frame so pipe
-        // buffers cannot back up while focus changes. New diffs are requested
-        // on a tab switch or shortly after edits settle; requests coalesce and
-        // never wait for Git on the UI thread.
-        if textEditorContextAvailable {
-            scmGutter.Pump(engine, docMgr, projMgr);
-        }
-        if allowBackground and textEditorContextAvailable {
-            if docMgr.activeIndex != scmGutterActiveIndex {
-                scmGutterActiveIndex = docMgr.activeIndex;
-                scmGutter.RefreshActive(engine, docMgr, projMgr);
-            } else if currentRevisionForSave != scmGutterRevision {
-                scmGutterRevision = currentRevisionForSave;
-                scmGutterDebounce.Signal();
-            } else if scmGutterDebounce.get_IsReady() {
-                scmGutter.RefreshActive(engine, docMgr, projMgr);
-                scmGutterDebounce.Reset();
-            }
-        }
-
-        // ====================================================================
-        // File change detection
-        // ====================================================================
-        if allowBackground {
-            fileWatchCtrl.Pump(shell, docMgr, StudioBase.OPEN_DOC_EXTERNAL_POLL_MS);
-        }
-
-        if allowBackground {
-            workspace_watcher.PumpWorkspaceWatcher(shell, projMgr, docMgr, indexer, locStore, engine,
-                                 workspaceWatcherState);
-        }
     }
 
     hide func UpdateStatusAndRenderFrame() {
@@ -834,7 +712,9 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
     }
 
     hide func Cleanup() {
-        ShutdownApplication();
+        while ShutdownApplication() == false {
+            Clock.Sleep(25);
+        }
     }
 
     expose func Run() {

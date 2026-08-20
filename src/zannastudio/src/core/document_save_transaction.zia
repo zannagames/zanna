@@ -1,0 +1,148 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/document_save_transaction.zia
+// Purpose: Commit complete document snapshots and classify native failures.
+// Key invariants:
+//   - Existing files commit through one prepared workspace-edit transaction.
+//   - Prepared tokens are consumed at most once and destroyed on every path.
+//   - Every failure retains a stable category plus native diagnostic context.
+// Ownership/Lifetime:
+//   - Returned MutationResult objects own their strings; runtime tokens do not
+//     escape a helper call.
+// Links: zannastudio/src/core/document_manager_base.zia,
+//        zannastudio/src/services/safe_io_results.zia,
+//        docs/adr/0280-prepared-workspace-edit-transactions.md
+//
+//===----------------------------------------------------------------------===//
+
+module document_save_transaction;
+
+bind "../services/safe_io";
+bind "../services/safe_io_results";
+
+bind File = Zanna.IO.File;
+bind WorkspaceEdit = Zanna.Workspace.Edit;
+bind PreparedEdit = Zanna.Workspace.PreparedEdit;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+/// @brief Replace one existing file through a prepared native transaction.
+expose func Replace(path: String,
+                    content: String,
+                    expectedMtime: Integer,
+                    expectedSize: Integer,
+                    expectedHash: String,
+                    maxBytes: Integer) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure(
+            "save-file", path, "", safe_io_results.IO_FAILURE_INVALID);
+    }
+    if expectedMtime >= 0 and expectedHash == "" {
+        return safe_io_results.Failure(
+            "save-file", path, "", safe_io_results.IO_FAILURE_CONFLICT);
+    }
+
+    var edit = Map.New();
+    Map.SetStr(edit, "file", path);
+    Map.SetBool(edit, "wholeFile", true);
+    Map.SetStr(edit, "newText", content);
+    Map.SetInt(edit, "expectedMtime", expectedMtime);
+    Map.SetInt(edit, "expectedSize", expectedSize);
+    Map.SetStr(edit, "expectedHash", expectedHash);
+    Map.SetInt(edit, "maxBytes", maxBytes);
+    var edits = Seq.New();
+    Seq.Push(edits, edit);
+
+    var prepared = WorkspaceEdit.Prepare(edits);
+    if prepared == null {
+        return safe_io_results.Failure(
+            "save-file", path, "", safe_io_results.IO_FAILURE_IO);
+    }
+    if PreparedEdit.IsValid(prepared) == false {
+        var validation = PreparedEdit.Result(prepared);
+        PreparedEdit.Destroy(prepared);
+        return FromWorkspaceResult(validation, path);
+    }
+    var result = PreparedEdit.Apply(prepared);
+    PreparedEdit.Destroy(prepared);
+    if Map.GetBool(result, "success")
+       and Map.GetInt(result, "appliedFiles") == 1 {
+        return safe_io_results.Success("save-file", path, "");
+    }
+    return FromWorkspaceResult(result, path);
+}
+
+/// @brief Persist Save As content without mutating document state first.
+expose func SaveAs(path: String,
+                   content: String,
+                   maxBytes: Integer) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure(
+            "save-as", path, "", safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(path) {
+        return Replace(path, content, -1, -1, "", maxBytes);
+    }
+    return Create(path, content);
+}
+
+/// @brief Atomically create a destination that remains absent at commit.
+expose func Create(path: String,
+                   content: String) -> safe_io_results.MutationResult {
+    return safe_io.CreateTextFileResult(path, content);
+}
+
+/// @brief Convert prepared-edit diagnostics to Studio's typed I/O model.
+hide func FromWorkspaceResult(value: Any,
+                              fallbackPath: String) -> safe_io_results.MutationResult {
+    var failureCode = safe_io_results.IO_FAILURE_IO;
+    var retryable = false;
+    var message = "The file could not be saved.";
+    var resultPath = fallbackPath;
+    var diagnostics = Map.Get(value, "diagnostics");
+    if diagnostics != null and Seq.get_Count(diagnostics) > 0 {
+        var first = Seq.Get(diagnostics, 0);
+        var code = Map.GetStr(first, "code");
+        var detail = Map.GetStr(first, "message");
+        var file = Map.GetStr(first, "file");
+        if code == "edit.version" {
+            failureCode = safe_io_results.IO_FAILURE_CONFLICT;
+            retryable = true;
+        } else if code == "edit.limit" {
+            failureCode = safe_io_results.IO_FAILURE_LIMIT;
+        } else if code == "edit.invalid" or code == "edit.file"
+                  or code == "edit.range" or code == "edit.root"
+                  or code == "edit.prepared.invalid"
+                  or code == "edit.prepared.consumed" {
+            failureCode = safe_io_results.IO_FAILURE_INVALID;
+        }
+        if detail != "" { message = detail; }
+        if code != "" { message = message + " [" + code + "]"; }
+        if file != "" {
+            resultPath = file;
+            message = message + " (" + file + ")";
+        }
+        var i = 1;
+        while i < Seq.get_Count(diagnostics) and i < 3 {
+            var next = Seq.Get(diagnostics, i);
+            var nextMessage = Map.GetStr(next, "message");
+            var nextCode = Map.GetStr(next, "code");
+            if nextMessage != "" {
+                message = message + " " + nextMessage;
+                if nextCode != "" { message = message + " [" + nextCode + "]"; }
+            }
+            i = i + 1;
+        }
+    }
+    var result = safe_io_results.Failure(
+        "save-file", resultPath, "", failureCode);
+    result.message = message;
+    result.detail = message;
+    result.retryable = retryable;
+    return result;
+}

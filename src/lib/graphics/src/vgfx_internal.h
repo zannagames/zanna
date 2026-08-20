@@ -501,6 +501,10 @@ int vgfx_platform_process_events(struct vgfx_window *win);
 /// @pre win != NULL && win->platform_data != NULL
 int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms);
 
+/// @brief Interrupt a platform event wait from another thread.
+/// @return 1 when the backend accepted the wake request, otherwise 0.
+int vgfx_platform_wake_events(struct vgfx_window *win);
+
 /// @brief Toggle the platform input-method context for an editable control.
 /// @details Enables or disables native text composition for the window.
 ///          Backends may create, focus, or reset their IME context as needed.

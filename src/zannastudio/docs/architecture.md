@@ -53,6 +53,10 @@ The larger feature areas are intentionally split into small teaching modules:
 - `app/command_palette_controller.zia` owns command-palette mode transitions.
 - `app/file_watch_controller.zia` owns active-file watch state and open-tab
   timestamp polling.
+- `app/editor_split_orchestration.zia` reconciles physical pane focus with the
+  global tab/document model and restores exact shared or distinct pane owners.
+- `app/studio_document_frame.zia` coordinates dirty state, autosave, recovery,
+  watchers, and secondary native tool-window pumping.
 - `services/search_matcher.zia` owns pure literal/regex line matching.
 - `services/search_paths.zia` owns search include/exclude/ignore path rules.
 - `services/workspace_file_index.zia` owns shared FileIndex-backed workspace
@@ -128,6 +132,26 @@ shrinks debt, regenerate the candidate with
 the lower baseline in the same change. Do not regenerate the baseline to admit
 unrelated growth.
 
+### Quarterly debt budget
+
+Architecture debt has an active reduction budget, not merely a no-growth rule.
+Each calendar quarter must:
+
+- remove at least four oversized-file baseline rows;
+- remove at least two forbidden upward-dependency rows;
+- split at least one remaining module above 900 lines by lifecycle or model
+  ownership; and
+- leave both total debt counts no higher than the prior quarter, including
+  changes merged by unrelated feature work.
+
+The reviewed `--print-baseline` diff is the scorecard. If a quarter cannot meet
+a target, its release notes must name an owner and the specific replacement
+quarter; raising or reintroducing a bound never counts as reduction. The
+2026-08-20 pass established this cadence by moving watcher fallback/refresh,
+project-index state/update/enumeration, SCM jobs/controls/presentation, search
+state/discovery, project tree sorting/cache, editor core state, and application
+document-frame ownership into focused modules.
+
 ## Main Loop Responsibilities
 
 `main.zia` currently coordinates:
@@ -155,9 +179,12 @@ It deduplicates open files, tracks untitled documents, stores recently closed
 paths, detects file kind and language by extension, and routes saves through
 `Zanna.Workspace.Edit` when replacing existing files.
 
-`core/document.zia` stores per-buffer state: file path, display name, language,
-document kind, content, modified/new/read-only flags, disk metadata, cursor,
-scroll, and external-change notification state.
+`core/document.zia` stores document identity, canonical-content compatibility,
+modified/new/read-only flags, disk metadata, cursor, scroll, and scene state.
+`core/document_buffer.zia` owns canonical shared text generations and the sole
+mutable view owner. Same-document panes move one undo-capable EditorBuffer
+between focused views; the inactive view is a read-only, independently scrolled
+mirror.
 
 Document kinds:
 
@@ -592,7 +619,11 @@ removal, so a stale action cannot toggle a missing breakpoint back on.
 `terminal/terminal_controller.zia` owns the UI side: lazy start, shell
 resolution, terminal mode on `OutputPane`, raw key forwarding, output append,
 cell-metric-based resize, bounded hidden-session draining, Stop, Restart, and
-shutdown cleanup.
+shutdown cleanup. Build, debugger, and terminal sessions attach their native
+handles to the owning `GUI.App`; stream readiness posts a platform event that
+interrupts `PollWait`. A four-millisecond process/PTY poll is retained only
+when that attachment fails. Background language lanes rotate fairly until an
+absolute ten-millisecond deadline rather than consuming fixed item counts.
 
 The terminal is intended for interactive shells and simple commands. OutputPane
 terminal mode handles common cursor addressing and clear-screen redraws, but
@@ -619,11 +650,14 @@ after five seconds, and caps marker publication. Gutter diffs explicitly disable
 external diff and text-conversion drivers because passive editor decoration must
 never execute arbitrary configured helpers or wait for interactive input.
 
-The Source Control view is intentionally lightweight. Push and pull are
-long-running operations with streamed progress and heuristic in-app credential
-prompts. Basic content conflicts have a safe guided path, but merge/rebase
-orchestration, ours/theirs review, and advanced recovery are absent. Treat it as
-useful local Git integration, not a complete Git client.
+The Source Control view is intentionally lightweight. Fetch, push, and explicit
+fast-forward/merge/rebase pull strategies are long-running Process jobs with
+streamed progress. Merge/rebase state and abort are explicit. Authentication is
+delegated to configured Git helpers, askpass brokers, or SSH agents with
+terminal prompting disabled; Studio never owns secret text. Basic content
+conflicts have a safe guided path, but graphical continue/skip, ours/theirs,
+stash, and advanced recovery are absent. Treat it as useful local Git
+integration, not a complete Git client.
 
 ## UI Ownership
 

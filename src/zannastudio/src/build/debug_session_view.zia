@@ -1,0 +1,196 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/debug_session_view.zia
+// Purpose: Read-only debugger snapshot accessors and console formatting.
+// Key invariants:
+//   - Out-of-range snapshot queries return safe empty values.
+//   - Formatting never mutates adapter request or process lifecycle state.
+// Ownership/Lifetime: Borrows inherited stop-event arrays for the active stop.
+// Links: zannastudio/src/build/debug_session_base.zia,
+//        zannastudio/src/build/debug_session.zia
+//
+//===----------------------------------------------------------------------===//
+
+module debug_session_view;
+
+bind "debug_session_base" as Base;
+
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+
+/// @brief Presentation layer shared by the polling DebugSession controller.
+class DebugSessionViewLayer extends Base.DebugSessionBase {
+    expose func FormatConsole() -> String {
+        if hasSession == false and terminated == false { return ""; }
+        if consoleText != "" { return consoleText; }
+        var state = lastType;
+        if state == "" and hasSession { state = "running"; }
+        var result = "[debug] " + state;
+        if lastReason != "" { result = result + " " + lastReason; }
+        return result;
+    }
+
+    expose func FrameCount() -> Integer {
+        if stopFrames == null { return 0; }
+        return Seq.get_Count(stopFrames);
+    }
+
+    expose func FrameLabel(i: Integer) -> String {
+        if stopFrames == null or i < 0
+           or i >= Seq.get_Count(stopFrames) { return ""; }
+        var frame = Seq.Get(stopFrames, i);
+        var functionName = Map.GetStr(frame, "function");
+        if functionName == "" { functionName = "<anonymous>"; }
+        return functionName + " — " + BaseName(Map.GetStr(frame, "path"))
+            + ":" + Map.GetInt(frame, "line");
+    }
+
+    expose func FramePath(i: Integer) -> String {
+        if stopFrames == null or i < 0
+           or i >= Seq.get_Count(stopFrames) { return ""; }
+        return Map.GetStr(Seq.Get(stopFrames, i), "path");
+    }
+
+    expose func FrameLine(i: Integer) -> Integer {
+        if stopFrames == null or i < 0
+           or i >= Seq.get_Count(stopFrames) { return 0; }
+        return Map.GetInt(Seq.Get(stopFrames, i), "line");
+    }
+
+    expose func LocalCount() -> Integer {
+        if stopLocals == null { return 0; }
+        return Seq.get_Count(stopLocals);
+    }
+
+    expose func LocalLabel(i: Integer) -> String {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return ""; }
+        var local = Seq.Get(stopLocals, i);
+        return Map.GetStr(local, "name") + " = " + Map.GetStr(local, "value")
+            + " : " + Map.GetStr(local, "type");
+    }
+
+    expose func LocalVarRef(i: Integer) -> Integer {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return 0; }
+        return Map.GetInt(Seq.Get(stopLocals, i), "varRef");
+    }
+
+    expose func LocalChildCount(i: Integer) -> Integer {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return 0; }
+        return Map.GetInt(Seq.Get(stopLocals, i), "childCount");
+    }
+
+    expose func VarChildCount() -> Integer {
+        if lastVarChildren == null { return 0; }
+        return Seq.get_Count(lastVarChildren);
+    }
+
+    expose func VarChildLabel(i: Integer) -> String {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return ""; }
+        var child = Seq.Get(lastVarChildren, i);
+        return Map.GetStr(child, "name") + " = " + Map.GetStr(child, "value")
+            + " : " + Map.GetStr(child, "type");
+    }
+
+    expose func VarChildVarRef(i: Integer) -> Integer {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return 0; }
+        return Map.GetInt(Seq.Get(lastVarChildren, i), "varRef");
+    }
+
+    expose func VarChildName(i: Integer) -> String {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return ""; }
+        return Map.GetStr(Seq.Get(lastVarChildren, i), "name");
+    }
+
+    expose func VarChildValue(i: Integer) -> String {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return ""; }
+        return Map.GetStr(Seq.Get(lastVarChildren, i), "value");
+    }
+
+    expose func VarChildType(i: Integer) -> String {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return ""; }
+        return Map.GetStr(Seq.Get(lastVarChildren, i), "type");
+    }
+
+    expose func VarChildChildCount(i: Integer) -> Integer {
+        if lastVarChildren == null or i < 0
+           or i >= Seq.get_Count(lastVarChildren) { return 0; }
+        return Map.GetInt(Seq.Get(lastVarChildren, i), "childCount");
+    }
+
+    expose func LocalName(i: Integer) -> String {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return ""; }
+        return Map.GetStr(Seq.Get(stopLocals, i), "name");
+    }
+
+    expose func LocalValue(i: Integer) -> String {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return ""; }
+        return Map.GetStr(Seq.Get(stopLocals, i), "value");
+    }
+
+    expose func LocalType(i: Integer) -> String {
+        if stopLocals == null or i < 0
+           or i >= Seq.get_Count(stopLocals) { return ""; }
+        return Map.GetStr(Seq.Get(stopLocals, i), "type");
+    }
+
+    hide func BaseName(path: String) -> String {
+        var slash = Str.LastIndexOf(path, "/");
+        var backslash = Str.LastIndexOf(path, "\\");
+        var cut = slash;
+        if backslash > cut { cut = backslash; }
+        if cut <= 0 { return path; }
+        return Str.Mid(path, cut + 1);
+    }
+
+    hide func formatStopped(event: Any) -> String {
+        var text = new StringBuilder();
+        text.Append("[debug] stopped (" + lastReason + ") at "
+                    + self.activePath + ":" + lastLine + "\n");
+        AppendFrames(text, Map.Get(event, "frames"));
+        AppendLocals(text, Map.Get(event, "locals"));
+        return text.ToString();
+    }
+
+    hide func AppendFrames(text: StringBuilder, frames: Any) {
+        if frames == null or Seq.get_Count(frames) == 0 { return; }
+        text.Append("\nCall stack:\n");
+        var i = 0;
+        while i < Seq.get_Count(frames) {
+            var frame = Seq.Get(frames, i);
+            text.Append("  #" + i + " " + Map.GetStr(frame, "function")
+                        + " " + Map.GetStr(frame, "path")
+                        + ":" + Map.GetInt(frame, "line") + "\n");
+            i = i + 1;
+        }
+    }
+
+    hide func AppendLocals(text: StringBuilder, locals: Any) {
+        if locals == null or Seq.get_Count(locals) == 0 { return; }
+        text.Append("\nLocals:\n");
+        var i = 0;
+        while i < Seq.get_Count(locals) {
+            var local = Seq.Get(locals, i);
+            text.Append("  " + Map.GetStr(local, "name")
+                        + " = " + Map.GetStr(local, "value")
+                        + " : " + Map.GetStr(local, "type") + "\n");
+            i = i + 1;
+        }
+    }
+}

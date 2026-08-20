@@ -32,7 +32,6 @@ bind "../core/project_manager";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../build/build_system";
-bind "../build/diagnostic";
 bind "../build/run_config";
 bind "../commands/file_commands";
 bind "../services/file_utils";
@@ -43,8 +42,6 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind "../services/theme_colors";
 
-bind Zanna.GUI;
-bind Convert = Zanna.Core.Convert;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
 
@@ -129,14 +126,19 @@ func StartExecutionConfig(shell: app_shell.AppShell,
         progressLabel = "Running";
     }
     if buildSys.StartConfig(cfg) {
+        // A root job starts a fresh diagnostic publication. Clear the prior
+        // generation once, then append stable records as the parser emits them.
+        UpdateDiagnostics(shell, buildSys, locStore);
         shell.SetBuildJobActive(true, buildSys.activeName);
         shell.SetStatusLeft(progressLabel + ": " + cfg.targetPath);
-        shell.toolPanels.SetBuildOutput("Started: " + FormatCommand(cfg));
+        shell.toolPanels.SetBuildOutput("Started: " + FormatCommand(cfg) + "\n");
     } else {
         shell.SetBuildJobActive(false, "");
         shell.SetStatusLeft(actionLabel + " failed to start");
         notification_policy.ActionError(actionLabel + " did not start");
-        PopulateBuildOutput(shell, buildSys, locStore, true);
+        UpdateDiagnostics(shell, buildSys, locStore);
+        shell.toolPanels.SetBuildOutput(buildSys.GetOutput());
+        shell.toolPanels.ShowOutputPanel();
     }
 }
 
@@ -353,13 +355,11 @@ expose func handlePlayScene(shell: app_shell.AppShell,
                 "Embedded Play could not create its frame channel");
             return;
         }
-        var vmEnv = Zanna.Collections.Map.New();
-        Zanna.Collections.Map.SetStr(
-            vmEnv, "ZANNA_EMBED_CHANNEL", vmChannel);
+        var vmEnv = Seq.New();
+        Seq.Push(vmEnv, "ZANNA_EMBED_CHANNEL=" + vmChannel);
         // The embedded game's native window stays hidden; its frames
         // reach the user only through the editor pane.
-        Zanna.Collections.Map.SetStr(
-            vmEnv, "ZANNA_GFX_HIDE_WINDOWS", "1");
+        Seq.Push(vmEnv, "ZANNA_GFX_HIDE_WINDOWS=1");
         var vmCfg = run_config.ForDocument(
             run_config.ACTION_RUN, null, projMgr);
         Seq.Push(vmCfg.args, "--");
@@ -380,11 +380,11 @@ expose func handlePlayScene(shell: app_shell.AppShell,
             "Embedded Play could not create its frame channel");
         return;
     }
-    var env = Zanna.Collections.Map.New();
-    Zanna.Collections.Map.SetStr(env, "ZANNA_EMBED_CHANNEL", channelName);
+    var env = Seq.New();
+    Seq.Push(env, "ZANNA_EMBED_CHANNEL=" + channelName);
     // The embedded game's native window stays hidden; its frames reach
     // the user only through the editor pane.
-    Zanna.Collections.Map.SetStr(env, "ZANNA_GFX_HIDE_WINDOWS", "1");
+    Seq.Push(env, "ZANNA_GFX_HIDE_WINDOWS=1");
     var root = projMgr.RootPath();
     var projectName = projMgr.project.name;
     if projectName == "" { projectName = "game"; }
@@ -520,20 +520,24 @@ func UpdateJob(shell: app_shell.AppShell,
     }
 }
 
-/// @brief Repopulate the diagnostics listbox + minimap markers + build
-///        output panel from the most recent BuildSystem run.
-/// @note Hides the diagnostics panel entirely when there are zero
-///       diagnostics so it doesn't waste vertical space.
+/// @brief Append newly parsed diagnostics to Problems and minimap surfaces.
+/// @details A new job generation retires prior rows and locations exactly once;
+///          subsequent parser revisions publish only their stable-ID suffix.
 func UpdateDiagnostics(shell: app_shell.AppShell,
                        buildSys: build_system.BuildSystem,
                        locStore: locations.LocationStore) {
     var revealResult = shell.toolPanels.IsOutputPanelActive();
-    shell.toolPanels.BeginProblems();
-    shell.workbench.minimap.ClearMarkers();
+    if buildSys.TakeDiagnosticPublicationReset() {
+        // Retire only the previous build generation without disturbing
+        // search/reference navigation targets.
+        locStore.ClearOwner("build");
+        shell.toolPanels.BeginProblems();
+        shell.workbench.minimap.ClearMarkers();
+    }
 
     var diagCount = buildSys.diagnostics.count();
+    var i = buildSys.FirstUnpublishedDiagnosticIndex();
     if diagCount > 0 {
-        var i = 0;
         while i < diagCount {
             var diag = buildSys.diagnostics.get(i);
             if diag == null {
@@ -554,73 +558,28 @@ func UpdateDiagnostics(shell: app_shell.AppShell,
                 action = diag.fixitMessage;
                 if action == "" { action = "Quick fix available"; }
             }
-            var item = shell.toolPanels.AddProblem(sevLabel, "build", diag.filePath, diag.line, diag.column,
-                                        diag.code, diag.message, action);
+            var item = shell.toolPanels.AddProblemStable(
+                diag.stableId, sevLabel, "build", diag.filePath,
+                diag.line, diag.column, diag.code, diag.message, action);
             var endLine = diag.endLine;
             var endColumn = diag.endColumn;
             if endLine <= 0 { endLine = diag.line; }
             if endColumn <= 0 { endColumn = diag.column + 1; }
-            var locId = locStore.Add(diag.filePath, diag.line, diag.column,
-                                     endLine, endColumn,
-                                     locations.KIND_BUILD, diag.message);
+            var locId = locStore.AddOwned(
+                diag.filePath, diag.line, diag.column, endLine, endColumn,
+                locations.KIND_BUILD, diag.message, "build");
             shell.toolPanels.SetAddedProblemLocationData(item, locId);
             shell.workbench.minimap.AddMarker(diag.line, 1, markerColor);
             i = i + 1;
         }
     }
+    buildSys.MarkDiagnosticsPublished();
     shell.toolPanels.UpdateProblems(diagCount);
-
-    PopulateBuildOutput(shell, buildSys, locStore, revealResult);
     // Land on the Problems tab when there is something to triage — those rows are
     // click-to-navigate — while a clean build stays on the Output log.
     if diagCount > 0 and revealResult {
         shell.toolPanels.ShowProblemsPanel();
     }
-}
-
-func PopulateBuildOutput(shell: app_shell.AppShell,
-                         buildSys: build_system.BuildSystem,
-                         locStore: locations.LocationStore,
-                         reveal: Boolean) {
-    shell.toolPanels.BeginOutputRows();
-    var output = buildSys.GetOutput();
-    if output == "" {
-        shell.toolPanels.HideOutputPanel();
-        return;
-    }
-    shell.toolPanels.SetOutputRowSource(output);
-    var lines = Zanna.String.Split(output, "\n");
-    var i = 0;
-    while i < Seq.get_Count(lines) {
-        var line = Obj.ToString(Seq.Get(lines, i));
-        if line != "" {
-            var item = shell.toolPanels.AddOutputDisplayLine(line);
-            var diag = buildSys.ParseDiagnosticLine(line);
-            if item != null {
-                if diag != null {
-                    var d = diag!;
-                    if d.severity == diagnostic.SEV_WARNING {
-                        GUI.ListBox.ItemSetTextColor(item, WarningMarkerColor());
-                    } else if d.severity == diagnostic.SEV_INFO {
-                        GUI.ListBox.ItemSetTextColor(item, InfoMarkerColor());
-                    } else {
-                        GUI.ListBox.ItemSetTextColor(item, ErrorMarkerColor());
-                    }
-                    var locId = locStore.Add(d.filePath, d.line, d.column,
-                                             d.line, d.column + 1,
-                                             locations.KIND_BUILD, d.message);
-                    GUI.ListBox.ItemSetData(item, locId);
-                } else {
-                    shell.toolPanels.ApplyOutputLineColor(item, line);
-                }
-            }
-        }
-        i = i + 1;
-    }
-    if shell.toolPanels.outputAutoScroll {
-        shell.toolPanels.outputListBox.ScrollToBottom();
-    }
-    if reveal { shell.toolPanels.ShowOutputPanel(); }
 }
 
 func FormatCommand(cfg: run_config.RunConfig) -> String {

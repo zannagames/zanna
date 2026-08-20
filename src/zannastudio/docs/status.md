@@ -1,10 +1,13 @@
 # Zanna Studio Current Status
 
-Last reviewed against source: 2026-07-28.
+Last reviewed against source: 2026-08-20.
 
 This file is the current-state reference for Zanna Studio. It intentionally avoids
 future-phase language and records limitations in the same place as shipped
 behavior.
+
+The implementation and focused verification evidence for the 2026 Studio/runtime
+audit is recorded in [audit-70-implementation.md](audit-70-implementation.md).
 
 ## Summary
 
@@ -23,9 +26,10 @@ It is not yet a polished product-complete IDE. The largest current gaps are:
   live, persisted left/right dock with its activity rail, direct drag targets,
   mirrored width, collapse recovery, and Command Palette actions.
 - Source Control covers status, staging, commit, paged history, per-commit
-  diffs, queued jobs, in-app credential prompts, and a guided edit-then-Stage
-  conflict path, but is still not a full Git client (no merge/rebase
-  orchestration or ours/theirs recovery tools).
+  diffs, generation-scoped queued jobs, explicit fetch and
+  fast-forward/merge/rebase pull strategies, merge/rebase abort, external
+  credential brokers, and a guided edit-then-Stage conflict path. It is still
+  not a full Git client (no graphical ours/theirs, continue, or stash tools).
 - BASIC semantic navigation and rename are implemented by the IDE-side scanner,
   not by the Zia project index or external BASIC server.
 - Routine command text entry and rename review are non-modal. Native file
@@ -56,9 +60,10 @@ and structured expansion of collections and class instances (field-by-field,
 via the compile-time layout sidecar of ADR 0138).
 BASIC support is intentionally honest but incomplete.
 Source Control covers daily local Git plus commit history, queued operations,
-live push/pull output, in-app credential prompts, and safe basic conflict
-resolution guidance, but it does not have the merge/rebase workflow depth or
-conflict recovery tools of a full client. Scene
+live push/pull output, explicit integration strategies and abort state,
+external credential brokers, and safe basic conflict resolution guidance, but
+it does not have the ours/theirs, continue, stash, or multi-file recovery tools
+of a full client. Scene
 documents mount built-in 2D and 3D visual editors with hierarchy/layer,
 viewport, property, history, and import workflows, but those tools remain
 earlier and narrower than a mature game-engine editor.
@@ -291,8 +296,8 @@ scene authoring, and panel virtualization for very large result sets.
 | Area | Status | Notes |
 | --- | --- | --- |
 | Text editing | Implemented | Multi-tab CodeEditor, undo/redo, selections, comments, formatting, folding, minimap option. |
-| Split editor | Implemented (v1) | Two side-by-side panes ("Split Editor Right", "Focus Other Editor Pane", "Close Editor Split", click-to-focus). Each pane owns a distinct document and the focused pane drives the active tab, typing, IntelliSense, find, minimap, status, save, and recovery state. Opening a document already visible in the other pane focuses its existing owner, preventing divergent buffers and stale overwrites. Split-active state is restored when at least two documents are open. v1 limits: exactly two panes; open a second document before splitting; same-document multi-view awaits shared-buffer runtime support. |
-| Workspace layout | Implemented with limits | The primary Explorer/Source Control/Run-and-Debug sidebar has a draggable header, stationary left/right targets, explicit arrows and Command Palette actions; its activity rail, logical width, visibility, active view, and position persist together. Problems/Output/Search/References/Variables/Call Stack/Debug/Terminal can form simultaneous left/bottom/right groups plus one movable/resizable in-window floating group: each header exposes direct selected-tool movement, the Command Palette exposes the same actions, and the primary group can drag/merge/float as a unit. Floating bounds recover across viewport/UI-scale changes and membership/order/attached sizes/floating geometry replay through migration-safe settings. Explicit cards and narrow edge strips make redocking deliberate, while Reset Workspace Layout restores coherent attached defaults. Native secondary-window and multi-monitor detachment are not implemented. |
+| Split editor | Implemented with limits | Two side-by-side panes ("Split Editor Right", "Focus Other Editor Pane", "Close Editor Split", click-to-focus). The normal command opens two independently scrolled views of the active document. Exactly one pane owns its mutable EditorBuffer and undo history; focus transfers that owner while the inactive pane remains a revision-gated read-only mirror, preventing divergence. Distinct-document splits remain supported for restored/legacy layouts. Focus drives the active tab, IntelliSense, find, minimap, status, save, and recovery state. Equal durable pane slots restore one shared Document without duplicating a tab or recovery owner. Current limit: exactly two panes. |
+| Workspace layout | Implemented with limits | The primary Explorer/Source Control/Run-and-Debug sidebar has a draggable header, stationary left/right targets, explicit arrows and Command Palette actions; its activity rail, logical width, visibility, active view, and position persist together. Problems/Output/Search/References/Variables/Call Stack/Debug/Terminal can form simultaneous left/bottom/right groups plus one movable/resizable in-window floating group. Output additionally detaches through "Detach Output to Native Window" into an independent native App that can move across monitors; its host-neutral bounded model continues streaming append deltas and returns cleanly to the workbench. Other tools do not yet expose native-window hosts. |
 | Zia IntelliSense | Implemented with limits | Completion, diagnostics, hover, signature help, symbols, definition, references, rename, workspace symbols. |
 | BASIC IntelliSense | Implemented with limits | Completion, diagnostics, hover, document symbols, scanner-backed definition, references, rename, workspace symbols, call hierarchy, and signature help. |
 | Plain text | Implemented | Opens unknown/text-like files as text without semantic features. |
@@ -305,12 +310,12 @@ scene authoring, and panel virtualization for very large result sets.
 | Tool panels | Implemented with limits | Problems/Output/Search/References/Variables/Call Stack/Debug/Terminal retain their live controllers while moving among independent left/bottom/right groups or the in-window floating group, support group-local movable tab order, and use responsive controls. Problems has live text/severity filters, counts, durable navigation metadata, and selection-aware Quick Fix. Output has live filter/wrap/follow/copy/clear controls. References has grouped live filtering, visible/total counts, durable click-to-open locations, Copy All, Clear, and contextual empty states. Debug Console has filter/wrap/copy/clear controls and Call Stack has filter/copy controls plus live debugger-state empty text. In-panel Clear retains the visible Output, References, or Debug Console surface. Result widgets remain bounded ListBox/OutputPane surfaces rather than fully virtualized views. |
 | Debugging | Implemented with UX gaps | External VM debug adapter, breakpoints, stepping, pause, async restart, run to cursor, locals, call stack, evaluate, conditions, and logpoints. The persisted Run and Debug activity view exposes state-valid Start/Continue/Pause/Restart/Stop/step actions, links to Variables/Call Stack/Console, and durable filterable breakpoint Open/Remove/Condition/Logpoint actions. The docked Variables surface has inline Add/Remove/Refresh/Clear watch controls, Call Stack preserves frame identity through filtering, and Debug Console separates clearable program output from retained session status. Lists/seqs/maps plus class-instance fields expand with value previews. |
 | Terminal | Implemented with limits | PTY-backed shell in OutputPane terminal mode: alternate screen, DECSTBM scroll regions, IL/DL/ICH/DCH/ECH, tab stops, cursor visibility, bracketed paste, application cursor keys, DSR/DA replies, SGR 16/256/truecolor + reverse. Coverage is pinned to the vim/less/htop sequence table, not full VT. |
-| Source Control | Implemented with limits | Responsive, selection-aware Git controls for async status, stage/unstage, commit, per-path diff, worker-computed/incrementally rendered side-by-side diffs, paged commit history with per-commit files and diffs, queued serialized jobs, PTY-backed push/pull with live output and focused in-app credential prompts. Real unmerged rows show edit-then-Stage guidance and block Commit until resolved. No merge/rebase orchestration or ours/theirs recovery tools. |
+| Source Control | Implemented with limits | Responsive, selection-aware Git controls for async status, stage/unstage, commit, per-path diff, worker-computed/incrementally rendered side-by-side diffs, paged commit history with per-commit files and diffs, virtual generation-tagged rows, and coalesced serialized jobs. Fetch and push stream through bounded Process jobs; pull requires an explicit fast-forward-only, merge, or rebase strategy, with visible operation/conflict state and merge/rebase abort. Credentials stay in configured Git helpers, askpass brokers, or SSH agents; Studio disables terminal prompts and never collects secrets. Real unmerged rows show edit-then-Stage guidance and block Commit until resolved. Graphical ours/theirs, continue, stash, and advanced multi-file recovery remain absent. |
 | Settings | Implemented | Platform config path, theme, editor behavior, auto-save, save-before-build, session options, settings search, rebindable keyboard shortcuts, and debounced primary-sidebar/tool-dock position and split sizing. The body is vertically scrollable with a fixed action footer; compact windows give Preferences the full workbench lane and stack descriptions above controls without horizontal overflow. |
 | Session restore | Implemented | Project, tabs, cursor/scroll, recent files/projects, bounded recovery text, and painted caller-budgeted startup restoration. |
 | File watching | Implemented with limits | Active file watcher, inactive document polling, missing/deleted/moved-file conflict state, capped recursive workspace watcher set with fallback scans, and quiet metadata-polled refresh of external 2D layer images. |
 | Visual polish | Implemented with limits | Zanna-brand palettes (WCAG-gated), scalable vector icons across toolbar/tree/tabs/status, smooth scrolling, gamma-correct text with ligatures, and viewport-bounded welcome/About/Preferences/diff, command, and semantic popup surfaces. Follow-cursor and anchored tooltips now measure while becoming visible, wrap to their containing root, move above a lower-edge pointer, and clamp completely inside that viewport. Focus-taking Settings, About, explorer, breakpoint, command-input, and diff surfaces are mutually exclusive with popup menus, preventing stacked panels and ambiguous Enter/Escape routing. Build/Search notifications follow a contextual policy: their durable background results stay quiet, while immediate failures may warn; routine success remains status text. Chrome text, floating overlays, wrapped output, and responsive tool tabs share one effective-scale coordinate space without applying user zoom twice. Long list rows—including compact Recent paths—use explicit ellipsis and expose their complete unmodified text on hover instead of ending at a hard clip. The native workbench minimum starts at 720 by 520 and grows with whole-UI zoom, contracting against a desktop-chrome safety margin when the display cannot fit that floor. A requested minimap is temporarily suppressed below a useful editor-lane width and restored automatically when the lane expands, without overwriting the user's preference. Remaining density work is tracked per panel. |
-| Cross-platform | Intended | Runtime adapters exist for process, PTY, GUI; display/runtime behavior still needs regular platform smoke. |
+| Cross-platform | Formal gate defined; sign-off pending | The versioned Windows/macOS/Linux matrix covers native pickers, watcher timestamp edges, malformed/large sources, Git credentials/conflicts, vim/less/htop, PTY/ConPTY, huge output, debugger watches, focus/accessibility, and D3D11/EGL/Metal headless scenes. Rows remain pending until platform evidence is recorded; see `docs/platform-signoff.md`. |
 
 ## Language Support
 
@@ -1335,7 +1340,7 @@ It supports:
 - Diff selected path (unified in the panel, or side-by-side via the diff view).
 - Responsive wrapped action rows whose enabled states follow the repository,
   selected path, staged index, authored message, active job, and conflict state.
-- Focused Enter submission for commit messages and Git credential responses.
+- Focused Enter submission for commit messages.
 - Basic conflict recovery: real porcelain-v2 unmerged rows are highlighted,
   explain "edit conflict markers, then Stage", and keep Commit disabled until
   every conflict is staged as resolved.
@@ -1346,9 +1351,12 @@ It supports:
   budget prevents a slow child or pathological hunk from freezing the editor.
 - Commit history: lazily paged log, per-commit file lists, and side-by-side
   parent-vs-commit diffs for any file in a commit.
-- Push and pull on a PTY with live output streaming into the panel; detected
-  Username/Password/passphrase/host-key prompts surface an in-app credential
-  row (masked input for secrets) — no external askpass helper.
+- Fetch, push, and explicit fast-forward-only/merge/rebase pull jobs with live,
+  bounded output. Merge and rebase states are visible and expose the matching
+  abort action.
+- Authentication stays in configured Git Credential Manager/helpers, external
+  askpass brokers, SSH agents, and host-key policy. Terminal prompting is
+  disabled and Studio never stores or transports repository secrets.
 - Queued operations: actions requested while a job runs wait in a bounded,
   visible queue and run in order; Cancel clears the active job and the queue.
 - Switch branch basics.
@@ -1357,12 +1365,13 @@ Known limits:
 
 - Operations remain serialized by design (git mutates shared repository
   state); the queue makes waiting visible rather than adding parallelism.
-- Credential prompt detection is a heuristic over PTY output and fails open:
-  unrecognized prompts simply stream into the panel.
+- Credential brokers must be configured to complete noninteractively; detected
+  authentication failures retain raw Git output and add actionable setup help.
 - Status parsing uses porcelain v2 and handles common spaces, renames, and real
   unmerged rows, but exotic path bytes and multi-file/rename conflict recovery
   still need more coverage.
-- No merge, rebase, stash, ours/theirs selection, or merge-abort workflow.
+- Merge/rebase start and abort are present. Graphical continue/skip,
+  ours/theirs selection, stash, and advanced multi-file recovery are not.
 
 ## Data Safety
 
@@ -1414,8 +1423,8 @@ These gaps are current documentation, not a plan commitment:
   sidebar. Remaining: native secondary-window/multi-monitor detachment and
   fully virtualized panel content beyond the bounded stable-row model.
 - Add boxed struct-payload expansion in the debugger.
-- Deepen Source Control with merge/rebase orchestration, ours/theirs review,
-  merge-abort, and multi-file conflict recovery.
+- Deepen Source Control beyond its explicit merge/rebase start-and-abort state
+  with continue/skip, ours/theirs review, stash, and multi-file recovery.
 - Deepen the scene editors' remaining explicit deferrals: prefab per-field
   descendant overrides (VSCN v7 instances override transform, name,
   visibility, and metadata only), multiple simultaneous 3D viewports,

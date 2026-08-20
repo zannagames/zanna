@@ -1,0 +1,130 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_recovery_decode.zia
+// Purpose: Schedule and publish large session recovery payload decoding.
+// Key invariants:
+//   - Workers own only immutable encoded scalar input and result state.
+//   - No worker borrows document, project, tab, INI, or GUI models.
+//   - A failed worker stops restoration without rewriting durable session data.
+// Ownership/Lifetime:
+//   - SessionRestoreJob owns the pending Future/request until completion.
+//   - Async.RunOwned retains the request independently after cancellation.
+// Links: zannastudio/src/core/session_restore_layer.zia,
+//        zannastudio/src/core/session_restore_helpers.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_recovery_decode;
+
+bind "session_restore_helpers" as RestoreHelpers;
+bind "session_state" as State;
+
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+bind Str = Zanna.String;
+
+final ASYNC_RECOVERY_DECODE_THRESHOLD_BYTES = 65536;
+
+type SessionRestoreJob = State.SessionRestoreJob;
+type RecoveryDecodeRequest = State.RecoveryDecodeRequest;
+
+/// @brief Decode one bounded payload without borrowing live restore models.
+func RunRecoveryDecode(request: RecoveryDecodeRequest) -> Any {
+    if request == null { return request; }
+    request.payload = RestoreHelpers.DecodeRecoveryPayload(
+        request.encoded, request.encoding,
+        request.modified, request.explicitPresence);
+    request.succeeded = request.payload != null;
+    return request;
+}
+
+/// @brief Start or collect one large recovery decode for the current slot.
+/// @return A completed payload, or null while the worker is pending/failed.
+expose func DecodeForSlot(job: SessionRestoreJob,
+                          index: Integer,
+                          encoded: String,
+                          encoding: String,
+                          modified: Boolean,
+                          explicitPresence: String)
+    -> RestoreHelpers.RecoveryPayload? {
+    if job.recoveryDecodeFuture != null {
+        if job.recoveryDecodeIndex != index {
+            AbortRestore(job, "recovery decode generation mismatch");
+            return null;
+        }
+        if Future.get_IsDone(job.recoveryDecodeFuture) == false {
+            return null;
+        }
+        var request = job.recoveryDecodeRequest;
+        if Future.get_IsError(job.recoveryDecodeFuture) {
+            var detail = Future.get_Error(job.recoveryDecodeFuture);
+            if detail == "" { detail = "background recovery decode failed"; }
+            ClearDecodeState(job);
+            AbortRestore(job, detail);
+            return null;
+        }
+        ClearDecodeState(job);
+        if request == null or request!.succeeded == false
+           or request!.payload == null {
+            AbortRestore(job, "background recovery decode returned no payload");
+            return null;
+        }
+        job.recoveryDecodeCompletedCount =
+            job.recoveryDecodeCompletedCount + 1;
+        return request!.payload;
+    }
+
+    if encoding == "base64"
+       and Str.get_Length(encoded) >= ASYNC_RECOVERY_DECODE_THRESHOLD_BYTES {
+        var request2 = new RecoveryDecodeRequest();
+        request2.encoded = encoded;
+        request2.encoding = encoding;
+        request2.modified = modified;
+        request2.explicitPresence = explicitPresence;
+        job.recoveryDecodeRequest = request2;
+        job.recoveryDecodeIndex = index;
+        job.recoveryDecodeFuture = null;
+        try {
+            job.recoveryDecodeFuture =
+                Async.RunOwned(&RunRecoveryDecode, request2);
+        } catch {
+            job.recoveryDecodeFuture = null;
+        }
+        if job.recoveryDecodeFuture == null {
+            ClearDecodeState(job);
+            AbortRestore(job, "could not start background recovery decode");
+            return null;
+        }
+        job.recoveryDecodeStartedCount = job.recoveryDecodeStartedCount + 1;
+        return null;
+    }
+
+    return RestoreHelpers.DecodeRecoveryPayload(
+        encoded, encoding, modified, explicitPresence);
+}
+
+/// @brief Release the UI owner's handles to a completed or canceled decode.
+expose func ClearDecodeState(job: SessionRestoreJob) {
+    if job == null { return; }
+    job.recoveryDecodeFuture = null;
+    job.recoveryDecodeRequest = null;
+    job.recoveryDecodeIndex = -1;
+}
+
+/// @brief Stop safely while leaving the durable session snapshot untouched.
+hide func AbortRestore(job: SessionRestoreJob,
+                       message: String) {
+    if job == null { return; }
+    job.restoreError = message;
+    job.active = false;
+    job.ini = null;
+    job.sourceText = "";
+    job.docMgr = null;
+    job.projMgr = null;
+    job.tabs = null;
+}

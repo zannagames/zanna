@@ -40,6 +40,8 @@ bind Str = Zanna.String;
 bind Zanna.GUI as GUI;
 bind "../services/safe_io";
 bind "keybinding_settings";
+bind "settings_state" as State;
+bind "settings_save_layer" as SaveLayer;
 
 // ============================================================================
 // MODULE: settings
@@ -81,111 +83,16 @@ bind "keybinding_settings";
 
 /// @brief Default editor font size (in points). Used both at construction and as
 ///        the reset target for the "Reset font size" command.
-final DEFAULT_FONT_SIZE = 15;
+final DEFAULT_FONT_SIZE = State.DEFAULT_FONT_SIZE;
 
 /// @brief Old Zanna Studio builds persisted small sizes; migrate them upward.
 final MIN_COMFORTABLE_FONT_SIZE = 12;
 
 /// @brief Settings store with INI-backed persistence.
-class SettingsManager {
-    expose Integer fontSize;       // Editor font size in points.
-    expose String  fontPath;       // Optional custom .ttf/.ttc path; "" = default fallback chain.
-    expose String  theme;          // "dark" or "light".
-    expose Boolean minimapVisible; // Whether the minimap panel is shown.
-    expose keybinding_settings.KeybindingOverrideSet keybindings;
-    expose String keybindingOverrides; // Legacy scalar retained only for migration visibility.
-    expose Boolean autoCheckOnSave;// Legacy key: whether live diagnostics run on edit.
-    expose Boolean codeFolding;    // Whether the editor offers code-folding regions.
-    expose Boolean statusBarVisible; // Whether the status bar is shown.
-    expose Boolean fullscreen;     // Whether the main app starts fullscreen.
-    expose Boolean wordWrap;       // Whether editor lines wrap within the viewport.
-    expose Integer renderWhitespaceMode; // Whitespace markers: 0=none, 1=boundary, 2=all.
-    expose Integer wheelSpeedPct;  // Mouse-wheel scroll sensitivity, percent (100 = 1.0x).
-    expose Integer bottomPanelSplitPct; // Editor's share of the editor/panel split, percent (default 70).
-    expose String panelDockPosition; // "bottom", "left", or "right".
-    expose String toolPanelGroupLayout; // Canonical attached/floating membership.
-    expose Integer sidePanelWidthPct; // Tool panel's share of a side split.
-    expose Integer floatingToolPanelX; // Floating tool window X in UI units.
-    expose Integer floatingToolPanelY; // Floating tool window Y in UI units.
-    expose Integer floatingToolPanelWidth; // Floating tool window width.
-    expose Integer floatingToolPanelHeight; // Floating tool window height.
-    expose String primarySidebarPosition; // "left" or "right".
-    expose Integer sidebarWidthPct; // Explorer/sidebar share of the workbench split.
-    expose Boolean sidebarVisible; // User-requested sidebar state when a project exists.
-    expose String activeSidebarViewId; // "explorer", "scm", or "run-debug".
-    expose Integer editorSplitPct; // Primary editor's share of a two-pane split.
-    expose String toolPanelTabOrder; // Comma-separated stable tool-tab IDs.
-    expose String activeToolPanelId; // Stable visible panel ID, or "none".
-    expose Boolean lineNumbers;    // Whether the editor gutter shows line numbers.
-    expose Boolean insertSpaces;   // Whether Tab inserts spaces instead of a hard tab.
-    expose Boolean trimTrailingWhitespace; // Trim trailing spaces/tabs when saving.
-    expose Boolean ensureFinalNewline; // Ensure saved text ends with a newline.
-    expose Boolean autoSave;      // Save modified named files after editor idle.
-    expose Boolean saveAllBeforeBuild; // Save all modified files before build/debug.
-    expose Boolean restoreSession; // Restore open tabs and cursor state on startup.
-    expose Boolean restoreLastProject; // Restore last project tree on startup.
-    expose Boolean confirmOnExitWithUnsavedChanges; // Guard destructive close paths.
-    expose Integer diagnosticsDelayMs; // Live diagnostics idle delay.
-    expose Integer completionDelayMs;  // Completion debounce delay.
-    expose Integer tabWidth;       // Tab width in spaces (2..8).
-    expose Integer uiZoomPercent;  // Whole-UI zoom percentage (50..300; 100 = default).
-    expose String  settingsDir;    // Platform ZannaStudio config dir (resolved at SetupPath).
-    expose String  settingsPath;   // settingsDir/settings.ini.
-    expose Boolean persistenceAvailable; // False when no safe per-user root can be resolved.
-    expose String  persistenceWarning; // User-visible explanation when persistence is disabled.
-
-    /// @brief Initialize with defaults. Call SetupPath then Load to
-    ///        populate from disk.
+class SettingsManager extends SaveLayer.SettingsSaveLayer {
+    /// @brief Initialize a complete valid preference set.
     expose func init() {
-        fontSize       = DEFAULT_FONT_SIZE;
-        fontPath       = "";
-        theme          = "dark";
-        // The minimap's line-summary cache renders incrementally (bounded,
-        // O(1) per-line lookups), so it defaults on; the editor hot-path perf
-        // probe guards the cost on large buffers.
-        minimapVisible = true;
-        keybindings = new keybinding_settings.KeybindingOverrideSet();
-        keybindingOverrides = "";
-        autoCheckOnSave = true;
-        codeFolding    = true;
-        statusBarVisible = true;
-        fullscreen = false;
-        wordWrap       = false;
-        renderWhitespaceMode = 0;
-        wheelSpeedPct  = 100;
-        bottomPanelSplitPct = 70;
-        panelDockPosition = "bottom";
-        toolPanelGroupLayout = ""; // Empty migrates the legacy dock and order.
-        sidePanelWidthPct = 30;
-        floatingToolPanelX = 96;
-        floatingToolPanelY = 88;
-        floatingToolPanelWidth = 680;
-        floatingToolPanelHeight = 420;
-        primarySidebarPosition = "left";
-        sidebarWidthPct = 24;
-        sidebarVisible = true;
-        activeSidebarViewId = "explorer";
-        editorSplitPct = 50;
-        toolPanelTabOrder =
-            "problems,output,search,references,variables,call-stack,debug-console,terminal";
-        activeToolPanelId = "none";
-        lineNumbers    = true;
-        insertSpaces   = true;
-        trimTrailingWhitespace = false;
-        ensureFinalNewline = true;
-        autoSave = false;
-        saveAllBeforeBuild = true;
-        restoreSession = true;
-        restoreLastProject = true;
-        confirmOnExitWithUnsavedChanges = true;
-        diagnosticsDelayMs = 500;
-        completionDelayMs = 180;
-        tabWidth       = 4;
-        uiZoomPercent  = 100;
-        settingsDir    = "";
-        settingsPath   = "";
-        persistenceAvailable = true;
-        persistenceWarning = "";
+        InitializeState();
     }
 
     /// @brief Resolve `settingsDir` and `settingsPath` from platform config roots.
@@ -200,7 +107,7 @@ class SettingsManager {
     ///          adopted in place, matching the pre-rename fallback behaviour.
     /// @note Persistence is disabled if the runtime cannot resolve a native
     ///       user home. Idempotent.
-    expose func SetupPath() {
+    expose override func SetupPath() {
         SetupPathFromHome(Machine.Home);
     }
 
@@ -507,150 +414,6 @@ class SettingsManager {
         }
     }
 
-
-    /// @brief Persist settings to disk in the native configuration directory.
-    /// @note Updates the settings section while preserving session and
-    ///       recent-project sections owned by SessionManager.
-    /// @return True when the complete settings file was written successfully.
-    expose func Save() -> Boolean {
-        if settingsPath == "" {
-            SetupPath();
-        }
-        if settingsDir == "" or settingsPath == "" { return false; }
-        if safe_io.MakeAll(settingsDir) == false { return false; }
-
-        var content = "";
-        if IO.File.Exists(settingsPath) {
-            var readResult = safe_io.ReadStudioState(settingsPath);
-            if readResult.ok == false { return false; }
-            content = readResult.text;
-        }
-        var ini = Ini.Parse(content);
-        Ini.Set(ini, "settings", "fontSize", "" + fontSize);
-        Ini.Set(ini, "settings", "fontPath", fontPath);
-        Ini.Set(ini, "settings", "theme", theme);
-        if minimapVisible {
-            Ini.Set(ini, "settings", "minimap", "1");
-        } else {
-            Ini.Set(ini, "settings", "minimap", "0");
-        }
-        keybindings.Save(ini);
-        keybindingOverrides = "";
-        if autoCheckOnSave {
-            Ini.Set(ini, "settings", "autoCheck", "1");
-        } else {
-            Ini.Set(ini, "settings", "autoCheck", "0");
-        }
-        if codeFolding {
-            Ini.Set(ini, "settings", "codeFolding", "1");
-        } else {
-            Ini.Set(ini, "settings", "codeFolding", "0");
-        }
-        if statusBarVisible {
-            Ini.Set(ini, "settings", "statusBarVisible", "1");
-        } else {
-            Ini.Set(ini, "settings", "statusBarVisible", "0");
-        }
-        if fullscreen {
-            Ini.Set(ini, "settings", "fullscreen", "1");
-        } else {
-            Ini.Set(ini, "settings", "fullscreen", "0");
-        }
-        if wordWrap {
-            Ini.Set(ini, "settings", "wordWrap", "1");
-        } else {
-            Ini.Set(ini, "settings", "wordWrap", "0");
-        }
-        Ini.Set(ini, "settings", "renderWhitespace", "" + renderWhitespaceMode);
-        Ini.Set(ini, "settings", "wheelSpeed", "" + wheelSpeedPct);
-        Ini.Set(ini, "settings", "bottomPanelSplit", "" + bottomPanelSplitPct);
-        Ini.Set(ini, "settings", "panelDockPosition", panelDockPosition);
-        Ini.Set(ini, "settings", "toolPanelGroupLayout",
-                toolPanelGroupLayout);
-        Ini.Set(ini, "settings", "sidePanelWidth", "" + sidePanelWidthPct);
-        Ini.Set(ini, "settings", "floatingToolPanelX",
-                "" + floatingToolPanelX);
-        Ini.Set(ini, "settings", "floatingToolPanelY",
-                "" + floatingToolPanelY);
-        Ini.Set(ini, "settings", "floatingToolPanelWidth",
-                "" + floatingToolPanelWidth);
-        Ini.Set(ini, "settings", "floatingToolPanelHeight",
-                "" + floatingToolPanelHeight);
-        if primarySidebarPosition != "left"
-           and primarySidebarPosition != "right" {
-            primarySidebarPosition = "left";
-        }
-        Ini.Set(ini, "settings", "primarySidebarPosition",
-                primarySidebarPosition);
-        Ini.Set(ini, "settings", "sidebarWidth", "" + sidebarWidthPct);
-        if sidebarVisible {
-            Ini.Set(ini, "settings", "sidebarVisible", "1");
-        } else {
-            Ini.Set(ini, "settings", "sidebarVisible", "0");
-        }
-        if IsValidSidebarViewId(activeSidebarViewId) == false {
-            activeSidebarViewId = "explorer";
-        }
-        Ini.Set(ini, "settings", "activeSidebarView", activeSidebarViewId);
-        Ini.Set(ini, "settings", "editorSplit", "" + editorSplitPct);
-        Ini.Set(ini, "settings", "toolPanelTabOrder", toolPanelTabOrder);
-        if IsValidActiveToolPanelId(activeToolPanelId) == false {
-            activeToolPanelId = "none";
-        }
-        Ini.Set(ini, "settings", "activeToolPanel", activeToolPanelId);
-        if lineNumbers {
-            Ini.Set(ini, "settings", "lineNumbers", "1");
-        } else {
-            Ini.Set(ini, "settings", "lineNumbers", "0");
-        }
-        if insertSpaces {
-            Ini.Set(ini, "settings", "insertSpaces", "1");
-        } else {
-            Ini.Set(ini, "settings", "insertSpaces", "0");
-        }
-        if trimTrailingWhitespace {
-            Ini.Set(ini, "settings", "trimTrailingWhitespace", "1");
-        } else {
-            Ini.Set(ini, "settings", "trimTrailingWhitespace", "0");
-        }
-        if ensureFinalNewline {
-            Ini.Set(ini, "settings", "ensureFinalNewline", "1");
-        } else {
-            Ini.Set(ini, "settings", "ensureFinalNewline", "0");
-        }
-        if autoSave {
-            Ini.Set(ini, "settings", "autoSave", "1");
-        } else {
-            Ini.Set(ini, "settings", "autoSave", "0");
-        }
-        if saveAllBeforeBuild {
-            Ini.Set(ini, "settings", "saveAllBeforeBuild", "1");
-        } else {
-            Ini.Set(ini, "settings", "saveAllBeforeBuild", "0");
-        }
-        if restoreSession {
-            Ini.Set(ini, "settings", "restoreSession", "1");
-        } else {
-            Ini.Set(ini, "settings", "restoreSession", "0");
-        }
-        if restoreLastProject {
-            Ini.Set(ini, "settings", "restoreLastProject", "1");
-        } else {
-            Ini.Set(ini, "settings", "restoreLastProject", "0");
-        }
-        if confirmOnExitWithUnsavedChanges {
-            Ini.Set(ini, "settings", "confirmOnExitWithUnsavedChanges", "1");
-        } else {
-            Ini.Set(ini, "settings", "confirmOnExitWithUnsavedChanges", "0");
-        }
-        Ini.Set(ini, "settings", "tabWidth", "" + tabWidth);
-        Ini.Set(ini, "settings", "diagnosticsDelayMs", "" + diagnosticsDelayMs);
-        Ini.Set(ini, "settings", "completionDelayMs", "" + completionDelayMs);
-        Ini.Set(ini, "settings", "uiZoomPercent", "" + uiZoomPercent);
-        var formattedContent = Ini.Format(ini);
-        return safe_io.CompareExchangeStudioState(
-            settingsPath, content, formattedContent);
-    }
 
     /// @brief Apply the loaded theme via Zanna.GUI.Theme.SetDark/SetLight.
     expose func ApplyTheme() {

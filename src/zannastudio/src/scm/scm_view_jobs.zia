@@ -1,0 +1,191 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_view_jobs.zia
+// Purpose: Serialize bounded, generation-tagged asynchronous Git jobs.
+// Key invariants:
+//   - Mutations run one at a time and read snapshots coalesce by kind.
+//   - Every job carries the repository generation that created it.
+// Ownership/Lifetime: Inherited ScmView state owns active and queued Git jobs.
+// Links: zannastudio/src/scm/scm_view.zia,
+//        zannastudio/src/scm/scm_view_presenter.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_view_jobs;
+
+bind "scm_view_base" as State;
+bind "scm_git";
+
+bind Str = Zanna.String;
+
+final HISTORY_PAGE_SIZE = 50;
+final MAX_PENDING_JOBS = 8;
+
+class ScmViewJobLayer extends State.ScmViewBase {
+    expose func Busy() -> Boolean {
+        return activeJob != null and activeJob.running;
+    }
+
+    hide func StartJob(job: scm_git.GitJob,
+                       label: String) -> Boolean {
+        if job == null { return false; }
+        job.repositoryGeneration = repositoryGeneration;
+        activeJob = job;
+        if job.started == false {
+            statusLabel.SetText(job.CombinedOutput());
+            if diffPane != null and job.CombinedOutput() != "" {
+                diffPane.Clear();
+                diffPane.Append(job.CombinedOutput() + "\n");
+            }
+            activeJob = null;
+            return false;
+        }
+        statusLabel.SetText(QueueSuffix(label));
+        return true;
+    }
+
+    /// @brief Append the pending-queue depth to a status label when non-empty.
+    hide func QueueSuffix(label: String) -> String {
+        if pendingJobs.count() == 0 { return label; }
+        return label + "  (" + pendingJobs.count() + " queued)";
+    }
+
+    /// @brief Run @p kind now, or queue it while another git job is active.
+    /// @details The queue is bounded; overflowing requests are dropped with a
+    ///          visible message rather than silently discarded.
+    hide func RunOrQueue(kind: String, path: String, message: String) {
+        if Busy() == false {
+            Dispatch(kind, path, message);
+            return;
+        }
+        // Read-only refreshes are replaceable snapshots. Retain at most one
+        // matching request for the current repository instead of replaying
+        // stale status/history work after a slow network or mutation job.
+        if IsCoalescibleRead(kind) {
+            var i = pendingJobs.count() - 1;
+            while i >= 0 {
+                var queued = pendingJobs.get(i);
+                if queued.repositoryGeneration != repositoryGeneration
+                   or queued.kind == kind {
+                    pendingJobs.removeAt(i);
+                }
+                i = i - 1;
+            }
+        }
+        if pendingJobs.count() >= MAX_PENDING_JOBS {
+            statusLabel.SetText("Queue is full; wait for git to finish");
+            return;
+        }
+        var action = new scm_view_base.PendingAction();
+        action.kind = kind;
+        action.path = path;
+        action.message = message;
+        action.repositoryGeneration = repositoryGeneration;
+        pendingJobs.Push(action);
+        statusLabel.SetText(QueueSuffix("Running git..."));
+    }
+
+    hide func IsCoalescibleRead(kind: String) -> Boolean {
+        return kind == "status" or kind == "log" or kind == "logfiles"
+               or kind == "show";
+    }
+
+    /// @brief Start the job for one action kind (the queue's dispatcher).
+    hide func Dispatch(kind: String, path: String, message: String) {
+        if kind == "status" { StartJob(git.StartStatus(), "Refreshing status..."); return; }
+        if kind == "stage" { StartJob(git.StartStage(path), "Staging " + path + "..."); return; }
+        if kind == "unstage" { StartJob(git.StartUnstage(path), "Unstaging " + path + "..."); return; }
+        if kind == "stageAll" { StartJob(git.StartStageAll(), "Staging all changes..."); return; }
+        if kind == "commit" { StartJob(git.StartCommit(message), "Committing..."); return; }
+        if kind == "fetch" {
+            operationState = "fetching";
+            StartJob(git.StartFetch(), "Fetching...");
+            return;
+        }
+        if kind == "push" { StartJob(git.StartPush(), "Pushing..."); return; }
+        if kind == "pullFf" {
+            operationState = "fast-forwarding";
+            StartJob(git.StartPullStrategy("ff"), "Pulling (fast-forward only)...");
+            return;
+        }
+        if kind == "pullMerge" {
+            operationState = "merging";
+            StartJob(git.StartPullStrategy("merge"), "Pulling with merge...");
+            return;
+        }
+        if kind == "pullRebase" {
+            operationState = "rebasing";
+            StartJob(git.StartPullStrategy("rebase"), "Pulling with rebase...");
+            return;
+        }
+        if kind == "mergeAbort" {
+            StartJob(git.StartMergeAbort(), "Aborting merge...");
+            return;
+        }
+        if kind == "rebaseAbort" {
+            StartJob(git.StartRebaseAbort(), "Aborting rebase...");
+            return;
+        }
+        if kind == "log" {
+            StartJob(git.StartLog(historyLoaded, HISTORY_PAGE_SIZE), "Loading history...");
+            return;
+        }
+        if kind == "logfiles" { StartJob(git.StartCommitFiles(path), "Loading commit..."); return; }
+        if kind == "showold" {
+            StartJob(git.StartShowAt(historySha + "~1", path, "showold"), "Loading old version...");
+            return;
+        }
+        if kind == "shownew" {
+            StartJob(git.StartShowAt(historySha, path, "shownew"), "Loading new version...");
+            return;
+        }
+        if kind == "show" { StartJob(git.StartShowHead(path), "Loading HEAD version..."); return; }
+    }
+
+    /// @brief Start the next queued action when idle.
+    hide func DrainQueue() {
+        if Busy() { return; }
+        while pendingJobs.count() > 0 {
+            var action = pendingJobs.get(0);
+            pendingJobs.removeAt(0);
+            if action.repositoryGeneration == repositoryGeneration {
+                Dispatch(action.kind, action.path, action.message);
+                return;
+            }
+        }
+    }
+    hide func JobLabel(kind: String) -> String {
+        if kind == "stage" or kind == "stageAll" { return "Stage"; }
+        if kind == "unstage" { return "Unstage"; }
+        if kind == "commit" { return "Commit"; }
+        if kind == "push" { return "Push"; }
+        if kind == "fetch" { return "Fetch"; }
+        if kind == "pullFf" or kind == "pullMerge" or kind == "pullRebase" {
+            return "Pull";
+        }
+        if kind == "mergeAbort" { return "Abort merge"; }
+        if kind == "rebaseAbort" { return "Abort rebase"; }
+        if kind == "checkout" { return "Checkout"; }
+        return kind;
+    }
+
+    hide func JobPastTense(kind: String) -> String {
+        if kind == "stage" { return "Staged"; }
+        if kind == "stageAll" { return "Staged all changes"; }
+        if kind == "unstage" { return "Unstaged"; }
+        if kind == "commit" { return "Committed"; }
+        if kind == "push" { return "Pushed"; }
+        if kind == "fetch" { return "Fetched remotes"; }
+        if kind == "pullFf" { return "Pulled (fast-forward only)"; }
+        if kind == "pullMerge" { return "Pulled with merge"; }
+        if kind == "pullRebase" { return "Pulled with rebase"; }
+        if kind == "mergeAbort" { return "Merge aborted"; }
+        if kind == "rebaseAbort" { return "Rebase aborted"; }
+        if kind == "checkout" { return "Switched branch"; }
+        return "Done";
+    }}

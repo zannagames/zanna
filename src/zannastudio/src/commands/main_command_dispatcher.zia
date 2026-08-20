@@ -84,90 +84,6 @@ bind Path = Zanna.IO.Path;
 //          where it runs, and how UI events reach it.
 // ============================================================================
 
-/// @brief Dispatch all command triggers for one frame using legacy parameters.
-/// @details This wrapper preserves existing probe and caller code while the
-///          implementation moves toward the named CommandContext shape.
-/// @param shell Workbench shell containing menu and toolbar widgets.
-/// @param docMgr Open document manager.
-/// @param projMgr Project/tree manager.
-/// @param engine Active editor engine.
-/// @param tabs Editor tab controller.
-/// @param buildSys Build/run process controller.
-/// @param dbgSession Active debug session.
-/// @param terminalCtrl Integrated terminal controller.
-/// @param fileWatchCtrl File-watch controller.
-/// @param workspaceWatcherState Workspace watcher state passed to cleanup.
-/// @param indexer Semantic project indexer.
-/// @param breakpointStore Persistent breakpoint store.
-/// @param sessionMgr Session persistence and recent-file manager.
-/// @param locStore Structured location store.
-/// @param commandRegistry Runtime command registry.
-/// @param paletteCtrl Command-palette state controller.
-/// @param explorerOverlay Non-modal explorer action overlay.
-/// @param debugOverlay Non-modal breakpoint metadata overlay.
-/// @param overlays Settings/About overlay controller.
-/// @param liveDiag Live diagnostics controller.
-/// @param symbolOutline Document symbol outline controller.
-/// @param sigCtrl Signature help controller.
-/// @param searcher Async project-search controller.
-/// @param appSettings Current user settings.
-/// @param cpSelected Normalized command-palette selection id for this frame.
-/// @param suppressTreeOpen True when a tree right-click should not open a file.
-/// @return True when cleanup has already run and the application should exit.
-expose func DispatchCommands(shell: app_shell.AppShell,
-                             docMgr: document_manager.DocumentManager,
-                             projMgr: project_manager.ProjectManager,
-                             engine: editor_engine.EditorEngine,
-                             tabs: editor_tabs.EditorTabs,
-                             buildSys: build_system.BuildSystem,
-                             dbgSession: debug_session.DebugSession,
-                             terminalCtrl: terminal_controller.TerminalController,
-                             fileWatchCtrl: file_watch_controller.FileWatchController,
-                             workspaceWatcherState: workspace_watcher.WorkspaceWatcherState,
-                             indexer: project_index.ProjectIndexer,
-                             breakpointStore: breakpoints.BreakpointStore,
-                             sessionMgr: session.SessionManager,
-                             locStore: locations.LocationStore,
-                             commandRegistry: command_registry.CommandRegistry,
-                             paletteCtrl: command_palette_controller.CommandPaletteController,
-                             explorerOverlay: explorer_actions.ExplorerActionOverlay,
-                             debugOverlay: debug_breakpoint_overlay.DebugBreakpointOverlay,
-                             overlays: ide_overlays.IdeOverlays,
-                             liveDiag: diagnostics.LiveDiagnostics,
-                             symbolOutline: symbols.SymbolOutline,
-                             sigCtrl: signature.SignatureController,
-                             searcher: search_commands.SearchController,
-                             appSettings: settings.SettingsManager,
-                             cpSelected: String,
-                             suppressTreeOpen: Boolean) -> Boolean {
-    var ctx = new command_context.CommandContext();
-    ctx.shell = shell;
-    ctx.docMgr = docMgr;
-    ctx.projMgr = projMgr;
-    ctx.engine = engine;
-    ctx.tabs = tabs;
-    ctx.buildSys = buildSys;
-    ctx.dbgSession = dbgSession;
-    ctx.terminalCtrl = terminalCtrl;
-    ctx.fileWatchCtrl = fileWatchCtrl;
-    ctx.workspaceWatcherState = workspaceWatcherState;
-    ctx.indexer = indexer;
-    ctx.breakpointStore = breakpointStore;
-    ctx.sessionMgr = sessionMgr;
-    ctx.locStore = locStore;
-    ctx.commandRegistry = commandRegistry;
-    ctx.paletteCtrl = paletteCtrl;
-    ctx.explorerOverlay = explorerOverlay;
-    ctx.debugOverlay = debugOverlay;
-    ctx.overlays = overlays;
-    ctx.liveDiag = liveDiag;
-    ctx.symbolOutline = symbolOutline;
-    ctx.sigCtrl = sigCtrl;
-    ctx.searcher = searcher;
-    ctx.appSettings = appSettings;
-    return DispatchCommandContext(ctx, cpSelected, suppressTreeOpen);
-}
-
 /// @brief Dispatch all command triggers for one frame.
 /// @details Returns true only when the user confirmed application exit. The
 ///          entry point owns the one shared cleanup path so menu and native
@@ -470,6 +386,30 @@ hide func DispatchFileCommands(ctx: command_context.CommandContext,
     if dispatch_helpers.Triggered("terminal", ctx.shell.menuChrome.miTerminal, null, cpSelected) {
         if ctx.projMgr.IsOpen() { ctx.terminalCtrl.SetCwd(ctx.projMgr.RootPath()); }
         ctx.shell.toolPanels.ToggleTerminalPanel();
+    }
+    if dispatch_helpers.TriggeredNoMenu("terminalnew", cpSelected) {
+        ctx.shell.toolPanels.ShowTerminalPanel();
+        if ctx.terminalCtrl.NewSession() {
+            ctx.shell.SetStatusLeft("Created terminal session");
+        } else {
+            ctx.shell.SetStatusLeft("Terminal session limit reached");
+            GUI.Toast.Warning("Close a terminal before creating another one");
+        }
+    }
+    if dispatch_helpers.TriggeredNoMenu("terminalnext", cpSelected) {
+        ctx.shell.toolPanels.ShowTerminalPanel();
+        ctx.terminalCtrl.NextSession();
+    }
+    if dispatch_helpers.TriggeredNoMenu("terminalclose", cpSelected) {
+        if ctx.terminalCtrl.CloseActiveSession() {
+            ctx.shell.SetStatusLeft("Closed terminal session");
+        }
+    }
+    if dispatch_helpers.TriggeredNoMenu("terminalrename", cpSelected) {
+        if ctx.commandInputOverlay != null {
+            ctx.commandInputOverlay.OpenRenameTerminal(
+                ctx.shell, ctx.terminalCtrl.sess.title);
+        }
     }
     if dispatch_helpers.Triggered("save", ctx.shell.menuChrome.miSave, ctx.shell.menuChrome.tbSave, cpSelected)   {
         if file_commands.handleSave(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs) {

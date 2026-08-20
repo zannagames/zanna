@@ -1,0 +1,459 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_view_presenter.zia
+// Purpose: Project Git results into responsive, virtualized Source Control UI.
+// Key invariants:
+//   - Stale repository generations never update rows or diff panes.
+//   - Revision read failures remain distinct from valid empty file contents.
+// Ownership/Lifetime: Borrows widgets owned by the inherited ScmView state.
+// Links: zannastudio/src/scm/scm_view.zia,
+//        zannastudio/src/scm/scm_view_jobs.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_view_presenter;
+
+bind "scm_view_base";
+bind "scm_view_controls" as PreviousLayer;
+bind "scm_git";
+bind "../ui/diff_view";
+bind "../services/safe_io";
+
+bind Zanna.GUI as GUI;
+bind Str = Zanna.String;
+bind IO = Zanna.IO;
+bind Path = Zanna.IO.Path;
+
+final HISTORY_PAGE_SIZE = 50;
+final MAX_SCM_DIFF_BYTES = 8000000;
+
+class ScmViewPresenterLayer extends PreviousLayer.ScmViewControlLayer {
+    /// @brief Queue a background status refresh.
+    expose func Refresh() {
+        if ready == false { return; }
+        if repoPath == "" {
+            if statusLabel != null {
+                statusLabel.SetText("Open a workspace to use source control");
+            }
+            return;
+        }
+        if Busy() == false {
+            ClearStatusRows();
+            if diffPane != null { diffPane.Clear(); }
+        }
+        RunOrQueue("status", "", "");
+    }
+    hide func CompleteJob(job: scm_git.GitJob) {
+        if job == null { return; }
+        activeJob = null;
+        if job.repositoryGeneration != repositoryGeneration {
+            DrainQueue();
+            return;
+        }
+        if job.kind == "status" {
+            ApplyStatus(git.StatusFromJob(job));
+            if queuedDiffPath != "" {
+                var p = queuedDiffPath;
+                queuedDiffPath = "";
+                ShowDiff(p);
+            }
+            DrainQueue();
+            return;
+        }
+        if job.kind == "diff" {
+            ApplyDiff(job);
+            DrainQueue();
+            return;
+        }
+        if job.kind == "show" {
+            if diffOverlay != null {
+                var headText = "";
+                if job.HasCompleteStdout() {
+                    headText = job.stdoutText;
+                } else {
+                    var entry = EntryForPath(job.path);
+                    var expectedMissing = entry != null
+                        and (entry.untracked or entry.index == "A");
+                    if expectedMissing == false or job.stdoutTruncated {
+                        ShowRevisionFailure(job, "Could not read HEAD version");
+                        DrainQueue();
+                        return;
+                    }
+                }
+                var worktree = "";
+                var absolute = Path.Join(git.repo, job.path);
+                if IO.File.Exists(absolute) {
+                    var readResult = safe_io.ReadAllTextBounded(absolute, MAX_SCM_DIFF_BYTES);
+                    if readResult.ok == false {
+                        statusLabel.SetText("Could not read worktree file for diff");
+                        GUI.Toast.Error("Could not open worktree diff");
+                        DrainQueue();
+                        return;
+                    }
+                    worktree = readResult.text;
+                }
+                diffOverlay.Open(job.path + "  (HEAD → worktree)", headText, worktree);
+            }
+            DrainQueue();
+            return;
+        }
+        if job.kind == "log" {
+            ApplyLog(job);
+            DrainQueue();
+            return;
+        }
+        if job.kind == "logfiles" {
+            ApplyCommitFiles(job);
+            DrainQueue();
+            return;
+        }
+        if job.kind == "showold" {
+            pendingOldText = "";
+            if job.HasCompleteStdout() {
+                pendingOldText = job.stdoutText;
+            } else if Str.Left(pendingDiffStatus, 1) != "A"
+                      or job.stdoutTruncated {
+                ShowRevisionFailure(job, "Could not read parent revision");
+                pendingDiffFile = "";
+                pendingDiffStatus = "";
+                DrainQueue();
+                return;
+            }
+            RunOrQueue("shownew", job.path, "");
+            return;
+        }
+        if job.kind == "shownew" {
+            var newText = "";
+            if job.HasCompleteStdout() {
+                newText = job.stdoutText;
+            } else if Str.Left(pendingDiffStatus, 1) != "D"
+                      or job.stdoutTruncated {
+                ShowRevisionFailure(job, "Could not read selected revision");
+                pendingOldText = "";
+                pendingDiffFile = "";
+                pendingDiffStatus = "";
+                DrainQueue();
+                return;
+            }
+            if diffOverlay != null {
+                var shortSha = Str.Left(historySha, 8);
+                diffOverlay.Open(job.path + "  (" + shortSha + "~1 → " + shortSha + ")",
+                                 pendingOldText, newText);
+            }
+            pendingOldText = "";
+            pendingDiffFile = "";
+            pendingDiffStatus = "";
+            statusLabel.SetText("Diff: " + job.path);
+            DrainQueue();
+            return;
+        }
+
+        if job.Success() {
+            statusLabel.SetText(JobPastTense(job.kind));
+            if job.kind == "commit" and commitInput != null {
+                commitInput.SetText("");
+            }
+            if job.kind == "fetch" or job.kind == "pullFf"
+               or job.kind == "pullMerge" or job.kind == "pullRebase"
+               or job.kind == "mergeAbort" or job.kind == "rebaseAbort" {
+                operationState = "idle";
+            }
+        } else {
+            var combined = job.CombinedOutput();
+            var hint = scm_git.FailureHint(job.kind, combined);
+            if hint != "" {
+                statusLabel.SetText(JobLabel(job.kind) + " needs attention");
+            } else {
+                statusLabel.SetText(JobLabel(job.kind) + " failed (" + job.exitCode + ")");
+            }
+            if diffPane != null {
+                diffPane.Clear();
+                if combined == "" { combined = "git " + job.kind + " failed"; }
+                if hint != "" {
+                    diffPane.Append(hint + "\n\n");
+                }
+                diffPane.Append(combined + "\n");
+            }
+            if job.kind == "pullMerge" { operationState = "conflict-merge"; }
+            if job.kind == "pullRebase" { operationState = "conflict-rebase"; }
+        }
+        StartJob(git.StartStatus(), "Refreshing status...");
+    }
+
+    /// @brief Surface a revision-content failure without disguising it as empty text.
+    hide func ShowRevisionFailure(job: scm_git.GitJob,
+                                  summary: String) {
+        var detail = job.CombinedOutput();
+        if job.stdoutTruncated {
+            detail = "Git output was truncated before the revision could be decoded";
+        } else if detail == "" {
+            detail = "git show failed with exit code " + job.exitCode;
+        }
+        statusLabel.SetText(summary);
+        if diffPane != null {
+            diffPane.Clear();
+            diffPane.Append(summary + ":\n" + detail + "\n");
+        }
+        GUI.Toast.Error(summary);
+    }
+
+    /// @brief Render one page of `git log` into the list (history mode).
+    hide func ApplyLog(job: scm_git.GitJob) {
+        if viewMode != "history" { return; }
+        if job.HasCompleteStdout() == false {
+            statusLabel.SetText("History failed (" + job.exitCode + ")");
+            if diffPane != null {
+                diffPane.Clear();
+                diffPane.Append(job.CombinedOutput() + "\n");
+            }
+            return;
+        }
+        var commits = scm_git.ParseLog(job.stdoutText);
+        if historyLoaded == 0 { ClearStatusRows(); }
+        var i = 0;
+        while i < commits.count() {
+            var c = commits.get(i);
+            var label = Str.Left(c.sha, 8) + "  " + c.date + "  " + c.subject
+                + "  — " + c.author;
+            AddStatusRow(label, c.sha, "commit");
+            i = i + 1;
+        }
+        historyLoaded = historyLoaded + commits.count();
+        if historyLoaded == 0 {
+            AddStatusRow("(no commits)", "", "empty");
+        }
+        if loadMoreBtn != null {
+            loadMoreBtn.SetVisible(commits.count() >= HISTORY_PAGE_SIZE);
+        }
+        statusLabel.SetText("History: " + historyLoaded + " commit(s) loaded");
+    }
+
+    /// @brief Render one commit's touched files into the list (commitfiles mode).
+    hide func ApplyCommitFiles(job: scm_git.GitJob) {
+        if viewMode != "commitfiles" { return; }
+        ClearStatusRows();
+        AddStatusRow("<- Back to history", "::back", "back");
+        if job.HasCompleteStdout() == false {
+            statusLabel.SetText("Commit load failed (" + job.exitCode + ")");
+            if diffPane != null and job.stdoutTruncated {
+                diffPane.Clear();
+                diffPane.Append("Commit file list exceeded the Git output limit\n");
+            }
+            return;
+        }
+        var files = scm_git.ParseCommitFiles(job.stdoutText);
+        var i = 0;
+        while i < files.count() {
+            var row = files.get(i) as scm_git.GitCommitFile;
+            var statusMark = row.status;
+            var filePath = row.path;
+            if filePath == "" { i = i + 1; continue; }
+            AddStatusRow("[" + Str.Left(statusMark, 1) + "] "
+                         + scm_git.DisplayPath(filePath), filePath, statusMark);
+            i = i + 1;
+        }
+        var shortSha = Str.Left(historySha, 8);
+        statusLabel.SetText("Commit " + shortSha + ": " + files.count() + " file(s)");
+    }
+
+    hide func ApplyStatus(st: scm_git.GitStatus) {
+        lastStatus = st;
+        ClearStatusRows();
+        if st.isRepo == false {
+            repoReady = false;
+            SetRepositoryActionsEnabled(false);
+            branchLabel.SetText("Not a git repository");
+            statusLabel.SetText(st.errorText);
+            if diffPane != null and st.errorText != "" {
+                diffPane.Clear();
+                diffPane.Append(st.errorText + "\n");
+            }
+            return;
+        }
+        repoReady = true;
+        SetRepositoryActionsEnabled(true);
+        if Str.get_Length(st.branch) > 0 {
+            branchLabel.SetText("Branch: " + st.branch);
+        } else {
+            branchLabel.SetText("Branch: (detached)");
+        }
+
+        var i = 0;
+        var conflicts = 0;
+        while i < st.entries.count() {
+            var e = st.entries.get(i);
+            var label = StatusMarker(e) + " " + scm_git.DisplayPath(e.path);
+            if e.renamed and e.oldPath != "" {
+                label = label + " <- " + scm_git.DisplayPath(e.oldPath);
+            }
+            if e.conflicted {
+                label = label + "  (conflict)";
+                conflicts = conflicts + 1;
+            }
+            AddStatusRow(label, e.path, "status");
+            i = i + 1;
+        }
+        if st.entries.count() == 0 {
+            AddStatusRow("(working tree clean)", "", "empty");
+        }
+        if conflicts > 0 {
+            if operationState == "rebasing" {
+                operationState = "conflict-rebase";
+            } else if operationState == "merging" {
+                operationState = "conflict-merge";
+            } else if Str.StartsWith(operationState, "conflict") == false {
+                operationState = "conflict";
+            }
+            statusLabel.SetText("" + conflicts + " conflict(s), " + st.entries.count() + " changed file(s)");
+        } else {
+            if Str.StartsWith(operationState, "conflict") {
+                operationState = "idle";
+            }
+            statusLabel.SetText("" + st.entries.count() + " changed file(s)");
+        }
+    }
+
+    hide func ApplyDiff(job: scm_git.GitJob) {
+        if diffPane == null { return; }
+        diffPane.Clear();
+        if job.HasCompleteStdout() == false {
+            var combined = job.CombinedOutput();
+            if job.stdoutTruncated {
+                combined = "Git diff exceeded the capture limit";
+            } else if combined == "" { combined = "git diff failed"; }
+            diffPane.Append(combined + "\n");
+            statusLabel.SetText("Diff failed");
+            return;
+        }
+        if Str.get_Length(Str.Trim(job.stdoutText)) == 0 and job.stagedDiff == false {
+            StartJob(git.StartDiff(job.path, true), "Loading staged diff...");
+            return;
+        }
+        var entry = EntryForPath(job.path);
+        if entry != null and entry.conflicted {
+            diffPane.Append(
+                "Conflict: edit the conflict markers in this file, then Stage it "
+                + "to mark the conflict resolved.\n\n");
+        }
+        if Str.get_Length(Str.Trim(job.stdoutText)) == 0 {
+            diffPane.Append("(no diff)\n");
+        } else {
+            diffPane.Append(job.stdoutText);
+        }
+        if entry != null and entry.conflicted {
+            statusLabel.SetText("Conflict: " + job.path + " — edit, then Stage");
+        } else {
+            statusLabel.SetText("Diff: " + job.path);
+        }
+    }
+
+    /// @brief Two-char marker for a status entry.
+    hide func StatusMarker(e: scm_git.GitEntry) -> String {
+        if e.conflicted { return "[!]"; }
+        if e.untracked { return "[?]"; }
+        if e.renamed { return "[R]"; }
+        if e.staged { return "[+]"; }
+        return "[~]";
+    }
+
+    /// @brief Return whether a mutating SCM command can run right now.
+    /// @param actionLabel Human-readable action phrase for status feedback.
+    /// @return True when the view is wired, points at a repository, and is idle.
+    /// @details Button clicks can arrive while no project repository is open or
+    ///          before the first status refresh has completed. Reporting that
+    ///          locally is clearer than starting a Git process that is guaranteed
+    ///          to fail and then replacing the message during the follow-up status.
+    hide func CanRunRepositoryAction(actionLabel: String) -> Boolean {
+        if ready == false { return false; }
+        if repoPath == "" or repoReady == false {
+            statusLabel.SetText("Open a Git repository before " + actionLabel);
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Return the selected changed-file path or report an actionable status.
+    /// @param actionLabel Action verb shown when no changed file is selected.
+    /// @return Repo-relative selected path, or empty when no file action should run.
+    hide func SelectedPathForAction(actionLabel: String) -> String {
+        var p = SelectedPath();
+        if p == "" {
+            statusLabel.SetText("Select a changed file to " + actionLabel);
+        }
+        return p;
+    }
+
+    /// @brief Show the diff of @p path.
+    hide func ShowDiff(path: String) {
+        if diffPane == null { return; }
+        if path == "" { return; }
+        if Busy() {
+            queuedDiffPath = path;
+            return;
+        }
+        diffPane.Clear();
+        StartJob(git.StartDiff(path, false), "Loading diff...");
+    }
+
+    /// @brief Enter or leave the commit-history view.
+    hide func ToggleHistory() {
+        if viewMode == "status" {
+            viewMode = "history";
+            historyLoaded = 0;
+            ClearStatusRows();
+            if diffPane != null { diffPane.Clear(); }
+            RunOrQueue("log", "", "");
+            return;
+        }
+        viewMode = "status";
+        historySha = "";
+        if loadMoreBtn != null { loadMoreBtn.SetVisible(false); }
+        Refresh();
+    }
+
+    /// @brief Route a list selection according to the current view mode.
+    hide func HandleSelection() {
+        var data = SelectedPath();
+        if data == "" { return; }
+        if viewMode == "status" {
+            ShowDiff(data);
+            return;
+        }
+        if viewMode == "history" {
+            historySha = data;
+            viewMode = "commitfiles";
+            RunOrQueue("logfiles", data, "");
+            return;
+        }
+        if viewMode == "commitfiles" {
+            if data == "::back" {
+                viewMode = "history";
+                historyLoaded = 0;
+                ClearStatusRows();
+                RunOrQueue("log", "", "");
+                return;
+            }
+            // Chain the parent and commit versions, then open the side-by-side
+            // diff view from plan 07.
+            pendingDiffFile = data;
+            pendingDiffStatus = SelectedRowMeta();
+            RunOrQueue("showold", data, "");
+        }
+    }
+
+    /// @brief Cancel whatever git work is active or queued (user pressed Cancel).
+    hide func CancelAll() {
+        var kind = "";
+        if activeJob != null { kind = activeJob.kind; activeJob.Kill(); activeJob = null; }
+        pendingJobs = [];
+        if kind == "" { return; }
+        statusLabel.SetText("Canceled git " + kind);
+        if diffPane != null { diffPane.Append("\n[canceled git " + kind + "]\n"); }
+        StartJob(git.StartStatus(), "Refreshing status...");
+    }
+}

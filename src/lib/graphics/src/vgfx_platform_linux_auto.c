@@ -57,6 +57,7 @@ static atomic_int g_backend = ATOMIC_VAR_INIT(VGFX_LINUX_BACKEND_UNSELECTED);
     int prefix##_vgfx_platform_init_window(struct vgfx_window *, const vgfx_window_params_t *);    \
     void prefix##_vgfx_platform_destroy_window(struct vgfx_window *);                              \
     int prefix##_vgfx_platform_wait_events(struct vgfx_window *, int32_t);                         \
+    int prefix##_vgfx_platform_wake_events(struct vgfx_window *);                                 \
     int prefix##_vgfx_platform_process_events(struct vgfx_window *);                               \
     int prefix##_vgfx_platform_present(struct vgfx_window *);                                      \
     void prefix##_vgfx_platform_set_title(struct vgfx_window *, const char *);                     \
@@ -231,6 +232,8 @@ DISPATCH_RET(int, vgfx_platform_get_display_logical_size, (int32_t *w, int32_t *
 DISPATCH_VOID(vgfx_platform_destroy_window, (struct vgfx_window * w), (w))
 /// @copydoc vgfx_platform_wait_events
 DISPATCH_RET(int, vgfx_platform_wait_events, (struct vgfx_window * w, int32_t ms), (w, ms), 0)
+/// @copydoc vgfx_platform_wake_events
+DISPATCH_RET(int, vgfx_platform_wake_events, (struct vgfx_window * w), (w), 0)
 /// @copydoc vgfx_platform_process_events
 DISPATCH_RET(int, vgfx_platform_process_events, (struct vgfx_window * w), (w), 0)
 /// @copydoc vgfx_platform_present

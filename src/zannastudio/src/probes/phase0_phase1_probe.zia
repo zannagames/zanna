@@ -73,6 +73,7 @@ bind Codec = Zanna.Text.Codec;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind Str = Zanna.String;
+bind Time = Zanna.Time;
 bind Bytes = Zanna.Collections.Bytes;
 
 var probeFailed = false;
@@ -131,10 +132,49 @@ func TestDocumentBehavior(ctx: DocumentsSettingsProbeContext) {
                   "runtime file identity recognizes equivalent path spellings") == false {
         return;
     }
+    if assertTrue(File.IdentityKey(filePath) != ""
+                  and File.IdentityKey(filePath) == File.IdentityKey(equivalentFilePath)
+                  and path_identity.FileKey(filePath)
+                      == path_identity.FileKey(equivalentFilePath),
+                  "opaque file identity keys collapse equivalent edit targets") == false {
+        return;
+    }
     if assertTrue(Path.SameEntry(root, Path.Join(aliasDir, ".."))
                   and path_identity.SameEntry(root, Path.Join(aliasDir, ".."))
                   and File.SameFile(root, root) == false,
                   "path entry identity supports directories without widening SameFile") == false {
+        return;
+    }
+    var subtreeDoc = new document.Document();
+    subtreeDoc.filePath = Path.Join(Path.Join(root, "tree"), "child.zia");
+    if assertTrue(file_commands.DocumentIsUnderPath(
+                      subtreeDoc, Path.Join(Path.Join(root, "tree"), "."))
+                  and file_commands.DocumentIsUnderPath(
+                      subtreeDoc, Path.Join(root, "tree-child")) == false,
+                  "dirty-path selection uses normalized component containment") == false {
+        return;
+    }
+
+    // Cached tab indexes must repair themselves after reorder and close. This
+    // exercises the fast lookup path without making mutation correctness depend
+    // on every caller manually invalidating a cache.
+    var lookupA = Path.Join(root, "lookup-a.zia");
+    var lookupB = Path.Join(root, "lookup-b.zia");
+    File.WriteAllText(lookupA, "module LookupA;\n");
+    File.WriteAllText(lookupB, "module LookupB;\n");
+    var lookupDocs = new document_manager.DocumentManager();
+    lookupDocs.OpenFile(lookupA);
+    lookupDocs.OpenFile(lookupB);
+    var cachedA = lookupDocs.FindByPath(lookupA);
+    var cachedB = lookupDocs.FindByPath(lookupB);
+    lookupDocs.MoveDocument(0, 1);
+    var movedLookupOk = cachedA == 0 and cachedB == 1
+        and lookupDocs.FindByPath(lookupA) == 1
+        and lookupDocs.FindByPath(lookupB) == 0;
+    lookupDocs.CloseDocument(0);
+    if assertTrue(movedLookupOk and lookupDocs.FindByPath(lookupA) == 0
+                  and lookupDocs.FindByPath(lookupB) == -1,
+                  "document path cache self-repairs after tab reorder and close") == false {
         return;
     }
     if assertTrue(project_file_ops.IsPlainChildName("report.final.zia"),
@@ -197,9 +237,32 @@ func TestDocumentBehavior(ctx: DocumentsSettingsProbeContext) {
     Bytes.Set(binaryBytes, 6, 2);
     Bytes.Set(binaryBytes, 7, 3);
     File.WriteAllBytes(binaryPath, binaryBytes);
+    var malformedUtf8Path = Path.Join(root, "malformed-utf8.zia");
+    var malformedUtf8Bytes = Bytes.New(3);
+    Bytes.Set(malformedUtf8Bytes, 0, 0xED);
+    Bytes.Set(malformedUtf8Bytes, 1, 0xA0);
+    Bytes.Set(malformedUtf8Bytes, 2, 0x80);
+    File.WriteAllBytes(malformedUtf8Path, malformedUtf8Bytes);
+    var lateNulPath = Path.Join(root, "late-nul.zia");
+    var lateNulBytes = Bytes.New(4100);
+    Bytes.Fill(lateNulBytes, 65);
+    Bytes.Set(lateNulBytes, 4098, 0);
+    File.WriteAllBytes(lateNulPath, lateNulBytes);
     if assertTrue(document_manager.IsEditableTextFile(filePath)
-                  and !document_manager.IsEditableTextFile(binaryPath),
-                  "editable-file gate detects extensionless binary payloads") == false { return; }
+                  and !document_manager.IsEditableTextFile(binaryPath)
+                  and !document_manager.IsEditableTextFile(malformedUtf8Path)
+                  and !document_manager.IsEditableTextFile(lateNulPath)
+                  and Str.IndexOf(document_manager.TextOpenBlockReason(malformedUtf8Path),
+                                 "UTF-8") != 0,
+                  "editable-file gate validates complete NUL-free UTF-8 payloads") == false {
+        return;
+    }
+    var malformedPreview = canonicalDocs.OpenFile(malformedUtf8Path);
+    if assertTrue(malformedPreview.isReadOnlyPreview
+                  and Str.IndexOf(malformedPreview.content, "not valid UTF-8") != 0,
+                  "malformed UTF-8 opens only as a safe metadata preview") == false {
+        return;
+    }
     if assertTrue(startup_arguments.IsUserFileArgument(0, binaryPath) == false
                   and startup_arguments.IsUserFileArgument(0, filePath)
                   and startup_arguments.IsUserFileArgument(1, filePath),
@@ -248,6 +311,17 @@ func TestDocumentBehavior(ctx: DocumentsSettingsProbeContext) {
                   and conflictMgr.SaveDocumentAfterExternalConfirmation(0, missingState)
                   and File.ReadAllText(conflictPath) == "module Recreated;\n",
                   "missing file is recreated only after explicit confirmation") == false { return; }
+
+    conflictDoc.content = "module MustNotClobber;\n";
+    conflictDoc.isModified = true;
+    conflictDoc.lastContentHashOnDisk = "";
+    if assertTrue(conflictMgr.ExternalStateForSave(0)
+                      == document.EXTERNAL_STATE_CHANGED
+                  and conflictMgr.SaveDocument(0) == false
+                  and File.ReadAllText(conflictPath) == "module Recreated;\n",
+                  "unknown disk hashes cannot become an empty-file save baseline") == false {
+        return;
+    }
 
     var binarySaveMgr = new document_manager.DocumentManager();
     var binarySaveDoc = binarySaveMgr.NewDocument();
@@ -453,10 +527,41 @@ func TestSessionPersistence() {
                   and Ini.Get(savedIni, "recentFiles", "path.0") == filePath,
                   "session save records recent file history") == false { return; }
     if assertTrue(Ini.Get(savedIni, "session.file.0", "recoveryModified") == "1"
+                  and Ini.Get(savedIni, "session.file.0", "recoveryPresent") == "1"
                   and Ini.Get(savedIni, "session.file.0", "recoveryEncoding") == "base64"
                   and Str.IndexOf(Codec.Base64Decode(Ini.Get(savedIni, "session.file.0", "recovery")),
                                   "unsaved recovery edit") != 0,
                   "session save snapshots dirty existing files") == false { return; }
+
+    // Empty is a meaningful modified snapshot, not the absence of recovery.
+    // A crash after Select All/Delete must not silently restore the disk text.
+    var emptyFilePath = Path.Join(root, "emptied.zia");
+    var emptySettingsPath = Path.Join(root, "empty-recovery.ini");
+    File.WriteAllText(emptyFilePath, "module ShouldDisappear;\n");
+    File.WriteAllText(emptySettingsPath,
+        "[settings]\nrestoreSession=1\nrestoreLastProject=0\n");
+    var emptyDocs = new document_manager.DocumentManager();
+    var emptied = emptyDocs.OpenFile(emptyFilePath);
+    emptied.content = "";
+    emptied.isModified = true;
+    var emptyWriter = new session.SessionManager();
+    emptyWriter.Setup(emptySettingsPath);
+    if assertTrue(emptyWriter.Save(
+                      emptyDocs, new project_manager.ProjectManager()),
+                  "empty recovery session save succeeds") == false { return; }
+    var emptyIni = Ini.Parse(File.ReadAllText(emptySettingsPath));
+    var emptyRestoredDocs = new document_manager.DocumentManager();
+    var emptyReader = new session.SessionManager();
+    emptyReader.Setup(emptySettingsPath);
+    var emptyRestoredCount = emptyReader.Restore(
+        emptyRestoredDocs, new project_manager.ProjectManager(), null);
+    var emptyRestored = emptyRestoredDocs.GetActive();
+    if assertTrue(Ini.Get(emptyIni, "session.file.0", "recoveryPresent") == "1"
+                  and Ini.Get(emptyIni, "session.file.0", "recovery") == ""
+                  and emptyRestoredCount == 1 and emptyRestored != null
+                  and emptyRestored!.content == ""
+                  and emptyRestored!.isModified,
+                  "empty modified buffers restore authoritatively") == false { return; }
 
     // Writer limits must mirror restore limits. A large live tab set used to
     // serialize every document even though startup would read only 256, causing
@@ -707,6 +812,19 @@ func TestSessionRestoreScheduling(ctx: SessionRestoreProbeContext) {
     File.WriteAllText(stagedRestorePath, stagedRestoreText);
     var stagedSession = new session.SessionManager();
     stagedSession.Setup(stagedRestorePath);
+    var byteBudgetDocs = new document_manager.DocumentManager();
+    var byteBudgetJob = stagedSession.BeginRestore(
+        byteBudgetDocs, new project_manager.ProjectManager(), null);
+    var byteBudgetPump = stagedSession.PumpRestoreBudgeted(
+        byteBudgetJob, 5, 1, 1000);
+    if assertTrue(byteBudgetPump == 1 and byteBudgetJob.active
+                  and byteBudgetJob.budgetYielded
+                  and byteBudgetJob.lastPumpBytes > 1
+                  and byteBudgetDocs.GetCount() == 1,
+                  "session restore yields on its byte budget") == false {
+        return;
+    }
+    stagedSession.CancelRestore(byteBudgetJob);
     var stagedDocs = new document_manager.DocumentManager();
     var stagedJob = stagedSession.BeginRestore(
         stagedDocs, new project_manager.ProjectManager(), null);
@@ -733,6 +851,89 @@ func TestSessionRestoreScheduling(ctx: SessionRestoreProbeContext) {
                       == "Restoring your workspace: 5/5"
                   and stagedActive != null and stagedActive!.filePath == stagedActivePath,
                   "session restore completes bounded pages and restores active tab") == false {
+        return;
+    }
+
+    // A large Base64 recovery record must yield the first paint before any
+    // document or tab model is touched, then publish the worker-owned decode on
+    // a later pump.
+    var largeRecoveryPath = Path.Join(root, "large-recovery.ini");
+    var largeRecoveryText = Str.Repeat("large recovery payload ", 5000);
+    File.WriteAllText(largeRecoveryPath,
+        "[settings]\nrestoreSession=1\nrestoreLastProject=0\n"
+        + "[session]\ncount=1\nactiveIndex=0\n"
+        + "[session.file.0]\nname=Large Recovery\npath=\n"
+        + "recovery=" + Codec.Base64Encode(largeRecoveryText) + "\n"
+        + "recoveryEncoding=base64\nrecoveryModified=1\nrecoveryPresent=1\n");
+    var largeRecoverySession = new session.SessionManager();
+    largeRecoverySession.Setup(largeRecoveryPath);
+    var largeRecoveryDocs = new document_manager.DocumentManager();
+    var largeRecoveryJob = largeRecoverySession.BeginRestore(
+        largeRecoveryDocs, new project_manager.ProjectManager(), null);
+    var largeRecoveryFirstPump = largeRecoverySession.PumpRestoreBudgeted(
+        largeRecoveryJob, 1, 4194304, 1000);
+    if assertTrue(largeRecoveryFirstPump == 0 and largeRecoveryJob.active
+                  and largeRecoveryJob.budgetYielded
+                  and largeRecoveryJob.recoveryDecodeStartedCount == 1
+                  and largeRecoveryJob.recoveryDecodeCompletedCount == 0
+                  and largeRecoveryDocs.GetCount() == 0,
+                  "large session recovery decode yields the startup paint") == false {
+        return;
+    }
+    var largeRecoveryWait = 0;
+    while largeRecoveryJob.active and largeRecoveryWait < 10000 {
+        if largeRecoverySession.PumpRestore(largeRecoveryJob, 1) == 0 {
+            Time.Clock.Sleep(1);
+        }
+        largeRecoveryWait = largeRecoveryWait + 1;
+    }
+    var largeRecoveryDoc = largeRecoveryDocs.GetActive();
+    if assertTrue(largeRecoveryJob.active == false
+                  and largeRecoveryJob.restoreError == ""
+                  and largeRecoveryJob.recoveryDecodeCompletedCount == 1
+                  and largeRecoveryDoc != null
+                  and largeRecoveryDoc!.isModified
+                  and largeRecoveryDoc!.content == largeRecoveryText,
+                  "large session recovery publishes the complete decoded draft") == false {
+        return;
+    }
+
+    // A writer racing restore cleanup must keep its unrelated section while
+    // the invalid slot is conditionally pruned from a freshly read revision.
+    var prunePath = Path.Join(root, "prune-retry.ini");
+    var missingPruneFile = Path.Join(root, "missing-prune.zia");
+    var pruneText = "[settings]\nrestoreSession=1\nrestoreLastProject=0\n"
+        + "[session]\ncount=1\nactivePath=" + missingPruneFile + "\n"
+        + "[session.file.0]\npath=" + missingPruneFile + "\n"
+        + "name=missing\nrecoveryModified=0\n";
+    File.WriteAllText(prunePath, pruneText);
+    var pruneSession = new session.SessionManager();
+    pruneSession.Setup(prunePath);
+    var pruneJob = pruneSession.BeginRestore(
+        new document_manager.DocumentManager(),
+        new project_manager.ProjectManager(), null);
+    File.WriteAllText(prunePath, pruneText + "[concurrent]\nmarker=kept\n");
+    while pruneJob.active { pruneSession.PumpRestore(pruneJob, 1); }
+    var prunedIni = Ini.Parse(File.ReadAllText(prunePath));
+    if assertTrue(pruneJob.pruneCommitFailed == false
+                  and Ini.Get(prunedIni, "session.file.0", "path") == ""
+                  and Ini.Get(prunedIni, "concurrent", "marker") == "kept",
+                  "stale session pruning retries with a conditional section merge") == false {
+        return;
+    }
+
+    File.WriteAllText(prunePath, pruneText);
+    var failedPruneSession = new session.SessionManager();
+    failedPruneSession.Setup(prunePath);
+    var failedPruneJob = failedPruneSession.BeginRestore(
+        new document_manager.DocumentManager(),
+        new project_manager.ProjectManager(), null);
+    failedPruneSession.settingsPath = root;
+    while failedPruneJob.active {
+        failedPruneSession.PumpRestore(failedPruneJob, 1);
+    }
+    if assertTrue(failedPruneJob.pruneCommitFailed,
+                  "failed stale-session cleanup remains observable") == false {
         return;
     }
 
@@ -878,6 +1079,61 @@ func TestWorkspaceEdits() {
     if assertTrue(unsortedResult.success
                   and unsortedDoc.content == "AAAA bb CCCC\n",
                   "workspace edits sort open-buffer edits by descending range") == false { return; }
+
+    var aliasPath = Path.Join(root, "alias_open_edits.zia");
+    File.WriteAllText(aliasPath, "aa bb cc\n");
+    var aliasMgr = new document_manager.DocumentManager();
+    var aliasDoc = aliasMgr.OpenFile(aliasPath);
+    var aliasSpelling = root + Path.Separator() + "." + Path.Separator()
+        + "alias_open_edits.zia";
+    var aliasEdits = Seq.New();
+    AddEdit(aliasEdits, aliasPath, 1, 1, 1, 3, "AAAA");
+    AddEdit(aliasEdits, aliasSpelling, 1, 7, 1, 9, "CCCC");
+    var aliasResult = workspace_edits.ApplyRenameEdits(aliasEdits, aliasMgr,
+                                                       workspaceRoots);
+    if assertTrue(aliasResult.success
+                  and aliasDoc.content == "AAAA bb CCCC\n",
+                  "workspace edits group lexical aliases by open document identity") == false {
+        return;
+    }
+
+    // Case aliases exist only on some mounted filesystems. When the runtime
+    // reports one, overlap detection must group it by identity before mutation.
+    var caseOverlapPath = Path.Join(root, "case_alias_overlap.zia");
+    var caseOverlapAlias = Path.Join(root, "CASE_ALIAS_OVERLAP.ZIA");
+    File.WriteAllText(caseOverlapPath, "abcdefgh\n");
+    if File.Exists(caseOverlapAlias)
+       and File.SameFile(caseOverlapPath, caseOverlapAlias) {
+        var caseOverlapEdits = Seq.New();
+        AddEdit(caseOverlapEdits, caseOverlapPath, 1, 1, 1, 6, "first");
+        AddEdit(caseOverlapEdits, caseOverlapAlias, 1, 4, 1, 8, "second");
+        var caseOverlapResult = workspace_edits.ApplyRenameEdits(
+            caseOverlapEdits, new document_manager.DocumentManager(), workspaceRoots);
+        if assertTrue(caseOverlapResult.success == false
+                      and File.ReadAllText(caseOverlapPath) == "abcdefgh\n"
+                      and Str.IndexOf(caseOverlapResult.message,
+                                     "Overlapping workspace edits") != 0,
+                      "workspace edit overlap grouping follows filesystem identity") == false {
+            return;
+        }
+    }
+
+    // Language-service edit columns are one-based UTF-8 byte positions. This
+    // catches accidental mixing with Mid/MidLen's codepoint-based indexing.
+    var unicodePath = Path.Join(root, "unicode_open_edits.zia");
+    File.WriteAllText(unicodePath, "var café = café;\n");
+    var unicodeMgr = new document_manager.DocumentManager();
+    var unicodeDoc = unicodeMgr.OpenFile(unicodePath);
+    var unicodeEdits = Seq.New();
+    AddEdit(unicodeEdits, unicodePath, 1, 5, 1, 10, "name");
+    AddEdit(unicodeEdits, unicodePath, 1, 13, 1, 18, "name");
+    Map.SetStr(Seq.Get(unicodeEdits, 0), "expectedText", "café");
+    Map.SetStr(Seq.Get(unicodeEdits, 1), "expectedText", "café");
+    var unicodeResult = workspace_edits.ApplyRenameEdits(
+        unicodeEdits, unicodeMgr, workspaceRoots);
+    if assertTrue(unicodeResult.success
+                  and unicodeDoc.content == "var name = name;\n",
+                  "workspace edits preserve UTF-8 byte-column ranges") == false { return; }
 
     var rollbackPath = Path.Join(root, "rollback.zia");
     File.WriteAllText(rollbackPath, "module Rollback;\nfunc run() {\n    var oldName = 1;\n}\n");

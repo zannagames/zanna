@@ -89,6 +89,10 @@ expose func DefaultCommandSpecs() -> List[CommandSpec] {
     AddSpec(specs, "newprojectlibrary", "New Project: Library", "Scaffold a reusable library and open it", "", "", true);
     AddSpec(specs, "palette", "Command Palette", "Open the command palette", "Ctrl+Shift+P", "", false);
     AddSpec(specs, "terminal", "Toggle Terminal", "Show or hide the integrated terminal", "Ctrl+`", "", true);
+    AddSpec(specs, "terminalnew", "Terminal: New", "Create and select a bounded terminal session", "", "", true);
+    AddSpec(specs, "terminalnext", "Terminal: Select Next", "Select the next terminal session", "", "", true);
+    AddSpec(specs, "terminalrename", "Terminal: Rename", "Rename the active terminal session", "", "", true);
+    AddSpec(specs, "terminalclose", "Terminal: Close", "Close the active terminal session", "", "", true);
     AddSpec(specs, "save", "Save", "Save the current file", "Ctrl+S", "", true);
     AddSpec(specs, "saveas", "Save As...", "Save the current file under a new path", "Ctrl+Shift+S", "", true);
     AddSpec(specs, "saveall", "Save All", "Save all open files", "Ctrl+Alt+Shift+S", "", true);
@@ -132,9 +136,10 @@ expose func DefaultCommandSpecs() -> List[CommandSpec] {
     AddSpec(specs, "movetoolfloating", "Move Active Tool to Floating Window", "Split the selected tool into the movable floating group", "", "", true);
     AddSpec(specs, "scenefocus", "Toggle Scene Focus", "Maximize the active 2D or 3D scene while preserving the exact scene and workbench layout", "Shift+Space", "", true);
     AddSpec(specs, "resetworkspacelayout", "Reset Workspace Layout", "Restore default sidebar, panel docking, tab order, and editor split", "", "", true);
-    AddSpec(specs, "spliteditorright", "Split Editor Right", "Open a second editor pane to the right", "Ctrl+\\", "", true);
+    AddSpec(specs, "spliteditorright", "Split Editor Right", "Open another view of the active document to the right", "Ctrl+\\", "", true);
     AddSpec(specs, "focusotherpane", "Focus Other Editor Pane", "Move focus to the other split pane", "", "", true);
     AddSpec(specs, "closesplit", "Close Editor Split", "Close the second editor pane", "", "", true);
+    AddSpec(specs, "detachoutputwindow", "Detach Output to Native Window", "Move Output to an independent multi-monitor window", "", "", true);
     AddSpec(specs, "statusbar", "Toggle Status Bar", "Show or hide the status bar", "", "", true);
     AddSpec(specs, "zoomin", "Zoom In", "Increase editor font size", "Ctrl+=", "", true);
     AddSpec(specs, "zoomout", "Zoom Out", "Decrease editor font size", "Ctrl+-", "", true);
@@ -301,7 +306,8 @@ expose func CategoryForCommand(id: String) -> String {
        or id == "uizoomout" or id == "uizoomreset"
        or id == "toggletheme" or id == "fullscreen" or id == "minimap"
        or id == "resetworkspacelayout"
-       or id == "spliteditorright" or id == "focusotherpane" or id == "closesplit" {
+       or id == "spliteditorright" or id == "focusotherpane" or id == "closesplit"
+       or id == "detachoutputwindow" {
         return "View";
     }
     if id == "settings" or id == "keybindings" {

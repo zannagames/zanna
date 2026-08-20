@@ -58,8 +58,14 @@ expose func IsEditableTextFile(path: String) -> Boolean {
 
 /// @brief Document identity, retargeting, ordering, and close layer.
 class DocumentManager extends document_manager_base.DocumentManagerBase {
+    // Normalized spelling/alias -> last known tab index. Every hit is checked
+    // against the live document before use, so close, reorder, Save As, and an
+    // external alias retarget cannot turn a stale cache entry into a wrong tab.
+    hide Any pathLookup;
+
     expose func init() {
         InitializeState();
+        pathLookup = Map.New();
     }
 
     /// @brief Format a non-editable tab without embedding untrusted file bytes.
@@ -322,15 +328,50 @@ class DocumentManager extends document_manager_base.DocumentManagerBase {
         return index;
     }
 
-    /// @brief Linear search for a document by filePath.
+    /// @brief Find a document through a self-validating normalized-path cache.
+    /// @details Exact normalized spellings take the constant-time cache/lexical
+    ///          path. Filesystem identity is consulted only for a true alias
+    ///          such as a symlink, hard link, or filesystem case equivalent.
+    ///          Cached indexes are verified because tab close/reorder and Save
+    ///          As can invalidate them between calls.
     /// @return Index, or -1 if not found.
     expose override func FindByPath(path: String) -> Integer {
         if path == "" { return -1; }
         var target = NormalizeDocumentPath(path);
+        if pathLookup == null { pathLookup = Map.New(); }
+
+        var cached = Map.GetIntOr(pathLookup, target, -1);
+        if cached >= 0 and cached < documents.count() {
+            var cachedDoc = documents.get(cached);
+            if cachedDoc.filePath == target
+               or PathsReferToSameFile(cachedDoc.filePath, target) {
+                return cached;
+            }
+        }
+        if cached >= 0 { Map.Remove(pathLookup, target); }
+
+        // Stored paths are already normalized. Keep the common exact lookup
+        // free of filesystem calls, even when the cache is cold.
         var i = 0;
         while i < documents.count() {
             var doc = documents.get(i);
-            if PathsReferToSameFile(doc.filePath, target) { return i; }
+            if doc.filePath == target {
+                Map.SetInt(pathLookup, target, i);
+                return i;
+            }
+            i = i + 1;
+        }
+
+        // Only aliases need the stable identity predicate. Cache their input
+        // spelling too; the next lookup verifies that the alias still resolves
+        // to this document before trusting its index.
+        i = 0;
+        while i < documents.count() {
+            var aliasDoc = documents.get(i);
+            if PathsReferToSameFile(aliasDoc.filePath, target) {
+                Map.SetInt(pathLookup, target, i);
+                return i;
+            }
             i = i + 1;
         }
         return -1;

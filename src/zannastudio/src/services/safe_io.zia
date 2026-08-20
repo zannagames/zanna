@@ -27,6 +27,9 @@
 
 module safe_io;
 
+bind "safe_io_results";
+bind "safe_io_mutations";
+
 bind File = Zanna.IO.File;
 bind Dir = Zanna.IO.Dir;
 bind Path = Zanna.IO.Path;
@@ -211,25 +214,24 @@ expose func ListDirectoryPage(path: String,
 /// @brief Create a directory tree without propagating filesystem traps.
 /// @return True when the directory exists after the operation.
 expose func MakeAll(path: String) -> Boolean {
-    if path == "" { return false; }
-    try {
-        Dir.MakeAll(path);
-    } catch {
-        return false;
-    }
-    return Dir.Exists(path);
+    return MakeAllResult(path).ok;
+}
+
+/// @brief Create a directory tree and retain a typed failure when it cannot be created.
+expose func MakeAllResult(path: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.MakeAll(path);
 }
 
 /// @brief Move one regular file without replacing an existing destination.
 /// @return True only when the runtime move completed.
 expose func MoveFile(source: String, destination: String) -> Boolean {
-    if source == "" or destination == "" { return false; }
-    try {
-        File.Move(source, destination);
-    } catch {
-        return false;
-    }
-    return true;
+    return MoveFileResult(source, destination).ok;
+}
+
+/// @brief Move a regular file without replacement and return a typed outcome.
+expose func MoveFileResult(source: String,
+                           destination: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.MoveFile(source, destination);
 }
 
 /// @brief Atomically replace a destination with a staged regular file.
@@ -238,26 +240,25 @@ expose func MoveFile(source: String, destination: String) -> Boolean {
 ///          readers observe either the old complete file or the new one.
 /// @return True only when the staged source replaced the destination.
 expose func MoveFileOver(source: String, destination: String) -> Boolean {
-    if source == "" or destination == "" { return false; }
-    try {
-        File.MoveOver(source, destination);
-    } catch {
-        return false;
-    }
-    return File.Exists(destination) and File.Exists(source) == false;
+    return MoveFileOverResult(source, destination).ok;
+}
+
+/// @brief Atomically replace a destination and return a typed outcome.
+expose func MoveFileOverResult(source: String,
+                               destination: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.MoveFileOver(source, destination);
 }
 
 /// @brief Copy one regular file without replacing an existing destination.
 /// @return True only when the source was copied and the destination exists.
 expose func CopyFile(source: String, destination: String) -> Boolean {
-    if source == "" or destination == "" { return false; }
-    if File.Exists(source) == false or File.Exists(destination) { return false; }
-    try {
-        File.Copy(source, destination);
-    } catch {
-        return false;
-    }
-    return File.Exists(destination);
+    return CopyFileResult(source, destination).ok;
+}
+
+/// @brief Copy a regular file without replacement and return a typed outcome.
+expose func CopyFileResult(source: String,
+                           destination: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.CopyFile(source, destination);
 }
 
 /// @brief Choose a short unused staging path beside a destination.
@@ -322,28 +323,25 @@ hide func IsSafeStagingPurpose(purpose: String) -> Boolean {
 /// @details The runtime exclusively stages, durably flushes, and commits with
 ///          no-clobber semantics at one cross-platform linearization point.
 expose func CreateTextFile(path: String, content: String) -> Boolean {
-    if path == "" or File.Exists(path) { return false; }
-    if Path.Directory(path) == "" or Dir.Exists(Path.Directory(path)) == false {
-        return false;
-    }
-    try {
-        File.WriteAllTextNew(path, content);
-    } catch {
-        return false;
-    }
-    return File.Exists(path);
+    return CreateTextFileResult(path, content).ok;
+}
+
+/// @brief Atomically create text without replacement and return a typed outcome.
+expose func CreateTextFileResult(path: String,
+                                 content: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.CreateTextFile(path, content);
 }
 
 /// @brief Move one directory without replacing an existing destination.
 /// @return True only when the runtime move completed.
 expose func MoveDirectory(source: String, destination: String) -> Boolean {
-    if source == "" or destination == "" { return false; }
-    try {
-        Dir.Move(source, destination);
-    } catch {
-        return false;
-    }
-    return true;
+    return MoveDirectoryResult(source, destination).ok;
+}
+
+/// @brief Move a directory without replacement and return a typed outcome.
+expose func MoveDirectoryResult(source: String,
+                                destination: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.MoveDirectory(source, destination);
 }
 
 /// @brief Recursively delete one explicit directory tree without propagating traps.
@@ -351,39 +349,40 @@ expose func MoveDirectory(source: String, destination: String) -> Boolean {
 ///          process working directory; this wrapper preserves those protections.
 /// @return True when the directory is absent after the operation.
 expose func DeleteDirectoryTree(path: String) -> Boolean {
-    if path == "" { return false; }
-    if Dir.Exists(path) == false { return true; }
-    try {
-        Dir.RemoveAll(path);
-    } catch {
-        return false;
-    }
-    return Dir.Exists(path) == false;
+    return DeleteDirectoryTreeResult(path).ok;
+}
+
+/// @brief Recursively delete a directory tree and return a typed outcome.
+expose func DeleteDirectoryTreeResult(path: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.DeleteDirectoryTree(path);
 }
 
 /// @brief Write complete text without propagating permission/I/O traps.
 /// @details This has the same replace behavior as File.WriteAllText; callers
 ///          remain responsible for no-overwrite checks where required.
 expose func WriteAllText(path: String, content: String) -> Boolean {
-    if path == "" { return false; }
-    try {
-        File.WriteAllText(path, content);
-    } catch {
-        return false;
-    }
-    return File.Exists(path);
+    return WriteAllTextResult(path, content).ok;
+}
+
+/// @brief Atomically write complete text and return a typed outcome.
+expose func WriteAllTextResult(path: String,
+                               content: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.WriteAllText(path, content);
 }
 
 /// @brief Atomically replace one text file through a same-directory staging file.
 /// @details File.WriteAllText already uses exclusive same-directory staging,
 ///          durable flush, atomic replacement, and parent-directory sync.
 expose func WriteAllTextAtomic(path: String, content: String) -> Boolean {
-    if path == "" { return false; }
-    var directory = Path.Directory(path);
-    if directory == "" or Dir.Exists(directory) == false { return false; }
+    return WriteAllTextAtomicResult(path, content).ok;
+}
 
-    if Path.Name(path) == "" { return false; }
-    return WriteAllText(path, content);
+/// @brief Atomically replace complete text and return a typed outcome.
+expose func WriteAllTextAtomicResult(path: String,
+                                     content: String) -> safe_io_results.MutationResult {
+    var result = safe_io_mutations.WriteAllText(path, content);
+    result.operation = "write-file-atomic";
+    return result;
 }
 
 /// @brief Atomically persist shared Studio state when it fits the global cap.
@@ -391,8 +390,19 @@ expose func WriteAllTextAtomic(path: String, content: String) -> Boolean {
 ///          bounded reader even for non-ASCII settings and recovery text.
 /// @return False without touching the destination when content is oversized.
 expose func WriteStudioState(path: String, content: String) -> Boolean {
-    if Str.get_Length(content) > MAX_STUDIO_STATE_BYTES { return false; }
-    return WriteAllTextAtomic(path, content);
+    return WriteStudioStateResult(path, content).ok;
+}
+
+/// @brief Persist bounded Studio state and return a typed outcome.
+expose func WriteStudioStateResult(path: String,
+                                   content: String) -> safe_io_results.MutationResult {
+    if Str.get_Length(content) > MAX_STUDIO_STATE_BYTES {
+        return safe_io_results.Failure("write-studio-state", path, "",
+                                       safe_io_results.IO_FAILURE_LIMIT);
+    }
+    var result = WriteAllTextAtomicResult(path, content);
+    result.operation = "write-studio-state";
+    return result;
 }
 
 /// @brief Commit shared Studio state only when its complete bytes are unchanged.
@@ -404,8 +414,18 @@ expose func WriteStudioState(path: String, content: String) -> Boolean {
 expose func CompareExchangeStudioState(path: String,
                                        expected: String,
                                        replacement: String) -> Boolean {
-    return CompareExchangeTextFile(path, expected, replacement,
-                                   MAX_STUDIO_STATE_BYTES);
+    return CompareExchangeStudioStateResult(path, expected, replacement).ok;
+}
+
+/// @brief Compare/exchange bounded Studio state and return a typed outcome.
+expose func CompareExchangeStudioStateResult(
+    path: String,
+    expected: String,
+    replacement: String) -> safe_io_results.MutationResult {
+    var result = CompareExchangeTextFileResult(
+        path, expected, replacement, MAX_STUDIO_STATE_BYTES);
+    result.operation = "compare-exchange-studio-state";
+    return result;
 }
 
 /// @brief Commit a bounded text file only from the exact expected byte revision.
@@ -418,28 +438,27 @@ expose func CompareExchangeTextFile(path: String,
                                     expected: String,
                                     replacement: String,
                                     maxBytes: Integer) -> Boolean {
-    if path == "" or maxBytes < 0 { return false; }
-    if Str.get_Length(expected) > maxBytes
-       or Str.get_Length(replacement) > maxBytes {
-        return false;
-    }
-    try {
-        return File.CompareExchangeAllText(path, expected, replacement);
-    } catch {
-        return false;
-    }
-    return false;
+    return CompareExchangeTextFileResult(
+        path, expected, replacement, maxBytes).ok;
+}
+
+/// @brief Compare/exchange bounded complete text and return a typed outcome.
+expose func CompareExchangeTextFileResult(
+    path: String,
+    expected: String,
+    replacement: String,
+    maxBytes: Integer) -> safe_io_results.MutationResult {
+    return safe_io_mutations.CompareExchangeTextFile(
+        path, expected, replacement, maxBytes);
 }
 
 /// @brief Delete an existing regular file without propagating cleanup traps.
 /// @return True when the path is absent after the operation.
 expose func DeleteFile(path: String) -> Boolean {
-    if path == "" { return false; }
-    if File.Exists(path) == false { return true; }
-    try {
-        File.Delete(path);
-    } catch {
-        return false;
-    }
-    return File.Exists(path) == false;
+    return DeleteFileResult(path).ok;
+}
+
+/// @brief Delete an existing regular file and return a typed outcome.
+expose func DeleteFileResult(path: String) -> safe_io_results.MutationResult {
+    return safe_io_mutations.DeleteFile(path);
 }

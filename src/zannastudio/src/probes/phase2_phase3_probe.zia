@@ -221,6 +221,43 @@ func VerifyRunConfigurationAndProcess(
     if assertTrue(buildSys.lastBuildSuccess and Str.IndexOf(buildSys.GetOutput(), "PHASE2-RUN") != 0,
                   "process job streams child output") == false { return false; }
 
+    // RunConfig environments are additive overrides. Embedded Play uses this
+    // path with only two ZANNA_* entries, so the child must still inherit host
+    // variables needed by PATH, locale, loaders, certificates, and agents.
+    Env.SetVariable("ZANNA_STUDIO_OVERLAY_PARENT", "inherited");
+    var envProbePath = Path.Join(spacedDir, "env_overlay.zia");
+    File.WriteAllText(envProbePath,
+        "module EnvOverlay;\n"
+        + "bind Env = Zanna.System.Environment;\n"
+        + "func main() { Zanna.Terminal.Say("
+        + "Env.GetVariable(\"ZANNA_STUDIO_OVERLAY_PARENT\") + \"|\" + "
+        + "Env.GetVariable(\"ZANNA_STUDIO_OVERLAY_CHILD\")); }\n");
+    var envCfg = new run_config.RunConfig();
+    envCfg.name = "Environment Overlay Probe";
+    envCfg.action = run_config.ACTION_RUN;
+    envCfg.program = ziaBin;
+    envCfg.workingDirectory = spacedDir;
+    Seq.Push(envCfg.args, envProbePath);
+    envCfg.env = Seq.New();
+    Seq.Push(envCfg.env, "ZANNA_STUDIO_OVERLAY_CHILD=override");
+    if assertTrue(buildSys.StartConfig(envCfg),
+                  "environment overlay process starts") == false { return false; }
+    var envDeadlineMs = Clock.NowMs() + 15000;
+    while buildSys.IsActive() and Clock.NowMs() < envDeadlineMs {
+        buildSys.Update();
+        Clock.Sleep(1);
+    }
+    if buildSys.IsActive() {
+        buildSys.Stop();
+        fail("environment overlay process timed out");
+        return false;
+    }
+    if assertTrue(buildSys.lastBuildSuccess
+                  and Str.IndexOf(buildSys.GetOutput(), "inherited|override") != 0,
+                  "build/run environment overlays preserve inherited variables") == false {
+        return false;
+    }
+
     // A two-stage job is one user-visible transaction: output, diagnostics,
     // timing, and the typed completion survive the continuation handoff.
     var stageOnePath = Path.Join(spacedDir, "stage_one.zia");

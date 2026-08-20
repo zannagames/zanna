@@ -37,6 +37,8 @@ bind "../terminal/terminal_session";
 
 bind Terminal = Zanna.Terminal;
 bind Str = Zanna.String;
+bind Bytes = Zanna.Collections.Bytes;
+bind Codec = Zanna.Text.Codec;
 
 func fail(shell: app_shell.AppShell, reason: String) {
     shell.Destroy();
@@ -71,7 +73,24 @@ func main() {
     ctrl.SwitchTo(0);
     if ctrl.activeIdx != 0 { fail(shell, "SwitchTo(0) activeIdx!=0"); return; }
     var s0 = ctrl.sessions.get(0) as terminal_session.TerminalSession;
+    var s1 = ctrl.sessions.get(1) as terminal_session.TerminalSession;
     if ctrl.sess != s0 { fail(shell, "sess not aliased to sessions[0]"); return; }
+
+    // Stop and resize caches belong to the selected session. Switching cannot
+    // clear a manual stop or inherit another shell's last applied dimensions.
+    s0.manualStop = true;
+    s0.lastCols = 71;
+    s0.lastRows = 19;
+    s1.manualStop = false;
+    s1.lastCols = 132;
+    s1.lastRows = 44;
+    ctrl.SwitchTo(1);
+    if s0.manualStop == false or s0.lastCols != 71 or s0.lastRows != 19
+       or ctrl.sess.manualStop or ctrl.sess.lastCols != 132
+       or ctrl.sess.lastRows != 44 {
+        fail(shell, "session-local stop/resize state leaked across switch"); return;
+    }
+    ctrl.SwitchTo(0);
 
     // Out-of-range switches are ignored (activeIdx unchanged).
     ctrl.SwitchTo(99);
@@ -81,12 +100,11 @@ func main() {
 
     // A background session's pending suffix is consumed on switch-in, while its
     // complete recent scrollback remains available for later switches.
-    var s1 = ctrl.sessions.get(1) as terminal_session.TerminalSession;
     s1.RecordOutput("REPLAYME");
     ctrl.SwitchTo(1);
     if ctrl.activeIdx != 1 { fail(shell, "SwitchTo(1) activeIdx!=1"); return; }
-    if s1.replayBuffer != "REPLAYME" { fail(shell, "switch discarded scrollback"); return; }
-    if s1.pendingOutput != "" { fail(shell, "switch did not consume pending output"); return; }
+    if s1.ReplayText() != "REPLAYME" { fail(shell, "switch discarded scrollback"); return; }
+    if s1.PeekPendingOutput() != "" { fail(shell, "switch did not consume pending output"); return; }
 
     // Frame overflow and long-hidden output retain the newest suffix, with
     // independent scrollback/pending loss state and visible consumption markers.
@@ -103,18 +121,18 @@ func main() {
     bounded.RecordOutput(
         "SCROLL-HEAD" + Str.Repeat("s", terminal_session.MAX_TERMINAL_SCROLLBACK)
         + "SCROLL-TAIL");
-    if Str.get_Length(bounded.replayBuffer) > terminal_session.MAX_TERMINAL_SCROLLBACK
-       or Str.EndsWith(bounded.replayBuffer, "SCROLL-TAIL") == false
+    if bounded.ReplayBytes() > terminal_session.MAX_TERMINAL_SCROLLBACK
+       or Str.EndsWith(bounded.ReplayText(), "SCROLL-TAIL") == false
        or bounded.scrollbackDropped == false
-       or Str.get_Length(bounded.pendingOutput) > terminal_session.MAX_TERMINAL_PENDING
-       or Str.EndsWith(bounded.pendingOutput, "SCROLL-TAIL") == false
+       or bounded.PendingBytes() > terminal_session.MAX_TERMINAL_PENDING
+       or Str.EndsWith(bounded.PeekPendingOutput(), "SCROLL-TAIL") == false
        or bounded.pendingOutputDropped == false {
         fail(shell, "per-session output caps did not retain suffix/state"); return;
     }
     var pending = bounded.TakePendingOutput();
     if Str.StartsWith(pending, "\n[terminal pending output prefix truncated]\n") == false
        or Str.EndsWith(pending, "SCROLL-TAIL") == false
-       or bounded.pendingOutput != "" {
+       or bounded.PeekPendingOutput() != "" {
         fail(shell, "pending loss marker/consumption was inconsistent"); return;
     }
     var replay = bounded.ReplayText();
@@ -123,12 +141,81 @@ func main() {
         fail(shell, "scrollback replay marker/suffix was inconsistent"); return;
     }
 
+    // The output store is a byte ring: wraparound retains ordered bytes, starts
+    // on a UTF-8 boundary, and holds a split trailing code point until complete.
+    var asciiRing = new terminal_session.BoundedTerminalText(5);
+    asciiRing.Append("abc");
+    asciiRing.Append("def");
+    if asciiRing.Text() != "bcdef" or asciiRing.byteCount != 5 {
+        fail(shell, "byte ring wrap ordering failed"); return;
+    }
+    var unicodeRing = new terminal_session.BoundedTerminalText(6);
+    unicodeRing.Append("Aé世界Z");
+    if unicodeRing.Text() != "界Z" or Codec.IsValidUtf8(unicodeRing.Text()) == false {
+        fail(shell, "UTF-8 ring overflow split a code point"); return;
+    }
+    var streamed = new terminal_session.BoundedTerminalText(16);
+    var euroLead = Bytes.New(1);
+    Bytes.Set(euroLead, 0, 0xE2);
+    streamed.Append(Bytes.ToStr(euroLead));
+    if streamed.TakeText() != "" or streamed.byteCount != 1 {
+        fail(shell, "split UTF-8 lead byte was consumed early"); return;
+    }
+    var euroTail = Bytes.New(2);
+    Bytes.Set(euroTail, 0, 0x82);
+    Bytes.Set(euroTail, 1, 0xAC);
+    streamed.Append(Bytes.ToStr(euroTail));
+    if streamed.TakeText() != "€" or streamed.byteCount != 0 {
+        fail(shell, "split UTF-8 code point did not reassemble"); return;
+    }
+
+    // Preserve the exact escape streams exercised by vim/less/htop-style
+    // alternate screens plus common OSC, DSR, edit, and mode sequences.
+    var vtCorpus = "\x1b]0;title\x07\x1b[?1049h\x1b[2J\x1b[1;3r"
+                   + "\x1b[3;1H\n\x1b[r\x1b[L\x1b[M\x1b[2@\x1b[2P"
+                   + "\x1b[3X\x1b[6n\x1b[?25l\x1b[?2004h世界"
+                   + "\x1b[?2004l\x1b[?25h\x1b[?1049l";
+    var vtRing = new terminal_session.BoundedTerminalText(1024);
+    vtRing.Append(Str.Left(vtCorpus, 17));
+    vtRing.Append(Str.Substring(vtCorpus, 17, Str.get_Length(vtCorpus) - 17));
+    if vtRing.Text() != vtCorpus or Codec.IsValidUtf8(vtRing.Text()) == false {
+        fail(shell, "VT corpus changed in terminal replay ring"); return;
+    }
+
+    // Rename/close are bounded public workflows, and creation stops at a fixed
+    // cap so dormant shells and their scrollback cannot grow without limit.
+    if ctrl.RenameActiveSession("build shell") == false
+       or ctrl.sess.title != "build shell"
+       or ctrl.RenameActiveSession("")
+       or ctrl.RenameActiveSession(Str.Repeat("x", 129)) {
+        fail(shell, "terminal rename validation failed"); return;
+    }
+    var beforeClose = ctrl.sessions.count();
+    if ctrl.CloseActiveSession() == false
+       or ctrl.sessions.count() != beforeClose - 1
+       or ctrl.sess != ctrl.sessions.get(ctrl.activeIdx) {
+        fail(shell, "terminal close did not select a retained session"); return;
+    }
+    while ctrl.sessions.count() < terminal_controller.MAX_TERMINAL_SESSIONS {
+        if ctrl.NewSession() == false { fail(shell, "session cap rejected early"); return; }
+    }
+    if ctrl.NewSession() or ctrl.sessions.count() != terminal_controller.MAX_TERMINAL_SESSIONS {
+        fail(shell, "terminal session cap was not enforced"); return;
+    }
+
     // Next-terminal cycling wraps around the session list.
     var count = ctrl.sessions.count();
-    ctrl.SwitchTo((ctrl.activeIdx + 1) % count);
-    if ctrl.activeIdx != 2 { fail(shell, "cycle to 2 failed"); return; }
-    ctrl.SwitchTo((ctrl.activeIdx + 1) % count);
-    if ctrl.activeIdx != 0 { fail(shell, "cycle wrap to 0 failed"); return; }
+    var cycleStart = ctrl.activeIdx;
+    ctrl.NextSession();
+    if ctrl.activeIdx != (cycleStart + 1) % count {
+        fail(shell, "next-session selection failed"); return;
+    }
+    var cycleIndex = 1;
+    while cycleIndex < count {
+        ctrl.NextSession();
+        cycleIndex = cycleIndex + 1;
+    }
+    if ctrl.activeIdx != cycleStart { fail(shell, "cycle wrap failed"); return; }
 
     // Shutdown stops every session without trapping.
     ctrl.Stop();

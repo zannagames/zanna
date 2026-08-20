@@ -45,7 +45,8 @@
 // Links: src/runtime/graphics/rt_gui_internal.h (internal types/globals),
 //        src/runtime/graphics/rt_gui_widgets.c (basic widget implementations),
 //        src/lib/gui/include/vg.h (ZannaGUI C API),
-//        src/lib/graphics/include/vgfx.h (window/event layer)
+//        src/lib/graphics/include/vgfx.h (window/event layer),
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -57,6 +58,9 @@
 #include "rt_gui_internal.h"
 #include "rt_input.h"
 #include "rt_platform.h"
+#include "rt_activity_wake.h"
+#include "rt_process.h"
+#include "rt_pty.h"
 #include "rt_result.h"
 #include "rt_time.h"
 #include "rt_videowidget.h"
@@ -78,6 +82,15 @@ static int s_destroyed_app_cap = 0;
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
 
 static void rt_gui_app_finalizer(void *app_ptr);
+
+/// @brief Interrupt one app's native event wait from a process/PTy monitor thread.
+/// @details The enclosing activity-wake target serializes this callback with
+///          invalidation, so app/window lifetime remains valid for the call.
+static void rt_gui_app_activity_wake(void *context) {
+    rt_gui_app_t *app = (rt_gui_app_t *)context;
+    if (app && app->window)
+        (void)vgfx_wake_events(app->window);
+}
 
 /// @brief Duplicate a NUL-terminated GUI app string with malloc ownership.
 /// @details GUI app titles and drag/drop payload snapshots are released with
@@ -1538,6 +1551,18 @@ static void *rt_gui_app_create(rt_string title,
         rt_gui_app_set_create_error(out_error, RT_GUI_APP_CREATE_STATE);
         return NULL;
     }
+    app->activity_wake = rt_activity_wake_new(rt_gui_app_activity_wake, app);
+    if (!app->activity_wake) {
+        vgfx_destroy_window(app->window);
+        app->window = NULL;
+        free(app->title);
+        app->title = NULL;
+        free(app->application_name);
+        app->application_name = NULL;
+        memset(app, 0, sizeof(rt_gui_app_t));
+        rt_gui_app_set_create_error(out_error, RT_GUI_APP_CREATE_STATE);
+        return NULL;
+    }
 
     // Register resize callback so the window repaints during macOS live-resize.
     // Without this, the Cocoa modal resize loop blocks our main thread and
@@ -1551,6 +1576,9 @@ static void *rt_gui_app_create(rt_string title,
     // prevent the layout engine from resizing the root on window resize.
     app->root = vg_widget_create(VG_WIDGET_CONTAINER);
     if (!app->root) {
+        rt_activity_wake_invalidate(app->activity_wake);
+        rt_activity_wake_release(app->activity_wake);
+        app->activity_wake = NULL;
         vgfx_destroy_window(app->window);
         free(app->title);
         app->title = NULL;
@@ -1581,6 +1609,9 @@ static void *rt_gui_app_create(rt_string title,
 
     if (!rt_gui_register_app(app)) {
         vg_widget_destroy(app->root);
+        rt_activity_wake_invalidate(app->activity_wake);
+        rt_activity_wake_release(app->activity_wake);
+        app->activity_wake = NULL;
         vgfx_destroy_window(app->window);
         free(app->title);
         app->title = NULL;
@@ -1722,6 +1753,11 @@ void rt_gui_app_destroy(void *app_ptr) {
     rt_gui_app_t *app = rt_gui_app_handle_checked(app_ptr);
     if (!app)
         return;
+    if (app->activity_wake) {
+        rt_activity_wake_invalidate(app->activity_wake);
+        rt_activity_wake_release(app->activity_wake);
+        app->activity_wake = NULL;
+    }
     rt_gui_app_t *previous_active = s_active_app;
     rt_gui_activate_app(app);
     if (app->window)
@@ -2996,6 +3032,27 @@ int64_t rt_gui_app_poll_wait(void *app_ptr, int64_t timeout_ms) {
     return had_events ? 1 : 0;
 }
 
+/// @brief Attach this app's event wake target to a streaming child process.
+/// @details The process retains only the ref-counted wake target, never the App
+///          object. App destruction invalidates the callback before destroying
+///          its window, so a later process notification becomes a safe no-op.
+int64_t rt_gui_app_watch_process(void *app_ptr, void *process_ptr) {
+    RT_ASSERT_MAIN_THREAD();
+    rt_gui_app_t *app = rt_gui_app_handle_checked(app_ptr);
+    if (!app || !app->activity_wake)
+        return 0;
+    return rt_process_set_activity_wake(process_ptr, app->activity_wake);
+}
+
+/// @brief Attach this app's event wake target to one pseudo-terminal session.
+int64_t rt_gui_app_watch_pty(void *app_ptr, void *pty_ptr) {
+    RT_ASSERT_MAIN_THREAD();
+    rt_gui_app_t *app = rt_gui_app_handle_checked(app_ptr);
+    if (!app || !app->activity_wake)
+        return 0;
+    return rt_pty_set_activity_wake(pty_ptr, app->activity_wake);
+}
+
 /// @brief Return the root container widget of the app's widget tree.
 /// @details The root is a plain VG_WIDGET_CONTAINER that fills the window. All
 ///          user-created widgets are added as children (or descendants) of this
@@ -3320,6 +3377,20 @@ void rt_gui_app_poll(void *app_ptr) {
 int64_t rt_gui_app_poll_wait(void *app_ptr, int64_t timeout_ms) {
     (void)app_ptr;
     (void)timeout_ms;
+    return 0;
+}
+
+/// @brief Stub: no graphics event wait can watch a Process.
+int64_t rt_gui_app_watch_process(void *app_ptr, void *process_ptr) {
+    (void)app_ptr;
+    (void)process_ptr;
+    return 0;
+}
+
+/// @brief Stub: no graphics event wait can watch a PTY.
+int64_t rt_gui_app_watch_pty(void *app_ptr, void *pty_ptr) {
+    (void)app_ptr;
+    (void)pty_ptr;
     return 0;
 }
 

@@ -13,7 +13,8 @@ last-verified: 2026-07-26
 
 ## Zanna.Text.Codec
 
-String-based encoding and decoding utilities for Base64, Hex, and URL encoding.
+String-based encoding and decoding utilities for Base64, Hex, and URL encoding,
+plus allocation-free strict UTF-8 validation.
 
 **Type:** Static utility class
 
@@ -25,12 +26,16 @@ String-based encoding and decoding utilities for Base64, Hex, and URL encoding.
 | `Base64Decode(str)` | `String(String)` | Decode a Base64 string to original bytes |
 | `HexEncode(str)`    | `String(String)` | Hex-encode a string's bytes (lowercase)  |
 | `HexDecode(str)`    | `String(String)` | Decode a hex string to original bytes    |
+| `IsValidUtf8(str)`  | `Boolean(String)` | Validate the complete byte string as strict UTF-8 |
 | `UrlEncode(str)` | `String(String)` | URL-encode a string (percent-encoding)   |
 | `UrlDecode(str)` | `String(String)` | URL-decode a string                      |
 
 ### Notes
 
 - All methods operate on the runtime string byte length, so embedded `NUL` bytes are preserved
+- `IsValidUtf8` rejects overlong, truncated, surrogate, bare-continuation, and
+  out-of-range scalar encodings. U+0000 is valid UTF-8, so consumers requiring
+  C-string-safe text must reject embedded `NUL` separately.
 - For arbitrary binary buffers, `Bytes.ToBase64`/`Bytes.FromBase64` and `Bytes.ToHex`/`Bytes.FromHex` remain the preferred APIs
 - **URL Encoding:**
     - Unreserved characters (A-Z, a-z, 0-9, `-`, `_`, `.`, `~`) pass through unchanged
@@ -54,6 +59,7 @@ func start() {
     Say("Decoded: " + Codec.Base64Decode("SGVsbG8="));     // Hello
     Say("Hex: " + Codec.HexEncode("Hello"));               // 48656c6c6f
     Say("HexDec: " + Codec.HexDecode("48656c6c6f"));       // Hello
+    Say("UTF-8: " + Codec.IsValidUtf8("Hello, 世界"));    // true
     Say("UrlEnc: " + Codec.UrlEncode("hello world"));   // hello%20world
     Say("UrlDec: " + Codec.UrlDecode("hello%20world")); // hello world
 }

@@ -1,0 +1,304 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_view_controls.zia
+// Purpose: Derive responsive Source Control action state from repository data.
+// Key invariants:
+//   - Every action reflects repository, selection, conflict, and busy state.
+//   - Compact layout changes widget sizing without replacing live controls.
+// Ownership/Lifetime: Borrows widgets and status data owned by ScmView state.
+// Links: zannastudio/src/scm/scm_view.zia,
+//        zannastudio/src/scm/scm_view_presenter.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_view_controls;
+
+bind "scm_view_base";
+bind "scm_view_jobs" as PreviousLayer;
+bind "scm_git";
+
+bind Str = Zanna.String;
+
+class ScmViewControlLayer extends PreviousLayer.ScmViewJobLayer {
+    /// @brief Render the intentional no-workspace state without spawning Git.
+    hide func ShowNoWorkspaceState() {
+        repoReady = false;
+        lastStatus = new scm_git.GitStatus();
+        if branchLabel != null { branchLabel.SetText("Source Control"); }
+        ClearStatusRows();
+        if diffPane != null { diffPane.Clear(); }
+        if statusLabel != null {
+            statusLabel.SetText("Open a workspace to use source control");
+        }
+        SetRepositoryActionsEnabled(false);
+    }
+
+    /// @brief Return whether Source Control currently uses compact controls.
+    expose func IsCompactControls() -> Boolean {
+        return compactControls;
+    }
+
+    /// @brief Reflow Source Control without replacing live input or job state.
+    /// @details The activity sidebar can be substantially narrower than the
+    ///          editor. Wrapped Flex rows and compact action bases prevent the
+    ///          fixed toolbar clipping that previously hid Push/Pull/History.
+    hide func ApplyResponsiveControls() {
+        if host == null or topRow == null { return; }
+        var width = host.GetLogicalWidth();
+        if width <= 0.0 { return; }
+        var compact = scm_view_base.ScmUsesCompactControls(width);
+        if compact == compactControls { return; }
+        compactControls = compact;
+
+        if compactControls {
+            refreshBtn.SetFlex(1.0);
+            cancelBtn.SetFlex(1.0);
+            fetchBtn.SetFlex(1.0);
+            pushBtn.SetFlex(1.0);
+            pullBtn.SetFlex(1.0);
+            historyBtn.SetFlex(1.0);
+            loadMoreBtn.SetFlex(1.0);
+            stageBtn.SetFlex(1.0);
+            unstageBtn.SetFlex(1.0);
+            stageAllBtn.SetFlex(1.0);
+            abortOperationBtn.SetFlex(1.0);
+
+            refreshBtn.SetPreferredSize(60.0, 0.0);
+            cancelBtn.SetPreferredSize(56.0, 0.0);
+            fetchBtn.SetPreferredSize(48.0, 0.0);
+            pushBtn.SetPreferredSize(48.0, 0.0);
+            pullBtn.SetPreferredSize(48.0, 0.0);
+            historyBtn.SetPreferredSize(64.0, 0.0);
+            loadMoreBtn.SetPreferredSize(48.0, 0.0);
+            stageBtn.SetPreferredSize(56.0, 0.0);
+            unstageBtn.SetPreferredSize(64.0, 0.0);
+            stageAllBtn.SetPreferredSize(68.0, 0.0);
+            abortOperationBtn.SetPreferredSize(92.0, 0.0);
+            commitInput.SetMinSize(80.0, 0.0);
+            commitInput.SetPreferredSize(104.0, 0.0);
+        } else {
+            refreshBtn.SetFlex(0.0);
+            cancelBtn.SetFlex(0.0);
+            fetchBtn.SetFlex(0.0);
+            pushBtn.SetFlex(0.0);
+            pullBtn.SetFlex(0.0);
+            historyBtn.SetFlex(0.0);
+            loadMoreBtn.SetFlex(0.0);
+            stageBtn.SetFlex(0.0);
+            unstageBtn.SetFlex(0.0);
+            stageAllBtn.SetFlex(0.0);
+            abortOperationBtn.SetFlex(0.0);
+
+            refreshBtn.SetPreferredSize(0.0, 0.0);
+            cancelBtn.SetPreferredSize(0.0, 0.0);
+            fetchBtn.SetPreferredSize(0.0, 0.0);
+            pushBtn.SetPreferredSize(0.0, 0.0);
+            pullBtn.SetPreferredSize(0.0, 0.0);
+            historyBtn.SetPreferredSize(0.0, 0.0);
+            loadMoreBtn.SetPreferredSize(0.0, 0.0);
+            stageBtn.SetPreferredSize(0.0, 0.0);
+            unstageBtn.SetPreferredSize(0.0, 0.0);
+            stageAllBtn.SetPreferredSize(0.0, 0.0);
+            abortOperationBtn.SetPreferredSize(0.0, 0.0);
+            commitInput.SetMinSize(120.0, 0.0);
+            commitInput.SetPreferredSize(180.0, 0.0);
+        }
+        refreshBtn.SetMinSize(48.0, 0.0);
+        cancelBtn.SetMinSize(48.0, 0.0);
+        fetchBtn.SetMinSize(44.0, 0.0);
+        pushBtn.SetMinSize(44.0, 0.0);
+        pullBtn.SetMinSize(44.0, 0.0);
+        historyBtn.SetMinSize(56.0, 0.0);
+        loadMoreBtn.SetMinSize(44.0, 0.0);
+        stageBtn.SetMinSize(52.0, 0.0);
+        unstageBtn.SetMinSize(60.0, 0.0);
+        stageAllBtn.SetMinSize(64.0, 0.0);
+        abortOperationBtn.SetMinSize(88.0, 0.0);
+        commitBtn.SetMinSize(60.0, 0.0);
+    }
+
+    /// @brief Enable repository-only controls only after a successful status.
+    hide func SetRepositoryActionsEnabled(enabled: Boolean) {
+        if refreshBtn != null { refreshBtn.SetEnabled(repoPath != ""); }
+        if fetchBtn != null { fetchBtn.SetEnabled(enabled); }
+        if pushBtn != null { pushBtn.SetEnabled(enabled); }
+        if pullBtn != null { pullBtn.SetEnabled(enabled); }
+        if pullStrategy != null { pullStrategy.SetEnabled(enabled); }
+        if historyBtn != null { historyBtn.SetEnabled(enabled); }
+        if stageBtn != null { stageBtn.SetEnabled(false); }
+        if unstageBtn != null { unstageBtn.SetEnabled(false); }
+        if stageAllBtn != null { stageAllBtn.SetEnabled(false); }
+        if commitInput != null { commitInput.SetEnabled(enabled); }
+        if commitBtn != null { commitBtn.SetEnabled(false); }
+        if sideBySideButton != null {
+            sideBySideButton.SetEnabled(false);
+        }
+        if cancelBtn != null { cancelBtn.SetEnabled(false); }
+        if abortOperationBtn != null {
+            abortOperationBtn.SetEnabled(false);
+            abortOperationBtn.SetVisible(false);
+        }
+    }
+
+    /// @brief Find the latest structured status entry for one repository path.
+    hide func EntryForPath(path: String) -> scm_git.GitEntry {
+        if path == "" or lastStatus == null { return null; }
+        var i = 0;
+        while i < lastStatus.entries.count() {
+            var entry = lastStatus.entries.get(i);
+            if entry.path == path { return entry; }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /// @brief Return the selected structured status entry, when any.
+    hide func SelectedEntry() -> scm_git.GitEntry {
+        if viewMode != "status" { return null; }
+        return EntryForPath(SelectedPath());
+    }
+
+    /// @brief Return whether an entry still has worktree state to stage.
+    hide func EntryCanStage(entry: scm_git.GitEntry) -> Boolean {
+        if entry == null { return false; }
+        return entry.conflicted or entry.untracked or entry.worktree != ".";
+    }
+
+    /// @brief Return whether any current entry can be staged.
+    hide func HasStageableChanges() -> Boolean {
+        if lastStatus == null { return false; }
+        var i = 0;
+        while i < lastStatus.entries.count() {
+            if EntryCanStage(lastStatus.entries.get(i)) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Return whether the index contains at least one staged change.
+    hide func HasStagedChanges() -> Boolean {
+        if lastStatus == null { return false; }
+        var i = 0;
+        while i < lastStatus.entries.count() {
+            if lastStatus.entries.get(i).staged { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Return whether the current status still contains a conflict.
+    hide func HasConflicts() -> Boolean {
+        if lastStatus == null { return false; }
+        var i = 0;
+        while i < lastStatus.entries.count() {
+            if lastStatus.entries.get(i).conflicted { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Synchronize every action with live repository and selection state.
+    /// @details This runs every frame so typed commit text and list
+    ///          selection affect the controls without rebuilding their widgets.
+    hide func UpdateActionStates() {
+        var repository = ready and repoPath != "" and repoReady;
+        var statusMode = repository and viewMode == "status";
+        var integrationBlocked = Str.StartsWith(operationState, "conflict");
+        var selected = SelectedEntry();
+        var staged = HasStagedChanges();
+        var conflicts = HasConflicts();
+        var commitMessage = "";
+        if commitInput != null { commitMessage = Str.Trim(commitInput.get_Text()); }
+
+        if refreshBtn != null { refreshBtn.SetEnabled(ready and repoPath != ""); }
+        if cancelBtn != null {
+            cancelBtn.SetEnabled(Busy() or pendingJobs.count() > 0);
+        }
+        if fetchBtn != null { fetchBtn.SetEnabled(repository and integrationBlocked == false); }
+        if pushBtn != null { pushBtn.SetEnabled(repository and integrationBlocked == false); }
+        if pullBtn != null { pullBtn.SetEnabled(repository and integrationBlocked == false); }
+        if pullStrategy != null {
+            pullStrategy.SetEnabled(repository and integrationBlocked == false);
+        }
+        if historyBtn != null {
+            historyBtn.SetEnabled(repository);
+            if viewMode == "status" {
+                historyBtn.SetText("History");
+                historyBtn.SetTooltip("Show repository commit history");
+            } else {
+                historyBtn.SetText("Changes");
+                historyBtn.SetTooltip("Return to current worktree changes");
+            }
+        }
+        if loadMoreBtn != null {
+            loadMoreBtn.SetEnabled(repository and viewMode == "history");
+        }
+        if stageBtn != null {
+            stageBtn.SetEnabled(statusMode and EntryCanStage(selected));
+        }
+        if unstageBtn != null {
+            unstageBtn.SetEnabled(statusMode and selected != null and selected.staged);
+        }
+        if stageAllBtn != null {
+            stageAllBtn.SetEnabled(statusMode and HasStageableChanges());
+        }
+        if commitInput != null { commitInput.SetEnabled(statusMode); }
+        if commitBtn != null {
+            commitBtn.SetEnabled(statusMode and staged and conflicts == false
+                                 and commitMessage != "");
+        }
+        if sideBySideButton != null {
+            sideBySideButton.SetEnabled(statusMode and selected != null);
+        }
+        if abortOperationBtn != null {
+            var canAbort = repository
+                and (operationState == "merging" or operationState == "rebasing"
+                     or operationState == "conflict-merge"
+                     or operationState == "conflict-rebase");
+            abortOperationBtn.SetVisible(canAbort);
+            abortOperationBtn.SetEnabled(canAbort and Busy() == false);
+        }
+    }
+    /// @brief Repo-relative path of the selected row.
+    hide func SelectedPath() -> String {
+        if ready == false { return ""; }
+        if statusRows == null { return ""; }
+        var index = statusRows.GetSelectedIndex();
+        if index < 0 or index >= statusRowData.count() { return ""; }
+        return statusRowData.get(index) as String;
+    }
+
+    /// @brief Metadata associated with the selected virtual SCM row.
+    hide func SelectedRowMeta() -> String {
+        if statusRows == null { return ""; }
+        var index = statusRows.GetSelectedIndex();
+        if index < 0 or index >= statusRowMeta.count() { return ""; }
+        return statusRowMeta.get(index) as String;
+    }
+
+    /// @brief Drop both the virtual projection and its exact row payloads.
+    hide func ClearStatusRows() {
+        if statusRows != null { statusRows.SetCount(0); }
+        statusRowData = [];
+        statusRowMeta = [];
+    }
+
+    /// @brief Append one viewport-backed SCM row with separate exact payload.
+    hide func AddStatusRow(text: String,
+                           data: String,
+                           meta: String) {
+        if statusRows == null { return; }
+        var index = statusRowData.count();
+        statusRowData.Push(data);
+        statusRowMeta.Push(meta);
+        statusRows.SetCount(index + 1);
+        statusRows.SetRowId(index, "scm:" + repositoryGeneration + ":"
+                            + viewMode + ":" + index);
+        statusRows.SetRowText(index, text);
+    }
+}

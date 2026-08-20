@@ -533,6 +533,34 @@ TEST(DynamicSymbolPolicy, PosixRecursiveMutexAttributeSymbolsAccepted) {
     }
 }
 
+// Workspace transaction durability and process-tree ownership use these
+// descriptor-relative libc entry points. Keep the native linker's policy in
+// lockstep with the statically archived runtime so failures are caught here,
+// not when a large application reaches its final native link.
+TEST(DynamicSymbolPolicy, RuntimeWorkspaceAndProcessSymbolsAccepted) {
+    static constexpr const char *kPosixSymbols[] = {
+        "fchown",
+        "fgetxattr",
+        "flistxattr",
+        "flock",
+        "fsetxattr",
+        "posix_spawnattr_destroy",
+        "posix_spawnattr_getflags",
+        "posix_spawnattr_init",
+        "posix_spawnattr_setflags",
+        "posix_spawnattr_setpgroup",
+        "pread",
+    };
+    for (const char *symbol : kPosixSymbols) {
+        EXPECT_TRUE(isKnownDynamicSymbol(symbol, LinkPlatform::Linux));
+        EXPECT_TRUE(isKnownDynamicSymbol(symbol, LinkPlatform::macOS));
+    }
+
+    EXPECT_TRUE(isKnownDynamicSymbol("fchflags", LinkPlatform::macOS));
+    EXPECT_FALSE(isKnownDynamicSymbol("fchflags", LinkPlatform::Linux));
+    EXPECT_FALSE(isKnownDynamicSymbol("fchflags", LinkPlatform::Windows));
+}
+
 // F24/F25: OpenGL (gl + CamelCase, incl. glX) resolves to libGL and X11 (X +
 // CamelCase) to libX11, while libc glob / stray uppercase-X names are NOT treated
 // as GL/X11 dynamic imports.

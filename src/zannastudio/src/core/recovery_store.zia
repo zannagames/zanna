@@ -6,256 +6,65 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/core/recovery_store.zia
-// Purpose: Crash-safe swap-file recovery. Snapshots modified buffers on the UI
-//          thread, persists them through a coalescing background worker, keeps
-//          a session lock so an unclean exit is detectable, and collects
-//          recoverable documents on the next launch.
+// Purpose: Bounded recovery discovery, validation, and clean-exit cleanup.
 // Key invariants:
-//   - Each document maps to two files under <settingsDir>/recovery/:
-//     swap-<hash>.swp (full text) and swap-<hash>.path (origin path). Two files
-//     avoid any in-content parsing.
-//   - Large payload writes use request-unique temporary names. A short,
-//     cancellation-serialized rename is the only canonical commit operation,
-//     so Save/Close synchronization cannot be followed by a stale worker write.
-//   - Interactive debounce ticks never enumerate or write the filesystem on
-//     the UI thread; explicit save/close transitions retain synchronous cleanup.
-//   - Startup recovery discovery is paged and bounds retained records and bytes.
-//   - A clean exit removes the lock and clears all swaps.
+//   - Live instance namespaces are excluded by process-lifetime file leases.
+//   - Metadata identities are authenticated against SHA-256 swap basenames.
+//   - Scan count and retained payload bytes remain caller-bounded.
+//   - Clean tombstones are durable before leases are released.
 // Ownership/Lifetime:
-//   - RecoveryStore owns at most one Future-backed write request and one latest
-//     pending request. Async.RunOwned retains an active request until completion.
-// Links: zannastudio/src/main.zia, zannastudio/src/core/session.zia,
-//        zannastudio/src/commands/file_commands.zia
+//   - Inherited state owns current and explicitly claimed namespace leases.
+// Links: zannastudio/src/core/recovery_store_base.zia,
+//        zannastudio/src/core/recovery_types.zia,
+//        docs/adr/0276-process-lifetime-file-leases-and-isolated-studio-recovery.md
 //
 //===----------------------------------------------------------------------===//
 
 module recovery_store;
 
-bind "../core/document";
-bind "../core/document_manager";
+bind "document_manager";
 bind "../editor/editor_engine";
 bind "../services/file_utils";
 bind "../services/safe_io";
+bind "recovery_store_base" as Base;
+bind "recovery_types" as Types;
 
 bind File = Zanna.IO.File;
+bind FileLease = Zanna.IO.FileLease;
 bind Path = Zanna.IO.Path;
 bind Dir = Zanna.IO.Dir;
 bind Hash = Zanna.Crypto.Hash;
+bind Json = Zanna.Data.Json;
+bind Uuid = Zanna.Text.Uuid;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Map = Zanna.Collections.Map;
 bind Async = Zanna.Threads.Async;
 bind Future = Zanna.Threads.Future;
-bind Monitor = Zanna.Threads.Monitor;
 
-final MAX_RECOVERY_PATH_BYTES = 32768;
-final MAX_RECOVERY_SWAP_BYTES = 64000000;
-final MAX_RECOVERY_RECORDS = 256;
-final MAX_RECOVERY_TOTAL_BYTES = 128000000;
-final RECOVERY_SHUTDOWN_WAIT_MS = 5000;
+final MAX_RECOVERY_PATH_BYTES = Types.MAX_RECOVERY_PATH_BYTES;
+final MAX_RECOVERY_METADATA_BYTES = Types.MAX_RECOVERY_METADATA_BYTES;
+final MAX_RECOVERY_RECORDS = Types.MAX_RECOVERY_RECORDS;
+final RECOVERY_FORMAT_VERSION = Types.RECOVERY_FORMAT_VERSION;
 
-/// @brief One recovered document (origin path + last-known text).
-class RecoveryRecord {
-    expose String path;    // Original file path, or "" for an untitled buffer.
-    expose String content; // Recovered text.
-    expose func init() { path = ""; content = ""; }
+type RecoveryRecord = Types.RecoveryRecord;
+type RecoveryScanJob = Types.RecoveryScanJob;
+type RecoveryPayloadCandidate = Types.RecoveryPayloadCandidate;
+type RecoveryPayloadReadRequest = Types.RecoveryPayloadReadRequest;
+type RecoveryWriteRequest = Types.RecoveryWriteRequest;
+type RecoveryWriteSnapshot = Types.RecoveryWriteSnapshot;
+
+func RunRecoveryPayloadRead(request: RecoveryPayloadReadRequest) -> Any {
+    return Types.ReadRecoveryPayloads(request);
 }
 
-/// @brief Resumable, bounded scan of the flat recovery directory.
-class RecoveryScanJob {
-    expose Boolean active;
-    expose Boolean complete;
-    expose Boolean failed;
-    expose Boolean collectRecords;
-    expose Boolean truncated;
-    expose Integer nextOffset;
-    expose Integer entriesScanned;
-    expose Integer lastPumpCount;
-    expose Integer recoveredBytes;
-    expose List records;
-
+/// @brief Recovery discovery and cleanup layered over leased write ownership.
+class RecoveryStore extends Base.RecoveryStoreBase {
     expose func init() {
-        active = false;
-        complete = false;
-        failed = false;
-        collectRecords = true;
-        truncated = false;
-        nextOffset = 0;
-        entriesScanned = 0;
-        lastPumpCount = 0;
-        recoveredBytes = 0;
-        records = new List();
-    }
-}
-
-/// @brief Immutable UI-thread snapshot consumed by one recovery worker.
-class RecoveryWriteSnapshot {
-    expose String basePath;
-    expose String originPath;
-    expose String content;
-    expose String tempPathFile;
-    expose String tempSwapFile;
-
-    expose func init() {
-        basePath = "";
-        originPath = "";
-        content = "";
-        tempPathFile = "";
-        tempSwapFile = "";
-    }
-}
-
-/// @brief One worker-owned batch plus its cancellation/diagnostic state.
-class RecoveryWriteRequest {
-    expose List snapshots;
-    expose Integer generation;
-    expose Boolean cancelled;
-    expose Boolean succeeded;
-    expose String error;
-    expose Integer committedCount;
-
-    expose func init() {
-        snapshots = new List();
-        generation = 0;
-        cancelled = false;
-        succeeded = true;
-        error = "";
-        committedCount = 0;
-    }
-}
-
-/// @brief Identify both Studio staging names and runtime atomic-write sidecars.
-func IsRecoveryTemporaryName(name: String) -> Boolean {
-    return Str.EndsWith(name, ".tmp") or Str.Contains(name, ".zanna-tmp.");
-}
-
-/// @brief Return cancellation state under the request monitor.
-func RecoveryRequestCancelled(request: RecoveryWriteRequest) -> Boolean {
-    if request == null { return true; }
-    Monitor.Enter(request);
-    var cancelled = request.cancelled;
-    Monitor.Exit(request);
-    return cancelled;
-}
-
-/// @brief Persist one immutable request without touching editor-owned objects.
-/// @details Payloads are written to request-unique temporary names first. The
-///          request monitor serializes only the two same-directory renames with
-///          UI-thread cancellation, keeping cancellation waits independent of
-///          payload size and filesystem write latency.
-func WriteRecoveryRequest(request: RecoveryWriteRequest) -> Any {
-    if request == null { return request; }
-    var i = 0;
-    while i < request.snapshots.count() {
-        var snapshot = request.snapshots.get(i) as RecoveryWriteSnapshot;
-        if RecoveryRequestCancelled(request) { break; }
-        if snapshot == null
-           or safe_io.WriteAllText(snapshot!.tempPathFile, snapshot!.originPath) == false
-           or safe_io.WriteAllText(snapshot!.tempSwapFile, snapshot!.content) == false {
-            request.succeeded = false;
-            request.error = "Could not stage crash-recovery data";
-            if snapshot != null {
-                safe_io.DeleteFile(snapshot!.tempPathFile);
-                safe_io.DeleteFile(snapshot!.tempSwapFile);
-            }
-            i = i + 1;
-            continue;
-        }
-
-        Monitor.Enter(request);
-        if request.cancelled == false {
-            // Commit the tiny origin sidecar before the payload. A crash between
-            // these operations leaves either an ignored sidecar or the previous
-            // complete payload for the same stable document key.
-            var pathCommitted = safe_io.MoveFileOver(
-                snapshot!.tempPathFile, snapshot!.basePath + ".path");
-            var swapCommitted = false;
-            if pathCommitted {
-                swapCommitted = safe_io.MoveFileOver(
-                    snapshot!.tempSwapFile, snapshot!.basePath + ".swp");
-            }
-            if pathCommitted and swapCommitted {
-                request.committedCount = request.committedCount + 1;
-            } else {
-                request.succeeded = false;
-                request.error = "Could not commit crash-recovery data";
-            }
-        }
-        Monitor.Exit(request);
-        safe_io.DeleteFile(snapshot!.tempPathFile);
-        safe_io.DeleteFile(snapshot!.tempSwapFile);
-        i = i + 1;
-    }
-    return request;
-}
-
-/// @brief Owns the recovery directory, session lock, and swap read/write.
-class RecoveryStore {
-    expose String recoveryDir;
-    expose Boolean uncleanExit; // True when a prior session left a lock behind.
-    hide Boolean lockClaimed;
-    expose RecoveryWriteRequest activeRequest;
-    expose RecoveryWriteRequest pendingRequest;
-    expose Any activeFuture;
-    expose Integer nextGeneration;
-    expose Integer asyncQueuedRequests;
-    expose Integer asyncCompletedRequests;
-    expose Integer asyncCancelledRequests;
-    expose Integer asyncCommittedDocuments;
-    expose String lastAsyncError;
-
-    expose func init() {
-        recoveryDir = "";
-        uncleanExit = false;
-        lockClaimed = false;
-        activeRequest = null;
-        pendingRequest = null;
-        activeFuture = null;
-        nextGeneration = 1;
-        asyncQueuedRequests = 0;
-        asyncCompletedRequests = 0;
-        asyncCancelledRequests = 0;
-        asyncCommittedDocuments = 0;
-        lastAsyncError = "";
+        InitializeRecoveryState();
     }
 
-    /// @brief Resolve the recovery directory, detect an unclean exit, and claim
-    ///        the session lock.
-    /// @param settingsDir Platform config directory.
-    expose func Setup(settingsDir: String) -> Boolean {
-        if settingsDir == "" { return false; }
-        recoveryDir = Path.Join(settingsDir, "recovery");
-        if safe_io.MakeAll(recoveryDir) == false {
-            recoveryDir = "";
-            return false;
-        }
-        var lock = LockPath();
-        uncleanExit = File.Exists(lock);
-        lockClaimed = safe_io.WriteAllText(lock, "active");
-        return lockClaimed;
-    }
-
-    hide func LockPath() -> String {
-        return Path.Join(recoveryDir, "session.lock");
-    }
-
-    hide func KeyFor(doc: document.Document) -> String {
-        if doc.filePath != "" { return doc.filePath; }
-        return "untitled:" + doc.fileName;
-    }
-
-    hide func SwapBase(doc: document.Document) -> String {
-        // Preserve the on-disk key used by prior Studio releases so an upgraded
-        // session does not create two competing recovery pairs for one buffer.
-        var h = "" + Zanna.Crypto.Legacy.Hash.Crc32(KeyFor(doc));
-        return Path.Join(recoveryDir, "swap-" + h);
-    }
-
-    /// @brief Snapshot all modified editable documents and queue background I/O.
-    /// @details Only immutable strings cross the thread boundary. Repeated calls
-    ///          replace the not-yet-started request, while an active request is
-    ///          allowed to finish before the newest complete snapshot runs.
-    /// @return True when at least one modified document was queued.
+    /// @brief Queue immutable modified-buffer snapshots for background I/O.
     expose func QueueSwaps(docMgr: document_manager.DocumentManager,
                            engine: editor_engine.EditorEngine) -> Boolean {
         if recoveryDir == "" or lockClaimed == false or docMgr == null {
@@ -264,108 +73,33 @@ class RecoveryStore {
         var request = BuildRequest(docMgr, engine);
         if request == null or request.snapshots.count() == 0 { return false; }
         asyncQueuedRequests = asyncQueuedRequests + 1;
-        if activeFuture == null {
-            return StartRequest(request);
-        }
+        if activeFuture == null { return StartRequest(request); }
         pendingRequest = request;
         return true;
     }
 
-    /// @brief Non-blockingly publish a completed worker and start the latest batch.
-    /// @return True while active or pending recovery work remains.
-    expose func PumpAsync() -> Boolean {
-        if activeFuture != null and Future.get_IsDone(activeFuture) {
-            asyncCompletedRequests = asyncCompletedRequests + 1;
-            if Future.get_IsError(activeFuture) {
-                lastAsyncError = Future.get_Error(activeFuture);
-            } else if activeRequest != null {
-                asyncCommittedDocuments = asyncCommittedDocuments
-                    + activeRequest.committedCount;
-                if activeRequest.succeeded == false {
-                    lastAsyncError = activeRequest.error;
-                } else if activeRequest.cancelled == false {
-                    lastAsyncError = "";
-                }
-            }
-            activeFuture = null;
-            activeRequest = null;
-        }
-        if activeFuture == null and pendingRequest != null {
-            var next = pendingRequest;
-            pendingRequest = null;
-            StartRequest(next);
-        }
-        return IsAsyncBusy();
-    }
-
-    /// @brief True while a worker or coalesced request remains outstanding.
-    expose func IsAsyncBusy() -> Boolean {
-        return activeFuture != null or pendingRequest != null;
-    }
-
-    /// @brief Prevent an active request from committing and discard pending work.
-    /// @details Cancellation may wait only for an in-progress same-directory
-    ///          rename, never for the large temporary-file write itself.
-    expose func CancelAsync() {
-        pendingRequest = null;
-        if activeRequest != null {
-            Monitor.Enter(activeRequest);
-            if activeRequest.cancelled == false {
-                activeRequest.cancelled = true;
-                asyncCancelledRequests = asyncCancelledRequests + 1;
-            }
-            Monitor.Exit(activeRequest);
-        }
-    }
-
-    /// @brief Cancel and drain recovery publication before final persistence.
-    /// @details The session lock remains claimed. Callers may clear it only
-    ///          after this succeeds and the final clean session is durable.
-    /// @return True when no worker or pending recovery request remains.
-    expose func WaitForShutdown() -> Boolean {
-        CancelAsync();
-        if activeFuture == null { return pendingRequest == null; }
-        var finished = false;
-        try {
-            finished = Future.WaitFor(activeFuture,
-                                      RECOVERY_SHUTDOWN_WAIT_MS);
-        } catch {
-            return false;
-        }
-        if finished == false { return false; }
-        var failed = Future.get_IsError(activeFuture);
-        if failed {
-            lastAsyncError = Future.get_Error(activeFuture);
-        }
-        activeFuture = null;
-        activeRequest = null;
-        return failed == false and pendingRequest == null;
-    }
-
-    /// @brief Write swap files for every modified, editable document.
-    /// @param docMgr Open-document set.
-    /// @param engine Editor engine (for the active document's live text).
+    /// @brief Synchronously write all current modified-buffer swaps.
     expose func WriteSwaps(docMgr: document_manager.DocumentManager,
                            engine: editor_engine.EditorEngine) -> Boolean {
-        if recoveryDir == "" or lockClaimed == false or docMgr == null { return false; }
-        // Save/reload/close transitions are authoritative. Once this returns,
-        // no older background request can recreate a swap that pruning removed.
+        if recoveryDir == "" or lockClaimed == false or docMgr == null {
+            return false;
+        }
         CancelAsync();
         var allWritten = true;
-        var n = docMgr.GetCount();
         var i = 0;
-        while i < n {
-            var d = docMgr.GetDocument(i);
-            if d != null and d!.isModified and d!.isReadOnlyPreview == false {
-                var content = d!.content;
+        while i < docMgr.GetCount() {
+            var doc = docMgr.GetDocument(i);
+            if doc != null and doc!.isModified and doc!.isReadOnlyPreview == false {
+                var content = doc!.content;
                 if i == docMgr.activeIndex and engine != null
-                   and file_utils.IsVisualKind(d!.kind) == false {
+                   and file_utils.IsVisualKind(doc!.kind) == false {
                     content = engine.GetTextSnapshot();
                 }
-                var base = SwapBase(d!);
-                if safe_io.WriteAllText(base + ".path", d!.filePath) == false {
-                    allWritten = false;
-                } else if safe_io.WriteAllText(base + ".swp", content) == false {
+                var base = SwapBase(doc!);
+                var metadata = RecoveryMetadata(doc!);
+                if base == "" or metadata == ""
+                   or safe_io.WriteAllText(base + ".meta", metadata) == false
+                   or safe_io.WriteAllText(base + ".swp", content) == false {
                     allWritten = false;
                 }
             }
@@ -375,12 +109,7 @@ class RecoveryStore {
         return allWritten;
     }
 
-    /// @brief Reconcile recovery after save, reload, close, rename, or delete.
-    /// @details Stale canonical pairs are retired synchronously after cancelling
-    ///          older commits; current dirty buffers are then queued for the
-    ///          background writer. User commands therefore never rewrite every
-    ///          remaining modified document before returning.
-    /// @return True when stale cleanup succeeded and any required batch queued.
+    /// @brief Reconcile swaps after save, reload, close, rename, or delete.
     expose func ReconcileDocuments(docMgr: document_manager.DocumentManager,
                                    engine: editor_engine.EditorEngine) -> Boolean {
         if recoveryDir == "" or lockClaimed == false or docMgr == null {
@@ -402,52 +131,6 @@ class RecoveryStore {
         return cleaned;
     }
 
-    /// @brief Remove swaps that no longer correspond to a modified open buffer.
-    /// @details Saving, reloading, discarding, or closing a document must retire
-    ///          its older swap. Otherwise a later crash can resurrect stale text
-    ///          over a newer on-disk save. Orphan sidecars are removed as well.
-    /// @param docMgr Current open-document set.
-    expose func PruneStaleSwaps(docMgr: document_manager.DocumentManager) -> Boolean {
-        if recoveryDir == "" or docMgr == null { return false; }
-        CancelAsync();
-        var allRemoved = true;
-        var fileResult = safe_io.ListFiles(recoveryDir);
-        if fileResult.ok == false { return false; }
-        var files = fileResult.items;
-        var count = files.count();
-        var i = 0;
-        while i < count {
-            var name = Obj.ToString(files.get(i));
-            if Str.EndsWith(name, ".path") {
-                var pathFile = Path.Join(recoveryDir, name);
-                var base = Str.MidLen(pathFile, 1, Str.get_Length(pathFile) - 5);
-                if ModifiedDocumentOwnsSwap(docMgr, base) == false {
-                    if safe_io.DeleteFile(pathFile) == false { allRemoved = false; }
-                    if safe_io.DeleteFile(base + ".swp") == false { allRemoved = false; }
-                }
-            }
-            i = i + 1;
-        }
-
-        // The same enumeration also retires payloads whose sidecar disappeared
-        // during an interrupted write. Ordering is harmless: a stale `.path`
-        // branch above deletes its payload directly.
-        i = 0;
-        while i < count {
-            var name = Obj.ToString(files.get(i));
-            if Str.EndsWith(name, ".swp") {
-                var swapFile = Path.Join(recoveryDir, name);
-                var base = Str.MidLen(swapFile, 1, Str.get_Length(swapFile) - 4);
-                if File.Exists(base + ".path") == false {
-                    if safe_io.DeleteFile(swapFile) == false { allRemoved = false; }
-                }
-            }
-            i = i + 1;
-        }
-        return allRemoved;
-    }
-
-    /// @brief Construct one immutable batch on the UI thread.
     hide func BuildRequest(docMgr: document_manager.DocumentManager,
                            engine: editor_engine.EditorEngine) -> RecoveryWriteRequest {
         var request = new RecoveryWriteRequest();
@@ -460,13 +143,23 @@ class RecoveryStore {
                 var snapshot = new RecoveryWriteSnapshot();
                 snapshot.basePath = SwapBase(doc!);
                 snapshot.originPath = doc!.filePath;
+                snapshot.identity = KeyFor(doc!);
+                snapshot.instanceId = instanceId;
+                snapshot.documentId = doc!.recoveryId;
                 snapshot.content = doc!.content;
+                snapshot.metadata = RecoveryMetadata(doc!);
                 if i == docMgr.activeIndex and engine != null
                    and file_utils.IsVisualKind(doc!.kind) == false {
                     snapshot.content = engine.GetTextSnapshot();
                 }
+                if snapshot.basePath == "" or snapshot.metadata == "" {
+                    request.succeeded = false;
+                    request.error = "Could not allocate crash-recovery identity";
+                    i = i + 1;
+                    continue;
+                }
                 var unique = ".recovery-" + request.generation + "-" + i;
-                snapshot.tempPathFile = snapshot.basePath + unique + ".path.tmp";
+                snapshot.tempMetadataFile = snapshot.basePath + unique + ".meta.tmp";
                 snapshot.tempSwapFile = snapshot.basePath + unique + ".swp.tmp";
                 request.snapshots.add(snapshot);
             }
@@ -475,67 +168,25 @@ class RecoveryStore {
         return request;
     }
 
-    /// @brief Start one owned background callback.
-    hide func StartRequest(request: RecoveryWriteRequest) -> Boolean {
-        if request == null or request.snapshots.count() == 0 { return false; }
-        activeRequest = request;
-        try {
-            activeFuture = Async.RunOwned(&WriteRecoveryRequest, request);
-        } catch {
-            activeFuture = null;
-        }
-        if activeFuture == null {
-            activeRequest = null;
-            lastAsyncError = "Could not start crash-recovery worker";
-            return false;
-        }
-        return true;
-    }
-
-    /// @brief Return whether a modified editable document owns a swap basename.
-    hide func ModifiedDocumentOwnsSwap(docMgr: document_manager.DocumentManager,
-                                       base: String) -> Boolean {
-        var i = 0;
-        while i < docMgr.GetCount() {
-            var doc = docMgr.GetDocument(i);
-            if doc != null and doc!.isModified and doc!.isReadOnlyPreview == false
-               and SwapBase(doc!) == base {
-                return true;
-            }
-            i = i + 1;
-        }
-        return false;
-    }
-
-    /// @brief Delete a document's swap files (after save or close).
-    expose func DeleteSwap(doc: document.Document) -> Boolean {
-        if recoveryDir == "" or doc == null { return false; }
-        CancelAsync();
-        var base = SwapBase(doc);
-        var payloadRemoved = safe_io.DeleteFile(base + ".swp");
-        var pathRemoved = safe_io.DeleteFile(base + ".path");
-        return payloadRemoved and pathRemoved;
-    }
-
-    /// @brief Collect documents recoverable after an unclean exit.
-    /// @return List of RecoveryRecord; empty when nothing needs recovering. A
-    ///         file whose swap matches the on-disk content is skipped.
+    /// @brief Collect every valid record under the fixed startup ceilings.
     expose func CollectRecovered() -> List {
         var job = BeginRecoveryScan(true);
-        while job.active {
-            PumpRecoveryScan(job, 64);
-        }
+        while job.active { PumpRecoveryScan(job, 64); }
         return job.records;
     }
 
-    /// @brief Start paged recovery discovery without enumerating the directory.
-    /// @param collectRecords True to load canonical swap pairs; false to clean
-    ///        abandoned staging files only.
-    /// @return A scan job advanced by PumpRecoveryScan.
+    /// @brief Start a paged scan across claimed, legacy, and current namespaces.
     expose func BeginRecoveryScan(collectRecords: Boolean) -> RecoveryScanJob {
         var job = new RecoveryScanJob();
         job.collectRecords = collectRecords;
-        if recoveryDir == "" or Dir.Exists(recoveryDir) == false {
+        var i = 0;
+        while i < claimedRecoveryDirs.count() {
+            AddScanDirectory(job, Obj.ToString(claimedRecoveryDirs.get(i)));
+            i = i + 1;
+        }
+        if legacyRecoveryClaimed { AddScanDirectory(job, recoveryRoot); }
+        AddScanDirectory(job, recoveryDir);
+        if job.directories.count() == 0 {
             job.complete = true;
             return job;
         }
@@ -543,23 +194,38 @@ class RecoveryStore {
         return job;
     }
 
-    /// @brief Examine at most @p maxEntries recovery-directory entries.
-    /// @details Temporary worker files are removed during every scan. Canonical
-    ///          records are retained only under fixed count and aggregate-byte
-    ///          caps so a damaged recovery directory cannot exhaust startup.
-    /// @return Number of directory entries examined during this call.
+    hide func AddScanDirectory(job: RecoveryScanJob,
+                               directory: String) {
+        if job == null or directory == "" or Dir.Exists(directory) == false {
+            return;
+        }
+        var i = 0;
+        while i < job.directories.count() {
+            if Obj.ToString(job.directories.get(i)) == directory { return; }
+            i = i + 1;
+        }
+        job.directories.add(directory);
+    }
+
+    /// @brief Examine at most @p maxEntries entries from one scan page.
     expose func PumpRecoveryScan(job: RecoveryScanJob,
                                  maxEntries: Integer) -> Integer {
         if job == null or job.active == false { return 0; }
+        if job.payloadFuture != null { return PumpPayloadRead(job); }
         var limit = maxEntries;
         if limit <= 0 { limit = 1; }
+        if job.directoryIndex >= job.directories.count() {
+            FinishRecoveryEnumeration(job);
+            return 0;
+        }
+        var directory = Obj.ToString(
+            job.directories.get(job.directoryIndex));
         var oldOffset = job.nextOffset;
-        var page = safe_io.ListDirectoryPage(recoveryDir, job.nextOffset, limit);
+        var page = safe_io.ListDirectoryPage(directory, job.nextOffset, limit);
         if page.ok == false {
-            job.active = false;
-            job.complete = true;
             job.failed = true;
             job.lastPumpCount = 0;
+            AdvanceScanDirectory(job);
             return 0;
         }
 
@@ -567,10 +233,12 @@ class RecoveryStore {
         while i < page.entries.count() {
             var entry = page.entries.get(i);
             var name = Map.GetStr(entry, "name");
-            if IsRecoveryTemporaryName(name) {
-                safe_io.DeleteFile(Path.Join(recoveryDir, name));
+            if Types.IsRecoveryTemporaryName(name) {
+                safe_io.DeleteFile(Path.Join(directory, name));
+            } else if job.collectRecords and Str.EndsWith(name, ".meta") {
+                AddRecoveredMetadataRecord(job, directory, name);
             } else if job.collectRecords and Str.EndsWith(name, ".path") {
-                AddRecoveredPathRecord(job, name);
+                AddRecoveredPathRecord(job, directory, name);
             }
             i = i + 1;
         }
@@ -578,63 +246,174 @@ class RecoveryStore {
         job.entriesScanned = job.entriesScanned + i;
         job.nextOffset = page.nextOffset;
         if page.done or (i == 0 and job.nextOffset == oldOffset) {
-            job.active = false;
-            job.complete = true;
+            AdvanceScanDirectory(job);
         }
         return i;
     }
 
-    /// @brief Validate and retain one canonical `.path` / `.swp` pair.
-    hide func AddRecoveredPathRecord(job: RecoveryScanJob,
-                                     name: String) {
-        if job == null or name == "" { return; }
-        if job.records.count() >= MAX_RECOVERY_RECORDS {
-            job.truncated = true;
-            return;
+    hide func AdvanceScanDirectory(job: RecoveryScanJob) {
+        job.directoryIndex = job.directoryIndex + 1;
+        job.nextOffset = 0;
+        if job.directoryIndex >= job.directories.count() {
+            FinishRecoveryEnumeration(job);
         }
-        var pathFile = Path.Join(recoveryDir, name);
-        var swapFile = Str.MidLen(pathFile, 1, Str.get_Length(pathFile) - 5) + ".swp";
-        if File.Exists(swapFile) == false { return; }
-        var pathResult = safe_io.ReadAllTextBounded(pathFile, MAX_RECOVERY_PATH_BYTES);
-        var swapResult = safe_io.ReadAllTextBounded(swapFile, MAX_RECOVERY_SWAP_BYTES);
-        if pathResult.ok == false or swapResult.ok == false { return; }
-
-        var origin = pathResult.text;
-        var content = swapResult.text;
-        if origin != "" and File.Exists(origin) {
-            // Skip when the swap matches what's already on disk.
-            var diskResult = safe_io.ReadAllTextBounded(origin, MAX_RECOVERY_SWAP_BYTES);
-            if diskResult.ok and diskResult.text == content { return; }
-        }
-
-        var contentBytes = Str.get_Length(content);
-        if contentBytes < 0
-           or job.recoveredBytes + contentBytes > MAX_RECOVERY_TOTAL_BYTES {
-            job.truncated = true;
-            return;
-        }
-        var rec = new RecoveryRecord();
-        rec.path = origin;
-        rec.content = content;
-        job.records.add(rec);
-        job.recoveredBytes = job.recoveredBytes + contentBytes;
     }
 
-    /// @brief Delete every swap file (used after restoring or discarding).
+    /// @brief Hand validated payload candidates to one owned worker batch.
+    hide func FinishRecoveryEnumeration(job: RecoveryScanJob) {
+        if job == null { return; }
+        if job.collectRecords == false
+           or job.payloadRequest == null
+           or job.payloadRequest.candidates.count() == 0 {
+            job.active = false;
+            job.complete = true;
+            return;
+        }
+        try {
+            job.payloadFuture = Async.RunOwned(
+                &RunRecoveryPayloadRead, job.payloadRequest);
+        } catch {
+            job.payloadFuture = null;
+        }
+        if job.payloadFuture == null {
+            job.failed = true;
+            job.active = false;
+            job.complete = true;
+        }
+    }
+
+    /// @brief Publish a completed background payload batch without blocking.
+    hide func PumpPayloadRead(job: RecoveryScanJob) -> Integer {
+        if job == null or job.payloadFuture == null { return 0; }
+        if Future.get_IsDone(job.payloadFuture) == false { return 0; }
+        if Future.get_IsError(job.payloadFuture) {
+            job.failed = true;
+        } else if job.payloadRequest != null {
+            job.records = job.payloadRequest.records;
+            job.recoveredBytes = job.payloadRequest.recoveredBytes;
+            if job.payloadRequest.truncated { job.truncated = true; }
+            if job.payloadRequest.succeeded == false { job.failed = true; }
+        }
+        job.payloadFuture = null;
+        job.active = false;
+        job.complete = true;
+        job.lastPumpCount = 0;
+        return 0;
+    }
+
+    /// @brief Validate a v2 metadata/digest pair before retaining its payload.
+    hide func AddRecoveredMetadataRecord(job: RecoveryScanJob,
+                                         directory: String,
+                                         name: String) {
+        if job == null or directory == "" or name == "" { return; }
+        var metadataFile = Path.Join(directory, name);
+        var base = Str.MidLen(
+            metadataFile, 1, Str.get_Length(metadataFile) - 5);
+        var swapFile = base + ".swp";
+        if File.Exists(swapFile) == false { return; }
+        var metadataResult = safe_io.ReadAllTextBounded(
+            metadataFile, MAX_RECOVERY_METADATA_BYTES);
+        if metadataResult.ok == false
+           or Json.IsValid(metadataResult.text) == false {
+            return;
+        }
+        var metadata = Json.Parse(metadataResult.text);
+        if Map.GetInt(metadata, "version") != RECOVERY_FORMAT_VERSION { return; }
+        var sourceInstance = Map.GetStr(metadata, "instanceId");
+        var sourceDocument = Map.GetStr(metadata, "documentId");
+        var identity = Map.GetStr(metadata, "identity");
+        var origin = Map.GetStr(metadata, "path");
+        if Uuid.IsValid(sourceInstance) == false
+           or Uuid.IsValid(sourceDocument) == false or identity == "" {
+            return;
+        }
+        var digest = Hash.Sha256(
+            sourceInstance + "\n" + sourceDocument + "\n" + identity);
+        if name != "swap-" + digest + ".meta" { return; }
+        var recordKey = sourceInstance + ":" + sourceDocument;
+        if Map.GetBool(job.seenRecords, recordKey) { return; }
+        AddPayloadCandidate(job, swapFile, origin, identity,
+                            sourceInstance, sourceDocument, recordKey);
+    }
+
+    /// @brief Validate and retain one legacy `.path` / `.swp` pair.
+    hide func AddRecoveredPathRecord(job: RecoveryScanJob,
+                                     directory: String,
+                                     name: String) {
+        if job == null or directory == "" or name == "" { return; }
+        if job.payloadRequest.candidates.count() >= MAX_RECOVERY_RECORDS {
+            job.truncated = true;
+            return;
+        }
+        var pathFile = Path.Join(directory, name);
+        var swapFile = Str.MidLen(
+            pathFile, 1, Str.get_Length(pathFile) - 5) + ".swp";
+        if File.Exists(swapFile) == false { return; }
+        var pathResult = safe_io.ReadAllTextBounded(
+            pathFile, MAX_RECOVERY_PATH_BYTES);
+        if pathResult.ok == false { return; }
+        var legacyKey = "legacy:" + directory + ":" + name;
+        if Map.GetBool(job.seenRecords, legacyKey) { return; }
+        AddPayloadCandidate(job, swapFile, pathResult.text,
+                            legacyKey, "", "", legacyKey);
+    }
+
+    /// @brief Retain validated metadata for background payload materialization.
+    hide func AddPayloadCandidate(job: RecoveryScanJob,
+                                  swapFile: String,
+                                  origin: String,
+                                  identity: String,
+                                  sourceInstance: String,
+                                  sourceDocument: String,
+                                  recordKey: String) {
+        if job == null or swapFile == "" or recordKey == "" { return; }
+        if job.payloadRequest == null
+           or job.payloadRequest.candidates.count() >= MAX_RECOVERY_RECORDS {
+            job.truncated = true;
+            return;
+        }
+        var candidate = new RecoveryPayloadCandidate();
+        candidate.swapFile = swapFile;
+        candidate.origin = origin;
+        candidate.identity = identity;
+        candidate.instanceId = sourceInstance;
+        candidate.documentId = sourceDocument;
+        job.payloadRequest.candidates.add(candidate);
+        Map.SetBool(job.seenRecords, recordKey, true);
+    }
+
+    /// @brief Delete swaps from the current and explicitly claimed namespaces.
     expose func ClearAll() -> Boolean {
         if recoveryDir == "" { return false; }
         CancelAsync();
-        var fileResult = safe_io.ListFiles(recoveryDir);
-        if fileResult.ok == false { return false; }
-        var files = fileResult.items;
-        var allRemoved = true;
-        var count = files.count();
+        var allRemoved = ClearRecoveryDirectory(recoveryDir);
         var i = 0;
-        while i < count {
-            var name = Obj.ToString(files.get(i));
+        while i < claimedRecoveryDirs.count() {
+            if ClearRecoveryDirectory(
+                   Obj.ToString(claimedRecoveryDirs.get(i))) == false {
+                allRemoved = false;
+            }
+            i = i + 1;
+        }
+        if legacyRecoveryClaimed
+           and ClearRecoveryDirectory(recoveryRoot) == false {
+            allRemoved = false;
+        }
+        return allRemoved;
+    }
+
+    hide func ClearRecoveryDirectory(directory: String) -> Boolean {
+        if directory == "" or Dir.Exists(directory) == false { return true; }
+        var result = safe_io.ListFiles(directory);
+        if result.ok == false { return false; }
+        var allRemoved = true;
+        var i = 0;
+        while i < result.items.count() {
+            var name = Obj.ToString(result.items.get(i));
             if Str.EndsWith(name, ".swp") or Str.EndsWith(name, ".path")
-               or IsRecoveryTemporaryName(name) {
-                if safe_io.DeleteFile(Path.Join(recoveryDir, name)) == false {
+               or Str.EndsWith(name, ".meta")
+               or Types.IsRecoveryTemporaryName(name) {
+                if safe_io.DeleteFile(Path.Join(directory, name)) == false {
                     allRemoved = false;
                 }
             }
@@ -643,18 +422,51 @@ class RecoveryStore {
         return allRemoved;
     }
 
-    /// @brief Remove the session lock and clear swaps on a clean exit.
+    /// @brief Durably mark clean ownership before releasing any lease.
     expose func MarkCleanExit() -> Boolean {
-        if recoveryDir == "" { return false; }
-        // The lock cannot truthfully be removed while a worker still owns
-        // staging files in the recovery directory.
-        if WaitForShutdown() == false { return false; }
-        // The lock is the commit marker: keep it until every swap is gone so a
-        // crash midway through cleanup remains recoverable on the next launch.
+        if recoveryDir == "" or WaitForShutdown() == false { return false; }
         if ClearAll() == false { return false; }
-        var lock = LockPath();
-        if safe_io.DeleteFile(lock) == false { return false; }
+        if WriteCleanMarker(recoveryDir) == false { return false; }
+        var markerIndex = 0;
+        while markerIndex < claimedRecoveryDirs.count() {
+            if WriteCleanMarker(Obj.ToString(
+                   claimedRecoveryDirs.get(markerIndex))) == false {
+                return false;
+            }
+            markerIndex = markerIndex + 1;
+        }
+
+        var ownedDir = recoveryDir;
+        var ownedId = instanceId;
+        FileLease.Release(sessionLease);
+        sessionLease = null;
+        RetireRecoveryNamespace(ownedDir, ownedId);
+        var i = 0;
+        while i < claimedRecoveryDirs.count() {
+            var claimedDir = Obj.ToString(claimedRecoveryDirs.get(i));
+            FileLease.Release(claimedRecoveryLeases.get(i));
+            RetireRecoveryNamespace(
+                claimedDir, NamespaceIdFromDirectory(claimedDir));
+            i = i + 1;
+        }
+        if legacyRecoveryClaimed
+           and safe_io.DeleteFile(
+                  Path.Join(recoveryRoot, "session.lock")) == false {
+            return false;
+        }
+        claimedRecoveryDirs = new List();
+        claimedRecoveryLeases = new List();
         lockClaimed = false;
         return true;
+    }
+
+    /// @brief Release only this instance lease while retaining all swap data.
+    expose func ReleaseOwnershipWithoutCleanup() {
+        CancelAsync();
+        if sessionLease != null {
+            FileLease.Release(sessionLease);
+            sessionLease = null;
+        }
+        lockClaimed = false;
     }
 }

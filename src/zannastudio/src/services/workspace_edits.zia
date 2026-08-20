@@ -13,7 +13,8 @@
 //   - Closed-file targets must remain inside explicitly opened workspace roots.
 // Ownership/Lifetime: Stateless helpers borrow document models and runtime edits.
 // Links: zannastudio/src/editor/project_index.zia,
-//        zannastudio/src/commands/edit_commands.zia
+//        zannastudio/src/commands/edit_commands.zia,
+//        docs/adr/0282-opaque-regular-file-identity-keys.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,15 +22,21 @@ module workspace_edits;
 
 bind "../core/document_manager";
 bind "../core/document";
+bind "path_identity";
 bind "safe_io";
+bind "workspace_edit_algorithms";
 
 bind WorkspaceEdit = Zanna.Workspace.Edit;
+bind PreparedEdit = Zanna.Workspace.PreparedEdit;
 bind File = Zanna.IO.File;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind StringBuilder = Zanna.Text.StringBuilder;
+
+final MAX_WORKSPACE_EDIT_COUNT = 100000;
+final MAX_WORKSPACE_REPLACEMENT_BYTES = 128 * 1024 * 1024;
 
 // ============================================================================
 // MODULE: workspace_edits
@@ -86,6 +93,10 @@ func ApplyRenameEdits(edits: Any,
         result.message = "No edits returned";
         return result;
     }
+    if Seq.get_Count(edits) > MAX_WORKSPACE_EDIT_COUNT {
+        result.message = "Rename canceled because the edit batch is too large";
+        return result;
+    }
 
     var validation = ValidateRenameEdits(edits, docMgr);
     if validation != "" {
@@ -95,18 +106,24 @@ func ApplyRenameEdits(edits: Any,
 
     var closedEdits = Seq.New();
     var openPaths = Seq.New();
+    var openEditsByPath = Map.New();
     var newContentByPath = Map.New();
+    var cleanupWarning = "";
     var i = 0;
     while i < Seq.get_Count(edits) {
         var edit = Seq.Get(edits, i);
         var path = Map.GetStr(edit, "file");
         var docIndex = docMgr.FindByPath(path);
         if docIndex >= 0 {
-            if SeqContainsString(openPaths, path) == false {
-                Seq.Push(openPaths, path);
-                var openDoc = docMgr.documents.get(docIndex);
-                Map.SetStr(newContentByPath, path, openDoc.content);
+            var openDoc = docMgr.documents.get(docIndex);
+            var openPath = openDoc.filePath;
+            if openPath == "" { openPath = path; }
+            if Map.Has(openEditsByPath, openPath) == false {
+                Seq.Push(openPaths, openPath);
+                Map.Set(openEditsByPath, openPath, Seq.New());
+                Map.SetStr(newContentByPath, openPath, openDoc.content);
             }
+            Seq.Push(Map.Get(openEditsByPath, openPath), edit);
         } else {
             if File.Exists(path) {
                 var modified = safe_io.Modified(path);
@@ -128,15 +145,15 @@ func ApplyRenameEdits(edits: Any,
         i = i + 1;
     }
 
-    var applyOrder = SortEditsForApplication(edits);
     var j = 0;
-    while j < Seq.get_Count(applyOrder) {
-        var edit2 = Seq.Get(applyOrder, j);
-        var path2 = Map.GetStr(edit2, "file");
+    while j < Seq.get_Count(openPaths) {
+        var path2 = Obj.ToString(Seq.Get(openPaths, j));
         var idx = docMgr.FindByPath(path2);
         if idx >= 0 {
             var current = Map.GetStr(newContentByPath, path2);
-            Map.SetStr(newContentByPath, path2, ApplyEditToText(current, edit2));
+            var snapshot = workspace_edit_algorithms.Prepare(current);
+            Map.SetStr(newContentByPath, path2,
+                       snapshot.Apply(Map.Get(openEditsByPath, path2)));
         }
         j = j + 1;
     }
@@ -147,17 +164,25 @@ func ApplyRenameEdits(edits: Any,
             result.message = "Rename canceled because no workspace root is available";
             return result;
         }
-        var diskValidation = WorkspaceEdit.ValidateInRoots(closedEdits, editRoots);
+        var prepared = WorkspaceEdit.PrepareInRoots(closedEdits, editRoots);
+        var diskValidation = PreparedEdit.Result(prepared);
         if Map.GetBool(diskValidation, "success") == false {
             result.message = FormatWorkspaceEditDiagnostics(
                 Map.Get(diskValidation, "diagnostics"), "Workspace edit validation failed");
+            PreparedEdit.Destroy(prepared);
             return result;
         }
-        var diskResult = WorkspaceEdit.ApplyInRoots(closedEdits, editRoots);
+        var diskResult = PreparedEdit.Apply(prepared);
+        PreparedEdit.Destroy(prepared);
         if Map.GetBool(diskResult, "success") == false {
             result.message = FormatWorkspaceEditDiagnostics(
                 Map.Get(diskResult, "diagnostics"), "Workspace edit failed");
             return result;
+        }
+        var cleanupDiagnostics = Map.Get(diskResult, "diagnostics");
+        if cleanupDiagnostics != null and Seq.get_Count(cleanupDiagnostics) > 0 {
+            cleanupWarning = FormatWorkspaceEditDiagnostics(
+                cleanupDiagnostics, "Workspace edit cleanup needs attention");
         }
     }
 
@@ -184,6 +209,9 @@ func ApplyRenameEdits(edits: Any,
 
     result.success = true;
     result.message = "Applied edits";
+    if cleanupWarning != "" {
+        result.message = result.message + "\n\n" + cleanupWarning;
+    }
     return result;
 }
 
@@ -254,6 +282,15 @@ func ApplyEditToDocument(doc: document.Document, edit: Any) -> Boolean {
 
 func ValidateRenameEdits(edits: Any,
                          docMgr: document_manager.DocumentManager) -> String {
+    if Seq.get_Count(edits) > MAX_WORKSPACE_EDIT_COUNT {
+        return "Workspace edit batch is too large";
+    }
+    var snapshots = Map.New();
+    var modifiedByPath = Map.New();
+    var sizeByPath = Map.New();
+    var editsByPath = Map.New();
+    var paths = Seq.New();
+    var replacementBytes = 0;
     var i = 0;
     while i < Seq.get_Count(edits) {
         var edit = Seq.Get(edits, i);
@@ -261,44 +298,79 @@ func ValidateRenameEdits(edits: Any,
         if path == "" {
             return "Workspace edit has no file path";
         }
-        var content = "";
+        var replacementSize = Str.get_Length(Map.GetStr(edit, "newText"));
+        if replacementSize > MAX_WORKSPACE_REPLACEMENT_BYTES - replacementBytes {
+            return "Workspace edit replacement text is too large";
+        }
+        replacementBytes = replacementBytes + replacementSize;
+
+        var key = path_identity.FileKey(path);
         var docIndex = docMgr.FindByPath(path);
         if docIndex >= 0 {
-            content = docMgr.documents.get(docIndex).content;
+            var openDoc = docMgr.documents.get(docIndex);
+            if openDoc.filePath != "" { key = path_identity.FileKey(openDoc.filePath); }
+            if Map.Has(snapshots, key) == false {
+                Map.Set(snapshots, key,
+                        workspace_edit_algorithms.Prepare(openDoc.content));
+            }
         } else {
             if File.Exists(path) == false {
                 return "Workspace edit file not found: " + path;
             }
             var expectedMtime = Map.GetIntOr(edit, "expectedMtime", -1);
-            var currentMtime = safe_io.Modified(path);
-            if currentMtime < 0 {
-                return "Workspace edit file is unavailable: " + path;
+            var expectedSize = Map.GetIntOr(edit, "expectedSize", -1);
+            if Map.Has(snapshots, key) == false {
+                var currentMtime = safe_io.Modified(path);
+                var currentSize = safe_io.SizeBytes(path);
+                if currentMtime < 0 or currentSize < 0 {
+                    return "Workspace edit file is unavailable: " + path;
+                }
+                var readResult = safe_io.ReadAllTextBounded(
+                    path, document_manager.MAX_TEXT_OPEN_BYTES);
+                if readResult.ok == false {
+                    return "Workspace edit file is unavailable: " + path;
+                }
+                Map.SetInt(modifiedByPath, key, currentMtime);
+                Map.SetInt(sizeByPath, key, currentSize);
+                Map.Set(snapshots, key,
+                        workspace_edit_algorithms.Prepare(readResult.text));
             }
-            if expectedMtime >= 0 and expectedMtime != currentMtime {
+            var observedMtime = Map.GetInt(modifiedByPath, key);
+            var observedSize = Map.GetInt(sizeByPath, key);
+            if expectedMtime >= 0 and expectedMtime != observedMtime {
                 return "Workspace edit file changed during the operation: " + path;
             }
-            var readResult = safe_io.ReadAllTextBounded(
-                path, document_manager.MAX_TEXT_OPEN_BYTES);
-            if readResult.ok == false {
-                return "Workspace edit file is unavailable: " + path;
+            if expectedSize >= 0 and expectedSize != observedSize {
+                return "Workspace edit file changed during the operation: " + path;
             }
-            content = readResult.text;
+            if expectedMtime < 0 { Map.SetInt(edit, "expectedMtime", observedMtime); }
+            if expectedSize < 0 { Map.SetInt(edit, "expectedSize", observedSize); }
         }
-        if CanApplyEditToText(content, edit) == false {
+        var snapshot = Map.Get(snapshots, key)
+            as workspace_edit_algorithms.TextSnapshot;
+        if snapshot == null or snapshot!.CanApply(edit) == false {
             return "Invalid workspace edit range in " + path;
         }
         var expectedText = Map.GetStr(edit, "expectedText");
-        if expectedText != "" and TextAtEditRange(content, edit) != expectedText {
+        if expectedText != "" and snapshot!.TextAt(edit) != expectedText {
             return "Workspace edit source changed during the operation: " + path;
         }
+        if Map.Has(editsByPath, key) == false {
+            Map.Set(editsByPath, key, Seq.New());
+            Seq.Push(paths, key);
+        }
+        Seq.Push(Map.Get(editsByPath, key), edit);
+        i = i + 1;
+    }
 
-        var j = i + 1;
-        while j < Seq.get_Count(edits) {
-            var other = Seq.Get(edits, j);
-            if EditsOverlap(edit, other) {
-                return RenameConflictMessage(edit, other);
-            }
-            j = j + 1;
+    i = 0;
+    while i < Seq.get_Count(paths) {
+        var key2 = Obj.ToString(Seq.Get(paths, i));
+        var overlap = workspace_edit_algorithms.FirstOverlap(
+            Map.Get(editsByPath, key2));
+        if overlap != null {
+            return RenameConflictMessage(Map.Get(overlap, "first"),
+                                         Map.Get(overlap, "second"));
         }
         i = i + 1;
     }
@@ -314,19 +386,7 @@ func ValidateRenameEdits(edits: Any,
 /// @return Covered text, or empty for an unsupported/invalid multi-line range.
 func TextAtEditRange(content: String,
                      edit: Any) -> String {
-    var startLine = Map.GetInt(edit, "startLine");
-    var endLine = Map.GetInt(edit, "endLine");
-    var startCol = Map.GetInt(edit, "startColumn");
-    var endCol = Map.GetInt(edit, "endColumn");
-    if startLine != endLine or startLine < 1 or startCol < 1
-       or endCol < startCol {
-        return "";
-    }
-    var lines = Str.Split(content, "\n");
-    if startLine > Seq.get_Count(lines) { return ""; }
-    var line = Obj.ToString(Seq.Get(lines, startLine - 1));
-    if endCol > Str.get_Length(line) + 1 { return ""; }
-    return Str.MidLen(line, startCol, endCol - startCol);
+    return workspace_edit_algorithms.Prepare(content).TextAt(edit);
 }
 
 func RenameConflictMessage(edit: Any,
@@ -352,34 +412,6 @@ func EditRange(edit: Any) -> String {
            + "-" + Map.GetInt(edit, "endLine") + ":" + Map.GetInt(edit, "endColumn");
 }
 
-func EditsOverlap(a: Any, b: Any) -> Boolean {
-    if Map.GetStr(a, "file") != Map.GetStr(b, "file") {
-        return false;
-    }
-    return PositionBefore(Map.GetInt(a, "startLine"), Map.GetInt(a, "startColumn"),
-                          Map.GetInt(b, "endLine"), Map.GetInt(b, "endColumn"))
-           and PositionBefore(Map.GetInt(b, "startLine"), Map.GetInt(b, "startColumn"),
-                              Map.GetInt(a, "endLine"), Map.GetInt(a, "endColumn"));
-}
-
-/// @brief Compare two workspace-edit positions using end-exclusive ordering.
-/// @details Workspace edit ranges follow the editor/LSP convention where the
-///          start position is inclusive and the end position is exclusive.
-///          Two ranges overlap when each range starts before the other's end.
-/// @param lineA First position line, one-based.
-/// @param colA First position column, one-based.
-/// @param lineB Second position line, one-based.
-/// @param colB Second position column, one-based.
-/// @return True when position A is strictly before position B.
-func PositionBefore(lineA: Integer,
-                    colA: Integer,
-                    lineB: Integer,
-                    colB: Integer) -> Boolean {
-    if lineA < lineB { return true; }
-    if lineA > lineB { return false; }
-    return colA < colB;
-}
-
 /// @brief Sort workspace edits into safe in-memory application order.
 /// @param edits Sequence of workspace edit maps.
 /// @return New sequence containing the same edit maps.
@@ -389,131 +421,17 @@ func PositionBefore(lineA: Integer,
 ///          runtime workspace edit API, which performs its own offset sort; this
 ///          helper gives open documents the same order-independent behavior.
 func SortEditsForApplication(edits: Any) -> Any {
-    var sorted: Any = Seq.New();
-    if edits == null { return sorted; }
-    var i = 0;
-    while i < Seq.get_Count(edits) {
-        sorted = InsertEditInApplicationOrder(sorted, Seq.Get(edits, i));
-        i = i + 1;
-    }
-    return sorted;
-}
-
-/// @brief Insert one edit into a descending per-file application sequence.
-/// @param sorted Existing sequence sorted for safe application.
-/// @param edit Edit map to insert.
-/// @return New sequence containing @p edit at its application-safe position.
-/// @details Zia's runtime Seq API used here is append-oriented, so insertion is
-///          implemented by rebuilding a short sequence. Rename edit batches are
-///          typically small; correctness and deterministic provider-order handling
-///          are more important than in-place mutation in this path.
-func InsertEditInApplicationOrder(sorted: Any,
-                                  edit: Any) -> Any {
-    var result: Any = Seq.New();
-    var inserted = false;
-    var i = 0;
-    while i < Seq.get_Count(sorted) {
-        var existing = Seq.Get(sorted, i);
-        if inserted == false and EditShouldApplyBefore(edit, existing) {
-            Seq.Push(result, edit);
-            inserted = true;
-        }
-        Seq.Push(result, existing);
-        i = i + 1;
-    }
-    if inserted == false {
-        Seq.Push(result, edit);
-    }
-    return result;
-}
-
-/// @brief Compare two edits for descending source-position application order.
-/// @param candidate Edit being inserted.
-/// @param existing Existing sorted edit.
-/// @return True when @p candidate must run before @p existing.
-/// @details Only edits in the same file are reordered. Cross-file ordering is left
-///          stable because files are independent. Within one file, later start
-///          positions run first; equal starts use the later end position first so
-///          replacement ranges remain conservative.
-func EditShouldApplyBefore(candidate: Any,
-                           existing: Any) -> Boolean {
-    if Map.GetStr(candidate, "file") != Map.GetStr(existing, "file") {
-        return false;
-    }
-    var candStartLine = Map.GetInt(candidate, "startLine");
-    var candStartCol = Map.GetInt(candidate, "startColumn");
-    var existingStartLine = Map.GetInt(existing, "startLine");
-    var existingStartCol = Map.GetInt(existing, "startColumn");
-    if PositionBefore(existingStartLine, existingStartCol, candStartLine, candStartCol) {
-        return true;
-    }
-    if candStartLine == existingStartLine and candStartCol == existingStartCol {
-        return PositionBefore(Map.GetInt(existing, "endLine"), Map.GetInt(existing, "endColumn"),
-                              Map.GetInt(candidate, "endLine"), Map.GetInt(candidate, "endColumn"));
-    }
-    return false;
+    return workspace_edit_algorithms.SortForApplication(edits);
 }
 
 func CanApplyEditToText(content: String, edit: Any) -> Boolean {
-    var startLine = Map.GetInt(edit, "startLine");
-    var startCol = Map.GetInt(edit, "startColumn");
-    var endLine = Map.GetInt(edit, "endLine");
-    var endCol = Map.GetInt(edit, "endColumn");
-    if startLine < 1 or startCol < 1 or endLine < startLine or endCol < 1 { return false; }
-    if startLine == endLine and endCol < startCol { return false; }
-
-    var lines = Str.Split(content, "\n");
-    if startLine > Seq.get_Count(lines) { return false; }
-    if endLine > Seq.get_Count(lines) { return false; }
-    var startText = Obj.ToString(Seq.Get(lines, startLine - 1));
-    var endText = Obj.ToString(Seq.Get(lines, endLine - 1));
-    if startCol > Str.get_Length(startText) + 1 { return false; }
-    if endCol > Str.get_Length(endText) + 1 { return false; }
-    return true;
+    return workspace_edit_algorithms.Prepare(content).CanApply(edit);
 }
 
 func ApplyEditToText(content: String, edit: Any) -> String {
-    var startLine = Map.GetInt(edit, "startLine");
-    var startCol = Map.GetInt(edit, "startColumn");
-    var endLine = Map.GetInt(edit, "endLine");
-    var endCol = Map.GetInt(edit, "endColumn");
-    var newText = Map.GetStr(edit, "newText");
-
-    var lines = Str.Split(content, "\n");
-    var startText = Obj.ToString(Seq.Get(lines, startLine - 1));
-    var endText = Obj.ToString(Seq.Get(lines, endLine - 1));
-    var prefix = "";
-    if startCol > 1 {
-        prefix = Str.Left(startText, startCol - 1);
-    }
-    var suffix = "";
-    if endCol <= Str.get_Length(endText) {
-        suffix = Str.Mid(endText, endCol);
-    }
-    var replacement = prefix + newText + suffix;
-    var rebuilt = new StringBuilder();
-    var firstOutputLine = true;
-    var i = 0;
-    while i < Seq.get_Count(lines) {
-        var emit = false;
-        var text = "";
-        if i < startLine - 1 or i > endLine - 1 {
-            emit = true;
-            text = Obj.ToString(Seq.Get(lines, i));
-        } else if i == startLine - 1 {
-            emit = true;
-            text = replacement;
-        }
-        if emit {
-            if firstOutputLine == false {
-                rebuilt.Append("\n");
-            }
-            rebuilt.Append(text);
-            firstOutputLine = false;
-        }
-        i = i + 1;
-    }
-    return rebuilt.ToString();
+    var edits = Seq.New();
+    Seq.Push(edits, edit);
+    return workspace_edit_algorithms.Prepare(content).Apply(edits);
 }
 
 func SeqContainsString(items: Any, value: String) -> Boolean {

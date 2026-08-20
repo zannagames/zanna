@@ -1,0 +1,74 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/document_buffer.zia
+// Purpose: Own canonical text identity shared by multiple editor views.
+// Key invariants:
+//   - One canonical text generation is authoritative for every live view.
+//   - Exactly one view owns the mutable GUI EditorBuffer and undo history.
+//   - Other views are read-only mirrors with independent cursor/scroll state.
+//   - Compatibility writes to Document.content are explicitly reconciled.
+// Ownership/Lifetime:
+//   - One Document owns one SharedDocumentBuffer for the document lifetime.
+// Links: zannastudio/src/core/document.zia,
+//        zannastudio/src/editor/editor_engine.zia
+//
+//===----------------------------------------------------------------------===//
+
+module document_buffer;
+
+/// @brief Canonical text state shared by one or more physical editor views.
+class SharedDocumentBuffer {
+    expose String content;
+    expose Integer generation;
+    expose Integer viewCount;
+    expose Integer mutableOwnerView;
+
+    expose func init() {
+        content = "";
+        generation = 0;
+        viewCount = 0;
+        mutableOwnerView = -1;
+    }
+
+    /// @brief Reconcile legacy Document.content before views attach.
+    expose func Adopt(text: String) -> Boolean {
+        if content == text { return false; }
+        content = text;
+        generation = generation + 1;
+        return true;
+    }
+
+    /// @brief Publish text from the sole mutable editor-buffer owner.
+    expose func Publish(text: String, ownerView: Integer) -> Boolean {
+        mutableOwnerView = ownerView;
+        if content == text { return false; }
+        content = text;
+        generation = generation + 1;
+        return true;
+    }
+
+    /// @brief Declare a two-view session over the current canonical text.
+    expose func OpenPair(text: String, ownerView: Integer) {
+        Adopt(text);
+        viewCount = 2;
+        mutableOwnerView = ownerView;
+    }
+
+    /// @brief Transfer the sole mutable GUI buffer to another physical view.
+    expose func TransferOwnership(ownerView: Integer) {
+        if viewCount > 1 { mutableOwnerView = ownerView; }
+    }
+
+    /// @brief Return to ordinary single-view ownership.
+    expose func ClosePair() {
+        viewCount = 1;
+        mutableOwnerView = 0;
+    }
+
+    expose func IsShared() -> Boolean { return viewCount > 1; }
+}

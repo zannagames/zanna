@@ -10,6 +10,8 @@
 // Key invariants: File operations work correctly across platforms, bounded text reads reject
 //                 oversize before allocation, no-clobber writes preserve racing destinations,
 //                 compare/exchange writes reject stale snapshots without changing the file,
+//                 FileLease ownership is exclusive and becomes reacquirable after release,
+//                 opaque identity keys collapse aliases without accepting directories,
 //                 ReadBytes/WriteBytes handle binary data correctly, ReadLines/WriteLines preserve
 //                 line structure, atomic overwrites preserve existing permissions, and Windows
 //                 sparse files retain 64-bit seek/stat behavior beyond 2 GiB.
@@ -46,6 +48,7 @@
 #define rmdir_p(path) _rmdir(path)
 #else
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <utime.h>
 #define mkdir_p(path) mkdir(path, 0755)
 #define rmdir_p(path) rmdir(path)
@@ -197,14 +200,34 @@ static void test_same_file() {
     test_result("directory is not treated as same file",
                 rt_file_same(rt_const_cstr(directory_path), rt_const_cstr(directory_path)) == 0);
 
+    rt_string source_identity = rt_file_identity_key(source);
+    rt_string other_identity = rt_file_identity_key(rt_const_cstr(other_path));
+    rt_string missing_identity = rt_file_identity_key(rt_const_cstr(get_missing_path()));
+    rt_string directory_identity = rt_file_identity_key(rt_const_cstr(directory_path));
+    test_result("regular file has opaque identity key", rt_str_len(source_identity) > 0);
+    test_result("different file has different identity key",
+                rt_str_len(other_identity) > 0 &&
+                    strcmp(rt_string_cstr(source_identity), rt_string_cstr(other_identity)) != 0);
+    test_result("missing path has no identity key", rt_str_len(missing_identity) == 0);
+    test_result("directory has no file identity key", rt_str_len(directory_identity) == 0);
+
     std::error_code linkError;
     std::filesystem::create_hard_link(source_path, alias_path, linkError);
     if (!linkError) {
         test_result("hard-link spelling resolves to same file",
                     rt_file_same(source, rt_const_cstr(alias_path)) == 1);
+        rt_string alias_identity = rt_file_identity_key(rt_const_cstr(alias_path));
+        test_result("hard-link spellings share one identity key",
+                    strcmp(rt_string_cstr(source_identity), rt_string_cstr(alias_identity)) == 0);
+        rt_string_unref(alias_identity);
     } else {
         printf("  hard-link identity: SKIP (filesystem rejected link)\n");
     }
+
+    rt_string_unref(source_identity);
+    rt_string_unref(other_identity);
+    rt_string_unref(missing_identity);
+    rt_string_unref(directory_identity);
 
     remove_file(source_path);
     remove_file(alias_path);
@@ -756,6 +779,51 @@ static void test_compare_exchange_all_text() {
     printf("\n");
 }
 
+/// @brief Verify FileLease exclusion, explicit release, and persistent markers.
+static void test_file_lease() {
+    printf("Testing cross-process file leases:\n");
+
+    const char *base = get_test_base();
+    char lease_path[512];
+    snprintf(lease_path, sizeof(lease_path), "%s_recovery.lease", base);
+    remove_file(lease_path);
+    rt_string path = rt_const_cstr(lease_path);
+
+    void *first = rt_file_lease_try_acquire(path);
+    test_result("first lease acquired", first != nullptr && rt_file_lease_is_valid(first) == 1);
+    test_result("lease marker persists", rt_io_file_exists(path) == 1);
+
+    void *contended = rt_file_lease_try_acquire(path);
+    test_result("second live lease is rejected", contended == nullptr);
+#if !RT_PLATFORM_WINDOWS
+    // A distinct process must observe the same exclusion guarantee.
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        void *child_contended = rt_file_lease_try_acquire(path);
+        _exit(child_contended == nullptr ? 0 : 1);
+    }
+    int child_status = 0;
+    assert(waitpid(child, &child_status, 0) == child);
+    test_result("cross-process live lease is rejected",
+                WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+#endif
+
+    rt_file_lease_release(first);
+    test_result("released lease becomes invalid", rt_file_lease_is_valid(first) == 0);
+    void *second = rt_file_lease_try_acquire(path);
+    test_result("abandoned marker is reacquirable",
+                second != nullptr && rt_file_lease_is_valid(second) == 1);
+    rt_file_lease_release(second);
+
+    if (rt_obj_release_check0(first))
+        rt_obj_free(first);
+    if (second && rt_obj_release_check0(second))
+        rt_obj_free(second);
+    remove_file(lease_path);
+    printf("\n");
+}
+
 /// @brief Test rt_io_file_read_all_bytes / rt_io_file_write_all_bytes.
 static void test_read_write_all_bytes() {
     printf("Testing rt_io_file_read_all_bytes/rt_io_file_write_all_bytes:\n");
@@ -1149,6 +1217,7 @@ int main() {
     test_write_all_text();
     test_write_all_text_new();
     test_compare_exchange_all_text();
+    test_file_lease();
     test_read_write_all_bytes();
     test_write_all_bytes_invalid_data_traps();
     test_read_all_lines();

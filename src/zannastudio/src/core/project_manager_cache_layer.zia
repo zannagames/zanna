@@ -1,0 +1,192 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/project_manager_cache_layer.zia
+// Purpose: Cooperatively discover and publish project files for Quick Open.
+// Key invariants:
+//   - Recursive workspace discovery is paged and never completes in one frame.
+//   - Cache generations distinguish replacement snapshots from append-only work.
+//   - Every published path is canonicalized and deduplicated by FileIndex.
+// Ownership/Lifetime:
+//   - Inherited ProjectManagerBase owns cursor and cache storage.
+// Links: zannastudio/src/core/project_manager_base.zia,
+//        zannastudio/src/core/project_manager_tree.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_manager_cache_layer;
+
+bind "project_manager_base" as Base;
+bind "../services/workspace_file_index";
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind Zanna.IO.Dir as Dir;
+
+class ProjectManagerCacheLayer extends Base.ProjectManagerBase {
+    /// @brief Build the primary project's complete file list synchronously.
+    /// @note Retained for non-interactive callers; UI paths use the paged cache.
+    func BuildProjectFileCache() -> List {
+        if self.project == null or self.project.isOpen == false {
+            return new List();
+        }
+        return workspace_file_index.EnumerateFiles(
+            self.project.rootPath, "", self.project.ignorePatterns);
+    }
+
+    /// @brief Start or advance lazy project-file discovery.
+    func EnsureFullFileCache() {
+        if fileCacheComplete { return; }
+        if fileCacheRefreshing == false { StartFileCacheRefresh(); }
+        PumpFileCacheRefresh(32);
+    }
+
+    /// @brief Start a cooperative refresh of the full project file cache.
+    expose func StartFileCacheRefresh() {
+        if self.project == null or self.project.isOpen == false { return; }
+        ResetFileCacheDiscovery();
+        var all = AllRoots();
+        fileCacheRefreshing = true;
+        if all.count() == 0 {
+            fileCacheRefreshing = false;
+            fileCacheComplete = true;
+        }
+    }
+
+    /// @brief Begin a new empty project-file cache snapshot.
+    hide func ResetFileCacheDiscovery() {
+        fileCache = new List();
+        fileCacheSeen = Map.New();
+        fileCacheComplete = false;
+        fileCacheGeneration = fileCacheGeneration + 1;
+        pendingFileCacheDirs = new List();
+        fileCacheRefreshing = false;
+        fileCacheDirsScanned = 0;
+        fileCacheRootIndex = 0;
+        fileCachePageOffset = 0;
+        if fileCacheCursor != null { fileCacheCursor.Destroy(); }
+        fileCacheTruncated = false;
+    }
+
+    /// @brief Pump a bounded file-index page for project file discovery.
+    /// @param maxDirs Historical directory budget; now used as page size.
+    /// @return Number of file-index entries examined.
+    expose func PumpFileCacheRefresh(maxDirs: Integer) -> Integer {
+        if self.project == null or self.project.isOpen == false { return 0; }
+        if fileCacheRefreshing == false and fileCacheComplete == false {
+            StartFileCacheRefresh();
+        }
+        var pageSize = maxDirs;
+        if pageSize <= 0 { pageSize = 128; }
+
+        var processed = 0;
+        var all = AllRoots();
+        while fileCacheRefreshing and fileCacheRootIndex < all.count()
+              and processed < pageSize {
+            var root = all.get(fileCacheRootIndex);
+            if root == null or root.isOpen == false
+               or Dir.Exists(root.rootPath) == false {
+                fileCacheCursor.Destroy();
+                fileCacheRootIndex = fileCacheRootIndex + 1;
+                fileCachePageOffset = 0;
+                continue;
+            }
+
+            var oldOffset = fileCachePageOffset;
+            if fileCacheCursor.IsOpen() == false
+               and fileCacheCursor.Open(root.rootPath,
+                                        "",
+                                        root.ignorePatterns,
+                                        false) == false {
+                fileCacheRootIndex = fileCacheRootIndex + 1;
+                fileCachePageOffset = 0;
+                continue;
+            }
+            var page = fileCacheCursor.Next(pageSize - processed);
+            if Map.GetBool(page, "valid") == false {
+                fileCacheCursor.Destroy();
+                fileCacheRootIndex = fileCacheRootIndex + 1;
+                fileCachePageOffset = 0;
+                continue;
+            }
+
+            var entries = Map.Get(page, "entries");
+            var i = 0;
+            while entries != null and i < Seq.get_Count(entries) {
+                var entry = Seq.Get(entries, i);
+                if Map.GetBool(entry, "isDirectory") == false {
+                    AddCachedFile(Map.GetStr(entry, "path"));
+                }
+                i = i + 1;
+                processed = processed + 1;
+                fileCacheDirsScanned = fileCacheDirsScanned + 1;
+            }
+
+            var nextOffset = Map.GetInt(page, "nextOffset");
+            fileCachePageOffset = nextOffset;
+            if Map.GetBool(page, "truncated") { fileCacheTruncated = true; }
+            if Map.GetBool(page, "done") {
+                fileCacheCursor.Destroy();
+                fileCacheRootIndex = fileCacheRootIndex + 1;
+                fileCachePageOffset = 0;
+            } else if nextOffset == oldOffset and i == 0 {
+                fileCacheCursor.Destroy();
+                fileCacheRootIndex = fileCacheRootIndex + 1;
+                fileCachePageOffset = 0;
+            } else if processed >= pageSize {
+                break;
+            }
+        }
+
+        if fileCacheRootIndex >= all.count() {
+            fileCacheCursor.Destroy();
+            fileCacheRefreshing = false;
+            fileCacheComplete = true;
+        }
+        return processed;
+    }
+
+    /// @brief Advance project-file discovery by a bounded amount.
+    expose func WarmFileCache(maxDirs: Integer) -> Boolean {
+        if fileCacheComplete { return true; }
+        PumpFileCacheRefresh(maxDirs);
+        return fileCacheComplete;
+    }
+
+    /// @brief Short status string for project-search surfaces.
+    expose func FileCacheStatusText() -> String {
+        if fileCacheComplete and fileCacheTruncated {
+            return "Project file cache ready (truncated)";
+        }
+        if fileCacheComplete { return "Project file cache ready"; }
+        if fileCacheRefreshing {
+            return "Indexing project files: " + fileCache.count() + " found";
+        }
+        return "Project file cache idle";
+    }
+
+    /// @brief Add a canonical file path unless already present.
+    hide func AddCachedFile(path: String) {
+        workspace_file_index.AddUniquePath(fileCache, fileCacheSeen, path);
+    }
+
+    expose func CachedFileCount() -> Integer {
+        EnsureFullFileCache();
+        return fileCache.count();
+    }
+
+    expose func PeekCachedFileCount() -> Integer { return fileCache.count(); }
+
+    expose func FileCacheGeneration() -> Integer { return fileCacheGeneration; }
+
+    expose func IsFileCacheComplete() -> Boolean { return fileCacheComplete; }
+
+    expose func CachedFileAt(index: Integer) -> String {
+        if index < 0 or index >= fileCache.count() { return ""; }
+        return Obj.ToString(fileCache.get(index));
+    }
+}

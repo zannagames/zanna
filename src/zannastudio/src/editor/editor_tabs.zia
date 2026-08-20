@@ -20,6 +20,7 @@ module editor_tabs;
 
 bind "../core/document";
 bind "../core/document_manager";
+bind "../core/session_tab_sink";
 bind "../services/file_utils";
 bind Zanna.GUI as GUI;
 
@@ -50,7 +51,7 @@ bind Zanna.GUI as GUI;
 // ============================================================================
 
 /// @brief Tab bar wrapper with index-addressable tab operations.
-class EditorTabs {
+class EditorTabs implements session_tab_sink.SessionTabSink {
     expose GUI.TabBar tabBar;        // TabBar widget handle.
     expose Integer lastActiveIndex;  // Cache for detecting tab switches in the main loop.
 

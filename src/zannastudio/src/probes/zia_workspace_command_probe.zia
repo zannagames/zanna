@@ -248,6 +248,116 @@ func VerifyWorkspaceQueryWorker(
     return true;
 }
 
+/// @brief Verify live-buffer authority and bounded known-file refresh semantics.
+func VerifyProjectIndexerOverlayLifecycle(
+    ctx: ZiaWorkspaceCommandProbeContext) -> Boolean {
+    var path = Path.Join(ctx.root, "overlay.zia");
+    var diskSource = "module Overlay;\n"
+        + "expose func diskValue() -> Integer { return 1; }\n";
+    var liveSource = "module Overlay;\n"
+        + "expose func liveValue() -> Integer { return 2; }\n";
+    var liveQuery = "module Query;\n"
+        + "bind \"overlay.zia\";\n"
+        + "func start() -> Integer { return liveValue(); }\n";
+    var diskQuery = "module Query;\n"
+        + "bind \"overlay.zia\";\n"
+        + "func start() -> Integer { return diskValue(); }\n";
+    File.WriteAllText(path, diskSource);
+    var docs = new document_manager.DocumentManager();
+    var doc = docs.OpenFile(path);
+    doc.content = liveSource;
+    doc.isModified = true;
+
+    var indexer = new project_index.ProjectIndexer();
+    indexer.Open(ctx.root, docs);
+    indexer.IndexWorkspace();
+    if indexer.IsWorkspaceQueryReady() == false
+       or indexer.syncedOpenPaths.count() != 1
+       or indexer.syncedOpenHashes.count() != 1
+       or indexer.syncedOpenBytes.count() != 1 {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail compact open-overlay identity");
+        return false;
+    }
+
+    // Multiple native events for one path coalesce. Dequeueing consults the
+    // current dirty document, so disk text can never overwrite unsaved symbols.
+    indexer.QueueFileUpdate(path, false, docs);
+    indexer.QueueFileUpdate(path, false, docs);
+    indexer.QueueFileUpdate(path, false, docs);
+    if indexer.pendingFileUpdatePaths.count() - indexer.pendingFileUpdatePos != 1 {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail watcher refresh did not coalesce");
+        return false;
+    }
+    indexer.PumpIndex(8);
+    var liveDefinition = ProjectIndex.Definition(
+        indexer.handle, Path.Join(ctx.root, "query.zia"), liveQuery, 3, 36);
+    var diskDefinition = ProjectIndex.Definition(
+        indexer.handle, Path.Join(ctx.root, "query.zia"), diskQuery, 3, 36);
+    if Map.GetBool(liveDefinition, "found") == false
+       or Map.GetBool(diskDefinition, "found")
+       or indexer.workspaceIndexComplete == false {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail dirty buffer lost watcher authority");
+        return false;
+    }
+
+    // Closing the tab drops compact overlay metadata and restores the current
+    // disk corpus through the same bounded queue.
+    docs.CloseDocument(0);
+    indexer.SyncOpenDocuments(docs);
+    if indexer.syncedOpenPaths.count() != 0 or indexer.HasPendingFileUpdates() == false {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail closed semantic overlay was retained");
+        return false;
+    }
+    indexer.PumpIndex(8);
+    diskDefinition = ProjectIndex.Definition(
+        indexer.handle, Path.Join(ctx.root, "query.zia"), diskQuery, 3, 36);
+    liveDefinition = ProjectIndex.Definition(
+        indexer.handle, Path.Join(ctx.root, "query.zia"), liveQuery, 3, 36);
+    if Map.GetBool(diskDefinition, "found") == false
+       or Map.GetBool(liveDefinition, "found") {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail closed overlay did not restore disk symbols");
+        return false;
+    }
+
+    // A transient missing-file window retains the last good symbols. Recreate
+    // the file before the next frame and the queued retry replaces them cleanly.
+    File.Delete(path);
+    indexer.QueueFileUpdate(path, false, docs);
+    indexer.PumpIndex(1);
+    diskDefinition = ProjectIndex.Definition(
+        indexer.handle, Path.Join(ctx.root, "query.zia"), diskQuery, 3, 36);
+    if Map.GetBool(diskDefinition, "found") == false
+       or indexer.HasPendingFileUpdates() == false {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail transient index read removed known symbols");
+        return false;
+    }
+    File.WriteAllText(path, diskSource);
+    indexer.PumpIndex(1);
+    if indexer.HasPendingFileUpdates()
+       or indexer.workspaceIndexComplete == false
+       or indexer.IsWorkspaceQueryReady() == false {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail transient index read did not recover");
+        return false;
+    }
+
+    indexer.workspaceIndexTruncated = true;
+    if indexer.IsWorkspaceQueryReady()
+       or indexer.PrepareWorkspaceQuery(1) {
+        indexer.Destroy();
+        Terminal.Say("RESULT: fail partial index reported query readiness");
+        return false;
+    }
+    indexer.Destroy();
+    return true;
+}
+
 /// @brief Verify cooperative indexing and bounded References publication.
 func VerifyWorkspaceReferenceCommand(
     ctx: ZiaWorkspaceCommandProbeContext) -> Boolean {
@@ -475,6 +585,7 @@ func VerifyWorkspaceRenameAndCancellation(
 func main() {
     var ctx = new ZiaWorkspaceCommandProbeContext();
     if VerifyWorkspaceQueryWorker(ctx) == false { return; }
+    if VerifyProjectIndexerOverlayLifecycle(ctx) == false { return; }
     if VerifyWorkspaceReferenceCommand(ctx) == false { return; }
     if VerifyWorkspaceRenameAndCancellation(ctx) == false { return; }
 }

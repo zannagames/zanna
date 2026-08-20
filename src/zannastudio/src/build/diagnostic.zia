@@ -18,6 +18,7 @@ final SEV_WARNING = 1;
 final SEV_INFO    = 2;
 
 class Diagnostic {
+    expose String stableId;
     expose String filePath;
     expose Integer line;
     expose Integer column;
@@ -32,6 +33,7 @@ class Diagnostic {
     expose Integer fixitCount;
 
     expose func init() {
+        stableId = "";
         filePath = "";
         line = 0;
         column = 0;

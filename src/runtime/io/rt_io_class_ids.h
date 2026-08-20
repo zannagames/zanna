@@ -23,6 +23,7 @@
 // Links: src/runtime/io/rt_binfile.h, src/runtime/io/rt_memstream.h,
 //        src/runtime/io/rt_stream.h, src/runtime/io/rt_archive.h,
 //        src/runtime/io/rt_savedata.h, src/runtime/io/rt_watcher.h
+//        src/runtime/io/rt_file_ext.h
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -62,3 +63,6 @@
 
 /// @brief Class identifier for binary-buffer handles.
 #define RT_BINBUF_CLASS_ID INT64_C(-0x760009)
+
+/// @brief Class identifier for held cross-process file leases.
+#define RT_FILE_LEASE_CLASS_ID INT64_C(-0x76000A)

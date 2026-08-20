@@ -17,6 +17,8 @@
 
 module search_controller_base;
 
+bind "search_controller_state" as State;
+
 bind "../ui/app_shell";
 bind "../ui/notification_policy";
 bind "../core/project_manager";
@@ -33,6 +35,7 @@ bind "../services/search_paths";
 bind "../services/search_request";
 bind "../services/safe_io";
 bind "../services/workspace_file_index";
+bind "../services/workspace_file_cursor";
 bind "../editor/zia_query";
 bind "../basic/semantic_scan";
 
@@ -41,7 +44,6 @@ bind ZiaCompletion = Zanna.Zia.Completion;
 bind IO = Zanna.IO;
 bind Dir = Zanna.IO.Dir;
 bind Path = Zanna.IO.Path;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
@@ -58,91 +60,8 @@ final MAX_SEARCH_RESULTS = SearchSupport.MAX_SEARCH_RESULTS;
 final SEARCH_MODE_TEXT: Integer = SearchSupport.SEARCH_MODE_TEXT;
 final SEARCH_MODE_WORKSPACE_SYMBOLS: Integer = SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS;
 
-class SearchControllerBase {
-    expose Boolean active;
-    expose Boolean canceled;
-    expose replace_commands.ProjectReplaceController replacer;
-    expose Integer mode;
-    expose String root;
-    expose String query;
-    expose String fileKinds;
-    expose String ignorePatterns;
-    expose String includeGlobs;
-    expose String excludeGlobs;
-    expose Boolean caseSensitive;
-    expose Boolean wholeWord;
-    expose Boolean regexMode;
-    expose search_matcher.SearchProgram searchProgram;
-    expose Integer fileIndex;
-    expose Integer resultCount;
-    expose Integer totalFiles;
-    expose List files;
-    expose Any filesSeen;
-    expose Boolean discovering;
-    expose List pendingDirs;
-    expose Integer directoriesScanned;
-    expose Integer discoveryOffset;
-    expose Boolean discoveryTruncated;
-    expose String discoveryError;
-    expose Integer skippedLargeFiles;
-    expose Boolean resultLimitReached;
-    expose String panelRoot;
-    expose String panelIgnorePatterns;
-    expose Boolean panelUseWorkspace;
-    expose List rootPaths;
-    expose List rootIgnorePatterns;
-    expose Integer rootSearchIndex;
-    expose Integer lastPumpFileCount;
-    expose Integer lastPumpByteCount;
-    expose Integer resultLocationFirstId;
-    expose Integer resultLocationLastId;
-    expose Boolean resultLocationRangePending;
-
-    expose func init() {
-        InitializeState();
-    }
-
-    /// @brief Initialize search state for the public execution controller.
-    expose func InitializeState() {
-        active = false;
-        canceled = false;
-        replacer = new replace_commands.ProjectReplaceController();
-        mode = SEARCH_MODE_TEXT;
-        root = "";
-        query = "";
-        fileKinds = "";
-        ignorePatterns = "";
-        includeGlobs = "";
-        excludeGlobs = "";
-        caseSensitive = false;
-        wholeWord = false;
-        regexMode = false;
-        searchProgram = new search_matcher.SearchProgram();
-        fileIndex = 0;
-        resultCount = 0;
-        totalFiles = 0;
-        files = new List();
-        filesSeen = Map.New();
-        discovering = false;
-        pendingDirs = new List();
-        directoriesScanned = 0;
-        discoveryOffset = 0;
-        discoveryTruncated = false;
-        discoveryError = "";
-        skippedLargeFiles = 0;
-        resultLimitReached = false;
-        panelRoot = "";
-        panelIgnorePatterns = "";
-        panelUseWorkspace = false;
-        rootPaths = new List();
-        rootIgnorePatterns = new List();
-        rootSearchIndex = 0;
-        lastPumpFileCount = 0;
-        lastPumpByteCount = 0;
-        resultLocationFirstId = 0;
-        resultLocationLastId = 0;
-        resultLocationRangePending = false;
-    }
+class SearchControllerBase extends State.SearchControllerState {
+    expose func init() { InitializeState(); }
 
     /// @brief Reveal live search/replace work instead of interrupting it.
     /// @param shell Workbench shell that owns the shared Search panel.
@@ -493,7 +412,7 @@ class SearchControllerBase {
     /// @param shell App shell that owns the search result panel and status bar.
     /// @param request Search request produced by prompt UI, probes, or tests.
     /// @return True when the controller accepted the request and queued work.
-    /// @details Searches discover files cooperatively through FileIndex.Page.
+    /// @details Searches discover files cooperatively through FileIndexCursor.
     ///          This is authoritative for project searches: the run is complete
     ///          only after file-index discovery reports `done`, so users never
     ///          receive a silently partial result from a warming project cache.
@@ -540,7 +459,7 @@ class SearchControllerBase {
     /// @return True when root discovery was initialized.
     /// @details This is the common initializer for single-root, folder, and
     ///          multi-root project searches. The search still discovers files
-    ///          cooperatively through FileIndex.Page and never snapshots a whole
+    ///          cooperatively through FileIndexCursor and never snapshots a whole
     ///          workspace synchronously.
     hide func StartRequestWithRoots(shell: app_shell.AppShell,
                                     request: search_request.SearchRequest,
@@ -575,6 +494,7 @@ class SearchControllerBase {
         rootPaths = paths;
         rootIgnorePatterns = ignores;
         rootSearchIndex = 0;
+        discoveryCursor.Destroy();
         files = new List();
         filesSeen = Map.New();
         pendingDirs = new List();

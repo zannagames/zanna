@@ -1,0 +1,125 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/project_index_state.zia
+// Purpose: Define semantic-index budgets and its single mutable state record.
+// Key invariants:
+//   - Runtime handle, traversal cursor, overlays, and pending updates have one owner.
+//   - Workspace completeness and truncation are explicit independent states.
+// Ownership/Lifetime: ProjectIndexer initializes and destroys this inherited state.
+// Links: zannastudio/src/editor/project_index.zia,
+//        zannastudio/src/editor/project_index_updates.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_index_state;
+
+bind "../core/document_manager";
+bind "../editor/scheduler";
+bind "../services/workspace_file_cursor";
+
+bind Map = Zanna.Collections.Map;
+
+final INDEX_IDLE_MS = 350;
+final INDEX_FILES_PER_FRAME = 8;
+final INDEX_MAX_SOURCE_BYTES = 200000;
+final INDEX_MAX_BYTES_PER_FRAME = 500000;
+final INDEX_ENUM_CAP = 100000;
+final INDEX_FILE_PAGE_SIZE = 512;
+final INDEX_MAX_WORKSPACE_FILES = 20000;
+final INDEX_MAX_WORKSPACE_SOURCE_BYTES = 64000000;
+final INDEX_READ_RETRY_LIMIT = 3;
+final INDEX_MAX_PENDING_FILE_UPDATES = 4096;
+final INDEX_FILE_UPDATE = 0;
+final INDEX_FILE_REMOVE = 1;
+
+class ProjectIndexState {
+    expose Any handle;
+    expose String rootPath;
+    expose String workspaceSignature;
+    expose List rootPaths;
+    expose List rootIgnorePatterns;
+    expose Boolean valid;
+    expose String syncedActivePath;
+    expose Integer syncedActiveRevision;
+    expose String pendingActivePath;
+    expose Integer pendingActiveRevision;
+    expose Integer pendingSinceMs;
+    expose Integer syncCount;
+    expose Any pendingIndexFiles;
+    expose Integer pendingIndexPos;
+    expose Integer pendingIndexRootIndex;
+    expose Integer pendingIndexOffset;
+    expose workspace_file_cursor.WorkspaceFileCursor pendingIndexCursor;
+    expose Boolean pendingIndexDone;
+    expose Boolean indexing;
+    expose Boolean workspaceIndexComplete;
+    expose Integer indexedFileCount;
+    expose Integer workspaceIndexEntryCount;
+    expose Integer workspaceIndexConsideredCount;
+    expose Integer workspaceIndexSourceBytes;
+    expose Boolean workspaceIndexTruncated;
+    expose String workspaceIndexStatusMessage;
+    expose Any pendingIndexSeenPaths;
+    expose Any pendingIndexReadAttempts;
+    expose scheduler.EditorScheduler workScheduler;
+    expose List[String] syncedOpenPaths;
+    expose List[String] syncedOpenHashes;
+    expose List[Integer] syncedOpenBytes;
+    expose List[String] pendingFileUpdatePaths;
+    expose List[Integer] pendingFileUpdateActions;
+    expose List[Integer] pendingFileUpdateAttempts;
+    expose Integer pendingFileUpdatePos;
+    expose document_manager.DocumentManager pendingFileUpdateDocuments;
+    expose Integer lastPendingUpdateBytes;
+    expose Integer updateCount;
+    expose Integer updateBytes;
+    expose Integer contentGeneration;
+
+    expose func InitializeState() {
+        handle = null;
+        rootPath = "";
+        workspaceSignature = "";
+        rootPaths = new List();
+        rootIgnorePatterns = new List();
+        valid = false;
+        syncedActivePath = "";
+        syncedActiveRevision = -1;
+        pendingActivePath = "";
+        pendingActiveRevision = -1;
+        pendingSinceMs = 0;
+        syncCount = 0;
+        pendingIndexFiles = null;
+        pendingIndexPos = 0;
+        pendingIndexRootIndex = 0;
+        pendingIndexOffset = 0;
+        pendingIndexCursor = new workspace_file_cursor.WorkspaceFileCursor();
+        pendingIndexDone = true;
+        indexing = false;
+        workspaceIndexComplete = false;
+        indexedFileCount = 0;
+        workspaceIndexEntryCount = 0;
+        workspaceIndexConsideredCount = 0;
+        workspaceIndexSourceBytes = 0;
+        workspaceIndexTruncated = false;
+        workspaceIndexStatusMessage = "";
+        pendingIndexSeenPaths = Map.New();
+        pendingIndexReadAttempts = Map.New();
+        syncedOpenPaths = new List();
+        syncedOpenHashes = new List();
+        syncedOpenBytes = new List();
+        pendingFileUpdatePaths = new List();
+        pendingFileUpdateActions = new List();
+        pendingFileUpdateAttempts = new List();
+        pendingFileUpdatePos = 0;
+        pendingFileUpdateDocuments = null;
+        lastPendingUpdateBytes = 0;
+        updateCount = 0;
+        updateBytes = 0;
+        contentGeneration = 0;
+    }
+}

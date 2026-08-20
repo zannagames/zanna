@@ -15,6 +15,8 @@
 //   - Ordered reads preserve capture order and tag every stdout/stderr chunk.
 //   - Poll/IsRunning reap the process once and preserve the exit code.
 //   - Destroy is idempotent and closes all OS handles.
+//   - Every child belongs to a runtime-owned process group/job so Kill and
+//     Destroy terminate descendants as well as the direct child.
 //   - A non-null environment sequence replaces the complete child environment.
 //   - Windows environment blocks are UTF-16, case-insensitively sorted, and
 //     passed with CREATE_UNICODE_ENVIRONMENT.
@@ -24,7 +26,8 @@
 //   - Destroy or the GC finalizer terminates a still-running child and releases
 //     pipe buffers and OS resources.
 //
-// Links: src/runtime/system/rt_process.h
+// Links: src/runtime/system/rt_process.h,
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -44,6 +47,7 @@
 
 #include "rt_process.h"
 
+#include "rt_activity_wake.h"
 #include "rt_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
@@ -66,6 +70,8 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/types.h>
@@ -74,8 +80,6 @@
 extern char **environ;
 #endif
 
-/// @brief Initial allocation size for each incremental output buffer.
-#define PROCESS_BUFFER_INITIAL_SIZE 4096
 /// @brief Maximum retained bytes per stdout or stderr buffer.
 #define PROCESS_BUFFER_MAX_SIZE (16 * 1024 * 1024)
 /// @brief Maximum retained bytes in the ordered combined-output queue.
@@ -84,17 +88,6 @@ extern char **environ;
 #define PROCESS_WINDOWS_STDIN_QUEUE_MAX_SIZE (1024 * 1024)
 /// @brief Maximum time finalization waits for an asynchronously terminated Windows child.
 #define PROCESS_WINDOWS_TERMINATE_WAIT_MS 5000u
-
-/// @brief Incremental byte buffer for one redirected child output stream.
-/// @details Storage is retained between reads for reuse. Once the 16 MiB cap is
-///          reached, additional bytes are discarded and @c truncated remains
-///          set until the next take operation reports and clears it.
-typedef struct process_buffer {
-    char *data;    ///< Owned allocation, or NULL before first append.
-    size_t len;    ///< Number of unread bytes currently retained.
-    size_t cap;    ///< Allocated byte capacity of @c data.
-    int truncated; ///< Whether bytes were discarded since the previous take.
-} process_buffer;
 
 enum process_output_stream {
     PROCESS_OUTPUT_STDOUT = 1,
@@ -106,6 +99,7 @@ typedef struct process_output_chunk {
     struct process_output_chunk *next;
     char *data;
     size_t len;
+    size_t cap;
     uint64_t sequence;
     int stream;
 } process_output_chunk;
@@ -128,17 +122,26 @@ typedef struct rt_process_impl {
     int8_t running;
     int8_t destroyed;
     int64_t exit_code;
-    process_buffer stdout_buf;
-    process_buffer stderr_buf;
     process_output_chunk *output_head;
     process_output_chunk *output_tail;
     size_t output_bytes;
+    size_t stdout_output_bytes;
+    size_t stderr_output_bytes;
     uint64_t next_output_sequence;
     int output_truncated;
+    int stdout_output_truncated;
+    int stderr_output_truncated;
+    rt_activity_wake_target *activity_wake;
+    volatile int activity_monitor_stop;
+    volatile int activity_monitor_armed;
+    volatile int stdout_activity_closed;
+    volatile int stderr_activity_closed;
+    int activity_monitor_started;
 
 #if defined(_WIN32)
     HANDLE process;
     HANDLE thread;
+    HANDLE job;
     HANDLE stdout_read;
     HANDLE stderr_read;
     HANDLE stdin_write;
@@ -151,16 +154,25 @@ typedef struct rt_process_impl {
     int stdin_lock_initialized;
     int stdin_shutdown;
     int stdin_failed;
+    HANDLE activity_thread;
+    HANDLE activity_stop_event;
+    HANDLE activity_rearm_event;
 #else
     pid_t pid;
     int stdout_fd;
     int stderr_fd;
     int stdin_fd;
+    pthread_t activity_thread;
+    int activity_control_read;
+    int activity_control_write;
 #endif
 } rt_process_impl;
 
 static void process_finalize(void *obj);
 static void process_close(rt_process_impl *proc);
+static int process_activity_monitor_start(rt_process_impl *proc);
+static void process_activity_monitor_stop(rt_process_impl *proc);
+static void process_activity_rearm(rt_process_impl *proc);
 
 /// @brief Release one local reference to a managed runtime object.
 static void process_release_object(void *object) {
@@ -245,99 +257,6 @@ static int process_validate_string_sequence(void *items,
     return 1;
 }
 
-/// @brief Mark a process output buffer as truncated after reaching its cap.
-/// @details The old behavior silently discarded bytes after 16 MiB. The
-///          buffer now records truncation so the next read can surface a trap
-///          while still returning any bytes already captured if trap hooks
-///          choose to continue.
-/// @param buf Output buffer to mark.
-static void buffer_mark_truncated(process_buffer *buf) {
-    if (buf)
-        buf->truncated = 1;
-}
-
-/// @brief Append captured bytes to a bounded process output buffer.
-/// @details Retains at most PROCESS_BUFFER_MAX_SIZE bytes. Excess input is
-///          discarded after setting the truncation flag; allocation grows
-///          geometrically and existing unread bytes are preserved on failure.
-/// @param buf Destination output buffer.
-/// @param data Borrowed bytes to append.
-/// @param len Number of bytes available at @p data.
-/// @return 1 on success, including a recorded truncation or a no-op input; 0
-///         only when storage growth fails.
-static int buffer_append(process_buffer *buf, const char *data, size_t len) {
-    if (!buf || !data || len == 0)
-        return 1;
-    if (buf->len >= PROCESS_BUFFER_MAX_SIZE) {
-        buffer_mark_truncated(buf);
-        return 1;
-    }
-    if (len > PROCESS_BUFFER_MAX_SIZE - buf->len) {
-        len = PROCESS_BUFFER_MAX_SIZE - buf->len;
-        buffer_mark_truncated(buf);
-    }
-    if (len == 0)
-        return 1;
-
-    size_t needed = buf->len + len;
-    if (needed > buf->cap) {
-        size_t new_cap = buf->cap ? buf->cap : PROCESS_BUFFER_INITIAL_SIZE;
-        while (new_cap < needed && new_cap < PROCESS_BUFFER_MAX_SIZE) {
-            if (new_cap > PROCESS_BUFFER_MAX_SIZE / 2) {
-                new_cap = PROCESS_BUFFER_MAX_SIZE;
-                break;
-            }
-            new_cap *= 2;
-        }
-        if (new_cap < needed)
-            new_cap = needed;
-        char *new_data = (char *)realloc(buf->data, new_cap);
-        if (!new_data)
-            return 0;
-        buf->data = new_data;
-        buf->cap = new_cap;
-    }
-
-    memcpy(buf->data + buf->len, data, len);
-    buf->len += len;
-    return 1;
-}
-
-/// @brief Move the currently unread bytes into a runtime string.
-/// @details Clears the buffer's unread length and truncation marker while
-///          retaining its allocation for later appends. A NULL or empty buffer
-///          yields a fresh empty string.
-/// @param buf Buffer to consume; may be NULL.
-/// @param was_truncated Optional destination for the pre-consumption
-///        truncation state.
-/// @return Newly allocated runtime string containing all retained unread bytes.
-static rt_string buffer_take_string(process_buffer *buf, int *was_truncated) {
-    int truncated = buf ? buf->truncated : 0;
-    if (was_truncated)
-        *was_truncated = truncated;
-    if (!buf) {
-        return empty_string();
-    }
-    buf->truncated = 0;
-    if (buf->len == 0)
-        return empty_string();
-    rt_string out = rt_string_from_bytes(buf->data, buf->len);
-    buf->len = 0;
-    return out;
-}
-
-/// @brief Consume a process output buffer and trap if bytes were discarded.
-/// @param buf Buffer to consume; may be NULL.
-/// @return Newly allocated string containing the retained unread bytes.
-static rt_string buffer_take(process_buffer *buf) {
-    int truncated = 0;
-    rt_string out = buffer_take_string(buf, &truncated);
-    if (truncated) {
-        rt_trap("Process: output truncated");
-    }
-    return out;
-}
-
 /// @brief Store a runtime string under a constant text key in a runtime map.
 /// @details Supplies an empty constant string when @p value is NULL. The map
 ///          operation acquires its own value ownership; this helper does not
@@ -351,60 +270,43 @@ static void map_set_string_owned(void *map, const char *key, rt_string value) {
     rt_map_set_str(map, rt_const_cstr(key), value ? value : rt_const_cstr(""));
 }
 
-/// @brief Consume buffered output into a structured nontrapping read result.
-/// @details Returns a map with a string @c text entry and Boolean @c truncated
-///          entry, clearing both unread bytes and the source truncation marker.
-/// @param buf Output buffer to consume; NULL represents an empty,
-///        nontruncated source.
-/// @return Caller-owned runtime map, or NULL when map allocation fails.
-static void *buffer_take_result(process_buffer *buf) {
-    int truncated = 0;
-    rt_string text = buffer_take_string(buf, &truncated);
-    void *result = rt_map_new();
-    if (!result) {
-        rt_str_release_maybe(text);
-        return NULL;
-    }
-    map_set_string_owned(result, "text", text);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
-    rt_str_release_maybe(text);
-    return result;
+/// @brief Locate one stream's retained-byte counter.
+static size_t *output_stream_bytes(rt_process_impl *proc, int stream) {
+    return stream == PROCESS_OUTPUT_STDERR ? &proc->stderr_output_bytes
+                                           : &proc->stdout_output_bytes;
 }
 
-/// @brief Release all storage and reset an output buffer.
-/// @param buf Buffer to clear; NULL is ignored.
-static void buffer_free(process_buffer *buf) {
-    if (!buf)
-        return;
-    free(buf->data);
-    buf->data = NULL;
-    buf->len = 0;
-    buf->cap = 0;
-    buf->truncated = 0;
+/// @brief Locate one stream's truncation latch.
+static int *output_stream_truncation(rt_process_impl *proc, int stream) {
+    return stream == PROCESS_OUTPUT_STDERR ? &proc->stderr_output_truncated
+                                           : &proc->stdout_output_truncated;
 }
 
-/// @brief Mark all bytes in a retained stream buffer consumed without freeing capacity.
-static void buffer_discard(process_buffer *buf) {
-    if (!buf)
-        return;
-    buf->len = 0;
-    buf->truncated = 0;
+/// @brief Locate one activity monitor's EOF/error latch.
+static volatile int *output_stream_activity_closed(rt_process_impl *proc, int stream) {
+    return stream == PROCESS_OUTPUT_STDERR ? &proc->stderr_activity_closed
+                                           : &proc->stdout_activity_closed;
 }
 
-/// @brief Append one observed stream read to the bounded ordered queue.
+/// @brief Append one observed stream read to the sole retained output queue.
 /// @details Adjacent reads from the same stream are coalesced without crossing
-///          a stream boundary. Queue allocation failure is reported as
-///          truncation because the independent legacy stream buffers remain
-///          available and process polling must not fail solely for tagging.
+///          a stream boundary. Chunk allocations grow geometrically, avoiding
+///          a realloc-and-copy for every 4 KiB pipe read. The tagged queue is
+///          also the backing store for legacy stdout/stderr reads, so captured
+///          bytes are retained once instead of in three parallel buffers.
 static void ordered_output_append(rt_process_impl *proc, int stream, const char *data, size_t len) {
     if (!proc || !data || len == 0)
         return;
-    if (proc->output_bytes >= PROCESS_ORDERED_OUTPUT_MAX_SIZE) {
+    size_t *stream_bytes = output_stream_bytes(proc, stream);
+    int *stream_truncated = output_stream_truncation(proc, stream);
+    if (*stream_bytes >= PROCESS_BUFFER_MAX_SIZE) {
+        *stream_truncated = 1;
         proc->output_truncated = 1;
         return;
     }
-    if (len > PROCESS_ORDERED_OUTPUT_MAX_SIZE - proc->output_bytes) {
-        len = PROCESS_ORDERED_OUTPUT_MAX_SIZE - proc->output_bytes;
+    if (len > PROCESS_BUFFER_MAX_SIZE - *stream_bytes) {
+        len = PROCESS_BUFFER_MAX_SIZE - *stream_bytes;
+        *stream_truncated = 1;
         proc->output_truncated = 1;
     }
     if (len == 0)
@@ -412,31 +314,48 @@ static void ordered_output_append(rt_process_impl *proc, int stream, const char 
 
     process_output_chunk *tail = proc->output_tail;
     if (tail && tail->stream == stream && len <= SIZE_MAX - tail->len) {
-        char *grown = (char *)realloc(tail->data, tail->len + len);
-        if (!grown) {
-            proc->output_truncated = 1;
-            return;
+        size_t needed = tail->len + len;
+        if (needed > tail->cap) {
+            size_t capacity = tail->cap ? tail->cap : 4096u;
+            while (capacity < needed && capacity <= PROCESS_BUFFER_MAX_SIZE / 2u)
+                capacity *= 2u;
+            if (capacity < needed)
+                capacity = needed;
+            char *grown = (char *)realloc(tail->data, capacity);
+            if (!grown) {
+                *stream_truncated = 1;
+                proc->output_truncated = 1;
+                return;
+            }
+            tail->data = grown;
+            tail->cap = capacity;
         }
-        memcpy(grown + tail->len, data, len);
-        tail->data = grown;
+        memcpy(tail->data + tail->len, data, len);
         tail->len += len;
         proc->output_bytes += len;
+        *stream_bytes += len;
+        if (proc->output_bytes > PROCESS_ORDERED_OUTPUT_MAX_SIZE)
+            proc->output_truncated = 1;
         return;
     }
 
     process_output_chunk *chunk = (process_output_chunk *)calloc(1, sizeof(*chunk));
     if (!chunk) {
+        *stream_truncated = 1;
         proc->output_truncated = 1;
         return;
     }
-    chunk->data = (char *)malloc(len);
+    size_t capacity = len < 4096u ? 4096u : len;
+    chunk->data = (char *)malloc(capacity);
     if (!chunk->data) {
         free(chunk);
+        *stream_truncated = 1;
         proc->output_truncated = 1;
         return;
     }
     memcpy(chunk->data, data, len);
     chunk->len = len;
+    chunk->cap = capacity;
     chunk->stream = stream;
     chunk->sequence = proc->next_output_sequence++;
     if (proc->output_tail)
@@ -445,6 +364,93 @@ static void ordered_output_append(rt_process_impl *proc, int stream, const char 
         proc->output_head = chunk;
     proc->output_tail = chunk;
     proc->output_bytes += len;
+    *stream_bytes += len;
+    if (proc->output_bytes > PROCESS_ORDERED_OUTPUT_MAX_SIZE)
+        proc->output_truncated = 1;
+}
+
+/// @brief Consume one stream from the shared tagged queue into a string.
+/// @details Chunks for the other stream remain linked and retain their capture
+///          order. The shared native bytes are copied only once, into the
+///          managed return value, before their queue nodes are released.
+static rt_string stream_output_take_string(rt_process_impl *proc, int stream, int *was_truncated) {
+    if (was_truncated)
+        *was_truncated = 0;
+    if (!proc)
+        return empty_string();
+
+    size_t *stream_bytes = output_stream_bytes(proc, stream);
+    int *stream_truncated = output_stream_truncation(proc, stream);
+    if (was_truncated)
+        *was_truncated = *stream_truncated;
+    if (*stream_bytes == 0) {
+        *stream_truncated = 0;
+        return empty_string();
+    }
+
+    char *bytes = (char *)malloc(*stream_bytes);
+    if (!bytes)
+        return NULL;
+    size_t copied = 0;
+    for (process_output_chunk *chunk = proc->output_head; chunk; chunk = chunk->next) {
+        if (chunk->stream != stream)
+            continue;
+        memcpy(bytes + copied, chunk->data, chunk->len);
+        copied += chunk->len;
+    }
+    rt_string result = rt_string_from_bytes(bytes, copied);
+    free(bytes);
+    if (!result)
+        return NULL;
+
+    process_output_chunk *previous = NULL;
+    process_output_chunk *chunk = proc->output_head;
+    while (chunk) {
+        process_output_chunk *next = chunk->next;
+        if (chunk->stream == stream) {
+            if (previous)
+                previous->next = next;
+            else
+                proc->output_head = next;
+            if (proc->output_tail == chunk)
+                proc->output_tail = previous;
+            proc->output_bytes -= chunk->len;
+            free(chunk->data);
+            free(chunk);
+        } else {
+            previous = chunk;
+        }
+        chunk = next;
+    }
+    *stream_bytes = 0;
+    *stream_truncated = 0;
+    return result;
+}
+
+/// @brief Consume one stream and trap after returning its retained prefix when truncated.
+static rt_string stream_output_take(rt_process_impl *proc, int stream) {
+    int truncated = 0;
+    rt_string result = stream_output_take_string(proc, stream, &truncated);
+    if (truncated)
+        rt_trap("Process: output truncated");
+    return result;
+}
+
+/// @brief Consume one stream into a structured nontrapping read result.
+static void *stream_output_take_result(rt_process_impl *proc, int stream) {
+    int truncated = 0;
+    rt_string output = stream_output_take_string(proc, stream, &truncated);
+    if (!output)
+        return NULL;
+    void *result = rt_map_new();
+    if (!result) {
+        rt_str_release_maybe(output);
+        return NULL;
+    }
+    map_set_string_owned(result, "text", output);
+    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
+    rt_str_release_maybe(output);
+    return result;
 }
 
 /// @brief Free every retained ordered-output chunk.
@@ -461,7 +467,11 @@ static void ordered_output_free(rt_process_impl *proc) {
     proc->output_head = NULL;
     proc->output_tail = NULL;
     proc->output_bytes = 0;
+    proc->stdout_output_bytes = 0;
+    proc->stderr_output_bytes = 0;
     proc->output_truncated = 0;
+    proc->stdout_output_truncated = 0;
+    proc->stderr_output_truncated = 0;
 }
 
 /// @brief Consume ordered output as `{ chunks, truncated }`.
@@ -477,10 +487,13 @@ static void *ordered_output_take_result(rt_process_impl *proc) {
         return NULL;
     }
 
-    for (process_output_chunk *chunk = proc ? proc->output_head : NULL; chunk;
+    size_t remaining = PROCESS_ORDERED_OUTPUT_MAX_SIZE;
+    int truncated = proc && proc->output_truncated;
+    for (process_output_chunk *chunk = proc ? proc->output_head : NULL; chunk && remaining > 0;
          chunk = chunk->next) {
+        size_t emitted = chunk->len < remaining ? chunk->len : remaining;
         void *entry = rt_map_new();
-        rt_string text = rt_string_from_bytes(chunk->data, chunk->len);
+        rt_string text = rt_string_from_bytes(chunk->data, emitted);
         if (!entry || !text) {
             process_release_object(entry);
             rt_str_release_maybe(text);
@@ -497,10 +510,13 @@ static void *ordered_output_take_result(rt_process_impl *proc) {
         rt_str_release_maybe(text);
         rt_seq_push(chunks, entry);
         process_release_object(entry);
+        remaining -= emitted;
+        if (emitted < chunk->len)
+            truncated = 1;
     }
 
     rt_map_set(result, rt_const_cstr("chunks"), chunks);
-    rt_map_set_bool(result, rt_const_cstr("truncated"), proc && proc->output_truncated ? 1 : 0);
+    rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
     process_release_object(chunks);
     if (proc)
         ordered_output_free(proc);
@@ -585,16 +601,22 @@ static rt_process_impl *process_alloc(void) {
 #if defined(_WIN32)
     proc->process = NULL;
     proc->thread = NULL;
+    proc->job = NULL;
     proc->stdout_read = NULL;
     proc->stderr_read = NULL;
     proc->stdin_write = NULL;
     proc->stdin_thread = NULL;
     proc->stdin_event = NULL;
+    proc->activity_thread = NULL;
+    proc->activity_stop_event = NULL;
+    proc->activity_rearm_event = NULL;
 #else
     proc->pid = -1;
     proc->stdout_fd = -1;
     proc->stderr_fd = -1;
     proc->stdin_fd = -1;
+    proc->activity_control_read = -1;
+    proc->activity_control_write = -1;
 #endif
     rt_obj_set_finalizer(proc, process_finalize);
     return proc;
@@ -1165,6 +1187,133 @@ static void close_handle(HANDLE *handle) {
     }
 }
 
+/// @brief Test whether either anonymous output pipe has readable bytes or closed.
+static int process_windows_activity_ready(rt_process_impl *proc) {
+    HANDLE pipes[2] = {proc ? proc->stdout_read : NULL, proc ? proc->stderr_read : NULL};
+    volatile int *closed[2] = {proc ? &proc->stdout_activity_closed : NULL,
+                               proc ? &proc->stderr_activity_closed : NULL};
+    for (int i = 0; i < 2; ++i) {
+        if (!pipes[i] || !closed[i] ||
+            rt_atomic_load_i32(closed[i], __ATOMIC_ACQUIRE))
+            continue;
+        DWORD available = 0;
+        if (!PeekNamedPipe(pipes[i], NULL, 0, NULL, &available, NULL)) {
+            if (!rt_atomic_exchange_i32(closed[i], 1, __ATOMIC_ACQ_REL))
+                return 1;
+            continue;
+        }
+        if (available > 0)
+            return 1;
+    }
+    return 0;
+}
+
+/// @brief Monitor Windows output readiness and process exit off the UI thread.
+/// @details Anonymous pipe handles do not expose a waitable readability event,
+///          so readiness probes are paced behind a 16 ms process/stop wait. One
+///          notification is emitted per UI drain; the main thread explicitly
+///          rearms the monitor afterward, preventing a readable pipe from
+///          spinning either thread.
+static DWORD WINAPI process_activity_monitor_main(LPVOID context) {
+    rt_process_impl *proc = (rt_process_impl *)context;
+    if (!proc)
+        return 1;
+    HANDLE waits[2] = {proc->activity_stop_event, proc->process};
+    for (;;) {
+        if (rt_atomic_load_i32(&proc->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return 0;
+        if (!rt_atomic_load_i32(&proc->activity_monitor_armed, __ATOMIC_ACQUIRE)) {
+            HANDLE paused[2] = {proc->activity_stop_event, proc->activity_rearm_event};
+            DWORD resumed = WaitForMultipleObjects(2, paused, FALSE, INFINITE);
+            if (resumed == WAIT_OBJECT_0 || resumed == WAIT_FAILED)
+                return 0;
+            continue;
+        }
+        int exited = proc->process && WaitForSingleObject(proc->process, 0) == WAIT_OBJECT_0;
+        if (exited || process_windows_activity_ready(proc)) {
+            if (rt_atomic_exchange_i32(
+                    &proc->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+                rt_activity_wake_signal(proc->activity_wake);
+            if (exited)
+                return 0;
+            continue;
+        }
+        DWORD waited = WaitForMultipleObjects(2, waits, FALSE, 16);
+        if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED)
+            return 0;
+        if (waited == WAIT_OBJECT_0 + 1) {
+            if (rt_atomic_exchange_i32(
+                    &proc->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+                rt_activity_wake_signal(proc->activity_wake);
+            return 0;
+        }
+    }
+}
+
+static int process_activity_monitor_start(rt_process_impl *proc) {
+    if (!proc || proc->activity_monitor_started)
+        return proc && proc->activity_monitor_started;
+    proc->activity_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    proc->activity_rearm_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!proc->activity_stop_event || !proc->activity_rearm_event) {
+        close_handle(&proc->activity_stop_event);
+        close_handle(&proc->activity_rearm_event);
+        return 0;
+    }
+    rt_atomic_store_i32(&proc->activity_monitor_stop, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&proc->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    proc->activity_thread = CreateThread(NULL, 0, process_activity_monitor_main, proc, 0, NULL);
+    if (!proc->activity_thread) {
+        close_handle(&proc->activity_stop_event);
+        close_handle(&proc->activity_rearm_event);
+        return 0;
+    }
+    proc->activity_monitor_started = 1;
+    return 1;
+}
+
+static void process_activity_monitor_stop(rt_process_impl *proc) {
+    if (!proc || !proc->activity_monitor_started)
+        return;
+    rt_atomic_store_i32(&proc->activity_monitor_stop, 1, __ATOMIC_RELEASE);
+    SetEvent(proc->activity_stop_event);
+    (void)WaitForSingleObject(proc->activity_thread, INFINITE);
+    close_handle(&proc->activity_thread);
+    close_handle(&proc->activity_stop_event);
+    close_handle(&proc->activity_rearm_event);
+    proc->activity_monitor_started = 0;
+    rt_activity_wake_release(proc->activity_wake);
+    proc->activity_wake = NULL;
+}
+
+static void process_activity_rearm(rt_process_impl *proc) {
+    if (!proc || !proc->activity_monitor_started ||
+        rt_atomic_load_i32(&proc->activity_monitor_stop, __ATOMIC_ACQUIRE))
+        return;
+    rt_atomic_store_i32(&proc->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    SetEvent(proc->activity_rearm_event);
+}
+
+/// @brief Create a Windows Job Object that owns and kills a complete child tree.
+/// @details The child is created suspended and assigned to this job before its
+///          first instruction runs. Closing the last job handle therefore
+///          cannot leave a compiler, game, debugger, or helper grandchild
+///          behind after Studio stops the owning Process handle.
+/// @return Owned job handle, or NULL when the tree guarantee cannot be created.
+static HANDLE process_tree_job_create(void) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (!job)
+        return NULL;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+    memset(&limits, 0, sizeof(limits));
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        CloseHandle(job);
+        return NULL;
+    }
+    return job;
+}
+
 /// @brief Background writer that keeps synchronous anonymous-pipe writes off the UI thread.
 static DWORD WINAPI process_stdin_writer_main(LPVOID context) {
     rt_process_impl *proc = (rt_process_impl *)context;
@@ -1294,20 +1443,19 @@ static int64_t process_stdin_enqueue(rt_process_impl *proc, const char *bytes, s
 ///          the read handle; buffer allocation failure traps and also closes it.
 ///          Returning after one chunk lets process_drain alternate streams.
 /// @param read_pipe Address of the owned parent read handle.
-/// @param buf Destination bounded output buffer.
-/// @param proc Owning process whose ordered output queue receives the chunk.
+/// @param proc Owning process whose shared tagged queue receives the chunk.
 /// @param stream PROCESS_OUTPUT_STDOUT or PROCESS_OUTPUT_STDERR.
 /// @return 1 when bytes were captured, otherwise 0.
-static int drain_pipe_once(HANDLE *read_pipe,
-                           process_buffer *buf,
-                           rt_process_impl *proc,
-                           int stream) {
+static int drain_pipe_once(HANDLE *read_pipe, rt_process_impl *proc, int stream) {
     if (!read_pipe || !*read_pipe)
         return 0;
 
     DWORD available = 0;
     if (!PeekNamedPipe(*read_pipe, NULL, 0, NULL, &available, NULL)) {
-        close_handle(read_pipe);
+        rt_atomic_store_i32(
+            output_stream_activity_closed(proc, stream), 1, __ATOMIC_RELEASE);
+        if (!proc->activity_monitor_started)
+            close_handle(read_pipe);
         return 0;
     }
     if (available == 0)
@@ -1317,12 +1465,10 @@ static int drain_pipe_once(HANDLE *read_pipe,
     DWORD to_read = available < sizeof(chunk) ? available : (DWORD)sizeof(chunk);
     DWORD read_count = 0;
     if (!ReadFile(*read_pipe, chunk, to_read, &read_count, NULL) || read_count == 0) {
-        close_handle(read_pipe);
-        return 0;
-    }
-    if (!buffer_append(buf, chunk, read_count)) {
-        rt_trap("Process: output buffer allocation failed");
-        close_handle(read_pipe);
+        rt_atomic_store_i32(
+            output_stream_activity_closed(proc, stream), 1, __ATOMIC_RELEASE);
+        if (!proc->activity_monitor_started)
+            close_handle(read_pipe);
         return 0;
     }
     ordered_output_append(proc, stream, chunk, read_count);
@@ -1336,13 +1482,12 @@ static void process_drain(rt_process_impl *proc) {
         return;
     for (;;) {
         int progressed = 0;
-        progressed |=
-            drain_pipe_once(&proc->stdout_read, &proc->stdout_buf, proc, PROCESS_OUTPUT_STDOUT);
-        progressed |=
-            drain_pipe_once(&proc->stderr_read, &proc->stderr_buf, proc, PROCESS_OUTPUT_STDERR);
+        progressed |= drain_pipe_once(&proc->stdout_read, proc, PROCESS_OUTPUT_STDOUT);
+        progressed |= drain_pipe_once(&proc->stderr_read, proc, PROCESS_OUTPUT_STDERR);
         if (!progressed)
-            return;
+            break;
     }
+    process_activity_rearm(proc);
 }
 
 /// @brief Poll or wait for a Windows child while continuously draining output.
@@ -1474,11 +1619,8 @@ static rt_process_impl *process_start_impl(
         return NULL;
     }
 
-    HANDLE inherited[3] = {stdin_read, stdout_write, stderr_write};
-    process_win_startup_info si;
-    PROCESS_INFORMATION pi;
-    memset(&pi, 0, sizeof(pi));
-    if (!process_win_startup_init(&si, inherited, 3)) {
+    HANDLE job = process_tree_job_create();
+    if (!job) {
         close_handle(&stdout_read);
         close_handle(&stdout_write);
         close_handle(&stderr_read);
@@ -1492,22 +1634,42 @@ static rt_process_impl *process_start_impl(
         free(cmdline);
         return NULL;
     }
+
+    HANDLE inherited[3] = {stdin_read, stdout_write, stderr_write};
+    process_win_startup_info si;
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof(pi));
+    if (!process_win_startup_init(&si, inherited, 3)) {
+        close_handle(&stdout_read);
+        close_handle(&stdout_write);
+        close_handle(&stderr_read);
+        close_handle(&stderr_write);
+        close_handle(&stdin_read);
+        close_handle(&stdin_write);
+        close_handle(&job);
+        free(env_block);
+        free(wprogram);
+        free(wcmdline);
+        free(wcwd);
+        free(cmdline);
+        return NULL;
+    }
     si.startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
     si.startup.StartupInfo.hStdInput = stdin_read;
     si.startup.StartupInfo.hStdOutput = stdout_write;
     si.startup.StartupInfo.hStdError = stderr_write;
 
-    BOOL ok =
-        CreateProcessW(wprogram,
-                       wcmdline,
-                       NULL,
-                       NULL,
-                       TRUE,
-                       CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-                       env_block,
-                       wcwd,
-                       &si.startup.StartupInfo,
-                       &pi);
+    BOOL ok = CreateProcessW(wprogram,
+                             wcmdline,
+                             NULL,
+                             NULL,
+                             TRUE,
+                             CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                                 EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
+                             env_block,
+                             wcwd,
+                             &si.startup.StartupInfo,
+                             &pi);
 
     process_win_startup_destroy(&si);
     close_handle(&stdout_write);
@@ -1519,16 +1681,32 @@ static rt_process_impl *process_start_impl(
     free(wcwd);
     free(cmdline);
 
+    if (ok) {
+        BOOL assigned = AssignProcessToJobObject(job, pi.hProcess);
+        if (!assigned || ResumeThread(pi.hThread) == (DWORD)-1) {
+            DWORD ignored_exit_code = STILL_ACTIVE;
+            if (assigned)
+                (void)TerminateJobObject(job, 1);
+            (void)rt_win32_terminate_process_bounded(
+                pi.hProcess, 1, PROCESS_WINDOWS_TERMINATE_WAIT_MS, &ignored_exit_code);
+            close_handle(&pi.hProcess);
+            close_handle(&pi.hThread);
+            ok = FALSE;
+        }
+    }
+
     if (!ok) {
         close_handle(&stdout_read);
         close_handle(&stderr_read);
         close_handle(&stdin_write);
+        close_handle(&job);
         return NULL;
     }
 
     rt_process_impl *proc = process_alloc();
     if (!proc) {
         DWORD ignored_exit_code = STILL_ACTIVE;
+        (void)TerminateJobObject(job, 1);
         (void)rt_win32_terminate_process_bounded(
             pi.hProcess, 1, PROCESS_WINDOWS_TERMINATE_WAIT_MS, &ignored_exit_code);
         close_handle(&stdout_read);
@@ -1536,12 +1714,14 @@ static rt_process_impl *process_start_impl(
         close_handle(&stdin_write);
         close_handle(&pi.hProcess);
         close_handle(&pi.hThread);
+        close_handle(&job);
         return NULL;
     }
     proc->started = 1;
     proc->running = 1;
     proc->process = pi.hProcess;
     proc->thread = pi.hThread;
+    proc->job = job;
     proc->stdout_read = stdout_read;
     proc->stderr_read = stderr_read;
     proc->stdin_write = stdin_write;
@@ -1604,6 +1784,122 @@ static void close_fd(int *fd) {
     }
 }
 
+/// @brief Write a coalescing control byte to the POSIX monitor self-pipe.
+static void process_activity_control_signal(rt_process_impl *proc) {
+    if (!proc || proc->activity_control_write < 0)
+        return;
+    const unsigned char byte = 1;
+    ssize_t result;
+    do {
+        result = write(proc->activity_control_write, &byte, 1);
+    } while (result < 0 && errno == EINTR);
+    (void)result;
+}
+
+/// @brief Drain all rearm/stop bytes already queued for the activity monitor.
+static void process_activity_control_drain(rt_process_impl *proc) {
+    if (!proc || proc->activity_control_read < 0)
+        return;
+    unsigned char bytes[64];
+    while (read(proc->activity_control_read, bytes, sizeof(bytes)) > 0) {
+    }
+}
+
+/// @brief Block on POSIX output descriptors and emit one wake per UI drain.
+static void *process_activity_monitor_main(void *context) {
+    rt_process_impl *proc = (rt_process_impl *)context;
+    if (!proc)
+        return NULL;
+    for (;;) {
+        if (rt_atomic_load_i32(&proc->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return NULL;
+        int armed = rt_atomic_load_i32(&proc->activity_monitor_armed, __ATOMIC_ACQUIRE);
+        struct pollfd descriptors[3];
+        nfds_t count = 0;
+        descriptors[count++] =
+            (struct pollfd){.fd = proc->activity_control_read, .events = POLLIN, .revents = 0};
+        if (armed && proc->stdout_fd >= 0 &&
+            !rt_atomic_load_i32(&proc->stdout_activity_closed, __ATOMIC_ACQUIRE))
+            descriptors[count++] =
+                (struct pollfd){.fd = proc->stdout_fd, .events = POLLIN, .revents = 0};
+        if (armed && proc->stderr_fd >= 0 &&
+            !rt_atomic_load_i32(&proc->stderr_activity_closed, __ATOMIC_ACQUIRE))
+            descriptors[count++] =
+                (struct pollfd){.fd = proc->stderr_fd, .events = POLLIN, .revents = 0};
+        int result;
+        do {
+            result = poll(descriptors, count, -1);
+        } while (result < 0 && errno == EINTR);
+        if (result < 0)
+            return NULL;
+        if (descriptors[0].revents != 0)
+            process_activity_control_drain(proc);
+        if (rt_atomic_load_i32(&proc->activity_monitor_stop, __ATOMIC_ACQUIRE))
+            return NULL;
+        int activity = 0;
+        for (nfds_t i = 1; i < count; ++i) {
+            if (descriptors[i].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) {
+                activity = 1;
+                break;
+            }
+        }
+        if (activity && rt_atomic_exchange_i32(
+                            &proc->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
+            rt_activity_wake_signal(proc->activity_wake);
+    }
+}
+
+static int process_activity_monitor_start(rt_process_impl *proc) {
+    if (!proc || proc->activity_monitor_started)
+        return proc && proc->activity_monitor_started;
+    int control[2] = {-1, -1};
+    if (pipe(control) != 0)
+        return 0;
+    for (int i = 0; i < 2; ++i) {
+        int descriptor_flags = fcntl(control[i], F_GETFD, 0);
+        int status_flags = fcntl(control[i], F_GETFL, 0);
+        if (descriptor_flags < 0 || status_flags < 0 ||
+            fcntl(control[i], F_SETFD, descriptor_flags | FD_CLOEXEC) != 0 ||
+            fcntl(control[i], F_SETFL, status_flags | O_NONBLOCK) != 0) {
+            close(control[0]);
+            close(control[1]);
+            return 0;
+        }
+    }
+    proc->activity_control_read = control[0];
+    proc->activity_control_write = control[1];
+    rt_atomic_store_i32(&proc->activity_monitor_stop, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&proc->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    if (pthread_create(&proc->activity_thread, NULL, process_activity_monitor_main, proc) != 0) {
+        close_fd(&proc->activity_control_read);
+        close_fd(&proc->activity_control_write);
+        return 0;
+    }
+    proc->activity_monitor_started = 1;
+    return 1;
+}
+
+static void process_activity_monitor_stop(rt_process_impl *proc) {
+    if (!proc || !proc->activity_monitor_started)
+        return;
+    rt_atomic_store_i32(&proc->activity_monitor_stop, 1, __ATOMIC_RELEASE);
+    process_activity_control_signal(proc);
+    (void)pthread_join(proc->activity_thread, NULL);
+    close_fd(&proc->activity_control_read);
+    close_fd(&proc->activity_control_write);
+    proc->activity_monitor_started = 0;
+    rt_activity_wake_release(proc->activity_wake);
+    proc->activity_wake = NULL;
+}
+
+static void process_activity_rearm(rt_process_impl *proc) {
+    if (!proc || !proc->activity_monitor_started ||
+        rt_atomic_load_i32(&proc->activity_monitor_stop, __ATOMIC_ACQUIRE))
+        return;
+    rt_atomic_store_i32(&proc->activity_monitor_armed, 1, __ATOMIC_RELEASE);
+    process_activity_control_signal(proc);
+}
+
 /// @brief Create a POSIX pipe with close-on-exec set on both descriptors.
 /// @details The child duplicates the pipe ends it needs onto stdin/stdout/stderr
 ///          before exec. Setting FD_CLOEXEC on the original descriptors prevents
@@ -1636,16 +1932,15 @@ static void set_nonblocking(int fd) {
 }
 
 /// @brief Read one available chunk from a nonblocking descriptor.
-/// @details Retries interrupted reads, leaves the descriptor open on EAGAIN,
-///          and closes it on EOF, other read errors, or output-buffer
-///          allocation failure. Returning after one chunk lets the caller
+/// @details Retries interrupted reads and leaves the descriptor open on EAGAIN.
+///          While an activity monitor owns a stable descriptor set, EOF/error
+///          closure is deferred until monitor shutdown. Returning after one chunk lets the caller
 ///          alternate stdout and stderr. Allocation failure raises a trap.
 /// @param fd Address of the owned stdout or stderr descriptor.
-/// @param buf Destination bounded output buffer.
-/// @param proc Owning process whose ordered output queue receives the chunk.
+/// @param proc Owning process whose shared tagged queue receives the chunk.
 /// @param stream PROCESS_OUTPUT_STDOUT or PROCESS_OUTPUT_STDERR.
 /// @return 1 when bytes were captured, otherwise 0.
-static int drain_fd_once(int *fd, process_buffer *buf, rt_process_impl *proc, int stream) {
+static int drain_fd_once(int *fd, rt_process_impl *proc, int stream) {
     if (!fd || *fd < 0)
         return 0;
 
@@ -1653,23 +1948,24 @@ static int drain_fd_once(int *fd, process_buffer *buf, rt_process_impl *proc, in
         char chunk[4096];
         ssize_t count = read(*fd, chunk, sizeof(chunk));
         if (count > 0) {
-            if (!buffer_append(buf, chunk, (size_t)count)) {
-                rt_trap("Process: output buffer allocation failed");
-                close_fd(fd);
-                return 0;
-            }
             ordered_output_append(proc, stream, chunk, (size_t)count);
             return 1;
         }
         if (count == 0) {
-            close_fd(fd);
+            rt_atomic_store_i32(
+                output_stream_activity_closed(proc, stream), 1, __ATOMIC_RELEASE);
+            if (!proc->activity_monitor_started)
+                close_fd(fd);
             return 0;
         }
         if (errno == EINTR)
             continue;
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 0;
-        close_fd(fd);
+        rt_atomic_store_i32(
+            output_stream_activity_closed(proc, stream), 1, __ATOMIC_RELEASE);
+        if (!proc->activity_monitor_started)
+            close_fd(fd);
         return 0;
     }
 }
@@ -1681,13 +1977,12 @@ static void process_drain(rt_process_impl *proc) {
         return;
     for (;;) {
         int progressed = 0;
-        progressed |=
-            drain_fd_once(&proc->stdout_fd, &proc->stdout_buf, proc, PROCESS_OUTPUT_STDOUT);
-        progressed |=
-            drain_fd_once(&proc->stderr_fd, &proc->stderr_buf, proc, PROCESS_OUTPUT_STDERR);
+        progressed |= drain_fd_once(&proc->stdout_fd, proc, PROCESS_OUTPUT_STDOUT);
+        progressed |= drain_fd_once(&proc->stderr_fd, proc, PROCESS_OUTPUT_STDERR);
         if (!progressed)
-            return;
+            break;
     }
+    process_activity_rearm(proc);
 }
 
 /// @brief Normalize a POSIX wait status for the Process API.
@@ -1746,20 +2041,42 @@ static void process_poll_internal(rt_process_impl *proc, int wait) {
     }
 }
 
-/// @brief Wait briefly for a POSIX child to exit after SIGTERM.
-/// @details Destruction is still bounded, but the child now gets a short
-///          cleanup window before the runtime escalates to SIGKILL. The loop
-///          drains output while waiting so a child that exits promptly does not
-///          lose buffered stdout/stderr.
+/// @brief Test whether the dedicated POSIX process group still has members.
+/// @param proc Process handle whose positive child pid is also its group id.
+/// @return Nonzero while the group exists (including an inaccessible group).
+static int process_tree_exists(const rt_process_impl *proc) {
+    if (!proc || proc->pid <= 0)
+        return 0;
+    if (kill(-proc->pid, 0) == 0)
+        return 1;
+    return errno == EPERM;
+}
+
+/// @brief Send one signal to the complete dedicated POSIX process group.
+/// @details The spawn attributes make the direct child the group leader before
+///          it executes user code, removing the parent-side setpgid race.
+/// @param proc Process handle whose pid is the owned group id.
+/// @param signal_number Signal to deliver.
+/// @return Nonzero when the group accepted the signal.
+static int process_signal_tree(const rt_process_impl *proc, int signal_number) {
+    if (!proc || proc->pid <= 0)
+        return 0;
+    return kill(-proc->pid, signal_number) == 0;
+}
+
+/// @brief Wait briefly for a POSIX process tree to exit after SIGTERM.
+/// @details Destruction is bounded, but every descendant gets a short cleanup
+///          window before escalation. The loop drains output and reaps the
+///          direct child while waiting for the process group to disappear.
 /// @param proc Process handle to poll.
 /// @param grace_ms Maximum grace interval in milliseconds.
 static void process_wait_after_sigterm(rt_process_impl *proc, int grace_ms) {
     if (!proc || grace_ms <= 0)
         return;
     int elapsed = 0;
-    while (proc->running && elapsed < grace_ms) {
+    while (process_tree_exists(proc) && elapsed < grace_ms) {
         process_poll_internal(proc, 0);
-        if (!proc->running)
+        if (!process_tree_exists(proc))
             break;
         {
             struct timespec delay;
@@ -2058,8 +2375,38 @@ static rt_process_impl *process_start_impl(
     }
 
     pid_t pid = -1;
-    int spawn_rc = posix_spawn(
-        &pid, resolved_program, &actions, NULL, argv.values, envp.values ? envp.values : environ);
+    posix_spawnattr_t attributes;
+    short spawn_flags = 0;
+    int attr_rc = posix_spawnattr_init(&attributes);
+    int attr_initialized = attr_rc == 0;
+    if (attr_rc == 0)
+        attr_rc = posix_spawnattr_setpgroup(&attributes, 0);
+    if (attr_rc == 0)
+        attr_rc = posix_spawnattr_getflags(&attributes, &spawn_flags);
+    if (attr_rc == 0)
+        attr_rc =
+            posix_spawnattr_setflags(&attributes, (short)(spawn_flags | POSIX_SPAWN_SETPGROUP));
+    if (attr_rc != 0) {
+        if (attr_initialized)
+            posix_spawnattr_destroy(&attributes);
+        posix_spawn_file_actions_destroy(&actions);
+        close_fd(&stdout_pipe[0]);
+        close_fd(&stdout_pipe[1]);
+        close_fd(&stderr_pipe[0]);
+        close_fd(&stderr_pipe[1]);
+        close_fd(&stdin_pipe[0]);
+        close_fd(&stdin_pipe[1]);
+        free_string_vector(&envp);
+        free_string_vector(&argv);
+        return NULL;
+    }
+    int spawn_rc = posix_spawn(&pid,
+                               resolved_program,
+                               &actions,
+                               &attributes,
+                               argv.values,
+                               envp.values ? envp.values : environ);
+    posix_spawnattr_destroy(&attributes);
     posix_spawn_file_actions_destroy(&actions);
     if (spawn_rc != 0) {
         close_fd(&stdout_pipe[0]);
@@ -2084,7 +2431,7 @@ static rt_process_impl *process_start_impl(
 
     rt_process_impl *proc = process_alloc();
     if (!proc) {
-        (void)kill(pid, SIGTERM);
+        (void)kill(-pid, SIGKILL);
         (void)waitpid(pid, NULL, 0);
         close_fd(&stdout_pipe[0]);
         close_fd(&stderr_pipe[0]);
@@ -2114,8 +2461,12 @@ static void process_close(rt_process_impl *proc) {
     if (!proc || proc->destroyed)
         return;
 
+    process_activity_monitor_stop(proc);
+
 #if defined(_WIN32)
     process_poll_internal(proc, 0);
+    if (proc->job && !TerminateJobObject(proc->job, 1))
+        rt_trap("Process: child-tree termination failed");
     if (proc->running && proc->process) {
         DWORD exit_code = STILL_ACTIVE;
         if (rt_win32_terminate_process_bounded(
@@ -2133,14 +2484,15 @@ static void process_close(rt_process_impl *proc) {
     close_handle(&proc->stdin_write);
     close_handle(&proc->thread);
     close_handle(&proc->process);
+    close_handle(&proc->job);
 #else
-    if (proc->running && proc->pid > 0) {
-        (void)kill(proc->pid, SIGTERM);
+    if (proc->pid > 0) {
+        (void)process_signal_tree(proc, SIGTERM);
         process_wait_after_sigterm(proc, 500);
-        if (proc->running) {
-            (void)kill(proc->pid, SIGKILL);
+        if (process_tree_exists(proc))
+            (void)process_signal_tree(proc, SIGKILL);
+        if (proc->running)
             process_poll_internal(proc, 1);
-        }
     } else {
         process_poll_internal(proc, 0);
     }
@@ -2150,8 +2502,6 @@ static void process_close(rt_process_impl *proc) {
     close_fd(&proc->stdin_fd);
 #endif
 
-    buffer_free(&proc->stdout_buf);
-    buffer_free(&proc->stderr_buf);
     ordered_output_free(proc);
     proc->running = 0;
     proc->started = 0;
@@ -2222,6 +2572,21 @@ int64_t rt_process_is_valid(void *handle) {
     return proc && proc->started && !proc->destroyed ? 1 : 0;
 }
 
+/// @brief Attach a lifetime-safe output/exit wake target to a live Process.
+int64_t rt_process_set_activity_wake(void *handle, rt_activity_wake_target *target) {
+    rt_process_impl *proc = process_checked(handle);
+    if (!proc || !target || !proc->started || proc->destroyed)
+        return 0;
+    process_activity_monitor_stop(proc);
+    proc->activity_wake = rt_activity_wake_retain(target);
+    if (!proc->activity_wake || !process_activity_monitor_start(proc)) {
+        rt_activity_wake_release(proc->activity_wake);
+        proc->activity_wake = NULL;
+        return 0;
+    }
+    return 1;
+}
+
 /// @brief Nonblockingly collect output and check for child completion.
 /// @details Reaps a newly exited POSIX child or records a completed Windows
 ///          process exactly once, preserving its exit status for later queries.
@@ -2254,7 +2619,7 @@ rt_string rt_process_read_stdout(void *handle) {
     if (!proc || !proc->started || proc->destroyed)
         return empty_string();
     process_drain(proc);
-    return buffer_take(&proc->stdout_buf);
+    return stream_output_take(proc, PROCESS_OUTPUT_STDOUT);
 }
 
 /// @brief Consume stdout into a structured truncation-aware result.
@@ -2266,9 +2631,9 @@ rt_string rt_process_read_stdout(void *handle) {
 void *rt_process_read_stdout_result(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
-        return buffer_take_result(NULL);
+        return stream_output_take_result(NULL, PROCESS_OUTPUT_STDOUT);
     process_drain(proc);
-    return buffer_take_result(&proc->stdout_buf);
+    return stream_output_take_result(proc, PROCESS_OUTPUT_STDOUT);
 }
 
 /// @brief Consume stderr bytes buffered or immediately available.
@@ -2283,7 +2648,7 @@ rt_string rt_process_read_stderr(void *handle) {
     if (!proc || !proc->started || proc->destroyed)
         return empty_string();
     process_drain(proc);
-    return buffer_take(&proc->stderr_buf);
+    return stream_output_take(proc, PROCESS_OUTPUT_STDERR);
 }
 
 /// @brief Consume stderr into a structured truncation-aware result.
@@ -2295,9 +2660,9 @@ rt_string rt_process_read_stderr(void *handle) {
 void *rt_process_read_stderr_result(void *handle) {
     rt_process_impl *proc = process_checked(handle);
     if (!proc || !proc->started || proc->destroyed)
-        return buffer_take_result(NULL);
+        return stream_output_take_result(NULL, PROCESS_OUTPUT_STDERR);
     process_drain(proc);
-    return buffer_take_result(&proc->stderr_buf);
+    return stream_output_take_result(proc, PROCESS_OUTPUT_STDERR);
 }
 
 /// @brief Consume capture-ordered stdout/stderr chunks without trapping.
@@ -2314,12 +2679,7 @@ void *rt_process_read_output_result(void *handle) {
     if (!proc || !proc->started || proc->destroyed)
         return ordered_output_take_result(NULL);
     process_drain(proc);
-    void *result = ordered_output_take_result(proc);
-    if (result) {
-        buffer_discard(&proc->stdout_buf);
-        buffer_discard(&proc->stderr_buf);
-    }
-    return result;
+    return ordered_output_take_result(proc);
 }
 
 /// @brief Write all possible bytes to the redirected child stdin stream.
@@ -2378,23 +2738,24 @@ int64_t rt_process_exit_code(void *handle) {
 }
 
 /// @brief Request termination of a running child without waiting for it.
-/// @details Uses TerminateProcess with status 1 on Windows and SIGTERM on POSIX.
-///          Poll or wait afterward to observe and reap completion.
+/// @details Uses the per-handle Job Object on Windows and dedicated process
+///          group on POSIX. Poll or wait afterward to observe and reap the
+///          direct child's completion.
 /// @param handle Candidate process handle.
 /// @return 1 when the OS accepted a termination request, otherwise 0.
 int64_t rt_process_kill(void *handle) {
     rt_process_impl *proc = process_checked(handle);
-    if (!proc || !proc->started || proc->destroyed || !proc->running)
+    if (!proc || !proc->started || proc->destroyed)
         return 0;
 
 #if defined(_WIN32)
-    if (!proc->process)
+    if (!proc->job)
         return 0;
-    return TerminateProcess(proc->process, 1) ? 1 : 0;
+    return TerminateJobObject(proc->job, 1) ? 1 : 0;
 #else
     if (proc->pid <= 0)
         return 0;
-    return kill(proc->pid, SIGTERM) == 0 ? 1 : 0;
+    return process_signal_tree(proc, SIGTERM) ? 1 : 0;
 #endif
 }
 

@@ -229,6 +229,8 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
     expose Integer activeToolPanelKind;
     expose Integer panelSelectionRevision;
     expose String lastBuildOutput;
+    expose Integer outputContentGeneration;
+    expose Integer outputResetGeneration;
     expose String outputPartialLine;
     expose Any outputPartialItem;
     expose String outputFilterText;
@@ -483,6 +485,8 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
     hide func InitializePanelDataState() {        activeToolPanelKind = tool_panel_model.PANEL_NONE;
         panelSelectionRevision = 0;
         lastBuildOutput = "";
+        outputContentGeneration = 0;
+        outputResetGeneration = 0;
         outputPartialLine = "";
         outputPartialItem = null;
         outputFilterText = "";
@@ -523,5 +527,12 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
         debugRows = new tool_panel_model.ToolPanelRows();
         variablesRows = new tool_panel_model.ToolPanelRows();
         callStackRows = new tool_panel_model.ToolPanelRows();
+    }
+
+    /// @brief Publish one Output-model mutation to every window host.
+    /// @param reset True when consumers must replace rather than append.
+    hide func NoteOutputContentChanged(reset: Boolean) {
+        outputContentGeneration = outputContentGeneration + 1;
+        if reset { outputResetGeneration = outputResetGeneration + 1; }
     }
 }

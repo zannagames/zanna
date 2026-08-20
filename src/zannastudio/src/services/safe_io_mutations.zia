@@ -1,0 +1,312 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/safe_io_mutations.zia
+// Purpose: Return classified, non-trapping filesystem mutation outcomes.
+// Key invariants:
+//   - Every failure preserves a stable category, retry policy, and runtime detail.
+//   - No-overwrite and atomic-replace semantics remain owned by runtime primitives.
+// Ownership/Lifetime: Stateless; returned result objects own copied diagnostic text.
+// Links: zannastudio/src/services/safe_io.zia,
+//        zannastudio/src/services/safe_io_results.zia
+//
+//===----------------------------------------------------------------------===//
+
+module safe_io_mutations;
+
+bind "safe_io_results";
+
+bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+
+/// @brief Create a directory tree and retain a typed failure.
+func MakeAll(path: String) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure("create-directory", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if Dir.Exists(path) {
+        return safe_io_results.Success("create-directory", path, "");
+    }
+    if File.Exists(path) {
+        return safe_io_results.Failure("create-directory", path, "",
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    try {
+        Dir.MakeAll(path);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "create-directory", path, "", true, false,
+            e.kind, e.code, e.message);
+    }
+    if Dir.Exists(path) {
+        return safe_io_results.Success("create-directory", path, "");
+    }
+    return safe_io_results.Failure("create-directory", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Move a regular file without replacement and retain a typed failure.
+func MoveFile(source: String,
+              destination: String) -> safe_io_results.MutationResult {
+    if source == "" or destination == "" {
+        return safe_io_results.Failure("move-file", source, destination,
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(source) == false {
+        return safe_io_results.Failure("move-file", source, destination,
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    if File.Exists(destination) or Dir.Exists(destination) {
+        return safe_io_results.Failure("move-file", source, destination,
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    try {
+        File.Move(source, destination);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "move-file", source, destination, File.Exists(source),
+            File.Exists(destination) or Dir.Exists(destination),
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(destination) and File.Exists(source) == false {
+        return safe_io_results.Success("move-file", source, destination);
+    }
+    return safe_io_results.Failure("move-file", source, destination,
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Atomically move a staged file over a destination.
+func MoveFileOver(source: String,
+                  destination: String) -> safe_io_results.MutationResult {
+    if source == "" or destination == "" {
+        return safe_io_results.Failure("replace-file", source, destination,
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(source) == false {
+        return safe_io_results.Failure("replace-file", source, destination,
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    if Path.Directory(destination) == ""
+       or Dir.Exists(Path.Directory(destination)) == false {
+        return safe_io_results.Failure("replace-file", source, destination,
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    try {
+        File.MoveOver(source, destination);
+    } catch(e: Error) {
+        var sourceExists = File.Exists(source);
+        var destinationExists = File.Exists(destination);
+        if destinationExists == false { destinationExists = Dir.Exists(destination); }
+        return safe_io_results.CaughtFailure(
+            "replace-file", source, destination, sourceExists, destinationExists,
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(destination) and File.Exists(source) == false {
+        return safe_io_results.Success("replace-file", source, destination);
+    }
+    return safe_io_results.Failure("replace-file", source, destination,
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Copy a regular file without replacement and retain a typed failure.
+func CopyFile(source: String,
+              destination: String) -> safe_io_results.MutationResult {
+    if source == "" or destination == "" {
+        return safe_io_results.Failure("copy-file", source, destination,
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(source) == false {
+        return safe_io_results.Failure("copy-file", source, destination,
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    if File.Exists(destination) or Dir.Exists(destination) {
+        return safe_io_results.Failure("copy-file", source, destination,
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    try {
+        File.Copy(source, destination);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "copy-file", source, destination, File.Exists(source),
+            File.Exists(destination) or Dir.Exists(destination),
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(destination) {
+        return safe_io_results.Success("copy-file", source, destination);
+    }
+    return safe_io_results.Failure("copy-file", source, destination,
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Atomically create text without replacing a destination.
+func CreateTextFile(path: String,
+                    content: String) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure("create-file", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(path) or Dir.Exists(path) {
+        return safe_io_results.Failure("create-file", path, "",
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    if Path.Directory(path) == "" or Dir.Exists(Path.Directory(path)) == false {
+        return safe_io_results.Failure("create-file", path, "",
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    try {
+        File.WriteAllTextNew(path, content);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "create-file", path, "", true, File.Exists(path) or Dir.Exists(path),
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(path) {
+        return safe_io_results.Success("create-file", path, "");
+    }
+    return safe_io_results.Failure("create-file", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Move a directory without replacement and retain a typed failure.
+func MoveDirectory(source: String,
+                   destination: String) -> safe_io_results.MutationResult {
+    if source == "" or destination == "" {
+        return safe_io_results.Failure("move-directory", source, destination,
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if Dir.Exists(source) == false {
+        return safe_io_results.Failure("move-directory", source, destination,
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    if File.Exists(destination) or Dir.Exists(destination) {
+        return safe_io_results.Failure("move-directory", source, destination,
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    try {
+        Dir.Move(source, destination);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "move-directory", source, destination, Dir.Exists(source),
+            File.Exists(destination) or Dir.Exists(destination),
+            e.kind, e.code, e.message);
+    }
+    if Dir.Exists(destination) and Dir.Exists(source) == false {
+        return safe_io_results.Success("move-directory", source, destination);
+    }
+    return safe_io_results.Failure("move-directory", source, destination,
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Recursively delete one explicit directory tree.
+func DeleteDirectoryTree(path: String) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure("delete-directory", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if Dir.Exists(path) == false {
+        return safe_io_results.Success("delete-directory", path, "");
+    }
+    try {
+        Dir.RemoveAll(path);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "delete-directory", path, "", Dir.Exists(path), false,
+            e.kind, e.code, e.message);
+    }
+    if Dir.Exists(path) == false {
+        return safe_io_results.Success("delete-directory", path, "");
+    }
+    return safe_io_results.Failure("delete-directory", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Atomically write complete text and retain a typed failure.
+func WriteAllText(path: String,
+                  content: String) -> safe_io_results.MutationResult {
+    if path == "" or Path.Name(path) == "" {
+        return safe_io_results.Failure("write-file", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if Path.Directory(path) == ""
+       or Dir.Exists(Path.Directory(path)) == false {
+        return safe_io_results.Failure("write-file", path, "",
+                                       safe_io_results.IO_FAILURE_NOT_FOUND);
+    }
+    if Dir.Exists(path) {
+        return safe_io_results.Failure("write-file", path, "",
+                                       safe_io_results.IO_FAILURE_ALREADY_EXISTS);
+    }
+    try {
+        File.WriteAllText(path, content);
+    } catch(e: Error) {
+        var destinationExists = File.Exists(path);
+        if destinationExists == false { destinationExists = Dir.Exists(path); }
+        return safe_io_results.CaughtFailure(
+            "write-file", path, "", true, destinationExists,
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(path) {
+        return safe_io_results.Success("write-file", path, "");
+    }
+    return safe_io_results.Failure("write-file", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Compare/exchange complete text and distinguish conflict from I/O.
+func CompareExchangeTextFile(path: String,
+                             expected: String,
+                             replacement: String,
+                             maxBytes: Integer) -> safe_io_results.MutationResult {
+    if path == "" or maxBytes < 0 {
+        return safe_io_results.Failure("compare-exchange-file", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if Str.get_Length(expected) > maxBytes
+       or Str.get_Length(replacement) > maxBytes {
+        return safe_io_results.Failure("compare-exchange-file", path, "",
+                                       safe_io_results.IO_FAILURE_LIMIT);
+    }
+    try {
+        if File.CompareExchangeAllText(path, expected, replacement) {
+            return safe_io_results.Success("compare-exchange-file", path, "");
+        }
+        return safe_io_results.Failure("compare-exchange-file", path, "",
+                                       safe_io_results.IO_FAILURE_CONFLICT);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "compare-exchange-file", path, "", File.Exists(path), false,
+            e.kind, e.code, e.message);
+    }
+    return safe_io_results.Failure("compare-exchange-file", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}
+
+/// @brief Delete an existing regular file and retain a typed failure.
+func DeleteFile(path: String) -> safe_io_results.MutationResult {
+    if path == "" {
+        return safe_io_results.Failure("delete-file", path, "",
+                                       safe_io_results.IO_FAILURE_INVALID);
+    }
+    if File.Exists(path) == false {
+        return safe_io_results.Success("delete-file", path, "");
+    }
+    try {
+        File.Delete(path);
+    } catch(e: Error) {
+        return safe_io_results.CaughtFailure(
+            "delete-file", path, "", File.Exists(path), false,
+            e.kind, e.code, e.message);
+    }
+    if File.Exists(path) == false {
+        return safe_io_results.Success("delete-file", path, "");
+    }
+    return safe_io_results.Failure("delete-file", path, "",
+                                   safe_io_results.IO_FAILURE_IO);
+}

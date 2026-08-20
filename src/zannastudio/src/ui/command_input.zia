@@ -37,6 +37,7 @@ final COMMAND_INPUT_NEW_PROJECT_GUI: Integer = 9;
 final COMMAND_INPUT_NEW_PROJECT_LIBRARY: Integer = 10;
 final COMMAND_INPUT_NEW_PROJECT_GAME_2D: Integer = 11;
 final COMMAND_INPUT_NEW_PROJECT_GAME_3D: Integer = 12;
+final COMMAND_INPUT_RENAME_TERMINAL: Integer = 13;
 final COMMAND_INPUT_CANCEL: Integer = 99;
 
 final COMMAND_INPUT_WIDTH: Integer = 440;
@@ -203,6 +204,18 @@ class CommandInputOverlay {
              "Rename the symbol at the cursor across supported references.",
              "New name",
              currentName,
+             "Rename");
+    }
+
+    /// @brief Open the overlay for renaming the active terminal session.
+    expose func OpenRenameTerminal(shell: app_shell.AppShell,
+                                   currentTitle: String) {
+        Open(shell,
+             COMMAND_INPUT_RENAME_TERMINAL,
+             "Rename Terminal",
+             "Set a short display name for the active terminal session.",
+             "Terminal name",
+             currentTitle,
              "Rename");
     }
 

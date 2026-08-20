@@ -68,6 +68,7 @@
 #define vgfx_platform_show_cursor VGFX_PREFIXED(vgfx_platform_show_cursor)
 #define vgfx_platform_sleep_ms VGFX_PREFIXED(vgfx_platform_sleep_ms)
 #define vgfx_platform_wait_events VGFX_PREFIXED(vgfx_platform_wait_events)
+#define vgfx_platform_wake_events VGFX_PREFIXED(vgfx_platform_wake_events)
 #define vgfx_platform_warp_cursor VGFX_PREFIXED(vgfx_platform_warp_cursor)
 #define vgfx_platform_yield VGFX_PREFIXED(vgfx_platform_yield)
 /// @}

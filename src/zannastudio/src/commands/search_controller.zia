@@ -41,7 +41,6 @@ bind ZiaCompletion = Zanna.Zia.Completion;
 bind IO = Zanna.IO;
 bind Dir = Zanna.IO.Dir;
 bind Path = Zanna.IO.Path;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
@@ -50,6 +49,7 @@ bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
 bind "search_commands_support" as SearchSupport;
 bind "search_controller_base";
+bind "search_controller_discovery" as Implementation;
 
 final SEARCH_FILES_PER_FRAME = SearchSupport.SEARCH_FILES_PER_FRAME;
 final SEARCH_BYTES_PER_FRAME = SearchSupport.SEARCH_BYTES_PER_FRAME;
@@ -59,10 +59,8 @@ final MAX_SEARCH_RESULTS = SearchSupport.MAX_SEARCH_RESULTS;
 final SEARCH_MODE_TEXT: Integer = SearchSupport.SEARCH_MODE_TEXT;
 final SEARCH_MODE_WORKSPACE_SYMBOLS: Integer = SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS;
 
-class SearchController extends search_controller_base.SearchControllerBase {
-    expose func init() {
-        InitializeState();
-    }
+class SearchController extends Implementation.SearchControllerDiscoveryLayer {
+    expose func init() { InitializeState(); }
 
     expose func StartCachedDirect(shell: app_shell.AppShell,
                                   projMgr: project_manager.ProjectManager,
@@ -118,7 +116,7 @@ class SearchController extends search_controller_base.SearchControllerBase {
     /// @param request Search request produced by prompt UI, probes, or tests.
     /// @return True when cached search state was initialized.
     /// @details Historically this snapped ProjectManager's partial file cache.
-    ///          It now delegates to FileIndex.Page discovery so search results
+    ///          It now delegates to FileIndexCursor discovery so search results
     ///          are complete even while Quick Open's project cache is still
     ///          warming in the background.
     hide func StartCachedRequest(shell: app_shell.AppShell,
@@ -144,34 +142,6 @@ class SearchController extends search_controller_base.SearchControllerBase {
         caseSensitive = request.caseSensitive;
         wholeWord = request.wholeWord;
         regexMode = request.regexMode;
-    }
-
-    /// @brief Return the root currently being discovered.
-    /// @return Absolute root path, or empty when discovery is complete.
-    /// @details File discovery advances root-by-root so FileIndex.Page offsets
-    ///          stay local to the root they came from. Search result rows remain
-    ///          path-based and do not need to know which root found the file.
-    hide func CurrentDiscoveryRoot() -> String {
-        if rootSearchIndex < 0 or rootSearchIndex >= rootPaths.count() { return ""; }
-        return Obj.ToString(rootPaths.get(rootSearchIndex));
-    }
-
-    /// @brief Return ignore patterns for the current discovery root.
-    /// @return Comma-separated ignore pattern list, or empty when unavailable.
-    /// @details The list is aligned with rootPaths by StartRequestWithRoots.
-    ///          Missing entries are tolerated so probes can pass only roots.
-    hide func CurrentDiscoveryIgnores() -> String {
-        if rootSearchIndex < 0 or rootSearchIndex >= rootIgnorePatterns.count() { return ""; }
-        return Obj.ToString(rootIgnorePatterns.get(rootSearchIndex));
-    }
-
-    /// @brief Advance file discovery to the next root.
-    /// @details Resets the FileIndex.Page offset because offsets are root-local.
-    ///          When the final root is consumed, PumpDiscovery marks discovery
-    ///          complete on the next loop check.
-    hide func AdvanceDiscoveryRoot() {
-        rootSearchIndex = rootSearchIndex + 1;
-        discoveryOffset = 0;
     }
 
     expose override func Cancel(shell: app_shell.AppShell) {
@@ -234,6 +204,7 @@ class SearchController extends search_controller_base.SearchControllerBase {
         active = false;
         canceled = true;
         discovering = false;
+        discoveryCursor.Destroy();
         pendingDirs = new List();
         discoveryError = "";
         lastPumpFileCount = 0;
@@ -249,18 +220,27 @@ class SearchController extends search_controller_base.SearchControllerBase {
         while discovering and rootSearchIndex < rootPaths.count() and processed < pageSize {
             var currentRoot = CurrentDiscoveryRoot();
             if currentRoot == "" or Dir.Exists(currentRoot) == false {
+                discoveryCursor.Destroy();
                 discoveryError = "Search file discovery root is unavailable: " + currentRoot;
                 discovering = false;
                 active = false;
                 break;
             }
             var oldOffset = discoveryOffset;
-            var page = FileIndex.Page(currentRoot,
-                                      fileKinds,
-                                      SearchSupport.MergePatternLists(CurrentDiscoveryIgnores(), excludeGlobs),
-                                      false,
-                                      discoveryOffset,
-                                      pageSize - processed);
+            if discoveryCursor.IsOpen() == false
+               and discoveryCursor.Open(
+                       currentRoot,
+                       fileKinds,
+                       SearchSupport.MergePatternLists(
+                           CurrentDiscoveryIgnores(), excludeGlobs),
+                       false) == false {
+                discoveryError = "Search file discovery failed for " + currentRoot
+                                 + ": could not open traversal";
+                discovering = false;
+                active = false;
+                break;
+            }
+            var page = discoveryCursor.Next(pageSize - processed);
             var diagnostics = Map.Get(page, "diagnostics");
             if Map.GetBool(page, "valid") == false
                or (diagnostics != null and Seq.get_Count(diagnostics) > 0) {
@@ -273,6 +253,7 @@ class SearchController extends search_controller_base.SearchControllerBase {
                 }
                 discoveryError = "Search file discovery failed for " + currentRoot
                                  + ": " + detail;
+                discoveryCursor.Destroy();
                 discovering = false;
                 active = false;
                 break;
@@ -300,6 +281,7 @@ class SearchController extends search_controller_base.SearchControllerBase {
                 AdvanceDiscoveryRoot();
             } else if i == 0 and discoveryOffset == oldOffset {
                 discoveryError = "Search file discovery stalled for " + currentRoot;
+                discoveryCursor.Destroy();
                 discovering = false;
                 active = false;
                 break;
@@ -307,6 +289,7 @@ class SearchController extends search_controller_base.SearchControllerBase {
             totalFiles = files.count();
         }
         if rootSearchIndex >= rootPaths.count() {
+            discoveryCursor.Destroy();
             discovering = false;
         }
         return processed;
@@ -423,10 +406,10 @@ class SearchController extends search_controller_base.SearchControllerBase {
             }
         }
     }
-
     /// @brief Capture the id interval owned by the current search result rows.
     hide func BeginResultLocationRange(locStore: locations.LocationStore) {
         if resultLocationRangePending == false or locStore == null { return; }
+        locStore.ClearOwner("search");
         resultLocationFirstId = locStore.nextId;
         resultLocationLastId = resultLocationFirstId - 1;
         resultLocationRangePending = false;

@@ -6,9 +6,10 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/text/rt_codec.c
-// Purpose: Implements encoding and decoding utilities for the Zanna.Text.Codec
-//          class. Provides Base64 (RFC 4648), hexadecimal, and URL percent-
-//          encoding representations of strings and binary data.
+// Purpose: Implements encoding, decoding, and strict UTF-8 validation utilities
+//          for the Zanna.Text.Codec class. Provides Base64 (RFC 4648),
+//          hexadecimal, and URL percent-encoding representations of strings
+//          and binary data.
 //
 // Key invariants:
 //   - Base64 encoding follows RFC 4648 with '=' padding; output is always a
@@ -16,6 +17,8 @@
 //   - Hex encoding produces lowercase hex pairs; decoding accepts upper or lower.
 //   - URL encoding percent-encodes all characters except A-Z, a-z, 0-9, -, _, ., ~.
 //   - Invalid Base64 or Hex input during decoding traps with a diagnostic.
+//   - UTF-8 validation accepts only complete Unicode scalar encodings and does
+//     not reject an otherwise valid embedded U+0000 byte.
 //   - All functions are thread-safe with no global mutable state.
 //
 // Ownership/Lifetime:
@@ -41,6 +44,7 @@
 
 #include "rt_internal.h"
 #include "rt_string.h"
+#include "rt_string_internal.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -74,8 +78,24 @@ static int b64_digit_value(char c) {
 /// @param c Byte to classify.
 /// @return 1 for an RFC 3986 unreserved ASCII byte, otherwise 0.
 static int is_url_unreserved(unsigned char c) {
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-           (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' ||
+           c == '_' || c == '.' || c == '~';
+}
+
+/// @brief Validate every byte in a runtime String as strict UTF-8.
+/// @details Rejects truncated sequences, bare continuation bytes, overlong
+///          encodings, UTF-16 surrogate code points, and values above U+10FFFF.
+///          Embedded U+0000 is valid UTF-8 and remains accepted; callers that
+///          require NUL-free text must enforce that separate content policy.
+/// @param str Borrowed runtime byte string.
+/// @return One when @p str is non-null and wholly valid UTF-8, otherwise zero.
+int64_t rt_codec_is_valid_utf8(rt_string str) {
+    if (!str)
+        return 0;
+    int64_t length = rt_str_len(str);
+    if (length < 0)
+        return 0;
+    return rt_utf8_span_valid(rt_string_cstr(str), (size_t)length) ? 1 : 0;
 }
 
 //=============================================================================

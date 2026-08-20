@@ -1,0 +1,52 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/search_controller_discovery.zia
+// Purpose: Advance explicit workspace-search cursors across configured roots.
+// Key invariants:
+//   - Cursor generations never cross root boundaries.
+//   - Root and ignore-pattern lists remain index-aligned.
+// Ownership/Lifetime: Borrows the cursor owned by SearchController state.
+// Links: zannastudio/src/commands/search_controller.zia
+//
+//===----------------------------------------------------------------------===//
+
+module search_controller_discovery;
+
+bind "search_controller_base" as PreviousLayer;
+bind Obj = Zanna.Core.Object;
+
+class SearchControllerDiscoveryLayer extends PreviousLayer.SearchControllerBase {
+    /// @brief Return the root currently being discovered.
+    /// @return Absolute root path, or empty when discovery is complete.
+    /// @details File discovery advances root-by-root so FileIndexCursor generations
+    ///          stay local to the root they came from. Search result rows remain
+    ///          path-based and do not need to know which root found the file.
+    hide func CurrentDiscoveryRoot() -> String {
+        if rootSearchIndex < 0 or rootSearchIndex >= rootPaths.count() { return ""; }
+        return Obj.ToString(rootPaths.get(rootSearchIndex));
+    }
+
+    /// @brief Return ignore patterns for the current discovery root.
+    /// @return Comma-separated ignore pattern list, or empty when unavailable.
+    /// @details The list is aligned with rootPaths by StartRequestWithRoots.
+    ///          Missing entries are tolerated so probes can pass only roots.
+    hide func CurrentDiscoveryIgnores() -> String {
+        if rootSearchIndex < 0 or rootSearchIndex >= rootIgnorePatterns.count() { return ""; }
+        return Obj.ToString(rootIgnorePatterns.get(rootSearchIndex));
+    }
+
+    /// @brief Advance file discovery to the next root.
+    /// @details Destroys the current explicit traversal because cursors are root-local.
+    ///          When the final root is consumed, PumpDiscovery marks discovery
+    ///          complete on the next loop check.
+    hide func AdvanceDiscoveryRoot() {
+        discoveryCursor.Destroy();
+        rootSearchIndex = rootSearchIndex + 1;
+        discoveryOffset = 0;
+    }
+}

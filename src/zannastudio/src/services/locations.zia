@@ -30,8 +30,8 @@ bind "../commands/file_commands";
 bind "../ui/app_shell";
 
 bind Zanna.GUI;
-bind Convert = Zanna.Core.Convert;
 bind Str = Zanna.String;
+bind Map = Zanna.Collections.Map;
 
 final KIND_SEARCH = 1;
 final KIND_DIAGNOSTIC = 2;
@@ -64,6 +64,7 @@ class Location {
     expose String message;
     expose String sourceRevision;
     expose String sourceLineText;
+    expose String owner;
 
     expose func init() {
         id = 0;
@@ -76,21 +77,51 @@ class Location {
         message = "";
         sourceRevision = "";
         sourceLineText = "";
+        owner = "";
     }
 }
 
 class LocationStore {
     expose List[Location] items;
     expose Integer nextId;
+    hide Any byId;
 
     expose func init() {
         items = [];
         nextId = 1;
+        byId = Map.New();
     }
 
+    /// @brief Retire all targets without reusing their externally visible ids.
+    /// @details Old UI rows can outlive a workspace/panel rebuild by a frame.
+    ///          Keeping nextId monotonic prevents such a row from resolving to
+    ///          an unrelated location created after this clear.
     expose func Clear() {
         items = [];
-        nextId = 1;
+        byId = Map.New();
+    }
+
+    /// @brief Retire one panel/publication owner's targets in linear batch time.
+    /// @details Search and build refreshes use stable owner names so replacing
+    ///          their rows does not retain obsolete navigation records or
+    ///          invalidate locations owned by other panels.
+    expose func ClearOwner(owner: String) -> Integer {
+        if owner == "" { return 0; }
+        var retained: List[Location] = [];
+        var removed = 0;
+        var i = 0;
+        while i < items.count() {
+            var loc = items.get(i);
+            if loc.owner == owner {
+                removed = removed + 1;
+            } else {
+                retained.add(loc);
+            }
+            i = i + 1;
+        }
+        items = retained;
+        RebuildIdIndex();
+        return removed;
     }
 
     /// @brief Remove targets for one file or descendant subtree only.
@@ -116,6 +147,7 @@ class LocationStore {
             i = i + 1;
         }
         items = retained;
+        RebuildIdIndex();
         return removed;
     }
 
@@ -126,6 +158,19 @@ class LocationStore {
                     endColumn: Integer,
                     kind: Integer,
                     message: String) -> String {
+        return AddOwned(filePath, line, column, endLine, endColumn,
+                        kind, message, "");
+    }
+
+    /// @brief Add one target attributed to a replaceable publication owner.
+    expose func AddOwned(filePath: String,
+                         line: Integer,
+                         column: Integer,
+                         endLine: Integer,
+                         endColumn: Integer,
+                         kind: Integer,
+                         message: String,
+                         owner: String) -> String {
         var loc = new Location();
         loc.id = nextId;
         loc.filePath = filePath;
@@ -135,7 +180,9 @@ class LocationStore {
         loc.endColumn = endColumn;
         loc.kind = kind;
         loc.message = message;
+        loc.owner = owner;
         items.add(loc);
+        Map.SetInt(byId, "" + loc.id, items.count() - 1);
         nextId = nextId + 1;
         return "" + loc.id;
     }
@@ -153,27 +200,42 @@ class LocationStore {
                           message: String,
                           sourceRevision: String,
                           sourceLineText: String) -> String {
-        var idText = Add(filePath, line, column, endLine, endColumn,
-                         KIND_SEARCH, message);
-        var loc = Get(idText);
-        if loc != null {
-            loc!.sourceRevision = sourceRevision;
-            loc!.sourceLineText = sourceLineText;
-        }
-        return idText;
+        var loc = new Location();
+        loc.id = nextId;
+        loc.filePath = filePath;
+        loc.line = line;
+        loc.column = column;
+        loc.endLine = endLine;
+        loc.endColumn = endColumn;
+        loc.kind = KIND_SEARCH;
+        loc.message = message;
+        loc.sourceRevision = sourceRevision;
+        loc.sourceLineText = sourceLineText;
+        loc.owner = "search";
+        items.add(loc);
+        Map.SetInt(byId, "" + loc.id, items.count() - 1);
+        nextId = nextId + 1;
+        return "" + loc.id;
     }
 
     expose func Get(idText: String) -> Location? {
-        var id = Convert.ToInt64(idText);
-        var i = 0;
-        while i < items.count() {
-            var loc = items.get(i);
-            if loc.id == id {
-                return loc;
-            }
-            i = i + 1;
+        if idText == "" { return null; }
+        var index = Map.GetIntOr(byId, idText, -1);
+        if index >= 0 and index < items.count() {
+            var loc = items.get(index);
+            if "" + loc.id == idText { return loc; }
         }
         return null;
+    }
+
+    /// @brief Rebuild id-to-index entries after one batch compaction.
+    hide func RebuildIdIndex() {
+        byId = Map.New();
+        var i = 0;
+        while i < items.count() {
+            Map.SetInt(byId, "" + items.get(i).id, i);
+            i = i + 1;
+        }
     }
 
     expose func OpenLocation(shell: app_shell.AppShell,

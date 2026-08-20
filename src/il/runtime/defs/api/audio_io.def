@@ -159,6 +159,7 @@ RT_FUNC(FileCopy,         rt_file_copy,              "Zanna.IO.File.Copy",      
 RT_FUNC(FileDelete,       rt_io_file_delete,         "Zanna.IO.File.Delete",       "void(str)")
 RT_FUNC(FileExists,       rt_io_file_exists,         "Zanna.IO.File.Exists",       "i1(str)")
 RT_FUNC(FileSame,         rt_file_same,              "Zanna.IO.File.SameFile",     "i1(str,str)")
+RT_FUNC(FileIdentityKey,  rt_file_identity_key,      "Zanna.IO.File.IdentityKey",  "str(str)")
 RT_FUNC(FileModified,     rt_file_modified,          "Zanna.IO.File.Modified",     "i64(str)")
 RT_FUNC(FileMove,         rt_file_move,              "Zanna.IO.File.Move",         "void(str,str)")
 RT_FUNC(FileMoveOver,     rt_file_move_over,         "Zanna.IO.File.MoveOver",     "void(str,str)")
@@ -173,6 +174,11 @@ RT_FUNC(FileWriteAllLines, rt_io_file_write_all_lines, "Zanna.IO.File.WriteAllLi
 RT_FUNC(FileWriteAllText, rt_io_file_write_all_text, "Zanna.IO.File.WriteAllText", "void(str,str)")
 RT_FUNC(FileWriteAllTextNew, rt_io_file_write_all_text_new, "Zanna.IO.File.WriteAllTextNew", "void(str,str)")
 RT_FUNC(FileCompareExchangeAllText, rt_io_file_compare_exchange_all_text, "Zanna.IO.File.CompareExchangeAllText", "i1(str,str,str)")
+
+// Cross-process nonblocking lease handle (ADR 0276).
+RT_FUNC(FileLeaseTryAcquire, rt_file_lease_try_acquire, "Zanna.IO.FileLease.TryAcquire", "obj<Zanna.IO.FileLease>(str)")
+RT_FUNC(FileLeaseIsValid,    rt_file_lease_is_valid,    "Zanna.IO.FileLease.IsValid",    "i1(obj)")
+RT_FUNC(FileLeaseRelease,    rt_file_lease_release,     "Zanna.IO.FileLease.Release",    "void(obj)")
 
 //=============================================================================
 // IO - PATH
@@ -210,6 +216,11 @@ RT_FUNC(WorkspaceFileIndexEnumerate, rt_workspace_file_index_enumerate, "Zanna.W
 RT_FUNC(WorkspaceFileIndexPage, rt_workspace_file_index_page, "Zanna.Workspace.FileIndex.Page", "obj<Zanna.Collections.Map>(str,str,str,i1,i64,i64)")
 RT_FUNC(WorkspaceFileIndexStatus, rt_workspace_file_index_status, "Zanna.Workspace.FileIndex.Status", "obj<Zanna.Collections.Map>(str,str,str,i1)")
 RT_FUNC(WorkspaceFileIndexShouldIgnore, rt_workspace_file_index_should_ignore, "Zanna.Workspace.FileIndex.ShouldIgnore", "i1(str,str,str)")
+RT_FUNC(WorkspaceFileIndexCursorNew, rt_workspace_file_index_cursor_new, "Zanna.Workspace.FileIndexCursor.New", "obj(str,str,str,i1)")
+RT_FUNC(WorkspaceFileIndexCursorIsValid, rt_workspace_file_index_cursor_is_valid, "Zanna.Workspace.FileIndexCursor.IsValid", "i1(obj)")
+RT_FUNC(WorkspaceFileIndexCursorGeneration, rt_workspace_file_index_cursor_generation, "Zanna.Workspace.FileIndexCursor.Generation", "i64(obj)")
+RT_FUNC(WorkspaceFileIndexCursorNext, rt_workspace_file_index_cursor_next, "Zanna.Workspace.FileIndexCursor.Next", "obj<Zanna.Collections.Map>(obj,i64)")
+RT_FUNC(WorkspaceFileIndexCursorDestroy, rt_workspace_file_index_cursor_destroy, "Zanna.Workspace.FileIndexCursor.Destroy", "void(obj)")
 RT_FUNC(WorkspaceWatcherPollBatch, rt_workspace_watcher_poll_batch, "Zanna.Workspace.WorkspaceWatcher.PollBatch", "obj<Zanna.Collections.Seq>(obj,i64)")
 
 RT_FUNC(ProjectManifestParseText, rt_project_manifest_parse_text, "Zanna.Project.Manifest.ParseText", "obj<Zanna.Collections.Map>(str)")
@@ -217,10 +228,17 @@ RT_FUNC(ProjectManifestParseFile, rt_project_manifest_parse_file, "Zanna.Project
 
 RT_FUNC(WorkspaceEditValidate, rt_workspace_edit_validate, "Zanna.Workspace.Edit.Validate", "obj<Zanna.Collections.Map>(obj)")
 RT_FUNC(WorkspaceEditApply, rt_workspace_edit_apply, "Zanna.Workspace.Edit.Apply", "obj<Zanna.Collections.Map>(obj)")
+RT_FUNC(WorkspaceEditPrepare, rt_workspace_edit_prepare, "Zanna.Workspace.Edit.Prepare", "obj<Zanna.Workspace.PreparedEdit>(obj)")
 RT_FUNC(WorkspaceEditValidateInRoot, rt_workspace_edit_validate_in_root, "Zanna.Workspace.Edit.ValidateInRoot", "obj<Zanna.Collections.Map>(obj,str)")
 RT_FUNC(WorkspaceEditApplyInRoot, rt_workspace_edit_apply_in_root, "Zanna.Workspace.Edit.ApplyInRoot", "obj<Zanna.Collections.Map>(obj,str)")
+RT_FUNC(WorkspaceEditPrepareInRoot, rt_workspace_edit_prepare_in_root, "Zanna.Workspace.Edit.PrepareInRoot", "obj<Zanna.Workspace.PreparedEdit>(obj,str)")
 RT_FUNC(WorkspaceEditValidateInRoots, rt_workspace_edit_validate_in_roots, "Zanna.Workspace.Edit.ValidateInRoots", "obj<Zanna.Collections.Map>(obj,obj)")
 RT_FUNC(WorkspaceEditApplyInRoots, rt_workspace_edit_apply_in_roots, "Zanna.Workspace.Edit.ApplyInRoots", "obj<Zanna.Collections.Map>(obj,obj)")
+RT_FUNC(WorkspaceEditPrepareInRoots, rt_workspace_edit_prepare_in_roots, "Zanna.Workspace.Edit.PrepareInRoots", "obj<Zanna.Workspace.PreparedEdit>(obj,obj)")
+RT_FUNC(WorkspacePreparedEditIsValid, rt_workspace_edit_prepared_is_valid, "Zanna.Workspace.PreparedEdit.IsValid", "i1(obj)")
+RT_FUNC(WorkspacePreparedEditResult, rt_workspace_edit_prepared_result, "Zanna.Workspace.PreparedEdit.Result", "obj<Zanna.Collections.Map>(obj)")
+RT_FUNC(WorkspacePreparedEditApply, rt_workspace_edit_prepared_apply, "Zanna.Workspace.PreparedEdit.Apply", "obj<Zanna.Collections.Map>(obj)")
+RT_FUNC(WorkspacePreparedEditDestroy, rt_workspace_edit_prepared_destroy, "Zanna.Workspace.PreparedEdit.Destroy", "void(obj)")
 
 //=============================================================================
 // IO - ASSETS
@@ -259,6 +277,18 @@ RT_CLASS_BEGIN("Zanna.Workspace.FileIndex", WorkspaceFileIndex, "none", none)
     RT_METHOD("ShouldIgnore", "i1(str,str,str)",                            WorkspaceFileIndexShouldIgnore)
 RT_CLASS_END()
 
+/// @summary Provides explicitly owned, generation-tagged workspace traversals.
+/// @details
+/// `Zanna.Workspace.FileIndexCursor` retains one traversal until `Destroy`; callers use
+/// `Generation` to reject pages from an obsolete cursor after resetting discovery.
+RT_CLASS_BEGIN("Zanna.Workspace.FileIndexCursor", WorkspaceFileIndexCursor, "none", WorkspaceFileIndexCursorNew)
+    RT_METHOD("New",        "obj(str,str,str,i1)",                        WorkspaceFileIndexCursorNew)
+    RT_METHOD("IsValid",    "i1(obj)",                                   WorkspaceFileIndexCursorIsValid)
+    RT_METHOD("Generation", "i64(obj)",                                  WorkspaceFileIndexCursorGeneration)
+    RT_METHOD("Next",       "obj<Zanna.Collections.Map>(obj,i64)",       WorkspaceFileIndexCursorNext)
+    RT_METHOD("Destroy",    "void(obj)",                                 WorkspaceFileIndexCursorDestroy)
+RT_CLASS_END()
+
 /// @summary Provides Workspace Watcher constants and static operations for workspace tooling.
 /// @details
 /// `Zanna.Workspace.WorkspaceWatcher` is a static runtime surface and does not require an instance.
@@ -279,15 +309,30 @@ RT_CLASS_END()
 /// @summary Provides Edit constants and static operations for workspace tooling.
 /// @details
 /// `Zanna.Workspace.Edit` is a static runtime surface and does not require an instance. Its public
-/// Its public surface exposes operations including `Validate`, `Apply`, `ValidateInRoot`,
-/// `ApplyInRoot`, `ValidateInRoots`, and `ApplyInRoots`.
+/// Its public surface exposes legacy one-shot validation/application plus explicitly owned
+/// prepared transactions. Prepared transactions retain one immutable validation snapshot and
+/// narrow commit races without repeating target reads.
 RT_CLASS_BEGIN("Zanna.Workspace.Edit", WorkspaceEdit, "none", none)
     RT_METHOD("Validate",        "obj<Zanna.Collections.Map>(obj)",     WorkspaceEditValidate)
     RT_METHOD("Apply",           "obj<Zanna.Collections.Map>(obj)",     WorkspaceEditApply)
+    RT_METHOD("Prepare",         "obj<Zanna.Workspace.PreparedEdit>(obj)", WorkspaceEditPrepare)
     RT_METHOD("ValidateInRoot",  "obj<Zanna.Collections.Map>(obj,str)", WorkspaceEditValidateInRoot)
     RT_METHOD("ApplyInRoot",     "obj<Zanna.Collections.Map>(obj,str)", WorkspaceEditApplyInRoot)
+    RT_METHOD("PrepareInRoot",   "obj<Zanna.Workspace.PreparedEdit>(obj,str)", WorkspaceEditPrepareInRoot)
     RT_METHOD("ValidateInRoots", "obj<Zanna.Collections.Map>(obj,obj)", WorkspaceEditValidateInRoots)
     RT_METHOD("ApplyInRoots",    "obj<Zanna.Collections.Map>(obj,obj)", WorkspaceEditApplyInRoots)
+    RT_METHOD("PrepareInRoots",  "obj<Zanna.Workspace.PreparedEdit>(obj,obj)", WorkspaceEditPrepareInRoots)
+RT_CLASS_END()
+
+/// @summary Provides explicit lifecycle operations for a prepared workspace-edit transaction.
+/// @details
+/// A prepared edit is immutable and one-shot. `Result` clones its validation diagnostics,
+/// `Apply` consumes it, and `Destroy` releases retained source images without changing files.
+RT_CLASS_BEGIN("Zanna.Workspace.PreparedEdit", WorkspacePreparedEdit, "none", none)
+    RT_METHOD("IsValid", "i1(obj)", WorkspacePreparedEditIsValid)
+    RT_METHOD("Result",  "obj<Zanna.Collections.Map>(obj)", WorkspacePreparedEditResult)
+    RT_METHOD("Apply",   "obj<Zanna.Collections.Map>(obj)", WorkspacePreparedEditApply)
+    RT_METHOD("Destroy", "void(obj)", WorkspacePreparedEditDestroy)
 RT_CLASS_END()
 
 //=============================================================================

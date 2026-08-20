@@ -1,0 +1,394 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/recovery_store_base.zia
+// Purpose: Recovery namespace ownership, swap identity, and write orchestration.
+// Key invariants:
+//   - Every process mutates only its leased namespace or namespaces it claims.
+//   - Swap keys include process/document nonces plus the complete identity.
+//   - Save/close cancellation serializes with canonical worker publication.
+// Ownership/Lifetime:
+//   - The base owns all leases and one active plus one coalesced write request.
+// Links: zannastudio/src/core/recovery_types.zia,
+//        zannastudio/src/core/recovery_store.zia
+//
+//===----------------------------------------------------------------------===//
+
+module recovery_store_base;
+
+bind "document";
+bind "document_manager";
+bind "../services/safe_io";
+bind "recovery_types" as Types;
+
+bind File = Zanna.IO.File;
+bind FileLease = Zanna.IO.FileLease;
+bind Path = Zanna.IO.Path;
+bind Dir = Zanna.IO.Dir;
+bind Hash = Zanna.Crypto.Hash;
+bind Json = Zanna.Data.Json;
+bind Uuid = Zanna.Text.Uuid;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Map = Zanna.Collections.Map;
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+bind Monitor = Zanna.Threads.Monitor;
+
+final RECOVERY_SHUTDOWN_WAIT_MS = Types.RECOVERY_SHUTDOWN_WAIT_MS;
+final RECOVERY_FORMAT_VERSION = Types.RECOVERY_FORMAT_VERSION;
+final RECOVERY_NAMESPACE_PREFIX = Types.RECOVERY_NAMESPACE_PREFIX;
+final RECOVERY_RETIRED_PREFIX = Types.RECOVERY_RETIRED_PREFIX;
+final RECOVERY_CLEAN_MARKER = Types.RECOVERY_CLEAN_MARKER;
+
+type RecoveryWriteRequest = Types.RecoveryWriteRequest;
+
+/// @brief Adapter suitable for Async.RunOwned's function-reference syntax.
+func RunRecoveryWrite(request: RecoveryWriteRequest) -> Any {
+    return Types.WriteRecoveryRequest(request);
+}
+
+/// @brief Own recovery leases and publish current-instance swap snapshots.
+class RecoveryStoreBase {
+    expose String recoveryRoot;
+    expose String recoveryDir;
+    expose String instanceId;
+    expose Boolean uncleanExit;
+    hide Boolean lockClaimed;
+    hide Any sessionLease;
+    hide List claimedRecoveryDirs;
+    hide List claimedRecoveryLeases;
+    hide Boolean legacyRecoveryClaimed;
+    expose RecoveryWriteRequest activeRequest;
+    expose RecoveryWriteRequest pendingRequest;
+    expose Any activeFuture;
+    expose Integer nextGeneration;
+    expose Integer asyncQueuedRequests;
+    expose Integer asyncCompletedRequests;
+    expose Integer asyncCancelledRequests;
+    expose Integer asyncCommittedDocuments;
+    expose String lastAsyncError;
+
+    hide func InitializeRecoveryState() {
+        recoveryRoot = "";
+        recoveryDir = "";
+        instanceId = "";
+        uncleanExit = false;
+        lockClaimed = false;
+        sessionLease = null;
+        claimedRecoveryDirs = new List();
+        claimedRecoveryLeases = new List();
+        legacyRecoveryClaimed = false;
+        activeRequest = null;
+        pendingRequest = null;
+        activeFuture = null;
+        nextGeneration = 1;
+        asyncQueuedRequests = 0;
+        asyncCompletedRequests = 0;
+        asyncCancelledRequests = 0;
+        asyncCommittedDocuments = 0;
+        lastAsyncError = "";
+    }
+
+    /// @brief Create and lease a fresh namespace after claiming abandoned ones.
+    expose func Setup(settingsDir: String) -> Boolean {
+        if settingsDir == "" or lockClaimed { return false; }
+        recoveryRoot = Path.Join(settingsDir, "recovery");
+        if safe_io.MakeAll(recoveryRoot) == false {
+            recoveryRoot = "";
+            recoveryDir = "";
+            return false;
+        }
+        CleanupRetiredNamespaces();
+        ClaimAbandonedNamespaces();
+        legacyRecoveryClaimed = File.Exists(
+            Path.Join(recoveryRoot, "session.lock"));
+        if legacyRecoveryClaimed { uncleanExit = true; }
+
+        var attempts = 0;
+        while attempts < 16 and lockClaimed == false {
+            instanceId = NewRecoveryId();
+            if instanceId == "" { break; }
+            recoveryDir = Path.Join(
+                recoveryRoot, RECOVERY_NAMESPACE_PREFIX + instanceId);
+            if Dir.Exists(recoveryDir) {
+                attempts = attempts + 1;
+                continue;
+            }
+            if safe_io.MakeAll(recoveryDir) == false {
+                attempts = attempts + 1;
+                continue;
+            }
+            sessionLease = FileLease.TryAcquire(LockPath());
+            lockClaimed = sessionLease != null
+                and FileLease.IsValid(sessionLease);
+            if lockClaimed == false {
+                sessionLease = null;
+                safe_io.DeleteFile(LockPath());
+                RemoveEmptyRecoveryDirectory(recoveryDir);
+                recoveryDir = "";
+            }
+            attempts = attempts + 1;
+        }
+        return lockClaimed;
+    }
+
+    hide func LockPath() -> String {
+        return Path.Join(recoveryDir, "session.lock");
+    }
+
+    /// @brief Claim abandoned namespaces without touching live owners.
+    hide func ClaimAbandonedNamespaces() {
+        claimedRecoveryDirs = new List();
+        claimedRecoveryLeases = new List();
+        uncleanExit = false;
+        var listed = safe_io.ListDirectories(recoveryRoot);
+        if listed.ok == false { return; }
+        var i = 0;
+        while i < listed.items.count() {
+            var name = Obj.ToString(listed.items.get(i));
+            var namespaceId = "";
+            if Str.StartsWith(name, RECOVERY_NAMESPACE_PREFIX) {
+                namespaceId = Str.Mid(
+                    name, Str.get_Length(RECOVERY_NAMESPACE_PREFIX) + 1);
+            }
+            if namespaceId != "" and Uuid.IsValid(namespaceId) {
+                var directory = Path.Join(recoveryRoot, name);
+                var lease = FileLease.TryAcquire(
+                    Path.Join(directory, "session.lock"));
+                if lease != null and FileLease.IsValid(lease) {
+                    if File.Exists(Path.Join(directory, RECOVERY_CLEAN_MARKER)) {
+                        FileLease.Release(lease);
+                        RetireRecoveryNamespace(directory, namespaceId);
+                    } else {
+                        claimedRecoveryDirs.add(directory);
+                        claimedRecoveryLeases.add(lease);
+                        uncleanExit = true;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func CleanupRetiredNamespaces() {
+        var listed = safe_io.ListDirectories(recoveryRoot);
+        if listed.ok == false { return; }
+        var i = 0;
+        while i < listed.items.count() {
+            var name = Obj.ToString(listed.items.get(i));
+            if Str.StartsWith(name, RECOVERY_RETIRED_PREFIX) {
+                var id = Str.Mid(
+                    name, Str.get_Length(RECOVERY_RETIRED_PREFIX) + 1);
+                if Uuid.IsValid(id) {
+                    var directory = Path.Join(recoveryRoot, name);
+                    safe_io.DeleteFile(Path.Join(directory, "session.lock"));
+                    safe_io.DeleteFile(Path.Join(directory, RECOVERY_CLEAN_MARKER));
+                    RemoveEmptyRecoveryDirectory(directory);
+                }
+            }
+            i = i + 1;
+        }
+    }
+
+    hide func NewRecoveryId() -> String {
+        try { return Uuid.Generate(); } catch { return ""; }
+        return "";
+    }
+
+    hide func KeyFor(doc: document.Document) -> String {
+        if doc.filePath != "" { return doc.filePath; }
+        return "untitled:" + doc.fileName;
+    }
+
+    hide func SwapBase(doc: document.Document) -> String {
+        if doc == null or instanceId == "" { return ""; }
+        if doc.recoveryId == "" { doc.recoveryId = NewRecoveryId(); }
+        if doc.recoveryId == "" { return ""; }
+        var identity = KeyFor(doc);
+        var digest = Hash.Sha256(
+            instanceId + "\n" + doc.recoveryId + "\n" + identity);
+        if digest == "" { return ""; }
+        return Path.Join(recoveryDir, "swap-" + digest);
+    }
+
+    hide func RecoveryMetadata(doc: document.Document) -> String {
+        if doc == null or doc.recoveryId == "" { return ""; }
+        var metadata = Map.New();
+        Map.SetInt(metadata, "version", RECOVERY_FORMAT_VERSION);
+        Map.SetStr(metadata, "instanceId", instanceId);
+        Map.SetStr(metadata, "documentId", doc.recoveryId);
+        Map.SetStr(metadata, "identity", KeyFor(doc));
+        Map.SetStr(metadata, "path", doc.filePath);
+        return Json.Format(metadata);
+    }
+
+    /// @brief Publish completed work and start the latest coalesced request.
+    expose func PumpAsync() -> Boolean {
+        if activeFuture != null and Future.get_IsDone(activeFuture) {
+            asyncCompletedRequests = asyncCompletedRequests + 1;
+            if Future.get_IsError(activeFuture) {
+                lastAsyncError = Future.get_Error(activeFuture);
+            } else if activeRequest != null {
+                asyncCommittedDocuments = asyncCommittedDocuments
+                    + activeRequest.committedCount;
+                if activeRequest.succeeded == false {
+                    lastAsyncError = activeRequest.error;
+                } else if activeRequest.cancelled == false {
+                    lastAsyncError = "";
+                }
+            }
+            activeFuture = null;
+            activeRequest = null;
+        }
+        if activeFuture == null and pendingRequest != null {
+            var next = pendingRequest;
+            pendingRequest = null;
+            StartRequest(next);
+        }
+        return IsAsyncBusy();
+    }
+
+    expose func IsAsyncBusy() -> Boolean {
+        return activeFuture != null or pendingRequest != null;
+    }
+
+    /// @brief Prevent active publication and discard coalesced work.
+    expose func CancelAsync() {
+        pendingRequest = null;
+        if activeRequest != null {
+            Monitor.Enter(activeRequest);
+            if activeRequest.cancelled == false {
+                activeRequest.cancelled = true;
+                asyncCancelledRequests = asyncCancelledRequests + 1;
+            }
+            Monitor.Exit(activeRequest);
+        }
+    }
+
+    /// @brief Cancel and drain recovery publication before clean persistence.
+    expose func WaitForShutdown() -> Boolean {
+        CancelAsync();
+        if activeFuture == null { return pendingRequest == null; }
+        var finished = false;
+        try {
+            finished = Future.WaitFor(
+                activeFuture, RECOVERY_SHUTDOWN_WAIT_MS);
+        } catch {
+            return false;
+        }
+        if finished == false { return false; }
+        var failed = Future.get_IsError(activeFuture);
+        if failed { lastAsyncError = Future.get_Error(activeFuture); }
+        activeFuture = null;
+        activeRequest = null;
+        return failed == false and pendingRequest == null;
+    }
+
+    /// @brief Remove swaps no longer owned by a modified open document.
+    expose func PruneStaleSwaps(docMgr: document_manager.DocumentManager) -> Boolean {
+        if recoveryDir == "" or docMgr == null { return false; }
+        CancelAsync();
+        var result = safe_io.ListFiles(recoveryDir);
+        if result.ok == false { return false; }
+        var allRemoved = true;
+        var i = 0;
+        while i < result.items.count() {
+            var name = Obj.ToString(result.items.get(i));
+            if Str.EndsWith(name, ".meta") or Str.EndsWith(name, ".path") {
+                var sidecar = Path.Join(recoveryDir, name);
+                var base = Str.MidLen(
+                    sidecar, 1, Str.get_Length(sidecar) - 5);
+                if ModifiedDocumentOwnsSwap(docMgr, base) == false {
+                    if safe_io.DeleteFile(sidecar) == false { allRemoved = false; }
+                    if safe_io.DeleteFile(base + ".swp") == false { allRemoved = false; }
+                }
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < result.items.count() {
+            var name = Obj.ToString(result.items.get(i));
+            if Str.EndsWith(name, ".swp") {
+                var swap = Path.Join(recoveryDir, name);
+                var base = Str.MidLen(swap, 1, Str.get_Length(swap) - 4);
+                if File.Exists(base + ".meta") == false
+                   and File.Exists(base + ".path") == false
+                   and safe_io.DeleteFile(swap) == false {
+                    allRemoved = false;
+                }
+            }
+            i = i + 1;
+        }
+        return allRemoved;
+    }
+
+    hide func StartRequest(request: RecoveryWriteRequest) -> Boolean {
+        if request == null or request.snapshots.count() == 0 { return false; }
+        activeRequest = request;
+        try { activeFuture = Async.RunOwned(&RunRecoveryWrite, request); }
+        catch { activeFuture = null; }
+        if activeFuture == null {
+            activeRequest = null;
+            lastAsyncError = "Could not start crash-recovery worker";
+            return false;
+        }
+        return true;
+    }
+
+    hide func ModifiedDocumentOwnsSwap(
+        docMgr: document_manager.DocumentManager, base: String) -> Boolean {
+        var i = 0;
+        while i < docMgr.GetCount() {
+            var doc = docMgr.GetDocument(i);
+            if doc != null and doc!.isModified and doc!.isReadOnlyPreview == false
+               and SwapBase(doc!) == base {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    expose func DeleteSwap(doc: document.Document) -> Boolean {
+        if recoveryDir == "" or doc == null { return false; }
+        CancelAsync();
+        var base = SwapBase(doc);
+        return safe_io.DeleteFile(base + ".swp")
+            and safe_io.DeleteFile(base + ".path")
+            and safe_io.DeleteFile(base + ".meta");
+    }
+
+    hide func WriteCleanMarker(directory: String) -> Boolean {
+        if directory == "" { return false; }
+        return safe_io.WriteAllText(
+            Path.Join(directory, RECOVERY_CLEAN_MARKER), "clean");
+    }
+
+    hide func RetireRecoveryNamespace(directory: String,
+                                      namespaceId: String) {
+        if directory == "" or namespaceId == "" { return; }
+        var retired = Path.Join(
+            recoveryRoot, RECOVERY_RETIRED_PREFIX + namespaceId);
+        if Dir.Exists(retired) { return; }
+        if safe_io.MoveDirectory(directory, retired) == false { return; }
+        safe_io.DeleteFile(Path.Join(retired, "session.lock"));
+        safe_io.DeleteFile(Path.Join(retired, RECOVERY_CLEAN_MARKER));
+        RemoveEmptyRecoveryDirectory(retired);
+    }
+
+    hide func NamespaceIdFromDirectory(directory: String) -> String {
+        var prefix = Path.Join(recoveryRoot, RECOVERY_NAMESPACE_PREFIX);
+        if Str.StartsWith(directory, prefix) == false { return ""; }
+        return Str.Mid(directory, Str.get_Length(prefix) + 1);
+    }
+
+    hide func RemoveEmptyRecoveryDirectory(directory: String) {
+        if directory == "" or Dir.Exists(directory) == false { return; }
+        try { Dir.Remove(directory); } catch { return; }
+    }
+}

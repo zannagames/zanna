@@ -113,7 +113,8 @@ until the UI uses virtual row realization end to end.
 
 Zanna Studio uses:
 
-- `StartWithEnv(program, args, cwd, env)`.
+- `StartWithEnvOverlay(program, args, cwd, env)` for Studio-authored overrides
+  while preserving the host environment.
 - `ReadOutputResult()` for ordered, stream-tagged build output.
 - `ReadStdoutResult()`.
 - `ReadStderrResult()`.
@@ -122,6 +123,8 @@ Zanna Studio uses:
 - `ExitCode()`.
 - `Kill()`.
 - `Destroy()`.
+- `GUI.App.WatchProcess(handle)` after each launch, so output readiness and exit
+  interrupt the native event wait without polling the UI thread.
 
 Important constraints:
 
@@ -131,10 +134,16 @@ Important constraints:
   launch behavior is independent of Studio's own current directory.
 - Windows stdin is accepted through a bounded background writer; UI frame code
   never performs a potentially blocking pipe write.
+- Each process handle owns a POSIX process group or Windows Job Object, so Stop
+  and shutdown terminate ordinary compiler/game/debugger descendant trees.
 - IDE-side retained output is bounded to avoid runaway memory usage.
 - Runtime process buffers are finite. Zanna Studio uses result reads so overflow
   returns `{ text, truncated }` instead of trapping the IDE; callers append a
   visible truncation marker and still keep their own retained-output caps.
+- One shared tagged runtime queue backs stdout, stderr, and ordered reads; bytes
+  are not retained in three native buffers. The activity monitor coalesces one
+  wake until Studio drains and rearms it. Monitor-allocation failure is explicit
+  and selects Studio's four-millisecond fallback only for that process.
 
 ## PTY Runtime
 
@@ -152,6 +161,7 @@ Zanna Studio uses:
 - `PtySession.ExitCode()`.
 - `PtySession.Kill()`.
 - `PtySession.Destroy()`.
+- `GUI.App.WatchPty(session)` after open.
 
 Platform behavior:
 
@@ -170,6 +180,8 @@ IDE constraints:
   surfaced in the terminal stream instead of being dropped silently.
 - Stop kills and destroys the PTY session.
 - Restart destroys the previous session and opens a new one.
+- PTY readiness uses the same coalesced App wake contract; EOF retires the
+  monitored descriptor so a closed slave cannot create a HUP wake loop.
 
 ## Exec Runtime
 

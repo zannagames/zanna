@@ -690,6 +690,9 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_GuiDialogStatus,
     RTCLS_GuiImageFilter,
     RTCLS_GuiSortDirection,
+    RTCLS_FileLease,
+    RTCLS_WorkspaceFileIndexCursor,
+    RTCLS_WorkspacePreparedEdit,
 };
 
 /// @brief Describes a property on a runtime class.

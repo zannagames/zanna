@@ -46,8 +46,15 @@ func main() {
     failed.Begin();
     failed.RecordWorkerDrain(false);
     failed.RecordWorkerDrain(true);
-    if failed.workerDrainsSucceeded or failed.MayMarkCleanExit(true) {
+    if failed.workerDrainsSucceeded or failed.currentAttemptSucceeded
+       or failed.MayMarkCleanExit(true) {
         fail("failed drain was not sticky");
+        return;
+    }
+    failed.ReleaseForRetry();
+    if failed.Begin() == false or failed.currentAttemptSucceeded == false
+       or failed.workerDrainsSucceeded {
+        fail("retry ownership/current-attempt reset");
         return;
     }
 

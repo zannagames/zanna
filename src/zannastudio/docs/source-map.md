@@ -9,8 +9,11 @@ Zanna Studio is organized around long-lived state objects that are created by
 is not yet a highly decoupled workbench framework. It is a practical IDE
 application with clear subsystem boundaries.
 
-Source modules are bounded (ADR 0218): no file exceeds 1,000 lines and no
-function exceeds 200. Large controllers decompose into focused units using two
+Source modules are ratcheted by ADR 0218: new or worsened files/functions may
+not cross the configured bounds. The 2026-08-20 baseline still tracks 73
+grandfathered size debts and 47 layer debts, down from 87 and 49; those are
+explicit burn-down work, not a claim that every legacy unit is already below
+1,000/200 lines. Large controllers decompose into focused units using two
 shapes — stateless helper modules, or narrowly named inheritance layers
 assembled behind a stable facade (Zia classes cannot be reopened across
 modules, so stateful splits are deliberate inheritance chains). The recurring
@@ -53,10 +56,10 @@ It also performs the top-level polling work:
 - Maintain status bar and panel state.
 - Save session state and clean up processes on exit.
 
-`main.zia` is already beyond the preferred file-size budget. New behavior should
-usually be added to a focused module and called from `main.zia`, not implemented
-inline. If a change requires adding another large block to the frame loop, first
-look for a controller extraction point.
+`main.zia` is now a small bootstrap/frame-loop facade. New behavior should stay
+in a focused module and be called from `main.zia`, not be implemented inline.
+If a change requires adding another large block to the frame loop, first look
+for a controller extraction point.
 
 Common reasons to touch `main.zia`:
 
@@ -140,6 +143,31 @@ visual scenes publish their own status later in the frame, so the two surfaces
 cannot invalidate the retained status bar by overwriting one another every
 idle frame.
 
+`app/language_tool_frame_state.zia` owns its dependency references and durable
+frame state, leaving the facade focused on orchestration.
+
+### `app/studio_document_frame.zia`
+
+Coordinates document-facing frame work extracted from the application: editor
+dirty-state publication, shared-view synchronization, autosave/recovery,
+external-file checks, watcher refresh, and native tool-window pumping.
+
+### `app/editor_split_orchestration.zia`
+
+Reconciles physical editor-pane focus with the global tab/document model. It
+restores exact shared or distinct pane owners and routes click-to-focus without
+creating a second mutable buffer for one document.
+
+### `app/studio_runtime_policy.zia`
+
+Central frame-budget and absolute-deadline policy for process, PTY, background
+job, and idle work. Process and PTY controllers report whether their
+`GUI.App.Watch*` attachment succeeded; only failed attachments select the
+four-millisecond polling fallback. Ready language work requests an immediate
+frame, otherwise absolute scheduler/idle deadlines govern `PollWait`. Keep
+cadence and fairness decisions here instead of scattering numeric budgets
+through controllers.
+
 ### `app/settings_applier.zia`
 
 Applies persisted settings to the shell and editor. Settings parsing belongs in
@@ -151,6 +179,15 @@ or editor state.
 Tracks workspace-level change notifications. It complements document-level file
 watching in the main loop and should remain focused on detecting project-tree
 changes, not mutating documents directly.
+
+The facade is assembled from three focused modules:
+
+- `app/workspace_watcher_state.zia` owns roots, snapshots, generations, and
+  deterministic initialization.
+- `app/workspace_watcher_fallback.zia` owns bounded metadata-scan fallback and
+  coarse-timestamp content-fingerprint checks.
+- `app/workspace_refresh.zia` converts watcher results into project-tree and
+  index refresh intents without taking document ownership.
 
 ## `build/`
 
@@ -176,6 +213,13 @@ Important behavior:
 Touch this file for process lifecycle, compiler resolution, output retention, or
 diagnostic parsing. Do not put UI row formatting here; that belongs in command
 or shell code.
+
+### `build/diagnostic_publication.zia`
+
+Owns incremental publication state for stable diagnostic IDs, Problems rows,
+and newly appended Output records. Build process mechanics retain parsed data;
+this helper decides what changed since the previous revision so controllers do
+not rebuild or reparse complete retained streams.
 
 ### `build/run_config.zia`
 
@@ -224,8 +268,11 @@ overlays.
 
 ### `build/debug_session_base.zia`
 
-Owns debug-adapter process state, requests, watches, and restart intent; the
-`debug_session.zia` facade extends it.
+Owns debug-adapter commands, watches, and restart behavior; the
+`debug_session.zia` facade extends it. `build/debug_session_state.zia` owns the
+process handle, framed partial-write carry, correlated request IDs/timeouts,
+snapshots, and watch state. `build/debug_session_view.zia` owns read-only
+presentation accessors so transport code does not accumulate UI formatting.
 
 ## `commands/`
 
@@ -507,7 +554,10 @@ fallback when an older session has no saved index.
 
 Recovery text is intentionally capped and base64 encoded. This module should
 remain conservative because it runs during startup/shutdown and protects user
-work.
+work. `core/session_recovery_decode.zia` decodes large Base64 records through an
+owned immutable worker request and publishes them through
+`session_restore_layer.zia` on a later startup pump; no worker borrows document,
+tab, project, or GUI models.
 
 ### `services/safe_io.zia`
 
@@ -515,6 +565,13 @@ Non-trapping filesystem boundary helpers. Shared Studio INI state has a global
 size ceiling and is committed through a same-directory staging file plus atomic
 replace, so settings, sessions, and breakpoints share one corruption-resistant
 policy.
+
+### `services/safe_io_mutations.zia`
+
+Result-returning mutation helpers for editor saves and other user-authored file
+changes. They preserve the native failure message and target path so command
+controllers can keep documents dirty and present an actionable error instead of
+collapsing save failure to a Boolean. Keep UI presentation outside this module.
 
 ### `core/recovery_store.zia`
 
@@ -530,15 +587,28 @@ recovery directory, remove abandoned staging files, and retain recovered text
 under fixed record and aggregate-byte caps. Main polls and paints between scan
 entries and between recovered tabs.
 
+### `core/document_buffer.zia`
+
+Owns canonical text and generation state for a document shared by multiple
+editor panes. `SharedDocumentBuffer` records view count and exactly one mutable
+view owner; inactive panes consume read-only mirrors while cursor and scroll
+remain per view.
+
 ### `core/` split modules (ADR 0218)
 
 | Module | Responsibility |
 | --- | --- |
 | `core/document_manager_base.zia` | Open documents, safe loading, saving, and disk-state checks core. |
+| `core/document_save_transaction.zia` | Complete-file prepared save transactions and typed runtime diagnostic conversion. |
+| `core/document_disk_state.zia` | Disk metadata/hash baselines and external-change state transitions. |
 | `core/project_manager_base.zia` | Workspace roots, Explorer tree state, and safe file mutations core. |
 | `core/project_manager_mutations.zia` | Safe Explorer rename, move, trash, entry-file, and bind-rewrite operations. |
 | `core/project_manager_tree.zia` | Workspace opening, incremental Explorer loading, file-cache discovery, selection. |
+| `core/project_manager_bind_layer.zia` | Project bind discovery and stale-safe manifest rewrites. |
+| `core/project_manager_cache_layer.zia` | Runtime cursor-backed file-cache lifecycle and bounded cache publication. |
+| `core/project_tree_sort.zia` | Incremental stable name sorting and Explorer tree-load state. |
 | `core/session_manager.zia` | Session save, recent-history commands, and bounded restore orchestration. |
+| `core/session_recovery_decode.zia` | Async large-recovery scalar decode with model-free worker ownership. |
 | `core/session_state.zia` | Persists and conservatively restores workspace, document, and editor state. |
 
 ## `editor/`
@@ -551,9 +621,16 @@ IDE behavior.
 The adapter between `Document` and `CodeEditor`. It loads documents into the
 editor, saves editor state back to documents, sets language/display options,
 manages current file path/language, and caches full-text snapshots by editor
-revision.
+revision. Same-document split views share one canonical mutable EditorBuffer;
+focus transfers that buffer and its undo history between widgets while the
+inactive widget is a generation-gated read-only mirror with independent view
+coordinates.
 
 Use `GetTextSnapshot()` instead of reading full editor text repeatedly.
+
+`editor/editor_engine_base.zia` owns pane state, widget attachment, and the
+stable editor configuration/state core; the facade owns higher-level editing
+and shared-view coordination.
 
 ### `editor/editor_tabs.zia`
 
@@ -685,6 +762,14 @@ updates and immutable query snapshots.
 Changes here can affect responsiveness and semantic correctness. Keep file-size
 caps, stale-data handling, and dirty-open-document behavior explicit.
 
+The facade's inheritance chain is split by lifecycle:
+
+- `editor/project_index_state.zia` owns handles, limits, counters, and status.
+- `editor/project_index_updates.zia` owns open-buffer and disk update/removal
+  scheduling plus generation publication.
+- `editor/project_index_enumeration.zia` owns explicit runtime file cursors,
+  multi-root paging, deduplication, and completion/truncation transitions.
+
 ### `editor/semantic_tokens.zia`
 
 Semantic highlighting controller. It maps runtime token kinds to CodeEditor
@@ -813,7 +898,8 @@ kept for probes and older call sites, but UI code should start and pump
 
 ### `scm/scm_git_support.zia`
 
-Detects Git prompts and classifies common command failures for `scm_git.zia`.
+Classifies common noninteractive Git failures and adds credential-broker,
+conflict, upstream, rejection, and repository-lock recovery guidance.
 
 ### `scm/scm_view.zia`
 
@@ -821,13 +907,21 @@ Source Control view model and UI action state. It owns the current Git snapshot,
 selected path, diff text, commit message, active job, and refresh/operation
 behavior needed by AppShell. Wrapped action rows reflow with the sidebar;
 selection/index/conflict/message state drives truthful enablement; focused Enter
-submits commits and credential responses; and unmerged rows expose the safe
-edit-then-Stage path without destructive resolution shortcuts.
+submits commits; external credential brokers remain outside the view; and
+unmerged rows expose the safe edit-then-Stage path without destructive
+resolution shortcuts.
 
 ### `scm/scm_view_base.zia`
 
-Coordinates asynchronous Git operations and Source Control UI state; the
-`scm_view.zia` facade extends it.
+Owns foundational Source Control state; the view facade is assembled through
+three lifecycle layers:
+
+- `scm/scm_view_jobs.zia` starts, pumps, times out, and publishes Git jobs.
+- `scm/scm_view_controls.zia` owns action eligibility and user intent.
+- `scm/scm_view_presenter.zia` projects snapshots, conflicts, history,
+  operation state, and feedback into the retained shell.
+
+`scm_view.zia` is the stable terminal facade over that chain.
 
 ### `scm/scm_gutter_controller.zia`
 
@@ -847,6 +941,19 @@ results that already have a durable owning surface stay quiet, immediate action
 failures are eligible, and external-state warnings require active-resource
 ownership. Build and Search controllers are linted against bypassing this
 boundary with direct warning/error toast calls.
+
+### `ui/tool_window_model.zia`
+
+GUI-neutral bounded Output state for a secondary window. Content and reset
+generations make append-only synchronization explicit without sharing native
+widget handles across Apps.
+
+### `ui/native_tool_window_host.zia`
+
+Owns the optional secondary native `GUI.App`, window, and OutputPane. It pumps
+that App independently, applies only unseen bounded-output suffixes, and always
+restores the primary App context. Closing the secondary window returns Output
+to the workbench and never closes Studio.
 
 ### `ui/app_shell.zia`
 
@@ -1831,6 +1938,7 @@ Use this practical decision table:
 | BASIC project semantic commands | `commands/basic_workspace_commands.zia` + `editor/basic_workspace_query_job.zia` |
 | Pure source scanning | focused `zia/*_scan.zia` module; keep `zia/source_scan.zia` as facade |
 | Search matching/path/file discovery rules | `services/search_matcher.zia`, `services/search_paths.zia`, `services/workspace_file_index.zia` |
+| Search controller state/discovery | `commands/search_controller_state.zia`, `commands/search_controller_discovery.zia` |
 | Quick Open palette/scoring | `commands/quick_open_commands.zia` |
 | Completion row data | `editor/completion_items.zia` |
 | Completion workspace source loading | `editor/completion_workspace_source.zia` |
@@ -1880,7 +1988,9 @@ Use this practical decision table:
 | Terminal PTY wrapper | `terminal/terminal_session.zia` |
 | Terminal UI behavior | `terminal/terminal_controller.zia` |
 | Git command execution | `scm/scm_git.zia` |
-| Source Control view state | `scm/scm_view.zia` |
+| Source Control view state/jobs/presentation | `scm/scm_view_base.zia`, `scm/scm_view_jobs.zia`, `scm/scm_view_controls.zia`, `scm/scm_view_presenter.zia`, `scm/scm_view.zia` |
+| Shared document text/view ownership | `core/document_buffer.zia`, `editor/editor_engine_base.zia`, `editor/editor_engine.zia` |
+| Secondary native tool windows | `ui/tool_window_model.zia`, `ui/native_tool_window_host.zia` |
 | Persistent shell widgets | `ui/app_shell.zia` |
 | Workbench splitter topology | `ui/workbench_shell.zia` |
 | Primary sidebar docking | `ui/primary_sidebar_dock.zia` |
@@ -1902,13 +2012,14 @@ The source map should also make current weak spots explicit:
   `ui/scene_component_authoring.zia`, `ui/scene_component_schema_model.zia`,
   `editor/completion.zia`); cohesive new behavior belongs in new layer or
   helper modules, not in these.
-- Tool panels support independent attached groups and one in-window floating
-  group, but not native secondary-window/multi-monitor detachment or true
-  virtualized workbench surfaces.
+- Tool panels support independent attached groups, one in-window floating
+  group, and native multi-monitor detachment for Output. Other tools do not yet
+  have native hosts, and workbench surfaces are not fully virtualized.
 - Built-in 2D/3D scene editors exist, but their asset/component/gizmo depth is
   still substantially below mature game-engine authoring tools.
-- Source Control has a safe basic conflict path but no merge/rebase
-  orchestration or ours/theirs recovery surface.
+- Source Control has explicit fetch and fast-forward/merge/rebase pull state
+  plus merge/rebase abort, but no graphical continue/skip, ours/theirs, stash,
+  or advanced multi-file recovery surface.
 - Terminal behavior depends on OutputPane terminal mode, not a complete terminal
   emulator.
 - BASIC support is intentionally narrower than Zia.

@@ -4,14 +4,16 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/text/rt_codec.h
-// Purpose: Base64, Hex, and URL encoding/decoding utilities for string-based transformations used
-// in network protocols, configuration, and data serialization.
+// Purpose: Base64, Hex, and URL encoding/decoding plus strict UTF-8 validation
+// for string-based transformations used in protocols, configuration, and data
+// serialization.
 //
 // Key invariants:
 //   - Base64 encoding uses the standard alphabet (A-Z, a-z, 0-9, +, /); output includes padding.
 //   - URL encoding uses percent-encoding for reserved characters.
 //   - Hex encoding uses lowercase hexadecimal digits.
 //   - Base64 and Hex decoders trap on invalid input; URL decoding is forgiving.
+//   - UTF-8 validation is allocation-free, strict, and accepts embedded U+0000.
 //
 // Ownership/Lifetime:
 //   - Returned strings are newly allocated; caller must release.
@@ -37,6 +39,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/// @brief Validate a complete runtime String as strict UTF-8.
+/// @details Rejects malformed, truncated, overlong, surrogate, and out-of-range
+///          scalar encodings. Embedded U+0000 remains valid UTF-8; text editors
+///          and C-string consumers may impose a separate NUL-free policy.
+/// @param str Borrowed runtime byte string; NULL is invalid and empty is valid.
+/// @return One when every byte belongs to a valid UTF-8 scalar, otherwise zero.
+int64_t rt_codec_is_valid_utf8(rt_string str);
 
 /// @brief URL-encode a string (percent-encoding).
 /// @details Leaves RFC 3986 unreserved ASCII bytes `A-Z`, `a-z`, `0-9`, `-`,

@@ -1,3 +1,21 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/perf_monitor.zia
+// Purpose: Collect frame-work metrics and publish optional logs asynchronously.
+// Key invariants:
+//   - Intentional event waiting is measured separately from frame work.
+//   - File logging never performs filesystem I/O on the render thread.
+//   - At most one log write and one latest replacement are retained.
+// Ownership/Lifetime: PerfMonitor owns its bounded log request/future state.
+// Links: zannastudio/src/studio_application_surface_frame.zia
+//
+//===----------------------------------------------------------------------===//
+
 module perf_monitor;
 
 bind "../editor/project_index";
@@ -7,6 +25,28 @@ bind Env = Zanna.System.Environment;
 bind Clock = Zanna.Time.Clock;
 bind File = Zanna.IO.File;
 bind Log = Zanna.Diagnostics.Log;
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+
+final PERF_LOG_SHUTDOWN_WAIT_MS = 5000;
+
+/// @brief Immutable path/message payload for one background append.
+class PerfLogRequest {
+    expose String path;
+    expose String line;
+
+    expose func init() {
+        path = "";
+        line = "";
+    }
+}
+
+func WritePerfLog(request: PerfLogRequest) -> Any {
+    if request != null and request.path != "" {
+        File.AppendLine(request.path, request.line);
+    }
+    return request;
+}
 
 // ============================================================================
 // MODULE: perf_monitor
@@ -29,6 +69,7 @@ class PerfMonitor {
     expose Integer frameCount;
     expose Integer maxFrameUs;
     expose Integer totalFrameUs;
+    expose Integer eventWaitUs;
     expose Integer completionUs;
     expose Integer diagnosticsUs;
     expose Integer hoverUs;
@@ -41,12 +82,20 @@ class PerfMonitor {
     expose Integer renderUs;
     expose Integer projectIndexUpdates;
     expose Integer projectIndexBytes;
+    hide Any activeLogFuture;
+    hide PerfLogRequest pendingLogRequest;
+    expose Integer logWriteFailures;
+    expose String lastLogError;
 
     expose func init() {
         enabled = Env.HasVariable("ZANNASTUDIO_PERF") or Env.HasVariable("ZANNASTUDIO_PERF_LOG");
         logPath = Env.GetVariable("ZANNASTUDIO_PERF_LOG");
         frameStartUs = 0;
         lastFlushMs = Zanna.Time.Clock.NowMs();
+        activeLogFuture = null;
+        pendingLogRequest = null;
+        logWriteFailures = 0;
+        lastLogError = "";
         ResetWindow();
     }
 
@@ -54,6 +103,7 @@ class PerfMonitor {
         frameCount = 0;
         maxFrameUs = 0;
         totalFrameUs = 0;
+        eventWaitUs = 0;
         completionUs = 0;
         diagnosticsUs = 0;
         hoverUs = 0;
@@ -76,6 +126,12 @@ class PerfMonitor {
     expose func StartSpan() -> Integer {
         if enabled == false { return 0; }
         return Clock.NowMicros();
+    }
+
+    expose func AddEventWait(startUs: Integer) {
+        if enabled and startUs > 0 {
+            eventWaitUs = eventWaitUs + (Clock.NowMicros() - startUs);
+        }
     }
 
     expose func AddCompletion(startUs: Integer) {
@@ -121,6 +177,7 @@ class PerfMonitor {
     expose func EndFrame(editor: GUI.CodeEditor,
                          indexer: project_index.ProjectIndexer) {
         if enabled == false { return; }
+        PumpLogWriter();
         var frameUs = Clock.NowMicros() - frameStartUs;
         totalFrameUs = totalFrameUs + frameUs;
         if frameUs > maxFrameUs { maxFrameUs = frameUs; }
@@ -159,6 +216,7 @@ class PerfMonitor {
             + " frames=" + frameCount
             + " avgFrameUs=" + avgUs
             + " maxFrameUs=" + maxFrameUs
+            + " eventWaitUs=" + eventWaitUs
             + " renderUs=" + renderUs
             + " completionUs=" + completionUs
             + " diagnosticsUs=" + diagnosticsUs
@@ -180,7 +238,7 @@ class PerfMonitor {
             + " highlightSpanChecks=" + spanChecks;
 
         if logPath != "" {
-            File.AppendLine(logPath, msg);
+            QueueLogWrite(logPath, msg);
         } else {
             Log.Info(msg);
         }
@@ -193,5 +251,48 @@ class PerfMonitor {
         }
         lastFlushMs = nowMs;
         ResetWindow();
+    }
+
+    /// @brief Drain the handle-only log worker before runtime teardown.
+    expose func Shutdown() -> Boolean {
+        var deadline = Clock.NowMs() + PERF_LOG_SHUTDOWN_WAIT_MS;
+        while (activeLogFuture != null or pendingLogRequest != null)
+              and Clock.NowMs() < deadline {
+            PumpLogWriter();
+            if activeLogFuture != null or pendingLogRequest != null {
+                Clock.Sleep(5);
+            }
+        }
+        PumpLogWriter();
+        return activeLogFuture == null and pendingLogRequest == null;
+    }
+
+    hide func QueueLogWrite(path: String, line: String) {
+        var request = new PerfLogRequest();
+        request.path = path;
+        request.line = line;
+        pendingLogRequest = request;
+        StartPendingLogWrite();
+    }
+
+    hide func PumpLogWriter() {
+        if activeLogFuture != null and Future.get_IsDone(activeLogFuture) {
+            if Future.get_IsError(activeLogFuture) {
+                logWriteFailures = logWriteFailures + 1;
+                lastLogError = Future.get_Error(activeLogFuture);
+            }
+            activeLogFuture = null;
+        }
+        StartPendingLogWrite();
+    }
+
+    hide func StartPendingLogWrite() {
+        if activeLogFuture != null or pendingLogRequest == null { return; }
+        var request = pendingLogRequest;
+        var future = Async.RunOwned(WritePerfLog, request);
+        if future != null {
+            activeLogFuture = future;
+            pendingLogRequest = null;
+        }
     }
 }

@@ -1,0 +1,259 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_history_layer.zia
+// Purpose: Persist, canonicalize, de-duplicate, and prune recent Studio paths.
+// Key invariants:
+//   - Recent files are editable text and recent projects are existing directories.
+//   - Compare/exchange cleanup preserves unrelated shared settings sections.
+// Ownership/Lifetime:
+//   - The layer owns no handles and borrows document/project models during saves.
+// Links: zannastudio/src/core/session_manager.zia,
+//        zannastudio/src/core/session_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_history_layer;
+
+bind "document_manager";
+bind "project_manager";
+bind "session_state" as State;
+bind "../services/path_identity";
+bind "../services/safe_io";
+
+bind Ini = Zanna.Data.Ini;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Parse = Zanna.Core.Parse;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+
+final MAX_RECENT_PROJECTS = State.MAX_RECENT_PROJECTS;
+final MAX_RECENT_FILES = State.MAX_RECENT_FILES;
+
+/// @brief Recent-history persistence layered over core session state.
+class SessionHistoryLayer extends State.SessionManagerState {
+    /// @brief Record every live workspace root with the primary root first.
+    hide func SaveRecentProjects(ini: Any,
+                                 projMgr: project_manager.ProjectManager) {
+        if projMgr == null { return; }
+        // Prepend extras in reverse, then primary, so root index 0 remains the
+        // most prominent row while every multi-root folder stays discoverable.
+        var i = projMgr.RootCount() - 1;
+        while i >= 0 {
+            PrependRecentProject(ini, projMgr.RootPathAt(i));
+            i = i - 1;
+        }
+    }
+
+    /// @brief Prepend a workspace folder while canonicalizing and de-duplicating.
+    hide func PrependRecentProject(ini: Any, path: String) {
+        var canonicalPath = CanonicalRecentPath(path);
+        if canonicalPath == "" or Dir.Exists(canonicalPath) == false { return; }
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recent", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        if oldCount > MAX_RECENT_PROJECTS { oldCount = MAX_RECENT_PROJECTS; }
+        var oldPaths = Seq.New();
+        var i = 0;
+        while i < oldCount {
+            var oldPath = CanonicalRecentPath(Ini.Get(ini, "recent", "path." + i));
+            if oldPath != "" and oldPath != canonicalPath and Dir.Exists(oldPath)
+               and !StringSeqContains(oldPaths, oldPath) {
+                Seq.Push(oldPaths, oldPath);
+            }
+            i = i + 1;
+        }
+
+        Ini.Set(ini, "recent", "path.0", canonicalPath);
+        var written = 1;
+        i = 0;
+        while i < Seq.get_Count(oldPaths) and written < MAX_RECENT_PROJECTS {
+            Ini.Set(ini, "recent", "path." + written,
+                    Obj.ToString(Seq.Get(oldPaths, i)));
+            written = written + 1;
+            i = i + 1;
+        }
+        var persisted = written;
+        while written < MAX_RECENT_PROJECTS {
+            Ini.Set(ini, "recent", "path." + written, "");
+            written = written + 1;
+        }
+        Ini.Set(ini, "recent", "count", "" + persisted);
+    }
+
+    hide func SaveRecentFiles(ini: Any, docMgr: document_manager.DocumentManager) {
+        if docMgr == null { return; }
+        var i = docMgr.GetCount() - 1;
+        while i >= 0 {
+            var doc = docMgr.documents.get(i);
+            if doc.filePath != "" and !doc.isNew and !doc.isReadOnlyPreview
+                and document_manager.IsEditableTextFile(doc.filePath) {
+                PrependRecentFile(ini, doc.filePath);
+            }
+            i = i - 1;
+        }
+    }
+
+    hide func PrependRecentFile(ini: Any, path: String) {
+        var canonicalPath = CanonicalRecentPath(path);
+        if !document_manager.IsEditableTextFile(canonicalPath) { return; }
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recentFiles", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        if oldCount > MAX_RECENT_FILES { oldCount = MAX_RECENT_FILES; }
+        var oldPaths = Seq.New();
+        var i = 0;
+        while i < oldCount {
+            var oldPath = CanonicalRecentPath(Ini.Get(ini, "recentFiles", "path." + i));
+            if oldPath != "" and oldPath != canonicalPath
+                and document_manager.IsEditableTextFile(oldPath)
+                and !StringSeqContains(oldPaths, oldPath) {
+                Seq.Push(oldPaths, oldPath);
+            }
+            i = i + 1;
+        }
+
+        Ini.Set(ini, "recentFiles", "path.0", canonicalPath);
+        var written = 1;
+        i = 0;
+        while i < Seq.get_Count(oldPaths) and written < MAX_RECENT_FILES {
+            Ini.Set(ini, "recentFiles", "path." + written, Obj.ToString(Seq.Get(oldPaths, i)));
+            written = written + 1;
+            i = i + 1;
+        }
+        Ini.Set(ini, "recentFiles", "count", "" + written);
+    }
+
+    /// @brief Remove invalid and duplicate workspace folders from recent history.
+    hide func PruneRecentProjectHistory() {
+        if settingsPath == "" or !IO.File.Exists(settingsPath) { return; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return; }
+        var ini = Ini.Parse(readResult.text);
+        if PruneRecentProjectsInIni(ini) {
+            safe_io.CompareExchangeStudioState(
+                settingsPath, readResult.text, Ini.Format(ini));
+        }
+    }
+
+    /// @brief Compact valid recent workspace paths in-place.
+    hide func PruneRecentProjectsInIni(ini: Any) -> Boolean {
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recent", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        var scanCount = oldCount;
+        if scanCount > MAX_RECENT_PROJECTS { scanCount = MAX_RECENT_PROJECTS; }
+        var paths = Seq.New();
+        var i = 0;
+        while i < scanCount {
+            var path = CanonicalRecentPath(Ini.Get(ini, "recent", "path." + i));
+            if path != "" and Dir.Exists(path) and !StringSeqContains(paths, path) {
+                Seq.Push(paths, path);
+            }
+            i = i + 1;
+        }
+
+        var changed = oldCount != Seq.get_Count(paths);
+        i = 0;
+        while i < Seq.get_Count(paths) {
+            var expected = Obj.ToString(Seq.Get(paths, i));
+            if Ini.Get(ini, "recent", "path." + i) != expected { changed = true; }
+            Ini.Set(ini, "recent", "path." + i, expected);
+            i = i + 1;
+        }
+        while i < MAX_RECENT_PROJECTS {
+            if Ini.Get(ini, "recent", "path." + i) != "" { changed = true; }
+            Ini.Set(ini, "recent", "path." + i, "");
+            i = i + 1;
+        }
+        Ini.Set(ini, "recent", "count", "" + Seq.get_Count(paths));
+        return changed;
+    }
+
+    /// @brief Remove invalid and duplicate files from durable recent history.
+    /// @details Setup calls this once so legacy settings are repaired before the
+    ///          welcome view asks for rows. Unknown INI sections remain intact.
+    hide func PruneRecentFileHistory() {
+        if settingsPath == "" or !IO.File.Exists(settingsPath) { return; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return; }
+        var ini = Ini.Parse(readResult.text);
+        if PruneRecentFilesInIni(ini) {
+            safe_io.CompareExchangeStudioState(
+                settingsPath, readResult.text, Ini.Format(ini));
+        }
+    }
+
+    /// @brief Compact valid recent paths in-place and report whether INI changed.
+    hide func PruneRecentFilesInIni(ini: Any) -> Boolean {
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recentFiles", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        var scanCount = oldCount;
+        if scanCount > MAX_RECENT_FILES { scanCount = MAX_RECENT_FILES; }
+        var paths = Seq.New();
+        var i = 0;
+        while i < scanCount {
+            var path = CanonicalRecentPath(Ini.Get(ini, "recentFiles", "path." + i));
+            if document_manager.IsEditableTextFile(path) and !StringSeqContains(paths, path) {
+                Seq.Push(paths, path);
+            }
+            i = i + 1;
+        }
+
+        var changed = oldCount != Seq.get_Count(paths);
+        i = 0;
+        while i < Seq.get_Count(paths) {
+            var expected = Obj.ToString(Seq.Get(paths, i));
+            if Ini.Get(ini, "recentFiles", "path." + i) != expected { changed = true; }
+            Ini.Set(ini, "recentFiles", "path." + i, expected);
+            i = i + 1;
+        }
+        while i < MAX_RECENT_FILES {
+            if Ini.Get(ini, "recentFiles", "path." + i) != "" { changed = true; }
+            Ini.Set(ini, "recentFiles", "path." + i, "");
+            i = i + 1;
+        }
+        Ini.Set(ini, "recentFiles", "count", "" + Seq.get_Count(paths));
+        return changed;
+    }
+
+    /// @brief Return whether an untyped sequence already contains a path.
+    hide func StringSeqContains(items: Any, path: String) -> Boolean {
+        var i = 0;
+        while i < Seq.get_Count(items) {
+            if path_identity.SameEntry(Obj.ToString(Seq.Get(items, i)), path) {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Normalize recent-file identity before persistence or comparison.
+    /// @param path Absolute or relative file path spelling.
+    /// @return Absolute normalized path, or empty for an empty input.
+    /// @details Studio can be launched from a terminal, Finder, or a file
+    ///          association. Canonical storage prevents those working-directory
+    ///          differences from creating duplicate welcome rows.
+    hide func CanonicalRecentPath(path: String) -> String {
+        if path == "" { return ""; }
+        try {
+            return path_identity.Normalize(path);
+        } catch {
+            return "";
+        }
+        return "";
+    }
+
+    /// @brief Clear a rejected session slot while preserving unrelated settings.
+    hide func ClearSessionFile(ini: Any, section: String) {
+        Ini.Set(ini, section, "path", "");
+        Ini.Set(ini, section, "name", "");
+        Ini.Set(ini, section, "recovery", "");
+        Ini.Set(ini, section, "recoveryEncoding", "");
+        Ini.Set(ini, section, "recoveryModified", "0");
+        Ini.Set(ini, section, "recoveryPresent", "0");
+    }
+}

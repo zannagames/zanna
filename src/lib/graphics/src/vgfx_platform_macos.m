@@ -1663,6 +1663,27 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     }
 }
 
+/// @copydoc vgfx_platform_wake_events
+int vgfx_platform_wake_events(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return 0;
+    @autoreleasepool {
+        NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                          location:NSZeroPoint
+                                     modifierFlags:0
+                                         timestamp:0.0
+                                      windowNumber:0
+                                           context:nil
+                                           subtype:0
+                                             data1:0
+                                             data2:0];
+        if (!event)
+            return 0;
+        [NSApp postEvent:event atStart:NO];
+        return 1;
+    }
+}
+
 int vgfx_platform_process_events(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;

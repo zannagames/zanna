@@ -1,0 +1,128 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/studio_runtime_policy.zia
+// Purpose: Handle process flags and compute bounded Studio event-wait policy.
+// Key invariants:
+//   - Command-line queries are read-only and terminate before UI construction.
+//   - Active asynchronous work uses a short bounded wait, never a busy loop.
+// Ownership/Lifetime:
+//   - Helpers borrow controllers for one decision and own no process state.
+// Links: zannastudio/src/app/studio_application_base.zia,
+//        zannastudio/src/studio_application_surface_frame.zia
+//
+//===----------------------------------------------------------------------===//
+
+module studio_runtime_policy;
+
+bind "../ui/app_shell";
+bind "build_info";
+bind "focus_throttle";
+bind "../build/build_system";
+bind "../build/debug_session";
+bind "../terminal/terminal_controller";
+bind "../editor/scheduler";
+bind "../editor/project_index";
+bind "../core/project_manager";
+
+bind Env = Zanna.System.Environment;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Clock = Zanna.Time.Clock;
+
+final POLL_WAIT_ACTIVE_IO_MS = 4;
+final POLL_WAIT_IDLE_FOCUSED_MS = 50;
+final POLL_WAIT_IDLE_UNFOCUSED_MS = 150;
+
+/// @brief Handle non-visual command-line requests before Studio construction.
+func HandleCommandLine() -> Boolean {
+    if HasArg("--version") {
+        Terminal.Say(build_info.BuildSummary());
+        return true;
+    }
+    if HasArg("--help") or HasArg("-h") {
+        Terminal.Say("Usage: zannastudio [--version] [--help] [file]");
+        return true;
+    }
+    return false;
+}
+
+/// @brief Parse one conventional Boolean environment flag.
+func EnvFlagEnabled(name: String) -> Boolean {
+    if Env.HasVariable(name) == false { return false; }
+    var value = Str.ToLower(Env.GetVariable(name));
+    return value == "1" or value == "true" or value == "yes" or value == "on";
+}
+
+/// @brief Compute how long the next PollWait may sleep without delaying live work.
+func ComputePollWaitMs(shell: app_shell.AppShell,
+                       focusThrottle: focus_throttle.FocusThrottle,
+                       buildSys: build_system.BuildSystem,
+                       dbgSession: debug_session.DebugSession,
+                       terminalCtrl: terminal_controller.TerminalController,
+                       editorScheduler: scheduler.EditorScheduler,
+                       indexer: project_index.ProjectIndexer,
+                       projMgr: project_manager.ProjectManager) -> Integer {
+    if shell == null { return 0; }
+    var focused = focusThrottle == null or focusThrottle.focused;
+    var processIoNeedsPolling =
+        (buildSys != null and buildSys.NeedsActivityPolling())
+        or (dbgSession != null and dbgSession.NeedsActivityPolling())
+        or (terminalCtrl != null and terminalCtrl.NeedsActivityPolling());
+    var earliestDueMs = 0;
+    if editorScheduler != null and editorScheduler.QueuedCount() > 0 {
+        earliestDueMs = editorScheduler.EarliestDueMs();
+    }
+    var backgroundActive =
+        (indexer != null and indexer.indexing)
+        or (projMgr != null and projMgr.fileCacheRefreshing);
+    return ComputePollWaitPolicy(
+        focused, processIoNeedsPolling, backgroundActive,
+        earliestDueMs, Clock.NowMs());
+}
+
+/// @brief Pure event-wait policy used by the frame loop and headless probes.
+/// @details Native input and attached Process/PTy monitors wake PollWait early.
+///          The four-millisecond cap is only a safe fallback when monitor
+///          attachment failed. Ready cooperative CPU work requests an immediate
+///          next frame; scheduler work uses its absolute due time.
+expose func ComputePollWaitPolicy(focused: Boolean,
+                                  processIoNeedsPolling: Boolean,
+                                  backgroundActive: Boolean,
+                                  earliestDueMs: Integer,
+                                  nowMs: Integer) -> Integer {
+    var waitMs = POLL_WAIT_IDLE_FOCUSED_MS;
+    if focused == false { waitMs = POLL_WAIT_IDLE_UNFOCUSED_MS; }
+    if processIoNeedsPolling {
+        waitMs = MinWait(waitMs, POLL_WAIT_ACTIVE_IO_MS);
+    }
+    if earliestDueMs > 0 {
+        var dueInMs = earliestDueMs - nowMs;
+        if dueInMs < 0 { dueInMs = 0; }
+        waitMs = MinWait(waitMs, dueInMs);
+    }
+    if backgroundActive {
+        waitMs = 0;
+    }
+    return waitMs;
+}
+
+hide func MinWait(current: Integer, candidate: Integer) -> Integer {
+    if candidate < 0 { return 0; }
+    if candidate < current { return candidate; }
+    return current;
+}
+
+/// @brief Return whether one exact process argument is present.
+hide func HasArg(name: String) -> Boolean {
+    var i = 0;
+    while i < Env.GetArgumentCount() {
+        if Env.GetArgument(i) == name { return true; }
+        i = i + 1;
+    }
+    return false;
+}

@@ -40,12 +40,14 @@
 #include "vgfx_wayland_text_input.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /// @brief Aggregate state owned by one Wayland-backed ZannaGFX window.
 /// @details Owns every protocol submodule and caches the last public state
@@ -75,6 +77,8 @@ typedef struct vgfx_wayland_platform {
     int32_t minimized;
     int32_t cursor_type;
     int32_t cursor_visible;
+    int wake_read_fd;
+    int wake_write_fd;
 } vgfx_wayland_platform_t;
 
 static vgfx_wayland_data_t *g_vgfx_wayland_active_data;
@@ -147,6 +151,38 @@ static void vgfx_wayland_set_error(const char *message) {
     vgfx_internal_set_error(VGFX_ERR_PLATFORM, message ? message : "Wayland backend failed");
 }
 
+/// @brief Create the nonblocking self-pipe used to interrupt Wayland waits.
+static int vgfx_wayland_wake_pipe_open(vgfx_wayland_platform_t *platform) {
+    if (!platform)
+        return 0;
+    int descriptors[2] = {-1, -1};
+    if (pipe(descriptors) != 0)
+        return 0;
+    int read_flags = fcntl(descriptors[0], F_GETFL, 0);
+    int write_flags = fcntl(descriptors[1], F_GETFL, 0);
+    if (read_flags < 0 || write_flags < 0 ||
+        fcntl(descriptors[0], F_SETFL, read_flags | O_NONBLOCK) != 0 ||
+        fcntl(descriptors[1], F_SETFL, write_flags | O_NONBLOCK) != 0 ||
+        fcntl(descriptors[0], F_SETFD, FD_CLOEXEC) != 0 ||
+        fcntl(descriptors[1], F_SETFD, FD_CLOEXEC) != 0) {
+        close(descriptors[0]);
+        close(descriptors[1]);
+        return 0;
+    }
+    platform->wake_read_fd = descriptors[0];
+    platform->wake_write_fd = descriptors[1];
+    return 1;
+}
+
+/// @brief Drain every coalesced byte from the Wayland wake self-pipe.
+static void vgfx_wayland_wake_pipe_drain(vgfx_wayland_platform_t *platform) {
+    if (!platform || platform->wake_read_fd < 0)
+        return;
+    char bytes[64];
+    while (read(platform->wake_read_fd, bytes, sizeof(bytes)) > 0) {
+    }
+}
+
 /// @brief Dispatch pending Wayland traffic with a bounded connection wait.
 /// @details Follows the prepare-read/flush/poll/read protocol, drains already
 ///          queued callbacks, handles a blocked outgoing flush with POLLOUT,
@@ -174,30 +210,37 @@ static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, in
         api->display_cancel_read(platform->connection.display);
         return 0;
     }
-    struct pollfd descriptor = {.fd = api->display_get_fd(platform->connection.display),
-                                .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
-                                .revents = 0};
+    struct pollfd descriptors[2] = {
+        {.fd = api->display_get_fd(platform->connection.display),
+         .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
+         .revents = 0},
+        {.fd = platform->wake_read_fd, .events = POLLIN, .revents = 0}};
+    nfds_t descriptor_count = platform->wake_read_fd >= 0 ? 2 : 1;
     int result;
     do {
-        result = poll(&descriptor, 1, timeout_ms < 0 ? -1 : timeout_ms);
+        result = poll(descriptors, descriptor_count, timeout_ms < 0 ? -1 : timeout_ms);
     } while (result < 0 && errno == EINTR);
-    if (result > 0 && (descriptor.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+    if (result > 0 && (descriptors[0].revents & (POLLERR | POLLHUP | POLLNVAL))) {
         api->display_cancel_read(platform->connection.display);
         return 0;
     }
-    if (result > 0 && (descriptor.revents & POLLIN)) {
+    int was_woken = result > 0 && descriptor_count > 1 &&
+                     (descriptors[1].revents & POLLIN) != 0;
+    if (was_woken)
+        vgfx_wayland_wake_pipe_drain(platform);
+    if (result > 0 && (descriptors[0].revents & POLLIN)) {
         if (api->display_read_events(platform->connection.display) < 0)
             return 0;
-        if (flush_blocked && (descriptor.revents & POLLOUT) &&
+        if (flush_blocked && (descriptors[0].revents & POLLOUT) &&
             api->display_flush(platform->connection.display) < 0 && errno != EAGAIN)
             return 0;
         return api->display_dispatch_pending(platform->connection.display) >= 0 ? 2 : 0;
     }
     api->display_cancel_read(platform->connection.display);
-    if (result > 0 && flush_blocked && (descriptor.revents & POLLOUT) &&
+    if (result > 0 && flush_blocked && (descriptors[0].revents & POLLOUT) &&
         api->display_flush(platform->connection.display) < 0 && errno != EAGAIN)
         return 0;
-    return result >= 0 ? (dispatched ? 2 : 1) : 0;
+    return result >= 0 ? (dispatched || was_woken ? 2 : 1) : 0;
 }
 
 /// @brief Reconcile compositor state with core framebuffer and public events.
@@ -297,8 +340,15 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
         return 0;
     }
     win->platform_data = platform;
+    platform->wake_read_fd = -1;
+    platform->wake_write_fd = -1;
     platform->cursor_visible = 1;
     char error[256];
+    if (!vgfx_wayland_wake_pipe_open(platform)) {
+        vgfx_wayland_set_error("Could not create Wayland event-wake pipe");
+        vgfx_platform_destroy_window(win);
+        return 0;
+    }
     if (!vgfx_wayland_connection_open(&platform->connection, NULL, NULL, error, sizeof(error)) ||
         !vgfx_wayland_shell_open(&platform->shell,
                                  &platform->connection,
@@ -378,6 +428,12 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     vgfx_wayland_scale_close(&platform->scale);
     vgfx_wayland_shell_close(&platform->shell);
     vgfx_wayland_connection_close(&platform->connection);
+    if (platform->wake_read_fd >= 0)
+        close(platform->wake_read_fd);
+    if (platform->wake_write_fd >= 0)
+        close(platform->wake_write_fd);
+    platform->wake_read_fd = -1;
+    platform->wake_write_fd = -1;
     free(platform);
     win->platform_data = NULL;
 }
@@ -395,6 +451,21 @@ int vgfx_platform_wait_events(struct vgfx_window *win, int32_t timeout_ms) {
     if (dispatched && !vgfx_wayland_sync_state(win))
         return 0;
     return dispatched == 2 || repeated > 0;
+}
+
+/// @copydoc vgfx_platform_wake_events
+int vgfx_platform_wake_events(struct vgfx_window *win) {
+    if (!win || !win->platform_data)
+        return 0;
+    vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
+    if (platform->wake_write_fd < 0)
+        return 0;
+    const unsigned char byte = 1;
+    ssize_t written;
+    do {
+        written = write(platform->wake_write_fd, &byte, 1);
+    } while (written < 0 && errno == EINTR);
+    return written == 1 || (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
 }
 
 /// @copydoc vgfx_platform_process_events

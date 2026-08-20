@@ -21,19 +21,13 @@
 module debug_session;
 
 bind "bounded_output";
-bind "breakpoints";
 bind "var_model";
-bind "debug_session_base";
+bind "debug_session_view" as View;
 
-bind Process = Zanna.System.Process;
 bind Json = Zanna.Data.Json;
 bind Map = Zanna.Collections.Map;
 bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
-bind Obj = Zanna.Core.Object;
-bind Path = Zanna.IO.Path;
-bind Time = Zanna.Time;
-bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: debug_session
@@ -53,24 +47,46 @@ final SENTINEL = "@@VDBG@@ ";
 final MAX_DEBUG_OUTPUT_CHARS = 250000;
 final TERMINATE_GRACE_MS = 750;
 final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
+final MAX_DEBUG_CONTROL_CARRY_BYTES = 1024 * 1024;
 
-class DebugSession extends debug_session_base.DebugSessionBase {
+class DebugSession extends View.DebugSessionViewLayer {
     expose func init() {
         InitializeState();
     }
 
     /// @brief Drain program output + control events. Returns true on a state change.
     expose func Poll() -> Boolean {
+        processReaper.Pump();
         if processHandle == null { return false; }
         dirty = false;
 
+        FlushAdapterInput();
         drainProcessOutput();
         if pendingVarPath != "" and variableRequestCountdown.get_IsExpired() {
             failedVarPath = pendingVarPath;
             pendingVarPath = "";
             pendingVarRef = 0;
+            if expectedVariableRequestId == pendingVarRequestId {
+                expectedVariableRequestId = 0;
+            }
+            pendingVarRequestId = 0;
             variableRequestCountdown.Reset();
             dirty = true;
+        }
+        if pendingManualEvalRequestId > 0
+           and manualEvalCountdown.get_IsExpired() {
+            lastEvalExpr = pendingManualEvalExpr;
+            lastEvalValue = "(timed out)";
+            lastEvalType = "";
+            lastEvalOk = false;
+            evalJustArrived = true;
+            pendingManualEvalExpr = "";
+            pendingManualEvalRequestId = 0;
+            manualEvalCountdown.Reset();
+            dirty = true;
+        }
+        if watchRequestActive and watchRequestCountdown.get_IsExpired() {
+            ExpireWatchRequest();
         }
         if terminateRequested and terminated == false and processHandle.IsRunning()
            and terminateCountdown.get_IsExpired() {
@@ -129,10 +145,7 @@ class DebugSession extends debug_session_base.DebugSessionBase {
     hide func AppendStderrResult(result: Any) {
         if result == null { return; }
         var err = Map.GetStr(result, "text");
-        if err != "" {
-            ctrlBuf = ctrlBuf + err;
-            drainControlLines();
-        }
+        AcceptAdapterControlText(err);
         if Map.GetBool(result, "truncated") {
             programOutput = AppendBoundedOutput(programOutput,
                                                 "\n[debug stderr truncated by runtime]\n");
@@ -140,25 +153,62 @@ class DebugSession extends debug_session_base.DebugSessionBase {
         }
     }
 
+    /// @brief Consume one arbitrary byte chunk from the adapter's stderr stream.
+    /// @details Complete records and the unterminated carry are bounded before
+    ///          JSON parsing. Keeping this as a narrow input seam also lets the
+    ///          headless debugger probe exercise malformed framing without a
+    ///          test-only process implementation.
+    expose func AcceptAdapterControlText(text: String) {
+        if text == "" { return; }
+        ctrlBuf = ctrlBuf + text;
+        drainControlLines();
+        if Str.get_Length(ctrlBuf) > MAX_DEBUG_CONTROL_CARRY_BYTES {
+            ctrlBuf = "";
+            ReportProtocolDiagnostic("oversized debug control line discarded");
+        }
+    }
+
     hide func drainControlLines() {
-        var nl = Str.IndexOf(ctrlBuf, "\n");
+        var lineStart = 1;
+        var nl = Str.IndexOfFrom(ctrlBuf, lineStart, "\n");
         while nl != 0 {
-            var line = Str.Left(ctrlBuf, nl - 1);
-            ctrlBuf = Str.Mid(ctrlBuf, nl + 1);
-            handleLine(line);
-            nl = Str.IndexOf(ctrlBuf, "\n");
+            var lineBytes = nl - lineStart;
+            if lineBytes > MAX_DEBUG_CONTROL_CARRY_BYTES {
+                ReportProtocolDiagnostic("oversized debug control line discarded");
+            } else {
+                var line = Str.Substring(ctrlBuf, lineStart - 1, lineBytes);
+                handleLine(line);
+            }
+            lineStart = nl + 1;
+            nl = Str.IndexOfFrom(ctrlBuf, lineStart, "\n");
+        }
+        var remaining = Str.get_Length(ctrlBuf) - lineStart + 1;
+        if remaining <= 0 {
+            ctrlBuf = "";
+        } else if lineStart > 1 {
+            ctrlBuf = Str.Substring(ctrlBuf, lineStart - 1, remaining);
         }
     }
 
     hide func handleLine(line: String) {
         if line == "" { return; }
         if Str.StartsWith(line, SENTINEL) {
-            handleEvent(Str.Mid(line, Str.get_Length(SENTINEL) + 1));
+            var prefixBytes = Str.get_Length(SENTINEL);
+            var lineBytes = Str.get_Length(line);
+            handleEvent(Str.Substring(line, prefixBytes,
+                                      lineBytes - prefixBytes));
         } else {
             // Raw program stderr or trap text: show it as output.
             programOutput = AppendBoundedOutput(programOutput, line + "\n");
             dirty = true;
         }
+    }
+
+    /// @brief Publish one bounded, visible adapter-protocol diagnostic.
+    hide func ReportProtocolDiagnostic(message: String) {
+        programOutput = AppendBoundedOutput(
+            programOutput, "\n[" + message + "]\n");
+        dirty = true;
     }
 
     /// @brief Append debug output while preserving a bounded console history.
@@ -203,18 +253,45 @@ class DebugSession extends debug_session_base.DebugSessionBase {
         if failedVarPath == pendingVarPath { failedVarPath = ""; }
         pendingVarPath = "";
         pendingVarRef = 0;
+        pendingVarRequestId = 0;
         variableRequestCountdown.Reset();
     }
 
+    /// @brief Fail one timed-out watch and continue the serialized refresh.
+    hide func ExpireWatchRequest() {
+        var watchIdx = FindWatch(watchRequestExpr);
+        if watchIdx >= 0 {
+            watchValues.removeAt(watchIdx);
+            watchValues.insert(watchIdx, "(timed out)");
+            watchTypes.removeAt(watchIdx);
+            watchTypes.insert(watchIdx, "");
+            watchOk.removeAt(watchIdx);
+            watchOk.insert(watchIdx, false);
+            watchRefreshIndex = watchIdx + 1;
+            if watchRefreshIndex >= watchExprs.count() {
+                watchRefreshIndex = -1;
+            }
+        }
+        watchRequestActive = false;
+        watchRequestExpr = "";
+        watchRequestId = 0;
+        watchRequestCountdown.Reset();
+        dirty = true;
+        PumpWatchRequest();
+    }
+
     hide func handleEvent(jsonText: String) {
-        if Json.IsValid(jsonText) == false { return; }
+        if Json.IsValid(jsonText) == false {
+            ReportProtocolDiagnostic("malformed debug control JSON discarded");
+            return;
+        }
         var ev = Json.Parse(jsonText);
         var evType = Zanna.Collections.Map.GetStr(ev, "type");
         if evType == "stopped" {
             stopped = true;
             lastType = "stopped";
             lastReason = Zanna.Collections.Map.GetStr(ev, "reason");
-            activePath = Zanna.Collections.Map.GetStr(ev, "path");
+            self.activePath = Zanna.Collections.Map.GetStr(ev, "path");
             lastLine = Zanna.Collections.Map.GetInt(ev, "line");
             stopFrames = Map.Get(ev, "frames");
             stopLocals = Map.Get(ev, "locals");
@@ -233,12 +310,15 @@ class DebugSession extends debug_session_base.DebugSessionBase {
             ClearWatchValues();
             dirty = true;
         } else if evType == "evaluated" {
+            var responseId = Zanna.Collections.Map.GetInt(ev, "requestId");
             var expr = Zanna.Collections.Map.GetStr(ev, "expr");
             var value = Zanna.Collections.Map.GetStr(ev, "value");
             var valueType = Zanna.Collections.Map.GetStr(ev, "valueType");
             var ok = Zanna.Collections.Map.GetBool(ev, "ok");
             var watchIdx = FindWatch(expr);
-            if watchIdx >= 0 and watchRequestActive and expr == watchRequestExpr {
+            var matched = false;
+            if watchIdx >= 0 and watchRequestActive
+               and responseId == watchRequestId and expr == watchRequestExpr {
                 watchValues.removeAt(watchIdx);
                 if ok {
                     watchValues.insert(watchIdx, value);
@@ -251,27 +331,40 @@ class DebugSession extends debug_session_base.DebugSessionBase {
                 watchOk.insert(watchIdx, ok);
                 watchRequestActive = false;
                 watchRequestExpr = "";
+                watchRequestId = 0;
+                watchRequestCountdown.Reset();
                 watchRefreshIndex = watchIdx + 1;
                 if watchRefreshIndex >= watchExprs.count() {
                     watchRefreshIndex = -1;
                 }
                 PumpWatchRequest();
+                matched = true;
             }
-            if pendingManualEvalExpr != "" and expr == pendingManualEvalExpr {
+            if pendingManualEvalRequestId > 0
+               and responseId == pendingManualEvalRequestId
+               and expr == pendingManualEvalExpr {
                 lastEvalExpr = expr;
                 lastEvalValue = value;
                 lastEvalType = valueType;
                 lastEvalOk = ok;
                 evalJustArrived = true;
                 pendingManualEvalExpr = "";
+                pendingManualEvalRequestId = 0;
+                manualEvalCountdown.Reset();
+                matched = true;
             }
-            dirty = true;
+            if matched { dirty = true; }
         } else if evType == "variables" {
             // Lazy expansion result for a composite local/child. Copy matching
             // UI requests into the stable name-path cache before publishing.
+            var responseId = Zanna.Collections.Map.GetInt(ev, "requestId");
+            if responseId <= 0 or responseId != expectedVariableRequestId { return; }
+            expectedVariableRequestId = 0;
             lastVarRef = Zanna.Collections.Map.GetInt(ev, "varRef");
             lastVarChildren = Map.Get(ev, "vars");
-            CachePendingVariableChildren();
+            if responseId == pendingVarRequestId {
+                CachePendingVariableChildren();
+            }
             dirty = true;
         } else if evType == "log" {
             // Logpoint: surfaced in the debug console; execution never paused.
@@ -283,196 +376,4 @@ class DebugSession extends debug_session_base.DebugSessionBase {
         }
     }
 
-    expose func FormatConsole() -> String {
-        if hasSession == false and terminated == false { return ""; }
-        if consoleText != "" { return consoleText; }
-        var state = lastType;
-        if state == "" and hasSession { state = "running"; }
-        var result = "[debug] " + state;
-        if lastReason != "" { result = result + " " + lastReason; }
-        return result;
-    }
-
-    // ── Structured stop accessors (Variables / Call Stack panels) ───────────
-
-    /// @brief Number of call-stack frames at the current stop (0 if not stopped).
-    expose func FrameCount() -> Integer {
-        if stopFrames == null { return 0; }
-        return Seq.get_Count(stopFrames);
-    }
-
-    /// @brief One-line label for call-stack frame @p i: "function — file:line".
-    expose func FrameLabel(i: Integer) -> String {
-        if stopFrames == null or i < 0 or i >= Seq.get_Count(stopFrames) { return ""; }
-        var f = Seq.Get(stopFrames, i);
-        var fn = Zanna.Collections.Map.GetStr(f, "function");
-        if fn == "" { fn = "<anonymous>"; }
-        return fn + " — " + baseName(Zanna.Collections.Map.GetStr(f, "path")) + ":" + Zanna.Collections.Map.GetInt(f, "line");
-    }
-
-    /// @brief Source path for frame @p i (for click-to-navigate), or "".
-    expose func FramePath(i: Integer) -> String {
-        if stopFrames == null or i < 0 or i >= Seq.get_Count(stopFrames) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(stopFrames, i), "path");
-    }
-
-    /// @brief One-based source line for frame @p i, or 0.
-    expose func FrameLine(i: Integer) -> Integer {
-        if stopFrames == null or i < 0 or i >= Seq.get_Count(stopFrames) { return 0; }
-        return Zanna.Collections.Map.GetInt(Seq.Get(stopFrames, i), "line");
-    }
-
-    /// @brief Number of locals visible at the current stop (0 if not stopped).
-    expose func LocalCount() -> Integer {
-        if stopLocals == null { return 0; }
-        return Seq.get_Count(stopLocals);
-    }
-
-    /// @brief "name = value : type" label for local @p i.
-    expose func LocalLabel(i: Integer) -> String {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return ""; }
-        var l = Seq.Get(stopLocals, i);
-        return Zanna.Collections.Map.GetStr(l, "name") + " = " + Zanna.Collections.Map.GetStr(l, "value")
-            + " : " + Zanna.Collections.Map.GetStr(l, "type");
-    }
-
-    /// @brief Expansion ref for local @p i: >0 when it is a composite that can be
-    ///        expanded via RequestVariables, 0 for a leaf.
-    expose func LocalVarRef(i: Integer) -> Integer {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return 0; }
-        return Zanna.Collections.Map.GetInt(Seq.Get(stopLocals, i), "varRef");
-    }
-
-    /// @brief Number of children local @p i has when expandable, else 0.
-    expose func LocalChildCount(i: Integer) -> Integer {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return 0; }
-        return Zanna.Collections.Map.GetInt(Seq.Get(stopLocals, i), "childCount");
-    }
-
-    /// @brief Number of children returned by the most recent RequestVariables.
-    expose func VarChildCount() -> Integer {
-        if lastVarChildren == null { return 0; }
-        return Seq.get_Count(lastVarChildren);
-    }
-
-    /// @brief "name = value : type" label for expanded child @p i.
-    expose func VarChildLabel(i: Integer) -> String {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return ""; }
-        var c = Seq.Get(lastVarChildren, i);
-        return Zanna.Collections.Map.GetStr(c, "name") + " = " + Zanna.Collections.Map.GetStr(c, "value")
-            + " : " + Zanna.Collections.Map.GetStr(c, "type");
-    }
-
-    /// @brief Expansion ref for expanded child @p i (>0 when it nests further).
-    expose func VarChildVarRef(i: Integer) -> Integer {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return 0; }
-        return Zanna.Collections.Map.GetInt(Seq.Get(lastVarChildren, i), "varRef");
-    }
-
-    /// @brief Display name of expanded child @p i (e.g. "[0]" or a map key).
-    expose func VarChildName(i: Integer) -> String {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(lastVarChildren, i), "name");
-    }
-
-    /// @brief Display value of expanded child @p i.
-    expose func VarChildValue(i: Integer) -> String {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(lastVarChildren, i), "value");
-    }
-
-    /// @brief Type label of expanded child @p i.
-    expose func VarChildType(i: Integer) -> String {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(lastVarChildren, i), "type");
-    }
-
-    /// @brief Child count of expanded child @p i (>0 when it nests further).
-    expose func VarChildChildCount(i: Integer) -> Integer {
-        if lastVarChildren == null or i < 0 or i >= Seq.get_Count(lastVarChildren) { return 0; }
-        return Zanna.Collections.Map.GetInt(Seq.Get(lastVarChildren, i), "childCount");
-    }
-
-    /// @brief Name of local @p i (the stable key used for tree paths).
-    expose func LocalName(i: Integer) -> String {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(stopLocals, i), "name");
-    }
-
-    /// @brief Display value of local @p i.
-    expose func LocalValue(i: Integer) -> String {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(stopLocals, i), "value");
-    }
-
-    /// @brief Type label of local @p i.
-    expose func LocalType(i: Integer) -> String {
-        if stopLocals == null or i < 0 or i >= Seq.get_Count(stopLocals) { return ""; }
-        return Zanna.Collections.Map.GetStr(Seq.Get(stopLocals, i), "type");
-    }
-
-    /// @brief Compatibility helper that synchronously fetches one child level.
-    /// @details Headless probes may use this helper; Studio UI code must use
-    ///          RequestVariableChildren so adapter latency never blocks a frame.
-    ///          On success children remain readable through VarChild* accessors.
-    expose func FetchChildren(varRef: Integer, start: Integer, count: Integer) -> Boolean {
-        if pendingVarPath != "" { return false; }
-        lastVarChildren = null;
-        lastVarRef = 0;
-        if RequestVariables(varRef, start, count) == false { return false; }
-        var waited = 0;
-        while waited < 2000 and lastVarRef != varRef {
-            Poll();
-            if lastVarRef == varRef { return true; }
-            Time.Clock.Sleep(2);
-            waited = waited + 2;
-        }
-        return lastVarRef == varRef;
-    }
-
-    /// @brief Trailing path component of @p p (handles both / and \\ separators).
-    hide func baseName(p: String) -> String {
-        var slash = Str.LastIndexOf(p, "/");
-        var back = Str.LastIndexOf(p, "\\");
-        var cut = slash;
-        if back > cut { cut = back; }
-        if cut <= 0 { return p; }
-        return Str.Mid(p, cut + 1);
-    }
-
-    hide func formatStopped(ev: Any) -> String {
-        var text = new StringBuilder();
-        text.Append("[debug] stopped (" + lastReason + ") at "
-                    + activePath + ":" + lastLine + "\n");
-
-        var frames = Map.Get(ev, "frames");
-        if frames != null and Seq.get_Count(frames) > 0 {
-            text.Append("\nCall stack:\n");
-            var i = 0;
-            while i < Seq.get_Count(frames) {
-                var f = Seq.Get(frames, i);
-                text.Append("  #" + i + " "
-                            + Zanna.Collections.Map.GetStr(f, "function")
-                            + " " + Zanna.Collections.Map.GetStr(f, "path")
-                            + ":" + Zanna.Collections.Map.GetInt(f, "line")
-                            + "\n");
-                i = i + 1;
-            }
-        }
-
-        var locals = Map.Get(ev, "locals");
-        if locals != null and Seq.get_Count(locals) > 0 {
-            text.Append("\nLocals:\n");
-            var j = 0;
-            while j < Seq.get_Count(locals) {
-                var l = Seq.Get(locals, j);
-                text.Append("  " + Zanna.Collections.Map.GetStr(l, "name")
-                            + " = " + Zanna.Collections.Map.GetStr(l, "value")
-                            + " : " + Zanna.Collections.Map.GetStr(l, "type")
-                            + "\n");
-                j = j + 1;
-            }
-        }
-        return text.ToString();
-    }
 }

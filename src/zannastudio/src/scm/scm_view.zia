@@ -23,6 +23,7 @@
 module scm_view;
 
 bind "../scm/scm_view_base";
+bind "../scm/scm_view_presenter" as Implementation;
 
 bind "scm_git";
 bind "../ui/diff_view";
@@ -47,7 +48,7 @@ func ScmUsesCompactControls(width: Number) -> Boolean {
 }
 
 /// @brief Source Control job and event controller.
-class ScmView extends scm_view_base.ScmViewBase {
+class ScmView extends Implementation.ScmViewPresenterLayer {
     expose func init() {
         InitializeState();
     }
@@ -61,15 +62,21 @@ class ScmView extends scm_view_base.ScmViewBase {
             return;
         }
         repoContextInitialized = true;
+        repositoryGeneration = repositoryGeneration + 1;
+        if repositoryGeneration <= 0 { repositoryGeneration = 1; }
         repoPath = path;
         repoReady = false;
         if activeJob != null { activeJob.Kill(); activeJob = null; }
-        if activePtyJob != null { activePtyJob.Kill(); activePtyJob = null; }
         pendingJobs = [];
+        queuedDiffPath = "";
+        pendingOldText = "";
+        pendingDiffFile = "";
+        pendingDiffStatus = "";
         viewMode = "status";
         historySha = "";
         historyLoaded = 0;
-        HideCredRow();
+        operationState = "idle";
+        ClearStatusRows();
         lastStatus = new scm_git.GitStatus();
         if loadMoreBtn != null { loadMoreBtn.SetVisible(false); }
         SetRepositoryActionsEnabled(false);
@@ -85,787 +92,17 @@ class ScmView extends scm_view_base.ScmViewBase {
     /// @details User cancellation refreshes status, but application shutdown
     ///          must be terminal: no queued or replacement process may start
     ///          after native GUI teardown begins.
-    expose func Shutdown() {
-        if activePtyJob != null {
-            activePtyJob.Kill();
-            activePtyJob = null;
-        }
+    expose func Shutdown() -> Boolean {
         if activeJob != null {
             activeJob.Kill();
             activeJob = null;
         }
         pendingJobs = [];
+        queuedDiffPath = "";
+        pendingOldText = "";
         pendingDiffFile = "";
-        HideCredRow();
-    }
-
-    /// @brief Render the intentional no-workspace state without spawning Git.
-    hide func ShowNoWorkspaceState() {
-        repoReady = false;
-        lastStatus = new scm_git.GitStatus();
-        if branchLabel != null { branchLabel.SetText("Source Control"); }
-        if statusList != null { statusList.Clear(); }
-        if diffPane != null { diffPane.Clear(); }
-        if statusLabel != null {
-            statusLabel.SetText("Open a workspace to use source control");
-        }
-        SetRepositoryActionsEnabled(false);
-    }
-
-    /// @brief Return whether Source Control currently uses compact controls.
-    expose func IsCompactControls() -> Boolean {
-        return compactControls;
-    }
-
-    /// @brief Reflow Source Control without replacing live input or job state.
-    /// @details The activity sidebar can be substantially narrower than the
-    ///          editor. Wrapped Flex rows and compact action bases prevent the
-    ///          fixed toolbar clipping that previously hid Push/Pull/History.
-    hide func ApplyResponsiveControls() {
-        if host == null or topRow == null { return; }
-        var width = host.GetLogicalWidth();
-        if width <= 0.0 { return; }
-        var compact = ScmUsesCompactControls(width);
-        if compact == compactControls { return; }
-        compactControls = compact;
-
-        if compactControls {
-            refreshBtn.SetFlex(1.0);
-            cancelBtn.SetFlex(1.0);
-            pushBtn.SetFlex(1.0);
-            pullBtn.SetFlex(1.0);
-            historyBtn.SetFlex(1.0);
-            loadMoreBtn.SetFlex(1.0);
-            stageBtn.SetFlex(1.0);
-            unstageBtn.SetFlex(1.0);
-            stageAllBtn.SetFlex(1.0);
-
-            refreshBtn.SetPreferredSize(60.0, 0.0);
-            cancelBtn.SetPreferredSize(56.0, 0.0);
-            pushBtn.SetPreferredSize(48.0, 0.0);
-            pullBtn.SetPreferredSize(48.0, 0.0);
-            historyBtn.SetPreferredSize(64.0, 0.0);
-            loadMoreBtn.SetPreferredSize(48.0, 0.0);
-            stageBtn.SetPreferredSize(56.0, 0.0);
-            unstageBtn.SetPreferredSize(64.0, 0.0);
-            stageAllBtn.SetPreferredSize(68.0, 0.0);
-            commitInput.SetMinSize(80.0, 0.0);
-            commitInput.SetPreferredSize(104.0, 0.0);
-            credInput.SetMinSize(80.0, 0.0);
-            credInput.SetPreferredSize(96.0, 0.0);
-        } else {
-            refreshBtn.SetFlex(0.0);
-            cancelBtn.SetFlex(0.0);
-            pushBtn.SetFlex(0.0);
-            pullBtn.SetFlex(0.0);
-            historyBtn.SetFlex(0.0);
-            loadMoreBtn.SetFlex(0.0);
-            stageBtn.SetFlex(0.0);
-            unstageBtn.SetFlex(0.0);
-            stageAllBtn.SetFlex(0.0);
-
-            refreshBtn.SetPreferredSize(0.0, 0.0);
-            cancelBtn.SetPreferredSize(0.0, 0.0);
-            pushBtn.SetPreferredSize(0.0, 0.0);
-            pullBtn.SetPreferredSize(0.0, 0.0);
-            historyBtn.SetPreferredSize(0.0, 0.0);
-            loadMoreBtn.SetPreferredSize(0.0, 0.0);
-            stageBtn.SetPreferredSize(0.0, 0.0);
-            unstageBtn.SetPreferredSize(0.0, 0.0);
-            stageAllBtn.SetPreferredSize(0.0, 0.0);
-            commitInput.SetMinSize(120.0, 0.0);
-            commitInput.SetPreferredSize(180.0, 0.0);
-            credInput.SetMinSize(120.0, 0.0);
-            credInput.SetPreferredSize(160.0, 0.0);
-        }
-        refreshBtn.SetMinSize(48.0, 0.0);
-        cancelBtn.SetMinSize(48.0, 0.0);
-        pushBtn.SetMinSize(44.0, 0.0);
-        pullBtn.SetMinSize(44.0, 0.0);
-        historyBtn.SetMinSize(56.0, 0.0);
-        loadMoreBtn.SetMinSize(44.0, 0.0);
-        stageBtn.SetMinSize(52.0, 0.0);
-        unstageBtn.SetMinSize(60.0, 0.0);
-        stageAllBtn.SetMinSize(64.0, 0.0);
-        commitBtn.SetMinSize(60.0, 0.0);
-        credSendBtn.SetMinSize(52.0, 0.0);
-        credCancelBtn.SetMinSize(56.0, 0.0);
-    }
-
-    /// @brief Enable repository-only controls only after a successful status.
-    hide func SetRepositoryActionsEnabled(enabled: Boolean) {
-        if refreshBtn != null { refreshBtn.SetEnabled(repoPath != ""); }
-        if pushBtn != null { pushBtn.SetEnabled(enabled); }
-        if pullBtn != null { pullBtn.SetEnabled(enabled); }
-        if historyBtn != null { historyBtn.SetEnabled(enabled); }
-        if stageBtn != null { stageBtn.SetEnabled(false); }
-        if unstageBtn != null { unstageBtn.SetEnabled(false); }
-        if stageAllBtn != null { stageAllBtn.SetEnabled(false); }
-        if commitInput != null { commitInput.SetEnabled(enabled); }
-        if commitBtn != null { commitBtn.SetEnabled(false); }
-        if sideBySideButton != null {
-            sideBySideButton.SetEnabled(false);
-        }
-        if cancelBtn != null { cancelBtn.SetEnabled(false); }
-    }
-
-    /// @brief Find the latest structured status entry for one repository path.
-    hide func EntryForPath(path: String) -> scm_git.GitEntry {
-        if path == "" or lastStatus == null { return null; }
-        var i = 0;
-        while i < lastStatus.entries.count() {
-            var entry = lastStatus.entries.get(i);
-            if entry.path == path { return entry; }
-            i = i + 1;
-        }
-        return null;
-    }
-
-    /// @brief Return the selected structured status entry, when any.
-    hide func SelectedEntry() -> scm_git.GitEntry {
-        if viewMode != "status" { return null; }
-        return EntryForPath(SelectedPath());
-    }
-
-    /// @brief Return whether an entry still has worktree state to stage.
-    hide func EntryCanStage(entry: scm_git.GitEntry) -> Boolean {
-        if entry == null { return false; }
-        return entry.conflicted or entry.untracked or entry.worktree != ".";
-    }
-
-    /// @brief Return whether any current entry can be staged.
-    hide func HasStageableChanges() -> Boolean {
-        if lastStatus == null { return false; }
-        var i = 0;
-        while i < lastStatus.entries.count() {
-            if EntryCanStage(lastStatus.entries.get(i)) { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-
-    /// @brief Return whether the index contains at least one staged change.
-    hide func HasStagedChanges() -> Boolean {
-        if lastStatus == null { return false; }
-        var i = 0;
-        while i < lastStatus.entries.count() {
-            if lastStatus.entries.get(i).staged { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-
-    /// @brief Return whether the current status still contains a conflict.
-    hide func HasConflicts() -> Boolean {
-        if lastStatus == null { return false; }
-        var i = 0;
-        while i < lastStatus.entries.count() {
-            if lastStatus.entries.get(i).conflicted { return true; }
-            i = i + 1;
-        }
-        return false;
-    }
-
-    /// @brief Synchronize every action with live repository and selection state.
-    /// @details This runs every frame so typed commit/credential text and list
-    ///          selection affect the controls without rebuilding their widgets.
-    hide func UpdateActionStates() {
-        var repository = ready and repoPath != "" and repoReady;
-        var statusMode = repository and viewMode == "status";
-        var selected = SelectedEntry();
-        var staged = HasStagedChanges();
-        var conflicts = HasConflicts();
-        var commitMessage = "";
-        if commitInput != null { commitMessage = Str.Trim(commitInput.get_Text()); }
-
-        if refreshBtn != null { refreshBtn.SetEnabled(ready and repoPath != ""); }
-        if cancelBtn != null {
-            cancelBtn.SetEnabled(Busy() or pendingJobs.count() > 0);
-        }
-        if pushBtn != null { pushBtn.SetEnabled(repository); }
-        if pullBtn != null { pullBtn.SetEnabled(repository); }
-        if historyBtn != null {
-            historyBtn.SetEnabled(repository);
-            if viewMode == "status" {
-                historyBtn.SetText("History");
-                historyBtn.SetTooltip("Show repository commit history");
-            } else {
-                historyBtn.SetText("Changes");
-                historyBtn.SetTooltip("Return to current worktree changes");
-            }
-        }
-        if loadMoreBtn != null {
-            loadMoreBtn.SetEnabled(repository and viewMode == "history");
-        }
-        if stageBtn != null {
-            stageBtn.SetEnabled(statusMode and EntryCanStage(selected));
-        }
-        if unstageBtn != null {
-            unstageBtn.SetEnabled(statusMode and selected != null and selected.staged);
-        }
-        if stageAllBtn != null {
-            stageAllBtn.SetEnabled(statusMode and HasStageableChanges());
-        }
-        if commitInput != null { commitInput.SetEnabled(statusMode); }
-        if commitBtn != null {
-            commitBtn.SetEnabled(statusMode and staged and conflicts == false
-                                 and commitMessage != "");
-        }
-        if sideBySideButton != null {
-            sideBySideButton.SetEnabled(statusMode and selected != null);
-        }
-        if credSendBtn != null {
-            credSendBtn.SetEnabled(credRow != null and credRow.IsVisible()
-                                   and Str.Trim(credInput.get_Text()) != "");
-        }
-        if credCancelBtn != null {
-            credCancelBtn.SetEnabled(credRow != null and credRow.IsVisible());
-        }
-    }
-
-    /// @brief Queue a background status refresh.
-    expose func Refresh() {
-        if ready == false { return; }
-        if repoPath == "" {
-            if statusLabel != null {
-                statusLabel.SetText("Open a workspace to use source control");
-            }
-            return;
-        }
-        if Busy() == false {
-            statusList.Clear();
-            if diffPane != null { diffPane.Clear(); }
-        }
-        RunOrQueue("status", "", "");
-    }
-
-    expose func Busy() -> Boolean {
-        if activePtyJob != null and activePtyJob.running { return true; }
-        return activeJob != null and activeJob.running;
-    }
-
-    hide func StartJob(job: scm_git.GitJob,
-                       label: String) -> Boolean {
-        if job == null { return false; }
-        activeJob = job;
-        if job.started == false {
-            statusLabel.SetText(job.CombinedOutput());
-            if diffPane != null and job.CombinedOutput() != "" {
-                diffPane.Clear();
-                diffPane.Append(job.CombinedOutput() + "\n");
-            }
-            activeJob = null;
-            return false;
-        }
-        statusLabel.SetText(QueueSuffix(label));
-        return true;
-    }
-
-    /// @brief Start a PTY-backed interactive job (push/pull) with live output.
-    hide func StartPtyJob(job: scm_git.GitPtyJob, label: String) -> Boolean {
-        if job == null { return false; }
-        activePtyJob = job;
-        if job.started == false {
-            statusLabel.SetText(job.outputText);
-            if diffPane != null and job.outputText != "" {
-                diffPane.Clear();
-                diffPane.Append(job.outputText + "\n");
-            }
-            activePtyJob = null;
-            return false;
-        }
-        if diffPane != null { diffPane.Clear(); }
-        statusLabel.SetText(QueueSuffix(label));
-        return true;
-    }
-
-    /// @brief Append the pending-queue depth to a status label when non-empty.
-    hide func QueueSuffix(label: String) -> String {
-        if pendingJobs.count() == 0 { return label; }
-        return label + "  (" + pendingJobs.count() + " queued)";
-    }
-
-    /// @brief Run @p kind now, or queue it while another git job is active.
-    /// @details The queue is bounded; overflowing requests are dropped with a
-    ///          visible message rather than silently discarded.
-    hide func RunOrQueue(kind: String, path: String, message: String) {
-        if Busy() == false {
-            Dispatch(kind, path, message);
-            return;
-        }
-        if pendingJobs.count() >= MAX_PENDING_JOBS {
-            statusLabel.SetText("Queue is full; wait for git to finish");
-            return;
-        }
-        var action = new scm_view_base.PendingAction();
-        action.kind = kind;
-        action.path = path;
-        action.message = message;
-        pendingJobs.Push(action);
-        statusLabel.SetText(QueueSuffix("Running git..."));
-    }
-
-    /// @brief Start the job for one action kind (the queue's dispatcher).
-    hide func Dispatch(kind: String, path: String, message: String) {
-        if kind == "status" { StartJob(git.StartStatus(), "Refreshing status..."); return; }
-        if kind == "stage" { StartJob(git.StartStage(path), "Staging " + path + "..."); return; }
-        if kind == "unstage" { StartJob(git.StartUnstage(path), "Unstaging " + path + "..."); return; }
-        if kind == "stageAll" { StartJob(git.StartStageAll(), "Staging all changes..."); return; }
-        if kind == "commit" { StartJob(git.StartCommit(message), "Committing..."); return; }
-        if kind == "push" { StartJob(git.StartPush(), "Pushing..."); return; }
-        if kind == "pull" { StartJob(git.StartPull(), "Pulling..."); return; }
-        if kind == "log" {
-            StartJob(git.StartLog(historyLoaded, HISTORY_PAGE_SIZE), "Loading history...");
-            return;
-        }
-        if kind == "logfiles" { StartJob(git.StartCommitFiles(path), "Loading commit..."); return; }
-        if kind == "showold" {
-            StartJob(git.StartShowAt(historySha + "~1", path, "showold"), "Loading old version...");
-            return;
-        }
-        if kind == "shownew" {
-            StartJob(git.StartShowAt(historySha, path, "shownew"), "Loading new version...");
-            return;
-        }
-        if kind == "show" { StartJob(git.StartShowHead(path), "Loading HEAD version..."); return; }
-    }
-
-    /// @brief Start the next queued action when idle.
-    hide func DrainQueue() {
-        if Busy() { return; }
-        if pendingJobs.count() == 0 { return; }
-        var action = pendingJobs.get(0);
-        pendingJobs.removeAt(0);
-        Dispatch(action.kind, action.path, action.message);
-    }
-
-    hide func CompleteJob(job: scm_git.GitJob) {
-        if job == null { return; }
-        activeJob = null;
-        if job.kind == "status" {
-            ApplyStatus(git.StatusFromOutput(job.stdoutText, job.stderrText, job.exitCode));
-            if queuedDiffPath != "" {
-                var p = queuedDiffPath;
-                queuedDiffPath = "";
-                ShowDiff(p);
-            }
-            DrainQueue();
-            return;
-        }
-        if job.kind == "diff" {
-            ApplyDiff(job);
-            DrainQueue();
-            return;
-        }
-        if job.kind == "show" {
-            if diffOverlay != null {
-                var headText = "";
-                if job.Success() { headText = job.stdoutText; }
-                var worktree = "";
-                var absolute = Path.Join(git.repo, job.path);
-                if IO.File.Exists(absolute) {
-                    var readResult = safe_io.ReadAllTextBounded(absolute, MAX_SCM_DIFF_BYTES);
-                    if readResult.ok == false {
-                        statusLabel.SetText("Could not read worktree file for diff");
-                        GUI.Toast.Error("Could not open worktree diff");
-                        DrainQueue();
-                        return;
-                    }
-                    worktree = readResult.text;
-                }
-                diffOverlay.Open(job.path + "  (HEAD → worktree)", headText, worktree);
-            }
-            DrainQueue();
-            return;
-        }
-        if job.kind == "log" {
-            ApplyLog(job);
-            DrainQueue();
-            return;
-        }
-        if job.kind == "logfiles" {
-            ApplyCommitFiles(job);
-            DrainQueue();
-            return;
-        }
-        if job.kind == "showold" {
-            // First half of a commit-diff chain: stash the parent version (a
-            // failure means the file was added in this commit — empty left).
-            pendingOldText = "";
-            if job.Success() { pendingOldText = job.stdoutText; }
-            RunOrQueue("shownew", job.path, "");
-            return;
-        }
-        if job.kind == "shownew" {
-            var newText = "";
-            if job.Success() { newText = job.stdoutText; }
-            if diffOverlay != null {
-                var shortSha = Str.Left(historySha, 8);
-                diffOverlay.Open(job.path + "  (" + shortSha + "~1 → " + shortSha + ")",
-                                 pendingOldText, newText);
-            }
-            pendingOldText = "";
-            statusLabel.SetText("Diff: " + job.path);
-            DrainQueue();
-            return;
-        }
-
-        if job.Success() {
-            statusLabel.SetText(JobPastTense(job.kind));
-            if job.kind == "commit" and commitInput != null {
-                commitInput.SetText("");
-            }
-        } else {
-            var combined = job.CombinedOutput();
-            var hint = scm_git.FailureHint(job.kind, combined);
-            if hint != "" {
-                statusLabel.SetText(JobLabel(job.kind) + " needs attention");
-            } else {
-                statusLabel.SetText(JobLabel(job.kind) + " failed (" + job.exitCode + ")");
-            }
-            if diffPane != null {
-                diffPane.Clear();
-                if combined == "" { combined = "git " + job.kind + " failed"; }
-                if hint != "" {
-                    diffPane.Append(hint + "\n\n");
-                }
-                diffPane.Append(combined + "\n");
-            }
-        }
-        StartJob(git.StartStatus(), "Refreshing status...");
-    }
-
-    /// @brief Render one page of `git log` into the list (history mode).
-    hide func ApplyLog(job: scm_git.GitJob) {
-        if viewMode != "history" { return; }
-        if job.exitCode != 0 {
-            statusLabel.SetText("History failed (" + job.exitCode + ")");
-            if diffPane != null {
-                diffPane.Clear();
-                diffPane.Append(job.CombinedOutput() + "\n");
-            }
-            return;
-        }
-        var commits = scm_git.ParseLog(job.stdoutText);
-        if historyLoaded == 0 { statusList.Clear(); }
-        var i = 0;
-        while i < commits.count() {
-            var c = commits.get(i);
-            var label = Str.Left(c.sha, 8) + "  " + c.date + "  " + c.subject
-                + "  — " + c.author;
-            var item = statusList.AddItem(label);
-            GUI.ListBox.ItemSetData(item, c.sha);
-            i = i + 1;
-        }
-        historyLoaded = historyLoaded + commits.count();
-        if historyLoaded == 0 {
-            statusList.AddItem("(no commits)");
-        }
-        if loadMoreBtn != null {
-            loadMoreBtn.SetVisible(commits.count() >= HISTORY_PAGE_SIZE);
-        }
-        statusLabel.SetText("History: " + historyLoaded + " commit(s) loaded");
-    }
-
-    /// @brief Render one commit's touched files into the list (commitfiles mode).
-    hide func ApplyCommitFiles(job: scm_git.GitJob) {
-        if viewMode != "commitfiles" { return; }
-        statusList.Clear();
-        var back = statusList.AddItem("<- Back to history");
-        GUI.ListBox.ItemSetData(back, "::back");
-        if job.exitCode != 0 {
-            statusLabel.SetText("Commit load failed (" + job.exitCode + ")");
-            return;
-        }
-        var files = scm_git.ParseCommitFiles(job.stdoutText);
-        var i = 0;
-        while i < files.count() {
-            var row = files.get(i) as scm_git.GitCommitFile;
-            var statusMark = row.status;
-            var filePath = row.path;
-            if filePath == "" { i = i + 1; continue; }
-            var item = statusList.AddItem("[" + Str.Left(statusMark, 1) + "] " + filePath);
-            GUI.ListBox.ItemSetData(item, filePath);
-            i = i + 1;
-        }
-        var shortSha = Str.Left(historySha, 8);
-        statusLabel.SetText("Commit " + shortSha + ": " + files.count() + " file(s)");
-    }
-
-    hide func ApplyStatus(st: scm_git.GitStatus) {
-        lastStatus = st;
-        statusList.Clear();
-        if st.isRepo == false {
-            repoReady = false;
-            SetRepositoryActionsEnabled(false);
-            branchLabel.SetText("Not a git repository");
-            statusLabel.SetText(st.errorText);
-            if diffPane != null and st.errorText != "" {
-                diffPane.Clear();
-                diffPane.Append(st.errorText + "\n");
-            }
-            return;
-        }
-        repoReady = true;
-        SetRepositoryActionsEnabled(true);
-        if Str.get_Length(st.branch) > 0 {
-            branchLabel.SetText("Branch: " + st.branch);
-        } else {
-            branchLabel.SetText("Branch: (detached)");
-        }
-
-        var i = 0;
-        var conflicts = 0;
-        while i < st.entries.count() {
-            var e = st.entries.get(i);
-            var label = StatusMarker(e) + " " + e.path;
-            if e.renamed and e.oldPath != "" {
-                label = label + " <- " + e.oldPath;
-            }
-            if e.conflicted {
-                label = label + "  (conflict)";
-                conflicts = conflicts + 1;
-            }
-            var item = statusList.AddItem(label);
-            GUI.ListBox.ItemSetData(item, e.path);
-            if e.conflicted {
-                GUI.ListBox.ItemSetTextColor(item, 14707829);
-            }
-            i = i + 1;
-        }
-        if st.entries.count() == 0 {
-            statusList.AddItem("(working tree clean)");
-        }
-        if conflicts > 0 {
-            statusLabel.SetText("" + conflicts + " conflict(s), " + st.entries.count() + " changed file(s)");
-        } else {
-            statusLabel.SetText("" + st.entries.count() + " changed file(s)");
-        }
-    }
-
-    hide func ApplyDiff(job: scm_git.GitJob) {
-        if diffPane == null { return; }
-        diffPane.Clear();
-        if job.exitCode != 0 {
-            var combined = job.CombinedOutput();
-            if combined == "" { combined = "git diff failed"; }
-            diffPane.Append(combined + "\n");
-            statusLabel.SetText("Diff failed");
-            return;
-        }
-        if Str.get_Length(Str.Trim(job.stdoutText)) == 0 and job.stagedDiff == false {
-            StartJob(git.StartDiff(job.path, true), "Loading staged diff...");
-            return;
-        }
-        var entry = EntryForPath(job.path);
-        if entry != null and entry.conflicted {
-            diffPane.Append(
-                "Conflict: edit the conflict markers in this file, then Stage it "
-                + "to mark the conflict resolved.\n\n");
-        }
-        if Str.get_Length(Str.Trim(job.stdoutText)) == 0 {
-            diffPane.Append("(no diff)\n");
-        } else {
-            diffPane.Append(job.stdoutText);
-        }
-        if entry != null and entry.conflicted {
-            statusLabel.SetText("Conflict: " + job.path + " — edit, then Stage");
-        } else {
-            statusLabel.SetText("Diff: " + job.path);
-        }
-    }
-
-    /// @brief Two-char marker for a status entry.
-    hide func StatusMarker(e: scm_git.GitEntry) -> String {
-        if e.conflicted { return "[!]"; }
-        if e.untracked { return "[?]"; }
-        if e.renamed { return "[R]"; }
-        if e.staged { return "[+]"; }
-        return "[~]";
-    }
-
-    /// @brief Repo-relative path of the selected row.
-    hide func SelectedPath() -> String {
-        if ready == false { return ""; }
-        var item = statusList.get_Selected();
-        if item == null { return ""; }
-        return GUI.ListBox.ItemGetData(item);
-    }
-
-    /// @brief Return whether a mutating SCM command can run right now.
-    /// @param actionLabel Human-readable action phrase for status feedback.
-    /// @return True when the view is wired, points at a repository, and is idle.
-    /// @details Button clicks can arrive while no project repository is open or
-    ///          before the first status refresh has completed. Reporting that
-    ///          locally is clearer than starting a Git process that is guaranteed
-    ///          to fail and then replacing the message during the follow-up status.
-    hide func CanRunRepositoryAction(actionLabel: String) -> Boolean {
-        if ready == false { return false; }
-        if repoPath == "" or repoReady == false {
-            statusLabel.SetText("Open a Git repository before " + actionLabel);
-            return false;
-        }
-        return true;
-    }
-
-    /// @brief Return the selected changed-file path or report an actionable status.
-    /// @param actionLabel Action verb shown when no changed file is selected.
-    /// @return Repo-relative selected path, or empty when no file action should run.
-    hide func SelectedPathForAction(actionLabel: String) -> String {
-        var p = SelectedPath();
-        if p == "" {
-            statusLabel.SetText("Select a changed file to " + actionLabel);
-        }
-        return p;
-    }
-
-    /// @brief Show the diff of @p path.
-    hide func ShowDiff(path: String) {
-        if diffPane == null { return; }
-        if path == "" { return; }
-        if Busy() {
-            queuedDiffPath = path;
-            return;
-        }
-        diffPane.Clear();
-        StartJob(git.StartDiff(path, false), "Loading diff...");
-    }
-
-    /// @brief Pump the interactive PTY job: stream output, surface credential
-    ///        prompts, and finish with the shared success/failure handling.
-    hide func PumpPtyJob() {
-        var stillRunning = activePtyJob.Pump();
-        if activePtyJob.lastDelta != "" and diffPane != null {
-            diffPane.Append(activePtyJob.lastDelta);
-        }
-        if stillRunning {
-            if activePtyJob.IsWaitingForInput() {
-                ShowCredRow(activePtyJob.promptText);
-                var sendCredential =
-                    credSendBtn != null and credSendBtn.WasClicked();
-                if credInput != null and credInput.IsFocused()
-                   and Input.Keyboard.WasPressed(Zanna.Input.Key.Enter) {
-                    sendCredential = true;
-                }
-                if sendCredential {
-                    var response = credInput.get_Text();
-                    if Str.Trim(response) == "" {
-                        statusLabel.SetText("Enter a response for the Git prompt");
-                    } else {
-                        activePtyJob.SendInput(response);
-                        credInput.SetText("");
-                        HideCredRow();
-                        statusLabel.SetText(
-                            "Answer sent to git " + activePtyJob.kind + "...");
-                    }
-                }
-                if credCancelBtn != null and credCancelBtn.WasClicked() {
-                    var k = activePtyJob.kind;
-                    activePtyJob.Kill();
-                    activePtyJob = null;
-                    HideCredRow();
-                    statusLabel.SetText("Aborted git " + k);
-                    StartJob(git.StartStatus(), "Refreshing status...");
-                }
-            } else {
-                statusLabel.SetText(QueueSuffix("Running git " + activePtyJob.kind + "..."));
-            }
-            return;
-        }
-
-        var finished = activePtyJob;
-        activePtyJob = null;
-        HideCredRow();
-        if finished.Success() {
-            statusLabel.SetText(JobPastTense(finished.kind));
-        } else {
-            var hint = scm_git.FailureHint(finished.kind, finished.outputText);
-            if hint != "" {
-                statusLabel.SetText(JobLabel(finished.kind) + " needs attention");
-                if diffPane != null { diffPane.Append("\n" + hint + "\n"); }
-            } else {
-                statusLabel.SetText(JobLabel(finished.kind) + " failed (" + finished.exitCode + ")");
-            }
-        }
-        StartJob(git.StartStatus(), "Refreshing status...");
-    }
-
-    hide func ShowCredRow(prompt: String) {
-        if credRow == null { return; }
-        var newlyVisible = credRow.IsVisible() == false;
-        credLabel.SetText(prompt);
-        credLabel.SetTooltip(prompt);
-        credInput.SetPassword(scm_git.PromptWantsMask(prompt));
-        credRow.SetVisible(true);
-        if newlyVisible { credInput.Focus(); }
-    }
-
-    hide func HideCredRow() {
-        if credRow == null { return; }
-        var restoreListFocus =
-            credInput != null and credInput.IsFocused();
-        credRow.SetVisible(false);
-        credInput.SetText("");
-        credInput.SetPassword(false);
-        if restoreListFocus and statusList != null { statusList.Focus(); }
-    }
-
-    /// @brief Enter or leave the commit-history view.
-    hide func ToggleHistory() {
-        if viewMode == "status" {
-            viewMode = "history";
-            historyLoaded = 0;
-            statusList.Clear();
-            if diffPane != null { diffPane.Clear(); }
-            RunOrQueue("log", "", "");
-            return;
-        }
-        viewMode = "status";
-        historySha = "";
-        if loadMoreBtn != null { loadMoreBtn.SetVisible(false); }
-        Refresh();
-    }
-
-    /// @brief Route a list selection according to the current view mode.
-    hide func HandleSelection() {
-        var data = SelectedPath();
-        if data == "" { return; }
-        if viewMode == "status" {
-            ShowDiff(data);
-            return;
-        }
-        if viewMode == "history" {
-            historySha = data;
-            viewMode = "commitfiles";
-            RunOrQueue("logfiles", data, "");
-            return;
-        }
-        if viewMode == "commitfiles" {
-            if data == "::back" {
-                viewMode = "history";
-                historyLoaded = 0;
-                statusList.Clear();
-                RunOrQueue("log", "", "");
-                return;
-            }
-            // Chain the parent and commit versions, then open the side-by-side
-            // diff view from plan 07.
-            pendingDiffFile = data;
-            RunOrQueue("showold", data, "");
-        }
-    }
-
-    /// @brief Cancel whatever git work is active or queued (user pressed Cancel).
-    hide func CancelAll() {
-        var kind = "";
-        if activePtyJob != null { kind = activePtyJob.kind; activePtyJob.Kill(); activePtyJob = null; }
-        if activeJob != null { kind = activeJob.kind; activeJob.Kill(); activeJob = null; }
-        pendingJobs = [];
-        HideCredRow();
-        if kind == "" { return; }
-        statusLabel.SetText("Canceled git " + kind);
-        if diffPane != null { diffPane.Append("\n[canceled git " + kind + "]\n"); }
-        StartJob(git.StartStatus(), "Refreshing status...");
+        pendingDiffStatus = "";
+        return git.Shutdown();
     }
 
     /// @brief Per-frame: poll widgets first (so actions queue while a job is
@@ -893,6 +130,10 @@ class ScmView extends scm_view_base.ScmViewBase {
         }
         if loadMoreBtn != null and loadMoreBtn.WasClicked() and viewMode == "history" {
             RunOrQueue("log", "", "");
+        }
+        if fetchBtn != null and fetchBtn.WasClicked()
+           and CanRunRepositoryAction("fetching") {
+            RunOrQueue("fetch", "", "");
         }
 
         if sideBySideButton != null and sideBySideButton.WasClicked()
@@ -931,18 +172,28 @@ class ScmView extends scm_view_base.ScmViewBase {
             }
         }
         if pushBtn.WasClicked() and CanRunRepositoryAction("pushing") { RunOrQueue("push", "", ""); }
-        if pullBtn.WasClicked() and CanRunRepositoryAction("pulling") { RunOrQueue("pull", "", ""); }
+        if pullBtn.WasClicked() and CanRunRepositoryAction("pulling") {
+            var strategy = "pullFf";
+            if pullStrategy != null and pullStrategy.Selected == 1 {
+                strategy = "pullMerge";
+            } else if pullStrategy != null and pullStrategy.Selected == 2 {
+                strategy = "pullRebase";
+            }
+            RunOrQueue(strategy, "", "");
+        }
+        if abortOperationBtn != null and abortOperationBtn.WasClicked() {
+            if operationState == "merging" or operationState == "conflict-merge" {
+                RunOrQueue("mergeAbort", "", "");
+            } else if operationState == "rebasing"
+                      or operationState == "conflict-rebase" {
+                RunOrQueue("rebaseAbort", "", "");
+            }
+        }
 
         if statusList.WasSelectionChanged() {
             HandleSelection();
         }
         UpdateActionStates();
-
-        if activePtyJob != null {
-            PumpPtyJob();
-            UpdateActionStates();
-            return;
-        }
 
         if activeJob != null {
             if activeJob.Pump() == false {
@@ -958,24 +209,4 @@ class ScmView extends scm_view_base.ScmViewBase {
         UpdateActionStates();
     }
 
-    hide func JobLabel(kind: String) -> String {
-        if kind == "stage" or kind == "stageAll" { return "Stage"; }
-        if kind == "unstage" { return "Unstage"; }
-        if kind == "commit" { return "Commit"; }
-        if kind == "push" { return "Push"; }
-        if kind == "pull" { return "Pull"; }
-        if kind == "checkout" { return "Checkout"; }
-        return kind;
-    }
-
-    hide func JobPastTense(kind: String) -> String {
-        if kind == "stage" { return "Staged"; }
-        if kind == "stageAll" { return "Staged all changes"; }
-        if kind == "unstage" { return "Unstaged"; }
-        if kind == "commit" { return "Committed"; }
-        if kind == "push" { return "Pushed"; }
-        if kind == "pull" { return "Pulled"; }
-        if kind == "checkout" { return "Switched branch"; }
-        return "Done";
-    }
 }

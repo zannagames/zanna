@@ -1,0 +1,29 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/il/runtime/defs/classes/file_lease.def
+// Purpose: Append-only class metadata for the process-lifetime file lease.
+// Key invariants:
+//   - This fragment remains last in runtime.def so existing RuntimeTypeId
+//     numeric values never shift when the additive class is introduced.
+// Ownership/Lifetime: Declarative metadata consumed by rtgen.
+// Links: docs/adr/0276-process-lifetime-file-leases-and-isolated-studio-recovery.md,
+//        src/runtime/io/rt_file_ext.c
+//
+//===----------------------------------------------------------------------===//
+
+// Zanna.IO.FileLease - held cross-process ownership marker (ADR 0276).
+/// @summary Holds one nonblocking exclusive lease on a persistent lock file.
+/// @details
+/// `TryAcquire` creates the marker when needed and returns null while another
+/// process owns it. The OS lease remains held until `Release` or finalization;
+/// callers decide when it is safe to delete the persistent marker itself.
+RT_CLASS_BEGIN("Zanna.IO.FileLease", FileLease, "obj", none)
+    RT_METHOD("TryAcquire", "obj<Zanna.IO.FileLease>(str)", FileLeaseTryAcquire)
+    RT_METHOD("IsValid", "i1()", FileLeaseIsValid)
+    RT_METHOD("Release", "void()", FileLeaseRelease)
+RT_CLASS_END()

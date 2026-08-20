@@ -90,11 +90,11 @@ func main() {
             i = i + 1;
         }
         ctrl.Pump();
-        if Str.IndexOf(ctrl.sess.replayBuffer, "termhidden789") < 0 {
+        if Str.IndexOf(ctrl.sess.ReplayText(), "termhidden789") < 0 {
             fail(shell, "hidden pump did not buffer PTY output");
             return;
         }
-        if Str.IndexOf(ctrl.sess.pendingOutput, "termhidden789") < 0 {
+        if Str.IndexOf(ctrl.sess.PeekPendingOutput(), "termhidden789") < 0 {
             fail(shell, "hidden output was not pending for first render");
             return;
         }
@@ -108,11 +108,11 @@ func main() {
         fail(shell, "visible pump did not attempt PTY startup");
         return;
     }
-    if ctrl.sess.pendingOutput != "" {
+    if ctrl.sess.PeekPendingOutput() != "" {
         fail(shell, "visible pump did not flush hidden terminal output");
         return;
     }
-    if Pty.IsSupported() and Str.IndexOf(ctrl.sess.replayBuffer, "termhidden789") < 0 {
+    if Pty.IsSupported() and Str.IndexOf(ctrl.sess.ReplayText(), "termhidden789") < 0 {
         fail(shell, "visible flush discarded session scrollback");
         return;
     }

@@ -20,6 +20,7 @@
 module terminal_controller;
 
 bind "terminal_session";
+bind "../services/process_reaper";
 
 bind Zanna.GUI as GUI;
 bind Str = Zanna.String;
@@ -27,6 +28,10 @@ bind Seq = Zanna.Collections.Seq;
 bind Machine = Zanna.System.Machine;
 bind Env = Zanna.System.Environment;
 bind IO = Zanna.IO;
+bind Codec = Zanna.Text.Codec;
+
+final MAX_TERMINAL_SESSIONS = 16;
+final MAX_TERMINAL_TITLE_BYTES = 128;
 
 // ============================================================================
 // MODULE: terminal_controller  (Phase 5E — interactive terminal)
@@ -57,30 +62,53 @@ class TerminalController {
     expose GUI.Button nextBtn; // "Next Terminal" (optional; cycles sessions).
     expose Boolean ready;
     expose String cwd;
-    expose Boolean manualStop;
     expose Boolean didFocus;
-    expose Integer lastCols;
-    expose Integer lastRows;
     // Multiple concurrent sessions. sessions[activeIdx] == sess. Each non-active
-    // session drains into its own replayBuffer so its output does not back up;
-    // switching to it clears the pane and replays that buffer.
+    // session drains into its own bounded replay store so its output does not
+    // back up; switching to it clears the pane and replays that store.
     expose List sessions;
     expose Integer activeIdx;
+    hide Integer nextSessionId;
+    hide process_reaper.ProcessReaper processReaper;
+    hide GUI.App wakeApp;
 
     expose func init() {
         sess = new terminal_session.TerminalSession();
         ready = false;
         cwd = "";
-        manualStop = false;
         didFocus = false;
-        lastCols = 0;
-        lastRows = 0;
         newBtn = null;
         nextBtn = null;
         sess.title = "1: shell";
+        processReaper = new process_reaper.ProcessReaper();
+        wakeApp = null;
+        sess.SetProcessReaper(processReaper);
         sessions = new List();
         sessions.add(sess);
         activeIdx = 0;
+        nextSessionId = 2;
+    }
+
+    /// @brief Route every existing and future PTY wake to the primary App.
+    expose func SetWakeApp(value: GUI.App) {
+        wakeApp = value;
+        var i = 0;
+        while i < sessions.count() {
+            var current = sessions.get(i) as terminal_session.TerminalSession;
+            if current != null { current.SetWakeApp(value); }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Report whether any active PTY lacks a native event-wake monitor.
+    expose func NeedsActivityPolling() -> Boolean {
+        var i = 0;
+        while i < sessions.count() {
+            var current = sessions.get(i) as terminal_session.TerminalSession;
+            if current != null and current.NeedsActivityPolling() { return true; }
+            i = i + 1;
+        }
+        return false;
     }
 
     /// @brief Wire optional multi-terminal buttons (New / Next).
@@ -238,9 +266,9 @@ class TerminalController {
     ///          attempts from appending the same message every frame.
     /// @return true when a PTY-backed shell is active.
     hide func StartSession() -> Boolean {
-        lastCols = TerminalCols();
-        lastRows = TerminalRows();
-        var ok = sess.Start(ShellPath(), ShellArgs(), cwd, lastCols, lastRows);
+        var cols = TerminalCols();
+        var rows = TerminalRows();
+        var ok = sess.Start(ShellPath(), ShellArgs(), cwd, cols, rows);
         if ok == false {
             var reason = sess.LastError();
             if reason == "" { reason = "unknown PTY startup failure"; }
@@ -254,10 +282,9 @@ class TerminalController {
     ///          exited or was manually stopped.
     /// @return true when the replacement shell is active.
     hide func RestartSession() -> Boolean {
-        manualStop = false;
-        lastCols = TerminalCols();
-        lastRows = TerminalRows();
-        var ok = sess.Restart(ShellPath(), ShellArgs(), cwd, lastCols, lastRows);
+        var cols = TerminalCols();
+        var rows = TerminalRows();
+        var ok = sess.Restart(ShellPath(), ShellArgs(), cwd, cols, rows);
         if ok == false {
             var reason = sess.LastError();
             if reason == "" { reason = "unknown PTY startup failure"; }
@@ -271,7 +298,7 @@ class TerminalController {
     ///          Run or Restart. Natural process exit also remains latched so the
     ///          terminal does not respawn unexpectedly every frame.
     hide func EnsureStarted() {
-        if manualStop { return; }
+        if sess.manualStop { return; }
         if sess.IsActive() { return; }
         if sess.started { return; } // already attempted (or exited) — don't loop
         StartSession();
@@ -284,9 +311,7 @@ class TerminalController {
         if sess.IsActive() == false { return; }
         var cols = TerminalCols();
         var rows = TerminalRows();
-        if cols == lastCols and rows == lastRows { return; }
-        lastCols = cols;
-        lastRows = rows;
+        if cols == sess.lastCols and rows == sess.lastRows { return; }
         sess.Resize(cols, rows);
     }
 
@@ -321,11 +346,78 @@ class TerminalController {
     /// @details Public so a command (e.g. a palette "Terminal: New" action) can
     ///          open a terminal without a physical button click. The fresh session
     ///          starts on the next visible Pump via EnsureStarted.
-    expose func NewSession() {
+    expose func NewSession() -> Boolean {
+        if sessions.count() >= MAX_TERMINAL_SESSIONS {
+            RecordActiveOutput("\n[terminal session limit reached]\n");
+            return false;
+        }
         var s = new terminal_session.TerminalSession();
-        s.title = "" + (sessions.count() + 1) + ": shell";
+        s.SetProcessReaper(processReaper);
+        s.SetWakeApp(wakeApp);
+        s.title = "" + nextSessionId + ": shell";
+        nextSessionId = nextSessionId + 1;
         sessions.add(s);
         SwitchTo(sessions.count() - 1);
+        return true;
+    }
+
+    /// @brief Rename a terminal with a bounded, valid UTF-8 display label.
+    expose func RenameSession(idx: Integer, requestedTitle: String) -> Boolean {
+        if idx < 0 or idx >= sessions.count() { return false; }
+        var title = Str.Trim(requestedTitle);
+        if title == "" or Str.get_Length(title) > MAX_TERMINAL_TITLE_BYTES
+           or Codec.IsValidUtf8(title) == false
+           or Str.IndexOf(title, Str.Chr(0)) != 0 {
+            return false;
+        }
+        var target = sessions.get(idx) as terminal_session.TerminalSession;
+        target.title = title;
+        return true;
+    }
+
+    expose func RenameActiveSession(requestedTitle: String) -> Boolean {
+        return RenameSession(activeIdx, requestedTitle);
+    }
+
+    /// @brief Close one terminal, retaining one fresh terminal slot at minimum.
+    expose func CloseSession(idx: Integer) -> Boolean {
+        if idx < 0 or idx >= sessions.count() { return false; }
+        var wasActive = idx == activeIdx;
+        var closing = sessions.get(idx) as terminal_session.TerminalSession;
+        closing.Stop();
+        sessions.removeAt(idx);
+        if sessions.count() == 0 {
+            var replacement = new terminal_session.TerminalSession();
+            replacement.SetProcessReaper(processReaper);
+            replacement.SetWakeApp(wakeApp);
+            replacement.title = "" + nextSessionId + ": shell";
+            nextSessionId = nextSessionId + 1;
+            sessions.add(replacement);
+            activeIdx = 0;
+            wasActive = true;
+        } else if idx < activeIdx {
+            activeIdx = activeIdx - 1;
+        } else if activeIdx >= sessions.count() {
+            activeIdx = sessions.count() - 1;
+        }
+        sess = sessions.get(activeIdx) as terminal_session.TerminalSession;
+        if wasActive {
+            didFocus = false;
+            if pane != null {
+                pane.Clear();
+                var replay = sess.ReplayText();
+                if replay != "" { pane.Append(replay); }
+                sess.ClearPendingOutput();
+            }
+        }
+        UpdateButtonStates();
+        return true;
+    }
+
+    expose func CloseActiveSession() -> Boolean { return CloseSession(activeIdx); }
+
+    expose func NextSession() {
+        if sessions.count() > 1 { SwitchTo((activeIdx + 1) % sessions.count()); }
     }
 
     /// @brief Show session @p idx: clear the pane and replay its buffered output.
@@ -335,7 +427,6 @@ class TerminalController {
         if idx < 0 or idx >= sessions.count() { return; }
         activeIdx = idx;
         sess = sessions.get(idx) as terminal_session.TerminalSession;
-        manualStop = false;
         didFocus = false;
         if pane != null {
             pane.Clear();
@@ -348,6 +439,7 @@ class TerminalController {
 
     /// @brief Per-frame pump for the integrated terminal.
     expose func Pump() {
+        processReaper.Pump();
         if ready == false { return; }
         if IsVisible() == false {
             PumpHiddenSession();
@@ -368,13 +460,15 @@ class TerminalController {
         var keys = pane.TakeInput();
         if Str.get_Length(keys) > 0 {
             if sess.IsActive() == false { RestartSession(); }
-            sess.Send(keys);
+            if sess.Send(keys) == false {
+                RecordActiveOutput(
+                    "\n[terminal input queue full; input was not sent]\n");
+            }
         }
 
         var actionUsed = false;
         if killBtn != null and killBtn.WasClicked() {
             sess.Stop();
-            manualStop = true;
             RecordActiveOutput("\n[stopped]\n");
             actionUsed = true;
         }
@@ -391,7 +485,7 @@ class TerminalController {
             actionUsed = true;
         }
         if nextBtn != null and nextBtn.WasClicked() and sessions.count() > 1 {
-            SwitchTo((activeIdx + 1) % sessions.count());
+            NextSession();
             actionUsed = true;
         }
         UpdateButtonStates();
@@ -407,7 +501,12 @@ class TerminalController {
             s.Stop();
             i = i + 1;
         }
-        manualStop = true;
         UpdateButtonStates();
+    }
+
+    /// @brief Stop every shell and drain handle-only teardown workers.
+    expose func Shutdown() -> Boolean {
+        Stop();
+        return processReaper.WaitForShutdown();
     }
 }

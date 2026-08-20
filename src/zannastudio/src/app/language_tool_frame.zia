@@ -24,6 +24,8 @@
 
 module language_tool_frame;
 
+bind "language_tool_frame_state" as State;
+
 bind "../app/command_palette_controller";
 bind "../app/dispatch_helpers";
 bind "../build/breakpoints";
@@ -60,10 +62,8 @@ bind Str = Zanna.String;
 bind Clock = Zanna.Time.Clock;
 bind Zanna.GUI;
 
-final LANGUAGE_FRAME_INDEX_FILES_PER_FRAME = 4;
-final LANGUAGE_FRAME_WORKSPACE_SYMBOL_FILES_PER_FRAME = 2;
-final LANGUAGE_FRAME_FRESHNESS_ENTRIES_PER_FRAME = 64;
 final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = 10;
+final LANGUAGE_BACKGROUND_LANE_COUNT = 4;
 
 /// @brief Coordinates editor intelligence and background work for one frame.
 /// @details The main loop still owns application lifecycle and command routing,
@@ -71,69 +71,8 @@ final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = 10;
 ///          pump editor services, honor a soft background budget" sequence. That
 ///          keeps per-feature controllers isolated and gives future scheduler
 ///          work one place to enforce priorities.
-class LanguageToolFrameController {
-    /// Completion popup and workspace-symbol cache controller.
-    expose completion.CompletionController completer;
-    /// Live diagnostics controller.
-    expose diagnostics.LiveDiagnostics liveDiag;
-    /// Semantic token highlighter.
-    expose semantic_tokens.SemanticHighlighter semHighlighter;
-    /// Hover tooltip controller.
-    expose hover.HoverController hoverCtrl;
-    /// Signature help popup controller.
-    expose signature.SignatureController sigCtrl;
-    /// Inlay hint controller.
-    expose inlay_hints.InlayHintController inlayCtrl;
-    /// Symbol outline controller.
-    expose symbols.SymbolOutline symbolOutline;
-    /// Workspace semantic indexer.
-    expose project_index.ProjectIndexer indexer;
-    /// Shared editor scheduler status source.
-    expose scheduler.EditorScheduler editorScheduler;
-    /// Optional performance monitor.
-    expose perf_monitor.PerfMonitor perfMon;
-    /// Active language service for the current frame.
-    expose language_service.LanguageService activeService;
-    /// Active document for the current frame.
-    expose document.Document activeDocument;
-    /// Text typed during the current frame after completion key routing.
-    expose String typedThisFrame;
-    /// True only while the focused code editor owns application keyboard input.
-    expose Boolean editorInputActive;
-    /// Current editor cursor line after language-trigger handling.
-    expose Integer curCursorLine;
-    /// Current editor cursor column after language-trigger handling.
-    expose Integer curCursorCol;
-    /// Tick timestamp used by soft background budget checks.
-    expose Integer frameWorkStartMs;
-
-    hide String lastWorkspaceIndexStatus;
-    hide String lastBreakpointPath;
-    hide Integer lastBreakpointVersion;
-
-    /// @brief Initialize an unwired frame controller.
-    expose func init() {
-        completer = null;
-        liveDiag = null;
-        semHighlighter = null;
-        hoverCtrl = null;
-        sigCtrl = null;
-        inlayCtrl = null;
-        symbolOutline = null;
-        indexer = null;
-        editorScheduler = null;
-        perfMon = null;
-        activeService = null;
-        activeDocument = null;
-        typedThisFrame = "";
-        editorInputActive = false;
-        curCursorLine = 1;
-        curCursorCol = 1;
-        frameWorkStartMs = 0;
-        lastWorkspaceIndexStatus = "";
-        lastBreakpointPath = "";
-        lastBreakpointVersion = -1;
-    }
+class LanguageToolFrameController extends State.LanguageToolFrameState {
+    expose func init() { InitializeState(); }
 
     /// @brief Whether editor-intelligence work targets the visible surface.
     hide func ActiveUsesTextEditor() -> Boolean {
@@ -254,28 +193,48 @@ class LanguageToolFrameController {
             if ActiveUsesTextEditor() {
                 indexer.SyncActiveWhenIdle(docMgr, engine);
             }
-            if indexer.valid and indexer.workspaceIndexComplete == false {
-                if indexer.indexing == false and indexer.pendingIndexFiles == null {
+            if indexer.valid
+               and (indexer.workspaceIndexComplete == false
+                    or indexer.HasPendingFileUpdates()) {
+                if indexer.workspaceIndexComplete == false
+                   and indexer.indexing == false and indexer.pendingIndexFiles == null {
                     indexer.StartIndexWorkspace();
                 }
-                indexer.PumpIndex(LANGUAGE_FRAME_INDEX_FILES_PER_FRAME);
             }
             UpdateWorkspaceIndexStatus(shell);
         }
         if editorScheduler != null and shell != null {
             shell.SetSchedulerStatus(editorScheduler.StatusText());
         }
-        if completer != null {
-            completer.PumpWorkspaceSymbolCache(LANGUAGE_FRAME_WORKSPACE_SYMBOL_FILES_PER_FRAME);
-        }
-        if BudgetAllows() and projMgr != null and projMgr.fileCacheRefreshing {
-            projMgr.PumpFileCacheRefresh(2);
-        }
-        if BudgetAllows() and projMgr != null {
-            projMgr.PumpSourceFreshness(
-                LANGUAGE_FRAME_FRESHNESS_ENTRIES_PER_FRAME);
+        // Round-robin one item per lane until the absolute frame deadline.
+        // This replaces fixed per-feature counts: fast machines make progress
+        // without arbitrary caps, while slow operations cannot overrun 10 ms.
+        var stalledLanes = 0;
+        while BudgetAllows() and stalledLanes < LANGUAGE_BACKGROUND_LANE_COUNT {
+            var progressed = PumpOneBackgroundLane(projMgr);
+            nextBackgroundLane = (nextBackgroundLane + 1)
+                % LANGUAGE_BACKGROUND_LANE_COUNT;
+            if progressed { stalledLanes = 0; }
+            else { stalledLanes = stalledLanes + 1; }
         }
         AddIndexPerf(perfSpan);
+    }
+
+    /// @brief Pump one item from the current fair background-work lane.
+    hide func PumpOneBackgroundLane(
+        projMgr: project_manager.ProjectManager) -> Boolean {
+        if nextBackgroundLane == 0 {
+            return indexer != null and indexer.PumpIndex(1) > 0;
+        }
+        if nextBackgroundLane == 1 {
+            return completer != null
+                and completer.PumpWorkspaceSymbolCache(1) > 0;
+        }
+        if nextBackgroundLane == 2 {
+            return projMgr != null and projMgr.fileCacheRefreshing
+                and projMgr.PumpFileCacheRefresh(1) > 0;
+        }
+        return projMgr != null and projMgr.PumpSourceFreshness(1) > 0;
     }
 
     /// @brief Synchronize editor gutter breakpoint icons for the active document.

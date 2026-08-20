@@ -1,0 +1,90 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/native_tool_window_probe.zia
+// Purpose: Regress detached tool models and independent native App hosts.
+// Key invariants:
+//   - A secondary host never aliases or closes the primary App.
+//   - Append generations add only unseen output; reset generations replace it.
+//   - Closing the secondary host restores the primary construction context.
+// Ownership/Lifetime:
+//   - The probe owns and explicitly destroys both native App instances.
+// Links: zannastudio/src/ui/tool_window_model.zia,
+//        zannastudio/src/ui/native_tool_window_host.zia
+//
+//===----------------------------------------------------------------------===//
+
+module native_tool_window_probe;
+
+bind "../ui/tool_window_model";
+bind "../ui/native_tool_window_host";
+bind Zanna.GUI as GUI;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func fail(primary: GUI.App, host: native_tool_window_host.NativeToolWindowHost,
+          reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+    if host != null { host.Destroy(primary); }
+    if primary != null { primary.Destroy(); }
+}
+
+func main() {
+    var primary = GUI.App.New("Zanna Studio Primary Host Probe", 480, 320);
+    var primaryRoot = GUI.VBox.New();
+    primaryRoot.SetFlex(1.0);
+    primary.Root.AddChild(primaryRoot);
+    GUI.Label.New(primaryRoot, "Primary workbench remains alive");
+
+    var model = new tool_window_model.ToolWindowModel();
+    model.OpenOutput("alpha\nbeta\n", 1, 1);
+    var host = new native_tool_window_host.NativeToolWindowHost();
+    if host.Open(model, primary) == false or host.app == primary {
+        fail(primary, host, "secondary native App did not open independently");
+        return;
+    }
+    host.Pump(model, primary);
+    host.outputPane.SelectAll();
+    var first = host.outputPane.GetSelection();
+    if Str.IndexOf(first, "alpha") <= 0 or Str.IndexOf(first, "beta") <= 0 {
+        fail(primary, host, "initial model was not projected into native host");
+        return;
+    }
+
+    model.SyncOutput("alpha\nbeta\ngamma\n", 2, 1);
+    host.Pump(model, primary);
+    host.outputPane.SelectAll();
+    var appended = host.outputPane.GetSelection();
+    if Str.Count(appended, "alpha") != 1
+       or Str.IndexOf(appended, "gamma") <= 0 {
+        fail(primary, host, "append generation replayed or lost output");
+        return;
+    }
+
+    model.SyncOutput("replacement\n", 3, 2);
+    host.Pump(model, primary);
+    host.outputPane.SelectAll();
+    var replaced = host.outputPane.GetSelection();
+    if Str.IndexOf(replaced, "replacement") <= 0
+       or Str.IndexOf(replaced, "alpha") > 0 {
+        fail(primary, host, "reset generation retained stale output");
+        return;
+    }
+
+    model.Close();
+    host.Pump(model, primary);
+    if host.IsOpen() or host.TakeReturnRequested() == false {
+        fail(primary, host, "secondary close did not return tool ownership");
+        return;
+    }
+
+    primary.MakeCurrent();
+    GUI.Label.New(primaryRoot, "Primary context restored");
+    primary.Render();
+    primary.Destroy();
+    Terminal.Say("RESULT: ok");
+}

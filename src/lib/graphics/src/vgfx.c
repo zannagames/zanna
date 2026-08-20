@@ -1564,6 +1564,13 @@ int32_t vgfx_wait_events(vgfx_window_t window, int32_t timeout_ms) {
     return vgfx_platform_wait_events(window, timeout_ms);
 }
 
+/// @copydoc vgfx_wake_events
+int32_t vgfx_wake_events(vgfx_window_t window) {
+    if (!window)
+        return 0;
+    return vgfx_platform_wake_events(window);
+}
+
 /// @copydoc vgfx_set_text_input_enabled
 int vgfx_set_text_input_enabled(vgfx_window_t window, int32_t enabled) {
     if (!window || (enabled != 0 && enabled != 1))

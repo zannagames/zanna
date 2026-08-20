@@ -36,9 +36,9 @@ bind Option = Zanna.Option;
 bind "document_manager";
 bind "../zia/bind_utils";
 bind "project_manager_base" as Base;
-bind "project_manager_tree" as PreviousLayer;
+bind "project_manager_bind_layer" as PreviousLayer;
 
-class ProjectManagerMutationLayer extends PreviousLayer.ProjectManagerTreeLayer {
+class ProjectManagerMutationLayer extends PreviousLayer.ProjectManagerBindLayer {
 expose func RenameSelected(newName: String,
                                docMgr: document_manager.DocumentManager) -> String {
         var oldPath = SelectedPath();
@@ -122,10 +122,12 @@ expose func RenameSelected(newName: String,
                            isDirectory: Boolean,
                            caseOnly: Boolean) -> Boolean {
         if caseOnly == false {
+            var directResult = safe_io.MoveFileResult(sourcePath, destinationPath);
             if isDirectory {
-                return safe_io.MoveDirectory(sourcePath, destinationPath);
+                directResult = safe_io.MoveDirectoryResult(sourcePath, destinationPath);
             }
-            return safe_io.MoveFile(sourcePath, destinationPath);
+            if directResult.ok == false { lastOperationError = directResult.message; }
+            return directResult.ok;
         }
 
         var tempPath = CaseRenameTempPath(sourcePath);
@@ -133,13 +135,14 @@ expose func RenameSelected(newName: String,
             lastOperationError = "A temporary rename path could not be reserved.";
             return false;
         }
-        var staged = false;
+        var stagedResult = safe_io.MoveFileResult(sourcePath, tempPath);
         if isDirectory {
-            staged = safe_io.MoveDirectory(sourcePath, tempPath);
-        } else {
-            staged = safe_io.MoveFile(sourcePath, tempPath);
+            stagedResult = safe_io.MoveDirectoryResult(sourcePath, tempPath);
         }
-        if staged == false { return false; }
+        if stagedResult.ok == false {
+            lastOperationError = stagedResult.message;
+            return false;
+        }
 
         if IO.File.Exists(destinationPath) or Dir.Exists(destinationPath) {
             if RestoreCaseRenameTemp(tempPath, sourcePath, isDirectory) == false {
@@ -150,13 +153,12 @@ expose func RenameSelected(newName: String,
             return false;
         }
 
-        var committed = false;
+        var commitResult = safe_io.MoveFileResult(tempPath, destinationPath);
         if isDirectory {
-            committed = safe_io.MoveDirectory(tempPath, destinationPath);
-        } else {
-            committed = safe_io.MoveFile(tempPath, destinationPath);
+            commitResult = safe_io.MoveDirectoryResult(tempPath, destinationPath);
         }
-        if committed { return true; }
+        if commitResult.ok { return true; }
+        lastOperationError = commitResult.message;
         if RestoreCaseRenameTemp(tempPath, sourcePath, isDirectory) == false {
             lastOperationError = "Rename failed; the original remains at " + tempPath;
         }
@@ -365,14 +367,16 @@ expose func RenameSelected(newName: String,
             }
         }
         if IO.File.Exists(sourcePath) {
-            if safe_io.MoveFile(sourcePath, newPath) == false {
-                lastOperationError = "The file could not be moved.";
+            var moveResult = safe_io.MoveFileResult(sourcePath, newPath);
+            if moveResult.ok == false {
+                lastOperationError = moveResult.message;
                 return "";
             }
             if docMgr != null { docMgr.UpdatePath(sourcePath, newPath); }
         } else if Dir.Exists(sourcePath) {
-            if safe_io.MoveDirectory(sourcePath, newPath) == false {
-                lastOperationError = "The folder could not be moved.";
+            var moveResult = safe_io.MoveDirectoryResult(sourcePath, newPath);
+            if moveResult.ok == false {
+                lastOperationError = moveResult.message;
                 return "";
             }
             if docMgr != null { docMgr.UpdatePathPrefix(sourcePath, newPath); }
@@ -418,8 +422,9 @@ expose func RenameSelected(newName: String,
             lastOperationError = "The project trash path crosses a linked folder.";
             return false;
         }
-        if safe_io.MakeAll(trashDir) == false {
-            lastOperationError = "The project trash folder could not be created.";
+        var makeTrashResult = safe_io.MakeAllResult(trashDir);
+        if makeTrashResult.ok == false {
+            lastOperationError = makeTrashResult.message;
             return false;
         }
         if PathHasLinkedComponent(trashDir, owner.rootPath, true) {
@@ -427,14 +432,16 @@ expose func RenameSelected(newName: String,
             return false;
         }
         if IO.File.Exists(path) {
-            if safe_io.MoveFile(path, trashPath) == false {
-                lastOperationError = "The file could not be moved to project trash.";
+            var trashResult = safe_io.MoveFileResult(path, trashPath);
+            if trashResult.ok == false {
+                lastOperationError = trashResult.message;
                 return false;
             }
             CloseOpenDocumentsUnder(path, docMgr);
         } else if Dir.Exists(path) {
-            if safe_io.MoveDirectory(path, trashPath) == false {
-                lastOperationError = "The folder could not be moved to project trash.";
+            var trashResult = safe_io.MoveDirectoryResult(path, trashPath);
+            if trashResult.ok == false {
+                lastOperationError = trashResult.message;
                 return false;
             }
             CloseOpenDocumentsUnder(path, docMgr);
@@ -558,120 +565,4 @@ expose func RenameSelected(newName: String,
         }
     }
 
-    func RewriteProjectBindsAfterRename(oldPath: String,
-                                        newPath: String,
-                                        oldWasDir: Boolean,
-                                        docMgr: document_manager.DocumentManager) -> Integer {
-        return ProcessProjectBindsForRename(oldPath, newPath, oldWasDir, docMgr, true);
-    }
-
-    func CountProjectBindsForRename(oldPath: String,
-                                    newPath: String,
-                                    oldWasDir: Boolean,
-                                    docMgr: document_manager.DocumentManager) -> Integer {
-        return ProcessProjectBindsForRename(oldPath, newPath, oldWasDir, docMgr, false);
-    }
-
-    func ProcessProjectBindsForRename(oldPath: String,
-                                      newPath: String,
-                                      oldWasDir: Boolean,
-                                      docMgr: document_manager.DocumentManager,
-                                      applyChanges: Boolean) -> Integer {
-        if self.project == null or self.project.rootPath == "" { return 0; }
-        var files = new List();
-        AddIndexedZiaFiles(files);
-        if docMgr != null {
-            var d = 0;
-            while d < docMgr.GetCount() {
-                var doc = docMgr.documents.get(d);
-                if doc.filePath != "" and IsZiaFile(doc.filePath)
-                   and workspace_file_index.ListContains(files, doc.filePath) == false {
-                    files.Push(doc.filePath);
-                }
-                d = d + 1;
-            }
-        }
-
-        var oldNorm = Base.NormalizeAbsPath(oldPath);
-        var newNorm = Base.NormalizeAbsPath(newPath);
-        var total = 0;
-        var i = 0;
-        while i < files.count() {
-            var filePath = Obj.ToString(files.get(i));
-            var docIndex = -1;
-            var content = "";
-            if docMgr != null {
-                docIndex = docMgr.FindByPath(filePath);
-            }
-            if docIndex >= 0 {
-                content = docMgr.documents.get(docIndex).content;
-            } else if IO.File.Exists(filePath) {
-                var sourceRead = safe_io.ReadAllText(filePath);
-                if sourceRead.ok { content = sourceRead.text; }
-            }
-
-            var rewrite = Base.RewriteZiaBindContent(content, filePath, oldNorm, newNorm, oldWasDir);
-            if rewrite.count > 0 {
-                if applyChanges == false {
-                    total = total + rewrite.count;
-                } else if docIndex >= 0 {
-                    var openDoc = docMgr.documents.get(docIndex);
-                    openDoc.content = rewrite.text;
-                    openDoc.isModified = true;
-                    total = total + rewrite.count;
-                } else if safe_io.WriteAllText(filePath, rewrite.text) {
-                    total = total + rewrite.count;
-                } else {
-                    AddOperationWarning("One or more Zia bind paths could not be updated.");
-                }
-            }
-            i = i + 1;
-        }
-        return total;
-    }
-
-    /// @brief Accumulate a non-fatal warning after a physical tree move succeeds.
-    func AddOperationWarning(message: String) {
-        if message == "" { return; }
-        if lastOperationError == "" {
-            lastOperationError = message;
-        } else if Str.IndexOf(lastOperationError, message) == 0 {
-            lastOperationError = lastOperationError + " " + message;
-        }
-    }
-
-    /// @brief Add project Zia files from the runtime workspace index.
-    /// @details Runtime FileIndex owns hard excludes, `.gitignore`, and project
-    ///          ignore patterns. Using it here avoids a second recursive scanner
-    ///          on the UI path and keeps rename bind rewrites aligned with Quick
-    ///          Open, project cache, and workspace indexing.
-    /// @param files Mutable List receiving absolute `.zia` file paths.
-    func AddIndexedZiaFiles(files: List) {
-        var roots = AllRoots();
-        var i = 0;
-        while i < roots.count() {
-            var root = roots.get(i);
-            if root != null and root.rootPath != "" {
-                workspace_file_index.AddEnumeratedFiles(files,
-                                                        root.rootPath,
-                                                        ".zia",
-                                                        root.ignorePatterns);
-            }
-            i = i + 1;
-        }
-    }
-
-    /// @brief Return true when a name is a safe single filesystem component.
-    /// @details Explorer rename/create actions accept a child name, never a path.
-    ///          Rejecting separators, Windows drive separators, and dot aliases
-    ///          keeps cross-platform behavior consistent before any disk move.
-    /// @param name User-provided file or folder name.
-    /// @return True when @p name can be joined under the selected parent.
-    func IsPlainChildName(name: String) -> Boolean {
-        return project_file_ops.IsPlainChildName(name);
-    }
-
-    func IsZiaFile(path: String) -> Boolean {
-        return project_file_ops.IsZiaFile(path);
-    }
 }

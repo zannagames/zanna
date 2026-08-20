@@ -1,0 +1,240 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/workspace_watcher_fallback.zia
+// Purpose: Cooperatively fingerprint workspaces with degraded native coverage.
+// Key invariants:
+//   - Each pump consumes at most one bounded explicit-cursor page.
+//   - Nanosecond metadata and sampled content participate in two fingerprints.
+//   - A completed changed snapshot refreshes topology-derived state once.
+// Ownership/Lifetime: Borrows application state; owns no watcher or cursor.
+// Links: zannastudio/src/app/workspace_watcher.zia,
+//        zannastudio/src/app/workspace_watcher_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_watcher_fallback;
+
+bind "workspace_refresh";
+bind "workspace_watcher_state";
+bind "../ui/app_shell";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../editor/editor_engine";
+bind "../editor/project_index";
+bind "../services/locations";
+bind "../services/path_identity";
+
+bind Hash = Zanna.Crypto.Hash;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+
+final WORKSPACE_FALLBACK_PAGE_SIZE = 256;
+final WORKSPACE_FINGERPRINT_MODULUS = 2000000011;
+final WORKSPACE_SECONDARY_FINGERPRINT_MODULUS = 1999999973;
+
+/// @brief Consume one bounded fallback page or publish a completed snapshot.
+expose func Pump(
+    shell: app_shell.AppShell,
+    projMgr: project_manager.ProjectManager,
+    docMgr: document_manager.DocumentManager,
+    indexer: project_index.ProjectIndexer,
+    locStore: locations.LocationStore,
+    engine: editor_engine.EditorEngine,
+    state: workspace_watcher_state.WorkspaceWatcherState) {
+    if state == null or state.rootPaths.count() == 0 { return; }
+    if state.discoveryActive { return; }
+    if state.fallbackScanActive == false {
+        if state.rescanThrottle.TryAcquire() == false { return; }
+        Begin(state);
+    }
+    if state.fallbackRootIndex >= state.rootPaths.count() {
+        Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
+        return;
+    }
+
+    var rootIndex = state.fallbackRootIndex;
+    var root = state.rootPaths.get(rootIndex);
+    var ignores = "";
+    if rootIndex < state.rootIgnorePatterns.count() {
+        ignores = state.rootIgnorePatterns.get(rootIndex);
+    }
+    if state.fallbackCursor.IsOpen() == false
+       and state.fallbackCursor.Open(root, "", ignores, true) == false {
+        state.degraded = true;
+        FinishRoot(state);
+        return;
+    }
+    var page = state.fallbackCursor.Next(WORKSPACE_FALLBACK_PAGE_SIZE);
+    if Map.GetBool(page, "valid") == false {
+        state.degraded = true;
+        FinishRoot(state);
+        return;
+    }
+    var entries = Map.Get(page, "entries");
+    var entryCount = 0;
+    if entries != null { entryCount = Seq.get_Count(entries); }
+    var i = 0;
+    while entries != null and i < entryCount {
+        Accumulate(state, Seq.Get(entries, i));
+        i = i + 1;
+    }
+    state.fallbackPageOffset = Map.GetInt(page, "nextOffset");
+    var done = Map.GetBool(page, "done");
+    if Map.GetBool(page, "truncated") {
+        state.degraded = true;
+        done = true;
+    }
+    if entryCount == 0 and done == false {
+        state.degraded = true;
+        done = true;
+    }
+    if done { FinishRoot(state); }
+    if state.fallbackRootIndex >= state.rootPaths.count() {
+        Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
+    }
+}
+
+/// @brief Reset one cooperative fallback traversal.
+func Begin(state: workspace_watcher_state.WorkspaceWatcherState) {
+    if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
+    state.fallbackScanActive = true;
+    state.fallbackRootIndex = 0;
+    state.fallbackPageOffset = 0;
+    state.fallbackCurrentCount = 0;
+    state.fallbackCurrentFingerprint = 0;
+    state.fallbackCurrentSecondaryFingerprint = 0;
+    state.fallbackEntryCounts = new List();
+    state.fallbackFingerprints = new List();
+    state.fallbackSecondaryFingerprints = new List();
+}
+
+/// @brief Fold one FileIndex row into bounded order-independent metadata keys.
+expose func Accumulate(
+    state: workspace_watcher_state.WorkspaceWatcherState,
+    entry: Any) {
+    if state == null or entry == null { return; }
+    var idPart = NormalizePrimary(Map.GetInt(entry, "id"));
+    var modifiedPart = NormalizePrimary(Map.GetInt(entry, "modified"));
+    var modifiedNsPart = NormalizePrimary(Map.GetInt(entry, "modifiedNs"));
+    var sizePart = NormalizePrimary(Map.GetInt(entry, "size"));
+    var samplePart = NormalizePrimary(Map.GetInt(entry, "sampleHash"));
+    var pathPart = NormalizePrimary(
+        Hash.NonCryptoFast(path_identity.Normalize(Map.GetStr(entry, "path"))));
+    var term = idPart;
+    term = (term + modifiedPart * 31) % WORKSPACE_FINGERPRINT_MODULUS;
+    term = (term + sizePart * 131) % WORKSPACE_FINGERPRINT_MODULUS;
+    term = (term + pathPart * 521) % WORKSPACE_FINGERPRINT_MODULUS;
+    term = (term + modifiedNsPart * 8191) % WORKSPACE_FINGERPRINT_MODULUS;
+    term = (term + samplePart * 65537) % WORKSPACE_FINGERPRINT_MODULUS;
+    if Map.GetBool(entry, "isDirectory") {
+        term = (term + 104729) % WORKSPACE_FINGERPRINT_MODULUS;
+    }
+    state.fallbackCurrentFingerprint =
+        (state.fallbackCurrentFingerprint + term) % WORKSPACE_FINGERPRINT_MODULUS;
+    var secondary = NormalizeSecondary(Map.GetInt(entry, "id"));
+    secondary = (secondary
+                 + NormalizeSecondary(Map.GetInt(entry, "size")) * 8191)
+                % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    secondary = (secondary
+                 + NormalizeSecondary(Map.GetInt(entry, "modifiedNs")) * 131)
+                % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    secondary = (secondary
+                 + NormalizeSecondary(Map.GetInt(entry, "sampleHash")) * 521)
+                % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    secondary = (secondary
+                 + NormalizeSecondary(Hash.NonCryptoFast(
+                       path_identity.Normalize(Map.GetStr(entry, "path"))))
+                   * 65537)
+                % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    state.fallbackCurrentSecondaryFingerprint =
+        (state.fallbackCurrentSecondaryFingerprint + secondary)
+        % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    state.fallbackCurrentCount = state.fallbackCurrentCount + 1;
+}
+
+func NormalizePrimary(value: Integer) -> Integer {
+    var result = value % WORKSPACE_FINGERPRINT_MODULUS;
+    if result < 0 { result = result + WORKSPACE_FINGERPRINT_MODULUS; }
+    return result;
+}
+
+func NormalizeSecondary(value: Integer) -> Integer {
+    var result = value % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    if result < 0 { result = result + WORKSPACE_SECONDARY_FINGERPRINT_MODULUS; }
+    return result;
+}
+
+/// @brief Commit the current root aggregate and advance the fallback cursor.
+func FinishRoot(state: workspace_watcher_state.WorkspaceWatcherState) {
+    if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
+    state.fallbackEntryCounts.Push(state.fallbackCurrentCount);
+    state.fallbackFingerprints.Push(state.fallbackCurrentFingerprint);
+    state.fallbackSecondaryFingerprints.Push(
+        state.fallbackCurrentSecondaryFingerprint);
+    state.fallbackRootIndex = state.fallbackRootIndex + 1;
+    state.fallbackPageOffset = 0;
+    state.fallbackCurrentCount = 0;
+    state.fallbackCurrentFingerprint = 0;
+    state.fallbackCurrentSecondaryFingerprint = 0;
+}
+
+/// @brief Compare and publish one completed cooperative fallback snapshot.
+func Complete(
+    shell: app_shell.AppShell,
+    projMgr: project_manager.ProjectManager,
+    docMgr: document_manager.DocumentManager,
+    indexer: project_index.ProjectIndexer,
+    locStore: locations.LocationStore,
+    engine: editor_engine.EditorEngine,
+    state: workspace_watcher_state.WorkspaceWatcherState) {
+    var changed = false;
+    if state.fallbackBaselineReady
+       and state.lastEntryCounts.count() == state.fallbackEntryCounts.count()
+       and state.lastFingerprints.count() == state.fallbackFingerprints.count()
+       and state.lastSecondaryFingerprints.count()
+           == state.fallbackSecondaryFingerprints.count() {
+        var i = 0;
+        while i < state.fallbackEntryCounts.count() {
+            if state.lastEntryCounts.get(i) != state.fallbackEntryCounts.get(i)
+               or state.lastFingerprints.get(i) != state.fallbackFingerprints.get(i)
+               or state.lastSecondaryFingerprints.get(i)
+                  != state.fallbackSecondaryFingerprints.get(i) {
+                changed = true;
+            }
+            i = i + 1;
+        }
+    } else if state.fallbackBaselineReady {
+        changed = true;
+    }
+    state.lastEntryCounts = state.fallbackEntryCounts;
+    state.lastFingerprints = state.fallbackFingerprints;
+    state.lastSecondaryFingerprints = state.fallbackSecondaryFingerprints;
+    state.fallbackBaselineReady = true;
+    state.fallbackScanActive = false;
+    if state.lastEntryCounts.count() > 0 {
+        state.lastEntryCount = state.lastEntryCounts.get(0);
+        state.lastFingerprint = state.lastFingerprints.get(0);
+    } else {
+        state.lastEntryCount = -1;
+        state.lastFingerprint = 0;
+    }
+    state.rescanThrottle.Reset();
+    state.rescanThrottle.TryAcquire();
+
+    if changed {
+        if projMgr != null {
+            projMgr.InvalidateAllSourceFreshness();
+            projMgr.RefreshTree();
+        }
+        workspace_refresh.ReindexAfterTreeMove(projMgr, indexer, docMgr);
+        workspace_refresh.InvalidateWorkspaceLocations(shell, locStore, engine);
+        if shell != null {
+            shell.SetStatusLeft("Workspace changed: refreshed nested files");
+        }
+    }
+}

@@ -1,0 +1,97 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/workspace_watcher_state.zia
+// Purpose: Own mutable native-watcher discovery and fallback-scan state.
+// Key invariants:
+//   - Paired watcher/path and root/fingerprint lists remain index-aligned.
+//   - Explicit cursor objects are destroyed before a traversal is replaced.
+// Ownership/Lifetime: The Studio application owns one state object per workspace.
+// Links: zannastudio/src/app/workspace_watcher.zia,
+//        zannastudio/src/app/workspace_watcher_fallback.zia
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_watcher_state;
+
+bind "../services/workspace_file_cursor";
+
+bind IO = Zanna.IO;
+bind Threads = Zanna.Threads;
+
+/// @brief Mutable state shared by watcher topology and fallback controllers.
+class WorkspaceWatcherState {
+    expose IO.Watcher watcher;
+    expose List[IO.Watcher] watchers;
+    expose List[String] watcherPaths;
+    expose Boolean watching;
+    expose Boolean degraded;
+    expose String rootPath;
+    expose String rootSignature;
+    expose List[String] rootPaths;
+    expose List[String] rootIgnorePatterns;
+    expose List lastEntryCounts;
+    expose List lastFingerprints;
+    expose List lastSecondaryFingerprints;
+    expose Integer watcherPollPos;
+    expose Threads.Throttler rescanThrottle;
+    expose Integer lastEntryCount;
+    expose Integer lastFingerprint;
+    expose Boolean discoveryActive;
+    expose Integer discoveryRootIndex;
+    expose Integer discoveryPageOffset;
+    expose Boolean discoveryRootAdded;
+    expose workspace_file_cursor.WorkspaceFileCursor discoveryCursor;
+    expose Boolean fallbackScanActive;
+    expose Boolean fallbackBaselineReady;
+    expose Integer fallbackRootIndex;
+    expose Integer fallbackPageOffset;
+    expose workspace_file_cursor.WorkspaceFileCursor fallbackCursor;
+    expose Integer fallbackCurrentCount;
+    expose Integer fallbackCurrentFingerprint;
+    expose Integer fallbackCurrentSecondaryFingerprint;
+    expose List fallbackEntryCounts;
+    expose List fallbackFingerprints;
+    expose List fallbackSecondaryFingerprints;
+    expose Integer lastWatcherPollCount;
+
+    expose func InitializeState() {
+        watcher = null;
+        watchers = new List();
+        watcherPaths = new List();
+        watching = false;
+        degraded = false;
+        rootPath = "";
+        rootSignature = "";
+        rootPaths = new List();
+        rootIgnorePatterns = new List();
+        lastEntryCounts = new List();
+        lastFingerprints = new List();
+        lastSecondaryFingerprints = new List();
+        watcherPollPos = 0;
+        rescanThrottle = Threads.Throttler.New(3000);
+        lastEntryCount = -1;
+        lastFingerprint = 0;
+        discoveryActive = false;
+        discoveryRootIndex = 0;
+        discoveryPageOffset = 0;
+        discoveryRootAdded = false;
+        discoveryCursor = new workspace_file_cursor.WorkspaceFileCursor();
+        fallbackScanActive = false;
+        fallbackBaselineReady = false;
+        fallbackRootIndex = 0;
+        fallbackPageOffset = 0;
+        fallbackCursor = new workspace_file_cursor.WorkspaceFileCursor();
+        fallbackCurrentCount = 0;
+        fallbackCurrentFingerprint = 0;
+        fallbackCurrentSecondaryFingerprint = 0;
+        fallbackEntryCounts = new List();
+        fallbackFingerprints = new List();
+        fallbackSecondaryFingerprints = new List();
+        lastWatcherPollCount = 0;
+    }
+}

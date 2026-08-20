@@ -1,0 +1,141 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/settings_state.zia
+// Purpose: Own the complete in-memory Zanna Studio preference schema.
+// Key invariants:
+//   - Construction produces a valid cross-platform preference set.
+//   - Serialized sidebar and tool-panel identities come from bounded schemas.
+// Ownership/Lifetime:
+//   - The final SettingsManager owns all inherited values and keybinding state.
+// Links: zannastudio/src/core/settings.zia,
+//        zannastudio/src/core/settings_save_layer.zia
+//
+//===----------------------------------------------------------------------===//
+
+module settings_state;
+
+bind "keybinding_settings";
+
+final DEFAULT_FONT_SIZE = 15;
+
+/// @brief Shared mutable settings state for load/save policy layers.
+class SettingsState {
+    expose Integer fontSize;
+    expose String fontPath;
+    expose String theme;
+    expose Boolean minimapVisible;
+    expose keybinding_settings.KeybindingOverrideSet keybindings;
+    expose String keybindingOverrides;
+    expose Boolean autoCheckOnSave;
+    expose Boolean codeFolding;
+    expose Boolean statusBarVisible;
+    expose Boolean fullscreen;
+    expose Boolean wordWrap;
+    expose Integer renderWhitespaceMode;
+    expose Integer wheelSpeedPct;
+    expose Integer bottomPanelSplitPct;
+    expose String panelDockPosition;
+    expose String toolPanelGroupLayout;
+    expose Integer sidePanelWidthPct;
+    expose Integer floatingToolPanelX;
+    expose Integer floatingToolPanelY;
+    expose Integer floatingToolPanelWidth;
+    expose Integer floatingToolPanelHeight;
+    expose String primarySidebarPosition;
+    expose Integer sidebarWidthPct;
+    expose Boolean sidebarVisible;
+    expose String activeSidebarViewId;
+    expose Integer editorSplitPct;
+    expose String toolPanelTabOrder;
+    expose String activeToolPanelId;
+    expose Boolean lineNumbers;
+    expose Boolean insertSpaces;
+    expose Boolean trimTrailingWhitespace;
+    expose Boolean ensureFinalNewline;
+    expose Boolean autoSave;
+    expose Boolean saveAllBeforeBuild;
+    expose Boolean restoreSession;
+    expose Boolean restoreLastProject;
+    expose Boolean confirmOnExitWithUnsavedChanges;
+    expose Integer diagnosticsDelayMs;
+    expose Integer completionDelayMs;
+    expose Integer tabWidth;
+    expose Integer uiZoomPercent;
+    expose String settingsDir;
+    expose String settingsPath;
+    expose Boolean persistenceAvailable;
+    expose String persistenceWarning;
+
+    /// @brief Reset every preference and persistence path to a valid default.
+    expose func InitializeState() {
+        fontSize = DEFAULT_FONT_SIZE;
+        fontPath = "";
+        theme = "dark";
+        minimapVisible = true;
+        keybindings = new keybinding_settings.KeybindingOverrideSet();
+        keybindingOverrides = "";
+        autoCheckOnSave = true;
+        codeFolding = true;
+        statusBarVisible = true;
+        fullscreen = false;
+        wordWrap = false;
+        renderWhitespaceMode = 0;
+        wheelSpeedPct = 100;
+        bottomPanelSplitPct = 70;
+        panelDockPosition = "bottom";
+        toolPanelGroupLayout = "";
+        sidePanelWidthPct = 30;
+        floatingToolPanelX = 96;
+        floatingToolPanelY = 88;
+        floatingToolPanelWidth = 680;
+        floatingToolPanelHeight = 420;
+        primarySidebarPosition = "left";
+        sidebarWidthPct = 24;
+        sidebarVisible = true;
+        activeSidebarViewId = "explorer";
+        editorSplitPct = 50;
+        toolPanelTabOrder =
+            "problems,output,search,references,variables,call-stack,debug-console,terminal";
+        activeToolPanelId = "none";
+        lineNumbers = true;
+        insertSpaces = true;
+        trimTrailingWhitespace = false;
+        ensureFinalNewline = true;
+        autoSave = false;
+        saveAllBeforeBuild = true;
+        restoreSession = true;
+        restoreLastProject = true;
+        confirmOnExitWithUnsavedChanges = true;
+        diagnosticsDelayMs = 500;
+        completionDelayMs = 180;
+        tabWidth = 4;
+        uiZoomPercent = 100;
+        settingsDir = "";
+        settingsPath = "";
+        persistenceAvailable = true;
+        persistenceWarning = "";
+    }
+}
+
+/// @brief Validate one stable persisted activity-bar view selection.
+expose func IsValidSidebarViewId(id: String) -> Boolean {
+    return id == "explorer" or id == "scm" or id == "run-debug";
+}
+
+/// @brief Validate one stable persisted tool-panel selection.
+expose func IsValidActiveToolPanelId(id: String) -> Boolean {
+    return id == "none"
+        or id == "problems"
+        or id == "output"
+        or id == "search"
+        or id == "references"
+        or id == "variables"
+        or id == "call-stack"
+        or id == "debug-console"
+        or id == "terminal";
+}

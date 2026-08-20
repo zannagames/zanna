@@ -1,0 +1,286 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+// File: zannastudio/src/services/workspace_edit_algorithms.zia
+// Purpose: Prepare, sort, validate, and apply in-memory workspace text edits.
+// Key invariants:
+//   - Workspace positions are one-based UTF-8 byte columns.
+//   - Per-file ordering is stable, descending, and O(n log n).
+//   - A prepared text snapshot splits source and computes line offsets once.
+//   - Applying a validated batch copies each unchanged source byte at most once.
+// Ownership/Lifetime: Callers own edit sequences; snapshots own derived text views.
+// Links: zannastudio/src/services/workspace_edits.zia,
+//        docs/adr/0151-transactional-multi-root-workspace-edits.md
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_edit_algorithms;
+
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+
+/// @brief Prepared byte-coordinate view of one document revision.
+/// @details Splitting and line-start calculation happen once, so validating or
+///          applying many edits does not repeatedly scan the full document.
+class TextSnapshot {
+    expose String content;
+    expose Any lines;
+    expose List[Integer] lineStarts;
+
+    expose func init() {
+        content = "";
+        lines = Seq.New();
+        lineStarts = [];
+    }
+
+    /// @brief Replace this snapshot with one immutable text revision.
+    expose func Setup(text: String) {
+        content = text;
+        lines = Str.Split(text, "\n");
+        lineStarts = [];
+        var offset = 0;
+        var i = 0;
+        while i < Seq.get_Count(lines) {
+            lineStarts.add(offset);
+            offset = offset + Str.get_Length(Obj.ToString(Seq.Get(lines, i)));
+            if i + 1 < Seq.get_Count(lines) { offset = offset + 1; }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Return whether an edit range addresses this exact snapshot.
+    expose func CanApply(edit: Any) -> Boolean {
+        var startLine = Map.GetInt(edit, "startLine");
+        var startCol = Map.GetInt(edit, "startColumn");
+        var endLine = Map.GetInt(edit, "endLine");
+        var endCol = Map.GetInt(edit, "endColumn");
+        if startLine < 1 or startCol < 1 or endLine < startLine or endCol < 1 {
+            return false;
+        }
+        if startLine == endLine and endCol < startCol { return false; }
+        if startLine > Seq.get_Count(lines) or endLine > Seq.get_Count(lines) {
+            return false;
+        }
+        var startText = Obj.ToString(Seq.Get(lines, startLine - 1));
+        var endText = Obj.ToString(Seq.Get(lines, endLine - 1));
+        return startCol <= Str.get_Length(startText) + 1
+            and endCol <= Str.get_Length(endText) + 1;
+    }
+
+    /// @brief Return bytes covered by a valid single-line edit range.
+    expose func TextAt(edit: Any) -> String {
+        var startLine = Map.GetInt(edit, "startLine");
+        var endLine = Map.GetInt(edit, "endLine");
+        var startCol = Map.GetInt(edit, "startColumn");
+        var endCol = Map.GetInt(edit, "endColumn");
+        if startLine != endLine or CanApply(edit) == false { return ""; }
+        var line = Obj.ToString(Seq.Get(lines, startLine - 1));
+        return Str.Substring(line, startCol - 1, endCol - startCol);
+    }
+
+    /// @brief Apply a validated per-file edit batch in one source pass.
+    /// @details Descending edits emit suffix/replacement chunks in reverse.
+    ///          Reversing those chunks into one StringBuilder avoids a complete
+    ///          split/rebuild for every individual edit.
+    expose func Apply(edits: Any) -> String {
+        if edits == null or Seq.get_Count(edits) == 0 { return content; }
+        // One snapshot is one logical file even when providers used multiple
+        // lexical aliases for it, so ignore the edit-map path while ordering.
+        var sorted = SortSingleFile(edits);
+        var chunks: List[String] = [];
+        var cursor = Str.get_Length(content);
+        var i = 0;
+        while i < Seq.get_Count(sorted) {
+            var edit = Seq.Get(sorted, i);
+            var startOffset = Offset(Map.GetInt(edit, "startLine"),
+                                     Map.GetInt(edit, "startColumn"));
+            var endOffset = Offset(Map.GetInt(edit, "endLine"),
+                                   Map.GetInt(edit, "endColumn"));
+            if endOffset < cursor {
+                chunks.add(Str.Substring(content, endOffset, cursor - endOffset));
+            }
+            chunks.add(Map.GetStr(edit, "newText"));
+            cursor = startOffset;
+            i = i + 1;
+        }
+        if cursor > 0 { chunks.add(Str.Substring(content, 0, cursor)); }
+
+        var result = new StringBuilder();
+        i = chunks.count() - 1;
+        while i >= 0 {
+            result.Append(chunks.get(i));
+            i = i - 1;
+        }
+        return result.ToString();
+    }
+
+    /// @brief Convert a valid one-based byte position to a zero-based offset.
+    hide func Offset(line: Integer, column: Integer) -> Integer {
+        return lineStarts.get(line - 1) + column - 1;
+    }
+}
+
+/// @brief Create a prepared snapshot for one text revision.
+expose func Prepare(content: String) -> TextSnapshot {
+    var snapshot = new TextSnapshot();
+    snapshot.Setup(content);
+    return snapshot;
+}
+
+/// @brief Sort edits by first-seen file and descending source position.
+/// @details Each per-file group uses a stable bottom-up merge sort. Grouping
+///          makes the comparison total without changing any cross-file result.
+expose func SortForApplication(edits: Any) -> Any {
+    var result = Seq.New();
+    if edits == null { return result; }
+    var paths = Seq.New();
+    var groups = Map.New();
+    var i = 0;
+    while i < Seq.get_Count(edits) {
+        var edit = Seq.Get(edits, i);
+        var path = Map.GetStr(edit, "file");
+        if Map.Has(groups, path) == false {
+            Map.Set(groups, path, Seq.New());
+            Seq.Push(paths, path);
+        }
+        Seq.Push(Map.Get(groups, path), edit);
+        i = i + 1;
+    }
+    i = 0;
+    while i < Seq.get_Count(paths) {
+        var sorted = SortSingleFile(Map.Get(groups, Obj.ToString(Seq.Get(paths, i))));
+        Seq.PushAll(result, sorted);
+        i = i + 1;
+    }
+    return result;
+}
+
+/// @brief Detect overlap by comparing adjacent edits after O(n log n) sorting.
+expose func HasOverlap(edits: Any) -> Boolean {
+    var sorted = SortForApplication(edits);
+    var i = 1;
+    while i < Seq.get_Count(sorted) {
+        if EditsOverlap(Seq.Get(sorted, i - 1), Seq.Get(sorted, i)) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+/// @brief Return the first adjacent overlap from one logical file group.
+/// @return Map with `first` and `second`, or null when ranges are disjoint.
+expose func FirstOverlap(edits: Any) -> Any {
+    var sorted = SortSingleFile(edits);
+    var i = 1;
+    while i < Seq.get_Count(sorted) {
+        var first = Seq.Get(sorted, i - 1);
+        var second = Seq.Get(sorted, i);
+        if RangesOverlap(first, second) {
+            var result = Map.New();
+            Map.Set(result, "first", first);
+            Map.Set(result, "second", second);
+            return result;
+        }
+        i = i + 1;
+    }
+    return null;
+}
+
+/// @brief Stable bottom-up merge sort for one file's edit sequence.
+func SortSingleFile(items: Any) -> Any {
+    var current = Seq.Clone(items);
+    var count = Seq.get_Count(current);
+    var width = 1;
+    while width < count {
+        var merged = Seq.WithCapacity(count);
+        var runStart = 0;
+        while runStart < count {
+            var middle = runStart + width;
+            if middle > count { middle = count; }
+            var runEnd = middle + width;
+            if runEnd > count { runEnd = count; }
+            MergeRuns(current, merged, runStart, middle, runEnd);
+            runStart = runEnd;
+        }
+        current = merged;
+        width = width * 2;
+    }
+    return current;
+}
+
+/// @brief Merge two adjacent descending edit runs while retaining equal order.
+func MergeRuns(source: Any,
+               destination: Any,
+               leftStart: Integer,
+               rightStart: Integer,
+               runEnd: Integer) {
+    var left = leftStart;
+    var right = rightStart;
+    while left < rightStart or right < runEnd {
+        if right >= runEnd {
+            Seq.Push(destination, Seq.Get(source, left));
+            left = left + 1;
+        } else if left >= rightStart {
+            Seq.Push(destination, Seq.Get(source, right));
+            right = right + 1;
+        } else {
+            var leftEdit = Seq.Get(source, left);
+            var rightEdit = Seq.Get(source, right);
+            if EditShouldApplyBefore(rightEdit, leftEdit) {
+                Seq.Push(destination, rightEdit);
+                right = right + 1;
+            } else {
+                Seq.Push(destination, leftEdit);
+                left = left + 1;
+            }
+        }
+    }
+}
+
+/// @brief Return whether two end-exclusive ranges in one file overlap.
+func EditsOverlap(a: Any, b: Any) -> Boolean {
+    if Map.GetStr(a, "file") != Map.GetStr(b, "file") { return false; }
+    return RangesOverlap(a, b);
+}
+
+/// @brief Return whether two end-exclusive ranges overlap independent of path spelling.
+func RangesOverlap(a: Any, b: Any) -> Boolean {
+    return PositionBefore(Map.GetInt(a, "startLine"), Map.GetInt(a, "startColumn"),
+                          Map.GetInt(b, "endLine"), Map.GetInt(b, "endColumn"))
+       and PositionBefore(Map.GetInt(b, "startLine"), Map.GetInt(b, "startColumn"),
+                          Map.GetInt(a, "endLine"), Map.GetInt(a, "endColumn"));
+}
+
+/// @brief Compare two one-based source positions.
+func PositionBefore(lineA: Integer,
+                    colA: Integer,
+                    lineB: Integer,
+                    colB: Integer) -> Boolean {
+    if lineA < lineB { return true; }
+    if lineA > lineB { return false; }
+    return colA < colB;
+}
+
+/// @brief Compare same-file edits for descending application order.
+func EditShouldApplyBefore(candidate: Any, existing: Any) -> Boolean {
+    var candStartLine = Map.GetInt(candidate, "startLine");
+    var candStartCol = Map.GetInt(candidate, "startColumn");
+    var existingStartLine = Map.GetInt(existing, "startLine");
+    var existingStartCol = Map.GetInt(existing, "startColumn");
+    if PositionBefore(existingStartLine, existingStartCol, candStartLine, candStartCol) {
+        return true;
+    }
+    if candStartLine == existingStartLine and candStartCol == existingStartCol {
+        return PositionBefore(Map.GetInt(existing, "endLine"),
+                              Map.GetInt(existing, "endColumn"),
+                              Map.GetInt(candidate, "endLine"),
+                              Map.GetInt(candidate, "endColumn"));
+    }
+    return false;
+}

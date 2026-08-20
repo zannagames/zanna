@@ -1,0 +1,148 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/document_disk_state.zia
+// Purpose: Compare open document snapshots with durable filesystem state.
+// Key invariants:
+//   - Failed reads never install the hash of an invented empty snapshot.
+//   - Save-time checks include content identity after cheap metadata checks.
+//   - Watcher hints remain explicit until a successful load/save clears them.
+// Ownership/Lifetime:
+//   - Functions borrow Document objects and mutate only their disk-state fields.
+// Links: zannastudio/src/core/document_manager_base.zia,
+//        zannastudio/src/core/text_admission.zia
+//
+//===----------------------------------------------------------------------===//
+
+module document_disk_state;
+
+bind "document";
+bind "text_admission";
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Hash = Zanna.Crypto.Hash;
+
+/// @brief Refresh metadata by admitting one complete current disk snapshot.
+expose func Refresh(doc: document.Document) {
+    if doc == null or doc.filePath == "" or File.Exists(doc.filePath) == false {
+        return;
+    }
+    var diskText = "";
+    if doc.isReadOnlyPreview == false {
+        var admission = text_admission.ReadEditableText(doc.filePath);
+        if admission.ok == false {
+            doc.lastModifiedOnDisk = safe_io.Modified(doc.filePath);
+            doc.lastSizeOnDisk = safe_io.SizeBytes(doc.filePath);
+            doc.lastContentHashOnDisk = "";
+            return;
+        }
+        diskText = admission.text;
+    }
+    RefreshFromKnownText(doc, diskText);
+}
+
+/// @brief Record metadata for text already known to equal the disk snapshot.
+expose func RefreshFromKnownText(doc: document.Document,
+                                 diskText: String) {
+    if doc == null or doc.filePath == "" or File.Exists(doc.filePath) == false {
+        return;
+    }
+    var modified = safe_io.Modified(doc.filePath);
+    var size = safe_io.SizeBytes(doc.filePath);
+    if modified < 0 or size < 0 {
+        doc.lastModifiedOnDisk = 0;
+        doc.lastSizeOnDisk = 0;
+        doc.lastContentHashOnDisk = "";
+        return;
+    }
+    doc.lastModifiedOnDisk = modified;
+    doc.lastSizeOnDisk = size;
+    doc.lastContentHashOnDisk = "";
+    if doc.isReadOnlyPreview == false {
+        doc.lastContentHashOnDisk = Hash.Sha256(diskText);
+    }
+}
+
+/// @brief Clear watcher-derived conflict state after durable synchronization.
+expose func ClearExternal(doc: document.Document) {
+    if doc == null { return; }
+    doc.externalChangeNotified = false;
+    doc.externalState = document.EXTERNAL_STATE_CLEAN;
+    doc.externalMessage = "";
+}
+
+/// @brief Return cheap metadata/watcher state for one open document.
+expose func ExternalState(doc: document.Document) -> Integer {
+    if doc == null or doc.isNew or doc.filePath == "" {
+        return document.EXTERNAL_STATE_CLEAN;
+    }
+    if doc.externalState != document.EXTERNAL_STATE_CLEAN {
+        return doc.externalState;
+    }
+    if File.Exists(doc.filePath) == false {
+        return document.EXTERNAL_STATE_MISSING;
+    }
+    if doc.lastModifiedOnDisk > 0 {
+        var current = safe_io.Modified(doc.filePath);
+        var currentSize = safe_io.SizeBytes(doc.filePath);
+        if current < 0 or currentSize < 0
+           or current != doc.lastModifiedOnDisk
+           or currentSize != doc.lastSizeOnDisk {
+            return document.EXTERNAL_STATE_CHANGED;
+        }
+    }
+    return document.EXTERNAL_STATE_CLEAN;
+}
+
+/// @brief Add a content hash check to the cheap external-state probe.
+expose func ExternalStateForSave(doc: document.Document) -> Integer {
+    var state = ExternalState(doc);
+    if state != document.EXTERNAL_STATE_CLEAN or doc == null
+       or doc.isNew or doc.filePath == "" {
+        return state;
+    }
+    if doc.lastContentHashOnDisk == "" {
+        return document.EXTERNAL_STATE_CHANGED;
+    }
+    var admission = text_admission.ReadEditableText(doc.filePath);
+    if admission.ok == false
+       or Hash.Sha256(admission.text) != doc.lastContentHashOnDisk {
+        return document.EXTERNAL_STATE_CHANGED;
+    }
+    return state;
+}
+
+/// @brief Retain a watcher-derived external state and message.
+expose func MarkExternal(doc: document.Document,
+                         state: Integer,
+                         message: String) {
+    if doc == null { return; }
+    doc.externalState = state;
+    doc.externalMessage = message;
+    doc.externalChangeNotified = true;
+}
+
+/// @brief Produce the current user-facing external-state message.
+expose func Message(doc: document.Document) -> String {
+    if doc == null { return ""; }
+    if doc.externalMessage != "" { return doc.externalMessage; }
+    var state = ExternalState(doc);
+    if state == document.EXTERNAL_STATE_CHANGED {
+        return doc.fileName + " changed on disk";
+    }
+    if state == document.EXTERNAL_STATE_DELETED {
+        return doc.fileName + " was deleted on disk";
+    }
+    if state == document.EXTERNAL_STATE_RENAMED {
+        return doc.fileName + " was renamed or moved on disk";
+    }
+    if state == document.EXTERNAL_STATE_MISSING {
+        return doc.fileName + " is missing on disk";
+    }
+    return "";
+}

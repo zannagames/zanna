@@ -18,6 +18,7 @@
 //   - CompareExchangeAllText serializes cooperating processes and rejects stale snapshots.
 //   - Replacing an existing regular file preserves its permission mode.
 //   - Exists returns false for directories; use Dir.Exists for those.
+//   - IdentityKey is opaque, alias-stable, and empty for non-regular entries.
 //   - Copy does not overwrite the destination unless explicitly requested.
 //   - All functions handle both POSIX and Windows file APIs transparently.
 //   - Internal bytes layout is accessed directly to avoid per-byte overhead.
@@ -29,7 +30,8 @@
 //
 // Links: src/runtime/io/rt_file_ext.h (public API),
 //        src/runtime/io/rt_file.h (low-level RtFile handle and channel table),
-//        src/runtime/io/rt_file_path.h (mode string conversion)
+//        src/runtime/io/rt_file_path.h (mode string conversion),
+//        docs/adr/0282-opaque-regular-file-identity-keys.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -47,6 +49,7 @@
 #include "network/rt_entropy_platform.h"
 #include "rt_file_path.h"
 #include "rt_internal.h"
+#include "rt_io_class_ids.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
@@ -61,6 +64,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <setjmp.h>
 #include <stdint.h>
@@ -71,7 +75,18 @@
 #include <sys/types.h>
 #include <time.h>
 #if !RT_PLATFORM_WINDOWS
+#include <sys/file.h>
 #include <unistd.h>
+#endif
+
+// Darwin hides flock(2) behind its extension namespace when the runtime's
+// global POSIX feature level is selected. This adapter still uses the stable
+// libc ABI while keeping platform detection centralized in rt_platform.h.
+#if RT_PLATFORM_MACOS && !defined(LOCK_EX)
+#define LOCK_EX 0x02
+#define LOCK_NB 0x04
+#define LOCK_UN 0x08
+extern int flock(int, int);
 #endif
 
 #if RT_PLATFORM_WINDOWS
@@ -124,6 +139,49 @@ const char *rt_trap_get_error(void);
 static void rt_fileext_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
+}
+
+/// @brief Managed operating-system lock held for a FileLease object's lifetime.
+typedef struct rt_file_lease_impl {
+    int closed; ///< Nonzero after explicit release or finalization.
+#if RT_PLATFORM_WINDOWS
+    HANDLE handle;      ///< Open lock-file handle owning the byte-range lock.
+    OVERLAPPED overlap; ///< Stable lock/unlock range descriptor.
+#else
+    int fd; ///< Open descriptor owning the advisory flock.
+#endif
+} rt_file_lease_impl;
+
+/// @brief Validate and unwrap a managed FileLease handle.
+static rt_file_lease_impl *rt_file_lease_checked(void *handle) {
+    if (!rt_obj_is_instance(handle, RT_FILE_LEASE_CLASS_ID, sizeof(rt_file_lease_impl)))
+        return NULL;
+    return (rt_file_lease_impl *)handle;
+}
+
+/// @brief Release native lease state without deleting the persistent marker.
+static void rt_file_lease_close(rt_file_lease_impl *lease) {
+    if (!lease || lease->closed)
+        return;
+#if RT_PLATFORM_WINDOWS
+    if (lease->handle != INVALID_HANDLE_VALUE) {
+        (void)UnlockFileEx(lease->handle, 0, MAXDWORD, MAXDWORD, &lease->overlap);
+        (void)CloseHandle(lease->handle);
+        lease->handle = INVALID_HANDLE_VALUE;
+    }
+#else
+    if (lease->fd >= 0) {
+        (void)flock(lease->fd, LOCK_UN);
+        (void)close(lease->fd);
+        lease->fd = -1;
+    }
+#endif
+    lease->closed = 1;
+}
+
+/// @brief GC finalizer for an unreleased FileLease.
+static void rt_file_lease_finalize(void *object) {
+    rt_file_lease_close((rt_file_lease_impl *)object);
 }
 
 /// @brief Preserve the active trap message in a caller-provided buffer.
@@ -1056,6 +1114,57 @@ int64_t rt_file_same(rt_string left, rt_string right) {
     return rt_fileext_same_existing_file(left_path, right_path) ? 1 : 0;
 }
 
+/// @brief Return an opaque stable key for one existing regular file.
+/// @details Windows keys contain the volume serial and 64-bit file index obtained
+///          from an open handle. POSIX keys contain the device/inode pair from
+///          `stat`. The textual representation is deliberately undocumented and
+///          callers must use it only as an equality/grouping key.
+/// @param path Runtime path whose followed regular-file identity should be read.
+/// @return Fresh nonempty key on success, or the shared empty string on failure.
+rt_string rt_file_identity_key(rt_string path) {
+    const char *cpath = NULL;
+    if (!rt_file_path_from_vstr(path, &cpath) || !cpath || *cpath == '\0')
+        return rt_str_empty();
+
+    rt_fileext_stat_t st;
+    if (rt_fileext_stat_path(cpath, &st) != 0 || !rt_fileext_is_regular_mode(st.st_mode))
+        return rt_str_empty();
+
+    char key[96];
+#if RT_PLATFORM_WINDOWS
+    wchar_t *wide = rt_file_path_utf8_to_wide(cpath);
+    if (!wide)
+        return rt_str_empty();
+    HANDLE handle = CreateFileW(wide,
+                                FILE_READ_ATTRIBUTES,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                NULL,
+                                OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL,
+                                NULL);
+    free(wide);
+    if (handle == INVALID_HANDLE_VALUE)
+        return rt_str_empty();
+    BY_HANDLE_FILE_INFORMATION info;
+    BOOL queried = GetFileInformationByHandle(handle, &info);
+    CloseHandle(handle);
+    if (!queried)
+        return rt_str_empty();
+    int written = snprintf(key,
+                           sizeof(key),
+                           "w:%08" PRIx32 ":%08" PRIx32 "%08" PRIx32,
+                           (uint32_t)info.dwVolumeSerialNumber,
+                           (uint32_t)info.nFileIndexHigh,
+                           (uint32_t)info.nFileIndexLow);
+#else
+    int written = snprintf(
+        key, sizeof(key), "p:%" PRIxMAX ":%" PRIxMAX, (uintmax_t)st.st_dev, (uintmax_t)st.st_ino);
+#endif
+    if (written <= 0 || (size_t)written >= sizeof(key))
+        return rt_str_empty();
+    return rt_string_from_bytes(key, (size_t)written);
+}
+
 /// @brief Read an entire regular file into a runtime string.
 /// @details Sizes the allocation from `fstat`, then reads exactly that many bytes. No encoding
 ///          validation or newline translation is performed. A size change that causes premature
@@ -1320,6 +1429,120 @@ int64_t rt_io_file_compare_exchange_all_text(rt_string path,
         return 0;
     }
     return 1;
+}
+
+/// @brief Try to acquire a nonblocking, process-lifetime lease on a lock file.
+/// @details The persistent file is deliberately not unlinked on release: a
+///          scanner can open that same stable inode and determine whether its
+///          former owner is still alive. Links, directories, and special files
+///          are rejected before publication of a managed handle.
+void *rt_file_lease_try_acquire(rt_string path) {
+    const char *cpath =
+        rt_io_file_require_path(path, "Zanna.IO.FileLease.TryAcquire: invalid file path");
+
+    rt_file_lease_impl *lease = (rt_file_lease_impl *)rt_obj_new_i64(
+        RT_FILE_LEASE_CLASS_ID, (int64_t)sizeof(rt_file_lease_impl));
+    if (!lease) {
+        rt_trap("Zanna.IO.FileLease.TryAcquire: allocation failed");
+        return NULL;
+    }
+    memset(lease, 0, sizeof(*lease));
+    lease->closed = 1;
+#if RT_PLATFORM_WINDOWS
+    lease->handle = INVALID_HANDLE_VALUE;
+    memset(&lease->overlap, 0, sizeof(lease->overlap));
+#else
+    lease->fd = -1;
+#endif
+    rt_obj_set_finalizer(lease, rt_file_lease_finalize);
+
+#if RT_PLATFORM_WINDOWS
+    wchar_t *wide = rt_file_path_utf8_to_wide(cpath);
+    if (!wide) {
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    HANDLE handle = CreateFileW(wide,
+                                GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL,
+                                OPEN_ALWAYS,
+                                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                                NULL);
+    free(wide);
+    if (handle == INVALID_HANDLE_VALUE) {
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(handle, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0 ||
+        !LockFileEx(handle,
+                    LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                    0,
+                    MAXDWORD,
+                    MAXDWORD,
+                    &lease->overlap)) {
+        (void)CloseHandle(handle);
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    lease->handle = handle;
+#else
+    int flags = O_RDWR | O_CREAT;
+#if defined(O_CLOEXEC)
+    flags |= O_CLOEXEC;
+#endif
+#if defined(O_NOFOLLOW)
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = rt_fileext_open(cpath, flags, 0600);
+    if (fd < 0) {
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    rt_fileext_stat_t st;
+    if (rt_fileext_fstat(fd, &st) != 0 || !rt_fileext_is_regular_mode(st.st_mode) ||
+        st.st_nlink != 1) {
+        (void)close(fd);
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    int lock_result;
+    do {
+        lock_result = flock(fd, LOCK_EX | LOCK_NB);
+    } while (lock_result != 0 && errno == EINTR);
+    if (lock_result != 0) {
+        (void)close(fd);
+        rt_fileext_release_object(lease);
+        return NULL;
+    }
+    lease->fd = fd;
+#endif
+    lease->closed = 0;
+    return lease;
+}
+
+/// @brief Return whether a managed FileLease still owns its native lock.
+int64_t rt_file_lease_is_valid(void *handle) {
+    rt_file_lease_impl *lease = rt_file_lease_checked(handle);
+    if (!lease || lease->closed)
+        return 0;
+#if RT_PLATFORM_WINDOWS
+    return lease->handle != INVALID_HANDLE_VALUE ? 1 : 0;
+#else
+    return lease->fd >= 0 ? 1 : 0;
+#endif
+}
+
+/// @brief Explicitly release a FileLease; finalization is an equivalent fallback.
+void rt_file_lease_release(void *handle) {
+    rt_file_lease_impl *lease = rt_file_lease_checked(handle);
+    if (!lease) {
+        rt_trap("Zanna.IO.FileLease.Release: invalid lease");
+        return;
+    }
+    rt_file_lease_close(lease);
 }
 
 /// What: Append @p text and a newline to @p path (creating it when missing).

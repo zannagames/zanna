@@ -1,0 +1,205 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/platform_signoff_manifest_probe.zia
+// Purpose: Validate the formal Studio desktop sign-off matrix.
+// Key invariants:
+//   - Every required case has exactly one Windows, macOS, and Linux row.
+//   - Status and evidence fields cannot silently claim unsupported completion.
+//   - --require-complete fails until every applicable row records pass evidence.
+// Ownership/Lifetime:
+//   - Reads one bounded checked-in TSV manifest and owns transient maps/lists.
+// Links: zannastudio/tests/platform_signoff.tsv,
+//        zannastudio/docs/platform-signoff.md
+//
+//===----------------------------------------------------------------------===//
+
+module platform_signoff_manifest_probe;
+
+bind Env = Zanna.System.Environment;
+bind File = Zanna.IO.File;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+final MAX_MANIFEST_BYTES = 262144;
+final EXPECTED_COLUMNS = 8;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func argValue(name: String) -> String {
+    var i = 0;
+    while i < Env.GetArgumentCount() - 1 {
+        if Env.GetArgument(i) == name { return Env.GetArgument(i + 1); }
+        i = i + 1;
+    }
+    return "";
+}
+
+func hasArg(name: String) -> Boolean {
+    var i = 0;
+    while i < Env.GetArgumentCount() {
+        if Env.GetArgument(i) == name { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func requiredCases() -> List[String] {
+    return [
+        "native_file_picker",
+        "coarse_timestamp_same_size_rewrite",
+        "malformed_large_sources",
+        "credentialed_push",
+        "rename_conflict",
+        "multi_file_conflict",
+        "terminal_vim",
+        "terminal_less",
+        "terminal_htop",
+        "pty_conpty_lifecycle",
+        "huge_panel_output",
+        "debugger_structs_watches",
+        "focus_accessibility",
+        "scene_d3d11_headless",
+        "scene_egl_headless",
+        "scene_metal_headless"
+    ];
+}
+
+func platforms() -> List[String] { return ["windows", "macos", "linux"]; }
+
+func validStatus(status: String) -> Boolean {
+    return status == "pending" or status == "pass" or status == "fail"
+           or status == "blocked" or status == "not-applicable";
+}
+
+func backendApplies(caseId: String, platform: String) -> Boolean {
+    if caseId == "scene_d3d11_headless" { return platform == "windows"; }
+    if caseId == "scene_egl_headless" { return platform == "linux"; }
+    if caseId == "scene_metal_headless" { return platform == "macos"; }
+    return true;
+}
+
+func main() {
+    var path = argValue("--manifest");
+    if path == "" { path = "../../tests/platform_signoff.tsv"; }
+    if File.Exists(path) == false {
+        fail("manifest not found: " + path);
+        return;
+    }
+    var size = File.SizeBytes(path);
+    if size < 1 or size > MAX_MANIFEST_BYTES {
+        fail("manifest byte size is outside the validated bound");
+        return;
+    }
+    var lines = Str.Split(File.ReadAllText(path), "\n");
+    if Seq.get_Count(lines) < 2 {
+        fail("manifest has no data rows");
+        return;
+    }
+    var header = Str.Trim(Obj.ToString(Seq.Get(lines, 0)));
+    if header != "case_id\tplatform\trequirement\tprocedure\tstatus\tevidence\towner\tlast_run" {
+        fail("manifest header does not match schema");
+        return;
+    }
+
+    var required = requiredCases();
+    var allowedPlatforms = platforms();
+    var requiredSet = Map.New();
+    for caseId in required { Map.SetBool(requiredSet, caseId, true); }
+    var platformSet = Map.New();
+    for platform in allowedPlatforms { Map.SetBool(platformSet, platform, true); }
+    var seen = Map.New();
+    var applicable = 0;
+    var passed = 0;
+    var pending = 0;
+    var rowIndex = 1;
+    while rowIndex < Seq.get_Count(lines) {
+        var raw = Obj.ToString(Seq.Get(lines, rowIndex));
+        if Str.Trim(raw) == "" {
+            rowIndex = rowIndex + 1;
+            continue;
+        }
+        var fields = Str.Split(raw, "\t");
+        if Seq.get_Count(fields) != EXPECTED_COLUMNS {
+            fail("row " + (rowIndex + 1) + " does not have eight columns");
+            return;
+        }
+        var caseId = Str.Trim(Obj.ToString(Seq.Get(fields, 0)));
+        var platform = Str.Trim(Obj.ToString(Seq.Get(fields, 1)));
+        var requirement = Str.Trim(Obj.ToString(Seq.Get(fields, 2)));
+        var procedure = Str.Trim(Obj.ToString(Seq.Get(fields, 3)));
+        var status = Str.Trim(Obj.ToString(Seq.Get(fields, 4)));
+        var evidence = Str.Trim(Obj.ToString(Seq.Get(fields, 5)));
+        var owner = Str.Trim(Obj.ToString(Seq.Get(fields, 6)));
+        var lastRun = Str.Trim(Obj.ToString(Seq.Get(fields, 7)));
+        if Map.GetBool(requiredSet, caseId) == false {
+            fail("row " + (rowIndex + 1) + " has unknown case " + caseId);
+            return;
+        }
+        if Map.GetBool(platformSet, platform) == false {
+            fail("row " + (rowIndex + 1) + " has unknown platform " + platform);
+            return;
+        }
+        var key = caseId + "|" + platform;
+        if Map.GetBool(seen, key) {
+            fail("duplicate matrix row " + key);
+            return;
+        }
+        Map.SetBool(seen, key, true);
+        if requirement == "" or procedure == "" or owner == "" {
+            fail("row " + (rowIndex + 1) + " omits required sign-off detail");
+            return;
+        }
+        if validStatus(status) == false {
+            fail("row " + (rowIndex + 1) + " has invalid status " + status);
+            return;
+        }
+        var applies = backendApplies(caseId, platform);
+        if applies and status == "not-applicable" {
+            fail("applicable row " + key + " cannot be not-applicable");
+            return;
+        }
+        if applies == false and status != "not-applicable" {
+            fail("backend-specific row " + key + " must be not-applicable");
+            return;
+        }
+        if (status == "pass" or status == "fail" or status == "blocked")
+           and (evidence == "" or evidence == "-" or lastRun == "-") {
+            fail("completed row " + key + " requires evidence and last_run");
+            return;
+        }
+        if applies {
+            applicable = applicable + 1;
+            if status == "pass" { passed = passed + 1; }
+            else { pending = pending + 1; }
+        }
+        rowIndex = rowIndex + 1;
+    }
+
+    for caseId in required {
+        for platform in allowedPlatforms {
+            var key = caseId + "|" + platform;
+            if Map.GetBool(seen, key) == false {
+                fail("missing matrix row " + key);
+                return;
+            }
+        }
+    }
+    if hasArg("--require-complete") and passed != applicable {
+        fail("release sign-off incomplete: " + passed + "/" + applicable
+             + " applicable rows pass; " + pending + " remain");
+        return;
+    }
+    Terminal.Say("SIGNOFF: " + passed + "/" + applicable
+                 + " applicable rows pass; " + pending + " remain");
+    Terminal.Say("RESULT: ok");
+}

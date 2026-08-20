@@ -216,6 +216,12 @@ class ScmGutterController {
         pendingRelativePath = "";
     }
 
+    /// @brief Cancel gutter work and drain its handle-only destroy workers.
+    expose func Shutdown() -> Boolean {
+        Cancel();
+        return git.Shutdown();
+    }
+
     /// @brief Start and consume the newest coalesced request.
     hide func StartPending() -> Boolean {
         if pendingRootPath == "" or pendingDocumentPath == ""

@@ -49,6 +49,7 @@ bind "../services/file_utils";
 bind "../services/locations";
 bind "../services/project_templates";
 bind "../services/safe_io";
+bind "../services/safe_io_results";
 bind "../services/workspace_edits";
 bind "../core/project_manager";
 bind "../core/session";
@@ -215,7 +216,11 @@ func TestSafeIo() {
     var safeIoMoved = Path.Join(safeIoRoot, "moved.txt");
     File.WriteAllText(safeIoSource, "source");
     File.WriteAllText(safeIoCollision, "collision");
-    if assertTrue(safe_io.MoveFile(safeIoSource, safeIoCollision) == false
+    var collisionResult = safe_io.MoveFileResult(safeIoSource, safeIoCollision);
+    if assertTrue(collisionResult.ok == false
+                  and collisionResult.code == safe_io_results.IO_FAILURE_ALREADY_EXISTS
+                  and collisionResult.retryable == false
+                  and collisionResult.message == "The destination already exists."
                   and File.ReadAllText(safeIoSource) == "source"
                   and File.ReadAllText(safeIoCollision) == "collision",
                   "safe file move contains destination traps") == false { return; }
@@ -224,7 +229,9 @@ func TestSafeIo() {
                   and File.ReadAllText(safeIoMoved) == "source",
                   "safe file move succeeds without overwrite") == false { return; }
     var safeIoCopied = Path.Join(safeIoRoot, "copied.txt");
-    if assertTrue(safe_io.CopyFile(safeIoMoved, safeIoCollision) == false
+    var copyCollision = safe_io.CopyFileResult(safeIoMoved, safeIoCollision);
+    if assertTrue(copyCollision.ok == false
+                  and copyCollision.code == safe_io_results.IO_FAILURE_ALREADY_EXISTS
                   and safe_io.CopyFile(safeIoMoved, safeIoCopied)
                   and File.ReadAllText(safeIoCopied) == "source"
                   and File.ReadAllText(safeIoCollision) == "collision",
@@ -245,11 +252,27 @@ func TestSafeIo() {
                   and safe_io.SiblingTempPath(longStagingTarget, "../escape") == "",
                   "atomic staging names stay short and reject unsafe labels") == false { return; }
     var safeCreated = Path.Join(safeIoRoot, "created.txt");
-    if assertTrue(safe_io.CreateTextFile(safeCreated, "created")
+    var createdFirst = safe_io.CreateTextFile(safeCreated, "created");
+    var createCollision = safe_io.CreateTextFileResult(safeCreated, "replacement");
+    if assertTrue(createdFirst
                   and File.ReadAllText(safeCreated) == "created"
-                  and safe_io.CreateTextFile(safeCreated, "replacement") == false
+                  and createCollision.ok == false
+                  and createCollision.code == safe_io_results.IO_FAILURE_ALREADY_EXISTS
                   and File.ReadAllText(safeCreated) == "created",
                   "atomic text creation preserves no-overwrite behavior") == false { return; }
+    var writeResult = safe_io.WriteAllTextResult(safeCreated, "written");
+    var staleResult = safe_io.CompareExchangeTextFileResult(
+        safeCreated, "stale", "replacement", 1024);
+    var oversizedState = safe_io.WriteStudioStateResult(
+        safeCreated, Str.Repeat("x", safe_io.MAX_STUDIO_STATE_BYTES + 1));
+    if assertTrue(writeResult.ok
+                  and File.ReadAllText(safeCreated) == "written"
+                  and staleResult.ok == false
+                  and staleResult.code == safe_io_results.IO_FAILURE_CONFLICT
+                  and staleResult.retryable
+                  and oversizedState.ok == false
+                  and oversizedState.code == safe_io_results.IO_FAILURE_LIMIT,
+                  "typed write results preserve conflict and limit reasons") == false { return; }
     var missingSafeRead = safe_io.ReadAllText(Path.Join(safeIoRoot, "missing.txt"));
     if assertTrue(missingSafeRead.ok == false
                   and safe_io.SizeBytes(Path.Join(safeIoRoot, "missing.txt")) == -1
@@ -420,7 +443,7 @@ func TestCommandsAndModels() {
                   and registry.IsExecutable("closesplit", ziaService) == false
                   and Str.IndexOf(
                       registry.DisabledReason("spliteditorright", ziaService),
-                      "another source or text document") != 0,
+                      "editable source or text document") != 0,
                   "single-document split commands explain missing topology") == false {
         return;
     }
@@ -513,6 +536,19 @@ func TestSupportingModels() {
     var loc = locs.Get(id);
     if assertTrue(loc != null and loc!.filePath == "C:\\tmp\\a file.zia",
                   "location store preserves colon path") == false { return; }
+    var ownedSearch = locs.AddOwned(
+        "search.zia", 1, 1, 1, 2, locations.KIND_SEARCH, "search", "search");
+    var ownedBuild = locs.AddOwned(
+        "build.zia", 1, 1, 1, 2, locations.KIND_BUILD, "build", "build");
+    if assertTrue(locs.ClearOwner("search") == 1
+                  and locs.Get(ownedSearch) == null
+                  and locs.Get(ownedBuild) != null,
+                  "location owners evict only their publication") == false { return; }
+    locs.Clear();
+    var afterClear = locs.Add(
+        "new.zia", 1, 1, 1, 2, locations.KIND_SEARCH, "new");
+    if assertTrue(locs.Get(id) == null and afterClear != id,
+                  "location clear never reuses stale clickable ids") == false { return; }
 
     if assertTrue(search_commands.LineMatches("foobar foo", "foo", false, true),
                   "whole-word search finds later whole token") == false { return; }

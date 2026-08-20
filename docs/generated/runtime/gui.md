@@ -863,6 +863,8 @@ Constructor: `Zanna.GUI.App.New`
 | <a id="zanna-gui-app-trynew"></a>`TryNew` | `obj<Zanna.Result>(str,i64,i64)` | `Zanna.GUI.App.TryNew` |
 | <a id="zanna-gui-app-poll"></a>`Poll` | `void()` | `Zanna.GUI.App.Poll` |
 | <a id="zanna-gui-app-pollwait"></a>`PollWait` | `i1(i64)` | `Zanna.GUI.App.PollWait` |
+| <a id="zanna-gui-app-watchprocess"></a>`WatchProcess` | `i1(obj<Zanna.System.Process>)` | `Zanna.GUI.App.WatchProcess` |
+| <a id="zanna-gui-app-watchpty"></a>`WatchPty` | `i1(obj<Zanna.System.PtySession>)` | `Zanna.GUI.App.WatchPty` |
 | <a id="zanna-gui-app-render"></a>`Render` | `void()` | `Zanna.GUI.App.Render` |
 | <a id="zanna-gui-app-runframe"></a>`RunFrame` | `i1()` | `Zanna.GUI.App.RunFrame` |
 | <a id="zanna-gui-app-runframewithdelta"></a>`RunFrameWithDelta` | `i1(f64)` | `Zanna.GUI.App.RunFrameWithDelta` |
@@ -2482,6 +2484,8 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-app-get-shouldclose"></a>`Zanna.GUI.App.get_ShouldClose` | `i1(obj)` | `rt_gui_app_should_close` |
 | `Zanna.GUI.App.Poll` | `void(obj)` | `rt_gui_app_poll` |
 | `Zanna.GUI.App.PollWait` | `i1(obj,i64)` | `rt_gui_app_poll_wait` |
+| `Zanna.GUI.App.WatchProcess` | `i1(obj,obj)` | `rt_gui_app_watch_process` |
+| `Zanna.GUI.App.WatchPty` | `i1(obj,obj)` | `rt_gui_app_watch_pty` |
 | `Zanna.GUI.App.Render` | `void(obj)` | `rt_gui_app_render` |
 | `Zanna.GUI.App.RunFrame` | `i1(obj)` | `rt_gui_app_run_frame` |
 | `Zanna.GUI.App.RunFrameWithDelta` | `i1(obj,f64)` | `rt_gui_app_run_frame_with_delta` |

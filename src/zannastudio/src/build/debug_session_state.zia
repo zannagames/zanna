@@ -1,0 +1,188 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/debug_session_state.zia
+// Purpose: Own debugger process, request-correlation, watch, and snapshot state.
+// Key invariants:
+//   - Request IDs and timeouts are session-local and reset together.
+//   - Adapter references and copied variable-tree caches share stop lifetime.
+// Ownership/Lifetime:
+//   - The final DebugSession owns the process handle and every inherited list.
+// Links: zannastudio/src/build/debug_session_base.zia,
+//        zannastudio/src/build/debug_session.zia
+//
+//===----------------------------------------------------------------------===//
+
+module debug_session_state;
+
+bind "var_model";
+bind "../services/process_reaper";
+
+bind Process = Zanna.System.Process;
+bind Time = Zanna.Time;
+bind GUI = Zanna.GUI;
+bind Str = Zanna.String;
+
+final TERMINATE_GRACE_MS = 750;
+final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
+final EVALUATION_REQUEST_TIMEOUT_MS = 2000;
+final MAX_ADAPTER_INPUT_BYTES = 1024 * 1024;
+
+/// @brief Shared mutable state for layered debugger orchestration.
+class DebugSessionState {
+    expose Process.ProcessHandle processHandle;
+    expose Boolean hasSession;
+    expose Boolean stopped;
+    expose Boolean terminated;
+    expose String activePath;
+    expose Integer lastLine;
+    expose String lastType;
+    expose String lastReason;
+    expose String consoleText;
+    expose String programOutput;
+    expose Integer exitCode;
+    expose Any stopFrames;
+    expose Any stopLocals;
+    expose Any lastVarChildren;
+    expose Integer lastVarRef;
+    expose String pendingVarPath;
+    expose Integer pendingVarRef;
+    expose Integer pendingVarRequestId;
+    expose Integer expectedVariableRequestId;
+    expose Integer lastIssuedVariableRequestId;
+    expose String failedVarPath;
+    expose Time.Countdown variableRequestCountdown;
+    expose var_model.VarTreeState varTree;
+    expose String lastEvalExpr;
+    expose String lastEvalValue;
+    expose String lastEvalType;
+    expose Boolean lastEvalOk;
+    expose Boolean evalJustArrived;
+    expose String pendingManualEvalExpr;
+    expose Integer pendingManualEvalRequestId;
+    expose Time.Countdown manualEvalCountdown;
+    expose List watchExprs;
+    expose List watchValues;
+    expose List watchTypes;
+    expose List watchOk;
+    expose Integer watchRefreshIndex;
+    expose Boolean watchRequestActive;
+    expose String watchRequestExpr;
+    expose Integer watchRequestId;
+    expose Time.Countdown watchRequestCountdown;
+    hide String ctrlBuf;
+    expose String adapterInputCarry;
+    expose Integer nextRequestId;
+    expose Boolean dirty;
+    expose Boolean terminateRequested;
+    expose Time.Countdown terminateCountdown;
+    expose Boolean restartPending;
+    expose String restartZannaBin;
+    expose String restartPath;
+    expose process_reaper.ProcessReaper processReaper;
+    expose GUI.App wakeApp;
+    expose Boolean activityWakeAttached;
+
+    /// @brief Initialize every session-owned value as one coherent generation.
+    expose func InitializeState() {
+        processHandle = null;
+        hasSession = false;
+        stopped = false;
+        terminated = false;
+        activePath = "";
+        lastLine = 0;
+        lastType = "";
+        lastReason = "";
+        consoleText = "";
+        programOutput = "";
+        exitCode = -1;
+        stopFrames = null;
+        stopLocals = null;
+        lastVarChildren = null;
+        lastVarRef = 0;
+        pendingVarPath = "";
+        pendingVarRef = 0;
+        pendingVarRequestId = 0;
+        expectedVariableRequestId = 0;
+        lastIssuedVariableRequestId = 0;
+        failedVarPath = "";
+        variableRequestCountdown = Time.Countdown.New(
+            VARIABLE_REQUEST_TIMEOUT_MS);
+        lastEvalExpr = "";
+        lastEvalValue = "";
+        lastEvalType = "";
+        lastEvalOk = false;
+        evalJustArrived = false;
+        pendingManualEvalExpr = "";
+        pendingManualEvalRequestId = 0;
+        manualEvalCountdown = Time.Countdown.New(
+            EVALUATION_REQUEST_TIMEOUT_MS);
+        watchExprs = new List();
+        watchValues = new List();
+        watchTypes = new List();
+        watchOk = new List();
+        watchRefreshIndex = -1;
+        watchRequestActive = false;
+        watchRequestExpr = "";
+        watchRequestId = 0;
+        watchRequestCountdown = Time.Countdown.New(
+            EVALUATION_REQUEST_TIMEOUT_MS);
+        varTree = new var_model.VarTreeState();
+        ctrlBuf = "";
+        adapterInputCarry = "";
+        nextRequestId = 1;
+        dirty = false;
+        terminateRequested = false;
+        terminateCountdown = Time.Countdown.New(TERMINATE_GRACE_MS);
+        restartPending = false;
+        restartZannaBin = "";
+        restartPath = "";
+        processReaper = new process_reaper.ProcessReaper();
+        wakeApp = null;
+        activityWakeAttached = false;
+    }
+
+    /// @brief Allocate a positive session-local debug-query correlation id.
+    hide func NextRequestId() -> Integer {
+        var value = nextRequestId;
+        nextRequestId = nextRequestId + 1;
+        if nextRequestId <= 0 or nextRequestId > 2147483647 {
+            nextRequestId = 1;
+        }
+        return value;
+    }
+
+    /// @brief Retry the unwritten suffix of queued adapter commands once.
+    expose func FlushAdapterInput() -> Boolean {
+        if adapterInputCarry == "" { return true; }
+        if processHandle == null { return false; }
+        var accepted = processHandle.WriteStdin(adapterInputCarry);
+        if accepted <= 0 { return false; }
+        var length = Str.get_Length(adapterInputCarry);
+        if accepted >= length {
+            adapterInputCarry = "";
+            return true;
+        }
+        adapterInputCarry = Str.Substring(
+            adapterInputCarry, accepted, length - accepted);
+        return false;
+    }
+
+    /// @brief Queue one bounded newline-delimited JSON adapter command.
+    /// @details Partial nonblocking writes retain their unwritten suffix.
+    hide func QueueAdapterCommand(command: String) -> Boolean {
+        if processHandle == null or command == "" { return false; }
+        FlushAdapterInput();
+        var framed = command + "\n";
+        var currentBytes = Str.get_Length(adapterInputCarry);
+        var framedBytes = Str.get_Length(framed);
+        if framedBytes > MAX_ADAPTER_INPUT_BYTES - currentBytes { return false; }
+        adapterInputCarry = adapterInputCarry + framed;
+        FlushAdapterInput();
+        return true;
+    }
+}

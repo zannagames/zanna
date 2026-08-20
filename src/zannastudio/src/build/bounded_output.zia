@@ -26,9 +26,8 @@ expose func Append(existing: String,
                    text: String,
                    prefix: String,
                    maxChars: Integer) -> String {
-    var combined = existing + text;
     if maxChars <= 0 {
-        return combined;
+        return existing + text;
     }
 
     var textLen = Str.get_Length(text);
@@ -42,5 +41,5 @@ expose func Append(existing: String,
         return prefix + Str.Mid(existing, existingLen - keepExisting + 1) + text;
     }
 
-    return combined;
+    return existing + text;
 }

@@ -1,0 +1,50 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/diagnostic_publication.zia
+// Purpose: Track incremental Problems publication for one build generation.
+// Key invariants:
+//   - A new diagnostic generation retires prior rows exactly once.
+//   - Published counts are clamped to the live parsed-record count.
+// Ownership/Lifetime:
+//   - BuildSystem owns one cursor for its complete lifetime.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/commands/build_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module diagnostic_publication;
+
+class DiagnosticPublicationCursor {
+    hide Integer generation;
+    hide Integer count;
+
+    expose func init() {
+        generation = 0;
+        count = 0;
+    }
+
+    expose func TakeReset(currentGeneration: Integer) -> Boolean {
+        if generation == currentGeneration { return false; }
+        generation = currentGeneration;
+        count = 0;
+        return true;
+    }
+
+    expose func FirstUnpublished(currentGeneration: Integer,
+                                 recordCount: Integer) -> Integer {
+        if generation != currentGeneration or count < 0 { return 0; }
+        if count > recordCount { return recordCount; }
+        return count;
+    }
+
+    expose func MarkPublished(currentGeneration: Integer,
+                              recordCount: Integer) {
+        generation = currentGeneration;
+        count = recordCount;
+    }
+}

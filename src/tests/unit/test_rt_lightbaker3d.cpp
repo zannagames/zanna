@@ -806,6 +806,45 @@ bool test_probe_grid_sampling_and_roundtrip() {
     PASS();
 }
 
+bool test_probe_bake_rejects_non_baker_argument() {
+    TEST("probe bake traps a wrong-class or null baker before touching the grid");
+
+    void *minimum = rt_vec3_new(0.0, 0.0, 0.0);
+    void *maximum = rt_vec3_new(4.0, 4.0, 4.0);
+    void *grid = rt_lightprobegrid3d_new(minimum, maximum, 2.0);
+    EXPECT_TRUE(grid != nullptr, "grid allocates");
+    void *scene = rt_scene3d_new();
+    EXPECT_TRUE(scene != nullptr, "scene allocates");
+
+    /* The shipped mistake: the scene itself where the baker belongs (the
+     * neighboring ReflectionProbe3D.Capture signature does take the scene,
+     * and obj<T> parameters are not enforced at Zia call sites). */
+    EXPECT_TRUE(expect_trap("LightProbeGrid3D.Bake: invalid baker",
+                            [&] { rt_lightprobegrid3d_bake(grid, scene); }),
+                "a SceneGraph passed as the baker traps by class id");
+    EXPECT_TRUE(expect_trap("LightProbeGrid3D.Bake: invalid baker",
+                            [&] { rt_lightprobegrid3d_bake(grid, nullptr); }),
+                "a null baker traps");
+    EXPECT_TRUE(expect_trap("LightProbeGrid3D.Bake: invalid grid",
+                            [&] { rt_lightprobegrid3d_bake(scene, nullptr); }),
+                "the receiver grid is validated before the baker");
+
+    /* The rejected calls leave the grid intact: a real baker still bakes. */
+    void *baker = rt_lightbaker3d_new(scene);
+    EXPECT_TRUE(baker != nullptr, "baker allocates");
+    rt_lightbaker3d_set_samples(baker, 8);
+    rt_lightbaker3d_set_sky_color(baker, 0.5, 0.5, 0.5);
+    rt_lightprobegrid3d_bake(grid, baker);
+    void *position = rt_vec3_new(1.0, 1.0, 1.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    void *sample = rt_lightprobegrid3d_sample(grid, position, up);
+    EXPECT_TRUE(rt_vec3_x(sample) > 0.0, "the same grid bakes sky light after the rejected calls");
+
+    for (void *o : {sample, up, position, baker, scene, grid, maximum, minimum})
+        release_object(o);
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -820,6 +859,7 @@ int main() {
     ok &= test_punctual_light_semantics();
     ok &= test_bounce_color_bleed_and_determinism();
     ok &= test_probe_validation_empty_scene_and_sampling_guards();
+    ok &= test_probe_bake_rejects_non_baker_argument();
     ok &= test_probe_grid_sampling_and_roundtrip();
     std::printf("\nBaked GI tests: %d/%d passed\n", g_tests_passed, g_tests_total);
     return ok && g_tests_passed == g_tests_total ? 0 : 1;

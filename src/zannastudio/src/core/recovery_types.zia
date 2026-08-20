@@ -1,0 +1,282 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/recovery_types.zia
+// Purpose: Immutable recovery snapshots, bounded scan state, and worker I/O.
+// Key invariants:
+//   - Background workers receive only immutable strings and request state.
+//   - Canonical metadata and payload names are published through atomic moves.
+// Ownership/Lifetime:
+//   - RecoveryStore owns requests; Async.RunOwned retains an active request.
+// Links: zannastudio/src/core/recovery_store_base.zia,
+//        zannastudio/src/core/recovery_store.zia
+//
+//===----------------------------------------------------------------------===//
+
+module recovery_types;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Str = Zanna.String;
+bind Map = Zanna.Collections.Map;
+bind Monitor = Zanna.Threads.Monitor;
+
+final MAX_RECOVERY_PATH_BYTES = 32768;
+final MAX_RECOVERY_METADATA_BYTES = 131072;
+final MAX_RECOVERY_SWAP_BYTES = 64000000;
+final MAX_RECOVERY_RECORDS = 256;
+final MAX_RECOVERY_TOTAL_BYTES = 128000000;
+final RECOVERY_SHUTDOWN_WAIT_MS = 5000;
+final RECOVERY_FORMAT_VERSION = 2;
+final RECOVERY_NAMESPACE_PREFIX = "session-";
+final RECOVERY_RETIRED_PREFIX = "retired-";
+final RECOVERY_CLEAN_MARKER = "clean.exit";
+
+/// @brief One recovered document (origin path + last-known text).
+class RecoveryRecord {
+    expose String path;
+    expose String content;
+    expose String identity;
+    expose String instanceId;
+    expose String documentId;
+
+    expose func init() {
+        path = "";
+        content = "";
+        identity = "";
+        instanceId = "";
+        documentId = "";
+    }
+}
+
+/// @brief Validated metadata awaiting background payload materialization.
+class RecoveryPayloadCandidate {
+    expose String swapFile;
+    expose String origin;
+    expose String identity;
+    expose String instanceId;
+    expose String documentId;
+
+    expose func init() {
+        swapFile = "";
+        origin = "";
+        identity = "";
+        instanceId = "";
+        documentId = "";
+    }
+}
+
+/// @brief Worker-owned batch of payload candidates and bounded results.
+class RecoveryPayloadReadRequest {
+    expose List candidates;
+    expose List records;
+    expose Integer recoveredBytes;
+    expose Boolean truncated;
+    expose Boolean succeeded;
+    expose String error;
+
+    expose func init() {
+        candidates = new List();
+        records = new List();
+        recoveredBytes = 0;
+        truncated = false;
+        succeeded = true;
+        error = "";
+    }
+}
+
+/// @brief Resumable state for a bounded multi-namespace recovery scan.
+class RecoveryScanJob {
+    expose Boolean active;
+    expose Boolean complete;
+    expose Boolean failed;
+    expose Boolean collectRecords;
+    expose Boolean truncated;
+    expose Integer nextOffset;
+    expose Integer entriesScanned;
+    expose Integer lastPumpCount;
+    expose Integer recoveredBytes;
+    expose List records;
+    expose List directories;
+    expose Integer directoryIndex;
+    expose Any seenRecords;
+    expose RecoveryPayloadReadRequest payloadRequest;
+    expose Any payloadFuture;
+
+    expose func init() {
+        active = false;
+        complete = false;
+        failed = false;
+        collectRecords = true;
+        truncated = false;
+        nextOffset = 0;
+        entriesScanned = 0;
+        lastPumpCount = 0;
+        recoveredBytes = 0;
+        records = new List();
+        directories = new List();
+        directoryIndex = 0;
+        seenRecords = Map.New();
+        payloadRequest = new RecoveryPayloadReadRequest();
+        payloadFuture = null;
+    }
+}
+
+/// @brief Read and compare validated swap payloads away from the UI thread.
+expose func ReadRecoveryPayloads(
+    request: RecoveryPayloadReadRequest) -> Any {
+    if request == null { return request; }
+    var i = 0;
+    while i < request.candidates.count() {
+        if request.records.count() >= MAX_RECOVERY_RECORDS {
+            request.truncated = true;
+            break;
+        }
+        var candidate = request.candidates.get(i) as RecoveryPayloadCandidate;
+        if candidate != null {
+            var swap = safe_io.ReadAllTextBounded(
+                candidate!.swapFile, MAX_RECOVERY_SWAP_BYTES);
+            if swap.ok {
+                var retain = true;
+                if candidate!.origin != "" and File.Exists(candidate!.origin) {
+                    var disk = safe_io.ReadAllTextBounded(
+                        candidate!.origin, MAX_RECOVERY_SWAP_BYTES);
+                    if disk.ok and disk.text == swap.text { retain = false; }
+                }
+                var contentBytes = Str.get_Length(swap.text);
+                if retain and (contentBytes < 0
+                   or request.recoveredBytes + contentBytes
+                       > MAX_RECOVERY_TOTAL_BYTES) {
+                    request.truncated = true;
+                    retain = false;
+                }
+                if retain {
+                    var record = new RecoveryRecord();
+                    record.path = candidate!.origin;
+                    record.content = swap.text;
+                    record.identity = candidate!.identity;
+                    record.instanceId = candidate!.instanceId;
+                    record.documentId = candidate!.documentId;
+                    request.records.add(record);
+                    request.recoveredBytes = request.recoveredBytes + contentBytes;
+                }
+            } else {
+                request.succeeded = false;
+                request.error = "Could not read a validated recovery payload";
+            }
+        }
+        i = i + 1;
+    }
+    return request;
+}
+
+/// @brief Immutable UI-thread snapshot consumed by one recovery worker.
+class RecoveryWriteSnapshot {
+    expose String basePath;
+    expose String originPath;
+    expose String identity;
+    expose String instanceId;
+    expose String documentId;
+    expose String content;
+    expose String metadata;
+    expose String tempMetadataFile;
+    expose String tempSwapFile;
+
+    expose func init() {
+        basePath = "";
+        originPath = "";
+        identity = "";
+        instanceId = "";
+        documentId = "";
+        content = "";
+        metadata = "";
+        tempMetadataFile = "";
+        tempSwapFile = "";
+    }
+}
+
+/// @brief One worker-owned batch plus cancellation and diagnostic state.
+class RecoveryWriteRequest {
+    expose List snapshots;
+    expose Integer generation;
+    expose Boolean cancelled;
+    expose Boolean succeeded;
+    expose String error;
+    expose Integer committedCount;
+
+    expose func init() {
+        snapshots = new List();
+        generation = 0;
+        cancelled = false;
+        succeeded = true;
+        error = "";
+        committedCount = 0;
+    }
+}
+
+/// @brief Identify Studio staging names and runtime atomic-write sidecars.
+expose func IsRecoveryTemporaryName(name: String) -> Boolean {
+    return Str.EndsWith(name, ".tmp") or Str.Contains(name, ".zanna-tmp.");
+}
+
+/// @brief Return cancellation state under the request monitor.
+hide func RecoveryRequestCancelled(request: RecoveryWriteRequest) -> Boolean {
+    if request == null { return true; }
+    Monitor.Enter(request);
+    var cancelled = request.cancelled;
+    Monitor.Exit(request);
+    return cancelled;
+}
+
+/// @brief Persist one immutable request without touching editor-owned objects.
+/// @details Payloads are staged under request-unique names. The monitor covers
+///          only canonical renames, so cancellation never waits for large I/O.
+expose func WriteRecoveryRequest(request: RecoveryWriteRequest) -> Any {
+    if request == null { return request; }
+    var i = 0;
+    while i < request.snapshots.count() {
+        var snapshot = request.snapshots.get(i) as RecoveryWriteSnapshot;
+        if RecoveryRequestCancelled(request) { break; }
+        if snapshot == null
+           or safe_io.WriteAllText(
+                  snapshot!.tempMetadataFile, snapshot!.metadata) == false
+           or safe_io.WriteAllText(
+                  snapshot!.tempSwapFile, snapshot!.content) == false {
+            request.succeeded = false;
+            request.error = "Could not stage crash-recovery data";
+            if snapshot != null {
+                safe_io.DeleteFile(snapshot!.tempMetadataFile);
+                safe_io.DeleteFile(snapshot!.tempSwapFile);
+            }
+            i = i + 1;
+            continue;
+        }
+
+        Monitor.Enter(request);
+        if request.cancelled == false {
+            var metadataCommitted = safe_io.MoveFileOver(
+                snapshot!.tempMetadataFile, snapshot!.basePath + ".meta");
+            var swapCommitted = false;
+            if metadataCommitted {
+                swapCommitted = safe_io.MoveFileOver(
+                    snapshot!.tempSwapFile, snapshot!.basePath + ".swp");
+            }
+            if metadataCommitted and swapCommitted {
+                request.committedCount = request.committedCount + 1;
+            } else {
+                request.succeeded = false;
+                request.error = "Could not commit crash-recovery data";
+            }
+        }
+        Monitor.Exit(request);
+        safe_io.DeleteFile(snapshot!.tempMetadataFile);
+        safe_io.DeleteFile(snapshot!.tempSwapFile);
+        i = i + 1;
+    }
+    return request;
+}

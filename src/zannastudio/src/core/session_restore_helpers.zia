@@ -1,0 +1,75 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_restore_helpers.zia
+// Purpose: Validate recovery payloads and preserve durable split-slot identity.
+// Key invariants:
+//   - Empty new-format recovery payloads remain present and valid.
+//   - Non-empty Base64 text that decodes empty is rejected as malformed.
+//   - Split owners bind to durable slot numbers, never compacted tab indices.
+// Ownership/Lifetime: Stateless; returned payloads own decoded immutable text.
+// Links: zannastudio/src/core/session_manager.zia,
+//        zannastudio/src/core/session_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_restore_helpers;
+
+bind "document";
+bind "session_state" as State;
+
+bind Codec = Zanna.Text.Codec;
+bind Str = Zanna.String;
+
+final MAX_SESSION_RECOVERY_CHARS = State.MAX_SESSION_RECOVERY_CHARS;
+final MAX_SESSION_RECOVERY_ENCODED_CHARS =
+    State.MAX_SESSION_RECOVERY_ENCODED_CHARS;
+
+type RecoveryPayload = State.RecoveryPayload;
+
+/// @brief Decode current and legacy recovery presence without ambiguity.
+expose func DecodeRecoveryPayload(encoded: String,
+                                  encoding: String,
+                                  modified: Boolean,
+                                  explicitPresence: String) -> RecoveryPayload {
+    var payload = new State.RecoveryPayload();
+    payload.present = explicitPresence == "1"
+        or (explicitPresence == "" and modified and encoded != "");
+    payload.text = DecodeRecoveryText(encoded, encoding);
+    payload.valid = payload.present;
+    if encoding == "base64" and encoded != "" and payload.text == "" {
+        payload.valid = false;
+    }
+    return payload;
+}
+
+hide func DecodeRecoveryText(encoded: String, encoding: String) -> String {
+    if encoded == "" { return ""; }
+    if Str.get_Length(encoded) > MAX_SESSION_RECOVERY_ENCODED_CHARS { return ""; }
+    if encoding == "base64" {
+        try {
+            var decoded = Codec.Base64Decode(encoded);
+            if Str.get_Length(decoded) > MAX_SESSION_RECOVERY_CHARS { return ""; }
+            return decoded;
+        } catch {
+            return "";
+        }
+    }
+    if Str.get_Length(encoded) > MAX_SESSION_RECOVERY_CHARS { return ""; }
+    return encoded;
+}
+
+/// @brief Bind one restored document to its original durable split slot.
+expose func RecordRestoredSplitDocument(job: State.SessionRestoreJob,
+                                        index: Integer,
+                                        doc: document.Document) {
+    if job == null or doc == null or job.structuredSplitRequested == false {
+        return;
+    }
+    if index == job.splitFirstIndex { job.splitFirstDocument = doc; }
+    if index == job.splitSecondIndex { job.splitSecondDocument = doc; }
+}

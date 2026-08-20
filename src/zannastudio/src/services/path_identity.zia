@@ -11,11 +11,13 @@
 // Key invariants:
 //   - Missing paths keep normalized, case-preserving lexical identity.
 //   - Existing aliases compare through filesystem identity, never OS-wide folding.
+//   - Existing regular-file grouping keys are O(1), opaque, and alias-stable.
 //   - Mutation containment rejects every linked descendant below an opened root.
 //   - User-created child names are valid on Windows, macOS, and Linux.
 // Ownership/Lifetime: Pure helpers; callers own all strings and filesystem state.
 // Links: docs/adr/0153-non-following-path-link-inspection.md,
-//        docs/adr/0259-stable-filesystem-entry-identity.md
+//        docs/adr/0259-stable-filesystem-entry-identity.md,
+//        docs/adr/0282-opaque-regular-file-identity-keys.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -56,6 +58,18 @@ expose func SameFile(left: String,
     var normalizedRight = Normalize(right);
     if normalizedLeft == normalizedRight { return true; }
     return File.SameFile(normalizedLeft, normalizedRight);
+}
+
+/// @brief Produce an alias-stable grouping key for a file edit target.
+/// @details Existing regular files use the runtime's opaque filesystem identity;
+///          missing paths fall back to a namespaced normalized spelling. Callers
+///          must not parse or persist the returned key.
+expose func FileKey(path: String) -> String {
+    var normalized = Normalize(path);
+    if normalized == "" { return ""; }
+    var identity = File.IdentityKey(normalized);
+    if identity != "" { return "identity:" + identity; }
+    return "path:" + normalized;
 }
 
 /// @brief Test normalized separator-aware lexical containment.

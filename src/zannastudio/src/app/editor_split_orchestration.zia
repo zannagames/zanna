@@ -1,0 +1,142 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/editor_split_orchestration.zia
+// Purpose: Reconcile split-editor pane identity with tabs and controllers.
+// Key invariants:
+//   - Physical pane focus is authoritative for global active-document state.
+//   - Restored pane owners are exact Document identities, including a shared
+//     same-document pair; no unrelated fallback owner is guessed.
+//   - Widget-bound helpers are rebound after every physical focus transition.
+// Ownership/Lifetime:
+//   - Stateless orchestration; all arguments remain caller-owned.
+// Links: zannastudio/src/editor/editor_engine.zia,
+//        zannastudio/src/core/session_manager.zia
+//
+//===----------------------------------------------------------------------===//
+
+module editor_split_orchestration;
+
+bind "../ui/app_shell";
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/session";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../editor/completion";
+bind "../commands/file_commands";
+
+/// @brief Re-point focused-pane controllers after a split or focus change.
+func RebindFocusedPane(shell: app_shell.AppShell,
+                       engine: editor_engine.EditorEngine,
+                       completer: completion.CompletionController) {
+    if shell == null or engine == null { return; }
+    if shell.workbench.minimap != null {
+        shell.workbench.minimap.BindEditor(engine.editor);
+    }
+    if shell.workbench.findBar != null {
+        shell.workbench.findBar.BindEditor(engine.editor);
+    }
+    if completer != null { completer.SetEngine(engine); }
+}
+
+/// @brief Select a distinct open document for legacy two-document restore.
+func SplitCompanionDocument(docMgr: document_manager.DocumentManager,
+                            primary: document.Document) -> document.Document? {
+    if docMgr == null
+       or editor_engine.IsSplitDocumentEligible(primary) == false {
+        return null;
+    }
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var candidate = docMgr.GetDocument(i);
+        if candidate != null and candidate! != primary
+           and editor_engine.IsSplitDocumentEligible(candidate!) {
+            return candidate;
+        }
+        i = i + 1;
+    }
+    return null;
+}
+
+/// @brief Open a safe legacy two-document split.
+func OpenSplitWithCompanion(shell: app_shell.AppShell,
+                            docMgr: document_manager.DocumentManager,
+                            engine: editor_engine.EditorEngine,
+                            notifyOnFailure: Boolean) -> Boolean {
+    var companion = SplitCompanionDocument(docMgr, engine.currentDoc);
+    if companion == null {
+        if notifyOnFailure {
+            shell.SetStatusLeft("Open a second file before splitting the editor");
+        }
+        return false;
+    }
+    return engine.SplitRight(companion!);
+}
+
+/// @brief Align global document/tab state with the physically focused pane.
+func SyncFocusedPaneSelection(shell: app_shell.AppShell,
+                              docMgr: document_manager.DocumentManager,
+                              engine: editor_engine.EditorEngine,
+                              tabs: editor_tabs.EditorTabs) -> Boolean {
+    if shell == null or docMgr == null or engine == null or tabs == null
+       or engine.currentDoc == null {
+        return false;
+    }
+    var focused = engine.currentDoc;
+    var focusedIndex = docMgr.SetActiveDocument(focused);
+    if focusedIndex < 0 { return false; }
+    tabs.SetActive(focusedIndex);
+
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var doc = docMgr.GetDocument(i);
+        if doc != null { tabs.SetModified(i, doc!.isModified); }
+        i = i + 1;
+    }
+
+    shell.SelectSurface(focused.kind);
+    if focused.isNew { shell.SetBreadcrumbPath(""); }
+    else { shell.SetBreadcrumbPath(focused.filePath); }
+    shell.SetStatusRight(file_commands.DocStatusLabel(focused));
+    return true;
+}
+
+/// @brief Rebuild an exact durable left/right editor arrangement.
+func OpenRestoredSplit(docMgr: document_manager.DocumentManager,
+                       engine: editor_engine.EditorEngine,
+                       tabs: editor_tabs.EditorTabs,
+                       sessionMgr: session.SessionManager) -> Boolean {
+    if docMgr == null or engine == null or tabs == null or sessionMgr == null {
+        return false;
+    }
+    var first = sessionMgr.RestoredSplitFirstDocument();
+    var second = sessionMgr.RestoredSplitSecondDocument();
+    if first == null or second == null
+       or editor_engine.IsSplitDocumentEligible(first!) == false
+       or editor_engine.IsSplitDocumentEligible(second!) == false {
+        return false;
+    }
+    var firstIndex = docMgr.SetActiveDocument(first!);
+    if firstIndex < 0 { return false; }
+    tabs.SetActive(firstIndex);
+    engine.LoadDocument(first!);
+    if engine.SplitRight(second!) == false { return false; }
+    if sessionMgr.splitSecondFocused { engine.FocusOtherPane(); }
+    return true;
+}
+
+/// @brief Consume and publish an engine-level pane focus transition.
+func ReconcilePaneFocus(shell: app_shell.AppShell,
+                        docMgr: document_manager.DocumentManager,
+                        engine: editor_engine.EditorEngine,
+                        tabs: editor_tabs.EditorTabs,
+                        completer: completion.CompletionController) {
+    if engine == null or engine.ConsumePaneFocusChanged() == false { return; }
+    SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+    RebindFocusedPane(shell, engine, completer);
+}

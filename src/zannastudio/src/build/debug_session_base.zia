@@ -22,7 +22,7 @@ module debug_session_base;
 
 bind "bounded_output";
 bind "breakpoints";
-bind "var_model";
+bind "debug_session_state" as State;
 
 bind Process = Zanna.System.Process;
 bind Json = Zanna.Data.Json;
@@ -31,7 +31,6 @@ bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
-bind Time = Zanna.Time;
 bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
@@ -48,119 +47,17 @@ bind StringBuilder = Zanna.Text.StringBuilder;
 //          callback state hidden outside the frame loop.
 // ============================================================================
 
-final SENTINEL = "@@VDBG@@ ";
-final MAX_DEBUG_OUTPUT_CHARS = 250000;
-final TERMINATE_GRACE_MS = 750;
-final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
-
-class DebugSessionBase {
-    expose Process.ProcessHandle processHandle;
-    expose Boolean hasSession;
-    expose Boolean stopped;
-    expose Boolean terminated;
-    expose String activePath;
-    expose Integer lastLine;
-    expose String lastType;
-    expose String lastReason;
-    expose String consoleText;
-    expose String programOutput;
-    expose Integer exitCode;
-
-    // Structured snapshot of the most recent stop, for the Variables and Call
-    // Stack panels. Null when not stopped. Each is a parsed JSON array: frames of
-    // {function,path,line}; locals of {name,value,type,varRef,childCount}.
-    expose Any stopFrames;
-    expose Any stopLocals;
-
-    // Children of the most recently expanded composite variable (a parsed JSON
-    // array of {name,value,type,varRef,childCount}), and the varRef they belong
-    // to. Populated by a `variables` event in response to RequestVariables. These
-    // are scoped to the current stop; the adapter's refs die on resume.
-    expose Any lastVarChildren;
-    expose Integer lastVarRef;
-    expose String pendingVarPath;
-    expose Integer pendingVarRef;
-    expose String failedVarPath;
-    expose Time.Countdown variableRequestCountdown;
-
-    // Persistent expand/collapse state + per-stop child cache for the Variables
-    // panel tree (plan 13). Keyed by stable name-paths so expansion survives steps.
-    expose var_model.VarTreeState varTree;
-
-    // Most recent watch/evaluate result (from an `evaluated` event).
-    expose String lastEvalExpr;
-    expose String lastEvalValue;
-    expose String lastEvalType;
-    expose Boolean lastEvalOk;
-    expose Boolean evalJustArrived; // set when a fresh result lands; IDE clears it.
-    expose String pendingManualEvalExpr;
-
-    // Persistent watch expressions for the current debug session. Values refresh
-    // asynchronously whenever execution stops.
-    expose List watchExprs;
-    expose List watchValues;
-    expose List watchTypes;
-    expose List watchOk;
-    expose Integer watchRefreshIndex;
-    expose Boolean watchRequestActive;
-    expose String watchRequestExpr;
-
-    // Accumulator for partial control-channel lines.
-    hide String ctrlBuf;
-    // True when Poll observed a state change worth refreshing the UI for.
-    expose Boolean dirty;
-    expose Boolean terminateRequested;
-    expose Time.Countdown terminateCountdown;
-    expose Boolean restartPending;
-    expose String restartZannaBin;
-    expose String restartPath;
-
+class DebugSessionBase extends State.DebugSessionState {
     expose func init() {
         InitializeState();
     }
 
-    /// @brief Initialize adapter state for the public polling controller.
-    expose func InitializeState() {
-        processHandle = null;
-        hasSession = false;
-        stopped = false;
-        terminated = false;
-        activePath = "";
-        lastLine = 0;
-        lastType = "";
-        lastReason = "";
-        consoleText = "";
-        programOutput = "";
-        exitCode = -1;
-        stopFrames = null;
-        stopLocals = null;
-        lastVarChildren = null;
-        lastVarRef = 0;
-        pendingVarPath = "";
-        pendingVarRef = 0;
-        failedVarPath = "";
-        variableRequestCountdown = Time.Countdown.New(VARIABLE_REQUEST_TIMEOUT_MS);
-        lastEvalExpr = "";
-        lastEvalValue = "";
-        lastEvalType = "";
-        lastEvalOk = false;
-        evalJustArrived = false;
-        pendingManualEvalExpr = "";
-        watchExprs = new List();
-        watchValues = new List();
-        watchTypes = new List();
-        watchOk = new List();
-        watchRefreshIndex = -1;
-        watchRequestActive = false;
-        watchRequestExpr = "";
-        varTree = new var_model.VarTreeState();
-        ctrlBuf = "";
-        dirty = false;
-        terminateRequested = false;
-        terminateCountdown = Time.Countdown.New(TERMINATE_GRACE_MS);
-        restartPending = false;
-        restartZannaBin = "";
-        restartPath = "";
+    /// @brief Select the App whose native wait receives adapter activity wakes.
+    expose func SetWakeApp(value: Zanna.GUI.App) { wakeApp = value; }
+
+    /// @brief Report whether an active adapter still needs timer polling.
+    expose func NeedsActivityPolling() -> Boolean {
+        return IsActive() and activityWakeAttached == false;
     }
 
     /// @brief Launch the adapter for @p path and install its breakpoints.
@@ -179,11 +76,13 @@ class DebugSessionBase {
             processHandle = null;
             return false;
         }
+        activityWakeAttached = wakeApp != null
+            and wakeApp.WatchProcess(processHandle);
 
         hasSession = true;
         stopped = false;
         terminated = false;
-        activePath = path;
+        self.activePath = path;
         lastLine = 0;
         lastType = "";
         lastReason = "";
@@ -195,6 +94,8 @@ class DebugSessionBase {
         ClearEvaluationSnapshot();
         ClearWatchValues();
         ctrlBuf = "";
+        adapterInputCarry = "";
+        nextRequestId = 1;
         dirty = true;
         terminateRequested = false;
         terminateCountdown.Reset();
@@ -202,8 +103,13 @@ class DebugSessionBase {
         restartZannaBin = "";
         restartPath = "";
 
-        processHandle.WriteStdin(buildSetBreakpoints(path, store) + "\n");
-        processHandle.WriteStdin("{\"type\":\"launch\"}\n");
+        if QueueAdapterCommand(buildSetBreakpoints(path, store)) == false
+           or QueueAdapterCommand("{\"type\":\"launch\"}") == false {
+            ReleaseProcessHandle();
+            hasSession = false;
+            terminated = true;
+            return false;
+        }
         return true;
     }
 
@@ -218,7 +124,9 @@ class DebugSessionBase {
         if terminateRequested {
             return true;
         }
-        processHandle.WriteStdin("{\"type\":\"terminate\"}\n");
+        if QueueAdapterCommand("{\"type\":\"terminate\"}") == false {
+            processHandle.Kill();
+        }
         terminateRequested = true;
         terminateCountdown.Start();
         ClearStopSnapshot();
@@ -281,8 +189,7 @@ class DebugSessionBase {
     expose func SyncBreakpoints(path: String,
                                 store: breakpoints.BreakpointStore) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
-        processHandle.WriteStdin(buildSetBreakpoints(path, store) + "\n");
-        return true;
+        return QueueAdapterCommand(buildSetBreakpoints(path, store));
     }
 
     /// @brief Run to a specific line: continue execution until it reaches @p line
@@ -292,9 +199,11 @@ class DebugSessionBase {
     expose func RunToLine(path: String, line: Integer) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped == false or path == "" or line <= 0 { return false; }
+        if QueueAdapterCommand("{\"type\":\"runToLine\",\"path\":\""
+            + jsonEscape(path) + "\",\"line\":" + line + "}") == false {
+            return false;
+        }
         EnterRunningState("running");
-        processHandle.WriteStdin("{\"type\":\"runToLine\",\"path\":\"" + jsonEscape(path)
-            + "\",\"line\":" + line + "}\n");
         return true;
     }
 
@@ -315,8 +224,10 @@ class DebugSessionBase {
     hide func sendStep(kind: String) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped == false { return false; }
+        if QueueAdapterCommand("{\"type\":\"" + kind + "\"}") == false {
+            return false;
+        }
         EnterRunningState("running");
-        processHandle.WriteStdin("{\"type\":\"" + kind + "\"}\n");
         return true;
     }
 
@@ -324,9 +235,9 @@ class DebugSessionBase {
     expose func Pause() -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped { return false; }
+        if QueueAdapterCommand("{\"type\":\"pause\"}") == false { return false; }
         lastType = "pausing";
         dirty = true;
-        processHandle.WriteStdin("{\"type\":\"pause\"}\n");
         return true;
     }
 
@@ -336,8 +247,14 @@ class DebugSessionBase {
     expose func Evaluate(expr: String) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped == false or expr == "" { return false; }
+        var requestId = NextRequestId();
+        if QueueAdapterCommand("{\"type\":\"evaluate\",\"requestId\":"
+            + requestId + ",\"expr\":\"" + jsonEscape(expr) + "\"}") == false {
+            return false;
+        }
         pendingManualEvalExpr = expr;
-        processHandle.WriteStdin("{\"type\":\"evaluate\",\"expr\":\"" + jsonEscape(expr) + "\"}\n");
+        pendingManualEvalRequestId = requestId;
+        manualEvalCountdown.Start();
         return true;
     }
 
@@ -352,15 +269,19 @@ class DebugSessionBase {
     expose func RequestVariables(varRef: Integer, start: Integer, count: Integer) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped == false or varRef <= 0 { return false; }
-        processHandle.WriteStdin("{\"type\":\"variables\",\"varRef\":" + varRef
-            + ",\"start\":" + start + ",\"count\":" + count + "}\n");
+        var requestId = NextRequestId();
+        if QueueAdapterCommand("{\"type\":\"variables\",\"requestId\":"
+            + requestId + ",\"varRef\":" + varRef + ",\"start\":" + start
+            + ",\"count\":" + count + "}") == false { return false; }
+        lastIssuedVariableRequestId = requestId;
+        expectedVariableRequestId = requestId;
         return true;
     }
 
     /// @brief Start one non-blocking Variables-panel child request.
-    /// @details Requests are serialized because adapter replies identify only a
-    ///          varRef, while the UI cache is keyed by a stable name path. A
-    ///          later Poll copies the matching reply into VarTreeState.
+    /// @details Requests are serialized per tree because the UI cache is keyed
+    ///          by a stable name path. The adapter echoes a requestId as well as
+    ///          varRef, so a late reply cannot populate a newer stop or row.
     /// @param path Stable Variables-panel name path for the composite row.
     /// @param varRef Adapter reference valid at the current stop.
     /// @return True when sent or already pending for the same row.
@@ -375,6 +296,7 @@ class DebugSessionBase {
         if RequestVariables(varRef, 0, 100) == false { return false; }
         pendingVarPath = path;
         pendingVarRef = varRef;
+        pendingVarRequestId = lastIssuedVariableRequestId;
         if failedVarPath == path { failedVarPath = ""; }
         variableRequestCountdown.Start();
         dirty = true;
@@ -439,6 +361,8 @@ class DebugSessionBase {
         if watchRequestExpr == removedExpr {
             watchRequestActive = false;
             watchRequestExpr = "";
+            watchRequestId = 0;
+            watchRequestCountdown.Reset();
         }
         dirty = true;
         if stopped and watchRefreshIndex >= 0 {
@@ -459,6 +383,8 @@ class DebugSessionBase {
         watchRefreshIndex = -1;
         watchRequestActive = false;
         watchRequestExpr = "";
+        watchRequestId = 0;
+        watchRequestCountdown.Reset();
         dirty = true;
     }
 
@@ -524,6 +450,8 @@ class DebugSessionBase {
         watchRefreshIndex = -1;
         watchRequestActive = false;
         watchRequestExpr = "";
+        watchRequestId = 0;
+        watchRequestCountdown.Reset();
     }
 
     /// @brief Clear data that is valid only while execution is paused.
@@ -539,6 +467,9 @@ class DebugSessionBase {
         lastVarRef = 0;
         pendingVarPath = "";
         pendingVarRef = 0;
+        pendingVarRequestId = 0;
+        expectedVariableRequestId = 0;
+        lastIssuedVariableRequestId = 0;
         failedVarPath = "";
         variableRequestCountdown.Reset();
         // Child data is bound to the (now dead) stop's varRefs; drop it but keep
@@ -560,6 +491,8 @@ class DebugSessionBase {
         lastEvalOk = false;
         evalJustArrived = false;
         pendingManualEvalExpr = "";
+        pendingManualEvalRequestId = 0;
+        manualEvalCountdown.Reset();
     }
 
     /// @brief Transition the session from a paused stop back to running state.
@@ -586,9 +519,11 @@ class DebugSessionBase {
     ///          dead process from blocking a subsequent launch.
     /// @return Nothing.
     hide func ReleaseProcessHandle() {
+        adapterInputCarry = "";
         if processHandle == null { return; }
-        processHandle.Destroy();
+        processReaper.RetireProcess(processHandle);
         processHandle = null;
+        activityWakeAttached = false;
     }
 
     hide func PumpWatchRequest() {
@@ -596,9 +531,15 @@ class DebugSessionBase {
         if watchRequestActive { return; }
         if watchRefreshIndex < 0 or watchRefreshIndex >= watchExprs.count() { return; }
         var expr = Obj.ToString(watchExprs.get(watchRefreshIndex));
+        var requestId = NextRequestId();
+        if QueueAdapterCommand("{\"type\":\"evaluate\",\"requestId\":"
+            + requestId + ",\"expr\":\"" + jsonEscape(expr) + "\"}") == false {
+            return;
+        }
         watchRequestExpr = expr;
+        watchRequestId = requestId;
         watchRequestActive = true;
-        processHandle.WriteStdin("{\"type\":\"evaluate\",\"expr\":\"" + jsonEscape(expr) + "\"}\n");
+        watchRequestCountdown.Start();
     }
 
     hide func FindWatch(expr: String) -> Integer {
@@ -637,7 +578,7 @@ class DebugSessionBase {
         ClearStopSnapshot();
         ClearEvaluationSnapshot();
         ClearWatchValues();
-        return processHandle == null;
+        return processHandle == null and processReaper.WaitForShutdown();
     }
 
     /// @brief Queue a restart and begin asynchronous termination of this adapter.

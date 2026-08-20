@@ -592,7 +592,8 @@ class CompletionController extends completion_base.CompletionControllerBase {
             return 0;
         }
 
-        workspaceProject.PumpFileCacheRefresh(maxFiles * 128);
+        // The frame owner advances this in deadline-checked single-item slices.
+        workspaceProject.PumpFileCacheRefresh(maxFiles);
 
         var root = workspaceProject.project.rootPath;
         var fileCount = workspaceProject.PeekCachedFileCount();

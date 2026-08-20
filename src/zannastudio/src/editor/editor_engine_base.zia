@@ -1,0 +1,267 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/editor_engine_base.zia
+// Purpose: Own editor widgets, flat state, text access, and semantic mirroring.
+// Key invariants:
+//   - Flat state always describes the focused physical editor widget.
+//   - Full-text snapshots are materialized at most once per content revision.
+//   - Language mirrors use deltas when contiguous and full-sync on any gap.
+//   - Programmatic document replacement preserves the owning buffer's state.
+// Ownership/Lifetime:
+//   - The derived EditorEngine owns widgets; Documents own detached buffers.
+// Links: zannastudio/src/editor/editor_engine.zia,
+//        zannastudio/src/core/document_buffer.zia
+//
+//===----------------------------------------------------------------------===//
+
+module editor_engine_base;
+
+bind "../core/document";
+bind "../services/file_utils";
+bind Zanna.GUI as GUI;
+bind Doc = Zanna.Zia.Document;
+
+/// @brief Return whether a document may own a CodeEditor split pane.
+expose func IsSplitDocumentEligible(doc: document.Document?) -> Boolean {
+    return doc != null and doc!.isReadOnlyPreview == false
+           and file_utils.IsVisualKind(doc!.kind) == false;
+}
+
+/// @brief Metadata for whichever split pane is not focused.
+class PaneState {
+    expose document.Document currentDoc;
+    expose String currentLanguage;
+    expose Integer lastCursorLine;
+    expose Integer lastCursorCol;
+    expose String cachedTextSnapshot;
+    expose Integer cachedTextRevision;
+
+    expose func init() {
+        currentDoc = null;
+        currentLanguage = "";
+        lastCursorLine = 1;
+        lastCursorCol = 1;
+        cachedTextSnapshot = "";
+        cachedTextRevision = -1;
+    }
+}
+
+/// @brief State and operations independent of split lifecycle transitions.
+class EditorEngineBase {
+    expose GUI.CodeEditor editor;
+    expose document.Document currentDoc;
+    expose String currentLanguage;
+    expose Integer lastCursorLine;
+    expose Integer lastCursorCol;
+    expose String cachedTextSnapshot;
+    expose Integer cachedTextRevision;
+    expose GUI.CodeEditor leftWidget;
+    expose GUI.CodeEditor rightWidget;
+    expose GUI.SplitPane editorPaneSplit;
+    expose Boolean splitActive;
+    expose Boolean sharedDocumentSplit;
+    expose Boolean secondaryFocused;
+    expose PaneState shadow;
+    expose Boolean paneFocusChanged;
+    expose Number splitPositionFraction;
+    hide Number appliedSplitPosition;
+    hide Boolean splitPositionDirty;
+    hide Integer sharedMirrorGeneration;
+    expose Integer syncedRevision;
+    expose String syncedPath;
+
+    expose func init() {
+        currentDoc = null;
+        currentLanguage = "";
+        lastCursorLine = 1;
+        lastCursorCol = 1;
+        cachedTextSnapshot = "";
+        cachedTextRevision = -1;
+        leftWidget = null;
+        rightWidget = null;
+        editorPaneSplit = null;
+        splitActive = false;
+        sharedDocumentSplit = false;
+        secondaryFocused = false;
+        shadow = null;
+        paneFocusChanged = false;
+        splitPositionFraction = 0.50;
+        appliedSplitPosition = 0.50;
+        splitPositionDirty = false;
+        sharedMirrorGeneration = -1;
+        syncedRevision = -1;
+        syncedPath = "";
+    }
+
+    /// @brief Construct the primary editor and retained secondary host.
+    expose func Setup(parent: GUI.HBox) {
+        editorPaneSplit = GUI.SplitPane.New(parent, 1);
+        editorPaneSplit.SetFlex(1.0);
+        editorPaneSplit.SetPosition(splitPositionFraction);
+        editorPaneSplit.SetMinFirst(160.0);
+        editorPaneSplit.SetMinSecond(160.0);
+        var primaryHost: GUI.Widget = editorPaneSplit.First;
+        editor = GUI.CodeEditor.New(primaryHost);
+        editor.SetShowLineNumbers(true);
+        editor.SetShowFoldGutter(true);
+        editor.SetFlex(1.0);
+        leftWidget = editor;
+        editorPaneSplit.CollapseSecond();
+    }
+
+    expose func GoToLine(line: Integer) {
+        var line0 = line - 1;
+        if line0 < 0 { line0 = 0; }
+        editor.SetCursor(line0, 0);
+        editor.ScrollToLine(line0);
+    }
+
+    expose func IsModified() -> Boolean {
+        return editor != null and editor.IsModified();
+    }
+
+    expose func ClearModified() {
+        if editor != null { editor.ClearModified(); }
+    }
+
+    /// @brief Clear the modified bit on a live or detached buffer owner.
+    expose func ClearDocumentModified(doc: document.Document) {
+        if doc == null { return; }
+        if doc == currentDoc {
+            if editor != null { editor.ClearModified(); }
+            return;
+        }
+        if splitActive and shadow != null and shadow.currentDoc == doc {
+            if secondaryFocused {
+                if leftWidget != null { leftWidget.ClearModified(); }
+            } else if rightWidget != null {
+                rightWidget.ClearModified();
+            }
+            return;
+        }
+        if doc.buffer != null { doc.buffer.ClearModified(); }
+    }
+
+    expose func GetLineCount() -> Integer {
+        if editor == null { return 0; }
+        return editor.LineCount;
+    }
+
+    expose func GetText() -> String {
+        if editor == null { return ""; }
+        return editor.Text;
+    }
+
+    /// @brief Full text snapshot cached by editor content revision.
+    expose func GetTextSnapshot() -> String {
+        if editor == null { return ""; }
+        var revision = editor.Revision;
+        if revision != cachedTextRevision {
+            cachedTextSnapshot = editor.Text;
+            cachedTextRevision = revision;
+        }
+        return cachedTextSnapshot;
+    }
+
+    expose func GetRevision() -> Integer {
+        if editor == null { return 0; }
+        return editor.Revision;
+    }
+
+    /// @brief Synchronize the focused source into the runtime language mirror.
+    expose func SyncActiveDocument(path: String) -> Boolean {
+        if editor == null { return false; }
+        var revision = editor.Revision;
+        if syncedPath != path or syncedRevision < 0 {
+            Doc.SyncFull(path, GetTextSnapshot(), revision);
+            syncedPath = path;
+            syncedRevision = revision;
+            return true;
+        }
+        if revision == syncedRevision { return true; }
+
+        var deltas = editor.TakeDeltas(syncedRevision);
+        if deltas != "overflow" and Doc.SyncDelta(path, deltas, revision) {
+            syncedRevision = revision;
+            return true;
+        }
+        Doc.SyncFull(path, GetTextSnapshot(), revision);
+        syncedRevision = revision;
+        return true;
+    }
+
+    expose func InvalidateDocumentSync() {
+        syncedRevision = -1;
+        syncedPath = "";
+    }
+
+    expose func SetText(text: String) {
+        if editor == null { return; }
+        editor.SetText(text);
+        cachedTextSnapshot = text;
+        cachedTextRevision = editor.Revision;
+        if currentDoc != null {
+            currentDoc.PublishText(text, secondaryFocused ? 1 : 0);
+        }
+    }
+
+    /// @brief Apply one undoable complete-text edit to its exact buffer owner.
+    expose func ReplaceDocumentTextPreservingState(doc: document.Document,
+                                                   text: String) -> Boolean {
+        if doc == null { return false; }
+        if doc == currentDoc {
+            if editor == null or editor.ReplaceAllText(text) == false {
+                return false;
+            }
+            doc.PublishText(text, secondaryFocused ? 1 : 0);
+            doc.isModified = true;
+            cachedTextSnapshot = text;
+            cachedTextRevision = editor.Revision;
+            InvalidateDocumentSync();
+            return true;
+        }
+        if splitActive and shadow != null and shadow.currentDoc == doc {
+            var owner = rightWidget;
+            if secondaryFocused { owner = leftWidget; }
+            if owner == null or owner.ReplaceAllText(text) == false {
+                return false;
+            }
+            doc.PublishText(text, secondaryFocused ? 0 : 1);
+            doc.isModified = true;
+            shadow.cachedTextSnapshot = text;
+            shadow.cachedTextRevision = owner.Revision;
+            return true;
+        }
+        if doc.buffer != null
+           and doc.buffer.ReplaceAllText(text) == false {
+            return false;
+        }
+        doc.PublishText(text, -1);
+        doc.isModified = true;
+        return true;
+    }
+
+    expose func SetSize(w: Integer, h: Integer) { editor.SetSize(w, h); }
+
+    expose func GetCursorLine() -> Integer {
+        if editor == null { return 1; }
+        lastCursorLine = editor.CursorLine + 1;
+        return lastCursorLine;
+    }
+
+    expose func GetCursorCol() -> Integer {
+        if editor == null { return 1; }
+        lastCursorCol = editor.CursorCol + 1;
+        return lastCursorCol;
+    }
+
+    expose func GetScrollLine() -> Integer {
+        if editor == null { return 1; }
+        return editor.ScrollTopLine + 1;
+    }
+}

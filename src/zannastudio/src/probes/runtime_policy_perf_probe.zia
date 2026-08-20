@@ -1,0 +1,112 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/runtime_policy_perf_probe.zia
+// Purpose: Verify bounded event waits and asynchronous performance logging.
+// Key invariants:
+//   - Attached I/O relies on event wakes; only attachment failure polls.
+//   - Absolute scheduler deadlines can still request an immediate wake.
+//   - Perf log filesystem I/O is drained by a background future at shutdown.
+// Links: zannastudio/src/app/studio_runtime_policy.zia,
+//        zannastudio/src/editor/perf_monitor.zia
+//
+//===----------------------------------------------------------------------===//
+
+module runtime_policy_perf_probe;
+
+bind "../app/studio_runtime_policy";
+bind "../editor/perf_monitor";
+
+bind Clock = Zanna.Time.Clock;
+bind Dir = Zanna.IO.Dir;
+bind Env = Zanna.System.Environment;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+
+func Fail(message: String) {
+    Terminal.Say("RESULT: fail " + message);
+}
+
+func VerifyWaitPolicy() -> Boolean {
+    var now = 1000;
+    if studio_runtime_policy.ComputePollWaitPolicy(
+           true, false, false, 0, now) != 50
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           false, false, false, 0, now) != 150
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           true, true, false, 0, now) != 4
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           true, false, true, 0, now) != 0
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           true, false, false, now + 7, now) != 7
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           true, true, false, now + 20, now) != 4
+       or studio_runtime_policy.ComputePollWaitPolicy(
+           true, true, false, now, now) != 0 {
+        Fail("event-wait policy");
+        return false;
+    }
+    return true;
+}
+
+func VerifyPerfWriter() -> Boolean {
+    var root = TempFile.CreateDirWithPrefix("zannastudio_perf_");
+    var path = Path.Join(root, "frames.log");
+    Env.SetVariable("ZANNASTUDIO_PERF_LOG", path);
+    var monitor = new perf_monitor.PerfMonitor();
+    if monitor.enabled == false or monitor.logPath != path {
+        Fail("perf logging enablement");
+        Dir.RemoveAll(root);
+        return false;
+    }
+
+    var waitStart = monitor.StartSpan();
+    Clock.Sleep(20);
+    monitor.AddEventWait(waitStart);
+    monitor.BeginFrame();
+    monitor.EndFrame(null, null);
+    if monitor.eventWaitUs < 10000
+       or monitor.totalFrameUs >= monitor.eventWaitUs {
+        Fail("event wait separated from frame work");
+        Dir.RemoveAll(root);
+        return false;
+    }
+
+    monitor.lastFlushMs = Clock.NowMs() - 1001;
+    monitor.BeginFrame();
+    var publishStart = Clock.NowMs();
+    monitor.EndFrame(null, null);
+    var publishElapsed = Clock.NowMs() - publishStart;
+    if publishElapsed > 250 {
+        Fail("perf publication blocked render-style caller");
+        Dir.RemoveAll(root);
+        return false;
+    }
+    if monitor.Shutdown() == false or File.Exists(path) == false {
+        Fail("perf writer shutdown");
+        Dir.RemoveAll(root);
+        return false;
+    }
+    var logged = File.ReadAllText(path);
+    if Str.IndexOf(logged, "eventWaitUs=") == 0
+       or Str.IndexOf(logged, "avgFrameUs=") == 0 {
+        Fail("perf log fields");
+        Dir.RemoveAll(root);
+        return false;
+    }
+    Dir.RemoveAll(root);
+    return true;
+}
+
+func main() {
+    if VerifyWaitPolicy() == false { return; }
+    if VerifyPerfWriter() == false { return; }
+    Terminal.Say("RESULT: ok");
+}

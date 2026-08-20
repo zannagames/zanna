@@ -447,11 +447,12 @@ Supported operations:
 - Commit staged changes after entering a message; focused Enter submits.
 - View diff for selected file.
 - View paged commit history, changed files, and parent-to-commit comparisons.
-- Push.
-- Pull.
+- Fetch and push through noninteractive, bounded Process jobs.
+- Pull with an explicit fast-forward-only, merge, or rebase strategy.
+- Abort an active merge or rebase from the operation-state control.
 - Switch branch.
-- Answer detected username/password/passphrase prompts in the focused in-app
-  credential row; focused Enter sends the response.
+- Use configured Git Credential Manager/helpers, an external askpass broker, or
+  an SSH agent for authentication. Studio never asks for repository secrets.
 - Resolve a basic unmerged file by selecting it, editing its conflict markers,
   and staging it. The diff pane explains this path, and Commit remains disabled
   while any unmerged row remains.
@@ -464,13 +465,14 @@ Limitations:
 
 - Commands run asynchronously, but the view processes one active Git job at a
   time.
-- Push and pull can be long-running. Output and detected credential prompts are
-  visible, but prompt detection is heuristic rather than a Git protocol.
+- Network operations can be long-running. Output is visible, terminal prompts
+  are disabled, and authentication failures explain how to configure an
+  external credential broker.
 - Common paths with spaces, staged renames, and a real content-conflict
   edit/Stage/commit path are covered; exotic path bytes, rename conflicts, and
   multi-file recovery need more coverage.
-- Merge/rebase orchestration, ours/theirs review, stash, and merge abort are not
-  provided.
+- Merge/rebase start and abort are provided; graphical continue/skip,
+  ours/theirs review, stash, and advanced multi-file recovery are not.
 
 ## Scene Authoring
 

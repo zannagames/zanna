@@ -21,7 +21,7 @@
 module explorer_action_runner;
 
 bind "../app/context_menus";
-bind "../app/workspace_watcher";
+bind "../app/workspace_refresh";
 bind "../ui/app_shell";
 bind "../ui/explorer_actions";
 bind "../core/document";
@@ -176,8 +176,9 @@ func ApplyExplorerNewFile(shell: app_shell.AppShell,
         overlay.Reject(shell, "Target already exists.");
         return false;
     }
-    if safe_io.CreateTextFile(newPath, "") == false {
-        overlay.Reject(shell, "Could not create the file. Check folder permissions and try again.");
+    var createResult = safe_io.CreateTextFileResult(newPath, "");
+    if createResult.ok == false {
+        overlay.Reject(shell, createResult.message);
         return false;
     }
     projMgr.RefreshTree();
@@ -208,8 +209,9 @@ func ApplyExplorerNewFolder(shell: app_shell.AppShell,
         overlay.Reject(shell, "Target already exists.");
         return;
     }
-    if safe_io.MakeAll(newPath) == false {
-        overlay.Reject(shell, "Could not create the folder. Check folder permissions and try again.");
+    var createResult = safe_io.MakeAllResult(newPath);
+    if createResult.ok == false {
+        overlay.Reject(shell, createResult.message);
         return;
     }
     projMgr.RefreshTree();
@@ -234,8 +236,9 @@ func ApplyExplorerDuplicate(shell: app_shell.AppShell,
         overlay.Reject(shell, "Target already exists.");
         return;
     }
-    if safe_io.CopyFile(sourcePath, targetPath) == false {
-        overlay.Reject(shell, "Could not duplicate the file. The target may have changed.");
+    var copyResult = safe_io.CopyFileResult(sourcePath, targetPath);
+    if copyResult.ok == false {
+        overlay.Reject(shell, copyResult.message);
         return;
     }
     projMgr.RefreshTree();
@@ -287,8 +290,8 @@ func ApplyExplorerRename(shell: app_shell.AppShell,
     SynchronizeDocumentMutationUI(shell, docMgr, engine, tabs);
     file_commands.SyncRecoverySwaps(docMgr, engine);
     indexer.RemoveFile(selectedPath);
-    workspace_watcher.ReindexAfterTreeMove(projMgr, indexer, docMgr);
-    workspace_watcher.InvalidateWorkspaceLocations(shell, locStore, engine);
+    workspace_refresh.ReindexAfterTreeMove(projMgr, indexer, docMgr);
+    workspace_refresh.InvalidateWorkspaceLocations(shell, locStore, engine);
     var status = "Renamed: " + Path.Name(renamedPath);
     if projMgr.lastBindRewriteCount > 0 {
         status = status + " (" + projMgr.lastBindRewriteCount + " bind updates)";
@@ -331,8 +334,8 @@ func ApplyExplorerDelete(shell: app_shell.AppShell,
         return false;
     }
     indexer.RemoveFile(deletePath);
-    workspace_watcher.ReindexAfterTreeMove(projMgr, indexer, docMgr);
-    workspace_watcher.InvalidateWorkspaceLocations(shell, locStore, engine);
+    workspace_refresh.ReindexAfterTreeMove(projMgr, indexer, docMgr);
+    workspace_refresh.InvalidateWorkspaceLocations(shell, locStore, engine);
     SynchronizeDocumentMutationUI(shell, docMgr, engine, tabs);
     file_commands.SyncRecoverySwaps(docMgr, engine);
     if projMgr.lastTrashPath != "" {
@@ -527,8 +530,8 @@ expose func PumpTreeDrops(shell: app_shell.AppShell,
 
     SynchronizeDocumentMutationUI(shell, docMgr, engine, tabs);
     file_commands.SyncRecoverySwaps(docMgr, engine);
-    workspace_watcher.ReindexAfterTreeMove(projMgr, indexer, docMgr);
-    workspace_watcher.InvalidateWorkspaceLocations(shell, locStore, engine);
+    workspace_refresh.ReindexAfterTreeMove(projMgr, indexer, docMgr);
+    workspace_refresh.InvalidateWorkspaceLocations(shell, locStore, engine);
     var status = "Moved " + Path.Name(movedPath) + " to folder";
     if projMgr.lastBindRewriteCount > 0 {
         status = status + " (" + projMgr.lastBindRewriteCount + " bind updates)";

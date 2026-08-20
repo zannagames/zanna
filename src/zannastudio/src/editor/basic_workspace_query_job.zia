@@ -25,10 +25,10 @@ module basic_workspace_query_job;
 bind "../basic/semantic_scan";
 bind "../services/path_identity";
 bind "../services/safe_io";
+bind "../services/workspace_file_cursor";
 
 bind Async = Zanna.Threads.Async;
 bind Convert = Zanna.Core.Convert;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Future = Zanna.Threads.Future;
 bind Map = Zanna.Collections.Map;
 bind Monitor = Zanna.Threads.Monitor;
@@ -361,12 +361,21 @@ func AddRootSources(request: BasicWorkspaceQueryRequest,
                     rootPath: String,
                     ignorePatterns: String) {
     if rootPath == "" { return; }
-    var offset = 0;
+    var cursor = new workspace_file_cursor.WorkspaceFileCursor();
+    if cursor.Open(rootPath, ".bas,.vb", ignorePatterns, false) == false {
+        corpus.failed = true;
+        corpus.error = "workspace_unavailable";
+        return;
+    }
     var done = false;
     while done == false and corpus.budgetExhausted == false {
-        if RequestIsCancelled(request) { return; }
-        var page = ReadFileIndexPage(rootPath, ignorePatterns, offset);
+        if RequestIsCancelled(request) {
+            cursor.Destroy();
+            return;
+        }
+        var page = cursor.Next(FILE_INDEX_PAGE_SIZE);
         if page == null or Map.GetBool(page, "valid") == false {
+            cursor.Destroy();
             corpus.failed = true;
             corpus.error = "workspace_unavailable";
             return;
@@ -385,27 +394,15 @@ func AddRootSources(request: BasicWorkspaceQueryRequest,
                 entryIndex = entryIndex + 1;
             }
         }
-        offset = Map.GetInt(page, "nextOffset");
         done = Map.GetBool(page, "done");
         if emitted == 0 and done == false {
+            cursor.Destroy();
             corpus.failed = true;
             corpus.error = "workspace_unavailable";
             return;
         }
     }
-}
-
-/// @brief Convert runtime FileIndex traps into an unavailable page.
-func ReadFileIndexPage(rootPath: String,
-                       ignorePatterns: String,
-                       offset: Integer) -> Any {
-    try {
-        return FileIndex.Page(rootPath, ".bas,.vb", ignorePatterns,
-                              false, offset, FILE_INDEX_PAGE_SIZE);
-    } catch {
-        return null;
-    }
-    return null;
+    cursor.Destroy();
 }
 
 /// @brief Read one closed file under per-file and aggregate limits.

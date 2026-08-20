@@ -31,13 +31,14 @@ bind IO = Zanna.IO;
 bind Zanna.IO.Path as Path;
 bind Zanna.IO.Dir as Dir;
 bind Zanna.String as Str;
-bind FileIndex = Zanna.Workspace.FileIndex;
 bind Option = Zanna.Option;
 bind "document_manager";
 bind "../zia/bind_utils";
 bind "project_manager_base" as Base;
+bind "project_manager_cache_layer" as Cache;
+bind "project_tree_sort" as TreeSort;
 
-class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
+class ProjectManagerTreeLayer extends Cache.ProjectManagerCacheLayer {
 /// @brief Open a folder as a project. Closes any previously-open project.
     /// @param path Absolute folder path.
     /// @return True when the folder still exists and became the primary root.
@@ -230,7 +231,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         }
         // Small roots still appear immediately. Large roots consume only one
         // bounded page here and continue from the frame loop.
-        PumpTreeLoads(Base.TREE_INITIAL_WORK_BUDGET);
+        PumpTreeLoads(TreeSort.TREE_INITIAL_WORK_BUDGET);
         FinishTreeRestoreIfIdle();
     }
 
@@ -293,7 +294,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
             i = i + 1;
         }
 
-        var job = new Base.ExplorerTreeLoad();
+        var job = new TreeSort.ExplorerTreeLoad();
         job.dirPath = dirPath;
         job.normalizedDir = normalizedDir;
         job.parentNode = parentNode;
@@ -314,12 +315,12 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         lastTreePumpEntries = 0;
         if treeView == null or treeLoadJobs.count() == 0 { return 0; }
         var budget = maxWork;
-        if budget <= 0 { budget = Base.TREE_FRAME_WORK_BUDGET; }
+        if budget <= 0 { budget = TreeSort.TREE_FRAME_WORK_BUDGET; }
         var work = 0;
         var job = treeLoadJobs.get(0);
 
-        if job.stage == Base.TREE_LOAD_SCAN {
-            var pageLimit = Base.TREE_DIRECTORY_PAGE_SIZE;
+        if job.stage == TreeSort.TREE_LOAD_SCAN {
+            var pageLimit = TreeSort.TREE_DIRECTORY_PAGE_SIZE;
             if pageLimit > budget { pageLimit = budget; }
             var page = safe_io.ListDirectoryPage(job.dirPath, job.offset, pageLimit);
             if page.ok == false {
@@ -349,27 +350,27 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
                 // Exactly one native page per frame, even when maxWork is large.
                 return work;
             }
-            job.directorySort = Base.BeginIncrementalNameSort(job.directories);
-            job.stage = Base.TREE_LOAD_SORT_DIRECTORIES;
+            job.directorySort = TreeSort.BeginIncrementalNameSort(job.directories);
+            job.stage = TreeSort.TREE_LOAD_SORT_DIRECTORIES;
         }
 
-        if job.stage == Base.TREE_LOAD_SORT_DIRECTORIES and work < budget {
-            work = work + Base.PumpIncrementalNameSort(job.directorySort, budget - work);
+        if job.stage == TreeSort.TREE_LOAD_SORT_DIRECTORIES and work < budget {
+            work = work + TreeSort.PumpIncrementalNameSort(job.directorySort, budget - work);
             if job.directorySort.done == false { return work; }
             job.directories = job.directorySort.source;
-            job.fileSort = Base.BeginIncrementalNameSort(job.files);
-            job.stage = Base.TREE_LOAD_SORT_FILES;
+            job.fileSort = TreeSort.BeginIncrementalNameSort(job.files);
+            job.stage = TreeSort.TREE_LOAD_SORT_FILES;
         }
 
-        if job.stage == Base.TREE_LOAD_SORT_FILES and work < budget {
-            work = work + Base.PumpIncrementalNameSort(job.fileSort, budget - work);
+        if job.stage == TreeSort.TREE_LOAD_SORT_FILES and work < budget {
+            work = work + TreeSort.PumpIncrementalNameSort(job.fileSort, budget - work);
             if job.fileSort.done == false { return work; }
             job.files = job.fileSort.source;
             job.publishIndex = 0;
-            job.stage = Base.TREE_LOAD_PUBLISH_DIRECTORIES;
+            job.stage = TreeSort.TREE_LOAD_PUBLISH_DIRECTORIES;
         }
 
-        if job.stage == Base.TREE_LOAD_PUBLISH_DIRECTORIES and work < budget {
+        if job.stage == TreeSort.TREE_LOAD_PUBLISH_DIRECTORIES and work < budget {
             while job.publishIndex < job.directories.count() and work < budget {
                 var dirNameText = Obj.ToString(job.directories.get(job.publishIndex));
                 var fullPath = Path.Join(job.dirPath, dirNameText);
@@ -392,10 +393,10 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
             }
             if job.publishIndex < job.directories.count() { return work; }
             job.publishIndex = 0;
-            job.stage = Base.TREE_LOAD_PUBLISH_FILES;
+            job.stage = TreeSort.TREE_LOAD_PUBLISH_FILES;
         }
 
-        if job.stage == Base.TREE_LOAD_PUBLISH_FILES and work < budget {
+        if job.stage == TreeSort.TREE_LOAD_PUBLISH_FILES and work < budget {
             while job.publishIndex < job.files.count() and work < budget {
                 var fileNameText = Obj.ToString(job.files.get(job.publishIndex));
                 var fullPath = Path.Join(job.dirPath, fileNameText);
@@ -415,7 +416,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
     }
 
     /// @brief Mark one directory job complete and release its loading affordance.
-    func CompleteTreeLoad(job: Base.ExplorerTreeLoad) {
+    func CompleteTreeLoad(job: TreeSort.ExplorerTreeLoad) {
         if job == null { return; }
         GUI.TreeView.Node.SetLoading(job.parentNode, false);
         GUI.TreeView.Node.SetHasChildren(job.parentNode, false);
@@ -427,7 +428,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
     }
 
     /// @brief End one failed directory job without propagating a filesystem trap.
-    func FailTreeLoad(job: Base.ExplorerTreeLoad) {
+    func FailTreeLoad(job: TreeSort.ExplorerTreeLoad) {
         if job != null {
             GUI.TreeView.Node.SetLoading(job.parentNode, false);
             GUI.TreeView.Node.SetHasChildren(job.parentNode, false);
@@ -490,186 +491,6 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         return "vector:file";
     }
 
-    /// @brief Build the project-wide file cache without constructing GUI nodes.
-    /// @details Uses the runtime workspace file index, which applies the same
-    ///          hard excludes, `.gitignore`, and project ignore patterns as the
-    ///          tree. If the runtime index is unavailable, returns an empty cache;
-    ///          clicked tree folders still add their files opportunistically.
-    /// @return List of absolute file paths for Quick Open and command palette use.
-    func BuildProjectFileCache() -> List {
-        if self.project == null or self.project.isOpen == false { return new List(); }
-        return workspace_file_index.EnumerateFiles(self.project.rootPath, "", self.project.ignorePatterns);
-    }
-
-    /// @brief Populate the full Quick Open file cache on first use.
-    /// @details Project open and tree refresh only add visible/opened-folder
-    ///          files so large workspaces do not block the UI immediately.
-    ///          Consumers that need the full project list call this method
-    ///          indirectly through CachedFileCount/CachedFileAt.
-    func EnsureFullFileCache() {
-        if fileCacheComplete { return; }
-        if fileCacheRefreshing == false {
-            StartFileCacheRefresh();
-        }
-        PumpFileCacheRefresh(32);
-    }
-
-    /// @brief Start a cooperative refresh of the full project file cache.
-    /// @details This replaces the old first-use full workspace enumeration with a
-    ///          directory-sliced scan. Visible tree expansion can still seed
-    ///          `fileCache`, but Quick Open and search no longer have to block on a
-    ///          complete recursive traversal before showing partial results.
-    expose func StartFileCacheRefresh() {
-        if self.project == null or self.project.isOpen == false { return; }
-        ResetFileCacheDiscovery();
-        var all = AllRoots();
-        fileCacheRefreshing = true;
-        if all.count() == 0 {
-            fileCacheRefreshing = false;
-            fileCacheComplete = true;
-        }
-    }
-
-    /// @brief Begin a new empty project-file cache snapshot.
-    /// @details Consumers keep cursors into `fileCache`; the generation lets
-    ///          them distinguish ordinary append-only discovery from a refresh
-    ///          that reused the same root and happened to produce the same size.
-    hide func ResetFileCacheDiscovery() {
-        fileCache = new List();
-        fileCacheSeen = Map.New();
-        fileCacheComplete = false;
-        fileCacheGeneration = fileCacheGeneration + 1;
-        pendingFileCacheDirs = new List();
-        fileCacheRefreshing = false;
-        fileCacheDirsScanned = 0;
-        fileCacheRootIndex = 0;
-        fileCachePageOffset = 0;
-        fileCacheTruncated = false;
-    }
-
-    /// @brief Pump a bounded file-index page for project file discovery.
-    /// @param maxDirs Historical directory budget; now used as page size.
-    /// @return Number of file-index entries examined.
-    expose func PumpFileCacheRefresh(maxDirs: Integer) -> Integer {
-        if self.project == null or self.project.isOpen == false { return 0; }
-        if fileCacheRefreshing == false and fileCacheComplete == false {
-            StartFileCacheRefresh();
-        }
-        var pageSize = maxDirs;
-        if pageSize <= 0 { pageSize = 128; }
-
-        var processed = 0;
-        var all = AllRoots();
-        while fileCacheRefreshing and fileCacheRootIndex < all.count() and processed < pageSize {
-            var root = all.get(fileCacheRootIndex);
-            if root == null or root.isOpen == false or Dir.Exists(root.rootPath) == false {
-                fileCacheRootIndex = fileCacheRootIndex + 1;
-                fileCachePageOffset = 0;
-                continue;
-            }
-
-            var oldOffset = fileCachePageOffset;
-            var page = FileIndex.Page(root.rootPath,
-                                      "",
-                                      root.ignorePatterns,
-                                      false,
-                                      fileCachePageOffset,
-                                      pageSize - processed);
-            if Map.GetBool(page, "valid") == false {
-                fileCacheRootIndex = fileCacheRootIndex + 1;
-                fileCachePageOffset = 0;
-                continue;
-            }
-
-            var entries = Map.Get(page, "entries");
-            var i = 0;
-            while entries != null and i < Seq.get_Count(entries) {
-                var entry = Seq.Get(entries, i);
-                if Map.GetBool(entry, "isDirectory") == false {
-                    AddCachedFile(Map.GetStr(entry, "path"));
-                }
-                i = i + 1;
-                processed = processed + 1;
-                fileCacheDirsScanned = fileCacheDirsScanned + 1;
-            }
-
-            var nextOffset = Map.GetInt(page, "nextOffset");
-            fileCachePageOffset = nextOffset;
-            if Map.GetBool(page, "truncated") {
-                fileCacheTruncated = true;
-            }
-            if Map.GetBool(page, "done") {
-                fileCacheRootIndex = fileCacheRootIndex + 1;
-                fileCachePageOffset = 0;
-            } else if nextOffset == oldOffset and i == 0 {
-                fileCacheRootIndex = fileCacheRootIndex + 1;
-                fileCachePageOffset = 0;
-            } else if processed >= pageSize {
-                break;
-            }
-        }
-
-        if fileCacheRootIndex >= all.count() {
-            fileCacheRefreshing = false;
-            fileCacheComplete = true;
-        }
-        return processed;
-    }
-
-    /// @brief Advance project-file discovery by a bounded amount for UI commands.
-    /// @param maxDirs Directory budget to scan before returning.
-    /// @return True when the full cache is complete after this pump.
-    expose func WarmFileCache(maxDirs: Integer) -> Boolean {
-        if fileCacheComplete { return true; }
-        PumpFileCacheRefresh(maxDirs);
-        return fileCacheComplete;
-    }
-
-    /// @brief Short status string for Quick Open and project-search surfaces.
-    /// @return Human-readable cache progress.
-    expose func FileCacheStatusText() -> String {
-        if fileCacheComplete and fileCacheTruncated {
-            return "Project file cache ready (truncated)";
-        }
-        if fileCacheComplete { return "Project file cache ready"; }
-        if fileCacheRefreshing {
-            return "Indexing project files: " + fileCache.count() + " found";
-        }
-        return "Project file cache idle";
-    }
-
-    /// @brief Add a file path to the cache if it has not already been recorded.
-    /// @param path Absolute file path discovered from the tree or incremental scan.
-    hide func AddCachedFile(path: String) {
-        workspace_file_index.AddUniquePath(fileCache, fileCacheSeen, path);
-    }
-
-    expose func CachedFileCount() -> Integer {
-        EnsureFullFileCache();
-        return fileCache.count();
-    }
-
-    /// @brief Current known file-cache size without starting or pumping discovery.
-    expose func PeekCachedFileCount() -> Integer {
-        return fileCache.count();
-    }
-
-    /// @brief Identity of the current append-only file-cache snapshot.
-    /// @return Monotonic generation incremented whenever cached paths reset.
-    expose func FileCacheGeneration() -> Integer {
-        return fileCacheGeneration;
-    }
-
-    /// @brief True when the cooperative file cache reached every workspace root.
-    expose func IsFileCacheComplete() -> Boolean {
-        return fileCacheComplete;
-    }
-
-    expose func CachedFileAt(index: Integer) -> String {
-        if index < 0 or index >= fileCache.count() { return ""; }
-        return Obj.ToString(fileCache.get(index));
-    }
-
     /// @brief Build the displayed label for the project root tree node.
     /// @details The returned text includes a compact visual prefix only. All
     ///          project operations continue to use TreeView node data for the
@@ -678,22 +499,22 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
     /// @param name Project display name.
     /// @return Decorated root label for the sidebar tree.
     func TreeRootLabel(name: String) -> String {
-        if name == "" { return Base.TREE_ROOT_PREFIX + "Project"; }
-        return Base.TREE_ROOT_PREFIX + name;
+        if name == "" { return TreeSort.TREE_ROOT_PREFIX + "Project"; }
+        return TreeSort.TREE_ROOT_PREFIX + name;
     }
 
     /// @brief Build the displayed label for a directory node.
     /// @param name Directory basename.
     /// @return Decorated folder label for the sidebar tree.
     func TreeFolderLabel(name: String) -> String {
-        return Base.TREE_FOLDER_PREFIX + name;
+        return TreeSort.TREE_FOLDER_PREFIX + name;
     }
 
     /// @brief Build the displayed label for a file node.
     /// @param name File basename.
     /// @return Decorated file label for the sidebar tree.
     func TreeFileLabel(name: String) -> String {
-        return Base.TREE_FILE_PREFIX + name;
+        return TreeSort.TREE_FILE_PREFIX + name;
     }
 
     /// @brief Per-frame selection-change poll.
@@ -708,7 +529,7 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
         if treeView == null {
             return "";
         }
-        PumpTreeLoads(Base.TREE_FRAME_WORK_BUDGET);
+        PumpTreeLoads(TreeSort.TREE_FRAME_WORK_BUDGET);
         PumpLazyTreeRequest();
         SyncSelectedTreeExpansion();
 
@@ -835,8 +656,8 @@ class ProjectManagerTreeLayer extends Base.ProjectManagerBase {
             treeRestoreExpandedDirs = expandedTreeDirs;
             treeRestoreSelectedPath = SelectedPath();
             treeRestoreBudget = treeRestoreExpandedDirs.count();
-            if treeRestoreBudget > Base.MAX_TREE_REFRESH_EXPANDED_DIRS {
-                treeRestoreBudget = Base.MAX_TREE_REFRESH_EXPANDED_DIRS;
+            if treeRestoreBudget > TreeSort.MAX_TREE_REFRESH_EXPANDED_DIRS {
+                treeRestoreBudget = TreeSort.MAX_TREE_REFRESH_EXPANDED_DIRS;
             }
             treeRestoredSelection = false;
         }

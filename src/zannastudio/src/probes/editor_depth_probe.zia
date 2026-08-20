@@ -127,6 +127,37 @@ func main() {
         return;
     }
 
+    // Equal durable pane slots encode two views of one shared Document. This
+    // does not duplicate a tab or recovery owner during restore.
+    var sharedSessionPath = Path.Join(sessionDir, "shared-settings.ini");
+    var sharedMgr = new session.SessionManager();
+    sharedMgr.Setup(sharedSessionPath);
+    docMgr.SetActiveDocument(primaryPane!);
+    sharedMgr.CaptureSplitState(primaryPane!, primaryPane!, true);
+    if sharedMgr.SaveCleanExit(docMgr, projMgr) == false {
+        fail("shared-document split session save failed");
+        return;
+    }
+    var sharedIni = Ini.Parse(File.ReadAllText(sharedSessionPath));
+    if Ini.Get(sharedIni, "session", "splitActive") != "1"
+       or Ini.Get(sharedIni, "session", "splitFirstIndex") != "0"
+       or Ini.Get(sharedIni, "session", "splitSecondIndex") != "0" {
+        fail("shared-document split identity was not serialized");
+        return;
+    }
+    var sharedRestore = new session.SessionManager();
+    sharedRestore.Setup(sharedSessionPath);
+    var sharedDocs = new document_manager.DocumentManager();
+    var sharedProject = new project_manager.ProjectManager();
+    if sharedRestore.Restore(sharedDocs, sharedProject, tabs) != 3
+       or sharedRestore.RestoredSplitFirstDocument() == null
+       or sharedRestore.RestoredSplitFirstDocument()
+          != sharedRestore.RestoredSplitSecondDocument()
+       or sharedDocs.GetCount() != 3 {
+        fail("shared-document split restored divergent document owners");
+        return;
+    }
+
     // A structured session from an older or malformed writer may name a visual
     // document. Restore its tabs, but never rebuild it as a hidden CodeEditor.
     var visualPath = Path.Join(sessionDir, "world.vscn");
