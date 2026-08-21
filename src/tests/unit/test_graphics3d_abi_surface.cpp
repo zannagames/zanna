@@ -590,6 +590,9 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "RT_METHOD(\"SetIKSolver\""),
                  "Animator3D.SetIKSolver method missing") &&
          ok;
+    ok = require(contains(runtime_def, "\"Zanna.Game3D.Animator3D.AddIKSolver\""),
+                 "Animator3D.AddIKSolver must use Game3D PascalCase naming") &&
+         ok;
     ok = require(contains(runtime_def, "\"Zanna.Game3D.Animator3D.get_NodeAnimator\""),
                  "Animator3D.NodeAnimator getter must use Game3D PascalCase naming") &&
          ok;
@@ -952,6 +955,13 @@ bool check_runtime_surface_names() {
          ok;
     ok = require(contains(runtime_def, "RT_METHOD(\"SetIKSolver\""),
                  "AnimController3D.SetIKSolver method missing") &&
+         ok;
+    ok = require(
+             contains(runtime_def, "\"Zanna.Graphics3D.AnimController3D.AddIKSolver\""),
+             "AnimController3D.AddIKSolver must use Graphics3D PascalCase naming") &&
+         ok;
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.Skeleton3D.CloneMutable\""),
+                 "Skeleton3D.CloneMutable must use Graphics3D PascalCase naming") &&
          ok;
     ok = require(contains(runtime_def, "\"Zanna.Graphics3D.NavMesh3D.AddOffMeshLink\""),
                  "NavMesh3D.AddOffMeshLink must use Graphics3D PascalCase naming") &&

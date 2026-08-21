@@ -140,7 +140,8 @@ struct AnimController3DTestLayout {
     int32_t event_capacity;
     AnimController3DLayerTestLayout layers[4];
     void *blend_tree;
-    void *ik_solver;
+    void *ik_solvers[4];
+    int32_t ik_solver_count;
     float *final_palette;
     float *final_globals;
     float *prev_final_palette;
@@ -774,6 +775,61 @@ static void test_controller_ik_solver_drives_end_effector() {
     foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
     EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 3), 2.0, 0.01, "Clearing IK restores bind-pose foot x");
     EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 3), 0.0, 0.01, "Clearing IK restores bind-pose foot y");
+}
+
+static void test_controller_ordered_ik_solver_stack() {
+    void *skel = rt_skeleton3d_new();
+    int64_t root =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t lu = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("left_upper"), root, rt_mat4_translate(-1.0, 0.0, 0.0));
+    int64_t ll = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("left_lower"), lu, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t lh = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("left_hand"), ll, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t ru = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("right_upper"), root, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t rl = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("right_lower"), ru, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t rh = rt_skeleton3d_add_bone(
+        skel, rt_const_cstr("right_hand"), rl, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *controller = rt_anim_controller3d_new(skel);
+    void *left = rt_ik_solver3d_two_bone(skel, lu, ll, lh);
+    void *right = rt_ik_solver3d_two_bone(skel, ru, rl, rh);
+    rt_ik_solver3d_set_target(left, rt_vec3_new(-1.0, 1.0, 0.0));
+    rt_ik_solver3d_set_target(right, rt_vec3_new(1.0, 1.0, 0.0));
+    rt_ik_solver3d_set_weight(left, 1.0);
+    rt_ik_solver3d_set_weight(right, 1.0);
+
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, left) == 1,
+                "SetIKSolver installs the first ordered constraint");
+    EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, right) == 1,
+                "AddIKSolver appends a compatible independent constraint");
+    EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, right) == 1,
+                "AddIKSolver is idempotent for an existing solver");
+    void *lm = rt_anim_controller3d_get_bone_matrix(controller, lh);
+    void *rm = rt_anim_controller3d_get_bone_matrix(controller, rh);
+    EXPECT_NEAR(rt_mat4_get(lm, 0, 3), -1.0, 0.05,
+                "ordered IK stack solves the left hand x");
+    EXPECT_NEAR(rt_mat4_get(lm, 1, 3), 1.0, 0.05,
+                "ordered IK stack solves the left hand y");
+    EXPECT_NEAR(rt_mat4_get(rm, 0, 3), 1.0, 0.05,
+                "ordered IK stack solves the right hand x");
+    EXPECT_NEAR(rt_mat4_get(rm, 1, 3), 1.0, 0.05,
+                "ordered IK stack solves the right hand y");
+
+    EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, skel) == 0,
+                "AddIKSolver rejects wrong-class handles");
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, nullptr) == 1,
+                "SetIKSolver(NULL) clears the whole ordered stack");
+    lm = rt_anim_controller3d_get_bone_matrix(controller, lh);
+    rm = rt_anim_controller3d_get_bone_matrix(controller, rh);
+    EXPECT_NEAR(rt_mat4_get(lm, 0, 3), 1.0, 0.01,
+                "clearing the IK stack restores the left bind pose");
+    EXPECT_NEAR(rt_mat4_get(rm, 0, 3), 3.0, 0.01,
+                "clearing the IK stack restores the right bind pose");
 }
 
 static void test_two_bone_ik_foot_aligns_to_ground_normal() {
@@ -1410,10 +1466,12 @@ static void test_anim_controller_private_refs_clear_wrong_class_without_release(
 
     void *wrong_ik = rt_obj_new_i64(0, 8);
     rt_obj_retain_maybe(wrong_ik);
-    layout->ik_solver = wrong_ik;
+    layout->ik_solvers[0] = wrong_ik;
+    layout->ik_solver_count = 1;
     EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, nullptr) == 1,
                 "AnimController3D clears a corrupted IKSolver3D slot");
-    EXPECT_TRUE(layout->ik_solver == nullptr, "AnimController3D nulls the corrupted IK solver");
+    EXPECT_TRUE(layout->ik_solvers[0] == nullptr && layout->ik_solver_count == 0,
+                "AnimController3D nulls the corrupted IK solver stack");
     expect_retained_probe_untouched(
         wrong_ik, "AnimController3D does not release wrong-class IK solver slots");
 
@@ -1577,6 +1635,7 @@ int main() {
     test_two_bone_ik_pole_vector();
     test_two_bone_ik_bends_bone_rotations();
     test_controller_ik_solver_drives_end_effector();
+    test_controller_ordered_ik_solver_stack();
     test_two_bone_ik_foot_aligns_to_ground_normal();
     test_ik_solver_look_at_and_fabrik_factories();
     test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage();

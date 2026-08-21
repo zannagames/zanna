@@ -185,6 +185,74 @@ void *rt_skeleton3d_new(void) {
     return s;
 }
 
+/// @brief Clone topology, bind data, importer inverse binds, and aliases into
+///        a new structurally mutable Skeleton3D (ADR 0285).
+/// @param[in] obj Source Skeleton3D, frozen or mutable.
+/// @return New mutable clone, or `NULL` for invalid input/allocation failure.
+void *rt_skeleton3d_clone_mutable(void *obj) {
+    rt_skeleton3d *source =
+        (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
+    rt_skeleton3d *clone;
+    int32_t bone_count;
+    int32_t alias_count;
+    if (!source)
+        return NULL;
+    bone_count = skeleton3d_safe_bone_count(source);
+    alias_count = skeleton3d_safe_alias_count(source);
+    clone = (rt_skeleton3d *)rt_skeleton3d_new();
+    if (!clone)
+        return NULL;
+    for (int32_t i = 0; i < bone_count; i++) {
+        void *bind = rt_mat4_new(source->bones[i].bind_pose_local[0],
+                                 source->bones[i].bind_pose_local[1],
+                                 source->bones[i].bind_pose_local[2],
+                                 source->bones[i].bind_pose_local[3],
+                                 source->bones[i].bind_pose_local[4],
+                                 source->bones[i].bind_pose_local[5],
+                                 source->bones[i].bind_pose_local[6],
+                                 source->bones[i].bind_pose_local[7],
+                                 source->bones[i].bind_pose_local[8],
+                                 source->bones[i].bind_pose_local[9],
+                                 source->bones[i].bind_pose_local[10],
+                                 source->bones[i].bind_pose_local[11],
+                                 source->bones[i].bind_pose_local[12],
+                                 source->bones[i].bind_pose_local[13],
+                                 source->bones[i].bind_pose_local[14],
+                                 source->bones[i].bind_pose_local[15]);
+        int64_t added = rt_skeleton3d_add_bone(
+            clone, source->bones[i].name, source->bones[i].parent_index, bind);
+        if (bind && rt_obj_release_check0(bind))
+            rt_obj_free(bind);
+        if (added != i) {
+            if (rt_obj_release_check0(clone))
+                rt_obj_free(clone);
+            return NULL;
+        }
+        memcpy(clone->bones[i].inverse_bind,
+               source->bones[i].inverse_bind,
+               sizeof(clone->bones[i].inverse_bind));
+    }
+    if (alias_count > 0) {
+        clone->owned_aliases =
+            (rt_skeleton3d_alias *)calloc((size_t)alias_count, sizeof(rt_skeleton3d_alias));
+        if (!clone->owned_aliases) {
+            if (rt_obj_release_check0(clone))
+                rt_obj_free(clone);
+            return NULL;
+        }
+        memcpy(clone->owned_aliases,
+               source->aliases,
+               (size_t)alias_count * sizeof(rt_skeleton3d_alias));
+        clone->aliases = clone->owned_aliases;
+        clone->alias_count = alias_count;
+        clone->alias_capacity = alias_count;
+        clone->owned_alias_capacity = alias_count;
+        clone->initialized_alias_count = alias_count;
+    }
+    clone->frozen = 0;
+    return clone;
+}
+
 /// @brief Append one bone to the skeleton with its bind-pose matrix and parent reference.
 ///
 /// `parent_index` of -1 marks a root bone. `bind_mat4` is the
@@ -289,6 +357,23 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
         mat4f_identity(bone->bind_pose_local);
     }
     mat4f_identity(bone->inverse_bind);
+    /* A mutable clone can carry importer-authored inverse binds whose unit
+     * conversion cannot be reconstructed from local bind poses. Derive an
+     * appended bone from its parent's authoritative inverse space so those
+     * conversions propagate exactly. Fresh skeleton construction benefits
+     * too; a later ComputeInverseBind remains equivalent. */
+    {
+        float inverse_local[16];
+        if (mat4f_invert(bone->bind_pose_local, inverse_local) == 0) {
+            if (parent_index >= 0) {
+                mat4f_mul_local(inverse_local,
+                                s->bones[parent_index].inverse_bind,
+                                bone->inverse_bind);
+            } else {
+                memcpy(bone->inverse_bind, inverse_local, sizeof(inverse_local));
+            }
+        }
+    }
     /* Cache the decomposed bind TRS once: sampling uses it as the per-channel
      * fallback every frame, and decomposition is the expensive part. */
     mat4f_decompose_trs(bone->bind_pose_local, bone->bind_pos, bone->bind_rot, bone->bind_scl);

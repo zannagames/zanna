@@ -396,6 +396,19 @@ int8_t rt_game3d_animator_set_ik_solver(void *obj, void *ik_solver) {
     return rt_anim_controller3d_set_ik_solver(controller, ik_solver);
 }
 
+/// @brief Append an IKSolver3D to the wrapped controller's ordered stack.
+/// @param obj Animator3D wrapper containing the skeletal controller.
+/// @param ik_solver Compatible IKSolver3D handle.
+/// @return 1 when present/appended, or 0 when unavailable, invalid, or full.
+int8_t rt_game3d_animator_add_ik_solver(void *obj, void *ik_solver) {
+    rt_game3d_animator *animator =
+        game3d_animator_checked(obj, "Game3D.Animator3D.addIKSolver: invalid animator");
+    void *controller = game3d_animator_controller_ref(animator);
+    if (!controller)
+        return 0;
+    return rt_anim_controller3d_add_ik_solver(controller, ik_solver);
+}
+
 /// @brief Set the playback speed multiplier for the named state/clip.
 /// @details Skeletal controllers apply the value to @p name; node animators use it as their global
 ///   clip speed. Invalid values fall back to 1 and magnitudes are bounded by the Game3D limit.

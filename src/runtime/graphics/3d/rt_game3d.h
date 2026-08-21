@@ -1299,6 +1299,11 @@ int8_t rt_game3d_animator_set_blend_tree(void *animator, void *blend_tree);
 /// @param ik_solver Value supplied for the ik solver argument.
 /// @return 1 when the documented condition holds, or 0 otherwise.
 int8_t rt_game3d_animator_set_ik_solver(void *animator, void *ik_solver);
+/// @brief Append an IKSolver3D to the wrapped controller's ordered stack.
+/// @param animator Value supplied for the animator argument.
+/// @param ik_solver Compatible solver bound to the controller skeleton.
+/// @return 1 when present/appended, or 0 when invalid/full.
+int8_t rt_game3d_animator_add_ik_solver(void *animator, void *ik_solver);
 /// @brief Set the playback speed multiplier for the named clip.
 /// @param animator Value supplied for the animator argument.
 /// @param name Runtime string naming the requested object or property.

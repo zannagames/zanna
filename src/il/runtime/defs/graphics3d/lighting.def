@@ -414,6 +414,7 @@ RT_CLASS_END()
 
 // Skeleton3D
 RT_FUNC(Skeleton3DNew,               rt_skeleton3d_new,                "Zanna.Graphics3D.Skeleton3D.New",               "obj()")
+RT_FUNC(Skeleton3DCloneMutable,      rt_skeleton3d_clone_mutable,      "Zanna.Graphics3D.Skeleton3D.CloneMutable",      "obj(obj)")
 RT_FUNC(Skeleton3DAddBone,           rt_skeleton3d_add_bone,           "Zanna.Graphics3D.Skeleton3D.AddBone",           "i64(obj,str,i64,obj)")
 RT_FUNC(Skeleton3DSetBoneAlias, rt_skeleton3d_set_bone_alias, "Zanna.Graphics3D.Skeleton3D.SetBoneAlias", "void(obj,str,str)")
 RT_FUNC(Skeleton3DAliasCount, rt_skeleton3d_get_alias_count, "Zanna.Graphics3D.Skeleton3D.get_AliasCount", "i64(obj)")
@@ -433,6 +434,7 @@ RT_FUNC(Skeleton3DGetBoneBindPose,   rt_skeleton3d_get_bone_bind_pose, "Zanna.Gr
 RT_CLASS_BEGIN("Zanna.Graphics3D.Skeleton3D", Skeleton3D, "obj", Skeleton3DNew)
     RT_PROP("BoneCount", "i64", Skeleton3DBoneCount, none)
     RT_METHOD("AddBone", "i64(str,i64,obj)", Skeleton3DAddBone)
+    RT_METHOD("CloneMutable", "obj<Zanna.Graphics3D.Skeleton3D>()", Skeleton3DCloneMutable)
     RT_METHOD("ComputeInverseBind", "void()", Skeleton3DComputeInverseBind)
     RT_METHOD("FindBoneOption", "obj<Zanna.Option>(str)", Skeleton3DFindBoneOption)
     RT_METHOD("GetBoneName", "str(i64)", Skeleton3DGetBoneName)

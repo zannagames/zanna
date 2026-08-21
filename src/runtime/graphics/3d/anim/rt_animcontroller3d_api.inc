@@ -57,7 +57,10 @@ static void controller_finalize(void *obj) {
         controller_release_class_ref((void **)&controller->layers[i].player,
                                      RT_G3D_ANIMPLAYER3D_CLASS_ID);
     controller_release_class_ref(&controller->blend_tree, RT_G3D_BLENDTREE3D_CLASS_ID);
-    controller_release_class_ref(&controller->ik_solver, RT_G3D_IKSOLVER3D_CLASS_ID);
+    for (int32_t i = 0; i < RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS; i++)
+        controller_release_class_ref(
+            &controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
+    controller->ik_solver_count = 0;
     free(controller->final_palette);
     controller->final_palette = NULL;
     free(controller->final_globals);
@@ -777,7 +780,16 @@ int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
     return 1;
 }
 
-/// @brief Attach an IKSolver3D to the final controller pose; NULL clears it.
+static void controller_clear_ik_solvers(rt_anim_controller3d *controller) {
+    if (!controller)
+        return;
+    for (int32_t i = 0; i < RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS; i++)
+        controller_release_class_ref(
+            &controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
+    controller->ik_solver_count = 0;
+}
+
+/// @brief Replace the ordered IK stack with one solver; NULL clears it.
 /// @param[in,out] obj AnimController3D to configure.
 /// @param[in] ik_solver Borrowed IKSolver3D bound to the controller's exact
 ///                      skeleton, or `NULL` to detach.
@@ -789,7 +801,7 @@ int8_t rt_anim_controller3d_set_ik_solver(void *obj, void *ik_solver) {
     if (!controller)
         return 0;
     if (!ik_solver) {
-        controller_release_class_ref(&controller->ik_solver, RT_G3D_IKSOLVER3D_CLASS_ID);
+        controller_clear_ik_solvers(controller);
         controller_compute_final_palette(controller);
         return 1;
     }
@@ -798,11 +810,43 @@ int8_t rt_anim_controller3d_set_ik_solver(void *obj, void *ik_solver) {
     solver_skeleton = rt_ik_solver3d_get_skeleton(ik_solver);
     if (!solver_skeleton || solver_skeleton != controller->skeleton)
         return 0;
-    if (controller->ik_solver != ik_solver) {
-        rt_obj_retain_maybe(ik_solver);
-        controller_release_class_ref(&controller->ik_solver, RT_G3D_IKSOLVER3D_CLASS_ID);
-        controller->ik_solver = ik_solver;
+    rt_obj_retain_maybe(ik_solver);
+    controller_clear_ik_solvers(controller);
+    controller->ik_solvers[0] = ik_solver;
+    controller->ik_solver_count = 1;
+    controller_compute_final_palette(controller);
+    return 1;
+}
+
+/// @brief Append one compatible solver to the ordered final-pose IK stack.
+/// @details Duplicate handles are idempotent. Constraints apply in insertion
+///          order and may affect disjoint or intentionally overlapping chains.
+/// @param[in,out] obj AnimController3D to configure.
+/// @param[in] ik_solver Borrowed IKSolver3D bound to the exact skeleton.
+/// @return `1` when present/appended; `0` for invalid input or a full stack.
+int8_t rt_anim_controller3d_add_ik_solver(void *obj, void *ik_solver) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    void *solver_skeleton;
+    int32_t count;
+    if (!controller || !rt_g3d_has_class(ik_solver, RT_G3D_IKSOLVER3D_CLASS_ID))
+        return 0;
+    solver_skeleton = rt_ik_solver3d_get_skeleton(ik_solver);
+    if (!solver_skeleton || solver_skeleton != controller->skeleton)
+        return 0;
+    count = controller->ik_solver_count;
+    if (count < 0 || count > RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS) {
+        controller_clear_ik_solvers(controller);
+        count = 0;
     }
+    for (int32_t i = 0; i < count; i++) {
+        if (controller->ik_solvers[i] == ik_solver)
+            return 1;
+    }
+    if (count >= RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS)
+        return 0;
+    rt_obj_retain_maybe(ik_solver);
+    controller->ik_solvers[count] = ik_solver;
+    controller->ik_solver_count = count + 1;
     controller_compute_final_palette(controller);
     return 1;
 }

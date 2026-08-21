@@ -202,9 +202,14 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller) {
             controller->skeleton, final_locals, controller->final_globals, bone_count);
     }
 
-    if (controller->ik_solver) {
-        (void)rt_ik_solver3d_apply_to_pose(
-            controller->ik_solver, final_locals, controller->final_globals, bone_count);
+    int32_t ik_count = controller->ik_solver_count;
+    if (ik_count < 0 || ik_count > RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS)
+        ik_count = 0;
+    for (int32_t i = 0; i < ik_count; i++) {
+        if (rt_g3d_has_class(controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID)) {
+            (void)rt_ik_solver3d_apply_to_pose(
+                controller->ik_solvers[i], final_locals, controller->final_globals, bone_count);
+        }
     }
 
     /* Bone-count animation LOD: for distant characters, freeze bones at/after the LOD index to

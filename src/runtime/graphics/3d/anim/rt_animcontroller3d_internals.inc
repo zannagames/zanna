@@ -27,6 +27,8 @@
 
 /// Number of animation layers, including the base layer at index zero.
 #define RT_ANIM_CONTROLLER3D_MAX_LAYERS 4
+/// Maximum ordered post-pose IK constraints on one controller (ADR 0284).
+#define RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS 4
 /// Bytes per queued event-name slot, including its NUL terminator.
 #define RT_ANIM_CONTROLLER3D_EVENT_NAME_MAX 64
 /// Bytes per stored state name, including its NUL terminator.
@@ -138,8 +140,10 @@ typedef struct {
     anim_controller3d_layer_t layers[RT_ANIM_CONTROLLER3D_MAX_LAYERS];
     /// Optional retained BlendTree3D pose source.
     void *blend_tree;
-    /// Optional retained IKSolver3D post-process.
-    void *ik_solver;
+    /// Ordered retained IKSolver3D post-process stack.
+    void *ik_solvers[RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS];
+    /// Number of populated leading entries in @ref ik_solvers.
+    int32_t ik_solver_count;
 
     /// Current skinning matrices (`global * inverse_bind`), 16 floats per bone.
     float *final_palette;

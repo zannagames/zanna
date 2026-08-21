@@ -1513,6 +1513,7 @@ Constructor: `Zanna.Game3D.Animator3D.New`
 | <a id="zanna-game3d-animator3d-crossfadelayeradditive"></a>`CrossfadeLayerAdditive` | `i1(i64,str,f64)` | `Zanna.Game3D.Animator3D.CrossfadeLayerAdditive` |
 | <a id="zanna-game3d-animator3d-setblendtree"></a>`SetBlendTree` | `i1(obj)` | `Zanna.Game3D.Animator3D.SetBlendTree` |
 | <a id="zanna-game3d-animator3d-setiksolver"></a>`SetIKSolver` | `i1(obj)` | `Zanna.Game3D.Animator3D.SetIKSolver` |
+| <a id="zanna-game3d-animator3d-addiksolver"></a>`AddIKSolver` | `i1(obj)` | `Zanna.Game3D.Animator3D.AddIKSolver` |
 | <a id="zanna-game3d-animator3d-setspeed"></a>`SetSpeed` | `void(str,f64)` | `Zanna.Game3D.Animator3D.SetSpeed` |
 | <a id="zanna-game3d-animator3d-isplaying"></a>`IsPlaying` | `i1(str)` | `Zanna.Game3D.Animator3D.IsPlaying` |
 | <a id="zanna-game3d-animator3d-statetime"></a>`StateTime` | `f64()` | `Zanna.Game3D.Animator3D.StateTime` |
@@ -2545,6 +2546,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Animator3D.CrossfadeLayerAdditive` | `i1(obj,i64,str,f64)` | `rt_game3d_animator_crossfade_layer_additive` |
 | `Zanna.Game3D.Animator3D.SetBlendTree` | `i1(obj,obj)` | `rt_game3d_animator_set_blend_tree` |
 | `Zanna.Game3D.Animator3D.SetIKSolver` | `i1(obj,obj)` | `rt_game3d_animator_set_ik_solver` |
+| `Zanna.Game3D.Animator3D.AddIKSolver` | `i1(obj,obj)` | `rt_game3d_animator_add_ik_solver` |
 | `Zanna.Game3D.Animator3D.SetSpeed` | `void(obj,str,f64)` | `rt_game3d_animator_set_speed` |
 | `Zanna.Game3D.Animator3D.IsPlaying` | `i1(obj,str)` | `rt_game3d_animator_is_playing` |
 | `Zanna.Game3D.Animator3D.StateTime` | `f64(obj)` | `rt_game3d_animator_state_time` |

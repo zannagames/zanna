@@ -1607,6 +1607,11 @@ void *rt_skeleton3d_new(void) {
     return NULL;
 }
 
+void *rt_skeleton3d_clone_mutable(void *skeleton) {
+    (void)skeleton;
+    return NULL;
+}
+
 /// @brief Stub for `Skeleton3D.AddBone` — append a bone with name `n`,
 ///        parent index `p` (`-1` for root), and bind-pose transform
 ///        matrix `m`. Returns the assigned bone index, or `-1` on failure.
@@ -3796,6 +3801,13 @@ int8_t rt_anim_controller3d_set_blend_tree(void *c, void *t) {
 ///
 /// @return `0`.
 int8_t rt_anim_controller3d_set_ik_solver(void *c, void *s) {
+    (void)c;
+    (void)s;
+    return 0;
+}
+
+/// @brief Stub for `AnimController3D.AddIKSolver`.
+int8_t rt_anim_controller3d_add_ik_solver(void *c, void *s) {
     (void)c;
     (void)s;
     return 0;

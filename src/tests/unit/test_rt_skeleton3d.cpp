@@ -100,6 +100,39 @@ static void test_skeleton_add_bone() {
     EXPECT_TRUE(rt_skeleton3d_get_bone_count(skel) == 2, "Bone count = 2");
 }
 
+static void test_skeleton_mutable_clone_preserves_imported_inverse_binds() {
+    void *source = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(
+        source, rt_const_cstr("root"), -1, rt_mat4_translate(10.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(source);
+    auto *source_impl = static_cast<rt_skeleton3d *>(source);
+    /* Model an importer-supplied inverse bind with a unit conversion that
+     * cannot be reconstructed from the public local bind hierarchy. */
+    source_impl->bones[0].inverse_bind[3] = -0.1f;
+    rt_skeleton3d_set_bone_alias(
+        source, rt_const_cstr("external_root"), rt_const_cstr("root"));
+    (void)rt_anim_player3d_new(source); /* freeze the imported source */
+
+    void *clone = rt_skeleton3d_clone_mutable(source);
+    EXPECT_TRUE(clone != nullptr, "Skeleton3D.CloneMutable clones a frozen skeleton");
+    auto *clone_impl = static_cast<rt_skeleton3d *>(clone);
+    EXPECT_NEAR(clone_impl->bones[0].inverse_bind[3],
+                -0.1,
+                1e-6,
+                "CloneMutable preserves importer-supplied inverse binds exactly");
+    EXPECT_TRUE(rt_skeleton3d_get_alias_count(clone) == 1,
+                "CloneMutable preserves retarget aliases");
+    int64_t child = rt_skeleton3d_add_bone(
+        clone, rt_const_cstr("finger"), 0, rt_mat4_translate(3.0, 0.0, 0.0));
+    EXPECT_TRUE(child == 1, "CloneMutable remains structurally mutable");
+    EXPECT_NEAR(clone_impl->bones[1].inverse_bind[3],
+                -3.1,
+                1e-5,
+                "appended bone derives inverse bind from imported parent space");
+    EXPECT_TRUE(rt_skeleton3d_get_bone_count(source) == 1,
+                "mutable clone does not alter the imported source");
+}
+
 static void test_skeleton_find_bone() {
     void *skel = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1694,6 +1727,7 @@ static void test_crossfade_preserves_structure() {
 int main() {
     test_skeleton_create();
     test_skeleton_add_bone();
+    test_skeleton_mutable_clone_preserves_imported_inverse_binds();
     test_skeleton_find_bone();
     test_animation_create();
     test_animation_keyframes();

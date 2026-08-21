@@ -810,6 +810,7 @@ Constructor: `Zanna.Graphics3D.Skeleton3D.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-graphics3d-skeleton3d-addbone"></a>`AddBone` | `i64(str,i64,obj)` | `Zanna.Graphics3D.Skeleton3D.AddBone` |
+| <a id="zanna-graphics3d-skeleton3d-clonemutable"></a>`CloneMutable` | `obj<Zanna.Graphics3D.Skeleton3D>()` | `Zanna.Graphics3D.Skeleton3D.CloneMutable` |
 | <a id="zanna-graphics3d-skeleton3d-computeinversebind"></a>`ComputeInverseBind` | `void()` | `Zanna.Graphics3D.Skeleton3D.ComputeInverseBind` |
 | <a id="zanna-graphics3d-skeleton3d-findboneoption"></a>`FindBoneOption` | `obj<Zanna.Option>(str)` | `Zanna.Graphics3D.Skeleton3D.FindBoneOption` |
 | <a id="zanna-graphics3d-skeleton3d-getbonename"></a>`GetBoneName` | `str(i64)` | `Zanna.Graphics3D.Skeleton3D.GetBoneName` |
@@ -2528,6 +2529,7 @@ Constructor: `Zanna.Graphics3D.AnimController3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-setbonelod"></a>`SetBoneLod` | `void(i64)` | `Zanna.Graphics3D.AnimController3D.SetBoneLod` |
 | <a id="zanna-graphics3d-animcontroller3d-setblendtree"></a>`SetBlendTree` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.SetBlendTree` |
 | <a id="zanna-graphics3d-animcontroller3d-setiksolver"></a>`SetIKSolver` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.SetIKSolver` |
+| <a id="zanna-graphics3d-animcontroller3d-addiksolver"></a>`AddIKSolver` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.AddIKSolver` |
 | <a id="zanna-graphics3d-animcontroller3d-addevent"></a>`AddEvent` | `void(str,f64,str)` | `Zanna.Graphics3D.AnimController3D.AddEvent` |
 | <a id="zanna-graphics3d-animcontroller3d-pollevent"></a>`PollEvent` | `str()` | `Zanna.Graphics3D.AnimController3D.PollEvent` |
 | <a id="zanna-graphics3d-animcontroller3d-setrootmotionbone"></a>`SetRootMotionBone` | `void(i64)` | `Zanna.Graphics3D.AnimController3D.SetRootMotionBone` |
@@ -3239,6 +3241,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.NodeAnimator3D.SetTime` | `void(obj,f64)` | `rt_node_animator3d_set_time` |
 | `Zanna.Graphics3D.NodeAnimator3D.Update` | `void(obj,f64)` | `rt_node_animator3d_update` |
 | `Zanna.Graphics3D.Skeleton3D.New` | `obj()` | `rt_skeleton3d_new` |
+| `Zanna.Graphics3D.Skeleton3D.CloneMutable` | `obj(obj)` | `rt_skeleton3d_clone_mutable` |
 | `Zanna.Graphics3D.Skeleton3D.AddBone` | `i64(obj,str,i64,obj)` | `rt_skeleton3d_add_bone` |
 | `Zanna.Graphics3D.Skeleton3D.SetBoneAlias` | `void(obj,str,str)` | `rt_skeleton3d_set_bone_alias` |
 | <a id="zanna-graphics3d-skeleton3d-get-aliascount"></a>`Zanna.Graphics3D.Skeleton3D.get_AliasCount` | `i64(obj)` | `rt_skeleton3d_get_alias_count` |
@@ -4067,6 +4070,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.AnimController3D.SetBoneLod` | `void(obj,i64)` | `rt_anim_controller3d_set_bone_lod` |
 | `Zanna.Graphics3D.AnimController3D.SetBlendTree` | `i1(obj,obj)` | `rt_anim_controller3d_set_blend_tree` |
 | `Zanna.Graphics3D.AnimController3D.SetIKSolver` | `i1(obj,obj)` | `rt_anim_controller3d_set_ik_solver` |
+| `Zanna.Graphics3D.AnimController3D.AddIKSolver` | `i1(obj,obj)` | `rt_anim_controller3d_add_ik_solver` |
 | `Zanna.Graphics3D.AnimController3D.AddEvent` | `void(obj,str,f64,str)` | `rt_anim_controller3d_add_event` |
 | `Zanna.Graphics3D.AnimController3D.PollEvent` | `str(obj)` | `rt_anim_controller3d_poll_event` |
 | `Zanna.Graphics3D.AnimController3D.SetRootMotionBone` | `void(obj,i64)` | `rt_anim_controller3d_set_root_motion_bone` |

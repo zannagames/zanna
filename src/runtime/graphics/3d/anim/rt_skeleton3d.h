@@ -52,6 +52,11 @@ extern "C" {
 /// @return New GC-managed mutable Skeleton3D, or `NULL` after a runtime trap on
 ///         allocation failure.
 void *rt_skeleton3d_new(void);
+/// @brief Clone a Skeleton3D into a structurally mutable role-owned copy.
+/// @details Preserves importer-authored inverse binds and aliases exactly.
+/// @param skeleton Source Skeleton3D, frozen or mutable.
+/// @return New mutable clone, or NULL for invalid input/allocation failure.
+void *rt_skeleton3d_clone_mutable(void *skeleton);
 /// @brief Append a bone with an exact retained name, parent index, and bind-pose matrix.
 /// @details The skeleton retains the complete runtime string without a fixed-length name limit.
 ///          A parent index of -1 creates a root; other bones must reference an

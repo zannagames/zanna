@@ -212,6 +212,13 @@ int8_t rt_anim_controller3d_set_blend_tree(void *controller, void *blend_tree);
 /// @return `1` when attached or cleared; `0` for an invalid controller, wrong
 ///         class, or mismatched skeleton.
 int8_t rt_anim_controller3d_set_ik_solver(void *controller, void *ik_solver);
+/// @brief Append an IKSolver3D to the bounded ordered post-pose stack.
+/// @details Duplicate handles are idempotent. The solver must reference the
+///          controller's exact skeleton; at most four constraints are retained.
+/// @param[in,out] controller AnimController3D to configure.
+/// @param[in] ik_solver Borrowed compatible IKSolver3D handle.
+/// @return `1` when present/appended; `0` for invalid input or a full stack.
+int8_t rt_anim_controller3d_add_ik_solver(void *controller, void *ik_solver);
 
 /// @brief Schedule an event to fire when @p state_name reaches @p time_seconds during playback.
 /// @details The nonempty event name is copied into bounded storage. Negative
