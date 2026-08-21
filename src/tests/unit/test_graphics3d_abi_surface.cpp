@@ -876,6 +876,12 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "\"Zanna.Graphics3D.IKSolver3D.Solve\""),
                  "IKSolver3D.Solve must use Graphics3D PascalCase naming") &&
          ok;
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.IKSolver3D.SetTargetRotation\""),
+                 "IKSolver3D.SetTargetRotation must use Graphics3D PascalCase naming") &&
+         ok;
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.IKSolver3D.ClearTargetRotation\""),
+                 "IKSolver3D.ClearTargetRotation must use Graphics3D PascalCase naming") &&
+         ok;
     ok = require(contains(runtime_def, "\"Zanna.Graphics3D.AnimController3D.SetIKSolver\""),
                  "AnimController3D.SetIKSolver must use Graphics3D PascalCase naming") &&
          ok;
@@ -951,14 +957,19 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "RT_METHOD(\"SetWeight\""),
                  "IKSolver3D.SetWeight method missing") &&
          ok;
+    ok = require(contains(runtime_def, "RT_METHOD(\"SetTargetRotation\""),
+                 "IKSolver3D.SetTargetRotation method missing") &&
+         ok;
+    ok = require(contains(runtime_def, "RT_METHOD(\"ClearTargetRotation\""),
+                 "IKSolver3D.ClearTargetRotation method missing") &&
+         ok;
     ok = require(contains(runtime_def, "RT_METHOD(\"Solve\""), "IKSolver3D.Solve method missing") &&
          ok;
     ok = require(contains(runtime_def, "RT_METHOD(\"SetIKSolver\""),
                  "AnimController3D.SetIKSolver method missing") &&
          ok;
-    ok = require(
-             contains(runtime_def, "\"Zanna.Graphics3D.AnimController3D.AddIKSolver\""),
-             "AnimController3D.AddIKSolver must use Graphics3D PascalCase naming") &&
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.AnimController3D.AddIKSolver\""),
+                 "AnimController3D.AddIKSolver must use Graphics3D PascalCase naming") &&
          ok;
     ok = require(contains(runtime_def, "\"Zanna.Graphics3D.Skeleton3D.CloneMutable\""),
                  "Skeleton3D.CloneMutable must use Graphics3D PascalCase naming") &&

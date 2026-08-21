@@ -378,7 +378,7 @@ parallel-batch event ownership, and native-installer UI cleanup repairs.
 | WR-340 | cross-target package tests | Linux toolchain archive fixtures inherited `.exe`, `.lib`, PE identity, and synthetic NTFS permission bits on Windows, causing their exact payload and mode assertions to depend on the host. The fixtures now normalize Linux names, archive extensions, ELF identity, and the intended POSIX mode before packaging. |
 | WR-341 | Studio phase probe deadlines | Process and debugger waits treated `Sleep(1)` poll counts as elapsed milliseconds, making the Windows end-to-end probe depend on scheduler granularity and cold executable scanning. The waits now use bounded monotonic deadlines, terminate timed-out children, preserve diagnostic output, and have matching serial CTest headroom. |
 | WR-342 | Release boundary assertions | Release installer builds inherited `NDEBUG` in two boundary suites that deliberately use assertions as executable checks, erasing filesystem, Result, and COM calls; the scene-editor and UI Automation tests consequently failed or crashed after their setup disappeared. Both translation units now enable their checks before any header can cache the disabled assertion macro, without changing product or unrelated test flags. |
-| WR-343 | Studio version provenance | The packager compared Studio’s full configured version (for example `0.2.99-snapshot`) with the deliberately numeric CMake package version (`0.2.99`), so a correctly built prerelease Studio could never ship. Install manifests now preserve package and exact product versions separately; Studio provenance binds the staged header’s full version while installer naming and upgrade metadata retain the package-compatible version. |
+| WR-343 | Studio version provenance | The packager compared Studio’s full configured version (for example `0.3.0-snapshot`) with the deliberately numeric CMake package version (`0.3.0`), so a correctly built prerelease Studio could never ship. Install manifests now preserve package and exact product versions separately; Studio provenance binds the staged header’s full version while installer naming and upgrade metadata retain the package-compatible version. |
 | WR-344 | native WinSock teardown | The first `TcpServer.Listen` in a native Windows executable registered `WSACleanup` through CRT `atexit`, but Zanna PE files can enter through a deliberately CRT-less startup shim. The call corrupted the uninitialized CRT exit table (`0xC0000374` in ZannaSQL) before the listener was returned. WinSock now remains process-lifetime state, which Windows reclaims at process teardown, and the native Windows runtime probe opens, inspects, and closes an ephemeral listener through that exact entry path. |
 | WR-345 | Studio lifecycle provenance | The lifecycle validator still compared installed Studio’s full configured version with the installer’s deliberately numeric package/upgrade version, so the correctly repaired prerelease package would fail its own Complete install and restore checks. Validation now obtains the bounded canonical product version from the installed, package-owned `zanna --version` result and uses it for both Studio provenance checks while retaining numeric package identity for Apps & Features. |
 | WR-346 | installer validator version parsing | The Studio provenance helper anchored its version expression to all of `zanna --version`, even though the CLI contract intentionally follows the canonical product-version line with snapshot, source, IL, and feature details. A valid installer therefore failed lifecycle validation after installation. The helper now parses the strict first line from the still-bounded, NUL-free capture and accepts the documented diagnostic lines that follow. |
@@ -1269,7 +1269,7 @@ Final alpha-hardening revalidation on Windows x64/MSVC on 2026-07-26:
   demo gate produced no stderr output.
 - `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed the
   real Release package path in 3,063.3 seconds. Its manifest marked the 307,005,574-byte unsigned
-  x64 `zanna-0.2.99-win-x64.exe` payload verified with SHA-256
+  x64 `zanna-0.3.0-win-x64.exe` payload verified with SHA-256
   `fcbc41db89314dc843ec756ea6716b03ffcd4182372fcc5a0775990fdbdc7795`. The standalone
   real-artifact validator then passed complete install, integration registration, component
   modify, byte-exact repair, installed CLI/native-code generation, installed SDK CMake-consumer
@@ -1300,7 +1300,7 @@ Revalidated on Windows x64/MSVC on 2026-07-26:
   demo gate produced no stderr output.
 - `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed the
   real Release package path in 2,614.1 seconds. Its manifest marked the 306,436,348-byte unsigned
-  x64 `zanna-0.2.99-win-x64.exe` payload verified with SHA-256
+  x64 `zanna-0.3.0-win-x64.exe` payload verified with SHA-256
   `8fd2206002fe627a79df632a966472531e676571ff6991971106d4886f476f0d`. The non-elevated toolchain
   and Xenoscape install/uninstall lifecycle CTests then passed in 6.04 and 30.27 seconds. The
   standalone real-artifact validator also completed its complete install, CMake-consumer build,
@@ -1352,7 +1352,7 @@ Revalidated on Windows x64/MSVC on 2026-07-24:
 - `scripts/build_installer.ps1 --build-dir build --config Release --target windows` completed in
   1,864.3 seconds after its first invocation exposed and repaired the Windows self-relink lock in
   WR-502. It produced the verified, unsigned development installer
-  `zanna-0.2.99-win-x64.exe`: 298,583,630 bytes with SHA-256
+  `zanna-0.3.0-win-x64.exe`: 298,583,630 bytes with SHA-256
   `1570f9cf5a848a3113da0cb25d1c7871f36ac5598df88b2d408074f6191369ed`.
   Independent checksum-required verification, the bounded installer-host self-test, and schema-3
   inspection all returned zero. Inspection reports 1,984 payload files, 642,324,370 installed
@@ -1386,7 +1386,7 @@ Revalidated on Windows x64/MSVC on 2026-07-23:
   Those contracts cover the bounded caches, frame/present protocol, resize ordering, post-FX
   route validation, and active-frame mutation guards added by this audit.
 - `scripts/build_installer.ps1 --build-dir build --config Release --target windows` produced the
-  286,072,746-byte development installer `zanna-0.2.99-win-x64.exe` with SHA-256
+  286,072,746-byte development installer `zanna-0.3.0-win-x64.exe` with SHA-256
   `1ca60c5ec9715a2ed00be3633c3218649db2c429c0b8472b98c276f04156a853`.
   Checksum-required verification, the waited installer-host self-test, and schema-3 inspection all
   returned zero. Inspection reports 1,870 payload files, 623,540,847 installed bytes, and the

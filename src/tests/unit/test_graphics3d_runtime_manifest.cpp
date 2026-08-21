@@ -67,10 +67,13 @@ namespace {
 // ADR 0274 (2026-08-19): Entity3D.AttachToBoneOffsetRotated — bone-socket
 // rotation offset (Euler degrees) composing after the bone pose, so held
 // props stop baking their grip tilt into the mesh: +1 function / +1 method.
-constexpr std::size_t kExpectedFunctionCount = 2261;
+// ADR 0286 (2026-08-21): IKSolver3D.SetTargetRotation/ClearTargetRotation —
+// model-space end-bone orientation goal applied after the positional solve:
+// +2 functions / +2 methods.
+constexpr std::size_t kExpectedFunctionCount = 2263;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 829;
-constexpr std::size_t kExpectedMethodCount = 1217;
+constexpr std::size_t kExpectedMethodCount = 1219;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -268,7 +271,9 @@ int main() {
     // Re-pinned 2026-08-19 (ADR 0273 amendment: Mesh3D.RasterizeUvHeight).
     // Re-pinned 2026-08-20: ADR 0284 ordered AddIKSolver wrappers and
     // ADR 0285 Skeleton3D.CloneMutable (three functions/methods total).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xc3927872f77b0932);
+    // Re-pinned 2026-08-21: ADR 0286 IKSolver3D.SetTargetRotation and
+    // ClearTargetRotation (two functions/methods).
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x90b9bb191280f42a);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

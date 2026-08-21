@@ -45,6 +45,7 @@
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_object.h"
+#include "rt_quat.h"
 #include "rt_seq.h"
 #include "rt_skeleton3d_internal.h"
 #include "rt_trap.h"
@@ -97,6 +98,10 @@ typedef struct {
     float ground_normal[3];
     /// Nonzero after a valid ground normal has been assigned.
     int8_t has_ground_normal;
+    /// Optional normalized model-space end-bone orientation goal (x, y, z, w).
+    float target_rotation[4];
+    /// Nonzero after a valid target rotation has been assigned.
+    int8_t has_target_rotation;
     /// Solved-pose contribution in `[0,1]`.
     float weight;
     /// Owned bind-seeded local matrices used by standalone solve.
@@ -810,6 +815,9 @@ static int32_t ik_solver3d_repair_state(rt_ik_solver3d *solver) {
     }
     solver->has_pole = solver->has_pole ? 1 : 0;
     solver->has_ground_normal = solver->has_ground_normal ? 1 : 0;
+    solver->has_target_rotation = solver->has_target_rotation ? 1 : 0;
+    if (solver->has_target_rotation)
+        ik3d_quat_normalize(solver->target_rotation);
     solver->weight = ik3d_clamp01(solver->weight);
     if (solver->has_ground_normal) {
         for (int lane = 0; lane < 3; ++lane)
@@ -1035,10 +1043,81 @@ void rt_ik_solver3d_set_ground_normal(void *obj, void *normal) {
     solver->has_ground_normal = 1;
 }
 
-/// @brief Orient the chain's end (foot) bone so its local +Y (sole-up) aligns with the supplied
-///   ground normal, preserving the foot's facing as much as possible. Run after the position solve.
-///   The desired model-space rotation is converted into the foot's parent-local space, so it is
-///   correct for a foot parented under an arbitrarily-rotated leg.
+/// @brief Set a model-space orientation goal for the chain's end bone (non-Quat ignored).
+/// @details Applied after the positional solve by slerping the end bone toward
+///          the goal by solver weight. Takes precedence over a ground normal.
+///          Components are sanitized to finite values and the quaternion is
+///          normalized; a degenerate quaternion becomes identity.
+/// @param[in,out] obj IKSolver3D to configure.
+/// @param[in] rotation Borrowed Quat goal in skeleton/model space.
+void rt_ik_solver3d_set_target_rotation(void *obj, void *rotation) {
+    rt_ik_solver3d *solver = ik_solver3d_checked(obj);
+    if (!solver || !rt_g3d_is_quat(rotation))
+        return;
+    solver->target_rotation[0] = ik3d_finite_float(rt_quat_x(rotation), 0.0f);
+    solver->target_rotation[1] = ik3d_finite_float(rt_quat_y(rotation), 0.0f);
+    solver->target_rotation[2] = ik3d_finite_float(rt_quat_z(rotation), 0.0f);
+    solver->target_rotation[3] = ik3d_finite_float(rt_quat_w(rotation), 1.0f);
+    ik3d_quat_normalize(solver->target_rotation);
+    solver->has_target_rotation = 1;
+}
+
+/// @brief Remove the end-bone orientation goal; positional solving is unaffected.
+/// @param[in,out] obj IKSolver3D to configure.
+void rt_ik_solver3d_clear_target_rotation(void *obj) {
+    rt_ik_solver3d *solver = ik_solver3d_checked(obj);
+    if (!solver)
+        return;
+    solver->has_target_rotation = 0;
+}
+
+/// @brief Slerp the chain's end bone toward a desired model-space rotation by solver weight.
+/// @details Shared tail for the ground-normal and target-rotation passes. The
+///   desired global rotation is converted into the end bone's parent-local
+///   space (correct for an arbitrarily-rotated parent), blended against the
+///   current local rotation, and globals are rebuilt so downstream consumers
+///   see the edit. Translation and scale are preserved.
+/// @param[in] solver Solver providing skeleton, chain, and blend weight.
+/// @param[in,out] locals Writable local-pose matrices.
+/// @param[in,out] globals Writable model-space matrices rebuilt after the edit.
+/// @param[in] bone_count Number of matrices available in both arrays.
+/// @param[in] desired_global Borrowed desired model-space rotation quaternion.
+static void ik3d_slerp_end_to_global(rt_ik_solver3d *solver,
+                                     float *locals,
+                                     float *globals,
+                                     int32_t bone_count,
+                                     const float *desired_global) {
+    int32_t end;
+    int32_t parent;
+    int32_t chain_count = ik3d_safe_chain_count(solver);
+    float parent_rot[4], parent_conj[4], local_target[4];
+    float cur_pos[3], cur_rot[4], cur_scl[3], blended[4];
+    if (!solver || !locals || !globals || !desired_global || chain_count < 2)
+        return;
+    end = solver->chain[chain_count - 1];
+    if (end < 0 || end >= bone_count)
+        return;
+    parent = solver->skeleton->bones[end].parent_index;
+    if (parent >= 0 && parent < bone_count && parent != end) {
+        float ppos[3], pscl[3];
+        ik3d_decompose_trs(&globals[parent * 16], ppos, parent_rot, pscl);
+    } else {
+        ik3d_quat_identity(parent_rot);
+    }
+    ik3d_quat_conjugate(parent_rot, parent_conj);
+    ik3d_quat_mul(parent_conj, desired_global, local_target);
+    ik3d_decompose_trs(&locals[end * 16], cur_pos, cur_rot, cur_scl);
+    ik3d_quat_slerp(cur_rot, local_target, solver->weight, blended);
+    ik3d_build_trs(cur_pos, blended, cur_scl, &locals[end * 16]);
+    ik3d_build_globals(solver->skeleton, locals, globals, bone_count);
+}
+
+/// @brief Lean the chain's end (foot) bone with the ground: tilt its current animated rotation by
+///   the shortest arc from model +Y to the supplied normal. Run after the position solve.
+/// @details ADR 0286: this is a delta, not an absolute basis. On a flat surface
+///   (normal = model +Y) the arc is identity and the authored pose survives
+///   exactly; on a slope the animated rotation leans with the surface. The
+///   pass therefore never depends on the rig's bone-axis convention.
 /// @param[in] solver Solver providing skeleton, chain, normal, and blend
 ///                   weight.
 /// @param[in,out] locals Writable local-pose matrices.
@@ -1050,11 +1129,11 @@ static void ik3d_apply_foot_orientation(rt_ik_solver3d *solver,
                                         float *globals,
                                         int32_t bone_count) {
     int32_t end;
-    int32_t parent;
     int32_t chain_count = ik3d_safe_chain_count(solver);
-    float up[3], fwd_ref[3], right[3], fwd[3];
-    float desired[4], parent_rot[4], parent_conj[4], local_target[4];
-    float cur_pos[3], cur_rot[4], cur_scl[3], blended[4];
+    float up[3];
+    float model_up[3] = {0.0f, 1.0f, 0.0f};
+    float tilt[4], cur_global_rot[4], desired_global[4];
+    float g_pos[3], g_scl[3];
     if (!solver || !locals || !globals || chain_count < 2)
         return;
     end = solver->chain[chain_count - 1];
@@ -1065,40 +1144,28 @@ static void ik3d_apply_foot_orientation(rt_ik_solver3d *solver,
     up[2] = solver->ground_normal[2];
     if (!ik3d_normalize3(up))
         return;
-    /* Reference forward = the foot's current world +Z (column 2 of its global matrix). */
-    fwd_ref[0] = globals[end * 16 + 2];
-    fwd_ref[1] = globals[end * 16 + 6];
-    fwd_ref[2] = globals[end * 16 + 10];
-    ik3d_cross3(up, fwd_ref, right);
-    if (!ik3d_normalize3(right)) {
-        float alt[3] = {1.0f, 0.0f, 0.0f};
-        if (fabsf(up[0]) > 0.9f) {
-            alt[0] = 0.0f;
-            alt[2] = 1.0f;
-        }
-        ik3d_cross3(up, alt, right);
-        if (!ik3d_normalize3(right))
-            return;
-    }
-    ik3d_cross3(right, up, fwd);
-    if (!ik3d_normalize3(fwd))
+    ik3d_quat_from_to(model_up, up, tilt);
+    ik3d_decompose_trs(&globals[end * 16], g_pos, cur_global_rot, g_scl);
+    ik3d_quat_mul(tilt, cur_global_rot, desired_global);
+    ik3d_slerp_end_to_global(solver, locals, globals, bone_count, desired_global);
+}
+
+/// @brief Slerp the chain's end bone toward the solver's model-space orientation goal.
+/// @details Run after the position solve; takes precedence over the
+///   ground-normal pass (ADR 0286). The stored goal is already sanitized and
+///   normalized by the setter.
+/// @param[in] solver Solver providing skeleton, chain, goal, and blend weight.
+/// @param[in,out] locals Writable local-pose matrices.
+/// @param[in,out] globals Writable model-space matrices rebuilt after the
+///                        orientation edit.
+/// @param[in] bone_count Number of matrices available in both arrays.
+static void ik3d_apply_end_target_rotation(rt_ik_solver3d *solver,
+                                           float *locals,
+                                           float *globals,
+                                           int32_t bone_count) {
+    if (!solver)
         return;
-    /* Columns are right=X, up=Y, fwd=Z. */
-    ik3d_quat_from_matrix_rows(
-        right[0], up[0], fwd[0], right[1], up[1], fwd[1], right[2], up[2], fwd[2], desired);
-    parent = solver->skeleton->bones[end].parent_index;
-    if (parent >= 0 && parent < bone_count && parent != end) {
-        float ppos[3], pscl[3];
-        ik3d_decompose_trs(&globals[parent * 16], ppos, parent_rot, pscl);
-    } else {
-        ik3d_quat_identity(parent_rot);
-    }
-    ik3d_quat_conjugate(parent_rot, parent_conj);
-    ik3d_quat_mul(parent_conj, desired, local_target);
-    ik3d_decompose_trs(&locals[end * 16], cur_pos, cur_rot, cur_scl);
-    ik3d_quat_slerp(cur_rot, local_target, solver->weight, blended);
-    ik3d_build_trs(cur_pos, blended, cur_scl, &locals[end * 16]);
-    ik3d_build_globals(solver->skeleton, locals, globals, bone_count);
+    ik3d_slerp_end_to_global(solver, locals, globals, bone_count, solver->target_rotation);
 }
 
 /// @brief Swing-rotate @p bone in place so its child joint (currently at the
@@ -1148,7 +1215,7 @@ static void ik3d_aim_bone_child_at(rt_ik_solver3d *solver,
     ik3d_decompose_trs(&globals[bone * 16], g_pos, g_rot, g_scl);
     ik3d_quat_mul(arc, g_rot, new_global_rot);
     parent = solver->skeleton->bones[bone].parent_index;
-    if (parent >= 0 && parent < bone_count) {
+    if (parent >= 0 && parent < bone_count && parent != bone) {
         float ppos[3], pscl[3];
         ik3d_decompose_trs(&globals[parent * 16], ppos, parent_rot, pscl);
     } else {
@@ -1297,7 +1364,10 @@ static int ik3d_apply_chain(rt_ik_solver3d *solver,
         ik3d_aim_bone_child_at(solver, locals, globals, bone_count, parent_link, bone, blended);
         ik3d_set_global_position(solver, locals, globals, bone_count, bone, blended);
     }
-    if (solver->has_ground_normal)
+    /* End-bone orientation: an explicit goal wins over the ground hint (ADR 0286). */
+    if (solver->has_target_rotation)
+        ik3d_apply_end_target_rotation(solver, locals, globals, bone_count);
+    else if (solver->has_ground_normal)
         ik3d_apply_foot_orientation(solver, locals, globals, bone_count);
     return 1;
 }

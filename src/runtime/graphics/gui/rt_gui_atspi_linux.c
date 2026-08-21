@@ -1555,7 +1555,7 @@ static GVariant *rt_gui_atspi_get_property(GDBusConnection *connection,
         if (strcmp(property, "ToolkitName") == 0)
             return g_rt_gui_atspi_api.variant_new_string("ZannaGUI");
         if (strcmp(property, "Version") == 0)
-            return g_rt_gui_atspi_api.variant_new_string("0.2.99");
+            return g_rt_gui_atspi_api.variant_new_string("0.3.0");
         if (strcmp(property, "AtspiVersion") == 0)
             return g_rt_gui_atspi_api.variant_new_string("2.1");
         if (strcmp(property, "Id") == 0)

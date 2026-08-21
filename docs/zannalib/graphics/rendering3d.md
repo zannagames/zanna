@@ -1675,16 +1675,21 @@ Inverse-kinematics solvers for final pose adjustment before skinning.
 | `SetTarget(pos)` | `Void(Object)` | Set the target as a `Vec3` |
 | `SetWeight(weight)` | `Void(Double)` | Blend solver output from `0.0` to `1.0`; non-finite values become zero |
 | `SetPole(pos)` | `Void(Object)` | Set a world-space pole target for `TwoBone` bend-plane control |
-| `SetGroundNormal(normal)` | `Void(Object)` | Set a world-space ground normal used to orient solved end-effectors |
+| `SetGroundNormal(normal)` | `Void(Object)` | Set a ground normal; the end bone's animated rotation is tilted by the model-up-to-normal delta (flat ground is a no-op) |
+| `SetTargetRotation(rotation)` | `Void(Object)` | Set a model-space `Quat` orientation goal for the end bone, applied after the positional solve; wins over `SetGroundNormal` |
+| `ClearTargetRotation()` | `Void()` | Remove the end-bone orientation goal |
 | `Solve()` | `Void()` | Solve against the skeleton bind pose for standalone inspection |
 
 Attach a solver through `AnimController3D.SetIKSolver(solver)` or the Game3D
 wrapper `Animator3D.SetIKSolver(solver)`. Controller-bound IK runs after the
 base state/blend tree and overlays are composed, then before skinning palettes
 are generated. `TwoBone` and `FABRIK` use a positional chain solve and preserve
-the chain root; `SetPole` controls two-bone bend direction, `SetGroundNormal`
-orients solved end-effectors to terrain/contact normals, and `LookAt` aims the
-selected bone's local +Z axis.
+the chain root; `SetPole` controls two-bone bend direction, and `LookAt` aims
+the selected bone's local +Z axis. End-bone orientation follows ADR 0286:
+`SetGroundNormal` tilts the animated end-bone rotation by the shortest arc
+from model +Y to the surface normal (a flat surface changes nothing), and
+`SetTargetRotation` slerps the end bone toward an explicit model-space
+quaternion goal by solver weight, taking precedence over the ground hint.
 
 ---
 

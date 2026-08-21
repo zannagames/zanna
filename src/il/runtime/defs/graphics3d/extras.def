@@ -581,6 +581,8 @@ RT_FUNC(IKSolver3DSetTarget,     rt_ik_solver3d_set_target,       "Zanna.Graphic
 RT_FUNC(IKSolver3DSetWeight,     rt_ik_solver3d_set_weight,       "Zanna.Graphics3D.IKSolver3D.SetWeight",        "void(obj,f64)")
 RT_FUNC(IKSolver3DSetPole,       rt_ik_solver3d_set_pole,         "Zanna.Graphics3D.IKSolver3D.SetPole",          "void(obj,obj)")
 RT_FUNC(IKSolver3DSetGroundNormal,rt_ik_solver3d_set_ground_normal,"Zanna.Graphics3D.IKSolver3D.SetGroundNormal", "void(obj,obj)")
+RT_FUNC(IKSolver3DSetTargetRotation,rt_ik_solver3d_set_target_rotation,"Zanna.Graphics3D.IKSolver3D.SetTargetRotation", "void(obj,obj)")
+RT_FUNC(IKSolver3DClearTargetRotation,rt_ik_solver3d_clear_target_rotation,"Zanna.Graphics3D.IKSolver3D.ClearTargetRotation", "void(obj)")
 RT_FUNC(IKSolver3DSolve,         rt_ik_solver3d_solve,            "Zanna.Graphics3D.IKSolver3D.Solve",            "void(obj)")
 
 /// @summary Provides IK Solver 3D functionality for 3D rendering and scene applications.
@@ -596,6 +598,8 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.IKSolver3D", IKSolver3D, "obj", none)
     RT_METHOD("SetWeight", "void(f64)", IKSolver3DSetWeight)
     RT_METHOD("SetPole", "void(obj)", IKSolver3DSetPole)
     RT_METHOD("SetGroundNormal", "void(obj)", IKSolver3DSetGroundNormal)
+    RT_METHOD("SetTargetRotation", "void(obj)", IKSolver3DSetTargetRotation)
+    RT_METHOD("ClearTargetRotation", "void()", IKSolver3DClearTargetRotation)
     RT_METHOD("Solve", "void()", IKSolver3DSolve)
 RT_CLASS_END()
 

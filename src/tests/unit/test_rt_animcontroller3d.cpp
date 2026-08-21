@@ -27,6 +27,7 @@
 #include "rt_blendtree3d.h"
 #include "rt_box.h"
 #include "rt_iksolver3d.h"
+#include "rt_quat.h"
 #include "rt_seq.h"
 #include "rt_seq_internal.h"
 #include "rt_skeleton3d.h"
@@ -186,6 +187,8 @@ struct IKSolver3DTestPrefix {
     int8_t has_pole;
     float ground_normal[3];
     int8_t has_ground_normal;
+    float target_rotation[4];
+    int8_t has_target_rotation;
     float weight;
     float *solved_locals;
     float *solved_globals;
@@ -779,8 +782,7 @@ static void test_controller_ik_solver_drives_end_effector() {
 
 static void test_controller_ordered_ik_solver_stack() {
     void *skel = rt_skeleton3d_new();
-    int64_t root =
-        rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
     int64_t lu = rt_skeleton3d_add_bone(
         skel, rt_const_cstr("left_upper"), root, rt_mat4_translate(-1.0, 0.0, 0.0));
     int64_t ll = rt_skeleton3d_add_bone(
@@ -811,14 +813,10 @@ static void test_controller_ordered_ik_solver_stack() {
                 "AddIKSolver is idempotent for an existing solver");
     void *lm = rt_anim_controller3d_get_bone_matrix(controller, lh);
     void *rm = rt_anim_controller3d_get_bone_matrix(controller, rh);
-    EXPECT_NEAR(rt_mat4_get(lm, 0, 3), -1.0, 0.05,
-                "ordered IK stack solves the left hand x");
-    EXPECT_NEAR(rt_mat4_get(lm, 1, 3), 1.0, 0.05,
-                "ordered IK stack solves the left hand y");
-    EXPECT_NEAR(rt_mat4_get(rm, 0, 3), 1.0, 0.05,
-                "ordered IK stack solves the right hand x");
-    EXPECT_NEAR(rt_mat4_get(rm, 1, 3), 1.0, 0.05,
-                "ordered IK stack solves the right hand y");
+    EXPECT_NEAR(rt_mat4_get(lm, 0, 3), -1.0, 0.05, "ordered IK stack solves the left hand x");
+    EXPECT_NEAR(rt_mat4_get(lm, 1, 3), 1.0, 0.05, "ordered IK stack solves the left hand y");
+    EXPECT_NEAR(rt_mat4_get(rm, 0, 3), 1.0, 0.05, "ordered IK stack solves the right hand x");
+    EXPECT_NEAR(rt_mat4_get(rm, 1, 3), 1.0, 0.05, "ordered IK stack solves the right hand y");
 
     EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, skel) == 0,
                 "AddIKSolver rejects wrong-class handles");
@@ -826,16 +824,19 @@ static void test_controller_ordered_ik_solver_stack() {
                 "SetIKSolver(NULL) clears the whole ordered stack");
     lm = rt_anim_controller3d_get_bone_matrix(controller, lh);
     rm = rt_anim_controller3d_get_bone_matrix(controller, rh);
-    EXPECT_NEAR(rt_mat4_get(lm, 0, 3), 1.0, 0.01,
-                "clearing the IK stack restores the left bind pose");
-    EXPECT_NEAR(rt_mat4_get(rm, 0, 3), 3.0, 0.01,
-                "clearing the IK stack restores the right bind pose");
+    EXPECT_NEAR(
+        rt_mat4_get(lm, 0, 3), 1.0, 0.01, "clearing the IK stack restores the left bind pose");
+    EXPECT_NEAR(
+        rt_mat4_get(rm, 0, 3), 3.0, 0.01, "clearing the IK stack restores the right bind pose");
 }
 
-static void test_two_bone_ik_foot_aligns_to_ground_normal() {
-    /* The knee is given a 90-degree bind rotation so the foot's parent has a non-identity world
-     * rotation. That exercises the foot-orientation's local/world conversion: a version that
-     * forgot the parent inverse would only align correctly under an identity parent. */
+static void test_two_bone_ik_ground_normal_is_a_delta() {
+    /* ADR 0286: the ground pass tilts the ANIMATED foot rotation by the shortest arc from
+     * model +Y to the normal — it never replaces the rotation with an absolute basis. The
+     * knee carries a 90-degree bind rotation so the foot bone's +Y axis runs HORIZONTALLY
+     * (the ankle-toward-toe convention of imported humanoid rigs): the pre-ADR code forced
+     * that axis onto the normal and pitched the foot ~90 degrees toes-up. The rotated
+     * parent also exercises the parent-local conversion. */
     const double half_pi = 1.5707963267948966;
     void *skel = rt_skeleton3d_new();
     int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -847,25 +848,135 @@ static void test_two_bone_ik_foot_aligns_to_ground_normal() {
 
     void *controller = rt_anim_controller3d_new(skel);
     void *solver = rt_ik_solver3d_two_bone(skel, root, knee, foot);
-    rt_ik_solver3d_set_target(solver, rt_vec3_new(1.5, 0.5, 0.0));
+    /* Target = the bind foot position, so the positional solve is a no-op: this is exactly
+     * the standing-still case where the old absolute basis still flipped the foot. */
+    rt_ik_solver3d_set_target(solver, rt_vec3_new(1.0, 1.0, 0.0));
     rt_ik_solver3d_set_weight(solver, 1.0);
-    /* A slope normal tilted away from world up. */
+    rt_ik_solver3d_set_ground_normal(solver, rt_vec3_new(0.0, 1.0, 0.0));
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D accepts the ground-normal IK solver");
+
+    /* Flat ground: the authored rotation survives exactly. In bind the foot's global X axis
+     * is (0,1,0) and its global Y axis is (-1,0,0) — horizontal, like a real foot bone. */
+    void *foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 0), 0.0, 0.05, "flat normal keeps foot X axis.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 0), 1.0, 0.05, "flat normal keeps foot X axis.y");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 1),
+                -1.0,
+                0.05,
+                "flat normal keeps the horizontal foot Y axis.x (no toes-up flip)");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 1),
+                0.0,
+                0.05,
+                "flat normal keeps the horizontal foot Y axis.y (no toes-up flip)");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 3), 1.0, 0.03, "zero-correction solve keeps foot x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 3), 1.0, 0.03, "zero-correction solve keeps foot y");
+
+    /* Slope: normalize (0.5, 1, 0); the delta is a rotation of acos(0.8944) about -Z, so the
+     * foot's bind X axis (0,1,0) lands exactly on the normal and its Y axis tilts with it. */
     double nx = 0.5, ny = 1.0, nz = 0.0;
     double nlen = std::sqrt(nx * nx + ny * ny + nz * nz);
     nx /= nlen;
     ny /= nlen;
     nz /= nlen;
     rt_ik_solver3d_set_ground_normal(solver, rt_vec3_new(nx, ny, nz));
-    rt_ik_solver3d_solve(solver);
     EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
-                "AnimController3D accepts the foot-orientation IK solver");
+                "AnimController3D recomputes after a ground-normal change");
+    foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 0), nx, 0.05, "slope tilts foot X axis onto normal.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 0), ny, 0.05, "slope tilts foot X axis onto normal.y");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 2, 0), nz, 0.05, "slope tilts foot X axis onto normal.z");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 1), -ny, 0.05, "slope tilts foot Y axis by the delta.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 1), nx, 0.05, "slope tilts foot Y axis by the delta.y");
+}
 
-    /* The foot's world up axis (global matrix column 1) should align with the ground normal,
-     * regardless of the rotated knee parent. */
+static void test_two_bone_ik_target_rotation_goal() {
+    /* ADR 0286: SetTargetRotation slerps the end bone toward a model-space quaternion goal
+     * after the positional solve, wins over a ground normal, and ClearTargetRotation restores
+     * the positional-only result. A straight +X chain with the target at the bind end position
+     * keeps every rotation analytic. */
+    const double sqrt_half = 0.7071067811865476;
+    void *skel = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t knee =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("knee"), root, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t foot =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("foot"), knee, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *controller = rt_anim_controller3d_new(skel);
+    void *solver = rt_ik_solver3d_two_bone(skel, root, knee, foot);
+    rt_ik_solver3d_set_target(solver, rt_vec3_new(2.0, 0.0, 0.0));
+    rt_ik_solver3d_set_weight(solver, 1.0);
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D accepts the goal-rotation IK solver");
     void *foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
-    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 1), nx, 0.05, "Foot IK aligns foot up.x to ground normal");
-    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 1), ny, 0.05, "Foot IK aligns foot up.y to ground normal");
-    EXPECT_NEAR(rt_mat4_get(foot_mat, 2, 1), nz, 0.05, "Foot IK aligns foot up.z to ground normal");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 0), 1.0, 0.01, "positional-only baseline X axis.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 0), 0.0, 0.01, "positional-only baseline X axis.y");
+
+    /* Full-weight goal: rotate the foot 90 degrees about Z. */
+    rt_ik_solver3d_set_target_rotation(solver, rt_quat_new(0.0, 0.0, sqrt_half, sqrt_half));
+    /* Also set a conflicting ground normal: the explicit goal must take precedence. */
+    rt_ik_solver3d_set_ground_normal(solver, rt_vec3_new(0.0, 0.0, 1.0));
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D recomputes with a target rotation installed");
+    foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 0), 0.0, 0.03, "target rotation turns foot X axis.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 0), 1.0, 0.03, "target rotation turns foot X axis.y");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 3), 2.0, 0.03, "target rotation preserves foot x");
+
+    /* Half weight halves the goal: the foot X axis sits at 45 degrees. */
+    rt_ik_solver3d_set_weight(solver, 0.5);
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D recomputes after a weight change");
+    foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 0, 0), sqrt_half, 0.03, "half-weight goal X axis.x");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 0), sqrt_half, 0.03, "half-weight goal X axis.y");
+
+    /* Clearing the goal falls back to the ground normal: +Y tilts onto +Z (delta over an
+     * identity animated rotation), so the foot Y axis lands on the normal. */
+    rt_ik_solver3d_set_weight(solver, 1.0);
+    rt_ik_solver3d_clear_target_rotation(solver);
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D recomputes after clearing the target rotation");
+    foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 1, 1), 0.0, 0.03, "cleared goal falls back to ground.y");
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 2, 1), 1.0, 0.03, "cleared goal falls back to ground.z");
+
+    /* Invalid goal objects are ignored and leave the stored goal untouched. */
+    rt_ik_solver3d_set_target_rotation(solver, skel);
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "AnimController3D recomputes after an ignored invalid goal");
+    foot_mat = rt_anim_controller3d_get_bone_matrix(controller, foot);
+    EXPECT_NEAR(rt_mat4_get(foot_mat, 2, 1),
+                1.0,
+                0.03,
+                "non-Quat goal input is ignored (ground fallback still applies)");
+}
+
+static void test_add_ik_solver_rejects_source_skeleton_solver_on_clone() {
+    /* AddIKSolver requires the controller's exact skeleton object. A solver built on the
+     * SOURCE skeleton must be rejected against a CloneMutable-backed controller — this is
+     * the silent-no-op path a demo hits when it wires solvers to the wrong rig handle. */
+    void *source = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(source, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t mid = rt_skeleton3d_add_bone(
+        source, rt_const_cstr("mid"), root, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t end =
+        rt_skeleton3d_add_bone(source, rt_const_cstr("end"), mid, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(source);
+    void *clone = rt_skeleton3d_clone_mutable(source);
+    EXPECT_TRUE(clone != nullptr, "CloneMutable produces a clone for solver-binding checks");
+
+    void *controller = rt_anim_controller3d_new(clone);
+    void *source_solver = rt_ik_solver3d_two_bone(source, root, mid, end);
+    void *clone_solver = rt_ik_solver3d_two_bone(clone, root, mid, end);
+    EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, source_solver) == 0,
+                "AddIKSolver rejects a solver bound to the source skeleton");
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, source_solver) == 0,
+                "SetIKSolver rejects a solver bound to the source skeleton");
+    EXPECT_TRUE(rt_anim_controller3d_add_ik_solver(controller, clone_solver) == 1,
+                "AddIKSolver accepts a solver bound to the controller's clone");
 }
 
 static void test_ik_solver_look_at_and_fabrik_factories() {
@@ -976,6 +1087,11 @@ static void test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage() 
     layout->ground_normal[2] = 0.0f;
     layout->has_pole = -7;
     layout->has_ground_normal = 42;
+    layout->target_rotation[0] = std::numeric_limits<float>::quiet_NaN();
+    layout->target_rotation[1] = 0.0f;
+    layout->target_rotation[2] = 0.0f;
+    layout->target_rotation[3] = 0.0f;
+    layout->has_target_rotation = 42;
     layout->weight = std::numeric_limits<float>::infinity();
     rt_ik_solver3d_solve(solver);
     EXPECT_TRUE(layout->solved_locals == owned_locals && layout->solved_globals == owned_globals,
@@ -995,6 +1111,12 @@ static void test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage() 
                 1.0,
                 1e-6,
                 "IKSolver3D repairs a degenerate retained ground normal to world up");
+    EXPECT_TRUE(layout->has_target_rotation == 1,
+                "IKSolver3D canonicalizes the retained target-rotation flag");
+    EXPECT_NEAR(layout->target_rotation[3],
+                1.0,
+                1e-6,
+                "IKSolver3D repairs a degenerate retained target rotation to identity");
     EXPECT_NEAR(layout->weight, 0.0, 0.0, "IKSolver3D repairs a nonfinite retained weight");
 
     float locals[2 * 16];
@@ -1636,7 +1758,9 @@ int main() {
     test_two_bone_ik_bends_bone_rotations();
     test_controller_ik_solver_drives_end_effector();
     test_controller_ordered_ik_solver_stack();
-    test_two_bone_ik_foot_aligns_to_ground_normal();
+    test_two_bone_ik_ground_normal_is_a_delta();
+    test_two_bone_ik_target_rotation_goal();
+    test_add_ik_solver_rejects_source_skeleton_solver_on_clone();
     test_ik_solver_look_at_and_fabrik_factories();
     test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage();
     test_controller_animation_lod_throttles_updates_deterministically();

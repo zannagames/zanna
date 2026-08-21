@@ -8,7 +8,7 @@ last-verified: 2026-08-17
 
 > **Development Status:** Pre-Alpha. Zanna is under active development and not ready for production use.
 
-## Version 0.2.99 — Pre-Alpha (DRAFT — unreleased)
+## Version 0.3.0 — Pre-Alpha (DRAFT — unreleased)
 
 <!-- DRAFT: release date TBD. v0.2.7 was cut on 2026-06-30. -->
 
@@ -49,7 +49,7 @@ The final round came from using Zanna rather than building it. A full-size game 
 
 ### By the Numbers
 
-| Metric | v0.2.7 | v0.2.99 | Delta |
+| Metric | v0.2.7 | v0.3.0 | Delta |
 |---|---|---|---|
 | Commits | — | 262 | +262 |
 | Source files | 3,402 | 3,691 | +289 |

@@ -2248,7 +2248,7 @@ Grouped by rule; the long tail is in Part 2 per-namespace notes.
 ## Appendix — Method
 
 - Ground truth: `./build/src/tools/zanna/zanna --dump-runtime-api` from this
-  checkout (v0.2.99-snapshot; 514 classes / 7,384 functions / 5,272 methods
+  checkout (v0.3.0-snapshot; 514 classes / 7,384 functions / 5,272 methods
   / 1,828 properties), saved and analyzed with ten sweep scripts
   (vocabulary matrix, lifecycle symmetry, boolean naming, accessor/property
   duplication, abbreviation/acronym scan, unit conventions, parameter

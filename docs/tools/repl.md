@@ -27,7 +27,7 @@ vbasic                  # zero-arg vbasic launches the BASIC REPL directly
 You'll see a prompt where you can type code:
 
 ```text
-Zanna zia REPL v0.2.99.20260704
+Zanna zia REPL v0.3.0
 Type .help for commands, .quit to exit.
 
 zia> 2 + 3

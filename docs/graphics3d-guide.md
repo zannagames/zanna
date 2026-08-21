@@ -3607,17 +3607,22 @@ runtime target while still using authored animation as the base pose.
 | `SetTarget(pos)` | `void(obj)` | Set the target as a `Vec3` |
 | `SetWeight(w)` | `void(f64)` | Blend solver output from `0.0` to `1.0`; non-finite values become zero |
 | `SetPole(pos)` | `void(obj)` | Set a world-space pole target for `TwoBone` bend-plane control |
-| `SetGroundNormal(normal)` | `void(obj)` | Set a world-space ground normal used to orient solved end-effectors |
+| `SetGroundNormal(normal)` | `void(obj)` | Set a ground normal; the end bone's animated rotation is tilted by the model-up-to-normal delta (flat ground is a no-op) |
+| `SetTargetRotation(rotation)` | `void(obj)` | Set a model-space `Quat` orientation goal for the end bone, applied after the positional solve; wins over `SetGroundNormal` |
+| `ClearTargetRotation()` | `void()` | Remove the end-bone orientation goal |
 | `Solve()` | `void()` | Solve against the skeleton bind pose for standalone inspection |
 
 Attach a solver to an animation controller with `AnimController3D.SetIKSolver(solver)` or the
 Game3D wrapper `Animator3D.SetIKSolver(solver)`. Controller-bound IK is applied after the base
 state/blend tree and overlay layers are composed, then before skinning palettes are generated.
 `TwoBone` and `FABRIK` use a positional FABRIK-style chain solve and preserve the chain root;
-`SetPole` swings a two-bone middle joint toward the requested bend plane, `SetGroundNormal` orients
-the solved end-effector toward terrain/contact normals, and `LookAt` aims the selected bone's local
-+Z axis. `Solve()` solves against bind pose, while a bound controller solves against that
-controller's current animated pose.
+`SetPole` swings a two-bone middle joint toward the requested bend plane, and `LookAt` aims the
+selected bone's local +Z axis. End-bone orientation follows ADR 0286: `SetGroundNormal` composes
+the shortest-arc tilt from model +Y to the surface normal onto the animated end-bone rotation
+(so a flat surface changes nothing and no rig axis convention is assumed), while
+`SetTargetRotation` slerps the end bone toward an explicit model-space quaternion goal by solver
+weight and takes precedence over the ground hint. `Solve()` solves against bind pose, while a
+bound controller solves against that controller's current animated pose.
 
 ---
 

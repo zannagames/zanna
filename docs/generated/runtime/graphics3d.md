@@ -2459,6 +2459,8 @@ callers to construct the class directly. Its public surface exposes operations i
 | <a id="zanna-graphics3d-iksolver3d-setweight"></a>`SetWeight` | `void(f64)` | `Zanna.Graphics3D.IKSolver3D.SetWeight` |
 | <a id="zanna-graphics3d-iksolver3d-setpole"></a>`SetPole` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetPole` |
 | <a id="zanna-graphics3d-iksolver3d-setgroundnormal"></a>`SetGroundNormal` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetGroundNormal` |
+| <a id="zanna-graphics3d-iksolver3d-settargetrotation"></a>`SetTargetRotation` | `void(obj)` | `Zanna.Graphics3D.IKSolver3D.SetTargetRotation` |
+| <a id="zanna-graphics3d-iksolver3d-cleartargetrotation"></a>`ClearTargetRotation` | `void()` | `Zanna.Graphics3D.IKSolver3D.ClearTargetRotation` |
 | <a id="zanna-graphics3d-iksolver3d-solve"></a>`Solve` | `void()` | `Zanna.Graphics3D.IKSolver3D.Solve` |
 
 <a id="zanna-graphics3d-blendtree3d"></a>
@@ -4050,6 +4052,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.IKSolver3D.SetWeight` | `void(obj,f64)` | `rt_ik_solver3d_set_weight` |
 | `Zanna.Graphics3D.IKSolver3D.SetPole` | `void(obj,obj)` | `rt_ik_solver3d_set_pole` |
 | `Zanna.Graphics3D.IKSolver3D.SetGroundNormal` | `void(obj,obj)` | `rt_ik_solver3d_set_ground_normal` |
+| `Zanna.Graphics3D.IKSolver3D.SetTargetRotation` | `void(obj,obj)` | `rt_ik_solver3d_set_target_rotation` |
+| `Zanna.Graphics3D.IKSolver3D.ClearTargetRotation` | `void(obj)` | `rt_ik_solver3d_clear_target_rotation` |
 | `Zanna.Graphics3D.IKSolver3D.Solve` | `void(obj)` | `rt_ik_solver3d_solve` |
 | `Zanna.Graphics3D.AnimController3D.New` | `obj(obj)` | `rt_anim_controller3d_new` |
 | `Zanna.Graphics3D.AnimController3D.AddState` | `i64(obj,str,obj)` | `rt_anim_controller3d_add_state` |

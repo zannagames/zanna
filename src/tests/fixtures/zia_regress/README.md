@@ -7,7 +7,7 @@ binary.
 
 Environment used for the observations:
 
-- Zanna `v0.2.99.20260704` (`0.2.7-dev-60-gef74b30b1-dirty`)
+- Zanna `v0.3.0` (`0.2.7-dev-60-gef74b30b1-dirty`)
 - IL `0.3.0`
 - macOS `26.5.2`, Apple Silicon (`arm64`)
 - Canvas3D backend: Metal

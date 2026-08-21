@@ -1,4 +1,4 @@
-# Alpha Readiness Punch List — v0.2.99 → v0.3.0-alpha
+# Alpha Readiness Punch List — v0.3.0 → v0.3.0-alpha
 
 **Date:** 2026-07-25
 **Basis:** Eight deep C/C++ source audits plus six subsystem readiness reviews against the

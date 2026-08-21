@@ -947,6 +947,20 @@ void rt_ik_solver3d_set_ground_normal(void *solver, void *normal) {
     (void)normal;
 }
 
+/// @brief Ignore the end-bone orientation goal assigned to a disabled IK solver.
+/// @param solver IKSolver3D handle (ignored).
+/// @param rotation Quat orientation goal (ignored).
+void rt_ik_solver3d_set_target_rotation(void *solver, void *rotation) {
+    (void)solver;
+    (void)rotation;
+}
+
+/// @brief Ignore clearing the end-bone orientation goal on a disabled IK solver.
+/// @param solver IKSolver3D handle (ignored).
+void rt_ik_solver3d_clear_target_rotation(void *solver) {
+    (void)solver;
+}
+
 /// @brief Return the fallback playback time for a disabled animation controller.
 /// @param controller AnimController3D handle (ignored).
 /// @return `0.0` seconds.

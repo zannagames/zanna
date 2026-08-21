@@ -6,7 +6,7 @@ last-verified: 2026-07-14
 
 # Zanna Runtime Library Reference
 
-> **Development line:** 0.2.99
+> **Development line:** 0.3.0
 > **Status:** Pre-Alpha — API subject to change
 > **Last updated:** 2026-07-14
 

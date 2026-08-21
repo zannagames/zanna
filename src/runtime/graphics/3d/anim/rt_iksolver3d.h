@@ -83,13 +83,30 @@ void rt_ik_solver3d_set_weight(void *solver, double weight);
 /// @param[in,out] solver IKSolver3D to configure.
 /// @param[in] pole Borrowed Vec3 position relative to the skeleton root.
 void rt_ik_solver3d_set_pole(void *solver, void *pole);
-/// @brief Set a ground normal; the chain's end (foot) bone is oriented so its sole-up axis aligns
-///        with it after the position solve. Non-Vec3 normals are ignored.
-/// @details The direction is interpreted in skeleton/model space, normalized,
-///          and replaced with `(0,1,0)` when degenerate.
+/// @brief Set a ground normal; after the position solve the chain's end (foot) bone is tilted by
+///        the shortest arc from model +Y to it, on top of its animated rotation (ADR 0286).
+///        Non-Vec3 normals are ignored.
+/// @details A flat normal (model +Y) leaves the authored pose untouched; a
+///          slope leans it with the surface, independent of the rig's bone-axis
+///          convention. The direction is interpreted in skeleton/model space,
+///          normalized, and replaced with `(0,1,0)` when degenerate. A target
+///          rotation, when set, takes precedence over this hint.
 /// @param[in,out] solver IKSolver3D to configure.
-/// @param[in] normal Borrowed Vec3 sole-up direction.
+/// @param[in] normal Borrowed Vec3 surface normal.
 void rt_ik_solver3d_set_ground_normal(void *solver, void *normal);
+/// @brief Set a model-space orientation goal for the chain's end bone. Non-Quat inputs are
+///        ignored.
+/// @details Applied after the position solve by slerping the end bone toward
+///          the goal by solver weight; takes precedence over a ground normal
+///          (ADR 0286). Components are sanitized and the quaternion normalized
+///          (identity when degenerate). Look-at solvers have no end segment and
+///          ignore the goal.
+/// @param[in,out] solver IKSolver3D to configure.
+/// @param[in] rotation Borrowed Quat goal in skeleton/model space.
+void rt_ik_solver3d_set_target_rotation(void *solver, void *rotation);
+/// @brief Remove the end-bone orientation goal; positional solving is unaffected.
+/// @param[in,out] solver IKSolver3D to configure.
+void rt_ik_solver3d_clear_target_rotation(void *solver);
 /// @brief Solve the IK constraint against the skeleton bind pose.
 /// @details Reinitializes the solver-owned local matrices from bind pose and
 ///          refreshes its private model-space globals. This does not modify a
