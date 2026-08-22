@@ -44,7 +44,7 @@ class SceneComponentSchemaEnvironment3DLayer extends PreviousLayer.SceneComponen
         profile: SceneComponentModel.ScenePreview3DDefinition,
         schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
         if Map.Has(raw, "environmentLayers") == false { return true; }
-        var rawLayers = Map.Get(raw, "environmentLayers");
+        var rawLayers = Map.Get(raw, "environmentLayers") as Seq;
         if rawLayers == null or Json.TypeOf(rawLayers) != "array" {
             Reject(schema, "scenePreview3D environmentLayers must be an array.");
             return false;
@@ -332,7 +332,7 @@ class SceneComponentSchemaEnvironment3DLayer extends PreviousLayer.SceneComponen
         profile: SceneComponentModel.ScenePreview3DDefinition,
         schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
         if Map.Has(raw, "waterLayers") == false { return true; }
-        var rawLayers = Map.Get(raw, "waterLayers");
+        var rawLayers = Map.Get(raw, "waterLayers") as Seq;
         if rawLayers == null or Json.TypeOf(rawLayers) != "array" {
             Reject(schema, "scenePreview3D waterLayers must be an array.");
             return false;
@@ -642,7 +642,7 @@ class SceneComponentSchemaEnvironment3DLayer extends PreviousLayer.SceneComponen
         layer: SceneComponentModel.SceneWaterLayer3DDefinition,
         schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
         if Map.Has(rawLayer, "waves") {
-            var rawWaves = Map.Get(rawLayer, "waves");
+            var rawWaves = Map.Get(rawLayer, "waves") as Seq;
             if rawWaves == null or Json.TypeOf(rawWaves) != "array"
                or Seq.get_Count(rawWaves)
                   > SceneComponentModel.MAX_SCENE_WATER_PREVIEW_WAVES {

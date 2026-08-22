@@ -264,6 +264,34 @@ bool ZannaType::equals(const ZannaType &other) const {
     return true;
 }
 
+namespace {
+
+/// @brief Canonical `Zanna.Collections.*` class name for a collection type.
+/// @details Bridges the two spellings the type system uses for the same runtime
+///          class: the dedicated List/Map/Set kinds and the named-Ptr sentinels
+///          that carry Seq, Queue, Stack, Deque, Ring, Heap, and Bytes.
+/// @param type Candidate semantic type.
+/// @return Canonical collection class name, or an empty string when @p type is
+///         not a runtime collection.
+std::string collectionClassName(const ZannaType &type) {
+    switch (type.kind) {
+        case TypeKindSem::List:
+            return "Zanna.Collections.List";
+        case TypeKindSem::Map:
+            return "Zanna.Collections.Map";
+        case TypeKindSem::Set:
+            return "Zanna.Collections.Set";
+        case TypeKindSem::Ptr:
+            if (type.name.rfind("Zanna.Collections.", 0) == 0)
+                return type.name;
+            return {};
+        default:
+            return {};
+    }
+}
+
+} // namespace
+
 /// @brief Test whether a value of @p source may be assigned to this type.
 /// @param source Source value type.
 /// @return True for exact/compatible types, supported promotions, optional lifting, declared
@@ -320,9 +348,24 @@ bool ZannaType::isAssignableFrom(const ZannaType &source) const {
 
     // Ptr compatibility: concrete runtime reference values lower to pointers,
     // so they can be stored in an explicitly type-erased Ptr slot.
-    if (kind == TypeKindSem::Ptr && (source.kind == TypeKindSem::Ptr ||
-                                     source.kind == TypeKindSem::Function || source.isReference()))
-        return true;
+    //
+    // Collections are the exception. `Zanna.Collections.*` classes are distinct
+    // runtime classes with distinct class ids, and every receiver check is an
+    // exact class-id comparison (rt_obj_is_instance performs no hierarchy walk).
+    // Letting a List satisfy a Seq slot therefore does not type-erase, it just
+    // defers the failure to a trap like "Seq: invalid Seq object", which aborts
+    // the process. Require an exact collection match on both sides; unrelated
+    // runtime classes keep the historical permissive behaviour because Zia does
+    // not model the runtime GUI class hierarchy (a FloatingPanel is a Widget).
+    if (kind == TypeKindSem::Ptr) {
+        const std::string targetCollection = collectionClassName(*this);
+        const std::string sourceCollection = collectionClassName(source);
+        if (!targetCollection.empty() && !sourceCollection.empty() &&
+            targetCollection != sourceCollection)
+            return false;
+        return source.kind == TypeKindSem::Ptr || source.kind == TypeKindSem::Function ||
+               source.isReference();
+    }
 
     if (kind == TypeKindSem::Result && source.kind == TypeKindSem::Result && !typeArgs.empty() &&
         !source.typeArgs.empty()) {

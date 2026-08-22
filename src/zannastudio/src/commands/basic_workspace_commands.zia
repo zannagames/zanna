@@ -48,7 +48,7 @@ final RESULT_ROWS_PER_FRAME = 100;
 class BasicWorkspaceCommandController {
     expose basic_workspace_query_job.BasicWorkspaceQueryJob job;
     expose Integer pendingGeneration;
-    expose Any renderItems;
+    expose Seq renderItems;
     expose Integer renderIndex;
     expose Integer renderKind;
     expose String renderLabel;
@@ -273,7 +273,7 @@ class BasicWorkspaceCommandController {
         shell: app_shell.AppShell,
         request: basic_workspace_query_job.BasicWorkspaceQueryRequest,
         result: Any) {
-        var edits = Map.Get(result, "edits");
+        var edits = Map.Get(result, "edits") as Seq;
         if edits == null or Seq.get_Count(edits) == 0 {
             GUI.Toast.Warning("Rename failed: no references found");
             return;
@@ -293,7 +293,7 @@ class BasicWorkspaceCommandController {
                              kind: Integer,
                              label: String,
                              result: Any) {
-        renderItems = Map.Get(result, "items");
+        renderItems = Map.Get(result, "items") as Seq;
         renderIndex = 0;
         renderKind = kind;
         renderLabel = label;

@@ -26,7 +26,7 @@ bind Obj = Zanna.Core.Object;
 bind Str = Zanna.String;
 
 /// @brief Build block-end lookups in a fixed number of reverse source passes.
-func Build(lines: Any) -> Any {
+func Build(lines: Seq) -> Any {
     var index = Map.New();
     IndexKeyword(lines, index, "FUNCTION");
     IndexKeyword(lines, index, "SUB");
@@ -58,7 +58,7 @@ func IsStart(line: String,
                Str.Trim(Str.Left(line, column - 1)), "END") == false;
 }
 
-func IndexKeyword(lines: Any,
+func IndexKeyword(lines: Seq,
                   index: Any,
                   keyword: String) {
     var lineCount = Seq.get_Count(lines);

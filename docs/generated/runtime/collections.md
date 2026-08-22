@@ -958,10 +958,10 @@ Constructor: `Zanna.Collections.Seq.New`
 | <a id="zanna-collections-seq-toqueue"></a>`ToQueue` | `obj<Zanna.Collections.Queue>()` | `Zanna.Collections.Seq.ToQueue` |
 | <a id="zanna-collections-seq-todeque"></a>`ToDeque` | `obj<Zanna.Collections.Deque>()` | `Zanna.Collections.Seq.ToDeque` |
 | <a id="zanna-collections-seq-tostringset"></a>`ToStringSet` | `obj<Zanna.Collections.StringSet>()` | `Zanna.Collections.Seq.ToStringSet` |
-| <a id="zanna-collections-seq-new"></a>`New` | `obj()` | `Zanna.Collections.Seq.New` |
-| <a id="zanna-collections-seq-getstr"></a>`GetStr` | `str(obj,i64)` | `Zanna.Collections.Seq.GetStr` |
-| <a id="zanna-collections-seq-newsized"></a>`NewSized` | `obj(i64)` | `Zanna.Collections.Seq.NewSized` |
-| <a id="zanna-collections-seq-withcapacity"></a>`WithCapacity` | `obj(i64)` | `Zanna.Collections.Seq.WithCapacity` |
+| <a id="zanna-collections-seq-new"></a>`New` | `obj<Zanna.Collections.Seq>()` | `Zanna.Collections.Seq.New` |
+| <a id="zanna-collections-seq-getstr"></a>`GetStr` | `str(seq<obj>,i64)` | `Zanna.Collections.Seq.GetStr` |
+| <a id="zanna-collections-seq-newsized"></a>`NewSized` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Collections.Seq.NewSized` |
+| <a id="zanna-collections-seq-withcapacity"></a>`WithCapacity` | `obj<Zanna.Collections.Seq>(i64)` | `Zanna.Collections.Seq.WithCapacity` |
 
 <a id="zanna-collections-stack"></a>
 ### `Zanna.Collections.Stack`
@@ -1480,51 +1480,51 @@ Constructor: `Zanna.Collections.Deque.New`
 | `Zanna.Collections.Ring.SetOwnsElements` | `void(obj,i1)` | `rt_ring_set_owns_elements` |
 | `Zanna.Collections.Ring.Clone` | `obj<Zanna.Collections.Ring>(obj)` | `rt_ring_clone` |
 | `Zanna.Collections.Ring.ToSeq` | `obj<Zanna.Collections.Seq>(obj)` | `rt_ring_to_seq` |
-| `Zanna.Collections.Seq.Clear` | `void(obj)` | `rt_seq_clear` |
-| `Zanna.Collections.Seq.Clone` | `obj<Zanna.Collections.Seq>(obj)` | `rt_seq_clone` |
-| <a id="zanna-collections-seq-get-capacity"></a>`Zanna.Collections.Seq.get_Capacity` | `i64(obj)` | `rt_seq_cap` |
-| `Zanna.Collections.Seq.FindOption` | `obj<Zanna.Option>(obj,obj)` | `rt_seq_find_option` |
-| `Zanna.Collections.Seq.First` | `obj(obj)` | `rt_seq_first` |
-| `Zanna.Collections.Seq.Get` | `obj(obj,i64)` | `rt_seq_get` |
-| `Zanna.Collections.Seq.GetStr` | `str(obj,i64)` | `rt_seq_get_str` |
-| `Zanna.Collections.Seq.Has` | `i1(obj,obj)` | `rt_seq_has` |
-| `Zanna.Collections.Seq.Insert` | `void(obj,i64,obj)` | `rt_seq_insert` |
-| <a id="zanna-collections-seq-get-isempty"></a>`Zanna.Collections.Seq.get_IsEmpty` | `i1(obj)` | `rt_seq_is_empty` |
-| `Zanna.Collections.Seq.Last` | `obj(obj)` | `rt_seq_last` |
-| <a id="zanna-collections-seq-get-count"></a>`Zanna.Collections.Seq.get_Count` | `i64(obj)` | `rt_seq_len` |
-| `Zanna.Collections.Seq.New` | `obj()` | `rt_seq_new_owned` |
-| `Zanna.Collections.Seq.NewSized` | `obj(i64)` | `rt_seq_new_sized` |
-| `Zanna.Collections.Seq.Peek` | `obj(obj)` | `rt_seq_peek` |
-| `Zanna.Collections.Seq.Pop` | `obj(obj)` | `rt_seq_pop` |
-| `Zanna.Collections.Seq.Push` | `void(obj,obj)` | `rt_seq_push` |
-| `Zanna.Collections.Seq.PushAll` | `void(obj,obj)` | `rt_seq_push_all` |
-| `Zanna.Collections.Seq.RemoveAt` | `obj(obj,i64)` | `rt_seq_remove` |
-| `Zanna.Collections.Seq.Reverse` | `void(obj)` | `rt_seq_reverse` |
-| `Zanna.Collections.Seq.Set` | `void(obj,i64,obj)` | `rt_seq_set` |
-| `Zanna.Collections.Seq.Shuffle` | `void(obj)` | `rt_seq_shuffle` |
-| `Zanna.Collections.Seq.Slice` | `obj<Zanna.Collections.Seq>(obj,i64,i64)` | `rt_seq_slice` |
-| `Zanna.Collections.Seq.Sort` | `void(obj)` | `rt_seq_sort` |
-| `Zanna.Collections.Seq.SortDesc` | `void(obj)` | `rt_seq_sort_desc` |
-| `Zanna.Collections.Seq.WithCapacity` | `obj(i64)` | `rt_seq_with_capacity_owned` |
-| `Zanna.Collections.Seq.Take` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_seq_take` |
-| `Zanna.Collections.Seq.Drop` | `obj<Zanna.Collections.Seq>(obj,i64)` | `rt_seq_drop` |
-| `Zanna.Collections.Seq.Filter` | `obj<Zanna.Collections.Seq>(obj,obj)` | `rt_seq_keep_wrapper` |
-| `Zanna.Collections.Seq.Reject` | `obj<Zanna.Collections.Seq>(obj,obj)` | `rt_seq_reject_wrapper` |
-| `Zanna.Collections.Seq.Map` | `obj<Zanna.Collections.Seq>(obj,obj)` | `rt_seq_apply_wrapper` |
-| `Zanna.Collections.Seq.All` | `i1(obj,obj)` | `rt_seq_all_wrapper` |
-| `Zanna.Collections.Seq.Any` | `i1(obj,obj)` | `rt_seq_any_wrapper` |
-| `Zanna.Collections.Seq.None` | `i1(obj,obj)` | `rt_seq_none_wrapper` |
-| `Zanna.Collections.Seq.CountWhere` | `i64(obj,obj)` | `rt_seq_count_where_wrapper` |
-| `Zanna.Collections.Seq.FindWhereOption` | `obj<Zanna.Option>(obj,obj)` | `rt_seq_find_where_option_wrapper` |
-| `Zanna.Collections.Seq.TakeWhile` | `obj<Zanna.Collections.Seq>(obj,obj)` | `rt_seq_take_while_wrapper` |
-| `Zanna.Collections.Seq.DropWhile` | `obj<Zanna.Collections.Seq>(obj,obj)` | `rt_seq_drop_while_wrapper` |
-| `Zanna.Collections.Seq.Fold` | `obj(obj,obj,obj)` | `rt_seq_fold_wrapper` |
-| `Zanna.Collections.Seq.ToList` | `obj<Zanna.Collections.List>(obj)` | `rt_seq_to_list` |
-| `Zanna.Collections.Seq.ToSet` | `obj<Zanna.Collections.Set>(obj)` | `rt_seq_to_set` |
-| `Zanna.Collections.Seq.ToStack` | `obj<Zanna.Collections.Stack>(obj)` | `rt_seq_to_stack` |
-| `Zanna.Collections.Seq.ToQueue` | `obj<Zanna.Collections.Queue>(obj)` | `rt_seq_to_queue` |
-| `Zanna.Collections.Seq.ToDeque` | `obj<Zanna.Collections.Deque>(obj)` | `rt_seq_to_deque` |
-| `Zanna.Collections.Seq.ToStringSet` | `obj<Zanna.Collections.StringSet>(obj)` | `rt_seq_to_bag` |
+| `Zanna.Collections.Seq.Clear` | `void(seq<obj>)` | `rt_seq_clear` |
+| `Zanna.Collections.Seq.Clone` | `obj<Zanna.Collections.Seq>(seq<obj>)` | `rt_seq_clone` |
+| <a id="zanna-collections-seq-get-capacity"></a>`Zanna.Collections.Seq.get_Capacity` | `i64(seq<obj>)` | `rt_seq_cap` |
+| `Zanna.Collections.Seq.FindOption` | `obj<Zanna.Option>(seq<obj>,obj)` | `rt_seq_find_option` |
+| `Zanna.Collections.Seq.First` | `obj(seq<obj>)` | `rt_seq_first` |
+| `Zanna.Collections.Seq.Get` | `obj(seq<obj>,i64)` | `rt_seq_get` |
+| `Zanna.Collections.Seq.GetStr` | `str(seq<obj>,i64)` | `rt_seq_get_str` |
+| `Zanna.Collections.Seq.Has` | `i1(seq<obj>,obj)` | `rt_seq_has` |
+| `Zanna.Collections.Seq.Insert` | `void(seq<obj>,i64,obj)` | `rt_seq_insert` |
+| <a id="zanna-collections-seq-get-isempty"></a>`Zanna.Collections.Seq.get_IsEmpty` | `i1(seq<obj>)` | `rt_seq_is_empty` |
+| `Zanna.Collections.Seq.Last` | `obj(seq<obj>)` | `rt_seq_last` |
+| <a id="zanna-collections-seq-get-count"></a>`Zanna.Collections.Seq.get_Count` | `i64(seq<obj>)` | `rt_seq_len` |
+| `Zanna.Collections.Seq.New` | `obj<Zanna.Collections.Seq>()` | `rt_seq_new_owned` |
+| `Zanna.Collections.Seq.NewSized` | `obj<Zanna.Collections.Seq>(i64)` | `rt_seq_new_sized` |
+| `Zanna.Collections.Seq.Peek` | `obj(seq<obj>)` | `rt_seq_peek` |
+| `Zanna.Collections.Seq.Pop` | `obj(seq<obj>)` | `rt_seq_pop` |
+| `Zanna.Collections.Seq.Push` | `void(seq<obj>,obj)` | `rt_seq_push` |
+| `Zanna.Collections.Seq.PushAll` | `void(seq<obj>,seq<obj>)` | `rt_seq_push_all` |
+| `Zanna.Collections.Seq.RemoveAt` | `obj(seq<obj>,i64)` | `rt_seq_remove` |
+| `Zanna.Collections.Seq.Reverse` | `void(seq<obj>)` | `rt_seq_reverse` |
+| `Zanna.Collections.Seq.Set` | `void(seq<obj>,i64,obj)` | `rt_seq_set` |
+| `Zanna.Collections.Seq.Shuffle` | `void(seq<obj>)` | `rt_seq_shuffle` |
+| `Zanna.Collections.Seq.Slice` | `obj<Zanna.Collections.Seq>(seq<obj>,i64,i64)` | `rt_seq_slice` |
+| `Zanna.Collections.Seq.Sort` | `void(seq<obj>)` | `rt_seq_sort` |
+| `Zanna.Collections.Seq.SortDesc` | `void(seq<obj>)` | `rt_seq_sort_desc` |
+| `Zanna.Collections.Seq.WithCapacity` | `obj<Zanna.Collections.Seq>(i64)` | `rt_seq_with_capacity_owned` |
+| `Zanna.Collections.Seq.Take` | `obj<Zanna.Collections.Seq>(seq<obj>,i64)` | `rt_seq_take` |
+| `Zanna.Collections.Seq.Drop` | `obj<Zanna.Collections.Seq>(seq<obj>,i64)` | `rt_seq_drop` |
+| `Zanna.Collections.Seq.Filter` | `obj<Zanna.Collections.Seq>(seq<obj>,obj)` | `rt_seq_keep_wrapper` |
+| `Zanna.Collections.Seq.Reject` | `obj<Zanna.Collections.Seq>(seq<obj>,obj)` | `rt_seq_reject_wrapper` |
+| `Zanna.Collections.Seq.Map` | `obj<Zanna.Collections.Seq>(seq<obj>,obj)` | `rt_seq_apply_wrapper` |
+| `Zanna.Collections.Seq.All` | `i1(seq<obj>,obj)` | `rt_seq_all_wrapper` |
+| `Zanna.Collections.Seq.Any` | `i1(seq<obj>,obj)` | `rt_seq_any_wrapper` |
+| `Zanna.Collections.Seq.None` | `i1(seq<obj>,obj)` | `rt_seq_none_wrapper` |
+| `Zanna.Collections.Seq.CountWhere` | `i64(seq<obj>,obj)` | `rt_seq_count_where_wrapper` |
+| `Zanna.Collections.Seq.FindWhereOption` | `obj<Zanna.Option>(seq<obj>,obj)` | `rt_seq_find_where_option_wrapper` |
+| `Zanna.Collections.Seq.TakeWhile` | `obj<Zanna.Collections.Seq>(seq<obj>,obj)` | `rt_seq_take_while_wrapper` |
+| `Zanna.Collections.Seq.DropWhile` | `obj<Zanna.Collections.Seq>(seq<obj>,obj)` | `rt_seq_drop_while_wrapper` |
+| `Zanna.Collections.Seq.Fold` | `obj(seq<obj>,obj,obj)` | `rt_seq_fold_wrapper` |
+| `Zanna.Collections.Seq.ToList` | `obj<Zanna.Collections.List>(seq<obj>)` | `rt_seq_to_list` |
+| `Zanna.Collections.Seq.ToSet` | `obj<Zanna.Collections.Set>(seq<obj>)` | `rt_seq_to_set` |
+| `Zanna.Collections.Seq.ToStack` | `obj<Zanna.Collections.Stack>(seq<obj>)` | `rt_seq_to_stack` |
+| `Zanna.Collections.Seq.ToQueue` | `obj<Zanna.Collections.Queue>(seq<obj>)` | `rt_seq_to_queue` |
+| `Zanna.Collections.Seq.ToDeque` | `obj<Zanna.Collections.Deque>(seq<obj>)` | `rt_seq_to_deque` |
+| `Zanna.Collections.Seq.ToStringSet` | `obj<Zanna.Collections.StringSet>(seq<obj>)` | `rt_seq_to_bag` |
 | `Zanna.Collections.Stack.Clear` | `void(obj)` | `rt_stack_clear` |
 | <a id="zanna-collections-stack-get-isempty"></a>`Zanna.Collections.Stack.get_IsEmpty` | `i1(obj)` | `rt_stack_is_empty` |
 | <a id="zanna-collections-stack-get-count"></a>`Zanna.Collections.Stack.get_Count` | `i64(obj)` | `rt_stack_len` |

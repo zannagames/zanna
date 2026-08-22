@@ -558,7 +558,7 @@ class Git {
     }
 
     /// @brief Start a reviewed argument-vector command supplied by an SCM peer module.
-    expose func StartPrepared(kind: String, args: Any, path: String) -> GitJob {
+    expose func StartPrepared(kind: String, args: Seq, path: String) -> GitJob {
         return StartCommand(kind, args, path, false); }
 
     expose func StartCheckout(branchName: String) -> GitJob {

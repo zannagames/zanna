@@ -202,7 +202,7 @@ class SceneComponentSchemaComponentsLayer extends PreviousLayer.SceneComponentSc
         raw: Any,
         component: SceneComponentModel.SceneComponentDefinition,
         schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
-        var rawFields = Map.Get(raw, "fields");
+        var rawFields = Map.Get(raw, "fields") as Seq;
         if rawFields == null or Json.TypeOf(rawFields) != "array" {
             Reject(
                 schema,
@@ -342,7 +342,7 @@ class SceneComponentSchemaComponentsLayer extends PreviousLayer.SceneComponentSc
     hide override func ParseEnumChoices(raw: Any,
                           field: SceneComponentModel.SceneComponentField,
                           schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
-        var rawChoices = Map.Get(raw, "choices");
+        var rawChoices = Map.Get(raw, "choices") as Seq;
         if rawChoices == null or Json.TypeOf(rawChoices) != "array" {
             Reject(
                 schema,
@@ -399,7 +399,7 @@ class SceneComponentSchemaComponentsLayer extends PreviousLayer.SceneComponentSc
             field.assetKinds.add("any");
             return true;
         }
-        var rawKinds = Map.Get(raw, "assetKinds");
+        var rawKinds = Map.Get(raw, "assetKinds") as Seq;
         if Json.TypeOf(rawKinds) != "array" {
             Reject(
                 schema,

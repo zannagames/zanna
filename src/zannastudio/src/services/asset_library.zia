@@ -164,7 +164,7 @@ expose func ParseText(text: String, sourcePath: String) -> AssetLibrary {
     if version.IsNone or version.UnwrapI64() != LIBRARY_VERSION {
         return Reject(library, "Unsupported asset library version.");
     }
-    var rawEntries = Map.Get(root, "entries");
+    var rawEntries = Map.Get(root, "entries") as Seq;
     if rawEntries == null or Json.TypeOf(rawEntries) != "array" {
         return Reject(library, "Asset library requires an entries array.");
     }
@@ -203,7 +203,7 @@ expose func UpsertEntryText(text: String,
         return "";
     }
     var root = Json.Parse(base);
-    var entries = Map.Get(root, "entries");
+    var entries = Map.Get(root, "entries") as Seq;
     if entries == null or Json.TypeOf(entries) != "array" {
         errorOut.add("The asset library needs an entries array.");
         return "";
@@ -263,7 +263,7 @@ expose func RemoveEntryText(text: String,
         return "";
     }
     var root = Json.Parse(text);
-    var entries = Map.Get(root, "entries");
+    var entries = Map.Get(root, "entries") as Seq;
     if entries == null or Json.TypeOf(entries) != "array" {
         errorOut.add("The asset library needs an entries array.");
         return "";
@@ -468,7 +468,7 @@ func ParseEntry(raw: Any,
     Map.SetBool(seenPaths, folded, true);
 
     if Map.Has(raw, "tags") {
-        var rawTags = Map.Get(raw, "tags");
+        var rawTags = Map.Get(raw, "tags") as Seq;
         if Json.TypeOf(rawTags) != "array"
            or Seq.get_Count(rawTags) > MAX_TAGS_PER_ENTRY {
             Reject(
@@ -556,7 +556,7 @@ func ReadGrid(raw: Any,
 }
 
 /// @brief Find one raw entry object by case-insensitive path.
-func FindRawEntry(entries: Any, relativePath: String) -> Any {
+func FindRawEntry(entries: Seq, relativePath: String) -> Any {
     var folded = Str.ToLower(Str.Trim(relativePath));
     var index = 0;
     while index < Seq.get_Count(entries) {

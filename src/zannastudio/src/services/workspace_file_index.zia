@@ -150,7 +150,7 @@ expose func EnumerateFiles(rootPath: String,
             cursor.Destroy();
             return result;
         }
-        var entries = Map.Get(page, "entries");
+        var entries = Map.Get(page, "entries") as Seq;
         var emitted = 0;
         if entries != null {
             var i = 0;

@@ -297,7 +297,7 @@ func FormatZiaLine(line: String,
 /// @return Brace-based indentation level before targetLine.
 /// @details Block-comment depth is carried while scanning so braces inside
 ///          comments do not affect indentation.
-func ZiaIndentBeforeLine(lines: Any,
+func ZiaIndentBeforeLine(lines: Seq,
                          targetLine: Integer) -> Integer {
     var indent = 0;
     var depth = 0;
@@ -346,7 +346,7 @@ func FormatBasicLine(line: String,
 /// @param lines Sequence of source lines.
 /// @param targetLine Zero-based line index where formatting starts.
 /// @return Keyword-based indentation level before targetLine.
-func BasicIndentBeforeLine(lines: Any,
+func BasicIndentBeforeLine(lines: Seq,
                            targetLine: Integer) -> Integer {
     var indent = 0;
     var i = 0;

@@ -73,7 +73,7 @@ expose func Normalize(indices: List[Integer],
 }
 
 /// @brief Convert byte-exact retained row data to validated model indices.
-expose func FromData(rowData: Any,
+expose func FromData(rowData: Seq,
                      itemCount: Integer,
                      primary: Integer) -> List[Integer] {
     var selected: List[Integer] = [];

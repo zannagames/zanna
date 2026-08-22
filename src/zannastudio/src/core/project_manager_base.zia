@@ -244,8 +244,9 @@ class ProjectManagerBase {
         return sourceFreshness.InvalidatePath(path);
     }
 
-    /// @brief Invalidate freshness after a batch of saved/watched paths.
-    expose func InvalidateSourceFreshnessPaths(paths: Any) -> Boolean {
+    /// @brief Invalidate freshness after a batch of saved paths.
+    /// @param paths Saved-path List produced by a build/run save preflight.
+    expose func InvalidateSourceFreshnessPaths(paths: List) -> Boolean {
         if sourceFreshness == null { return false; }
         if self.project != null and self.project.isOpen {
             sourceFreshness.EnsureProject(self.project.rootPath);

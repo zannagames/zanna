@@ -73,7 +73,7 @@ expose func ToggleLineCommentRangeText(source: String,
 /// @param endLine Zero-based last line to inspect, inclusive.
 /// @param marker Line-comment marker to find.
 /// @return True when the toggle should remove line-comment markers.
-expose func ShouldUncommentLineRange(lines: Any,
+expose func ShouldUncommentLineRange(lines: Seq,
                                      startLine: Integer,
                                      endLine: Integer,
                                      marker: String) -> Boolean {

@@ -167,7 +167,7 @@ expose func ZiaCommentDepthAfter(line: String, commentDepth: Integer) -> Integer
 /// @param lines Sequence returned by `Str.Split(source, "\n")`.
 /// @param targetLine Zero-based target line index.
 /// @return Block-comment depth before `targetLine`.
-expose func ZiaCommentDepthBeforeLine(lines: Any,
+expose func ZiaCommentDepthBeforeLine(lines: Seq,
                                       targetLine: Integer) -> Integer {
     var depth = 0;
     var i = 0;
@@ -247,7 +247,7 @@ expose func ZiaParenDelta(line: String, commentDepth: Integer) -> Integer {
 /// @param lines Sequence returned by `Str.Split(source, "\n")`.
 /// @param targetLine Zero-based target line index.
 /// @return Parenthesis/bracket depth before `targetLine`.
-expose func ZiaParenDepthBeforeLine(lines: Any,
+expose func ZiaParenDepthBeforeLine(lines: Seq,
                                     targetLine: Integer) -> Integer {
     var paren = 0;
     var depth = 0;

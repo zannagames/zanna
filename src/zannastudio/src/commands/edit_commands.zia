@@ -460,7 +460,7 @@ expose func ToggleLineCommentRangeText(source: String,
     return comment_commands.ToggleLineCommentRangeText(source, startLine, endLine, marker);
 }
 
-func ShouldUncommentLineRange(lines: Any,
+func ShouldUncommentLineRange(lines: Seq,
                               startLine: Integer,
                               endLine: Integer,
                               marker: String) -> Boolean {
@@ -655,17 +655,17 @@ func handleCreateMissingBind(shell: app_shell.AppShell,
     diagnostic_edit_commands.handleCreateMissingBind(shell, docMgr, engine, projMgr);
 }
 
-func DiagnosticFixItAt(records: Any,
+func DiagnosticFixItAt(records: Seq,
                        targetLine: Integer) -> Any {
     return diagnostic_edit_commands.DiagnosticFixItAt(records, targetLine);
 }
 
-func MissingRuntimeBindIdentifierAt(records: Any,
+func MissingRuntimeBindIdentifierAt(records: Seq,
                                     targetLine: Integer) -> String {
     return diagnostic_edit_commands.MissingRuntimeBindIdentifierAt(records, targetLine);
 }
 
-func MissingUndefinedIdentifierAt(records: Any,
+func MissingUndefinedIdentifierAt(records: Seq,
                                   targetLine: Integer) -> String {
     return diagnostic_edit_commands.MissingUndefinedIdentifierAt(records, targetLine);
 }
@@ -745,7 +745,7 @@ func StripTrailingCr(line: String) -> String {
     return text_utils.StripTrailingCr(line);
 }
 
-func SuppressibleDiagnosticCodeAt(records: Any, targetLine: Integer) -> String {
+func SuppressibleDiagnosticCodeAt(records: Seq, targetLine: Integer) -> String {
     return diagnostic_edit_commands.SuppressibleDiagnosticCodeAt(records, targetLine);
 }
 

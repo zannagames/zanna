@@ -293,8 +293,8 @@ class DebugSession extends View.DebugSessionViewLayer {
             lastReason = Zanna.Collections.Map.GetStr(ev, "reason");
             self.activePath = Zanna.Collections.Map.GetStr(ev, "path");
             lastLine = Zanna.Collections.Map.GetInt(ev, "line");
-            stopFrames = Map.Get(ev, "frames");
-            stopLocals = Map.Get(ev, "locals");
+            stopFrames = Map.Get(ev, "frames") as Seq;
+            stopLocals = Map.Get(ev, "locals") as Seq;
             consoleText = formatStopped(ev);
             RefreshWatches();
             dirty = true;
@@ -361,7 +361,7 @@ class DebugSession extends View.DebugSessionViewLayer {
             if responseId <= 0 or responseId != expectedVariableRequestId { return; }
             expectedVariableRequestId = 0;
             lastVarRef = Zanna.Collections.Map.GetInt(ev, "varRef");
-            lastVarChildren = Map.Get(ev, "vars");
+            lastVarChildren = Map.Get(ev, "vars") as Seq;
             if responseId == pendingVarRequestId {
                 CachePendingVariableChildren();
             }

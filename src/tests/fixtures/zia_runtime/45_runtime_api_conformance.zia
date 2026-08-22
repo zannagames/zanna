@@ -82,7 +82,7 @@ func testLazyDeferredFactory() {
     assertEqInt(lazySupplierRuns, 0, "lazy_new_not_evaluated_early");
     assertTrue(!deferred.get_IsEvaluated(), "lazy_new_is_evaluated_false");
 
-    var first = deferred.Get();
+    var first = deferred.Get() as Zanna.Collections.Seq;
     assertEqInt(lazySupplierRuns, 1, "lazy_new_supplier_ran_once");
     assertTrue(deferred.get_IsEvaluated(), "lazy_new_is_evaluated_true");
     assertEqStr(Zanna.Collections.Seq.GetStr(first, 0), "computed", "lazy_new_payload");

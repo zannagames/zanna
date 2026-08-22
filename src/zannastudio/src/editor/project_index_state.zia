@@ -23,6 +23,7 @@ bind "../editor/scheduler";
 bind "../services/workspace_file_cursor";
 
 bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
 
 final INDEX_IDLE_MS = 350;
 final INDEX_FILES_PER_FRAME = 8;
@@ -50,7 +51,7 @@ class ProjectIndexState {
     expose Integer pendingActiveRevision;
     expose Integer pendingSinceMs;
     expose Integer syncCount;
-    expose Any pendingIndexFiles;
+    expose Seq pendingIndexFiles;
     expose Integer pendingIndexPos;
     expose Integer pendingIndexRootIndex;
     expose Integer pendingIndexOffset;

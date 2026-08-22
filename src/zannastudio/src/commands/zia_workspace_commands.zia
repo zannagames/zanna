@@ -50,7 +50,7 @@ final INDEX_FILES_PER_WAITING_FRAME = 32;
 class ZiaWorkspaceCommandController {
     expose zia_workspace_query_job.ZiaWorkspaceQueryJob job;
     expose Integer pendingGeneration;
-    expose Any renderItems;
+    expose Seq renderItems;
     expose Integer renderIndex;
     expose Integer renderLimit;
     expose Integer renderKind;
@@ -428,7 +428,7 @@ class ZiaWorkspaceCommandController {
             shell.SetStatusLeft("Rename failed: " + reason);
             return;
         }
-        var edits = Map.Get(rename, "edits");
+        var edits = Map.Get(rename, "edits") as Seq;
         if edits == null or Seq.get_Count(edits) == 0 {
             GUI.Toast.Warning("Rename failed: no references found");
             return;
@@ -446,7 +446,7 @@ class ZiaWorkspaceCommandController {
     hide func BeginRendering(
         shell: app_shell.AppShell,
         request: zia_workspace_query_job.ZiaWorkspaceQueryRequest) {
-        renderItems = request.result;
+        renderItems = request.result as Seq;
         renderIndex = 0;
         renderLimit = request.resultCount;
         renderKind = request.kind;

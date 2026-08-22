@@ -54,7 +54,7 @@ class WorkspaceEditPreview {
     expose Boolean visible;
     expose Integer pendingAction;
     expose Integer completedAction;
-    expose Any edits;
+    expose Seq edits;
     expose List allowedRoots;
     expose String newName;
     expose String validationMessage;
@@ -144,7 +144,7 @@ class WorkspaceEditPreview {
     /// @param requestedName New identifier selected by the user.
     /// @return True when a non-empty preview opened.
     expose func OpenRename(shell: app_shell.AppShell,
-                           editPayload: Any,
+                           editPayload: Seq,
                            roots: List,
                            requestedName: String) -> Boolean {
         if panel == null or shell == null or editPayload == null {

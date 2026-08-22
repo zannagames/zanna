@@ -415,6 +415,58 @@ bool canAutoStringifyForTerminal(TypeRef type) {
 /// @param calleeName Display name used in diagnostics and declaration lookup.
 /// @details Rejects named arguments, validates arity including declaration defaults/variadics,
 ///          and checks each fixed or variadic argument against its target type.
+/// @brief Type-check a runtime extern call written in explicit-receiver form.
+/// @details See the declaration in Sema.hpp for why extern calls are otherwise
+///          exempt. Only exact arity matches are checked, so the implicit-receiver
+///          method form and defaulted-argument shapes stay untouched.
+/// @param expr Call expression supplying argument values and locations.
+/// @param funcType Resolved extern function type carrying parameter types.
+void Sema::validateExternCallArgTypes(CallExpr *expr, TypeRef funcType) {
+    if (!expr || !funcType || funcType->kind != TypeKindSem::Function)
+        return;
+    const std::vector<TypeRef> paramTys = funcType->paramTypes();
+    if (paramTys.size() != expr->args.size())
+        return;
+
+    /// @brief Test whether a parameter names a runtime collection class.
+    /// @param type Declared parameter type.
+    /// @return True for List/Map/Set and for `Zanna.Collections.*` handles.
+    auto isRuntimeCollection = [](const TypeRef &type) {
+        if (!type)
+            return false;
+        switch (type->kind) {
+            case TypeKindSem::List:
+            case TypeKindSem::Map:
+            case TypeKindSem::Set:
+                return true;
+            case TypeKindSem::Ptr:
+                return type->name.rfind("Zanna.Collections.", 0) == 0;
+            default:
+                return false;
+        }
+    };
+
+    for (size_t i = 0; i < paramTys.size(); ++i) {
+        TypeRef paramType = paramTys[i];
+        if (!paramType || paramType->kind == TypeKindSem::Unknown)
+            continue;
+        // Only collection parameters are policed here. Scalar parameters accept
+        // documented implicit coercions (Terminal.Say stringification, Integer
+        // widening) that bindExternCallOnCall applies afterwards, so checking
+        // them at this point would reject valid calls.
+        if (!isRuntimeCollection(paramType))
+            continue;
+        auto it = exprTypes_.find(expr->args[i].value.get());
+        if (it == exprTypes_.end())
+            continue;
+        TypeRef argType = it->second;
+        if (!argType || argType->kind == TypeKindSem::Unknown)
+            continue;
+        if (!paramType->isAssignableFrom(*argType))
+            errorTypeMismatch(expr->args[i].value->loc, paramType, argType);
+    }
+}
+
 void Sema::validateCallArgs(CallExpr *expr, TypeRef funcType, const std::string &calleeName) {
     if (!funcType || funcType->kind != TypeKindSem::Function)
         return;
@@ -1491,6 +1543,7 @@ TypeRef Sema::analyzeCall(CallExpr *expr) {
                 if (!sym->isExtern) {
                     validateCallArgs(expr, funcType, dottedName);
                 } else {
+                    validateExternCallArgTypes(expr, funcType);
                     TypeRef terminalTextResult = nullptr;
                     if (tryBindTerminalTextCall(expr, dottedName, sym, terminalTextResult))
                         return terminalTextResult;

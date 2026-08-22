@@ -43,7 +43,7 @@ class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaC
                           schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
         var strictLegacy = schema.version
             < FormsModel.SCENE_SETTINGS_SCHEMA_VERSION;
-        var rawChoices = Map.Get(raw, "choices");
+        var rawChoices = Map.Get(raw, "choices") as Seq;
         if rawChoices == null or Json.TypeOf(rawChoices) != "array" {
             Reject(
                 schema,
@@ -169,7 +169,7 @@ class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaC
                     + FormsModel.SCENE_SETTINGS_SCHEMA_VERSION + ".");
             return false;
         }
-        var raw = Map.Get(root, "sceneComponents");
+        var raw = Map.Get(root, "sceneComponents") as Seq;
         if Json.TypeOf(raw) != "array" {
             Reject(schema, "sceneComponents must be an array.");
             return false;
@@ -251,7 +251,7 @@ class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaC
                     + "\" requires a fields array.");
             return null;
         }
-        var fields = Map.Get(raw, "fields");
+        var fields = Map.Get(raw, "fields") as Seq;
         if Seq.get_Count(fields) > FormsModel.MAX_SCENE_FORM_FIELDS {
             Reject(
                 schema,
@@ -424,7 +424,7 @@ class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaC
             or field.kind == FormsModel.KIND_VEC2
             or field.kind == FormsModel.KIND_VEC3;
         if wantsKeys and Map.Has(raw, "keys") {
-            var keys = Map.Get(raw, "keys");
+            var keys = Map.Get(raw, "keys") as Seq;
             if Json.TypeOf(keys) != "array" {
                 Reject(
                     schema,
@@ -580,7 +580,7 @@ class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaC
                     + component.name + "\" requires a choices array.");
             return false;
         }
-        var choices = Map.Get(raw, "choices");
+        var choices = Map.Get(raw, "choices") as Seq;
         if Seq.get_Count(choices) < 1
            or Seq.get_Count(choices) > FormsModel.MAX_LABELED_CHOICES {
             Reject(

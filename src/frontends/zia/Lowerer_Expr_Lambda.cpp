@@ -20,6 +20,7 @@
 
 #include "frontends/zia/Lowerer.hpp"
 #include "frontends/zia/RuntimeNames.hpp"
+#include "il/runtime/classes/RuntimeClasses.hpp"
 
 #include <algorithm>
 #include <functional>
@@ -483,6 +484,22 @@ LowerResult Lowerer::lowerAs(AsExpr *expr) {
             // i32 -> i64: zero-extend widening
             Value widened = widenByteToInteger(source.value);
             return {widened, Type(Type::Kind::I64)};
+        }
+    }
+
+    // Narrowing to a runtime collection class is verified at runtime. The class
+    // ids are exact (no hierarchy walk), so an unchecked `as` would let an
+    // unrelated handle through and fail later inside an unrelated accessor with
+    // a trap that names the wrong operation. Null narrows to null so nullable
+    // runtime handles keep their `== null` guards. A source already statically
+    // known to be that class needs no check.
+    if (sourceType && targetType && targetType->kind == TypeKindSem::Ptr &&
+        sourceType->name != targetType->name) {
+        if (auto classId = il::runtime::runtimeCollectionClassId(targetType->name)) {
+            Value checked = emitCallRet(Type(Type::Kind::Ptr),
+                                        "rt_cast_runtime_class",
+                                        {source.value, Value::constInt(*classId)});
+            return {checked, ilTargetType};
         }
     }
 

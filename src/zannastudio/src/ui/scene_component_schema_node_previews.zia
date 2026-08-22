@@ -267,7 +267,7 @@ class SceneComponentSchemaNodePreviewsLayer extends PreviousLayer.SceneComponent
                     "3D node preview variantProperty must be a portable key.");
                 return false;
             }
-            var variants = Map.Get(raw, "variantPrefabs");
+            var variants = Map.Get(raw, "variantPrefabs") as Seq;
             if variants == null or Json.TypeOf(variants) != "array" {
                 Reject(
                     schema,

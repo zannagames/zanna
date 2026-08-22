@@ -48,7 +48,7 @@ func fail(shell: app_shell.AppShell,
 }
 
 /// @brief Run a Git argv tail inside @p root.
-func runGit(root: String, tail: Any) -> Boolean {
+func runGit(root: String, tail: Seq) -> Boolean {
     var args = Seq.New();
     Seq.Push(args, "-C");
     Seq.Push(args, root);

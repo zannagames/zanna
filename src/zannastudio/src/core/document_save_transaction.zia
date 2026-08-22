@@ -104,7 +104,7 @@ hide func FromWorkspaceResult(value: Any,
     var retryable = false;
     var message = "The file could not be saved.";
     var resultPath = fallbackPath;
-    var diagnostics = Map.Get(value, "diagnostics");
+    var diagnostics = Map.Get(value, "diagnostics") as Seq;
     if diagnostics != null and Seq.get_Count(diagnostics) > 0 {
         var first = Seq.Get(diagnostics, 0);
         var code = Map.GetStr(first, "code");

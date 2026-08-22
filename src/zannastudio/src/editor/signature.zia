@@ -411,7 +411,7 @@ func FormatSignatureDisplayAt(sigInfo: Any, overloadIndex: Integer) -> String {
     var overloadCount = Map.GetInt(sigInfo, "overloadCount");
     var activeIndex = overloadIndex;
     var sigRecord = sigInfo;
-    var overloads = Map.Get(sigInfo, "overloads");
+    var overloads = Map.Get(sigInfo, "overloads") as Seq;
     if overloads != null and Seq.get_Count(overloads) > 0 {
         if activeIndex < 0 { activeIndex = 0; }
         if activeIndex >= Seq.get_Count(overloads) { activeIndex = Seq.get_Count(overloads) - 1; }
@@ -419,7 +419,7 @@ func FormatSignatureDisplayAt(sigInfo: Any, overloadIndex: Integer) -> String {
     }
 
     var display = Map.GetStr(sigRecord, "display");
-    var params = Map.Get(sigRecord, "parameters");
+    var params = Map.Get(sigRecord, "parameters") as Seq;
     var name = Map.GetStr(sigRecord, "name");
     var documentation = Map.GetStr(sigRecord, "documentation");
     if documentation == "" {

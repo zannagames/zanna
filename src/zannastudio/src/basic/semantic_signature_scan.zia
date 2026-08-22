@@ -32,7 +32,7 @@ final MAX_SIGNATURE_BACKTRACK_LINES = 200;
 /// @param lineNumber One-based call-site line.
 /// @param col0 Zero-based call-site byte column.
 /// @return Stable signature-info map with `available=false` when no call resolves.
-func InfoForDeclarations(declarations: Any,
+func InfoForDeclarations(declarations: Seq,
                          source: String,
                          lineNumber: Integer,
                          col0: Integer) -> Any {

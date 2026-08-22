@@ -90,13 +90,13 @@ expose func NewNotFound() -> Any {
 }
 
 expose func DeclarationsForFile(path: String,
-                                source: String) -> Any {
+                                source: String) -> Seq {
     var decls = Seq.New();
     AddDeclarations(decls, path, source);
     return decls;
 }
 
-expose func AddDeclarations(decls: Any,
+expose func AddDeclarations(decls: Seq,
                             path: String,
                             source: String) {
     AddDeclarationsCapped(decls, path, source, 0);
@@ -108,7 +108,7 @@ expose func AddDeclarations(decls: Any,
 /// @param source BASIC source text.
 /// @param maxCount Maximum aggregate sequence size, or zero for unlimited.
 /// @return True when the complete source was scanned; false when capped.
-expose func AddDeclarationsCapped(decls: Any,
+expose func AddDeclarationsCapped(decls: Seq,
                                   path: String,
                                   source: String,
                                   maxCount: Integer) -> Boolean {
@@ -155,7 +155,7 @@ expose func AddDeclarationsCapped(decls: Any,
        and (maxCount <= 0 or Seq.get_Count(decls) < maxCount);
 }
 
-expose func BestDefinition(decls: Any,
+expose func BestDefinition(decls: Seq,
                            activePath: String,
                            activeLine: Integer,
                            token: String) -> Any {
@@ -182,7 +182,7 @@ expose func BestDefinition(decls: Any,
     return best;
 }
 
-expose func AddReferencesForFile(refs: Any,
+expose func AddReferencesForFile(refs: Seq,
                                  path: String,
                                  source: String,
                                  def: Any) {
@@ -196,7 +196,7 @@ expose func AddReferencesForFile(refs: Any,
 /// @param def Resolved declaration record.
 /// @param maxCount Maximum aggregate sequence size, or zero for unlimited.
 /// @return True when the relevant source range was completely scanned.
-expose func AddReferencesForFileCapped(refs: Any,
+expose func AddReferencesForFileCapped(refs: Seq,
                                        path: String,
                                        source: String,
                                        def: Any,
@@ -226,8 +226,8 @@ expose func AddReferencesForFileCapped(refs: Any,
        and (maxCount <= 0 or Seq.get_Count(refs) < maxCount);
 }
 
-expose func RenameEditsFromReferences(refs: Any,
-                                      newName: String) -> Any {
+expose func RenameEditsFromReferences(refs: Seq,
+                                      newName: String) -> Seq {
     var edits = Seq.New();
     if refs == null { return edits; }
     var i = 0;
@@ -302,7 +302,7 @@ expose func OutgoingBasicCallTokens(source: String,
 expose func OutgoingBasicCallTokensCapped(source: String,
                                           startLine: Integer,
                                           endLine: Integer,
-                                          maxCount: Integer) -> Any {
+                                          maxCount: Integer) -> Seq {
     var tokens = Seq.New();
     if source == "" { return tokens; }
     var lines = Str.Split(source, "\n");
@@ -358,7 +358,7 @@ func DefinitionScore(decl: Any,
     return score;
 }
 
-func AddBlockDeclaration(decls: Any,
+func AddBlockDeclaration(decls: Seq,
                          path: String,
                          line: String,
                          lineNumber: Integer,
@@ -438,7 +438,7 @@ func ProcedureOrBlockDeclaration(path: String,
     return decl;
 }
 
-func AddDestructorDeclaration(decls: Any,
+func AddDestructorDeclaration(decls: Seq,
                               path: String,
                               line: String,
                               lineNumber: Integer,
@@ -457,7 +457,7 @@ func AddDestructorDeclaration(decls: Any,
     Seq.Push(decls, decl);
 }
 
-func AddLabelDeclaration(decls: Any,
+func AddLabelDeclaration(decls: Seq,
                          path: String,
                          line: String,
                          lineNumber: Integer,
@@ -478,7 +478,7 @@ func AddLabelDeclaration(decls: Any,
     }
 }
 
-func AddDimDeclarations(decls: Any,
+func AddDimDeclarations(decls: Seq,
                         path: String,
                         line: String,
                         lineNumber: Integer,
@@ -502,7 +502,7 @@ func AddDimDeclarations(decls: Any,
                                     maxCount);
 }
 
-func AddConstDeclaration(decls: Any,
+func AddConstDeclaration(decls: Seq,
                          path: String,
                          line: String,
                          lineNumber: Integer,
@@ -526,7 +526,7 @@ func AddConstDeclaration(decls: Any,
                                     maxCount);
 }
 
-func AddClassFieldDeclaration(decls: Any,
+func AddClassFieldDeclaration(decls: Seq,
                               path: String,
                               line: String,
                               lineNumber: Integer,
@@ -549,7 +549,7 @@ func AddClassFieldDeclaration(decls: Any,
     Seq.Push(decls, decl);
 }
 
-func AddVariableDeclarationsFromList(decls: Any,
+func AddVariableDeclarationsFromList(decls: Seq,
                                      path: String,
                                      line: String,
                                      lineNumber: Integer,
@@ -582,7 +582,7 @@ func AddVariableDeclarationsFromList(decls: Any,
     }
 }
 
-func AddParameterDeclarations(decls: Any,
+func AddParameterDeclarations(decls: Seq,
                               path: String,
                               procDecl: Any,
                               maxCount: Integer) {
@@ -648,7 +648,7 @@ func NewDecl(path: String,
     return decl;
 }
 
-func AddLineReferences(refs: Any,
+func AddLineReferences(refs: Seq,
                        path: String,
                        line: String,
                        lineNumber: Integer,
@@ -705,7 +705,7 @@ func AddLineReferences(refs: Any,
     }
 }
 
-func AddOutgoingCallsFromLine(tokens: Any,
+func AddOutgoingCallsFromLine(tokens: Seq,
                               line: String,
                               lineNumber: Integer,
                               maxCount: Integer) {
@@ -757,7 +757,7 @@ func AddOutgoingCallsFromLine(tokens: Any,
 /// @param items Runtime sequence receiving result maps.
 /// @param maxCount Maximum aggregate count, or zero for unlimited.
 /// @return True when another item may be appended.
-func HasResultCapacity(items: Any,
+func HasResultCapacity(items: Seq,
                        maxCount: Integer) -> Boolean {
     if items == null { return false; }
     return maxCount <= 0 or Seq.get_Count(items) < maxCount;

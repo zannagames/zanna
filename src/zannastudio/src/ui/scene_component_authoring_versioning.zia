@@ -48,7 +48,7 @@ func SyncSchemaVersion(root: Any) {
         var nodeVersion =
             scene_component_schema.NODE_PREVIEW_3D_SCHEMA_VERSION;
         if NodePreviewsRequireDirectModels(
-               Map.Get(root, "nodePreviews3D")) {
+               Map.Get(root, "nodePreviews3D") as Seq) {
             nodeVersion =
                 scene_component_schema
                     .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION;
@@ -112,14 +112,14 @@ func SyncSchemaVersion(root: Any) {
         var previewVersion =
             scene_component_schema.OBJECT_PREVIEW_SCHEMA_VERSION;
         if ObjectPreviewsHaveDrawStackMembers(
-               Map.Get(root, "objectPreviews")) {
+               Map.Get(root, "objectPreviews") as Seq) {
             previewVersion =
                 scene_component_schema
                     .OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION;
         }
         if previewVersion > required { required = previewVersion; }
     }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     if components == null or Json.TypeOf(components) != "array" {
         Map.SetInt(root, "version", required);
         return;
@@ -139,7 +139,7 @@ func SyncSchemaVersion(root: Any) {
                 required = creationVersion;
             }
         }
-        var fields = Map.Get(component, "fields");
+        var fields = Map.Get(component, "fields") as Seq;
         if fields == null or Json.TypeOf(fields) != "array" { continue; }
         var fieldIndex = 0;
         while fieldIndex < Seq.get_Count(fields) {
@@ -155,7 +155,7 @@ func SyncSchemaVersion(root: Any) {
 }
 
 /// @brief Return whether node-preview content requires schema version 17.
-func NodePreviewsRequireDirectModels(raw: Any) -> Boolean {
+func NodePreviewsRequireDirectModels(raw: Seq) -> Boolean {
     if raw == null or Json.TypeOf(raw) != "array" { return false; }
     var index = 0;
     while index < Seq.get_Count(raw) {
@@ -184,7 +184,7 @@ func NodePreviewsRequireDirectModels(raw: Any) -> Boolean {
             }
         }
         if Map.Has(preview, "variantPrefabs") {
-            var variants = Map.Get(preview, "variantPrefabs");
+            var variants = Map.Get(preview, "variantPrefabs") as Seq;
             if variants != null and Json.TypeOf(variants) == "array" {
                 var variantIndex = 0;
                 while variantIndex < Seq.get_Count(variants) {
@@ -229,7 +229,7 @@ func ScenePreviewHasOutputMembers(raw: Any) -> Boolean {
 }
 
 /// @brief Return whether object-preview content requires schema version 11.
-func ObjectPreviewsHaveDrawStackMembers(raw: Any) -> Boolean {
+func ObjectPreviewsHaveDrawStackMembers(raw: Seq) -> Boolean {
     if raw == null or Json.TypeOf(raw) != "array" { return false; }
     var index = 0;
     while index < Seq.get_Count(raw) {

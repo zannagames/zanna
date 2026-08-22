@@ -193,7 +193,7 @@ class DiagnosticActionController {
                 Fail(shell, pendingLabel + " diagnostics failed", true);
                 return;
             }
-            var records = SemanticJob.Diagnostics(semantic);
+            var records = SemanticJob.Diagnostics(semantic) as Seq;
             if records == null {
                 Fail(shell, pendingLabel + " diagnostics failed", true);
                 return;
@@ -234,7 +234,7 @@ class DiagnosticActionController {
                or bindJob.IsBusy();
     }
 
-    hide func HandleDiagnosticRecords(records: Any,
+    hide func HandleDiagnosticRecords(records: Seq,
                                       shell: app_shell.AppShell,
                                       docMgr: document_manager.DocumentManager,
                                       engine: editor_engine.EditorEngine,
@@ -628,7 +628,7 @@ func handleCreateMissingBind(shell: app_shell.AppShell,
 /// @param records Diagnostics returned by ZiaToolchain.CheckForFile.
 /// @param targetLine One-based editor line.
 /// @return Diagnostic record map, or null when no fix-it applies.
-func DiagnosticFixItAt(records: Any,
+func DiagnosticFixItAt(records: Seq,
                        targetLine: Integer) -> Any {
     if records == null { return null; }
     var i = 0;
@@ -648,7 +648,7 @@ func DiagnosticFixItAt(records: Any,
 /// @param records Diagnostics returned by ZiaToolchain.CheckForFile.
 /// @param targetLine One-based editor line.
 /// @return Runtime identifier that can be bound safely, or empty.
-func MissingRuntimeBindIdentifierAt(records: Any,
+func MissingRuntimeBindIdentifierAt(records: Seq,
                                     targetLine: Integer) -> String {
     if records == null { return ""; }
     var i = 0;
@@ -669,7 +669,7 @@ func MissingRuntimeBindIdentifierAt(records: Any,
 /// @param records Diagnostics returned by ZiaToolchain.CheckForFile.
 /// @param targetLine One-based editor line.
 /// @return Undefined identifier text, or empty.
-func MissingUndefinedIdentifierAt(records: Any,
+func MissingUndefinedIdentifierAt(records: Seq,
                                   targetLine: Integer) -> String {
     if records == null { return ""; }
     var i = 0;
@@ -835,7 +835,7 @@ func SourceHasFileBind(source: String,
 /// @param records Diagnostics returned by ZiaToolchain.CheckForFile.
 /// @param targetLine One-based editor line.
 /// @return Warning code such as W008, or empty when none applies.
-func SuppressibleDiagnosticCodeAt(records: Any, targetLine: Integer) -> String {
+func SuppressibleDiagnosticCodeAt(records: Seq, targetLine: Integer) -> String {
     if records == null { return ""; }
     var i = 0;
     while i < Seq.get_Count(records) {

@@ -118,7 +118,7 @@ class SceneComponentSchemaScenePreview2DLayer extends PreviousLayer.SceneCompone
                     "scenePreview2D variantProperty must be a portable key.");
                 return false;
             }
-            var variants = Map.Get(raw, "variantImages");
+            var variants = Map.Get(raw, "variantImages") as Seq;
             if variants == null or Json.TypeOf(variants) != "array" {
                 Reject(
                     schema,
@@ -234,7 +234,7 @@ class SceneComponentSchemaScenePreview2DLayer extends PreviousLayer.SceneCompone
             Reject(schema, "Project object previews require schema version 3.");
             return false;
         }
-        var rawPreviews = Map.Get(root, "objectPreviews");
+        var rawPreviews = Map.Get(root, "objectPreviews") as Seq;
         if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
             Reject(schema, "objectPreviews must be an array.");
             return false;
@@ -472,7 +472,7 @@ class SceneComponentSchemaScenePreview2DLayer extends PreviousLayer.SceneCompone
     hide override func ParsePreviewFrameMap(raw: Any,
                               preview: SceneComponentModel.SceneObjectPreviewDefinition,
                               schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
-        var rawMap = Map.Get(raw, "frameMap");
+        var rawMap = Map.Get(raw, "frameMap") as Seq;
         if rawMap == null or Json.TypeOf(rawMap) != "array" {
             Reject(schema, "Object preview frameMap must be an array.");
             return false;

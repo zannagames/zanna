@@ -121,7 +121,7 @@ func main() {
     var largeLatest = waitForCompletion(largeJob);
     if largeLatest == null or largeLatest!.generation != latestLargeGeneration
        or largeLatest!.path != "large_latest.bas" or largeLatest!.succeeded == false
-       or Seq.get_Count(largeLatest!.result) != 0 or largeJob.startedCount != 2 {
+       or Seq.get_Count(largeLatest!.result as Seq) != 0 or largeJob.startedCount != 2 {
         fail("large-file stale result contract");
         return;
     }
@@ -132,7 +132,7 @@ func main() {
     var diagnosticRequest = waitForCompletion(diagnostics);
     if diagnosticRequest == null or diagnosticRequest!.succeeded == false
        or diagnosticRequest!.result == null
-       or Seq.get_Count(diagnosticRequest!.result) == 0 {
+       or Seq.get_Count(diagnosticRequest!.result as Seq) == 0 {
         fail("diagnostic result shape");
         return;
     }
@@ -143,7 +143,7 @@ func main() {
     var completionRequest = waitForCompletion(completion);
     if completionRequest == null or completionRequest!.succeeded == false
        or completionRequest!.result == null
-       or Seq.get_Count(completionRequest!.result) == 0 {
+       or Seq.get_Count(completionRequest!.result as Seq) == 0 {
         fail("completion result shape");
         return;
     }

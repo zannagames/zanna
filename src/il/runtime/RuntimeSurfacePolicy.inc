@@ -1000,6 +1000,7 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_body3d_get_pose_raw")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas3d_draw_aabb_wire_raw")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas3d_draw_line3d_raw")
 
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_cast_runtime_class")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_obj_class_id")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_obj_free")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_obj_is_instance")

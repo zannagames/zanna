@@ -51,7 +51,7 @@ class RunConfig {
     expose String action;
     expose String kind;
     expose String program;
-    expose Any args;
+    expose Seq args;
     expose String workingDirectory;
     expose Any env;
     expose String problemMatcher;
@@ -202,8 +202,8 @@ func ApplyProjectOverrides(cfg: RunConfig,
     }
 }
 
-func SplitArgsWithTarget(text: String, targetPath: String) -> Any {
-    var items = SplitArgs(text);
+func SplitArgsWithTarget(text: String, targetPath: String) -> Seq {
+    var items = SplitArgs(text) as Seq;
     if items == null { return null; }
     var out = Seq.New();
     var i = 0;
@@ -226,7 +226,7 @@ func SplitArgsWithTarget(text: String, targetPath: String) -> Any {
 ///          Empty quoted tokens are retained and unmatched quotes fail closed.
 /// @param text User-authored argument string from zanna.project.
 /// @return Seq of argv tokens with quotes removed, or null for unmatched quotes.
-func SplitArgs(text: String) -> Any {
+func SplitArgs(text: String) -> Seq {
     var items = Seq.New();
     var token = "";
     var quote = "";

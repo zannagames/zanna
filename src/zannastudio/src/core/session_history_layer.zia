@@ -220,7 +220,7 @@ class SessionHistoryLayer extends State.SessionManagerState {
     }
 
     /// @brief Return whether an untyped sequence already contains a path.
-    hide func StringSeqContains(items: Any, path: String) -> Boolean {
+    hide func StringSeqContains(items: Seq, path: String) -> Boolean {
         var i = 0;
         while i < Seq.get_Count(items) {
             if path_identity.SameEntry(Obj.ToString(Seq.Get(items, i)), path) {

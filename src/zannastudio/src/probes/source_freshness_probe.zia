@@ -12,6 +12,8 @@
 //   - Zia, BASIC/VB, IL, manifests, and explicit embed/pack inputs invalidate.
 //   - Runtime-loaded scene and unrelated documentation changes do not force a
 //     native rebuild unless explicitly named as build-time assets.
+//   - Batch invalidation reads the save preflight's typed path List, so an
+//     empty or populated list never traps on a Seq receiver.
 // Ownership/Lifetime: The probe owns and removes its temporary project roots.
 // Links: zannastudio/src/services/source_freshness.zia
 //
@@ -157,6 +159,38 @@ func main() {
        or scanner.ArtifactStatus(artifactPath)
           != source_freshness.FRESHNESS_STALE {
         Fail(root, invalidRoot, "embedded asset was not tracked conservatively");
+        return;
+    }
+
+    // Build/run save preflight reports written files as a typed List
+    // (file_commands.SaveAllResult.savedPaths). Reading it as a Seq trapped
+    // with "Seq: invalid Seq object" and terminated Studio, so cover both the
+    // empty list a clean tree produces and a populated one.
+    Clock.Sleep(1100);
+    File.WriteAllText(artifactPath, "binary-v3\n");
+    if scanner.IsArtifactKnownFresh(artifactPath) == false {
+        Fail(root, invalidRoot, "artifact was not fresh before saved-path invalidation");
+        return;
+    }
+    var noSavedPaths = new List();
+    if scanner.InvalidatePaths(noSavedPaths)
+       or scanner.IsArtifactKnownFresh(artifactPath) == false {
+        Fail(root, invalidRoot, "empty saved-path list disturbed a fresh artifact");
+        return;
+    }
+
+    Clock.Sleep(1100);
+    File.WriteAllText(mainPath, "func main() { }\n");
+    var savedPaths = new List();
+    savedPaths.Push(notesPath);
+    savedPaths.Push(mainPath);
+    if scanner.InvalidatePaths(savedPaths) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_UNKNOWN
+       or Finish(scanner) == false
+       or scanner.ArtifactStatus(artifactPath)
+          != source_freshness.FRESHNESS_STALE {
+        Fail(root, invalidRoot, "saved-path list did not invalidate to stale");
         return;
     }
 

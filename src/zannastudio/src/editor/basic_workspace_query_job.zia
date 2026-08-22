@@ -173,7 +173,7 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
         }
     }
 
-    var outgoingTokens: Any = null;
+    var outgoingTokens: Seq = null;
     var callerName = "";
     if request.kind == QUERY_OUTGOING_CALLS {
         var startLine = semantic_scan.EnclosingBasicProcedureStartLine(
@@ -380,7 +380,7 @@ func AddRootSources(request: BasicWorkspaceQueryRequest,
             corpus.error = "workspace_unavailable";
             return;
         }
-        var entries = Map.Get(page, "entries");
+        var entries = Map.Get(page, "entries") as Seq;
         var emitted = 0;
         if entries != null {
             var entryIndex = 0;
@@ -475,7 +475,7 @@ func SourceShapeIsBounded(source: String) -> Boolean {
 func CollectReferences(request: BasicWorkspaceQueryRequest,
                        corpus: BasicWorkspaceCorpus,
                        def: Any,
-                       result: Any) -> Any {
+                       result: Any) -> Seq {
     var refs = Seq.New();
     var complete = true;
     var sourceIndex = 0;
@@ -513,8 +513,8 @@ func CollectReferences(request: BasicWorkspaceQueryRequest,
 /// @brief Resolve call tokens against declarations and build display-neutral rows.
 func BuildOutgoingResult(result: Any,
                          request: BasicWorkspaceQueryRequest,
-                         decls: Any,
-                         tokens: Any,
+                         decls: Seq,
+                         tokens: Seq,
                          callerName: String) -> Any {
     var items = Seq.New();
     var sourceLines = Str.Split(request.activeSource, "\n");
@@ -558,7 +558,7 @@ func BuildOutgoingResult(result: Any,
 }
 
 /// @brief Return one trimmed one-based line from a pre-split source.
-func PreviewFromLines(lines: Any,
+func PreviewFromLines(lines: Seq,
                       lineNumber: Integer) -> String {
     if lines == null or lineNumber < 1 or lineNumber > Seq.get_Count(lines) {
         return "";

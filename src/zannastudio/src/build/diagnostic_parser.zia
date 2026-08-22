@@ -245,7 +245,7 @@ func ParseJsonDiagnosticsBounded(
     if Json.IsValid(jsonText) == false { return result; }
 
     var root = Json.Parse(jsonText);
-    var records = Map.Get(root, "diagnostics");
+    var records = Map.Get(root, "diagnostics") as Seq;
     if records == null { return result; }
     result.found = true;
 
@@ -357,14 +357,14 @@ func DiagnosticFromJsonRecord(record: Any) -> diagnostic.Diagnostic? {
     }
     diag.code = Map.GetStr(record, "code");
     diag.message = Map.GetStr(record, "message");
-    var notes = Map.Get(record, "notes");
+    var notes = Map.Get(record, "notes") as Seq;
     if notes != null {
         diag.noteCount = Seq.get_Count(notes);
         if diag.noteCount > 0 {
             diag.noteSummary = Map.GetStr(Seq.Get(notes, 0), "message");
         }
     }
-    var fixits = Map.Get(record, "fixits");
+    var fixits = Map.Get(record, "fixits") as Seq;
     if fixits != null {
         diag.fixitCount = Seq.get_Count(fixits);
         if diag.fixitCount > 0 {

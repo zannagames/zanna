@@ -918,4 +918,13 @@ const std::vector<RuntimeClass> &runtimeClassCatalog();
 /// @note Comparison is case-insensitive.
 const RuntimeClass *findRuntimeClassByQName(std::string_view qname);
 
+/// @brief Runtime heap class tag for a checkable runtime collection class.
+/// @details Frontends may not include runtime headers, so this is the sanctioned
+///          bridge from a qualified class name to the class id stored in heap
+///          object headers. Only classes whose identity a lowered cast can verify
+///          are listed; everything else returns nullopt and stays unchecked.
+/// @param qname Fully-qualified class name (e.g., "Zanna.Collections.Seq").
+/// @returns Heap class tag, or nullopt when @p qname is not checkable.
+std::optional<int64_t> runtimeCollectionClassId(std::string_view qname);
+
 } // namespace il::runtime

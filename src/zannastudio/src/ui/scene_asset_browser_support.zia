@@ -204,8 +204,8 @@ expose func PortableReferencePath(assetPath: String,
     }
     var base = Path.Normalize(
         Path.Absolute(Path.Directory(documentPath)));
-    var baseParts = AssetPathParts(base);
-    var targetParts = AssetPathParts(target);
+    var baseParts = AssetPathParts(base) as Seq;
+    var targetParts = AssetPathParts(target) as Seq;
     if Seq.get_Count(baseParts) == 0
        or Seq.get_Count(targetParts) == 0 {
         return PortableSeparators(target);

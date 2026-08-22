@@ -74,6 +74,8 @@
 
 #include "il/runtime/classes/RuntimeClasses.hpp"
 
+#include "collections/rt_collection_ids.h"
+
 #include <algorithm>
 #include <cctype>
 #include <type_traits>
@@ -834,6 +836,40 @@ std::vector<std::string> RuntimeRegistry::methodCandidates(std::string_view clas
 ///
 const std::vector<RuntimeClass> &RuntimeRegistry::rawCatalog() const {
     return runtimeClassCatalog();
+}
+
+/// @brief Runtime heap class tag for a checkable runtime collection class.
+/// @details The listed classes are the ones whose heap identity a lowered
+///          `as` cast can verify with an exact class-id comparison. Adding a
+///          class here makes casts to it checked; omitting one leaves casts to
+///          it unchecked rather than wrong.
+/// @param qname Fully-qualified class name.
+/// @returns Heap class tag, or nullopt when @p qname is not checkable.
+std::optional<int64_t> runtimeCollectionClassId(std::string_view qname) {
+    struct Entry {
+        std::string_view name;
+        int64_t id;
+    };
+    // Mirrors src/runtime/collections/rt_collection_ids.h. Frontends cannot
+    // include that header, so the values are bridged here and pinned by
+    // RuntimeCollectionClassIdsMatchRuntimeHeader in the runtime tests.
+    static constexpr Entry kEntries[] = {
+        {"Zanna.Collections.Seq", RT_SEQ_CLASS_ID},
+        {"Zanna.Collections.List", RT_LIST_CLASS_ID},
+        {"Zanna.Collections.Set", RT_SET_CLASS_ID},
+        {"Zanna.Collections.Map", RT_MAP_CLASS_ID},
+        {"Zanna.Collections.Stack", RT_STACK_CLASS_ID},
+        {"Zanna.Collections.Queue", RT_QUEUE_CLASS_ID},
+        {"Zanna.Collections.Deque", RT_DEQUE_CLASS_ID},
+        {"Zanna.Collections.Ring", RT_RING_CLASS_ID},
+        {"Zanna.Collections.Iterator", RT_ITERATOR_CLASS_ID},
+        {"Zanna.Collections.LazySeq", RT_LAZYSEQ_CLASS_ID},
+    };
+    for (const Entry &entry : kEntries) {
+        if (entry.name == qname)
+            return entry.id;
+    }
+    return std::nullopt;
 }
 
 /// @}

@@ -376,7 +376,7 @@ class CompletionControllerBase {
         Hide();
     }
 
-    hide func ApplyCompletionItems(items: Any,
+    hide func ApplyCompletionItems(items: Seq,
                                    off: Integer,
                                    curLine: Integer,
                                    curCol: Integer) {

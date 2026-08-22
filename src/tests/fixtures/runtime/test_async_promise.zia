@@ -42,7 +42,7 @@ func start() {
     if (got == null) { Say("FAIL: Future.Get should return value"); return; }
 
     // Verify it's the same Seq
-    var gLen = Zanna.Collections.Seq.get_Count(got);
+    var gLen = Zanna.Collections.Seq.get_Count(got as Zanna.Collections.Seq);
     if (gLen != 1) { Say("FAIL: retrieved Seq should have 1 element"); return; }
 
     // === Test 10: Future.Wait (should return immediately since done) ===

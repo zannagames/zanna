@@ -26,6 +26,8 @@ bind "../services/workspace_edits";
 bind "../ui/app_shell";
 bind "../ui/workspace_edit_preview";
 
+bind Seq = Zanna.Collections.Seq;
+
 final RENAME_PREVIEW_OUTCOME_NONE: Integer = 0;
 final RENAME_PREVIEW_OUTCOME_APPLIED: Integer = 1;
 final RENAME_PREVIEW_OUTCOME_CANCELED: Integer = 2;
@@ -57,7 +59,7 @@ expose func PumpRenamePreview(
 
     var requestedName = preview.ReadNewName();
     var result = workspace_edits.ApplyRenameEdits(
-        preview.ReadEdits(), docMgr, preview.ReadAllowedRoots());
+        preview.ReadEdits() as Seq, docMgr, preview.ReadAllowedRoots());
     if result.success == false {
         var message = result.message;
         if message == "" { message = "Rename edits are no longer valid"; }

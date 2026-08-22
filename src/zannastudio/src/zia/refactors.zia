@@ -289,7 +289,7 @@ expose func InlineLocalExpressionFromLine(line: String) -> String {
 /// @param source Full Zia source text.
 /// @param name Candidate function name.
 /// @return True when any function declaration uses name.
-func ZiaFunctionNameExistsInLines(lines: Any,
+func ZiaFunctionNameExistsInLines(lines: Seq,
                                   name: String) -> Boolean {
     var i = 0;
     while i < Seq.get_Count(lines) {
@@ -311,7 +311,7 @@ func ZiaFunctionNameExistsInLines(lines: Any,
 /// @details This is intentionally conservative. It rejects selections that jump
 ///          out of the extracted block, depend on locals declared before the
 ///          block, leave selected locals used after the block, or unbalance braces.
-func ExtractFunctionSelectionIsSafe(lines: Any,
+func ExtractFunctionSelectionIsSafe(lines: Seq,
                                     funcStart: Integer,
                                     funcEnd: Integer,
                                     startLine: Integer,
@@ -390,7 +390,7 @@ func LineUsesAnyIdentifier(line: String,
 /// @param endLine One-based last function line.
 /// @param name Identifier to find.
 /// @return True when name appears outside comments and strings.
-func ZiaFunctionContainsIdentifierFromLines(lines: Any,
+func ZiaFunctionContainsIdentifierFromLines(lines: Seq,
                                             startLine: Integer,
                                             endLine: Integer,
                                             name: String) -> Boolean {

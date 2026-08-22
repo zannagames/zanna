@@ -136,7 +136,7 @@ func handleFindReferences(shell: app_shell.AppShell,
     indexer.SyncActiveNow(docMgr, engine);
     indexer.SyncOpenDocuments(docMgr);
     if PrepareSemanticQuery(shell, indexer, "Find references") == false { return; }
-    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol);
+    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol) as Seq;
     shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
     if refs == null or Seq.get_Count(refs) == 0 {
         shell.toolPanels.HideReferencesPanel();
@@ -200,7 +200,7 @@ func handleIncomingCalls(shell: app_shell.AppShell,
     indexer.SyncActiveNow(docMgr, engine);
     indexer.SyncOpenDocuments(docMgr);
     if PrepareSemanticQuery(shell, indexer, "Incoming calls") == false { return; }
-    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol);
+    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol) as Seq;
     shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
     if refs == null or Seq.get_Count(refs) == 0 {
         shell.toolPanels.HideReferencesPanel();
@@ -291,7 +291,7 @@ func handleOutgoingCalls(shell: app_shell.AppShell,
     }
     var callerName = ZiaFunctionNameFromLine(SourceLine(activeDoc.content, startLine));
     var endLine = ZiaFunctionEndLine(activeDoc.content, startLine);
-    var tokens = OutgoingZiaCallTokens(activeDoc.content, startLine, endLine);
+    var tokens = OutgoingZiaCallTokens(activeDoc.content, startLine, endLine) as Seq;
     shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
     if tokens == null or Seq.get_Count(tokens) == 0 {
         shell.toolPanels.HideReferencesPanel();

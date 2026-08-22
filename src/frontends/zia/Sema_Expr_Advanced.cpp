@@ -837,6 +837,14 @@ TypeRef Sema::analyzeAs(AsExpr *expr) {
     if (sourceType->isConvertibleTo(*targetType))
         return targetType;
 
+    // `Any` is the type-erased surface for runtime handles that cross an `obj`
+    // boundary (Map.Get, job results, JSON payloads). Narrowing one back to a
+    // concrete type is exactly what `as` is for: it is explicit, greppable, and
+    // local, unlike threading `Any` through every downstream signature. Only the
+    // explicit cast is permitted; implicit assignment from `Any` stays an error.
+    if (sourceType->kind == TypeKindSem::Any)
+        return targetType;
+
     TypeRef effectiveSource = sourceType;
     if (sourceType->kind == TypeKindSem::Optional && sourceType->innerType())
         effectiveSource = sourceType->innerType();

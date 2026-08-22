@@ -175,7 +175,7 @@ func VerifyWorkspaceQueryWorker(
        or bounded!.truncated == false
        or bounded!.resultCount
           != zia_workspace_query_job.ZIA_MAX_NAVIGATION_RESULTS
-       or Seq.get_Count(bounded!.result)
+       or Seq.get_Count(bounded!.result as Seq)
           != zia_workspace_query_job.ZIA_MAX_NAVIGATION_RESULTS + 1 {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail bounded reference result");
@@ -187,9 +187,9 @@ func VerifyWorkspaceQueryWorker(
                     "Rename", handle, mainPath, directSource, 3, 33,
                     "welcome", 1, root, 3);
     var rename = waitForJob(renameJob);
-    var renameEdits: Any = null;
+    var renameEdits: Seq = null;
     if rename != null and rename!.result != null {
-        renameEdits = Map.Get(rename!.result, "edits");
+        renameEdits = Map.Get(rename!.result, "edits") as Seq;
     }
     if rename == null or rename!.succeeded == false
        or Map.GetBool(rename!.result, "success") == false

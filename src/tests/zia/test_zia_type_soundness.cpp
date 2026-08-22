@@ -807,6 +807,165 @@ func start() {
     EXPECT_TRUE(hasErrorContaining(result, "Set literal contains incompatible"));
 }
 
+//=============================================================================
+// Category: Runtime collection class identity
+//
+// Zanna.Collections.* classes are distinct runtime classes with distinct class
+// ids, and every runtime receiver check is an exact class-id comparison. A
+// mismatch therefore cannot be type-erased away; it becomes a process-aborting
+// trap such as "Seq: invalid Seq object". These tests pin the frontend as the
+// place that rejects it.
+//=============================================================================
+
+TEST(ZiaTypeSoundness, ListArgumentIsRejectedForSeqParameter) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+func CountIt(items: Seq) -> Integer {
+    return Seq.get_Count(items);
+}
+func start() {
+    var wrong = new List();
+    var n = CountIt(wrong);
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_TRUE(hasErrorContaining(result, "expected Zanna.Collections.Seq"));
+}
+
+TEST(ZiaTypeSoundness, MapArgumentIsRejectedForSeqParameter) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+func CountIt(items: Seq) -> Integer {
+    return Seq.get_Count(items);
+}
+func start() {
+    var n = CountIt(Map.New());
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, SeqArgumentIsRejectedForListParameter) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Str = Zanna.String;
+func CountIt(items: List) -> Integer {
+    return items.count();
+}
+func start() {
+    var n = CountIt(Str.Split("a,b", ","));
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, SeqArgumentIsAcceptedForSeqParameter) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+func CountIt(items: Seq) -> Integer {
+    if items == null { return -1; }
+    return Seq.get_Count(items);
+}
+func start() {
+    var n = CountIt(Str.Split("a,b", ","));
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, AnyIsNotImplicitlyASeq) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+func CountIt(items: Seq) -> Integer {
+    return Seq.get_Count(items);
+}
+func Wrap(payload: Any) -> Integer {
+    return CountIt(payload);
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, StaticReceiverFormRejectsWrongCollection) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+func start() {
+    var wrong = new List();
+    wrong.Push("x");
+    var n = Seq.get_Count(wrong);
+}
+)",
+                                sm);
+    EXPECT_FALSE(result.succeeded());
+    EXPECT_TRUE(hasErrorContaining(result, "expected Zanna.Collections.Seq"));
+}
+
+TEST(ZiaTypeSoundness, StaticReceiverFormAcceptsMatchingCollection) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+func start() {
+    var parts = Str.Split("a,b", ",");
+    var n = Seq.get_Count(parts);
+    var first = Seq.Get(parts, 0);
+    Seq.Push(parts, "c");
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, MethodFormWithImplicitReceiverStillCompiles) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Str = Zanna.String;
+func start() {
+    var parts = Str.Split("a,b", ",");
+    var n = parts.Count;
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
+TEST(ZiaTypeSoundness, AnyNarrowsToSeqWithExplicitCast) {
+    SourceManager sm;
+    auto result = compileSource(R"(
+module Test;
+bind Seq = Zanna.Collections.Seq;
+func CountIt(items: Seq) -> Integer {
+    if items == null { return -1; }
+    return Seq.get_Count(items);
+}
+func Wrap(payload: Any) -> Integer {
+    return CountIt(payload as Seq);
+}
+)",
+                                sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
 } // namespace
 
 int main() {

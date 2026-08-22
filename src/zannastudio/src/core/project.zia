@@ -198,20 +198,20 @@ class Project {
         }
         if manifestEntry != "" { entryFile = manifestEntry; }
 
-        ignorePatterns = JoinStringSeq(Map.Get(manifest, "excludes"), ",");
-        var runConfigs = Map.Get(manifest, "runConfigs");
+        ignorePatterns = JoinStringSeq(Map.Get(manifest, "excludes") as Seq, ",");
+        var runConfigs = Map.Get(manifest, "runConfigs") as Seq;
         if runConfigs != null and Seq.get_Count(runConfigs) > 0 {
             var run = Seq.Get(runConfigs, 0);
             runProgram = Map.GetStr(run, "program");
-            runArgs = JoinStringSeq(Map.Get(run, "args"), " ");
+            runArgs = JoinStringSeq(Map.Get(run, "args") as Seq, " ");
             workingDirectory = Map.GetStr(run, "cwd");
         }
 
-        var buildConfigs = Map.Get(manifest, "buildConfigs");
+        var buildConfigs = Map.Get(manifest, "buildConfigs") as Seq;
         if buildConfigs != null and Seq.get_Count(buildConfigs) > 0 {
             var build = Seq.Get(buildConfigs, 0);
             buildProgram = Map.GetStr(build, "program");
-            buildArgs = JoinStringSeq(Map.Get(build, "args"), " ");
+            buildArgs = JoinStringSeq(Map.Get(build, "args") as Seq, " ");
             if workingDirectory == "" {
                 workingDirectory = Map.GetStr(build, "cwd");
             }
@@ -224,7 +224,7 @@ class Project {
     /// @param items Runtime sequence of strings, or null.
     /// @param separator Separator inserted between entries.
     /// @return Concatenated string, or "" for a null/empty sequence.
-    hide func JoinStringSeq(items: Any,
+    hide func JoinStringSeq(items: Seq,
                             separator: String) -> String {
         if items == null { return ""; }
         var out = "";

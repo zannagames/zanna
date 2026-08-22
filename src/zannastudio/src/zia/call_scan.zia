@@ -59,9 +59,9 @@ expose func OutgoingZiaCallTokens(source: String,
 /// @param startLine 1-based inclusive start line.
 /// @param endLine 1-based inclusive end line.
 /// @return Sequence of maps with name, line, and column fields.
-expose func OutgoingZiaCallTokensFromLines(lines: Any,
+expose func OutgoingZiaCallTokensFromLines(lines: Seq,
                                            startLine: Integer,
-                                           endLine: Integer) -> Any {
+                                           endLine: Integer) -> Seq {
     var tokens = Seq.New();
     if lines == null { return tokens; }
     var fromLine = startLine;
@@ -84,7 +84,7 @@ expose func OutgoingZiaCallTokensFromLines(lines: Any,
 /// @param lineNumber One-based line number stored in emitted call tokens.
 /// @details Strings and line comments are skipped, and function declaration
 ///          names are ignored so call hierarchy only records outgoing calls.
-func AddOutgoingCallsFromLine(tokens: Any,
+func AddOutgoingCallsFromLine(tokens: Seq,
                               line: String,
                               lineNumber: Integer) {
     var pos = 1;

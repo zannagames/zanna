@@ -58,6 +58,8 @@
 #include "rt_string.h"
 #include "rt_threads.h"
 
+#include "collections/rt_collection_ids.h"
+
 #include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -246,6 +248,77 @@ int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes) {
     if (info.cap < min_payload_bytes)
         return 0;
     return 1;
+}
+
+/// @brief Human-readable name for a runtime collection class identifier.
+/// @param class_id Runtime class tag from a heap-object header.
+/// @return Static qualified class name, or @c NULL when @p class_id is not a
+///         known runtime collection class.
+static const char *rt_runtime_class_name(int64_t class_id) {
+    switch (class_id) {
+        case RT_SEQ_CLASS_ID:
+            return "Zanna.Collections.Seq";
+        case RT_LIST_CLASS_ID:
+            return "Zanna.Collections.List";
+        case RT_SET_CLASS_ID:
+            return "Zanna.Collections.Set";
+        case RT_MAP_CLASS_ID:
+            return "Zanna.Collections.Map";
+        case RT_STACK_CLASS_ID:
+            return "Zanna.Collections.Stack";
+        case RT_QUEUE_CLASS_ID:
+            return "Zanna.Collections.Queue";
+        case RT_DEQUE_CLASS_ID:
+            return "Zanna.Collections.Deque";
+        case RT_RING_CLASS_ID:
+            return "Zanna.Collections.Ring";
+        case RT_BAG_CLASS_ID:
+            return "Zanna.Collections.StringSet";
+        case RT_ITERATOR_CLASS_ID:
+            return "Zanna.Collections.Iterator";
+        case RT_LAZYSEQ_CLASS_ID:
+            return "Zanna.Collections.LazySeq";
+        default:
+            return NULL;
+    }
+}
+
+/// @brief Narrow a runtime handle to an exact runtime class, trapping on mismatch.
+/// @details Backs the Zia `value as RuntimeClass` cast. Runtime classes are
+///          compared by exact class id because @ref rt_obj_is_instance performs
+///          no hierarchy walk, so an unrelated handle would otherwise survive
+///          the cast and fail later inside an unrelated accessor. Null narrows
+///          to null so nullable runtime handles keep their `== null` guards.
+/// @param p Candidate user-visible heap payload, or @c NULL.
+/// @param class_id Exact runtime class identifier required by the cast.
+/// @return @p p when it is null or an instance of @p class_id.
+/// @warning Traps when @p p is a live handle of any other class.
+void *rt_cast_runtime_class(void *p, int64_t class_id) {
+    if (!p)
+        return NULL;
+    const int64_t actual = rt_obj_class_id(p);
+    if (actual == class_id)
+        return p;
+
+    char message[192];
+    const char *want = rt_runtime_class_name(class_id);
+    const char *got = rt_runtime_class_name(actual);
+    if (want && got)
+        snprintf(message, sizeof(message), "Cast: expected %s, got %s", want, got);
+    else if (want)
+        snprintf(message,
+                 sizeof(message),
+                 "Cast: expected %s, got class id %lld",
+                 want,
+                 (long long)actual);
+    else
+        snprintf(message,
+                 sizeof(message),
+                 "Cast: expected class id %lld, got class id %lld",
+                 (long long)class_id,
+                 (long long)actual);
+    rt_trap(message);
+    return NULL; /* unreachable — rt_trap terminates */
 }
 
 /// @brief Resurrect an object from inside its finalizer to return it to a pool.

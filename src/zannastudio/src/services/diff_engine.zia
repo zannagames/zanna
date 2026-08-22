@@ -125,8 +125,8 @@ func IsCancelled(token: DiffCancelToken) -> Boolean {
 ///          up front avoids building an edit trace whose result is known to be
 ///          empty. This is especially important on interpreted backends where
 ///          each boxed trace-cell operation carries runtime-bridge overhead.
-func LinesShareValueCancellable(aLines: Any,
-                                bLines: Any,
+func LinesShareValueCancellable(aLines: Seq,
+                                bLines: Seq,
                                 token: DiffCancelToken) -> Boolean {
     var seen = Map.New();
     var i = 0;
@@ -144,7 +144,7 @@ func LinesShareValueCancellable(aLines: Any,
     return false;
 }
 
-func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
+func LinesShareValue(aLines: Seq, bLines: Seq) -> Boolean {
     return LinesShareValueCancellable(aLines, bLines, null);
 }
 
@@ -152,13 +152,13 @@ func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
 /// @details Returns a List of Integer pairs encoded as (aIndex * 1000000 +
 ///          bIndex) marking matched line pairs, in order. Inputs beyond the
 ///          bound fall back to "no matches" (full replace) to stay bounded.
-func MatchedPairs(aLines: Any, bLines: Any) -> List {
+func MatchedPairs(aLines: Seq, bLines: Seq) -> List {
     return MatchedPairsCancellable(aLines, bLines, null).pairs;
 }
 
 /// @brief Compute Myers pairs with explicit fallback and cancellation state.
-func MatchedPairsCancellable(aLines: Any,
-                             bLines: Any,
+func MatchedPairsCancellable(aLines: Seq,
+                             bLines: Seq,
                              token: DiffCancelToken) -> DiffMatchResult {
     var outcome = new DiffMatchResult();
     var pairs = outcome.pairs;

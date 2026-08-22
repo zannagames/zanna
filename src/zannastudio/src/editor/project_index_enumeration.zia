@@ -76,7 +76,7 @@ class ProjectIndexEnumerationLayer extends
                 AdvanceIndexRoot();
                 continue;
             }
-            pendingIndexFiles = Map.Get(page, "entries");
+            pendingIndexFiles = Map.Get(page, "entries") as Seq;
             pendingIndexPos = 0;
             pendingIndexOffset = Map.GetInt(page, "nextOffset");
             pendingIndexDone = false;
@@ -124,7 +124,7 @@ class ProjectIndexEnumerationLayer extends
     /// @brief Count entries in a FileIndexCursor page result sequence.
     /// @param entries Sequence returned by FileIndexCursor.Next, or null.
     /// @return Number of entries in the page.
-    hide func PageEntryCount(entries: Any) -> Integer {
+    hide func PageEntryCount(entries: Seq) -> Integer {
         if entries == null { return 0; }
         return Seq.get_Count(entries);
     }

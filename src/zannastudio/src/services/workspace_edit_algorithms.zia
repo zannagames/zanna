@@ -29,7 +29,7 @@ bind StringBuilder = Zanna.Text.StringBuilder;
 ///          applying many edits does not repeatedly scan the full document.
 class TextSnapshot {
     expose String content;
-    expose Any lines;
+    expose Seq lines;
     expose List[Integer] lineStarts;
 
     expose func init() {
@@ -87,11 +87,11 @@ class TextSnapshot {
     /// @details Descending edits emit suffix/replacement chunks in reverse.
     ///          Reversing those chunks into one StringBuilder avoids a complete
     ///          split/rebuild for every individual edit.
-    expose func Apply(edits: Any) -> String {
+    expose func Apply(edits: Seq) -> String {
         if edits == null or Seq.get_Count(edits) == 0 { return content; }
         // One snapshot is one logical file even when providers used multiple
         // lexical aliases for it, so ignore the edit-map path while ordering.
-        var sorted = SortSingleFile(edits);
+        var sorted = SortSingleFile(edits) as Seq;
         var chunks: List[String] = [];
         var cursor = Str.get_Length(content);
         var i = 0;
@@ -135,7 +135,7 @@ expose func Prepare(content: String) -> TextSnapshot {
 /// @brief Sort edits by first-seen file and descending source position.
 /// @details Each per-file group uses a stable bottom-up merge sort. Grouping
 ///          makes the comparison total without changing any cross-file result.
-expose func SortForApplication(edits: Any) -> Any {
+expose func SortForApplication(edits: Seq) -> Seq {
     var result = Seq.New();
     if edits == null { return result; }
     var paths = Seq.New();
@@ -148,12 +148,12 @@ expose func SortForApplication(edits: Any) -> Any {
             Map.Set(groups, path, Seq.New());
             Seq.Push(paths, path);
         }
-        Seq.Push(Map.Get(groups, path), edit);
+        Seq.Push(Map.Get(groups, path) as Seq, edit);
         i = i + 1;
     }
     i = 0;
     while i < Seq.get_Count(paths) {
-        var sorted = SortSingleFile(Map.Get(groups, Obj.ToString(Seq.Get(paths, i))));
+        var sorted = SortSingleFile(Map.Get(groups, Obj.ToString(Seq.Get(paths, i))) as Seq);
         Seq.PushAll(result, sorted);
         i = i + 1;
     }
@@ -161,7 +161,7 @@ expose func SortForApplication(edits: Any) -> Any {
 }
 
 /// @brief Detect overlap by comparing adjacent edits after O(n log n) sorting.
-expose func HasOverlap(edits: Any) -> Boolean {
+expose func HasOverlap(edits: Seq) -> Boolean {
     var sorted = SortForApplication(edits);
     var i = 1;
     while i < Seq.get_Count(sorted) {
@@ -175,7 +175,7 @@ expose func HasOverlap(edits: Any) -> Boolean {
 
 /// @brief Return the first adjacent overlap from one logical file group.
 /// @return Map with `first` and `second`, or null when ranges are disjoint.
-expose func FirstOverlap(edits: Any) -> Any {
+expose func FirstOverlap(edits: Seq) -> Any {
     var sorted = SortSingleFile(edits);
     var i = 1;
     while i < Seq.get_Count(sorted) {
@@ -193,7 +193,7 @@ expose func FirstOverlap(edits: Any) -> Any {
 }
 
 /// @brief Stable bottom-up merge sort for one file's edit sequence.
-func SortSingleFile(items: Any) -> Any {
+func SortSingleFile(items: Seq) -> Seq {
     var current = Seq.Clone(items);
     var count = Seq.get_Count(current);
     var width = 1;
@@ -215,8 +215,8 @@ func SortSingleFile(items: Any) -> Any {
 }
 
 /// @brief Merge two adjacent descending edit runs while retaining equal order.
-func MergeRuns(source: Any,
-               destination: Any,
+func MergeRuns(source: Seq,
+               destination: Seq,
                leftStart: Integer,
                rightStart: Integer,
                runEnd: Integer) {

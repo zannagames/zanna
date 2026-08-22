@@ -75,7 +75,7 @@ expose func Pump(
         FinishRoot(state);
         return;
     }
-    var entries = Map.Get(page, "entries");
+    var entries = Map.Get(page, "entries") as Seq;
     var entryCount = 0;
     if entries != null { entryCount = Seq.get_Count(entries); }
     var i = 0;

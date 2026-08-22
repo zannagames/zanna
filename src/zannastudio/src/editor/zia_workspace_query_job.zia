@@ -111,7 +111,7 @@ func RunZiaWorkspaceQuery(request: ZiaWorkspaceQueryRequest) -> Any {
                                          request.source, request.line,
                                          request.col);
         if result != null {
-            resultCount = Seq.get_Count(result);
+            resultCount = Seq.get_Count(result as Seq);
             if resultCount > ZIA_MAX_NAVIGATION_RESULTS {
                 resultCount = ZIA_MAX_NAVIGATION_RESULTS;
                 truncated = true;
@@ -120,7 +120,7 @@ func RunZiaWorkspaceQuery(request: ZiaWorkspaceQueryRequest) -> Any {
     } else if request.kind == ZIA_QUERY_OUTGOING_CALLS {
         result = CollectOutgoingDefinitions(request);
         reason = request.reason;
-        if result != null { resultCount = Seq.get_Count(result); }
+        if result != null { resultCount = Seq.get_Count(result as Seq); }
         if resultCount > ZIA_MAX_NAVIGATION_RESULTS {
             resultCount = ZIA_MAX_NAVIGATION_RESULTS;
             truncated = true;
@@ -132,7 +132,7 @@ func RunZiaWorkspaceQuery(request: ZiaWorkspaceQueryRequest) -> Any {
                                          request.col, request.newName);
         if result != null {
             reason = Map.GetStr(result, "reason");
-            var edits = Map.Get(result, "edits");
+            var edits = Map.Get(result, "edits") as Seq;
             if edits != null { resultCount = Seq.get_Count(edits); }
         }
     } else {

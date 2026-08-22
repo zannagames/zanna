@@ -406,12 +406,12 @@ class LiveDiagnostics {
             FinishManualCheckFailure(shell, "Diagnostics failed");
             return 0;
         }
-        var errorCount = ApplyDiagnostics(request!.result, 0, shell, locStore, engine);
+        var errorCount = ApplyDiagnostics(request!.result as Seq, 0, shell, locStore, engine);
         FinishManualCheck(shell);
         return errorCount;
     }
 
-    hide func ApplyDiagnostics(records: Any,
+    hide func ApplyDiagnostics(records: Seq,
                                lineOff: Integer,
                                shell: app_shell.AppShell,
                                locStore: locations.LocationStore,

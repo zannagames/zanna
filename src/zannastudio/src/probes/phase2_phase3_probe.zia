@@ -238,8 +238,9 @@ func VerifyRunConfigurationAndProcess(
     envCfg.program = ziaBin;
     envCfg.workingDirectory = spacedDir;
     Seq.Push(envCfg.args, envProbePath);
-    envCfg.env = Seq.New();
-    Seq.Push(envCfg.env, "ZANNA_STUDIO_OVERLAY_CHILD=override");
+    var envOverlay = Seq.New();
+    envCfg.env = envOverlay;
+    Seq.Push(envOverlay, "ZANNA_STUDIO_OVERLAY_CHILD=override");
     if assertTrue(buildSys.StartConfig(envCfg),
                   "environment overlay process starts") == false { return false; }
     var envDeadlineMs = Clock.NowMs() + 15000;

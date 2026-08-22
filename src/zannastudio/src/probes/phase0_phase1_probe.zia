@@ -91,7 +91,7 @@ func assertTrue(cond: Boolean, msg: String) -> Boolean {
     return true;
 }
 
-func AddEdit(edits: Any,
+func AddEdit(edits: Seq,
              filePath: String,
              startLine: Integer,
              startColumn: Integer,
@@ -1168,7 +1168,7 @@ func TestWorkspaceEdits() {
 
     var indexer = new project_index.ProjectIndexer();
     indexer.Open(root, docMgr);
-    var refs = indexer.References(filePath, doc.content, 3, 8);
+    var refs = indexer.References(filePath, doc.content, 3, 8) as Seq;
     if assertTrue(refs != null and Seq.get_Count(refs) >= 1,
                   "project index references from dirty buffer") == false { return; }
     indexer.Destroy();

@@ -48,7 +48,7 @@ expose func SourceLine(source: String,
 /// @param lines Reusable source-line sequence.
 /// @param lineNumber 1-based line number.
 /// @return The requested line or empty when out of range.
-expose func SourceLineFromLines(lines: Any,
+expose func SourceLineFromLines(lines: Seq,
                                 lineNumber: Integer) -> String {
     if lines == null { return ""; }
     if lineNumber < 1 or lineNumber > Seq.get_Count(lines) { return ""; }
@@ -67,7 +67,7 @@ expose func EnclosingZiaFunctionStartLine(source: String,
 }
 
 /// @brief Find the nearest function declaration using a reusable line model.
-expose func EnclosingZiaFunctionStartLineFromLines(lines: Any,
+expose func EnclosingZiaFunctionStartLineFromLines(lines: Seq,
                                                    lineNumber: Integer) -> Integer {
     if lines == null { return 0; }
     var i = lineNumber;
@@ -94,7 +94,7 @@ expose func EnclosingZiaFunctionName(source: String,
 }
 
 /// @brief Find an enclosing function name using one reusable line model.
-expose func EnclosingZiaFunctionNameFromLines(lines: Any,
+expose func EnclosingZiaFunctionNameFromLines(lines: Seq,
                                               lineNumber: Integer) -> String {
     var startLine = EnclosingZiaFunctionStartLineFromLines(lines, lineNumber);
     return ZiaFunctionNameFromLine(SourceLineFromLines(lines, startLine));
@@ -142,7 +142,7 @@ expose func ZiaFunctionEndLine(source: String,
 }
 
 /// @brief Find a function body close using a reusable line model.
-expose func ZiaFunctionEndLineFromLines(lines: Any,
+expose func ZiaFunctionEndLineFromLines(lines: Seq,
                                         startLine: Integer) -> Integer {
     if lines == null { return startLine; }
     var startIdx = startLine - 1;

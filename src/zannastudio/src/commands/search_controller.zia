@@ -241,7 +241,7 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
                 break;
             }
             var page = discoveryCursor.Next(pageSize - processed);
-            var diagnostics = Map.Get(page, "diagnostics");
+            var diagnostics = Map.Get(page, "diagnostics") as Seq;
             if Map.GetBool(page, "valid") == false
                or (diagnostics != null and Seq.get_Count(diagnostics) > 0) {
                 var detail = "workspace file-index traversal failed";
@@ -258,7 +258,7 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
                 active = false;
                 break;
             }
-            var entries = Map.Get(page, "entries");
+            var entries = Map.Get(page, "entries") as Seq;
             var entryCount = 0;
             if entries != null { entryCount = Seq.get_Count(entries); }
             var i = 0;

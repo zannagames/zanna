@@ -1293,6 +1293,19 @@ class Sema {
     /// @param calleeName Name of the function for error messages.
     void validateCallArgs(CallExpr *expr, TypeRef funcType, const std::string &calleeName);
 
+    /// @brief Type-check runtime collection arguments in an explicit-receiver call.
+    /// @details Runtime externs skip @ref validateCallArgs because the method form
+    ///          `value.Method(arg)` hides the receiver, so surface and symbol arity
+    ///          disagree. The static form `Class.Method(value, arg)` spells every
+    ///          argument, so when the counts line up exactly each one can be checked
+    ///          against its declared parameter type. Only collection parameters are
+    ///          checked: scalar parameters accept implicit coercions that
+    ///          @ref bindExternCallOnCall applies afterwards. Arity is deliberately
+    ///          not policed here; a mismatched count simply skips the check.
+    /// @param expr Call expression supplying argument values and locations.
+    /// @param funcType Resolved extern function type carrying parameter types.
+    void validateExternCallArgTypes(CallExpr *expr, TypeRef funcType);
+
     /// @brief Analyze an index expression.
     /// @return The element type of the collection.
     TypeRef analyzeIndex(IndexExpr *expr);

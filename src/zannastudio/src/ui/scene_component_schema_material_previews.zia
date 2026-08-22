@@ -77,7 +77,7 @@ class SceneComponentSchemaMaterialPreviewsLayer extends PreviousLayer.SceneCompo
                 "Project 3D material previews require schema version 16.");
             return false;
         }
-        var rawPreviews = Map.Get(root, "materialPreviews3D");
+        var rawPreviews = Map.Get(root, "materialPreviews3D") as Seq;
         if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
             Reject(schema, "materialPreviews3D must be an array.");
             return false;

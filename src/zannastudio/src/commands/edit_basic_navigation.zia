@@ -210,7 +210,7 @@ expose func handleBasicOutgoingCalls(shell: app_shell.AppShell,
     var endLine = semantic_scan.BasicProcedureEndLine(source, startLine);
     var callerName = semantic_scan.EnclosingBasicProcedureName(source, cursorLine);
     if callerName == "" { callerName = "<procedure>"; }
-    var tokens = semantic_scan.OutgoingBasicCallTokens(source, startLine, endLine);
+    var tokens = semantic_scan.OutgoingBasicCallTokens(source, startLine, endLine) as Seq;
     shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
     if tokens == null or Seq.get_Count(tokens) == 0 {
         shell.toolPanels.HideReferencesPanel();
@@ -267,7 +267,7 @@ expose func handleBasicOutgoingCalls(shell: app_shell.AppShell,
 func RenderBasicReferences(shell: app_shell.AppShell,
                            docMgr: document_manager.DocumentManager,
                            locStore: locations.LocationStore,
-                           refs: Any,
+                           refs: Seq,
                            label: String) {
     shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
     if refs == null or Seq.get_Count(refs) == 0 {
@@ -307,7 +307,7 @@ func RenderBasicReferences(shell: app_shell.AppShell,
 
 func BasicWorkspaceDeclarations(docMgr: document_manager.DocumentManager,
                                 indexer: project_index.ProjectIndexer,
-                                activeDoc: document.Document) -> Any {
+                                activeDoc: document.Document) -> Seq {
     var decls = Seq.New();
     if activeDoc == null { return decls; }
     var files = BasicWorkspaceFiles(docMgr, indexer, activeDoc);
@@ -326,7 +326,7 @@ func BasicWorkspaceDeclarations(docMgr: document_manager.DocumentManager,
 func BasicWorkspaceReferences(docMgr: document_manager.DocumentManager,
                               indexer: project_index.ProjectIndexer,
                               activeDoc: document.Document,
-                              def: Any) -> Any {
+                              def: Any) -> Seq {
     var refs = Seq.New();
     if activeDoc == null or def == null { return refs; }
     var files = BasicWorkspaceFiles(docMgr, indexer, activeDoc);

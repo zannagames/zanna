@@ -77,6 +77,18 @@ int64_t rt_obj_class_id(void *p);
 /// @return 1 when the object matches, otherwise 0.
 int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes);
 
+/// @brief Narrow a runtime handle to an exact runtime class, trapping on mismatch.
+/// @details Backs the Zia `value as RuntimeClass` cast. Runtime classes compare by
+///          exact class id because there is no hierarchy walk, so an unrelated
+///          handle would otherwise survive the cast and fail later inside an
+///          unrelated accessor. Null narrows to null so nullable runtime handles
+///          keep their `== null` guards.
+/// @param p Candidate object payload pointer, or @c NULL.
+/// @param class_id Exact runtime class identifier required by the cast.
+/// @return @p p when it is null or an instance of @p class_id.
+/// @warning Traps when @p p is a live handle of any other class.
+void *rt_cast_runtime_class(void *p, int64_t class_id);
+
 /// @brief Increment the reference count for a runtime-managed object if the pointer is
 /// non-null.
 /// @details Recognizes runtime string handles and heap payloads. Null, raw, and

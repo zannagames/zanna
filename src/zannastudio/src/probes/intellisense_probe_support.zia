@@ -123,7 +123,7 @@ expose func waitSemanticJob(job: Any, maxTicks: Integer) -> Boolean {
     return false;
 }
 
-expose func completionItemsContain(items: Any, label: String) -> Boolean {
+expose func completionItemsContain(items: Seq, label: String) -> Boolean {
     if items == null { return false; }
     var i = 0;
     while i < Seq.get_Count(items) {
@@ -136,7 +136,7 @@ expose func completionItemsContain(items: Any, label: String) -> Boolean {
     return false;
 }
 
-expose func completionItemDocumentationContains(items: Any, label: String, needle: String) -> Boolean {
+expose func completionItemDocumentationContains(items: Seq, label: String, needle: String) -> Boolean {
     if items == null { return false; }
     var i = 0;
     while i < Seq.get_Count(items) {

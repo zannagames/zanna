@@ -63,7 +63,7 @@ class ApplyResult {
     }
 }
 
-func PreviewRenameEdits(edits: Any, maxRows: Integer) -> String {
+func PreviewRenameEdits(edits: Seq, maxRows: Integer) -> String {
     if edits == null {
         return "No edits returned.";
     }
@@ -85,7 +85,7 @@ func PreviewRenameEdits(edits: Any, maxRows: Integer) -> String {
     return text.ToString();
 }
 
-func ApplyRenameEdits(edits: Any,
+func ApplyRenameEdits(edits: Seq,
                       docMgr: document_manager.DocumentManager,
                       allowedRoots: List) -> ApplyResult {
     var result = new ApplyResult();
@@ -159,7 +159,7 @@ func ApplyRenameEdits(edits: Any,
     }
 
     if Seq.get_Count(closedEdits) > 0 {
-        var editRoots = CopyWorkspaceRoots(allowedRoots);
+        var editRoots = CopyWorkspaceRoots(allowedRoots) as Seq;
         if Seq.get_Count(editRoots) == 0 {
             result.message = "Rename canceled because no workspace root is available";
             return result;
@@ -242,7 +242,7 @@ func CopyWorkspaceRoots(allowedRoots: List) -> Any {
 /// @param diagnostics Runtime diagnostics sequence from Validate/Apply.
 /// @param fallback Message used when the sequence is empty or unavailable.
 /// @return Newline-delimited diagnostic summary.
-func FormatWorkspaceEditDiagnostics(diagnostics: Any,
+func FormatWorkspaceEditDiagnostics(diagnostics: Seq,
                                     fallback: String) -> String {
     if diagnostics == null or Seq.get_Count(diagnostics) == 0 {
         return fallback;
@@ -280,7 +280,7 @@ func ApplyEditToDocument(doc: document.Document, edit: Any) -> Boolean {
     return true;
 }
 
-func ValidateRenameEdits(edits: Any,
+func ValidateRenameEdits(edits: Seq,
                          docMgr: document_manager.DocumentManager) -> String {
     if Seq.get_Count(edits) > MAX_WORKSPACE_EDIT_COUNT {
         return "Workspace edit batch is too large";
@@ -420,7 +420,7 @@ func EditRange(edit: Any) -> String {
 ///          shift the range for a later one. Disk-backed edits are handled by the
 ///          runtime workspace edit API, which performs its own offset sort; this
 ///          helper gives open documents the same order-independent behavior.
-func SortEditsForApplication(edits: Any) -> Any {
+func SortEditsForApplication(edits: Seq) -> Any {
     return workspace_edit_algorithms.SortForApplication(edits);
 }
 
@@ -434,7 +434,7 @@ func ApplyEditToText(content: String, edit: Any) -> String {
     return workspace_edit_algorithms.Prepare(content).Apply(edits);
 }
 
-func SeqContainsString(items: Any, value: String) -> Boolean {
+func SeqContainsString(items: Seq, value: String) -> Boolean {
     var i = 0;
     while i < Seq.get_Count(items) {
         if Obj.ToString(Seq.Get(items, i)) == value {

@@ -98,7 +98,7 @@ class SceneComponentSchemaLoadingLayer extends PreviousLayer.SceneComponentSchem
         }
         schema.version = parsedVersion.UnwrapI64();
 
-        var rawComponents = Map.Get(root, "components");
+        var rawComponents = Map.Get(root, "components") as Seq;
         if rawComponents == null or Json.TypeOf(rawComponents) != "array" {
             return Reject(schema, "Component schema requires a components array.");
         }
@@ -145,7 +145,7 @@ class SceneComponentSchemaLoadingLayer extends PreviousLayer.SceneComponentSchem
             Reject(schema, "Project 3D node previews require schema version 5.");
             return false;
         }
-        var rawPreviews = Map.Get(root, "nodePreviews3D");
+        var rawPreviews = Map.Get(root, "nodePreviews3D") as Seq;
         if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
             Reject(schema, "nodePreviews3D must be an array.");
             return false;
@@ -274,7 +274,7 @@ class SceneComponentSchemaLoadingLayer extends PreviousLayer.SceneComponentSchem
             Reject(schema, "nodePreviewFilter3D requires a states array.");
             return -1;
         }
-        var rawStates = Map.Get(raw, "states");
+        var rawStates = Map.Get(raw, "states") as Seq;
         var stateCount = Seq.get_Count(rawStates);
         if stateCount <= 0
            or stateCount > SceneComponentModel.MAX_NODE_PREVIEW_FILTER_STATES {

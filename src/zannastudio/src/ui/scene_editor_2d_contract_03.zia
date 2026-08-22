@@ -254,7 +254,7 @@ class SceneEditor2DContract03 extends PreviousContract.SceneEditor2DContract02 {
     hide func BehaviorMarkedTiles() -> List[Integer] { return []; }
 
     /// @brief Neutral dispatch slot for AddMarkedTiles.
-    hide func AddMarkedTiles(_marked: List[Integer], _tiles: Any) {}
+    hide func AddMarkedTiles(_marked: List[Integer], _tiles: Seq) {}
 
     /// @brief Neutral dispatch slot for RefreshTileBehavior.
     hide func RefreshTileBehavior() {}

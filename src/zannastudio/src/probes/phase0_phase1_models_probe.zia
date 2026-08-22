@@ -89,7 +89,7 @@ func assertTrue(cond: Boolean, msg: String) -> Boolean {
     return true;
 }
 
-func AddEdit(edits: Any,
+func AddEdit(edits: Seq,
              filePath: String,
              startLine: Integer,
              startColumn: Integer,

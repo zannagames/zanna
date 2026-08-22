@@ -418,7 +418,7 @@ class SceneTileBehavior2D {
     }
 
     /// @brief Render one runtime integer sequence as comma-separated draft text.
-    hide func IntSeqCsv(values: Any) -> String {
+    hide func IntSeqCsv(values: Seq) -> String {
         var out = "";
         var count = Seq.get_Count(values);
         var index = 0;

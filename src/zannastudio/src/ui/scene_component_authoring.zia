@@ -102,7 +102,7 @@ expose func AddStarterComponent(
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var schema =
         scene_component_schema.ParseText(text, "authoring");
 
@@ -191,7 +191,7 @@ expose func UpdateComponent(
         return NoChange(result);
     }
 
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var index = RawComponentIndex(components, previous.name);
     if index < 0 {
         return Fail(result, "The selected component is detached.");
@@ -218,7 +218,7 @@ expose func RemoveComponent(
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var index = RawComponentIndex(components, name);
     if index < 0 {
         return Fail(result, "The selected component no longer exists.");
@@ -241,7 +241,7 @@ expose func MoveComponent(
     if direction != -1 and direction != 1 {
         return Fail(result, "Component move direction must be -1 or 1.");
     }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var index = RawComponentIndex(components, name);
     if index < 0 {
         return Fail(result, "The selected component no longer exists.");
@@ -263,14 +263,14 @@ expose func AddStarterField(
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var componentIndex =
         RawComponentIndex(components, componentName);
     if componentIndex < 0 {
         return Fail(result, "The selected component no longer exists.");
     }
     var component = Seq.Get(components, componentIndex);
-    var fields = Map.Get(component, "fields");
+    var fields = Map.Get(component, "fields") as Seq;
     if Seq.get_Count(fields)
        >= scene_component_schema.MAX_FIELDS_PER_COMPONENT {
         return Fail(result, "The component already has 64 fields.");
@@ -344,14 +344,14 @@ expose func UpdateField(
         return NoChange(result);
     }
 
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var componentIndex =
         RawComponentIndex(components, component.name);
     if componentIndex < 0 {
         return Fail(result, "The selected component is detached.");
     }
     var rawComponent = Seq.Get(components, componentIndex);
-    var fields = Map.Get(rawComponent, "fields");
+    var fields = Map.Get(rawComponent, "fields") as Seq;
     var fieldIndex = RawFieldIndex(fields, previous.key);
     if fieldIndex < 0 {
         return Fail(result, "The selected field is detached.");
@@ -398,14 +398,14 @@ expose func RemoveField(
     var result = BeginEdit(text);
     var root = ValidRoot(text, result);
     if root == null { return result; }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var componentIndex =
         RawComponentIndex(components, componentName);
     if componentIndex < 0 {
         return Fail(result, "The selected component no longer exists.");
     }
     var component = Seq.Get(components, componentIndex);
-    var fields = Map.Get(component, "fields");
+    var fields = Map.Get(component, "fields") as Seq;
     if Seq.get_Count(fields) <= 1 {
         return Fail(
             result, "A component must retain at least one field.");
@@ -434,14 +434,14 @@ expose func MoveField(
     if direction != -1 and direction != 1 {
         return Fail(result, "Field move direction must be -1 or 1.");
     }
-    var components = Map.Get(root, "components");
+    var components = Map.Get(root, "components") as Seq;
     var componentIndex =
         RawComponentIndex(components, componentName);
     if componentIndex < 0 {
         return Fail(result, "The selected component no longer exists.");
     }
     var component = Seq.Get(components, componentIndex);
-    var fields = Map.Get(component, "fields");
+    var fields = Map.Get(component, "fields") as Seq;
     var index = RawFieldIndex(fields, key);
     if index < 0 {
         return Fail(result, "The selected field no longer exists.");
@@ -819,7 +819,7 @@ func FindAnyTarget(
     return component;
 }
 
-func RawComponentIndex(components: Any,
+func RawComponentIndex(components: Seq,
                        name: String) -> Integer {
     var folded = Str.ToLower(Str.Trim(name));
     var index = 0;
@@ -835,7 +835,7 @@ func RawComponentIndex(components: Any,
     return -1;
 }
 
-func RawFieldIndex(fields: Any,
+func RawFieldIndex(fields: Seq,
                    key: String) -> Integer {
     var index = 0;
     while index < Seq.get_Count(fields) {
@@ -862,7 +862,7 @@ func UniqueComponentName(
     return candidate;
 }
 
-func UniqueFieldKey(fields: Any,
+func UniqueFieldKey(fields: Seq,
                     base: String) -> String {
     var candidate = base;
     var suffix = 2;

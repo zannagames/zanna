@@ -163,12 +163,12 @@ class DebugSessionViewLayer extends Base.DebugSessionBase {
         var text = new StringBuilder();
         text.Append("[debug] stopped (" + lastReason + ") at "
                     + self.activePath + ":" + lastLine + "\n");
-        AppendFrames(text, Map.Get(event, "frames"));
-        AppendLocals(text, Map.Get(event, "locals"));
+        AppendFrames(text, Map.Get(event, "frames") as Seq);
+        AppendLocals(text, Map.Get(event, "locals") as Seq);
         return text.ToString();
     }
 
-    hide func AppendFrames(text: StringBuilder, frames: Any) {
+    hide func AppendFrames(text: StringBuilder, frames: Seq) {
         if frames == null or Seq.get_Count(frames) == 0 { return; }
         text.Append("\nCall stack:\n");
         var i = 0;
@@ -181,7 +181,7 @@ class DebugSessionViewLayer extends Base.DebugSessionBase {
         }
     }
 
-    hide func AppendLocals(text: StringBuilder, locals: Any) {
+    hide func AppendLocals(text: StringBuilder, locals: Seq) {
         if locals == null or Seq.get_Count(locals) == 0 { return; }
         text.Append("\nLocals:\n");
         var i = 0;

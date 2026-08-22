@@ -24,6 +24,8 @@ bind "function_scan";
 bind "occurrence_scan";
 bind "trivia_scan";
 
+bind Seq = Zanna.Collections.Seq;
+
 // ============================================================================
 // MODULE: source_scan
 // PURPOSE: Compatibility facade for lightweight Zia source-analysis helpers.
@@ -48,7 +50,7 @@ expose func SourceLine(source: String,
     return function_scan.SourceLine(source, lineNumber);
 }
 
-expose func SourceLineFromLines(lines: Any,
+expose func SourceLineFromLines(lines: Seq,
                                 lineNumber: Integer) -> String {
     return function_scan.SourceLineFromLines(lines, lineNumber);
 }
@@ -62,7 +64,7 @@ expose func EnclosingZiaFunctionStartLine(source: String,
     return function_scan.EnclosingZiaFunctionStartLine(source, lineNumber);
 }
 
-expose func EnclosingZiaFunctionStartLineFromLines(lines: Any,
+expose func EnclosingZiaFunctionStartLineFromLines(lines: Seq,
                                                    lineNumber: Integer) -> Integer {
     return function_scan.EnclosingZiaFunctionStartLineFromLines(lines, lineNumber);
 }
@@ -76,7 +78,7 @@ expose func EnclosingZiaFunctionName(source: String,
     return function_scan.EnclosingZiaFunctionName(source, lineNumber);
 }
 
-expose func EnclosingZiaFunctionNameFromLines(lines: Any,
+expose func EnclosingZiaFunctionNameFromLines(lines: Seq,
                                               lineNumber: Integer) -> String {
     return function_scan.EnclosingZiaFunctionNameFromLines(lines, lineNumber);
 }
@@ -98,7 +100,7 @@ expose func ZiaFunctionEndLine(source: String,
     return function_scan.ZiaFunctionEndLine(source, startLine);
 }
 
-expose func ZiaFunctionEndLineFromLines(lines: Any,
+expose func ZiaFunctionEndLineFromLines(lines: Seq,
                                         startLine: Integer) -> Integer {
     return function_scan.ZiaFunctionEndLineFromLines(lines, startLine);
 }
@@ -114,9 +116,9 @@ expose func OutgoingZiaCallTokens(source: String,
     return call_scan.OutgoingZiaCallTokens(source, startLine, endLine);
 }
 
-expose func OutgoingZiaCallTokensFromLines(lines: Any,
+expose func OutgoingZiaCallTokensFromLines(lines: Seq,
                                            startLine: Integer,
-                                           endLine: Integer) -> Any {
+                                           endLine: Integer) -> Seq {
     return call_scan.OutgoingZiaCallTokensFromLines(lines, startLine, endLine);
 }
 
@@ -140,7 +142,7 @@ expose func ZiaCommentDepthAfter(line: String, commentDepth: Integer) -> Integer
 /// @param lines Sequence returned by `Str.Split(source, "\n")`.
 /// @param targetLine Zero-based target line index.
 /// @return Block-comment depth before `targetLine`.
-expose func ZiaCommentDepthBeforeLine(lines: Any,
+expose func ZiaCommentDepthBeforeLine(lines: Seq,
                                       targetLine: Integer) -> Integer {
     return trivia_scan.ZiaCommentDepthBeforeLine(lines, targetLine);
 }
@@ -157,7 +159,7 @@ expose func ZiaParenDelta(line: String, commentDepth: Integer) -> Integer {
 /// @param lines Sequence returned by `Str.Split(source, "\n")`.
 /// @param targetLine Zero-based target line index.
 /// @return Parenthesis/bracket depth before `targetLine`.
-expose func ZiaParenDepthBeforeLine(lines: Any,
+expose func ZiaParenDepthBeforeLine(lines: Seq,
                                     targetLine: Integer) -> Integer {
     return trivia_scan.ZiaParenDepthBeforeLine(lines, targetLine);
 }

@@ -45,9 +45,9 @@ class DebugSessionState {
     expose String consoleText;
     expose String programOutput;
     expose Integer exitCode;
-    expose Any stopFrames;
-    expose Any stopLocals;
-    expose Any lastVarChildren;
+    expose Seq stopFrames;
+    expose Seq stopLocals;
+    expose Seq lastVarChildren;
     expose Integer lastVarRef;
     expose String pendingVarPath;
     expose Integer pendingVarRef;

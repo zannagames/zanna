@@ -209,8 +209,8 @@ class SceneEditor2DTilePreviewsLayer extends PreviousLayer.SceneEditor2DHierarch
                                     durationsCsv: String) -> Boolean {
         if scene == null { return false; }
         if TileBehaviorTileValid(tile) == false { return false; }
-        var frames = ParseCsvIntegers(framesCsv);
-        var durations = ParseCsvIntegers(durationsCsv);
+        var frames = ParseCsvIntegers(framesCsv) as Seq;
+        var durations = ParseCsvIntegers(durationsCsv) as Seq;
         if frames == null or durations == null
            or Seq.get_Count(frames) == 0
            or Seq.get_Count(frames) != Seq.get_Count(durations) {
@@ -262,7 +262,7 @@ class SceneEditor2DTilePreviewsLayer extends PreviousLayer.SceneEditor2DHierarch
                                         variantsCsv: String) -> Boolean {
         if scene == null { return false; }
         if TileBehaviorTileValid(tile) == false { return false; }
-        var variants = ParseCsvIntegers(variantsCsv);
+        var variants = ParseCsvIntegers(variantsCsv) as Seq;
         if variants == null or Seq.get_Count(variants) != 16 {
             detailLabel.SetText(
                 "Enter exactly 16 comma-separated variant tile ids.");

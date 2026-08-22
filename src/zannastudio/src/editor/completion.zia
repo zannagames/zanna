@@ -164,7 +164,7 @@ class CompletionController extends completion_base.CompletionControllerBase {
             Hide();
             return true;
         }
-        ApplyCompletionItems(request!.result, 0,
+        ApplyCompletionItems(request!.result as Seq, 0,
                              pendingJobQueryLine, pendingJobQueryCol);
         return true;
     }

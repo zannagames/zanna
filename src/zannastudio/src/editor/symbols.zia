@@ -484,7 +484,7 @@ expose func SemanticFoldEndLine(source: String, startLine: Integer) -> Integer {
     return SemanticFoldEndLineFromLines(lines, startLine);
 }
 
-expose func SemanticFoldEndLineFromLines(lines: Any, startLine: Integer) -> Integer {
+expose func SemanticFoldEndLineFromLines(lines: Seq, startLine: Integer) -> Integer {
     var startIdx = startLine - 1;
     if startIdx < 0 or startIdx >= Seq.get_Count(lines) { return startLine; }
 

@@ -198,7 +198,7 @@ func ScanRoot(request: ProjectBindQueryRequest,
             state.stop = true;
             return;
         }
-        var entries = Map.Get(page, "entries");
+        var entries = Map.Get(page, "entries") as Seq;
         var emitted = 0;
         if entries != null {
             var entryIndex = 0;

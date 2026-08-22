@@ -374,8 +374,8 @@ expose func RelativeBindPath(importingDir: String,
         return MaybeStripZiaExtension(NormalizeBindSeparators(targetNorm), keepNoExt);
     }
 
-    var baseParts = PathParts(NormalizeAbsPath(importingDir));
-    var targetParts = PathParts(targetNorm);
+    var baseParts = PathParts(NormalizeAbsPath(importingDir)) as Seq;
+    var targetParts = PathParts(targetNorm) as Seq;
     if Seq.get_Count(baseParts) > 0 and Seq.get_Count(targetParts) > 0 {
         if Obj.ToString(Seq.Get(baseParts, 0)) != Obj.ToString(Seq.Get(targetParts, 0)) {
             return MaybeStripZiaExtension(NormalizeBindSeparators(targetNorm), keepNoExt);

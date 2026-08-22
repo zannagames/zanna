@@ -114,7 +114,7 @@ class ProjectManagerCacheLayer extends Base.ProjectManagerBase {
                 continue;
             }
 
-            var entries = Map.Get(page, "entries");
+            var entries = Map.Get(page, "entries") as Seq;
             var i = 0;
             while entries != null and i < Seq.get_Count(entries) {
                 var entry = Seq.Get(entries, i);

@@ -384,7 +384,7 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
     }
 
     /// @brief Append bounded unique palette-range ids from one runtime list.
-    hide override func AddMarkedTiles(marked: List[Integer], tiles: Any) {
+    hide override func AddMarkedTiles(marked: List[Integer], tiles: Seq) {
         var count = Seq.get_Count(tiles);
         var index = 0;
         while index < count {

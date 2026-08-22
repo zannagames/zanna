@@ -2567,6 +2567,35 @@ int main() {
         release_fake(fake);
     }
 
+    // rt_cast_runtime_class backs the Zia `value as RuntimeClass` narrowing.
+    // Null narrows to null so nullable runtime handles keep their `== null`
+    // guards, a matching class passes through unchanged, and an unrelated class
+    // traps naming both sides instead of surviving into an unrelated accessor.
+    {
+        assert(rt_cast_runtime_class(nullptr, RT_SEQ_CLASS_ID) == nullptr);
+
+        void *seq = rt_seq_new();
+        assert(rt_cast_runtime_class(seq, RT_SEQ_CLASS_ID) == seq);
+        release_fake(seq);
+    }
+    {
+        void *wrong = make_fake(RT_LIST_CLASS_ID, 1);
+        jmp_buf recovery;
+        rt_trap_set_recovery(&recovery);
+        if (setjmp(recovery) == 0) {
+            rt_cast_runtime_class(wrong, RT_SEQ_CLASS_ID);
+            rt_trap_clear_recovery();
+            release_fake(wrong);
+            assert(false && "expected runtime class cast trap");
+        }
+        const char *err = rt_trap_get_error();
+        assert(err != nullptr);
+        assert(std::strstr(err, "Cast: expected Zanna.Collections.Seq") != nullptr);
+        assert(std::strstr(err, "got Zanna.Collections.List") != nullptr);
+        rt_trap_clear_recovery();
+        release_fake(wrong);
+    }
+
     std::printf("Handle validation tests: all passed\n");
     return 0;
 }

@@ -99,13 +99,18 @@ class SourceFreshnessScanner {
         return true;
     }
 
-    /// @brief Invalidate for every path in a save/event list.
-    expose func InvalidatePaths(paths: Any) -> Boolean {
-        if paths == null { return false; }
+    /// @brief Invalidate for every path in a saved-file list.
+    /// @details Save preflight collects written paths in a typed List, so this
+    ///          reads it with List operations. Typing the parameter keeps a
+    ///          Seq from reaching a List receiver, which traps at runtime.
+    /// @param paths Saved paths written by a build/run save preflight; the
+    ///        non-nullable List type makes an absent batch unrepresentable.
+    /// @return True when a new scan was scheduled for at least one path.
+    expose func InvalidatePaths(paths: List) -> Boolean {
         var invalidated = false;
         var i = 0;
-        while i < Seq.get_Count(paths) {
-            if InvalidatePath(Obj.ToString(Seq.Get(paths, i))) {
+        while i < paths.count() {
+            if InvalidatePath(Obj.ToString(paths.get(i))) {
                 invalidated = true;
             }
             i = i + 1;
@@ -134,7 +139,7 @@ class SourceFreshnessScanner {
         }
         if Map.GetBool(page, "truncated") { truncated = true; }
 
-        var entries = Map.Get(page, "entries");
+        var entries = Map.Get(page, "entries") as Seq;
         var processed = 0;
         while entries != null and processed < Seq.get_Count(entries) {
             var entry = Seq.Get(entries, processed);
@@ -244,7 +249,7 @@ class SourceFreshnessScanner {
         var lines = Str.Split(read.text, "\n");
         var i = 0;
         while i < Seq.get_Count(lines) {
-            var words = SplitManifestWords(Obj.ToString(Seq.Get(lines, i)));
+            var words = SplitManifestWords(Obj.ToString(Seq.Get(lines, i))) as Seq;
             i = i + 1;
             if words == null {
                 reliable = false;

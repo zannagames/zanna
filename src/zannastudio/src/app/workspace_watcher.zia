@@ -252,7 +252,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
         AdvanceWatcherDiscoveryRoot(state);
         return added;
     }
-    var entries = Map.Get(page, "entries");
+    var entries = Map.Get(page, "entries") as Seq;
     var entryCount = 0;
     if entries != null { entryCount = Seq.get_Count(entries); }
     var i = 0;
@@ -418,7 +418,7 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
         // Build a batch only after the first real event, then drain this one
         // watcher under the same global event budget used before.
         var eventType = watcher.Poll();
-        var events: Any = null;
+        var events: Seq = null;
         while eventType != watcher.EventNone
               and changed < WORKSPACE_WATCHER_EVENTS_PER_FRAME {
             if events == null { events = Seq.New(); }
@@ -477,7 +477,7 @@ func WatcherEventRecord(watcher: IO.Watcher,
     return event;
 }
 
-expose func EventsRequireFallback(events: Any) -> Boolean {
+expose func EventsRequireFallback(events: Seq) -> Boolean {
     if events == null { return false; }
     var i = 0;
     while i < Seq.get_Count(events) {
@@ -500,7 +500,7 @@ expose func EventsRequireFallback(events: Any) -> Boolean {
 ///          unwatched.
 /// @return True when the batch changed or may have changed directory topology.
 expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
-                                           events: Any) -> Boolean {
+                                           events: Seq) -> Boolean {
     if state == null or events == null { return false; }
     var topologyChanged = false;
     var requestAdditiveDiscovery = false;
@@ -641,7 +641,7 @@ func HandleWorkspaceWatcherEvents(shell: app_shell.AppShell,
                                   indexer: project_index.ProjectIndexer,
                                   locStore: locations.LocationStore,
                                   engine: editor_engine.EditorEngine,
-                                  events: Any) {
+                                  events: Seq) {
     var refreshTree = false;
     var fullReindex = false;
     var invalidatedActiveDocument = false;
