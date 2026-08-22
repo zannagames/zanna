@@ -39,7 +39,8 @@
 //        src/runtime/core/rt_string_advanced.c (extended operations),
 //        src/runtime/core/rt_string_specialized.c (specialized transforms),
 //        src/runtime/core/rt_string_encode.c (byte/C-string bridging),
-//        src/runtime/core/rt_string_format.c (numeric conversion)
+//        src/runtime/core/rt_string_format.c (numeric conversion),
+//        docs/adr/0288-allocation-free-string-byte-access.md
 //
 //===----------------------------------------------------------------------===//
 /// @file
@@ -133,6 +134,12 @@ rt_string rt_str_from_lit(const char *bytes, size_t len);
 /// @param s String to measure; `NULL` is treated as empty.
 /// @return Stored byte length clamped to `INT64_MAX`.
 int64_t rt_str_len(rt_string s);
+
+/// @brief Return one unsigned stored byte without allocating a substring.
+/// @param s Borrowed live string handle.
+/// @param offset Zero-based byte offset.
+/// @return Value in 0..255, or -1 when @p offset is outside the string.
+int64_t rt_str_byte_at(rt_string s, int64_t offset);
 
 /// @brief Test whether @p s has zero stored bytes.
 /// @param s String to inspect; `NULL` is treated as empty.

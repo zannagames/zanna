@@ -11,7 +11,8 @@
 //   - Wrapped controls remain reachable at the minimum supported sidebar width.
 //   - Stage, Unstage, diff, and Commit reflect structured selection/index state.
 //   - Focused Enter submission performs exactly one real commit.
-//   - Conflicts explain the safe edit-then-Stage workflow and block commits.
+//   - Conflicts support explicit side selection, Stage confirmation, and a
+//     noninteractive merge continuation while ordinary Commit stays blocked.
 // Ownership/Lifetime: The probe owns its temporary repo, shell, and harness.
 // Links: zannastudio/src/scm/scm_view.zia,
 //        zannastudio/src/scm/scm_git.zia
@@ -21,6 +22,7 @@
 module scm_view_probe;
 
 bind "../scm/scm_git";
+bind "../scm/scm_git_support";
 bind "../scm/scm_view";
 bind "../ui/activity_bar";
 bind "../ui/app_shell";
@@ -47,6 +49,37 @@ func GitConfig(dir: String,
     Seq.Push(args, key);
     Seq.Push(args, value);
     Exec.RunArgs("git", args);
+}
+
+/// @brief Run `git mv` with exact argument-vector paths in the temporary repository.
+func GitMove(dir: String,
+             source: String,
+             destination: String) -> Boolean {
+    var args = Seq.New();
+    Seq.Push(args, "-C");
+    Seq.Push(args, dir);
+    Seq.Push(args, "mv");
+    Seq.Push(args, source);
+    Seq.Push(args, destination);
+    return Exec.RunArgs("git", args) == 0;
+}
+
+/// @brief Verify operation discovery through Git's linked-worktree pointer format.
+func VerifyLinkedWorktreeOperationDiscovery() -> Boolean {
+    var worktree = TempFile.CreateDirWithPrefix("zannastudio_git_worktree_");
+    var control = TempFile.CreateDirWithPrefix("zannastudio_git_control_");
+    File.WriteAllText(Path.Join(worktree, ".git"), "gitdir: " + control + "\n");
+    File.WriteAllText(Path.Join(control, "MERGE_HEAD"), "probe\n");
+    if scm_git_support.CurrentOperation(worktree) != "merging" {
+        Terminal.Say("RESULT: fail linked-worktree merge operation discovery");
+        return false;
+    }
+    File.Delete(Path.Join(control, "MERGE_HEAD"));
+    if scm_git_support.CurrentOperation(worktree) != "idle" {
+        Terminal.Say("RESULT: fail linked-worktree idle operation discovery");
+        return false;
+    }
+    return true;
 }
 
 /// @brief Return whether one rendered child remains inside its panel.
@@ -116,6 +149,17 @@ func PumpUntilIdle(shell: app_shell.AppShell,
     view.HandleEvents();
     shell.Render();
     return view.Busy() == false and view.pendingJobs.count() == 0;
+}
+
+/// @brief Locate one exact status path without relying on Git's row ordering.
+func StatusIndexForPath(view: scm_view.ScmView,
+                        path: String) -> Integer {
+    var i = 0;
+    while i < view.lastStatus.entries.count() {
+        if view.lastStatus.entries.get(i).path == path { return i; }
+        i = i + 1;
+    }
+    return -1;
 }
 
 func Fail(shell: app_shell.AppShell,
@@ -361,21 +405,37 @@ func VerifyConflictedScmWorkflow(ctx: ScmViewProbeContext) -> Boolean {
     view.HandleEvents();
     if PumpUntilIdle(shell, view, 10000) == false
        or view.stageBtn.IsEnabled() == false
-       or view.sideBySideButton.IsEnabled() == false {
+       or view.sideBySideButton.IsEnabled() == false
+       or view.takeCurrentBtn.IsEnabled() == false
+       or view.takeIncomingBtn.IsEnabled() == false {
         Fail(shell, harness, "selected conflict actions");
         return false;
     }
     view.diffPane.SelectAll();
     var conflictDiff = view.diffPane.GetSelection();
-    if Str.Contains(conflictDiff, "edit the conflict markers") == false
-       or Str.Contains(conflictDiff, "then Stage it") == false {
+    if Str.Contains(conflictDiff, "edit the markers") == false
+       or Str.Contains(conflictDiff, "Take Current/Take Incoming") == false
+       or Str.Contains(conflictDiff, "then Stage") == false {
         Fail(shell, harness, "conflict guidance missing from diff");
         return false;
     }
 
-    // The authored message survives while the user edits, then staging the
-    // resolved file unlocks the existing commit rather than discarding work.
-    File.WriteAllText(filePath, "module Game; // resolved version\n");
+    // Choosing a side is deliberately non-destructive to the index: the row
+    // remains conflicted until a separate Stage confirms that resolution.
+    Click(shell, harness, view.takeIncomingBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or File.ReadAllText(filePath) != "module Game; // branch version\n"
+       or view.lastStatus.entries.count() != 1
+       or view.lastStatus.entries.get(0).conflicted == false {
+        Fail(shell, harness, "take incoming conflict side");
+        return false;
+    }
+
+    // Stage confirms the chosen side. The active merge now exposes Continue;
+    // ordinary Commit remains disabled so a rebase cannot be committed by hand.
+    view.statusList.SelectIndex(0);
+    view.HandleEvents();
     Click(shell, harness, view.stageBtn);
     view.HandleEvents();
     if PumpUntilIdle(shell, view, 10000) == false
@@ -383,29 +443,266 @@ func VerifyConflictedScmWorkflow(ctx: ScmViewProbeContext) -> Boolean {
        or view.lastStatus.entries.get(0).conflicted
        or view.lastStatus.entries.get(0).staged == false
        or view.commitInput.get_Text() != "resolve conflict from Studio"
-       or view.commitBtn.IsEnabled() == false {
-        Fail(shell, harness, "edit-then-Stage conflict resolution");
+       or view.operationState != "merging"
+       or view.continueOperationBtn.IsEnabled() == false
+       or view.commitBtn.IsEnabled() {
+        Fail(shell, harness, "stage-confirmed conflict resolution");
         return false;
     }
-    view.commitInput.Focus();
-    harness.SendKey("enter", 0);
-    harness.DispatchPending();
+
+    Click(shell, harness, view.continueOperationBtn);
     view.HandleEvents();
     if PumpUntilIdle(shell, view, 10000) == false
        or view.lastStatus.entries.count() != 0
+       or view.operationState != "idle"
        or git.Status().entries.count() != 0 {
-        Fail(shell, harness, "resolved conflict commit");
+        Fail(shell, harness, "noninteractive merge continue");
         return false;
     }
 
     return true;
 }
 
+/// @brief Resolve two simultaneous real conflicts in reverse path order.
+/// @details This proves row identity, mixed-side selection, partial resolution,
+///   commit gating, and noninteractive continuation without assuming Git's
+///   status ordering.
+func VerifyMultiFileConflictWorkflow(ctx: ScmViewProbeContext) -> Boolean {
+    var dir = ctx.dir;
+    var git = ctx.git;
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
+    var baseBranch = git.CurrentBranch();
+    var firstPath = Path.Join(dir, "multi_first.zia");
+    var secondPath = Path.Join(dir, "multi_second.zia");
+    File.WriteAllText(firstPath, "module First; // common\n");
+    File.WriteAllText(secondPath, "module Second; // common\n");
+    if git.StageAll() == false or git.Commit("seed multi conflict") == false {
+        Fail(shell, harness, "seed multi-file conflict");
+        return false;
+    }
+
+    var branchArgs = Seq.New();
+    Seq.Push(branchArgs, "-C");
+    Seq.Push(branchArgs, dir);
+    Seq.Push(branchArgs, "checkout");
+    Seq.Push(branchArgs, "-b");
+    Seq.Push(branchArgs, "scm-view-multi-conflict");
+    if Exec.RunArgs("git", branchArgs) != 0 {
+        Fail(shell, harness, "create multi-file conflict branch");
+        return false;
+    }
+    File.WriteAllText(firstPath, "module First; // incoming\n");
+    File.WriteAllText(secondPath, "module Second; // incoming\n");
+    if git.StageAll() == false or git.Commit("incoming multi-file edits") == false
+       or git.Checkout(baseBranch) == false {
+        Fail(shell, harness, "seed incoming multi-file edits");
+        return false;
+    }
+    File.WriteAllText(firstPath, "module First; // current\n");
+    File.WriteAllText(secondPath, "module Second; // current\n");
+    if git.StageAll() == false or git.Commit("current multi-file edits") == false {
+        Fail(shell, harness, "seed current multi-file edits");
+        return false;
+    }
+    var mergeArgs = Seq.New();
+    Seq.Push(mergeArgs, "-C");
+    Seq.Push(mergeArgs, dir);
+    Seq.Push(mergeArgs, "merge");
+    Seq.Push(mergeArgs, "scm-view-multi-conflict");
+    if Exec.RunArgs("git", mergeArgs) == 0 {
+        Fail(shell, harness, "expected multi-file merge conflict");
+        return false;
+    }
+
+    view.Refresh();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.lastStatus.entries.count() != 2
+       or StatusIndexForPath(view, "multi_first.zia") < 0
+       or StatusIndexForPath(view, "multi_second.zia") < 0
+       or view.operationState != "conflict-merge" {
+        Terminal.Say("DETAIL: multi rows=" + view.lastStatus.entries.count()
+            + " first=" + StatusIndexForPath(view, "multi_first.zia")
+            + " second=" + StatusIndexForPath(view, "multi_second.zia")
+            + " operation=" + view.operationState
+            + " busy=" + view.Busy());
+        var detailIndex = 0;
+        while detailIndex < view.lastStatus.entries.count() {
+            Terminal.Say("DETAIL: multi entry " + detailIndex + " path="
+                + view.lastStatus.entries.get(detailIndex).path + " conflicted="
+                + view.lastStatus.entries.get(detailIndex).conflicted);
+            detailIndex = detailIndex + 1;
+        }
+        Fail(shell, harness, "multi-file conflict rows");
+        return false;
+    }
+
+    // Resolve the second path first with the incoming side.
+    view.statusList.SelectIndex(StatusIndexForPath(view, "multi_second.zia"));
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.takeIncomingBtn.IsEnabled() == false {
+        Fail(shell, harness, "select incoming multi-file conflict");
+        return false;
+    }
+    Click(shell, harness, view.takeIncomingBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or File.ReadAllText(secondPath) != "module Second; // incoming\n" {
+        Fail(shell, harness, "take incoming in multi-file conflict");
+        return false;
+    }
+    view.statusList.SelectIndex(StatusIndexForPath(view, "multi_second.zia"));
+    view.HandleEvents();
+    Click(shell, harness, view.stageBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or StatusIndexForPath(view, "multi_first.zia") < 0
+       or view.commitBtn.IsEnabled() {
+        Fail(shell, harness, "partial multi-file conflict resolution");
+        return false;
+    }
+
+    // Resolve the remaining first path with the current side.
+    view.statusList.SelectIndex(StatusIndexForPath(view, "multi_first.zia"));
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.takeCurrentBtn.IsEnabled() == false {
+        Fail(shell, harness, "select current multi-file conflict");
+        return false;
+    }
+    Click(shell, harness, view.takeCurrentBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or File.ReadAllText(firstPath) != "module First; // current\n" {
+        Fail(shell, harness, "take current in multi-file conflict");
+        return false;
+    }
+    view.statusList.SelectIndex(StatusIndexForPath(view, "multi_first.zia"));
+    view.HandleEvents();
+    Click(shell, harness, view.stageBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.operationState != "merging"
+       or view.continueOperationBtn.IsEnabled() == false
+       or view.commitBtn.IsEnabled() {
+        Fail(shell, harness, "complete multi-file conflict staging");
+        return false;
+    }
+    Click(shell, harness, view.continueOperationBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.operationState != "idle"
+       or git.Status().entries.count() != 0 {
+        Fail(shell, harness, "continue multi-file merge");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Recover a real rename/rename conflict through rendered Studio controls.
+func VerifyRenameConflictWorkflow(ctx: ScmViewProbeContext) -> Boolean {
+    var dir = ctx.dir;
+    var git = ctx.git;
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
+    var baseBranch = git.CurrentBranch();
+    var sourceName = "rename_source.zia";
+    var currentName = "rename_current.zia";
+    var incomingName = "rename_incoming.zia";
+    File.WriteAllText(Path.Join(dir, sourceName), "module RenameProbe; // common\n");
+    if git.StageAll() == false or git.Commit("seed rename conflict") == false {
+        Fail(shell, harness, "seed rename conflict");
+        return false;
+    }
+
+    var branchArgs = Seq.New();
+    Seq.Push(branchArgs, "-C");
+    Seq.Push(branchArgs, dir);
+    Seq.Push(branchArgs, "checkout");
+    Seq.Push(branchArgs, "-b");
+    Seq.Push(branchArgs, "scm-view-rename-conflict");
+    if Exec.RunArgs("git", branchArgs) != 0
+       or GitMove(dir, sourceName, incomingName) == false
+       or git.Commit("incoming rename") == false
+       or git.Checkout(baseBranch) == false
+       or GitMove(dir, sourceName, currentName) == false
+       or git.Commit("current rename") == false {
+        Fail(shell, harness, "seed rename branches");
+        return false;
+    }
+    var mergeArgs = Seq.New();
+    Seq.Push(mergeArgs, "-C");
+    Seq.Push(mergeArgs, dir);
+    Seq.Push(mergeArgs, "merge");
+    Seq.Push(mergeArgs, "scm-view-rename-conflict");
+    if Exec.RunArgs("git", mergeArgs) == 0 {
+        Fail(shell, harness, "expected rename conflict");
+        return false;
+    }
+
+    view.Refresh();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.lastStatus.entries.count() != 3
+       or StatusIndexForPath(view, currentName) < 0
+       or StatusIndexForPath(view, incomingName) < 0
+       or StatusIndexForPath(view, sourceName) < 0
+       or view.operationState != "conflict-merge" {
+        Fail(shell, harness, "rename conflict rows");
+        return false;
+    }
+    view.statusList.SelectIndex(StatusIndexForPath(view, currentName));
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.takeCurrentBtn.IsEnabled() == false {
+        Fail(shell, harness, "select current rename side");
+        return false;
+    }
+    Click(shell, harness, view.takeCurrentBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or File.Exists(Path.Join(dir, currentName)) == false {
+        Fail(shell, harness, "take current rename side");
+        return false;
+    }
+    // A rename/rename conflict legitimately leaves both destination paths in
+    // the worktree. Model the documented user edit: keep Current and delete
+    // the unwanted Incoming destination before staging the complete resolution.
+    if File.Exists(Path.Join(dir, incomingName)) {
+        File.Delete(Path.Join(dir, incomingName));
+    }
+    Click(shell, harness, view.stageAllBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or view.operationState != "merging"
+       or view.continueOperationBtn.IsEnabled() == false
+       or view.commitBtn.IsEnabled() {
+        Fail(shell, harness, "stage rename resolution");
+        return false;
+    }
+    Click(shell, harness, view.continueOperationBtn);
+    view.HandleEvents();
+    if PumpUntilIdle(shell, view, 10000) == false
+       or git.Status().entries.count() != 0
+       or File.Exists(Path.Join(dir, currentName)) == false
+       or File.Exists(Path.Join(dir, incomingName))
+       or File.Exists(Path.Join(dir, sourceName)) {
+        Fail(shell, harness, "continue rename merge");
+        return false;
+    }
+    return true;
+}
+
 func main() {
+    if VerifyLinkedWorktreeOperationDiscovery() == false { return; }
     var ctx = new ScmViewProbeContext();
     if VerifyOrdinaryScmWorkflow(ctx) == false { return; }
     if ctx.skipped { return; }
     if VerifyConflictedScmWorkflow(ctx) == false { return; }
+    if VerifyMultiFileConflictWorkflow(ctx) == false { return; }
+    if VerifyRenameConflictWorkflow(ctx) == false { return; }
 
     ctx.harness.UnbindApp();
     ctx.shell.Destroy();

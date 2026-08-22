@@ -8,7 +8,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 |---|---:|---:|
 | [Assets](assets.md) | 1 | 1 |
 | [Audio](audio.md) | 9 | 132 |
-| [Basic](basic.md) | 1 | 4 |
+| [Basic](basic.md) | 1 | 5 |
 | [Collections](collections.md) | 31 | 487 |
 | [Core](core.md) | 6 | 60 |
 | [Crypto](crypto.md) | 10 | 81 |
@@ -16,7 +16,7 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Diagnostics](diagnostics.md) | 3 | 20 |
 | [Error](error.md) | 0 | 3 |
 | [Functional](functional.md) | 2 | 33 |
-| [GUI](gui.md) | 79 | 1165 |
+| [GUI](gui.md) | 79 | 1167 |
 | [Game](game.md) | 52 | 793 |
 | [Game2D](game2d.md) | 1 | 143 |
 | [Game3D](game3d.md) | 61 | 818 |
@@ -33,8 +33,8 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Project](project.md) | 1 | 2 |
 | [Result](result.md) | 1 | 26 |
 | [Runtime](runtime.md) | 2 | 16 |
-| [String](string.md) | 1 | 52 |
-| [System](system.md) | 12 | 94 |
+| [String](string.md) | 1 | 53 |
+| [System](system.md) | 12 | 96 |
 | [Terminal](terminal.md) | 1 | 24 |
 | [Testing](testing.md) | 2 | 16 |
 | [Text](text.md) | 18 | 175 |

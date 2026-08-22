@@ -1,0 +1,69 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_conflict_commands.zia
+// Purpose: Build noninteractive Git conflict-resolution and continuation jobs.
+// Key invariants:
+//   - Paths are passed after `--`; no shell command text is constructed.
+//   - Continue operations suppress Git's editor and never prompt in Studio.
+//   - Choosing a side only updates the worktree; an explicit Stage remains the
+//     durable action that marks a conflict resolved.
+// Ownership/Lifetime: Returned jobs own their Git child through scm_git.GitJob.
+// Links: zannastudio/src/scm/scm_git.zia,
+//        zannastudio/src/scm/scm_view_jobs.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_conflict_commands;
+
+bind "scm_git";
+bind Seq = Zanna.Collections.Seq;
+
+/// @brief Replace an unmerged worktree path with Git's current or incoming stage.
+/// @param git Repository-bound Git command owner.
+/// @param path Exact repository-relative path.
+/// @param side `ours` for the current stage or `theirs` for the incoming stage.
+/// @return Asynchronous checkout job; callers must Stage separately on success.
+expose func StartTakeSide(git: scm_git.Git,
+                          path: String,
+                          side: String) -> scm_git.GitJob {
+    var args = Seq.New();
+    Seq.Push(args, "checkout");
+    if side == "theirs" { Seq.Push(args, "--theirs"); }
+    else { Seq.Push(args, "--ours"); }
+    Seq.Push(args, "--");
+    Seq.Push(args, path);
+    return git.StartPrepared("take" + side, args, path);
+}
+
+/// @brief Continue a merge without opening a terminal editor.
+expose func StartMergeContinue(git: scm_git.Git) -> scm_git.GitJob {
+    var args = Seq.New();
+    Seq.Push(args, "-c");
+    Seq.Push(args, "core.editor=true");
+    Seq.Push(args, "merge");
+    Seq.Push(args, "--continue");
+    return git.StartPrepared("mergeContinue", args, "");
+}
+
+/// @brief Continue a rebase without opening a terminal editor.
+expose func StartRebaseContinue(git: scm_git.Git) -> scm_git.GitJob {
+    var args = Seq.New();
+    Seq.Push(args, "-c");
+    Seq.Push(args, "core.editor=true");
+    Seq.Push(args, "rebase");
+    Seq.Push(args, "--continue");
+    return git.StartPrepared("rebaseContinue", args, "");
+}
+
+/// @brief Skip the currently failing rebase commit without prompting.
+expose func StartRebaseSkip(git: scm_git.Git) -> scm_git.GitJob {
+    var args = Seq.New();
+    Seq.Push(args, "rebase");
+    Seq.Push(args, "--skip");
+    return git.StartPrepared("rebaseSkip", args, "");
+}

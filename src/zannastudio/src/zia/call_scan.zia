@@ -90,41 +90,38 @@ func AddOutgoingCallsFromLine(tokens: Any,
     var pos = 1;
     var inString = false;
     while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        var next = "";
-        if pos < Str.get_Length(line) {
-            next = Str.MidLen(line, pos + 1, 1);
-        }
+        var ch = Str.ByteAt(line, pos - 1);
+        var next = Str.ByteAt(line, pos);
 
         if inString {
-            if ch == "\\" {
+            if ch == 92 {
                 pos = pos + 2;
                 continue;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = false;
             }
             pos = pos + 1;
             continue;
         }
-        if ch == "/" and next == "/" {
+        if ch == 47 and next == 47 {
             break;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
             pos = pos + 1;
             continue;
         }
-        if identifier_utils.IsIdentStart(ch) {
+        if identifier_utils.IsIdentStartByte(ch) {
             var start = pos;
-            var name = "";
-            while pos <= Str.get_Length(line) and identifier_utils.IsIdentPart(Str.MidLen(line, pos, 1)) {
-                name = name + Str.MidLen(line, pos, 1);
+            while pos <= Str.get_Length(line)
+                  and identifier_utils.IsIdentPartByte(Str.ByteAt(line, pos - 1)) {
                 pos = pos + 1;
             }
+            var name = Str.Substring(line, start - 1, pos - start);
             var callParen = trivia_scan.SkipWhitespace(line, pos);
             if callParen <= Str.get_Length(line)
-               and Str.MidLen(line, callParen, 1) == "("
+               and Str.ByteAt(line, callParen - 1) == 40
                and identifier_utils.IsKeyword(name) == false
                and IsFunctionDeclarationName(line, start) == false {
                 var token = Map.New();

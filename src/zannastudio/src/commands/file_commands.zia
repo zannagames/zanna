@@ -25,13 +25,13 @@ module file_commands;
 bind "../ui/app_shell";
 bind "../core/document";
 bind "../core/document_manager";
+bind "../core/text_admission";
 bind "../core/project_manager";
 bind "../core/recovery_store";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
 bind "../services/file_utils";
 bind "../services/path_identity";
-bind "../commands/autosave_job";
 bind "../commands/file_save_support";
 
 bind Zanna.GUI;
@@ -220,7 +220,10 @@ func handleSave(shell: app_shell.AppShell,
             var savePath = FileDialog.Save(
                 "Save File", "", file_utils.SaveDialogFilter(saveDoc.kind, saveDoc.language), saveDoc.fileName);
             if savePath != "" {
-                NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
+                if NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex) == false {
+                    file_save_support.ReportNormalizationFailure(shell, saveDoc.fileName);
+                    return false;
+                }
                 if docMgr.SaveAs(savePath) == false {
                     file_save_support.ReportSaveFailure(
                         shell, docMgr, saveDoc.fileName);
@@ -241,7 +244,10 @@ func handleSave(shell: app_shell.AppShell,
         } else {
             var externalState = docMgr.ExternalStateForSave(docMgr.activeIndex);
             if confirmOverwriteExternal(shell, docMgr, docMgr.activeIndex, externalState) {
-                NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
+                if NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex) == false {
+                    file_save_support.ReportNormalizationFailure(shell, saveDoc.fileName);
+                    return false;
+                }
                 if docMgr.SaveActiveAfterExternalConfirmation(externalState) == false {
                     file_save_support.ReportSaveFailure(
                         shell, docMgr, saveDoc.fileName);
@@ -281,7 +287,10 @@ func handleSaveAs(shell: app_shell.AppShell,
                 GUI.Toast.Warning(blocked);
                 return false;
             }
-            NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
+            if NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex) == false {
+                file_save_support.ReportNormalizationFailure(shell, saveAsDoc.fileName);
+                return false;
+            }
             if docMgr.SaveAs(saveAsPath) == false {
                 file_save_support.ReportSaveFailure(
                     shell, docMgr, saveAsDoc.fileName);
@@ -336,7 +345,12 @@ func handleSaveAll(shell: app_shell.AppShell,
                         GUI.Toast.Warning(blocked);
                         return result;
                     }
-                    NormalizeDocumentForSave(docMgr, engine, i);
+                    if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                        result.savedCount = savedCount;
+                        result.message = file_save_support.ReportNormalizationFailure(
+                            shell, doc.fileName);
+                        return result;
+                    }
                     if docMgr.SaveDocumentAs(i, savePath) {
                         tabs.SetTitle(i, doc.fileName);
                         tabs.SetTooltip(i, doc.filePath);
@@ -367,7 +381,12 @@ func handleSaveAll(shell: app_shell.AppShell,
                     shell.SetStatusLeft(result.message);
                     return result;
                 }
-                NormalizeDocumentForSave(docMgr, engine, i);
+                if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                    result.savedCount = savedCount;
+                    result.message = file_save_support.ReportNormalizationFailure(
+                        shell, doc.fileName);
+                    return result;
+                }
                 if docMgr.SaveDocumentAfterExternalConfirmation(i, externalState) {
                     tabs.SetModified(i, false);
                     engine.ClearDocumentModified(doc);
@@ -632,143 +651,10 @@ func SyncRecoverySwaps(docMgr: document_manager.DocumentManager,
     activeRecoveryStore.ReconcileDocuments(docMgr, engine);
 }
 
-func AutoSaveActive(shell: app_shell.AppShell,
-                    docMgr: document_manager.DocumentManager,
-                    engine: editor_engine.EditorEngine,
-                    tabs: editor_tabs.EditorTabs) -> Boolean {
-    if shell == null or docMgr == null or engine == null { return false; }
-    SaveEditorState(docMgr, engine);
-    var doc = docMgr.GetActive();
-    if doc == null { return false; }
-    if doc.isNew or doc.isModified == false { return false; }
-    if doc.isReadOnlyPreview { return false; }
-    if docMgr.HasExternalChangeForSave(docMgr.activeIndex) {
-        shell.SetStatusLeft("Auto-save paused: " + docMgr.ExternalStateMessage(docMgr.activeIndex));
-        return false;
-    }
-    NormalizeDocumentForSave(docMgr, engine, docMgr.activeIndex);
-    if docMgr.SaveActive() {
-        tabs.SetModified(docMgr.activeIndex, false);
-        engine.ClearModified();
-        shell.SetStatusLeft("Auto-saved: " + doc.fileName);
-        SyncRecoverySwaps(docMgr, engine);
-        return true;
-    }
-    return false;
-}
-
-/// @brief Snapshot the active document and start a background autosave.
-/// @details The UI thread only synchronizes the immutable editor snapshot and
-///          captures its revision/baseline. Normalization, hashing, disk reads,
-///          compare/exchange, flush, and rename execute in AutoSaveJob.
-func QueueAutoSaveActive(job: autosave_job.AutoSaveJob,
-                         shell: app_shell.AppShell,
-                         docMgr: document_manager.DocumentManager,
-                         engine: editor_engine.EditorEngine,
-                         sourceRevision: Integer) -> Boolean {
-    if job == null or shell == null or docMgr == null or engine == null
-       or job.IsBusy() {
-        return false;
-    }
-    SaveEditorState(docMgr, engine);
-    var doc = docMgr.GetActive();
-    if doc == null or doc!.isNew or doc!.isModified == false
-       or doc!.isReadOnlyPreview or doc!.filePath == "" {
-        return false;
-    }
-    if docMgr.HasExternalChangeForSave(docMgr.activeIndex) {
-        shell.SetStatusLeft(
-            "Auto-save paused: " + docMgr.ExternalStateMessage(docMgr.activeIndex));
-        return false;
-    }
-
-    var request = new autosave_job.AutoSaveRequest();
-    request.owner = doc!;
-    request.sourceRevision = sourceRevision;
-    request.path = doc!.filePath;
-    request.sourceContent = doc!.content;
-    request.expectedModified = doc!.lastModifiedOnDisk;
-    request.expectedSize = doc!.lastSizeOnDisk;
-    request.expectedHash = doc!.lastContentHashOnDisk;
-    request.maxBytes = document_manager.MaxOpenBytesForPath(doc!.filePath);
-    request.trimTrailingWhitespace =
-        file_save_support.TrimTrailingWhitespaceOnSaveEnabled();
-    request.ensureFinalNewline =
-        file_save_support.EnsureFinalNewlineOnSaveEnabled();
-    return job.Queue(request);
-}
-
-/// @brief Reconcile one completed autosave with the current editor revision.
-/// @details A successful older snapshot advances the known disk baseline but
-///          deliberately leaves newer edits dirty. Save normalization is
-///          applied to the buffer only when the original revision is still
-///          current, preserving editor state through the normal transaction.
-/// @return True only when the current live document became clean.
-func CompleteAutoSave(shell: app_shell.AppShell,
-                      docMgr: document_manager.DocumentManager,
-                      engine: editor_engine.EditorEngine,
-                      tabs: editor_tabs.EditorTabs,
-                      request: autosave_job.AutoSaveRequest,
-                      currentRevision: Integer) -> Boolean {
-    if request == null or docMgr == null { return false; }
-    var doc = request.owner;
-    var index = docMgr.IndexOfDocument(doc);
-    if index < 0 or doc.filePath != request.path { return false; }
-    if request.succeeded == false {
-        if request.conflict {
-            docMgr.RefreshExternalState(index, document.EXTERNAL_STATE_CLEAN, "");
-            if shell != null {
-                shell.SetStatusLeft(
-                    "Auto-save paused: " + docMgr.ExternalStateMessage(index));
-            }
-        } else if shell != null {
-            shell.SetStatusLeft("Auto-save failed: " + request.error);
-        }
-        return false;
-    }
-
-    var stillCurrent = doc.content == request.sourceContent;
-    if engine != null and engine.currentDoc == doc {
-        stillCurrent = stillCurrent and currentRevision == request.sourceRevision
-                       and engine.GetTextSnapshot() == request.sourceContent;
-    }
-    if stillCurrent and request.savedContent != request.sourceContent {
-        stillCurrent = engine != null
-                       and engine.ReplaceDocumentTextPreservingState(
-                           doc, request.savedContent);
-    }
-
-    index = docMgr.AcknowledgeBackgroundSave(
-        doc,
-        request.savedContent,
-        request.committedModified,
-        request.committedSize,
-        stillCurrent);
-    if index < 0 {
-        docMgr.RefreshExternalState(docMgr.IndexOfDocument(doc),
-                                    document.EXTERNAL_STATE_CLEAN,
-                                    "");
-        if shell != null { shell.SetStatusLeft("Auto-save result became stale"); }
-        return false;
-    }
-
-    if stillCurrent {
-        if tabs != null { tabs.SetModified(index, false); }
-        if engine != null and engine.currentDoc == doc { engine.ClearModified(); }
-        if shell != null { shell.SetStatusLeft("Auto-saved: " + doc.fileName); }
-        SyncRecoverySwaps(docMgr, engine);
-        return true;
-    }
-    if shell != null {
-        shell.SetStatusLeft("Auto-saved an earlier revision; newer edits remain");
-    }
-    return false;
-}
-
 func NormalizeDocumentForSave(docMgr: document_manager.DocumentManager,
                               engine: editor_engine.EditorEngine,
-                              index: Integer) {
-    file_save_support.NormalizeDocumentForSave(docMgr, engine, index);
+                              index: Integer) -> Boolean {
+    return file_save_support.NormalizeDocumentForSave(docMgr, engine, index);
 }
 
 func ApplySaveTextRules(text: String) -> String {
@@ -787,16 +673,28 @@ func OpenFileAtPath(shell: app_shell.AppShell,
                     engine: editor_engine.EditorEngine,
                     tabs: editor_tabs.EditorTabs,
                     path: String) -> Boolean {
-    var blocked = document_manager.TextOpenBlockReason(path);
-    if blocked != "" {
+    var existingIndex = docMgr.FindByPath(path);
+    var admission: text_admission.TextAdmissionResult = null;
+    if existingIndex < 0 {
+        admission = text_admission.ReadEditableText(path);
+    }
+    if admission != null and admission!.ok == false
+       and file_utils.DetectKind(path) != file_utils.DOC_KIND_BINARY_UNSUPPORTED {
         shell.SetStatusLeft("Not opened: " + Path.Name(path));
-        GUI.Toast.Warning(blocked);
+        GUI.Toast.Warning(admission!.reason);
         return false;
     }
     SaveEditorState(docMgr, engine);
 
     var prevCount = docMgr.GetCount();
-    var openDoc = docMgr.OpenFile(path);
+    var openDoc: document.Document = null;
+    if admission != null and admission!.ok {
+        openDoc = docMgr.OpenFileFromKnownText(path, admission!.text);
+    } else {
+        // Existing documents need no new read. Binary files use the manager's
+        // bounded read-only preview path without loading their payload.
+        openDoc = docMgr.OpenFile(path);
+    }
 
     if docMgr.GetCount() > prevCount {
         tabs.AddTab(openDoc.fileName, 1);
@@ -988,7 +886,10 @@ func SaveDirtyDocumentsForClose(shell: app_shell.AppShell,
                         shell.SetStatusLeft("Close canceled");
                         return false;
                     }
-                    NormalizeDocumentForSave(docMgr, engine, i);
+                    if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                        file_save_support.ReportNormalizationFailure(shell, doc.fileName);
+                        return false;
+                    }
                     if docMgr.SaveDocumentAs(i, savePath) == false {
                         file_save_support.ReportSaveFailure(
                             shell, docMgr, doc.fileName);
@@ -999,7 +900,10 @@ func SaveDirtyDocumentsForClose(shell: app_shell.AppShell,
                     if confirmOverwriteExternal(shell, docMgr, i, externalState) == false {
                         return false;
                     }
-                    NormalizeDocumentForSave(docMgr, engine, i);
+                    if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                        file_save_support.ReportNormalizationFailure(shell, doc.fileName);
+                        return false;
+                    }
                     if docMgr.SaveDocumentAfterExternalConfirmation(i, externalState) == false {
                         file_save_support.ReportSaveFailure(
                             shell, docMgr, doc.fileName);
@@ -1034,12 +938,18 @@ func SaveDirtyDocumentsUnderPath(shell: app_shell.AppShell,
                 var savePath = FileDialog.Save(
                     "Save " + doc.fileName, "", file_utils.SaveDialogFilter(doc.kind, doc.language), doc.fileName);
                 if savePath == "" { return false; }
-                NormalizeDocumentForSave(docMgr, engine, i);
+                if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                    file_save_support.ReportNormalizationFailure(shell, doc.fileName);
+                    return false;
+                }
                 if docMgr.SaveDocumentAs(i, savePath) == false { return false; }
             } else {
                 var externalState = docMgr.ExternalStateForSave(i);
                 if confirmOverwriteExternal(shell, docMgr, i, externalState) == false { return false; }
-                NormalizeDocumentForSave(docMgr, engine, i);
+                if NormalizeDocumentForSave(docMgr, engine, i) == false {
+                    file_save_support.ReportNormalizationFailure(shell, doc.fileName);
+                    return false;
+                }
                 if docMgr.SaveDocumentAfterExternalConfirmation(i, externalState) == false { return false; }
             }
             doc.isModified = false;

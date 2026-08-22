@@ -97,6 +97,7 @@ enum class RuntimeFeature : std::size_t {
     Lcase,
     Chr,
     Asc,
+    ByteAt,
     Sqrt,
     AbsI64,
     AbsF64,

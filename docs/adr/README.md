@@ -42,6 +42,10 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0017](0017-string-lines-runtime-function.md) — CRLF-Aware Line Splitting (Zanna.String.Lines)
 - [ADR 0027](0027-runtime-api-contract-metadata.md) — Add Contract Metadata to the Runtime API Dump
 - [ADR 0277](0277-strict-utf8-codec-validation.md) — Expose Strict Whole-String UTF-8 Validation
+- [ADR 0288](0288-allocation-free-string-byte-access.md) — Expose Allocation-Free String Byte Access
+- [ADR 0289](0289-pty-environment-overlays.md) — Add PTY Environment Overlays
+- [ADR 0290](0290-virtual-tree-bulk-updates.md) — Add Nestable VirtualTree Bulk Updates
+- [ADR 0291](0291-compiler-backed-basic-signature-help.md) — Make the BASIC Compiler Authoritative for Signature Help
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API
@@ -135,6 +139,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0014](0014-basic-language-service-runtime-bridge.md) — Zanna BASIC Language-Service Runtime Bridge
 - [ADR 0015](0015-workspace-file-index-paging.md) — Workspace File Index Paging
 - [ADR 0278](0278-explicit-workspace-file-index-cursors.md) — Explicit Workspace File-Index Cursors and Precise Fallback Identity
+- [ADR 0287](0287-generation-safe-workspace-index-cursors.md) — Make Workspace Index Cursor Tokens Generation-Safe and Work-Bounded
 - [ADR 0016](0016-pty-runtime-surface.md) — PTY Runtime Surface (Zanna.System.Pty) and Integrated Terminal
 - [ADR 0018](0018-gui-command-binding-runtime-surface.md) — GUI Command Binding (Zanna.GUI.Command / CommandRegistry)
 - [ADR 0019](0019-gui-text-cell-metrics-runtime-surface.md) — GUI Text/Cell Metrics (Zanna.GUI.OutputPane measurement)

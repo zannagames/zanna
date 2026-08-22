@@ -14,7 +14,8 @@
 //   - Map and sequence results are runtime-owned objects returned to callers.
 // Links: src/runtime/io/rt_ide_primitives.h, src/runtime/io/rt_watcher.h,
 //        docs/adr/0151-transactional-multi-root-workspace-edits.md,
-//        docs/adr/0280-prepared-workspace-edit-transactions.md
+//        docs/adr/0280-prepared-workspace-edit-transactions.md,
+//        docs/adr/0287-generation-safe-workspace-index-cursors.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -357,96 +358,80 @@ std::vector<std::string> splitList(const std::string &value) {
     return out;
 }
 
-/// @brief Match a byte string against `*` and `?` wildcards without separator rules.
-/// @details Uses iterative last-star backtracking; `*` consumes any byte sequence and `?`
-///          consumes exactly one byte.
-/// @param text Candidate byte string.
-/// @param pattern Wildcard pattern.
-/// @return True when the complete text matches the complete pattern.
-bool wildcardMatchRec(std::string_view text, std::string_view pattern) {
-    size_t ti = 0;
-    size_t pi = 0;
-    size_t star = std::string_view::npos;
-    size_t match = 0;
-    while (ti < text.size()) {
-        if (pi < pattern.size() && pattern[pi] == '*') {
-            star = pi++;
-            match = ti;
-        } else if (pi < pattern.size() && (pattern[pi] == '?' || pattern[pi] == text[ti])) {
-            pi++;
-            ti++;
-        } else if (star != std::string_view::npos) {
-            pi = star + 1;
-            ti = ++match;
-        } else {
-            return false;
-        }
-    }
-    while (pi < pattern.size() && pattern[pi] == '*')
-        pi++;
-    return pi == pattern.size();
-}
-
 /// @brief Match a normalized slash path against component-aware wildcards.
-/// @details A single `*` stays within one component, `?` consumes one byte, `**/` consumes zero
-///          or more complete components, and bare `**` may consume separators.
+/// @details Memoized states keep adversarial wildcard runs polynomial. A single
+///          `*` stays within one component, `?` consumes one non-separator byte,
+///          `**/` consumes complete components, and bracket classes follow Git.
 /// @param text Normalized candidate path.
 /// @param pattern Normalized wildcard pattern.
 /// @return True when the complete path matches the complete pattern.
 bool pathGlobMatch(std::string_view text, std::string_view pattern) {
-    std::vector<std::string_view> stackText{text};
-    if (pattern.find("**") == std::string_view::npos)
-        return wildcardMatchRec(text, pattern);
-
-    // Small recursive matcher for ** over normalized slash paths.
-    /// @brief Match suffixes beginning at one text and pattern offset.
-    /// @param ti Current byte offset in @p text.
-    /// @param pi Current byte offset in @p pattern.
-    /// @return `true` when both remaining suffixes match completely.
+    const size_t width = pattern.size() + 1;
+    std::vector<int8_t> memo((text.size() + 1) * width, -1);
     std::function<bool(size_t, size_t)> rec = [&](size_t ti, size_t pi) -> bool {
-        if (pi == pattern.size())
-            return ti == text.size();
-        if (pi + 1 < pattern.size() && pattern[pi] == '*' && pattern[pi + 1] == '*') {
+        int8_t &cached = memo[ti * width + pi];
+        if (cached >= 0)
+            return cached != 0;
+        bool matched = false;
+        if (pi == pattern.size()) {
+            matched = ti == text.size();
+        } else if (pattern[pi] == '\\' && pi + 1 < pattern.size()) {
+            matched = ti < text.size() && text[ti] == pattern[pi + 1] &&
+                      rec(ti + 1, pi + 2);
+        } else if (pattern[pi] == '[') {
+            size_t end = pi + 1;
+            bool negated = false;
+            if (end < pattern.size() && (pattern[end] == '!' || pattern[end] == '^')) {
+                negated = true;
+                end++;
+            }
+            bool classMatch = false;
+            bool hasMember = false;
+            while (end < pattern.size() && pattern[end] != ']') {
+                char first = pattern[end];
+                if (first == '\\' && end + 1 < pattern.size())
+                    first = pattern[++end];
+                hasMember = true;
+                if (end + 2 < pattern.size() && pattern[end + 1] == '-' &&
+                    pattern[end + 2] != ']') {
+                    char last = pattern[end + 2];
+                    if (ti < text.size() && text[ti] >= first && text[ti] <= last)
+                        classMatch = true;
+                    end += 3;
+                } else {
+                    if (ti < text.size() && text[ti] == first)
+                        classMatch = true;
+                    end++;
+                }
+            }
+            if (end < pattern.size() && hasMember && ti < text.size() && text[ti] != '/') {
+                if (negated)
+                    classMatch = !classMatch;
+                matched = classMatch && rec(ti + 1, end + 1);
+            } else {
+                matched = ti < text.size() && text[ti] == '[' && rec(ti + 1, pi + 1);
+            }
+        } else if (pi + 1 < pattern.size() && pattern[pi] == '*' && pattern[pi + 1] == '*') {
             size_t next = pi + 2;
-            bool hadSlash = false;
             if (next < pattern.size() && pattern[next] == '/') {
                 next++;
-                hadSlash = true;
+                matched = rec(ti, next);
+                size_t slash = text.find('/', ti);
+                if (!matched && slash != std::string_view::npos)
+                    matched = rec(slash + 1, pi);
+            } else {
+                matched = rec(ti, next) || (ti < text.size() && rec(ti + 1, pi));
             }
-            if (hadSlash) {
-                // `**/` consumes zero or more COMPLETE path components, so the
-                // remainder may only begin at a component boundary — the current
-                // position (zero components) or immediately after a '/'. Trying
-                // it at every byte offset let a pattern like `**/bar` match
-                // `foobar` mid-component (VDOC-192).
-                for (size_t i = ti; i <= text.size(); i++) {
-                    if (i == ti || text[i - 1] == '/') {
-                        if (rec(i, next))
-                            return true;
-                    }
-                }
-                return false;
-            }
-            // A bare `**` (no trailing slash, e.g. `a/**`) matches any run of
-            // characters including separators.
-            for (size_t i = ti; i <= text.size(); i++) {
-                if (rec(i, next))
-                    return true;
-            }
-            return false;
+        } else if (pattern[pi] == '*') {
+            matched = rec(ti, pi + 1) ||
+                      (ti < text.size() && text[ti] != '/' && rec(ti + 1, pi));
+        } else if (pattern[pi] == '?') {
+            matched = ti < text.size() && text[ti] != '/' && rec(ti + 1, pi + 1);
+        } else {
+            matched = ti < text.size() && pattern[pi] == text[ti] && rec(ti + 1, pi + 1);
         }
-        if (ti >= text.size())
-            return false;
-        if (pattern[pi] == '*') {
-            for (size_t i = ti; i <= text.size() && (i == ti || text[i - 1] != '/'); i++) {
-                if (rec(i, pi + 1))
-                    return true;
-            }
-            return false;
-        }
-        if (pattern[pi] == '?' || pattern[pi] == text[ti])
-            return rec(ti + 1, pi + 1);
-        return false;
+        cached = matched ? 1 : 0;
+        return matched;
     };
     return rec(0, 0);
 }
@@ -470,7 +455,6 @@ bool patternMatchesPath(std::string pattern, const std::string &relativePath, bo
         }
         i++;
     }
-    pattern = normalizeSlashes(pattern);
     bool dirOnly = !pattern.empty() && pattern.back() == '/';
     if (dirOnly)
         pattern.pop_back();
@@ -860,20 +844,21 @@ bool shouldIgnorePathWithPatterns(const std::string &relativePath,
             return true;
     }
 
-    std::vector<std::string> patterns = extraPatterns;
-    patterns.insert(patterns.end(), gitignorePatterns.begin(), gitignorePatterns.end());
-
     bool ignored = false;
-    for (std::string pattern : patterns) {
-        pattern = normalizeGitignorePattern(pattern);
-        if (pattern.empty() || pattern[0] == '#')
-            continue;
-        bool negated = pattern[0] == '!';
-        if (negated)
-            pattern.erase(0, 1);
-        if (patternMatchesPath(pattern, rel, isDir))
-            ignored = !negated;
-    }
+    auto applyPatterns = [&](const std::vector<std::string> &patterns) {
+        for (std::string pattern : patterns) {
+            pattern = normalizeGitignorePattern(pattern);
+            if (pattern.empty() || pattern[0] == '#')
+                continue;
+            bool negated = pattern[0] == '!';
+            if (negated)
+                pattern.erase(0, 1);
+            if (patternMatchesPath(pattern, rel, isDir))
+                ignored = !negated;
+        }
+    };
+    applyPatterns(extraPatterns);
+    applyPatterns(gitignorePatterns);
     return ignored;
 }
 
@@ -931,17 +916,166 @@ struct WorkspaceFileIndexPageCursor {
     fs::path root;
     std::set<std::string> extensions;
     std::vector<std::string> extraPatterns;
-    std::set<std::string> seenPaths;
+    std::unordered_map<std::string, std::vector<std::string>> gitignorePatternsByDirectory;
     bool includeDirs{false};
     bool sampleContent{false};
     fs::recursive_directory_iterator it;
     fs::recursive_directory_iterator end;
     std::error_code ec;
     int64_t matched{0};
+    int64_t scanned{0};
     bool done{false};
     bool truncated{false};
     int64_t generation{0};
 };
+
+/** Registry node that keeps public cursor tokens generation-safe after Destroy. */
+struct WorkspaceFileIndexCursorRegistration {
+    uintptr_t token{0};
+    WorkspaceFileIndexPageCursor *cursor{nullptr};
+    int64_t leases{0};
+    std::atomic_flag operationLock = ATOMIC_FLAG_INIT;
+    bool destroyed{false};
+    WorkspaceFileIndexCursorRegistration *next{nullptr};
+};
+
+/** Trivially initialized registry for opaque cursor tokens. */
+WorkspaceFileIndexCursorRegistration *g_fileIndexCursorRegistry = nullptr;
+std::atomic_flag g_fileIndexCursorRegistryLock = ATOMIC_FLAG_INIT;
+
+/// @brief Serialize access to the cursor-token registry.
+struct FileIndexCursorRegistryLockGuard {
+    FileIndexCursorRegistryLockGuard() {
+        while (g_fileIndexCursorRegistryLock.test_and_set(std::memory_order_acquire)) {
+        }
+    }
+    ~FileIndexCursorRegistryLockGuard() {
+        g_fileIndexCursorRegistryLock.clear(std::memory_order_release);
+    }
+    FileIndexCursorRegistryLockGuard(const FileIndexCursorRegistryLockGuard &) = delete;
+};
+
+/// @brief Serialize iterator mutation for one retained cursor registration.
+struct FileIndexCursorOperationGuard {
+    WorkspaceFileIndexCursorRegistration *registration;
+    explicit FileIndexCursorOperationGuard(WorkspaceFileIndexCursorRegistration *value)
+        : registration(value) {
+        while (registration->operationLock.test_and_set(std::memory_order_acquire)) {
+        }
+    }
+    ~FileIndexCursorOperationGuard() {
+        registration->operationLock.clear(std::memory_order_release);
+    }
+    FileIndexCursorOperationGuard(const FileIndexCursorOperationGuard &) = delete;
+};
+
+/// @brief Publish a cursor behind a non-dereferenceable monotonic token.
+void *registerFileIndexCursor(WorkspaceFileIndexPageCursor *cursor) {
+    if (!cursor)
+        return nullptr;
+    auto *registration = new (std::nothrow) WorkspaceFileIndexCursorRegistration();
+    if (!registration)
+        return nullptr;
+    registration->token = static_cast<uintptr_t>(cursor->generation);
+    if (registration->token == 0) {
+        delete registration;
+        return nullptr;
+    }
+    registration->cursor = cursor;
+    {
+        FileIndexCursorRegistryLockGuard lock;
+        registration->next = g_fileIndexCursorRegistry;
+        g_fileIndexCursorRegistry = registration;
+    }
+    return reinterpret_cast<void *>(registration->token);
+}
+
+/// @brief Retain a live registration addressed by an opaque public token.
+WorkspaceFileIndexCursorRegistration *retainFileIndexCursor(void *handle) {
+    const uintptr_t token = reinterpret_cast<uintptr_t>(handle);
+    if (token == 0)
+        return nullptr;
+    FileIndexCursorRegistryLockGuard lock;
+    for (auto *entry = g_fileIndexCursorRegistry; entry; entry = entry->next) {
+        if (entry->token == token && !entry->destroyed) {
+            entry->leases++;
+            return entry;
+        }
+    }
+    return nullptr;
+}
+
+/// @brief Release a registry lease and retire a previously destroyed cursor.
+void releaseFileIndexCursor(WorkspaceFileIndexCursorRegistration *registration) {
+    if (!registration)
+        return;
+    bool deleteNow = false;
+    {
+        FileIndexCursorRegistryLockGuard lock;
+        registration->leases--;
+        deleteNow = registration->leases == 0 && registration->destroyed;
+    }
+    if (deleteNow) {
+        delete registration->cursor;
+        delete registration;
+    }
+}
+
+/// @brief Remove a public token; active operations retain the cursor until completion.
+void unregisterFileIndexCursor(void *handle) {
+    const uintptr_t token = reinterpret_cast<uintptr_t>(handle);
+    if (token == 0)
+        return;
+    WorkspaceFileIndexCursorRegistration *removed = nullptr;
+    bool deleteNow = false;
+    {
+        FileIndexCursorRegistryLockGuard lock;
+        WorkspaceFileIndexCursorRegistration **link = &g_fileIndexCursorRegistry;
+        while (*link) {
+            if ((*link)->token == token) {
+                removed = *link;
+                *link = removed->next;
+                removed->next = nullptr;
+                removed->destroyed = true;
+                deleteNow = removed->leases == 0;
+                break;
+            }
+            link = &(*link)->next;
+        }
+    }
+    if (deleteNow) {
+        delete removed->cursor;
+        delete removed;
+    }
+}
+
+/// @brief Return nested ignore rules while loading each directory at most once per cursor.
+const std::vector<std::string> &cursorGitignorePatternsForDirectory(
+    WorkspaceFileIndexPageCursor *cursor, std::string directory) {
+    static const std::vector<std::string> empty;
+    if (!cursor)
+        return empty;
+    directory = normalizeSlashes(directory);
+    if (directory == ".")
+        directory.clear();
+    auto existing = cursor->gitignorePatternsByDirectory.find(directory);
+    if (existing != cursor->gitignorePatternsByDirectory.end())
+        return existing->second;
+
+    std::vector<std::string> patterns;
+    if (!directory.empty()) {
+        std::string ancestor =
+            normalizeSlashes(fs::path(directory).parent_path().generic_string());
+        if (ancestor == ".")
+            ancestor.clear();
+        const auto &inherited = cursorGitignorePatternsForDirectory(cursor, ancestor);
+        patterns = inherited;
+    }
+    for (const auto &pattern : cachedGitignorePatterns(cursor->root / directory))
+        patterns.push_back(rebaseGitignorePattern(directory, pattern));
+    return cursor->gitignorePatternsByDirectory.emplace(directory, std::move(patterns))
+        .first->second;
+}
 
 /// @brief Parse and normalize a file-extension allow-list.
 /// @details Splits the serialized list, prepends a dot when absent, lowercases each extension,
@@ -1067,12 +1201,17 @@ void emitFileIndexEntry(void *entries,
 int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
                                 void *entries,
                                 int64_t offset,
-                                int64_t limit) {
+                                int64_t limit,
+                                int64_t workLimit) {
     if (!cursor || cursor->done)
         return 0;
 
     int64_t emitted = 0;
-    for (; !cursor->ec && cursor->it != cursor->end; cursor->it.increment(cursor->ec)) {
+    int64_t work = 0;
+    for (; work < workLimit && !cursor->ec && cursor->it != cursor->end;
+         cursor->it.increment(cursor->ec)) {
+        work++;
+        cursor->scanned++;
         std::error_code relEc;
         const fs::directory_entry &dirEntry = *cursor->it;
         std::string rel =
@@ -1081,7 +1220,10 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
             continue;
 
         bool isDir = dirEntry.is_directory(cursor->ec);
-        const auto gitignorePatterns = gitignorePatternsForPath(cursor->root, rel);
+        std::string parent =
+            normalizeSlashes(fs::path(rel).parent_path().generic_string());
+        const auto &gitignorePatterns =
+            cursorGitignorePatternsForDirectory(cursor, parent == "." ? "" : parent);
         if (shouldIgnorePathWithPatterns(rel, isDir, cursor->extraPatterns, gitignorePatterns)) {
             if (isDir)
                 cursor->it.disable_recursion_pending();
@@ -1094,8 +1236,6 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
             if (!cursor->extensions.count(ext))
                 continue;
         }
-        if (!cursor->seenPaths.insert(rel).second)
-            continue;
         if (cursor->matched >= kWorkspaceFileIndexMaxEntries) {
             cursor->truncated = true;
             cursor->done = true;
@@ -1114,7 +1254,7 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
         }
     }
 
-    cursor->done = true;
+    cursor->done = cursor->ec || cursor->it == cursor->end;
     return emitted;
 }
 
@@ -2199,7 +2339,10 @@ void *rt_workspace_file_index_cursor_new(rt_string root_s,
         WorkspaceFileIndexPageCursor *cursor = startFileIndexPageCursor(
             root, toStd(extensions_csv), toStd(excludes_csv), include_dirs != 0, diagnostics);
         releaseObject(diagnostics);
-        return cursor;
+        void *handle = registerFileIndexCursor(cursor);
+        if (!handle)
+            destroyFileIndexPageCursor(cursor);
+        return handle;
     } catch (...) {
         return nullptr;
     }
@@ -2207,13 +2350,18 @@ void *rt_workspace_file_index_cursor_new(rt_string root_s,
 
 /// @brief Test whether an explicit file-index cursor was created successfully.
 int8_t rt_workspace_file_index_cursor_is_valid(void *handle) {
-    return handle ? 1 : 0;
+    auto *registration = retainFileIndexCursor(handle);
+    const int8_t valid = registration ? 1 : 0;
+    releaseFileIndexCursor(registration);
+    return valid;
 }
 
 /// @brief Return the immutable generation assigned to an explicit traversal.
 int64_t rt_workspace_file_index_cursor_generation(void *handle) {
-    auto *cursor = static_cast<WorkspaceFileIndexPageCursor *>(handle);
-    return cursor ? cursor->generation : 0;
+    auto *registration = retainFileIndexCursor(handle);
+    const int64_t generation = registration ? registration->cursor->generation : 0;
+    releaseFileIndexCursor(registration);
+    return generation;
 }
 
 /// @brief Advance one explicitly owned traversal by a bounded result page.
@@ -2225,15 +2373,17 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
         limit = 512;
     if (limit > 4096)
         limit = 4096;
-    auto *cursor = static_cast<WorkspaceFileIndexPageCursor *>(handle);
+    auto *registration = retainFileIndexCursor(handle);
+    auto *cursor = registration ? registration->cursor : nullptr;
     const int64_t offset = cursor ? cursor->matched : 0;
     rt_map_set_bool(result, rt_const_cstr("valid"), cursor ? 1 : 0);
     mapSetStr(result, "root", cursor ? cursor->root.generic_string() : "");
     rt_map_set_int(result, rt_const_cstr("offset"), offset);
     rt_map_set_int(result, rt_const_cstr("limit"), limit);
     rt_map_set_int(result, rt_const_cstr("emitted"), 0);
+    rt_map_set_int(result, rt_const_cstr("work"), 0);
     rt_map_set_int(result, rt_const_cstr("nextOffset"), offset);
-    rt_map_set_int(result, rt_const_cstr("scanned"), offset);
+    rt_map_set_int(result, rt_const_cstr("scanned"), cursor ? cursor->scanned : 0);
     rt_map_set_int(result, rt_const_cstr("generation"), cursor ? cursor->generation : 0);
     rt_map_set_int(result, rt_const_cstr("maxEntries"), kWorkspaceFileIndexMaxEntries);
     rt_map_set_bool(result, rt_const_cstr("done"), cursor && !cursor->done ? 0 : 1);
@@ -2249,10 +2399,15 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
                        "fileindex.cursor.invalid");
         releaseObject(entries);
         releaseObject(diagnostics);
+        releaseFileIndexCursor(registration);
         return result;
     }
     try {
-        const int64_t emitted = scanFileIndexPageCursor(cursor, entries, offset, limit);
+        FileIndexCursorOperationGuard operation(registration);
+        const int64_t scannedBefore = cursor->scanned;
+        const int64_t workLimit = std::min<int64_t>(32768, std::max<int64_t>(64, limit * 8));
+        const int64_t emitted =
+            scanFileIndexPageCursor(cursor, entries, offset, limit, workLimit);
         if (cursor->ec) {
             pushDiagnostic(diagnostics,
                            "workspace traversal stopped early",
@@ -2261,8 +2416,9 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
                            "fileindex.walk");
         }
         rt_map_set_int(result, rt_const_cstr("emitted"), emitted);
+        rt_map_set_int(result, rt_const_cstr("work"), cursor->scanned - scannedBefore);
         rt_map_set_int(result, rt_const_cstr("nextOffset"), cursor->matched);
-        rt_map_set_int(result, rt_const_cstr("scanned"), cursor->matched);
+        rt_map_set_int(result, rt_const_cstr("scanned"), cursor->scanned);
         rt_map_set_bool(result, rt_const_cstr("done"), cursor->done ? 1 : 0);
         rt_map_set_bool(result, rt_const_cstr("truncated"), cursor->truncated ? 1 : 0);
     } catch (...) {
@@ -2277,12 +2433,13 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
     }
     releaseObject(entries);
     releaseObject(diagnostics);
+    releaseFileIndexCursor(registration);
     return result;
 }
 
 /// @brief Destroy an explicit workspace file-index traversal handle.
 void rt_workspace_file_index_cursor_destroy(void *handle) {
-    destroyFileIndexPageCursor(static_cast<WorkspaceFileIndexPageCursor *>(handle));
+    unregisterFileIndexCursor(handle);
 }
 
 /// @brief Return a bounded page of workspace file-index entries.
@@ -2370,12 +2527,14 @@ void *rt_workspace_file_index_page(rt_string root_s,
             return result;
         }
 
-        emitted = scanFileIndexPageCursor(cursor, entries, offset, limit);
+        emitted = scanFileIndexPageCursor(
+            cursor, entries, offset, limit, std::numeric_limits<int64_t>::max());
         matched = cursor->matched;
         done = cursor->done;
         truncated = cursor->truncated;
         ec = cursor->ec;
         const int64_t generation = cursor->generation;
+        const int64_t scanned = cursor->scanned;
         destroyFileIndexPageCursor(cursor);
 
         if (ec) {
@@ -2387,7 +2546,7 @@ void *rt_workspace_file_index_page(rt_string root_s,
         }
         rt_map_set_int(result, rt_const_cstr("emitted"), emitted);
         rt_map_set_int(result, rt_const_cstr("nextOffset"), matched);
-        rt_map_set_int(result, rt_const_cstr("scanned"), matched);
+        rt_map_set_int(result, rt_const_cstr("scanned"), scanned);
         rt_map_set_int(result, rt_const_cstr("generation"), generation);
         rt_map_set_bool(result, rt_const_cstr("done"), done ? 1 : 0);
         rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);

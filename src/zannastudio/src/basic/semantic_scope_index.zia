@@ -1,0 +1,82 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/basic/semantic_scope_index.zia
+// Purpose: Precompute BASIC block endpoints for linear semantic scans.
+// Key invariants:
+//   - Every recognized block start maps to its following compatible terminator.
+//   - Missing terminators conservatively extend to the final source line.
+// Ownership/Lifetime:
+//   - Returned maps own scalar endpoints and retain no source text.
+// Links: zannastudio/src/basic/semantic_scan.zia,
+//        zannastudio/src/basic/semantic_lexing.zia
+//
+//===----------------------------------------------------------------------===//
+
+module semantic_scope_index;
+
+bind "semantic_lexing" as SemanticLexing;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+
+/// @brief Build block-end lookups in a fixed number of reverse source passes.
+func Build(lines: Any) -> Any {
+    var index = Map.New();
+    IndexKeyword(lines, index, "FUNCTION");
+    IndexKeyword(lines, index, "SUB");
+    IndexKeyword(lines, index, "PROPERTY");
+    IndexKeyword(lines, index, "DESTRUCTOR");
+    IndexKeyword(lines, index, "CLASS");
+    IndexKeyword(lines, index, "INTERFACE");
+    IndexKeyword(lines, index, "TYPE");
+    IndexKeyword(lines, index, "ENUM");
+    IndexKeyword(lines, index, "NAMESPACE");
+    return index;
+}
+
+/// @brief Return a precomputed endpoint, defaulting to the source boundary.
+func EndLine(index: Any,
+             keyword: String,
+             startLine: Integer,
+             lineCount: Integer) -> Integer {
+    if index == null { return lineCount; }
+    return Map.GetIntOr(index, Key(keyword, startLine), lineCount);
+}
+
+/// @brief Return whether one line begins a block rather than terminating it.
+func IsStart(line: String,
+             keyword: String) -> Boolean {
+    var column = SemanticLexing.KeywordColumn(line, keyword);
+    if column <= 0 { return false; }
+    return SemanticLexing.EndsWithToken(
+               Str.Trim(Str.Left(line, column - 1)), "END") == false;
+}
+
+func IndexKeyword(lines: Any,
+                  index: Any,
+                  keyword: String) {
+    var lineCount = Seq.get_Count(lines);
+    var nextEnd = lineCount;
+    var i = lineCount;
+    while i >= 1 {
+        var code = Str.Trim(SemanticLexing.StripLineComment(
+            Obj.ToString(Seq.Get(lines, i - 1))));
+        if SemanticLexing.IsEndKeywordLine(code, keyword) {
+            nextEnd = i;
+        } else if IsStart(code, keyword) {
+            Map.SetInt(index, Key(keyword, i), nextEnd);
+        }
+        i = i - 1;
+    }
+}
+
+func Key(keyword: String,
+         lineNumber: Integer) -> String {
+    return keyword + ":" + lineNumber;
+}

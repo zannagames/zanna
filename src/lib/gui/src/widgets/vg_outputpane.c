@@ -715,6 +715,7 @@ vg_outputpane_t *vg_outputpane_create(void) {
     pane->term_scroll_bottom = -1;
     pane->primary_term_scroll_top = -1;
     pane->primary_term_scroll_bottom = -1;
+    pane->term_autowrap = true;
 
     return pane;
 }
@@ -1611,6 +1612,9 @@ static void term_load_cells_from_line(vg_outputpane_t *pane, size_t logical_line
 /// @param bytes UTF-8 glyph bytes to copy.
 /// @param len Number of bytes in @p bytes, clamped to the cell representation.
 /// @param codepoint Decoded Unicode scalar used for deterministic display width.
+static int term_screen_cols(const vg_outputpane_t *pane);
+static void term_newline(vg_outputpane_t *pane);
+
 static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len, uint32_t codepoint) {
     if (len < 1)
         len = 1;
@@ -1642,7 +1646,16 @@ static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len, ui
     }
     pane->term_join_next = false;
 
+    int screen_cols = term_screen_cols(pane);
+    if (pane->term_autowrap && pane->term_wrap_pending)
+        term_newline(pane);
+    if (pane->term_autowrap && width > 1 && pane->cursor_col + width > (uint32_t)screen_cols)
+        term_newline(pane);
+    pane->term_wrap_pending = false;
+
     size_t col = pane->cursor_col;
+    if (!pane->term_autowrap && col + width > (size_t)screen_cols)
+        col = screen_cols > width ? (size_t)screen_cols - width : 0;
     size_t need = col + width;
     if (need < col || !term_ensure_cells(pane, need))
         return;
@@ -1672,6 +1685,10 @@ static void term_put_glyph(vg_outputpane_t *pane, const char *bytes, int len, ui
     if (width == 2)
         term_continuation_cell(&pane->cells[col + 1], cell->fg, cell->bg, cell->bold);
     pane->cursor_col = (uint32_t)(col + width);
+    if (pane->cursor_col >= (uint32_t)screen_cols) {
+        pane->cursor_col = (uint32_t)(screen_cols - 1);
+        pane->term_wrap_pending = pane->term_autowrap;
+    }
 }
 
 /// @brief Rebuild the cursor line's styled segments from the cell buffer.
@@ -1744,6 +1761,7 @@ static void term_set_cursor_line_col(vg_outputpane_t *pane, size_t line, uint32_
     term_load_cells_from_line(pane, line);
     pane->cursor_col = col;
     pane->term_join_next = false;
+    pane->term_wrap_pending = false;
 }
 
 /// @brief Save the current terminal cursor position.
@@ -1769,6 +1787,12 @@ static void term_restore_cursor(vg_outputpane_t *pane) {
 static int term_screen_rows(const vg_outputpane_t *pane) {
     int rows = vg_outputpane_rows_for_height(pane);
     return rows > 0 ? rows : 24;
+}
+
+/// @brief Visible terminal columns for delayed autowrap (fallback before layout).
+static int term_screen_cols(const vg_outputpane_t *pane) {
+    int cols = vg_outputpane_columns_for_width(pane);
+    return cols > 0 ? cols : 80;
 }
 
 /// @brief True when a DECSTBM scroll region is set and well-formed.
@@ -1891,6 +1915,7 @@ static void term_newline(vg_outputpane_t *pane) {
     if (!pane)
         return;
     pane->term_join_next = false;
+    pane->term_wrap_pending = false;
     if (term_region_active(pane) && pane->term_cursor_line == term_region_bottom_abs(pane)) {
         term_scroll_range(
             pane, term_region_top_abs(pane), term_region_bottom_abs(pane), 1, /*down=*/false);
@@ -1932,6 +1957,7 @@ static void term_clear_display(vg_outputpane_t *pane) {
     pane->saved_cursor_col = 0;
     pane->cursor_col = 0;
     pane->term_join_next = false;
+    pane->term_wrap_pending = false;
     pane->scroll_y = 0;
     pane->scroll_locked = false;
     outputpane_clear_selection(pane);
@@ -2092,6 +2118,8 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
     bool private_mode = false;
     int pc = ansi_parse_csi_params(pane->escape_buf, params, 16, &private_mode);
     int p0 = pc > 0 ? params[0] : 0;
+    if (final != 'm')
+        pane->term_wrap_pending = false;
     switch (final) {
         case 'm':
             outputpane_apply_sgr_params(pane, params, pc);
@@ -2166,13 +2194,25 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
         case 'f': { // cursor position
             int row = pc >= 1 && params[0] > 0 ? params[0] : 1;
             int col = pc >= 2 ? params[1] : 1;
-            size_t target = pane->term_origin_line + (size_t)(row - 1);
+            size_t base = pane->term_origin_line;
+            if (pane->term_origin_mode && term_region_active(pane))
+                base = term_region_top_abs(pane);
+            size_t target = base + (size_t)(row - 1);
+            if (pane->term_origin_mode && term_region_active(pane) &&
+                target > term_region_bottom_abs(pane))
+                target = term_region_bottom_abs(pane);
             term_set_cursor_line_col(pane, target, col > 0 ? (uint32_t)(col - 1) : 0);
             break;
         }
         case 'd': { // vertical position absolute
             int row = p0 > 0 ? p0 : 1;
-            size_t target = pane->term_origin_line + (size_t)(row - 1);
+            size_t base = pane->term_origin_line;
+            if (pane->term_origin_mode && term_region_active(pane))
+                base = term_region_top_abs(pane);
+            size_t target = base + (size_t)(row - 1);
+            if (pane->term_origin_mode && term_region_active(pane) &&
+                target > term_region_bottom_abs(pane))
+                target = term_region_bottom_abs(pane);
             term_set_cursor_line_col(pane, target, pane->cursor_col);
             break;
         }
@@ -2213,7 +2253,11 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
                 pane->term_scroll_top = -1;
                 pane->term_scroll_bottom = -1;
             }
-            term_set_cursor_line_col(pane, pane->term_origin_line, 0);
+            term_set_cursor_line_col(pane,
+                                     pane->term_origin_mode && term_region_active(pane)
+                                         ? term_region_top_abs(pane)
+                                         : pane->term_origin_line,
+                                     0);
             break;
         }
         case 'S': { // SU: scroll region (or screen) up n lines
@@ -2334,6 +2378,16 @@ static void term_dispatch_csi(vg_outputpane_t *pane, char final) {
                         pane->bracketed_paste = set;
                     } else if (params[i] == 1) {
                         pane->app_cursor_keys = set;
+                    } else if (params[i] == 6) {
+                        pane->term_origin_mode = set;
+                        term_set_cursor_line_col(pane,
+                                                 set && term_region_active(pane)
+                                                     ? term_region_top_abs(pane)
+                                                     : pane->term_origin_line,
+                                                 0);
+                    } else if (params[i] == 7) {
+                        pane->term_autowrap = set;
+                        pane->term_wrap_pending = false;
                     }
                 }
             }
@@ -2381,15 +2435,18 @@ static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) 
                     p++;
                 } else if (c == '\r') {
                     pane->term_join_next = false;
+                    pane->term_wrap_pending = false;
                     pane->cursor_col = 0;
                     p++;
                 } else if (c == '\b') {
                     pane->term_join_next = false;
+                    pane->term_wrap_pending = false;
                     if (pane->cursor_col > 0)
                         pane->cursor_col--;
                     p++;
                 } else if (c == '\t') {
                     pane->term_join_next = false;
+                    pane->term_wrap_pending = false;
                     // HT only moves the cursor (never writes glyphs), so tabbing
                     // across existing cursor-addressed content leaves it intact.
                     pane->cursor_col = term_next_tab_stop(pane, pane->cursor_col);
@@ -2479,6 +2536,9 @@ static void outputpane_append_terminal(vg_outputpane_t *pane, const char *text) 
                     pane->term_cursor_hidden = false;
                     pane->bracketed_paste = false;
                     pane->app_cursor_keys = false;
+                    pane->term_origin_mode = false;
+                    pane->term_autowrap = true;
+                    pane->term_wrap_pending = false;
                     term_init_default_tabs(pane);
                     term_clear_display(pane);
                     pane->esc_state = 0;
@@ -2654,6 +2714,9 @@ void vg_outputpane_set_terminal_mode(vg_outputpane_t *pane, bool enabled) {
         pane->term_cursor_hidden = false;
         pane->bracketed_paste = false;
         pane->app_cursor_keys = false;
+        pane->term_origin_mode = false;
+        pane->term_autowrap = true;
+        pane->term_wrap_pending = false;
         pane->ansi_reverse = false;
         term_init_default_tabs(pane);
         term_load_cells_from_line(pane, pane->term_cursor_line);

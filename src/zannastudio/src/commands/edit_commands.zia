@@ -183,11 +183,10 @@ func handleGoToLineText(shell: app_shell.AppShell,
 /// @return True when every character is 0-9.
 hide func IsPositiveIntegerText(text: String) -> Boolean {
     if text == "" { return false; }
-    var i = 1;
-    while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
-        if ch != "0" and ch != "1" and ch != "2" and ch != "3" and ch != "4"
-           and ch != "5" and ch != "6" and ch != "7" and ch != "8" and ch != "9" {
+    var i = 0;
+    while i < Str.get_Length(text) {
+        var ch = Str.ByteAt(text, i);
+        if ch < 48 or ch > 57 {
             return false;
         }
         i = i + 1;
@@ -857,23 +856,28 @@ func SelectWordAt(engine: editor_engine.EditorEngine,
     if pos < 1 { pos = 1; }
     if pos > len { pos = len; }
 
-    var ch = Str.MidLen(line, pos, 1);
-    if IsIdentPart(ch) == false and pos > 1 {
+    var ch = Str.ByteAt(line, pos - 1);
+    if IsIdentPartByte(ch) == false and pos > 1 {
         pos = pos - 1;
-        ch = Str.MidLen(line, pos, 1);
+        ch = Str.ByteAt(line, pos - 1);
     }
-    if IsIdentPart(ch) == false { return false; }
+    if IsIdentPartByte(ch) == false { return false; }
 
     var start = pos;
-    while start > 1 and IsIdentPart(Str.MidLen(line, start - 1, 1)) {
+    while start > 1 and IsIdentPartByte(Str.ByteAt(line, start - 2)) {
         start = start - 1;
     }
     var end = pos;
-    while end <= len and IsIdentPart(Str.MidLen(line, end, 1)) {
+    while end <= len and IsIdentPartByte(Str.ByteAt(line, end - 1)) {
         end = end + 1;
     }
     engine.editor.SetCursorSelection(0, lineIdx, start - 1, lineIdx, end - 1);
     return true;
+}
+
+func IsIdentPartByte(ch: Integer) -> Boolean {
+    return (ch >= 97 and ch <= 122) or (ch >= 65 and ch <= 90)
+        or (ch >= 48 and ch <= 57) or ch == 95;
 }
 
 func SelectLine(engine: editor_engine.EditorEngine, lineIdx: Integer) {

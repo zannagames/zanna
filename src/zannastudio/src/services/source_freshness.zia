@@ -165,7 +165,8 @@ class SourceFreshnessScanner {
             } else if reliable {
                 statusReason = "complete";
             }
-        } else if processed == 0 and pageOffset == oldOffset {
+        } else if processed == 0 and pageOffset == oldOffset
+                  and Map.GetInt(page, "work") <= 0 {
             FailScan("workspace index made no progress");
         }
         return processed;

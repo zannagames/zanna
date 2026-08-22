@@ -2481,6 +2481,18 @@ static void test_d3d11_backend_source_contracts(void) {
                     strstr(source, "D3D_DRIVER_TYPE_WARP") != NULL &&
                     strstr(source, "d3d11_release_device_attempt(ctx)") != NULL,
                 "Device creation retries transactionally with WARP for remote and virtual hosts");
+    EXPECT_TRUE(strstr(source, "static HRESULT d3d11_try_create_headless_device") != NULL &&
+                    strstr(source, "hr = D3D11CreateDevice(NULL") != NULL &&
+                    strstr(source,
+                           ": d3d11_try_create_headless_device(ctx, "
+                           "D3D_DRIVER_TYPE_HARDWARE)") != NULL,
+                "Windowless D3D11 contexts create a device directly without a hidden HWND");
+    EXPECT_TRUE(strstr(source,
+                       "if (ctx->swap_chain && (!ctx->rtv || !ctx->depth_tex || !ctx->dsv)") !=
+                    NULL &&
+                    strstr(source, "if (ctx->swap_chain) {\n"
+                                   "        hr = d3d11_create_swapchain_targets") != NULL,
+                "Headless D3D11 contexts never enter swapchain target creation or repair");
     EXPECT_TRUE(strstr(source, "Begin(frame timestamp)") != NULL &&
                     strstr(source, "End(frame timestamp)") != NULL,
                 "Timestamp query publication is gated by device-health checks");

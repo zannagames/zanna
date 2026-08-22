@@ -111,7 +111,7 @@ updated where appropriate.
 | 65 | Implemented | Process and PTY activity signal a refcounted GUI wake target through platform backends; the frame loop uses absolute deadlines and language work checks them between items. | `runtime/system/rt_activity_wake.*`; ZannaGFX/GUI adapters; ADR 0281; `test_window`/`RTExecTests` |
 | 66 | Implemented | `LifecycleController` is the idempotent shutdown owner. It drains producers/reapers before destroying consumers and preserves recovery state when a bounded drain times out. | `app/lifecycle_controller.zia`; shutdown-state probe |
 | 67 | Implemented | `EditorScheduler` is now a registry of `ScheduledJob` records keyed by kind/path/revision/generation; parallel legacy flag/deadline fields were removed. | `editor/scheduler.zia`; phase/runtime-policy probes |
-| 68 | Implemented | The ratchet was reduced from 87 to 73 tracked size debts and from 49 to 47 layer debts. Large session, SCM, project-index, scheduler, debug, document, search, and application coordinators were split by state/lifecycle ownership. | `scripts/architecture_baseline.tsv`; architecture guard; updated source map |
+| 68 | Implemented | The ratchet was reduced from 87 to 69 tracked size debts and from 49 to 42 layer debts. Large session, SCM, project-index, scheduler, debug, document, search, application, BASIC-signature, transform, and protocol coordinators were split by state/lifecycle ownership; static command metadata moved to the leaf services layer. | `scripts/architecture_baseline.tsv`; architecture guard; updated source map |
 | 69 | Implemented | Split views share a `DocumentBuffer` with one mutable GUI owner, and detached tools separate `ToolWindowModel` from `NativeToolWindowHost`. | `core/document_buffer.zia`; `ui/native_tool_window_host.zia`; ADR 0279; split/native-window probes |
 | 70 | Matrix implemented; sign-off pending | A schema-checked Windows/macOS/Linux matrix covers all requested picker, filesystem, text, SCM, terminal, process, output, debugger, accessibility, and graphics scenarios. Applicable rows begin at `pending`; backend-impossible rows are explicitly `not-applicable`. | `tests/platform_signoff.tsv`; `platform-signoff.md`; manifest probe |
 
@@ -140,7 +140,7 @@ macOS arm64 Studio payload successfully.
 The final focused validation set was:
 
 - Whole Studio source check: clean.
-- Architecture guard: 517 source units checked; 73 tracked size debts and 47
+- Architecture guard: 523 source units checked; 69 tracked size debts and 42
   tracked layer debts; passed.
 - 24 targeted Studio CTest entries spanning recovery, safe I/O, watcher/index,
   multi-root, SCM, terminal, process reaping, diagnostics, perf/wake policy,

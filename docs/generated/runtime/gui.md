@@ -586,6 +586,8 @@ Constructor: `Zanna.GUI.VirtualTree.New`
 
 | Method | Signature | Runtime target |
 |---|---|---|
+| <a id="zanna-gui-virtualtree-beginupdate"></a>`BeginUpdate` | `void()` | `Zanna.GUI.VirtualTree.BeginUpdate` |
+| <a id="zanna-gui-virtualtree-endupdate"></a>`EndUpdate` | `void()` | `Zanna.GUI.VirtualTree.EndUpdate` |
 | <a id="zanna-gui-virtualtree-addnode"></a>`AddNode` | `void(str,str,str)` | `Zanna.GUI.VirtualTree.AddNode` |
 | <a id="zanna-gui-virtualtree-movenode"></a>`MoveNode` | `i1(str,str)` | `Zanna.GUI.VirtualTree.MoveNode` |
 | <a id="zanna-gui-virtualtree-setnodetext"></a>`SetNodeText` | `i1(str,str)` | `Zanna.GUI.VirtualTree.SetNodeText` |
@@ -3476,6 +3478,8 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.VirtualList.GetSelectedId` | `str(obj)` | `rt_virtual_list_get_selected_id` |
 | `Zanna.GUI.VirtualList.GetSelectedIndex` | `i64(obj)` | `rt_virtual_list_get_selected_index` |
 | `Zanna.GUI.VirtualTree.New` | `obj<Zanna.GUI.VirtualTree>()` | `rt_virtual_tree_new` |
+| `Zanna.GUI.VirtualTree.BeginUpdate` | `void(obj)` | `rt_virtual_tree_begin_update` |
+| `Zanna.GUI.VirtualTree.EndUpdate` | `void(obj)` | `rt_virtual_tree_end_update` |
 | `Zanna.GUI.VirtualTree.AddNode` | `void(obj,str,str,str)` | `rt_virtual_tree_add_node` |
 | `Zanna.GUI.VirtualTree.MoveNode` | `i1(obj,str,str)` | `rt_virtual_tree_move_node` |
 | `Zanna.GUI.VirtualTree.SetNodeText` | `i1(obj,str,str)` | `rt_virtual_tree_set_node_text` |

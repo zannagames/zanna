@@ -2087,6 +2087,15 @@ set_tests_properties(zia_zannastudio_terminal_altscreen PROPERTIES
         LABELS "zia;zannastudio;terminal;requires_display"
         TIMEOUT 30)
 
+add_test(NAME zia_zannastudio_terminal_apps
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/terminal_apps_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_terminal_apps PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;terminal;requires_display;platform"
+        RUN_SERIAL TRUE
+        TIMEOUT 45)
+
 add_test(NAME zia_zannastudio_terminal_multi
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/terminal_multi_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")

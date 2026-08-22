@@ -1,0 +1,77 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/debug_protocol.zia
+// Purpose: Encode debugger control messages without owning adapter process state.
+// Key invariants:
+//   - Every interpolated JSON string passes through one escaping implementation.
+//   - Breakpoint metadata and line arrays preserve BreakpointStore order exactly.
+// Ownership/Lifetime: Stateless; returned strings own all encoded command bytes.
+// Links: zannastudio/src/build/debug_session_base.zia,
+//        zannastudio/src/build/breakpoints.zia
+//
+//===----------------------------------------------------------------------===//
+
+module debug_protocol;
+
+bind "breakpoints";
+bind Str = Zanna.String;
+bind StringBuilder = Zanna.Text.StringBuilder;
+
+/// @brief Escape one runtime string for insertion into a JSON string literal.
+func Escape(value: String) -> String {
+    var out = Str.Replace(value, "\\", "\\\\");
+    out = Str.Replace(out, "\"", "\\\"");
+    out = Str.Replace(out, "\n", "\\n");
+    out = Str.Replace(out, "\r", "\\r");
+    out = Str.Replace(out, "\t", "\\t");
+    return out;
+}
+
+/// @brief Encode the complete breakpoint projection for one source path.
+/// @param path Exact source path understood by the debug adapter.
+/// @param store Borrowed breakpoint store, or null for an empty projection.
+/// @return One newline-free JSON command ready for the adapter input queue.
+func SetBreakpoints(path: String,
+                    store: breakpoints.BreakpointStore) -> String {
+    var lines = new StringBuilder();
+    var lineCount = 0;
+    var meta = new StringBuilder();
+    var metaCount = 0;
+    if store != null {
+        var i = 0;
+        while i < store.Count() {
+            if store.GetPath(i) == path {
+                var line = store.GetLine(i);
+                if lineCount > 0 { lines.Append(","); }
+                lines.Append("" + line);
+                lineCount = lineCount + 1;
+                var condition = store.GetCondition(i);
+                var logMessage = store.GetLogMessage(i);
+                if condition != "" or logMessage != "" {
+                    if metaCount > 0 { meta.Append(","); }
+                    meta.Append("{\"line\":" + line);
+                    if condition != "" {
+                        meta.Append(",\"condition\":\"" + Escape(condition) + "\"");
+                    }
+                    if logMessage != "" {
+                        meta.Append(",\"logMessage\":\"" + Escape(logMessage) + "\"");
+                    }
+                    meta.Append("}");
+                    metaCount = metaCount + 1;
+                }
+            }
+            i = i + 1;
+        }
+    }
+    var out = new StringBuilder();
+    out.Append("{\"type\":\"setBreakpoints\",\"path\":\""
+               + Escape(path) + "\",\"lines\":[" + lines.ToString() + "]");
+    if metaCount > 0 { out.Append(",\"meta\":[" + meta.ToString() + "]"); }
+    out.Append("}");
+    return out.ToString();
+}

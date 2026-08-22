@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-20
+last-verified: 2026-08-21
 ---
 
 # ADR 0281: Wake GUI Event Loops for Process and PTY Activity
@@ -35,9 +35,9 @@ input event for Zia code.
 
 The wake target is reference counted and serializes signal with invalidation.
 App destruction first invalidates the target, waiting for an in-flight callback,
-then releases its owner reference. Process and PTY monitors retain their own
-references until their threads have stopped and joined. A late producer can
-therefore neither dereference a destroyed App nor signal a recycled window.
+then releases its owner reference. Process and PTY registrations retain their
+own references until unregistered. A late producer can therefore neither
+dereference a destroyed App nor signal a recycled window.
 
 Backend wake mechanisms are deliberately local to ZannaGFX:
 
@@ -47,12 +47,14 @@ Backend wake mechanisms are deliberately local to ZannaGFX:
 - Wayland writes to a nonblocking self-pipe included in the display poll set.
 - The mock backend records a lock-protected pending wake for deterministic tests.
 
-POSIX Process and PTY monitors block in `poll` on their stream descriptors plus
-a private control pipe. Windows ConPTY and anonymous Process pipes do not expose
-waitable read-readiness handles, so their monitor threads perform a bounded
-background `PeekNamedPipe` probe paced by a process wait. This fallback never
-runs on the GUI thread and posts at most one wake until Studio drains and rearms
-the source. Failure to create any monitor is reported by `WatchProcess` or
+A single process-wide activity worker multiplexes nonblocking readiness probes
+for every watched Process and PTY. POSIX probes use zero-timeout `poll`; Windows
+ConPTY and anonymous Process pipes use `PeekNamedPipe` plus a zero-timeout child
+status check because pipe readability is not a waitable kernel object. The
+worker is paced at 16 ms, never runs on the GUI thread, and posts at most one
+wake per registration until Studio drains and rearms it. Unregistration is
+serialized with probes before the owning handle closes descriptors. Failure to
+create the shared worker or a registration is reported by `WatchProcess` or
 `WatchPty`; Studio then uses a four-millisecond polling fallback for only that
 source.
 
@@ -65,10 +67,11 @@ wakes the event loop.
 ## Consequences
 
 - Idle builds, debuggers, and terminals no longer force the UI thread to spin.
-- Stream monitoring has explicit start, rearm, stop, join, and target-retention
-  states; Process/PTy destruction must stop the monitor before closing handles.
-- Windows retains a small background readiness probe until an overlapped or
-  completion-port pipe implementation replaces anonymous/ConPTY handles.
+- Stream monitoring has explicit register, rearm, unregister, and
+  target-retention states; Process/PTy destruction unregisters before closing
+  handles.
+- Any number of concurrent child handles uses one background worker instead of
+  one native thread and control pipe/event set per handle.
 - A failed monitor allocation degrades to bounded Studio polling rather than
   making output permanently invisible.
 - Platform GUI adapters gain `vgfx_wake_events`; it is a wake primitive, not a
@@ -84,7 +87,9 @@ wakes the event loop.
   Zia UI/runtime state remains owned by the GUI thread.
 - **Use one global wake callback.** Rejected because multiple Apps and teardown
   ordering require explicit per-owner lifetime and invalidation.
+- **Use one monitor thread per child handle.** Rejected because build graphs and
+  debugger helpers can create many concurrent processes; independently retained
+  registrations preserve owner lifetime without linear native-thread growth.
 - **Make the Windows monitor block only on the process handle.** Rejected because
   output can arrive long before process exit and anonymous pipe readability is
   not a waitable kernel object.
-

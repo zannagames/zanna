@@ -7024,13 +7024,15 @@ static void test_canvas_hiz_rasterizer_culls_behind_rotated_occluder() {
     PASS();
 }
 
-/// @brief Verify over-budget occluders use exact coarse proxies without false edge culls.
+/// @brief Verify over-budget meshes are occludees only — never occluders.
 /// @details A rotated box repeats its twelve real surface triangles until it exceeds the precise
-///   1,024-triangle limit. The bounded proxy must still establish central coverage and hide boxes
-///   fully behind it after history warm-up. A box crossing the projected silhouette edge must
-///   remain submitted because the proxy publishes only completely covered 4x4 fine blocks.
-static void test_canvas_hiz_high_poly_proxy_is_conservative() {
-    TEST("Canvas3D Hi-Z uses a conservative proxy for high-poly occluders");
+///   1,024-triangle limit. It must write NO occlusion (neither a triangle proxy nor an AABB
+///   rectangle): the boxes fully behind it stay submitted, and the only Hi-Z triangles written are
+///   the small boxes' own. The retired subset-proxy path was honest per-triangle, but once its
+///   frame budget drained, over-budget draws fell to the AABB fallback and published whole bounds
+///   rectangles as coverage — the stadium-shell chunk erasure.
+static void test_canvas_hiz_over_budget_mesh_is_not_an_occluder() {
+    TEST("Canvas3D Hi-Z treats over-budget meshes as occludees only");
     vgfx3d_backend_t backend = {};
     rt_canvas3d canvas;
     const int64_t hidden_draws = 8;
@@ -7059,7 +7061,7 @@ static void test_canvas_hiz_high_poly_proxy_is_conservative() {
         }
     }
     EXPECT_TRUE(rt_mesh3d_get_triangle_count(occluder_mesh) > 1024,
-                "High-poly proxy fixture exceeds the precise per-draw triangle budget");
+                "Over-budget fixture exceeds the precise per-draw triangle budget");
 
     backend.name = "opengl";
     backend.gpu_skinning = 1;
@@ -7085,10 +7087,108 @@ static void test_canvas_hiz_high_poly_proxy_is_conservative() {
         rt_canvas3d_end(&canvas);
     }
 
-    EXPECT_EQ(canvas.hiz_frame_triangles, 12);
-    EXPECT_EQ(canvas.hiz_frame_proxy_triangles, 512);
-    EXPECT_EQ(g_canvas_submit_draw_calls, 2);
-    EXPECT_EQ(rt_canvas3d_get_occluded_draw_count(&canvas), hidden_draws);
+    EXPECT_EQ(g_canvas_submit_draw_calls, hidden_draws + 2);
+    EXPECT_EQ(rt_canvas3d_get_occluded_draw_count(&canvas), 0);
+    EXPECT_EQ(canvas.hiz_frame_triangles, (hidden_draws + 1) * 12);
+    PASS();
+}
+
+/// @brief Append one axis-aligned slab (8 vertices, 12 triangles) to a mesh under construction.
+static void hiz_gap_fixture_add_slab(void *mesh, double x0, double x1, double y0, double y1,
+                                     double z0, double z1) {
+    const int64_t base = rt_mesh3d_get_vertex_count(mesh);
+    const double xs[8] = {x0, x1, x0, x1, x0, x1, x0, x1};
+    const double ys[8] = {y0, y0, y1, y1, y0, y0, y1, y1};
+    const double zs[8] = {z0, z0, z0, z0, z1, z1, z1, z1};
+    static const uint32_t tris[36] = {0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4,
+                                      2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4, 6, 1, 3, 5, 3, 7, 5};
+    for (int i = 0; i < 8; i++)
+        rt_mesh3d_add_vertex(mesh, xs[i], ys[i], zs[i], 0.0, 0.0, 1.0, 0.0, 0.0);
+    for (int t = 0; t < 12; t++)
+        rt_mesh3d_add_triangle(mesh, (int64_t)base + tris[t * 3], (int64_t)base + tris[t * 3 + 1],
+                               (int64_t)base + tris[t * 3 + 2]);
+}
+
+/// @brief Verify an over-budget shallow mesh never publishes AABB-rectangle coverage.
+/// @details Eight dense near boxes model a frame full of over-budget draws (they drained the
+///   retired proxy budget), followed by an over-budget shallow "dumbbell" — two slabs with a real
+///   GAP between them whose projected AABB nevertheless spans the gap — and a small box behind,
+///   visible through the gap. With the AABB fallback reachable for over-budget draws the dumbbell
+///   published its whole rectangle and the visible box was culled; over-budget draws must instead
+///   write nothing, so the box stays submitted.
+static void test_canvas_hiz_over_budget_shallow_mesh_never_writes_aabb_coverage() {
+    TEST("Canvas3D Hi-Z never publishes AABB coverage for over-budget draws");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    const int dense_draws = 8;
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *eye = rt_vec3_new(0.0, 0.0, 5.0);
+    void *target = rt_vec3_new(0.0, 0.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    void *dense_mesh = rt_mesh3d_new_box(0.6, 0.6, 0.1);
+    void *gap_mesh = rt_mesh3d_new();
+    void *visible_mesh = rt_mesh3d_new_box(0.8, 0.8, 0.2);
+    void *material = rt_material3d_new();
+    auto *dense_view = (rt_mesh3d *)dense_mesh;
+    uint32_t dense_indices[36];
+    void *ident_xf =
+        rt_mat4_new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    void *dense_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.8, 0.0, 1.0, 0.0, 0.8, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0);
+    void *behind_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 0.0, 0.0, 0.0, 1.0);
+
+    /* Two slabs with a clear x in (-2, 2) gap; z span 0.2 keeps the depth
+     * span far inside the AABB fallback's shallow-write gate. */
+    hiz_gap_fixture_add_slab(gap_mesh, -4.0, -2.0, -2.5, 2.5, -0.1, 0.1);
+    hiz_gap_fixture_add_slab(gap_mesh, 2.0, 4.0, -2.5, 2.5, -0.1, 0.1);
+    {
+        auto *gap_view = (rt_mesh3d *)gap_mesh;
+        uint32_t gap_indices[72];
+        memcpy(gap_indices, gap_view->indices, sizeof(gap_indices));
+        for (int repeat = 0; repeat < 44; repeat++)
+            for (int triangle = 0; triangle < 24; triangle++) {
+                const uint32_t *indices = &gap_indices[(size_t)triangle * 3u];
+                rt_mesh3d_add_triangle(gap_mesh, indices[0], indices[1], indices[2]);
+            }
+    }
+    EXPECT_TRUE(rt_mesh3d_get_triangle_count(gap_mesh) > 1024,
+                "Gap fixture exceeds the precise per-draw triangle budget");
+    memcpy(dense_indices, dense_view->indices, sizeof(dense_indices));
+    for (int repeat = 0; repeat < 128; repeat++)
+        for (int triangle = 0; triangle < 12; triangle++) {
+            const uint32_t *indices = &dense_indices[(size_t)triangle * 3u];
+            rt_mesh3d_add_triangle(dense_mesh, indices[0], indices[1], indices[2]);
+        }
+    EXPECT_TRUE(rt_mesh3d_get_triangle_count(dense_mesh) > 1024,
+                "Dense fixture exceeds the precise per-draw triangle budget");
+
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.end_frame = tracked_end_frame;
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 128;
+    canvas.height = 128;
+
+    rt_camera3d_look_at(camera, eye, target, up);
+    rt_canvas3d_set_occlusion_culling(&canvas, 1);
+    for (int frame = 0; frame < 4; frame++) {
+        if (frame == 3)
+            g_canvas_submit_draw_calls = 0;
+        rt_canvas3d_begin(&canvas, camera);
+        for (int i = 0; i < dense_draws; i++)
+            rt_canvas3d_draw_mesh(&canvas, dense_mesh, dense_xf, material);
+        rt_canvas3d_draw_mesh(&canvas, gap_mesh, ident_xf, material);
+        rt_canvas3d_draw_mesh(&canvas, visible_mesh, behind_xf, material);
+        rt_canvas3d_end(&canvas);
+    }
+
+    EXPECT_EQ(g_canvas_submit_draw_calls, dense_draws + 2);
+    EXPECT_EQ(rt_canvas3d_get_occluded_draw_count(&canvas), 0);
     PASS();
 }
 
@@ -11638,7 +11738,8 @@ int main() {
     test_frustum_culling_keeps_runtime_deformed_draws();
     test_backend_reversed_z_negates_projection_z_row();
     test_canvas_hiz_rasterizer_culls_behind_rotated_occluder();
-    test_canvas_hiz_high_poly_proxy_is_conservative();
+    test_canvas_hiz_over_budget_mesh_is_not_an_occluder();
+    test_canvas_hiz_over_budget_shallow_mesh_never_writes_aabb_coverage();
     test_frame_light_flatten_cache_shares_snapshot_across_draws();
     test_shadow_distance_setter_and_effective_range();
     test_instanced_draw_precomputes_world_bounds_in_snapshot_pass();

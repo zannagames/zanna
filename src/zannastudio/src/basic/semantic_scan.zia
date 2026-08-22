@@ -21,27 +21,11 @@ module semantic_scan;
 
 bind Map = Zanna.Collections.Map;
 bind "semantic_lexing" as SemanticLexing;
+bind "semantic_scope_index" as ScopeIndex;
+bind "semantic_signature_scan" as SignatureScan;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
 bind Str = Zanna.String;
-
-final BASIC_MAX_SIGNATURE_BACKTRACK_LINES = 200;
-
-// ============================================================================
-// MODULE: semantic_scan
-// PURPOSE: Lightweight BASIC semantic scanning for IDE navigation.
-//
-// WHERE-THIS-FITS: The BASIC compiler bridge exposes diagnostics, completion,
-//          hover, and document symbols. This module fills editor-only project
-//          navigation gaps without changing runtime ABI: go-to-definition,
-//          references, rename edits, call hierarchy tokens, workspace symbols,
-//          and signature-help records.
-//
-// TEACHING-NOTE: This is not a replacement parser. It mirrors BASIC's lexical
-//          rules closely enough for IDE assists: case-insensitive identifiers,
-//          optional type suffixes, apostrophe/REM comments, and doubled-quote
-//          string escapes. Compiler diagnostics remain the source of truth.
-// ============================================================================
 
 expose func IdentifierAt(source: String,
                          lineNumber: Integer,
@@ -53,8 +37,8 @@ expose func IdentifierAt(source: String,
     if at > Str.get_Length(line) { at = Str.get_Length(line); }
     if at < 1 { return ""; }
 
-    if SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, at, 1)) == false {
-        if at > 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, at - 1, 1)) {
+    if SemanticLexing.IsBasicIdentifierCharByte(Str.ByteAt(line, at - 1)) == false {
+        if at > 1 and SemanticLexing.IsBasicIdentifierCharByte(Str.ByteAt(line, at - 2)) {
             at = at - 1;
         } else {
             return "";
@@ -62,14 +46,15 @@ expose func IdentifierAt(source: String,
     }
 
     var start = at;
-    while start > 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, start - 1, 1)) {
+    while start > 1 and SemanticLexing.IsBasicIdentifierCharByte(Str.ByteAt(line, start - 2)) {
         start = start - 1;
     }
     var endPos = at;
-    while endPos < Str.get_Length(line) and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, endPos + 1, 1)) {
+    while endPos < Str.get_Length(line)
+          and SemanticLexing.IsBasicIdentifierCharByte(Str.ByteAt(line, endPos)) {
         endPos = endPos + 1;
     }
-    return Str.MidLen(line, start, endPos - start + 1);
+    return Str.Substring(line, start - 1, endPos - start + 1);
 }
 
 expose func CanonicalName(name: String) -> String {
@@ -81,10 +66,10 @@ expose func IsValidBasicIdentifier(name: String) -> Boolean {
     var base = SemanticLexing.StripTypeSuffix(name);
     if base == "" { return false; }
     if SemanticLexing.IsKeyword(base) { return false; }
-    if SemanticLexing.IsBasicIdentifierStart(Str.MidLen(base, 1, 1)) == false { return false; }
+    if SemanticLexing.IsBasicIdentifierStartByte(Str.ByteAt(base, 0)) == false { return false; }
     var i = 2;
     while i <= Str.get_Length(base) {
-        if SemanticLexing.IsBasicIdentifierPart(Str.MidLen(base, i, 1)) == false { return false; }
+        if SemanticLexing.IsBasicIdentifierPartByte(Str.ByteAt(base, i - 1)) == false { return false; }
         i = i + 1;
     }
     return true;
@@ -130,31 +115,40 @@ expose func AddDeclarationsCapped(decls: Any,
     if decls == null or source == "" { return true; }
     var lines = Str.Split(source, "\n");
     var lineCount = Seq.get_Count(lines);
+    var blockEnds = ScopeIndex.Build(lines);
+    var procedureStart = 0;
+    var procedureEnd = 0;
     var i = 1;
     while i <= lineCount and HasResultCapacity(decls, maxCount) {
         var rawLine = Obj.ToString(Seq.Get(lines, i - 1));
         var code = SemanticLexing.StripLineComment(rawLine);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "FUNCTION", "function", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "SUB", "function", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "PROPERTY", "property", maxCount);
-        AddDestructorDeclaration(decls, path, source, code, i, maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "CLASS", "type", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "INTERFACE", "interface", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "TYPE", "type", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "ENUM", "enum", maxCount);
-        AddBlockDeclaration(decls, path, source, code, i, lineCount,
-                            "NAMESPACE", "module", maxCount);
+        if i > procedureEnd {
+            procedureStart = 0;
+            procedureEnd = 0;
+        }
+        var procedureKind = SemanticLexing.ProcedureKeywordOnLine(code);
+        if procedureKind != "" and ScopeIndex.IsStart(code, procedureKind) {
+            procedureStart = i;
+            procedureEnd = ScopeIndex.EndLine(
+                blockEnds, procedureKind, i, lineCount);
+        }
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "FUNCTION", "function", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "SUB", "function", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "PROPERTY", "property", maxCount);
+        AddDestructorDeclaration(decls, path, code, i, lineCount,
+                                 blockEnds, maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "CLASS", "type", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "INTERFACE", "interface", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "TYPE", "type", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "ENUM", "enum", maxCount);
+        AddBlockDeclaration(decls, path, code, i, lineCount, blockEnds, "NAMESPACE", "module", maxCount);
         AddLabelDeclaration(decls, path, code, i, lineCount, maxCount);
-        AddDimDeclarations(decls, path, source, code, i, lineCount, maxCount);
-        AddConstDeclaration(decls, path, source, code, i, lineCount, maxCount);
-        AddClassFieldDeclaration(decls, path, source, code, i, lineCount, maxCount);
+        AddDimDeclarations(decls, path, code, i, lineCount,
+                           procedureStart, procedureEnd, maxCount);
+        AddConstDeclaration(decls, path, code, i, lineCount,
+                            procedureStart, procedureEnd, maxCount);
+        AddClassFieldDeclaration(decls, path, code, i, lineCount,
+                                 procedureStart, maxCount);
         i = i + 1;
     }
     return i > lineCount
@@ -331,38 +325,8 @@ expose func SignatureInfoForFile(path: String,
                                  source: String,
                                  lineNumber: Integer,
                                  col0: Integer) -> Any {
-    var info = Map.New();
-    Map.SetBool(info, "available", false);
-    var call = ActiveCallAt(source, lineNumber, col0);
-    if Map.GetBool(call, "available") == false { return info; }
-
-    var callName = Map.GetStr(call, "name");
     var decls = DeclarationsForFile(path, source);
-    var overloads = Seq.New();
-    var i = 0;
-    while i < Seq.get_Count(decls) {
-        var decl = Seq.Get(decls, i);
-        if Map.GetStr(decl, "canon") == CanonicalName(callName)
-           and IsCallableKind(Map.GetStr(decl, "kind")) {
-            Seq.Push(overloads, SignatureRecordForDeclaration(decl));
-        }
-        i = i + 1;
-    }
-    if Seq.get_Count(overloads) == 0 { return info; }
-
-    var first = Seq.Get(overloads, 0);
-    Map.SetBool(info, "available", true);
-    Map.SetInt(info, "activeSignature", 0);
-    Map.SetInt(info, "activeParameter", Map.GetInt(call, "activeParameter"));
-    Map.SetInt(info, "overloadCount", Seq.get_Count(overloads));
-    Map.Set(info, "overloads", overloads);
-    Map.SetStr(info, "name", Map.GetStr(first, "name"));
-    Map.SetStr(info, "display", Map.GetStr(first, "display"));
-    Map.Set(info, "parameters", Map.Get(first, "parameters"));
-    Map.SetStr(info, "returnType", Map.GetStr(first, "returnType"));
-    Map.SetStr(info, "documentation", "");
-    Map.SetStr(info, "source", "basic");
-    return info;
+    return SignatureScan.InfoForDeclarations(decls, source, lineNumber, col0);
 }
 
 expose func WorkspaceSymbolMatchesDecl(decl: Any,
@@ -396,16 +360,16 @@ func DefinitionScore(decl: Any,
 
 func AddBlockDeclaration(decls: Any,
                          path: String,
-                         source: String,
                          line: String,
                          lineNumber: Integer,
                          lineCount: Integer,
+                         blockEnds: Any,
                          keyword: String,
                          kind: String,
                          maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
-    var decl = ProcedureOrBlockDeclaration(path, source, line, lineNumber,
-                                           lineCount, keyword, kind);
+    var decl = ProcedureOrBlockDeclaration(path, line, lineNumber, lineCount,
+                                           blockEnds, keyword, kind);
     if Map.GetBool(decl, "found") == false { return; }
     Seq.Push(decls, decl);
     if keyword == "FUNCTION" or keyword == "SUB" or keyword == "PROPERTY" {
@@ -420,15 +384,20 @@ func ProcedureDeclarationFromLine(path: String,
                                   lineCount: Integer) -> Any {
     var kind = SemanticLexing.ProcedureKeywordOnLine(line);
     if kind == "" { return NewNotFound(); }
-    return ProcedureOrBlockDeclaration(path, source, line, lineNumber,
-                                       lineCount, kind, "function");
+    var decl = ProcedureOrBlockDeclaration(path, line, lineNumber,
+                                           lineCount, null, kind, "function");
+    if Map.GetBool(decl, "found") and SemanticLexing.IsBlockKeyword(kind) {
+        Map.SetInt(decl, "scopeEnd",
+                   SemanticLexing.BasicBlockEndLine(source, lineNumber, kind));
+    }
+    return decl;
 }
 
 func ProcedureOrBlockDeclaration(path: String,
-                                 source: String,
                                  line: String,
                                  lineNumber: Integer,
                                  lineCount: Integer,
+                                 blockEnds: Any,
                                  keyword: String,
                                  kind: String) -> Any {
     var code = SemanticLexing.StripLineComment(line);
@@ -443,7 +412,7 @@ func ProcedureOrBlockDeclaration(path: String,
 
     var endLine = lineCount;
     if SemanticLexing.IsBlockKeyword(keyword) {
-        endLine = SemanticLexing.BasicBlockEndLine(source, lineNumber, keyword);
+        endLine = ScopeIndex.EndLine(blockEnds, keyword, lineNumber, lineCount);
     }
     var openParen = Str.IndexOfFrom(code, nameStart + Str.get_Length(name), "(");
     var closeParen = 0;
@@ -471,15 +440,17 @@ func ProcedureOrBlockDeclaration(path: String,
 
 func AddDestructorDeclaration(decls: Any,
                               path: String,
-                              source: String,
                               line: String,
                               lineNumber: Integer,
+                              lineCount: Integer,
+                              blockEnds: Any,
                               maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
     var keywordCol = SemanticLexing.KeywordColumn(line, "DESTRUCTOR");
     if keywordCol <= 0 { return; }
     if SemanticLexing.EndsWithToken(Str.Trim(Str.Left(line, keywordCol - 1)), "END") { return; }
-    var endLine = SemanticLexing.BasicBlockEndLine(source, lineNumber, "DESTRUCTOR");
+    var endLine = ScopeIndex.EndLine(
+        blockEnds, "DESTRUCTOR", lineNumber, lineCount);
     var decl = NewDecl(path, "DESTRUCTOR", "function", lineNumber, keywordCol,
                        keywordCol + Str.get_Length("DESTRUCTOR"), lineNumber,
                        endLine, false, "DESTRUCTOR", "", "");
@@ -499,7 +470,7 @@ func AddLabelDeclaration(decls: Any,
     var name = SemanticLexing.ReadBasicIdentifierAt(line, offset);
     if name == "" or SemanticLexing.IsKeyword(name) { return; }
     var after = offset + Str.get_Length(name);
-    if after <= Str.get_Length(line) and Str.MidLen(line, after, 1) == ":" {
+    if after <= Str.get_Length(line) and Str.ByteAt(line, after - 1) == 58 {
         var decl = NewDecl(path, name, "label", lineNumber, offset,
                            offset + Str.get_Length(name), 1, lineCount,
                            true, name + ":", "", "");
@@ -509,19 +480,20 @@ func AddLabelDeclaration(decls: Any,
 
 func AddDimDeclarations(decls: Any,
                         path: String,
-                        source: String,
                         line: String,
                         lineNumber: Integer,
                         lineCount: Integer,
+                        procedureStart: Integer,
+                        procedureEnd: Integer,
                         maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
     var dimCol = SemanticLexing.KeywordColumn(line, "DIM");
     if dimCol <= 0 { return; }
-    var scopeStart = EnclosingBasicProcedureStartLine(source, lineNumber);
+    var scopeStart = procedureStart;
     var scopeEnd = lineCount;
     var local = false;
     if scopeStart > 0 {
-        scopeEnd = BasicProcedureEndLine(source, scopeStart);
+        scopeEnd = procedureEnd;
         local = true;
     }
     AddVariableDeclarationsFromList(decls, path, line, lineNumber,
@@ -532,19 +504,20 @@ func AddDimDeclarations(decls: Any,
 
 func AddConstDeclaration(decls: Any,
                          path: String,
-                         source: String,
                          line: String,
                          lineNumber: Integer,
                          lineCount: Integer,
+                         procedureStart: Integer,
+                         procedureEnd: Integer,
                          maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
     var constCol = SemanticLexing.KeywordColumn(line, "CONST");
     if constCol <= 0 { return; }
-    var scopeStart = EnclosingBasicProcedureStartLine(source, lineNumber);
+    var scopeStart = procedureStart;
     var scopeEnd = lineCount;
     var local = false;
     if scopeStart > 0 {
-        scopeEnd = BasicProcedureEndLine(source, scopeStart);
+        scopeEnd = procedureEnd;
         local = true;
     }
     AddVariableDeclarationsFromList(decls, path, line, lineNumber,
@@ -555,13 +528,13 @@ func AddConstDeclaration(decls: Any,
 
 func AddClassFieldDeclaration(decls: Any,
                               path: String,
-                              source: String,
                               line: String,
                               lineNumber: Integer,
                               lineCount: Integer,
+                              procedureStart: Integer,
                               maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
-    if EnclosingBasicProcedureStartLine(source, lineNumber) > 0 { return; }
+    if procedureStart > 0 { return; }
     var code = Str.Trim(line);
     if code == "" { return; }
     var firstCol = SemanticLexing.LeadingWhitespaceLength(line) + 1;
@@ -669,14 +642,10 @@ func NewDecl(path: String,
     Map.SetInt(decl, "scopeEnd", scopeEnd);
     Map.SetBool(decl, "local", local);
     Map.SetStr(decl, "signature", signature);
-    Map.SetStr(decl, "signatureLine", SourceSafeLine(signature));
+    Map.SetStr(decl, "signatureLine", signature);
     Map.SetStr(decl, "paramsText", paramsText);
     Map.SetStr(decl, "returnType", returnType);
     return decl;
-}
-
-func SourceSafeLine(text: String) -> String {
-    return text;
 }
 
 func AddLineReferences(refs: Any,
@@ -690,10 +659,10 @@ func AddLineReferences(refs: Any,
     var inString = false;
     var n = Str.get_Length(line);
     while pos <= n and HasResultCapacity(refs, maxCount) {
-        var ch = Str.MidLen(line, pos, 1);
+        var ch = Str.ByteAt(line, pos - 1);
         if inString {
-            if ch == "\"" {
-                if pos < n and Str.MidLen(line, pos + 1, 1) == "\"" {
+            if ch == 34 {
+                if pos < n and Str.ByteAt(line, pos) == 34 {
                     pos = pos + 2;
                     continue;
                 }
@@ -702,14 +671,14 @@ func AddLineReferences(refs: Any,
             pos = pos + 1;
             continue;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
             pos = pos + 1;
             continue;
         }
-        if ch == "'" { break; }
+        if ch == 39 { break; }
         if SemanticLexing.IsRemCommentAt(line, pos) { break; }
-        if SemanticLexing.IsBasicIdentifierStart(ch) {
+        if SemanticLexing.IsBasicIdentifierStartByte(ch) {
             var start = pos;
             var token = SemanticLexing.ReadBasicIdentifierAt(line, start);
             if token != "" {
@@ -744,10 +713,10 @@ func AddOutgoingCallsFromLine(tokens: Any,
     var inString = false;
     var n = Str.get_Length(line);
     while pos <= n and HasResultCapacity(tokens, maxCount) {
-        var ch = Str.MidLen(line, pos, 1);
+        var ch = Str.ByteAt(line, pos - 1);
         if inString {
-            if ch == "\"" {
-                if pos < n and Str.MidLen(line, pos + 1, 1) == "\"" {
+            if ch == 34 {
+                if pos < n and Str.ByteAt(line, pos) == 34 {
                     pos = pos + 2;
                     continue;
                 }
@@ -756,21 +725,21 @@ func AddOutgoingCallsFromLine(tokens: Any,
             pos = pos + 1;
             continue;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
             pos = pos + 1;
             continue;
         }
-        if ch == "'" { break; }
+        if ch == 39 { break; }
         if SemanticLexing.IsRemCommentAt(line, pos) { break; }
-        if SemanticLexing.IsBasicIdentifierStart(ch) {
+        if SemanticLexing.IsBasicIdentifierStartByte(ch) {
             var start = pos;
             var name = SemanticLexing.ReadBasicIdentifierAt(line, start);
             var next = SemanticLexing.SkipWhitespace(line, start + Str.get_Length(name));
             if SemanticLexing.IsKeyword(name) == false
                and SemanticLexing.IsDeclarationNameAt(line, start) == false
                and next <= n
-               and Str.MidLen(line, next, 1) == "(" {
+               and Str.ByteAt(line, next - 1) == 40 {
                 var token = Map.New();
                 Map.SetStr(token, "name", name);
                 Map.SetInt(token, "line", lineNumber);
@@ -792,102 +761,6 @@ func HasResultCapacity(items: Any,
                        maxCount: Integer) -> Boolean {
     if items == null { return false; }
     return maxCount <= 0 or Seq.get_Count(items) < maxCount;
-}
-
-func ActiveCallAt(source: String,
-                  lineNumber: Integer,
-                  col0: Integer) -> Any {
-    var result = Map.New();
-    Map.SetBool(result, "available", false);
-    var lines = Str.Split(source, "\n");
-    var lineIdx = lineNumber - 1;
-    if lineIdx >= Seq.get_Count(lines) { lineIdx = Seq.get_Count(lines) - 1; }
-    if lineIdx < 0 { return result; }
-
-    var minLine = lineIdx - BASIC_MAX_SIGNATURE_BACKTRACK_LINES + 1;
-    if minLine < 0 { minLine = 0; }
-    var depth = 0;
-    var activeParam = 0;
-    var row = lineIdx;
-    while row >= minLine {
-        var text = SemanticLexing.StripLineComment(Obj.ToString(Seq.Get(lines, row)));
-        var pos = Str.get_Length(text);
-        if row == lineIdx {
-            pos = col0;
-            if pos > Str.get_Length(text) { pos = Str.get_Length(text); }
-        }
-        while pos >= 1 {
-            var ch = Str.MidLen(text, pos, 1);
-            if ch == ")" {
-                depth = depth + 1;
-            } else if ch == "(" {
-                if depth == 0 {
-                    var name = CallNameBeforeOpenParen(text, pos);
-                    if name == "" { return result; }
-                    Map.SetBool(result, "available", true);
-                    Map.SetStr(result, "name", name);
-                    Map.SetInt(result, "activeParameter", activeParam);
-                    Map.SetInt(result, "line", row + 1);
-                    Map.SetInt(result, "column", pos);
-                    return result;
-                }
-                depth = depth - 1;
-            } else if ch == "," and depth == 0 {
-                activeParam = activeParam + 1;
-            }
-            pos = pos - 1;
-        }
-        row = row - 1;
-    }
-    return result;
-}
-
-func CallNameBeforeOpenParen(line: String,
-                             openCol: Integer) -> String {
-    var pos = openCol - 1;
-    while pos >= 1 and SemanticLexing.IsSpace(Str.MidLen(line, pos, 1)) { pos = pos - 1; }
-    var endPos = pos;
-    while pos >= 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, pos, 1)) {
-        pos = pos - 1;
-    }
-    if endPos < pos + 1 { return ""; }
-    return Str.MidLen(line, pos + 1, endPos - pos);
-}
-
-func SignatureRecordForDeclaration(decl: Any) -> Any {
-    var sig = Map.New();
-    var params = ParamsSeqFromText(Map.GetStr(decl, "paramsText"));
-    Map.SetStr(sig, "name", Map.GetStr(decl, "name"));
-    Map.SetStr(sig, "display", Map.GetStr(decl, "signature"));
-    Map.Set(sig, "parameters", params);
-    Map.SetStr(sig, "returnType", Map.GetStr(decl, "returnType"));
-    Map.SetStr(sig, "documentation", "");
-    Map.SetStr(sig, "source", "basic");
-    return sig;
-}
-
-func ParamsSeqFromText(paramsText: String) -> Any {
-    var params = Seq.New();
-    var pos = 1;
-    while pos <= Str.get_Length(paramsText) {
-        pos = SemanticLexing.SkipWhitespaceAndCommas(paramsText, pos);
-        pos = SemanticLexing.SkipParameterModifier(paramsText, pos);
-        var name = SemanticLexing.ReadBasicIdentifierAt(paramsText, pos);
-        if name == "" { break; }
-        var commaCol = SemanticLexing.NextCommaOutsideParens(paramsText, pos + Str.get_Length(name));
-        var asCol = SemanticLexing.KeywordColumnFrom(paramsText, "AS", pos + Str.get_Length(name));
-        var typeText = "";
-        if asCol > 0 and (commaCol == 0 or asCol < commaCol) {
-            typeText = SemanticLexing.TypeTextAfterAs(paramsText, asCol);
-        }
-        var param = Map.New();
-        Map.SetStr(param, "name", name);
-        Map.SetStr(param, "type", typeText);
-        Seq.Push(params, param);
-        if commaCol == 0 { break; }
-        pos = commaCol + 1;
-    }
-    return params;
 }
 
 func SignatureDisplay(keyword: String,

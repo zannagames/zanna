@@ -1,0 +1,157 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/autosave_commands.zia
+// Purpose: Queue immutable document snapshots and reconcile autosave results.
+// Key invariants:
+//   - Autosave never overwrites a file whose baseline changed externally.
+//   - Inactive durable documents are eligible without requiring editor focus.
+//   - A stale successful snapshot updates disk metadata but leaves newer edits.
+// Ownership/Lifetime:
+//   - This stateless module borrows the app-owned job and document services.
+// Links: zannastudio/src/commands/autosave_job.zia,
+//        zannastudio/src/commands/file_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module autosave_commands;
+
+bind "../ui/app_shell";
+bind "../core/document";
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "autosave_job";
+bind "file_commands";
+bind "file_save_support";
+
+/// @brief Snapshot the active document and start a background autosave.
+func QueueAutoSaveActive(job: autosave_job.AutoSaveJob,
+                         shell: app_shell.AppShell,
+                         docMgr: document_manager.DocumentManager,
+                         engine: editor_engine.EditorEngine,
+                         sourceRevision: Integer) -> Boolean {
+    if docMgr == null { return false; }
+    return QueueAutoSaveDocument(
+        job, shell, docMgr, engine, docMgr.activeIndex, sourceRevision);
+}
+
+/// @brief Snapshot one durable document and start a background autosave.
+/// @details Inactive documents already own canonical content because tab and
+///          pane transitions synchronize the prior editor before focus moves.
+///          The active document is synchronized here as an additional safety
+///          boundary. A single-flight job lets the frame pump drain dirty
+///          background tabs without concurrent writes.
+func QueueAutoSaveDocument(job: autosave_job.AutoSaveJob,
+                           shell: app_shell.AppShell,
+                           docMgr: document_manager.DocumentManager,
+                           engine: editor_engine.EditorEngine,
+                           index: Integer,
+                           sourceRevision: Integer) -> Boolean {
+    if job == null or docMgr == null or job.IsBusy()
+       or index < 0 or index >= docMgr.GetCount() {
+        return false;
+    }
+    if index == docMgr.activeIndex {
+        if engine == null { return false; }
+        file_commands.SaveEditorState(docMgr, engine);
+    }
+    var doc = docMgr.documents.get(index);
+    if doc == null or doc!.isNew or doc!.isModified == false
+       or doc!.isReadOnlyPreview or doc!.filePath == "" {
+        return false;
+    }
+    if docMgr.HasExternalChangeForSave(index) {
+        if shell != null {
+            shell.SetStatusLeft(
+                "Auto-save paused: " + docMgr.ExternalStateMessage(index));
+        }
+        return false;
+    }
+
+    var request = new autosave_job.AutoSaveRequest();
+    request.owner = doc!;
+    request.sourceRevision = sourceRevision;
+    request.path = doc!.filePath;
+    request.sourceContent = doc!.content;
+    request.expectedModified = doc!.lastModifiedOnDisk;
+    request.expectedSize = doc!.lastSizeOnDisk;
+    request.expectedHash = doc!.lastContentHashOnDisk;
+    request.maxBytes = document_manager.MaxOpenBytesForPath(doc!.filePath);
+    request.trimTrailingWhitespace =
+        file_save_support.TrimTrailingWhitespaceOnSaveEnabled();
+    request.ensureFinalNewline =
+        file_save_support.EnsureFinalNewlineOnSaveEnabled();
+    return job.Queue(request);
+}
+
+/// @brief Reconcile one completed autosave with the current editor revision.
+/// @details A successful older snapshot advances the known disk baseline but
+///          deliberately leaves newer edits dirty. Save normalization is
+///          applied to the buffer only when the original revision is still
+///          current, preserving editor state through the normal transaction.
+/// @return True only when the current live document became clean.
+func CompleteAutoSave(shell: app_shell.AppShell,
+                      docMgr: document_manager.DocumentManager,
+                      engine: editor_engine.EditorEngine,
+                      tabs: editor_tabs.EditorTabs,
+                      request: autosave_job.AutoSaveRequest,
+                      currentRevision: Integer) -> Boolean {
+    if request == null or docMgr == null { return false; }
+    var doc = request.owner;
+    var index = docMgr.IndexOfDocument(doc);
+    if index < 0 or doc.filePath != request.path { return false; }
+    if request.succeeded == false {
+        if request.conflict {
+            docMgr.RefreshExternalState(index, document.EXTERNAL_STATE_CLEAN, "");
+            if shell != null {
+                shell.SetStatusLeft(
+                    "Auto-save paused: " + docMgr.ExternalStateMessage(index));
+            }
+        } else if shell != null {
+            shell.SetStatusLeft("Auto-save failed: " + request.error);
+        }
+        return false;
+    }
+
+    var stillCurrent = doc.content == request.sourceContent;
+    if engine != null and engine.currentDoc == doc {
+        stillCurrent = stillCurrent and currentRevision == request.sourceRevision
+                       and engine.GetTextSnapshot() == request.sourceContent;
+    }
+    if stillCurrent and request.savedContent != request.sourceContent {
+        stillCurrent = engine != null
+                       and engine.ReplaceDocumentTextPreservingState(
+                           doc, request.savedContent);
+    }
+
+    index = docMgr.AcknowledgeBackgroundSave(
+        doc,
+        request.savedContent,
+        request.committedModified,
+        request.committedSize,
+        stillCurrent);
+    if index < 0 {
+        docMgr.RefreshExternalState(docMgr.IndexOfDocument(doc),
+                                    document.EXTERNAL_STATE_CLEAN,
+                                    "");
+        if shell != null { shell.SetStatusLeft("Auto-save result became stale"); }
+        return false;
+    }
+
+    if stillCurrent {
+        if tabs != null { tabs.SetModified(index, false); }
+        if engine != null and engine.currentDoc == doc { engine.ClearModified(); }
+        if shell != null { shell.SetStatusLeft("Auto-saved: " + doc.fileName); }
+        file_commands.SyncRecoverySwaps(docMgr, engine);
+        return engine != null and engine.currentDoc == doc;
+    }
+    if shell != null {
+        shell.SetStatusLeft("Auto-saved an earlier revision; newer edits remain");
+    }
+    return false;
+}

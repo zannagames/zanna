@@ -13,7 +13,7 @@ Provides Language Service constants and static operations for Zanna BASIC langua
 
 `Zanna.Basic.LanguageService` is a static runtime surface and does not require an instance.
 Its public surface exposes operations including `CheckForFile`, `ItemsForFile`,
-`SymbolsForFile`, `HoverInfoForFile`.
+`SymbolsForFile`, `HoverInfoForFile`, `SignatureInfoForFile`.
 
 #### Methods
 
@@ -23,6 +23,7 @@ Its public surface exposes operations including `CheckForFile`, `ItemsForFile`,
 | <a id="zanna-basic-languageservice-itemsforfile"></a>`ItemsForFile` | `obj<Zanna.Collections.Seq>(str,str,i64,i64)` | `Zanna.Basic.LanguageService.ItemsForFile` |
 | <a id="zanna-basic-languageservice-symbolsforfile"></a>`SymbolsForFile` | `str(str,str)` | `Zanna.Basic.LanguageService.SymbolsForFile` |
 | <a id="zanna-basic-languageservice-hoverinfoforfile"></a>`HoverInfoForFile` | `obj<Zanna.Collections.Map>(str,str,i64,i64)` | `Zanna.Basic.LanguageService.HoverInfoForFile` |
+| <a id="zanna-basic-languageservice-signatureinfoforfile"></a>`SignatureInfoForFile` | `obj<Zanna.Collections.Map>(str,str,i64,i64)` | `Zanna.Basic.LanguageService.SignatureInfoForFile` |
 
 ## Functions
 
@@ -32,4 +33,5 @@ Its public surface exposes operations including `CheckForFile`, `ItemsForFile`,
 | `Zanna.Basic.LanguageService.ItemsForFile` | `obj<Zanna.Collections.Seq>(str,str,i64,i64)` | `rt_basic_completion_items_for_file` |
 | `Zanna.Basic.LanguageService.SymbolsForFile` | `str(str,str)` | `rt_basic_completion_symbols_for_file` |
 | `Zanna.Basic.LanguageService.HoverInfoForFile` | `obj<Zanna.Collections.Map>(str,str,i64,i64)` | `rt_basic_completion_hover_info_for_file` |
+| `Zanna.Basic.LanguageService.SignatureInfoForFile` | `obj<Zanna.Collections.Map>(str,str,i64,i64)` | `rt_basic_completion_signature_info_for_file` |
 

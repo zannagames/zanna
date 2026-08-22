@@ -22,7 +22,7 @@
 module menu_chrome_base;
 
 bind "../commands/command_registry";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../editor/language_service";
 bind "../ui/status_bar_model";
 

@@ -614,12 +614,13 @@ RT_CLASS_END()
 /// @details
 /// `Zanna.Basic.LanguageService` is a static runtime surface and does not require an instance.
 /// Its public surface exposes operations including `CheckForFile`, `ItemsForFile`,
-/// `SymbolsForFile`, `HoverInfoForFile`.
+/// `SymbolsForFile`, `HoverInfoForFile`, `SignatureInfoForFile`.
 RT_CLASS_BEGIN("Zanna.Basic.LanguageService", BasicLanguageService, "none", none)
     RT_METHOD("CheckForFile",    "obj<Zanna.Collections.Seq>(str,str)",         BasicToolchainCheckForFile)
     RT_METHOD("ItemsForFile",    "obj<Zanna.Collections.Seq>(str,str,i64,i64)", BasicCompletionItemsForFile)
     RT_METHOD("SymbolsForFile",  "str(str,str)",                                BasicCompletionSymbolsForFile)
     RT_METHOD("HoverInfoForFile","obj<Zanna.Collections.Map>(str,str,i64,i64)", BasicCompletionHoverInfoForFile)
+    RT_METHOD("SignatureInfoForFile","obj<Zanna.Collections.Map>(str,str,i64,i64)", BasicCompletionSignatureInfoForFile)
 RT_CLASS_END()
 
 /// @summary Provides Semantic Job constants and static operations for Zia language tooling.

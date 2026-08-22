@@ -21,7 +21,8 @@
 //     to the caller; returned owning sequences retain their element objects.
 // Links: src/runtime/io/rt_ide_primitives.cpp (implementation),
 //        src/runtime/io/rt_watcher.h (watcher events),
-//        src/runtime/io/rt_asset.h (mounted asset lookup)
+//        src/runtime/io/rt_asset.h (mounted asset lookup),
+//        docs/adr/0287-generation-safe-workspace-index-cursors.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -70,22 +71,25 @@ void *rt_workspace_file_index_cursor_new(rt_string root,
 
 /// @brief Test whether an explicit workspace traversal handle is valid.
 /// @param handle Borrowed cursor handle.
-/// @return Non-zero for a non-NULL cursor.
+/// @return Non-zero only while the opaque token names a live cursor.
 int8_t rt_workspace_file_index_cursor_is_valid(void *handle);
 
 /// @brief Return the immutable generation assigned to a traversal handle.
 /// @param handle Borrowed cursor handle.
-/// @return Positive generation, or zero for NULL.
+/// @return Positive generation for a live token, or zero after destruction.
 int64_t rt_workspace_file_index_cursor_generation(void *handle);
 
-/// @brief Advance an explicit traversal by one bounded page.
+/// @brief Advance an explicit traversal by one result- and work-bounded page.
+/// @details A valid page may contain no entries when filtered candidates consumed
+///          the work budget. `work` is the candidates examined by this call and
+///          `scanned` is the cumulative candidate count for the cursor.
 /// @param handle Borrowed cursor handle.
 /// @param limit Maximum entries to emit, clamped to 1..4096.
 /// @return Fresh result map tagged with the cursor generation.
 void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit);
 
 /// @brief Destroy an explicit traversal handle.
-/// @param handle Owned cursor handle; NULL is accepted.
+/// @param handle Owned cursor token; NULL, stale, and repeated destruction are accepted.
 void rt_workspace_file_index_cursor_destroy(void *handle);
 
 /// @brief Return one bounded page of workspace file-index entries.

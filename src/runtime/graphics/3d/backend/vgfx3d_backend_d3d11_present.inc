@@ -226,7 +226,7 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
     if (!ctx->rtt_active && cam->load_existing_color && ctx->scene_composited_to_swapchain)
         ctx->active_target_kind = VGFX3D_D3D11_TARGET_SWAPCHAIN;
 
-    if ((!ctx->rtv || !ctx->depth_tex || !ctx->dsv) &&
+    if (ctx->swap_chain && (!ctx->rtv || !ctx->depth_tex || !ctx->dsv) &&
         vgfx3d_d3d11_is_valid_texture2d_extent(ctx->width, ctx->height)) {
         d3d11_release_swapchain_main_targets(ctx);
         hr = d3d11_recreate_swapchain_main_targets(

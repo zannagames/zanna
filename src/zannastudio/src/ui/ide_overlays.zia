@@ -33,7 +33,7 @@ bind "../app/build_info";
 bind "../services/theme_colors";
 bind "../ui/ide_overlays_base";
 bind "../commands/command_registry";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 
 bind Zanna.GUI as GUI;
 bind Str = Zanna.String;

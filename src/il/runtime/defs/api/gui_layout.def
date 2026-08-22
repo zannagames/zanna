@@ -742,6 +742,7 @@ RT_FUNC(BasicToolchainCheckForFile,  rt_basic_toolchain_check_for_file,  "Zanna.
 RT_FUNC(BasicCompletionItemsForFile, rt_basic_completion_items_for_file, "Zanna.Basic.LanguageService.ItemsForFile", "obj<Zanna.Collections.Seq>(str,str,i64,i64)")
 RT_FUNC(BasicCompletionSymbolsForFile,   rt_basic_completion_symbols_for_file,    "Zanna.Basic.LanguageService.SymbolsForFile",   "str(str,str)")
 RT_FUNC(BasicCompletionHoverInfoForFile, rt_basic_completion_hover_info_for_file, "Zanna.Basic.LanguageService.HoverInfoForFile", "obj<Zanna.Collections.Map>(str,str,i64,i64)")
+RT_FUNC(BasicCompletionSignatureInfoForFile, rt_basic_completion_signature_info_for_file, "Zanna.Basic.LanguageService.SignatureInfoForFile", "obj<Zanna.Collections.Map>(str,str,i64,i64)")
 
 //=============================================================================
 // GUI - FLOATING PANEL (Overlay popup for IntelliSense)
@@ -996,6 +997,8 @@ RT_FUNC(GuiVirtualListGetSelectedId,    rt_virtual_list_get_selected_id,    "Zan
 RT_FUNC(GuiVirtualListGetSelectedIndex, rt_virtual_list_get_selected_index, "Zanna.GUI.VirtualList.GetSelectedIndex", "i64(obj)")
 
 RT_FUNC(GuiVirtualTreeNew,           rt_virtual_tree_new,             "Zanna.GUI.VirtualTree.New", "obj<Zanna.GUI.VirtualTree>()")
+RT_FUNC(GuiVirtualTreeBeginUpdate,   rt_virtual_tree_begin_update,    "Zanna.GUI.VirtualTree.BeginUpdate", "void(obj)")
+RT_FUNC(GuiVirtualTreeEndUpdate,     rt_virtual_tree_end_update,      "Zanna.GUI.VirtualTree.EndUpdate", "void(obj)")
 RT_FUNC(GuiVirtualTreeAddNode,       rt_virtual_tree_add_node,        "Zanna.GUI.VirtualTree.AddNode", "void(obj,str,str,str)")
 RT_FUNC(GuiVirtualTreeMoveNode,      rt_virtual_tree_move_node,       "Zanna.GUI.VirtualTree.MoveNode", "i1(obj,str,str)")
 RT_FUNC(GuiVirtualTreeSetNodeText,   rt_virtual_tree_set_node_text,   "Zanna.GUI.VirtualTree.SetNodeText", "i1(obj,str,str)")
@@ -1142,6 +1145,8 @@ RT_CLASS_END()
 /// object with the instance members below. Its public surface exposes operations including
 /// `AddNode`, `Expand`, `Collapse`, `SelectId`.
 RT_CLASS_BEGIN("Zanna.GUI.VirtualTree", GuiVirtualTree, "obj", GuiVirtualTreeNew)
+    RT_METHOD("BeginUpdate",     "void()",                            GuiVirtualTreeBeginUpdate)
+    RT_METHOD("EndUpdate",       "void()",                            GuiVirtualTreeEndUpdate)
     RT_METHOD("AddNode",        "void(str,str,str)",                 GuiVirtualTreeAddNode)
     RT_METHOD("MoveNode",       "i1(str,str)",                       GuiVirtualTreeMoveNode)
     RT_METHOD("SetNodeText",    "i1(str,str)",                       GuiVirtualTreeSetNodeText)

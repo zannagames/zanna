@@ -567,6 +567,8 @@ RT_FUNC(ProcessDestroy,      rt_process_destroy,       "Zanna.System.Process.Pro
 // See ADR 0016. Backed by rt_pty.c (POSIX openpt/fork; Windows ConPTY).
 RT_FUNC(PtyOpen,        rt_pty_open,         "Zanna.System.Pty.Open",                 "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)")
 RT_FUNC(PtyOpenResult,  rt_pty_open_result,  "Zanna.System.Pty.OpenResult",           "obj<Zanna.Result>(str,obj,str,obj,i64,i64)")
+RT_FUNC(PtyOpenWithEnvOverlay, rt_pty_open_with_env_overlay, "Zanna.System.Pty.OpenWithEnvOverlay", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)")
+RT_FUNC(PtyOpenWithEnvOverlayResult, rt_pty_open_with_env_overlay_result, "Zanna.System.Pty.OpenWithEnvOverlayResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)")
 RT_FUNC(PtyIsSupported, rt_pty_is_supported, "Zanna.System.Pty.IsSupported",          "i1()")
 RT_FUNC(PtyIsValid,     rt_pty_is_valid,     "Zanna.System.Pty.PtySession.IsValid",   "i1(obj)")
 RT_FUNC(PtyPoll,        rt_pty_poll,         "Zanna.System.Pty.PtySession.Poll",      "i1(obj)")

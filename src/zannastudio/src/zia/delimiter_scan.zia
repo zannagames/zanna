@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/delimiter_scan.zia
+// Purpose: Match inline delimiters and document braces outside source trivia.
+// Key invariants:
+//   - Columns and line indexes are zero-based at editor-facing boundaries.
+//   - Strings and line comments never contribute structural delimiters.
+// Ownership/Lifetime:
+//   - Stateless; temporary stacks are owned by each scan.
+// Links: zannastudio/src/zia/source_scan.zia,
+//        docs/adr/0288-allocation-free-string-byte-access.md
+//
+//===----------------------------------------------------------------------===//
+
 module delimiter_scan;
 
 bind Convert = Zanna.Core.Convert;
@@ -35,31 +54,29 @@ expose func EnclosingInlineDelimiterOpenCol(line: String,
     var pos = 0;
     var inString = false;
     while pos <= limit {
-        var ch = Str.MidLen(line, pos + 1, 1);
-        var next = "";
-        if pos + 1 < len {
-            next = Str.MidLen(line, pos + 2, 1);
-        }
+        var ch = Str.ByteAt(line, pos);
+        var next = Str.ByteAt(line, pos + 1);
         if inString {
-            if ch == "\\" {
+            if ch == 92 {
                 pos = pos + 2;
                 continue;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = false;
             }
         } else {
-            if ch == "/" and next == "/" {
+            if ch == 47 and next == 47 {
                 break;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = true;
             } else if IsInlineOpenDelimiter(ch) {
                 openCols.add("" + pos);
-                openChars.add(ch);
+                openChars.add("" + ch);
             } else if IsInlineCloseDelimiter(ch) {
                 if openChars.count() > 0
-                   and MatchingInlineClose(Obj.ToString(openChars.get(openChars.count() - 1))) == ch {
+                   and MatchingInlineClose(Convert.ToInt64(
+                           Obj.ToString(openChars.get(openChars.count() - 1)))) == ch {
                     openCols.removeAt(openCols.count() - 1);
                     openChars.removeAt(openChars.count() - 1);
                 }
@@ -79,31 +96,28 @@ expose func MatchingInlineDelimiterCloseCol(line: String,
                                             openCol: Integer) -> Integer {
     var len = Str.get_Length(line);
     if line == "" or openCol < 0 or openCol >= len { return -1; }
-    var openCh = Str.MidLen(line, openCol + 1, 1);
+    var openCh = Str.ByteAt(line, openCol);
     if IsInlineOpenDelimiter(openCh) == false { return -1; }
     var closeCh = MatchingInlineClose(openCh);
     var depth = 0;
     var pos = openCol;
     var inString = false;
     while pos < len {
-        var ch = Str.MidLen(line, pos + 1, 1);
-        var next = "";
-        if pos + 1 < len {
-            next = Str.MidLen(line, pos + 2, 1);
-        }
+        var ch = Str.ByteAt(line, pos);
+        var next = Str.ByteAt(line, pos + 1);
         if inString {
-            if ch == "\\" {
+            if ch == 92 {
                 pos = pos + 2;
                 continue;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = false;
             }
         } else {
-            if ch == "/" and next == "/" {
+            if ch == 47 and next == 47 {
                 break;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = true;
             } else if ch == openCh {
                 depth = depth + 1;
@@ -153,28 +167,25 @@ expose func MatchingBraceCloseLine(source: String,
         var pos = 1;
         var inString = false;
         while pos <= Str.get_Length(line) {
-            var ch = Str.MidLen(line, pos, 1);
-            var next = "";
-            if pos < Str.get_Length(line) {
-                next = Str.MidLen(line, pos + 1, 1);
-            }
+            var ch = Str.ByteAt(line, pos - 1);
+            var next = Str.ByteAt(line, pos);
             if inString {
-                if ch == "\\" {
+                if ch == 92 {
                     pos = pos + 2;
                     continue;
                 }
-                if ch == "\"" {
+                if ch == 34 {
                     inString = false;
                 }
             } else {
-                if ch == "/" and next == "/" {
+                if ch == 47 and next == 47 {
                     break;
                 }
-                if ch == "\"" {
+                if ch == 34 {
                     inString = true;
-                } else if ch == "{" {
+                } else if ch == 123 {
                     depth = depth + 1;
-                } else if ch == "}" {
+                } else if ch == 125 {
                     depth = depth - 1;
                     if depth <= 0 {
                         return i;
@@ -191,24 +202,24 @@ expose func MatchingBraceCloseLine(source: String,
 /// @brief Return true for inline delimiters that can nest on one line.
 /// @param ch Single-character string to test.
 /// @return True for `(` or `[`.
-func IsInlineOpenDelimiter(ch: String) -> Boolean {
-    return ch == "(" or ch == "[";
+func IsInlineOpenDelimiter(ch: Integer) -> Boolean {
+    return ch == 40 or ch == 91;
 }
 
 /// @brief Return true for inline closing delimiters that match inline opens.
 /// @param ch Single-character string to test.
 /// @return True for `)` or `]`.
-func IsInlineCloseDelimiter(ch: String) -> Boolean {
-    return ch == ")" or ch == "]";
+func IsInlineCloseDelimiter(ch: Integer) -> Boolean {
+    return ch == 41 or ch == 93;
 }
 
 /// @brief Return the expected closing delimiter for an inline opening delimiter.
 /// @param ch Opening delimiter.
 /// @return `)` for `(`, `]` for `[`, or empty for unsupported input.
-func MatchingInlineClose(ch: String) -> String {
-    if ch == "(" { return ")"; }
-    if ch == "[" { return "]"; }
-    return "";
+func MatchingInlineClose(ch: Integer) -> Integer {
+    if ch == 40 { return 41; }
+    if ch == 91 { return 93; }
+    return -1;
 }
 
 /// @brief Update an opening-brace stack after scanning one source line.
@@ -223,28 +234,25 @@ func ScanBraceLineForStack(line: String,
     var pos = 1;
     var inString = false;
     while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        var next = "";
-        if pos < Str.get_Length(line) {
-            next = Str.MidLen(line, pos + 1, 1);
-        }
+        var ch = Str.ByteAt(line, pos - 1);
+        var next = Str.ByteAt(line, pos);
         if inString {
-            if ch == "\\" {
+            if ch == 92 {
                 pos = pos + 2;
                 continue;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = false;
             }
         } else {
-            if ch == "/" and next == "/" {
+            if ch == 47 and next == 47 {
                 break;
             }
-            if ch == "\"" {
+            if ch == 34 {
                 inString = true;
-            } else if ch == "{" {
+            } else if ch == 123 {
                 openLines.add("" + lineIdx);
-            } else if ch == "}" {
+            } else if ch == 125 {
                 if openLines.count() > 0 {
                     openLines.removeAt(openLines.count() - 1);
                 }

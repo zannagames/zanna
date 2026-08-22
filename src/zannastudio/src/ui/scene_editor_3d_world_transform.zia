@@ -132,8 +132,9 @@ class SceneEditor3DWorldTransformLayer extends PreviousLayer.SceneEditor3DNodeTr
         }
 
         // Same group pivot policy as the single-axis world path.
-        var sharedPivot = GroupPivotPoint(
-            transformMode, primary.WorldPosition, startWorldPositions);
+        var sharedPivot = scene_transform_3d.GroupPivotPoint(
+            transformMode, groupPivotMode,
+            primary.WorldPosition, startWorldPositions);
         var sharedScale = sharedPivot != null ? primary.WorldScale : null;
 
         var accepted = true;
@@ -250,8 +251,9 @@ class SceneEditor3DWorldTransformLayer extends PreviousLayer.SceneEditor3DNodeTr
         // primary's pivot or the selection centroid) instead of each node's
         // own origin. Shared scale uses the primary's captured world scale so
         // every member applies one common factor about the shared point.
-        var sharedPivot = GroupPivotPoint(
-            transformMode, primaryPosition, startWorldPositions);
+        var sharedPivot = scene_transform_3d.GroupPivotPoint(
+            transformMode, groupPivotMode,
+            primaryPosition, startWorldPositions);
         var sharedScale = sharedPivot != null ? primaryScale : null;
 
         var accepted = true;
@@ -306,39 +308,6 @@ class SceneEditor3DWorldTransformLayer extends PreviousLayer.SceneEditor3DNodeTr
         SetEditorControlsEnabled(true);
         renderDirty = true;
         return true;
-    }
-
-    /// @brief Resolve the shared group pivot for one world Rotate/Scale, or
-    ///        null when each node should use its own origin.
-    /// @details Move never uses a pivot. Single-node selections and the
-    ///          Individual policy keep per-node origins. Primary returns the
-    ///          primary node's captured world position; Centroid averages the
-    ///          captured world positions so mid-edit motion cannot skew it.
-    hide func GroupPivotPoint(transformMode: Integer,
-                              primaryPosition: Vec3,
-                              startWorldPositions: List[Vec3]) -> Vec3 {
-        if transformMode == SceneEditor3DModel.GIZMO_MODE_MOVE
-           or groupPivotMode
-              == scene_transform_3d.GROUP_PIVOT_INDIVIDUAL
-           or startWorldPositions.count() < 2 {
-            return null;
-        }
-        if groupPivotMode == scene_transform_3d.GROUP_PIVOT_PRIMARY {
-            return primaryPosition;
-        }
-        var sumX = 0.0;
-        var sumY = 0.0;
-        var sumZ = 0.0;
-        var index = 0;
-        while index < startWorldPositions.count() {
-            var position = startWorldPositions.get(index);
-            sumX = sumX + position.X;
-            sumY = sumY + position.Y;
-            sumZ = sumZ + position.Z;
-            index = index + 1;
-        }
-        var count = 1.0 * startWorldPositions.count();
-        return Vec3.New(sumX / count, sumY / count, sumZ / count);
     }
 
     /// @brief Return selected flattened indices in parent-before-child order.
@@ -599,4 +568,3 @@ class SceneEditor3DWorldTransformLayer extends PreviousLayer.SceneEditor3DNodeTr
         return true;
     }
 }
-

@@ -420,35 +420,35 @@ func LineAssignsToIdentifier(line: String,
     var inString = false;
     var escape = false;
     while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        var next = "";
+        var ch = Str.ByteAt(line, pos - 1);
+        var next = -1;
         if pos < Str.get_Length(line) {
-            next = Str.MidLen(line, pos + 1, 1);
+            next = Str.ByteAt(line, pos);
         }
         if inString {
             if escape {
                 escape = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escape = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
             pos = pos + 1;
             continue;
         }
-        if ch == "/" and next == "/" { return false; }
-        if ch == "\"" {
+        if ch == 47 and next == 47 { return false; }
+        if ch == 34 {
             inString = true;
             pos = pos + 1;
             continue;
         }
-        if identifier_utils.IsIdentStart(ch) {
+        if identifier_utils.IsIdentStartByte(ch) {
             var start = pos;
-            var ident = "";
-            while pos <= Str.get_Length(line) and identifier_utils.IsIdentPart(Str.MidLen(line, pos, 1)) {
-                ident = ident + Str.MidLen(line, pos, 1);
+            while pos <= Str.get_Length(line)
+                  and identifier_utils.IsIdentPartByte(Str.ByteAt(line, pos - 1)) {
                 pos = pos + 1;
             }
+            var ident = Str.MidLen(line, start, pos - start);
             if ident == name {
                 var after = source_scan.SkipWhitespace(line, pos);
                 if InlineLocalAssignmentOperatorAt(line, after) {
@@ -470,18 +470,18 @@ func LineAssignsToIdentifier(line: String,
 func InlineLocalAssignmentOperatorAt(line: String,
                                      pos: Integer) -> Boolean {
     if pos > Str.get_Length(line) { return false; }
-    var op = Str.MidLen(line, pos, 1);
-    var next = "";
+    var op = Str.ByteAt(line, pos - 1);
+    var next = -1;
     if pos < Str.get_Length(line) {
-        next = Str.MidLen(line, pos + 1, 1);
+        next = Str.ByteAt(line, pos);
     }
-    if op == "=" {
-        return next != "=";
+    if op == 61 {
+        return next != 61;
     }
-    if op == "+" or op == "-" or op == "*" or op == "/" or op == "%" {
-        if next == "=" { return true; }
-        if op == "+" and next == "+" { return true; }
-        if op == "-" and next == "-" { return true; }
+    if op == 43 or op == 45 or op == 42 or op == 47 or op == 37 {
+        if next == 61 { return true; }
+        if op == 43 and next == 43 { return true; }
+        if op == 45 and next == 45 { return true; }
     }
     return false;
 }

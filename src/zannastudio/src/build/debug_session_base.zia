@@ -22,6 +22,7 @@ module debug_session_base;
 
 bind "bounded_output";
 bind "breakpoints";
+bind "debug_protocol" as Protocol;
 bind "debug_session_state" as State;
 
 bind Process = Zanna.System.Process;
@@ -31,7 +32,6 @@ bind Seq = Zanna.Collections.Seq;
 bind Str = Zanna.String;
 bind Obj = Zanna.Core.Object;
 bind Path = Zanna.IO.Path;
-bind StringBuilder = Zanna.Text.StringBuilder;
 
 // ============================================================================
 // MODULE: debug_session
@@ -103,7 +103,7 @@ class DebugSessionBase extends State.DebugSessionState {
         restartZannaBin = "";
         restartPath = "";
 
-        if QueueAdapterCommand(buildSetBreakpoints(path, store)) == false
+        if QueueAdapterCommand(Protocol.SetBreakpoints(path, store)) == false
            or QueueAdapterCommand("{\"type\":\"launch\"}") == false {
             ReleaseProcessHandle();
             hasSession = false;
@@ -138,58 +138,13 @@ class DebugSessionBase extends State.DebugSessionState {
         return true;
     }
 
-    hide func buildSetBreakpoints(path: String,
-                                  store: breakpoints.BreakpointStore) -> String {
-        var lines = new StringBuilder();
-        var lineCount = 0;
-        var meta = new StringBuilder();
-        var metaCount = 0;
-        if store != null {
-            var i = 0;
-            while i < store.Count() {
-                if store.GetPath(i) == path {
-                    var ln = store.GetLine(i);
-                    if lineCount > 0 { lines.Append(","); }
-                    lines.Append("" + ln);
-                    lineCount = lineCount + 1;
-                    var cond = store.GetCondition(i);
-                    var log = store.GetLogMessage(i);
-                    if cond != "" or log != "" {
-                        if metaCount > 0 { meta.Append(","); }
-                        meta.Append("{\"line\":" + ln);
-                        if cond != "" {
-                            meta.Append(",\"condition\":\""
-                                        + jsonEscape(cond) + "\"");
-                        }
-                        if log != "" {
-                            meta.Append(",\"logMessage\":\""
-                                        + jsonEscape(log) + "\"");
-                        }
-                        meta.Append("}");
-                        metaCount = metaCount + 1;
-                    }
-                }
-                i = i + 1;
-            }
-        }
-        var out = new StringBuilder();
-        out.Append("{\"type\":\"setBreakpoints\",\"path\":\""
-                   + jsonEscape(path) + "\",\"lines\":["
-                   + lines.ToString() + "]");
-        if metaCount > 0 {
-            out.Append(",\"meta\":[" + meta.ToString() + "]");
-        }
-        out.Append("}");
-        return out.ToString();
-    }
-
     /// @brief Re-send the breakpoint set (with conditions/logpoints) for @p path so
     ///        mid-session edits take effect. The adapter applies condition/logpoint
     ///        changes while stopped; adding/removing lines needs a relaunch.
     expose func SyncBreakpoints(path: String,
                                 store: breakpoints.BreakpointStore) -> Boolean {
         if hasSession == false or terminated or processHandle == null { return false; }
-        return QueueAdapterCommand(buildSetBreakpoints(path, store));
+        return QueueAdapterCommand(Protocol.SetBreakpoints(path, store));
     }
 
     /// @brief Run to a specific line: continue execution until it reaches @p line
@@ -200,20 +155,11 @@ class DebugSessionBase extends State.DebugSessionState {
         if hasSession == false or terminated or processHandle == null { return false; }
         if stopped == false or path == "" or line <= 0 { return false; }
         if QueueAdapterCommand("{\"type\":\"runToLine\",\"path\":\""
-            + jsonEscape(path) + "\",\"line\":" + line + "}") == false {
+            + Protocol.Escape(path) + "\",\"line\":" + line + "}") == false {
             return false;
         }
         EnterRunningState("running");
         return true;
-    }
-
-    hide func jsonEscape(s: String) -> String {
-        var out = Str.Replace(s, "\\", "\\\\");
-        out = Str.Replace(out, "\"", "\\\"");
-        out = Str.Replace(out, "\n", "\\n");
-        out = Str.Replace(out, "\r", "\\r");
-        out = Str.Replace(out, "\t", "\\t");
-        return out;
     }
 
     expose func Continue() -> Boolean { return sendStep("continue"); }
@@ -249,7 +195,7 @@ class DebugSessionBase extends State.DebugSessionState {
         if stopped == false or expr == "" { return false; }
         var requestId = NextRequestId();
         if QueueAdapterCommand("{\"type\":\"evaluate\",\"requestId\":"
-            + requestId + ",\"expr\":\"" + jsonEscape(expr) + "\"}") == false {
+            + requestId + ",\"expr\":\"" + Protocol.Escape(expr) + "\"}") == false {
             return false;
         }
         pendingManualEvalExpr = expr;
@@ -533,7 +479,7 @@ class DebugSessionBase extends State.DebugSessionState {
         var expr = Obj.ToString(watchExprs.get(watchRefreshIndex));
         var requestId = NextRequestId();
         if QueueAdapterCommand("{\"type\":\"evaluate\",\"requestId\":"
-            + requestId + ",\"expr\":\"" + jsonEscape(expr) + "\"}") == false {
+            + requestId + ",\"expr\":\"" + Protocol.Escape(expr) + "\"}") == false {
             return;
         }
         watchRequestExpr = expr;

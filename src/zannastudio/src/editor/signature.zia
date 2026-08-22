@@ -504,15 +504,15 @@ func ActiveParameter(source: String, line: Integer, col0: Integer) -> Integer {
             if pos > Str.get_Length(text) { pos = Str.get_Length(text); }
         }
         while pos >= 1 {
-            var ch = Str.MidLen(text, pos, 1);
-            if ch == ")" {
+            var ch = Str.ByteAt(text, pos - 1);
+            if ch == 41 {
                 depth = depth + 1;
-            } else if ch == "(" {
+            } else if ch == 40 {
                 if depth == 0 {
                     return param;
                 }
                 depth = depth - 1;
-            } else if ch == "," and depth == 0 {
+            } else if ch == 44 and depth == 0 {
                 param = param + 1;
             }
             pos = pos - 1;
@@ -541,10 +541,10 @@ func IsInsideCall(source: String, line: Integer, col0: Integer) -> Boolean {
             if pos > Str.get_Length(text) { pos = Str.get_Length(text); }
         }
         while pos >= 1 {
-            var ch = Str.MidLen(text, pos, 1);
-            if ch == ")" {
+            var ch = Str.ByteAt(text, pos - 1);
+            if ch == 41 {
                 depth = depth + 1;
-            } else if ch == "(" {
+            } else if ch == 40 {
                 if depth == 0 { return true; }
                 depth = depth - 1;
             }

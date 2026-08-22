@@ -21,8 +21,8 @@
 #include "rt_seq.h"
 #include "rt_string.h"
 
-#include <cassert>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -37,6 +37,7 @@
 #else
 #include <cerrno>
 #include <csignal>
+#include <dirent.h>
 #include <unistd.h>
 #endif
 
@@ -167,7 +168,121 @@ static void test_pty_activity_wake() {
     assert(output.find("pty-activity-wake") != std::string::npos);
     rt_pty_destroy(handle);
 }
+
+static void test_pty_environment_overlay() {
+    if (!rt_pty_is_supported())
+        return;
+    assert(setenv("ZANNA_PTY_OVERLAY_PARENT", "preserved", 1) == 0);
+    void *overlay = rt_seq_new();
+    rt_seq_push(overlay, make_string("TERM=zanna-test-term"));
+    void *handle = rt_pty_open_with_env_overlay(
+        make_string("/bin/sh"),
+        make_shell_args("printf '%s|%s' \"$TERM\" \"$ZANNA_PTY_OVERLAY_PARENT\""),
+        make_string(""),
+        overlay,
+        80,
+        24);
+    assert(handle != nullptr);
+    assert(rt_pty_wait(handle) == 0);
+    std::string output;
+    append_runtime_string(output, rt_pty_read(handle));
+    assert(output.find("zanna-test-term|preserved") != std::string::npos);
+    rt_pty_destroy(handle);
+    unsetenv("ZANNA_PTY_OVERLAY_PARENT");
+}
+
+static int count_open_file_descriptors() {
+    DIR *directory = opendir("/dev/fd");
+    assert(directory != nullptr);
+    int count = 0;
+    while (dirent *entry = readdir(directory)) {
+        if (entry->d_name[0] == '.' &&
+            (entry->d_name[1] == '\0' || (entry->d_name[1] == '.' && entry->d_name[2] == '\0')))
+            continue;
+        ++count;
+    }
+    assert(closedir(directory) == 0);
+    // The directory being enumerated contributes one temporary descriptor.
+    return count - 1;
+}
+
+static void test_pty_lifecycle_reaps_session_and_descriptors() {
+    if (!rt_pty_is_supported())
+        return;
+
+    void *handle =
+        rt_pty_open(make_string("/bin/sh"),
+                    make_shell_args("sleep 30 & child=$!; printf '%s\\n' \"$child\"; wait"),
+                    make_string(""),
+                    nullptr,
+                    80,
+                    24);
+    assert(handle != nullptr);
+    std::string output;
+    for (int i = 0; i < 400 && output.find('\n') == std::string::npos; ++i) {
+        append_runtime_string(output, rt_pty_read(handle));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    char *end = nullptr;
+    long descendant = std::strtol(output.c_str(), &end, 10);
+    assert(descendant > 1 && end != output.c_str());
+    assert(kill((pid_t)descendant, 0) == 0);
+
+    assert(rt_pty_kill(handle) == 1);
+    assert(rt_pty_wait(handle) != 0);
+    bool descendant_gone = false;
+    for (int i = 0; i < 400; ++i) {
+        if (kill((pid_t)descendant, 0) != 0 && errno == ESRCH) {
+            descendant_gone = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    assert(descendant_gone);
+    rt_pty_destroy(handle);
+
+    const int descriptors_before = count_open_file_descriptors();
+    for (int i = 0; i < 12; ++i) {
+        handle = rt_pty_open(make_string("/bin/sh"),
+                             make_shell_args("printf 'drained-tail-%s' done"),
+                             make_string(""),
+                             nullptr,
+                             80,
+                             24);
+        assert(handle != nullptr);
+        assert(rt_pty_wait(handle) == 0);
+        output.clear();
+        append_runtime_string(output, rt_pty_read(handle));
+        assert(output.find("drained-tail-done") != std::string::npos);
+        rt_pty_destroy(handle);
+    }
+    assert(count_open_file_descriptors() == descriptors_before);
+}
 #endif
+
+static void test_pty_success_clears_last_error() {
+    assert(rt_pty_open(make_string("/definitely/not/a/zanna/pty/program"),
+                       nullptr,
+                       nullptr,
+                       nullptr,
+                       80,
+                       24) == nullptr);
+    rt_string error = rt_pty_last_error();
+    assert(error != nullptr && rt_str_len(error) > 0);
+    rt_str_release_maybe(error);
+    if (!rt_pty_is_supported())
+        return;
+    error = rt_pty_last_error();
+    assert(error != nullptr && rt_str_len(error) == 0);
+    rt_str_release_maybe(error);
+}
+
+static void test_process_finalizer_cleans_live_child() {
+    void *handle = start_shell_process("sleep 5");
+    assert(handle != nullptr);
+    if (rt_obj_release_check0(handle))
+        rt_obj_free(handle);
+}
 
 static void test_shell_true() {
     // "true" command should return 0
@@ -507,6 +622,30 @@ static void test_process_ordered_tagged_output() {
     assert(tagged.find("[stderr]ordered-err") != std::string::npos);
     assert(rt_str_len(rt_process_read_stdout(handle)) == 0);
     assert(rt_str_len(rt_process_read_stderr(handle)) == 0);
+    rt_process_destroy(handle);
+}
+
+static void test_process_ordered_output_enforces_combined_cap() {
+    void *handle = start_shell_process("dd if=/dev/zero bs=1048576 count=9 2>/dev/null; "
+                                       "dd if=/dev/zero bs=1048576 count=9 >&2 2>/dev/null");
+    assert(handle != nullptr);
+    assert(rt_process_wait(handle) == 0);
+
+    void *result = rt_process_read_output_result(handle);
+    assert(result != nullptr);
+    assert(rt_map_get_bool(result, rt_const_cstr("truncated")) == 1);
+    void *chunks = rt_map_get(result, rt_const_cstr("chunks"));
+    assert(chunks != nullptr);
+    int64_t retained = 0;
+    for (int64_t i = 0; i < rt_seq_len(chunks); ++i) {
+        void *chunk = rt_seq_get(chunks, i);
+        assert(chunk != nullptr);
+        rt_string text = rt_map_get_str(chunk, rt_const_cstr("text"));
+        assert(text != nullptr);
+        retained += rt_str_len(text);
+        rt_str_release_maybe(text);
+    }
+    assert(retained == 16 * 1024 * 1024);
     rt_process_destroy(handle);
 }
 
@@ -855,6 +994,31 @@ static void test_windows_conpty_unicode_environment_round_trip() {
                        24) == nullptr);
     printf("  PASS: test_windows_conpty_unicode_environment_round_trip\n");
 }
+
+static void test_windows_conpty_input_is_nonblocking() {
+    if (!rt_pty_is_supported()) {
+        printf("  SKIP: test_windows_conpty_input_is_nonblocking (ConPTY unavailable)\n");
+        return;
+    }
+    std::string executable = windows_current_executable_utf8();
+    assert(!executable.empty());
+    void *args = rt_seq_new();
+    rt_seq_push(args, make_string("--pty-stdin-no-read-child"));
+    void *handle =
+        rt_pty_open(make_string(executable.c_str()), args, make_string(""), nullptr, 80, 24);
+    assert(handle != nullptr);
+
+    std::string bytes(2u * 1024u * 1024u, 'p');
+    rt_string input = rt_string_from_bytes(bytes.data(), bytes.size());
+    auto started = std::chrono::steady_clock::now();
+    int64_t accepted = rt_pty_write(handle, input);
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    assert(accepted > 0 && accepted <= 1024 * 1024);
+    assert(elapsed < std::chrono::milliseconds(500));
+    rt_str_release_maybe(input);
+    rt_pty_destroy(handle);
+    printf("  PASS: test_windows_conpty_input_is_nonblocking\n");
+}
 #endif
 
 int main(int argc, char **argv) {
@@ -867,10 +1031,15 @@ int main(int argc, char **argv) {
         Sleep(5000);
         return 0;
     }
+    if (argc == 2 && strcmp(argv[1], "--pty-stdin-no-read-child") == 0) {
+        Sleep(5000);
+        return 0;
+    }
     test_windows_unicode_environment_round_trip();
     test_windows_environment_overlay();
     test_windows_conpty_unicode_environment_round_trip();
     test_windows_process_stdin_is_nonblocking();
+    test_windows_conpty_input_is_nonblocking();
     return 0;
 #else
     (void)argc;
@@ -904,7 +1073,10 @@ int main(int argc, char **argv) {
 
     // Streaming Process handle coverage.
     test_process_streams_stdout_stderr();
+    test_process_finalizer_cleans_live_child();
+    test_pty_success_clears_last_error();
     test_process_ordered_tagged_output();
+    test_process_ordered_output_enforces_combined_cap();
     test_process_write_stdin();
     test_process_cwd_and_env();
 #if !ZANNA_HOST_WINDOWS
@@ -918,6 +1090,8 @@ int main(int argc, char **argv) {
     test_process_kill_terminates_descendants();
     test_process_activity_wake();
     test_pty_activity_wake();
+    test_pty_environment_overlay();
+    test_pty_lifecycle_reaps_session_and_descriptors();
 #endif
 
     return 0;

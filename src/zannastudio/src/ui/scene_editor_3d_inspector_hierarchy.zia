@@ -798,10 +798,10 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
         if PickLockedPath(path) { lockMarker = "  ⊘"; }
         return visibleMarker + name + lockMarker + componentMarker;
     }
-
     /// @brief Refresh model row labels without disturbing row identity.
     hide override func RefreshHierarchyRowLabels() {
         if hierarchyModel == null { return; }
+        hierarchyModel.BeginUpdate();
         var index = 0;
         while index < flatNodes.count()
               and index < flatPaths.count() {
@@ -811,8 +811,8 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
                     flatNodes.get(index), flatPaths.get(index)));
             index = index + 1;
         }
+        hierarchyModel.EndUpdate();
     }
-
     /// @brief Append one virtual parent/child row and its bounded subtree.
     /// @details Model ids are this build's flat indices; @p parentTreeNode
     ///          carries the parent's id string ("" declares a top-level row).

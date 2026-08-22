@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/trivia_scan.zia
+// Purpose: Scan Zia strings, comments, braces, and continuation trivia.
+// Key invariants:
+//   - Structural scans ignore delimiters inside strings and nested comments.
+//   - Scanner positions use byte columns consistent with editor/compiler APIs.
+// Ownership/Lifetime:
+//   - Stateless; rebuilt transformation strings transfer to callers.
+// Links: zannastudio/src/zia/source_scan.zia,
+//        docs/adr/0288-allocation-free-string-byte-access.md
+//
+//===----------------------------------------------------------------------===//
+
 module trivia_scan;
 
 bind "../services/text_utils";
@@ -37,19 +56,16 @@ expose func ZiaBraceDelta(line: String, commentDepth: Integer) -> Integer {
     var n = Str.get_Length(line);
     var i = 1;
     while i <= n {
-        var ch = Str.MidLen(line, i, 1);
-        var next = "";
-        if i < n {
-            next = Str.MidLen(line, i + 1, 1);
-        }
+        var ch = Str.ByteAt(line, i - 1);
+        var next = Str.ByteAt(line, i);
 
         if depth > 0 {
-            if ch == "/" and next == "*" {
+            if ch == 47 and next == 42 {
                 depth = depth + 1;
                 i = i + 2;
                 continue;
             }
-            if ch == "*" and next == "/" {
+            if ch == 42 and next == 47 {
                 depth = depth - 1;
                 i = i + 2;
                 continue;
@@ -61,28 +77,28 @@ expose func ZiaBraceDelta(line: String, commentDepth: Integer) -> Integer {
         if inString {
             if escape {
                 escape = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escape = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
             i = i + 1;
             continue;
         }
 
-        if ch == "/" and next == "/" {
+        if ch == 47 and next == 47 {
             break;
         }
-        if ch == "/" and next == "*" {
+        if ch == 47 and next == 42 {
             depth = 1;
             i = i + 2;
             continue;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
-        } else if ch == "{" {
+        } else if ch == 123 {
             delta = delta + 1;
-        } else if ch == "}" {
+        } else if ch == 125 {
             delta = delta - 1;
         }
         i = i + 1;
@@ -101,19 +117,16 @@ expose func ZiaCommentDepthAfter(line: String, commentDepth: Integer) -> Integer
     var n = Str.get_Length(line);
     var i = 1;
     while i <= n {
-        var ch = Str.MidLen(line, i, 1);
-        var next = "";
-        if i < n {
-            next = Str.MidLen(line, i + 1, 1);
-        }
+        var ch = Str.ByteAt(line, i - 1);
+        var next = Str.ByteAt(line, i);
 
         if depth > 0 {
-            if ch == "/" and next == "*" {
+            if ch == 47 and next == 42 {
                 depth = depth + 1;
                 i = i + 2;
                 continue;
             }
-            if ch == "*" and next == "/" {
+            if ch == 42 and next == 47 {
                 depth = depth - 1;
                 i = i + 2;
                 continue;
@@ -125,24 +138,24 @@ expose func ZiaCommentDepthAfter(line: String, commentDepth: Integer) -> Integer
         if inString {
             if escape {
                 escape = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escape = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
             i = i + 1;
             continue;
         }
 
-        if ch == "/" and next == "/" {
+        if ch == 47 and next == 47 {
             return depth;
         }
-        if ch == "/" and next == "*" {
+        if ch == 47 and next == 42 {
             depth = 1;
             i = i + 2;
             continue;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
         }
         i = i + 1;
@@ -180,19 +193,16 @@ expose func ZiaParenDelta(line: String, commentDepth: Integer) -> Integer {
     var n = Str.get_Length(line);
     var i = 1;
     while i <= n {
-        var ch = Str.MidLen(line, i, 1);
-        var next = "";
-        if i < n {
-            next = Str.MidLen(line, i + 1, 1);
-        }
+        var ch = Str.ByteAt(line, i - 1);
+        var next = Str.ByteAt(line, i);
 
         if depth > 0 {
-            if ch == "/" and next == "*" {
+            if ch == 47 and next == 42 {
                 depth = depth + 1;
                 i = i + 2;
                 continue;
             }
-            if ch == "*" and next == "/" {
+            if ch == 42 and next == 47 {
                 depth = depth - 1;
                 i = i + 2;
                 continue;
@@ -204,28 +214,28 @@ expose func ZiaParenDelta(line: String, commentDepth: Integer) -> Integer {
         if inString {
             if escape {
                 escape = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escape = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
             i = i + 1;
             continue;
         }
 
-        if ch == "/" and next == "/" {
+        if ch == 47 and next == 47 {
             break;
         }
-        if ch == "/" and next == "*" {
+        if ch == 47 and next == 42 {
             depth = 1;
             i = i + 2;
             continue;
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
-        } else if ch == "(" or ch == "[" {
+        } else if ch == 40 or ch == 91 {
             delta = delta + 1;
-        } else if ch == ")" or ch == "]" {
+        } else if ch == 41 or ch == 93 {
             delta = delta - 1;
         }
         i = i + 1;
@@ -260,10 +270,10 @@ expose func ZiaContinuationIndent(line: String,
                                   parenDepthBefore: Integer) -> Integer {
     var trimmed = Str.Trim(line);
     if trimmed == "" { return 0; }
-    var first = Str.MidLen(trimmed, 1, 1);
-    if first == ")" or first == "]" { return 0; }
+    var first = Str.ByteAt(trimmed, 0);
+    if first == 41 or first == 93 { return 0; }
     if parenDepthBefore > 0 { return 1; }
-    if first == "." { return 1; }
+    if first == 46 { return 1; }
     return 0;
 }
 
@@ -277,52 +287,55 @@ expose func ReplaceIdentifierOutsideTrivia(line: String,
                                            replacement: String) -> String {
     var out = new StringBuilder();
     var pos = 1;
+    var copyStart = 1;
     var inString = false;
     var escape = false;
     while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        var next = "";
+        var ch = Str.ByteAt(line, pos - 1);
+        var next = -1;
         if pos < Str.get_Length(line) {
-            next = Str.MidLen(line, pos + 1, 1);
+            next = Str.ByteAt(line, pos);
         }
         if inString {
-            out.Append(ch);
             if escape {
                 escape = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escape = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
             pos = pos + 1;
             continue;
         }
-        if ch == "/" and next == "/" {
+        if ch == 47 and next == 47 {
+            if pos > copyStart { out.Append(Str.MidLen(line, copyStart, pos - copyStart)); }
             out.Append(Str.Mid(line, pos));
             return out.ToString();
         }
-        if ch == "\"" {
+        if ch == 34 {
             inString = true;
-            out.Append(ch);
             pos = pos + 1;
             continue;
         }
-        if identifier_utils.IsIdentStart(ch) {
+        if identifier_utils.IsIdentStartByte(ch) {
             var identStart = pos;
-            while pos <= Str.get_Length(line) and identifier_utils.IsIdentPart(Str.MidLen(line, pos, 1)) {
+            while pos <= Str.get_Length(line)
+                  and identifier_utils.IsIdentPartByte(Str.ByteAt(line, pos - 1)) {
                 pos = pos + 1;
             }
             var ident = Str.MidLen(line, identStart, pos - identStart);
             if ident == name {
+                if identStart > copyStart {
+                    out.Append(Str.MidLen(line, copyStart, identStart - copyStart));
+                }
                 out.Append(replacement);
-            } else {
-                out.Append(ident);
+                copyStart = pos;
             }
             continue;
         }
-        out.Append(ch);
         pos = pos + 1;
     }
+    if copyStart <= Str.get_Length(line) { out.Append(Str.Mid(line, copyStart)); }
     return out.ToString();
 }
 
@@ -334,8 +347,8 @@ expose func SkipWhitespace(line: String,
                            pos: Integer) -> Integer {
     var i = pos;
     while i <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, i, 1);
-        if ch != " " and ch != "\t" {
+        var ch = Str.ByteAt(line, i - 1);
+        if ch != 32 and ch != 9 {
             return i;
         }
         i = i + 1;

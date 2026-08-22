@@ -1,3 +1,6 @@
+## Accept UPDATE_GOLDEN from -D or the environment.
+include(${CMAKE_CURRENT_LIST_DIR}/../GoldenUpdateMode.cmake)
+
 if (NOT DEFINED ILC)
     message(FATAL_ERROR "ILC not set")
 endif ()
@@ -14,6 +17,10 @@ endif ()
 # Normalize Windows line endings
 string(REPLACE "\r\n" "\n" out "${out}")
 string(REPLACE "\r" "\n" out "${out}")
+## Keep the verbatim compiler output for -DUPDATE_GOLDEN=1. Goldens store the
+## real IL version header and the symbol names the compiler actually emits, so
+## refreshing one must not bake in the comparison placeholders applied below.
+set(out_raw "${out}")
 file(READ ${GOLDEN} expected)
 string(REPLACE "\r\n" "\n" expected "${expected}")
 string(REPLACE "\r" "\n" expected "${expected}")
@@ -33,6 +40,13 @@ foreach (i RANGE 0 ${_last})
     string(REPLACE "extern @${_a}" "extern @${_c}" out "${out}")
     string(REPLACE "extern @${_a}" "extern @${_c}" expected "${expected}")
 endforeach ()
+## Mirrors the -DUPDATE_GOLDEN=1 escape hatch in check_il.cmake so bounds-check
+## goldens stay refreshable by update_goldens.sh.
 if (NOT out STREQUAL expected)
-    message(FATAL_ERROR "IL mismatch\nExpected: ${expected}\nGot: ${out}")
+    if (DEFINED UPDATE_GOLDEN)
+        file(WRITE ${GOLDEN} "${out_raw}")
+        message(STATUS "Updated golden: ${GOLDEN}")
+    else ()
+        message(FATAL_ERROR "IL mismatch\nExpected: ${expected}\nGot: ${out}")
+    endif ()
 endif ()

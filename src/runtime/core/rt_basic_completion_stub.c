@@ -96,3 +96,19 @@ RT_WEAK void *rt_basic_completion_hover_info_for_file(rt_string source,
     rt_string_unref(key);
     return map;
 }
+
+/// @brief Returns a protocol-shaped unavailable signature-help response.
+RT_WEAK void *rt_basic_completion_signature_info_for_file(rt_string source,
+                                                          rt_string file_path,
+                                                          int64_t line,
+                                                          int64_t col) {
+    (void)source;
+    (void)file_path;
+    (void)line;
+    (void)col;
+    void *map = rt_map_new();
+    rt_string key = rt_string_from_bytes("available", strlen("available"));
+    rt_map_set_bool(map, key, 0);
+    rt_string_unref(key);
+    return map;
+}

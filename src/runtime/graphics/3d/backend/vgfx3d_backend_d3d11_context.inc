@@ -1019,30 +1019,68 @@ static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
     return hr;
 }
 
+/// @brief Attempt one feature-level-11 device creation without a presentation swap chain.
+/// @details This route backs windowless Canvas3D instances. Their first explicit render target
+///   supplies all color/depth attachments, so creating an HWND or a hidden DXGI swap chain is
+///   unnecessary and would make accelerated offscreen rendering depend on a desktop session.
+/// @param[in,out] ctx Backend context receiving the created device and immediate context.
+/// @param[in] driver_type Hardware or WARP D3D11 driver type to try.
+/// @return S_OK for a complete feature-level-11 context, otherwise the creation HRESULT.
+static HRESULT d3d11_try_create_headless_device(d3d11_context_t *ctx,
+                                                D3D_DRIVER_TYPE driver_type) {
+    const D3D_FEATURE_LEVEL requested_feature_level = D3D_FEATURE_LEVEL_11_0;
+    D3D_FEATURE_LEVEL created_feature_level = (D3D_FEATURE_LEVEL)0;
+    HRESULT hr;
+
+    if (!ctx)
+        return E_INVALIDARG;
+    d3d11_release_device_attempt(ctx);
+    hr = D3D11CreateDevice(NULL,
+                           driver_type,
+                           NULL,
+                           D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                           &requested_feature_level,
+                           1,
+                           D3D11_SDK_VERSION,
+                           &ctx->device,
+                           &created_feature_level,
+                           &ctx->ctx);
+    if (SUCCEEDED(hr) && (!ctx->device || !ctx->ctx))
+        hr = E_POINTER;
+    if (SUCCEEDED(hr) && created_feature_level != requested_feature_level)
+        hr = E_FAIL;
+    if (SUCCEEDED(hr) && !d3d11_device_context_belongs_to_device(ctx->ctx, ctx->device))
+        hr = E_FAIL;
+    if (FAILED(hr))
+        d3d11_release_device_attempt(ctx);
+    return hr;
+}
+
 /// @brief Allocate and initialize the entire D3D11 backend context.
 ///
-/// The big one — creates the device + swap chain, compiles every
+/// The big one — creates the device and an optional window swap chain, compiles every
 /// shader (main VS/PS, instanced VS, shadow VS, skybox VS/PS, postfx
 /// VS/PS, overlay PS), creates input layouts, depth/blend/sampler
 /// states, all four rasterizer-state combos, all cbuffers, and the
 /// skybox cube vertex buffer. Returns NULL on any device-create
 /// failure (the host falls back to the software backend in that case).
-/// @param[in] win Platform window whose native HWND and framebuffer are used.
+/// @param[in] win Optional platform window whose native HWND and framebuffer are used. A null
+///   window creates a device-only context for explicit offscreen render targets.
 /// @param[in] width Requested initial width, overridden by a valid framebuffer extent.
 /// @param[in] height Requested initial height, overridden by a valid framebuffer extent.
 /// @return Fully initialized opaque D3D11 context, or NULL to request software fallback.
 static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) {
     d3d11_context_t *ctx = NULL;
-    HWND hwnd = (HWND)vgfx_get_native_view(win);
+    HWND hwnd = win ? (HWND)vgfx_get_native_view(win) : NULL;
     vgfx_framebuffer_t fb;
     DXGI_SWAP_CHAIN_DESC swap_desc;
     d3d11_shader_blobs_t blobs;
     HRESULT hr;
     memset(&blobs, 0, sizeof(blobs));
 
-    if (!hwnd)
+    if (win && !hwnd)
         return NULL;
-    if (vgfx_get_framebuffer(win, &fb) && fb.width > 0 && fb.height > 0) {
+    if (win && vgfx_get_framebuffer(win, &fb) && fb.width > 0 && fb.height > 0) {
         width = fb.width;
         height = fb.height;
     }
@@ -1057,23 +1095,33 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     if (!ctx)
         return NULL;
     d3d11_init_context_defaults(ctx, width, height);
-    d3d11_fill_swap_chain_desc(&swap_desc, hwnd, width, height);
+    if (hwnd)
+        d3d11_fill_swap_chain_desc(&swap_desc, hwnd, width, height);
 
-    hr = d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_HARDWARE, &swap_desc);
+    hr = hwnd ? d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_HARDWARE, &swap_desc)
+              : d3d11_try_create_headless_device(ctx, D3D_DRIVER_TYPE_HARDWARE);
     if (FAILED(hr)) {
-        d3d11_log_hresult("D3D11CreateDeviceAndSwapChain(hardware)", hr);
-        hr = d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_WARP, &swap_desc);
+        d3d11_log_hresult(hwnd ? "D3D11CreateDeviceAndSwapChain(hardware)"
+                               : "D3D11CreateDevice(hardware headless)",
+                             hr);
+        hr = hwnd ? d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_WARP, &swap_desc)
+                  : d3d11_try_create_headless_device(ctx, D3D_DRIVER_TYPE_WARP);
     }
     if (FAILED(hr)) {
-        d3d11_log_hresult("D3D11CreateDeviceAndSwapChain(WARP)", hr);
+        d3d11_log_hresult(hwnd ? "D3D11CreateDeviceAndSwapChain(WARP)"
+                               : "D3D11CreateDevice(WARP headless)",
+                             hr);
         d3d11_destroy_ctx(ctx);
         return NULL;
     }
-    d3d11_disable_implicit_fullscreen(ctx, hwnd);
+    if (hwnd)
+        d3d11_disable_implicit_fullscreen(ctx, hwnd);
 
-    hr = d3d11_create_swapchain_targets(ctx, width, height);
-    if (FAILED(hr))
-        goto fail;
+    if (ctx->swap_chain) {
+        hr = d3d11_create_swapchain_targets(ctx, width, height);
+        if (FAILED(hr))
+            goto fail;
+    }
     hr = d3d11_create_context_depth_states(ctx);
     if (FAILED(hr))
         goto fail;

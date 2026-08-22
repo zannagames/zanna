@@ -268,6 +268,7 @@ RT_CLASS_END()
 
 // String instance methods (Zanna.String.*)
 RT_FUNC(Asc,            rt_str_asc,              "Zanna.String.Asc",         "i64(str)",         always)
+RT_FUNC(ByteAt,         rt_str_byte_at,          "Zanna.String.ByteAt",      "i64(str,i64)",     always)
 RT_FUNC(Chr,            rt_str_chr,              "Zanna.String.Chr",         "str(i64)",         always)
 RT_FUNC(Concat,         rt_str_concat,           "Zanna.String.Concat",      "str(str,str)")
 RT_FUNC(IndexOf,        rt_str_index_of,           "Zanna.String.IndexOf",     "i64(str,str)",     always)

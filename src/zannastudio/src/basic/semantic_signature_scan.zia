@@ -1,0 +1,180 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/basic/semantic_signature_scan.zia
+// Purpose: Resolve lightweight BASIC call-site and overload signature records.
+// Key invariants:
+//   - Backtracking is capped and ignores parentheses inside stripped line comments.
+//   - Declaration matching is case-insensitive and excludes non-callable symbol kinds.
+// Ownership/Lifetime: Stateless; the returned map and parameter sequences are caller-owned.
+// Links: zannastudio/src/basic/semantic_scan.zia,
+//        zannastudio/src/basic/semantic_lexing.zia
+//
+//===----------------------------------------------------------------------===//
+
+module semantic_signature_scan;
+
+bind "semantic_lexing" as SemanticLexing;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+
+final MAX_SIGNATURE_BACKTRACK_LINES = 200;
+
+/// @brief Build signature help from an already-scanned declaration sequence.
+/// @param declarations Declaration maps produced by semantic_scan.
+/// @param source Complete BASIC source containing the call site.
+/// @param lineNumber One-based call-site line.
+/// @param col0 Zero-based call-site byte column.
+/// @return Stable signature-info map with `available=false` when no call resolves.
+func InfoForDeclarations(declarations: Any,
+                         source: String,
+                         lineNumber: Integer,
+                         col0: Integer) -> Any {
+    var info = Map.New();
+    Map.SetBool(info, "available", false);
+    var call = ActiveCallAt(source, lineNumber, col0);
+    if Map.GetBool(call, "available") == false { return info; }
+
+    var callName = CanonicalName(Map.GetStr(call, "name"));
+    var overloads = Seq.New();
+    var i = 0;
+    while i < Seq.get_Count(declarations) {
+        var declaration = Seq.Get(declarations, i);
+        if Map.GetStr(declaration, "canon") == callName
+           and IsCallableKind(Map.GetStr(declaration, "kind")) {
+            Seq.Push(overloads, SignatureRecord(declaration));
+        }
+        i = i + 1;
+    }
+    if Seq.get_Count(overloads) == 0 { return info; }
+
+    var first = Seq.Get(overloads, 0);
+    Map.SetBool(info, "available", true);
+    Map.SetInt(info, "activeSignature", 0);
+    Map.SetInt(info, "activeParameter", Map.GetInt(call, "activeParameter"));
+    Map.SetInt(info, "overloadCount", Seq.get_Count(overloads));
+    Map.Set(info, "overloads", overloads);
+    Map.SetStr(info, "name", Map.GetStr(first, "name"));
+    Map.SetStr(info, "display", Map.GetStr(first, "display"));
+    Map.Set(info, "parameters", Map.Get(first, "parameters"));
+    Map.SetStr(info, "returnType", Map.GetStr(first, "returnType"));
+    Map.SetStr(info, "documentation", "");
+    Map.SetStr(info, "source", "basic");
+    return info;
+}
+
+func CanonicalName(name: String) -> String {
+    return Str.ToLower(SemanticLexing.StripTypeSuffix(name));
+}
+
+func ActiveCallAt(source: String,
+                  lineNumber: Integer,
+                  col0: Integer) -> Any {
+    var result = Map.New();
+    Map.SetBool(result, "available", false);
+    var lines = Str.Split(source, "\n");
+    var lineIndex = lineNumber - 1;
+    if lineIndex >= Seq.get_Count(lines) { lineIndex = Seq.get_Count(lines) - 1; }
+    if lineIndex < 0 { return result; }
+
+    var minLine = lineIndex - MAX_SIGNATURE_BACKTRACK_LINES + 1;
+    if minLine < 0 { minLine = 0; }
+    var depth = 0;
+    var activeParameter = 0;
+    var row = lineIndex;
+    while row >= minLine {
+        var text = SemanticLexing.StripLineComment(Obj.ToString(Seq.Get(lines, row)));
+        var position = Str.get_Length(text);
+        if row == lineIndex {
+            position = col0;
+            if position > Str.get_Length(text) { position = Str.get_Length(text); }
+        }
+        while position >= 1 {
+            var byte = Str.ByteAt(text, position - 1);
+            if byte == 41 {
+                depth = depth + 1;
+            } else if byte == 40 {
+                if depth == 0 {
+                    var name = CallNameBeforeOpenParen(text, position);
+                    if name == "" { return result; }
+                    Map.SetBool(result, "available", true);
+                    Map.SetStr(result, "name", name);
+                    Map.SetInt(result, "activeParameter", activeParameter);
+                    Map.SetInt(result, "line", row + 1);
+                    Map.SetInt(result, "column", position);
+                    return result;
+                }
+                depth = depth - 1;
+            } else if byte == 44 and depth == 0 {
+                activeParameter = activeParameter + 1;
+            }
+            position = position - 1;
+        }
+        row = row - 1;
+    }
+    return result;
+}
+
+func CallNameBeforeOpenParen(line: String,
+                             openColumn: Integer) -> String {
+    var position = openColumn - 1;
+    while position >= 1
+          and SemanticLexing.IsSpaceByte(Str.ByteAt(line, position - 1)) {
+        position = position - 1;
+    }
+    var endPosition = position;
+    while position >= 1
+          and SemanticLexing.IsBasicIdentifierCharByte(Str.ByteAt(line, position - 1)) {
+        position = position - 1;
+    }
+    if endPosition < position + 1 { return ""; }
+    return Str.Substring(line, position, endPosition - position);
+}
+
+func SignatureRecord(declaration: Any) -> Any {
+    var signature = Map.New();
+    Map.SetStr(signature, "name", Map.GetStr(declaration, "name"));
+    Map.SetStr(signature, "display", Map.GetStr(declaration, "signature"));
+    Map.Set(signature, "parameters",
+            ParamsFromText(Map.GetStr(declaration, "paramsText")));
+    Map.SetStr(signature, "returnType", Map.GetStr(declaration, "returnType"));
+    Map.SetStr(signature, "documentation", "");
+    Map.SetStr(signature, "source", "basic");
+    return signature;
+}
+
+func ParamsFromText(paramsText: String) -> Any {
+    var params = Seq.New();
+    var position = 1;
+    while position <= Str.get_Length(paramsText) {
+        position = SemanticLexing.SkipWhitespaceAndCommas(paramsText, position);
+        position = SemanticLexing.SkipParameterModifier(paramsText, position);
+        var name = SemanticLexing.ReadBasicIdentifierAt(paramsText, position);
+        if name == "" { break; }
+        var commaColumn = SemanticLexing.NextCommaOutsideParens(
+            paramsText, position + Str.get_Length(name));
+        var asColumn = SemanticLexing.KeywordColumnFrom(
+            paramsText, "AS", position + Str.get_Length(name));
+        var typeText = "";
+        if asColumn > 0 and (commaColumn == 0 or asColumn < commaColumn) {
+            typeText = SemanticLexing.TypeTextAfterAs(paramsText, asColumn);
+        }
+        var parameter = Map.New();
+        Map.SetStr(parameter, "name", name);
+        Map.SetStr(parameter, "type", typeText);
+        Seq.Push(params, parameter);
+        if commaColumn == 0 { break; }
+        position = commaColumn + 1;
+    }
+    return params;
+}
+
+func IsCallableKind(kind: String) -> Boolean {
+    return kind == "function" or kind == "property";
+}

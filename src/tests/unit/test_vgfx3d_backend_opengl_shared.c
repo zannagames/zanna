@@ -427,6 +427,8 @@ static char *read_opengl_backend_sources(void) {
         "vgfx3d_backend_opengl_frame.inc",
         "vgfx3d_backend_opengl_targets.inc",
         "vgfx3d_backend_opengl_texture.inc",
+        "vgfx3d_egl_wayland.c",
+        "vgfx3d_egl_wayland.h",
     };
     char path[1024];
     char *combined = NULL;
@@ -619,6 +621,14 @@ static void test_opengl_source_contracts_are_context_safe(void) {
                    "if (!ctx->rtt_fbo || !ctx->rtt_color_tex || !ctx->rtt_depth_rbo || "
                    "!ctx->rtt_target)") != NULL,
         "OpenGL failed RTT unbind and replacement requests preserve a recoverable dirty target");
+    EXPECT_TRUE(strstr(source, "vgfx3d_egl_headless_create(w, h)") != NULL &&
+                    strstr(source, "eglCreatePbufferSurface") != NULL &&
+                    strstr(source, "EGL_PLATFORM_SURFACELESS_MESA_VALUE") != NULL,
+                "Windowless OpenGL contexts use a surfaceless EGL pbuffer");
+    EXPECT_TRUE(strstr(source, "int vgfx3d_egl_available(void)") != NULL &&
+                    strstr(source, "if (g_egl.wayland_egl_library) {") != NULL &&
+                    strstr(source, "vgfx3d_egl_wayland_available())") != NULL,
+                "Core headless EGL discovery remains independent of optional Wayland integration");
     free(source);
 }
 

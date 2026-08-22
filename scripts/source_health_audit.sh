@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
-# Script: source_health_audit.sh
-# Purpose: Local source-health guardrails for high-ownership Zanna subsystems.
+#===----------------------------------------------------------------------===//
+#
+# Part of the Zanna project, under the GNU GPL v3.
+# See LICENSE for license information.
+#
+#===----------------------------------------------------------------------===//
+#
+# File: scripts/source_health_audit.sh
+# Purpose: Enforces local source-health guardrails for high-ownership subsystems.
+# Key invariants:
+#   - Debt metrics may not exceed their checked-in ceilings.
+#   - Coverage and capability metrics may not fall below their checked-in floors.
+# Ownership/Lifetime:
+#   - Repository files are borrowed read-only for one bounded audit invocation.
+#   - Temporary pipeline state is process-local and released when the script exits.
+# Links: scripts/source_health_baseline.tsv, docs/internals/testing.md
+#
+#===----------------------------------------------------------------------===//
 
 set -euo pipefail
 
@@ -314,7 +330,10 @@ metric_value() {
                 src/zannastudio/src
             ;;
         ide_scheduler_capability_jobs)
-            rg_count 'JOB_(DIAGNOSTIC|COMPLETION|HOVER|SIGNATURE)' \
+            # Count both scheduler-backed feature jobs and the long-lived async
+            # query-job owners that replaced direct scheduler markers. This
+            # preserves the capability floor across the ownership refactor.
+            rg_count 'JOB_(DIAGNOSTIC|COMPLETION|HOVER|SIGNATURE)|Basic(Query|WorkspaceQuery)Job|ProjectBindQueryJob|ZiaWorkspaceQueryJob' \
                 src/zannastudio/src/editor
             ;;
         debug_adapter_protocol_markers)

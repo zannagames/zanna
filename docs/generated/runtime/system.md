@@ -189,6 +189,8 @@ construct the class directly. Its public surface exposes operations including `O
 |---|---|---|
 | <a id="zanna-system-pty-open"></a>`Open` | `obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)` | `Zanna.System.Pty.Open` |
 | <a id="zanna-system-pty-openresult"></a>`OpenResult` | `obj<Zanna.Result>(str,obj,str,obj,i64,i64)` | `Zanna.System.Pty.OpenResult` |
+| <a id="zanna-system-pty-openwithenvoverlay"></a>`OpenWithEnvOverlay` | `obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)` | `Zanna.System.Pty.OpenWithEnvOverlay` |
+| <a id="zanna-system-pty-openwithenvoverlayresult"></a>`OpenWithEnvOverlayResult` | `obj<Zanna.Result>(str,obj,str,obj,i64,i64)` | `Zanna.System.Pty.OpenWithEnvOverlayResult` |
 | <a id="zanna-system-pty-issupported"></a>`IsSupported` | `i1()` | `Zanna.System.Pty.IsSupported` |
 
 <a id="zanna-system-pty-ptysession"></a>
@@ -335,6 +337,8 @@ construct the class directly. Its public surface exposes properties such as `Arc
 | `Zanna.System.Process.ProcessHandle.Destroy` | `void(obj)` | `rt_process_destroy` |
 | `Zanna.System.Pty.Open` | `obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)` | `rt_pty_open` |
 | `Zanna.System.Pty.OpenResult` | `obj<Zanna.Result>(str,obj,str,obj,i64,i64)` | `rt_pty_open_result` |
+| `Zanna.System.Pty.OpenWithEnvOverlay` | `obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)` | `rt_pty_open_with_env_overlay` |
+| `Zanna.System.Pty.OpenWithEnvOverlayResult` | `obj<Zanna.Result>(str,obj,str,obj,i64,i64)` | `rt_pty_open_with_env_overlay_result` |
 | `Zanna.System.Pty.IsSupported` | `i1()` | `rt_pty_is_supported` |
 | `Zanna.System.Pty.PtySession.IsValid` | `i1(obj)` | `rt_pty_is_valid` |
 | `Zanna.System.Pty.PtySession.Poll` | `i1(obj)` | `rt_pty_poll` |

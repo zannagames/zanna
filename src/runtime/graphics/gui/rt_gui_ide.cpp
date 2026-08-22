@@ -20,7 +20,8 @@
 // Links: src/runtime/graphics/gui/rt_gui_ide.h,
 //        src/runtime/graphics/gui/rt_gui_internal.h,
 //        src/lib/gui/include/vg_widgets.h,
-//        src/lib/gui/include/vg_ide_widgets_tree.h
+//        src/lib/gui/include/vg_ide_widgets_tree.h,
+//        docs/adr/0290-virtual-tree-bulk-updates.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -743,6 +744,8 @@ struct VirtualTreeState {
     std::vector<VisibleTreeRow> visibleRows;
     std::unordered_map<std::string, size_t> visibleIndexById;
     bool visibleDirty{true};
+    uint32_t updateDepth{0}; ///< Nested bulk-update scope depth.
+    bool syncPending{false}; ///< Projection invalidation deferred by a bulk scope.
     void *boundTree{nullptr};
     bool dropLatched{false};  ///< A consumed-on-read virtual drop is pending.
     std::string dropSourceId; ///< Dragged node id at latch time.
@@ -954,10 +957,23 @@ static void removeVirtualTreeDescendants(VirtualTreeState &state, const std::str
 }
 
 /// @brief Replace the model's multi-selection and keep the membership index coherent.
+/// @details Missing, placeholder, empty, and duplicate identifiers are rejected
+///          while preserving the first occurrence order of declared nodes.
 /// @param state VirtualTree model to update.
 /// @param ids New ordered selection; the first entry becomes the primary id.
 static void setVirtualTreeSelection(VirtualTreeState &state, std::vector<std::string> ids) {
-    state.selectedIds = std::move(ids);
+    std::vector<std::string> accepted;
+    accepted.reserve(ids.size());
+    std::unordered_set<std::string> seen;
+    seen.reserve(ids.size());
+    for (auto &entry : ids) {
+        auto node = state.nodes.find(entry);
+        if (entry.empty() || node == state.nodes.end() || !node->second.declared ||
+            !seen.insert(entry).second)
+            continue;
+        accepted.push_back(std::move(entry));
+    }
+    state.selectedIds = std::move(accepted);
     state.selectedIdSet.clear();
     for (const auto &entry : state.selectedIds)
         state.selectedIdSet.insert(entry);
@@ -1075,6 +1091,11 @@ static bool virtualTreeProvider(vg_treeview_t *tree,
 /// @brief Synchronize flattened row count, selection, and paint after a tree model mutation.
 /// @param state VirtualTree model whose projection should be synchronized.
 static void syncBoundVirtualTree(VirtualTreeState &state) {
+    if (state.updateDepth > 0) {
+        state.syncPending = true;
+        return;
+    }
+    state.syncPending = false;
     auto *tree = static_cast<vg_treeview_t *>(state.boundTree);
     if (!tree || !ensureVisibleTreeIndex(state))
         return;
@@ -1188,7 +1209,11 @@ static void syncBoundVirtualList(VirtualListState &state) {
 ///          mutation has the same allocation behavior regardless of graphics availability.
 /// @param state Live model state whose data mutation has already completed.
 static void syncBoundVirtualTree(VirtualTreeState &state) {
-    (void)state;
+    if (state.updateDepth > 0) {
+        state.syncPending = true;
+        return;
+    }
+    state.syncPending = false;
 }
 #endif
 
@@ -2337,6 +2362,29 @@ void *rt_virtual_tree_new(void) {
     return h;
 }
 
+/// @brief Defer bound-tree projection work across a nested mutation batch.
+void rt_virtual_tree_begin_update(void *tree) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
+    if (h->state->updateDepth == UINT32_MAX) {
+        rt_trap("GUI.VirtualTree: update nesting overflow");
+        return;
+    }
+    h->state->updateDepth++;
+}
+
+/// @brief Close one mutation batch and synchronize once at the outer boundary.
+void rt_virtual_tree_end_update(void *tree) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
+    VirtualTreeState &state = *h->state;
+    if (state.updateDepth == 0) {
+        rt_trap("GUI.VirtualTree: EndUpdate without BeginUpdate");
+        return;
+    }
+    state.updateDepth--;
+    if (state.updateDepth == 0 && state.syncPending)
+        syncBoundVirtualTree(state);
+}
+
 /// @brief Declare a uniquely identified virtual-tree node beneath a parent.
 /// @param tree Managed VirtualTree handle.
 /// @param parent_id Stable parent identifier; missing parents become placeholders.
@@ -2813,10 +2861,7 @@ int8_t rt_virtual_tree_set_node_icon(void *tree, rt_string id_s, rt_string spec_
         } else {
             it->second.iconText = std::move(spec);
         }
-#ifdef ZANNA_ENABLE_GRAPHICS
-        if (h->state->boundTree)
-            vg_treeview_invalidate_virtual_rows(static_cast<vg_treeview_t *>(h->state->boundTree));
-#endif
+        syncBoundVirtualTree(*h->state);
         return 1;
     } catch (const std::bad_alloc &) {
         return 0;
@@ -2837,10 +2882,7 @@ int8_t rt_virtual_tree_set_node_style(void *tree, rt_string id_s, int64_t rgb, i
             return 0;
         it->second.color = static_cast<uint32_t>(rgb & 0xffffff);
         it->second.dim = dim != 0;
-#ifdef ZANNA_ENABLE_GRAPHICS
-        if (h->state->boundTree)
-            vg_treeview_invalidate_virtual_rows(static_cast<vg_treeview_t *>(h->state->boundTree));
-#endif
+        syncBoundVirtualTree(*h->state);
         return 1;
     } catch (const std::bad_alloc &) {
         return 0;
@@ -2950,11 +2992,7 @@ int8_t rt_virtual_tree_set_node_loaded(void *tree, rt_string id_s, int8_t loaded
             return 0;
         if (it->second.loaded != (loaded != 0)) {
             it->second.loaded = loaded != 0;
-#ifdef ZANNA_ENABLE_GRAPHICS
-            if (h->state->boundTree)
-                vg_treeview_invalidate_virtual_rows(
-                    static_cast<vg_treeview_t *>(h->state->boundTree));
-#endif
+            syncBoundVirtualTree(*h->state);
         }
         return 1;
     } catch (const std::bad_alloc &) {

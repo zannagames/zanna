@@ -21,7 +21,9 @@
 module autosave_job_probe;
 
 bind "../commands/autosave_job";
+bind "../commands/autosave_commands";
 bind "../core/document";
+bind "../core/document_manager";
 bind "../services/safe_io";
 
 bind File = Zanna.IO.File;
@@ -112,6 +114,32 @@ func main() {
        or job.WaitForShutdown() == false {
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - oversized request changed disk state");
+        return;
+    }
+
+    var inactivePath = Path.Join(root, "inactive.zia");
+    var activePath = Path.Join(root, "active.zia");
+    File.WriteAllText(inactivePath, "inactive before\n");
+    File.WriteAllText(activePath, "active\n");
+    var documents = new document_manager.DocumentManager();
+    var inactiveDoc = documents.OpenFile(inactivePath);
+    documents.OpenFile(activePath);
+    inactiveDoc.content = "inactive after\n";
+    inactiveDoc.isModified = true;
+    if autosave_commands.QueueAutoSaveDocument(
+           job, null, documents, null, 0, -1) == false {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - inactive document did not queue");
+        return;
+    }
+    var inactiveDone = drain(job, 5000);
+    if inactiveDone == null or inactiveDone.succeeded == false
+       or autosave_commands.CompleteAutoSave(
+              null, documents, null, null, inactiveDone, -1)
+       or inactiveDoc.isModified
+       or File.ReadAllText(inactivePath) != "inactive after\n" {
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - inactive document did not autosave");
         return;
     }
 

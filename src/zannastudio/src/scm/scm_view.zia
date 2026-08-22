@@ -153,6 +153,24 @@ class ScmView extends Implementation.ScmViewPresenterLayer {
             var p2 = SelectedPathForAction("unstage");
             if p2 != "" { RunOrQueue("unstage", p2, ""); }
         }
+        if takeCurrentBtn != null and takeCurrentBtn.WasClicked()
+           and CanRunRepositoryAction("choosing a conflict side") {
+            var currentPath = SelectedPathForAction("take current");
+            if currentPath != "" { RunOrQueue("takeours", currentPath, ""); }
+        }
+        if takeIncomingBtn != null and takeIncomingBtn.WasClicked()
+           and CanRunRepositoryAction("choosing a conflict side") {
+            var incomingPath = SelectedPathForAction("take incoming");
+            if incomingPath != "" { RunOrQueue("taketheirs", incomingPath, ""); }
+        }
+        if continueOperationBtn != null and continueOperationBtn.WasClicked() {
+            if operationState == "merging" { RunOrQueue("mergeContinue", "", ""); }
+            else if operationState == "rebasing" { RunOrQueue("rebaseContinue", "", ""); }
+        }
+        if skipRebaseBtn != null and skipRebaseBtn.WasClicked()
+           and (operationState == "rebasing" or operationState == "conflict-rebase") {
+            RunOrQueue("rebaseSkip", "", "");
+        }
         var commitRequested = commitBtn.WasClicked();
         if commitInput.IsFocused()
            and Input.Keyboard.WasPressed(Zanna.Input.Key.Enter) {

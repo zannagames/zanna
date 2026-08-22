@@ -933,6 +933,20 @@ function(zanna_add_basic_to_il_golden_tests)
                 ${ZANNA_BASIC_TO_IL_GOLDEN_BATCH_SHARDS})
         zanna_add_test_labels(basic_to_il_goldens_batch_${_ZANNA_BASIC_TO_IL_BATCH_SHARD} basic)
     endforeach ()
+
+    # Guards the -DUPDATE_GOLDEN=1 / UPDATE_GOLDEN=1 refresh path in every
+    # BASIC-to-IL golden harness so scripts/update_goldens.sh can repair extern
+    # drift instead of leaving the goldens to be hand-edited.
+    zanna_add_ctest(basic_to_il_golden_update_path
+            ${CMAKE_COMMAND}
+            -DILC=${_ZANNA_BASIC_ILC}
+            -DBATCH_RUNNER=$<TARGET_FILE:test_basic_to_il_goldens_batch>
+            -DCHECK_IL=${_ZANNA_BASIC_TO_IL_CHECK}
+            -DCHECK_IL_BOUNDS=${_ZANNA_BASIC_TO_IL_CHECK_BOUNDS}
+            -DBAS_FILE=${_ZANNA_BASIC_TO_IL_DIR}/gosub.bas
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/basic_to_il_golden_update_path
+            -P ${_ZANNA_BASIC_TO_IL_DIR}/check_golden_update.cmake)
+    zanna_add_test_labels(basic_to_il_golden_update_path basic)
 endfunction()
 
 function(zanna_add_basic_strings_test)

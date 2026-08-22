@@ -40,13 +40,39 @@ class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLay
     hide override func AddBuildOutputLines(output: String) {
         var lines = Str.Split(output, "\n");
         var n = Seq.get_Count(lines);
-        var i = 0;
+        var start = 0;
+        var matched = 0;
+        var scan = n - 1;
+        // A full repaint already owns the complete bounded source. Select the
+        // newest retained matches before publishing so broad filters never
+        // build and repeatedly trim thousands of transient GUI rows.
+        if outputWrapLines == false {
+            while scan >= 0 and matched < ToolPanelModel.MAX_OUTPUT_ROW_COUNT {
+                var candidate = Obj.ToString(Seq.Get(lines, scan));
+                if candidate != ""
+                   and (outputFilterText == ""
+                        or Str.IndexOf(Str.ToLower(candidate),
+                                       outputFilterText) != 0) {
+                    matched = matched + 1;
+                    start = scan;
+                }
+                scan = scan - 1;
+            }
+        }
+        outputBulkRows = outputWrapLines == false
+            and matched >= tool_panel_model.VIRTUALIZE_AFTER_ROWS;
+        var i = start;
         while i < n {
             var line = Obj.ToString(Seq.Get(lines, i));
             if line != "" {
                 AddOutputDisplayLine(line);
             }
             i = i + 1;
+        }
+        outputBulkRows = false;
+        if outputRows != null
+           and outputRows.Count() >= tool_panel_model.VIRTUALIZE_AFTER_ROWS {
+            RebuildVirtualToolRows(outputListBox, outputRows);
         }
     }
 
@@ -168,15 +194,15 @@ class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLay
     /// @return True when text was copied.
     expose override func CopyOutputText() -> Boolean {
         var text = lastBuildOutput;
-        if text == "" {
+        if text == "" and outputRows != null {
             var output = new StringBuilder();
             var written = 0;
             var i = 0;
-            while i < outputRenderedItems.count() {
-                var item = outputRenderedItems.get(i);
-                if item != null {
+            while i < outputRows.rows.count() {
+                var row = outputRows.rows.get(i);
+                if row != null {
                     if written > 0 { output.Append("\n"); }
-                    output.Append(GUI.ListBox.ItemGetText(item));
+                    output.Append(row.text);
                     written = written + 1;
                 }
                 i = i + 1;

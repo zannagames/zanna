@@ -52,6 +52,8 @@ using Kind = SigParam::Kind;
 void register_string_signatures() {
     register_signature(make_signature("rt_str_len", {Kind::Ptr}, {Kind::I64}, false, true));
     register_signature(
+        make_signature("rt_str_byte_at", {Kind::Ptr, Kind::I64}, {Kind::I64}, false, true));
+    register_signature(
         make_signature("rt_str_substr", {Kind::Ptr, Kind::I64, Kind::I64}, {Kind::Ptr}));
     register_signature(make_signature("rt_trap_string", {Kind::Ptr}));
     register_signature(make_signature("rt_str_concat", {Kind::Ptr, Kind::Ptr}, {Kind::Ptr}));

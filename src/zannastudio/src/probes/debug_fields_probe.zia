@@ -88,7 +88,8 @@ func main() {
     var prog = Path.Join(dir, "fields.zia");
     // Player mixes every field storage the debugger reads: i64, string handle,
     // boolean, managed list, nested object. Break on line 22 while all locals
-    // are live; the program exits 2 so termination is asserted too.
+    // are live; a canonical Map covers keyed-container expansion, and the
+    // program exits 2 so termination is asserted too.
     File.WriteAllText(prog,
         "class Vec {\n"                                  // 1
         + "    expose var x: Integer;\n"                  // 2
@@ -111,12 +112,14 @@ func main() {
         + "    var p = new Player(100, \"Ann\", true, scores, v);\n" // 19
         + "    var team: List[Any] = [];\n"                // 20
         + "    team.add(p);\n"                              // 21
-        + "    var total = p.hp;\n"                        // 22  <- breakpoint
-        + "    return total - 98;\n"                        // 23
-        + "}\n");                                           // 24
+        + "    var stats = Zanna.Collections.Map.New();\n" // 22
+        + "    Zanna.Collections.Map.Set(stats, \"score\", \"forty-two\");\n" // 23
+        + "    var total = p.hp;\n"                        // 24  <- breakpoint
+        + "    return total - 98;\n"                        // 25
+        + "}\n");                                           // 26
 
     var store = new breakpoints.BreakpointStore();
-    store.Toggle(prog, 22);
+    store.Toggle(prog, 24);
 
     var session = new debug_session.DebugSession();
     if session.Launch(zannaBin, prog, store) == false {
@@ -129,7 +132,7 @@ func main() {
         fail("did not stop at breakpoint (terminated=" + session.terminated + ")");
         return;
     }
-    if session.lastLine != 22 {
+    if session.lastLine != 24 {
         fail("stopped at wrong line: " + session.lastLine);
         return;
     }
@@ -248,6 +251,27 @@ func main() {
     pollVars(session, memberRef, 8000);
     if session.VarChildCount() != 5 {
         fail("team[0] expanded to " + session.VarChildCount() + " children (expected 5)");
+        return;
+    }
+
+    // ── Canonical Map local expands into its keyed value leaves ──────────────
+    var statsIdx = findLocal(session, "stats");
+    if statsIdx < 0
+       or Str.IndexOf(session.LocalLabel(statsIdx), "Map(1)") < 1
+       or session.LocalChildCount(statsIdx) != 1 {
+        fail("stats map summary or child count was missing");
+        return;
+    }
+    var statsRef = session.LocalVarRef(statsIdx);
+    if statsRef <= 0 {
+        fail("stats map has no varRef");
+        return;
+    }
+    session.RequestVariables(statsRef, 0, 100);
+    pollVars(session, statsRef, 8000);
+    if session.VarChildCount() != 1
+       or Str.IndexOf(session.VarChildLabel(0), "score = \"forty-two\"") < 1 {
+        fail("stats map expansion was '" + session.VarChildLabel(0) + "'");
         return;
     }
 

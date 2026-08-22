@@ -520,6 +520,8 @@ terminal-like IDE surfaces.
 |--------|-----------|-------------|
 | `Open(program, args, cwd, env, cols, rows)` | `PtySession(String, Object, String, Object, Integer, Integer)` | Open a PTY-backed child |
 | `OpenResult(program, args, cwd, env, cols, rows)` | `Result(String, Object, String, Object, Integer, Integer)` | Open a PTY-backed child as `Ok(PtySession)` or `Err(message)` |
+| `OpenWithEnvOverlay(program, args, cwd, env, cols, rows)` | `PtySession(String, Object, String, Object, Integer, Integer)` | Open a PTY while preserving inherited variables not overridden by `env` |
+| `OpenWithEnvOverlayResult(program, args, cwd, env, cols, rows)` | `Result(String, Object, String, Object, Integer, Integer)` | Result-returning environment-overlay form |
 | `IsSupported()` | `Boolean()` | Returns `TRUE` when the current platform can create PTYs |
 
 ### Zanna.System.Pty.PtySession

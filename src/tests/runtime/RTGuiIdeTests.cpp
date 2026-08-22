@@ -190,6 +190,36 @@ int main() {
         "GUI model ID must be unique: a");
     assert(visible_count(tree2) == 3);
 
+    void *selectionIds = rt_seq_new();
+    rt_seq_push(selectionIds, rt_const_cstr("a"));
+    rt_seq_push(selectionIds, rt_const_cstr("missing"));
+    rt_seq_push(selectionIds, rt_const_cstr("a"));
+    rt_seq_push(selectionIds, rt_const_cstr("b"));
+    rt_virtual_tree_select_ids(tree2, selectionIds);
+    void *acceptedSelection = rt_virtual_tree_get_selected_ids(tree2);
+    assert(rt_seq_len(acceptedSelection) == 2);
+    assert(take(rt_seq_get_str(acceptedSelection, 0)) == "a");
+    assert(take(rt_seq_get_str(acceptedSelection, 1)) == "b");
+    rt_virtual_tree_select_id(tree2, rt_const_cstr("missing"));
+    assert(take(rt_virtual_tree_get_selected_id(tree2)).empty());
+
+    void *batchedTree = rt_virtual_tree_new();
+    void *batchedControl = rt_treeview_new(nullptr);
+    assert(rt_virtual_tree_bind(batchedTree, batchedControl) == 1);
+    rt_virtual_tree_begin_update(batchedTree);
+    rt_virtual_tree_begin_update(batchedTree);
+    rt_virtual_tree_add_node(
+        batchedTree, rt_const_cstr(""), rt_const_cstr("bulk"), rt_const_cstr("Bulk"));
+    rt_virtual_tree_add_node(
+        batchedTree, rt_const_cstr("bulk"), rt_const_cstr("child"), rt_const_cstr("Child"));
+    expand = rt_virtual_tree_expand(batchedTree, rt_const_cstr("bulk"));
+    assert(rt_map_get_bool(expand, rt_const_cstr("expanded")) == 1);
+    rt_virtual_tree_end_update(batchedTree);
+    assert(visible_count(batchedTree) == 2);
+    rt_virtual_tree_end_update(batchedTree);
+    expect_trap([&] { rt_virtual_tree_end_update(batchedTree); },
+                "GUI.VirtualTree: EndUpdate without BeginUpdate");
+
     void *tree3 = rt_virtual_tree_new();
     rt_virtual_tree_add_node(
         tree3, rt_const_cstr("missing"), rt_const_cstr("leaf"), rt_const_cstr("Leaf"));

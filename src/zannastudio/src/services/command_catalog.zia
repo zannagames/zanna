@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: zannastudio/src/commands/command_catalog.zia
+// File: zannastudio/src/services/command_catalog.zia
 // Purpose: Declare Studio commands and platform-native default shortcuts.
 // Key invariants:
 //   - One catalog supplies menu, palette, toolbar, and global-shortcut metadata.
@@ -28,7 +28,7 @@ bind Machine = Zanna.System.Machine;
 //          static list of command ids, labels, shortcuts, capabilities, and
 //          palette visibility so CommandRegistry can focus on runtime behavior.
 //
-// WHERE-THIS-FITS: commands/command_registry.zia imports this file during
+// WHERE-THIS-FITS: commands/command_registry.zia imports this leaf service during
 //          startup, converts each CommandSpec into a CommandEntry, and then
 //          applies language-service capability checks and shortcut wiring.
 //

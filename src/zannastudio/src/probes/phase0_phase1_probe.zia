@@ -34,7 +34,7 @@ module phase0_phase1_probe;
 // ============================================================================
 
 bind "../commands/command_registry";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../commands/edit_commands";
 bind "../commands/file_commands";
 bind "../commands/search_commands";

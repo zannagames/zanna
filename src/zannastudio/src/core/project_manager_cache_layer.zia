@@ -133,7 +133,8 @@ class ProjectManagerCacheLayer extends Base.ProjectManagerBase {
                 fileCacheCursor.Destroy();
                 fileCacheRootIndex = fileCacheRootIndex + 1;
                 fileCachePageOffset = 0;
-            } else if nextOffset == oldOffset and i == 0 {
+            } else if nextOffset == oldOffset and i == 0
+                      and Map.GetInt(page, "work") <= 0 {
                 fileCacheCursor.Destroy();
                 fileCacheRootIndex = fileCacheRootIndex + 1;
                 fileCachePageOffset = 0;

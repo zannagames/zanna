@@ -6,8 +6,8 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/frontends/basic/rt_basic_completion.cpp
-// Purpose: Exposes BASIC diagnostics, completion, symbols, and hover results
-//          through the runtime C ABI used by editor tooling.
+// Purpose: Exposes BASIC diagnostics, completion, symbols, hover, and signature
+//          results through the runtime C ABI used by editor tooling.
 // Key invariants:
 //   - Returned maps/sequences use the same schema as the Zia bridge.
 //   - Runtime objects inserted into owned collections release local references.
@@ -16,6 +16,7 @@
 //   - C ABI results transfer runtime ownership to the caller.
 //   - Source and file-path handles are borrowed for each call.
 // Links: docs/adr/0014-basic-language-service-runtime-bridge.md,
+//        docs/adr/0291-compiler-backed-basic-signature-help.md,
 //        src/frontends/zia/rt_zia_completion.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -586,6 +587,224 @@ void *basicHoverMap(const std::string &name,
     return map;
 }
 
+struct BasicActiveCall {
+    std::string name;
+    int64_t activeParameter{0};
+};
+
+/// @brief Locate the innermost BASIC call containing an editor cursor.
+/// @details Strings and apostrophe/REM comments are blanked before the reverse
+///          delimiter walk, so punctuation inside them cannot become a call.
+BasicActiveCall activeBasicCall(const std::string &source, int64_t line, int64_t col) {
+    BasicActiveCall call;
+    if (line < 1 || col < 0)
+        return call;
+    size_t lineStart = 0;
+    int64_t currentLine = 1;
+    while (lineStart < source.size() && currentLine < line) {
+        if (source[lineStart++] == '\n')
+            currentLine++;
+    }
+    if (currentLine != line)
+        return call;
+    size_t lineEnd = source.find('\n', lineStart);
+    if (lineEnd == std::string::npos)
+        lineEnd = source.size();
+    size_t cursor = lineStart + std::min<size_t>((size_t)col, lineEnd - lineStart);
+    std::string structural(source.data(), cursor);
+    bool quoted = false;
+    bool commented = false;
+    bool tokenStart = true;
+    for (size_t i = 0; i < structural.size(); ++i) {
+        unsigned char c = static_cast<unsigned char>(structural[i]);
+        if (c == '\n' || c == '\r') {
+            quoted = false;
+            commented = false;
+            tokenStart = true;
+            continue;
+        }
+        if (commented) {
+            structural[i] = ' ';
+            continue;
+        }
+        if (quoted) {
+            if (c == '"' && i + 1 < structural.size() && structural[i + 1] == '"') {
+                structural[i] = ' ';
+                structural[++i] = ' ';
+                continue;
+            }
+            if (c == '"')
+                quoted = false;
+            structural[i] = ' ';
+            continue;
+        }
+        if (c == '"') {
+            quoted = true;
+            structural[i] = ' ';
+            continue;
+        }
+        if (c == '\'') {
+            commented = true;
+            structural[i] = ' ';
+            continue;
+        }
+        if (tokenStart && i + 3 <= structural.size() &&
+            std::tolower(static_cast<unsigned char>(structural[i])) == 'r' &&
+            std::tolower(static_cast<unsigned char>(structural[i + 1])) == 'e' &&
+            std::tolower(static_cast<unsigned char>(structural[i + 2])) == 'm' &&
+            (i + 3 == structural.size() ||
+             std::isspace(static_cast<unsigned char>(structural[i + 3])))) {
+            commented = true;
+            structural[i] = structural[i + 1] = structural[i + 2] = ' ';
+            i += 2;
+            continue;
+        }
+        tokenStart = std::isspace(c) || c == ':';
+    }
+
+    int depth = 0;
+    int64_t activeParameter = 0;
+    for (size_t at = structural.size(); at > 0;) {
+        char c = structural[--at];
+        if (c == ')') {
+            depth++;
+        } else if (c == '(') {
+            if (depth > 0) {
+                depth--;
+                continue;
+            }
+            size_t end = at;
+            while (end > 0 && std::isspace(static_cast<unsigned char>(structural[end - 1])))
+                end--;
+            size_t begin = end;
+            while (begin > 0) {
+                unsigned char b = static_cast<unsigned char>(structural[begin - 1]);
+                if (!std::isalnum(b) && b != '_' && b != '$' && b != '%' && b != '!' && b != '#' &&
+                    b != '&' && b != '.')
+                    break;
+                begin--;
+            }
+            if (begin == end)
+                return call;
+            std::string name = structural.substr(begin, end - begin);
+            size_t dot = name.rfind('.');
+            if (dot != std::string::npos)
+                name.erase(0, dot + 1);
+            call.name = std::move(name);
+            call.activeParameter = activeParameter;
+            return call;
+        } else if (c == ',' && depth == 0) {
+            activeParameter++;
+        }
+    }
+    return call;
+}
+
+std::string qualifiedTypeDisplay(const std::vector<std::string> &segments, Type fallback) {
+    if (segments.empty())
+        return astTypeDisplay(fallback);
+    std::string result;
+    for (const auto &segment : segments) {
+        if (!result.empty())
+            result += ".";
+        result += segment;
+    }
+    return result;
+}
+
+std::string paramTypeDisplay(const Param &param) {
+    std::string type = param.objectClass.empty() ? astTypeDisplay(param.type) : param.objectClass;
+    if (param.is_array)
+        type += "()";
+    return type;
+}
+
+void *basicSignatureMap(std::string_view keyword,
+                        std::string_view name,
+                        const std::vector<Param> &params,
+                        std::string_view returnType) {
+    void *map = rt_map_new();
+    void *runtimeParams = rt_seq_new_owned();
+    std::string display(keyword);
+    display += " ";
+    display += name;
+    display += "(";
+    for (size_t i = 0; i < params.size(); ++i) {
+        const Param &param = params[i];
+        std::string type = paramTypeDisplay(param);
+        std::string parameterDisplay = param.isByRef ? "BYREF " : "";
+        parameterDisplay += param.name;
+        if (param.is_array)
+            parameterDisplay += "()";
+        if (!type.empty())
+            parameterDisplay += " AS " + type;
+        if (i > 0)
+            display += ", ";
+        display += parameterDisplay;
+        void *runtimeParam = rt_map_new();
+        mapSetStr(runtimeParam, "name", param.name);
+        mapSetStr(runtimeParam, "type", type);
+        mapSetStr(runtimeParam, "display", parameterDisplay);
+        rt_seq_push(runtimeParams, runtimeParam);
+        releaseRuntimeObject(runtimeParam);
+    }
+    display += ")";
+    if (!returnType.empty())
+        display += " AS " + std::string(returnType);
+    mapSetStr(map, "name", name);
+    mapSetStr(map, "display", display);
+    mapSetObject(map, "parameters", runtimeParams);
+    mapSetStr(map, "returnType", returnType);
+    mapSetStr(map, "documentation", "");
+    mapSetStr(map, "source", "basic-compiler");
+    releaseRuntimeObject(runtimeParams);
+    return map;
+}
+
+void appendBasicProcedureSignatures(void *overloads,
+                                    const Program &program,
+                                    const std::string &canonicalName) {
+    for (const auto &procedure : program.procs) {
+        if (!procedure)
+            continue;
+        void *signature = nullptr;
+        if (procedure->stmtKind() == Stmt::Kind::FunctionDecl) {
+            const auto &fn = static_cast<const FunctionDecl &>(*procedure);
+            if (CanonicalizeIdent(StripTypeSuffix(fn.name)) == canonicalName) {
+                std::string returnType = qualifiedTypeDisplay(fn.explicitClassRetQname, fn.ret);
+                signature = basicSignatureMap("FUNCTION", fn.name, fn.params, returnType);
+            }
+        } else if (procedure->stmtKind() == Stmt::Kind::SubDecl) {
+            const auto &sub = static_cast<const SubDecl &>(*procedure);
+            if (CanonicalizeIdent(StripTypeSuffix(sub.name)) == canonicalName)
+                signature = basicSignatureMap("SUB", sub.name, sub.params, "");
+        }
+        if (signature) {
+            rt_seq_push(overloads, signature);
+            releaseRuntimeObject(signature);
+        }
+    }
+    for (const auto &statement : program.main) {
+        if (!statement || statement->stmtKind() != Stmt::Kind::ClassDecl)
+            continue;
+        const auto &classDecl = static_cast<const ClassDecl &>(*statement);
+        for (const auto &member : classDecl.members) {
+            if (!member || member->stmtKind() != Stmt::Kind::MethodDecl)
+                continue;
+            const auto &method = static_cast<const MethodDecl &>(*member);
+            if (CanonicalizeIdent(StripTypeSuffix(method.name)) != canonicalName)
+                continue;
+            std::string returnType;
+            if (method.ret)
+                returnType = qualifiedTypeDisplay(method.explicitClassRetQname, *method.ret);
+            void *signature = basicSignatureMap(
+                method.ret ? "FUNCTION" : "SUB", method.name, method.params, returnType);
+            rt_seq_push(overloads, signature);
+            releaseRuntimeObject(signature);
+        }
+    }
+}
+
 } // namespace
 
 extern "C" {
@@ -695,6 +914,58 @@ void *rt_basic_completion_hover_info_for_file(rt_string source,
         return basicHoverMap(ident, disp, runtimeClassDocumentation(disp));
     } catch (...) {
         return basicHoverMap("", "");
+    }
+}
+
+/// @brief Resolve compiler-AST-backed signature help at a BASIC call cursor.
+void *rt_basic_completion_signature_info_for_file(rt_string source,
+                                                  rt_string file_path,
+                                                  int64_t line,
+                                                  int64_t col) {
+    void *info = rt_map_new();
+    mapSetBool(info, "available", false);
+    try {
+        std::string sourceStr = toStdString(source);
+        BasicActiveCall call = activeBasicCall(sourceStr, line, col);
+        std::string canonicalName = CanonicalizeIdent(StripTypeSuffix(call.name));
+        if (canonicalName.empty())
+            return info;
+        std::string pathStr = editorPathOrDefault(file_path);
+        il::support::SourceManager sm;
+        BasicCompilerInput input{.source = sourceStr, .path = pathStr};
+        auto result = parseAndAnalyzeBasic(input, sm);
+        if (!result || !result->ast)
+            return info;
+        void *overloads = rt_seq_new_owned();
+        appendBasicProcedureSignatures(overloads, *result->ast, canonicalName);
+        int64_t count = rt_seq_len(overloads);
+        if (count <= 0) {
+            releaseRuntimeObject(overloads);
+            return info;
+        }
+        void *first = rt_seq_get(overloads, 0);
+        mapSetBool(info, "available", true);
+        mapSetInt(info, "activeSignature", 0);
+        mapSetInt(info, "activeParameter", call.activeParameter);
+        mapSetInt(info, "overloadCount", count);
+        mapSetObject(info, "overloads", overloads);
+        mapSetStr(info, "name", StripTypeSuffix(call.name));
+        rt_string key = toRtString("display");
+        rt_string value = rt_map_get_str(first, key);
+        rt_string_unref(key);
+        mapSetStr(info, "display", toStdString(value));
+        rt_string_unref(value);
+        key = toRtString("returnType");
+        value = rt_map_get_str(first, key);
+        rt_string_unref(key);
+        mapSetStr(info, "returnType", toStdString(value));
+        rt_string_unref(value);
+        mapSetStr(info, "documentation", "");
+        mapSetStr(info, "source", "basic-compiler");
+        releaseRuntimeObject(overloads);
+        return info;
+    } catch (...) {
+        return info;
     }
 }
 

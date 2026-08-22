@@ -36,15 +36,25 @@ expose func StartsWith(text: String, prefix: String) -> Boolean {
 expose func CompletionMatches(text: String, query: String) -> Boolean {
     if query == "" { return true; }
     if StartsWith(text, query) { return true; }
-    var ti = 1;
-    var qi = 1;
-    while ti <= Str.get_Length(text) and qi <= Str.get_Length(query) {
-        if Str.MidLen(text, ti, 1) == Str.MidLen(query, qi, 1) {
+    var ti = 0;
+    var qi = 0;
+    while ti < Str.get_Length(text) and qi < Str.get_Length(query) {
+        if Str.ByteAt(text, ti) == Str.ByteAt(query, qi) {
             qi = qi + 1;
         }
         ti = ti + 1;
     }
-    return qi > Str.get_Length(query);
+    return qi >= Str.get_Length(query);
+}
+
+/// @brief Test whether a byte occurs in an ASCII delimiter set without allocation.
+func ContainsByte(text: String, value: Integer) -> Boolean {
+    var i = 0;
+    while i < Str.get_Length(text) {
+        if Str.ByteAt(text, i) == value { return true; }
+        i = i + 1;
+    }
+    return false;
 }
 
 /// @brief Return true when any typed character appears in a candidate set.
@@ -53,12 +63,9 @@ expose func CompletionMatches(text: String, query: String) -> Boolean {
 /// @return True when at least one typed character is contained in characters.
 expose func ContainsAny(characters: String, typed: String) -> Boolean {
     if characters == "" or typed == "" { return false; }
-    var i = 1;
-    while i <= Str.get_Length(typed) {
-        var ch = Str.MidLen(typed, i, 1);
-        if Str.IndexOf(characters, ch) != 0 {
-            return true;
-        }
+    var i = 0;
+    while i < Str.get_Length(typed) {
+        if ContainsByte(characters, Str.ByteAt(typed, i)) { return true; }
         i = i + 1;
     }
     return false;
@@ -72,11 +79,10 @@ expose func ContainsAny(characters: String, typed: String) -> Boolean {
 ///          boolean, so it can preserve the user's typed delimiter in the edit.
 expose func FirstMatchingCharacter(characters: String, typed: String) -> String {
     if characters == "" or typed == "" { return ""; }
-    var i = 1;
-    while i <= Str.get_Length(typed) {
-        var ch = Str.MidLen(typed, i, 1);
-        if Str.IndexOf(characters, ch) != 0 {
-            return ch;
+    var i = 0;
+    while i < Str.get_Length(typed) {
+        if ContainsByte(characters, Str.ByteAt(typed, i)) {
+            return Str.MidLen(typed, i + 1, 1);
         }
         i = i + 1;
     }
@@ -90,10 +96,10 @@ expose func FirstMatchingCharacter(characters: String, typed: String) -> String 
 ///          are layout, not semantic text that would be destroyed by insertion.
 expose func IsOnlyIndentWhitespace(text: String) -> Boolean {
     if text == "" { return false; }
-    var i = 1;
-    while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
-        if ch != " " and ch != "\t" {
+    var i = 0;
+    while i < Str.get_Length(text) {
+        var ch = Str.ByteAt(text, i);
+        if ch != 32 and ch != 9 {
             return false;
         }
         i = i + 1;
@@ -114,21 +120,21 @@ expose func ShouldSuppressAutoCompletionLine(line: String, cursorCol: Integer) -
 
     var inString = false;
     var escaped = false;
-    var i = 1;
-    while i <= limit {
-        var ch = Str.MidLen(line, i, 1);
+    var i = 0;
+    while i < limit {
+        var ch = Str.ByteAt(line, i);
         if inString {
             if escaped {
                 escaped = false;
-            } else if ch == "\\" {
+            } else if ch == 92 {
                 escaped = true;
-            } else if ch == "\"" {
+            } else if ch == 34 {
                 inString = false;
             }
         } else {
-            if ch == "\"" {
+            if ch == 34 {
                 inString = true;
-            } else if ch == "/" and i < limit and Str.MidLen(line, i + 1, 1) == "/" {
+            } else if ch == 47 and i + 1 < limit and Str.ByteAt(line, i + 1) == 47 {
                 return true;
             }
         }

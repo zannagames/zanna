@@ -20,14 +20,14 @@
 //     its first snapshot, preserving standalone registry use in tooling/tests.
 // Ownership/Lifetime:
 //   - Main owns one registry and refreshes its runtime context once per frame.
-// Links: zannastudio/src/commands/command_catalog.zia,
+// Links: zannastudio/src/services/command_catalog.zia,
 //        zannastudio/src/ui/menu_chrome.zia
 //
 //===----------------------------------------------------------------------===//
 
 module command_registry;
 
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../core/keybinding_settings";
 bind "../editor/language_service";
 

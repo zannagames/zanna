@@ -22,7 +22,7 @@
 module welcome_view;
 
 bind "../app/build_info";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../core/session";
 bind "../services/theme_colors";
 

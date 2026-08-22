@@ -1479,17 +1479,21 @@ static int mat4f_inverse_gl(const float *m, float *out) {
 ///     standard mechanism for fetching extension entry points.
 /// Returns 0 on success, -1 if any required function couldn't be
 /// resolved (the backend caller falls back to software in that case).
-/// Idempotent — `gl_loaded` flag short-circuits subsequent calls.
-/// @param wayland_binding Nonzero to resolve the EGL/Wayland presentation route instead of GLX.
+/// Idempotent — `gl_loaded` flag short-circuits subsequent calls after confirming any newly
+/// requested EGL route is available. Linux-auto builds load GLX presentation symbols alongside
+/// the shared GL dispatch so windowed and headless contexts can coexist in either creation order.
+/// @param wayland_binding Nonzero to resolve the EGL presentation route instead of GLX. This
+///   includes both native Wayland surfaces and headless EGL pbuffers.
 /// @return 0 when every required symbol is available, otherwise -1.
 static int load_gl(int wayland_binding) {
     const char *missing_symbol = NULL;
     if (gl_loaded)
-        return 0;
+        return wayland_binding && !vgfx3d_egl_available() ? -1 : 0;
     gl_dispatch_lock();
     if (gl_loaded) {
+        int result = wayland_binding && !vgfx3d_egl_available() ? -1 : 0;
         gl_dispatch_unlock();
-        return 0;
+        return result;
     }
 
     gl.lib = dlopen("libGL.so.1", RTLD_LAZY);
@@ -1503,7 +1507,7 @@ static int load_gl(int wayland_binding) {
         gl_dispatch_unlock();
         return -1;
     }
-    if (wayland_binding && !vgfx3d_egl_wayland_available()) {
+    if (wayland_binding && !vgfx3d_egl_available()) {
         gl_unload_partial_dispatch();
         gl_dispatch_unlock();
         return -1;
@@ -1584,7 +1588,8 @@ static int load_gl(int wayland_binding) {
     LOAD(BlendFunc);
     LOAD(DepthMask);
 
-    if (!gl_wayland_binding) {
+#if !defined(ZANNA_GRAPHICS_WAYLAND)
+    {
         LOADX(ChooseFBConfig);
         LOADX(CreateNewContext);
         LOADX(GetVisualFromFBConfig);
@@ -1597,6 +1602,7 @@ static int load_gl(int wayland_binding) {
         glx.SwapIntervalEXT = (PFNGLXSWAPINTERVALEXTPROC)glx.GetProcAddress(
             (const unsigned char *)"glXSwapIntervalEXT");
     }
+#endif
 
     LOADP(PolygonMode);
     LOADP(PolygonOffset);

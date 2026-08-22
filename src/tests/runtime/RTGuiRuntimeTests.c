@@ -1535,6 +1535,16 @@ static void test_codeeditor_runtime_supports_multicursor_editing(void) {
     text = rt_codeeditor_get_text(editor);
     assert(strcmp(rt_string_cstr(text), "abc\nabc") == 0);
 
+    rt_codeeditor_clear_extra_cursors(editor);
+    rt_codeeditor_set_text(editor, rt_const_cstr("a\xC3\xA9z\ntail"));
+    rt_codeeditor_set_cursor_position_at(editor, 0, 1, 0);
+    rt_codeeditor_add_cursor(editor, 0, 2);
+    assert(rt_codeeditor_get_cursor_count(editor) == 2);
+    assert(rt_codeeditor_get_cursor_col_at(editor, 1) == 2);
+    rt_codeeditor_insert_at_cursor(editor, rt_const_cstr("X"));
+    text = rt_codeeditor_get_text(editor);
+    assert(strcmp(rt_string_cstr(text), "a\xC3\xA9Xz\nXtail") == 0);
+
     cleanup_fake_app(&app);
     printf("test_codeeditor_runtime_supports_multicursor_editing: PASSED\n");
 }

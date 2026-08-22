@@ -25,9 +25,15 @@ graphics adapter/driver where relevant, commands run, and retained logs or
 screenshots. A new release candidate resets affected rows to `pending` when its
 changes can invalidate the prior evidence.
 
-The checked-in matrix starts honestly at 0/42 applicable passes. It defines the
-gate; it does not claim that unavailable Windows or Linux machines were tested
-from a macOS development session.
+The checked-in matrix currently records 11/42 applicable passes: macOS
+same-size rewrite detection, malformed/large source admission, rename and
+multi-file conflict recovery, PTY
+lifecycle, real Vim/less/htop workflows, bounded huge-panel output, debugger
+structures/watches, and Metal headless rendering have retained same-host
+evidence. It defines the gate;
+it does not claim that unavailable Windows or Linux machines—or interactive
+flows not actually exercised on macOS—were tested from this development
+session.
 
 ## Validation
 

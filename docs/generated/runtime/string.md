@@ -63,6 +63,7 @@ operations including `Asc`, `CamelCase`, `Chr`, `Compare`.
 | <a id="zanna-string-trimstart"></a>`TrimStart` | `str()` | `Zanna.String.TrimStart` |
 | <a id="zanna-string-like"></a>`Like` | `i1(str)` | `Zanna.String.Like` |
 | <a id="zanna-string-likeignorecase"></a>`LikeIgnoreCase` | `i1(str)` | `Zanna.String.LikeIgnoreCase` |
+| <a id="zanna-string-byteat"></a>`ByteAt` | `i64(str,i64)` | `Zanna.String.ByteAt` |
 | <a id="zanna-string-equals"></a>`Equals` | `i1(str,str)` | `Zanna.String.Equals` |
 | <a id="zanna-string-fromi16"></a>`FromI16` | `str(i16)` | `Zanna.String.FromI16` |
 | <a id="zanna-string-fromi32"></a>`FromI32` | `str(i32)` | `Zanna.String.FromI32` |
@@ -85,6 +86,7 @@ operations including `Asc`, `CamelCase`, `Chr`, `Compare`.
 | Function | Signature | Runtime symbol |
 |---|---|---|
 | `Zanna.String.Asc` | `i64(str)` | `rt_str_asc` |
+| `Zanna.String.ByteAt` | `i64(str,i64)` | `rt_str_byte_at` |
 | `Zanna.String.Chr` | `str(i64)` | `rt_str_chr` |
 | `Zanna.String.Concat` | `str(str,str)` | `rt_str_concat` |
 | `Zanna.String.IndexOf` | `i64(str,str)` | `rt_str_index_of` |

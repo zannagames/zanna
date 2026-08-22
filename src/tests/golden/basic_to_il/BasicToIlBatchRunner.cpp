@@ -10,12 +10,14 @@
 //          compiler startup and CMake-script overhead in the default CTest set.
 // Key invariants: Exact-output cases mirror check_il.cmake normalization;
 //                 bounds cases mirror check_il_bounds.cmake normalization;
-//                 contains cases mirror check_il_contains.cmake substring checks.
+//                 contains cases mirror check_il_contains.cmake substring checks;
+//                 goldens are rewritten only when UPDATE_GOLDEN is set.
 // Ownership/Lifetime: The runner owns source/golden buffers for each case and
 //                     constructs a fresh SourceManager per compilation.
 // Links: src/tests/golden/basic_to_il/check_il.cmake,
 //        src/tests/golden/basic_to_il/check_il_bounds.cmake,
-//        src/tests/golden/basic_to_il/check_il_contains.cmake
+//        src/tests/golden/basic_to_il/check_il_contains.cmake,
+//        scripts/update_goldens.sh
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,12 +27,16 @@
 ///          compile every case without launching the `zanna` executable for each
 ///          file.  The old one-test-per-case CTest declarations remain available
 ///          through `ZANNA_ENABLE_INDIVIDUAL_BASIC_TO_IL_GOLDEN_TESTS`.
+///          Setting `UPDATE_GOLDEN=1` in the environment rewrites mismatching
+///          goldens instead of failing, which is how scripts/update_goldens.sh
+///          refreshes the cases owned by this runner.
 
 #include "frontends/basic/BasicCompiler.hpp"
 #include "zanna/il/IO.hpp"
 
 #include <algorithm>
 #include <charconv>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -79,6 +85,33 @@ struct CompileOutput {
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
+}
+
+/// @brief Overwrite a golden file with verbatim compiler output.
+/// @details Mirrors the `file(WRITE)` in check_il.cmake: goldens keep the real
+///          IL version header and the symbol names the compiler emits, so the
+///          text written here is never the normalized comparison form.
+/// @param path Golden file path to overwrite.
+/// @param text Text to write.
+/// @return True when the file was written successfully.
+[[nodiscard]] bool writeTextFile(const std::string &path, const std::string &text) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        std::cerr << "error: unable to write " << path << '\n';
+        return false;
+    }
+    out << text;
+    return static_cast<bool>(out);
+}
+
+/// @brief Report whether golden files may be rewritten instead of compared.
+/// @details Set by scripts/update_goldens.sh for the update pass only. Any
+///          value other than an empty string or `0` enables rewriting, matching
+///          how the CMake checkers treat a defined `UPDATE_GOLDEN`.
+/// @return True when the environment requests golden updates.
+[[nodiscard]] bool goldenUpdateEnabled() {
+    const char *value = std::getenv("UPDATE_GOLDEN");
+    return value != nullptr && *value != '\0' && std::string_view(value) != "0";
 }
 
 /// @brief Replace all occurrences of one substring in-place.
@@ -356,7 +389,23 @@ void replaceAll(std::string &text, std::string_view needle, std::string_view rep
     return CompileOutput{il::io::Serializer::toString(result.module)};
 }
 
+/// @brief Rewrite one case's golden file with the compiler's verbatim output.
+/// @details Only reached when @ref goldenUpdateEnabled is true, so a normal test
+///          run can never silently absorb drift.
+/// @param test Case metadata naming the golden file.
+/// @param actualIl Raw serialized IL produced by the compiler.
+/// @return True when the golden was rewritten.
+[[nodiscard]] bool updateGolden(const TestCase &test, const std::string &actualIl) {
+    if (!writeTextFile(test.goldenPath, normalizeNewlines(actualIl)))
+        return false;
+    std::cout << "Updated golden: " << test.goldenPath << '\n';
+    return true;
+}
+
 /// @brief Compare one normalized exact-output case.
+/// @details Extern drift and body drift both reach the update branch, because a
+///          newly always-declared runtime function changes only the extern set
+///          of every golden and must still be refreshable.
 /// @param test Case metadata.
 /// @param actualIl Serialized IL produced by the compiler.
 /// @return True when the normalized output matches the golden.
@@ -369,6 +418,14 @@ void replaceAll(std::string &text, std::string_view needle, std::string_view rep
     const std::string expectedNorm = normalizeCompareIl(*expected);
     const auto actualExterns = sortedExternLines(actualNorm);
     const auto expectedExterns = sortedExternLines(expectedNorm);
+    const std::string actualBody = removeExternLines(actualNorm);
+    const std::string expectedBody = removeExternLines(expectedNorm);
+    if (actualExterns == expectedExterns && actualBody == expectedBody)
+        return true;
+
+    if (goldenUpdateEnabled())
+        return updateGolden(test, actualIl);
+
     if (actualExterns != expectedExterns) {
         std::cerr << "FAIL: " << test.name << ": extern declarations mismatch\nExpected:\n";
         for (const auto &line : expectedExterns)
@@ -379,15 +436,10 @@ void replaceAll(std::string &text, std::string_view needle, std::string_view rep
         return false;
     }
 
-    const std::string actualBody = removeExternLines(actualNorm);
-    const std::string expectedBody = removeExternLines(expectedNorm);
-    if (actualBody != expectedBody) {
-        std::cerr << "FAIL: " << test.name << ": IL body mismatch\nExpected:\n"
-                  << expectedBody << "\nGot:\n"
-                  << actualBody;
-        return false;
-    }
-    return true;
+    std::cerr << "FAIL: " << test.name << ": IL body mismatch\nExpected:\n"
+              << expectedBody << "\nGot:\n"
+              << actualBody;
+    return false;
 }
 
 /// @brief Compare one normalized bounds-checking case.
@@ -401,6 +453,8 @@ void replaceAll(std::string &text, std::string_view needle, std::string_view rep
     const std::string actualNorm = normalizeBoundsIl(actualIl);
     const std::string expectedNorm = normalizeBoundsIl(*expected);
     if (actualNorm != expectedNorm) {
+        if (goldenUpdateEnabled())
+            return updateGolden(test, actualIl);
         std::cerr << "FAIL: " << test.name << ": bounds-check IL mismatch\nExpected:\n"
                   << expectedNorm << "\nGot:\n"
                   << actualNorm;
@@ -505,6 +559,10 @@ int main(int argc, char **argv) {
     }
     if (failures != 0) {
         std::cerr << failures << " BASIC-to-IL golden case(s) failed\n";
+        if (goldenUpdateEnabled()) {
+            std::cerr << "note: UPDATE_GOLDEN cannot refresh compile failures or contains-style "
+                         "cases, which have no golden file\n";
+        }
         return 1;
     }
     std::cout << attempted << " BASIC-to-IL golden case(s) passed";

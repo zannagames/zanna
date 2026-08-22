@@ -1464,13 +1464,18 @@ static void canvas3d_occlusion_grid_write(canvas3d_occlusion_grid_t *grid,
  * CPU occlusion Hi-Z rasterizer
  *
  * The coarse grid's coverage TEST is unchanged (all cells covered and nearer
- * than the candidate, with margins and covered-streak hysteresis). WRITES now
+ * than the candidate, with margins and covered-streak hysteresis). WRITES
  * rasterize the occluder's actual triangles into a fine per-texel view-depth
  * buffer and fold each fully-written 4x4 block into the coarse grid as its
- * conservative max depth. Over-budget meshes use an exact bounded subset of
- * their own triangles as a conservative coarse proxy: omitted triangles can
- * reduce culling but can never invent coverage. AABB rectangles remain only
- * as the final shallow-depth fallback.
+ * conservative max depth. A draw is an occluder ONLY when its full triangle
+ * set fits the precise budgets: over-budget meshes are occludees only. The
+ * retired proxy path (a centered 512-triangle subset) could not invent
+ * coverage itself, but once its per-frame budget was exhausted over-budget
+ * draws fell through to the AABB-rectangle fallback, which published each
+ * mesh's ENTIRE projected bounds as solid — gaps, seams, and sky included —
+ * and erased visible geometry behind them (the stadium-shell chunk loss).
+ * AABB rectangles remain only as the shallow-depth fallback for
+ * non-rasterizable draws.
  *=========================================================================*/
 
 #define CANVAS3D_HIZ_BLOCK 4
@@ -1480,8 +1485,6 @@ static void canvas3d_occlusion_grid_write(canvas3d_occlusion_grid_t *grid,
 #define CANVAS3D_HIZ_MAX_TRIS_PER_DRAW 1024
 #define CANVAS3D_HIZ_MAX_TRIS_PER_FRAME 8192
 #define CANVAS3D_HIZ_MAX_VERTS_PER_DRAW 4096
-#define CANVAS3D_HIZ_PROXY_TRIS_PER_DRAW 512
-#define CANVAS3D_HIZ_PROXY_TRIS_PER_FRAME 4096
 
 /// @brief Reset the fine Hi-Z buffer and the per-frame triangle budget.
 /// @param c Canvas3D owning fine depth storage and budget counters.
@@ -1489,7 +1492,6 @@ static void canvas3d_hiz_frame_reset(rt_canvas3d *c) {
     if (!c)
         return;
     c->hiz_frame_triangles = 0;
-    c->hiz_frame_proxy_triangles = 0;
     if (c->hiz_depth) {
         for (int32_t i = 0; i < CANVAS3D_HIZ_CELLS; i++)
             c->hiz_depth[i] = FLT_MAX;
@@ -1624,19 +1626,21 @@ static void canvas3d_hiz_flush_blocks(const rt_canvas3d *c,
     }
 }
 
-/// @brief Rasterize one draw's triangles or an exact bounded triangle-subset proxy into Hi-Z.
-/// @details Meshes within the precise budgets project every vertex once and rasterize every
-///   triangle. A draw that exceeds a vertex/triangle limit or the remaining precise frame budget
-///   instead rasterizes a centered contiguous subset of at most 512 source triangles. Proxy
-///   triangles are not enlarged or replaced: missing work can only create false-visible results.
-///   Fine blocks still publish only after all 16 texels have real coverage, so edge-visible
-///   candidates are never culled by an outer AABB rectangle.
+/// @brief Rasterize one draw's full triangle set into the fine Hi-Z buffer.
+/// @details Only meshes within the precise budgets write occlusion: every vertex projects once
+///   and every triangle rasterizes, so published coverage is the geometry's own. An over-budget
+///   draw (vertex/triangle limit or the exhausted precise frame budget) is consumed WITHOUT
+///   writing — it remains an occludee but never an occluder. The retired subset-proxy path was
+///   honest per-triangle, but its exhausted frame budget dropped over-budget draws into the
+///   projected-AABB fallback, which published whole bounds rectangles (gaps and sky included) and
+///   culled visible geometry behind them. Fine blocks still publish only after all 16 texels have
+///   real coverage, so edge-visible candidates are never culled by an outer AABB rectangle.
 /// @param c Canvas3D owning fine depth, scratch, camera matrix, and budgets.
 /// @param grid Mutable coarse grid receiving completed fine blocks.
 /// @param dd Borrowed deferred mesh draw considered as an occluder.
-/// @return 1 when precise geometry or a proxy consumed the draw (disallowing an AABB write), or 0
-///   when the draw is ineligible/no raster budget or storage is available and the caller may try
-///   the separately depth-guarded AABB fallback.
+/// @return 1 when the draw was consumed (rasterized, or over-budget and deliberately not an
+///   occluder — both disallow an AABB write), or 0 when the draw is ineligible or storage is
+///   unavailable and the caller may try the separately depth-guarded AABB fallback.
 static int canvas3d_hiz_rasterize_draw(rt_canvas3d *c,
                                        canvas3d_occlusion_grid_t *grid,
                                        const deferred_draw_t *dd) {
@@ -1645,8 +1649,6 @@ static int canvas3d_hiz_rasterize_draw(rt_canvas3d *c,
     float *verts;
     int32_t source_tri_count;
     int32_t raster_tri_count;
-    int32_t triangle_begin = 0;
-    int use_proxy = 0;
     int32_t fine_min_x = CANVAS3D_HIZ_W;
     int32_t fine_min_y = CANVAS3D_HIZ_H;
     int32_t fine_max_x = -1;
@@ -1665,34 +1667,23 @@ static int canvas3d_hiz_rasterize_draw(rt_canvas3d *c,
     if (source_tri_count > CANVAS3D_HIZ_MAX_TRIS_PER_DRAW ||
         cmd->vertex_count > (uint32_t)CANVAS3D_HIZ_MAX_VERTS_PER_DRAW ||
         source_tri_count > CANVAS3D_HIZ_MAX_TRIS_PER_FRAME - c->hiz_frame_triangles) {
-        int32_t remaining_proxy = CANVAS3D_HIZ_PROXY_TRIS_PER_FRAME - c->hiz_frame_proxy_triangles;
-        use_proxy = 1;
-        if (raster_tri_count > CANVAS3D_HIZ_PROXY_TRIS_PER_DRAW)
-            raster_tri_count = CANVAS3D_HIZ_PROXY_TRIS_PER_DRAW;
-        if (raster_tri_count > remaining_proxy)
-            raster_tri_count = remaining_proxy;
-        if (raster_tri_count <= 0)
-            return 0;
-        triangle_begin = (source_tri_count - raster_tri_count) / 2;
+        /* Consumed, not an occluder: partial coverage cannot be published
+         * honestly, and the AABB fallback would invent it wholesale. */
+        return 1;
     }
     if (!canvas3d_hiz_ensure_buffer(c) ||
-        (!use_proxy && !canvas3d_hiz_ensure_scratch(c, (int32_t)cmd->vertex_count)))
+        !canvas3d_hiz_ensure_scratch(c, (int32_t)cmd->vertex_count))
         return 0;
 
     canvas3d_mul_mat4(c->cached_vp, cmd->model_matrix, mvp);
     verts = c->hiz_vertex_scratch;
-    if (!use_proxy)
-        for (uint32_t i = 0; i < cmd->vertex_count; i++)
-            (void)canvas3d_hiz_project_vertex(mvp, cmd->vertices[i].pos, &verts[(size_t)i * 4u]);
+    for (uint32_t i = 0; i < cmd->vertex_count; i++)
+        (void)canvas3d_hiz_project_vertex(mvp, cmd->vertices[i].pos, &verts[(size_t)i * 4u]);
 
-    for (int32_t local_triangle = 0; local_triangle < raster_tri_count; local_triangle++) {
-        int32_t source_triangle = triangle_begin + local_triangle;
+    for (int32_t source_triangle = 0; source_triangle < raster_tri_count; source_triangle++) {
         uint32_t i0 = cmd->indices[(size_t)source_triangle * 3u];
         uint32_t i1 = cmd->indices[(size_t)source_triangle * 3u + 1u];
         uint32_t i2 = cmd->indices[(size_t)source_triangle * 3u + 2u];
-        float proxy_v0[4];
-        float proxy_v1[4];
-        float proxy_v2[4];
         const float *v0;
         const float *v1;
         const float *v2;
@@ -1703,18 +1694,9 @@ static int canvas3d_hiz_rasterize_draw(rt_canvas3d *c,
         int32_t bb_max_y;
         if (i0 >= cmd->vertex_count || i1 >= cmd->vertex_count || i2 >= cmd->vertex_count)
             continue;
-        if (use_proxy) {
-            (void)canvas3d_hiz_project_vertex(mvp, cmd->vertices[i0].pos, proxy_v0);
-            (void)canvas3d_hiz_project_vertex(mvp, cmd->vertices[i1].pos, proxy_v1);
-            (void)canvas3d_hiz_project_vertex(mvp, cmd->vertices[i2].pos, proxy_v2);
-            v0 = proxy_v0;
-            v1 = proxy_v1;
-            v2 = proxy_v2;
-        } else {
-            v0 = &verts[(size_t)i0 * 4u];
-            v1 = &verts[(size_t)i1 * 4u];
-            v2 = &verts[(size_t)i2 * 4u];
-        }
+        v0 = &verts[(size_t)i0 * 4u];
+        v1 = &verts[(size_t)i1 * 4u];
+        v2 = &verts[(size_t)i2 * 4u];
         if (v0[3] == 0.0f || v1[3] == 0.0f || v2[3] == 0.0f)
             continue;
         area = (v1[0] - v0[0]) * (v2[1] - v0[1]) - (v1[1] - v0[1]) * (v2[0] - v0[0]);
@@ -1778,10 +1760,7 @@ static int canvas3d_hiz_rasterize_draw(rt_canvas3d *c,
             fine_max_y = bb_max_y;
         rasterized_any = 1;
     }
-    if (use_proxy)
-        c->hiz_frame_proxy_triangles += raster_tri_count;
-    else
-        c->hiz_frame_triangles += raster_tri_count;
+    c->hiz_frame_triangles += raster_tri_count;
     if (rasterized_any)
         canvas3d_hiz_flush_blocks(c, grid, fine_min_x, fine_min_y, fine_max_x, fine_max_y);
     /* The draw was consumed by the rasterizer even if every triangle was clipped;
@@ -1850,7 +1829,11 @@ static int canvas3d_occlusion_test_and_write(rt_canvas3d *c,
         if (!covered)
             canvas3d_occlusion_history_note_visible(c, dd);
     }
-    if (!dd->occlusion_write_disabled && !canvas3d_hiz_rasterize_draw(c, grid, dd) && have_rect &&
+    /* The AABB fallback publishes a solid rectangle, so it is reserved for
+     * non-rasterizable single draws with a shallow depth span. An instanced
+     * draw's union rect is not coverage — the instances are scattered. */
+    if (!dd->occlusion_write_disabled && !canvas3d_hiz_rasterize_draw(c, grid, dd) &&
+        dd->instance_count == 0 && have_rect &&
         canvas3d_occlusion_depth_span_can_write(test_depth, write_depth))
         canvas3d_occlusion_grid_write(grid, min_x, min_y, max_x, max_y, write_depth);
     return 0;

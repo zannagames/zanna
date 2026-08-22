@@ -213,7 +213,7 @@ func ScanRoot(request: ProjectBindQueryRequest,
             }
         }
         done = Map.GetBool(page, "done");
-        if emitted == 0 and done == false {
+        if emitted == 0 and done == false and Map.GetInt(page, "work") <= 0 {
             cursor.Destroy();
             state.error = "workspace_unavailable";
             state.stop = true;

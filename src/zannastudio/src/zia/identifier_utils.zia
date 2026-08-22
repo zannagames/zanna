@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/zia/identifier_utils.zia
+// Purpose: Centralize conservative Zia identifier and keyword rules.
+// Key invariants:
+//   - Identifier classification uses the compiler-facing ASCII subset.
+//   - Byte-oriented helpers never allocate one-character strings.
+// Ownership/Lifetime:
+//   - Stateless; returned identifier strings transfer to the caller.
+// Links: zannastudio/src/zia/call_scan.zia,
+//        docs/adr/0288-allocation-free-string-byte-access.md
+//
+//===----------------------------------------------------------------------===//
+
 module identifier_utils;
 
 bind Str = Zanna.String;
@@ -38,6 +57,18 @@ expose func IsIdentPart(ch: String) -> Boolean {
     return false;
 }
 
+/// @brief Allocation-free ASCII identifier-start classification.
+expose func IsIdentStartByte(value: Integer) -> Boolean {
+    if value >= 97 and value <= 122 { return true; }
+    if value >= 65 and value <= 90 { return true; }
+    return value == 95;
+}
+
+/// @brief Allocation-free ASCII identifier-part classification.
+expose func IsIdentPartByte(value: Integer) -> Boolean {
+    return IsIdentStartByte(value) or (value >= 48 and value <= 57);
+}
+
 /// @brief Validate a candidate user-authored identifier.
 /// @details Used before local refactors create new declarations. The check is
 ///          deliberately conservative: an empty string, keyword, leading digit,
@@ -47,11 +78,10 @@ expose func IsIdentPart(ch: String) -> Boolean {
 expose func IsValidIdentifier(name: String) -> Boolean {
     if Str.get_Length(name) == 0 { return false; }
     if IsKeyword(name) { return false; }
-    var first = Str.MidLen(name, 1, 1);
-    if IsIdentStart(first) == false { return false; }
+    if IsIdentStartByte(Str.ByteAt(name, 0)) == false { return false; }
     var i = 2;
     while i <= Str.get_Length(name) {
-        if IsIdentPart(Str.MidLen(name, i, 1)) == false { return false; }
+        if IsIdentPartByte(Str.ByteAt(name, i - 1)) == false { return false; }
         i = i + 1;
     }
     return true;
@@ -67,11 +97,11 @@ expose func IsWordBoundaryMatch(line: String, startCol: Integer, len: Integer) -
     var beforeOk = true;
     var afterOk = true;
     if startCol > 1 {
-        beforeOk = IsIdentPart(Str.MidLen(line, startCol - 1, 1)) == false;
+        beforeOk = IsIdentPartByte(Str.ByteAt(line, startCol - 2)) == false;
     }
     var afterCol = startCol + len;
     if afterCol <= Str.get_Length(line) {
-        afterOk = IsIdentPart(Str.MidLen(line, afterCol, 1)) == false;
+        afterOk = IsIdentPartByte(Str.ByteAt(line, afterCol - 1)) == false;
     }
     return beforeOk and afterOk;
 }
@@ -84,18 +114,13 @@ expose func IsWordBoundaryMatch(line: String, startCol: Integer, len: Integer) -
 /// @return Identifier text, or empty when no identifier starts at `startPos`.
 expose func ReadIdentifierAt(text: String, startPos: Integer) -> String {
     var pos = startPos;
-    var name = "";
-    while pos <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, pos, 1);
-        if name == "" {
-            if IsIdentStart(ch) == false { return ""; }
-        } else if IsIdentPart(ch) == false {
-            break;
-        }
-        name = name + ch;
+    if IsIdentStartByte(Str.ByteAt(text, pos - 1)) == false { return ""; }
+    pos = pos + 1;
+    while pos <= Str.get_Length(text)
+          and IsIdentPartByte(Str.ByteAt(text, pos - 1)) {
         pos = pos + 1;
     }
-    return name;
+    return Str.Substring(text, startPos - 1, pos - startPos);
 }
 
 /// @brief Return true for Zia reserved words known to the IDE transforms.

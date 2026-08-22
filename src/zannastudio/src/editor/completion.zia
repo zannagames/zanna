@@ -441,8 +441,8 @@ class CompletionController extends completion_base.CompletionControllerBase {
         var consumed = 0;
         var i = 1;
         while i <= Str.get_Length(inserted) and consumed < cursorOffset {
-            var ch = Str.MidLen(inserted, i, 1);
-            if ch == "\n" {
+            var ch = Str.ByteAt(inserted, i - 1);
+            if ch == 10 {
                 line = line + 1;
                 col = 0;
             } else {
@@ -906,7 +906,7 @@ class CompletionController extends completion_base.CompletionControllerBase {
         if startCol <= 0 { return false; }
         var line = editor.GetLine(editor.CursorLine);
         if Str.get_Length(line) < startCol { return false; }
-        return Str.MidLen(line, startCol, 1) == ".";
+        return Str.ByteAt(line, startCol - 1) == 46;
     }
 }
 

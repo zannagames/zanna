@@ -15,14 +15,14 @@
 // Ownership/Lifetime:
 //   - AppShell owns one MenuChrome for the lifetime of the IDE window.
 //   - GUI widgets are created during BuildMainMenus/BuildToolbar/BuildContextMenus.
-// Links: zannastudio/src/ui/app_shell.zia, zannastudio/src/commands/command_catalog.zia
+// Links: zannastudio/src/ui/app_shell.zia, zannastudio/src/services/command_catalog.zia
 //
 //===----------------------------------------------------------------------===//
 
 module menu_chrome;
 
 bind "../commands/command_registry";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../editor/language_service";
 bind "../ui/status_bar_model";
 bind "../ui/menu_chrome_base";

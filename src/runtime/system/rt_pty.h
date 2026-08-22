@@ -66,6 +66,13 @@ extern "C" {
 void *rt_pty_open(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows);
 
+/// @brief Open a PTY with inherited environment plus explicit overrides.
+/// @details Override names use native comparison rules: case-insensitive on
+///          Windows and case-sensitive on POSIX. NULL/empty overlays inherit
+///          the parent environment unchanged.
+void *rt_pty_open_with_env_overlay(
+    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows);
+
 /// @brief Open a PTY-backed child process and return a Zanna.Result.
 /// @details Returns `Ok(PtySession)` when the child session starts and
 ///          `Err(message)` when the platform lacks PTY support, startup fails,
@@ -83,6 +90,10 @@ void *rt_pty_open(
 void *rt_pty_open_result(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows);
 
+/// @brief Result-returning form of rt_pty_open_with_env_overlay().
+void *rt_pty_open_with_env_overlay_result(
+    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows);
+
 /// @brief Return TRUE when the runtime can create PTY sessions on this platform.
 /// @details Always true for the POSIX backend. Windows dynamically requires all
 ///          ConPTY entry points (Windows 10 1809+); failure installs a
@@ -91,9 +102,9 @@ void *rt_pty_open_result(
 int64_t rt_pty_is_supported(void);
 
 /// @brief Copy the calling thread's most recent PTY diagnostic.
-/// @details Intended for reporting immediately after a failed operation.
-///          Successful rt_pty_open calls clear it, while unrelated successful
-///          operations do not necessarily clear an earlier message.
+/// @details Intended for reporting immediately after a failed operation. Every
+///          public PTY operation first clears the prior per-thread message, so
+///          a successful operation cannot leave a stale diagnostic behind.
 /// @return Newly allocated diagnostic string, or an empty string when none;
 ///         the caller must release it.
 rt_string rt_pty_last_error(void);
@@ -137,8 +148,10 @@ rt_string rt_pty_read(void *handle);
 void *rt_pty_read_result(void *handle);
 
 /// @brief Write bytes to the terminal input.
-/// @details Honors runtime-string length, including embedded NUL; POSIX may
-///          return a partial count because the master descriptor is nonblocking.
+/// @details Honors runtime-string length, including embedded NUL. Windows
+///          copies accepted bytes into a bounded asynchronous queue so a child
+///          that stops reading cannot block the caller; POSIX writes directly
+///          to the nonblocking master and may return a partial count.
 /// @param handle Candidate PTY session with open terminal input.
 /// @param data Runtime byte string; NULL is treated as empty.
 /// @return Complete byte count, zero for empty input, positive partial count

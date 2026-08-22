@@ -187,11 +187,11 @@ func ParameterHintText(line: String, funcs: List) -> String {
         var openParen = Str.IndexOfFrom(line, pos, "(");
         if openParen == 0 { return ""; }
         var nameEnd = openParen - 1;
-        while nameEnd > 0 and IsSpace(Str.MidLen(line, nameEnd, 1)) {
+        while nameEnd > 0 and IsSpaceByte(Str.ByteAt(line, nameEnd - 1)) {
             nameEnd = nameEnd - 1;
         }
         var nameStart = nameEnd;
-        while nameStart > 0 and IsIdentPart(Str.MidLen(line, nameStart, 1)) {
+        while nameStart > 0 and IsIdentPartByte(Str.ByteAt(line, nameStart - 1)) {
             nameStart = nameStart - 1;
         }
         nameStart = nameStart + 1;
@@ -317,13 +317,13 @@ func ArgumentCount(args: String) -> Integer {
     var inString = false;
     var i = 1;
     while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
-        if ch == "\"" {
+        var ch = Str.ByteAt(text, i - 1);
+        if ch == 34 {
             inString = inString == false;
         } else if inString == false {
-            if ch == "(" { depth = depth + 1; }
-            if ch == ")" and depth > 0 { depth = depth - 1; }
-            if ch == "," and depth == 0 { count = count + 1; }
+            if ch == 40 { depth = depth + 1; }
+            if ch == 41 and depth > 0 { depth = depth - 1; }
+            if ch == 44 and depth == 0 { count = count + 1; }
         }
         i = i + 1;
     }
@@ -335,12 +335,12 @@ func FindClosingParen(text: String, openParen: Integer) -> Integer {
     var inString = false;
     var i = openParen;
     while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
-        if ch == "\"" {
+        var ch = Str.ByteAt(text, i - 1);
+        if ch == 34 {
             inString = inString == false;
         } else if inString == false {
-            if ch == "(" { depth = depth + 1; }
-            if ch == ")" {
+            if ch == 40 { depth = depth + 1; }
+            if ch == 41 {
                 depth = depth - 1;
                 if depth == 0 { return i; }
             }
@@ -356,10 +356,10 @@ func IsNumericLiteral(text: String) -> Boolean {
     var seenDot = false;
     var i = 1;
     while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
-        if ch >= "0" and ch <= "9" {
+        var ch = Str.ByteAt(text, i - 1);
+        if ch >= 48 and ch <= 57 {
             seenDigit = true;
-        } else if ch == "." and seenDot == false {
+        } else if ch == 46 and seenDot == false {
             seenDot = true;
         } else {
             return false;
@@ -373,10 +373,10 @@ func IsIdentifier(text: String) -> Boolean {
     if text == "" { return false; }
     var i = 1;
     while i <= Str.get_Length(text) {
-        var ch = Str.MidLen(text, i, 1);
+        var ch = Str.ByteAt(text, i - 1);
         if i == 1 {
-            if IsIdentStart(ch) == false { return false; }
-        } else if IsIdentPart(ch) == false {
+            if IsIdentStartByte(ch) == false { return false; }
+        } else if IsIdentPartByte(ch) == false {
             return false;
         }
         i = i + 1;
@@ -390,6 +390,18 @@ func IsIdentStart(ch: String) -> Boolean {
 
 func IsIdentPart(ch: String) -> Boolean {
     return IsIdentStart(ch) or (ch >= "0" and ch <= "9");
+}
+
+func IsIdentStartByte(ch: Integer) -> Boolean {
+    return (ch >= 65 and ch <= 90) or (ch >= 97 and ch <= 122) or ch == 95;
+}
+
+func IsIdentPartByte(ch: Integer) -> Boolean {
+    return IsIdentStartByte(ch) or (ch >= 48 and ch <= 57);
+}
+
+func IsSpaceByte(ch: Integer) -> Boolean {
+    return ch == 32 or ch == 9;
 }
 
 func IsSpace(ch: String) -> Boolean {

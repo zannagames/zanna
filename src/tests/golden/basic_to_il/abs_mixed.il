@@ -1,5 +1,6 @@
 il 0.3.0
 extern @Zanna.String.Asc(str) -> i64
+extern @Zanna.String.ByteAt(str, i64) -> i64
 extern @Zanna.String.Chr(i64) -> str
 extern @Zanna.String.IndexOf(str, str) -> i64
 extern @Zanna.String.IndexOfFrom(str, i64, str) -> i64

@@ -221,6 +221,8 @@ set(RT_IO_FS_SOURCES
 
 set(RT_EXEC_SOURCES
         system/rt_activity_wake.c
+        system/rt_activity_watch.c
+        system/rt_async_pipe_writer.c
         system/rt_exec.c
         system/rt_process.c
         system/rt_pty.c
@@ -509,9 +511,11 @@ set(RT_GRAPHICS_DISABLED_SOURCES
         graphics/common/rt_canvas3d_stubs.c
         graphics/common/rt_embed_host.c
         graphics/common/rt_3d_asset_stubs.c
+        graphics/common/rt_3d_animation_effect_stubs.c
         graphics/common/rt_3d_textureasset_stubs.c
         graphics/common/rt_3d_scene_stubs.c
         graphics/common/rt_3d_physics_stubs.c
+        graphics/common/rt_3d_cloth_stubs.c
         graphics/common/rt_3d_world_stubs.c
         graphics/common/rt_graphics_media_stubs.c
         graphics/common/rt_disabled_runtime_stubs.c

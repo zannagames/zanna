@@ -143,6 +143,10 @@ class ScmViewControlLayer extends PreviousLayer.ScmViewJobLayer {
             abortOperationBtn.SetEnabled(false);
             abortOperationBtn.SetVisible(false);
         }
+        if takeCurrentBtn != null { takeCurrentBtn.SetEnabled(false); takeCurrentBtn.SetVisible(false); }
+        if takeIncomingBtn != null { takeIncomingBtn.SetEnabled(false); takeIncomingBtn.SetVisible(false); }
+        if continueOperationBtn != null { continueOperationBtn.SetEnabled(false); continueOperationBtn.SetVisible(false); }
+        if skipRebaseBtn != null { skipRebaseBtn.SetEnabled(false); skipRebaseBtn.SetVisible(false); }
     }
 
     /// @brief Find the latest structured status entry for one repository path.
@@ -212,6 +216,7 @@ class ScmViewControlLayer extends PreviousLayer.ScmViewJobLayer {
         var selected = SelectedEntry();
         var staged = HasStagedChanges();
         var conflicts = HasConflicts();
+        var selectedConflict = statusMode and selected != null and selected.conflicted;
         var commitMessage = "";
         if commitInput != null { commitMessage = Str.Trim(commitInput.get_Text()); }
 
@@ -250,7 +255,7 @@ class ScmViewControlLayer extends PreviousLayer.ScmViewJobLayer {
         if commitInput != null { commitInput.SetEnabled(statusMode); }
         if commitBtn != null {
             commitBtn.SetEnabled(statusMode and staged and conflicts == false
-                                 and commitMessage != "");
+                                 and operationState == "idle" and commitMessage != "");
         }
         if sideBySideButton != null {
             sideBySideButton.SetEnabled(statusMode and selected != null);
@@ -262,6 +267,26 @@ class ScmViewControlLayer extends PreviousLayer.ScmViewJobLayer {
                      or operationState == "conflict-rebase");
             abortOperationBtn.SetVisible(canAbort);
             abortOperationBtn.SetEnabled(canAbort and Busy() == false);
+        }
+        if takeCurrentBtn != null {
+            takeCurrentBtn.SetVisible(selectedConflict);
+            takeCurrentBtn.SetEnabled(selectedConflict and Busy() == false);
+        }
+        if takeIncomingBtn != null {
+            takeIncomingBtn.SetVisible(selectedConflict);
+            takeIncomingBtn.SetEnabled(selectedConflict and Busy() == false);
+        }
+        if continueOperationBtn != null {
+            var canContinue = repository and conflicts == false
+                and (operationState == "merging" or operationState == "rebasing");
+            continueOperationBtn.SetVisible(canContinue);
+            continueOperationBtn.SetEnabled(canContinue and Busy() == false);
+        }
+        if skipRebaseBtn != null {
+            var canSkip = repository and (operationState == "rebasing"
+                          or operationState == "conflict-rebase");
+            skipRebaseBtn.SetVisible(canSkip);
+            skipRebaseBtn.SetEnabled(canSkip and Busy() == false);
         }
     }
     /// @brief Repo-relative path of the selected row.

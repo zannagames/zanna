@@ -31,6 +31,8 @@
 //     resolved dynamically and thread-safely (Windows 10 1809+).
 //
 // Links: src/runtime/system/rt_pty.h, src/runtime/system/rt_process.c,
+//        src/runtime/system/rt_activity_watch.h,
+//        src/runtime/system/rt_async_pipe_writer.h,
 //        docs/adr/0281-event-driven-process-pty-gui-wakes.md
 //
 //===----------------------------------------------------------------------===//
@@ -51,6 +53,8 @@
 #include "rt_pty.h"
 
 #include "rt_activity_wake.h"
+#include "rt_activity_watch.h"
+#include "rt_async_pipe_writer.h"
 #include "rt_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
@@ -82,7 +86,6 @@ typedef VOID(WINAPI *pty_close_pseudoconsole_fn)(void *);
 #else
 #include <fcntl.h>
 #include <poll.h>
-#include <pthread.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
@@ -98,6 +101,8 @@ extern char **environ;
 #define PTY_BUFFER_MAX_SIZE (16 * 1024 * 1024)
 /// @brief Maximum time finalization waits for an asynchronously terminated ConPTY child.
 #define PTY_WINDOWS_TERMINATE_WAIT_MS 5000u
+/// @brief Maximum copied terminal-input bytes awaiting the Windows writer.
+#define PTY_WINDOWS_INPUT_QUEUE_MAX_SIZE (1024 * 1024)
 /// @brief Capacity of the per-thread PTY diagnostic buffer.
 #define PTY_LAST_ERROR_MAX 256
 
@@ -128,36 +133,54 @@ typedef struct rt_pty_impl {
     int8_t started;
     int8_t running;
     int8_t destroyed;
+    int8_t finalizing;
     int64_t exit_code;
     pty_buffer output_buf;
     rt_activity_wake_target *activity_wake;
-    volatile int activity_monitor_stop;
-    volatile int activity_monitor_armed;
+    rt_activity_watch *activity_watch;
     volatile int output_activity_closed;
-    int activity_monitor_started;
 
 #if defined(_WIN32)
     HANDLE process;
     HANDLE thread;
     HANDLE input_write; // parent -> child
+    rt_async_pipe_writer *input_writer;
     HANDLE output_read; // child -> parent
     void *hpc;          // HPCON
-    HANDLE activity_thread;
-    HANDLE activity_stop_event;
-    HANDLE activity_rearm_event;
 #else
     pid_t pid;
     int master_fd;
-    pthread_t activity_thread;
-    int activity_control_read;
-    int activity_control_write;
 #endif
 } rt_pty_impl;
 
 static void pty_finalize(void *obj);
+static void pty_close(rt_pty_impl *pty);
 static int pty_activity_monitor_start(rt_pty_impl *pty);
 static void pty_activity_monitor_stop(rt_pty_impl *pty);
 static void pty_activity_rearm(rt_pty_impl *pty);
+static int pty_activity_probe(void *context);
+
+static int pty_activity_monitor_start(rt_pty_impl *pty) {
+    if (!pty || pty->activity_watch)
+        return pty && pty->activity_watch;
+    pty->activity_watch = rt_activity_watch_register(pty_activity_probe, pty, pty->activity_wake);
+    return pty->activity_watch != NULL;
+}
+
+static void pty_activity_monitor_stop(rt_pty_impl *pty) {
+    if (!pty)
+        return;
+    rt_activity_watch_unregister(pty->activity_watch);
+    pty->activity_watch = NULL;
+    rt_activity_wake_release(pty->activity_wake);
+    pty->activity_wake = NULL;
+}
+
+static void pty_activity_rearm(rt_pty_impl *pty) {
+    if (pty)
+        rt_activity_watch_rearm(pty->activity_watch);
+}
+
 // Thread-local so concurrent Open/OpenResult/IsSupported calls on different
 // threads never tear each other's diagnostic or clobber it — the buffer was a
 // plain process-global written with snprintf from every path (VDOC-215). Each
@@ -469,16 +492,12 @@ static rt_pty_impl *pty_alloc(void) {
     pty->process = NULL;
     pty->thread = NULL;
     pty->input_write = NULL;
+    pty->input_writer = NULL;
     pty->output_read = NULL;
     pty->hpc = NULL;
-    pty->activity_thread = NULL;
-    pty->activity_stop_event = NULL;
-    pty->activity_rearm_event = NULL;
 #else
     pty->pid = -1;
     pty->master_fd = -1;
-    pty->activity_control_read = -1;
-    pty->activity_control_write = -1;
 #endif
     rt_obj_set_finalizer(pty, pty_finalize);
     return pty;
@@ -569,94 +588,20 @@ static void close_handle(HANDLE *h) {
     }
 }
 
-/// @brief Monitor ConPTY output readiness and process exit off the UI thread.
-static DWORD WINAPI pty_activity_monitor_main(LPVOID context) {
+/// @brief Probe ConPTY output readiness and process exit without blocking.
+static int pty_activity_probe(void *context) {
     rt_pty_impl *pty = (rt_pty_impl *)context;
-    if (!pty)
+    if (!pty || pty->destroyed)
+        return 0;
+    if (pty->process && WaitForSingleObject(pty->process, 0) == WAIT_OBJECT_0)
         return 1;
-    HANDLE waits[2] = {pty->activity_stop_event, pty->process};
-    for (;;) {
-        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
-            return 0;
-        if (!rt_atomic_load_i32(&pty->activity_monitor_armed, __ATOMIC_ACQUIRE)) {
-            HANDLE paused[2] = {pty->activity_stop_event, pty->activity_rearm_event};
-            DWORD resumed = WaitForMultipleObjects(2, paused, FALSE, INFINITE);
-            if (resumed == WAIT_OBJECT_0 || resumed == WAIT_FAILED)
-                return 0;
-            continue;
-        }
-        DWORD available = 0;
-        int pipe_activity = 0;
-        if (pty->output_read &&
-            !rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE)) {
-            if (!PeekNamedPipe(pty->output_read, NULL, 0, NULL, &available, NULL)) {
-                pipe_activity =
-                    !rt_atomic_exchange_i32(&pty->output_activity_closed, 1, __ATOMIC_ACQ_REL);
-            } else {
-                pipe_activity = available > 0;
-            }
-        }
-        int exited = pty->process && WaitForSingleObject(pty->process, 0) == WAIT_OBJECT_0;
-        if (pipe_activity || exited) {
-            if (rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
-                rt_activity_wake_signal(pty->activity_wake);
-            if (exited)
-                return 0;
-            continue;
-        }
-        DWORD waited = WaitForMultipleObjects(2, waits, FALSE, 16);
-        if (waited == WAIT_OBJECT_0 || waited == WAIT_FAILED)
-            return 0;
-        if (waited == WAIT_OBJECT_0 + 1) {
-            if (rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
-                rt_activity_wake_signal(pty->activity_wake);
-            return 0;
-        }
-    }
-}
-
-static int pty_activity_monitor_start(rt_pty_impl *pty) {
-    if (!pty || pty->activity_monitor_started)
-        return pty && pty->activity_monitor_started;
-    pty->activity_stop_event = CreateEventW(NULL, TRUE, FALSE, NULL);
-    pty->activity_rearm_event = CreateEventW(NULL, FALSE, FALSE, NULL);
-    if (!pty->activity_stop_event || !pty->activity_rearm_event) {
-        close_handle(&pty->activity_stop_event);
-        close_handle(&pty->activity_rearm_event);
+    if (!pty->output_read || rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE))
         return 0;
+    DWORD available = 0;
+    if (!PeekNamedPipe(pty->output_read, NULL, 0, NULL, &available, NULL)) {
+        return !rt_atomic_exchange_i32(&pty->output_activity_closed, 1, __ATOMIC_ACQ_REL);
     }
-    rt_atomic_store_i32(&pty->activity_monitor_stop, 0, __ATOMIC_RELEASE);
-    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
-    pty->activity_thread = CreateThread(NULL, 0, pty_activity_monitor_main, pty, 0, NULL);
-    if (!pty->activity_thread) {
-        close_handle(&pty->activity_stop_event);
-        close_handle(&pty->activity_rearm_event);
-        return 0;
-    }
-    pty->activity_monitor_started = 1;
-    return 1;
-}
-
-static void pty_activity_monitor_stop(rt_pty_impl *pty) {
-    if (!pty || !pty->activity_monitor_started)
-        return;
-    rt_atomic_store_i32(&pty->activity_monitor_stop, 1, __ATOMIC_RELEASE);
-    SetEvent(pty->activity_stop_event);
-    (void)WaitForSingleObject(pty->activity_thread, INFINITE);
-    close_handle(&pty->activity_thread);
-    close_handle(&pty->activity_stop_event);
-    close_handle(&pty->activity_rearm_event);
-    pty->activity_monitor_started = 0;
-    rt_activity_wake_release(pty->activity_wake);
-    pty->activity_wake = NULL;
-}
-
-static void pty_activity_rearm(rt_pty_impl *pty) {
-    if (!pty || !pty->activity_monitor_started ||
-        rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
-        return;
-    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
-    SetEvent(pty->activity_rearm_event);
+    return available > 0;
 }
 
 /// @brief Convert a NUL-terminated UTF-8 string to strict UTF-16.
@@ -679,125 +624,7 @@ static wchar_t *pty_widen(const char *text) {
     return wide;
 }
 
-/// @brief Invoke the dynamically resolved Windows ordinal comparator.
-/// @details Uses case-insensitive CompareStringOrdinal when available and falls
-///          back to exact wide-string equality otherwise.
-/// @param left First UTF-16 string.
-/// @param left_len First length, or -1 for NUL-terminated input.
-/// @param right Second UTF-16 string.
-/// @param right_len Second length, or -1 for NUL-terminated input.
-/// @return CSTR_* ordering value, CSTR_EQUAL for equal fallback inputs, or zero
-///         for unequal fallback inputs.
-static int pty_compare_ordinal(const wchar_t *left,
-                               int left_len,
-                               const wchar_t *right,
-                               int right_len) {
-    pty_load_conpty();
-    if (pty_compare_string_ordinal)
-        return pty_compare_string_ordinal(left, left_len, right, right_len, TRUE);
-    if (left_len < 0 && right_len < 0)
-        return wcscmp(left, right) == 0 ? CSTR_EQUAL : 0;
-    return wcsncmp(left, right, (size_t)left_len) == 0 ? CSTR_EQUAL : 0;
-}
-
-/// @brief Compare complete UTF-16 environment entries using Win32 ordinal rules.
-/// @details Applies case-insensitive ordinal order first and binary wide-string
-///          order as a deterministic tie breaker.
-/// @param left Pointer to the first wchar_t pointer.
-/// @param right Pointer to the second wchar_t pointer.
-/// @return Negative, zero, or positive for qsort ordering.
-static int pty_compare_env_entry_wide(const void *left, const void *right) {
-    const wchar_t *lhs = *(const wchar_t *const *)left;
-    const wchar_t *rhs = *(const wchar_t *const *)right;
-    int result = pty_compare_ordinal(lhs, -1, rhs, -1);
-    if (result == CSTR_LESS_THAN)
-        return -1;
-    if (result == CSTR_GREATER_THAN)
-        return 1;
-    return wcscmp(lhs, rhs);
-}
-
-/// @brief Test whether two UTF-16 environment entries name the same variable.
-/// @param lhs First NUL-terminated NAME=VALUE entry.
-/// @param rhs Second NUL-terminated NAME=VALUE entry.
-/// @return 1 when the nonempty names compare case-insensitively equal, otherwise 0.
-static int pty_env_names_equal_wide(const wchar_t *lhs, const wchar_t *rhs) {
-    size_t lhs_len = 0;
-    size_t rhs_len = 0;
-    while (lhs[lhs_len] && lhs[lhs_len] != L'=')
-        lhs_len++;
-    while (rhs[rhs_len] && rhs[rhs_len] != L'=')
-        rhs_len++;
-    if (lhs_len == 0 || lhs_len != rhs_len || lhs_len > INT_MAX)
-        return 0;
-    return pty_compare_ordinal(lhs, (int)lhs_len, rhs, (int)rhs_len) == CSTR_EQUAL;
-}
-
-/// @brief Build a strict, sorted CreateProcessW environment block.
-/// @details Converts every validated NAME=VALUE entry independently, sorts
-///          case-insensitively, rejects duplicate names, and emits the required
-///          double-NUL terminator. A non-NULL empty sequence creates an explicit
-///          empty environment block.
-/// @param env Runtime environment sequence, or NULL to inherit.
-/// @return Caller-owned UTF-16 block, or NULL for inheritance or on conversion,
-///         duplicate-name, overflow, or allocation failure.
-static wchar_t *pty_build_env_block_wide(void *env) {
-    int64_t count;
-    size_t total_wchars = 1;
-    wchar_t **entries = NULL;
-    wchar_t *block = NULL;
-
-    if (!env)
-        return NULL;
-    count = rt_seq_len(env);
-    if (count < 0 || (uint64_t)count > SIZE_MAX / sizeof(*entries))
-        return NULL;
-    if (count > 0) {
-        entries = (wchar_t **)calloc((size_t)count, sizeof(*entries));
-        if (!entries)
-            return NULL;
-    }
-    for (int64_t i = 0; i < count; i++) {
-        rt_string item = rt_seq_get_str(env, i);
-        entries[i] = pty_widen(item ? rt_string_cstr(item) : NULL);
-        rt_str_release_maybe(item);
-        if (!entries[i])
-            goto fail;
-        size_t length = wcslen(entries[i]);
-        if (length == SIZE_MAX || total_wchars > SIZE_MAX - length - 1)
-            goto fail;
-        total_wchars += length + 1;
-    }
-    if (count > 1) {
-        qsort(entries, (size_t)count, sizeof(*entries), pty_compare_env_entry_wide);
-        for (int64_t i = 1; i < count; i++) {
-            if (pty_env_names_equal_wide(entries[i - 1], entries[i]))
-                goto fail;
-        }
-    }
-    if (total_wchars == SIZE_MAX || total_wchars + 1 > SIZE_MAX / sizeof(*block))
-        goto fail;
-    block = (wchar_t *)calloc(total_wchars + 1, sizeof(*block));
-    if (!block)
-        goto fail;
-    wchar_t *out = block;
-    for (int64_t i = 0; i < count; i++) {
-        size_t length = wcslen(entries[i]);
-        memcpy(out, entries[i], length * sizeof(*out));
-        out += length + 1;
-        free(entries[i]);
-    }
-    free(entries);
-    return block;
-
-fail:
-    if (entries) {
-        for (int64_t i = 0; i < count; i++)
-            free(entries[i]);
-    }
-    free(entries);
-    return NULL;
-}
+#include "rt_pty_windows_environment.inc"
 
 /// @brief Append one argument to a growing Windows command line.
 /// @details Adds a separating space when needed and applies conventional
@@ -884,8 +711,13 @@ static int pty_cmdline_append(char **buf, size_t *len, size_t *cap, const char *
 /// @param rows Normalized initial terminal rows.
 /// @return New GC-managed running PTY object, or NULL after recording any
 ///         validation, availability, conversion, setup, or launch failure.
-static rt_pty_impl *pty_open_impl(
-    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
+static rt_pty_impl *pty_open_impl(rt_string program,
+                                  void *args,
+                                  rt_string cwd,
+                                  void *env,
+                                  int64_t cols,
+                                  int64_t rows,
+                                  int overlay_environment) {
     const char *program_text = NULL;
     const char *cwd_text = NULL;
     size_t program_len = 0, cwd_len = 0;
@@ -1006,7 +838,8 @@ static rt_pty_impl *pty_open_impl(
     wchar_t *wcwd = cwd_text ? pty_widen(cwd_text) : NULL;
     free(cmdline);
     cmdline = NULL;
-    wchar_t *env_block = pty_build_env_block_wide(env);
+    wchar_t *env_block =
+        overlay_environment ? pty_build_env_overlay_block_wide(env) : pty_build_env_block_wide(env);
     if (!wcmd || (cwd_text && !wcwd) || (env && !env_block)) {
         pty_set_last_error("ConPTY UTF-8 conversion or environment allocation failed");
         DeleteProcThreadAttributeList(si.lpAttributeList);
@@ -1063,8 +896,16 @@ static rt_pty_impl *pty_open_impl(
     pty->process = pi.hProcess;
     pty->thread = pi.hThread;
     pty->input_write = in_write;
+    pty->input_writer =
+        rt_async_pipe_writer_create(pty->input_write, PTY_WINDOWS_INPUT_QUEUE_MAX_SIZE);
     pty->output_read = out_read;
     pty->hpc = hpc;
+    if (!pty->input_writer) {
+        pty_close(pty);
+        if (rt_obj_release_check0(pty))
+            rt_obj_free(pty);
+        return NULL;
+    }
     return pty;
 }
 
@@ -1091,7 +932,8 @@ static void pty_drain(rt_pty_impl *pty) {
             break;
         }
         if (!buffer_append(&pty->output_buf, chunk, (size_t)got)) {
-            rt_trap("Pty: output buffer allocation failed");
+            if (!pty->finalizing)
+                rt_trap("Pty: output buffer allocation failed");
             break;
         }
     }
@@ -1162,18 +1004,7 @@ static int pty_resize_impl(rt_pty_impl *pty, int64_t cols, int64_t rows) {
 /// @return Complete byte count, a positive partial count after later failure,
 ///         or -1 when no byte can be written.
 static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
-    if (!pty->input_write)
-        return -1;
-    size_t off = 0;
-    while (off < len) {
-        size_t remaining = len - off;
-        DWORD chunk = remaining > 0x40000000u ? 0x40000000u : (DWORD)remaining;
-        DWORD written = 0;
-        if (!WriteFile(pty->input_write, bytes + off, chunk, &written, NULL) || written == 0)
-            return off > 0 ? (int64_t)off : -1;
-        off += written;
-    }
-    return (int64_t)off;
+    return rt_async_pipe_writer_enqueue(pty ? pty->input_writer : NULL, bytes, len);
 }
 
 /// @brief Terminate and release a Windows PTY session.
@@ -1198,6 +1029,10 @@ static void pty_close(rt_pty_impl *pty) {
         }
     }
     pty_drain(pty);
+    if (!rt_async_pipe_writer_destroy(pty->input_writer, PTY_WINDOWS_TERMINATE_WAIT_MS) &&
+        !pty->finalizing)
+        pty_set_last_error("Bounded ConPTY input writer shutdown failed");
+    pty->input_writer = NULL;
     if (pty->hpc && pty_close_pc) {
         pty_close_pc(pty->hpc);
         pty->hpc = NULL;
@@ -1264,108 +1099,18 @@ static void close_fd(int *fd) {
     }
 }
 
-static void pty_activity_control_signal(rt_pty_impl *pty) {
-    if (!pty || pty->activity_control_write < 0)
-        return;
-    const unsigned char byte = 1;
-    ssize_t result;
-    do {
-        result = write(pty->activity_control_write, &byte, 1);
-    } while (result < 0 && errno == EINTR);
-    (void)result;
-}
-
-static void pty_activity_control_drain(rt_pty_impl *pty) {
-    if (!pty || pty->activity_control_read < 0)
-        return;
-    unsigned char bytes[64];
-    while (read(pty->activity_control_read, bytes, sizeof(bytes)) > 0) {
-    }
-}
-
-/// @brief Block on one PTY master and emit one wake per main-thread drain.
-static void *pty_activity_monitor_main(void *context) {
+/// @brief Probe one POSIX PTY master without blocking the shared watcher.
+static int pty_activity_probe(void *context) {
     rt_pty_impl *pty = (rt_pty_impl *)context;
-    if (!pty)
-        return NULL;
-    for (;;) {
-        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
-            return NULL;
-        int armed = rt_atomic_load_i32(&pty->activity_monitor_armed, __ATOMIC_ACQUIRE);
-        struct pollfd descriptors[2];
-        nfds_t count = 1;
-        descriptors[0] =
-            (struct pollfd){.fd = pty->activity_control_read, .events = POLLIN, .revents = 0};
-        if (armed && pty->master_fd >= 0 &&
-            !rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE))
-            descriptors[count++] =
-                (struct pollfd){.fd = pty->master_fd, .events = POLLIN, .revents = 0};
-        int result;
-        do {
-            result = poll(descriptors, count, -1);
-        } while (result < 0 && errno == EINTR);
-        if (result < 0)
-            return NULL;
-        if (descriptors[0].revents != 0)
-            pty_activity_control_drain(pty);
-        if (rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
-            return NULL;
-        if (count > 1 &&
-            (descriptors[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) &&
-            rt_atomic_exchange_i32(&pty->activity_monitor_armed, 0, __ATOMIC_ACQ_REL))
-            rt_activity_wake_signal(pty->activity_wake);
-    }
-}
-
-static int pty_activity_monitor_start(rt_pty_impl *pty) {
-    if (!pty || pty->activity_monitor_started)
-        return pty && pty->activity_monitor_started;
-    int control[2] = {-1, -1};
-    if (pipe(control) != 0)
+    if (!pty || pty->destroyed || pty->master_fd < 0 ||
+        rt_atomic_load_i32(&pty->output_activity_closed, __ATOMIC_ACQUIRE))
         return 0;
-    for (int i = 0; i < 2; ++i) {
-        int descriptor_flags = fcntl(control[i], F_GETFD, 0);
-        int status_flags = fcntl(control[i], F_GETFL, 0);
-        if (descriptor_flags < 0 || status_flags < 0 ||
-            fcntl(control[i], F_SETFD, descriptor_flags | FD_CLOEXEC) != 0 ||
-            fcntl(control[i], F_SETFL, status_flags | O_NONBLOCK) != 0) {
-            close(control[0]);
-            close(control[1]);
-            return 0;
-        }
-    }
-    pty->activity_control_read = control[0];
-    pty->activity_control_write = control[1];
-    rt_atomic_store_i32(&pty->activity_monitor_stop, 0, __ATOMIC_RELEASE);
-    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
-    if (pthread_create(&pty->activity_thread, NULL, pty_activity_monitor_main, pty) != 0) {
-        close_fd(&pty->activity_control_read);
-        close_fd(&pty->activity_control_write);
-        return 0;
-    }
-    pty->activity_monitor_started = 1;
-    return 1;
-}
-
-static void pty_activity_monitor_stop(rt_pty_impl *pty) {
-    if (!pty || !pty->activity_monitor_started)
-        return;
-    rt_atomic_store_i32(&pty->activity_monitor_stop, 1, __ATOMIC_RELEASE);
-    pty_activity_control_signal(pty);
-    (void)pthread_join(pty->activity_thread, NULL);
-    close_fd(&pty->activity_control_read);
-    close_fd(&pty->activity_control_write);
-    pty->activity_monitor_started = 0;
-    rt_activity_wake_release(pty->activity_wake);
-    pty->activity_wake = NULL;
-}
-
-static void pty_activity_rearm(rt_pty_impl *pty) {
-    if (!pty || !pty->activity_monitor_started ||
-        rt_atomic_load_i32(&pty->activity_monitor_stop, __ATOMIC_ACQUIRE))
-        return;
-    rt_atomic_store_i32(&pty->activity_monitor_armed, 1, __ATOMIC_RELEASE);
-    pty_activity_control_signal(pty);
+    struct pollfd descriptor = {.fd = pty->master_fd, .events = POLLIN, .revents = 0};
+    int result;
+    do {
+        result = poll(&descriptor, 1, 0);
+    } while (result < 0 && errno == EINTR);
+    return result > 0 && (descriptor.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL));
 }
 
 /// @brief Best-effort report a pre-exec child error to the parent.
@@ -1463,8 +1208,9 @@ static void pty_drain(rt_pty_impl *pty) {
         ssize_t count = read(pty->master_fd, chunk, sizeof(chunk));
         if (count > 0) {
             if (!buffer_append(&pty->output_buf, chunk, (size_t)count)) {
-                rt_trap("Pty: output buffer allocation failed");
-                if (!pty->activity_monitor_started)
+                if (!pty->finalizing)
+                    rt_trap("Pty: output buffer allocation failed");
+                if (!pty->activity_watch)
                     close_fd(&pty->master_fd);
                 break;
             }
@@ -1473,7 +1219,7 @@ static void pty_drain(rt_pty_impl *pty) {
         if (count == 0) {
             // EOF on the master means the child closed the slave (exited).
             rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
-            if (!pty->activity_monitor_started)
+            if (!pty->activity_watch)
                 close_fd(&pty->master_fd);
             break;
         }
@@ -1483,7 +1229,7 @@ static void pty_drain(rt_pty_impl *pty) {
             break;
         // A closed slave surfaces as EIO on the master once the child is gone.
         rt_atomic_store_i32(&pty->output_activity_closed, 1, __ATOMIC_RELEASE);
-        if (!pty->activity_monitor_started)
+        if (!pty->activity_watch)
             close_fd(&pty->master_fd);
         break;
     }
@@ -1601,6 +1347,73 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
     return (int64_t)off;
 }
 
+/// @brief Return the nonempty name length of one POSIX NAME=value entry.
+static size_t pty_env_name_length(const char *entry) {
+    const char *equals = entry ? strchr(entry, '=') : NULL;
+    return equals && equals != entry ? (size_t)(equals - entry) : 0;
+}
+
+/// @brief Compare POSIX environment names using native case-sensitive rules.
+static int pty_env_names_equal(const char *left, const char *right) {
+    size_t left_len = pty_env_name_length(left);
+    size_t right_len = pty_env_name_length(right);
+    return left_len > 0 && left_len == right_len && memcmp(left, right, left_len) == 0;
+}
+
+/// @brief Build an inherited POSIX environment with validated overrides.
+static pty_string_vector pty_build_env_overlay_vector(void *env) {
+    pty_string_vector result;
+    memset(&result, 0, sizeof(result));
+    pty_string_vector overlay = build_string_vector(NULL, env, 0);
+    if (!overlay.values)
+        return result;
+    size_t overlay_count = 0;
+    while (overlay.values[overlay_count])
+        overlay_count++;
+    for (size_t i = 0; i < overlay_count; i++) {
+        for (size_t j = i + 1; j < overlay_count; j++) {
+            if (pty_env_names_equal(overlay.values[i], overlay.values[j])) {
+                free_string_vector(&overlay);
+                return result;
+            }
+        }
+    }
+    size_t inherited_count = 0;
+    while (environ && environ[inherited_count])
+        inherited_count++;
+    if (inherited_count > SIZE_MAX - overlay_count - 1 ||
+        inherited_count + overlay_count + 1 > SIZE_MAX / sizeof(char *)) {
+        free_string_vector(&overlay);
+        return result;
+    }
+    result.values = (char **)calloc(inherited_count + overlay_count + 1, sizeof(char *));
+    if (!result.values) {
+        free_string_vector(&overlay);
+        return result;
+    }
+    size_t at = 0;
+    for (size_t i = 0; i < inherited_count; i++) {
+        int shadowed = 0;
+        for (size_t j = 0; j < overlay_count; j++) {
+            if (pty_env_names_equal(environ[i], overlay.values[j])) {
+                shadowed = 1;
+                break;
+            }
+        }
+        if (!shadowed)
+            result.values[at++] = environ[i];
+    }
+    for (size_t i = 0; i < overlay_count; i++)
+        result.values[at++] = overlay.values[i];
+    result.values[at] = NULL;
+    result.owned_strings = overlay.owned_strings;
+    result.owned_count = overlay.owned_count;
+    overlay.owned_strings = NULL;
+    overlay.owned_count = 0;
+    free(overlay.values);
+    return result;
+}
+
 /// @brief Open a controlling-terminal-backed POSIX child session.
 /// @details Validates OS-bound strings, creates and unlocks a PTY pair, forks a
 ///          session leader, attaches the slave as controlling terminal and all
@@ -1618,8 +1431,13 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
 /// @param rows Normalized initial terminal rows.
 /// @return New GC-managed running PTY object, or NULL after recording any
 ///         validation, allocation, PTY, fork, child-setup, or exec failure.
-static rt_pty_impl *pty_open_impl(
-    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
+static rt_pty_impl *pty_open_impl(rt_string program,
+                                  void *args,
+                                  rt_string cwd,
+                                  void *env,
+                                  int64_t cols,
+                                  int64_t rows,
+                                  int overlay_environment) {
     const char *program_text = NULL;
     const char *cwd_text = NULL;
     size_t program_len = 0, cwd_len = 0;
@@ -1655,7 +1473,8 @@ static rt_pty_impl *pty_open_impl(
     pty_string_vector envp;
     memset(&envp, 0, sizeof(envp));
     if (env)
-        envp = build_string_vector(NULL, env, 0);
+        envp = overlay_environment ? pty_build_env_overlay_vector(env)
+                                   : build_string_vector(NULL, env, 0);
     if (env && !envp.values) {
         free_string_vector(&argv);
         pty_set_last_error("PTY environment allocation failed");
@@ -1904,7 +1723,13 @@ static int64_t pty_supported(void) {
 /// @brief GC finalizer for a PTY session's operating-system resources.
 /// @param obj PTY implementation object being finalized.
 static void pty_finalize(void *obj) {
-    pty_close((rt_pty_impl *)obj);
+    rt_pty_impl *pty = (rt_pty_impl *)obj;
+    if (!pty)
+        return;
+    // A GC finalizer must not longjmp out of collector bookkeeping. Explicit
+    // Destroy remains diagnostic; finalization is bounded best-effort cleanup.
+    pty->finalizing = 1;
+    pty_close(pty);
 }
 
 /// @brief Open an interactive pseudoterminal-backed child session.
@@ -1925,7 +1750,18 @@ void *rt_pty_open(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     pty_set_last_error(NULL);
     pty_clamp_size(&cols, &rows);
-    void *handle = pty_open_impl(program, args, cwd, env, cols, rows);
+    void *handle = pty_open_impl(program, args, cwd, env, cols, rows, 0);
+    if (handle)
+        pty_set_last_error(NULL);
+    return handle;
+}
+
+/// @brief Open a PTY with inherited environment plus explicit overrides.
+void *rt_pty_open_with_env_overlay(
+    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
+    pty_set_last_error(NULL);
+    pty_clamp_size(&cols, &rows);
+    void *handle = pty_open_impl(program, args, cwd, env, cols, rows, 1);
     if (handle)
         pty_set_last_error(NULL);
     return handle;
@@ -1971,12 +1807,44 @@ void *rt_pty_open_result(
     return result;
 }
 
+/// @brief Open a PTY with inherited environment overrides and return a Result.
+void *rt_pty_open_with_env_overlay_result(
+    rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        const char *err = rt_trap_get_error();
+        rt_trap_clear_recovery();
+        return rt_result_err_str(
+            rt_const_cstr(err && err[0] ? err : "Pty.OpenWithEnvOverlay failed"));
+    }
+
+    void *handle = rt_pty_open_with_env_overlay(program, args, cwd, env, cols, rows);
+    rt_trap_clear_recovery();
+    if (!handle) {
+        rt_string err = rt_pty_last_error();
+        if (!err || rt_str_len(err) == 0) {
+            rt_str_release_maybe(err);
+            return rt_result_err_str(rt_const_cstr("Pty.OpenWithEnvOverlay failed"));
+        }
+        void *result = rt_result_err_str(err);
+        rt_str_release_maybe(err);
+        return result;
+    }
+
+    void *result = rt_result_ok(handle);
+    if (rt_obj_release_check0(handle))
+        rt_obj_free(handle);
+    return result;
+}
+
 /// @brief Report whether this runtime can create PTY sessions.
 /// @details POSIX builds always report support. Windows dynamically requires
 ///          CreatePseudoConsole, ResizePseudoConsole, and ClosePseudoConsole;
 ///          an unavailable backend installs a default thread-local diagnostic.
 /// @return 1 when the platform backend is available, otherwise 0.
 int64_t rt_pty_is_supported(void) {
+    pty_set_last_error(NULL);
     int64_t supported = pty_supported();
     if (!supported && pty_last_error[0] == '\0')
         pty_set_last_error("PTY support is not available on this platform");
@@ -1984,8 +1852,9 @@ int64_t rt_pty_is_supported(void) {
 }
 
 /// @brief Copy the calling thread's latest PTY support or operation diagnostic.
-/// @details Successful rt_pty_open() clears the slot. Other successful
-///          operations do not necessarily clear an older diagnostic.
+/// @details Every public PTY operation clears the calling thread's previous
+///          diagnostic before doing work, so this value always describes the
+///          immediately preceding failed operation rather than stale history.
 /// @return Newly allocated diagnostic string, or a newly allocated empty string
 ///         when no error is recorded.
 rt_string rt_pty_last_error(void) {
@@ -2000,12 +1869,14 @@ rt_string rt_pty_last_error(void) {
 /// @param handle Candidate opaque runtime object.
 /// @return 1 for a valid PTY handle, otherwise 0.
 int64_t rt_pty_is_valid(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     return pty && pty->started && !pty->destroyed ? 1 : 0;
 }
 
 /// @brief Attach a lifetime-safe output/exit wake target to a live PTY.
 int64_t rt_pty_set_activity_wake(void *handle, rt_activity_wake_target *target) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !target || !pty->started || pty->destroyed)
         return 0;
@@ -2023,6 +1894,7 @@ int64_t rt_pty_set_activity_wake(void *handle, rt_activity_wake_target *target) 
 /// @param handle Candidate PTY session handle.
 /// @return 1 while the child is running, otherwise 0.
 int64_t rt_pty_poll(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return 0;
@@ -2045,6 +1917,7 @@ int64_t rt_pty_is_running(void *handle) {
 /// @return Newly allocated incremental output string, or an empty string for no
 ///         bytes or an invalid handle.
 rt_string rt_pty_read(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return empty_string();
@@ -2059,6 +1932,7 @@ rt_string rt_pty_read(void *handle) {
 /// @return Caller-owned result map, including an empty nontruncated result for
 ///         invalid handles, or NULL when map allocation fails.
 void *rt_pty_read_result(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return buffer_take_result(NULL);
@@ -2075,14 +1949,20 @@ void *rt_pty_read_result(void *handle) {
 /// @return Complete byte count, zero for empty input, a positive partial count
 ///         after later failure or would-block, or -1 when no byte can be written.
 int64_t rt_pty_write(void *handle, rt_string data) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
-    if (!pty || !pty->started || pty->destroyed)
+    if (!pty || !pty->started || pty->destroyed) {
+        pty_set_last_error("PTY input handle is invalid");
         return -1;
+    }
     const char *bytes = data ? rt_string_cstr(data) : "";
     size_t len = data ? (size_t)rt_str_len(data) : 0;
     if (len == 0)
         return 0;
-    return pty_write_impl(pty, bytes, len);
+    int64_t written = pty_write_impl(pty, bytes, len);
+    if (written < 0)
+        pty_set_last_error("PTY input is closed or temporarily full");
+    return written;
 }
 
 /// @brief Resize the pseudoterminal window.
@@ -2094,6 +1974,7 @@ int64_t rt_pty_write(void *handle, rt_string data) {
 /// @param rows Requested rows.
 /// @return 1 only when the OS applies the normalized size, otherwise 0.
 int64_t rt_pty_resize(void *handle, int64_t cols, int64_t rows) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return 0;
@@ -2109,6 +1990,7 @@ int64_t rt_pty_resize(void *handle, int64_t cols, int64_t rows) {
 /// @return Normal exit code, negated signal number on POSIX, or -1 while
 ///         running, after status failure, or for an invalid handle.
 int64_t rt_pty_exit_code(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return -1;
@@ -2123,6 +2005,7 @@ int64_t rt_pty_exit_code(void *handle) {
 /// @param handle Candidate PTY session handle.
 /// @return 1 when a termination request is accepted, otherwise 0.
 int64_t rt_pty_kill(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed || !pty->running)
         return 0;
@@ -2146,6 +2029,7 @@ int64_t rt_pty_kill(void *handle) {
 /// @return Normal exit code, negated signal number on POSIX, or -1 for an
 ///         invalid handle or wait/status failure.
 int64_t rt_pty_wait(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     if (!pty || !pty->started || pty->destroyed)
         return -1;
@@ -2158,6 +2042,7 @@ int64_t rt_pty_wait(void *handle) {
 ///          subsequent PTY operations.
 /// @param handle Candidate PTY session handle; invalid values are ignored.
 void rt_pty_destroy(void *handle) {
+    pty_set_last_error(NULL);
     rt_pty_impl *pty = pty_checked(handle);
     pty_close(pty);
 }

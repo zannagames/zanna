@@ -773,32 +773,41 @@ static void gl_release_host_only_context_storage(gl_context_t *ctx) {
 
 /// @brief Allocate and initialize the entire OpenGL backend context.
 ///
-/// Creates: GLX or Wayland/EGL context (3.3 core profile preferred, fallback to
-/// any), shader programs (main, shadow, skybox, postfx), VAOs +
+/// Creates: GLX, Wayland/EGL, or headless EGL-pbuffer context (3.3 core profile
+/// preferred, fallback to any), shader programs (main, shadow, skybox, postfx), VAOs +
 /// VBOs (mesh, instance, fullscreen-triangle, skybox cube), bone
 /// UBOs, morph TBOs. Returns NULL on any failure path; caller falls
 /// back to the software backend.
 ///
 /// FBConfig selection picks the first config matching the window's
 /// X visual to avoid drawable-incompatibility errors at MakeCurrent.
-/// @param win Borrowed Zanna window whose native handles and framebuffer are used.
+/// @param win Optional borrowed Zanna window whose native handles and framebuffer are used. A
+///   null window selects the EGL pbuffer route for accelerated offscreen rendering.
 /// @param w Initial logical output width in pixels.
 /// @param h Initial logical output height in pixels.
 /// @return A fully initialized backend context, or NULL after releasing partial state on failure.
 static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
     gl_shader_set_t shaders;
     vgfx_native_handles_t handles;
-    if (!vgfx_get_native_handles(win, &handles) ||
-        (handles.backend != VGFX_NATIVE_BACKEND_X11 &&
-         handles.backend != VGFX_NATIVE_BACKEND_WAYLAND) ||
-        load_gl(handles.backend == VGFX_NATIVE_BACKEND_WAYLAND) != 0)
+    int headless = win == NULL;
+    memset(&handles, 0, sizeof(handles));
+    if (headless) {
+        if (load_gl(1) != 0)
+            return NULL;
+    } else if (!vgfx_get_native_handles(win, &handles) ||
+               (handles.backend != VGFX_NATIVE_BACKEND_X11 &&
+                handles.backend != VGFX_NATIVE_BACKEND_WAYLAND) ||
+               load_gl(handles.backend == VGFX_NATIVE_BACKEND_WAYLAND) != 0) {
         return NULL;
+    }
 
     gl_context_t *ctx = (gl_context_t *)calloc(1, sizeof(gl_context_t));
     if (!ctx)
         return NULL;
     ctx->vgfx_win = win;
-    if (handles.backend == VGFX_NATIVE_BACKEND_WAYLAND) {
+    if (headless) {
+        ctx->egl_binding = vgfx3d_egl_headless_create(w, h);
+    } else if (handles.backend == VGFX_NATIVE_BACKEND_WAYLAND) {
         ctx->egl_binding = vgfx3d_egl_wayland_create(handles.display, handles.surface, w, h);
     }
 #if !defined(ZANNA_GRAPHICS_WAYLAND)

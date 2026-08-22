@@ -24,6 +24,10 @@ Thumbs.db
 /out/
 /artifacts/
 /artifacts-*/
+# Golden-runner failure diagnostics (check_opt.cmake / check_constfold.cmake
+# write <binary-dir>/_artifacts/<test>/{golden,out,diff}); a runner invoked with
+# the source tree as its binary dir drops them here.
+/_artifacts/
 cmake-build*/
 cmake-build-*/
 CMakeFiles/

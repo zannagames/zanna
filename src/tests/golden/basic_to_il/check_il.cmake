@@ -1,3 +1,6 @@
+## Accept UPDATE_GOLDEN from -D or the environment.
+include(${CMAKE_CURRENT_LIST_DIR}/../GoldenUpdateMode.cmake)
+
 if (NOT DEFINED ILC)
     message(FATAL_ERROR "ILC not set")
 endif ()
@@ -14,6 +17,10 @@ endif ()
 # Normalize Windows line endings
 string(REPLACE "\r\n" "\n" out "${out}")
 string(REPLACE "\r" "\n" out "${out}")
+## Keep the verbatim compiler output for -DUPDATE_GOLDEN=1. Goldens store the
+## real IL version header and the symbol names the compiler actually emits, so
+## refreshing one must not bake in the comparison placeholders applied below.
+set(out_raw "${out}")
 file(READ ${GOLDEN} expected)
 string(REPLACE "\r\n" "\n" expected "${expected}")
 string(REPLACE "\r" "\n" expected "${expected}")
@@ -39,16 +46,23 @@ string(REGEX MATCHALL "extern @[^\n]+" _out_externs "${out}")
 string(REGEX MATCHALL "extern @[^\n]+" _exp_externs "${expected}")
 list(SORT _out_externs)
 list(SORT _exp_externs)
+set(_mismatch "")
 if (NOT "${_out_externs}" STREQUAL "${_exp_externs}")
-    message(FATAL_ERROR "Extern declarations mismatch\nExpected:\n${_exp_externs}\nGot:\n${_out_externs}")
+    set(_mismatch "Extern declarations mismatch\nExpected:\n${_exp_externs}\nGot:\n${_out_externs}")
 endif ()
 string(REGEX REPLACE "extern @[^\n]+\n?" "" _out_body "${out}")
 string(REGEX REPLACE "extern @[^\n]+\n?" "" _exp_body "${expected}")
-if (NOT "${_out_body}" STREQUAL "${_exp_body}")
+if ("${_mismatch}" STREQUAL "" AND NOT "${_out_body}" STREQUAL "${_exp_body}")
+    set(_mismatch "IL body mismatch\nExpected:\n${_exp_body}\nGot:\n${_out_body}")
+endif ()
+## Both drift kinds route through one -DUPDATE_GOLDEN=1 branch. Extern drift is
+## the common case when a runtime function becomes always-declared, so failing
+## it outright would leave update_goldens.sh unable to refresh these files.
+if (NOT "${_mismatch}" STREQUAL "")
     if (DEFINED UPDATE_GOLDEN)
-        file(WRITE ${GOLDEN} "${out}")
+        file(WRITE ${GOLDEN} "${out_raw}")
         message(STATUS "Updated golden: ${GOLDEN}")
     else ()
-        message(FATAL_ERROR "IL body mismatch\nExpected:\n${_exp_body}\nGot:\n${_out_body}")
+        message(FATAL_ERROR "${_mismatch}")
     endif ()
 endif ()

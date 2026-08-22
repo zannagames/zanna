@@ -156,30 +156,30 @@ expose func ZiaFunctionEndLineFromLines(lines: Any,
         var pos = 1;
         var inString = false;
         while pos <= Str.get_Length(line) {
-            var ch = Str.MidLen(line, pos, 1);
-            var next = "";
+            var ch = Str.ByteAt(line, pos - 1);
+            var next = -1;
             if pos < Str.get_Length(line) {
-                next = Str.MidLen(line, pos + 1, 1);
+                next = Str.ByteAt(line, pos);
             }
 
             if inString {
-                if ch == "\\" {
+                if ch == 92 {
                     pos = pos + 2;
                     continue;
                 }
-                if ch == "\"" {
+                if ch == 34 {
                     inString = false;
                 }
             } else {
-                if ch == "/" and next == "/" {
+                if ch == 47 and next == 47 {
                     break;
                 }
-                if ch == "\"" {
+                if ch == 34 {
                     inString = true;
-                } else if ch == "{" {
+                } else if ch == 123 {
                     depth = depth + 1;
                     seenOpen = true;
-                } else if ch == "}" {
+                } else if ch == 125 {
                     if seenOpen {
                         depth = depth - 1;
                         if depth <= 0 {

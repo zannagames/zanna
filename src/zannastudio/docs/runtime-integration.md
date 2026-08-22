@@ -88,11 +88,12 @@ max-line limit evicts the oldest logical line without shifting the whole line
 array, so long build logs and terminal sessions do not pay an O(n) cost per
 eviction.
 
-OutputPane terminal mode is intentionally not a complete terminal emulator. It
-supports line-oriented shell interaction, captured key input, cursor-position
-overwrite for common shell redraws, `CSI H/f` row addressing, `CSI K` line
-erase, `CSI J` display erase, and cursor save/restore. It does not implement the
-full alternate-screen and terminal-mode behavior required by full-screen editors.
+OutputPane terminal mode implements the bounded VT subset exercised by the
+integrated-shell conformance corpus: alternate screens, scrolling regions,
+line/cell edits, delayed autowrap, origin-relative cursor addressing, tab stops,
+cursor/application modes, bracketed paste, status replies, and xterm-style key
+encoding. It remains a deliberately bounded emulator rather than a claim of
+complete VT/xterm compatibility.
 
 ### VirtualList And VirtualTree
 
@@ -153,7 +154,9 @@ Zanna Studio uses:
 
 - `Pty.IsSupported()`.
 - `Pty.LastError()`.
-- `Pty.Open(program, args, cwd, env, cols, rows)`.
+- `Pty.OpenWithEnvOverlayResult(program, args, cwd, env, cols, rows)` with
+  `TERM=xterm-256color` and `COLORTERM=truecolor`, preserving the inherited
+  executable path, home, locale, and shell environment.
 - `PtySession.ReadResult()`.
 - `PtySession.Write()`.
 - `PtySession.Resize()`.
@@ -437,9 +440,11 @@ Studio's viewport requests acceleration at startup
 their pixels stay byte-deterministic. Camera framing always derives from the
 logical viewport, letting interactive camera/gizmo drags render into a
 reduced-resolution target that Studio upscales before drawing overlays — a
-full-resolution frame re-renders on release. Backends without headless
-context support fail construction cleanly and fall back; enabling true GPU
-offscreen contexts per backend is the recorded follow-up.
+full-resolution frame re-renders on release. Metal creates a layer-free
+context, D3D11 creates a device without an HWND/swap chain (hardware then
+WARP), and Linux OpenGL creates a surfaceless EGL pbuffer without requiring
+Wayland integration. Missing platform GPU facilities still fail construction
+cleanly and select the truthful software fallback.
 
 ADR 0172 exposes the light component already retained and serialized by the
 native scene graph as a typed read/write `SceneNode.Light` property. The setter

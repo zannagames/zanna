@@ -43,7 +43,7 @@ local changes. Do not revert or reformat files outside the scope of your work.
 Use this path for anything triggered by a menu item, toolbar button, shortcut,
 command palette item, context menu item, or activity bar action.
 
-1. Add a `CommandSpec` row in `commands/command_catalog.zia`.
+1. Add a `CommandSpec` row in `services/command_catalog.zia`.
 2. Choose a stable command id. Prefer lower-case words without punctuation.
 3. Add a label and description that explain the action, not implementation.
 4. Add a shortcut only if it is important and does not conflict.

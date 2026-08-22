@@ -5,6 +5,9 @@
 # Ownership/Lifetime: Invoked by CTest for IL optimizer golden tests.
 # Links: docs/internals/codemap.md
 
+## Accept UPDATE_GOLDEN from -D or the environment.
+include(${CMAKE_CURRENT_LIST_DIR}/../GoldenUpdateMode.cmake)
+
 if (NOT DEFINED ILC)
     message(FATAL_ERROR "ILC not set")
 endif ()

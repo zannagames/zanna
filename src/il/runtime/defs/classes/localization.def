@@ -522,6 +522,8 @@ RT_CLASS_END()
 RT_CLASS_BEGIN("Zanna.System.Pty", Pty, "obj", none)
     RT_METHOD("Open", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)", PtyOpen)
     RT_METHOD("OpenResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)", PtyOpenResult)
+    RT_METHOD("OpenWithEnvOverlay", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)", PtyOpenWithEnvOverlay)
+    RT_METHOD("OpenWithEnvOverlayResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)", PtyOpenWithEnvOverlayResult)
     RT_METHOD("IsSupported", "i1()", PtyIsSupported)
 RT_CLASS_END()
 

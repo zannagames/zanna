@@ -100,12 +100,13 @@ class LanguageServiceManager {
 
         basicService = new LanguageService();
         basicService.name = LANGUAGE_BASIC;
-        basicService.displayName = "BASIC (scanner)";
-        basicService.capabilityNote = "BASIC semantic navigation is scanner-backed";
+        basicService.displayName = "BASIC";
+        basicService.capabilityNote =
+            "Compiler-backed editor semantics with bounded workspace indexing";
         basicService.externalServerName = "vbasic-server";
         // In-process BASIC language services use the Zanna.Basic.* bridge for
-        // compiler-backed features plus the IDE-side BASIC semantic scanner for
-        // project navigation, rename, references, and signature help.
+        // compiler-backed editor semantics plus the IDE-side bounded corpus
+        // index for project-wide navigation, rename, and references.
         basicService.canComplete = true;
         basicService.canDiagnose = true;
         basicService.canHover = true;

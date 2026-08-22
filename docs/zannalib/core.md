@@ -412,6 +412,7 @@ methods (`Left`, `Right`, `Substr`, indexes, ...) continue to accept arbitrary b
 | Method                       | Signature                  | Description                                                                   |
 |------------------------------|----------------------------|-------------------------------------------------------------------------------|
 | `Substring(start, length)`   | `String(Integer, Integer)` | Extracts bytes from zero-based offset `start`; negative values clamp to zero   |
+| `ByteAt(offset)`             | `Integer(Integer)` | Read an unsigned byte at a zero-based offset, or `-1` when out of range |
 | `Concat(other)`              | `String(String)`           | Concatenates another string and returns the result                            |
 | `Left(count)`                | `String(Integer)`          | Returns the leftmost `count` bytes; a negative count traps                     |
 | `Right(count)`               | `String(Integer)`          | Returns the rightmost `count` bytes; a negative count traps                    |

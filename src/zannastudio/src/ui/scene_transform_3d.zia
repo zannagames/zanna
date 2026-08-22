@@ -29,6 +29,7 @@ module scene_transform_3d;
 
 bind Fmt = Zanna.Text.Fmt;
 bind Math = Zanna.Math;
+bind Vec3 = Zanna.Math.Vec3;
 
 // ============================================================================
 // MODULE: scene_transform_3d
@@ -53,6 +54,40 @@ final TRANSFORM_SPACE_WORLD: Integer = 1;
 final GROUP_PIVOT_INDIVIDUAL: Integer = 0;
 final GROUP_PIVOT_PRIMARY: Integer = 1;
 final GROUP_PIVOT_CENTROID: Integer = 2;
+
+/// @brief Resolve a stable shared pivot for a multi-selection world transform.
+/// @details Move and individual-pivot edits use per-node origins. Primary uses the captured
+///   primary position, while centroid averages the complete captured selection so mutation order
+///   during an edit cannot move the pivot.
+/// @param transformMode Move, rotate, or scale mode.
+/// @param pivotMode Individual, primary, or centroid pivot policy.
+/// @param primaryPosition Captured world position of the primary selection.
+/// @param startWorldPositions Captured world positions for the normalized selection.
+/// @return Shared pivot, or null when each selected node owns its origin.
+func GroupPivotPoint(transformMode: Integer,
+                     pivotMode: Integer,
+                     primaryPosition: Vec3,
+                     startWorldPositions: List[Vec3]) -> Vec3 {
+    if transformMode == TRANSFORM_MOVE
+       or pivotMode == GROUP_PIVOT_INDIVIDUAL
+       or startWorldPositions.count() < 2 {
+        return null;
+    }
+    if pivotMode == GROUP_PIVOT_PRIMARY { return primaryPosition; }
+    var sumX = 0.0;
+    var sumY = 0.0;
+    var sumZ = 0.0;
+    var index = 0;
+    while index < startWorldPositions.count() {
+        var position = startWorldPositions.get(index);
+        sumX = sumX + position.X;
+        sumY = sumY + position.Y;
+        sumZ = sumZ + position.Z;
+        index = index + 1;
+    }
+    var count = 1.0 * startWorldPositions.count();
+    return Vec3.New(sumX / count, sumY / count, sumZ / count);
+}
 
 /// @brief Return the toolbar label for one group pivot policy.
 func GroupPivotLabel(pivotMode: Integer) -> String {

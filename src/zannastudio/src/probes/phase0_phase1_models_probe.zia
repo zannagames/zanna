@@ -20,6 +20,8 @@
 
 module phase0_phase1_models_probe;
 
+bind BasicLanguageService = Zanna.Basic.LanguageService;
+
 // ============================================================================
 // MODULE: phase0_phase1_probe
 // PURPOSE: Headless regression coverage for core IDE model and command helpers.
@@ -33,7 +35,7 @@ module phase0_phase1_models_probe;
 // ============================================================================
 
 bind "../commands/command_registry";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../commands/edit_commands";
 bind "../commands/file_commands";
 bind "../commands/search_commands";
@@ -503,7 +505,7 @@ func TestCommandsAndModels() {
 }
 
 func TestSupportingModels() {
-    var basicSource = "SUB Greet(name$)\n  PRINT name$\nEND SUB\nGreet(\"Ada\")\n";
+    var basicSource = "SUB Greet(name$)\n  PRINT \"héllo\", name$\nEND SUB\nGreet(\"Ada\")\n";
     var basicDecls = semantic_scan.DeclarationsForFile("probe.bas", basicSource);
     var greetDef = semantic_scan.BestDefinition(basicDecls, "probe.bas", 4, "Greet");
     if assertTrue(greetDef != null and Map.GetBool(greetDef, "found")
@@ -521,6 +523,31 @@ func TestSupportingModels() {
     if assertTrue(Map.GetBool(basicSig, "available")
                   and Map.GetStr(basicSig, "name") == "Greet",
                   "basic scanner returns signature help") == false { return; }
+    var compilerSig = BasicLanguageService.SignatureInfoForFile(
+        basicSource, "probe.bas", 4, 8);
+    if assertTrue(Map.GetBool(compilerSig, "available")
+                  and Map.GetStr(compilerSig, "name") == "Greet"
+                  and Map.GetStr(compilerSig, "source") == "basic-compiler",
+                  "BASIC compiler service is authoritative for signature help: available="
+                  + Map.GetBool(compilerSig, "available")
+                  + " name=" + Map.GetStr(compilerSig, "name")
+                  + " source=" + Map.GetStr(compilerSig, "source")) == false {
+        return;
+    }
+    var scopedSource = "SUB First()\n DIM firstLocal AS INTEGER\nEND SUB\n"
+        + "SUB Second()\n DIM secondLocal AS INTEGER\nEND SUB\n";
+    var scopedDecls = semantic_scan.DeclarationsForFile("scope.bas", scopedSource);
+    var firstLocal = semantic_scan.BestDefinition(
+        scopedDecls, "scope.bas", 2, "firstLocal");
+    var secondLocal = semantic_scan.BestDefinition(
+        scopedDecls, "scope.bas", 5, "secondLocal");
+    if assertTrue(Map.GetInt(firstLocal, "scopeStart") == 1
+                  and Map.GetInt(firstLocal, "scopeEnd") == 3
+                  and Map.GetInt(secondLocal, "scopeStart") == 4
+                  and Map.GetInt(secondLocal, "scopeEnd") == 6,
+                  "basic scope index assigns independent linear-time procedure ranges") == false {
+        return;
+    }
 
     var previewPath = Path.Join(TempFile.Dir(), "zannastudio_preview.png");
     File.WriteAllText(previewPath, "not actually image data");

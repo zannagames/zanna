@@ -21,6 +21,7 @@ module scm_view_presenter;
 bind "scm_view_base";
 bind "scm_view_controls" as PreviousLayer;
 bind "scm_git";
+bind "scm_git_support";
 bind "../ui/diff_view";
 bind "../services/safe_io";
 
@@ -160,7 +161,9 @@ class ScmViewPresenterLayer extends PreviousLayer.ScmViewControlLayer {
             }
             if job.kind == "fetch" or job.kind == "pullFf"
                or job.kind == "pullMerge" or job.kind == "pullRebase"
-               or job.kind == "mergeAbort" or job.kind == "rebaseAbort" {
+               or job.kind == "mergeAbort" or job.kind == "rebaseAbort"
+               or job.kind == "mergeContinue" or job.kind == "rebaseContinue"
+               or job.kind == "rebaseSkip" {
                 operationState = "idle";
             }
         } else {
@@ -301,17 +304,26 @@ class ScmViewPresenterLayer extends PreviousLayer.ScmViewControlLayer {
         if st.entries.count() == 0 {
             AddStatusRow("(working tree clean)", "", "empty");
         }
+        var repositoryOperation = scm_git_support.CurrentOperation(git.repo);
         if conflicts > 0 {
-            if operationState == "rebasing" {
+            if repositoryOperation == "rebasing" or operationState == "rebasing" {
                 operationState = "conflict-rebase";
-            } else if operationState == "merging" {
+            } else if repositoryOperation == "merging" or operationState == "merging" {
                 operationState = "conflict-merge";
             } else if Str.StartsWith(operationState, "conflict") == false {
                 operationState = "conflict";
             }
             statusLabel.SetText("" + conflicts + " conflict(s), " + st.entries.count() + " changed file(s)");
         } else {
-            if Str.StartsWith(operationState, "conflict") {
+            if repositoryOperation == "merging" {
+                operationState = "merging";
+            } else if repositoryOperation == "rebasing" {
+                operationState = "rebasing";
+            } else if operationState == "conflict-merge" {
+                operationState = "merging";
+            } else if operationState == "conflict-rebase" {
+                operationState = "rebasing";
+            } else if operationState == "conflict" {
                 operationState = "idle";
             }
             statusLabel.SetText("" + st.entries.count() + " changed file(s)");
@@ -337,8 +349,8 @@ class ScmViewPresenterLayer extends PreviousLayer.ScmViewControlLayer {
         var entry = EntryForPath(job.path);
         if entry != null and entry.conflicted {
             diffPane.Append(
-                "Conflict: edit the conflict markers in this file, then Stage it "
-                + "to mark the conflict resolved.\n\n");
+                "Conflict: edit the markers or choose Take Current/Take Incoming, "
+                + "then Stage to confirm the resolution.\n\n");
         }
         if Str.get_Length(Str.Trim(job.stdoutText)) == 0 {
             diffPane.Append("(no diff)\n");

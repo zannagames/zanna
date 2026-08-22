@@ -75,6 +75,7 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
     /// @param listBox Tool-panel ListBox.
     /// @return Matching row model, or null for non-tool lists.
     hide override func ToolRowsForListBox(listBox: GUI.ListBox) -> tool_panel_model.ToolPanelRows {
+        if listBox == outputListBox { return outputRows; }
         if listBox == diagListBox { return problemsRows; }
         if listBox == searchListBox { return searchRows; }
         if listBox == referencesListBox { return referencesRows; }
@@ -86,7 +87,8 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
 
     /// @brief Return whether one high-cardinality panel supports virtual rows.
     hide override func CanVirtualizeToolRows(listBox: GUI.ListBox) -> Boolean {
-        return listBox == diagListBox
+        return listBox == outputListBox
+            or listBox == diagListBox
             or listBox == searchListBox
             or listBox == debugListBox;
     }

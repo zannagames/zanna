@@ -194,6 +194,7 @@ func PopulateDebugPanels(shell: app_shell.AppShell,
     var variableTree = GUI.VirtualTree.New();
     var wc = session.WatchCount();
     if session.stopped == false and wc == 0 { return; }
+    variableTree.BeginUpdate();
     if wc > 0 {
         variableTree.AddNode("", "watches", "Watches");
         var wi = 0;
@@ -228,6 +229,7 @@ func PopulateDebugPanels(shell: app_shell.AppShell,
         }
         variableTree.Expand("locals");
     }
+    variableTree.EndUpdate();
     RenderVariableTree(shell, variableTree);
 
     if session.stopped == false { return; }

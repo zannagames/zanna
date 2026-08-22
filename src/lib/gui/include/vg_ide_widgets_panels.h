@@ -597,6 +597,9 @@ typedef struct vg_outputpane {
     bool term_cursor_hidden;        ///< DECRST ?25: terminal caret suppressed.
     bool bracketed_paste;           ///< DECSET ?2004: wrap pastes in ESC[200~ / ESC[201~.
     bool app_cursor_keys;           ///< DECSET ?1: unmodified arrows send SS3 (ESC O A..D).
+    bool term_origin_mode;          ///< DECSET ?6: CUP/VPA rows are relative to scroll margins.
+    bool term_autowrap;             ///< DECSET ?7: printable output wraps at the visible edge.
+    bool term_wrap_pending;         ///< Last glyph filled the edge; next glyph performs the wrap.
     bool ansi_reverse;              ///< SGR 7: swap fg/bg for newly written cells.
     uint8_t term_tab_stops[512];    ///< Tab-stop bitset, one bit per column (4096 columns).
 

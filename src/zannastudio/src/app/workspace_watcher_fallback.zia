@@ -89,7 +89,7 @@ expose func Pump(
         state.degraded = true;
         done = true;
     }
-    if entryCount == 0 and done == false {
+    if entryCount == 0 and done == false and Map.GetInt(page, "work") <= 0 {
         state.degraded = true;
         done = true;
     }

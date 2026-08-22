@@ -25,7 +25,6 @@
 module scm_git;
 
 bind "../scm/scm_git_support";
-
 bind "../build/bounded_output";
 bind "../services/process_reaper";
 
@@ -43,7 +42,6 @@ bind Codec = Zanna.Text.Codec;
 
 final MAX_GIT_STDOUT_CHARS = 500000;
 final MAX_GIT_STDERR_CHARS = 120000;
-
 // ============================================================================
 // MODULE: scm_git
 // PURPOSE: Async git command layer for the IDE Source Control view.
@@ -413,7 +411,6 @@ class Git {
         processReaper.Pump();
         repo = path;
     }
-
     expose func Shutdown() -> Boolean {
         return processReaper.WaitForShutdown();
     }
@@ -440,7 +437,6 @@ class Git {
         Seq.Push(args, "--renames");
         return StartCommand("status", args, "", false);
     }
-
     expose func StartShowHead(path: String) -> GitJob {
         var args = Seq.New();
         Seq.Push(args, "show");
@@ -560,6 +556,10 @@ class Git {
         Seq.Push(args, "--abort");
         return StartCommand("rebaseAbort", args, "", false);
     }
+
+    /// @brief Start a reviewed argument-vector command supplied by an SCM peer module.
+    expose func StartPrepared(kind: String, args: Any, path: String) -> GitJob {
+        return StartCommand(kind, args, path, false); }
 
     expose func StartCheckout(branchName: String) -> GitJob {
         var args = Seq.New();
@@ -891,15 +891,15 @@ class Git {
         var fields = 0;
         var n = Str.get_Length(line);
         while pos <= n and fields < fieldCount {
-            while pos <= n and Str.MidLen(line, pos, 1) == " " {
+            while pos <= n and Str.ByteAt(line, pos - 1) == 32 {
                 pos = pos + 1;
             }
-            while pos <= n and Str.MidLen(line, pos, 1) != " " {
+            while pos <= n and Str.ByteAt(line, pos - 1) != 32 {
                 pos = pos + 1;
             }
             fields = fields + 1;
         }
-        while pos <= n and Str.MidLen(line, pos, 1) == " " {
+        while pos <= n and Str.ByteAt(line, pos - 1) == 32 {
             pos = pos + 1;
         }
         if pos > n { return ""; }
@@ -912,7 +912,7 @@ class Git {
         if exact { return pathText; }
         var p = Str.Trim(pathText);
         if Str.get_Length(p) >= 2 and Str.Left(p, 1) == "\""
-           and Str.MidLen(p, Str.get_Length(p), 1) == "\"" {
+           and Str.ByteAt(p, Str.get_Length(p) - 1) == 34 {
             p = Str.MidLen(p, 2, Str.get_Length(p) - 2);
             p = Str.Replace(p, "\\\"", "\"");
             p = Str.Replace(p, "\\\\", "\\");

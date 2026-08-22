@@ -58,6 +58,11 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
         if outputFilterText != "" and Str.IndexOf(Str.ToLower(line), outputFilterText) == 0 {
             return null;
         }
+        if outputBulkRows and outputRows != null {
+            outputRows.Add(line, tool_panel_text.OutputLineColor(line));
+            outputRenderedRowCount = outputRenderedRowCount + 1;
+            return null;
+        }
         EnsureOutputRowCapacity();
         var layoutWidth = 0;
         if outputListBox != null {
@@ -70,7 +75,7 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
         }
         var wrapColumn = output_cache.WrapColumn(layoutWidth);
         if outputWrapLines == false or Str.get_Length(line) <= wrapColumn {
-            var item = outputListBox.AddItem(line);
+            var item = AddToolPlainRow(outputListBox, line, 0);
             RegisterOutputRow(item, line);
             ApplyOutputLineColor(item, line);
             if outputAutoScroll {
@@ -83,7 +88,7 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
         var start = 1;
         while start <= Str.get_Length(line) {
             var chunk = Str.MidLen(line, start, wrapColumn);
-            var item = outputListBox.AddItem(chunk);
+            var item = AddToolPlainRow(outputListBox, chunk, 0);
             RegisterOutputRow(item, chunk);
             ApplyOutputLineColor(item, line);
             if first == null { first = item; }
@@ -117,6 +122,7 @@ class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLaye
     hide override func ResetOutputRows() {
         outputRenderedItems = new List();
         outputRenderedRowCount = 0;
+        if outputRows != null { outputRows.Clear(); }
         if outputVirtualList != null {
             outputVirtualList.SetCount(0);
         }

@@ -26,7 +26,6 @@ bind "run_debug_support";
 bind "../services/theme_colors";
 bind Zanna.GUI as GUI;
 bind Str = Zanna.String;
-
 // ============================================================================
 // MODULE: run_debug_view
 // PURPOSE: Own the state-aware Run and Debug activity-sidebar widgets.
@@ -325,9 +324,7 @@ class RunDebugView {
     }
 
     /// @brief Return whether the view currently uses compact wrapped controls.
-    expose func IsCompactControls() -> Boolean {
-        return compactControls;
-    }
+    expose func IsCompactControls() -> Boolean { return compactControls; }
 
     /// @brief Return the selected durable store index, or -1.
     expose func SelectedBreakpointStoreIndex() -> Integer {
@@ -342,7 +339,6 @@ class RunDebugView {
         if record == null { return ""; }
         return record.path;
     }
-
     /// @brief Return the selected one-based breakpoint source line, or zero.
     expose func SelectedBreakpointLine() -> Integer {
         var record = SelectedBreakpointRecord();

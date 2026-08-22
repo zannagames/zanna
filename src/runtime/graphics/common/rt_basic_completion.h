@@ -28,6 +28,7 @@
 //   - Returned runtime objects (Seq/Map) and rt_string are owned by the caller.
 //   - Result shapes match the Zia bridge so the IDE controllers consume both.
 // Links: src/frontends/basic/rt_basic_completion.cpp,
+//        docs/adr/0291-compiler-backed-basic-signature-help.md,
 //        src/runtime/graphics/common/rt_zia_completion.h,
 //        docs/adr/0014-basic-language-service-runtime-bridge.md
 //
@@ -95,6 +96,13 @@ void *rt_basic_completion_hover_info_for_file(rt_string source,
                                               rt_string file_path,
                                               int64_t line,
                                               int64_t col);
+
+/// @brief Collect compiler-AST-backed BASIC signature help at a call cursor.
+/// @return Owned map containing availability, active parameter, and overloads.
+void *rt_basic_completion_signature_info_for_file(rt_string source,
+                                                  rt_string file_path,
+                                                  int64_t line,
+                                                  int64_t col);
 
 #ifdef __cplusplus
 }

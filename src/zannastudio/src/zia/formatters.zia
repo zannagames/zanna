@@ -318,7 +318,7 @@ func ZiaIndentBeforeLine(lines: Any,
 func LeadingCloseBraceCount(trimmed: String) -> Integer {
     var count = 0;
     var i = 1;
-    while i <= Str.get_Length(trimmed) and Str.MidLen(trimmed, i, 1) == "}" {
+    while i <= Str.get_Length(trimmed) and Str.ByteAt(trimmed, i - 1) == 125 {
         count = count + 1;
         i = i + 1;
     }
@@ -365,11 +365,11 @@ func BasicIndentBeforeLine(lines: Any,
 func BasicFirstWord(trimmed: String) -> String {
     var n = Str.get_Length(trimmed);
     var i = 1;
-    while i <= n and (Str.MidLen(trimmed, i, 1) == " " or Str.MidLen(trimmed, i, 1) == "\t") {
+    while i <= n and IsAsciiSpaceByte(Str.ByteAt(trimmed, i - 1)) {
         i = i + 1;
     }
     var start = i;
-    while i <= n and Str.MidLen(trimmed, i, 1) != " " and Str.MidLen(trimmed, i, 1) != "\t" {
+    while i <= n and IsAsciiSpaceByte(Str.ByteAt(trimmed, i - 1)) == false {
         i = i + 1;
     }
     if i <= start { return ""; }
@@ -382,14 +382,14 @@ func BasicFirstWord(trimmed: String) -> String {
 func BasicSecondWord(trimmed: String) -> String {
     var n = Str.get_Length(trimmed);
     var i = 1;
-    while i <= n and Str.MidLen(trimmed, i, 1) != " " and Str.MidLen(trimmed, i, 1) != "\t" {
+    while i <= n and IsAsciiSpaceByte(Str.ByteAt(trimmed, i - 1)) == false {
         i = i + 1;
     }
-    while i <= n and (Str.MidLen(trimmed, i, 1) == " " or Str.MidLen(trimmed, i, 1) == "\t") {
+    while i <= n and IsAsciiSpaceByte(Str.ByteAt(trimmed, i - 1)) {
         i = i + 1;
     }
     var start = i;
-    while i <= n and Str.MidLen(trimmed, i, 1) != " " and Str.MidLen(trimmed, i, 1) != "\t" {
+    while i <= n and IsAsciiSpaceByte(Str.ByteAt(trimmed, i - 1)) == false {
         i = i + 1;
     }
     if i <= start { return ""; }
@@ -404,19 +404,23 @@ func BasicCodeOnly(line: String) -> String {
     var n = Str.get_Length(line);
     var i = 1;
     while i <= n {
-        var ch = Str.MidLen(line, i, 1);
+        var ch = Str.ByteAt(line, i - 1);
         if inString {
-            if ch == "\"" { inString = false; }
+            if ch == 34 { inString = false; }
         } else {
-            if ch == "\"" {
+            if ch == 34 {
                 inString = true;
-            } else if ch == "'" {
+            } else if ch == 39 {
                 return Str.Left(line, i - 1);
             }
         }
         i = i + 1;
     }
     return line;
+}
+
+func IsAsciiSpaceByte(ch: Integer) -> Boolean {
+    return ch == 32 or ch == 9;
 }
 
 /// @brief Return whether a BASIC line opens an IF block through THEN.

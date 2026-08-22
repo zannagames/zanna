@@ -26,8 +26,6 @@
 
 module basic_query_job;
 
-bind "../basic/semantic_scan";
-
 bind BasicLanguageService = Zanna.Basic.LanguageService;
 bind Async = Zanna.Threads.Async;
 bind Future = Zanna.Threads.Future;
@@ -99,8 +97,8 @@ func RunBasicQuery(request: BasicQueryRequest) -> Any {
     } else if request.kind == QUERY_SYMBOLS {
         result = BasicLanguageService.SymbolsForFile(request.source, request.path);
     } else if request.kind == QUERY_SIGNATURE {
-        result = semantic_scan.SignatureInfoForFile(request.path, request.source,
-                                                    request.line, request.col);
+        result = BasicLanguageService.SignatureInfoForFile(
+            request.source, request.path, request.line, request.col);
     } else {
         succeeded = false;
         error = "Unsupported BASIC language query";

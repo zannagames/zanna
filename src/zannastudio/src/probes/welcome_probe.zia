@@ -39,7 +39,7 @@ bind "../ui/welcome_view";
 bind "../ui/ide_overlays";
 bind "../ui/command_input";
 bind "../app/build_info";
-bind "../commands/command_catalog";
+bind "../services/command_catalog";
 bind "../commands/view_commands";
 bind "../core/session";
 bind "../editor/editor_tabs";

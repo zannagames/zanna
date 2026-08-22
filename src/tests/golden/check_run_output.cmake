@@ -1,3 +1,6 @@
+## Accept UPDATE_GOLDEN from -D or the environment.
+include(${CMAKE_CURRENT_LIST_DIR}/GoldenUpdateMode.cmake)
+
 if (NOT DEFINED ILC)
     message(FATAL_ERROR "ILC not set")
 endif ()

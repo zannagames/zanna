@@ -855,6 +855,7 @@ void rt_codeeditor_add_cursor(void *editor, int64_t line, int64_t col) {
     int line_i = rt_gui_clamp_i64_to_i32(line, 0, INT32_MAX);
     int col_i = rt_gui_clamp_i64_to_i32(col, 0, INT32_MAX);
     rt_codeeditor_clamp_position(ce, &line_i, &col_i);
+    col_i = rt_codeeditor_char_col_to_byte_col(ce, line_i, col_i);
     if (rt_codeeditor_cursor_exists_at(ce, line_i, col_i))
         return;
     if (ce->extra_cursor_count >= ce->extra_cursor_cap) {

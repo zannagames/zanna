@@ -395,7 +395,7 @@ func AddRootSources(request: BasicWorkspaceQueryRequest,
             }
         }
         done = Map.GetBool(page, "done");
-        if emitted == 0 and done == false {
+        if emitted == 0 and done == false and Map.GetInt(page, "work") <= 0 {
             cursor.Destroy();
             corpus.failed = true;
             corpus.error = "workspace_unavailable";

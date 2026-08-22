@@ -279,7 +279,8 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
             }
             if Map.GetBool(page, "done") {
                 AdvanceDiscoveryRoot();
-            } else if i == 0 and discoveryOffset == oldOffset {
+            } else if i == 0 and discoveryOffset == oldOffset
+                      and Map.GetInt(page, "work") <= 0 {
                 discoveryError = "Search file discovery stalled for " + currentRoot;
                 discoveryCursor.Destroy();
                 discovering = false;

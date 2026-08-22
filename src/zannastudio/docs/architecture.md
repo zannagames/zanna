@@ -103,7 +103,7 @@ Rules:
 
 - `main.zia` wires subsystems and dispatches events. Do not add parsing rules,
   filesystem mutation flows, formatting logic, or command metadata there.
-- `commands/command_catalog.zia` owns command ids, labels, shortcuts,
+- `services/command_catalog.zia` owns command ids, labels, shortcuts,
   capability tags, and command-palette visibility.
 - Command behavior belongs in the feature command modules:
   `file_commands.zia`, `edit_commands.zia`, `search_commands.zia`,
@@ -792,7 +792,7 @@ code.
 
 ## Adding A Feature
 
-1. Add command metadata to `commands/command_catalog.zia` if the feature is
+1. Add command metadata to `services/command_catalog.zia` if the feature is
    user-triggered.
 2. Put behavior in the appropriate command or subsystem module.
 3. Keep shared parsing/path/edit logic in `services/` or `zia/`.

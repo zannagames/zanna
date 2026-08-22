@@ -252,6 +252,11 @@ static void test_file_index_and_ignore() {
     for (void *other : interleaved)
         rt_workspace_file_index_cursor_destroy(other);
     rt_workspace_file_index_cursor_destroy(cursor);
+    assert(rt_workspace_file_index_cursor_is_valid(cursor) == 0);
+    assert(rt_workspace_file_index_cursor_generation(cursor) == 0);
+    void *destroyed_page = rt_workspace_file_index_cursor_next(cursor, 1);
+    assert(rt_map_get_bool(destroyed_page, rt_const_cstr("valid")) == 0);
+    rt_workspace_file_index_cursor_destroy(cursor);
 
     // Fallback-watcher pages request all extensions plus directories. Those
     // rows include precise metadata and a bounded content sample so a same-size
@@ -268,7 +273,16 @@ static void test_file_index_and_ignore() {
     const int64_t first_sample = rt_map_get_int(main_entry, rt_const_cstr("sampleHash"));
     assert(first_sample >= 0);
 
+    std::error_code rewrite_time_error;
+    const auto original_main_mtime =
+        fs::last_write_time(root / "src/main.zia", rewrite_time_error);
+    assert(!rewrite_time_error);
     write_file(root / "src/main.zia", "module Mine;\n");
+    fs::last_write_time(root / "src/main.zia", original_main_mtime, rewrite_time_error);
+    assert(!rewrite_time_error);
+    assert(fs::last_write_time(root / "src/main.zia", rewrite_time_error) ==
+           original_main_mtime);
+    assert(!rewrite_time_error);
     void *rewritten_page =
         rt_workspace_file_index_page(root_s, rt_const_cstr(""), rt_const_cstr(""), 1, 0, 4096);
     void *rewritten_entries = rt_map_get(rewritten_page, rt_const_cstr("entries"));
@@ -329,6 +343,54 @@ static void test_file_index_and_ignore() {
                root_s, rt_const_cstr("foo/bar"), rt_const_cstr("foo/**/bar")) == 1);
     assert(rt_workspace_file_index_should_ignore(
                root_s, rt_const_cstr("foo/x/bar"), rt_const_cstr("foo/**/bar")) == 1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("src/main.zia"), rt_const_cstr("src/*.zia")) == 1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("src/nested/main.zia"), rt_const_cstr("src/*.zia")) == 0);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("src/nested/main.zia"), rt_const_cstr("src/**/main.zia")) ==
+           1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("file7.zia"), rt_const_cstr("file[0-9].zia")) == 1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("filex.zia"), rt_const_cstr("file[!0-9].zia")) == 1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("literal*.zia"), rt_const_cstr("literal\\*.zia")) == 1);
+    assert(rt_workspace_file_index_should_ignore(
+               root_s, rt_const_cstr("literalx.zia"), rt_const_cstr("literal\\*.zia")) == 0);
+    rt_string_unref(root_s);
+    fs::remove_all(root);
+}
+
+/// @brief A result limit must also bound raw traversal work when no files match.
+static void test_file_index_cursor_work_budget() {
+    fs::path root = temp_root();
+    for (int i = 0; i < 200; ++i)
+        write_file(root / ("candidate_" + std::to_string(i) + ".txt"), "skip");
+    rt_string root_s = s(root.string());
+    void *cursor = rt_workspace_file_index_cursor_new(
+        root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+    assert(rt_workspace_file_index_cursor_is_valid(cursor) == 1);
+
+    int64_t priorScanned = 0;
+    bool done = false;
+    int pages = 0;
+    while (!done) {
+        void *page = rt_workspace_file_index_cursor_next(cursor, 1);
+        assert(rt_map_get_bool(page, rt_const_cstr("valid")) == 1);
+        const int64_t work = rt_map_get_int(page, rt_const_cstr("work"));
+        const int64_t scanned = rt_map_get_int(page, rt_const_cstr("scanned"));
+        assert(work > 0 && work <= 64);
+        assert(scanned == priorScanned + work);
+        assert(rt_map_get_int(page, rt_const_cstr("emitted")) == 0);
+        priorScanned = scanned;
+        done = rt_map_get_bool(page, rt_const_cstr("done")) == 1;
+        pages++;
+        assert(pages < 10);
+    }
+    assert(priorScanned == 200);
+    assert(pages >= 4);
+    rt_workspace_file_index_cursor_destroy(cursor);
     rt_string_unref(root_s);
     fs::remove_all(root);
 }
@@ -919,6 +981,7 @@ static void test_gitignore_same_second_rewrite() {
 int main() {
     test_directory_page();
     test_file_index_and_ignore();
+    test_file_index_cursor_work_budget();
     test_asset_resolver_and_manifest();
     test_workspace_watcher_batch();
     test_workspace_edits();

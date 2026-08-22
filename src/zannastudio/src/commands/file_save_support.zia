@@ -43,27 +43,31 @@ func SetSaveFormatOptions(trimWhitespace: Boolean,
     ensureFinalNewlineOnSave = finalNewline;
 }
 
+/// @brief Apply configured text normalization before a durable save.
+/// @return True when normalization is unnecessary or committed to the canonical
+///         document buffer; false when the editor rejected the replacement.
 func NormalizeDocumentForSave(docMgr: document_manager.DocumentManager,
                               engine: editor_engine.EditorEngine,
-                              index: Integer) {
-    if docMgr == null or index < 0 or index >= docMgr.GetCount() { return; }
+                              index: Integer) -> Boolean {
+    if docMgr == null or index < 0 or index >= docMgr.GetCount() { return false; }
     var doc = docMgr.documents.get(index);
-    if doc.isReadOnlyPreview { return; }
+    if doc.isReadOnlyPreview { return true; }
     // Scene controllers already own a canonical serializer. Text-editor save
     // preferences (especially the default final-newline rule) must not rewrite
     // those assets, desynchronize visual history, or force a post-save reload.
-    if file_utils.IsVisualKind(doc.kind) { return; }
+    if file_utils.IsVisualKind(doc.kind) { return true; }
     var normalized = ApplySaveTextRules(doc.content);
     if normalized != doc.content {
         if engine != null {
             if engine.ReplaceDocumentTextPreservingState(doc, normalized) == false {
-                return;
+                return false;
             }
         } else {
             doc.content = normalized;
             doc.isModified = true;
         }
     }
+    return true;
 }
 
 func ApplySaveTextRules(text: String) -> String {
@@ -102,6 +106,17 @@ func ReportSaveFailure(shell: app_shell.AppShell,
                        docMgr: document_manager.DocumentManager,
                        fileName: String) -> String {
     var reason = docMgr.SaveFailureMessage("The file could not be saved.");
+    var message = "Could not save " + fileName + ": " + reason;
+    shell.SetStatusLeft(message);
+    GUI.Toast.Error(reason);
+    return message;
+}
+
+/// @brief Report that save-time normalization could not update the document buffer.
+/// @return Complete status text for single-save and batch-save callers.
+func ReportNormalizationFailure(shell: app_shell.AppShell,
+                                fileName: String) -> String {
+    var reason = "The editor could not apply save-time text normalization.";
     var message = "Could not save " + fileName + ": " + reason;
     shell.SetStatusLeft(message);
     GUI.Toast.Error(reason);

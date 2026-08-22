@@ -20,6 +20,7 @@ module scm_view_jobs;
 
 bind "scm_view_base" as State;
 bind "scm_git";
+bind "scm_conflict_commands" as ConflictCommands;
 
 bind Str = Zanna.String;
 
@@ -131,6 +132,28 @@ class ScmViewJobLayer extends State.ScmViewBase {
             StartJob(git.StartRebaseAbort(), "Aborting rebase...");
             return;
         }
+        if kind == "takeours" {
+            StartJob(ConflictCommands.StartTakeSide(git, path, "ours"),
+                     "Taking current version...");
+            return;
+        }
+        if kind == "taketheirs" {
+            StartJob(ConflictCommands.StartTakeSide(git, path, "theirs"),
+                     "Taking incoming version...");
+            return;
+        }
+        if kind == "mergeContinue" {
+            StartJob(ConflictCommands.StartMergeContinue(git), "Continuing merge...");
+            return;
+        }
+        if kind == "rebaseContinue" {
+            StartJob(ConflictCommands.StartRebaseContinue(git), "Continuing rebase...");
+            return;
+        }
+        if kind == "rebaseSkip" {
+            StartJob(ConflictCommands.StartRebaseSkip(git), "Skipping rebase commit...");
+            return;
+        }
         if kind == "log" {
             StartJob(git.StartLog(historyLoaded, HISTORY_PAGE_SIZE), "Loading history...");
             return;
@@ -170,6 +193,11 @@ class ScmViewJobLayer extends State.ScmViewBase {
         }
         if kind == "mergeAbort" { return "Abort merge"; }
         if kind == "rebaseAbort" { return "Abort rebase"; }
+        if kind == "takeours" { return "Take current"; }
+        if kind == "taketheirs" { return "Take incoming"; }
+        if kind == "mergeContinue" { return "Continue merge"; }
+        if kind == "rebaseContinue" { return "Continue rebase"; }
+        if kind == "rebaseSkip" { return "Skip rebase commit"; }
         if kind == "checkout" { return "Checkout"; }
         return kind;
     }
@@ -186,6 +214,11 @@ class ScmViewJobLayer extends State.ScmViewBase {
         if kind == "pullRebase" { return "Pulled with rebase"; }
         if kind == "mergeAbort" { return "Merge aborted"; }
         if kind == "rebaseAbort" { return "Rebase aborted"; }
+        if kind == "takeours" { return "Current version selected; Stage to confirm"; }
+        if kind == "taketheirs" { return "Incoming version selected; Stage to confirm"; }
+        if kind == "mergeContinue" { return "Merge continued"; }
+        if kind == "rebaseContinue" { return "Rebase continued"; }
+        if kind == "rebaseSkip" { return "Rebase commit skipped"; }
         if kind == "checkout" { return "Switched branch"; }
         return "Done";
     }}

@@ -497,23 +497,23 @@ func handleDebugStop(shell: app_shell.AppShell,
     }
 }
 
-hide func isIdentChar(ch: String) -> Boolean {
-    return (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z")
-        or (ch >= "0" and ch <= "9") or ch == "_";
+hide func isIdentByte(ch: Integer) -> Boolean {
+    return (ch >= 97 and ch <= 122) or (ch >= 65 and ch <= 90)
+        or (ch >= 48 and ch <= 57) or ch == 95;
 }
 
 /// @brief Extract the identifier spanning 0-based column `col0` of `lineText`.
 hide func identifierAt(lineText: String, col0: Integer) -> String {
     var n = Str.get_Length(lineText);
-    var p = col0 + 1; // 1-based for MidLen
+    var p = col0 + 1; // 1-based source position
     if p < 1 or p > n { return ""; }
-    if isIdentChar(Str.MidLen(lineText, p, 1)) == false { return ""; }
+    if isIdentByte(Str.ByteAt(lineText, p - 1)) == false { return ""; }
     var start = p;
-    while start > 1 and isIdentChar(Str.MidLen(lineText, start - 1, 1)) {
+    while start > 1 and isIdentByte(Str.ByteAt(lineText, start - 2)) {
         start = start - 1;
     }
     var endp = p;
-    while endp < n and isIdentChar(Str.MidLen(lineText, endp + 1, 1)) {
+    while endp < n and isIdentByte(Str.ByteAt(lineText, endp)) {
         endp = endp + 1;
     }
     return Str.MidLen(lineText, start, endp - start + 1);

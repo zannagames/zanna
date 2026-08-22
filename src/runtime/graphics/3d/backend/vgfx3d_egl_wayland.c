@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/runtime/graphics/3d/backend/vgfx3d_egl_wayland.c
-// Purpose: Dynamically create OpenGL EGL contexts on native Wayland surfaces.
+// Purpose: Dynamically create OpenGL EGL contexts on Wayland or headless pbuffer surfaces.
 // Key invariants: See vgfx3d_egl_wayland.h.
 // Ownership/Lifetime: See vgfx3d_egl_wayland.h.
 // Links: src/runtime/graphics/3d/backend/vgfx3d_egl_wayland.h
@@ -15,7 +15,7 @@
 
 /**
  * @file vgfx3d_egl_wayland.c
- * @brief Implements dynamic EGL/OpenGL context management for native Wayland surfaces.
+ * @brief Implements dynamic EGL/OpenGL context management for Wayland and headless surfaces.
  *
  * This adapter loads EGL and wayland-egl at runtime, resolves the entry points required by the
  * OpenGL backend, and owns the EGL display, context, surface, and wl_egl_window associated with
@@ -49,6 +49,7 @@ enum {
     EGL_ALPHA_SIZE_VALUE = 0x3021,
     EGL_DEPTH_SIZE_VALUE = 0x3025,
     EGL_SURFACE_TYPE_VALUE = 0x3033,
+    EGL_PBUFFER_BIT_VALUE = 0x0001,
     EGL_WINDOW_BIT_VALUE = 0x0004,
     EGL_RENDERABLE_TYPE_VALUE = 0x3040,
     EGL_OPENGL_BIT_VALUE = 0x0008,
@@ -58,6 +59,9 @@ enum {
     EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR_VALUE = 0x0001,
     EGL_OPENGL_API_VALUE = 0x30A2,
     EGL_PLATFORM_WAYLAND_KHR_VALUE = 0x31D8,
+    EGL_PLATFORM_SURFACELESS_MESA_VALUE = 0x31DD,
+    EGL_WIDTH_VALUE = 0x3057,
+    EGL_HEIGHT_VALUE = 0x3056,
 };
 
 typedef EGLDisplay (*egl_get_display_fn)(void *native_display);
@@ -65,14 +69,12 @@ typedef EGLDisplay (*egl_get_platform_display_fn)(uint32_t, void *, const EGLAtt
 typedef EGLBoolean (*egl_initialize_fn)(EGLDisplay, EGLint *, EGLint *);
 typedef EGLBoolean (*egl_terminate_fn)(EGLDisplay);
 typedef EGLBoolean (*egl_bind_api_fn)(uint32_t);
-typedef EGLBoolean (*egl_choose_config_fn)(EGLDisplay,
-                                           const EGLint *,
-                                           EGLConfig *,
-                                           EGLint,
-                                           EGLint *);
+typedef EGLBoolean (*egl_choose_config_fn)(
+    EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
 typedef EGLContext (*egl_create_context_fn)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
 typedef EGLBoolean (*egl_destroy_context_fn)(EGLDisplay, EGLContext);
 typedef EGLSurface (*egl_create_window_surface_fn)(EGLDisplay, EGLConfig, void *, const EGLint *);
+typedef EGLSurface (*egl_create_pbuffer_surface_fn)(EGLDisplay, EGLConfig, const EGLint *);
 typedef EGLBoolean (*egl_destroy_surface_fn)(EGLDisplay, EGLSurface);
 typedef EGLBoolean (*egl_make_current_fn)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
 typedef EGLBoolean (*egl_swap_buffers_fn)(EGLDisplay, EGLSurface);
@@ -94,6 +96,7 @@ typedef struct {
     egl_create_context_fn create_context;
     egl_destroy_context_fn destroy_context;
     egl_create_window_surface_fn create_window_surface;
+    egl_create_pbuffer_surface_fn create_pbuffer_surface;
     egl_destroy_surface_fn destroy_surface;
     egl_make_current_fn make_current;
     egl_swap_buffers_fn swap_buffers;
@@ -117,11 +120,14 @@ static int32_t g_egl_lock;
 
 /// @brief Acquire the process-wide spin lock protecting initial EGL symbol discovery.
 static void vgfx3d_egl_lock(void) {
-    while (rt_atomic_test_and_set(&g_egl_lock, __ATOMIC_ACQUIRE)) {}
+    while (rt_atomic_test_and_set(&g_egl_lock, __ATOMIC_ACQUIRE)) {
+    }
 }
 
 /// @brief Release the process-wide EGL symbol-discovery lock.
-static void vgfx3d_egl_unlock(void) { rt_atomic_clear(&g_egl_lock, __ATOMIC_RELEASE); }
+static void vgfx3d_egl_unlock(void) {
+    rt_atomic_clear(&g_egl_lock, __ATOMIC_RELEASE);
+}
 
 /// @brief Open the preferred shared library name or fall back to an unversioned soname.
 /// @param primary Preferred versioned library name.
@@ -132,9 +138,9 @@ static void *vgfx3d_egl_open(const char *primary, const char *fallback) {
     return library ? library : dlopen(fallback, RTLD_LOCAL | RTLD_NOW);
 }
 
-/// @brief Resolve and cache the EGL and wayland-egl entry points required by this adapter.
-/// @details The first caller performs discovery under @ref g_egl_lock. Both success and failure
-///          are published atomically and cached for the remainder of the process.
+/// @brief Resolve and cache the core EGL entry points and optional wayland-egl integration.
+/// @details The first caller performs discovery under @ref g_egl_lock. Core EGL is sufficient for
+///          headless pbuffers; a missing wayland-egl library only disables native Wayland windows.
 /// @return Non-zero when all mandatory libraries and entry points are available, otherwise zero.
 static int vgfx3d_egl_load(void) {
     int32_t state = __atomic_load_n(&g_egl_state, __ATOMIC_ACQUIRE);
@@ -148,20 +154,13 @@ static int vgfx3d_egl_load(void) {
         return result;
     }
     g_egl.egl_library = vgfx3d_egl_open("libEGL.so.1", "libEGL.so");
-    g_egl.wayland_egl_library =
-        vgfx3d_egl_open("libwayland-egl.so.1", "libwayland-egl.so");
-    if (!g_egl.egl_library || !g_egl.wayland_egl_library)
+    if (!g_egl.egl_library)
         goto fail;
+    g_egl.wayland_egl_library = vgfx3d_egl_open("libwayland-egl.so.1", "libwayland-egl.so");
 #define LOAD_EGL(field, symbol)                                                                    \
-    g_egl.field =                                                                                  \
-        RT_FN_PTR_CAST((__typeof__(g_egl.field))dlsym(g_egl.egl_library, symbol));                 \
+    g_egl.field = RT_FN_PTR_CAST((__typeof__(g_egl.field))dlsym(g_egl.egl_library, symbol));       \
     if (!g_egl.field)                                                                              \
-        goto fail
-#define LOAD_WL(field, symbol)                                                                     \
-    g_egl.field = RT_FN_PTR_CAST(                                                                  \
-        (__typeof__(g_egl.field))dlsym(g_egl.wayland_egl_library, symbol));                        \
-    if (!g_egl.field)                                                                              \
-        goto fail
+    goto fail
     LOAD_EGL(get_display, "eglGetDisplay");
     LOAD_EGL(initialize, "eglInitialize");
     LOAD_EGL(terminate, "eglTerminate");
@@ -170,16 +169,21 @@ static int vgfx3d_egl_load(void) {
     LOAD_EGL(create_context, "eglCreateContext");
     LOAD_EGL(destroy_context, "eglDestroyContext");
     LOAD_EGL(create_window_surface, "eglCreateWindowSurface");
+    LOAD_EGL(create_pbuffer_surface, "eglCreatePbufferSurface");
     LOAD_EGL(destroy_surface, "eglDestroySurface");
     LOAD_EGL(make_current, "eglMakeCurrent");
     LOAD_EGL(swap_buffers, "eglSwapBuffers");
     LOAD_EGL(swap_interval, "eglSwapInterval");
     LOAD_EGL(get_proc_address, "eglGetProcAddress");
-    LOAD_WL(window_create, "wl_egl_window_create");
-    LOAD_WL(window_destroy, "wl_egl_window_destroy");
-    LOAD_WL(window_resize, "wl_egl_window_resize");
+    if (g_egl.wayland_egl_library) {
+        g_egl.window_create = RT_FN_PTR_CAST(
+            (wl_egl_window_create_fn)dlsym(g_egl.wayland_egl_library, "wl_egl_window_create"));
+        g_egl.window_destroy = RT_FN_PTR_CAST(
+            (wl_egl_window_destroy_fn)dlsym(g_egl.wayland_egl_library, "wl_egl_window_destroy"));
+        g_egl.window_resize = RT_FN_PTR_CAST(
+            (wl_egl_window_resize_fn)dlsym(g_egl.wayland_egl_library, "wl_egl_window_resize"));
+    }
 #undef LOAD_EGL
-#undef LOAD_WL
     g_egl.get_platform_display = RT_FN_PTR_CAST(
         (egl_get_platform_display_fn)dlsym(g_egl.egl_library, "eglGetPlatformDisplay"));
     if (!g_egl.get_platform_display)
@@ -199,9 +203,17 @@ fail:
     return 0;
 }
 
+/// @brief Report whether the runtime core EGL dependencies are usable for headless contexts.
+/// @return Non-zero after successful symbol discovery, otherwise zero.
+int vgfx3d_egl_available(void) {
+    return vgfx3d_egl_load();
+}
+
 /// @brief Report whether the runtime EGL and wayland-egl dependencies are usable.
 /// @return Non-zero after successful symbol discovery, otherwise zero.
-int vgfx3d_egl_wayland_available(void) { return vgfx3d_egl_load(); }
+int vgfx3d_egl_wayland_available(void) {
+    return vgfx3d_egl_load() && g_egl.window_create && g_egl.window_destroy && g_egl.window_resize;
+}
 
 /// @brief Resolve an OpenGL or EGL extension entry point for the Wayland backend.
 /// @param name Null-terminated symbol name.
@@ -229,15 +241,16 @@ vgfx3d_egl_wayland_t *vgfx3d_egl_wayland_create(void *native_display,
                                                 void *native_surface,
                                                 int32_t width,
                                                 int32_t height) {
-    if (!native_display || !native_surface || width <= 0 || height <= 0 || !vgfx3d_egl_load())
+    if (!native_display || !native_surface || width <= 0 || height <= 0 ||
+        !vgfx3d_egl_wayland_available())
         return NULL;
     vgfx3d_egl_wayland_t *binding = calloc(1, sizeof(*binding));
     if (!binding)
         return NULL;
-    binding->display = g_egl.get_platform_display
-                           ? g_egl.get_platform_display(
-                                 EGL_PLATFORM_WAYLAND_KHR_VALUE, native_display, NULL)
-                           : g_egl.get_display(native_display);
+    binding->display =
+        g_egl.get_platform_display
+            ? g_egl.get_platform_display(EGL_PLATFORM_WAYLAND_KHR_VALUE, native_display, NULL)
+            : g_egl.get_display(native_display);
     EGLint major = 0;
     EGLint minor = 0;
     if (!binding->display || !g_egl.initialize(binding->display, &major, &minor) ||
@@ -270,8 +283,7 @@ vgfx3d_egl_wayland_t *vgfx3d_egl_wayland_create(void *native_display,
                                          EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR_VALUE,
                                          EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR_VALUE,
                                          EGL_NONE_VALUE};
-    binding->context =
-        g_egl.create_context(binding->display, config, NULL, context_attributes);
+    binding->context = g_egl.create_context(binding->display, config, NULL, context_attributes);
     if (!binding->context) {
         const EGLint fallback_attributes[] = {EGL_NONE_VALUE};
         binding->context =
@@ -280,13 +292,91 @@ vgfx3d_egl_wayland_t *vgfx3d_egl_wayland_create(void *native_display,
     binding->window = g_egl.window_create(native_surface, width, height);
     if (!binding->context || !binding->window)
         goto fail;
-    binding->surface =
-        g_egl.create_window_surface(binding->display, config, binding->window, NULL);
+    binding->surface = g_egl.create_window_surface(binding->display, config, binding->window, NULL);
     if (!binding->surface || !vgfx3d_egl_wayland_make_current(binding))
         goto fail;
     /* Zanna owns dispatch on this wl_display. A blocking EGL swap interval may dispatch the
      * display internally while Zanna's queue is prepared for reading. Wayland compositors still
-     * schedule scanout atomically with interval zero; explicit tearing requires another protocol. */
+     * schedule scanout atomically with interval zero; explicit tearing requires another protocol.
+     */
+    (void)g_egl.swap_interval(binding->display, 0);
+    return binding;
+fail:
+    vgfx3d_egl_wayland_destroy(binding);
+    return NULL;
+}
+
+/// @brief Create and bind an OpenGL context on an EGL pbuffer without a native window system.
+/// @details The surfaceless platform is preferred for Mesa/CI environments. The default display
+///   remains a fallback for EGL implementations that expose device-backed pbuffers without the
+///   platform extension. The resulting binding shares the Wayland binding lifetime operations,
+///   with its native-window field intentionally left null.
+/// @param width Positive pbuffer width in pixels.
+/// @param height Positive pbuffer height in pixels.
+/// @return Newly allocated current binding, or null after releasing partial EGL resources.
+vgfx3d_egl_wayland_t *vgfx3d_egl_headless_create(int32_t width, int32_t height) {
+    vgfx3d_egl_wayland_t *binding;
+    EGLConfig config = NULL;
+    EGLint config_count = 0;
+    EGLint major = 0;
+    EGLint minor = 0;
+    const EGLint config_attributes[] = {EGL_SURFACE_TYPE_VALUE,
+                                        EGL_PBUFFER_BIT_VALUE,
+                                        EGL_RENDERABLE_TYPE_VALUE,
+                                        EGL_OPENGL_BIT_VALUE,
+                                        EGL_RED_SIZE_VALUE,
+                                        8,
+                                        EGL_GREEN_SIZE_VALUE,
+                                        8,
+                                        EGL_BLUE_SIZE_VALUE,
+                                        8,
+                                        EGL_ALPHA_SIZE_VALUE,
+                                        8,
+                                        EGL_DEPTH_SIZE_VALUE,
+                                        24,
+                                        EGL_NONE_VALUE};
+    const EGLint context_attributes[] = {EGL_CONTEXT_MAJOR_VERSION_VALUE,
+                                         3,
+                                         EGL_CONTEXT_MINOR_VERSION_KHR_VALUE,
+                                         3,
+                                         EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR_VALUE,
+                                         EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR_VALUE,
+                                         EGL_NONE_VALUE};
+    const EGLint surface_attributes[] = {
+        EGL_WIDTH_VALUE, width, EGL_HEIGHT_VALUE, height, EGL_NONE_VALUE};
+
+    if (width <= 0 || height <= 0 || !vgfx3d_egl_load())
+        return NULL;
+    binding = calloc(1, sizeof(*binding));
+    if (!binding)
+        return NULL;
+    if (g_egl.get_platform_display)
+        binding->display =
+            g_egl.get_platform_display(EGL_PLATFORM_SURFACELESS_MESA_VALUE, NULL, NULL);
+    if (!binding->display || !g_egl.initialize(binding->display, &major, &minor)) {
+        if (binding->display)
+            (void)g_egl.terminate(binding->display);
+        binding->display = g_egl.get_display(NULL);
+        major = 0;
+        minor = 0;
+        if (!binding->display || !g_egl.initialize(binding->display, &major, &minor))
+            goto fail;
+    }
+    if (!g_egl.bind_api(EGL_OPENGL_API_VALUE) ||
+        !g_egl.choose_config(binding->display, config_attributes, &config, 1, &config_count) ||
+        config_count < 1 || !config)
+        goto fail;
+    binding->context = g_egl.create_context(binding->display, config, NULL, context_attributes);
+    if (!binding->context) {
+        const EGLint fallback_attributes[] = {EGL_NONE_VALUE};
+        binding->context =
+            g_egl.create_context(binding->display, config, NULL, fallback_attributes);
+    }
+    if (!binding->context)
+        goto fail;
+    binding->surface = g_egl.create_pbuffer_surface(binding->display, config, surface_attributes);
+    if (!binding->surface || !vgfx3d_egl_wayland_make_current(binding))
+        goto fail;
     (void)g_egl.swap_interval(binding->display, 0);
     return binding;
 fail:
@@ -326,10 +416,8 @@ int vgfx3d_egl_wayland_set_swap_interval(vgfx3d_egl_wayland_t *binding, int32_t 
 /// @param binding Borrowed binding whose window is resized.
 /// @param width Positive new width in pixels.
 /// @param height Positive new height in pixels.
-void vgfx3d_egl_wayland_resize(vgfx3d_egl_wayland_t *binding,
-                               int32_t width,
-                               int32_t height) {
-    if (binding && binding->window && width > 0 && height > 0)
+void vgfx3d_egl_wayland_resize(vgfx3d_egl_wayland_t *binding, int32_t width, int32_t height) {
+    if (binding && binding->window && g_egl.window_resize && width > 0 && height > 0)
         g_egl.window_resize(binding->window, width, height, 0, 0);
 }
 
@@ -347,7 +435,7 @@ void vgfx3d_egl_wayland_destroy(vgfx3d_egl_wayland_t *binding) {
         (void)g_egl.destroy_surface(binding->display, binding->surface);
     if (binding->context && binding->display)
         (void)g_egl.destroy_context(binding->display, binding->context);
-    if (binding->window)
+    if (binding->window && g_egl.window_destroy)
         g_egl.window_destroy(binding->window);
     if (binding->display)
         (void)g_egl.terminate(binding->display);

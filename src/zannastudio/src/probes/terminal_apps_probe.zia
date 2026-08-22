@@ -1,0 +1,179 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/terminal_apps_probe.zia
+// Purpose: Drive real full-screen terminal applications through Studio's PTY and renderer.
+// Key invariants:
+//   - Vim edits and saves through raw terminal input after a live resize.
+//   - Less searches, redraws after resize, and exits on its normal key binding.
+//   - Htop redraws after resize and returns the renderer to the primary screen.
+// Ownership/Lifetime: The probe owns temporary files, PTYs, and one hidden AppShell.
+// Links: zannastudio/src/terminal/terminal_session.zia,
+//        zannastudio/src/probes/terminal_altscreen_probe.zia
+//
+//===----------------------------------------------------------------------===//
+
+module terminal_apps_probe;
+
+bind "../terminal/terminal_session";
+bind "../ui/app_shell";
+
+bind File = Zanna.IO.File;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+bind Time = Zanna.Time;
+
+func Fail(shell: app_shell.AppShell,
+          session: terminal_session.TerminalSession,
+          reason: String) {
+    if session != null { session.Stop(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+/// @brief Pump one real PTY into the terminal renderer for a bounded interval.
+func PumpUntil(session: terminal_session.TerminalSession,
+               pane: GUI.OutputPane,
+               expectedRawText: String,
+               requireExit: Boolean,
+               budgetMs: Integer) -> Boolean {
+    var waited = 0;
+    while waited < budgetMs {
+        var delta = session.Update();
+        if delta != "" { pane.Append(delta); }
+        var textReady = expectedRawText == ""
+            or Str.Contains(session.ReplayText(), expectedRawText);
+        var exitReady = requireExit == false or session.IsActive() == false;
+        if textReady and exitReady { return true; }
+        Time.Clock.Sleep(5);
+        waited = waited + 5;
+    }
+    var tail = session.Update();
+    if tail != "" { pane.Append(tail); }
+    return (expectedRawText == ""
+            or Str.Contains(session.ReplayText(), expectedRawText))
+        and (requireExit == false or session.IsActive() == false);
+}
+
+func PrimaryScreenContains(pane: GUI.OutputPane,
+                           sentinel: String) -> Boolean {
+    pane.SelectAll();
+    return Str.Contains(pane.GetSelection(), sentinel);
+}
+
+func VerifyVim(shell: app_shell.AppShell,
+               root: String) -> Boolean {
+    var pane = shell.toolPanels.terminalPane;
+    pane.Clear();
+    pane.Append("vim-primary-sentinel\n");
+    var path = Path.Join(root, "vim-probe.txt");
+    File.WriteAllText(path, "original vim line\n");
+    var args = Seq.New();
+    Seq.Push(args, "-N");
+    Seq.Push(args, "-u");
+    Seq.Push(args, "NONE");
+    Seq.Push(args, "-n");
+    Seq.Push(args, path);
+    var session = new terminal_session.TerminalSession();
+    if session.Start("/usr/bin/vim", args, root, 80, 24) == false
+       or PumpUntil(session, pane, "original vim line", false, 5000) == false
+       or session.Resize(100, 30) == false
+       or session.Send("gg0iZANNA \x1b:wq\r") == false
+       or PumpUntil(session, pane, "", true, 8000) == false
+       or Str.StartsWith(File.ReadAllText(path), "ZANNA original vim line") == false
+       or PrimaryScreenContains(pane, "vim-primary-sentinel") == false {
+        Fail(shell, session, "real Vim edit/resize/save/exit workflow");
+        return false;
+    }
+    session.Stop();
+    return true;
+}
+
+func VerifyLess(shell: app_shell.AppShell,
+                root: String) -> Boolean {
+    var pane = shell.toolPanels.terminalPane;
+    pane.Clear();
+    pane.Append("less-primary-sentinel\n");
+    var path = Path.Join(root, "less-probe.txt");
+    var text = new StringBuilder();
+    var i = 0;
+    while i < 240 {
+        if i == 180 {
+            text.Append("terminal-less-needle\n");
+        } else {
+            text.Append("less probe row " + i + "\n");
+        }
+        i = i + 1;
+    }
+    File.WriteAllText(path, text.ToString());
+    var args = Seq.New();
+    Seq.Push(args, path);
+    var session = new terminal_session.TerminalSession();
+    if session.Start("/usr/bin/less", args, root, 80, 24) == false
+       or PumpUntil(session, pane, "less probe row", false, 5000) == false
+       or session.Send("/terminal-less-needle\r") == false
+       or PumpUntil(session, pane, "terminal-less-needle", false, 5000) == false
+       or session.Resize(96, 28) == false
+       or session.Send("q") == false
+       or PumpUntil(session, pane, "", true, 5000) == false
+       or PrimaryScreenContains(pane, "less-primary-sentinel") == false {
+        Fail(shell, session, "real less search/resize/exit workflow");
+        return false;
+    }
+    session.Stop();
+    return true;
+}
+
+func VerifyHtop(shell: app_shell.AppShell,
+                root: String) -> Boolean {
+    var pane = shell.toolPanels.terminalPane;
+    pane.Clear();
+    pane.Append("htop-primary-sentinel\n");
+    var session = new terminal_session.TerminalSession();
+    if session.Start("/opt/homebrew/bin/htop", Seq.New(), root, 80, 24) == false
+       or PumpUntil(session, pane, "Tasks", false, 8000) == false
+       or session.Resize(104, 32) == false {
+        Fail(shell, session, "real htop startup/resize workflow");
+        return false;
+    }
+    Time.Clock.Sleep(100);
+    var redraw = session.Update();
+    if redraw != "" { pane.Append(redraw); }
+    if session.Send("q") == false
+       or PumpUntil(session, pane, "", true, 5000) == false
+       or PrimaryScreenContains(pane, "htop-primary-sentinel") == false {
+        Fail(shell, session, "real htop redraw/exit workflow");
+        return false;
+    }
+    session.Stop();
+    return true;
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Terminal Applications Probe", 1000, 700);
+    shell.toolPanels.terminalPane.SetTerminalMode(true);
+    var root = TempFile.CreateDirWithPrefix("zannastudio_terminal_apps_");
+
+    if File.Exists("/usr/bin/vim") == false
+       or File.Exists("/usr/bin/less") == false
+       or File.Exists("/opt/homebrew/bin/htop") == false {
+        shell.Destroy();
+        Terminal.Say("RESULT: ok (required host applications unavailable, skipped)");
+        return;
+    }
+    if VerifyVim(shell, root) == false { return; }
+    if VerifyLess(shell, root) == false { return; }
+    if VerifyHtop(shell, root) == false { return; }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok vim=real less=real htop=real");
+}

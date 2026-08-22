@@ -41,6 +41,12 @@ int main() {
     assert(rt_str_len(empty) == 0);
 
     rt_string hello = rt_const_cstr("hello");
+    assert(rt_str_byte_at(hello, 0) == 'h');
+    assert(rt_str_byte_at(hello, 4) == 'o');
+    assert(rt_str_byte_at(hello, -1) == -1);
+    assert(rt_str_byte_at(hello, 5) == -1);
+    assert(rt_str_byte_at(rt_const_cstr("\xC3\xA9"), 0) == 0xC3);
+    assert(rt_str_byte_at(rt_const_cstr("\xC3\xA9"), 1) == 0xA9);
     rt_string world = rt_const_cstr("world");
     rt_string hw = rt_str_concat(rt_string_ref(hello), rt_string_ref(world));
     assert(rt_str_len(hw) == 10);

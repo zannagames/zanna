@@ -10,8 +10,8 @@ is not yet a highly decoupled workbench framework. It is a practical IDE
 application with clear subsystem boundaries.
 
 Source modules are ratcheted by ADR 0218: new or worsened files/functions may
-not cross the configured bounds. The 2026-08-20 baseline still tracks 73
-grandfathered size debts and 47 layer debts, down from 87 and 49; those are
+not cross the configured bounds. The 2026-08-21 baseline tracks 69
+grandfathered size debts and 42 layer debts, down from 87 and 49; those are
 explicit burn-down work, not a claim that every legacy unit is already below
 1,000/200 lines. Large controllers decompose into focused units using two
 shapes — stateless helper modules, or narrowly named inheritance layers
@@ -278,7 +278,7 @@ presentation accessors so transport code does not accumulate UI formatting.
 
 The `commands/` directory is where user-triggered behavior lives.
 
-### `commands/command_catalog.zia`
+### `services/command_catalog.zia`
 
 Declarative command metadata: id, label, description, shortcut, capability, and
 palette visibility. Add command ids here first. Command ids are stable API
@@ -599,6 +599,7 @@ remain per view.
 | Module | Responsibility |
 | --- | --- |
 | `core/document_manager_base.zia` | Open documents, safe loading, saving, and disk-state checks core. |
+| `core/document_factory.zia` | Initialized untitled, scene, and admitted durable document construction. |
 | `core/document_save_transaction.zia` | Complete-file prepared save transactions and typed runtime diagnostic conversion. |
 | `core/document_disk_state.zia` | Disk metadata/hash baselines and external-change state transitions. |
 | `core/project_manager_base.zia` | Workspace roots, Explorer tree state, and safe file mutations core. |
@@ -1926,7 +1927,7 @@ Use this practical decision table:
 
 | Change | Preferred location |
 | --- | --- |
-| New command id or shortcut | `commands/command_catalog.zia` |
+| New command id or shortcut | `services/command_catalog.zia` |
 | Command availability | `commands/command_registry.zia`, `editor/language_service.zia` |
 | File open/save behavior | `core/document_manager.zia` |
 | New document metadata | `core/document.zia` |

@@ -36,7 +36,8 @@
 // Links: src/runtime/core/rt_string_internal.h (shared helpers),
 //        src/runtime/core/rt_string_advanced.c (extended operations),
 //        src/runtime/core/rt_string_specialized.c (case conversion + distance),
-//        src/runtime/core/rt_string.h (rt_string type and ref-counting API)
+//        src/runtime/core/rt_string.h (rt_string type and ref-counting API),
+//        docs/adr/0288-allocation-free-string-byte-access.md
 //
 //===----------------------------------------------------------------------===//
 /// @file
@@ -783,6 +784,24 @@ int64_t rt_str_len(rt_string s) {
     if (len > (size_t)INT64_MAX)
         return INT64_MAX;
     return (int64_t)len;
+}
+
+/// @brief Return one unsigned byte from a runtime string without allocation.
+/// @details Out-of-range offsets return -1 so bounded scanners can use a
+///          sentinel. A non-null forged handle traps consistently with other
+///          string accessors; null is treated as an empty string.
+/// @param s Borrowed string handle.
+/// @param offset Zero-based stored-byte offset.
+/// @return Byte value in 0..255, or -1 when no byte exists at @p offset.
+int64_t rt_str_byte_at(rt_string s, int64_t offset) {
+    if (!s || offset < 0)
+        return -1;
+    if (!rt_string_require_handle_(s, "String.ByteAt: invalid string handle"))
+        return -1;
+    const size_t len = rt_string_len_bytes(s);
+    if ((uint64_t)offset >= (uint64_t)len)
+        return -1;
+    return (int64_t)(unsigned char)s->data[(size_t)offset];
 }
 
 /// @brief Return 1 when the runtime string is empty; 0 otherwise.

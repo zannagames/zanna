@@ -18,7 +18,8 @@
 //   - Bind operations never transfer ownership of a model or GUI control.
 // Links: src/runtime/graphics/gui/rt_gui_ide.cpp,
 //        src/runtime/graphics/gui/rt_gui.h,
-//        src/il/runtime/defs/api/gui_layout.def
+//        src/il/runtime/defs/api/gui_layout.def,
+//        docs/adr/0290-virtual-tree-bulk-updates.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -327,6 +328,13 @@ int64_t rt_virtual_list_get_selected_index(void *list);
 /// @brief Create an empty virtualized tree.
 /// @return New managed VirtualTree object, or `NULL` on allocation failure.
 void *rt_virtual_tree_new(void);
+
+/// @brief Begin a nestable mutation batch that defers bound-control projection.
+void rt_virtual_tree_begin_update(void *tree);
+
+/// @brief End a mutation batch and project all accumulated changes once.
+/// @details An unmatched call traps as a programming error.
+void rt_virtual_tree_end_update(void *tree);
 /// @brief Add a node @p id labelled @p text under @p parent_id (empty parent = root).
 /// @param tree Managed VirtualTree object; invalid handles trap.
 /// @param parent_id Stable parent identifier, or empty for the hidden root.

@@ -138,6 +138,13 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/io/rt_file_path.h")
 // by Process, PTY, and GUI App. Scripts attach sources through App.WatchProcess
 // and App.WatchPty rather than calling the callback lifetime machinery directly.
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/system/rt_activity_wake.h")
+// The shared readiness worker that drives those wake targets is likewise an
+// implementation detail: Process and PTY register their own nonblocking probes
+// and scripts never see the registration handles.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/system/rt_activity_watch.h")
+// The bounded Windows pipe writer exists so Process.Write and Pty.Write never
+// block on a full ConPTY/child stdin pipe; it is private to those two backends.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/system/rt_async_pipe_writer.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_http2.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_entropy_platform.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/network/rt_network_internal.h")

@@ -24,6 +24,7 @@ bind "../studio_application_surface_frame" as SurfaceFrame;
 bind "studio_application_base" as StudioBase;
 bind "editor_split_orchestration" as EditorSplit;
 bind "workspace_watcher";
+bind "../commands/autosave_commands";
 bind "../commands/file_commands";
 
 class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfaceFrame {
@@ -117,7 +118,7 @@ class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfa
         autoSaveJob.Pump();
         var completedAutoSave = autoSaveJob.TakeCompleted();
         if completedAutoSave != null {
-            var currentBecameClean = file_commands.CompleteAutoSave(
+            var currentBecameClean = autosave_commands.CompleteAutoSave(
                 shell, docMgr, engine, tabs, completedAutoSave,
                 currentRevisionForSave);
             if currentBecameClean {
@@ -139,7 +140,7 @@ class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfa
                 autoSaveDebounce.Signal();
             } else if autoSaveDebounce.get_IsReady() and autoDoc!.isModified
                       and autoSaveJob.IsBusy() == false {
-                file_commands.QueueAutoSaveActive(
+                autosave_commands.QueueAutoSaveActive(
                     autoSaveJob, shell, docMgr, engine, currentRevisionForSave);
                 autoSaveDebounce.Reset();
             }
@@ -147,6 +148,24 @@ class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfa
             autoSaveActiveIndex = docMgr.activeIndex;
             autoSaveRevision = currentRevisionForSave;
             autoSaveDebounce.Reset();
+        }
+        if appSettings.autoSave and autoSaveJob.IsBusy() == false {
+            var backgroundIndex = 0;
+            while backgroundIndex < docMgr.GetCount() {
+                var backgroundDoc = docMgr.documents.get(backgroundIndex);
+                if backgroundIndex != docMgr.activeIndex
+                   and backgroundDoc != null and backgroundDoc!.isModified
+                   and backgroundDoc!.isNew == false
+                   and backgroundDoc!.isReadOnlyPreview == false
+                   and backgroundDoc!.filePath != "" {
+                    if autosave_commands.QueueAutoSaveDocument(
+                           autoSaveJob, shell, docMgr, engine,
+                           backgroundIndex, -1) {
+                        break;
+                    }
+                }
+                backgroundIndex = backgroundIndex + 1;
+            }
         }
     }
 

@@ -1541,7 +1541,6 @@ typedef struct {
     float *hiz_vertex_scratch;
     int32_t hiz_vertex_scratch_capacity; /* in vertices (4 floats each) */
     int32_t hiz_frame_triangles;         /* rasterized this frame, budget-capped */
-    int32_t hiz_frame_proxy_triangles;   /* exact subset triangles after precise-budget overflow */
 
     /* Shadow mapping */
     int8_t shadows_enabled;

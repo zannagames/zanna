@@ -292,6 +292,48 @@ static int test_modes_and_replies(void) {
     return 0;
 }
 
+static int test_autowrap_and_origin_mode(void) {
+    vg_outputpane_t *pane = vg_outputpane_create();
+    CHECK(pane != NULL);
+    vg_outputpane_set_terminal_mode(pane, true);
+
+    /* No layout uses the deterministic 80-column fallback. Filling the final
+     * column delays wrapping until the next printable glyph, as xterm does. */
+    char full_row[81];
+    memset(full_row, 'x', 80);
+    full_row[80] = '\0';
+    feed(pane, full_row);
+    CHECK(pane->term_cursor_line == 0);
+    CHECK(pane->cursor_col == 79);
+    CHECK(pane->term_wrap_pending);
+    feed(pane, "Y");
+    CHECK(pane->term_cursor_line == 1);
+    CHECK(pane->cursor_col == 1);
+    CHECK(line_equals(pane, 0, full_row));
+    CHECK(line_equals(pane, 1, "Y"));
+
+    /* DECRST ?7 pins writes to the final column instead of growing an
+     * unbounded logical row. DECSET ?7 restores delayed wrapping. */
+    feed(pane, "\x1b[?7l\x1b[1;80HAB");
+    CHECK(pane->term_cursor_line == 0);
+    CHECK(pane->cursor_col == 79);
+    CHECK(!pane->term_wrap_pending);
+    CHECK(pane->cells[79].utf8[0] == 'B');
+    feed(pane, "\x1b[?7h");
+    CHECK(pane->term_autowrap);
+
+    /* With DECOM enabled, CUP row 1 is the top scrolling margin and rows are
+     * clamped at the bottom margin. Resetting DECOM restores screen origin. */
+    feed(pane, "\x1b[2J\x1b[3;5r\x1b[?6h\x1b[1;1HO\x1b[99;1HZ");
+    CHECK(line_equals(pane, 2, "O"));
+    CHECK(line_equals(pane, 4, "Z"));
+    feed(pane, "\x1b[?6l\x1b[1;1HS");
+    CHECK(line_equals(pane, 0, "S"));
+
+    vg_outputpane_destroy(pane);
+    return 0;
+}
+
 static int test_scrollback_flow_unchanged(void) {
     vg_outputpane_t *pane = vg_outputpane_create();
     CHECK(pane != NULL);
@@ -399,6 +441,8 @@ int main(void) {
     if (test_region_scrolling())
         return 1;
     if (test_modes_and_replies())
+        return 1;
+    if (test_autowrap_and_origin_mode())
         return 1;
     if (test_scrollback_flow_unchanged())
         return 1;

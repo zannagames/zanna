@@ -251,6 +251,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
     expose List[tool_panel_model.ProblemRecord] visibleProblemRecords;
     expose List outputRenderedItems;
     expose Integer outputRenderedRowCount;
+    hide Boolean outputBulkRows;
     expose String referencesFilterText;
     expose Integer referencesResultCount;
     expose Integer visibleReferenceCount;
@@ -265,6 +266,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
     expose String callStackFilterText;
     expose String callStackStateText;
     expose Integer visibleCallStackFrameCount;
+    expose tool_panel_model.ToolPanelRows outputRows;
     expose tool_panel_model.ToolPanelRows problemsRows;
     expose tool_panel_model.ToolPanelRows searchRows;
     expose tool_panel_model.ToolPanelRows referencesRows;
@@ -507,6 +509,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
         visibleProblemRecords = [];
         outputRenderedItems = new List();
         outputRenderedRowCount = 0;
+        outputBulkRows = false;
         referencesFilterText = "";
         referencesResultCount = 0;
         visibleReferenceCount = 0;
@@ -521,6 +524,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
         callStackFilterText = "";
         callStackStateText = "Idle";
         visibleCallStackFrameCount = 0;
+        outputRows = new tool_panel_model.ToolPanelRows();
         problemsRows = new tool_panel_model.ToolPanelRows();
         searchRows = new tool_panel_model.ToolPanelRows();
         referencesRows = new tool_panel_model.ToolPanelRows();

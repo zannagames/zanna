@@ -19,6 +19,63 @@
 module scm_git_support;
 
 bind Str = Zanna.String;
+bind IO = Zanna.IO;
+bind Path = Zanna.IO.Path;
+bind "../services/safe_io";
+
+final MAX_GITDIR_POINTER_BYTES = 4096;
+
+/// @brief Resolve and normalize one bounded Git control-directory pointer.
+func NormalizeGitControlTarget(repo: String,
+                               target: String) -> String {
+    try {
+        if Path.IsAbsolute(target) { return Path.Normalize(Path.Absolute(target)); }
+        return Path.Normalize(Path.Absolute(Path.Join(repo, target)));
+    } catch {
+        return "";
+    }
+    return "";
+}
+
+/// @brief Resolve a repository's directory or linked-worktree Git control path.
+/// @details Ordinary repositories store control metadata in a `.git` directory. Linked
+///   worktrees instead use a bounded `gitdir: PATH` pointer file; relative targets are resolved
+///   from the worktree root. Malformed, inaccessible, and oversized pointers are ignored.
+/// @param repo Repository worktree root.
+/// @return Normalized control-directory path, or empty when unavailable.
+func GitControlDirectory(repo: String) -> String {
+    if repo == "" { return ""; }
+    var marker = Path.Join(repo, ".git");
+    if IO.Dir.Exists(marker) { return marker; }
+    if IO.File.Exists(marker) == false { return ""; }
+    var read = safe_io.ReadAllTextBounded(marker, MAX_GITDIR_POINTER_BYTES);
+    if read.ok == false { return ""; }
+    var pointer = Str.Trim(read.text);
+    if Str.StartsWith(pointer, "gitdir: ") == false { return ""; }
+    var target = Str.Trim(Str.Mid(pointer, 9));
+    if target == "" { return ""; }
+    target = NormalizeGitControlTarget(repo, target);
+    if target == "" { return ""; }
+    if IO.Dir.Exists(target) == false { return ""; }
+    return target;
+}
+
+/// @brief Detect an externally or internally started merge/rebase operation.
+/// @details Git records operation authority beneath its control directory. This bounded metadata
+///   check lets a fresh Studio view recover Continue/Abort state after opening a pre-existing
+///   conflict instead of collapsing it into an uncontinuable generic state.
+/// @param repo Repository worktree root.
+/// @return `merging`, `rebasing`, or `idle`.
+expose func CurrentOperation(repo: String) -> String {
+    var controlDir = GitControlDirectory(repo);
+    if controlDir == "" { return "idle"; }
+    if IO.Dir.Exists(Path.Join(controlDir, "rebase-merge"))
+       or IO.Dir.Exists(Path.Join(controlDir, "rebase-apply")) {
+        return "rebasing";
+    }
+    if IO.File.Exists(Path.Join(controlDir, "MERGE_HEAD")) { return "merging"; }
+    return "idle";
+}
 
 /// @brief Classify common Git failures into short user-actionable guidance.
 /// @details Source Control still preserves raw stdout/stderr in the output pane.

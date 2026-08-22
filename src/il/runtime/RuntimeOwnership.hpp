@@ -511,10 +511,12 @@ template <std::size_t N>
     // High-traffic string helpers that only borrow: they read their arguments,
     // never retain, release, or store any handle, and never call back into
     // user code. Optimizers may hoist retain/release traffic across them.
-    if (name == "rt_print_str" || name == "rt_str_len" || name == "rt_str_eq" ||
+    if (name == "rt_print_str" || name == "rt_str_len" || name == "rt_str_byte_at" ||
+        name == "rt_str_eq" ||
         name == "rt_str_cmp" || name == "rt_str_cmp_nocase" || name == "rt_str_is_empty" ||
         name == "rt_str_starts_with" || name == "rt_str_ends_with" || name == "rt_str_index_of" ||
         name == "Zanna.Terminal.PrintStr" || name == "Zanna.String.get_Length" ||
+        name == "Zanna.String.ByteAt" ||
         name == "Zanna.String.Equals" || name == "Zanna.String.Cmp" ||
         name == "Zanna.String.CmpNoCase") {
         effects.knownNeutral = true;

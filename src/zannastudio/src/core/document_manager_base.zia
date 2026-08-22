@@ -21,6 +21,7 @@ module document_manager_base;
 
 bind "document";
 bind "document_disk_state";
+bind "document_factory";
 bind "document_save_transaction";
 bind "text_admission";
 bind "../services/file_utils";
@@ -28,7 +29,6 @@ bind "../services/safe_io_results";
 
 bind IO = Zanna.IO;
 bind Path = Zanna.IO.Path;
-bind SceneDocument = Zanna.Game2D.SceneDocument;
 
 /// @brief Return the bounded in-memory document budget for one durable path.
 func MaxOpenBytesForPath(path: String) -> Integer {
@@ -123,17 +123,7 @@ class DocumentManagerBase {
     ///       to draft new Zia code.
     expose func NewDocument() -> document.Document {
         untitledCount = untitledCount + 1;
-        var doc = new document.Document();
-        doc.fileName = "Untitled " + untitledCount;
-        doc.language = "zia";
-        doc.kind = file_utils.DOC_KIND_CODE;
-        doc.isNew = true;
-        // Pre-populate with a `module` skeleton so the Zia completion engine
-        // can parse the buffer as the user types. Without this, every cursor
-        // position in a bare-expression buffer makes CompleteForFile return
-        // the empty string, which presents to users as a blank popup.
-        doc.content = "module Untitled" + untitledCount + ";\n\n";
-
+        var doc = document_factory.NewCodeDocument(untitledCount);
         documents.add(doc);
         activeIndex = documents.count() - 1;
         return doc;
@@ -142,13 +132,7 @@ class DocumentManagerBase {
     /// @brief Create a canonical untitled 2D scene document and activate it.
     expose func NewScene2DDocument() -> document.Document {
         untitledCount = untitledCount + 1;
-        var doc = new document.Document();
-        doc.fileName = "Untitled Scene " + untitledCount;
-        doc.language = "scene";
-        doc.kind = file_utils.DOC_KIND_SCENE_2D;
-        doc.isNew = true;
-        var scene = SceneDocument.New(32, 18, 32, 32);
-        doc.content = scene.ToJson();
+        var doc = document_factory.NewScene2DDocument(untitledCount);
         documents.add(doc);
         activeIndex = documents.count() - 1;
         return doc;
@@ -157,12 +141,7 @@ class DocumentManagerBase {
     /// @brief Create an empty canonical VSCN document and activate it.
     expose func NewScene3DDocument() -> document.Document {
         untitledCount = untitledCount + 1;
-        var doc = new document.Document();
-        doc.fileName = "Untitled 3D Scene " + untitledCount;
-        doc.language = "scene3d";
-        doc.kind = file_utils.DOC_KIND_SCENE_3D;
-        doc.isNew = true;
-        doc.content = file_utils.DefaultScene3DContent();
+        var doc = document_factory.NewScene3DDocument(untitledCount);
         documents.add(doc);
         activeIndex = documents.count() - 1;
         return doc;
@@ -181,21 +160,39 @@ class DocumentManagerBase {
             return documents.get(existing);
         }
 
-        var doc = new document.Document();
-        doc.filePath = canonicalPath;
-        doc.fileName = Path.Name(canonicalPath);
-        doc.language = file_utils.DetectLanguage(canonicalPath);
-        doc.kind = file_utils.DetectKind(canonicalPath);
         var admission = text_admission.ReadEditableText(canonicalPath);
-        var blockReason = admission.reason;
-        doc.isReadOnlyPreview = blockReason != "";
-        if doc.isReadOnlyPreview {
-            doc.content = BlockedPreviewText(canonicalPath, blockReason);
-        } else {
-            doc.content = admission.text;
+        return OpenNewFileSnapshot(canonicalPath, admission.text, admission.reason);
+    }
+
+    /// @brief Open a file from an already admitted complete text snapshot.
+    /// @details UI open commands use this after one bounded validation read so
+    ///          the accepted bytes cannot change between admission and document
+    ///          creation. Existing documents are still activated without using
+    ///          the supplied snapshot.
+    /// @param path Durable path associated with @p text.
+    /// @param text Complete validated UTF-8, NUL-free disk snapshot.
+    /// @return Existing or freshly opened Document.
+    expose func OpenFileFromKnownText(path: String,
+                                      text: String) -> document.Document {
+        var canonicalPath = NormalizeDocumentPath(path);
+        var existing = FindByPath(canonicalPath);
+        if existing >= 0 {
+            activeIndex = existing;
+            return documents.get(existing);
         }
-        doc.isNew = false;
-        doc.isModified = false;
+        return OpenNewFileSnapshot(canonicalPath, text, "");
+    }
+
+    /// @brief Construct one new durable document from a previously read snapshot.
+    hide func OpenNewFileSnapshot(canonicalPath: String,
+                                  text: String,
+                                  blockReason: String) -> document.Document {
+        var content = text;
+        if blockReason != "" {
+            content = BlockedPreviewText(canonicalPath, blockReason);
+        }
+        var doc = document_factory.OpenDocument(
+            canonicalPath, content, blockReason != "");
         RefreshDiskMetadataFromKnownText(doc, doc.content);
         ClearExternalState(doc);
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-25
+last-verified: 2026-08-21
 ---
 
 # ADR 0191: GPU-Accelerated Offscreen Editor Rendering
@@ -77,10 +77,20 @@ software constructor.
   cleared frame reads back the requested color within per-channel rasterizer
   tolerance (`test_rt_canvas3d`), and Studio's viewport launches without the
   software-fallback notice.
-- **OpenGL (Linux) and D3D11 (Windows): pending.** Their `create_ctx` still
-  requires a window and fails cleanly, so the accelerated constructor
-  truthfully falls back to software on those platforms until their headless
-  context work lands.
+- **OpenGL (Linux): implemented.** A null-window context uses dynamically
+  loaded EGL with a surfaceless display and pbuffer, falling back to EGL's
+  default display when necessary. Core EGL loading no longer depends on
+  `libwayland-egl`, and Linux-auto builds resolve both EGL and GLX presentation
+  support so windowed and headless contexts can coexist in either creation
+  order. `test_headless_egl` exercises context creation without X11, Wayland,
+  or a display environment; the existing accelerated-canvas test covers
+  target clear/readback and truthful software fallback when EGL is absent.
+- **D3D11 (Windows): implemented.** A null-window context calls
+  `D3D11CreateDevice` without a swap chain, preferring hardware and retaining
+  the existing WARP fallback. Explicit render targets supply the offscreen
+  attachments, while swap-chain target recreation and presentation remain
+  guarded for windowed contexts. Windows CI owns live device/WARP clear and
+  readback evidence through the accelerated-canvas test.
 
 ## Consequences
 

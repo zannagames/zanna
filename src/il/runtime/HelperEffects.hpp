@@ -66,7 +66,7 @@ inline HelperEffects classifyHelperEffects(std::string_view name) {
 
     // Pure math helpers: nothrow=true, readonly=false, pure=true
     // These perform pure computation with no memory access.
-    constexpr std::array<Entry, 32> kEntries{{
+    constexpr std::array<Entry, 33> kEntries{{
         // Math: pure computation, no memory access
         Entry{"rt_cdbl_from_any", HelperEffects{true, false, true}},
         Entry{"rt_int_floor", HelperEffects{true, false, true}},
@@ -89,6 +89,7 @@ inline HelperEffects classifyHelperEffects(std::string_view name) {
         // String inspection: readonly (reads string memory), not pure.
         // These may trap on invalid handles, so they are not marked nothrow.
         Entry{"rt_str_len", HelperEffects{false, true, false}},
+        Entry{"rt_str_byte_at", HelperEffects{false, true, false}},
         Entry{"rt_str_index_of", HelperEffects{false, true, false}},
         Entry{"rt_str_instr3", HelperEffects{false, true, false}},
         Entry{"rt_str_eq", HelperEffects{false, true, false}},

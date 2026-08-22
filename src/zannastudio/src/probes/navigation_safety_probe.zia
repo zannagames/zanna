@@ -30,8 +30,10 @@ bind "../editor/editor_tabs";
 bind "../services/locations";
 bind "../ui/app_shell";
 
+bind Bytes = Zanna.Collections.Bytes;
 bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
 bind TempFile = Zanna.IO.TempFile;
 bind Terminal = Zanna.Terminal;
 
@@ -61,11 +63,19 @@ func main() {
     var targetPath = Path.Join(root, "target.zia");
     var missingPath = Path.Join(root, "deleted.zia");
     var binaryPath = Path.Join(root, "image.png");
+    var malformedPath = Path.Join(root, "malformed.zia");
+    var oversizedPath = Path.Join(root, "oversized.zia");
     File.WriteAllText(currentPath,
                       "module Current;\nfunc first() {}\nfunc second() {}\n");
     File.WriteAllText(targetPath,
                       "module Target;\nfunc destination() {}\n");
     File.WriteAllText(binaryPath, "not image data, but intentionally unsupported");
+    var malformedBytes = Bytes.New(3);
+    Bytes.Set(malformedBytes, 0, 0xED);
+    Bytes.Set(malformedBytes, 1, 0xA0);
+    Bytes.Set(malformedBytes, 2, 0x80);
+    File.WriteAllBytes(malformedPath, malformedBytes);
+    File.WriteAllText(oversizedPath, Str.Repeat("x", 4000001));
 
     if file_commands.OpenFileAtPath(shell, docMgr, engine, tabs, currentPath) == false {
         fail(shell, "could not open current fixture");
@@ -89,13 +99,31 @@ func main() {
 
     var binaryId = locStore.Add(binaryPath, 2, 1, 2, 1,
                                 locations.KIND_SEARCH, "unsupported result");
-    if locStore.OpenLocation(shell, docMgr, engine, tabs, binaryId) {
-        fail(shell, "binary location reported success");
+    if locStore.OpenLocation(shell, docMgr, engine, tabs, binaryId) == false {
+        fail(shell, "binary location did not open its safe preview");
         return;
     }
-    if docMgr.GetCount() != 1 or activePath(docMgr) != currentPath
+    var binaryPreview = docMgr.GetActive();
+    if docMgr.GetCount() != 2 or activePath(docMgr) != binaryPath
+       or binaryPreview == null or binaryPreview!.isReadOnlyPreview == false {
+        fail(shell, "binary location did not activate a read-only preview");
+        return;
+    }
+    docMgr.SetActive(0);
+    tabs.SetActive(0);
+    engine.LoadDocument(docMgr.GetActive()!);
+    engine.GoToLine(originalLine);
+
+    // Text admission rejects complete malformed and oversized snapshots before
+    // they can replace the active editable buffer or create a misleading tab.
+    if file_commands.OpenFileAtPath(shell, docMgr, engine, tabs, malformedPath)
+       or file_commands.OpenFileAtPath(shell, docMgr, engine, tabs, oversizedPath) {
+        fail(shell, "invalid source admission reported success");
+        return;
+    }
+    if docMgr.GetCount() != 2 or activePath(docMgr) != currentPath
        or engine.GetCursorLine() != originalLine {
-        fail(shell, "binary location changed the active editor");
+        fail(shell, "invalid source admission changed the active editor");
         return;
     }
 
@@ -105,13 +133,13 @@ func main() {
     var binaryCommand = quick_open_commands.QuickOpenCommandId(binaryPath);
     if quick_open_commands.HandleQuickOpenPaletteSelection(shell, projMgr,
                                                           docMgr, engine, tabs,
-                                                          binaryCommand) {
-        fail(shell, "Quick Open reported rejected binary as opened");
+                                                          binaryCommand) == false {
+        fail(shell, "Quick Open did not activate the binary preview");
         return;
     }
-    if docMgr.GetCount() != 1 or activePath(docMgr) != currentPath
-       or engine.GetCursorLine() != originalLine {
-        fail(shell, "failed Quick Open changed the active editor");
+    if docMgr.GetCount() != 2 or activePath(docMgr) != binaryPath
+       or docMgr.GetActive()!.isReadOnlyPreview == false {
+        fail(shell, "Quick Open binary preview state was inconsistent");
         return;
     }
 
@@ -121,7 +149,7 @@ func main() {
         fail(shell, "valid location reported failure");
         return;
     }
-    if docMgr.GetCount() != 2 or activePath(docMgr) != targetPath
+    if docMgr.GetCount() != 3 or activePath(docMgr) != targetPath
        or engine.GetCursorLine() != 2 or engine.GetCursorCol() != 6 {
         fail(shell, "valid location did not activate its exact source range");
         return;
@@ -130,13 +158,15 @@ func main() {
     // A file can disappear after it entered history. The shared open helper
     // must reject it and repair recent-file persistence in the same action.
     var settingsPath = Path.Join(root, "settings.ini");
+    var deletedRecentPath = Path.Join(root, "deleted-recent.zia");
+    File.WriteAllText(deletedRecentPath, "module deleted_recent;\n");
     File.WriteAllText(settingsPath, "[settings]\nrestoreSession=0\n");
     var sessionMgr = new session.SessionManager();
     sessionMgr.Setup(settingsPath);
-    sessionMgr.RecordRecentFile(targetPath);
-    File.Delete(targetPath);
+    sessionMgr.RecordRecentFile(deletedRecentPath);
+    File.Delete(deletedRecentPath);
     if explorer_action_runner.OpenFileAndRecord(shell, docMgr, engine, tabs,
-                                                sessionMgr, targetPath) {
+                                                sessionMgr, deletedRecentPath) {
         fail(shell, "deleted recent file reported success");
         return;
     }

@@ -101,6 +101,10 @@ class ScmViewBase {
     expose GUI.Button unstageBtn;
     expose GUI.Button stageAllBtn;
     expose GUI.Button abortOperationBtn;
+    expose GUI.Button takeCurrentBtn;
+    expose GUI.Button takeIncomingBtn;
+    expose GUI.Button continueOperationBtn;
+    expose GUI.Button skipRebaseBtn;
     expose GUI.Flex stageRow;
     expose GUI.Flex commitRow;
     expose GUI.Button commitBtn;
@@ -228,6 +232,22 @@ class ScmViewBase {
         abortOperationBtn.SetAccessibleName("Abort merge or rebase");
         abortOperationBtn.SetTooltip("Abort the active merge or rebase operation");
         abortOperationBtn.SetVisible(false);
+        takeCurrentBtn = GUI.Button.New(stageRow, "Take Current");
+        takeCurrentBtn.SetAccessibleName("Use current version for selected conflict");
+        takeCurrentBtn.SetTooltip("Replace the selected conflict with Git's current side; Stage to confirm");
+        takeCurrentBtn.SetVisible(false);
+        takeIncomingBtn = GUI.Button.New(stageRow, "Take Incoming");
+        takeIncomingBtn.SetAccessibleName("Use incoming version for selected conflict");
+        takeIncomingBtn.SetTooltip("Replace the selected conflict with Git's incoming side; Stage to confirm");
+        takeIncomingBtn.SetVisible(false);
+        continueOperationBtn = GUI.Button.New(stageRow, "Continue");
+        continueOperationBtn.SetAccessibleName("Continue merge or rebase");
+        continueOperationBtn.SetTooltip("Continue the active merge or rebase after every conflict is staged");
+        continueOperationBtn.SetVisible(false);
+        skipRebaseBtn = GUI.Button.New(stageRow, "Skip Commit");
+        skipRebaseBtn.SetAccessibleName("Skip current rebase commit");
+        skipRebaseBtn.SetTooltip("Skip the failing commit in the active rebase");
+        skipRebaseBtn.SetVisible(false);
 
         commitRow = GUI.Flex.New();
         commitRow.SetDirection(GUI.FlexDirection.Row);

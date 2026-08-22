@@ -262,7 +262,13 @@ class TerminalSession {
         if active { return true; }
         var a = args;
         if a == null { a = Seq.New(); }
-        var opened = Pty.OpenResult(program, a, cwd, null, cols, rows);
+        // Preserve PATH, HOME, locale, and user-defined shell variables while
+        // giving interactive programs a deterministic true-color terminal.
+        var terminalEnv = Seq.New();
+        Seq.Push(terminalEnv, "TERM=xterm-256color");
+        Seq.Push(terminalEnv, "COLORTERM=truecolor");
+        var opened = Pty.OpenWithEnvOverlayResult(program, a, cwd,
+                                                  terminalEnv, cols, rows);
         if not opened.IsOk {
             lastError = opened.UnwrapErrStr();
             if lastError == "" { lastError = "PTY session could not be created"; }

@@ -1,0 +1,75 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/document_factory.zia
+// Purpose: Construct initialized untitled and durable Studio documents.
+// Key invariants:
+//   - New code documents contain a syntactically useful module skeleton.
+//   - Durable documents derive language and kind from their canonical path.
+// Ownership/Lifetime:
+//   - Returned documents transfer to the calling DocumentManager.
+// Links: zannastudio/src/core/document.zia,
+//        zannastudio/src/core/document_manager_base.zia
+//
+//===----------------------------------------------------------------------===//
+
+module document_factory;
+
+bind "document";
+bind "../services/file_utils";
+
+bind Path = Zanna.IO.Path;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+
+/// @brief Create one untitled Zia document with a parseable module skeleton.
+func NewCodeDocument(sequence: Integer) -> document.Document {
+    var doc = new document.Document();
+    doc.fileName = "Untitled " + sequence;
+    doc.language = "zia";
+    doc.kind = file_utils.DOC_KIND_CODE;
+    doc.isNew = true;
+    doc.content = "module Untitled" + sequence + ";\n\n";
+    return doc;
+}
+
+/// @brief Create one empty canonical 2D scene document.
+func NewScene2DDocument(sequence: Integer) -> document.Document {
+    var doc = new document.Document();
+    doc.fileName = "Untitled Scene " + sequence;
+    doc.language = "scene";
+    doc.kind = file_utils.DOC_KIND_SCENE_2D;
+    doc.isNew = true;
+    doc.content = SceneDocument.New(32, 18, 32, 32).ToJson();
+    return doc;
+}
+
+/// @brief Create one empty canonical 3D scene document.
+func NewScene3DDocument(sequence: Integer) -> document.Document {
+    var doc = new document.Document();
+    doc.fileName = "Untitled 3D Scene " + sequence;
+    doc.language = "scene3d";
+    doc.kind = file_utils.DOC_KIND_SCENE_3D;
+    doc.isNew = true;
+    doc.content = file_utils.DefaultScene3DContent();
+    return doc;
+}
+
+/// @brief Create a durable document from one already admitted snapshot.
+func OpenDocument(canonicalPath: String,
+                  content: String,
+                  readOnlyPreview: Boolean) -> document.Document {
+    var doc = new document.Document();
+    doc.filePath = canonicalPath;
+    doc.fileName = Path.Name(canonicalPath);
+    doc.language = file_utils.DetectLanguage(canonicalPath);
+    doc.kind = file_utils.DetectKind(canonicalPath);
+    doc.content = content;
+    doc.isReadOnlyPreview = readOnlyPreview;
+    doc.isNew = false;
+    doc.isModified = false;
+    return doc;
+}
