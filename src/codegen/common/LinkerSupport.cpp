@@ -207,6 +207,20 @@ std::filesystem::path fallbackSupportLibraryPath(std::string_view libBaseName) {
     return configs;
 }
 
+/// @brief Single-config build-tree layout path for a support library.
+/// @details The deterministic location an archive occupies when no multi-config
+///          sub-directory is involved. Serves both as the non-Windows build-tree
+///          answer and as the host-independent missing-archive path, so a library
+///          that has not been built yet is still reported relative to the build
+///          root on every platform.
+/// @param buildDir CMake build root.
+/// @param libBaseName Support-library target/base name.
+/// @return `buildDir / <layout subdir> / <archive filename>`; not validated.
+std::filesystem::path buildTreeSupportLibraryLayoutPath(const std::filesystem::path &buildDir,
+                                                        std::string_view libBaseName) {
+    return buildDir / supportLibBuildSubdir(libBaseName) / archiveFileName(libBaseName);
+}
+
 /// @brief Locate a support-library archive inside a CMake build directory.
 /// @details On Windows, probes the script-provided or current build configuration
 ///          before other multi-config directories; this prevents stale archives
@@ -218,9 +232,9 @@ std::filesystem::path fallbackSupportLibraryPath(std::string_view libBaseName) {
 ///         or an empty path when Windows probes find no archive.
 std::filesystem::path buildTreeSupportLibraryPath(const std::filesystem::path &buildDir,
                                                   std::string_view libBaseName) {
-    const std::filesystem::path subdir = supportLibBuildSubdir(libBaseName);
-    const std::string archive = archiveFileName(libBaseName);
     if constexpr (zanna::platform::kHostWindows) {
+        const std::filesystem::path subdir = supportLibBuildSubdir(libBaseName);
+        const std::string archive = archiveFileName(libBaseName);
         std::vector<std::filesystem::path> candidates;
         for (const auto &config : preferredBuildConfigs())
             candidates.push_back(buildDir / subdir / config / archive);
@@ -231,7 +245,7 @@ std::filesystem::path buildTreeSupportLibraryPath(const std::filesystem::path &b
         }
         return std::filesystem::path{};
     }
-    return buildDir / subdir / archive;
+    return buildTreeSupportLibraryLayoutPath(buildDir, libBaseName);
 }
 
 /// @brief Read one exact key from a CMake cache.
@@ -975,11 +989,12 @@ std::filesystem::path supportLibraryPath(const std::filesystem::path &buildDir,
     }
     if (systemPath && fileExists(*systemPath))
         return *systemPath;
-    if (!buildDir.empty()) {
-        const auto path = buildTreeSupportLibraryPath(buildDir, libBaseName);
-        if (!path.empty())
-            return path;
-    }
+    /* Nothing exists yet: report the deterministic build-tree layout path so the
+     * build root survives into rebuild logic and diagnostics. The Windows probe
+     * above yields an empty path in that case, so the layout helper — not
+     * buildTreeSupportLibraryPath — is what keeps the hosts in agreement. */
+    if (!buildDir.empty())
+        return buildTreeSupportLibraryLayoutPath(buildDir, libBaseName);
     if (configuredPath)
         return *configuredPath;
     if (adjacentPath)

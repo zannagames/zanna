@@ -81,7 +81,13 @@ static std::string get_str(void *map, const char *key) {
 static void write_file(const fs::path &path, const std::string &text) {
     fs::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    // A silent failure here (Windows refuses to truncate a hidden file through
+    // the standard streams) would surface much later as an unrelated edit-range
+    // or content mismatch, so fixture writes fail loudly instead.
+    assert(out.is_open());
     out << text;
+    out.flush();
+    assert(out.good());
 }
 
 static std::string read_file(const fs::path &path) {
@@ -730,6 +736,11 @@ static void test_workspace_edits() {
         assert(std::string(actual_payload, sizeof(actual_payload)) ==
                std::string(stream_payload, sizeof(stream_payload)));
     }
+    // Preservation has been verified; drop the hidden bit so the rest of the case
+    // can rewrite `a` through the standard streams, which cannot truncate a
+    // hidden file on Windows.
+    if (attribute_fixture)
+        SetFileAttributesW(a.wstring().c_str(), original_attributes);
 #endif
 #if RT_PLATFORM_LINUX || RT_PLATFORM_MACOS
     if (xattr_fixture) {

@@ -55,9 +55,23 @@ class DebugSessionBase extends State.DebugSessionState {
     /// @brief Select the App whose native wait receives adapter activity wakes.
     expose func SetWakeApp(value: Zanna.GUI.App) { wakeApp = value; }
 
-    /// @brief Report whether an active adapter still needs timer polling.
+    /// @brief Report whether the adapter still owes Poll() work.
+    /// @details A session stops being active the moment the adapter's terminated
+    ///          event is parsed off stderr, but the child is still running at that
+    ///          point and typically still holds the debugged program's stdout: the
+    ///          adapter flushes that pipe as it exits, strictly after the event.
+    ///          Poll() therefore keeps the handle until it observes the exit,
+    ///          performs the final drain, and releases it. Pumping must outlive
+    ///          IsActive() or the last program output is dropped, so a retained
+    ///          handle - not session liveness - is what asks for another frame.
+    /// @return True while an adapter process handle is still retained.
+    expose func NeedsPump() -> Boolean {
+        return processHandle != null;
+    }
+
+    /// @brief Report whether a pumping adapter still needs timer polling.
     expose func NeedsActivityPolling() -> Boolean {
-        return IsActive() and activityWakeAttached == false;
+        return NeedsPump() and activityWakeAttached == false;
     }
 
     /// @brief Launch the adapter for @p path and install its breakpoints.

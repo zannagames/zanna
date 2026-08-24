@@ -48,11 +48,16 @@ static void test_utf8_validation() {
                 rt_codec_is_valid_utf8(rt_string_from_bytes(embedded_nul, sizeof(embedded_nul))) ==
                     1);
 
-    const char bare_continuation[] = {(char)0x80};
-    const char overlong[] = {(char)0xC0, (char)0xAF};
-    const char surrogate[] = {(char)0xED, (char)0xA0, (char)0x80};
-    const char truncated[] = {(char)0xF0, (char)0x9F, (char)0x8C};
-    const char too_large[] = {(char)0xF4, (char)0x90, (char)0x80, (char)0x80};
+    const char bare_continuation[] = {static_cast<char>(0x80)};
+    const char overlong[] = {static_cast<char>(0xC0), static_cast<char>(0xAF)};
+    const char surrogate[] = {
+        static_cast<char>(0xED), static_cast<char>(0xA0), static_cast<char>(0x80)};
+    const char truncated[] = {
+        static_cast<char>(0xF0), static_cast<char>(0x9F), static_cast<char>(0x8C)};
+    const char too_large[] = {static_cast<char>(0xF4),
+                              static_cast<char>(0x90),
+                              static_cast<char>(0x80),
+                              static_cast<char>(0x80)};
     test_result("Bare continuation is rejected",
                 rt_codec_is_valid_utf8(
                     rt_string_from_bytes(bare_continuation, sizeof(bare_continuation))) == 0);

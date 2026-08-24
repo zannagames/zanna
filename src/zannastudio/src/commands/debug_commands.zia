@@ -408,7 +408,7 @@ func DebugUpdate(shell: app_shell.AppShell,
                  tabs: editor_tabs.EditorTabs,
                  store: breakpoints.BreakpointStore,
                  session: debug_session.DebugSession) {
-    if session == null or session.processHandle == null { return; }
+    if session == null or session.NeedsPump() == false { return; }
     if session.Poll() {
         if session.restartPending and session.IsActive() == false {
             var restartBin = session.restartZannaBin;

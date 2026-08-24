@@ -449,8 +449,12 @@ func VerifyConditionalBreakpointsAndLogpoints(
         fail("logpoint: Launch returned false");
         return false;
     }
+    // Pump until the adapter handle is released: the terminated event lands on
+    // stderr while the child still owns unflushed program output, so a loop that
+    // stops at IsActive() can miss the logpoint text a single trailing Poll()
+    // only sometimes recovers.
     var lw = 0;
-    while lsession.IsActive() and lw < debugWaitMs() {
+    while lsession.NeedsPump() and lw < debugWaitMs() {
         lsession.Poll();
         if lsession.stopped {
             fail("logpoint: unexpectedly halted at line " + lsession.lastLine);
@@ -459,7 +463,6 @@ func VerifyConditionalBreakpointsAndLogpoints(
         Time.Clock.Sleep(5);
         lw = lw + 5;
     }
-    lsession.Poll();
     if Str.IndexOf(lsession.programOutput, "[logpoint:5] iter i=3") == 0 {
         fail("logpoint: missing 'iter i=3' in output: " + lsession.programOutput);
         return false;

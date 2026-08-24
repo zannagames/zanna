@@ -555,12 +555,16 @@ func VerifyDebugAdapterAndScene(
                   "debug stop reports a call stack and locals") == false { return false; }
 
     dbg.Continue();
+    // Pump until the adapter handle is released, not merely until the session
+    // stops being active. The terminated event reaches stderr before the child
+    // exits, and the program's stdout is still buffered inside the adapter until
+    // that exit flushes it; stopping at IsActive() drops the program output.
     debugDeadlineMs = Clock.NowMs() + 20000;
-    while dbg.IsActive() and Clock.NowMs() < debugDeadlineMs {
+    while dbg.NeedsPump() and Clock.NowMs() < debugDeadlineMs {
         dbg.Poll();
         Clock.Sleep(1);
     }
-    if dbg.IsActive() {
+    if dbg.NeedsPump() {
         dbg.Terminate();
         fail("debug adapter termination wait timed out");
         return false;

@@ -3328,25 +3328,44 @@ static bool reserveWorkspaceEditBackup(WorkspaceEditTargetAccess &access,
 }
 
 #if RT_PLATFORM_WINDOWS
-/// @brief Rename one already-open file relative to a retained directory handle.
+/// @brief Rename one already-open file to a fully qualified destination path.
+/// @details Win32's `SetFileInformationByHandle` does not honor
+///          `FILE_RENAME_INFO::RootDirectory`; a non-null handle there fails the
+///          call with `ERROR_INVALID_PARAMETER`, because handle-relative renames
+///          exist only in the native API. The destination is therefore an
+///          absolute path in the preferred (backslash) form. That reopens no race
+///          window: `WorkspaceEditTargetAccess` keeps every directory component
+///          open without `FILE_SHARE_DELETE`, so no component can be renamed or
+///          replaced mid-transaction.
+/// @param file Open handle carrying DELETE access to the file being renamed.
+/// @param destination Absolute path the file is renamed to.
+/// @param replaceExisting Whether an existing destination may be replaced.
+/// @return True when the rename completed.
 static bool renameWorkspaceEditHandleWindows(HANDLE file,
-                                             HANDLE parent,
-                                             const std::string &leafText,
+                                             const fs::path &destination,
                                              bool replaceExisting) {
-    if (file == INVALID_HANDLE_VALUE || parent == INVALID_HANDLE_VALUE)
+    if (file == INVALID_HANDLE_VALUE)
         return false;
-    const std::wstring leaf = fs::path(leafText).wstring();
-    const size_t nameBytes = leaf.size() * sizeof(wchar_t);
-    const size_t allocation = offsetof(FILE_RENAME_INFO, FileName) + nameBytes;
+    std::error_code ec;
+    fs::path resolved = destination.is_absolute() ? destination : fs::absolute(destination, ec);
+    if (ec || !resolved.is_absolute())
+        return false;
+    resolved.make_preferred();
+    const std::wstring target = resolved.wstring();
+    const size_t nameBytes = target.size() * sizeof(wchar_t);
+    if (nameBytes == 0)
+        return false;
+    // One trailing wide NUL keeps the buffer terminated for the kernel's own copy
+    // of the name; the length field still counts only the name itself.
+    const size_t allocation = offsetof(FILE_RENAME_INFO, FileName) + nameBytes + sizeof(wchar_t);
     if (allocation > std::numeric_limits<DWORD>::max())
         return false;
-    std::vector<unsigned char> storage(allocation);
+    std::vector<unsigned char> storage(allocation, 0);
     auto *renameInfo = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
     renameInfo->ReplaceIfExists = replaceExisting ? TRUE : FALSE;
-    renameInfo->RootDirectory = parent;
+    renameInfo->RootDirectory = nullptr;
     renameInfo->FileNameLength = static_cast<DWORD>(nameBytes);
-    if (nameBytes > 0)
-        std::memcpy(renameInfo->FileName, leaf.data(), nameBytes);
+    std::memcpy(renameInfo->FileName, target.data(), nameBytes);
     return SetFileInformationByHandle(
                file, FileRenameInfo, renameInfo, static_cast<DWORD>(allocation)) != 0;
 }
@@ -3374,8 +3393,7 @@ static bool moveWorkspaceTargetToReservedBackup(WorkspaceEditTargetAccess &acces
 #if RT_PLATFORM_WINDOWS
     if (access.directoryHandles.empty() || access.fileHandle == INVALID_HANDLE_VALUE)
         return false;
-    return renameWorkspaceEditHandleWindows(
-        access.fileHandle, access.directoryHandles.back(), backupLeaf, true);
+    return renameWorkspaceEditHandleWindows(access.fileHandle, access.parent / backupLeaf, true);
 #else
     return renameat(access.parentFd,
                     access.leaf.c_str(),
@@ -3406,8 +3424,7 @@ static bool moveWorkspaceTempToTarget(WorkspaceEditTargetAccess &access,
                   tempHandle, FileAttributeTagInfo, &attributes, sizeof(attributes)) != 0 &&
               (attributes.FileAttributes &
                (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0 &&
-              renameWorkspaceEditHandleWindows(
-                  tempHandle, access.directoryHandles.back(), access.leaf, false);
+              renameWorkspaceEditHandleWindows(tempHandle, access.file, false);
     CloseHandle(tempHandle);
     return ok;
 #else
@@ -3726,10 +3743,7 @@ static bool restoreWorkspaceEditBackup(PendingWorkspaceWrite &write) {
 #if RT_PLATFORM_WINDOWS
     if (write.access->directoryHandles.empty())
         return false;
-    return renameWorkspaceEditHandleWindows(write.access->fileHandle,
-                                            write.access->directoryHandles.back(),
-                                            write.access->leaf,
-                                            false);
+    return renameWorkspaceEditHandleWindows(write.access->fileHandle, write.access->file, false);
 #else
     return renameat(write.access->parentFd,
                     write.backupLeaf.c_str(),

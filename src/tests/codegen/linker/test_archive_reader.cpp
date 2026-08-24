@@ -807,8 +807,7 @@ int main() {
     }
     CHECK(sawTrapDef);
 
-    auto loadArchive = [&](RtComponent comp) -> Archive {
-        const auto path = runtimeArchivePath(*buildDir, archiveNameForComponent(comp));
+    auto loadArchiveAt = [&](const std::filesystem::path &path) -> Archive {
         Archive lib;
         if (!fileExists(path)) {
             check(false, "fileExists(path)", __LINE__);
@@ -824,6 +823,10 @@ int main() {
         return lib;
     };
 
+    auto loadArchive = [&](RtComponent comp) -> Archive {
+        return loadArchiveAt(runtimeArchivePath(*buildDir, archiveNameForComponent(comp)));
+    };
+
     Archive collections = loadArchive(RtComponent::Collections);
     Archive arrays = loadArchive(RtComponent::Arrays);
     Archive game = loadArchive(RtComponent::Game);
@@ -831,6 +834,10 @@ int main() {
     Archive text = loadArchive(RtComponent::Text);
     Archive iofs = loadArchive(RtComponent::IoFs);
     Archive threads = loadArchive(RtComponent::Threads);
+    // The regex engine is a shared support library rather than a runtime
+    // component archive, but rt_string_advanced/rt_compiled_pattern reference
+    // its symbols, so a full resolve needs it exactly as the real link does.
+    Archive regexEngine = loadArchiveAt(supportLibraryPath(*buildDir, "zanna_regex_engine"));
 
     CHECK(collections.symbolIndex.count("rt_seq_with_capacity") == 1);
     CHECK(game.symbolIndex.count("rt_uimenulist_new") == 1);
@@ -854,7 +861,8 @@ int main() {
     }
 
     // --- Basic resolve: all runtime components needed for full resolution ---
-    std::vector<Archive> archives = {ar, collections, arrays, oop, text, iofs, threads};
+    std::vector<Archive> archives = {
+        ar, collections, arrays, oop, text, iofs, threads, regexEngine};
     std::vector<ObjFile> initialObjects = {makeUndefinedCaller()};
     std::unordered_map<std::string, GlobalSymEntry> globalSyms;
     std::vector<ObjFile> allObjects;
@@ -874,7 +882,7 @@ int main() {
     CHECK(globalSyms["rt_init_stack_safety"].binding == GlobalSymEntry::Global);
 
     // --- Transitive resolve: all component archives ---
-    archives = {ar, collections, arrays, oop, text, iofs, threads};
+    archives = {ar, collections, arrays, oop, text, iofs, threads, regexEngine};
     initialObjects = {makeUndefinedCaller()};
     globalSyms.clear();
     allObjects.clear();
