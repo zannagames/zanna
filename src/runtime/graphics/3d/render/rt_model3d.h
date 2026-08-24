@@ -290,6 +290,20 @@ int64_t rt_model3d_limit_texture_dim(void *obj, int64_t max_dim);
 /// @param max_tris Maximum triangles retained by each simplified mesh.
 /// @return Number of inventory meshes replaced, or zero for invalid input/failure.
 int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris);
+/// @brief Simplify over-budget meshes with explicit collapse constraints.
+/// @details Tool-facing (`zanna asset bake --simplify-lock-seams` /
+///          `--simplify-max-error`): forwards @p flags and @p max_error_frac to
+///          rt_mesh3d_simplify_ex so seam-dense scans decimate without opening
+///          cracks and stop at a geometric error ceiling.
+/// @param obj Model3D modified in place.
+/// @param max_tris Maximum triangles retained by each simplified mesh.
+/// @param flags Bitwise OR of RT_MESH3D_SIMPLIFY_FLAG_* values, or zero.
+/// @param max_error_frac Error ceiling as a bounding-diameter fraction; <= 0 disables.
+/// @return Number of inventory meshes replaced, or zero for invalid input/failure.
+int64_t rt_model3d_simplify_meshes_ex(void *obj,
+                                      int64_t max_tris,
+                                      int64_t flags,
+                                      double max_error_frac);
 /// @brief Generate LOD chains (1..4 levels of repeated ratio-scaled triangles) for every mesh node
 /// in
 ///        the asset's template and scene hierarchies, and enable auto screen-error

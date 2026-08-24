@@ -201,6 +201,11 @@ typedef struct {
     uint32_t heap_count;
     /// Allocated entry capacity of @ref heap.
     uint32_t heap_capacity;
+
+    /// Non-zero when classified boundary vertices may never be removed.
+    int8_t lock_boundaries;
+    /// Absolute quadric-cost ceiling; collapsing stops above it. Zero disables.
+    double max_error_cap;
 } simp_ctx_t;
 
 /// @brief Exchange two entries in a simplification heap.
@@ -881,11 +886,11 @@ static int simp_simulated_face_geometry_valid(const simp_ctx_t *cx,
                        fmax(e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2],
                             e3[0] * e3[0] + e3[1] * e3[1] + e3[2] * e3[2]));
     if (!isfinite(after_len) || !isfinite(max_edge_sq) || max_edge_sq <= 0.0 ||
-        after_len <= max_edge_sq * 1e-12)
+        after_len <= max_edge_sq * 1e-8)
         return 0;
     dot = before[0] * (after[0] / after_len) + before[1] * (after[1] / after_len) +
           before[2] * (after[2] / after_len);
-    return isfinite(dot) && dot > 1e-8;
+    return isfinite(dot) && dot > 0.05;
 }
 
 /**
@@ -929,6 +934,13 @@ static int simp_simulated_face_unique(
  * @return Non-zero only when applying `b -> a` preserves every simplifier invariant.
  */
 static int simp_collapse_is_legal(simp_ctx_t *cx, uint32_t a, uint32_t b) {
+    /* Boundary locking: the removed endpoint may never sit on a classified
+     * boundary, so every open, UV-seam, and material-seam polyline keeps its
+     * exact vertex set (subset placement never moves the survivor). Checked
+     * live rather than precomputed because face retirement can open new
+     * boundaries mid-run. */
+    if (cx->lock_boundaries && simp_vertex_is_classified_boundary(cx, b))
+        return 0;
     if (!simp_link_condition_holds(cx, a, b))
         return 0;
     for (int32_t link = cx->vert_face_head[b]; link >= 0; link = cx->face_links[link]) {
@@ -1060,6 +1072,28 @@ int64_t rt_mesh3d_get_simplify_status(void *mesh_obj) {
  * @return A new complete/partial Mesh3D, or `NULL` for invalid input/allocation failure.
  */
 void *rt_mesh3d_simplify(void *mesh_obj, int64_t target_triangles) {
+    return rt_mesh3d_simplify_ex(mesh_obj, target_triangles, 0, 0.0);
+}
+
+/**
+ * @brief Full-control QEM entry: optional boundary locking and error ceiling.
+ *
+ * Shares every invariant of rt_mesh3d_simplify. @p flags may lock classified
+ * boundary vertices against removal; a positive finite @p max_error_frac converts
+ * to an absolute quadric-cost ceiling of `(max_error_frac * bounding_diameter)^2`
+ * (each candidate's cost is the accumulated squared plane distance at the
+ * surviving endpoint) and collapsing stops at the first candidate above it.
+ *
+ * @param mesh_obj Source Mesh3D handle.
+ * @param target_triangles Requested budget, sanitized to at least one.
+ * @param flags Bitwise OR of RT_MESH3D_SIMPLIFY_FLAG_* values, or zero.
+ * @param max_error_frac Error ceiling as a bounding-diameter fraction; <= 0 disables.
+ * @return A new complete/partial Mesh3D, or `NULL` for invalid input/allocation failure.
+ */
+void *rt_mesh3d_simplify_ex(void *mesh_obj,
+                            int64_t target_triangles,
+                            int64_t flags,
+                            double max_error_frac) {
     rt_mesh3d *mesh = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
     simp_ctx_t cx;
     uint32_t src_verts;
@@ -1097,6 +1131,15 @@ void *rt_mesh3d_simplify(void *mesh_obj, int64_t target_triangles) {
     target_u32 = target_triangles > (int64_t)UINT32_MAX ? UINT32_MAX : (uint32_t)target_triangles;
 
     cx.source_mesh = mesh;
+    cx.lock_boundaries = (flags & RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES) != 0 ? 1 : 0;
+    if (isfinite(max_error_frac) && max_error_frac > 0.0) {
+        double diameter;
+        double ceiling;
+        rt_mesh3d_refresh_bounds(mesh);
+        diameter = mesh->bsphere_radius > 0.0f ? (double)mesh->bsphere_radius * 2.0 : 1.0;
+        ceiling = max_error_frac * diameter;
+        cx.max_error_cap = ceiling * ceiling;
+    }
     remap = simp_weld(mesh, src_verts, &cx.verts, &cx.source_vertices, &cx.vert_count);
     if (!remap)
         goto fail;
@@ -1250,6 +1293,11 @@ void *rt_mesh3d_simplify(void *mesh_obj, int64_t target_triangles) {
         uint32_t b;
         int32_t link;
         if (!simp_heap_pop(&cx, &entry))
+            break;
+        /* The heap pops in nondecreasing stored-cost order, so the first entry
+         * above the ceiling proves every remaining candidate is at least as
+         * expensive; stopping here yields a valid PARTIAL result. */
+        if (cx.max_error_cap > 0.0 && entry.cost > cx.max_error_cap)
             break;
         a = entry.a;
         b = entry.b;

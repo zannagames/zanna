@@ -48,6 +48,38 @@ extern "C" {
  * invalid input/allocation failure.
  */
 void *rt_mesh3d_simplify(void *mesh, int64_t target_triangles);
+
+/**
+ * @brief Refuse collapses that remove any open/attribute/material boundary vertex.
+ *
+ * Exact-record welding splits every UV-chart and material border into independent
+ * boundary polylines; decimating the two sides to different vertex subsets opens
+ * visible cracks. With this flag each classified boundary polyline survives
+ * verbatim and only chart interiors decimate, so scans with dense seam networks
+ * (photogrammetry) stay watertight at aggressive targets.
+ */
+#define RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES INT64_C(1)
+
+/**
+ * @brief Tool-facing simplify with boundary locking and a geometric error ceiling.
+ *
+ * Identical to rt_mesh3d_simplify plus two offline-bake controls: @p flags selects
+ * additional collapse constraints (see the flag macros above) and @p max_error_frac,
+ * when positive and finite, stops collapsing once the cheapest remaining candidate's
+ * accumulated quadric cost exceeds `(max_error_frac * bounding_diameter)^2`. Stopping
+ * early is not an error: the result is a valid PARTIAL mesh with exact diagnostics.
+ *
+ * @param[in] mesh Source Mesh3D handle.
+ * @param target_triangles Requested triangle budget, clamped to at least one.
+ * @param flags Bitwise OR of RT_MESH3D_SIMPLIFY_FLAG_* values, or zero.
+ * @param max_error_frac Error ceiling as a fraction of the bounding diameter; <= 0 disables.
+ * @return A new valid Mesh3D, including when the result is partial, or `NULL` on
+ * invalid input/allocation failure.
+ */
+void *rt_mesh3d_simplify_ex(void *mesh,
+                            int64_t target_triangles,
+                            int64_t flags,
+                            double max_error_frac);
 /**
  * @brief Return the sanitized target recorded by Mesh3D.Simplify.
  * @param[in] mesh Mesh3D receiver.

@@ -635,6 +635,172 @@ static void test_nonmanifold_and_bowtie_guards() {
 }
 
 /**
+ * @brief Build a planar two-chart grid whose shared column is duplicated per chart.
+ *
+ * Models a UV-atlas seam after exact-record welding: each chart indexes its own
+ * copy of the seam column (records differ through the index-keyed attribute
+ * markers), so the seam is a pair of open boundary polylines. All faces are
+ * wound counter-clockwise for a +Z normal.
+ *
+ * @param out_seam_sources Receives the source indices of both seam copies.
+ * @return New runtime-owned mesh, or `nullptr` on allocation failure.
+ */
+static rt_mesh3d *make_two_chart_seam_grid(std::vector<uint32_t> &out_seam_sources) {
+    const uint32_t cols = 4;
+    const uint32_t rows = 4;
+    std::vector<float> positions;
+    std::vector<uint32_t> indices;
+    out_seam_sources.clear();
+    for (uint32_t chart = 0; chart < 2; ++chart) {
+        const float x0 = chart == 0 ? 0.0f : 3.0f;
+        for (uint32_t y = 0; y < rows; ++y) {
+            for (uint32_t x = 0; x < cols; ++x) {
+                positions.push_back(x0 + static_cast<float>(x));
+                positions.push_back(static_cast<float>(y));
+                positions.push_back(0.0f);
+            }
+        }
+    }
+    for (uint32_t y = 0; y < rows; ++y) {
+        out_seam_sources.push_back(y * cols + (cols - 1u)); /* chart A, x = 3 */
+        out_seam_sources.push_back(rows * cols + y * cols); /* chart B, x = 3 */
+    }
+    for (uint32_t chart = 0; chart < 2; ++chart) {
+        const uint32_t base = chart * rows * cols;
+        for (uint32_t y = 0; y + 1u < rows; ++y) {
+            for (uint32_t x = 0; x + 1u < cols; ++x) {
+                const uint32_t v00 = base + y * cols + x;
+                const uint32_t v10 = v00 + 1u;
+                const uint32_t v01 = v00 + cols;
+                const uint32_t v11 = v01 + 1u;
+                indices.insert(indices.end(), {v00, v10, v11});
+                indices.insert(indices.end(), {v00, v11, v01});
+            }
+        }
+    }
+    return make_mesh(positions, indices);
+}
+
+/**
+ * @brief Seam locking keeps both copies of every boundary polyline vertex verbatim.
+ */
+static void test_seam_lock_preserves_boundary_polylines() {
+    std::vector<uint32_t> seam_sources;
+    rt_mesh3d *source = make_two_chart_seam_grid(seam_sources);
+    EXPECT_TRUE(source != nullptr, "two-chart seam grid allocates");
+    if (!source)
+        return;
+    const int64_t source_tris = static_cast<int64_t>(source->index_count / 3u);
+
+    rt_mesh3d *locked = static_cast<rt_mesh3d *>(
+        rt_mesh3d_simplify_ex(source, 4, RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES, 0.0));
+    EXPECT_TRUE(locked != nullptr, "seam-locked simplify returns a mesh");
+    if (locked) {
+        expect_valid_triangle_output(locked);
+        EXPECT_EQ(rt_mesh3d_get_simplify_status(locked),
+                  RT_MESH3D_SIMPLIFY_STATUS_PARTIAL,
+                  "boundary-dominated grid reports partial under seam locking");
+        EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(locked) > 4,
+                    "seam locking refuses to shatter down to the budget");
+        EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(locked) < source_tris,
+                    "seam locking still decimates chart interiors");
+        for (uint32_t seam_index = 0; seam_index < seam_sources.size(); ++seam_index) {
+            const vgfx3d_vertex_t &record = source->vertices[seam_sources[seam_index]];
+            bool found = false;
+            for (uint32_t vertex = 0; vertex < locked->vertex_count && !found; ++vertex)
+                found = std::memcmp(&locked->vertices[vertex], &record, sizeof(record)) == 0;
+            EXPECT_TRUE(found, "both copies of every seam vertex survive seam locking");
+        }
+        for (uint32_t face = 0; face < locked->index_count / 3u; ++face) {
+            double normal[3];
+            if (face_normal(locked, face, normal))
+                EXPECT_TRUE(normal[2] > 0.0, "seam-locked planar output keeps +Z orientation");
+        }
+    }
+
+    rt_mesh3d *unlocked = static_cast<rt_mesh3d *>(rt_mesh3d_simplify(source, 4));
+    EXPECT_TRUE(unlocked != nullptr, "legacy simplify still returns a mesh");
+    if (unlocked) {
+        expect_valid_triangle_output(unlocked);
+        for (uint32_t face = 0; face < unlocked->index_count / 3u; ++face) {
+            double normal[3];
+            if (face_normal(unlocked, face, normal))
+                EXPECT_TRUE(normal[2] > 0.0, "flip guard keeps planar output facing +Z");
+        }
+        if (locked)
+            EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(unlocked) <=
+                            rt_mesh3d_get_simplify_achieved_triangles(locked),
+                        "legacy path decimates at least as far as the locked path");
+    }
+
+    release_object(unlocked);
+    release_object(locked);
+    release_object(source);
+}
+
+/**
+ * @brief A tight error ceiling stops collapsing early with an honest PARTIAL result.
+ */
+static void test_error_cap_stops_early() {
+    const uint32_t cols = 5;
+    const uint32_t rows = 5;
+    std::vector<float> positions;
+    std::vector<uint32_t> indices;
+    for (uint32_t y = 0; y < rows; ++y) {
+        for (uint32_t x = 0; x < cols; ++x) {
+            positions.push_back(static_cast<float>(x));
+            positions.push_back(static_cast<float>(y));
+            positions.push_back(static_cast<float>((x * x * 3u + y * y * 5u + x * y * 7u) % 11u) * 0.05f);
+        }
+    }
+    for (uint32_t y = 0; y + 1u < rows; ++y) {
+        for (uint32_t x = 0; x + 1u < cols; ++x) {
+            const uint32_t v00 = y * cols + x;
+            const uint32_t v10 = v00 + 1u;
+            const uint32_t v01 = v00 + cols;
+            const uint32_t v11 = v01 + 1u;
+            indices.insert(indices.end(), {v00, v10, v11});
+            indices.insert(indices.end(), {v00, v11, v01});
+        }
+    }
+    rt_mesh3d *source = make_mesh(positions, indices);
+    EXPECT_TRUE(source != nullptr, "bumpy grid allocates");
+    if (!source)
+        return;
+    const int64_t source_tris = static_cast<int64_t>(source->index_count / 3u);
+
+    rt_mesh3d *capped = static_cast<rt_mesh3d *>(rt_mesh3d_simplify_ex(source, 2, 0, 1e-7));
+    EXPECT_TRUE(capped != nullptr, "tightly capped simplify returns a mesh");
+    if (capped) {
+        expect_valid_triangle_output(capped);
+        EXPECT_EQ(rt_mesh3d_get_simplify_status(capped),
+                  RT_MESH3D_SIMPLIFY_STATUS_PARTIAL,
+                  "a tight error ceiling reports partial");
+        EXPECT_EQ(rt_mesh3d_get_simplify_requested_triangles(capped),
+                  2,
+                  "the capped result still records the requested budget");
+        EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(capped) >= source_tris - 4,
+                    "a tight error ceiling permits at most a few zero-cost collapses");
+    }
+
+    rt_mesh3d *roomy = static_cast<rt_mesh3d *>(rt_mesh3d_simplify_ex(source, 2, 0, 0.9));
+    EXPECT_TRUE(roomy != nullptr, "roomy capped simplify returns a mesh");
+    if (roomy) {
+        expect_valid_triangle_output(roomy);
+        EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(roomy) < source_tris,
+                    "a roomy error ceiling permits real decimation");
+        if (capped)
+            EXPECT_TRUE(rt_mesh3d_get_simplify_achieved_triangles(roomy) <=
+                            rt_mesh3d_get_simplify_achieved_triangles(capped),
+                        "the ceiling only ever stops work earlier");
+    }
+
+    release_object(roomy);
+    release_object(capped);
+    release_object(source);
+}
+
+/**
  * @brief Run all focused simplifier regressions.
  * @return Process success when every assertion passed.
  */
@@ -642,6 +808,8 @@ int main() {
     test_attribute_animation_and_range_remap();
     test_partial_status_duplicate_guard_and_range_coalescing();
     test_nonmanifold_and_bowtie_guards();
+    test_seam_lock_preserves_boundary_polylines();
+    test_error_cap_stops_early();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

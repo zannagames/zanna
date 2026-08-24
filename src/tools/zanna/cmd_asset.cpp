@@ -20,6 +20,7 @@
 #include "cmd_asset.hpp"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
+#include "rt_mesh_simplify.h"
 #include "rt_model3d.h"
 #include "rt_textureasset3d.h"
 #endif
@@ -747,6 +748,7 @@ void printAssetUsage(std::FILE *out) {
                  "  zanna asset bake <input> <output.scene3d> [--force-tangents]\n"
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
                  "                   [--clips LIST] [--strip-meshes] [--simplify-meshes N]\n"
+                 "                   [--simplify-lock-seams] [--simplify-max-error F]\n"
                  "                   [--max-texture-dim N] [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
@@ -757,6 +759,13 @@ void printAssetUsage(std::FILE *out) {
                  "      and A-B index ranges. Node animations follow matching clip\n"
                  "      names. Use per-clip bakes when a full bake exceeds the VSCN\n"
                  "      document size limit.\n"
+                 "      --simplify-lock-seams keeps every open, UV-seam, and material\n"
+                 "      boundary vertex during --simplify-meshes so seam-dense scans\n"
+                 "      (photogrammetry) decimate without opening cracks; heavy chunks\n"
+                 "      may finish above the budget as valid PARTIAL results.\n"
+                 "      --simplify-max-error stops --simplify-meshes once the cheapest\n"
+                 "      remaining collapse exceeds F of the mesh bounding diameter\n"
+                 "      (typical: 0.001).\n"
                  "      --max-texture-dim downscales every material texture above N\n"
                  "      texels to fit N (stored as compact raw pixels — the source\n"
                  "      container's per-load decode cost disappears with its bulk).\n"
@@ -811,6 +820,8 @@ int cmdAsset(int argc, char **argv) {
         long simplifyMeshes = 0;
         long maxTextureDim = 0;
         bool stripMeshes = false;
+        bool simplifyLockSeams = false;
+        double simplifyMaxError = 0.0;
         bool json = false;
         for (int i = 3; i < argc; i++) {
             const std::string arg = argv[i];
@@ -840,6 +851,16 @@ int cmdAsset(int argc, char **argv) {
                                  "ceiling >= 8\n");
                     return 1;
                 }
+            } else if (arg == "--simplify-lock-seams") {
+                simplifyLockSeams = true;
+            } else if (arg == "--simplify-max-error" && i + 1 < argc) {
+                simplifyMaxError = std::strtod(argv[++i], nullptr);
+                if (!(simplifyMaxError > 0.0) || simplifyMaxError >= 1.0) {
+                    std::fprintf(stderr,
+                                 "zanna asset bake: --simplify-max-error expects a "
+                                 "bounding-diameter fraction in (0,1)\n");
+                    return 1;
+                }
             } else if (arg == "--max-texture-dim" && i + 1 < argc) {
                 maxTextureDim = std::strtol(argv[++i], nullptr, 10);
                 if (maxTextureDim < 64) {
@@ -857,6 +878,12 @@ int cmdAsset(int argc, char **argv) {
                 printAssetUsage(stderr);
                 return 1;
             }
+        }
+        if ((simplifyLockSeams || simplifyMaxError > 0.0) && simplifyMeshes <= 0) {
+            std::fprintf(stderr,
+                         "zanna asset bake: --simplify-lock-seams/--simplify-max-error "
+                         "require --simplify-meshes\n");
+            return 1;
         }
         void *model =
             rt_model3d_load_with_options_ex(rt_const_cstr(input), rt_const_cstr(options.c_str()));
@@ -898,7 +925,12 @@ int cmdAsset(int argc, char **argv) {
         if (stripMeshes)
             (void)rt_model3d_strip_meshes(model);
         if (simplifyMeshes > 0)
-            (void)rt_model3d_simplify_meshes(model, (int64_t)simplifyMeshes);
+            (void)rt_model3d_simplify_meshes_ex(model,
+                                                (int64_t)simplifyMeshes,
+                                                simplifyLockSeams
+                                                    ? RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES
+                                                    : INT64_C(0),
+                                                simplifyMaxError);
         if (maxTextureDim > 0)
             (void)rt_model3d_limit_texture_dim(model, (int64_t)maxTextureDim);
         if (lods > 0)

@@ -508,6 +508,23 @@ static void model_swap_node_mesh(rt_scene_node3d *node, void *ctx) {
 /// @param max_tris Triangle ceiling per mesh (minimum 8).
 /// @return Number of meshes replaced, or 0 for invalid input.
 int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
+    return rt_model3d_simplify_meshes_ex(obj, max_tris, 0, 0.0);
+}
+
+/// @brief Decimate every mesh above @p max_tris with explicit collapse constraints.
+/// @details Tool-facing peer of rt_model3d_simplify_meshes: @p flags and
+///          @p max_error_frac flow to rt_mesh3d_simplify_ex per mesh, so bakes
+///          of seam-dense photogrammetry can lock boundary polylines and stop
+///          at a geometric error ceiling instead of shattering to the budget.
+/// @param obj Model3D to decimate in place.
+/// @param max_tris Triangle ceiling per mesh (minimum 8).
+/// @param flags Bitwise OR of RT_MESH3D_SIMPLIFY_FLAG_* values, or zero.
+/// @param max_error_frac Error ceiling as a bounding-diameter fraction; <= 0 disables.
+/// @return Number of meshes replaced, or 0 for invalid input.
+int64_t rt_model3d_simplify_meshes_ex(void *obj,
+                                      int64_t max_tris,
+                                      int64_t flags,
+                                      double max_error_frac) {
     rt_model3d *model = model3d_checked(obj);
     rt_scene_node3d **nodes = NULL;
     size_t node_count = 0;
@@ -531,7 +548,7 @@ int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
         rt_mesh3d_repair_geometry_counts(mesh);
         if ((int64_t)(rt_mesh3d_validated_index_count(mesh) / 3u) <= max_tris)
             continue;
-        slim = rt_mesh3d_simplify(mesh_obj, max_tris);
+        slim = rt_mesh3d_simplify_ex(mesh_obj, max_tris, flags, max_error_frac);
         if (!slim)
             continue;
         swap.old_mesh = mesh_obj;
