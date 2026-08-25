@@ -2323,6 +2323,76 @@ static void test_colorize_masked_strength_and_alpha() {
     printf("test_colorize_masked_strength_and_alpha: PASSED\n");
 }
 
+static void test_colorize_masked_linear_reference_and_dark_tail() {
+    /* ADR 0293. At the reference luma the linear op must land exactly on
+     * the target (same contract as the byte-space op). For a texel darker
+     * than the reference, the LINEAR result must be brighter than the
+     * byte-space result once both are read back as sRGB bytes — the
+     * byte-space multiply double-darkens after shader linearization,
+     * which is the whole reason the variant exists. */
+    void *p1 = rt_pixels_new(2, 1);
+    void *p2 = rt_pixels_new(2, 1);
+    void *m = rt_pixels_new(2, 1);
+    /* A mid gray at the reference (128) and a half-dark texel (64). */
+    rt_pixels_set_rgba(p1, 0, 0, 0x808080FF);
+    rt_pixels_set_rgba(p1, 1, 0, 0x404040FF);
+    rt_pixels_set_rgba(p2, 0, 0, 0x808080FF);
+    rt_pixels_set_rgba(p2, 1, 0, 0x404040FF);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 1, 0, 0xFFFFFFFF);
+
+    rt_pixels_colorize_masked(p1, m, 0x1A3A6B, 128, 2.2, 1.0);
+    rt_pixels_colorize_masked_linear(p2, m, 0x1A3A6B, 128, 2.2, 1.0);
+
+    /* Reference texel: both ops land on the target (linear may round by
+     * one code value per channel through the EOTF round trip). */
+    uint32_t refByte = (uint32_t)rt_pixels_get_rgba(p1, 0, 0);
+    uint32_t refLin = (uint32_t)rt_pixels_get_rgba(p2, 0, 0);
+    assert(refByte == 0x1A3A6BFFu);
+    for (int c = 1; c <= 3; c++) {
+        int64_t a = (refLin >> (8 * c)) & 0xFF;
+        int64_t b = (refByte >> (8 * c)) & 0xFF;
+        int64_t d = a - b;
+        if (d < 0)
+            d = -d;
+        assert(d <= 1);
+    }
+    /* Dark-tail texel: the linear result is strictly brighter per channel
+     * than the byte-space result (green channel is the biggest, check
+     * it explicitly). */
+    uint32_t darkByte = (uint32_t)rt_pixels_get_rgba(p1, 1, 0);
+    uint32_t darkLin = (uint32_t)rt_pixels_get_rgba(p2, 1, 0);
+    assert(((darkLin >> 16) & 0xFFu) > ((darkByte >> 16) & 0xFFu));
+    assert(((darkLin >> 24) & 0xFFu) >= ((darkByte >> 24) & 0xFFu));
+    assert(((darkLin >> 8) & 0xFFu) > ((darkByte >> 8) & 0xFFu));
+    /* Alpha untouched. */
+    assert((darkLin & 0xFFu) == 0xFFu);
+    printf("test_colorize_masked_linear_reference_and_dark_tail: PASSED\n");
+}
+
+static void test_colorize_masked_linear_mask_and_strength() {
+    void *p = rt_pixels_new(2, 1);
+    void *m = rt_pixels_new(2, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x80808080); /* alpha 0x80 */
+    rt_pixels_set_rgba(p, 1, 0, 0x40404040);
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF); /* only texel 0 covered */
+    rt_pixels_colorize_masked_linear(p, m, 0x1A3A6B, 128, 2.2, 0.0);
+    /* strength 0: covered texel unchanged (up to EOTF round trip). */
+    uint32_t s0 = (uint32_t)rt_pixels_get_rgba(p, 0, 0);
+    for (int c = 1; c <= 3; c++) {
+        int64_t a = (s0 >> (8 * c)) & 0xFF;
+        int64_t d = a - 0x80;
+        if (d < 0)
+            d = -d;
+        assert(d <= 1);
+    }
+    assert((s0 & 0xFFu) == 0x80u);
+    rt_pixels_colorize_masked_linear(p, m, 0x1A3A6B, 128, 2.2, 1.0);
+    /* Uncovered texel untouched by both passes. */
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0x40404040u);
+    printf("test_colorize_masked_linear_mask_and_strength: PASSED\n");
+}
+
 static void test_stamp_nonzero_copies_sparse_layer() {
     void *p = rt_pixels_new(3, 1);
     void *layer = rt_pixels_new(3, 1);
@@ -2574,6 +2644,8 @@ int main() {
     test_dilate_owner_full_fill();
     test_dilate_owner_dim_mismatch_noop();
     test_colorize_masked_shade();
+    test_colorize_masked_linear_reference_and_dark_tail();
+    test_colorize_masked_linear_mask_and_strength();
     test_colorize_masked_strength_and_alpha();
     test_colorize_masked_mask_scale();
     test_stamp_nonzero_copies_sparse_layer();

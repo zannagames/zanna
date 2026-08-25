@@ -1821,6 +1821,115 @@ void rt_pixels_colorize_masked(
     pixels_touch(p);
 }
 
+/// @brief sRGB EOTF (the exact piecewise curve the 3D backends apply when
+/// linearizing an albedo texture) and its inverse, on [0,1].
+static double rt_px_srgb_to_linear(double c) {
+    if (c <= 0.04045)
+        return c / 12.92;
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+static double rt_px_linear_to_srgb(double c) {
+    if (c <= 0.0031308)
+        return c * 12.92;
+    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+/// @brief Linear-light variant of rt_pixels_colorize_masked (ADR 0293).
+/// Identical signature and gating. The shade RATIO is read exactly like the
+/// byte-space op (Rec.601 luma on the encoded bytes over ref_lum — the
+/// authored shading pattern), but it is APPLIED in linear light: the target
+/// linearizes through the sRGB EOTF, `target_linear * shade` is computed,
+/// clamped, strength-blended in linear, and re-encoded. The byte-space op
+/// multiplies the ENCODED target instead, which the shader's albedo
+/// linearization then compresses roughly quadratically — every texel darker
+/// than the reference lands far darker in light than its authored shading
+/// says, the "recolored uniforms render too dark" defect.
+void rt_pixels_colorize_masked_linear(
+    void *pixels, void *mask, int64_t rgb, int64_t ref_lum, double max_shade, double strength) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.ColorizeMaskedLinear: null pixels");
+    rt_pixels_impl *mk = rt_pixels_checked_impl(mask, "Pixels.ColorizeMaskedLinear: null mask");
+    double tr_l;
+    double tg_l;
+    double tb_l;
+    if (!p || !p->data || !mk || !mk->data)
+        return;
+    if (mk->width <= 0 || mk->height <= 0)
+        return;
+    if (!isfinite(strength))
+        return;
+    if (strength < 0.0)
+        strength = 0.0;
+    if (strength > 1.0)
+        strength = 1.0;
+    if (ref_lum < 1)
+        ref_lum = 1;
+    if (!isfinite(max_shade) || max_shade <= 0.0)
+        max_shade = 1.5; /* rt_pixels_colorize_masked parity */
+    if (max_shade > 16.0)
+        max_shade = 16.0;
+    tr_l = rt_px_srgb_to_linear((double)((rgb >> 16) & 0xFF) / 255.0);
+    tg_l = rt_px_srgb_to_linear((double)((rgb >> 8) & 0xFF) / 255.0);
+    tb_l = rt_px_srgb_to_linear((double)(rgb & 0xFF) / 255.0);
+    for (int64_t y = 0; y < p->height; y++) {
+        int64_t my = y * mk->height / p->height;
+        for (int64_t x = 0; x < p->width; x++) {
+            int64_t mx = x * mk->width / p->width;
+            uint32_t mtex = mk->data[(size_t)my * (size_t)mk->width + (size_t)mx];
+            uint32_t texel;
+            uint32_t pa;
+            int64_t pr;
+            int64_t pg;
+            int64_t pb;
+            int64_t lum;
+            double shade;
+            double cr;
+            double cg;
+            double cb;
+            int64_t nr;
+            int64_t ng;
+            int64_t nb;
+            if ((mtex >> 8) == 0u) /* RGB all zero = uncovered */
+                continue;
+            texel = p->data[(size_t)y * (size_t)p->width + (size_t)x];
+            pr = (texel >> 24) & 0xFF;
+            pg = (texel >> 16) & 0xFF;
+            pb = (texel >> 8) & 0xFF;
+            pa = texel & 0xFF;
+            lum = (pr * 77 + pg * 150 + pb * 29) / 256;
+            shade = (double)lum / (double)ref_lum;
+            if (shade > max_shade)
+                shade = max_shade;
+            cr = tr_l * shade;
+            cg = tg_l * shade;
+            cb = tb_l * shade;
+            if (cr > 1.0)
+                cr = 1.0;
+            if (cg > 1.0)
+                cg = 1.0;
+            if (cb > 1.0)
+                cb = 1.0;
+            cr = rt_px_srgb_to_linear((double)pr / 255.0) * (1.0 - strength) +
+                 cr * strength;
+            cg = rt_px_srgb_to_linear((double)pg / 255.0) * (1.0 - strength) +
+                 cg * strength;
+            cb = rt_px_srgb_to_linear((double)pb / 255.0) * (1.0 - strength) +
+                 cb * strength;
+            nr = (int64_t)(rt_px_linear_to_srgb(cr) * 255.0 + 0.5);
+            ng = (int64_t)(rt_px_linear_to_srgb(cg) * 255.0 + 0.5);
+            nb = (int64_t)(rt_px_linear_to_srgb(cb) * 255.0 + 0.5);
+            if (nr > 255)
+                nr = 255;
+            if (ng > 255)
+                ng = 255;
+            if (nb > 255)
+                nb = 255;
+            p->data[(size_t)y * (size_t)p->width + (size_t)x] =
+                ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
+        }
+    }
+}
+
 /// @brief Luminance-band tint restricted to a coverage mask and to near-neutral
 ///   texels. Same blend as rt_pixels_tint_luminance_masked, with two extra
 ///   gates: the mask (any non-zero RGB at the scaled coordinate) must cover

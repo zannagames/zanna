@@ -171,6 +171,15 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes);
 void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
                                double max_shade, double strength);
 
+/// @brief Linear-light variant of rt_pixels_colorize_masked (ADR 0293):
+///   identical signature and gating, but the shade transfer runs in linear
+///   light through the exact sRGB EOTF the 3D backends apply to albedo
+///   textures, so a recolored PBR region is no longer double-darkened by
+///   the shader's linearization. Display-referred rasters keep the
+///   byte-space op.
+void rt_pixels_colorize_masked_linear(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
+                                      double max_shade, double strength);
+
 /// @brief Copy every texel of @p src whose RGB is non-zero over the
 ///   receiver (same dimensions; mismatch is a no-op). The sparse-layer
 ///   stamp: offline tools bake per-texel patches (e.g. garment-sourced
