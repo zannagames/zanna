@@ -175,6 +175,29 @@ extern "C" void *rt_pixels_rotate(void *pixels, double rotation) {
     return pixels;
 }
 
+extern "C" void *rt_pixels_transform_region_nearest(void *pixels,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t width,
+                                                    int64_t height,
+                                                    int8_t,
+                                                    int8_t,
+                                                    int64_t tint,
+                                                    int64_t alpha) {
+    void *result = rt_pixels_scale(pixels, width, height);
+    if (!result)
+        return nullptr;
+    if (tint >= 0) {
+        void *tinted = rt_pixels_tint(result, tint);
+        if (tinted)
+            result = tinted;
+    }
+    (void)alpha;
+    return result;
+}
+
 extern "C" int64_t rt_pixels_width(void *pixels) {
     return pixels ? static_cast<StubPixels *>(pixels)->width : 0;
 }

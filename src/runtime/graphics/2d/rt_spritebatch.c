@@ -647,6 +647,27 @@ static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_
         return;
     }
 
+    if (item->rotation == 0) {
+        int64_t output_width = spritebatch_saturating_scaled_dim(item->src_w, scale_x);
+        int64_t output_height = spritebatch_saturating_scaled_dim(item->src_h, scale_y);
+        void *transformed = rt_pixels_transform_region_nearest(item->source,
+                                                               item->src_x,
+                                                               item->src_y,
+                                                               item->src_w,
+                                                               item->src_h,
+                                                               output_width,
+                                                               output_height,
+                                                               0,
+                                                               0,
+                                                               batch->tint_color,
+                                                               batch->alpha);
+        if (!transformed)
+            return;
+        rt_canvas_blit_alpha(canvas, item->x, item->y, transformed);
+        spritebatch_release_object(transformed);
+        return;
+    }
+
     void *transformed =
         extract_region_pixels(item->source, item->src_x, item->src_y, item->src_w, item->src_h);
     if (!transformed)

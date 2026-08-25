@@ -39,6 +39,7 @@ set(_zanna_codegen_x86_64_pure_tests
         fp_stress
         udiv_pow2
         i32_checked_ovf
+        null_trap
         object_only_cli)
 
 set(_zanna_codegen_x86_64_native_tests

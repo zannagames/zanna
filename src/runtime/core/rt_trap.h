@@ -96,6 +96,15 @@ void rt_trap_div0(void);
 /// @brief Traps the runtime on checked integer overflow.
 void rt_trap_ovf(void);
 
+/// @brief Traps the runtime on a null (or null-page) memory access.
+/// @details Raised by native codegen's load/store address guards so a null
+///          dereference traps deterministically instead of faulting, matching
+///          the IL spec ("null or misaligned accesses trap") and the VM's
+///          null/low-page rule. Kind matches the reference VM's null-access
+///          classification (InvalidOperation); code 91 matches the bytecode
+///          VM's NullPointer error-code convention.
+void rt_trap_null(void);
+
 /// @brief Trap when @p condition is false with the supplied diagnostic.
 /// @param condition Non-zero when the assertion passes.
 /// @param message Runtime string describing the assertion; falls back to a

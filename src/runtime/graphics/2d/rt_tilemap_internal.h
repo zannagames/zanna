@@ -12,7 +12,8 @@
 //   - Dynamic animation arrays are owned by the containing Tilemap.
 //
 // Ownership/Lifetime:
-//   - Layer tiles, cloned tilesets, and animation arrays release in the finalizer.
+//   - Layer tiles, cloned tilesets, animation arrays, and scaled cache release
+//     in the finalizer.
 //   - The base tile array remains inline after rt_tilemap_impl.
 //
 // Links: rt_tilemap.h, rt_tilemap.c, rt_tilemap_io.c,
@@ -32,10 +33,16 @@
 #define TM_MAX_LAYERS 16
 /// Maximum number of registered tile-animation keys.
 #define TM_MAX_TILE_ANIMS 64
+/// Power-of-two slots in the animation-key lookup table (maximum load 50%).
+#define TM_ANIM_LOOKUP_CAPACITY 128
 /// Maximum frames accepted by the uniform-duration public animation helper.
 #define TM_MAX_ANIM_FRAMES 8
 /// Maximum frames accepted from imported variable-duration animation data.
 #define TM_MAX_IMPORT_ANIM_FRAMES 4096
+/// Hash sets retained by each lazily-created scaled-tile cache.
+#define TM_SCALED_CACHE_SETS 64
+/// LRU candidates per scaled-tile cache hash set.
+#define TM_SCALED_CACHE_WAYS 4
 /// Number of tile identifiers addressable by the fixed property table.
 #define MAX_TILE_PROPS 256
 /// Maximum custom integer properties stored for one tile identifier.
@@ -112,6 +119,8 @@ typedef struct {
     int64_t *frame_tiles;
     /// Owned positive per-frame milliseconds.
     int64_t *frame_durations;
+    /// Owned exclusive cumulative duration end for each frame.
+    int64_t *frame_ends;
     /// Length of both owned arrays.
     int32_t frame_count;
     /// Uniform-duration metadata, or zero for imported timing.
@@ -120,7 +129,20 @@ typedef struct {
     int64_t timer;
     /// Active zero-based array index.
     int32_t current_frame;
+    /// Sum of all durations when representable, otherwise zero.
+    int64_t cycle_duration;
 } tm_tile_anim;
+
+/// @brief One entry in the persistent, set-associative scaled-tile cache.
+typedef struct {
+    uint64_t source_identity;   ///< Stable source Pixels cache identity.
+    uint64_t source_generation; ///< Source mutation generation.
+    int64_t tile_index;         ///< One-based source frame identifier.
+    int64_t destination_width;  ///< Scaled frame width.
+    int64_t destination_height; ///< Scaled frame height.
+    void *scaled_pixels;        ///< Owned scaled Pixels result.
+    uint64_t last_use;          ///< LRU timestamp within the containing map.
+} tm_scaled_tile_cache_entry;
 
 /// @brief Complete private state of a runtime-managed layered Tilemap.
 /// @details The base tile array is allocated immediately after this structure;
@@ -191,6 +213,12 @@ typedef struct rt_tilemap_impl {
     tm_tile_anim tile_anims[TM_MAX_TILE_ANIMS];
     /// Number of animation entries.
     int32_t tile_anim_count;
+    /// Open-addressed animation index plus one; zero denotes an empty slot.
+    uint8_t tile_anim_lookup[TM_ANIM_LOOKUP_CAPACITY];
+    /// Lazily allocated `TM_SCALED_CACHE_SETS * TM_SCALED_CACHE_WAYS` entries.
+    tm_scaled_tile_cache_entry *scaled_tile_cache;
+    /// Monotonic LRU timestamp for @c scaled_tile_cache.
+    uint64_t scaled_tile_cache_clock;
     /// Fixed per-tile property sets.
     tile_props tile_prop_sets[MAX_TILE_PROPS];
     /// Allocated rule slots.

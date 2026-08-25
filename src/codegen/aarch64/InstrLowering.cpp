@@ -2372,6 +2372,75 @@ bool lowerFptosi(const il::core::Instr &ins,
 // Memory Operations — Store
 //===----------------------------------------------------------------------===//
 
+/// @brief Look up the instruction producing IL temp @p tempId (lazy map).
+static const il::core::Instr *nullGuardProducerOf(LoweringContext &ctx, unsigned tempId) {
+    if (!ctx.ilProducersBuilt) {
+        for (const auto &b : ctx.fn.blocks)
+            for (const auto &ins : b.instructions)
+                if (ins.result)
+                    ctx.ilProducers[*ins.result] = &ins;
+        ctx.ilProducersBuilt = true;
+    }
+    const auto it = ctx.ilProducers.find(tempId);
+    return it == ctx.ilProducers.end() ? nullptr : it->second;
+}
+
+/// @brief Resolve the value the null guard should test: the GEP-chain root.
+/// @details Guarding a GEP result would add a second use to the derived
+///          address temp and defeat single-use addressing folds; guarding the
+///          root pointer keeps those folds intact and covers every derived
+///          access through it, regardless of accumulated offset.
+static il::core::Value nullGuardRoot(LoweringContext &ctx, il::core::Value v) {
+    for (int hops = 0; v.kind == il::core::Value::Kind::Temp && hops < 16; ++hops) {
+        const il::core::Instr *def = nullGuardProducerOf(ctx, v.id);
+        if (!def || def->op != il::core::Opcode::GEP || def->operands.empty())
+            break;
+        const il::core::Value &base = def->operands[0];
+        if (base.kind != il::core::Value::Kind::Temp)
+            break;
+        v = base;
+    }
+    return v;
+}
+
+/// @brief Guard a non-frame memory access against the null page.
+/// @details The IL spec requires null loads/stores to trap deterministically
+///          ("null or misaligned accesses trap"); the VMs enforce a
+///          null/low-page (< 4096) rule, so native code must trap through the
+///          runtime instead of faulting. Emits `cmp root, #4095; b.ls
+///          .Ltrap_null` on the address's GEP-chain root — a null root traps
+///          for every field offset, and 4095 fits the A64 12-bit compare
+///          immediate. Alloca-rooted addresses are never guarded (the stack
+///          is provably mapped), and a root vreg is guarded at most once per
+///          block (vregs are SSA-stable, so a later use in the same block is
+///          dominated by the first guard).
+static void emitNullAddressGuard(LoweringContext &ctx,
+                                 const il::core::BasicBlock &bb,
+                                 MBasicBlock &out,
+                                 const il::core::Value &baseVal,
+                                 uint16_t vbase) {
+    const il::core::Value root = nullGuardRoot(ctx, baseVal);
+    uint16_t guardVReg = vbase;
+    if (root.kind == il::core::Value::Kind::Temp) {
+        const il::core::Instr *rootDef = nullGuardProducerOf(ctx, root.id);
+        if (rootDef && rootDef->op == il::core::Opcode::Alloca)
+            return;
+        if (!(baseVal.kind == il::core::Value::Kind::Temp && baseVal.id == root.id)) {
+            RegClass cls = RegClass::GPR;
+            if (!materializeValueToVReg(root, bb, ctx, out, guardVReg, cls))
+                guardVReg = vbase;
+        }
+    }
+    if (!ctx.nullGuardedBases[out.name].insert(guardVReg).second)
+        return;
+    out.instrs.push_back(
+        MInstr{MOpcode::CmpRI,
+               {MOperand::vregOp(RegClass::GPR, guardVReg), MOperand::immOp(4095)}});
+    const std::string trapLabel = requestSharedTrapBlock(ctx, "null", "rt_trap_null");
+    out.instrs.push_back(
+        MInstr{MOpcode::BCond, {MOperand::condOp("ls"), MOperand::labelOp(trapLabel)}});
+}
+
 /// @copydoc lowerStore()
 bool lowerStore(const il::core::Instr &ins,
                 const il::core::BasicBlock &bb,
@@ -2417,6 +2486,7 @@ bool lowerStore(const il::core::Instr &ins,
             !materializeValueToVReg(ins.operands[1], bb, ctx, out, vval, cval)) {
             return false;
         }
+        emitNullAddressGuard(ctx, bb, out, ins.operands[0], vbase);
         const bool dstIsFP = (ins.type.kind == il::core::Type::Kind::F64);
         if (dstIsFP) {
             uint16_t srcF = vval;
@@ -2486,6 +2556,7 @@ bool lowerLoad(const il::core::Instr &ins,
         RegClass cbase = RegClass::GPR;
         if (!materializeValueToVReg(ins.operands[0], bb, ctx, out, vbase, cbase))
             return false;
+        emitNullAddressGuard(ctx, bb, out, ins.operands[0], vbase);
         const uint16_t dst = allocateNextVReg(ctx.nextVRegId);
         if (isFP) {
             ctx.tempRegClass[*ins.result] = RegClass::FPR;

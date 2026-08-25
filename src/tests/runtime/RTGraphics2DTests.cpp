@@ -883,6 +883,11 @@ static void test_animation_collision_palette_gradient_and_rig() {
     void *mapped = rt_palette2d_apply(palette, nearest_src);
     assert(rt_pixels_get(mapped, 0, 0) == 0xFF0000FF);
     assert(rt_pixels_get(mapped, 1, 0) == 0x0000FF80);
+    void *mapped_cached = rt_palette2d_apply(palette, nearest_src);
+    assert(rt_pixels_get(mapped_cached, 0, 0) == 0xFF0000FF);
+    rt_palette2d_set_color(palette, 3, 0xF01010FF);
+    void *mapped_after_palette_change = rt_palette2d_apply(palette, nearest_src);
+    assert(rt_pixels_get(mapped_after_palette_change, 0, 0) == 0xF01010FF);
 
     void *gradient = rt_gradient2d_new(0x000000FF, 0xFFFFFFFF, 2);
     assert(rt_gradient2d_sample(gradient, 100) == 0xFFFFFFFF);

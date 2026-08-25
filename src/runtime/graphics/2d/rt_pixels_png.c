@@ -182,10 +182,26 @@ static int png_idat_cap_from_expected(size_t expected_filtered_bytes, size_t *ca
 /// @param len Number of bytes in @p data.
 /// @return Updated preconditioned CRC state.
 static uint32_t png_crc32_update_state(uint32_t crc, const uint8_t *data, size_t len) {
+    static const uint32_t nibble_table[16] = {0x00000000u,
+                                              0x1DB71064u,
+                                              0x3B6E20C8u,
+                                              0x26D930ACu,
+                                              0x76DC4190u,
+                                              0x6B6B51F4u,
+                                              0x4DB26158u,
+                                              0x5005713Cu,
+                                              0xEDB88320u,
+                                              0xF00F9344u,
+                                              0xD6D6A3E8u,
+                                              0xCB61B38Cu,
+                                              0x9B64C2B0u,
+                                              0x86D3D2D4u,
+                                              0xA00AE278u,
+                                              0xBDBDF21Cu};
     for (size_t i = 0; i < len; i++) {
         crc ^= data[i];
-        for (int bit = 0; bit < 8; bit++)
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+        crc = (crc >> 4) ^ nibble_table[crc & 0x0Fu];
+        crc = (crc >> 4) ^ nibble_table[crc & 0x0Fu];
     }
     return crc;
 }
@@ -305,52 +321,6 @@ static int png_filter_row(
     return 1;
 }
 
-/// @brief Compute PNG filter selection score for one candidate filtered row.
-/// @details The PNG spec leaves encoder filter selection open. This scorer uses
-///          the common sum-of-absolute-signed-bytes heuristic: smaller residuals
-///          generally compress better, while remaining cheap enough for every row.
-/// @param row Current unfiltered RGBA row.
-/// @param prev Previous unfiltered row, or NULL for the first row.
-/// @param len Row length in bytes.
-/// @param bpp Bytes per pixel for left-neighbor filters.
-/// @param filter PNG filter type 0..4.
-/// @return Residual score; SIZE_MAX marks an invalid filter.
-static size_t png_filter_score_row(
-    const uint8_t *row, const uint8_t *prev, size_t len, size_t bpp, int filter) {
-    size_t score = 0;
-    if (!row || bpp == 0 || filter < 0 || filter > 4)
-        return SIZE_MAX;
-    for (size_t i = 0; i < len; i++) {
-        uint8_t left = (i >= bpp) ? row[i - bpp] : 0;
-        uint8_t up = prev ? prev[i] : 0;
-        uint8_t up_left = (prev && i >= bpp) ? prev[i - bpp] : 0;
-        uint8_t pred = 0;
-        switch (filter) {
-            case 0:
-                pred = 0;
-                break;
-            case 1:
-                pred = left;
-                break;
-            case 2:
-                pred = up;
-                break;
-            case 3:
-                pred = (uint8_t)(((int)left + (int)up) / 2);
-                break;
-            case 4:
-                pred = paeth_predict(left, up, up_left);
-                break;
-        }
-        int residual = (int)(int8_t)(row[i] - pred);
-        size_t magnitude = (size_t)(residual < 0 ? -residual : residual);
-        if (magnitude > SIZE_MAX - score)
-            return SIZE_MAX;
-        score += magnitude;
-    }
-    return score;
-}
-
 /// @brief Validate a PNG chunk type's four ASCII letters and reserved bit.
 /// @details PNG chunk names contain only ASCII letters. The third letter's
 ///          lowercase bit is reserved and must remain zero in this PNG version.
@@ -368,7 +338,8 @@ static int png_chunk_type_is_valid(const uint8_t *chunk_type) {
 }
 
 /// @brief Encode one RGBA row with the best PNG filter by residual score.
-/// @details Writes the selected filter byte followed by filtered payload bytes.
+/// @details Scores all five predictors in one source-row pass, then writes the
+///          selected filter byte and payload in a second pass.
 ///          The previous row must be unfiltered; passing NULL is valid for the
 ///          first row and naturally makes Up/Average/Paeth consider zero above.
 /// @param dst Destination of size `len + 1`.
@@ -378,15 +349,24 @@ static int png_chunk_type_is_valid(const uint8_t *chunk_type) {
 /// @param bpp Bytes per pixel for PNG left-neighbor filters.
 static void png_write_best_filtered_row(
     uint8_t *dst, const uint8_t *row, const uint8_t *prev, size_t len, size_t bpp) {
-    int best_filter = 0;
-    size_t best_score = png_filter_score_row(row, prev, len, bpp, 0);
-    for (int filter = 1; filter <= 4; filter++) {
-        size_t score = png_filter_score_row(row, prev, len, bpp, filter);
-        if (score < best_score) {
-            best_score = score;
-            best_filter = filter;
+    size_t scores[5] = {0, 0, 0, 0, 0};
+    for (size_t i = 0; i < len; ++i) {
+        uint8_t left = i >= bpp ? row[i - bpp] : 0;
+        uint8_t up = prev ? prev[i] : 0;
+        uint8_t up_left = prev && i >= bpp ? prev[i - bpp] : 0;
+        uint8_t predictors[5] = {
+            0, left, up, (uint8_t)(((int)left + (int)up) / 2), paeth_predict(left, up, up_left)};
+        for (int filter = 0; filter < 5; ++filter) {
+            int residual = (int)(int8_t)(row[i] - predictors[filter]);
+            size_t magnitude = (size_t)(residual < 0 ? -residual : residual);
+            scores[filter] =
+                scores[filter] > SIZE_MAX - magnitude ? SIZE_MAX : scores[filter] + magnitude;
         }
     }
+    int best_filter = 0;
+    for (int filter = 1; filter < 5; ++filter)
+        if (scores[filter] < scores[best_filter])
+            best_filter = filter;
     dst[0] = (uint8_t)best_filter;
     for (size_t i = 0; i < len; i++) {
         uint8_t left = (i >= bpp) ? row[i - bpp] : 0;
@@ -1158,7 +1138,6 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
     // All error paths after comp_bytes allocation must go through cleanup to
     // release these GC-managed objects (refcount=1).
     void *comp_bytes = NULL;
-    uint8_t *zlib_data = NULL;
     FILE *out = NULL;
     char *tmp_path = NULL;
     int64_t result = 0;
@@ -1173,16 +1152,11 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
     size_t comp_len = (size_t)comp_len_i64;
     const uint8_t *comp_data = rt_bytes_data_const(comp_bytes);
 
-    // Build zlib stream: 2-byte header + deflate data + 4-byte adler32
-    // Zlib header: CMF=0x78 (deflate, window=32K), FLG=0x01 (no dict, check=1)
+    // The zlib stream is written as header/data/trailer pieces, avoiding a
+    // second full compressed-size concatenation buffer.
     size_t zlib_len = 2 + comp_len + 4;
-    zlib_data = (uint8_t *)malloc(zlib_len);
-    if (!zlib_data)
-        goto save_cleanup;
-
-    zlib_data[0] = 0x78; // CMF
-    zlib_data[1] = 0x01; // FLG
-    memcpy(zlib_data + 2, comp_data, comp_len);
+    const uint8_t zlib_header[2] = {0x78, 0x01};
+    uint8_t adler_buf[4];
 
     // Compute Adler-32 of the raw (uncompressed) data
     {
@@ -1191,10 +1165,10 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
         if (raw_b_len < 0)
             goto save_cleanup;
         uint32_t adler = png_adler32(raw_b, (size_t)raw_b_len);
-        zlib_data[2 + comp_len + 0] = (uint8_t)((adler >> 24) & 0xFF);
-        zlib_data[2 + comp_len + 1] = (uint8_t)((adler >> 16) & 0xFF);
-        zlib_data[2 + comp_len + 2] = (uint8_t)((adler >> 8) & 0xFF);
-        zlib_data[2 + comp_len + 3] = (uint8_t)(adler & 0xFF);
+        adler_buf[0] = (uint8_t)((adler >> 24) & 0xFF);
+        adler_buf[1] = (uint8_t)((adler >> 16) & 0xFF);
+        adler_buf[2] = (uint8_t)((adler >> 8) & 0xFF);
+        adler_buf[3] = (uint8_t)(adler & 0xFF);
     }
 
     out = rt_file_stdio_open_temp_for_replace_utf8(filepath, &tmp_path);
@@ -1256,11 +1230,18 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
 
         if (write_ok && !px_write_exact(out, "IDAT", 4))
             write_ok = 0;
-        if (write_ok && !px_write_exact(out, zlib_data, zlib_len))
+        if (write_ok && !px_write_exact(out, zlib_header, sizeof(zlib_header)))
+            write_ok = 0;
+        if (write_ok && !px_write_exact(out, comp_data, comp_len))
+            write_ok = 0;
+        if (write_ok && !px_write_exact(out, adler_buf, sizeof(adler_buf)))
             write_ok = 0;
 
         uint32_t crc_state = png_crc32_update_state(0xFFFFFFFFu, (const uint8_t *)"IDAT", 4);
-        uint32_t chunk_crc = png_crc32_update_state(crc_state, zlib_data, zlib_len) ^ 0xFFFFFFFFu;
+        crc_state = png_crc32_update_state(crc_state, zlib_header, sizeof(zlib_header));
+        crc_state = png_crc32_update_state(crc_state, comp_data, comp_len);
+        uint32_t chunk_crc =
+            png_crc32_update_state(crc_state, adler_buf, sizeof(adler_buf)) ^ 0xFFFFFFFFu;
         uint8_t crc_buf[4] = {(uint8_t)(chunk_crc >> 24),
                               (uint8_t)(chunk_crc >> 16),
                               (uint8_t)(chunk_crc >> 8),
@@ -1279,7 +1260,6 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
     result = write_ok;
 
 save_cleanup:
-    free(zlib_data);
     if (out) {
         if (!rt_file_stdio_flush_sync_close(out))
             result = 0;

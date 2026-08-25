@@ -691,29 +691,32 @@ void *rt_pixels_rotate(void *pixels, double angle_degrees) {
     double dst_cx = ((double)new_width - 1.0) * 0.5;
     double dst_cy = ((double)new_height - 1.0) * 0.5;
 
-    // For each destination pixel, find source pixel using inverse rotation
+    // For each destination row, seed the inverse transform once and advance by
+    // the constant rotated X basis. Periodic reseeding bounds floating drift.
     for (int64_t dy = 0; dy < new_height; dy++) {
+        double dy_c = (double)dy - dst_cy;
+        double sx = -dst_cx * cos_a + dy_c * sin_a + src_cx;
+        double sy = dst_cx * sin_a + dy_c * cos_a + src_cy;
         for (int64_t dx = 0; dx < new_width; dx++) {
-            // Destination position relative to new center
-            double dx_c = (double)dx - dst_cx;
-            double dy_c = (double)dy - dst_cy;
-
-            // Inverse rotation to find source position
-            double sx_c = dx_c * cos_a + dy_c * sin_a;
-            double sy_c = -dx_c * sin_a + dy_c * cos_a;
-
-            // Source position in original image coordinates
-            double sx = sx_c + src_cx;
-            double sy = sy_c + src_cy;
+            if (dx != 0 && (dx & 255) == 0) {
+                double dx_c = (double)dx - dst_cx;
+                sx = dx_c * cos_a + dy_c * sin_a + src_cx;
+                sy = -dx_c * sin_a + dy_c * cos_a + src_cy;
+            }
+            double sample_x = sx;
+            double sample_y = sy;
+            sx += cos_a;
+            sy -= sin_a;
 
             // Reject coordinates before converting to int64_t. A floating
             // value outside int64_t's range must never reach a C cast.
-            if (sx <= -1.0 || sx >= (double)p->width || sy <= -1.0 || sy >= (double)p->height)
+            if (sample_x <= -1.0 || sample_x >= (double)p->width || sample_y <= -1.0 ||
+                sample_y >= (double)p->height)
                 continue;
 
             // Bilinear interpolation
-            int64_t x0 = (int64_t)floor(sx);
-            int64_t y0 = (int64_t)floor(sy);
+            int64_t x0 = (int64_t)floor(sample_x);
+            int64_t y0 = (int64_t)floor(sample_y);
             int64_t x1 = x0 + 1;
             int64_t y1 = y0 + 1;
 
@@ -722,8 +725,8 @@ void *rt_pixels_rotate(void *pixels, double angle_degrees) {
                 continue;
 
             // Fractional parts
-            double fx = sx - x0;
-            double fy = sy - y0;
+            double fx = sample_x - x0;
+            double fy = sample_y - y0;
 
             // Get the four surrounding pixels (with bounds checking)
             uint32_t c00 = 0, c10 = 0, c01 = 0, c11 = 0;
@@ -774,19 +777,27 @@ void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
     if (!result)
         return NULL;
 
-    int64_t *x_map = NULL;
-    if ((uint64_t)new_width <= (uint64_t)SIZE_MAX / sizeof(*x_map)) {
+    int64_t inline_x_map[256];
+    int64_t inline_y_map[256];
+    int64_t *x_map = new_width <= 256 ? inline_x_map : NULL;
+    int64_t *y_map = new_height <= 256 ? inline_y_map : NULL;
+    if (!x_map && (uint64_t)new_width <= (uint64_t)SIZE_MAX / sizeof(*x_map))
         x_map = (int64_t *)malloc((size_t)new_width * sizeof(*x_map));
-        if (x_map) {
-            for (int64_t x = 0; x < new_width; x++)
-                x_map[x] = pixels_map_index(x, p->width, new_width);
-        }
+    if (!y_map && (uint64_t)new_height <= (uint64_t)SIZE_MAX / sizeof(*y_map))
+        y_map = (int64_t *)malloc((size_t)new_height * sizeof(*y_map));
+    if (x_map) {
+        for (int64_t x = 0; x < new_width; x++)
+            x_map[x] = pixels_map_index(x, p->width, new_width);
+    }
+    if (y_map) {
+        for (int64_t y = 0; y < new_height; y++)
+            y_map[y] = pixels_map_index(y, p->height, new_height);
     }
 
     // Nearest-neighbor scaling
     for (int64_t y = 0; y < new_height; y++) {
         // Map destination y to source y
-        int64_t src_y = pixels_map_index(y, p->height, new_height);
+        int64_t src_y = y_map ? y_map[y] : pixels_map_index(y, p->height, new_height);
 
         uint32_t *src_row = p->data + src_y * p->width;
         uint32_t *dst_row = result->data + y * new_width;
@@ -797,8 +808,89 @@ void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
         }
     }
 
-    free(x_map);
+    if (x_map != inline_x_map)
+        free(x_map);
+    if (y_map != inline_y_map)
+        free(y_map);
     pixels_copy_alpha_classification_cache(result, p);
+    return result;
+}
+
+/// @brief Fused region extraction, nearest scaling, flips, tint, and alpha.
+/// @details This is the software sprite hot path: each destination texel maps
+///          directly to the original frame, then color modulation is applied
+///          once. It replaces up to five full-image allocations/passes while
+///          preserving the endpoint-aligned sampling and rounded modulation
+///          rules of the individual public operations.
+void *rt_pixels_transform_region_nearest(void *pixels,
+                                         int64_t source_x,
+                                         int64_t source_y,
+                                         int64_t source_width,
+                                         int64_t source_height,
+                                         int64_t destination_width,
+                                         int64_t destination_height,
+                                         int8_t flip_x,
+                                         int8_t flip_y,
+                                         int64_t tint_color,
+                                         int64_t alpha) {
+    rt_pixels_impl *source = rt_pixels_checked_impl(pixels, "Pixels.Transform: null pixels");
+    if (!source || source_width <= 0 || source_height <= 0 || destination_width <= 0 ||
+        destination_height <= 0 || source_x < 0 || source_y < 0 || source_x >= source->width ||
+        source_y >= source->height || source_width > source->width - source_x ||
+        source_height > source->height - source_y)
+        return NULL;
+    rt_pixels_impl *result = pixels_alloc(destination_width, destination_height);
+    if (!result)
+        return NULL;
+
+    uint32_t tr = 255u;
+    uint32_t tg = 255u;
+    uint32_t tb = 255u;
+    uint32_t ta = 255u;
+    int8_t tint_enabled = tint_color >= 0;
+    if (tint_enabled) {
+        uint64_t color = (uint64_t)tint_color;
+        if ((color & (uint64_t)RT_PIXELS_COLOR_EXPLICIT_ALPHA_FLAG) != 0 || color > 0x00FFFFFFu) {
+            uint32_t rgba = rt_pixels_rgba_or_tagged_color_to_rgba(tint_color);
+            tr = (rgba >> 24) & 0xFFu;
+            tg = (rgba >> 16) & 0xFFu;
+            tb = (rgba >> 8) & 0xFFu;
+            ta = rgba & 0xFFu;
+        } else {
+            tr = ((uint32_t)tint_color >> 16) & 0xFFu;
+            tg = ((uint32_t)tint_color >> 8) & 0xFFu;
+            tb = (uint32_t)tint_color & 0xFFu;
+        }
+    }
+    uint32_t alpha_u = alpha <= 0 ? 0u : alpha >= 255 ? 255u : (uint32_t)alpha;
+
+    for (int64_t y = 0; y < destination_height; ++y) {
+        int64_t mapped_y = pixels_map_index(y, source_height, destination_height);
+        if (flip_y)
+            mapped_y = source_height - 1 - mapped_y;
+        const uint32_t *source_row =
+            source->data + (source_y + mapped_y) * source->width + source_x;
+        uint32_t *destination_row = result->data + y * destination_width;
+        for (int64_t x = 0; x < destination_width; ++x) {
+            int64_t mapped_x = pixels_map_index(x, source_width, destination_width);
+            if (flip_x)
+                mapped_x = source_width - 1 - mapped_x;
+            uint32_t pixel = source_row[mapped_x];
+            uint32_t r = (pixel >> 24) & 0xFFu;
+            uint32_t g = (pixel >> 16) & 0xFFu;
+            uint32_t b = (pixel >> 8) & 0xFFu;
+            uint32_t a = pixel & 0xFFu;
+            if (tint_enabled) {
+                r = (r * tr + 127u) / 255u;
+                g = (g * tg + 127u) / 255u;
+                b = (b * tb + 127u) / 255u;
+                a = (a * ta + 127u) / 255u;
+            }
+            if (alpha_u < 255u)
+                a = (a * alpha_u + 127u) / 255u;
+            destination_row[x] = (r << 24) | (g << 16) | (b << 8) | a;
+        }
+    }
     return result;
 }
 
@@ -1293,8 +1385,10 @@ void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height) {
 /// 6 (skipped for near-neutral references). The mask holds full
 /// strength inside tolerance/2 and ramps to zero at tolerance so
 /// UV-island edges blend. Alpha untouched.
-void rt_pixels_recolor_masked(
-    void *pixels, int64_t target_rgb, int64_t ref_rgb, int64_t tolerance) {
+void rt_pixels_recolor_masked(void *pixels,
+                              int64_t target_rgb,
+                              int64_t ref_rgb,
+                              int64_t tolerance) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.RecolorMasked: null pixels");
     int64_t count;
     if (!p || !p->data)
@@ -1368,24 +1462,25 @@ void rt_pixels_recolor_masked(
                 ng = 255;
             if (nb > 255)
                 nb = 255;
-            p->data[i] = ((uint32_t)nr << 24) | ((uint32_t)ng << 16) |
-                         ((uint32_t)nb << 8) | pa;
+            p->data[i] = ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
         }
     }
     pixels_touch(p);
 }
 
 /// @brief Grow covered texels outward into uncovered gutters (see rt_pixels.h).
-/// One frontier byte-buffer per pass keeps growth uniform: a texel covered
-/// this pass never feeds another texel in the same pass.
+/// A ring frontier keeps growth uniform without rescanning the whole image:
+/// a texel covered this pass never feeds another texel in the same pass.
 void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DilateMasked: null pixels");
     rt_pixels_impl *m = rt_pixels_checked_impl(mask, "Pixels.DilateMasked: null mask");
     int64_t w;
     int64_t h;
     int64_t count;
-    uint8_t *cov;
-    uint8_t *next;
+    uint8_t *state;
+    int32_t *frontier;
+    int64_t frontier_n;
+    int8_t changed = 0;
     if (!p || !p->data || !m || !m->data)
         return;
     if (p->width != m->width || p->height != m->height)
@@ -1399,64 +1494,105 @@ void rt_pixels_dilate_masked(void *pixels, void *mask, int64_t passes) {
     count = w * h;
     if (count <= 0)
         return;
-    cov = (uint8_t *)malloc((size_t)count);
-    next = (uint8_t *)malloc((size_t)count);
-    if (!cov || !next) {
-        free(cov);
-        free(next);
+    if (count > INT32_MAX)
+        return;
+    state = (uint8_t *)malloc((size_t)count);
+    frontier = (int32_t *)malloc((size_t)count * sizeof(*frontier));
+    if (!state || !frontier) {
+        free(state);
+        free(frontier);
         return;
     }
     for (int64_t i = 0; i < count; i++)
-        cov[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
-    for (int64_t pass = 0; pass < passes; pass++) {
-        int64_t grew = 0;
-        memcpy(next, cov, (size_t)count);
-        for (int64_t y = 0; y < h; y++) {
-            for (int64_t x = 0; x < w; x++) {
-                int64_t idx = y * w + x;
-                int64_t sr = 0;
-                int64_t sg = 0;
-                int64_t sb = 0;
-                int64_t sa = 0;
-                int64_t n = 0;
-                if (cov[idx])
-                    continue;
-                for (int64_t dy = -1; dy <= 1; dy++) {
-                    for (int64_t dx = -1; dx <= 1; dx++) {
-                        int64_t nx = x + dx;
-                        int64_t ny = y + dy;
-                        int64_t nidx;
-                        uint32_t texel;
-                        if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
-                            continue;
-                        nidx = ny * w + nx;
-                        if (!cov[nidx])
-                            continue;
-                        texel = p->data[nidx];
-                        sr += (int64_t)((texel >> 24) & 0xFFu);
-                        sg += (int64_t)((texel >> 16) & 0xFFu);
-                        sb += (int64_t)((texel >> 8) & 0xFFu);
-                        sa += (int64_t)(texel & 0xFFu);
-                        n++;
+        state[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
+    frontier_n = 0;
+    for (int64_t y = 0; y < h; y++) {
+        for (int64_t x = 0; x < w; x++) {
+            int64_t idx = y * w + x;
+            if (state[idx])
+                continue;
+            for (int64_t dy = -1; dy <= 1 && state[idx] == 0u; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    if (state[ny * w + nx] == 1u) {
+                        state[idx] = 2u;
+                        frontier[frontier_n++] = (int32_t)idx;
+                        break;
                     }
                 }
-                if (n == 0)
-                    continue;
+            }
+        }
+    }
+    for (int64_t pass = 0; pass < passes && frontier_n > 0; pass++) {
+        int64_t next_n = 0;
+        for (int64_t c = 0; c < frontier_n; c++) {
+            int64_t idx = frontier[c];
+            int64_t x = idx % w;
+            int64_t y = idx / w;
+            int64_t sr = 0;
+            int64_t sg = 0;
+            int64_t sb = 0;
+            int64_t sa = 0;
+            int64_t n = 0;
+            for (int64_t dy = -1; dy <= 1; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    int64_t nidx;
+                    uint32_t texel;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    nidx = ny * w + nx;
+                    if (state[nidx] != 1u)
+                        continue;
+                    texel = p->data[nidx];
+                    sr += (int64_t)((texel >> 24) & 0xFFu);
+                    sg += (int64_t)((texel >> 16) & 0xFFu);
+                    sb += (int64_t)((texel >> 8) & 0xFFu);
+                    sa += (int64_t)(texel & 0xFFu);
+                    n++;
+                }
+            }
+            if (n > 0) {
                 p->data[idx] = ((uint32_t)(sr / n) << 24) | ((uint32_t)(sg / n) << 16) |
                                ((uint32_t)(sb / n) << 8) | (uint32_t)(sa / n);
                 m->data[idx] = 0xFFFFFFFFu;
-                next[idx] = 1u;
-                grew = 1;
             }
         }
-        memcpy(cov, next, (size_t)count);
-        if (!grew)
-            break;
+        for (int64_t c = 0; c < frontier_n; c++)
+            state[frontier[c]] = 1u;
+        changed = 1;
+        for (int64_t c = 0; c < frontier_n; c++) {
+            int64_t idx = frontier[c];
+            int64_t x = idx % w;
+            int64_t y = idx / w;
+            for (int64_t dy = -1; dy <= 1; dy++) {
+                for (int64_t dx = -1; dx <= 1; dx++) {
+                    int64_t nx = x + dx;
+                    int64_t ny = y + dy;
+                    int64_t nidx;
+                    if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    nidx = ny * w + nx;
+                    if (state[nidx] != 0u)
+                        continue;
+                    state[nidx] = 2u;
+                    frontier[frontier_n + next_n++] = (int32_t)nidx;
+                }
+            }
+        }
+        memmove(frontier, frontier + frontier_n, (size_t)next_n * sizeof(*frontier));
+        frontier_n = next_n;
     }
-    free(cov);
-    free(next);
-    pixels_touch(p);
-    pixels_touch(m);
+    free(state);
+    free(frontier);
+    if (changed) {
+        pixels_touch(p);
+        pixels_touch(m);
+    }
 }
 
 /// @brief Grow covered texels into gutters by exact nearest-owner copy
@@ -1473,12 +1609,10 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
     int64_t w;
     int64_t h;
     int64_t count;
-    uint8_t *cov;
-    uint8_t *pending;
-    int32_t *cand;
-    int32_t *claimed;
+    uint8_t *state;
+    int32_t *frontier;
     int64_t cand_n;
-    int64_t claimed_n;
+    int8_t changed = 0;
     if (!p || !p->data || !m || !m->data)
         return;
     if (p->width != m->width || p->height != m->height)
@@ -1490,27 +1624,22 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
         return;
     if (passes <= 0 || passes > count)
         passes = count; /* convergence bound: one ring can never exceed count */
-    cov = (uint8_t *)malloc((size_t)count);
-    pending = (uint8_t *)malloc((size_t)count);
-    cand = (int32_t *)malloc((size_t)count * sizeof(int32_t));
-    claimed = (int32_t *)malloc((size_t)count * sizeof(int32_t));
-    if (!cov || !pending || !cand || !claimed) {
-        free(cov);
-        free(pending);
-        free(cand);
-        free(claimed);
+    state = (uint8_t *)malloc((size_t)count);
+    frontier = (int32_t *)malloc((size_t)count * sizeof(*frontier));
+    if (!state || !frontier) {
+        free(state);
+        free(frontier);
         return;
     }
-    memset(pending, 0, (size_t)count);
     for (int64_t i = 0; i < count; i++)
-        cov[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
+        state[i] = (m->data[i] & 0xFFFFFF00u) != 0u ? 1u : 0u;
     /* Seed candidates: every uncovered texel with a covered 8-neighbor. */
     cand_n = 0;
     for (int64_t y = 0; y < h; y++) {
         for (int64_t x = 0; x < w; x++) {
             int64_t idx = y * w + x;
             int found = 0;
-            if (cov[idx])
+            if (state[idx])
                 continue;
             for (int64_t dy = -1; dy <= 1 && !found; dy++) {
                 for (int64_t dx = -1; dx <= 1; dx++) {
@@ -1518,25 +1647,25 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
                     int64_t ny = y + dy;
                     if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
                         continue;
-                    if (cov[ny * w + nx]) {
+                    if (state[ny * w + nx] == 1u) {
                         found = 1;
                         break;
                     }
                 }
             }
             if (found) {
-                pending[idx] = 1u;
-                cand[cand_n++] = (int32_t)idx;
+                state[idx] = 2u;
+                frontier[cand_n++] = (int32_t)idx;
             }
         }
     }
     for (int64_t pass = 0; pass < passes && cand_n > 0; pass++) {
-        claimed_n = 0;
+        int64_t next_n = 0;
         /* Resolve every candidate against the previous ring's coverage.
            Each candidate independently picks its FIRST covered neighbor in
            the fixed scan order, so processing order cannot matter. */
         for (int64_t c = 0; c < cand_n; c++) {
-            int64_t idx = cand[c];
+            int64_t idx = frontier[c];
             int64_t x = idx % w;
             int64_t y = idx / w;
             int done = 0;
@@ -1548,24 +1677,22 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
                     if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
                         continue;
                     nidx = ny * w + nx;
-                    if (!cov[nidx])
+                    if (state[nidx] != 1u)
                         continue;
                     p->data[idx] = p->data[nidx];
                     m->data[idx] = 0xFFFFFFFFu;
-                    claimed[claimed_n++] = (int32_t)idx;
                     done = 1;
                     break;
                 }
             }
-            pending[idx] = 0u;
         }
         /* Ring barrier: coverage advances only after every claim resolved. */
-        for (int64_t c = 0; c < claimed_n; c++)
-            cov[claimed[c]] = 1u;
+        for (int64_t c = 0; c < cand_n; c++)
+            state[frontier[c]] = 1u;
+        changed = 1;
         /* Next ring's candidates: uncovered neighbors of this ring's claims. */
-        cand_n = 0;
-        for (int64_t c = 0; c < claimed_n; c++) {
-            int64_t idx = claimed[c];
+        for (int64_t c = 0; c < cand_n; c++) {
+            int64_t idx = frontier[c];
             int64_t x = idx % w;
             int64_t y = idx / w;
             for (int64_t dy = -1; dy <= 1; dy++) {
@@ -1576,20 +1703,22 @@ void rt_pixels_dilate_owner(void *pixels, void *mask, int64_t passes) {
                     if ((dx == 0 && dy == 0) || nx < 0 || ny < 0 || nx >= w || ny >= h)
                         continue;
                     nidx = ny * w + nx;
-                    if (cov[nidx] || pending[nidx])
+                    if (state[nidx] != 0u)
                         continue;
-                    pending[nidx] = 1u;
-                    cand[cand_n++] = (int32_t)nidx;
+                    state[nidx] = 2u;
+                    frontier[cand_n + next_n++] = (int32_t)nidx;
                 }
             }
         }
+        memmove(frontier, frontier + cand_n, (size_t)next_n * sizeof(*frontier));
+        cand_n = next_n;
     }
-    free(cov);
-    free(pending);
-    free(cand);
-    free(claimed);
-    pixels_touch(p);
-    pixels_touch(m);
+    free(state);
+    free(frontier);
+    if (changed) {
+        pixels_touch(p);
+        pixels_touch(m);
+    }
 }
 
 /// @brief Sparse-layer stamp: copy src texels with non-zero RGB (see
@@ -1603,19 +1732,23 @@ void rt_pixels_stamp_nonzero(void *pixels, void *src) {
     if (p->width != s->width || p->height != s->height)
         return;
     count = p->width * p->height;
+    int8_t changed = 0;
     for (int64_t i = 0; i < count; i++) {
-        if ((s->data[i] & 0xFFFFFF00u) != 0u)
+        if ((s->data[i] & 0xFFFFFF00u) != 0u && p->data[i] != s->data[i]) {
             p->data[i] = s->data[i];
+            changed = 1;
+        }
     }
-    pixels_touch(p);
+    if (changed)
+        pixels_touch(p);
 }
 
 /// @brief Mask-scoped shade-preserving colorize (see rt_pixels.h).
 /// rt_pixels_recolor_masked's interior formula with the color-class gates
 /// replaced by an explicit mask, an explicit reference luminance, and an
 /// explicit shade clamp — dark authored regions reach bright targets.
-void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t ref_lum,
-                               double max_shade, double strength) {
+void rt_pixels_colorize_masked(
+    void *pixels, void *mask, int64_t rgb, int64_t ref_lum, double max_shade, double strength) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.ColorizeMasked: null pixels");
     rt_pixels_impl *mk = rt_pixels_checked_impl(mask, "Pixels.ColorizeMasked: null mask");
     int64_t tr;
@@ -1701,9 +1834,13 @@ void rt_pixels_colorize_masked(void *pixels, void *mask, int64_t rgb, int64_t re
 /// @param lum_lo Luma at which the band begins (0..255).
 /// @param lum_hi Luma at which the band reaches full strength (> lum_lo).
 /// @param neutral_max Maximum channel spread (max-min) for a texel to qualify.
-void rt_pixels_tint_masked_neutral(
-    void *pixels, void *mask, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi,
-    int64_t neutral_max) {
+void rt_pixels_tint_masked_neutral(void *pixels,
+                                   void *mask,
+                                   int64_t rgb,
+                                   double strength,
+                                   int64_t lum_lo,
+                                   int64_t lum_hi,
+                                   int64_t neutral_max) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.TintMaskedNeutral: null pixels");
     rt_pixels_impl *mk = rt_pixels_checked_impl(mask, "Pixels.TintMaskedNeutral: null mask");
     int64_t tr;

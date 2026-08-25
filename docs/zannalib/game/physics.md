@@ -403,11 +403,12 @@ Analytic projectile helper for preview arcs, lobbed attacks, and trajectory test
 
 - **Static bodies** (mass = 0) are immovable — use for floors, walls, platforms
 - **Dynamic bodies** (mass > 0) are affected by gravity, forces, and collisions
-- `ContactCount` and `Contact*` methods expose contacts from the latest step; the list is cleared at the start of every `Step` and when bodies are removed. A multi-substep `Step` can record the same pair more than once.
+- `ContactCount` and `Contact*` methods expose contacts from the latest step; the list is cleared at the start of every `Step` and when bodies are removed. A multi-substep `Step` collapses repeated manifolds for one body pair to one deepest/latest representative.
 - `SetPosition(x, y)` is a teleport: it updates the previous-position state too, so the next step does not treat the teleport as swept motion
 - `Step(dt)` performs integration, joint solving, AABB/circle collision detection, and shape-aware swept checks for fast AABB and circle bodies
 - Swept collisions resolve at time of impact and deliberately drop the untested remainder of that substep; a later substep handles subsequent motion
 - `Step(dt)` clears previous contacts, then no-ops for `dt <= 0` and for non-finite values
+- A positive `Step(dt)` consumes at most eight seconds in one-second-or-smaller substeps; excess elapsed time is retained and joined to the next positive call instead of being discarded
 - Collision response uses impulse-based resolution with restitution and friction
 - `Restitution` and `Friction` are clamped to `[0, 1]`
 - Collision layers and masks are 64-bit bitmasks; new bodies default to `CollisionLayer = 1` and `CollisionMask = -1` (all 64 bits)

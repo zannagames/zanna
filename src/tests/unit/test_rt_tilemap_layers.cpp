@@ -31,6 +31,7 @@
 #include "rt.hpp"
 #include "rt_internal.h"
 #include "rt_physics2d.h"
+#include "rt_physics2d_joint.h"
 #include "rt_string.h"
 #include "rt_tilemap.h"
 #include <cassert>
@@ -293,6 +294,78 @@ static void test_one_way_platform_ignores_teleported_overlap(void) {
     PASS();
 }
 
+static void test_solid_tile_catches_fast_crossing(void) {
+    TEST("Solid tile catches a fast horizontal crossing");
+    void *tm = rt_tilemap_new(4, 2, 16, 16);
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *body = rt_physics2d_body_new(0.0, 2.0, 8.0, 8.0, 1.0);
+    assert(tm && world && body);
+    rt_tilemap_set_tile(tm, 1, 0, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_SOLID);
+    rt_physics2d_body_set_vel(body, 80.0, 0.0);
+    rt_physics2d_world_add(world, body);
+    rt_physics2d_world_step(world, 0.5);
+
+    assert(rt_physics2d_body_x(body) == 40.0);
+    assert(rt_tilemap_collide_body(tm, body) == 1);
+    assert(rt_physics2d_body_x(body) == 8.0);
+    assert(rt_physics2d_body_vx(body) == 0.0);
+    PASS();
+}
+
+static void test_one_way_platform_catches_complete_crossing(void) {
+    TEST("One-way platform catches a crossing that ends below the tile");
+    void *tm = rt_tilemap_new(2, 4, 16, 16);
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *body = rt_physics2d_body_new(2.0, 0.0, 8.0, 8.0, 1.0);
+    assert(tm && world && body);
+    rt_tilemap_set_tile(tm, 0, 1, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_ONE_WAY_UP);
+    rt_physics2d_body_set_vel(body, 0.0, 96.0);
+    rt_physics2d_world_add(world, body);
+    rt_physics2d_world_step(world, 0.5);
+
+    assert(rt_physics2d_body_y(body) == 48.0);
+    assert(rt_tilemap_collide_body(tm, body) == 1);
+    assert(rt_physics2d_body_y(body) == 8.0);
+    assert(rt_physics2d_body_vy(body) == 0.0);
+    PASS();
+}
+
+static void test_circle_body_collides_with_solid_tile(void) {
+    TEST("Circle body resolves against a solid tile");
+    void *tm = rt_tilemap_new(3, 2, 16, 16);
+    void *circle = rt_physics2d_circle_body_new(14.0, 8.0, 4.0, 1.0);
+    assert(tm && circle);
+    rt_tilemap_set_tile(tm, 1, 0, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_SOLID);
+    rt_physics2d_body_set_vel(circle, 10.0, 0.0);
+
+    assert(rt_tilemap_collide_body(tm, circle) == 1);
+    assert(rt_physics2d_body_x(circle) == 12.0);
+    assert(rt_physics2d_body_vx(circle) == 0.0);
+    PASS();
+}
+
+static void test_circle_body_catches_fast_solid_crossing(void) {
+    TEST("Circle body catches a fast solid-tile crossing");
+    void *tm = rt_tilemap_new(4, 2, 16, 16);
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *circle = rt_physics2d_circle_body_new(4.0, 8.0, 4.0, 1.0);
+    assert(tm && world && circle);
+    rt_tilemap_set_tile(tm, 1, 0, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_SOLID);
+    rt_physics2d_body_set_vel(circle, 80.0, 0.0);
+    rt_physics2d_world_add(world, circle);
+    rt_physics2d_world_step(world, 0.5);
+
+    assert(rt_physics2d_body_x(circle) == 44.0);
+    assert(rt_tilemap_collide_body(tm, circle) == 1);
+    assert(rt_physics2d_body_x(circle) == 12.0);
+    assert(rt_physics2d_body_vx(circle) == 0.0);
+    PASS();
+}
+
 static void test_backwards_compatibility(void) {
     TEST("Backwards compatibility (single-layer API on layer 0)");
     void *tm = rt_tilemap_new(10, 10, 16, 16);
@@ -439,6 +512,42 @@ static void test_tile_animation_rejects_nonpositive_replacement_frames() {
     PASS();
 }
 
+static void test_tile_animation_index_handles_full_registration_set() {
+    TEST("Tile animation index resolves every registered key");
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    for (int64_t i = 0; i < 64; ++i) {
+        int64_t base = 1000 + i * 127;
+        rt_tilemap_set_tile_anim(tm, base, 2, 10);
+        rt_tilemap_set_tile_anim_frame(tm, base, 1, base + 100000);
+    }
+    rt_tilemap_update_anims(tm, 10);
+    for (int64_t i = 0; i < 64; ++i) {
+        int64_t base = 1000 + i * 127;
+        assert(rt_tilemap_resolve_anim_tile(tm, base) == base + 100000);
+    }
+    assert(rt_tilemap_resolve_anim_tile(tm, 77) == 77);
+    PASS();
+}
+
+static void test_variable_animation_prefix_boundaries_and_huge_delta() {
+    TEST("Variable animation prefix lookup preserves boundaries and huge deltas");
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    const int64_t frames[] = {10, 20, 30};
+    const int64_t durations[] = {10, 20, 30};
+    assert(rt_tilemap_set_import_tile_anim(tm, 9, 3, frames, durations) == 1);
+    rt_tilemap_update_anims(tm, 9);
+    assert(rt_tilemap_resolve_anim_tile(tm, 9) == 10);
+    rt_tilemap_update_anims(tm, 1);
+    assert(rt_tilemap_resolve_anim_tile(tm, 9) == 20);
+    rt_tilemap_update_anims(tm, 20);
+    assert(rt_tilemap_resolve_anim_tile(tm, 9) == 30);
+    rt_tilemap_update_anims(tm, INT64_MAX);
+    assert(rt_tilemap_resolve_anim_tile(tm, 9) == 30);
+    rt_tilemap_update_anims(tm, 23);
+    assert(rt_tilemap_resolve_anim_tile(tm, 9) == 10);
+    PASS();
+}
+
 static void test_animated_tile_collision_uses_base_tile(void) {
     TEST("Animated tile collision uses base tile");
     void *tm = rt_tilemap_new(2, 2, 16, 16);
@@ -562,6 +671,10 @@ int main() {
     test_negative_body_does_not_false_collide();
     test_one_way_platform_catches_fast_downward_crossing();
     test_one_way_platform_ignores_teleported_overlap();
+    test_solid_tile_catches_fast_crossing();
+    test_one_way_platform_catches_complete_crossing();
+    test_circle_body_collides_with_solid_tile();
+    test_circle_body_catches_fast_solid_crossing();
     test_backwards_compatibility();
     test_remove_layer();
     test_cannot_remove_base_layer();
@@ -570,6 +683,8 @@ int main() {
     test_embedded_null_layer_names_do_not_alias();
     test_tile_animation_negative_and_huge_dt();
     test_tile_animation_rejects_nonpositive_replacement_frames();
+    test_tile_animation_index_handles_full_registration_set();
+    test_variable_animation_prefix_boundaries_and_huge_delta();
     test_animated_tile_collision_uses_base_tile();
     test_collision_type_validation();
     test_fill_rect_and_pixel_conversion_extremes();

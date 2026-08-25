@@ -73,6 +73,8 @@ typedef enum {
 #define MAX_CHORD_KEYS 8
 /// @brief Maximum number of named actions retained by the global registry.
 #define ACTION_MAX_ACTIONS 4096
+/// @brief Fixed open-addressed index size; kept at <= 50% load by the action cap.
+#define ACTION_HASH_CAPACITY 8192
 /// @brief Maximum number of physical bindings retained by one action.
 #define ACTION_MAX_BINDINGS_PER_ACTION 65536
 /// @brief Maximum aggregate bindings accepted from one persistence document.
@@ -135,6 +137,12 @@ extern "C" {
 extern Action *g_actions;
 /// @brief Nonzero while the action subsystem is initialized.
 extern int8_t g_initialized;
+/// @brief Open-addressed borrowed pointers for constant-time name lookup.
+extern Action *g_action_index[ACTION_HASH_CAPACITY];
+/// @brief Exact number of valid nodes in @ref g_actions.
+extern int64_t g_action_count;
+/// @brief Rebuild the name index/count after a transactional list replacement.
+void action_rebuild_index(void);
 #ifdef __cplusplus
 }
 #endif
@@ -156,25 +164,39 @@ static inline int action_node_shallow_valid(const Action *action) {
            ((action->binding_count == 0) == (action->bindings == NULL));
 }
 
-/// @brief Linear-scan the global action list by C-string name. NULL on miss.
+/// @brief Compute the fixed action index's byte-span hash.
 /// @param name Borrowed null-terminated action name.
 /// @return Borrowed matching Action, or `NULL` for null/absent names.
-static inline Action *find_action(const char *name) {
-    if (!name)
+static inline uint64_t action_hash_bytes(const char *name, size_t name_len) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < name_len; ++i) {
+        hash ^= (unsigned char)name[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+/// @brief Lookup a name byte span through the fixed open-addressed index.
+static inline Action *find_action_bytes(const char *name, size_t name_len) {
+    if (!name || name_len == 0 || name_len > INT64_MAX)
         return NULL;
-    size_t name_len = strlen(name);
-    if (name_len > INT64_MAX)
-        return NULL;
-    Action *a = g_actions;
-    int64_t visited = 0;
-    while (a && visited++ < ACTION_MAX_ACTIONS) {
+    size_t slot = (size_t)(action_hash_bytes(name, name_len) & (ACTION_HASH_CAPACITY - 1));
+    for (size_t probe = 0; probe < ACTION_HASH_CAPACITY; ++probe) {
+        Action *a = g_action_index[slot];
+        if (!a)
+            return NULL;
         if (!action_binding_list_valid(a))
             return NULL;
         if (a->name_len == (int64_t)name_len && memcmp(a->name, name, name_len) == 0)
             return a;
-        a = a->next;
+        slot = (slot + 1) & (ACTION_HASH_CAPACITY - 1);
     }
     return NULL;
+}
+
+/// @brief Hash-index lookup by C-string name. NULL on miss.
+static inline Action *find_action(const char *name) {
+    return name ? find_action_bytes(name, strlen(name)) : NULL;
 }
 
 /// @brief Allocate a new binding node populated with the given fields.

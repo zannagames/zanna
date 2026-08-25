@@ -299,6 +299,19 @@ static void test_transform_cache_tracks_frame_generation() {
     assert(g_last_blit_pixels_id != first_id);
 }
 
+static void test_transform_cache_retains_alternating_working_set() {
+    StubPixels source(5, 3, 801);
+    void *sprite = rt_sprite_new(&source);
+    assert(sprite != nullptr);
+
+    reset_draw_state();
+    rt_sprite_draw_transformed(sprite, reinterpret_cast<void *>(1), 0, 0, 100, 100, 90, -1, 255);
+    rt_sprite_draw_transformed(sprite, reinterpret_cast<void *>(1), 0, 0, 100, 100, 180, -1, 255);
+    assert(g_rotate_call_count == 2);
+    rt_sprite_draw_transformed(sprite, reinterpret_cast<void *>(1), 0, 0, 100, 100, 90, -1, 255);
+    assert(g_rotate_call_count == 2);
+}
+
 static void test_equivalent_full_rotations_use_untransformed_fast_path() {
     StubPixels source(3, 3, 81);
     void *sprite = rt_sprite_new(&source);
@@ -597,6 +610,30 @@ extern "C" void *rt_pixels_tint(void *pixels, int64_t tint) {
     return src ? make_pixels(src->impl.width, src->impl.height, g_next_pixels_id++) : nullptr;
 }
 
+extern "C" void *rt_pixels_transform_region_nearest(void *pixels,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t,
+                                                    int64_t width,
+                                                    int64_t height,
+                                                    int8_t flip_x,
+                                                    int8_t flip_y,
+                                                    int64_t tint,
+                                                    int64_t) {
+    auto *src = static_cast<StubPixels *>(pixels);
+    if (!src)
+        return nullptr;
+    if (tint >= 0) {
+        g_tint_call_count++;
+        g_last_tint = tint;
+    }
+    int64_t id = src->id + (flip_x ? 100 : 0) + (flip_y ? 200 : 0);
+    if (width != src->impl.width || height != src->impl.height || tint >= 0)
+        id = g_next_pixels_id++;
+    return make_pixels(width, height, id);
+}
+
 extern "C" void *rt_pixels_new(int64_t width, int64_t height) {
     return make_pixels(width, height, g_next_pixels_id++);
 }
@@ -655,6 +692,7 @@ int main() {
     test_animator_rejects_overlong_clip_name();
     test_animator_get_current_rejects_corrupt_clip_index();
     test_transform_cache_tracks_frame_generation();
+    test_transform_cache_retains_alternating_working_set();
     test_equivalent_full_rotations_use_untransformed_fast_path();
     test_off_image_rotation_origin_is_transformed_without_padding();
     test_setting_current_frame_does_not_restart_animation_clock();

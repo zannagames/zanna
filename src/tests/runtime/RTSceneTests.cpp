@@ -516,6 +516,28 @@ static void test_scene_find() {
     printf("test_scene_find: PASSED\n");
 }
 
+static void test_scene_find_index_tracks_duplicates_renames_and_removal() {
+    void *scene = rt_scene_new();
+    void *first = rt_scene_node_new();
+    void *second = rt_scene_node_new();
+    rt_scene_node_set_name(first, rt_const_cstr("duplicate"));
+    rt_scene_node_set_name(second, rt_const_cstr("duplicate"));
+    rt_scene_add(scene, first);
+    rt_scene_add(scene, second);
+
+    assert(rt_scene_find(scene, rt_const_cstr("duplicate")) == first);
+    rt_scene_node_set_name(first, rt_const_cstr("renamed"));
+    assert(rt_scene_find(scene, rt_const_cstr("duplicate")) == second);
+    assert(rt_scene_find(scene, rt_const_cstr("renamed")) == first);
+
+    rt_scene_remove(scene, second);
+    assert(rt_scene_find(scene, rt_const_cstr("duplicate")) == nullptr);
+    rt_scene_clear(scene);
+    assert(rt_scene_find(scene, rt_const_cstr("renamed")) == nullptr);
+
+    printf("test_scene_find_index_tracks_duplicates_renames_and_removal: PASSED\n");
+}
+
 static void test_scene_clear() {
     void *scene = rt_scene_new();
 
@@ -588,6 +610,7 @@ int main() {
     test_scene_new();
     test_scene_add_remove();
     test_scene_find();
+    test_scene_find_index_tracks_duplicates_renames_and_removal();
     test_scene_clear();
     test_scene_update();
 

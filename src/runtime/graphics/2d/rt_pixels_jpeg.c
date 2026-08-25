@@ -1502,27 +1502,87 @@ int rt_jpeg_decode_buffer_into_rgba32(
                                            dst_height);
 }
 
-/// @brief Decode JPEG bytes into a new GC-managed Pixels object.
-/// @details Uses the malloc-owned raw decoder, validates the returned pixel
-///          count again, copies canonical words into embedded Pixels storage,
-///          and frees the intermediate buffer on every path.
-/// @param data Pointer to JPEG data (must start with 0xFFD8 SOI marker).
-/// @param len Length of data in bytes.
-/// @return New caller-owned Pixels object, or NULL on failure. The borrowed
-///         encoded @p data is never freed.
-void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len) {
+/// @brief Read baseline SOF dimensions without allocating decode buffers.
+static int jpeg_probe_encoded_dimensions(const uint8_t *data,
+                                         size_t len,
+                                         int64_t *width_out,
+                                         int64_t *height_out) {
+    if (!data || len < 4 || !width_out || !height_out || data[0] != 0xFF || data[1] != 0xD8)
+        return 0;
+    size_t pos = 2;
+    while (pos + 1 < len) {
+        if (data[pos++] != 0xFF)
+            return 0;
+        while (pos < len && data[pos] == 0xFF)
+            ++pos;
+        if (pos >= len)
+            return 0;
+        uint8_t marker = data[pos++];
+        if (marker == 0xD9 || marker == 0xDA)
+            return 0;
+        if (marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7))
+            continue;
+        if (pos + 2 > len)
+            return 0;
+        size_t segment_len = ((size_t)data[pos] << 8u) | data[pos + 1u];
+        if (segment_len < 2 || segment_len > len - pos)
+            return 0;
+        if (marker == 0xC0) {
+            if (segment_len < 8 || data[pos + 2u] != 8)
+                return 0;
+            int64_t height = ((int64_t)data[pos + 3u] << 8u) | data[pos + 4u];
+            int64_t width = ((int64_t)data[pos + 5u] << 8u) | data[pos + 6u];
+            size_t count = 0;
+            if (!jpeg_rgba_pixel_count_checked(width, height, &count))
+                return 0;
+            *width_out = width;
+            *height_out = height;
+            return 1;
+        }
+        pos += segment_len;
+    }
+    return 0;
+}
+
+/// @brief Decode to managed Pixels, writing directly into embedded storage when possible.
+static rt_pixels_impl *jpeg_decode_managed_pixels(const uint8_t *data,
+                                                  size_t len,
+                                                  jpeg_decode_status_t *status_out) {
+    int64_t encoded_width = 0;
+    int64_t encoded_height = 0;
+    if (jpeg_probe_encoded_dimensions(data, len, &encoded_width, &encoded_height)) {
+        rt_pixels_impl *direct = pixels_alloc(encoded_width, encoded_height);
+        if (direct) {
+            uint32_t *unused = NULL;
+            int64_t decoded_width = 0;
+            int64_t decoded_height = 0;
+            if (rt_jpeg_decode_buffer_rgba32_ex(data,
+                                                len,
+                                                &unused,
+                                                &decoded_width,
+                                                &decoded_height,
+                                                status_out,
+                                                direct->data,
+                                                encoded_width,
+                                                encoded_height))
+                return direct;
+            if (rt_obj_release_check0(direct))
+                rt_obj_free(direct);
+        }
+    }
+
     uint32_t *raw_pixels = NULL;
     int64_t width = 0;
     int64_t height = 0;
     size_t pixel_count = 0;
-    rt_pixels_impl *pixels;
-    if (!rt_jpeg_decode_buffer_rgba32(data, len, &raw_pixels, &width, &height))
+    if (!rt_jpeg_decode_buffer_rgba32_ex(
+            data, len, &raw_pixels, &width, &height, status_out, NULL, 0, 0))
         return NULL;
     if (!jpeg_rgba_pixel_count_checked(width, height, &pixel_count)) {
         free(raw_pixels);
         return NULL;
     }
-    pixels = pixels_alloc(width, height);
+    rt_pixels_impl *pixels = pixels_alloc(width, height);
     if (!pixels) {
         free(raw_pixels);
         return NULL;
@@ -1530,6 +1590,17 @@ void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len) {
     memcpy(pixels->data, raw_pixels, pixel_count * sizeof(uint32_t));
     free(raw_pixels);
     return pixels;
+}
+
+/// @brief Decode JPEG bytes into a new GC-managed Pixels object.
+/// @details Ordinary non-oriented images decode directly into embedded Pixels
+///          storage. EXIF transforms fall back to the malloc-owned raw path.
+/// @param data Pointer to JPEG data (must start with 0xFFD8 SOI marker).
+/// @param len Length of data in bytes.
+/// @return New caller-owned Pixels object, or NULL on failure. The borrowed
+///         encoded @p data is never freed.
+void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len) {
+    return jpeg_decode_managed_pixels(data, len, NULL);
 }
 
 /// @brief Load a bounded baseline JPEG file into a Pixels object.
@@ -1605,30 +1676,8 @@ void *rt_pixels_load_jpeg(void *path) {
     }
     fclose(f);
 
-    uint32_t *raw_pixels = NULL;
-    int64_t width = 0;
-    int64_t height = 0;
     jpeg_decode_status_t decode_status = JPEG_DECODE_STATUS_CORRUPT;
-    void *result = NULL;
-    if (rt_jpeg_decode_buffer_rgba32_ex(file_data,
-                                        (size_t)file_len,
-                                        &raw_pixels,
-                                        &width,
-                                        &height,
-                                        &decode_status,
-                                        NULL,
-                                        0,
-                                        0)) {
-        size_t pixel_count = 0;
-        if (jpeg_rgba_pixel_count_checked(width, height, &pixel_count)) {
-            rt_pixels_impl *pixels = pixels_alloc(width, height);
-            if (pixels) {
-                memcpy(pixels->data, raw_pixels, pixel_count * sizeof(uint32_t));
-                result = pixels;
-            }
-        }
-        free(raw_pixels);
-    }
+    void *result = jpeg_decode_managed_pixels(file_data, (size_t)file_len, &decode_status);
     free(file_data);
     if (result) {
         rt_asset_error_end_load_success();

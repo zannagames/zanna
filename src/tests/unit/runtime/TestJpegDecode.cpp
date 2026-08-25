@@ -45,6 +45,7 @@ int rt_jpeg_decode_buffer_rgba32(const uint8_t *data,
                                  int64_t *out_height);
 int rt_jpeg_decode_buffer_into_rgba32(
     const uint8_t *data, size_t len, uint32_t *dst_pixels, int64_t dst_width, int64_t dst_height);
+void *rt_jpeg_decode_buffer(const uint8_t *data, size_t len);
 void *rt_const_cstr(const char *s);
 int64_t rt_obj_release_check0(void *obj);
 void rt_obj_free(void *obj);
@@ -189,8 +190,7 @@ static std::vector<uint8_t> make_gray_jpeg(uint8_t table_id = 0,
 // Reconstruction must equal dc/8 + 128 — the spec relation the IDCT
 // descale bug (five-bit final shift instead of three) violated by 4x while
 // the all-zero fixtures above stayed green (0/32 == 0/8).
-static std::vector<uint8_t> make_dc_jpeg(uint8_t dc_category,
-                                         const std::vector<uint8_t> &entropy) {
+static std::vector<uint8_t> make_dc_jpeg(uint8_t dc_category, const std::vector<uint8_t> &entropy) {
     std::vector<uint8_t> jpeg = {0xFF, 0xD8};
 
     std::vector<uint8_t> dqt(65, 1);
@@ -323,6 +323,7 @@ TEST(JpegDecodeTest, IdctDcScaleIsSpecExact) {
         std::vector<uint8_t> entropy;
         uint32_t expected;
     };
+
     const DcCase cases[] = {
         {7, {0x40, 0x7F}, UINT32_C(0x888888FF)},
         {10, {0x40, 0x0F}, UINT32_C(0xC0C0C0FF)},
@@ -449,6 +450,26 @@ TEST(JpegDecodeTest, DirectDecodeRejectsTrailingExifOrientation) {
     EXPECT_EQ(height, 1);
     EXPECT_EQ(pixels[0], UINT32_C(0x808080FF));
     std::free(pixels);
+}
+
+TEST(JpegDecodeTest, ManagedDecodeSupportsDirectAndOrientationFallbackPaths) {
+    std::vector<uint8_t> ordinary =
+        make_gray_jpeg(0, 1, 0x11, 0x3F, false, false, false, false, false, false);
+    void *pixels = rt_jpeg_decode_buffer(ordinary.data(), ordinary.size());
+    ASSERT_TRUE(pixels != nullptr);
+    EXPECT_EQ(rt_pixels_width(pixels), 1);
+    EXPECT_EQ(rt_pixels_height(pixels), 1);
+    EXPECT_EQ(rt_pixels_get(pixels, 0, 0), INT64_C(0x808080FF));
+    if (rt_obj_release_check0(pixels))
+        rt_obj_free(pixels);
+
+    std::vector<uint8_t> oriented =
+        make_gray_jpeg(0, 1, 0x11, 0x3F, false, false, false, false, false, true);
+    pixels = rt_jpeg_decode_buffer(oriented.data(), oriented.size());
+    ASSERT_TRUE(pixels != nullptr);
+    EXPECT_EQ(rt_pixels_get(pixels, 0, 0), INT64_C(0x808080FF));
+    if (rt_obj_release_check0(pixels))
+        rt_obj_free(pixels);
 }
 
 TEST(JpegDecodeTest, MalformedExifCountCannotApplyOrientation) {

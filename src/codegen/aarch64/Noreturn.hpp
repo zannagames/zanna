@@ -56,8 +56,9 @@ namespace zanna::codegen::aarch64 {
  *       not canonicalize @p symbol itself.
  */
 [[nodiscard]] inline bool isNoReturnRuntimeSymbol(std::string_view symbol) noexcept {
-    return symbol == "rt_trap_ovf" || symbol == "rt_trap_div0" || symbol == "rt_trap_raise_error" ||
-           symbol == "rt_trap_string" || symbol == "rt_arr_oob_panic" || symbol == "rt_trap";
+    return symbol == "rt_trap_ovf" || symbol == "rt_trap_div0" || symbol == "rt_trap_null" ||
+           symbol == "rt_trap_raise_error" || symbol == "rt_trap_string" ||
+           symbol == "rt_arr_oob_panic" || symbol == "rt_trap";
 }
 
 /**

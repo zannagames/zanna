@@ -103,10 +103,14 @@ void maybe_resolve_pair(rt_world_impl *w, int ii, int jj, double dt) {
 
     double nx, ny, pen, entry;
     if (shape_overlap(bi, bj, &nx, &ny, &pen)) {
+        rt_physics2d_body_wake(bi);
+        rt_physics2d_body_wake(bj);
         world_record_contact(w, bi, bj, nx, ny, pen);
         resolve_collision(bi, bj, nx, ny, pen);
     } else if (swept_bounds_pair(bi, bj, &nx, &ny, &entry)) {
         (void)entry;
+        rt_physics2d_body_wake(bi);
+        rt_physics2d_body_wake(bj);
         world_record_contact(w, bi, bj, nx, ny, 0.0);
         resolve_collision(bi, bj, nx, ny, 0.0);
         /* Both bodies are left at their time-of-impact positions. We intentionally

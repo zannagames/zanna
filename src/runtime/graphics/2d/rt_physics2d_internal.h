@@ -105,6 +105,8 @@ typedef struct {
     int64_t collision_mask;  ///< Bitmask: which layers this body can collide with.
     double radius;           ///< Circle radius (0 for AABB bodies).
     int8_t is_circle;        ///< 1 = circle shape, 0 = AABB shape.
+    double sleep_time;       ///< Consecutive low-motion time used by safe sleeping.
+    int8_t is_sleeping;      ///< Canonical flag for zero-gravity integration skipping.
     void *owner_world;       ///< World this body was added to, or NULL. Enables O(1)
                              ///< duplicate detection and removal (see rt_physics2d.c).
     int64_t world_index;     ///< Index of this body in owner_world->bodies; valid only
@@ -114,8 +116,9 @@ typedef struct {
 /// @brief Forward declaration of the shared joint payload.
 typedef struct ph_joint ph_joint;
 
-/// @brief Retained contact manifold recorded for one world step.
-/// @details Both body pointers hold references until contacts are cleared.
+/// @brief Contact manifold recorded for one world step.
+/// @details Body pointers are borrowed from the world's retained body array and
+///          remain valid until the next step or body removal clears contacts.
 ///          The normal points from body A toward body B and penetration is
 ///          nonnegative, with zero used by swept impacts.
 typedef struct {
@@ -124,12 +127,13 @@ typedef struct {
     double nx;
     double ny;
     double penetration;
+    uint64_t pair_key; ///< Packed stable world-body indices for per-step deduplication.
 } ph_contact_record;
 
 /// @brief Internal representation of a physics world.
-/// @details The world owns four categories of growable storage: retained body
-///          and joint arrays, retained contact records, packed broad-phase pair
-///          scratch, and parallel force-snapshot arrays used by public
+/// @details The world owns growable retained body/joint arrays, borrowed contact
+///          records plus their index, persistent sweep-and-prune ordering, and
+///          parallel force-snapshot arrays used by public
 ///          substepping. Count fields describe initialized entries and capacity
 ///          fields describe allocated slots.
 typedef struct {
@@ -137,6 +141,7 @@ typedef struct {
     uint64_t state_magic; ///< Private initialized-payload cookie.
     double gravity_x;
     double gravity_y;
+    double pending_dt; ///< Positive elapsed time deferred by the bounded public step budget.
     rt_body_impl **bodies;
     int64_t body_count;
     int64_t body_capacity;
@@ -148,14 +153,14 @@ typedef struct {
     int64_t contact_count;
     int64_t contact_capacity;
     int8_t contact_overflow; ///< Set when the most recent step could not grow contact storage.
+    int64_t *contact_slots;  ///< Open-addressed contact index + 1, zero for an empty slot.
+    int64_t contact_slot_capacity; ///< Power-of-two slot count for contact deduplication.
 
-    /* Broad-phase candidate-pair scratch. Each entry packs a body-index pair as
-     * ((uint64_t)ii << 32) | (uint32_t)jj with ii < jj. Collected per step, sorted,
-     * then de-duplicated — O(pairs) memory instead of the former O(n^2) bit-matrix
-     * (which also cost an O(n^2) memset every substep). */
-    uint64_t *pair_scratch;
-    int64_t pair_scratch_count;
-    int64_t pair_scratch_capacity;
+    /* Persistent sweep-and-prune ordering. Entries borrow world-owned bodies and
+       remain nearly sorted across substeps, so insertion maintenance is cheap. */
+    rt_body_impl **broadphase_order;
+    int64_t broadphase_count;
+    int64_t broadphase_capacity;
 
     rt_body_impl **force_bodies;
     double *force_x;
@@ -191,24 +196,30 @@ static inline int8_t rt_physics2d_is_world_handle(void *obj) {
         return 0;
     const rt_world_impl *w = (const rt_world_impl *)obj;
     if (w->state_magic != RT_PHYSICS2D_WORLD_STATE_MAGIC || !isfinite(w->gravity_x) ||
-        !isfinite(w->gravity_y) || w->body_count < 0 || w->body_capacity < 0 ||
-        w->body_count > w->body_capacity || w->joint_count < 0 || w->joint_capacity < 0 ||
-        w->joint_count > w->joint_capacity || w->contact_count < 0 || w->contact_capacity < 0 ||
-        w->contact_count > w->contact_capacity ||
-        (w->contact_overflow != 0 && w->contact_overflow != 1) || w->pair_scratch_count < 0 ||
-        w->pair_scratch_capacity < 0 || w->pair_scratch_count > w->pair_scratch_capacity ||
+        !isfinite(w->gravity_y) || !isfinite(w->pending_dt) || w->pending_dt < 0.0 ||
+        w->body_count < 0 || w->body_capacity < 0 || w->body_count > w->body_capacity ||
+        w->joint_count < 0 || w->joint_capacity < 0 || w->joint_count > w->joint_capacity ||
+        w->contact_count < 0 || w->contact_capacity < 0 || w->contact_count > w->contact_capacity ||
+        (w->contact_overflow != 0 && w->contact_overflow != 1) || w->contact_slot_capacity < 0 ||
+        w->broadphase_count < 0 || w->broadphase_capacity < 0 ||
+        w->broadphase_count != w->body_count || w->broadphase_count > w->broadphase_capacity ||
         w->force_capacity < 0 || w->body_count > INT_MAX ||
         (uint64_t)w->body_capacity > SIZE_MAX / sizeof(rt_body_impl *) ||
         (uint64_t)w->joint_capacity > SIZE_MAX / sizeof(ph_joint *) ||
         (uint64_t)w->contact_capacity > SIZE_MAX / sizeof(ph_contact_record) ||
-        (uint64_t)w->pair_scratch_capacity > SIZE_MAX / sizeof(uint64_t) ||
+        (uint64_t)w->contact_slot_capacity > SIZE_MAX / sizeof(int64_t) ||
+        (uint64_t)w->broadphase_capacity > SIZE_MAX / sizeof(rt_body_impl *) ||
         (uint64_t)w->force_capacity > SIZE_MAX / sizeof(rt_body_impl *) ||
         (uint64_t)w->force_capacity > SIZE_MAX / sizeof(double))
         return 0;
     if ((w->body_capacity == 0) != (w->bodies == NULL) ||
         (w->joint_capacity == 0) != (w->joints == NULL) ||
         (w->contact_capacity == 0) != (w->contacts == NULL) ||
-        (w->pair_scratch_capacity == 0) != (w->pair_scratch == NULL))
+        (w->contact_slot_capacity == 0) != (w->contact_slots == NULL) ||
+        (w->broadphase_capacity == 0) != (w->broadphase_order == NULL))
+        return 0;
+    if (w->contact_slot_capacity > 0 &&
+        (w->contact_slot_capacity & (w->contact_slot_capacity - 1)) != 0)
         return 0;
     if (w->force_capacity == 0)
         return !w->force_bodies && !w->force_x && !w->force_y;
@@ -227,8 +238,10 @@ static inline int8_t rt_physics2d_is_body_handle(void *obj) {
         !isfinite(b->prev_x) || !isfinite(b->prev_y) || !isfinite(b->w) || !isfinite(b->h) ||
         !isfinite(b->vx) || !isfinite(b->vy) || !isfinite(b->fx) || !isfinite(b->fy) ||
         !isfinite(b->mass) || !isfinite(b->inv_mass) || !isfinite(b->restitution) ||
-        !isfinite(b->friction) || !isfinite(b->radius) || b->mass < 0.0 || b->inv_mass < 0.0 ||
-        b->restitution < 0.0 || b->restitution > 1.0 || b->friction < 0.0 || b->friction > 1.0)
+        !isfinite(b->friction) || !isfinite(b->radius) || !isfinite(b->sleep_time) ||
+        b->sleep_time < 0.0 || (b->is_sleeping != 0 && b->is_sleeping != 1) || b->mass < 0.0 ||
+        b->inv_mass < 0.0 || b->restitution < 0.0 || b->restitution > 1.0 || b->friction < 0.0 ||
+        b->friction > 1.0)
         return 0;
     if ((b->mass == 0.0) != (b->inv_mass == 0.0) || (b->mass > 0.0 && b->inv_mass != 1.0 / b->mass))
         return 0;
@@ -418,9 +431,12 @@ double body_prev_max_y(rt_body_impl *b);
 /// @brief Clamp a body's state to finite, sane values before integration.
 /// @param b Mutable body implementation; `NULL` is accepted as a no-op.
 void sanitize_body_state(rt_body_impl *b);
+/// @brief Mark a dynamic body awake and restart its low-motion timer.
+/// @param b Mutable body implementation; `NULL` is accepted as a no-op.
+void rt_physics2d_body_wake(rt_body_impl *b);
 /// @brief Append a contact manifold to the world's per-step contact list.
-/// @details Retains both bodies and sets the world's overflow flag if contact
-///          storage cannot grow.
+/// @details Borrows world-owned bodies, de-duplicates the pair, and sets the
+///          world's overflow flag if contact storage cannot grow.
 /// @param w Mutable world receiving the record.
 /// @param a First body.
 /// @param b Second body.

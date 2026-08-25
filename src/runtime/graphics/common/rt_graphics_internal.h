@@ -670,6 +670,22 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
                                  int64_t w,
                                  int64_t h);
 
+/// @brief One source/destination rectangle for an internal alpha-blit batch.
+typedef struct {
+    int64_t dx;
+    int64_t dy;
+    int64_t sx;
+    int64_t sy;
+    int64_t w;
+    int64_t h;
+} rt_canvas_alpha_region;
+
+/// @brief Alpha-blit multiple regions from one Pixels source with one canvas validation.
+void rt_canvas_blit_regions_alpha(void *canvas_ptr,
+                                  void *pixels_ptr,
+                                  const rt_canvas_alpha_region *regions,
+                                  size_t region_count);
+
 /// @brief Fill an inclusive horizontal span [x0..x1] at logical row @p y as a
 ///        height-1 logical rect (scale-aware; internal, defined in rt_drawing.c).
 ///        Scanline-fill primitives use this instead of rt_canvas_line so HiDPI

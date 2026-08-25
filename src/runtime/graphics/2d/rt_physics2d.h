@@ -60,10 +60,10 @@ void *rt_physics2d_world_new(double gravity_x, double gravity_y);
 
 /// @brief Step the physics simulation forward. Clears previous contacts first; non-finite and
 /// non-positive dt values then no-op.
-/// @details Positive time is capped at eight seconds and split into at most
-///          eight substeps of no more than one second. Accumulated forces are
-///          snapshotted and reapplied to every substep so their total impulse
-///          remains proportional to the requested bounded timestep.
+/// @details Each call consumes at most eight seconds in no-more-than-one-second
+///          substeps. Excess positive time is retained by the world and joined
+///          to the next positive Step call rather than discarded. Accumulated
+///          forces are snapshotted and reapplied to each consumed substep.
 /// @param world Opaque world handle to advance.
 /// @param dt Requested elapsed time in seconds.
 void rt_physics2d_world_step(void *world, double dt);
@@ -97,8 +97,8 @@ void rt_physics2d_world_set_gravity(void *world, double gx, double gy);
 
 /// @brief Number of contacts detected during the most recent world step.
 /// @details The list is cleared at the start of every Step() and whenever a
-///          body is removed. Contacts from every substep of one public Step()
-///          remain queryable and may include the same pair more than once.
+///          body is removed. Repeated manifolds for one body pair across public
+///          Step substeps are collapsed to one deepest/latest representative.
 /// @param world Opaque world handle to query.
 /// @return The current contact-record count, or `0` for invalid input.
 int64_t rt_physics2d_world_contact_count(void *world);

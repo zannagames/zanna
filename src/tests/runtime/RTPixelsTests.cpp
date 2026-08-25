@@ -1748,6 +1748,41 @@ static void test_tint_rounds_instead_of_darkening() {
     printf("test_tint_rounds_instead_of_darkening: PASSED\n");
 }
 
+static void test_fused_region_transform_matches_individual_passes() {
+    void *source = rt_pixels_new(4, 3);
+    for (int64_t y = 0; y < 3; ++y) {
+        for (int64_t x = 0; x < 4; ++x) {
+            uint32_t value = (uint32_t)((20 + x * 31) << 24) | (uint32_t)((30 + y * 47) << 16) |
+                             (uint32_t)((40 + x * 11 + y * 7) << 8) |
+                             (uint32_t)(80 + x * 23 + y * 13);
+            rt_pixels_set_rgba(source, x, y, value);
+        }
+    }
+
+    int64_t tint = rt_color_rgba(160, 190, 220, 173);
+    void *fused = rt_pixels_transform_region_nearest(source, 1, 0, 3, 2, 5, 4, 1, 1, tint, 129);
+    assert(fused != nullptr);
+
+    void *region = rt_pixels_new(3, 2);
+    rt_pixels_copy(region, 0, 0, source, 1, 0, 3, 2);
+    void *flipped_h = rt_pixels_flip_h(region);
+    void *flipped_v = rt_pixels_flip_v(flipped_h);
+    void *scaled = rt_pixels_scale(flipped_v, 5, 4);
+    void *expected = rt_pixels_tint(scaled, tint);
+    auto *expected_impl = static_cast<rt_pixels_impl *>(expected);
+    for (int64_t i = 0; i < expected_impl->width * expected_impl->height; ++i) {
+        uint32_t pixel = expected_impl->data[i];
+        uint32_t alpha = ((pixel & 0xFFu) * 129u + 127u) / 255u;
+        expected_impl->data[i] = (pixel & 0xFFFFFF00u) | alpha;
+    }
+    for (int64_t y = 0; y < 4; ++y) {
+        for (int64_t x = 0; x < 5; ++x)
+            assert(rt_pixels_get(fused, x, y) == rt_pixels_get(expected, x, y));
+    }
+
+    printf("test_fused_region_transform_matches_individual_passes: PASSED\n");
+}
+
 static int64_t bilerp_rgba_premul(
     int64_t p00, int64_t p10, int64_t p01, int64_t p11, int frac_x, int frac_y) {
     int inv_frac_x = 256 - frac_x;
@@ -2308,6 +2343,42 @@ static void test_stamp_nonzero_copies_sparse_layer() {
     printf("test_stamp_nonzero_copies_sparse_layer: PASSED\n");
 }
 
+static void test_sparse_mutators_preserve_generation_on_noop() {
+    void *p = rt_pixels_new(3, 1);
+    void *m = rt_pixels_new(3, 1);
+    void *layer = rt_pixels_new(3, 1);
+    assert(p && m && layer);
+
+    for (int64_t x = 0; x < 3; ++x)
+        rt_pixels_set_rgba(m, x, 0, 0xFFFFFFFF);
+    uint64_t p_generation = rt_pixels_generation(p);
+    uint64_t m_generation = rt_pixels_generation(m);
+
+    /* A fully covered mask has no growth frontier, so neither image changed. */
+    rt_pixels_dilate_masked(p, m, 4);
+    assert(rt_pixels_generation(p) == p_generation);
+    assert(rt_pixels_generation(m) == m_generation);
+    rt_pixels_dilate_owner(p, m, 4);
+    assert(rt_pixels_generation(p) == p_generation);
+    assert(rt_pixels_generation(m) == m_generation);
+
+    /* Empty and value-identical sparse layers are also exact no-ops. */
+    rt_pixels_stamp_nonzero(p, layer);
+    assert(rt_pixels_generation(p) == p_generation);
+    rt_pixels_set_rgba(p, 1, 0, 0xA0B0C0FF);
+    rt_pixels_set_rgba(layer, 1, 0, 0xA0B0C0FF);
+    p_generation = rt_pixels_generation(p);
+    rt_pixels_stamp_nonzero(p, layer);
+    assert(rt_pixels_generation(p) == p_generation);
+
+    /* A real sparse replacement publishes exactly one mutation. */
+    rt_pixels_set_rgba(layer, 1, 0, 0x102030FF);
+    rt_pixels_stamp_nonzero(p, layer);
+    assert(rt_pixels_generation(p) == p_generation + 1);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0x102030FFu);
+    printf("test_sparse_mutators_preserve_generation_on_noop: PASSED\n");
+}
+
 static void test_colorize_masked_mask_scale() {
     /* A half-width mask scales proportionally: its covered left half
      * gates the pixels' left half. */
@@ -2478,6 +2549,7 @@ int main() {
     test_scale_and_resize_reject_nonpositive_target_dimensions();
     test_tint_multiplies_tagged_alpha();
     test_tint_rounds_instead_of_darkening();
+    test_fused_region_transform_matches_individual_passes();
     test_blur_zero_returns_exact_copy();
     test_blur_empty_image_returns_empty_pixels();
     test_blur_rgba_channel_order();
@@ -2505,6 +2577,7 @@ int main() {
     test_colorize_masked_strength_and_alpha();
     test_colorize_masked_mask_scale();
     test_stamp_nonzero_copies_sparse_layer();
+    test_sparse_mutators_preserve_generation_on_noop();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

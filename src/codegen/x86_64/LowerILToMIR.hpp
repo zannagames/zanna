@@ -295,6 +295,43 @@ class LowerILToMIR {
     ///          to ensure deterministic output across compilations.
     [[nodiscard]] uint32_t nextLocalLabelId() noexcept;
 
+    /// @brief Record that @p id is an alloca result (a provably mapped stack address).
+    /// @details Loads/stores through such bases skip the null-page guard.
+    void noteAllocaResult(int id) {
+        allocaResultIds_.insert(id);
+    }
+
+    /// @brief Instruction producing SSA id @p id in the current function.
+    /// @details Used by the null-address guard to chase a derived address
+    ///          (gep / pointer-add chain) back to its root pointer.
+    /// @return Borrowed pointer into the function being lowered, or nullptr.
+    [[nodiscard]] const ILInstr *ilProducerOf(int id) const {
+        const auto it = ilProducers_.find(id);
+        return it == ilProducers_.end() ? nullptr : it->second;
+    }
+
+    /// @brief True when @p id names an alloca result in the current function.
+    [[nodiscard]] bool isAllocaResult(int id) const {
+        return allocaResultIds_.count(id) != 0;
+    }
+
+    /// @brief Record a null-page guard for @p vregId inside @p blockLabel.
+    /// @details Per-block scoping means a guard is only elided when
+    ///          straight-line execution guarantees an earlier guard on the
+    ///          same vreg already ran; no dominance analysis is required.
+    /// @return `false` when the vreg was already guarded in that block.
+    [[nodiscard]] bool noteNullGuardedBase(const std::string &blockLabel, uint16_t vregId) {
+        return nullGuardedBases_[blockLabel].insert(vregId).second;
+    }
+
+    /// @brief The per-function null trap block label; marks the block as required.
+    /// @details `lower()` appends the block (CALL rt_trap_null; UD2) after the
+    ///          main lowering loop when any guard referenced it.
+    [[nodiscard]] std::string requestNullTrapLabel() {
+        nullTrapRequested_ = true;
+        return ".Ltrap_null_" + currentFunctionName_;
+    }
+
     friend class MIRBuilder;
 
   private:
@@ -326,6 +363,16 @@ class LowerILToMIR {
     std::unordered_set<int> strLoadRetainElidable_{};
     /// Transferring string call results whose defensive retain may be omitted.
     std::unordered_set<int> strCallRetainElidable_{};
+    /// Name of the function currently being lowered (null trap label suffix).
+    std::string currentFunctionName_{};
+    /// Alloca result ids in the current function (bases that skip null guards).
+    std::unordered_set<int> allocaResultIds_{};
+    /// SSA id -> producing instruction for the current function (borrowed).
+    std::unordered_map<int, const ILInstr *> ilProducers_{};
+    /// Base vregs already null-guarded, per MIR block label.
+    std::unordered_map<std::string, std::unordered_set<uint16_t>> nullGuardedBases_{};
+    /// True once any load/store guard referenced the null trap block.
+    bool nullTrapRequested_{false};
 
     /// @brief Populate strLoadRetainElidable_ for @p func (see StringRetainPolicy.hpp).
     /// @param func Function whose string ownership uses are analyzed.

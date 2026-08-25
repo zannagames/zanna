@@ -22,6 +22,8 @@
 //===----------------------------------------------------------------------===//
 
 extern "C" {
+#include "rt_graphics_internal.h"
+#include "rt_physics2d_internal.h"
 #include "rt_tilemap.h"
 }
 
@@ -33,6 +35,7 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <new>
 
 #ifndef RT_PIXELS_CLASS_ID
 #define RT_PIXELS_CLASS_ID INT64_C(-0x600201)
@@ -48,9 +51,22 @@ struct ObjHeader {
 struct StubPixels {
     int64_t width;
     int64_t height;
+    uint32_t *data;
+    uint64_t generation;
+    uint64_t cache_identity;
+    uint64_t alpha_scan_generation;
+    uint64_t alpha_classification_scan_count;
+    int8_t alpha_scan_valid;
+    int8_t alpha_scan_classification;
     int64_t id;
     int refcount;
     bool freed;
+
+    StubPixels(int64_t width_value, int64_t height_value, int64_t id_value, int refs, bool is_freed)
+        : width(width_value), height(height_value), data(nullptr), generation(1),
+          cache_identity(static_cast<uint64_t>(id_value)), alpha_scan_generation(0),
+          alpha_classification_scan_count(0), alpha_scan_valid(0), alpha_scan_classification(0),
+          id(id_value), refcount(refs), freed(is_freed) {}
 };
 
 struct StubCanvas {
@@ -59,13 +75,43 @@ struct StubCanvas {
 };
 
 struct StubBody {
+    void *vptr;
+    uint64_t state_magic;
     double x;
     double y;
+    double prev_x;
     double prev_y;
     double w;
     double h;
     double vx;
     double vy;
+    double fx;
+    double fy;
+    double mass;
+    double inv_mass;
+    double restitution;
+    double friction;
+    int64_t collision_layer;
+    int64_t collision_mask;
+    double radius;
+    int8_t is_circle;
+    double sleep_time;
+    int8_t is_sleeping;
+    void *owner_world;
+    int64_t world_index;
+
+    StubBody(double x_value,
+             double y_value,
+             double previous_y,
+             double width,
+             double height,
+             double velocity_x,
+             double velocity_y)
+        : vptr(nullptr), state_magic(RT_PHYSICS2D_BODY_STATE_MAGIC), x(x_value), y(y_value),
+          prev_x(x_value), prev_y(previous_y), w(width), h(height), vx(velocity_x), vy(velocity_y),
+          fx(0.0), fy(0.0), mass(1.0), inv_mass(1.0), restitution(0.0), friction(0.0),
+          collision_layer(1), collision_mask(-1), radius(0.0), is_circle(0), sleep_time(0.0),
+          is_sleeping(0), owner_world(nullptr), world_index(-1) {}
 };
 
 struct BlitCall {
@@ -84,6 +130,7 @@ int g_alpha_blit_count = 0;
 StubPixels *g_clones[16];
 int g_clone_count = 0;
 int g_pixels_freed = 0;
+int g_scale_count = 0;
 bool g_fail_map_new = false;
 
 void reset_blits() {
@@ -96,6 +143,7 @@ void reset_pixels_tracking() {
     std::memset(g_clones, 0, sizeof(g_clones));
     g_clone_count = 0;
     g_pixels_freed = 0;
+    g_scale_count = 0;
 }
 
 ObjHeader *header_from_payload(void *obj) {
@@ -128,7 +176,7 @@ extern "C" int64_t rt_obj_class_id(void *obj) {
 extern "C" int8_t rt_obj_is_instance(void *obj, int64_t class_id, size_t) {
     if (!obj)
         return 0;
-    if (class_id == RT_PIXELS_CLASS_ID)
+    if (class_id == RT_PIXELS_CLASS_ID || class_id == RT_PHYSICS2D_BODY_CLASS_ID)
         return 1;
     return rt_obj_class_id(obj) == class_id;
 }
@@ -169,7 +217,7 @@ extern "C" void *rt_pixels_clone(void *pixels) {
     auto *src = static_cast<StubPixels *>(pixels);
     auto *copy = static_cast<StubPixels *>(std::malloc(sizeof(StubPixels)));
     assert(copy != nullptr);
-    *copy = *src;
+    new (copy) StubPixels(*src);
     copy->refcount = 1;
     copy->freed = false;
     assert(g_clone_count < (int)(sizeof(g_clones) / sizeof(g_clones[0])));
@@ -234,18 +282,26 @@ extern "C" void rt_canvas_blit_region_alpha(void *canvas,
     rt_canvas_blit_region(canvas, dx, dy, pixels, sx, sy, w, h);
 }
 
+extern "C" void rt_canvas_blit_regions_alpha(void *canvas,
+                                             void *pixels,
+                                             const rt_canvas_alpha_region *regions,
+                                             size_t region_count) {
+    for (size_t i = 0; i < region_count; ++i) {
+        const rt_canvas_alpha_region &region = regions[i];
+        rt_canvas_blit_region_alpha(
+            canvas, region.dx, region.dy, pixels, region.sx, region.sy, region.w, region.h);
+    }
+}
+
 extern "C" void rt_canvas_blit_alpha(void *canvas, int64_t x, int64_t y, void *pixels) {
     g_alpha_blit_count++;
     rt_canvas_blit(canvas, x, y, pixels);
 }
 
 extern "C" void *rt_pixels_new(int64_t width, int64_t height) {
-    auto *pixels = static_cast<StubPixels *>(std::calloc(1, sizeof(StubPixels)));
+    auto *pixels = static_cast<StubPixels *>(std::malloc(sizeof(StubPixels)));
     assert(pixels != nullptr);
-    pixels->width = width;
-    pixels->height = height;
-    pixels->id = 900;
-    pixels->refcount = 1;
+    new (pixels) StubPixels(width, height, 900, 1, false);
     return pixels;
 }
 
@@ -253,13 +309,11 @@ extern "C" void rt_pixels_copy(
     void *, int64_t, int64_t, void *, int64_t, int64_t, int64_t, int64_t) {}
 
 extern "C" void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
+    g_scale_count++;
     auto *src = static_cast<StubPixels *>(pixels);
-    auto *scaled = static_cast<StubPixels *>(std::calloc(1, sizeof(StubPixels)));
+    auto *scaled = static_cast<StubPixels *>(std::malloc(sizeof(StubPixels)));
     assert(scaled != nullptr);
-    scaled->width = new_width;
-    scaled->height = new_height;
-    scaled->id = src ? src->id : 0;
-    scaled->refcount = 1;
+    new (scaled) StubPixels(new_width, new_height, src ? src->id : 0, 1, false);
     return scaled;
 }
 
@@ -737,8 +791,16 @@ static void test_scaled_import_preserves_projection_and_source_frame() {
     reset_blits();
     rt_tilemap_draw_scaled(tm, &canvas, 10, 20, 200);
     assert(g_blit_count == 1);
+    assert(g_scale_count == 1);
     assert(g_blits[0].dx == 53 && g_blits[0].dy == 9);
     assert(g_blits[0].w == 48 && g_blits[0].h == 32);
+    reset_blits();
+    rt_tilemap_draw_scaled(tm, &canvas, 10, 20, 200);
+    assert(g_blit_count == 1);
+    assert(g_scale_count == 1);
+    g_clones[0]->generation++;
+    rt_tilemap_draw_scaled(tm, &canvas, 10, 20, 200);
+    assert(g_scale_count == 2);
 
     StubPixels count_atlas{24, 16, 597, 0, false};
     StubCanvas small_canvas{32, 32};

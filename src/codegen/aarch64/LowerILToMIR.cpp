@@ -471,7 +471,7 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     // two edges plus, for switches, three blocks per branch target; shared
     // trap blocks add a small per-function constant. The capacity is verified
     // after lowering (see the ICE check at the end of this function).
-    std::size_t auxBlockBudget = 8; // shared trap blocks + slack
+    std::size_t auxBlockBudget = 9; // shared trap blocks (6 kinds) + slack
     for (const auto &bbIn : fn.blocks) {
         for (const auto &ins : bbIn.instructions) {
             if (!ins.labels.empty())

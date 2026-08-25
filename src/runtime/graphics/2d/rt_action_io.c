@@ -368,6 +368,7 @@ int8_t rt_action_load(rt_string json) {
 
     saved_actions = g_actions;
     g_actions = NULL;
+    action_rebuild_index();
 
     tok = rt_json_stream_next(parser);
     if (tok != RT_JSON_TOK_OBJECT_START)
@@ -695,5 +696,6 @@ cleanup:
         action_free_list(g_actions);
         g_actions = saved_actions;
     }
+    action_rebuild_index();
     return success;
 }

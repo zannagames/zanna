@@ -52,7 +52,7 @@
 ///   the top-left corner, so the center is x + w/2.
 /// @param b Borrowed body implementation.
 /// @return The shape's current center X coordinate.
-static double body_cx(rt_body_impl *b) {
+static double body_cx(const rt_body_impl *b) {
     return b->is_circle ? b->x : (b->x + b->w * 0.5);
 }
 
@@ -61,7 +61,7 @@ static double body_cx(rt_body_impl *b) {
 ///   the top-left corner, so the center is y + h/2.
 /// @param b Borrowed body implementation.
 /// @return The shape's current center Y coordinate.
-static double body_cy(rt_body_impl *b) {
+static double body_cy(const rt_body_impl *b) {
     return b->is_circle ? b->y : (b->y + b->h * 0.5);
 }
 
@@ -523,6 +523,8 @@ void rt_physics2d_world_add_joint(void *world, void *joint) {
         return;
     }
     j->active = 1;
+    rt_physics2d_body_wake((rt_body_impl *)j->body_a);
+    rt_physics2d_body_wake((rt_body_impl *)j->body_b);
     rt_obj_retain_maybe(joint);
     w->joints[w->joint_count++] = j;
 }
@@ -909,11 +911,37 @@ void rt_physics2d_solve_spring_joints(void *world, double dt) {
 
 /// @brief Run PH_JOINT_ITERATIONS Gauss-Seidel passes for all positional joints.
 /// @details Iterates over distance, hinge, and rope joints (spring joints are
-///   velocity-based and handled separately).  Multiple iterations converge the
-///   positional error for systems with chained constraints (ragdolls, ropes made
-///   of segments), at the cost of O(iterations × joints) work per step.
+///   velocity-based and handled separately). Multiple iterations converge the
+///   positional error for systems with chained constraints, while a post-pass
+///   error check stops early once every constraint is within tolerance.
 /// @param world  Physics2D.World handle.
 /// @param dt     Time step in seconds passed through to individual solvers.
+static double joint_position_error(const ph_joint *j) {
+    if (!j || !j->active || j->type == RT_JOINT_SPRING)
+        return 0.0;
+    const rt_body_impl *a = (const rt_body_impl *)j->body_a;
+    const rt_body_impl *b = (const rt_body_impl *)j->body_b;
+    if (!a || !b)
+        return 0.0;
+
+    double dx;
+    double dy;
+    if (j->type == RT_JOINT_HINGE) {
+        dx = (body_cx(b) + j->anchor_bx) - (body_cx(a) + j->anchor_ax);
+        dy = (body_cy(b) + j->anchor_by) - (body_cy(a) + j->anchor_ay);
+        return hypot(dx, dy);
+    }
+
+    dx = body_cx(b) - body_cx(a);
+    dy = body_cy(b) - body_cy(a);
+    double distance = hypot(dx, dy);
+    if (!isfinite(distance))
+        return DBL_MAX;
+    if (j->type == RT_JOINT_ROPE)
+        return distance > j->length ? distance - j->length : 0.0;
+    return fabs(distance - j->length);
+}
+
 void rt_physics2d_solve_position_joints(void *world, double dt) {
     rt_world_impl *w = checked_world(world, "Physics2D.World: expected Physics2D.World");
     if (!w)
@@ -939,6 +967,15 @@ void rt_physics2d_solve_position_joints(void *world, double dt) {
                     break;
             }
         }
+
+        double max_error = 0.0;
+        for (int64_t i = 0; i < w->joint_count; ++i) {
+            double error = joint_position_error(w->joints[i]);
+            if (error > max_error)
+                max_error = error;
+        }
+        if (max_error <= 1.0e-7)
+            break;
     }
 }
 
@@ -999,6 +1036,8 @@ void *rt_physics2d_circle_body_new(double cx, double cy, double radius, double m
     b->collision_mask = INT64_C(-1);
     b->radius = radius;
     b->is_circle = 1;
+    b->sleep_time = 0.0;
+    b->is_sleeping = 0;
     b->owner_world = NULL;
     b->world_index = -1;
     sanitize_body_state(b);

@@ -34,6 +34,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 // Helper to create an rt_string from a C string
@@ -614,6 +615,32 @@ static void test_presets_are_idempotent_and_transactional() {
     rt_action_clear();
 }
 
+static void test_registry_hash_index_and_exact_list_count() {
+    rt_action_init();
+    rt_action_clear();
+
+    char name[32];
+    for (int i = 0; i < 256; ++i) {
+        snprintf(name, sizeof(name), "indexed_action_%d", i);
+        assert(rt_action_define(make_str(name)) == 1);
+    }
+    assert(g_action_count == 256);
+    for (int i = 0; i < 256; ++i) {
+        snprintf(name, sizeof(name), "indexed_action_%d", i);
+        assert(rt_action_exists(make_str(name)) == 1);
+    }
+
+    void *names = rt_action_list();
+    assert(names != nullptr);
+    assert(rt_seq_len(names) == 256);
+    assert(rt_action_remove(make_str("indexed_action_127")) == 1);
+    assert(g_action_count == 255);
+    assert(rt_action_exists(make_str("indexed_action_127")) == 0);
+    assert(rt_action_exists(make_str("indexed_action_128")) == 1);
+
+    rt_action_clear();
+}
+
 int main() {
     // Initialize keyboard for key name lookups
     rt_keyboard_init();
@@ -642,6 +669,7 @@ int main() {
     test_action_rejects_forged_handles_and_corrupt_private_nodes();
     test_axis_accumulation_saturates_finitely();
     test_presets_are_idempotent_and_transactional();
+    test_registry_hash_index_and_exact_list_count();
 
     return 0;
 }

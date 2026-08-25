@@ -327,6 +327,10 @@ void LowerILToMIR::resetFunctionState() {
     nextStackLocalSlot_ = 0;
     strLoadRetainElidable_.clear();
     strCallRetainElidable_.clear();
+    allocaResultIds_.clear();
+    ilProducers_.clear();
+    nullGuardedBases_.clear();
+    nullTrapRequested_ = false;
 }
 
 /**
@@ -878,7 +882,13 @@ std::string LowerILToMIR::buildEdgeCopyBlock(MFunction &func,
 /// @return Machine function containing the lowered instructions.
 MFunction LowerILToMIR::lower(const ILFunction &func) {
     resetFunctionState();
+    currentFunctionName_ = func.name;
     computeStrLoadRetainElidable(func);
+    // SSA producer table for the null-address guard's root-pointer chase.
+    for (const auto &ilBlock : func.blocks)
+        for (const auto &ilInstr : ilBlock.instrs)
+            if (ilInstr.resultId >= 0)
+                ilProducers_[ilInstr.resultId] = &ilInstr;
 
     MFunction result{};
     result.name = func.name;
@@ -1101,6 +1111,19 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
             }
             rule->emit(loweredInstr, builder);
         }
+    }
+
+    // Materialise the shared null trap block when any load/store guard
+    // referenced it (see EmitCommon::emitNullAddressGuard). Appending after
+    // the main loop keeps block references stable during lowering; the
+    // downstream passes treat it like the div0/ovf trap blocks.
+    if (nullTrapRequested_) {
+        MBasicBlock trapBlock{};
+        trapBlock.label = ".Ltrap_null_" + result.name;
+        trapBlock.append(MInstr::make(
+            MOpcode::CALL, std::vector<Operand>{x64::makeLabelOperand("rt_trap_null")}));
+        trapBlock.append(MInstr::make(MOpcode::UD2));
+        result.addBlock(std::move(trapBlock));
     }
 
     return result;

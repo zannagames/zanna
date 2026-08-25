@@ -877,13 +877,31 @@ void rt2d_blit_pixels(void *dst,
     void *snapshot = NULL;
     void *read_src = src;
     void *read_dst = dst;
+    int64_t write_dx = dx;
+    int64_t write_dy = dy;
     if (dst == src &&
         !(dx + width <= sx || sx + width <= dx || dy + height <= sy || sy + height <= dy)) {
-        snapshot = rt_pixels_clone(src);
+        int64_t snapshot_x = dx < sx ? dx : sx;
+        int64_t snapshot_y = dy < sy ? dy : sy;
+        int64_t snapshot_right = dx + width > sx + width ? dx + width : sx + width;
+        int64_t snapshot_bottom = dy + height > sy + height ? dy + height : sy + height;
+        snapshot = rt_pixels_new(snapshot_right - snapshot_x, snapshot_bottom - snapshot_y);
         if (!snapshot)
             return;
+        rt_pixels_copy(snapshot,
+                       0,
+                       0,
+                       src,
+                       snapshot_x,
+                       snapshot_y,
+                       snapshot_right - snapshot_x,
+                       snapshot_bottom - snapshot_y);
         read_src = snapshot;
         read_dst = snapshot;
+        sx -= snapshot_x;
+        sy -= snapshot_y;
+        dx -= snapshot_x;
+        dy -= snapshot_y;
     }
 
     /* Coordinates are pre-clipped to both buffers by blit_clip_axis above, so walk
@@ -900,7 +918,7 @@ void rt2d_blit_pixels(void *dst,
         for (int64_t y = 0; y < height; y++) {
             const uint32_t *srow = &si->data[(sy + y) * si->width + sx];
             const uint32_t *drow = &dri->data[(dy + y) * dri->width + dx];
-            uint32_t *wrow = &dwi->data[(dy + y) * dwi->width + dx];
+            uint32_t *wrow = &dwi->data[(write_dy + y) * dwi->width + write_dx];
             for (int64_t x = 0; x < width; x++) {
                 uint32_t source = apply_tint_alpha(srow[x], tint, alpha);
                 if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
@@ -923,7 +941,10 @@ void rt2d_blit_pixels(void *dst,
                 if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
                     continue;
                 uint32_t dest = (uint32_t)rt_pixels_get(read_dst, dx + x, dy + y);
-                rt_pixels_set(dst, dx + x, dy + y, (int64_t)blend_pixel(dest, source, blend_mode));
+                rt_pixels_set(dst,
+                              write_dx + x,
+                              write_dy + y,
+                              (int64_t)blend_pixel(dest, source, blend_mode));
             }
         }
     }

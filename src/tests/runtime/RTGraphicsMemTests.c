@@ -176,6 +176,10 @@ static void test_spritesheet_many_regions_survive_realloc(void) {
     assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_50")) == 1);
     assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_99")) == 1);
     assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_100")) == 0);
+    assert(rt_spritesheet_remove_region(sheet, rt_const_cstr("region_50")) == 1);
+    assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_50")) == 0);
+    assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_49")) == 1);
+    assert(rt_spritesheet_has_region(sheet, rt_const_cstr("region_99")) == 1);
 }
 
 /// @brief Updating an existing region does not increase the count.

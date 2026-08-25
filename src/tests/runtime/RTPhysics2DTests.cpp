@@ -447,6 +447,50 @@ static void test_invalid_dt_noop() {
     release_obj(world);
 }
 
+static void test_large_dt_is_deferred_instead_of_discarded() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *body = rt_physics2d_body_new(0.0, 0.0, 1.0, 1.0, 1.0);
+    rt_physics2d_body_set_vel(body, 1.0, 0.0);
+    rt_physics2d_world_add(world, body);
+
+    rt_physics2d_world_step(world, 10.0);
+    ASSERT_NEAR(rt_physics2d_body_x(body), 8.0, "one Step consumes its bounded eight seconds");
+    ASSERT_NEAR(static_cast<rt_world_impl *>(world)->pending_dt,
+                2.0,
+                "excess elapsed time remains pending");
+
+    rt_physics2d_world_step(world, 1.0);
+    ASSERT_NEAR(rt_physics2d_body_x(body), 11.0, "next positive Step consumes deferred time");
+    ASSERT_NEAR(
+        static_cast<rt_world_impl *>(world)->pending_dt, 0.0, "deferred time drains exactly");
+
+    release_obj(body);
+    release_obj(world);
+}
+
+static void test_zero_gravity_body_sleeps_and_external_force_wakes_it() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *body = rt_physics2d_body_new(4.0, 7.0, 1.0, 1.0, 1.0);
+    rt_physics2d_world_add(world, body);
+
+    rt_physics2d_world_step(world, 0.5);
+    auto *impl = static_cast<rt_body_impl *>(body);
+    ASSERT(impl->is_sleeping == 1, "stationary zero-gravity body enters safe sleep");
+    rt_physics2d_world_step(world, 0.5);
+    ASSERT_NEAR(rt_physics2d_body_x(body), 4.0, "sleeping body skips position integration");
+
+    rt_physics2d_body_apply_force(body, 2.0, 0.0);
+    ASSERT(impl->is_sleeping == 0, "nonzero force wakes sleeping body immediately");
+    rt_physics2d_world_step(world, 0.5);
+    ASSERT(rt_physics2d_body_x(body) > 4.0, "woken body integrates the applied force");
+
+    rt_physics2d_world_set_gravity(world, 0.0, 1.0);
+    ASSERT(impl->is_sleeping == 0, "gravity changes keep dynamic bodies awake");
+
+    release_obj(body);
+    release_obj(world);
+}
+
 static void test_separating_overlap_still_corrected() {
     void *world = rt_physics2d_world_new(0.0, 0.0);
     void *a = rt_physics2d_body_new(0, 0, 10, 10, 1.0);
@@ -605,6 +649,28 @@ static void test_world_records_step_contacts() {
     release_obj(world);
 }
 
+static void test_world_deduplicates_contacts_across_substeps() {
+    void *world = rt_physics2d_world_new(0.0, 1.0);
+    void *body = rt_physics2d_body_new(0.0, 0.0, 10.0, 10.0, 1.0);
+    void *floor = rt_physics2d_body_new(0.0, 10.0, 10.0, 10.0, 0.0);
+    rt_physics2d_body_set_restitution(body, 0.0);
+    rt_physics2d_body_set_restitution(floor, 0.0);
+    rt_physics2d_world_add(world, body);
+    rt_physics2d_world_add(world, floor);
+
+    rt_physics2d_world_step(world, 8.0);
+    ASSERT(rt_physics2d_world_contact_count(world) == 1,
+           "persistent pair has one public-step contact across eight substeps");
+    ASSERT(rt_physics2d_world_contact_body_a(world, 0) == body,
+           "deduplicated contact preserves body A");
+    ASSERT(rt_physics2d_world_contact_body_b(world, 0) == floor,
+           "deduplicated contact preserves body B");
+
+    release_obj(body);
+    release_obj(floor);
+    release_obj(world);
+}
+
 static void test_world_clears_contacts_on_noop_step() {
     void *world = rt_physics2d_world_new(0.0, 0.0);
     void *a = rt_physics2d_body_new(0.0, 0.0, 10.0, 10.0, 1.0);
@@ -644,13 +710,19 @@ static void test_world_remove_clears_contacts() {
 
 static void test_world_contact_storage_grows_past_default_capacity() {
     void *world = rt_physics2d_world_new(0.0, 0.0);
-    void *a = rt_physics2d_body_new(0.0, 0.0, 10.0, 10.0, 1.0);
-    void *b = rt_physics2d_body_new(5.0, 0.0, 10.0, 10.0, 1.0);
-
     const int total = PH_MAX_CONTACTS + 10;
-    for (int i = 0; i < total; i++) {
-        world_record_contact(
-            (rt_world_impl *)world, (rt_body_impl *)a, (rt_body_impl *)b, 1.0, 0.0, 1.0);
+    void *bodies[PH_MAX_CONTACTS + 11] = {};
+    for (int i = 0; i <= total; ++i) {
+        bodies[i] = rt_physics2d_body_new((double)i, 0.0, 1.0, 1.0, 1.0);
+        rt_physics2d_world_add(world, bodies[i]);
+    }
+    for (int i = 1; i <= total; i++) {
+        world_record_contact((rt_world_impl *)world,
+                             (rt_body_impl *)bodies[0],
+                             (rt_body_impl *)bodies[i],
+                             1.0,
+                             0.0,
+                             1.0);
     }
     ASSERT(rt_physics2d_world_contact_count(world) == total,
            "contact storage grows past PH_MAX_CONTACTS");
@@ -661,8 +733,8 @@ static void test_world_contact_storage_grows_past_default_capacity() {
     ASSERT(rt_physics2d_world_contact_count(world) == 0, "clear removes grown contacts");
     ASSERT(rt_physics2d_world_contact_overflowed(world) == 0, "clear resets overflow flag");
 
-    release_obj(a);
-    release_obj(b);
+    for (int i = 0; i <= total; ++i)
+        release_obj(bodies[i]);
     release_obj(world);
 }
 
@@ -826,7 +898,7 @@ static void test_collision_mask_filtering_works() {
     rt_obj_release_check0(world);
 }
 
-static void test_dense_cell_overflow_falls_back_to_all_pairs() {
+static void test_clustered_broadphase_has_no_fixed_occupancy_limit() {
     void *world = rt_physics2d_world_new(0.0, 0.0);
 
     void *wall = rt_physics2d_body_new(0, 0, 20, 20, 0.0);
@@ -842,7 +914,7 @@ static void test_dense_cell_overflow_falls_back_to_all_pairs() {
         release_obj(filler);
     }
 
-    // This body lands beyond the 32-body cell cap and used to be dropped from broad-phase cells.
+    // This target is deliberately beyond the old grid's 32-body cell cap.
     void *target = rt_physics2d_body_new(1, 0, 20, 20, 1.0);
     rt_physics2d_body_set_collision_layer(target, 1);
     rt_physics2d_body_set_collision_mask(target, 1);
@@ -851,7 +923,10 @@ static void test_dense_cell_overflow_falls_back_to_all_pairs() {
 
     rt_physics2d_world_step(world, 0.001);
     ASSERT(fabs(rt_physics2d_body_vx(target) + 5.0) > EPSILON,
-           "dense-cell overflow still resolves the dropped pair via O(n^2) fallback");
+           "persistent sweep broad-phase resolves clustered bodies without a cell cap");
+    auto *world_impl = static_cast<rt_world_impl *>(world);
+    ASSERT(world_impl->broadphase_count == world_impl->body_count,
+           "persistent broad-phase tracks every world body");
 
     release_obj(target);
     release_obj(wall);
@@ -1324,6 +1399,8 @@ int main() {
     test_collision_with_static();
     test_set_gravity();
     test_invalid_dt_noop();
+    test_large_dt_is_deferred_instead_of_discarded();
+    test_zero_gravity_body_sleeps_and_external_force_wakes_it();
     test_separating_overlap_still_corrected();
     test_circle_body_collides_with_aabb();
     test_swept_aabb_hits_thin_wall();
@@ -1333,6 +1410,7 @@ int main() {
     test_circle_radius_allows_subunit_values();
     test_circle_aabb_tangent_is_not_overlap();
     test_world_records_step_contacts();
+    test_world_deduplicates_contacts_across_substeps();
     test_world_clears_contacts_on_noop_step();
     test_world_remove_clears_contacts();
     test_world_contact_storage_grows_past_default_capacity();
@@ -1354,7 +1432,7 @@ int main() {
     test_collision_mask_default_full();
     test_collision_layer31_collides_with_default_mask();
     test_collision_mask_filtering_works();
-    test_dense_cell_overflow_falls_back_to_all_pairs();
+    test_clustered_broadphase_has_no_fixed_occupancy_limit();
     test_world_finalizer_releases_joint_retained_bodies();
     test_add_joint_requires_world_bodies();
     test_joint_storage_grows_past_default_capacity();

@@ -1728,33 +1728,18 @@ void rt_canvas_blit_region(void *canvas_ptr,
 /// @param sy Source rectangle Y.
 /// @param w Source width.
 /// @param h Source height.
-void rt_canvas_blit_region_alpha(void *canvas_ptr,
-                                 int64_t dx,
-                                 int64_t dy,
-                                 void *pixels_ptr,
-                                 int64_t sx,
-                                 int64_t sy,
-                                 int64_t w,
-                                 int64_t h) {
-    if (!canvas_ptr || !pixels_ptr)
-        return;
-
-    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
-    rt_pixels_impl *pixels =
-        rt_pixels_checked_impl(pixels_ptr, "Canvas.BlitRegionAlpha: invalid pixels");
-    if (!canvas || !canvas->gfx_win || !pixels || !pixels->data)
-        return;
-
-    rt_canvas_resync_window_state(canvas);
-
-    vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
-        return;
-
+static void rt_canvas_blit_region_alpha_raw(rt_canvas *canvas,
+                                            rt_pixels_impl *pixels,
+                                            const vgfx_framebuffer_t *fb,
+                                            float scale,
+                                            int64_t dx,
+                                            int64_t dy,
+                                            int64_t sx,
+                                            int64_t sy,
+                                            int64_t w,
+                                            int64_t h) {
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
         return;
-
-    float scale = rt_canvas_effective_coord_scale(canvas);
 
     for (int64_t row = 0; row < h; row++) {
         int64_t py0 = rtg_scale_up_i64(dy + row, scale);
@@ -1763,8 +1748,8 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
             py1 = py0 + 1;
         if (py0 < 0)
             py0 = 0;
-        if (py1 > fb.height)
-            py1 = fb.height;
+        if (py1 > fb->height)
+            py1 = fb->height;
         if (py1 <= py0)
             continue;
 
@@ -1776,8 +1761,8 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
                 px1 = px0 + 1;
             if (px0 < 0)
                 px0 = 0;
-            if (px1 > fb.width)
-                px1 = fb.width;
+            if (px1 > fb->width)
+                px1 = fb->width;
             if (px1 <= px0)
                 continue;
 
@@ -1791,7 +1776,7 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
                 continue;
 
             for (int64_t py = py0; py < py1; py++) {
-                uint8_t *dst = &fb.pixels[(size_t)py * (size_t)fb.stride + (size_t)px0 * 4u];
+                uint8_t *dst = &fb->pixels[(size_t)py * (size_t)fb->stride + (size_t)px0 * 4u];
                 for (int64_t px = px0; px < px1; px++) {
                     if (sa == 255) {
                         dst[0] = sr;
@@ -1824,6 +1809,49 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
                 }
             }
         }
+    }
+}
+
+void rt_canvas_blit_region_alpha(void *canvas_ptr,
+                                 int64_t dx,
+                                 int64_t dy,
+                                 void *pixels_ptr,
+                                 int64_t sx,
+                                 int64_t sy,
+                                 int64_t w,
+                                 int64_t h) {
+    rt_canvas_alpha_region region = {dx, dy, sx, sy, w, h};
+    rt_canvas_blit_regions_alpha(canvas_ptr, pixels_ptr, &region, 1u);
+}
+
+void rt_canvas_blit_regions_alpha(void *canvas_ptr,
+                                  void *pixels_ptr,
+                                  const rt_canvas_alpha_region *regions,
+                                  size_t region_count) {
+    if (!canvas_ptr || !pixels_ptr || !regions || region_count == 0)
+        return;
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    rt_pixels_impl *pixels =
+        rt_pixels_checked_impl(pixels_ptr, "Canvas.BlitRegionsAlpha: invalid pixels");
+    if (!canvas || !canvas->gfx_win || !pixels || !pixels->data)
+        return;
+    rt_canvas_resync_window_state(canvas);
+    vgfx_framebuffer_t fb;
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
+        return;
+    float scale = rt_canvas_effective_coord_scale(canvas);
+    for (size_t i = 0; i < region_count; ++i) {
+        const rt_canvas_alpha_region *region = &regions[i];
+        rt_canvas_blit_region_alpha_raw(canvas,
+                                        pixels,
+                                        &fb,
+                                        scale,
+                                        region->dx,
+                                        region->dy,
+                                        region->sx,
+                                        region->sy,
+                                        region->w,
+                                        region->h);
     }
 }
 

@@ -182,6 +182,7 @@ static Action *define_action_cstr(const char *name, int8_t is_axis) {
     a->is_axis = is_axis != 0;
     a->next = g_actions;
     g_actions = a;
+    action_rebuild_index();
     return a;
 }
 
@@ -591,14 +592,17 @@ int8_t rt_action_load_preset(rt_string preset_name) {
         return 0;
 
     g_actions = working_actions;
+    action_rebuild_index();
     g_preset_build_ok = 1;
     loader();
     if (g_preset_build_ok) {
         action_free_list(saved_actions);
+        action_rebuild_index();
         return 1;
     }
 
     action_free_list(g_actions);
     g_actions = saved_actions;
+    action_rebuild_index();
     return 0;
 }

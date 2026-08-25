@@ -149,6 +149,18 @@ void rt_trap_ovf(void) {
         RT_TRAP_KIND_OVERFLOW, Err_Overflow, -1, "Zanna runtime trap: integer overflow");
 }
 
+/// @brief Report a null-pointer memory-access trap through the runtime trap hook.
+/// @details Called from native codegen's load/store address guards when the
+///          base address falls inside the null page, so a null dereference
+///          traps deterministically (IL spec: null accesses trap) instead of
+///          raising SIGSEGV. The kind mirrors the reference VM's null-access
+///          classification; code 91 is the bytecode VM's NullPointer
+///          error-code convention (BytecodeVM defaultBytecodeTrapErrorCode).
+void rt_trap_null(void) {
+    rt_trap_raise_kind(
+        RT_TRAP_KIND_INVALID_OPERATION, 91, -1, "Zanna runtime trap: null pointer access");
+}
+
 /// @brief Trap with a managed runtime string message.
 /// @details Null, empty, or unavailable data uses `"trap"`. Invalid handles
 ///          raise a dedicated diagnostics trap. Valid stored bytes are escaped

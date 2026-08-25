@@ -375,7 +375,9 @@ int64_t rt_tilemap_get_collision(void *tilemap, int64_t tile_id);
 /// @return `1` only when the designated collision-layer cell is tagged solid.
 int8_t rt_tilemap_is_solid_at(void *tilemap, int64_t pixel_x, int64_t pixel_y);
 
-/// @brief Resolve a Physics2D.Body against solid/one-way tiles.
+/// @brief Resolve an AABB or circle Physics2D.Body against solid/one-way tiles.
+/// @details Uses previous-to-current swept motion to prevent crossing a tile
+///          between samples, then resolves any remaining penetration.
 /// @param tilemap Tilemap object.
 /// @param body Physics2D.Body object.
 /// @return 1 if any collision occurred, 0 otherwise.

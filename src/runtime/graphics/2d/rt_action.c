@@ -68,6 +68,30 @@ static int8_t action_chord_seq_valid(void *keys) {
 Action *g_actions = NULL;
 /// @brief Nonzero after rt_action_init() and before rt_action_shutdown().
 int8_t g_initialized = 0;
+/// @brief Fixed name index and exact count, rebuilt only on registry mutation.
+Action *g_action_index[ACTION_HASH_CAPACITY] = {NULL};
+int64_t g_action_count = 0;
+
+/// @brief Rebuild the action-name hash index after any linked-list mutation.
+/// @details The registry cap guarantees at most 50% occupancy, so lookup always
+///          terminates at an empty slot. Invalid/cyclic lists clear the index.
+void action_rebuild_index(void) {
+    memset(g_action_index, 0, sizeof(g_action_index));
+    g_action_count = 0;
+    for (Action *a = g_actions; a && g_action_count < ACTION_MAX_ACTIONS; a = a->next) {
+        if (!action_binding_list_valid(a)) {
+            memset(g_action_index, 0, sizeof(g_action_index));
+            g_action_count = 0;
+            return;
+        }
+        size_t slot =
+            (size_t)(action_hash_bytes(a->name, (size_t)a->name_len) & (ACTION_HASH_CAPACITY - 1));
+        while (g_action_index[slot])
+            slot = (slot + 1) & (ACTION_HASH_CAPACITY - 1);
+        g_action_index[slot] = a;
+        ++g_action_count;
+    }
+}
 
 /// @brief Linear-scan the global action list by `rt_string` name.
 ///
@@ -83,16 +107,7 @@ static Action *find_action_str(rt_string name) {
         return NULL;
     const char *name_data = name->data;
 
-    Action *a = g_actions;
-    int64_t visited = 0;
-    while (a && visited++ < ACTION_MAX_ACTIONS) {
-        if (!action_binding_list_valid(a))
-            return NULL;
-        if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0)
-            return a;
-        a = a->next;
-    }
-    return NULL;
+    return find_action_bytes(name_data, (size_t)name_len);
 }
 
 /// @brief Validate that an action name is nonempty, NUL-free, strict UTF-8.
@@ -416,6 +431,7 @@ void rt_action_init(void) {
     if (g_initialized)
         return;
     g_actions = NULL;
+    action_rebuild_index();
     g_initialized = 1;
 }
 
@@ -589,17 +605,15 @@ void rt_action_clear(void) {
     RT_ASSERT_MAIN_THREAD();
     action_free_list(g_actions);
     g_actions = NULL;
+    action_rebuild_index();
 }
 
 /// @brief Define one validated action kind without duplicating initialization.
 static int8_t action_define_impl(rt_string name, int8_t is_axis) {
     if (!action_name_valid(name) || find_action_str(name))
         return 0;
-    int64_t action_count = 0;
-    for (Action *existing = g_actions; existing; existing = existing->next) {
-        if (!action_binding_list_valid(existing) || ++action_count >= ACTION_MAX_ACTIONS)
-            return 0;
-    }
+    if (g_action_count >= ACTION_MAX_ACTIONS)
+        return 0;
 
     Action *action = (Action *)calloc(1, sizeof(Action));
     if (!action)
@@ -614,6 +628,7 @@ static int8_t action_define_impl(rt_string name, int8_t is_axis) {
     action->is_axis = is_axis != 0;
     action->next = g_actions;
     g_actions = action;
+    action_rebuild_index();
     return 1;
 }
 
@@ -690,6 +705,7 @@ int8_t rt_action_remove(rt_string name) {
         if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0) {
             *pp = a->next;
             action_free_node(a);
+            action_rebuild_index();
             return 1;
         }
         pp = &a->next;
@@ -1159,7 +1175,7 @@ double rt_action_axis_raw(rt_string action) {
 /// @return Owned runtime sequence of owned action-name strings.
 void *rt_action_list(void) {
     RT_ASSERT_MAIN_THREAD();
-    void *seq = rt_seq_new();
+    void *seq = rt_seq_with_capacity(g_action_count > 0 ? g_action_count : 1);
     if (!seq)
         return NULL;
     /* Make the seq own its elements and drop our creation reference after each push

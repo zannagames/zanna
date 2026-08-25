@@ -1669,6 +1669,24 @@ void ISel::foldLeaIntoMem(MFunction &func) const {
         }
 
         eraseInstructionsReverse(block, toErase);
+
+        // Third pass: drop LEA definitions with no remaining uses. Emit-time
+        // indexed-address fusion (tryMakeIndexedMem) can subsume an address
+        // computation entirely, and the post-RA block-local DCE cannot remove
+        // the leftover once a null-guard branch splits the block. LEA is
+        // flag-free and side-effect-free, so a zero-use virtual def is dead.
+        std::vector<std::size_t> deadLeas;
+        for (std::size_t idx = 0; idx < block.instructions.size(); ++idx) {
+            const auto &instr = block.instructions[idx];
+            if (instr.opcode != MOpcode::LEA || instr.operands.empty())
+                continue;
+            const auto *dst = asReg(instr.operands[0]);
+            if (!dst || dst->isPhys || dst->cls != RegClass::GPR)
+                continue;
+            if (countVirtualRegisterUsesInFunction(func, dst->idOrPhys) == 0)
+                deadLeas.push_back(idx);
+        }
+        eraseInstructionsReverse(block, deadLeas);
     }
 }
 

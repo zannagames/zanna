@@ -398,24 +398,22 @@ static void rt_pixels_fill_raw_internal(void *pixels, uint32_t color, const char
         return;
 
     size_t total = (size_t)pixel_count;
-    if (p->data[0] == color) {
-        size_t i = 1;
-        while (i < total && p->data[i] == color)
-            i++;
-        if (i == total)
-            return;
-    }
+    size_t matching_prefix = 0;
+    while (matching_prefix < total && p->data[matching_prefix] == color)
+        matching_prefix++;
+    if (matching_prefix == total)
+        return;
 
     if (color == 0) {
-        memset(p->data, 0, size);
+        memset(p->data + matching_prefix, 0, (total - matching_prefix) * sizeof(uint32_t));
         pixels_touch(p);
         return;
     }
     /* Non-zero fill: seed one pixel then broadcast by doubling memcpy — the memcpy
      * runs at memory bandwidth instead of a scalar per-pixel store loop, which is a
      * clear win on the common "clear to an opaque background" path. */
-    p->data[0] = color;
-    size_t filled = 1;
+    p->data[matching_prefix] = color;
+    size_t filled = matching_prefix + 1;
     while (filled < total) {
         size_t chunk = filled;
         if (chunk > total - filled)
@@ -476,7 +474,7 @@ void rt_pixels_clear(void *pixels) {
     if (i == word_count)
         return;
 
-    memset(p->data, 0, size);
+    memset(p->data + i, 0, size - i * sizeof(uint32_t));
     pixels_touch(p);
 }
 

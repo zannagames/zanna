@@ -226,6 +226,22 @@ struct LoweringContext {
     /// @details Materialised at the end of lowerFunction; see TrapBlockRequest.
     std::unordered_map<std::string, TrapBlockRequest> &sharedTrapBlocks;
 
+    /// @brief Base-address vregs already null-guarded, per output block name.
+    /// @details Scoped per block (not per function) so a guard is only elided
+    ///          when straight-line execution guarantees an earlier guard on the
+    ///          same vreg already ran; no dominance analysis is required.
+    std::unordered_map<std::string, std::unordered_set<uint16_t>> nullGuardedBases{};
+
+    /// @brief Lazily built IL temp-id -> producing-instruction map.
+    /// @details Used by the null-address guard to chase a derived address
+    ///          (GEP chain) back to its root pointer so the guard tests the
+    ///          root instead of adding a use to the derived temp, which would
+    ///          defeat single-use addressing folds. Pointers borrow @ref fn.
+    std::unordered_map<unsigned, const il::core::Instr *> ilProducers{};
+
+    /// @brief True once @ref ilProducers has been populated for @ref fn.
+    bool ilProducersBuilt = false;
+
     /// @brief Construct a lowering context with every borrowed state object bound explicitly.
     /// @details The context stores references into the surrounding lowering pass and must never
     ///          outlive that pass invocation. Using an explicit constructor keeps the long member

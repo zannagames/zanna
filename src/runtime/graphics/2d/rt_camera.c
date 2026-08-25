@@ -77,6 +77,18 @@ typedef struct {
     int8_t active;              ///< 1 if this layer slot is in use
 } rt_parallax_layer;
 
+/// @brief Precomputed forward/inverse transform values for one camera origin.
+typedef struct {
+    double center_x;
+    double center_y;
+    double screen_center_x;
+    double screen_center_y;
+    double scale;
+    double inverse_scale;
+    double cos_rotation;
+    double sin_rotation;
+} rt_camera_transform;
+
 /// @brief Camera implementation structure.
 typedef struct rt_camera_impl {
     uint64_t state_magic; ///< Distinguishes constructed state from forged storage.
@@ -94,6 +106,14 @@ typedef struct rt_camera_impl {
     int64_t dirty;        ///< 1 if position/zoom/rotation changed since last rt_camera_clear_dirty
     int64_t deadzone_w; ///< Deadzone width (0 = disabled). Target within zone doesn't move camera.
     int64_t deadzone_h; ///< Deadzone height (0 = disabled).
+    rt_camera_transform transform_cache; ///< Reused world/screen matrix components.
+    int64_t transform_cache_x;
+    int64_t transform_cache_y;
+    int64_t transform_cache_width;
+    int64_t transform_cache_height;
+    int64_t transform_cache_zoom;
+    int64_t transform_cache_rotation;
+    int8_t transform_cache_valid;
     rt_parallax_layer parallax[RT_CAMERA_MAX_PARALLAX]; ///< Fixed parallax layer slots
     int64_t parallax_count;                             ///< Number of active layers
 } rt_camera_impl;
@@ -107,8 +127,9 @@ static int8_t camera_state_is_valid(const rt_camera_impl *camera) {
         camera->height <= 0 || camera->zoom < 10 || camera->zoom > 1000 ||
         (camera->has_bounds != 0 && camera->has_bounds != 1) ||
         (camera->dirty != 0 && camera->dirty != 1) || camera->deadzone_w < 0 ||
-        camera->deadzone_h < 0 || camera->parallax_count < 0 ||
-        camera->parallax_count > RT_CAMERA_MAX_PARALLAX)
+        camera->deadzone_h < 0 ||
+        (camera->transform_cache_valid != 0 && camera->transform_cache_valid != 1) ||
+        camera->parallax_count < 0 || camera->parallax_count > RT_CAMERA_MAX_PARALLAX)
         return 0;
 
     int64_t active_count = 0;
@@ -369,18 +390,6 @@ static int64_t camera_rotation_for_math(int64_t degrees) {
     return degrees % 360;
 }
 
-/// @brief Precomputed forward/inverse transform values for one camera origin.
-typedef struct {
-    double center_x;
-    double center_y;
-    double screen_center_x;
-    double screen_center_y;
-    double scale;
-    double inverse_scale;
-    double cos_rotation;
-    double sin_rotation;
-} rt_camera_transform;
-
 /// @brief Build a reusable transform for a camera-sized view at a supplied origin.
 static void camera_transform_init(const rt_camera_impl *camera,
                                   int64_t origin_x,
@@ -396,6 +405,29 @@ static void camera_transform_init(const rt_camera_impl *camera,
         -((double)camera_rotation_for_math(camera->rotation)) * 3.14159265358979323846 / 180.0;
     transform->cos_rotation = cos(radians);
     transform->sin_rotation = sin(radians);
+}
+
+/// @brief Return the cached transform for the camera's primary origin.
+/// @details Key comparison makes the cache self-invalidating even when a setter
+///          clamps bounds and changes multiple fields in one operation.
+static const rt_camera_transform *camera_current_transform(rt_camera_impl *camera) {
+    if (!camera)
+        return NULL;
+    if (!camera->transform_cache_valid || camera->transform_cache_x != camera->x ||
+        camera->transform_cache_y != camera->y || camera->transform_cache_width != camera->width ||
+        camera->transform_cache_height != camera->height ||
+        camera->transform_cache_zoom != camera->zoom ||
+        camera->transform_cache_rotation != camera->rotation) {
+        camera_transform_init(camera, camera->x, camera->y, &camera->transform_cache);
+        camera->transform_cache_x = camera->x;
+        camera->transform_cache_y = camera->y;
+        camera->transform_cache_width = camera->width;
+        camera->transform_cache_height = camera->height;
+        camera->transform_cache_zoom = camera->zoom;
+        camera->transform_cache_rotation = camera->rotation;
+        camera->transform_cache_valid = 1;
+    }
+    return &camera->transform_cache;
 }
 
 /// @brief Apply a precomputed world-to-screen transform.
@@ -441,14 +473,11 @@ static void camera_apply_inverse_transform_cached(const rt_camera_transform *tra
 /// @param world_y Vertical world coordinate.
 /// @param screen_x Optional output for the horizontal screen coordinate.
 /// @param screen_y Optional output for the vertical screen coordinate.
-static void camera_apply_transform(const rt_camera_impl *camera,
-                                   double world_x,
-                                   double world_y,
-                                   double *screen_x,
-                                   double *screen_y) {
-    rt_camera_transform transform;
-    camera_transform_init(camera, camera->x, camera->y, &transform);
-    camera_apply_transform_cached(&transform, world_x, world_y, screen_x, screen_y);
+static void camera_apply_transform(
+    rt_camera_impl *camera, double world_x, double world_y, double *screen_x, double *screen_y) {
+    const rt_camera_transform *transform = camera_current_transform(camera);
+    if (transform)
+        camera_apply_transform_cached(transform, world_x, world_y, screen_x, screen_y);
 }
 
 /// @brief Screen → world inverse transform.
@@ -462,14 +491,11 @@ static void camera_apply_transform(const rt_camera_impl *camera,
 /// @param screen_y Vertical screen coordinate.
 /// @param world_x Optional output for the horizontal world coordinate.
 /// @param world_y Optional output for the vertical world coordinate.
-static void camera_apply_inverse_transform(const rt_camera_impl *camera,
-                                           double screen_x,
-                                           double screen_y,
-                                           double *world_x,
-                                           double *world_y) {
-    rt_camera_transform transform;
-    camera_transform_init(camera, camera->x, camera->y, &transform);
-    camera_apply_inverse_transform_cached(&transform, screen_x, screen_y, world_x, world_y);
+static void camera_apply_inverse_transform(
+    rt_camera_impl *camera, double screen_x, double screen_y, double *world_x, double *world_y) {
+    const rt_camera_transform *transform = camera_current_transform(camera);
+    if (transform)
+        camera_apply_inverse_transform_cached(transform, screen_x, screen_y, world_x, world_y);
 }
 
 /// @brief Floor-division on int64 (rounds toward negative infinity, not toward zero).

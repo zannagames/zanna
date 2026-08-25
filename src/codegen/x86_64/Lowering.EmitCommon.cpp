@@ -101,6 +101,24 @@ void emitRetainStringVReg(MIRBuilder &builder, const VReg &valueVReg) {
            opcode == MOpcode::RET || opcode == MOpcode::UD2;
 }
 
+/// @brief Instruction-level variant of @ref isIndexedFoldScanBarrier.
+/// @details A null-address guard's conditional branch (JCC targeting a
+///          `.Ltrap_null_*` block) is transparent to the backward scan: the
+///          trap block never returns and its label introduces no incoming
+///          path, so every definition before the branch remains the unique
+///          definition on the straight-line path after it.
+/// @param mi Candidate scan boundary instruction.
+/// @return @c true when the scan must not cross @p mi.
+[[nodiscard]] bool isIndexedFoldScanBarrierInstr(const MInstr &mi) noexcept {
+    if (mi.opcode == MOpcode::JCC && mi.operands.size() >= 2) {
+        if (const auto *label = std::get_if<OpLabel>(&mi.operands[1])) {
+            if (label->name.rfind(".Ltrap_null_", 0) == 0)
+                return false;
+        }
+    }
+    return isIndexedFoldScanBarrier(mi.opcode);
+}
+
 /// @brief Return true if @p instr has a first-operand vreg definition for @p id.
 /// @details The address-building patterns this helper recognizes use
 ///          destination-first MIR instructions. Treating any other definition of
@@ -325,7 +343,7 @@ std::optional<Operand> EmitCommon::tryMakeIndexedMem(const ILInstr &addrProducer
     bool haveBase = false;
     for (std::size_t i = defIdx; i > 0; --i) {
         const auto &mi = blk.instructions[i - 1];
-        if (isIndexedFoldScanBarrier(mi.opcode)) {
+        if (isIndexedFoldScanBarrierInstr(mi)) {
             return std::nullopt;
         }
         if (mi.opcode == MOpcode::MOVrr && mi.operands.size() >= 2) {
@@ -349,7 +367,7 @@ std::optional<Operand> EmitCommon::tryMakeIndexedMem(const ILInstr &addrProducer
     OpReg actualIdx = *idxReg;
     for (std::size_t i = defIdx; i > 0; --i) {
         const auto &mi = blk.instructions[i - 1];
-        if (isIndexedFoldScanBarrier(mi.opcode)) {
+        if (isIndexedFoldScanBarrierInstr(mi)) {
             break;
         }
         if (definesVReg(mi, idxReg->idOrPhys) && mi.opcode != MOpcode::SHLri) {
@@ -799,6 +817,76 @@ void EmitCommon::emitReturn(const ILInstr &instr) {
     builder().append(MInstr::make(MOpcode::RET, {}));
 }
 
+/// @brief Resolve the value the null guard should test: the address's root.
+/// @details Chases gep and pointer-add chains back to the root pointer.
+///          Guarding a derived address temp would add a second use to it and
+///          defeat the single-use addressing folds (tryMakeIndexedMem,
+///          foldLeaIntoMem); guarding the root keeps those folds intact and
+///          covers every derived access through it, regardless of offset.
+[[nodiscard]] static ILValue nullGuardRoot(const MIRBuilder &builder, ILValue v) {
+    for (int hops = 0; v.id >= 0 && hops < 16; ++hops) {
+        const ILInstr *def = builder.lower().ilProducerOf(v.id);
+        if (!def)
+            break;
+        const ILValue *next = nullptr;
+        if (def->opcode == "gep" && !def->ops.empty()) {
+            next = &def->ops[0];
+        } else if (def->opcode == "add" && def->ops.size() == 2) {
+            // Follow the unique pointer-kinded operand; an ambiguous or
+            // pointer-free add ends the chase.
+            const bool lhsPtr = def->ops[0].kind == ILValue::Kind::PTR;
+            const bool rhsPtr = def->ops[1].kind == ILValue::Kind::PTR;
+            if (lhsPtr == rhsPtr)
+                break;
+            next = lhsPtr ? &def->ops[0] : &def->ops[1];
+        } else {
+            break;
+        }
+        if (next->id < 0)
+            break;
+        v = *next;
+    }
+    return v;
+}
+
+/// @brief Guard a memory-access base register against the null page.
+/// @details The IL spec requires null loads/stores to trap deterministically
+///          ("null or misaligned accesses trap"); the VMs enforce a
+///          null/low-page (< 4096) rule, so native code must trap through the
+///          runtime instead of faulting. Emits `cmpq root, $4096; jb
+///          .Ltrap_null_<fn>` on the address's gep-chain root — a null root
+///          traps for every field offset. Alloca-rooted addresses are never
+///          guarded (the stack is provably mapped), and a root vreg is
+///          guarded at most once per block (vregs are SSA-stable, so a later
+///          use in the same block is dominated by the first guard).
+/// @param builder MIR construction context bound to the current block.
+/// @param baseVal IL value supplying the base address.
+/// @param baseOp Materialised base-register operand (fallback guard target).
+static void emitNullAddressGuard(MIRBuilder &builder,
+                                 const ILValue &baseVal,
+                                 const Operand &baseOp) {
+    const ILValue root = nullGuardRoot(builder, baseVal);
+    if (root.id >= 0 && builder.lower().isAllocaResult(root.id))
+        return;
+    Operand guardOp = baseOp;
+    if (root.id >= 0 && !(baseVal.id >= 0 && baseVal.id == root.id)) {
+        if (const auto rootOp = builder.tryGetOperandForValue(root, RegClass::GPR))
+            guardOp = *rootOp;
+    }
+    const auto *reg = std::get_if<OpReg>(&guardOp);
+    if (!reg)
+        return;
+    if (!reg->isPhys &&
+        !builder.lower().noteNullGuardedBase(builder.block().label, reg->idOrPhys))
+        return;
+    const std::string trapLabel = builder.lower().requestNullTrapLabel();
+    builder.append(
+        MInstr::make(MOpcode::CMPri, std::vector<Operand>{guardOp, makeImmOperand(4096)}));
+    // Condition code 8 = "b" (unsigned below).
+    builder.append(MInstr::make(
+        MOpcode::JCC, std::vector<Operand>{makeImmOperand(8), makeLabelOperand(trapLabel)}));
+}
+
 /// @brief Emit a load from memory into a virtual register.
 /// @details Accepts a base register and optional displacement, verifies that the
 ///          base is addressable, and then emits either a MOV or MOVSD load based
@@ -835,6 +923,10 @@ void EmitCommon::emitLoad(const ILInstr &instr, RegClass cls) {
             mem = *indexed;
         }
     }
+
+    // Guard after the addressing analysis so the emitted cmp/jb never sits
+    // between an address def and the backward fold scan that consumes it.
+    emitNullAddressGuard(builder(), instr.ops[0], baseOp);
 
     if (cls == RegClass::GPR) {
         builder().append(MInstr::make(MOpcode::MOVmr, std::vector<Operand>{clone(dest), mem}));
@@ -889,6 +981,10 @@ void EmitCommon::emitStore(const ILInstr &instr) {
             mem = *indexed;
         }
     }
+
+    // Guard after the addressing analysis so the emitted cmp/jb never sits
+    // between an address def and the backward fold scan that consumes it.
+    emitNullAddressGuard(builder(), instr.ops[0], baseOp);
 
     if (std::holds_alternative<OpReg>(value)) {
         const auto cls = std::get<OpReg>(value).cls;

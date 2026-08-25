@@ -595,6 +595,21 @@ if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
         zanna_set_test_labels(differential_${_prog} arm64 differential)
     endforeach ()
 
+    # Trapping corpus programs through the same VM<->native gate: a null
+    # dereference must trap deterministically on both backends (same stdout
+    # and exit code), not SIGSEGV natively. These failed with a 139-vs-1
+    # exit mismatch before native load/store null-page guards landed.
+    set(_ZANNA_DIFF_TRAP_CORPUS trap_null_load trap_null_store)
+    foreach (_prog IN LISTS _ZANNA_DIFF_TRAP_CORPUS)
+        zanna_add_ctest(differential_${_prog}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DARCH=arm64
+                -DIL_FILE=${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il/traps/${_prog}.il
+                -P ${_ZANNA_E2E_DIR}/differential_vm_native.cmake)
+        zanna_set_test_labels(differential_${_prog} arm64 differential)
+    endforeach ()
+
     # Vtris demo - compile, assemble, link
     zanna_add_ctest(arm64_native_vtris
             ${CMAKE_COMMAND}

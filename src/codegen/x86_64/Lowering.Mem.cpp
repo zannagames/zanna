@@ -401,6 +401,9 @@ void emitAlloca(const ILInstr &instr, MIRBuilder &builder) {
     // Reserve the result vreg for the pointer
     const VReg destReg = builder.ensureVReg(instr.resultId, instr.resultKind);
     const Operand dest = makeVRegOperand(destReg.cls, destReg.id);
+    // A stack address is provably mapped; loads/stores through it skip the
+    // null-page guard (see EmitCommon::emitNullAddressGuard).
+    builder.lower().noteAllocaResult(instr.resultId);
 
     const int sizeBytes = static_cast<int>(sizeImm);
     const int32_t placeholderOffset =

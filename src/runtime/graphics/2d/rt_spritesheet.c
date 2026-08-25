@@ -16,9 +16,9 @@
 //     dimensions. Numeric names are assigned in row-major order:
 //       col = N % cols,  row = N / cols
 //       src_x = col * frame_w,  src_y = row * frame_h
-//   - Names and rectangles occupy parallel dynamic arrays; lookup is a
-//     case-sensitive linear scan. Reusing a name replaces its rectangle without
-//     changing insertion order.
+//   - Names and rectangles occupy parallel dynamic arrays; a lazily rebuilt
+//     open-addressed index accelerates case-sensitive lookup. Reusing a name
+//     replaces its rectangle without changing insertion order.
 //   - Empty names and rectangles outside the atlas are silently rejected.
 //   - The atlas Pixels buffer is retained by the sheet and released on destroy.
 //     Extracted frame Pixels objects are independent copies; they do not hold
@@ -28,8 +28,8 @@
 //
 // Ownership/Lifetime:
 //   - Constructors return caller-owned runtime reference-counted objects.
-//   - The finalizer releases the retained atlas and frees copied C names and
-//     both parallel metadata arrays.
+//   - The finalizer releases the retained atlas and frees copied C names,
+//     parallel metadata arrays, and the name index.
 //
 // Links: src/runtime/graphics/2d/rt_spritesheet.h (public API),
 //        src/runtime/graphics/2d/rt_sprite.h (consumer of atlas frames),
@@ -75,15 +75,18 @@ typedef struct {
 /// @details `regions[i]` and `names[i]` describe the same entry for every
 ///          index below @c count. The atlas reference and every name are owned.
 typedef struct {
-    uint64_t state_magic; ///< Private initialized-payload cookie.
-    void *vptr;           ///< Reserved runtime virtual-table slot.
-    void *atlas;          ///< Retained Pixels atlas.
-    ss_region *regions;   ///< Owned region array parallel to @ref names.
-    char **names;         ///< Owned copied names parallel to @ref regions.
-    int64_t count;        ///< Number of initialized region/name entries.
-    int64_t capacity;     ///< Number of allocated parallel-array slots.
-    int64_t atlas_width;  ///< Immutable retained-atlas width.
-    int64_t atlas_height; ///< Immutable retained-atlas height.
+    uint64_t state_magic;       ///< Private initialized-payload cookie.
+    void *vptr;                 ///< Reserved runtime virtual-table slot.
+    void *atlas;                ///< Retained Pixels atlas.
+    ss_region *regions;         ///< Owned region array parallel to @ref names.
+    char **names;               ///< Owned copied names parallel to @ref regions.
+    int64_t count;              ///< Number of initialized region/name entries.
+    int64_t capacity;           ///< Number of allocated parallel-array slots.
+    int64_t atlas_width;        ///< Immutable retained-atlas width.
+    int64_t atlas_height;       ///< Immutable retained-atlas height.
+    int64_t *name_index;        ///< Open-addressed dense region indices plus one.
+    size_t name_index_capacity; ///< Power-of-two hash slot count.
+    int8_t name_index_dirty;    ///< Nonzero when shifted entries require rebuild.
 } rt_spritesheet_impl;
 
 /// @brief Initial number of named-region slots allocated for a sheet.
@@ -105,7 +108,9 @@ static rt_spritesheet_impl *spritesheet_checked_or_null(void *obj) {
         !rt_pixels_checked_impl_or_null(ss->atlas) || ss->count < 0 || ss->capacity <= 0 ||
         ss->count > ss->capacity || !ss->regions || !ss->names ||
         (uint64_t)ss->capacity > (uint64_t)SIZE_MAX / sizeof(*ss->regions) ||
-        (uint64_t)ss->capacity > (uint64_t)SIZE_MAX / sizeof(*ss->names))
+        (uint64_t)ss->capacity > (uint64_t)SIZE_MAX / sizeof(*ss->names) ||
+        (ss->name_index && (ss->name_index_capacity < 2 ||
+                            (ss->name_index_capacity & (ss->name_index_capacity - 1u)) != 0u)))
         return NULL;
     rt_pixels_impl *atlas = rt_pixels_checked_impl_or_null(ss->atlas);
     if (!atlas || atlas->width != ss->atlas_width || atlas->height != ss->atlas_height)
@@ -181,8 +186,11 @@ static void ss_finalizer(void *obj) {
         }
         free(ss->regions);
         free(ss->names);
+        free(ss->name_index);
         ss->regions = NULL;
         ss->names = NULL;
+        ss->name_index = NULL;
+        ss->name_index_capacity = 0;
         ss->count = 0;
         if (ss->atlas && rt_heap_is_payload(ss->atlas)) {
             if (rt_obj_release_check0(ss->atlas))
@@ -207,26 +215,80 @@ static int8_t spritesheet_entry_valid(const rt_spritesheet_impl *ss, int64_t ind
         ss, ss->regions[index].x, ss->regions[index].y, ss->regions[index].w, ss->regions[index].h);
 }
 
-/// @brief Linear scan for a region by name; returns its index or -1 if not found.
-/// @details The sheet is not expected to have thousands of regions so a linear scan is
-///   acceptable. If performance becomes a concern a hash map could replace this, but
-///   the allocation complexity of the current sequential two-array layout favors the
-///   simple approach.
+/// @brief Indexed region lookup with a correctness-preserving linear OOM fallback.
 /// @param ss Valid SpriteSheet implementation.
 /// @param name NUL-terminated case-sensitive name to find.
 /// @return Zero-based region index, or `-1` when absent.
+static int8_t spritesheet_rebuild_name_index(rt_spritesheet_impl *ss) {
+    if (!ss)
+        return 0;
+    size_t required = 32u;
+    while (required / 2u < (size_t)ss->count) {
+        if (required > SIZE_MAX / 2u || required * 2u > SIZE_MAX / sizeof(int64_t))
+            return 0;
+        required *= 2u;
+    }
+    int64_t *index = (int64_t *)calloc(required, sizeof(*index));
+    if (!index)
+        return 0;
+    for (int64_t i = 0; i < ss->count; ++i) {
+        if (!spritesheet_entry_valid(ss, i)) {
+            free(index);
+            return 0;
+        }
+        size_t slot = (size_t)ss->regions[i].name_hash & (required - 1u);
+        while (index[slot] != 0)
+            slot = (slot + 1u) & (required - 1u);
+        index[slot] = i + 1;
+    }
+    free(ss->name_index);
+    ss->name_index = index;
+    ss->name_index_capacity = required;
+    ss->name_index_dirty = 0;
+    return 1;
+}
+
+static void spritesheet_index_appended_region(rt_spritesheet_impl *ss, int64_t index) {
+    if (!ss || !ss->name_index || ss->name_index_dirty || index < 0 || index >= ss->count ||
+        (size_t)ss->count > ss->name_index_capacity / 2u) {
+        if (ss)
+            ss->name_index_dirty = 1;
+        return;
+    }
+    size_t slot = (size_t)ss->regions[index].name_hash & (ss->name_index_capacity - 1u);
+    while (ss->name_index[slot] != 0)
+        slot = (slot + 1u) & (ss->name_index_capacity - 1u);
+    ss->name_index[slot] = index + 1;
+}
+
 static int64_t find_region(rt_spritesheet_impl *ss,
                            const char *name,
                            size_t name_len,
                            uint64_t name_hash) {
     if (!ss || !name)
         return -1;
-    for (int64_t i = 0; i < ss->count; i++) {
+    if ((!ss->name_index || ss->name_index_dirty) && !spritesheet_rebuild_name_index(ss)) {
+        for (int64_t i = 0; i < ss->count; i++) {
+            if (!spritesheet_entry_valid(ss, i))
+                return -1;
+            if (ss->regions[i].name_hash == name_hash && ss->regions[i].name_len == name_len &&
+                memcmp(ss->names[i], name, name_len) == 0)
+                return i;
+        }
+        return -1;
+    }
+    size_t slot = (size_t)name_hash & (ss->name_index_capacity - 1u);
+    for (size_t probe = 0; probe < ss->name_index_capacity; ++probe) {
+        int64_t encoded = ss->name_index[slot];
+        if (encoded == 0)
+            return -1;
+        int64_t i = encoded - 1;
         if (!spritesheet_entry_valid(ss, i))
             return -1;
         if (ss->regions[i].name_hash == name_hash && ss->regions[i].name_len == name_len &&
             memcmp(ss->names[i], name, name_len) == 0)
             return i;
+        slot = (slot + 1u) & (ss->name_index_capacity - 1u);
     }
     return -1;
 }
@@ -486,6 +548,7 @@ void rt_spritesheet_set_region(
         ss->regions[ss->count].name_len = name_len;
         ss->regions[ss->count].name_hash = name_hash;
         ss->count++;
+        spritesheet_index_appended_region(ss, ss->count - 1);
     }
 }
 
@@ -647,5 +710,6 @@ int8_t rt_spritesheet_remove_region(void *obj, rt_string name) {
     ss->count--;
     ss->names[ss->count] = NULL;
     memset(&ss->regions[ss->count], 0, sizeof(ss->regions[ss->count]));
+    ss->name_index_dirty = 1;
     return 1;
 }

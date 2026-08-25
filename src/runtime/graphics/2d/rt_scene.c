@@ -98,7 +98,11 @@ typedef struct scene_node_impl {
     int64_t world_scale_x;
     int64_t world_scale_y;
     int64_t world_rotation;
-    int8_t transform_dirty; // needs recalculation
+    int8_t transform_dirty;          // this node's local transform changed
+    uint64_t world_revision;         // increments whenever this cache changes
+    uint64_t cached_parent_revision; // parent revision used by this cache
+    uint64_t draw_revision;          // root-owned draw-order invalidation epoch
+    uint64_t name_revision;          // root-owned name-index invalidation epoch
 
     // Hierarchy
     struct scene_node_impl *parent;
@@ -119,6 +123,12 @@ typedef struct scene_impl {
      * node_sort_entry is defined later in this file. */
     void *draw_scratch;
     int64_t draw_scratch_cap;
+    int64_t draw_scratch_count;
+    uint64_t draw_cache_revision;
+    scene_node_impl **name_index;
+    int64_t name_index_cap;
+    int64_t name_index_count;
+    uint64_t name_cache_revision;
 } scene_impl;
 
 /// @brief Validate the private Seq used as a node's owning child list.
@@ -168,10 +178,16 @@ static scene_impl *scene_checked_or_null(void *scene_ptr) {
         return NULL;
     scene_impl *scene = (scene_impl *)scene_ptr;
     if (scene->state_magic != RT_SCENE_STATE_MAGIC || !scene_node_state_is_valid(scene->root) ||
-        scene->root->parent || scene->draw_scratch_cap < 0 ||
+        scene->root->parent || scene->draw_scratch_cap < 0 || scene->draw_scratch_count < 0 ||
+        scene->draw_scratch_count > scene->draw_scratch_cap || scene->name_index_cap < 0 ||
+        scene->name_index_count < 0 || scene->name_index_count > scene->name_index_cap ||
         (scene->draw_scratch_cap == 0) != (scene->draw_scratch == NULL) ||
+        (scene->name_index_cap == 0) != (scene->name_index == NULL) ||
         (uint64_t)scene->draw_scratch_cap >
-            (uint64_t)SIZE_MAX / (sizeof(void *) + 2u * sizeof(int64_t)))
+            (uint64_t)SIZE_MAX / (sizeof(void *) + 2u * sizeof(int64_t)) ||
+        (uint64_t)scene->name_index_cap > (uint64_t)SIZE_MAX / sizeof(scene_node_impl *))
+        return NULL;
+    if (scene->name_index_cap > 0 && (scene->name_index_cap & (scene->name_index_cap - 1)) != 0)
         return NULL;
     return scene;
 }
@@ -322,6 +338,35 @@ static int scene_parent_chain_contains(scene_node_impl *start, scene_node_impl *
         }
     }
     return 0;
+}
+
+/// @brief Return the topmost ancestor for cache-epoch invalidation.
+static scene_node_impl *scene_tree_root(scene_node_impl *node) {
+    int64_t depth = 0;
+    while (node && node->parent && depth++ < SCENE_NODE_MAX_PARENT_CHAIN)
+        node = node->parent;
+    return node;
+}
+
+/// @brief Advance a nonzero cache revision, tolerating theoretical wraparound.
+static void scene_bump_revision(uint64_t *revision) {
+    if (!revision)
+        return;
+    (*revision)++;
+    if (*revision == 0)
+        *revision = 1;
+}
+
+static void mark_draw_cache_dirty(scene_node_impl *node) {
+    scene_node_impl *root = scene_tree_root(node);
+    if (root)
+        scene_bump_revision(&root->draw_revision);
+}
+
+static void mark_name_cache_dirty(scene_node_impl *node) {
+    scene_node_impl *root = scene_tree_root(node);
+    if (root)
+        scene_bump_revision(&root->name_revision);
 }
 
 static int compare_depth(const void *a, const void *b);
@@ -477,6 +522,11 @@ static void scene_finalize(void *obj) {
     free(scene->draw_scratch);
     scene->draw_scratch = NULL;
     scene->draw_scratch_cap = 0;
+    scene->draw_scratch_count = 0;
+    free(scene->name_index);
+    scene->name_index = NULL;
+    scene->name_index_cap = 0;
+    scene->name_index_count = 0;
 }
 
 //=============================================================================
@@ -512,6 +562,10 @@ void *rt_scene_node_new(void) {
     node->world_scale_y = 100;
     node->world_rotation = 0;
     node->transform_dirty = 1;
+    node->world_revision = 0;
+    node->cached_parent_revision = 0;
+    node->draw_revision = 1;
+    node->name_revision = 1;
 
     node->parent = NULL;
     node->children = rt_seq_new();
@@ -549,42 +603,14 @@ void *rt_scene_node_from_sprite(void *sprite) {
 // Transform Management
 //=============================================================================
 
-/// @brief Mark @p node and all of its descendants as needing a world-transform recalculation.
-/// @details Sets transform_dirty on every node in the subtree rooted at @p node.  The
-///   actual recalculation is deferred until a world-transform getter (world_x, world_y, etc.)
-///   is called, making repeated local-transform changes O(1) per change rather than
-///   O(subtree size).  Already-dirty subtrees are short-circuited to avoid redundant work.
-/// @param node Root of the subtree to invalidate, or null.
+/// @brief Mark one node's local transform cache stale in constant time.
+/// @details Descendants compare their cached parent revision on demand, so a
+///          parent edit never walks the subtree. A requested descendant cache
+///          is refreshed by the top-down ancestor pass below.
+/// @param node Node whose local transform changed, or null.
 static void mark_transform_dirty(scene_node_impl *node) {
-    if (!node)
-        return;
-
-    scene_node_stack stack;
-    scene_node_stack_init(&stack);
-    if (!scene_node_stack_push(&stack, node)) {
-        rt_trap("SceneNode: transform stack allocation failed");
-        scene_node_stack_destroy(&stack);
-        return;
-    }
-
-    while (stack.count > 0) {
-        scene_node_impl *cur = scene_node_stack_pop(&stack);
-        if (!cur)
-            continue;
-        /* Short-circuit: marking always dirties a whole subtree, so an
-         * already-dirty node guarantees its descendants are dirty too. Skipping it
-         * makes repeated setter calls on the same node O(1) instead of O(subtree),
-         * as the doc above promises. */
-        if (cur->transform_dirty)
-            continue;
-        cur->transform_dirty = 1;
-        if (!scene_node_stack_push_children_reverse(&stack, cur)) {
-            rt_trap("SceneNode: transform stack allocation failed");
-            break;
-        }
-    }
-
-    scene_node_stack_destroy(&stack);
+    if (node)
+        node->transform_dirty = 1;
 }
 
 /// @brief Compute and store the world transform for @p node, assuming its parent's world
@@ -629,7 +655,11 @@ static void apply_node_transform(scene_node_impl *node) {
         node->world_rotation = node->rotation % 360;
     }
 
+    node->cached_parent_revision = node->parent ? node->parent->world_revision : 0;
     node->transform_dirty = 0;
+    node->world_revision++;
+    if (node->world_revision == 0)
+        node->world_revision = 1;
 }
 
 /// @brief Propagate world transforms from the highest dirty ancestor down to @p node.
@@ -640,10 +670,11 @@ static void apply_node_transform(scene_node_impl *node) {
 ///          No-op when @p node is NULL or its transform is already clean.
 /// @param node Node whose cached world transform is required.
 static void update_world_transform(scene_node_impl *node) {
-    if (!node || !node->transform_dirty)
+    if (!node)
         return;
 
-    // Collect the chain of dirty ancestors (including node itself).
+    // Collect the complete ancestor chain. A clean-looking descendant may still
+    // depend on a parent whose local transform changed since its last request.
     // Use a small fixed inline buffer; spill to heap for deep hierarchies.
     scene_node_impl *inline_buf[64];
     scene_node_impl **heap_chain = NULL;
@@ -652,7 +683,7 @@ static void update_world_transform(scene_node_impl *node) {
     int64_t depth = 0;
 
     scene_node_impl *cur = node;
-    while (cur && cur->transform_dirty) {
+    while (cur) {
         if (!scene_node_state_is_valid(cur)) {
             free(heap_chain);
             rt_trap("SceneNode: invalid transform chain");
@@ -686,9 +717,14 @@ static void update_world_transform(scene_node_impl *node) {
         cur = cur->parent;
     }
 
-    // Process top-down (root-most dirty node first)
-    for (int64_t i = depth - 1; i >= 0; i--)
-        apply_node_transform(chain[i]);
+    // Process top-down, recalculating only locally dirty nodes or nodes whose
+    // cached parent generation is stale.
+    for (int64_t i = depth - 1; i >= 0; i--) {
+        scene_node_impl *current = chain[i];
+        uint64_t parent_revision = current->parent ? current->parent->world_revision : 0;
+        if (current->transform_dirty || current->cached_parent_revision != parent_revision)
+            apply_node_transform(current);
+    }
 
     free(heap_chain);
 }
@@ -910,7 +946,11 @@ void rt_scene_node_set_visible(void *node_ptr, int8_t visible) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
-    node->visible = visible ? 1 : 0;
+    int8_t normalized = visible ? 1 : 0;
+    if (node->visible == normalized)
+        return;
+    node->visible = normalized;
+    mark_draw_cache_dirty(node);
 }
 
 /// @brief Return the node's Z-order depth used for depth-sorted rendering.
@@ -932,7 +972,10 @@ void rt_scene_node_set_depth(void *node_ptr, int64_t depth) {
     scene_node_impl *node = scene_node_checked_or_null(node_ptr);
     if (!node)
         return;
+    if (node->depth == depth)
+        return;
     node->depth = depth;
+    mark_draw_cache_dirty(node);
 }
 
 //=============================================================================
@@ -973,6 +1016,7 @@ void rt_scene_node_set_name(void *node_ptr, rt_string name) {
     rt_obj_retain_maybe(name);
     release_owned_ref((void **)&node->name);
     node->name = name;
+    mark_name_cache_dirty(node);
 }
 
 /// @brief Return the sprite attached to the node (borrowed reference — do not release).
@@ -1003,9 +1047,12 @@ void rt_scene_node_set_sprite(void *node_ptr, void *sprite) {
     }
     if (node->sprite == sprite)
         return;
+    int presence_changed = (node->sprite == NULL) != (sprite == NULL);
     rt_obj_retain_maybe(sprite);
     release_owned_ref(&node->sprite);
     node->sprite = sprite;
+    if (presence_changed)
+        mark_draw_cache_dirty(node);
 }
 
 //=============================================================================
@@ -1053,6 +1100,8 @@ void rt_scene_node_add_child(void *node_ptr, void *child_ptr) {
         rt_scene_node_remove_child(old_parent, child);
     child->parent = node;
     mark_transform_dirty(child);
+    mark_draw_cache_dirty(node);
+    mark_name_cache_dirty(node);
 }
 
 /// @brief Detach @p child_ptr from @p node_ptr and release the node's reference to it.
@@ -1074,6 +1123,8 @@ void rt_scene_node_remove_child(void *node_ptr, void *child_ptr) {
     int64_t count = rt_seq_len(node->children);
     for (int64_t i = 0; i < count; i++) {
         if (rt_seq_get(node->children, i) == child) {
+            mark_draw_cache_dirty(node);
+            mark_name_cache_dirty(node);
             int was_parent = child->parent == node;
             if (was_parent)
                 child->parent = NULL;
@@ -1472,9 +1523,112 @@ void rt_scene_remove(void *scene_ptr, void *node_ptr) {
     rt_scene_node_remove_child(scene->root, node_ptr);
 }
 
+/// @brief Hash an exact scene-node name byte span using FNV-1a.
+static uint64_t scene_name_hash(const char *bytes, size_t length) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < length; ++i) {
+        hash ^= (unsigned char)bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+/// @brief Grow and rehash the scene's open-addressed name index.
+static int8_t scene_name_index_reserve(scene_impl *scene, int64_t needed) {
+    if (!scene || needed < 0)
+        return 0;
+    if (scene->name_index_cap > 0 && needed <= scene->name_index_cap / 2)
+        return 1;
+    int64_t capacity = scene->name_index_cap > 0 ? scene->name_index_cap : 64;
+    while (needed > capacity / 2) {
+        if (capacity > INT64_MAX / 2 ||
+            (uint64_t)(capacity * 2) > SIZE_MAX / sizeof(scene_node_impl *))
+            return 0;
+        capacity *= 2;
+    }
+    scene_node_impl **grown = (scene_node_impl **)calloc((size_t)capacity, sizeof(*grown));
+    if (!grown)
+        return 0;
+    for (int64_t i = 0; i < scene->name_index_cap; ++i) {
+        scene_node_impl *node = scene->name_index[i];
+        if (!node)
+            continue;
+        const char *bytes = NULL;
+        size_t length = 0;
+        if (!scene_string_view(node->name, &bytes, &length)) {
+            free(grown);
+            return 0;
+        }
+        size_t slot = (size_t)(scene_name_hash(bytes, length) & (uint64_t)(capacity - 1));
+        while (grown[slot])
+            slot = (slot + 1) & (size_t)(capacity - 1);
+        grown[slot] = node;
+    }
+    free(scene->name_index);
+    scene->name_index = grown;
+    scene->name_index_cap = capacity;
+    return 1;
+}
+
+/// @brief Insert a node only when its name has no earlier pre-order match.
+static int8_t scene_name_index_insert(scene_impl *scene, scene_node_impl *node) {
+    const char *bytes = NULL;
+    size_t length = 0;
+    if (!scene || !node || !scene_string_view(node->name, &bytes, &length) ||
+        !scene_name_index_reserve(scene, scene->name_index_count + 1))
+        return 0;
+    size_t slot = (size_t)(scene_name_hash(bytes, length) & (uint64_t)(scene->name_index_cap - 1));
+    while (scene->name_index[slot]) {
+        scene_node_impl *existing = scene->name_index[slot];
+        const char *existing_bytes = NULL;
+        size_t existing_length = 0;
+        if (!scene_string_view(existing->name, &existing_bytes, &existing_length))
+            return 0;
+        if (existing_length == length && memcmp(existing_bytes, bytes, length) == 0)
+            return 1;
+        slot = (slot + 1) & (size_t)(scene->name_index_cap - 1);
+    }
+    scene->name_index[slot] = node;
+    scene->name_index_count++;
+    return 1;
+}
+
+/// @brief Rebuild the first-preorder-match name index after name/tree mutation.
+static int8_t scene_rebuild_name_index(scene_impl *scene) {
+    if (!scene)
+        return 0;
+    if (scene->name_index && scene->name_index_cap > 0)
+        memset(scene->name_index, 0, (size_t)scene->name_index_cap * sizeof(scene_node_impl *));
+    scene->name_index_count = 0;
+
+    scene_node_stack stack;
+    scene_node_stack_init(&stack);
+    if (!scene_node_stack_push(&stack, scene->root)) {
+        scene_node_stack_destroy(&stack);
+        return 0;
+    }
+    while (stack.count > 0) {
+        scene_node_impl *node = scene_node_stack_pop(&stack);
+        if (!node || !scene_name_index_insert(scene, node) ||
+            !scene_node_stack_push_children_reverse(&stack, node)) {
+            scene_node_stack_destroy(&stack);
+            if (scene->name_index && scene->name_index_cap > 0)
+                memset(scene->name_index,
+                       0,
+                       (size_t)scene->name_index_cap * sizeof(scene_node_impl *));
+            scene->name_index_count = 0;
+            scene->name_cache_revision = 0;
+            return 0;
+        }
+    }
+    scene_node_stack_destroy(&stack);
+    scene->name_cache_revision = scene->root->name_revision;
+    return 1;
+}
+
 /// @brief Search the scene's node tree for the first node matching @p name.
-/// @details Delegates to the root node's exact depth-first pre-order search;
-///          the implicit root itself can match.
+/// @details Uses a lazily rebuilt scene-owned hash index. Duplicate names map
+///          to the first exact depth-first pre-order match, including the root.
 /// @param scene_ptr Opaque Scene handle.
 /// @param name Runtime string to match.
 /// @return Borrowed first matching SceneNode, or null for invalid input or no
@@ -1485,7 +1639,31 @@ void *rt_scene_find(void *scene_ptr, rt_string name) {
     scene_impl *scene = scene_checked_or_null(scene_ptr);
     if (!scene || !scene->root)
         return NULL;
-    return rt_scene_node_find(scene->root, name);
+    const char *bytes = NULL;
+    size_t length = 0;
+    if (!scene_string_view(name, &bytes, &length))
+        return NULL;
+    if (scene->name_cache_revision != scene->root->name_revision &&
+        !scene_rebuild_name_index(scene)) {
+        rt_trap("Scene.Find: name index allocation failed");
+        return NULL;
+    }
+    if (scene->name_index_cap <= 0)
+        return NULL;
+    size_t slot = (size_t)(scene_name_hash(bytes, length) & (uint64_t)(scene->name_index_cap - 1));
+    for (int64_t probe = 0; probe < scene->name_index_cap; ++probe) {
+        scene_node_impl *node = scene->name_index[slot];
+        if (!node)
+            return NULL;
+        const char *node_bytes = NULL;
+        size_t node_length = 0;
+        if (!scene_string_view(node->name, &node_bytes, &node_length))
+            return NULL;
+        if (node_length == length && memcmp(node_bytes, bytes, length) == 0)
+            return node;
+        slot = (slot + 1) & (size_t)(scene->name_index_cap - 1);
+    }
+    return NULL;
 }
 
 /// @brief Search the scene's node tree for a matching name as an Option.
@@ -1589,6 +1767,31 @@ static int64_t scene_collect_draw_entries(scene_node_impl *root,
     return count;
 }
 
+/// @brief Return the scene's cached stable depth order, rebuilding only after
+///        structural, visibility, sprite-presence, or depth mutations.
+static int8_t scene_get_draw_entries(scene_impl *scene,
+                                     node_sort_entry **entries_out,
+                                     int64_t *count_out) {
+    if (!scene || !entries_out || !count_out)
+        return 0;
+    if (scene->draw_cache_revision != scene->root->draw_revision) {
+        node_sort_entry *entries = (node_sort_entry *)scene->draw_scratch;
+        int64_t capacity = scene->draw_scratch_cap;
+        int64_t count = scene_collect_draw_entries(scene->root, &entries, &capacity);
+        scene->draw_scratch = entries;
+        scene->draw_scratch_cap = capacity;
+        if (count < 0)
+            return 0;
+        if (count > 1)
+            qsort(entries, (size_t)count, sizeof(node_sort_entry), compare_depth);
+        scene->draw_scratch_count = count;
+        scene->draw_cache_revision = scene->root->draw_revision;
+    }
+    *entries_out = (node_sort_entry *)scene->draw_scratch;
+    *count_out = scene->draw_scratch_count;
+    return 1;
+}
+
 /// @brief Draw all visible nodes to @p canvas, sorted by depth.
 /// @details Collects every visible node that has a sprite into a temporary list,
 ///   stable-sorts them by depth (ascending), and renders each in order using
@@ -1603,17 +1806,10 @@ void rt_scene_draw(void *scene_ptr, void *canvas) {
     if (!scene || !scene->root)
         return;
 
-    // Collect visible sprite nodes into the scene's reusable scratch (no per-frame
-    // allocation for a static scene), then depth-sort.
-    node_sort_entry *arr = (node_sort_entry *)scene->draw_scratch;
-    int64_t cap = scene->draw_scratch_cap;
-    int64_t count = scene_collect_draw_entries(scene->root, &arr, &cap);
-    scene->draw_scratch = arr;
-    scene->draw_scratch_cap = cap;
-    if (count <= 0)
+    node_sort_entry *arr = NULL;
+    int64_t count = 0;
+    if (!scene_get_draw_entries(scene, &arr, &count) || count <= 0)
         return;
-
-    qsort(arr, (size_t)count, sizeof(node_sort_entry), compare_depth);
 
     // Draw in depth order
     for (int64_t i = 0; i < count; i++) {
@@ -1649,16 +1845,10 @@ void rt_scene_draw_with_camera(void *scene_ptr, void *canvas, void *camera) {
     if (!scene || !scene->root)
         return;
 
-    // Collect visible sprite nodes into the scene's reusable scratch, then depth-sort.
-    node_sort_entry *arr = (node_sort_entry *)scene->draw_scratch;
-    int64_t cap = scene->draw_scratch_cap;
-    int64_t count = scene_collect_draw_entries(scene->root, &arr, &cap);
-    scene->draw_scratch = arr;
-    scene->draw_scratch_cap = cap;
-    if (count <= 0)
+    node_sort_entry *arr = NULL;
+    int64_t count = 0;
+    if (!scene_get_draw_entries(scene, &arr, &count) || count <= 0)
         return;
-
-    qsort(arr, (size_t)count, sizeof(node_sort_entry), compare_depth);
 
     // Draw in depth order
     for (int64_t i = 0; i < count; i++) {
@@ -1722,6 +1912,10 @@ void rt_scene_clear(void *scene_ptr) {
 
     // Clear parent pointers before removing children to avoid stale references
     int64_t n = rt_seq_len(scene->root->children);
+    if (n > 0) {
+        mark_draw_cache_dirty(scene->root);
+        mark_name_cache_dirty(scene->root);
+    }
     for (int64_t i = 0; i < n; i++) {
         scene_node_impl *child = (scene_node_impl *)rt_seq_get(scene->root->children, i);
         if (child)

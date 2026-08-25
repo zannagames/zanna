@@ -12,8 +12,8 @@
 ///
 /// @details The rigid-body subsystem integrates axis-aligned boxes and circles,
 /// retains bodies and joints through world membership, records queryable
-/// per-step contacts, and uses a deterministic adaptive-grid broad phase with
-/// an exhaustive fallback. The Projectile2D subsystem is independent of world
+/// per-step contacts, and uses a deterministic persistent sweep-and-prune broad
+/// phase. The Projectile2D subsystem is independent of world
 /// simulation and evaluates closed-form motion under constant gravity and
 /// optional linear drag.
 ///
@@ -35,12 +35,9 @@
 //   - Collision filtering uses 64-bit layer/mask bitmasks: bodies A and B
 //     collide only when (A.layer & B.mask) && (B.layer & A.mask) are both
 //     non-zero (bidirectional filter).
-//   - Broad-phase uses a stack-local adaptive uniform grid (8×8, 12×12, or
-//     16×16) rebuilt each step. The grid arrays live on the stack, making
-//     concurrent physics worlds safe.
-//   - Broad-phase candidate pairs are collected into a growable scratch buffer,
-//     sorted, and de-duplicated so each pair resolves at most once per step, even
-//     when the two bodies share multiple grid cells.
+//   - Broad-phase retains a body-pointer order between steps and repairs it with
+//     insertion sort, making coherent scenes linear while avoiding fixed-cell
+//     occupancy limits, duplicate candidates, and per-step scratch allocation.
 //   - Positional correction uses the Baumgarte stabilisation technique with
 //     a 0.01-world-unit slop and 40% correction factor to prevent sinking
 //     while avoiding jitter.
@@ -74,6 +71,8 @@
 #define PHYSICS2D_MAX_PUBLIC_STEP_DT 8.0
 #define PHYSICS2D_MAX_SUBSTEP_DT 1.0
 #define PHYSICS2D_MAX_SUBSTEPS 8
+#define PHYSICS2D_SLEEP_SPEED 1.0e-4
+#define PHYSICS2D_SLEEP_DELAY 0.5
 
 /// @}
 
@@ -196,6 +195,51 @@ static int8_t ensure_contact_capacity(rt_world_impl *w, int64_t needed) {
     return 1;
 }
 
+/// @brief Mix a packed body-index pair for the contact deduplication table.
+static uint64_t contact_pair_hash(uint64_t key) {
+    key ^= key >> 33u;
+    key *= UINT64_C(0xff51afd7ed558ccd);
+    key ^= key >> 33u;
+    key *= UINT64_C(0xc4ceb9fe1a85ec53);
+    return key ^ (key >> 33u);
+}
+
+/// @brief Ensure the per-step contact hash table can index @p needed unique pairs.
+/// @details Growth is transactional and rehashes already-published records, so a
+///          failed allocation leaves the previous table and contact list intact.
+static int8_t ensure_contact_slot_capacity(rt_world_impl *w, int64_t needed) {
+    if (!w || needed < 0)
+        return 0;
+    int64_t required = w->contact_slot_capacity > 0 ? w->contact_slot_capacity : 512;
+    while (needed > required - required / 3) {
+        if (required > INT64_MAX / 2 || (uint64_t)required * 2u > SIZE_MAX / sizeof(int64_t))
+            return 0;
+        required *= 2;
+    }
+    if (required == w->contact_slot_capacity)
+        return 1;
+
+    int64_t *slots = (int64_t *)calloc((size_t)required, sizeof(int64_t));
+    if (!slots)
+        return 0;
+    size_t mask = (size_t)required - 1u;
+    for (int64_t i = 0; i < w->contact_count; ++i) {
+        uint64_t key = w->contacts[i].pair_key;
+        if (key == 0) {
+            free(slots);
+            return 0;
+        }
+        size_t slot = (size_t)contact_pair_hash(key) & mask;
+        while (slots[slot] != 0)
+            slot = (slot + 1u) & mask;
+        slots[slot] = i + 1;
+    }
+    free(w->contact_slots);
+    w->contact_slots = slots;
+    w->contact_slot_capacity = required;
+    return 1;
+}
+
 /// @brief Ensure all parallel per-step force-snapshot arrays have @p needed slots.
 /// @details The body-pointer, X-force, and Y-force arrays grow to one common
 ///          capacity. Growth is transactional: all three replacements are
@@ -245,94 +289,51 @@ static int8_t ensure_force_capacity(rt_world_impl *w, int64_t needed) {
     return 1;
 }
 
-/// @brief Ensure the broad-phase candidate-pair scratch can hold @p needed entries.
-/// @details Grows geometrically so repeated appends across a step amortize to O(1).
-///   Returns 0 on overflow/allocation failure, in which case the caller falls back
-///   to the exhaustive O(n^2) pair pass so collision correctness is preserved.
-/// @param w Mutable world implementation whose scratch buffer may grow.
-/// @param needed Nonnegative minimum number of packed pair slots.
-/// @return Nonzero when capacity is sufficient or growth succeeds; zero for
-///         invalid input, overflow, or allocation failure.
-static int8_t ensure_pair_scratch_capacity(rt_world_impl *w, int64_t needed) {
+/// @brief Ensure the persistent sweep-and-prune order can hold @p needed bodies.
+static int8_t ensure_broadphase_capacity(rt_world_impl *w, int64_t needed) {
     if (!w || needed < 0)
         return 0;
-    if (needed <= w->pair_scratch_capacity)
+    if (needed <= w->broadphase_capacity)
         return 1;
     int64_t new_capacity = 0;
-    if (!grow_capacity_i64(w->pair_scratch_capacity, needed, 256, &new_capacity) ||
-        (uint64_t)new_capacity > SIZE_MAX / sizeof(uint64_t))
+    if (!grow_capacity_i64(w->broadphase_capacity, needed, PH_MAX_BODIES, &new_capacity) ||
+        (uint64_t)new_capacity > SIZE_MAX / sizeof(rt_body_impl *))
         return 0;
-    uint64_t *scratch =
-        (uint64_t *)realloc(w->pair_scratch, (size_t)new_capacity * sizeof(uint64_t));
-    if (!scratch)
+    rt_body_impl **order = (rt_body_impl **)realloc(w->broadphase_order,
+                                                    (size_t)new_capacity * sizeof(rt_body_impl *));
+    if (!order)
         return 0;
-    w->pair_scratch = scratch;
-    w->pair_scratch_capacity = new_capacity;
+    memset(order + w->broadphase_capacity,
+           0,
+           (size_t)(new_capacity - w->broadphase_capacity) * sizeof(rt_body_impl *));
+    w->broadphase_order = order;
+    w->broadphase_capacity = new_capacity;
     return 1;
-}
-
-/// @brief Append candidate pair (ii, jj) to the scratch list, ordered ii < jj.
-/// @param w Mutable world implementation owning the scratch list.
-/// @param ii First body-array index.
-/// @param jj Second body-array index.
-/// @return 1 on success, 0 if the scratch could not grow (caller must fall back).
-static int8_t pair_scratch_push(rt_world_impl *w, int ii, int jj) {
-    if (!w || ii < 0 || jj < 0)
-        return 0;
-    if (ii == jj)
-        return 1;
-    if (ii > jj) {
-        int t = ii;
-        ii = jj;
-        jj = t;
-    }
-    if (w->pair_scratch_count < 0 || w->pair_scratch_count == INT64_MAX ||
-        !ensure_pair_scratch_capacity(w, w->pair_scratch_count + 1))
-        return 0;
-    w->pair_scratch[w->pair_scratch_count++] =
-        ((uint64_t)(uint32_t)ii << 32) | (uint64_t)(uint32_t)jj;
-    return 1;
-}
-
-/// @brief qsort comparator over packed pair keys (ascending). Total order on
-///        distinct (ii, jj) pairs makes the resolution sweep deterministic.
-/// @param a Pointer to the first packed `uint64_t` pair key.
-/// @param b Pointer to the second packed `uint64_t` pair key.
-/// @return A negative, zero, or positive value when @p a sorts before, equal to,
-///         or after @p b.
-static int pair_key_cmp(const void *a, const void *b) {
-    uint64_t ka = *(const uint64_t *)a;
-    uint64_t kb = *(const uint64_t *)b;
-    return (ka < kb) ? -1 : (ka > kb) ? 1 : 0;
 }
 
 /// @brief Clear the world's per-step contact list (called at the start of
 ///        each physics step before broad/narrow-phase regenerates contacts).
-/// @details Releases both body references held by every initialized record,
-///          zeroes those records, and resets the count and overflow flag.
+/// @details Zeroes borrowed records and the pair index, then resets the count
+///          and overflow flag. Body lifetime remains owned by the world array.
 /// @param w Mutable world implementation; `NULL` is accepted as a no-op.
 static void world_clear_contacts(rt_world_impl *w) {
     if (!w)
         return;
-    for (int64_t i = 0; i < w->contact_count; ++i) {
-        if (w->contacts[i].body_a && rt_obj_release_check0(w->contacts[i].body_a))
-            rt_obj_free(w->contacts[i].body_a);
-        if (w->contacts[i].body_b && rt_obj_release_check0(w->contacts[i].body_b))
-            rt_obj_free(w->contacts[i].body_b);
+    for (int64_t i = 0; i < w->contact_count; ++i)
         memset(&w->contacts[i], 0, sizeof(w->contacts[i]));
-    }
+    if (w->contact_slots && w->contact_slot_capacity > 0)
+        memset(w->contact_slots, 0, (size_t)w->contact_slot_capacity * sizeof(int64_t));
     w->contact_count = 0;
     w->contact_overflow = 0;
 }
 
-/// @brief Append a contact record to the world's per-step contact list.
-/// @details Records an overflow flag when the list cannot grow, and skips non-finite
-///   manifold values so downstream queries always see a clean list even in degenerate numerical
-///   situations. Penetration is clamped to [0, +inf) because negative depth would indicate
-///   separation, not contact.
+/// @brief Insert or update a unique body-pair contact for the current public step.
+/// @details A contact hash collapses repeated substep manifolds to one record,
+///          retaining the deepest/latest representative without reference-count
+///          traffic. Allocation failure sets the overflow flag.
 /// @param w Mutable world receiving the contact.
-/// @param a First body, retained by the contact record.
-/// @param b Second body, retained by the contact record.
+/// @param a First body, borrowed from the world's body array.
+/// @param b Second body, borrowed from the world's body array.
 /// @param nx Finite contact-normal X component pointing from @p a toward @p b.
 /// @param ny Finite contact-normal Y component pointing from @p a toward @p b.
 /// @param pen Penetration depth, clamped to a nonnegative value.
@@ -342,19 +343,52 @@ void world_record_contact(
         return;
     if (!isfinite(nx) || !isfinite(ny) || !isfinite(pen))
         return;
+    if (a->owner_world != w || b->owner_world != w || a->world_index < 0 || b->world_index < 0 ||
+        a->world_index == b->world_index || a->world_index > UINT32_MAX ||
+        b->world_index > UINT32_MAX) {
+        w->contact_overflow = 1;
+        return;
+    }
+    uint32_t index_a = (uint32_t)a->world_index;
+    uint32_t index_b = (uint32_t)b->world_index;
+    uint32_t low = index_a < index_b ? index_a : index_b;
+    uint32_t high = index_a < index_b ? index_b : index_a;
+    uint64_t pair_key = ((uint64_t)low << 32u) | (uint64_t)high;
+    if (pair_key == 0 || !ensure_contact_slot_capacity(w, w->contact_count + 1)) {
+        w->contact_overflow = 1;
+        return;
+    }
+    size_t mask = (size_t)w->contact_slot_capacity - 1u;
+    size_t slot = (size_t)contact_pair_hash(pair_key) & mask;
+    while (w->contact_slots[slot] != 0) {
+        int64_t existing_index = w->contact_slots[slot] - 1;
+        ph_contact_record *existing = &w->contacts[existing_index];
+        if (existing->pair_key == pair_key) {
+            double oriented_nx = existing->body_a == a ? nx : -nx;
+            double oriented_ny = existing->body_a == a ? ny : -ny;
+            double depth = pen > 0.0 ? pen : 0.0;
+            if (depth >= existing->penetration) {
+                existing->nx = oriented_nx;
+                existing->ny = oriented_ny;
+                existing->penetration = depth;
+            }
+            return;
+        }
+        slot = (slot + 1u) & mask;
+    }
     if (w->contact_count < 0 || w->contact_count == INT64_MAX ||
         !ensure_contact_capacity(w, w->contact_count + 1)) {
         w->contact_overflow = 1;
         return;
     }
     int64_t idx = w->contact_count++;
-    rt_obj_retain_maybe(a);
-    rt_obj_retain_maybe(b);
     w->contacts[idx].body_a = a;
     w->contacts[idx].body_b = b;
     w->contacts[idx].nx = nx;
     w->contacts[idx].ny = ny;
     w->contacts[idx].penetration = pen > 0.0 ? pen : 0.0;
+    w->contacts[idx].pair_key = pair_key;
+    w->contact_slots[slot] = idx + 1;
 }
 
 /// @brief Return `value` if finite, otherwise `fallback`. Used for gravity and position setters.
@@ -489,6 +523,24 @@ void sanitize_body_state(rt_body_impl *b) {
     b->inv_mass = b->mass > 0.0 ? 1.0 / b->mass : 0.0;
     b->restitution = clamp01(b->restitution);
     b->friction = clamp01(b->friction);
+    b->sleep_time = (isfinite(b->sleep_time) && b->sleep_time >= 0.0) ? b->sleep_time : 0.0;
+    b->is_sleeping = b->is_sleeping ? 1 : 0;
+    if (b->inv_mass == 0.0) {
+        b->sleep_time = 0.0;
+        b->is_sleeping = 0;
+    }
+}
+
+/// @brief Wake a dynamic body after external input or solver interaction.
+/// @details Sleeping is intentionally an internal optimization. Resetting both
+///          fields here centralizes the wake invariant for public mutators,
+///          gravity/joint changes, and collision response.
+/// @param b Mutable body implementation; `NULL` and static bodies are ignored.
+void rt_physics2d_body_wake(rt_body_impl *b) {
+    if (!b || b->inv_mass == 0.0)
+        return;
+    b->sleep_time = 0.0;
+    b->is_sleeping = 0;
 }
 
 /* AABB edge accessors. The world uses positive-y-downward screen coordinates, so
@@ -633,12 +685,12 @@ static void world_remove_joints_for_body(rt_world_impl *w, rt_body_impl *body) {
 
 /// @brief GC finalizer for a physics world.
 /// @details Runs when the world's reference count reaches zero. Releases every
-///   joint (marking each inactive first), clears and releases the per-step contact
+///   joint (marking each inactive first), clears the borrowed per-step contact
 ///   list, then releases each retained body — detaching it from this world so a
 ///   body still referenced elsewhere can be re-added to another world. Finally
-///   frees all world-owned growable arrays (bodies, joints, contacts, pair scratch,
-///   force snapshot) and zeroes their sizes. Order (joints → contacts → bodies)
-///   matters: joints and contacts hold body references that must be released first.
+///   frees all world-owned growable arrays (bodies, joints, contacts, broad-phase
+///   order, force snapshot) and zeroes their sizes. Joints are released before bodies
+///   because joints retain their endpoints; contacts borrow world-owned bodies.
 /// @param obj Finalizing world implementation supplied by the object system;
 ///            `NULL` is accepted.
 static void world_finalizer(void *obj) {
@@ -672,10 +724,13 @@ static void world_finalizer(void *obj) {
         free(w->contacts);
         w->contacts = NULL;
         w->contact_capacity = 0;
-        free(w->pair_scratch);
-        w->pair_scratch = NULL;
-        w->pair_scratch_count = 0;
-        w->pair_scratch_capacity = 0;
+        free(w->contact_slots);
+        w->contact_slots = NULL;
+        w->contact_slot_capacity = 0;
+        free(w->broadphase_order);
+        w->broadphase_order = NULL;
+        w->broadphase_count = 0;
+        w->broadphase_capacity = 0;
         free(w->force_bodies);
         w->force_bodies = NULL;
         free(w->force_x);
@@ -708,14 +763,16 @@ void *rt_physics2d_world_new(double gravity_x, double gravity_y) {
     w->state_magic = RT_PHYSICS2D_WORLD_STATE_MAGIC;
     w->gravity_x = finite_or(gravity_x, 0.0);
     w->gravity_y = finite_or(gravity_y, 0.0);
+    w->pending_dt = 0.0;
     w->body_count = 0;
     w->joint_count = 0;
     w->contact_count = 0;
     w->contact_overflow = 0;
     rt_obj_set_finalizer(w, world_finalizer);
-    if (!ensure_body_capacity(w, PH_MAX_BODIES) ||
+    if (!ensure_body_capacity(w, PH_MAX_BODIES) || !ensure_broadphase_capacity(w, PH_MAX_BODIES) ||
         !rt_physics2d_world_reserve_joint_capacity(w, PH_MAX_JOINTS) ||
-        !ensure_contact_capacity(w, PH_MAX_CONTACTS)) {
+        !ensure_contact_capacity(w, PH_MAX_CONTACTS) ||
+        !ensure_contact_slot_capacity(w, PH_MAX_CONTACTS)) {
         rt_trap("Physics2D.World: allocation failed");
         if (rt_obj_release_check0(w))
             rt_obj_free(w);
@@ -740,11 +797,14 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
      * only the final substep's contacts queryable, silently dropping collision
      * events (damage/sound triggers) that occurred in earlier substeps. */
 
+    int8_t sleeping_allowed = w->gravity_x == 0.0 && w->gravity_y == 0.0 && w->joint_count == 0;
     for (i = 0; i < w->body_count; i++) {
         rt_body_impl *b = w->bodies[i];
         if (!b)
             continue;
         sanitize_body_state(b);
+        if (!sleeping_allowed)
+            rt_physics2d_body_wake(b);
         b->prev_x = b->x;
         b->prev_y = b->y;
     }
@@ -762,6 +822,10 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
             b->fy = 0.0;
             continue; /* Skip static bodies */
         }
+        if (b->is_sleeping && b->fx == 0.0 && b->fy == 0.0)
+            continue;
+        if (b->fx != 0.0 || b->fy != 0.0)
+            rt_physics2d_body_wake(b);
         double ax = rt_physics2d_saturating_add(rt_physics2d_saturating_mul(b->fx, b->inv_mass),
                                                 w->gravity_x);
         double ay = rt_physics2d_saturating_add(rt_physics2d_saturating_mul(b->fy, b->inv_mass),
@@ -789,7 +853,7 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
      * and springs are committed before any position updates occur. */
     for (i = 0; i < w->body_count; i++) {
         rt_body_impl *b = w->bodies[i];
-        if (!b || b->inv_mass == 0.0)
+        if (!b || b->inv_mass == 0.0 || b->is_sleeping)
             continue;
         b->x = rt_physics2d_saturating_add(b->x, rt_physics2d_saturating_mul(b->vx, dt));
         b->y = rt_physics2d_saturating_add(b->y, rt_physics2d_saturating_mul(b->vy, dt));
@@ -807,200 +871,75 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
             sanitize_body_state(w->bodies[i]);
     }
 
-    /* Step 3: Broad-phase + narrow-phase collision detection and resolution.
-     *
-     * Broad phase: bounded adaptive uniform grid. The grid is recomputed from
-     * scratch each step. The world swept AABB is computed first, then divided into
-     * grid_dim×grid_dim cells. Each body is registered in every cell its swept
-     * bounds overlap.
-     *
-     * All grid arrays are stack-local, making this function safe to call on
-     * concurrent worlds from separate threads with no data sharing.
-     *
-     * The grid stores body indices (not pointers) to keep each cell small.
-     * BPG_CELL_MAX caps the count per cell; if a cell
-     * overflows, the step falls back to an exhaustive O(n²) pair pass so
-     * collision correctness is preserved in dense scenes.
-     *
-     * Narrow phase: candidate pairs are collected into w->pair_scratch, sorted,
-     * and de-duplicated, then each unique pair is tested with shape_overlap() or
-     * swept AABB and resolved if it collides. This replaces the former O(n^2)
-     * bit-matrix (and its per-substep O(n^2) memset) with O(pairs) memory. */
-
-#define BPG_BASE_DIM 8  /* Small-world broad-phase grid cells per axis. */
-#define BPG_MAX_DIM 16  /* Largest stack-backed grid cells per axis. */
-#define BPG_CELL_MAX 32 /* Maximum body indices stored per grid cell. */
-
-    if (w->body_count >= 2) {
-        int grid_dim = BPG_BASE_DIM;
-        if (w->body_count > 128)
-            grid_dim = BPG_MAX_DIM;
-        else if (w->body_count > 64)
-            grid_dim = 12;
-        /* --- Step 3a: Compute the world swept AABB that encloses all bodies --- */
-        double wx0 = 1e18, wy0 = 1e18, wx1 = -1e18, wy1 = -1e18;
-        for (i = 0; i < w->body_count; i++) {
-            rt_body_impl *b = w->bodies[i];
-            if (!b)
-                continue;
-            double bx0 = body_swept_min_x(b);
-            double by0 = body_swept_min_y(b);
-            double bx1 = body_swept_max_x(b);
-            double by1 = body_swept_max_y(b);
-            if (bx0 < wx0)
-                wx0 = bx0;
-            if (by0 < wy0)
-                wy0 = by0;
-            if (bx1 > wx1)
-                wx1 = bx1;
-            if (by1 > wy1)
-                wy1 = by1;
+    /* Step 3: persistent sweep-and-prune broad phase. The body-pointer order is
+       retained across substeps and repaired with a stable insertion pass, which
+       is linear for static/coherent scenes. Each candidate pair is emitted once;
+       there is no fixed cell occupancy, world-extent distortion, pair scratch,
+       duplicate generation, or comparison sort. */
+    for (i = 1; i < w->broadphase_count; ++i) {
+        rt_body_impl *key = w->broadphase_order[i];
+        double key_min_x = body_swept_min_x(key);
+        int64_t j = i;
+        while (j > 0) {
+            rt_body_impl *previous = w->broadphase_order[j - 1];
+            double previous_min_x = body_swept_min_x(previous);
+            if (previous_min_x < key_min_x ||
+                (previous_min_x == key_min_x && previous->world_index < key->world_index))
+                break;
+            w->broadphase_order[j] = previous;
+            --j;
         }
-        /* Guard: ensure minimum cell size of 1 so division below never divides
-         * by zero (can happen when all bodies occupy the exact same point). */
-        if (wx1 <= wx0)
-            wx1 = wx0 + 1.0;
-        if (wy1 <= wy0)
-            wy1 = wy0 + 1.0;
-        double cell_w = (wx1 - wx0) / (double)grid_dim;
-        double cell_h = (wy1 - wy0) / (double)grid_dim;
+        w->broadphase_order[j] = key;
+    }
 
-        /* A body whose swept AABB spans at least half the world on either axis is
-         * "large": a ground/wall platform, or a stray far-away body that would
-         * otherwise stretch every cell and collapse the scene into one. Large
-         * bodies are kept out of the grid and paired against all bodies, so one
-         * oversized body no longer degrades the whole broad-phase to O(n^2). */
-        double large_w = 0.5 * (wx1 - wx0);
-        double large_h = 0.5 * (wy1 - wy0);
-
-        /* --- Step 3b: Populate the broad-phase grid (stack-local) and collect
-         * candidate pairs into w->pair_scratch. Large bodies (and bodies spilled
-         * from an overflowing cell) are paired against every other body directly;
-         * normal bodies are gridded and paired with their cell neighbours. Pairs
-         * are de-duplicated later by sorting, so the overlap between against-all
-         * and grid pairs is harmless. */
-        int32_t grid_bodies[BPG_MAX_DIM * BPG_MAX_DIM][BPG_CELL_MAX];
-        int grid_count[BPG_MAX_DIM * BPG_MAX_DIM];
-        int use_exhaustive = 0;
-        memset(grid_count, 0, sizeof(grid_count));
-        w->pair_scratch_count = 0;
-
-        for (i = 0; i < w->body_count && !use_exhaustive; i++) {
-            rt_body_impl *b = w->bodies[i];
-            if (!b)
+    for (i = 0; i < w->broadphase_count; ++i) {
+        rt_body_impl *a = w->broadphase_order[i];
+        double a_max_x = body_swept_max_x(a);
+        double a_min_y = body_swept_min_y(a);
+        double a_max_y = body_swept_max_y(a);
+        for (int64_t j = i + 1; j < w->broadphase_count; ++j) {
+            rt_body_impl *b = w->broadphase_order[j];
+            if (body_swept_min_x(b) > a_max_x)
+                break;
+            if (body_swept_min_y(b) > a_max_y || body_swept_max_y(b) < a_min_y)
                 continue;
-            double bx0 = body_swept_min_x(b);
-            double by0 = body_swept_min_y(b);
-            double bx1 = body_swept_max_x(b);
-            double by1 = body_swept_max_y(b);
-
-            int against_all = (bx1 - bx0) >= large_w || (by1 - by0) >= large_h;
-            if (against_all) {
-                for (int64_t j = 0; j < w->body_count; j++) {
-                    if (j == i || !w->bodies[j])
-                        continue;
-                    if (!pair_scratch_push(w, (int)i, (int)j)) {
-                        use_exhaustive = 1;
-                        break;
-                    }
-                }
-                continue;
+            int ii = (int)a->world_index;
+            int jj = (int)b->world_index;
+            if (ii > jj) {
+                int swap = ii;
+                ii = jj;
+                jj = swap;
             }
-
-            int cx0 = (int)((bx0 - wx0) / cell_w);
-            if (cx0 < 0)
-                cx0 = 0;
-            if (cx0 >= grid_dim)
-                cx0 = grid_dim - 1;
-            int cy0 = (int)((by0 - wy0) / cell_h);
-            if (cy0 < 0)
-                cy0 = 0;
-            if (cy0 >= grid_dim)
-                cy0 = grid_dim - 1;
-            int cx1 = (int)((bx1 - wx0) / cell_w);
-            if (cx1 < 0)
-                cx1 = 0;
-            if (cx1 >= grid_dim)
-                cx1 = grid_dim - 1;
-            int cy1 = (int)((by1 - wy0) / cell_h);
-            if (cy1 < 0)
-                cy1 = 0;
-            if (cy1 >= grid_dim)
-                cy1 = grid_dim - 1;
-
-            int spilled = 0;
-            for (int cy = cy0; cy <= cy1 && !spilled; cy++) {
-                for (int cx = cx0; cx <= cx1; cx++) {
-                    int cell = cy * grid_dim + cx;
-                    int cnt = grid_count[cell];
-                    /* Pair this body with everyone already registered in the cell. */
-                    for (int k = 0; k < cnt; k++) {
-                        if (!pair_scratch_push(w, (int)i, (int)grid_bodies[cell][k])) {
-                            use_exhaustive = 1;
-                            break;
-                        }
-                    }
-                    if (use_exhaustive)
-                        break;
-                    if (cnt < BPG_CELL_MAX) {
-                        grid_bodies[cell][cnt] = (int32_t)i;
-                        grid_count[cell] = cnt + 1;
-                    } else {
-                        /* Cell full: spill this body to the against-all set rather
-                         * than forcing a whole-world exhaustive pass. */
-                        for (int64_t j = 0; j < w->body_count; j++) {
-                            if (j == i || !w->bodies[j])
-                                continue;
-                            if (!pair_scratch_push(w, (int)i, (int)j)) {
-                                use_exhaustive = 1;
-                                break;
-                            }
-                        }
-                        spilled = 1;
-                        break;
-                    }
-                }
-                if (use_exhaustive)
-                    break;
-            }
-        }
-
-        if (use_exhaustive) {
-            /* Scratch could not grow — preserve correctness with the exhaustive
-             * O(n^2) pair pass. */
-            for (int ii = 0; ii < w->body_count; ii++) {
-                for (int jj = ii + 1; jj < w->body_count; jj++)
-                    maybe_resolve_pair(w, ii, jj, dt);
-            }
-        } else if (w->pair_scratch_count > 0) {
-            /* --- Step 3c: Sort collected pairs and resolve each unique pair once.
-             * Sorting by packed (ii, jj) key gives a deterministic sweep order so
-             * VM and native runs agree. */
-            qsort(w->pair_scratch, (size_t)w->pair_scratch_count, sizeof(uint64_t), pair_key_cmp);
-            uint64_t prev_key = ~(uint64_t)0;
-            for (int64_t p = 0; p < w->pair_scratch_count; p++) {
-                uint64_t key = w->pair_scratch[p];
-                if (p > 0 && key == prev_key)
-                    continue;
-                prev_key = key;
-                int ii = (int)(uint32_t)(key >> 32);
-                int jj = (int)(uint32_t)(key & 0xFFFFFFFFu);
-                maybe_resolve_pair(w, ii, jj, dt);
-            }
+            maybe_resolve_pair(w, ii, jj, dt);
         }
     }
 
-#undef BPG_BASE_DIM
-#undef BPG_MAX_DIM
-#undef BPG_CELL_MAX
+    /* Sleeping is deliberately limited to unconstrained zero-gravity worlds.
+       That conservative policy makes integration skipping safe without a full
+       contact-island/support graph: gravity, springs, and joints always wake. */
+    for (i = 0; i < w->body_count; ++i) {
+        rt_body_impl *b = w->bodies[i];
+        if (!b || b->inv_mass == 0.0)
+            continue;
+        if (!sleeping_allowed || fabs(b->vx) > PHYSICS2D_SLEEP_SPEED ||
+            fabs(b->vy) > PHYSICS2D_SLEEP_SPEED) {
+            rt_physics2d_body_wake(b);
+            continue;
+        }
+        b->sleep_time = rt_physics2d_saturating_add(b->sleep_time, dt);
+        if (b->sleep_time >= PHYSICS2D_SLEEP_DELAY) {
+            b->vx = 0.0;
+            b->vy = 0.0;
+            b->is_sleeping = 1;
+        }
+    }
 }
 
 /// @brief Advance the physics world by `dt` seconds.
-/// @details Non-finite and non-positive values only clear stale contacts. Step
-///          calls up to one second preserve the historical single-step
-///          semi-implicit Euler behavior. Larger hitch values are capped and
-///          split into bounded substeps so joints and collision detection never
-///          receive an unbounded timestep after a pause.
+/// @details Non-finite and non-positive values only clear stale contacts. Positive
+///          elapsed time joins any deferred remainder; each call consumes at most
+///          eight seconds in one-second-or-smaller substeps and preserves the rest
+///          for a later positive Step call instead of discarding it.
 /// @param obj Opaque Physics2D.World handle to advance; `NULL` is ignored and a
 ///            non-null class mismatch traps.
 /// @param dt Requested elapsed simulation time in seconds.
@@ -1013,20 +952,22 @@ void rt_physics2d_world_step(void *obj, double dt) {
     world_clear_contacts(w);
     if (dt <= 0.0 || !isfinite(dt))
         return;
-    if (dt > PHYSICS2D_MAX_PUBLIC_STEP_DT)
-        dt = PHYSICS2D_MAX_PUBLIC_STEP_DT;
+    double available_dt = w->pending_dt > DBL_MAX - dt ? DBL_MAX : w->pending_dt + dt;
+    double consumed_dt =
+        available_dt > PHYSICS2D_MAX_PUBLIC_STEP_DT ? PHYSICS2D_MAX_PUBLIC_STEP_DT : available_dt;
 
-    int substeps = (int)(dt / PHYSICS2D_MAX_SUBSTEP_DT);
-    if ((double)substeps * PHYSICS2D_MAX_SUBSTEP_DT < dt)
+    int substeps = (int)(consumed_dt / PHYSICS2D_MAX_SUBSTEP_DT);
+    if ((double)substeps * PHYSICS2D_MAX_SUBSTEP_DT < consumed_dt)
         substeps++;
     if (substeps < 1)
         substeps = 1;
     if (substeps > PHYSICS2D_MAX_SUBSTEPS)
         substeps = PHYSICS2D_MAX_SUBSTEPS;
-    double sub_dt = dt / (double)substeps;
+    double sub_dt = consumed_dt / (double)substeps;
 
     int64_t force_count = w->body_count;
     if (!ensure_force_capacity(w, force_count)) {
+        w->pending_dt = available_dt;
         rt_trap("Physics2D.World.Step: force snapshot allocation failed");
         return;
     }
@@ -1045,6 +986,7 @@ void rt_physics2d_world_step(void *obj, double dt) {
         }
         physics2d_world_step_once(obj, w, sub_dt);
     }
+    w->pending_dt = available_dt - consumed_dt;
 }
 
 /// @brief Insert a body into the world's simulation list. The world retains the body; remove
@@ -1083,7 +1025,8 @@ void rt_physics2d_world_add(void *obj, void *body) {
         rt_trap("Physics2D.World.Add: body count exceeds solver index range");
         return;
     }
-    if (!ensure_body_capacity(w, w->body_count + 1)) {
+    if (!ensure_body_capacity(w, w->body_count + 1) ||
+        !ensure_broadphase_capacity(w, w->body_count + 1)) {
         rt_trap("Physics2D.World.Add: body storage allocation failed");
         return;
     }
@@ -1091,6 +1034,7 @@ void rt_physics2d_world_add(void *obj, void *body) {
     bd->owner_world = w;
     bd->world_index = w->body_count;
     w->bodies[w->body_count++] = bd;
+    w->broadphase_order[w->broadphase_count++] = bd;
 }
 
 /// @brief Detach and release a body retained by the world.
@@ -1135,6 +1079,18 @@ void rt_physics2d_world_remove(void *obj, void *body) {
 
     world_remove_joints_for_body(w, bd);
     world_clear_contacts(w);
+    for (int64_t k = 0; k < w->broadphase_count; ++k) {
+        if (w->broadphase_order[k] != bd)
+            continue;
+        int64_t remaining = w->broadphase_count - k - 1;
+        if (remaining > 0) {
+            memmove(&w->broadphase_order[k],
+                    &w->broadphase_order[k + 1],
+                    (size_t)remaining * sizeof(rt_body_impl *));
+        }
+        w->broadphase_order[--w->broadphase_count] = NULL;
+        break;
+    }
     bd->owner_world = NULL;
     bd->world_index = -1;
     if (rt_obj_release_check0(bd))
@@ -1172,6 +1128,8 @@ void rt_physics2d_world_set_gravity(void *obj, double gx, double gy) {
         return;
     w->gravity_x = finite_or(gx, 0.0);
     w->gravity_y = finite_or(gy, 0.0);
+    for (int64_t i = 0; i < w->body_count; ++i)
+        rt_physics2d_body_wake(w->bodies[i]);
 }
 
 /// @brief Number of contact pairs resolved during the most recent world step.
@@ -1305,6 +1263,8 @@ void *rt_physics2d_body_new(double x, double y, double w, double h, double mass)
     b->collision_mask = INT64_C(-1); /* Default: collide with all 64 layers */
     b->radius = 0.0;
     b->is_circle = 0;
+    b->sleep_time = 0.0;
+    b->is_sleeping = 0;
     b->owner_world = NULL;
     b->world_index = -1;
     sanitize_body_state(b);
@@ -1414,6 +1374,7 @@ void rt_physics2d_body_set_pos(void *obj, double x, double y) {
     body->y = y;
     body->prev_x = x;
     body->prev_y = y;
+    rt_physics2d_body_wake(body);
     sanitize_body_state(body);
 }
 
@@ -1443,6 +1404,7 @@ void rt_physics2d_body_set_vel(void *obj, double vx, double vy) {
     }
     body->vx = vx;
     body->vy = vy;
+    rt_physics2d_body_wake(body);
     sanitize_body_state(body);
 }
 
@@ -1467,6 +1429,8 @@ void rt_physics2d_body_apply_force(void *obj, double fx, double fy) {
      * ApplyForce calls in the same frame combine correctly. */
     body->fx = rt_physics2d_saturating_add(body->fx, fx);
     body->fy = rt_physics2d_saturating_add(body->fy, fy);
+    if (fx != 0.0 || fy != 0.0)
+        rt_physics2d_body_wake(body);
     sanitize_body_state(body);
 }
 
@@ -1493,6 +1457,8 @@ void rt_physics2d_body_apply_impulse(void *obj, double ix, double iy) {
      * equivalently: Δv = impulse * inv_mass. */
     b->vx = rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul(ix, b->inv_mass));
     b->vy = rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul(iy, b->inv_mass));
+    if (ix != 0.0 || iy != 0.0)
+        rt_physics2d_body_wake(b);
     sanitize_body_state(b);
 }
 

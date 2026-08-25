@@ -568,3 +568,21 @@ static inline int64_t isqrt64(int64_t n) {
 /// @return A new implementation with generation zero and a unique cache
 ///         identity, or null when construction fails.
 rt_pixels_impl *pixels_alloc(int64_t width, int64_t height);
+
+/// @brief Extract, nearest-scale, optionally flip, tint, and alpha-modulate a
+///        source region in one destination pass.
+/// @details Internal rendering helper; rotation is intentionally separate.
+#ifdef __cplusplus
+extern "C"
+#endif
+    void *rt_pixels_transform_region_nearest(void *pixels,
+                                             int64_t source_x,
+                                             int64_t source_y,
+                                             int64_t source_width,
+                                             int64_t source_height,
+                                             int64_t destination_width,
+                                             int64_t destination_height,
+                                             int8_t flip_x,
+                                             int8_t flip_y,
+                                             int64_t tint_color,
+                                             int64_t alpha);

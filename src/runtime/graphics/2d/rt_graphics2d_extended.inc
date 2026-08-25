@@ -139,6 +139,10 @@ typedef struct {
     uint32_t colors[256];
     uint8_t defined[256];
     int64_t count;
+    uint32_t lookup_keys[1024];
+    uint32_t lookup_values[1024];
+    uint32_t lookup_revisions[1024];
+    uint32_t revision;
 } rt_palette2d_impl;
 
 typedef struct {
@@ -2148,6 +2152,7 @@ void *rt_palette2d_new(void) {
         RT2D_PALETTE_CLASS_ID, (int64_t)sizeof(rt_palette2d_impl));
     if (!impl)
         return NULL;
+    impl->revision = 1;
     return impl;
 }
 
@@ -2162,10 +2167,17 @@ void rt_palette2d_set_color(void *palette, int64_t index, int64_t rgba) {
                                   : NULL;
     if (!impl || index < 0 || index >= 256)
         return;
-    impl->colors[index] = rt_pixels_rgba_or_tagged_color_to_rgba(rgba);
+    uint32_t color = rt_pixels_rgba_or_tagged_color_to_rgba(rgba);
+    if (impl->defined[index] && impl->colors[index] == color)
+        return;
+    impl->colors[index] = color;
     impl->defined[index] = 1;
     if (index + 1 > impl->count)
         impl->count = index + 1;
+    if (++impl->revision == 0) {
+        memset(impl->lookup_revisions, 0, sizeof(impl->lookup_revisions));
+        impl->revision = 1;
+    }
 }
 
 /// @brief Return the RGBA color at `index`, or 0 if out of range or beyond `count`.
@@ -2275,6 +2287,16 @@ void *rt_palette2d_apply(void *palette, void *pixels) {
     for (int64_t y = 0; y < src_pixels->height; y++) {
         for (int64_t x = 0; x < src_pixels->width; x++) {
             uint32_t src = src_pixels->data[y * src_pixels->width + x];
+            uint32_t hash = src;
+            hash ^= hash >> 16u;
+            hash *= UINT32_C(0x7feb352d);
+            hash ^= hash >> 15u;
+            size_t lookup_slot = (size_t)hash & 1023u;
+            if (impl->lookup_revisions[lookup_slot] == impl->revision &&
+                impl->lookup_keys[lookup_slot] == src) {
+                dst_pixels->data[y * src_pixels->width + x] = impl->lookup_values[lookup_slot];
+                continue;
+            }
             uint32_t best = src;
             uint64_t best_distance = UINT64_MAX;
             for (int64_t i = 0; i < candidate_count; i++) {
@@ -2290,6 +2312,9 @@ void *rt_palette2d_apply(void *palette, void *pixels) {
                     best = candidate;
                 }
             }
+            impl->lookup_keys[lookup_slot] = src;
+            impl->lookup_values[lookup_slot] = best;
+            impl->lookup_revisions[lookup_slot] = impl->revision;
             dst_pixels->data[y * src_pixels->width + x] = best;
         }
     }

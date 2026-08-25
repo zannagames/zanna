@@ -355,8 +355,8 @@ void rt_scene_add(void *scene, void *node);
 void rt_scene_remove(void *scene, void *node);
 
 /// @brief Find a node in the scene by name.
-/// @details Includes the implicit root and returns the first exact depth-first
-///          pre-order match.
+/// @details Uses a lazily rebuilt name index, includes the implicit root, and
+///          preserves the first exact depth-first pre-order match for duplicates.
 /// @param scene The Scene object.
 /// @param name The name to search for in the entire scene hierarchy.
 /// @return Borrowed first matching SceneNode, or NULL if not found.
@@ -373,8 +373,8 @@ void *rt_scene_find_option(void *scene, rt_string name);
 /// @brief Draw all nodes in the scene (depth-sorted).
 /// @details Collects visible nodes with sprites, prunes hidden subtrees, and
 ///          sorts globally by ascending depth with traversal order as an
-///          explicit tie-breaker. Scratch allocation is retained by the scene
-///          for later frames.
+///          explicit tie-breaker. The collected/sorted order and its allocation
+///          are retained until structure, visibility, sprite presence, or depth changes.
 /// @param scene The Scene object.
 /// @param canvas The canvas to draw all visible nodes onto, sorted
 ///               by depth. Equal depths preserve traversal order.
