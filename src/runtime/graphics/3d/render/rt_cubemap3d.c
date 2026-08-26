@@ -50,6 +50,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
@@ -92,6 +93,9 @@ static rt_pixels_impl *cubemap_face_pixels_impl(void *pixels) {
 static uint64_t g_next_cubemap_cache_identity = 1;
 
 #define CUBEMAP3D_MAX_FACE_SIZE 32768
+#define CUBEMAP3D_MAX_HDR_FILE_BYTES (256u * 1024u * 1024u)
+#define CUBEMAP3D_MAX_HDR_PIXELS (64u * 1024u * 1024u)
+#define CUBEMAP3D_MAX_HDR_HEADER_BYTES (64u * 1024u)
 
 /// @brief Borrowed six-face view resolved from one fully validated cubemap.
 /// @details Sampling a single filtered direction can require dozens of texel
@@ -780,19 +784,33 @@ static void cubemap_hdr_rgbe_to_float(const uint8_t rgbe[4], float *out_rgb) {
     }
 }
 
-/// @brief Parse the Radiance header; returns the offset of the pixel data and
-///   the image dimensions, or 0 on malformed input. Only the standard "-Y H +X W"
-///   row order is accepted (top-down rows, left-to-right columns).
+/// @brief Canonical dimensions and source scanline orientation from a Radiance header.
+typedef struct cubemap_hdr_layout {
+    int width;
+    int height;
+    int major_count;
+    int minor_count;
+    char major_axis;
+    char minor_axis;
+    char major_sign;
+    char minor_sign;
+} cubemap_hdr_layout;
+
+/// @brief Parse the Radiance header, dimensions, and signed scanline axes.
+/// @details Both LF and CRLF records are accepted. The two resolution descriptors may use either
+///   X/Y order and either sign; decoded pixels are remapped to canonical left-to-right, top-down
+///   storage later.
 /// @param data Borrowed encoded byte buffer.
 /// @param size Number of readable bytes in @p data.
-/// @param out_w Output width, written only after a valid resolution line.
-/// @param out_h Output height, written only after a valid resolution line.
+/// @param out_layout Output layout, written only after a valid resolution line.
 /// @return Byte offset of the first scanline, or zero for a malformed,
 ///   unsupported, truncated, or oversized header.
-static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *out_w, int *out_h) {
+static size_t cubemap_hdr_parse_header(const uint8_t *data,
+                                       size_t size,
+                                       cubemap_hdr_layout *out_layout) {
     size_t pos = 0;
     int saw_format = 0;
-    if (size < 11 || data[0] != '#' || data[1] != '?')
+    if (!data || !out_layout || size < 11 || data[0] != '#' || data[1] != '?')
         return 0;
     while (pos < size) {
         size_t line_start = pos;
@@ -803,6 +821,8 @@ static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *ou
             return 0;
         line_len = pos - line_start;
         pos++; /* consume newline */
+        if (line_len > 0 && data[line_start + line_len - 1u] == '\r')
+            line_len--;
         if (line_len == 0) {
             /* Blank line ends the header; the resolution line follows. */
             break;
@@ -821,26 +841,62 @@ static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *ou
         char line[96];
         size_t line_start = pos;
         size_t line_len;
-        int h = 0;
-        int w = 0;
+        int major_count = 0;
+        int minor_count = 0;
+        int consumed = 0;
+        char major_sign = 0;
+        char major_axis = 0;
+        char minor_sign = 0;
+        char minor_axis = 0;
         while (pos < size && data[pos] != '\n')
             pos++;
         if (pos >= size)
             return 0;
         line_len = pos - line_start;
         pos++;
+        if (line_len > 0 && data[line_start + line_len - 1u] == '\r')
+            line_len--;
         if (line_len == 0 || line_len >= sizeof(line))
             return 0;
         memcpy(line, data + line_start, line_len);
         line[line_len] = 0;
-        if (sscanf(line, "-Y %d +X %d", &h, &w) != 2)
+        if (sscanf(line,
+                   " %c%c %d %c%c %d %n",
+                   &major_sign,
+                   &major_axis,
+                   &major_count,
+                   &minor_sign,
+                   &minor_axis,
+                   &minor_count,
+                   &consumed) != 6)
             return 0;
-        if (w <= 0 || h <= 0 || w > 16384 || h > 16384)
+        while (line[consumed] == ' ' || line[consumed] == '\t')
+            consumed++;
+        if (line[consumed] != 0 || (major_sign != '+' && major_sign != '-') ||
+            (minor_sign != '+' && minor_sign != '-') || (major_axis != 'X' && major_axis != 'Y') ||
+            (minor_axis != 'X' && minor_axis != 'Y') || major_axis == minor_axis ||
+            major_count <= 0 || minor_count <= 0 || major_count > 16384 || minor_count > 16384)
             return 0;
-        *out_w = w;
-        *out_h = h;
+        memset(out_layout, 0, sizeof(*out_layout));
+        out_layout->width = major_axis == 'X' ? major_count : minor_count;
+        out_layout->height = major_axis == 'Y' ? major_count : minor_count;
+        if ((size_t)out_layout->width > CUBEMAP3D_MAX_HDR_PIXELS / (size_t)out_layout->height)
+            return 0;
+        out_layout->major_count = major_count;
+        out_layout->minor_count = minor_count;
+        out_layout->major_axis = major_axis;
+        out_layout->minor_axis = minor_axis;
+        out_layout->major_sign = major_sign;
+        out_layout->minor_sign = minor_sign;
     }
     return pos;
+}
+
+/// @brief Map one source coordinate on a signed Radiance axis to canonical image storage.
+static int cubemap_hdr_axis_coordinate(char axis, char sign, int index, int dimension) {
+    if (axis == 'X')
+        return sign == '+' ? index : dimension - 1 - index;
+    return sign == '-' ? index : dimension - 1 - index;
 }
 
 /// @brief Decode the RGBE scanlines (new RLE, old RLE, and flat forms) into a
@@ -852,32 +908,35 @@ static size_t cubemap_hdr_parse_header(const uint8_t *data, size_t size, int *ou
 /// @return `malloc`-owned row-major `width * height * 3` float channels, or
 ///   `NULL` for malformed data, overflow, or allocation failure.
 static float *cubemap_hdr_decode(const uint8_t *data, size_t size, int *out_w, int *out_h) {
-    int w = 0;
-    int h = 0;
-    size_t pos = cubemap_hdr_parse_header(data, size, &w, &h);
+    cubemap_hdr_layout layout;
+    size_t pos;
     float *rgb;
     uint8_t *row;
+    if (!data || !out_w || !out_h || size > CUBEMAP3D_MAX_HDR_FILE_BYTES)
+        return NULL;
+    pos = cubemap_hdr_parse_header(data, size, &layout);
     if (pos == 0)
         return NULL;
-    if ((size_t)w > SIZE_MAX / (size_t)h / (3u * sizeof(float)))
+    if ((size_t)layout.width > SIZE_MAX / (size_t)layout.height / (3u * sizeof(float)))
         return NULL;
-    rgb = (float *)malloc((size_t)w * (size_t)h * 3u * sizeof(float));
-    row = (uint8_t *)malloc((size_t)w * 4u);
+    rgb = (float *)malloc((size_t)layout.width * (size_t)layout.height * 3u * sizeof(float));
+    row = (uint8_t *)malloc((size_t)layout.minor_count * 4u);
     if (!rgb || !row) {
         free(rgb);
         free(row);
         return NULL;
     }
-    for (int y = 0; y < h; y++) {
+    for (int major = 0; major < layout.major_count; major++) {
         if (pos + 4 > size)
             goto fail;
         if (data[pos] == 2 && data[pos + 1] == 2 &&
-            (((int)data[pos + 2] << 8) | data[pos + 3]) == w && w >= 8 && w <= 32767) {
+            (((int)data[pos + 2] << 8) | data[pos + 3]) == layout.minor_count &&
+            layout.minor_count >= 8 && layout.minor_count <= 32767) {
             /* New-style RLE: four independent component planes. */
             pos += 4;
             for (int c = 0; c < 4; c++) {
                 int x = 0;
-                while (x < w) {
+                while (x < layout.minor_count) {
                     uint8_t count;
                     if (pos >= size)
                         goto fail;
@@ -885,14 +944,14 @@ static float *cubemap_hdr_decode(const uint8_t *data, size_t size, int *out_w, i
                     if (count > 128) {
                         uint8_t value;
                         int run = count - 128;
-                        if (pos >= size || x + run > w)
+                        if (pos >= size || run <= 0 || run > layout.minor_count - x)
                             goto fail;
                         value = data[pos++];
                         for (int i = 0; i < run; i++)
                             row[(size_t)(x + i) * 4u + (size_t)c] = value;
                         x += run;
                     } else {
-                        if (count == 0 || x + count > w || pos + count > size)
+                        if (count == 0 || count > layout.minor_count - x || pos + count > size)
                             goto fail;
                         for (int i = 0; i < count; i++)
                             row[(size_t)(x + i) * 4u + (size_t)c] = data[pos + (size_t)i];
@@ -905,19 +964,23 @@ static float *cubemap_hdr_decode(const uint8_t *data, size_t size, int *out_w, i
             /* Flat / old-style RLE rows. */
             int x = 0;
             int shift = 0;
-            while (x < w) {
+            while (x < layout.minor_count) {
                 uint8_t px[4];
                 if (pos + 4 > size)
                     goto fail;
                 memcpy(px, data + pos, 4);
                 pos += 4;
                 if (px[0] == 1 && px[1] == 1 && px[2] == 1) {
-                    int run = (int)px[3] << shift;
-                    if (x == 0 || x + run > w)
+                    uint64_t run64;
+                    int run;
+                    if (x == 0 || shift < 0 || shift >= 32 ||
+                        (uint64_t)px[3] > ((uint64_t)(layout.minor_count - x) >> shift))
                         goto fail;
+                    run64 = (uint64_t)px[3] << (unsigned)shift;
+                    run = (int)run64;
                     for (int i = 0; i < run; i++)
                         memcpy(&row[(size_t)(x + i) * 4u], &row[(size_t)(x - 1) * 4u], 4u);
-                    x += run;
+                    x += (int)run;
                     shift += 8;
                     if (shift > 24)
                         goto fail;
@@ -928,13 +991,20 @@ static float *cubemap_hdr_decode(const uint8_t *data, size_t size, int *out_w, i
                 }
             }
         }
-        for (int x = 0; x < w; x++)
-            cubemap_hdr_rgbe_to_float(&row[(size_t)x * 4u],
-                                      &rgb[((size_t)y * (size_t)w + (size_t)x) * 3u]);
+        for (int minor = 0; minor < layout.minor_count; minor++) {
+            int x = layout.major_axis == 'X'
+                        ? cubemap_hdr_axis_coordinate('X', layout.major_sign, major, layout.width)
+                        : cubemap_hdr_axis_coordinate('X', layout.minor_sign, minor, layout.width);
+            int y = layout.major_axis == 'Y'
+                        ? cubemap_hdr_axis_coordinate('Y', layout.major_sign, major, layout.height)
+                        : cubemap_hdr_axis_coordinate('Y', layout.minor_sign, minor, layout.height);
+            cubemap_hdr_rgbe_to_float(&row[(size_t)minor * 4u],
+                                      &rgb[((size_t)y * (size_t)layout.width + (size_t)x) * 3u]);
+        }
     }
     free(row);
-    *out_w = w;
-    *out_h = h;
+    *out_w = layout.width;
+    *out_h = layout.height;
     return rgb;
 fail:
     free(rgb);
@@ -983,25 +1053,40 @@ static void cubemap_hdr_sample_panorama(
 ///   direct paths like SceneAsset.Load; the asset manager is the fallback).
 /// @param path Null-terminated filesystem path.
 /// @param out_size Output byte count, reset to zero before opening.
-/// @return `malloc`-owned file bytes, including a one-byte allocation for an
-///   empty file, or `NULL` on open/seek/read/allocation failure.
+/// @return `malloc`-owned nonempty file bytes, or `NULL` on open, bounded-header validation,
+///   seek/read, size-limit, or allocation failure.
 static uint8_t *cubemap_hdr_read_file(const char *path, size_t *out_size) {
-    FILE *f = rt_file_stdio_open_utf8(path, "rb");
-    long len;
+    FILE *f;
+    int64_t len;
     uint8_t *data;
-    *out_size = 0;
+    uint8_t header[CUBEMAP3D_MAX_HDR_HEADER_BYTES];
+    size_t header_size;
+    cubemap_hdr_layout layout;
+    if (!path || !out_size)
+        return NULL;
+    *out_size = 0u;
+    f = rt_file_stdio_open_utf8(path, "rb");
     if (!f)
         return NULL;
-    if (fseek(f, 0, SEEK_END) != 0 || (len = ftell(f)) < 0 || fseek(f, 0, SEEK_SET) != 0) {
+    if (rt_file_stdio_seek64(f, 0, SEEK_END) != 0 || (len = rt_file_stdio_tell64(f)) <= 0 ||
+        (uint64_t)len > (uint64_t)CUBEMAP3D_MAX_HDR_FILE_BYTES ||
+        rt_file_stdio_seek64(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
-    data = (uint8_t *)malloc((size_t)len ? (size_t)len : 1u);
+    header_size = (uint64_t)len < sizeof(header) ? (size_t)len : sizeof(header);
+    if (fread(header, 1, header_size, f) != header_size ||
+        cubemap_hdr_parse_header(header, header_size, &layout) == 0 ||
+        rt_file_stdio_seek64(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    data = (uint8_t *)malloc((size_t)len);
     if (!data) {
         fclose(f);
         return NULL;
     }
-    if (len > 0 && fread(data, 1, (size_t)len, f) != (size_t)len) {
+    if (fread(data, 1, (size_t)len, f) != (size_t)len) {
         free(data);
         fclose(f);
         return NULL;

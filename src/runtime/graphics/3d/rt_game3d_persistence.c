@@ -979,10 +979,13 @@ int8_t rt_game3d_world_load_state(void *obj, rt_string app_name, rt_string slot)
     free(path);
     if (!file)
         return 0;
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
-    if (file_size <= 0 || file_size > (long)PERSIST3D_MAX_BYTES) {
+    if (rt_file_stdio_seek64(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        return 0;
+    }
+    int64_t file_size = rt_file_stdio_tell64(file);
+    if (file_size <= 0 || file_size > (int64_t)PERSIST3D_MAX_BYTES ||
+        rt_file_stdio_seek64(file, 0, SEEK_SET) != 0) {
         fclose(file);
         return 0;
     }

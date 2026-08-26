@@ -1330,6 +1330,7 @@ static uint32_t *g_navagent_batch_bucket_visit_stamps = NULL;
 static uint32_t g_navagent_batch_bucket_capacity = 0;
 static uint32_t g_navagent_batch_bucket_visit_epoch = 0;
 static int g_navagent_batch_active = 0;
+static int8_t g_navagent_test_force_batch_bucket_alloc_failure = 0;
 
 /// @brief Grow the reusable selected-agent staging array.
 /// @param needed Minimum number of batch-item records required.
@@ -1423,7 +1424,7 @@ static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
     uint32_t capacity = g_navagent_batch_bucket_capacity;
     int32_t *heads;
     uint32_t *stamps;
-    if (snapshot_count < 0)
+    if (snapshot_count < 0 || g_navagent_test_force_batch_bucket_alloc_failure)
         return 0;
     if ((uint64_t)snapshot_count <= (uint64_t)capacity / 2u && capacity > 0)
         return 1;
@@ -1838,6 +1839,11 @@ int64_t rt_navagent3d_grid_bucket_capacity_for_test(void) {
 /// @brief Test-only unique bucket count from the most recent live-grid query.
 int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void) {
     return g_navagent3d_last_unique_bucket_visits;
+}
+
+/// @brief Test-only deterministic failure injection for batch bucket preflight.
+void rt_navagent3d_test_set_batch_bucket_alloc_failure(int8_t enabled) {
+    g_navagent_test_force_batch_bucket_alloc_failure = enabled ? 1 : 0;
 }
 
 /// @brief Derive "close enough to this corner" distance from the agent's radius. Half
@@ -2373,7 +2379,8 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
     registry_count = (int32_t)g_navagent3d_registry_count;
     if (!navagent_batch_reserve_items((int32_t)agent_count) ||
         !navagent_batch_reserve_snapshots(registry_count) ||
-        !navagent_batch_reserve_neighbors(registry_count))
+        !navagent_batch_reserve_neighbors(registry_count) ||
+        !navagent_batch_reserve_buckets(registry_count))
         return 0;
 
     for (int64_t i = 0; i < agent_count; i++) {

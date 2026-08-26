@@ -288,9 +288,9 @@ static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *
     }
 }
 
-/// @brief Allocate a canvas-tracked temp buffer and copy @p instance_count 4×4 instance
-///   matrices into it (overflow-checked), used when deferring an instanced draw. Traps with
-///   @p trap_message on allocation failure.
+/// @brief Allocate frame-arena storage and copy @p instance_count 4×4 instance matrices into it
+///   (overflow-checked), used when deferring an instanced draw. Traps with @p trap_message on
+///   allocation failure.
 /// @details When @p union_local_min / @p union_local_max are provided, the copy loop also
 ///   accumulates the union of every instance's transformed AABB into
 ///   @p out_world_min / @p out_world_max (mirroring the skip-invalid-transform contract of
@@ -299,6 +299,8 @@ static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *
 ///   contributed a finite bound.
 /// @param c Borrowed Canvas3D providing camera-relative matrix conversion and counters.
 /// @param matrices Borrowed source array containing @p instance_count matrices.
+/// @param source_indices Optional borrowed remap selecting source matrices in output order; `NULL`
+///   selects the contiguous range starting at zero.
 /// @param instance_count Positive number of matrices to copy.
 /// @param trap_message Optional diagnostic used for overflow, allocation, or
 ///   conversion failure; a default instancing diagnostic is used when `NULL`.
@@ -311,6 +313,7 @@ static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *
 /// @return The snapshot buffer, or NULL for invalid arguments.
 static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
                                                       const float *matrices,
+                                                      const int32_t *source_indices,
                                                       int32_t instance_count,
                                                       const char *trap_message,
                                                       const float *union_local_min,
@@ -333,7 +336,7 @@ static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
         return NULL;
     }
     matrix_float_count = (size_t)instance_count * 16u;
-    snapshot = (float *)malloc(matrix_float_count * sizeof(*snapshot));
+    snapshot = (float *)canvas3d_frame_arena_alloc(c, matrix_float_count * sizeof(*snapshot));
     if (!snapshot) {
         canvas3d_record_submission_failure(c, RT_CANVAS3D_SUBMISSION_INSTANCE_FAILURE);
         rt_trap(trap_message ? trap_message
@@ -341,9 +344,14 @@ static float *canvas3d_alloc_instance_matrix_snapshot(rt_canvas3d *c,
         return NULL;
     }
     for (int32_t i = 0; i < instance_count; ++i) {
+        int32_t source_index = source_indices ? source_indices[i] : i;
+        if (source_index < 0) {
+            rt_trap(trap_message ? trap_message
+                                 : "Canvas3D.DrawMeshInstanced: invalid source index");
+            return NULL;
+        }
         if (!canvas3d_copy_mat4_f32_for_frame(
-                c, &matrices[(size_t)i * 16u], &snapshot[(size_t)i * 16u])) {
-            free(snapshot);
+                c, &matrices[(size_t)source_index * 16u], &snapshot[(size_t)i * 16u])) {
             rt_trap(trap_message
                         ? trap_message
                         : "Canvas3D.DrawMeshInstanced: rebased matrix is out of float range");
@@ -433,6 +441,7 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
     float *queued_instance_matrices = canvas3d_alloc_instance_matrix_snapshot(
         c,
         instance_matrices,
+        motion_indices,
         instance_count,
         "Canvas3D.DrawMeshInstanced: instance matrix allocation failed",
         local_bounds_min,
@@ -444,12 +453,6 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
         canvas3d_instanced_release_refs(b);
         return;
     }
-    if (!canvas3d_track_temp_buffer(c, queued_instance_matrices)) {
-        free(queued_instance_matrices);
-        canvas3d_instanced_release_refs(b);
-        return;
-    }
-
     float *queued_prev_instance_matrices = NULL;
     int needs_motion_vectors = canvas3d_frame_needs_motion_vectors(c);
     if (needs_motion_vectors) {
@@ -457,6 +460,7 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
             queued_prev_instance_matrices = canvas3d_alloc_instance_matrix_snapshot(
                 c,
                 prev_instance_matrices,
+                motion_indices,
                 instance_count,
                 "Canvas3D.DrawMeshInstanced: previous instance matrix allocation failed",
                 NULL,
@@ -465,21 +469,14 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
                 NULL,
                 NULL);
         } else {
-            queued_prev_instance_matrices =
-                (float *)malloc(matrix_float_count * sizeof(*queued_prev_instance_matrices));
+            queued_prev_instance_matrices = (float *)canvas3d_frame_arena_alloc(
+                c, matrix_float_count * sizeof(*queued_prev_instance_matrices));
         }
         if (!queued_prev_instance_matrices) {
             canvas3d_record_submission_failure(c, RT_CANVAS3D_SUBMISSION_INSTANCE_FAILURE);
-            canvas3d_release_tracked_temp_buffer(c, queued_instance_matrices);
             canvas3d_instanced_release_refs(b);
             if (!(has_prev_instance_matrices && prev_instance_matrices))
                 rt_trap("Canvas3D.DrawMeshInstanced: previous instance matrix allocation failed");
-            return;
-        }
-        if (!canvas3d_track_temp_buffer(c, queued_prev_instance_matrices)) {
-            canvas3d_release_tracked_temp_buffer(c, queued_instance_matrices);
-            free(queued_prev_instance_matrices);
-            canvas3d_instanced_release_refs(b);
             return;
         }
     }
@@ -522,8 +519,6 @@ static void canvas3d_queue_instanced_hardware(const canvas3d_instanced_batch_t *
             has_world_bounds ? world_bounds_min : NULL,
             has_world_bounds ? world_bounds_max : NULL)) {
         rt_trap("Canvas3D.DrawMeshInstanced: deferred draw queue allocation failed");
-        canvas3d_release_tracked_temp_buffer(c, queued_prev_instance_matrices);
-        canvas3d_release_tracked_temp_buffer(c, queued_instance_matrices);
         canvas3d_instanced_release_refs(b);
         return;
     }
@@ -604,28 +599,18 @@ static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
     float inv_w = extent_x > 1e-6f ? (float)cells / (extent_x * 1.0001f) : 0.0f;
     float inv_d = extent_z > 1e-6f ? (float)cells / (extent_z * 1.0001f) : 0.0f;
 
-    /* Staging: bucket-contiguous matrices (+ optional prev) and the original index remap
-     * that keeps per-instance motion-history keys stable across the split. The hardware
-     * path snapshots into frame-owned buffers, so this staging is freed before returning. */
-    size_t matrices_bytes = (size_t)instance_count * 16u * sizeof(float);
-    float *staged = (float *)malloc(matrices_bytes);
-    float *staged_prev = (has_prev_instance_matrices && prev_instance_matrices)
-                             ? (float *)malloc(matrices_bytes)
-                             : NULL;
-    int32_t *remap = (int32_t *)malloc((size_t)instance_count * sizeof(int32_t));
-    int32_t *cell_of = (int32_t *)malloc((size_t)instance_count * sizeof(int32_t));
-    int32_t *starts = (int32_t *)calloc((size_t)cell_count + 1u, sizeof(int32_t));
-    int32_t *cursor = (int32_t *)malloc((size_t)cell_count * sizeof(int32_t));
-    if (!staged || !remap || !cell_of || !starts || !cursor ||
-        (has_prev_instance_matrices && prev_instance_matrices && !staged_prev)) {
-        free(staged);
-        free(staged_prev);
-        free(remap);
-        free(cell_of);
-        free(starts);
-        free(cursor);
+    /* Build only a bucket-contiguous original-index remap. Hardware submission gathers matrices
+     * directly from the caller array into final frame-arena snapshots, avoiding staging copies. */
+    int32_t *remap =
+        (int32_t *)canvas3d_frame_arena_alloc(b->c, (size_t)instance_count * sizeof(int32_t));
+    int32_t *starts =
+        (int32_t *)canvas3d_frame_arena_alloc(b->c, ((size_t)cell_count + 1u) * sizeof(int32_t));
+    int32_t *cursor =
+        (int32_t *)canvas3d_frame_arena_alloc(b->c, (size_t)cell_count * sizeof(int32_t));
+    if (!remap || !starts || !cursor) {
         return 0; /* fall back to the single wide batch rather than failing the draw */
     }
+    memset(starts, 0, ((size_t)cell_count + 1u) * sizeof(int32_t));
     for (int32_t i = 0; i < instance_count; i++) {
         float tx = instance_matrices[(size_t)i * 16u + 3u];
         float tz = instance_matrices[(size_t)i * 16u + 11u];
@@ -639,20 +624,25 @@ static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
             cz = 0;
         if (cz >= cells)
             cz = cells - 1;
-        cell_of[i] = cz * cells + cx;
-        starts[cell_of[i] + 1]++;
+        starts[cz * cells + cx + 1]++;
     }
     for (int32_t cidx = 0; cidx < cell_count; cidx++)
         starts[cidx + 1] += starts[cidx];
     memcpy(cursor, starts, (size_t)cell_count * sizeof(int32_t));
     for (int32_t i = 0; i < instance_count; i++) {
-        int32_t dst = cursor[cell_of[i]]++;
-        memcpy(
-            &staged[(size_t)dst * 16u], &instance_matrices[(size_t)i * 16u], 16u * sizeof(float));
-        if (staged_prev)
-            memcpy(&staged_prev[(size_t)dst * 16u],
-                   &prev_instance_matrices[(size_t)i * 16u],
-                   16u * sizeof(float));
+        float tx = instance_matrices[(size_t)i * 16u + 3u];
+        float tz = instance_matrices[(size_t)i * 16u + 11u];
+        int32_t cx = (int32_t)((tx - min_x) * inv_w);
+        int32_t cz = (int32_t)((tz - min_z) * inv_d);
+        if (cx < 0)
+            cx = 0;
+        if (cx >= cells)
+            cx = cells - 1;
+        if (cz < 0)
+            cz = 0;
+        if (cz >= cells)
+            cz = cells - 1;
+        int32_t dst = cursor[cz * cells + cx]++;
         remap[dst] = i;
     }
     for (int32_t cidx = 0; cidx < cell_count; cidx++) {
@@ -662,9 +652,9 @@ static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
             continue;
         canvas3d_queue_instanced_hardware(b,
                                           base_cmd,
-                                          &staged[(size_t)begin * 16u],
+                                          instance_matrices,
                                           count,
-                                          staged_prev ? &staged_prev[(size_t)begin * 16u] : NULL,
+                                          prev_instance_matrices,
                                           has_prev_instance_matrices,
                                           explicit_local_bounds_min,
                                           explicit_local_bounds_max,
@@ -674,12 +664,6 @@ static int canvas3d_queue_instanced_split(const canvas3d_instanced_batch_t *b,
                                           instance_matrices,
                                           instance_count);
     }
-    free(staged);
-    free(staged_prev);
-    free(remap);
-    free(cell_of);
-    free(starts);
-    free(cursor);
     return 1;
 }
 
@@ -1180,16 +1164,12 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
     }
 
     bytes = (size_t)instance_count * sizeof(*snapshot);
-    snapshot = (vgfx3d_particle_instance_t *)malloc(bytes);
+    snapshot = (vgfx3d_particle_instance_t *)canvas3d_frame_arena_alloc(c, bytes);
     if (!snapshot) {
         rt_trap("Particles3D.Draw: compact instance allocation failed");
         return 0;
     }
     memcpy(snapshot, instances, bytes);
-    if (!canvas3d_track_temp_buffer(c, snapshot)) {
-        free(snapshot);
-        return 0;
-    }
 
     batch.c = c;
     batch.mat = mat;
@@ -1201,7 +1181,6 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
                                       CANVAS3D_DRAW_RESOURCE_ROLLBACK_CAP) ||
         !canvas3d_track_material_resources(
             c, mat, batch.new_refs, &batch.new_ref_count, CANVAS3D_DRAW_RESOURCE_ROLLBACK_CAP)) {
-        canvas3d_release_tracked_temp_buffer(c, snapshot);
         canvas3d_instanced_release_refs(&batch);
         return 0;
     }
@@ -1235,7 +1214,6 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
             bounds_max,
             bounds_min,
             bounds_max)) {
-        canvas3d_release_tracked_temp_buffer(c, snapshot);
         canvas3d_instanced_release_refs(&batch);
         return 0;
     }

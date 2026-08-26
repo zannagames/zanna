@@ -262,6 +262,12 @@ void rt_navmesh3d_test_reset_path_peak_concurrency(void *navmesh);
 /// @param navmesh NavMesh3D handle to inspect.
 /// @return Peak overlapping query count, or zero for an invalid handle.
 int64_t rt_navmesh3d_test_get_path_peak_concurrency(void *navmesh);
+
+/// @brief Return the number of path workspaces retaining corridor and portal scratch buffers.
+int64_t rt_navmesh3d_test_get_ready_path_scratch_count(void *navmesh);
+
+/// @brief Return the number of currently available path-workspace gate permits.
+int64_t rt_navmesh3d_test_get_path_workspace_permits(void *navmesh);
 /// @brief Test-only: read triangle-reference probes from the latest SamplePosition query.
 /// @details Duplicate cell references and bounded-fallback probes are included conservatively.
 /// @param navmesh NavMesh3D handle to inspect.

@@ -19,7 +19,8 @@
 //===----------------------------------------------------------------------===//
 
 /// @file
-/// @brief Implements Scene3D lifecycle, hierarchy access, visibility authoring, draw, and telemetry.
+/// @brief Implements Scene3D lifecycle, hierarchy access, visibility authoring, draw, and
+/// telemetry.
 /// @details This include owns scene construction/finalization, root-level
 /// mutations, name lookup, portal/PVS definitions, camera-dependent LOD
 /// selection, draw-state preservation, binding synchronization, and counters.
@@ -86,9 +87,17 @@ static void rt_scene3d_finalize(void *obj) {
     free(scene->spatial_index.entries);
     free(scene->spatial_index.entry_indices);
     free(scene->spatial_index.nodes);
+    free(scene->spatial_index.query_stack);
+    free(scene->spatial_index.query_order_scratch);
+    free(scene->spatial_index.dirty_nodes);
+    free(scene->spatial_index.dirty_walk_stack);
     scene->spatial_index.entries = NULL;
     scene->spatial_index.entry_indices = NULL;
     scene->spatial_index.nodes = NULL;
+    scene->spatial_index.query_stack = NULL;
+    scene->spatial_index.query_order_scratch = NULL;
+    scene->spatial_index.dirty_nodes = NULL;
+    scene->spatial_index.dirty_walk_stack = NULL;
     scene->spatial_index.count = 0;
     scene->spatial_index.capacity = 0;
     scene->spatial_index.entry_index_capacity = 0;
@@ -221,8 +230,8 @@ int64_t rt_scene3d_adopt_baked_animations(void *obj, void *source) {
     }
     if (fresh_count == 0)
         return 0;
-    merged = (void **)calloc(
-        (size_t)dst->baked_animation_count + (size_t)fresh_count, sizeof(void *));
+    merged =
+        (void **)calloc((size_t)dst->baked_animation_count + (size_t)fresh_count, sizeof(void *));
     if (!merged)
         return 0;
     for (int32_t i = 0; i < dst->baked_animation_count; ++i)

@@ -52,6 +52,8 @@ static rt_navmesh3d *navmesh3d_import_v2_after_magic(FILE *f) {
     }
     memset(nm, 0, sizeof(*nm));
     rt_obj_set_finalizer(nm, navmesh3d_finalizer);
+    if (!navmesh3d_init_path_workspace_gate(nm))
+        goto fail;
     if (!navmesh3d_read_f64(f, &agent_radius) || !navmesh3d_read_f64(f, &agent_height) ||
         !navmesh3d_read_f64(f, &max_slope) || !navmesh3d_read_f64(f, &tile_size) ||
         !navmesh3d_read_u8(f, &skip_gate) || !navmesh3d_read_i32(f, &vc) || vc < 0 ||
@@ -912,6 +914,13 @@ static void *navmesh3d_voxel_bake(
     nm->max_slope = slope;
     nm->skip_portal_width_gate = 1; /* clearance comes from the radius erosion in step 4 */
     rt_obj_set_finalizer(nm, navmesh3d_finalizer);
+    if (!navmesh3d_init_path_workspace_gate(nm)) {
+        free(cell_h);
+        free(cell_walk);
+        free(corner_vid);
+        navmesh3d_free_partial(nm);
+        return NULL;
+    }
 
     if (cell_count > (size_t)INT64_MAX / 2u) {
         free(cell_h);

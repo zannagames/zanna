@@ -235,13 +235,21 @@ APIs:
 - `rt_navmesh3d_test_get_last_sample_probe_count`;
 - `rt_navmesh3d_test_get_last_sample_used_fallback`;
 - `rt_navmesh3d_test_reset_path_peak_concurrency`;
-- `rt_navmesh3d_test_get_path_peak_concurrency`.
+- `rt_navmesh3d_test_get_path_peak_concurrency`;
+- `rt_navmesh3d_test_get_ready_path_scratch_count`;
+- `rt_navmesh3d_test_get_path_workspace_permits`;
+- `rt_navagent3d_test_set_batch_bucket_alloc_failure`;
+- `rt_scene3d_test_set_precise_hit_growth_failure`.
 
 The first two inject failure before staged state can be published. The third
 executes production grid-dimension arithmetic without allocating the resulting
-grid. The remaining hooks report the latest sample's conservative probe/fallback
-metrics and the resettable peak count of overlapping A* workspace owners. They
-exist solely to make requirements 39–43 deterministic under CTest.
+grid. The next four report the latest sample's conservative probe/fallback
+metrics and the resettable peak count of overlapping A* workspace owners. Those
+hooks exist solely to make requirements 39–43 deterministic under CTest.
+The added scratch/permit readers verify that bounded path queries block without
+spinning and retain their corridor/funnel work arrays. The two failure injectors
+prove that NavAgent3D batch preflight and precise SceneGraph collect-all queries
+remain transactional when native result storage cannot grow.
 
 ### Particles3D timing and terminal-frame ABI amendment
 

@@ -692,7 +692,7 @@ void mark_dirty(rt_scene_node3d *node) {
     if (!node)
         return;
     node->world_dirty = 1;
-    scene3d_mark_spatial_refit_dirty(node->owner_scene);
+    scene3d_mark_spatial_refit_dirty(node->owner_scene, node);
 }
 
 /// @brief Recompute a single node's world matrix after its parent has already been refreshed.

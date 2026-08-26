@@ -32,6 +32,7 @@
 
 extern "C" int64_t rt_navagent3d_grid_bucket_capacity_for_test(void);
 extern "C" int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void);
+extern "C" void rt_navagent3d_test_set_batch_bucket_alloc_failure(int8_t enabled);
 #include <limits>
 
 extern "C" {
@@ -856,6 +857,34 @@ static void test_navagent_batch_update_is_order_independent() {
     }
 }
 
+static void test_navagent_batch_bucket_failure_is_transactional() {
+    void *mesh = rt_mesh3d_new_plane(20.0, 20.0);
+    void *navmesh = rt_navmesh3d_build(mesh, 0.4, 1.8);
+    void *agent = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    void *target = rt_vec3_new(6.0, 0.0, 0.0);
+    rt_navagent3d_set_target(agent, target);
+    auto *layout = (NavAgent3DTestLayout *)agent;
+    const double repath_before = layout->repath_accum;
+    const double remaining_before = layout->remaining_distance;
+    const double desired_before[3] = {
+        layout->desired_velocity[0], layout->desired_velocity[1], layout->desired_velocity[2]};
+    const int32_t path_index_before = layout->path_index;
+    const int8_t has_path_before = layout->has_path;
+    void *batch[1] = {agent};
+
+    rt_navagent3d_test_set_batch_bucket_alloc_failure(1);
+    EXPECT_TRUE(rt_navagent3d_update_batch(batch, 1, 0.1) == 0,
+                "NavAgent3D batch reports bucket preflight failure");
+    rt_navagent3d_test_set_batch_bucket_alloc_failure(0);
+    EXPECT_TRUE(
+        layout->repath_accum == repath_before && layout->remaining_distance == remaining_before &&
+            layout->path_index == path_index_before && layout->has_path == has_path_before &&
+            layout->desired_velocity[0] == desired_before[0] &&
+            layout->desired_velocity[1] == desired_before[1] &&
+            layout->desired_velocity[2] == desired_before[2],
+        "NavAgent3D bucket preflight failure leaves preparation state untouched");
+}
+
 /// Funnel regression: an L-shaped corridor must string-pull a tight path that
 /// hugs the inside corner and never leaves the walkable area. A wrong-side
 /// left/right assignment in the portal ordering would emit a corner on the far
@@ -911,6 +940,7 @@ int main() {
     test_navagent_character_binding_updates_bound_node();
     test_navagent_avoidance_properties();
     test_navagent_batch_update_is_order_independent();
+    test_navagent_batch_bucket_failure_is_transactional();
     test_navagent_local_avoidance_reduces_head_on_velocity();
     test_navagent_avoidance_breaks_head_on_deadlock();
     test_navagent_crowd_multiple_pairs_cross();

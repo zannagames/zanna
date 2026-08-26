@@ -34,6 +34,13 @@
 #include <math.h>
 #include <stdlib.h>
 
+static int8_t g_scene3d_test_force_precise_hit_growth_failure = 0;
+
+/// @brief Test-only deterministic allocation failure for precise collect-all growth.
+void rt_scene3d_test_set_precise_hit_growth_failure(int8_t enabled) {
+    g_scene3d_test_force_precise_hit_growth_failure = enabled ? 1 : 0;
+}
+
 /// @brief Borrow the scene's pooled query-candidate buffer, transferring ownership to the
 ///   returned list and clearing the scene's slot (avoids per-query allocation). Returns an
 ///   empty list when @p scene is NULL.
@@ -422,6 +429,8 @@ static int scene3d_precise_consider_node(scene3d_precise_acc_t *acc,
             next_capacity = acc->capacity * 2;
         if (next_capacity <= acc->count || (size_t)next_capacity > SIZE_MAX / sizeof(*acc->items))
             return 0;
+        if (g_scene3d_test_force_precise_hit_growth_failure)
+            return 0;
         scene3d_precise_hit_t *grown = (scene3d_precise_hit_t *)realloc(
             acc->items, (size_t)next_capacity * sizeof(scene3d_precise_hit_t));
         if (!grown)
@@ -503,7 +512,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
                         acc, candidates.items[i]->node, origin, direction)) {
                     scene3d_query_return_candidates(s, &candidates);
                     rt_trap(trap_message);
-                    return 1;
+                    return 0;
                 }
             }
             scene3d_query_return_candidates(s, &candidates);
@@ -514,7 +523,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
     if (!scene_node_stack_push(
             &s->query_traversal_stack, &count, &s->query_traversal_stack_capacity, s->root)) {
         rt_trap(trap_message);
-        return 1;
+        return 0;
     }
     while (count > 0) {
         rt_scene_node3d *current = s->query_traversal_stack[--count];
@@ -522,7 +531,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
             continue;
         if (!scene3d_precise_consider_node(acc, current, origin, direction)) {
             rt_trap(trap_message);
-            return 1;
+            return 0;
         }
         for (int32_t i = scene3d_node_child_count(current) - 1; i >= 0; --i) {
             if (!scene_node_stack_push(&s->query_traversal_stack,
@@ -530,7 +539,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
                                        &s->query_traversal_stack_capacity,
                                        current->children[i])) {
                 rt_trap(trap_message);
-                return 1;
+                return 0;
             }
         }
     }
@@ -575,12 +584,15 @@ void *rt_scene3d_raycast_nodes_precise_all(void *obj,
     scene3d_precise_acc_t acc = {0};
     void *result;
     acc.collect_all = 1;
-    scene3d_raycast_precise_walk(s,
-                                 origin_obj,
-                                 direction_obj,
-                                 max_distance,
-                                 "Scene3D.RaycastNodesPreciseAll: result allocation failed",
-                                 &acc);
+    if (!scene3d_raycast_precise_walk(s,
+                                      origin_obj,
+                                      direction_obj,
+                                      max_distance,
+                                      "Scene3D.RaycastNodesPreciseAll: result allocation failed",
+                                      &acc)) {
+        free(acc.items);
+        return NULL;
+    }
     result = rt_seq_new_owned();
     if (!result) {
         free(acc.items);

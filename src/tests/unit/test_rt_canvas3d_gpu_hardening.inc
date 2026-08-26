@@ -167,6 +167,10 @@ static void test_compact_particle_batches_snapshot_instances_and_retain_unit_geo
                 "A finite compact particle batch enters the deferred instanced queue");
     EXPECT_TRUE(canvas.draw_count == 1,
                 "One compact particle batch produces one deferred hardware draw");
+    EXPECT_TRUE(canvas.frame_arena_frame_bytes >= sizeof(instances),
+                "Compact particle snapshots use retained frame-arena storage");
+    EXPECT_TRUE(canvas.temp_buf_count == 0,
+                "Compact particle snapshots avoid tracked malloc buffers");
     test_deferred_draw_t *draws = (test_deferred_draw_t *)canvas.draw_cmds;
     EXPECT_TRUE(draws[0].instance_matrices == nullptr,
                 "Compact particle commands do not fabricate full instance matrices");

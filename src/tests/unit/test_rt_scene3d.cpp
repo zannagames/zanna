@@ -136,6 +136,7 @@ extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 extern void rt_obj_retain_maybe(void *p);
 extern int32_t rt_obj_release_check0(void *p);
 extern void rt_obj_free(void *p);
+extern void rt_scene3d_test_set_precise_hit_growth_failure(int8_t enabled);
 }
 
 static int tests_passed = 0;
@@ -143,9 +144,12 @@ static int tests_run = 0;
 static std::jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_expect_trap = false;
+static bool g_return_from_trap = false;
 
 extern "C" void vm_trap(const char *msg) {
     g_last_trap = msg;
+    if (g_return_from_trap)
+        return;
     if (g_expect_trap)
         std::longjmp(g_trap_jmp, 1);
     std::fprintf(stderr, "unexpected runtime trap: %s\n", msg ? msg : "(null)");
@@ -1569,6 +1573,47 @@ static void test_scene_spatial_queries_flat_walk_reference() {
                 "VisibleNodeCount tracks submitted drawable nodes from the last draw");
 }
 
+static void test_scene_spatial_query_append_telemetry_and_stable_order() {
+    void *scene = rt_scene3d_new();
+    auto *scene_impl = (rt_scene3d *)scene;
+    void *first = rt_scene_node3d_new();
+    void *second = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    scene3d_spatial_candidate_list_t candidates = {};
+    const double first_min[3] = {-1.0, -1.0, -5.0};
+    const double first_max[3] = {1.0, 1.0, -3.0};
+    const double second_min[3] = {9.0, -1.0, -5.0};
+    const double second_max[3] = {11.0, 1.0, -3.0};
+
+    rt_scene_node3d_set_position(first, 0.0, 0.0, -4.0);
+    rt_scene_node3d_set_mesh(first, mesh);
+    rt_scene3d_add(scene, first);
+    rt_scene_node3d_set_position(second, 10.0, 0.0, -4.0);
+    rt_scene_node3d_set_mesh(second, mesh);
+    rt_scene3d_add(scene, second);
+
+    EXPECT_TRUE(scene3d_spatial_collect_aabb(scene_impl, first_min, first_max, &candidates, 0) != 0,
+                "internal AABB collection succeeds for the first append");
+    EXPECT_TRUE(candidates.count == 1 && candidates.items[0]->node == first,
+                "first spatial append contains the first node");
+    EXPECT_TRUE(scene_impl->spatial_index.last_candidate_count == 1,
+                "first spatial append reports its own candidate delta");
+    int32_t *retained_stack = scene_impl->spatial_index.query_stack;
+
+    EXPECT_TRUE(scene3d_spatial_collect_aabb(scene_impl, second_min, second_max, &candidates, 0) !=
+                    0,
+                "internal AABB collection succeeds when appending to an existing list");
+    EXPECT_TRUE(candidates.count == 2 && candidates.items[0]->node == first &&
+                    candidates.items[1]->node == second,
+                "spatial append preserves stable scene traversal order");
+    EXPECT_TRUE(scene_impl->spatial_index.last_candidate_count == 1,
+                "appended spatial telemetry reports only the newly collected candidate");
+    EXPECT_TRUE(scene_impl->spatial_index.query_stack == retained_stack &&
+                    retained_stack != nullptr,
+                "AABB traversal reuses its retained BVH stack across queries");
+    std::free(candidates.items);
+}
+
 static void test_scene_spatial_queries_validate_vec3_args_before_result_alloc() {
     void *scene = rt_scene3d_new();
     void *min = rt_vec3_new(-1.0, -1.0, -1.0);
@@ -1671,6 +1716,27 @@ static void test_scene_precise_raycast_selects_through_aabb_gaps() {
                 "RaycastNodesPrecise traps with a clear message for non-Vec3 origin");
 }
 
+static void test_scene_precise_raycast_allocation_failure_returns_no_partial_result() {
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    rt_scene_node3d_set_position(node, 0.0, 0.0, -5.0);
+    rt_scene_node3d_set_mesh(node, mesh);
+    rt_scene3d_add(scene, node);
+
+    g_last_trap = nullptr;
+    g_return_from_trap = true;
+    rt_scene3d_test_set_precise_hit_growth_failure(1);
+    void *hits = rt_scene3d_raycast_nodes_precise_all(
+        scene, rt_vec3_new(0.0, 0.0, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 20.0);
+    rt_scene3d_test_set_precise_hit_growth_failure(0);
+    g_return_from_trap = false;
+    EXPECT_TRUE(hits == nullptr,
+                "precise collect-all discards partial hits after allocation failure");
+    EXPECT_TRUE(g_last_trap && std::strstr(g_last_trap, "result allocation failed"),
+                "precise collect-all reports its allocation failure before returning null");
+}
+
 static void test_scene_spatial_index_rebuilds_on_dirty_node() {
     void *scene = rt_scene3d_new();
     auto *scene_impl = (rt_scene3d *)scene;
@@ -1706,6 +1772,9 @@ static void test_scene_spatial_index_rebuilds_on_dirty_node() {
                 "SceneGraph spatial index does not refit a clean build");
 
     rt_scene_node3d_set_position(node, 10.0, 0.0, -4.0);
+    EXPECT_TRUE(scene_impl->spatial_index.dirty_node_count == 1 &&
+                    scene_impl->spatial_index.dirty_all == 0,
+                "transform invalidation queues only its changed subtree");
     void *old_hits =
         rt_scene3d_query_aabb(scene, rt_vec3_new(-1.0, -1.0, -5.0), rt_vec3_new(1.0, 1.0, -3.0));
     EXPECT_TRUE(rt_seq_len(old_hits) == 0,
@@ -1714,6 +1783,8 @@ static void test_scene_spatial_index_rebuilds_on_dirty_node() {
                 "SceneGraph spatial index refits instead of rebuilding after a transform change");
     EXPECT_TRUE(scene_impl->spatial_index.refit_count == first_refit_count + 1,
                 "SceneGraph spatial index records the transform-only refit");
+    EXPECT_TRUE(scene_impl->spatial_index.dirty_node_count == 0,
+                "subtree refit drains the dirty-node queue");
 
     void *new_hits =
         rt_scene3d_query_aabb(scene, rt_vec3_new(9.0, -1.0, -5.0), rt_vec3_new(11.0, 1.0, -3.0));
@@ -1807,6 +1878,12 @@ static void test_scene_spatial_index_contains_corrupt_cached_topology() {
 
     EXPECT_TRUE(rt_seq_len(query_all()) == 12 && scene_impl->spatial_index.node_count > 1,
                 "topology corruption fixture builds an internal BVH");
+    EXPECT_TRUE(scene_impl->spatial_index.query_stack != nullptr &&
+                    scene_impl->spatial_index.query_stack_capacity > 0,
+                "BVH query traversal stack is retained for subsequent queries");
+    EXPECT_TRUE(scene_impl->spatial_index.query_order_scratch != nullptr &&
+                    scene_impl->spatial_index.query_order_scratch_capacity >= 12,
+                "linear candidate ordering retains high-water scratch");
 
     int32_t root = scene_impl->spatial_index.root_node;
     int64_t build_count = scene_impl->spatial_index.build_count;
@@ -5598,7 +5675,9 @@ int main(int argc, char **argv) {
     test_dynamic_deformation_rejects_corrupt_morph_delta_span();
     test_parent_animator_drives_child_skinned_meshes();
     test_scene_spatial_queries_flat_walk_reference();
+    test_scene_spatial_query_append_telemetry_and_stable_order();
     test_scene_precise_raycast_selects_through_aabb_gaps();
+    test_scene_precise_raycast_allocation_failure_returns_no_partial_result();
     test_scene_spatial_queries_validate_vec3_args_before_result_alloc();
     test_scene_spatial_index_rebuilds_on_dirty_node();
     test_scene_spatial_index_repairs_storage_and_query_pool_metadata();

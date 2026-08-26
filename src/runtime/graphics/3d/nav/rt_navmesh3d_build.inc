@@ -137,7 +137,11 @@ static void navmesh3d_finalizer(void *obj) {
         free(nm->path_workspaces[i].parent);
         free(nm->path_workspaces[i].closed);
         free(nm->path_workspaces[i].heap);
+        free(nm->path_workspaces[i].corridor);
+        free(nm->path_workspaces[i].portals);
     }
+    if (nm->path_workspace_gate && rt_obj_release_check0(nm->path_workspace_gate))
+        rt_obj_free(nm->path_workspace_gate);
     free(nm->voxel_cell_height);
     free(nm->voxel_cell_walkable);
     free(nm->voxel_corner_vertices);
@@ -153,6 +157,7 @@ static void navmesh3d_finalizer(void *obj) {
     nm->qgrid_starts = NULL;
     nm->qgrid_tris = NULL;
     memset(nm->path_workspaces, 0, sizeof(nm->path_workspaces));
+    nm->path_workspace_gate = NULL;
     nm->path_active_queries = 0;
     nm->path_peak_active_queries = 0;
     nm->voxel_cell_height = NULL;
@@ -1704,6 +1709,11 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
     nm->agent_height = navmesh3d_agent_dim_or(agent_height, 1.8);
     nm->max_slope = navmesh3d_sanitize_slope(45.0);
     rt_obj_set_finalizer(nm, navmesh3d_finalizer);
+    if (!navmesh3d_init_path_workspace_gate(nm)) {
+        navmesh3d_free_partial(nm);
+        rt_trap("NavMesh3D.Build: workspace gate allocation failed");
+        return NULL;
+    }
 
     /* Phase 1: Copy vertices */
     nm->vertex_count = (int32_t)vertex_count;
@@ -2032,6 +2042,8 @@ static rt_navmesh3d *navmesh3d_import_v1_after_magic(FILE *f) {
     }
     memset(nm, 0, sizeof(*nm));
     rt_obj_set_finalizer(nm, navmesh3d_finalizer);
+    if (!navmesh3d_init_path_workspace_gate(nm))
+        goto fail;
     nm->agent_radius = navmesh3d_agent_dim_or(params[0], 0.4);
     nm->agent_height = navmesh3d_agent_dim_or(params[1], 1.8);
     nm->max_slope = navmesh3d_sanitize_slope(params[2]);

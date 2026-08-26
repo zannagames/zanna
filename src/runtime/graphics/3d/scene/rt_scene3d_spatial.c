@@ -98,6 +98,12 @@ static void scene3d_spatial_invalidate(rt_scene3d_spatial_index *index) {
 static void scene3d_spatial_prepare_rebuild(rt_scene3d_spatial_index *index) {
     if (!index)
         return;
+    if (index->entries && index->count > 0 && index->count <= index->capacity) {
+        for (int32_t i = 0; i < index->count; i++) {
+            if (rt_g3d_has_class(index->entries[i].node, RT_G3D_SCENENODE3D_CLASS_ID))
+                index->entries[i].node->spatial_entry_index = -1;
+        }
+    }
     if (!index->entries || index->capacity < 0 || index->capacity > SCENE3D_SPATIAL_ENTRY_MAX) {
         free(index->entries);
         index->entries = NULL;
@@ -315,6 +321,69 @@ static int scene3d_spatial_candidate_push(scene3d_spatial_candidate_list_t *list
     return 1;
 }
 
+/// @brief Stably order query candidates by dense traversal ordinal in linear time.
+/// @details Four byte-wise radix passes replace the comparison sort formerly paid by every BVH
+///   query. Scratch storage is retained by the index and grows only past its high-water mark.
+static int scene3d_spatial_order_candidates(rt_scene3d_spatial_index *index,
+                                            scene3d_spatial_candidate_list_t *list) {
+    int32_t capacity;
+    rt_scene3d_spatial_entry **grown;
+    rt_scene3d_spatial_entry **source;
+    rt_scene3d_spatial_entry **destination;
+    if (!index || !list || list->count < 0 || list->count > list->capacity)
+        return 0;
+    if (list->count <= 1)
+        return 1;
+    if (list->count > index->query_order_scratch_capacity) {
+        capacity =
+            index->query_order_scratch_capacity > 0 ? index->query_order_scratch_capacity : 64;
+        while (capacity < list->count) {
+            if (capacity > SCENE3D_SPATIAL_ENTRY_MAX / 2) {
+                capacity = list->count;
+                break;
+            }
+            capacity *= 2;
+        }
+        if (capacity < list->count || capacity > SCENE3D_SPATIAL_ENTRY_MAX ||
+            (size_t)capacity > SIZE_MAX / sizeof(*grown))
+            return 0;
+        grown = (rt_scene3d_spatial_entry **)realloc(index->query_order_scratch,
+                                                     (size_t)capacity * sizeof(*grown));
+        if (!grown)
+            return 0;
+        index->query_order_scratch = grown;
+        index->query_order_scratch_capacity = capacity;
+    }
+    source = list->items;
+    destination = index->query_order_scratch;
+    for (unsigned pass = 0; pass < 4u; pass++) {
+        size_t counts[256] = {0};
+        size_t offsets[256];
+        unsigned shift = pass * 8u;
+        for (int32_t i = 0; i < list->count; i++) {
+            uint32_t key;
+            if (!source[i])
+                return 0;
+            key = ((uint32_t)source[i]->traversal_order) ^ UINT32_C(0x80000000);
+            counts[(key >> shift) & 0xffu]++;
+        }
+        offsets[0] = 0u;
+        for (size_t bucket = 1; bucket < 256u; bucket++)
+            offsets[bucket] = offsets[bucket - 1u] + counts[bucket - 1u];
+        for (int32_t i = 0; i < list->count; i++) {
+            uint32_t key = ((uint32_t)source[i]->traversal_order) ^ UINT32_C(0x80000000);
+            size_t bucket = (key >> shift) & 0xffu;
+            destination[offsets[bucket]++] = source[i];
+        }
+        {
+            rt_scene3d_spatial_entry **tmp = source;
+            source = destination;
+            destination = tmp;
+        }
+    }
+    return source == list->items;
+}
+
 /// @brief Push a BVH node index onto a query's traversal stack, growing it as needed.
 /// @param stack Caller-owned traversal stack.
 /// @param node_index Non-negative zero-based BVH-node index.
@@ -353,19 +422,16 @@ static int scene3d_spatial_node_stack_push(scene3d_spatial_node_stack_t *stack,
     return 1;
 }
 
-/// @brief qsort comparator ordering candidate entries by their scene traversal order (stable draw
-/// order).
-/// @param a Borrowed pointer to the first candidate-entry pointer.
-/// @param b Borrowed pointer to the second candidate-entry pointer.
-/// @return Negative, zero, or positive according to stable scene traversal order.
-static int scene3d_spatial_entry_ptr_compare_order(const void *a, const void *b) {
-    const rt_scene3d_spatial_entry *ea = *(rt_scene3d_spatial_entry *const *)a;
-    const rt_scene3d_spatial_entry *eb = *(rt_scene3d_spatial_entry *const *)b;
-    if (ea->traversal_order < eb->traversal_order)
-        return -1;
-    if (ea->traversal_order > eb->traversal_order)
-        return 1;
-    return 0;
+/// @brief Publish a query traversal stack back to its owning reusable scratch tuple.
+static void scene3d_spatial_store_query_stack(rt_scene3d_spatial_index *index,
+                                              scene3d_spatial_node_stack_t *stack) {
+    if (!index || !stack)
+        return;
+    index->query_stack = stack->items;
+    index->query_stack_capacity = stack->capacity;
+    stack->items = NULL;
+    stack->count = 0;
+    stack->capacity = 0;
 }
 
 /// @brief Centroid of a spatial entry's world AABB along @p axis (used to choose BVH split planes).
@@ -405,45 +471,63 @@ static int scene3d_spatial_entry_index_less(const rt_scene3d_spatial_index *inde
                : a < b;
 }
 
-/// @brief Quicksort a sub-range of the entry-index array by centroid along @p axis.
-/// @details In-place median-of-center-pivot quicksort; orders leaves so a BVH range can be split
-///          cleanly at its midpoint.
+/// @brief Partition a sub-range so the requested median slot contains its sorted value.
+/// @details Iterative median-of-three quickselect avoids recursively sorting every complete BVH
+///   subtree. The two resulting ranges remain unordered because their children will select only
+///   the medians they actually require.
 /// @param index Borrowed index whose ordering array is sorted.
 /// @param start Zero-based first ordering-array slot.
 /// @param count Number of slots in the subrange.
 /// @param axis Coordinate axis in `[0, 2]`.
-static void scene3d_spatial_sort_entry_indices(rt_scene3d_spatial_index *index,
-                                               int32_t start,
-                                               int32_t count,
-                                               int axis) {
-    int32_t left;
-    int32_t right;
-    int32_t pivot;
-    int32_t pivot_value;
+static void scene3d_spatial_select_entry_index(
+    rt_scene3d_spatial_index *index, int32_t start, int32_t count, int32_t nth, int axis) {
+    int32_t left = start;
+    int32_t right = start + count - 1;
     if (!index || !index->entry_indices || count <= 1 || axis < 0 || axis > 2)
         return;
-    left = start;
-    right = start + count - 1;
-    pivot = index->entry_indices[start + count / 2];
-    while (left <= right) {
-        while (scene3d_spatial_entry_index_less(index, index->entry_indices[left], pivot, axis))
-            left++;
-        while (scene3d_spatial_entry_index_less(index, pivot, index->entry_indices[right], axis))
-            right--;
-        if (left <= right) {
-            int32_t tmp = index->entry_indices[left];
-            index->entry_indices[left] = index->entry_indices[right];
-            index->entry_indices[right] = tmp;
-            left++;
-            right--;
+    if (nth < left || nth > right)
+        return;
+    while (left < right) {
+        int32_t middle = left + (right - left) / 2;
+        int32_t a = index->entry_indices[left];
+        int32_t b = index->entry_indices[middle];
+        int32_t c = index->entry_indices[right];
+        int32_t pivot_slot = middle;
+        int32_t pivot;
+        int32_t store = left;
+        if (scene3d_spatial_entry_index_less(index, b, a, axis)) {
+            int32_t tmp = a;
+            a = b;
+            b = tmp;
         }
+        if (scene3d_spatial_entry_index_less(index, c, b, axis)) {
+            b = c;
+            if (scene3d_spatial_entry_index_less(index, b, a, axis))
+                b = a;
+        }
+        if (b == index->entry_indices[left])
+            pivot_slot = left;
+        else if (b == index->entry_indices[right])
+            pivot_slot = right;
+        pivot = index->entry_indices[pivot_slot];
+        index->entry_indices[pivot_slot] = index->entry_indices[right];
+        index->entry_indices[right] = pivot;
+        for (int32_t i = left; i < right; i++) {
+            if (scene3d_spatial_entry_index_less(index, index->entry_indices[i], pivot, axis)) {
+                int32_t tmp = index->entry_indices[store];
+                index->entry_indices[store++] = index->entry_indices[i];
+                index->entry_indices[i] = tmp;
+            }
+        }
+        index->entry_indices[right] = index->entry_indices[store];
+        index->entry_indices[store] = pivot;
+        if (store == nth)
+            return;
+        if (nth < store)
+            right = store - 1;
+        else
+            left = store + 1;
     }
-    pivot_value = right - start + 1;
-    if (pivot_value > 1)
-        scene3d_spatial_sort_entry_indices(index, start, pivot_value, axis);
-    pivot_value = start + count - left;
-    if (pivot_value > 1)
-        scene3d_spatial_sort_entry_indices(index, left, pivot_value, axis);
 }
 
 /// @brief Expand AABB [out_min, out_max] in place to also contain AABB [in_min, in_max].
@@ -509,8 +593,8 @@ static int scene3d_spatial_alloc_bvh_node(rt_scene3d_spatial_index *index) {
 
 /// @brief Recursively build a BVH subtree over entry-index range [start, start+count).
 /// @details Computes the node's bounds and cullable count; ranges of <= 8 entries become leaves,
-///          larger ranges are sorted on the widest centroid axis and split at the midpoint into two
-///          child nodes. Returns the node index, or -1 on allocation failure.
+///          larger ranges select the median on the widest centroid axis and split at the midpoint
+///          into two child nodes. Returns the node index, or -1 on allocation failure.
 /// @param index Borrowed spatial index under construction.
 /// @param start Zero-based first ordering-array slot in this subtree.
 /// @param count Positive number of entries covered by this subtree.
@@ -557,7 +641,7 @@ static int scene3d_spatial_build_bvh_range(rt_scene3d_spatial_index *index,
         int32_t right_count = count - left_count;
         int32_t left_node;
         int32_t right_node;
-        scene3d_spatial_sort_entry_indices(index, start, count, axis);
+        scene3d_spatial_select_entry_index(index, start, count, start + left_count, axis);
         left_node = scene3d_spatial_build_bvh_range(index, start, left_count);
         right_node = scene3d_spatial_build_bvh_range(index, start + left_count, right_count);
         if (left_node < 0 || right_node < 0)
@@ -1027,6 +1111,66 @@ static int scene3d_spatial_refit_path(rt_scene3d_spatial_index *index, int32_t l
     return current == -1;
 }
 
+/// @brief Push one node onto retained dirty-subtree traversal scratch.
+static int scene3d_spatial_dirty_walk_push(rt_scene3d_spatial_index *index,
+                                           int32_t *count,
+                                           rt_scene_node3d *node) {
+    int32_t capacity;
+    rt_scene_node3d **grown;
+    if (!index || !count || !node || *count < 0 || *count >= SCENE3D_SPATIAL_ANCESTOR_MAX)
+        return 0;
+    if (*count >= index->dirty_walk_stack_capacity) {
+        capacity = index->dirty_walk_stack_capacity > 0 ? index->dirty_walk_stack_capacity : 64;
+        while (capacity <= *count) {
+            if (capacity > SCENE3D_SPATIAL_ANCESTOR_MAX / 2) {
+                capacity = *count + 1;
+                break;
+            }
+            capacity *= 2;
+        }
+        if (capacity <= *count || capacity > SCENE3D_SPATIAL_ANCESTOR_MAX ||
+            (size_t)capacity > SIZE_MAX / sizeof(*grown))
+            return 0;
+        grown =
+            (rt_scene_node3d **)realloc(index->dirty_walk_stack, (size_t)capacity * sizeof(*grown));
+        if (!grown)
+            return 0;
+        index->dirty_walk_stack = grown;
+        index->dirty_walk_stack_capacity = capacity;
+    }
+    index->dirty_walk_stack[(*count)++] = node;
+    return 1;
+}
+
+/// @brief Refresh one mapped spatial entry and schedule its leaf-to-root refit.
+static int scene3d_spatial_refresh_mapped_entry(rt_scene3d_spatial_index *index,
+                                                rt_scene_node3d *node,
+                                                int *refresh_attempts,
+                                                int *path_refit_ok) {
+    int32_t entry_index;
+    rt_scene3d_spatial_entry *entry;
+    if (!index || !node || !refresh_attempts || !path_refit_ok)
+        return 0;
+    entry_index = node->spatial_entry_index;
+    if (entry_index < 0)
+        return 1;
+    if (!scene3d_spatial_entry_valid(index, entry_index) ||
+        index->entries[entry_index].node != node)
+        return 0;
+    entry = &index->entries[entry_index];
+    if (!scene3d_spatial_refresh_entry_bounds(entry))
+        return 0;
+    (*refresh_attempts)++;
+    if (entry->leaf_node >= 0 && entry->leaf_node < index->node_count) {
+        if (*refresh_attempts < (index->count + 7) / 8 &&
+            !scene3d_spatial_refit_path(index, entry->leaf_node))
+            *path_refit_ok = 0;
+    } else {
+        *path_refit_ok = 0;
+    }
+    return 1;
+}
+
 /// @brief Refit the BVH to current geometry without changing its topology.
 /// @details Refreshes only entries whose transform/geometry/visibility revisions
 ///   moved, then re-unions just the changed leaf-to-root paths (falling back to
@@ -1050,32 +1194,47 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
         return scene3d_spatial_rebuild(scene);
     if (!index->valid || index->topology_dirty)
         return scene3d_spatial_rebuild(scene);
-    for (int32_t i = 0; i < index->count; ++i) {
-        rt_scene3d_spatial_entry *entry = &index->entries[i];
-        uint32_t before = entry->world_revision;
-        uint32_t geometry_before = entry->geometry_revision;
-        int8_t visible_before = entry->visible;
-        uint32_t geometry_now;
-        int8_t visible_now;
-        if (!rt_g3d_has_class(entry->node, RT_G3D_SCENENODE3D_CLASS_ID))
-            return scene3d_spatial_rebuild(scene);
-        geometry_now = scene_node_geometry_revision_signature(entry->node);
-        visible_now = scene3d_node_effective_visible(entry->node) ? 1 : 0;
-        if (!scene3d_spatial_node_or_ancestor_dirty(entry->node) &&
-            before == entry->node->world_revision && geometry_before == geometry_now &&
-            visible_before == visible_now)
-            continue;
-        if (!scene3d_spatial_refresh_entry_bounds(entry))
-            return scene3d_spatial_rebuild(scene);
-        refresh_attempts++;
-        /* Bounds may have moved even when the counters above agree (refresh is
-         * authoritative); queue the path refit whenever a refresh ran. */
-        if (entry->leaf_node >= 0 && entry->leaf_node < index->node_count) {
-            if (refresh_attempts < (index->count + 7) / 8 &&
-                !scene3d_spatial_refit_path(index, entry->leaf_node))
-                path_refit_ok = 0;
-        } else {
-            path_refit_ok = 0;
+    if (index->dirty_all || index->dirty_node_count <= 0 ||
+        index->mesh_geometry_epoch != rt_mesh3d_global_geometry_epoch()) {
+        /* Shared mesh mutations cannot identify their consuming scene nodes cheaply, and dirty
+         * queue allocation failure deliberately lands here. Preserve the complete safe scan. */
+        for (int32_t i = 0; i < index->count; ++i) {
+            rt_scene3d_spatial_entry *entry = &index->entries[i];
+            uint32_t geometry_now;
+            int8_t visible_now;
+            if (!rt_g3d_has_class(entry->node, RT_G3D_SCENENODE3D_CLASS_ID))
+                return scene3d_spatial_rebuild(scene);
+            geometry_now = scene_node_geometry_revision_signature(entry->node);
+            visible_now = scene3d_node_effective_visible(entry->node) ? 1 : 0;
+            if (!scene3d_spatial_node_or_ancestor_dirty(entry->node) &&
+                entry->world_revision == entry->node->world_revision &&
+                entry->geometry_revision == geometry_now && entry->visible == visible_now)
+                continue;
+            if (!scene3d_spatial_refresh_mapped_entry(
+                    index, entry->node, &refresh_attempts, &path_refit_ok))
+                return scene3d_spatial_rebuild(scene);
+        }
+    } else {
+        int32_t traversal_budget = SCENE3D_SPATIAL_ANCESTOR_MAX;
+        for (int32_t root_index = 0; root_index < index->dirty_node_count; root_index++) {
+            int32_t walk_count = 0;
+            if (!scene3d_spatial_dirty_walk_push(
+                    index, &walk_count, index->dirty_nodes[root_index]))
+                return scene3d_spatial_rebuild(scene);
+            while (walk_count > 0) {
+                rt_scene_node3d *node = index->dirty_walk_stack[--walk_count];
+                if (traversal_budget-- <= 0 ||
+                    !rt_g3d_has_class(node, RT_G3D_SCENENODE3D_CLASS_ID) ||
+                    node->owner_scene != scene)
+                    return scene3d_spatial_rebuild(scene);
+                if (!scene3d_spatial_refresh_mapped_entry(
+                        index, node, &refresh_attempts, &path_refit_ok))
+                    return scene3d_spatial_rebuild(scene);
+                for (int32_t child = 0; child < scene3d_node_child_count(node); child++) {
+                    if (!scene3d_spatial_dirty_walk_push(index, &walk_count, node->children[child]))
+                        return scene3d_spatial_rebuild(scene);
+                }
+            }
         }
     }
     if (refresh_attempts > 0 && (!path_refit_ok || refresh_attempts >= (index->count + 7) / 8)) {
@@ -1089,6 +1248,8 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
     index->valid = 1;
     index->topology_dirty = 0;
     index->mesh_geometry_epoch = rt_mesh3d_global_geometry_epoch();
+    index->dirty_node_count = 0;
+    index->dirty_all = 0;
     if (refresh_attempts)
         index->refit_count++;
     if (refresh_attempts && index->refit_count >= SCENE3D_SPATIAL_MAX_REFITS_BEFORE_REBUILD)
@@ -1151,6 +1312,7 @@ static int scene3d_spatial_add_entry(rt_scene3d_spatial_index *index,
     entry->leaf_node = -1;
     entry->world_revision = node->world_revision;
     entry->geometry_revision = scene_node_geometry_revision_signature(node);
+    node->spatial_entry_index = index->count - 1;
     return 1;
 }
 
@@ -1257,6 +1419,8 @@ static int scene3d_spatial_rebuild(rt_scene3d *scene) {
     index->build_count++;
     index->refit_count = 0;
     index->mesh_geometry_epoch = rt_mesh3d_global_geometry_epoch();
+    index->dirty_node_count = 0;
+    index->dirty_all = 0;
     return 1;
 }
 
@@ -1296,6 +1460,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                                  int count_cullable_prefilter) {
     rt_scene3d_spatial_index *index;
     scene3d_spatial_node_stack_t stack = {0};
+    int32_t initial_count;
     int32_t prefiltered = 0;
     int32_t traversal_budget;
     if (!scene || !query_min || !query_max || !out)
@@ -1309,9 +1474,21 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
         scene3d_spatial_invalidate(index);
         return 0;
     }
+    if (!out->items || out->capacity < 0 || out->capacity > SCENE3D_SPATIAL_ENTRY_MAX) {
+        free(out->items);
+        out->items = NULL;
+        out->count = 0;
+        out->capacity = 0;
+    } else if (out->count < 0 || out->count > out->capacity) {
+        out->count = 0;
+    }
+    initial_count = out->count;
+    stack.items = index->query_stack;
+    stack.capacity = index->query_stack_capacity;
     traversal_budget = index->node_count;
     if (index->root_node >= 0 && !scene3d_spatial_node_stack_push(&stack, index->root_node)) {
         rt_trap("Scene3D.SpatialIndex: BVH traversal stack allocation failed");
+        scene3d_spatial_store_query_stack(index, &stack);
         return 0;
     }
     while (stack.count > 0) {
@@ -1319,14 +1496,14 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
         int32_t node_index = stack.items[--stack.count];
         if (traversal_budget-- <= 0 || node_index < 0 || node_index >= index->node_count) {
             scene3d_spatial_invalidate(index);
-            free(stack.items);
+            scene3d_spatial_store_query_stack(index, &stack);
             return 0;
         }
         node = &index->nodes[node_index];
         if ((node->leaf != 0 && node->leaf != 1) ||
             !scene3d_spatial_bounds_valid(node->world_min, node->world_max)) {
             scene3d_spatial_invalidate(index);
-            free(stack.items);
+            scene3d_spatial_store_query_stack(index, &stack);
             return 0;
         }
         if (!scene3d_aabb_intersects_aabb(node->world_min, node->world_max, query_min, query_max)) {
@@ -1338,7 +1515,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
             if (node->start < 0 || node->count <= 0 || node->start > index->count - node->count ||
                 node->start > index->entry_index_capacity - node->count) {
                 scene3d_spatial_invalidate(index);
-                free(stack.items);
+                scene3d_spatial_store_query_stack(index, &stack);
                 return 0;
             }
             for (int32_t i = node->start; i < node->start + node->count; ++i) {
@@ -1346,7 +1523,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                 rt_scene3d_spatial_entry *entry;
                 if (!scene3d_spatial_entry_valid(index, entry_index)) {
                     scene3d_spatial_invalidate(index);
-                    free(stack.items);
+                    scene3d_spatial_store_query_stack(index, &stack);
                     return 0;
                 }
                 entry = &index->entries[entry_index];
@@ -1360,7 +1537,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                 }
                 if (!scene3d_spatial_candidate_push(out, entry)) {
                     rt_trap("Scene3D.SpatialIndex: candidate allocation failed");
-                    free(stack.items);
+                    scene3d_spatial_store_query_stack(index, &stack);
                     return 0;
                 }
             }
@@ -1371,24 +1548,23 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                 index->nodes[node->left].parent != node_index ||
                 index->nodes[node->right].parent != node_index) {
                 scene3d_spatial_invalidate(index);
-                free(stack.items);
+                scene3d_spatial_store_query_stack(index, &stack);
                 return 0;
             }
             if (!scene3d_spatial_node_stack_push(&stack, node->right) ||
                 !scene3d_spatial_node_stack_push(&stack, node->left)) {
                 rt_trap("Scene3D.SpatialIndex: BVH traversal stack allocation failed");
-                free(stack.items);
+                scene3d_spatial_store_query_stack(index, &stack);
                 return 0;
             }
         }
     }
-    free(stack.items);
-    if (out->count > 1)
-        qsort(out->items,
-              (size_t)out->count,
-              sizeof(out->items[0]),
-              scene3d_spatial_entry_ptr_compare_order);
-    index->last_candidate_count = out->count;
+    scene3d_spatial_store_query_stack(index, &stack);
+    if (!scene3d_spatial_order_candidates(index, out)) {
+        rt_trap("Scene3D.SpatialIndex: candidate ordering allocation failed");
+        return 0;
+    }
+    index->last_candidate_count = out->count - initial_count;
     index->last_prefiltered_count = prefiltered;
     return 1;
 }
@@ -1434,12 +1610,11 @@ int scene3d_spatial_collect_all(rt_scene3d *scene, scene3d_spatial_candidate_lis
      * caller list is already stable and needs no O(n log n) sort. Preserve
      * the append contract for nonempty internal callers by sorting the merged
      * result as before. */
-    if (initial_count > 0 && out->count > 1)
-        qsort(out->items,
-              (size_t)out->count,
-              sizeof(out->items[0]),
-              scene3d_spatial_entry_ptr_compare_order);
-    index->last_candidate_count = out->count;
+    if (initial_count > 0 && !scene3d_spatial_order_candidates(index, out)) {
+        rt_trap("Scene3D.SpatialIndex: candidate ordering allocation failed");
+        return 0;
+    }
+    index->last_candidate_count = out->count - initial_count;
     index->last_prefiltered_count = 0;
     return 1;
 }

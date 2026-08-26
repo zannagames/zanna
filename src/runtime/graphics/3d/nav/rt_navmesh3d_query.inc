@@ -45,42 +45,35 @@
 typedef navmesh3d_heap_entry_t heap_entry_t;
 
 /// @brief Claim one independently mutable A* workspace from a navmesh's bounded pool.
-/// @details Every slot has its own arrays and ownership flag. The caller yields only when all
-///   slots are occupied, allowing the common multi-worker case to run searches concurrently.
+/// @details Every slot has its own arrays and ownership flag. The caller blocks on a counting
+///   gate only when all slots are occupied, allowing the common multi-worker case to run searches
+///   concurrently without a busy-wait loop.
 /// @param nm Navigation mesh whose workspace pool is queried.
 /// @return An exclusively owned slot, or NULL for a null navmesh.
 static navmesh3d_path_workspace_t *navmesh3d_path_workspace_acquire(rt_navmesh3d *nm) {
-    int spins = 0;
-    if (!nm)
+    if (!nm || !nm->path_workspace_gate)
         return NULL;
-    for (;;) {
-        for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
-            int expected = 0;
-            if (rt_atomic_compare_exchange_i32(&nm->path_workspaces[i].in_use,
-                                               &expected,
-                                               1,
-                                               __ATOMIC_ACQ_REL,
-                                               __ATOMIC_ACQUIRE)) {
-                int active =
-                    rt_atomic_fetch_add_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL) + 1;
-                int peak = rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE);
-                while (active > peak &&
-                       !rt_atomic_compare_exchange_i32(&nm->path_peak_active_queries,
-                                                       &peak,
-                                                       active,
-                                                       __ATOMIC_ACQ_REL,
-                                                       __ATOMIC_ACQUIRE)) {
-                }
-                return &nm->path_workspaces[i];
+    rt_gate_enter(nm->path_workspace_gate);
+    for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
+        int expected = 0;
+        if (rt_atomic_compare_exchange_i32(
+                &nm->path_workspaces[i].in_use, &expected, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            int active = rt_atomic_fetch_add_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL) + 1;
+            int peak = rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE);
+            while (active > peak && !rt_atomic_compare_exchange_i32(&nm->path_peak_active_queries,
+                                                                    &peak,
+                                                                    active,
+                                                                    __ATOMIC_ACQ_REL,
+                                                                    __ATOMIC_ACQUIRE)) {
             }
-        }
-        /* A bounded pool deliberately applies back-pressure after four overlapping searches.
-         * Briefly spin to catch short queries, then yield to one of the owners. */
-        if (++spins >= 64) {
-            rt_thread_yield();
-            spins = 0;
+            return &nm->path_workspaces[i];
         }
     }
+    /* A permit is published only after its slot's ownership flag is cleared, so one complete scan
+     * must succeed. Restore the permit and contain any corrupted invariant without spinning. */
+    rt_gate_leave(nm->path_workspace_gate);
+    rt_trap("NavMesh3D.FindPath: workspace gate invariant violated");
+    return NULL;
 }
 
 /// @brief Return one exclusively owned A* workspace to its navmesh pool.
@@ -92,6 +85,7 @@ static void navmesh3d_path_workspace_release(rt_navmesh3d *nm,
         return;
     rt_atomic_fetch_sub_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL);
     rt_atomic_store_i32(&workspace->in_use, 0, __ATOMIC_RELEASE);
+    rt_gate_leave(nm->path_workspace_gate);
 }
 
 /// @brief Grow reusable A* arrays without discarding the previous workspace on allocation failure.
@@ -131,6 +125,29 @@ static int navmesh3d_reserve_path_workspace(navmesh3d_path_workspace_t *workspac
         workspace->heap = heap;
         workspace->heap_capacity = heap_capacity;
     }
+    if (triangle_count > workspace->corridor_capacity) {
+        int32_t *corridor = (int32_t *)malloc((size_t)triangle_count * sizeof(*corridor));
+        if (!corridor)
+            return 0;
+        free(workspace->corridor);
+        workspace->corridor = corridor;
+        workspace->corridor_capacity = triangle_count;
+    }
+    if (triangle_count >= workspace->portal_capacity) {
+        int32_t portal_capacity;
+        navmesh3d_portal_t *portals;
+        if (triangle_count == INT32_MAX)
+            return 0;
+        portal_capacity = triangle_count + 1;
+        if ((size_t)portal_capacity > SIZE_MAX / sizeof(*portals))
+            return 0;
+        portals = (navmesh3d_portal_t *)malloc((size_t)portal_capacity * sizeof(*portals));
+        if (!portals)
+            return 0;
+        free(workspace->portals);
+        workspace->portals = portals;
+        workspace->portal_capacity = portal_capacity;
+    }
     return 1;
 }
 
@@ -166,6 +183,33 @@ void rt_navmesh3d_test_reset_path_peak_concurrency(void *obj) {
 int64_t rt_navmesh3d_test_get_path_peak_concurrency(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     return nm ? (int64_t)rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE) : 0;
+}
+
+/// @brief Count workspaces whose reconstructed-corridor and funnel-portal scratch is reusable.
+/// @details This test-only diagnostic verifies successful queries retain both path post-processing
+///   buffers instead of allocating them on each request. It is not part of the scripting API.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Number of fully provisioned slots, or zero for an invalid handle.
+int64_t rt_navmesh3d_test_get_ready_path_scratch_count(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    int64_t ready = 0;
+    if (!nm)
+        return 0;
+    for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
+        navmesh3d_path_workspace_t *workspace = &nm->path_workspaces[i];
+        if (workspace->corridor && workspace->corridor_capacity > 0 && workspace->portals &&
+            workspace->portal_capacity > 0)
+            ready++;
+    }
+    return ready;
+}
+
+/// @brief Read the number of unclaimed A* workspace permits.
+/// @param obj NavMesh3D handle to inspect.
+/// @return Available permits, or zero for an invalid handle.
+int64_t rt_navmesh3d_test_get_path_workspace_permits(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    return nm && nm->path_workspace_gate ? rt_gate_get_permits(nm->path_workspace_gate) : 0;
 }
 
 /// @brief Push a `(triangle, f-score)` entry onto the A* min-heap and sift up. Comparison
@@ -536,11 +580,6 @@ static void navmesh3d_pull_segment(
     }
 }
 
-typedef struct {
-    float left[3];
-    float right[3];
-} navmesh3d_portal_t;
-
 /// @brief Signed twice-area of triangle a/b/c in the XZ plane.
 /// @details Positive/negative signs describe which side of segment a->b point c lies on and are
 ///   used by the string-pulling funnel to detect corridor constrictions.
@@ -640,26 +679,23 @@ static int navmesh3d_transition_portal(
 /// @param point_count In/out number of waypoints stored in @p points.
 /// @return 1 when the corridor used only normal adjacency and the funnel ran, 0 to use fallback.
 static int navmesh3d_pull_funnel_corridor(rt_navmesh3d *nm,
+                                          navmesh3d_path_workspace_t *workspace,
                                           const int32_t *seq,
                                           int32_t count,
                                           const float start[3],
                                           const float end[3],
                                           double *points,
                                           int64_t *point_count) {
-    if (!nm || !seq || count < 2 || !points || !point_count)
+    navmesh3d_portal_t *portals;
+    if (!nm || !workspace || !seq || count < 2 || !points || !point_count || !workspace->portals ||
+        workspace->portal_capacity <= count)
         return 0;
-    if ((size_t)count + 1u > SIZE_MAX / sizeof(navmesh3d_portal_t))
-        return 0;
-    navmesh3d_portal_t *portals =
-        (navmesh3d_portal_t *)malloc(((size_t)count + 1u) * sizeof(*portals));
-    if (!portals)
-        return 0;
+    portals = workspace->portals;
     memcpy(portals[0].left, start, sizeof(portals[0].left));
     memcpy(portals[0].right, start, sizeof(portals[0].right));
     float ordering_apex[3] = {start[0], start[1], start[2]};
     for (int32_t i = 0; i < count - 1; i++) {
         if (!navmesh3d_transition_portal(nm, seq[i], seq[i + 1], ordering_apex, &portals[i + 1])) {
-            free(portals);
             return 0;
         }
         ordering_apex[0] = nm->triangles[seq[i + 1]].centroid[0];
@@ -714,7 +750,6 @@ static int navmesh3d_pull_funnel_corridor(rt_navmesh3d *nm,
             }
         }
     }
-    free(portals);
     return 1;
 }
 
@@ -735,6 +770,7 @@ static int navmesh3d_pull_funnel_corridor(rt_navmesh3d *nm,
 /// @return Newly malloc'd points buffer (caller owns) with @p out_point_count entries, or NULL on
 ///         allocation failure (then @p out_point_count is 0).
 static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
+                                          navmesh3d_path_workspace_t *workspace,
                                           const int32_t *parent,
                                           int32_t goal,
                                           float fx,
@@ -758,9 +794,9 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
     for (int32_t c = goal; c != -1; c = parent[c])
         count++;
 
-    seq = (int32_t *)malloc((size_t)count * sizeof(int32_t));
-    if (!seq)
+    if (!workspace || !workspace->corridor || workspace->corridor_capacity < count)
         return NULL;
+    seq = workspace->corridor;
     idx = count - 1;
     for (int32_t c = goal; c != -1; c = parent[c])
         seq[idx--] = c;
@@ -771,13 +807,11 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
      * upper bound with headroom; if the funnel emitter is ever changed to emit more points
      * per segment, keep this >= the real per-segment bound rather than trusting the literal. */
     if (count > (INT32_MAX - 2) / 3) {
-        free(seq);
         return NULL;
     }
     max_points = count * 3 + 2;
     points = (double *)malloc((size_t)max_points * 3u * sizeof(double));
     if (!points) {
-        free(seq);
         return NULL;
     }
     points[point_count * 3 + 0] = fdx;
@@ -792,7 +826,8 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
     if (count >= 2) {
         float apex[3] = {fx, fy, fz};
         float end[3] = {(float)tdx, (float)tdy, (float)tdz};
-        if (!navmesh3d_pull_funnel_corridor(nm, seq, count, apex, end, points, &point_count)) {
+        if (!navmesh3d_pull_funnel_corridor(
+                nm, workspace, seq, count, apex, end, points, &point_count)) {
             for (int32_t i = 0; i < count - 1; i++)
                 navmesh3d_pull_segment(nm, seq[i], seq[i + 1], apex, points, &point_count);
         }
@@ -808,7 +843,6 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
     points[point_count * 3 + 1] = tdy;
     points[point_count * 3 + 2] = tdz;
     point_count++;
-    free(seq);
     *out_point_count = point_count;
     return points;
 }
@@ -902,7 +936,7 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
     if (navmesh3d_astar_search(nm, start, goal, g_cost, parent, closed, heap, heap_cap)) {
         navmesh3d_store_last_path_cost(nm, (double)g_cost[goal]);
         points = navmesh3d_reconstruct_path(
-            nm, parent, goal, fx, fy, fz, fdx, fdy, fdz, tdx, tdy, tdz, &point_count);
+            nm, workspace, parent, goal, fx, fy, fz, fdx, fdy, fdz, tdx, tdy, tdz, &point_count);
     }
 
     navmesh3d_path_workspace_release(nm, workspace);

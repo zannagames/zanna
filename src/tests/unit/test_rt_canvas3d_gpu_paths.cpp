@@ -2129,6 +2129,10 @@ static void test_instanced_transform_history_forwarded(void) {
 
     reset_canvas_frame(&canvas, 1);
     rt_canvas3d_draw_instanced(&canvas, batch);
+    EXPECT_TRUE(canvas.frame_arena_frame_bytes >= 2u * 16u * sizeof(float),
+                "Instanced matrix snapshots consume retained frame-arena storage");
+    EXPECT_TRUE(canvas.temp_buf_count == 0,
+                "Instanced matrix snapshots avoid tracked per-draw malloc buffers");
     rt_canvas3d_end(&canvas);
     EXPECT_TRUE(last_instance_count == 2, "Instanced draw submits both instances");
     EXPECT_TRUE(last_instanced_cmd.has_prev_instance_matrices == 1,

@@ -346,16 +346,14 @@ static float *vscn_base64_decode_f32_le(const char *data,
                             field ? field : "f32 payload");
         return NULL;
     }
-    values = (float *)malloc(expected_count > 0 ? expected_count * sizeof(float) : 1u);
-    if (!values) {
-        free(raw);
-        return NULL;
-    }
+    /* malloc-backed Base64 output is sufficiently aligned for every scalar type and has exactly
+     * the final payload size. Canonicalize little-endian lanes in place to avoid a second equally
+     * large allocation and copy at peak scene-load memory. */
+    values = (float *)(void *)raw;
     for (size_t i = 0; i < expected_count; ++i) {
         size_t offset = i * sizeof(float);
         uint32_t bits;
         if (offset > raw_len || raw_len - offset < sizeof(float)) {
-            free(values);
             free(raw);
             rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
                                 "Scene3D.Load: %s decoded f32 payload ended early",
@@ -366,7 +364,6 @@ static float *vscn_base64_decode_f32_le(const char *data,
                ((uint32_t)raw[offset + 2u] << 16u) | ((uint32_t)raw[offset + 3u] << 24u);
         memcpy(&values[i], &bits, sizeof(bits));
         if (!isfinite(values[i])) {
-            free(values);
             free(raw);
             rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
                                 "Scene3D.Load: %s contains a non-finite value",
@@ -374,7 +371,6 @@ static float *vscn_base64_decode_f32_le(const char *data,
             return NULL;
         }
     }
-    free(raw);
     return values;
 }
 
@@ -407,16 +403,11 @@ static double *vscn_base64_decode_f64_le(const char *data,
                             field ? field : "f64 payload");
         return NULL;
     }
-    values = (double *)malloc(expected_count > 0 ? expected_count * sizeof(double) : 1u);
-    if (!values) {
-        free(raw);
-        return NULL;
-    }
+    values = (double *)(void *)raw;
     for (size_t i = 0; i < expected_count; ++i) {
         size_t offset = i * sizeof(double);
         uint64_t bits = 0;
         if (offset > raw_len || raw_len - offset < sizeof(double)) {
-            free(values);
             free(raw);
             rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
                                 "Scene3D.Load: %s decoded f64 payload ended early",
@@ -427,7 +418,6 @@ static double *vscn_base64_decode_f64_le(const char *data,
             bits |= (uint64_t)raw[offset + byte] << (byte * 8u);
         memcpy(&values[i], &bits, sizeof(bits));
         if (!isfinite(values[i])) {
-            free(values);
             free(raw);
             rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
                                 "Scene3D.Load: %s contains a non-finite value",
@@ -435,7 +425,6 @@ static double *vscn_base64_decode_f64_le(const char *data,
             return NULL;
         }
     }
-    free(raw);
     return values;
 }
 

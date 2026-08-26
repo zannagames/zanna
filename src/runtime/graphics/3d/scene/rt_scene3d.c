@@ -218,26 +218,50 @@ void scene3d_mark_spatial_dirty(rt_scene3d *scene) {
     scene->spatial_index.dirty = 1;
     scene->spatial_index.valid = 0;
     scene->spatial_index.topology_dirty = 1;
+    scene->spatial_index.dirty_node_count = 0;
+    scene->spatial_index.dirty_all = 0;
 }
 
-/// @brief Request a cheaper BVH refit (a node moved but the tree shape is unchanged).
-/// @details Only escalates to a full topology rebuild if the index is already invalid.
-/// @param scene Borrowed scene whose spatial index requires refreshed bounds.
-static void scene3d_mark_spatial_refit_dirty(rt_scene3d *scene) {
+/// @brief Queue one changed subtree for a cheaper BVH refit.
+/// @details Exact duplicate roots are coalesced. Allocation failure sets a full-scan fallback flag
+///   rather than losing the invalidation request.
+static void scene3d_mark_spatial_refit_dirty(rt_scene3d *scene, rt_scene_node3d *node) {
     if (!scene)
         return;
     scene->spatial_index.dirty = 1;
-    if (!scene->spatial_index.valid)
+    if (!scene->spatial_index.valid) {
         scene->spatial_index.topology_dirty = 1;
+        return;
+    }
+    if (!node || node->owner_scene != scene || scene->spatial_index.dirty_all)
+        scene->spatial_index.dirty_all = 1;
+    else {
+        for (int32_t i = 0; i < scene->spatial_index.dirty_node_count; i++) {
+            if (scene->spatial_index.dirty_nodes[i] == node)
+                return;
+        }
+        if (!scene3d_grow_array_i32((void **)&scene->spatial_index.dirty_nodes,
+                                    &scene->spatial_index.dirty_node_capacity,
+                                    scene->spatial_index.dirty_node_count + 1,
+                                    16,
+                                    sizeof(*scene->spatial_index.dirty_nodes),
+                                    0)) {
+            scene->spatial_index.dirty_node_count = 0;
+            scene->spatial_index.dirty_all = 1;
+            return;
+        }
+        scene->spatial_index.dirty_nodes[scene->spatial_index.dirty_node_count++] = node;
+    }
 }
 
 /// @brief Mark the spatial index stale after a visibility toggle.
 /// @details Hidden nodes stay in the BVH as filtered entries, so a visibility
 ///   change is a refit (per-entry flag refresh), NOT a topology rebuild — a
 ///   blinking or LOD-hidden object no longer costs O(n log n) per toggle.
-/// @param scene Borrowed scene whose per-entry visibility flags changed.
-void scene3d_mark_spatial_visibility_dirty(rt_scene3d *scene) {
-    scene3d_mark_spatial_refit_dirty(scene);
+/// @param node Borrowed node whose effective-visibility subtree changed.
+void scene3d_mark_spatial_visibility_dirty(rt_scene_node3d *node) {
+    if (node)
+        scene3d_mark_spatial_refit_dirty(node->owner_scene, node);
 }
 
 /// @brief Return @p value if it is a finite number, otherwise return @p fallback.

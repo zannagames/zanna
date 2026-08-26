@@ -38,6 +38,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
 
 extern "C" {
 #include "rt_canvas3d_internal.h"
@@ -119,6 +123,128 @@ static void tracked_pixels_finalize(void *) {
 static void release_runtime_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
+}
+
+static std::filesystem::path write_hdr_fixture(const char *suffix,
+                                               const std::string &header,
+                                               const std::vector<uint8_t> &pixels) {
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() / (std::string("zanna_cubemap_") + suffix + ".hdr");
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(header.data(), (std::streamsize)header.size());
+    stream.write((const char *)pixels.data(), (std::streamsize)pixels.size());
+    stream.close();
+    return path;
+}
+
+static rt_cubemap3d *load_hdr_fixture(const std::filesystem::path &path) {
+    std::string text = path.string();
+    rt_string runtime_path = rt_string_from_bytes(text.data(), text.size());
+    rt_cubemap3d *result = (rt_cubemap3d *)rt_cubemap3d_load_hdr_panorama(runtime_path, 1.0);
+    rt_string_unref(runtime_path);
+    return result;
+}
+
+static bool cubemap_faces_equal(const rt_cubemap3d *a, const rt_cubemap3d *b) {
+    if (!a || !b || a->face_size != b->face_size)
+        return false;
+    for (int face = 0; face < 6; face++) {
+        for (int y = 0; y < a->face_size; y++) {
+            for (int x = 0; x < a->face_size; x++) {
+                if (rt_pixels_get(a->faces[face], x, y) != rt_pixels_get(b->faces[face], x, y))
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+/// Radiance orientation signs/axis order and CRLF headers must canonicalize identically. The
+/// old-RLE fixture also exercises a multi-byte repeat count with a zero low digit.
+static void test_hdr_layouts_crlf_and_old_rle() {
+    TEST("HDR orientation, CRLF, and old-RLE compatibility");
+    const std::vector<uint8_t> canonical_pixels = {
+        255,
+        0,
+        0,
+        128,
+        0,
+        255,
+        0,
+        128,
+        0,
+        0,
+        255,
+        128,
+        255,
+        255,
+        255,
+        128,
+    };
+    const std::vector<uint8_t> reversed_pixels = {
+        255,
+        255,
+        255,
+        128,
+        0,
+        0,
+        255,
+        128,
+        0,
+        255,
+        0,
+        128,
+        255,
+        0,
+        0,
+        128,
+    };
+    const std::vector<uint8_t> axis_swapped_pixels = {
+        0,
+        0,
+        255,
+        128,
+        255,
+        0,
+        0,
+        128,
+        255,
+        255,
+        255,
+        128,
+        0,
+        255,
+        0,
+        128,
+    };
+    auto canonical_path = write_hdr_fixture(
+        "canonical", "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 2 +X 2\n", canonical_pixels);
+    auto reversed_path = write_hdr_fixture(
+        "reversed", "#?RADIANCE\r\nFORMAT=32-bit_rle_rgbe\r\n\r\n+Y 2 -X 2\r\n", reversed_pixels);
+    auto swapped_path = write_hdr_fixture(
+        "swapped", "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n+X 2 +Y 2\n", axis_swapped_pixels);
+    rt_cubemap3d *canonical = load_hdr_fixture(canonical_path);
+    rt_cubemap3d *reversed = load_hdr_fixture(reversed_path);
+    rt_cubemap3d *swapped = load_hdr_fixture(swapped_path);
+    EXPECT_TRUE(canonical && reversed && swapped, "all valid Radiance layouts load");
+    EXPECT_TRUE(cubemap_faces_equal(canonical, reversed), "signed CRLF layout canonicalizes");
+    EXPECT_TRUE(cubemap_faces_equal(canonical, swapped), "axis-swapped layout canonicalizes");
+
+    std::vector<uint8_t> old_rle = {64, 32, 16, 128, 1, 1, 1, 0, 1, 1, 1, 1};
+    auto old_rle_path = write_hdr_fixture(
+        "old_rle", "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 257\n", old_rle);
+    rt_cubemap3d *old_rle_map = load_hdr_fixture(old_rle_path);
+    EXPECT_TRUE(old_rle_map != nullptr, "bounded multi-byte old-RLE repeat loads safely");
+
+    release_runtime_object(canonical);
+    release_runtime_object(reversed);
+    release_runtime_object(swapped);
+    release_runtime_object(old_rle_map);
+    std::filesystem::remove(canonical_path);
+    std::filesystem::remove(reversed_path);
+    std::filesystem::remove(swapped_path);
+    std::filesystem::remove(old_rle_path);
+    PASS();
 }
 
 /// Constant environment: SH irradiance must be the environment color for every
@@ -368,6 +494,7 @@ int main() {
     test_source_face_state_repair();
     test_ibl_state_repair_and_rebuild();
     test_cubemap_finalizer_uses_owner_slots();
+    test_hdr_layouts_crlf_and_old_rle();
     printf("%d/%d tests passed\n", tests_passed, tests_total);
     return tests_passed == tests_total ? 0 : 1;
 }

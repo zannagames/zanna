@@ -165,6 +165,11 @@ typedef struct {
     float f;
 } navmesh3d_heap_entry_t;
 
+typedef struct {
+    float left[3];
+    float right[3];
+} navmesh3d_portal_t;
+
 /// @brief Independently owned mutable storage for one in-flight A* query.
 /// @details A NavMesh3D retains a small fixed pool of these slots. A query exclusively claims one
 ///   slot before growing or writing its arrays, so searches on the same immutable topology can
@@ -174,8 +179,12 @@ typedef struct {
     int32_t *parent;
     int8_t *closed;
     navmesh3d_heap_entry_t *heap;
+    int32_t *corridor;
+    navmesh3d_portal_t *portals;
     int32_t triangle_capacity;
     int32_t heap_capacity;
+    int32_t corridor_capacity;
+    int32_t portal_capacity;
     volatile int in_use;
 } navmesh3d_path_workspace_t;
 
@@ -203,6 +212,7 @@ typedef struct {
     /* Bounded pool of independently reusable A* workspaces. Queries serialize only when every
      * slot is occupied; up to NAVMESH3D_PATH_WORKSPACE_COUNT searches otherwise overlap. */
     navmesh3d_path_workspace_t path_workspaces[NAVMESH3D_PATH_WORKSPACE_COUNT];
+    void *path_workspace_gate;
     volatile int path_active_queries;
     volatile int path_peak_active_queries;
     double agent_radius;
@@ -244,6 +254,14 @@ typedef struct {
     uint8_t *voxel_cell_walkable;
     int32_t *voxel_corner_vertices;
 } rt_navmesh3d;
+
+/// @brief Initialize the fair counting gate that maps callers onto fixed A* workspaces.
+static int navmesh3d_init_path_workspace_gate(rt_navmesh3d *nm) {
+    if (!nm)
+        return 0;
+    nm->path_workspace_gate = rt_gate_new(NAVMESH3D_PATH_WORKSPACE_COUNT);
+    return nm->path_workspace_gate != NULL;
+}
 
 /// @brief Record that a NavMesh3D query-grid build could not publish a new acceleration index.
 /// @details The per-object counter is incremented when a valid object is available and the shared

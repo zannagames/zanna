@@ -353,6 +353,10 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
                 "NavMesh A* workspace pool is reusable across concurrent queries");
     EXPECT_TRUE(rt_navmesh3d_test_get_path_peak_concurrency(nm) >= 2,
                 "NavMesh independent A* workspace slots overlap in flight");
+    EXPECT_TRUE(rt_navmesh3d_test_get_ready_path_scratch_count(nm) >= 2,
+                "NavMesh concurrent searches retain per-workspace corridor and portal scratch");
+    EXPECT_TRUE(rt_navmesh3d_test_get_path_workspace_permits(nm) == 4,
+                "NavMesh returns every blocking workspace permit after concurrent searches");
     EXPECT_TRUE(std::isfinite(rt_navmesh3d_get_last_path_cost(nm)),
                 "NavMesh LastPathCost remains atomically readable during workspace reuse");
 }

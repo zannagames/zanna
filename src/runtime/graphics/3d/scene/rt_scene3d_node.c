@@ -313,6 +313,7 @@ void *rt_scene_node3d_new(void) {
     node->world_matrix[0] = node->world_matrix[5] = 1.0;
     node->world_matrix[10] = node->world_matrix[15] = 1.0;
     node->world_dirty = 1;
+    node->spatial_entry_index = -1;
     node->world_revision = 1;
     node->parent_world_revision_seen = 0;
 
@@ -1343,7 +1344,7 @@ void rt_scene_node3d_set_visible(void *obj, int8_t visible) {
         /* Visibility is a per-entry filter in the spatial index, not topology:
          * request a refit so toggles stay O(changed paths) instead of forcing a
          * full O(n log n) rebuild per blink. */
-        scene3d_mark_spatial_visibility_dirty(node->owner_scene);
+        scene3d_mark_spatial_visibility_dirty(node);
     }
 }
 

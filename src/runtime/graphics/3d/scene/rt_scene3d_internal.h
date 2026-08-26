@@ -190,6 +190,16 @@ typedef struct {
     rt_scene3d_spatial_bvh_node *nodes;
     int32_t node_count;
     int32_t node_capacity;
+    int32_t *query_stack;
+    int32_t query_stack_capacity;
+    rt_scene3d_spatial_entry **query_order_scratch;
+    int32_t query_order_scratch_capacity;
+    struct rt_scene_node3d **dirty_nodes;
+    int32_t dirty_node_count;
+    int32_t dirty_node_capacity;
+    struct rt_scene_node3d **dirty_walk_stack;
+    int32_t dirty_walk_stack_capacity;
+    int8_t dirty_all;
     int32_t root_node;
     int8_t dirty;
     int8_t topology_dirty;
@@ -267,6 +277,9 @@ typedef struct rt_scene_node3d {
     int8_t world_dirty;
     uint32_t world_revision;
     uint32_t parent_world_revision_seen;
+    /* Dense spatial-entry lookup rebuilt with the owning scene BVH, or -1 when this node has no
+     * drawable entry. It lets transform/visibility dirty queues avoid a whole-index scan. */
+    int32_t spatial_entry_index;
 
     struct rt_scene_node3d *parent;
     struct rt_scene3d *owner_scene;
@@ -749,9 +762,9 @@ double scene3d_distance_or_zero(double value);
 /// @param scene Borrowed scene to invalidate; `NULL` is accepted.
 void scene3d_mark_spatial_dirty(rt_scene3d *scene);
 
-/// @brief Mark spatial entry bounds/visibility stale without changing BVH topology.
-/// @param scene Borrowed scene to invalidate; `NULL` is accepted.
-void scene3d_mark_spatial_visibility_dirty(rt_scene3d *scene);
+/// @brief Mark one node's spatial visibility subtree stale without changing BVH topology.
+/// @param node Borrowed changed node; `NULL` is accepted.
+void scene3d_mark_spatial_visibility_dirty(rt_scene_node3d *node);
 
 /// @brief Robustly normalize a finite three-component vector in place.
 /// @param v Mutable vector left unchanged when it cannot be normalized.
