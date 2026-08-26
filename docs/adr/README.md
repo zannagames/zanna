@@ -47,6 +47,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0290](0290-virtual-tree-bulk-updates.md) — Add Nestable VirtualTree Bulk Updates
 - [ADR 0291](0291-compiler-backed-basic-signature-help.md) — Make the BASIC Compiler Authoritative for Signature Help
 - [ADR 0292](0292-collection-class-identity-in-zia.md) — Enforce Runtime Collection Class Identity in Zia
+- [ADR 0293](0293-linear-space-colorize-masked.md) — Linear-Space Variant of Pixels.ColorizeMasked
+- [ADR 0294](0294-venue-kit-engine-surface.md) — Venue-Kit Engine Surface: Mesh3D.BendArc, glTF extras Metadata, SceneAsset.FlattenStatic
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API

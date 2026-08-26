@@ -585,6 +585,9 @@ RT_FUNC(Model3DApplyVariant,   rt_model3d_apply_variant,      "Zanna.Graphics3D.
 RT_FUNC(Model3DGenerateLODs,   rt_model3d_generate_lods,      "Zanna.Graphics3D.SceneAsset.GenerateLods",      "i64(obj,i64,f64)")
 RT_FUNC(Model3DFindNodeOption, rt_model3d_find_node_option,   "Zanna.Graphics3D.SceneAsset.FindNode",    "obj<Zanna.Option>(obj,str)")
 RT_FUNC(Model3DInstantiate,    rt_model3d_instantiate,        "Zanna.Graphics3D.SceneAsset.Instantiate",       "obj(obj)")
+// Static flatten (ADR 0294): merge a template subtree into one transform-only
+// SceneNode per material, pre-transformed by a placement matrix.
+RT_FUNC(Model3DFlattenStatic,  rt_model3d_flatten_static,     "Zanna.Graphics3D.SceneAsset.FlattenStatic",     "obj<Zanna.Collections.Seq>(obj,str,obj)")
 RT_FUNC(Model3DInstantiateScene,rt_model3d_instantiate_scene, "Zanna.Graphics3D.SceneAsset.InstantiateScene",  "obj(obj)")
 RT_FUNC(Model3DInstantiateSceneAt,rt_model3d_instantiate_scene_at, "Zanna.Graphics3D.SceneAsset.InstantiateSceneAt", "obj<Zanna.Graphics3D.SceneGraph>(obj,i64)")
 RT_FUNC(Model3DLoadAnimationResult, rt_model3d_load_animation_result, "Zanna.Graphics3D.SceneAsset.LoadAnimationResult", "obj<Zanna.Result>(str,i64)")
@@ -697,6 +700,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.SceneAsset", Model3D, "obj", none)
     RT_METHOD("GenerateLods", "i64(i64,f64)", Model3DGenerateLODs)
     RT_METHOD("FindNode", "obj<Zanna.Option>(str)", Model3DFindNodeOption)
     RT_METHOD("Instantiate", "obj()", Model3DInstantiate)
+    RT_METHOD("FlattenStatic", "obj<Zanna.Collections.Seq>(str,obj)", Model3DFlattenStatic)
     RT_METHOD("InstantiateScene", "obj()", Model3DInstantiateScene)
     RT_METHOD("InstantiateSceneAt", "obj<Zanna.Graphics3D.SceneGraph>(i64)", Model3DInstantiateSceneAt)
     RT_METHOD("LoadAnimationResult", "obj<Zanna.Result>(str,i64)", Model3DLoadAnimationResult)

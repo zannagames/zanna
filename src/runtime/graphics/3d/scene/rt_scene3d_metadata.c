@@ -353,6 +353,57 @@ static const rt_scene3d_metadata_entry *metadata_get_entry(void *obj,
     return found ? &node->metadata[index] : NULL;
 }
 
+/// @brief Importer entry (ADR 0294): set one metadata entry from native bytes.
+/// @details Same bounds and replace-or-insert semantics as the public setters.
+int8_t rt_scene_node3d_metadata_import_internal(rt_scene_node3d *node,
+                                                const char *key,
+                                                int32_t key_length,
+                                                int32_t kind,
+                                                int8_t bool_value,
+                                                int64_t int_value,
+                                                double float_value,
+                                                const char *string_value,
+                                                int32_t string_length) {
+    if (kind < (int32_t)RT_SCENE3D_METADATA_NULL || kind > (int32_t)RT_SCENE3D_METADATA_STRING)
+        return 0;
+    return metadata_set(node,
+                        key,
+                        key_length,
+                        (rt_scene3d_metadata_kind)kind,
+                        bool_value,
+                        int_value,
+                        float_value,
+                        string_value,
+                        string_length);
+}
+
+/// @brief Deep-copy every metadata entry of @p src onto @p dst (ADR 0294).
+/// @details Used by the glTF scene-root clone so authored `extras` survive template construction.
+int8_t rt_scene_node3d_metadata_copy_internal(rt_scene_node3d *dst, const rt_scene_node3d *src) {
+    if (!dst || !src || !metadata_table_valid(src))
+        return 0;
+    for (int32_t index = 0; index < src->metadata_count; ++index) {
+        const rt_scene3d_metadata_entry *entry = &src->metadata[index];
+        const char *string_value = NULL;
+        int32_t string_length = 0;
+        if (entry->kind == RT_SCENE3D_METADATA_STRING) {
+            string_value = entry->value.string_value.data;
+            string_length = entry->value.string_value.length;
+        }
+        if (!metadata_set(dst,
+                          entry->key,
+                          entry->key_length,
+                          entry->kind,
+                          entry->value.bool_value,
+                          entry->value.int_value,
+                          entry->value.float_value,
+                          string_value,
+                          string_length))
+            return 0;
+    }
+    return 1;
+}
+
 /// @brief Release every native allocation owned by one node metadata table.
 /// @param node Borrowed node whose keys, string values, and entry array are cleared.
 void rt_scene_node3d_metadata_clear_internal(rt_scene_node3d *node) {

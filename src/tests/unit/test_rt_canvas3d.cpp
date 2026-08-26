@@ -10449,6 +10449,112 @@ static void test_mesh_transform_updates_tangent_basis() {
     PASS();
 }
 
+static void test_mesh_bend_arc_wraps_chord_onto_shared_arc() {
+    TEST("Mesh3D.BendArc wraps the X extent onto a circular arc with rotated normals");
+    rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new();
+    assert(m != NULL);
+    /* A 20-unit straight panel facing -Z (away from the +Z bend centre). */
+    rt_mesh3d_add_vertex(m, -10, 0, 0, 0, 0, -1, 0, 0);
+    rt_mesh3d_add_vertex(m, 10, 0, 0, 0, 0, -1, 1, 0);
+    rt_mesh3d_add_vertex(m, 10, 5, 0, 0, 0, -1, 1, 1);
+    rt_mesh3d_add_vertex(m, -10, 5, 0, 0, 0, -1, 0, 1);
+    /* A vertex 2 units deep (toward the centre) at the chord midpoint. */
+    rt_mesh3d_add_vertex(m, 0, 2.5, 2, 0, 0, -1, 0.5, 0.5);
+    rt_mesh3d_add_triangle(m, 0, 2, 1);
+    rt_mesh3d_add_triangle(m, 0, 3, 2);
+    rt_mesh3d_add_triangle(m, 0, 1, 4);
+    uint32_t revision_before = m->geometry_revision;
+
+    rt_mesh3d_bend_arc(m, 100.0, 20.0);
+
+    const double s10 = std::sin(10.0 * 3.14159265358979323846 / 180.0);
+    const double c10 = std::cos(10.0 * 3.14159265358979323846 / 180.0);
+    /* Endpoints land at +-10 degrees on the radius-100 circle centred at (0, *, 100). */
+    EXPECT_NEAR(m->vertices[1].pos[0], 100.0 * s10, 0.001);
+    EXPECT_NEAR(m->vertices[1].pos[2], 100.0 - 100.0 * c10, 0.001);
+    EXPECT_NEAR(m->vertices[0].pos[0], -100.0 * s10, 0.001);
+    EXPECT_NEAR(m->vertices[0].pos[2], 100.0 - 100.0 * c10, 0.001);
+    EXPECT_NEAR(m->vertices[2].pos[1], 5.0, 0.0001);
+    /* Both end sections sit exactly on the circle, 20 degrees apart: two such pieces
+     * placed at adjacent angles share their end sections. */
+    {
+        double dx0 = m->vertices[0].pos[0];
+        double dz0 = m->vertices[0].pos[2] - 100.0;
+        double dx1 = m->vertices[1].pos[0];
+        double dz1 = m->vertices[1].pos[2] - 100.0;
+        EXPECT_NEAR(std::sqrt(dx0 * dx0 + dz0 * dz0), 100.0, 0.001);
+        EXPECT_NEAR(std::sqrt(dx1 * dx1 + dz1 * dz1), 100.0, 0.001);
+        double ang = std::atan2(dx1, -dz1) - std::atan2(dx0, -dz0);
+        EXPECT_NEAR(ang * 180.0 / 3.14159265358979323846, 20.0, 0.001);
+    }
+    /* The chord midpoint keeps its depth: the deep vertex stays at (0, 2.5, 2). */
+    EXPECT_NEAR(m->vertices[4].pos[0], 0.0, 0.0001);
+    EXPECT_NEAR(m->vertices[4].pos[2], 2.0, 0.0001);
+    /* Normals rotate with the local frame and still point away from the centre. */
+    EXPECT_NEAR(m->vertices[1].normal[0], s10, 0.001);
+    EXPECT_NEAR(m->vertices[1].normal[2], -c10, 0.001);
+    EXPECT_NEAR(m->vertices[0].normal[0], -s10, 0.001);
+    EXPECT_NEAR(m->vertices[4].normal[2], -1.0, 0.0001);
+    /* Winding is preserved (proper rotation everywhere). */
+    EXPECT_TRUE(m->indices[0] == 0 && m->indices[1] == 2 && m->indices[2] == 1,
+                "Mesh3D.BendArc keeps triangle winding");
+    EXPECT_TRUE(m->geometry_revision != revision_before,
+                "Mesh3D.BendArc advances the geometry revision");
+    rt_mesh3d_refresh_bounds(m);
+    EXPECT_NEAR(m->aabb_max[0], 100.0 * s10, 0.01);
+    EXPECT_NEAR(m->aabb_min[0], -100.0 * s10, 0.01);
+    PASS();
+}
+
+static void test_mesh_bend_arc_rejects_invalid_input_without_mutation() {
+    TEST("Mesh3D.BendArc validates before mutating");
+    rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new();
+    assert(m != NULL);
+    rt_mesh3d_add_vertex(m, -10, 0, 0, 0, 0, -1, 0, 0);
+    rt_mesh3d_add_vertex(m, 10, 0, 0, 0, 0, -1, 1, 0);
+    rt_mesh3d_add_vertex(m, 10, 5, 0, 0, 0, -1, 1, 1);
+    rt_mesh3d_add_triangle(m, 0, 2, 1);
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_bend_arc(m, 0.0, 20.0); }, "radius"),
+                "Mesh3D.BendArc traps on a zero radius");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_bend_arc(m, 100.0, 0.0); }, "arc"),
+                "Mesh3D.BendArc traps on a zero arc");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_bend_arc(m, 100.0, 361.0); }, "arc"),
+                "Mesh3D.BendArc traps on an arc over 360 degrees");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_bend_arc(m, 100.0, NAN); }, "arc"),
+                "Mesh3D.BendArc traps on a non-finite arc");
+    EXPECT_NEAR(m->vertices[1].pos[0], 10.0, 0.0001);
+    EXPECT_NEAR(m->vertices[1].pos[2], 0.0, 0.0001);
+
+    /* A vertex as deep as the radius would invert the bend. */
+    rt_mesh3d *deep = (rt_mesh3d *)rt_mesh3d_new();
+    assert(deep != NULL);
+    rt_mesh3d_add_vertex(deep, -10, 0, 0, 0, 0, -1, 0, 0);
+    rt_mesh3d_add_vertex(deep, 10, 0, 100, 0, 0, -1, 1, 0);
+    rt_mesh3d_add_vertex(deep, 10, 5, 0, 0, 0, -1, 1, 1);
+    rt_mesh3d_add_triangle(deep, 0, 2, 1);
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_bend_arc(deep, 100.0, 20.0); },
+                                     "closer than the radius"),
+                "Mesh3D.BendArc traps when a vertex reaches the bend axis");
+    EXPECT_NEAR(deep->vertices[1].pos[2], 100.0, 0.0001);
+
+    /* No X extent: nothing to map onto the arc. */
+    rt_mesh3d *flat = (rt_mesh3d *)rt_mesh3d_new();
+    assert(flat != NULL);
+    rt_mesh3d_add_vertex(flat, 0, 0, 0, 0, 0, -1, 0, 0);
+    rt_mesh3d_add_vertex(flat, 0, 1, 0, 0, 0, -1, 1, 0);
+    rt_mesh3d_add_vertex(flat, 0, 1, 1, 0, 0, -1, 1, 1);
+    rt_mesh3d_add_triangle(flat, 0, 2, 1);
+    EXPECT_TRUE(
+        expect_trap_contains([&] { rt_mesh3d_bend_arc(flat, 100.0, 20.0); }, "positive X extent"),
+        "Mesh3D.BendArc traps on a zero X extent");
+    /* NULL and empty meshes are silent no-ops. */
+    rt_mesh3d_bend_arc(NULL, 100.0, 20.0);
+    rt_mesh3d *empty = (rt_mesh3d *)rt_mesh3d_new();
+    rt_mesh3d_bend_arc(empty, 100.0, 20.0);
+    EXPECT_TRUE(empty->vertex_count == 0, "Mesh3D.BendArc ignores empty meshes");
+    PASS();
+}
+
 static void test_mesh_transform_rejects_singular_normal_matrix() {
     TEST("Mesh3D.Transform rejects singular normal matrices");
     rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new_plane(1.0, 1.0);
@@ -11526,6 +11632,8 @@ int main() {
     test_mesh_clone_deep_copies_morph_targets();
     test_mesh_transform_uses_inverse_transpose_normals();
     test_mesh_transform_updates_tangent_basis();
+    test_mesh_bend_arc_wraps_chord_onto_shared_arc();
+    test_mesh_bend_arc_rejects_invalid_input_without_mutation();
     test_mesh_transform_flips_tangent_handedness_for_mirrors();
     test_mesh_recalc_normals();
     test_mesh_recalc_normals_uses_double_accumulation();

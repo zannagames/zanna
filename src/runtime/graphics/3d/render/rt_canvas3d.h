@@ -1056,6 +1056,15 @@ void *rt_mesh3d_clone(void *obj);
 /// @param obj Borrowed mutable Mesh3D handle.
 /// @param mat4 Borrowed Mat4 applied to positions and normal directions.
 void rt_mesh3d_transform(void *obj, void *mat4);
+/// @brief Wrap the mesh's X extent around a vertical circular arc (`Mesh3D.BendArc`, ADR 0294).
+/// @details The arc centre lies on local +Z, `radius` from the chord midpoint; vertices at depth z
+///          land on radius `radius - z`. Normals/tangents rotate with the local frame; winding is
+///          preserved. Traps (without mutating) on invalid arguments, skinned/morph meshes, a
+///          zero X extent, or any vertex whose depth reaches the radius.
+/// @param obj Borrowed mutable Mesh3D handle.
+/// @param radius Bend radius (finite, > 0).
+/// @param arc_degrees Angle the X extent spans after bending, in (0, 360].
+void rt_mesh3d_bend_arc(void *obj, double radius, double arc_degrees);
 /// @brief Compute per-vertex tangent vectors from UVs (required for normal mapping).
 /// @param obj Borrowed mutable Mesh3D handle.
 void rt_mesh3d_calc_tangents(void *obj);

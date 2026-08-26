@@ -30,6 +30,7 @@
 #include "rt_canvas3d_internal.h"
 #include "rt_fbx_loader.h"
 #include "rt_gltf.h"
+#include "rt_mat4.h"
 #include "rt_model3d.h"
 #include "rt_morphtarget3d.h"
 #include "rt_morphtarget3d_internal.h"
@@ -38,6 +39,7 @@
 #include "rt_result.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
+#include "rt_seq.h"
 #include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
 #include "rt_textureasset3d.h"
@@ -4175,6 +4177,239 @@ static void test_model3d_find_node_rejects_wrong_string_handles() {
     if (rt_obj_release_check0(wrong_name))
         rt_obj_free(wrong_name);
     std::remove(path);
+}
+
+/// @brief ADR 0294 kit fixture: one triangle shared by two meshes/materials, a KitRoot with
+///        three placed children (two seats sharing material 0, one rail on material 1), a loose
+///        sibling on material 1, and authored `extras` on the root and the first seat.
+static bool write_kit_gltf_fixture(const char *path) {
+    std::vector<uint8_t> gltf_buffer;
+    const float positions[9] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const uint16_t indices[3] = {0, 1, 2};
+    for (float v : positions)
+        append_bytes(gltf_buffer, v);
+    for (uint16_t v : indices)
+        append_bytes(gltf_buffer, v);
+    std::string buffer_b64 = base64_encode(gltf_buffer.data(), gltf_buffer.size());
+    std::string gltf_json =
+        "{\n"
+        "  \"asset\": {\"version\": \"2.0\"},\n"
+        "  \"buffers\": [{\"uri\": \"data:application/octet-stream;base64," +
+        buffer_b64 + "\", \"byteLength\": " + std::to_string(gltf_buffer.size()) +
+        "}],\n"
+        "  \"bufferViews\": [\n"
+        "    {\"buffer\": 0, \"byteOffset\": 0, \"byteLength\": 36},\n"
+        "    {\"buffer\": 0, \"byteOffset\": 36, \"byteLength\": 6}\n"
+        "  ],\n"
+        "  \"accessors\": [\n"
+        "    {\"bufferView\": 0, \"componentType\": 5126, \"count\": 3, \"type\": \"VEC3\"},\n"
+        "    {\"bufferView\": 1, \"componentType\": 5123, \"count\": 3, \"type\": \"SCALAR\"}\n"
+        "  ],\n"
+        "  \"materials\": [\n"
+        "    {\"name\": \"Seat\", \"pbrMetallicRoughness\": {\"baseColorFactor\": [0.8, 0.1, 0.1, "
+        "1.0]}},\n"
+        "    {\"name\": \"Rail\", \"pbrMetallicRoughness\": {\"baseColorFactor\": [0.1, 0.1, 0.8, "
+        "1.0]}}\n"
+        "  ],\n"
+        "  \"meshes\": [\n"
+        "    {\"primitives\": [{\"attributes\": {\"POSITION\": 0}, \"indices\": 1, \"material\": "
+        "0}]},\n"
+        "    {\"primitives\": [{\"attributes\": {\"POSITION\": 0}, \"indices\": 1, \"material\": "
+        "1}]}\n"
+        "  ],\n"
+        "  \"nodes\": [\n"
+        "    {\"name\": \"KitRoot\", \"children\": [1, 2, 3], \"extras\": {\"kit.category\": "
+        "\"tier\"}},\n"
+        "    {\"name\": \"SeatA\", \"mesh\": 0, \"translation\": [1.0, 2.0, 3.0],\n"
+        "     \"extras\": {\"kit.role\": \"seat\", \"chord_ft\": 20, \"rise\": 2.4, \"tintable\": "
+        "true,\n"
+        "                \"note\": null, \"nested\": {\"a\": 1}, \"list\": [1, 2]}},\n"
+        "    {\"name\": \"SeatB\", \"mesh\": 0, \"translation\": [10.0, 0.0, 0.0]},\n"
+        "    {\"name\": \"Rail\", \"mesh\": 1, \"translation\": [0.0, 5.0, 0.0], \"extras\": 7},\n"
+        "    {\"name\": \"Loose\", \"mesh\": 1, \"translation\": [0.0, 0.0, 50.0]}\n"
+        "  ],\n"
+        "  \"scenes\": [{\"nodes\": [0, 4]}],\n"
+        "  \"scene\": 0\n"
+        "}\n";
+    FILE *gltf = std::fopen(path, "wb");
+    if (!gltf)
+        return false;
+    std::fwrite(gltf_json.data(), 1, gltf_json.size(), gltf);
+    std::fclose(gltf);
+    return true;
+}
+
+static bool metadata_string_is(void *node, const char *key, const char *expected) {
+    rt_string value =
+        rt_scene_node3d_metadata_get_string(node, rt_const_cstr(key), rt_const_cstr(""));
+    const char *text = value ? rt_string_cstr(value) : nullptr;
+    return text && std::strcmp(text, expected) == 0;
+}
+
+static bool metadata_kind_is(void *node, const char *key, const char *expected) {
+    rt_string kind = rt_scene_node3d_metadata_kind(node, rt_const_cstr(key));
+    const char *text = kind ? rt_string_cstr(kind) : nullptr;
+    return text && std::strcmp(text, expected) == 0;
+}
+
+/// @brief ADR 0294: glTF node `extras` become typed SceneNode metadata on import, survive a
+///        VSCN bake round-trip, and travel with instantiated clones.
+static void test_model3d_imports_gltf_node_extras_as_metadata() {
+    const char *path = "/tmp/zanna_model3d_kit_extras.gltf";
+    const char *baked = "/tmp/zanna_model3d_kit_extras_baked.scene3d";
+    bool wrote_fixture = write_kit_gltf_fixture(path);
+    EXPECT_TRUE(wrote_fixture, "kit glTF fixture can be written");
+    if (!wrote_fixture)
+        return;
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "SceneAsset.Load parses the kit fixture");
+    if (!model)
+        return;
+    void *seat = rt_model3d_find_node(model, rt_const_cstr("SeatA"));
+    void *root = rt_model3d_find_node(model, rt_const_cstr("KitRoot"));
+    void *rail = rt_model3d_find_node(model, rt_const_cstr("Rail"));
+    EXPECT_TRUE(seat != nullptr && root != nullptr && rail != nullptr,
+                "kit fixture nodes are importable by name");
+    if (!seat || !root || !rail)
+        return;
+    EXPECT_TRUE(metadata_string_is(seat, "kit.role", "seat"),
+                "glTF extras strings import as string metadata");
+    EXPECT_TRUE(metadata_kind_is(seat, "chord_ft", "int") &&
+                    rt_scene_node3d_metadata_get_int(seat, rt_const_cstr("chord_ft"), 0) == 20,
+                "glTF extras integers import as int metadata");
+    EXPECT_TRUE(metadata_kind_is(seat, "rise", "float"),
+                "glTF extras floats import as float metadata");
+    EXPECT_NEAR(rt_scene_node3d_metadata_get_float(seat, rt_const_cstr("rise"), 0.0),
+                2.4,
+                0.0001,
+                "glTF extras float values are preserved");
+    EXPECT_TRUE(metadata_kind_is(seat, "tintable", "bool") &&
+                    rt_scene_node3d_metadata_get_bool(seat, rt_const_cstr("tintable"), 0) == 1,
+                "glTF extras booleans import as bool metadata");
+    EXPECT_TRUE(metadata_kind_is(seat, "note", "null"),
+                "glTF extras null imports as a null metadata entry");
+    EXPECT_TRUE(rt_scene_node3d_metadata_has(seat, rt_const_cstr("nested")) == 0 &&
+                    rt_scene_node3d_metadata_has(seat, rt_const_cstr("list")) == 0,
+                "nested glTF extras objects and arrays stay opaque");
+    EXPECT_TRUE(metadata_string_is(root, "kit.category", "tier"),
+                "transform-only nodes import their extras too");
+    EXPECT_TRUE(rt_seq_len(rt_scene_node3d_metadata_keys(rail)) == 0,
+                "a non-object extras value is ignored");
+
+    /* Instantiated clones carry the metadata. */
+    void *instance = rt_model3d_instantiate(model);
+    EXPECT_TRUE(instance != nullptr, "kit fixture instantiates");
+    if (instance) {
+        void *seat_copy = rt_scene_node3d_find(instance, rt_const_cstr("SeatA"));
+        EXPECT_TRUE(seat_copy != nullptr && metadata_string_is(seat_copy, "kit.role", "seat"),
+                    "Instantiate deep-copies imported extras metadata");
+    }
+
+    /* The bake path (SceneAsset.Save -> .scene3d -> load) keeps it. */
+    void *scene = rt_model3d_instantiate_scene(model);
+    EXPECT_TRUE(scene != nullptr, "kit fixture instantiates as a scene");
+    if (scene) {
+        EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(baked)) == 1,
+                    "instantiated kit scene saves as VSCN");
+        void *reloaded = rt_model3d_load(rt_const_cstr(baked));
+        EXPECT_TRUE(reloaded != nullptr, "baked kit scene reloads");
+        if (reloaded) {
+            void *seat_baked = rt_model3d_find_node(reloaded, rt_const_cstr("SeatA"));
+            EXPECT_TRUE(
+                seat_baked != nullptr && metadata_string_is(seat_baked, "kit.role", "seat") &&
+                    rt_scene_node3d_metadata_get_int(seat_baked, rt_const_cstr("chord_ft"), 0) ==
+                        20,
+                "VSCN bake round-trips imported extras metadata");
+        }
+    }
+}
+
+/// @brief ADR 0294: FlattenStatic merges a subtree into one node per material, in first-seen
+///        order, pre-transformed by node world and placement matrices.
+static void test_model3d_flatten_static_merges_by_material() {
+    const char *path = "/tmp/zanna_model3d_kit_flatten.gltf";
+    bool wrote_fixture = write_kit_gltf_fixture(path);
+    EXPECT_TRUE(wrote_fixture, "kit glTF fixture can be written for flatten");
+    if (!wrote_fixture)
+        return;
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "SceneAsset.Load parses the kit fixture for flatten");
+    if (!model)
+        return;
+
+    /* Whole model, identity placement: two groups (material 0 then 1). */
+    void *groups = rt_model3d_flatten_static(model, rt_const_cstr(""), nullptr);
+    EXPECT_TRUE(groups != nullptr && rt_seq_len(groups) == 2,
+                "FlattenStatic returns one group per distinct material");
+    if (!groups || rt_seq_len(groups) != 2)
+        return;
+    void *group0 = rt_seq_get(groups, 0);
+    void *group1 = rt_seq_get(groups, 1);
+    rt_mesh3d *mesh0 = (rt_mesh3d *)rt_scene_node3d_get_mesh(group0);
+    rt_mesh3d *mesh1 = (rt_mesh3d *)rt_scene_node3d_get_mesh(group1);
+    EXPECT_TRUE(mesh0 != nullptr && mesh1 != nullptr, "FlattenStatic groups carry merged meshes");
+    if (!mesh0 || !mesh1)
+        return;
+    EXPECT_TRUE(rt_scene_node3d_get_material(group0) == rt_model3d_get_material(model, 0) &&
+                    rt_scene_node3d_get_material(group1) == rt_model3d_get_material(model, 1),
+                "FlattenStatic groups share the model's materials in first-seen order");
+    EXPECT_TRUE(mesh0->vertex_count == 6 && mesh0->index_count == 6,
+                "material-0 group merges SeatA and SeatB");
+    EXPECT_TRUE(mesh1->vertex_count == 6 && mesh1->index_count == 6,
+                "material-1 group merges Rail and Loose");
+    EXPECT_NEAR(
+        mesh0->vertices[0].pos[0], 1.0, 0.0001, "SeatA vertex 0 carries its node translation (x)");
+    EXPECT_NEAR(
+        mesh0->vertices[0].pos[1], 2.0, 0.0001, "SeatA vertex 0 carries its node translation (y)");
+    EXPECT_NEAR(
+        mesh0->vertices[0].pos[2], 3.0, 0.0001, "SeatA vertex 0 carries its node translation (z)");
+    EXPECT_NEAR(mesh0->vertices[3].pos[0], 10.0, 0.0001, "SeatB follows SeatA in authored order");
+    EXPECT_NEAR(
+        mesh1->vertices[0].pos[1], 5.0, 0.0001, "Rail precedes Loose in the material-1 group");
+    EXPECT_NEAR(
+        mesh1->vertices[3].pos[2], 50.0, 0.0001, "Loose sibling is flattened after KitRoot");
+    EXPECT_TRUE(mesh0->indices[3] == 3 && mesh0->indices[5] == 5,
+                "merged indices are rebased per appended mesh");
+    const char *group_name = rt_string_cstr(rt_scene_node3d_get_name(group0));
+    EXPECT_TRUE(group_name && std::strcmp(group_name, "SeatA") == 0,
+                "FlattenStatic groups carry their first source node's name");
+    const char *group1_name = rt_string_cstr(rt_scene_node3d_get_name(group1));
+    EXPECT_TRUE(group1_name && std::strcmp(group1_name, "Rail") == 0,
+                "each group names its own first contributor");
+
+    /* Subtree + placement: KitRoot only, translated by 100 on X. */
+    void *placed = rt_model3d_flatten_static(
+        model, rt_const_cstr("KitRoot"), rt_mat4_translate(100.0, 0.0, 0.0));
+    EXPECT_TRUE(placed != nullptr && rt_seq_len(placed) == 2,
+                "FlattenStatic on a subtree still groups by material");
+    if (placed && rt_seq_len(placed) == 2) {
+        rt_mesh3d *p0 = (rt_mesh3d *)rt_scene_node3d_get_mesh(rt_seq_get(placed, 0));
+        rt_mesh3d *p1 = (rt_mesh3d *)rt_scene_node3d_get_mesh(rt_seq_get(placed, 1));
+        EXPECT_TRUE(p0 && p0->vertex_count == 6, "subtree flatten keeps both seats");
+        EXPECT_TRUE(p1 && p1->vertex_count == 3, "subtree flatten excludes the loose sibling");
+        if (p0) {
+            EXPECT_NEAR(
+                p0->vertices[0].pos[0], 101.0, 0.0001, "placement composes with node world (x)");
+            EXPECT_NEAR(
+                p0->vertices[0].pos[2], 3.0, 0.0001, "placement composes with node world (z)");
+        }
+    }
+
+    /* Unknown root: empty. Template untouched: a second flatten matches the first. */
+    void *missing = rt_model3d_flatten_static(model, rt_const_cstr("Nope"), nullptr);
+    EXPECT_TRUE(missing != nullptr && rt_seq_len(missing) == 0,
+                "FlattenStatic returns an empty sequence for an unknown root");
+    void *again = rt_model3d_flatten_static(model, rt_const_cstr(""), nullptr);
+    rt_mesh3d *again0 = again && rt_seq_len(again) == 2
+                            ? (rt_mesh3d *)rt_scene_node3d_get_mesh(rt_seq_get(again, 0))
+                            : nullptr;
+    EXPECT_TRUE(again0 && again0->vertex_count == 6 &&
+                    std::fabs(again0->vertices[0].pos[0] - 1.0) < 0.0001,
+                "FlattenStatic never mutates the template");
+    rt_mesh3d *template_mesh = (rt_mesh3d *)rt_model3d_get_mesh(model, 0);
+    EXPECT_TRUE(template_mesh && template_mesh->vertex_count == 3 &&
+                    std::fabs(template_mesh->vertices[0].pos[0]) < 0.0001,
+                "template meshes keep their authored positions");
 }
 
 static void test_model3d_adapts_gltf_scene_graphs() {
@@ -10184,6 +10419,8 @@ int main() {
     test_model3d_load_text_result_resolves_prefabs_beside_virtual_path();
     test_model3d_find_node_rejects_wrong_string_handles();
     test_model3d_adapts_gltf_scene_graphs();
+    test_model3d_imports_gltf_node_extras_as_metadata();
+    test_model3d_flatten_static_merges_by_material();
     test_model3d_rejects_gltf_accessor_overrun_of_buffer_view();
     test_gltf_asset_accessors_clamp_corrupt_counts();
     test_model3d_load_asset_resolves_mounted_gltf_dependencies();

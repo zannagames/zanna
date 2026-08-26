@@ -1684,6 +1684,232 @@ void *rt_model3d_find_node_option(void *obj, rt_string name) {
     return node ? rt_option_some(node) : rt_option_none();
 }
 
+/// @brief One material group accumulated by `rt_model3d_flatten_static`.
+typedef struct {
+    void *material;       /* borrowed group key (may be NULL) */
+    void *mesh;           /* owned merged Mesh3D */
+    rt_string first_name; /* borrowed name of the first contributing node, or NULL */
+} model3d_flatten_group;
+
+/// @brief Row-major 4x4 multiply: out = a * b.
+/// @param a Left matrix (16 doubles).
+/// @param b Right matrix (16 doubles).
+/// @param out Receives the product; must not alias the inputs.
+static void model3d_mat4d_mul(const double *a, const double *b, double *out) {
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            out[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
+                             a[r * 4 + 2] * b[2 * 4 + c] + a[r * 4 + 3] * b[3 * 4 + c];
+        }
+    }
+}
+
+/// @brief Upper-3x3 determinant of a row-major 4x4 matrix.
+/// @param m Matrix (16 doubles).
+/// @return The determinant of the linear part.
+static double model3d_mat4d_det3(const double *m) {
+    return m[0] * (m[5] * m[10] - m[6] * m[9]) - m[1] * (m[4] * m[10] - m[6] * m[8]) +
+           m[2] * (m[4] * m[9] - m[5] * m[8]);
+}
+
+/// @brief Find or append the flatten group for a material.
+/// @param groups Address of the owned group array.
+/// @param count Address of the group count.
+/// @param capacity Address of the group capacity.
+/// @param material Borrowed group key.
+/// @return Group slot, or NULL when growth fails.
+static model3d_flatten_group *model3d_flatten_group_for(model3d_flatten_group **groups,
+                                                        int32_t *count,
+                                                        int32_t *capacity,
+                                                        void *material) {
+    for (int32_t i = 0; i < *count; i++) {
+        if ((*groups)[i].material == material)
+            return &(*groups)[i];
+    }
+    if (*count >= *capacity) {
+        int32_t next = *capacity == 0 ? 8 : *capacity * 2;
+        model3d_flatten_group *grown;
+        if (next <= *capacity)
+            return NULL;
+        grown = (model3d_flatten_group *)realloc(*groups, (size_t)next * sizeof(*grown));
+        if (!grown)
+            return NULL;
+        *groups = grown;
+        *capacity = next;
+    }
+    (*groups)[*count].material = material;
+    (*groups)[*count].mesh = NULL;
+    (*groups)[*count].first_name = NULL;
+    return &(*groups)[(*count)++];
+}
+
+void *rt_model3d_flatten_static(void *obj, rt_string root_name, void *transform) {
+    rt_model3d *model = model3d_checked(obj);
+    void *out = rt_seq_new_owned();
+    rt_scene_node3d *root = NULL;
+    rt_scene_node3d **stack = NULL;
+    int32_t stack_count = 0;
+    int32_t stack_capacity = 0;
+    model3d_flatten_group *groups = NULL;
+    int32_t group_count = 0;
+    int32_t group_capacity = 0;
+    int32_t skipped = 0;
+    int failed = 0;
+    double placement[16];
+    const char *needle;
+    if (!out)
+        return NULL;
+    if (!model || !model->template_root)
+        return out;
+    needle = model_string_cstr_or_null(root_name);
+    if (needle && needle[0] != '\0') {
+        root = model_find_node_safe(model->template_root, root_name);
+        if (!root)
+            return out;
+    } else {
+        root = model->template_root;
+    }
+    for (int i = 0; i < 16; i++)
+        placement[i] = (i % 5 == 0) ? 1.0 : 0.0;
+    if (transform) {
+        for (int r = 0; r < 4; r++) {
+            for (int c = 0; c < 4; c++) {
+                double v = rt_mat4_get(transform, r, c);
+                if (!isfinite(v)) {
+                    rt_trap("SceneAsset.FlattenStatic: placement matrix must be finite");
+                    return out;
+                }
+                placement[r * 4 + c] = v;
+            }
+        }
+    }
+
+    stack_capacity = 32;
+    stack = (rt_scene_node3d **)malloc((size_t)stack_capacity * sizeof(*stack));
+    if (!stack) {
+        rt_trap("SceneAsset.FlattenStatic: traversal stack allocation failed");
+        return out;
+    }
+    stack[stack_count++] = root;
+    while (stack_count > 0 && !failed) {
+        rt_scene_node3d *current = stack[--stack_count];
+        int32_t child_count;
+        if (!current)
+            continue;
+        child_count = model_node_child_count(current);
+        /* Push children in reverse so they pop in authored order. */
+        for (int32_t i = child_count - 1; i >= 0; i--) {
+            rt_scene_node3d *child = current->children ? current->children[i] : NULL;
+            if (!child)
+                continue;
+            if (stack_count >= stack_capacity) {
+                int32_t next = stack_capacity * 2;
+                rt_scene_node3d **grown;
+                if (next <= stack_capacity) {
+                    failed = 1;
+                    break;
+                }
+                grown = (rt_scene_node3d **)realloc(stack, (size_t)next * sizeof(*grown));
+                if (!grown) {
+                    failed = 1;
+                    break;
+                }
+                stack = grown;
+                stack_capacity = next;
+            }
+            stack[stack_count++] = child;
+        }
+        if (failed)
+            break;
+        if (!current->visible || !current->mesh)
+            continue;
+        {
+            rt_mesh3d *mesh = (rt_mesh3d *)current->mesh;
+            double world[16];
+            double composed[16];
+            void *clone;
+            model3d_flatten_group *group;
+            if (mesh->skeleton_ref || mesh->morph_targets_ref) {
+                skipped++;
+                continue;
+            }
+            if (!rt_scene_node3d_get_world_matrix_components(current, world)) {
+                skipped++;
+                continue;
+            }
+            model3d_mat4d_mul(placement, world, composed);
+            if (fabs(model3d_mat4d_det3(composed)) <= 1e-12) {
+                skipped++;
+                continue;
+            }
+            group = model3d_flatten_group_for(
+                &groups, &group_count, &group_capacity, current->material);
+            if (!group) {
+                failed = 1;
+                break;
+            }
+            clone = rt_mesh3d_clone(mesh);
+            if (!clone) {
+                failed = 1;
+                break;
+            }
+            rt_mesh3d_transform_components(clone, composed);
+            if (!group->mesh) {
+                group->mesh = clone;
+                group->first_name = current->name;
+            } else {
+                rt_mesh3d_append(group->mesh, clone);
+                model_release_local(clone);
+            }
+        }
+    }
+    free(stack);
+
+    if (failed) {
+        for (int32_t i = 0; i < group_count; i++)
+            model_release_local(groups[i].mesh);
+        free(groups);
+        rt_trap("SceneAsset.FlattenStatic: allocation failed while merging meshes");
+        return out;
+    }
+    for (int32_t i = 0; i < group_count; i++) {
+        void *node;
+        char name[32];
+        rt_string node_name;
+        if (!groups[i].mesh)
+            continue;
+        node = rt_scene_node3d_new();
+        if (!node) {
+            model_release_local(groups[i].mesh);
+            continue;
+        }
+        /* The group carries the name of its first contributing node so a
+         * name-based role convention (tint_*, emissive_*) survives flattening;
+         * unnamed sources fall back to the group index. */
+        if (groups[i].first_name && model_string_cstr_or_null(groups[i].first_name) &&
+            model_string_cstr_or_null(groups[i].first_name)[0] != '\0') {
+            rt_scene_node3d_set_name(node, groups[i].first_name);
+        } else {
+            snprintf(name, sizeof(name), "flatten_%d", (int)i);
+            node_name = rt_const_cstr(name);
+            rt_scene_node3d_set_name(node, node_name);
+            rt_string_unref(node_name);
+        }
+        rt_scene_node3d_set_mesh(node, groups[i].mesh);
+        rt_scene_node3d_set_material(node, groups[i].material);
+        model_release_local(groups[i].mesh);
+        rt_seq_push(out, node);
+        model_release_local(node);
+    }
+    free(groups);
+    if (skipped > 0)
+        rt_asset_error_add_warningf("SceneAsset.FlattenStatic: %d node%s skipped (skinned, morph, "
+                                    "or singular transform)",
+                                    (int)skipped,
+                                    skipped == 1 ? "" : "s");
+    return out;
+}
+
 /// @brief Clone the template into an independent SceneNode3D subtree (with synthetic root).
 /// Each instantiation creates a fresh deep-copy of the node hierarchy, suitable for adding to
 /// a live scene without disturbing the template. Static meshes/materials are shared; meshes

@@ -40,6 +40,7 @@
 #include "rt_asset_error.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
+#include "rt_collection_ids.h"
 #include "rt_file_stdio.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_gif.h"
@@ -75,6 +76,10 @@
 // Forward declarations for runtime JSON and collection APIs
 extern void *rt_json_parse_object(rt_string text);
 extern void *rt_map_get(void *map, rt_string key);
+extern void *rt_map_keys(void *map);
+extern int64_t rt_map_len(void *map);
+extern int8_t rt_obj_is_instance(void *p, int64_t class_id, size_t min_payload_bytes);
+extern int32_t rt_obj_release_check0(void *p);
 extern int64_t rt_seq_len(void *seq);
 extern void *rt_seq_get(void *seq, int64_t index);
 extern int64_t rt_box_type(void *box);

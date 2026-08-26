@@ -355,6 +355,39 @@ typedef struct rt_scene_node3d {
 /// @param node Borrowed SceneNode3D payload whose metadata table is freed and reset.
 void rt_scene_node3d_metadata_clear_internal(rt_scene_node3d *node);
 
+/// @brief Importer entry for typed metadata (ADR 0294): set one entry from native bytes.
+/// @details Same bounds and replace-or-insert semantics as the public setters, without runtime
+///          string handles, so asset loaders can promote authored properties (glTF `extras`)
+///          into the node's sorted metadata table.
+/// @param node Borrowed SceneNode3D payload.
+/// @param key Borrowed key bytes (not necessarily NUL-terminated).
+/// @param key_length Key byte count, 1..RT_SCENE_NODE3D_MAX_METADATA_KEY_BYTES.
+/// @param kind One of `rt_scene3d_metadata_kind`.
+/// @param bool_value Used for `RT_SCENE3D_METADATA_BOOL`.
+/// @param int_value Used for `RT_SCENE3D_METADATA_INT`.
+/// @param float_value Finite value used for `RT_SCENE3D_METADATA_FLOAT`.
+/// @param string_value Borrowed bytes used for `RT_SCENE3D_METADATA_STRING`.
+/// @param string_length Byte count for @p string_value.
+/// @return Nonzero after insertion or replacement, otherwise zero with the table unchanged.
+int8_t rt_scene_node3d_metadata_import_internal(rt_scene_node3d *node,
+                                                const char *key,
+                                                int32_t key_length,
+                                                int32_t kind,
+                                                int8_t bool_value,
+                                                int64_t int_value,
+                                                double float_value,
+                                                const char *string_value,
+                                                int32_t string_length);
+
+/// @brief Deep-copy every metadata entry of @p src onto @p dst (ADR 0294).
+/// @details Loader-side counterpart of the model instantiation copy: keys and string payloads
+///          are duplicated, scalars copied, existing keys on @p dst replaced. Used by the glTF
+///          scene-root clone so authored `extras` survive template construction.
+/// @param dst Borrowed destination node payload.
+/// @param src Borrowed source node payload.
+/// @return Nonzero when every entry copied; zero on invalid tables or allocation failure.
+int8_t rt_scene_node3d_metadata_copy_internal(rt_scene_node3d *dst, const rt_scene_node3d *src);
+
 /// @brief Scene3D payload: the implicit root node, total node count, and the
 ///   frustum-culled count from the most recent draw (a perf metric).
 typedef struct rt_scene3d {

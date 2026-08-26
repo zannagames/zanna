@@ -70,10 +70,10 @@ namespace {
 // ADR 0286 (2026-08-21): IKSolver3D.SetTargetRotation/ClearTargetRotation —
 // model-space end-bone orientation goal applied after the positional solve:
 // +2 functions / +2 methods.
-constexpr std::size_t kExpectedFunctionCount = 2263;
+constexpr std::size_t kExpectedFunctionCount = 2265;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 829;
-constexpr std::size_t kExpectedMethodCount = 1219;
+constexpr std::size_t kExpectedMethodCount = 1221;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -273,7 +273,7 @@ int main() {
     // ADR 0285 Skeleton3D.CloneMutable (three functions/methods total).
     // Re-pinned 2026-08-21: ADR 0286 IKSolver3D.SetTargetRotation and
     // ClearTargetRotation (two functions/methods).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x90b9bb191280f42a);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xb19d29e824a042d4);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

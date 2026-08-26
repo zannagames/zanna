@@ -65,6 +65,8 @@
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_scene3d_vscn_internal.h"
+#include "rt_seq.h"
+#include "rt_mat4.h"
 #include "rt_skeleton3d.h"
 #include "rt_string.h"
 #include "rt_tempfile.h"

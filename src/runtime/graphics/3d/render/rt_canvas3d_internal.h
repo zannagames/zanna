@@ -126,6 +126,10 @@ void rt_mesh3d_note_global_geometry_change(void);
 /// @brief Process-wide monotonic epoch for Mesh3D geometry mutations.
 /// @return The current non-zero mutation epoch.
 uint64_t rt_mesh3d_global_geometry_epoch(void);
+/// @brief Internal `Mesh3D.Transform` with a borrowed row-major double matrix (ADR 0294).
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param matrix Borrowed row-major 4x4 matrix (16 doubles); NULL is a no-op.
+void rt_mesh3d_transform_components(void *obj, const double *matrix);
 
 //=============================================================================
 // Mesh3D

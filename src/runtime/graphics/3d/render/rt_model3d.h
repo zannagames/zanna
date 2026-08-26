@@ -327,6 +327,25 @@ void *rt_model3d_find_node(void *obj, rt_string name);
 /// @param name Exact node name to match.
 /// @return Owned Option wrapping the borrowed template node when found.
 void *rt_model3d_find_node_option(void *obj, rt_string name);
+
+/// @brief `SceneAsset.FlattenStatic` (ADR 0294): merge a template subtree's static meshes into one
+///        Mesh3D per material, pre-transformed into placement space.
+/// @details Walks the immutable template subtree rooted at the node named @p root_name (empty or
+///          NULL = the whole model) depth-first in authored child order, transforms every visible
+///          static mesh by `transform * nodeWorld` (model space; the synthetic template root is the
+///          identity) and appends it into the group for its material (first-seen order; a NULL
+///          material is its own group). Each group is returned as a fresh transform-only SceneNode
+///          named after its first contributing source node (`flatten_<index>` when that node is
+///          unnamed) carrying the merged Mesh3D and the shared Material3D, so a name-based role
+///          convention on the source nodes (tint_*, emissive_*) survives flattening. Skinned
+///          meshes, morph-target meshes, and nodes whose composed matrix has a singular upper 3x3
+///          are skipped and reported once as an asset warning. The template is never mutated.
+/// @param obj SceneAsset/Model3D receiver.
+/// @param root_name Exact template node name, or empty/NULL for the template root.
+/// @param transform Optional Mat4 placement applied after the node world matrix (NULL = identity).
+/// @return New owned Seq of SceneNode3D groups; empty for invalid input, an unknown root, or no
+///         static meshes.
+void *rt_model3d_flatten_static(void *obj, rt_string root_name, void *transform);
 /// @brief Instantiate the model's default node hierarchy as a Scene3D node.
 /// @details Deep-clones nodes and mutable typed metadata, shares static resources, and clones
 ///          morph-enabled meshes so blend-shape state remains instance-local.

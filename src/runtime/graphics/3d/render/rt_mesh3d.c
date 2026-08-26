@@ -2350,33 +2350,28 @@ void *rt_mesh3d_clone(void *obj) {
 ///          Normals and tangents are renormalized after transform — shear / non-uniform
 ///          scale otherwise produce non-unit vectors. After the pass, geometry is
 ///          marked dirty and bounds are recomputed so downstream culling stays correct.
-/// @param obj Target mesh (no-op when NULL).
-/// @param mat4_obj Mat4 handle (no-op when NULL).
-void rt_mesh3d_transform(void *obj, void *mat4_obj) {
-    rt_mesh3d *m = mesh3d_checked(obj);
-    mat4_impl *xform = mesh3d_mat4_checked(mat4_obj);
+/// @param m Validated target mesh.
+/// @param xm Borrowed row-major 4x4 matrix (16 doubles).
+static void mesh3d_transform_matrix(rt_mesh3d *m, const double *xm) {
     uint32_t vertex_count;
     uint32_t index_count;
-    if (!m || !xform)
-        return;
     float model_matrix[16];
     float normal_matrix[16];
     float handedness_sign = 1.0f;
     double det;
 
     for (int i = 0; i < 16; i++) {
-        if (!mesh_value_fits_float(xform->m[i])) {
+        if (!mesh_value_fits_float(xm[i])) {
             rt_trap("Mesh3D.Transform: matrix values must be finite and fit float range");
             return;
         }
-        model_matrix[i] = (float)xform->m[i];
+        model_matrix[i] = (float)xm[i];
     }
     /* Evaluate the upper-3x3 determinant from the original double matrix: a
      * matrix that is singular in double precision can still show |det| ~1e-7
      * once narrowed to float, which would slip past the invertibility gate. */
-    det = xform->m[0] * (xform->m[5] * xform->m[10] - xform->m[6] * xform->m[9]) -
-          xform->m[1] * (xform->m[4] * xform->m[10] - xform->m[6] * xform->m[8]) +
-          xform->m[2] * (xform->m[4] * xform->m[9] - xform->m[5] * xform->m[8]);
+    det = xm[0] * (xm[5] * xm[10] - xm[6] * xm[9]) - xm[1] * (xm[4] * xm[10] - xm[6] * xm[8]) +
+          xm[2] * (xm[4] * xm[9] - xm[5] * xm[8]);
     if (!isfinite(det) || fabs(det) <= 1e-12) {
         rt_trap("Mesh3D.Transform: matrix upper 3x3 must be invertible for normal transform");
         return;
@@ -2400,9 +2395,9 @@ void rt_mesh3d_transform(void *obj, void *mat4_obj) {
             m->positions64 ? m->positions64[(size_t)i * 3u + 1] : (double)m->vertices[i].pos[1];
         double z =
             m->positions64 ? m->positions64[(size_t)i * 3u + 2] : (double)m->vertices[i].pos[2];
-        double tx = xform->m[0] * x + xform->m[1] * y + xform->m[2] * z + xform->m[3];
-        double ty = xform->m[4] * x + xform->m[5] * y + xform->m[6] * z + xform->m[7];
-        double tz = xform->m[8] * x + xform->m[9] * y + xform->m[10] * z + xform->m[11];
+        double tx = xm[0] * x + xm[1] * y + xm[2] * z + xm[3];
+        double ty = xm[4] * x + xm[5] * y + xm[6] * z + xm[7];
+        double tz = xm[8] * x + xm[9] * y + xm[10] * z + xm[11];
         if (!mesh_value_fits_float(tx) || !mesh_value_fits_float(ty) ||
             !mesh_value_fits_float(tz)) {
             rt_trap(
@@ -2439,9 +2434,9 @@ void rt_mesh3d_transform(void *obj, void *mat4_obj) {
         double x = m->positions64 ? m->positions64[(size_t)i * 3u + 0] : (double)p[0];
         double y = m->positions64 ? m->positions64[(size_t)i * 3u + 1] : (double)p[1];
         double z = m->positions64 ? m->positions64[(size_t)i * 3u + 2] : (double)p[2];
-        double px = xform->m[0] * x + xform->m[1] * y + xform->m[2] * z + xform->m[3];
-        double py = xform->m[4] * x + xform->m[5] * y + xform->m[6] * z + xform->m[7];
-        double pz = xform->m[8] * x + xform->m[9] * y + xform->m[10] * z + xform->m[11];
+        double px = xm[0] * x + xm[1] * y + xm[2] * z + xm[3];
+        double py = xm[4] * x + xm[5] * y + xm[6] * z + xm[7];
+        double pz = xm[8] * x + xm[9] * y + xm[10] * z + xm[11];
         if (m->positions64) {
             m->positions64[(size_t)i * 3u + 0] = px;
             m->positions64[(size_t)i * 3u + 1] = py;
@@ -2494,6 +2489,193 @@ void rt_mesh3d_transform(void *obj, void *mat4_obj) {
             m->indices[i + 1] = m->indices[i + 2];
             m->indices[i + 2] = tmp;
         }
+    }
+    rt_mesh3d_touch_geometry(m);
+    rt_mesh3d_refresh_bounds(m);
+}
+
+/// @brief Transform every vertex position (and rotate normals/tangents) by a Mat4 handle.
+/// @param obj Target mesh (no-op when NULL).
+/// @param mat4_obj Mat4 handle (no-op when NULL).
+void rt_mesh3d_transform(void *obj, void *mat4_obj) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    mat4_impl *xform = mesh3d_mat4_checked(mat4_obj);
+    if (!m || !xform)
+        return;
+    mesh3d_transform_matrix(m, xform->m);
+}
+
+/// @brief Internal: `rt_mesh3d_transform` with a borrowed row-major double matrix (ADR 0294).
+/// @details Shares the affine core with the public Mat4-handle entry so runtime callers such as
+///          `SceneAsset.FlattenStatic` never re-implement the normal/tangent/handedness path.
+/// @param obj Target mesh (no-op when NULL).
+/// @param matrix Borrowed row-major 4x4 matrix (16 doubles); NULL is a no-op.
+void rt_mesh3d_transform_components(void *obj, const double *matrix) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    if (!m || !matrix)
+        return;
+    mesh3d_transform_matrix(m, matrix);
+}
+
+/// @brief Read one authoritative vertex position (double sidecar when present).
+/// @param m Validated mesh.
+/// @param i Vertex index below the safe vertex count.
+/// @param out Receives x, y, z.
+static void mesh3d_authoritative_position(const rt_mesh3d *m, uint32_t i, double out[3]) {
+    if (m->positions64) {
+        out[0] = m->positions64[(size_t)i * 3u + 0];
+        out[1] = m->positions64[(size_t)i * 3u + 1];
+        out[2] = m->positions64[(size_t)i * 3u + 2];
+    } else {
+        out[0] = (double)m->vertices[i].pos[0];
+        out[1] = (double)m->vertices[i].pos[1];
+        out[2] = (double)m->vertices[i].pos[2];
+    }
+}
+
+/// @brief Wrap a straight piece around a vertical circular arc (`Mesh3D.BendArc`, ADR 0294).
+/// @details The mesh's authoritative X extent [xmin, xmax] is mapped onto the angle span
+///          [-arc/2, +arc/2] of a circle of the given radius whose centre lies on the mesh's
+///          local +Z side, `radius` units from the chord midpoint (xmid, *, 0). A vertex at
+///          depth z (toward the centre) lands on the concentric circle of radius `radius - z`,
+///          so the chord midpoint and its depth stay fixed and the piece bends about it. Y is
+///          untouched. Two pieces bent to the same radius/arc and placed at adjacent angles
+///          therefore share their end sections exactly (no radial gap), which is the property
+///          kit-of-parts bowl construction relies on.
+///
+///          Normals and tangents are rotated by the local frame rotation at each vertex's
+///          angle (the standard bend-deformer approximation) and renormalized; tangent
+///          handedness is preserved. Every depth must stay below the radius, so the map's
+///          Jacobian is positive everywhere: it is orientation-preserving and triangle winding
+///          is unchanged. The opposite bend direction is a 180-degree yaw of the piece, not a
+///          negative arc (that would be a reflection). Validation happens before any mutation;
+///          a trap leaves the mesh untouched.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param radius Bend radius in mesh units; must be finite and positive.
+/// @param arc_degrees Angle the X extent spans after bending; finite, in (0, 360].
+void rt_mesh3d_bend_arc(void *obj, double radius, double arc_degrees) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    uint32_t vertex_count;
+    double xmin = 0.0;
+    double xmax = 0.0;
+    double arc;
+    double span;
+    double xmid;
+    double rate;
+    if (!m)
+        return;
+    if (!isfinite(radius) || radius <= 0.0) {
+        rt_trap("Mesh3D.BendArc: radius must be finite and positive");
+        return;
+    }
+    if (!isfinite(arc_degrees) || arc_degrees <= 0.0 || arc_degrees > 360.0) {
+        rt_trap("Mesh3D.BendArc: arc must be finite and within (0, 360] degrees");
+        return;
+    }
+    if (m->skeleton_ref || m->morph_targets_ref) {
+        rt_trap("Mesh3D.BendArc: skinned and morph-target meshes cannot be bent");
+        return;
+    }
+    rt_mesh3d_repair_geometry_counts(m);
+    vertex_count = rt_mesh3d_safe_vertex_count(m);
+    if (vertex_count == 0u)
+        return;
+
+    /* Pass 1: validate every input before touching anything. */
+    for (uint32_t i = 0; i < vertex_count; i++) {
+        double p[3];
+        mesh3d_authoritative_position(m, i, p);
+        if (!isfinite(p[0]) || !isfinite(p[1]) || !isfinite(p[2])) {
+            rt_trap("Mesh3D.BendArc: vertex positions must be finite");
+            return;
+        }
+        if (radius - p[2] <= 1e-9) {
+            rt_trap("Mesh3D.BendArc: every vertex must lie closer than the radius to the bend "
+                    "axis");
+            return;
+        }
+        if (i == 0u || p[0] < xmin)
+            xmin = p[0];
+        if (i == 0u || p[0] > xmax)
+            xmax = p[0];
+    }
+    span = xmax - xmin;
+    if (!(span > 1e-9)) {
+        rt_trap("Mesh3D.BendArc: mesh must span a positive X extent");
+        return;
+    }
+    xmid = (xmin + xmax) * 0.5;
+    /* Outputs are bounded by |xmid| + 2 * radius in X/Z, so one range check up front
+     * guarantees every transformed position fits float. */
+    if (!mesh_value_fits_float(fabs(xmid) + 2.0 * radius)) {
+        rt_trap("Mesh3D.BendArc: bent positions must fit float range");
+        return;
+    }
+    arc = arc_degrees * (3.14159265358979323846 / 180.0);
+    rate = arc / span;
+
+    /* Pass 2: bend positions, rotate normals/tangents by the local frame. */
+    for (uint32_t i = 0; i < vertex_count; i++) {
+        double p[3];
+        double theta;
+        double s;
+        double c;
+        double r;
+        double px;
+        double pz;
+        float *pos = m->vertices[i].pos;
+        float *n = m->vertices[i].normal;
+        float *t = m->vertices[i].tangent;
+        float nx;
+        float nz;
+        float tx;
+        float tz;
+        float len;
+        float handedness;
+        mesh3d_authoritative_position(m, i, p);
+        theta = -arc * 0.5 + (p[0] - xmin) * rate;
+        s = sin(theta);
+        c = cos(theta);
+        r = radius - p[2];
+        px = xmid + r * s;
+        pz = radius - r * c;
+        if (m->positions64) {
+            m->positions64[(size_t)i * 3u + 0] = px;
+            m->positions64[(size_t)i * 3u + 2] = pz;
+        }
+        pos[0] = (float)px;
+        pos[2] = (float)pz;
+
+        /* Local +X maps to (cos t, 0, sin t) and local +Z to (-sin t, 0, cos t). */
+        nx = n[0];
+        nz = n[2];
+        n[0] = (float)((double)nx * c - (double)nz * s);
+        n[2] = (float)((double)nx * s + (double)nz * c);
+        len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (isfinite(len) && len > 1e-8f) {
+            n[0] /= len;
+            n[1] /= len;
+            n[2] /= len;
+        } else {
+            n[0] = 0.0f;
+            n[1] = 1.0f;
+            n[2] = 0.0f;
+        }
+
+        handedness = (!isfinite(t[3]) || t[3] == 0.0f) ? 1.0f : (t[3] < 0.0f ? -1.0f : 1.0f);
+        tx = t[0];
+        tz = t[2];
+        t[0] = (float)((double)tx * c - (double)tz * s);
+        t[2] = (float)((double)tx * s + (double)tz * c);
+        len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        if (isfinite(len) && len > 1e-8f) {
+            t[0] /= len;
+            t[1] /= len;
+            t[2] /= len;
+        } else {
+            mesh_default_tangent_from_normal(n, t);
+        }
+        t[3] = handedness;
     }
     rt_mesh3d_touch_geometry(m);
     rt_mesh3d_refresh_bounds(m);

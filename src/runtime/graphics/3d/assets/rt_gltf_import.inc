@@ -602,6 +602,11 @@ static rt_scene_node3d *gltf_clone_scene_node_shallow(const rt_scene_node3d *src
         gltf_release_local(dst);
         return NULL;
     }
+    /* Authored `extras` metadata survives template construction (ADR 0294). */
+    if (!rt_scene_node3d_metadata_copy_internal(dst, src)) {
+        gltf_release_local(dst);
+        return NULL;
+    }
     return dst;
 }
 

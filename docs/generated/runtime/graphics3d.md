@@ -337,6 +337,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-rasterizeuvheight"></a>`RasterizeUvHeight` | `void(obj,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` |
 | <a id="zanna-graphics3d-mesh3d-clone"></a>`Clone` | `obj()` | `Zanna.Graphics3D.Mesh3D.Clone` |
 | <a id="zanna-graphics3d-mesh3d-transform"></a>`Transform` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.Transform` |
+| <a id="zanna-graphics3d-mesh3d-bendarc"></a>`BendArc` | `void(f64,f64)` | `Zanna.Graphics3D.Mesh3D.BendArc` |
 | <a id="zanna-graphics3d-mesh3d-releasecpuscratch"></a>`ReleaseCpuScratch` | `i64()` | `Zanna.Graphics3D.Mesh3D.ReleaseCpuScratch` |
 | <a id="zanna-graphics3d-mesh3d-calculatetangents"></a>`CalculateTangents` | `void()` | `Zanna.Graphics3D.Mesh3D.CalculateTangents` |
 | <a id="zanna-graphics3d-mesh3d-setskeleton"></a>`SetSkeleton` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.SetSkeleton` |
@@ -1027,6 +1028,7 @@ typed node metadata on instances, and operations including `LoadResult`, `LoadWi
 | <a id="zanna-graphics3d-sceneasset-generatelods"></a>`GenerateLods` | `i64(i64,f64)` | `Zanna.Graphics3D.SceneAsset.GenerateLods` |
 | <a id="zanna-graphics3d-sceneasset-findnode"></a>`FindNode` | `obj<Zanna.Option>(str)` | `Zanna.Graphics3D.SceneAsset.FindNode` |
 | <a id="zanna-graphics3d-sceneasset-instantiate"></a>`Instantiate` | `obj()` | `Zanna.Graphics3D.SceneAsset.Instantiate` |
+| <a id="zanna-graphics3d-sceneasset-flattenstatic"></a>`FlattenStatic` | `obj<Zanna.Collections.Seq>(str,obj)` | `Zanna.Graphics3D.SceneAsset.FlattenStatic` |
 | <a id="zanna-graphics3d-sceneasset-instantiatescene"></a>`InstantiateScene` | `obj()` | `Zanna.Graphics3D.SceneAsset.InstantiateScene` |
 | <a id="zanna-graphics3d-sceneasset-instantiatesceneat"></a>`InstantiateSceneAt` | `obj<Zanna.Graphics3D.SceneGraph>(i64)` | `Zanna.Graphics3D.SceneAsset.InstantiateSceneAt` |
 | <a id="zanna-graphics3d-sceneasset-loadanimationresult"></a>`LoadAnimationResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Graphics3D.SceneAsset.LoadAnimationResult` |
@@ -2945,6 +2947,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` | `void(obj,obj,f64,f64)` | `rt_mesh3d_rasterize_uv_height` |
 | `Zanna.Graphics3D.Mesh3D.Clone` | `obj(obj)` | `rt_mesh3d_clone` |
 | `Zanna.Graphics3D.Mesh3D.Transform` | `void(obj,obj)` | `rt_mesh3d_transform` |
+| `Zanna.Graphics3D.Mesh3D.BendArc` | `void(obj,f64,f64)` | `rt_mesh3d_bend_arc` |
 | `Zanna.Graphics3D.Camera3D.New` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new` |
 | `Zanna.Graphics3D.Camera3D.WithHorizontalFov` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new_horizontal_fov` |
 | `Zanna.Graphics3D.Camera3D.NewOrtho` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new_ortho` |
@@ -3347,6 +3350,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneAsset.GenerateLods` | `i64(obj,i64,f64)` | `rt_model3d_generate_lods` |
 | `Zanna.Graphics3D.SceneAsset.FindNode` | `obj<Zanna.Option>(obj,str)` | `rt_model3d_find_node_option` |
 | `Zanna.Graphics3D.SceneAsset.Instantiate` | `obj(obj)` | `rt_model3d_instantiate` |
+| `Zanna.Graphics3D.SceneAsset.FlattenStatic` | `obj<Zanna.Collections.Seq>(obj,str,obj)` | `rt_model3d_flatten_static` |
 | `Zanna.Graphics3D.SceneAsset.InstantiateScene` | `obj(obj)` | `rt_model3d_instantiate_scene` |
 | `Zanna.Graphics3D.SceneAsset.InstantiateSceneAt` | `obj<Zanna.Graphics3D.SceneGraph>(obj,i64)` | `rt_model3d_instantiate_scene_at` |
 | `Zanna.Graphics3D.SceneAsset.LoadAnimationResult` | `obj<Zanna.Result>(str,i64)` | `rt_model3d_load_animation_result` |

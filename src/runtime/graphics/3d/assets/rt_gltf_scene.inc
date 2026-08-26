@@ -13,6 +13,132 @@
  *          scene compatibility view.
  */
 
+/// @brief Promote a glTF node's application-defined `extras` into typed SceneNode metadata
+///        (ADR 0294).
+/// @details Strings, integers, finite floats, booleans, and JSON null map onto the matching
+///          metadata kinds. Nested objects/arrays, oversized keys or strings, non-finite numbers,
+///          and entries beyond the node metadata capacity are skipped and reported once per node
+///          as an asset warning. A non-object `extras` value is ignored (the specification allows
+///          any JSON value there).
+/// @param node Runtime node receiving the metadata.
+/// @param extras Borrowed parsed `extras` value, or NULL.
+/// @param node_name Display name used in the warning.
+static void gltf_node_import_extras(rt_scene_node3d *node, void *extras, const char *node_name) {
+    void *keys;
+    int64_t count;
+    int32_t skipped = 0;
+    if (!node || !extras || !rt_obj_is_instance(extras, RT_MAP_CLASS_ID, 0))
+        return;
+    if (rt_map_len(extras) <= 0)
+        return;
+    keys = rt_map_keys(extras);
+    if (!keys)
+        return;
+    count = rt_seq_len(keys);
+    for (int64_t i = 0; i < count; i++) {
+        rt_string key = (rt_string)rt_seq_get(keys, i);
+        const char *key_data;
+        size_t key_len;
+        void *value;
+        int8_t ok = 0;
+        if (!rt_string_is_handle(key)) {
+            skipped++;
+            continue;
+        }
+        key_data = rt_string_cstr(key);
+        key_len = key_data ? strlen(key_data) : 0u;
+        if (key_len == 0u || key_len > (size_t)RT_SCENE_NODE3D_MAX_METADATA_KEY_BYTES) {
+            skipped++;
+            continue;
+        }
+        value = rt_map_get(extras, key);
+        if (!value) {
+            ok = rt_scene_node3d_metadata_import_internal(
+                node, key_data, (int32_t)key_len, RT_SCENE3D_METADATA_NULL, 0, 0, 0.0, NULL, 0);
+        } else if (rt_string_is_handle(value)) {
+            const char *text = rt_string_cstr((rt_string)value);
+            size_t text_len = text ? strlen(text) : 0u;
+            if (text && text_len <= (size_t)RT_SCENE_NODE3D_MAX_METADATA_STRING_BYTES)
+                ok = rt_scene_node3d_metadata_import_internal(node,
+                                                              key_data,
+                                                              (int32_t)key_len,
+                                                              RT_SCENE3D_METADATA_STRING,
+                                                              0,
+                                                              0,
+                                                              0.0,
+                                                              text,
+                                                              (int32_t)text_len);
+        } else {
+            switch (rt_box_type(value)) {
+                case 0:
+                    ok = rt_scene_node3d_metadata_import_internal(node,
+                                                                  key_data,
+                                                                  (int32_t)key_len,
+                                                                  RT_SCENE3D_METADATA_INT,
+                                                                  0,
+                                                                  rt_unbox_i64(value),
+                                                                  0.0,
+                                                                  NULL,
+                                                                  0);
+                    break;
+                case 1: {
+                    /* The JSON tree boxes every number as a double; an integral value
+                     * (Blender int custom properties, counts, indices) imports as int so
+                     * MetadataGetInt reads it back, fractional values stay float. */
+                    double number = rt_unbox_f64(value);
+                    int64_t integral;
+                    if (!isfinite(number))
+                        break;
+                    if (gltf_double_to_i64_checked(number, &integral))
+                        ok = rt_scene_node3d_metadata_import_internal(node,
+                                                                      key_data,
+                                                                      (int32_t)key_len,
+                                                                      RT_SCENE3D_METADATA_INT,
+                                                                      0,
+                                                                      integral,
+                                                                      0.0,
+                                                                      NULL,
+                                                                      0);
+                    else
+                        ok = rt_scene_node3d_metadata_import_internal(node,
+                                                                      key_data,
+                                                                      (int32_t)key_len,
+                                                                      RT_SCENE3D_METADATA_FLOAT,
+                                                                      0,
+                                                                      0,
+                                                                      number,
+                                                                      NULL,
+                                                                      0);
+                    break;
+                }
+                case 2:
+                    ok = rt_scene_node3d_metadata_import_internal(node,
+                                                                  key_data,
+                                                                  (int32_t)key_len,
+                                                                  RT_SCENE3D_METADATA_BOOL,
+                                                                  rt_unbox_i1(value) ? 1 : 0,
+                                                                  0,
+                                                                  0.0,
+                                                                  NULL,
+                                                                  0);
+                    break;
+                default:
+                    break; /* nested object/array: opaque by design */
+            }
+        }
+        if (!ok)
+            skipped++;
+    }
+    if (rt_obj_release_check0(keys))
+        rt_obj_free(keys);
+    if (skipped > 0)
+        rt_asset_error_add_warningf("glTF node '%s' extras: %d entr%s not imported (unsupported "
+                                    "value kind or metadata limits)",
+                                    node_name ? node_name : "",
+                                    (int)skipped,
+                                    skipped == 1 ? "y" : "ies");
+}
+
 /// @brief Apply a glTF node's matrix or component transform to a runtime scene node.
 /// @details A 4x4 matrix takes precedence over translation, rotation, and scale arrays.
 ///          The result is decomposed as needed, sanitized, and marked world-dirty.
@@ -313,6 +439,7 @@ static int gltf_build_template_node(rt_gltf_asset *asset,
         name =
             gltf_effective_node_name(nodes_arr, node_index, fallback_name, sizeof(fallback_name));
     gltf_set_node_name(node, name);
+    gltf_node_import_extras(node, jget(node_json, "extras"), name);
     if (mesh_ref < -1 || skin_ref < -1 || light_ref < -1)
         return 0;
     if (!gltf_node_bind_light(node, light_ref, imported_lights, imported_light_count))

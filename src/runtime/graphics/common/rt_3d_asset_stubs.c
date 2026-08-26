@@ -391,6 +391,20 @@ void rt_mesh3d_transform(void *o, void *m) {
     (void)m;
 }
 
+/// @brief Stub for `Mesh3D.BendArc` — would wrap the mesh's X extent around a
+///        vertical circular arc (ADR 0294).
+///
+/// Silent no-op stub.
+///
+/// @param o Mesh3D handle (ignored).
+/// @param radius Bend radius (ignored).
+/// @param arc_degrees Arc span in degrees (ignored).
+void rt_mesh3d_bend_arc(void *o, double radius, double arc_degrees) {
+    (void)o;
+    (void)radius;
+    (void)arc_degrees;
+}
+
 /// @brief Stub for `Material3D.New` — would normally create a default
 ///        Blinn-Phong material (white diffuse, no textures, shininess 32).
 ///        Use `NewColor`, `NewTextured`, or `NewPBR` for shorthand
@@ -2747,6 +2761,21 @@ void *rt_model3d_find_node_option(void *m, rt_string name) {
     (void)m;
     (void)name;
     return rt_option_none();
+}
+
+/// @brief Stub for `SceneAsset.FlattenStatic` — would merge a template subtree's
+///        static meshes into one Mesh3D per material (ADR 0294).
+/// @details Graphics-disabled builds have no imported model hierarchy, so this
+///          returns NULL like the other model-query stubs.
+/// @param m SceneAsset/Model3D handle (ignored).
+/// @param root_name Subtree root name (ignored).
+/// @param transform Placement Mat4 (ignored).
+/// @return NULL.
+void *rt_model3d_flatten_static(void *m, rt_string root_name, void *transform) {
+    (void)m;
+    (void)root_name;
+    (void)transform;
+    return NULL;
 }
 
 /// @brief Stub for `Model3D.Instantiate` — would normally clone the
