@@ -1170,6 +1170,99 @@ int vgfx3d_get_pixels_extent(const void *pixels_ptr, int32_t *out_w, int32_t *ou
     return 1;
 }
 
+/// @brief Decode a Pixels row band into caller-owned reusable RGBA8 storage.
+/// @param pixels_ptr Borrowed opaque Pixels object storing packed 0xRRGGBBAA values.
+/// @param start_row Zero-based first destination-band row.
+/// @param row_count Positive requested row count, clamped to the image boundary.
+/// @param flip_y Non-zero to reverse the source-row mapping.
+/// @param rgba Caller-owned destination bytes.
+/// @param rgba_capacity Writable capacity of @p rgba.
+/// @param out_w Receives decoded width and is cleared before validation.
+/// @param out_rows Receives decoded row count and is cleared before validation.
+/// @return 0 on success, otherwise -1 without writing outside @p rgba.
+int vgfx3d_unpack_pixels_rgba_rows_into(const void *pixels_ptr,
+                                        int32_t start_row,
+                                        int32_t row_count,
+                                        int flip_y,
+                                        uint8_t *rgba,
+                                        size_t rgba_capacity,
+                                        int32_t *out_w,
+                                        int32_t *out_rows) {
+    const vgfx3d_pixels_view_t *pv = (const vgfx3d_pixels_view_t *)pixels_ptr;
+    int32_t w;
+    int32_t h;
+    size_t row_bytes;
+    size_t total_bytes;
+    if (out_w)
+        *out_w = 0;
+    if (out_rows)
+        *out_rows = 0;
+    if (!pv || !rgba || !out_w || !out_rows || !pv->data || pv->w <= 0 || pv->h <= 0 ||
+        pv->w > INT32_MAX || pv->h > INT32_MAX || start_row < 0 || row_count <= 0)
+        return -1;
+    w = (int32_t)pv->w;
+    h = (int32_t)pv->h;
+    if (start_row >= h)
+        return -1;
+    if (row_count > h - start_row)
+        row_count = h - start_row;
+    if ((size_t)w > SIZE_MAX / 4u)
+        return -1;
+    row_bytes = (size_t)w * 4u;
+    if ((size_t)row_count > SIZE_MAX / row_bytes)
+        return -1;
+    total_bytes = (size_t)row_count * row_bytes;
+    if (total_bytes > rgba_capacity)
+        return -1;
+    for (int32_t y = 0; y < row_count; ++y) {
+        int32_t src_y = flip_y ? (h - 1 - (start_row + y)) : (start_row + y);
+        const uint32_t *src = pv->data + (size_t)src_y * (size_t)w;
+        uint8_t *dst = rgba + (size_t)y * row_bytes;
+        for (int32_t x = 0; x < w; ++x) {
+            uint32_t px = src[x];
+            dst[(size_t)x * 4u + 0u] = (uint8_t)((px >> 24) & 0xFF);
+            dst[(size_t)x * 4u + 1u] = (uint8_t)((px >> 16) & 0xFF);
+            dst[(size_t)x * 4u + 2u] = (uint8_t)((px >> 8) & 0xFF);
+            dst[(size_t)x * 4u + 3u] = (uint8_t)(px & 0xFF);
+        }
+    }
+    *out_w = w;
+    *out_rows = row_count;
+    return 0;
+}
+
+/// @brief Grow reusable byte storage geometrically without discarding it on allocation failure.
+/// @param storage Address of caller-owned storage, updated only after successful allocation.
+/// @param capacity Address of the current byte capacity, updated on success.
+/// @param required_bytes Minimum non-zero capacity requested by the caller.
+/// @return The retained or grown storage, or NULL on invalid arguments/allocation failure.
+uint8_t *vgfx3d_ensure_byte_scratch(uint8_t **storage, size_t *capacity, size_t required_bytes) {
+    size_t grown_capacity;
+    uint8_t *grown;
+
+    if (!storage || !capacity || required_bytes == 0)
+        return NULL;
+    if (*storage && *capacity >= required_bytes)
+        return *storage;
+    grown_capacity = *storage ? *capacity : 0u;
+    if (grown_capacity < 4096u)
+        grown_capacity = 4096u;
+    while (grown_capacity < required_bytes) {
+        size_t increment = grown_capacity / 2u + 1u;
+        if (increment > SIZE_MAX - grown_capacity) {
+            grown_capacity = required_bytes;
+            break;
+        }
+        grown_capacity += increment;
+    }
+    grown = (uint8_t *)realloc(*storage, grown_capacity);
+    if (!grown)
+        return NULL;
+    *storage = grown;
+    *capacity = grown_capacity;
+    return grown;
+}
+
 /// @brief Decode a horizontal band of a Pixels object into a fresh RGBA8 buffer (caller frees).
 /// @details Unpacks @p row_count rows from @p start_row (clamped to the image), optionally flipping
 ///          vertically (@p flip_y) for backends with a bottom-left origin. Enables streaming a
@@ -1223,21 +1316,11 @@ int vgfx3d_unpack_pixels_rgba_rows(const void *pixels_ptr,
     if (!rgba)
         return -1;
 
-    for (int32_t y = 0; y < row_count; y++) {
-        int32_t src_y = flip_y ? (h - 1 - (start_row + y)) : (start_row + y);
-        const uint32_t *src = pv->data + ((size_t)src_y * (size_t)w);
-        uint8_t *dst = rgba + ((size_t)y * row_bytes);
-        for (int32_t x = 0; x < w; x++) {
-            uint32_t px = src[x]; /* 0xRRGGBBAA */
-            dst[(size_t)x * 4u + 0u] = (uint8_t)((px >> 24) & 0xFF);
-            dst[(size_t)x * 4u + 1u] = (uint8_t)((px >> 16) & 0xFF);
-            dst[(size_t)x * 4u + 2u] = (uint8_t)((px >> 8) & 0xFF);
-            dst[(size_t)x * 4u + 3u] = (uint8_t)(px & 0xFF);
-        }
+    if (vgfx3d_unpack_pixels_rgba_rows_into(
+            pixels_ptr, start_row, row_count, flip_y, rgba, total_bytes, out_w, out_rows) != 0) {
+        free(rgba);
+        return -1;
     }
-
-    *out_w = w;
-    *out_rows = row_count;
     *out_rgba = rgba;
     return 0;
 }

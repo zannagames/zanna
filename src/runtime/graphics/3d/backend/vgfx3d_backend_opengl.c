@@ -899,6 +899,8 @@ typedef struct {
     uint64_t frame_serial;
     uint64_t texture_upload_bytes;
     uint64_t texture_upload_budget_bytes;
+    uint8_t *texture_upload_scratch_rgba;
+    size_t texture_upload_scratch_bytes;
     int32_t gl_major_version;
     int32_t gl_minor_version;
     int32_t max_texture_size;

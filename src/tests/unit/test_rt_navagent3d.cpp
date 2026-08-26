@@ -29,6 +29,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+
+extern "C" int64_t rt_navagent3d_grid_bucket_capacity_for_test(void);
+extern "C" int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void);
 #include <limits>
 
 extern "C" {
@@ -453,6 +456,11 @@ static void test_navagent_avoidance_grid_matches_full_scan() {
     }
     EXPECT_TRUE(rt_navagent3d_check_avoidance_grid_parity() == 1,
                 "NavAgent grid avoidance matches full-scan after crowd converges");
+    EXPECT_TRUE(rt_navagent3d_grid_bucket_capacity_for_test() >= 64,
+                "NavAgent live spatial hash owns a dynamically sized bucket table");
+    EXPECT_TRUE(rt_navagent3d_last_unique_bucket_visits_for_test() <=
+                    rt_navagent3d_grid_bucket_capacity_for_test(),
+                "NavAgent grid queries visit every colliding hash bucket at most once");
 }
 
 static void test_navagent_agent_count_perf_target() {
@@ -544,6 +552,8 @@ static void test_navagent_agent_count_perf_target() {
                 "NavAgent crowd target: RVO keeps a bounded minimum pair distance");
     EXPECT_TRUE(rt_navagent3d_check_avoidance_grid_parity() == 1,
                 "NavAgent crowd target: grid and full-scan RVO agree after the fixture");
+    EXPECT_TRUE(rt_navagent3d_grid_bucket_capacity_for_test() >= 512,
+                "NavAgent crowd target grows the live hash beyond its initial bucket table");
 }
 
 static void test_navagent_rejects_wrong_handle_types() {

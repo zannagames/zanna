@@ -295,6 +295,30 @@ int vgfx3d_unpack_pixels_rgba_rows(const void *pixels_ptr,
                                    int32_t *out_w,
                                    int32_t *out_rows,
                                    uint8_t **out_rgba);
+/// @brief Decode a row slice into caller-owned reusable RGBA8 storage without allocating.
+/// @param pixels_ptr Borrowed opaque Pixels object.
+/// @param start_row Zero-based first destination-band row.
+/// @param row_count Positive requested row count, clamped to the image.
+/// @param flip_y Non-zero to reverse the source row mapping.
+/// @param rgba Caller-owned destination storage.
+/// @param rgba_capacity Number of writable bytes at @p rgba.
+/// @param out_w Receives decoded width and is cleared before validation.
+/// @param out_rows Receives decoded row count and is cleared before validation.
+/// @return 0 on success, otherwise -1 for invalid input or insufficient destination capacity.
+int vgfx3d_unpack_pixels_rgba_rows_into(const void *pixels_ptr,
+                                        int32_t start_row,
+                                        int32_t row_count,
+                                        int flip_y,
+                                        uint8_t *rgba,
+                                        size_t rgba_capacity,
+                                        int32_t *out_w,
+                                        int32_t *out_rows);
+/// @brief Grow reusable byte storage geometrically to hold at least @p required_bytes.
+/// @param storage Address of caller-owned storage, updated only after successful allocation.
+/// @param capacity Address of the current byte capacity, updated on success.
+/// @param required_bytes Minimum non-zero capacity requested by the caller.
+/// @return The retained or grown storage, or NULL on invalid arguments/allocation failure.
+uint8_t *vgfx3d_ensure_byte_scratch(uint8_t **storage, size_t *capacity, size_t required_bytes);
 /// @brief Compute the RGBA8 byte count uploaded for one Pixels texture.
 /// @param pixels_ptr Borrowed opaque Pixels object.
 /// @param out_bytes Receives the tightly packed RGBA8 byte count and is cleared before validation.

@@ -22,7 +22,8 @@
 //
 // Links: rt_scene3d.h, rt_scene3d_internal.h, rt_scene3d_vscn_internal.h,
 //        rt_scene3d_vscn_load.c (inverse: load), rt_json.h,
-//        docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md
+//        docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md,
+//        docs/adr/0295-portable-vscn-binary-wire-layouts.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -47,6 +48,7 @@
 #include "rt_object.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
+#include "rt_platform.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_scene3d_vscn_internal.h"
@@ -72,6 +74,10 @@ typedef struct {
     int32_t count;
     /// Allocated pointer capacity.
     int32_t capacity;
+    /// Open-addressed slots storing insertion indexes plus one; zero means empty.
+    int32_t *hash_slots;
+    /// Power-of-two number of hash slots.
+    int32_t hash_capacity;
 } vscn_ptr_table_t;
 
 typedef struct {
@@ -101,6 +107,47 @@ typedef struct {
 /// @brief Base64 alphabet table used by the encoder.
 static const char vscn_base64_chars[] =
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+typedef struct {
+    FILE *file;
+    char *tmp_path;
+    const char *filepath;
+    size_t bytes_written;
+    int failed;
+} vscn_file_stream_t;
+
+static RT_THREAD_LOCAL vscn_file_stream_t *g_vscn_file_stream = NULL;
+
+static int vscn_file_stream_flush(char *buffer, size_t *length) {
+    vscn_file_stream_t *stream = g_vscn_file_stream;
+    size_t written = 0;
+    if (!stream || !length || *length == 0)
+        return 1;
+    if (!buffer || stream->failed || *length > VSCN_MAX_FILE_BYTES - stream->bytes_written) {
+        if (stream && !stream->failed) {
+            rt_asset_error_setf(RT_ASSET_ERROR_TOO_LARGE,
+                                "VSCN.Save: serialized document exceeds the %u-byte limit",
+                                (unsigned)VSCN_MAX_FILE_BYTES);
+            stream->failed = 1;
+        }
+        return 0;
+    }
+    while (written < *length) {
+        size_t chunk = fwrite(buffer + written, 1, *length - written, stream->file);
+        if (chunk == 0) {
+            rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
+                                "VSCN.Save: write failed after %llu bytes for '%s'",
+                                (unsigned long long)stream->bytes_written,
+                                stream->filepath);
+            stream->failed = 1;
+            return 0;
+        }
+        written += chunk;
+    }
+    stream->bytes_written += *length;
+    *length = 0;
+    return 1;
+}
 
 /// @brief Encode `len` raw bytes to a freshly-allocated NUL-terminated base64 string.
 ///
@@ -198,15 +245,166 @@ static char *vscn_base64_encode_f64_le(const double *values, size_t count) {
     return encoded;
 }
 
+#define VSCN_VERTEX_WIRE_V3_BYTES 92u
+#define VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES 24u
+#define VSCN_KEYFRAME_WIRE_V3_BYTES 132u
+
+static void vscn_write_u16_le(uint8_t *destination, uint16_t value) {
+    destination[0] = (uint8_t)(value & 0xffu);
+    destination[1] = (uint8_t)((value >> 8u) & 0xffu);
+}
+
+static void vscn_write_u32_le(uint8_t *destination, uint32_t value) {
+    destination[0] = (uint8_t)(value & 0xffu);
+    destination[1] = (uint8_t)((value >> 8u) & 0xffu);
+    destination[2] = (uint8_t)((value >> 16u) & 0xffu);
+    destination[3] = (uint8_t)((value >> 24u) & 0xffu);
+}
+
+static void vscn_write_u64_le(uint8_t *destination, uint64_t value) {
+    for (size_t byte = 0; byte < 8u; ++byte)
+        destination[byte] = (uint8_t)((value >> (byte * 8u)) & UINT64_C(0xff));
+}
+
+static void vscn_write_f32_le(uint8_t *destination, float value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    vscn_write_u32_le(destination, bits);
+}
+
+static void vscn_write_f64_le(uint8_t *destination, double value) {
+    uint64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    vscn_write_u64_le(destination, bits);
+}
+
+static void vscn_write_f32_lanes(uint8_t **cursor, const float *values, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+        vscn_write_f32_le(*cursor, values[index]);
+        *cursor += sizeof(float);
+    }
+}
+
+static char *vscn_encode_vertices_le_v3(const vgfx3d_vertex_t *vertices, uint32_t count) {
+    uint8_t *wire;
+    char *encoded;
+    if ((!vertices && count > 0) || (size_t)count > SIZE_MAX / VSCN_VERTEX_WIRE_V3_BYTES)
+        return NULL;
+    wire = (uint8_t *)malloc(count > 0 ? (size_t)count * VSCN_VERTEX_WIRE_V3_BYTES : 1u);
+    if (!wire)
+        return NULL;
+    for (uint32_t index = 0; index < count; ++index) {
+        const vgfx3d_vertex_t *vertex = &vertices[index];
+        uint8_t *cursor = wire + (size_t)index * VSCN_VERTEX_WIRE_V3_BYTES;
+        vscn_write_f32_lanes(&cursor, vertex->pos, 3u);
+        vscn_write_f32_lanes(&cursor, vertex->normal, 3u);
+        vscn_write_f32_lanes(&cursor, vertex->uv, 2u);
+        vscn_write_f32_lanes(&cursor, vertex->uv1, 2u);
+        vscn_write_f32_lanes(&cursor, vertex->color, 4u);
+        vscn_write_f32_lanes(&cursor, vertex->tangent, 4u);
+        memcpy(cursor, vertex->bone_indices, sizeof(vertex->bone_indices));
+        cursor += sizeof(vertex->bone_indices);
+        vscn_write_f32_lanes(&cursor, vertex->bone_weights, 4u);
+    }
+    encoded = vscn_base64_encode(wire, (size_t)count * VSCN_VERTEX_WIRE_V3_BYTES, NULL);
+    free(wire);
+    return encoded;
+}
+
+static char *vscn_encode_indices_u32_le(const uint32_t *indices, uint32_t count) {
+    uint8_t *wire;
+    char *encoded;
+    if ((!indices && count > 0) || (size_t)count > SIZE_MAX / sizeof(uint32_t))
+        return NULL;
+    wire = (uint8_t *)malloc(count > 0 ? (size_t)count * sizeof(uint32_t) : 1u);
+    if (!wire)
+        return NULL;
+    for (uint32_t index = 0; index < count; ++index)
+        vscn_write_u32_le(wire + (size_t)index * sizeof(uint32_t), indices[index]);
+    encoded = vscn_base64_encode(wire, (size_t)count * sizeof(uint32_t), NULL);
+    free(wire);
+    return encoded;
+}
+
+static char *vscn_encode_bone_map_i32_le(const int32_t *bone_map, int32_t count) {
+    uint8_t *wire;
+    char *encoded;
+    if (!bone_map || count <= 0 || (size_t)count > SIZE_MAX / sizeof(int32_t))
+        return NULL;
+    wire = (uint8_t *)malloc((size_t)count * sizeof(int32_t));
+    if (!wire)
+        return NULL;
+    for (int32_t index = 0; index < count; ++index)
+        vscn_write_u32_le(wire + (size_t)index * sizeof(int32_t), (uint32_t)bone_map[index]);
+    encoded = vscn_base64_encode(wire, (size_t)count * sizeof(int32_t), NULL);
+    free(wire);
+    return encoded;
+}
+
+static char *vscn_encode_extra_influences_le_v1(const vgfx3d_extra_influences_t *extra,
+                                                uint32_t count) {
+    uint8_t *wire;
+    char *encoded;
+    if ((!extra && count > 0) || (size_t)count > SIZE_MAX / VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES)
+        return NULL;
+    wire = (uint8_t *)malloc(count > 0 ? (size_t)count * VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES : 1u);
+    if (!wire)
+        return NULL;
+    for (uint32_t vertex = 0; vertex < count; ++vertex) {
+        uint8_t *cursor = wire + (size_t)vertex * VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES;
+        for (size_t lane = 0; lane < 4u; ++lane) {
+            vscn_write_u16_le(cursor, extra[vertex].indices[lane]);
+            cursor += sizeof(uint16_t);
+        }
+        vscn_write_f32_lanes(&cursor, extra[vertex].weights, 4u);
+    }
+    encoded = vscn_base64_encode(wire, (size_t)count * VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES, NULL);
+    free(wire);
+    return encoded;
+}
+
 /// @brief Reset a pointer table — free its backing array and zero counts.
 /// @param table Borrowed mutable pointer table.
 static void vscn_free_ptr_table(vscn_ptr_table_t *table) {
     if (!table)
         return;
     free(table->items);
+    free(table->hash_slots);
     table->items = NULL;
+    table->hash_slots = NULL;
     table->count = 0;
     table->capacity = 0;
+    table->hash_capacity = 0;
+}
+
+static size_t vscn_ptr_hash(const void *item) {
+    uintptr_t value = (uintptr_t)item;
+    size_t hash = (size_t)UINT64_C(1469598103934665603);
+    for (size_t byte = 0; byte < sizeof(value); ++byte) {
+        hash ^= (size_t)((value >> (byte * 8u)) & (uintptr_t)0xffu);
+        hash *= (size_t)UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static int vscn_ptr_table_rehash(vscn_ptr_table_t *table, int32_t new_capacity) {
+    int32_t *new_slots;
+    if (!table || new_capacity < 16 || (new_capacity & (new_capacity - 1)) != 0 ||
+        (size_t)new_capacity > SIZE_MAX / sizeof(*new_slots))
+        return 0;
+    new_slots = (int32_t *)calloc((size_t)new_capacity, sizeof(*new_slots));
+    if (!new_slots)
+        return 0;
+    for (int32_t index = 0; index < table->count; ++index) {
+        size_t slot = vscn_ptr_hash(table->items[index]) & (size_t)(new_capacity - 1);
+        while (new_slots[slot] != 0)
+            slot = (slot + 1u) & (size_t)(new_capacity - 1);
+        new_slots[slot] = index + 1;
+    }
+    free(table->hash_slots);
+    table->hash_slots = new_slots;
+    table->hash_capacity = new_capacity;
+    return 1;
 }
 
 /// @brief Return the index of `item` in the table, inserting it if not present.
@@ -220,9 +418,16 @@ static void vscn_free_ptr_table(vscn_ptr_table_t *table) {
 static int vscn_ptr_table_index_or_add(vscn_ptr_table_t *table, void *item) {
     if (!table || !item)
         return -1;
-    for (int32_t i = 0; i < table->count; i++) {
-        if (table->items[i] == item)
-            return i;
+    if (table->hash_capacity > 0) {
+        size_t slot = vscn_ptr_hash(item) & (size_t)(table->hash_capacity - 1);
+        while (table->hash_slots[slot] != 0) {
+            int32_t index = table->hash_slots[slot] - 1;
+            if (table->items[index] == item)
+                return index;
+            slot = (slot + 1u) & (size_t)(table->hash_capacity - 1);
+        }
+    } else if (!vscn_ptr_table_rehash(table, 16)) {
+        return -1;
     }
     if (table->count >= table->capacity) {
         if (table->capacity > INT32_MAX / 2)
@@ -236,9 +441,19 @@ static int vscn_ptr_table_index_or_add(vscn_ptr_table_t *table, void *item) {
         table->items = new_items;
         table->capacity = new_cap;
     }
+    if ((int64_t)(table->count + 1) * 10 > (int64_t)table->hash_capacity * 7) {
+        if (table->hash_capacity > INT32_MAX / 2 ||
+            !vscn_ptr_table_rehash(table, table->hash_capacity * 2))
+            return -1;
+    }
     table->items[table->count] = item;
-    table->count++;
-    return table->count - 1;
+    {
+        size_t slot = vscn_ptr_hash(item) & (size_t)(table->hash_capacity - 1);
+        while (table->hash_slots[slot] != 0)
+            slot = (slot + 1u) & (size_t)(table->hash_capacity - 1);
+        table->hash_slots[slot] = table->count + 1;
+    }
+    return table->count++;
 }
 
 /// @brief Find an already-collected pointer without mutating table order.
@@ -248,9 +463,16 @@ static int vscn_ptr_table_index_or_add(vscn_ptr_table_t *table, void *item) {
 static int vscn_ptr_table_index(const vscn_ptr_table_t *table, const void *item) {
     if (!table || !item)
         return -1;
-    for (int32_t i = 0; i < table->count; ++i) {
-        if (table->items[i] == item)
-            return i;
+    if (table->hash_capacity <= 0 || !table->hash_slots)
+        return -1;
+    {
+        size_t slot = vscn_ptr_hash(item) & (size_t)(table->hash_capacity - 1);
+        while (table->hash_slots[slot] != 0) {
+            int32_t index = table->hash_slots[slot] - 1;
+            if (table->items[index] == item)
+                return index;
+            slot = (slot + 1u) & (size_t)(table->hash_capacity - 1);
+        }
     }
     return -1;
 }
@@ -318,6 +540,8 @@ static int vscn_append_raw(char **buf, size_t *len, size_t *cap, const char *src
         memcpy(*buf + *len, src, src_len);
     *len += src_len;
     (*buf)[*len] = '\0';
+    if (g_vscn_file_stream && *len >= 64u * 1024u)
+        return vscn_file_stream_flush(*buf, len);
     return 1;
 }
 
@@ -360,6 +584,8 @@ static int vscn_append(char **buf, size_t *len, size_t *cap, const char *fmt, ..
             return 0;
         if ((size_t)written < available) {
             *len += (size_t)written;
+            if (g_vscn_file_stream && *len >= 64u * 1024u)
+                return vscn_file_stream_flush(*buf, len);
             return 1;
         }
 
@@ -1130,8 +1356,6 @@ static int vscn_serialize_mesh_morph_targets(rt_mesh3d *mesh,
 static int vscn_serialize_mesh(
     rt_mesh3d *mesh, vscn_save_context_t *ctx, char **buf, size_t *len, size_t *cap, int depth) {
     char indent[64];
-    size_t vertex_bytes_len;
-    size_t index_bytes_len;
     char *vertex_base64 = NULL;
     char *index_base64 = NULL;
 
@@ -1144,11 +1368,9 @@ static int vscn_serialize_mesh(
     if (!rt_alloc_count_ok(mesh->vertex_count, sizeof(vgfx3d_vertex_t)) ||
         !rt_alloc_count_ok(mesh->index_count, sizeof(uint32_t)))
         return 0;
-    vertex_bytes_len = (size_t)mesh->vertex_count * sizeof(vgfx3d_vertex_t);
-    index_bytes_len = (size_t)mesh->index_count * sizeof(uint32_t);
     vscn_make_indent(indent, sizeof(indent), depth);
-    vertex_base64 = vscn_base64_encode((const uint8_t *)mesh->vertices, vertex_bytes_len, NULL);
-    index_base64 = vscn_base64_encode((const uint8_t *)mesh->indices, index_bytes_len, NULL);
+    vertex_base64 = vscn_encode_vertices_le_v3(mesh->vertices, mesh->vertex_count);
+    index_base64 = vscn_encode_indices_u32_le(mesh->indices, mesh->index_count);
     if (!vertex_base64 || !index_base64) {
         free(vertex_base64);
         free(index_base64);
@@ -1168,7 +1390,8 @@ static int vscn_serialize_mesh(
         int ok = vscn_append(buf,
                              len,
                              cap,
-                             "%s{\"vertexFormat\": \"vgfx3d_vertex_le_v2\", "
+                             "%s{\"vertexFormat\": \"vgfx3d_vertex_le_v3\", "
+                             "\"indexFormat\": \"u32le-v1\", "
                              "\"vertexCount\": %u, "
                              "\"indexCount\": %u, "
                              "\"boneCount\": %d, "
@@ -1190,11 +1413,11 @@ static int vscn_serialize_mesh(
             return 0;
         /* Optional v3 rig side streams. */
         if (mesh->bone_map && mesh->bone_count > 0) {
-            char *map64 = vscn_base64_encode(
-                (const uint8_t *)mesh->bone_map, (size_t)mesh->bone_count * sizeof(int32_t), NULL);
+            char *map64 = vscn_encode_bone_map_i32_le(mesh->bone_map, mesh->bone_count);
             if (!map64)
                 return 0;
-            ok = vscn_append(buf, len, cap, ", \"boneMapBase64\": ") &&
+            ok = vscn_append(
+                     buf, len, cap, ", \"boneMapFormat\": \"i32le-v1\", \"boneMapBase64\": ") &&
                  vscn_append_json_string(buf, len, cap, map64);
             free(map64);
             if (!ok)
@@ -1202,12 +1425,15 @@ static int vscn_serialize_mesh(
         }
         if (mesh->extra_influences && mesh->vertex_count > 0) {
             char *extra64 =
-                vscn_base64_encode((const uint8_t *)mesh->extra_influences,
-                                   (size_t)mesh->vertex_count * sizeof(vgfx3d_extra_influences_t),
-                                   NULL);
+                vscn_encode_extra_influences_le_v1(mesh->extra_influences, mesh->vertex_count);
             if (!extra64)
                 return 0;
-            ok = vscn_append(buf, len, cap, ", \"extraInfluencesBase64\": ") &&
+            ok = vscn_append(buf,
+                             len,
+                             cap,
+                             ", \"extraInfluencesFormat\": "
+                             "\"vgfx3d_extra_influences_le_v1\", "
+                             "\"extraInfluencesBase64\": ") &&
                  vscn_append_json_string(buf, len, cap, extra64);
             free(extra64);
             if (!ok)
@@ -1866,18 +2092,18 @@ static int vscn_save_emit_skeletons(char **buf,
 /// @return Caller-owned Base64 text, or `NULL` for invalid data/allocation failure.
 static char *vscn_encode_skeletal_keyframes(const vgfx3d_anim_channel_t *channel,
                                             int32_t key_count) {
-    vgfx3d_keyframe_t *wire;
+    uint8_t *wire;
     char *encoded;
     double previous_time = -1.0;
     if (!channel || !channel->keyframes || key_count <= 0 ||
-        (size_t)key_count > SIZE_MAX / sizeof(*wire))
+        (size_t)key_count > SIZE_MAX / VSCN_KEYFRAME_WIRE_V3_BYTES)
         return NULL;
-    wire = (vgfx3d_keyframe_t *)calloc((size_t)key_count, sizeof(*wire));
+    wire = (uint8_t *)malloc((size_t)key_count * VSCN_KEYFRAME_WIRE_V3_BYTES);
     if (!wire)
         return NULL;
     for (int32_t index = 0; index < key_count; index++) {
         const vgfx3d_keyframe_t *source = &channel->keyframes[index];
-        vgfx3d_keyframe_t *target = &wire[index];
+        uint8_t *cursor = wire + (size_t)index * VSCN_KEYFRAME_WIRE_V3_BYTES;
         if (!isfinite(source->time) || source->time < 0.0 || source->time > (double)FLT_MAX ||
             (index > 0 && !(source->time > previous_time)) ||
             (source->position_mask & ~0x07u) != 0 ||
@@ -1921,26 +2147,23 @@ static char *vscn_encode_skeletal_keyframes(const vgfx3d_anim_channel_t *channel
                 return NULL;
             }
         }
-        target->time = source->time;
-        memcpy(target->position, source->position, sizeof(target->position));
-        memcpy(target->rotation, source->rotation, sizeof(target->rotation));
-        memcpy(target->scale_xyz, source->scale_xyz, sizeof(target->scale_xyz));
-        target->position_mask = source->position_mask;
-        target->rotation_mask = source->rotation_mask;
-        target->scale_mask = source->scale_mask;
-        target->cubic_mask = source->cubic_mask;
-        memcpy(target->pos_in_tangent, source->pos_in_tangent, sizeof(target->pos_in_tangent));
-        memcpy(target->pos_out_tangent, source->pos_out_tangent, sizeof(target->pos_out_tangent));
-        memcpy(target->rot_in_tangent, source->rot_in_tangent, sizeof(target->rot_in_tangent));
-        memcpy(target->rot_out_tangent, source->rot_out_tangent, sizeof(target->rot_out_tangent));
-        memcpy(
-            target->scale_in_tangent, source->scale_in_tangent, sizeof(target->scale_in_tangent));
-        memcpy(target->scale_out_tangent,
-               source->scale_out_tangent,
-               sizeof(target->scale_out_tangent));
+        vscn_write_f64_le(cursor, source->time);
+        cursor += sizeof(double);
+        vscn_write_f32_lanes(&cursor, source->position, 3u);
+        vscn_write_f32_lanes(&cursor, source->rotation, 4u);
+        vscn_write_f32_lanes(&cursor, source->scale_xyz, 3u);
+        *cursor++ = source->position_mask;
+        *cursor++ = source->rotation_mask;
+        *cursor++ = source->scale_mask;
+        *cursor++ = source->cubic_mask;
+        vscn_write_f32_lanes(&cursor, source->pos_in_tangent, 3u);
+        vscn_write_f32_lanes(&cursor, source->pos_out_tangent, 3u);
+        vscn_write_f32_lanes(&cursor, source->rot_in_tangent, 4u);
+        vscn_write_f32_lanes(&cursor, source->rot_out_tangent, 4u);
+        vscn_write_f32_lanes(&cursor, source->scale_in_tangent, 3u);
+        vscn_write_f32_lanes(&cursor, source->scale_out_tangent, 3u);
     }
-    encoded = vscn_base64_encode(
-        (const uint8_t *)wire, (size_t)key_count * sizeof(vgfx3d_keyframe_t), NULL);
+    encoded = vscn_base64_encode(wire, (size_t)key_count * VSCN_KEYFRAME_WIRE_V3_BYTES, NULL);
     free(wire);
     return encoded;
 }
@@ -1964,6 +2187,7 @@ static int vscn_save_emit_animations(char **buf,
     for (int32_t i = 0; i < ctx->animation_count; i++) {
         rt_animation3d *anim = (rt_animation3d *)ctx->animations[i];
         int32_t channel_count;
+        uint8_t seen_bones[(VGFX3D_MAX_SKELETON_BONES + 7) / 8] = {0};
         if (!rt_g3d_has_class(anim, RT_G3D_ANIMATION3D_CLASS_ID))
             continue;
         channel_count = animation3d_safe_channel_count(anim);
@@ -1976,7 +2200,7 @@ static int vscn_save_emit_animations(char **buf,
                          len,
                          cap,
                          ", \"duration\": %.9g, \"looping\": %s, "
-                         "\"keyframeFormat\": \"vgfx3d_keyframe_le_v2\", "
+                         "\"keyframeFormat\": \"vgfx3d_keyframe_le_v3\", "
                          "\"channels\": [\n",
                          (double)anim->duration,
                          anim->looping ? "true" : "false"))
@@ -1986,10 +2210,11 @@ static int vscn_save_emit_animations(char **buf,
             int32_t key_count = animation3d_safe_keyframe_count(ch);
             if (ch->bone_index < 0 || ch->bone_index >= VGFX3D_MAX_SKELETON_BONES)
                 return 0;
-            for (int32_t prior = 0; prior < c; prior++) {
-                if (anim->channels[prior].bone_index == ch->bone_index)
-                    return 0;
-            }
+            if ((seen_bones[(size_t)ch->bone_index >> 3u] &
+                 (uint8_t)(1u << ((uint32_t)ch->bone_index & 7u))) != 0)
+                return 0;
+            seen_bones[(size_t)ch->bone_index >> 3u] |=
+                (uint8_t)(1u << ((uint32_t)ch->bone_index & 7u));
             char *keys64 = vscn_encode_skeletal_keyframes(ch, key_count);
             int ok;
             if (!keys64)
@@ -2298,63 +2523,66 @@ static int vscn_save_emit_scenes(char **buf, size_t *len, size_t *cap, vscn_save
     return vscn_append(buf, len, cap, "  ]\n");
 }
 
-/// @brief Atomically publish a completed VSCN text buffer at @p filepath.
-/// @param filepath Borrowed UTF-8 destination path.
-/// @param buf Borrowed complete serialized bytes.
-/// @param len Number of bytes to write.
-/// @return `1` after atomic replacement, otherwise `0`.
-static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t len) {
-    FILE *file;
-    char *tmp_path = NULL;
-    size_t written = 0;
-    int64_t result;
-    if (!filepath || !buf)
+static int vscn_file_stream_begin(const char *filepath, vscn_file_stream_t *stream) {
+    if (!filepath || !stream || g_vscn_file_stream)
         return 0;
-    if (len > VSCN_MAX_FILE_BYTES) {
-        rt_asset_error_setf(RT_ASSET_ERROR_TOO_LARGE,
-                            "VSCN.Save: serialized document is %llu bytes; the VSCN limit is %u "
-                            "bytes — bake a clip subset (zanna asset bake --clips) or reduce the "
-                            "asset",
-                            (unsigned long long)len,
-                            (unsigned)VSCN_MAX_FILE_BYTES);
-        return 0;
-    }
-    file = rt_file_stdio_open_temp_for_replace_utf8(filepath, &tmp_path);
-    if (!file) {
+    memset(stream, 0, sizeof(*stream));
+    stream->filepath = filepath;
+    stream->file = rt_file_stdio_open_temp_for_replace_utf8(filepath, &stream->tmp_path);
+    if (!stream->file) {
         rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
                             "VSCN.Save: cannot open a temporary file beside '%s'",
                             filepath);
         return 0;
     }
-    while (written < len) {
-        size_t chunk = fwrite(buf + written, 1, len - written, file);
-        if (chunk == 0) {
-            rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
-                                "VSCN.Save: write failed after %llu of %llu bytes for '%s'",
-                                (unsigned long long)written,
-                                (unsigned long long)len,
-                                filepath);
-            fclose(file);
-            (void)rt_file_stdio_unlink_utf8(tmp_path);
-            free(tmp_path);
-            return 0;
-        }
-        written += chunk;
+    g_vscn_file_stream = stream;
+    return 1;
+}
+
+static void vscn_file_stream_abort(vscn_file_stream_t *stream) {
+    if (!stream)
+        return;
+    if (g_vscn_file_stream == stream)
+        g_vscn_file_stream = NULL;
+    if (stream->file) {
+        fclose(stream->file);
+        stream->file = NULL;
     }
-    if (!rt_file_stdio_flush_sync_close(file)) {
-        rt_asset_error_setf(
-            RT_ASSET_ERROR_UNREADABLE, "VSCN.Save: flush-and-sync failed for '%s'", filepath);
-        (void)rt_file_stdio_unlink_utf8(tmp_path);
-        free(tmp_path);
+    if (stream->tmp_path) {
+        (void)rt_file_stdio_unlink_utf8(stream->tmp_path);
+        free(stream->tmp_path);
+        stream->tmp_path = NULL;
+    }
+}
+
+static int64_t vscn_file_stream_commit(vscn_file_stream_t *stream, char *buffer, size_t *length) {
+    int64_t result;
+    if (!stream || g_vscn_file_stream != stream || !vscn_file_stream_flush(buffer, length) ||
+        stream->failed) {
+        vscn_file_stream_abort(stream);
         return 0;
     }
-    result = rt_file_stdio_replace_utf8(tmp_path, filepath) ? 1 : 0;
-    if (!result) {
-        rt_asset_error_setf(
-            RT_ASSET_ERROR_UNREADABLE, "VSCN.Save: atomic replace failed for '%s'", filepath);
-        (void)rt_file_stdio_unlink_utf8(tmp_path);
+    g_vscn_file_stream = NULL;
+    if (!rt_file_stdio_flush_sync_close(stream->file)) {
+        stream->file = NULL;
+        rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
+                            "VSCN.Save: flush-and-sync failed for '%s'",
+                            stream->filepath);
+        (void)rt_file_stdio_unlink_utf8(stream->tmp_path);
+        free(stream->tmp_path);
+        stream->tmp_path = NULL;
+        return 0;
     }
-    free(tmp_path);
+    stream->file = NULL;
+    result = rt_file_stdio_replace_utf8(stream->tmp_path, stream->filepath) ? 1 : 0;
+    if (!result) {
+        rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
+                            "VSCN.Save: atomic replace failed for '%s'",
+                            stream->filepath);
+        (void)rt_file_stdio_unlink_utf8(stream->tmp_path);
+    }
+    free(stream->tmp_path);
+    stream->tmp_path = NULL;
     return result;
 }
 
@@ -2364,6 +2592,7 @@ static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t l
 /// @return `1` on successful atomic save, otherwise `0`.
 int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string path) {
     vscn_save_context_t ctx = {0};
+    vscn_file_stream_t stream;
     char *buf = NULL;
     size_t len = 0;
     size_t cap = 0;
@@ -2381,6 +2610,10 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
         return 0;
     }
     ctx.output_version = ctx.requires_v7 ? 7 : (ctx.requires_v6 ? 6 : 5);
+    if (!vscn_file_stream_begin(filepath, &stream)) {
+        vscn_save_free_ctx(&ctx);
+        return 0;
+    }
     if (!vscn_append(&buf, &len, &cap, "{\n") ||
         !vscn_append(&buf, &len, &cap, "  \"format\": \"vscn\",\n") ||
         !vscn_append(&buf, &len, &cap, "  \"version\": %d,\n", ctx.output_version) ||
@@ -2397,11 +2630,12 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
         rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
                                     "VSCN.Save: document serialization failed (allocation or "
                                     "invalid retained resource)");
+        vscn_file_stream_abort(&stream);
         vscn_save_free_ctx(&ctx);
         free(buf);
         return 0;
     }
-    result = vscn_write_atomic(filepath, buf, len);
+    result = vscn_file_stream_commit(&stream, buf, &len);
     vscn_save_free_ctx(&ctx);
     free(buf);
     return result;
@@ -2495,9 +2729,14 @@ int64_t rt_scene3d_save(void *scene_obj, rt_string path) {
 
     char *buf = NULL;
     size_t len = 0;
-    if (!scene3d_build_vscn_text(scene, &buf, &len))
+    vscn_file_stream_t stream;
+    if (!vscn_file_stream_begin(filepath, &stream))
         return 0;
-    int64_t result = vscn_write_atomic(filepath, buf, len);
+    if (!scene3d_build_vscn_text(scene, &buf, &len)) {
+        vscn_file_stream_abort(&stream);
+        return 0;
+    }
+    int64_t result = vscn_file_stream_commit(&stream, buf, &len);
     free(buf);
     return result;
 }

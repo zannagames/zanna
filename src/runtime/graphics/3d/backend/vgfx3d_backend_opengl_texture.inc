@@ -921,7 +921,8 @@ static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
     int32_t rows;
     int32_t slice_w = 0;
     int32_t slice_rows = 0;
-    uint8_t *rgba = NULL;
+    uint8_t *rgba;
+    size_t rgba_bytes;
     uint64_t bytes;
 
     if (!ctx || !entry || !pixels_ptr || !entry->upload_in_progress || !entry->tex)
@@ -940,10 +941,22 @@ static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
                                          ctx->texture_upload_bytes);
     if (rows <= 0)
         return GL_UPLOAD_FAILED;
-    if (vgfx3d_unpack_pixels_rgba_rows(
-            pixels_ptr, entry->upload_next_row, rows, 0, &slice_w, &slice_rows, &rgba) != 0 ||
-        !rgba || slice_w != entry->width || slice_rows <= 0) {
-        free(rgba);
+    if ((size_t)entry->width > SIZE_MAX / 4u ||
+        (size_t)rows > SIZE_MAX / ((size_t)entry->width * 4u))
+        return GL_UPLOAD_FAILED;
+    rgba_bytes = (size_t)entry->width * (size_t)rows * 4u;
+    rgba = vgfx3d_ensure_byte_scratch(
+        &ctx->texture_upload_scratch_rgba, &ctx->texture_upload_scratch_bytes, rgba_bytes);
+    if (!rgba ||
+        vgfx3d_unpack_pixels_rgba_rows_into(pixels_ptr,
+                                            entry->upload_next_row,
+                                            rows,
+                                            0,
+                                            rgba,
+                                            ctx->texture_upload_scratch_bytes,
+                                            &slice_w,
+                                            &slice_rows) != 0 ||
+        slice_w != entry->width || slice_rows <= 0) {
         return GL_UPLOAD_FAILED;
     }
 
@@ -960,13 +973,11 @@ static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
                      rgba);
     if (!gl_upload_ok()) {
         gl.PixelStorei(GL_UNPACK_ALIGNMENT, 4);
-        free(rgba);
         return GL_UPLOAD_FAILED;
     }
     gl.PixelStorei(GL_UNPACK_ALIGNMENT, 4);
     bytes = (uint64_t)(uint32_t)slice_w * (uint64_t)(uint32_t)slice_rows * 4u;
     gl_record_texture_upload_bytes(ctx, bytes);
-    free(rgba);
 
     entry->upload_next_row += slice_rows;
     entry->last_used_frame = ctx->frame_serial;

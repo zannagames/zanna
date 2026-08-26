@@ -65,6 +65,8 @@ int32_t vgfx3d_software_backend_fragment_uses_opaque_write_for_test(int32_t alph
                                                                     float fragment_alpha);
 int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *ctx,
                                                                    int32_t scratch_kind);
+int64_t vgfx3d_software_backend_tile_scratch_capacity_for_test(const void *ctx,
+                                                               int32_t scratch_kind);
 void *rt_pixels_new(int64_t width, int64_t height);
 void rt_pixels_set_rgba(void *pixels, int64_t x, int64_t y, int64_t rgba);
 }
@@ -187,6 +189,10 @@ struct SoftwareSceneRenderResult {
     int64_t shadow_triangle_scratch_capacity = 0;
     int64_t color_task_triangle_scratch_capacity = 0;
     int64_t shadow_task_triangle_scratch_capacity = 0;
+    int64_t color_tile_scratch_capacity = 0;
+    int64_t shadow_tile_scratch_capacity = 0;
+    int64_t color_tile_bin_scratch_capacity = 0;
+    int64_t shadow_tile_bin_scratch_capacity = 0;
     std::vector<uint8_t> rgba;
 };
 
@@ -927,6 +933,14 @@ static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *re
             vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 2);
         result->shadow_task_triangle_scratch_capacity =
             vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 3);
+        result->color_tile_scratch_capacity =
+            vgfx3d_software_backend_tile_scratch_capacity_for_test(canvas.backend_ctx, 0);
+        result->shadow_tile_scratch_capacity =
+            vgfx3d_software_backend_tile_scratch_capacity_for_test(canvas.backend_ctx, 1);
+        result->color_tile_bin_scratch_capacity =
+            vgfx3d_software_backend_tile_scratch_capacity_for_test(canvas.backend_ctx, 2);
+        result->shadow_tile_bin_scratch_capacity =
+            vgfx3d_software_backend_tile_scratch_capacity_for_test(canvas.backend_ctx, 3);
         result->rgba.assign((size_t)width * (size_t)height * 4u, 0u);
         for (int32_t y = 0; y < height; y++) {
             std::memcpy(&result->rgba[(size_t)y * (size_t)width * 4u],
@@ -1019,6 +1033,11 @@ static void test_software_tiled_raster_threads_are_deterministic() {
                 "Four-worker color rasterization retains worker-local triangle scratch");
     EXPECT_TRUE(four.shadow_task_triangle_scratch_capacity > 0,
                 "Four-worker shadow rasterization retains worker-local triangle scratch");
+    EXPECT_TRUE(four.color_tile_scratch_capacity > 0 && four.shadow_tile_scratch_capacity > 0,
+                "Four-worker rasterization retains color and shadow tile grids");
+    EXPECT_TRUE(four.color_tile_bin_scratch_capacity > 0 &&
+                    four.shadow_tile_bin_scratch_capacity > 0,
+                "Four-worker rasterization retains per-tile triangle-index storage");
     EXPECT_EQ_U64(four.hash, one.hash, "Four-worker software raster hash matches serial");
     EXPECT_TRUE(rgba_equal(one, four), "Four-worker software raster pixels match serial");
 

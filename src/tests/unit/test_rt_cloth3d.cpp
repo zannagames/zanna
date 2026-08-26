@@ -24,6 +24,8 @@
 #include <cmath>
 #include <cstdio>
 
+extern "C" int64_t rt_cloth3d_last_collision_narrowphase_tests_for_test(void *obj);
+
 static int tests_passed = 0;
 static int tests_run = 0;
 
@@ -190,6 +192,22 @@ static void test_extreme_inputs_remain_finite() {
                 "non-finite cloth delta is an exact no-op");
 }
 
+static void test_collider_aabb_shortlist_prunes_far_narrowphase_work() {
+    void *cloth = rt_cloth3d_new_patch(64, 64, 6.3, 6.3);
+    for (int collider = 0; collider < 15; ++collider) {
+        rt_cloth3d_add_sphere(
+            cloth, rt_vec3_new(100.0 + (double)collider * 3.0, 100.0, 100.0), 0.5);
+    }
+    rt_cloth3d_add_sphere(cloth, rt_vec3_new(0.0, 0.0, 0.0), 0.2);
+
+    rt_cloth3d_step(cloth, 1.0 / 60.0);
+    int64_t narrowphase_tests = rt_cloth3d_last_collision_narrowphase_tests_for_test(cloth);
+    EXPECT_TRUE(rt_cloth3d_get_point_count(cloth) == 4096,
+                "Cloth collider shortlist fixture uses the maximum patch point count");
+    EXPECT_TRUE(narrowphase_tests >= 0 && narrowphase_tests < 512,
+                "Collider AABBs shortlist a 4096-point cloth before closest-point tests");
+}
+
 int main() {
     test_chain_settles();
     test_determinism_replay();
@@ -197,6 +215,7 @@ int main() {
     test_sphere_pushout();
     test_pins_hold();
     test_extreme_inputs_remain_finite();
+    test_collider_aabb_shortlist_prunes_far_narrowphase_work();
     std::printf("%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

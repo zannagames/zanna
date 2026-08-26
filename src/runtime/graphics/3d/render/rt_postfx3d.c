@@ -2314,36 +2314,33 @@ static void apply_ssao_cpu(rt_postfx3d *fx,
     postfx_run_bands(fx, h, apply_ssao_modulate_rows, &ctx);
 }
 
-/// @brief DOF: circle-of-confusion gather blur; CoC from |linear - focus| / aperture.
-/// @param fbuf Packed RGB float framebuffer modified in place.
-/// @param w Framebuffer width in pixels.
-/// @param h Framebuffer height in pixels.
-/// @param sc Scene inputs supplying a matching NDC depth buffer.
-/// @param focus_distance Camera-space distance of the focus plane.
-/// @param aperture Distance scale controlling the circle of confusion.
-/// @param max_blur User-facing maximum blur amount, converted to a bounded pixel radius.
-/// @param scratch Reusable allocation used to preserve the unblurred framebuffer.
-static void apply_dof_cpu(float *fbuf,
-                          int32_t w,
-                          int32_t h,
-                          const postfx_scene_in_t *sc,
-                          float focus_distance,
-                          float aperture,
-                          float max_blur,
-                          postfx_scratch_t *scratch) {
-    size_t count = (size_t)w * (size_t)h;
-    float *copy = postfx_scratch_primary(scratch, count * 3u);
-    if (!copy || !sc->has_depth || sc->depth_w != w || sc->depth_h != h)
-        return;
-    if (!(focus_distance > 0.0f))
-        focus_distance = 10.0f;
-    if (!(aperture > 0.0f))
-        aperture = 5.0f;
-    float max_radius = max_blur > 0.0f ? max_blur * 8.0f : 6.0f;
-    if (max_radius > 12.0f)
-        max_radius = 12.0f;
-    memcpy(copy, fbuf, count * 3u * sizeof(float));
-    for (int32_t y = 0; y < h; y++) {
+typedef struct {
+    float *fbuf;
+    const float *copy;
+    const postfx_scene_in_t *sc;
+    int32_t w;
+    int32_t h;
+    float focus_distance;
+    float aperture;
+    float max_radius;
+} postfx_dof_band_ctx;
+
+/// @brief Apply DOF gather blur to one independent destination row band.
+/// @param ctx_ptr Borrowed `postfx_dof_band_ctx` shared by all band tasks.
+/// @param y0 First destination row to process.
+/// @param y1 One-past-last destination row to process.
+static void apply_dof_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
+    const postfx_dof_band_ctx *bc = (const postfx_dof_band_ctx *)ctx_ptr;
+    float *fbuf = bc->fbuf;
+    const float *copy = bc->copy;
+    const postfx_scene_in_t *sc = bc->sc;
+    int32_t w = bc->w;
+    int32_t h = bc->h;
+    float focus_distance = bc->focus_distance;
+    float aperture = bc->aperture;
+    float max_radius = bc->max_radius;
+
+    for (int32_t y = y0; y < y1; y++) {
         for (int32_t x = 0; x < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
             float ndc = postfx_depth_at(sc, x, y);
@@ -2403,37 +2400,74 @@ static void apply_dof_cpu(float *fbuf,
     }
 }
 
-/// @brief Motion blur: camera-reprojection velocity, up to 6 samples along it.
-///   Per-object velocity is a documented divergence from the GPU path.
+/// @brief DOF: circle-of-confusion gather blur; CoC from |linear - focus| / aperture.
+/// @param fx PostFX chain providing row-band parallelism.
 /// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
-/// @param sc Scene inputs supplying depth, inverse projection, and prior-frame projection.
-/// @param strength Scale applied to the reconstructed screen-space velocity.
-/// @param samples Requested gather count, clamped between two and six.
-/// @param scratch Reusable allocation used to preserve the source framebuffer.
-static void apply_motion_blur_cpu(float *fbuf,
-                                  int32_t w,
-                                  int32_t h,
-                                  const postfx_scene_in_t *sc,
-                                  float strength,
-                                  int32_t samples,
-                                  postfx_scratch_t *scratch) {
+/// @param sc Scene inputs supplying a matching NDC depth buffer.
+/// @param focus_distance Camera-space distance of the focus plane.
+/// @param aperture Distance scale controlling the circle of confusion.
+/// @param max_blur User-facing maximum blur amount, converted to a bounded pixel radius.
+/// @param scratch Reusable allocation used to preserve the unblurred framebuffer.
+static void apply_dof_cpu(rt_postfx3d *fx,
+                          float *fbuf,
+                          int32_t w,
+                          int32_t h,
+                          const postfx_scene_in_t *sc,
+                          float focus_distance,
+                          float aperture,
+                          float max_blur,
+                          postfx_scratch_t *scratch) {
     size_t count = (size_t)w * (size_t)h;
     float *copy = postfx_scratch_primary(scratch, count * 3u);
-    if (!copy || !sc->has_depth || !sc->has_inv || !sc->has_prev_vp || sc->depth_w != w ||
-        sc->depth_h != h)
+    postfx_dof_band_ctx ctx;
+    if (!copy || !sc->has_depth || sc->depth_w != w || sc->depth_h != h)
         return;
-    if (samples < 2)
-        samples = 2;
-    if (samples > 6)
-        samples = 6;
-    if (!(strength > 0.0f))
-        return;
-    if (strength > 2.0f)
-        strength = 2.0f;
+    if (!(focus_distance > 0.0f))
+        focus_distance = 10.0f;
+    if (!(aperture > 0.0f))
+        aperture = 5.0f;
+    float max_radius = max_blur > 0.0f ? max_blur * 8.0f : 6.0f;
+    if (max_radius > 12.0f)
+        max_radius = 12.0f;
     memcpy(copy, fbuf, count * 3u * sizeof(float));
-    for (int32_t y = 0; y < h; y++) {
+    ctx.fbuf = fbuf;
+    ctx.copy = copy;
+    ctx.sc = sc;
+    ctx.w = w;
+    ctx.h = h;
+    ctx.focus_distance = focus_distance;
+    ctx.aperture = aperture;
+    ctx.max_radius = max_radius;
+    postfx_run_bands(fx, h, apply_dof_rows, &ctx);
+}
+
+typedef struct {
+    float *fbuf;
+    const float *copy;
+    const postfx_scene_in_t *sc;
+    int32_t w;
+    int32_t h;
+    float strength;
+    int32_t samples;
+} postfx_motion_blur_band_ctx;
+
+/// @brief Apply motion-blur gathers to one independent destination row band.
+/// @param ctx_ptr Borrowed `postfx_motion_blur_band_ctx` shared by all band tasks.
+/// @param y0 First destination row to process.
+/// @param y1 One-past-last destination row to process.
+static void apply_motion_blur_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
+    const postfx_motion_blur_band_ctx *bc = (const postfx_motion_blur_band_ctx *)ctx_ptr;
+    float *fbuf = bc->fbuf;
+    const float *copy = bc->copy;
+    const postfx_scene_in_t *sc = bc->sc;
+    int32_t w = bc->w;
+    int32_t h = bc->h;
+    float strength = bc->strength;
+    int32_t samples = bc->samples;
+
+    for (int32_t y = y0; y < y1; y++) {
         for (int32_t x = 0; x < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
             float ndc = postfx_depth_at(sc, x, y);
@@ -2481,36 +2515,76 @@ static void apply_motion_blur_cpu(float *fbuf,
     }
 }
 
-/// @brief SSR: coarse screen-space march along the depth-reconstructed reflection ray.
-///   Misses keep the base color (no environment fallback on CPU — documented).
+/// @brief Motion blur: camera-reprojection velocity, up to 6 samples along it.
+///   Per-object velocity is a documented divergence from the GPU path.
+/// @param fx PostFX chain providing row-band parallelism.
 /// @param fbuf Packed RGB float framebuffer modified in place.
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
-/// @param sc Scene inputs supplying depth, camera position, and projection matrices.
-/// @param intensity Blend weight applied to successful reflection hits.
-/// @param steps Requested ray-march iteration count, clamped between four and sixteen.
+/// @param sc Scene inputs supplying depth, inverse projection, and prior-frame projection.
+/// @param strength Scale applied to the reconstructed screen-space velocity.
+/// @param samples Requested gather count, clamped between two and six.
 /// @param scratch Reusable allocation used to preserve the source framebuffer.
-static void apply_ssr_cpu(float *fbuf,
-                          int32_t w,
-                          int32_t h,
-                          const postfx_scene_in_t *sc,
-                          float intensity,
-                          int32_t steps,
-                          postfx_scratch_t *scratch) {
+static void apply_motion_blur_cpu(rt_postfx3d *fx,
+                                  float *fbuf,
+                                  int32_t w,
+                                  int32_t h,
+                                  const postfx_scene_in_t *sc,
+                                  float strength,
+                                  int32_t samples,
+                                  postfx_scratch_t *scratch) {
     size_t count = (size_t)w * (size_t)h;
     float *copy = postfx_scratch_primary(scratch, count * 3u);
-    if (!copy || !sc->has_depth || !sc->has_inv || sc->depth_w != w || sc->depth_h != h)
+    postfx_motion_blur_band_ctx ctx;
+    if (!copy || !sc->has_depth || !sc->has_inv || !sc->has_prev_vp || sc->depth_w != w ||
+        sc->depth_h != h)
         return;
-    if (steps < 4)
-        steps = 4;
-    if (steps > 16)
-        steps = 16;
-    if (!(intensity > 0.0f))
+    if (samples < 2)
+        samples = 2;
+    if (samples > 6)
+        samples = 6;
+    if (!(strength > 0.0f))
         return;
-    if (intensity > 1.0f)
-        intensity = 1.0f;
+    if (strength > 2.0f)
+        strength = 2.0f;
     memcpy(copy, fbuf, count * 3u * sizeof(float));
-    for (int32_t y = 1; y + 1 < h; y++) {
+    ctx.fbuf = fbuf;
+    ctx.copy = copy;
+    ctx.sc = sc;
+    ctx.w = w;
+    ctx.h = h;
+    ctx.strength = strength;
+    ctx.samples = samples;
+    postfx_run_bands(fx, h, apply_motion_blur_rows, &ctx);
+}
+
+typedef struct {
+    float *fbuf;
+    const float *copy;
+    const postfx_scene_in_t *sc;
+    int32_t w;
+    int32_t h;
+    float intensity;
+    int32_t steps;
+} postfx_ssr_band_ctx;
+
+/// @brief Apply SSR ray marching to one independent destination row band.
+/// @param ctx_ptr Borrowed `postfx_ssr_band_ctx` shared by all band tasks.
+/// @param y0 First destination row to process.
+/// @param y1 One-past-last destination row to process.
+static void apply_ssr_rows(void *ctx_ptr, int32_t y0, int32_t y1) {
+    const postfx_ssr_band_ctx *bc = (const postfx_ssr_band_ctx *)ctx_ptr;
+    float *fbuf = bc->fbuf;
+    const float *copy = bc->copy;
+    const postfx_scene_in_t *sc = bc->sc;
+    int32_t w = bc->w;
+    int32_t h = bc->h;
+    float intensity = bc->intensity;
+    int32_t steps = bc->steps;
+    int32_t first_y = y0 > 1 ? y0 : 1;
+    int32_t last_y = y1 < h - 1 ? y1 : h - 1;
+
+    for (int32_t y = first_y; y < last_y; y++) {
         for (int32_t x = 1; x + 1 < w; x++) {
             size_t idx = (size_t)y * (size_t)w + (size_t)x;
             float ndc = postfx_depth_at(sc, x, y);
@@ -2602,6 +2676,48 @@ static void apply_ssr_cpu(float *fbuf,
             pixel[2] = pixel[2] * (1.0f - k) + hit_b * k;
         }
     }
+}
+
+/// @brief SSR: coarse screen-space march along the depth-reconstructed reflection ray.
+///   Misses keep the base color (no environment fallback on CPU — documented).
+/// @param fx PostFX chain providing row-band parallelism.
+/// @param fbuf Packed RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param sc Scene inputs supplying depth, camera position, and projection matrices.
+/// @param intensity Blend weight applied to successful reflection hits.
+/// @param steps Requested ray-march iteration count, clamped between four and sixteen.
+/// @param scratch Reusable allocation used to preserve the source framebuffer.
+static void apply_ssr_cpu(rt_postfx3d *fx,
+                          float *fbuf,
+                          int32_t w,
+                          int32_t h,
+                          const postfx_scene_in_t *sc,
+                          float intensity,
+                          int32_t steps,
+                          postfx_scratch_t *scratch) {
+    size_t count = (size_t)w * (size_t)h;
+    float *copy = postfx_scratch_primary(scratch, count * 3u);
+    postfx_ssr_band_ctx ctx;
+    if (!copy || !sc->has_depth || !sc->has_inv || sc->depth_w != w || sc->depth_h != h)
+        return;
+    if (steps < 4)
+        steps = 4;
+    if (steps > 16)
+        steps = 16;
+    if (!(intensity > 0.0f))
+        return;
+    if (intensity > 1.0f)
+        intensity = 1.0f;
+    memcpy(copy, fbuf, count * 3u * sizeof(float));
+    ctx.fbuf = fbuf;
+    ctx.copy = copy;
+    ctx.sc = sc;
+    ctx.w = w;
+    ctx.h = h;
+    ctx.intensity = intensity;
+    ctx.steps = steps;
+    postfx_run_bands(fx, h, apply_ssr_rows, &ctx);
 }
 
 /// @brief Auto-exposure: geometric-mean luminance -> smoothed EV multiplier.
@@ -3024,7 +3140,8 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                 break;
             case POSTFX_DOF:
                 if (scene)
-                    apply_dof_cpu(fbuf,
+                    apply_dof_cpu(fx,
+                                  fbuf,
                                   w,
                                   h,
                                   scene,
@@ -3035,7 +3152,8 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                 break;
             case POSTFX_MOTION_BLUR:
                 if (scene)
-                    apply_motion_blur_cpu(fbuf,
+                    apply_motion_blur_cpu(fx,
+                                          fbuf,
                                           w,
                                           h,
                                           scene,
@@ -3049,7 +3167,8 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                 break;
             case POSTFX_SSR:
                 if (scene)
-                    apply_ssr_cpu(fbuf, w, h, scene, e->p.ssr.intensity, e->p.ssr.steps, &scratch);
+                    apply_ssr_cpu(
+                        fx, fbuf, w, h, scene, e->p.ssr.intensity, e->p.ssr.steps, &scratch);
                 break;
             case POSTFX_AUTO_EXPOSURE:
                 apply_auto_exposure_cpu(fx,

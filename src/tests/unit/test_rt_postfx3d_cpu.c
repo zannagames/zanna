@@ -36,6 +36,7 @@
 #include <string.h>
 
 extern void rt_postfx3d_apply_to_canvas(void *canvas);
+extern int64_t rt_parallel_default_workers(void);
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -57,10 +58,36 @@ typedef struct {
     rt_canvas3d *canvas;
 } PostFXCPUFixture;
 
-static PostFXCPUFixture postfx_cpu_fixture_new(void) {
+typedef struct {
+    void *vptr;
+    void *effects;
+    int32_t effect_count;
+    int32_t effect_capacity;
+    int8_t enabled;
+    char last_error[160];
+    float *taa_history;
+    int32_t taa_w;
+    int32_t taa_h;
+    int8_t taa_valid;
+    float cpu_prev_vp[16];
+    int8_t cpu_prev_vp_valid;
+    float auto_exposure_ev;
+    int8_t auto_exposure_valid;
+    void *lut_pixels;
+    float *cpu_fbuf;
+    size_t cpu_fbuf_bytes;
+    float *cpu_scratch_primary;
+    size_t cpu_scratch_primary_bytes;
+    float *cpu_scratch_secondary;
+    size_t cpu_scratch_secondary_bytes;
+    void *worker_pool;
+    int8_t worker_pool_failed;
+} PostFXCPUWorkerLayout;
+
+static PostFXCPUFixture postfx_cpu_fixture_new_sized(int32_t width, int32_t height) {
     PostFXCPUFixture fixture;
     memset(&fixture, 0, sizeof(fixture));
-    fixture.target_obj = rt_rendertarget3d_new(2, 1);
+    fixture.target_obj = rt_rendertarget3d_new(width, height);
     fixture.target_wrapper = (rt_rendertarget3d *)fixture.target_obj;
     fixture.target = fixture.target_wrapper ? fixture.target_wrapper->target : NULL;
     fixture.canvas_obj = fixture.target_obj ? rt_canvas3d_new_offscreen(fixture.target_obj) : NULL;
@@ -76,11 +103,14 @@ static PostFXCPUFixture postfx_cpu_fixture_new(void) {
         fixture.canvas->cached_cam_near = 0.1f;
         fixture.canvas->cached_cam_far = 100.0f;
     }
-    if (fixture.target && fixture.target->depth_buf) {
-        fixture.target->depth_buf[0] = 0.0f;
-        fixture.target->depth_buf[1] = 0.0f;
-    }
+    if (fixture.target && fixture.target->depth_buf)
+        for (int32_t i = 0; i < width * height; ++i)
+            fixture.target->depth_buf[i] = 0.0f;
     return fixture;
+}
+
+static PostFXCPUFixture postfx_cpu_fixture_new(void) {
+    return postfx_cpu_fixture_new_sized(2, 1);
 }
 
 static void postfx_cpu_fixture_free(PostFXCPUFixture *fixture) {
@@ -375,6 +405,48 @@ static void test_taa_history_uses_packed_rgb_pixels(void) {
     postfx_cpu_fixture_free(&fixture);
 }
 
+static void test_scene_effects_use_row_band_worker_pool(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new_sized(96, 96);
+    void *fx = rt_postfx3d_new();
+    PostFXCPUWorkerLayout *layout = (PostFXCPUWorkerLayout *)fx;
+
+    EXPECT_TRUE(fixture.canvas && fixture.target && fixture.target->color_buf &&
+                    fixture.target->depth_buf && fx,
+                "Banded scene-effect fixture initializes");
+    if (!fixture.target || !fixture.target->color_buf || !fixture.target->depth_buf || !fx) {
+        (void)rt_memory_release(fx);
+        postfx_cpu_fixture_free(&fixture);
+        return;
+    }
+    for (int32_t y = 0; y < 96; ++y) {
+        for (int32_t x = 0; x < 96; ++x) {
+            size_t index = (size_t)y * 96u + (size_t)x;
+            uint8_t *pixel = &fixture.target->color_buf[index * 4u];
+            pixel[0] = (uint8_t)(x * 255 / 95);
+            pixel[1] = (uint8_t)(y * 255 / 95);
+            pixel[2] = (uint8_t)((x + y) * 255 / 190);
+            pixel[3] = (uint8_t)(64 + (index % 128u));
+            fixture.target->depth_buf[index] = 0.5f;
+        }
+    }
+    rt_postfx3d_add_dof(fx, 10.0, 2.0, 1.0);
+    rt_postfx3d_add_motion_blur(fx, 0.5, 6);
+    rt_postfx3d_add_ssr(fx, 0.5, 0.8);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+
+    EXPECT_TRUE(rt_parallel_default_workers() < 2 || layout->worker_pool != NULL,
+                "DOF, motion blur, and SSR activate the retained row-band worker pool");
+    EXPECT_TRUE(fixture.target->color_buf[3] == 64 &&
+                    fixture.target->color_buf[((size_t)95 * 96u + 95u) * 4u + 3u] ==
+                        (uint8_t)(64 + (((size_t)95 * 96u + 95u) % 128u)),
+                "Banded scene-aware effects preserve alpha at both frame extremes");
+
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
 int main(void) {
     test_tonemap_midgrey_anchor();
     test_tonemap_saturated_patch_anchor();
@@ -384,6 +456,7 @@ int main(void) {
     test_auto_exposure_samples_packed_luminance();
     test_taa_history_uses_packed_rgb_pixels();
     test_sharpen_steepens_soft_edges_without_halos();
+    test_scene_effects_use_row_band_worker_pool();
 
     printf("rt_postfx3d CPU tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

@@ -1019,17 +1019,22 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
 /// @brief Upload a band of RGBA8 source rows into a BGRA8 Metal texture, swizzling R↔B per pixel.
 /// @details Metal's default textures are BGRA-order; Pixels are RGBA, so the channels are swapped
 ///          during the copy. Returns 1 on success.
+/// @param ctx Borrowed Metal context owning reusable BGRA swizzle storage.
 /// @param tex Borrowed destination 2D BGRA8 texture.
 /// @param rgba Borrowed tightly packed RGBA8 source rows.
 /// @param w Number of pixels in each source row.
 /// @param start_y First destination row to replace.
 /// @param rows Number of consecutive rows to upload.
 /// @return 1 after successful validation, conversion, and replacement; otherwise 0.
-static int metal_upload_rgba_to_bgra_texture_rows(
-    id<MTLTexture> tex, const uint8_t *rgba, int32_t w, int32_t start_y, int32_t rows) {
+static int metal_upload_rgba_to_bgra_texture_rows(VGFXMetalContext *ctx,
+                                                  id<MTLTexture> tex,
+                                                  const uint8_t *rgba,
+                                                  int32_t w,
+                                                  int32_t start_y,
+                                                  int32_t rows) {
     uint8_t *bgra;
     size_t pixel_count;
-    if (!tex || !rgba || w <= 0 || rows <= 0 || start_y < 0)
+    if (!ctx || !tex || !rgba || w <= 0 || rows <= 0 || start_y < 0)
         return 0;
     if ((NSUInteger)w > tex.width || (NSUInteger)start_y > tex.height ||
         (NSUInteger)rows > tex.height - (NSUInteger)start_y)
@@ -1039,7 +1044,8 @@ static int metal_upload_rgba_to_bgra_texture_rows(
         return 0;
     if (pixel_count > SIZE_MAX / 4u)
         return 0;
-    bgra = (uint8_t *)malloc(pixel_count * 4u);
+    bgra = vgfx3d_ensure_byte_scratch(
+        &ctx->_textureUploadScratchBGRA, &ctx->_textureUploadScratchBGRABytes, pixel_count * 4u);
     if (!bgra)
         return 0;
     for (size_t i = 0; i < pixel_count; i++) {
@@ -1052,7 +1058,6 @@ static int metal_upload_rgba_to_bgra_texture_rows(
            mipmapLevel:0
              withBytes:bgra
            bytesPerRow:(NSUInteger)(uint32_t)w * 4u];
-    free(bgra);
     return 1;
 }
 

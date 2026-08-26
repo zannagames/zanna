@@ -23,7 +23,8 @@
 // Links: rt_scene3d.h, rt_scene3d_internal.h, rt_scene3d_vscn_internal.h,
 //        rt_scene3d_vscn_material_parse.inc (material parsers),
 //        rt_scene3d_vscn_save.c (inverse: save), rt_json.h,
-//        docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md
+//        docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md,
+//        docs/adr/0295-portable-vscn-binary-wire-layouts.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -572,9 +573,64 @@ static int vscn_base64_decode_rgba_pixels_ex(const char *data,
 ///          index array.
 /// @param data Borrowed pointer to at least four serialized bytes.
 /// @return Host-order unsigned 32-bit value.
+#define VSCN_VERTEX_WIRE_V3_BYTES 92u
+#define VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES 24u
+#define VSCN_KEYFRAME_WIRE_V3_BYTES 132u
+
+static uint16_t vscn_read_u16_le(const uint8_t *data) {
+    return (uint16_t)(((uint16_t)data[0]) | ((uint16_t)data[1] << 8u));
+}
+
 static uint32_t vscn_read_u32_le(const uint8_t *data) {
     return ((uint32_t)data[0]) | ((uint32_t)data[1] << 8) | ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
+}
+
+static uint64_t vscn_read_u64_le(const uint8_t *data) {
+    uint64_t value = 0;
+    for (size_t byte = 0; byte < 8u; ++byte)
+        value |= (uint64_t)data[byte] << (byte * 8u);
+    return value;
+}
+
+static float vscn_read_f32_le(const uint8_t *data) {
+    const uint32_t bits = vscn_read_u32_le(data);
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static double vscn_read_f64_le(const uint8_t *data) {
+    const uint64_t bits = vscn_read_u64_le(data);
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+static void vscn_read_f32_lanes(const uint8_t **cursor, float *values, size_t count) {
+    for (size_t index = 0; index < count; ++index) {
+        values[index] = vscn_read_f32_le(*cursor);
+        *cursor += sizeof(float);
+    }
+}
+
+static void vscn_decode_vertices_le_v3(vgfx3d_vertex_t *vertices,
+                                       const uint8_t *wire,
+                                       uint32_t count) {
+    for (uint32_t index = 0; index < count; ++index) {
+        vgfx3d_vertex_t *vertex = &vertices[index];
+        const uint8_t *cursor = wire + (size_t)index * VSCN_VERTEX_WIRE_V3_BYTES;
+        memset(vertex, 0, sizeof(*vertex));
+        vscn_read_f32_lanes(&cursor, vertex->pos, 3u);
+        vscn_read_f32_lanes(&cursor, vertex->normal, 3u);
+        vscn_read_f32_lanes(&cursor, vertex->uv, 2u);
+        vscn_read_f32_lanes(&cursor, vertex->uv1, 2u);
+        vscn_read_f32_lanes(&cursor, vertex->color, 4u);
+        vscn_read_f32_lanes(&cursor, vertex->tangent, 4u);
+        memcpy(vertex->bone_indices, cursor, sizeof(vertex->bone_indices));
+        cursor += sizeof(vertex->bone_indices);
+        vscn_read_f32_lanes(&cursor, vertex->bone_weights, 4u);
+    }
 }
 
 /// @brief Validate that every serialized VSCN index is inside the loaded vertex range.
@@ -1166,6 +1222,109 @@ static int vscn_vertex_payload_is_valid(const vgfx3d_vertex_t *vertices,
     return 1;
 }
 
+static int vscn_parse_mesh_rig_streams(rt_mesh3d *mesh, void *mesh_obj) {
+    void *map_value = vjson_get(mesh_obj, "boneMapBase64");
+    void *extra_value = vjson_get(mesh_obj, "extraInfluencesBase64");
+    void *map_format_value = vjson_get(mesh_obj, "boneMapFormat");
+    void *extra_format_value = vjson_get(mesh_obj, "extraInfluencesFormat");
+    const char *map64 = vjson_cstr(mesh_obj, "boneMapBase64");
+    const char *extra64 = vjson_cstr(mesh_obj, "extraInfluencesBase64");
+    const char *map_format = vjson_cstr(mesh_obj, "boneMapFormat");
+    const char *extra_format = vjson_cstr(mesh_obj, "extraInfluencesFormat");
+    uint8_t *map_raw = NULL;
+    uint8_t *extra_raw = NULL;
+    int32_t *bone_map = NULL;
+    vgfx3d_extra_influences_t *extra = NULL;
+
+    if ((map_value && !map64) || (extra_value && !extra64) || (map_format_value && !map_format) ||
+        (extra_format_value && !extra_format) || (map_format && !map64) ||
+        (extra_format && !extra64) || (map_format && strcmp(map_format, "i32le-v1") != 0) ||
+        (extra_format && strcmp(extra_format, "vgfx3d_extra_influences_le_v1") != 0))
+        goto corrupt;
+
+    if (map64) {
+        size_t raw_len = 0;
+        size_t error_offset = SIZE_MAX;
+        if (mesh->bone_count <= 0)
+            goto corrupt;
+        map_raw = vscn_base64_decode_ex(map64, strlen(map64), &raw_len, &error_offset);
+        if (!map_raw) {
+            if (error_offset != SIZE_MAX)
+                vscn_set_base64_error("mesh.boneMapBase64", error_offset);
+            goto corrupt;
+        }
+        if (raw_len != (size_t)mesh->bone_count * sizeof(int32_t))
+            goto corrupt;
+        bone_map = (int32_t *)malloc((size_t)mesh->bone_count * sizeof(int32_t));
+        if (!bone_map)
+            goto fail;
+        for (int32_t index = 0; index < mesh->bone_count; ++index) {
+            uint32_t value = vscn_read_u32_le(map_raw + (size_t)index * sizeof(int32_t));
+            if (value >= VGFX3D_MAX_SKELETON_BONES)
+                goto corrupt;
+            bone_map[index] = (int32_t)value;
+        }
+    }
+
+    if (extra64) {
+        size_t raw_len = 0;
+        size_t error_offset = SIZE_MAX;
+        if (mesh->vertex_count == 0 || !mesh->vertices)
+            goto corrupt;
+        extra_raw = vscn_base64_decode_ex(extra64, strlen(extra64), &raw_len, &error_offset);
+        if (!extra_raw) {
+            if (error_offset != SIZE_MAX)
+                vscn_set_base64_error("mesh.extraInfluencesBase64", error_offset);
+            goto corrupt;
+        }
+        if (raw_len != (size_t)mesh->vertex_count * VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES)
+            goto corrupt;
+        extra = (vgfx3d_extra_influences_t *)calloc(mesh->vertex_count,
+                                                    sizeof(vgfx3d_extra_influences_t));
+        if (!extra)
+            goto fail;
+        for (uint32_t vertex = 0; vertex < mesh->vertex_count; ++vertex) {
+            const uint8_t *cursor =
+                extra_raw + (size_t)vertex * VSCN_EXTRA_INFLUENCES_WIRE_V1_BYTES;
+            float weight_sum = 0.0f;
+            for (size_t lane = 0; lane < 4u; ++lane)
+                weight_sum += mesh->vertices[vertex].bone_weights[lane];
+            for (size_t lane = 0; lane < 4u; ++lane) {
+                extra[vertex].indices[lane] = vscn_read_u16_le(cursor);
+                cursor += sizeof(uint16_t);
+            }
+            for (size_t lane = 0; lane < 4u; ++lane) {
+                const float weight = vscn_read_f32_le(cursor);
+                cursor += sizeof(float);
+                if (!isfinite(weight) || weight < 0.0f || weight > 1.0f ||
+                    (weight > 0.000001f &&
+                     (mesh->bone_count <= 0 || extra[vertex].indices[lane] >= mesh->bone_count)))
+                    goto corrupt;
+                extra[vertex].weights[lane] = weight;
+                weight_sum += weight;
+            }
+            if (!isfinite(weight_sum) || weight_sum > 1.0001f)
+                goto corrupt;
+        }
+    }
+
+    free(map_raw);
+    free(extra_raw);
+    mesh->bone_map = bone_map;
+    mesh->extra_influences = extra;
+    return 1;
+
+corrupt:
+    rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                "Scene3D.Load: mesh rig side stream is corrupt");
+fail:
+    free(map_raw);
+    free(extra_raw);
+    free(bone_map);
+    free(extra);
+    return 0;
+}
+
 /// @brief Parse and attach a complete VSCN v4+ morph-target block to @p mesh.
 /// @param mesh Borrowed destination Mesh3D payload.
 /// @param mesh_obj Borrowed parsed JSON mesh object.
@@ -1264,6 +1423,7 @@ fail:
 static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
     rt_mesh3d *mesh;
     const char *vertex_format;
+    const char *index_format;
     const char *vertices_b64;
     const char *indices_b64;
     size_t vertices_b64_len = 0;
@@ -1280,14 +1440,31 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
     uint8_t *vertices_raw = NULL;
     uint8_t *indices_raw = NULL;
     int vertices_are_legacy84 = 0;
+    int vertices_are_portable_v3 = 0;
 
     if (!vjson_is_map(mesh_obj))
         return NULL;
 
     vertex_format = vjson_cstr(mesh_obj, "vertexFormat");
-    if (vertex_format && strcmp(vertex_format, "vgfx3d_vertex_le_v1") != 0 &&
-        strcmp(vertex_format, "vgfx3d_vertex_le_v2") != 0)
+    index_format = vjson_cstr(mesh_obj, "indexFormat");
+    if ((vjson_get(mesh_obj, "vertexFormat") && !vertex_format) ||
+        (vjson_get(mesh_obj, "indexFormat") && !index_format)) {
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "Scene3D.Load: mesh binary format tag has the wrong type");
         return NULL;
+    }
+    if (vertex_format && strcmp(vertex_format, "vgfx3d_vertex_le_v1") != 0 &&
+        strcmp(vertex_format, "vgfx3d_vertex_le_v2") != 0 &&
+        strcmp(vertex_format, "vgfx3d_vertex_le_v3") != 0) {
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "Scene3D.Load: mesh vertex format is unsupported");
+        return NULL;
+    }
+    if (index_format && strcmp(index_format, "u32le-v1") != 0) {
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "Scene3D.Load: mesh index format is unsupported");
+        return NULL;
+    }
 
     if (!vjson_i64_exact(mesh_obj, "vertexCount", 0, &vertex_count_i64) ||
         !vjson_i64_exact(mesh_obj, "indexCount", 0, &index_count_i64))
@@ -1338,7 +1515,16 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
     }
     size_t native_vertex_bytes = (size_t)vertex_count * sizeof(vgfx3d_vertex_t);
     size_t legacy_vertex_bytes = (size_t)vertex_count * 84u;
-    if (vertex_format && strcmp(vertex_format, "vgfx3d_vertex_le_v2") == 0) {
+    if (vertex_format && strcmp(vertex_format, "vgfx3d_vertex_le_v3") == 0) {
+        if (vertices_len != (size_t)vertex_count * VSCN_VERTEX_WIRE_V3_BYTES) {
+            rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                               "Scene3D.Load: v3 mesh payload size does not match counts");
+            free(vertices_raw);
+            free(indices_raw);
+            return NULL;
+        }
+        vertices_are_portable_v3 = 1;
+    } else if (vertex_format && strcmp(vertex_format, "vgfx3d_vertex_le_v2") == 0) {
         if (vertices_len != native_vertex_bytes) {
             rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
                                "Scene3D.Load: v2 mesh payload size does not match counts");
@@ -1366,9 +1552,12 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
         free(indices_raw);
         return NULL;
     }
-    if (!rt_untrusted_count_ok(vertex_count_i64,
-                               vertices_are_legacy84 ? 84u : sizeof(vgfx3d_vertex_t),
-                               vertices_len) ||
+    if (!rt_untrusted_count_ok(
+            vertex_count_i64,
+            vertices_are_legacy84
+                ? 84u
+                : (vertices_are_portable_v3 ? VSCN_VERTEX_WIRE_V3_BYTES : sizeof(vgfx3d_vertex_t)),
+            vertices_len) ||
         !rt_untrusted_count_ok(index_count_i64, sizeof(uint32_t), indices_len)) {
         rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
                            "Scene3D.Load: mesh payload count exceeds source bytes");
@@ -1407,7 +1596,9 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
             scene3d_release_ref((void **)&mesh);
             return NULL;
         }
-        if (!vertices_are_legacy84) {
+        if (vertices_are_portable_v3) {
+            vscn_decode_vertices_le_v3(vertices, vertices_raw, vertex_count);
+        } else if (!vertices_are_legacy84) {
             memcpy(vertices, vertices_raw, (size_t)vertex_count * sizeof(vgfx3d_vertex_t));
         } else {
             typedef struct {
@@ -1482,32 +1673,11 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
     rt_mesh3d_set_resident(mesh, vjson_bool(mesh_obj, "resident", 1));
     rt_mesh3d_refresh_bounds(mesh);
 
-    /* Optional v3 rig side streams (absent in v1/v2 files). */
-    {
-        const char *map64 = vjson_cstr(mesh_obj, "boneMapBase64");
-        const char *extra64 = vjson_cstr(mesh_obj, "extraInfluencesBase64");
-        if (map64 && mesh->bone_count > 0) {
-            size_t map_len = 0;
-            size_t map_err = SIZE_MAX;
-            uint8_t *map_raw = vscn_base64_decode_ex(map64, strlen(map64), &map_len, &map_err);
-            if (map_raw && map_len == (size_t)mesh->bone_count * sizeof(int32_t)) {
-                mesh->bone_map = (int32_t *)map_raw;
-            } else {
-                free(map_raw);
-            }
-        }
-        if (extra64 && mesh->vertex_count > 0) {
-            size_t extra_len = 0;
-            size_t extra_err = SIZE_MAX;
-            uint8_t *extra_raw =
-                vscn_base64_decode_ex(extra64, strlen(extra64), &extra_len, &extra_err);
-            if (extra_raw &&
-                extra_len == (size_t)mesh->vertex_count * sizeof(vgfx3d_extra_influences_t)) {
-                mesh->extra_influences = (vgfx3d_extra_influences_t *)extra_raw;
-            } else {
-                free(extra_raw);
-            }
-        }
+    if (!vscn_parse_mesh_rig_streams(mesh, mesh_obj)) {
+        free(vertices_raw);
+        free(indices_raw);
+        scene3d_release_ref((void **)&mesh);
+        return NULL;
     }
 
     free(vertices_raw);
@@ -1656,6 +1826,35 @@ static int vscn_skeletal_keyframes_valid(vgfx3d_keyframe_t *keys, int32_t key_co
     return 1;
 }
 
+static vgfx3d_keyframe_t *vscn_decode_keyframes_le_v3(const uint8_t *wire, int32_t key_count) {
+    vgfx3d_keyframe_t *keys;
+    if (!wire || key_count <= 0 || (size_t)key_count > SIZE_MAX / sizeof(*keys))
+        return NULL;
+    keys = (vgfx3d_keyframe_t *)calloc((size_t)key_count, sizeof(*keys));
+    if (!keys)
+        return NULL;
+    for (int32_t index = 0; index < key_count; ++index) {
+        vgfx3d_keyframe_t *key = &keys[index];
+        const uint8_t *cursor = wire + (size_t)index * VSCN_KEYFRAME_WIRE_V3_BYTES;
+        key->time = vscn_read_f64_le(cursor);
+        cursor += sizeof(double);
+        vscn_read_f32_lanes(&cursor, key->position, 3u);
+        vscn_read_f32_lanes(&cursor, key->rotation, 4u);
+        vscn_read_f32_lanes(&cursor, key->scale_xyz, 3u);
+        key->position_mask = *cursor++;
+        key->rotation_mask = *cursor++;
+        key->scale_mask = *cursor++;
+        key->cubic_mask = *cursor++;
+        vscn_read_f32_lanes(&cursor, key->pos_in_tangent, 3u);
+        vscn_read_f32_lanes(&cursor, key->pos_out_tangent, 3u);
+        vscn_read_f32_lanes(&cursor, key->rot_in_tangent, 4u);
+        vscn_read_f32_lanes(&cursor, key->rot_out_tangent, 4u);
+        vscn_read_f32_lanes(&cursor, key->scale_in_tangent, 3u);
+        vscn_read_f32_lanes(&cursor, key->scale_out_tangent, 3u);
+    }
+    return keys;
+}
+
 /// @brief Parse one v3 animation clip ({name,duration,looping,keyframeFormat,
 ///   channels:[{bone,keyCount,keyframesBase64}...]}) into a retained Animation3D.
 /// @param anim_obj Borrowed parsed JSON skeletal-animation object.
@@ -1667,11 +1866,15 @@ static void *vscn_parse_animation(void *anim_obj) {
     int64_t channel_count;
     double duration;
     rt_animation3d *anim;
+    uint8_t seen_bones[(VGFX3D_MAX_SKELETON_BONES + 7) / 8] = {0};
+    int portable_v3;
     if (!vjson_is_map(anim_obj))
         return NULL;
     format = vjson_cstr(anim_obj, "keyframeFormat");
-    if (!format || strcmp(format, "vgfx3d_keyframe_le_v2") != 0)
+    if (!format || (strcmp(format, "vgfx3d_keyframe_le_v2") != 0 &&
+                    strcmp(format, "vgfx3d_keyframe_le_v3") != 0))
         return NULL; /* layout drift: refuse rather than misread */
+    portable_v3 = strcmp(format, "vgfx3d_keyframe_le_v3") == 0;
     name = vjson_cstr(anim_obj, "name");
     channels_arr = vjson_get(anim_obj, "channels");
     channel_count = vjson_len(channels_arr);
@@ -1706,29 +1909,39 @@ static void *vscn_parse_animation(void *anim_obj) {
         size_t raw_len = 0;
         size_t raw_err = SIZE_MAX;
         uint8_t *raw;
+        vgfx3d_keyframe_t *keys;
         if (!vjson_is_map(ch_obj) || !vjson_i64_exact(ch_obj, "bone", 0, &bone_index) ||
             bone_index < 0 || bone_index >= VGFX3D_MAX_SKELETON_BONES ||
             !vjson_i64_exact(ch_obj, "keyCount", 0, &key_count) || key_count <= 0 ||
             key_count > RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL)
             goto fail;
-        for (int64_t prior = 0; prior < c; prior++) {
-            if (anim->channels[prior].bone_index == (int32_t)bone_index)
-                goto fail;
-        }
+        if ((seen_bones[(size_t)bone_index >> 3u] & (uint8_t)(1u << ((uint32_t)bone_index & 7u))) !=
+            0)
+            goto fail;
+        seen_bones[(size_t)bone_index >> 3u] |= (uint8_t)(1u << ((uint32_t)bone_index & 7u));
         keys64 = vjson_cstr_len(ch_obj, "keyframesBase64", &keys_len);
         if (!keys64)
             goto fail;
         raw = vscn_base64_decode_ex(keys64, keys_len, &raw_len, &raw_err);
-        if (!raw || raw_len != (size_t)key_count * sizeof(vgfx3d_keyframe_t)) {
+        if (!raw || raw_len != (size_t)key_count * (portable_v3 ? VSCN_KEYFRAME_WIRE_V3_BYTES
+                                                                : sizeof(vgfx3d_keyframe_t))) {
             free(raw);
             goto fail;
         }
-        if (!vscn_skeletal_keyframes_valid((vgfx3d_keyframe_t *)raw, (int32_t)key_count)) {
+        if (portable_v3) {
+            keys = vscn_decode_keyframes_le_v3(raw, (int32_t)key_count);
             free(raw);
+            if (!keys)
+                goto fail;
+        } else {
+            keys = (vgfx3d_keyframe_t *)raw;
+        }
+        if (!vscn_skeletal_keyframes_valid(keys, (int32_t)key_count)) {
+            free(keys);
             goto fail;
         }
         ch->bone_index = (int32_t)bone_index;
-        ch->keyframes = (vgfx3d_keyframe_t *)raw;
+        ch->keyframes = keys;
         ch->keyframe_count = (int32_t)key_count;
         ch->keyframe_capacity = (int32_t)key_count;
         ch->owned_keyframes = ch->keyframes;
@@ -3064,8 +3277,26 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
         if (!vjson_i64_exact(mesh_obj, "skeletonIndex", -1, &skeleton_index) ||
             skeleton_index < -1 || skeleton_index >= skeleton_count)
             goto fail;
-        if (skeleton_index >= 0)
+        if (skeleton_index >= 0) {
+            const int32_t skeleton_bones =
+                skeleton3d_safe_bone_count((rt_skeleton3d *)skeletons[skeleton_index]);
+            if (meshes[i]->bone_map) {
+                for (int32_t local_bone = 0; local_bone < meshes[i]->bone_count; ++local_bone) {
+                    if (meshes[i]->bone_map[local_bone] < 0 ||
+                        meshes[i]->bone_map[local_bone] >= skeleton_bones) {
+                        rt_asset_error_set(
+                            RT_ASSET_ERROR_CORRUPT,
+                            "Scene3D.Load: mesh bone map references a missing skeleton bone");
+                        goto fail;
+                    }
+                }
+            }
             rt_mesh3d_set_skeleton(meshes[i], skeletons[skeleton_index]);
+        } else if (meshes[i]->bone_map || meshes[i]->extra_influences) {
+            rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                               "Scene3D.Load: rigged mesh has no skeleton reference");
+            goto fail;
+        }
     }
     for (int i = 0; i < animation_count; ++i) {
         animations[i] = vscn_parse_animation(rt_seq_get(animations_arr, i));

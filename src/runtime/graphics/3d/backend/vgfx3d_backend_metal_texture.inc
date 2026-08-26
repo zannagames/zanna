@@ -441,7 +441,8 @@ static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx
     int32_t rows;
     int32_t slice_w = 0;
     int32_t slice_rows = 0;
-    uint8_t *rgba = NULL;
+    uint8_t *rgba;
+    size_t rgba_bytes;
     uint64_t bytes;
 
     if (!ctx || !entry || !pixels_ptr || !entry.uploadInProgress || !entry.texture)
@@ -456,20 +457,29 @@ static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx
                                          ctx.textureUploadBytes);
     if (rows <= 0)
         return METAL_UPLOAD_FAILED;
-    if (vgfx3d_unpack_pixels_rgba_rows(
-            pixels_ptr, entry.uploadNextRow, rows, 0, &slice_w, &slice_rows, &rgba) != 0 ||
-        !rgba || slice_w != entry.width || slice_rows <= 0) {
-        free(rgba);
+    if ((size_t)entry.width > SIZE_MAX / 4u || (size_t)rows > SIZE_MAX / ((size_t)entry.width * 4u))
+        return METAL_UPLOAD_FAILED;
+    rgba_bytes = (size_t)entry.width * (size_t)rows * 4u;
+    rgba = vgfx3d_ensure_byte_scratch(
+        &ctx->_textureUploadScratchRGBA, &ctx->_textureUploadScratchRGBABytes, rgba_bytes);
+    if (!rgba ||
+        vgfx3d_unpack_pixels_rgba_rows_into(pixels_ptr,
+                                            entry.uploadNextRow,
+                                            rows,
+                                            0,
+                                            rgba,
+                                            ctx->_textureUploadScratchRGBABytes,
+                                            &slice_w,
+                                            &slice_rows) != 0 ||
+        slice_w != entry.width || slice_rows <= 0) {
         return METAL_UPLOAD_FAILED;
     }
     if (!metal_upload_rgba_to_bgra_texture_rows(
-            entry.texture, rgba, slice_w, entry.uploadNextRow, slice_rows)) {
-        free(rgba);
+            ctx, entry.texture, rgba, slice_w, entry.uploadNextRow, slice_rows)) {
         return METAL_UPLOAD_FAILED;
     }
     bytes = (uint64_t)(uint32_t)slice_w * (uint64_t)(uint32_t)slice_rows * 4u;
     metal_record_texture_upload_bytes(ctx, bytes);
-    free(rgba);
 
     entry.uploadNextRow += slice_rows;
     entry.lastUsedFrame = ctx.frameSerial;

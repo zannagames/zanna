@@ -82,6 +82,9 @@ typedef struct cloth3d_collider {
     double b[3];
     ///< Positive collision radius.
     double radius;
+    ///< Cached world-space bounds used to shortlist point narrow-phase tests.
+    double bounds_min[3];
+    double bounds_max[3];
 } cloth3d_collider;
 
 /// @brief Cloth3D payload: verlet points, constraints, colliders, bindings.
@@ -134,6 +137,7 @@ typedef struct rt_cloth3d {
     float *owned_override_globals;
     int32_t allocated_skeleton_bone_count;
     int8_t anchor_initialized;
+    int64_t last_collision_narrowphase_tests;
 } rt_cloth3d;
 
 /// @brief Clamp one cloth-space coordinate to the common Game3D finite range.
@@ -151,6 +155,25 @@ static double cloth3d_length3(const double value[3]) {
     if (!value || !isfinite(value[0]) || !isfinite(value[1]) || !isfinite(value[2]))
         return INFINITY;
     return hypot(hypot(value[0], value[1]), value[2]);
+}
+
+/// @brief Rebuild one static collider's conservative world-space AABB.
+/// @param collider Mutable sphere/capsule collider with sanitized endpoints and radius.
+static void cloth3d_update_collider_bounds(cloth3d_collider *collider) {
+    if (!collider)
+        return;
+    for (int lane = 0; lane < 3; ++lane) {
+        double endpoint_min = collider->is_capsule && collider->b[lane] < collider->a[lane]
+                                  ? collider->b[lane]
+                                  : collider->a[lane];
+        double endpoint_max = collider->is_capsule && collider->b[lane] > collider->a[lane]
+                                  ? collider->b[lane]
+                                  : collider->a[lane];
+        collider->bounds_min[lane] =
+            cloth3d_coord_or(endpoint_min - collider->radius, -RT_GAME3D_COORD_ABS_MAX);
+        collider->bounds_max[lane] =
+            cloth3d_coord_or(endpoint_max + collider->radius, RT_GAME3D_COORD_ABS_MAX);
+    }
 }
 
 /// @brief Return the sum of valid distance-constraint rest lengths.
@@ -241,6 +264,7 @@ static void cloth3d_repair_storage(rt_cloth3d *cloth) {
             collider->radius = 1.0;
         if (collider->radius > RT_GAME3D_COORD_ABS_MAX)
             collider->radius = RT_GAME3D_COORD_ABS_MAX;
+        cloth3d_update_collider_bounds(collider);
     }
 }
 
@@ -608,7 +632,9 @@ void *rt_cloth3d_add_sphere(void *obj, void *center, double radius) {
         return obj;
     cloth->colliders[slot].is_capsule = 0;
     memcpy(cloth->colliders[slot].a, c, sizeof(c));
+    memcpy(cloth->colliders[slot].b, c, sizeof(c));
     cloth->colliders[slot].radius = radius;
+    cloth3d_update_collider_bounds(&cloth->colliders[slot]);
     return obj;
 }
 
@@ -637,6 +663,7 @@ void *rt_cloth3d_add_capsule(void *obj, void *a_obj, void *b_obj, double radius)
     memcpy(cloth->colliders[slot].a, a, sizeof(a));
     memcpy(cloth->colliders[slot].b, b, sizeof(b));
     cloth->colliders[slot].radius = radius;
+    cloth3d_update_collider_bounds(&cloth->colliders[slot]);
     return obj;
 }
 
@@ -952,6 +979,7 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
             }
         }
     }
+    cloth->last_collision_narrowphase_tests = 0;
     for (int32_t k = 0; k < cloth->collider_count; ++k) {
         cloth3d_collider *col = &cloth->colliders[k];
         for (int32_t p = 0; p < cloth->point_count; ++p) {
@@ -959,6 +987,12 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                 continue;
             double *pos = &cloth->pos[p * 3];
             double closest[3];
+            if (pos[0] < col->bounds_min[0] || pos[0] > col->bounds_max[0] ||
+                pos[1] < col->bounds_min[1] || pos[1] > col->bounds_max[1] ||
+                pos[2] < col->bounds_min[2] || pos[2] > col->bounds_max[2])
+                continue;
+            if (cloth->last_collision_narrowphase_tests < INT64_MAX)
+                cloth->last_collision_narrowphase_tests++;
             if (col->is_capsule)
                 cloth3d_closest_on_segment(col->a, col->b, pos, closest);
             else
@@ -1042,6 +1076,12 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
             cloth->prev[p * 3 + lane] = target;
         }
     }
+}
+
+/// @brief Test-only count of closest-point narrow-phase tests in the last cloth substep.
+int64_t rt_cloth3d_last_collision_narrowphase_tests_for_test(void *obj) {
+    rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D test collision count: invalid cloth");
+    return cloth ? cloth->last_collision_narrowphase_tests : -1;
 }
 
 /// @brief Quaternion rotating unit vector @p a onto unit vector @p b.

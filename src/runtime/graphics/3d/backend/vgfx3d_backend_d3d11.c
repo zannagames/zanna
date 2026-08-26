@@ -637,6 +637,8 @@ typedef struct {
     uint64_t frame_serial;
     uint64_t texture_upload_bytes;
     uint64_t texture_upload_budget_bytes;
+    uint8_t *texture_upload_scratch_rgba;
+    size_t texture_upload_scratch_bytes;
     vgfx3d_backend_stats_t stats;
 
     ID3D11RenderTargetView *current_rtvs[2];

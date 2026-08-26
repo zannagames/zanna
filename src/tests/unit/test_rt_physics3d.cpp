@@ -1171,6 +1171,24 @@ static void test_world_broadphase_rejects_separated_bodies() {
                 "Sweep-and-prune broadphase keeps separated bodies out of narrowphase");
 }
 
+static void test_world_broadphase_hierarchy_prunes_dense_sweep_rows() {
+    void *world = rt_world3d_new(0, 0, 0);
+    for (int y = 0; y < 32; ++y) {
+        for (int z = 0; z < 32; ++z) {
+            void *body = rt_body3d_new_sphere(0.25, 0.0);
+            rt_body3d_set_position(body, 0.0, (double)y * 2.0, (double)z * 2.0);
+            rt_world3d_add(world, body);
+        }
+    }
+
+    rt_world3d_step(world, 1.0 / 60.0);
+    rt_world3d *view = static_cast<rt_world3d *>(world);
+    EXPECT_TRUE(rt_world3d_get_collision_count(world) == 0,
+                "Spatial broadphase keeps a dense non-overlapping Y/Z field contact-free");
+    EXPECT_TRUE(view->last_broadphase_leaf_pair_tests <= 128,
+                "Spatial hierarchy prunes dense same-sweep-coordinate rows before leaf pairs");
+}
+
 static void test_world_broadphase_keeps_legacy_cached_primitives() {
     void *w = rt_world3d_new(0, 0, 0);
     rt_body3d *a = (rt_body3d *)rt_body3d_new(1.0);
@@ -5427,6 +5445,7 @@ int main() {
     test_world_sparse_body_count_step_stress();
     test_world_contact_storage_grows_past_initial_capacity();
     test_world_broadphase_rejects_separated_bodies();
+    test_world_broadphase_hierarchy_prunes_dense_sweep_rows();
     test_world_broadphase_keeps_legacy_cached_primitives();
     test_gravity_integration();
     test_force_application();

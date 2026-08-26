@@ -161,7 +161,8 @@ extern double rt_quat_w(void *q);
 #define PH3D_SCRATCH_PAIR_TABLE_B 2
 #define PH3D_SCRATCH_EVENT_FLAGS 3
 #define PH3D_SCRATCH_STEP_TRANSACTION 4
-#define PH3D_WORLD_SCRATCH_SLOTS 5
+#define PH3D_SCRATCH_BROADPHASE_BVH 5
+#define PH3D_WORLD_SCRATCH_SLOTS 6
 /* Slop added to each cached query-broadphase AABB. Bodies that move without
  * escaping their fattened bounds do not invalidate the cache: the fat entry
  * remains a conservative candidate filter and narrow phase tests live body
@@ -316,6 +317,7 @@ struct rt_world3d {
     void *query_hits_scratch;
     int32_t max_query_hits;
     int64_t broadphase_fallback_count;
+    int64_t last_broadphase_leaf_pair_tests;
     int32_t last_ccd_requested_substeps;
     int32_t last_ccd_substeps;
     int64_t ccd_substep_clamped_count;

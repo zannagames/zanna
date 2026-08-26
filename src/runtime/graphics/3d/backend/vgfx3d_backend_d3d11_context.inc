@@ -1026,8 +1026,7 @@ static HRESULT d3d11_try_create_device(d3d11_context_t *ctx,
 /// @param[in,out] ctx Backend context receiving the created device and immediate context.
 /// @param[in] driver_type Hardware or WARP D3D11 driver type to try.
 /// @return S_OK for a complete feature-level-11 context, otherwise the creation HRESULT.
-static HRESULT d3d11_try_create_headless_device(d3d11_context_t *ctx,
-                                                D3D_DRIVER_TYPE driver_type) {
+static HRESULT d3d11_try_create_headless_device(d3d11_context_t *ctx, D3D_DRIVER_TYPE driver_type) {
     const D3D_FEATURE_LEVEL requested_feature_level = D3D_FEATURE_LEVEL_11_0;
     D3D_FEATURE_LEVEL created_feature_level = (D3D_FEATURE_LEVEL)0;
     HRESULT hr;
@@ -1103,14 +1102,13 @@ static void *d3d11_create_ctx(vgfx_window_t win, int32_t width, int32_t height) 
     if (FAILED(hr)) {
         d3d11_log_hresult(hwnd ? "D3D11CreateDeviceAndSwapChain(hardware)"
                                : "D3D11CreateDevice(hardware headless)",
-                             hr);
+                          hr);
         hr = hwnd ? d3d11_try_create_device(ctx, D3D_DRIVER_TYPE_WARP, &swap_desc)
                   : d3d11_try_create_headless_device(ctx, D3D_DRIVER_TYPE_WARP);
     }
     if (FAILED(hr)) {
-        d3d11_log_hresult(hwnd ? "D3D11CreateDeviceAndSwapChain(WARP)"
-                               : "D3D11CreateDevice(WARP headless)",
-                             hr);
+        d3d11_log_hresult(
+            hwnd ? "D3D11CreateDeviceAndSwapChain(WARP)" : "D3D11CreateDevice(WARP headless)", hr);
         d3d11_destroy_ctx(ctx);
         return NULL;
     }
@@ -1287,5 +1285,6 @@ static void d3d11_destroy_ctx(void *ctx_ptr) {
     SAFE_RELEASE(ctx->ctx);
     SAFE_RELEASE(ctx->device);
     free(ctx->instance_upload_data);
+    free(ctx->texture_upload_scratch_rgba);
     free(ctx);
 }

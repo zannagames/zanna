@@ -132,8 +132,8 @@ static int64_t g_navagent3d_registry_count = 0;
 /* Spatial hash over agent XZ positions: each registered agent lives in exactly one bucket so
  * avoidance can scan a small cell neighborhood instead of the whole registry (O(N^2) -> ~O(N)). */
 #define NAVAGENT_GRID_CELL 4.0
-#define NAVAGENT_GRID_BUCKETS 1024u /* power of two for mask-based modulo */
-#define NAVAGENT_GRID_MAX_RING 16   /* beyond this, fall back to a full registry scan */
+#define NAVAGENT_GRID_INITIAL_BUCKETS 64u
+#define NAVAGENT_GRID_MAX_RING 16 /* beyond this, fall back to a full registry scan */
 #define NAVAGENT_RVO_MIN_TIME_HORIZON 0.65
 #define NAVAGENT_RVO_MAX_TIME_HORIZON 2.0
 #define NAVAGENT_RVO_MAX_CANDIDATES 48
@@ -149,7 +149,11 @@ static int64_t g_navagent3d_registry_count = 0;
  * clamped to >= 0, so a negative value is an unambiguous "invalid query" signal that callers can
  * distinguish from a legitimate zero (e.g. "no path" / "at goal"). */
 #define NAVAGENT_INVALID_QUERY (-1.0)
-static rt_navagent3d *g_navagent3d_grid[NAVAGENT_GRID_BUCKETS];
+static rt_navagent3d **g_navagent3d_grid = NULL;
+static uint32_t *g_navagent3d_grid_visit_stamps = NULL;
+static uint32_t g_navagent3d_grid_bucket_count = 0;
+static uint32_t g_navagent3d_grid_visit_epoch = 0;
+static int64_t g_navagent3d_last_unique_bucket_visits = 0;
 /* Monotonic max of (effective avoidance radius + desired speed) across agents; bounds the cell
  * neighborhood a query must cover so the grid never misses a contributing peer. */
 static double g_navagent3d_max_reach = 0.0;
@@ -159,6 +163,7 @@ static uint64_t g_navagent3d_next_stable_order = 0;
 
 static void navagent_grid_refresh(rt_navagent3d *agent);
 static void navagent_grid_remove(rt_navagent3d *agent);
+static int navagent_grid_ensure_capacity(int64_t agent_count);
 static void navagent_recompute_max_reach(void);
 static void navagent_repair_state(rt_navagent3d *agent);
 static double navagent_clamp_abs_or(double value, double fallback, double max_abs);
@@ -182,6 +187,7 @@ static void navagent_register(rt_navagent3d *agent) {
     agent->registry_next = g_navagent3d_registry;
     g_navagent3d_registry = agent;
     g_navagent3d_registry_count++;
+    (void)navagent_grid_ensure_capacity(g_navagent3d_registry_count);
     navagent_grid_refresh(agent); /* insert into the spatial grid at its current cell */
 }
 
@@ -199,6 +205,14 @@ static void navagent_unregister(rt_navagent3d *agent) {
             agent->registry_next = NULL;
             if (g_navagent3d_registry_count > 0)
                 g_navagent3d_registry_count--;
+            if (g_navagent3d_registry_count == 0) {
+                free(g_navagent3d_grid);
+                free(g_navagent3d_grid_visit_stamps);
+                g_navagent3d_grid = NULL;
+                g_navagent3d_grid_visit_stamps = NULL;
+                g_navagent3d_grid_bucket_count = 0;
+                g_navagent3d_grid_visit_epoch = 0;
+            }
             navagent_recompute_max_reach();
             return;
         }
@@ -543,14 +557,80 @@ static int32_t navagent_grid_coord(double v) {
     return (int32_t)c;
 }
 
-/// @brief Hash a 2D cell (cx, cz) to a grid bucket using the Teschner spatial-hash primes.
-/// @details NAVAGENT_GRID_BUCKETS is a power of two, so the mask replaces a modulo.
+/// @brief Hash a 2D cell (cx, cz) to a power-of-two grid bucket.
 /// @param cx Quantized X cell coordinate.
 /// @param cz Quantized Z cell coordinate.
-/// @return Bucket index in `[0, NAVAGENT_GRID_BUCKETS)`.
-static uint32_t navagent_grid_bucket(int32_t cx, int32_t cz) {
+/// @param bucket_count Positive power-of-two bucket count.
+/// @return Bucket index in `[0, bucket_count)`, or zero for invalid capacity.
+static uint32_t navagent_grid_bucket_for_capacity(int32_t cx, int32_t cz, uint32_t bucket_count) {
     uint32_t h = (uint32_t)cx * 73856093u ^ (uint32_t)cz * 19349663u;
-    return h & (NAVAGENT_GRID_BUCKETS - 1u);
+    return bucket_count > 0 ? h & (bucket_count - 1u) : 0u;
+}
+
+/// @brief Hash a cell into the current live-agent grid.
+static uint32_t navagent_grid_bucket(int32_t cx, int32_t cz) {
+    return navagent_grid_bucket_for_capacity(cx, cz, g_navagent3d_grid_bucket_count);
+}
+
+/// @brief Ensure the live spatial hash has at least two buckets per registered agent.
+/// @details Growth is transactional: a new bucket/stamp pair is allocated first, then every
+/// registered agent is rehashed into it. The old table remains usable if either allocation fails.
+/// @param agent_count Current registered-agent count.
+/// @return One when a grid exists with sufficient capacity, otherwise zero.
+static int navagent_grid_ensure_capacity(int64_t agent_count) {
+    uint32_t capacity;
+    rt_navagent3d **buckets;
+    uint32_t *stamps;
+    if (agent_count <= 0)
+        return g_navagent3d_grid != NULL;
+    if ((uint64_t)agent_count <= (uint64_t)g_navagent3d_grid_bucket_count / 2u)
+        return 1;
+    capacity = g_navagent3d_grid_bucket_count;
+    if (capacity < NAVAGENT_GRID_INITIAL_BUCKETS)
+        capacity = NAVAGENT_GRID_INITIAL_BUCKETS;
+    while ((uint64_t)capacity < (uint64_t)agent_count * 2u) {
+        if (capacity > UINT32_MAX / 2u)
+            return 0;
+        capacity *= 2u;
+    }
+    buckets = (rt_navagent3d **)calloc((size_t)capacity, sizeof(*buckets));
+    stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*stamps));
+    if (!buckets || !stamps) {
+        free(buckets);
+        free(stamps);
+        return 0;
+    }
+    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
+        agent->grid_cx = navagent_grid_coord(agent->position[0]);
+        agent->grid_cz = navagent_grid_coord(agent->position[2]);
+        uint32_t bucket =
+            navagent_grid_bucket_for_capacity(agent->grid_cx, agent->grid_cz, capacity);
+        agent->grid_next = buckets[bucket];
+        buckets[bucket] = agent;
+        agent->in_grid = 1;
+    }
+    free(g_navagent3d_grid);
+    free(g_navagent3d_grid_visit_stamps);
+    g_navagent3d_grid = buckets;
+    g_navagent3d_grid_visit_stamps = stamps;
+    g_navagent3d_grid_bucket_count = capacity;
+    g_navagent3d_grid_visit_epoch = 0;
+    return 1;
+}
+
+/// @brief Begin one live-grid query and return a fresh bucket-visit epoch.
+static uint32_t navagent_grid_next_visit_epoch(void) {
+    if (!g_navagent3d_grid_visit_stamps || g_navagent3d_grid_bucket_count == 0)
+        return 0;
+    g_navagent3d_grid_visit_epoch++;
+    if (g_navagent3d_grid_visit_epoch == 0) {
+        memset(g_navagent3d_grid_visit_stamps,
+               0,
+               (size_t)g_navagent3d_grid_bucket_count * sizeof(*g_navagent3d_grid_visit_stamps));
+        g_navagent3d_grid_visit_epoch = 1;
+    }
+    g_navagent3d_last_unique_bucket_visits = 0;
+    return g_navagent3d_grid_visit_epoch;
 }
 
 /// @brief Insert an agent into the spatial grid bucket for its current XZ cell (no-op if already
@@ -559,7 +639,7 @@ static uint32_t navagent_grid_bucket(int32_t cx, int32_t cz) {
 static void navagent_grid_insert(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     uint32_t b;
-    if (!agent || agent->in_grid)
+    if (!agent || agent->in_grid || !g_navagent3d_grid || g_navagent3d_grid_bucket_count == 0)
         return;
     agent->grid_cx = navagent_grid_coord(agent->position[0]);
     agent->grid_cz = navagent_grid_coord(agent->position[2]);
@@ -575,7 +655,7 @@ static void navagent_grid_remove(rt_navagent3d *agent) {
     RT_ASSERT_MAIN_THREAD();
     uint32_t b;
     rt_navagent3d **link;
-    if (!agent || !agent->in_grid)
+    if (!agent || !agent->in_grid || !g_navagent3d_grid || g_navagent3d_grid_bucket_count == 0)
         return;
     b = navagent_grid_bucket(agent->grid_cx, agent->grid_cz);
     link = &g_navagent3d_grid[b];
@@ -958,14 +1038,20 @@ static int navagent_collect_avoidance_neighbors(rt_navagent3d *agent,
             (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= g_navagent3d_registry_count)) {
             int32_t cx = agent->grid_cx;
             int32_t cz = agent->grid_cz;
+            uint32_t visit_epoch = navagent_grid_next_visit_epoch();
             for (int32_t dz = -ring; dz <= ring; dz++) {
                 for (int32_t dx = -ring; dx <= ring; dx++) {
                     int32_t qx = cx + dx;
                     int32_t qz = cz + dz;
                     uint32_t b = navagent_grid_bucket(qx, qz);
+                    if (!visit_epoch || g_navagent3d_grid_visit_stamps[b] == visit_epoch)
+                        continue;
+                    g_navagent3d_grid_visit_stamps[b] = visit_epoch;
+                    g_navagent3d_last_unique_bucket_visits++;
                     for (rt_navagent3d *other = g_navagent3d_grid[b]; other;
                          other = other->grid_next) {
-                        if (other->grid_cx == qx && other->grid_cz == qz)
+                        if (other->grid_cx >= cx - ring && other->grid_cx <= cx + ring &&
+                            other->grid_cz >= cz - ring && other->grid_cz <= cz + ring)
                             NAVAGENT_APPEND_IF_PEER(other);
                     }
                 }
@@ -1038,6 +1124,7 @@ static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
             (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= g_navagent3d_registry_count)) {
             int32_t cx = agent->grid_cx;
             int32_t cz = agent->grid_cz;
+            uint32_t visit_epoch = navagent_grid_next_visit_epoch();
             int32_t dz;
             for (dz = -ring; dz <= ring; dz++) {
                 int32_t dx;
@@ -1045,8 +1132,13 @@ static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
                     int32_t qx = cx + dx;
                     int32_t qz = cz + dz;
                     uint32_t b = navagent_grid_bucket(qx, qz);
+                    if (!visit_epoch || g_navagent3d_grid_visit_stamps[b] == visit_epoch)
+                        continue;
+                    g_navagent3d_grid_visit_stamps[b] = visit_epoch;
+                    g_navagent3d_last_unique_bucket_visits++;
                     for (other = g_navagent3d_grid[b]; other; other = other->grid_next) {
-                        if (other->grid_cx == qx && other->grid_cz == qz) {
+                        if (other->grid_cx >= cx - ring && other->grid_cx <= cx + ring &&
+                            other->grid_cz >= cz - ring && other->grid_cz <= cz + ring) {
                             penalty += navagent_rvo_peer_penalty(
                                 agent, other, agent_radius, horizon, cand_x, cand_z);
                         }
@@ -1218,7 +1310,9 @@ typedef struct {
 typedef struct {
     navagent_batch_snapshot_t *snapshots;
     int32_t snapshot_count;
-    int32_t bucket_heads[NAVAGENT_GRID_BUCKETS];
+    int32_t *bucket_heads;
+    uint32_t *bucket_visit_stamps;
+    uint32_t bucket_count;
     double max_reach;
 } navagent_batch_context_t;
 
@@ -1231,6 +1325,10 @@ static navagent_batch_snapshot_t *g_navagent_batch_snapshots = NULL;
 static int32_t g_navagent_batch_snapshot_capacity = 0;
 static int32_t *g_navagent_batch_neighbor_indices = NULL;
 static int32_t g_navagent_batch_neighbor_capacity = 0;
+static int32_t *g_navagent_batch_bucket_heads = NULL;
+static uint32_t *g_navagent_batch_bucket_visit_stamps = NULL;
+static uint32_t g_navagent_batch_bucket_capacity = 0;
+static uint32_t g_navagent_batch_bucket_visit_epoch = 0;
 static int g_navagent_batch_active = 0;
 
 /// @brief Grow the reusable selected-agent staging array.
@@ -1320,6 +1418,53 @@ static int navagent_batch_reserve_neighbors(int32_t needed) {
     return 1;
 }
 
+/// @brief Grow reusable batch snapshot hash buckets to at least two slots per snapshot.
+static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
+    uint32_t capacity = g_navagent_batch_bucket_capacity;
+    int32_t *heads;
+    uint32_t *stamps;
+    if (snapshot_count < 0)
+        return 0;
+    if ((uint64_t)snapshot_count <= (uint64_t)capacity / 2u && capacity > 0)
+        return 1;
+    if (capacity < NAVAGENT_GRID_INITIAL_BUCKETS)
+        capacity = NAVAGENT_GRID_INITIAL_BUCKETS;
+    while ((uint64_t)capacity < (uint64_t)snapshot_count * 2u) {
+        if (capacity > UINT32_MAX / 2u)
+            return 0;
+        capacity *= 2u;
+    }
+    heads = (int32_t *)malloc((size_t)capacity * sizeof(*heads));
+    stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*stamps));
+    if (!heads || !stamps) {
+        free(heads);
+        free(stamps);
+        return 0;
+    }
+    free(g_navagent_batch_bucket_heads);
+    free(g_navagent_batch_bucket_visit_stamps);
+    g_navagent_batch_bucket_heads = heads;
+    g_navagent_batch_bucket_visit_stamps = stamps;
+    g_navagent_batch_bucket_capacity = capacity;
+    g_navagent_batch_bucket_visit_epoch = 0;
+    return 1;
+}
+
+/// @brief Begin one batch-grid query and return a fresh bucket-visit epoch.
+static uint32_t navagent_batch_next_visit_epoch(void) {
+    if (!g_navagent_batch_bucket_visit_stamps || g_navagent_batch_bucket_capacity == 0)
+        return 0;
+    g_navagent_batch_bucket_visit_epoch++;
+    if (g_navagent_batch_bucket_visit_epoch == 0) {
+        memset(g_navagent_batch_bucket_visit_stamps,
+               0,
+               (size_t)g_navagent_batch_bucket_capacity *
+                   sizeof(*g_navagent_batch_bucket_visit_stamps));
+        g_navagent_batch_bucket_visit_epoch = 1;
+    }
+    return g_navagent_batch_bucket_visit_epoch;
+}
+
 /// @brief Compare selected batch items by stable creation order, then numeric handle value.
 /// @param lhs Pointer to a `navagent_batch_item_t`.
 /// @param rhs Pointer to a `navagent_batch_item_t`.
@@ -1384,7 +1529,8 @@ static int32_t navagent_batch_find_snapshot(const navagent_batch_snapshot_t *sna
 /// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
 static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
     int32_t count = 0;
-    if (!context || g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX)
+    if (!context || g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX ||
+        !navagent_batch_reserve_buckets((int32_t)g_navagent3d_registry_count))
         return 0;
     for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
         if (count >= g_navagent_batch_snapshot_capacity)
@@ -1414,11 +1560,15 @@ static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
     context->snapshots = g_navagent_batch_snapshots;
     context->snapshot_count = count;
     context->max_reach = 0.0;
-    for (uint32_t bucket = 0; bucket < NAVAGENT_GRID_BUCKETS; bucket++)
+    context->bucket_heads = g_navagent_batch_bucket_heads;
+    context->bucket_visit_stamps = g_navagent_batch_bucket_visit_stamps;
+    context->bucket_count = g_navagent_batch_bucket_capacity;
+    for (uint32_t bucket = 0; bucket < context->bucket_count; bucket++)
         context->bucket_heads[bucket] = -1;
     for (int32_t i = 0; i < count; i++) {
         navagent_batch_snapshot_t *snapshot = &context->snapshots[i];
-        uint32_t bucket = navagent_grid_bucket(snapshot->grid_cx, snapshot->grid_cz);
+        uint32_t bucket = navagent_grid_bucket_for_capacity(
+            snapshot->grid_cx, snapshot->grid_cz, context->bucket_count);
         snapshot->grid_next = context->bucket_heads[bucket];
         context->bucket_heads[bucket] = i;
         if (snapshot->reach > context->max_reach)
@@ -1468,16 +1618,24 @@ static int navagent_batch_collect_peers(const navagent_batch_context_t *context,
     int ring = (int)ceil(max_distance / NAVAGENT_GRID_CELL) + 1;
     int64_t grid_cells = (int64_t)(2 * ring + 1) * (int64_t)(2 * ring + 1);
     if (ring >= 1 && (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= context->snapshot_count)) {
+        uint32_t visit_epoch = navagent_batch_next_visit_epoch();
         for (int32_t dz = -ring; dz <= ring; dz++) {
             for (int32_t dx = -ring; dx <= ring; dx++) {
                 int32_t cell_x = self->grid_cx + dx;
                 int32_t cell_z = self->grid_cz + dz;
-                uint32_t bucket = navagent_grid_bucket(cell_x, cell_z);
+                uint32_t bucket =
+                    navagent_grid_bucket_for_capacity(cell_x, cell_z, context->bucket_count);
+                if (!visit_epoch || context->bucket_visit_stamps[bucket] == visit_epoch)
+                    continue;
+                context->bucket_visit_stamps[bucket] = visit_epoch;
                 for (int32_t candidate_index = context->bucket_heads[bucket]; candidate_index >= 0;
                      candidate_index = context->snapshots[candidate_index].grid_next) {
                     const navagent_batch_snapshot_t *candidate =
                         &context->snapshots[candidate_index];
-                    if (candidate->grid_cx == cell_x && candidate->grid_cz == cell_z &&
+                    if (candidate->grid_cx >= self->grid_cx - ring &&
+                        candidate->grid_cx <= self->grid_cx + ring &&
+                        candidate->grid_cz >= self->grid_cz - ring &&
+                        candidate->grid_cz <= self->grid_cz + ring &&
                         !navagent_batch_append_peer(context, self_index, candidate_index, &count))
                         return 0;
                 }
@@ -1670,6 +1828,16 @@ int8_t rt_navagent3d_check_avoidance_grid_parity(void) {
             return 0;
     }
     return 1;
+}
+
+/// @brief Test-only live spatial-hash bucket capacity.
+int64_t rt_navagent3d_grid_bucket_capacity_for_test(void) {
+    return (int64_t)g_navagent3d_grid_bucket_count;
+}
+
+/// @brief Test-only unique bucket count from the most recent live-grid query.
+int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void) {
+    return g_navagent3d_last_unique_bucket_visits;
 }
 
 /// @brief Derive "close enough to this corner" distance from the agent's radius. Half

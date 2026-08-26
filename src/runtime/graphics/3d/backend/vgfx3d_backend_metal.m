@@ -136,6 +136,10 @@
      * Zero-initialized with the object; texture_fallback_binds stays zero on
      * Metal (streaming fallbacks resolve inside ctx-free helpers). */
     vgfx3d_backend_stats_t _stats;
+    uint8_t *_textureUploadScratchRGBA;
+    size_t _textureUploadScratchRGBABytes;
+    uint8_t *_textureUploadScratchBGRA;
+    size_t _textureUploadScratchBGRABytes;
 }
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> commandQueue;
@@ -300,6 +304,12 @@
 
 @implementation VGFXMetalContext
 @synthesize gpuPostfxChain = _gpuPostfxChain;
+
+- (void)dealloc {
+    free(_textureUploadScratchRGBA);
+    free(_textureUploadScratchBGRA);
+}
+
 @end
 
 @interface VGFXMetalTextureCacheEntry : NSObject

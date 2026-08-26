@@ -22,7 +22,8 @@
 //   docs/adr/0159-typed-scenenode-metadata-and-vscn-v6.md,
 //   docs/adr/0161-stable-scenenode-sibling-reordering.md,
 //   docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
-//   docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md
+//   docs/adr/0172-public-scenenode-light-authoring-and-studio-light-inspector.md,
+//   docs/adr/0295-portable-vscn-binary-wire-layouts.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -215,6 +216,51 @@ static bool write_text_file(const char *path, const char *text) {
     const bool ok = len == 0 || std::fwrite(text, 1, len, f) == len;
     const bool closed = std::fclose(f) == 0;
     return ok && closed;
+}
+
+static bool replace_first_json_string_value(std::string &text,
+                                            const char *field,
+                                            const std::string &replacement) {
+    const std::string prefix = std::string("\"") + field + "\": \"";
+    size_t value_offset = text.find(prefix);
+    if (value_offset == std::string::npos)
+        return false;
+    value_offset += prefix.size();
+    const size_t value_end = text.find('"', value_offset);
+    if (value_end == std::string::npos)
+        return false;
+    text.replace(value_offset, value_end - value_offset, replacement);
+    return true;
+}
+
+static std::string scene_test_base64_encode(const uint8_t *data, size_t len) {
+    static const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output(((len + 2u) / 3u) * 4u, '=');
+    size_t input_offset = 0;
+    size_t output_offset = 0;
+    while (input_offset < len) {
+        const uint32_t a = data[input_offset++];
+        const uint32_t b = input_offset < len ? data[input_offset++] : 0u;
+        const uint32_t c = input_offset < len ? data[input_offset++] : 0u;
+        const uint32_t triple = (a << 16u) | (b << 8u) | c;
+        output[output_offset++] = chars[(triple >> 18u) & 0x3fu];
+        output[output_offset++] = chars[(triple >> 12u) & 0x3fu];
+        output[output_offset++] = chars[(triple >> 6u) & 0x3fu];
+        output[output_offset++] = chars[triple & 0x3fu];
+    }
+    const size_t padding = (3u - (len % 3u)) % 3u;
+    for (size_t index = 0; index < padding; ++index)
+        output[output.size() - 1u - index] = '=';
+    return output;
+}
+
+static void scene_test_write_f32_le(uint8_t *destination, float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    destination[0] = static_cast<uint8_t>(bits & 0xffu);
+    destination[1] = static_cast<uint8_t>((bits >> 8u) & 0xffu);
+    destination[2] = static_cast<uint8_t>((bits >> 16u) & 0xffu);
+    destination[3] = static_cast<uint8_t>((bits >> 24u) & 0xffu);
 }
 
 static void test_create_scene_and_node() {
@@ -3920,8 +3966,7 @@ static void test_auto_lod_radius_uses_world_scale() {
 
     rt_scene_node3d_set_auto_lod(node, 1, 16.0);
     rt_scene3d_draw(scene, &canvas, camera);
-    EXPECT_TRUE(g_scene_submit_count == 1,
-                "SceneGraph draws the scaled auto-LOD fixture");
+    EXPECT_TRUE(g_scene_submit_count == 1, "SceneGraph draws the scaled auto-LOD fixture");
     EXPECT_TRUE(g_scene_last_vertex_count != 3,
                 "auto-LOD projects the WORLD-space radius: a 4x-scaled node "
                 "re-crosses the screen-error threshold and keeps LOD0");
@@ -4748,6 +4793,15 @@ static void test_scene_skeletal_roundtrip_repairs_bind_cache_and_validates_wire_
     rt_string_unref(bone_name);
     rt_skeleton3d_compute_inverse_bind(skeleton);
     rt_mesh3d_set_skeleton(mesh, skeleton);
+    auto *mesh_view = static_cast<rt_mesh3d *>(mesh);
+    mesh_view->bone_map = static_cast<int32_t *>(calloc(1, sizeof(int32_t)));
+    mesh_view->extra_influences = static_cast<vgfx3d_extra_influences_t *>(
+        calloc(mesh_view->vertex_count, sizeof(vgfx3d_extra_influences_t)));
+    EXPECT_TRUE(mesh_view->bone_map != nullptr && mesh_view->extra_influences != nullptr,
+                "Skeletal VSCN fixture allocates rig side streams");
+    if (!mesh_view->bone_map || !mesh_view->extra_influences)
+        return;
+    mesh_view->extra_influences[0].weights[0] = 0.25f;
     rt_scene_node3d_set_name(node, rt_const_cstr("rigged"));
     rt_scene_node3d_set_mesh(node, mesh);
     rt_scene3d_add(scene, node);
@@ -4775,6 +4829,14 @@ static void test_scene_skeletal_roundtrip_repairs_bind_cache_and_validates_wire_
     EXPECT_TRUE(read_text_file(path, first_text) && read_text_file(second_path, second_text) &&
                     first_text == second_text,
                 "Skeletal VSCN keyframe payloads are byte-deterministic");
+    EXPECT_TRUE(first_text.find("\"vertexFormat\": \"vgfx3d_vertex_le_v3\"") != std::string::npos &&
+                    first_text.find("\"indexFormat\": \"u32le-v1\"") != std::string::npos &&
+                    first_text.find("\"boneMapFormat\": \"i32le-v1\"") != std::string::npos &&
+                    first_text.find("\"extraInfluencesFormat\": "
+                                    "\"vgfx3d_extra_influences_le_v1\"") != std::string::npos &&
+                    first_text.find("\"keyframeFormat\": \"vgfx3d_keyframe_le_v3\"") !=
+                        std::string::npos,
+                "VSCN rig payloads declare portable padding-free wire layouts");
 
     void *loaded = rt_scene3d_load(rt_const_cstr(path));
     EXPECT_TRUE(loaded != nullptr, "SceneGraph.Load reads the skeletal VSCN fixture");
@@ -4832,6 +4894,50 @@ static void test_scene_skeletal_roundtrip_repairs_bind_cache_and_validates_wire_
                     "Wrong-typed bindLocal fixture can be written");
         EXPECT_TRUE(rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr,
                     "SceneGraph.Load rejects booleans in exact numeric bind arrays");
+    }
+
+    {
+        std::string unknown_vertex_format = second_text;
+        EXPECT_TRUE(replace_first_json_string_value(
+                        unknown_vertex_format, "vertexFormat", "vgfx3d_vertex_le_future"),
+                    "Unknown vertex-format mutation finds its field");
+        EXPECT_TRUE(write_text_file(malformed_path, unknown_vertex_format.c_str()) &&
+                        rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr,
+                    "SceneGraph.Load rejects an unknown explicit vertex format");
+    }
+    {
+        std::string malformed_extra = second_text;
+        EXPECT_TRUE(
+            replace_first_json_string_value(malformed_extra, "extraInfluencesBase64", "%%%%"),
+            "Malformed extra-influence mutation finds its field");
+        EXPECT_TRUE(write_text_file(malformed_path, malformed_extra.c_str()) &&
+                        rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr &&
+                        rt_asset_error_get_code() == RT_ASSET_ERROR_CORRUPT,
+                    "Present malformed extra influences reject the complete VSCN transaction");
+    }
+    {
+        std::vector<uint8_t> invalid_extra(static_cast<size_t>(mesh_view->vertex_count) * 24u, 0u);
+        invalid_extra[0] = 1u;
+        scene_test_write_f32_le(invalid_extra.data() + 8u, 0.25f);
+        std::string invalid_semantics = second_text;
+        EXPECT_TRUE(replace_first_json_string_value(
+                        invalid_semantics,
+                        "extraInfluencesBase64",
+                        scene_test_base64_encode(invalid_extra.data(), invalid_extra.size())),
+                    "Invalid extra-influence semantic mutation finds its field");
+        EXPECT_TRUE(write_text_file(malformed_path, invalid_semantics.c_str()) &&
+                        rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr &&
+                        rt_asset_error_get_code() == RT_ASSET_ERROR_CORRUPT,
+                    "SceneGraph.Load rejects positively weighted out-of-range extra bones");
+    }
+    {
+        std::string malformed_map = second_text;
+        EXPECT_TRUE(replace_first_json_string_value(malformed_map, "boneMapBase64", "AAAA"),
+                    "Truncated bone-map mutation finds its field");
+        EXPECT_TRUE(write_text_file(malformed_path, malformed_map.c_str()) &&
+                        rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr &&
+                        rt_asset_error_get_code() == RT_ASSET_ERROR_CORRUPT,
+                    "Present truncated bone maps reject the complete VSCN transaction");
     }
 
     auto *animation_view = static_cast<rt_animation3d *>(animation);

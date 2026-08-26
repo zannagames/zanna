@@ -459,6 +459,7 @@ typedef struct {
     int32_t cols;
     int32_t rows;
     int32_t count;
+    int32_t capacity;
     int32_t active_count;
     int32_t active_capacity;
 } sw_shadow_tile_grid_t;
@@ -555,7 +556,7 @@ static void sw_shadow_tile_grid_free(sw_shadow_tile_grid_t *grid) {
     if (!grid)
         return;
     if (grid->bins) {
-        for (int32_t i = 0; i < grid->count; i++)
+        for (int32_t i = 0; i < grid->capacity; i++)
             free(grid->bins[i].indices);
     }
     free(grid->active_indices);
@@ -565,6 +566,7 @@ static void sw_shadow_tile_grid_free(sw_shadow_tile_grid_t *grid) {
     grid->cols = 0;
     grid->rows = 0;
     grid->count = 0;
+    grid->capacity = 0;
     grid->active_count = 0;
     grid->active_capacity = 0;
 }
@@ -574,23 +576,35 @@ static void sw_shadow_tile_grid_free(sw_shadow_tile_grid_t *grid) {
 /// @param width Positive shadow-map width in pixels.
 /// @param height Positive shadow-map height in pixels.
 /// @return 1 when all bins are allocated, otherwise 0 for invalid dimensions, overflow, or OOM.
-static int sw_shadow_tile_grid_init(sw_shadow_tile_grid_t *grid, int32_t width, int32_t height) {
+static int sw_shadow_tile_grid_prepare(sw_shadow_tile_grid_t *grid, int32_t width, int32_t height) {
     int32_t cols;
     int32_t rows;
+    int32_t count;
     if (!grid || width <= 0 || height <= 0)
         return 0;
-    memset(grid, 0, sizeof(*grid));
     cols = ((width - 1) / SW_TILE_SIZE) + 1;
     rows = ((height - 1) / SW_TILE_SIZE) + 1;
     if (cols <= 0 || rows <= 0 || cols > INT32_MAX / rows)
         return 0;
+    count = cols * rows;
+    for (int32_t index = 0; index < grid->capacity; ++index)
+        grid->bins[index].count = 0;
+    grid->active_count = 0;
+    if (count > grid->capacity) {
+        sw_shadow_tile_bin_t *grown;
+        if ((size_t)count > SIZE_MAX / sizeof(*grid->bins))
+            return 0;
+        grown = (sw_shadow_tile_bin_t *)realloc(grid->bins, (size_t)count * sizeof(*grid->bins));
+        if (!grown)
+            return 0;
+        memset(grown + grid->capacity, 0, (size_t)(count - grid->capacity) * sizeof(*grid->bins));
+        grid->bins = grown;
+        grid->capacity = count;
+    }
     grid->cols = cols;
     grid->rows = rows;
-    grid->count = cols * rows;
-    if ((size_t)grid->count > SIZE_MAX / sizeof(*grid->bins))
-        return 0;
-    grid->bins = (sw_shadow_tile_bin_t *)calloc((size_t)grid->count, sizeof(*grid->bins));
-    return grid->bins ? 1 : 0;
+    grid->count = count;
+    return 1;
 }
 
 /// @brief Append a newly non-empty tile to the grid's active-tile work list.
@@ -1040,7 +1054,7 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
     float lmvp[16];
     float half_w, half_h;
     sw_shadow_tri_list_t tris = {0};
-    sw_shadow_tile_grid_t grid = {0};
+    sw_shadow_tile_grid_t *grid = NULL;
     int ok = 0;
 
     if (!ctx || !ctx->worker_pool || ctx->worker_count <= 1)
@@ -1079,16 +1093,22 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
         ok = 1;
         goto cleanup;
     }
-    if (!sw_shadow_tile_grid_init(&grid, ctx->shadow_w[slot], ctx->shadow_h[slot]))
+    if (!ctx->shadow_tile_grid_scratch) {
+        ctx->shadow_tile_grid_scratch = calloc(1, sizeof(sw_shadow_tile_grid_t));
+        if (!ctx->shadow_tile_grid_scratch)
+            goto cleanup;
+    }
+    grid = (sw_shadow_tile_grid_t *)ctx->shadow_tile_grid_scratch;
+    if (!sw_shadow_tile_grid_prepare(grid, ctx->shadow_w[slot], ctx->shadow_h[slot]))
         goto cleanup;
-    if (!sw_shadow_bin_triangles(&grid, &tris, ctx->shadow_w[slot], ctx->shadow_h[slot]))
+    if (!sw_shadow_bin_triangles(grid, &tris, ctx->shadow_w[slot], ctx->shadow_h[slot]))
         goto cleanup;
-    if (grid.active_count == 0) {
+    if (grid->active_count == 0) {
         ok = 1;
         goto cleanup;
     }
     if (!sw_shadow_raster_tiles_parallel(ctx,
-                                         &grid,
+                                         grid,
                                          &tris,
                                          ctx->shadow_depth[slot],
                                          ctx->shadow_w[slot],
@@ -1099,7 +1119,6 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
     ok = 1;
 
 cleanup:
-    sw_shadow_tile_grid_free(&grid);
     ctx->shadow_triangle_scratch = tris.items;
     ctx->shadow_triangle_scratch_capacity = tris.capacity;
     return ok;

@@ -152,6 +152,45 @@ static void test_unpack_pixels_rgba_rows_and_extent(void) {
                     "Pixels flipped row-slice reads from the bottom source row");
     }
     free(rgba);
+
+    {
+        uint8_t scratch[16] = {0};
+        EXPECT_TRUE(vgfx3d_unpack_pixels_rgba_rows_into(
+                        &px, 1, 2, 0, scratch, sizeof(scratch), &w, &rows) == 0,
+                    "Pixels row-slice decodes into reusable caller storage");
+        EXPECT_TRUE(w == 2 && rows == 2 && scratch[0] == 0x21 && scratch[8] == 0x41,
+                    "Reusable row storage receives consecutive RGBA rows");
+        EXPECT_TRUE(vgfx3d_unpack_pixels_rgba_rows_into(
+                        &px, 0, 2, 0, scratch, sizeof(scratch) - 1u, &w, &rows) != 0 &&
+                        w == 0 && rows == 0,
+                    "Reusable row decode rejects insufficient capacity without publication");
+    }
+    {
+        uint8_t *scratch = NULL;
+        uint8_t *retained;
+        size_t scratch_capacity = 0;
+        size_t retained_capacity;
+
+        EXPECT_TRUE(vgfx3d_ensure_byte_scratch(&scratch, &scratch_capacity, 17u) == scratch &&
+                        scratch != NULL && scratch_capacity >= 17u,
+                    "Byte scratch grows to the requested capacity");
+        retained = scratch;
+        retained_capacity = scratch_capacity;
+        EXPECT_TRUE(vgfx3d_ensure_byte_scratch(&scratch, &scratch_capacity, 16u) == retained &&
+                        scratch_capacity == retained_capacity,
+                    "Byte scratch retains storage when capacity is sufficient");
+        EXPECT_TRUE(vgfx3d_ensure_byte_scratch(NULL, &scratch_capacity, 16u) == NULL &&
+                        vgfx3d_ensure_byte_scratch(&scratch, NULL, 16u) == NULL &&
+                        vgfx3d_ensure_byte_scratch(&scratch, &scratch_capacity, 0u) == NULL,
+                    "Byte scratch rejects invalid ownership and zero-byte requests");
+        free(scratch);
+        scratch = NULL;
+        scratch_capacity = SIZE_MAX;
+        EXPECT_TRUE(vgfx3d_ensure_byte_scratch(&scratch, &scratch_capacity, 16u) == scratch &&
+                        scratch != NULL && scratch_capacity >= 16u && scratch_capacity < SIZE_MAX,
+                    "Byte scratch ignores stale capacity when storage is absent");
+        free(scratch);
+    }
 }
 
 static void test_upload_rows_for_budget(void) {

@@ -32,6 +32,8 @@
  * Backend vtable implementation
  *=========================================================================*/
 
+static void sw_release_retained_tile_grids(sw_context_t *ctx);
+
 /// @brief Backend `create_ctx` op — allocate the software-renderer state struct.
 ///
 /// Trivial compared to hardware backends — no shaders, no FBOs, no
@@ -83,6 +85,7 @@ static void sw_destroy_ctx(void *ctx_ptr) {
         free(ctx->color_task_triangle_scratch[i]);
         free(ctx->shadow_task_triangle_scratch[i]);
     }
+    sw_release_retained_tile_grids(ctx);
     free(ctx->scaled_color);
     free(ctx);
 }
@@ -835,6 +838,7 @@ typedef struct {
     int32_t cols;
     int32_t rows;
     int32_t count;
+    int32_t capacity;
     int32_t active_count;
     int32_t active_capacity;
 } sw_tile_grid_t;
@@ -959,7 +963,7 @@ static void sw_tile_grid_free(sw_tile_grid_t *grid) {
     if (!grid)
         return;
     if (grid->bins) {
-        for (int32_t i = 0; i < grid->count; i++)
+        for (int32_t i = 0; i < grid->capacity; i++)
             free(grid->bins[i].indices);
     }
     free(grid->active_indices);
@@ -969,6 +973,7 @@ static void sw_tile_grid_free(sw_tile_grid_t *grid) {
     grid->cols = 0;
     grid->rows = 0;
     grid->count = 0;
+    grid->capacity = 0;
     grid->active_count = 0;
     grid->active_capacity = 0;
 }
@@ -978,23 +983,50 @@ static void sw_tile_grid_free(sw_tile_grid_t *grid) {
 /// @param width Positive output width in pixels.
 /// @param height Positive output height in pixels.
 /// @return 1 when all bins are allocated, otherwise 0 for invalid dimensions, overflow, or OOM.
-static int sw_tile_grid_init(sw_tile_grid_t *grid, int32_t width, int32_t height) {
+static int sw_tile_grid_prepare(sw_tile_grid_t *grid, int32_t width, int32_t height) {
     int32_t cols;
     int32_t rows;
+    int32_t count;
     if (!grid || width <= 0 || height <= 0)
         return 0;
-    memset(grid, 0, sizeof(*grid));
     cols = ((width - 1) / SW_TILE_SIZE) + 1;
     rows = ((height - 1) / SW_TILE_SIZE) + 1;
     if (cols <= 0 || rows <= 0 || cols > INT32_MAX / rows)
         return 0;
-    grid->count = cols * rows;
+    count = cols * rows;
+    for (int32_t index = 0; index < grid->capacity; ++index)
+        grid->bins[index].count = 0;
+    grid->active_count = 0;
+    if (count > grid->capacity) {
+        sw_tile_bin_t *grown;
+        if ((size_t)count > SIZE_MAX / sizeof(*grid->bins))
+            return 0;
+        grown = (sw_tile_bin_t *)realloc(grid->bins, (size_t)count * sizeof(*grid->bins));
+        if (!grown)
+            return 0;
+        memset(grown + grid->capacity, 0, (size_t)(count - grid->capacity) * sizeof(*grid->bins));
+        grid->bins = grown;
+        grid->capacity = count;
+    }
+    grid->count = count;
     grid->cols = cols;
     grid->rows = rows;
-    if ((size_t)grid->count > SIZE_MAX / sizeof(*grid->bins))
-        return 0;
-    grid->bins = (sw_tile_bin_t *)calloc((size_t)grid->count, sizeof(*grid->bins));
-    return grid->bins ? 1 : 0;
+    return 1;
+}
+
+static void sw_release_retained_tile_grids(sw_context_t *ctx) {
+    if (!ctx)
+        return;
+    if (ctx->color_tile_grid_scratch) {
+        sw_tile_grid_free((sw_tile_grid_t *)ctx->color_tile_grid_scratch);
+        free(ctx->color_tile_grid_scratch);
+        ctx->color_tile_grid_scratch = NULL;
+    }
+    if (ctx->shadow_tile_grid_scratch) {
+        sw_shadow_tile_grid_free((sw_shadow_tile_grid_t *)ctx->shadow_tile_grid_scratch);
+        free(ctx->shadow_tile_grid_scratch);
+        ctx->shadow_tile_grid_scratch = NULL;
+    }
 }
 
 /// @brief Append a newly non-empty tile to the grid's active work list.
@@ -1491,7 +1523,7 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
     float normal_matrix[16];
     sw_material_views mv;
     sw_screen_tri_list_t tris = {0};
-    sw_tile_grid_t grid = {0};
+    sw_tile_grid_t *grid = NULL;
     int ok = 0;
 
     if (!ctx || !ctx->worker_pool || ctx->worker_count <= 1 || wireframe || sw_debug_enabled())
@@ -1534,16 +1566,22 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
         ok = 1;
         goto cleanup;
     }
-    if (!sw_tile_grid_init(&grid, out_w, out_h))
+    if (!ctx->color_tile_grid_scratch) {
+        ctx->color_tile_grid_scratch = calloc(1, sizeof(sw_tile_grid_t));
+        if (!ctx->color_tile_grid_scratch)
+            goto cleanup;
+    }
+    grid = (sw_tile_grid_t *)ctx->color_tile_grid_scratch;
+    if (!sw_tile_grid_prepare(grid, out_w, out_h))
         goto cleanup;
-    if (!sw_bin_screen_triangles(&grid, &tris, out_w, out_h, backface_cull))
+    if (!sw_bin_screen_triangles(grid, &tris, out_w, out_h, backface_cull))
         goto cleanup;
-    if (grid.active_count == 0) {
+    if (grid->active_count == 0) {
         ok = 1;
         goto cleanup;
     }
     if (!sw_raster_tiles_parallel(ctx,
-                                  &grid,
+                                  grid,
                                   &tris,
                                   out_pixels,
                                   out_zbuf,
@@ -1560,7 +1598,6 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
     ok = 1;
 
 cleanup:
-    sw_tile_grid_free(&grid);
     ctx->color_triangle_scratch = tris.items;
     ctx->color_triangle_scratch_capacity = tris.capacity;
     return ok;

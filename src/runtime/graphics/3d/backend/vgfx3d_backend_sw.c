@@ -91,6 +91,8 @@ typedef struct {
     uint32_t color_triangle_scratch_capacity;
     void *shadow_triangle_scratch;
     uint32_t shadow_triangle_scratch_capacity;
+    void *color_tile_grid_scratch;
+    void *shadow_tile_grid_scratch;
     void *color_task_triangle_scratch[SW_MAX_TASKS];
     uint32_t color_task_triangle_scratch_capacity[SW_MAX_TASKS];
     void *shadow_task_triangle_scratch[SW_MAX_TASKS];
@@ -1485,6 +1487,46 @@ int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *c
                                    : (int64_t)ctx->color_task_triangle_scratch_capacity[i];
     }
     return total;
+}
+
+/// @brief Expose retained color/shadow tile grids and bin-index storage to performance tests.
+/// @param ctx_ptr Borrowed software backend context.
+/// @param scratch_kind Zero/one select color/shadow grid capacity; two/three select the summed
+///        retained color/shadow bin-index capacity.
+/// @return Retained element capacity, or zero for an invalid context, selector, or unused path.
+int64_t vgfx3d_software_backend_tile_scratch_capacity_for_test(const void *ctx_ptr,
+                                                               int32_t scratch_kind) {
+    const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    int64_t total = 0;
+    if (!ctx)
+        return 0;
+    if (scratch_kind == 0) {
+        const sw_tile_grid_t *grid = (const sw_tile_grid_t *)ctx->color_tile_grid_scratch;
+        return grid ? grid->capacity : 0;
+    }
+    if (scratch_kind == 1) {
+        const sw_shadow_tile_grid_t *grid =
+            (const sw_shadow_tile_grid_t *)ctx->shadow_tile_grid_scratch;
+        return grid ? grid->capacity : 0;
+    }
+    if (scratch_kind == 2) {
+        const sw_tile_grid_t *grid = (const sw_tile_grid_t *)ctx->color_tile_grid_scratch;
+        if (!grid)
+            return 0;
+        for (int32_t index = 0; index < grid->capacity; ++index)
+            total += grid->bins[index].capacity;
+        return total;
+    }
+    if (scratch_kind == 3) {
+        const sw_shadow_tile_grid_t *grid =
+            (const sw_shadow_tile_grid_t *)ctx->shadow_tile_grid_scratch;
+        if (!grid)
+            return 0;
+        for (int32_t index = 0; index < grid->capacity; ++index)
+            total += grid->bins[index].capacity;
+        return total;
+    }
+    return 0;
 }
 
 /*==========================================================================

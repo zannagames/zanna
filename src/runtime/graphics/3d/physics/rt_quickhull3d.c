@@ -46,6 +46,8 @@ typedef struct {
     int32_t *conflicts;  ///< Input point indices strictly outside this face.
     int32_t conflict_count;
     int32_t conflict_cap;
+    int32_t farthest_conflict;
+    double farthest_distance;
     int8_t alive;
 } qh_face;
 
@@ -102,6 +104,19 @@ static double qh_dot(const double *a, const double *b) {
 ///         by the face normal's magnitude.
 static double qh_face_dist(const qh_ctx *ctx, const qh_face *f, int32_t i) {
     return qh_dot(f->normal, qh_p(ctx, i)) - f->offset;
+}
+
+static void qh_face_refresh_farthest(const qh_ctx *ctx, qh_face *face) {
+    face->farthest_conflict = -1;
+    face->farthest_distance = ctx->eps;
+    for (int32_t index = 0; index < face->conflict_count; ++index) {
+        const int32_t point = face->conflicts[index];
+        const double distance = qh_face_dist(ctx, face, point);
+        if (distance > face->farthest_distance) {
+            face->farthest_distance = distance;
+            face->farthest_conflict = point;
+        }
+    }
 }
 
 /// @brief Compute a face's plane from its current winding (no reorientation).
@@ -168,6 +183,7 @@ static int32_t qh_alloc_face(qh_ctx *ctx) {
     }
     memset(&ctx->faces[ctx->face_count], 0, sizeof(qh_face));
     ctx->faces[ctx->face_count].alive = 1;
+    ctx->faces[ctx->face_count].farthest_conflict = -1;
     return ctx->face_count++;
 }
 
@@ -192,6 +208,15 @@ static int32_t qh_neighbor_slot(const qh_face *f, int32_t old) {
             return i;
     }
     return -1;
+}
+
+static uint32_t qh_vertex_hash(int32_t vertex) {
+    uint32_t value = (uint32_t)vertex;
+    value ^= value >> 16u;
+    value *= UINT32_C(0x7feb352d);
+    value ^= value >> 15u;
+    value *= UINT32_C(0x846ca68b);
+    return value ^ (value >> 16u);
 }
 
 /// @brief Choose the four initial tetrahedron corners from the extremes.
@@ -315,19 +340,29 @@ int rt_quickhull3d_build(const double *points,
         return 0;
     if (point_count > INT32_MAX / 8 - 64)
         return 0; /* keeps point_count*3 and the 8*n+64 face guard in int32 range */
+    double coordinate_scale = 0.0;
     for (int64_t i = 0; i < (int64_t)point_count * 3; i++) {
         if (!isfinite(points[i]))
             return 0;
+        if (fabs(points[i]) > coordinate_scale)
+            coordinate_scale = fabs(points[i]);
     }
+    if (!(coordinate_scale > 0.0) || (size_t)point_count > SIZE_MAX / (3u * sizeof(double)))
+        return 0;
+    double *scaled_points = (double *)malloc((size_t)point_count * 3u * sizeof(double));
+    if (!scaled_points)
+        return 0;
+    for (int64_t i = 0; i < (int64_t)point_count * 3; ++i)
+        scaled_points[i] = points[i] / coordinate_scale;
 
     qh_ctx ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.pts = points;
+    ctx.pts = scaled_points;
     ctx.n = point_count;
 
     /* Epsilon scaled by the bounding-box diagonal. */
-    double mn[3] = {points[0], points[1], points[2]};
-    double mx[3] = {points[0], points[1], points[2]};
+    double mn[3] = {scaled_points[0], scaled_points[1], scaled_points[2]};
+    double mx[3] = {scaled_points[0], scaled_points[1], scaled_points[2]};
     for (int32_t i = 1; i < point_count; i++) {
         for (int32_t a = 0; a < 3; a++) {
             double c = qh_p(&ctx, i)[a];
@@ -341,19 +376,18 @@ int rt_quickhull3d_build(const double *points,
     ctx.eps = 1e-9 * sqrt(qh_dot(diag, diag)) + 1e-12;
 
     int32_t tet[4];
-    if (!qh_initial_tetra(&ctx, tet))
+    if (!qh_initial_tetra(&ctx, tet)) {
+        free(scaled_points);
         return 0;
+    }
 
     double interior[3] = {
-        (qh_p(&ctx, tet[0])[0] + qh_p(&ctx, tet[1])[0] + qh_p(&ctx, tet[2])[0] +
-         qh_p(&ctx, tet[3])[0]) *
-            0.25,
-        (qh_p(&ctx, tet[0])[1] + qh_p(&ctx, tet[1])[1] + qh_p(&ctx, tet[2])[1] +
-         qh_p(&ctx, tet[3])[1]) *
-            0.25,
-        (qh_p(&ctx, tet[0])[2] + qh_p(&ctx, tet[1])[2] + qh_p(&ctx, tet[2])[2] +
-         qh_p(&ctx, tet[3])[2]) *
-            0.25,
+        qh_p(&ctx, tet[0])[0] * 0.25 + qh_p(&ctx, tet[1])[0] * 0.25 + qh_p(&ctx, tet[2])[0] * 0.25 +
+            qh_p(&ctx, tet[3])[0] * 0.25,
+        qh_p(&ctx, tet[0])[1] * 0.25 + qh_p(&ctx, tet[1])[1] * 0.25 + qh_p(&ctx, tet[2])[1] * 0.25 +
+            qh_p(&ctx, tet[3])[1] * 0.25,
+        qh_p(&ctx, tet[0])[2] * 0.25 + qh_p(&ctx, tet[1])[2] * 0.25 + qh_p(&ctx, tet[2])[2] * 0.25 +
+            qh_p(&ctx, tet[3])[2] * 0.25,
     };
 
     /* Four tetra faces; adjacency filled by brute force below. */
@@ -362,6 +396,7 @@ int rt_quickhull3d_build(const double *points,
         int32_t idx = qh_alloc_face(&ctx);
         if (idx < 0) {
             qh_free_all(&ctx);
+            free(scaled_points);
             return 0;
         }
         qh_face *f = &ctx.faces[idx];
@@ -396,12 +431,15 @@ int rt_quickhull3d_build(const double *points,
             if (qh_face_dist(&ctx, &ctx.faces[fi], i) > ctx.eps) {
                 if (!qh_face_push_conflict(&ctx.faces[fi], i)) {
                     qh_free_all(&ctx);
+                    free(scaled_points);
                     return 0;
                 }
                 break;
             }
         }
     }
+    for (int32_t fi = 0; fi < ctx.face_count; ++fi)
+        qh_face_refresh_farthest(&ctx, &ctx.faces[fi]);
 
     /* Working buffers for the expansion loop. */
     int32_t *visible = (int32_t *)malloc(sizeof(int32_t) * 8);
@@ -410,25 +448,24 @@ int rt_quickhull3d_build(const double *points,
     int32_t stack_cap = 8;
     int8_t *mark = (int8_t *)calloc((size_t)ctx.face_cap, 1);
     int32_t mark_cap = ctx.face_cap;
+    int32_t *horizon_slots = NULL;
+    int32_t horizon_cap = 0;
     if (!visible || !stack || !mark)
         goto fail;
 
     for (;;) {
-        /* Pick the face whose farthest conflict point is globally farthest. */
+        /* Pick the face whose cached farthest conflict point is globally farthest. */
         int32_t best_face = -1;
         int32_t best_point = -1;
         double best_dist = ctx.eps;
         for (int32_t fi = 0; fi < ctx.face_count; fi++) {
             qh_face *f = &ctx.faces[fi];
-            if (!f->alive)
+            if (!f->alive || f->farthest_conflict < 0)
                 continue;
-            for (int32_t c = 0; c < f->conflict_count; c++) {
-                double d = qh_face_dist(&ctx, f, f->conflicts[c]);
-                if (d > best_dist) {
-                    best_dist = d;
-                    best_face = fi;
-                    best_point = f->conflicts[c];
-                }
+            if (f->farthest_distance > best_dist) {
+                best_dist = f->farthest_distance;
+                best_face = fi;
+                best_point = f->farthest_conflict;
             }
         }
         if (best_face < 0)
@@ -514,18 +551,47 @@ int rt_quickhull3d_build(const double *points,
             }
         }
         int32_t new_count = ctx.face_count - first_new;
-        /* Link new faces to each other: edge (b, apex) of one face matches
-         * edge (apex, a) of the face whose horizon edge starts at b. */
-        for (int32_t i = 0; i < new_count; i++) {
-            qh_face *fa = &ctx.faces[first_new + i];
-            for (int32_t j = 0; j < new_count; j++) {
-                if (i == j)
-                    continue;
-                qh_face *fb = &ctx.faces[first_new + j];
-                if (fa->v[1] == fb->v[0])
-                    fa->neighbor[1] = first_new + j; /* (b, apex) meets (b=..a', ..) */
-                if (fa->v[0] == fb->v[1])
-                    fa->neighbor[2] = first_new + j; /* (apex, a) meets (.., a) */
+        /* Index each horizon edge by its starting vertex, then link the fan in linear time. */
+        {
+            int32_t needed = 16;
+            while (needed < new_count * 2) {
+                if (needed > INT32_MAX / 2)
+                    goto fail;
+                needed *= 2;
+            }
+            if (needed > horizon_cap) {
+                int32_t *grown =
+                    (int32_t *)realloc(horizon_slots, (size_t)needed * sizeof(int32_t));
+                if (!grown)
+                    goto fail;
+                horizon_slots = grown;
+                horizon_cap = needed;
+            }
+            for (int32_t slot = 0; slot < horizon_cap; ++slot)
+                horizon_slots[slot] = -1;
+            for (int32_t offset = 0; offset < new_count; ++offset) {
+                qh_face *face = &ctx.faces[first_new + offset];
+                uint32_t slot = qh_vertex_hash(face->v[0]) & (uint32_t)(horizon_cap - 1);
+                while (horizon_slots[slot] >= 0) {
+                    if (ctx.faces[first_new + horizon_slots[slot]].v[0] == face->v[0])
+                        goto fail;
+                    slot = (slot + 1u) & (uint32_t)(horizon_cap - 1);
+                }
+                horizon_slots[slot] = offset;
+            }
+            for (int32_t offset = 0; offset < new_count; ++offset) {
+                qh_face *face = &ctx.faces[first_new + offset];
+                uint32_t slot = qh_vertex_hash(face->v[1]) & (uint32_t)(horizon_cap - 1);
+                while (horizon_slots[slot] >= 0 &&
+                       ctx.faces[first_new + horizon_slots[slot]].v[0] != face->v[1])
+                    slot = (slot + 1u) & (uint32_t)(horizon_cap - 1);
+                if (horizon_slots[slot] < 0)
+                    goto fail;
+                int32_t next_face = first_new + horizon_slots[slot];
+                if (ctx.faces[next_face].neighbor[2] >= 0)
+                    goto fail;
+                face->neighbor[1] = next_face;
+                ctx.faces[next_face].neighbor[2] = first_new + offset;
             }
         }
 
@@ -549,7 +615,10 @@ int rt_quickhull3d_build(const double *points,
             f->conflicts = NULL;
             f->conflict_count = 0;
             f->conflict_cap = 0;
+            f->farthest_conflict = -1;
         }
+        for (int32_t nfi = first_new; nfi < ctx.face_count; ++nfi)
+            qh_face_refresh_farthest(&ctx, &ctx.faces[nfi]);
     }
 
     /* Compact: remap used vertices, emit faces. */
@@ -608,14 +677,18 @@ int rt_quickhull3d_build(const double *points,
     free(visible);
     free(stack);
     free(mark);
+    free(horizon_slots);
     qh_free_all(&ctx);
+    free(scaled_points);
     return 1;
 
 fail:
     free(visible);
     free(stack);
     free(mark);
+    free(horizon_slots);
     qh_free_all(&ctx);
+    free(scaled_points);
     return 0;
 }
 
@@ -637,18 +710,33 @@ int32_t rt_quickhull3d_reduce(const double *points,
                               double *out_points) {
     if (!points || point_count <= 0 || max_points <= 0 || !out_points)
         return 0;
+    double coordinate_scale = 0.0;
+    for (int64_t index = 0; index < (int64_t)point_count * 3; ++index) {
+        if (!isfinite(points[index]))
+            return 0;
+        if (fabs(points[index]) > coordinate_scale)
+            coordinate_scale = fabs(points[index]);
+    }
     if (point_count <= max_points) {
         memcpy(out_points, points, sizeof(double) * 3u * (size_t)point_count);
         return point_count;
     }
+    if ((size_t)point_count > SIZE_MAX / (3u * sizeof(double)))
+        return 0;
+    if (!(coordinate_scale > 0.0))
+        coordinate_scale = 1.0;
 
     int32_t *chosen = (int32_t *)malloc(sizeof(int32_t) * (size_t)max_points);
     double *best_d2 = (double *)malloc(sizeof(double) * (size_t)point_count);
-    if (!chosen || !best_d2) {
+    double *scaled_points = (double *)malloc(sizeof(double) * 3u * (size_t)point_count);
+    if (!chosen || !best_d2 || !scaled_points) {
         free(chosen);
         free(best_d2);
+        free(scaled_points);
         return 0;
     }
+    for (int64_t index = 0; index < (int64_t)point_count * 3; ++index)
+        scaled_points[index] = points[index] / coordinate_scale;
 
     /* Seed with the six axis extremes (dedup'd) to guarantee the support
      * bounds survive, then greedily add the point farthest from the set. */
@@ -677,9 +765,9 @@ int32_t rt_quickhull3d_reduce(const double *points,
     for (int32_t i = 0; i < point_count; i++) {
         best_d2[i] = INFINITY;
         for (int32_t c = 0; c < chosen_count; c++) {
-            double dx = points[i * 3 + 0] - points[chosen[c] * 3 + 0];
-            double dy = points[i * 3 + 1] - points[chosen[c] * 3 + 1];
-            double dz = points[i * 3 + 2] - points[chosen[c] * 3 + 2];
+            double dx = scaled_points[i * 3 + 0] - scaled_points[chosen[c] * 3 + 0];
+            double dy = scaled_points[i * 3 + 1] - scaled_points[chosen[c] * 3 + 1];
+            double dz = scaled_points[i * 3 + 2] - scaled_points[chosen[c] * 3 + 2];
             double d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < best_d2[i])
                 best_d2[i] = d2;
@@ -699,9 +787,9 @@ int32_t rt_quickhull3d_reduce(const double *points,
             break; /* every remaining point coincides with a chosen one */
         chosen[chosen_count++] = far_idx;
         for (int32_t i = 0; i < point_count; i++) {
-            double dx = points[i * 3 + 0] - points[far_idx * 3 + 0];
-            double dy = points[i * 3 + 1] - points[far_idx * 3 + 1];
-            double dz = points[i * 3 + 2] - points[far_idx * 3 + 2];
+            double dx = scaled_points[i * 3 + 0] - scaled_points[far_idx * 3 + 0];
+            double dy = scaled_points[i * 3 + 1] - scaled_points[far_idx * 3 + 1];
+            double dz = scaled_points[i * 3 + 2] - scaled_points[far_idx * 3 + 2];
             double d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < best_d2[i])
                 best_d2[i] = d2;
@@ -715,5 +803,6 @@ int32_t rt_quickhull3d_reduce(const double *points,
     }
     free(chosen);
     free(best_d2);
+    free(scaled_points);
     return chosen_count;
 }

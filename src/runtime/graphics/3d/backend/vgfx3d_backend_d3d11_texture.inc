@@ -1286,7 +1286,8 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
     int32_t rows;
     int32_t slice_w = 0;
     int32_t slice_rows = 0;
-    uint8_t *rgba = NULL;
+    uint8_t *rgba;
+    size_t rgba_bytes;
     D3D11_BOX box;
     uint64_t bytes;
     uint32_t row_pitch;
@@ -1310,15 +1311,24 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
                                          ctx->texture_upload_bytes);
     if (rows <= 0)
         return VGFX3D_D3D11_UPLOAD_PENDING;
-    if (vgfx3d_unpack_pixels_rgba_rows(
-            pixels, entry->upload_next_row, rows, 0, &slice_w, &slice_rows, &rgba) != 0 ||
-        !rgba) {
-        free(rgba);
+    if ((size_t)entry->width > SIZE_MAX / 4u ||
+        (size_t)rows > SIZE_MAX / ((size_t)entry->width * 4u))
+        return VGFX3D_D3D11_UPLOAD_FAILED;
+    rgba_bytes = (size_t)entry->width * (size_t)rows * 4u;
+    rgba = vgfx3d_ensure_byte_scratch(
+        &ctx->texture_upload_scratch_rgba, &ctx->texture_upload_scratch_bytes, rgba_bytes);
+    if (!rgba || vgfx3d_unpack_pixels_rgba_rows_into(pixels,
+                                                     entry->upload_next_row,
+                                                     rows,
+                                                     0,
+                                                     rgba,
+                                                     ctx->texture_upload_scratch_bytes,
+                                                     &slice_w,
+                                                     &slice_rows) != 0) {
         return VGFX3D_D3D11_UPLOAD_FAILED;
     }
     if (slice_w != entry->width || slice_rows <= 0 ||
         !vgfx3d_d3d11_validate_row_span(entry->height, entry->upload_next_row, slice_rows)) {
-        free(rgba);
         return VGFX3D_D3D11_UPLOAD_FAILED;
     }
 
@@ -1331,19 +1341,16 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
     box.back = 1;
     d3d11_unbind_draw_resources(ctx);
     if (!vgfx3d_d3d11_compute_rgba8_upload_pitch(slice_w, &row_pitch)) {
-        free(rgba);
         return VGFX3D_D3D11_UPLOAD_FAILED;
     }
     ID3D11DeviceContext_UpdateSubresource(
         ctx->ctx, (ID3D11Resource *)entry->tex, 0, &box, rgba, (UINT)row_pitch, 0);
     if (FAILED(
             d3d11_device_status_after_void_command(ctx, "UpdateSubresource(streamed texture)"))) {
-        free(rgba);
         return VGFX3D_D3D11_UPLOAD_FAILED;
     }
     bytes = (uint64_t)(uint32_t)slice_w * (uint64_t)(uint32_t)slice_rows * 4u;
     d3d11_record_texture_upload_bytes(ctx, bytes);
-    free(rgba);
 
     entry->upload_next_row += slice_rows;
     entry->last_used_frame = ctx->frame_serial;

@@ -49,6 +49,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0292](0292-collection-class-identity-in-zia.md) — Enforce Runtime Collection Class Identity in Zia
 - [ADR 0293](0293-linear-space-colorize-masked.md) — Linear-Space Variant of Pixels.ColorizeMasked
 - [ADR 0294](0294-venue-kit-engine-surface.md) — Venue-Kit Engine Surface: Mesh3D.BendArc, glTF extras Metadata, SceneAsset.FlattenStatic
+- [ADR 0295](0295-portable-vscn-binary-wire-layouts.md) — Make VSCN Binary Wire Layouts Explicit and Portable
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API
@@ -238,6 +239,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0271](0271-postfx-sharpen.md) — PostFX3D.AddSharpen Clamped Unsharp-Mask Pass
 - [ADR 0272](0272-material3d-texture-filters.md) — Material3D.SetTextureFilters Public Sampler Filter Surface
 - [ADR 0273](0273-pixels-region-recolor-ops.md) — Pixels.DilateOwner + Pixels.ColorizeMasked Region-Mask Recoloring
+- [ADR 0295](0295-portable-vscn-binary-wire-layouts.md) — Make VSCN Binary Wire Layouts Explicit and Portable
 - [ADR 0158](0158-scene-level-property-authoring.md) — Make Scene-Level Properties Fully Authorable
 - [ADR 0159](0159-typed-scenenode-metadata-and-vscn-v6.md) — Add Typed SceneNode Metadata and VSCN v6
 - [ADR 0160](0160-project-scene-component-schemas.md) — Add Project Scene Component Schemas

@@ -768,6 +768,9 @@ static void gl_release_host_only_context_storage(gl_context_t *ctx) {
     free(ctx->readback_scratch_rgba);
     ctx->readback_scratch_rgba = NULL;
     ctx->readback_scratch_bytes = 0;
+    free(ctx->texture_upload_scratch_rgba);
+    ctx->texture_upload_scratch_rgba = NULL;
+    ctx->texture_upload_scratch_bytes = 0;
     vgfx3d_postfx_chain_free(&ctx->gpu_postfx_chain);
 }
 
@@ -1024,6 +1027,9 @@ static void gl_destroy_ctx(void *ctx_ptr) {
     free(ctx->readback_scratch_rgba);
     ctx->readback_scratch_rgba = NULL;
     ctx->readback_scratch_bytes = 0;
+    free(ctx->texture_upload_scratch_rgba);
+    ctx->texture_upload_scratch_rgba = NULL;
+    ctx->texture_upload_scratch_bytes = 0;
     gl_destroy_native_binding(ctx);
     free(ctx);
 }
