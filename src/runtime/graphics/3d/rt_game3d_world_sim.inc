@@ -765,7 +765,8 @@ rt_game3d_entity *game3d_world_find_entity_by_body(rt_game3d_world *world, void 
 }
 
 /// @brief Remove `entity` from the registry without rebuilding the name index.
-/// @details Used by tree operations that rebuild once after a batch.
+/// @details The name index removes this entity and promotes any duplicate incrementally before
+///          registry compaction, so tree operations do not need a full-table rebuild.
 /// @param world Borrowed world whose registry and body index are updated.
 /// @param entity Borrowed registered entity to remove.
 static void game3d_world_registry_remove_no_rebuild(rt_game3d_world *world,
@@ -773,6 +774,8 @@ static void game3d_world_registry_remove_no_rebuild(rt_game3d_world *world,
     int32_t index = game3d_world_find_entity_index(world, entity);
     if (index < 0)
         return;
+    const char *old_name = entity->name ? rt_string_cstr(entity->name) : "";
+    (void)game3d_world_name_index_remove_entity(world, entity, old_name);
     int32_t entity_count = game3d_world_repair_entity_count(world);
     void *body = game3d_entity_body_ref(entity);
     if (body && game3d_world_find_entity_by_body(world, body) == entity)
@@ -790,7 +793,6 @@ static void game3d_world_registry_remove_no_rebuild(rt_game3d_world *world,
     if (owned)
         owned->registry_index = -1;
     game3d_release_ref((void **)&owned);
-    world->name_index_valid = 0;
 }
 
 /// @brief Detach an entity's node from its parent, or from the scene root if it has no
@@ -1172,7 +1174,6 @@ static void game3d_world_rollback_spawned_entities(rt_game3d_world *world,
         if (entity && spawned->items[i].assigned_id)
             entity->id = 0;
     }
-    game3d_world_rebuild_name_index(world);
 }
 
 /// @brief Despawn an entity tree with an explicit heap stack, optionally marking nodes destroyed.
@@ -1238,7 +1239,6 @@ static void game3d_world_despawn_entity_tree_internal(rt_game3d_world *world,
     }
     free(stack);
     game3d_entity_visit_set_free(&visited);
-    game3d_world_rebuild_name_index(world);
 }
 
 /// @brief Despawn an entity tree with an explicit heap stack, marking handles stale.

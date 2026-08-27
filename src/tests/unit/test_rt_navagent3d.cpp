@@ -83,6 +83,8 @@ struct NavAgent3DTestLayout {
      * same position as the runtime struct. */
     int8_t stopped;
     NavAgent3DTestLayout *registry_next;
+    NavAgent3DTestLayout *crowd_next;
+    void *crowd;
     NavAgent3DTestLayout *grid_next;
     int32_t grid_cx;
     int32_t grid_cz;
@@ -341,6 +343,50 @@ static void test_navagent_local_avoidance_reduces_head_on_velocity() {
                 "NavAgent3D RVO avoidance adds lateral passing velocity");
     EXPECT_TRUE(std::fabs(avoid_az) + std::fabs(avoid_bz) > 0.25,
                 "NavAgent3D reciprocal avoidance creates a collision-free passing side");
+}
+
+/// @brief Agents sharing one NavMesh but bound to different physics worlds must not steer around
+/// each other; their world binding is part of the internal avoidance-crowd identity.
+static void test_navagent_avoidance_isolated_by_physics_world() {
+    void *mesh = rt_mesh3d_new_plane(20.0, 20.0);
+    void *navmesh = rt_navmesh3d_build(mesh, 0.4, 1.8);
+    void *world_a = rt_world3d_new(0.0, -9.8, 0.0);
+    void *world_b = rt_world3d_new(0.0, -9.8, 0.0);
+    void *character_a = rt_character3d_new(0.4, 1.8, 80.0);
+    void *character_b = rt_character3d_new(0.4, 1.8, 80.0);
+    void *agent_a = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    void *agent_b = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    void *batch[2] = {agent_a, agent_b};
+
+    rt_character3d_set_world(character_a, world_a);
+    rt_character3d_set_world(character_b, world_b);
+    rt_navagent3d_bind_character(agent_a, character_a);
+    rt_navagent3d_bind_character(agent_b, character_b);
+    rt_navagent3d_set_desired_speed(agent_a, 2.0);
+    rt_navagent3d_set_desired_speed(agent_b, 2.0);
+    rt_navagent3d_set_avoidance_enabled(agent_a, 1);
+    rt_navagent3d_set_avoidance_enabled(agent_b, 1);
+    rt_navagent3d_set_avoidance_radius(agent_a, 0.8);
+    rt_navagent3d_set_avoidance_radius(agent_b, 0.8);
+    rt_navagent3d_warp(agent_a, rt_vec3_new(-1.2, 0.0, 0.0));
+    rt_navagent3d_warp(agent_b, rt_vec3_new(1.2, 0.0, 0.0));
+    rt_navagent3d_set_target(agent_a, rt_vec3_new(4.0, 0.0, 0.0));
+    rt_navagent3d_set_target(agent_b, rt_vec3_new(-4.0, 0.0, 0.0));
+
+    EXPECT_TRUE(rt_navagent3d_update_batch(batch, 2, 0.1) == 2,
+                "NavAgent3D updates agents from two isolated physics-world crowds");
+    void *velocity_a = rt_navagent3d_get_desired_velocity(agent_a);
+    void *velocity_b = rt_navagent3d_get_desired_velocity(agent_b);
+    EXPECT_TRUE(rt_vec3_x(velocity_a) > 1.0 && rt_vec3_x(velocity_b) < -1.0,
+                "cross-world NavAgents keep their direct preferred velocities");
+    EXPECT_NEAR(rt_vec3_z(velocity_a),
+                0.0,
+                1e-6,
+                "cross-world NavAgents do not add lateral avoidance for unrelated peers");
+    EXPECT_NEAR(rt_vec3_z(velocity_b),
+                0.0,
+                1e-6,
+                "cross-world peer remains outside the reciprocal avoidance solve");
 }
 
 static void test_navagent_avoidance_breaks_head_on_deadlock() {
@@ -942,6 +988,7 @@ int main() {
     test_navagent_batch_update_is_order_independent();
     test_navagent_batch_bucket_failure_is_transactional();
     test_navagent_local_avoidance_reduces_head_on_velocity();
+    test_navagent_avoidance_isolated_by_physics_world();
     test_navagent_avoidance_breaks_head_on_deadlock();
     test_navagent_crowd_multiple_pairs_cross();
     test_navagent_avoidance_grid_matches_full_scan();

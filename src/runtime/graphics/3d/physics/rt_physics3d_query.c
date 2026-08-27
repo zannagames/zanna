@@ -813,37 +813,34 @@ static int sweep_capsule_against_body(const double *a,
     return hit;
 }
 
-/// @brief `World3D.OverlapSphere(center, radius, mask)` — list bodies overlapping a sphere.
-///
-/// Builds a transient sphere collider, then tests every world body
-/// (after layer/mask filter) for overlap. Returns up to
-/// the configured query cap as a `PhysicsHitList3D`. The query body is
-/// stack-local while its collider is reusable storage owned by the world.
-/// @param obj Borrowed `World3D` runtime object.
-/// @param center_obj Borrowed `Vec3` containing the query center in world coordinates.
-/// @param radius Non-negative sphere radius in world units.
-/// @param mask Collision-layer bit mask used to select candidate bodies.
-/// @return A newly boxed `PhysicsHitList3D`, possibly empty and marked truncated when the logical
-///         result exceeds the configured capacity; or null for an invalid world/vector/radius or
-///         scratch-collider allocation failure.
-void *rt_world3d_overlap_sphere(void *obj, void *center_obj, double radius, int64_t mask) {
-    rt_world3d *w = world3d_checked(obj);
-    rt_query_hit3d *hits = world3d_query_hits_scratch(w);
-    int32_t hit_capacity = w ? w->max_query_hits : 0;
+/// @brief Shared sphere-overlap traversal for boxed and raw callers.
+/// @param w Validated world to query.
+/// @param center Sanitized raw sphere center.
+/// @param radius Sanitized sphere radius.
+/// @param mask Collision-layer mask.
+/// @param hits Optional output hit records.
+/// @param hit_capacity Capacity of @p hits.
+/// @param bodies Optional output borrowed body handles.
+/// @param body_capacity Capacity of @p bodies.
+/// @param[out] out_total Logical overlap count before output caps.
+/// @return Number of hit/body records written, or -1 on collider allocation failure.
+static int32_t world3d_overlap_sphere_core(rt_world3d *w,
+                                           const double center[3],
+                                           double radius,
+                                           int64_t mask,
+                                           rt_query_hit3d *hits,
+                                           int32_t hit_capacity,
+                                           void **bodies,
+                                           int32_t body_capacity,
+                                           int64_t *out_total) {
     int32_t hit_count = 0;
     int64_t total_count = 0;
-    double center[3];
     double query_min[3], query_max[3];
     rt_body3d query_body;
     void *sphere_collider;
-    if (!w || !rt_g3d_is_vec3(center_obj) || !isfinite(radius) || radius < 0.0)
-        return NULL;
-    if (!query_read_vec3(center_obj, center))
-        return NULL;
-    radius = query_sanitize_distance(radius);
     sphere_collider = world3d_query_sphere_collider(w, radius);
     if (!sphere_collider)
-        return NULL;
+        return -1;
     init_temp_query_body(&query_body, sphere_collider, center);
     body3d_update_shape_cache_from_collider(&query_body);
     body_aabb(&query_body, query_min, query_max);
@@ -861,12 +858,76 @@ void *rt_world3d_overlap_sphere(void *obj, void *center_obj, double radius, int6
             continue;
         if (overlap_query_body_against_body(&query_body, body, &hit)) {
             total_count++;
-            if (hits && hit_count < hit_capacity)
-                hits[hit_count++] = hit;
+            if (hit_count < hit_capacity || hit_count < body_capacity) {
+                if (hits && hit_count < hit_capacity)
+                    hits[hit_count] = hit;
+                if (bodies && hit_count < body_capacity)
+                    bodies[hit_count] = body;
+                hit_count++;
+            }
         }
     }
+    if (out_total)
+        *out_total = total_count;
+    return hit_count;
+}
+
+/// @brief `World3D.OverlapSphere(center, radius, mask)` — list bodies overlapping a sphere.
+///
+/// Builds a transient sphere collider, then tests every world body
+/// (after layer/mask filter) for overlap. Returns up to
+/// the configured query cap as a `PhysicsHitList3D`. The query body is
+/// stack-local while its collider is reusable storage owned by the world.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param center_obj Borrowed `Vec3` containing the query center in world coordinates.
+/// @param radius Non-negative sphere radius in world units.
+/// @param mask Collision-layer bit mask used to select candidate bodies.
+/// @return A newly boxed `PhysicsHitList3D`, possibly empty and marked truncated when the logical
+///         result exceeds the configured capacity; or null for an invalid world/vector/radius or
+///         scratch-collider allocation failure.
+void *rt_world3d_overlap_sphere(void *obj, void *center_obj, double radius, int64_t mask) {
+    rt_world3d *w = world3d_checked(obj);
+    rt_query_hit3d *hits = world3d_query_hits_scratch(w);
+    int32_t hit_capacity = w && hits ? w->max_query_hits : 0;
+    int64_t total_count = 0;
+    double center[3];
+    if (!w || !rt_g3d_is_vec3(center_obj) || !isfinite(radius) || radius < 0.0)
+        return NULL;
+    if (!query_read_vec3(center_obj, center))
+        return NULL;
+    radius = query_sanitize_distance(radius);
+    int32_t hit_count = world3d_overlap_sphere_core(
+        w, center, radius, mask, hits, hit_capacity, NULL, 0, &total_count);
+    if (hit_count < 0)
+        return NULL;
     return physics_hit_list3d_new_ex(
         hits, hit_count, total_count, total_count > (int64_t)hit_count);
+}
+
+/// @brief C-internal allocation-free sphere overlap returning borrowed bodies.
+/// @details Results preserve the deterministic world broadphase order and are capped by both
+///          the caller capacity and the world's configured query limit.
+int32_t rt_world3d_overlap_sphere_bodies_raw(void *obj,
+                                             double cx,
+                                             double cy,
+                                             double cz,
+                                             double radius,
+                                             int64_t mask,
+                                             void **out_bodies,
+                                             int32_t capacity) {
+    rt_world3d *w = world3d_checked(obj);
+    double center[3];
+    if (!w || !out_bodies || capacity <= 0 || !isfinite(cx) || !isfinite(cy) || !isfinite(cz) ||
+        !isfinite(radius) || radius < 0.0)
+        return -1;
+    if (capacity > w->max_query_hits)
+        capacity = w->max_query_hits;
+    center[0] = query_saturate_coord(cx);
+    center[1] = query_saturate_coord(cy);
+    center[2] = query_saturate_coord(cz);
+    radius = query_sanitize_distance(radius);
+    return world3d_overlap_sphere_core(
+        w, center, radius, mask, NULL, 0, out_bodies, capacity, NULL);
 }
 
 /// @brief `World3D.OverlapAabb(min, max, mask)` — list bodies overlapping a box.

@@ -45,9 +45,12 @@ void rt_scene3d_test_set_precise_hit_growth_failure(int8_t enabled) {
 ///   returned list and clearing the scene's slot (avoids per-query allocation). Returns an
 ///   empty list when @p scene is NULL.
 /// @param scene Borrowed scene whose native candidate allocation is transferred.
+/// @param preserve_traversal_order Nonzero when the query result exposes scene order.
 /// @return Candidate-list value owning the borrowed allocation, or an empty list.
-static scene3d_spatial_candidate_list_t scene3d_query_borrow_candidates(rt_scene3d *scene) {
+static scene3d_spatial_candidate_list_t scene3d_query_borrow_candidates(
+    rt_scene3d *scene, int preserve_traversal_order) {
     scene3d_spatial_candidate_list_t candidates = {0};
+    candidates.preserve_traversal_order = preserve_traversal_order ? 1 : 0;
     if (!scene)
         return candidates;
     candidates.items = scene->query_candidates;
@@ -105,7 +108,7 @@ void *rt_scene3d_query_aabb(void *obj, void *min_obj, void *max_obj) {
     }
     scene3d_canonicalize_aabb_d(query_min, query_max);
     if (s->use_spatial_index) {
-        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s);
+        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s, 1);
         if (scene3d_spatial_collect_aabb(s, query_min, query_max, &candidates, 0)) {
             for (int32_t i = 0; i < candidates.count; ++i) {
                 rt_scene_node3d *current = candidates.items[i]->node;
@@ -167,7 +170,7 @@ void *rt_scene3d_query_sphere(void *obj, void *center_obj, double radius) {
         return NULL;
     r = scene3d_distance_or_zero(radius);
     if (s->use_spatial_index) {
-        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s);
+        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s, 1);
         double query_min[3] = {scene3d_clamp_abs_or(center[0] - r, 0.0),
                                scene3d_clamp_abs_or(center[1] - r, 0.0),
                                scene3d_clamp_abs_or(center[2] - r, 0.0)};
@@ -249,7 +252,7 @@ void *rt_scene3d_raycast_nodes(void *obj,
     max_distance = scene3d_distance_or_zero(max_distance);
     best_t = max_distance;
     if (s->use_spatial_index) {
-        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s);
+        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s, 1);
         double query_min[3];
         double query_max[3];
         int ok;
@@ -337,7 +340,7 @@ typedef struct {
     double max_distance;
     /// Nearest hit; `best.node` is `NULL` before the first hit.
     scene3d_precise_hit_t best;
-    /// Owned hit array used when @ref collect_all is set.
+    /// Temporarily borrowed scene-retained hit array used when @ref collect_all is set.
     scene3d_precise_hit_t *items;
     /// Number of valid entries in @ref items.
     int32_t count;
@@ -346,6 +349,32 @@ typedef struct {
     /// Monotonic traversal counter stamped onto each accepted hit.
     int64_t order_counter;
 } scene3d_precise_acc_t;
+
+/// @brief Borrow the scene-retained precise-hit array for a collect-all query.
+static void scene3d_precise_borrow_scratch(rt_scene3d *scene, scene3d_precise_acc_t *acc) {
+    if (!scene || !acc)
+        return;
+    acc->items = (scene3d_precise_hit_t *)scene->query_precise_hits;
+    acc->capacity = scene->query_precise_hit_capacity;
+    scene->query_precise_hits = NULL;
+    scene->query_precise_hit_capacity = 0;
+}
+
+/// @brief Return a precise-hit array to its scene for reuse by later queries.
+static void scene3d_precise_return_scratch(rt_scene3d *scene, scene3d_precise_acc_t *acc) {
+    if (!acc)
+        return;
+    acc->count = 0;
+    if (scene) {
+        free(scene->query_precise_hits);
+        scene->query_precise_hits = acc->items;
+        scene->query_precise_hit_capacity = acc->capacity;
+    } else {
+        free(acc->items);
+    }
+    acc->items = NULL;
+    acc->capacity = 0;
+}
 
 /// @brief AABB-prefiltered triangle test for one candidate node.
 /// @details `scene3d_node_world_mesh_aabb` refreshes the node's world matrix,
@@ -398,11 +427,13 @@ static int scene3d_precise_test_node(rt_scene_node3d *node,
 /// @param node Borrowed candidate node.
 /// @param origin Borrowed world ray origin.
 /// @param direction Borrowed normalized world ray direction.
+/// @param order Stable scene traversal ordinal for deterministic ties.
 /// @return Nonzero on success; zero when the result array failed to grow.
 static int scene3d_precise_consider_node(scene3d_precise_acc_t *acc,
                                          rt_scene_node3d *node,
                                          const double origin[3],
-                                         const double direction[3]) {
+                                         const double direction[3],
+                                         int64_t order) {
     scene3d_precise_hit_t hit;
     int32_t next_capacity;
     if (!acc || acc->count < 0 || acc->capacity < 0 || acc->count > acc->capacity ||
@@ -413,9 +444,11 @@ static int scene3d_precise_consider_node(scene3d_precise_acc_t *acc,
         cap = acc->best.distance;
     if (!scene3d_precise_test_node(node, origin, direction, cap, &hit))
         return 1;
-    hit.order = acc->order_counter++;
+    hit.order = order;
     if (!acc->collect_all) {
-        acc->best = hit;
+        if (!acc->best.node || hit.distance < acc->best.distance ||
+            (hit.distance == acc->best.distance && hit.order >= acc->best.order))
+            acc->best = hit;
         return 1;
     }
     if (acc->count == acc->capacity) {
@@ -465,8 +498,8 @@ static int scene3d_precise_hit_compare(const void *lhs, const void *rhs) {
 /// @brief Shared traversal for the triangle-accurate raycast queries.
 /// @details Mirrors `rt_scene3d_raycast_nodes`: the spatial index supplies
 ///   candidates from the ray's swept bounds when enabled, and an iterative
-///   visible-subtree walk covers every other case. Ownership of `acc->items`
-///   stays with the caller regardless of outcome.
+///   visible-subtree walk covers every other case. The caller returns `acc->items`
+///   to the scene scratch pool regardless of outcome.
 /// @param s Borrowed validated scene.
 /// @param origin_obj Borrowed Vec3 ray origin handle.
 /// @param direction_obj Borrowed Vec3 ray direction handle.
@@ -498,7 +531,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
         return 0;
     acc->max_distance = scene3d_distance_or_zero(max_distance);
     if (s->use_spatial_index) {
-        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s);
+        scene3d_spatial_candidate_list_t candidates = scene3d_query_borrow_candidates(s, 0);
         double query_min[3];
         double query_max[3];
         int ok;
@@ -508,8 +541,11 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
             ok = scene3d_spatial_collect_all(s, &candidates);
         if (ok) {
             for (int32_t i = 0; i < candidates.count; ++i) {
-                if (!scene3d_precise_consider_node(
-                        acc, candidates.items[i]->node, origin, direction)) {
+                if (!scene3d_precise_consider_node(acc,
+                                                   candidates.items[i]->node,
+                                                   origin,
+                                                   direction,
+                                                   candidates.items[i]->traversal_order)) {
                     scene3d_query_return_candidates(s, &candidates);
                     rt_trap(trap_message);
                     return 0;
@@ -529,7 +565,7 @@ static int scene3d_raycast_precise_walk(rt_scene3d *s,
         rt_scene_node3d *current = s->query_traversal_stack[--count];
         if (!current->visible)
             continue;
-        if (!scene3d_precise_consider_node(acc, current, origin, direction)) {
+        if (!scene3d_precise_consider_node(acc, current, origin, direction, acc->order_counter++)) {
             rt_trap(trap_message);
             return 0;
         }
@@ -584,18 +620,19 @@ void *rt_scene3d_raycast_nodes_precise_all(void *obj,
     scene3d_precise_acc_t acc = {0};
     void *result;
     acc.collect_all = 1;
+    scene3d_precise_borrow_scratch(s, &acc);
     if (!scene3d_raycast_precise_walk(s,
                                       origin_obj,
                                       direction_obj,
                                       max_distance,
                                       "Scene3D.RaycastNodesPreciseAll: result allocation failed",
                                       &acc)) {
-        free(acc.items);
+        scene3d_precise_return_scratch(s, &acc);
         return NULL;
     }
     result = rt_seq_new_owned();
     if (!result) {
-        free(acc.items);
+        scene3d_precise_return_scratch(s, &acc);
         return NULL;
     }
     if (acc.count > 1)
@@ -605,7 +642,7 @@ void *rt_scene3d_raycast_nodes_precise_all(void *obj,
               scene3d_precise_hit_compare);
     for (int32_t i = 0; i < acc.count; ++i)
         rt_seq_push(result, acc.items[i].node);
-    free(acc.items);
+    scene3d_precise_return_scratch(s, &acc);
     return result;
 }
 

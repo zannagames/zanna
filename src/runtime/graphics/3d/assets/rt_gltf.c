@@ -993,12 +993,14 @@ static int gltf_validate_node_visit(void *nodes_arr,
         }
         state[item.node] = 1;
         if (stack_count >= stack_capacity) {
-            int32_t next_capacity = stack_capacity * 2;
+            int32_t next_capacity;
             gltf_node_visit_item *grown;
-            if (stack_capacity > INT32_MAX / 2) {
+            if (stack_capacity <= 0 || stack_capacity > INT32_MAX / 2 ||
+                (size_t)stack_capacity * 2u > SIZE_MAX / sizeof(*stack)) {
                 free(stack);
                 return 0;
             }
+            next_capacity = stack_capacity * 2;
             grown = (gltf_node_visit_item *)realloc(stack, (size_t)next_capacity * sizeof(*stack));
             if (!grown) {
                 free(stack);
@@ -1021,12 +1023,14 @@ static int gltf_validate_node_visit(void *nodes_arr,
                 if (state[child] == 2)
                     continue;
                 if (stack_count >= stack_capacity) {
-                    int32_t next_capacity = stack_capacity * 2;
+                    int32_t next_capacity;
                     gltf_node_visit_item *grown;
-                    if (stack_capacity > INT32_MAX / 2) {
+                    if (stack_capacity <= 0 || stack_capacity > INT32_MAX / 2 ||
+                        (size_t)stack_capacity * 2u > SIZE_MAX / sizeof(*stack)) {
                         free(stack);
                         return 0;
                     }
+                    next_capacity = stack_capacity * 2;
                     grown = (gltf_node_visit_item *)realloc(stack,
                                                             (size_t)next_capacity * sizeof(*stack));
                     if (!grown) {

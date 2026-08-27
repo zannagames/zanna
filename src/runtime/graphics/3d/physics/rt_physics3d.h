@@ -434,6 +434,24 @@ void *rt_world3d_sweep_capsule(
 /// @param mask Collision-layer mask used to filter bodies.
 /// @return Bounded PhysicsHitList3D, or NULL for invalid input.
 void *rt_world3d_overlap_sphere(void *world, void *center, double radius, int64_t mask);
+/// @brief C-internal allocation-free sphere overlap over raw center components.
+/// @param world World3D handle to query.
+/// @param cx Sphere-center X coordinate.
+/// @param cy Sphere-center Y coordinate.
+/// @param cz Sphere-center Z coordinate.
+/// @param radius Non-negative sphere radius.
+/// @param mask Collision-layer mask used to filter bodies.
+/// @param out_bodies Caller-owned array receiving borrowed Body3D handles.
+/// @param capacity Number of pointer slots available in @p out_bodies.
+/// @return Number of bodies written, or -1 for invalid input/allocation failure.
+int32_t rt_world3d_overlap_sphere_bodies_raw(void *world,
+                                             double cx,
+                                             double cy,
+                                             double cz,
+                                             double radius,
+                                             int64_t mask,
+                                             void **out_bodies,
+                                             int32_t capacity);
 
 /// @brief Find all bodies overlapping an axis-aligned bounding box (non-null list for valid
 /// inputs).

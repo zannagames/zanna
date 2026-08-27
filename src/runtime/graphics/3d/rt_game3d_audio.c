@@ -977,27 +977,26 @@ static void game3d_audio_occlusion_tick(rt_game3d_world *world,
         void *source = rt_g3d_checked_or_null(audio->sources[index], RT_G3D_SOUNDSOURCE3D_CLASS_ID);
         if (!source)
             continue;
-        void *pos_obj = rt_soundsource3d_get_position(source);
-        if (!pos_obj)
+        double pos[3];
+        if (!rt_soundsource3d_get_position_components(source, &pos[0], &pos[1], &pos[2]))
             continue;
-        double pos[3] = {rt_vec3_x(pos_obj), rt_vec3_y(pos_obj), rt_vec3_z(pos_obj)};
-        game3d_release_ref(&pos_obj);
         double to[3] = {pos[0] - listener[0], pos[1] - listener[1], pos[2] - listener[2]};
         double dist = sqrt(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]);
         double occluded = 0.0;
         if (isfinite(dist) && dist > 0.5) {
-            void *origin = rt_vec3_new(listener[0], listener[1], listener[2]);
-            void *dir = rt_vec3_new(to[0] / dist, to[1] / dist, to[2] / dist);
-            if (origin && dir) {
-                void *hit = rt_world3d_raycast(
-                    world->physics, origin, dir, dist - 0.25, audio->occlusion_mask);
-                if (hit) {
-                    occluded = audio->occlusion_amount;
-                    game3d_release_ref(&hit);
-                }
-            }
-            game3d_release_ref(&origin);
-            game3d_release_ref(&dir);
+            void *hit = rt_world3d_raycast_closest_body_raw(world->physics,
+                                                            listener[0],
+                                                            listener[1],
+                                                            listener[2],
+                                                            to[0] / dist,
+                                                            to[1] / dist,
+                                                            to[2] / dist,
+                                                            dist - 0.25,
+                                                            audio->occlusion_mask,
+                                                            NULL,
+                                                            NULL);
+            if (hit)
+                occluded = audio->occlusion_amount;
         }
         rt_soundsource3d_set_occlusion(source, occluded);
     }

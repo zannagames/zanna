@@ -152,6 +152,9 @@ static void navmesh3d_finalizer(void *obj) {
     nm->offmesh_adjacency_starts = NULL;
     nm->offmesh_adjacency_edges = NULL;
     nm->offmesh_adjacency_edge_count = 0;
+    nm->offmesh_adjacency_state = 0;
+    nm->offmesh_adjacency_degraded = 0;
+    nm->offmesh_adjacency_fallback_count = 0;
     nm->area_names = NULL;
     nm->obstacles = NULL;
     nm->qgrid_starts = NULL;

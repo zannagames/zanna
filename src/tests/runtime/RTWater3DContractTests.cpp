@@ -224,6 +224,25 @@ extern "C" void rt_mesh3d_add_triangle(void *m, int64_t, int64_t, int64_t) {
     static_cast<rt_mesh3d *>(m)->index_count += 3;
 }
 
+/* The isolated target deliberately exercises Water3D's software-compatible fallback without
+ * linking the animation subsystem. Production builds provide these through MorphTarget3D. */
+extern "C" void *rt_morphtarget3d_new_packed_internal(int64_t, int32_t, float *, float *) {
+    return nullptr;
+}
+
+extern "C" void rt_morphtarget3d_set_weight(void *, int64_t, double) {}
+
+extern "C" void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *,
+                                                            void *,
+                                                            const double *,
+                                                            void *,
+                                                            const void *,
+                                                            void *,
+                                                            const float *,
+                                                            const float *,
+                                                            int8_t,
+                                                            int8_t) {}
+
 extern "C" void *rt_mat4_identity(void) {
     static double identity[16] = {
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};

@@ -956,6 +956,26 @@ void *rt_world3d_overlap_sphere(void *w, void *center, double radius, int64_t ma
     return NULL;
 }
 
+/// @brief Graphics-disabled raw sphere-overlap stub.
+int32_t rt_world3d_overlap_sphere_bodies_raw(void *w,
+                                             double cx,
+                                             double cy,
+                                             double cz,
+                                             double radius,
+                                             int64_t mask,
+                                             void **out_bodies,
+                                             int32_t capacity) {
+    (void)w;
+    (void)cx;
+    (void)cy;
+    (void)cz;
+    (void)radius;
+    (void)mask;
+    (void)out_bodies;
+    (void)capacity;
+    return -1;
+}
+
 /// @brief Stub for `Physics3DWorld.OverlapAABB` — return every body
 ///        whose collider overlaps a static axis-aligned box `(min_corner,
 ///        max_corner)`. Useful for box triggers and selection regions.

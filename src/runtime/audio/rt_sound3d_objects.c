@@ -1175,6 +1175,23 @@ void *rt_soundsource3d_get_position(void *obj) {
     return rt_vec3_new(position[0], position[1], position[2]);
 }
 
+/// @brief Allocation-free source-position readback with binding synchronization.
+/// @param obj SoundSource3D object.
+/// @param x Output receiving world X.
+/// @param y Output receiving world Y.
+/// @param z Output receiving world Z.
+/// @return One for a valid source and outputs, otherwise zero.
+int8_t rt_soundsource3d_get_position_components(void *obj, double *x, double *y, double *z) {
+    rt_soundsource3d *source = sound3d_source_checked(obj);
+    if (!source || !x || !y || !z)
+        return 0;
+    sound3d_source_sync_binding(source, 0.0);
+    *x = source->position[0];
+    *y = source->position[1];
+    *z = source->position[2];
+    return 1;
+}
+
 /// @brief Manually set the source's world position. Resets the velocity tracker (no jump) and
 /// re-applies spatial volume/pan immediately so playback continues at the new location.
 /// @param obj SoundSource3D object.

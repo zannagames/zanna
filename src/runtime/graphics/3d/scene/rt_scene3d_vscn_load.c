@@ -3008,9 +3008,11 @@ static int32_t vscn_graft_one_prefab(rt_scene_node3d *node,
 /// @param scene Borrowed freshly parsed Scene3D payload.
 /// @param filepath Borrowed source file path used to resolve relative references.
 /// @param parent_stack Borrowed enclosing prefab frame, or `NULL` at the top level.
-static void vscn_graft_prefabs(rt_scene3d *scene,
-                               const char *filepath,
-                               const vscn_prefab_frame *parent_stack) {
+/// @return Nonzero after the complete hierarchy was visited; zero on setup, growth, or allocation
+/// failure so the caller can reject the partially grafted scene transaction.
+static int vscn_graft_prefabs(rt_scene3d *scene,
+                              const char *filepath,
+                              const vscn_prefab_frame *parent_stack) {
     rt_scene_node3d **stack = NULL;
     size_t count = 0;
     size_t capacity = 256;
@@ -3021,10 +3023,10 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
     vscn_prefab_frame self_frame;
 
     if (!scene || !scene->root || !filepath)
-        return;
+        return 0;
     self_path = rt_string_from_bytes(filepath, strlen(filepath));
     if (!self_path)
-        return;
+        return 0;
     self_abs = rt_path_abs(self_path);
     base_dir = rt_path_dir(self_path);
     rt_string_unref(self_path);
@@ -3033,43 +3035,55 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
             rt_string_unref(self_abs);
         if (base_dir)
             rt_string_unref(base_dir);
-        return;
+        return 0;
     }
     self_frame.canonical_path = rt_string_cstr(self_abs);
     self_frame.parent = parent_stack;
     self_frame.depth = parent_stack ? parent_stack->depth + 1 : 1;
     self_frame.instance_budget = parent_stack ? parent_stack->instance_budget : &local_budget;
 
+    if (capacity > SIZE_MAX / sizeof(*stack))
+        goto fail;
     stack = (rt_scene_node3d **)malloc(capacity * sizeof(*stack));
-    if (stack) {
-        stack[count++] = scene->root;
-        while (count > 0) {
-            rt_scene_node3d *current = stack[--count];
-            if (!current)
-                continue;
-            if (current->prefab_path) {
-                scene->unresolved_prefab_count +=
-                    vscn_graft_one_prefab(current, base_dir, &self_frame);
-                continue; /* grafted content never re-resolves */
-            }
-            for (int32_t i = 0; i < scene3d_node_child_count(current); ++i) {
-                if (count >= capacity) {
-                    size_t next_capacity = capacity * 2u;
-                    rt_scene_node3d **grown =
-                        (rt_scene_node3d **)realloc(stack, next_capacity * sizeof(*stack));
-                    if (!grown)
-                        break;
-                    stack = grown;
-                    capacity = next_capacity;
-                }
-                if (count < capacity)
-                    stack[count++] = scene_node3d_checked(current->children[i]);
-            }
+    if (!stack)
+        goto fail;
+    stack[count++] = scene->root;
+    while (count > 0) {
+        rt_scene_node3d *current = stack[--count];
+        if (!current)
+            continue;
+        if (current->prefab_path) {
+            scene->unresolved_prefab_count += vscn_graft_one_prefab(current, base_dir, &self_frame);
+            continue; /* grafted content never re-resolves */
         }
-        free(stack);
+        for (int32_t i = 0; i < scene3d_node_child_count(current); ++i) {
+            if (count >= capacity) {
+                size_t next_capacity;
+                rt_scene_node3d **grown;
+                if (capacity > SIZE_MAX / 2u)
+                    goto fail;
+                next_capacity = capacity * 2u;
+                if (next_capacity <= capacity || next_capacity > SIZE_MAX / sizeof(*stack))
+                    goto fail;
+                grown = (rt_scene_node3d **)realloc(stack, next_capacity * sizeof(*stack));
+                if (!grown)
+                    goto fail;
+                stack = grown;
+                capacity = next_capacity;
+            }
+            stack[count++] = scene_node3d_checked(current->children[i]);
+        }
     }
+    free(stack);
     rt_string_unref(self_abs);
     rt_string_unref(base_dir);
+    return 1;
+
+fail:
+    free(stack);
+    rt_string_unref(self_abs);
+    rt_string_unref(base_dir);
+    return 0;
 }
 
 /// @brief Deserialize a Scene3D from a `.vscn` (JSON) file; returns NULL on failure.
@@ -3431,7 +3445,11 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
         rt_asset_error_set(RT_ASSET_ERROR_CORRUPT, "Scene3D.Load: invalid root metadata");
         goto fail;
     }
-    vscn_graft_prefabs(scene, filepath, prefab_stack);
+    if (!vscn_graft_prefabs(scene, filepath, prefab_stack)) {
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                           "Scene3D.Load: prefab traversal allocation failed");
+        goto fail;
+    }
     scene->node_count = scene3d_count_subtree(scene->root);
     if (scene->node_count < 0) {
         rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,

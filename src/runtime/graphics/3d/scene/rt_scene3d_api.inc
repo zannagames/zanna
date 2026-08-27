@@ -110,12 +110,14 @@ static void rt_scene3d_finalize(void *obj) {
     free(scene->visibility_zones);
     free(scene->visibility_portals);
     free(scene->query_candidates);
+    free(scene->query_precise_hits);
     free(scene->query_traversal_stack);
     free(scene->world_matrix_stack);
     free(scene->sync_stack);
     scene->visibility_zones = NULL;
     scene->visibility_portals = NULL;
     scene->query_candidates = NULL;
+    scene->query_precise_hits = NULL;
     scene->query_traversal_stack = NULL;
     scene->world_matrix_stack = NULL;
     scene->sync_stack = NULL;
@@ -124,6 +126,7 @@ static void rt_scene3d_finalize(void *obj) {
     scene->visibility_portal_count = 0;
     scene->visibility_portal_capacity = 0;
     scene->query_candidate_capacity = 0;
+    scene->query_precise_hit_capacity = 0;
     scene->query_traversal_stack_capacity = 0;
     scene->world_matrix_stack_capacity = 0;
     scene->sync_stack_capacity = 0;
@@ -157,10 +160,12 @@ void *rt_scene3d_new(void) {
     s->spatial_index.dirty = 1;
     s->spatial_index.topology_dirty = 1;
     s->query_candidates = NULL;
+    s->query_precise_hits = NULL;
     s->query_traversal_stack = NULL;
     s->world_matrix_stack = NULL;
     s->sync_stack = NULL;
     s->query_candidate_capacity = 0;
+    s->query_precise_hit_capacity = 0;
     s->query_traversal_stack_capacity = 0;
     s->world_matrix_stack_capacity = 0;
     s->sync_stack_capacity = 0;

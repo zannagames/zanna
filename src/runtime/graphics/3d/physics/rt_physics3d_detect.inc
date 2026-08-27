@@ -1360,26 +1360,126 @@ static void *world3d_cached_event_from_contact(void ***array,
     return event;
 }
 
-/// @brief Return whether a hash-table allocation failure can use the O(n²) diff fallback.
-/// @details The fallback is fine for small event sets and preserves behavior under
-///   memory pressure, but for large scenes it can cause an unbounded frame spike.
-///   This helper caps the fallback by pair comparisons and lets Step fail cleanly
-///   when both contact sets are too large to diff without hash tables.
-/// @param w World3D providing current and previous contact counts.
-/// @param previous_table Hash table for previous contacts, or NULL on allocation failure.
-/// @param current_table Hash table for current contacts, or NULL on allocation failure.
-/// @return One when hash lookup or bounded linear fallback is safe, otherwise zero.
-static int world3d_event_diff_fallback_allowed(const rt_world3d *w,
-                                               const contact_pair_hash_entry *previous_table,
-                                               const contact_pair_hash_entry *current_table) {
-    if (!w)
-        return 0;
-    if (previous_table && current_table)
-        return 1;
-    if (w->contact_count <= 0 || w->previous_contact_count <= 0)
-        return 1;
-    int64_t comparisons = (int64_t)w->contact_count * (int64_t)w->previous_contact_count;
-    return comparisons <= PH3D_EVENT_DIFF_FALLBACK_PAIR_LIMIT;
+/// @brief Canonical endpoint key used by the allocation-light event-diff fallback.
+typedef struct ph3d_contact_endpoint_key {
+    int32_t owner_index;
+    uintptr_t body;
+    uintptr_t collider;
+} ph3d_contact_endpoint_key;
+
+/// @brief Compare canonical contact endpoints without dereferencing collider handles.
+static int ph3d_contact_endpoint_key_compare(const ph3d_contact_endpoint_key *a,
+                                             const ph3d_contact_endpoint_key *b) {
+    if (a->owner_index != b->owner_index)
+        return a->owner_index < b->owner_index ? -1 : 1;
+    if (a->body != b->body)
+        return a->body < b->body ? -1 : 1;
+    if (a->collider != b->collider)
+        return a->collider < b->collider ? -1 : 1;
+    return 0;
+}
+
+/// @brief Build an order-independent two-endpoint identity key for a contact.
+static void ph3d_contact_pair_key(const rt_contact3d *contact, ph3d_contact_endpoint_key out[2]) {
+    ph3d_contact_endpoint_key tmp;
+    out[0].owner_index = contact->body_a ? contact->body_a->owner_index : -1;
+    out[0].body = (uintptr_t)contact->body_a;
+    out[0].collider = (uintptr_t)contact->collider_a;
+    out[1].owner_index = contact->body_b ? contact->body_b->owner_index : -1;
+    out[1].body = (uintptr_t)contact->body_b;
+    out[1].collider = (uintptr_t)contact->collider_b;
+    if (ph3d_contact_endpoint_key_compare(&out[1], &out[0]) < 0) {
+        tmp = out[0];
+        out[0] = out[1];
+        out[1] = tmp;
+    }
+}
+
+/// @brief Compare two contacts by canonical unordered body/collider identity.
+static int ph3d_contact_pair_compare(const rt_contact3d *a, const rt_contact3d *b) {
+    ph3d_contact_endpoint_key ka[2];
+    ph3d_contact_endpoint_key kb[2];
+    int first;
+    ph3d_contact_pair_key(a, ka);
+    ph3d_contact_pair_key(b, kb);
+    first = ph3d_contact_endpoint_key_compare(&ka[0], &kb[0]);
+    return first ? first : ph3d_contact_endpoint_key_compare(&ka[1], &kb[1]);
+}
+
+/// @brief Restore a max-heap of contact indices below @p root.
+static void ph3d_contact_index_sift_down(const rt_contact3d *contacts,
+                                         int32_t *indices,
+                                         int32_t count,
+                                         int32_t root) {
+    if (!contacts || !indices || count <= 1)
+        return;
+    for (;;) {
+        int32_t child;
+        int32_t swap_index = root;
+        if (root > (count - 2) / 2)
+            return;
+        child = root * 2 + 1;
+        if (ph3d_contact_pair_compare(&contacts[indices[swap_index]], &contacts[indices[child]]) <
+            0)
+            swap_index = child;
+        if (child + 1 < count && ph3d_contact_pair_compare(&contacts[indices[swap_index]],
+                                                           &contacts[indices[child + 1]]) < 0)
+            swap_index = child + 1;
+        if (swap_index == root)
+            return;
+        {
+            int32_t tmp = indices[root];
+            indices[root] = indices[swap_index];
+            indices[swap_index] = tmp;
+        }
+        root = swap_index;
+    }
+}
+
+/// @brief In-place heapsort contact indices by pair identity using no auxiliary allocation.
+static void ph3d_contact_indices_sort(const rt_contact3d *contacts,
+                                      int32_t *indices,
+                                      int32_t count) {
+    if (!contacts || !indices || count <= 1)
+        return;
+    for (int32_t root = count / 2; root-- > 0;)
+        ph3d_contact_index_sift_down(contacts, indices, count, root);
+    for (int32_t end = count - 1; end > 0; --end) {
+        int32_t tmp = indices[0];
+        indices[0] = indices[end];
+        indices[end] = tmp;
+        ph3d_contact_index_sift_down(contacts, indices, end, 0);
+    }
+}
+
+/// @brief Classify current/previous membership with an O(n log n) sort and O(n) merge.
+/// @details The index arrays are scratch, so contact/event publication order remains unchanged.
+static void world3d_event_diff_sorted_merge(const rt_world3d *w,
+                                            int32_t *current_indices,
+                                            int32_t *previous_indices,
+                                            uint8_t *current_was_previous,
+                                            uint8_t *previous_still_current) {
+    int32_t current_pos = 0;
+    int32_t previous_pos = 0;
+    for (int32_t i = 0; i < w->contact_count; ++i)
+        current_indices[i] = i;
+    for (int32_t i = 0; i < w->previous_contact_count; ++i)
+        previous_indices[i] = i;
+    ph3d_contact_indices_sort(w->contacts, current_indices, w->contact_count);
+    ph3d_contact_indices_sort(w->previous_contacts, previous_indices, w->previous_contact_count);
+    while (current_pos < w->contact_count && previous_pos < w->previous_contact_count) {
+        int compare =
+            ph3d_contact_pair_compare(&w->contacts[current_indices[current_pos]],
+                                      &w->previous_contacts[previous_indices[previous_pos]]);
+        if (compare < 0) {
+            current_pos++;
+        } else if (compare > 0) {
+            previous_pos++;
+        } else {
+            current_was_previous[current_indices[current_pos++]] = 1u;
+            previous_still_current[previous_indices[previous_pos++]] = 1u;
+        }
+    }
 }
 
 /// @brief Clear all collision/event counts visible to public query APIs.
@@ -1422,25 +1522,28 @@ static int world3d_build_event_buffers(rt_world3d *w) {
     int32_t enter_write = 0;
     int32_t stay_write = 0;
     int32_t exit_write = 0;
+    int use_sorted_merge = 0;
     if (!w)
         return 0;
 
     /* All four transient buffers live in world step-scratch slots: no per-step
      * malloc/free. The two pair tables are alive simultaneously, so they use
      * distinct slots; the two classification flag arrays share one zeroed slot. */
-    previous_table = contact_pair_table_build_scratch(w,
-                                                      PH3D_SCRATCH_PAIR_TABLE_A,
-                                                      w->previous_contacts,
-                                                      w->previous_contact_count,
-                                                      &previous_table_capacity);
-    current_table = contact_pair_table_build_scratch(
-        w, PH3D_SCRATCH_PAIR_TABLE_B, w->contacts, w->contact_count, &current_table_capacity);
-    if (!world3d_event_diff_fallback_allowed(w, previous_table, current_table)) {
-        world3d_step_fail(w, "Physics3D.World.Step: collision-event diff allocation failed");
-        goto fail;
+    if (!g_ph3d_test_force_event_pair_table_failure) {
+        previous_table = contact_pair_table_build_scratch(w,
+                                                          PH3D_SCRATCH_PAIR_TABLE_A,
+                                                          w->previous_contacts,
+                                                          w->previous_contact_count,
+                                                          &previous_table_capacity);
+        current_table = contact_pair_table_build_scratch(
+            w, PH3D_SCRATCH_PAIR_TABLE_B, w->contacts, w->contact_count, &current_table_capacity);
     }
+    use_sorted_merge = w->contact_count > 0 && w->previous_contact_count > 0 &&
+                       (!previous_table || !current_table);
     if (w->contact_count > 0 || w->previous_contact_count > 0) {
         size_t flag_bytes;
+        size_t scratch_bytes;
+        size_t aligned_flag_bytes;
         uint8_t *flags;
         if ((size_t)w->contact_count > SIZE_MAX - (size_t)w->previous_contact_count) {
             world3d_step_fail(w,
@@ -1448,7 +1551,25 @@ static int world3d_build_event_buffers(rt_world3d *w) {
             goto fail;
         }
         flag_bytes = (size_t)w->contact_count + (size_t)w->previous_contact_count;
-        flags = (uint8_t *)world3d_step_scratch_acquire(w, PH3D_SCRATCH_EVENT_FLAGS, flag_bytes, 1);
+        scratch_bytes = flag_bytes;
+        aligned_flag_bytes = flag_bytes;
+        if (use_sorted_merge) {
+            if (flag_bytes > SIZE_MAX - (sizeof(int32_t) - 1u)) {
+                world3d_step_fail(
+                    w, "Physics3D.World.Step: event-diff classification allocation failed");
+                goto fail;
+            }
+            aligned_flag_bytes = (flag_bytes + sizeof(int32_t) - 1u) & ~(sizeof(int32_t) - 1u);
+            if (flag_bytes > SIZE_MAX / sizeof(int32_t) ||
+                aligned_flag_bytes > SIZE_MAX - flag_bytes * sizeof(int32_t)) {
+                world3d_step_fail(
+                    w, "Physics3D.World.Step: event-diff classification allocation failed");
+                goto fail;
+            }
+            scratch_bytes = aligned_flag_bytes + flag_bytes * sizeof(int32_t);
+        }
+        flags =
+            (uint8_t *)world3d_step_scratch_acquire(w, PH3D_SCRATCH_EVENT_FLAGS, scratch_bytes, 1);
         if (!flags) {
             world3d_step_fail(w,
                               "Physics3D.World.Step: event-diff classification allocation failed");
@@ -1456,20 +1577,21 @@ static int world3d_build_event_buffers(rt_world3d *w) {
         }
         current_was_previous = w->contact_count > 0 ? flags : NULL;
         previous_still_current = w->previous_contact_count > 0 ? flags + w->contact_count : NULL;
+        if (use_sorted_merge) {
+            int32_t *current_indices = (int32_t *)(void *)(flags + aligned_flag_bytes);
+            int32_t *previous_indices = current_indices + w->contact_count;
+            world3d_event_diff_sorted_merge(
+                w, current_indices, previous_indices, current_was_previous, previous_still_current);
+        }
     }
 
     for (int32_t i = 0; i < w->contact_count; ++i) {
-        int found = previous_table ? contact_pair_table_contains(
-                                         previous_table, previous_table_capacity, &w->contacts[i])
-                                   : 0;
-        if (!previous_table) {
-            for (int32_t j = 0; j < w->previous_contact_count; ++j) {
-                if (contact_pair_equals(&w->contacts[i], &w->previous_contacts[j])) {
-                    found = 1;
-                    break;
-                }
-            }
-        }
+        int found =
+            use_sorted_merge
+                ? current_was_previous[i] != 0
+                : (previous_table ? contact_pair_table_contains(
+                                        previous_table, previous_table_capacity, &w->contacts[i])
+                                  : 0);
         if (found) {
             current_was_previous[i] = 1u;
             if (!world3d_checked_increment(stay_count, &stay_count))
@@ -1481,18 +1603,12 @@ static int world3d_build_event_buffers(rt_world3d *w) {
     }
 
     for (int32_t i = 0; i < w->previous_contact_count; ++i) {
-        int found = current_table ? contact_pair_table_contains(current_table,
-                                                                current_table_capacity,
-                                                                &w->previous_contacts[i])
-                                  : 0;
-        if (!current_table) {
-            for (int32_t j = 0; j < w->contact_count; ++j) {
-                if (contact_pair_equals(&w->previous_contacts[i], &w->contacts[j])) {
-                    found = 1;
-                    break;
-                }
-            }
-        }
+        int found = use_sorted_merge
+                        ? previous_still_current[i] != 0
+                        : (current_table ? contact_pair_table_contains(current_table,
+                                                                       current_table_capacity,
+                                                                       &w->previous_contacts[i])
+                                         : 0);
         if (!found) {
             if (!world3d_checked_increment(exit_count, &exit_count))
                 goto overflow;

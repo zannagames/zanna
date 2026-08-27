@@ -136,6 +136,8 @@ typedef struct {
     int32_t initialized_shape_count;
     /// Distinguishes a real frame-serial zero from uninitialized history.
     int8_t motion_frame_initialized;
+    /// Nonzero when shape channels alias the packed owned position/normal arrays.
+    int8_t shape_channels_alias_packed;
 } rt_morphtarget3d;
 
 /// @brief Validate @p obj is a heap-allocated Mat4 and return its typed pointer (NULL on mismatch).
@@ -624,8 +626,10 @@ static void rt_morphtarget3d_finalize(void *obj) {
     if (!mt)
         return;
     for (int32_t i = 0, count = morphtarget_finalize_shape_count(mt); i < count; i++) {
-        free(mt->owned_shapes[i].owned_pos_deltas);
-        free(mt->owned_shapes[i].owned_nrm_deltas);
+        if (!mt->shape_channels_alias_packed) {
+            free(mt->owned_shapes[i].owned_pos_deltas);
+            free(mt->owned_shapes[i].owned_nrm_deltas);
+        }
         free(mt->owned_shapes[i].owned_tan_deltas);
     }
     free(mt->owned_shapes);
@@ -655,6 +659,7 @@ static void rt_morphtarget3d_finalize(void *obj) {
     mt->has_prev_weights = 0;
     mt->packed_dirty = 0;
     mt->motion_frame_initialized = 0;
+    mt->shape_channels_alias_packed = 0;
 }
 
 /// @brief Create a morph target container for blendshape animation.
@@ -696,7 +701,61 @@ void *rt_morphtarget3d_new(int64_t vertex_count) {
     mt->max_position_delta_cache = 0.0;
     mt->name_lookup_memo = -1;
     mt->packed_dirty = 1;
+    mt->shape_channels_alias_packed = 0;
     rt_obj_set_finalizer(mt, rt_morphtarget3d_finalize);
+    return mt;
+}
+
+/// @brief Create an immutable shape-major morph payload without per-vertex setter calls.
+/// @details Takes ownership of both arrays only on success. Shape records alias the packed arrays,
+/// so GPU upload and the software fallback consume the same immutable channel storage.
+/// @param vertex_count Positive vertex count shared by every shape.
+/// @param shape_count Positive shape count no greater than the backend limit.
+/// @param owned_position_deltas Owned `shape_count * vertex_count * 3` position lanes.
+/// @param owned_normal_deltas Optional equally sized owned normal lanes.
+/// @return New MorphTarget3D taking both arrays, or `NULL` with ownership unchanged.
+void *rt_morphtarget3d_new_packed_internal(int64_t vertex_count,
+                                           int32_t shape_count,
+                                           float *owned_position_deltas,
+                                           float *owned_normal_deltas) {
+    rt_morphtarget3d *mt;
+    size_t delta_count;
+    if (vertex_count <= 0 || vertex_count > INT32_MAX || shape_count <= 0 || shape_count > 64 ||
+        !owned_position_deltas ||
+        !morphtarget_delta_float_count(shape_count, (int32_t)vertex_count, &delta_count))
+        return NULL;
+    mt = (rt_morphtarget3d *)rt_morphtarget3d_new(vertex_count);
+    if (!mt)
+        return NULL;
+    if (!morphtarget_reserve_shapes(mt, shape_count)) {
+        if (rt_obj_release_check0(mt))
+            rt_obj_free(mt);
+        return NULL;
+    }
+    for (size_t i = 0; i < delta_count; ++i) {
+        owned_position_deltas[i] = morphtarget_sanitize_delta(owned_position_deltas[i]);
+        if (owned_normal_deltas)
+            owned_normal_deltas[i] = morphtarget_sanitize_delta(owned_normal_deltas[i]);
+    }
+    for (int32_t shape_index = 0; shape_index < shape_count; ++shape_index) {
+        size_t offset = (size_t)shape_index * (size_t)vertex_count * 3u;
+        vgfx3d_morph_shape_t *shape = &mt->shapes[shape_index];
+        memset(shape, 0, sizeof(*shape));
+        shape->pos_deltas = owned_position_deltas + offset;
+        shape->owned_pos_deltas = shape->pos_deltas;
+        if (owned_normal_deltas) {
+            shape->nrm_deltas = owned_normal_deltas + offset;
+            shape->owned_nrm_deltas = shape->nrm_deltas;
+        }
+    }
+    mt->owned_packed_pos_deltas = owned_position_deltas;
+    mt->owned_packed_nrm_deltas = owned_normal_deltas;
+    mt->packed_pos_deltas = owned_position_deltas;
+    mt->packed_nrm_deltas = owned_normal_deltas;
+    mt->shape_count = shape_count;
+    mt->initialized_shape_count = shape_count;
+    mt->packed_dirty = 0;
+    mt->shape_channels_alias_packed = 1;
     return mt;
 }
 

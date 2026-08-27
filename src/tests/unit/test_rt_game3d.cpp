@@ -1807,11 +1807,24 @@ static bool test_world_body_index_deletion_tombstones_and_duplicate_names() {
     rt_game3d_entity_set_name(second_named, rt_const_cstr("SharedName"));
     rt_game3d_world_spawn(world, first_named);
     rt_game3d_world_spawn(world, second_named);
+    auto *index_layout = static_cast<Game3DWorldTestLayout *>(world);
+    void *name_index_storage = index_layout->name_index_entities;
     EXPECT_TRUE(rt_game3d_world_find_entity(world, rt_const_cstr("SharedName")) == first_named,
                 "duplicate entity names use first-spawned lookup policy");
     rt_game3d_world_despawn(world, first_named);
     EXPECT_TRUE(rt_game3d_world_find_entity(world, rt_const_cstr("SharedName")) == second_named,
                 "despawning the first duplicate promotes the remaining entity");
+    EXPECT_TRUE(index_layout->name_index_valid != 0 &&
+                    index_layout->name_index_entities == name_index_storage,
+                "despawn updates the existing name index without rebuilding storage");
+    rt_game3d_entity_set_name(second_named, rt_const_cstr("RenamedSurvivor"));
+    EXPECT_TRUE(rt_game3d_world_find_entity(world, rt_const_cstr("SharedName")) == nullptr &&
+                    rt_game3d_world_find_entity(world, rt_const_cstr("RenamedSurvivor")) ==
+                        second_named,
+                "rename incrementally erases the old name and inserts the new name");
+    EXPECT_TRUE(index_layout->name_index_valid != 0 &&
+                    index_layout->name_index_entities == name_index_storage,
+                "rename retains valid name-index storage");
 
     constexpr int kBodyCount = 10;
     void *entities[kBodyCount] = {};

@@ -52,6 +52,7 @@
 #include "rt_physics3d.h"
 #include "rt_platform.h"
 #include "rt_scene3d.h"
+#include "rt_trap.h"
 
 #include <float.h>
 #include <math.h>
@@ -70,6 +71,8 @@ extern void *rt_vec3_new(double x, double y, double z);
 extern double rt_vec3_x(void *v);
 extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
+
+typedef struct navagent_crowd navagent_crowd;
 
 typedef struct rt_navagent3d {
     void *vptr;
@@ -101,6 +104,10 @@ typedef struct rt_navagent3d {
      * suppressed until resumed. */
     int8_t stopped;
     struct rt_navagent3d *registry_next;
+    /// Next agent in the same `(NavMesh3D, physics-world)` avoidance crowd.
+    struct rt_navagent3d *crowd_next;
+    /// Process-owned crowd descriptor; weak keys remain retained through member bindings.
+    navagent_crowd *crowd;
     /* Uniform spatial-hash grid links for O(1)-ish neighbor queries during avoidance. The agent is
      * present in exactly one cell (grid_cx,grid_cz); the cell is refreshed whenever position syncs.
      */
@@ -121,19 +128,29 @@ typedef struct rt_navagent3d {
     int32_t avoidance_allocation_capacity;
 } rt_navagent3d;
 
+/// @brief Process-local avoidance crowd isolated by navigation mesh and bound physics world.
+struct navagent_crowd {
+    void *navmesh;
+    void *world_key;
+    rt_navagent3d *agents;
+    int32_t count;
+    double max_reach;
+    navagent_crowd *next;
+};
+
 static rt_navagent3d *g_navagent3d_registry = NULL;
+static navagent_crowd *g_navagent3d_crowds = NULL;
 /// @brief Live count of agents in g_navagent3d_registry, maintained alongside the linked
 /// list. Lets the RVO neighbour search compare a grid scan's cost (~(2*ring+1)^2 cells)
-/// against a full registry walk (this many agents) and pick the cheaper one, rather than
-/// falling back to the registry at a fixed ring cap (which made one large-reach agent force
-/// every agent onto the O(N) walk). Main-thread only, like the registry itself.
+/// against an isolated-crowd walk and pick the cheaper one. Main-thread only, like the
+/// registry itself.
 static int64_t g_navagent3d_registry_count = 0;
 
 /* Spatial hash over agent XZ positions: each registered agent lives in exactly one bucket so
  * avoidance can scan a small cell neighborhood instead of the whole registry (O(N^2) -> ~O(N)). */
 #define NAVAGENT_GRID_CELL 4.0
 #define NAVAGENT_GRID_INITIAL_BUCKETS 64u
-#define NAVAGENT_GRID_MAX_RING 16 /* beyond this, fall back to a full registry scan */
+#define NAVAGENT_GRID_MAX_RING 16 /* beyond this, prefer an isolated-crowd scan */
 #define NAVAGENT_RVO_MIN_TIME_HORIZON 0.65
 #define NAVAGENT_RVO_MAX_TIME_HORIZON 2.0
 #define NAVAGENT_RVO_MAX_CANDIDATES 48
@@ -156,7 +173,6 @@ static uint32_t g_navagent3d_grid_visit_epoch = 0;
 static int64_t g_navagent3d_last_unique_bucket_visits = 0;
 /* Monotonic max of (effective avoidance radius + desired speed) across agents; bounds the cell
  * neighborhood a query must cover so the grid never misses a contributing peer. */
-static double g_navagent3d_max_reach = 0.0;
 /* Monotonic creation order used to canonicalize batch publication independently of the caller's
  * array order. Registry operations and agent construction are main-thread-only. */
 static uint64_t g_navagent3d_next_stable_order = 0;
@@ -164,10 +180,96 @@ static uint64_t g_navagent3d_next_stable_order = 0;
 static void navagent_grid_refresh(rt_navagent3d *agent);
 static void navagent_grid_remove(rt_navagent3d *agent);
 static int navagent_grid_ensure_capacity(int64_t agent_count);
-static void navagent_recompute_max_reach(void);
+static double navagent_reach(const rt_navagent3d *agent);
 static void navagent_repair_state(rt_navagent3d *agent);
 static double navagent_clamp_abs_or(double value, double fallback, double max_abs);
 static double navagent_coord_or(double value, double fallback);
+
+/// @brief Return the bound physics world that distinguishes otherwise shared NavMesh crowds.
+static void *navagent_world_key(const rt_navagent3d *agent) {
+    return agent && agent->bound_character ? rt_character3d_get_world(agent->bound_character)
+                                           : NULL;
+}
+
+/// @brief Find or optionally create the crowd for one agent's current bindings.
+static navagent_crowd *navagent_crowd_find(rt_navagent3d *agent, int create) {
+    void *navmesh = agent ? agent->navmesh : NULL;
+    void *world_key = navagent_world_key(agent);
+    for (navagent_crowd *crowd = g_navagent3d_crowds; crowd; crowd = crowd->next)
+        if (crowd->navmesh == navmesh && crowd->world_key == world_key)
+            return crowd;
+    if (!create || !agent)
+        return NULL;
+    navagent_crowd *crowd = (navagent_crowd *)calloc(1u, sizeof(*crowd));
+    if (!crowd)
+        return NULL;
+    crowd->navmesh = navmesh;
+    crowd->world_key = world_key;
+    crowd->next = g_navagent3d_crowds;
+    g_navagent3d_crowds = crowd;
+    return crowd;
+}
+
+/// @brief Recompute one crowd's reach bound after a member shrinks or leaves.
+static void navagent_crowd_recompute_max_reach(navagent_crowd *crowd) {
+    double max_reach = 0.0;
+    if (!crowd)
+        return;
+    for (rt_navagent3d *agent = crowd->agents; agent; agent = agent->crowd_next) {
+        double reach = navagent_reach(agent);
+        if (reach > max_reach)
+            max_reach = reach;
+    }
+    crowd->max_reach = max_reach;
+}
+
+/// @brief Unlink an agent from its crowd, destroying an empty descriptor.
+static void navagent_crowd_remove(rt_navagent3d *agent) {
+    navagent_crowd *crowd = agent ? agent->crowd : NULL;
+    if (!crowd)
+        return;
+    rt_navagent3d **member = &crowd->agents;
+    while (*member && *member != agent)
+        member = &(*member)->crowd_next;
+    if (*member == agent) {
+        *member = agent->crowd_next;
+        if (crowd->count > 0)
+            crowd->count--;
+    }
+    agent->crowd = NULL;
+    agent->crowd_next = NULL;
+    if (crowd->count > 0) {
+        navagent_crowd_recompute_max_reach(crowd);
+        return;
+    }
+    navagent_crowd **link = &g_navagent3d_crowds;
+    while (*link && *link != crowd)
+        link = &(*link)->next;
+    if (*link == crowd)
+        *link = crowd->next;
+    free(crowd);
+}
+
+/// @brief Move an agent into the crowd matching its current navmesh and character world.
+static int navagent_crowd_refresh(rt_navagent3d *agent) {
+    navagent_crowd *expected;
+    if (!agent)
+        return 0;
+    if (agent->crowd && agent->crowd->navmesh == agent->navmesh &&
+        agent->crowd->world_key == navagent_world_key(agent))
+        return 1;
+    expected = navagent_crowd_find(agent, 1);
+    if (!expected || expected->count == INT32_MAX)
+        return 0;
+    navagent_crowd_remove(agent);
+    agent->crowd = expected;
+    agent->crowd_next = expected->agents;
+    expected->agents = agent;
+    expected->count++;
+    if (navagent_reach(agent) > expected->max_reach)
+        expected->max_reach = navagent_reach(agent);
+    return 1;
+}
 
 /// @brief Validate @p obj as a NavAgent3D handle and return its typed pointer (NULL on mismatch).
 /// @param obj Opaque runtime object handle.
@@ -187,6 +289,8 @@ static void navagent_register(rt_navagent3d *agent) {
     agent->registry_next = g_navagent3d_registry;
     g_navagent3d_registry = agent;
     g_navagent3d_registry_count++;
+    if (!navagent_crowd_refresh(agent))
+        rt_trap("NavAgent3D: avoidance crowd allocation failed");
     (void)navagent_grid_ensure_capacity(g_navagent3d_registry_count);
     navagent_grid_refresh(agent); /* insert into the spatial grid at its current cell */
 }
@@ -199,6 +303,7 @@ static void navagent_unregister(rt_navagent3d *agent) {
     if (!agent)
         return;
     navagent_grid_remove(agent);
+    navagent_crowd_remove(agent);
     while (*link) {
         if (*link == agent) {
             *link = agent->registry_next;
@@ -213,7 +318,6 @@ static void navagent_unregister(rt_navagent3d *agent) {
                 g_navagent3d_grid_bucket_count = 0;
                 g_navagent3d_grid_visit_epoch = 0;
             }
-            navagent_recompute_max_reach();
             return;
         }
         link = &(*link)->registry_next;
@@ -371,8 +475,8 @@ static void navagent_release_local(void *obj) {
 /// @details Allocation capacities and identities are private authority; mutable
 ///          legacy pointers/counts are restored to the current owned path.
 ///          Wrong-class retained slots are cleared as unowned corruption. A
-///          repaired reach also grows the process-wide query bound so local
-///          avoidance cannot miss peers after numeric state repair.
+///          repaired reach also refreshes the isolated crowd query bound so
+///          local avoidance cannot miss peers after numeric state repair.
 /// @param[in,out] agent Agent state to repair; null is ignored.
 static void navagent_repair_state(rt_navagent3d *agent) {
     if (!agent)
@@ -397,11 +501,13 @@ static void navagent_repair_state(rt_navagent3d *agent) {
         agent->stopping_distance, agent->radius, NAVAGENT_DISTANCE_MAX);
     agent->desired_speed =
         navagent_nonnegative_capped_or(agent->desired_speed, 4.0, NAVAGENT_SPEED_MAX);
-    {
+    if (!navagent_crowd_refresh(agent))
+        rt_trap("NavAgent3D: avoidance crowd allocation failed");
+    if (agent->crowd) {
         double repaired_reach =
             agent->avoidance_radius + agent->desired_speed * NAVAGENT_RVO_MAX_TIME_HORIZON;
-        if (repaired_reach > g_navagent3d_max_reach)
-            g_navagent3d_max_reach = repaired_reach;
+        if (repaired_reach > agent->crowd->max_reach)
+            agent->crowd->max_reach = repaired_reach;
     }
     agent->remaining_distance =
         navagent_nonnegative_capped_or(agent->remaining_distance, 0.0, NAVAGENT_DISTANCE_MAX);
@@ -525,20 +631,6 @@ static double navagent_reach(const rt_navagent3d *agent) {
         navagent_nonnegative_capped_or(agent ? agent->desired_speed : 0.0, 0.0, NAVAGENT_SPEED_MAX);
     return navagent_nonnegative_capped_or(
         r + s * NAVAGENT_RVO_MAX_TIME_HORIZON, 0.0, NAVAGENT_DISTANCE_MAX);
-}
-
-/// @brief Recompute the global maximum avoidance reach from registered agents.
-/// @details Called when an agent is removed or a reach-affecting property
-///          shrinks. This keeps grid neighbor-ring queries from using a stale
-///          overlarge bound forever after the largest agent changes.
-static void navagent_recompute_max_reach(void) {
-    double max_reach = 0.0;
-    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
-        double reach = navagent_reach(agent);
-        if (reach > max_reach)
-            max_reach = reach;
-    }
-    g_navagent3d_max_reach = max_reach;
 }
 
 /// @brief Quantize a world coordinate to its spatial-grid cell index (clamped to ±1e9; 0 if
@@ -670,7 +762,7 @@ static void navagent_grid_remove(rt_navagent3d *agent) {
     agent->in_grid = 0;
 }
 
-/// @brief Keep @p agent's grid cell current and grow the global reach bound. Called after every
+/// @brief Keep @p agent's grid cell current and grow its crowd reach bound. Called after every
 ///   position sync and on registration; moves the agent between buckets only when its cell changes.
 /// @param agent Mutable registered agent; null is a no-op.
 static void navagent_grid_refresh(rt_navagent3d *agent) {
@@ -681,8 +773,8 @@ static void navagent_grid_refresh(rt_navagent3d *agent) {
     if (!agent)
         return;
     reach = navagent_reach(agent);
-    if (reach > g_navagent3d_max_reach)
-        g_navagent3d_max_reach = reach;
+    if (agent->crowd && reach > agent->crowd->max_reach)
+        agent->crowd->max_reach = reach;
     if (!agent->in_grid) {
         navagent_grid_insert(agent);
         return;
@@ -873,7 +965,7 @@ static double navagent_rvo_peer_penalty(rt_navagent3d *agent,
     double closest_x;
     double closest_z;
     double closest_sq;
-    if (other == agent || !other->avoidance_enabled || other->navmesh != agent->navmesh)
+    if (other == agent || !other->avoidance_enabled || other->crowd != agent->crowd)
         return 0.0;
     other_radius = navagent_effective_avoidance_radius(other);
     combined = agent_radius + other_radius;
@@ -1017,7 +1109,7 @@ static int navagent_collect_avoidance_neighbors(rt_navagent3d *agent,
     do {                                                                                           \
         rt_navagent3d *candidate_agent__ = (candidate_);                                           \
         if (candidate_agent__ != agent && candidate_agent__->avoidance_enabled &&                  \
-            candidate_agent__->navmesh == agent->navmesh &&                                        \
+            candidate_agent__->crowd == agent->crowd &&                                            \
             navagent_effective_avoidance_radius(candidate_agent__) > 0.0 &&                        \
             !navagent_neighbor_list_append(agent, &count, candidate_agent__)) {                    \
             return 0;                                                                              \
@@ -1025,17 +1117,14 @@ static int navagent_collect_avoidance_neighbors(rt_navagent3d *agent,
     } while (0)
 
     if (use_grid && agent->in_grid) {
-        double dmax = navagent_reach(agent) + g_navagent3d_max_reach;
+        double dmax = navagent_reach(agent) + (agent->crowd ? agent->crowd->max_reach : 0.0);
         int ring = (int)ceil(dmax / NAVAGENT_GRID_CELL) + 1;
-        /* Use the spatial grid while its cell-scan cost (~(2*ring+1)^2) is no worse than a
-         * full registry walk. A single large-reach agent inflates g_navagent3d_max_reach
-         * (and thus `ring`) for everyone; comparing costs keeps the grid for the common
-         * moderately-inflated case instead of dropping every agent onto the O(N) registry
-         * scan at a fixed ring cap. Both paths are exhaustive, so the neighbour set is
-         * identical regardless of which is chosen. */
+        /* Use the spatial grid while its cell-scan cost (~(2*ring+1)^2) is no worse than walking
+         * this agent's isolated crowd. Per-crowd reach/count bounds prevent unrelated worlds or
+         * NavMeshes from inflating the ring or forcing a process-wide scan. */
         int64_t grid_cells = (int64_t)(2 * ring + 1) * (int64_t)(2 * ring + 1);
-        if (ring >= 1 &&
-            (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= g_navagent3d_registry_count)) {
+        if (ring >= 1 && (ring <= NAVAGENT_GRID_MAX_RING ||
+                          grid_cells <= (agent->crowd ? agent->crowd->count : 0))) {
             int32_t cx = agent->grid_cx;
             int32_t cz = agent->grid_cz;
             uint32_t visit_epoch = navagent_grid_next_visit_epoch();
@@ -1060,11 +1149,12 @@ static int navagent_collect_avoidance_neighbors(rt_navagent3d *agent,
             *out_count = count;
             return 1;
         }
-        /* reach too large for a tight neighborhood: fall through to the full registry scan */
+        /* Reach too large for a tight neighborhood: scan only the isolated crowd. */
     }
 
-    for (rt_navagent3d *other = g_navagent3d_registry; other; other = other->registry_next)
-        NAVAGENT_APPEND_IF_PEER(other);
+    if (agent->crowd)
+        for (rt_navagent3d *other = agent->crowd->agents; other; other = other->crowd_next)
+            NAVAGENT_APPEND_IF_PEER(other);
     *out_neighbors = agent->avoidance_neighbors;
     *out_count = count;
 #undef NAVAGENT_APPEND_IF_PEER
@@ -1097,7 +1187,7 @@ static double navagent_rvo_neighbor_list_penalty(rt_navagent3d *agent,
     return penalty;
 }
 
-/// @brief Evaluate one candidate velocity against the grid or full registry.
+/// @brief Evaluate one candidate velocity against the grid or isolated crowd.
 /// @param agent Borrowed registered agent being solved.
 /// @param agent_radius Effective avoidance radius for @p agent.
 /// @param horizon Positive collision-prediction horizon in seconds.
@@ -1114,14 +1204,14 @@ static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
     rt_navagent3d *other;
     double penalty = 0.0;
     if (use_grid && agent->in_grid) {
-        double dmax = navagent_reach(agent) + g_navagent3d_max_reach;
+        double dmax = navagent_reach(agent) + (agent->crowd ? agent->crowd->max_reach : 0.0);
         int ring = (int)ceil(dmax / NAVAGENT_GRID_CELL) + 1;
         /* See navagent_collect_avoidance_neighbors: prefer the grid while its scan cost
          * (~(2*ring+1)^2 cells) is no worse than walking all g_navagent3d_registry_count
          * agents, rather than falling back at a fixed ring cap. Both paths are exhaustive. */
         int64_t grid_cells = (int64_t)(2 * ring + 1) * (int64_t)(2 * ring + 1);
-        if (ring >= 1 &&
-            (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= g_navagent3d_registry_count)) {
+        if (ring >= 1 && (ring <= NAVAGENT_GRID_MAX_RING ||
+                          grid_cells <= (agent->crowd ? agent->crowd->count : 0))) {
             int32_t cx = agent->grid_cx;
             int32_t cz = agent->grid_cz;
             uint32_t visit_epoch = navagent_grid_next_visit_epoch();
@@ -1149,8 +1239,10 @@ static double navagent_rvo_candidate_penalty(rt_navagent3d *agent,
         }
         /* reach too large for a tight neighborhood: fall through to the full scan */
     }
-    for (other = g_navagent3d_registry; other; other = other->registry_next)
-        penalty += navagent_rvo_peer_penalty(agent, other, agent_radius, horizon, cand_x, cand_z);
+    if (agent->crowd)
+        for (other = agent->crowd->agents; other; other = other->crowd_next)
+            penalty +=
+                navagent_rvo_peer_penalty(agent, other, agent_radius, horizon, cand_x, cand_z);
     return penalty;
 }
 
@@ -1279,7 +1371,7 @@ static void navagent_apply_local_avoidance(rt_navagent3d *agent, double dt) {
 ///   well as the preferred velocity derived after path preparation.
 typedef struct {
     rt_navagent3d *agent;
-    void *navmesh;
+    navagent_crowd *crowd;
     uint64_t stable_order;
     double position[3];
     double velocity[3];
@@ -1313,7 +1405,6 @@ typedef struct {
     int32_t *bucket_heads;
     uint32_t *bucket_visit_stamps;
     uint32_t bucket_count;
-    double max_reach;
 } navagent_batch_context_t;
 
 /* Main-thread reusable staging buffers remove per-frame allocation churn for crowd updates. They
@@ -1507,46 +1598,101 @@ static int32_t navagent_batch_find_snapshot(const navagent_batch_snapshot_t *sna
     return -1;
 }
 
-/// @brief Populate and spatially index an immutable snapshot of every registered agent.
-/// @details Registration prepends agents in monotonically increasing creation order. Filling the
-///   array backward therefore produces stable ascending order without a second batch sort, so both
-///   full scans and hash-bucket walks remain deterministic independent of caller selection order.
-/// @param context Output context whose fixed bucket table and reusable snapshot pointer are filled.
-/// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
-static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
-    int32_t count;
-    int32_t write_index;
-    if (!context || g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX ||
-        !navagent_batch_reserve_buckets((int32_t)g_navagent3d_registry_count))
+/// @brief Compare immutable snapshots by stable agent creation order.
+static int navagent_batch_snapshot_compare(const void *lhs, const void *rhs) {
+    const navagent_batch_snapshot_t *a = (const navagent_batch_snapshot_t *)lhs;
+    const navagent_batch_snapshot_t *b = (const navagent_batch_snapshot_t *)rhs;
+    if (a->stable_order < b->stable_order)
+        return -1;
+    if (a->stable_order > b->stable_order)
+        return 1;
+    return (uintptr_t)a->agent<(uintptr_t)b->agent ? -1 : (uintptr_t)a->agent>(uintptr_t) b->agent
+               ? 1
+               : 0;
+}
+
+/// @brief Count agents in the distinct avoidance crowds represented by selected items.
+static int32_t navagent_batch_relevant_count(const navagent_batch_item_t *items, int32_t count) {
+    int32_t total = 0;
+    if (!items || count <= 0)
         return 0;
-    count = (int32_t)g_navagent3d_registry_count;
-    write_index = count;
-    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
-        if (write_index <= 0 || count > g_navagent_batch_snapshot_capacity)
-            return 0;
-        navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[--write_index];
-        memset(snapshot, 0, sizeof(*snapshot));
-        snapshot->agent = agent;
-        snapshot->navmesh = agent->navmesh;
-        snapshot->stable_order = agent->stable_order;
-        navagent_vec_copy(snapshot->position, agent->position);
-        navagent_vec_copy(snapshot->velocity, agent->velocity);
-        navagent_vec_copy(snapshot->desired_velocity, agent->desired_velocity);
-        navagent_preferred_velocity_xz(agent, &snapshot->preferred_x, &snapshot->preferred_z);
-        snapshot->desired_speed =
-            navagent_nonnegative_capped_or(agent->desired_speed, 0.0, NAVAGENT_SPEED_MAX);
-        snapshot->avoidance_radius = navagent_effective_avoidance_radius(agent);
-        snapshot->reach = navagent_reach(agent);
-        snapshot->grid_cx = navagent_grid_coord(snapshot->position[0]);
-        snapshot->grid_cz = navagent_grid_coord(snapshot->position[2]);
-        snapshot->grid_next = -1;
-        snapshot->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
+    for (int32_t i = 0; i < count; ++i) {
+        navagent_crowd *crowd = items[i].agent ? items[i].agent->crowd : NULL;
+        if (!crowd)
+            continue;
+        int seen = 0;
+        for (int32_t j = 0; j < i; ++j)
+            if (items[j].agent && items[j].agent->crowd == crowd) {
+                seen = 1;
+                break;
+            }
+        if (seen)
+            continue;
+        if (crowd->count < 0 || total > INT32_MAX - crowd->count)
+            return -1;
+        total += crowd->count;
     }
-    if (write_index != 0)
+    return total;
+}
+
+/// @brief Populate and spatially index immutable snapshots for selected crowds only.
+/// @details Distinct crowd lists avoid copying unrelated worlds/NavMeshes. The resulting compact
+///   array is sorted by stable creation order so batch results remain caller-order independent.
+/// @param context Output context whose fixed bucket table and reusable snapshot pointer are filled.
+/// @param items Stable selected-agent table identifying the crowds to include.
+/// @param item_count Number of unique selected items.
+/// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
+static int navagent_batch_build_snapshot(navagent_batch_context_t *context,
+                                         const navagent_batch_item_t *items,
+                                         int32_t item_count) {
+    int32_t count = navagent_batch_relevant_count(items, item_count);
+    int32_t write_index = 0;
+    if (!context || count < 0 || count > g_navagent_batch_snapshot_capacity ||
+        !navagent_batch_reserve_buckets(count))
         return 0;
+    for (int32_t selected = 0; selected < item_count; ++selected) {
+        navagent_crowd *crowd = items[selected].agent ? items[selected].agent->crowd : NULL;
+        if (!crowd)
+            continue;
+        int seen = 0;
+        for (int32_t earlier = 0; earlier < selected; ++earlier)
+            if (items[earlier].agent && items[earlier].agent->crowd == crowd) {
+                seen = 1;
+                break;
+            }
+        if (seen)
+            continue;
+        for (rt_navagent3d *agent = crowd->agents; agent; agent = agent->crowd_next) {
+            if (write_index >= count)
+                return 0;
+            navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[write_index++];
+            memset(snapshot, 0, sizeof(*snapshot));
+            snapshot->agent = agent;
+            snapshot->crowd = crowd;
+            snapshot->stable_order = agent->stable_order;
+            navagent_vec_copy(snapshot->position, agent->position);
+            navagent_vec_copy(snapshot->velocity, agent->velocity);
+            navagent_vec_copy(snapshot->desired_velocity, agent->desired_velocity);
+            navagent_preferred_velocity_xz(agent, &snapshot->preferred_x, &snapshot->preferred_z);
+            snapshot->desired_speed =
+                navagent_nonnegative_capped_or(agent->desired_speed, 0.0, NAVAGENT_SPEED_MAX);
+            snapshot->avoidance_radius = navagent_effective_avoidance_radius(agent);
+            snapshot->reach = navagent_reach(agent);
+            snapshot->grid_cx = navagent_grid_coord(snapshot->position[0]);
+            snapshot->grid_cz = navagent_grid_coord(snapshot->position[2]);
+            snapshot->grid_next = -1;
+            snapshot->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
+        }
+    }
+    if (write_index != count)
+        return 0;
+    if (count > 1)
+        qsort(g_navagent_batch_snapshots,
+              (size_t)count,
+              sizeof(*g_navagent_batch_snapshots),
+              navagent_batch_snapshot_compare);
     context->snapshots = g_navagent_batch_snapshots;
     context->snapshot_count = count;
-    context->max_reach = 0.0;
     context->bucket_heads = g_navagent_batch_bucket_heads;
     context->bucket_visit_stamps = g_navagent_batch_bucket_visit_stamps;
     context->bucket_count = g_navagent_batch_bucket_capacity;
@@ -1558,8 +1704,6 @@ static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
             snapshot->grid_cx, snapshot->grid_cz, context->bucket_count);
         snapshot->grid_next = context->bucket_heads[bucket];
         context->bucket_heads[bucket] = i;
-        if (snapshot->reach > context->max_reach)
-            context->max_reach = snapshot->reach;
     }
     return 1;
 }
@@ -1581,7 +1725,7 @@ static int navagent_batch_append_peer(const navagent_batch_context_t *context,
     const navagent_batch_snapshot_t *self = &context->snapshots[self_index];
     const navagent_batch_snapshot_t *candidate = &context->snapshots[candidate_index];
     if (candidate_index == self_index || !candidate->avoidance_enabled ||
-        candidate->navmesh != self->navmesh || candidate->avoidance_radius <= 0.0)
+        candidate->crowd != self->crowd || candidate->avoidance_radius <= 0.0)
         return 1;
     g_navagent_batch_neighbor_indices[(*count)++] = candidate_index;
     return 1;
@@ -1601,7 +1745,7 @@ static int navagent_batch_collect_peers(const navagent_batch_context_t *context,
     if (!context || !out_count || self_index < 0 || self_index >= context->snapshot_count)
         return 0;
     const navagent_batch_snapshot_t *self = &context->snapshots[self_index];
-    double max_distance = self->reach + context->max_reach;
+    double max_distance = self->reach + (self->crowd ? self->crowd->max_reach : 0.0);
     int ring = (int)ceil(max_distance / NAVAGENT_GRID_CELL) + 1;
     int64_t grid_cells = (int64_t)(2 * ring + 1) * (int64_t)(2 * ring + 1);
     if (ring >= 1 && (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= context->snapshot_count)) {
@@ -1667,7 +1811,7 @@ static double navagent_batch_peer_penalty(const navagent_batch_snapshot_t *self,
     double closest_z;
     double closest_sq;
     if (!self || !other || self == other || !other->avoidance_enabled ||
-        other->navmesh != self->navmesh)
+        other->crowd != self->crowd)
         return 0.0;
     combined = self->avoidance_radius + other->avoidance_radius;
     if (combined <= 0.0)
@@ -1797,7 +1941,7 @@ static int navagent_batch_solve_velocity(const navagent_batch_context_t *context
 }
 
 /// @brief Test-only: verify the spatial-grid avoidance query produces the same steering adjustment
-///   as a full registry scan for every registered agent (they must agree up to floating-point
+///   as an isolated-crowd scan for every registered agent (they must agree up to floating-point
 ///   summation order). @return 1 if all agents agree (or none registered), 0 on any mismatch. Not
 ///   part of the scripting surface.
 int8_t rt_navagent3d_check_avoidance_grid_parity(void) {
@@ -2342,11 +2486,11 @@ void rt_navagent3d_update(void *obj, double dt) {
 /// @brief Update an arbitrary set of agents through deterministic snapshot/solve/apply phases.
 /// @details Valid unique handles are canonicalized by monotonic creation order, so caller array
 ///   order cannot affect preparation or publication. All selected agents first prepare their path
-///   velocity; the complete live registry is then snapshotted once; every avoidance solve reads
-///   only that immutable state; solved velocities and positions are finally published in the same
-///   stable handle order. Invalid handles and duplicates are ignored. The function is main-thread
-///   only, matching agent registration, binding, and the live spatial grid. Reusable process-owned
-///   scratch buffers avoid allocation after the largest observed batch has warmed up.
+///   velocity; only the selected agents' avoidance crowds are then snapshotted; every avoidance
+///   solve reads that immutable state; solved velocities and positions are finally published in
+///   the same stable handle order. Invalid handles and duplicates are ignored. The function is
+///   main-thread only, matching agent registration, binding, and the live spatial grid. Reusable
+///   process-owned scratch buffers avoid allocation after the largest observed batch has warmed up.
 /// @param agents Array of candidate NavAgent3D handles. The array is borrowed for the call.
 /// @param agent_count Number of entries available in @p agents.
 /// @param dt Tick duration in seconds, sanitized and capped identically to individual Update.
@@ -2355,18 +2499,14 @@ void rt_navagent3d_update(void *obj, double dt) {
 int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, double dt) {
     navagent_batch_context_t context;
     int32_t selected_count = 0;
-    int32_t registry_count;
+    int32_t relevant_count;
     RT_ASSERT_MAIN_THREAD();
     dt = navagent_nonnegative_capped_or(dt, 0.0, NAVAGENT_DT_MAX);
     if (!agents || agent_count <= 0 || agent_count > INT32_MAX || dt <= 0.0 ||
         g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX ||
         g_navagent_batch_active)
         return 0;
-    registry_count = (int32_t)g_navagent3d_registry_count;
-    if (!navagent_batch_reserve_items((int32_t)agent_count) ||
-        !navagent_batch_reserve_snapshots(registry_count) ||
-        !navagent_batch_reserve_neighbors(registry_count) ||
-        !navagent_batch_reserve_buckets(registry_count))
+    if (!navagent_batch_reserve_items((int32_t)agent_count))
         return 0;
 
     for (int64_t i = 0; i < agent_count; i++) {
@@ -2394,6 +2534,11 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
             g_navagent_batch_items[unique_count] = g_navagent_batch_items[i];
         unique_count++;
     }
+    relevant_count = navagent_batch_relevant_count(g_navagent_batch_items, unique_count);
+    if (relevant_count < unique_count || !navagent_batch_reserve_snapshots(relevant_count) ||
+        !navagent_batch_reserve_neighbors(relevant_count) ||
+        !navagent_batch_reserve_buckets(relevant_count))
+        return 0;
 
     g_navagent_batch_active = 1;
     for (int32_t i = 0; i < unique_count; i++) {
@@ -2404,7 +2549,7 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
                                  : 0;
     }
     memset(&context, 0, sizeof(context));
-    if (!navagent_batch_build_snapshot(&context)) {
+    if (!navagent_batch_build_snapshot(&context, g_navagent_batch_items, unique_count)) {
         g_navagent_batch_active = 0;
         return 0;
     }
@@ -2650,10 +2795,10 @@ void rt_navagent3d_set_desired_speed(void *obj, double speed) {
     old_reach = navagent_reach(agent);
     agent->desired_speed = repaired;
     new_reach = navagent_reach(agent);
-    if (new_reach > g_navagent3d_max_reach)
-        g_navagent3d_max_reach = new_reach;
-    else if (new_reach < old_reach && old_reach >= g_navagent3d_max_reach)
-        navagent_recompute_max_reach();
+    if (agent->crowd && new_reach > agent->crowd->max_reach)
+        agent->crowd->max_reach = new_reach;
+    else if (agent->crowd && new_reach < old_reach && old_reach >= agent->crowd->max_reach)
+        navagent_crowd_recompute_max_reach(agent->crowd);
 }
 
 /// @brief Returns 1 if the agent automatically rebuilds its path on the repath interval. When
@@ -2680,7 +2825,7 @@ void rt_navagent3d_set_auto_repath(void *obj, int8_t enabled) {
     agent->auto_repath = canonical;
 }
 
-/// @brief Returns 1 when same-NavMesh local separation steering is enabled.
+/// @brief Returns 1 when same-crowd local separation steering is enabled.
 /// @param obj Opaque NavAgent3D handle.
 /// @return 1 when local avoidance is enabled, otherwise 0, including invalid handles.
 int8_t rt_navagent3d_get_avoidance_enabled(void *obj) {
@@ -2688,7 +2833,7 @@ int8_t rt_navagent3d_get_avoidance_enabled(void *obj) {
     return agent && agent->avoidance_enabled ? 1 : 0;
 }
 
-/// @brief Toggle opt-in same-NavMesh local separation steering.
+/// @brief Toggle opt-in same-crowd local separation steering.
 /// @param obj Opaque NavAgent3D handle.
 /// @param enabled Non-zero to enable reciprocal local avoidance.
 void rt_navagent3d_set_avoidance_enabled(void *obj, int8_t enabled) {
@@ -2729,10 +2874,10 @@ void rt_navagent3d_set_avoidance_radius(void *obj, double radius) {
     old_reach = navagent_reach(agent);
     agent->avoidance_radius = repaired;
     new_reach = navagent_reach(agent);
-    if (new_reach > g_navagent3d_max_reach)
-        g_navagent3d_max_reach = new_reach;
-    else if (new_reach < old_reach && old_reach >= g_navagent3d_max_reach)
-        navagent_recompute_max_reach();
+    if (agent->crowd && new_reach > agent->crowd->max_reach)
+        agent->crowd->max_reach = new_reach;
+    else if (agent->crowd && new_reach < old_reach && old_reach >= agent->crowd->max_reach)
+        navagent_crowd_recompute_max_reach(agent->crowd);
 }
 
 /// @brief Bind the agent to a CharacterController3D — `_update` will call `_move` on the
@@ -2752,6 +2897,8 @@ void rt_navagent3d_bind_character(void *obj, void *controller) {
         rt_obj_retain_maybe(controller);
     navagent_release_class_ref(&agent->bound_character, RT_G3D_CHARACTER3D_CLASS_ID);
     agent->bound_character = controller;
+    if (!navagent_crowd_refresh(agent))
+        rt_trap("NavAgent3D.BindCharacter: avoidance crowd allocation failed");
     navagent_sync_position_from_bindings(agent);
     if (agent->bound_character && agent->bound_node)
         navagent_set_node_world_position(agent->bound_node, agent->position);

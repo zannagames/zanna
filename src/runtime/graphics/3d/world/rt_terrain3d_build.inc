@@ -1464,6 +1464,17 @@ void rt_terrain3d_rebuild_splat_weights(void *obj) {
             rt_obj_free(map1);
         return;
     }
+    rt_pixels_impl *map0_pixels = rt_pixels_checked_impl_or_null(map0);
+    rt_pixels_impl *map1_pixels = rt_pixels_checked_impl_or_null(map1);
+    if (!map0_pixels || !map1_pixels || map0_pixels->width != t->width ||
+        map0_pixels->height != t->depth || map1_pixels->width != t->width ||
+        map1_pixels->height != t->depth || !map0_pixels->data || !map1_pixels->data) {
+        if (rt_obj_release_check0(map0))
+            rt_obj_free(map0);
+        if (rt_obj_release_check0(map1))
+            rt_obj_free(map1);
+        return;
+    }
     double sx = terrain_scale_axis_or(t, 0, 1.0);
     double sy = terrain_scale_axis_or(t, 1, 1.0);
     double sz = terrain_scale_axis_or(t, 2, 1.0);
@@ -1509,14 +1520,17 @@ void rt_terrain3d_rebuild_splat_weights(void *obj) {
                 double w = weights[layer] / sum;
                 ch[layer] = terrain_channel_to_u8(w);
             }
-            int64_t p0 = ((int64_t)ch[0] << 24) | ((int64_t)ch[1] << 16) | ((int64_t)ch[2] << 8) |
-                         (int64_t)ch[3];
-            int64_t p1 = ((int64_t)ch[4] << 24) | ((int64_t)ch[5] << 16) | ((int64_t)ch[6] << 8) |
-                         (int64_t)ch[7];
-            rt_pixels_set(map0, ix, iz, p0);
-            rt_pixels_set(map1, ix, iz, p1);
+            uint32_t p0 = ((uint32_t)ch[0] << 24) | ((uint32_t)ch[1] << 16) |
+                          ((uint32_t)ch[2] << 8) | (uint32_t)ch[3];
+            uint32_t p1 = ((uint32_t)ch[4] << 24) | ((uint32_t)ch[5] << 16) |
+                          ((uint32_t)ch[6] << 8) | (uint32_t)ch[7];
+            size_t pixel_index = (size_t)iz * (size_t)t->width + (size_t)ix;
+            map0_pixels->data[pixel_index] = p0;
+            map1_pixels->data[pixel_index] = p1;
         }
     }
+    pixels_touch(map0_pixels);
+    pixels_touch(map1_pixels);
     terrain_assign_texture_ref(&t->splat_map, map0);
     terrain_assign_texture_ref(&t->splat_map2, map1);
     if (rt_obj_release_check0(map0))

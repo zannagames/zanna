@@ -425,6 +425,7 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
     if (!nm || !g_cost || !parent || !closed || !heap || start < 0 || start >= tc || goal < 0 ||
         goal >= tc || heap_cap <= 0)
         return 0;
+    (void)navmesh3d_ensure_offmesh_adjacency(nm);
     g_cost[start] = 0;
     heap_push(heap, &heap_size, heap_cap, start, navmesh3d_astar_heuristic(nm, start, goal));
     while (heap_size > 0) {
@@ -1401,7 +1402,7 @@ int8_t rt_navmesh3d_add_offmesh_link(void *obj, void *from, void *to, int8_t bid
     link->state_flags = 0;
     link->traversal_cost = 1.0f;
     link->kind = NULL;
-    (void)navmesh3d_build_offmesh_adjacency(nm);
+    navmesh3d_mark_offmesh_adjacency_dirty(nm);
     return 1;
 }
 

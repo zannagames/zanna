@@ -12,7 +12,8 @@
 //   - Grid resolution: configurable [8, 256], default 64x64 quads.
 //   - Wave: height = amplitude * sin(freq * (x + z) - time * speed) (legacy).
 //   - Gerstner multi-wave path sums up to WATER_MAX_WAVES superimposed waves.
-//   - Normals computed analytically from wave derivative for smooth shading.
+//   - Wave bases and analytic-normal deltas are immutable GPU morph shapes.
+//   - Per-tick work updates two scalar weights per wave; software draws blend on the CPU.
 //   - Drawn with alpha-blended material; backface cull disabled around draw.
 //   - Mutable resource mirrors are republished from private retained-owner identities.
 //   - Retained scalar state is canonicalized before readback, distance gating, or mesh work.
@@ -30,9 +31,9 @@
  * @file rt_water3d.c
  * @brief Implements animated grid water with legacy sine or multi-wave Gerstner deformation.
  *
- * Water3D retains a reusable mesh and material, updates analytic normals on the CPU, supports
- * texture/normal/environment bindings, and can skip off-range grid rebuilds while preserving wave
- * phase.
+ * Water3D retains a reusable mesh, procedural morph payload, and material. GPU backends deform the
+ * immutable grid in their vertex shaders; the software backend blends the same analytic wave
+ * bases during draw. Texture, normal, environment, and distance-gating controls remain supported.
  */
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -43,6 +44,7 @@
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_heap.h"
+#include "rt_morphtarget3d.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
 #include "rt_platform.h"
@@ -105,6 +107,25 @@ extern void rt_material3d_set_env_map(void *m, void *cubemap);
 extern void rt_material3d_set_reflectivity(void *m, double r);
 extern void rt_material3d_set_ssr_enabled(void *m, int8_t enabled);
 extern void rt_material3d_set_color(void *m, double r, double g, double b);
+extern void *rt_morphtarget3d_new_packed_internal(int64_t vertex_count,
+                                                  int32_t shape_count,
+                                                  float *owned_position_deltas,
+                                                  float *owned_normal_deltas)
+    WATER3D_OPTIONAL_SYMBOL;
+extern void rt_morphtarget3d_set_weight(void *mt,
+                                        int64_t shape,
+                                        double weight) WATER3D_OPTIONAL_SYMBOL;
+extern void rt_canvas3d_draw_mesh_matrix_morphed_bounds(void *canvas,
+                                                        void *mesh,
+                                                        const double *model_matrix,
+                                                        void *material,
+                                                        const void *motion_key,
+                                                        void *morph_targets,
+                                                        const float *local_bounds_min,
+                                                        const float *local_bounds_max,
+                                                        int8_t conservative_bounds,
+                                                        int8_t disable_occlusion)
+    WATER3D_OPTIONAL_SYMBOL;
 
 #define WATER_GRID 64
 #define WATER_MAX_WAVES 8
@@ -159,6 +180,10 @@ typedef struct {
     void *owned_texture;
     void *owned_normal_map;
     void *owned_env_map;
+    /* Immutable procedural wave bases consumed by the existing GPU-morph pipeline. */
+    void *owned_wave_morph;
+    int32_t wave_morph_shape_count;
+    int8_t wave_morph_enabled;
 } rt_water3d;
 
 /// @brief Validate @p obj as a Water3D handle and return its typed pointer (NULL on mismatch).
@@ -233,6 +258,17 @@ static void water3d_release_env_map_slot(void **slot) {
     if (!slot || !*slot)
         return;
     if (!rt_g3d_has_class(*slot, RT_G3D_CUBEMAP3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    water3d_release_ref(slot);
+}
+
+/// @brief Release a retained procedural MorphTarget3D slot after validating its class.
+static void water3d_release_morph_slot(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_g3d_has_class(*slot, RT_G3D_MORPHTARGET3D_CLASS_ID)) {
         rt_g3d_ref_slot_clear_unowned(slot);
         return;
     }
@@ -350,6 +386,13 @@ static void water3d_repair_resource_handles(rt_water3d *w) {
     if (w->owned_env_map && (!rt_g3d_has_class(w->owned_env_map, RT_G3D_CUBEMAP3D_CLASS_ID) ||
                              !rt_cubemap3d_is_complete(w->owned_env_map)))
         water3d_release_env_map_slot(&w->owned_env_map);
+    if (w->owned_wave_morph &&
+        !rt_g3d_has_class(w->owned_wave_morph, RT_G3D_MORPHTARGET3D_CLASS_ID)) {
+        water3d_release_morph_slot(&w->owned_wave_morph);
+        w->wave_morph_enabled = 0;
+        w->wave_morph_shape_count = 0;
+        w->mesh_dirty = 1;
+    }
 
     if (w->mesh != w->owned_mesh)
         w->mesh_dirty = 1;
@@ -472,6 +515,9 @@ static void water3d_repair_state(rt_water3d *w) {
 
     w->mesh_dirty = w->mesh_dirty ? 1 : 0;
     w->material_dirty = w->material_dirty ? 1 : 0;
+    w->wave_morph_enabled = w->wave_morph_enabled && w->owned_wave_morph ? 1 : 0;
+    if (!w->wave_morph_enabled)
+        w->wave_morph_shape_count = 0;
     if (geometry_changed)
         w->mesh_dirty = 1;
     if (material_changed)
@@ -599,6 +645,7 @@ static void water3d_finalizer(void *obj) {
     water3d_release_pixels_slot(&w->owned_texture);
     water3d_release_pixels_slot(&w->owned_normal_map);
     water3d_release_env_map_slot(&w->owned_env_map);
+    water3d_release_morph_slot(&w->owned_wave_morph);
     water3d_release_mesh_slot(&w->owned_mesh);
     water3d_release_material_slot(&w->owned_material);
     w->texture = NULL;
@@ -657,6 +704,9 @@ void *rt_water3d_new(double width, double depth) {
     w->owned_texture = NULL;
     w->owned_normal_map = NULL;
     w->owned_env_map = NULL;
+    w->owned_wave_morph = NULL;
+    w->wave_morph_shape_count = 0;
+    w->wave_morph_enabled = 0;
     rt_obj_set_finalizer(w, water3d_finalizer);
     return w;
 }
@@ -1156,6 +1206,147 @@ static void water3d_fill_vertices(rt_water3d *w,
     }
 }
 
+/// @brief Fill immutable flat vertices and two analytic morph bases per configured wave.
+/// @details For phase `theta - timePhase`, position uses
+/// `sin(theta)*cos(timePhase) - cos(theta)*sin(timePhase)`. Normal derivatives use the same two
+/// weights, letting existing morph shaders reproduce the former CPU wave and analytic normal.
+static int water3d_build_wave_morph(rt_water3d *w,
+                                    rt_mesh3d *mesh,
+                                    int32_t grid,
+                                    int32_t row,
+                                    double hx,
+                                    double hz,
+                                    double step_x,
+                                    double step_z,
+                                    double inv_grid,
+                                    const int8_t *wave_valid) {
+    int32_t logical_wave_count;
+    int32_t shape_count;
+    size_t delta_count;
+    float *position_deltas;
+    float *normal_deltas;
+    void *morph;
+    if (!w || !mesh || !mesh->vertices || !rt_morphtarget3d_new_packed_internal ||
+        !rt_morphtarget3d_set_weight || !rt_canvas3d_draw_mesh_matrix_morphed_bounds)
+        return 0;
+    logical_wave_count = w->wave_count > 0 ? w->wave_count : 1;
+    shape_count = logical_wave_count * 2;
+    if ((size_t)shape_count > SIZE_MAX / (size_t)mesh->vertex_count ||
+        (size_t)shape_count * (size_t)mesh->vertex_count > SIZE_MAX / 3u)
+        return 0;
+    delta_count = (size_t)shape_count * (size_t)mesh->vertex_count * 3u;
+    if (!rt_alloc_count_ok(delta_count, sizeof(float)))
+        return 0;
+    position_deltas = (float *)calloc(delta_count, sizeof(float));
+    normal_deltas = (float *)calloc(delta_count, sizeof(float));
+    if (!position_deltas || !normal_deltas) {
+        free(position_deltas);
+        free(normal_deltas);
+        return 0;
+    }
+
+    for (int32_t gz = 0; gz <= grid; ++gz) {
+        for (int32_t gx = 0; gx <= grid; ++gx) {
+            uint32_t vertex_index = (uint32_t)(gz * row + gx);
+            vgfx3d_vertex_t *vertex = &mesh->vertices[vertex_index];
+            double x = w->center_x - hx + gx * step_x;
+            double z = w->center_z - hz + gz * step_z;
+            double u = (double)gx * inv_grid;
+            double v = (double)gz * inv_grid;
+            memset(vertex, 0, sizeof(*vertex));
+            vertex->pos[0] = (float)x;
+            vertex->pos[1] = (float)w->height;
+            vertex->pos[2] = (float)z;
+            vertex->normal[1] = 1.0f;
+            vertex->uv[0] = (float)u;
+            vertex->uv[1] = (float)v;
+            vertex->uv1[0] = (float)u;
+            vertex->uv1[1] = (float)v;
+            vertex->color[0] = 1.0f;
+            vertex->color[1] = 1.0f;
+            vertex->color[2] = 1.0f;
+            vertex->color[3] = 1.0f;
+            vertex->tangent[3] = 1.0f;
+            if (mesh->positions64) {
+                mesh->positions64[(size_t)vertex_index * 3u + 0] = x;
+                mesh->positions64[(size_t)vertex_index * 3u + 1] = w->height;
+                mesh->positions64[(size_t)vertex_index * 3u + 2] = z;
+            }
+
+            for (int32_t wave_index = 0; wave_index < logical_wave_count; ++wave_index) {
+                double dir_x;
+                double dir_z;
+                double amplitude;
+                double frequency;
+                double theta;
+                double sine;
+                double cosine;
+                size_t sin_base =
+                    ((size_t)(wave_index * 2) * mesh->vertex_count + vertex_index) * 3u;
+                size_t cos_base = sin_base + (size_t)mesh->vertex_count * 3u;
+                if (w->wave_count > 0) {
+                    const water_wave_t *wave = &w->waves[wave_index];
+                    if (!wave_valid[wave_index])
+                        continue;
+                    dir_x = wave->dir[0];
+                    dir_z = wave->dir[1];
+                    amplitude = wave->amplitude;
+                    frequency = wave->frequency;
+                    theta = frequency * (dir_x * x + dir_z * z);
+                } else {
+                    dir_x = 1.0;
+                    dir_z = 1.0;
+                    amplitude = w->wave_amplitude;
+                    frequency = w->wave_frequency;
+                    theta = frequency * (x + z);
+                }
+                if (!isfinite(theta))
+                    theta = 0.0;
+                theta = fmod(theta, WATER3D_TWO_PI);
+                sine = sin(theta);
+                cosine = cos(theta);
+                position_deltas[sin_base + 1u] = (float)(amplitude * sine);
+                position_deltas[cos_base + 1u] = (float)(-amplitude * cosine);
+                normal_deltas[sin_base + 0u] = (float)(-amplitude * frequency * dir_x * cosine);
+                normal_deltas[sin_base + 2u] = (float)(-amplitude * frequency * dir_z * cosine);
+                normal_deltas[cos_base + 0u] = (float)(-amplitude * frequency * dir_x * sine);
+                normal_deltas[cos_base + 2u] = (float)(-amplitude * frequency * dir_z * sine);
+            }
+        }
+    }
+
+    morph = rt_morphtarget3d_new_packed_internal(
+        mesh->vertex_count, shape_count, position_deltas, normal_deltas);
+    if (!morph) {
+        free(position_deltas);
+        free(normal_deltas);
+        return 0;
+    }
+    water3d_release_morph_slot(&w->owned_wave_morph);
+    w->owned_wave_morph = morph;
+    w->wave_morph_shape_count = shape_count;
+    w->wave_morph_enabled = 1;
+    return 1;
+}
+
+/// @brief Update the scalar phase weights for an immutable procedural wave morph.
+static void water3d_update_wave_morph_weights(rt_water3d *w) {
+    int32_t logical_wave_count;
+    if (!w || !w->wave_morph_enabled || !w->owned_wave_morph || !rt_morphtarget3d_set_weight)
+        return;
+    logical_wave_count = w->wave_count > 0 ? w->wave_count : 1;
+    if (w->wave_morph_shape_count != logical_wave_count * 2)
+        return;
+    for (int32_t wave_index = 0; wave_index < logical_wave_count; ++wave_index) {
+        double speed = w->wave_count > 0 ? w->waves[wave_index].speed : w->wave_speed;
+        double phase = fmod(w->time * speed, WATER3D_TWO_PI);
+        if (!isfinite(phase))
+            phase = 0.0;
+        rt_morphtarget3d_set_weight(w->owned_wave_morph, wave_index * 2, cos(phase));
+        rt_morphtarget3d_set_weight(w->owned_wave_morph, wave_index * 2 + 1, sin(phase));
+    }
+}
+
 /// @brief Emit the 2*grid*grid triangle indices for the water grid (two triangles per cell).
 /// @param mesh Mesh3D with writable storage for all grid indices.
 /// @param grid Number of quads per axis.
@@ -1204,20 +1395,18 @@ static int water3d_update_material(rt_water3d *w) {
     return 1;
 }
 
-/// @brief Advance the water simulation by `dt` seconds and regenerate the surface mesh.
-/// @details Rebuilds the (grid+1)x(grid+1) vertex grid and the 2*grid*grid triangle list
-///          each frame. Vertex heights come from either the Gerstner multi-wave sum (when
-///          waves have been registered via `rt_water3d_add_wave`) or a single legacy sine
-///          wave. Per-vertex normals are derived analytically from the wave derivative
-///          (dy/dx, dy/dz) rather than numerically, keeping shading smooth across the
-///          grid independent of resolution.
+/// @brief Advance the water simulation by `dt` seconds and update its wave phase weights.
+/// @details Builds the grid and two immutable morph bases per wave only when topology or wave
+///          parameters change. Normal ticks update scalar sine/cosine weights, so Metal, D3D11,
+///          and OpenGL deform in their existing morph vertex shaders. Builds without that pipeline
+///          retain the analytic CPU vertex/normal fallback.
 ///
 ///          Mesh and material are created lazily on the first update and then reused. Material
 ///          bindings are refreshed only when retained material state changes; geometry-only
 ///          frames avoid redundant setter traffic. Reflectivity is forced to 0 when no
 ///          environment cubemap is bound so the shader skips the reflection path.
 ///
-///          A zero delta does not advance time or rewrite clean geometry, but it still applies
+///          A zero delta does not advance time or rebuild clean geometry, but it still applies
 ///          pending material changes and lazily recovers missing/dirty render resources.
 /// @param obj Opaque water handle from `rt_water3d_new` (no-op when NULL).
 /// @param dt Elapsed seconds since the previous update (must be > 0 to apply).
@@ -1245,7 +1434,8 @@ void rt_water3d_update(void *obj, double dt) {
      * the water's surface rectangle, keep the phase advance above but skip the
      * grid rebuild entirely. First build (no mesh yet) always runs so the
      * water has geometry to draw when it comes into range. */
-    if (w->sim_distance > 0.0 && w->has_camera_pos && w->owned_mesh && !w->mesh_dirty) {
+    if (!w->wave_morph_enabled && w->sim_distance > 0.0 && w->has_camera_pos && w->owned_mesh &&
+        !w->mesh_dirty) {
         double half_w = w->width * 0.5;
         double half_d = w->depth * 0.5;
         double dx = fmax(fabs(w->last_camera_pos[0] - w->center_x) - half_w, 0.0);
@@ -1306,13 +1496,24 @@ void rt_water3d_update(void *obj, double dt) {
     mesh->index_count = required_indices;
     mesh->build_failed = 0;
 
-    /* Vertices */
-    water3d_fill_vertices(
-        w, mesh, grid, row, hx, hz, step_x, step_z, inv_grid, wave_valid, wave_time_phase);
-
-    if (topology_dirty)
+    if (topology_dirty) {
         water3d_fill_indices(mesh, grid, row);
-    rt_mesh3d_touch_geometry(mesh);
+        if (!water3d_build_wave_morph(
+                w, mesh, grid, row, hx, hz, step_x, step_z, inv_grid, wave_valid)) {
+            water3d_release_morph_slot(&w->owned_wave_morph);
+            w->wave_morph_shape_count = 0;
+            w->wave_morph_enabled = 0;
+            water3d_fill_vertices(
+                w, mesh, grid, row, hx, hz, step_x, step_z, inv_grid, wave_valid, wave_time_phase);
+        }
+        rt_mesh3d_touch_geometry(mesh);
+    } else if (!w->wave_morph_enabled) {
+        /* Software/isolated builds without the morph pipeline retain the legacy CPU fallback. */
+        water3d_fill_vertices(
+            w, mesh, grid, row, hx, hz, step_x, step_z, inv_grid, wave_valid, wave_time_phase);
+        rt_mesh3d_touch_geometry(mesh);
+    }
+    water3d_update_wave_morph_weights(w);
     if (((rt_mesh3d *)w->mesh)->build_failed) {
         rt_mesh3d_clear(w->mesh);
         w->mesh_dirty = 1;
@@ -1388,7 +1589,35 @@ void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
     };
     rt_mesh3d *mesh = (rt_mesh3d *)w->owned_mesh;
     water3d_enable_double_sided_material(w->owned_material);
-    if (rt_canvas3d_draw_mesh_matrix_keyed_bounds) {
+    if (w->wave_morph_enabled && w->owned_wave_morph &&
+        rt_canvas3d_draw_mesh_matrix_morphed_bounds) {
+        float bounds_min[3];
+        float bounds_max[3];
+        double vertical_amplitude = 0.0;
+        rt_mesh3d_refresh_bounds(mesh);
+        memcpy(bounds_min, mesh->aabb_min, sizeof(bounds_min));
+        memcpy(bounds_max, mesh->aabb_max, sizeof(bounds_max));
+        if (w->wave_count > 0) {
+            for (int32_t i = 0; i < w->wave_count; ++i)
+                vertical_amplitude += w->waves[i].amplitude;
+        } else {
+            vertical_amplitude = w->wave_amplitude;
+        }
+        if (!isfinite(vertical_amplitude) || vertical_amplitude < 0.0)
+            vertical_amplitude = 0.0;
+        bounds_min[1] -= (float)vertical_amplitude;
+        bounds_max[1] += (float)vertical_amplitude;
+        rt_canvas3d_draw_mesh_matrix_morphed_bounds(c,
+                                                    w->owned_mesh,
+                                                    identity,
+                                                    w->owned_material,
+                                                    w,
+                                                    w->owned_wave_morph,
+                                                    bounds_min,
+                                                    bounds_max,
+                                                    1,
+                                                    1);
+    } else if (rt_canvas3d_draw_mesh_matrix_keyed_bounds) {
         rt_mesh3d_refresh_bounds(mesh);
         rt_canvas3d_draw_mesh_matrix_keyed_bounds(c,
                                                   w->owned_mesh,

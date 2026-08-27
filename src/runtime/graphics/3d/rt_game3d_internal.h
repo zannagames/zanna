@@ -673,6 +673,15 @@ typedef struct rt_game3d_stream_load_candidate {
     double distance_sq;
 } rt_game3d_stream_load_candidate;
 
+/// @brief One sorted manifest terrain edge used for logarithmic neighbor lookup.
+typedef struct rt_game3d_stream_terrain_edge {
+    double coordinate; ///< X for east/west edges, Z for north/south edges.
+    double range_min;  ///< Minimum coordinate along the edge.
+    double range_max;  ///< Maximum coordinate along the edge.
+    int32_t tile_index;
+    int8_t edge;
+} rt_game3d_stream_terrain_edge;
+
 /// @brief One streaming terrain tile parsed from the terrain manifest: spatial
 ///   center/scale/radius and heightmap, material/nav/layer/collision metadata, an
 ///   optional malloc-owned binary sidecar payload, and the loaded terrain plus
@@ -795,6 +804,9 @@ typedef struct rt_game3d_world_stream {
     int32_t cell_flag_capacity;      /* flag array capacity */
     rt_string loaded_events[RT_GAME3D_STREAM_MAX_LOADED_EVENTS]; /* just-loaded cell names */
     int32_t loaded_event_count;                                  /* buffered loaded-cell events */
+    rt_game3d_stream_terrain_edge *terrain_edges; /* Sorted four-edge manifest index. */
+    int32_t terrain_edge_count;
+    double terrain_edge_tolerance_max;
 } rt_game3d_world_stream;
 
 /// @brief One entry in the process-wide model cache, keyed by path + asset flag
@@ -1111,6 +1123,8 @@ typedef struct rt_game3d_targetlock {
     int8_t just_lost;         ///< One-shot poll flag set on release.
     void *candidate_scratch;  ///< Owned reusable target-lock candidate records.
     int32_t candidate_capacity;
+    void **candidate_bodies; ///< Owned reusable raw overlap body pointers.
+    int32_t candidate_body_capacity;
     void **candidate_seen; ///< Owned reusable open-addressed entity identity set.
     int32_t candidate_seen_capacity;
 } rt_game3d_targetlock;
@@ -2190,6 +2204,15 @@ int game3d_world_body_index_add(rt_game3d_world *world, rt_game3d_entity *entity
 /// @param entity Borrowed entity whose retained name should be indexed.
 /// @return Nonzero on success or when no name needs indexing; zero on allocation failure.
 int game3d_world_name_index_add_entity(rt_game3d_world *world, rt_game3d_entity *entity);
+
+/// @brief Incrementally remove an entity's old name mapping, promoting an existing duplicate.
+/// @param world Borrowed world owning the name index.
+/// @param entity Borrowed entity being renamed or removed.
+/// @param old_name Previous non-owning UTF-8 name view.
+/// @return Nonzero when the index remains usable, otherwise zero.
+int game3d_world_name_index_remove_entity(rt_game3d_world *world,
+                                          rt_game3d_entity *entity,
+                                          const char *old_name);
 
 /// @brief Find a live spawned entity by name through the world's lookup index.
 /// @param world Borrowed world containing the name index.

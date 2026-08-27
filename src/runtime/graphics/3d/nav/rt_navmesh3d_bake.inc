@@ -1225,6 +1225,17 @@ static void navmesh3d_clear_offmesh_adjacency(rt_navmesh3d *nm) {
     nm->offmesh_adjacency_edge_count = 0;
 }
 
+/// @brief Invalidate derived off-mesh adjacency after a topology/link mutation.
+/// @details Clearing before the release-store ensures concurrent readers either use the previous
+/// complete cache before mutation or observe the dirty state and take the correct full-link scan.
+static void navmesh3d_mark_offmesh_adjacency_dirty(rt_navmesh3d *nm) {
+    if (!nm)
+        return;
+    navmesh3d_clear_offmesh_adjacency(nm);
+    nm->offmesh_adjacency_degraded = 0;
+    rt_atomic_store_i32(&nm->offmesh_adjacency_state, 1, __ATOMIC_RELEASE);
+}
+
 /// @brief Pack an offmesh link index and direction bit for storage in the adjacency cache.
 /// @details Returns -1 when the link index cannot fit into the signed packed representation.
 /// @param link_index Non-negative authored link index.
@@ -1339,6 +1350,32 @@ static int navmesh3d_build_offmesh_adjacency(rt_navmesh3d *nm) {
     return 1;
 }
 
+/// @brief Lazily rebuild dirty off-mesh adjacency once, with concurrent queries falling back.
+/// @return Nonzero when a complete cache is available or unnecessary; zero for the linear-scan
+/// fallback while another query builds or after allocation failure.
+static int navmesh3d_ensure_offmesh_adjacency(rt_navmesh3d *nm) {
+    int state;
+    int expected;
+    int built;
+    if (!nm)
+        return 0;
+    state = rt_atomic_load_i32(&nm->offmesh_adjacency_state, __ATOMIC_ACQUIRE);
+    if (state == 0)
+        return nm->offmesh_adjacency_degraded ? 0 : 1;
+    if (state != 1)
+        return 0;
+    expected = 1;
+    if (!rt_atomic_compare_exchange_i32(
+            &nm->offmesh_adjacency_state, &expected, 2, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return 0;
+    built = navmesh3d_build_offmesh_adjacency(nm);
+    nm->offmesh_adjacency_degraded = built ? 0 : 1;
+    if (!built && nm->offmesh_adjacency_fallback_count < INT64_MAX)
+        nm->offmesh_adjacency_fallback_count++;
+    rt_atomic_store_i32(&nm->offmesh_adjacency_state, 0, __ATOMIC_RELEASE);
+    return built;
+}
+
 /// @brief Re-resolve authored off-mesh link endpoints against the current walkable triangle set.
 /// @param nm Mutable navmesh whose link endpoint indices and adjacency cache are refreshed.
 static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
@@ -1347,6 +1384,8 @@ static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
         return;
     if (link_count <= 0) {
         navmesh3d_clear_offmesh_adjacency(nm);
+        rt_atomic_store_i32(&nm->offmesh_adjacency_state, 0, __ATOMIC_RELEASE);
+        nm->offmesh_adjacency_degraded = 0;
         return;
     }
     float max_dy = navmesh3d_vertical_tolerance(nm);
@@ -1356,7 +1395,7 @@ static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
             find_tri_with_max_dy(nm, link->from[0], link->from[1], link->from[2], max_dy);
         link->to_tri = find_tri_with_max_dy(nm, link->to[0], link->to[1], link->to[2], max_dy);
     }
-    (void)navmesh3d_build_offmesh_adjacency(nm);
+    navmesh3d_mark_offmesh_adjacency_dirty(nm);
 }
 
 /// @brief Validate and return one triangle's range in the derived off-mesh CSR cache.
@@ -1373,9 +1412,10 @@ static int navmesh3d_offmesh_adjacency_range(const rt_navmesh3d *nm,
                                              int32_t link_count,
                                              int32_t *out_begin,
                                              int32_t *out_end) {
-    if (!nm || !out_begin || !out_end || triangle < 0 || triangle >= triangle_count ||
-        link_count <= 0 || !nm->offmesh_adjacency_starts || !nm->offmesh_adjacency_edges ||
-        nm->offmesh_adjacency_edge_count <= 0 ||
+    if (!nm || !out_begin || !out_end ||
+        rt_atomic_load_i32(&nm->offmesh_adjacency_state, __ATOMIC_ACQUIRE) != 0 || triangle < 0 ||
+        triangle >= triangle_count || link_count <= 0 || !nm->offmesh_adjacency_starts ||
+        !nm->offmesh_adjacency_edges || nm->offmesh_adjacency_edge_count <= 0 ||
         (int64_t)nm->offmesh_adjacency_edge_count > (int64_t)link_count * 2)
         return 0;
     int32_t begin = nm->offmesh_adjacency_starts[triangle];
@@ -1393,7 +1433,7 @@ static int navmesh3d_offmesh_adjacency_range(const rt_navmesh3d *nm,
 /// @param to_tri Destination triangle index.
 /// @param reverse Optional output set to one when a bidirectional link is traversed in reverse.
 /// @return Borrowed matching link descriptor, or null when no permitted link connects the pair.
-static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(const rt_navmesh3d *nm,
+static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(rt_navmesh3d *nm,
                                                              int32_t from_tri,
                                                              int32_t to_tri,
                                                              int *reverse) {
@@ -1405,6 +1445,7 @@ static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(const rt_navmesh3d 
         *reverse = 0;
     if (!nm || link_count <= 0)
         return NULL;
+    (void)navmesh3d_ensure_offmesh_adjacency(nm);
     if (navmesh3d_offmesh_adjacency_range(nm, from_tri, triangle_count, link_count, &begin, &end)) {
         for (int32_t ei = begin; ei < end; ei++) {
             int32_t link_index = -1;

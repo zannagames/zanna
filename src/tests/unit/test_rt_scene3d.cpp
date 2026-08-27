@@ -1611,6 +1611,8 @@ static void test_scene_spatial_query_append_telemetry_and_stable_order() {
     EXPECT_TRUE(scene_impl->spatial_index.query_stack == retained_stack &&
                     retained_stack != nullptr,
                 "AABB traversal reuses its retained BVH stack across queries");
+    EXPECT_TRUE(scene_impl->spatial_index.query_order_scratch == nullptr,
+                "unordered internal collection skips all radix-ordering passes");
     std::free(candidates.items);
 }
 
@@ -1632,6 +1634,7 @@ static void test_scene_spatial_queries_validate_vec3_args_before_result_alloc() 
 
 static void test_scene_precise_raycast_selects_through_aabb_gaps() {
     void *scene = rt_scene3d_new();
+    auto *scene_impl = (rt_scene3d *)scene;
     void *corner_node = rt_scene_node3d_new();
     void *behind_node = rt_scene_node3d_new();
     void *farther_node = rt_scene_node3d_new();
@@ -1680,6 +1683,16 @@ static void test_scene_precise_raycast_selects_through_aabb_gaps() {
                 "RaycastNodesPreciseAll sorts the nearer hit first");
     EXPECT_TRUE(rt_seq_get(all_hits, 1) == farther_node,
                 "RaycastNodesPreciseAll sorts the farther hit second");
+    void *retained_precise_hits = scene_impl->query_precise_hits;
+    int32_t retained_precise_capacity = scene_impl->query_precise_hit_capacity;
+    EXPECT_TRUE(retained_precise_hits != nullptr && retained_precise_capacity >= 2,
+                "precise collect-all retains its hit scratch on the scene");
+    void *repeated_hits = rt_scene3d_raycast_nodes_precise_all(
+        scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
+    EXPECT_TRUE(rt_seq_len(repeated_hits) == 2 &&
+                    scene_impl->query_precise_hits == retained_precise_hits &&
+                    scene_impl->query_precise_hit_capacity == retained_precise_capacity,
+                "precise collect-all reuses retained hit scratch across calls");
 
     void *hit_info = rt_scene3d_raycast_precise_hit(
         scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);

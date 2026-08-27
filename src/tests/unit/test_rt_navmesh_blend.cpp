@@ -201,6 +201,9 @@ typedef struct {
     int32_t *offmesh_adjacency_starts;
     NavMeshOffmeshEdgeRefTestLayout *offmesh_adjacency_edges;
     int32_t offmesh_adjacency_edge_count;
+    volatile int offmesh_adjacency_state;
+    int8_t offmesh_adjacency_degraded;
+    int64_t offmesh_adjacency_fallback_count;
     rt_string *area_names;
     int32_t area_name_count;
     int32_t area_name_capacity;
@@ -594,14 +597,18 @@ static void test_navmesh_offmesh_links_bridge_islands() {
                 "NavMesh off-mesh: AddOffMeshLink accepts endpoints on walkable islands");
     EXPECT_TRUE(rt_navmesh3d_get_offmesh_link_count(nm) == 1,
                 "NavMesh off-mesh: OffMeshLinkCount tracks authored links");
+    auto *view = static_cast<NavMesh3DTestLayout *>(nm);
+    EXPECT_TRUE(view->offmesh_adjacency_state == 1 && view->offmesh_adjacency_starts == nullptr,
+                "NavMesh off-mesh: link authoring invalidates adjacency without rebuilding it");
 
     void *path = rt_navmesh3d_find_path(nm, from, to);
     EXPECT_TRUE(path != nullptr, "NavMesh off-mesh: bidirectional link bridges islands");
+    EXPECT_TRUE(view->offmesh_adjacency_state == 0 && view->offmesh_adjacency_starts != nullptr,
+                "NavMesh off-mesh: first path query lazily publishes adjacency once");
     if (path)
         EXPECT_TRUE(rt_path3d_get_point_count(path) >= 4,
                     "NavMesh off-mesh: path includes endpoint and link waypoints");
 
-    auto *view = static_cast<NavMesh3DTestLayout *>(nm);
     int32_t from_tri = view->offmesh_links[0].from_tri;
     int32_t saved_begin = view->offmesh_adjacency_starts[from_tri];
     view->offmesh_adjacency_starts[from_tri] = -1;

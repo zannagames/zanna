@@ -422,12 +422,14 @@ typedef struct rt_scene3d {
     int8_t portal_clipping_disabled;     /* 1 = legacy reachability flood-fill */
     int32_t last_portal_traversal_count; /* portal expansions in the last PVS build */
     rt_scene3d_spatial_entry **query_candidates;
+    void *query_precise_hits;
     rt_scene_node3d **query_traversal_stack;
     rt_scene_node3d **world_matrix_stack;
     /* Persistent per-scene traversal stack for SyncBindings so the once-per-tick
      * whole-tree walk stops paying a malloc/free per frame. */
     rt_scene_node3d **sync_stack;
     int32_t query_candidate_capacity;
+    int32_t query_precise_hit_capacity;
     size_t query_traversal_stack_capacity;
     size_t world_matrix_stack_capacity;
     size_t sync_stack_capacity;
@@ -837,6 +839,8 @@ typedef struct {
     int32_t count;
     /// Allocated pointer capacity.
     int32_t capacity;
+    /// Nonzero when callers require stable scene-traversal ordering.
+    int8_t preserve_traversal_order;
 } scene3d_spatial_candidate_list_t;
 
 /// @brief Expand a double-precision AABB to include a sanitized point.

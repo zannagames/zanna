@@ -37,7 +37,8 @@ static void sw_release_retained_tile_grids(sw_context_t *ctx);
 /// @brief Backend `create_ctx` op — allocate the software-renderer state struct.
 ///
 /// Trivial compared to hardware backends — no shaders, no FBOs, no
-/// device. Just a `sw_context_t` with a deferred-allocated zbuffer.
+/// device. The deterministic BRDF table is explicitly warmed here so enabling
+/// image-based lighting cannot stall an otherwise interactive first frame.
 /// @param win Borrowed window handle used to query physical framebuffer dimensions.
 /// @param w Logical fallback width when no framebuffer is available.
 /// @param h Logical fallback height when no framebuffer is available.
@@ -65,6 +66,7 @@ static void *sw_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
         free(ctx);
         return NULL;
     }
+    vgfx3d_brdf_lut_ensure();
     sw_init_worker_pool(ctx);
     return ctx;
 }
@@ -330,8 +332,6 @@ static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     ctx->height_fog_sun_amount =
         vgfx3d_clamp_float_param(cam->height_fog_sun_amount, 0.0f, 1.0f, 0.0f);
     ctx->ibl_enabled = cam->ibl_enabled ? 1 : 0;
-    if (cam->ibl_enabled)
-        vgfx3d_brdf_lut_ensure(); /* single-threaded seam before parallel raster */
     ctx->ibl_intensity =
         vgfx3d_clamp_float_param(cam->ibl_intensity, 0.0f, SW_MATERIAL_PARAM_ABS_MAX, 1.0f);
     for (int lane = 0; lane < 27; lane++)

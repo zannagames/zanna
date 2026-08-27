@@ -162,6 +162,14 @@ static void test_source_follows_bound_node_in_world_space() {
     EXPECT_NEAR(rt_vec3_x(pos), 1.0, 0.001, "SoundSource3D follows bound node world X");
     EXPECT_NEAR(rt_vec3_y(pos), 0.5, 0.001, "SoundSource3D follows bound node world Y");
     EXPECT_NEAR(rt_vec3_z(pos), 7.0, 0.001, "SoundSource3D follows bound node world Z");
+    double raw_x = 0.0;
+    double raw_y = 0.0;
+    double raw_z = 0.0;
+    EXPECT_TRUE(rt_soundsource3d_get_position_components(source, &raw_x, &raw_y, &raw_z) != 0,
+                "SoundSource3D exposes allocation-free position components");
+    EXPECT_NEAR(raw_x, 1.0, 0.001, "raw SoundSource3D position preserves world X");
+    EXPECT_NEAR(raw_y, 0.5, 0.001, "raw SoundSource3D position preserves world Y");
+    EXPECT_NEAR(raw_z, 7.0, 0.001, "raw SoundSource3D position preserves world Z");
 
     rt_scene_node3d_set_position(parent, 4.0, 0.0, 4.0);
     rt_scene3d_sync_bindings(scene, 0.5);

@@ -215,6 +215,33 @@ bool test_combat_filters() {
     PASS();
 }
 
+bool test_combat_broadphase_preserves_victim_order() {
+    TEST("Combat broadphase preserves deterministic victim event order");
+    CombatFixture fx = combat_fixture_new("Combat Broadphase Order");
+    rt_game3d_entity_set_position(fx.victim, 0.2, 1.0, -1.0);
+
+    void *victim2 = rt_game3d_entity_new();
+    rt_game3d_entity_set_position(victim2, -0.2, 1.0, -1.0);
+    rt_game3d_world_spawn(fx.world, victim2);
+    void *hurt_shape2 = rt_collider3d_new_sphere(0.5);
+    void *hurt2 = rt_game3d_hitbox_new(victim2, hurt_shape2);
+    if (rt_obj_release_check0(hurt_shape2))
+        rt_obj_free(hurt_shape2);
+    rt_game3d_hitbox_set_team(hurt2, 2);
+
+    rt_game3d_hitbox_set_active(fx.hit, 1);
+    rt_game3d_world_step_simulation(fx.world, 1.0 / 60.0);
+    EXPECT_EQ_INT(rt_game3d_world_hit_event_count(fx.world), 2, "both victims overlap the attack");
+    void *first = rt_game3d_world_hit_event(fx.world, 0);
+    void *second = rt_game3d_world_hit_event(fx.world, 1);
+    EXPECT_TRUE(rt_game3d_hit_event_get_victim(first) == fx.victim,
+                "first spawned victim remains the first event");
+    EXPECT_TRUE(rt_game3d_hit_event_get_victim(second) == victim2,
+                "second spawned victim remains the second event");
+    rt_game3d_world_destroy(fx.world);
+    PASS();
+}
+
 bool test_combat_window_activation() {
     TEST("Animation windows gate hitbox liveness by state and time");
     CombatFixture fx = combat_fixture_new("Combat Window");
@@ -399,6 +426,7 @@ int main() {
     bool ok = true;
     ok = test_combat_overlap_hit_and_rehit() && ok;
     ok = test_combat_filters() && ok;
+    ok = test_combat_broadphase_preserves_victim_order() && ok;
     ok = test_combat_window_activation() && ok;
     ok = test_combat_window_survives_coarse_step() && ok;
     ok = test_health_lifecycle_and_events() && ok;

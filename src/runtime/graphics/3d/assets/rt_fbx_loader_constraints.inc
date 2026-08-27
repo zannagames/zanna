@@ -177,6 +177,8 @@ struct fbx_constraint_pose {
     int32_t *cache_slots;
     /// Owned cached global-matrix blocks of `count * 16` doubles each, in insertion order.
     double *cache_globals;
+    /// Single owned allocation backing all three cache views above.
+    void *cache_storage;
     /// Number of cached ticks.
     int32_t cache_count;
     /// Allocated cache capacity in ticks.
@@ -199,9 +201,7 @@ static void fbx_constraint_pose_free(fbx_constraint_pose_t *pose) {
     free(pose->id_table);
     free(pose->fixed_globals);
     free(pose->evaluation_flags);
-    free(pose->cache_times);
-    free(pose->cache_slots);
-    free(pose->cache_globals);
+    free(pose->cache_storage);
     memset(pose, 0, sizeof(*pose));
 }
 
@@ -265,31 +265,56 @@ static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t
         return;
     block_doubles = (size_t)pose->count * 16u;
     if (pose->cache_count == pose->cache_capacity) {
-        int32_t new_capacity = pose->cache_capacity == 0 ? 64 : pose->cache_capacity * 2;
+        int32_t new_capacity;
         uint64_t per_entry_bytes =
             (uint64_t)block_doubles * sizeof(double) + sizeof(int64_t) + sizeof(int32_t);
         int64_t *times;
         int32_t *slots;
         double *globals;
+        void *storage;
+        size_t times_bytes;
+        size_t slots_bytes;
+        size_t globals_bytes;
+        size_t total_bytes;
+        if (pose->cache_capacity < 0 || pose->cache_capacity > INT32_MAX / 2) {
+            pose->cache_disabled = 1;
+            return;
+        }
+        new_capacity = pose->cache_capacity == 0 ? 64 : pose->cache_capacity * 2;
         if ((uint64_t)new_capacity > SIZE_MAX / (block_doubles * sizeof(double)) ||
             (uint64_t)new_capacity * per_entry_bytes > FBX_POSE_CACHE_MAX_BYTES) {
             pose->cache_disabled = 1;
             return;
         }
-        times = (int64_t *)realloc(pose->cache_times, (size_t)new_capacity * sizeof(*times));
-        if (times)
-            pose->cache_times = times;
-        slots = (int32_t *)realloc(pose->cache_slots, (size_t)new_capacity * sizeof(*slots));
-        if (slots)
-            pose->cache_slots = slots;
-        globals = (double *)realloc(pose->cache_globals,
-                                    (size_t)new_capacity * block_doubles * sizeof(double));
-        if (globals)
-            pose->cache_globals = globals;
-        if (!times || !slots || !globals) {
+        times_bytes = (size_t)new_capacity * sizeof(*times);
+        slots_bytes = (size_t)new_capacity * sizeof(*slots);
+        globals_bytes = (size_t)new_capacity * block_doubles * sizeof(*globals);
+        if (times_bytes > SIZE_MAX - slots_bytes ||
+            times_bytes + slots_bytes > SIZE_MAX - globals_bytes) {
             pose->cache_disabled = 1;
             return;
         }
+        total_bytes = times_bytes + slots_bytes + globals_bytes;
+        storage = malloc(total_bytes);
+        if (!storage) {
+            pose->cache_disabled = 1;
+            return;
+        }
+        times = (int64_t *)storage;
+        slots = (int32_t *)((uint8_t *)storage + times_bytes);
+        globals = (double *)((uint8_t *)storage + times_bytes + slots_bytes);
+        if (pose->cache_count > 0) {
+            memcpy(times, pose->cache_times, (size_t)pose->cache_count * sizeof(*times));
+            memcpy(slots, pose->cache_slots, (size_t)pose->cache_count * sizeof(*slots));
+            memcpy(globals,
+                   pose->cache_globals,
+                   (size_t)pose->cache_count * block_doubles * sizeof(*globals));
+        }
+        free(pose->cache_storage);
+        pose->cache_storage = storage;
+        pose->cache_times = times;
+        pose->cache_slots = slots;
+        pose->cache_globals = globals;
         pose->cache_capacity = new_capacity;
     }
     /* Keep tick order sorted; blocks stay in insertion order behind the slot indirection. */

@@ -10,7 +10,7 @@
 //
 // Key invariants:
 //   - Billboard computed from camera view matrix right/up vectors.
-//   - Quad built per-frame (4 verts, 2 tris) with UV from frame rect.
+//   - One immutable unit quad is transformed per draw; frame UVs live on the material.
 //   - Anchor offset applied before billboard expansion.
 //   - Material is cached and only rebuilt when the texture changes.
 //
@@ -25,7 +25,7 @@
 /// @file
 /// @brief Implements camera-facing Sprite3D billboards with spritesheet, tint, and blend controls.
 /// @details Sprite3D retains its source Pixels plus reusable mesh and material objects, sanitizes
-///   runtime inputs, rebuilds camera-relative quad geometry per draw, and parks cached resources
+///   runtime inputs, transforms immutable quad geometry per draw, and parks cached resources
 ///   on the canvas until deferred submission completes.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -49,7 +49,6 @@ extern int rt_obj_release_check0(void *obj);
 extern void rt_obj_free(void *obj);
 #include "rt_trap.h"
 extern void *rt_mesh3d_new(void);
-extern void rt_mesh3d_clear(void *m);
 extern void rt_mesh3d_add_vertex(
     void *m, double x, double y, double z, double nx, double ny, double nz, double u, double v);
 extern void rt_mesh3d_add_triangle(void *m, int64_t v0, int64_t v1, int64_t v2);
@@ -59,7 +58,6 @@ extern void rt_canvas3d_draw_mesh_matrix(void *canvas,
                                          const double *transform,
                                          void *material);
 extern int rt_canvas3d_add_temp_object(void *canvas, void *value);
-extern int rt_canvas3d_get_camera_relative_origin(void *canvas, double out_origin[3]);
 extern void *rt_material3d_new(void);
 extern void rt_material3d_set_texture(void *m, void *tex);
 extern void rt_material3d_set_unlit(void *m, int8_t u);
@@ -325,39 +323,42 @@ static int32_t sprite3d_clamp_frame_component_i32(int64_t value, int32_t fallbac
     return (int32_t)value;
 }
 
-/// @brief Build a row-major model matrix that translates by @p origin (identity rotation/scale).
-/// @param origin Optional three-element camera-relative origin; `NULL` leaves an identity matrix.
+/// @brief Build the row-major model matrix for an immutable unit billboard quad.
+/// @param center Three-element billboard center in world space.
+/// @param right Normalized camera-right basis vector.
+/// @param up Normalized camera-up basis vector.
+/// @param normal Normalized billboard-facing basis vector.
+/// @param width Billboard width applied to the unit quad.
+/// @param height Billboard height applied to the unit quad.
 /// @param[out] out Sixteen-element row-major destination matrix.
-static void sprite3d_origin_model_matrix(const double origin[3], double out[16]) {
-    static const double identity[16] = {
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-        0.0,
-        0.0,
-        0.0,
-        0.0,
-        1.0,
-    };
-    memcpy(out, identity, sizeof(identity));
-    if (origin) {
-        out[3] = sprite3d_coord_or(origin[0], 0.0);
-        out[7] = sprite3d_coord_or(origin[1], 0.0);
-        out[11] = sprite3d_coord_or(origin[2], 0.0);
-    }
+static void sprite3d_billboard_model_matrix(const double center[3],
+                                            const double right[3],
+                                            const double up[3],
+                                            const double normal[3],
+                                            double width,
+                                            double height,
+                                            double out[16]) {
+    out[0] = right[0] * width;
+    out[1] = up[0] * height;
+    out[2] = normal[0];
+    out[3] = center[0];
+    out[4] = right[1] * width;
+    out[5] = up[1] * height;
+    out[6] = normal[1];
+    out[7] = center[1];
+    out[8] = right[2] * width;
+    out[9] = up[2] * height;
+    out[10] = normal[2];
+    out[11] = center[2];
+    out[12] = 0.0;
+    out[13] = 0.0;
+    out[14] = 0.0;
+    out[15] = 1.0;
 }
 
 /// @brief GC finalizer — release the texture, billboard mesh, and cached material.
 /// @details Sprite3D lazily caches three dependent objects: the billboard
-///   mesh (regenerated per frame to face the camera), the material
+///   immutable unit-quad mesh, the material
 ///   (valid until the texture changes), and the source texture itself.
 ///   All three are ref-counted — releasing is safe even if other
 ///   objects still hold the texture. `cached_texture` is only a
@@ -557,9 +558,9 @@ void rt_sprite3d_rebase_origin(void *obj, double dx, double dy, double dz) {
 }
 
 /// @brief Draw a 3D sprite as a camera-facing billboard on the canvas.
-/// @details Constructs a billboard quad each frame using the camera's right and
-///          up vectors, applies the anchor offset, and renders as a textured mesh.
-///          The quad geometry is cached and reused between frames.
+/// @details Transforms a cached immutable unit quad using the camera's right and
+///          up vectors, applies the anchor offset, and renders it with the selected
+///          spritesheet frame expressed as a material UV transform.
 /// @param canvas Canvas3D receiving the deferred mesh draw.
 /// @param obj Sprite3D instance supplying texture, frame, position, and appearance.
 /// @param camera Camera3D whose view basis orients the billboard.
@@ -602,8 +603,6 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     sy = sprite3d_positive_scale_or(s->scale_wh[1], 1.0);
 
     /* Anchor offset: shift center by (0.5 - anchor) in each axis */
-    double hw = sx * 0.5;
-    double hh = sy * 0.5;
     double ax = (0.5 - sprite3d_clamp01(s->anchor[0])) * sx;
     double ay = (0.5 - sprite3d_clamp01(s->anchor[1])) * sy;
     double px = sprite3d_coord_or(s->position[0], 0.0);
@@ -612,11 +611,6 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     double cx = sprite3d_coord_or(px + rx * ax + ux * ay, px);
     double cy = sprite3d_coord_or(py + ry * ax + uy * ay, py);
     double cz = sprite3d_coord_or(pz + rz * ax + uz * ay, pz);
-    double origin[3] = {0.0, 0.0, 0.0};
-    (void)rt_canvas3d_get_camera_relative_origin(canvas, origin);
-    origin[0] = sprite3d_coord_or(origin[0], 0.0);
-    origin[1] = sprite3d_coord_or(origin[1], 0.0);
-    origin[2] = sprite3d_coord_or(origin[2], 0.0);
 
     /* UV from frame rect */
     double u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0;
@@ -640,8 +634,17 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     }
 
     /* Lazily create cached mesh and material (once, reused every frame) */
-    if (!s->cached_mesh)
+    if (!s->cached_mesh) {
         s->cached_mesh = rt_mesh3d_new();
+        if (s->cached_mesh) {
+            rt_mesh3d_add_vertex(s->cached_mesh, -0.5, -0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0);
+            rt_mesh3d_add_vertex(s->cached_mesh, 0.5, -0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
+            rt_mesh3d_add_vertex(s->cached_mesh, 0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0);
+            rt_mesh3d_add_vertex(s->cached_mesh, -0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+            rt_mesh3d_add_triangle(s->cached_mesh, 0, 1, 2);
+            rt_mesh3d_add_triangle(s->cached_mesh, 0, 2, 3);
+        }
+    }
     if (!s->cached_mesh)
         return;
     if (!s->cached_material || s->cached_texture != s->texture) {
@@ -662,53 +665,21 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     rt_material3d_set_color(s->cached_material, s->tint[0], s->tint[1], s->tint[2]);
     ((rt_material3d *)s->cached_material)->additive_blend = s->additive ? 1 : 0;
     rt_material3d_set_alpha_mode(s->cached_material, RT_MATERIAL3D_ALPHA_MODE_BLEND);
+    rt_material3d *material = (rt_material3d *)s->cached_material;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][0] = u1 - u0;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][1] = 0.0;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][2] = 0.0;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][3] = v1 - v0;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][4] = u0;
+    material->texture_slot_uv_transform[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR][5] = v0;
 
-    /* Rebuild billboard quad each frame (orientation changes with camera).
-       Clear resets vertex/index counts without freeing the backing arrays. */
+    /* The unit quad never changes after construction; camera orientation, scale, anchor, and
+       position are expressed entirely by the per-draw model matrix. */
     void *mesh = s->cached_mesh;
-    rt_mesh3d_clear(mesh);
 
     double nx = -(cam->view[8]), ny = -(cam->view[9]), nz = -(cam->view[10]); /* face camera */
     sprite3d_normalize3(&nx, &ny, &nz, 0.0, 0.0, 1.0);
 
-    rt_mesh3d_add_vertex(mesh,
-                         sprite3d_coord_or(cx - rx * hw - ux * hh - origin[0], 0.0),
-                         sprite3d_coord_or(cy - ry * hw - uy * hh - origin[1], 0.0),
-                         sprite3d_coord_or(cz - rz * hw - uz * hh - origin[2], 0.0),
-                         nx,
-                         ny,
-                         nz,
-                         u0,
-                         v1);
-    rt_mesh3d_add_vertex(mesh,
-                         sprite3d_coord_or(cx + rx * hw - ux * hh - origin[0], 0.0),
-                         sprite3d_coord_or(cy + ry * hw - uy * hh - origin[1], 0.0),
-                         sprite3d_coord_or(cz + rz * hw - uz * hh - origin[2], 0.0),
-                         nx,
-                         ny,
-                         nz,
-                         u1,
-                         v1);
-    rt_mesh3d_add_vertex(mesh,
-                         sprite3d_coord_or(cx + rx * hw + ux * hh - origin[0], 0.0),
-                         sprite3d_coord_or(cy + ry * hw + uy * hh - origin[1], 0.0),
-                         sprite3d_coord_or(cz + rz * hw + uz * hh - origin[2], 0.0),
-                         nx,
-                         ny,
-                         nz,
-                         u1,
-                         v0);
-    rt_mesh3d_add_vertex(mesh,
-                         sprite3d_coord_or(cx - rx * hw + ux * hh - origin[0], 0.0),
-                         sprite3d_coord_or(cy - ry * hw + uy * hh - origin[1], 0.0),
-                         sprite3d_coord_or(cz - rz * hw + uz * hh - origin[2], 0.0),
-                         nx,
-                         ny,
-                         nz,
-                         u0,
-                         v0);
-    rt_mesh3d_add_triangle(mesh, 0, 1, 2);
-    rt_mesh3d_add_triangle(mesh, 0, 2, 3);
     {
         rt_mesh3d *built = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
         if (!built || rt_mesh3d_safe_vertex_count(built) != 4u ||
@@ -725,7 +696,11 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
         return;
 
     double model[16];
-    sprite3d_origin_model_matrix(origin, model);
+    double center[3] = {cx, cy, cz};
+    double right[3] = {rx, ry, rz};
+    double up[3] = {ux, uy, uz};
+    double normal[3] = {nx, ny, nz};
+    sprite3d_billboard_model_matrix(center, right, up, normal, sx, sy, model);
     rt_canvas3d_draw_mesh_matrix(canvas, mesh, model, s->cached_material);
 }
 

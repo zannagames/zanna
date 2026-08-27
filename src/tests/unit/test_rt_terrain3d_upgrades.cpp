@@ -33,6 +33,7 @@
 #include "rt_time.h"
 #include "rt_vec3.h"
 
+#include <cmath>
 #include <csetjmp>
 #include <cstdio>
 #include <cstdlib>
@@ -326,6 +327,49 @@ bool test_streamed_tile_manifest_holes() {
     PASS();
 }
 
+bool test_streamed_tiles_use_edge_index_and_stitch_neighbors() {
+    TEST("streamed terrain uses a coordinate edge index and stitches only neighbors");
+    const char *heightmap_path = "/tmp/zanna_terrain_index_tile.height";
+    const char *manifest_path = "/tmp/zanna_terrain_index_manifest.json";
+    EXPECT_TRUE(write_step_heightmap(heightmap_path, 17, 17), "indexed tile heightmap writes");
+
+    char manifest[1280];
+    std::snprintf(manifest,
+                  sizeof(manifest),
+                  "{\"tiles\":["
+                  "{\"name\":\"west\",\"path\":\"west.bin\",\"heightmap\":\"%s\","
+                  "\"center\":[0,0,0],\"radius\":64,\"width\":17,\"depth\":17,"
+                  "\"scale\":[1,1,1]},"
+                  "{\"name\":\"east\",\"path\":\"east.bin\",\"heightmap\":\"%s\","
+                  "\"center\":[16,0,0],\"radius\":64,\"width\":17,\"depth\":17,"
+                  "\"scale\":[1,1,1]}]}",
+                  heightmap_path,
+                  heightmap_path);
+    EXPECT_TRUE(write_text_file(manifest_path, manifest), "indexed terrain manifest writes");
+
+    void *world = rt_game3d_world_new(rt_const_cstr("Terrain Edge Index"), 80, 60);
+    void *stream_obj = rt_game3d_world_get_stream(world);
+    rt_game3d_world_stream_set_async_streaming(stream_obj, 0);
+    rt_game3d_world_stream_set_radii(stream_obj, 64.0, 96.0);
+    rt_game3d_world_stream_mount_tiled_terrain(stream_obj, rt_const_cstr(manifest_path));
+
+    rt_game3d_world_stream_update(stream_obj, 1.0 / 60.0);
+    EXPECT_EQ_INT(rt_game3d_world_stream_get_resident_terrain_tile_count(stream_obj),
+                  2,
+                  "both adjacent tiles become resident");
+    void *west = rt_game3d_world_stream_get_resident_terrain_tile(stream_obj, 0);
+    void *east = rt_game3d_world_stream_get_resident_terrain_tile(stream_obj, 1);
+    EXPECT_TRUE(west != nullptr && east != nullptr, "both resident terrains are accessible");
+    EXPECT_TRUE(std::fabs(rt_terrain3d_get_height_at(west, 16.0, 8.0) -
+                          rt_terrain3d_get_height_at(east, 0.0, 8.0)) <= 1e-6,
+                "coordinate-indexed adjacent edges are stitched to one height");
+
+    rt_game3d_world_destroy(world);
+    if (rt_obj_release_check0(world))
+        rt_obj_free(world);
+    PASS();
+}
+
 //=========================================================================
 // 8-layer compat: 4-layer configs keep the realtime path available
 //=========================================================================
@@ -364,6 +408,7 @@ int main() {
     ok &= test_holes_handle_extreme_coordinates_and_growth();
     ok &= test_rules_generate_normalized_weights();
     ok &= test_streamed_tile_manifest_holes();
+    ok &= test_streamed_tiles_use_edge_index_and_stitch_neighbors();
     ok &= test_extended_layers_survive_setters();
     std::printf("\nTerrain upgrade tests: %d/%d passed\n", g_tests_passed, g_tests_total);
     return ok && g_tests_passed == g_tests_total ? 0 : 1;

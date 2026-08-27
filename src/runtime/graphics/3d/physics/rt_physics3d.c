@@ -90,10 +90,9 @@ int ph3d_i32_stack_push(int32_t **items, int32_t *count, int32_t *capacity, int3
 #define PH3D_STATE_ABS_MAX 1000000000000.0
 #define PH3D_PARAM_ABS_MAX 1000000000.0
 #define PH3D_STEP_DT_MAX 1.0
-#define PH3D_EVENT_DIFF_FALLBACK_PAIR_LIMIT 4194304LL
-
 static int8_t g_ph3d_test_force_broadphase_alloc_failure = 0;
 static int8_t g_ph3d_test_force_step_failure = 0;
+static int8_t g_ph3d_test_force_event_pair_table_failure = 0;
 
 /// @brief Enable deterministic broadphase allocation failure for internal tests.
 /// @details The hook affects both simulation and query broadphase reserves and
@@ -101,6 +100,13 @@ static int8_t g_ph3d_test_force_step_failure = 0;
 /// @param enabled Nonzero to force subsequent broadphase reserve attempts to fail.
 void rt_world3d_test_set_broadphase_alloc_failure(int8_t enabled) {
     g_ph3d_test_force_broadphase_alloc_failure = enabled ? 1 : 0;
+}
+
+/// @brief Force event-diff pair-table failure so tests exercise the sorted-merge fallback.
+/// @details This hook is internal-only and is never exposed through the runtime registry.
+/// @param enabled Nonzero to bypass both event-diff hash-table builds.
+void rt_world3d_test_set_event_pair_table_failure(int8_t enabled) {
+    g_ph3d_test_force_event_pair_table_failure = enabled ? 1 : 0;
 }
 
 /// @brief Enable deterministic failure after integration for transaction tests.

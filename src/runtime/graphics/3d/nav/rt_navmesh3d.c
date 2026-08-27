@@ -202,6 +202,11 @@ typedef struct {
     int32_t *offmesh_adjacency_starts;
     nav_offmesh_edge_ref_t *offmesh_adjacency_edges;
     int32_t offmesh_adjacency_edge_count;
+    /// Atomic lazy-cache state: 0 clean/degraded, 1 dirty, 2 one query rebuilding.
+    volatile int offmesh_adjacency_state;
+    /// Nonzero when the latest lazy rebuild failed and queries use the correct linear fallback.
+    int8_t offmesh_adjacency_degraded;
+    int64_t offmesh_adjacency_fallback_count;
     rt_string *area_names;
     int32_t area_name_count;
     int32_t area_name_capacity;

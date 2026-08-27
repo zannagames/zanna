@@ -16,7 +16,7 @@
 //     platform, satisfying the VM/native determinism requirement.
 //   - Texel centers sample NdotV, roughness in (0, 1]; row-major, NdotV on X.
 // Ownership/Lifetime:
-//   - Static process-lifetime storage, built once on first use.
+//   - Static process-lifetime storage, explicitly warmed during backend startup.
 // Links: vgfx3d_brdf_lut.h
 //
 //===----------------------------------------------------------------------===//
@@ -27,8 +27,8 @@
  *
  * The table stores the Fresnel scale and bias pair used to reconstruct specular image-based
  * lighting from a prefiltered environment map. A single thread computes the process-lifetime
- * table from a fixed Hammersley sequence; the native platform once primitive blocks concurrent
- * callers without spinning and subsequently reads require no locking.
+ * table from a fixed Hammersley sequence; backends warm it during context startup, and the native
+ * platform once primitive still makes direct concurrent callers safe without spinning.
  */
 #include "vgfx3d_brdf_lut.h"
 

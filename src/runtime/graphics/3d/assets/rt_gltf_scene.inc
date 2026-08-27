@@ -723,10 +723,17 @@ static int gltf_build_node_hierarchy(rt_gltf_asset *asset,
                                      void **imported_lights,
                                      int32_t imported_light_count) {
     int load_failed = 0;
-    int mesh_json_count = (int)jarr_len(jarr(root, "meshes"));
+    int64_t mesh_json_count64 = jarr_len(jarr(root, "meshes"));
+    if (mesh_json_count64 < 0 || mesh_json_count64 > INT32_MAX)
+        return 1;
+    int mesh_json_count = (int)mesh_json_count64;
     {
         void *nodes_arr = jarr(root, "nodes");
-        int node_json_count = (int)jarr_len(nodes_arr);
+        int64_t node_json_count64 = jarr_len(nodes_arr);
+        if (node_json_count64 < 0 || node_json_count64 > INT32_MAX ||
+            (size_t)node_json_count64 > SIZE_MAX / sizeof(rt_scene_node3d *))
+            return 1;
+        int node_json_count = (int)node_json_count64;
         if (node_json_count > 0) {
             int *node_parent = NULL;
             int graph_valid = gltf_validate_node_graph(nodes_arr, node_json_count, &node_parent);

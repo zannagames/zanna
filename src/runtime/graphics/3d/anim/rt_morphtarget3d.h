@@ -185,6 +185,18 @@ int8_t rt_morphtarget3d_blend_vertices_internal(void *morph,
                                                 const void *src_vertices,
                                                 void *dst_vertices,
                                                 uint32_t vertex_count);
+/// @brief Construct an immutable shape-major procedural morph payload.
+/// @details Ownership transfers only on success; both arrays contain
+/// `shape_count * vertex_count * 3` floats and are shared by GPU and software paths.
+/// @param vertex_count Positive vertex count shared by all shapes.
+/// @param shape_count Positive shape count up to 64.
+/// @param owned_position_deltas Owned shape-major position deltas.
+/// @param owned_normal_deltas Optional owned shape-major normal deltas.
+/// @return New MorphTarget3D, or `NULL` with input ownership unchanged.
+void *rt_morphtarget3d_new_packed_internal(int64_t vertex_count,
+                                           int32_t shape_count,
+                                           float *owned_position_deltas,
+                                           float *owned_normal_deltas);
 /// @brief Nonzero change generation that bumps whenever any delta changes.
 /// @details Wrap from `UINT64_MAX` returns to one, deliberately skipping zero
 ///          so caches can reserve zero for “never observed.”

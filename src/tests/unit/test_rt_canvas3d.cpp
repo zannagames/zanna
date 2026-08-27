@@ -46,6 +46,7 @@
 #include "rt_texatlas3d.h"
 #include "rt_textureasset3d.h"
 #include "rt_ttf_font.h"
+#include "rt_water3d.h"
 #include "tests/common/PosixCompat.h"
 #include <atomic>
 #include <cassert>
@@ -7151,8 +7152,8 @@ static void test_canvas_hiz_over_budget_mesh_is_not_an_occluder() {
 }
 
 /// @brief Append one axis-aligned slab (8 vertices, 12 triangles) to a mesh under construction.
-static void hiz_gap_fixture_add_slab(void *mesh, double x0, double x1, double y0, double y1,
-                                     double z0, double z1) {
+static void hiz_gap_fixture_add_slab(
+    void *mesh, double x0, double x1, double y0, double y1, double z0, double z1) {
     const int64_t base = rt_mesh3d_get_vertex_count(mesh);
     const double xs[8] = {x0, x1, x0, x1, x0, x1, x0, x1};
     const double ys[8] = {y0, y0, y1, y1, y0, y0, y1, y1};
@@ -7162,7 +7163,9 @@ static void hiz_gap_fixture_add_slab(void *mesh, double x0, double x1, double y0
     for (int i = 0; i < 8; i++)
         rt_mesh3d_add_vertex(mesh, xs[i], ys[i], zs[i], 0.0, 0.0, 1.0, 0.0, 0.0);
     for (int t = 0; t < 12; t++)
-        rt_mesh3d_add_triangle(mesh, (int64_t)base + tris[t * 3], (int64_t)base + tris[t * 3 + 1],
+        rt_mesh3d_add_triangle(mesh,
+                               (int64_t)base + tris[t * 3],
+                               (int64_t)base + tris[t * 3 + 1],
                                (int64_t)base + tris[t * 3 + 2]);
 }
 
@@ -7190,8 +7193,8 @@ static void test_canvas_hiz_over_budget_shallow_mesh_never_writes_aabb_coverage(
     uint32_t dense_indices[36];
     void *ident_xf =
         rt_mat4_new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
-    void *dense_xf = rt_mat4_new(
-        1.0, 0.0, 0.0, 0.8, 0.0, 1.0, 0.0, 0.8, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0);
+    void *dense_xf =
+        rt_mat4_new(1.0, 0.0, 0.0, 0.8, 0.0, 1.0, 0.0, 0.8, 0.0, 0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 1.0);
     void *behind_xf = rt_mat4_new(
         1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 0.0, 0.0, 0.0, 1.0);
 
@@ -8029,9 +8032,11 @@ static void test_canvas_camera_relative_upload_rebases_raw_and_generated_vertice
 
     EXPECT_EQ(g_canvas_submit_draw_calls, 1);
     EXPECT_EQ(g_last_draw_vertex_count, 4);
-    EXPECT_NEAR(g_last_draw_cmd.model_matrix[3], 0.0, 0.0001);
-    EXPECT_NEAR(g_last_draw_vertices[0].pos[0], 3.0, 0.0001);
-    EXPECT_NEAR(g_last_draw_vertices[2].pos[0], 5.0, 0.0001);
+    EXPECT_NEAR(g_last_draw_cmd.model_matrix[3], 4.0, 0.0001);
+    EXPECT_NEAR(g_last_draw_vertices[0].pos[0], -0.5, 0.0001);
+    EXPECT_NEAR(g_last_draw_vertices[2].pos[0], 0.5, 0.0001);
+    EXPECT_TRUE(g_last_draw_cmd.geometry_key != NULL,
+                "Sprite3D submissions retain cacheable immutable unit-quad geometry");
 
     rt_sprite3d_set_position(sprite, kBase + 8.0, 0.0, -4.0);
     rt_sprite3d_rebase_origin(sprite, kBase, 0.0, 0.0);
@@ -8047,21 +8052,27 @@ static void test_canvas_camera_relative_upload_rebases_raw_and_generated_vertice
 
     EXPECT_EQ(g_canvas_submit_draw_calls, 1);
     EXPECT_EQ(g_last_draw_vertex_count, 4);
-    EXPECT_NEAR(g_last_draw_cmd.model_matrix[3], 0.0, 0.0001);
-    EXPECT_NEAR(g_last_draw_vertices[0].pos[0], 7.0, 0.0001);
-    EXPECT_NEAR(g_last_draw_vertices[2].pos[0], 9.0, 0.0001);
+    EXPECT_NEAR(g_last_draw_cmd.model_matrix[3], 8.0, 0.0001);
+    EXPECT_NEAR(g_last_draw_vertices[0].pos[0], -0.5, 0.0001);
+    EXPECT_NEAR(g_last_draw_vertices[2].pos[0], 0.5, 0.0001);
 
     rt_canvas3d_set_camera_relative_upload(&canvas, 0);
     free_canvas3d_test_draw_state(&canvas);
     PASS();
 }
 
-// Helper: world-space extent of the captured billboard quad along a vgfx vertex axis.
+// Helper: world-space extent after composing captured unit-quad vertices with the model matrix.
 static double sprite3d_captured_axis_extent(int axis) {
-    double lo = g_last_draw_vertices[0].pos[axis];
+    const float *m = g_last_draw_cmd.model_matrix;
+    auto transformed_axis = [&](uint32_t i) {
+        const float *p = g_last_draw_vertices[i].pos;
+        return (double)m[axis * 4 + 0] * p[0] + (double)m[axis * 4 + 1] * p[1] +
+               (double)m[axis * 4 + 2] * p[2] + (double)m[axis * 4 + 3];
+    };
+    double lo = transformed_axis(0);
     double hi = lo;
     for (uint32_t i = 1; i < g_last_draw_vertex_count && i < 4; ++i) {
-        double v = g_last_draw_vertices[i].pos[axis];
+        double v = transformed_axis(i);
         lo = v < lo ? v : lo;
         hi = v > hi ? v : hi;
     }
@@ -8103,6 +8114,8 @@ static void test_sprite3d_billboard_reorients_to_camera() {
     rt_canvas3d_end(&canvas);
     EXPECT_EQ(g_canvas_submit_draw_calls, 1);
     EXPECT_EQ(g_last_draw_vertex_count, 4);
+    const void *immutable_geometry_key = g_last_draw_cmd.geometry_key;
+    EXPECT_TRUE(immutable_geometry_key != NULL, "Sprite3D unit quad is cacheable");
     EXPECT_NEAR(sprite3d_captured_axis_extent(0), 2.0, 0.001); // width along X
     EXPECT_NEAR(sprite3d_captured_axis_extent(2), 0.0, 0.001); // flat in Z
 
@@ -8120,8 +8133,80 @@ static void test_sprite3d_billboard_reorients_to_camera() {
     rt_canvas3d_end(&canvas);
     EXPECT_EQ(g_canvas_submit_draw_calls, 1);
     EXPECT_EQ(g_last_draw_vertex_count, 4);
+    EXPECT_TRUE(g_last_draw_cmd.geometry_key == immutable_geometry_key,
+                "Sprite3D reuses one immutable quad across camera changes");
     EXPECT_NEAR(sprite3d_captured_axis_extent(0), 0.0, 0.001); // quad now flat in X
     EXPECT_NEAR(sprite3d_captured_axis_extent(2), 2.0, 0.001); // width re-mapped to Z
+
+    free_canvas3d_test_draw_state(&canvas);
+    PASS();
+}
+
+static void test_water3d_updates_gpu_morph_weights_without_rebuilding_grid() {
+    TEST("Water3D updates GPU morph weights without rebuilding its grid");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas = {};
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *water = rt_water3d_new(8.0, 8.0);
+
+    backend.name = "opengl";
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.end_frame = tracked_end_frame;
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 128;
+    canvas.height = 128;
+    rt_water3d_set_resolution(water, 8);
+    rt_water3d_update(water, 0.0);
+
+    g_canvas_submit_draw_calls = 0;
+    memset(&g_last_draw_cmd, 0, sizeof(g_last_draw_cmd));
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_water(&canvas, water, camera);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ(g_last_draw_cmd.morph_shape_count, 2);
+    EXPECT_TRUE(g_last_draw_cmd.morph_key != nullptr,
+                "Water3D submits retained morph payloads on GPU backends");
+    uint32_t geometry_revision = g_last_draw_cmd.geometry_revision;
+    const void *geometry_key = g_last_draw_cmd.geometry_key;
+    const float *morph_deltas = g_last_draw_cmd.morph_deltas;
+
+    rt_water3d_update(water, 0.25);
+    g_canvas_submit_draw_calls = 0;
+    memset(&g_last_draw_cmd, 0, sizeof(g_last_draw_cmd));
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_water(&canvas, water, camera);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ(g_last_draw_cmd.geometry_revision, geometry_revision);
+    EXPECT_TRUE(g_last_draw_cmd.geometry_key == geometry_key &&
+                    g_last_draw_cmd.morph_deltas == morph_deltas,
+                "Water3D retains immutable grid and wave-basis storage across ticks");
+    EXPECT_NEAR(g_last_draw_cmd.morph_weights[0], std::cos(0.5), 0.0001);
+    EXPECT_NEAR(g_last_draw_cmd.morph_weights[1], std::sin(0.5), 0.0001);
+
+    const double expected_first_height = 0.15 * std::sin(1.5 * (-4.0 + -4.0) - 0.5);
+    double gpu_composed_height = g_last_draw_cmd.vertices[0].pos[1];
+    for (int32_t shape = 0; shape < g_last_draw_cmd.morph_shape_count; ++shape) {
+        size_t lane = (size_t)shape * g_last_draw_cmd.vertex_count * 3u + 1u;
+        gpu_composed_height +=
+            g_last_draw_cmd.morph_weights[shape] * g_last_draw_cmd.morph_deltas[lane];
+    }
+    EXPECT_NEAR(gpu_composed_height, expected_first_height, 0.0001);
+
+    backend.name = "software";
+    g_canvas_submit_draw_calls = 0;
+    g_last_draw_vertex_count = 0;
+    memset(&g_last_draw_cmd, 0, sizeof(g_last_draw_cmd));
+    memset(g_last_draw_vertices, 0, sizeof(g_last_draw_vertices));
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_water(&canvas, water, camera);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ(g_last_draw_cmd.morph_shape_count, 0);
+    EXPECT_NEAR(g_last_draw_vertices[0].pos[1], expected_first_height, 0.0001);
 
     free_canvas3d_test_draw_state(&canvas);
     PASS();
@@ -11845,6 +11930,7 @@ int main() {
     test_sprite3d_set_frame();
     test_sprite3d_null_safety();
     test_sprite3d_billboard_reorients_to_camera();
+    test_water3d_updates_gpu_morph_weights_without_rebuilding_grid();
 
     /* RenderTarget3D */
     test_rendertarget_new();

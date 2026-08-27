@@ -249,6 +249,15 @@ void *rt_soundsource3d_get_position(void *s) {
     return NULL;
 }
 
+/// @brief Graphics-disabled scalar SoundSource3D position readback stub.
+int8_t rt_soundsource3d_get_position_components(void *s, double *x, double *y, double *z) {
+    (void)s;
+    (void)x;
+    (void)y;
+    (void)z;
+    return 0;
+}
+
 /// @brief Stub for `SoundSource3D.Position` setter — set the source's
 ///        world-space position from a Vec3 handle.
 ///

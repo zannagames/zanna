@@ -613,6 +613,76 @@ static int game3d_stream_range_matches(
            game3d_stream_almost_equal(a_max, b_max, tolerance);
 }
 
+static int32_t game3d_world_stream_safe_terrain_tile_count(const rt_game3d_world_stream *stream);
+
+/// @brief Stable ordering for the manifest terrain-edge coordinate index.
+static int game3d_stream_terrain_edge_compare(const void *lhs, const void *rhs) {
+    const rt_game3d_stream_terrain_edge *a = (const rt_game3d_stream_terrain_edge *)lhs;
+    const rt_game3d_stream_terrain_edge *b = (const rt_game3d_stream_terrain_edge *)rhs;
+    if (a->edge != b->edge)
+        return (a->edge > b->edge) - (a->edge < b->edge);
+    if (a->coordinate < b->coordinate)
+        return -1;
+    if (a->coordinate > b->coordinate)
+        return 1;
+    return (a->tile_index > b->tile_index) - (a->tile_index < b->tile_index);
+}
+
+/// @brief Rebuild the four-edge coordinate index for the current terrain manifest.
+/// @details Failure leaves the index empty; seam stitching retains a correct linear fallback.
+static void game3d_world_stream_rebuild_terrain_edge_index(rt_game3d_world_stream *stream) {
+    free(stream ? stream->terrain_edges : NULL);
+    if (!stream)
+        return;
+    stream->terrain_edges = NULL;
+    stream->terrain_edge_count = 0;
+    stream->terrain_edge_tolerance_max = 0.00001;
+    int32_t tile_count = game3d_world_stream_safe_terrain_tile_count(stream);
+    if (tile_count <= 0 || tile_count > INT32_MAX / 4)
+        return;
+    int32_t edge_count = tile_count * 4;
+    rt_game3d_stream_terrain_edge *edges =
+        (rt_game3d_stream_terrain_edge *)malloc((size_t)edge_count * sizeof(*edges));
+    if (!edges)
+        return;
+    for (int32_t i = 0; i < tile_count; ++i) {
+        double min_x, max_x, min_z, max_z;
+        game3d_stream_terrain_tile_bounds(
+            &stream->terrain_tiles[i], &min_x, &max_x, &min_z, &max_z);
+        double tolerance = game3d_stream_terrain_seam_tolerance(&stream->terrain_tiles[i], NULL);
+        if (tolerance > stream->terrain_edge_tolerance_max)
+            stream->terrain_edge_tolerance_max = tolerance;
+        edges[i * 4 + 0] =
+            (rt_game3d_stream_terrain_edge){min_z, min_x, max_x, i, RT_TERRAIN3D_EDGE_NORTH};
+        edges[i * 4 + 1] =
+            (rt_game3d_stream_terrain_edge){max_x, min_z, max_z, i, RT_TERRAIN3D_EDGE_EAST};
+        edges[i * 4 + 2] =
+            (rt_game3d_stream_terrain_edge){max_z, min_x, max_x, i, RT_TERRAIN3D_EDGE_SOUTH};
+        edges[i * 4 + 3] =
+            (rt_game3d_stream_terrain_edge){min_x, min_z, max_z, i, RT_TERRAIN3D_EDGE_WEST};
+    }
+    qsort(edges, (size_t)edge_count, sizeof(*edges), game3d_stream_terrain_edge_compare);
+    stream->terrain_edges = edges;
+    stream->terrain_edge_count = edge_count;
+}
+
+/// @brief Lower-bound lookup for an edge kind and coordinate in the sorted manifest index.
+static int32_t game3d_stream_terrain_edge_lower_bound(const rt_game3d_world_stream *stream,
+                                                      int8_t edge,
+                                                      double coordinate) {
+    int32_t lo = 0;
+    int32_t hi = stream ? stream->terrain_edge_count : 0;
+    while (lo < hi) {
+        int32_t mid = lo + (hi - lo) / 2;
+        const rt_game3d_stream_terrain_edge *entry = &stream->terrain_edges[mid];
+        if (entry->edge < edge || (entry->edge == edge && entry->coordinate < coordinate))
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
 /// @brief Square a sanitized stream radius without producing a non-finite result.
 /// @param radius Candidate radius.
 /// @return Finite non-negative squared radius, saturating at `DBL_MAX`.
@@ -972,6 +1042,10 @@ static void game3d_world_stream_clear_terrain_tiles(rt_game3d_world_stream *stre
     if (!stream)
         return;
     int32_t tile_count = game3d_world_stream_safe_terrain_tile_count(stream);
+    free(stream->terrain_edges);
+    stream->terrain_edges = NULL;
+    stream->terrain_edge_count = 0;
+    stream->terrain_edge_tolerance_max = 0.0;
     stream->terrain_generation++; /* in-flight staging results for these tiles are now stale */
     for (int32_t i = 0; i < tile_count; ++i) {
         rt_game3d_stream_terrain_tile *tile = &stream->terrain_tiles[i];
@@ -1486,35 +1560,72 @@ static int64_t game3d_world_stream_stitch_loaded_terrain_neighbors(
     rt_game3d_world_stream *stream, rt_game3d_stream_terrain_tile *tile) {
     if (!stream || !game3d_stream_terrain_tile_terrain_ref(tile))
         return 0;
-    int64_t changed = 0;
     int32_t tile_count = game3d_world_stream_safe_terrain_tile_count(stream);
+    int64_t changed = 0;
+    int32_t tile_index = stream->terrain_tiles && tile >= stream->terrain_tiles &&
+                                 tile < stream->terrain_tiles + tile_count
+                             ? (int32_t)(tile - stream->terrain_tiles)
+                             : -1;
+    if (tile_index >= 0 && stream->terrain_edges && stream->terrain_edge_count == tile_count * 4) {
+        double min_x, max_x, min_z, max_z;
+        const int8_t neighbor_edges[4] = {RT_TERRAIN3D_EDGE_SOUTH,
+                                          RT_TERRAIN3D_EDGE_WEST,
+                                          RT_TERRAIN3D_EDGE_NORTH,
+                                          RT_TERRAIN3D_EDGE_EAST};
+        double coordinates[4];
+        double range_mins[4];
+        double range_maxs[4];
+        game3d_stream_terrain_tile_bounds(tile, &min_x, &max_x, &min_z, &max_z);
+        coordinates[0] = min_z;
+        coordinates[1] = max_x;
+        coordinates[2] = max_z;
+        coordinates[3] = min_x;
+        range_mins[0] = range_mins[2] = min_x;
+        range_maxs[0] = range_maxs[2] = max_x;
+        range_mins[1] = range_mins[3] = min_z;
+        range_maxs[1] = range_maxs[3] = max_z;
+        for (int edge_index = 0; edge_index < 4; ++edge_index) {
+            double broad_tolerance = stream->terrain_edge_tolerance_max;
+            int32_t at = game3d_stream_terrain_edge_lower_bound(
+                stream, neighbor_edges[edge_index], coordinates[edge_index] - broad_tolerance);
+            for (; at < stream->terrain_edge_count; ++at) {
+                const rt_game3d_stream_terrain_edge *entry = &stream->terrain_edges[at];
+                if (entry->edge != neighbor_edges[edge_index] ||
+                    entry->coordinate > coordinates[edge_index] + broad_tolerance)
+                    break;
+                if (entry->tile_index < 0 || entry->tile_index >= tile_count ||
+                    entry->tile_index == tile_index)
+                    continue;
+                rt_game3d_stream_terrain_tile *neighbor = &stream->terrain_tiles[entry->tile_index];
+                double tolerance = game3d_stream_terrain_seam_tolerance(tile, neighbor);
+                if (!game3d_stream_almost_equal(
+                        entry->coordinate, coordinates[edge_index], tolerance) ||
+                    !game3d_stream_range_matches(entry->range_min,
+                                                 entry->range_max,
+                                                 range_mins[edge_index],
+                                                 range_maxs[edge_index],
+                                                 tolerance))
+                    continue;
+                int64_t delta = game3d_world_stream_stitch_terrain_pair(tile, neighbor);
+                if (delta <= 0)
+                    continue;
+                game3d_world_stream_refresh_terrain_spatial_sources(stream, neighbor);
+                changed = changed > INT64_MAX - delta ? INT64_MAX : changed + delta;
+            }
+        }
+        return changed;
+    }
     for (int32_t i = 0; i < tile_count; ++i) {
         rt_game3d_stream_terrain_tile *neighbor = &stream->terrain_tiles[i];
-        if (neighbor == tile)
-            continue;
-        int64_t delta = game3d_world_stream_stitch_terrain_pair(tile, neighbor);
-        if (delta > 0) {
-            if (changed > INT64_MAX - delta)
-                changed = INT64_MAX;
-            else
-                changed += delta;
+        if (neighbor != tile) {
+            int64_t delta = game3d_world_stream_stitch_terrain_pair(tile, neighbor);
+            if (delta > 0) {
+                game3d_world_stream_refresh_terrain_spatial_sources(stream, neighbor);
+                changed = changed > INT64_MAX - delta ? INT64_MAX : changed + delta;
+            }
         }
     }
     return changed;
-}
-
-/// @brief Refresh all resident streamed terrain collider/nav sources after seam changes.
-/// @param stream Borrowed stream whose resident terrain attachments are rebuilt.
-static void game3d_world_stream_refresh_all_terrain_spatial_sources(
-    rt_game3d_world_stream *stream) {
-    if (!stream)
-        return;
-    int32_t tile_count = game3d_world_stream_safe_terrain_tile_count(stream);
-    for (int32_t i = 0; i < tile_count; ++i) {
-        rt_game3d_stream_terrain_tile *tile = &stream->terrain_tiles[i];
-        if (game3d_stream_terrain_tile_terrain_ref(tile))
-            game3d_world_stream_refresh_terrain_spatial_sources(stream, tile);
-    }
 }
 
 /// @brief Build and install a tile's Terrain3D from a prepared heightmap (shared core).
@@ -1577,11 +1688,8 @@ static int game3d_world_stream_install_terrain_tile(rt_game3d_world_stream *stre
 /// @param tile Newly resident terrain record.
 static void game3d_world_stream_finish_terrain_install(rt_game3d_world_stream *stream,
                                                        rt_game3d_stream_terrain_tile *tile) {
-    int64_t stitched = game3d_world_stream_stitch_loaded_terrain_neighbors(stream, tile);
-    if (stitched > 0)
-        game3d_world_stream_refresh_all_terrain_spatial_sources(stream);
-    else
-        game3d_world_stream_refresh_terrain_spatial_sources(stream, tile);
+    (void)game3d_world_stream_stitch_loaded_terrain_neighbors(stream, tile);
+    game3d_world_stream_refresh_terrain_spatial_sources(stream, tile);
 }
 
 /// @brief Load a terrain tile synchronously from its heightmap and sidecar paths.
@@ -2090,6 +2198,7 @@ static int game3d_world_stream_parse_terrain_manifest(rt_game3d_world_stream *st
     stream->terrain_tiles = parsed;
     stream->terrain_tile_count = parsed_count;
     stream->terrain_tile_capacity = (int32_t)count64;
+    game3d_world_stream_rebuild_terrain_edge_index(stream);
     stream->terrain_manifest_loaded = 1;
     rt_string_unref(text);
     game3d_release_ref(&root);

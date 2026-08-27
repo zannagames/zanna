@@ -59,6 +59,7 @@ extern void *rt_mesh3d_new(void);
 extern void rt_mesh3d_add_vertex(
     void *obj, double x, double y, double z, double nx, double ny, double nz, double u, double v);
 extern void rt_mesh3d_add_triangle(void *obj, int64_t i0, int64_t i1, int64_t i2);
+extern void rt_world3d_test_set_event_pair_table_failure(int8_t enabled);
 }
 
 static int tests_passed = 0;
@@ -577,6 +578,24 @@ static void test_body_scale_affects_queries() {
     EXPECT_TRUE(hits != nullptr, "scaled body overlap returns a hit list");
     EXPECT_TRUE(rt_physics_hit_list3d_get_count(hits) == 1,
                 "scaled body AABB participates in broadphase queries");
+}
+
+static void test_raw_overlap_sphere_returns_borrowed_bodies_without_boxing() {
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *near_body = rt_body3d_new_sphere(0.5, 0.0);
+    void *far_body = rt_body3d_new_sphere(0.5, 0.0);
+    void *bodies[2] = {nullptr, nullptr};
+    rt_body3d_set_position(near_body, 0.0, 0.0, 0.0);
+    rt_body3d_set_position(far_body, 20.0, 0.0, 0.0);
+    rt_world3d_add(world, near_body);
+    rt_world3d_add(world, far_body);
+
+    int32_t count = rt_world3d_overlap_sphere_bodies_raw(world, 0.0, 0.0, 0.0, 1.0, -1, bodies, 2);
+    EXPECT_TRUE(count == 1, "raw sphere overlap returns only intersecting bodies");
+    EXPECT_TRUE(bodies[0] == near_body, "raw sphere overlap returns a borrowed body identity");
+    EXPECT_TRUE(rt_world3d_overlap_sphere_bodies_raw(world, 0.0, 0.0, 0.0, 1.0, -1, nullptr, 2) ==
+                    -1,
+                "raw sphere overlap rejects missing output storage");
 }
 
 static void test_body_velocity() {
@@ -3056,6 +3075,7 @@ static void test_collision_events_enter_stay_exit() {
     EXPECT_TRUE(rt_world3d_get_exit_event_count(world) == 0,
                 "collision events: no exit on first step");
 
+    rt_world3d_test_set_event_pair_table_failure(1);
     rt_world3d_step(world, 1.0 / 60.0);
     EXPECT_TRUE(rt_world3d_get_enter_event_count(world) == 0, "collision events: no re-enter");
     EXPECT_TRUE(rt_world3d_get_stay_event_count(world) == 1,
@@ -3064,8 +3084,9 @@ static void test_collision_events_enter_stay_exit() {
     rt_body3d_set_position(box, 5.0, 0.0, 0.0);
     rt_body3d_set_velocity(box, 0.0, 0.0, 0.0);
     rt_world3d_step(world, 1.0 / 60.0);
+    rt_world3d_test_set_event_pair_table_failure(0);
     EXPECT_TRUE(rt_world3d_get_exit_event_count(world) == 1,
-                "collision events: exit when separated");
+                "collision events: sorted fallback emits exit when separated");
 }
 
 static void test_query_mask_zero_matches_no_layers() {
@@ -5485,6 +5506,7 @@ int main() {
     /* Property accessors */
     test_body_position();
     test_body_scale_affects_queries();
+    test_raw_overlap_sphere_returns_borrowed_bodies_without_boxing();
     test_body_orientation_roundtrip();
     test_body_velocity();
     test_body_far_origin_integrates_sub_float_delta();

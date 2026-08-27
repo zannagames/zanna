@@ -40,6 +40,13 @@ void *rt_soundsource3d_new(void *sound);
 /// @param source Source object.
 /// @return New Vec3 snapshot, or NULL for an invalid object/allocation failure.
 void *rt_soundsource3d_get_position(void *source);
+/// @brief Read the source position into caller-owned scalar outputs without allocating a Vec3.
+/// @param source Source object.
+/// @param x Output receiving world X.
+/// @param y Output receiving world Y.
+/// @param z Output receiving world Z.
+/// @return One for a valid source and outputs, otherwise zero.
+int8_t rt_soundsource3d_get_position_components(void *source, double *x, double *y, double *z);
 /// @brief Set the source's position from a Vec3 handle.
 /// @param source Source object.
 /// @param position Vec3 world position; NULL/invalid handles are ignored.

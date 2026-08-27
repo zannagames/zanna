@@ -461,6 +461,72 @@ int game3d_world_name_index_add_entity(rt_game3d_world *world, rt_game3d_entity 
     return 1;
 }
 
+/// @brief Delete one occupied name-index slot and close its linear-probing cluster.
+static void game3d_world_name_index_delete_slot(rt_game3d_world *world, int32_t slot) {
+    int32_t mask = world->name_index_capacity - 1;
+    world->name_index_entities[slot] = NULL;
+    world->name_index_hashes[slot] = 0;
+    if (world->name_index_count > 0)
+        world->name_index_count--;
+    for (int32_t next = (slot + 1) & mask; world->name_index_entities[next];
+         next = (next + 1) & mask) {
+        rt_game3d_entity *displaced = world->name_index_entities[next];
+        world->name_index_entities[next] = NULL;
+        world->name_index_hashes[next] = 0;
+        if (world->name_index_count > 0)
+            world->name_index_count--;
+        game3d_world_name_index_insert(world, displaced);
+    }
+}
+
+/// @brief Incrementally remove an entity's current name mapping and promote a duplicate.
+/// @details If another entity owns the duplicate-name slot, removing this later duplicate is a
+///          no-op. Removing the indexed winner closes its probe cluster and scans only for the
+///          earliest surviving duplicate to promote; unrelated mappings remain untouched.
+int game3d_world_name_index_remove_entity(rt_game3d_world *world,
+                                          rt_game3d_entity *entity,
+                                          const char *old_name) {
+    if (!world || !entity || !world->name_index_valid || !old_name || !*old_name)
+        return 1;
+    if (world->name_index_capacity <= 0 || !world->name_index_hashes ||
+        !world->name_index_entities ||
+        !game3d_index_capacity_is_power_of_two(world->name_index_capacity)) {
+        world->name_index_valid = 0;
+        return 0;
+    }
+    uint64_t hash = game3d_hash_name(old_name);
+    int32_t mask = world->name_index_capacity - 1;
+    for (int32_t probe = 0; probe < world->name_index_capacity; ++probe) {
+        int32_t slot = (int32_t)((hash + (uint64_t)probe) & (uint64_t)mask);
+        rt_game3d_entity *indexed = world->name_index_entities[slot];
+        if (!indexed)
+            return 1;
+        if (world->name_index_hashes[slot] != hash || !indexed->name)
+            continue;
+        const char *indexed_name = rt_string_cstr(indexed->name);
+        if (!indexed_name || strcmp(indexed_name, old_name) != 0)
+            continue;
+        if (indexed != entity)
+            return 1;
+        game3d_world_name_index_delete_slot(world, slot);
+        int32_t entity_count = game3d_world_safe_entity_count(world);
+        for (int32_t i = 0; i < entity_count; ++i) {
+            rt_game3d_entity *candidate = world->entities[i];
+            if (!candidate || candidate == entity || !candidate->alive || !candidate->spawned ||
+                candidate->world != world || !candidate->name)
+                continue;
+            const char *candidate_name = rt_string_cstr(candidate->name);
+            if (candidate_name && strcmp(candidate_name, old_name) == 0) {
+                game3d_world_name_index_insert(world, candidate);
+                break;
+            }
+        }
+        return 1;
+    }
+    world->name_index_valid = 0;
+    return 0;
+}
+
 /// @brief Look up an entity by name via the hash table; returns NULL if not present.
 /// @details Linear-probes from the name's hash slot, comparing full strings on a hash
 ///   match; stops at the first empty slot (open-addressing absence proof).

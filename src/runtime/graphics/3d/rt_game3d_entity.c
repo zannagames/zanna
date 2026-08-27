@@ -1050,7 +1050,7 @@ int8_t rt_game3d_entity_is_group(void *obj) {
 /// @param obj Entity3D runtime handle.
 /// @param name Runtime string to retain; NULL is normalized to empty.
 /// @return @p obj for fluent chaining.
-/// @post A spawned entity invalidates its world's name index.
+/// @post A spawned entity updates its world's name index incrementally.
 void *rt_game3d_entity_set_name(void *obj, rt_string name) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.setName: invalid entity");
@@ -1061,16 +1061,24 @@ void *rt_game3d_entity_set_name(void *obj, rt_string name) {
         return obj;
     }
     if (entity) {
+        rt_game3d_world *world = entity->spawned && rt_obj_is_instance(entity->world,
+                                                                       RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                                       sizeof(rt_game3d_world))
+                                     ? (rt_game3d_world *)entity->world
+                                     : NULL;
         if (entity->name && !rt_string_is_handle(entity->name))
             entity->name = NULL;
+        const char *old_name = entity->name ? rt_string_cstr(entity->name) : "";
+        const char *new_name = rt_string_cstr(name);
+        int name_changed = !old_name || !new_name || strcmp(old_name, new_name) != 0;
+        if (world && name_changed)
+            (void)game3d_world_name_index_remove_entity(world, entity, old_name);
         game3d_assign_ref((void **)&entity->name, name);
         void *node = game3d_entity_node_ref(entity);
         if (node)
             rt_scene_node3d_set_name(node, name);
-        if (entity->spawned && rt_obj_is_instance(entity->world,
-                                                  RT_G3D_GAME3D_WORLD_CLASS_ID,
-                                                  sizeof(rt_game3d_world)))
-            ((rt_game3d_world *)entity->world)->name_index_valid = 0;
+        if (world && name_changed && !game3d_world_name_index_add_entity(world, entity))
+            world->name_index_valid = 0;
     }
     return obj;
 }

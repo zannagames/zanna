@@ -1452,7 +1452,7 @@ static int scene3d_spatial_ensure(rt_scene3d *scene) {
 /// @param query_max Borrowed query maximum corner.
 /// @param out Caller-owned candidate list to append to.
 /// @param count_cullable_prefilter Nonzero to count only cullable broad-phase rejections.
-/// @return Nonzero after successful stable-order collection, otherwise zero.
+/// @return Nonzero after successful collection, otherwise zero.
 int scene3d_spatial_collect_aabb(rt_scene3d *scene,
                                  const double query_min[3],
                                  const double query_max[3],
@@ -1560,7 +1560,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
         }
     }
     scene3d_spatial_store_query_stack(index, &stack);
-    if (!scene3d_spatial_order_candidates(index, out)) {
+    if (out->preserve_traversal_order && !scene3d_spatial_order_candidates(index, out)) {
         rt_trap("Scene3D.SpatialIndex: candidate ordering allocation failed");
         return 0;
     }
@@ -1572,7 +1572,7 @@ int scene3d_spatial_collect_aabb(rt_scene3d *scene,
 /// @brief Collect every spatial entry (no spatial filtering) into the candidate list.
 /// @param scene Borrowed scene whose refreshed index is enumerated.
 /// @param out Caller-owned candidate list to append visible entries to.
-/// @return Nonzero after successful stable-order collection, otherwise zero.
+/// @return Nonzero after successful collection, otherwise zero.
 int scene3d_spatial_collect_all(rt_scene3d *scene, scene3d_spatial_candidate_list_t *out) {
     rt_scene3d_spatial_index *index;
     int32_t initial_count;
@@ -1610,7 +1610,8 @@ int scene3d_spatial_collect_all(rt_scene3d *scene, scene3d_spatial_candidate_lis
      * caller list is already stable and needs no O(n log n) sort. Preserve
      * the append contract for nonempty internal callers by sorting the merged
      * result as before. */
-    if (initial_count > 0 && !scene3d_spatial_order_candidates(index, out)) {
+    if (out->preserve_traversal_order && initial_count > 0 &&
+        !scene3d_spatial_order_candidates(index, out)) {
         rt_trap("Scene3D.SpatialIndex: candidate ordering allocation failed");
         return 0;
     }

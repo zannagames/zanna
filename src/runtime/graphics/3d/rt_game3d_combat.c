@@ -963,6 +963,12 @@ typedef struct {
     double aabb_max[3];
 } game3d_combat_volume;
 
+/// @brief One stable X-axis broadphase entry for a posed hurt volume.
+typedef struct {
+    double min_x;
+    int32_t original_index;
+} game3d_combat_hurt_x_entry;
+
 /// @brief Per-world combat scratch: the posed hit/hurt volume lists for one pass.
 /// @details Owned by the world (lazily allocated, freed with the world's other
 ///   registries) instead of TU-static storage, so concurrent worlds and any
@@ -970,6 +976,8 @@ typedef struct {
 typedef struct {
     game3d_combat_volume hit_volumes[GAME3D_COMBAT_MAX_HIT_VOLUMES];
     game3d_combat_volume hurt_volumes[GAME3D_COMBAT_MAX_HURT_VOLUMES];
+    game3d_combat_hurt_x_entry hurt_x_order[GAME3D_COMBAT_MAX_HURT_VOLUMES];
+    uint64_t hurt_candidate_bits[(GAME3D_COMBAT_MAX_HURT_VOLUMES + 63) / 64];
 } game3d_combat_scratch;
 
 /// @brief Return the world's combat scratch, allocating it on first use.
@@ -1056,6 +1064,27 @@ static int game3d_combat_aabb_overlap(const game3d_combat_volume *a,
            a->aabb_min[2] <= b->aabb_max[2] && a->aabb_max[2] >= b->aabb_min[2];
 }
 
+/// @brief Order hurt-volume broadphase entries by minimum X, retaining original-order ties.
+static int game3d_combat_hurt_x_compare(const void *lhs, const void *rhs) {
+    const game3d_combat_hurt_x_entry *a = (const game3d_combat_hurt_x_entry *)lhs;
+    const game3d_combat_hurt_x_entry *b = (const game3d_combat_hurt_x_entry *)rhs;
+    if (a->min_x < b->min_x)
+        return -1;
+    if (a->min_x > b->min_x)
+        return 1;
+    return (a->original_index > b->original_index) - (a->original_index < b->original_index);
+}
+
+/// @brief Find the first set bit in a non-zero 64-bit word without compiler intrinsics.
+static int32_t game3d_combat_first_set_bit(uint64_t bits) {
+    int32_t bit = 0;
+    while ((bits & UINT64_C(1)) == 0) {
+        bits >>= 1;
+        bit++;
+    }
+    return bit;
+}
+
 /// @brief Per-step combat pass. See internal header.
 /// @details Clears prior events and one-shot flags, advances invulnerability, collects posed
 ///   volumes, performs broad- and narrow-phase overlap tests, and records one hit per activation.
@@ -1112,56 +1141,83 @@ void game3d_world_update_combat(rt_game3d_world *world, double dt) {
     if (hit_count <= 0 || hurt_count <= 0)
         return;
 
-    /* 3. Pairwise narrow phase via the collider overlap primitive. */
+    /* 3. Sort a compact X-axis broadphase once. Candidate bits restore the original hurt-volume
+     * order before narrow phase, so event ordering remains stable across spatial arrangements. */
+    for (int32_t v = 0; v < hurt_count; ++v) {
+        scratch->hurt_x_order[v].min_x = hurt_volumes[v].aabb_min[0];
+        scratch->hurt_x_order[v].original_index = v;
+    }
+    qsort(scratch->hurt_x_order,
+          (size_t)hurt_count,
+          sizeof(scratch->hurt_x_order[0]),
+          game3d_combat_hurt_x_compare);
+
     for (int32_t h = 0; h < hit_count; ++h) {
         game3d_combat_volume *attack = &hit_volumes[h];
-        for (int32_t v = 0; v < hurt_count; ++v) {
-            game3d_combat_volume *defend = &hurt_volumes[v];
-            if (attack->entity == defend->entity)
-                continue;
-            if (attack->hitbox->team == defend->hitbox->team && !attack->hitbox->friendly_fire)
-                continue;
-            if ((attack->hitbox->channel & defend->hitbox->channel) == 0)
-                continue;
-            if (game3d_hitbox_victim_seen(attack->hitbox, defend->entity))
-                continue;
-            if (!game3d_combat_aabb_overlap(attack, defend))
-                continue;
-            double normal[3];
-            double depth = 0.0;
-            double point[3];
-            if (!rt_collider3d_overlap_at_raw(attack->hitbox->collider,
-                                              attack->pos,
-                                              attack->quat,
-                                              defend->hitbox->collider,
-                                              defend->pos,
-                                              defend->quat,
-                                              normal,
-                                              &depth,
-                                              point))
-                continue;
-            double safe_normal[3] = {0.0, 1.0, 0.0};
-            double normal_len =
-                sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
-            if (isfinite(normal_len) && normal_len > 1e-9) {
-                safe_normal[0] = normal[0] / normal_len;
-                safe_normal[1] = normal[1] / normal_len;
-                safe_normal[2] = normal[2] / normal_len;
+        memset(scratch->hurt_candidate_bits, 0, sizeof(scratch->hurt_candidate_bits));
+        for (int32_t sorted = 0; sorted < hurt_count; ++sorted) {
+            int32_t v = scratch->hurt_x_order[sorted].original_index;
+            if (scratch->hurt_x_order[sorted].min_x > attack->aabb_max[0])
+                break;
+            if (hurt_volumes[v].aabb_max[0] >= attack->aabb_min[0])
+                scratch->hurt_candidate_bits[(uint32_t)v >> 6] |= UINT64_C(1)
+                                                                  << ((uint32_t)v & 63u);
+        }
+        int32_t word_count = (hurt_count + 63) / 64;
+        for (int32_t word_index = 0; word_index < word_count; ++word_index) {
+            uint64_t candidates = scratch->hurt_candidate_bits[word_index];
+            while (candidates) {
+                int32_t v = word_index * 64 + game3d_combat_first_set_bit(candidates);
+                candidates &= candidates - UINT64_C(1);
+                if (v >= hurt_count)
+                    break;
+                game3d_combat_volume *defend = &hurt_volumes[v];
+                if (attack->entity == defend->entity)
+                    continue;
+                if (attack->hitbox->team == defend->hitbox->team && !attack->hitbox->friendly_fire)
+                    continue;
+                if ((attack->hitbox->channel & defend->hitbox->channel) == 0)
+                    continue;
+                if (game3d_hitbox_victim_seen(attack->hitbox, defend->entity))
+                    continue;
+                if (!game3d_combat_aabb_overlap(attack, defend))
+                    continue;
+                double normal[3];
+                double depth = 0.0;
+                double point[3];
+                if (!rt_collider3d_overlap_at_raw(attack->hitbox->collider,
+                                                  attack->pos,
+                                                  attack->quat,
+                                                  defend->hitbox->collider,
+                                                  defend->pos,
+                                                  defend->quat,
+                                                  normal,
+                                                  &depth,
+                                                  point))
+                    continue;
+                double safe_normal[3] = {0.0, 1.0, 0.0};
+                double normal_len =
+                    sqrt(normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
+                if (isfinite(normal_len) && normal_len > 1e-9) {
+                    safe_normal[0] = normal[0] / normal_len;
+                    safe_normal[1] = normal[1] / normal_len;
+                    safe_normal[2] = normal[2] / normal_len;
+                }
+                double safe_point[3] = {game3d_clamp_coord_or(point[0], attack->pos[0]),
+                                        game3d_clamp_coord_or(point[1], attack->pos[1]),
+                                        game3d_clamp_coord_or(point[2], attack->pos[2])};
+                /* Fail closed when the suppression ring is full: dropping the hit
+                 * preserves the one-hit-per-activation-per-victim invariant. */
+                if (!game3d_hitbox_remember_victim(attack->hitbox, defend->entity))
+                    continue;
+                game3d_world_push_hit_event(world,
+                                            attack->entity,
+                                            defend->entity,
+                                            attack->hitbox,
+                                            defend->hitbox,
+                                            safe_point,
+                                            safe_normal);
             }
-            double safe_point[3] = {game3d_clamp_coord_or(point[0], attack->pos[0]),
-                                    game3d_clamp_coord_or(point[1], attack->pos[1]),
-                                    game3d_clamp_coord_or(point[2], attack->pos[2])};
-            /* Fail closed when the suppression ring is full: dropping the hit
-             * preserves the one-hit-per-activation-per-victim invariant. */
-            if (!game3d_hitbox_remember_victim(attack->hitbox, defend->entity))
-                continue;
-            game3d_world_push_hit_event(world,
-                                        attack->entity,
-                                        defend->entity,
-                                        attack->hitbox,
-                                        defend->hitbox,
-                                        safe_point,
-                                        safe_normal);
         }
     }
 }
