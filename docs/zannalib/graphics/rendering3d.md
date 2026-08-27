@@ -1252,7 +1252,7 @@ Post-processing effect chain applied to a rendered scene.
 | `AddTaa(blend)` | `Void(Double)` | Add temporal anti-aliasing. `blend` is the history weight (0.5–0.98; typical 0.9) |
 | `AddSSR(intensity, maxRoughness)` | `Void(Double, Double)` | Add screen-space reflections; the software reference uses a bounded coarse depth march |
 | `AddAutoExposure(minEv, maxEv, adaptSpeed)` | `Void(Double, Double, Double)` | Add temporally smoothed eye adaptation within the ordered exposure range |
-| `AddColorLUT(pixels, blend)` | `Void(Object, Double)` | Add a retained 256×16 LUT strip and blend it with the current color |
+| `AddColorLUT(pixels, blend)` | `Void(Object, Double)` | Set the chain's retained singleton 256×16 LUT strip and blend it with the current color; a later call replaces the earlier LUT in place |
 | `AddSunShafts(intensity, decay, samples)` | `Void(Double, Double, Integer)` | Add bounded screen-space radial light shafts |
 | `GetEffectKind(index)` | `Integer(Integer)` | Kind of the effect at `index` in application order — one of the `PostFXEffectKind` constants; `-1` when out of range |
 | `RemoveEffectAt(index)` | `Boolean(Integer)` | Remove one effect, closing the chain over the gap; `false` when out of range |

@@ -28,8 +28,8 @@
  *
  * Graphics3D backends use one deterministic CPU-generated table for specular image-based
  * lighting. GPU backends upload its interleaved Fresnel scale/bias pairs, while the software
- * rasterizer samples the same process-lifetime data directly. Lazy initialization is thread-safe,
- * and callers never own or free the returned storage.
+ * rasterizer samples the same process-lifetime data directly. Lazy initialization uses the native
+ * platform once primitive, and callers never own or free the returned storage.
  */
 #pragma once
 
@@ -43,8 +43,8 @@ extern "C" {
 #define VGFX3D_BRDF_LUT_SIZE 64
 
 /// @brief Build the table if it has not been built yet (thread-safe, exactly once).
-/// @details One caller performs the fixed-sample integration while concurrent callers wait for
-///          publication of the immutable process-lifetime table.
+/// @details One caller performs the fixed-sample integration while concurrent callers block in the
+///          platform once primitive until the immutable process-lifetime table is published.
 void vgfx3d_brdf_lut_ensure(void);
 
 /// @brief Borrow the table data: VGFX3D_BRDF_LUT_SIZE^2 texels of (A, B) float

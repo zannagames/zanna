@@ -578,10 +578,28 @@ static int obj_triangulate_face(void *mesh_obj, const uint32_t *mesh_indices, in
             rt_mesh3d_add_triangle(mesh_obj, mesh_indices[0], mesh_indices[1], mesh_indices[2]);
         return !mesh->build_failed;
     }
+    obj_choose_projection_axes(mesh, mesh_indices, face_count, &ax0, &ax1);
+    area = obj_projected_area2(mesh, mesh_indices, face_count, ax0, ax1);
+    if (!isfinite(area) || fabs(area) <= 1e-12) {
+        rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
+                            "Mesh3D.FromOBJ: degenerate or self-intersecting polygon");
+        return 0;
+    }
+    winding = area > 0.0 ? 1.0 : -1.0;
     if (face_count > MESH3D_OBJ_MAX_EARCLIP_VERTS) {
-        /* Very large face: ear-clipping below is O(n^2..n^3), so emit a triangle fan instead
-         * (exact for convex faces; see MESH3D_OBJ_MAX_EARCLIP_VERTS). This bounds the cost of
-         * a pathological mega-face without stalling the loader. */
+        /* A fan is linear and exact for a convex mega-face. Concave input must fail instead of
+         * silently emitting overlapping/out-of-polygon triangles. */
+        for (int i = 0; i < face_count; i++) {
+            uint32_t ia = mesh_indices[(i + face_count - 1) % face_count];
+            uint32_t ib = mesh_indices[i];
+            uint32_t ic = mesh_indices[(i + 1) % face_count];
+            if (obj_orient2(mesh, ia, ib, ic, ax0, ax1) * winding < -1e-12) {
+                rt_asset_error_setf(
+                    RT_ASSET_ERROR_CORRUPT,
+                    "Mesh3D.FromOBJ: concave polygon exceeds the 1024-vertex triangulation limit");
+                return 0;
+            }
+        }
         for (int i = 1; i + 1 < face_count; ++i) {
             if (mesh_indices_form_triangle(
                     mesh, mesh_indices[0], mesh_indices[i], mesh_indices[i + 1]))
@@ -592,11 +610,6 @@ static int obj_triangulate_face(void *mesh_obj, const uint32_t *mesh_indices, in
         }
         return !mesh->build_failed;
     }
-    obj_choose_projection_axes(mesh, mesh_indices, face_count, &ax0, &ax1);
-    area = obj_projected_area2(mesh, mesh_indices, face_count, ax0, ax1);
-    if (!isfinite(area) || fabs(area) <= 1e-12)
-        return 1;
-    winding = area > 0.0 ? 1.0 : -1.0;
     order = (int *)malloc((size_t)face_count * sizeof(int));
     if (!order)
         return 0;
@@ -660,20 +673,10 @@ static int obj_triangulate_face(void *mesh_obj, const uint32_t *mesh_indices, in
                 }
             }
             if (!clipped) {
-                uint32_t anchor = mesh_indices[order[0]];
-                for (int oi = 1; oi + 1 < remaining; ++oi) {
-                    uint32_t ib = mesh_indices[order[oi]];
-                    uint32_t ic = mesh_indices[order[oi + 1]];
-                    if (mesh_indices_form_triangle(mesh, anchor, ib, ic)) {
-                        rt_mesh3d_add_triangle(mesh_obj, anchor, ib, ic);
-                        emitted++;
-                        if (mesh->build_failed) {
-                            free(order);
-                            return 0;
-                        }
-                    }
-                }
-                remaining = 0;
+                free(order);
+                rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
+                                    "Mesh3D.FromOBJ: polygon triangulation stalled");
+                return 0;
             }
         }
     }

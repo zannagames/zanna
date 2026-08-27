@@ -582,36 +582,3 @@ static void *textureasset3d_decode_bc6h_fallback(const uint8_t *data,
     pixels_touch(pixels);
     return pixels;
 }
-
-/// @brief Decode all BC6H mips into a Pixels array (per-mip misses allowed).
-/// @param[in] data Complete KTX2 source bytes.
-/// @param size Number of readable bytes at @p data.
-/// @param[in] mips Validated mip offset, length, and dimension table.
-/// @param mip_count Number of entries in @p mips.
-/// @param is_signed Non-zero for signed BC6H endpoint decoding.
-/// @return Owned array of optional Pixels handles when at least one mip decodes;
-///         `NULL` when arguments, allocation, or every mip decode fails.
-static void **textureasset3d_decode_bc6h_mips(const uint8_t *data,
-                                              size_t size,
-                                              const textureasset3d_mip *mips,
-                                              int64_t mip_count,
-                                              int is_signed) {
-    void **mip_pixels;
-    int64_t decoded_count = 0;
-    if (!data || !mips || mip_count <= 0 || mip_count > (int64_t)TEXTUREASSET3D_MAX_MIP_COUNT)
-        return NULL;
-    mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
-    if (!mip_pixels)
-        return NULL;
-    for (int64_t i = 0; i < mip_count; i++) {
-        mip_pixels[i] = textureasset3d_decode_bc6h_fallback(
-            data, size, mips[i].width, mips[i].height, mips[i].offset, mips[i].length, is_signed);
-        if (mip_pixels[i])
-            decoded_count++;
-    }
-    if (decoded_count <= 0) {
-        free(mip_pixels);
-        return NULL;
-    }
-    return mip_pixels;
-}

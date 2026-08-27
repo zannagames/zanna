@@ -146,6 +146,69 @@ int raycast_sphere_raw(const double *origin,
     return 1;
 }
 
+/// @brief Intersect a parameterized local-space ray with an origin-centered sphere.
+/// @details Unlike raycast_sphere_raw, @p dir need not be normalized. This preserves the original
+/// world-space ray parameter after inverse non-uniform scale, producing an exact ellipsoid hit.
+/// @param origin Borrowed local-space ray origin.
+/// @param dir Borrowed local-space ray vector retaining the caller's world-space parameterization.
+/// @param radius Non-negative local sphere radius.
+/// @param max_distance Maximum accepted original ray parameter.
+/// @param[out] out_t Optional original ray parameter at entry, or zero for an interior start.
+/// @param[out] out_normal Optional local-space outward surface normal.
+/// @param[out] out_started Optional destination set when the local origin starts inside the sphere.
+/// @return Non-zero when the ray starts inside or enters the sphere within @p max_distance.
+static int raycast_parameterized_local_sphere(const double *origin,
+                                              const double *dir,
+                                              double radius,
+                                              double max_distance,
+                                              double *out_t,
+                                              double *out_normal,
+                                              int *out_started) {
+    double a;
+    double b;
+    double c;
+    double discriminant;
+    double t;
+    if (!origin || !dir || !isfinite(radius) || radius < 0.0 || !isfinite(max_distance) ||
+        max_distance < 0.0)
+        return 0;
+    a = vec3_dot(dir, dir);
+    if (!isfinite(a) || a <= 1e-24)
+        return 0;
+    c = vec3_dot(origin, origin) - radius * radius;
+    if (c <= 0.0) {
+        if (out_t)
+            *out_t = 0.0;
+        if (out_started)
+            *out_started = 1;
+        if (out_normal) {
+            vec3_copy(out_normal, origin);
+            if (vec3_normalize_in_place(out_normal) <= 1e-12)
+                vec3_negate(dir, out_normal);
+        }
+        return 1;
+    }
+    b = vec3_dot(origin, dir);
+    discriminant = b * b - a * c;
+    if (!isfinite(discriminant) || discriminant < 0.0)
+        return 0;
+    t = (-b - sqrt(discriminant)) / a;
+    if (!isfinite(t) || t < 0.0 || t > max_distance)
+        return 0;
+    if (out_t)
+        *out_t = t;
+    if (out_started)
+        *out_started = 0;
+    if (out_normal) {
+        out_normal[0] = origin[0] + dir[0] * t;
+        out_normal[1] = origin[1] + dir[1] * t;
+        out_normal[2] = origin[2] + dir[2] * t;
+        if (vec3_normalize_in_place(out_normal) <= 1e-12)
+            vec3_negate(dir, out_normal);
+    }
+    return 1;
+}
+
 /// @brief Intersects a ray with an axis-aligned box using the slab method.
 /// @param origin Borrowed three-element ray origin.
 /// @param dir Borrowed ray direction.
@@ -860,22 +923,104 @@ mesh_raycast_done:
     return 1;
 }
 
-/// @brief Raycast a posed heightfield collider: clip the ray to the field AABB, then
-///   march in local space sampling terrain height until the ray dips below the surface.
-/// @details The local XZ interval is clipped to the finite grid when heightfield dimensions are
-///          available. March steps follow half-cell spacing and the first sign change in vertical
-///          clearance is refined by bisection.
+/// @brief Evaluate local ray clearance over one heightfield cell interval and solve its first root.
+/// @details Bilinear height along a linear XZ ray is quadratic. Three interior samples recover that
+/// quadratic exactly while staying away from cell boundaries, where a neighboring hole may own the
+/// boundary sample. The earliest root therefore cannot hide between fixed march samples.
+static int raycast_heightfield_cell_interval(void *heightfield,
+                                             const double *local_origin,
+                                             const double *local_dir,
+                                             double t0,
+                                             double t1,
+                                             double *out_t,
+                                             double *out_local_normal) {
+    static const double sample_u[3] = {0.25, 0.5, 0.75};
+    double q[3];
+    double a;
+    double b;
+    double c;
+    double root = DBL_MAX;
+    double span;
+    if (!heightfield || !local_origin || !local_dir || !isfinite(t0) || !isfinite(t1) || t1 < t0)
+        return 0;
+    span = t1 - t0;
+    if (span <= 1e-12)
+        return 0;
+    for (int i = 0; i < 3; i++) {
+        double t = t0 + span * sample_u[i];
+        double point[3] = {local_origin[0] + local_dir[0] * t,
+                           local_origin[1] + local_dir[1] * t,
+                           local_origin[2] + local_dir[2] * t};
+        double surface;
+        if (!rt_collider3d_sample_heightfield_raw(heightfield, point[0], point[2], &surface, NULL))
+            return 0;
+        q[i] = point[1] - surface;
+        if (!isfinite(q[i]))
+            return 0;
+    }
+    /* q(u) = a*u^2 + b*u + c through u={1/4,1/2,3/4}. */
+    a = 8.0 * (q[2] - 2.0 * q[1] + q[0]);
+    b = 4.0 * (q[1] - q[0]) - 0.75 * a;
+    c = q[0] - 0.0625 * a - 0.25 * b;
+    if (c <= 1e-10) {
+        root = 0.0;
+    } else if (fabs(a) <= 1e-12) {
+        if (fabs(b) > 1e-12) {
+            double candidate = -c / b;
+            if (candidate >= -1e-10 && candidate <= 1.0 + 1e-10)
+                root = clampd(candidate, 0.0, 1.0);
+        }
+    } else {
+        double discriminant = b * b - 4.0 * a * c;
+        if (discriminant >= -1e-12 && isfinite(discriminant)) {
+            double roots[2];
+            double square_root = sqrt(discriminant > 0.0 ? discriminant : 0.0);
+            roots[0] = (-b - square_root) / (2.0 * a);
+            roots[1] = (-b + square_root) / (2.0 * a);
+            if (roots[0] > roots[1]) {
+                double tmp = roots[0];
+                roots[0] = roots[1];
+                roots[1] = tmp;
+            }
+            for (int i = 0; i < 2; i++) {
+                if (isfinite(roots[i]) && roots[i] >= -1e-10 && roots[i] <= 1.0 + 1e-10) {
+                    root = clampd(roots[i], 0.0, 1.0);
+                    break;
+                }
+            }
+        }
+    }
+    if (root == DBL_MAX)
+        return 0;
+    if (out_t)
+        *out_t = t0 + span * root;
+    if (out_local_normal) {
+        double normal_u = clampd(root, 1e-8, 1.0 - 1e-8);
+        double normal_t = t0 + span * normal_u;
+        double point[3] = {local_origin[0] + local_dir[0] * normal_t,
+                           local_origin[1] + local_dir[1] * normal_t,
+                           local_origin[2] + local_dir[2] * normal_t};
+        double surface;
+        if (!rt_collider3d_sample_heightfield_raw(
+                heightfield, point[0], point[2], &surface, out_local_normal))
+            vec3_set(out_local_normal, 0.0, 1.0, 0.0);
+    }
+    return 1;
+}
+
+/// @brief Raycast a posed heightfield collider using grid-cell DDA and exact bilinear roots.
+/// @details The local XZ interval is clipped to the finite grid. Each crossed cell contributes one
+/// parameter interval, and the ray-minus-bilinear-height quadratic is solved analytically there.
 /// @param heightfield Borrowed heightfield collider.
 /// @param pose Borrowed world pose applied to the heightfield.
 /// @param origin Borrowed three-element world-space ray origin.
 /// @param dir Borrowed normalized world-space ray direction.
 /// @param max_distance Positive maximum accepted distance in world units.
-/// @param[out] out_t Optional destination for the sampled and refined hit distance.
+/// @param[out] out_t Optional destination for the exact bilinear hit distance.
 /// @param[out] out_normal Optional destination for the normalized world-space terrain normal.
 /// @param[out] out_started Optional destination set when the first sampled point is already at or
 ///        below the terrain surface.
-/// @return `1` when the clipped ray crosses the sampled terrain within the distance and march
-///         budgets; otherwise `0`.
+/// @return `1` when the clipped ray crosses a non-holed terrain cell; otherwise `0`.
 static int raycast_heightfield_pose_raw(void *heightfield,
                                         const rt_collider_pose *pose,
                                         const double *origin,
@@ -889,14 +1034,9 @@ static int raycast_heightfield_pose_raw(void *heightfield,
     double local_origin[3], local_dir[3];
     double start_t;
     double march_end;
-    double step;
-    double march_budget;
     double heightfield_scale[3] = {1.0, 1.0, 1.0};
     int32_t heightfield_width = 0;
     int32_t heightfield_depth = 0;
-    double prev_t;
-    double prev_clearance = DBL_MAX;
-    int has_prev = 0;
     if (!heightfield || !pose || !origin || !dir || !isfinite(max_distance) || max_distance <= 0.0)
         return 0;
     max_distance = query_sanitize_distance(max_distance);
@@ -908,125 +1048,129 @@ static int raycast_heightfield_pose_raw(void *heightfield,
     transform_vector_to_local(pose, dir, local_dir);
     start_t = started ? 0.0 : entry_t;
     march_end = max_distance;
-    step = max_distance / 512.0;
-    /* The march budget must cover the whole in-field segment: the previous fixed
-     * 2048-iteration cap made rays crossing more than ~1024 cells horizontally
-     * exit mid-terrain and report a MISS (long sniper shots / AI line-of-sight on
-     * large heightfields). With a half-cell step the in-field sample count is
-     * geometrically bounded, so derive the budget from the grid dimensions and
-     * clip the marched range to the field's local XZ rectangle so out-of-field
-     * travel costs nothing. */
-    march_budget = 1024.0;
-    if (rt_collider3d_get_heightfield_info_raw(
-            heightfield, &heightfield_width, &heightfield_depth, heightfield_scale)) {
+    if (!rt_collider3d_get_heightfield_info_raw(
+            heightfield, &heightfield_width, &heightfield_depth, heightfield_scale) ||
+        heightfield_width < 2 || heightfield_depth < 2)
+        return 0;
+    {
         double sx = fabs(heightfield_scale[0]);
         double sz = fabs(heightfield_scale[2]);
-        double cell = sx > 1e-12 && sz > 1e-12 ? fmin(sx, sz) : fmax(sx, sz);
-        double horizontal_speed = sqrt(local_dir[0] * local_dir[0] + local_dir[2] * local_dir[2]);
-        if (heightfield_width > 1 && heightfield_depth > 1 && cell > 1e-12 &&
-            horizontal_speed > 1e-12) {
-            double half_w = 0.5 * (double)(heightfield_width - 1) * sx;
-            double half_d = 0.5 * (double)(heightfield_depth - 1) * sz;
-            double clip_lo = start_t;
-            double clip_hi = march_end;
-            int clipped_out = 0;
-            step = (cell * 0.5) / horizontal_speed;
-            /* 2D slab clip of the local ray against the field's XZ rectangle
-             * (transform_vector_to_local preserves the t parameter). */
-            for (int axis = 0; axis < 3; axis += 2) {
-                double lo_bound = axis == 0 ? -half_w : -half_d;
-                double hi_bound = axis == 0 ? half_w : half_d;
-                if (fabs(local_dir[axis]) < 1e-12) {
-                    if (local_origin[axis] < lo_bound || local_origin[axis] > hi_bound)
-                        clipped_out = 1;
-                    continue;
+        double half_w = 0.5 * (double)(heightfield_width - 1) * sx;
+        double half_d = 0.5 * (double)(heightfield_depth - 1) * sz;
+        double clip_lo = start_t;
+        double clip_hi = march_end;
+        double horizontal_speed = hypot(local_dir[0], local_dir[2]);
+        int32_t cells_x = heightfield_width - 1;
+        int32_t cells_z = heightfield_depth - 1;
+        if (sx <= 1e-12 || sz <= 1e-12)
+            return 0;
+        for (int axis = 0; axis < 3; axis += 2) {
+            double bound_lo = axis == 0 ? -half_w : -half_d;
+            double bound_hi = axis == 0 ? half_w : half_d;
+            if (fabs(local_dir[axis]) <= 1e-12) {
+                if (local_origin[axis] < bound_lo || local_origin[axis] > bound_hi)
+                    return 0;
+            } else {
+                double t0 = (bound_lo - local_origin[axis]) / local_dir[axis];
+                double t1 = (bound_hi - local_origin[axis]) / local_dir[axis];
+                if (t0 > t1) {
+                    double tmp = t0;
+                    t0 = t1;
+                    t1 = tmp;
                 }
-                {
-                    double inv = 1.0 / local_dir[axis];
-                    double t1 = (lo_bound - local_origin[axis]) * inv;
-                    double t2 = (hi_bound - local_origin[axis]) * inv;
-                    if (t1 > t2) {
-                        double tmp = t1;
-                        t1 = t2;
-                        t2 = tmp;
-                    }
-                    if (isfinite(t1) && t1 > clip_lo)
-                        clip_lo = t1;
-                    if (isfinite(t2) && t2 < clip_hi)
-                        clip_hi = t2;
-                }
+                if (t0 > clip_lo)
+                    clip_lo = t0;
+                if (t1 < clip_hi)
+                    clip_hi = t1;
             }
-            if (clipped_out || clip_lo > clip_hi)
+        }
+        clip_lo = fmax(clip_lo, 0.0);
+        clip_hi = fmin(clip_hi, max_distance);
+        if (!isfinite(clip_lo) || !isfinite(clip_hi) || clip_lo > clip_hi)
+            return 0;
+
+        /* A vertical ray remains in one bilinear sample, so its clearance is linear. */
+        if (horizontal_speed <= 1e-12) {
+            double surface;
+            double local_normal[3];
+            double clearance;
+            double hit_t;
+            if (!rt_collider3d_sample_heightfield_raw(
+                    heightfield, local_origin[0], local_origin[2], &surface, local_normal))
                 return 0;
-            /* Back off one step so the first in-field sample brackets the entry. */
-            start_t = fmax(start_t, clip_lo - step);
-            march_end = clip_hi;
-            march_budget = 4.0 * (double)(heightfield_width + heightfield_depth) + 1024.0;
-        }
-    }
-    if (!isfinite(step) || step <= 0.0)
-        step = max_distance / 512.0;
-    if (!isfinite(step) || step < 1e-5)
-        step = 1e-5;
-    if (step > max_distance)
-        step = max_distance;
-    if (!isfinite(step) || step <= 0.0)
-        return 0;
-    if (!isfinite(march_end) || march_end > max_distance)
-        march_end = max_distance;
-    prev_t = start_t;
-    for (double t = start_t, march_iter = 0.0;
-         t <= march_end + step + 1e-9 && t <= max_distance + 1e-9 && march_iter < march_budget;
-         t += step, march_iter += 1.0) {
-        double local_point[3] = {local_origin[0] + local_dir[0] * t,
-                                 local_origin[1] + local_dir[1] * t,
-                                 local_origin[2] + local_dir[2] * t};
-        double surface = 0.0;
-        double local_normal[3] = {0.0, 1.0, 0.0};
-        double clearance;
-        if (!rt_collider3d_sample_heightfield_raw(
-                heightfield, local_point[0], local_point[2], &surface, local_normal)) {
-            prev_t = t;
-            has_prev = 0;
-            continue;
-        }
-        clearance = local_point[1] - surface;
-        if (clearance <= 0.0) {
-            double hit_t = t;
-            if (has_prev && prev_clearance > 0.0) {
-                double lo = prev_t;
-                double hi = t;
-                for (int iter = 0; iter < 16; iter++) {
-                    double mid = (lo + hi) * 0.5;
-                    double mid_point[3] = {local_origin[0] + local_dir[0] * mid,
-                                           local_origin[1] + local_dir[1] * mid,
-                                           local_origin[2] + local_dir[2] * mid};
-                    double mid_surface = 0.0;
-                    double mid_normal[3] = {0.0, 1.0, 0.0};
-                    if (rt_collider3d_sample_heightfield_raw(
-                            heightfield, mid_point[0], mid_point[2], &mid_surface, mid_normal) &&
-                        mid_point[1] - mid_surface <= 0.0) {
-                        hi = mid;
-                        vec3_copy(local_normal, mid_normal);
-                    } else {
-                        lo = mid;
-                    }
-                }
-                hit_t = hi;
-            }
+            clearance = local_origin[1] + local_dir[1] * clip_lo - surface;
+            if (clearance <= 0.0)
+                hit_t = clip_lo;
+            else if (local_dir[1] < -1e-12)
+                hit_t = clip_lo + clearance / -local_dir[1];
+            else
+                return 0;
+            if (hit_t > clip_hi)
+                return 0;
             if (out_t)
                 *out_t = hit_t;
             if (out_started)
-                *out_started = (t == start_t && clearance <= 0.0) ? 1 : 0;
+                *out_started = hit_t <= 1e-10 ? 1 : 0;
             if (out_normal) {
                 transform_normal_from_local(pose, local_normal, out_normal);
                 query_normalize_normal(out_normal, dir);
             }
             return 1;
         }
-        prev_clearance = clearance;
-        prev_t = t;
-        has_prev = 1;
+
+        double current_t = clip_lo;
+        int64_t visit_budget = (int64_t)cells_x + (int64_t)cells_z + 8;
+        for (int64_t visit = 0; visit < visit_budget && current_t < clip_hi - 1e-12; visit++) {
+            double remaining = clip_hi - current_t;
+            double probe_t = current_t + fmin(remaining * 0.5, fmax(1e-10, remaining * 1e-8));
+            double probe_x = local_origin[0] + local_dir[0] * probe_t;
+            double probe_z = local_origin[2] + local_dir[2] * probe_t;
+            double grid_x = clampd((probe_x + half_w) / sx, 0.0, (double)cells_x - 1e-12);
+            double grid_z = clampd((probe_z + half_d) / sz, 0.0, (double)cells_z - 1e-12);
+            int32_t cell_x = (int32_t)floor(grid_x);
+            int32_t cell_z = (int32_t)floor(grid_z);
+            double interval_end = clip_hi;
+            if (local_dir[0] > 1e-12) {
+                double boundary = -half_w + (double)(cell_x + 1) * sx;
+                interval_end = fmin(interval_end, (boundary - local_origin[0]) / local_dir[0]);
+            } else if (local_dir[0] < -1e-12) {
+                double boundary = -half_w + (double)cell_x * sx;
+                interval_end = fmin(interval_end, (boundary - local_origin[0]) / local_dir[0]);
+            }
+            if (local_dir[2] > 1e-12) {
+                double boundary = -half_d + (double)(cell_z + 1) * sz;
+                interval_end = fmin(interval_end, (boundary - local_origin[2]) / local_dir[2]);
+            } else if (local_dir[2] < -1e-12) {
+                double boundary = -half_d + (double)cell_z * sz;
+                interval_end = fmin(interval_end, (boundary - local_origin[2]) / local_dir[2]);
+            }
+            if (interval_end <= current_t + 1e-12) {
+                current_t += fmax(1e-10, remaining * 1e-10);
+                continue;
+            }
+            {
+                double hit_t;
+                double local_normal[3];
+                if (raycast_heightfield_cell_interval(heightfield,
+                                                      local_origin,
+                                                      local_dir,
+                                                      current_t,
+                                                      interval_end,
+                                                      &hit_t,
+                                                      local_normal)) {
+                    if (out_t)
+                        *out_t = hit_t;
+                    if (out_started)
+                        *out_started = hit_t <= 1e-10 ? 1 : 0;
+                    if (out_normal) {
+                        transform_normal_from_local(pose, local_normal, out_normal);
+                        query_normalize_normal(out_normal, dir);
+                    }
+                    return 1;
+                }
+            }
+            current_t = interval_end;
+        }
     }
     return 0;
 }
@@ -1067,21 +1211,21 @@ static int raycast_collider_pose(void *collider,
             return 0;
     } else if (type == RT_COLLIDER3D_TYPE_SPHERE) {
         double radius = rt_collider3d_get_radius_raw(collider);
-        double sx = pose_abs_scale_or_unit(pose->scale[0]);
-        double sy = pose_abs_scale_or_unit(pose->scale[1]);
-        double sz = pose_abs_scale_or_unit(pose->scale[2]);
-        double max_scale = sx > sy ? sx : sy;
-        if (sz > max_scale)
-            max_scale = sz;
-        if (!raycast_sphere_raw(origin,
-                                dir,
-                                pose->position,
-                                radius * max_scale,
-                                max_distance,
-                                &t,
-                                normal,
-                                &started))
+        double local_origin[3];
+        double local_dir[3];
+        double local_normal[3];
+        transform_point_to_local(pose, origin, local_origin);
+        transform_vector_to_local(pose, dir, local_dir);
+        if (!raycast_parameterized_local_sphere(
+                local_origin, local_dir, radius, max_distance, &t, local_normal, &started))
             return 0;
+        if (started) {
+            vec3_negate(dir, normal);
+            query_normalize_normal(normal, dir);
+        } else {
+            transform_normal_from_local(pose, local_normal, normal);
+            query_normalize_normal(normal, dir);
+        }
     } else if (type == RT_COLLIDER3D_TYPE_CAPSULE) {
         rt_body3d proxy;
         double a[3], b[3];
@@ -1422,9 +1566,10 @@ static int32_t world3d_raycast_all_core(rt_world3d *w,
             continue;
         if (raycast_body(body, origin, dir, max_distance, &hit)) {
             total_count++;
-            hit_count = query_hit_insert_sorted_bounded(hits, hit_count, hit_capacity, &hit);
+            hit_count = query_hit_heap_collect_bounded(hits, hit_count, hit_capacity, &hit);
         }
     }
+    query_hit_sort_by_distance(hits, hit_count);
     if (out_total)
         *out_total = total_count;
     return hit_count;

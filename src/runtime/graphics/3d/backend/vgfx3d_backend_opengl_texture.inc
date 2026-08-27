@@ -132,7 +132,22 @@ static uint64_t *gl_cache_age_scratch(gl_context_t *ctx, int32_t needed) {
     return grown;
 }
 
-/// @brief Release one texture-cache slot's owned texture objects and zero the entry.
+/// @brief Replace one texture-cache slot's retained TextureAsset3D identity.
+/// @param entry Cache entry whose runtime-object ownership is updated.
+/// @param asset Borrowed TextureAsset3D to retain, or null to clear the identity.
+static void gl_texture_cache_assign_asset(gl_texture_cache_entry_t *entry, void *asset) {
+    void *previous;
+    if (!entry || entry->texture_asset == asset)
+        return;
+    if (asset)
+        rt_obj_retain_maybe(asset);
+    previous = entry->texture_asset;
+    entry->texture_asset = asset;
+    if (previous && rt_obj_release_check0(previous))
+        rt_obj_free(previous);
+}
+
+/// @brief Release one texture-cache slot's owned texture objects and retained asset, then zero it.
 /// @param entry Cache entry to release and reset; null is a no-op.
 static void texture_cache_release_entry(gl_texture_cache_entry_t *entry) {
     if (!entry)
@@ -141,6 +156,7 @@ static void texture_cache_release_entry(gl_texture_cache_entry_t *entry) {
         gl.DeleteTextures(1, &entry->tex);
     if (entry->fallback_tex)
         gl.DeleteTextures(1, &entry->fallback_tex);
+    gl_texture_cache_assign_asset(entry, NULL);
     memset(entry, 0, sizeof(*entry));
 }
 
@@ -886,7 +902,7 @@ static gl_upload_status_t gl_start_native_texture_upload(gl_context_t *ctx,
             return GL_UPLOAD_FAILED;
     }
     entry->pixels = NULL;
-    entry->texture_asset = asset;
+    gl_texture_cache_assign_asset(entry, asset);
     entry->pending_generation = cache_key;
     entry->failed_generation = 0;
     entry->failed_mip_start = 0;
@@ -1029,7 +1045,7 @@ static gl_upload_status_t gl_start_texture_upload(gl_context_t *ctx,
     }
 
     entry->pixels = pixels_ptr;
-    entry->texture_asset = NULL;
+    gl_texture_cache_assign_asset(entry, NULL);
     entry->pending_generation = cache_key;
     entry->failed_generation = 0;
     entry->failed_mip_start = 0;
@@ -1281,7 +1297,7 @@ static GLuint gl_get_cached_native_texture(
     memset(entry, 0, sizeof(*entry));
     status = gl_start_native_texture_upload(ctx, entry, asset, cache_key, mip_start, mip_count);
     if (status == GL_UPLOAD_FAILED) {
-        entry->texture_asset = asset;
+        gl_texture_cache_assign_asset(entry, asset);
         gl_fail_texture_upload(entry, cache_key, mip_start, mip_count);
     }
     gl_texture_cache_remember(ctx, asset, index);

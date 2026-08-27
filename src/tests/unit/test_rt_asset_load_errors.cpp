@@ -29,6 +29,7 @@
 #include "rt_string.h"
 #include "tests/TestHarness.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -295,6 +296,35 @@ TEST(AssetLoadErrors, AsciiFbxHeaderLoadsGeometryThroughAsciiPath) {
     EXPECT_NE(asset, nullptr);
     EXPECT_EQ(rt_fbx_mesh_count(asset), 1);
 
+    std::remove(fbx.c_str());
+}
+
+TEST(AssetLoadErrors, OversizedConcaveFbxPolygonIsRejectedInsteadOfFanned) {
+    constexpr int kVertexCount = 1025;
+    std::string text = "; FBX 7.4.0 project file\nObjects: {\n"
+                       " Geometry: 1, \"Geometry::ConcaveMegaFace\", \"Mesh\" {\n"
+                       "  Vertices: *" +
+                       std::to_string(kVertexCount * 3) + " { a: ";
+    for (int i = 0; i < kVertexCount; i++) {
+        double angle = 2.0 * 3.14159265358979323846 * (double)i / (double)kVertexCount;
+        double radius = i == kVertexCount / 2 ? 0.1 : 1.0;
+        if (i)
+            text += ",";
+        text += std::to_string(radius * std::cos(angle)) + "," +
+                std::to_string(radius * std::sin(angle)) + ",0";
+    }
+    text += " }\n  PolygonVertexIndex: *" + std::to_string(kVertexCount) + " { a: ";
+    for (int i = 0; i < kVertexCount; i++) {
+        if (i)
+            text += ",";
+        text += std::to_string(i + 1 == kVertexCount ? -(i + 1) : i);
+    }
+    text += " }\n }\n}\n";
+
+    std::string fbx = tmp_path("concave_mega_face.fbx");
+    write_text(fbx.c_str(), text.c_str());
+    expect_null_with_error(rt_fbx_load, fbx.c_str(), "FBX.Load oversized concave polygon");
+    EXPECT_EQ(rt_asset_error_get_code(), RT_ASSET_ERROR_CORRUPT);
     std::remove(fbx.c_str());
 }
 

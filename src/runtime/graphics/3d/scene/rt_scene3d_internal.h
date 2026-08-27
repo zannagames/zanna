@@ -117,6 +117,7 @@ typedef struct rt_node_animator3d {
     int32_t sample_scratch_capacity;
     struct rt_scene_node3d **traversal_stack;
     size_t traversal_stack_capacity;
+    uint64_t cached_hierarchy_epoch;
 } rt_node_animator3d;
 
 /// @brief One immutable VSCN v4+ scene carried privately from SceneGraph.Load to SceneAsset.Load.
@@ -761,6 +762,12 @@ double scene3d_distance_or_zero(double value);
 /// @brief Invalidate a scene's spatial topology and force a complete BVH rebuild.
 /// @param scene Borrowed scene to invalidate; `NULL` is accepted.
 void scene3d_mark_spatial_dirty(rt_scene3d *scene);
+
+/// @brief Record a process-wide scene-parent topology change.
+void scene3d_note_hierarchy_change(void);
+
+/// @brief Read the current nonzero process-wide scene-parent topology epoch.
+uint64_t scene3d_hierarchy_epoch(void);
 
 /// @brief Mark one node's spatial visibility subtree stale without changing BVH topology.
 /// @param node Borrowed changed node; `NULL` is accepted.

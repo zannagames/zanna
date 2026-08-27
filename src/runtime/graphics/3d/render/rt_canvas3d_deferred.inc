@@ -573,7 +573,7 @@ static int ensure_text_capacity(rt_canvas3d *c, int32_t vertex_count, int32_t in
 /// @param b Borrowed pointer to the second `deferred_draw_t`.
 /// @return Negative, zero, or positive according to sanitized descending depth, stable identity,
 /// and enqueue-order comparison.
-static CANVAS3D_UNUSED_PRIVATE int cmp_back_to_front(const void *a, const void *b) {
+static int cmp_back_to_front(const void *a, const void *b) {
     const deferred_draw_t *da = (const deferred_draw_t *)a;
     const deferred_draw_t *db = (const deferred_draw_t *)b;
     float ka = canvas3d_sanitize_sort_key(da->sort_key, 1);
@@ -601,7 +601,7 @@ static CANVAS3D_UNUSED_PRIVATE int cmp_back_to_front(const void *a, const void *
 /// @param b Borrowed pointer to the second `deferred_draw_t`.
 /// @return Negative, zero, or positive according to sanitized ascending depth, stable identity,
 /// and enqueue-order comparison.
-static CANVAS3D_UNUSED_PRIVATE int cmp_front_to_back(const void *a, const void *b) {
+static int cmp_front_to_back(const void *a, const void *b) {
     const deferred_draw_t *da = (const deferred_draw_t *)a;
     const deferred_draw_t *db = (const deferred_draw_t *)b;
     float ka = canvas3d_sanitize_sort_key(da->sort_key, 0);
@@ -621,56 +621,45 @@ static CANVAS3D_UNUSED_PRIVATE int cmp_front_to_back(const void *a, const void *
     return 0;
 }
 
-/// @brief Return whether a draw sort tuple comes after the previously emitted tuple.
-/// @details The no-allocation fallback uses this to iterate a sorted order without
-///          moving or marking the source draw array. Ties fall back to original draw
-///          index, which gives a deterministic stable order even when many objects
-///          share the same depth key.
-/// @param key Candidate draw's depth key.
-/// @param stable_sort_id Candidate persistent identity tie-breaker.
-/// @param enqueue_index Candidate original queue position.
-/// @param previous_key Previously emitted depth key.
-/// @param previous_stable_sort_id Previously emitted identity.
-/// @param previous_enqueue_index Previously emitted queue position, or a negative sentinel
-/// initially.
-/// @param descending Non-zero for back-to-front ordering; zero for front-to-back.
-/// @return Non-zero when the candidate is strictly after the previous tuple.
-static int canvas3d_sort_tuple_after(float key,
-                                     uintptr_t stable_sort_id,
-                                     int32_t enqueue_index,
-                                     float previous_key,
-                                     uintptr_t previous_stable_sort_id,
-                                     int32_t previous_enqueue_index,
-                                     int descending) {
-    if (previous_enqueue_index < 0)
-        return 1;
-    key = canvas3d_sanitize_sort_key(key, descending ? 1 : 0);
-    previous_key = canvas3d_sanitize_sort_key(previous_key, descending ? 1 : 0);
-    if (key == previous_key)
-        return stable_sort_id == previous_stable_sort_id ? enqueue_index > previous_enqueue_index
-                                                         : stable_sort_id > previous_stable_sort_id;
-    return descending ? key < previous_key : key > previous_key;
+typedef int (*canvas3d_draw_compare_fn)(const void *, const void *);
+
+/// @brief Restore a max-heap below @p root according to a total draw comparator.
+static void canvas3d_heap_sift_down(deferred_draw_t *items,
+                                    int32_t root,
+                                    int32_t count,
+                                    canvas3d_draw_compare_fn compare) {
+    for (;;) {
+        int32_t child = root * 2 + 1;
+        if (child >= count)
+            return;
+        if (child + 1 < count && compare(&items[child], &items[child + 1]) < 0)
+            child++;
+        if (compare(&items[root], &items[child]) >= 0)
+            return;
+        deferred_draw_t tmp = items[root];
+        items[root] = items[child];
+        items[child] = tmp;
+        root = child;
+    }
 }
 
-/// @brief Compare two deferred sort tuples using the same ordering as the qsort paths.
-/// @details This keeps the no-allocation fallback deterministic under memory pressure by honoring
-///          stable draw identity before falling back to enqueue order.
-/// @param a Borrowed first deferred draw.
-/// @param b Borrowed second deferred draw.
-/// @param descending Non-zero for back-to-front depth comparison.
-/// @return Non-zero when @p a sorts before @p b.
-static int canvas3d_sort_tuple_less(const deferred_draw_t *a,
-                                    const deferred_draw_t *b,
-                                    int descending) {
-    if (!a || !b)
-        return 0;
-    float a_key = canvas3d_sanitize_sort_key(a->sort_key, descending ? 1 : 0);
-    float b_key = canvas3d_sanitize_sort_key(b->sort_key, descending ? 1 : 0);
-    if (a_key != b_key)
-        return descending ? (a_key > b_key) : (a_key < b_key);
-    if (a->stable_sort_id != b->stable_sort_id)
-        return a->stable_sort_id < b->stable_sort_id;
-    return a->enqueue_index < b->enqueue_index;
+/// @brief Allocation-free O(n log n) fallback for deferred ordering under scratch OOM.
+/// @details The depth/identity/enqueue comparator is a total order, so the in-place heap result is
+/// deterministic even though heapsort itself is not stable. This replaces the former O(n²)
+/// repeated-selection fallback and lets a recorded frame finish without more memory.
+static void canvas3d_heap_sort_draws(deferred_draw_t *items,
+                                     int32_t count,
+                                     canvas3d_draw_compare_fn compare) {
+    if (!items || count <= 1 || !compare)
+        return;
+    for (int32_t root = count / 2; root-- > 0;)
+        canvas3d_heap_sift_down(items, root, count, compare);
+    for (int32_t end = count - 1; end > 0; --end) {
+        deferred_draw_t tmp = items[0];
+        items[0] = items[end];
+        items[end] = tmp;
+        canvas3d_heap_sift_down(items, 0, end, compare);
+    }
 }
 
 #define CANVAS3D_SORT_DEPTH_BUCKETS 4096
@@ -929,9 +918,12 @@ static int canvas3d_stable_bucket_sort_depth(
 static int canvas3d_sort_transparent_draws(rt_canvas3d *c, deferred_draw_t *items, int32_t count) {
     if (count <= 1)
         return 1;
-    if (!canvas3d_stable_radix_sort_u64(c, items, count, canvas3d_sort_key_stable_id, NULL))
-        return 0;
-    return canvas3d_stable_bucket_sort_depth(c, items, count, 1, 1);
+    if (!canvas3d_stable_radix_sort_u64(c, items, count, canvas3d_sort_key_stable_id, NULL) ||
+        !canvas3d_stable_bucket_sort_depth(c, items, count, 1, 1)) {
+        canvas3d_heap_sort_draws(items, count, cmp_back_to_front);
+        c->frame_sort_passes++;
+    }
+    return 1;
 }
 
 /// @brief Deterministically sort opaque draws by identity then exact front-to-back depth.
@@ -944,9 +936,12 @@ static int canvas3d_sort_opaque_draws_depth_first(rt_canvas3d *c,
                                                   int32_t count) {
     if (count <= 1)
         return 1;
-    if (!canvas3d_stable_radix_sort_u64(c, items, count, canvas3d_sort_key_stable_id, NULL))
-        return 0;
-    return canvas3d_stable_bucket_sort_depth(c, items, count, 0, 0);
+    if (!canvas3d_stable_radix_sort_u64(c, items, count, canvas3d_sort_key_stable_id, NULL) ||
+        !canvas3d_stable_bucket_sort_depth(c, items, count, 0, 0)) {
+        canvas3d_heap_sort_draws(items, count, cmp_front_to_back);
+        c->frame_sort_passes++;
+    }
+    return 1;
 }
 
 /// @brief Report whether backend-state transition telemetry should treat the canvas as software.
@@ -961,49 +956,6 @@ static int canvas3d_backend_uses_software_raster(const rt_canvas3d *c) {
         return 1;
     name = c->backend->name;
     return name && strcmp(name, "software") == 0;
-}
-
-/// @brief Pick the next visible main-pass draw in sorted order without allocating scratch storage.
-/// @details Used only when the normal staged sort buffer cannot be allocated. It performs
-///          an O(n²) selection pass over the existing deferred draw list, preserving the
-///          same front/back depth ordering contract as the qsort path while avoiding
-///          mutation of the mixed-pass queue.
-/// @param cmds Borrowed mixed-pass deferred queue.
-/// @param draw_count Number of valid queue entries.
-/// @param requires_blend Required transparency class for the selection.
-/// @param descending Non-zero for back-to-front traversal.
-/// @param previous_key Previously emitted key.
-/// @param previous_stable_sort_id Previously emitted stable identity.
-/// @param previous_enqueue_index Previously emitted queue index, or a negative initial sentinel.
-/// @return The source index of the next draw, or -1 when no later draw exists.
-static CANVAS3D_UNUSED_PRIVATE int32_t
-canvas3d_pick_next_sorted_main_draw(const deferred_draw_t *cmds,
-                                    int32_t draw_count,
-                                    int requires_blend,
-                                    int descending,
-                                    float previous_key,
-                                    uintptr_t previous_stable_sort_id,
-                                    int32_t previous_enqueue_index) {
-    int32_t best = -1;
-    if (!cmds || draw_count <= 0)
-        return -1;
-    for (int32_t i = 0; i < draw_count; ++i) {
-        const deferred_draw_t *draw = &cmds[i];
-        if (draw->pass_kind != DEFERRED_PASS_MAIN || !draw->visible ||
-            draw->requires_blend != requires_blend)
-            continue;
-        if (!canvas3d_sort_tuple_after(draw->sort_key,
-                                       draw->stable_sort_id,
-                                       draw->enqueue_index,
-                                       previous_key,
-                                       previous_stable_sort_id,
-                                       previous_enqueue_index,
-                                       descending))
-            continue;
-        if (best < 0 || canvas3d_sort_tuple_less(draw, &cmds[best], descending))
-            best = i;
-    }
-    return best;
 }
 
 /*==========================================================================

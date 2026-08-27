@@ -47,6 +47,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern void rt_obj_retain_maybe(void *obj);
+extern int rt_obj_release_check0(void *obj);
+extern void rt_obj_free(void *obj);
+
 #define VGFX3D_STR_IMPL(x) #x
 #define VGFX3D_STR(x) VGFX3D_STR_IMPL(x)
 
@@ -335,6 +339,28 @@
 @end
 
 @implementation VGFXMetalTextureCacheEntry
+
+@synthesize textureAsset = _textureAsset;
+
+- (void)setTextureAsset:(void *)textureAsset {
+    void *previous;
+    if (_textureAsset == textureAsset)
+        return;
+    if (textureAsset)
+        rt_obj_retain_maybe(textureAsset);
+    previous = _textureAsset;
+    _textureAsset = textureAsset;
+    if (previous && rt_obj_release_check0(previous))
+        rt_obj_free(previous);
+}
+
+- (void)dealloc {
+    void *asset = _textureAsset;
+    _textureAsset = NULL;
+    if (asset && rt_obj_release_check0(asset))
+        rt_obj_free(asset);
+}
+
 @end
 
 @interface VGFXMetalCubemapCacheEntry : NSObject

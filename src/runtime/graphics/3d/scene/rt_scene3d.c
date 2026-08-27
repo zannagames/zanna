@@ -53,6 +53,7 @@
 #include "rt_option.h"
 #include "rt_physics3d.h"
 #include "rt_pixels_internal.h"
+#include "rt_platform.h"
 #include "rt_quat.h"
 #include "rt_scene3d_internal.h"
 #include "rt_seq.h"
@@ -71,6 +72,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Conservative process-wide epoch for parent/child topology mutations.
+static volatile uint64_t g_scene3d_hierarchy_epoch = 1;
+
+/// @brief Record an add/remove/reparent so hierarchy-dependent caches revalidate once.
+void scene3d_note_hierarchy_change(void) {
+    uint64_t previous =
+        rt_atomic_fetch_add_u64(&g_scene3d_hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
+    if (previous == UINT64_MAX)
+        rt_atomic_store_u64(&g_scene3d_hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
+}
+
+/// @brief Return the current nonzero hierarchy epoch.
+uint64_t scene3d_hierarchy_epoch(void) {
+    return rt_atomic_load_u64(&g_scene3d_hierarchy_epoch, __ATOMIC_ACQUIRE);
+}
 
 /// @brief Validate @p obj as a Scene3D handle and return its typed pointer (NULL on mismatch).
 /// @param obj Borrowed opaque runtime handle.

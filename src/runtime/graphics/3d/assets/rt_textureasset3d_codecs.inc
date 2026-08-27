@@ -167,34 +167,6 @@ static void *textureasset3d_decode_bc3_fallback(const uint8_t *data,
     return pixels;
 }
 
-/// @brief Decode all mips of a BC3 texture into a Pixels array.
-/// @param[in] data Base address of the complete compressed texture payload.
-/// @param[in] size Number of readable bytes in @p data.
-/// @param[in] mips Array describing the source range and dimensions of each mip level.
-/// @param[in] mip_count Number of entries in @p mips.
-/// @return A newly allocated array of @p mip_count Pixels objects, or NULL if any mip fails.
-/// @ownership The caller owns the returned array and every Pixels reference it contains.
-static void **textureasset3d_decode_bc3_mips(const uint8_t *data,
-                                             size_t size,
-                                             const textureasset3d_mip *mips,
-                                             int64_t mip_count) {
-    void **mip_pixels;
-    if (!data || !mips || mip_count <= 0)
-        return NULL;
-    mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
-    if (!mip_pixels)
-        return NULL;
-    for (int64_t i = 0; i < mip_count; i++) {
-        mip_pixels[i] = textureasset3d_decode_bc3_fallback(
-            data, size, mips[i].width, mips[i].height, mips[i].offset, mips[i].length);
-        if (!mip_pixels[i]) {
-            textureasset3d_release_mip_pixels(mip_pixels, mip_count);
-            return NULL;
-        }
-    }
-    return mip_pixels;
-}
-
 /* ------------------------------------------------------------------------- *
  * BC7 software reference decode.
  *
@@ -782,39 +754,6 @@ static void *textureasset3d_decode_bc7_fallback(const uint8_t *data,
     return pixels;
 }
 
-/// @brief Decode all supported BC7 mips into a Pixels array, allowing per-mip misses.
-/// @details The returned array has one slot per mip. Unsupported/reserved blocks leave only that
-///          slot NULL instead of discarding fallbacks already decoded for other levels.
-/// @param[in] data Base address of the complete compressed texture payload.
-/// @param[in] size Number of readable bytes in @p data.
-/// @param[in] mips Array describing the source range and dimensions of each mip level.
-/// @param[in] mip_count Number of entries in @p mips.
-/// @return A newly allocated, partially populated Pixels array, or NULL if no mip can be decoded.
-/// @ownership The caller owns the returned array and each non-NULL Pixels reference it contains.
-static void **textureasset3d_decode_bc7_mips(const uint8_t *data,
-                                             size_t size,
-                                             const textureasset3d_mip *mips,
-                                             int64_t mip_count) {
-    void **mip_pixels;
-    int decoded_count = 0;
-    if (!data || !mips || mip_count <= 0)
-        return NULL;
-    mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
-    if (!mip_pixels)
-        return NULL;
-    for (int64_t i = 0; i < mip_count; i++) {
-        mip_pixels[i] = textureasset3d_decode_bc7_fallback(
-            data, size, mips[i].width, mips[i].height, mips[i].offset, mips[i].length);
-        if (mip_pixels[i])
-            decoded_count++;
-    }
-    if (decoded_count <= 0) {
-        free(mip_pixels);
-        return NULL;
-    }
-    return mip_pixels;
-}
-
 /// @brief Expand a 4-bit value to 8 bits by bit replication (v<<4 | v).
 /// @param[in] v Unsigned component value whose low four bits contain the encoded value.
 /// @return The component expanded to the full 0-255 range.
@@ -1180,56 +1119,6 @@ static void *textureasset3d_decode_compressed_fallback(const uint8_t *data,
     }
     pixels_touch(pixels);
     return pixels;
-}
-
-/// @brief Decode every mip level of a block-compressed texture into a newly allocated array
-///   of Pixels objects (one per level) via textureasset3d_decode_compressed_fallback,
-///   releasing all on any failure.
-/// @param[in] data Base address of the complete compressed texture payload.
-/// @param[in] size Number of readable bytes in @p data.
-/// @param[in] mips Array describing the source range and dimensions of each mip level.
-/// @param[in] mip_count Number of entries in @p mips.
-/// @param[in] block_width Encoded block footprint width in texels.
-/// @param[in] block_height Encoded block footprint height in texels.
-/// @param[in] block_bytes Encoded byte size of one block.
-/// @param[in] decode Format-specific block decoder passed to the generic mip walker.
-/// @param[in] alloc_error Optional trap message used if Pixels allocation fails.
-/// @return The Pixels array (caller owns), or NULL on bad input or a decode failure.
-/// @ownership The caller owns the returned array and every Pixels reference it contains.
-static void **textureasset3d_decode_compressed_mips(const uint8_t *data,
-                                                    size_t size,
-                                                    const textureasset3d_mip *mips,
-                                                    int64_t mip_count,
-                                                    int32_t block_width,
-                                                    int32_t block_height,
-                                                    int32_t block_bytes,
-                                                    textureasset3d_block_decode_fn decode,
-                                                    const char *alloc_error) {
-    void **mip_pixels;
-
-    if (!data || !mips || mip_count <= 0)
-        return NULL;
-    mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
-    if (!mip_pixels)
-        return NULL;
-    for (int64_t i = 0; i < mip_count; i++) {
-        mip_pixels[i] = textureasset3d_decode_compressed_fallback(data,
-                                                                  size,
-                                                                  mips[i].width,
-                                                                  mips[i].height,
-                                                                  mips[i].offset,
-                                                                  mips[i].length,
-                                                                  block_width,
-                                                                  block_height,
-                                                                  block_bytes,
-                                                                  decode,
-                                                                  alloc_error);
-        if (!mip_pixels[i]) {
-            textureasset3d_release_mip_pixels(mip_pixels, mip_count);
-            return NULL;
-        }
-    }
-    return mip_pixels;
 }
 
 /// @brief Decode one 8-byte BC1 (DXT1) block into 16 row-major RGBA texels (@p out_rgba is 64

@@ -1312,6 +1312,33 @@ static void test_mesh_obj_loader_ear_clips_concave_ngons() {
     PASS();
 }
 
+static void test_mesh_obj_loader_rejects_oversized_concave_ngons() {
+    TEST("Mesh3D.FromOBJ — rejects oversized concave n-gons instead of fanning");
+    const char *path = "/tmp/zanna_obj_oversized_concave_ngon_test.obj";
+    FILE *f = fopen(path, "w");
+    assert(f);
+    constexpr int kVertexCount = 1025;
+    for (int i = 0; i < kVertexCount; i++) {
+        double angle = 2.0 * 3.14159265358979323846 * (double)i / (double)kVertexCount;
+        double radius = i == kVertexCount / 2 ? 0.1 : 1.0;
+        fprintf(f, "v %.17g %.17g 0\n", radius * cos(angle), radius * sin(angle));
+    }
+    fputs("f", f);
+    for (int i = 0; i < kVertexCount; i++)
+        fprintf(f, " %d", i + 1);
+    fputc('\n', f);
+    fclose(f);
+
+    rt_asset_error_clear();
+    rt_string obj_path = rt_string_from_bytes(path, (int64_t)strlen(path));
+    void *mesh = rt_mesh3d_from_obj(obj_path);
+    EXPECT_TRUE(mesh == nullptr, "Oversized concave OBJ face is rejected transactionally");
+    EXPECT_TRUE(rt_asset_error_get_code() == RT_ASSET_ERROR_CORRUPT,
+                "Oversized concave OBJ face records a corrupt-asset diagnostic");
+    std::remove(path);
+    PASS();
+}
+
 static void test_mesh_obj_loader_rejects_invalid_indices() {
     TEST("Mesh3D.FromOBJ — rejects invalid face indices");
     const char *path = "/tmp/zanna_obj_invalid_index_test.obj";
@@ -2622,9 +2649,12 @@ static void test_textureasset3d_mip_residency() {
     EXPECT_EQ(rt_textureasset3d_get_resident_mip_count(asset), 3);
     EXPECT_EQ(rt_textureasset3d_get_resident_bytes(asset), 84);
     EXPECT_EQ(rt_textureasset3d_get_retained_bytes(asset),
-              168 + (int64_t)layout->container_backing_bytes);
+              148 + (int64_t)layout->container_backing_bytes);
     EXPECT_TRUE(layout->source_backing != nullptr && layout->source_backing_bytes == 84,
                 "RGBA8 mip chain retains one exact canonical source backing");
+    EXPECT_TRUE(layout->mip_pixels[0] != nullptr && layout->mip_pixels[1] == nullptr &&
+                    layout->mip_pixels[2] == nullptr,
+                "KTX2 import retains only base Pixels and lazily reconstructs later mips");
     void *mip_pixels = rt_textureasset3d_get_pixels(asset);
     EXPECT_TRUE(mip_pixels != nullptr, "resident RGBA8 mip 0 exposes a Pixels fallback");
     EXPECT_EQ(rt_pixels_width(mip_pixels), 4);
@@ -4367,6 +4397,33 @@ static void test_build_light_params_sorts_globals_first() {
     /* Identity survives the reorder (shadow patching matches by identity). */
     EXPECT_TRUE(out[0].identity == (uintptr_t)dir && out[2].identity == (uintptr_t)point,
                 "Reordered entries keep their light identities");
+    PASS();
+}
+
+static void test_build_light_params_selects_top_k_across_all_candidates() {
+    TEST("build_light_params bounded heap keeps globally strongest local lights");
+    rt_canvas3d canvas;
+    rt_light3d lights[12];
+    vgfx3d_light_params_t out[4];
+    memset(&canvas, 0, sizeof(canvas));
+    memset(lights, 0, sizeof(lights));
+    for (int32_t i = 0; i < 12; ++i) {
+        lights[i].type = 1;
+        lights[i].position[0] = 1.0 + (double)i;
+        lights[i].color[0] = lights[i].color[1] = lights[i].color[2] = 1.0;
+        lights[i].intensity = 1.0;
+        lights[i].attenuation = 1.0;
+        lights[i].enabled = 1;
+        canvas.lights[i] = &lights[i];
+    }
+    lights[11].intensity = 10000.0;
+    int32_t count = build_light_params(&canvas, out, 4);
+    EXPECT_EQ(count, 4);
+    bool found_last = false;
+    for (int32_t i = 0; i < count; ++i)
+        found_last = found_last || out[i].identity == (uintptr_t)&lights[11];
+    EXPECT_TRUE(found_last, "a high-score candidate beyond the heap budget prefix is retained");
+    EXPECT_EQ(canvas.last_dropped_light_count, 8);
     PASS();
 }
 
@@ -11642,6 +11699,7 @@ int main() {
     test_mesh_obj_loader_fills_only_missing_normals();
     test_mesh_obj_loader_deduplicates_vertices_and_handles_ngons();
     test_mesh_obj_loader_ear_clips_concave_ngons();
+    test_mesh_obj_loader_rejects_oversized_concave_ngons();
     test_mesh_obj_loader_rejects_invalid_indices();
     test_mesh_obj_loader_rejects_invalid_numeric_tokens();
     test_mesh_obj_loader_rejects_empty_geometry();
@@ -11731,6 +11789,7 @@ int main() {
     test_cluster_table_overflow_truncates_deterministically();
     test_cluster_table_ring_and_gating();
     test_build_light_params_sorts_globals_first();
+    test_build_light_params_selects_top_k_across_all_candidates();
     test_soft_particle_fade_software();
     test_native_area_volume_lighting_software();
     test_ssr_chain_and_mask_plumbing();

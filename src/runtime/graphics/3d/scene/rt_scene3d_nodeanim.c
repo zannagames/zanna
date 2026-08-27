@@ -218,6 +218,7 @@ static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
         animator->cached_target_capacity = 0;
         animator->cached_clip_index = -1;
         animator->cached_root = NULL;
+        animator->cached_hierarchy_epoch = 0;
         return;
     }
     if (animator->cached_targets && animator->cached_target_capacity > 0) {
@@ -233,6 +234,7 @@ static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
     }
     animator->cached_clip_index = -1;
     animator->cached_root = NULL;
+    animator->cached_hierarchy_epoch = 0;
 }
 
 /// @brief Ensure the per-animator channel-target cache can address @p channel_count channels.
@@ -1438,38 +1440,6 @@ static void node_anim_apply_weights_recursive(rt_node_animator3d *animator,
     }
 }
 
-/// @brief Whether @p node lies in @p root's subtree (walks parent links up to root).
-/// @param root Borrowed prospective ancestor.
-/// @param node Borrowed node whose parent chain is searched.
-/// @return Nonzero when @p root is @p node or one of its ancestors.
-static int scene_node_is_descendant_of(rt_scene_node3d *root, rt_scene_node3d *node) {
-    rt_scene_node3d *slow = node;
-    rt_scene_node3d *fast = node;
-    size_t visited = 0;
-    if (!rt_g3d_has_class(root, RT_G3D_SCENENODE3D_CLASS_ID))
-        return 0;
-    while (node && visited++ < NODE_ANIM_TRAVERSAL_NODE_MAX) {
-        if (!rt_g3d_has_class(node, RT_G3D_SCENENODE3D_CLASS_ID))
-            return 0;
-        if (node == root)
-            return 1;
-        node = node->parent;
-
-        slow = rt_g3d_has_class(slow, RT_G3D_SCENENODE3D_CLASS_ID) ? slow->parent : NULL;
-        if (rt_g3d_has_class(fast, RT_G3D_SCENENODE3D_CLASS_ID))
-            fast = fast->parent;
-        else
-            fast = NULL;
-        if (rt_g3d_has_class(fast, RT_G3D_SCENENODE3D_CLASS_ID))
-            fast = fast->parent;
-        else
-            fast = NULL;
-        if (slow && slow == fast)
-            return 0;
-    }
-    return 0;
-}
-
 /// @brief Depth-first search the subtree rooted at @p root for the node whose import index
 ///   equals @p import_index (used to bind animation channels to imported nodes); NULL if none.
 /// @param animator Borrowed animator providing reusable traversal storage.
@@ -1560,14 +1530,19 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
                                                  rt_node_anim_channel3d *channel,
                                                  int32_t channel_index) {
     rt_scene_node3d *cached_target = NULL;
+    uint64_t hierarchy_epoch;
     if (!animator || !root || !channel || !channel->target_name)
         return NULL;
     if (!node_anim_string_view(channel->target_name, 0, NULL, NULL))
         return NULL;
-    if (animator->cached_root != root || animator->cached_clip_index != animator->current_animation)
+    hierarchy_epoch = scene3d_hierarchy_epoch();
+    if (animator->cached_root != root ||
+        animator->cached_clip_index != animator->current_animation ||
+        animator->cached_hierarchy_epoch != hierarchy_epoch)
         node_animator_clear_target_cache(animator);
     animator->cached_root = root;
     animator->cached_clip_index = animator->current_animation;
+    animator->cached_hierarchy_epoch = hierarchy_epoch;
     if (channel_index >= 0 && channel_index < animator->cached_target_capacity)
         cached_target = animator->cached_targets[channel_index];
     if (cached_target && !rt_g3d_has_class(cached_target, RT_G3D_SCENENODE3D_CLASS_ID)) {
@@ -1575,8 +1550,7 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
         cached_target = NULL;
     }
     if (channel->target_node_index >= 0) {
-        if (cached_target && cached_target->import_index == channel->target_node_index &&
-            scene_node_is_descendant_of(root, cached_target))
+        if (cached_target && cached_target->import_index == channel->target_node_index)
             return cached_target;
         cached_target = node_anim_find_by_import_index(animator, root, channel->target_node_index);
         node_animator_cache_store(animator, channel_index, cached_target);
@@ -1584,7 +1558,7 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
             return cached_target;
         return NULL;
     }
-    if (cached_target && scene_node_is_descendant_of(root, cached_target)) {
+    if (cached_target) {
         if (node_anim_string_equal(cached_target->name, channel->target_name))
             return cached_target;
     }

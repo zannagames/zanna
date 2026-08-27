@@ -738,6 +738,26 @@ static int sw_shadow_bin_triangles(sw_shadow_tile_grid_t *grid,
             ty1 = grid->rows - 1;
         for (int32_t ty = ty0; ty <= ty1; ty++) {
             for (int32_t tx = tx0; tx <= tx1; tx++) {
+                int32_t tile_min_x = tx * SW_TILE_SIZE;
+                int32_t tile_min_y = ty * SW_TILE_SIZE;
+                int32_t tile_max_x = tile_min_x + SW_TILE_SIZE - 1;
+                int32_t tile_max_y = tile_min_y + SW_TILE_SIZE - 1;
+                const sw_shadow_screen_tri_t *tri = &tris->items[tri_index];
+                if (tile_max_x >= sw)
+                    tile_max_x = sw - 1;
+                if (tile_max_y >= sh)
+                    tile_max_y = sh - 1;
+                if (!sw_triangle_overlaps_pixel_rect(tri->sx[0],
+                                                     tri->sy[0],
+                                                     tri->sx[1],
+                                                     tri->sy[1],
+                                                     tri->sx[2],
+                                                     tri->sy[2],
+                                                     tile_min_x,
+                                                     tile_min_y,
+                                                     tile_max_x,
+                                                     tile_max_y))
+                    continue;
                 sw_shadow_tile_bin_t *bin = &grid->bins[ty * grid->cols + tx];
                 uint32_t prior_count = bin->count;
                 if (!sw_shadow_tile_bin_append(bin, tri_index))

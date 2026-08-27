@@ -85,6 +85,20 @@ int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
                                     int32_t capacity,
                                     const rt_query_hit3d *hit);
 
+/// @brief Accumulates the nearest hits in a bounded max-heap.
+/// @param[in,out] hits Writable heap storage with room for @p capacity records.
+/// @param count Number of initialized heap records.
+/// @param capacity Maximum retained record count.
+/// @param hit Borrowed candidate record, copied and sanitized before insertion.
+/// @return The resulting retained count, never greater than @p capacity.
+int query_hit_heap_collect_bounded(rt_query_hit3d *hits,
+                                   int32_t count,
+                                   int32_t capacity,
+                                   const rt_query_hit3d *hit);
+
+/// @brief Converts accumulated query hits to ascending-distance result order.
+void query_hit_sort_by_distance(rt_query_hit3d *hits, int32_t count);
+
 /// @brief Validates or rebuilds the world's lazily cached query broad phase.
 /// @param w Borrowed world whose collision-geometry bounds should be indexed.
 /// @return The number of cached entries, or `-1` when the world or scratch allocation is invalid.

@@ -27,8 +27,8 @@
  *
  * The table stores the Fresnel scale and bias pair used to reconstruct specular image-based
  * lighting from a prefiltered environment map. A single thread computes the process-lifetime
- * table from a fixed Hammersley sequence; concurrent callers wait for the immutable result and
- * subsequently read it without locking.
+ * table from a fixed Hammersley sequence; the native platform once primitive blocks concurrent
+ * callers without spinning and subsequently reads require no locking.
  */
 #include "vgfx3d_brdf_lut.h"
 
@@ -37,13 +37,23 @@
 #include <math.h>
 #include <stddef.h>
 
+#if RT_PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
+
 /// Number of deterministic GGX importance samples accumulated per lookup-table texel.
 #define BRDF_LUT_SAMPLES 1024u
 
 /// Process-lifetime table of interleaved Fresnel scale and bias pairs.
 static float g_brdf_lut[VGFX3D_BRDF_LUT_SIZE * VGFX3D_BRDF_LUT_SIZE * 2];
-/* 0 = uninitialized, 1 = one builder active, 2 = immutable/ready. */
-static int g_brdf_lut_state = 0;
+#if RT_PLATFORM_WINDOWS
+static INIT_ONCE g_brdf_lut_once = INIT_ONCE_STATIC_INIT;
+#else
+static pthread_once_t g_brdf_lut_once = PTHREAD_ONCE_INIT;
+#endif
 
 /// @brief Van der Corput radical inverse in base 2 (bit reversal).
 /// @param bits Hammersley sample index whose bits are reflected across the radix point.
@@ -79,28 +89,24 @@ static float brdf_g_smith_ibl(float ndotv, float ndotl, float roughness) {
 /// @param roughness Positive perceptual roughness used to construct the GGX distribution.
 /// @param out_a Receives the Fresnel-independent scale term.
 /// @param out_b Receives the grazing-angle Fresnel bias term.
-static void brdf_integrate(float ndotv, float roughness, float *out_a, float *out_b) {
+static void brdf_integrate(float ndotv,
+                           float roughness,
+                           const float *sample_hx,
+                           const float *sample_hz,
+                           float *out_a,
+                           float *out_b) {
     /* View vector in the local frame (N = +Z). */
     float vx = sqrtf(1.0f - ndotv * ndotv);
     float vz = ndotv;
-    float a = roughness * roughness;
     double sum_a = 0.0;
     double sum_b = 0.0;
     for (uint32_t i = 0; i < BRDF_LUT_SAMPLES; i++) {
-        /* GGX importance-sampled half vector from the Hammersley point. */
-        float e1 = ((float)i + 0.5f) / (float)BRDF_LUT_SAMPLES;
-        float e2 = brdf_radical_inverse(i);
-        float phi = 2.0f * 3.14159265358979323846f * e1;
-        float cos_theta = sqrtf((1.0f - e2) / (1.0f + (a * a - 1.0f) * e2));
-        float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
-        float hx = sin_theta * cosf(phi);
-        float hy = sin_theta * sinf(phi);
-        float hz = cos_theta;
+        float hx = sample_hx[i];
+        float hz = sample_hz[i];
         float vdoth = vx * hx + vz * hz;
         /* Only L.z is needed: N = +Z, so NdotL falls out of the reflection. */
         float ndotl = 2.0f * vdoth * hz - vz;
         float ndoth = hz;
-        (void)hy;
         if (ndotl > 0.0f && vdoth > 0.0f && ndoth > 0.0f) {
             float g = brdf_g_smith_ibl(vz, ndotl, roughness);
             float g_vis = g * vdoth / (ndoth * vz);
@@ -115,30 +121,59 @@ static void brdf_integrate(float ndotv, float roughness, float *out_a, float *ou
     *out_b = (float)(sum_b / (double)BRDF_LUT_SAMPLES);
 }
 
-/// @brief Build the process-wide BRDF lookup table exactly once.
-/// @details The winning caller performs the deterministic integration and publishes the immutable
-///          table with release ordering. Concurrent callers spin on an acquire load until
-///          publication completes; calls after initialization return immediately.
-void vgfx3d_brdf_lut_ensure(void) {
-    if (rt_atomic_load_i32(&g_brdf_lut_state, __ATOMIC_ACQUIRE) == 2)
-        return;
-    int expected = 0;
-    if (rt_atomic_compare_exchange_i32(
-            &g_brdf_lut_state, &expected, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        for (int y = 0; y < VGFX3D_BRDF_LUT_SIZE; y++) {
-            float roughness = ((float)y + 0.5f) / (float)VGFX3D_BRDF_LUT_SIZE;
-            for (int x = 0; x < VGFX3D_BRDF_LUT_SIZE; x++) {
-                float ndotv = ((float)x + 0.5f) / (float)VGFX3D_BRDF_LUT_SIZE;
-                float *texel = &g_brdf_lut[(size_t)(y * VGFX3D_BRDF_LUT_SIZE + x) * 2u];
-                brdf_integrate(ndotv, roughness, &texel[0], &texel[1]);
-            }
+/// @brief Deterministically build the BRDF table for the native once primitive.
+/// @details Hammersley azimuth/radical-inverse values are invariant across all texels, while the
+/// GGX half vectors are invariant across each roughness row. Staging both removes millions of
+/// redundant trigonometric operations from first use without changing the integration sequence.
+static void brdf_lut_build(void) {
+    float sample_cos_phi[BRDF_LUT_SAMPLES];
+    float sample_e2[BRDF_LUT_SAMPLES];
+    float sample_hx[BRDF_LUT_SAMPLES];
+    float sample_hz[BRDF_LUT_SAMPLES];
+    for (uint32_t i = 0; i < BRDF_LUT_SAMPLES; ++i) {
+        float e1 = ((float)i + 0.5f) / (float)BRDF_LUT_SAMPLES;
+        float phi = 2.0f * 3.14159265358979323846f * e1;
+        sample_cos_phi[i] = cosf(phi);
+        sample_e2[i] = brdf_radical_inverse(i);
+    }
+    for (int y = 0; y < VGFX3D_BRDF_LUT_SIZE; y++) {
+        float roughness = ((float)y + 0.5f) / (float)VGFX3D_BRDF_LUT_SIZE;
+        float a = roughness * roughness;
+        for (uint32_t i = 0; i < BRDF_LUT_SAMPLES; ++i) {
+            float e2 = sample_e2[i];
+            float cos_theta = sqrtf((1.0f - e2) / (1.0f + (a * a - 1.0f) * e2));
+            float sin_theta = sqrtf(1.0f - cos_theta * cos_theta);
+            sample_hx[i] = sin_theta * sample_cos_phi[i];
+            sample_hz[i] = cos_theta;
         }
-        rt_atomic_store_i32(&g_brdf_lut_state, 2, __ATOMIC_RELEASE);
-        return;
+        for (int x = 0; x < VGFX3D_BRDF_LUT_SIZE; x++) {
+            float ndotv = ((float)x + 0.5f) / (float)VGFX3D_BRDF_LUT_SIZE;
+            float *texel = &g_brdf_lut[(size_t)(y * VGFX3D_BRDF_LUT_SIZE + x) * 2u];
+            brdf_integrate(ndotv, roughness, sample_hx, sample_hz, &texel[0], &texel[1]);
+        }
     }
-    while (rt_atomic_load_i32(&g_brdf_lut_state, __ATOMIC_ACQUIRE) != 2) {
-        /* One backend is building the process-lifetime table. */
-    }
+}
+
+#if RT_PLATFORM_WINDOWS
+/// @brief Windows one-time initialization callback.
+static BOOL CALLBACK brdf_lut_build_once(PINIT_ONCE once, PVOID parameter, PVOID *context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+    brdf_lut_build();
+    return TRUE;
+}
+#endif
+
+/// @brief Build the process-wide BRDF lookup table exactly once.
+/// @details Concurrent first-use callers block in the platform once primitive instead of consuming
+/// CPU in an unbounded spin loop; calls after initialization return immediately.
+void vgfx3d_brdf_lut_ensure(void) {
+#if RT_PLATFORM_WINDOWS
+    InitOnceExecuteOnce(&g_brdf_lut_once, brdf_lut_build_once, NULL, NULL);
+#else
+    pthread_once(&g_brdf_lut_once, brdf_lut_build);
+#endif
 }
 
 /// @brief Return the initialized interleaved BRDF lookup-table storage.

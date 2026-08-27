@@ -977,9 +977,8 @@ static float postfx_gamma_lut_sample(const float lut[POSTFX3D_GAMMA_LUT_SIZE + 1
 
 /// @brief Reserve and zero one more `postfx_entry_t` slot in the chain, growing the heap
 /// buffer when capacity is exceeded. Capacity doubles on each grow (starting at 8) so the
-/// amortized cost of long chains is O(1). Returns NULL on realloc failure — the caller's
-/// chain stays intact and the caller silently drops the add, matching the prior fixed-
-/// size-array implementation's "silent drop past N" contract.
+/// amortized cost of long chains is O(1). Returns NULL on policy/allocation failure and records a
+/// recoverable diagnostic while leaving the caller's existing chain intact.
 /// @param fx PostFX chain whose internal effect array receives the new entry.
 /// @return A zero-initialized chain-owned entry, or `NULL` when storage cannot grow.
 static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
@@ -989,8 +988,11 @@ static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
     if (!fx)
         return NULL;
     (void)postfx3d_repair_state(fx);
-    if (fx->initialized_effect_count >= VGFX3D_POSTFX_MAX_EFFECTS)
+    postfx3d_set_last_error(fx, NULL);
+    if (fx->initialized_effect_count >= VGFX3D_POSTFX_MAX_EFFECTS) {
+        postfx3d_set_last_error(fx, "PostFX3D: effect limit reached");
         return NULL;
+    }
     if (fx->effect_count < fx->effect_capacity) {
         postfx_entry_t *entry = &fx->effects[fx->effect_count++];
         fx->initialized_effect_count = fx->effect_count;
@@ -1008,12 +1010,16 @@ static postfx_entry_t *postfx_append_entry(rt_postfx3d *fx) {
     if (new_capacity > VGFX3D_POSTFX_MAX_EFFECTS)
         new_capacity = VGFX3D_POSTFX_MAX_EFFECTS;
     if (new_capacity <= fx->effect_capacity ||
-        (size_t)new_capacity > SIZE_MAX / sizeof(postfx_entry_t))
+        (size_t)new_capacity > SIZE_MAX / sizeof(postfx_entry_t)) {
+        postfx3d_set_last_error(fx, "PostFX3D: effect storage size overflow");
         return NULL;
+    }
     effects =
         (postfx_entry_t *)realloc(fx->owned_effects, (size_t)new_capacity * sizeof(postfx_entry_t));
-    if (!effects)
+    if (!effects) {
+        postfx3d_set_last_error(fx, "PostFX3D: effect storage allocation failed");
         return NULL;
+    }
     memset(effects + fx->owned_effect_capacity,
            0,
            (size_t)(new_capacity - fx->owned_effect_capacity) * sizeof(postfx_entry_t));
@@ -4069,14 +4075,16 @@ void rt_postfx3d_add_auto_exposure(void *obj, double min_ev, double max_ev, doub
     fx->auto_exposure_valid = 0;
 }
 
-/// @brief Append a 3D LUT color grade. @p lut_pixels is a 256x16 strip (16 tiles of
-/// 16x16: x = red, y = green, tile = blue), trilinear sampled, blended 0..1 with the
-/// ungraded color. The chain retains the Pixels.
-/// @param obj PostFX3D chain receiving the effect and retaining the LUT.
+/// @brief Set the chain's singleton 3D LUT color grade. @p lut_pixels is a 256x16 strip (16 tiles
+/// of 16x16: x = red, y = green, tile = blue), trilinear sampled, blended 0..1 with the ungraded
+/// color. A prior ColorLUT entry is updated in place so every stored LUT entry cannot silently
+/// alias one chain-global source. The chain retains the Pixels.
+/// @param obj PostFX3D chain receiving or updating the effect and retaining the LUT.
 /// @param lut_pixels Pixels object containing the required 256-by-16 LUT strip.
 /// @param blend LUT contribution clamped to the unit interval.
 void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
     postfx_entry_t *e;
+    int32_t effect_count;
     rt_postfx3d *fx = postfx3d_checked(obj);
     rt_pixels_impl *lut = rt_pixels_checked_impl_or_null(lut_pixels);
     if (!fx)
@@ -4085,17 +4093,27 @@ void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
         rt_trap("PostFX3D.AddColorLUT: LUT must be a 256x16 Pixels strip");
         return;
     }
-    e = postfx_append_entry(fx);
-    if (!e)
-        return;
-    e->type = POSTFX_COLOR_LUT;
-    e->enabled = 1;
     if (!isfinite(blend))
         blend = 1.0;
     if (blend < 0.0)
         blend = 0.0;
     if (blend > 1.0)
         blend = 1.0;
+    effect_count = postfx3d_safe_effect_count(fx);
+    e = NULL;
+    for (int32_t i = 0; i < effect_count; i++) {
+        if (fx->effects[i].type == POSTFX_COLOR_LUT) {
+            e = &fx->effects[i];
+            break;
+        }
+    }
+    if (!e) {
+        e = postfx_append_entry(fx);
+        if (!e)
+            return;
+        e->type = POSTFX_COLOR_LUT;
+    }
+    e->enabled = 1;
     e->p.color_lut.blend = (float)blend;
     rt_obj_retain_maybe(lut_pixels);
     postfx3d_release_lut_owner(fx);
@@ -4103,6 +4121,7 @@ void rt_postfx3d_add_color_lut(void *obj, void *lut_pixels, double blend) {
     fx->lut_owner_cookie =
         postfx3d_storage_cookie_value(fx, lut_pixels, 1u, POSTFX3D_LUT_OWNER_COOKIE);
     fx->lut_pixels = lut_pixels;
+    postfx3d_reset_temporal_state(fx);
 }
 
 /// @brief Append screen-space sun shafts: radial sky-mask accumulation toward the

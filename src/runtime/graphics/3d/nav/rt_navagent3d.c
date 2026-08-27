@@ -1482,22 +1482,6 @@ static int navagent_batch_item_compare(const void *lhs, const void *rhs) {
     return ap < bp ? -1 : ap > bp ? 1 : 0;
 }
 
-/// @brief Compare immutable snapshots by stable creation order, then numeric handle value.
-/// @param lhs Pointer to a `navagent_batch_snapshot_t`.
-/// @param rhs Pointer to a `navagent_batch_snapshot_t`.
-/// @return Negative/zero/positive according to deterministic handle order.
-static int navagent_batch_snapshot_compare(const void *lhs, const void *rhs) {
-    const navagent_batch_snapshot_t *a = (const navagent_batch_snapshot_t *)lhs;
-    const navagent_batch_snapshot_t *b = (const navagent_batch_snapshot_t *)rhs;
-    if (a->stable_order < b->stable_order)
-        return -1;
-    if (a->stable_order > b->stable_order)
-        return 1;
-    uintptr_t ap = (uintptr_t)a->agent;
-    uintptr_t bp = (uintptr_t)b->agent;
-    return ap < bp ? -1 : ap > bp ? 1 : 0;
-}
-
 /// @brief Locate one selected live agent in the stable-order snapshot array.
 /// @param snapshots Sorted immutable snapshot array.
 /// @param count Number of valid snapshots.
@@ -1524,19 +1508,23 @@ static int32_t navagent_batch_find_snapshot(const navagent_batch_snapshot_t *sna
 }
 
 /// @brief Populate and spatially index an immutable snapshot of every registered agent.
-/// @details Snapshots are sorted by stable handle order before hash insertion, so both full scans
-///   and hash-bucket walks have deterministic order independent of the caller's selected array.
+/// @details Registration prepends agents in monotonically increasing creation order. Filling the
+///   array backward therefore produces stable ascending order without a second batch sort, so both
+///   full scans and hash-bucket walks remain deterministic independent of caller selection order.
 /// @param context Output context whose fixed bucket table and reusable snapshot pointer are filled.
 /// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
 static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
-    int32_t count = 0;
+    int32_t count;
+    int32_t write_index;
     if (!context || g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX ||
         !navagent_batch_reserve_buckets((int32_t)g_navagent3d_registry_count))
         return 0;
+    count = (int32_t)g_navagent3d_registry_count;
+    write_index = count;
     for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
-        if (count >= g_navagent_batch_snapshot_capacity)
+        if (write_index <= 0 || count > g_navagent_batch_snapshot_capacity)
             return 0;
-        navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[count++];
+        navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[--write_index];
         memset(snapshot, 0, sizeof(*snapshot));
         snapshot->agent = agent;
         snapshot->navmesh = agent->navmesh;
@@ -1554,10 +1542,8 @@ static int navagent_batch_build_snapshot(navagent_batch_context_t *context) {
         snapshot->grid_next = -1;
         snapshot->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
     }
-    qsort(g_navagent_batch_snapshots,
-          (size_t)count,
-          sizeof(*g_navagent_batch_snapshots),
-          navagent_batch_snapshot_compare);
+    if (write_index != 0)
+        return 0;
     context->snapshots = g_navagent_batch_snapshots;
     context->snapshot_count = count;
     context->max_reach = 0.0;

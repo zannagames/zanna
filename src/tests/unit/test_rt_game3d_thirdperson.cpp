@@ -729,6 +729,39 @@ bool test_targetlock_los_gating() {
     PASS();
 }
 
+bool test_targetlock_considers_every_physics_query_candidate() {
+    TEST("TargetLock3D ranks candidates beyond the former 64-entry prefix");
+    void *world = rt_game3d_world_new(rt_const_cstr("Lock Candidate Capacity"), 96, 48);
+    rt_game3d_world_set_gravity(world, 0.0, 0.0, 0.0);
+    void *player = rt_game3d_entity_new();
+    rt_game3d_entity_set_position(player, 0.0, 1.0, 0.0);
+    rt_game3d_world_spawn(world, player);
+    void *camera = rt_game3d_world_get_camera(world);
+    void *eye = rt_vec3_new(0.0, 1.0, 6.0);
+    void *look = rt_vec3_new(0.0, 1.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    rt_camera3d_look_at(camera, eye, look, up);
+    release_runtime_ref(up);
+    release_runtime_ref(look);
+    release_runtime_ref(eye);
+
+    const int64_t target_layer = INT64_C(1) << 3;
+    for (int i = 0; i < 70; ++i) {
+        void *decoy = spawn_dynamic_box(world, 2.3, 1.0, -1.93, 0.05, 0.05);
+        rt_game3d_entity_set_layer(decoy, target_layer);
+    }
+    void *best = spawn_dynamic_box(world, 0.0, 1.0, -10.0, 0.05, 0.05);
+    rt_game3d_entity_set_layer(best, target_layer);
+    void *lock = rt_game3d_targetlock_new(world, player);
+    rt_game3d_targetlock_set_candidate_mask(lock, target_layer);
+    rt_game3d_targetlock_set_require_los(lock, 0);
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(lock) != 0, "Acquire finds a target");
+    EXPECT_TRUE(rt_game3d_targetlock_get_target(lock) == best,
+                "the globally best candidate wins even when it follows 64 nearer hits");
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
 bool test_targetlock_cycle_direction() {
     TEST("TargetLock3D Cycle picks the nearest candidate in camera-yaw order");
     LockFixture fx = lock_fixture_new("Lock Cycle");
@@ -1342,6 +1375,7 @@ int main() {
     ok = test_thirdperson_occluder_fade_and_restore() && ok;
     ok = test_targetlock_acquire_prefers_near_center() && ok;
     ok = test_targetlock_los_gating() && ok;
+    ok = test_targetlock_considers_every_physics_query_candidate() && ok;
     ok = test_targetlock_cycle_direction() && ok;
     ok = test_targetlock_break_distance_release() && ok;
     ok = test_targetlock_framing_converges() && ok;

@@ -231,9 +231,6 @@ static int fbx_emit_polygon_triangles(void *mesh_obj, const int32_t *polygon, in
     if (poly_count == 3) {
         return fbx_try_emit_mesh_triangle(mesh_obj, polygon[0], polygon[1], polygon[2]);
     }
-    if (poly_count > FBX_MAX_EARCLIP_POLY_VERTS) {
-        return fbx_emit_polygon_fan(mesh_obj, polygon, poly_count);
-    }
     if ((size_t)poly_count > sizeof(stack_indices) / sizeof(stack_indices[0])) {
         if ((size_t)poly_count > SIZE_MAX / sizeof(int32_t))
             return 0;
@@ -260,12 +257,36 @@ static int fbx_emit_polygon_triangles(void *mesh_obj, const int32_t *polygon, in
         indices[i] = polygon[i];
     }
     if (!isfinite(area) || fabs(area) < 1e-12) {
-        int fan_ok = fbx_emit_polygon_fan(mesh_obj, polygon, poly_count);
         if (indices != stack_indices)
             free(indices);
-        return fan_ok;
+        rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
+                            "FBX.Load: degenerate or self-intersecting polygon");
+        return 0;
     }
     ccw = area > 0.0;
+    if (poly_count > FBX_MAX_EARCLIP_POLY_VERTS) {
+        for (int32_t i = 0; i < poly_count; i++) {
+            int32_t prev_i = (i + poly_count - 1) % poly_count;
+            int32_t next_i = (i + 1) % poly_count;
+            double ax, ay, bx, by, cx, cy;
+            double turn;
+            fbx_project_mesh_vertex(mesh, polygon[prev_i], drop_axis, &ax, &ay);
+            fbx_project_mesh_vertex(mesh, polygon[i], drop_axis, &bx, &by);
+            fbx_project_mesh_vertex(mesh, polygon[next_i], drop_axis, &cx, &cy);
+            turn = fbx_tri_area2(ax, ay, bx, by, cx, cy);
+            if ((ccw && turn < -1e-12) || (!ccw && turn > 1e-12)) {
+                if (indices != stack_indices)
+                    free(indices);
+                rt_asset_error_setf(
+                    RT_ASSET_ERROR_CORRUPT,
+                    "FBX.Load: concave polygon exceeds the 1024-vertex triangulation limit");
+                return 0;
+            }
+        }
+        if (indices != stack_indices)
+            free(indices);
+        return fbx_emit_polygon_fan(mesh_obj, polygon, poly_count);
+    }
     remaining = poly_count;
     guard = (int64_t)poly_count * (int64_t)poly_count;
     while (remaining > 3 && guard-- > 0) {
@@ -318,12 +339,10 @@ static int fbx_emit_polygon_triangles(void *mesh_obj, const int32_t *polygon, in
             return 0;
         }
     } else {
-        for (int32_t fi = 1; fi < poly_count - 1; ++fi)
-            if (!fbx_try_emit_mesh_triangle(mesh_obj, polygon[0], polygon[fi], polygon[fi + 1])) {
-                if (indices != stack_indices)
-                    free(indices);
-                return 0;
-            }
+        if (indices != stack_indices)
+            free(indices);
+        rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT, "FBX.Load: polygon triangulation stalled");
+        return 0;
     }
     if (indices != stack_indices)
         free(indices);

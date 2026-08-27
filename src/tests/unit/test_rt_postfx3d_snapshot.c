@@ -637,6 +637,36 @@ static void test_color_lut_snapshot_carries_payload(void) {
     (void)rt_memory_release(lut);
 }
 
+static void test_color_lut_is_a_replaceable_singleton(void) {
+    void *fx = rt_postfx3d_new();
+    void *first = rt_postfx3d_make_identity_lut();
+    void *second = rt_postfx3d_make_identity_lut();
+    vgfx3d_postfx_chain_t chain = {0};
+    const uint32_t *first_texels = NULL;
+
+    rt_postfx3d_add_color_lut(fx, first, 0.25);
+    if (vgfx3d_postfx_get_chain(fx, &chain) == 1)
+        first_texels = chain.effects[0].snapshot.color_lut_texels;
+    vgfx3d_postfx_chain_reset(&chain);
+    rt_postfx3d_add_color_lut(fx, second, 0.75);
+
+    EXPECT_TRUE(rt_postfx3d_get_effect_count(fx) == 1,
+                "A later ColorLUT replaces the singleton entry instead of aliasing two passes");
+    EXPECT_TRUE(vgfx3d_postfx_get_chain(fx, &chain) == 1 && chain.effect_count == 1 &&
+                    first_texels && chain.effects[0].snapshot.color_lut_texels &&
+                    chain.effects[0].snapshot.color_lut_texels != first_texels,
+                "The singleton ColorLUT snapshot carries the replacement Pixels source");
+    EXPECT_NEARF(chain.effects[0].snapshot.color_lut_blend,
+                 0.75f,
+                 1e-6f,
+                 "The replacement ColorLUT updates its blend in place");
+
+    vgfx3d_postfx_chain_free(&chain);
+    (void)rt_memory_release(first);
+    (void)rt_memory_release(second);
+    (void)rt_memory_release(fx);
+}
+
 static void test_invalid_retained_effect_kind_is_compacted(void) {
     void *fx = rt_postfx3d_new();
     PostFX3DTestLayout *layout = (PostFX3DTestLayout *)fx;
@@ -658,11 +688,17 @@ static void test_invalid_retained_effect_kind_is_compacted(void) {
 
 static void test_effect_chain_has_a_bounded_policy_limit(void) {
     void *fx = rt_postfx3d_new();
+    rt_string error;
 
     for (int32_t i = 0; i < VGFX3D_POSTFX_MAX_EFFECTS + 17; i++)
         rt_postfx3d_add_fxaa(fx);
     EXPECT_TRUE(rt_postfx3d_get_effect_count(fx) == VGFX3D_POSTFX_MAX_EFFECTS,
                 "PostFX chain growth stops at the documented policy limit");
+    error = rt_postfx3d_get_last_error(fx);
+    EXPECT_TRUE(rt_str_len(error) > 0,
+                "PostFX reports a recoverable diagnostic when an add exceeds the policy limit");
+    rt_string_unref(error);
+    (void)rt_memory_release(fx);
 }
 
 static void test_backend_chain_ownership_metadata_rejects_borrowed_storage(void) {
@@ -827,6 +863,7 @@ int main(void) {
     test_private_effect_storage_mirrors_are_not_ownership_authority();
     test_retained_effect_entries_are_repaired_before_export();
     test_color_lut_snapshot_carries_payload();
+    test_color_lut_is_a_replaceable_singleton();
     test_invalid_retained_effect_kind_is_compacted();
     test_effect_chain_has_a_bounded_policy_limit();
     test_backend_chain_ownership_metadata_rejects_borrowed_storage();

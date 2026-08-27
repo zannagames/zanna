@@ -1109,6 +1109,10 @@ typedef struct rt_game3d_targetlock {
     double los_broken_time;   ///< Accumulated seconds the LoS has been broken.
     int8_t just_acquired;     ///< One-shot poll flag set on acquisition.
     int8_t just_lost;         ///< One-shot poll flag set on release.
+    void *candidate_scratch;  ///< Owned reusable target-lock candidate records.
+    int32_t candidate_capacity;
+    void **candidate_seen; ///< Owned reusable open-addressed entity identity set.
+    int32_t candidate_seen_capacity;
 } rt_game3d_targetlock;
 
 #define RT_GAME3D_HITBOX_MAX_WINDOWS 4     ///< Animation windows per hitbox.

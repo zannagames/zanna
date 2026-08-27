@@ -31,6 +31,7 @@
 #include "rt_string.h"
 #include "vgfx3d_backend.h"
 
+#include <float.h>
 #include <math.h>
 #include <string.h>
 
@@ -184,6 +185,39 @@ typedef struct {
     int32_t order; /* original slot order, preserved among the selected set */
 } canvas3d_light_candidate_t;
 
+/// @brief Return whether @p a has lower selection priority than @p b.
+static int canvas3d_light_candidate_worse(const canvas3d_light_candidate_t *a,
+                                          const canvas3d_light_candidate_t *b) {
+    if (a->score != b->score)
+        return a->score < b->score;
+    return a->order > b->order;
+}
+
+/// @brief Swap two light candidates.
+static void canvas3d_light_candidate_swap(canvas3d_light_candidate_t *a,
+                                          canvas3d_light_candidate_t *b) {
+    canvas3d_light_candidate_t tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+/// @brief Restore a worst-candidate-rooted min-heap after replacing @p root.
+static void canvas3d_light_candidate_sift_down(canvas3d_light_candidate_t *items,
+                                               int32_t root,
+                                               int32_t count) {
+    for (;;) {
+        int32_t child = root * 2 + 1;
+        if (child >= count)
+            return;
+        if (child + 1 < count && canvas3d_light_candidate_worse(&items[child + 1], &items[child]))
+            child++;
+        if (!canvas3d_light_candidate_worse(&items[child], &items[root]))
+            return;
+        canvas3d_light_candidate_swap(&items[root], &items[child]);
+        root = child;
+    }
+}
+
 /// @brief Flatten the canvas's sparse light array into a dense backend buffer.
 /// @details The canvas stores lights in fixed slots (`lights[0..VGFX3D_MAX_LIGHTS]`)
 ///   so that dropped-and-readded lights keep stable slot identities, but the
@@ -258,26 +292,35 @@ int32_t build_light_params(rt_canvas3d *c, vgfx3d_light_params_t *out, int32_t m
         local_count++;
     }
     if (local_count > max - count) {
-        /* Over budget: score every candidate, boost incumbents 10%, then keep the top
-         * (max - count) by repeated selection (candidate counts are tiny). Selected
-         * lights are emitted in original slot order so the snapshot stays byte-stable
-         * whenever the same set wins. */
+        /* Over budget: score every candidate, boost incumbents 10%, then retain the top
+         * (max - count) through a bounded worst-at-root heap. Selected lights are emitted
+         * in original slot order so the snapshot stays byte-stable whenever the same set wins. */
         int32_t budget = max - count;
         for (int32_t i = 0; i < local_count; i++) {
             locals[i].score = canvas3d_local_light_score(c, locals[i].light);
             if (canvas3d_light_was_selected(c, locals[i].light))
                 locals[i].score *= 1.10;
+            if (!isfinite(locals[i].score))
+                locals[i].score = DBL_MAX;
         }
-        for (int32_t keep = 0; keep < budget && keep < local_count; keep++) {
-            int32_t best = keep;
-            for (int32_t j = keep + 1; j < local_count; j++) {
-                if (locals[j].score > locals[best].score)
-                    best = j;
+        if (budget > 0) {
+            for (int32_t child = 1; child < budget; ++child) {
+                int32_t at = child;
+                while (at > 0) {
+                    int32_t parent = (at - 1) / 2;
+                    if (!canvas3d_light_candidate_worse(&locals[at], &locals[parent]))
+                        break;
+                    canvas3d_light_candidate_swap(&locals[at], &locals[parent]);
+                    at = parent;
+                }
             }
-            if (best != keep) {
-                canvas3d_light_candidate_t tmp = locals[keep];
-                locals[keep] = locals[best];
-                locals[best] = tmp;
+            for (int32_t i = budget; i < local_count; ++i) {
+                if (canvas3d_light_candidate_worse(&locals[i], &locals[0]))
+                    continue;
+                if (locals[i].score == locals[0].score && locals[i].order == locals[0].order)
+                    continue;
+                locals[0] = locals[i];
+                canvas3d_light_candidate_sift_down(locals, 0, budget);
             }
         }
         if (budget < local_count)

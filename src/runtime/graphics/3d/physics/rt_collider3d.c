@@ -118,6 +118,10 @@ typedef struct {
     double material_friction;
     double material_restitution;
     int64_t surface_type; /* Game3D.Surfaces registry id; 0 = untyped */
+    /* Cached-bounds invalidation state. Appended to preserve test-fixture prefixes. */
+    uint64_t compound_collider_epoch;
+    uint64_t compound_mesh_epoch;
+    int8_t bounds_dirty;
 } rt_collider3d;
 
 /// @brief Safe-cast an opaque handle to rt_collider3d, or NULL if not one.
@@ -468,6 +472,7 @@ static rt_collider3d *collider3d_alloc(int32_t type) {
     collider->type = type;
     collider->bounds_min[0] = collider->bounds_min[1] = collider->bounds_min[2] = 0.0;
     collider->bounds_max[0] = collider->bounds_max[1] = collider->bounds_max[2] = 0.0;
+    collider->bounds_dirty = 1;
     collider->material_friction = -1.0;    /* unset: body friction applies */
     collider->material_restitution = -1.0; /* unset: body restitution applies */
     collider->surface_type = 0;
@@ -557,6 +562,12 @@ static int collider3d_contains_child(rt_collider3d *root,
 /// @param collider Collider whose local bounds are refreshed in place.
 /// @param depth Current one-based compound traversal depth.
 static void collider3d_recompute_bounds_at_depth(rt_collider3d *collider, int32_t depth) {
+    double previous_min[3];
+    double previous_max[3];
+    uint64_t previous_revision;
+    uint64_t collider_epoch;
+    uint64_t mesh_epoch;
+    int bounds_changed;
     if (!collider)
         return;
     /* Corrupt/shared graphs can outgrow the public limit after attachment. Stop before the C stack
@@ -565,12 +576,30 @@ static void collider3d_recompute_bounds_at_depth(rt_collider3d *collider, int32_
         return;
 
     rt_mesh3d *mesh = collider3d_mesh_or_null(collider);
-    if ((collider->type == RT_COLLIDER3D_TYPE_CONVEX_HULL ||
-         collider->type == RT_COLLIDER3D_TYPE_MESH) &&
-        mesh && collider->bounds_revision != 0 &&
-        collider->mesh_bounds_revision == mesh->geometry_revision && !mesh->bounds_dirty) {
-        return;
+    collider_epoch = rt_collider3d_global_geometry_epoch();
+    mesh_epoch = rt_mesh3d_global_geometry_epoch();
+    if (!collider->bounds_dirty && collider->bounds_revision != 0) {
+        if ((collider->type == RT_COLLIDER3D_TYPE_CONVEX_HULL ||
+             collider->type == RT_COLLIDER3D_TYPE_MESH) &&
+            mesh && collider->mesh_bounds_revision == mesh->geometry_revision &&
+            !mesh->bounds_dirty) {
+            return;
+        }
+        if (collider->type == RT_COLLIDER3D_TYPE_COMPOUND &&
+            collider->compound_collider_epoch == collider_epoch &&
+            collider->compound_mesh_epoch == mesh_epoch) {
+            return;
+        }
+        if (collider->type != RT_COLLIDER3D_TYPE_CONVEX_HULL &&
+            collider->type != RT_COLLIDER3D_TYPE_MESH &&
+            collider->type != RT_COLLIDER3D_TYPE_COMPOUND) {
+            return;
+        }
     }
+
+    vec3_copy(previous_min, collider->bounds_min);
+    vec3_copy(previous_max, collider->bounds_max);
+    previous_revision = collider->bounds_revision;
 
     switch (collider->type) {
         case RT_COLLIDER3D_TYPE_BOX:
@@ -706,8 +735,20 @@ static void collider3d_recompute_bounds_at_depth(rt_collider3d *collider, int32_
             collider->bounds_max[axis] = tmp;
         }
     }
-    collider->bounds_revision =
-        collider->bounds_revision == UINT64_MAX ? 1u : collider->bounds_revision + 1u;
+    bounds_changed = previous_revision == 0;
+    for (int axis = 0; axis < 3 && !bounds_changed; axis++) {
+        if (previous_min[axis] != collider->bounds_min[axis] ||
+            previous_max[axis] != collider->bounds_max[axis])
+            bounds_changed = 1;
+    }
+    if (bounds_changed) {
+        collider->bounds_revision = previous_revision == UINT64_MAX ? 1u : previous_revision + 1u;
+    }
+    collider->bounds_dirty = 0;
+    if (collider->type == RT_COLLIDER3D_TYPE_COMPOUND) {
+        collider->compound_collider_epoch = collider_epoch;
+        collider->compound_mesh_epoch = mesh_epoch;
+    }
 }
 
 /// @brief Refresh local bounds with a bounded compound-tree traversal.
@@ -1113,8 +1154,9 @@ void rt_collider3d_add_child(void *compound_obj, void *child_obj, void *local_tr
     collider3d_set_from_transform(&compound->child_transforms[compound->child_count],
                                   local_transform);
     compound->child_count++;
-    collider3d_recompute_bounds(compound);
+    compound->bounds_dirty = 1;
     collider3d_note_global_geometry_change();
+    collider3d_recompute_bounds(compound);
 }
 
 /// @brief Return the collider's discriminator (RT_COLLIDER3D_TYPE_BOX, _SPHERE, ...). -1 if NULL.
@@ -1260,11 +1302,18 @@ void rt_collider3d_get_box_half_extents_raw(void *collider, double *half_extents
 /// @param hz Replacement Z-axis half-extent.
 void rt_collider3d_reset_box_raw(void *collider, double hx, double hy, double hz) {
     rt_collider3d *shape = collider3d_checked(collider);
+    double next[3];
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_BOX)
         return;
-    shape->half_extents[0] = collider3d_extent_or_unit(hx);
-    shape->half_extents[1] = collider3d_extent_or_unit(hy);
-    shape->half_extents[2] = collider3d_extent_or_unit(hz);
+    next[0] = collider3d_extent_or_unit(hx);
+    next[1] = collider3d_extent_or_unit(hy);
+    next[2] = collider3d_extent_or_unit(hz);
+    if (shape->half_extents[0] == next[0] && shape->half_extents[1] == next[1] &&
+        shape->half_extents[2] == next[2])
+        return;
+    vec3_copy(shape->half_extents, next);
+    shape->bounds_dirty = 1;
+    collider3d_note_global_geometry_change();
     collider3d_recompute_bounds(shape);
 }
 
@@ -1285,9 +1334,15 @@ double rt_collider3d_get_radius_raw(void *collider) {
 /// @param radius Replacement radius.
 void rt_collider3d_reset_sphere_raw(void *collider, double radius) {
     rt_collider3d *shape = collider3d_checked(collider);
+    double next_radius;
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_SPHERE)
         return;
-    shape->radius = collider3d_extent_or_unit(radius);
+    next_radius = collider3d_extent_or_unit(radius);
+    if (shape->radius == next_radius)
+        return;
+    shape->radius = next_radius;
+    shape->bounds_dirty = 1;
+    collider3d_note_global_geometry_change();
     collider3d_recompute_bounds(shape);
 }
 
@@ -1299,12 +1354,20 @@ void rt_collider3d_reset_sphere_raw(void *collider, double radius) {
 /// @param height Replacement total tip-to-tip height.
 void rt_collider3d_reset_capsule_raw(void *collider, double radius, double height) {
     rt_collider3d *shape = collider3d_checked(collider);
+    double next_radius;
+    double next_height;
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_CAPSULE)
         return;
-    shape->radius = collider3d_extent_or_unit(radius);
-    shape->height = collider3d_extent_or_unit(height);
-    if (shape->height < shape->radius * 2.0)
-        shape->height = shape->radius * 2.0;
+    next_radius = collider3d_extent_or_unit(radius);
+    next_height = collider3d_extent_or_unit(height);
+    if (next_height < next_radius * 2.0)
+        next_height = next_radius * 2.0;
+    if (shape->radius == next_radius && shape->height == next_height)
+        return;
+    shape->radius = next_radius;
+    shape->height = next_height;
+    shape->bounds_dirty = 1;
+    collider3d_note_global_geometry_change();
     collider3d_recompute_bounds(shape);
 }
 
@@ -1440,8 +1503,11 @@ int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
     if (!shape || shape->type != RT_COLLIDER3D_TYPE_HEIGHTFIELD)
         return 0;
     if (!mask) {
+        if (!shape->heightfield_holes)
+            return 1;
         free(shape->heightfield_holes);
         shape->heightfield_holes = NULL;
+        collider3d_note_global_geometry_change();
         return 1;
     }
     if (cells_x != shape->heightfield_width - 1 || cells_z != shape->heightfield_depth - 1 ||
@@ -1452,8 +1518,13 @@ int8_t rt_collider3d_heightfield_set_holes_raw(void *collider,
     if (!copy)
         return 0;
     memcpy(copy, mask, mask_bytes);
+    if (shape->heightfield_holes && memcmp(shape->heightfield_holes, copy, mask_bytes) == 0) {
+        free(copy);
+        return 1;
+    }
     free(shape->heightfield_holes);
     shape->heightfield_holes = copy;
+    collider3d_note_global_geometry_change();
     return 1;
 }
 

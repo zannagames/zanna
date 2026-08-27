@@ -236,6 +236,68 @@ int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
     return capacity;
 }
 
+/// @brief Swap two raw hit records.
+static void query_hit_swap(rt_query_hit3d *a, rt_query_hit3d *b) {
+    rt_query_hit3d tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+/// @brief Accumulate the nearest hits as a max-heap, avoiding a shift per candidate.
+/// @details The farthest retained hit stays at the root. Each candidate therefore costs
+///          O(log capacity), and a final O(k log k) sort restores the public nearest-first order.
+int query_hit_heap_collect_bounded(rt_query_hit3d *hits,
+                                   int32_t count,
+                                   int32_t capacity,
+                                   const rt_query_hit3d *hit) {
+    rt_query_hit3d clean;
+    if (!hits || !hit || capacity <= 0)
+        return count;
+    clean = *hit;
+    if (!query_sanitize_hit(&clean, PH3D_QUERY_DISTANCE_MAX, NULL))
+        return count;
+    if (count < capacity) {
+        int32_t child = count++;
+        hits[child] = clean;
+        while (child > 0) {
+            int32_t parent = (child - 1) / 2;
+            if (hits[parent].distance >= hits[child].distance)
+                break;
+            query_hit_swap(&hits[parent], &hits[child]);
+            child = parent;
+        }
+        return count;
+    }
+    if (clean.distance >= hits[0].distance)
+        return count;
+    hits[0] = clean;
+    for (int32_t parent = 0;;) {
+        int32_t left = parent * 2 + 1;
+        if (left >= count)
+            break;
+        int32_t right = left + 1;
+        int32_t larger = right < count && hits[right].distance > hits[left].distance ? right : left;
+        if (hits[parent].distance >= hits[larger].distance)
+            break;
+        query_hit_swap(&hits[parent], &hits[larger]);
+        parent = larger;
+    }
+    return count;
+}
+
+/// @brief Compare hit records by ascending distance for public result ordering.
+static int query_hit_compare_distance(const void *lhs, const void *rhs) {
+    double a = ((const rt_query_hit3d *)lhs)->distance;
+    double b = ((const rt_query_hit3d *)rhs)->distance;
+    return (a > b) - (a < b);
+}
+
+/// @brief Sort retained heap records once after collection.
+void query_hit_sort_by_distance(rt_query_hit3d *hits, int32_t count) {
+    if (hits && count > 1)
+        qsort(hits, (size_t)count, sizeof(*hits), query_hit_compare_distance);
+}
+
 /// @brief Return the O(1) revision key for the world's query broadphase cache.
 /// @details Body transforms/colliders and body add/remove paths bump the world revision as they
 ///   mutate bounds. Spatial queries can therefore validate the cache without hashing every body.

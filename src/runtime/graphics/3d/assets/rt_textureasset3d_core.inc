@@ -1230,32 +1230,3 @@ static int textureasset3d_capture_rgba8_backing(void **mip_pixels,
     *out_size = total;
     return 1;
 }
-
-/// @brief Decode all mips of a raw RGBA8 texture into a Pixels array.
-/// @param[in] data Base address of the complete raw texture payload.
-/// @param[in] size Number of readable bytes in @p data.
-/// @param[in] mips Array describing the source range and dimensions of each mip level.
-/// @param[in] mip_count Number of entries in @p mips.
-/// @return A newly allocated array of Pixels objects, or NULL if any mip fails.
-/// @ownership The caller owns the returned array and every Pixels reference it contains.
-static void **textureasset3d_decode_rgba8_mips(const uint8_t *data,
-                                               size_t size,
-                                               const textureasset3d_mip *mips,
-                                               int64_t mip_count) {
-    void **mip_pixels;
-
-    if (!data || !mips || mip_count <= 0)
-        return NULL;
-    mip_pixels = (void **)calloc((size_t)mip_count, sizeof(void *));
-    if (!mip_pixels)
-        return NULL;
-    for (int64_t i = 0; i < mip_count; i++) {
-        mip_pixels[i] = textureasset3d_decode_rgba8_fallback(
-            data, size, mips[i].width, mips[i].height, mips[i].offset, mips[i].length);
-        if (!mip_pixels[i]) {
-            textureasset3d_release_mip_pixels(mip_pixels, mip_count);
-            return NULL;
-        }
-    }
-    return mip_pixels;
-}

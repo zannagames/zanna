@@ -64,6 +64,10 @@ typedef struct vgfx_xvisual_info XVisualInfo;
 #include <stdlib.h>
 #include <string.h>
 
+extern void rt_obj_retain_maybe(void *obj);
+extern int rt_obj_release_check0(void *obj);
+extern void rt_obj_free(void *obj);
+
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
 typedef int GLint;

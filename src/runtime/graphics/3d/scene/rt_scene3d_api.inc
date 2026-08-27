@@ -809,6 +809,7 @@ void rt_scene3d_clear(void *obj) {
     }
     root->child_count = 0;
     s->node_count = 1; /* just root */
+    scene3d_note_hierarchy_change();
     scene3d_mark_spatial_dirty(s);
 }
 

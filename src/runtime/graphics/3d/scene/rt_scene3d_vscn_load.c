@@ -2855,14 +2855,14 @@ typedef struct vscn_prefab_frame {
     int32_t *instance_budget;
 } vscn_prefab_frame;
 
-/// @brief Parse owned VSCN JSON bytes while threading nested-prefab state.
+/// @brief Parse borrowed VSCN JSON bytes while threading nested-prefab state.
 /// @param filepath Borrowed diagnostic/source path.
-/// @param json Owned NUL-terminated JSON allocation consumed on every path.
+/// @param json Borrowed JSON byte span; a trailing NUL is not required.
 /// @param file_size Exact JSON byte count excluding the terminator.
 /// @param prefab_stack Borrowed enclosing prefab frame, or `NULL`.
 /// @return New owned Scene3D/Model3D handle, or `NULL` on failure.
 static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
-                                              char *json,
+                                              const char *json,
                                               size_t file_size,
                                               const vscn_prefab_frame *prefab_stack);
 
@@ -2882,7 +2882,11 @@ static void *vscn_prefab_load_file(rt_string path, const vscn_prefab_frame *pref
     json = vscn_read_file(filepath, &file_size);
     if (!json)
         return NULL;
-    return rt_scene3d_load_impl_from_buffer(filepath, json, file_size, prefab_stack);
+    {
+        void *result = rt_scene3d_load_impl_from_buffer(filepath, json, file_size, prefab_stack);
+        free(json);
+        return result;
+    }
 }
 
 /// @brief Mark one grafted subtree as transient instance content.
@@ -3073,16 +3077,17 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
 ///   dependency order (textures, then cubemaps, then materials, then meshes), and finally walks the
 ///   node tree wiring index references back to the freshly-loaded objects. All partially-loaded
 ///   refs are released on any failure. glTF/FBX scenes load through rt_gltf_load / rt_fbx_load.
-/// @details Owns @p json (a NUL-terminated malloc buffer of @p file_size bytes) and frees it
-///   on every path. @p filepath is used for diagnostics only — no file IO happens here, which
-///   lets streaming commit worker-staged VSCN bytes without touching the disk on the main thread.
+/// @details Borrows @p json only for the duration of the call. @p filepath is used for diagnostics
+///   only — no file IO happens here, which lets streaming commit worker-staged VSCN bytes without
+///   touching the disk on the main thread. The input is copied exactly once into the runtime string
+///   required by the JSON parser; callers do not need to manufacture a second owned staging copy.
 /// @param filepath Borrowed diagnostic/source path, or `NULL` for memory input.
-/// @param json Owned NUL-terminated JSON allocation consumed on every path.
+/// @param json Borrowed JSON byte span; a trailing NUL is not required.
 /// @param file_size Exact JSON byte count excluding the terminator.
 /// @param prefab_stack Borrowed enclosing prefab frame, or `NULL`.
 /// @return New owned Scene3D/Model3D handle, or `NULL` after transactional rollback.
 static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
-                                              char *json,
+                                              const char *json,
                                               size_t file_size,
                                               const vscn_prefab_frame *prefab_stack) {
     rt_string json_text = NULL;
@@ -3126,8 +3131,6 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
         filepath = "<memory>";
 
     json_text = rt_string_from_bytes(json, file_size);
-    free(json);
-    json = NULL;
     if (!json_text)
         return NULL;
     {
@@ -3142,17 +3145,19 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
             return NULL;
         }
     }
-    if (rt_json_is_valid(json_text) != 1) {
-        rt_string_unref(json_text);
-        rt_asset_error_setf(
-            RT_ASSET_ERROR_CORRUPT, "Scene3D.Load: '%s' has invalid JSON", filepath);
-        return NULL;
+    {
+        rt_string parse_message = NULL;
+        if (rt_json_try_parse(json_text, &root, &parse_message, NULL, NULL) != 1 || !root) {
+            rt_string_unref(parse_message);
+            rt_string_unref(json_text);
+            rt_asset_error_setf(
+                RT_ASSET_ERROR_CORRUPT, "Scene3D.Load: '%s' has invalid JSON", filepath);
+            return NULL;
+        }
+        rt_string_unref(parse_message);
     }
-    root = rt_json_parse_object(json_text);
     rt_string_unref(json_text);
     json_text = NULL;
-    if (!root)
-        return NULL;
 
     textures_arr = vjson_get(root, "textures");
     cubemaps_arr = vjson_get(root, "cubemaps");
@@ -3485,15 +3490,20 @@ static void *rt_scene3d_load_impl(rt_string path) {
     json = vscn_read_file(filepath, &file_size);
     if (!json)
         return NULL;
-    return rt_scene3d_load_impl_from_buffer(filepath, json, file_size, NULL);
+    {
+        void *result = rt_scene3d_load_impl_from_buffer(filepath, json, file_size, NULL);
+        free(json);
+        return result;
+    }
 }
 
 /// @brief Deserialize a Scene3D from already-read `.vscn` JSON text (streaming staging path).
-/// @details Copies @p text so the caller keeps ownership of its buffer. @p path is used for
-///   diagnostics only. Returns NULL on parse failure with the asset-error state populated —
-///   never traps, matching the recoverable-cell contract of the streaming loader.
+/// @details Borrows @p text while parsing, so the caller keeps ownership without an intermediate
+///   native staging copy. @p path is used for diagnostics only. Returns NULL on parse failure with
+///   the asset-error state populated — never traps, matching the recoverable-cell contract of the
+///   streaming loader.
 /// @param path Borrowed optional diagnostic/source path.
-/// @param text Borrowed JSON bytes copied before parsing.
+/// @param text Borrowed JSON bytes consumed synchronously during parsing.
 /// @param len Exact byte count excluding any caller terminator.
 /// @return New owned Scene3D/Model3D handle, or `NULL` after recoverable failure.
 void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) {
@@ -3508,15 +3518,8 @@ void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) 
         rt_asset_error_end_load_failure();
         return NULL;
     }
-    char *copy = (char *)malloc(len + 1);
-    if (!copy) {
-        rt_asset_error_end_load_failure();
-        return NULL;
-    }
-    memcpy(copy, text, len);
-    copy[len] = '\0';
     void *scene =
-        rt_scene3d_load_impl_from_buffer(path ? rt_string_cstr(path) : "<memory>", copy, len, NULL);
+        rt_scene3d_load_impl_from_buffer(path ? rt_string_cstr(path) : "<memory>", text, len, NULL);
     if (scene) {
         rt_asset_error_end_load_success();
     } else {

@@ -20,7 +20,8 @@
 //   - One-shot flags follow the just_landed pattern: set on transition, cleared
 //     at the start of the next Update.
 // Ownership/Lifetime:
-//   - GC-managed handle; finalizer releases retained world/owner/target refs.
+//   - GC-managed handle; finalizer releases retained world/owner/target refs
+//     and reusable candidate-query scratch storage.
 // Links: rt_game3d_internal.h, rt_physics3d.h
 //
 //===----------------------------------------------------------------------===//
@@ -40,6 +41,8 @@
 #include "rt_trap.h"
 #include "rt_vec3.h"
 #include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 //=========================================================================
@@ -218,21 +221,65 @@ typedef struct {
     double distance;
     double angle_deg;  /* full 3D angle from the camera forward */
     double camera_yaw; /* signed yaw offset in the camera basis, radians */
+    double sort_key;
+    int32_t input_order;
 } game3d_targetlock_candidate;
 
-#define GAME3D_TARGETLOCK_MAX_CANDIDATES 64
+/// @brief Ensure reusable candidate and identity-set scratch can hold one overlap result.
+static int game3d_targetlock_reserve_candidates(rt_game3d_targetlock *lock, int32_t hit_count) {
+    if (hit_count <= 0)
+        return 1;
+    if (lock->candidate_capacity < hit_count) {
+        game3d_targetlock_candidate *grown = (game3d_targetlock_candidate *)realloc(
+            lock->candidate_scratch, (size_t)hit_count * sizeof(*grown));
+        if (!grown) {
+            rt_trap("Game3D.TargetLock3D: candidate scratch allocation failed");
+            return 0;
+        }
+        lock->candidate_scratch = grown;
+        lock->candidate_capacity = hit_count;
+    }
+    int32_t seen_capacity = 8;
+    while (seen_capacity < hit_count * 2)
+        seen_capacity *= 2;
+    if (lock->candidate_seen_capacity < seen_capacity) {
+        void **grown =
+            (void **)realloc(lock->candidate_seen, (size_t)seen_capacity * sizeof(*grown));
+        if (!grown) {
+            rt_trap("Game3D.TargetLock3D: candidate identity-set allocation failed");
+            return 0;
+        }
+        lock->candidate_seen = grown;
+        lock->candidate_seen_capacity = seen_capacity;
+    }
+    memset(lock->candidate_seen, 0, (size_t)lock->candidate_seen_capacity * sizeof(void *));
+    return 1;
+}
+
+/// @brief Insert an entity identity into the per-query open-addressed set.
+/// @return Nonzero only for the first occurrence of @p entity.
+static int game3d_targetlock_mark_first(rt_game3d_targetlock *lock, rt_game3d_entity *entity) {
+    size_t mask = (size_t)lock->candidate_seen_capacity - 1u;
+    size_t slot = (((uintptr_t)entity >> 4u) * UINT64_C(11400714819323198485)) & mask;
+    while (lock->candidate_seen[slot]) {
+        if (lock->candidate_seen[slot] == (void *)entity)
+            return 0;
+        slot = (slot + 1u) & mask;
+    }
+    lock->candidate_seen[slot] = entity;
+    return 1;
+}
 
 /// @brief Collect scored lock-on candidates around the owner.
 /// @details Overlap-sphere at the owner, resolve bodies to entities, reject the
-///   owner/dead/mask-mismatched entities and (optionally) candidates without LoS,
+///   owner/dead/mask-mismatched entities, deduplicate through an identity hash set,
 ///   and record distance plus camera-relative angles for scoring and cycling.
 /// @param lock Borrowed target-lock payload defining the query and filters.
-/// @param[out] out Caller-owned candidate array.
-/// @param out_capacity Maximum candidates that may be written.
-/// @return Number of candidates written to @p out (bounded).
+/// @param[out] out Receives reusable lock-owned candidate storage, invalidated by the next query.
+/// @return Number of candidates written to @p out.
 static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
-                                         game3d_targetlock_candidate *out,
-                                         int32_t out_capacity) {
+                                         game3d_targetlock_candidate **out) {
+    *out = NULL;
     rt_game3d_world *world = game3d_targetlock_world_ref(lock);
     rt_game3d_entity *owner = game3d_targetlock_owner_ref(lock);
     if (!world || !world->physics || !owner)
@@ -275,19 +322,19 @@ static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
         rt_world3d_overlap_sphere(world->physics, center, lock->max_distance, lock->candidate_mask);
     int32_t count = 0;
     int64_t hit_count = hits ? rt_physics_hit_list3d_get_count(hits) : 0;
-    for (int64_t i = 0; i < hit_count && count < out_capacity; ++i) {
+    if (hit_count > INT32_MAX || !game3d_targetlock_reserve_candidates(lock, (int32_t)hit_count)) {
+        game3d_release_ref(&hits);
+        game3d_release_ref(&center);
+        return 0;
+    }
+    game3d_targetlock_candidate *records = (game3d_targetlock_candidate *)lock->candidate_scratch;
+    for (int64_t i = 0; i < hit_count; ++i) {
         void *hit = rt_physics_hit_list3d_get(hits, i);
         void *body = hit ? rt_physics_hit3d_get_body(hit) : NULL;
         rt_game3d_entity *entity = body ? game3d_world_find_entity_by_body(world, body) : NULL;
         if (!entity || entity == owner || !game3d_targetlock_entity_targetable(entity))
             continue;
-        int already = 0;
-        for (int32_t c = 0; c < count; ++c)
-            if (out[c].entity == entity) {
-                already = 1; /* compound bodies can hit twice */
-                break;
-            }
-        if (already)
+        if (!game3d_targetlock_mark_first(lock, entity))
             continue;
         double pos[3];
         if (!game3d_entity_world_position_components(entity, pos))
@@ -301,18 +348,30 @@ static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
         double angle_deg = acos(game3d_clamp(cos_angle, -1.0, 1.0)) * (180.0 / RT_GAME3D_PI);
         if (angle_deg > lock->cone_degrees)
             continue;
-        if (lock->require_los && !game3d_targetlock_has_los(world, owner, entity))
-            continue;
-        out[count].entity = entity;
-        out[count].distance = dist;
-        out[count].angle_deg = angle_deg;
-        out[count].camera_yaw = atan2(dir[0] * right[0] + dir[1] * right[1] + dir[2] * right[2],
-                                      dir[0] * fwd[0] + dir[1] * fwd[1] + dir[2] * fwd[2]);
+        records[count].entity = entity;
+        records[count].distance = dist;
+        records[count].angle_deg = angle_deg;
+        records[count].camera_yaw = atan2(dir[0] * right[0] + dir[1] * right[1] + dir[2] * right[2],
+                                          dir[0] * fwd[0] + dir[1] * fwd[1] + dir[2] * fwd[2]);
+        records[count].sort_key = 0.0;
+        records[count].input_order = count;
         ++count;
     }
     game3d_release_ref(&hits);
     game3d_release_ref(&center);
+    *out = records;
     return count;
+}
+
+/// @brief Ascending candidate sort with deterministic input-order ties.
+static int game3d_targetlock_candidate_compare(const void *lhs, const void *rhs) {
+    const game3d_targetlock_candidate *a = (const game3d_targetlock_candidate *)lhs;
+    const game3d_targetlock_candidate *b = (const game3d_targetlock_candidate *)rhs;
+    if (a->sort_key < b->sort_key)
+        return -1;
+    if (a->sort_key > b->sort_key)
+        return 1;
+    return (a->input_order > b->input_order) - (a->input_order < b->input_order);
 }
 
 /// @brief Angle-weighted (2:1) acquisition score for a candidate.
@@ -366,6 +425,12 @@ static void game3d_targetlock_finalize(void *obj) {
         &lock->owner, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     game3d_targetlock_release_instance_ref(
         &lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
+    free(lock->candidate_scratch);
+    lock->candidate_scratch = NULL;
+    lock->candidate_capacity = 0;
+    free(lock->candidate_seen);
+    lock->candidate_seen = NULL;
+    lock->candidate_seen_capacity = 0;
 }
 
 //=========================================================================
@@ -570,21 +635,21 @@ int8_t rt_game3d_targetlock_acquire(void *obj) {
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Acquire: invalid lock");
     if (!lock)
         return 0;
-    game3d_targetlock_candidate candidates[GAME3D_TARGETLOCK_MAX_CANDIDATES];
-    int32_t count = game3d_targetlock_collect(lock, candidates, GAME3D_TARGETLOCK_MAX_CANDIDATES);
-    int32_t best = -1;
-    double best_score = -1e300;
+    game3d_targetlock_candidate *candidates = NULL;
+    int32_t count = game3d_targetlock_collect(lock, &candidates);
+    for (int32_t i = 0; i < count; ++i)
+        candidates[i].sort_key = -game3d_targetlock_score(lock, &candidates[i]);
+    if (count > 1)
+        qsort(candidates, (size_t)count, sizeof(*candidates), game3d_targetlock_candidate_compare);
+    rt_game3d_world *world = game3d_targetlock_world_ref(lock);
+    rt_game3d_entity *owner = game3d_targetlock_owner_ref(lock);
     for (int32_t i = 0; i < count; ++i) {
-        double score = game3d_targetlock_score(lock, &candidates[i]);
-        if (score > best_score) {
-            best_score = score;
-            best = i;
-        }
+        if (lock->require_los && !game3d_targetlock_has_los(world, owner, candidates[i].entity))
+            continue;
+        game3d_targetlock_install(lock, candidates[i].entity);
+        return 1;
     }
-    if (best < 0)
-        return game3d_targetlock_target_ref(lock) != NULL;
-    game3d_targetlock_install(lock, candidates[best].entity);
-    return 1;
+    return game3d_targetlock_target_ref(lock) != NULL;
 }
 
 /// @brief Release the current target without firing JustLost (explicit clear).
@@ -616,8 +681,8 @@ int8_t rt_game3d_targetlock_cycle(void *obj, int64_t direction) {
     rt_game3d_entity *current = game3d_targetlock_target_ref(lock);
     if (!current)
         return rt_game3d_targetlock_acquire(obj);
-    game3d_targetlock_candidate candidates[GAME3D_TARGETLOCK_MAX_CANDIDATES];
-    int32_t count = game3d_targetlock_collect(lock, candidates, GAME3D_TARGETLOCK_MAX_CANDIDATES);
+    game3d_targetlock_candidate *candidates = NULL;
+    int32_t count = game3d_targetlock_collect(lock, &candidates);
     double current_yaw = 0.0;
     int have_current = 0;
     for (int32_t i = 0; i < count; ++i)
@@ -628,24 +693,30 @@ int8_t rt_game3d_targetlock_cycle(void *obj, int64_t direction) {
         }
     if (!have_current)
         current_yaw = 0.0;
-    int32_t best = -1;
-    double best_delta = 1e300;
+    int32_t eligible = 0;
     for (int32_t i = 0; i < count; ++i) {
         if (candidates[i].entity == current)
             continue;
         double delta = candidates[i].camera_yaw - current_yaw;
         if (direction > 0 ? delta <= 1e-9 : delta >= -1e-9)
             continue;
-        double magnitude = fabs(delta);
-        if (magnitude < best_delta) {
-            best_delta = magnitude;
-            best = i;
-        }
+        candidates[i].sort_key = fabs(delta);
+        if (eligible != i)
+            candidates[eligible] = candidates[i];
+        ++eligible;
     }
-    if (best < 0)
-        return 0;
-    game3d_targetlock_install(lock, candidates[best].entity);
-    return 1;
+    if (eligible > 1)
+        qsort(
+            candidates, (size_t)eligible, sizeof(*candidates), game3d_targetlock_candidate_compare);
+    rt_game3d_world *world = game3d_targetlock_world_ref(lock);
+    rt_game3d_entity *owner = game3d_targetlock_owner_ref(lock);
+    for (int32_t i = 0; i < eligible; ++i) {
+        if (lock->require_los && !game3d_targetlock_has_los(world, owner, candidates[i].entity))
+            continue;
+        game3d_targetlock_install(lock, candidates[i].entity);
+        return 1;
+    }
+    return 0;
 }
 
 /// @brief Per-step maintenance: clears one-shot flags, then auto-releases on

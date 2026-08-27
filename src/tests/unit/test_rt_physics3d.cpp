@@ -507,6 +507,39 @@ static void test_collider_getters_sanitize_corrupt_private_state() {
     heightfield_view->heightfield_depth = saved_depth;
 }
 
+static void test_collider_bounds_revision_is_stable_and_compounds_invalidate_lazily() {
+    void *sphere = rt_collider3d_new_sphere(1.0);
+    uint64_t initial_revision = rt_collider3d_get_bounds_revision_raw(sphere);
+    double mn[3];
+    double mx[3];
+
+    rt_collider3d_get_local_bounds_raw(sphere, mn, mx);
+    EXPECT_TRUE(rt_collider3d_get_bounds_revision_raw(sphere) == initial_revision,
+                "Collider bounds reads do not mutate the revision");
+    rt_collider3d_reset_sphere_raw(sphere, 1.0);
+    EXPECT_TRUE(rt_collider3d_get_bounds_revision_raw(sphere) == initial_revision,
+                "Resetting a collider to identical geometry preserves its bounds revision");
+    rt_collider3d_reset_sphere_raw(sphere, 2.0);
+    uint64_t resized_revision = rt_collider3d_get_bounds_revision_raw(sphere);
+    EXPECT_TRUE(resized_revision != initial_revision,
+                "Changing primitive geometry advances its bounds revision");
+    EXPECT_TRUE(rt_collider3d_get_bounds_revision_raw(sphere) == resized_revision,
+                "Repeated revision reads remain stable after a geometry change");
+
+    void *compound = rt_collider3d_new_compound();
+    void *child = rt_collider3d_new_sphere(0.5);
+    rt_collider3d_add_child(compound, child, nullptr);
+    uint64_t compound_revision = rt_collider3d_get_bounds_revision_raw(compound);
+    rt_collider3d_get_local_bounds_raw(compound, mn, mx);
+    EXPECT_TRUE(rt_collider3d_get_bounds_revision_raw(compound) == compound_revision,
+                "Unchanged compound bounds use the cached revision");
+    rt_collider3d_reset_sphere_raw(child, 1.5);
+    rt_collider3d_get_local_bounds_raw(compound, mn, mx);
+    EXPECT_NEAR(mx[0], 1.5, 0.001, "A child geometry epoch lazily invalidates compound bounds");
+    EXPECT_TRUE(rt_collider3d_get_bounds_revision_raw(compound) != compound_revision,
+                "A changed child AABB advances the compound bounds revision");
+}
+
 static void test_mesh_collider_attaches_to_static_body() {
     void *mesh = rt_mesh3d_new_box(4.0, 1.0, 4.0);
     void *mesh_collider = rt_collider3d_new_mesh(mesh);
@@ -2696,6 +2729,55 @@ static void test_world_raycast_returns_nearest_hit() {
         EXPECT_TRUE(rt_physics_hit3d_get_started_penetrating(hit) == 0,
                     "raycast: not starting in penetration");
     }
+}
+
+static void test_world_raycast_nonuniform_sphere_uses_ellipsoid_geometry() {
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *body = rt_body3d_new(0.0);
+    void *collider = rt_collider3d_new_sphere(1.0);
+    void *origin = rt_vec3_new(0.0, 0.5, 0.0);
+    void *direction = rt_vec3_new(1.0, 0.0, 0.0);
+
+    rt_body3d_set_collider(body, collider);
+    rt_body3d_set_position(body, 5.0, 0.0, 0.0);
+    rt_body3d_set_scale(body, 3.0, 1.0, 1.0);
+    rt_world3d_add(world, body);
+    void *hit = rt_world3d_raycast(world, origin, direction, 20.0, -1);
+
+    EXPECT_TRUE(hit != nullptr, "Ray intersects a non-uniformly scaled sphere as an ellipsoid");
+    EXPECT_NEAR(rt_physics_hit3d_get_distance(hit),
+                5.0 - sqrt(6.75),
+                0.001,
+                "Ellipsoid ray distance preserves the inverse-scaled world ray parameter");
+}
+
+static void test_heightfield_raycast_finds_between_sample_crossing() {
+    void *pixels = rt_pixels_new(2, 2);
+    void *heightfield;
+    void *body = rt_body3d_new(0.0);
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    double inv_sqrt_two = 1.0 / sqrt(2.0);
+    void *origin = rt_vec3_new(-0.5, 1.5, -0.5);
+    void *direction = rt_vec3_new(inv_sqrt_two, 0.0, inv_sqrt_two);
+
+    /* Along the diagonal, scaled bilinear height is
+     * 1.49 + 0.48*u - 1.92*u^2. Clearance is positive at every old quarter-cell
+     * sample but negative around u=0.125, so a fixed march reports a false miss. */
+    rt_pixels_set(pixels, 0, 0, encode_height16((uint16_t)lround(0.745 * 65535.0)));
+    rt_pixels_set(pixels, 1, 0, encode_height16((uint16_t)lround(0.865 * 65535.0)));
+    rt_pixels_set(pixels, 0, 1, encode_height16((uint16_t)lround(0.865 * 65535.0)));
+    rt_pixels_set(pixels, 1, 1, encode_height16((uint16_t)lround(0.025 * 65535.0)));
+    heightfield = rt_collider3d_new_heightfield(pixels, 1.0, 2.0, 1.0);
+    rt_body3d_set_collider(body, heightfield);
+    rt_world3d_add(world, body);
+
+    void *hit = rt_world3d_raycast(world, origin, direction, 2.0, -1);
+    EXPECT_TRUE(hit != nullptr,
+                "Heightfield DDA finds a bilinear crossing between fixed march samples");
+    EXPECT_NEAR(rt_physics_hit3d_get_distance(hit),
+                ((0.48 - sqrt(0.1536)) / 3.84) * sqrt(2.0),
+                0.01,
+                "Heightfield raycast returns the first analytic bilinear root");
 }
 
 static void test_world_raycast_all_sorted() {
@@ -5514,6 +5596,7 @@ int main() {
     test_compound_collider_collects_multiple_leaf_contacts();
     test_compound_collider_rejects_transitive_cycle();
     test_compound_collider_rejects_excessive_nesting();
+    test_collider_bounds_revision_is_stable_and_compounds_invalidate_lazily();
     test_heightfield_collider_supports_ground_contact();
     test_heightfield_box_samples_bottom_edges();
 
@@ -5522,6 +5605,8 @@ int main() {
     test_collision_event_bodies();
     test_physics_world_event_hit_getters_sanitize_corrupt_private_state();
     test_world_raycast_returns_nearest_hit();
+    test_world_raycast_nonuniform_sphere_uses_ellipsoid_geometry();
+    test_heightfield_raycast_finds_between_sample_crossing();
     test_world_raycast_all_sorted();
     test_query_broadphase_survives_step_with_nonx_sweep_axis();
     test_query_broadphase_fat_aabb_skips_rebuild();

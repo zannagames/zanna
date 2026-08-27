@@ -1631,6 +1631,45 @@ typedef struct {
     uint8_t edge12_top_left, edge20_top_left, edge01_top_left;
 } sw_raster_geom;
 
+/// @brief Conservatively test a screen triangle against one rectangle of pixel centers.
+/// @details The triangle bounding box is cheap but grossly over-bins long thin triangles. This
+/// applies the three remaining triangle/box SAT axes in double precision; the rectangle is expanded
+/// by half a pixel so numerical edge cases can only add work, never drop covered samples.
+static int sw_triangle_overlaps_pixel_rect(float x0,
+                                           float y0,
+                                           float x1,
+                                           float y1,
+                                           float x2,
+                                           float y2,
+                                           int32_t min_x,
+                                           int32_t min_y,
+                                           int32_t max_x,
+                                           int32_t max_y) {
+    double xs[3] = {(double)x0, (double)x1, (double)x2};
+    double ys[3] = {(double)y0, (double)y1, (double)y2};
+    double center_x = ((double)min_x + (double)max_x) * 0.5;
+    double center_y = ((double)min_y + (double)max_y) * 0.5;
+    double half_x = ((double)max_x - (double)min_x) * 0.5 + 0.5;
+    double half_y = ((double)max_y - (double)min_y) * 0.5 + 0.5;
+    for (int edge = 0; edge < 3; ++edge) {
+        int next = edge == 2 ? 0 : edge + 1;
+        double axis_x = -(ys[next] - ys[edge]);
+        double axis_y = xs[next] - xs[edge];
+        double p0 = xs[0] * axis_x + ys[0] * axis_y;
+        double p1 = xs[1] * axis_x + ys[1] * axis_y;
+        double p2 = xs[2] * axis_x + ys[2] * axis_y;
+        double tri_min = fmin(p0, fmin(p1, p2));
+        double tri_max = fmax(p0, fmax(p1, p2));
+        double rect_center = center_x * axis_x + center_y * axis_y;
+        double rect_radius = half_x * fabs(axis_x) + half_y * fabs(axis_y);
+        double epsilon = (fabs(rect_center) + rect_radius + 1.0) * 1e-12;
+        if (tri_max < rect_center - rect_radius - epsilon ||
+            tri_min > rect_center + rect_radius + epsilon)
+            return 0;
+    }
+    return 1;
+}
+
 /// @brief Return whether an oriented edge owns samples exactly on that edge.
 /// @details Implements the standard top-left fill convention so adjacent triangles sharing an edge
 ///          do not both shade it or both leave a crack. The software backend uses screen-space
