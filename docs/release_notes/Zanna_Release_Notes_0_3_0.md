@@ -8,9 +8,10 @@ last-verified: 2026-08-28
 
 > **Development Status:** Pre-Alpha. Zanna is under active development and not ready for production use.
 
-## Version 0.3.0 — Pre-Alpha (DRAFT — unreleased)
+## Version 0.3.0 — Pre-Alpha (2026-08-28)
 
-<!-- DRAFT: release date TBD. v0.2.7 was cut on 2026-06-30. -->
+> **Distribution:** v0.3.0 is a source-only release. Prebuilt toolchain and
+> installer binaries are not published with this tag.
 
 ### What this release is about
 
@@ -28,12 +29,16 @@ The last pass before the cut was a stability review, walking the seams that only
 
 The work after that review stayed close to shipped games. Modular venue pieces can bend and flatten into draw-ready scene geometry, dense scans can be simplified without opening their seams, and baked scenes have an explicitly portable binary layout. Team-color textures can preserve their painted shading in linear light, procedural water follows the same deformation path on every renderer, and streamed world textures no longer starve small HUD images and text into white placeholders.
 
+The closing game-driven pass made off-screen frames behave like the picture they become: a render target sampled by a material or 2D overlay is display-referred on every backend while explicit CPU readback stays scene-referred. Animation controllers also gained opt-in blend-tree fades and transition continuity, so a finished action, a retriggered crossfade, or a short fade on an animation-LOD actor can leave the pose that was actually visible instead of flashing through a cut. The same pass tightened glTF ingestion, navigation, physics, post-processing, and backend resource recovery around malformed input and allocation failure.
+
 #### Highlights
 
 - **One naming convention, one way to fail.** Collection sizes read as `Count`, string lengths as `Length`, and abbreviations are spelled out; the operations that can fail hand back an `Option` or a `Result` instead of a null or a `-1`. The old names stay as aliases, so nothing you've written stops compiling.
 - **BASIC has its Zanna toolchain name (new).** `zbasic` is the standalone BASIC compiler, parallel to `zia`, and `zbasic-server` is its language server. Running `zbasic` with no input shows its command help; the interactive entry point is `zanna repl basic`.
 - **3D grew into a game engine.** First- and third-person runtimes — view-model rendering, spring-arm camera, character movement, combat, cloth, behavior trees, quests, world persistence — on top of image-based lighting, clustered lights, screen-space reflections, and temporal AA that work identically on all four backends.
 - **The same scene, the same picture.** A written display-transfer contract puts the gamma encode in exactly one place, so a tone-mapped frame grades identically on Metal, OpenGL, D3D11, and the software renderer instead of coming out washed out on Linux or crushed after a bloom pass. A decoded JPEG keeps the contrast it was authored with, and a two-sided surface lights from the side you're looking at.
+- **Off-screen frames arrive ready to display (new).** A `RenderTarget3D` sampled by a material or drawn into a 2D overlay resolves through the canvas's display post-processing on Metal, OpenGL, D3D11, and the software backend, while `AsPixels`, `CopyTo`, and explicit readback preserve their scene-referred contract.
+- **Animation transitions preserve the visible pose (new).** Opt-in blend-tree fades and transition continuity carry finished actions, stopped clips, retriggered crossfades, and animation-LOD actors through a real rendered transition instead of an instantaneous palette swap.
 - **Real fonts in a 3D frame (new).** `Canvas3D` draws and measures text through a `.ttf` face you load or a built-in default, with kerning and glyph bearings, so a HUD, a scoreboard, or a nameplate uses your game's typeface at any size instead of the fixed bitmap font.
 - **A night sky, and uniforms you can recolor (new).** `Sky3D` has a night half now — a graded horizon, a moon disc, and a deterministic star field — so a night scene has a sky instead of a black void, and lights from it. A family of masked pixel operations recolors part of a texture — a jersey, a livery, a banner — toward a new color while keeping the shading that was painted into it, and `Mesh3D` can rasterize a UV mask from the model itself to say exactly which triangles are in scope.
 - **The runtime picked up the pieces every game rewrites (new).** Random streams you can save, clone, and derive so a replay or a seeded level reproduces exactly; tweens you can seek to an absolute millisecond instead of only playing forward; a fixed-column text table; a test suite that reports every failure instead of trapping on the first; and command-line, path, and data-root helpers. All in the runtime, all deterministic.
@@ -50,7 +55,7 @@ The work after that review stayed close to shipped games. Modular venue pieces c
 - **A windowless GPU context on all three platforms (new).** Linux gets a surfaceless EGL context and Windows a swap-chain-free D3D11 device, joining the windowless Metal context macOS already had — so an offscreen `Canvas3D`, an embedded editor viewport, or a batch of thumbnails renders on the GPU everywhere instead of dropping to the software rasterizer on two platforms out of three.
 - **A batch of things you can feel.** A sustained 3D fight stops losing frame rate, a ragdoll falls like a body, a car drives on a moving platform, a bake covers the whole level instead of half of it, a killed enemy stays dead, a patrol walks at the speed you set, a HUD panel is translucent on every backend, Metal scenes have their shadows back, an MP3 plays back the way it was encoded, and a bat or a glove attaches to the hand that's holding it.
 - **The stack was audited for bad input, heavy load, and many threads.** Runtime, IL, the Zia frontend, 2D and 3D graphics, the GUI runtime, gameplay, animation, navigation, physics, audio decoding and mixing, spatial audio, post-processing, world and timeline state, Windows, and Linux. One theme runs through all of it: a handle that isn't live is refused rather than dereferenced, and a partial result is discarded rather than published — so a driver hiccup or a hostile asset costs you a frame, not the session.
-- **Real installers everywhere.** A native Windows toolchain installer with rollback and repair — branded, keyboard-accessible, and sharp at any DPI — plus AppImage, RPM, DMG, and Windows packages for standalone apps, each one checked, checksummed, and manifested before it ships.
+- **Real installers everywhere.** A native Windows toolchain installer with rollback and repair — branded, keyboard-accessible, and sharp at any DPI — plus Linux `.run` bundles and RPM, DMG, and Windows packages for standalone apps, each one checked, checksummed, and manifested before it ships. Those packaging paths are available from source, but v0.3.0 itself publishes no prebuilt binaries.
 - **Native Wayland on Linux (new), and Windows paths that used to fail.** Wayland is chosen automatically with an X11 fallback and no external dependencies, and its windows show your rendered frames and deliver pointer and keyboard input like any native app. On Windows, a project under `C:\Users\Ольга\Проекты` — or nested past the old `MAX_PATH` ceiling — compiles, packages, installs, and runs.
 - **Linux caught up with the other two.** A natively linked binary that prints — or calls into libm or pthreads — runs correctly now, the whole tree compiles warning-free under GCC as well as Clang, `Canvas3D.FrameGpuTimeUs` reports real GPU frame time on OpenGL, and a HiDPI window reports the size you asked for instead of one divided by the display scale twice.
 - **Generated code runs faster, and Zia gained list combinators.** Dense `switch` statements become jump tables, narrow overflow checks use the CPU's flag bits, and provably unnecessary checks are dropped; `map`, `filter`, `reduce`, and friends lower to plain loops with no closures and no allocation.
@@ -60,14 +65,14 @@ The work after that review stayed close to shipped games. Modular venue pieces c
 
 | Metric | v0.2.7 | v0.3.0 | Delta |
 |---|---|---|---|
-| Commits | — | 285 | +285 |
-| Source files | 3,402 | 3,703 | +301 |
-| Production SLOC | 659K | 882K | +223K |
-| Test SLOC | 254K | 331K | +77K |
+| Commits | — | 288 | +288 |
+| Source files | 3,402 | 3,704 | +302 |
+| Production SLOC | 659K | 884K | +225K |
+| Test SLOC | 254K | 332K | +78K |
 | Zanna Studio SLOC | 26K | 160K | +134K |
 | Demo SLOC | 144K | 242K | +98K |
 
-Counts via `scripts/count_sloc.sh`, which excludes blank lines and comments — line and block (production 882,298 / test 330,783 / zannastudio 159,978 / source files 3,703); the v0.2.7 column is restated on the same basis so the deltas reflect real growth. Demo SLOC is the sum of both homes — 73,337 in this repo (46,413 in `examples/`, the rest in Zia and BASIC test fixtures) plus 168,440 in the `zannademos` repository — because the showcase games moved out of this repo mid-release; the demos grew, they just no longer all live here. That total is about 9K lower than it read mid-release: two aging Baseball samples were retired from `zannademos` once the project they came from moved to a repository of its own. Commits since the `v0.2.7-dev` tag (2026-06-30). Much of the raw diff is checked-in text-glTF character and model assets, which these SLOC figures leave out.
+Counts via `scripts/count_sloc.sh`, which excludes blank lines and comments — line and block (production 883,784 / test 331,521 / zannastudio 159,978 / source files 3,704); the v0.2.7 column is restated on the same basis so the deltas reflect real growth. Demo SLOC is the sum of both homes — 73,337 in this repo (46,413 in `examples/`, the rest in Zia and BASIC test fixtures) plus 168,440 in the `zannademos` repository — because the showcase games moved out of this repo mid-release; the demos grew, they just no longer all live here. That total is about 9K lower than it read mid-release: two aging Baseball samples were retired from `zannademos` once the project they came from moved to a repository of its own. Commit count includes the release-preparation commit and is measured from the `v0.2.7-dev` tag (2026-06-30). Much of the raw diff is checked-in text-glTF character and model assets, which these SLOC figures leave out.
 
 ---
 
@@ -422,7 +427,7 @@ One rule runs underneath all of it, so the rest of this section doesn't repeat i
 
 - The Windows toolchain setup is a native installer: a statically linked, high-DPI host with signed payloads, journaled rollback, and a full install, upgrade, modify, repair, and uninstall lifecycle, including per-user and all-users scope and an Apps & Features entry. Unicode install paths work throughout.
 - Setup wears the Zanna Games brand. Welcome, maintenance, transaction confirmation, license acceptance, progress, and completion are a native shell drawn in the Zanna palette, with the Z mark and a green-to-teal compile rail rendered as vectors at your display's DPI — no bitmaps, so it stays sharp on any monitor. Accessibility didn't get traded away for it: every action is a real focusable Windows control carrying its full accessible name, Tab and Enter and Space behave natively, focus is visibly outlined, pages scroll when they don't fit the work area, and high-contrast mode replaces the brand colors with system ones. Silent installs still run with no UI at all.
-- That installer now ships Zanna Studio, and standalone apps package as AppImage, RPM, DMG, and Windows installers with desktop launchers and icons. `zanna package --dry-run --json` is there for scripting.
+- That installer can include Zanna Studio, and standalone apps package as Linux `.run` bundles, RPM, DMG, and Windows installers with desktop launchers and icons. `zanna package --dry-run --json` is there for scripting.
 - Every artifact passes a structural check and emits a SHA-256 checksum and a machine-readable manifest before it ships. `zanna install-package` refuses a package that doesn't match the target OS or architecture.
 
 ### Windows and Linux
@@ -478,4 +483,10 @@ The demos kept pace, and then they moved. Two of them now ship a second time bui
 
 Those big games, and the rest of the large demos, now live in their own repository, `github.com/zannagames/zannademos`, rather than inside the compiler (ADR 0241). Cloning, building, and installing Zanna stopped carrying a ~98 MB examples tree it didn't need, while `examples/` keeps a curated set that still earns its place: the IL, BASIC, and Zia ladders, the full 3D tutorial series, chess, Crackman, VTris, Frogger, Centipede, and Paint. Clone `zannademos` beside your checkout and the whole demo suite runs against it exactly as before; leave it out and those tests report as skipped instead of quietly disappearing. The Game3D starter now embeds its marker model rather than reading it from a sibling folder, so the scaffolded 3D project runs from wherever you launch it.
 
-<!-- END DRAFT -->
+### Known limitations
+
+- This is a pre-alpha source release. APIs, diagnostics, IL rules, project formats, and tooling may change before a stable release.
+- No prebuilt toolchain or installer binaries are published for v0.3.0; build from the tagged source with the platform scripts.
+- Native macOS support targets Apple Silicon. Linux targets x86-64 and AArch64; backend and platform capability details remain documented in the supported-platform guides.
+- OpenGL point shadows, macOS GPU frame timing, one Metal counter, and software-renderer reflection/HDR settings remain unavailable as documented in the 3D guides.
+- Assigning inherited `Filter` and `Wrap` properties through `GpuTexture2D` remains unsupported; use the underlying texture API where those settings are required.
