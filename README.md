@@ -19,10 +19,10 @@
 
 ## Download
 
-**Latest tagged release:** [v0.3.0](https://github.com/zannagames/zanna/releases/tag/v0.3.0) (2026-08-28)
+**Latest tagged release:** [v0.3.0](https://github.com/zannagames/zanna/releases/tag/v0.3.0-prealpha) (2026-08-28)
 
-- [Source (tar.gz)](https://github.com/zannagames/zanna/archive/refs/tags/v0.3.0.tar.gz)
-- [Source (zip)](https://github.com/zannagames/zanna/archive/refs/tags/v0.3.0.zip)
+- [Source (tar.gz)](https://github.com/zannagames/zanna/archive/refs/tags/v0.3.0-prealpha.tar.gz)
+- [Source (zip)](https://github.com/zannagames/zanna/archive/refs/tags/v0.3.0-prealpha.zip)
 - [Release notes](docs/release_notes/Zanna_Release_Notes_0_3_0.md)
 
 This pre-alpha release is distributed as source only; prebuilt toolchain and
