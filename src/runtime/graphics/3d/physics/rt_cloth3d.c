@@ -138,6 +138,7 @@ typedef struct rt_cloth3d {
     int32_t allocated_skeleton_bone_count;
     int8_t anchor_initialized;
     int64_t last_collision_narrowphase_tests;
+    int64_t last_bone_parent_reads;
 } rt_cloth3d;
 
 /// @brief Clamp one cloth-space coordinate to the common Game3D finite range.
@@ -811,25 +812,51 @@ void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone)
         return obj;
     }
     int64_t bone_count = rt_skeleton3d_get_bone_count(skeleton);
+    if (bone_count <= 0 || bone_count > INT32_MAX ||
+        (uint64_t)bone_count > SIZE_MAX / sizeof(int32_t)) {
+        rt_trap("Cloth3D.BindBoneChain: invalid skeleton bone count");
+        return obj;
+    }
+    int32_t *first_child = (int32_t *)malloc((size_t)bone_count * sizeof(int32_t));
+    uint8_t *child_count = (uint8_t *)calloc((size_t)bone_count, sizeof(uint8_t));
+    if (!first_child || !child_count) {
+        free(first_child);
+        free(child_count);
+        rt_trap("Cloth3D.BindBoneChain: bone hierarchy allocation failed");
+        return obj;
+    }
+    for (int64_t i = 0; i < bone_count; ++i)
+        first_child[i] = -1;
+    cloth->last_bone_parent_reads = 0;
+    for (int64_t i = 0; i < bone_count; ++i) {
+        int64_t parent = rt_skeleton3d_get_bone_parent_raw(skeleton, i);
+        cloth->last_bone_parent_reads++;
+        if (parent < 0 || parent >= bone_count)
+            continue;
+        if (child_count[parent] == 0)
+            first_child[parent] = (int32_t)i;
+        if (child_count[parent] < UINT8_MAX)
+            child_count[parent]++;
+    }
     int64_t current = root;
     while (current >= 0) {
         if (staged_bone_count >= CLOTH3D_MAX_CHAIN_BONES) {
+            free(first_child);
+            free(child_count);
             rt_trap("Cloth3D.BindBoneChain: bone chain exceeds the 32-bone limit");
             return obj;
         }
         staged_bones[staged_bone_count++] = (int32_t)current;
-        int64_t child = -1;
-        for (int64_t i = 0; i < bone_count; ++i) {
-            if (rt_skeleton3d_get_bone_parent_raw(skeleton, i) != current)
-                continue;
-            if (child >= 0) {
-                rt_trap("Cloth3D.BindBoneChain: branching bone chains are not supported");
-                return obj;
-            }
-            child = i;
+        if (child_count[current] > 1) {
+            free(first_child);
+            free(child_count);
+            rt_trap("Cloth3D.BindBoneChain: branching bone chains are not supported");
+            return obj;
         }
-        current = child;
+        current = first_child[current];
     }
+    free(first_child);
+    free(child_count);
     if (staged_bone_count < 1) {
         rt_trap("Cloth3D.BindBoneChain: empty bone chain");
         return obj;
@@ -1082,6 +1109,12 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
 int64_t rt_cloth3d_last_collision_narrowphase_tests_for_test(void *obj) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D test collision count: invalid cloth");
     return cloth ? cloth->last_collision_narrowphase_tests : -1;
+}
+
+/// @brief Test-only count of skeleton-parent reads in the last bone-chain binding.
+int64_t rt_cloth3d_last_bone_parent_reads_for_test(void *obj) {
+    rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D test bone reads: invalid cloth");
+    return cloth ? cloth->last_bone_parent_reads : -1;
 }
 
 /// @brief Quaternion rotating unit vector @p a onto unit vector @p b.

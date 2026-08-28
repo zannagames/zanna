@@ -57,6 +57,11 @@ static void rt_anim_player3d_finalize(void *obj) {
     free(p->owned_globals_buf);
     p->owned_globals_buf = NULL;
     p->globals_buf = NULL;
+    free(p->owned_crossfade_from_pose);
+    p->owned_crossfade_from_pose = NULL;
+    p->crossfade_from_pose = NULL;
+    p->owned_from_pose_capacity = 0;
+    p->crossfade_from_is_pose = 0;
     p->owned_pose_capacity = 0;
     p->pose_capacity = 0;
 }
@@ -156,6 +161,64 @@ static int anim_player3d_ensure_pose_capacity(rt_anim_player3d *p, int32_t bone_
     return 1;
 }
 
+/// @brief ADR 0302: ensure the frozen-pose crossfade buffer can hold @p bone_count bones.
+/// @details Lazily allocated on the first freeze so players that never opt in pay
+///   nothing. Grows with the pose capacity; contents are irrelevant after a grow
+///   because a freeze always rewrites every populated slot.
+/// @param[in,out] p Player whose frozen-pose buffer may be (re)allocated.
+/// @param[in] bone_count Required bone slots.
+/// @return Nonzero when the buffer holds at least @p bone_count slots.
+static int anim_player3d_ensure_from_pose(rt_anim_player3d *p, int32_t bone_count) {
+    int32_t capacity;
+    size_t floats;
+    float *staged;
+    if (!p)
+        return 0;
+    anim_player3d_repair_storage(p);
+    capacity = skeleton3d_pose_capacity_for_count(bone_count);
+    if (p->owned_crossfade_from_pose && p->owned_from_pose_capacity >= capacity)
+        return 1;
+    if (capacity < p->owned_from_pose_capacity)
+        capacity = p->owned_from_pose_capacity;
+    floats = (size_t)capacity * 16u;
+    if (floats > SIZE_MAX / sizeof(float))
+        return 0;
+    staged = (float *)calloc(floats, sizeof(float));
+    if (!staged)
+        return 0;
+    free(p->owned_crossfade_from_pose);
+    p->owned_crossfade_from_pose = staged;
+    p->owned_from_pose_capacity = capacity;
+    anim_player3d_repair_storage(p);
+    return 1;
+}
+
+/// @brief ADR 0302: capture the CURRENT blended local pose as the crossfade source.
+/// @details Decomposes every bone's local matrix into TRS into the frozen-pose buffer,
+///   marks the pose as the fade source, and releases any outgoing clip. The fade that
+///   follows therefore departs from exactly what was rendered last — the in-flight
+///   blend, the held last frame of a finished one-shot, or the bind pose after Stop.
+/// @param[in,out] p Player whose visible pose is frozen.
+/// @return Nonzero when the pose was captured.
+static int anim_player3d_freeze_current_pose(rt_anim_player3d *p) {
+    rt_skeleton3d *skel = p ? animation3d_skeleton_slot((void **)&p->skeleton) : NULL;
+    int32_t bone_count = skeleton3d_safe_bone_count(skel);
+    if (!p || !skel || bone_count <= 0 || !p->local_transforms)
+        return 0;
+    if (!anim_player3d_ensure_from_pose(p, bone_count))
+        return 0;
+    for (int32_t bone = 0; bone < bone_count; bone++) {
+        float *slot = &p->crossfade_from_pose[bone * 16];
+        mat4f_decompose_trs(&p->local_transforms[bone * 16], &slot[0], &slot[3], &slot[7]);
+    }
+    animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                       (void **)&p->crossfade_from,
+                                       NULL,
+                                       RT_G3D_ANIMATION3D_CLASS_ID);
+    p->crossfade_from_is_pose = 1;
+    return 1;
+}
+
 /// @brief Create an animation player bound to a target skeleton.
 ///
 /// The player holds the current playback time, the active and
@@ -205,6 +268,11 @@ void *rt_anim_player3d_new(void *skeleton) {
     p->last_motion_frame = 0;
     p->has_prev_motion_palette = 0;
     p->motion_history_initialized = 0;
+    p->crossfade_from_pose = NULL;
+    p->owned_crossfade_from_pose = NULL;
+    p->owned_from_pose_capacity = 0;
+    p->crossfade_from_is_pose = 0;
+    p->transition_continuity = 0;
 
     p->pose_capacity = skeleton3d_pose_capacity_for_count(bone_count);
     size_t palette_size = (size_t)p->pose_capacity * 16u * sizeof(float);
@@ -259,6 +327,7 @@ void rt_anim_player3d_play(void *obj, void *animation) {
                                        (void **)&p->crossfade_from,
                                        NULL,
                                        RT_G3D_ANIMATION3D_CLASS_ID);
+    p->crossfade_from_is_pose = 0;
     p->crossfade_time = 0.0f;
     p->crossfade_duration = 0.0f;
     p->crossfade_from_time = 0.0f;
@@ -291,10 +360,24 @@ void rt_anim_player3d_crossfade(void *obj, void *animation, double duration) {
         return;
     }
     current = animation3d_clip_slot((void **)&p->current);
-    animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
-                                       (void **)&p->crossfade_from,
-                                       current,
-                                       RT_G3D_ANIMATION3D_CLASS_ID);
+    {
+        /* ADR 0302: with continuity on, a fade issued while another fade is in
+         * flight, or from a clip that has finished (or been stopped), departs from
+         * the FROZEN visible pose. A retrigger from a still-playing clip with no
+         * fade in flight keeps the moving-clip source (the historical path). */
+        int mid_fade = (animation3d_clip_slot((void **)&p->crossfade_from) != NULL) ||
+                       p->crossfade_from_is_pose;
+        int frozen = 0;
+        if (p->transition_continuity && (mid_fade || !p->playing))
+            frozen = anim_player3d_freeze_current_pose(p);
+        if (!frozen) {
+            animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                               (void **)&p->crossfade_from,
+                                               current,
+                                               RT_G3D_ANIMATION3D_CLASS_ID);
+            p->crossfade_from_is_pose = 0;
+        }
+    }
     p->crossfade_from_time = p->current_time;
     p->crossfade_from_speed = isfinite(p->speed) ? p->speed : 1.0f;
     p->crossfade_from_looping = anim_player_current_looping(p);
@@ -324,6 +407,7 @@ void rt_anim_player3d_stop(void *obj) {
                                        (void **)&p->crossfade_from,
                                        NULL,
                                        RT_G3D_ANIMATION3D_CLASS_ID);
+    p->crossfade_from_is_pose = 0;
     p->crossfade_time = 0.0f;
     p->crossfade_duration = 0.0f;
     p->crossfade_from_time = 0.0f;
@@ -409,9 +493,12 @@ static void compute_bone_palette(rt_anim_player3d *p) {
     }
 
     /* Crossfade over every bone so target-only and source-only channels blend
-     * against bind pose instead of popping at transition boundaries. */
-    if (crossfade_from && current && p->crossfade_duration > 0.0f) {
+     * against bind pose instead of popping at transition boundaries. ADR 0302: the
+     * source may be the frozen visible pose instead of a clip. */
+    if ((crossfade_from || (p->crossfade_from_is_pose && p->crossfade_from_pose)) && current &&
+        p->crossfade_duration > 0.0f) {
         float factor = skeleton3d_clamp01f(p->crossfade_time / p->crossfade_duration);
+        int from_pose = (!crossfade_from && p->crossfade_from_is_pose) ? 1 : 0;
         /* Map bone -> channel index for each clip once (O(channels)) so the per-bone
          * blend below resolves channels with an O(1) lookup instead of the prior
          * O(channels) scan per bone (turning O(bones*channels) into O(bones+channels)).
@@ -421,7 +508,7 @@ static void compute_bone_palette(rt_anim_player3d *p) {
         int32_t to_ch[VGFX3D_MAX_SKELETON_BONES];
         int32_t mapped =
             bone_count < VGFX3D_MAX_SKELETON_BONES ? bone_count : VGFX3D_MAX_SKELETON_BONES;
-        int32_t from_count = animation3d_safe_channel_count(crossfade_from);
+        int32_t from_count = from_pose ? 0 : animation3d_safe_channel_count(crossfade_from);
         int32_t to_count = animation3d_safe_channel_count(current);
         for (int32_t b = 0; b < mapped; b++) {
             from_ch[b] = -1;
@@ -440,19 +527,27 @@ static void compute_bone_palette(rt_anim_player3d *p) {
 
         for (int32_t bone = 0; bone < bone_count; bone++) {
             const vgfx3d_anim_channel_t *from_channel =
-                (bone < mapped && from_ch[bone] >= 0) ? &crossfade_from->channels[from_ch[bone]]
-                                                      : NULL;
+                (!from_pose && bone < mapped && from_ch[bone] >= 0)
+                    ? &crossfade_from->channels[from_ch[bone]]
+                    : NULL;
             const vgfx3d_anim_channel_t *to_channel =
                 (bone < mapped && to_ch[bone] >= 0) ? &current->channels[to_ch[bone]] : NULL;
             float from_pos[3], from_rot[4], from_scl[3];
             float to_pos[3], to_rot[4], to_scl[3];
             float blend_pos[3], blend_rot[4], blend_scl[3];
-            sample_animation_channel_trs(from_channel,
-                                         p->crossfade_from_time,
-                                         &skel->bones[bone],
-                                         from_pos,
-                                         from_rot,
-                                         from_scl);
+            if (from_pose && bone < p->owned_from_pose_capacity) {
+                const float *slot = &p->crossfade_from_pose[bone * 16];
+                memcpy(from_pos, &slot[0], 3 * sizeof(float));
+                memcpy(from_rot, &slot[3], 4 * sizeof(float));
+                memcpy(from_scl, &slot[7], 3 * sizeof(float));
+            } else {
+                sample_animation_channel_trs(from_channel,
+                                             p->crossfade_from_time,
+                                             &skel->bones[bone],
+                                             from_pos,
+                                             from_rot,
+                                             from_scl);
+            }
             sample_animation_channel_trs(
                 to_channel, p->current_time, &skel->bones[bone], to_pos, to_rot, to_scl);
             for (int i = 0; i < 3; i++) {
@@ -515,7 +610,7 @@ void rt_anim_player3d_update(void *obj, double delta_time) {
         compute_player_bind_pose(p);
         return;
     }
-    if (!p->playing && !crossfade_from)
+    if (!p->playing && !crossfade_from && !p->crossfade_from_is_pose)
         return;
     if (!isfinite(p->speed))
         p->speed = 1.0f;
@@ -533,18 +628,20 @@ void rt_anim_player3d_update(void *obj, double delta_time) {
             p->playing = 0;
     }
 
-    /* Update crossfade */
-    if (crossfade_from) {
-        if (!isfinite(p->crossfade_from_speed))
-            p->crossfade_from_speed = 1.0f;
-        if (!isfinite(crossfade_from->duration) || crossfade_from->duration <= 0.0f)
-            crossfade_from->duration = 1.0f;
-        p->crossfade_from_time = animation3d_advance_clock(p->crossfade_from_time,
-                                                           delta_time,
-                                                           p->crossfade_from_speed,
-                                                           crossfade_from->duration,
-                                                           p->crossfade_from_looping,
-                                                           NULL);
+    /* Update crossfade (a clip source advances its own clock; a frozen pose holds) */
+    if (crossfade_from || p->crossfade_from_is_pose) {
+        if (crossfade_from) {
+            if (!isfinite(p->crossfade_from_speed))
+                p->crossfade_from_speed = 1.0f;
+            if (!isfinite(crossfade_from->duration) || crossfade_from->duration <= 0.0f)
+                crossfade_from->duration = 1.0f;
+            p->crossfade_from_time = animation3d_advance_clock(p->crossfade_from_time,
+                                                               delta_time,
+                                                               p->crossfade_from_speed,
+                                                               crossfade_from->duration,
+                                                               p->crossfade_from_looping,
+                                                               NULL);
+        }
         if (!isfinite(p->crossfade_duration) || p->crossfade_duration <= 0.0f) {
             fade_complete = 1;
         } else {
@@ -562,6 +659,7 @@ void rt_anim_player3d_update(void *obj, double delta_time) {
                                                (void **)&p->crossfade_from,
                                                NULL,
                                                RT_G3D_ANIMATION3D_CLASS_ID);
+            p->crossfade_from_is_pose = 0;
             p->crossfade_time = 0.0f;
             p->crossfade_duration = 0.0f;
             p->crossfade_from_time = 0.0f;

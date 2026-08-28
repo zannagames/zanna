@@ -2533,6 +2533,8 @@ Constructor: `Zanna.Graphics3D.AnimController3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-setanimationlod"></a>`SetAnimationLod` | `void(f64,f64)` | `Zanna.Graphics3D.AnimController3D.SetAnimationLod` |
 | <a id="zanna-graphics3d-animcontroller3d-setbonelod"></a>`SetBoneLod` | `void(i64)` | `Zanna.Graphics3D.AnimController3D.SetBoneLod` |
 | <a id="zanna-graphics3d-animcontroller3d-setblendtree"></a>`SetBlendTree` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.SetBlendTree` |
+| <a id="zanna-graphics3d-animcontroller3d-setblendtreefade"></a>`SetBlendTreeFade` | `void(f64)` | `Zanna.Graphics3D.AnimController3D.SetBlendTreeFade` |
+| <a id="zanna-graphics3d-animcontroller3d-settransitioncontinuity"></a>`SetTransitionContinuity` | `void(i1)` | `Zanna.Graphics3D.AnimController3D.SetTransitionContinuity` |
 | <a id="zanna-graphics3d-animcontroller3d-setiksolver"></a>`SetIKSolver` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.SetIKSolver` |
 | <a id="zanna-graphics3d-animcontroller3d-addiksolver"></a>`AddIKSolver` | `i1(obj)` | `Zanna.Graphics3D.AnimController3D.AddIKSolver` |
 | <a id="zanna-graphics3d-animcontroller3d-addevent"></a>`AddEvent` | `void(str,f64,str)` | `Zanna.Graphics3D.AnimController3D.AddEvent` |
@@ -4079,6 +4081,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.AnimController3D.SetAnimationLod` | `void(obj,f64,f64)` | `rt_anim_controller3d_set_animation_lod` |
 | `Zanna.Graphics3D.AnimController3D.SetBoneLod` | `void(obj,i64)` | `rt_anim_controller3d_set_bone_lod` |
 | `Zanna.Graphics3D.AnimController3D.SetBlendTree` | `i1(obj,obj)` | `rt_anim_controller3d_set_blend_tree` |
+| `Zanna.Graphics3D.AnimController3D.SetBlendTreeFade` | `void(obj,f64)` | `rt_anim_controller3d_set_blend_tree_fade` |
+| `Zanna.Graphics3D.AnimController3D.SetTransitionContinuity` | `void(obj,i1)` | `rt_anim_controller3d_set_transition_continuity` |
 | `Zanna.Graphics3D.AnimController3D.SetIKSolver` | `i1(obj,obj)` | `rt_anim_controller3d_set_ik_solver` |
 | `Zanna.Graphics3D.AnimController3D.AddIKSolver` | `i1(obj,obj)` | `rt_anim_controller3d_add_ik_solver` |
 | `Zanna.Graphics3D.AnimController3D.AddEvent` | `void(obj,str,f64,str)` | `rt_anim_controller3d_add_event` |

@@ -132,14 +132,8 @@ static void navmesh3d_finalizer(void *obj) {
     free(nm->obstacles);
     free(nm->qgrid_starts);
     free(nm->qgrid_tris);
-    for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
-        free(nm->path_workspaces[i].g_cost);
-        free(nm->path_workspaces[i].parent);
-        free(nm->path_workspaces[i].closed);
-        free(nm->path_workspaces[i].heap);
-        free(nm->path_workspaces[i].corridor);
-        free(nm->path_workspaces[i].portals);
-    }
+    for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++)
+        navmesh3d_dispose_path_workspace(&nm->path_workspaces[i]);
     if (nm->path_workspace_gate && rt_obj_release_check0(nm->path_workspace_gate))
         rt_obj_free(nm->path_workspace_gate);
     free(nm->voxel_cell_height);
@@ -163,6 +157,8 @@ static void navmesh3d_finalizer(void *obj) {
     nm->path_workspace_gate = NULL;
     nm->path_active_queries = 0;
     nm->path_peak_active_queries = 0;
+    nm->last_path_touched_count = 0;
+    nm->last_path_heap_peak = 0;
     nm->voxel_cell_height = NULL;
     nm->voxel_cell_walkable = NULL;
     nm->voxel_corner_vertices = NULL;
@@ -251,22 +247,34 @@ static double navmesh3d_cell_size_or(double value, double fallback) {
     return value;
 }
 
-/// @brief Read a Vec3 point into finite float coordinates for NavMesh3D queries.
+/// @brief Read a Vec3 point into exact-double and float coordinates for NavMesh3D queries.
 /// @param point Borrowed runtime Vec3 handle.
-/// @param out Caller-owned three-float destination.
-/// @return 1 when the handle and all coordinates are valid, otherwise 0.
-static int navmesh3d_read_point3f(void *point, float out[3]) {
-    if (!rt_g3d_is_vec3(point) || !out)
+/// @param out_double Optional caller-owned exact three-double destination.
+/// @param out_float Required caller-owned three-float destination used by indexed geometry.
+/// @return 1 when the handle and all coordinates are finite and inside the supported domain.
+static int navmesh3d_read_query_point(void *point, double out_double[3], float out_float[3]) {
+    if (!rt_g3d_is_vec3(point) || !out_float)
         return 0;
     double x = rt_vec3_x(point);
     double y = rt_vec3_y(point);
     double z = rt_vec3_z(point);
-    if (!isfinite(x) || !isfinite(y) || !isfinite(z))
+    if (!isfinite(x) || !isfinite(y) || !isfinite(z) || fabs(x) > NAVMESH3D_COORD_ABS_MAX ||
+        fabs(y) > NAVMESH3D_COORD_ABS_MAX || fabs(z) > NAVMESH3D_COORD_ABS_MAX)
         return 0;
-    out[0] = navmesh3d_coordf_or(x, 0.0);
-    out[1] = navmesh3d_coordf_or(y, 0.0);
-    out[2] = navmesh3d_coordf_or(z, 0.0);
-    return isfinite(out[0]) && isfinite(out[1]) && isfinite(out[2]);
+    if (out_double) {
+        out_double[0] = x;
+        out_double[1] = y;
+        out_double[2] = z;
+    }
+    out_float[0] = (float)x;
+    out_float[1] = (float)y;
+    out_float[2] = (float)z;
+    return isfinite(out_float[0]) && isfinite(out_float[1]) && isfinite(out_float[2]);
+}
+
+/// @brief Read a supported Vec3 query point into float geometry coordinates.
+static int navmesh3d_read_point3f(void *point, float out[3]) {
+    return navmesh3d_read_query_point(point, NULL, out);
 }
 
 /// @brief True when all lanes of a float3 are finite.

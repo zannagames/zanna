@@ -60,6 +60,7 @@ extern void rt_mesh3d_add_vertex(
     void *obj, double x, double y, double z, double nx, double ny, double nz, double u, double v);
 extern void rt_mesh3d_add_triangle(void *obj, int64_t i0, int64_t i1, int64_t i2);
 extern void rt_world3d_test_set_event_pair_table_failure(int8_t enabled);
+extern int64_t rt_trigger3d_test_get_last_candidate_count(void *trigger);
 }
 
 static int tests_passed = 0;
@@ -5292,6 +5293,23 @@ static void test_trigger_tracks_beyond_legacy_cap() {
                 "trigger tracks every occupant past the old 64-body cap");
 }
 
+static void test_trigger_uses_world_broadphase_shortlist() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *trigger = rt_trigger3d_new(-1, -1, -1, 1, 1, 1);
+    void *inside = rt_body3d_new_sphere(0.1, 1.0);
+    rt_world3d_add(world, inside);
+    for (int i = 0; i < 128; ++i) {
+        void *body = rt_body3d_new_sphere(0.1, 1.0);
+        rt_body3d_set_position(body, 100.0 + (double)i, 0.0, 0.0);
+        rt_world3d_add(world, body);
+    }
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(rt_trigger3d_get_enter_count(trigger) == 1,
+                "trigger broadphase preserves exact occupancy results");
+    EXPECT_TRUE(rt_trigger3d_test_get_last_candidate_count(trigger) <= 2,
+                "trigger broadphase excludes distant world bodies from narrow testing");
+}
+
 static void test_trigger_repairs_tracking_and_zeroes_dead_bodies() {
     void *world = rt_world3d_new(0, 0, 0);
     void *trigger = rt_trigger3d_new(-1, -1, -1, 1, 1, 1);
@@ -5593,6 +5611,7 @@ int main() {
     test_trigger_set_bounds();
     test_trigger_detects_straddling_large_body();
     test_trigger_tracks_beyond_legacy_cap();
+    test_trigger_uses_world_broadphase_shortlist();
     test_trigger_repairs_tracking_and_zeroes_dead_bodies();
     test_trigger_skips_invalid_and_duplicate_world_slots();
 

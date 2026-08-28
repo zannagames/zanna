@@ -943,13 +943,12 @@ static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                 else
                     opaque[oi++] = cmds[i];
             }
-            /* Depth-first sort first so the progressive occlusion grid tests draws
-             * front-to-back — occluders write coverage before the draws they hide are
-             * tested. The backend-state grouping re-sort runs afterward over the
-             * surviving draws only; running it before occlusion made the cull rate
-             * depend on arbitrary state-hash group order. */
+            /* Depth-first sorting is required for the progressive occlusion grid and
+             * remains the final software ordering. A native backend without CPU
+             * occlusion immediately replaces it with state grouping, so skip that
+             * otherwise-dead O(N log N) pass. */
             int32_t opaque_kept = opaque_count;
-            if (sort_opaque && opaque_count > 1 &&
+            if ((use_occlusion_grid || !state_sort_opaque) && opaque_count > 1 &&
                 !canvas3d_sort_opaque_draws_depth_first(c, opaque, opaque_count)) {
                 rt_trap("Canvas3D.End: deferred opaque sort scratch allocation failed");
                 return;
@@ -1066,8 +1065,21 @@ void rt_canvas3d_end(void *obj) {
 
     /* Any frame ending into an offscreen target changes its contents (even a
      * clear-only frame) — advance its revision so material mirrors refresh. */
-    if (c->render_target)
+    if (c->render_target) {
         c->render_target->content_revision++;
+        /* ADR 0301: remember the chain this frame was rendered under so the
+         * target's material mirror can be resolved to display-referred values
+         * on mirror-path backends (Metal resolves its own targets natively at
+         * end-of-frame; a foreign target it samples still comes through the
+         * mirror and picks this up). A canvas without a usable chain records
+         * nothing: the mirror keeps the historical scene-referred bytes. */
+        if (c->render_target_owner) {
+            rt_rendertarget3d *rtd = (rt_rendertarget3d *)c->render_target_owner;
+            rtd->display_chain_valid =
+                vgfx3d_postfx_get_chain(c->postfx, &rtd->display_chain) ? 1 : 0;
+            rtd->display_chain_revision = c->render_target->content_revision;
+        }
+    }
 
     cmds = (deferred_draw_t *)c->draw_cmds;
     queued_draw_count = c->draw_count;

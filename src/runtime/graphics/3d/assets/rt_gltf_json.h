@@ -20,7 +20,8 @@
 //     free(); numeric extraction uses stack storage first and may allocate for
 //     unusually long tokens. Navigation and validation helpers allocate nothing.
 // Ownership/Lifetime:
-//   - No global state; every call is pure over its argument buffer.
+//   - A bounded thread-local cache borrows spans into the last queried immutable
+//     object; preload resets it before accepting a new document buffer.
 // Links: rt_gltf_json.c, rt_gltf.c
 //
 //===----------------------------------------------------------------------===//
@@ -30,8 +31,8 @@
  * @brief Declares the length-bounded raw JSON scanner used by glTF preload and import.
  * @details Every range is a half-open byte span into caller-owned immutable storage. Functions
  *          that return offsets use `SIZE_MAX` for malformed input; functions ending in `_alloc`
- *          return heap strings owned by the caller. The scanner keeps no global state and builds
- *          no intermediate JSON object graph.
+ *          return heap strings owned by the caller. A bounded thread-local direct-property index
+ *          avoids rescanning the latest immutable object; no intermediate JSON graph is built.
  */
 
 #pragma once
@@ -188,6 +189,15 @@ int gltf_json_object_find_value(const char *json,
                                 const char *key,
                                 size_t *out_start,
                                 size_t *out_end);
+
+/// @brief Reset the current thread's bounded object-property lookup cache.
+void gltf_json_reset_lookup_cache(void);
+
+/// @brief Test-only reset of the current thread's full-object scan counter.
+void gltf_json_test_reset_object_scan_count(void);
+
+/// @brief Test-only number of full object scans since the latest counter reset.
+int64_t gltf_json_test_get_object_scan_count(void);
 
 /// @brief Fill [*out_start,*out_end) with one element span after validating the exact full array.
 /// @param json Source JSON bytes.

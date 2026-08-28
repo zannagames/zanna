@@ -6239,6 +6239,23 @@ static void test_gltf_json_object_ranges_are_transactional() {
                 "Matching accepts only JSON container delimiter pairs");
 }
 
+static void test_gltf_json_object_lookup_indexes_repeated_fields_once() {
+    const char json[] = "{\"name\":\"mesh\",\"count\":3,\"enabled\":true}";
+    const size_t len = sizeof(json) - 1u;
+    gltf_json_reset_lookup_cache();
+    gltf_json_test_reset_object_scan_count();
+    EXPECT_TRUE(gltf_json_object_get_int(json, len, 0, len, "count", -1) == 3,
+                "Indexed glTF object lookup reads an integer property");
+    EXPECT_TRUE(gltf_json_object_get_boolish(json, len, 0, len, "enabled", 0) == 1,
+                "Indexed glTF object lookup reads a boolean property");
+    char *name = gltf_json_object_get_string(json, len, 0, len, "name");
+    EXPECT_TRUE(name && std::strcmp(name, "mesh") == 0,
+                "Indexed glTF object lookup reads a string property");
+    std::free(name);
+    EXPECT_TRUE(gltf_json_test_get_object_scan_count() == 1,
+                "Repeated fields on one glTF object share one validated property scan");
+}
+
 /// @brief Reject wrong JSON types at glTF positions whose schema requires integral values.
 static void test_gltf_json_integral_schema_rejects_wrong_types() {
     const char *invalid[] = {
@@ -6405,6 +6422,7 @@ int main() {
     test_gltf_json_uses_exact_json_whitespace();
     test_gltf_json_rejects_malformed_utf8_and_surrogates();
     test_gltf_json_object_ranges_are_transactional();
+    test_gltf_json_object_lookup_indexes_repeated_fields_once();
     test_gltf_json_integral_schema_rejects_wrong_types();
     test_gltf_embedded_nul_is_not_prefix_truncated();
     std::printf("GLTF tests: %d/%d passed\n", tests_passed, tests_run);

@@ -1298,6 +1298,12 @@ typedef struct {
     uint32_t update_stamp;
     int32_t enter_count;
     int32_t exit_count;
+    void **lookup_keys;
+    int32_t *lookup_indices;
+    uint32_t *lookup_stamps;
+    uint32_t lookup_capacity;
+    uint32_t lookup_epoch;
+    int64_t last_candidate_count;
 } rt_trigger3d;
 
 /// @brief Validate @p obj as a Trigger3D handle and return its typed pointer (NULL on mismatch).
@@ -1357,6 +1363,7 @@ static void trigger3d_repair_tracking(rt_trigger3d *t) {
         t->seen_stamp = NULL;
         t->tracked_count = 0;
         t->tracked_capacity = 0;
+        t->lookup_epoch = 0;
         return;
     }
     if (t->tracked_count < 0)
@@ -1381,12 +1388,20 @@ static void trigger3d_finalizer(void *obj) {
     free(t->was_inside);
     free(t->is_inside);
     free(t->seen_stamp);
+    free(t->lookup_keys);
+    free(t->lookup_indices);
+    free(t->lookup_stamps);
     t->tracked_bodies = NULL;
     t->was_inside = NULL;
     t->is_inside = NULL;
     t->seen_stamp = NULL;
+    t->lookup_keys = NULL;
+    t->lookup_indices = NULL;
+    t->lookup_stamps = NULL;
     t->tracked_count = 0;
     t->tracked_capacity = 0;
+    t->lookup_capacity = 0;
+    t->lookup_epoch = 0;
 }
 
 /// @brief Store ordered, finite trigger bounds.
@@ -1473,14 +1488,109 @@ int8_t rt_trigger3d_contains(void *obj, void *point) {
                : 0;
 }
 
-/// @brief Find a tracked body's slot, or -1 when it is not tracked.
-/// @param t Trigger3D payload whose occupancy table is searched.
-/// @param body Exact weak Body3D pointer to find.
-/// @return Zero-based tracked slot, or -1 when absent.
+/// @brief Hash a tracked-body identity for the reusable stamped lookup table.
+static uint32_t trigger3d_pointer_hash(const void *body) {
+    uint64_t value = (uint64_t)(uintptr_t)body;
+    value ^= value >> 33;
+    value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    return (uint32_t)(value ^ (value >> 32));
+}
+
+/// @brief Grow the reusable tracked-body lookup table to at most 50 percent load.
+static int trigger3d_reserve_lookup(rt_trigger3d *t, int32_t needed) {
+    uint32_t capacity;
+    void **keys;
+    int32_t *indices;
+    uint32_t *stamps;
+    if (!t || needed < 0)
+        return 0;
+    if (t->lookup_capacity > 0 && t->lookup_keys && t->lookup_indices && t->lookup_stamps &&
+        (uint64_t)needed <= (uint64_t)t->lookup_capacity / 2u)
+        return 1;
+    capacity = t->lookup_capacity >= 16u ? t->lookup_capacity : 16u;
+    while ((uint64_t)capacity < (uint64_t)needed * 2u) {
+        if (capacity > UINT32_MAX / 2u)
+            return 0;
+        capacity *= 2u;
+    }
+    keys = (void **)malloc((size_t)capacity * sizeof(*keys));
+    indices = (int32_t *)malloc((size_t)capacity * sizeof(*indices));
+    stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*stamps));
+    if (!keys || !indices || !stamps) {
+        free(keys);
+        free(indices);
+        free(stamps);
+        return 0;
+    }
+    free(t->lookup_keys);
+    free(t->lookup_indices);
+    free(t->lookup_stamps);
+    t->lookup_keys = keys;
+    t->lookup_indices = indices;
+    t->lookup_stamps = stamps;
+    t->lookup_capacity = capacity;
+    t->lookup_epoch = 0;
+    return 1;
+}
+
+/// @brief Insert one live body pointer into the current trigger lookup epoch.
+static void trigger3d_lookup_insert(rt_trigger3d *t, void *body, int32_t index) {
+    if (!t || !body || index < 0 || !t->lookup_epoch || !t->lookup_keys || !t->lookup_indices ||
+        !t->lookup_stamps || t->lookup_capacity == 0)
+        return;
+    uint32_t mask = t->lookup_capacity - 1u;
+    uint32_t slot = trigger3d_pointer_hash(body) & mask;
+    for (uint32_t probe = 0; probe < t->lookup_capacity; ++probe) {
+        if (t->lookup_stamps[slot] != t->lookup_epoch || t->lookup_keys[slot] == body) {
+            t->lookup_stamps[slot] = t->lookup_epoch;
+            t->lookup_keys[slot] = body;
+            t->lookup_indices[slot] = index;
+            return;
+        }
+        slot = (slot + 1u) & mask;
+    }
+}
+
+/// @brief Rebuild the stamped lookup from zeroing-weak tracked slots once per update.
+static int trigger3d_build_lookup(rt_trigger3d *t) {
+    int32_t needed;
+    if (!t)
+        return 0;
+    needed = t->tracked_count < INT32_MAX ? t->tracked_count + 1 : INT32_MAX;
+    if (!trigger3d_reserve_lookup(t, needed))
+        return 0;
+    t->lookup_epoch++;
+    if (t->lookup_epoch == 0) {
+        memset(t->lookup_stamps, 0, (size_t)t->lookup_capacity * sizeof(*t->lookup_stamps));
+        t->lookup_epoch = 1;
+    }
+    for (int32_t i = 0; i < t->tracked_count; ++i) {
+        void *body = rt_weak_load(&t->tracked_bodies[i]);
+        if (body)
+            trigger3d_lookup_insert(t, body, i);
+        trigger3d_release_loaded_body(body);
+    }
+    return 1;
+}
+
 static int32_t trigger3d_find_index(rt_trigger3d *t, const void *body) {
     if (!t || !body)
         return -1;
     trigger3d_repair_tracking(t);
+    if (t->lookup_epoch && t->lookup_keys && t->lookup_indices && t->lookup_stamps &&
+        t->lookup_capacity > 0) {
+        uint32_t mask = t->lookup_capacity - 1u;
+        uint32_t slot = trigger3d_pointer_hash(body) & mask;
+        for (uint32_t probe = 0; probe < t->lookup_capacity; ++probe) {
+            if (t->lookup_stamps[slot] != t->lookup_epoch)
+                return -1;
+            if (t->lookup_keys[slot] == body)
+                return t->lookup_indices[slot];
+            slot = (slot + 1u) & mask;
+        }
+        return -1;
+    }
     for (int32_t i = 0; i < t->tracked_count; i++) {
         void *tracked = rt_weak_load(&t->tracked_bodies[i]);
         int matches = tracked == body;
@@ -1559,6 +1669,7 @@ static int32_t trigger3d_add(rt_trigger3d *t, void *body) {
         t->is_inside[idx] = 0;
         t->seen_stamp[idx] = 0;
         t->tracked_count = idx + 1;
+        trigger3d_lookup_insert(t, body, idx);
         return idx;
     }
 }
@@ -1628,18 +1739,35 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
     }
     t->enter_count = 0;
     t->exit_count = 0;
+    t->last_candidate_count = 0;
+    if (!trigger3d_build_lookup(t))
+        t->lookup_epoch = 0;
 
     int32_t body_count = 0;
     if (w->bodies && w->body_capacity > 0 && w->body_count > 0)
         body_count = w->body_count > w->body_capacity ? w->body_capacity : w->body_count;
-    for (int32_t i = 0; i < body_count; i++) {
-        rt_body3d *b = w->bodies[i];
+    int32_t broadphase_count = world3d_build_query_broadphase(w);
+    int32_t scan_count = broadphase_count >= 0 ? broadphase_count : body_count;
+    for (int32_t i = 0; i < scan_count; i++) {
+        ph3d_broadphase_entry *entry =
+            broadphase_count >= 0 ? &w->query_broadphase_entries[i] : NULL;
+        rt_body3d *b = entry ? entry->body : w->bodies[i];
         double bmn[3];
         double bmx[3];
         int8_t inside;
         int32_t idx;
+        if (entry) {
+            if (entry->min[0] > t->bounds_max[0])
+                break;
+            if (!query_entry_overlaps_bounds(entry, t->bounds_min, t->bounds_max))
+                continue;
+            if (!b || b->owner_world != w || b->owner_index < 0 || b->owner_index >= body_count ||
+                w->bodies[b->owner_index] != b)
+                continue;
+        }
         if (!rt_g3d_has_class(b, RT_G3D_BODY3D_CLASS_ID))
             continue;
+        t->last_candidate_count++;
 
         /* Body AABB vs trigger AABB. */
         body_aabb(b, bmn, bmx);
@@ -1680,6 +1808,12 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
             trigger3d_increment_edge_count(&t->exit_count);
         trigger3d_remove_at(t, i);
     }
+}
+
+/// @brief Test-only count of bodies narrow-tested by the most recent Trigger3D update.
+int64_t rt_trigger3d_test_get_last_candidate_count(void *obj) {
+    rt_trigger3d *t = trigger3d_checked(obj);
+    return t && t->last_candidate_count > 0 ? t->last_candidate_count : 0;
 }
 
 /// @brief `Trigger3D.EnterCount` — bodies that entered this trigger this frame.

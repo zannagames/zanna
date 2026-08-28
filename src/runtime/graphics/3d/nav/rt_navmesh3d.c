@@ -52,6 +52,7 @@
 #include "rt_mat4.h"
 #include "rt_option.h"
 #include "rt_path3d.h"
+#include "rt_path3d_internal.h"
 #include "rt_platform.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
@@ -178,6 +179,8 @@ typedef struct {
     float *g_cost;
     int32_t *parent;
     int8_t *closed;
+    uint32_t *node_generation;
+    int32_t *heap_positions;
     navmesh3d_heap_entry_t *heap;
     int32_t *corridor;
     navmesh3d_portal_t *portals;
@@ -185,6 +188,10 @@ typedef struct {
     int32_t heap_capacity;
     int32_t corridor_capacity;
     int32_t portal_capacity;
+    uint32_t generation;
+    int32_t touched_count;
+    int32_t heap_peak;
+    int8_t transient;
     volatile int in_use;
 } navmesh3d_path_workspace_t;
 
@@ -220,6 +227,8 @@ typedef struct {
     void *path_workspace_gate;
     volatile int path_active_queries;
     volatile int path_peak_active_queries;
+    volatile int last_path_touched_count;
+    volatile int last_path_heap_peak;
     double agent_radius;
     double agent_height;
     double max_slope;              /* degrees */
@@ -266,6 +275,21 @@ static int navmesh3d_init_path_workspace_gate(rt_navmesh3d *nm) {
         return 0;
     nm->path_workspace_gate = rt_gate_new(NAVMESH3D_PATH_WORKSPACE_COUNT);
     return nm->path_workspace_gate != NULL;
+}
+
+/// @brief Release every dynamic array owned by one retained or transient path workspace.
+static void navmesh3d_dispose_path_workspace(navmesh3d_path_workspace_t *workspace) {
+    if (!workspace)
+        return;
+    free(workspace->g_cost);
+    free(workspace->parent);
+    free(workspace->closed);
+    free(workspace->node_generation);
+    free(workspace->heap_positions);
+    free(workspace->heap);
+    free(workspace->corridor);
+    free(workspace->portals);
+    memset(workspace, 0, sizeof(*workspace));
 }
 
 /// @brief Record that a NavMesh3D query-grid build could not publish a new acceleration index.

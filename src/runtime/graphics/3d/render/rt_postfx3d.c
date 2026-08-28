@@ -58,6 +58,11 @@ extern void rt_obj_free(void *obj);
 #include "rt_pixels_internal.h"
 #include "rt_trap.h"
 
+/* FXAA defaults shared by `AddFxaa` and the ADR 0301 display resolve (a chain
+ * snapshot carries only the enable flag; the thresholds are these). */
+#define POSTFX3D_FXAA_DEFAULT_EDGE_THRESHOLD 0.166f
+#define POSTFX3D_FXAA_DEFAULT_MIN_THRESHOLD 0.0833f
+
 #define POSTFX3D_FLOAT_ABS_MAX 3.40282346638528859812e38
 #define POSTFX3D_PARAM_MAX 64.0f
 #define POSTFX3D_RADIUS_MAX 1000000.0f
@@ -951,7 +956,9 @@ static const float *postfx_gamma_lut_data(void) {
             rt_atomic_store_i32(&g_postfx3d_gamma_lut_state, 2, __ATOMIC_RELEASE);
         } else {
             while (rt_atomic_load_i32(&g_postfx3d_gamma_lut_state, __ATOMIC_ACQUIRE) != 2) {
-                /* Another caller is publishing the small process-lifetime table. */
+                /* Initialization is rare, but do not burn an entire core if the
+                 * publishing thread is descheduled while another frame waits. */
+                rt_thread_yield();
             }
         }
     }
@@ -1675,20 +1682,16 @@ static void apply_fxaa_rows(void *ctx_ptr, int32_t band_y0, int32_t band_y1) {
 /// @param edge_thresh Relative luminance-range threshold for edge detection.
 /// @param min_thresh Absolute lower bound for the edge threshold.
 /// @param scratch Reusable allocation supplying the copy-out buffer.
-static void apply_fxaa(rt_postfx3d *fx,
-                       float *buf,
-                       int32_t w,
-                       int32_t h,
-                       float edge_thresh,
-                       float min_thresh,
-                       postfx_scratch_t *scratch) {
-    size_t bytes;
+/// @brief FXAA over a caller-supplied scratch copy (`out` holds `bytes` floats).
+static void apply_fxaa_into(rt_postfx3d *fx,
+                            float *buf,
+                            float *out,
+                            int32_t w,
+                            int32_t h,
+                            float edge_thresh,
+                            float min_thresh,
+                            size_t bytes) {
     postfx_fxaa_band_ctx ctx;
-    if (!postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
-        return;
-    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
-    if (!out)
-        return;
     memcpy(out, buf, bytes);
     ctx.buf = buf;
     ctx.out = out;
@@ -1700,6 +1703,22 @@ static void apply_fxaa(rt_postfx3d *fx,
      * order-independent exactly like the serial copy-out/copy-back version. */
     postfx_run_bands(fx, h, apply_fxaa_rows, &ctx);
     memcpy(buf, out, bytes);
+}
+
+static void apply_fxaa(rt_postfx3d *fx,
+                       float *buf,
+                       int32_t w,
+                       int32_t h,
+                       float edge_thresh,
+                       float min_thresh,
+                       postfx_scratch_t *scratch) {
+    size_t bytes;
+    if (!postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
+        return;
+    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
+    if (!out)
+        return;
+    apply_fxaa_into(fx, buf, out, w, h, edge_thresh, min_thresh, bytes);
 }
 
 /// @brief Sharpen band context (Plan 61 / ADR 0271): unsharp mask over the four
@@ -1767,15 +1786,10 @@ static void apply_sharpen_rows(void *ctx_ptr, int32_t band_y0, int32_t band_y1) 
 /// @param h Framebuffer height in pixels.
 /// @param amount Edge gain in `[0, 1]` (0 is identity).
 /// @param scratch Reusable allocation supplying the copy-out buffer.
-static void apply_sharpen(
-    rt_postfx3d *fx, float *buf, int32_t w, int32_t h, float amount, postfx_scratch_t *scratch) {
-    size_t bytes;
+/// @brief Sharpen over a caller-supplied scratch copy (`out` holds `bytes` floats).
+static void apply_sharpen_into(
+    rt_postfx3d *fx, float *buf, float *out, int32_t w, int32_t h, float amount, size_t bytes) {
     postfx_sharpen_band_ctx ctx;
-    if (amount <= 0.0f || !postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
-        return;
-    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
-    if (!out)
-        return;
     memcpy(out, buf, bytes);
     ctx.buf = buf;
     ctx.out = out;
@@ -1784,6 +1798,17 @@ static void apply_sharpen(
     ctx.amount = amount;
     postfx_run_bands(fx, h, apply_sharpen_rows, &ctx);
     memcpy(buf, out, bytes);
+}
+
+static void apply_sharpen(
+    rt_postfx3d *fx, float *buf, int32_t w, int32_t h, float amount, postfx_scratch_t *scratch) {
+    size_t bytes;
+    if (amount <= 0.0f || !postfx_rgb_float_layout(w, h, NULL, NULL, &bytes))
+        return;
+    float *out = scratch ? postfx_scratch_reserve(scratch, 0, bytes, 0) : NULL;
+    if (!out)
+        return;
+    apply_sharpen_into(fx, buf, out, w, h, amount, bytes);
 }
 
 /// @brief Apply colour grading in a single pass — contrast scales each channel around
@@ -2797,17 +2822,22 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
 /// @param w Framebuffer width in pixels.
 /// @param h Framebuffer height in pixels.
 /// @param blend Lookup-table blend weight, clamped to the unit interval.
-static void apply_color_lut_cpu(
-    const rt_postfx3d *fx, float *fbuf, int32_t w, int32_t h, float blend) {
+/// @brief Trilinear 3D LUT grade over packed RGB floats from a 256x16 strip of texels
+///   (16 tiles of 16x16: x = red, y = green, tile = blue; 0xRRGGBBAA per texel).
+/// @param fbuf Packed RGB float framebuffer modified in place.
+/// @param w Framebuffer width in pixels.
+/// @param h Framebuffer height in pixels.
+/// @param ld Borrowed 256x16 texel strip.
+/// @param blend Mix toward the graded result in [0, 1].
+static void apply_color_lut_texels(
+    float *fbuf, int32_t w, int32_t h, const uint32_t *ld, float blend) {
     size_t count = (size_t)w * (size_t)h;
-    rt_pixels_impl *lut = fx ? rt_pixels_checked_impl_or_null(fx->lut_pixels) : NULL;
-    if (!lut || !lut->data || lut->width != 256 || lut->height != 16 || count == 0)
+    if (!fbuf || !ld || w <= 0 || h <= 0 || count == 0)
         return;
     if (blend <= 0.0f)
         return;
     if (blend > 1.0f)
         blend = 1.0f;
-    const uint32_t *ld = lut->data;
     for (size_t i = 0; i < count; i++) {
         float *pixel = &fbuf[i * 3u];
         float r = clampf(pixel[0], 0.0f, 1.0f);
@@ -2842,6 +2872,14 @@ static void apply_color_lut_cpu(
         pixel[1] = pixel[1] * (1.0f - blend) + acc[1] * blend;
         pixel[2] = pixel[2] * (1.0f - blend) + acc[2] * blend;
     }
+}
+
+static void apply_color_lut_cpu(
+    const rt_postfx3d *fx, float *fbuf, int32_t w, int32_t h, float blend) {
+    rt_pixels_impl *lut = fx ? rt_pixels_checked_impl_or_null(fx->lut_pixels) : NULL;
+    if (!lut || !lut->data || lut->width != 256 || lut->height != 16)
+        return;
+    apply_color_lut_texels(fbuf, w, h, lut->data, blend);
 }
 
 /// @brief Screen-space sun shafts: radial accumulation of the sky mask toward the
@@ -3329,6 +3367,137 @@ static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *targ
 }
 
 /*==========================================================================
+ * ADR 0301: display-referred resolve of a render target's material mirror
+ *=========================================================================*/
+
+/// @brief Resolve a render target's material mirror through a recorded chain snapshot.
+/// @details Mirrors Metal's `metal_encode_render_target_display` subset exactly — tone
+///   curve + exposure + gamma once (an explicit mode-0 entry encodes a still-linear
+///   source), colour grade, LUT, FXAA and sharpen in chain order; bloom, SSAO, DOF,
+///   motion blur, TAA, SSR, auto-exposure, sun shafts and vignette are skipped. The
+///   source is the target's linear HDR CPU mirror when valid, else the already-unpacked
+///   8-bit clamped-linear colour in @p pixels_obj. Runs serially (no worker pool) with
+///   caller-local scratch, so the software backend stays deterministic and no
+///   `rt_postfx3d` object is needed. A chain with no tonemap leaves the values linear,
+///   exactly as the GPU final pass does.
+/// @param chain Borrowed chain snapshot recorded when the frame into @p target ended.
+/// @param target Borrowed backing target.
+/// @param pixels_obj Borrowed same-size Pixels mirror, rewritten in place (alpha kept).
+/// @return 1 when the mirror was encoded, 0 when the inputs are unusable.
+int rt_postfx3d_resolve_display_pixels(const vgfx3d_postfx_chain_t *chain,
+                                       const vgfx3d_rendertarget_t *target,
+                                       void *pixels_obj) {
+    rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels_obj);
+    size_t count;
+    size_t fbuf_bytes;
+    float *fbuf;
+    float *scratch_out = NULL;
+    int tonemapped_yet = 0;
+    int32_t w;
+    int32_t h;
+
+    if (!chain || !target || !pv || !pv->data)
+        return 0;
+    if (!vgfx3d_postfx_chain_is_usable(chain))
+        return 0;
+    w = target->width;
+    h = target->height;
+    if (w <= 0 || h <= 0 || pv->width != (int64_t)w || pv->height != (int64_t)h)
+        return 0;
+    if (!postfx_rgb_float_layout(w, h, &count, NULL, &fbuf_bytes))
+        return 0;
+    fbuf = (float *)malloc(fbuf_bytes);
+    if (!fbuf)
+        return 0;
+
+    if (target->hdr_color_valid && target->hdr_color_buf) {
+        for (size_t i = 0; i < count; i++) {
+            fbuf[i * 3u + 0u] = sanitize_hdr_channel(target->hdr_color_buf[i * 4u + 0u]);
+            fbuf[i * 3u + 1u] = sanitize_hdr_channel(target->hdr_color_buf[i * 4u + 1u]);
+            fbuf[i * 3u + 2u] = sanitize_hdr_channel(target->hdr_color_buf[i * 4u + 2u]);
+        }
+    } else {
+        for (size_t i = 0; i < count; i++) {
+            uint32_t px = pv->data[i];
+            fbuf[i * 3u + 0u] = (float)((px >> 24) & 0xFFu) / 255.0f;
+            fbuf[i * 3u + 1u] = (float)((px >> 16) & 0xFFu) / 255.0f;
+            fbuf[i * 3u + 2u] = (float)((px >> 8) & 0xFFu) / 255.0f;
+        }
+    }
+
+    for (int32_t i = 0; i < chain->effect_count; i++) {
+        const vgfx3d_postfx_effect_desc_t *e = &chain->effects[i];
+        vgfx3d_postfx_snapshot_t s;
+        if (e->type == (int32_t)VGFX3D_POSTFX_EFFECT_TAA ||
+            e->type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR)
+            continue;
+        vgfx3d_sanitize_postfx_snapshot(&e->snapshot, &s);
+        switch (e->type) {
+            case (int32_t)VGFX3D_POSTFX_EFFECT_TONEMAP: {
+                int hdr_gamma = (s.tonemap_explicit && !tonemapped_yet) ? 1 : 0;
+                if (s.tonemap_mode == 1 || s.tonemap_mode == 2 ||
+                    (s.tonemap_mode == 0 && hdr_gamma)) {
+                    apply_tonemap(NULL, fbuf, w, h, s.tonemap_mode, s.tonemap_exposure, hdr_gamma);
+                    tonemapped_yet = 1;
+                }
+                break;
+            }
+            case (int32_t)VGFX3D_POSTFX_EFFECT_COLOR_GRADE:
+                if (s.color_grade_enabled)
+                    apply_color_grade(
+                        NULL, fbuf, w, h, s.cg_brightness, s.cg_contrast, s.cg_saturation);
+                break;
+            case (int32_t)VGFX3D_POSTFX_EFFECT_FXAA:
+                if (s.fxaa_enabled) {
+                    if (!scratch_out)
+                        scratch_out = (float *)malloc(fbuf_bytes);
+                    if (scratch_out)
+                        apply_fxaa_into(NULL,
+                                        fbuf,
+                                        scratch_out,
+                                        w,
+                                        h,
+                                        POSTFX3D_FXAA_DEFAULT_EDGE_THRESHOLD,
+                                        POSTFX3D_FXAA_DEFAULT_MIN_THRESHOLD,
+                                        fbuf_bytes);
+                }
+                break;
+            case (int32_t)VGFX3D_POSTFX_EFFECT_SHARPEN:
+                if (s.sharpen_enabled && s.sharpen_amount > 0.0f) {
+                    if (!scratch_out)
+                        scratch_out = (float *)malloc(fbuf_bytes);
+                    if (scratch_out)
+                        apply_sharpen_into(
+                            NULL, fbuf, scratch_out, w, h, s.sharpen_amount, fbuf_bytes);
+                }
+                break;
+            case (int32_t)VGFX3D_POSTFX_EFFECT_COLOR_LUT:
+                if (s.color_lut_enabled && s.color_lut_texels && s.color_lut_width == 256 &&
+                    s.color_lut_height == 16)
+                    apply_color_lut_texels(fbuf, w, h, s.color_lut_texels, s.color_lut_blend);
+                break;
+            default:
+                /* Bloom, SSAO, DOF, motion blur, auto-exposure, sun shafts: window-sized
+                 * or temporal — skipped by the target resolve. Vignette: excluded by
+                 * ADR 0301 (a sampled target is a composited element, not a frame). */
+                break;
+        }
+    }
+
+    for (size_t i = 0; i < count; i++) {
+        uint32_t alpha = pv->data[i] & 0xFFu;
+        uint32_t r = (uint32_t)(clampf(fbuf[i * 3u + 0u], 0.0f, 1.0f) * 255.0f);
+        uint32_t g = (uint32_t)(clampf(fbuf[i * 3u + 1u], 0.0f, 1.0f) * 255.0f);
+        uint32_t b = (uint32_t)(clampf(fbuf[i * 3u + 2u], 0.0f, 1.0f) * 255.0f);
+        pv->data[i] = (r << 24) | (g << 16) | (b << 8) | alpha;
+    }
+    pixels_touch(pv);
+    free(scratch_out);
+    free(fbuf);
+    return 1;
+}
+
+/*==========================================================================
  * PostFX3D lifecycle + API
  *=========================================================================*/
 
@@ -3508,8 +3677,8 @@ void rt_postfx3d_add_fxaa(void *obj) {
         return;
     e->type = POSTFX_FXAA;
     e->enabled = 1;
-    e->p.fxaa.edge_threshold = 0.166f;
-    e->p.fxaa.min_threshold = 0.0833f;
+    e->p.fxaa.edge_threshold = POSTFX3D_FXAA_DEFAULT_EDGE_THRESHOLD;
+    e->p.fxaa.min_threshold = POSTFX3D_FXAA_DEFAULT_MIN_THRESHOLD;
 }
 
 /// @brief Append a color-grading effect.
@@ -3960,6 +4129,10 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
             return;
         if (!vgfx3d_rendertarget_sync_color_if_needed(c->render_target))
             return;
+        /* ADR 0301: this route encodes the target's colour buffer IN PLACE, so the
+         * material mirror must not run the recorded display resolve over it again. */
+        if (c->render_target_owner)
+            ((rt_rendertarget3d *)c->render_target_owner)->display_chain_valid = 0;
         if (vgfx3d_rendertarget_is_hdr(c->render_target) && c->render_target->hdr_color_valid &&
             c->render_target->hdr_color_buf) {
             postfx_apply_hdr_target(fx, c->render_target);

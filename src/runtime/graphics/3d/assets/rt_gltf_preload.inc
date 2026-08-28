@@ -3063,6 +3063,7 @@ static int gltf_preload_stage_bundle_json(rt_gltf_preload_bundle *bundle,
                                           int load_assets,
                                           char *error,
                                           size_t error_cap) {
+    gltf_json_reset_lookup_cache();
     gltf_preload_buffer_ref_t *buffer_refs = NULL;
     int buffer_ref_count = 0;
     gltf_preload_buffer_view_ref_t *view_refs = NULL;

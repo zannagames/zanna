@@ -330,8 +330,11 @@ compares against `examples/3d/baselines/walk_min_software.png`.
   re-syncs its size on the toggle and the per-frame projection derives aspect from the active
   output, so the view stays un-stretched. `Game3D.Keys.get_KeyF11` pairs naturally with these.
 - **Overlay image blit** — `Canvas3D.DrawImage2D(canvas, x, y, w, h, pixels)` blits a `Pixels`
-  image into the 2D overlay (unlit, screen-space) scaled to `w×h`. Combine with
-  `RenderTarget3D.AsPixels(rt)` to show a rendered texture, such as a top-down minimap, on the HUD.
+  image into the 2D overlay (unlit, screen-space) scaled to `w×h`. A `RenderTarget3D` is an
+  accepted source too: pass the target itself (not `AsPixels`) to show a rendered texture, such
+  as a top-down minimap or a picture-in-picture camera, on the HUD — the blit carries the
+  target's display-referred resolve on every backend (ADR 0301), whereas `AsPixels` is the
+  scene-referred readback.
   `DrawImage2DRegion(canvas, x, y, w, h, pixels, sx, sy, sw, sh)` blits only the source
   sub-rectangle — the primitive behind sprite-sheet HUD icons and nine-slice panels.
 - **Overlay primitives** — the HUD layer has the full 2D-canvas drawing vocabulary:

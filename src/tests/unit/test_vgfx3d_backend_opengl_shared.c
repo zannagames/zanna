@@ -427,6 +427,7 @@ static char *read_opengl_backend_sources(void) {
         "vgfx3d_backend_opengl_frame.inc",
         "vgfx3d_backend_opengl_targets.inc",
         "vgfx3d_backend_opengl_texture.inc",
+        "vgfx3d_backend_sw_raster.inc",
         "vgfx3d_egl_wayland.c",
         "vgfx3d_egl_wayland.h",
     };
@@ -482,10 +483,20 @@ static void test_opengl_source_contracts_are_context_safe(void) {
     EXPECT_TRUE(strstr(source, "gl_compile_context_shaders(&shaders, ctx->zero_to_one_clip)") !=
                     NULL,
                 "OpenGL shader compilation receives the owning context's clip convention");
+    EXPECT_TRUE(strstr(source, "gl_try_load_context_program_binaries") != NULL &&
+                    strstr(source, "gl_store_context_program_binaries") != NULL,
+                "OpenGL reuses driver program binaries across isolated contexts when supported");
     EXPECT_TRUE(strstr(source, "char log[1024] = {0};") != NULL,
                 "OpenGL shader and linker diagnostics start NUL-terminated");
     EXPECT_TRUE(strstr(source, "vec4(mat3(model) * localTangent, aTangent.w)") != NULL,
                 "OpenGL tangents use the model linear transform under non-uniform scale");
+    EXPECT_TRUE(count_text(source, "vec3 low = c / 12.92;\\n") == 2,
+                "OpenGL lit and unlit materials share the exact piecewise sRGB transfer");
+    EXPECT_TRUE(count_text(source, "decodeSplatColor(texture(uSplatLayer") == 8,
+                "OpenGL PBR terrain layers decode sRGB before weighted blending");
+    EXPECT_TRUE(strstr(source, "cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR") != NULL &&
+                    count_text(source, "sw_srgb_to_linear(pr)") == 1,
+                "Software PBR terrain layers decode sRGB before weighted blending");
     EXPECT_TRUE(strstr(source, "vgfx3d_copy_mat4_finite_or_identity(safe_matrix") != NULL,
                 "OpenGL bone uploads sanitize each matrix before transposition");
     EXPECT_TRUE(strstr(source, "vgfx3d_shadow_matrix_is_usable(light_vp)") != NULL,

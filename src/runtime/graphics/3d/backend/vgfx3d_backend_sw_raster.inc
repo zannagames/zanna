@@ -602,6 +602,11 @@ static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
                     float lvc = sp_v * cmd->splat_layer_scales[L];
                     float pr, pg, pb, pa;
                     sample_texture(&layer_views[L], lu, lvc, &pr, &pg, &pb, &pa);
+                    if (cmd && cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR) {
+                        pr = sw_srgb_to_linear(pr);
+                        pg = sw_srgb_to_linear(pg);
+                        pb = sw_srgb_to_linear(pb);
+                    }
                     blr += pr * w[L];
                     blg += pg * w[L];
                     blb += pb * w[L];

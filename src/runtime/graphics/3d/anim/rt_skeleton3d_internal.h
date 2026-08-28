@@ -292,6 +292,19 @@ typedef struct rt_anim_player3d {
     int32_t owned_pose_capacity;
     /// Nonzero after any frame serial, including zero, has been snapshotted.
     int8_t motion_history_initialized;
+    /// ADR 0302: frozen-pose crossfade source — per-bone TRS (pos3, rot4, scl3 in a
+    /// 16-float stride) captured from the blended local pose when a crossfade is
+    /// issued mid-fade or from a finished clip, so the fade departs from what is on
+    /// screen instead of from the previous clip. Mirror of the owned buffer below.
+    float *crossfade_from_pose;
+    /// Stable allocation identity of the frozen-pose buffer (lazily allocated).
+    float *owned_crossfade_from_pose;
+    /// Bone slots allocated in the frozen-pose buffer.
+    int32_t owned_from_pose_capacity;
+    /// Nonzero while the crossfade source is the frozen pose, not `crossfade_from`.
+    int8_t crossfade_from_is_pose;
+    /// ADR 0302 opt-in (set by the owning controller): continuity transitions.
+    int8_t transition_continuity;
 } rt_anim_player3d;
 
 /// @brief One AnimBlend3D state: a named clip with its own weight, playback time, speed,
@@ -485,6 +498,14 @@ static inline void anim_player3d_repair_storage(rt_anim_player3d *player) {
     player->crossfade_from_looping = player->crossfade_from_looping ? 1 : 0;
     player->has_prev_motion_palette = player->has_prev_motion_palette ? 1 : 0;
     player->motion_history_initialized = player->motion_history_initialized ? 1 : 0;
+    player->crossfade_from_pose = player->owned_crossfade_from_pose;
+    if (player->owned_from_pose_capacity < 0 || !player->owned_crossfade_from_pose)
+        player->owned_from_pose_capacity = player->owned_crossfade_from_pose
+                                               ? player->owned_from_pose_capacity
+                                               : 0;
+    player->crossfade_from_is_pose =
+        (player->crossfade_from_is_pose && player->owned_crossfade_from_pose) ? 1 : 0;
+    player->transition_continuity = player->transition_continuity ? 1 : 0;
 }
 
 /// @brief Restore an AnimBlend3D's retained, state, and buffer mirrors.

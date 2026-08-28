@@ -10,7 +10,8 @@
 //   (json, len) buffer with byte-offset cursors to locate object/array members
 //   and extract scalars/strings, without constructing a DOM.
 // Key invariants:
-//   - Scanners are pure over their (json, len) argument buffer; no global state.
+//   - Scanners are pure over immutable (json, len) buffers; a bounded thread-local cache only
+//     retains byte spans for the most recently queried object.
 //   - Object/array ranges are [start, end) byte offsets into that buffer.
 // Ownership/Lifetime:
 //   - String extractors return malloc'd strings owned by the caller; numeric
@@ -33,6 +34,7 @@
 
 #include "rt_gltf_json.h"
 #include "rt_numeric.h"
+#include "rt_platform.h"
 
 #include <limits.h>
 #include <math.h>
@@ -43,6 +45,39 @@
 #define GLTF_JSON_MAX_DEPTH 512
 /// Stack storage used by the common fast path for one JSON number token.
 #define GLTF_JSON_NUMBER_STACK_CAP 128
+/// Maximum direct properties retained for the most recently queried object.
+#define GLTF_JSON_OBJECT_CACHE_CAP 256
+
+typedef struct {
+    size_t key_start;
+    size_t value_start;
+    size_t value_end;
+} gltf_json_cached_property_t;
+
+typedef struct {
+    const char *json;
+    size_t len;
+    size_t object_start;
+    size_t object_end;
+    size_t property_count;
+    int status; /* 0 empty, 1 valid/indexed, 2 valid/oversized, -1 malformed. */
+    gltf_json_cached_property_t properties[GLTF_JSON_OBJECT_CACHE_CAP];
+} gltf_json_object_cache_t;
+
+static RT_THREAD_LOCAL gltf_json_object_cache_t g_gltf_json_object_cache;
+static RT_THREAD_LOCAL int64_t g_gltf_json_object_scan_count = 0;
+
+void gltf_json_reset_lookup_cache(void) {
+    memset(&g_gltf_json_object_cache, 0, sizeof(g_gltf_json_object_cache));
+}
+
+void gltf_json_test_reset_object_scan_count(void) {
+    g_gltf_json_object_scan_count = 0;
+}
+
+int64_t gltf_json_test_get_object_scan_count(void) {
+    return g_gltf_json_object_scan_count;
+}
 
 /// @brief Test for one of the four whitespace bytes admitted by RFC 8259.
 /// @param c Source byte.
@@ -1154,13 +1189,13 @@ int gltf_json_object_get_int(
 /// @param out_start Optional destination for the value's first byte.
 /// @param out_end Optional destination for the offset immediately following the value.
 /// @return 1 if found (range set), 0 otherwise.
-int gltf_json_object_find_value(const char *json,
-                                size_t len,
-                                size_t obj_start,
-                                size_t obj_end,
-                                const char *key,
-                                size_t *out_start,
-                                size_t *out_end) {
+static int gltf_json_object_find_value_uncached(const char *json,
+                                                size_t len,
+                                                size_t obj_start,
+                                                size_t obj_end,
+                                                const char *key,
+                                                size_t *out_start,
+                                                size_t *out_end) {
     size_t found_start = SIZE_MAX;
     size_t found_end = SIZE_MAX;
     size_t pos;
@@ -1211,6 +1246,119 @@ int gltf_json_object_find_value(const char *json,
         pos = gltf_json_skip_ws(json, obj_end, pos + 1u);
         if (pos >= obj_end || json[pos] == '}')
             return 0;
+    }
+    if (found_start == SIZE_MAX)
+        return 0;
+    if (out_start)
+        *out_start = found_start;
+    if (out_end)
+        *out_end = found_end;
+    return 1;
+}
+
+/// @brief Validate and index one exact object into the current thread's bounded cache.
+static int gltf_json_build_object_cache(const char *json,
+                                        size_t len,
+                                        size_t obj_start,
+                                        size_t obj_end) {
+    gltf_json_object_cache_t *cache = &g_gltf_json_object_cache;
+    size_t pos;
+    memset(cache, 0, sizeof(*cache));
+    cache->json = json;
+    cache->len = len;
+    cache->object_start = obj_start;
+    cache->object_end = obj_end;
+    cache->status = -1;
+    if (g_gltf_json_object_scan_count < INT64_MAX)
+        g_gltf_json_object_scan_count++;
+    if (!json || obj_start >= obj_end || obj_end > len || json[obj_start] != '{')
+        return 0;
+    pos = gltf_json_skip_ws(json, obj_end, obj_start + 1u);
+    if (pos >= obj_end)
+        return 0;
+    if (json[pos] == '}') {
+        if (pos + 1u != obj_end)
+            return 0;
+        cache->status = 1;
+        return 1;
+    }
+    for (;;) {
+        size_t key_start = pos;
+        size_t key_end;
+        size_t value_start;
+        size_t value_end;
+        if (json[pos] != '"')
+            return 0;
+        key_end = gltf_json_skip_string_raw(json, obj_end, pos);
+        if (key_end == SIZE_MAX)
+            return 0;
+        pos = gltf_json_skip_ws(json, obj_end, key_end);
+        if (pos >= obj_end || json[pos] != ':')
+            return 0;
+        value_start = gltf_json_skip_ws(json, obj_end, pos + 1u);
+        value_end = gltf_json_skip_value(json, obj_end, value_start);
+        if (value_end == SIZE_MAX)
+            return 0;
+        if (cache->property_count < GLTF_JSON_OBJECT_CACHE_CAP) {
+            gltf_json_cached_property_t *property = &cache->properties[cache->property_count++];
+            property->key_start = key_start;
+            property->value_start = value_start;
+            property->value_end = value_end;
+        } else {
+            cache->status = 2;
+        }
+        pos = gltf_json_skip_ws(json, obj_end, value_end);
+        if (pos >= obj_end)
+            return 0;
+        if (json[pos] == '}') {
+            if (pos + 1u != obj_end)
+                return 0;
+            if (cache->status != 2)
+                cache->status = 1;
+            return 1;
+        }
+        if (json[pos] != ',')
+            return 0;
+        pos = gltf_json_skip_ws(json, obj_end, pos + 1u);
+        if (pos >= obj_end || json[pos] == '}')
+            return 0;
+    }
+}
+
+int gltf_json_object_find_value(const char *json,
+                                size_t len,
+                                size_t obj_start,
+                                size_t obj_end,
+                                const char *key,
+                                size_t *out_start,
+                                size_t *out_end) {
+    gltf_json_object_cache_t *cache = &g_gltf_json_object_cache;
+    size_t found_start = SIZE_MAX;
+    size_t found_end = SIZE_MAX;
+    if (out_start)
+        *out_start = SIZE_MAX;
+    if (out_end)
+        *out_end = SIZE_MAX;
+    if (!json || !key || obj_start >= obj_end || obj_end > len || json[obj_start] != '{')
+        return 0;
+    if (cache->json != json || cache->len != len || cache->object_start != obj_start ||
+        cache->object_end != obj_end) {
+        if (!gltf_json_build_object_cache(json, len, obj_start, obj_end))
+            return 0;
+    }
+    if (cache->status < 0)
+        return 0;
+    if (cache->status == 2)
+        return gltf_json_object_find_value_uncached(
+            json, len, obj_start, obj_end, key, out_start, out_end);
+    for (size_t i = 0; i < cache->property_count; ++i) {
+        const gltf_json_cached_property_t *property = &cache->properties[i];
+        if (!gltf_json_key_matches(json, obj_end, property->key_start, key, NULL))
+            continue;
+        if (found_start != SIZE_MAX)
+            return 0;
+        found_start = property->value_start;
+        found_end = property->value_end;
     }
     if (found_start == SIZE_MAX)
         return 0;

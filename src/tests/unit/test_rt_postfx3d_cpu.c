@@ -36,6 +36,9 @@
 #include <string.h>
 
 extern void rt_postfx3d_apply_to_canvas(void *canvas);
+extern int rt_postfx3d_resolve_display_pixels(const vgfx3d_postfx_chain_t *chain,
+                                              const vgfx3d_rendertarget_t *target,
+                                              void *pixels_obj);
 extern int64_t rt_parallel_default_workers(void);
 
 static int tests_run = 0;
@@ -447,6 +450,93 @@ static void test_scene_effects_use_row_band_worker_pool(void) {
     postfx_cpu_fixture_free(&fixture);
 }
 
+/// ADR 0301: the display resolve applies only the target-resolve subset of the chain
+/// (bloom/SSAO/vignette are skipped, tonemap runs once) and prefers the linear HDR
+/// mirror. Deterministic: no worker pool, caller-local scratch.
+static void test_display_resolve_applies_target_subset(void) {
+    PostFXCPUFixture fx_full = postfx_cpu_fixture_new_sized(4, 4);
+    PostFXCPUFixture fx_tone = postfx_cpu_fixture_new_sized(4, 4);
+    void *chain_full = rt_postfx3d_new();
+    void *chain_tone = rt_postfx3d_new();
+    void *px_full = rt_pixels_new(4, 4);
+    void *px_tone = rt_pixels_new(4, 4);
+    void *px_hdr = rt_pixels_new(4, 4);
+    vgfx3d_postfx_chain_t snap_full;
+    vgfx3d_postfx_chain_t snap_tone;
+    rt_pixels_impl *pf = rt_pixels_checked_impl_or_null(px_full);
+    rt_pixels_impl *pt = rt_pixels_checked_impl_or_null(px_tone);
+    rt_pixels_impl *ph = rt_pixels_checked_impl_or_null(px_hdr);
+    int i;
+
+    memset(&snap_full, 0, sizeof(snap_full));
+    memset(&snap_tone, 0, sizeof(snap_tone));
+    EXPECT_TRUE(fx_full.target && fx_tone.target && chain_full && chain_tone && pf && pt && ph,
+                "display resolve fixtures exist");
+    if (!fx_full.target || !fx_tone.target || !chain_full || !chain_tone || !pf || !pt || !ph)
+        return;
+
+    rt_postfx3d_add_bloom(chain_full, 0.7, 0.9, 2);
+    rt_postfx3d_add_ssao(chain_full, 0.5, 0.65, 8);
+    rt_postfx3d_add_tonemap(chain_full, 1, 1.0);
+    rt_postfx3d_add_vignette(chain_full, 0.2, 0.5);
+    rt_postfx3d_add_tonemap(chain_tone, 1, 1.0);
+    EXPECT_TRUE(vgfx3d_postfx_get_chain(chain_full, &snap_full) &&
+                    vgfx3d_postfx_get_chain(chain_tone, &snap_tone),
+                "chain snapshots capture");
+
+    /* LDR source: the mirror already holds clamped-linear 8-bit grey (0x80). */
+    for (i = 0; i < 16; i++) {
+        pf->data[i] = 0x808080FFu;
+        pt->data[i] = 0x808080FFu;
+    }
+    fx_full.target->hdr_color_valid = 0;
+    fx_tone.target->hdr_color_valid = 0;
+    EXPECT_TRUE(rt_postfx3d_resolve_display_pixels(&snap_full, fx_full.target, px_full) == 1,
+                "full chain resolves");
+    EXPECT_TRUE(rt_postfx3d_resolve_display_pixels(&snap_tone, fx_tone.target, px_tone) == 1,
+                "tonemap-only chain resolves");
+    /* Reinhard on 0.502: 0.334 -> gamma 1/2.2 -> 0.607 -> code 154/155. */
+    {
+        uint32_t r = (pt->data[5] >> 24) & 0xFFu;
+        EXPECT_TRUE(r >= 152u && r <= 157u, "tonemap-only resolve is display-encoded (~155)");
+        EXPECT_TRUE((pt->data[5] & 0xFFu) == 0xFFu, "alpha is preserved");
+    }
+    EXPECT_TRUE(memcmp(pf->data, pt->data, 16u * sizeof(uint32_t)) == 0,
+                "bloom/SSAO/vignette are skipped: full chain == tonemap-only chain");
+
+    /* HDR source: a 2.0 linear mirror beats the 8-bit clamp. 2/(1+2) -> gamma -> 0.832 -> 212. */
+    if (vgfx3d_rendertarget_ensure_color(fx_tone.target) && fx_tone.target->hdr_color_buf) {
+        for (i = 0; i < 16 * 4; i++)
+            fx_tone.target->hdr_color_buf[i] = (i % 4 == 3) ? 1.0f : 2.0f;
+        fx_tone.target->hdr_color_valid = 1;
+        for (i = 0; i < 16; i++)
+            ph->data[i] = 0xFFFFFFFFu;
+        EXPECT_TRUE(rt_postfx3d_resolve_display_pixels(&snap_tone, fx_tone.target, px_hdr) == 1,
+                    "HDR mirror resolves");
+        {
+            uint32_t r = (ph->data[9] >> 24) & 0xFFu;
+            EXPECT_TRUE(r >= 209u && r <= 214u, "the linear HDR mirror is the preferred source (~212)");
+        }
+    } else {
+        EXPECT_TRUE(1, "LDR fixture has no HDR mirror; HDR branch covered by the canvas test");
+    }
+
+    vgfx3d_postfx_chain_free(&snap_full);
+    vgfx3d_postfx_chain_free(&snap_tone);
+    if (rt_obj_release_check0(px_full))
+        rt_obj_free(px_full);
+    if (rt_obj_release_check0(px_tone))
+        rt_obj_free(px_tone);
+    if (rt_obj_release_check0(px_hdr))
+        rt_obj_free(px_hdr);
+    if (rt_obj_release_check0(chain_full))
+        rt_obj_free(chain_full);
+    if (rt_obj_release_check0(chain_tone))
+        rt_obj_free(chain_tone);
+    postfx_cpu_fixture_free(&fx_full);
+    postfx_cpu_fixture_free(&fx_tone);
+}
+
 int main(void) {
     test_tonemap_midgrey_anchor();
     test_tonemap_saturated_patch_anchor();
@@ -457,6 +547,7 @@ int main(void) {
     test_taa_history_uses_packed_rgb_pixels();
     test_sharpen_steepens_soft_edges_without_halos();
     test_scene_effects_use_row_band_worker_pool();
+    test_display_resolve_applies_target_subset();
 
     printf("rt_postfx3d CPU tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

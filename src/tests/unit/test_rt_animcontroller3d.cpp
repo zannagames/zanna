@@ -350,6 +350,241 @@ static void test_controller_crossfade_preserves_source_speed() {
                 "Crossfade source clip continues with source state speed");
 }
 
+/* ---- ADR 0302: transition continuity ------------------------------------ */
+
+static double adr0302_root_x(void *controller) {
+    void *m = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    return rt_mat4_get(m, 0, 3);
+}
+
+static void *adr0302_skel() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    return skel;
+}
+
+/// A finished one-shot (throw, held on its last frame) fades into idle when
+/// continuity is on; the default keeps the historical hard cut.
+static void test_controller_crossfade_from_finished_one_shot_blends() {
+    for (int continuity = 0; continuity < 2; continuity++) {
+        void *skel = adr0302_skel();
+        void *throw_clip = make_anim("throw", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+        void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        void *controller = rt_anim_controller3d_new(skel);
+        rt_anim_controller3d_add_state(controller, rt_const_cstr("throw"), throw_clip);
+        rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+        rt_anim_controller3d_set_state_looping(controller, rt_const_cstr("throw"), 0);
+        rt_anim_controller3d_set_transition_continuity(controller, (int8_t)continuity);
+        rt_anim_controller3d_play(controller, rt_const_cstr("throw"));
+        rt_anim_controller3d_update(controller, 2.0);
+        EXPECT_NEAR(adr0302_root_x(controller), 10.0, 0.01, "finished one-shot holds its last frame");
+        EXPECT_TRUE(rt_anim_controller3d_is_state_playing(controller, rt_const_cstr("throw")) == 0,
+                    "finished one-shot reports not playing");
+        rt_anim_controller3d_crossfade(controller, rt_const_cstr("idle"), 0.4);
+        if (continuity) {
+            EXPECT_TRUE(rt_anim_controller3d_get_is_transitioning(controller) != 0,
+                        "continuity: crossfade out of a finished clip is a transition");
+            rt_anim_controller3d_update(controller, 0.2);
+            EXPECT_NEAR(adr0302_root_x(controller),
+                        5.0,
+                        0.1,
+                        "continuity: mid-fade pose is strictly between the held frame and idle");
+            rt_anim_controller3d_update(controller, 0.2);
+            EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "continuity: fade lands on idle");
+        } else {
+            rt_anim_controller3d_update(controller, 0.2);
+            EXPECT_NEAR(adr0302_root_x(controller),
+                        0.0,
+                        0.01,
+                        "default: crossfade out of a finished clip is the historical hard cut");
+        }
+    }
+}
+
+/// A stopped layer (bind pose) fades into the next state instead of cutting.
+static void test_controller_crossfade_out_of_stopped_layer_blends_from_bind() {
+    void *skel = adr0302_skel();
+    void *lean = make_anim("lean", 0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0);
+    void *idle = make_anim("idle", 0, 8.0, 0.0, 0.0, 8.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("lean"), lean);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_set_transition_continuity(controller, 1);
+    rt_anim_controller3d_play(controller, rt_const_cstr("lean"));
+    rt_anim_controller3d_update(controller, 0.1);
+    rt_anim_controller3d_stop(controller);
+    EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "Stop returns to bind");
+    rt_anim_controller3d_crossfade(controller, rt_const_cstr("idle"), 0.4);
+    rt_anim_controller3d_update(controller, 0.2);
+    EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.1, "continuity: fade departs from the bind pose");
+    rt_anim_controller3d_update(controller, 0.2);
+    EXPECT_NEAR(adr0302_root_x(controller), 8.0, 0.01, "continuity: fade lands on the target");
+}
+
+/// SetBlendTreeFade ramps the tree in and out with intermediate palettes and keeps
+/// the cleared tree retained until its weight reaches zero.
+static void test_controller_blend_tree_fade_produces_intermediate_palettes() {
+    void *skel = adr0302_skel();
+    void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    void *lean = make_anim("lean", 0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0);
+    void *tree = rt_blend_tree3d_new_1d(skel);
+    rt_blend_tree3d_add_sample(tree, lean, 0.0, 0.0);
+    rt_blend_tree3d_set_param(tree, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    auto *layout = reinterpret_cast<AnimController3DTestLayout *>(controller);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_play(controller, rt_const_cstr("idle"));
+    rt_anim_controller3d_set_blend_tree_fade(controller, 0.5);
+    EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, tree) != 0, "fade attach accepted");
+    EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "attach with a fade starts at weight 0");
+    rt_anim_controller3d_update(controller, 0.25);
+    EXPECT_NEAR(adr0302_root_x(controller), 2.0, 0.05, "half-way through the fade-in");
+    rt_anim_controller3d_update(controller, 0.25);
+    EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "fade-in lands on the tree pose");
+    EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, nullptr) != 0, "fade clear accepted");
+    EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "clear with a fade holds the tree pose");
+    EXPECT_TRUE(layout->blend_tree != nullptr, "the clearing tree stays retained during the fade");
+    rt_anim_controller3d_update(controller, 0.25);
+    EXPECT_NEAR(adr0302_root_x(controller), 2.0, 0.05, "half-way through the fade-out");
+    rt_anim_controller3d_update(controller, 0.25);
+    EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "fade-out lands on layer 0");
+    EXPECT_TRUE(layout->blend_tree == nullptr, "the tree is released at weight 0");
+}
+
+/// Re-attaching during a fade-out reverses the ramp from the current weight — no jump.
+static void test_controller_blend_tree_fade_retrigger_is_continuous() {
+    void *skel = adr0302_skel();
+    void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    void *lean = make_anim("lean", 0, 4.0, 0.0, 0.0, 4.0, 0.0, 0.0);
+    void *tree = rt_blend_tree3d_new_1d(skel);
+    rt_blend_tree3d_add_sample(tree, lean, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_play(controller, rt_const_cstr("idle"));
+    rt_anim_controller3d_set_blend_tree_fade(controller, 0.4);
+    rt_anim_controller3d_set_blend_tree(controller, tree);
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_NEAR(adr0302_root_x(controller), 1.0, 0.05, "quarter of the way in");
+    rt_anim_controller3d_set_blend_tree(controller, nullptr);
+    rt_anim_controller3d_update(controller, 0.05);
+    EXPECT_NEAR(adr0302_root_x(controller), 0.5, 0.05, "fade-out continues from the current weight");
+    rt_anim_controller3d_set_blend_tree(controller, tree);
+    double prev = adr0302_root_x(controller);
+    int monotone = 1;
+    for (int i = 0; i < 40; i++) {
+        rt_anim_controller3d_update(controller, 0.01);
+        double x = adr0302_root_x(controller);
+        if (x < prev - 1e-4 || x - prev > 4.0 * 0.01 / 0.4 + 1e-3)
+            monotone = 0;
+        prev = x;
+    }
+    EXPECT_TRUE(monotone, "re-attach mid-fade ramps up continuously (no step larger than the slope)");
+    EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "re-attach lands on the tree pose");
+}
+
+/// With the fade at 0 the ramp code is bypassed: attach/update/detach palettes are
+/// bit-identical to a controller that never touched the new API.
+static void test_controller_blend_tree_fade_zero_matches_legacy_bit_exact() {
+    void *skel = adr0302_skel();
+    void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    void *lean = make_anim("lean", 0, 4.0, 0.0, 0.0, 9.0, 0.0, 0.0);
+    void *tree_a = rt_blend_tree3d_new_1d(skel);
+    void *tree_b = rt_blend_tree3d_new_1d(skel);
+    rt_blend_tree3d_add_sample(tree_a, lean, 0.0, 0.0);
+    rt_blend_tree3d_add_sample(tree_b, lean, 0.0, 0.0);
+    void *legacy = rt_anim_controller3d_new(skel);
+    void *tuned = rt_anim_controller3d_new(skel);
+    auto *tuned_layout = reinterpret_cast<AnimController3DTestLayout *>(tuned);
+    rt_anim_controller3d_add_state(legacy, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_add_state(tuned, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_play(legacy, rt_const_cstr("idle"));
+    rt_anim_controller3d_play(tuned, rt_const_cstr("idle"));
+    rt_anim_controller3d_set_blend_tree_fade(tuned, 0.0);
+    int32_t n_legacy = 0;
+    int32_t n_tuned = 0;
+    int same = 1;
+    rt_anim_controller3d_set_blend_tree(legacy, tree_a);
+    rt_anim_controller3d_set_blend_tree(tuned, tree_b);
+    for (int step = 0; step < 4; step++) {
+        const float *a = rt_anim_controller3d_get_final_palette_data(legacy, &n_legacy);
+        const float *b = rt_anim_controller3d_get_final_palette_data(tuned, &n_tuned);
+        if (!a || !b || n_legacy != n_tuned || memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
+            same = 0;
+        rt_anim_controller3d_update(legacy, 0.125);
+        rt_anim_controller3d_update(tuned, 0.125);
+    }
+    rt_anim_controller3d_set_blend_tree(legacy, nullptr);
+    rt_anim_controller3d_set_blend_tree(tuned, nullptr);
+    {
+        const float *a = rt_anim_controller3d_get_final_palette_data(legacy, &n_legacy);
+        const float *b = rt_anim_controller3d_get_final_palette_data(tuned, &n_tuned);
+        if (!a || !b || n_legacy != n_tuned || memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
+            same = 0;
+    }
+    EXPECT_TRUE(same, "fade 0 attach/update/detach palettes are bit-identical to the legacy controller");
+    EXPECT_TRUE(tuned_layout->blend_tree == nullptr, "fade 0 releases the tree immediately on clear");
+}
+
+/// A crossfade issued mid-fade departs from the blended pose (no pop) with
+/// continuity on; the default departs from the previous clip (pops to it).
+static void test_controller_retrigger_mid_crossfade_has_no_pop() {
+    for (int continuity = 0; continuity < 2; continuity++) {
+        void *skel = adr0302_skel();
+        void *a = make_anim("a", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        void *b = make_anim("b", 0, 10.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+        void *c = make_anim("c", 0, 20.0, 0.0, 0.0, 20.0, 0.0, 0.0);
+        void *controller = rt_anim_controller3d_new(skel);
+        rt_anim_controller3d_add_state(controller, rt_const_cstr("a"), a);
+        rt_anim_controller3d_add_state(controller, rt_const_cstr("b"), b);
+        rt_anim_controller3d_add_state(controller, rt_const_cstr("c"), c);
+        rt_anim_controller3d_set_transition_continuity(controller, (int8_t)continuity);
+        rt_anim_controller3d_play(controller, rt_const_cstr("a"));
+        rt_anim_controller3d_crossfade(controller, rt_const_cstr("b"), 0.4);
+        rt_anim_controller3d_update(controller, 0.2);
+        EXPECT_NEAR(adr0302_root_x(controller), 5.0, 0.05, "half-way through a -> b");
+        rt_anim_controller3d_crossfade(controller, rt_const_cstr("c"), 0.4);
+        if (continuity) {
+            EXPECT_NEAR(adr0302_root_x(controller),
+                        5.0,
+                        0.05,
+                        "continuity: the retrigger departs from the blended pose");
+            rt_anim_controller3d_update(controller, 0.2);
+            EXPECT_NEAR(adr0302_root_x(controller), 12.5, 0.1, "continuity: half-way from 5 to 20");
+            rt_anim_controller3d_update(controller, 0.2);
+            EXPECT_NEAR(adr0302_root_x(controller), 20.0, 0.01, "continuity: lands on c");
+        } else {
+            EXPECT_NEAR(adr0302_root_x(controller),
+                        10.0,
+                        0.05,
+                        "default: the retrigger departs from clip b (the historical pop)");
+        }
+    }
+}
+
+/// With continuity on, a fade from a still-playing clip with no fade in flight keeps
+/// the moving-clip source (same numbers as test_controller_crossfade_preserves_source_speed).
+static void test_controller_continuity_keeps_moving_source_when_playing() {
+    void *skel = adr0302_skel();
+    void *run = make_anim("run", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("run"), run);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_set_state_speed(controller, rt_const_cstr("run"), 2.0);
+    rt_anim_controller3d_set_state_speed(controller, rt_const_cstr("idle"), 0.0);
+    rt_anim_controller3d_set_state_looping(controller, rt_const_cstr("run"), 0);
+    rt_anim_controller3d_set_transition_continuity(controller, 1);
+    rt_anim_controller3d_play(controller, rt_const_cstr("run"));
+    rt_anim_controller3d_update(controller, 0.25);
+    rt_anim_controller3d_crossfade(controller, rt_const_cstr("idle"), 1.0);
+    rt_anim_controller3d_update(controller, 0.25);
+    EXPECT_NEAR(adr0302_root_x(controller),
+                7.5,
+                0.2,
+                "continuity: a playing source keeps moving through the fade");
+}
+
 static void test_controller_masked_layer() {
     void *skel = rt_skeleton3d_new();
     void *controller;
@@ -1843,6 +2078,13 @@ int main() {
     test_controller_state_flow();
     test_controller_root_motion_disabled_and_loop_wrap();
     test_controller_crossfade_preserves_source_speed();
+    test_controller_crossfade_from_finished_one_shot_blends();
+    test_controller_crossfade_out_of_stopped_layer_blends_from_bind();
+    test_controller_blend_tree_fade_produces_intermediate_palettes();
+    test_controller_blend_tree_fade_retrigger_is_continuous();
+    test_controller_blend_tree_fade_zero_matches_legacy_bit_exact();
+    test_controller_retrigger_mid_crossfade_has_no_pop();
+    test_controller_continuity_keeps_moving_source_when_playing();
     test_controller_masked_layer();
     test_controller_true_additive_layer_uses_bind_pose_delta();
     test_controller_blend_tree_drives_base_pose();

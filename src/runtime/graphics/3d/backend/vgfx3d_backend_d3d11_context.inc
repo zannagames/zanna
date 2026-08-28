@@ -11,8 +11,8 @@
 //   - Every required shader and input layout is created before a context is published.
 //   - Particle input slot 1 is four float4 lanes with a 64-byte per-instance stride.
 // Ownership/Lifetime:
-//   - Temporary blobs are released after context creation; context COM resources survive to
-//   destroy.
+//   - A process-lifetime cache owns compiled bytecode; each context build retains temporary blob
+//   references and releases them after creating its device-owned shader objects and layouts.
 //   - The including vgfx3d_backend_d3d11.c translation unit owns all declarations used here.
 // Links: vgfx3d_backend_d3d11.c, vgfx3d_backend_d3d11_shaders.inc
 //
@@ -20,7 +20,7 @@
 /// @file
 /// @brief Implements D3D11 backend context creation, fixed state, and teardown.
 ///
-/// The routines in this fragment compile every required shader, create the
+/// The routines in this fragment acquire every required compiled shader, create the
 /// matching input layouts and fixed-function state, allocate common buffers and
 /// fallback resources, publish a context only after full initialization, and
 /// release partial or complete contexts in dependency-safe order.
@@ -356,10 +356,10 @@ static HRESULT d3d11_create_context_sampler_states(d3d11_context_t *ctx) {
     return hr;
 }
 
-/// @brief Compile every HLSL shader entry point needed by the context.
+/// @brief Compile every HLSL shader entry point needed by the process cache.
 /// @param[out] blobs Temporary blob bundle populated in dependency order.
 /// @return S_OK when every shader compiles, otherwise the first compiler HRESULT.
-static HRESULT d3d11_compile_context_shaders(d3d11_shader_blobs_t *blobs) {
+static HRESULT d3d11_compile_context_shaders_uncached(d3d11_shader_blobs_t *blobs) {
     HRESULT hr;
     memset(blobs, 0, sizeof(*blobs));
     hr = d3d11_compile_shader(d3d11_shader_source, "VSMain", "vs_5_0", &blobs->vs);
@@ -410,6 +410,71 @@ static HRESULT d3d11_compile_context_shaders(d3d11_shader_blobs_t *blobs) {
     if (FAILED(hr))
         return hr;
     return d3d11_compile_shader(d3d11_ssr_shader_source, "PSSSR", "ps_5_0", &blobs->ps_ssr);
+}
+
+/* D3D bytecode is device-independent. Keep one process-lifetime compiler result
+ * and hand each context its own COM references; native shader objects and input
+ * layouts remain device-owned. INIT_ONCE also prevents duplicate D3DCompile work
+ * when multiple accelerated canvases are created concurrently. */
+static INIT_ONCE g_d3d11_shader_blob_once = INIT_ONCE_STATIC_INIT;
+static d3d11_shader_blobs_t g_d3d11_shader_blob_cache;
+static HRESULT g_d3d11_shader_blob_cache_hr = E_FAIL;
+
+/// @brief Initialize the immutable process-wide D3D bytecode bundle.
+static BOOL CALLBACK d3d11_initialize_shader_blob_cache(PINIT_ONCE once,
+                                                        PVOID parameter,
+                                                        PVOID *context) {
+    (void)once;
+    (void)parameter;
+    (void)context;
+    g_d3d11_shader_blob_cache_hr =
+        d3d11_compile_context_shaders_uncached(&g_d3d11_shader_blob_cache);
+    if (FAILED(g_d3d11_shader_blob_cache_hr)) {
+        d3d11_release_shader_blobs(&g_d3d11_shader_blob_cache);
+        return FALSE; /* Leave INIT_ONCE retryable after a transient compiler failure. */
+    }
+    return TRUE;
+}
+
+/// @brief Copy the cached bundle and retain every bytecode COM object for one context build.
+static void d3d11_retain_shader_blobs(d3d11_shader_blobs_t *destination,
+                                      const d3d11_shader_blobs_t *source) {
+    if (!destination || !source)
+        return;
+    *destination = *source;
+#define D3D11_RETAIN_SHADER_BLOB(member)                                                           \
+    do {                                                                                           \
+        if (destination->member)                                                                   \
+            ID3D10Blob_AddRef(destination->member);                                                \
+    } while (0)
+    D3D11_RETAIN_SHADER_BLOB(vs);
+    D3D11_RETAIN_SHADER_BLOB(vs_instanced);
+    D3D11_RETAIN_SHADER_BLOB(vs_particles);
+    D3D11_RETAIN_SHADER_BLOB(ps);
+    D3D11_RETAIN_SHADER_BLOB(vs_shadow);
+    D3D11_RETAIN_SHADER_BLOB(ps_shadow);
+    D3D11_RETAIN_SHADER_BLOB(vs_skybox);
+    D3D11_RETAIN_SHADER_BLOB(ps_skybox);
+    D3D11_RETAIN_SHADER_BLOB(vs_postfx);
+    D3D11_RETAIN_SHADER_BLOB(ps_postfx);
+    D3D11_RETAIN_SHADER_BLOB(ps_overlay);
+    D3D11_RETAIN_SHADER_BLOB(ps_bloom_down);
+    D3D11_RETAIN_SHADER_BLOB(ps_bloom_up);
+    D3D11_RETAIN_SHADER_BLOB(ps_taa);
+    D3D11_RETAIN_SHADER_BLOB(ps_ssr);
+#undef D3D11_RETAIN_SHADER_BLOB
+}
+
+/// @brief Acquire one retained view of the process-wide compiled bytecode bundle.
+static HRESULT d3d11_compile_context_shaders(d3d11_shader_blobs_t *blobs) {
+    if (!blobs)
+        return E_POINTER;
+    memset(blobs, 0, sizeof(*blobs));
+    if (!InitOnceExecuteOnce(
+            &g_d3d11_shader_blob_once, d3d11_initialize_shader_blob_cache, NULL, NULL))
+        return FAILED(g_d3d11_shader_blob_cache_hr) ? g_d3d11_shader_blob_cache_hr : E_FAIL;
+    d3d11_retain_shader_blobs(blobs, &g_d3d11_shader_blob_cache);
+    return S_OK;
 }
 
 /// @brief Create all shader objects from compiled HLSL blobs.

@@ -390,6 +390,20 @@ static void test_target_kind_blend_motion_and_readback_helpers(void) {
                 "Metal rejects zero and oversized texture extents before allocation");
 }
 
+/// ADR 0301: the render-target display resolve keys on the chain snapshot alone —
+/// the window present route is never on during a render-target frame, and gating
+/// on it left ADR 0299's resolve unreachable.
+static void test_render_target_display_resolve_ignores_present_route(void) {
+    EXPECT_TRUE(vgfx3d_metal_should_resolve_render_target_display(1, 1, 1) == 1,
+                "A valid chain with pipelines and a command buffer resolves");
+    EXPECT_TRUE(vgfx3d_metal_should_resolve_render_target_display(0, 1, 1) == 0,
+                "No chain snapshot: nothing to resolve through");
+    EXPECT_TRUE(vgfx3d_metal_should_resolve_render_target_display(1, 0, 1) == 0,
+                "Missing post-FX pipelines skip the resolve");
+    EXPECT_TRUE(vgfx3d_metal_should_resolve_render_target_display(1, 1, 0) == 0,
+                "No open command buffer skips the resolve");
+}
+
 static void test_capacity_mip_and_morph_cache_helpers(void) {
     vgfx3d_draw_cmd_t cmd;
 
@@ -620,6 +634,8 @@ static void test_metal_shader_source_uses_safe_normalization(void) {
                 "Metal skybox inverse-projection path uses safe normalization");
     EXPECT_TRUE(strstr(source, "float3(0.0, 0.0, -1.0)") != NULL,
                 "Metal skybox zero-vector fallback follows the Canvas3D camera -Z convention");
+    EXPECT_TRUE(count_text_occurrences(source, "decode_splat_color(splatLayer") == 4,
+                "Metal PBR terrain layers decode sRGB before weighted blending");
     EXPECT_TRUE(strstr(source, "eval_native_light") != NULL &&
                     strstr(source, "native_light_decay") != NULL,
                 "Metal shader retains native area/volume evaluation and FBX decay");
@@ -631,6 +647,9 @@ static void test_metal_shader_source_uses_safe_normalization(void) {
                 "Metal tangents use the model linear transform under non-uniform scale");
     EXPECT_TRUE(strstr(source, "vgfx3d_shadow_matrix_is_usable(light_vp)") != NULL,
                 "Metal shadow begin/reuse reject unusable light matrices");
+    EXPECT_TRUE(strstr(source, "metal_cached_shader_library") != NULL &&
+                    count_text_occurrences(source, "metal_cached_shader_library(device") == 3,
+                "Metal reuses main, post-FX, and skybox libraries per MTLDevice");
     EXPECT_TRUE(strstr(source, " normalize(") == NULL,
                 "Metal shader source avoids raw normalize calls");
 
@@ -877,6 +896,7 @@ int main(void) {
     test_frame_history_preserves_scene_state_across_overlay_passes();
     test_frame_history_sanitizes_nonfinite_scene_inputs();
     test_target_kind_blend_motion_and_readback_helpers();
+    test_render_target_display_resolve_ignores_present_route();
     test_capacity_mip_and_morph_cache_helpers();
     test_shadow_projection_helper_handles_orthographic_and_perspective();
     test_metal_shader_source_uses_safe_normalization();

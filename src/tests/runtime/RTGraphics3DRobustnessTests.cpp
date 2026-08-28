@@ -1005,6 +1005,8 @@ static void test_transform_and_path_private_state_repairs_are_cache_coherent() {
     double *owned_zs = path->owned_zs;
     double *owned_spline = path->owned_spline_cumulative;
     const int32_t owned_capacity = path->point_allocation_capacity;
+    assert(owned_ys == owned_xs + owned_capacity);
+    assert(owned_zs == owned_ys + owned_capacity);
     path->xs = reinterpret_cast<double *>(uintptr_t{1});
     path->ys = nullptr;
     path->zs = reinterpret_cast<double *>(uintptr_t{3});

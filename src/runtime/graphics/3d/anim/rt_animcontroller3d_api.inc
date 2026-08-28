@@ -469,6 +469,9 @@ static void controller_advance_layers(rt_anim_controller3d *controller,
     *out_base_looping = base_looping;
 }
 
+static void controller_advance_blend_tree_weight(rt_anim_controller3d *controller,
+                                                 double delta_time);
+
 /// @brief Per-frame tick for every layer. Advances each player's time by `delta_time`, fires
 /// time-stamped events crossing the previous→current playback window, advances transition
 /// blends, then composites the layered final bone palette. Also accumulates root-motion bone
@@ -504,8 +507,16 @@ void rt_anim_controller3d_update(void *obj, double delta_time) {
     state_count = controller->state_count;
     bone_count = controller_safe_bone_count(controller->skeleton);
 
-    if (!controller_apply_animation_lod(controller, &delta_time))
+    /* ADR 0302: with continuity on, an in-flight fade is evaluated every tick (the
+     * accumulated LOD remainder is consumed into this step) so a 40-200 ms fade on
+     * a throttled far actor never collapses into a single-frame cut. */
+    if (controller->transition_continuity && controller_fade_active(controller)) {
+        if (isfinite(controller->animation_lod_accum) && controller->animation_lod_accum > 0.0)
+            delta_time += controller->animation_lod_accum;
+        controller->animation_lod_accum = 0.0;
+    } else if (!controller_apply_animation_lod(controller, &delta_time)) {
         return;
+    }
 
     if (controller->final_palette && controller->prev_final_palette && controller->skeleton &&
         bone_count > 0) {
@@ -528,6 +539,7 @@ void rt_anim_controller3d_update(void *obj, double delta_time) {
                               &base_duration,
                               &base_looping);
 
+    controller_advance_blend_tree_weight(controller, delta_time);
     if (controller->blend_tree)
         rt_blend_tree3d_update(controller->blend_tree, delta_time);
     controller_compute_final_palette(controller);
@@ -827,8 +839,27 @@ int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     if (!controller)
         return 0;
+    controller_repair_blend_tree_fade(controller);
     if (!blend_tree) {
+        if (!controller->blend_tree) {
+            controller_compute_final_palette(controller);
+            return 1;
+        }
+        /* ADR 0302: with a fade configured, the tree stays retained and ramps its
+         * weight to zero over the fade (advanced by Update); without one the
+         * historical instantaneous swap runs. */
+        if (controller->blend_tree_fade_seconds > 0.0f && controller->blend_tree_weight > 0.0f) {
+            controller->blend_tree_fade_target = 0;
+            controller->blend_tree_fade_from = controller->blend_tree_weight;
+            controller->blend_tree_fade_elapsed = 0.0f;
+            controller->blend_tree_detach_pending = 1;
+            controller_compute_final_palette(controller);
+            return 1;
+        }
         controller_release_class_ref(&controller->blend_tree, RT_G3D_BLENDTREE3D_CLASS_ID);
+        controller->blend_tree_weight = 0.0f;
+        controller->blend_tree_detach_pending = 0;
+        controller->blend_tree_fade_target = 0;
         controller_compute_final_palette(controller);
         return 1;
     }
@@ -844,13 +875,96 @@ int8_t rt_anim_controller3d_set_blend_tree(void *obj, void *blend_tree) {
             return 0;
     }
     if (controller->blend_tree != blend_tree) {
+        int had_tree = controller->blend_tree != NULL;
         rt_obj_retain_maybe(blend_tree);
         controller_release_class_ref(&controller->blend_tree, RT_G3D_BLENDTREE3D_CLASS_ID);
         controller->blend_tree = blend_tree;
+        /* ADR 0302: a fresh attach ramps in from zero when a fade is configured; a
+         * tree-to-tree replacement keeps the current weight (documented limitation:
+         * that swap stays instantaneous). */
+        if (!had_tree)
+            controller->blend_tree_weight = controller->blend_tree_fade_seconds > 0.0f ? 0.0f : 1.0f;
     }
+    if (controller->blend_tree_fade_seconds <= 0.0f)
+        controller->blend_tree_weight = 1.0f;
+    controller->blend_tree_fade_target = 1;
+    controller->blend_tree_fade_from = controller->blend_tree_weight;
+    controller->blend_tree_fade_elapsed = 0.0f;
+    controller->blend_tree_detach_pending = 0;
     rt_blend_tree3d_update(controller->blend_tree, 0.0);
     controller_compute_final_palette(controller);
     return 1;
+}
+
+/// @brief ADR 0302: advance the blend-tree weight ramp by an accepted controller step.
+/// @details Linear ramp from `blend_tree_fade_from` toward the target; the final step
+///   lands exactly on 0/1 (the player's completion guard) so a detaching tree is
+///   released the moment its weight reaches zero — before the palette is composed.
+/// @param[in,out] controller Controller whose ramp advances.
+/// @param[in] delta_time Accepted step in seconds.
+static void controller_advance_blend_tree_weight(rt_anim_controller3d *controller,
+                                                 double delta_time) {
+    float target;
+    float fade;
+    if (!controller || !controller->blend_tree)
+        return;
+    controller_repair_blend_tree_fade(controller);
+    fade = controller->blend_tree_fade_seconds;
+    target = controller->blend_tree_fade_target ? 1.0f : 0.0f;
+    if (fade <= 0.0f || controller->blend_tree_weight == target) {
+        controller->blend_tree_weight = target;
+    } else if (delta_time > 0.0) {
+        /* Constant slope (a full 0 -> 1 ramp takes `fade` seconds) so a reversal
+         * part-way through continues at the same rate from the current weight —
+         * a ramp re-timed over the whole fade would slow down on every retrigger. */
+        double step = delta_time / (double)fade;
+        double remaining = fabs((double)target - (double)controller->blend_tree_weight);
+        if (step >= remaining) {
+            controller->blend_tree_weight = target;
+        } else if (target > controller->blend_tree_weight) {
+            controller->blend_tree_weight = (float)((double)controller->blend_tree_weight + step);
+        } else {
+            controller->blend_tree_weight = (float)((double)controller->blend_tree_weight - step);
+        }
+        controller->blend_tree_fade_elapsed =
+            (float)((double)controller->blend_tree_fade_elapsed + delta_time);
+    }
+    if (controller->blend_tree_detach_pending && controller->blend_tree_weight <= 0.0f) {
+        controller_release_class_ref(&controller->blend_tree, RT_G3D_BLENDTREE3D_CLASS_ID);
+        controller->blend_tree_weight = 0.0f;
+        controller->blend_tree_detach_pending = 0;
+        controller->blend_tree_fade_elapsed = 0.0f;
+    }
+}
+
+/// @brief ADR 0302: set the blend-tree fade length honoured by SetBlendTree.
+/// @param[in,out] obj AnimController3D to configure; invalid handles are ignored.
+/// @param[in] seconds Ramp length; zero (the default) keeps the instantaneous swap.
+void rt_anim_controller3d_set_blend_tree_fade(void *obj, double seconds) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    if (!controller)
+        return;
+    controller->blend_tree_fade_seconds = controller_clamp_nonnegative_float(seconds);
+    controller_repair_blend_tree_fade(controller);
+}
+
+/// @brief ADR 0302: enable transition continuity on every layer.
+/// @details On: crossfades out of finished or stopped clips blend from the held pose,
+///   a fade issued mid-fade departs from the visible blended pose (frozen-pose
+///   source), and an in-flight fade bypasses the animation-LOD gate so short fades
+///   never collapse to cuts. Off (the default) reproduces the historical palettes.
+/// @param[in,out] obj AnimController3D to configure; invalid handles are ignored.
+/// @param[in] enabled Nonzero to enable.
+void rt_anim_controller3d_set_transition_continuity(void *obj, int8_t enabled) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    if (!controller)
+        return;
+    controller->transition_continuity = enabled ? 1 : 0;
+    for (int32_t layer_index = 0; layer_index < RT_ANIM_CONTROLLER3D_MAX_LAYERS; layer_index++) {
+        rt_anim_player3d *player = controller->layers[layer_index].player;
+        if (player)
+            player->transition_continuity = controller->transition_continuity;
+    }
 }
 
 static void controller_clear_ik_solvers(rt_anim_controller3d *controller) {

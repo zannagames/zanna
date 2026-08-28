@@ -68,6 +68,12 @@ extern int64_t rt_navmesh3d_copy_path_points(void *navmesh,
                                              void *from,
                                              void *to,
                                              double **out_points_xyz);
+extern int64_t rt_navmesh3d_test_get_last_path_touched_count(void *navmesh);
+extern int64_t rt_navmesh3d_test_get_last_path_heap_peak(void *navmesh);
+extern int32_t rt_path3d_append_xyz_batch_internal(void *path,
+                                                   const double *points_xyz,
+                                                   int64_t point_count);
+extern void rt_path3d_test_set_coordinate_alloc_failure(int8_t enabled);
 }
 
 static int tests_passed = 0;
@@ -319,6 +325,72 @@ static void test_navmesh_find_path_from_shared_edge() {
     EXPECT_TRUE(path != nullptr, "NavMesh finds a path from a shared triangle edge");
     if (path)
         EXPECT_TRUE(rt_path3d_get_point_count(path) >= 2, "Shared-edge path includes endpoints");
+
+    double *points = nullptr;
+    int64_t point_count = rt_navmesh3d_copy_path_points(nm, from, to, &points);
+    EXPECT_TRUE(point_count >= 2 && points != nullptr,
+                "Shared-edge path exposes its packed waypoint representation");
+    if (point_count >= 2 && points) {
+        EXPECT_NEAR(points[0],
+                    1.909190416,
+                    1e-12,
+                    "NavMesh preserves the requested double-precision start endpoint");
+        EXPECT_NEAR(points[(point_count - 1) * 3],
+                    4.0,
+                    1e-12,
+                    "NavMesh preserves the requested double-precision destination endpoint");
+    }
+    std::free(points);
+}
+
+static void test_navmesh_rejects_out_of_domain_query_instead_of_clamping() {
+    void *mesh = rt_mesh3d_new();
+    const double x0 = 999999872.0;
+    const double x1 = 1000000000.0;
+    rt_mesh3d_add_vertex(mesh, x0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, x1, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, x1, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    rt_mesh3d_add_vertex(mesh, x0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0);
+    rt_mesh3d_add_triangle(mesh, 0, 2, 1);
+    rt_mesh3d_add_triangle(mesh, 0, 3, 2);
+    void *nm = rt_navmesh3d_build(mesh, 0.2, 1.8);
+    void *outside = rt_vec3_new(2000000000.0, 0.0, 0.0);
+    void *inside = rt_vec3_new(x0, 0.0, 0.0);
+    double *points = nullptr;
+    EXPECT_TRUE(rt_navmesh3d_copy_path_points(nm, outside, inside, &points) == 0 && !points,
+                "NavMesh rejects out-of-domain points instead of querying a clamped alias");
+}
+
+static void test_navmesh_astar_touches_only_frontier_nodes() {
+    void *nm = make_dense_grid_navmesh(64);
+    void *from = rt_vec3_new(-31.0, 0.0, -31.0);
+    void *to = rt_vec3_new(-20.0, 0.0, -20.0);
+    double *points = nullptr;
+    int64_t point_count = rt_navmesh3d_copy_path_points(nm, from, to, &points);
+    int64_t touched = rt_navmesh3d_test_get_last_path_touched_count(nm);
+    int64_t heap_peak = rt_navmesh3d_test_get_last_path_heap_peak(nm);
+    EXPECT_TRUE(point_count >= 2 && points != nullptr, "Dense-grid A* path succeeds");
+    EXPECT_TRUE(touched > 0 && touched < rt_navmesh3d_get_triangle_count(nm),
+                "A* initializes only nodes reached by the search frontier");
+    EXPECT_TRUE(heap_peak > 0 && heap_peak <= touched,
+                "Indexed A* heap contains at most one entry per touched node");
+    std::free(points);
+}
+
+static void test_path3d_bulk_append_is_transactional() {
+    double points[17 * 3] = {};
+    for (int i = 0; i < 17; ++i)
+        points[i * 3] = (double)i;
+    void *path = rt_path3d_new();
+    rt_path3d_test_set_coordinate_alloc_failure(1);
+    EXPECT_TRUE(rt_path3d_append_xyz_batch_internal(path, points, 17) == 0,
+                "Path3D bulk append reports staged allocation failure");
+    EXPECT_TRUE(rt_path3d_get_point_count(path) == 0,
+                "Path3D bulk append leaves the destination unchanged on failure");
+    rt_path3d_test_set_coordinate_alloc_failure(0);
+    EXPECT_TRUE(rt_path3d_append_xyz_batch_internal(path, points, 17) == 1 &&
+                    rt_path3d_get_point_count(path) == 17,
+                "Path3D bulk append publishes every point after one successful reserve");
 }
 
 static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
@@ -354,8 +426,8 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
         worker.join();
     EXPECT_TRUE(ok.load(std::memory_order_relaxed),
                 "NavMesh A* workspace pool is reusable across concurrent queries");
-    EXPECT_TRUE(rt_navmesh3d_test_get_path_peak_concurrency(nm) >= 2,
-                "NavMesh independent A* workspace slots overlap in flight");
+    EXPECT_TRUE(rt_navmesh3d_test_get_path_peak_concurrency(nm) > 4,
+                "NavMesh overflow workspaces let more than four searches overlap in flight");
     EXPECT_TRUE(rt_navmesh3d_test_get_ready_path_scratch_count(nm) >= 2,
                 "NavMesh concurrent searches retain per-workspace corridor and portal scratch");
     EXPECT_TRUE(rt_navmesh3d_test_get_path_workspace_permits(nm) == 4,
@@ -1493,6 +1565,9 @@ int main() {
     test_navmesh_sample_position_uses_sublinear_local_probe();
     test_navmesh_find_path();
     test_navmesh_find_path_from_shared_edge();
+    test_navmesh_rejects_out_of_domain_query_instead_of_clamping();
+    test_navmesh_astar_touches_only_frontier_nodes();
+    test_path3d_bulk_append_is_transactional();
     test_navmesh_path_workspace_reuse_is_concurrent_safe();
     test_navmesh_box_slope_filter();
     test_navmesh_voxel_grid_extreme_arithmetic_is_bounded();

@@ -10,7 +10,9 @@
 // Key invariants:
 //   - Included only by rt_canvas3d.c; this is not a standalone translation unit.
 //   - Post-processing state is snapshotted once at frame begin.
-//   - Render-target canvases and incapable backends leave GPU post-FX disabled.
+//   - Incapable backends leave GPU post-FX disabled. Render-target frames never
+//     PRESENT through the GPU post-FX route but still PUBLISH the frame's chain
+//     snapshot so the backend can resolve the bound target through it (ADR 0301).
 // Ownership/Lifetime:
 //   - The Canvas3D frame owns the copied effect descriptors through presentation.
 //   - Backend callbacks borrow the latched chain and must not retain its address.
@@ -35,9 +37,16 @@ static void canvas3d_apply_gpu_postfx_state(rt_canvas3d *c) {
 
     if (!c || !c->backend)
         return;
-    if (c->frame_gpu_postfx_enabled)
+    if (c->frame_postfx_chain_latched)
         chain = &c->frame_postfx_chain;
-    if (c->backend->set_gpu_postfx_enabled)
+    /* ADR 0301: the present-route toggle belongs to WINDOW frames only. A
+     * render-target frame used to call it with 0 and the next window frame
+     * with 1 — on Metal each flip commits pending work and reallocates every
+     * main target (scene/overlay/post-FX/bloom/TAA), and the NULL snapshot that
+     * followed cleared TAA history, so an interleaved RT frame cost two
+     * target rebuilds per window frame. The chain snapshot is published on
+     * every frame so a bound target can be resolved through it. */
+    if (!c->render_target && c->backend->set_gpu_postfx_enabled)
         c->backend->set_gpu_postfx_enabled(c->backend_ctx, c->frame_gpu_postfx_enabled);
     if (c->backend->set_gpu_postfx_snapshot)
         c->backend->set_gpu_postfx_snapshot(c->backend_ctx, chain);
@@ -48,7 +57,8 @@ static void canvas3d_apply_gpu_postfx_state(rt_canvas3d *c) {
 /// Snapshotting once per frame ensures the post-FX parameters used
 /// by the present-time composite match what was active at frame start
 /// (avoids tearing if the user toggles a post-FX setting mid-frame).
-/// Skips snapshot capture for RTT canvases or non-postfx backends.
+/// Skips snapshot capture for non-postfx backends. Render-target frames capture
+/// and publish the chain (ADR 0301) but never enable the window present route.
 /// @param c Borrowed Canvas3D whose frame snapshot is reset and populated. A
 ///   `NULL` canvas is ignored.
 static void canvas3d_latch_gpu_postfx_state(rt_canvas3d *c) {
@@ -56,10 +66,13 @@ static void canvas3d_latch_gpu_postfx_state(rt_canvas3d *c) {
         return;
     vgfx3d_postfx_chain_reset(&c->frame_postfx_chain);
     c->frame_gpu_postfx_enabled = 0;
+    c->frame_postfx_chain_latched = 0;
     c->frame_postfx_state_latched = 1;
-    if (canvas3d_backend_uses_gpu_postfx(c) &&
+    if (canvas3d_backend_accepts_gpu_postfx_chain(c) &&
         vgfx3d_postfx_get_chain(c->postfx, &c->frame_postfx_chain)) {
-        c->frame_gpu_postfx_enabled = 1;
+        c->frame_postfx_chain_latched = 1;
+        if (canvas3d_backend_uses_gpu_postfx(c))
+            c->frame_gpu_postfx_enabled = 1;
     }
     canvas3d_apply_gpu_postfx_state(c);
 }

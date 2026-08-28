@@ -485,6 +485,18 @@ static int canvas3d_backend_uses_gpu_postfx(const rt_canvas3d *c) {
     return c && c->backend && c->backend->present_postfx && c->render_target == NULL;
 }
 
+/// @brief True when the backend consumes post-FX chain snapshots at all (ADR 0301).
+///
+/// Distinct from `canvas3d_backend_uses_gpu_postfx`: this has NO render-target term.
+/// A render-target frame must still publish the frame's chain so a backend can
+/// resolve the bound target through it (Metal's per-target display image); only
+/// the window PRESENT route is gated on `render_target == NULL`.
+/// @param c Canvas whose backend hooks are inspected; may be NULL.
+/// @return Non-zero when the backend has both a present hook and a snapshot hook.
+static int canvas3d_backend_accepts_gpu_postfx_chain(const rt_canvas3d *c) {
+    return c && c->backend && c->backend->present_postfx && c->backend->set_gpu_postfx_snapshot;
+}
+
 /// @brief True when GPU post-FX can be split from final presentation.
 ///
 /// Split-capable backends composite the post-FX scene first, then Canvas3D

@@ -391,6 +391,19 @@ int8_t rt_anim_controller3d_crossfade(void *c, rt_string n, double d) {
     return 0;
 }
 
+/// @brief Stub for `AnimController3D.CrossfadeAt` (ADR 0300).
+///
+/// Silent no-op stub.
+///
+/// @return `0`.
+int8_t rt_anim_controller3d_crossfade_at(void *c, rt_string n, double d, double s) {
+    (void)c;
+    (void)n;
+    (void)d;
+    (void)s;
+    return 0;
+}
+
 /// @brief Stub for `AnimController3D.Stop` — halt animation playback.
 ///        The skeleton freezes at the current pose.
 ///
@@ -526,6 +539,28 @@ int8_t rt_anim_controller3d_set_blend_tree(void *c, void *t) {
     (void)c;
     (void)t;
     return 0;
+}
+
+/// @brief Stub for `AnimController3D.SetBlendTreeFade` (ADR 0302).
+///
+/// Silent no-op stub.
+///
+/// @param c AnimController3D handle (ignored).
+/// @param seconds Fade length (ignored).
+void rt_anim_controller3d_set_blend_tree_fade(void *c, double seconds) {
+    (void)c;
+    (void)seconds;
+}
+
+/// @brief Stub for `AnimController3D.SetTransitionContinuity` (ADR 0302).
+///
+/// Silent no-op stub.
+///
+/// @param c AnimController3D handle (ignored).
+/// @param enabled Continuity flag (ignored).
+void rt_anim_controller3d_set_transition_continuity(void *c, int8_t enabled) {
+    (void)c;
+    (void)enabled;
 }
 
 /// @brief Stub for `AnimController3D.SetIKSolver` — would normally apply an

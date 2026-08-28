@@ -2233,8 +2233,15 @@ static void metal_encode_render_target_display(VGFXMetalContext *ctx,
     if (!entry)
         return;
     entry.displayValid = 0;
-    if (!ctx || !ctx.cmdBuf || !entry.colorTexture || !ctx.gpuPostfxEnabled ||
-        !ctx.gpuPostfxChainValid || !ctx.postfxPipeline || !ctx.postfxPipelineHdr ||
+    /* ADR 0301: the decision must NOT consult `gpuPostfxEnabled` — that flag is
+     * the WINDOW present route, which is never on during a render-target frame.
+     * The chain snapshot alone authorises the resolve (published on every frame
+     * since ADR 0301); the pure helper keeps the predicate CI-testable. */
+    if (!ctx || !entry.colorTexture ||
+        !vgfx3d_metal_should_resolve_render_target_display(
+            ctx.gpuPostfxChainValid ? 1 : 0,
+            (ctx.postfxPipeline && ctx.postfxPipelineHdr) ? 1 : 0,
+            ctx.cmdBuf ? 1 : 0) ||
         !ctx.offscreenMotion || !ctx.depthTexture)
         return;
     chain = ctx.gpuPostfxChain;
@@ -2273,6 +2280,11 @@ static void metal_encode_render_target_display(VGFXMetalContext *ctx,
         safe_snapshot.motion_blur_enabled = 0;
         safe_snapshot.taa_enabled = 0;
         safe_snapshot.ssr_enabled = 0;
+        /* ADR 0301: a sampled target is a composited ELEMENT (a picture-in-picture,
+         * a scoreboard face), not a frame — a vignette at the target's own size
+         * would darken its corners inside the host frame. The CPU mirror resolve
+         * (rt_postfx3d_resolve_display_pixels) skips it for the same reason. */
+        safe_snapshot.vignette_enabled = 0;
         output_texture = metal_encode_postfx_pass(
             ctx, source_texture, target_texture, &safe_snapshot, 0, nil, !tonemapped_yet);
         if (!output_texture)

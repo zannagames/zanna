@@ -1935,6 +1935,7 @@ static void canvas3d_reset_finalized_frame_state(rt_canvas3d *c) {
     canvas3d_clear_final_overlay(c);
     c->frame_postfx_state_latched = 0;
     c->frame_gpu_postfx_enabled = 0;
+    c->frame_postfx_chain_latched = 0;
     c->frame_finalized = 0;
     c->frame_presented_by_finalize = 0;
     vgfx3d_postfx_chain_reset(&c->frame_postfx_chain);

@@ -1919,6 +1919,8 @@ static void test_d3d11_shader_sources_keep_numeric_guards(void) {
                 "Main D3D11 shader source remains available to the compile path");
     EXPECT_TRUE(contains_text(d3d11_shader_source, "if (!isFront) N = -N;"),
                 "D3D11 back faces of cull-off geometry shade with the outward normal (ZB-21)");
+    EXPECT_TRUE(count_text(d3d11_shader_source, "decodeSplatColor(splatLayer") == 4,
+                "D3D11 PBR terrain layers decode sRGB before weighted blending");
     EXPECT_TRUE(contains_text(d3d11_shader_source, "evalNativeLight") &&
                     contains_text(d3d11_shader_source, "nativeLightDecay"),
                 "D3D11 shader retains native area/volume evaluation and FBX decay");
@@ -2184,6 +2186,11 @@ static void test_d3d11_backend_source_contracts(void) {
         return;
     EXPECT_TRUE(strstr(source, "vgfx3d_sanitize_draw_command(cmd, &safe_cmd)") != NULL,
                 "D3D11 sanitizes draw snapshots before native upload");
+    EXPECT_TRUE(strstr(source, "InitOnceExecuteOnce") != NULL &&
+                    strstr(source, "g_d3d11_shader_blob_once") != NULL &&
+                    strstr(source, "d3d11_retain_shader_blobs") != NULL,
+                "D3D11 compiles device-independent shader bytecode once and retains it per "
+                "context");
     EXPECT_TRUE(
         contains_text(
             d3d11_postfx_shader_source,

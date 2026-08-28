@@ -253,6 +253,11 @@ typedef void *GLsync;
 #define GL_LINE 0x1B01
 #define GL_FILL 0x1B02
 #define GL_INVALID_INDEX 0xFFFFFFFFu
+#define GL_VENDOR 0x1F00
+#define GL_RENDERER 0x1F01
+#define GL_VERSION 0x1F02
+#define GL_PROGRAM_BINARY_LENGTH 0x8741
+#define GL_PROGRAM_BINARY_RETRIEVABLE_HINT 0x8257
 /* ARB_clip_control / GL 4.5 */
 #define GL_LOWER_LEFT 0x8CA1
 #define GL_ZERO_TO_ONE 0x935F
@@ -282,6 +287,9 @@ typedef void (*PFNGLATTACHSHADERPROC)(GLuint, GLuint);
 typedef void (*PFNGLLINKPROGRAMPROC)(GLuint);
 typedef void (*PFNGLGETPROGRAMIVPROC)(GLuint, GLenum, GLint *);
 typedef void (*PFNGLGETPROGRAMINFOLOGPROC)(GLuint, GLsizei, GLsizei *, GLchar *);
+typedef void (*PFNGLPROGRAMPARAMETERIPROC)(GLuint, GLenum, GLint);
+typedef void (*PFNGLGETPROGRAMBINARYPROC)(GLuint, GLsizei, GLsizei *, GLenum *, void *);
+typedef void (*PFNGLPROGRAMBINARYPROC)(GLuint, GLenum, const void *, GLsizei);
 typedef void (*PFNGLUSEPROGRAMPROC)(GLuint);
 typedef void (*PFNGLDELETESHADERPROC)(GLuint);
 typedef void (*PFNGLDELETEPROGRAMPROC)(GLuint);
@@ -407,6 +415,9 @@ static struct {
     PFNGLLINKPROGRAMPROC LinkProgram;
     PFNGLGETPROGRAMIVPROC GetProgramiv;
     PFNGLGETPROGRAMINFOLOGPROC GetProgramInfoLog;
+    PFNGLPROGRAMPARAMETERIPROC ProgramParameteri;
+    PFNGLGETPROGRAMBINARYPROC GetProgramBinary;
+    PFNGLPROGRAMBINARYPROC ProgramBinary;
     PFNGLUSEPROGRAMPROC UseProgram;
     PFNGLDELETESHADERPROC DeleteShader;
     PFNGLDELETEPROGRAMPROC DeleteProgram;
@@ -1637,6 +1648,11 @@ static int load_gl(int wayland_binding) {
     LOADP(LinkProgram);
     LOADP(GetProgramiv);
     LOADP(GetProgramInfoLog);
+    /* Optional GL 4.1 / ARB_get_program_binary startup cache. GL 3.3 drivers
+     * without it keep the ordinary source compile/link route. */
+    LOADP_OPTIONAL(ProgramParameteri);
+    LOADP_OPTIONAL(GetProgramBinary);
+    LOADP_OPTIONAL(ProgramBinary);
     LOADP(UseProgram);
     LOADP(DeleteShader);
     LOADP(DeleteProgram);
@@ -1875,6 +1891,8 @@ static GLuint link_program(GLuint vs, GLuint fs) {
     GLuint program = gl.CreateProgram();
     if (!program)
         return 0;
+    if (gl.ProgramParameteri && gl.GetProgramBinary && gl.ProgramBinary)
+        gl.ProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
     gl.AttachShader(program, vs);
     gl.AttachShader(program, fs);
     gl.LinkProgram(program);

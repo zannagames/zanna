@@ -710,6 +710,8 @@ int32_t rt_quickhull3d_reduce(const double *points,
                               double *out_points) {
     if (!points || point_count <= 0 || max_points <= 0 || !out_points)
         return 0;
+    if ((size_t)point_count > SIZE_MAX / (3u * sizeof(double)))
+        return 0;
     double coordinate_scale = 0.0;
     for (int64_t index = 0; index < (int64_t)point_count * 3; ++index) {
         if (!isfinite(points[index]))
@@ -721,8 +723,6 @@ int32_t rt_quickhull3d_reduce(const double *points,
         memcpy(out_points, points, sizeof(double) * 3u * (size_t)point_count);
         return point_count;
     }
-    if ((size_t)point_count > SIZE_MAX / (3u * sizeof(double)))
-        return 0;
     if (!(coordinate_scale > 0.0))
         coordinate_scale = 1.0;
 

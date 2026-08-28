@@ -211,6 +211,17 @@ vgfx3d_metal_motion_attachment_mode_t vgfx3d_metal_choose_motion_attachment_mode
 /// @param gpu_postfx_enabled Nonzero when the GPU post-processing route is active.
 /// @return The post-FX composite source when enabled, otherwise the backbuffer source.
 vgfx3d_metal_readback_kind_t vgfx3d_metal_choose_readback_kind(int8_t gpu_postfx_enabled);
+/// @brief ADR 0301: decide whether a render-target frame is resolved through the post-FX
+///   chain into its display image. Deliberately takes NO window-present-route flag:
+///   `gpu_postfx_enabled` is never on during a render-target frame, and gating the
+///   resolve on it was exactly the bug that left ADR 0299's display path unreachable.
+/// @param chain_valid Nonzero when a usable chain snapshot is installed for this frame.
+/// @param pipelines_ready Nonzero when both post-FX pipelines (LDR and HDR) compiled.
+/// @param has_command_buffer Nonzero when the frame's command buffer is open.
+/// @return 1 when the display resolve should run, otherwise 0.
+int8_t vgfx3d_metal_should_resolve_render_target_display(int8_t chain_valid,
+                                                          int8_t pipelines_ready,
+                                                          int8_t has_command_buffer);
 /// @brief Clamp light shadow indices to the currently completed contiguous shadow slots.
 /// @param shadow_index Requested zero-based shadow slot.
 /// @param shadow_count Number of complete contiguous slots available for sampling.

@@ -12,6 +12,7 @@
 //   - Particle pipelines read compact records at buffer index 6 and retained vertices at index 0.
 // Ownership/Lifetime:
 //   - VGFXMetalContext strongly owns created Objective-C resources until context destruction.
+//   - A weak-device process cache shares immutable shader libraries without retaining devices.
 //   - MTLFunction temporaries remain valid through pipeline creation in the including translation
 //   unit.
 // Links: vgfx3d_backend_metal.m, vgfx3d_backend_metal_shaders.inc
@@ -22,7 +23,8 @@
 /// @brief Implements Metal context creation, pipeline and fixed-state construction,
 ///   frame initialization, and backend capability reporting.
 /// @details Objective-C resources created here are strongly retained by
-///   `VGFXMetalContext`. Context creation assembles mandatory state before publishing
+///   `VGFXMetalContext`; immutable libraries are also shared per device. Context creation
+///   assembles mandatory state before publishing
 ///   the opaque backend handle, while optional compact pipelines fail back to full vertices.
 
 /// @brief Build the MTLVertexDescriptor describing the interleaved 92-byte vgfx3d_vertex_t layout
@@ -488,13 +490,55 @@ static BOOL metal_create_command_queue_and_defaults(VGFXMetalContext *ctx, id<MT
     return YES;
 }
 
+/// @brief Compile or reuse one immutable shader library for a Metal device.
+/// @details Device keys use weak identity so the cache cannot extend a device's lifetime. The
+///   synchronized miss path deliberately includes compilation: concurrent canvas creation pays
+///   for each source bundle at most once per device, while failed compilations remain retryable.
+/// @param device Device whose compiled representation is required.
+/// @param cacheKey Stable name for one source bundle in this process image.
+/// @param source Complete MSL source for the bundle.
+/// @param error Optional compiler-error destination, cleared on cache hits.
+/// @return A shared immutable library or nil on compilation failure.
+static id<MTLLibrary> metal_cached_shader_library(id<MTLDevice> device,
+                                                  NSString *cacheKey,
+                                                  NSString *source,
+                                                  NSError **error) {
+    static NSMapTable *deviceCaches;
+    static dispatch_once_t cacheOnce;
+    if (!device || !cacheKey || !source)
+        return nil;
+    dispatch_once(&cacheOnce, ^{
+      NSPointerFunctionsOptions keyOptions =
+          NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality;
+      deviceCaches = [NSMapTable mapTableWithKeyOptions:keyOptions
+                                           valueOptions:NSPointerFunctionsStrongMemory];
+    });
+    @synchronized(deviceCaches) {
+        NSMutableDictionary *libraries = [deviceCaches objectForKey:device];
+        if (!libraries) {
+            libraries = [[NSMutableDictionary alloc] init];
+            [deviceCaches setObject:libraries forKey:device];
+        }
+        id<MTLLibrary> library = [libraries objectForKey:cacheKey];
+        if (library) {
+            if (error)
+                *error = nil;
+            return library;
+        }
+        library = [device newLibraryWithSource:source options:nil error:error];
+        if (library)
+            [libraries setObject:library forKey:cacheKey];
+        return library;
+    }
+}
+
 /// @brief Compile the main in-memory Metal shader library.
 /// @param[in,out] ctx Context receiving the compiled library.
 /// @param[in] device Metal device used for source compilation.
 /// @return `YES` when the library compiles; otherwise `NO`.
 static BOOL metal_compile_main_library(VGFXMetalContext *ctx, id<MTLDevice> device) {
     NSError *error = nil;
-    ctx.library = [device newLibraryWithSource:metal_shader_source options:nil error:&error];
+    ctx.library = metal_cached_shader_library(device, @"main", metal_shader_source, &error);
     if (!ctx.library) {
         NSLog(@ "[Metal] Shader error: %@", error);
         return NO;
@@ -1624,7 +1668,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
             NSString *postfxSrc = [postfxChunks componentsJoinedByString:@ ""];
 
             NSError *pfxErr = nil;
-            ctx.postfxLibrary = [device newLibraryWithSource:postfxSrc options:nil error:&pfxErr];
+            ctx.postfxLibrary = metal_cached_shader_library(device, @"postfx", postfxSrc, &pfxErr);
             if (ctx.postfxLibrary) {
                 id<MTLFunction> pfxVS = [ctx.postfxLibrary newFunctionWithName:@ "fullscreen_vs"];
                 id<MTLFunction> pfxFS = [ctx.postfxLibrary newFunctionWithName:@ "postfx_fs"];
@@ -1751,7 +1795,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                  "}\n";
             NSError *skyErr = nil;
             id<MTLLibrary> skyLib =
-                [device newLibraryWithSource:skyboxSrc options:nil error:&skyErr];
+                metal_cached_shader_library(device, @"skybox", skyboxSrc, &skyErr);
             if (skyLib) {
                 id<MTLFunction> skyVS = [skyLib newFunctionWithName:@ "skybox_vs"];
                 id<MTLFunction> skyFS = [skyLib newFunctionWithName:@ "skybox_fs"];

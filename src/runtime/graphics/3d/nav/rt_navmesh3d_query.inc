@@ -44,36 +44,46 @@
 
 typedef navmesh3d_heap_entry_t heap_entry_t;
 
-/// @brief Claim one independently mutable A* workspace from a navmesh's bounded pool.
-/// @details Every slot has its own arrays and ownership flag. The caller blocks on a counting
-///   gate only when all slots are occupied, allowing the common multi-worker case to run searches
-///   concurrently without a busy-wait loop.
+/// @brief Claim one independently mutable A* workspace from a navmesh's retained pool.
+/// @details A free retained slot is preferred. When all four are busy, the caller receives a
+///   transient workspace instead of blocking, so path concurrency scales with the worker pool.
 /// @param nm Navigation mesh whose workspace pool is queried.
 /// @return An exclusively owned slot, or NULL for a null navmesh.
 static navmesh3d_path_workspace_t *navmesh3d_path_workspace_acquire(rt_navmesh3d *nm) {
     if (!nm || !nm->path_workspace_gate)
         return NULL;
-    rt_gate_enter(nm->path_workspace_gate);
-    for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
-        int expected = 0;
-        if (rt_atomic_compare_exchange_i32(
-                &nm->path_workspaces[i].in_use, &expected, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-            int active = rt_atomic_fetch_add_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL) + 1;
-            int peak = rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE);
-            while (active > peak && !rt_atomic_compare_exchange_i32(&nm->path_peak_active_queries,
-                                                                    &peak,
-                                                                    active,
-                                                                    __ATOMIC_ACQ_REL,
-                                                                    __ATOMIC_ACQUIRE)) {
+    navmesh3d_path_workspace_t *claimed = NULL;
+    if (rt_gate_try_enter(nm->path_workspace_gate)) {
+        for (int i = 0; i < NAVMESH3D_PATH_WORKSPACE_COUNT; i++) {
+            int expected = 0;
+            if (rt_atomic_compare_exchange_i32(&nm->path_workspaces[i].in_use,
+                                               &expected,
+                                               1,
+                                               __ATOMIC_ACQ_REL,
+                                               __ATOMIC_ACQUIRE)) {
+                claimed = &nm->path_workspaces[i];
+                break;
             }
-            return &nm->path_workspaces[i];
         }
+        if (!claimed) {
+            rt_gate_leave(nm->path_workspace_gate);
+            rt_trap("NavMesh3D.FindPath: workspace gate invariant violated");
+            return NULL;
+        }
+    } else {
+        claimed = (navmesh3d_path_workspace_t *)calloc(1, sizeof(*claimed));
+        if (!claimed)
+            return NULL;
+        claimed->in_use = 1;
+        claimed->transient = 1;
     }
-    /* A permit is published only after its slot's ownership flag is cleared, so one complete scan
-     * must succeed. Restore the permit and contain any corrupted invariant without spinning. */
-    rt_gate_leave(nm->path_workspace_gate);
-    rt_trap("NavMesh3D.FindPath: workspace gate invariant violated");
-    return NULL;
+    int active = rt_atomic_fetch_add_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL) + 1;
+    int peak = rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE);
+    while (active > peak &&
+           !rt_atomic_compare_exchange_i32(
+               &nm->path_peak_active_queries, &peak, active, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    }
+    return claimed;
 }
 
 /// @brief Return one exclusively owned A* workspace to its navmesh pool.
@@ -83,7 +93,14 @@ static void navmesh3d_path_workspace_release(rt_navmesh3d *nm,
                                              navmesh3d_path_workspace_t *workspace) {
     if (!nm || !workspace)
         return;
+    rt_atomic_store_i32(&nm->last_path_touched_count, workspace->touched_count, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&nm->last_path_heap_peak, workspace->heap_peak, __ATOMIC_RELEASE);
     rt_atomic_fetch_sub_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL);
+    if (workspace->transient) {
+        navmesh3d_dispose_path_workspace(workspace);
+        free(workspace);
+        return;
+    }
     rt_atomic_store_i32(&workspace->in_use, 0, __ATOMIC_RELEASE);
     rt_gate_leave(nm->path_workspace_gate);
 }
@@ -103,18 +120,28 @@ static int navmesh3d_reserve_path_workspace(navmesh3d_path_workspace_t *workspac
         float *g_cost = (float *)malloc((size_t)triangle_count * sizeof(*g_cost));
         int32_t *parent = (int32_t *)malloc((size_t)triangle_count * sizeof(*parent));
         int8_t *closed = (int8_t *)malloc((size_t)triangle_count * sizeof(*closed));
-        if (!g_cost || !parent || !closed) {
+        uint32_t *node_generation =
+            (uint32_t *)calloc((size_t)triangle_count, sizeof(*node_generation));
+        int32_t *heap_positions =
+            (int32_t *)malloc((size_t)triangle_count * sizeof(*heap_positions));
+        if (!g_cost || !parent || !closed || !node_generation || !heap_positions) {
             free(g_cost);
             free(parent);
             free(closed);
+            free(node_generation);
+            free(heap_positions);
             return 0;
         }
         free(workspace->g_cost);
         free(workspace->parent);
         free(workspace->closed);
+        free(workspace->node_generation);
+        free(workspace->heap_positions);
         workspace->g_cost = g_cost;
         workspace->parent = parent;
         workspace->closed = closed;
+        workspace->node_generation = node_generation;
+        workspace->heap_positions = heap_positions;
         workspace->triangle_capacity = triangle_count;
     }
     if (heap_capacity > workspace->heap_capacity) {
@@ -212,36 +239,59 @@ int64_t rt_navmesh3d_test_get_path_workspace_permits(void *obj) {
     return nm && nm->path_workspace_gate ? rt_gate_get_permits(nm->path_workspace_gate) : 0;
 }
 
-/// @brief Push a `(triangle, f-score)` entry onto the A* min-heap and sift up. Comparison
-/// uses `f` (g + heuristic) so the heap top is always the lowest-cost open triangle.
-/// @note The `*size >= capacity` guard is an (intended) unreachable safety net, not a lossy
-/// drop: the caller sizes the heap to `triangle_count*3 + offmesh_links*2 + 8`, and the A*
-/// loop closes each triangle at most once, so every directed edge (≤3 triangle neighbours
-/// plus the off-mesh links incident on a node) triggers at most one push. Total pushes —
-/// and therefore the peak heap occupancy — can never exceed that capacity, so no frontier
-/// node is ever silently lost. The guard remains only to keep the function memory-safe were
-/// a future caller to under-size the buffer.
-/// @param heap Caller-owned heap storage.
-/// @param size In/out number of occupied heap entries.
-/// @param capacity Maximum number of entries available in @p heap.
-/// @param tri Triangle index stored in the new entry.
-/// @param f A* priority assigned to the new entry.
-static void heap_push(heap_entry_t *heap, int32_t *size, int32_t capacity, int32_t tri, float f) {
-    if (*size >= capacity)
-        return;
-    int32_t i = (*size)++;
-    heap[i].tri = tri;
-    heap[i].f = f;
-    /* Sift up */
+/// @brief Read the number of triangle records initialized by the most recently completed path.
+int64_t rt_navmesh3d_test_get_last_path_touched_count(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    return nm ? (int64_t)rt_atomic_load_i32(&nm->last_path_touched_count, __ATOMIC_ACQUIRE) : 0;
+}
+
+/// @brief Read the peak indexed-heap occupancy of the most recently completed path.
+int64_t rt_navmesh3d_test_get_last_path_heap_peak(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    return nm ? (int64_t)rt_atomic_load_i32(&nm->last_path_heap_peak, __ATOMIC_ACQUIRE) : 0;
+}
+
+/// @brief Swap two indexed heap entries while repairing their reverse positions.
+static void heap_swap(heap_entry_t *heap, int32_t *positions, int32_t a, int32_t b) {
+    heap_entry_t tmp = heap[a];
+    heap[a] = heap[b];
+    heap[b] = tmp;
+    positions[heap[a].tri] = a;
+    positions[heap[b].tri] = b;
+}
+
+/// @brief Insert a triangle or decrease its existing open-set priority.
+/// @details The reverse-position table guarantees at most one heap entry per triangle.
+static int heap_push_or_decrease(heap_entry_t *heap,
+                                 int32_t *positions,
+                                 int32_t *size,
+                                 int32_t capacity,
+                                 int32_t tri,
+                                 float f,
+                                 int32_t *peak) {
+    int32_t i = positions[tri];
+    if (i >= 0) {
+        if (f >= heap[i].f)
+            return 1;
+        heap[i].f = f;
+    } else {
+        if (*size >= capacity)
+            return 0;
+        i = (*size)++;
+        heap[i].tri = tri;
+        heap[i].f = f;
+        positions[tri] = i;
+        if (peak && *size > *peak)
+            *peak = *size;
+    }
     while (i > 0) {
         int32_t p = (i - 1) / 2;
         if (heap[p].f <= heap[i].f)
             break;
-        heap_entry_t tmp = heap[p];
-        heap[p] = heap[i];
-        heap[i] = tmp;
+        heap_swap(heap, positions, p, i);
         i = p;
     }
+    return 1;
 }
 
 /// @brief Pop the lowest-`f` triangle from the A* min-heap and sift down. Returns the
@@ -250,9 +300,14 @@ static void heap_push(heap_entry_t *heap, int32_t *size, int32_t capacity, int32
 /// @param heap Caller-owned, non-empty heap storage.
 /// @param size In/out number of occupied entries; decremented before returning.
 /// @return Triangle index from the removed minimum-priority entry.
-static int32_t heap_pop(heap_entry_t *heap, int32_t *size) {
+static int32_t heap_pop(heap_entry_t *heap, int32_t *positions, int32_t *size) {
     int32_t result = heap[0].tri;
-    heap[0] = heap[--(*size)];
+    positions[result] = -1;
+    --(*size);
+    if (*size > 0) {
+        heap[0] = heap[*size];
+        positions[heap[0].tri] = 0;
+    }
     /* Sift down */
     int32_t i = 0;
     for (;;) {
@@ -263,12 +318,22 @@ static int32_t heap_pop(heap_entry_t *heap, int32_t *size) {
             best = r;
         if (best == i)
             break;
-        heap_entry_t tmp = heap[i];
-        heap[i] = heap[best];
-        heap[best] = tmp;
+        heap_swap(heap, positions, i, best);
         i = best;
     }
     return result;
+}
+
+/// @brief Lazily initialize one triangle for the workspace's current search generation.
+static void navmesh3d_astar_touch(navmesh3d_path_workspace_t *workspace, int32_t tri) {
+    if (workspace->node_generation[tri] == workspace->generation)
+        return;
+    workspace->node_generation[tri] = workspace->generation;
+    workspace->g_cost[tri] = FLT_MAX;
+    workspace->parent[tri] = -1;
+    workspace->closed[tri] = 0;
+    workspace->heap_positions[tri] = -1;
+    workspace->touched_count++;
 }
 
 /// @brief Euclidean distance between two triangles' precomputed centroids. Used as the
@@ -369,87 +434,99 @@ static float navmesh3d_offmesh_cost(const nav_offmesh_link_t *link) {
 /// @param goal Destination triangle used by the heuristic.
 /// @param triangle_count Defensively bounded triangle-array length.
 /// @param link Directed off-mesh traversal being relaxed.
-/// @param g_cost In/out best-known path cost for every triangle.
-/// @param parent In/out predecessor triangle for every improved node.
-/// @param closed Read-only closed-set flags for this search.
-/// @param heap Open-set heap storage.
+/// @param workspace Exclusively owned lazy node state and indexed open-set storage.
 /// @param heap_size In/out number of occupied heap entries.
-/// @param heap_cap Capacity of @p heap.
 static void navmesh3d_astar_relax_offmesh(rt_navmesh3d *nm,
                                           int32_t cur,
                                           int32_t next,
                                           int32_t goal,
                                           int32_t triangle_count,
                                           const nav_offmesh_link_t *link,
-                                          float *g_cost,
-                                          int32_t *parent,
-                                          int8_t *closed,
-                                          heap_entry_t *heap,
-                                          int32_t *heap_size,
-                                          int32_t heap_cap) {
-    if (!nm || !link || next < 0 || next >= triangle_count || closed[next] ||
+                                          navmesh3d_path_workspace_t *workspace,
+                                          int32_t *heap_size) {
+    if (!nm || !link || !workspace || next < 0 || next >= triangle_count ||
         nm->triangles[next].blocked)
         return;
-    float new_g = g_cost[cur] + navmesh3d_offmesh_cost(link);
-    if (new_g < g_cost[next]) {
-        g_cost[next] = new_g;
-        parent[next] = cur;
-        heap_push(
-            heap, heap_size, heap_cap, next, new_g + navmesh3d_astar_heuristic(nm, next, goal));
+    navmesh3d_astar_touch(workspace, next);
+    if (workspace->closed[next])
+        return;
+    float new_g = workspace->g_cost[cur] + navmesh3d_offmesh_cost(link);
+    if (new_g < workspace->g_cost[next]) {
+        workspace->g_cost[next] = new_g;
+        workspace->parent[next] = cur;
+        (void)heap_push_or_decrease(workspace->heap,
+                                    workspace->heap_positions,
+                                    heap_size,
+                                    workspace->heap_capacity,
+                                    next,
+                                    new_g + navmesh3d_astar_heuristic(nm, next, goal),
+                                    &workspace->heap_peak);
     }
 }
 
 /// @brief A* search over the navmesh triangle graph (edges + off-mesh links).
-/// @details Caller owns the @p g_cost, @p parent, @p closed, and @p heap buffers. The search
-/// fills the cost and predecessor arrays while consuming the initialized open and closed sets.
+/// @details The caller-exclusive workspace lazily initializes only visited triangles and holds an
+///   indexed heap with at most one open-set entry per triangle.
 /// @param nm Navigation mesh whose graph is searched.
 /// @param start Starting triangle index.
 /// @param goal Destination triangle index.
-/// @param g_cost In/out best-known path cost per triangle.
-/// @param parent In/out predecessor triangle per node.
-/// @param closed In/out closed-set flags per triangle.
-/// @param heap Caller-owned open-set heap.
-/// @param heap_cap Capacity of @p heap.
+/// @param workspace Exclusively owned A* state and scratch buffers.
 /// @return One if @p goal was reached, otherwise zero.
 static int navmesh3d_astar_search(rt_navmesh3d *nm,
                                   int32_t start,
                                   int32_t goal,
-                                  float *g_cost,
-                                  int32_t *parent,
-                                  int8_t *closed,
-                                  heap_entry_t *heap,
-                                  int32_t heap_cap) {
+                                  navmesh3d_path_workspace_t *workspace) {
     int32_t tc = navmesh3d_read_triangle_count(nm);
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     int32_t heap_size = 0;
-    if (!nm || !g_cost || !parent || !closed || !heap || start < 0 || start >= tc || goal < 0 ||
-        goal >= tc || heap_cap <= 0)
+    if (!nm || !workspace || !workspace->g_cost || !workspace->parent || !workspace->closed ||
+        !workspace->node_generation || !workspace->heap_positions || !workspace->heap ||
+        start < 0 || start >= tc || goal < 0 || goal >= tc || workspace->heap_capacity < tc)
         return 0;
+    workspace->generation++;
+    if (workspace->generation == 0) {
+        memset(workspace->node_generation, 0, (size_t)tc * sizeof(*workspace->node_generation));
+        workspace->generation = 1;
+    }
+    workspace->touched_count = 0;
+    workspace->heap_peak = 0;
     (void)navmesh3d_ensure_offmesh_adjacency(nm);
-    g_cost[start] = 0;
-    heap_push(heap, &heap_size, heap_cap, start, navmesh3d_astar_heuristic(nm, start, goal));
+    navmesh3d_astar_touch(workspace, start);
+    workspace->g_cost[start] = 0;
+    if (!heap_push_or_decrease(workspace->heap,
+                               workspace->heap_positions,
+                               &heap_size,
+                               workspace->heap_capacity,
+                               start,
+                               navmesh3d_astar_heuristic(nm, start, goal),
+                               &workspace->heap_peak))
+        return 0;
     while (heap_size > 0) {
-        int32_t cur = heap_pop(heap, &heap_size);
+        int32_t cur = heap_pop(workspace->heap, workspace->heap_positions, &heap_size);
         if (cur == goal)
             return 1;
-        if (closed[cur])
-            continue;
-        closed[cur] = 1;
+        workspace->closed[cur] = 1;
 
         for (int e = 0; e < 3; e++) {
             int32_t next = nm->triangles[cur].neighbors[e];
-            if (next < 0 || next >= tc || closed[next] || nm->triangles[next].blocked)
+            if (next < 0 || next >= tc || nm->triangles[next].blocked)
+                continue;
+            navmesh3d_astar_touch(workspace, next);
+            if (workspace->closed[next])
                 continue;
 
-            float new_g = g_cost[cur] + navmesh3d_edge_cost(nm, cur, next);
-            if (new_g < g_cost[next]) {
-                g_cost[next] = new_g;
-                parent[next] = cur;
-                heap_push(heap,
-                          &heap_size,
-                          heap_cap,
-                          next,
-                          new_g + navmesh3d_astar_heuristic(nm, next, goal));
+            float new_g = workspace->g_cost[cur] + navmesh3d_edge_cost(nm, cur, next);
+            if (new_g < workspace->g_cost[next]) {
+                workspace->g_cost[next] = new_g;
+                workspace->parent[next] = cur;
+                if (!heap_push_or_decrease(workspace->heap,
+                                           workspace->heap_positions,
+                                           &heap_size,
+                                           workspace->heap_capacity,
+                                           next,
+                                           new_g + navmesh3d_astar_heuristic(nm, next, goal),
+                                           &workspace->heap_peak))
+                    return 0;
             }
         }
 
@@ -465,18 +542,7 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
                     continue;
                 const nav_offmesh_link_t *link = &nm->offmesh_links[li];
                 int32_t next = reverse ? link->from_tri : link->to_tri;
-                navmesh3d_astar_relax_offmesh(nm,
-                                              cur,
-                                              next,
-                                              goal,
-                                              tc,
-                                              link,
-                                              g_cost,
-                                              parent,
-                                              closed,
-                                              heap,
-                                              &heap_size,
-                                              heap_cap);
+                navmesh3d_astar_relax_offmesh(nm, cur, next, goal, tc, link, workspace, &heap_size);
             }
         } else {
             for (int32_t li = 0; li < link_count; li++) {
@@ -486,18 +552,7 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
                     next = link->to_tri;
                 else if (link->bidirectional && link->to_tri == cur)
                     next = link->from_tri;
-                navmesh3d_astar_relax_offmesh(nm,
-                                              cur,
-                                              next,
-                                              goal,
-                                              tc,
-                                              link,
-                                              g_cost,
-                                              parent,
-                                              closed,
-                                              heap,
-                                              &heap_size,
-                                              heap_cap);
+                navmesh3d_astar_relax_offmesh(nm, cur, next, goal, tc, link, workspace, &heap_size);
             }
         }
     }
@@ -802,15 +857,12 @@ static double *navmesh3d_reconstruct_path(rt_navmesh3d *nm,
     for (int32_t c = goal; c != -1; c = parent[c])
         seq[idx--] = c;
 
-    /* String-pulling emits at most 2 waypoints per triangle transition (a portal midpoint,
-     * or an off-mesh link's two endpoints) across `count-1` transitions, plus the start and
-     * end points — i.e. at most ~2*count points. `count*3 + 2` is a deliberately generous
-     * upper bound with headroom; if the funnel emitter is ever changed to emit more points
-     * per segment, keep this >= the real per-segment bound rather than trusting the literal. */
-    if (count > (INT32_MAX - 2) / 3) {
+    /* Every transition emits at most two waypoints and the endpoints add two more, yielding
+     * exactly `2*count` as a safe bound for every multi-triangle corridor. */
+    if (count > INT32_MAX / 2) {
         return NULL;
     }
-    max_points = count * 3 + 2;
+    max_points = count * 2;
     points = (double *)malloc((size_t)max_points * 3u * sizeof(double));
     if (!points) {
         return NULL;
@@ -865,17 +917,21 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
         *out_points_xyz = NULL;
     float from_p[3];
     float to_p[3];
-    if (!obj || !navmesh3d_read_point3f(from_v, from_p) || !navmesh3d_read_point3f(to_v, to_p))
+    double from_exact[3];
+    double to_exact[3];
+    if (!obj || !navmesh3d_read_query_point(from_v, from_exact, from_p) ||
+        !navmesh3d_read_query_point(to_v, to_exact, to_p))
         return 0;
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     int32_t tc = navmesh3d_read_triangle_count(nm);
-    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     if (!nm || tc <= 0 || !nm->vertices)
         return 0;
     navmesh3d_store_last_path_cost(nm, 0.0);
+    rt_atomic_store_i32(&nm->last_path_touched_count, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i32(&nm->last_path_heap_peak, 0, __ATOMIC_RELEASE);
 
-    double fdx = from_p[0], fdy = from_p[1], fdz = from_p[2];
-    double tdx = to_p[0], tdy = to_p[1], tdz = to_p[2];
+    double fdx = from_exact[0], fdy = from_exact[1], fdz = from_exact[2];
+    double tdx = to_exact[0], tdy = to_exact[1], tdz = to_exact[2];
     float fx = from_p[0], fy = from_p[1], fz = from_p[2];
     float tx = to_p[0], ty = to_p[1], tz = to_p[2];
     float max_dy = navmesh3d_vertical_tolerance(nm);
@@ -910,31 +966,19 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
     }
 
     /* A* */
-    if (tc > INT32_MAX / 3)
-        return 0;
-    int64_t heap_cap64 = (int64_t)tc * 3 + (int64_t)link_count * 2 + 8;
-    if (heap_cap64 <= 0 || heap_cap64 > INT32_MAX)
-        return 0;
-    int32_t heap_cap = (int32_t)heap_cap64;
     if ((size_t)tc > SIZE_MAX / sizeof(float) || (size_t)tc > SIZE_MAX / sizeof(int32_t) ||
-        (size_t)tc > SIZE_MAX / sizeof(int8_t) ||
-        (size_t)heap_cap > SIZE_MAX / sizeof(heap_entry_t))
+        (size_t)tc > SIZE_MAX / sizeof(int8_t) || (size_t)tc > SIZE_MAX / sizeof(uint32_t) ||
+        (size_t)tc > SIZE_MAX / sizeof(heap_entry_t))
         return 0;
     navmesh3d_path_workspace_t *workspace = navmesh3d_path_workspace_acquire(nm);
-    if (!workspace || !navmesh3d_reserve_path_workspace(workspace, tc, heap_cap)) {
+    if (!workspace || !navmesh3d_reserve_path_workspace(workspace, tc, tc)) {
         navmesh3d_path_workspace_release(nm, workspace);
         return 0;
     }
     float *g_cost = workspace->g_cost;
     int32_t *parent = workspace->parent;
-    int8_t *closed = workspace->closed;
-    heap_entry_t *heap = workspace->heap;
-    memset(closed, 0, (size_t)tc * sizeof(*closed));
-    memset(parent, -1, (size_t)tc * sizeof(int32_t));
-    for (int32_t i = 0; i < tc; i++)
-        g_cost[i] = FLT_MAX;
 
-    if (navmesh3d_astar_search(nm, start, goal, g_cost, parent, closed, heap, heap_cap)) {
+    if (navmesh3d_astar_search(nm, start, goal, workspace)) {
         navmesh3d_store_last_path_cost(nm, (double)g_cost[goal]);
         points = navmesh3d_reconstruct_path(
             nm, workspace, parent, goal, fx, fy, fz, fdx, fdy, fdz, tdx, tdy, tdz, &point_count);
@@ -966,10 +1010,10 @@ void *rt_navmesh3d_find_path(void *obj, void *from_v, void *to_v) {
         free(points);
         return NULL;
     }
-    for (int64_t i = 0; i < point_count; i++) {
-        void *point = rt_vec3_new(points[i * 3 + 0], points[i * 3 + 1], points[i * 3 + 2]);
-        rt_path3d_add_point(path, point);
-        navmesh3d_release_local(point);
+    if (!rt_path3d_append_xyz_batch_internal(path, points, point_count)) {
+        free(points);
+        navmesh3d_release_local(path);
+        return NULL;
     }
     free(points);
     return path;

@@ -17,7 +17,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_animcontroller3d.h"
 #include "rt_cloth3d.h"
+#include "rt_skeleton3d.h"
+#include "rt_string.h"
 #include "rt_vec3.h"
 
 #include <cfloat>
@@ -25,6 +28,7 @@
 #include <cstdio>
 
 extern "C" int64_t rt_cloth3d_last_collision_narrowphase_tests_for_test(void *obj);
+extern "C" int64_t rt_cloth3d_last_bone_parent_reads_for_test(void *obj);
 
 static int tests_passed = 0;
 static int tests_run = 0;
@@ -208,6 +212,24 @@ static void test_collider_aabb_shortlist_prunes_far_narrowphase_work() {
                 "Collider AABBs shortlist a 4096-point cloth before closest-point tests");
 }
 
+static void test_bone_chain_binding_builds_children_in_one_pass() {
+    void *skeleton = rt_skeleton3d_new();
+    int64_t parent = -1;
+    for (int bone = 0; bone < 32; ++bone) {
+        char name[16];
+        int length = std::snprintf(name, sizeof(name), "bone-%d", bone);
+        parent = rt_skeleton3d_add_bone(
+            skeleton, rt_string_from_bytes(name, (size_t)length), parent, nullptr);
+    }
+    void *animator = rt_anim_controller3d_new(skeleton);
+    void *cloth = rt_cloth3d_new_chain(32, 3.2);
+
+    EXPECT_TRUE(rt_cloth3d_bind_bone_chain(cloth, animator, rt_const_cstr("bone-0")) == cloth,
+                "linear bone chain binds successfully");
+    EXPECT_TRUE(rt_cloth3d_last_bone_parent_reads_for_test(cloth) == 32,
+                "bone-chain binding reads each parent exactly once");
+}
+
 int main() {
     test_chain_settles();
     test_determinism_replay();
@@ -216,6 +238,7 @@ int main() {
     test_pins_hold();
     test_extreme_inputs_remain_finite();
     test_collider_aabb_shortlist_prunes_far_narrowphase_work();
+    test_bone_chain_binding_builds_children_in_one_pass();
     std::printf("%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

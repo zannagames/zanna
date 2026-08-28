@@ -355,6 +355,19 @@ vgfx3d_metal_readback_kind_t vgfx3d_metal_choose_readback_kind(int8_t gpu_postfx
                               : VGFX3D_METAL_READBACK_BACKBUFFER;
 }
 
+/// @brief ADR 0301: a render-target frame resolves through the chain whenever a usable
+///   chain snapshot is installed and the pipelines/command buffer exist — independent of
+///   the window present route.
+/// @param chain_valid Nonzero when a usable chain snapshot is installed for this frame.
+/// @param pipelines_ready Nonzero when both post-FX pipelines compiled.
+/// @param has_command_buffer Nonzero when the frame's command buffer is open.
+/// @return 1 when the display resolve should run, otherwise 0.
+int8_t vgfx3d_metal_should_resolve_render_target_display(int8_t chain_valid,
+                                                          int8_t pipelines_ready,
+                                                          int8_t has_command_buffer) {
+    return (chain_valid && pipelines_ready && has_command_buffer) ? 1 : 0;
+}
+
 /// @brief Clamp light shadow indices to completed contiguous shadow-map slots.
 /// @param shadow_index Requested zero-based shadow slot.
 /// @param shadow_count Number of complete contiguous slots available for sampling.

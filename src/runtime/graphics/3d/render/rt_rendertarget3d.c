@@ -315,6 +315,8 @@ static void rt_rendertarget3d_finalize(void *obj) {
         rtd->owned_target = NULL;
     }
     rendertarget3d_release_material_pixels(rtd);
+    vgfx3d_postfx_chain_free(&rtd->display_chain);
+    rtd->display_chain_valid = 0;
 }
 
 /// @brief Validate @p obj as a RenderTarget3D handle and return its typed pointer (NULL on
@@ -365,6 +367,10 @@ static void *rt_rendertarget3d_new_with_format(int64_t width,
     rtd->allocation_color_format = (int32_t)color_format;
     rtd->allocation_estimated_bytes = 0u;
     rtd->allocation_cache_identity = 0u;
+    vgfx3d_postfx_chain_reset(&rtd->display_chain);
+    rtd->display_chain_valid = 0;
+    rtd->display_chain_revision = 0u;
+    rtd->display_resolved_revision = 0u;
     rtd->target = rt_alloc((int32_t)width, (int32_t)height, color_format);
 
     if (!rtd->target) {
@@ -446,9 +452,13 @@ int32_t rt_rendertarget3d_get_is_hdr(void *obj) {
 
 /// @brief Copy the render target contents into a new Pixels object for CPU access.
 /// @details Converts the CPU readback buffer to Pixels' packed uint32_t format
-///          (0xRRGGBBAA). HDR render targets are tonemapped into that buffer by
-///          the active GPU backend before this copy occurs. This is a full copy
-///          — the Pixels can be used as a texture, saved to disk, or processed
+///          (0xRRGGBBAA). The copy is SCENE-REFERRED: HDR targets are range-
+///          compressed to 8 bits by the backend readback (a bare Reinhard curve, no
+///          display gamma) and LDR targets are the clamped linear colour — the
+///          post-FX chain is NOT applied here (ADR 0299 §3). Only the material
+///          mirror used when the target is sampled as a texture is display-referred
+///          (ADR 0301, `rt_rendertarget3d_material_pixels`). This is a full copy —
+///          the Pixels can be used as a texture, saved to disk, or processed
 ///          independently.
 /// @param obj Render target handle.
 /// @return New Pixels handle with the framebuffer contents, or NULL on failure.
@@ -624,8 +634,18 @@ void *rt_rendertarget3d_material_pixels(void *obj) {
     }
     if (rtd->material_pixels_revision != rtd->target->content_revision) {
         rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(rtd->material_pixels);
-        if (pv && rendertarget3d_read_into_pixels(rtd, pv))
+        if (pv && rendertarget3d_read_into_pixels(rtd, pv)) {
             rtd->material_pixels_revision = rtd->target->content_revision;
+            /* ADR 0301: encode the mirror through the chain the frame was
+             * rendered under, exactly once per completed frame, so a sampled
+             * target reads display-referred on mirror-path backends too. */
+            if (rtd->display_chain_valid &&
+                rtd->display_chain_revision == rtd->target->content_revision &&
+                rtd->display_resolved_revision != rtd->target->content_revision &&
+                rt_postfx3d_resolve_display_pixels(
+                    &rtd->display_chain, rtd->target, rtd->material_pixels))
+                rtd->display_resolved_revision = rtd->target->content_revision;
+        }
     }
     return rtd->material_pixels;
 }

@@ -33,6 +33,7 @@
 
 #include "rt_path3d.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_path3d_internal.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -57,6 +58,8 @@ extern double rt_vec3_z(void *v);
 
 #define PATH3D_SPLINE_SUBSTEPS 64
 #define PATH3D_MAX_SPLINE_SAMPLES 1000001
+
+static int8_t g_path3d_test_force_coordinate_alloc_failure = 0;
 
 /**
  * @brief Mutable storage and derived-data caches for one Path3D object.
@@ -93,6 +96,8 @@ typedef struct {
     double *owned_ys;
     double *owned_zs;
     double *owned_spline_cumulative;
+    ///< Single allocation backing owned_xs/owned_ys/owned_zs in three contiguous slices.
+    double *owned_points;
 } rt_path3d;
 
 /// @brief Validate both the Path3D class tag and the complete private payload size.
@@ -103,24 +108,28 @@ static rt_path3d *path3d_checked_or_null(void *obj) {
                                                                               : NULL;
 }
 
-/// @brief GC finalizer — release the three parallel coordinate arrays.
+/// @brief GC finalizer — release the allocation backing the three coordinate slices.
 /// @details Path control points are stored in struct-of-arrays layout
 ///   (separate `xs`, `ys`, `zs` rather than a packed Vec3 array) so each
 ///   axis can be cache-linearly scanned during length integration. The
-///   three arrays are always index-aligned and reallocated together; the
-///   finalizer releases each independently and zeros the counts so a
-///   stale post-finalize read sees an empty path rather than dangling
-///   pointers.
+///   three slices are always index-aligned in one allocation; the legacy
+///   three-allocation fallback remains for defensive compatibility. Counts and
+///   pointers are cleared so stale post-finalize reads see an empty path.
 /// @param obj Path3D allocation whose owned arrays are released; may be NULL.
 static void path3d_finalizer(void *obj) {
     rt_path3d *p = (rt_path3d *)obj;
     if (!p)
         return;
-    free(p->owned_xs);
-    free(p->owned_ys);
-    free(p->owned_zs);
+    if (p->owned_points) {
+        free(p->owned_points);
+    } else {
+        free(p->owned_xs);
+        free(p->owned_ys);
+        free(p->owned_zs);
+    }
     p->xs = p->ys = p->zs = NULL;
     p->owned_xs = p->owned_ys = p->owned_zs = NULL;
+    p->owned_points = NULL;
     p->point_count = p->point_capacity = 0;
     p->point_allocation_capacity = 0;
     free(p->owned_spline_cumulative);
@@ -257,12 +266,11 @@ static void path3d_repair(rt_path3d *p) {
     }
 }
 
-/// @brief Grow the parallel `xs` / `ys` / `zs` coordinate arrays to hold @p min_capacity entries.
+/// @brief Grow the parallel `xs` / `ys` / `zs` coordinate slices to hold @p min_capacity entries.
 /// @details Geometric growth (doubling from PATH3D_INIT_CAP) keeps amortised
-///   `add_point` cost O(1). All three arrays are reallocated together and on
-///   any failure the new buffers are freed before returning so the path stays
-///   in its previous valid state. Returns 1 on success, 0 (after `rt_trap`) on
-///   overflow or OOM.
+///   `add_point` cost O(1). A single replacement allocation is partitioned into
+///   three slices and published only after all existing coordinates are copied.
+///   Returns 1 on success, 0 after overflow/OOM reporting.
 /// @param p Path whose parallel coordinate arrays may be replaced.
 /// @param min_capacity Minimum number of point slots required.
 /// @return One when the requested capacity is available, otherwise zero.
@@ -280,34 +288,39 @@ static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
         }
         new_cap *= 2;
     }
-    if ((size_t)new_cap > SIZE_MAX / sizeof(double)) {
+    if ((size_t)new_cap > SIZE_MAX / (3u * sizeof(double))) {
         rt_trap("Path3D.AddPoint: allocation size overflow");
         return 0;
     }
-    double *new_xs = (double *)malloc((size_t)new_cap * sizeof(double));
-    double *new_ys = (double *)malloc((size_t)new_cap * sizeof(double));
-    double *new_zs = (double *)malloc((size_t)new_cap * sizeof(double));
-    if (!new_xs || !new_ys || !new_zs) {
-        free(new_xs);
-        free(new_ys);
-        free(new_zs);
+    if (g_path3d_test_force_coordinate_alloc_failure)
+        return 0;
+    double *new_points = (double *)malloc((size_t)new_cap * 3u * sizeof(double));
+    if (!new_points) {
         rt_trap("Path3D.AddPoint: allocation failed");
         return 0;
     }
+    double *new_xs = new_points;
+    double *new_ys = new_points + new_cap;
+    double *new_zs = new_points + (size_t)new_cap * 2u;
     if (p->point_count > 0) {
         memcpy(new_xs, p->xs, (size_t)p->point_count * sizeof(double));
         memcpy(new_ys, p->ys, (size_t)p->point_count * sizeof(double));
         memcpy(new_zs, p->zs, (size_t)p->point_count * sizeof(double));
     }
-    free(p->owned_xs);
-    free(p->owned_ys);
-    free(p->owned_zs);
+    if (p->owned_points) {
+        free(p->owned_points);
+    } else {
+        free(p->owned_xs);
+        free(p->owned_ys);
+        free(p->owned_zs);
+    }
     p->xs = new_xs;
     p->ys = new_ys;
     p->zs = new_zs;
     p->owned_xs = new_xs;
     p->owned_ys = new_ys;
     p->owned_zs = new_zs;
+    p->owned_points = new_points;
     p->point_capacity = new_cap;
     p->point_allocation_capacity = new_cap;
     return 1;
@@ -326,9 +339,10 @@ void *rt_path3d_new(void) {
         return NULL;
     }
     p->vptr = NULL;
-    p->owned_xs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
-    p->owned_ys = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
-    p->owned_zs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
+    p->owned_points = (double *)calloc(PATH3D_INIT_CAP * 3u, sizeof(double));
+    p->owned_xs = p->owned_points;
+    p->owned_ys = p->owned_points ? p->owned_points + PATH3D_INIT_CAP : NULL;
+    p->owned_zs = p->owned_points ? p->owned_points + PATH3D_INIT_CAP * 2u : NULL;
     p->xs = p->owned_xs;
     p->ys = p->owned_ys;
     p->zs = p->owned_zs;
@@ -352,6 +366,38 @@ void *rt_path3d_new(void) {
     p->spline_capacity = 0;
     rt_obj_set_finalizer(p, path3d_finalizer);
     return p;
+}
+
+/// @brief Append packed XYZ coordinates after one transactional reserve.
+/// @details No point is published until enough storage exists for the entire batch. Coordinate
+///   sanitization cannot fail, so a successful reserve makes publication all-or-nothing.
+int32_t rt_path3d_append_xyz_batch_internal(void *obj,
+                                            const double *points_xyz,
+                                            int64_t point_count) {
+    rt_path3d *p = path3d_checked_or_null(obj);
+    if (!p || !points_xyz || point_count < 0 || point_count > INT32_MAX)
+        return 0;
+    if (point_count == 0)
+        return 1;
+    path3d_repair_storage(p);
+    if (point_count > INT32_MAX - p->point_count ||
+        !path3d_reserve(p, p->point_count + (int32_t)point_count))
+        return 0;
+    int32_t first = p->point_count;
+    for (int64_t i = 0; i < point_count; ++i) {
+        p->xs[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 0], 0.0);
+        p->ys[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 1], 0.0);
+        p->zs[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 2], 0.0);
+    }
+    p->point_count += (int32_t)point_count;
+    p->length_dirty = 1;
+    p->spline_dirty = 1;
+    return 1;
+}
+
+/// @brief Test-only deterministic failure injection for coordinate-storage growth.
+void rt_path3d_test_set_coordinate_alloc_failure(int8_t enabled) {
+    g_path3d_test_force_coordinate_alloc_failure = enabled ? 1 : 0;
 }
 
 /// @brief Append a control point to the path (invalidates cached arc length).

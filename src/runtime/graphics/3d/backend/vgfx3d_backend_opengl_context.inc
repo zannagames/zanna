@@ -13,6 +13,7 @@
 // Ownership/Lifetime:
 //   - This file is included by vgfx3d_backend_opengl.c and is not a standalone translation unit.
 //   - GL objects and native bindings belong to gl_context_t until gl_destroy_ctx.
+//   - Optional driver program binaries are bounded process-lifetime host allocations.
 // Links: vgfx3d_backend_opengl.c, vgfx3d_backend_opengl_shaders.inc
 //
 //===----------------------------------------------------------------------===//
@@ -20,8 +21,8 @@
 /// @file
 /// @brief Implements OpenGL native-context creation, fixed resource setup, and teardown.
 /// @details Context construction is transactional: it resolves a compatible native binding,
-///          probes capabilities, compiles and links all shader programs, creates fixed GL
-///          resources, and unwinds every completed stage when a later stage fails.
+///          probes capabilities, loads cached driver binaries or compiles every program, creates
+///          fixed GL resources, and unwinds every completed stage when a later stage fails.
 
 typedef struct gl_shader_set_t {
     GLuint vs;
@@ -303,7 +304,196 @@ static void gl_delete_context_shaders(gl_shader_set_t *shaders) {
         gl.DeleteShader(shaders->bloom_up_fs);
     if (shaders->taa_fs)
         gl.DeleteShader(shaders->taa_fs);
+    if (shaders->ssr_fs)
+        gl.DeleteShader(shaders->ssr_fs);
     memset(shaders, 0, sizeof(*shaders));
+}
+
+#define GL_CONTEXT_PROGRAM_COUNT 9
+#define GL_PROGRAM_BINARY_MAX_BYTES (16u * 1024u * 1024u)
+
+/// @brief One driver-owned linked-program representation cached in host memory.
+typedef struct gl_program_binary_t {
+    void *bytes;
+    GLsizei length;
+    GLenum format;
+} gl_program_binary_t;
+
+/// @brief Process cache for one clip convention and one OpenGL driver identity.
+typedef struct gl_program_binary_cache_t {
+    uint64_t driver_hash;
+    int valid;
+    gl_program_binary_t programs[GL_CONTEXT_PROGRAM_COUNT];
+} gl_program_binary_cache_t;
+
+static gl_program_binary_cache_t g_gl_program_binary_caches[2];
+static int g_gl_program_binary_cache_lock = 0;
+
+/// @brief Serialize process-cache publication and loading across GL contexts.
+static void gl_program_binary_cache_lock(void) {
+    int spins = 0;
+    while (rt_atomic_test_and_set(&g_gl_program_binary_cache_lock, __ATOMIC_ACQUIRE)) {
+        if (++spins >= 64) {
+            sched_yield();
+            spins = 0;
+        }
+    }
+}
+
+/// @brief Release the process program-binary cache lock.
+static void gl_program_binary_cache_unlock(void) {
+    rt_atomic_clear(&g_gl_program_binary_cache_lock, __ATOMIC_RELEASE);
+}
+
+/// @brief Hash the current vendor, renderer, and driver-version identity.
+static uint64_t gl_program_binary_driver_hash(void) {
+    const GLenum names[3] = {GL_VENDOR, GL_RENDERER, GL_VERSION};
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (int name = 0; name < 3; ++name) {
+        const unsigned char *text = gl.GetString ? gl.GetString(names[name]) : NULL;
+        if (!text)
+            return 0;
+        while (*text) {
+            hash ^= (uint64_t)*text++;
+            hash *= UINT64_C(1099511628211);
+        }
+        hash ^= UINT64_C(0xFF);
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+/// @brief Copy context program names into their stable cache order.
+static void gl_context_program_array(const gl_context_t *ctx,
+                                     GLuint programs[GL_CONTEXT_PROGRAM_COUNT]) {
+    programs[0] = ctx->program;
+    programs[1] = ctx->unlit_program;
+    programs[2] = ctx->shadow_program;
+    programs[3] = ctx->postfx_program;
+    programs[4] = ctx->skybox_program;
+    programs[5] = ctx->bloom_down_program;
+    programs[6] = ctx->bloom_up_program;
+    programs[7] = ctx->taa_program;
+    programs[8] = ctx->ssr_program;
+}
+
+/// @brief Publish program names loaded from the stable cache order.
+static void gl_assign_context_program_array(gl_context_t *ctx,
+                                            const GLuint programs[GL_CONTEXT_PROGRAM_COUNT]) {
+    ctx->program = programs[0];
+    ctx->unlit_program = programs[1];
+    ctx->shadow_program = programs[2];
+    ctx->postfx_program = programs[3];
+    ctx->skybox_program = programs[4];
+    ctx->bloom_down_program = programs[5];
+    ctx->bloom_up_program = programs[6];
+    ctx->taa_program = programs[7];
+    ctx->ssr_program = programs[8];
+}
+
+/// @brief Free and invalidate one cache record while its lock is held.
+static void gl_clear_program_binary_cache(gl_program_binary_cache_t *cache) {
+    if (!cache)
+        return;
+    for (int i = 0; i < GL_CONTEXT_PROGRAM_COUNT; ++i)
+        free(cache->programs[i].bytes);
+    memset(cache, 0, sizeof(*cache));
+}
+
+/// @brief Load all linked programs from the current driver's process cache.
+/// @return Nonzero only when the complete suite validates in the current context.
+static int gl_try_load_context_program_binaries(gl_context_t *ctx, int zero_to_one_clip) {
+    GLuint loaded[GL_CONTEXT_PROGRAM_COUNT] = {0};
+    uint64_t driver_hash;
+    gl_program_binary_cache_t *cache;
+    int ok = 1;
+    if (!ctx || !gl.ProgramBinary || !gl.GetProgramBinary || !gl.ProgramParameteri)
+        return 0;
+    driver_hash = gl_program_binary_driver_hash();
+    if (!driver_hash)
+        return 0;
+    cache = &g_gl_program_binary_caches[zero_to_one_clip ? 1 : 0];
+    gl_program_binary_cache_lock();
+    if (!cache->valid || cache->driver_hash != driver_hash) {
+        gl_program_binary_cache_unlock();
+        return 0;
+    }
+    for (int i = 0; i < GL_CONTEXT_PROGRAM_COUNT; ++i) {
+        GLint linked = GL_FALSE;
+        const gl_program_binary_t *binary = &cache->programs[i];
+        loaded[i] = gl.CreateProgram();
+        if (!loaded[i] || !binary->bytes || binary->length <= 0) {
+            ok = 0;
+            break;
+        }
+        gl.ProgramBinary(loaded[i], binary->format, binary->bytes, binary->length);
+        gl.GetProgramiv(loaded[i], GL_LINK_STATUS, &linked);
+        if (linked != GL_TRUE) {
+            ok = 0;
+            break;
+        }
+    }
+    if (!ok)
+        gl_clear_program_binary_cache(cache);
+    gl_program_binary_cache_unlock();
+    if (!ok) {
+        for (int i = 0; i < GL_CONTEXT_PROGRAM_COUNT; ++i) {
+            if (loaded[i])
+                gl.DeleteProgram(loaded[i]);
+        }
+        return 0;
+    }
+    gl_assign_context_program_array(ctx, loaded);
+    return 1;
+}
+
+/// @brief Save a newly linked complete program suite for later isolated contexts.
+static void gl_store_context_program_binaries(const gl_context_t *ctx, int zero_to_one_clip) {
+    gl_program_binary_t staged[GL_CONTEXT_PROGRAM_COUNT] = {{0}};
+    GLuint programs[GL_CONTEXT_PROGRAM_COUNT];
+    uint64_t total_bytes = 0;
+    uint64_t driver_hash;
+    int complete = 1;
+    if (!ctx || !gl.ProgramBinary || !gl.GetProgramBinary || !gl.ProgramParameteri)
+        return;
+    driver_hash = gl_program_binary_driver_hash();
+    if (!driver_hash)
+        return;
+    gl_context_program_array(ctx, programs);
+    for (int i = 0; i < GL_CONTEXT_PROGRAM_COUNT; ++i) {
+        GLint required = 0;
+        GLsizei written = 0;
+        gl.GetProgramiv(programs[i], GL_PROGRAM_BINARY_LENGTH, &required);
+        if (required <= 0 || (uint32_t)required > GL_PROGRAM_BINARY_MAX_BYTES ||
+            total_bytes + (uint32_t)required > GL_PROGRAM_BINARY_MAX_BYTES) {
+            complete = 0;
+            break;
+        }
+        staged[i].bytes = malloc((size_t)required);
+        if (!staged[i].bytes) {
+            complete = 0;
+            break;
+        }
+        gl.GetProgramBinary(programs[i], required, &written, &staged[i].format, staged[i].bytes);
+        if (written <= 0 || written > required) {
+            complete = 0;
+            break;
+        }
+        staged[i].length = written;
+        total_bytes += (uint32_t)written;
+    }
+    if (complete) {
+        gl_program_binary_cache_t *cache = &g_gl_program_binary_caches[zero_to_one_clip ? 1 : 0];
+        gl_program_binary_cache_lock();
+        gl_clear_program_binary_cache(cache);
+        cache->driver_hash = driver_hash;
+        cache->valid = 1;
+        memcpy(cache->programs, staged, sizeof(staged));
+        memset(staged, 0, sizeof(staged));
+        gl_program_binary_cache_unlock();
+    }
+    for (int i = 0; i < GL_CONTEXT_PROGRAM_COUNT; ++i)
+        free(staged[i].bytes);
 }
 
 /// @brief Link shader programs from the temporary shader bundle.
@@ -920,21 +1110,23 @@ static void *gl_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
     }
     gl_query_anisotropy_support(ctx);
 
-    if (!gl_compile_context_shaders(&shaders, ctx->zero_to_one_clip)) {
+    if (!gl_try_load_context_program_binaries(ctx, ctx->zero_to_one_clip)) {
+        if (!gl_compile_context_shaders(&shaders, ctx->zero_to_one_clip)) {
+            gl_delete_context_shaders(&shaders);
+            gl_destroy_native_binding(ctx);
+            free(ctx);
+            return NULL;
+        }
+        if (!gl_link_context_programs(ctx, &shaders)) {
+            gl_delete_context_programs(ctx);
+            gl_delete_context_shaders(&shaders);
+            gl_destroy_native_binding(ctx);
+            free(ctx);
+            return NULL;
+        }
+        gl_store_context_program_binaries(ctx, ctx->zero_to_one_clip);
         gl_delete_context_shaders(&shaders);
-        gl_destroy_native_binding(ctx);
-        free(ctx);
-        return NULL;
     }
-
-    if (!gl_link_context_programs(ctx, &shaders)) {
-        gl_delete_context_programs(ctx);
-        gl_delete_context_shaders(&shaders);
-        gl_destroy_native_binding(ctx);
-        free(ctx);
-        return NULL;
-    }
-    gl_delete_context_shaders(&shaders);
 
     query_main_uniforms(ctx);
     if (!gl_query_unlit_uniforms(ctx)) {

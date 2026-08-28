@@ -192,6 +192,22 @@ typedef struct {
     float *sample_scratch;
     /// Bone capacity currently available in @ref sample_scratch.
     int32_t sample_scratch_bones;
+    /// ADR 0302: blend-tree fade. `blend_tree_fade_seconds` (0 = the historical
+    /// instantaneous swap) is the ramp length SetBlendTree honours; the tree's
+    /// contribution to the base pose is `blend_tree_weight`, ramped linearly from
+    /// `blend_tree_fade_from` toward `blend_tree_fade_target` over the ramp; a tree
+    /// being cleared stays retained until its weight reaches zero
+    /// (`blend_tree_detach_pending`). Appended at the struct's end (layout mirrors).
+    float blend_tree_fade_seconds;
+    float blend_tree_weight;
+    float blend_tree_fade_from;
+    float blend_tree_fade_elapsed;
+    int8_t blend_tree_fade_target;
+    int8_t blend_tree_detach_pending;
+    /// ADR 0302: transition continuity opt-in — crossfades out of finished or stopped
+    /// clips, retriggered fades departing from the visible pose, and fades that
+    /// bypass the animation-LOD gate. Pushed to every layer player.
+    int8_t transition_continuity;
 } rt_anim_controller3d;
 
 /// @brief Validate that @p obj is a live AnimController3D handle, returning NULL otherwise.
@@ -486,6 +502,53 @@ static void controller_repair_layer_state_indices(rt_anim_controller3d *controll
         if (layer_index == 0)
             layer->weight = 1.0f;
     }
+}
+
+/// @brief ADR 0302: sanitize the blend-tree fade state.
+/// @param[in,out] controller Controller whose ramp fields are clamped.
+static void controller_repair_blend_tree_fade(rt_anim_controller3d *controller) {
+    if (!controller)
+        return;
+    if (!isfinite((double)controller->blend_tree_fade_seconds) ||
+        controller->blend_tree_fade_seconds < 0.0f)
+        controller->blend_tree_fade_seconds = 0.0f;
+    if (!isfinite((double)controller->blend_tree_weight) || controller->blend_tree_weight < 0.0f)
+        controller->blend_tree_weight = 0.0f;
+    else if (controller->blend_tree_weight > 1.0f)
+        controller->blend_tree_weight = 1.0f;
+    if (!isfinite((double)controller->blend_tree_fade_from) ||
+        controller->blend_tree_fade_from < 0.0f)
+        controller->blend_tree_fade_from = 0.0f;
+    else if (controller->blend_tree_fade_from > 1.0f)
+        controller->blend_tree_fade_from = 1.0f;
+    if (!isfinite((double)controller->blend_tree_fade_elapsed) ||
+        controller->blend_tree_fade_elapsed < 0.0f)
+        controller->blend_tree_fade_elapsed = 0.0f;
+    controller->blend_tree_fade_target = controller->blend_tree_fade_target ? 1 : 0;
+    controller->blend_tree_detach_pending = controller->blend_tree_detach_pending ? 1 : 0;
+    controller->transition_continuity = controller->transition_continuity ? 1 : 0;
+    if (!controller->blend_tree) {
+        controller->blend_tree_weight = 0.0f;
+        controller->blend_tree_detach_pending = 0;
+    }
+}
+
+/// @brief ADR 0302: is any fade in flight (layer transition or blend-tree ramp)?
+/// @param[in] controller Controller to inspect.
+/// @return Nonzero while a transition or tree ramp is still advancing.
+static int controller_fade_active(const rt_anim_controller3d *controller) {
+    if (!controller)
+        return 0;
+    for (int32_t layer_index = 0; layer_index < RT_ANIM_CONTROLLER3D_MAX_LAYERS; layer_index++) {
+        if (controller->layers[layer_index].transitioning)
+            return 1;
+    }
+    if (controller->blend_tree && controller->blend_tree_fade_seconds > 0.0f) {
+        float target = controller->blend_tree_fade_target ? 1.0f : 0.0f;
+        if (controller->blend_tree_weight != target)
+            return 1;
+    }
+    return 0;
 }
 
 /// @brief True if @p value is a positive power of two.
@@ -898,9 +961,19 @@ static int8_t controller_set_layer_state(rt_anim_controller3d *controller,
     if (!layer->player || !state->animation)
         return 0;
 
-    use_crossfade = blend_seconds > 0.0 && layer->current_state >= 0 &&
-                    layer->current_state != state_index &&
-                    rt_anim_player3d_is_playing(layer->player);
+    {
+        /* ADR 0302: with continuity on, a layer whose player holds ANY pose — a
+         * finished one-shot on its last frame, a stopped player at bind — may be
+         * faded out of; the player freezes that pose as the fade source. */
+        int from_playing = rt_anim_player3d_is_playing(layer->player);
+        int from_holds_pose = 0;
+        if (controller->transition_continuity) {
+            anim_player3d_repair_storage(layer->player);
+            from_holds_pose = layer->player->current != NULL;
+        }
+        use_crossfade = blend_seconds > 0.0 && layer->current_state >= 0 &&
+                        layer->current_state != state_index && (from_playing || from_holds_pose);
+    }
 
     layer->previous_state = layer->current_state;
     layer->current_state = state_index;

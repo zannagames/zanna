@@ -69,6 +69,28 @@ static int controller_sample_state_global_matrix(rt_anim_controller3d *controlle
     return 1;
 }
 
+/// @brief Blend one local bone matrix toward another by @p weight (replace semantics).
+/// @details Decomposes both, lerps translation and scale, SLERPs rotation, sanitizes
+///   against the destination, and rebuilds — the overlay layer's non-additive blend,
+///   extracted so the ADR 0302 blend-tree fade uses the identical arithmetic.
+/// @param[in,out] dst Destination local matrix (16 floats), updated in place.
+/// @param[in] src Source local matrix (16 floats).
+/// @param[in] weight Blend factor in [0, 1] toward @p src.
+static void controller_blend_local_toward(float *dst, const float *src, float weight) {
+    float dst_pos[3], dst_rot[4], dst_scl[3];
+    float src_pos[3], src_rot[4], src_scl[3];
+    float blend_pos[3], blend_rot[4], blend_scl[3];
+    controller_decompose_trs_float(dst, dst_pos, dst_rot, dst_scl);
+    controller_decompose_trs_float(src, src_pos, src_rot, src_scl);
+    for (int32_t i = 0; i < 3; i++) {
+        blend_pos[i] = dst_pos[i] + (src_pos[i] - dst_pos[i]) * weight;
+        blend_scl[i] = dst_scl[i] + (src_scl[i] - dst_scl[i]) * weight;
+    }
+    controller_quat_slerp_float(dst_rot, src_rot, weight, blend_rot);
+    controller_sanitize_trs_sample(blend_pos, blend_rot, blend_scl, dst_pos, dst_rot, dst_scl);
+    controller_build_trs_float(blend_pos, blend_rot, blend_scl, dst);
+}
+
 /// @brief Composite the base layer + weighted overlay layers into the final bone palette.
 /// @details Two-pass blend:
 ///          1. A compatible BlendTree3D, the base player's local transforms,
@@ -118,7 +140,16 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller) {
         }
     }
 
-    if (controller->blend_tree) {
+    /* ADR 0302: the tree's contribution is its ramped weight (1 when the fade is
+     * off or complete — the historical exclusive-tree branch, byte for byte). A
+     * weight strictly inside (0, 1) seeds from layer 0 and lerps toward the tree. */
+    float tree_weight = controller->blend_tree ? controller->blend_tree_weight : 0.0f;
+    if (!isfinite((double)tree_weight))
+        tree_weight = controller->blend_tree ? 1.0f : 0.0f;
+    if (controller->blend_tree && controller->blend_tree_fade_seconds <= 0.0f &&
+        !controller->blend_tree_detach_pending)
+        tree_weight = 1.0f;
+    if (controller->blend_tree && tree_weight >= 1.0f - 1e-6f) {
         void *blend = rt_blend_tree3d_get_blend(controller->blend_tree);
         int32_t blend_bone_count = 0;
         const float *blend_locals =
@@ -143,6 +174,18 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller) {
             memcpy(&final_locals[bone * 16],
                    controller->skeleton->bones[bone].bind_pose_local,
                    16 * sizeof(float));
+        }
+    }
+
+    if (controller->blend_tree && tree_weight > 1e-6f && tree_weight < 1.0f - 1e-6f) {
+        void *blend = rt_blend_tree3d_get_blend(controller->blend_tree);
+        int32_t blend_bone_count = 0;
+        const float *blend_locals =
+            rt_anim_blend3d_get_local_transform_data(blend, &blend_bone_count);
+        if (blend_locals && blend_bone_count >= bone_count) {
+            for (int32_t bone = 0; bone < bone_count; bone++)
+                controller_blend_local_toward(
+                    &final_locals[bone * 16], &blend_locals[bone * 16], tree_weight);
         }
     }
 
@@ -187,11 +230,8 @@ static void controller_compute_final_palette(rt_anim_controller3d *controller) {
                     controller_quat_slerp_float(identity_rot, delta_rot, weight, weighted_delta);
                     controller_quat_mul_float(weighted_delta, dst_rot, blend_rot);
                 } else {
-                    for (int32_t i = 0; i < 3; i++) {
-                        blend_pos[i] = dst_pos[i] + (src_pos[i] - dst_pos[i]) * weight;
-                        blend_scl[i] = dst_scl[i] + (src_scl[i] - dst_scl[i]) * weight;
-                    }
-                    controller_quat_slerp_float(dst_rot, src_rot, weight, blend_rot);
+                    controller_blend_local_toward(dst, src, weight);
+                    continue;
                 }
                 controller_sanitize_trs_sample(
                     blend_pos, blend_rot, blend_scl, dst_pos, dst_rot, dst_scl);

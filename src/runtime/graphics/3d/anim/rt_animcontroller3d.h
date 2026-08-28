@@ -208,6 +208,12 @@ void rt_anim_controller3d_set_bone_lod(void *controller, int64_t max_bones);
 /// @return `1` when attached or cleared; `0` for an invalid controller, wrong
 ///         class, or incompatible skeleton data.
 int8_t rt_anim_controller3d_set_blend_tree(void *controller, void *blend_tree);
+/// @brief ADR 0302: fade length SetBlendTree honours when attaching/clearing a tree
+///        (0 = instantaneous swap, the default).
+void rt_anim_controller3d_set_blend_tree_fade(void *controller, double seconds);
+/// @brief ADR 0302: crossfade continuity — fade out of finished/stopped clips, depart
+///        retriggered fades from the visible pose, evaluate fades through the LOD gate.
+void rt_anim_controller3d_set_transition_continuity(void *controller, int8_t enabled);
 /// @brief Apply an IKSolver3D after controller layers and before skinning; pass NULL to clear it.
 /// @details A non-null solver must reference the controller's exact skeleton.
 ///          The controller retains a successfully attached solver and releases

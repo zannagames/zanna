@@ -1265,6 +1265,17 @@ typedef struct {
     int32_t allocation_color_format;
     uint64_t allocation_estimated_bytes;
     uint64_t allocation_cache_identity;
+    /* ADR 0301: the post-FX chain the rendering canvas carried when the last frame
+     * into this target ended. Mirror-path backends (software, OpenGL, Direct3D 11,
+     * and Metal's foreign-target fallback) resolve the material mirror through it so
+     * an RT sampled as a texture is display-referred on every backend, exactly as
+     * Metal's native display image is. `display_chain_revision` is the
+     * `content_revision` the chain was recorded for; `display_resolved_revision` is
+     * the revision whose mirror has already been encoded (never encode twice). */
+    vgfx3d_postfx_chain_t display_chain;
+    int8_t display_chain_valid;
+    uint64_t display_chain_revision;
+    uint64_t display_resolved_revision;
 } rt_rendertarget3d;
 
 /// @brief Repair a RenderTarget3D wrapper from its immutable allocation identities.
@@ -1467,8 +1478,15 @@ typedef struct {
     /* Post-processing effect chain (NULL = disabled) */
     void *postfx;
     vgfx3d_postfx_chain_t frame_postfx_chain;
+    /* ADR 0301: `frame_postfx_chain_latched` = a usable chain snapshot was captured
+     * for this frame and published to the backend (window AND render-target frames,
+     * so a backend can resolve a bound target through it). `frame_gpu_postfx_enabled`
+     * = this frame PRESENTS through the backend's GPU post-FX route (window frames
+     * only). Before ADR 0301 the two were one flag and every render-target frame
+     * published a NULL chain, which left the ADR 0299 display resolve unreachable. */
     int8_t frame_gpu_postfx_enabled;
     int8_t frame_postfx_state_latched;
+    int8_t frame_postfx_chain_latched;
     int32_t quality_requested;
     int32_t quality_active;
     int32_t quality_fallback_reason;
@@ -1982,6 +2000,20 @@ void rt_sh9_eval_irradiance(const float sh[27], float nx, float ny, float nz, fl
 /// @brief Internal: apply a canvas's active post-processing chain.
 /// @param canvas Borrowed Canvas3D handle whose completed frame is processed.
 void rt_postfx3d_apply_to_canvas(void *canvas);
+
+/// @brief ADR 0301: resolve a render target's material mirror through a recorded post-FX
+///   chain so the sampled texture is display-referred (tone curve + exposure + gamma
+///   once, colour grade, LUT, FXAA, sharpen; window-sized and temporal passes skipped —
+///   the same subset Metal's native display resolve applies).
+/// @param chain Borrowed chain snapshot recorded when the frame into @p target ended.
+/// @param target Borrowed backing target (linear HDR mirror preferred, else the 8-bit
+///   clamped-linear colour buffer already unpacked into @p pixels_obj).
+/// @param pixels_obj Borrowed target-owned Pixels mirror, already refreshed for this
+///   revision; rewritten in place with display-encoded values, alpha preserved.
+/// @return 1 when the mirror was re-encoded, 0 when the chain is unusable or sizes disagree.
+int rt_postfx3d_resolve_display_pixels(const vgfx3d_postfx_chain_t *chain,
+                                       const vgfx3d_rendertarget_t *target,
+                                       void *pixels_obj);
 /// @brief Internal: inject a mouse delta without changing absolute position.
 /// @param dx Horizontal relative-motion delta in input units.
 /// @param dy Vertical relative-motion delta in input units.

@@ -109,6 +109,9 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_stack_safety.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_string_intern.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_string_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/3d/render/rt_canvas3d_internal.h")
+// Path3D bulk-storage and allocation-failure hooks are shared only by the
+// NavMesh implementation and focused native tests; neither is script-facing.
+RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/3d/nav/rt_path3d_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/text/rt_font.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/common/rt_graphics_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/graphics/gui/rt_gui_internal.h")

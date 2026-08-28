@@ -33,6 +33,7 @@
 extern "C" int64_t rt_navagent3d_grid_bucket_capacity_for_test(void);
 extern "C" int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void);
 extern "C" void rt_navagent3d_test_set_batch_bucket_alloc_failure(int8_t enabled);
+extern "C" int64_t rt_navagent3d_test_get_last_batch_bucket_initializations(void);
 #include <limits>
 
 extern "C" {
@@ -852,6 +853,8 @@ static void test_navagent_batch_update_is_order_independent() {
     reset_pair();
     EXPECT_TRUE(rt_navagent3d_update_batch(forward, 2, 0.1) == 2,
                 "NavAgent3D batch processes both unique valid handles");
+    EXPECT_TRUE(rt_navagent3d_test_get_last_batch_bucket_initializations() <= 2,
+                "NavAgent3D batch initializes only buckets touched by its snapshots");
     double first_position[2][2];
     double first_velocity[2][2];
     double first_desired[2][2];

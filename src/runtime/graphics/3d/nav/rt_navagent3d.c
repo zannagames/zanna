@@ -135,6 +135,7 @@ struct navagent_crowd {
     rt_navagent3d *agents;
     int32_t count;
     double max_reach;
+    uint64_t batch_epoch;
     navagent_crowd *next;
 };
 
@@ -1403,8 +1404,10 @@ typedef struct {
     navagent_batch_snapshot_t *snapshots;
     int32_t snapshot_count;
     int32_t *bucket_heads;
+    uint32_t *bucket_head_stamps;
     uint32_t *bucket_visit_stamps;
     uint32_t bucket_count;
+    uint32_t bucket_head_epoch;
 } navagent_batch_context_t;
 
 /* Main-thread reusable staging buffers remove per-frame allocation churn for crowd updates. They
@@ -1417,9 +1420,17 @@ static int32_t g_navagent_batch_snapshot_capacity = 0;
 static int32_t *g_navagent_batch_neighbor_indices = NULL;
 static int32_t g_navagent_batch_neighbor_capacity = 0;
 static int32_t *g_navagent_batch_bucket_heads = NULL;
+static uint32_t *g_navagent_batch_bucket_head_stamps = NULL;
 static uint32_t *g_navagent_batch_bucket_visit_stamps = NULL;
 static uint32_t g_navagent_batch_bucket_capacity = 0;
+static uint32_t g_navagent_batch_bucket_head_epoch = 0;
 static uint32_t g_navagent_batch_bucket_visit_epoch = 0;
+static rt_navagent3d **g_navagent_batch_selected_slots = NULL;
+static uint32_t *g_navagent_batch_selected_stamps = NULL;
+static uint32_t g_navagent_batch_selected_capacity = 0;
+static uint32_t g_navagent_batch_selected_epoch = 0;
+static uint64_t g_navagent_batch_crowd_epoch = 0;
+static int64_t g_navagent_batch_last_bucket_initializations = 0;
 static int g_navagent_batch_active = 0;
 static int8_t g_navagent_test_force_batch_bucket_alloc_failure = 0;
 
@@ -1450,6 +1461,100 @@ static int navagent_batch_reserve_items(int32_t needed) {
     g_navagent_batch_items = grown;
     g_navagent_batch_item_capacity = capacity;
     return 1;
+}
+
+/// @brief Hash a live agent pointer for the reusable selected-set table.
+static uint32_t navagent_batch_pointer_hash(const rt_navagent3d *agent) {
+    uint64_t value = (uint64_t)(uintptr_t)agent;
+    value ^= value >> 33;
+    value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    return (uint32_t)(value ^ (value >> 32));
+}
+
+/// @brief Grow the stamped pointer set used to deduplicate batch input without sorting.
+static int navagent_batch_reserve_selected_set(int32_t needed) {
+    uint32_t capacity = g_navagent_batch_selected_capacity;
+    rt_navagent3d **slots;
+    uint32_t *stamps;
+    if (needed < 0)
+        return 0;
+    if ((uint64_t)needed <= (uint64_t)capacity / 2u && capacity > 0)
+        return 1;
+    if (capacity < NAVAGENT_GRID_INITIAL_BUCKETS)
+        capacity = NAVAGENT_GRID_INITIAL_BUCKETS;
+    while ((uint64_t)capacity < (uint64_t)needed * 2u) {
+        if (capacity > UINT32_MAX / 2u)
+            return 0;
+        capacity *= 2u;
+    }
+    slots = (rt_navagent3d **)malloc((size_t)capacity * sizeof(*slots));
+    stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*stamps));
+    if (!slots || !stamps) {
+        free(slots);
+        free(stamps);
+        return 0;
+    }
+    free(g_navagent_batch_selected_slots);
+    free(g_navagent_batch_selected_stamps);
+    g_navagent_batch_selected_slots = slots;
+    g_navagent_batch_selected_stamps = stamps;
+    g_navagent_batch_selected_capacity = capacity;
+    g_navagent_batch_selected_epoch = 0;
+    return 1;
+}
+
+/// @brief Advance the selected-set epoch, clearing stamps only on 32-bit wraparound.
+static uint32_t navagent_batch_next_selected_epoch(void) {
+    if (!g_navagent_batch_selected_stamps || g_navagent_batch_selected_capacity == 0)
+        return 0;
+    g_navagent_batch_selected_epoch++;
+    if (g_navagent_batch_selected_epoch == 0) {
+        memset(g_navagent_batch_selected_stamps,
+               0,
+               (size_t)g_navagent_batch_selected_capacity *
+                   sizeof(*g_navagent_batch_selected_stamps));
+        g_navagent_batch_selected_epoch = 1;
+    }
+    return g_navagent_batch_selected_epoch;
+}
+
+/// @brief Insert one agent into the current selected-set epoch.
+/// @return One for a new pointer, zero for a duplicate or invalid table.
+static int navagent_batch_select_agent(rt_navagent3d *agent, uint32_t epoch) {
+    if (!agent || !epoch || !g_navagent_batch_selected_slots || !g_navagent_batch_selected_stamps ||
+        g_navagent_batch_selected_capacity == 0)
+        return 0;
+    uint32_t mask = g_navagent_batch_selected_capacity - 1u;
+    uint32_t slot = navagent_batch_pointer_hash(agent) & mask;
+    for (uint32_t probe = 0; probe < g_navagent_batch_selected_capacity; ++probe) {
+        if (g_navagent_batch_selected_stamps[slot] != epoch) {
+            g_navagent_batch_selected_stamps[slot] = epoch;
+            g_navagent_batch_selected_slots[slot] = agent;
+            return 1;
+        }
+        if (g_navagent_batch_selected_slots[slot] == agent)
+            return 0;
+        slot = (slot + 1u) & mask;
+    }
+    return 0;
+}
+
+/// @brief Test membership in the current selected-set epoch.
+static int navagent_batch_agent_selected(const rt_navagent3d *agent, uint32_t epoch) {
+    if (!agent || !epoch || !g_navagent_batch_selected_slots || !g_navagent_batch_selected_stamps ||
+        g_navagent_batch_selected_capacity == 0)
+        return 0;
+    uint32_t mask = g_navagent_batch_selected_capacity - 1u;
+    uint32_t slot = navagent_batch_pointer_hash(agent) & mask;
+    for (uint32_t probe = 0; probe < g_navagent_batch_selected_capacity; ++probe) {
+        if (g_navagent_batch_selected_stamps[slot] != epoch)
+            return 0;
+        if (g_navagent_batch_selected_slots[slot] == agent)
+            return 1;
+        slot = (slot + 1u) & mask;
+    }
+    return 0;
 }
 
 /// @brief Grow the reusable whole-registry snapshot array.
@@ -1514,6 +1619,7 @@ static int navagent_batch_reserve_neighbors(int32_t needed) {
 static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
     uint32_t capacity = g_navagent_batch_bucket_capacity;
     int32_t *heads;
+    uint32_t *head_stamps;
     uint32_t *stamps;
     if (snapshot_count < 0 || g_navagent_test_force_batch_bucket_alloc_failure)
         return 0;
@@ -1527,17 +1633,22 @@ static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
         capacity *= 2u;
     }
     heads = (int32_t *)malloc((size_t)capacity * sizeof(*heads));
+    head_stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*head_stamps));
     stamps = (uint32_t *)calloc((size_t)capacity, sizeof(*stamps));
-    if (!heads || !stamps) {
+    if (!heads || !head_stamps || !stamps) {
         free(heads);
+        free(head_stamps);
         free(stamps);
         return 0;
     }
     free(g_navagent_batch_bucket_heads);
+    free(g_navagent_batch_bucket_head_stamps);
     free(g_navagent_batch_bucket_visit_stamps);
     g_navagent_batch_bucket_heads = heads;
+    g_navagent_batch_bucket_head_stamps = head_stamps;
     g_navagent_batch_bucket_visit_stamps = stamps;
     g_navagent_batch_bucket_capacity = capacity;
+    g_navagent_batch_bucket_head_epoch = 0;
     g_navagent_batch_bucket_visit_epoch = 0;
     return 1;
 }
@@ -1557,20 +1668,43 @@ static uint32_t navagent_batch_next_visit_epoch(void) {
     return g_navagent_batch_bucket_visit_epoch;
 }
 
-/// @brief Compare selected batch items by stable creation order, then numeric handle value.
-/// @param lhs Pointer to a `navagent_batch_item_t`.
-/// @param rhs Pointer to a `navagent_batch_item_t`.
-/// @return Negative/zero/positive according to deterministic handle order.
-static int navagent_batch_item_compare(const void *lhs, const void *rhs) {
-    const navagent_batch_item_t *a = (const navagent_batch_item_t *)lhs;
-    const navagent_batch_item_t *b = (const navagent_batch_item_t *)rhs;
-    if (a->stable_order < b->stable_order)
-        return -1;
-    if (a->stable_order > b->stable_order)
-        return 1;
-    uintptr_t ap = (uintptr_t)a->agent;
-    uintptr_t bp = (uintptr_t)b->agent;
-    return ap < bp ? -1 : ap > bp ? 1 : 0;
+/// @brief Advance the batch-grid publication epoch without clearing every bucket head.
+static uint32_t navagent_batch_next_head_epoch(void) {
+    if (!g_navagent_batch_bucket_head_stamps || g_navagent_batch_bucket_capacity == 0)
+        return 0;
+    g_navagent_batch_bucket_head_epoch++;
+    if (g_navagent_batch_bucket_head_epoch == 0) {
+        memset(g_navagent_batch_bucket_head_stamps,
+               0,
+               (size_t)g_navagent_batch_bucket_capacity *
+                   sizeof(*g_navagent_batch_bucket_head_stamps));
+        g_navagent_batch_bucket_head_epoch = 1;
+    }
+    return g_navagent_batch_bucket_head_epoch;
+}
+
+/// @brief Mark each distinct selected crowd once and sum its live agents in linear time.
+static int32_t navagent_batch_mark_relevant_crowds(const navagent_batch_item_t *items,
+                                                   int32_t count) {
+    int32_t total = 0;
+    if (!items || count <= 0)
+        return 0;
+    g_navagent_batch_crowd_epoch++;
+    if (g_navagent_batch_crowd_epoch == 0) {
+        for (navagent_crowd *crowd = g_navagent3d_crowds; crowd; crowd = crowd->next)
+            crowd->batch_epoch = 0;
+        g_navagent_batch_crowd_epoch = 1;
+    }
+    for (int32_t i = 0; i < count; ++i) {
+        navagent_crowd *crowd = items[i].agent ? items[i].agent->crowd : NULL;
+        if (!crowd || crowd->batch_epoch == g_navagent_batch_crowd_epoch)
+            continue;
+        crowd->batch_epoch = g_navagent_batch_crowd_epoch;
+        if (crowd->count < 0 || total > INT32_MAX - crowd->count)
+            return -1;
+        total += crowd->count;
+    }
+    return total;
 }
 
 /// @brief Locate one selected live agent in the stable-order snapshot array.
@@ -1598,110 +1732,64 @@ static int32_t navagent_batch_find_snapshot(const navagent_batch_snapshot_t *sna
     return -1;
 }
 
-/// @brief Compare immutable snapshots by stable agent creation order.
-static int navagent_batch_snapshot_compare(const void *lhs, const void *rhs) {
-    const navagent_batch_snapshot_t *a = (const navagent_batch_snapshot_t *)lhs;
-    const navagent_batch_snapshot_t *b = (const navagent_batch_snapshot_t *)rhs;
-    if (a->stable_order < b->stable_order)
-        return -1;
-    if (a->stable_order > b->stable_order)
-        return 1;
-    return (uintptr_t)a->agent<(uintptr_t)b->agent ? -1 : (uintptr_t)a->agent>(uintptr_t) b->agent
-               ? 1
-               : 0;
-}
-
-/// @brief Count agents in the distinct avoidance crowds represented by selected items.
-static int32_t navagent_batch_relevant_count(const navagent_batch_item_t *items, int32_t count) {
-    int32_t total = 0;
-    if (!items || count <= 0)
-        return 0;
-    for (int32_t i = 0; i < count; ++i) {
-        navagent_crowd *crowd = items[i].agent ? items[i].agent->crowd : NULL;
-        if (!crowd)
-            continue;
-        int seen = 0;
-        for (int32_t j = 0; j < i; ++j)
-            if (items[j].agent && items[j].agent->crowd == crowd) {
-                seen = 1;
-                break;
-            }
-        if (seen)
-            continue;
-        if (crowd->count < 0 || total > INT32_MAX - crowd->count)
-            return -1;
-        total += crowd->count;
-    }
-    return total;
-}
-
 /// @brief Populate and spatially index immutable snapshots for selected crowds only.
-/// @details Distinct crowd lists avoid copying unrelated worlds/NavMeshes. The resulting compact
-///   array is sorted by stable creation order so batch results remain caller-order independent.
+/// @details The previously stamped crowd set avoids copying unrelated worlds/NavMeshes. Traversing
+///   the global registry in reverse-list order produces stable creation order without a sort.
 /// @param context Output context whose fixed bucket table and reusable snapshot pointer are filled.
-/// @param items Stable selected-agent table identifying the crowds to include.
-/// @param item_count Number of unique selected items.
+/// @param count Exact number of agents in the previously stamped crowds.
 /// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
-static int navagent_batch_build_snapshot(navagent_batch_context_t *context,
-                                         const navagent_batch_item_t *items,
-                                         int32_t item_count) {
-    int32_t count = navagent_batch_relevant_count(items, item_count);
-    int32_t write_index = 0;
+static int navagent_batch_build_snapshot(navagent_batch_context_t *context, int32_t count) {
+    int32_t write_index = count;
+    uint32_t head_epoch;
     if (!context || count < 0 || count > g_navagent_batch_snapshot_capacity ||
         !navagent_batch_reserve_buckets(count))
         return 0;
-    for (int32_t selected = 0; selected < item_count; ++selected) {
-        navagent_crowd *crowd = items[selected].agent ? items[selected].agent->crowd : NULL;
-        if (!crowd)
+    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
+        navagent_crowd *crowd = agent->crowd;
+        if (!crowd || crowd->batch_epoch != g_navagent_batch_crowd_epoch)
             continue;
-        int seen = 0;
-        for (int32_t earlier = 0; earlier < selected; ++earlier)
-            if (items[earlier].agent && items[earlier].agent->crowd == crowd) {
-                seen = 1;
-                break;
-            }
-        if (seen)
-            continue;
-        for (rt_navagent3d *agent = crowd->agents; agent; agent = agent->crowd_next) {
-            if (write_index >= count)
-                return 0;
-            navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[write_index++];
-            memset(snapshot, 0, sizeof(*snapshot));
-            snapshot->agent = agent;
-            snapshot->crowd = crowd;
-            snapshot->stable_order = agent->stable_order;
-            navagent_vec_copy(snapshot->position, agent->position);
-            navagent_vec_copy(snapshot->velocity, agent->velocity);
-            navagent_vec_copy(snapshot->desired_velocity, agent->desired_velocity);
-            navagent_preferred_velocity_xz(agent, &snapshot->preferred_x, &snapshot->preferred_z);
-            snapshot->desired_speed =
-                navagent_nonnegative_capped_or(agent->desired_speed, 0.0, NAVAGENT_SPEED_MAX);
-            snapshot->avoidance_radius = navagent_effective_avoidance_radius(agent);
-            snapshot->reach = navagent_reach(agent);
-            snapshot->grid_cx = navagent_grid_coord(snapshot->position[0]);
-            snapshot->grid_cz = navagent_grid_coord(snapshot->position[2]);
-            snapshot->grid_next = -1;
-            snapshot->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
-        }
+        if (write_index <= 0)
+            return 0;
+        navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[--write_index];
+        memset(snapshot, 0, sizeof(*snapshot));
+        snapshot->agent = agent;
+        snapshot->crowd = crowd;
+        snapshot->stable_order = agent->stable_order;
+        navagent_vec_copy(snapshot->position, agent->position);
+        navagent_vec_copy(snapshot->velocity, agent->velocity);
+        navagent_vec_copy(snapshot->desired_velocity, agent->desired_velocity);
+        navagent_preferred_velocity_xz(agent, &snapshot->preferred_x, &snapshot->preferred_z);
+        snapshot->desired_speed =
+            navagent_nonnegative_capped_or(agent->desired_speed, 0.0, NAVAGENT_SPEED_MAX);
+        snapshot->avoidance_radius = navagent_effective_avoidance_radius(agent);
+        snapshot->reach = navagent_reach(agent);
+        snapshot->grid_cx = navagent_grid_coord(snapshot->position[0]);
+        snapshot->grid_cz = navagent_grid_coord(snapshot->position[2]);
+        snapshot->grid_next = -1;
+        snapshot->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
     }
-    if (write_index != count)
+    if (write_index != 0)
         return 0;
-    if (count > 1)
-        qsort(g_navagent_batch_snapshots,
-              (size_t)count,
-              sizeof(*g_navagent_batch_snapshots),
-              navagent_batch_snapshot_compare);
+    head_epoch = navagent_batch_next_head_epoch();
+    if (!head_epoch)
+        return 0;
     context->snapshots = g_navagent_batch_snapshots;
     context->snapshot_count = count;
     context->bucket_heads = g_navagent_batch_bucket_heads;
+    context->bucket_head_stamps = g_navagent_batch_bucket_head_stamps;
     context->bucket_visit_stamps = g_navagent_batch_bucket_visit_stamps;
     context->bucket_count = g_navagent_batch_bucket_capacity;
-    for (uint32_t bucket = 0; bucket < context->bucket_count; bucket++)
-        context->bucket_heads[bucket] = -1;
+    context->bucket_head_epoch = head_epoch;
+    g_navagent_batch_last_bucket_initializations = 0;
     for (int32_t i = 0; i < count; i++) {
         navagent_batch_snapshot_t *snapshot = &context->snapshots[i];
         uint32_t bucket = navagent_grid_bucket_for_capacity(
             snapshot->grid_cx, snapshot->grid_cz, context->bucket_count);
+        if (context->bucket_head_stamps[bucket] != head_epoch) {
+            context->bucket_head_stamps[bucket] = head_epoch;
+            context->bucket_heads[bucket] = -1;
+            g_navagent_batch_last_bucket_initializations++;
+        }
         snapshot->grid_next = context->bucket_heads[bucket];
         context->bucket_heads[bucket] = i;
     }
@@ -1759,6 +1847,9 @@ static int navagent_batch_collect_peers(const navagent_batch_context_t *context,
                 if (!visit_epoch || context->bucket_visit_stamps[bucket] == visit_epoch)
                     continue;
                 context->bucket_visit_stamps[bucket] = visit_epoch;
+                if (!context->bucket_head_stamps ||
+                    context->bucket_head_stamps[bucket] != context->bucket_head_epoch)
+                    continue;
                 for (int32_t candidate_index = context->bucket_heads[bucket]; candidate_index >= 0;
                      candidate_index = context->snapshots[candidate_index].grid_next) {
                     const navagent_batch_snapshot_t *candidate =
@@ -1974,6 +2065,11 @@ int64_t rt_navagent3d_last_unique_bucket_visits_for_test(void) {
 /// @brief Test-only deterministic failure injection for batch bucket preflight.
 void rt_navagent3d_test_set_batch_bucket_alloc_failure(int8_t enabled) {
     g_navagent_test_force_batch_bucket_alloc_failure = enabled ? 1 : 0;
+}
+
+/// @brief Test-only count of hash heads initialized by the most recent batch snapshot.
+int64_t rt_navagent3d_test_get_last_batch_bucket_initializations(void) {
+    return g_navagent_batch_last_bucket_initializations;
 }
 
 /// @brief Derive "close enough to this corner" distance from the agent's radius. Half
@@ -2500,41 +2596,43 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
     navagent_batch_context_t context;
     int32_t selected_count = 0;
     int32_t relevant_count;
+    uint32_t selected_epoch;
     RT_ASSERT_MAIN_THREAD();
     dt = navagent_nonnegative_capped_or(dt, 0.0, NAVAGENT_DT_MAX);
     if (!agents || agent_count <= 0 || agent_count > INT32_MAX || dt <= 0.0 ||
         g_navagent3d_registry_count < 0 || g_navagent3d_registry_count > INT32_MAX ||
         g_navagent_batch_active)
         return 0;
-    if (!navagent_batch_reserve_items((int32_t)agent_count))
+    if (!navagent_batch_reserve_items((int32_t)agent_count) ||
+        !navagent_batch_reserve_selected_set((int32_t)agent_count))
+        return 0;
+    selected_epoch = navagent_batch_next_selected_epoch();
+    if (!selected_epoch)
         return 0;
 
     for (int64_t i = 0; i < agent_count; i++) {
         rt_navagent3d *agent = navagent3d_checked(agents[i]);
-        if (!agent)
+        if (agent && navagent_batch_select_agent(agent, selected_epoch))
+            selected_count++;
+    }
+    if (selected_count <= 0)
+        return 0;
+    int32_t write_index = selected_count;
+    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
+        if (!navagent_batch_agent_selected(agent, selected_epoch))
             continue;
-        navagent_batch_item_t *item = &g_navagent_batch_items[selected_count++];
+        if (write_index <= 0)
+            return 0;
+        navagent_batch_item_t *item = &g_navagent_batch_items[--write_index];
         memset(item, 0, sizeof(*item));
         item->agent = agent;
         item->stable_order = agent->stable_order;
         item->snapshot_index = -1;
     }
-    if (selected_count <= 0)
+    if (write_index != 0)
         return 0;
-    qsort(g_navagent_batch_items,
-          (size_t)selected_count,
-          sizeof(*g_navagent_batch_items),
-          navagent_batch_item_compare);
-    int32_t unique_count = 0;
-    for (int32_t i = 0; i < selected_count; i++) {
-        if (unique_count > 0 &&
-            g_navagent_batch_items[unique_count - 1].agent == g_navagent_batch_items[i].agent)
-            continue;
-        if (unique_count != i)
-            g_navagent_batch_items[unique_count] = g_navagent_batch_items[i];
-        unique_count++;
-    }
-    relevant_count = navagent_batch_relevant_count(g_navagent_batch_items, unique_count);
+    int32_t unique_count = selected_count;
+    relevant_count = navagent_batch_mark_relevant_crowds(g_navagent_batch_items, unique_count);
     if (relevant_count < unique_count || !navagent_batch_reserve_snapshots(relevant_count) ||
         !navagent_batch_reserve_neighbors(relevant_count) ||
         !navagent_batch_reserve_buckets(relevant_count))
@@ -2549,7 +2647,7 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
                                  : 0;
     }
     memset(&context, 0, sizeof(context));
-    if (!navagent_batch_build_snapshot(&context, g_navagent_batch_items, unique_count)) {
+    if (!navagent_batch_build_snapshot(&context, relevant_count)) {
         g_navagent_batch_active = 0;
         return 0;
     }

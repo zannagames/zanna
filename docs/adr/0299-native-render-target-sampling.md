@@ -67,7 +67,11 @@ are part of the internal runtime C ABI, so ADR 0006 requires this record.
    albedo, unlit HUD blits pass it through). A canvas without a usable chain
    leaves the raw colour texture in place (the historical look). The CPU
    mirror (`AsPixels`, `CopyTo`, mirror-only backends) is unchanged and stays
-   scene-referred.
+   scene-referred. *Partly superseded by [ADR 0301](0301-display-referred-render-target-sampling.md):
+   this resolve was unreachable because the canvas published a NULL chain on
+   render-target frames; ADR 0301 makes it run and additionally resolves the
+   MATERIAL mirror on mirror-path backends (`AsPixels`/`CopyTo` stay
+   scene-referred).*
 4. OpenGL and Direct3D 11 keep the mirror path. Both own a single bound RTT
    (`rtt_fbo` / `rtt_color_tex`) that is reassigned on rebind, so there is no
    retained per-target texture to sample; adding one is a separate decision.

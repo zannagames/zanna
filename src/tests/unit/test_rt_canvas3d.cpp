@@ -7391,6 +7391,36 @@ static void test_instanced_draw_precomputes_world_bounds_in_snapshot_pass() {
     PASS();
 }
 
+static void test_gpu_opaque_state_sort_skips_overwritten_depth_sort() {
+    TEST("Canvas3D GPU opaque submission avoids an overwritten depth sort");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material_a = rt_material3d_new();
+    void *material_b = rt_material3d_new();
+
+    backend.name = "opengl";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.end_frame = tracked_end_frame;
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 64;
+    canvas.height = 64;
+    canvas.opaque_depth_sorting = 1;
+
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, rt_mat4_translate(0.0, 0.0, -2.0), material_a);
+    rt_canvas3d_draw_mesh(&canvas, mesh, rt_mat4_translate(0.0, 0.0, -4.0), material_b);
+    rt_canvas3d_end(&canvas);
+
+    EXPECT_EQ(rt_canvas3d_get_sort_passes(&canvas), 1);
+    PASS();
+}
+
 static void test_rendertarget_as_pixels_syncs_gpu_color_on_demand() {
     TEST("RenderTarget3D.AsPixels syncs backend-owned color on demand");
     rt_rendertarget3d *rt = (rt_rendertarget3d *)rt_rendertarget3d_new(1, 1);
@@ -7700,6 +7730,157 @@ static void test_canvas_draw_image2d_accepts_render_target() {
         rt_obj_free(dest);
     if (rt_obj_release_check0(source))
         rt_obj_free(source);
+    PASS();
+}
+
+/// ADR 0301: a render-target frame publishes the frame's chain snapshot to the
+/// backend but never touches the window present-route toggle; a window frame does
+/// both. Before this the RT frame published NULL (and toggled the route off), which
+/// made the Metal display resolve unreachable and rebuilt the window targets twice
+/// per frame.
+static int8_t adr0301_enabled_calls = 0;
+static int8_t adr0301_last_enabled = -1;
+static int8_t adr0301_snapshot_calls = 0;
+static int8_t adr0301_last_snapshot_nonnull = -1;
+
+static void adr0301_set_enabled(void *ctx, int8_t enabled) {
+    (void)ctx;
+    adr0301_enabled_calls++;
+    adr0301_last_enabled = enabled;
+}
+
+static void adr0301_set_snapshot(void *ctx, const vgfx3d_postfx_chain_t *chain) {
+    (void)ctx;
+    adr0301_snapshot_calls++;
+    adr0301_last_snapshot_nonnull = chain ? 1 : 0;
+}
+
+static void test_canvas_render_target_frame_publishes_chain_without_present_toggle() {
+    TEST("Render-target frames publish the post-FX chain and leave the present route alone (ADR 0301)");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *fx = rt_postfx3d_new();
+    void *target = rt_rendertarget3d_new_hdr(4, 4);
+    EXPECT_TRUE(fx && target, "ADR 0301 latch fixtures exist");
+    if (!fx || !target)
+        return;
+    backend.name = "metal";
+    backend.gpu_skinning = 1;
+    backend.begin_frame = cluster_noop_begin_frame;
+    backend.end_frame = cluster_noop_end_frame;
+    backend.present_postfx = bindcheck_present_postfx;
+    backend.set_gpu_postfx_enabled = adr0301_set_enabled;
+    backend.set_gpu_postfx_snapshot = adr0301_set_snapshot;
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    rt_postfx3d_add_tonemap(fx, 1, 1.0);
+    rt_canvas3d_set_post_fx(&canvas, fx);
+    EXPECT_TRUE(canvas.postfx == fx, "tonemap chain attaches to the mock GPU canvas");
+
+    /* Render-target frame (Begin2D latches): chain published, present route NOT
+     * toggled. The stack canvas has no wrapper owner, so End records nothing. */
+    adr0301_enabled_calls = 0;
+    adr0301_snapshot_calls = 0;
+    adr0301_last_enabled = -1;
+    adr0301_last_snapshot_nonnull = -1;
+    canvas.render_target = ((rt_rendertarget3d *)target)->target;
+    rt_canvas3d_begin_2d(&canvas);
+    EXPECT_EQ((int)canvas.frame_postfx_chain_latched, 1);
+    EXPECT_EQ((int)canvas.frame_gpu_postfx_enabled, 0);
+    EXPECT_EQ((int)adr0301_enabled_calls, 0);
+    EXPECT_EQ((int)adr0301_snapshot_calls, 1);
+    EXPECT_EQ((int)adr0301_last_snapshot_nonnull, 1);
+    rt_canvas3d_end(&canvas);
+    canvas.frame_postfx_state_latched = 0;
+
+    /* Window frame: both hooks, present route on. */
+    canvas.render_target = NULL;
+    rt_canvas3d_begin_2d(&canvas);
+    EXPECT_EQ((int)canvas.frame_postfx_chain_latched, 1);
+    EXPECT_EQ((int)canvas.frame_gpu_postfx_enabled, 1);
+    EXPECT_EQ((int)adr0301_enabled_calls, 1);
+    EXPECT_EQ((int)adr0301_last_enabled, 1);
+    EXPECT_EQ((int)adr0301_snapshot_calls, 2);
+    EXPECT_EQ((int)adr0301_last_snapshot_nonnull, 1);
+    rt_canvas3d_end(&canvas);
+    canvas.frame_postfx_state_latched = 0;
+
+    /* No chain at all: the window frame publishes NULL and turns the route off
+     * (unchanged behaviour). */
+    rt_canvas3d_set_post_fx(&canvas, NULL);
+    rt_canvas3d_begin_2d(&canvas);
+    EXPECT_EQ((int)canvas.frame_postfx_chain_latched, 0);
+    EXPECT_EQ((int)canvas.frame_gpu_postfx_enabled, 0);
+    EXPECT_EQ((int)adr0301_last_enabled, 0);
+    EXPECT_EQ((int)adr0301_last_snapshot_nonnull, 0);
+    rt_canvas3d_end(&canvas);
+
+    vgfx3d_postfx_chain_free(&canvas.frame_postfx_chain);
+    if (rt_obj_release_check0(fx))
+        rt_obj_free(fx);
+    if (rt_obj_release_check0(target))
+        rt_obj_free(target);
+    PASS();
+}
+
+/// ADR 0301: on the mirror path (software backend) a target rendered under a
+/// tonemap chain samples display-encoded from its material mirror, while
+/// AsPixels stays scene-referred; a chain-less canvas leaves the mirror equal to
+/// AsPixels; a repeated mirror read never re-encodes.
+static void test_canvas_material_mirror_is_display_referred() {
+    TEST("A sampled render target is display-referred on the mirror path (ADR 0301)");
+    void *target = rt_rendertarget3d_new_hdr(4, 4);
+    void *canvas = rt_canvas3d_new_offscreen(target);
+    void *fx = rt_postfx3d_new();
+    EXPECT_TRUE(target && canvas && fx, "ADR 0301 mirror fixtures exist");
+    if (!target || !canvas || !fx)
+        return;
+
+    /* Frame 1: no chain. Mirror == AsPixels (historical bytes). */
+    rt_canvas3d_clear(canvas, 0.5, 0.5, 0.5);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_end(canvas);
+    auto *plain = (pixels_view_t *)rt_rendertarget3d_as_pixels(target);
+    auto *mirror0 = (pixels_view_t *)rt_rendertarget3d_material_pixels(target);
+    EXPECT_TRUE(plain && mirror0 && plain->data && mirror0->data, "readbacks exist");
+    if (plain && mirror0 && plain->data && mirror0->data) {
+        EXPECT_TRUE(memcmp(plain->data, mirror0->data, 16u * sizeof(uint32_t)) == 0,
+                    "without a chain the mirror equals AsPixels");
+    }
+
+    /* Frame 2: explicit mode-0 tonemap (gamma-out only, exposure 1). 0.5 linear
+     * -> 0.5^(1/2.2) = 0.7297 -> code 186 (0xBA). */
+    rt_postfx3d_add_tonemap(fx, 0, 1.0);
+    rt_canvas3d_set_post_fx(canvas, fx);
+    rt_canvas3d_clear(canvas, 0.5, 0.5, 0.5);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_end(canvas);
+    auto *scene = (pixels_view_t *)rt_rendertarget3d_as_pixels(target);
+    auto *mirror = (pixels_view_t *)rt_rendertarget3d_material_pixels(target);
+    EXPECT_TRUE(scene && mirror && scene->data && mirror->data, "chain readbacks exist");
+    if (scene && mirror && scene->data && mirror->data) {
+        uint32_t sr = (scene->data[5] >> 24) & 0xFFu;
+        uint32_t mr = (mirror->data[5] >> 24) & 0xFFu;
+        EXPECT_TRUE(sr >= 126u && sr <= 129u, "AsPixels stays scene-referred (~0x80)");
+        EXPECT_TRUE(mr >= 184u && mr <= 188u, "the material mirror is display-encoded (~0xBA)");
+        EXPECT_TRUE((mirror->data[5] & 0xFFu) == 0xFFu, "alpha survives the resolve");
+        uint32_t first = mirror->data[5];
+        auto *again = (pixels_view_t *)rt_rendertarget3d_material_pixels(target);
+        EXPECT_TRUE(again && again->data && again->data[5] == first,
+                    "a repeated mirror read does not re-encode");
+    }
+    if (plain && rt_obj_release_check0(plain))
+        rt_obj_free(plain);
+    if (scene && rt_obj_release_check0(scene))
+        rt_obj_free(scene);
+    rt_canvas3d_set_post_fx(canvas, NULL);
+    if (rt_obj_release_check0(fx))
+        rt_obj_free(fx);
+    if (rt_obj_release_check0(canvas))
+        rt_obj_free(canvas);
+    if (rt_obj_release_check0(target))
+        rt_obj_free(target);
     PASS();
 }
 
@@ -12041,6 +12222,8 @@ int main() {
     test_rendertarget_rejects_malformed_buffer_layouts();
     test_canvas_offscreen_constructor_contract();
     test_canvas_draw_image2d_accepts_render_target();
+    test_canvas_render_target_frame_publishes_chain_without_present_toggle();
+    test_canvas_material_mirror_is_display_referred();
     test_canvas_offscreen_renders_and_finalizes_without_window();
     test_canvas_offscreen_rejects_invalid_targets();
     test_canvas_offscreen_accelerated_constructor_contract();
@@ -12092,6 +12275,7 @@ int main() {
     test_frame_light_flatten_cache_shares_snapshot_across_draws();
     test_shadow_distance_setter_and_effective_range();
     test_instanced_draw_precomputes_world_bounds_in_snapshot_pass();
+    test_gpu_opaque_state_sort_skips_overwritten_depth_sort();
     test_canvas_texture_upload_bytes_telemetry();
     test_canvas_frame_gpu_time_telemetry();
     test_canvas_texture_upload_budget_controls_backend();
