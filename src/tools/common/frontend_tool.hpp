@@ -6,7 +6,7 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tools/common/frontend_tool.hpp
-// Purpose: Shared infrastructure for language frontend CLI tools (vbasic, zia).
+// Purpose: Shared infrastructure for language frontend CLI tools (zbasic, zia).
 // Key invariants: All frontend tools share the same argument parsing logic.
 // Ownership/Lifetime: Helpers are stateless aside from buildIlcArgs, whose
 //                     returned char* vector aliases into a caller-owned storage
@@ -19,7 +19,7 @@
 /// @brief Defines the shared command-line pipeline for standalone language frontends.
 /// @details The header centralizes option validation, language-specific callback
 ///          hooks, frontend argument construction, stdout redirection, temporary
-///          IL handling, and optional native compilation for `zia` and `vbasic`.
+///          IL handling, and optional native compilation for `zia` and `zbasic`.
 
 #pragma once
 
@@ -125,7 +125,7 @@ struct FrontendToolParseStop {
 };
 
 /// @brief Return true when a wrapper-forwarded option consumes the next token.
-/// @details The standalone `zia` and `vbasic` wrappers forward only options
+/// @details The standalone `zia` and `zbasic` wrappers forward only options
 ///          understood by the underlying `zanna front` commands. This prevents
 ///          spelling mistakes from being accepted as opaque passthrough flags.
 /// @param arg Complete option token to classify.

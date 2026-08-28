@@ -113,7 +113,7 @@ if (WIN32)
             COMMAND ${CMAKE_COMMAND}
                     -DZANNA=$<TARGET_FILE:zanna>
                     -DZIA=$<TARGET_FILE:zia>
-                    -DVBASIC=$<TARGET_FILE:vbasic>
+                    -DZBASIC=$<TARGET_FILE:zbasic>
                     -DRTGEN=$<TARGET_FILE:rtgen>
                     -DRUNTIME_DEF=${PROJECT_SOURCE_DIR}/src/il/runtime/runtime.def
                     -DWORK_ROOT=${CMAKE_CURRENT_BINARY_DIR}
@@ -318,16 +318,16 @@ zanna_add_test(test_zia_server_lsp ${_ZIA_SERVER_TEST_DIR}/test_lsp_handler.cpp
         LIBS zia_server_lib)
 
 # ── BASIC Language Server tests ───────────────────────────────────────────
-set(_VBASIC_SERVER_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vbasic-server)
+set(_ZBASIC_SERVER_TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/zbasic-server)
 
-zanna_add_test(test_vbasic_server_bridge ${_VBASIC_SERVER_TEST_DIR}/test_basic_compiler_bridge.cpp
-        LIBS vbasic_server_lib)
+zanna_add_test(test_zbasic_server_bridge ${_ZBASIC_SERVER_TEST_DIR}/test_basic_compiler_bridge.cpp
+        LIBS zbasic_server_lib)
 
-zanna_add_test(test_vbasic_server_mcp ${_VBASIC_SERVER_TEST_DIR}/test_basic_server_mcp.cpp
-        LIBS vbasic_server_lib)
+zanna_add_test(test_zbasic_server_mcp ${_ZBASIC_SERVER_TEST_DIR}/test_basic_server_mcp.cpp
+        LIBS zbasic_server_lib)
 
-zanna_add_test(test_vbasic_server_lsp ${_VBASIC_SERVER_TEST_DIR}/test_basic_server_lsp.cpp
-        LIBS vbasic_server_lib)
+zanna_add_test(test_zbasic_server_lsp ${_ZBASIC_SERVER_TEST_DIR}/test_basic_server_lsp.cpp
+        LIBS zbasic_server_lib)
 
 # ── BASIC Analysis & Completion tests ─────────────────────────────────────
 zanna_add_test(test_basic_analysis

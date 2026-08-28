@@ -32,9 +32,9 @@ namespace zanna::server {
 
 /// @brief Configuration for parameterizing shared LSP/MCP handlers.
 struct ServerConfig {
-    std::string serverName; ///< "zia-server" or "vbasic-server"
+    std::string serverName; ///< "zia-server" or "zbasic-server"
     std::string version;    ///< "0.1.0"
-    std::string sourceName; ///< "zia" or "vbasic" (LSP diagnostic source)
+    std::string sourceName; ///< "zia" or "zbasic" (LSP diagnostic source)
     std::string toolPrefix; ///< "zia" or "basic" (MCP tool name prefix)
     std::string defaultExt; ///< ".zia" or ".bas"
     std::string langLabel;  ///< "Zia" or "Zanna BASIC" (for tool descriptions)

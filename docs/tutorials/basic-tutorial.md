@@ -571,7 +571,7 @@ END
 
 **Explore Examples:**
 
-- Browse `examples/vbasic/` for more sample programs
+- Browse `examples/zbasic/` for more sample programs
 - Check `src/tests/golden/basic/` for test cases
 
 **Advanced Topics:**

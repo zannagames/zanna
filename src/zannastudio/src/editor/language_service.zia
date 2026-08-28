@@ -103,7 +103,7 @@ class LanguageServiceManager {
         basicService.displayName = "BASIC";
         basicService.capabilityNote =
             "Compiler-backed editor semantics with bounded workspace indexing";
-        basicService.externalServerName = "vbasic-server";
+        basicService.externalServerName = "zbasic-server";
         // In-process BASIC language services use the Zanna.Basic.* bridge for
         // compiler-backed editor semantics plus the IDE-side bounded corpus
         // index for project-wide navigation, rename, and references.

@@ -641,16 +641,21 @@ void rt_canvas3d_draw_rect2d_alpha(
         rt_canvas3d_end(c);
 }
 
-/// @brief Blit a `Pixels` image into the 2D overlay at (x,y) scaled to (w,h).
+/// @brief Blit a `Pixels` image (or a live `RenderTarget3D`) into the 2D overlay at (x,y)
+///        scaled to (w,h).
 /// @details Screen-space, unlit, ignores the 3D camera — composites over the scene like
-///   `DrawRect2D`/`DrawText2D`. Pair with `RenderTarget3D.AsPixels` to display a rendered
-///   texture (e.g. a top-down minimap) on the HUD. NULL- and empty-rect-safe.
+///   `DrawRect2D`/`DrawText2D`. Pass a RenderTarget3D directly to display a rendered
+///   texture (a picture-in-picture camera, a minimap) on the HUD: backends with
+///   RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING sample the target's GPU colour texture
+///   with no readback (ADR 0299); others show its last completed frame through the CPU
+///   mirror, exactly like `Material3D.SetAlbedoRenderTarget`. NULL- and empty-rect-safe.
 /// @param obj Borrowed Canvas3D handle.
 /// @param x Left destination edge in logical pixels.
 /// @param y Top destination edge in logical pixels.
 /// @param w Destination width in logical pixels.
 /// @param h Destination height in logical pixels.
-/// @param pixels Borrowed Pixels handle retained through deferred replay.
+/// @param pixels Borrowed Pixels, TextureAsset3D, or RenderTarget3D handle retained through
+///   deferred replay.
 void rt_canvas3d_draw_image2d(void *obj, int64_t x, int64_t y, int64_t w, int64_t h, void *pixels) {
     int8_t started_temp_frame = 0;
 

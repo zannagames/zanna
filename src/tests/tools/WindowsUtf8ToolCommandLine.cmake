@@ -16,7 +16,7 @@
 #
 #===----------------------------------------------------------------------===#
 
-foreach(required IN ITEMS ZANNA ZIA VBASIC RTGEN RUNTIME_DEF WORK_ROOT)
+foreach(required IN ITEMS ZANNA ZIA ZBASIC RTGEN RUNTIME_DEF WORK_ROOT)
     if (NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
         message(FATAL_ERROR "${required} is required")
     endif ()
@@ -84,15 +84,15 @@ if (NOT zia_result EQUAL 0)
 endif ()
 
 execute_process(
-    COMMAND "${VBASIC}" "${basic_source}" --emit-il
-    RESULT_VARIABLE vbasic_result
-    OUTPUT_VARIABLE vbasic_stdout
-    ERROR_VARIABLE vbasic_stderr
+    COMMAND "${ZBASIC}" "${basic_source}" --emit-il
+    RESULT_VARIABLE zbasic_result
+    OUTPUT_VARIABLE zbasic_stdout
+    ERROR_VARIABLE zbasic_stderr
     TIMEOUT 30)
-if (NOT vbasic_result EQUAL 0)
+if (NOT zbasic_result EQUAL 0)
     message(FATAL_ERROR
-        "vbasic rejected a Unicode command-line path (${vbasic_result})\n"
-        "stdout:\n${vbasic_stdout}\nstderr:\n${vbasic_stderr}")
+        "zbasic rejected a Unicode command-line path (${zbasic_result})\n"
+        "stdout:\n${zbasic_stdout}\nstderr:\n${zbasic_stderr}")
 endif ()
 
 set(rtgen_output "${root}/生成-runtime")

@@ -363,7 +363,7 @@ have broken.
   sampled pages (`audio`, `game2d`, `threads`, `zia`) are exactly in sync with
   the registry.
 - `docs/getting-started.md` — verified end to end. `zanna init --help` matches
-  the options table verbatim; `zanna run examples/vbasic/ex1_hello_cond.bas`
+  the options table verbatim; `zanna run examples/zbasic/ex1_hello_cond.bas`
   prints the documented `HELLO/READY/10/10`; the Zia hello program runs; the
   REPL transcript reproduces exactly (`Hello from the REPL`, `14`, `42`, `49`);
   `zanna init` produces the documented tree; all seven listed tools resolve;

@@ -464,7 +464,7 @@ parallel-batch event ownership, and native-installer UI cleanup repairs.
 | WR-426 | tool environment contract | Compiler/linker/package configuration read borrowed ACP `getenv` values on Windows. A shared environment snapshot helper now uses strict, race-aware native reads. |
 | WR-427 | tool command lines | Eleven installed tools accepted ACP-decoded CRT `argv`, corrupting non-ASCII paths before validation. Their mains now rebuild strict UTF-8 arguments from `GetCommandLineW`. |
 | WR-428 | SourceManager keys | A remaining `generic_string()` conversion threw during registration of a Unicode Windows source path, aborting tools with exit code 3. Lookup keys now use explicit UTF-8 encoding. |
-| WR-429 | frontend source loading | Shared source loading and Zia `compileFile` opened UTF-8 strings through narrow streams. Both now open native paths, allowing `zanna`, `zia`, and `vbasic` to consume Unicode files. |
+| WR-429 | frontend source loading | Shared source loading and Zia `compileFile` opened UTF-8 strings through narrow streams. Both now open native paths, allowing `zanna`, `zia`, and `zbasic` to consume Unicode files. |
 | WR-430 | Zia imports | Import normalization, cache metadata, and file reads reconstructed paths through ACP and emitted ACP cache keys. Every operation now converts at the filesystem boundary and retains UTF-8 keys. |
 | WR-431 | BASIC `ADDFILE` | Include resolution, canonicalization, reads, and size checks used narrow paths. Included BASIC sources now remain UTF-8 in diagnostics and native for disk operations. |
 | WR-432 | Zia editor services | Project-root normalization and language-server workspace discovery used narrow filesystem construction/output. Completion and symbol indexes now preserve Unicode project paths. |
@@ -1127,7 +1127,7 @@ parallel-batch event ownership, and native-installer UI cleanup repairs.
 - `windows_installer_host_cli_contracts` exercises duplicate, empty, ambiguous-help, and malformed
   internal-handoff options without entering an installer mutation path.
 - `windows_utf8_tool_command_line` exercises Unicode source input through `zanna`, `zia`, and
-  `vbasic`; Unicode IL output and project creation through the driver; and Unicode generated output
+  `zbasic`; Unicode IL output and project creation through the driver; and Unicode generated output
   through `rtgen`. `test_support`, `test_run_process_quotes`,
   `test_tools_frontend_native_compiler`, and `test_tools_asset_compiler` cover the corresponding
   SourceManager, child-process, native-build, and asset filesystem boundaries. The process tests

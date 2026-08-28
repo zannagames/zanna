@@ -79,7 +79,7 @@ function(zanna_add_e2e_vm_suite)
     zanna_add_ctest(vm_trace_src
             ${CMAKE_COMMAND}
             -DILC=$<TARGET_FILE:zanna>
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/trace_src.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/trace_src.bas
             -DGOLDEN=${CMAKE_SOURCE_DIR}/src/tests/e2e/TraceSrcTests.bas.out
             -P ${_ZANNA_E2E_DIR}/test_trace_src.cmake)
     set_tests_properties(vm_trace_src PROPERTIES RESOURCE_LOCK vm_trace_artifacts)

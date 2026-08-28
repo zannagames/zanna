@@ -94,7 +94,7 @@ See the [Getting Started Guide](docs/getting-started.md) for platform-specific s
 | **[Runtime](docs/zannalib/README.md)** | Shared standard library for collections, graphics, 3D, GUI, games, networking, crypto, text, threads, localization, and more |
 | **[Language servers](docs/tools/zia-server.md)** | Zia and BASIC servers with LSP and MCP modes for editors and AI coding tools |
 | **[Zanna Studio](src/zannastudio/README.md)** | IDE written in Zia on the Zanna GUI runtime: semantic editing, project search/replace, side-by-side diffs, VM debugging with structured inspection, PTY terminal, and Git source control |
-| **[Tools](docs/tools/cli.md)** | Unified `zanna` driver plus `zia`, `vbasic`, `ilrun`, `il-verify`, `il-dis`, REPL, package, installer, and benchmark commands |
+| **[Tools](docs/tools/cli.md)** | Unified `zanna` driver plus `zia`, `zbasic`, `ilrun`, `il-verify`, `il-dis`, REPL, package, installer, and benchmark commands |
 
 ### Why Zanna?
 
@@ -241,14 +241,14 @@ zanna --dump-opcodes
 | `zanna run <file\|dir>` | Build and run a source file, project directory, or manifest |
 | `zanna build <file\|dir> -o <out>` | Build IL or a native executable |
 | `zanna check <file\|dir> --diagnostic-format=json` | Type-check and verify without running; JSON diagnostics include ranges, notes, and fixits |
-| `zanna eval 'expr' --json --type --il` | Evaluate a Zia or BASIC snippet through the REPL pipeline |
+| `zanna eval 'expr' --json [--type] [--il]` | Evaluate a snippet; type and IL inspection are Zia-only |
 | `zanna explain <CODE> --json`          | Explain a diagnostic code from the central catalog |
 | `zanna repl [zia & basic]`             | Interactive REPL |
 | `zanna -run <file.il>`                 | Execute an IL module directly, with optional tracing and step limits |
 | `zanna package <dir>`                  | Package an application for macOS, Linux, Windows, or tarball output |
 | `zanna install-package`                | Package the Zanna binary tools and Zanna Studio into a platform installer |
-| `zia` / `vbasic`                       | Standalone source compiler entry points |
-| `zia-server` / `vbasic-server`         | Language servers with LSP and MCP modes |
+| `zia` / `zbasic`                       | Standalone source compiler entry points |
+| `zia-server` / `zbasic-server`         | Language servers with LSP and MCP modes |
 | `ilrun`, `il-verify`, `il-dis`         | Direct IL execution, verification, and disassembly |
 | `zanna il-opt`                         | Run and inspect optimizer pipelines |
 | `zanna bench`                          | IL benchmark runner |

@@ -69,13 +69,13 @@ TEST(ARM64E2E, Frogger_RunNative_OptIn) {
     if (!onMacArm64() || !optInRun())
         return; // opt-in only
     const std::string buildDir = ".";
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
     const std::string froggerBas = "../examples/games/frogger-basic/frogger.bas";
-    if (!exists(vbasic) || !exists(ilc) || !exists(froggerBas))
+    if (!exists(zbasic) || !exists(ilc) || !exists(froggerBas))
         return;
     const std::string ilFile = "/tmp/frogger_run.il";
-    RunResult rr = run_process({vbasic, froggerBas, "-o", ilFile});
+    RunResult rr = run_process({zbasic, froggerBas, "-o", ilFile});
     ASSERT_EQ(rr.exit_code, 0);
     rr = run_process({ilc, "codegen", "arm64", ilFile, "-run-native"});
     // Minimal assertion: process executed and returned a code (no crash/sig)
@@ -86,13 +86,13 @@ TEST(ARM64E2E, Vtris_RunNative_OptIn) {
     if (!onMacArm64() || !optInRun())
         return; // opt-in only
     const std::string buildDir = ".";
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
     const std::string vtrisBas = "../examples/games/vtris/vtris.bas";
-    if (!exists(vbasic) || !exists(ilc) || !exists(vtrisBas))
+    if (!exists(zbasic) || !exists(ilc) || !exists(vtrisBas))
         return;
     const std::string ilFile = "/tmp/vtris_run.il";
-    RunResult rr = run_process({vbasic, vtrisBas, "-o", ilFile});
+    RunResult rr = run_process({zbasic, vtrisBas, "-o", ilFile});
     ASSERT_EQ(rr.exit_code, 0);
     rr = run_process({ilc, "codegen", "arm64", ilFile, "-run-native"});
     EXPECT_NE(rr.exit_code, -1);

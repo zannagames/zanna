@@ -844,7 +844,7 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
     cmd.index_count = 6;
     cmd.validated_index_count = cmd.index_count;
     cmd.model_matrix[0] = cmd.model_matrix[5] = cmd.model_matrix[10] = cmd.model_matrix[15] = 1.0f;
-    canvas3d_fill_material_cmd((const rt_material3d *)mat, &cmd);
+    canvas3d_fill_material_cmd(c, (const rt_material3d *)mat, &cmd);
     cmd.unlit = 1;
     cmd.disable_depth_test = 1;
     /* A screen quad exists only to show its Pixels: while the upload is still budget-paused the
@@ -1923,7 +1923,7 @@ void rt_canvas3d_draw_mesh_matrix_keyed_bounds(void *obj,
                                     dd->cmd.prev_model_matrix,
                                     &dd->cmd.has_prev_model_matrix);
     canvas3d_texture_stream_touch_material(c, mat);
-    canvas3d_fill_material_cmd(mat, &dd->cmd);
+    canvas3d_fill_material_cmd(c, mat, &dd->cmd);
     canvas3d_apply_ibl_env(c, &dd->cmd);
     if (suppress_normal_map)
         canvas3d_disable_cmd_normal_map(&dd->cmd);

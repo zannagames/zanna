@@ -375,14 +375,14 @@ function(zanna_add_basic_ast_golden_tests)
     zanna_add_ctest(basic_ast_ex1
             ${CMAKE_COMMAND}
             -DBASIC_AST_DUMP=${_ZANNA_BASIC_AST_DUMP}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex1_hello_cond.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex1_hello_cond.bas
             -DGOLDEN=${_ZANNA_BASIC_AST_DIR}/ex1_hello_cond.ast
             -P ${_ZANNA_BASIC_AST_CHECK})
 
     zanna_add_ctest(basic_ast_ex2
             ${CMAKE_COMMAND}
             -DBASIC_AST_DUMP=${_ZANNA_BASIC_AST_DUMP}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex2_sum_1_to_10.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex2_sum_1_to_10.bas
             -DGOLDEN=${_ZANNA_BASIC_AST_DIR}/ex2_sum_1_to_10.ast
             -P ${_ZANNA_BASIC_AST_CHECK})
 
@@ -570,42 +570,42 @@ function(zanna_add_basic_to_il_golden_tests)
     _zanna_basic_to_il_add_ctest(basic_to_il_ex1
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex1_hello_cond.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex1_hello_cond.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex1_hello_cond.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_ex2
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex2_sum_1_to_10.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex2_sum_1_to_10.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex2_sum_1_to_10.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_ex3
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex3_for_table.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex3_for_table.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex3_for_table.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_ex4
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex4_if_elseif.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex4_if_elseif.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex4_if_elseif.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_ex_elseif
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_elseif.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_elseif.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex_elseif.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_ex6
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex6_array_sum.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex6_array_sum.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex6_array_sum.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
@@ -633,35 +633,35 @@ function(zanna_add_basic_to_il_golden_tests)
     _zanna_basic_to_il_add_ctest(basic_to_il_not
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_not.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_not.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/not.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_print_commas
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_print_commas.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_print_commas.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/print_commas.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_print_semicolons
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_print_semicolons.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_print_semicolons.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/print_semicolons.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_print_newline_control
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_print_newline_control.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_print_newline_control.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/print_newline_control.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 
     _zanna_basic_to_il_add_ctest(basic_to_il_colon
             ${CMAKE_COMMAND}
             -DILC=${_ZANNA_BASIC_ILC}
-            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/vbasic/ex_colon.bas
+            -DBAS_FILE=${CMAKE_SOURCE_DIR}/examples/zbasic/ex_colon.bas
             -DGOLDEN=${_ZANNA_BASIC_TO_IL_DIR}/ex_colon.il
             -P ${_ZANNA_BASIC_TO_IL_CHECK})
 

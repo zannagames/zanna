@@ -455,6 +455,10 @@ rt_string rt_canvas3d_get_backend_fallback_reason(void *obj);
 /* The full post-FX chain (incl. SSAO/DOF/MotionBlur/TAA/SSR) executes on this
  * backend — GPU-accelerated or via the CPU parity implementations. */
 #define RT_CANVAS3D_BACKEND_CAP_POSTFX_FULL 0x1000000000LL
+/* Materials bound to a RenderTarget3D sample the backend's retained native
+ * colour texture directly (ADR 0299): no CPU mirror readback, no GPU stall,
+ * no re-upload. Backends without this bit keep the Pixels-mirror path. */
+#define RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING 0x2000000000LL
 
 /// @brief Return a 64-bit RT_CANVAS3D_BACKEND_CAP_* bitmask for the active backend.
 /// @param obj Borrowed Canvas3D handle.

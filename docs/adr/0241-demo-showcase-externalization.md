@@ -27,7 +27,7 @@ else moves to the `zannademos` repository (github.com/zannagames/zannademos),
 conventionally cloned nested at `<zanna>/zannademos/` (gitignored, same
 pattern as `/zannaweb/`).
 
-**Kept in `examples/`:** `il/`, `vbasic/`, `zia/`, `hello-lsp.zia`,
+**Kept in `examples/`:** `il/`, `zbasic/`, `zia/`, `hello-lsp.zia`,
 `localization/`, `embedding/`, `apiaudit/`, the whole `3d/` ladder
 (`openworld_slice` is a hard fixture for `test_rt_model3d`), `games/lib`,
 `games/chess`, `games/crackman`, `games/{vtris,frogger-basic,centipede-basic}`,

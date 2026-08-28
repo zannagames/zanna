@@ -168,7 +168,7 @@ Roughly 18K lines of new coverage (`+103` tests to 1,454). Highlights:
 - **Runtime.** `RTArgs`, `RTArchive` (path traversal + round-trip), `RTGlob`, `RTSaveData`, `RTWatcher`, `RTFileExt`, `RTGC`, `RTLineWriter`, `RTMouse` (`clear_canvas_if_matches`), `RTMsgBus`, `RTObjectIntrospect`.
 - **Smoke probes.** 6 Zia probes (`zia_smoke_paint`, `_zannaide`, `_zannasql`, `_3dbowling`, `_chess`, `_xenoscape`) exercise real example app/game module stacks deterministically.
 - **vgfx input.** T22–T25 (pump-events-without-present, text-input event, scroll event, focus state sync).
-- **Windows infrastructure.** ProcessIsolation `registerChildFunction()` with indexed dispatch (`--zanna-child-run=N`); failures reduced 48 → 4. Codegen test assertions accept `.rdata` alongside `.rodata` and `cmovne` alongside `cmovneq`. `rtgen` wraps generated `ZiaRuntimeExterns.inc` calls in per-namespace lambdas to dodge MSVC Debug stack overflow. `WinDialogSuppress.c` linked into zanna/vbasic/zia to suppress CI crash dialogs. Windows `CrossLayerArithTests` `dispatchChild()` guard prevents infinite process recursion.
+- **Windows infrastructure.** ProcessIsolation `registerChildFunction()` with indexed dispatch (`--zanna-child-run=N`); failures reduced 48 → 4. Codegen test assertions accept `.rdata` alongside `.rodata` and `cmovne` alongside `cmovneq`. `rtgen` wraps generated `ZiaRuntimeExterns.inc` calls in per-namespace lambdas to dodge MSVC Debug stack overflow. `WinDialogSuppress.c` linked into zanna/zbasic/zia to suppress CI crash dialogs. Windows `CrossLayerArithTests` `dispatchChild()` guard prevents infinite process recursion.
 
 ### Demos & docs
 

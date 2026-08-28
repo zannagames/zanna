@@ -1622,7 +1622,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
     }
 
     has_splat = d3d11_bind_draw_resources(ctx, cmd, &draw_resources);
-    if (cmd->texture_required && (cmd->texture || cmd->texture_asset) &&
+    if (cmd->texture_required && vgfx3d_draw_cmd_has_base_texture(cmd) &&
         !draw_resources.has_texture) {
         /* Text / image quad whose Pixels are still budget-paused: draw nothing this frame rather
          * than the untextured white material. */
@@ -1849,7 +1849,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     }
 
     has_splat = d3d11_bind_draw_resources(ctx, cmd, &draw_resources);
-    if (cmd->texture_required && (cmd->texture || cmd->texture_asset) &&
+    if (cmd->texture_required && vgfx3d_draw_cmd_has_base_texture(cmd) &&
         !draw_resources.has_texture) {
         /* Text / image quad whose Pixels are still budget-paused: draw nothing this frame rather
          * than the untextured white material. */

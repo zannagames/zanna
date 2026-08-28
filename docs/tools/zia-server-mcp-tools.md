@@ -6,7 +6,10 @@ last-verified: 2026-07-26
 
 # Zia Server — MCP Tool Specification
 
-Detailed specification for each MCP tool exposed by `zia-server --mcp`. This document is intended for AI agents and MCP client implementors.
+Detailed specification for each MCP tool exposed by `zia-server --mcp`. The
+same schemas are exposed by `zbasic-server --mcp` with `basic/` substituted for
+the `zia/` tool-name prefix. This document is intended for AI agents and MCP
+client implementors.
 
 `zia-server --lsp` exposes additional editor-only features (`definition`, `references`,
 `rename`, `signatureHelp`, `workspace/symbol`, and `semanticTokens/full`). MCP remains

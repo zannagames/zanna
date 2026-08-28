@@ -115,6 +115,7 @@ struct AnimController3DLayerTestLayout {
     int32_t previous_state;
     float transition_time;
     float transition_duration;
+    float entry_delay; /* ADR 0300 */
     int8_t transitioning;
     int8_t additive;
     float weight;
@@ -1139,6 +1140,101 @@ static void test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage() 
                 "IKSolver3D finalization frees owned identities, not corrupt mirrors");
 }
 
+/// ADR 0299: re-programming the SAME LOD rate keeps the pending batch (a camera cut
+/// re-gating an already-throttled actor must not drop pose time); a rate CHANGE
+/// restarts the accumulator.
+/// ADR 0300: CrossfadeAt enters the destination clip at an offset so the state
+/// time equals (playhead - mark) regardless of the frame the mark was noticed on.
+static void test_controller_crossfade_at_enters_at_offset() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *idle = make_anim("idle", 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    void *walk = make_anim("walk", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("idle"), idle);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("walk"), walk);
+    rt_anim_controller3d_play(controller, rt_const_cstr("idle"));
+    rt_anim_controller3d_update(controller, 0.2);
+
+    EXPECT_TRUE(rt_anim_controller3d_crossfade_at(controller, rt_const_cstr("walk"), 0.0, 0.3) == 1,
+                "CrossfadeAt applies a registered state");
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.3,
+                0.001,
+                "CrossfadeAt enters the clip at the requested offset");
+    rt_anim_controller3d_update(controller, 0.1);
+    void *root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
+                4.0,
+                0.1,
+                "the pose after one step reflects offset + step (0.4 s of a 10 u/s clip)");
+    EXPECT_TRUE(rt_anim_controller3d_crossfade_at(controller, rt_const_cstr("nope"), 0.0, 0.1) == 0,
+                "CrossfadeAt rejects an unknown state");
+    rt_anim_controller3d_crossfade_at(controller, rt_const_cstr("idle"), 0.0, 0.0);
+    rt_anim_controller3d_crossfade_at(controller, rt_const_cstr("walk"), 0.0, -0.05);
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.0,
+                0.001,
+                "a negative start enters at zero");
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.05,
+                0.001,
+                "a negative start holds the entry for |start| of update time, then runs");
+    rt_anim_controller3d_update(controller, 0.1);
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.15,
+                0.001,
+                "after the hold the clip advances at full rate");
+}
+
+static void test_controller_animation_lod_reprogram_preserves_accumulator() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *walk = make_anim("walk", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("walk"), walk);
+    rt_anim_controller3d_play(controller, rt_const_cstr("walk"));
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 2.0);
+
+    for (int i = 0; i < 3; i++)
+        rt_anim_controller3d_update(controller, 0.1);
+    /* Same rate again: the 0.3 s already accumulated must survive. */
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 2.0);
+    for (int i = 0; i < 2; i++)
+        rt_anim_controller3d_update(controller, 0.1);
+    void *root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
+                5.0,
+                0.1,
+                "re-applying an unchanged LOD rate keeps the pending interval");
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.5,
+                0.01,
+                "state time reflects the preserved accumulator");
+
+    /* A rate change restarts the batch: 0.1 s pending is discarded. */
+    rt_anim_controller3d_update(controller, 0.1);
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 4.0);
+    for (int i = 0; i < 2; i++)
+        rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
+                5.0,
+                0.1,
+                "a LOD rate change resets the accumulator (0.2 s < 0.25 s interval)");
+    rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
+                7.5,
+                0.1,
+                "the new interval applies once it fills after the reset");
+}
+
 static void test_controller_animation_lod_throttles_updates_deterministically() {
     void *skel = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1763,6 +1859,8 @@ int main() {
     test_add_ik_solver_rejects_source_skeleton_solver_on_clone();
     test_ik_solver_look_at_and_fabrik_factories();
     test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage();
+    test_controller_crossfade_at_enters_at_offset();
+    test_controller_animation_lod_reprogram_preserves_accumulator();
     test_controller_animation_lod_throttles_updates_deterministically();
     test_controller_bone_count_lod_freezes_distal_bones();
     test_controller_events_cover_full_loops_and_reverse();

@@ -3,6 +3,10 @@
     "zia": {
       "command": "build/src/tools/zia-server/zia-server",
       "args": ["--mcp"]
+    },
+    "zbasic": {
+      "command": "build/src/tools/zbasic-server/zbasic-server",
+      "args": ["--mcp"]
     }
   }
 }

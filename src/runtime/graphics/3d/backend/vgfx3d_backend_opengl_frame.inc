@@ -167,8 +167,9 @@ static void gl_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     ctx->shadow_count = 0;
     memset(ctx->shadow_complete, 0, sizeof(ctx->shadow_complete));
     ctx->current_pass_is_overlay = (!ctx->rtt_active && cam->load_existing_color) ? 1 : 0;
-    if (!ctx->current_pass_is_overlay)
-        ctx->texture_upload_bytes = 0;
+    /* Every pass — the overlay included — starts with a fresh upload budget (ADR 0299 note):
+     * sharing the scene pass's remainder let a heavy cut pause texture-required HUD quads. */
+    ctx->texture_upload_bytes = 0;
     if (!ctx->current_pass_is_overlay) {
         ctx->scene_composited_to_backbuffer = 0;
         ctx->scene_postfx_pending = 0;
@@ -1533,7 +1534,7 @@ static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
             cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
             cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
             cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
-        if (diffuse_tex == 0 && cmd->texture_required && (cmd->texture || cmd->texture_asset))
+        if (diffuse_tex == 0 && cmd->texture_required && vgfx3d_draw_cmd_has_base_texture(cmd))
             return; /* skipped in the main pass too; casting its shadow would be wrong */
         gl.Uniform1i(ctx->shadow_uHasTexture, diffuse_tex ? 1 : 0);
         gl.Uniform1i(ctx->shadow_uAlphaMode, vgfx3d_sanitize_alpha_mode(cmd->alpha_mode));

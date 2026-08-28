@@ -50,7 +50,7 @@ New user-friendly compiler drivers replace verbose `zanna` subcommands:
 
 | Old Command | New Command |
 |-------------|-------------|
-| `zanna front basic -run file.bas` | `vbasic file.bas` |
+| `zanna front basic -run file.bas` | `zbasic file.bas` |
 | `zanna front zia -run file.zia` | `zia file.zia` |
 | `zanna -run file.il` | `ilrun file.il` |
 
@@ -199,7 +199,7 @@ Sprite, tilemap, and camera support for 2D games:
 ### Breaking Changes
 
 1. **ZannaLang renamed to Zia**: Update file extensions from `.zanna` to `.zia`
-2. **New CLI tools**: Use `vbasic`, `zia`, `ilrun` instead of `zanna` subcommands
+2. **New CLI tools**: Use `zbasic`, `zia`, `ilrun` instead of `zanna` subcommands
 
 ### Migration from v0.1.3
 
@@ -223,7 +223,7 @@ mv program.zanna program.zia
 ./build/src/tools/zanna/zanna front basic -run program.bas
 
 # New
-./build/src/tools/vbasic/vbasic program.bas
+./build/src/tools/zbasic/zbasic program.bas
 ```
 
 ### v0.2.x Roadmap

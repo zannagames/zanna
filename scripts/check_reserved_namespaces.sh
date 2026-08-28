@@ -20,7 +20,7 @@ echo "Checking for reserved 'Zanna' namespace usage in user-facing code..."
 CHECK_DIRS=(
   "${REPO_ROOT}/src/tests/golden/basic"
   "${REPO_ROOT}/src/tests/e2e"
-  "${REPO_ROOT}/examples/vbasic"
+  "${REPO_ROOT}/examples/zbasic"
 )
 
 # Allowed exceptions (built-in library examples showing Track B syntax)

@@ -814,7 +814,7 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
     EXPECT_TRUE(strstr(source, "if (!resolved)\n                    return nil;") != NULL &&
                     strstr(source, "if (!output_texture)\n                    return nil;") != NULL,
                 "Metal propagates temporal and reflection encoder failures");
-    EXPECT_TRUE(strstr(source, "k_texture_cache_max_entries = 256u") != NULL &&
+    EXPECT_TRUE(strstr(source, "k_texture_cache_max_entries = 512u") != NULL &&
                     strstr(source, "k_cubemap_cache_max_entries = 64u") != NULL &&
                     strstr(source, "k_morph_cache_max_entries = 64u") != NULL,
                 "Metal GPU caches have hard same-frame cardinality limits");

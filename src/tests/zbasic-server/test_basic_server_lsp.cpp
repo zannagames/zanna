@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/vbasic-server/test_basic_server_lsp.cpp
+// File: tests/zbasic-server/test_basic_server_lsp.cpp
 // Purpose: Integration tests for LSP protocol handler with BASIC bridge.
 // Key invariants:
 //   - Tests exercise the LSP lifecycle: initialize → didOpen → features → shutdown
@@ -13,7 +13,7 @@
 //   - Feature requests validate response structure against LSP 3.17 spec
 // Ownership/Lifetime:
 //   - Test-only file
-// Links: tools/vbasic-server/BasicCompilerBridge.hpp,
+// Links: tools/zbasic-server/BasicCompilerBridge.hpp,
 //        tools/lsp-common/LspHandler.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -24,7 +24,7 @@
 #include "tools/lsp-common/JsonRpc.hpp"
 #include "tools/lsp-common/LspHandler.hpp"
 #include "tools/lsp-common/Transport.hpp"
-#include "tools/vbasic-server/BasicCompilerBridge.hpp"
+#include "tools/zbasic-server/BasicCompilerBridge.hpp"
 
 #include <string>
 #include <vector>
@@ -32,7 +32,7 @@
 using namespace zanna::server;
 
 static const ServerConfig kBasicConfig{
-    "vbasic-server", "0.1.0", "vbasic", "basic", ".bas", "Zanna BASIC"};
+    "zbasic-server", "0.1.0", "zbasic", "basic", ".bas", "Zanna BASIC"};
 
 // --- Mock transport that captures written messages ---
 
@@ -104,7 +104,7 @@ TEST(BasicLsp, Initialize) {
     EXPECT_FALSE(caps.has("semanticTokensProvider"));
 
     auto info = resp["result"]["serverInfo"];
-    EXPECT_EQ(info["name"].asString(), "vbasic-server");
+    EXPECT_EQ(info["name"].asString(), "zbasic-server");
 }
 
 TEST(BasicLsp, Shutdown) {

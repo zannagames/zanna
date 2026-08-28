@@ -277,8 +277,9 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
         return;
     }
 
+    /* Every pass — the overlay included — starts with a fresh upload budget (ADR 0299 note). */
+    ctx->texture_upload_bytes = 0;
     if (!ctx->current_pass_is_overlay) {
-        ctx->texture_upload_bytes = 0;
         ctx->shadow_count = 0;
         memset(ctx->shadow_slot_complete, 0, sizeof(ctx->shadow_slot_complete));
         ctx->overlay_used_this_frame = 0;

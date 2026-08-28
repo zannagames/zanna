@@ -64,10 +64,10 @@ zanna run examples/games/chess/
 zanna run examples/apps/paint/
 ```
 
-The standalone tools `vbasic`, `zia`, and `ilrun` are also available:
+The standalone tools `zbasic`, `zia`, and `ilrun` are also available:
 
 ```bash
-vbasic myprogram.bas
+zbasic myprogram.bas
 zia myprogram.zia
 ilrun program.il
 ```
@@ -365,7 +365,7 @@ ilrun program.il --break main:10
 
 ```bash
 zia program.zia --emit-il
-vbasic program.bas --emit-il
+zbasic program.bas --emit-il
 ```
 
 **Run tests:**

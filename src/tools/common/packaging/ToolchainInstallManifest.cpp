@@ -1025,12 +1025,12 @@ ToolchainInstallManifest gatherToolchainInstallManifest(
 std::vector<std::string> requiredToolchainBinaryNames() {
     return {"zanna",
             "zia",
-            "vbasic",
+            "zbasic",
             "ilrun",
             "il-verify",
             "il-dis",
             "zia-server",
-            "vbasic-server",
+            "zbasic-server",
             "basic-ast-dump",
             "basic-lex-dump",
             "zannastudio"};

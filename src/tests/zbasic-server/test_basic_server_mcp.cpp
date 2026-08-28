@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/vbasic-server/test_basic_server_mcp.cpp
+// File: tests/zbasic-server/test_basic_server_mcp.cpp
 // Purpose: Integration tests for MCP protocol handler with BASIC bridge.
 // Key invariants:
 //   - Tests exercise the full MCP lifecycle: initialize → tools/list → tools/call
@@ -13,7 +13,7 @@
 //   - Response structure matches MCP 2024-11-05 specification
 // Ownership/Lifetime:
 //   - Test-only file
-// Links: tools/vbasic-server/BasicCompilerBridge.hpp,
+// Links: tools/zbasic-server/BasicCompilerBridge.hpp,
 //        tools/lsp-common/McpHandler.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -22,14 +22,14 @@
 #include "tools/lsp-common/Json.hpp"
 #include "tools/lsp-common/JsonRpc.hpp"
 #include "tools/lsp-common/McpHandler.hpp"
-#include "tools/vbasic-server/BasicCompilerBridge.hpp"
+#include "tools/zbasic-server/BasicCompilerBridge.hpp"
 
 #include <string>
 
 using namespace zanna::server;
 
 static const ServerConfig kBasicConfig{
-    "vbasic-server", "0.1.0", "vbasic", "basic", ".bas", "Zanna BASIC"};
+    "zbasic-server", "0.1.0", "zbasic", "basic", ".bas", "Zanna BASIC"};
 
 /// Helper: build a JsonRpcRequest from method, params, and id.
 static JsonRpcRequest makeReq(const std::string &method,
@@ -68,7 +68,7 @@ TEST(BasicMcp, Initialize) {
 
     auto result = resp["result"];
     EXPECT_EQ(result["protocolVersion"].asString(), "2024-11-05");
-    EXPECT_EQ(result["serverInfo"]["name"].asString(), "vbasic-server");
+    EXPECT_EQ(result["serverInfo"]["name"].asString(), "zbasic-server");
     EXPECT_TRUE(result["capabilities"].has("tools"));
 }
 

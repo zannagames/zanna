@@ -1,0 +1,87 @@
+.TH zbasic 1 "Zanna" "zbasic" "User Commands"
+.SH NAME
+zbasic \- compile or run Zanna BASIC source files
+.SH SYNOPSIS
+.B zbasic
+[\fIoptions\fR] \fIFILE.bas\fR [\fB--\fR \fIprogram-args...\fR]
+.SH DESCRIPTION
+\fBzbasic\fR is the single-file Zanna BASIC driver. It runs BASIC source
+through the BASIC frontend and either executes the program, emits textual IL,
+or produces native output when \fB-o\fR names a non-\fB.il\fR file.
+.PP
+For project, directory, REPL, and packaging workflows, use \fBzanna\fR(1).
+.PP
+Invoking \fBzbasic\fR without a source file prints command help and exits. It
+does not enter a REPL; use \fBzanna repl basic\fR for an interactive session.
+.SH MODES
+.TP
+Run (default)
+\fBzbasic\fR \fIFILE.bas\fR
+.TP
+Emit IL to stdout
+\fBzbasic\fR \fIFILE.bas\fR \fB--emit-il\fR
+.TP
+Emit IL or native output to file
+\fBzbasic\fR \fIFILE.bas\fR \fB-o\fR \fIOUTPUT\fR
+.SH OPTIONS
+.TP
+\fB-o\fR, \fB--output\fR \fIFILE\fR
+Write IL when \fIFILE\fR ends in \fB.il\fR; otherwise compile native output.
+.TP
+\fB--emit-il\fR
+Emit IL instead of running the program.
+.TP
+\fB--trace\fR[=\fIil\fR|\fIsrc\fR]
+Enable tracing.
+.TP
+\fB--bounds-checks\fR
+Enable array bounds checks (default for source).
+.TP
+\fB--no-bounds-checks\fR
+Disable generated source bounds checks.
+.TP
+\fB--stdin-from\fR \fIFILE\fR
+Redirect stdin from file.
+.TP
+\fB--max-steps\fR \fIN\fR
+Limit instruction steps.
+.TP
+\fB--dump-trap\fR
+Show detailed trap diagnostics.
+.TP
+\fB--diagnostic-format\fR \fItext\fR|\fIjson\fR
+Select diagnostic output format.
+.TP
+\fB--paranoid-verify\fR
+Run all frontend verifier checkpoints.
+.TP
+\fB--pass-stats\fR
+Print optimizer pass statistics.
+.TP
+\fB-h\fR, \fB--help\fR
+Show command help and exit.
+.TP
+\fB--version\fR
+Show version information and exit.
+.SH NOTES
+FUNCTIONs must return on all paths; SUBs cannot be used as expressions; array
+parameters are ByRef. The shared Zia warning-control flags are accepted for CLI
+compatibility but do not change BASIC diagnostics.
+.SH EXAMPLES
+.TP
+Run a source file
+.nf
+zbasic hello.bas
+.fi
+.TP
+Emit IL to stdout
+.nf
+zbasic hello.bas --emit-il
+.fi
+.TP
+Save IL to a file
+.nf
+zbasic hello.bas -o hello.il
+.fi
+.SH SEE ALSO
+\fBzanna\fR(1), \fBzia\fR(1), \fBilrun\fR(1)

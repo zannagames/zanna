@@ -18,7 +18,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "tools/vbasic-server/BasicCompilerBridge.hpp"
+#include "tools/zbasic-server/BasicCompilerBridge.hpp"
 
 #include "tools/lsp-common/DiagnosticUtils.hpp"
 #include "tools/lsp-common/TextUtils.hpp"

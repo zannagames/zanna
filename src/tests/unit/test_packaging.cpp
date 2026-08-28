@@ -753,12 +753,12 @@ static std::filesystem::path createMockToolchainStage(const std::filesystem::pat
                         fs::perm_options::replace);
     }
     for (const char *tool : {"zia",
-                             "vbasic",
+                             "zbasic",
                              "ilrun",
                              "il-verify",
                              "il-dis",
                              "zia-server",
-                             "vbasic-server",
+                             "zbasic-server",
                              "basic-ast-dump",
                              "basic-lex-dump",
                              "zannastudio"}) {

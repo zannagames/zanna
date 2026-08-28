@@ -446,6 +446,7 @@ static uint64_t canvas3d_backend_state_key_core(deferred_draw_kind_t kind,
      * (and backend geometry caches get consecutive hits). */
     key = canvas3d_mix_sort_ptr(key, cmd->geometry_key);
     key = canvas3d_mix_sort_ptr(key, cmd->texture);
+    key = canvas3d_mix_sort_ptr(key, cmd->texture_target);
     key = canvas3d_mix_sort_ptr(key, cmd->normal_map);
     key = canvas3d_mix_sort_ptr(key, cmd->specular_map);
     key = canvas3d_mix_sort_ptr(key, cmd->emissive_map);
@@ -1285,10 +1286,51 @@ static void canvas3d_capture_texture_asset_snapshot(vgfx3d_draw_cmd_t *cmd,
 /// remapping (e.g., `mat->shininess` → `cmd->shininess`).
 /// @param mat Borrowed material to snapshot and sanitize.
 /// @param[out] cmd Draw command receiving every backend-visible material field.
-static void canvas3d_fill_material_cmd(const rt_material3d *mat, vgfx3d_draw_cmd_t *cmd) {
+/// @brief True when the canvas backend samples RenderTarget3D colour natively (ADR 0299).
+/// @param c Borrowed canvas; NULL or a backend without the feature hook reads as unsupported.
+/// @return Non-zero when RT-bound material slots may skip the CPU mirror.
+static int canvas3d_backend_samples_render_targets(const rt_canvas3d *c) {
+    if (!c || !c->backend || !c->backend->get_feature_caps)
+        return 0;
+    return (c->backend->get_feature_caps(c->backend_ctx) &
+            RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING) != 0;
+}
+
+/// @brief Resolve one material texture slot into its draw-command sources.
+/// @details A RenderTarget3D reference becomes a native target pointer when the backend can
+///          sample it directly (the Pixels fallback stays NULL so no mirror readback runs);
+///          every other reference, and RTs on mirror-only backends, resolve to Pixels.
+/// @param texture_ref Nullable Pixels, TextureAsset3D, or RenderTarget3D handle.
+/// @param native_rt Non-zero when the backend advertises native RT sampling.
+/// @param out_pixels Receives the borrowed Pixels fallback or NULL.
+/// @param out_target Receives the borrowed native target or NULL.
+static void canvas3d_resolve_material_slot(void *texture_ref,
+                                           int native_rt,
+                                           const void **out_pixels,
+                                           const vgfx3d_rendertarget_t **out_target,
+                                           void **out_target_owner) {
+    *out_target = NULL;
+    *out_target_owner = NULL;
+    if (native_rt && texture_ref && rt_g3d_has_class(texture_ref, RT_G3D_RENDERTARGET3D_CLASS_ID)) {
+        const rt_rendertarget3d *rtd = (const rt_rendertarget3d *)texture_ref;
+        if (rtd->target) {
+            *out_target = rtd->target;
+            *out_target_owner = texture_ref;
+            *out_pixels = NULL;
+            return;
+        }
+    }
+    *out_pixels = rt_material3d_resolve_texture_pixels(texture_ref);
+}
+
+static void canvas3d_fill_material_cmd(const rt_canvas3d *c,
+                                       const rt_material3d *mat,
+                                       vgfx3d_draw_cmd_t *cmd) {
     rt_pixels_alpha_classification alpha_classification;
+    int native_rt;
     if (!mat || !cmd)
         return;
+    native_rt = canvas3d_backend_samples_render_targets(c);
 
     cmd->diffuse_color[0] = canvas3d_clamp01_f64(mat->diffuse[0]);
     cmd->diffuse_color[1] = canvas3d_clamp01_f64(mat->diffuse[1]);
@@ -1301,10 +1343,15 @@ static void canvas3d_fill_material_cmd(const rt_material3d *mat, vgfx3d_draw_cmd
         canvas3d_clamp_material_f64(mat->shininess, 0.0, CANVAS3D_MATERIAL_SHININESS_MAX, 32.0f);
     cmd->alpha = canvas3d_clamp_material_f64(mat->alpha, 0.0, 1.0, 1.0f);
     cmd->unlit = (int8_t)(mat->unlit || mat->shading_model == 3);
-    cmd->texture = rt_material3d_resolve_texture_pixels(mat->texture);
+    canvas3d_resolve_material_slot(
+        mat->texture, native_rt, &cmd->texture, &cmd->texture_target, &cmd->texture_target_owner);
     cmd->normal_map = rt_material3d_resolve_texture_pixels(mat->normal_map);
     cmd->specular_map = rt_material3d_resolve_texture_pixels(mat->specular_map);
-    cmd->emissive_map = rt_material3d_resolve_texture_pixels(mat->emissive_map);
+    canvas3d_resolve_material_slot(mat->emissive_map,
+                                   native_rt,
+                                   &cmd->emissive_map,
+                                   &cmd->emissive_map_target,
+                                   &cmd->emissive_map_target_owner);
     cmd->texture_asset = rt_material3d_resolve_texture_native_asset(mat->texture);
     cmd->normal_map_asset = rt_material3d_resolve_texture_native_asset(mat->normal_map);
     cmd->specular_map_asset = rt_material3d_resolve_texture_native_asset(mat->specular_map);
@@ -2402,7 +2449,8 @@ static void canvas3d_fill_deferred_draw(rt_canvas3d *c,
     }
     dd->sort_key = canvas3d_sanitize_sort_key(sort_key, dd->requires_blend);
     dd->stable_sort_id = (uintptr_t)cmd->geometry_key ^ (uintptr_t)cmd->texture ^
-                         ((uintptr_t)cmd->texture_asset << 1) ^ ((uintptr_t)instance_matrices << 2);
+                         (uintptr_t)cmd->texture_target ^ ((uintptr_t)cmd->texture_asset << 1) ^
+                         ((uintptr_t)instance_matrices << 2);
     dd->occlusion_key = dd->stable_sort_id ? dd->stable_sort_id : (uintptr_t)cmd->vertices;
     if (local_bounds_min && local_bounds_max) {
         dd->has_local_bounds = 1;

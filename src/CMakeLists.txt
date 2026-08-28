@@ -653,17 +653,17 @@ if (APPLE)
             RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/zanna)
 endif ()
 
-add_executable(vbasic
-        tools/vbasic/main.cpp
-        tools/vbasic/usage.cpp
-        tools/vbasic/cli_compat.cpp
+add_executable(zbasic
+        tools/zbasic/main.cpp
+        tools/zbasic/usage.cpp
+        tools/zbasic/cli_compat.cpp
         tools/zanna/cmd_front_basic.cpp
         tools/zanna/cli.cpp)
 if (WIN32)
-    target_sources(vbasic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/common/WinDialogSuppress.c)
+    target_sources(zbasic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/common/WinDialogSuppress.c)
 endif ()
-set_target_properties(vbasic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src/tools/vbasic)
-target_link_libraries(vbasic
+set_target_properties(zbasic PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src/tools/zbasic)
+target_link_libraries(zbasic
         PRIVATE
         zanna_common_opts
         zanna::il_full
@@ -676,9 +676,8 @@ target_link_libraries(vbasic
         il_codegen_aarch64
         zanna_cmd_arm64
         zanna_common
-        zanna_bytecode
-        zanna_repl)
-install(TARGETS vbasic RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        zanna_bytecode)
+install(TARGETS zbasic RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 add_executable(zia
         tools/zia/main.cpp
@@ -766,26 +765,26 @@ target_link_libraries(zia-server
 install(TARGETS zia-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 #===----------------------------------------------------------------------===//
-# vbasic_server_lib: BASIC-specific compiler bridge
+# zbasic_server_lib: BASIC-specific compiler bridge
 #===----------------------------------------------------------------------===//
-add_library(vbasic_server_lib STATIC
-        tools/vbasic-server/BasicCompilerBridge.cpp)
-target_include_directories(vbasic_server_lib PUBLIC
+add_library(zbasic_server_lib STATIC
+        tools/zbasic-server/BasicCompilerBridge.cpp)
+target_include_directories(zbasic_server_lib PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
-target_link_libraries(vbasic_server_lib
+target_link_libraries(zbasic_server_lib
         PUBLIC
         lsp_common_lib
         fe_basic
         zanna::il_full
         il_transform)
 
-add_executable(vbasic-server
-        tools/vbasic-server/main.cpp)
-set_target_properties(vbasic-server PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src/tools/vbasic-server)
-target_link_libraries(vbasic-server
+add_executable(zbasic-server
+        tools/zbasic-server/main.cpp)
+set_target_properties(zbasic-server PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src/tools/zbasic-server)
+target_link_libraries(zbasic-server
         PRIVATE
-        vbasic_server_lib)
-install(TARGETS vbasic-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+        zbasic_server_lib)
+install(TARGETS zbasic-server RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 add_executable(ilrun
         tools/ilrun/main.cpp

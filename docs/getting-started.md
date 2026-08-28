@@ -127,7 +127,7 @@ zanna init calculator --lang basic
 ### BASIC
 
 ```sh
-zanna run examples/vbasic/ex1_hello_cond.bas
+zanna run examples/zbasic/ex1_hello_cond.bas
 ```
 
 **Expected output:**
@@ -200,13 +200,13 @@ You can inspect the generated IL or run IL programs directly:
 
 ```sh
 # Emit IL from BASIC
-zanna build examples/vbasic/ex1_hello_cond.bas
+zanna build examples/zbasic/ex1_hello_cond.bas
 
 # Emit IL from Zia
 zanna build hello.zia
 
 # Save IL to a file
-zanna build examples/vbasic/ex1_hello_cond.bas -o hello.il
+zanna build examples/zbasic/ex1_hello_cond.bas -o hello.il
 
 # Run the IL program directly
 ilrun hello.il
@@ -225,7 +225,7 @@ For more examples, see the **[BASIC Tutorial](tutorials/basic-tutorial.md)**,
 |-------------|-------------------------------------------|-----------------------------|
 | `zanna`     | Unified compiler driver — run and build   | `zanna run program.zia`     |
 | `zanna init`| Scaffold a new project                    | `zanna init my-app`         |
-| `vbasic`    | Run/compile BASIC programs                | `vbasic script.bas`         |
+| `zbasic`    | Run/compile BASIC programs                | `zbasic script.bas`         |
 | `zia`       | Run/compile Zia programs                  | `zia program.zia`           |
 | `ilrun`     | Execute IL programs                       | `ilrun program.il`          |
 | `il-verify` | Verify IL correctness                     | `il-verify program.il`      |

@@ -719,6 +719,78 @@ static id<MTLTexture> metal_get_material_texture(VGFXMetalContext *ctx,
     return pixels_ptr ? metal_get_cached_texture(ctx, pixels_ptr) : nil;
 }
 
+/// @brief Resolve a natively sampled RenderTarget3D colour texture (ADR 0299).
+/// @details The canvas sets `texture_target` only on backends advertising
+///          RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING. The retained cache texture is bound
+///          as-is: command buffers on one queue execute in commit order, so the frame that
+///          rendered into the target has completed before this draw samples it — no
+///          `waitUntilCompleted`, no CPU mirror, no re-upload. A target that is the pass's own
+///          attachment is never sampled (self-reference hazard).
+/// @param ctx Borrowed Metal context owning the native render-target cache.
+/// @param target Borrowed render-target shell to sample.
+/// @return The cached colour texture, or nil when the target has no native storage yet.
+static id<MTLTexture> metal_render_target_sample_texture(VGFXMetalContext *ctx,
+                                                         const vgfx3d_rendertarget_t *target,
+                                                         void *owner) {
+    VGFXMetalRenderTargetCacheEntry *entry;
+    if (!ctx || !target)
+        return nil;
+    if (ctx.rttActive && ctx.rttTarget == target)
+        return nil;
+    entry = metal_lookup_render_target_entry(ctx, target);
+    if (entry && entry.colorTexture) {
+        entry.lastUsedFrame = ctx.frameSerial;
+        if (entry.displayValid && entry.displayTexture)
+            return entry.displayTexture;
+        return entry.colorTexture;
+    }
+    /* No native storage on this device: the target is rendered by another canvas or
+     * backend (a software offscreen canvas feeding a jumbotron). Serve its Pixels mirror
+     * exactly as before ADR 0299. */
+    {
+        void *pixels = owner ? rt_rendertarget3d_material_pixels(owner) : NULL;
+        return pixels ? metal_get_cached_texture(ctx, pixels) : nil;
+    }
+}
+
+/// @brief Resolve a draw command's base-colour texture: native render target first, then
+///        the asset/Pixels material path.
+/// @param ctx Borrowed Metal context.
+/// @param cmd Borrowed draw command.
+/// @return The texture to bind at slot 0, or nil when nothing is resident yet.
+static id<MTLTexture> metal_material_base_texture(VGFXMetalContext *ctx,
+                                                  const vgfx3d_draw_cmd_t *cmd) {
+    if (cmd->texture_target)
+        return metal_render_target_sample_texture(
+            ctx, cmd->texture_target, cmd->texture_target_owner);
+    return metal_get_material_texture(
+        ctx,
+        cmd->texture_asset,
+        cmd->texture,
+        cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
+        cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
+        cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
+}
+
+/// @brief Resolve a draw command's emissive map: native render target first, then the
+///        asset/Pixels material path.
+/// @param ctx Borrowed Metal context.
+/// @param cmd Borrowed draw command.
+/// @return The texture to bind at the emissive slot, or nil when nothing is resident yet.
+static id<MTLTexture> metal_material_emissive_texture(VGFXMetalContext *ctx,
+                                                      const vgfx3d_draw_cmd_t *cmd) {
+    if (cmd->emissive_map_target)
+        return metal_render_target_sample_texture(
+            ctx, cmd->emissive_map_target, cmd->emissive_map_target_owner);
+    return metal_get_material_texture(
+        ctx,
+        cmd->emissive_map_asset,
+        cmd->emissive_map,
+        cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
+        cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
+        cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE]);
+}
+
 /// @brief Upload one full face image (BGRA-swizzled) to a specific cubemap mip level.
 /// @param tex Borrowed destination BGRA8 cubemap texture.
 /// @param rgba Borrowed tightly packed RGBA8 face image.

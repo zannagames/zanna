@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-27
+last-verified: 2026-08-28
 ---
 
 # Zanna.Graphics3D — User Guide
@@ -398,6 +398,10 @@ must fit the remaining upload budget. Prefiltered IBL cubemap mips are validated
 payload before any destination mip changes; zero or exhausted budgets defer the payload without
 decoding it, and a positive sub-payload budget may admit one indivisible IBL upload on an otherwise
 empty frame so streaming cannot stall forever.
+With a positive finite budget, an RGBA8 2D text or HUD texture no larger than 256 KiB may complete
+even after larger scene uploads consume that frame's allowance. This latency exemption prevents
+streaming from replacing newly rasterized labels and small interface images with a missing-texture
+frame. A budget of `0` remains a strict pause, and negative/unlimited mode needs no exemption.
 `TextureUploadPendingBytes` returns to `0` once all material/cubemap row slices
 native compressed mip submissions, and validated IBL mip payloads drain. Use it
 to correlate async asset commits and streaming movement with GPU texture upload pressure.
@@ -591,6 +595,7 @@ compatibility aliases for the shape factories.
 | `CalcTangents()` | `void()` | Compute tangent vectors (required for normal mapping) |
 | `Clone()` | `obj()` | Deep copy of mesh data, including attached morph targets |
 | `Transform(mat4)` | `void(obj)` | Transform all vertices in-place by Mat4 |
+| `BendArc(radius, arcDegrees)` | `void(f64, f64)` | Bend the mesh's X extent around a vertical circular arc in place, rotating normals and tangents with it |
 | `Mesh3D.Simplify(mesh, targetTriangles)` | `obj(obj, i64)` | Return a new simplified mesh via quadric-error-metric edge collapse (static form; deterministic, manifold-, boundary-, material-, and attribute-seam-preserving; may return a valid partial result) |
 
 `Simplify` keeps the existing object-returning API for both complete and partial
@@ -602,6 +607,15 @@ The simplifier stops with status `2` instead of collapsing a non-manifold or
 bow-tie fan, pinching a classified boundary, or producing a duplicate,
 degenerate, or inverted face. Any later geometry mutation clears these
 diagnostics to status `0` so an old achieved count cannot describe new data.
+
+`BendArc` is intended for straight modular-kit pieces such as seating, walls,
+rails, and trim. The mesh must have a positive X extent, `radius` must be finite
+and positive, and `arcDegrees` must be in `(0, 360]`. The mesh depth must remain
+inside the bend radius. Validation completes before mutation, so an invalid
+bend leaves the mesh unchanged; skinned and morph-target meshes are refused.
+Pieces authored to the same width and bent with the same radius and arc share
+their end sections without a gap. Rotate a piece 180 degrees around Y for the
+opposite bend direction.
 
 ### Skeletal and Morph Extensions
 
@@ -1525,6 +1539,7 @@ Current scope:
 | `Instantiate()` | `obj()` | Clone the template hierarchy into a fresh `SceneNode` subtree |
 | `InstantiateScene()` | `obj()` | Create a fresh `SceneGraph` and attach cloned top-level imported nodes below its root |
 | `InstantiateSceneAt(index)` | `obj(i64)` | Create a fresh `SceneGraph` for an immutable scene index |
+| `FlattenStatic(rootName, transform)` | `obj<Zanna.Collections.Seq>(str, obj)` | Merge a static template subtree into one fresh `SceneNode` per material, applying an optional placement `Mat4` |
 
 ### Ownership and Instancing
 
@@ -1538,6 +1553,7 @@ Current scope:
 - glTF imports order immutable scenes with the active/default scene at index `0` and secondary glTF scene roots after it. `GetSceneName(index)` preserves authored scene names where available and falls back to `"default"`/`"scene_N"`.
 - glTF cameras reachable from each imported scene populate `GetCameraCount(sceneIndex)` and `GetCamera(sceneIndex, index)`. Each immutable table entry is the same `Camera3D` attached to its authored template node; mutable instances receive independent camera clones with node world transforms applied.
 - Use `InstantiateSceneAt(index)` for scene-indexed code. Index `0` is equivalent to `InstantiateScene()`; invalid indices return `null` instead of mutating shared model state.
+- `FlattenStatic(rootName, transform)` walks the named template subtree (`""` means the whole model) in authored order and returns one merged node per first-seen material. The source template is never mutated, materials remain shared, and each result keeps the first contributing source node's name so role conventions survive flattening. Pass `null` for an identity placement. Skinned, morph-target, and singularly transformed pieces are skipped and reported through `AssetDiagnostics3D`; an unknown root returns an empty `Seq`.
 
 ### Zia Example
 
@@ -1574,13 +1590,14 @@ Format note:
 - OBJ-backed `SceneAsset` assets synthesize template nodes per material group, resolve relative `.mtl` files and texture maps safely beside the source OBJ/MTL, and reject absolute paths, URI schemes, traversal, and NUL-containing references.
 - STL-backed `SceneAsset` assets synthesize a single mesh node and default material around the existing binary/ASCII STL geometry loader.
 - glTF imports populate meshes, materials, active-scene and secondary scene hierarchies, scene-local cameras attached to their authored nodes, skins, morph targets, punctual lights, skeletal clips, and node/morph animation clips. Immutable camera tables share the node attachment; instantiated scenes clone each camera.
+- Scalar entries in a glTF node's `extras` object import as typed `SceneNode` metadata: JSON strings, integral and fractional numbers, booleans, and null become the corresponding string, int, float, bool, and null entries. Nested arrays/objects and values beyond the metadata limits are skipped with one import warning per node, visible through `AssetDiagnostics3D` and `zanna asset validate`. A VSCN bake preserves the imported metadata.
 - glTF skeletal tracks map to `Skeleton3D` / `Animation3D`; non-joint node translation, rotation, scale, and morph `weights` tracks are bound automatically on `SceneAsset.Instantiate()` and `InstantiateScene()`. Node animation channels reject non-finite sample data and non-increasing key times before playback; LINEAR rotation tracks use quaternion slerp, and CUBICSPLINE tracks use glTF Hermite tangents. Call `SceneGraph.SyncBindings(dt)` each frame to advance those imported node clips.
 - glTF mesh extraction supports `POSITION`, `NORMAL`, `TEXCOORD_0`, `TEXCOORD_1`, `COLOR_0`, `TANGENT`, `JOINTS_0`/`WEIGHTS_0`, and `JOINTS_1`/`WEIGHTS_1`. Secondary joint sets are reduced to the four strongest supported influences and renormalized. Invalid optional attributes are dropped with normals regenerated when needed; invalid indices, sparse accessors, and skin references fail the import. Skins above the runtime 256-bone palette are rejected instead of silently dropping the rig.
 - glTF morph targets import `POSITION`, `NORMAL`, and `TANGENT` deltas. Position/normal morphs can use the GPU path; tangent morphs currently route through the CPU morph path so tangent-space normal mapping stays correct.
 - glTF node hierarchies are rejected if they contain invalid child references, duplicate parents, or cycles; valid meshes/materials still remain available to the asset container.
 - Triangle-list, triangle-strip, and triangle-fan glTF primitives are triangulated on import. Points and line modes are skipped because the current renderer has no line/point primitive surface.
 - Materialless glTF primitives receive a shared default white PBR material so valid assets render through `SceneGraph` / `SceneAsset` without manual material assignment.
-- Complete `SceneAsset.Save` writes VSCN v5 when no node metadata exists and promotes metadata-bearing assets to VSCN v6. It round-trips the current `vgfx3d_vertex_le_v2` vertex layout, every immutable scene, camera-node attachments and scalar camera animation, native light state, typed node metadata, morph/animation/variant inventories, per-slot material metadata, lightmaps, and high-precision node transforms while loading VSCN versions 1–6 and older `vgfx3d_vertex_le_v1` scenes. Texture entries retain exact KTX2/PNG/JPEG/GIF/BMP bytes and native KTX2 mips when available, otherwise canonical RGBA8. The loader rejects malformed JSON/Base64, invalid metadata tags or bounds, invalid source-image magic or decoding, invalid mesh indexes, broken table/node references, and partial child subtrees transactionally.
+- Complete `SceneAsset.Save` selects VSCN v5 when camera/light/source-container content needs it, v6 when typed node metadata is present, and v7 when prefab references are present. It writes the portable `vgfx3d_vertex_le_v3` vertex layout plus explicitly tagged little-endian index, bone-map, extra-influence, and keyframe streams; the loader keeps compatibility with VSCN versions 1–7 and the older v1/v2 binary layouts. It round-trips every immutable scene, camera-node attachment and scalar camera animation, native light state, typed node metadata, morph/animation/variant inventory, per-slot material metadata, lightmaps, and high-precision node transform. Texture entries retain exact KTX2/PNG/JPEG/GIF/BMP bytes and native KTX2 mips when available, otherwise canonical RGBA8. The loader rejects malformed JSON/Base64, invalid metadata tags or bounds, invalid source-image magic or decoding, invalid mesh indexes, broken table/node references, malformed present rig streams, and partial child subtrees transactionally.
 - `.glb` files are validated as GLB 2.0 containers before JSON parse. External `.gltf` buffers and images are URI-decoded and resolved relative to the asset path; `./` relative paths are accepted, while absolute paths, URI schemes, `..` traversal, and NUL-containing references are rejected before opening files. In `LoadAsset`, those external dependencies are loaded through `Zanna.IO.Assets` first and missing-dependency diagnostics name both the parent model and dependency path.
 - glTF matrix-authored node transforms are decomposed to runtime TRS. Reflections preserve negative scale sign, while unsupported shear is reduced to an orthonormal rotation basis instead of leaking into unstable quaternions.
 - glTF `extensionsRequired` is enforced. Required `KHR_texture_transform`, `KHR_materials_emissive_strength`, `KHR_materials_unlit`, `KHR_materials_specular`, `KHR_lights_punctual`, `KHR_materials_variants`, `KHR_mesh_quantization`, `EXT_meshopt_compression`, `KHR_draco_mesh_compression`, and `KHR_texture_basisu` are accepted by their complete parser paths. Optional factor-level clearcoat, transmission, IOR, sheen, anisotropy, and volume features remain best-effort and are rejected when listed as required unless their full required semantics are representable. Required WebP, DDS, or unknown extensions fail load rather than rendering an incomplete fallback.
@@ -3046,6 +3063,12 @@ func start() {
 ```
 
 **Gerstner waves:** When waves are added via `AddWave`, the water uses a sum of directional Gerstner waves instead of the legacy single sine wave. Each wave has a direction, speed, amplitude, and wavelength. Up to 8 waves can be combined for realistic ocean effects. Normals are computed from wave derivatives for correct lighting.
+
+Procedural waves are represented internally as packed `MorphTarget3D` bases and
+submitted through the same deformation path as ordinary morph animation. GPU
+and software backends therefore render the same generated surface, reduced
+graphics builds keep the same behavior, and the retained bounds conservatively
+cover the moving water rather than describing only its rest plane.
 
 `Water3D` clamps extreme sizes, heights, wave speeds, amplitudes, frequencies, and wavelengths before mesh generation so renderer-facing vertices and normals stay finite. The retained water mesh is rewritten in place across frames; only topology changes such as resolution/capacity changes rebuild the index buffer. If a generated mesh fails validation, the water surface clears the partial mesh and remains dirty so the next valid update can rebuild it.
 

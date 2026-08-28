@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-03
+last-verified: 2026-08-28
 ---
 
 # Game3D
@@ -513,6 +513,14 @@ valid and independent, animator/node bindings remain on the transferred nodes,
 and `World3D.spawn` never reparents an implicit scene root. If the transfer
 cannot preflight its complete owner update, it traps without changing the source
 graph.
+
+Entity-name lookup is maintained as entities spawn, despawn, and rename, so a
+lookup does not rebuild the world index. If names are duplicated, the earliest
+live world entry wins; removing or renaming it deterministically promotes the
+next matching entity. The runtime validates the incremental index against the
+live entity table and falls back to a bounded rebuild if external corruption is
+detected, so `FindEntity` never returns a stale or already-despawned handle.
+
 Transform helpers sanitize non-finite numbers before touching the node and update
 an attached body only when the node sync mode is `SyncMode.BodyFromNode`:
 

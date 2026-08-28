@@ -6,7 +6,7 @@
 
 # Use a unique filename to avoid collisions when tests run in parallel.
 set(OUT_FILE "${CMAKE_CURRENT_BINARY_DIR}/random_walk.out.txt")
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/random_walk.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/random_walk.bas
         OUTPUT_FILE ${OUT_FILE} RESULT_VARIABLE r)
 if (NOT r EQUAL 0)
     message(FATAL_ERROR "execution failed")

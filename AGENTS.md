@@ -64,7 +64,7 @@ human-oriented output.
 | Command | Purpose |
 |---------|---------|
 | `zanna check <file\|dir> --diagnostic-format=json` | Type-check + verify a file or project without running. Exit 0 = clean, 1 = usage/target error, 2 = compile errors. JSON diagnostics (stderr) carry code, stage, range, notes, and machine-applicable `fixits`. |
-| `zanna eval 'expr' [--json] [--type] [--il]` | One-shot snippet evaluation (Zia default, `--lang basic`). Exit 0/1/2/3 = ok/usage/compile/trap. Reads stdin when no code argument. |
+| `zanna eval 'expr' [--json] [--type] [--il]` | One-shot snippet evaluation (Zia default, `--lang basic`; `--type`/`--il` are Zia-only). Exit 0/1/2/3 = ok/usage/compile/trap. Reads stdin when no code argument. |
 | `zanna explain <CODE> [--json]` | Describe a diagnostic code (e.g., `V-ZIA-UNDEFINED`, `B2001`, `W008`). `zanna explain --list --json` dumps the catalog. |
 | `zanna --print-error-codes [--json]` | Full diagnostic-code catalog. |
 | `zanna --dump-runtime-api` | JSON inventory of the entire runtime surface (functions + classes with members), generated from the live registry. |
@@ -81,7 +81,7 @@ human-oriented output.
 runtime-classes/-methods/-search). The repo's `.mcp.json` points at the build
 output (`build/src/tools/zia-server/zia-server`); build the project first.
 See docs/tools/zia-server.md and docs/tools/zia-server-mcp-tools.md. A BASIC equivalent
-ships as `vbasic-server`.
+ships as `zbasic-server`.
 
 ## Key Docs
 

@@ -837,8 +837,8 @@ try {
     }
 
     $requiredTools = @(
-        "zanna", "zia", "vbasic", "ilrun", "il-verify", "il-dis",
-        "zia-server", "vbasic-server", "basic-ast-dump", "basic-lex-dump"
+        "zanna", "zia", "zbasic", "ilrun", "il-verify", "il-dis",
+        "zia-server", "zbasic-server", "basic-ast-dump", "basic-lex-dump"
     )
     if ($components -contains "zannastudio") {
         $requiredTools += "zannastudio"

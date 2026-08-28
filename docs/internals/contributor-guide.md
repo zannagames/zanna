@@ -377,12 +377,12 @@ same source line, `zanna` reports the breakpoint once per line until control tra
 
 ```sh
 # Path normalization: build through a `..` segment, then break by source line
-zanna build ./examples/vbasic/../vbasic/ex2_sum_1_to_10.bas -o /tmp/ex2_sum.il
+zanna build ./examples/zbasic/../zbasic/ex2_sum_1_to_10.bas -o /tmp/ex2_sum.il
 zanna -run /tmp/ex2_sum.il \
-  --break-src ./examples/vbasic/../vbasic/ex2_sum_1_to_10.bas:4 --trace=src
+  --break-src ./examples/zbasic/../zbasic/ex2_sum_1_to_10.bas:4 --trace=src
 
 # Basename fallback with the explicit flag
-zanna build examples/vbasic/ex3_for_table.bas -o /tmp/ex3_for.il
+zanna build examples/zbasic/ex3_for_table.bas -o /tmp/ex3_for.il
 zanna -run /tmp/ex3_for.il \
   --break-src ex3_for_table.bas:5 --trace=src
 ```
@@ -397,7 +397,7 @@ Create a temporary test file and run:
 
 ```sh
 echo 'k$ = INKEY$(): IF LEN(k$) = 0 THEN PRINT "No key" ELSE PRINT "Got:"; ASC(k$)' > /tmp/inkey.bas
-vbasic /tmp/inkey.bas
+zbasic /tmp/inkey.bas
 ```
 
 Expected: Program polls once, prints "No key" (or the key code if pressed quickly), and exits immediately without
@@ -409,7 +409,7 @@ Create a temporary test file and run:
 
 ```sh
 echo 'COLOR 7,0: PRINT "Press a key": k$ = GETKEY$(): PRINT "Got:"; ASC(k$)' > /tmp/getkey.bas
-vbasic /tmp/getkey.bas
+zbasic /tmp/getkey.bas
 ```
 
 Expected: Program waits for one keystroke, then prints the ASCII code and exits.

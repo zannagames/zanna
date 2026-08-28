@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/vbasic-server/test_basic_compiler_bridge.cpp
+// File: tests/zbasic-server/test_basic_compiler_bridge.cpp
 // Purpose: Integration tests for BasicCompilerBridge facade methods.
 // Key invariants:
 //   - Each test uses small, self-contained BASIC source snippets
@@ -13,12 +13,12 @@
 //   - Runtime query tests verify the inherited default implementations
 // Ownership/Lifetime:
 //   - Test-only file
-// Links: tools/vbasic-server/BasicCompilerBridge.hpp
+// Links: tools/zbasic-server/BasicCompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "tests/TestHarness.hpp"
-#include "tools/vbasic-server/BasicCompilerBridge.hpp"
+#include "tools/zbasic-server/BasicCompilerBridge.hpp"
 
 #include <algorithm>
 #include <string>

@@ -285,7 +285,7 @@ Example:
 
 ```bash
 # Compile to native executable
-./vbasic program.bas -o program
+./zbasic program.bas -o program
 ./program
 ```
 
@@ -402,13 +402,13 @@ win.Present()
 
 New streamlined tools for common tasks:
 
-- `vbasic` - Direct BASIC interpreter/compiler
+- `zbasic` - Direct BASIC interpreter/compiler
 - `ilrun` - Direct IL program runner
 
 ```bash
 # New simplified syntax
-./vbasic program.bas              # Run directly
-./vbasic program.bas -o output    # Compile to executable
+./zbasic program.bas              # Run directly
+./zbasic program.bas -o output    # Compile to executable
 ./ilrun program.il                # Run IL code
 
 # Previous syntax (still supported)
@@ -705,13 +705,13 @@ Create `hello.bas`:
 Run it:
 
 ```bash
-./vbasic hello.bas
+./zbasic hello.bas
 ```
 
 Compile to native:
 
 ```bash
-./vbasic hello.bas -o hello
+./zbasic hello.bas -o hello
 ./hello
 ```
 
@@ -719,7 +719,7 @@ Compile to native:
 
 ```bash
 # Tetris game (BASIC)
-./vbasic demos/basic/vtris/vtris.bas
+./zbasic demos/basic/vtris/vtris.bas
 
 # Frogger (Zia)
 ./zia demos/zia/frogger/main.zia

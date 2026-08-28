@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-03
+last-verified: 2026-08-28
 ---
 
 # Images & Sprites
@@ -61,6 +61,13 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 | `SetColor(x, y, color)`           | `Void(Integer, Integer, Integer)`                                    | Set from `Color.Rgb()`, Canvas `0x00RRGGBB`, or `Color.Rgba()`                    |
 | `Tint(color)`                     | `Pixels(Integer)`                                                    | Return a copy with a color tint applied; `Color.Rgba` input also scales alpha     |
 | `TintLuminanceMasked(rgb, strength, lumLo, lumHi)` | `Void(Integer, Double, Integer, Integer)`           | In-place tint toward `0x00RRGGBB` masked by per-pixel luminance: untouched below `lumLo`, ramping to full `strength` at/above `lumHi` (0-255 luma); alpha preserved |
+| `RecolorMasked(targetRgb, referenceRgb, tolerance)` | `Void(Integer, Integer, Integer)`                  | In-place shade-preserving recolor of pixels near `referenceRgb`, with a feathered color-distance tolerance; alpha preserved |
+| `DilateMasked(mask, passes)`      | `Void(Pixels, Integer)`                                                | Grow non-zero-RGB mask coverage by up to 256 eight-neighbor rings, averaging covered neighbors into each new texel; updates the image and mask |
+| `DilateOwner(mask, passes)`       | `Void(Pixels, Integer)`                                                | Grow coverage while copying the first deterministic neighboring owner exactly; `passes <= 0` fills to convergence |
+| `ColorizeMasked(mask, rgb, referenceLuminance, maxShade, strength)` | `Void(Pixels, Integer, Integer, Double, Double)` | Recolor covered texels toward `rgb` while applying their authored luminance ratio in sRGB byte space; alpha preserved |
+| `ColorizeMaskedLinear(mask, rgb, referenceLuminance, maxShade, strength)` | `Void(Pixels, Integer, Integer, Double, Double)` | PBR-albedo variant of `ColorizeMasked` that applies the shade ratio and strength blend in linear light before re-encoding to sRGB; alpha preserved |
+| `StampNonZero(src)`               | `Void(Pixels)`                                                         | Copy every source texel whose RGB is non-zero over the receiver; dimensions must match |
+| `TintMaskedNeutral(mask, rgb, strength, lumLo, lumHi, neutralMax)` | `Void(Pixels, Integer, Double, Integer, Integer, Integer)` | Tint covered near-neutral texels on a luminance ramp while leaving colored detail and alpha intact |
 | `ToBytes()`                       | `Bytes()`                                                            | Convert to raw bytes (RGBA, row-major)                                            |
 
 ### Static Methods
@@ -77,6 +84,8 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 `LoadPng` rejects malformed chunk order, invalid IHDR compression/filter/interlace methods, indexed images without a palette, palette transparency entries that exceed the palette size, and PNG files without IEND. Sub-byte grayscale transparency compares the raw sample value from `tRNS`. `LoadBmp` uses checked file offsets when seeking to pixel data.
 `ToBytes()` and `FromBytes()` always use canonical `RR GG BB AA` bytes for each pixel, independent of CPU endianness. `FromBytes` requires an actual `Zanna.Collections.Bytes` object.
 JPEG loading validates component, quantization, Huffman, scan, and chroma sampling tables before decode, and applies EXIF orientation without leaking the pre-rotated image. Only baseline (sequential) DCT JPEGs are supported; progressive, lossless, and arithmetic-coded JPEGs are rejected and return null.
+
+The mask-taking operations sample `mask` proportionally when its dimensions differ from the receiver; any non-zero RGB marks coverage. Use `ColorizeMaskedLinear` for color regions that will be sampled as sRGB PBR albedo, because the renderer will decode those bytes to linear light. Keep `ColorizeMasked` for display-referred images such as UI tiles where byte-space shading is the intended result. `referenceLuminance` is clamped to at least 1, `strength` to `[0,1]`, and an invalid or non-positive `maxShade` uses 1.5. The linear variant clamps the shade ratio symmetrically to `[1/maxShade, maxShade]`, preventing an unbounded dark tail while preserving the painted shading pattern.
 
 ### Drawing Primitives
 

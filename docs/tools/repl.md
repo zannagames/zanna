@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-28
 ---
 
 # Zanna REPL
@@ -16,13 +16,13 @@ Launch the REPL:
 # Zia REPL (default — only via the unified driver)
 zanna repl
 
-# BASIC REPL — both forms work
+# BASIC REPL
 zanna repl basic
-vbasic                  # zero-arg vbasic launches the BASIC REPL directly
 ```
 
-> Note: the standalone `zia` binary requires a source file argument and does **not** launch a REPL.
-> Use `zanna repl` for an interactive Zia session.
+> Note: the standalone `zia` and `zbasic` binaries require source files and do
+> **not** launch REPLs. Use `zanna repl` or `zanna repl basic` for interactive
+> sessions.
 
 You'll see a prompt where you can type code:
 

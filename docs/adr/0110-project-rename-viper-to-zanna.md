@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-17
+last-verified: 2026-08-28
 ---
 
 # ADR 0110: Rename the Project from Viper to Zanna
@@ -40,6 +40,11 @@ Rename every project-owned identifier in one migration, with no
 compatibility aliases (pre-release, no external users):
 
 - Project, repository, and CLI binary: `viper` → `zanna`.
+- Standalone BASIC tooling and examples: `vbasic` → `zbasic`,
+  `vbasic-server` → `zbasic-server`, and `examples/vbasic/` →
+  `examples/zbasic/`. The `zbasic` executable mirrors the standalone `zia`
+  compiler interface; interactive BASIC remains available through
+  `zanna repl basic`.
 - Runtime namespace root: `Viper.*` → `Zanna.*` across the runtime class
   registry, all bindings, examples, goldens, and documentation.
 - Environment variables, CMake options, and preprocessor identifiers:

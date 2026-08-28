@@ -269,11 +269,11 @@ static void metal_submit_draw(void *ctx_ptr,
         mat.pbrScalars1[1] = cmd->alpha_cutoff;
         mat.pbrScalars1[2] = ctx->_opaqueDepthValid ? cmd->soft_particle_fade : 0.0f;
         mat.pbrScalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
-        mat.flags0[0] = (cmd->texture || cmd->texture_asset) ? 1 : 0;
+        mat.flags0[0] = vgfx3d_draw_cmd_has_base_texture(cmd) ? 1 : 0;
         mat.flags0[1] = cmd->unlit;
         mat.flags0[2] = (cmd->normal_map || cmd->normal_map_asset) ? 1 : 0;
         mat.flags0[3] = (cmd->specular_map || cmd->specular_map_asset) ? 1 : 0;
-        mat.flags1[0] = (cmd->emissive_map || cmd->emissive_map_asset) ? 1 : 0;
+        mat.flags1[0] = vgfx3d_draw_cmd_has_emissive_map(cmd) ? 1 : 0;
         mat.flags1[1] = (cmd->env_map && (cmd->reflectivity > 0.0001f || ibl_draw)) ? 1 : 0;
         mat.flags1[2] = has_complete_splat;
         mat.flags1[3] = ibl_draw;
@@ -354,14 +354,8 @@ static void metal_submit_draw(void *ctx_ptr,
                                      atIndex:7];
 
         /* MTL-03: Bind cached textures for each material map slot */
-        if (cmd->texture || cmd->texture_asset) {
-            id<MTLTexture> tex = metal_get_material_texture(
-                ctx,
-                cmd->texture_asset,
-                cmd->texture,
-                cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
+        if (vgfx3d_draw_cmd_has_base_texture(cmd)) {
+            id<MTLTexture> tex = metal_material_base_texture(ctx, cmd);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:0];
             else if (cmd->texture_required)
@@ -389,14 +383,8 @@ static void metal_submit_draw(void *ctx_ptr,
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:2];
         }
-        if (cmd->emissive_map || cmd->emissive_map_asset) {
-            id<MTLTexture> tex = metal_get_material_texture(
-                ctx,
-                cmd->emissive_map_asset,
-                cmd->emissive_map,
-                cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
-                cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
-                cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE]);
+        if (vgfx3d_draw_cmd_has_emissive_map(cmd)) {
+            id<MTLTexture> tex = metal_material_emissive_texture(ctx, cmd);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:3];
         }
@@ -502,6 +490,9 @@ static void metal_submit_draw(void *ctx_ptr,
 
 /// @brief End the frame: close the scene encoder, run GPU post-FX, present, and commit.
 /// @param ctx_ptr Borrowed `VGFXMetalContext` whose active frame is to be finalized.
+static void metal_encode_render_target_display(VGFXMetalContext *ctx,
+                                               VGFXMetalRenderTargetCacheEntry *entry);
+
 static void metal_end_frame(void *ctx_ptr) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
@@ -517,6 +508,9 @@ static void metal_end_frame(void *ctx_ptr) {
 
         if (ctx.rttActive && ctx.rttTarget && ctx.rttColorTexture) {
             rt_entry = metal_lookup_render_target_entry(ctx, ctx.rttTarget);
+            /* ADR 0299: resolve the frame through the post-FX chain into the entry's
+             * display image before the command buffer is committed. */
+            metal_encode_render_target_display(ctx, rt_entry);
             submitted = ctx.cmdBuf;
             if (rt_entry)
                 rt_entry.pendingCommandBuffer = submitted;
@@ -705,12 +699,14 @@ static void metal_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
             return;
 
         if (!rt) {
-            /* Disable RTT — revert to on-screen rendering */
-            metal_detach_render_target(ctx, YES);
+            /* Disable RTT — revert to on-screen rendering. The colour stays GPU-owned;
+             * the lazy sync_color hook installed at end-of-frame serves any later CPU
+             * readback (ADR 0299: an eager sync here stalled every interleaved RT frame). */
+            metal_detach_render_target(ctx, NO);
             return;
         }
         if (ctx.rttTarget && ctx.rttTarget != rt)
-            metal_detach_render_target(ctx, YES);
+            metal_detach_render_target(ctx, NO);
 
         entry = metal_ensure_render_target_entry(ctx, rt);
         if (!entry) {
@@ -718,6 +714,13 @@ static void metal_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
             return;
         }
 
+        if (!ctx.windowFrameHistoryParked) {
+            vgfx3d_metal_frame_history_t fresh;
+            ctx.windowFrameHistory = ctx.frameHistory;
+            ctx.windowFrameHistoryParked = 1;
+            memset(&fresh, 0, sizeof(fresh));
+            ctx.frameHistory = fresh;
+        }
         ctx.rttTarget = rt;
         ctx.rttWidth = rt->width;
         ctx.rttHeight = rt->height;
@@ -959,14 +962,8 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         [ctx.encoder setVertexBytes:&obj length:sizeof(obj) atIndex:1];
         {
             mtl_per_material_t mat;
-            id<MTLTexture> diffuse_tex = metal_get_material_texture(
-                ctx,
-                cmd->texture_asset,
-                cmd->texture,
-                cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
-            if (!diffuse_tex && cmd->texture_required && (cmd->texture || cmd->texture_asset))
+            id<MTLTexture> diffuse_tex = metal_material_base_texture(ctx, cmd);
+            if (!diffuse_tex && cmd->texture_required && vgfx3d_draw_cmd_has_base_texture(cmd))
                 return; /* skipped in the main pass too; casting its shadow would be wrong */
             memset(&mat, 0, sizeof(mat));
             memcpy(mat.dc, cmd->diffuse_color, sizeof(float) * 4);
@@ -1347,11 +1344,11 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         mat.pbrScalars1[1] = cmd->alpha_cutoff;
         mat.pbrScalars1[2] = ctx->_opaqueDepthValid ? cmd->soft_particle_fade : 0.0f;
         mat.pbrScalars1[3] = vgfx3d_draw_cmd_ssr_mask(cmd);
-        mat.flags0[0] = (cmd->texture || cmd->texture_asset) ? 1 : 0;
+        mat.flags0[0] = vgfx3d_draw_cmd_has_base_texture(cmd) ? 1 : 0;
         mat.flags0[1] = cmd->unlit;
         mat.flags0[2] = (cmd->normal_map || cmd->normal_map_asset) ? 1 : 0;
         mat.flags0[3] = (cmd->specular_map || cmd->specular_map_asset) ? 1 : 0;
-        mat.flags1[0] = (cmd->emissive_map || cmd->emissive_map_asset) ? 1 : 0;
+        mat.flags1[0] = vgfx3d_draw_cmd_has_emissive_map(cmd) ? 1 : 0;
         mat.flags1[1] = (cmd->env_map && (cmd->reflectivity > 0.0001f || ibl_draw)) ? 1 : 0;
         mat.flags1[2] = has_complete_splat;
         mat.flags1[3] = ibl_draw;
@@ -1430,14 +1427,8 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         [ctx.encoder setFragmentSamplerState:metal_get_material_sampler(
                                                  ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_AO)
                                      atIndex:7];
-        if (cmd->texture || cmd->texture_asset) {
-            id<MTLTexture> tex = metal_get_material_texture(
-                ctx,
-                cmd->texture_asset,
-                cmd->texture,
-                cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
-                cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
+        if (vgfx3d_draw_cmd_has_base_texture(cmd)) {
+            id<MTLTexture> tex = metal_material_base_texture(ctx, cmd);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:0];
             else if (cmd->texture_required)
@@ -1465,14 +1456,8 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:2];
         }
-        if (cmd->emissive_map || cmd->emissive_map_asset) {
-            id<MTLTexture> tex = metal_get_material_texture(
-                ctx,
-                cmd->emissive_map_asset,
-                cmd->emissive_map,
-                cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
-                cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE],
-                cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE]);
+        if (vgfx3d_draw_cmd_has_emissive_map(cmd)) {
+            id<MTLTexture> tex = metal_material_emissive_texture(ctx, cmd);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:3];
         }
@@ -2198,6 +2183,112 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
     ctx.postfxEncodedThisFrame = 1;
     ctx.displayTexture = source_texture;
     return source_texture;
+}
+
+/// @brief Allocate (or reuse) one resolve-chain texture for a render-target cache entry.
+/// @param ctx Borrowed Metal context whose device allocates the texture.
+/// @param existing Current texture, reused when its size and format already match.
+/// @param format Pixel format the pass targets.
+/// @param width Target width in pixels.
+/// @param height Target height in pixels.
+/// @return A render-target + shader-read texture, or nil on allocation failure.
+static id<MTLTexture> metal_ensure_resolve_texture(VGFXMetalContext *ctx,
+                                                   id<MTLTexture> existing,
+                                                   MTLPixelFormat format,
+                                                   NSUInteger width,
+                                                   NSUInteger height) {
+    MTLTextureDescriptor *desc;
+    if (existing && existing.pixelFormat == format && existing.width == width &&
+        existing.height == height)
+        return existing;
+    desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
+                                                              width:width
+                                                             height:height
+                                                          mipmapped:NO];
+    desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    desc.storageMode = MTLStorageModePrivate;
+    return [ctx.device newTextureWithDescriptor:desc];
+}
+
+/// @brief ADR 0299: resolve a just-rendered render target through the canvas's post-FX chain
+///        into the cache entry's display image.
+/// @details Runs the ordered chain exactly like the window path but at the target's own size
+///          and without the passes that read window-sized scene buffers (bloom, SSAO, DOF,
+///          motion blur, TAA, SSR): the tone curve, exposure, colour grade, LUT, vignette,
+///          FXAA and sharpen survive, so an RT sampled as a texture carries the same display
+///          encoding as the presented frame. The scene stays linear until the chain's tonemap
+///          pass (ADR 0247 chain-state); a chain that never tonemaps resolves clamped linear,
+///          matching the historical no-chain look. Failure (no chain, no pipelines, no
+///          window-context buffers) leaves `displayValid` clear so samplers fall back to the
+///          raw colour texture.
+/// @param ctx Borrowed Metal context with a live command buffer for the RTT frame.
+/// @param entry Borrowed cache entry of the target that was just rendered into.
+static void metal_encode_render_target_display(VGFXMetalContext *ctx,
+                                               VGFXMetalRenderTargetCacheEntry *entry) {
+    vgfx3d_postfx_chain_t chain;
+    id<MTLTexture> source_texture;
+    id<MTLTexture> target_texture;
+    id<MTLTexture> resolved;
+    int tonemapped_yet = 0;
+    if (!entry)
+        return;
+    entry.displayValid = 0;
+    if (!ctx || !ctx.cmdBuf || !entry.colorTexture || !ctx.gpuPostfxEnabled ||
+        !ctx.gpuPostfxChainValid || !ctx.postfxPipeline || !ctx.postfxPipelineHdr ||
+        !ctx.offscreenMotion || !ctx.depthTexture)
+        return;
+    chain = ctx.gpuPostfxChain;
+    if (!vgfx3d_postfx_chain_is_usable(&chain))
+        return;
+    entry.resolveScratchA = metal_ensure_resolve_texture(ctx,
+                                                         entry.resolveScratchA,
+                                                         MTLPixelFormatRGBA16Float,
+                                                         entry.colorTexture.width,
+                                                         entry.colorTexture.height);
+    entry.resolveScratchB = metal_ensure_resolve_texture(ctx,
+                                                         entry.resolveScratchB,
+                                                         MTLPixelFormatRGBA16Float,
+                                                         entry.colorTexture.width,
+                                                         entry.colorTexture.height);
+    entry.displayTexture = metal_ensure_resolve_texture(ctx,
+                                                        entry.displayTexture,
+                                                        MTLPixelFormatBGRA8Unorm,
+                                                        entry.colorTexture.width,
+                                                        entry.colorTexture.height);
+    if (!entry.resolveScratchA || !entry.resolveScratchB || !entry.displayTexture)
+        return;
+    metal_finish_encoding(ctx);
+    source_texture = entry.colorTexture;
+    target_texture = entry.resolveScratchA;
+    for (int32_t i = 0; i < chain.effect_count; i++) {
+        vgfx3d_postfx_snapshot_t safe_snapshot;
+        id<MTLTexture> output_texture;
+        if (chain.effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_TAA ||
+            chain.effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR)
+            continue;
+        vgfx3d_sanitize_postfx_snapshot(&chain.effects[i].snapshot, &safe_snapshot);
+        safe_snapshot.bloom_enabled = 0;
+        safe_snapshot.ssao_enabled = 0;
+        safe_snapshot.dof_enabled = 0;
+        safe_snapshot.motion_blur_enabled = 0;
+        safe_snapshot.taa_enabled = 0;
+        safe_snapshot.ssr_enabled = 0;
+        output_texture = metal_encode_postfx_pass(
+            ctx, source_texture, target_texture, &safe_snapshot, 0, nil, !tonemapped_yet);
+        if (!output_texture)
+            return;
+        if (safe_snapshot.tonemap_mode == 1 || safe_snapshot.tonemap_mode == 2 ||
+            (safe_snapshot.tonemap_mode == 0 && safe_snapshot.tonemap_explicit && !tonemapped_yet))
+            tonemapped_yet = 1;
+        source_texture = output_texture;
+        target_texture = (source_texture == entry.resolveScratchA) ? entry.resolveScratchB
+                                                                   : entry.resolveScratchA;
+    }
+    resolved = metal_encode_postfx_pass(
+        ctx, source_texture, entry.displayTexture, NULL, 0, nil, !tonemapped_yet);
+    if (!resolved)
+        return;
+    entry.displayValid = 1;
 }
 
 /// @brief Metal PostFX presentation: render fullscreen quad with PostFX shader.

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-28
 ---
 
 # Zanna Debugging Guide
@@ -569,7 +569,7 @@ IL modules can be serialized in two modes:
 - **Pretty mode** — Human-readable with indentation and comments
 - **Canonical mode** — Deterministic output suitable for golden tests
 
-Use `zia --emit-il`, `vbasic --emit-il`, or the legacy `zanna front ... -emit-il`
+Use `zia --emit-il`, `zbasic --emit-il`, or the legacy `zanna front ... -emit-il`
 commands to output the final IL module to stdout. Use `--dump-il` /
 `--dump-il-opt` to print specific pipeline stages to stderr:
 
@@ -790,7 +790,23 @@ std::cout << "Instructions: " << runner.instructionCount() << "\n";
 
 ---
 
-## 15. Known Limitations
+## 15. Debug Adapter
+
+`zanna run program.zia --debug-adapter` starts the VM-backed debug adapter on
+standard input and output. It exchanges newline-delimited JSON commands for
+breakpoints, continue/step control, call stacks, locals, watches, and
+evaluation; Zanna Studio uses this path for its integrated debugger. Adapter
+protocol output owns stdout, so program stdout/stderr and logpoint records are
+carried as debug-session output events rather than mixed into the command
+stream.
+
+A `terminated` event means execution has reached a terminal state, not that
+the client should immediately close the process pipes. Zanna Studio continues
+draining until the child has exited and its pending program, error, and
+logpoint output has been delivered, then releases the session handles. This
+preserves final output written immediately before exit.
+
+## 16. Known Limitations
 
 | Area | Status | Notes |
 |------|--------|-------|
@@ -800,7 +816,7 @@ std::cout << "Instructions: " << runner.instructionCount() << "\n";
 | Conditional breakpoints | Not implemented | No expression evaluation on break condition |
 | Source-to-IL name mapping | Partial | Zia local slots carry source names; generated temporaries and some BASIC paths still require IL names |
 | DWARF debug info | Partial | `--debug-lines` preserves linked DWARF v5 sections; codegen-generated line tables are limited |
-| Debug Adapter Protocol | Not implemented | No IDE integration (VS Code, etc.) |
+| Debug Adapter Protocol | Implemented for Zanna Studio | VM-backed newline-delimited JSON through `zanna run --debug-adapter`; it is not advertised as a general VS Code DAP transport |
 | Signal/crash handler | Not implemented | Native crashes produce no diagnostic output |
 | In-VM profiling | Not implemented | No function-level timing or allocation tracking |
 | Subsystem log filtering | Not implemented | VM trace and Zanna.Diagnostics.Log are all-or-nothing |

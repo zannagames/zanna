@@ -301,6 +301,11 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic) int8_t gpuPostfxChainValid;
 @property(nonatomic) vgfx3d_postfx_chain_t gpuPostfxChain;
 @property(nonatomic) vgfx3d_metal_frame_history_t frameHistory;
+/* ADR 0299: the window's frame history, parked while a render target is bound so an
+ * interleaved RT frame (a picture-in-picture pass between two window frames) cannot
+ * overwrite the window's previous-frame VP / motion history. Restored on detach. */
+@property(nonatomic) vgfx3d_metal_frame_history_t windowFrameHistory;
+@property(nonatomic) int8_t windowFrameHistoryParked;
 @property(nonatomic) int8_t postfxEncodedThisFrame;
 @property(nonatomic) int8_t postfxCompositedToDrawable;
 @property(nonatomic) int8_t captureAfterPresent;
@@ -429,6 +434,14 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic, strong) id<MTLTexture> colorTexture;
 @property(nonatomic, strong) id<MTLTexture> motionTexture;
 @property(nonatomic, strong) id<MTLTexture> depthTexture;
+/* ADR 0299: the target's post-FX-resolved, display-encoded image (BGRA8) plus the two
+ * RGBA16F ping-pong intermediates the resolve chain hops through. `displayValid` is set by
+ * the resolve at the end of a frame rendered into the target and cleared when the chain
+ * cannot run; material/HUD sampling prefers the display image whenever it is valid. */
+@property(nonatomic, strong) id<MTLTexture> displayTexture;
+@property(nonatomic, strong) id<MTLTexture> resolveScratchA;
+@property(nonatomic, strong) id<MTLTexture> resolveScratchB;
+@property(nonatomic) int8_t displayValid;
 @property(nonatomic, strong) id<MTLCommandBuffer> pendingCommandBuffer;
 @property(nonatomic, assign) vgfx3d_rendertarget_t *target;
 @property(nonatomic) uint64_t cacheIdentity;

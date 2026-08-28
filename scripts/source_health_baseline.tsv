@@ -30,7 +30,7 @@ mcp_tool_dispatch_branches 11
 mcp_argument_validators 27
 lsp_optional_capability_gates 38
 basic_server_semantic_entrypoints 8
-vbasic_server_test_targets 9
+zbasic_server_test_targets 9
 ide_basic_capability_gates 3
 ide_scheduler_capability_jobs 60
 debug_adapter_protocol_markers 97

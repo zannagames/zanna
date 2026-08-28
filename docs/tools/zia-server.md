@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-28
 ---
 
 # Zia Language Server Reference
@@ -67,7 +67,8 @@ zia-server --version
 
 ### Configuration for Claude Code
 
-Add to your project's `.mcp.json` or global MCP settings:
+Add the language servers you need to your project's `.mcp.json` or global MCP
+settings:
 
 ```json
 {
@@ -75,10 +76,17 @@ Add to your project's `.mcp.json` or global MCP settings:
     "zia": {
       "command": "/path/to/zia-server",
       "args": ["--mcp"]
+    },
+    "zbasic": {
+      "command": "/path/to/zbasic-server",
+      "args": ["--mcp"]
     }
   }
 }
 ```
+
+Both servers expose the shared 11-tool MCP surface. Zia tool names use the
+`zia/` prefix; Zanna BASIC tool names use the `basic/` prefix.
 
 ### MCP Lifecycle
 
@@ -166,12 +174,12 @@ client.start();
 | `publishDiagnostics` | Errors and warnings pushed on open/change |
 
 The shared LSP handler advertises these capabilities per language bridge. `zia-server`
-supports the full table above. `vbasic-server` currently advertises diagnostics,
+supports the full table above. `zbasic-server` currently advertises diagnostics,
 completion, hover, and document symbols only; BASIC semantic navigation is tracked
 separately from the Zia LSP parity work.
 
 Zanna Studio mirrors that split with separate server-capability and wired-command
-flags: BASIC disabled-command messages can name `vbasic-server` support without
+flags: BASIC disabled-command messages can name `zbasic-server` support without
 enabling a UI command before the IDE has a non-blocking BASIC adapter.
 
 Definition, references, and rename use the same native `Zanna.Zia.ProjectIndex`

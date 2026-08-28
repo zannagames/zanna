@@ -100,10 +100,10 @@ TEST(ARM64E2E, MinimalPrintTest) {
     }
 
     const std::string buildDir = getBuildDir();
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
 
-    if (!fileExists(vbasic) || !fileExists(ilc)) {
+    if (!fileExists(zbasic) || !fileExists(ilc)) {
         return;
     }
 
@@ -116,8 +116,8 @@ TEST(ARM64E2E, MinimalPrintTest) {
     ASSERT_TRUE(writeFile(basFile, basicCode));
 
     // Compile BASIC to IL
-    RunResult rr = run_process({vbasic, basFile, "-o", ilFile});
-    ASSERT_EQ(rr.exit_code, 0); // vbasic failed
+    RunResult rr = run_process({zbasic, basFile, "-o", ilFile});
+    ASSERT_EQ(rr.exit_code, 0); // zbasic failed
     ASSERT_TRUE(fileExists(ilFile));
 
     // Compile IL to ARM64 and run
@@ -134,10 +134,10 @@ TEST(ARM64E2E, ArrayOperationsTest) {
     }
 
     const std::string buildDir = getBuildDir();
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
 
-    if (!fileExists(vbasic) || !fileExists(ilc)) {
+    if (!fileExists(zbasic) || !fileExists(ilc)) {
         return;
     }
 
@@ -153,8 +153,8 @@ TEST(ARM64E2E, ArrayOperationsTest) {
     ASSERT_TRUE(writeFile(basFile, basicCode));
 
     // Compile BASIC to IL
-    RunResult rr = run_process({vbasic, basFile, "-o", ilFile});
-    ASSERT_EQ(rr.exit_code, 0); // vbasic failed
+    RunResult rr = run_process({zbasic, basFile, "-o", ilFile});
+    ASSERT_EQ(rr.exit_code, 0); // zbasic failed
     ASSERT_TRUE(fileExists(ilFile));
 
     // Compile IL to ARM64 assembly (don't run yet due to potential issues)
@@ -171,11 +171,11 @@ TEST(ARM64E2E, FroggerCompilesToAsm) {
     }
 
     const std::string buildDir = getBuildDir();
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
     const std::string froggerBas = "../examples/games/frogger-basic/frogger.bas";
 
-    if (!fileExists(vbasic) || !fileExists(ilc)) {
+    if (!fileExists(zbasic) || !fileExists(ilc)) {
         return;
     }
 
@@ -187,8 +187,8 @@ TEST(ARM64E2E, FroggerCompilesToAsm) {
     const std::string asmFile = "/tmp/frogger_test.s";
 
     // Compile BASIC to IL
-    RunResult rr = run_process({vbasic, froggerBas, "-o", ilFile});
-    ASSERT_EQ(rr.exit_code, 0); // vbasic failed on Frogger
+    RunResult rr = run_process({zbasic, froggerBas, "-o", ilFile});
+    ASSERT_EQ(rr.exit_code, 0); // zbasic failed on Frogger
     ASSERT_TRUE(fileExists(ilFile));
 
     // Compile IL to ARM64 assembly
@@ -213,11 +213,11 @@ TEST(ARM64E2E, VtrisCompilesToAsm) {
     }
 
     const std::string buildDir = getBuildDir();
-    const std::string vbasic = buildDir + "/src/tools/vbasic/vbasic";
+    const std::string zbasic = buildDir + "/src/tools/zbasic/zbasic";
     const std::string ilc = buildDir + "/src/tools/zanna/zanna";
     const std::string vtrisBas = "../examples/games/vtris/vtris.bas";
 
-    if (!fileExists(vbasic) || !fileExists(ilc)) {
+    if (!fileExists(zbasic) || !fileExists(ilc)) {
         return;
     }
 
@@ -229,8 +229,8 @@ TEST(ARM64E2E, VtrisCompilesToAsm) {
     const std::string asmFile = "/tmp/vtris_test.s";
 
     // Compile BASIC to IL
-    RunResult rr = run_process({vbasic, vtrisBas, "-o", ilFile});
-    ASSERT_EQ(rr.exit_code, 0); // vbasic failed on vTris
+    RunResult rr = run_process({zbasic, vtrisBas, "-o", ilFile});
+    ASSERT_EQ(rr.exit_code, 0); // zbasic failed on vTris
     ASSERT_TRUE(fileExists(ilFile));
 
     // Compile IL to ARM64 assembly

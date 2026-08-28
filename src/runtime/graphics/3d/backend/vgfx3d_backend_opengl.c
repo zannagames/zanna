@@ -1895,7 +1895,8 @@ static GLuint link_program(GLuint vs, GLuint fs) {
     return program;
 }
 
-#define GL_TEXTURE_CACHE_MAX_RESIDENT 256
+/* Matches the Canvas3D antialiased-text raster LRU (512). */
+#define GL_TEXTURE_CACHE_MAX_RESIDENT 512
 #define GL_MAIN_UNIFORM_SNAPSHOT_CAPACITY 2048
 #define GL_TEXTURE_CACHE_PRUNE_AGE 240u
 #define GL_CUBEMAP_CACHE_MAX_RESIDENT 64

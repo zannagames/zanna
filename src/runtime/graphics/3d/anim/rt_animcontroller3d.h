@@ -104,6 +104,11 @@ int8_t rt_anim_controller3d_play(void *controller, rt_string state_name);
 /// @return `1` when playback starts; `0` for an invalid controller, unknown
 ///         state, or unavailable internal player or clip.
 int8_t rt_anim_controller3d_crossfade(void *controller, rt_string state_name, double blend_seconds);
+/// @brief Cross-fade to a state, entering its clip at `start_seconds` (ADR 0300).
+int8_t rt_anim_controller3d_crossfade_at(void *controller,
+                                         rt_string state_name,
+                                         double blend_seconds,
+                                         double start_seconds);
 /// @brief Stop playback on every layer.
 /// @details Pauses the internal players, cancels transitions, invalidates the
 ///          previous-frame palette, and recomputes the current sampled pose.

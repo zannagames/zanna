@@ -1397,7 +1397,7 @@ std::string generateMacOSToolchainWelcomeHtml(const std::string &displayName,
     html << "<h2>" << xmlEscape(displayName) << " " << xmlEscape(version) << "</h2>\n";
     html
         << "<p>This installer sets up the Zanna compiler toolchain &mdash; the <code>zanna</code>, "
-           "<code>vbasic</code>, <code>zia</code>, language servers, IL utilities, and "
+           "<code>zbasic</code>, <code>zia</code>, language servers, IL utilities, and "
            "<code>zannastudio</code> together with the runtime libraries, headers, CMake package "
            "files, "
            "and manual pages.</p>\n";

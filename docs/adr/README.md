@@ -50,6 +50,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0293](0293-linear-space-colorize-masked.md) — Linear-Space Variant of Pixels.ColorizeMasked
 - [ADR 0294](0294-venue-kit-engine-surface.md) — Venue-Kit Engine Surface: Mesh3D.BendArc, glTF extras Metadata, SceneAsset.FlattenStatic
 - [ADR 0295](0295-portable-vscn-binary-wire-layouts.md) — Make VSCN Binary Wire Layouts Explicit and Portable
+- [ADR 0299](0299-native-render-target-sampling.md) — Sample Bound Render Targets Natively in Material Slots
+- [ADR 0300](0300-animation-state-entry-at-offset.md) — Enter an Animation State at a Time Offset
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API

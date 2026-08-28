@@ -11,8 +11,8 @@
 #   <path>   Use the explicit examples-relative target path.
 hello-lsp.zia	check-smoke	examples,smoke	SELF	root LSP smoke example
 zia/*.zia	check-smoke	examples,zia,smoke	SELF	Zia language feature examples
-vbasic/*.bas	check-smoke	examples,basic,smoke	SELF	BASIC language examples
-vbasic/**/*.bas	check-smoke	examples,basic,smoke	SELF	nested BASIC language examples
+zbasic/*.bas	check-smoke	examples,basic,smoke	SELF	BASIC language examples
+zbasic/**/*.bas	check-smoke	examples,basic,smoke	SELF	nested BASIC language examples
 il/debug_script.il	il-run-smoke	examples,il,smoke	SELF	debugger integration IL example
 il/ex1_hello_cond.il	il-run-smoke	examples,il,smoke	SELF	runnable IL tutorial example
 il/ex2_sum_1_to_10.il	il-run-smoke	examples,il,smoke	SELF	runnable IL tutorial example

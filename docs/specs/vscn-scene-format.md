@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-30
+last-verified: 2026-08-28
 ---
 
 # VSCN Scene Format (`.scene3d` / `.vscn`)
@@ -51,6 +51,32 @@ pixels or, from v5, the preserved source container bytes
 (`{"kind": "source", "sourceBase64": ...}`). There are no external mesh
 or texture references; the only reference node kind is `prefab` (v7).
 
+### Binary payload wire formats
+
+New files encode every embedded numeric payload member by member in an
+explicit padding-free little-endian format. These field-layout tags are
+independent of the document version: adding portable binary records does not
+force a scene whose content fits v5 or v6 to advertise a newer document
+schema.
+
+| Tag | Record layout |
+| --- | --- |
+| `vgfx3d_vertex_le_v3` | 92-byte vertex: 18 binary32 lanes (`position`, `normal`, `uv0`, `uv1`, `color`, `tangent`), four raw bone-index bytes, then four binary32 bone weights |
+| `u32le-v1` | One four-byte unsigned index |
+| `i32le-v1` | One four-byte signed bone-map entry |
+| `vgfx3d_extra_influences_le_v1` | 24-byte vertex side record: four little-endian uint16 bone indices followed by four binary32 weights |
+| `vgfx3d_keyframe_le_v3` | 132-byte skeletal keyframe: binary64 time, binary32 position/rotation/scale lanes, four one-byte masks, then six binary32 tangent vectors |
+
+Mesh entries name `indexFormat`, `boneMapFormat`, and
+`extraInfluencesFormat` whenever the matching stream is present. Readers also
+accept the established v1/v2 vertex and keyframe payloads and untagged legacy
+rig side streams, but reject an unknown explicit tag. A present rig stream is
+transactional: malformed Base64, a wrong decoded length, an invalid or
+out-of-range bone value, non-finite/negative weights, or an invalid combined
+weight sum rejects the complete load rather than silently dropping the stream.
+The explicit codecs make newly written mesh and animation bytes identical on
+macOS, Windows, Linux, and hosts of either byte order.
+
 ## Node fields
 
 Ordinary nodes write: `name`, `position` (xyz), `rotation` (normalized
@@ -70,7 +96,7 @@ never serialized into the referencing file and round-trips byte-stable.
 
 From `rt_scene3d_vscn_internal.h` and the loader:
 
-- Maximum file size 256 MiB; maximum node depth 98; absolute numeric
+- Maximum file size 512 MiB; maximum node depth 98; absolute numeric
   magnitudes clamp at 1e12.
 - Typed metadata: 256 entries per node, 128-byte keys, 64 KiB string
   values.

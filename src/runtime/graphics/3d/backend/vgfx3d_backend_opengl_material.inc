@@ -737,7 +737,7 @@ static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cm
                      cmd->splat_layer_scales[3]);
     }
     gl.ActiveTexture(GL_TEXTURE0);
-    return ((cmd->texture || cmd->texture_asset) && diffuse_tex == 0) ? 1 : 0;
+    return (vgfx3d_draw_cmd_has_base_texture(cmd) && diffuse_tex == 0) ? 1 : 0;
 }
 
 /// @brief Set up animation uniforms for the depth-only shadow program.

@@ -313,12 +313,18 @@ static void metal_detach_render_target(VGFXMetalContext *ctx, BOOL syncColor) {
         int sync_ok = 1;
         if (syncColor && target->color_dirty)
             sync_ok = metal_sync_render_target_color((__bridge void *)ctx, target);
-        if (sync_ok || !target->color_dirty) {
+        if ((syncColor && sync_ok) || !target->color_dirty) {
             vgfx3d_rendertarget_clear_sync(target);
         } else {
+            /* Still dirty (lazy detach, or a failed eager sync): keep the hook so a later
+             * AsPixels/CopyTo/mirror refresh reads the retained cache texture. */
             target->sync_color = metal_sync_render_target_color;
             target->sync_color_userdata = (__bridge void *)ctx;
         }
+    }
+    if (ctx.windowFrameHistoryParked) {
+        ctx.frameHistory = ctx.windowFrameHistory;
+        ctx.windowFrameHistoryParked = 0;
     }
     ctx.rttActive = NO;
     ctx.rttColorTexture = nil;

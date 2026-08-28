@@ -301,7 +301,7 @@ metric_value() {
             ;;
         diagnostic_json_entrypoints)
             rg_count '--diagnostic-format|DiagnosticFormat::Json|--json' \
-                src/tools/zanna src/tools/zia src/tools/vbasic src/tests/tools src/tests/unit
+                src/tools/zanna src/tools/zia src/tools/zbasic src/tests/tools src/tests/unit
             ;;
         mcp_tool_definitions)
             rg_count 'tools\.push_back' src/tools/lsp-common/McpHandler.cpp
@@ -315,15 +315,15 @@ metric_value() {
             ;;
         lsp_optional_capability_gates)
             rg_count 'supports(Definition|References|Rename|SignatureHelp|WorkspaceSymbols|SemanticTokens)' \
-                src/tools/lsp-common src/tools/zia-server src/tools/vbasic-server
+                src/tools/lsp-common src/tools/zia-server src/tools/zbasic-server
             ;;
         basic_server_semantic_entrypoints)
             rg_count 'BasicCompilerBridge::(check|compile|completions|hover|symbols|dumpIL|dumpAst|dumpTokens)' \
-                src/tools/vbasic-server
+                src/tools/zbasic-server
             ;;
-        vbasic_server_test_targets)
-            rg_count 'test_vbasic_server|test_basic_completion|test_basic_analysis' \
-                src/tests/CMakeLists.txt src/tests/vbasic-server src/tests/basic
+        zbasic_server_test_targets)
+            rg_count 'test_zbasic_server|test_basic_completion|test_basic_analysis' \
+                src/tests/CMakeLists.txt src/tests/zbasic-server src/tests/basic
             ;;
         ide_basic_capability_gates)
             rg_count 'basicService\.name|basic semantic commands disabled|format unsupported basic' \
@@ -404,7 +404,7 @@ mcp_tool_dispatch_branches
 mcp_argument_validators
 lsp_optional_capability_gates
 basic_server_semantic_entrypoints
-vbasic_server_test_targets
+zbasic_server_test_targets
 ide_basic_capability_gates
 ide_scheduler_capability_jobs
 debug_adapter_protocol_markers
@@ -436,7 +436,7 @@ run_check() {
             fuzz_harness_registrations|sanitizer_coverage_options|diagnostic_json_entrypoints|\
             mcp_tool_definitions|mcp_tool_dispatch_branches|mcp_argument_validators|\
             lsp_optional_capability_gates|basic_server_semantic_entrypoints|\
-            vbasic_server_test_targets|ide_scheduler_capability_jobs|\
+            zbasic_server_test_targets|ide_scheduler_capability_jobs|\
             debug_adapter_protocol_markers|packaging_verifier_entrypoints|\
             packaging_negative_test_markers)
                 if [[ "$value" -lt "$limit" ]]; then

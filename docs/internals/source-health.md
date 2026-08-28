@@ -88,7 +88,7 @@ markers to 65, returning it below the greater-than-70 hotspot threshold.
 | `mcp_argument_validators` | Ensures MCP argument validation helpers remain present. |
 | `lsp_optional_capability_gates` | Tracks LSP optional-capability gating. |
 | `basic_server_semantic_entrypoints` | Tracks BASIC language-server semantic entry points. |
-| `vbasic_server_test_targets` | Tracks BASIC server analysis/completion/LSP/MCP tests. |
+| `zbasic_server_test_targets` | Tracks BASIC server analysis/completion/LSP/MCP tests. |
 | `ide_basic_capability_gates` | Tracks explicit BASIC IDE capability gating until adapters are wired. |
 | `ide_scheduler_capability_jobs` | Tracks non-blocking Zanna Studio semantic job scheduling coverage. |
 | `debug_adapter_protocol_markers` | Tracks debugger JSON protocol request/event coverage. |
@@ -133,7 +133,7 @@ when the project moves backward.
 | Preserve MCP argument validation | `mcp_argument_validators` |
 | Keep optional LSP capabilities gated | `lsp_optional_capability_gates` |
 | Preserve BASIC server semantic entry points | `basic_server_semantic_entrypoints` |
-| Preserve BASIC server tests | `vbasic_server_test_targets` |
+| Preserve BASIC server tests | `zbasic_server_test_targets` |
 | Keep BASIC IDE capability gaps explicit | `ide_basic_capability_gates` |
 | Preserve non-blocking IDE semantic scheduling | `ide_scheduler_capability_jobs` |
 | Preserve debugger JSON protocol coverage | `debug_adapter_protocol_markers` |

@@ -34,7 +34,7 @@ void printUsage() {
               << "Usage Modes:\n"
               << "  zia script.zia              Run program (default)\n"
               << "  zia script.zia --emit-il    Emit IL to stdout\n"
-              << "  zia script.zia -o file.il   Emit IL to file\n"
+              << "  zia script.zia -o OUTPUT    Write IL or a native binary\n"
               << "\n"
               << "Options:\n";
     zanna::tools::printSharedOptions(std::cerr, zanna::tools::FrontendHelpDetail::Advanced);
@@ -43,6 +43,7 @@ void printUsage() {
               << "  zia hello.zia                           Run program\n"
               << "  zia hello.zia --emit-il                 Show generated IL\n"
               << "  zia hello.zia -o hello.il               Save IL to file\n"
+              << "  zia hello.zia -o hello                  Compile a native binary\n"
               << "  zia hello.zia --trace --bounds-checks   Debug mode\n"
               << "  zia hello.zia -- arg1 arg2              Pass args to program\n"
               << "  zia hello.zia --stdin-from input.txt    Redirect input\n"

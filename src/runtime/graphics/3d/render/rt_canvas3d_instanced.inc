@@ -73,7 +73,7 @@ static void canvas3d_build_instanced_base_cmd(rt_mesh3d *mesh,
     base_cmd->model_matrix[0] = base_cmd->model_matrix[5] = base_cmd->model_matrix[10] =
         base_cmd->model_matrix[15] = 1.0f;
     canvas3d_texture_stream_touch_material(canvas, mat);
-    canvas3d_fill_material_cmd(mat, base_cmd);
+    canvas3d_fill_material_cmd(canvas, mat, base_cmd);
     canvas3d_apply_ibl_env(canvas, base_cmd);
     canvas3d_bind_skinning_cmd(canvas, base_cmd, mesh, NULL);
     canvas3d_bind_morph_cmd(canvas, base_cmd, mesh, NULL);

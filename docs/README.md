@@ -78,7 +78,7 @@ Zanna is a from-scratch compiler toolchain and game development platform: two la
 
 ## Tools
 
-- [CLI Tools Reference](tools/cli.md) — `zanna`, `zia`, `vbasic`, `ilrun`, `il-verify`, `il-dis`
+- [CLI Tools Reference](tools/cli.md) — `zanna`, `zia`, `zbasic`, `ilrun`, `il-verify`, `il-dis`
 - [REPL](tools/repl.md) — Interactive Zia/BASIC environment
 - [Debugging Guide](tools/debugging.md) — VM tracing, breakpoints, and diagnostics
 - [Language Server](tools/zia-server.md) — `zia-server` for AI assistants and editors (LSP + MCP)

@@ -7657,6 +7657,52 @@ static void test_canvas_offscreen_constructor_contract() {
     PASS();
 }
 
+/// ADR 0299: a RenderTarget3D is a first-class DrawImage2D source. On the software
+/// backend (no native RT sampling) the blit goes through the target's Pixels mirror
+/// and shows the target's last COMPLETED frame.
+static void test_canvas_draw_image2d_accepts_render_target() {
+    TEST("DrawImage2D blits a RenderTarget3D's last completed frame (mirror path)");
+    void *source = rt_rendertarget3d_new(8, 8);
+    void *dest = rt_rendertarget3d_new(16, 16);
+    void *canvas = rt_canvas3d_new_offscreen(source);
+    EXPECT_TRUE(source && dest && canvas, "render-target blit fixtures exist");
+    if (!source || !dest || !canvas)
+        return;
+
+    /* Frame 1: a solid red frame INTO the source target. */
+    rt_canvas3d_clear(canvas, 1.0, 0.0, 0.0);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_end(canvas);
+    rt_canvas3d_flip(canvas);
+
+    /* Frame 2: retarget the canvas and blit the source over a blue clear. */
+    rt_canvas3d_set_render_target(canvas, dest);
+    EXPECT_TRUE(((rt_canvas3d *)canvas)->render_target_owner == dest,
+                "SetRenderTarget rebinds the offscreen canvas to the destination");
+    rt_canvas3d_clear(canvas, 0.0, 0.0, 1.0);
+    rt_canvas3d_begin_2d(canvas);
+    rt_canvas3d_draw_image2d(canvas, 2, 2, 12, 12, source);
+    rt_canvas3d_end(canvas);
+    rt_canvas3d_flip(canvas);
+
+    auto *shot = (pixels_view_t *)rt_canvas3d_screenshot(canvas);
+    EXPECT_TRUE(shot != nullptr && shot->data != nullptr && shot->w == 16 && shot->h == 16,
+                "destination screenshot reads the retargeted canvas");
+    if (shot && shot->data && shot->w == 16 && shot->h == 16) {
+        EXPECT_TRUE(shot->data[8 * 16 + 8] == 0xFF0000FFu,
+                    "the blit centre carries the source target's red frame");
+        EXPECT_TRUE(shot->data[0] == 0x0000FFFFu,
+                    "outside the blit rect the destination clear survives");
+    }
+    if (rt_obj_release_check0(canvas))
+        rt_obj_free(canvas);
+    if (rt_obj_release_check0(dest))
+        rt_obj_free(dest);
+    if (rt_obj_release_check0(source))
+        rt_obj_free(source);
+    PASS();
+}
+
 static void test_canvas_offscreen_renders_and_finalizes_without_window() {
     TEST("Canvas3D offscreen renders mesh frames and ScreenshotFinal flushes them");
     void *target = rt_rendertarget3d_new(96, 96);
@@ -11994,6 +12040,7 @@ int main() {
     test_rendertarget_clear_sync_detaches_backend_callback();
     test_rendertarget_rejects_malformed_buffer_layouts();
     test_canvas_offscreen_constructor_contract();
+    test_canvas_draw_image2d_accepts_render_target();
     test_canvas_offscreen_renders_and_finalizes_without_window();
     test_canvas_offscreen_rejects_invalid_targets();
     test_canvas_offscreen_accelerated_constructor_contract();

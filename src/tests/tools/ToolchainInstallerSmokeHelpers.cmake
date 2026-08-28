@@ -28,12 +28,12 @@ function(zanna_installer_smoke_required_tool_names out_var)
     set(${out_var}
             zanna
             zia
-            vbasic
+            zbasic
             ilrun
             il-verify
             il-dis
             zia-server
-            vbasic-server
+            zbasic-server
             basic-ast-dump
             basic-lex-dump
             zannastudio

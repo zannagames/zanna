@@ -76,4 +76,4 @@ navigation/signature help for BASIC. Hover is identifier-based (extract the toke
 look it up via the analyzer); unresolved symbols return `available=false`. Compiler-backed editor
 features remain responsive under large-file edits and tab switches, at the cost of retaining one
 immutable source snapshot per active feature until a non-preemptible call drains. A future external
-`vbasic-server` could supersede the in-process bridge without changing the runtime contract.
+`zbasic-server` could supersede the in-process bridge without changing the runtime contract.

@@ -72,7 +72,7 @@ pipeline:
 4. VM loads the module and runs `main`.
 
 ```sh
-$ zanna run examples/vbasic/ex1_hello_cond.bas
+$ zanna run examples/zbasic/ex1_hello_cond.bas
 HELLO
 READY
 10
@@ -348,8 +348,8 @@ See `docs/zannalib/io/assets.md` for the full API reference.
 - `il-dis` — IL disassembler / pretty-printer
 - `il-verify` — IL structural/type verifier
 - `ilrun` — Convenience wrapper for IL execution (`ilrun program.il`)
-- `vbasic` — Convenience wrapper for BASIC (`vbasic script.bas --emit-il|-o`)
-- `vbasic-server` — BASIC language server (LSP + MCP dual protocol)
+- `zbasic` — Convenience wrapper for BASIC (`zbasic script.bas --emit-il|-o`)
+- `zbasic-server` — BASIC language server (LSP + MCP dual protocol)
 - `zanna` — Unified driver
     - `run <target>` — Build and run a Zia or BASIC target
     - `build <target>` — Emit IL or build a native executable

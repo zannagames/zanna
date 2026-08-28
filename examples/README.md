@@ -121,12 +121,12 @@ interface.
 
 ## 📘 BASIC Language Examples
 
-The [`vbasic/`](vbasic/) directory contains 28 BASIC programs demonstrating language features:
+The [`zbasic/`](zbasic/) directory contains 28 BASIC programs demonstrating language features:
 
 - **Namespaces** — `namespace_demo.bas`: USING directives, cross-namespace inheritance
 - **Control flow** — `select_case.bas`, `ex_elseif.bas`, `ex_not.bas`
 - **I/O** — `ex_input_prompt_min.bas`, `ex_print_commas.bas`, `ex_print_semicolons.bas`
-- **OOP** — [`oop/`](vbasic/oop/): collections, text processing, mixed reports
+- **OOP** — [`oop/`](zbasic/oop/): collections, text processing, mixed reports
 - **Math** — `monte_carlo_pi.bas`, `random_walk.bas`
 - **Basics** — `ex1` through `ex6`: hello world, loops, arrays, conditionals
 

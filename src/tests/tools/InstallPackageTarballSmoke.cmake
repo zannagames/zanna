@@ -58,12 +58,12 @@ endif ()
 configure_file("${CMAKE_COMMAND}" "${_stage}/bin/zanna${_tool_suffix}" COPYONLY)
 foreach (_tool IN ITEMS
         zia
-        vbasic
+        zbasic
         ilrun
         il-verify
         il-dis
         zia-server
-        vbasic-server
+        zbasic-server
         basic-ast-dump
         basic-lex-dump
         zannastudio)
@@ -75,12 +75,12 @@ if (NOT WIN32)
                         WORLD_READ WORLD_EXECUTE)
     foreach (_tool IN ITEMS
             zia
-            vbasic
+            zbasic
             ilrun
             il-verify
             il-dis
             zia-server
-            vbasic-server
+            zbasic-server
             basic-ast-dump
             basic-lex-dump
             zannastudio)

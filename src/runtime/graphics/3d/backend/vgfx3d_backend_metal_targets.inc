@@ -201,7 +201,9 @@ static const float metal_skybox_vertices[] = {
 static const uint64_t k_texture_cache_max_age = 240u;
 static const uint64_t k_cubemap_cache_max_age = 240u;
 static const uint64_t k_morph_cache_max_age = 240u;
-static const NSUInteger k_texture_cache_max_entries = 256u;
+/* Matches the Canvas3D antialiased-text raster LRU (512): a smaller backend cache would
+ * thrash and re-upload every frame once the overlay working set passed it. */
+static const NSUInteger k_texture_cache_max_entries = 512u;
 static const NSUInteger k_cubemap_cache_max_entries = 64u;
 static const NSUInteger k_morph_cache_max_entries = 64u;
 
@@ -564,7 +566,7 @@ static void metal_install_render_target_release(VGFXMetalContext *ctx,
 /// @param rt Borrowed render-target shell and cache identity to resolve.
 /// @return The matching cache entry, or nil when absent, stale, or invalid.
 static VGFXMetalRenderTargetCacheEntry *metal_lookup_render_target_entry(
-    VGFXMetalContext *ctx, vgfx3d_rendertarget_t *rt) {
+    VGFXMetalContext *ctx, const vgfx3d_rendertarget_t *rt) {
     NSNumber *key;
     VGFXMetalRenderTargetCacheEntry *entry;
     if (!ctx || !ctx.renderTargetCache || !rt)

@@ -80,35 +80,48 @@ typedef struct vgfx3d_draw_cmd {
     /// Nonzero to upload cached geometry using VGFX3D_COMPACT_VERTEX_STRIDE encoding.
     int8_t compact_vertex_stream;
     /// Current row-major model-to-world transform.
-    float model_matrix[16];      /* row-major float */
+    float model_matrix[16]; /* row-major float */
     /// Previous-frame row-major model-to-world transform for motion vectors.
     float prev_model_matrix[16]; /* previous-frame row-major float */
     /// Resolved RGBA material multiplier.
-    float diffuse_color[4];      /* RGBA material color */
+    float diffuse_color[4]; /* RGBA material color */
     /// Resolved RGB specular multiplier.
-    float specular[3];           /* RGB specular color */
+    float specular[3]; /* RGB specular color */
     /// Blinn-Phong specular exponent.
-    float shininess;             /* specular exponent */
+    float shininess; /* specular exponent */
     /// Scalar opacity in the inclusive range 0-1.
-    float alpha;                 /* opacity [0.0=invisible, 1.0=opaque] */
+    float alpha; /* opacity [0.0=invisible, 1.0=opaque] */
     /// Nonzero to bypass all lighting calculations.
-    int8_t unlit;                /* skip lighting if true */
+    int8_t unlit; /* skip lighting if true */
     /// Nonzero for overlays that bypass depth testing and writing.
-    int8_t disable_depth_test;   /* screen-space overlays bypass depth test/write */
+    int8_t disable_depth_test; /* screen-space overlays bypass depth test/write */
     /// Nonzero when the draw is meaningless without its base-colour texture (screen text and
     /// image quads): backends skip the draw while that texture is still uploading instead of
     /// painting the untextured material colour as a solid block.
-    int8_t texture_required;     /* skip the draw while the base-colour texture is not resident */
+    int8_t texture_required; /* skip the draw while the base-colour texture is not resident */
     /// Borrowed diffuse Pixels fallback for texture slot zero.
-    const void *texture;         /* Pixels fallback (diffuse, slot 0) or NULL */
+    const void *texture; /* Pixels fallback (diffuse, slot 0) or NULL */
+    /// Borrowed live render target sampled natively as the base-colour texture (ADR 0299).
+    /// Set only when the backend advertises RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING;
+    /// `texture` is then NULL and no CPU mirror readback happens for this draw.
+    const vgfx3d_rendertarget_t *texture_target;
+    /// Borrowed RenderTarget3D wrapper owning `texture_target` (retained by the material for
+    /// the frame). A backend with no native storage for the target — it was rendered by another
+    /// canvas or backend — resolves the wrapper's Pixels mirror through
+    /// `rt_rendertarget3d_material_pixels` instead.
+    void *texture_target_owner;
     /// Borrowed normal-map Pixels fallback for texture slot one.
-    const void *normal_map;      /* Pixels fallback (normal map, slot 1) or NULL */
+    const void *normal_map; /* Pixels fallback (normal map, slot 1) or NULL */
     /// Borrowed specular-map Pixels fallback for texture slot two.
-    const void *specular_map;    /* Pixels fallback (specular map, slot 2) or NULL */
+    const void *specular_map; /* Pixels fallback (specular map, slot 2) or NULL */
     /// Borrowed emissive-map Pixels fallback for texture slot three.
-    const void *emissive_map;    /* Pixels fallback (emissive map, slot 3) or NULL */
+    const void *emissive_map; /* Pixels fallback (emissive map, slot 3) or NULL */
+    /// Borrowed live render target sampled natively as the emissive map (ADR 0299).
+    const vgfx3d_rendertarget_t *emissive_map_target;
+    /// Borrowed RenderTarget3D wrapper owning `emissive_map_target` (see `texture_target_owner`).
+    void *emissive_map_target_owner;
     /// Borrowed diffuse TextureAsset3D source for native upload.
-    void *texture_asset;         /* TextureAsset3D native source (diffuse, slot 0) or NULL */
+    void *texture_asset; /* TextureAsset3D native source (diffuse, slot 0) or NULL */
     /// Borrowed normal-map TextureAsset3D source for native upload.
     void *normal_map_asset;
     /// Borrowed specular-map TextureAsset3D source for native upload.
@@ -122,35 +135,35 @@ typedef struct vgfx3d_draw_cmd {
     /// Per-slot count of native mips requested for upload and sampling.
     int64_t texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_COUNT];
     /// RGB emissive multiplier.
-    float emissive_color[3];  /* emissive color multiplier */
+    float emissive_color[3]; /* emissive color multiplier */
     /// Metallic factor in the inclusive range 0-1.
-    float metallic;           /* [0,1] dielectric->metal */
+    float metallic; /* [0,1] dielectric->metal */
     /// Perceptual roughness factor in the inclusive range 0-1.
-    float roughness;          /* [0,1] smooth->rough */
+    float roughness; /* [0,1] smooth->rough */
     /// Ambient-occlusion multiplier in the inclusive range 0-1.
-    float ao;                 /* [0,1] ambient occlusion multiplier */
+    float ao; /* [0,1] ambient occlusion multiplier */
     /// Scalar applied after the emissive color and texture.
     float emissive_intensity; /* scalar multiplier applied after emissive color/map */
     /// Multiplier for tangent-space normal-map X and Y perturbation.
-    float normal_scale;       /* scales tangent-space XY perturbation */
+    float normal_scale; /* scales tangent-space XY perturbation */
     /// Nonzero to use additive rather than conventional alpha blending.
-    int8_t additive_blend;    /* use additive blending instead of standard alpha */
+    int8_t additive_blend; /* use additive blending instead of standard alpha */
     /// Resolved RT_MATERIAL3D_WORKFLOW_* value.
-    int32_t workflow;         /* RT_MATERIAL3D_WORKFLOW_* */
+    int32_t workflow; /* RT_MATERIAL3D_WORKFLOW_* */
     /// Resolved RT_MATERIAL3D_ALPHA_MODE_* value.
-    int32_t alpha_mode;       /* RT_MATERIAL3D_ALPHA_MODE_* */
+    int32_t alpha_mode; /* RT_MATERIAL3D_ALPHA_MODE_* */
     /// Alpha threshold used by masked materials.
-    float alpha_cutoff;       /* alpha-mask cutoff */
+    float alpha_cutoff; /* alpha-mask cutoff */
     /// Resolved RT_MATERIAL3D_SHADOW_MODE_* value.
-    int32_t shadow_mode;      /* RT_MATERIAL3D_SHADOW_MODE_* */
+    int32_t shadow_mode; /* RT_MATERIAL3D_SHADOW_MODE_* */
     /// Nonzero to disable face culling for this material.
-    int32_t double_sided;     /* culling disabled when true */
+    int32_t double_sided; /* culling disabled when true */
     /// Legacy/default horizontal RT_MATERIAL3D_TEXTURE_WRAP_* mode.
-    int32_t texture_wrap_s;   /* RT_MATERIAL3D_TEXTURE_WRAP_* */
+    int32_t texture_wrap_s; /* RT_MATERIAL3D_TEXTURE_WRAP_* */
     /// Legacy/default vertical RT_MATERIAL3D_TEXTURE_WRAP_* mode.
-    int32_t texture_wrap_t;   /* RT_MATERIAL3D_TEXTURE_WRAP_* */
+    int32_t texture_wrap_t; /* RT_MATERIAL3D_TEXTURE_WRAP_* */
     /// Legacy/default combined RT_MATERIAL3D_TEXTURE_FILTER_* mode.
-    int32_t texture_filter;   /* RT_MATERIAL3D_TEXTURE_FILTER_* */
+    int32_t texture_filter; /* RT_MATERIAL3D_TEXTURE_FILTER_* */
     /// Legacy/default minification filter.
     int32_t texture_min_filter;
     /// Legacy/default magnification filter.
@@ -180,7 +193,7 @@ typedef struct vgfx3d_draw_cmd {
     /// Borrowed combined metallic/roughness Pixels fallback.
     const void *metallic_roughness_map; /* Pixels fallback (glTF metallic/roughness map) or NULL */
     /// Borrowed ambient-occlusion Pixels fallback.
-    const void *ao_map;                 /* Pixels fallback (ambient occlusion map) or NULL */
+    const void *ao_map; /* Pixels fallback (ambient occlusion map) or NULL */
     /// Borrowed baked-GI Pixels atlas sampled with TEXCOORD_1.
     const void *lightmap; /* baked GI atlas (Pixels, TEXCOORD_1) or NULL: replaces flat ambient */
     /// Borrowed combined metallic/roughness TextureAsset3D source.
@@ -188,18 +201,18 @@ typedef struct vgfx3d_draw_cmd {
     /// Borrowed ambient-occlusion TextureAsset3D source.
     void *ao_map_asset;
     /// Borrowed CubeMap3D environment used for reflections.
-    const void *env_map;       /* CubeMap3D (environment reflections) or NULL */
+    const void *env_map; /* CubeMap3D (environment reflections) or NULL */
     /// Legacy environment reflection strength in the inclusive range 0-1.
-    float reflectivity;        /* [0.0=no reflection, 1.0=mirror] */
+    float reflectivity; /* [0.0=no reflection, 1.0=mirror] */
     /// Nonzero when @ref env_map is the canvas IBL environment.
-    int8_t ibl_env;            /* env_map is the canvas IBL environment: PBR draws use
-                                  SH irradiance + prefiltered specular instead of the
-                                  flat ambient + legacy reflectivity mix */
+    int8_t ibl_env; /* env_map is the canvas IBL environment: PBR draws use
+                       SH irradiance + prefiltered specular instead of the
+                       flat ambient + legacy reflectivity mix */
     /// Revision of the light and ambient snapshot associated with this draw.
-    uint32_t lights_revision;  /* monotonic stamp of the light+ambient snapshot this
-                                  draw was queued with; consecutive draws sharing a
-                                  stamp let backends skip re-uploading scene/light
-                                  constants (0 = unknown, always upload) */
+    uint32_t lights_revision; /* monotonic stamp of the light+ambient snapshot this
+                                 draw was queued with; consecutive draws sharing a
+                                 stamp let backends skip re-uploading scene/light
+                                 constants (0 = unknown, always upload) */
     /// Optional CPU-binned clustered-light table for the same light snapshot.
     const void *cluster_table; /* vgfx3d_cluster_table_t built for this draw's light
                                   snapshot, or NULL for the flat light loop. Backends
@@ -207,20 +220,20 @@ typedef struct vgfx3d_draw_cmd {
                                   lights_revision gate as the light constants. */
     /* Terrain splat mapping (populated by terrain draw path, NULL otherwise) */
     /// Borrowed terrain weight texture; NULL for non-terrain draws.
-    const void *splat_map;       /* RGBA weight texture (NULL = not terrain) */
+    const void *splat_map; /* RGBA weight texture (NULL = not terrain) */
     /// Borrowed diffuse textures for the four terrain layers.
     const void *splat_layers[4]; /* Layer textures */
     /// UV tiling factors for the four terrain layers.
     float splat_layer_scales[4]; /* UV tiling per layer */
     /// Nonzero when terrain splat mapping is active.
-    int8_t has_splat;            /* 1 = terrain splat active */
+    int8_t has_splat; /* 1 = terrain splat active */
     /* GPU skeletal skinning (MTL-09): set by rt_skeleton3d.c for GPU path */
     /// Current row-major bone matrices, optionally containing per-instance palettes.
-    const float *bone_palette;      /* bone_count * 16 floats (4x4 row-major) */
+    const float *bone_palette; /* bone_count * 16 floats (4x4 row-major) */
     /// Previous-frame bone palette for motion vectors, or NULL.
     const float *prev_bone_palette; /* previous-frame palette or NULL */
     /// Total number of matrices in @ref bone_palette; zero disables GPU skinning.
-    int32_t bone_count;             /* number of bones (0 = no skinning) */
+    int32_t bone_count; /* number of bones (0 = no skinning) */
     /* R18 per-instance skinning: when nonzero for an instanced draw, bone_palette
      * holds instance_count consecutive palettes of this many bones each
      * (bone_count = instance_count * stride, still <= VGFX3D_MAX_BONES) and the
@@ -235,27 +248,27 @@ typedef struct vgfx3d_draw_cmd {
     const vgfx3d_extra_influences_t *extra_influences;
     /* GPU morph targets (MTL-10): set by rt_morphtarget3d.c for GPU path */
     /// Packed position deltas organized by shape then vertex.
-    const float *morph_deltas;           /* shape_count * vertex_count * 3 floats */
+    const float *morph_deltas; /* shape_count * vertex_count * 3 floats */
     /// Optional packed normal deltas organized by shape then vertex.
-    const float *morph_normal_deltas;    /* shape_count * vertex_count * 3 floats or NULL */
+    const float *morph_normal_deltas; /* shape_count * vertex_count * 3 floats or NULL */
     /// Current scalar weight for each active morph shape.
-    const float *morph_weights;          /* shape_count floats */
+    const float *morph_weights; /* shape_count floats */
     /// Previous-frame weights for motion vectors, or NULL.
-    const float *prev_morph_weights;     /* previous-frame shape_count floats or NULL */
+    const float *prev_morph_weights; /* previous-frame shape_count floats or NULL */
     /// Number of active morph shapes; zero disables morphing.
-    int32_t morph_shape_count;           /* number of active morph shapes (0 = none) */
+    int32_t morph_shape_count; /* number of active morph shapes (0 = none) */
     /// Stable identity used by backend morph-delta caches.
-    const void *morph_key;               /* stable identity for backend morph-payload caches */
+    const void *morph_key; /* stable identity for backend morph-payload caches */
     /// Revision invalidating cached morph delta payloads.
-    uint64_t morph_revision;             /* bumps when morph delta payload changes */
+    uint64_t morph_revision; /* bumps when morph delta payload changes */
     /// Previous row-major transform per instance for instanced motion vectors.
     const float *prev_instance_matrices; /* N * 16 floats for instanced motion blur */
     /// Nonzero when @ref prev_model_matrix is valid.
-    int8_t has_prev_model_matrix;        /* 1 when prev_model_matrix is valid */
+    int8_t has_prev_model_matrix; /* 1 when prev_model_matrix is valid */
     /// Nonzero when @ref prev_instance_matrices covers the submitted instance count.
-    int8_t has_prev_instance_matrices;   /* 1 when prev_instance_matrices matches instance_count */
+    int8_t has_prev_instance_matrices; /* 1 when prev_instance_matrices matches instance_count */
     /// Resolved shader shading-model identifier.
-    int32_t shading_model;   /* 0=BlinnPhong, 1=Toon, 2=PBR, 3=Unlit, 4=Fresnel, 5=Emissive */
+    int32_t shading_model; /* 0=BlinnPhong, 1=Toon, 2=PBR, 3=Unlit, 4=Fresnel, 5=Emissive */
     /// User-defined material shader parameters.
     float custom_params[12]; /* user-defined shader parameters */
     /* Plan 10: soft-particle fade distance in world units (0 = hard edges).
@@ -272,12 +285,34 @@ typedef struct vgfx3d_draw_cmd {
     /// Slope-proportional renderer-space depth offset.
     float slope_scaled_depth_bias; /* slope-proportional depth offset for steep coplanar polygons */
     /// Nonzero when draw-time scanning found a texture with non-opaque alpha.
-    int8_t has_alpha_texture;      /* draw-time texture scan found non-opaque alpha */
+    int8_t has_alpha_texture; /* draw-time texture scan found non-opaque alpha */
     /* Recommendation 48: non-NULL selects the retained-unit-quad particle vertex path for an
      * instanced submission. Records are frame-owned and already sorted/rebased. */
     /// Optional compact particle instances selecting the retained-unit-quad path.
     const vgfx3d_particle_instance_t *particle_instances;
 } vgfx3d_draw_cmd_t;
+
+/// @brief Canvas-layer resolver for a RenderTarget3D wrapper's Pixels mirror (defined in
+///        rt_rendertarget3d.c). Backends call it only on the no-native-storage fallback path;
+///        it re-reads the target when its content revision advanced.
+/// @param obj Borrowed RenderTarget3D wrapper handle.
+/// @return Borrowed target-owned Pixels mirror, or NULL when unavailable.
+void *rt_rendertarget3d_material_pixels(void *obj);
+
+/// @brief True when a draw command carries any base-colour texture source
+///        (Pixels fallback, native asset, or a natively sampled render target).
+/// @param cmd Borrowed draw command; NULL reads as untextured.
+/// @return Non-zero when slot zero has a texture source.
+static inline int vgfx3d_draw_cmd_has_base_texture(const vgfx3d_draw_cmd_t *cmd) {
+    return cmd && (cmd->texture || cmd->texture_asset || cmd->texture_target);
+}
+
+/// @brief True when a draw command carries any emissive-map source.
+/// @param cmd Borrowed draw command; NULL reads as unmapped.
+/// @return Non-zero when the emissive slot has a texture source.
+static inline int vgfx3d_draw_cmd_has_emissive_map(const vgfx3d_draw_cmd_t *cmd) {
+    return cmd && (cmd->emissive_map || cmd->emissive_map_asset || cmd->emissive_map_target);
+}
 
 /* R20 compact static-mesh vertex stream: an opt-in 48-byte packed twin of the
  * 92-byte vgfx3d_vertex_t used only for GPU static-geometry-cache uploads.
@@ -447,15 +482,15 @@ static inline float vgfx3d_draw_cmd_ssr_mask(const vgfx3d_draw_cmd_t *cmd) {
 ///   flags for overlay/secondary passes.
 typedef struct vgfx3d_camera_params {
     /// Row-major world-to-view matrix.
-    float view[16];       /* view matrix, row-major float */
+    float view[16]; /* view matrix, row-major float */
     /// Row-major view-to-clip projection matrix.
     float projection[16]; /* projection matrix, row-major float */
     /// Camera position in render-world space.
-    float position[3];    /* eye position (for specular) */
+    float position[3]; /* eye position (for specular) */
     /// Normalized camera forward direction in render-world space.
-    float forward[3];     /* forward/view direction in world space */
+    float forward[3]; /* forward/view direction in world space */
     /// Nonzero for an orthographic projection.
-    int8_t is_ortho;      /* 1 = orthographic projection */
+    int8_t is_ortho; /* 1 = orthographic projection */
     /* Distance fog */
     /// Nonzero to enable distance-fog attenuation.
     int8_t fog_enabled;
@@ -558,13 +593,13 @@ typedef struct vgfx3d_camera_params {
 ///   overflow is order-stable and counted in `overflow_count` (never UB).
 typedef struct vgfx3d_cluster_table {
     /// Light snapshot revision matched by this table; zero marks invalid data.
-    uint32_t lights_revision;   /* snapshot revision this table matches (0 = invalid) */
+    uint32_t lights_revision; /* snapshot revision this table matches (0 = invalid) */
     /// Length of the directional/ambient prefix applied to every cluster.
     int32_t global_light_count; /* directional/ambient prefix length in the light array */
     /// Number of point and spot lights considered during froxel binning.
     int32_t binned_light_count; /* point/spot lights considered for binning */
     /// Number of cluster-light references dropped because the index array filled.
-    int32_t overflow_count;     /* dropped cluster entries (diagnostics; 0 in practice) */
+    int32_t overflow_count; /* dropped cluster entries (diagnostics; 0 in practice) */
     /// Near depth used by exponential Z slicing.
     float znear;
     /// Far depth used by exponential Z slicing.
@@ -585,9 +620,9 @@ typedef struct vgfx3d_light_params {
     /// Light kind: directional, point, ambient, spot, rectangle, sphere, or volume.
     int32_t type; /* 0=directional, 1=point, 2=ambient, 3=spot, 4=rect, 5=sphere, 6=volume */
     /// First assigned shadow slot, or -1 when unshadowed.
-    int32_t shadow_index;           /* -1 = unshadowed, otherwise [0, VGFX3D_MAX_SHADOW_LIGHTS) */
+    int32_t shadow_index; /* -1 = unshadowed, otherwise [0, VGFX3D_MAX_SHADOW_LIGHTS) */
     /// Number of cascades beginning at @ref shadow_index.
-    int32_t shadow_cascade_count;   /* >1 means shadow_index is the first cascade slot */
+    int32_t shadow_cascade_count; /* >1 means shadow_index is the first cascade slot */
     /// VGFX3D_SHADOW_PROJECTION_* value for the assigned shadow slots.
     int32_t shadow_projection_type; /* VGFX3D_SHADOW_PROJECTION_* */
     /// Nonzero when this light participates in shadow rendering.

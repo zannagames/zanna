@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-28
 ---
 
 # CLI Tools Reference
@@ -25,19 +25,24 @@ zia program.zia --emit-il
 zia program.zia -o program.il
 ```
 
-### vbasic
+### zbasic
 
-Run or compile BASIC programs.
+Run or compile single-file Zanna BASIC programs. Its command shape mirrors
+`zia`; running it without a source file prints command help. Use
+`zanna repl basic` for an interactive BASIC session.
 
 ```bash
 # Run a BASIC program
-vbasic program.bas
+zbasic program.bas
 
 # Emit IL
-vbasic program.bas --emit-il
+zbasic program.bas --emit-il
 
 # Save IL to file
-vbasic program.bas -o program.il
+zbasic program.bas -o program.il
+
+# Compile a native binary
+zbasic program.bas -o program
 ```
 
 ### zia-server
@@ -58,6 +63,20 @@ zia-server
 ```
 
 See [Language Server Reference](zia-server.md) for configuration and tool documentation.
+
+### zbasic-server
+
+Language server for Zanna BASIC, with the same MCP tool schemas as `zia-server`
+under the `basic/` prefix. Its LSP mode currently provides diagnostics,
+completion, hover, and document symbols.
+
+```bash
+zbasic-server --mcp
+zbasic-server --lsp
+```
+
+See [Language Server Reference](zia-server.md) for the shared protocol and the
+per-language capability matrix.
 
 ### ilrun
 
@@ -375,7 +394,7 @@ frame-depth based and are intended for VM debugging workflows where source-level
 ### zanna front
 
 Low-level frontend entry points retained for direct compiler testing and
-compatibility. Prefer `zia`, `vbasic`, or `zanna run` / `zanna build` for normal
+compatibility. Prefer `zia`, `zbasic`, or `zanna run` / `zanna build` for normal
 workflows.
 
 ```bash
@@ -533,18 +552,21 @@ Offline 3D asset conditioning. `zanna asset bake <input> <output.scene3d>` (lega
 model (glTF/GLB/FBX/OBJ/STL) through the full runtime import pipeline —
 including the meshopt, Draco, and Basis Universal decoders and the import
 options — optionally generates LOD chains, and saves the complete `SceneAsset`
-as VSCN v5 for near-instant loading. Version 5 retains every immutable scene,
-camera-to-node association, native light, enumerable resource, node/skeletal/
+in the current VSCN representation for near-instant loading. The baked document retains every immutable scene,
+camera-to-node association, native light, enumerable resource, typed node metadata, node/skeletal/
 camera animation, material variant, and static morph payload. It also retains
 the complete validated KTX2, PNG, JPEG, GIF, or BMP container when the importer
 had those bytes; otherwise it stores canonical RGBA8 texels. The command reloads
 the written file and compares texture content and metadata before reporting
-success. Options: `--force-tangents`,
-`--eight-influences`, `--compress-anims`, `--lods N` (0-8, halving ratio),
-`--simplify-meshes N` (decimate every mesh above N triangles to at most N
-before saving; N ≥ 8), `--strip-meshes` (drop all meshes and materials for
-animation-only bakes — the saved scene keeps nodes, skeletons, and clips), and
-`--json`.
+success. Options:
+
+- `--force-tangents`, `--eight-influences`, and `--compress-anims` select importer conditioning.
+- `--lods N` generates 0-8 LOD levels at a halving ratio.
+- `--clips LIST` keeps selected animation clips by name, zero-based skeletal-clip index, or inclusive `A-B` index range; node animations with matching names follow their skeletal clip.
+- `--simplify-meshes N` decimates every mesh above N triangles toward N before saving (`N >= 8`). `--simplify-lock-seams` keeps open, UV-seam, and material-boundary vertices fixed; a seam-constrained mesh can report a valid partial result above N. `--simplify-max-error F` stops when the next collapse would exceed F times the mesh bounding diameter (`0 < F < 1`; `0.001` is a typical starting point). Both refinement options require `--simplify-meshes`.
+- `--max-texture-dim N` downsizes material textures above N texels on either axis (`N >= 64`) and stores compact canonical pixels.
+- `--strip-meshes` drops all meshes and materials for animation-only bakes; the saved scene keeps nodes, skeletons, and clips.
+- `--json` emits the machine-readable report described below.
 
 In the default output mode, success keeps the historical `baked <input> ->
 <output>` line on stdout. Any resource class whose count was reduced by the
@@ -599,8 +621,8 @@ Package a staged Zanna developer-tools install tree. A valid toolchain
 installer stage must include every installed binary tool:
 
 ```text
-zanna, zia, vbasic, ilrun, il-verify, il-dis, zia-server,
-vbasic-server, basic-ast-dump, basic-lex-dump, zannastudio
+zanna, zia, zbasic, ilrun, il-verify, il-dis, zia-server,
+zbasic-server, basic-ast-dump, basic-lex-dump, zannastudio
 ```
 
 ```bash

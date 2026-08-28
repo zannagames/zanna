@@ -86,6 +86,9 @@ typedef struct {
     float transition_time;
     /// Total transition duration in seconds.
     float transition_duration;
+    /// ADR 0300: seconds the layer still holds at its entry before the clip (and its
+    /// crossfade) advance — a negative CrossfadeAt start.
+    float entry_delay;
     /// Nonzero while transition time is below duration.
     int8_t transitioning;
     /// Nonzero to composite a bind-pose-relative delta instead of replacement.
@@ -901,6 +904,7 @@ static int8_t controller_set_layer_state(rt_anim_controller3d *controller,
 
     layer->previous_state = layer->current_state;
     layer->current_state = state_index;
+    layer->entry_delay = 0.0f;
     if (use_crossfade) {
         rt_anim_player3d_crossfade(layer->player, state->animation, blend_seconds);
         controller_apply_state_settings(layer->player, state);

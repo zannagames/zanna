@@ -2524,6 +2524,7 @@ Constructor: `Zanna.Graphics3D.AnimController3D.New`
 | <a id="zanna-graphics3d-animcontroller3d-addtransition"></a>`AddTransition` | `i1(str,str,f64)` | `Zanna.Graphics3D.AnimController3D.AddTransition` |
 | <a id="zanna-graphics3d-animcontroller3d-play"></a>`Play` | `i1(str)` | `Zanna.Graphics3D.AnimController3D.Play` |
 | <a id="zanna-graphics3d-animcontroller3d-crossfade"></a>`Crossfade` | `i1(str,f64)` | `Zanna.Graphics3D.AnimController3D.Crossfade` |
+| <a id="zanna-graphics3d-animcontroller3d-crossfadeat"></a>`CrossfadeAt` | `i1(str,f64,f64)` | `Zanna.Graphics3D.AnimController3D.CrossfadeAt` |
 | <a id="zanna-graphics3d-animcontroller3d-stop"></a>`Stop` | `void()` | `Zanna.Graphics3D.AnimController3D.Stop` |
 | <a id="zanna-graphics3d-animcontroller3d-update"></a>`Update` | `void(f64)` | `Zanna.Graphics3D.AnimController3D.Update` |
 | <a id="zanna-graphics3d-animcontroller3d-isstateplaying"></a>`IsStatePlaying` | `i1(str)` | `Zanna.Graphics3D.AnimController3D.IsStatePlaying` |
@@ -4064,6 +4065,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.AnimController3D.AddTransition` | `i1(obj,str,str,f64)` | `rt_anim_controller3d_add_transition` |
 | `Zanna.Graphics3D.AnimController3D.Play` | `i1(obj,str)` | `rt_anim_controller3d_play` |
 | `Zanna.Graphics3D.AnimController3D.Crossfade` | `i1(obj,str,f64)` | `rt_anim_controller3d_crossfade` |
+| `Zanna.Graphics3D.AnimController3D.CrossfadeAt` | `i1(obj,str,f64,f64)` | `rt_anim_controller3d_crossfade_at` |
 | `Zanna.Graphics3D.AnimController3D.Stop` | `void(obj)` | `rt_anim_controller3d_stop` |
 | `Zanna.Graphics3D.AnimController3D.Update` | `void(obj,f64)` | `rt_anim_controller3d_update` |
 | <a id="zanna-graphics3d-animcontroller3d-get-currentstate"></a>`Zanna.Graphics3D.AnimController3D.get_CurrentState` | `str(obj)` | `rt_anim_controller3d_get_current_state` |

@@ -27,7 +27,7 @@ Source layout for the Zanna compiler toolchain (current tree, kept in sync).
 | `src/runtime/`         | C runtime library (strings, collections, I/O, math, graphics, audio, input, networking, threading, text, time, crypto, GC, serialization, physics, async) |
 | `src/support/`         | Shared support: diagnostics, arena, source manager, symbols, result      |
 | `src/tests/`           | Unit, golden, e2e, and perf tests by area                                |
-| `src/tools/`           | CLI tools (`zanna`, `vbasic`, `zia`, `zia-server`, `ilrun`, `il-verify`, `il-dis`, the native Windows installer, etc.) |
+| `src/tools/`           | CLI tools (`zanna`, `zbasic`, `zia`, `zia-server`, `ilrun`, `il-verify`, `il-dis`, the native Windows installer, etc.) |
 | `src/tui/`             | Terminal UI library + demo app (`src/tui/apps/tui_demo.cpp`)             |
 | `src/zannastudio/`        | Zanna Studio application (written in Zia) — editor, language services, build/debug workbench |
 | `src/vm/`              | Virtual Machine interpreter, opcode handlers, debug, runtime bridge      |
@@ -44,7 +44,7 @@ Source layout for the Zanna compiler toolchain (current tree, kept in sync).
 - Support & Infra: `src/{common,parse,pass,support}`
 - REPL: `src/repl` (line editor, input classifier, session, meta-commands)
 - Tests: `src/tests/{e2e,golden,perf,smoke,unit,...}`
-- Tools: `src/tools/{basic,basic-ast-dump,basic-lex-dump,common,il-dis,il-verify,ilrun,lsp-common,macos,rtgen,vbasic,vbasic-server,windows_installer,zanna,zia,zia-server}`
+- Tools: `src/tools/{basic,basic-ast-dump,basic-lex-dump,common,il-dis,il-verify,ilrun,lsp-common,macos,rtgen,zbasic,zbasic-server,windows_installer,zanna,zia,zia-server}`
 - VM: `src/vm` (+ `ops/{common,generated}` and `debug/`)
 
 For architecture and layering, see [architecture.md](architecture.md).
@@ -96,6 +96,6 @@ For architecture and layering, see [architecture.md](architecture.md).
 | [Docs](codemap/docs.md)        | Documentation subsystem                                  |
 | [Graphics](codemap/graphics.md) | ZannaGFX 2D graphics library                             |
 | [Graphics Stubs](codemap/runtime-graphics-stubs.md) | Graphics-disabled runtime surface policy       |
-| [Tools](codemap/tools.md)       | CLI tools (zanna, vbasic, zia, ilrun, il-verify, il-dis) |
+| [Tools](codemap/tools.md)       | CLI tools (zanna, zbasic, zia, ilrun, il-verify, il-dis) |
 | [Zia Server](codemap/zia-server.md) | Language server: MCP + LSP protocol handlers         |
 | [TUI](codemap/tui.md)           | Terminal UI library + tests                              |

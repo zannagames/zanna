@@ -19,15 +19,15 @@ frontend-language parity:
 
 | Surface | Zia | BASIC | Notes |
 |---------|-----|-------|-------|
-| Standalone LSP/MCP diagnostics | **Full** | **Full** | `zia-server` and `vbasic-server` both expose structured diagnostics through the shared handler. |
-| Completion / hover / document symbols | **Full** | **Full in `vbasic-server`; ZannaIDE tracks server support separately from wired commands** | BASIC analysis exists at the server boundary, and ZannaIDE exposes that distinction in disabled-command reasons. |
+| Standalone LSP/MCP diagnostics | **Full** | **Full** | `zia-server` and `zbasic-server` both expose structured diagnostics through the shared handler. |
+| Completion / hover / document symbols | **Full** | **Full in `zbasic-server`; ZannaIDE tracks server support separately from wired commands** | BASIC analysis exists at the server boundary, and ZannaIDE exposes that distinction in disabled-command reasons. |
 | Definition / references / rename | **Full** | None | Zia uses `Zanna.Zia.ProjectIndex`; BASIC has no equivalent project index yet. |
 | Signature help | **Full** | None | BASIC server does not advertise this capability. |
 | Workspace symbols | **Full** | None | Zia LSP can answer from open/project-indexed documents; BASIC remains document-scoped. |
-| Semantic tokens | **Full** | None | `vbasic-server` intentionally does not advertise semantic tokens. |
-| ZannaIDE semantic commands | **Full** | Disabled until BASIC adapters are wired | BASIC files can be edited/built in ZannaIDE. Semantic commands stay capability-gated off, but disabled-command reasons now distinguish `vbasic-server` support from missing IDE adapters. |
+| Semantic tokens | **Full** | None | `zbasic-server` intentionally does not advertise semantic tokens. |
+| ZannaIDE semantic commands | **Full** | Disabled until BASIC adapters are wired | BASIC files can be edited/built in ZannaIDE. Semantic commands stay capability-gated off, but disabled-command reasons now distinguish `zbasic-server` support from missing IDE adapters. |
 
-This split is intentional as of 2026-06-21. `vbasic-server` is the supported
+This split is intentional as of 2026-06-21. `zbasic-server` is the supported
 BASIC IDE-service surface for diagnostics, completion, hover, document symbols,
 and dumps. ZannaIDE records those server capabilities separately from its
 currently wired command capabilities, and should only enable BASIC commands

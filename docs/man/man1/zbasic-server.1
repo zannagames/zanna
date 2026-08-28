@@ -1,11 +1,11 @@
-.TH vbasic-server 1 "Zanna" "vbasic-server" "User Commands"
+.TH zbasic-server 1 "Zanna" "zbasic-server" "User Commands"
 .SH NAME
-vbasic-server \- Zanna BASIC language server for LSP and MCP clients
+zbasic-server \- Zanna BASIC language server for LSP and MCP clients
 .SH SYNOPSIS
-.B vbasic-server
+.B zbasic-server
 [\fB--mcp\fR|\fB--lsp\fR] [\fB--help\fR] [\fB--version\fR]
 .SH DESCRIPTION
-\fBvbasic-server\fR exposes Zanna BASIC compiler services over the Language
+\fBzbasic-server\fR exposes Zanna BASIC compiler services over the Language
 Server Protocol for editors and the Model Context Protocol for AI assistants.
 .PP
 When no protocol flag is supplied, the server auto-detects the protocol from
@@ -27,12 +27,12 @@ Show version information and exit.
 .TP
 Start MCP mode
 .nf
-vbasic-server --mcp
+zbasic-server --mcp
 .fi
 .TP
 Start LSP mode
 .nf
-vbasic-server --lsp
+zbasic-server --lsp
 .fi
 .SH SEE ALSO
-\fBzanna\fR(1), \fBvbasic\fR(1), \fBzia-server\fR(1)
+\fBzanna\fR(1), \fBzbasic\fR(1), \fBzia-server\fR(1)

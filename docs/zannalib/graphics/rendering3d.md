@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-14
+last-verified: 2026-08-28
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -164,6 +164,14 @@ glTF extension support is explicit:
 
 Unsupported required extensions fail the load and name the extension list, for
 example `GLTF.Load: requires EXT_texture_webp (unsupported)`.
+
+A glTF node's scalar `extras` entries import as typed `SceneNode` metadata:
+strings, integral/fractional numbers, booleans, and null become string, int,
+float, bool, and null values. Nested objects and arrays, oversized keys or
+strings, non-finite numbers, and entries beyond the metadata limit are skipped
+with one bounded warning per node. `AssetDiagnostics3D.GetImportReport` and
+`zanna asset validate` expose the warning, and VSCN persistence carries the
+accepted metadata through later instantiation.
 
 Plain `.gltf` input is length-aware and rejects embedded NUL bytes. Synchronous
 and preload `.glb` loads use the same bounded GLB 2.0 chunk iterator, so missing
@@ -658,6 +666,13 @@ whose byte counts cannot fit D3D11 `UINT` fields before it touches GPU resources
 Its post-FX and readback paths also reject malformed effect-chain storage and
 unsupported staging formats before replaying GPU passes or mapping CPU-readable
 textures.
+
+For a positive finite upload budget, small RGBA8 2D textures up to 256 KiB may
+finish after large scene uploads consume the nominal allowance. This keeps
+newly rasterized text and HUD images from disappearing for a frame during
+world-texture streaming. A budget of `0` is still a strict pause; negative
+budgets remain unlimited. Texture-required screen commands are skipped while
+their image is not resident instead of drawing a temporary white rectangle.
 `TextureUploadPendingBytes` reports remaining queued texture/cubemap row bytes
 plus native compressed mip bytes and returns to `0` after final submissions
 drain. The open-world native-compressed hitch CTest records the selected
@@ -862,6 +877,12 @@ keep a generated 10k drawable-node grid in the normal SceneGraph ctest lane to
 guard BVH shape, transform refit, isolated-query reduction, and frame-cull
 candidate reduction.
 
+Repeated scene, navigation, animation, overlap, and ray queries retain bounded
+scratch storage instead of allocating a new work buffer for every call.
+Collect-all queries publish only after the complete ordered result has been
+built; if a budget or allocation cannot be satisfied they return the API's
+empty/failure result rather than a plausible-looking partial hit list.
+
 `RebaseOrigin` is the low-level floating-origin primitive used by Game3D. It
 keeps child-local transforms stable by moving only root-level subtrees in world
 space; physics bodies, cameras, and audio listeners should be rebased through
@@ -887,6 +908,15 @@ both skin-influence streams, remapped morph channels, material ranges, and
 retained animation references aligned. Collapses that violate the manifold
 link condition or create duplicate, degenerate, or inverted faces are skipped.
 Changing the returned mesh's geometry clears its simplification diagnostics.
+
+`Mesh3D.BendArc(radius, arcDegrees)` bends a straight static mesh around a
+vertical circular arc in place. It maps the authored X extent across the arc,
+keeps Y unchanged, and rotates normals and tangents with the local bend frame
+without changing triangle winding. Use it for curved walls, seating, rails,
+and trim assembled from straight kit pieces. Radius must be finite and
+positive, the arc must be in `(0, 360]`, and every vertex must remain inside
+the bend radius; validation happens before mutation. Skinned and morph-target
+meshes are deliberately refused.
 
 `Mesh3D.CompactStreams` (default false) opts a mesh into the compact GPU
 vertex-stream encoding: static-geometry-cache uploads on the Metal, Direct3D 11,
@@ -1065,7 +1095,10 @@ equirectangular panorama (flat, old-RLE, and new-RLE scanlines), projects it ont
 the six cube faces through the engine's cubemap basis, and range-compresses with
 Reinhard `e*x / (1 + e*x)` at the given exposure (values <= 0 default to 1) into
 the 8-bit faces the IBL pipeline consumes. Resolves plain file paths first, then
-the asset manager (embedded/mounted packs).
+the asset manager (embedded/mounted packs). Both LF and CRLF headers are
+accepted, as are the signed and axis-swapped Radiance scanline orientations;
+pixels are normalized into the runtime's canonical image orientation. Invalid
+dimensions, truncated RLE, and malformed scanline declarations fail the load.
 
 ---
 
@@ -1373,7 +1406,7 @@ file as proof of a lossless conversion.
 | `LoadAnimationAssetResult(path, index)` | `Result[Animation3D](String, Integer)` | Load a skeletal animation clip through `Zanna.IO.Assets` |
 | `LoadNodeAnimationResult(path, index)` | `Result[NodeAnimation3D](String, Integer)` | Load an imported node animation clip as `Ok(NodeAnimation3D)` or `Err(message)` |
 | `LoadNodeAnimationAssetResult(path, index)` | `Result[NodeAnimation3D](String, Integer)` | Load a node animation clip through `Zanna.IO.Assets` |
-| `Save(path)` | `Integer(String)` | Atomically save the complete asset as VSCN v5; returns `1` on success or `0` on validation/allocation/I/O failure |
+| `Save(path)` | `Integer(String)` | Atomically save the complete asset using the lowest VSCN document version that carries its content; returns `1` on success or `0` on validation/allocation/I/O failure |
 
 `LoadAsset` and every `*AssetResult` root load accept ordinary logical asset
 paths or `asset://` paths. All six `SceneAsset` formats resolve from embedded
@@ -1393,11 +1426,14 @@ indexes preserve animation targeting when node names are duplicated; all twelve
 material custom parameters and per-slot anisotropy also round-trip, including
 imported glTF anisotropy factors.
 
-VSCN v5 stores numeric sample streams as explicitly little-endian binary data
-inside Base64 and rejects malformed lengths, non-finite values, invalid table
-indexes, unsupported source-container kinds, mismatched image magic, or failed
-image decoding before publishing an asset. Loaders remain compatible with VSCN
-versions 1–4. Texture entries are discriminated `rgba8` snapshots or `source`
+New VSCN output stores vertex, index, bone-map, extra-influence, and skeletal
+keyframe records as explicitly tagged, padding-free little-endian data inside
+Base64. The loader remains compatible with VSCN document versions 1–7 and the
+older v1/v2 binary layouts, while an unknown explicit layout tag or malformed
+present rig stream rejects the complete load. It also rejects malformed
+lengths, non-finite values, invalid table indexes, unsupported source-container
+kinds, mismatched image magic, or failed image decoding before publishing an
+asset. Texture entries are discriminated `rgba8` snapshots or `source`
 containers. Exact KTX2/PNG/JPEG/GIF/BMP bytes, native KTX2 format/mips, decoded
 texels, shared texture identity, sampler state, UV transforms, the lightmap
 slot, and cubemap faces survive when available. A decoded texture changed after
@@ -1434,9 +1470,17 @@ instantiable material-specific mesh nodes.
 | `GetVariantName(index)` | `String(Integer)` | Variant display name, or `""` when out of range |
 | `ApplyVariant(target, index)` | `Integer(Object, Integer)` | Apply a material variant to every mapped node under `target` (a `SceneNode` from `Instantiate()` or a `SceneGraph`); returns the node count updated. Variants a primitive does not map restore its default material, so switching is reversible |
 | `GenerateLods(levels, ratio)` | `Integer(Integer, Float)` | Generate 1..4 LOD levels (~`ratio^k` triangles, QEM decimation) for every template/scene mesh node and enable auto screen-error selection; each unique mesh is decimated once, nodes that already carry chains are skipped, and later `Instantiate()` clones inherit the chains. Returns the node count chained |
+| `FlattenStatic(rootName, transform)` | `Seq[SceneNode](String, Mat4)` | Merge the named static template subtree (`""` = whole model) into one fresh node per material, applying an optional placement transform |
 
 Mutating an instantiated node does not mutate the immutable template node
 returned by `FindNode()`.
+
+`FlattenStatic` walks visible static meshes in authored order, reuses their
+shared materials, and names each result after its first contributing source
+node so role-based naming survives the merge. Pass `null` for an identity
+placement. Skinned, morph-target, and singularly transformed pieces are skipped
+with `AssetDiagnostics3D` warnings; an unknown root returns an empty sequence,
+and the imported template is never changed.
 
 ---
 
@@ -2289,8 +2333,12 @@ Animated water plane with wave simulation, reflections, and normal mapping.
 | `AddWave(dirX, dirZ, speed, amplitude, wavelength)` | `Void(Double, Double, Double, Double, Double)` | Add a Gerstner wave: propagation direction (x, z), signed phase speed, vertical amplitude, wavelength in world units. Up to 8 waves total |
 | `ClearWaves()` | `Void()` | Remove all Gerstner waves (reverts to the legacy single-sine wave) |
 
-`Water3D.Update` rewrites the retained mesh vertex buffer in place and rebuilds
-index topology only when resolution or capacity changes.
+`Water3D.Update` represents its generated wave bases as packed
+`MorphTarget3D` data and submits them through the ordinary morph-deformation
+path. GPU and software backends therefore animate the same surface, retained
+bounds remain conservative while it moves, and reduced graphics builds keep
+the same behavior. Index topology is rebuilt only when resolution or capacity
+changes.
 
 ---
 

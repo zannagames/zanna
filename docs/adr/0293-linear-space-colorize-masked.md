@@ -33,7 +33,7 @@ display-space math is the intended semantic.
 
 Add one new op with the identical signature:
 
-```
+```text
 Zanna.Graphics.Pixels.ColorizeMaskedLinear(mask, rgb, referenceLuminance,
                                            maxShade, strength)
 ```

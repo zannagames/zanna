@@ -1,7 +1,8 @@
 //===----------------------------------------------------------------------===//
 // Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_animcontroller3d_api.inc  (#included from rt_animcontroller3d.c; not a standalone translation unit)
-// Purpose: AnimController3D public API: states, transitions, play/crossfade, update, IK, events
+// File: src/runtime/graphics/3d/anim/rt_animcontroller3d_api.inc  (#included from
+// rt_animcontroller3d.c; not a standalone translation unit) Purpose: AnimController3D public API:
+// states, transitions, play/crossfade, update, IK, events
 //===----------------------------------------------------------------------===//
 /// @file
 /// @brief Implements the AnimController3D public ABI and frame update.
@@ -18,7 +19,8 @@ static void controller_sanitize_root_motion_delta(rt_anim_controller3d *controll
     if (!controller)
         return;
     for (int32_t i = 0; i < 3; i++)
-        controller->root_motion_delta[i] = controller_finite_double_or(controller->root_motion_delta[i], 0.0);
+        controller->root_motion_delta[i] =
+            controller_finite_double_or(controller->root_motion_delta[i], 0.0);
 }
 
 /// @brief GC finalizer: release every owned reference and free the heap arrays.
@@ -58,8 +60,7 @@ static void controller_finalize(void *obj) {
                                      RT_G3D_ANIMPLAYER3D_CLASS_ID);
     controller_release_class_ref(&controller->blend_tree, RT_G3D_BLENDTREE3D_CLASS_ID);
     for (int32_t i = 0; i < RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS; i++)
-        controller_release_class_ref(
-            &controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
+        controller_release_class_ref(&controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
     controller->ik_solver_count = 0;
     free(controller->final_palette);
     controller->final_palette = NULL;
@@ -284,6 +285,52 @@ int8_t rt_anim_controller3d_crossfade(void *obj, rt_string state_name, double bl
     return controller_set_layer_state(controller, 0, state_index, blend_seconds);
 }
 
+/// @brief Cross-fade to `state_name` over `blend_seconds`, entering the clip at
+///        `start_seconds` instead of zero (ADR 0300).
+/// @details A game that drives its animation from a choreography clock notices a
+///          state mark on the first rendered frame at or after it, so the clip
+///          used to start up to one frame LATE relative to the mark — at a bat's
+///          ~100 ft/s that is a foot of barrel per 10 ms. Entering at the
+///          lateness keeps the clip's time equal to (playhead - mark) on every
+///          frame regardless of frame phase. The crossfade's outgoing pose is
+///          untouched; entry events between zero and `start_seconds` are not
+///          fired. A NEGATIVE start holds the entry pose (clip and blend) for
+///          |start| seconds of update time before running — the mark noticed
+///          inside the current frame. Non-finite starts enter at zero.
+/// @param[in,out] obj AnimController3D whose base layer to start.
+/// @param[in] state_name Registered destination-state name.
+/// @param[in] blend_seconds Requested blend duration; invalid or negative
+///                          values become an immediate switch.
+/// @param[in] start_seconds Clip time to enter at (clamped by the player to the
+///                          clip; looping clips wrap); negative = hold that long.
+/// @return `1` when the state was applied; `0` for an invalid controller,
+///         unknown state, or unavailable layer player or clip.
+int8_t rt_anim_controller3d_crossfade_at(void *obj,
+                                         rt_string state_name,
+                                         double blend_seconds,
+                                         double start_seconds) {
+    rt_anim_controller3d *controller = anim_controller3d_checked(obj);
+    int32_t state_index;
+    if (!controller)
+        return 0;
+    controller_repair_state_table(controller);
+    state_index = controller_find_state(controller, state_name);
+    if (state_index < 0)
+        return 0;
+    if (!controller_set_layer_state(controller, 0, state_index, blend_seconds))
+        return 0;
+    if (!isfinite(start_seconds) || !controller->layers[0].player)
+        return 1;
+    if (start_seconds > 0.0) {
+        rt_anim_player3d_set_time(controller->layers[0].player, start_seconds);
+        controller_compute_final_palette(controller);
+    } else if (start_seconds < 0.0) {
+        /* Negative start: hold the entry pose for |start| of update time, then run. */
+        controller->layers[0].entry_delay = (float)(-start_seconds);
+    }
+    return 1;
+}
+
 /// @brief Stop playback on every layer (base + overlays). Does not clear the current_state
 /// indices — calling `_play` again resumes from the same animation. Resets transition timers.
 /// @param[in,out] obj AnimController3D to stop; invalid handles are ignored.
@@ -356,10 +403,14 @@ static int controller_apply_animation_lod(rt_anim_controller3d *controller, doub
 ///                                    playback speed.
 /// @param[out] out_base_duration Active base clip duration, or zero.
 /// @param[out] out_base_looping Whether the active base state loops.
-static void controller_advance_layers(rt_anim_controller3d *controller, double delta_time,
-                                      int32_t state_count, int32_t *out_base_state,
-                                      double *out_base_prev_time, double *out_base_elapsed_time,
-                                      double *out_base_duration, int8_t *out_base_looping) {
+static void controller_advance_layers(rt_anim_controller3d *controller,
+                                      double delta_time,
+                                      int32_t state_count,
+                                      int32_t *out_base_state,
+                                      double *out_base_prev_time,
+                                      double *out_base_elapsed_time,
+                                      double *out_base_duration,
+                                      int8_t *out_base_looping) {
     int32_t base_state = -1;
     double base_prev_time = 0.0;
     double base_elapsed_time = 0.0;
@@ -373,9 +424,20 @@ static void controller_advance_layers(rt_anim_controller3d *controller, double d
         int32_t state_index = layer->current_state;
         if (!layer->player || state_index < 0 || state_index >= state_count)
             continue;
+        double layer_delta = delta_time;
+        /* ADR 0300: a negative CrossfadeAt start holds the entry pose until the
+         * delay is consumed, so the clip time equals (now - mark) from then on. */
+        if (layer->entry_delay > 0.0f && layer_delta > 0.0) {
+            double held =
+                layer_delta < (double)layer->entry_delay ? layer_delta : (double)layer->entry_delay;
+            layer->entry_delay = (float)((double)layer->entry_delay - held);
+            if (layer->entry_delay < 1e-6f)
+                layer->entry_delay = 0.0f;
+            layer_delta -= held;
+        }
         prev_time = rt_anim_player3d_get_time(layer->player);
-        elapsed_time = delta_time * rt_anim_player3d_get_speed(layer->player);
-        rt_anim_player3d_update(layer->player, delta_time);
+        elapsed_time = layer_delta * rt_anim_player3d_get_speed(layer->player);
+        rt_anim_player3d_update(layer->player, layer_delta);
         curr_time = rt_anim_player3d_get_time(layer->player);
         if (layer_index == 0) {
             base_state = state_index;
@@ -457,8 +519,14 @@ void rt_anim_controller3d_update(void *obj, double delta_time) {
         controller, controller->root_motion_bone, &before_x, &before_y, &before_z);
     controller_get_final_rotation(controller, controller->root_motion_bone, before_rot);
 
-    controller_advance_layers(controller, delta_time, state_count, &base_state, &base_prev_time,
-                              &base_elapsed_time, &base_duration, &base_looping);
+    controller_advance_layers(controller,
+                              delta_time,
+                              state_count,
+                              &base_state,
+                              &base_prev_time,
+                              &base_elapsed_time,
+                              &base_duration,
+                              &base_looping);
 
     if (controller->blend_tree)
         rt_blend_tree3d_update(controller->blend_tree, delta_time);
@@ -720,8 +788,13 @@ void rt_anim_controller3d_set_animation_lod(void *obj, double distance, double r
     if (rate_hz > RT_ANIM_CONTROLLER3D_LOD_RATE_MAX)
         rate_hz = RT_ANIM_CONTROLLER3D_LOD_RATE_MAX;
     controller->animation_lod_distance = distance;
+    /* Re-programming the same rate (a camera cut re-gating an already-throttled actor)
+     * keeps the pending batch: zeroing it dropped up to one interval of pose time and
+     * read as a one-frame freeze on every actor the cut touched. Only a rate change
+     * restarts the accumulator. */
+    if (controller->animation_lod_rate_hz != rate_hz)
+        controller->animation_lod_accum = 0.0;
     controller->animation_lod_rate_hz = rate_hz;
-    controller->animation_lod_accum = 0.0;
 }
 
 /// @brief Configure bone-count animation LOD: bones at/after @p max_bones are frozen to their
@@ -784,8 +857,7 @@ static void controller_clear_ik_solvers(rt_anim_controller3d *controller) {
     if (!controller)
         return;
     for (int32_t i = 0; i < RT_ANIM_CONTROLLER3D_MAX_IK_SOLVERS; i++)
-        controller_release_class_ref(
-            &controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
+        controller_release_class_ref(&controller->ik_solvers[i], RT_G3D_IKSOLVER3D_CLASS_ID);
     controller->ik_solver_count = 0;
 }
 
@@ -1047,8 +1119,7 @@ void rt_anim_controller3d_set_layer_mask(void *obj, int64_t layer_index, int64_t
     bone_count = controller_safe_bone_count(controller->skeleton);
     if (layer_index == 0) {
         anim_controller3d_layer_t *layer = &controller->layers[0];
-        if (layer->mask_root_bone != -1 ||
-            layer->mask_bone_count_seen != bone_count)
+        if (layer->mask_root_bone != -1 || layer->mask_bone_count_seen != bone_count)
             controller_set_all_mask_bits(layer, bone_count);
         layer->mask_root_bone = -1;
         return;
@@ -1315,9 +1386,7 @@ static void controller_mat4f_affine_inverse(const float *m, float *out) {
 /// @param[in] mask Borrowed array of one selection byte per skeleton bone.
 /// @param[in] globals Borrowed array of `bone_count * 16` replacement
 ///                    model-space matrix floats.
-void rt_anim_controller3d_apply_pose_override(void *obj,
-                                              const int8_t *mask,
-                                              const float *globals) {
+void rt_anim_controller3d_apply_pose_override(void *obj, const int8_t *mask, const float *globals) {
     rt_anim_controller3d *controller = anim_controller3d_checked(obj);
     rt_skeleton3d *skeleton = controller_skeleton_ref(controller);
     if (!controller || !skeleton || !mask || !globals || !controller->final_globals ||
@@ -1336,9 +1405,7 @@ void rt_anim_controller3d_apply_pose_override(void *obj,
     memcpy(old_globals, controller->final_globals, (size_t)bone_count * 16 * sizeof(float));
     for (int32_t bone = 0; bone < bone_count; ++bone) {
         if (mask[bone]) {
-            memcpy(&controller->final_globals[bone * 16],
-                   &globals[bone * 16],
-                   16 * sizeof(float));
+            memcpy(&controller->final_globals[bone * 16], &globals[bone * 16], 16 * sizeof(float));
             changed[bone] = 1;
         }
     }

@@ -13,10 +13,10 @@
 
 #include "usage.hpp"
 
-/// @brief Print vbasic-specific help through the legacy global usage symbol.
+/// @brief Print zbasic-specific help through the legacy global usage symbol.
 /// @details The cmdFrontBasic implementation calls the global usage() function
-///          when argument parsing fails. For vbasic, we redirect to our own
-///          vbasic-specific help text.
+///          when argument parsing fails. For zbasic, we redirect to our own
+///          zbasic-specific help text.
 void usage() {
-    vbasic::printUsage();
+    zbasic::printUsage();
 }

@@ -2002,8 +2002,11 @@ static void metal_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
         if (!ctx.rttActive && cam->load_existing_color && ctx.postfxCompositedToDrawable)
             ctx.currentTargetKind = VGFX3D_METAL_TARGET_SWAPCHAIN;
         is_overlay_pass = ctx.currentTargetKind == VGFX3D_METAL_TARGET_OVERLAY ? 1 : 0;
-        if (!is_overlay_pass)
-            ctx.textureUploadBytes = 0;
+        /* Every pass — the overlay included — starts with a fresh upload budget. Sharing the
+         * scene pass's remainder let a heavy cut pause HUD image quads (drawn as nothing
+         * since they became texture-required) for the frame; OpenGL/D3D11 reset the same
+         * way. */
+        ctx.textureUploadBytes = 0;
         history = ctx.frameHistory;
         load_existing_color = vgfx3d_metal_should_load_existing_color(
             ctx.currentTargetKind, cam->load_existing_color, history.overlay_used_this_frame);
@@ -2144,5 +2147,6 @@ static int64_t metal_get_native_texture_caps(void *ctx_ptr) {
 /// @return RT_CANVAS3D_BACKEND_CAP_* feature bits supported by Metal.
 static int64_t metal_get_feature_caps(void *ctx_ptr) {
     (void)ctx_ptr;
-    return RT_CANVAS3D_BACKEND_CAP_HDR_SCENE | RT_CANVAS3D_BACKEND_CAP_TAA;
+    return RT_CANVAS3D_BACKEND_CAP_HDR_SCENE | RT_CANVAS3D_BACKEND_CAP_TAA |
+           RT_CANVAS3D_BACKEND_CAP_RENDER_TARGET_SAMPLING;
 }

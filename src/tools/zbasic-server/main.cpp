@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tools/vbasic-server/main.cpp
+// File: tools/zbasic-server/main.cpp
 // Purpose: Entry point for the Zanna BASIC language server (MCP + LSP).
 // Key invariants:
 //   - --mcp: newline-delimited JSON-RPC (MCP protocol)
@@ -13,7 +13,7 @@
 //   - Default: auto-detect from first byte of input
 // Ownership/Lifetime:
 //   - Process lifetime; single-threaded event loop
-// Links: tools/lsp-common/ServerMain.hpp, tools/vbasic-server/BasicCompilerBridge.hpp
+// Links: tools/lsp-common/ServerMain.hpp, tools/zbasic-server/BasicCompilerBridge.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -25,16 +25,16 @@
 
 #include "common/Utf8CommandLine.hpp"
 #include "tools/lsp-common/ServerMain.hpp"
-#include "tools/vbasic-server/BasicCompilerBridge.hpp"
+#include "tools/zbasic-server/BasicCompilerBridge.hpp"
 #include "zanna/version.hpp"
 
 using namespace zanna::server;
 
 /// @brief Zanna BASIC-specific labels and protocol metadata.
 static const ServerConfig kBasicConfig{
-    "vbasic-server",   // serverName
+    "zbasic-server",   // serverName
     ZANNA_VERSION_STR, // version
-    "vbasic",          // sourceName
+    "zbasic",          // sourceName
     "basic",           // toolPrefix
     ".bas",            // defaultExt
     "Zanna BASIC",     // langLabel
@@ -50,5 +50,5 @@ int main(int argc, char **argv) {
     zanna::tools::Utf8CommandLine commandLine(argc, argv);
     if (!commandLine.applyOrReport(argc, argv))
         return 1;
-    return runLanguageServerMain<BasicCompilerBridge>(argc, argv, "vbasic-server", kBasicConfig);
+    return runLanguageServerMain<BasicCompilerBridge>(argc, argv, "zbasic-server", kBasicConfig);
 }

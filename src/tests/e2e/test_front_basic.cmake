@@ -5,7 +5,7 @@
 ## Ownership/Lifetime: Invoked by CTest.
 ## Links: docs/examples.md
 
-execute_process(COMMAND ${ILC} front basic -emit-il ${SRC_DIR}/examples/vbasic/ex1_hello_cond.bas
+execute_process(COMMAND ${ILC} front basic -emit-il ${SRC_DIR}/examples/zbasic/ex1_hello_cond.bas
         OUTPUT_FILE basic.il RESULT_VARIABLE r1)
 if (NOT r1 EQUAL 0)
     message(FATAL_ERROR "emit-il failed")
@@ -16,7 +16,7 @@ if (NOT _il1)
     message(FATAL_ERROR "missing HELLO in IL output")
 endif ()
 
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex1_hello_cond.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex1_hello_cond.bas
         OUTPUT_FILE run.txt RESULT_VARIABLE r2)
 if (NOT r2 EQUAL 0)
     message(FATAL_ERROR "execution failed")
@@ -36,7 +36,7 @@ if (NOT n EQUAL 2)
     message(FATAL_ERROR "expected two integers in output")
 endif ()
 
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex2_sum_1_to_10.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex2_sum_1_to_10.bas
         OUTPUT_FILE run2.txt RESULT_VARIABLE r3)
 if (NOT r3 EQUAL 0)
     message(FATAL_ERROR "execution ex2 failed")
@@ -56,7 +56,7 @@ if (NOT _s3)
 endif ()
 
 # test PRINT with commas
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_print_commas.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_print_commas.bas
         OUTPUT_FILE run_commas.txt RESULT_VARIABLE rc)
 if (NOT rc EQUAL 0)
     message(FATAL_ERROR "execution print_commas failed")
@@ -67,7 +67,7 @@ if (NOT RC STREQUAL "A             1             B\n")
 endif ()
 
 # test PRINT with semicolons
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_print_semicolons.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_print_semicolons.bas
         OUTPUT_FILE run_semicolons.txt RESULT_VARIABLE rs)
 if (NOT rs EQUAL 0)
     message(FATAL_ERROR "execution print_semicolons failed")
@@ -78,7 +78,7 @@ if (NOT RS STREQUAL "A1B\n")
 endif ()
 
 # test PRINT newline control with trailing ';'
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_print_newline_control.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_print_newline_control.bas
         OUTPUT_FILE run_nl.txt RESULT_VARIABLE rn)
 if (NOT rn EQUAL 0)
     message(FATAL_ERROR "execution print_newline_control failed")
@@ -89,7 +89,7 @@ if (NOT RN STREQUAL "AB\n")
 endif ()
 
 # test INPUT string echo
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex5_input_echo.bas --stdin-from ${SRC_DIR}/src/tests/data/input1.txt
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex5_input_echo.bas --stdin-from ${SRC_DIR}/src/tests/data/input1.txt
         OUTPUT_FILE run3.txt RESULT_VARIABLE r4)
 if (NOT r4 EQUAL 0)
     message(FATAL_ERROR "execution ex5 failed")
@@ -117,7 +117,7 @@ if (NOT _n1)
 endif ()
 
 # test INPUT prompt literal
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_input_prompt_min.bas --stdin-from ${SRC_DIR}/src/tests/data/n_input.txt
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_input_prompt_min.bas --stdin-from ${SRC_DIR}/src/tests/data/n_input.txt
         OUTPUT_FILE run_prompt.txt RESULT_VARIABLE rp)
 if (NOT rp EQUAL 0)
     message(FATAL_ERROR "execution input_prompt failed")
@@ -130,7 +130,7 @@ endif ()
 # test array DIM and element access
 set(tmp_arr_in "${CMAKE_BINARY_DIR}/array_n.txt")
 file(WRITE ${tmp_arr_in} "5\n")
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex6_array_sum.bas --stdin-from ${tmp_arr_in}
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex6_array_sum.bas --stdin-from ${tmp_arr_in}
         OUTPUT_FILE run5.txt RESULT_VARIABLE r6)
 if (NOT r6 EQUAL 0)
     message(FATAL_ERROR "execution ex6 failed")
@@ -142,7 +142,7 @@ if (NOT _n2)
 endif ()
 
 # test multi-statement lines with ':'
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_colon.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_colon.bas
         OUTPUT_FILE run_colon.txt RESULT_VARIABLE rcol)
 if (NOT rcol EQUAL 0)
     message(FATAL_ERROR "execution ex_colon failed")
@@ -153,7 +153,7 @@ if (NOT RCOL STREQUAL "1\n2\n")
 endif ()
 
 # test unary NOT
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_not.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_not.bas
         OUTPUT_FILE run_not.txt RESULT_VARIABLE rn)
 if (NOT rn EQUAL 0)
     message(FATAL_ERROR "execution ex_not failed")
@@ -164,7 +164,7 @@ if (NOT Rn STREQUAL "1\n")
 endif ()
 
 # test ELSEIF chain
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_elseif.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_elseif.bas
         OUTPUT_FILE run_elseif.txt RESULT_VARIABLE relief)
 if (NOT relief EQUAL 0)
     message(FATAL_ERROR "execution ex_elseif failed")
@@ -175,7 +175,7 @@ if (NOT RELIF STREQUAL "TWO\n")
 endif ()
 
 # test string comparisons
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_str_cmp.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_str_cmp.bas
         OUTPUT_FILE run_strcmp.txt RESULT_VARIABLE rsc)
 if (NOT rsc EQUAL 0)
     message(FATAL_ERROR "execution ex_str_cmp failed")
@@ -220,7 +220,7 @@ if (NOT RSI STREQUAL "HE\nHE\n0\n0\nHELLO\n0\n0\nHELLO\nHELLO\n")
 endif ()
 
 # test conversions STR$, VAL, INT
-execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/vbasic/ex_conversions.bas
+execute_process(COMMAND ${ILC} front basic -run ${SRC_DIR}/examples/zbasic/ex_conversions.bas
         OUTPUT_FILE run_conv.txt RESULT_VARIABLE rconv)
 if (NOT rconv EQUAL 0)
     message(FATAL_ERROR "execution conversions failed")

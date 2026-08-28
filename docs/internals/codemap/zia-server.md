@@ -17,7 +17,7 @@ Source files for `zia-server`, the dual-protocol language server for Zia (`src/t
 ## Source Files (`src/tools/zia-server/`)
 
 The foundation layer (JSON, transports, protocol handlers, document store) was extracted to
-`src/tools/lsp-common/` for reuse by `vbasic-server`. See [codemap/tools.md](tools.md) for the
+`src/tools/lsp-common/` for reuse by `zbasic-server`. See [codemap/tools.md](tools.md) for the
 shared files.
 
 ### Zia-Specific Files

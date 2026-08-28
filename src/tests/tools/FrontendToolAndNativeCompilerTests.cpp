@@ -61,7 +61,7 @@ void testFrontendDoubleDashSeparatesProgramArgs() {
         noopFrontend,
     };
 
-    char exe[] = "vbasic";
+    char exe[] = "zbasic";
     char src[] = "demo.bas";
     char sep[] = "--";
     char flag[] = "--trace";

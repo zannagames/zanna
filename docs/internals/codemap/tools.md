@@ -14,7 +14,7 @@ Command-line tools (`src/tools/`) for the Zanna toolchain.
 
 ## User-Facing Tools
 
-### vbasic (`vbasic/`)
+### zbasic (`zbasic/`)
 
 | File             | Purpose                                  |
 |------------------|------------------------------------------|
@@ -83,7 +83,7 @@ Shared infrastructure for both Zia and BASIC language servers.
 | `TextUtils.hpp` / `TextUtils.cpp` | Text manipulation helpers |
 | `ServerTypes.hpp` | Shared types (CompletionItem, Diagnostic, etc.) |
 
-### vbasic-server (`vbasic-server/`)
+### zbasic-server (`zbasic-server/`)
 
 BASIC language server (reuses lsp-common infrastructure).
 
