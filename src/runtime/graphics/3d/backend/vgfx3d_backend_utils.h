@@ -334,6 +334,23 @@ int vgfx3d_estimate_pixels_rgba_upload_bytes(const void *pixels_ptr, uint64_t *o
 /// @return Number of consecutive rows to upload next, or zero for an invalid or completed cursor.
 int32_t vgfx3d_upload_rows_for_budget(
     int32_t width, int32_t height, int32_t next_row, uint64_t budget, uint64_t used);
+/// @brief Upper bound in bytes for RGBA8 2D textures that bypass a finite per-frame upload budget.
+/// @details Text rasters and HUD sprites are tiny and latency-critical: deferring one a frame
+///          leaves its quad untextured, which reads as a white block. Anything at or under this
+///          size uploads in full the frame it is first seen; the bytes still count against the
+///          budget so larger streams observe the consumption.
+#define VGFX3D_TEXTURE_UPLOAD_BUDGET_EXEMPT_BYTES (256u * 1024u)
+/// @brief Whether an RGBA8 2D texture is small enough to bypass a finite upload budget.
+/// @param width Texture width in pixels.
+/// @param height Texture height in pixels.
+/// @param budget Per-frame byte budget; unlimited and zero budgets never exempt.
+/// @return 1 when the whole texture uploads regardless of bytes already consumed, otherwise 0.
+int vgfx3d_texture_upload_exempt_from_budget(int32_t width, int32_t height, uint64_t budget);
+/// @brief Row budget for a 2D Pixels upload honouring the small-texture exemption.
+/// @details Same contract as vgfx3d_upload_rows_for_budget except that a texture admitted by
+///          vgfx3d_texture_upload_exempt_from_budget receives every remaining row.
+int32_t vgfx3d_upload_rows_for_budget_2d(
+    int32_t width, int32_t height, int32_t next_row, uint64_t budget, uint64_t used);
 /// @brief Compute remaining RGBA8 row bytes for one in-progress 2D texture upload.
 /// @param width Positive texture width in pixels.
 /// @param height Positive texture height in pixels.

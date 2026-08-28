@@ -847,6 +847,9 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
     canvas3d_fill_material_cmd((const rt_material3d *)mat, &cmd);
     cmd.unlit = 1;
     cmd.disable_depth_test = 1;
+    /* A screen quad exists only to show its Pixels: while the upload is still budget-paused the
+     * backend must draw nothing rather than the material's white base colour. */
+    cmd.texture_required = 1;
     cmd.alpha = 1.0f;
 
     if (c->final_overlay_recording) {

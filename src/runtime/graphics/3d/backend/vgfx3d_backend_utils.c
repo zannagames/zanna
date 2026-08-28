@@ -1390,6 +1390,42 @@ int32_t vgfx3d_upload_rows_for_budget(
     return (int32_t)budget_rows;
 }
 
+/// @brief Whether an RGBA8 2D texture is small enough to bypass a finite upload budget.
+/// @details The exemption exists for CPU text rasters and HUD sprites, whose quads carry no
+///          meaning without their texture; it never applies to unlimited (nothing to bypass) or
+///          zero ("pause all uploads") budgets.
+/// @param width Texture width in pixels.
+/// @param height Texture height in pixels.
+/// @param budget Per-frame byte budget, or @c UINT64_MAX for unlimited.
+/// @return 1 when the texture's full RGBA8 payload is at or under the exemption ceiling.
+int vgfx3d_texture_upload_exempt_from_budget(int32_t width, int32_t height, uint64_t budget) {
+    uint64_t bytes;
+
+    if (width <= 0 || height <= 0)
+        return 0;
+    if (budget == UINT64_MAX || budget == 0)
+        return 0;
+    bytes = (uint64_t)(uint32_t)width * (uint64_t)(uint32_t)height * 4u;
+    return bytes <= (uint64_t)VGFX3D_TEXTURE_UPLOAD_BUDGET_EXEMPT_BYTES ? 1 : 0;
+}
+
+/// @brief Row budget for a 2D Pixels upload honouring the small-texture exemption.
+/// @param width Positive texture width in pixels.
+/// @param height Positive texture height in pixels.
+/// @param next_row First source row not yet uploaded.
+/// @param budget Per-frame byte budget, or @c UINT64_MAX for unlimited.
+/// @param used Bytes already consumed during the frame.
+/// @return Every remaining row for an exempt texture, otherwise the budgeted row count.
+int32_t vgfx3d_upload_rows_for_budget_2d(
+    int32_t width, int32_t height, int32_t next_row, uint64_t budget, uint64_t used) {
+    if (vgfx3d_texture_upload_exempt_from_budget(width, height, budget)) {
+        if (next_row < 0 || next_row >= height)
+            return 0;
+        return height - next_row;
+    }
+    return vgfx3d_upload_rows_for_budget(width, height, next_row, budget, used);
+}
+
 /// @brief Bytes still to upload for an RGBA texture from @p next_row to the last row.
 /// @details Returns 0 when no upload is in progress; saturates at UINT64_MAX. Lets the scheduler
 ///          weigh this texture's remaining work against the frame budget.

@@ -600,7 +600,9 @@ static void upload_main_uniforms(gl_context_t *ctx,
 /// slots are populated.
 /// @param ctx Borrowed OpenGL context owning texture caches and sampler objects.
 /// @param cmd Borrowed draw command containing every material texture source and sampler state.
-static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
+/// @return 1 when the command asked for a base-colour texture that is not resident yet (still
+///         budget-paused or failed), so a `texture_required` draw must be skipped; otherwise 0.
+static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd) {
     GLuint diffuse_tex = gl_get_material_texture(
         ctx,
         cmd->texture_asset,
@@ -735,6 +737,7 @@ static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *c
                      cmd->splat_layer_scales[3]);
     }
     gl.ActiveTexture(GL_TEXTURE0);
+    return ((cmd->texture || cmd->texture_asset) && diffuse_tex == 0) ? 1 : 0;
 }
 
 /// @brief Set up animation uniforms for the depth-only shadow program.

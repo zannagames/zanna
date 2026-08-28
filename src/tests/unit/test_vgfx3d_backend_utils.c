@@ -208,6 +208,32 @@ static void test_upload_rows_for_budget(void) {
                 "Texture upload budget rejects completed row ranges");
 }
 
+static void test_upload_rows_for_budget_2d_small_exempt(void) {
+    /* 256x256 RGBA8 = 256 KiB sits exactly on the exemption ceiling; 257 rows is over it. */
+    EXPECT_TRUE(vgfx3d_texture_upload_exempt_from_budget(256, 256, 4096) == 1,
+                "Textures at the exemption ceiling bypass a finite budget");
+    EXPECT_TRUE(vgfx3d_texture_upload_exempt_from_budget(256, 257, 4096) == 0,
+                "Textures over the exemption ceiling stay budgeted");
+    EXPECT_TRUE(vgfx3d_texture_upload_exempt_from_budget(8, 8, UINT64_MAX) == 0,
+                "Unlimited budgets have nothing to bypass");
+    EXPECT_TRUE(vgfx3d_texture_upload_exempt_from_budget(8, 8, 0) == 0,
+                "A zero budget pauses every upload, small ones included");
+    EXPECT_TRUE(vgfx3d_texture_upload_exempt_from_budget(0, 8, 4096) == 0 &&
+                    vgfx3d_texture_upload_exempt_from_budget(8, -1, 4096) == 0,
+                "Invalid extents are never exempt");
+    /* A budget already spent (used >= budget) still admits every row of a small texture ... */
+    EXPECT_TRUE(vgfx3d_upload_rows_for_budget_2d(64, 40, 5, 4096, 4096) == 35,
+                "Exempt textures upload every remaining row past a spent budget");
+    EXPECT_TRUE(vgfx3d_upload_rows_for_budget_2d(64, 40, 40, 4096, 0) == 0,
+                "Exempt textures still reject completed row ranges");
+    /* ... while a large one keeps the budgeted contract verbatim. */
+    EXPECT_TRUE(vgfx3d_upload_rows_for_budget_2d(1024, 1024, 0, 4096, 4096) == 0,
+                "Large textures pause when the budget is spent");
+    EXPECT_TRUE(vgfx3d_upload_rows_for_budget_2d(1024, 1024, 2, 16384, 4096) ==
+                    vgfx3d_upload_rows_for_budget(1024, 1024, 2, 16384, 4096),
+                "Non-exempt cases delegate to the budgeted helper");
+}
+
 static void test_pending_upload_bytes_return_to_baseline(void) {
     EXPECT_TRUE(vgfx3d_pending_rgba_upload_bytes(8, 4, 0, 1) == 128,
                 "2D texture pending bytes include every queued row");
@@ -1935,6 +1961,7 @@ int main(void) {
     test_estimate_pixels_rgba_upload_bytes();
     test_unpack_pixels_rgba_rows_and_extent();
     test_upload_rows_for_budget();
+    test_upload_rows_for_budget_2d_small_exempt();
     test_pending_upload_bytes_return_to_baseline();
     test_compressed_block_upload_budget_and_pending_bytes();
     test_native_texture_mip_validation();

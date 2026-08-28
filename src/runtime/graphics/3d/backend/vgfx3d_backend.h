@@ -95,6 +95,10 @@ typedef struct vgfx3d_draw_cmd {
     int8_t unlit;                /* skip lighting if true */
     /// Nonzero for overlays that bypass depth testing and writing.
     int8_t disable_depth_test;   /* screen-space overlays bypass depth test/write */
+    /// Nonzero when the draw is meaningless without its base-colour texture (screen text and
+    /// image quads): backends skip the draw while that texture is still uploading instead of
+    /// painting the untextured material colour as a solid block.
+    int8_t texture_required;     /* skip the draw while the base-colour texture is not resident */
     /// Borrowed diffuse Pixels fallback for texture slot zero.
     const void *texture;         /* Pixels fallback (diffuse, slot 0) or NULL */
     /// Borrowed normal-map Pixels fallback for texture slot one.

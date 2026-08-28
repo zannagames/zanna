@@ -2370,6 +2370,35 @@ static void test_colorize_masked_linear_reference_and_dark_tail() {
     printf("test_colorize_masked_linear_reference_and_dark_tail: PASSED\n");
 }
 
+static void test_colorize_masked_linear_touches_generation_and_floors_shade() {
+    /* The linear recolour is a mutation like any other: the GPU texture cache keys on the
+     * buffer generation, so an in-place re-tint of an uploaded Pixels must advance it (the
+     * byte-space twin always did). And the shade ratio is clamped symmetrically: a texel at
+     * 1/8 of the reference luma lands at 1/max_shade of the target, not 1/8 of it. */
+    void *p = rt_pixels_new(2, 1);
+    void *m = rt_pixels_new(2, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x808080FF); /* at the reference */
+    rt_pixels_set_rgba(p, 1, 0, 0x101010FF); /* 1/8 of it: below 1/max_shade */
+    rt_pixels_set_rgba(m, 0, 0, 0xFFFFFFFF);
+    rt_pixels_set_rgba(m, 1, 0, 0xFFFFFFFF);
+    uint64_t before = rt_pixels_generation(p);
+
+    rt_pixels_colorize_masked_linear(p, m, 0x808080, 128, 2.0, 1.0);
+
+    assert(rt_pixels_generation(p) != before);
+    uint32_t ref = (uint32_t)rt_pixels_get_rgba(p, 0, 0);
+    uint32_t dark = (uint32_t)rt_pixels_get_rgba(p, 1, 0);
+    /* Reference texel lands on the target (+-1 through the EOTF round trip). */
+    int64_t refG = (ref >> 16) & 0xFF;
+    assert(refG >= 0x7F && refG <= 0x81);
+    /* Floored texel: target_linear * 0.5 re-encoded — sRGB 128 is linear 0.2158, half is
+     * 0.1079, which encodes to ~94. Unfloored (1/8 -> 0.02698) would encode to ~46. */
+    int64_t darkG = (dark >> 16) & 0xFF;
+    assert(darkG >= 90 && darkG <= 98);
+    assert((dark & 0xFFu) == 0xFFu);
+    printf("test_colorize_masked_linear_touches_generation_and_floors_shade: PASSED\n");
+}
+
 static void test_colorize_masked_linear_mask_and_strength() {
     void *p = rt_pixels_new(2, 1);
     void *m = rt_pixels_new(2, 1);
@@ -2646,6 +2675,7 @@ int main() {
     test_colorize_masked_shade();
     test_colorize_masked_linear_reference_and_dark_tail();
     test_colorize_masked_linear_mask_and_strength();
+    test_colorize_masked_linear_touches_generation_and_floors_shade();
     test_colorize_masked_strength_and_alpha();
     test_colorize_masked_mask_scale();
     test_stamp_nonzero_copies_sparse_layer();

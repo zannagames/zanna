@@ -1844,7 +1844,11 @@ static double rt_px_linear_to_srgb(double c) {
 /// multiplies the ENCODED target instead, which the shader's albedo
 /// linearization then compresses roughly quadratically — every texel darker
 /// than the reference lands far darker in light than its authored shading
-/// says, the "recolored uniforms render too dark" defect.
+/// says, the "recolored uniforms render too dark" defect. The shade ratio is
+/// clamped symmetrically to [1/max_shade, max_shade]: the bright side was
+/// always capped (and then clamped again at 1.0 by the channel ceiling) while
+/// the dark side ran unbounded, so the recoloured region's mean landed below
+/// the target it was asked for.
 void rt_pixels_colorize_masked_linear(
     void *pixels, void *mask, int64_t rgb, int64_t ref_lum, double max_shade, double strength) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.ColorizeMaskedLinear: null pixels");
@@ -1900,6 +1904,8 @@ void rt_pixels_colorize_masked_linear(
             shade = (double)lum / (double)ref_lum;
             if (shade > max_shade)
                 shade = max_shade;
+            else if (shade < 1.0 / max_shade)
+                shade = 1.0 / max_shade; /* symmetric: the region's mean lands ON the target */
             cr = tr_l * shade;
             cg = tg_l * shade;
             cb = tb_l * shade;
@@ -1909,12 +1915,9 @@ void rt_pixels_colorize_masked_linear(
                 cg = 1.0;
             if (cb > 1.0)
                 cb = 1.0;
-            cr = rt_px_srgb_to_linear((double)pr / 255.0) * (1.0 - strength) +
-                 cr * strength;
-            cg = rt_px_srgb_to_linear((double)pg / 255.0) * (1.0 - strength) +
-                 cg * strength;
-            cb = rt_px_srgb_to_linear((double)pb / 255.0) * (1.0 - strength) +
-                 cb * strength;
+            cr = rt_px_srgb_to_linear((double)pr / 255.0) * (1.0 - strength) + cr * strength;
+            cg = rt_px_srgb_to_linear((double)pg / 255.0) * (1.0 - strength) + cg * strength;
+            cb = rt_px_srgb_to_linear((double)pb / 255.0) * (1.0 - strength) + cb * strength;
             nr = (int64_t)(rt_px_linear_to_srgb(cr) * 255.0 + 0.5);
             ng = (int64_t)(rt_px_linear_to_srgb(cg) * 255.0 + 0.5);
             nb = (int64_t)(rt_px_linear_to_srgb(cb) * 255.0 + 0.5);
@@ -1928,6 +1931,7 @@ void rt_pixels_colorize_masked_linear(
                 ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
         }
     }
+    pixels_touch(p);
 }
 
 /// @brief Luminance-band tint restricted to a coverage mask and to near-neutral

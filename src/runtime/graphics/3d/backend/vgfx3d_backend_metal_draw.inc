@@ -364,6 +364,8 @@ static void metal_submit_draw(void *ctx_ptr,
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:0];
+            else if (cmd->texture_required)
+                return; /* budget-paused text/image quad: nothing beats a white block */
         }
         if (cmd->normal_map || cmd->normal_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(
@@ -964,6 +966,8 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
                 cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
                 cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
+            if (!diffuse_tex && cmd->texture_required && (cmd->texture || cmd->texture_asset))
+                return; /* skipped in the main pass too; casting its shadow would be wrong */
             memset(&mat, 0, sizeof(mat));
             memcpy(mat.dc, cmd->diffuse_color, sizeof(float) * 4);
             mat.scalars[0] = cmd->alpha;
@@ -1436,6 +1440,8 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                 cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
             if (tex)
                 [ctx.encoder setFragmentTexture:tex atIndex:0];
+            else if (cmd->texture_required)
+                return; /* budget-paused text/image quad: nothing beats a white block */
         }
         if (cmd->normal_map || cmd->normal_map_asset) {
             id<MTLTexture> tex = metal_get_material_texture(

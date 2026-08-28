@@ -948,13 +948,15 @@ static gl_upload_status_t gl_continue_texture_upload(gl_context_t *ctx,
     if (entry->upload_next_row < 0 || entry->upload_next_row >= entry->height)
         return GL_UPLOAD_FAILED;
     if (ctx->texture_upload_budget_bytes != UINT64_MAX &&
-        ctx->texture_upload_bytes >= ctx->texture_upload_budget_bytes)
+        ctx->texture_upload_bytes >= ctx->texture_upload_budget_bytes &&
+        !vgfx3d_texture_upload_exempt_from_budget(
+            entry->width, entry->height, ctx->texture_upload_budget_bytes))
         return GL_UPLOAD_PENDING;
-    rows = vgfx3d_upload_rows_for_budget(entry->width,
-                                         entry->height,
-                                         entry->upload_next_row,
-                                         ctx->texture_upload_budget_bytes,
-                                         ctx->texture_upload_bytes);
+    rows = vgfx3d_upload_rows_for_budget_2d(entry->width,
+                                            entry->height,
+                                            entry->upload_next_row,
+                                            ctx->texture_upload_budget_bytes,
+                                            ctx->texture_upload_bytes);
     if (rows <= 0)
         return GL_UPLOAD_FAILED;
     if ((size_t)entry->width > SIZE_MAX / 4u ||

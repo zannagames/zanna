@@ -483,7 +483,11 @@ static void gl_submit_draw(void *ctx_ptr,
         gl_begin_material_program(ctx, cmd, saved_uniform_locations, &saved_program);
     gl.UseProgram(ctx->program);
     /* Resolve budgeted textures before IBL uniforms inspect native residency. */
-    bind_material_textures(ctx, cmd);
+    if (bind_material_textures(ctx, cmd) && cmd->texture_required) {
+        /* Budget-paused text/image quad: draw nothing rather than a white block. */
+        gl_end_material_program(ctx, specialized_program, saved_uniform_locations, saved_program);
+        return;
+    }
     upload_main_uniforms(ctx, cmd, lights, light_count, ambient, 0);
     configure_mesh_attributes(ctx, mesh_vbo, mesh_ibo, mesh_compact);
     if (gl_debug_enabled()) {
@@ -1529,6 +1533,8 @@ static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
             cmd->texture_asset_cache_key[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
             cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR],
             cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR]);
+        if (diffuse_tex == 0 && cmd->texture_required && (cmd->texture || cmd->texture_asset))
+            return; /* skipped in the main pass too; casting its shadow would be wrong */
         gl.Uniform1i(ctx->shadow_uHasTexture, diffuse_tex ? 1 : 0);
         gl.Uniform1i(ctx->shadow_uAlphaMode, vgfx3d_sanitize_alpha_mode(cmd->alpha_mode));
         gl.Uniform1f(ctx->shadow_uAlphaCutoff, cmd->alpha_cutoff);
@@ -1712,7 +1718,10 @@ static void gl_submit_draw_instanced(void *ctx_ptr,
         gl_begin_material_program(ctx, cmd, saved_uniform_locations, &saved_program);
     gl.UseProgram(ctx->program);
     /* Resolve budgeted textures before IBL uniforms inspect native residency. */
-    bind_material_textures(ctx, cmd);
+    if (bind_material_textures(ctx, cmd) && cmd->texture_required) {
+        gl_end_material_program(ctx, specialized_program, saved_uniform_locations, saved_program);
+        return;
+    }
     upload_main_uniforms(ctx, cmd, lights, light_count, ambient, particle_mode ? 0 : 1);
     configure_mesh_attributes(ctx, mesh_vbo, mesh_ibo, mesh_compact);
     if (!(particle_mode

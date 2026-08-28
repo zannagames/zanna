@@ -66,8 +66,11 @@ extern int8_t rt_textureasset3d_cpu_supports_ktx2(void);
 
 /* DrawText2DAA produces CPU-rasterized Pixels. Bound both entry count and retained bytes so
  * dynamic labels (timers, coordinates, chat) cannot grow the cache without limit. Typical HUD
- * text occupies only a few KiB, while unusually large one-off strings keep the frame-local path. */
-#define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRIES 128
+ * text occupies only a few KiB, while unusually large one-off strings keep the frame-local path.
+ * The entry ceiling must hold a whole broadcast overlay (two lineup cards, scorebug, live box,
+ * HUD) at once: an evicted string re-rasterizes into a NEW Pixels next frame and needs a fresh
+ * GPU upload, so thrash shows as text flickering in and out. */
+#define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRIES 512
 #define CANVAS3D_AA_TEXT_CACHE_MAX_BYTES (8u * 1024u * 1024u)
 #define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRY_BYTES (2u * 1024u * 1024u)
 

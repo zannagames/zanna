@@ -448,13 +448,15 @@ static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx
     if (!ctx || !entry || !pixels_ptr || !entry.uploadInProgress || !entry.texture)
         return METAL_UPLOAD_FAILED;
     if (ctx.textureUploadBudgetBytes != UINT64_MAX &&
-        ctx.textureUploadBytes >= ctx.textureUploadBudgetBytes)
+        ctx.textureUploadBytes >= ctx.textureUploadBudgetBytes &&
+        !vgfx3d_texture_upload_exempt_from_budget(
+            entry.width, entry.height, ctx.textureUploadBudgetBytes))
         return METAL_UPLOAD_PENDING;
-    rows = vgfx3d_upload_rows_for_budget(entry.width,
-                                         entry.height,
-                                         entry.uploadNextRow,
-                                         ctx.textureUploadBudgetBytes,
-                                         ctx.textureUploadBytes);
+    rows = vgfx3d_upload_rows_for_budget_2d(entry.width,
+                                            entry.height,
+                                            entry.uploadNextRow,
+                                            ctx.textureUploadBudgetBytes,
+                                            ctx.textureUploadBytes);
     if (rows <= 0)
         return METAL_UPLOAD_FAILED;
     if ((size_t)entry.width > SIZE_MAX / 4u || (size_t)rows > SIZE_MAX / ((size_t)entry.width * 4u))

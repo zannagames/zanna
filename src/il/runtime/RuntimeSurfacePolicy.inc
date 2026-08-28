@@ -731,8 +731,10 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_anim_controller3d_get_previous_palette_data"
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_anim_controller3d_get_skeleton")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_anim_controller3d_is_state_playing_cstr")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_morphtarget3d_get_max_position_delta")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_morphtarget3d_new_packed_internal")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_world3d_raycast_all_bodies_raw")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_world3d_raycast_closest_body_raw")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_world3d_overlap_sphere_bodies_raw")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_game3d_behavior_add_despawn_target_internal")
 
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_sound3d_clear_active_listener_state")
@@ -747,6 +749,7 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_sound3d_set_active_listener_state")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_sound3d_update_voice_ex")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundlistener3d_set_position_vec")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundsource3d_set_position_vec")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundsource3d_get_position_components")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundsource3d_rebase_origin")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_bitmapfont_destroy")
 // TtfFont renderer seams (E1 font bridge): the canvas TTF draw borrows the

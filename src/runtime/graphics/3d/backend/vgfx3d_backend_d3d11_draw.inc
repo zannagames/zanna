@@ -1622,6 +1622,14 @@ static void d3d11_submit_draw(void *ctx_ptr,
     }
 
     has_splat = d3d11_bind_draw_resources(ctx, cmd, &draw_resources);
+    if (cmd->texture_required && (cmd->texture || cmd->texture_asset) &&
+        !draw_resources.has_texture) {
+        /* Text / image quad whose Pixels are still budget-paused: draw nothing this frame rather
+         * than the untextured white material. */
+        d3d11_unbind_draw_resources(ctx);
+        d3d11_release_temporary_resources(&draw_resources);
+        return;
+    }
     {
         float ibl_env_lod_base = 0.0f;
         float ibl_env_max_lod = 0.0f;
@@ -1841,6 +1849,14 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     }
 
     has_splat = d3d11_bind_draw_resources(ctx, cmd, &draw_resources);
+    if (cmd->texture_required && (cmd->texture || cmd->texture_asset) &&
+        !draw_resources.has_texture) {
+        /* Text / image quad whose Pixels are still budget-paused: draw nothing this frame rather
+         * than the untextured white material. */
+        d3d11_unbind_draw_resources(ctx);
+        d3d11_release_temporary_resources(&draw_resources);
+        return;
+    }
     {
         float ibl_env_lod_base = 0.0f;
         float ibl_env_max_lod = 0.0f;

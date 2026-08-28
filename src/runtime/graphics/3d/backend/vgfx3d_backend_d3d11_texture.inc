@@ -1304,11 +1304,11 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
         return VGFX3D_D3D11_UPLOAD_FAILED;
     if (!vgfx3d_d3d11_row_upload_cursor_is_valid(entry->height, entry->upload_next_row))
         return VGFX3D_D3D11_UPLOAD_FAILED;
-    rows = vgfx3d_upload_rows_for_budget(entry->width,
-                                         entry->height,
-                                         entry->upload_next_row,
-                                         ctx->texture_upload_budget_bytes,
-                                         ctx->texture_upload_bytes);
+    rows = vgfx3d_upload_rows_for_budget_2d(entry->width,
+                                            entry->height,
+                                            entry->upload_next_row,
+                                            ctx->texture_upload_budget_bytes,
+                                            ctx->texture_upload_bytes);
     if (rows <= 0)
         return VGFX3D_D3D11_UPLOAD_PENDING;
     if ((size_t)entry->width > SIZE_MAX / 4u ||

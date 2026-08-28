@@ -7933,6 +7933,55 @@ static void test_canvas_camera_relative_upload_rebases_frame_payloads() {
     PASS();
 }
 
+static void test_canvas_screen_image_marks_texture_required() {
+    TEST("Canvas3D screen image quads require their texture; mesh draws do not");
+    /* A DrawImage2D / text quad exists only to show its Pixels. While its upload is still
+     * budget-paused a backend must draw nothing rather than the transient material's white base
+     * colour — the "white box before the text lands" defect — so the queued command carries
+     * texture_required. Ordinary mesh draws keep drawing untextured. */
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 1000.0);
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    void *pixels = rt_pixels_new(8, 8);
+    double model[16] = {
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -10.0, 0.0, 0.0, 0.0, 1.0};
+    assert(camera && mesh && material && pixels);
+
+    backend.name = "software";
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.end_frame = tracked_end_frame;
+
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 128;
+    canvas.height = 128;
+
+    g_canvas_submit_draw_calls = 0;
+    memset(&g_last_draw_cmd, 0, sizeof(g_last_draw_cmd));
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh_matrix(&canvas, mesh, model, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ((int)g_last_draw_cmd.texture_required, 0);
+
+    g_canvas_submit_draw_calls = 0;
+    memset(&g_last_draw_cmd, 0, sizeof(g_last_draw_cmd));
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_image2d(&canvas, 4, 4, 8, 8, pixels);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ((int)g_last_draw_cmd.texture_required, 1);
+    EXPECT_TRUE(g_last_draw_cmd.texture == pixels, "screen quad samples the queued Pixels");
+    EXPECT_EQ((int)g_last_draw_cmd.disable_depth_test, 1);
+
+    free_canvas3d_test_draw_state(&canvas);
+    PASS();
+}
+
 static void test_canvas_camera_relative_upload_rebases_raw_and_generated_vertices() {
     TEST("Canvas3D camera-relative upload rebases raw and generated vertices");
     vgfx3d_backend_t backend = {};
@@ -11999,6 +12048,7 @@ int main() {
     test_canvas_texture_upload_bytes_telemetry();
     test_canvas_frame_gpu_time_telemetry();
     test_canvas_texture_upload_budget_controls_backend();
+    test_canvas_screen_image_marks_texture_required();
     test_canvas_delta_time_preserves_first_zero();
     test_canvas_poll_event_queue_drains_in_order();
     test_canvas_delta_time_cap_and_disable();
