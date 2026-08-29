@@ -156,7 +156,7 @@ static void *http_error_result(const char *message) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: error Result allocation failed");
         rt_trap_clear_recovery();
@@ -192,7 +192,7 @@ static void *http_success_result_owned(void *response) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: success Result allocation failed");
         rt_trap_clear_recovery();
@@ -568,7 +568,7 @@ static rt_http_res_t *http_execute_one_shot(const char *method,
     volatile int owns_body = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int net_code = rt_trap_get_net_code();
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: request failed");
@@ -628,7 +628,7 @@ static rt_string http_take_response_string(rt_http_res_t *response) {
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: response allocation failed");
         rt_trap_clear_recovery();
@@ -654,7 +654,7 @@ static void *http_take_response_bytes(rt_http_res_t *response) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: response allocation failed");
         rt_trap_clear_recovery();
@@ -679,7 +679,7 @@ static void *http_take_response_headers(rt_http_res_t *response) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: header copy failed");
         rt_trap_clear_recovery();
@@ -838,7 +838,7 @@ int8_t rt_http_download(rt_string url, rt_string dest_path) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         http_download_state_destroy(state, 1);
         return 0;
@@ -983,7 +983,7 @@ void *rt_http_req_new(rt_string method, rt_string url) {
     rt_http_req_t *volatile req = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int net_code = rt_trap_get_net_code();
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: request construction failed");
@@ -1379,7 +1379,7 @@ void *rt_http_req_send(void *obj) {
 void *rt_http_req_send_result(void *obj) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP request failed");
         rt_trap_clear_recovery();
@@ -1447,7 +1447,7 @@ void *rt_http_res_headers(void *obj) {
     rt_string volatile value = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: header copy failed");
         rt_trap_clear_recovery();
@@ -1575,7 +1575,7 @@ rt_string rt_http_res_header(void *obj, rt_string name) {
     rt_string volatile copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         http_save_trap(saved_error, sizeof(saved_error), "HTTP: header lookup failed");
         rt_trap_clear_recovery();

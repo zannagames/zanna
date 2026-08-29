@@ -47,6 +47,9 @@ namespace zanna::codegen::linker {
 /// @param dynSyms Loader-resolved symbols requiring dynamic metadata.
 /// @param stackSize Requested GNU stack memory size; zero uses the platform default.
 /// @param emitStartupStub Whether to synthesize the runtime startup shim before `main`.
+/// @param emitLocalSymbols Write a `.symtab`/`.strtab` pair naming every placed
+///        definition as a local `STT_FUNC`/`STT_OBJECT` symbol (profiler and
+///        debugger names); `false` omits the tables.
 /// @param err Stream that receives validation or file-write diagnostics.
 /// @return `true` when a complete executable is installed; otherwise `false`.
 bool writeElfExe(const std::string &path,
@@ -56,7 +59,24 @@ bool writeElfExe(const std::string &path,
                  const std::unordered_set<std::string> &dynSyms,
                  std::size_t stackSize,
                  bool emitStartupStub,
+                 bool emitLocalSymbols,
                  std::ostream &err);
+
+/// @brief Writes an ELF image with local symbol tables enabled.
+/// @copydetails writeElfExe(const std::string &, const LinkLayout &, LinkArch, const
+/// std::vector<std::string> &, const std::unordered_set<std::string> &, std::size_t, bool, bool,
+/// std::ostream &)
+inline bool writeElfExe(const std::string &path,
+                        const LinkLayout &layout,
+                        LinkArch arch,
+                        const std::vector<std::string> &neededLibs,
+                        const std::unordered_set<std::string> &dynSyms,
+                        std::size_t stackSize,
+                        bool emitStartupStub,
+                        std::ostream &err) {
+    return writeElfExe(
+        path, layout, arch, neededLibs, dynSyms, stackSize, emitStartupStub, true, err);
+}
 
 /// @brief Writes a potentially dynamic ELF image with default stack and startup behavior.
 /// @param path UTF-8 destination path.

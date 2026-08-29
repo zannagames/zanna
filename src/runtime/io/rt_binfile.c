@@ -46,6 +46,7 @@
 #include "rt_internal.h"
 #include "rt_io_class_ids.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <errno.h>
@@ -115,7 +116,7 @@ static rt_binfile_impl *binfile_alloc_or_close(FILE *fp, const char *fallback) {
     FILE *volatile owned_fp = fp;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error, sizeof(saved_error), "%s", error && error[0] ? error : fallback);

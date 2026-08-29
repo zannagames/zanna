@@ -46,6 +46,7 @@
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 
 #include <setjmp.h>
@@ -634,7 +635,7 @@ void *rt_pqueue_to_seq(void *obj) {
     void *volatile transferred = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         heap_save_trap(saved_error, sizeof(saved_error), "Heap.ToSeq: snapshot failed");
         rt_trap_clear_recovery();

@@ -195,6 +195,7 @@ zanna build program.zia -o program
 | `--debug-adapter` | Serve the JSON debug adapter protocol on stdio (`zanna run` only) |
 | `--dump-trap` | Print detailed trap diagnostics (`zanna run` only) |
 | `--stack-size <bytes>` | Set the native executable stack size, decimal or `0x` hex (`zanna build` only) |
+| `--strip-symbols` | Omit function/data names from the executable's symbol table; by default every definition is named so `sample`, Instruments, and `perf` can attribute time (`zanna build` only) |
 | `--windows-debug-runtime`, `--windows-release-runtime` | Select the Windows CRT to link (`zanna build` only) |
 | `--arch arm64\|x64` | Override the native target architecture (`zanna build` only) |
 

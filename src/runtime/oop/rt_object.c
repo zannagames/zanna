@@ -634,7 +634,7 @@ static void rt_memory_release_array_payload(void *p, rt_heap_hdr_t *hdr) {
     rt_trap_set_recovery(&recovery);
 
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             rt_gc_mutator_enter();
             if (!trapped) {
                 const char *err = rt_trap_get_error();
@@ -705,7 +705,7 @@ static void rt_memory_free_zero_ref_array(void *p, rt_heap_hdr_t *hdr) {
     rt_gc_mutator_enter();
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_gc_mutator_enter();
         char saved_error[512];
         const char *err = rt_trap_get_error();
@@ -772,7 +772,7 @@ static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
         hdr->finalizer = NULL;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             // Trap dispatch unwinds shared GC scopes before longjmp. Re-enter
             // before inspecting or reclaiming the still-live payload.
             rt_gc_mutator_enter();

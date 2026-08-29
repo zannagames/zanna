@@ -246,9 +246,9 @@ static void testSingleTextSection() {
     CHECK(ehdr.e_phnum == 2);
     CHECK(ehdr.e_phoff == 64); // Immediately after ELF header.
 
-    // Section headers: null + 1 section + .note.GNU-stack + .shstrtab = 4.
-    CHECK(ehdr.e_shnum == 4);
-    CHECK(ehdr.e_shstrndx == 3); // .shstrtab is last.
+    // Section headers: null + 1 section + .symtab + .strtab + .note.GNU-stack + .shstrtab = 6.
+    CHECK(ehdr.e_shnum == 6);
+    CHECK(ehdr.e_shstrndx == 5); // .shstrtab is last.
 }
 
 /// Test 2: Multi-section layout — .text, .rodata, .data.
@@ -273,8 +273,8 @@ static void testMultiSection() {
     // 3 PT_LOAD + 1 PT_GNU_STACK = 4.
     CHECK(ehdr.e_phnum == 4);
 
-    // Section headers: null + 3 sections + .note.GNU-stack + .shstrtab = 6.
-    CHECK(ehdr.e_shnum == 6);
+    // Section headers: null + 3 sections + .symtab + .strtab + .note.GNU-stack + .shstrtab = 8.
+    CHECK(ehdr.e_shnum == 8);
 
     // Verify program headers.
     CHECK(data.size() >= ehdr.e_phoff + ehdr.e_phnum * sizeof(Elf64_Phdr));
@@ -564,8 +564,8 @@ static void testBssDoesNotInflateFileSize() {
             continue;
         found = true;
         CHECK(ph.p_vaddr == 0x402000);
-        CHECK(ph.p_filesz == 16);       // only the file-backed .data bytes
-        CHECK(ph.p_memsz == 0x1040);    // spans the gap + .bss: 0x403040 - 0x402000
+        CHECK(ph.p_filesz == 16);    // only the file-backed .data bytes
+        CHECK(ph.p_memsz == 0x1040); // spans the gap + .bss: 0x403040 - 0x402000
         CHECK(ph.p_filesz < ph.p_memsz);
     }
     CHECK(found);

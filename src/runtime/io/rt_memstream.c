@@ -44,6 +44,7 @@
 #include "rt_internal.h"
 #include "rt_io_class_ids.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <float.h>
@@ -181,7 +182,7 @@ static int memstream_ensure_capacity_or_release(rt_memstream_impl *ms,
                                                 const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         memstream_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

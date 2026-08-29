@@ -848,6 +848,82 @@ func start() {    Zanna.Terminal.SayInt(cfg.WIDTH);
     EXPECT_LE(errorCount, 2);    // only the local incomplete-bind error, not a cascade
 }
 
+// ZB-27: an inherited field must shadow a same-named exported global of a
+// bound module, exactly as a declared field does. The base class lives in one
+// module, a bound helper module exports `var vec_: Any`, and the derived class
+// (in a third module) reads and assigns `vec_` unqualified.
+TEST(ZiaBinds, InheritedFieldShadowsBoundModuleGlobal) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_bind_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "inherited_field_shadow";
+    writeFile(dir,
+              "other.zia",
+              R"(
+module other;
+var vec_: Any = null;
+var thing_: Any = null;
+class Thing {
+    expose Integer v;
+    expose func init() { v = 5; }
+    expose func twice() -> Integer { return v * 2; }
+}
+)");
+    writeFile(dir,
+              "base.zia",
+              R"(
+module base;
+bind Zanna.Math as Math;
+bind "./other";
+class Base {
+    expose Math.Vec3 vec_;
+    expose other.Thing thing_;
+    expose func init() { vec_ = Math.Vec3.New(1.0, 2.0, 3.0); thing_ = new other.Thing(); }
+}
+)");
+    writeFile(dir,
+              "mid.zia",
+              R"(
+module mid;
+bind Zanna.Math as Math;
+bind "./base";
+bind "./other";
+class Mid extends base.Base {
+    expose func midVal() -> Float { return vec_.X + (thing_.twice() + 0.0); }
+    expose func reset() { vec_ = Math.Vec3.New(7.0, 8.0, 9.0); }
+}
+)");
+    const std::string mainSource = R"(
+module main;
+bind Zanna.Math as Math;
+bind "./base";
+bind "./mid";
+bind "./other";
+class Top extends mid.Mid {
+    expose func init() { super.init(); }
+    expose func topVal() -> Float { self.reset(); return vec_.Z + (thing_.twice() + 0.0); }
+}
+func start() {
+    var t = new Top();
+    Zanna.Terminal.Say("v=" + toString(t.midVal()) + " top=" + toString(t.topVal()));
+}
+)";
+    const fs::path mainPath = writeFile(dir, "main.zia", mainSource);
+    const std::string mainPathStr = mainPath.string();
+    SourceManager sm;
+    CompilerInput input{.source = mainSource, .path = mainPathStr};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+    if (!result.succeeded()) {
+        std::cerr << "Diagnostics for InheritedFieldShadowsBoundModuleGlobal:\n";
+        for (const auto &d : result.diagnostics.diagnostics()) {
+            std::cerr << "  [" << (d.severity == Severity::Error ? "ERROR" : "WARN") << "] "
+                      << d.code << " " << d.message << "\n";
+        }
+    }
+    EXPECT_TRUE(result.succeeded());
+    fs::remove_all(tempRoot);
+}
+
 } // namespace
 
 int main() {

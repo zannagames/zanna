@@ -47,6 +47,7 @@
 #include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 
 #include <setjmp.h>
@@ -149,7 +150,7 @@ static void *set_build_result(rt_set_impl *left,
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         set_save_trap(saved_error, sizeof(saved_error), diagnostic);
         rt_trap_clear_recovery();
@@ -202,14 +203,15 @@ static void *set_build_result(rt_set_impl *left,
     rt_trap_clear_recovery();
     return (void *)result;
 
-returning_failure: {
-    char saved_error[256];
-    set_save_trap(saved_error, sizeof(saved_error), diagnostic);
-    rt_trap_clear_recovery();
-    set_release_temp((void *)result);
-    rt_trap(saved_error);
-    return NULL;
-}
+returning_failure:
+    {
+        char saved_error[256];
+        set_save_trap(saved_error, sizeof(saved_error), diagnostic);
+        rt_trap_clear_recovery();
+        set_release_temp((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
 }
 
 /// @brief GC traversal: visit every stored element across all bucket chains.
@@ -503,7 +505,7 @@ void *rt_set_items(void *obj) {
     void *volatile seq = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         set_save_trap(saved_error, sizeof(saved_error), "Set.Items: snapshot failed");
         rt_trap_clear_recovery();

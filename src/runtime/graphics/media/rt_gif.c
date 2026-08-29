@@ -34,6 +34,7 @@
 #include "rt_file_ext.h"
 #include "rt_object.h"
 #include "rt_pixels_internal.h"
+#include "rt_platform.h"
 
 #include <limits.h>
 #include <setjmp.h>
@@ -95,7 +96,7 @@ static uint8_t *gif_read_file_bytes(const char *filepath, size_t *out_len) {
     void *volatile bytes = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         rt_string_unref(path);
         return NULL;
@@ -1051,7 +1052,8 @@ int gif_decode_file(const char *filepath,
 }
 
 /// @brief Decode the first renderable GIF image from a memory buffer into RGBA32 pixels.
-/// @details Validates GIF87a/GIF89a structure, canvas and file-size budgets, palettes, image bounds,
+/// @details Validates GIF87a/GIF89a structure, canvas and file-size budgets, palettes, image
+/// bounds,
 ///          LZW termination, and palette indices. Extension blocks before the first image are
 ///          honored for transparency; later animation frames and disposal are not decoded. Output
 ///          pointers are initialized to NULL/zero before validation.

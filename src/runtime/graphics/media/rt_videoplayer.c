@@ -39,6 +39,7 @@
 #include "rt_canvas3d_internal.h"
 #include "rt_file_ext.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_theora.h"
 #include "rt_ycbcr.h"
@@ -185,7 +186,7 @@ static void *videoplayer_read_file_bytes(rt_string path, size_t *out_len, uint8_
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         if (bytes && rt_obj_release_check0((void *)bytes))
             rt_obj_free((void *)bytes);

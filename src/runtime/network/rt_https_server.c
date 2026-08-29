@@ -1111,7 +1111,7 @@ static int server_headers_to_http2(const server_res_t *src, rt_http2_header_t **
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         free((void *)lowercase_name);
         https_server_release_object((void *)keys);
@@ -1522,7 +1522,7 @@ static void handle_connection_task(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1605,9 +1605,8 @@ static void *accept_loop(void *arg)
         rt_obj_retain_maybe(server);
 
         if (!server->worker_pool ||
-            !rt_threadpool_submit(server->worker_pool,
-                                  RT_FN_PTR_CAST((void *)handle_connection_task),
-                                  task)) {
+            !rt_threadpool_submit(
+                server->worker_pool, RT_FN_PTR_CAST((void *)handle_connection_task), task)) {
             https_server_release_object(server);
             free(task);
             close_accepted_tcp_handle(tcp);
@@ -1650,7 +1649,7 @@ void *rt_https_server_new(int64_t port, rt_string cert_file, rt_string key_file)
     volatile int finalizer_installed = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1761,7 +1760,7 @@ static void add_route_binding(void *obj,
     volatile int lifecycle_locked = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1982,7 +1981,7 @@ void rt_https_server_start(void *obj) {
     volatile int published = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -2146,7 +2145,7 @@ void rt_https_server_stop(void *obj) {
     if (worker_pool && rt_threadpool_current_worker_pool() != worker_pool) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             const char *error = rt_trap_get_error();
             snprintf(saved_error,
@@ -2293,7 +2292,7 @@ HTTPS_MAYBE_UNUSED void *rt_https_server_process_request(void *obj, rt_string ra
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

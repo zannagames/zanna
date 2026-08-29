@@ -548,6 +548,7 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
     std::vector<Move> moves;
     std::vector<std::pair<PhysReg, long long>> immLoads;
     std::vector<std::pair<std::size_t, PhysReg>> tempRegs;
+    std::vector<PhysReg> i1Dsts;
     std::size_t scratchUsed = 0;
     bool supported = true;
 
@@ -565,6 +566,10 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
                 const PhysReg src = ctx.argOrder[pIdx];
                 if (src != dst)
                     moves.push_back(Move{dst, src});
+                // Generic lowering masks incoming i1 parameters to canonical
+                // 0/1 before they are re-marshalled; the fast path must too.
+                if (bb.params[pIdx].type.kind == il::core::Type::Kind::I1)
+                    i1Dsts.push_back(dst);
             } else {
                 // Attempt to compute temp into a scratch then marshal it
                 if (arg.kind == il::core::Value::Kind::Temp && scratchUsed < kScratchPoolSize) {
@@ -600,15 +605,22 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
             moves.push_back(Move{dstArg, tr.second});
     }
 
-    // Resolve reg moves with scratch X9 to break cycles
+    // Sequentialize the parallel move set. A move `dst <- src` may be emitted
+    // only when no OTHER pending move still reads `dst` (writing it would
+    // clobber a value that move needs). ZB-30: the old test was inverted
+    // ("src is not a pending destination"), which emitted a forwarding chain
+    // x0<-x1, x1<-x2, x2<-x3, x3<-x4 in the order x3<-x4, x2<-x3, ... — every
+    // argument ended up as x4's value. Pure cycles are broken by parking one
+    // source in the reserved scratch register.
     /**
-     * @brief Tests whether a register is still a pending move destination.
+     * @brief Tests whether another pending move still reads @p r.
      * @param r Physical register to query.
-     * @return `true` when a pending move will overwrite @p r.
+     * @param self The move being considered (excluded from the scan).
+     * @return `true` when some other pending move has @p r as its source.
      */
-    auto hasDst = [&](PhysReg r) {
+    auto readByOther = [&](PhysReg r, const Move *self) {
         for (auto &m : moves)
-            if (m.dst == r)
+            if (&m != self && m.src == r)
                 return true;
         return false;
     };
@@ -616,7 +628,7 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
     while (!moves.empty()) {
         bool progressed = false;
         for (auto it = moves.begin(); it != moves.end();) {
-            if (!hasDst(it->src)) {
+            if (!readByOther(it->dst, &*it)) {
                 bbMir.instrs.push_back(
                     MInstr{MOpcode::MovRR, {MOperand::regOp(it->dst), MOperand::regOp(it->src)}});
                 it = moves.erase(it);
@@ -626,7 +638,8 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
             }
         }
         if (!progressed) {
-            // Break cycle using scratch register
+            // Every remaining move sits on a cycle: park one source in the
+            // scratch register so its readers no longer pin that register.
             const PhysReg cycleSrc = moves.front().src;
             bbMir.instrs.push_back(
                 MInstr{MOpcode::MovRR, {MOperand::regOp(kScratchGPR), MOperand::regOp(cycleSrc)}});
@@ -635,6 +648,11 @@ std::optional<MFunction> tryCallFastPaths(FastPathContext &ctx) {
                     m.src = kScratchGPR;
         }
     }
+
+    // Canonicalize forwarded i1 parameters after every move has landed.
+    for (PhysReg dst : i1Dsts)
+        bbMir.instrs.push_back(MInstr{
+            MOpcode::AndRI, {MOperand::regOp(dst), MOperand::regOp(dst), MOperand::immOp(1)}});
 
     // Apply immediates
     for (auto &pr : immLoads)

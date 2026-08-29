@@ -41,6 +41,7 @@
 ///          empty; that mode controls GC traversal and element lifetime.
 
 #include "rt_ring.h"
+#include "rt_platform.h"
 #include "rt_ring_internal.h"
 
 #include "rt_box.h"
@@ -759,7 +760,7 @@ void *rt_ring_clone(void *obj) {
     void *volatile new_ring = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         ring_save_trap(saved_error, sizeof(saved_error), "Ring.Clone: copy failed");
         rt_trap_clear_recovery();

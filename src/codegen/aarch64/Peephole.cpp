@@ -35,7 +35,9 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1265,47 +1267,64 @@ static void runBranchInversionAndCleanup(MFunction &fn, PeepholeStats &stats) {
  * @return Aggregate counters populated by every invoked sub-pass.
  * @pre Register operands have been assigned physical registers.
  */
+/// @brief Triage kill switch for one peephole sub-stage (`ZANNA_NO_PH_<NAME>=1`).
+/// @details Names: REORDER, LOOPHOIST, PERBLOCK, DCE_CFG, FPSTORES,
+///          STORELOAD_FWD, PHI_LOADS, PHI_SPILLS, BRANCH. A bisection aid
+///          against a program-level oracle; the stage-level switches live in
+///          CodegenPipeline.cpp (backendStageDisabled). Never consulted at -O0.
+static bool peepholeStageDisabled(const char *name) {
+    std::string key = "ZANNA_NO_PH_";
+    key += name;
+    return std::getenv(key.c_str()) != nullptr;
+}
+
 PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     PeepholeStats stats;
 
     // Pass 0: Reorder blocks for better code layout
-    stats.blocksReordered = static_cast<int>(ph::reorderBlocks(fn));
+    if (!peepholeStageDisabled("REORDER"))
+        stats.blocksReordered = static_cast<int>(ph::reorderBlocks(fn));
 
     // Pass 0.5: Hoist loop-invariant MovRI out of loop bodies.
     // LoopOpt now rejects merge-like headers, non-preheader entries, and uses
     // that can observe the value before a dominating definition inside the loop.
-    stats.loopConstsHoisted = static_cast<int>(ph::hoistLoopConstants(fn));
+    if (!peepholeStageDisabled("LOOPHOIST"))
+        stats.loopConstsHoisted = static_cast<int>(ph::hoistLoopConstants(fn));
 
     // Passes 0.9 through 4.6: local per-block rewrites (division strength reduction,
     // constant-aware rewrites, fusions, identity removal, local DCE/flag DCE).
     // (Pass 0.6 — loop phi spill elimination — runs after Pass 4.8 below.)
-    runPerBlockRewrites(fn, stats, target);
+    if (!peepholeStageDisabled("PERBLOCK"))
+        runPerBlockRewrites(fn, stats, target);
 
-    if (target != nullptr) {
+    if (target != nullptr && !peepholeStageDisabled("DCE_CFG")) {
         ph::removeDeadInstructionsCFG(fn, stats, *target);
         for (auto &block : fn.blocks)
             ph::removeDeadFlagSetters(block.instrs, stats);
     }
 
-    ph::eliminateDeadFpStoresCrossBlock(fn, stats);
+    const bool fpStores = !peepholeStageDisabled("FPSTORES");
+    if (fpStores)
+        ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // Pass 4.8: Cross-block store-load forwarding for phi stores/loads.
     // Forwards single-predecessor join blocks; multi-predecessor joins handled
     // by passes 4.86 / 4.88 below.
-    forwardLayoutSuccessorStoreLoad(fn, stats);
+    if (!peepholeStageDisabled("STORELOAD_FWD"))
+        forwardLayoutSuccessorStoreLoad(fn, stats);
 
     // Pass 4.86: Forward single-predecessor phi-entry loads from predecessor
     // edge stores when the edge is acyclic and the source register survives to
     // the successor. This collapses direct join reloads without touching
     // loop-carried back-edges.
-    if (forwardSinglePredPhiLoads(fn, stats))
+    if (!peepholeStageDisabled("PHI_LOADS") && forwardSinglePredPhiLoads(fn, stats) && fpStores)
         ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // Pass 4.88: Coalesce multi-predecessor join-entry phi loads into
     // predecessor register moves when every incoming edge already materializes
     // the values in physical registers before branching to the join. This cuts
     // stack round-trips that remain after the single-predecessor forwarding pass.
-    if (coalesceJoinPhiLoads(fn, stats))
+    if (!peepholeStageDisabled("PHI_LOADS") && coalesceJoinPhiLoads(fn, stats) && fpStores)
         ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // (Pass 4.85 moved to Pass 0.7 — runs before per-block loop above)
@@ -1314,22 +1333,25 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     // Must run AFTER Pass 4.8 (cross-block store-load forwarding) because that pass
     // may convert phi loads to register movs, changing the header's instruction mix.
     // Running after 4.8 ensures we see the final form of the header instructions.
-    for (int iter = 0; iter < 16; ++iter) {
+    for (int iter = 0; iter < 16 && !peepholeStageDisabled("PHI_SPILLS"); ++iter) {
         const auto eliminated = ph::eliminateLoopPhiSpills(fn);
         if (eliminated == 0)
             break;
         stats.loopConstsHoisted += static_cast<int>(eliminated);
-        ph::eliminateDeadFpStoresCrossBlock(fn, stats);
+        if (fpStores)
+            ph::eliminateDeadFpStoresCrossBlock(fn, stats);
     }
 
     // Pass 4.95: Re-run cross-block dead spill-store elimination after forwarding
     // and loop phi cleanup. Pass 4.8 can replace the only remaining reload from a
     // phi slot with a register move, which leaves the predecessor spill dead only
     // after the earlier Pass 0.7 has already run.
-    ph::eliminateDeadFpStoresCrossBlock(fn, stats);
+    if (fpStores)
+        ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // Pass 5: Branch inversion and branch-to-next removal.
-    runBranchInversionAndCleanup(fn, stats);
+    if (!peepholeStageDisabled("BRANCH"))
+        runBranchInversionAndCleanup(fn, stats);
 
     return stats;
 }

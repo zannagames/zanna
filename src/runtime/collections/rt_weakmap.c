@@ -43,6 +43,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -355,7 +356,7 @@ static void wm_save_trap(char *output, size_t capacity, const char *fallback) {
 static int wm_push_key_or_release_seq(void *seq, rt_string key) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         wm_save_trap(saved_error, sizeof(saved_error), "WeakMap.Keys: snapshot append failed");
         rt_trap_clear_recovery();
@@ -393,7 +394,7 @@ void *rt_weakmap_new(void) {
     void *volatile obj = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         wm_save_trap(saved_error, sizeof(saved_error), "WeakMap: memory allocation failed");
         rt_trap_clear_recovery();
@@ -523,7 +524,7 @@ void rt_weakmap_set(void *map, rt_string key, void *value) {
     volatile int key_retained = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

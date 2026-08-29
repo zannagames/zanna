@@ -80,16 +80,25 @@ void buildRebaseOpcodes(std::vector<uint8_t> &rebaseData,
 /// @param symtabData Destination 16-byte `nlist_64` records.
 /// @param strtabData Destination NUL-separated string table.
 /// @param layout Final global symbol table.
+/// @param sectionOrder Layout section indices in Mach-O section-ordinal order
+///                     (`__TEXT` sections first, then `__DATA`).
+/// @param emitLocalSymbols When true, every placed definition other than the
+///                         entry point is written first as a non-external
+///                         `N_SECT` symbol so profilers can name addresses.
 /// @param dynSyms Dynamic symbol names to publish as undefined.
 /// @param symOrdinals Symbol-to-dylib ordinal map used in `n_desc`; zero maps
 ///                    to `DYNAMIC_LOOKUP_ORDINAL`, and missing names use one.
+/// @param nLocal Receives the number of non-external definitions appended.
 /// @param nExtDef Receives the number of external definitions appended.
 /// @param nUndef Receives the number of undefined imports appended.
 void buildSymtab(std::vector<uint8_t> &symtabData,
                  std::vector<uint8_t> &strtabData,
                  const LinkLayout &layout,
+                 const std::vector<size_t> &sectionOrder,
+                 bool emitLocalSymbols,
                  const std::unordered_set<std::string> &dynSyms,
                  const std::unordered_map<std::string, uint32_t> &symOrdinals,
+                 uint32_t &nLocal,
                  uint32_t &nExtDef,
                  uint32_t &nUndef);
 

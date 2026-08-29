@@ -133,7 +133,7 @@ static void *get_default_pool(void) {
         void *candidate = NULL;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             candidate = rt_threadpool_new(async_default_pool_size());
             rt_trap_clear_recovery();
         } else {
@@ -228,7 +228,7 @@ static int async_create_promise_pair(void **promise_out, void **future_out) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
                  sizeof(saved_error),
@@ -422,7 +422,7 @@ static int async_submit_worker(
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *error = rt_trap_get_error();
         if (error_out && error_capacity > 0) {
             snprintf(error_out,
@@ -469,7 +469,7 @@ static void async_connect_worker(void *arg) {
     jmp_buf recovery;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         host = rt_string_from_bytes(a->host, a->host_len);
         if (!host)
             rt_trap("AsyncSocket: memory allocation failed");
@@ -594,7 +594,7 @@ static void async_send_worker(void *arg) {
     jmp_buf recovery;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         int64_t sent = rt_tcp_send(a->tcp, a->data);
         boxed = rt_box_i64(sent);
         if (!boxed)
@@ -697,7 +697,7 @@ static void async_recv_worker(void *arg) {
     jmp_buf recovery;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         data = rt_tcp_recv(a->tcp, a->max_bytes);
         if (!data)
             rt_trap("AsyncSocket: receive failed without a result");
@@ -792,7 +792,7 @@ static void async_http_get_worker(void *arg) {
     jmp_buf recovery;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         url = rt_string_from_bytes(a->url, a->url_len);
         if (!url)
             rt_trap("AsyncSocket: memory allocation failed");
@@ -883,7 +883,7 @@ static void async_http_post_worker(void *arg) {
     jmp_buf recovery;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         url = rt_string_from_bytes(a->url, a->url_len);
         body = rt_string_from_bytes(a->body ? a->body : "", a->body_len);
         if (!url || !body)

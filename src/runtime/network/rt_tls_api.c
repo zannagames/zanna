@@ -36,6 +36,7 @@
  *          Results. Each wrapper object owns its session and copied host text.
  */
 
+#include "rt_platform.h"
 #include "rt_tls.h"
 #include "rt_tls_internal.h"
 
@@ -129,7 +130,7 @@ static void *rt_zanna_tls_error_result(const char *message) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rt_zanna_tls_save_trap(
             saved_error, sizeof(saved_error), "Tls: error Result allocation failed");
@@ -168,7 +169,7 @@ static void *rt_zanna_tls_success_result_owned(void *conn) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rt_zanna_tls_save_trap(
             saved_error, sizeof(saved_error), "Tls: success Result allocation failed");
@@ -326,7 +327,7 @@ static void *rt_zanna_tls_object_from_session(rt_tls_session_t *session,
     rt_zanna_tls_t *volatile tls = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rt_zanna_tls_save_trap(saved_error, sizeof(saved_error), "Tls: wrapper allocation failed");
         rt_trap_clear_recovery();
@@ -670,7 +671,7 @@ static rt_string rt_zanna_tls_string_from_owned_line(char *line, size_t len) {
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rt_zanna_tls_save_trap(saved_error, sizeof(saved_error), "Tls.RecvLine allocation failed");
         rt_trap_clear_recovery();

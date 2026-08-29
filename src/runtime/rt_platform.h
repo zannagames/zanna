@@ -63,6 +63,24 @@
 #endif
 
 //===----------------------------------------------------------------------===//
+// Non-blocking setjmp
+//===----------------------------------------------------------------------===//
+// Darwin's `setjmp` saves the signal mask and `longjmp` restores it — a
+// `sigprocmask` (and `sigaltstack` query) syscall on every trap-recovery
+// frame and every native `try` block. The runtime never manipulates signal
+// masks, so the mask-free `_setjmp`/`_longjmp` pair is used there. glibc's
+// `setjmp` already skips the mask and MSVC has none, so those stay as is.
+// Callers must include <setjmp.h> themselves; only the spelling changes.
+
+#if RT_PLATFORM_MACOS
+#define RT_SETJMP(env) _setjmp(env)
+#define RT_LONGJMP(env, val) _longjmp((env), (val))
+#else
+#define RT_SETJMP(env) setjmp(env)
+#define RT_LONGJMP(env, val) longjmp((env), (val))
+#endif
+
+//===----------------------------------------------------------------------===//
 // Compiler Detection
 //===----------------------------------------------------------------------===//
 

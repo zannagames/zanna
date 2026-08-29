@@ -48,6 +48,23 @@ int main() {
         rt_string_unref(s);
     }
 
+    // ZB-28: the IL VM classifies module-variable storage through this query.
+    {
+        int64_t *first = addrs[0];
+        assert(rt_modvar_contains_range(first, 8) == 1);
+        assert(rt_modvar_contains_range(first, 0) == 0);
+        assert(rt_modvar_contains_range(reinterpret_cast<char *>(first) + 4, 8) == 0);
+        assert(rt_modvar_contains_range(nullptr, 8) == 0);
+        int64_t stackSlot = 0;
+        assert(rt_modvar_contains_range(&stackSlot, 8) == 0);
+        rt_string block = rt_string_from_bytes("BLK", 3);
+        char *blk = (char *)rt_modvar_addr_block(block, 24);
+        assert(blk != nullptr);
+        assert(rt_modvar_contains_range(blk + 16, 8) == 1);
+        assert(rt_modvar_contains_range(blk + 17, 8) == 0);
+        rt_string_unref(block);
+    }
+
     rt_set_current_context(nullptr);
     rt_context_cleanup(&ctx);
     return 0;

@@ -36,6 +36,7 @@
 #include "rt_crypto.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_random.h"
 #include "rt_socket_platform.h"
 #include "rt_string.h"
@@ -1182,7 +1183,7 @@ static int ws_send_close_best_effort(rt_ws_impl *ws, const void *payload, size_t
     volatile int sent = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         sent = ws_send_frame(ws, WS_OP_CLOSE, payload, payload_len);
         rt_trap_clear_recovery();
     } else {
@@ -1671,7 +1672,7 @@ void *rt_ws_connect_for_protocol(rt_string url, int64_t timeout_ms, rt_string su
     rt_ws_impl *volatile ws = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         ws_save_trap(saved_error, sizeof(saved_error), "WebSocket: connection failed");
@@ -1946,7 +1947,7 @@ static rt_string ws_string_from_owned_message(uint8_t *message, size_t message_l
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         ws_save_trap(saved_error, sizeof(saved_error), "WebSocket: String allocation failed");
         rt_trap_clear_recovery();
@@ -1972,7 +1973,7 @@ static void *ws_bytes_from_owned_message(uint8_t *message, size_t message_len) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         ws_save_trap(saved_error, sizeof(saved_error), "WebSocket: Bytes allocation failed");
         rt_trap_clear_recovery();
@@ -2061,7 +2062,7 @@ rt_string rt_ws_recv_for(void *obj, int64_t timeout_ms) {
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         ws_save_trap(saved_error, sizeof(saved_error), "WebSocket: timed receive failed");
@@ -2166,7 +2167,7 @@ void *rt_ws_recv_bytes_for(void *obj, int64_t timeout_ms) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         ws_save_trap(saved_error, sizeof(saved_error), "WebSocket: timed Bytes receive failed");

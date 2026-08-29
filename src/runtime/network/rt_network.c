@@ -52,6 +52,7 @@
 #include "rt_network_internal.h"
 
 #include "rt_heap.h"
+#include "rt_platform.h"
 #include "rt_time.h"
 #include "rt_trap.h"
 
@@ -508,7 +509,7 @@ static void *tcp_adopt_connected_socket(socket_t sock,
                                         int local_port) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         tcp_save_trap_error(
             saved_error, sizeof(saved_error), "Network: TCP object allocation failed");
@@ -556,7 +557,7 @@ static void *tcp_adopt_connected_socket(socket_t sock,
 static void *tcp_server_adopt_listener(socket_t sock, char *address_cstr, int bound_port) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         tcp_save_trap_error(
             saved_error, sizeof(saved_error), "Network: TCP server allocation failed");
@@ -1122,7 +1123,7 @@ void *rt_tcp_recv(void *obj, int64_t max_bytes) {
     if (received < max_bytes) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[512];
             tcp_save_trap_error(
                 saved_error, sizeof(saved_error), "Network: receive result allocation failed");
@@ -1163,7 +1164,7 @@ rt_string rt_tcp_recv_str(void *obj, int64_t max_bytes) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         tcp_save_trap_error(
             saved_error, sizeof(saved_error), "Network: receive string allocation failed");
@@ -1334,7 +1335,7 @@ rt_string rt_tcp_recv_line(void *obj) {
     // line buffer is released even when allocation traps via longjmp.
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         tcp_save_trap_error(
             saved_error, sizeof(saved_error), "Network: receive line allocation failed");
@@ -1609,7 +1610,7 @@ rt_string rt_tcp_server_address(void *obj) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         tcp_save_trap_error(
             saved_error, sizeof(saved_error), "Network: server address allocation failed");

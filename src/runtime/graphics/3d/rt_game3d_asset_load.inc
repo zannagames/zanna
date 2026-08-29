@@ -586,7 +586,7 @@ static void *game3d_asset_async_commit_load_model(rt_game3d_asset_async_job *job
         return NULL;
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         if (job->preloaded_gltf) {
             rt_gltf_preload_bundle *bundle = job->preloaded_gltf;
             loaded_model =
@@ -649,7 +649,7 @@ static void game3d_asset_async_prepare_upload_slice(void *user_data) {
     }
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         prepared = rt_gltf_preload_bundle_prepare_decoded_image_slice(
             job->preloaded_gltf, (size_t)RT_GAME3D_ASSET_UPLOAD_SLICE_BYTES);
     } else {

@@ -480,7 +480,8 @@ class Sema {
     /// @param ownerType Concrete semantic owner.
     /// @param decl Method declaration to query.
     /// @return Cached semantic signature key, or an empty string on a cache miss.
-    std::string cachedMethodSignatureKey(const std::string &ownerType, const MethodDecl *decl) const {
+    std::string cachedMethodSignatureKey(const std::string &ownerType,
+                                         const MethodDecl *decl) const {
         auto it = ownerMethodSignatureKeys_.find(MethodInstanceKey{ownerType, decl});
         if (it != ownerMethodSignatureKeys_.end())
             return it->second;
@@ -611,6 +612,17 @@ class Sema {
     ///          the child owner. Struct lookups only check the struct itself.
     std::optional<std::string> findFieldOwner(const std::string &typeName,
                                               const std::string &fieldName) const;
+
+    /// @brief Whether a bare identifier inside a method body denotes a class field.
+    /// @param sym The symbol the scope chain resolved for the identifier (may be null).
+    /// @param name The identifier as written (unqualified).
+    /// @return True when @p sym is not a local binding (parameter, local variable, or a
+    ///         declared field symbol) and the current self type declares or inherits a
+    ///         field named @p name — i.e. the field shadows the module-level symbol.
+    /// @details Declared fields already shadow globals through the class scope; inherited
+    ///          fields of a base class from another module are not in that scope, so
+    ///          without this rule they lost to same-named exported globals of bound modules.
+    bool identShadowedByField(const Symbol *sym, const std::string &name) const;
 
     /// @brief Get the type of a field for a given type.
     /// @param typeName The fully qualified type name (may be mangled for generics).
@@ -1830,7 +1842,8 @@ class Sema {
     /// @param expr The field-access expression (its `loc` is the `.` token).
     /// @param className Fully-qualified runtime class name.
     /// @param candidates `methodCandidates` results (`"Name/arity"`) for the field.
-    void errorRuntimeMethodNeedsCall(FieldExpr *expr, const std::string &className,
+    void errorRuntimeMethodNeedsCall(FieldExpr *expr,
+                                     const std::string &className,
                                      const std::vector<std::string> &candidates);
 
     /// @brief Report a type mismatch error.

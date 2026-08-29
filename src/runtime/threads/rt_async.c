@@ -278,7 +278,7 @@ static void async_run_entry(void *ctx_ptr) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         void *result = ctx->callback(ctx->arg);
         async_promise_set_callback_result(ctx->promise, result, &ctx->arg, &ctx->owns_arg);
     } else {
@@ -328,7 +328,7 @@ static void async_cancel_entry(void *ctx_ptr) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         void *result = ctx->callback(ctx->arg, ctx->token);
         if (ctx->token && rt_cancellation_is_cancelled(ctx->token))
             async_promise_error_cstr(ctx->promise, "cancelled");
@@ -562,7 +562,7 @@ static void async_map_complete(void *future, void *ctx) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         source_owned = rt_future_value_is_owned(future);
         source_value = rt_future_peek_value(future);
         void *mapped = state->mapper((void *)source_value, state->arg);
@@ -746,7 +746,7 @@ static void async_any_complete(void *future, void *ctx) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         if (rt_future_is_error(future)) {
             async_promise_error_from_future(state->promise, future);
         } else {
@@ -994,7 +994,7 @@ static void async_all_complete(void *future, void *ctx) {
 
     jmp_buf peek_recovery;
     rt_trap_set_recovery(&peek_recovery);
-    if (setjmp(peek_recovery) == 0) {
+    if (RT_SETJMP(peek_recovery) == 0) {
         value_owned = rt_future_value_is_owned(future);
         value = rt_future_peek_value(future);
     } else {
@@ -1012,7 +1012,7 @@ static void async_all_complete(void *future, void *ctx) {
         if (!state->completed) {
             jmp_buf set_recovery;
             rt_trap_set_recovery(&set_recovery);
-            if (setjmp(set_recovery) == 0) {
+            if (RT_SETJMP(set_recovery) == 0) {
                 rt_seq_set(state->results, listener->index, value);
                 state->remaining--;
                 if (state->remaining == 0) {

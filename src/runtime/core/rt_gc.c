@@ -1657,7 +1657,7 @@ int64_t rt_gc_collect(void) {
     gc_unlock();
 
     rt_trap_set_recovery(&collection_recovery);
-    if (setjmp(collection_recovery) != 0) {
+    if (RT_SETJMP(collection_recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1961,7 +1961,7 @@ static void gc_run_shutdown_finalizer(void *obj, rt_heap_finalizer_t finalizer, 
     volatile int owns_retain = retained ? 1 : 0;
     jmp_buf finalizer_recovery;
     rt_trap_set_recovery(&finalizer_recovery);
-    if (setjmp(finalizer_recovery) != 0) {
+    if (RT_SETJMP(finalizer_recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

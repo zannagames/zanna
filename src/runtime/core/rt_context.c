@@ -494,7 +494,7 @@ static int rt_legacy_ensure_init(void) {
                 &g_legacy_state, &expected, 1, /*weak=*/0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
             jmp_buf recovery;
             rt_trap_set_recovery(&recovery);
-            if (setjmp(recovery) != 0) {
+            if (RT_SETJMP(recovery) != 0) {
                 rt_trap_clear_recovery();
                 __atomic_store_n(&g_legacy_state, -1, __ATOMIC_RELEASE);
                 rt_trap("Runtime context initialization failed");

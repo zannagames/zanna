@@ -49,6 +49,7 @@
 
 #include "rt_map.h"
 #include "rt_numeric.h"
+#include "rt_platform.h"
 
 #include "rt_collection_ownership.h"
 #include "rt_gc.h"
@@ -1006,7 +1007,7 @@ void *rt_map_keys(void *obj) {
     rt_string volatile key_string = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         map_save_trap(saved_error, sizeof(saved_error), "Map.Keys: snapshot allocation failed");
         rt_trap_clear_recovery();
@@ -1088,7 +1089,7 @@ void *rt_map_values(void *obj) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         map_save_trap(saved_error, sizeof(saved_error), "Map.Values: snapshot allocation failed");
         rt_trap_clear_recovery();
@@ -1342,7 +1343,7 @@ void *rt_map_clone(void *obj) {
     rt_string volatile key_string = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         map_save_trap(saved_error, sizeof(saved_error), "Map.Clone: allocation failed");
         rt_trap_clear_recovery();

@@ -40,6 +40,7 @@
 #include "rt_context.h"
 #include "rt_context_internal.h"
 #include "rt_internal.h"
+#include "rt_platform.h"
 #include "zanna/runtime/rt.h"
 
 #include "rt_object.h"
@@ -185,7 +186,7 @@ static inline int thread_try_retain_owned_value(void *arg, const char *fallback)
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
         rt_trap(saved_error);

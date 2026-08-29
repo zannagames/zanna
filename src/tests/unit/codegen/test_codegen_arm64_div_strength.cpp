@@ -361,6 +361,59 @@ TEST(AArch64DivStrength, SRemByPowerOf2BecomesSignCorrectedAnd) {
     EXPECT_FALSE(foundMSub);
 }
 
+// ZB-29: a constant fact for a register must die at ANY redefinition — the
+// flag-setting forms the overflow-checked lowering emits (adds/subs/…ovf) were
+// missing from the tracker's allowlist, so `mov x1, #2; adds x1, x2, #1;
+// sdiv x0, x3, x1` was strength-reduced to a divide by 2. In the game this
+// made `(a * 1000) / (b * 7 + 1)` return the dividend halved on the native
+// build only, and the season diverged from the VM oracle at day 41.
+TEST(AArch64DivStrength, ConstantFactDiesAtFlagSettingRedefinition) {
+    MFunction fn{};
+    fn.name = "test_sdiv_stale_const_adds";
+    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    auto &bb = fn.blocks.back();
+    bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(2)}});
+    bb.instrs.push_back(
+        MInstr{MOpcode::AddsRI,
+               {MOperand::regOp(PhysReg::X1), MOperand::regOp(PhysReg::X2), MOperand::immOp(1)}});
+    bb.instrs.push_back(MInstr{MOpcode::SDivRRR,
+                               {MOperand::regOp(PhysReg::X0),
+                                MOperand::regOp(PhysReg::X3),
+                                MOperand::regOp(PhysReg::X1)}});
+    bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
+    auto stats = runPeephole(fn);
+    EXPECT_EQ(stats.strengthReductions, 0u);
+    bool sdivSurvives = false;
+    for (const auto &mi : bb.instrs)
+        if (mi.opc == MOpcode::SDivRRR)
+            sdivSurvives = true;
+    EXPECT_TRUE(sdivSurvives);
+}
+
+TEST(AArch64DivStrength, ConstantFactDiesAtOverflowMultiplyRedefinition) {
+    MFunction fn{};
+    fn.name = "test_udiv_stale_const_mulovf";
+    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    auto &bb = fn.blocks.back();
+    bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(8)}});
+    bb.instrs.push_back(MInstr{MOpcode::MulOvfRRR,
+                               {MOperand::regOp(PhysReg::X1),
+                                MOperand::regOp(PhysReg::X2),
+                                MOperand::regOp(PhysReg::X4)}});
+    bb.instrs.push_back(MInstr{MOpcode::UDivRRR,
+                               {MOperand::regOp(PhysReg::X0),
+                                MOperand::regOp(PhysReg::X3),
+                                MOperand::regOp(PhysReg::X1)}});
+    bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
+    auto stats = runPeephole(fn);
+    EXPECT_EQ(stats.strengthReductions, 0u);
+    bool udivSurvives = false;
+    for (const auto &mi : bb.instrs)
+        if (mi.opc == MOpcode::UDivRRR)
+            udivSurvives = true;
+    EXPECT_TRUE(udivSurvives);
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, &argv);
     return zanna_test::run_all_tests();

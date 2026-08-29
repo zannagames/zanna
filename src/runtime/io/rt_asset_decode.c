@@ -43,6 +43,7 @@
 #endif
 #endif
 
+#include "rt_platform.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <setjmp.h>
@@ -523,7 +524,7 @@ static void *load_via_tempfile(const uint8_t *data,
     void *result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

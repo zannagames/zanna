@@ -337,6 +337,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-rasterizeuvheight"></a>`RasterizeUvHeight` | `void(obj,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` |
 | <a id="zanna-graphics3d-mesh3d-clone"></a>`Clone` | `obj()` | `Zanna.Graphics3D.Mesh3D.Clone` |
 | <a id="zanna-graphics3d-mesh3d-transform"></a>`Transform` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.Transform` |
+| <a id="zanna-graphics3d-mesh3d-mirror"></a>`Mirror` | `obj(obj)` | `Zanna.Graphics3D.Mesh3D.Mirror` |
 | <a id="zanna-graphics3d-mesh3d-bendarc"></a>`BendArc` | `void(f64,f64)` | `Zanna.Graphics3D.Mesh3D.BendArc` |
 | <a id="zanna-graphics3d-mesh3d-releasecpuscratch"></a>`ReleaseCpuScratch` | `i64()` | `Zanna.Graphics3D.Mesh3D.ReleaseCpuScratch` |
 | <a id="zanna-graphics3d-mesh3d-calculatetangents"></a>`CalculateTangents` | `void()` | `Zanna.Graphics3D.Mesh3D.CalculateTangents` |
@@ -2950,6 +2951,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` | `void(obj,obj,f64,f64)` | `rt_mesh3d_rasterize_uv_height` |
 | `Zanna.Graphics3D.Mesh3D.Clone` | `obj(obj)` | `rt_mesh3d_clone` |
 | `Zanna.Graphics3D.Mesh3D.Transform` | `void(obj,obj)` | `rt_mesh3d_transform` |
+| `Zanna.Graphics3D.Mesh3D.Mirror` | `obj(obj,obj)` | `rt_mesh3d_mirror` |
 | `Zanna.Graphics3D.Mesh3D.BendArc` | `void(obj,f64,f64)` | `rt_mesh3d_bend_arc` |
 | `Zanna.Graphics3D.Camera3D.New` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new` |
 | `Zanna.Graphics3D.Camera3D.WithHorizontalFov` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new_horizontal_fov` |

@@ -26,6 +26,8 @@
 #include "il/core/Opcode.hpp"
 #include "il/core/Type.hpp"
 #include "il/core/Value.hpp"
+#include "il/io/Parser.hpp"
+#include <sstream>
 
 #include <cassert>
 #include <iostream>
@@ -452,7 +454,54 @@ static void test_repeated_same_block_elimination_updates_later_uses() {
 }
 
 /// @brief Main.
+// ZB-32: a load memoized in a loop header must not be reused after the loop
+// (or inside it) when a loop-body block stores to the same slot. Dominance
+// does not imply "no intervening store" — the body does not dominate the
+// exit, yet it lies on every path from the header's second iteration onward.
+static void test_load_not_reused_across_loop_store() {
+    const char *text = R"(il 0.3.0
+func @f() -> i64 {
+entry:
+  %slot = alloca 8
+  store i64, %slot, 1
+  br loop(0)
+loop(%i:i64):
+  %v = load i64, %slot
+  %c = scmp_lt %i, 2
+  cbr %c, body, exit
+body:
+  store i64, %slot, 7
+  %n = iadd.ovf %i, 1
+  br loop(%n)
+exit:
+  %w = load i64, %slot
+  ret %w
+}
+)";
+    Module M;
+    std::istringstream in{text};
+    auto parsed = il::io::Parser::parse(in, M);
+    assert(parsed.hasValue());
+    Function &Fn = M.functions.front();
+    auto registry = makeRegistry();
+    il::transform::AnalysisManager AM(M, registry);
+    il::transform::GVN gvn;
+    (void)gvn.run(Fn, AM);
+    const BasicBlock *exitBlock = nullptr;
+    for (const auto &bb : Fn.blocks)
+        if (bb.label == "exit")
+            exitBlock = &bb;
+    assert(exitBlock && "exit block must survive");
+    bool loadSurvives = false;
+    for (const auto &ins : exitBlock->instructions)
+        if (ins.op == Opcode::Load)
+            loadSurvives = true;
+    assert(loadSurvives && "ZB-32: the post-loop load was replaced by the header's load");
+    std::cout << "gvn: load not reused across loop store OK\n";
+}
+
 int main() {
+    test_load_not_reused_across_loop_store();
     test_cse_cross_block();
     test_redundant_load_elim();
     test_textual_order_guard_for_redundant_load_elim();

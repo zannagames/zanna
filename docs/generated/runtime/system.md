@@ -168,6 +168,7 @@ callers to construct the class directly. Its public surface exposes operations i
 | <a id="zanna-system-process-processhandle-readstderr"></a>`ReadStderr` | `str()` | `Zanna.System.Process.ProcessHandle.ReadStderr` |
 | <a id="zanna-system-process-processhandle-readstderrresult"></a>`ReadStderrResult` | `obj<Zanna.Collections.Map>()` | `Zanna.System.Process.ProcessHandle.ReadStderrResult` |
 | <a id="zanna-system-process-processhandle-readoutputresult"></a>`ReadOutputResult` | `obj<Zanna.Collections.Map>()` | `Zanna.System.Process.ProcessHandle.ReadOutputResult` |
+| <a id="zanna-system-process-processhandle-readoutputresultbounded"></a>`ReadOutputResultBounded` | `obj<Zanna.Collections.Map>(i64,i64)` | `Zanna.System.Process.ProcessHandle.ReadOutputResultBounded` |
 | <a id="zanna-system-process-processhandle-writestdin"></a>`WriteStdin` | `i64(str)` | `Zanna.System.Process.ProcessHandle.WriteStdin` |
 | <a id="zanna-system-process-processhandle-exitcode"></a>`ExitCode` | `i64()` | `Zanna.System.Process.ProcessHandle.ExitCode` |
 | <a id="zanna-system-process-processhandle-kill"></a>`Kill` | `i1()` | `Zanna.System.Process.ProcessHandle.Kill` |
@@ -330,6 +331,7 @@ construct the class directly. Its public surface exposes properties such as `Arc
 | `Zanna.System.Process.ProcessHandle.ReadStderr` | `str(obj)` | `rt_process_read_stderr` |
 | `Zanna.System.Process.ProcessHandle.ReadStderrResult` | `obj<Zanna.Collections.Map>(obj)` | `rt_process_read_stderr_result` |
 | `Zanna.System.Process.ProcessHandle.ReadOutputResult` | `obj<Zanna.Collections.Map>(obj)` | `rt_process_read_output_result` |
+| `Zanna.System.Process.ProcessHandle.ReadOutputResultBounded` | `obj<Zanna.Collections.Map>(obj,i64,i64)` | `rt_process_read_output_result_bounded` |
 | `Zanna.System.Process.ProcessHandle.WriteStdin` | `i64(obj,str)` | `rt_process_write_stdin` |
 | `Zanna.System.Process.ProcessHandle.ExitCode` | `i64(obj)` | `rt_process_exit_code` |
 | `Zanna.System.Process.ProcessHandle.Kill` | `i1(obj)` | `rt_process_kill` |

@@ -3060,7 +3060,7 @@ void rt_game3d_world_run_frames(void *obj, int64_t frame_count, double step_sec,
     }
     rt_trap_set_recovery(&recovery);
     recovery_set = 1;
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *msg = rt_trap_get_error();
         snprintf(trap_message,
                  sizeof(trap_message),

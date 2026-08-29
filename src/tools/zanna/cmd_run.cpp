@@ -240,6 +240,7 @@ struct RunBuildConfig {
     std::optional<bool> fastLinkOverride;                 ///< --fast-link/--no-fast-link.
     std::optional<bool> windowsDebugRuntimeOverride;      ///< Windows debug/release runtime.
     std::optional<std::size_t> stackSizeOverride;         ///< --stack-size (bytes) for the exe.
+    bool stripSymbols = false; ///< --strip-symbols: omit local symbols from the exe.
 };
 
 /// @brief Print usage for the `zanna run`, `zanna build`, or `zanna check` subcommand.
@@ -305,6 +306,8 @@ void printRunBuildUsage(RunMode mode, std::ostream &out = std::cerr) {
         << "  -o PATH                       Output .il or native binary path\n"
         << "  --arch arm64|x64              Override native target architecture\n"
         << "  --fast-link | --no-fast-link  Override linker mode\n"
+        << "  --strip-symbols               Omit function/data names from the executable "
+           "symbol table\n"
         << "  --stack-size BYTES            Set the native executable stack size "
            "(decimal or 0x hex)\n"
         << "  --windows-debug-runtime       Link Windows debug runtime\n"
@@ -628,6 +631,15 @@ il::support::Expected<RunBuildConfig> parseRunBuildArgs(RunMode mode, int argc, 
                                             {}});
             }
             config.fastLinkOverride = false;
+        } else if (arg == "--strip-symbols") {
+            if (mode != RunMode::Build) {
+                return il::support::Expected<RunBuildConfig>(
+                    il::support::Diagnostic{il::support::Severity::Error,
+                                            "--strip-symbols is only valid with 'build'",
+                                            {},
+                                            {}});
+            }
+            config.stripSymbols = true;
         } else if (arg == "--stack-size") {
             if (mode != RunMode::Build) {
                 return il::support::Expected<RunBuildConfig>(
@@ -1370,7 +1382,8 @@ int executeRunBuildConfig(RunBuildConfig config) {
                                                      config.shared.timeCompile,
                                                      fastLink,
                                                      config.windowsDebugRuntimeOverride,
-                                                     config.stackSizeOverride.value_or(0));
+                                                     config.stackSizeOverride.value_or(0),
+                                                     !config.stripSymbols);
         printCompileTime(config.shared, "native-codegen-link", nativeStart);
         return rc;
     }

@@ -238,6 +238,25 @@ int8_t rt_heap_get_info(const void *payload, rt_heap_info_t *out_info);
 ///         otherwise 0.
 int8_t rt_heap_contains_range(const void *ptr, size_t bytes);
 
+/// @brief Enable or disable raw-allocation tracking for the reference IL VM (ZB-28).
+/// @details When enabled, every rt_alloc block is recorded until rt_free so
+///          rt_alloc_contains_range can classify it as program-owned memory.
+///          Off by default; disabling drops the table. Only the IL VM runner
+///          enables it — native programs and the bytecode VM never pay for it.
+/// @param enabled Nonzero to record allocations, zero to stop and free the table.
+void rt_alloc_set_tracking(int enabled);
+
+/// @brief Whether raw-allocation tracking is currently enabled.
+/// @return Nonzero when rt_alloc blocks are being recorded.
+int rt_alloc_tracking_enabled(void);
+
+/// @brief Test whether a byte range lies wholly inside one live rt_alloc block.
+/// @param ptr First byte of the requested range.
+/// @param bytes Number of bytes requested; zero-byte ranges are never owned.
+/// @return 1 when tracking is enabled and the range is inside one recorded
+///         block, otherwise 0.
+int8_t rt_alloc_contains_range(const void *ptr, size_t bytes);
+
 /// @brief Retrieve the header from a payload pointer.
 /// @details Validates exact registry membership before exposing the borrowed
 ///   header. The caller must already pin the payload against concurrent final

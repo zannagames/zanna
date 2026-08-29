@@ -36,6 +36,8 @@
 
 #include "rt_threads_internal.h"
 
+#include "rt_platform.h"
+
 /// @brief Join and release a retained inner Thread handle.
 /// @details Join traps are preserved across releasing @p inner and then raised again.
 /// @param inner Retained Thread handle to consume, or NULL.
@@ -46,7 +48,7 @@ static void thread_join_inner_or_release(void *inner) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "Thread.Join: failed");
         rt_trap_clear_recovery();
         thread_release_object(inner);
@@ -70,7 +72,7 @@ int8_t thread_try_join_inner_or_release(void *inner) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "Thread.TryJoin: failed");
         rt_trap_clear_recovery();
         thread_release_object(inner);
@@ -96,7 +98,7 @@ int8_t thread_join_for_inner_or_release(void *inner, int64_t ms) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "Thread.JoinFor: failed");
         rt_trap_clear_recovery();
         thread_release_object(inner);
@@ -120,7 +122,7 @@ static int64_t thread_get_id_inner_or_release(void *inner) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "Thread.GetId: failed");
         rt_trap_clear_recovery();
         thread_release_object(inner);
@@ -144,7 +146,7 @@ static int8_t thread_is_alive_inner_or_release(void *inner) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "Thread.IsAlive: failed");
         rt_trap_clear_recovery();
         thread_release_object(inner);
@@ -210,7 +212,7 @@ void *safe_thread_copy_inner_thread(SafeThreadCtx *ctx) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         thread_save_trap_error(saved_error, sizeof(saved_error), "SafeThread: retain failed");
         rt_trap_clear_recovery();
         if (ctx->monitor)
@@ -246,7 +248,7 @@ static void safe_thread_entry(void *ctx_ptr) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
 
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         ctx->entry(ctx->arg);
     } else {
         const char *err = rt_trap_get_error();
@@ -317,7 +319,7 @@ static void *rt_thread_start_safe_impl(rt_thread_entry_fn entry, void *arg, int8
     char saved_error[256];
     jmp_buf start_recovery;
     rt_trap_set_recovery(&start_recovery);
-    if (setjmp(start_recovery) != 0) {
+    if (RT_SETJMP(start_recovery) != 0) {
         thread_save_trap_error(
             saved_error, sizeof(saved_error), "Thread.StartSafe: failed to start");
         rt_trap_clear_recovery();

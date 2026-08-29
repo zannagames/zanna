@@ -70,12 +70,25 @@ static const size_t kImmortalRefcnt = RT_HEAP_IMMORTAL_REFCNT;
 #define RT_STRING_REG_EMPTY NULL
 #define RT_STRING_REG_TOMBSTONE ((rt_string)(uintptr_t)1)
 
+/// @brief Direct-mapped memo of recently validated handles (power of two).
+/// @details The main table is sized by the live-string population, which for
+///          large programs runs to millions of entries and hundreds of
+///          megabytes; every validation then costs a DRAM miss. This 64 KB
+///          memo stays cache-resident and answers repeat validations of hot
+///          handles without touching the table. An entry is only ever a
+///          pointer the table currently contains: insertion and successful
+///          lookup populate it, removal clears it, so a memo hit is exactly as
+///          trustworthy as a table hit.
+#define RT_STRING_REG_RECENT_SLOTS 8192u
+#define RT_STRING_REG_RECENT_MASK (RT_STRING_REG_RECENT_SLOTS - 1u)
+
 typedef struct {
     rt_string *slots;
     size_t count;
     size_t tombstones;
     size_t capacity;
     int lock;
+    rt_string recent[RT_STRING_REG_RECENT_SLOTS];
 } rt_string_registry_t;
 
 static rt_string_registry_t g_string_registry_;
@@ -96,6 +109,13 @@ static uint64_t rt_string_ptr_hash_(const void *p) {
     v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
     v = (v ^ (v >> 27)) * 0x94d049bb133111ebULL;
     return v ^ (v >> 31);
+}
+
+/// @brief Memo slot for a handle: the hash's upper bits, independent of the table index.
+/// @param p Candidate handle pointer.
+/// @return Index into `rt_string_registry_t::recent`.
+static size_t rt_string_registry_recent_idx_(const void *p) {
+    return (size_t)((rt_string_ptr_hash_(p) >> 32) & RT_STRING_REG_RECENT_MASK);
 }
 
 /// @brief Acquire the registry spinlock; yields the OS thread on contention.
@@ -217,6 +237,7 @@ static int rt_string_registry_insert_locked_(rt_string s) {
                 g_string_registry_.tombstones--;
             g_string_registry_.slots[target] = s;
             g_string_registry_.count++;
+            g_string_registry_.recent[rt_string_registry_recent_idx_(s)] = s;
             return 1;
         }
         if (slot == RT_STRING_REG_TOMBSTONE && first_tombstone == SIZE_MAX)
@@ -232,6 +253,9 @@ static int rt_string_registry_insert_locked_(rt_string s) {
 static void rt_string_registry_remove_locked_(rt_string s) {
     if (!s || !g_string_registry_.slots || g_string_registry_.capacity == 0)
         return;
+    const size_t recent_idx = rt_string_registry_recent_idx_(s);
+    if (g_string_registry_.recent[recent_idx] == s)
+        g_string_registry_.recent[recent_idx] = RT_STRING_REG_EMPTY;
     const size_t mask = g_string_registry_.capacity - 1;
     size_t idx = (size_t)(rt_string_ptr_hash_(s) & mask);
     while (1) {
@@ -256,12 +280,17 @@ static int rt_string_registry_contains_locked_(const rt_string s) {
     if (!s || s == RT_STRING_REG_TOMBSTONE || !g_string_registry_.slots ||
         g_string_registry_.capacity == 0)
         return 0;
+    const size_t recent_idx = rt_string_registry_recent_idx_(s);
+    if (g_string_registry_.recent[recent_idx] == s)
+        return 1;
     const size_t mask = g_string_registry_.capacity - 1;
     size_t idx = (size_t)(rt_string_ptr_hash_(s) & mask);
     while (1) {
         rt_string slot = g_string_registry_.slots[idx];
-        if (slot == s)
+        if (slot == s) {
+            g_string_registry_.recent[recent_idx] = s;
             return 1;
+        }
         if (slot == RT_STRING_REG_EMPTY)
             return 0;
         idx = (idx + 1) & mask;
@@ -307,6 +336,7 @@ void rt_string_registry_shutdown(void) {
     g_string_registry_.count = 0;
     g_string_registry_.tombstones = 0;
     g_string_registry_.capacity = 0;
+    memset(g_string_registry_.recent, 0, sizeof(g_string_registry_.recent));
     rt_string_registry_unlock_();
 }
 
@@ -580,15 +610,147 @@ rt_string rt_string_from_bytes(const char *bytes, size_t len) {
     return s;
 }
 
+// ---------------------------------------------------------------------------
+// Literal cache — one immortal string per literal site.
+// Native code calls `rt_str_from_lit` every time a string literal is
+// evaluated; the bytes live in the image's read-only data for the process
+// lifetime, so the literal's address identifies it. Without a cache every
+// evaluation paid an allocation, a registry insert, and (at scope end) a
+// registry erase and free — ~40 % of a string-heavy program's time. The
+// bytecode VM already materializes each literal once (`inlineLiteralCache`);
+// this makes native behave the same way. Entries are never removed.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    const char *bytes; ///< Literal address (the key); NULL = empty slot.
+    size_t len;        ///< Literal length, re-checked on every hit.
+    rt_string str;     ///< Immortal registered string for this literal.
+} rt_lit_slot_t;
+
+static struct {
+    rt_lit_slot_t *slots;
+    size_t count;
+    size_t capacity;
+    int lock;
+} g_lit_cache_;
+
+/// @brief Acquire the literal-cache spinlock (same discipline as the registry).
+static void rt_lit_cache_lock_(void) {
+    if (__atomic_test_and_set(&g_lit_cache_.lock, __ATOMIC_ACQUIRE)) {
+        do {
+#if RT_PLATFORM_WINDOWS
+            SwitchToThread();
+#else
+            sched_yield();
+#endif
+        } while (__atomic_test_and_set(&g_lit_cache_.lock, __ATOMIC_ACQUIRE));
+    }
+}
+
+/// @brief Release the literal-cache spinlock.
+static void rt_lit_cache_unlock_(void) {
+    __atomic_clear(&g_lit_cache_.lock, __ATOMIC_RELEASE);
+}
+
+/// @brief Grow the literal cache to twice its size (or 256) and rehash.
+/// @return One on success, zero when allocation fails (the old table stays).
+/// @pre The caller holds the cache lock.
+static int rt_lit_cache_grow_locked_(void) {
+    size_t new_capacity = g_lit_cache_.capacity ? g_lit_cache_.capacity * 2 : 256;
+    if (g_lit_cache_.capacity > SIZE_MAX / 2 / sizeof(rt_lit_slot_t))
+        return 0;
+    rt_lit_slot_t *new_slots = (rt_lit_slot_t *)calloc(new_capacity, sizeof(rt_lit_slot_t));
+    if (!new_slots)
+        return 0;
+    const size_t mask = new_capacity - 1;
+    for (size_t i = 0; i < g_lit_cache_.capacity; ++i) {
+        const rt_lit_slot_t *slot = &g_lit_cache_.slots[i];
+        if (!slot->bytes)
+            continue;
+        size_t idx = (size_t)(rt_string_ptr_hash_(slot->bytes) & mask);
+        while (new_slots[idx].bytes)
+            idx = (idx + 1) & mask;
+        new_slots[idx] = *slot;
+    }
+    free(g_lit_cache_.slots);
+    g_lit_cache_.slots = new_slots;
+    g_lit_cache_.capacity = new_capacity;
+    return 1;
+}
+
+/// @brief Make a freshly created mortal string immortal (heap-backed or embedded).
+/// @param s Owned string with exactly one reference.
+static void rt_string_make_immortal_(rt_string s) {
+    if (!s->heap || s->heap == RT_SSO_SENTINEL) {
+        __atomic_store_n(&s->literal_refs, kImmortalRefcnt, __ATOMIC_RELAXED);
+        return;
+    }
+    rt_heap_hdr_t *hdr = rt_string_registered_header_(s);
+    if (hdr)
+        __atomic_store_n(&hdr->refcnt, kImmortalRefcnt, __ATOMIC_RELAXED);
+}
+
 /// @brief Create a runtime string from a string literal.
-/// @details ABI wrapper around @ref rt_string_from_bytes used by generated
-///          code. Despite its name, it copies the span into an ordinary mortal
-///          string and does not retain a literal pointer.
-/// @param bytes Borrowed literal byte span.
-/// @param len Number of literal bytes to copy.
-/// @return Newly allocated owned copied string, or `NULL` on failure.
+/// @details Returns the immortal string cached for this literal address,
+///          creating it on first use; the same site always yields the same
+///          handle, so retain/release on the result are no-ops and no
+///          per-evaluation allocation happens. An address whose recorded
+///          length differs (a reused address after a module unload) misses
+///          and takes a fresh entry. Empty literals share the empty singleton.
+/// @param bytes Borrowed literal byte span that outlives the process's use of it.
+/// @param len Number of literal bytes.
+/// @return Immortal registered string, or `NULL` on allocation failure.
 rt_string rt_str_from_lit(const char *bytes, size_t len) {
-    return rt_string_from_bytes(bytes, len);
+    if (!bytes || len == 0)
+        return rt_str_empty();
+
+    rt_lit_cache_lock_();
+    if (g_lit_cache_.capacity) {
+        const size_t mask = g_lit_cache_.capacity - 1;
+        size_t idx = (size_t)(rt_string_ptr_hash_(bytes) & mask);
+        while (g_lit_cache_.slots[idx].bytes) {
+            const rt_lit_slot_t *slot = &g_lit_cache_.slots[idx];
+            if (slot->bytes == bytes && slot->len == len) {
+                rt_string hit = slot->str;
+                rt_lit_cache_unlock_();
+                return hit;
+            }
+            idx = (idx + 1) & mask;
+        }
+    }
+    // Miss: keep the load factor under 1/2 so probes stay short.
+    if ((g_lit_cache_.count + 1) * 2 >= g_lit_cache_.capacity && !rt_lit_cache_grow_locked_()) {
+        rt_lit_cache_unlock_();
+        return rt_string_from_bytes(bytes, len); // Uncached mortal fallback.
+    }
+    rt_string created = rt_string_from_bytes(bytes, len);
+    if (!created) {
+        rt_lit_cache_unlock_();
+        return NULL;
+    }
+    rt_string_make_immortal_(created);
+    const size_t mask = g_lit_cache_.capacity - 1;
+    size_t idx = (size_t)(rt_string_ptr_hash_(bytes) & mask);
+    while (g_lit_cache_.slots[idx].bytes)
+        idx = (idx + 1) & mask;
+    g_lit_cache_.slots[idx].bytes = bytes;
+    g_lit_cache_.slots[idx].len = len;
+    g_lit_cache_.slots[idx].str = created;
+    g_lit_cache_.count++;
+    rt_lit_cache_unlock_();
+    return created;
+}
+
+/// @brief Free the literal cache's table at runtime shutdown.
+/// @details The immortal strings themselves stay allocated like every other
+///          immortal singleton; only the index is released.
+void rt_string_literal_cache_shutdown(void) {
+    rt_lit_cache_lock_();
+    free(g_lit_cache_.slots);
+    g_lit_cache_.slots = NULL;
+    g_lit_cache_.count = 0;
+    g_lit_cache_.capacity = 0;
+    rt_lit_cache_unlock_();
 }
 
 /// @brief Test whether @p p is a currently registered runtime string.

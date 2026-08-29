@@ -193,6 +193,7 @@ std::string generateTempFilePath(const char *prefix, const char *extension) {
 /// @param fastLink Whether to select the faster link strategy.
 /// @param windowsDebugRuntime Optional Windows debug-CRT override.
 /// @param stackSize Requested executable stack bytes, or zero for the default.
+/// @param emitLocalSymbols Name every definition in the executable symbol table.
 /// @return Backend pipeline exit code, or two for a caught execution exception.
 int compileToNative(const std::string &ilPath,
                     const std::string &outputPath,
@@ -204,7 +205,8 @@ int compileToNative(const std::string &ilPath,
                     bool timePasses,
                     bool fastLink,
                     std::optional<bool> windowsDebugRuntime,
-                    std::size_t stackSize) {
+                    std::size_t stackSize,
+                    bool emitLocalSymbols) {
     if (arch == TargetArch::ARM64) {
         zanna::codegen::aarch64::CodegenPipeline::Options opts;
         opts.input_il_path = ilPath;
@@ -216,6 +218,7 @@ int compileToNative(const std::string &ilPath,
         opts.fast_link = fastLink;
         opts.windows_debug_runtime = windowsDebugRuntime;
         opts.stack_size = stackSize;
+        opts.emit_local_symbols = emitLocalSymbols;
         if (!assetObjPath.empty())
             opts.extra_objects.push_back(assetObjPath);
 
@@ -244,6 +247,7 @@ int compileToNative(const std::string &ilPath,
     opts.fast_link = fastLink;
     opts.windows_debug_runtime = windowsDebugRuntime;
     opts.stack_size = stackSize;
+    opts.emit_local_symbols = emitLocalSymbols;
 #if ZANNA_HOST_WINDOWS
     opts.target_abi = zanna::codegen::x64::CodegenOptions::TargetABI::Win64;
     opts.target_platform = zanna::codegen::x64::CodegenOptions::TargetPlatform::Windows;
@@ -295,6 +299,7 @@ int compileToNative(const std::string &ilPath,
 /// @param fastLink Whether to select the faster link strategy.
 /// @param windowsDebugRuntime Optional Windows debug-CRT override.
 /// @param stackSize Requested executable stack bytes, or zero for the default.
+/// @param emitLocalSymbols Name every definition in the executable symbol table.
 /// @return Backend pipeline exit code, or two for a caught execution exception.
 int compileModuleToNative(il::core::Module module,
                           const std::string &debugSourcePath,
@@ -308,7 +313,8 @@ int compileModuleToNative(il::core::Module module,
                           bool timePasses,
                           bool fastLink,
                           std::optional<bool> windowsDebugRuntime,
-                          std::size_t stackSize) {
+                          std::size_t stackSize,
+                          bool emitLocalSymbols) {
     const std::string syntheticInputPath =
         debugSourcePath.empty() ? std::string{"<in-memory>"} : debugSourcePath;
 
@@ -323,6 +329,7 @@ int compileModuleToNative(il::core::Module module,
         opts.fast_link = fastLink;
         opts.windows_debug_runtime = windowsDebugRuntime;
         opts.stack_size = stackSize;
+        opts.emit_local_symbols = emitLocalSymbols;
         if (!assetObjPath.empty())
             opts.extra_objects.push_back(assetObjPath);
 
@@ -351,6 +358,7 @@ int compileModuleToNative(il::core::Module module,
     opts.fast_link = fastLink;
     opts.windows_debug_runtime = windowsDebugRuntime;
     opts.stack_size = stackSize;
+    opts.emit_local_symbols = emitLocalSymbols;
 #if ZANNA_HOST_WINDOWS
     opts.target_abi = zanna::codegen::x64::CodegenOptions::TargetABI::Win64;
     opts.target_platform = zanna::codegen::x64::CodegenOptions::TargetPlatform::Windows;

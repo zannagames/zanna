@@ -43,6 +43,7 @@
 #include "rt_object.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
+#include "rt_skeleton3d.h"
 #include "rt_string.h"
 #include "rt_untrusted_count.h"
 #include "rt_vec3.h"
@@ -1282,7 +1283,6 @@ void rt_mesh3d_add_vertex(
     rt_mesh3d_touch_geometry(m);
 }
 
-
 //=============================================================================
 // Geometry Merge (ADR 0252)
 //=============================================================================
@@ -1346,8 +1346,8 @@ void rt_mesh3d_append(void *obj, void *src_obj) {
         return;
     }
 
-    if (!mesh3d_reserve_storage(dst, base + src_vertices, dst->index_count + src_indices,
-                                "Mesh3D.Append")) {
+    if (!mesh3d_reserve_storage(
+            dst, base + src_vertices, dst->index_count + src_indices, "Mesh3D.Append")) {
         mesh_mark_build_failed(dst);
         return;
     }
@@ -1387,6 +1387,7 @@ void rt_mesh3d_append(void *obj, void *src_obj) {
     dst->index_count += src_indices;
     rt_mesh3d_touch_geometry(dst);
 }
+
 /// @brief Add a triangle defined by three vertex indices (CCW winding = front-facing).
 /// @details Negative, out-of-range, repeated, or geometrically degenerate indices trap and latch
 ///          the mesh's failed-build state. Successful insertion grows index storage as needed and
@@ -1487,7 +1488,6 @@ void *rt_mesh3d_get_vertex_position(void *obj, int64_t index) {
     return rt_vec3_new(position[0], position[1], position[2]);
 }
 
-
 //=============================================================================
 // Bounds Readback and Normalization (ADR 0252)
 //=============================================================================
@@ -1565,6 +1565,7 @@ double rt_mesh3d_get_bounds_radius(void *obj) {
         return 0.0;
     return (double)m->bsphere_radius;
 }
+
 /// @brief Get the number of triangles in the mesh (index_count / 3).
 /// @param obj Mesh3D receiver.
 /// @return Number of complete triangles in the safe live index range, or zero for invalid input.
@@ -2510,6 +2511,99 @@ void rt_mesh3d_transform(void *obj, void *mat4_obj) {
 ///          `SceneAsset.FlattenStatic` never re-implement the normal/tangent/handedness path.
 /// @param obj Target mesh (no-op when NULL).
 /// @param matrix Borrowed row-major 4x4 matrix (16 doubles); NULL is a no-op.
+static int32_t mesh3d_mirror_palette_slot(const rt_mesh3d *m, void *skeleton, int32_t slot) {
+    int32_t bone = slot;
+    int32_t partner;
+    if (slot < 0 || slot >= m->bone_count)
+        return slot;
+    if (m->bone_map)
+        bone = m->bone_map[slot];
+    partner = rt_skeleton3d_mirror_bone(skeleton, bone);
+    if (partner == bone)
+        return slot;
+    if (!m->bone_map)
+        return partner >= 0 && partner < m->bone_count ? partner : slot;
+    for (int32_t i = 0; i < m->bone_count; ++i) {
+        if (m->bone_map[i] == partner)
+            return i;
+    }
+    return slot;
+}
+
+void *rt_mesh3d_mirror(void *obj, void *skeleton) {
+    rt_mesh3d *src = mesh3d_checked(obj);
+    rt_mesh3d *dst;
+    void *skel = NULL;
+    uint32_t vertex_count;
+    int32_t *partner = NULL;
+    static const double reflect_x[16] = {
+        -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+    if (!src)
+        return NULL;
+    if (skeleton) {
+        /* A handle that is not a Skeleton3D yields NULL (no trap): the caller
+         * decides whether a missing mirror is fatal. */
+        skel = rt_g3d_has_class(skeleton, RT_G3D_SKELETON3D_CLASS_ID) ? skeleton : NULL;
+        if (!skel)
+            return NULL;
+    }
+    dst = (rt_mesh3d *)rt_mesh3d_clone(obj);
+    if (!dst)
+        return NULL;
+    if (!skel)
+        skel = dst->skeleton_ref;
+
+    /* Geometry: the Transform path already reverses winding and negates the
+     * tangent handedness for a det < 0 matrix. */
+    mesh3d_transform_matrix(dst, reflect_x);
+
+    /* Bone influences: every palette slot moves to its sagittal partner. */
+    vertex_count = rt_mesh3d_safe_vertex_count(dst);
+    if (skel && dst->bone_count > 0 && mesh3d_has_bone_weights(dst)) {
+        partner = (int32_t *)malloc((size_t)dst->bone_count * sizeof(int32_t));
+        if (!partner) {
+            if (rt_obj_release_check0(dst))
+                rt_obj_free(dst);
+            rt_trap("Mesh3D.Mirror: memory allocation failed");
+            return NULL;
+        }
+        for (int32_t b = 0; b < dst->bone_count; ++b)
+            partner[b] = mesh3d_mirror_palette_slot(dst, skel, b);
+        for (uint32_t i = 0; i < vertex_count; ++i) {
+            vgfx3d_vertex_t *v = &dst->vertices[i];
+            for (int k = 0; k < 4; ++k) {
+                if (v->bone_weights[k] > 0.0f && v->bone_indices[k] < dst->bone_count)
+                    v->bone_indices[k] = (uint8_t)partner[v->bone_indices[k]];
+            }
+            if (dst->extra_influences) {
+                vgfx3d_extra_influences_t *e = &dst->extra_influences[i];
+                for (int k = 0; k < 4; ++k) {
+                    if (e->weights[k] > 0.0f && e->indices[k] < (uint16_t)dst->bone_count)
+                        e->indices[k] = (uint16_t)partner[e->indices[k]];
+                }
+            }
+        }
+        free(partner);
+    }
+
+    /* Morph deltas: the clone owns its own copy; reflect it in place. */
+    if (dst->morph_targets_ref) {
+        void *mirrored = rt_morphtarget3d_clone_mirrored_x(dst->morph_targets_ref);
+        if (!mirrored) {
+            if (rt_obj_release_check0(dst))
+                rt_obj_free(dst);
+            rt_trap("Mesh3D.Mirror: morph target mirror failed");
+            return NULL;
+        }
+        mesh_assign_morph_ref(&dst->morph_targets_ref, mirrored);
+        if (rt_obj_release_check0(mirrored))
+            rt_obj_free(mirrored);
+    }
+    rt_mesh3d_touch_geometry(dst);
+    rt_mesh3d_refresh_bounds(dst);
+    return dst;
+}
+
 void rt_mesh3d_transform_components(void *obj, const double *matrix) {
     rt_mesh3d *m = mesh3d_checked(obj);
     if (!m || !matrix)

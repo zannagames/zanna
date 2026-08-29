@@ -1782,7 +1782,7 @@ void *rt_pty_open_result(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *err = rt_trap_get_error();
         rt_trap_clear_recovery();
         return rt_result_err_str(rt_const_cstr(err && err[0] ? err : "Pty.Open failed"));
@@ -1812,7 +1812,7 @@ void *rt_pty_open_with_env_overlay_result(
     rt_string program, void *args, rt_string cwd, void *env, int64_t cols, int64_t rows) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *err = rt_trap_get_error();
         rt_trap_clear_recovery();
         return rt_result_err_str(

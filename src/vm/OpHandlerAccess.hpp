@@ -26,6 +26,9 @@
 #include "il/core/Function.hpp"
 #include "vm/VM.hpp"
 
+#include "rt_heap.h"
+#include "rt_modvar.h"
+
 #include <cstdint>
 #include <mutex>
 #include <span>
@@ -153,6 +156,20 @@ struct VMAccess {
         }
 
         if (rt_heap_contains_range(ptr, bytes)) {
+            info.valid = true;
+            return info;
+        }
+
+        // Module-level variables (rt_modvar_addr_*) live in rt_alloc storage
+        // owned by the runtime context, outside the heap registry (ZB-28).
+        if (rt_modvar_contains_range(ptr, bytes)) {
+            info.valid = true;
+            return info;
+        }
+
+        // Any other rt_alloc block (class descriptors, runtime tables) — the
+        // Runner enables tracking so these are program-owned too (ZB-28).
+        if (rt_alloc_contains_range(ptr, bytes)) {
             info.valid = true;
             return info;
         }

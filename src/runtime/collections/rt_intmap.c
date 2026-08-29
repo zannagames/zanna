@@ -56,6 +56,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 
 #include <setjmp.h>
@@ -182,7 +183,7 @@ static int intmap_append_key_or_release_seq(void *seq, int64_t key) {
     void *volatile boxed = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         intmap_save_trap(saved_error, sizeof(saved_error), "IntMap.Keys: snapshot append failed");
         rt_trap_clear_recovery();
@@ -209,7 +210,7 @@ static int intmap_append_key_or_release_seq(void *seq, int64_t key) {
 static int intmap_append_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         intmap_save_trap(saved_error, sizeof(saved_error), "IntMap.Values: snapshot append failed");
         rt_trap_clear_recovery();

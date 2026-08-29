@@ -49,6 +49,7 @@
 
 #include "rt_list.h"
 #include "rt_list_internal.h"
+#include "rt_platform.h"
 
 #include "rt_array_obj.h"
 #include "rt_box.h"
@@ -753,7 +754,7 @@ void *rt_list_slice(void *list, int64_t start, int64_t end) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         list_save_trap(saved_error, sizeof(saved_error), "List.Slice: construction failed");
         rt_trap_clear_recovery();
@@ -1045,7 +1046,7 @@ static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
     }
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

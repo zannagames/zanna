@@ -112,6 +112,9 @@ class CodegenPipeline {
         bool emit_debug_lines = false; ///< Emit .loc / line-number directives in assembly.
         bool time_passes = false;      ///< Print per-pass wall-clock timings to stderr.
         bool fast_link = false;        ///< Skip non-essential size-reduction passes in the linker.
+        /// Name every placed definition in the executable's symbol table so
+        /// profilers and debuggers can attribute addresses; false strips them.
+        bool emit_local_symbols = true;
         std::string asset_blob_path{}; ///< Path to ZPAK asset blob for .rodata embedding.
         std::vector<std::string> extra_objects{};    ///< Extra .o files to pass to the linker.
         std::optional<bool> windows_debug_runtime{}; ///< Override Windows CRT import flavor.

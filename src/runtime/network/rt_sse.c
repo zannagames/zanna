@@ -1498,7 +1498,7 @@ static int sse_open_url(
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         sse_save_trap(err_msg, err_msg_cap, "SSE: URL setup failed");
         rt_trap_clear_recovery();
         sse_native_discard(status_line);
@@ -2068,7 +2068,7 @@ void *rt_sse_connect(rt_string url) {
     rt_sse_impl *volatile sse = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         sse_save_trap(saved_error, sizeof(saved_error), "SSE: construction failed");
         rt_trap_clear_recovery();
@@ -2393,7 +2393,7 @@ static rt_string sse_receive_operation(rt_sse_impl *sse,
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         sse_save_trap(saved_error, sizeof(saved_error), "SSE.Recv: receive failed");
         rt_trap_clear_recovery();
@@ -2455,7 +2455,7 @@ static void *sse_receive_result_owned(rt_string data, int delivered, const char 
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         sse_save_trap(saved_error, sizeof(saved_error), "SSE: Result allocation failed");
         rt_trap_clear_recovery();
@@ -2529,7 +2529,7 @@ void *rt_sse_recv_for_result(void *obj, int64_t timeout_ms) {
     sse_receive_outcome_t outcome = SSE_RECEIVE_CLOSED;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         sse_save_trap(saved_error, sizeof(saved_error), "SSE: receive failed");
         rt_trap_clear_recovery();
@@ -2615,7 +2615,7 @@ static rt_string sse_metadata_snapshot(rt_sse_impl *sse, int event_type, const c
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         sse_save_trap(saved_error, sizeof(saved_error), operation);
         rt_trap_clear_recovery();

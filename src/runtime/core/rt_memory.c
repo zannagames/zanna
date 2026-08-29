@@ -40,8 +40,212 @@
 ///          @ref rt_trap. The default path returns zeroed storage of at least
 ///          one byte; an explicitly installed test hook may override that path.
 
+#include "rt_heap.h"
 #include "rt_internal.h"
+#include "rt_platform.h"
 #include <stdlib.h>
+#include <string.h>
+#if RT_PLATFORM_WINDOWS
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
+//===----------------------------------------------------------------------===//
+// Raw-allocation tracking (ZB-28)
+//
+// The reference IL VM validates every load/store address against memory it
+// can prove the program owns (frame stack, IL globals, registered heap
+// payloads). Blocks handed out by rt_alloc — class descriptors, module
+// variables, misc runtime tables — are plain calloc storage and were invisible
+// to that check, so `zanna run --trace/--profile` trapped on the first store
+// into one. When tracking is enabled (only by the IL VM runner) every rt_alloc
+// block is recorded in an open-addressing table keyed by address and removed
+// by rt_free; the VM asks rt_alloc_contains_range. Off by default: zero cost
+// for the bytecode VM and native programs.
+//===----------------------------------------------------------------------===//
+
+typedef struct {
+    void *ptr;   ///< Block start, NULL = empty slot, (void *)1 = tombstone.
+    size_t size; ///< Block size in bytes.
+} rt_alloc_track_entry_t;
+
+typedef struct {
+    rt_alloc_track_entry_t *slots;
+    size_t capacity; ///< Power of two, or 0 before the first insert.
+    size_t count;    ///< Live entries.
+    size_t used;     ///< Live entries + tombstones.
+    int enabled;
+    int lock;
+} rt_alloc_track_t;
+
+static rt_alloc_track_t g_alloc_track_ = {NULL, 0, 0, 0, 0, 0};
+#define RT_ALLOC_TRACK_TOMBSTONE ((void *)1)
+
+static void rt_alloc_track_lock_(void) {
+    if (__atomic_test_and_set(&g_alloc_track_.lock, __ATOMIC_ACQUIRE)) {
+        do {
+#if RT_PLATFORM_WINDOWS
+            SwitchToThread();
+#else
+            sched_yield();
+#endif
+        } while (__atomic_test_and_set(&g_alloc_track_.lock, __ATOMIC_ACQUIRE));
+    }
+}
+
+static void rt_alloc_track_unlock_(void) {
+    __atomic_clear(&g_alloc_track_.lock, __ATOMIC_RELEASE);
+}
+
+static size_t rt_alloc_track_hash_(const void *ptr) {
+    uint64_t h = (uint64_t)(uintptr_t)ptr;
+    h ^= h >> 33;
+    h *= 0xff51afd7ed558ccdULL;
+    h ^= h >> 33;
+    return (size_t)h;
+}
+
+static int rt_alloc_track_insert_locked_(void *ptr, size_t size);
+
+/// @brief Double the table (or create it) and re-insert every live entry; lock held.
+static int rt_alloc_track_grow_locked_(void) {
+    size_t new_cap = g_alloc_track_.capacity ? g_alloc_track_.capacity * 2 : 1024;
+    rt_alloc_track_entry_t *old = g_alloc_track_.slots;
+    size_t old_cap = g_alloc_track_.capacity;
+    rt_alloc_track_entry_t *fresh =
+        (rt_alloc_track_entry_t *)calloc(new_cap, sizeof(rt_alloc_track_entry_t));
+    if (!fresh)
+        return 0;
+    g_alloc_track_.slots = fresh;
+    g_alloc_track_.capacity = new_cap;
+    g_alloc_track_.count = 0;
+    g_alloc_track_.used = 0;
+    for (size_t i = 0; i < old_cap; ++i) {
+        if (old[i].ptr && old[i].ptr != RT_ALLOC_TRACK_TOMBSTONE)
+            (void)rt_alloc_track_insert_locked_(old[i].ptr, old[i].size);
+    }
+    free(old);
+    return 1;
+}
+
+/// @brief Insert or update @p ptr; lock held. Returns 0 only when growth fails.
+static int rt_alloc_track_insert_locked_(void *ptr, size_t size) {
+    if (g_alloc_track_.capacity == 0 ||
+        (g_alloc_track_.used + 1) * 10 > g_alloc_track_.capacity * 7) {
+        if (!rt_alloc_track_grow_locked_())
+            return 0;
+    }
+    size_t mask = g_alloc_track_.capacity - 1;
+    size_t i = rt_alloc_track_hash_(ptr) & mask;
+    for (;;) {
+        rt_alloc_track_entry_t *e = &g_alloc_track_.slots[i];
+        if (!e->ptr || e->ptr == RT_ALLOC_TRACK_TOMBSTONE) {
+            if (!e->ptr)
+                g_alloc_track_.used++;
+            e->ptr = ptr;
+            e->size = size;
+            g_alloc_track_.count++;
+            return 1;
+        }
+        if (e->ptr == ptr) {
+            e->size = size;
+            return 1;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+/// @brief Forget @p ptr (tombstone); lock held.
+static void rt_alloc_track_remove_locked_(void *ptr) {
+    if (g_alloc_track_.capacity == 0)
+        return;
+    size_t mask = g_alloc_track_.capacity - 1;
+    size_t i = rt_alloc_track_hash_(ptr) & mask;
+    for (;;) {
+        rt_alloc_track_entry_t *e = &g_alloc_track_.slots[i];
+        if (!e->ptr)
+            return;
+        if (e->ptr == ptr) {
+            e->ptr = RT_ALLOC_TRACK_TOMBSTONE;
+            e->size = 0;
+            g_alloc_track_.count--;
+            return;
+        }
+        i = (i + 1) & mask;
+    }
+}
+
+void rt_alloc_set_tracking(int enabled) {
+    rt_alloc_track_lock_();
+    g_alloc_track_.enabled = enabled ? 1 : 0;
+    if (!enabled) {
+        free(g_alloc_track_.slots);
+        g_alloc_track_.slots = NULL;
+        g_alloc_track_.capacity = 0;
+        g_alloc_track_.count = 0;
+        g_alloc_track_.used = 0;
+    }
+    rt_alloc_track_unlock_();
+}
+
+int rt_alloc_tracking_enabled(void) {
+    return __atomic_load_n(&g_alloc_track_.enabled, __ATOMIC_ACQUIRE);
+}
+
+int8_t rt_alloc_contains_range(const void *ptr, size_t bytes) {
+    if (!ptr || bytes == 0)
+        return 0;
+    if (!rt_alloc_tracking_enabled())
+        return 0;
+    const uintptr_t address = (uintptr_t)ptr;
+    int found = 0;
+    rt_alloc_track_lock_();
+    for (size_t i = 0; i < g_alloc_track_.capacity; ++i) {
+        const rt_alloc_track_entry_t *e = &g_alloc_track_.slots[i];
+        if (!e->ptr || e->ptr == RT_ALLOC_TRACK_TOMBSTONE || e->size == 0)
+            continue;
+        const uintptr_t begin = (uintptr_t)e->ptr;
+        if (address < begin)
+            continue;
+        const uintptr_t offset = address - begin;
+        if (offset < e->size && bytes <= e->size - (size_t)offset) {
+            found = 1;
+            break;
+        }
+    }
+    rt_alloc_track_unlock_();
+    return found ? 1 : 0;
+}
+
+/// @brief Record a fresh block when tracking is on and hand it back.
+static void *rt_alloc_track_note_(void *ptr, int64_t bytes);
+
+/// @brief Record a fresh block when tracking is on.
+static void rt_alloc_track_record_(void *ptr, int64_t bytes) {
+    if (!ptr || !rt_alloc_tracking_enabled())
+        return;
+    size_t size = bytes > 0 ? (size_t)bytes : 1;
+    rt_alloc_track_lock_();
+    if (g_alloc_track_.enabled)
+        (void)rt_alloc_track_insert_locked_(ptr, size);
+    rt_alloc_track_unlock_();
+}
+
+static void *rt_alloc_track_note_(void *ptr, int64_t bytes) {
+    rt_alloc_track_record_(ptr, bytes);
+    return ptr;
+}
+
+/// @brief Forget a block being freed when tracking is on.
+static void rt_alloc_track_forget_(void *ptr) {
+    if (!ptr || !rt_alloc_tracking_enabled())
+        return;
+    rt_alloc_track_lock_();
+    if (g_alloc_track_.enabled)
+        rt_alloc_track_remove_locked_(ptr);
+    rt_alloc_track_unlock_();
+}
 
 /// @brief Validate a byte count and allocate zero-initialized default storage.
 /// @details Zero-byte requests allocate one byte so successful calls always
@@ -102,8 +306,8 @@ void *rt_alloc(int64_t bytes) {
     // pointer here; require an explicit arm cookie from rt_set_alloc_hook()
     // before dispatching through the hook.
     if (g_rt_alloc_hook_armed == k_rt_alloc_hook_cookie && g_rt_alloc_hook)
-        return g_rt_alloc_hook(bytes, rt_alloc_impl);
-    return rt_alloc_impl(bytes);
+        return rt_alloc_track_note_(g_rt_alloc_hook(bytes, rt_alloc_impl), bytes);
+    return rt_alloc_track_note_(rt_alloc_impl(bytes), bytes);
 }
 
 /// @brief Free storage returned by @ref rt_alloc.
@@ -113,5 +317,6 @@ void *rt_alloc(int64_t bytes) {
 /// @param ptr Owned allocation returned by the default allocator or a
 ///   free-compatible test hook.
 void rt_free(void *ptr) {
+    rt_alloc_track_forget_(ptr);
     free(ptr);
 }

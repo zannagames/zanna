@@ -119,6 +119,7 @@ static void rt_global_shutdown(void) {
     rt_audio_shutdown();
     rt_legacy_context_shutdown();
     rt_string_intern_drain();
+    rt_string_literal_cache_shutdown();
     rt_string_registry_shutdown();
     rt_gc_shutdown();
     rt_heap_registry_shutdown_();
@@ -180,6 +181,15 @@ static int rt_register_shutdown_handler_(void) {
 /// @brief Deleted registry slot that preserves a linear-probe chain.
 #define RT_HEAP_REG_TOMBSTONE ((void *)(uintptr_t)1)
 
+/// @brief Direct-mapped memo of recently validated payloads (power of two).
+/// @details The table is sized by the live-allocation population — millions of
+///          entries for large programs — so each validation is a DRAM miss.
+///          This 64 KB memo stays cache-resident and short-circuits repeat
+///          validations. Entries mirror the table exactly: insertion and a
+///          successful probe populate a slot, removal and moves clear it.
+#define RT_HEAP_REG_RECENT_SLOTS 8192u
+#define RT_HEAP_REG_RECENT_MASK (RT_HEAP_REG_RECENT_SLOTS - 1u)
+
 /// @brief Process-global open-addressed set of exact live payload addresses.
 typedef struct {
     void **slots;
@@ -187,6 +197,7 @@ typedef struct {
     size_t tombstones;
     size_t capacity;
     int lock;
+    void *recent[RT_HEAP_REG_RECENT_SLOTS];
 } rt_heap_registry_t;
 
 /// @brief Lazily allocated payload registry and its spinlock state.
@@ -206,6 +217,13 @@ static uint64_t rt_heap_ptr_hash_(const void *p) {
     v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
     v = (v ^ (v >> 27)) * 0x94d049bb133111ebULL;
     return v ^ (v >> 31);
+}
+
+/// @brief Memo slot for a payload: the hash's upper bits, independent of the table index.
+/// @param p Candidate payload pointer.
+/// @return Index into `rt_heap_registry_t::recent`.
+static size_t rt_heap_registry_recent_idx_(const void *p) {
+    return (size_t)((rt_heap_ptr_hash_(p) >> 32) & RT_HEAP_REG_RECENT_MASK);
 }
 
 /// @brief Acquire the registry's spinlock with yield-on-contention.
@@ -349,6 +367,7 @@ static int rt_heap_registry_insert_existing_locked_(void *payload) {
                 g_heap_registry_.tombstones--;
             g_heap_registry_.slots[target] = payload;
             g_heap_registry_.count++;
+            g_heap_registry_.recent[rt_heap_registry_recent_idx_(payload)] = payload;
             return 1;
         }
         if (slot == RT_HEAP_REG_TOMBSTONE && first_tombstone == SIZE_MAX)
@@ -382,12 +401,17 @@ static int rt_heap_registry_contains_locked_(void *payload) {
     if (!payload || payload == RT_HEAP_REG_TOMBSTONE || !g_heap_registry_.slots ||
         g_heap_registry_.capacity == 0)
         return 0;
+    const size_t recent_idx = rt_heap_registry_recent_idx_(payload);
+    if (g_heap_registry_.recent[recent_idx] == payload)
+        return 1;
     const size_t mask = g_heap_registry_.capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(payload) & mask);
     while (1) {
         void *slot = g_heap_registry_.slots[idx];
-        if (slot == payload)
+        if (slot == payload) {
+            g_heap_registry_.recent[recent_idx] = payload;
             return 1;
+        }
         if (slot == RT_HEAP_REG_EMPTY)
             return 0;
         idx = (idx + 1) & mask;
@@ -427,6 +451,9 @@ static int rt_heap_try_get_header_locked_(void *payload, rt_heap_hdr_t **out_hdr
 static void rt_heap_registry_remove_locked_(void *payload) {
     if (!payload || !g_heap_registry_.slots || g_heap_registry_.capacity == 0)
         return;
+    const size_t recent_idx = rt_heap_registry_recent_idx_(payload);
+    if (g_heap_registry_.recent[recent_idx] == payload)
+        g_heap_registry_.recent[recent_idx] = RT_HEAP_REG_EMPTY;
     const size_t mask = g_heap_registry_.capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(payload) & mask);
     while (1) {
@@ -458,6 +485,9 @@ static int RT_HEAP_UNUSED_PRIVATE rt_heap_registry_move_locked_(void *old_payloa
         return 1;
     if (!g_heap_registry_.slots || g_heap_registry_.capacity == 0)
         return 0;
+    const size_t recent_idx = rt_heap_registry_recent_idx_(old_payload);
+    if (g_heap_registry_.recent[recent_idx] == old_payload)
+        g_heap_registry_.recent[recent_idx] = RT_HEAP_REG_EMPTY;
     const size_t mask = g_heap_registry_.capacity - 1;
     size_t idx = (size_t)(rt_heap_ptr_hash_(old_payload) & mask);
     while (1) {
@@ -484,6 +514,7 @@ static void rt_heap_registry_shutdown_(void) {
     g_heap_registry_.count = 0;
     g_heap_registry_.tombstones = 0;
     g_heap_registry_.capacity = 0;
+    memset(g_heap_registry_.recent, 0, sizeof(g_heap_registry_.recent));
 }
 
 /// @brief Sanity-check the invariants stored in a heap header.

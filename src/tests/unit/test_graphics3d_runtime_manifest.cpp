@@ -70,10 +70,10 @@ namespace {
 // ADR 0286 (2026-08-21): IKSolver3D.SetTargetRotation/ClearTargetRotation —
 // model-space end-bone orientation goal applied after the positional solve:
 // +2 functions / +2 methods.
-constexpr std::size_t kExpectedFunctionCount = 2268;
+constexpr std::size_t kExpectedFunctionCount = 2269;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 829;
-constexpr std::size_t kExpectedMethodCount = 1224;
+constexpr std::size_t kExpectedMethodCount = 1225;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -274,7 +274,10 @@ int main() {
     // Re-pinned 2026-08-21: ADR 0286 IKSolver3D.SetTargetRotation and
     // ClearTargetRotation (two functions/methods).
     // Re-pinned 2026-08-28: ADR 0300 AnimController3D.CrossfadeAt (0x96d4bb5a8a2f756a).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xe5a66c9807da22d6); /* ADR 0302: AnimController3D.SetBlendTreeFade + SetTransitionContinuity */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x69f0ac9a84301e75);
+    /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
+                                                                   AnimController3D.SetBlendTreeFade
+                                                                   + SetTransitionContinuity */
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

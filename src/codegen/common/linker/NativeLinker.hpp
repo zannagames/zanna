@@ -41,7 +41,7 @@ namespace zanna::codegen::linker {
 
 /// @brief Configures one independent native link invocation.
 struct NativeLinkerOptions {
-    std::string objPath;                   ///< Path to the user's compiled .o file.
+    std::string objPath; ///< Path to the user's compiled .o file.
     /// Optional serialized user object supplied directly by native codegen.
     /// When present, the linker parses these bytes instead of reading @ref objPath;
     /// objPath remains the diagnostic display name.
@@ -61,6 +61,11 @@ struct NativeLinkerOptions {
     std::optional<bool> windowsDebugRuntime; ///< Override CRT flavor on Windows when set.
     bool fastLink = false; ///< Skip non-essential size-reduction passes for edit/build cycles.
     bool preserveDebugSections = false; ///< Keep non-alloc DWARF/debug sections in output.
+    /// Publish every placed definition (functions and data) as a non-external
+    /// entry in the executable's symbol table so profilers and debuggers can
+    /// name addresses. Loader behaviour is unaffected; `false` writes a
+    /// stripped image carrying only the entry symbol and imports.
+    bool emitLocalSymbols = true;
 };
 
 /// @brief Runs the complete native object-to-executable link pipeline.

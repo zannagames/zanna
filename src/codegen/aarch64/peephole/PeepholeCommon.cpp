@@ -558,55 +558,24 @@ void updateKnownConsts(const MInstr &instr, RegConstMap &knownConsts) {
         return;
     }
 
+    if (knownConsts.empty())
+        return;
+
+    // ZB-29: every register the instruction defines loses its constant fact.
+    // The invalidation is derived from the canonical definesReg classification
+    // instead of a parallel opcode allowlist — the allowlist had drifted and
+    // omitted the flag-setting/overflow forms (adds/subs/…ovf), so a
+    // `mov x5, #2 … adds x5, x28, #1 … sdiv x, y, x5` chain was strength-
+    // reduced to a divide by 2 on the native -O1 build.
+    for (auto it = knownConsts.begin(); it != knownConsts.end();) {
+        const MOperand reg = MOperand::regOp(static_cast<PhysReg>(it->first));
+        if (definesReg(instr, reg))
+            it = knownConsts.erase(it);
+        else
+            ++it;
+    }
+
     switch (instr.opc) {
-        case MOpcode::MovRR:
-        case MOpcode::AddRRR:
-        case MOpcode::SubRRR:
-        case MOpcode::MulRRR:
-        case MOpcode::SmulhRRR:
-        case MOpcode::UmulhRRR:
-        case MOpcode::SDivRRR:
-        case MOpcode::UDivRRR:
-        case MOpcode::AndRRR:
-        case MOpcode::OrrRRR:
-        case MOpcode::EorRRR:
-        case MOpcode::AndRI:
-        case MOpcode::OrrRI:
-        case MOpcode::EorRI:
-        case MOpcode::AddRI:
-        case MOpcode::SubRI:
-        case MOpcode::LslRI:
-        case MOpcode::LsrRI:
-        case MOpcode::AsrRI:
-        case MOpcode::LslvRRR:
-        case MOpcode::LsrvRRR:
-        case MOpcode::AsrvRRR:
-        case MOpcode::Cset:
-        case MOpcode::LdrRegFpImm:
-        case MOpcode::Ldr8RegFpImm:
-        case MOpcode::Ldr16RegFpImm:
-        case MOpcode::Ldr32RegFpImm:
-        case MOpcode::LdrRegBaseImm:
-        case MOpcode::Ldr8RegBaseImm:
-        case MOpcode::Ldr16RegBaseImm:
-        case MOpcode::Ldr32RegBaseImm:
-        case MOpcode::AddFpImm:
-        case MOpcode::AdrPage:
-        case MOpcode::AddPageOff:
-        case MOpcode::MSubRRRR:
-        case MOpcode::MAddRRRR:
-        case MOpcode::Csel:
-        case MOpcode::FCsel:
-            if (!instr.ops.empty() && isPhysReg(instr.ops[0]))
-                knownConsts.erase(instr.ops[0].reg.idOrPhys);
-            break;
-        case MOpcode::LdpRegFpImm:
-        case MOpcode::LdpFprFpImm:
-            if (instr.ops.size() >= 1 && isPhysReg(instr.ops[0]))
-                knownConsts.erase(instr.ops[0].reg.idOrPhys);
-            if (instr.ops.size() >= 2 && isPhysReg(instr.ops[1]))
-                knownConsts.erase(instr.ops[1].reg.idOrPhys);
-            break;
         case MOpcode::JumpTable:
             // Clobbers the reserved X16/X17 scratch registers.
             knownConsts.erase(16);

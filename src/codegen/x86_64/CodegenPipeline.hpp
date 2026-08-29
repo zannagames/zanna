@@ -97,6 +97,9 @@ class CodegenPipeline {
         bool emit_debug_lines = false;
         bool time_passes = false; ///< Emit per-backend-pass timings.
         bool fast_link = false;   ///< Skip non-essential native-link size reductions.
+        /// Name every placed definition in the executable's symbol table so
+        /// profilers and debuggers can attribute addresses; false strips them.
+        bool emit_local_symbols = true;
         AssemblerMode assembler_mode = AssemblerMode::Native;
         LinkMode link_mode = LinkMode::Native;
         std::string asset_blob_path; ///< Path to ZPAK asset blob for .rodata embedding (optional).

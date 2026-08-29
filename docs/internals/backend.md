@@ -164,6 +164,26 @@ class PassManager {
 - Diagnostics accumulate throughout execution
 - Each pass reports success/failure via return value
 - `ZANNA_CODEGEN_STATS=1` enables non-fatal diagnostics with backend peephole transformation counts and MIR size/memory
+- Triage kill switches (bisection aids; never consulted at `-O0`): `ZANNA_NO_PRE_RA_OPT`,
+  `ZANNA_NO_BLOCK_LAYOUT`, `ZANNA_NO_PEEPHOLE`, `ZANNA_NO_SCHEDULER`,
+  `ZANNA_NO_POST_SCHED_PEEPHOLE` skip one AArch64 pipeline stage each
+  (`CodegenPipeline.cpp`), and `ZANNA_NO_PH_{REORDER,LOOPHOIST,PERBLOCK,DCE_CFG,FPSTORES,STORELOAD_FWD,PHI_LOADS,PHI_SPILLS,BRANCH}`
+  skip one sub-stage of the full peephole (`Peephole.cpp`). Together with the older
+  `ZANNA_NO_ADDR_FOLDS`, `ZANNA_NO_GLOBAL_RA`, `ZANNA_NO_JUMP_TABLES`, `ZANNA_NO_IF_CONVERT`,
+  `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
+  be bisected against a program-level oracle (VM vs native output) without rebuilding the
+  compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
+- `ZANNA_IL_OPT_KEEP_FUNCS=<file>` (IL optimizer, `PassManager::runPipeline`): the file lists
+  one IL function name per line; every function *not* listed is restored to its pre-pipeline
+  body after the named pipeline runs (functions, externs, and globals the pipeline removed
+  are re-added). With a program-level oracle this bisects "which optimized function changes
+  the output" in log₂(N) builds — plan 80 found ZB-30/ZB-31 this way. Keep-none must
+  reproduce the unoptimized result and keep-all the optimized one before trusting a run.
+- Native executables carry a full local symbol table by default (Mach-O `LC_SYMTAB` `N_SECT`
+  entries, ELF `.symtab`/`.strtab`), so `sample`, Instruments, and `perf` attribute samples to
+  Zia and runtime functions by name; `zanna build --strip-symbols` writes only the entry
+  point and imports. The loader never reads these entries, so stripping changes nothing at
+  run time.
   mix counters
 - AArch64 post-RA join coalescing handles acyclic joins and true loop headers only when the natural loop is call-free.
   Loop headers with call-containing bodies stay on stack-backed phi slots until the pass has full liveness proof for

@@ -46,6 +46,7 @@
 #include "rt_trie.h"
 
 #include "rt_option.h"
+#include "rt_platform.h"
 
 #include "rt_collection_ids.h"
 #include "rt_collection_ownership.h"
@@ -333,7 +334,7 @@ static int collect_keys(rt_trie_node *node,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         trie_save_trap_error(error, error_size, "rt_trie: failed to collect keys");
         rt_trap_clear_recovery();
         if (key)
@@ -550,7 +551,7 @@ void rt_trie_set(void *obj, rt_string key, void *value) {
     rt_trie_node *branch_tail = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         trie_save_trap_error(saved_error, sizeof(saved_error), "Trie.Set: operation failed");
         rt_trap_clear_recovery();
@@ -1000,7 +1001,7 @@ static rt_trie_node *clone_node(rt_trie_node *src, char *error, size_t error_siz
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         trie_save_trap_error(error, error_size, "rt_trie: clone failed");
         rt_trap_clear_recovery();
         free_node((rt_trie_node *)dst);

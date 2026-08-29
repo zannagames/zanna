@@ -408,6 +408,42 @@ TEST(Arm64Bugfix, SchedulerPreservesAliasedBaseRegisterStores) {
     ASSERT_EQ(rc, 10);
 }
 
+// ZB-31: a load whose GEP-chain root was materialized in ANOTHER block (the
+// shape LICM produces at -O2: the base load and the gep hoisted above a loop,
+// the dereference inside a later block) must guard the address it actually
+// dereferences. The old guard resolved the root through the function-wide
+// temp cache to a vreg that was not live in the loading block and trapped
+// "null pointer access" on a perfectly valid object.
+TEST(Arm64CLI, NullGuardUsesLiveAddressForCrossBlockRoot) {
+    const std::string in = outPath("arm64_nullguard_crossblock_root.il");
+    const std::string il = "il 0.1\n"
+                           "extern @rt_arr_obj_new(i64) -> ptr\n"
+                           "extern @rt_arr_obj_len(ptr) -> i64\n"
+                           "func @main() -> i64 {\n"
+                           "entry:\n"
+                           "  %cell = alloca 8\n"
+                           "  %obj = call @rt_arr_obj_new(3)\n"
+                           "  store ptr, %cell, %obj\n"
+                           "  %root = load ptr, %cell\n"
+                           "  %addr = gep %root, 8\n"
+                           "  br ^loop(0)\n"
+                           "loop(%i:i64):\n"
+                           "  %n = call @rt_arr_obj_len(%obj)\n"
+                           "  %done = scmp_ge %i, %n\n"
+                           "  cbr %done, ^exit, ^body\n"
+                           "body:\n"
+                           "  %v = load i64, %addr\n"
+                           "  %next = iadd.ovf %i, 1\n"
+                           "  br ^loop(%next)\n"
+                           "exit:\n"
+                           "  ret 0\n"
+                           "}\n";
+    writeFile(in, il);
+    const char *argv[] = {in.c_str(), "-O0", "--skip-il-optimization", "-run-native"};
+    const int rc = cmd_codegen_arm64(4, const_cast<char **>(argv));
+    ASSERT_EQ(rc, 0);
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, &argv);
     return zanna_test::run_all_tests();

@@ -52,6 +52,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq_internal.h"
 #include "rt_string.h"
 
@@ -354,7 +355,7 @@ void *rt_frozenset_from_seq(void *items) {
     volatile int pending_element_owned = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         fs_save_trap_error(
             saved_error, sizeof(saved_error), "FrozenSet: element extraction failed");

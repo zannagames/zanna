@@ -54,6 +54,7 @@
 #include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -294,7 +295,7 @@ static int bimap_append_copy_or_release_seq(void *seq,
     rt_string volatile copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         bimap_save_trap(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

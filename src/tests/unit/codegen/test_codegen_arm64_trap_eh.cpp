@@ -49,12 +49,14 @@ static std::string readFile(const std::string &path) {
 }
 
 /// @brief Returns the expected mangled symbol name for a call target.
-static std::string blSym(const std::string &name) {
 #if defined(__APPLE__)
-    return "bl _" + name;
+static const bool kDarwinHost = true;
 #else
-    return "bl " + name;
+static const bool kDarwinHost = false;
 #endif
+
+static std::string blSym(const std::string &name) {
+    return kDarwinHost ? "bl _" + name : "bl " + name;
 }
 
 static bool hasExactCall(const std::string &asmText, const std::string &name) {
@@ -229,7 +231,8 @@ TEST(Arm64CLI, EhMarkersLowerToNativeHelpers) {
     const std::string asmText = readFile(out);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_frame_alloc")), std::string::npos);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_push")), std::string::npos);
-    EXPECT_NE(asmText.find(blSym("setjmp")), std::string::npos);
+    // Darwin targets the mask-free `_setjmp`; other hosts `setjmp`.
+    EXPECT_NE(asmText.find(blSym(kDarwinHost ? "_setjmp" : "setjmp")), std::string::npos);
     EXPECT_TRUE(hasExactCall(asmText, "rt_trap_raise_error"));
 }
 

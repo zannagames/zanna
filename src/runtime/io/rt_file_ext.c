@@ -1863,7 +1863,7 @@ void *rt_io_file_read_all_lines(rt_string path) {
     rt_string volatile line = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         rt_fileext_save_trap_error(
             saved_error, sizeof(saved_error), "Zanna.IO.File.ReadAllLines: failed to split lines");

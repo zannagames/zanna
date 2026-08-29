@@ -1637,12 +1637,11 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
     if (!dynamicSyms.empty() && supportsDynamicStubs) {
         ObjFile stubObj;
         try {
-            stubObj =
-                (opts.platform == LinkPlatform::Linux && opts.arch == LinkArch::X86_64)
-                    ? generateDynStubsX8664(dynamicSyms)
-                    : generateDynStubsAArch64(dynamicSyms,
-                                              /*copyRelocDataSymbols=*/opts.platform ==
-                                                  LinkPlatform::Linux);
+            stubObj = (opts.platform == LinkPlatform::Linux && opts.arch == LinkArch::X86_64)
+                          ? generateDynStubsX8664(dynamicSyms)
+                          : generateDynStubsAArch64(dynamicSyms,
+                                                    /*copyRelocDataSymbols=*/opts.platform ==
+                                                        LinkPlatform::Linux);
         } catch (const std::exception &ex) {
             err << "error: failed to generate dynamic stubs: " << ex.what() << "\n";
             return 1;
@@ -1788,6 +1787,7 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
                                   dynamicSyms,
                                   opts.stackSize,
                                   opts.entrySymbol == "main",
+                                  opts.emitLocalSymbols,
                                   err);
             break;
         }
@@ -1803,6 +1803,7 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
                                     dynamicSyms,
                                     importPlan.symOrdinals,
                                     opts.stackSize,
+                                    opts.emitLocalSymbols,
                                     err);
             break;
         }

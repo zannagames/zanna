@@ -52,6 +52,7 @@
 #include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -730,7 +731,7 @@ void *rt_bag_items(void *obj) {
     rt_string volatile str = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         bag_save_trap(saved_error, sizeof(saved_error), "Bag.Items: snapshot failed");
         rt_trap_clear_recovery();

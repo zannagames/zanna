@@ -33,6 +33,7 @@
 
 #include "rt_monitor_internal.h"
 
+#include "rt_platform.h"
 #if !defined(_WIN32)
 
 #include <pthread.h>
@@ -727,7 +728,7 @@ void rt_monitor_enter(void *obj) {
     char saved_error[256];
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         monitor_save_trap_error(saved_error, sizeof(saved_error), "Monitor.Enter: failed");
         rt_trap_clear_recovery();
         pthread_mutex_unlock(&m->mu);

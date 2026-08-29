@@ -245,7 +245,7 @@ static int value_type_release_layout_slots(void *obj,
     rt_trap_set_recovery(&recovery);
 
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             rt_gc_mutator_enter();
             if (!trapped && error && error_size > 0) {
                 const char *err = rt_trap_get_error();
@@ -298,7 +298,7 @@ static void value_type_finalizer(void *obj) {
     if (previous && previous != value_type_finalizer) {
         jmp_buf previous_recovery;
         rt_trap_set_recovery(&previous_recovery);
-        if (setjmp(previous_recovery) != 0) {
+        if (RT_SETJMP(previous_recovery) != 0) {
             rt_gc_mutator_enter();
             const char *err = rt_trap_get_error();
             snprintf(previous_error,
@@ -513,7 +513,7 @@ void *rt_box_str(rt_string val) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -705,7 +705,7 @@ void *rt_box_to_str_option(void *box) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -882,7 +882,7 @@ void rt_box_value_type_add_field(void *obj, int64_t offset, int64_t kind, int8_t
         }
         jmp_buf retain_recovery;
         rt_trap_set_recovery(&retain_recovery);
-        if (setjmp(retain_recovery) != 0) {
+        if (RT_SETJMP(retain_recovery) != 0) {
             char saved_error[256];
             const char *err = rt_trap_get_error();
             snprintf(saved_error,
@@ -958,7 +958,7 @@ void rt_box_value_type_add_field(void *obj, int64_t offset, int64_t kind, int8_t
         rt_obj_set_finalizer(obj, value_type_finalizer);
         jmp_buf track_recovery;
         rt_trap_set_recovery(&track_recovery);
-        if (setjmp(track_recovery) != 0) {
+        if (RT_SETJMP(track_recovery) != 0) {
             char saved_error[256];
             const char *err = rt_trap_get_error();
             snprintf(saved_error,

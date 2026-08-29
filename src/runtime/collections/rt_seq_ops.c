@@ -47,6 +47,7 @@
 #include "rt_gc.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_seq_internal.h"
 #include "rt_string.h"
@@ -269,7 +270,7 @@ void rt_seq_sort_by(void *obj, int64_t (*cmp)(void *, void *)) {
     }
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

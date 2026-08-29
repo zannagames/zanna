@@ -25,6 +25,7 @@
 
 #include "zanna/vm/VM.hpp"
 
+#include "rt_heap.h"
 #include "support/source_manager.hpp"
 #include "vm/OpHandlerAccess.hpp"
 #include "vm/VM.hpp"
@@ -57,6 +58,10 @@ class Runner::Impl {
                                          std::move(config.debug),
                                          script,
                                          config.stackBytes) {
+        // ZB-28: the reference VM validates every memory access; record raw
+        // rt_alloc blocks so class descriptors and module variables classify as
+        // program-owned. Native programs and the bytecode VM never enable this.
+        rt_alloc_set_tracking(1);
         // Forward polling configuration to the underlying VM; allow env override.
         uint32_t everyN = config.interruptEveryN;
         if (everyN == 0) {

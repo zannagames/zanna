@@ -264,7 +264,7 @@ static void future_retain_object_or_cleanup(void *value, void *cleanup_obj, cons
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         future_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -294,7 +294,7 @@ static rt_string future_ref_string_or_cleanup(rt_string value,
     rt_string retained = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         future_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -470,7 +470,7 @@ static void future_invoke_listener(future_listener *listener) {
     int trapped = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         listener->callback(listener->future_obj, listener->ctx);
     } else {
         trapped = 1;
@@ -479,7 +479,7 @@ static void future_invoke_listener(future_listener *listener) {
 
     if (trapped && listener->cancel) {
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             listener->cancel(listener->ctx);
         }
         rt_trap_clear_recovery();
@@ -516,7 +516,7 @@ static void future_cancel_listeners(future_listener *listeners) {
         if (listeners->cancel) {
             jmp_buf recovery;
             rt_trap_set_recovery(&recovery);
-            if (setjmp(recovery) == 0)
+            if (RT_SETJMP(recovery) == 0)
                 listeners->cancel(listeners->ctx);
             rt_trap_clear_recovery();
         }
@@ -691,7 +691,7 @@ void *rt_promise_new(void) {
         char saved_error[256];
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             future_save_trap_error(saved_error, sizeof(saved_error), "Promise: GC tracking failed");
             rt_trap_clear_recovery();
             future_release_object(p);
@@ -743,7 +743,7 @@ void *rt_promise_get_future(void *obj) {
         future_impl *candidate = NULL;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             future_save_trap_error(saved_error, sizeof(saved_error), "Future: allocation failed");
             rt_trap_clear_recovery();
@@ -987,7 +987,7 @@ void rt_promise_set_error(void *obj, rt_string error) {
 
     jmp_buf setup_recovery;
     rt_trap_set_recovery(&setup_recovery);
-    if (setjmp(setup_recovery) != 0) {
+    if (RT_SETJMP(setup_recovery) != 0) {
         char saved_error[256];
         future_save_trap_error(
             saved_error, sizeof(saved_error), "Promise.SetError: error retain failed");
@@ -1065,7 +1065,7 @@ int8_t rt_promise_try_set_error_cstr(void *obj, const char *error) {
     if (error && error[0]) {
         jmp_buf copy_recovery;
         rt_trap_set_recovery(&copy_recovery);
-        if (setjmp(copy_recovery) == 0) {
+        if (RT_SETJMP(copy_recovery) == 0) {
             stored_error = rt_string_from_bytes(error, strlen(error));
             rt_trap_clear_recovery();
         } else {
@@ -1874,7 +1874,7 @@ int8_t rt_future_cancel_listener(void *obj, void (*callback)(void *future, void 
     if (removed->cancel) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             removed->cancel(removed->ctx);
         }
         rt_trap_clear_recovery();

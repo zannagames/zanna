@@ -344,6 +344,18 @@ std::optional<std::string> Sema::findFieldOwner(const std::string &typeName,
     return resolved->owner;
 }
 
+bool Sema::identShadowedByField(const Symbol *sym, const std::string &name) const {
+    if (!sym || !currentSelfType_ || name.find('.') != std::string::npos)
+        return false;
+    const bool localBinding = sym->kind == Symbol::Kind::Parameter ||
+                              sym->kind == Symbol::Kind::Field ||
+                              (sym->kind == Symbol::Kind::Variable &&
+                               !(sym->decl && sym->decl->kind == DeclKind::GlobalVar));
+    if (localBinding)
+        return false;
+    return findFieldOwner(currentSelfType_->name, name).has_value();
+}
+
 /// @brief Resolve a field type visible from a type.
 /// @param typeName The type whose member access is being analyzed.
 /// @param fieldName The field name to find.

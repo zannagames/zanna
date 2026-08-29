@@ -134,6 +134,43 @@ TEST(NativeEHLowering, RewritesResumeNextIntoRuntimeHelpers) {
     EXPECT_TRUE(sawSetjmp);
 }
 
+TEST(NativeEHLowering, MaskFreeSetjmpTargetsUnderscoreSetjmp) {
+    const std::string il = "il 0.1\n"
+                           "func @f() -> i64 {\n"
+                           "entry:\n"
+                           "  eh.push ^handler\n"
+                           "  %q = sdiv.chk0 10, 0\n"
+                           "  eh.pop\n"
+                           "  ret 42\n"
+                           "handler ^handler(%err:Error, %tok:ResumeTok):\n"
+                           "  eh.entry\n"
+                           "  resume.next %tok\n"
+                           "}\n";
+
+    il::core::Module mod = parseModule(il);
+    ASSERT_TRUE(zanna::codegen::common::lowerNativeEh(mod, /*maskFreeSetjmp=*/true));
+    auto verify = il::api::v2::verify_module_expected(mod);
+    ASSERT_TRUE(verify.hasValue());
+
+    EXPECT_TRUE(hasExtern(mod, "_setjmp"));
+    EXPECT_FALSE(hasExtern(mod, "setjmp"));
+
+    std::size_t maskFreeCalls = 0;
+    std::size_t plainCalls = 0;
+    for (const auto &bb : mod.functions.front().blocks) {
+        for (const auto &instr : bb.instructions) {
+            if (instr.op != il::core::Opcode::Call)
+                continue;
+            if (instr.callee == "_setjmp")
+                ++maskFreeCalls;
+            if (instr.callee == "setjmp")
+                ++plainCalls;
+        }
+    }
+    EXPECT_EQ(maskFreeCalls, 1U);
+    EXPECT_EQ(plainCalls, 0U);
+}
+
 TEST(NativeEHLowering, RewritesResumeSameIntoFaultSiteDispatch) {
     const std::string il = "il 0.1\n"
                            "func @f() -> i64 {\n"

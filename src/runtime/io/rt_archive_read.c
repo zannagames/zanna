@@ -37,6 +37,7 @@
 
 #include "rt_archive.h"
 #include "rt_archive_internal.h"
+#include "rt_platform.h"
 
 #include "rt_bytes.h"
 #include "rt_compress.h"
@@ -604,7 +605,7 @@ void *read_entry_data(rt_archive_t *ar, zip_entry_t *e) {
         uint8_t *volatile inflated_owner = inflated;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             archive_save_trap_error(
                 saved_error, sizeof(saved_error), "Archive: memory allocation failed");

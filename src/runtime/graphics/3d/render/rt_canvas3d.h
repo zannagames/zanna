@@ -1060,6 +1060,18 @@ void *rt_mesh3d_clone(void *obj);
 /// @param obj Borrowed mutable Mesh3D handle.
 /// @param mat4 Borrowed Mat4 applied to positions and normal directions.
 void rt_mesh3d_transform(void *obj, void *mat4);
+/// @brief Produce the left/right-mirrored copy of a mesh (`Mesh3D.Mirror`, ADR 0306).
+/// @details Positions, normals and tangents are reflected across model X = 0 with the
+///          `Mesh3D.Transform` math (winding reversed, tangent handedness negated), morph
+///          deltas are reflected, and every bone influence is remapped to its sagittal
+///          partner (`rt_skeleton3d_mirror_bone`: exact side-token swap, humanoid-role
+///          flip, else self) so a skinned copy reads as the opposite-handed character on
+///          the SAME skeleton. Meshes without bone weights mirror as plain geometry.
+/// @param obj Borrowed source Mesh3D handle.
+/// @param skeleton Borrowed Skeleton3D used for the partner resolution; NULL uses the
+///        mesh's attached skeleton. A non-skeleton handle yields NULL.
+/// @return New independent GC-managed Mesh3D, or NULL on invalid input / allocation failure.
+void *rt_mesh3d_mirror(void *obj, void *skeleton);
 /// @brief Wrap the mesh's X extent around a vertical circular arc (`Mesh3D.BendArc`, ADR 0294).
 /// @details The arc centre lies on local +Z, `radius` from the chord midpoint; vertices at depth z
 ///          land on radius `radius - z`. Normals/tangents rotate with the local frame; winding is

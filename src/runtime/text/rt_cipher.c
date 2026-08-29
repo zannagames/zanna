@@ -178,7 +178,7 @@ static void *cipher_password_result(cipher_password_decrypt_fn fn,
                                     const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = cipher_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -199,7 +199,7 @@ static void *cipher_password_option(cipher_password_decrypt_fn fn,
                                     rt_string password) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -224,7 +224,7 @@ static void *cipher_password_aad_result(cipher_password_aad_decrypt_fn fn,
                                         const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = cipher_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -247,7 +247,7 @@ static void *cipher_password_aad_option(cipher_password_aad_decrypt_fn fn,
                                         void *aad) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -270,7 +270,7 @@ static void *cipher_key_result(cipher_key_decrypt_fn fn,
                                const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = cipher_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -289,7 +289,7 @@ static void *cipher_key_result(cipher_key_decrypt_fn fn,
 static void *cipher_key_option(cipher_key_decrypt_fn fn, void *ciphertext, void *key) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -314,7 +314,7 @@ static void *cipher_key_aad_result(cipher_key_aad_decrypt_fn fn,
                                    const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = cipher_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -337,7 +337,7 @@ static void *cipher_key_aad_option(cipher_key_aad_decrypt_fn fn,
                                    void *aad) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -1286,8 +1286,7 @@ void *rt_cipher_decrypt_with_key_aad(void *ciphertext, void *key_bytes, void *aa
     // is AEAD-authenticated, so it only ever yields plaintext for a genuinely
     // valid legacy frame, and it never runs in approved mode.
     int magic_versioned = has_magic(ct_data, ct_len, CIPHER_KEY_MAGIC) || approved_payload;
-    const int allow_legacy_fallback =
-        !approved_payload && !rt_crypto_module_is_approved_mode();
+    const int allow_legacy_fallback = !approved_payload && !rt_crypto_module_is_approved_mode();
 
     for (int versioned = magic_versioned;; versioned = 0) {
         int64_t header_len = versioned ? CIPHER_KEY_HEADER_SIZE : CIPHER_NONCE_SIZE;

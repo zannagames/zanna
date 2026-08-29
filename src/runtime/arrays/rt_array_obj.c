@@ -361,7 +361,7 @@ void **rt_arr_obj_resize(void **arr, size_t len) {
 
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             rt_arr_obj_save_trap(
                 saved_error, sizeof(saved_error), "rt_array_obj: copy retain failed");

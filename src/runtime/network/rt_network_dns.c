@@ -51,6 +51,7 @@
 #include "rt_network_internal.h"
 
 #include "rt_map.h"
+#include "rt_platform.h"
 
 //=============================================================================
 // DNS Resolution - Static Utility Functions
@@ -316,7 +317,7 @@ void *rt_dns_resolve_all(rt_string hostname) {
     rt_string volatile addr_str = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         dns_save_trap_error(
             saved_error, sizeof(saved_error), "Network: failed to allocate DNS results");
@@ -562,7 +563,7 @@ void *rt_dns_local_addrs(void) {
     rt_string volatile addr_str = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         dns_save_trap_error(
             saved_error, sizeof(saved_error), "Network: failed to allocate local addresses");

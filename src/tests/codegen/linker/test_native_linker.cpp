@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -283,6 +284,138 @@ static bool countMachOSymbols(const std::vector<uint8_t> &data,
             ++undefinedCount;
     }
     return true;
+}
+
+/// Locates a named symbol in a Mach-O LC_SYMTAB and reports its nlist fields.
+static bool findMachOSymbol(const std::vector<uint8_t> &data,
+                            const std::string &symbolName,
+                            uint8_t &type,
+                            uint8_t &sect,
+                            uint64_t &value) {
+    static constexpr uint32_t LC_SYMTAB = 0x02;
+    if (data.size() < 32)
+        return false;
+    uint32_t symoff = 0, nsyms = 0, stroff = 0, strsize = 0;
+    const uint32_t ncmds = readLE32(data.data() + 16);
+    size_t off = 32;
+    for (uint32_t i = 0; i < ncmds; ++i) {
+        if (off + 8 > data.size())
+            return false;
+        const uint32_t cmd = readLE32(data.data() + off);
+        const uint32_t cmdsize = readLE32(data.data() + off + 4);
+        if (cmd == LC_SYMTAB) {
+            if (off + 24 > data.size())
+                return false;
+            symoff = readLE32(data.data() + off + 8);
+            nsyms = readLE32(data.data() + off + 12);
+            stroff = readLE32(data.data() + off + 16);
+            strsize = readLE32(data.data() + off + 20);
+            break;
+        }
+        if (cmdsize == 0)
+            return false;
+        off += cmdsize;
+    }
+    if (symoff == 0 || nsyms == 0 || stroff == 0 || stroff + strsize > data.size())
+        return false;
+    if (symoff + static_cast<size_t>(nsyms) * 16 > data.size())
+        return false;
+    for (uint32_t i = 0; i < nsyms; ++i) {
+        const uint8_t *entry = data.data() + symoff + static_cast<size_t>(i) * 16;
+        const uint32_t strx = readLE32(entry);
+        if (strx >= strsize)
+            return false;
+        const std::string name =
+            readMachOName(data.data() + stroff + strx, static_cast<size_t>(strsize - strx));
+        if (name != symbolName)
+            continue;
+        type = entry[4];
+        sect = entry[5];
+        value = readLE64(entry + 8);
+        return true;
+    }
+    return false;
+}
+
+/// Reads LC_DYSYMTAB's (ilocalsym, nlocalsym, iextdefsym, nextdefsym, iundefsym, nundefsym).
+static bool readMachODysymtab(const std::vector<uint8_t> &data, uint32_t out[6]) {
+    static constexpr uint32_t LC_DYSYMTAB = 0x0B;
+    if (data.size() < 32)
+        return false;
+    const uint32_t ncmds = readLE32(data.data() + 16);
+    size_t off = 32;
+    for (uint32_t i = 0; i < ncmds; ++i) {
+        if (off + 8 > data.size())
+            return false;
+        const uint32_t cmd = readLE32(data.data() + off);
+        const uint32_t cmdsize = readLE32(data.data() + off + 4);
+        if (cmd == LC_DYSYMTAB) {
+            if (off + 32 > data.size())
+                return false;
+            for (int k = 0; k < 6; ++k)
+                out[k] = readLE32(data.data() + off + 8 + static_cast<size_t>(k) * 4);
+            return true;
+        }
+        if (cmdsize == 0)
+            return false;
+        off += cmdsize;
+    }
+    return false;
+}
+
+/// Locates a named symbol in an ELF SHT_SYMTAB section and reports its fields.
+/// `found` distinguishes "no .symtab" (returns false) from "symbol absent".
+static bool findElfSymtabSymbol(const std::vector<uint8_t> &data,
+                                const std::string &symbolName,
+                                bool &found,
+                                uint8_t &info,
+                                uint16_t &shndx,
+                                uint64_t &value,
+                                uint64_t &size) {
+    static constexpr uint32_t SHT_SYMTAB = 2;
+    found = false;
+    if (data.size() < 64 || data[0] != 0x7F || data[1] != 'E' || data[2] != 'L' || data[3] != 'F')
+        return false;
+    const uint64_t shoff = readLE64(data.data() + 40);
+    const uint16_t shentsize = readLE16(data.data() + 58);
+    const uint16_t shnum = readLE16(data.data() + 60);
+    if (shentsize < 64 || shoff + static_cast<uint64_t>(shentsize) * shnum > data.size())
+        return false;
+    for (uint16_t i = 0; i < shnum; ++i) {
+        const uint8_t *sh = data.data() + shoff + static_cast<uint64_t>(i) * shentsize;
+        if (readLE32(sh + 4) != SHT_SYMTAB)
+            continue;
+        const uint64_t symOff = readLE64(sh + 24);
+        const uint64_t symSize = readLE64(sh + 32);
+        const uint32_t link = readLE32(sh + 40);
+        const uint64_t entsize = readLE64(sh + 56);
+        if (entsize != 24 || link >= shnum || symOff + symSize > data.size())
+            return false;
+        const uint8_t *strSh = data.data() + shoff + static_cast<uint64_t>(link) * shentsize;
+        const uint64_t strOff = readLE64(strSh + 24);
+        const uint64_t strSize = readLE64(strSh + 32);
+        if (strOff + strSize > data.size())
+            return false;
+        for (uint64_t e = 0; e + 24 <= symSize; e += 24) {
+            const uint8_t *sym = data.data() + symOff + e;
+            const uint32_t nameOff = readLE32(sym);
+            if (nameOff >= strSize)
+                continue;
+            const char *namePtr = reinterpret_cast<const char *>(data.data() + strOff + nameOff);
+            const std::string name(namePtr,
+                                   strnlen(namePtr, static_cast<size_t>(strSize - nameOff)));
+            if (name != symbolName)
+                continue;
+            found = true;
+            info = sym[4];
+            shndx = readLE16(sym + 6);
+            value = readLE64(sym + 8);
+            size = readLE64(sym + 16);
+            return true;
+        }
+        return true;
+    }
+    return false;
 }
 
 static bool findElfProgramHeader(const std::vector<uint8_t> &data, uint32_t type) {
@@ -1545,6 +1678,155 @@ int main() {
         CHECK(countMachOSymbols(exe, "_main", definedMain, undefinedMain));
         CHECK(definedMain == 1);
         CHECK(undefinedMain == 0);
+    }
+
+    // Executable symbol tables name every placed definition (profiler support):
+    // Mach-O publishes non-external N_SECT entries ahead of _main, and
+    // LC_DYSYMTAB partitions locals / external definitions / imports.
+    {
+        CodeSection text;
+        CodeSection rodata;
+        // main calls both helpers so dead-strip keeps their atoms alive.
+        text.defineSymbol("main", SymbolBinding::Global, SymbolSection::Text);
+        const uint32_t hotIdx = text.findOrDeclareSymbol("hot_helper");
+        text.addRelocation(RelocKind::A64Call26, hotIdx, 0);
+        text.emit32LE(0x94000000U); // bl hot_helper
+        const uint32_t coldIdx = text.findOrDeclareSymbol("cold_helper");
+        text.addRelocation(RelocKind::A64Call26, coldIdx, 4);
+        text.emit32LE(0x94000000U); // bl cold_helper
+        text.emit32LE(0xD2800000U); // mov x0, #0
+        text.emit32LE(0xD65F03C0U); // ret
+        text.defineSymbol("hot_helper", SymbolBinding::Global, SymbolSection::Text);
+        text.emit32LE(0xD2800020U); // mov x0, #1
+        text.emit32LE(0xD65F03C0U); // ret
+        text.defineSymbol("cold_helper", SymbolBinding::Global, SymbolSection::Text);
+        text.emit32LE(0xD65F03C0U); // ret
+
+        const std::string objPath = tmpPath("macos_local_symbols.o");
+        std::ostringstream writerErr;
+        MachOWriter writer(ObjArch::AArch64);
+        CHECK(writer.write(objPath, text, rodata, writerErr));
+        CHECK(writerErr.str().empty());
+
+        for (const bool emitLocals : {true, false}) {
+            const std::string exePath =
+                tmpPath(emitLocals ? "macos_local_symbols" : "macos_local_symbols_stripped");
+            NativeLinkerOptions opts;
+            opts.platform = LinkPlatform::macOS;
+            opts.arch = LinkArch::AArch64;
+            opts.objPath = objPath;
+            opts.exePath = exePath;
+            opts.entrySymbol = "main";
+            opts.emitLocalSymbols = emitLocals;
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = nativeLink(opts, out, err);
+            CHECK(rc == 0);
+            CHECK(err.str().find("error:") == std::string::npos);
+
+            const std::vector<uint8_t> exe = readFile(exePath);
+            uint8_t mainType = 0, mainSect = 0;
+            uint64_t mainValue = 0;
+            CHECK(findMachOSymbol(exe, "_main", mainType, mainSect, mainValue));
+            CHECK(mainType == 0x0F); // N_SECT | N_EXT
+            CHECK(mainSect == 1);
+
+            uint8_t type = 0, sect = 0;
+            uint64_t value = 0;
+            const bool hasHot = findMachOSymbol(exe, "_hot_helper", type, sect, value);
+            uint32_t dysym[6] = {0, 0, 0, 0, 0, 0};
+            CHECK(readMachODysymtab(exe, dysym));
+            if (emitLocals) {
+                CHECK(hasHot);
+                CHECK(type == 0x0E); // N_SECT, not external
+                CHECK(sect == 1);
+                CHECK(value == mainValue + 16);
+                uint8_t coldType = 0, coldSect = 0;
+                uint64_t coldValue = 0;
+                CHECK(findMachOSymbol(exe, "_cold_helper", coldType, coldSect, coldValue));
+                CHECK(coldValue == mainValue + 24);
+                CHECK(dysym[0] == 0); // ilocalsym
+                CHECK(dysym[1] == 2); // nlocalsym: both helpers
+                CHECK(dysym[2] == 2); // iextdefsym follows the locals
+                CHECK(dysym[3] == 1); // nextdefsym: _main
+                CHECK(dysym[4] == 3); // iundefsym
+            } else {
+                CHECK(!hasHot);
+                CHECK(dysym[1] == 0);
+                CHECK(dysym[2] == 0);
+                CHECK(dysym[3] == 1);
+            }
+        }
+    }
+
+    // ELF: a .symtab/.strtab pair with local STT_FUNC entries carrying sizes
+    // that run to the next definition, absent when stripped.
+    {
+        CodeSection text;
+        CodeSection rodata;
+        text.defineSymbol("main", SymbolBinding::Global, SymbolSection::Text);
+        text.emit8(0xC3); // ret
+        text.defineSymbol("hot_helper", SymbolBinding::Global, SymbolSection::Text);
+        text.emit8(0x90); // nop
+        text.emit8(0x90); // nop
+        text.emit8(0xC3); // ret
+        text.defineSymbol("cold_helper", SymbolBinding::Global, SymbolSection::Text);
+        text.emit8(0xC3); // ret
+
+        const std::string objPath = tmpPath("linux_local_symbols.o");
+        std::ostringstream writerErr;
+        ElfWriter writer(ObjArch::X86_64);
+        CHECK(writer.write(objPath, text, rodata, writerErr));
+        CHECK(writerErr.str().empty());
+
+        for (const bool emitLocals : {true, false}) {
+            const std::string exePath =
+                tmpPath(emitLocals ? "linux_local_symbols" : "linux_local_symbols_stripped");
+            NativeLinkerOptions opts;
+            opts.platform = LinkPlatform::Linux;
+            opts.arch = LinkArch::X86_64;
+            opts.objPath = objPath;
+            opts.exePath = exePath;
+            opts.entrySymbol = "main";
+            opts.emitLocalSymbols = emitLocals;
+
+            std::ostringstream out;
+            std::ostringstream err;
+            const int rc = nativeLink(opts, out, err);
+            CHECK(rc == 0);
+            CHECK(err.str().find("error:") == std::string::npos);
+
+            const std::vector<uint8_t> exe = readFile(exePath);
+            bool found = false;
+            uint8_t info = 0;
+            uint16_t shndx = 0;
+            uint64_t value = 0, size = 0;
+            const bool hasSymtab =
+                findElfSymtabSymbol(exe, "hot_helper", found, info, shndx, value, size);
+            if (emitLocals) {
+                CHECK(hasSymtab);
+                CHECK(found);
+                CHECK(info == 0x02); // STB_LOCAL | STT_FUNC
+                CHECK(shndx != 0);
+                CHECK(size == 3);
+                bool mainFound = false;
+                uint8_t mainInfo = 0;
+                uint16_t mainShndx = 0;
+                uint64_t mainValue = 0, mainSize = 0;
+                CHECK(findElfSymtabSymbol(
+                    exe, "main", mainFound, mainInfo, mainShndx, mainValue, mainSize));
+                CHECK(mainFound);
+                CHECK(mainShndx == shndx);
+                CHECK(value == mainValue + 1);
+                CHECK(mainSize == 1);
+                CHECK(containsAscii(exe, ".symtab"));
+                CHECK(containsAscii(exe, ".strtab"));
+            } else {
+                CHECK(!hasSymtab);
+                CHECK(!containsAscii(exe, "hot_helper"));
+            }
+        }
     }
 
     if (gFail == 0) {

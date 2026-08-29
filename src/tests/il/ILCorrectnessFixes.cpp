@@ -35,8 +35,8 @@
 #include <cmath>
 #include <limits>
 #include <sstream>
-#include <streambuf>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 
 namespace il::runtime::signatures {
@@ -147,7 +147,9 @@ func @main() -> i64 {
 entry:
   ret 0
 }
-)", limits, "resource limit exceeded: functions"));
+)",
+                                     limits,
+                                     "resource limit exceeded: functions"));
 
     limits = {};
     limits.maxBlocks = 0;
@@ -156,7 +158,9 @@ func @main() -> i64 {
 entry:
   ret 0
 }
-)", limits, "resource limit exceeded: basic blocks"));
+)",
+                                     limits,
+                                     "resource limit exceeded: basic blocks"));
 
     limits = {};
     limits.maxInstructions = 0;
@@ -165,7 +169,9 @@ func @main() -> i64 {
 entry:
   ret 0
 }
-)", limits, "resource limit exceeded: instructions"));
+)",
+                                     limits,
+                                     "resource limit exceeded: instructions"));
 
     limits = {};
     limits.maxValuesPerInstruction = 1;
@@ -175,7 +181,9 @@ entry:
   %sum = add 1, 2
   ret %sum
 }
-)", limits, "resource limit exceeded: instruction operands"));
+)",
+                                     limits,
+                                     "resource limit exceeded: instruction operands"));
 
     limits = {};
     limits.maxTempsPerFunction = 2;
@@ -187,7 +195,9 @@ entry:
   %c = add %b, 4
   ret %c
 }
-)", limits, "resource limit exceeded: function temporaries"));
+)",
+                                     limits,
+                                     "resource limit exceeded: function temporaries"));
 
     limits = {};
     limits.maxTempsPerFunction = 8;
@@ -196,7 +206,9 @@ func @main() -> i64 {
 entry:
   ret %t4294967295
 }
-)", limits, "resource limit exceeded: function temporaries"));
+)",
+                                     limits,
+                                     "resource limit exceeded: function temporaries"));
 }
 
 TEST(ILCorrectness, ParserRollsBackModuleOnFailure) {
@@ -1445,6 +1457,62 @@ TEST(ILCorrectness, DceCollapsesLongDeadChainWithWorklist) {
     il::transform::dce(module);
     ASSERT_EQ(module.functions.front().blocks.front().instructions.size(), 1u);
     EXPECT_EQ(module.functions.front().blocks.front().instructions.front().op, Opcode::Ret);
+}
+
+// ZB-28: the standard IL VM (used by `zanna run --trace/--profile`) must accept
+// loads and stores through rt_modvar_addr_* storage — the backing store of every
+// Zia module-level variable — which lives outside the runtime heap registry.
+TEST(ILCorrectness, StandardVmAcceptsModuleVariableStores) {
+    Module module = parseModule(R"(il 0.3.0
+extern @rt_modvar_addr_i64(str) -> ptr
+global const str @.L0 = "zb28_g"
+func @main() -> i64 {
+entry:
+  %t0 = const_str @.L0
+  %t1:ptr = call @rt_modvar_addr_i64(%t0)
+  store i64, %t1, 40
+  %t2 = load i64, %t1
+  %t3 = iadd.ovf %t2, 2
+  store i64, %t1, %t3
+  %t4 = load i64, %t1
+  ret %t4
+}
+)");
+    il::vm::RunConfig cfg;
+    il::vm::Runner runner(module, cfg);
+    const int64_t result = runner.run();
+    const auto trap = runner.lastTrapMessage();
+    if (trap && !trap->empty())
+        std::cerr << "unexpected trap: " << *trap << "\n";
+    EXPECT_FALSE(trap.has_value() && !trap->empty());
+    EXPECT_EQ(result, 42);
+}
+
+// ZB-28 (second half): class descriptors and other runtime tables are plain
+// rt_alloc blocks; the reference VM must accept stores into them as well.
+TEST(ILCorrectness, StandardVmAcceptsRawAllocationStores) {
+    Module module = parseModule(R"(il 0.3.0
+extern @rt_alloc(i64) -> ptr
+func @main() -> i64 {
+entry:
+  %t0:ptr = call @rt_alloc(16)
+  %t1 = gep %t0, 8
+  store i64, %t1, 7
+  store i64, %t0, 35
+  %t2 = load i64, %t0
+  %t3 = load i64, %t1
+  %t4 = iadd.ovf %t2, %t3
+  ret %t4
+}
+)");
+    il::vm::RunConfig cfg;
+    il::vm::Runner runner(module, cfg);
+    const int64_t result = runner.run();
+    const auto trap = runner.lastTrapMessage();
+    if (trap && !trap->empty())
+        std::cerr << "unexpected trap: " << *trap << "\n";
+    EXPECT_FALSE(trap.has_value() && !trap->empty());
+    EXPECT_EQ(result, 42);
 }
 
 int main(int argc, char **argv) {

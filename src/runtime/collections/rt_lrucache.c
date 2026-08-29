@@ -55,6 +55,7 @@
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -344,7 +345,7 @@ static int lru_destroy_nodes(rt_lru_node *head, char *error, size_t error_size) 
     rt_gc_mutator_enter();
     rt_trap_set_recovery(&recovery);
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             rt_gc_mutator_enter();
             if (!trapped)
                 lru_save_trap_error(error, error_size, "LRUCache: value finalizer cleanup failed");
@@ -370,7 +371,7 @@ static int lru_append_key_or_release_seq(void *seq, const char *key, size_t key_
     volatile rt_string key_copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         lru_save_trap_error(
             saved_error, sizeof(saved_error), "LRUCache.Keys: snapshot append failed");
@@ -401,7 +402,7 @@ static int lru_append_key_or_release_seq(void *seq, const char *key, size_t key_
 static int lru_append_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         lru_save_trap_error(
             saved_error, sizeof(saved_error), "LRUCache.Values: snapshot append failed");

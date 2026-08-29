@@ -54,6 +54,7 @@
 #include "rt_gc.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 
 #include <setjmp.h>
 #include <stdio.h>
@@ -643,7 +644,7 @@ void *rt_deque_clone(void *obj) {
     void *volatile new_d = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         deque_save_trap(saved_error, sizeof(saved_error), "Deque.Clone: copy failed");
         rt_trap_clear_recovery();

@@ -46,6 +46,7 @@
 #include "rt_http2.h"
 #include "rt_network_http_internal.h"
 #include "rt_network_internal.h"
+#include "rt_platform.h"
 #include "rt_tls.h"
 #include "rt_tls_internal.h"
 
@@ -928,7 +929,7 @@ void *rt_http_default_connection_pool(void) {
         void *volatile candidate = NULL;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             const char *error = rt_trap_get_error();
             snprintf(saved_error,
@@ -2218,7 +2219,7 @@ int rt_http_header_map_remove_ci(void *map, const char *name) {
     void *volatile keys = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         http_header_map_release_keys((void *)keys);
         return 0;
@@ -2259,7 +2260,7 @@ int rt_http_header_map_set_ci(void *map, rt_string name, void *value) {
     void *volatile keys = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         http_header_map_release_keys((void *)keys);
         return 0;
@@ -2647,7 +2648,7 @@ static rt_http_res_t *http_follow_redirect(rt_http_req_t *source,
     char *volatile location = location_owned;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -2696,7 +2697,7 @@ static rt_string get_header_value(void *headers_map, const char *name) {
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -2740,7 +2741,7 @@ static int set_header_value(void *headers_map, const char *name, const char *val
     void *volatile boxed = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -2837,7 +2838,7 @@ static int maybe_decode_gzip_body(const rt_http_req_t *req,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -3498,7 +3499,7 @@ static int http2_headers_to_map(const rt_http2_header_t *headers,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -3569,7 +3570,7 @@ static rt_http_res_t *http_make_response_obj(
     rt_http_res_t *volatile res = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -3667,7 +3668,7 @@ static rt_http_res_t *do_http2_request_opened(rt_http_req_t *req,
     int headers_ok = 0;
     jmp_buf header_recovery;
     rt_trap_set_recovery(&header_recovery);
-    if (setjmp(header_recovery) != 0) {
+    if (RT_SETJMP(header_recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -3741,7 +3742,7 @@ static rt_http_res_t *do_http2_request_opened(rt_http_req_t *req,
     int transform_ok = 0;
     jmp_buf transform_recovery;
     rt_trap_set_recovery(&transform_recovery);
-    if (setjmp(transform_recovery) != 0) {
+    if (RT_SETJMP(transform_recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -3887,7 +3888,7 @@ open_connection:
     http_conn_t response_head_cleanup_conn = conn;
     jmp_buf response_head_recovery;
     rt_trap_set_recovery(&response_head_recovery);
-    if (setjmp(response_head_recovery) != 0) {
+    if (RT_SETJMP(response_head_recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -3959,7 +3960,7 @@ open_connection:
     http_conn_t header_lookup_cleanup_conn = conn;
     jmp_buf header_lookup_recovery;
     rt_trap_set_recovery(&header_lookup_recovery);
-    if (setjmp(header_lookup_recovery) != 0) {
+    if (RT_SETJMP(header_lookup_recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -4099,7 +4100,7 @@ open_connection:
         http_conn_t transform_cleanup_conn = conn;
         jmp_buf transform_recovery;
         rt_trap_set_recovery(&transform_recovery);
-        if (setjmp(transform_recovery) != 0) {
+        if (RT_SETJMP(transform_recovery) != 0) {
             char saved_error[256];
             int saved_net_code = rt_trap_get_net_code();
             const char *error = rt_trap_get_error();
@@ -4225,7 +4226,7 @@ static int http_follow_download_redirect(rt_http_req_t *source,
     char *volatile location = location_owned;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         http_request_clone_cleanup(next_request);
         free((void *)location);
@@ -4287,7 +4288,7 @@ static int do_http_download_request_deadline(rt_http_req_t *req,
         rt_http_res_t *res = NULL;
         jmp_buf h2_recovery;
         rt_trap_set_recovery(&h2_recovery);
-        if (setjmp(h2_recovery) != 0) {
+        if (RT_SETJMP(h2_recovery) != 0) {
             rt_trap_clear_recovery();
             return 0;
         }
@@ -4335,7 +4336,7 @@ static int do_http_download_request_deadline(rt_http_req_t *req,
     http_conn_t response_head_cleanup_conn = conn;
     jmp_buf response_head_recovery;
     rt_trap_set_recovery(&response_head_recovery);
-    if (setjmp(response_head_recovery) != 0) {
+    if (RT_SETJMP(response_head_recovery) != 0) {
         rt_trap_clear_recovery();
         free(request_buf);
         free(request_str);
@@ -4381,7 +4382,7 @@ static int do_http_download_request_deadline(rt_http_req_t *req,
         rt_string volatile transfer_encoding_owned = NULL;
         jmp_buf header_recovery;
         rt_trap_set_recovery(&header_recovery);
-        if (setjmp(header_recovery) != 0) {
+        if (RT_SETJMP(header_recovery) != 0) {
             rt_trap_clear_recovery();
             if (transfer_encoding_owned)
                 rt_string_unref((rt_string)transfer_encoding_owned);

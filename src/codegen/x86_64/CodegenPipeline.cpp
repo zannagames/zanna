@@ -453,6 +453,7 @@ void collectNativeLinkArchives(const common::LinkContext &ctx,
 /// @param stackSize Requested stack reservation, or zero for the linker default.
 /// @param fastLink Skip optional size-reduction work when @c true.
 /// @param preserveDebugSections Retain emitted debugging sections when @c true.
+/// @param emitLocalSymbols Publish every placed definition in the executable symbol table.
 /// @param windowsDebugRuntime Optional override for the MSVC runtime flavor.
 /// @param out Stream receiving informational linker output.
 /// @param err Stream receiving linker diagnostics.
@@ -466,6 +467,7 @@ int linkObjectWithNativeLinker(const std::filesystem::path &objPath,
                                std::size_t stackSize,
                                bool fastLink,
                                bool preserveDebugSections,
+                               bool emitLocalSymbols,
                                std::optional<bool> windowsDebugRuntime,
                                std::ostream &out,
                                std::ostream &err) {
@@ -479,6 +481,7 @@ int linkObjectWithNativeLinker(const std::filesystem::path &objPath,
     linkOpts.stackSize = stackSize;
     linkOpts.fastLink = fastLink;
     linkOpts.preserveDebugSections = preserveDebugSections;
+    linkOpts.emitLocalSymbols = emitLocalSymbols;
     linkOpts.windowsDebugRuntime = windowsDebugRuntime;
     collectNativeLinkArchives(ctx, windowsDebugRuntime, linkOpts.archivePaths);
     if (ctx.needsZiaFrontend) {
@@ -551,7 +554,10 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
         return finish();
     }
 
-    zanna::codegen::common::lowerNativeEh(module);
+    // Darwin's setjmp saves the signal mask (a syscall per `try`); use the
+    // mask-free `_setjmp` there, matching the runtime's RT_SETJMP/RT_LONGJMP.
+    zanna::codegen::common::lowerNativeEh(module,
+                                          effectiveTargetPlatform(opts_) == TargetPlatform::Darwin);
     if (const auto residualEh = zanna::codegen::common::findResidualStructuredEh(module)) {
         err << "error: " << *residualEh << "\n";
         result.exit_code = 1;
@@ -791,6 +797,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
                                                         opts_.stack_size,
                                                         opts_.fast_link,
                                                         opts_.emit_debug_lines,
+                                                        opts_.emit_local_symbols,
                                                         opts_.windows_debug_runtime,
                                                         out,
                                                         err);
@@ -898,6 +905,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
                                                     opts_.stack_size,
                                                     opts_.fast_link,
                                                     opts_.emit_debug_lines,
+                                                    opts_.emit_local_symbols,
                                                     opts_.windows_debug_runtime,
                                                     out,
                                                     err);

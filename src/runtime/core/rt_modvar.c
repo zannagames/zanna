@@ -379,3 +379,39 @@ void *rt_modvar_addr_block(rt_string name, int64_t size) {
     }
     return mv_addr(name, MV_BLOCK, (size_t)size);
 }
+
+/// @brief Test whether a byte range lies wholly inside one module-variable block.
+/// @details Module-variable storage is allocated with rt_alloc (not the
+///          registered runtime heap), so the IL VM's memory validator cannot
+///          classify it through rt_heap_contains_range. This query lets the VM
+///          accept loads/stores through rt_modvar_addr_* addresses (ZB-28: every
+///          module-level Zia `var` trapped "store outside VM-owned memory" under
+///          `zanna run --trace` / `--profile`).
+/// @param ptr First byte of the requested range.
+/// @param bytes Number of bytes requested; zero-byte ranges are never owned.
+/// @return 1 when `[ptr, ptr + bytes)` lies inside one live module-variable
+///   block of the current context, otherwise 0 (including no context).
+int8_t rt_modvar_contains_range(const void *ptr, size_t bytes) {
+    if (!ptr || bytes == 0)
+        return 0;
+    RtContext *ctx = rt_context_acquire_state(RT_CONTEXT_STATE_MODVAR, NULL);
+    if (!ctx)
+        return 0;
+    const uintptr_t address = (uintptr_t)ptr;
+    int found = 0;
+    for (size_t i = 0; i < ctx->modvar_count; ++i) {
+        const RtModvarEntry *e = &ctx->modvar_entries[i];
+        if (!e->addr || e->size == 0)
+            continue;
+        const uintptr_t begin = (uintptr_t)e->addr;
+        if (address < begin)
+            continue;
+        const uintptr_t offset = address - begin;
+        if (offset < e->size && bytes <= e->size - (size_t)offset) {
+            found = 1;
+            break;
+        }
+    }
+    rt_context_release_state(ctx, RT_CONTEXT_STATE_MODVAR);
+    return found ? 1 : 0;
+}

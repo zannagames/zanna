@@ -43,6 +43,7 @@
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_string_internal.h"
@@ -264,7 +265,7 @@ static int8_t retain_value_or_free_entry(void *obj,
     cm_entry *volatile entry_for_cleanup = entry;
     void *volatile obj_for_cleanup = obj;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concmap_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -482,7 +483,7 @@ void *rt_concmap_new(void) {
     jmp_buf recovery;
     rt_concmap_impl *volatile cm_for_cleanup = cm;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concmap_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentMap: GC tracking failed");
@@ -638,7 +639,7 @@ void *rt_concmap_get(void *obj, rt_string key) {
         void *volatile obj_for_cleanup = obj;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             concmap_save_trap_error(
                 saved_error, sizeof(saved_error), "ConcurrentMap.Get: value retain failed");
@@ -687,7 +688,7 @@ void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
         void *volatile obj_for_cleanup = obj;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             concmap_save_trap_error(
                 saved_error, sizeof(saved_error), "ConcurrentMap.GetOr: value retain failed");
@@ -960,7 +961,7 @@ void *rt_concmap_keys(void *obj) {
     rt_string volatile current_key = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concmap_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentMap.Keys: key copy failed");
@@ -1034,7 +1035,7 @@ void *rt_concmap_values(void *obj) {
     void *volatile obj_for_cleanup = obj;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concmap_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentMap.Values: value retain failed");
@@ -1063,7 +1064,7 @@ void *rt_concmap_values(void *obj) {
 
     size_t volatile transferred = 0;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concmap_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentMap.Values: snapshot append failed");

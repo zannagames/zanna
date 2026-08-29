@@ -315,6 +315,17 @@ TypeRef Sema::analyzeIdent(IdentExpr *expr) {
         }
     }
 
+    // A class field — declared or inherited — shadows every module-level
+    // symbol, exactly as a declared field already does through the class
+    // scope. Without this, a derived class whose base lives in another module
+    // resolved an inherited field such as `world_` to a bound module's
+    // exported global of the same name (typed Any), so `world_.Foo()` failed
+    // with "Type 'Any' has no member" while the lowerer stored into the field.
+    if (identShadowedByField(sym, expr->name)) {
+        sym = nullptr;
+        lookupName = expr->name;
+    }
+
     if (sym)
         resolvedIdentNames_[expr] = lookupName;
 
@@ -397,8 +408,7 @@ TypeRef Sema::analyzeIdent(IdentExpr *expr) {
         // from the current scope chain misresolves when two modules declare
         // same-named globals, producing false positives in both modules.
         const bool moduleGlobal = sym->decl && sym->decl->kind == DeclKind::GlobalVar;
-        if (sym->kind == Symbol::Kind::Variable && !moduleGlobal &&
-            !isInitialized(expr->name)) {
+        if (sym->kind == Symbol::Kind::Variable && !moduleGlobal && !isInitialized(expr->name)) {
             warn(WarningCode::W015_UninitializedVariable,
                  expr->loc,
                  "Variable '" + expr->name + "' may be used before initialization");

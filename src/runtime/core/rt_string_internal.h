@@ -90,6 +90,9 @@ void rt_string_unregister_handle(rt_string s);
 ///          handle while shutdown runs.
 void rt_string_registry_shutdown(void);
 
+/// @brief Release the `rt_str_from_lit` literal-cache index at process shutdown.
+void rt_string_literal_cache_shutdown(void);
+
 /// @brief Convert a character (codepoint) position to a byte offset in a UTF-8 string.
 /// @details Strictly validates each traversed sequence. Null data or positions
 ///          at/below one map to zero; positions beyond the codepoint count map

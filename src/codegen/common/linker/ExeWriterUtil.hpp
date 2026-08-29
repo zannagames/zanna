@@ -34,6 +34,7 @@
 #include "common/Filesystem.hpp"
 #include "common/PlatformCapabilities.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -192,6 +193,64 @@ inline void classifySections(const LinkLayout &layout,
         else
             textIndices.push_back(i);
     }
+}
+
+/// @brief One placed definition selected for an executable's symbol table.
+struct LocalSymbolRecord {
+    std::string name;       ///< Logical (unmangled) symbol name.
+    uint64_t addr = 0;      ///< Final virtual address.
+    size_t sectionSlot = 0; ///< Zero-based position in the caller's section order.
+    uint64_t size = 0;      ///< Bytes to the next record in the same section or to its end.
+};
+
+/// @brief Collects every placed global/weak definition as a local symbol record.
+/// @details Only definitions with a valid, section-relative final address that
+///          falls inside one of @p sectionOrder's sections are kept. Records are
+///          sorted by address then name so the emitted table is deterministic,
+///          and each record's size runs to the next record in the same section
+///          (or the section end) so ELF consumers get usable extents.
+/// @param layout Final layout with resolved global symbols.
+/// @param sectionOrder Layout section indices in the order the writer numbers them.
+/// @param skipEntry When true, `main` / `_main` are omitted (the writer publishes
+///        the entry point separately as an external definition).
+/// @return Sorted records; empty when nothing is placed.
+inline std::vector<LocalSymbolRecord> collectLocalSymbolRecords(
+    const LinkLayout &layout, const std::vector<size_t> &sectionOrder, bool skipEntry) {
+    std::vector<LocalSymbolRecord> records;
+    for (const auto &[name, entry] : layout.globalSyms) {
+        if (name.empty())
+            continue;
+        if (entry.binding != GlobalSymEntry::Global && entry.binding != GlobalSymEntry::Weak)
+            continue;
+        if (!entry.resolvedAddrValid || entry.absolute)
+            continue;
+        if (skipEntry && (name == "main" || name == "_main"))
+            continue;
+        for (size_t slot = 0; slot < sectionOrder.size(); ++slot) {
+            const auto &sec = layout.sections[sectionOrder[slot]];
+            const uint64_t size = static_cast<uint64_t>(outputSectionMemSize(sec));
+            if (size == 0 || entry.resolvedAddr < sec.virtualAddr ||
+                entry.resolvedAddr - sec.virtualAddr >= size)
+                continue;
+            records.push_back({name, entry.resolvedAddr, slot, 0});
+            break;
+        }
+    }
+    std::sort(
+        records.begin(), records.end(), [](const LocalSymbolRecord &a, const LocalSymbolRecord &b) {
+            if (a.addr != b.addr)
+                return a.addr < b.addr;
+            return a.name < b.name;
+        });
+    for (size_t i = 0; i < records.size(); ++i) {
+        const auto &sec = layout.sections[sectionOrder[records[i].sectionSlot]];
+        uint64_t next = sec.virtualAddr + static_cast<uint64_t>(outputSectionMemSize(sec));
+        if (i + 1 < records.size() && records[i + 1].sectionSlot == records[i].sectionSlot &&
+            records[i + 1].addr > records[i].addr)
+            next = records[i + 1].addr;
+        records[i].size = next - records[i].addr;
+    }
+    return records;
 }
 
 /// @brief Computes the virtual-address span occupied by a section group.

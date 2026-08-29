@@ -48,6 +48,7 @@
 #include "rt_network_internal.h"
 
 #include "rt_map.h"
+#include "rt_platform.h"
 #include "rt_trap.h"
 
 #include <setjmp.h>
@@ -143,7 +144,7 @@ static rt_udp_t *udp_require(void *obj) {
 static void *udp_adopt_socket(socket_t sock, char *address, int port, int family, int is_bound) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         udp_save_trap_error(saved_error, sizeof(saved_error), "Network: UDP allocation failed");
         rt_trap_clear_recovery();
@@ -837,7 +838,7 @@ void *rt_udp_recv_from(void *obj, int64_t max_bytes) {
     if (received < max_bytes) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[512];
             udp_save_trap_error(
                 saved_error, sizeof(saved_error), "Network: UDP result allocation failed");

@@ -50,6 +50,7 @@
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 
 #include <setjmp.h>
@@ -139,7 +140,7 @@ static int sa_append_index_or_release_seq(void *seq, int64_t index) {
     void *volatile boxed = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sa_save_trap(
             saved_error, sizeof(saved_error), "SparseArray.Indices: snapshot append failed");
@@ -167,7 +168,7 @@ static int sa_append_index_or_release_seq(void *seq, int64_t index) {
 static int sa_append_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sa_save_trap(
             saved_error, sizeof(saved_error), "SparseArray.Values: snapshot append failed");

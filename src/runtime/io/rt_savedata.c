@@ -46,6 +46,7 @@
 #include "rt_file_path.h"
 #include "rt_io_class_ids.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
 
@@ -159,7 +160,7 @@ static int savedata_retain_pair_or_trap(rt_string key,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         savedata_save_trap_error(
             saved_error, sizeof(saved_error), "SaveData: string retain failed");
@@ -1088,7 +1089,7 @@ static int ensure_parent_dir(const char *file_path) {
     volatile int ok = 1;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         ok = 0;
     } else {

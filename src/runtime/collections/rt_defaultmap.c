@@ -53,6 +53,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -215,7 +216,7 @@ static int defaultmap_try_retain(void *value,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         defaultmap_save_trap_error(error, error_size, fallback);
         rt_trap_clear_recovery();
         return 0;
@@ -624,7 +625,7 @@ void *rt_defaultmap_keys(void *map) {
     rt_string volatile key_copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         defaultmap_save_trap_error(
             saved_error, sizeof(saved_error), "DefaultMap.Keys: snapshot allocation failed");

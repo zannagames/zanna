@@ -44,6 +44,7 @@
 #include "rt_io_class_ids.h"
 #include "rt_memstream.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <setjmp.h>
@@ -119,7 +120,7 @@ static int stream_retain_wrapped_or_cleanup(stream_impl *s, void *wrapped, const
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         stream_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -159,7 +160,7 @@ static void stream_release_wrapped(stream_impl *s, int report_close_error) {
         int close_trapped = 0;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             stream_save_trap_error(
                 saved_error, sizeof(saved_error), "Stream.Close: wrapped close failed");
             close_trapped = 1;
@@ -208,7 +209,7 @@ static void *stream_shrink_bytes(void *bytes, int64_t len) {
     void *volatile owned_bytes = bytes;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         stream_save_trap_error(saved_error, sizeof(saved_error), "Stream.Read: resize failed");
         rt_trap_clear_recovery();
@@ -237,7 +238,7 @@ static void *stream_read_binfile_bytes(void *binfile, int64_t count, const char 
     void *volatile active_bytes = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         stream_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -293,7 +294,7 @@ static stream_impl *stream_alloc_or_release_owned(void *wrapped, const char *fal
     void *volatile owned_wrapped = wrapped;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         stream_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

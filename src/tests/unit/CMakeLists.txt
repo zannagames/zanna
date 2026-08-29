@@ -1118,6 +1118,11 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_skeleton3d test_rt_skeleton3d)
     zanna_add_test_labels(test_rt_skeleton3d graphics3d unit)
 
+    zanna_add_test(test_rt_mesh3d_mirror ${ZANNA_TESTS_DIR}/unit/test_rt_mesh3d_mirror.cpp)
+    target_link_libraries(test_rt_mesh3d_mirror PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_mesh3d_mirror test_rt_mesh3d_mirror)
+    zanna_add_test_labels(test_rt_mesh3d_mirror graphics3d unit)
+
     zanna_add_test(test_rt_morphtarget3d ${ZANNA_TESTS_DIR}/unit/test_rt_morphtarget3d.cpp)
     target_link_libraries(test_rt_morphtarget3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_morphtarget3d test_rt_morphtarget3d)
@@ -2171,6 +2176,7 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_string_wrap_alloc_fail test_rt_string_wrap_alloc_fail)
 
     zanna_add_test(test_rt_alloc_zero ${ZANNA_TESTS_DIR}/runtime/RTAllocZeroTests.cpp)
+    zanna_add_test(test_rt_alloc_tracking ${ZANNA_TESTS_DIR}/runtime/RTAllocTrackingTests.cpp)
     target_link_libraries(test_rt_alloc_zero PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_alloc_zero test_rt_alloc_zero)
 
@@ -2344,6 +2350,11 @@ function(zanna_add_runtime_tests)
     zanna_add_test(test_rt_string_edge ${ZANNA_TESTS_DIR}/runtime/RTStringEdgeTests.cpp)
     target_link_libraries(test_rt_string_edge PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_string_edge test_rt_string_edge)
+
+    zanna_add_test(test_rt_string_literal_cache
+                   ${ZANNA_TESTS_DIR}/runtime/RTStringLiteralCacheTests.cpp)
+    target_link_libraries(test_rt_string_literal_cache PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_string_literal_cache test_rt_string_literal_cache)
 
     # Game development abstractions tests
     zanna_add_test(test_rt_statemachine ${ZANNA_TESTS_DIR}/unit/runtime/RTStateMachineTests.cpp)

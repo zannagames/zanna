@@ -425,7 +425,7 @@ static void mb_free_sub_chain(mb_sub *s) {
     mb_sub *volatile active_sub = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -470,7 +470,7 @@ static void mb_free_topic_chain(mb_topic *t) {
     mb_topic *volatile active_topic = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -741,7 +741,7 @@ void *rt_msgbus_new(void) {
     rt_msgbus_impl *mb = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -830,7 +830,7 @@ int64_t rt_msgbus_subscribe(void *obj, rt_string topic, void *callback) {
     volatile int locked = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1027,7 +1027,7 @@ int8_t rt_msgbus_unsubscribe(void *obj, int64_t sub_id) {
                     rt_gc_mutator_exit();
                     jmp_buf recovery;
                     rt_trap_set_recovery(&recovery);
-                    if (setjmp(recovery) != 0) {
+                    if (RT_SETJMP(recovery) != 0) {
                         char saved_error[512];
                         const char *err = rt_trap_get_error();
                         snprintf(saved_error,
@@ -1156,7 +1156,7 @@ int64_t rt_msgbus_publish(void *obj, rt_string topic, void *data) {
     volatile int64_t release_from = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1255,7 +1255,7 @@ void *rt_msgbus_topics(void *obj) {
     void *seq = NULL;
     jmp_buf setup_recovery;
     rt_trap_set_recovery(&setup_recovery);
-    if (setjmp(setup_recovery) != 0) {
+    if (RT_SETJMP(setup_recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1359,7 +1359,7 @@ void *rt_msgbus_topics(void *obj) {
     volatile rt_string active_topic_name = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1455,7 +1455,7 @@ void rt_msgbus_clear_topic(void *obj, rt_string topic) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

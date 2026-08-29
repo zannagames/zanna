@@ -1461,7 +1461,7 @@ static void *gltf_parse_validated_root_json(char *json_str, size_t json_len) {
     }
     json_rts = rt_string_from_bytes(json_str, json_len);
     rt_trap_set_recovery(&json_recovery);
-    if (setjmp(json_recovery) == 0)
+    if (RT_SETJMP(json_recovery) == 0)
         root = rt_json_parse_object(json_rts);
     else
         trap_message = rt_trap_get_error();

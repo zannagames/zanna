@@ -56,6 +56,7 @@
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -240,7 +241,7 @@ static int mm_destroy_entries(rt_mm_entry *head, char *error, size_t error_size)
     rt_gc_mutator_enter();
     rt_trap_set_recovery(&recovery);
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             rt_gc_mutator_enter();
             if (!trapped)
                 mm_save_trap_error(error, error_size, "MultiMap: value finalizer cleanup failed");
@@ -267,7 +268,7 @@ static int mm_destroy_entries(rt_mm_entry *head, char *error, size_t error_size)
 static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         mm_save_trap_error(saved_error, sizeof(saved_error), "MultiMap: value retain failed");
         rt_trap_clear_recovery();
@@ -295,7 +296,7 @@ static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
 static int mm_push_value_checked(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         mm_save_trap_error(saved_error, sizeof(saved_error), "MultiMap: value retain failed");
         rt_trap_clear_recovery();
@@ -322,7 +323,7 @@ static int mm_push_value_checked(void *seq, void *value) {
 static int mm_push_value_or_release_seq(void *seq, void *value, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         mm_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -353,7 +354,7 @@ static int mm_append_key_or_release_seq(void *seq, const char *key, size_t key_l
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         mm_save_trap_error(saved_error, sizeof(saved_error), "MultiMap.Keys: failed to copy key");
         rt_trap_clear_recovery();

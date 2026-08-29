@@ -30,6 +30,7 @@
 
 #include "rt_error.h"
 
+#include "rt_platform.h"
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -340,7 +341,7 @@ void *rt_diagnostics_current_trap(void) {
     rt_trap_info_t *info = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

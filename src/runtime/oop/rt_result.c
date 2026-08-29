@@ -132,7 +132,7 @@ void *rt_result_ok(void *value) {
         return NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -165,7 +165,7 @@ void *rt_result_ok_str(rt_string value) {
     rt_string retained = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -226,7 +226,7 @@ void *rt_result_err(void *error) {
         return NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -259,7 +259,7 @@ void *rt_result_err_str(rt_string message) {
     rt_string retained = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -330,8 +330,7 @@ void *rt_result_unwrap(void *obj) {
         return NULL;
     }
     if (r->value_type != VALUE_PTR) {
-        trap_with_message(
-            "Unwrap called on non-object payload; use UnwrapStr/UnwrapI64/UnwrapF64");
+        trap_with_message("Unwrap called on non-object payload; use UnwrapStr/UnwrapI64/UnwrapF64");
         return NULL;
     }
     return r->value.ptr;

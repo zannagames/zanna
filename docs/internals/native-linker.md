@@ -531,6 +531,10 @@ Section Header Table
   materialized bytes.
 - Dynamic string/symbol table offsets, generated section placement, startup-stub placement, and final section-header
   table offsets are checked before narrowing or allocation.
+- `NativeLinkerOptions::emitLocalSymbols` (default on) adds a `.symtab`/`.strtab` pair after the non-alloc sections:
+  one `STB_LOCAL` `STT_FUNC`/`STT_OBJECT` entry per placed global or weak definition, sorted by address, sized to the
+  next definition in the same section, with `st_shndx` pointing at the covering loadable section. The loader ignores
+  the tables; `perf` and `gdb` use them. `zanna build --strip-symbols` turns them off.
 - File permissions set to 755 after writing
 
 ### Mach-O Executable Writer
@@ -566,6 +570,11 @@ __DATA segment data (page-aligned)
 - Load-command sizes, section counts, link-edit offsets, code-signature offsets, and section file offsets are
   checked against Mach-O's 32-bit fields. Segment data writes now fail if a section would overlap bytes already
   emitted instead of appending at the wrong location.
+- `LC_SYMTAB` holds, in `LC_DYSYMTAB` order, the non-external `N_SECT` entries for every placed definition (when
+  `NativeLinkerOptions::emitLocalSymbols` is on, the default), then `_main` as the external definition, then the
+  undefined imports. `n_sect` is the one-based section ordinal in header order (`__TEXT` sections, then `__DATA`);
+  definitions past the 255th ordinal are omitted rather than mis-attributed. `sample`, Instruments, and `nm` read
+  these; dyld does not.
 
 ### PE Executable Writer
 

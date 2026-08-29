@@ -56,6 +56,16 @@ void *rt_morphtarget3d_new(int64_t vertex_count);
 /// @return New independent GC-managed clone, or `NULL` for an invalid source,
 ///         size error, or allocation failure.
 void *rt_morphtarget3d_clone(void *mt);
+/// @brief Deep copy with every position / normal / tangent delta reflected across
+///        X = 0 (ADR 0306 `Mesh3D.Mirror`): the X lane of each delta is negated,
+///        names, weights and the remaining lanes are copied verbatim.
+/// @param mt Borrowed MorphTarget3D handle.
+/// @return New GC-managed MorphTarget3D, or NULL on invalid input / allocation failure.
+void *rt_morphtarget3d_clone_mirrored_x(void *mt);
+/// @brief Internal (tests): one lane of a shape's position delta.
+/// @param lane 0 = x, 1 = y, 2 = z.
+/// @return The delta lane, or 0.0 for any invalid handle / index.
+double rt_morphtarget3d_delta_lane_internal(void *mt, int64_t shape, int64_t vertex, int64_t lane);
 /**
  * @brief Deep-copy a morph-target container through a simplified vertex map.
  *

@@ -30,6 +30,7 @@
  */
 
 #include "rt_ws_server.h"
+#include "rt_platform.h"
 #include "rt_websocket.h"
 
 #include "rt_bytes.h"
@@ -765,7 +766,7 @@ static void ws_client_run(rt_ws_server_impl *s, int slot, uint64_t generation, v
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         ws_server_remove_client(s, slot, generation, tcp);
         return;
@@ -907,7 +908,7 @@ static void ws_accept_task_run(void *arg) {
     // mid-handshake must reject the client, not abort the process.
     jmp_buf hs_recovery;
     rt_trap_set_recovery(&hs_recovery);
-    if (setjmp(hs_recovery) != 0) {
+    if (RT_SETJMP(hs_recovery) != 0) {
         rt_trap_clear_recovery();
         ws_server_remove_client(s, slot, generation, tcp);
         ws_release_tcp(&tcp);
@@ -1090,7 +1091,7 @@ void rt_ws_server_start(void *obj) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char error[512];
         const char *message = rt_trap_get_error();
         int net_code = rt_trap_get_net_code();
@@ -1309,7 +1310,7 @@ rt_string rt_ws_server_subprotocol(void *obj) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char error[512];
         const char *message = rt_trap_get_error();
         int net_code = rt_trap_get_net_code();
@@ -1670,7 +1671,7 @@ rt_string rt_ws_server_client_recv(void *tcp) {
 
             jmp_buf result_recovery;
             rt_trap_set_recovery(&result_recovery);
-            if (setjmp(result_recovery) != 0) {
+            if (RT_SETJMP(result_recovery) != 0) {
                 char error[512];
                 const char *trap_message = rt_trap_get_error();
                 int net_code = rt_trap_get_net_code();

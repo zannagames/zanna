@@ -90,6 +90,16 @@ void *rt_modvar_addr_str(rt_string name);
 ///   allocation, or context acquisition traps and returns.
 void *rt_modvar_addr_block(rt_string name, int64_t size);
 
+/// @brief Test whether a byte range lies wholly inside one module-variable block.
+/// @details The IL VM's memory validator consults this beside the runtime heap
+///          registry: module-variable storage comes from rt_alloc, so it is
+///          otherwise invisible to `rt_heap_contains_range` (ZB-28).
+/// @param ptr First byte of the requested range.
+/// @param bytes Number of bytes requested; zero-byte ranges are never owned.
+/// @return 1 when the range lies inside one live module-variable block of the
+///   current context, otherwise 0.
+int8_t rt_modvar_contains_range(const void *ptr, size_t bytes);
+
 #ifdef __cplusplus
 }
 #endif

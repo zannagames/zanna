@@ -50,6 +50,7 @@
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -191,7 +192,7 @@ static int om_destroy_entries(rt_om_entry *head, char *error, size_t error_size)
     rt_gc_mutator_enter();
     rt_trap_set_recovery(&recovery);
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             // Trap dispatch unwinds managed mutation scopes before longjmp.
             rt_gc_mutator_enter();
             if (!trapped)
@@ -224,7 +225,7 @@ static int om_append_key_or_release_seq(void *seq, const char *key, size_t key_l
     volatile rt_string key_copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         om_save_trap_error(
             saved_error, sizeof(saved_error), "OrderedMap.Keys: snapshot append failed");
@@ -255,7 +256,7 @@ static int om_append_key_or_release_seq(void *seq, const char *key, size_t key_l
 static int om_append_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         om_save_trap_error(
             saved_error, sizeof(saved_error), "OrderedMap.Values: snapshot append failed");

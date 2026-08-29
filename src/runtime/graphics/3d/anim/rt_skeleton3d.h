@@ -270,6 +270,13 @@ void *rt_animation3d_extract_range(void *anim, double start_sec, double end_sec)
 /// @return New GC-managed mirrored Animation3D, or `NULL` for invalid input
 ///         or a clip with no mappable channels.
 void *rt_animation3d_mirror(void *anim, void *skeleton);
+/// @brief The sagittal partner of a bone (ADR 0306, shared with ADR 0243's clip
+///        mirror): exact-name side-token swap (Left/Right, left/right, LEFT/RIGHT)
+///        first, then the humanoid-role side flip, else the bone itself.
+/// @param skel Borrowed Skeleton3D handle; a non-skeleton handle maps every bone to itself.
+/// @param bone Bone index; out-of-range indices are returned unchanged.
+/// @return The partner bone index (or @p bone when it has no partner).
+int32_t rt_skeleton3d_mirror_bone(void *skel, int32_t bone);
 
 /// @}
 

@@ -46,6 +46,7 @@
 #include "codegen/aarch64/passes/LoweringPass.hpp"
 #include "codegen/aarch64/passes/PeepholePass.hpp"
 #include "codegen/aarch64/passes/PreRegAllocOptPass.hpp"
+
 #include "codegen/aarch64/passes/RegAllocPass.hpp"
 #include "codegen/aarch64/passes/SchedulerPass.hpp"
 #include "codegen/common/LinkerSupport.hpp"
@@ -54,9 +55,12 @@
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
 #include "common/Filesystem.hpp"
 #include "common/PlatformCapabilities.hpp"
+
 #include "common/RunProcess.hpp"
 #include "il/transform/PassManager.hpp"
 #include "tools/common/module_loader.hpp"
+#include <cstdlib>
+#include <string>
 
 #include <filesystem>
 #include <fstream>
@@ -178,6 +182,7 @@ static int linkObjToExe(const std::string &objPath,
                         bool fastLink,
                         std::optional<bool> windowsDebugRuntime,
                         bool preserveDebugSections,
+                        bool emitLocalSymbols,
                         std::ostream &out,
                         std::ostream &err);
 
@@ -191,6 +196,7 @@ static int linkObjToExe(const std::string &objPath,
 /// @param fastLink Whether to skip optional size-reduction work.
 /// @param windowsDebugRuntime Optional Windows CRT flavor override.
 /// @param preserveDebugSections Whether linked output retains debug sections.
+/// @param emitLocalSymbols Whether the executable names every definition in its symbol table.
 /// @param out Stream receiving normal tool output.
 /// @param err Stream receiving diagnostics.
 /// @return Zero on success, otherwise the first assembler/linker error code.
@@ -202,6 +208,7 @@ static int linkToExe(const std::string &asmPath,
                      bool fastLink,
                      std::optional<bool> windowsDebugRuntime,
                      bool preserveDebugSections,
+                     bool emitLocalSymbols,
                      std::ostream &out,
                      std::ostream &err) {
     using namespace zanna::codegen::common;
@@ -227,6 +234,7 @@ static int linkToExe(const std::string &asmPath,
                                  fastLink,
                                  windowsDebugRuntime,
                                  preserveDebugSections,
+                                 emitLocalSymbols,
                                  out,
                                  err);
     std::error_code ec;
@@ -334,6 +342,7 @@ static void collectNativeLinkArchives(const common::LinkContext &ctx,
 /// @param fastLink      Skip non-essential size-reduction passes in the linker.
 /// @param windowsDebugRuntime Optional Windows CRT flavor override.
 /// @param preserveDebugSections Keep non-alloc DWARF/debug sections in linked output.
+/// @param emitLocalSymbols Publish every placed definition in the executable symbol table.
 /// @param out           Stream for linker stdout diagnostics.
 /// @param err           Stream for linker stderr diagnostics.
 /// @return 0 on success, non-zero on link failure.
@@ -347,6 +356,7 @@ static int linkObjToExe(const std::string &objPath,
                         bool fastLink,
                         std::optional<bool> windowsDebugRuntime,
                         bool preserveDebugSections,
+                        bool emitLocalSymbols,
                         std::ostream &out,
                         std::ostream &err) {
     using namespace zanna::codegen::common;
@@ -363,6 +373,7 @@ static int linkObjToExe(const std::string &objPath,
     linkOpts.stackSize = stackSize;
     linkOpts.fastLink = fastLink;
     linkOpts.preserveDebugSections = preserveDebugSections;
+    linkOpts.emitLocalSymbols = emitLocalSymbols;
     linkOpts.windowsDebugRuntime = windowsDebugRuntime;
     linkOpts.extraObjPaths = extraObjects;
     collectNativeLinkArchives(ctx, targetPlatform, windowsDebugRuntime, linkOpts.archivePaths);
@@ -380,6 +391,20 @@ static int linkObjToExe(const std::string &objPath,
     }
 
     return zanna::codegen::linker::nativeLink(linkOpts, out, err);
+}
+
+/// @brief Triage kill switch for one backend optimization stage.
+/// @details `ZANNA_NO_<STAGE>=1` in the environment skips that stage so a
+///          miscompile can be bisected against a program-level oracle without
+///          rebuilding the compiler (plan 80 / ZB-29 found the AArch64 -O1
+///          divergence this way). Stages: PRE_RA_OPT, BLOCK_LAYOUT, PEEPHOLE,
+///          SCHEDULER, POST_SCHED_PEEPHOLE. Never consulted at -O0.
+/// @param stage Environment suffix naming the stage.
+/// @return True when the stage must be skipped.
+static bool backendStageDisabled(const char *stage) {
+    std::string key = "ZANNA_NO_";
+    key += stage;
+    return std::getenv(key.c_str()) != nullptr;
 }
 
 /// @brief Run IL-level optimization passes on @p mod before machine-code lowering.
@@ -455,7 +480,7 @@ bool runCodegenPipeline(passes::AArch64Module &module,
             manager.setTimingStream(&diagOut, "aarch64");
         manager.addPass(std::make_unique<passes::LoweringPass>());
         manager.addPass(std::make_unique<passes::LegalizePass>());
-        if (opts.optimizeLevel >= 1)
+        if (opts.optimizeLevel >= 1 && !backendStageDisabled("PRE_RA_OPT"))
             manager.addPass(std::make_unique<passes::PreRegAllocOptPass>());
         if (!manager.run(module, diags))
             return flushOnFailure();
@@ -480,11 +505,15 @@ bool runCodegenPipeline(passes::AArch64Module &module,
         passes::PassManager manager;
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
-        manager.addPass(std::make_unique<passes::BlockLayoutPass>());
-        manager.addPass(std::make_unique<passes::PeepholePass>());
-        manager.addPass(std::make_unique<passes::SchedulerPass>());
-        manager.addPass(std::make_unique<passes::PeepholePass>(
-            passes::PeepholePass::Mode::PostScheduleCleanup));
+        if (!backendStageDisabled("BLOCK_LAYOUT"))
+            manager.addPass(std::make_unique<passes::BlockLayoutPass>());
+        if (!backendStageDisabled("PEEPHOLE"))
+            manager.addPass(std::make_unique<passes::PeepholePass>());
+        if (!backendStageDisabled("SCHEDULER"))
+            manager.addPass(std::make_unique<passes::SchedulerPass>());
+        if (!backendStageDisabled("POST_SCHED_PEEPHOLE"))
+            manager.addPass(std::make_unique<passes::PeepholePass>(
+                passes::PeepholePass::Mode::PostScheduleCleanup));
         if (!manager.run(module, diags))
             return flushOnFailure();
     }
@@ -575,7 +604,10 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
         return finish();
     }
 
-    zanna::codegen::common::lowerNativeEh(mod);
+    // Darwin's setjmp saves the signal mask (a syscall per `try`); use the
+    // mask-free `_setjmp` there, matching the runtime's RT_SETJMP/RT_LONGJMP.
+    zanna::codegen::common::lowerNativeEh(
+        mod, targetLinkPlatform(opts_.target_platform) == linker::LinkPlatform::macOS);
     if (const auto residualEh = zanna::codegen::common::findResidualStructuredEh(mod)) {
         err << "error: " << *residualEh << "\n";
         result.exit_code = 1;
@@ -824,6 +856,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
                                      opts_.fast_link,
                                      opts_.windows_debug_runtime,
                                      opts_.emit_debug_lines,
+                                     opts_.emit_local_symbols,
                                      out,
                                      err);
 
@@ -869,6 +902,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
                                   opts_.fast_link,
                                   opts_.windows_debug_runtime,
                                   opts_.emit_debug_lines,
+                                  opts_.emit_local_symbols,
                                   out,
                                   err);
         if (lrc == 0 && !opts_.emit_asm) {
@@ -894,6 +928,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
                   opts_.fast_link,
                   opts_.windows_debug_runtime,
                   opts_.emit_debug_lines,
+                  opts_.emit_local_symbols,
                   out,
                   err) != 0) {
         result.exit_code = 1;

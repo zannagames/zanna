@@ -1130,9 +1130,11 @@ static bool materializeFromProducer(
                             MOpcode::SubRI,
                             MOpcode::AddRRR,
                             MOpcode::SubRRR,
-                            /// @brief Materializes a legalized address offset in a temporary register.
+                            /// @brief Materializes a legalized address offset in a temporary
+                            /// register.
                             /// @param materializedImm Offset selected by the immediate legalizer.
-                            /// @return Operand naming the temporary register that contains the offset.
+                            /// @return Operand naming the temporary register that contains the
+                            /// offset.
                             [&](long long materializedImm) {
                                 const uint16_t tmp = allocateNextVReg(nextVRegId);
                                 out.instrs.push_back(MInstr{MOpcode::MovRI,
@@ -2414,6 +2416,23 @@ static il::core::Value nullGuardRoot(LoweringContext &ctx, il::core::Value v) {
 ///          is provably mapped), and a root vreg is guarded at most once per
 ///          block (vregs are SSA-stable, so a later use in the same block is
 ///          dominated by the first guard).
+/// @brief Whether IL temp @p id is defined inside @p bb (as a block parameter or
+///        an instruction result).
+/// @details The temp→vreg cache is function-wide, so a temp produced in another
+///          block resolves to the vreg that block materialized — a register that
+///          is not live here. Callers that need a value only reachable through
+///          an IL chain (not a direct operand of this block) must confine that
+///          shortcut to temps the current block defines.
+static bool tempDefinedInBlock(const il::core::BasicBlock &bb, unsigned id) {
+    for (const auto &param : bb.params)
+        if (param.id == id)
+            return true;
+    for (const auto &ins : bb.instructions)
+        if (ins.result && *ins.result == id)
+            return true;
+    return false;
+}
+
 static void emitNullAddressGuard(LoweringContext &ctx,
                                  const il::core::BasicBlock &bb,
                                  MBasicBlock &out,
@@ -2425,7 +2444,14 @@ static void emitNullAddressGuard(LoweringContext &ctx,
         const il::core::Instr *rootDef = nullGuardProducerOf(ctx, root.id);
         if (rootDef && rootDef->op == il::core::Opcode::Alloca)
             return;
-        if (!(baseVal.kind == il::core::Value::Kind::Temp && baseVal.id == root.id)) {
+        // ZB-31: guard the GEP-chain root only when this block defines it. A
+        // root produced in another block (LICM-hoisted `gep` bases at -O2)
+        // resolved through the function-wide temp cache to a vreg that is not
+        // live here, so the guard compared garbage and trapped on a valid
+        // pointer. Guarding the derived address itself is exactly the VM rule
+        // (any access below 4096 traps), so it is always correct.
+        if (!(baseVal.kind == il::core::Value::Kind::Temp && baseVal.id == root.id) &&
+            tempDefinedInBlock(bb, root.id)) {
             RegClass cls = RegClass::GPR;
             if (!materializeValueToVReg(root, bb, ctx, out, guardVReg, cls))
                 guardVReg = vbase;
@@ -2433,9 +2459,8 @@ static void emitNullAddressGuard(LoweringContext &ctx,
     }
     if (!ctx.nullGuardedBases[out.name].insert(guardVReg).second)
         return;
-    out.instrs.push_back(
-        MInstr{MOpcode::CmpRI,
-               {MOperand::vregOp(RegClass::GPR, guardVReg), MOperand::immOp(4095)}});
+    out.instrs.push_back(MInstr{
+        MOpcode::CmpRI, {MOperand::vregOp(RegClass::GPR, guardVReg), MOperand::immOp(4095)}});
     const std::string trapLabel = requestSharedTrapBlock(ctx, "null", "rt_trap_null");
     out.instrs.push_back(
         MInstr{MOpcode::BCond, {MOperand::condOp("ls"), MOperand::labelOp(trapLabel)}});

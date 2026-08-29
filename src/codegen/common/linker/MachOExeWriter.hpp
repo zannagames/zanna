@@ -55,6 +55,9 @@ struct DylibImport {
 /// @param symOrdinals Symbol-to-one-based-dylib-ordinal map. Zero selects flat
 ///                    lookup; missing symbols default to ordinal one.
 /// @param stackSize Requested `LC_MAIN` stack size; zero selects the writer default.
+/// @param emitLocalSymbols Publish every placed definition as a non-external
+///        `LC_SYMTAB` entry (profiler/debugger names); `false` keeps only the
+///        entry point and imports.
 /// @param err Stream that receives validation or file-write diagnostics.
 /// @return `true` when a complete executable is installed; otherwise `false`.
 bool writeMachOExe(const std::string &path,
@@ -64,6 +67,7 @@ bool writeMachOExe(const std::string &path,
                    const std::unordered_set<std::string> &dynSyms,
                    const std::unordered_map<std::string, uint32_t> &symOrdinals,
                    std::size_t stackSize,
+                   bool emitLocalSymbols,
                    std::ostream &err);
 
 /// @brief Writes a Mach-O executable using the default stack size.
@@ -82,7 +86,7 @@ inline bool writeMachOExe(const std::string &path,
                           const std::unordered_set<std::string> &dynSyms,
                           const std::unordered_map<std::string, uint32_t> &symOrdinals,
                           std::ostream &err) {
-    return writeMachOExe(path, layout, arch, dylibs, dynSyms, symOrdinals, 0, err);
+    return writeMachOExe(path, layout, arch, dylibs, dynSyms, symOrdinals, 0, true, err);
 }
 
 } // namespace zanna::codegen::linker

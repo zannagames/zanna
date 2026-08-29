@@ -41,7 +41,8 @@
 #include "rt_string_intern.h"
 
 #include "rt_internal.h" // struct rt_string_impl (data, literal_len fields)
-#include "rt_string.h"   // rt_string_ref, rt_string_unref, rt_str_len
+#include "rt_platform.h"
+#include "rt_string.h" // rt_string_ref, rt_string_unref, rt_str_len
 #include "rt_trap.h"
 
 #include <setjmp.h>
@@ -239,7 +240,7 @@ rt_string rt_string_intern(rt_string s) {
             rt_string result = NULL;
             jmp_buf recovery;
             rt_trap_set_recovery(&recovery);
-            if (setjmp(recovery) != 0) {
+            if (RT_SETJMP(recovery) != 0) {
                 char saved_error[256];
                 intern_save_trap_error(
                     saved_error, sizeof(saved_error), "rt_string_intern: retain failed");
@@ -268,7 +269,7 @@ rt_string rt_string_intern(rt_string s) {
                 rt_string result = NULL;
                 jmp_buf recovery;
                 rt_trap_set_recovery(&recovery);
-                if (setjmp(recovery) != 0) {
+                if (RT_SETJMP(recovery) != 0) {
                     char saved_error[256];
                     intern_save_trap_error(
                         saved_error, sizeof(saved_error), "rt_string_intern: retain failed");

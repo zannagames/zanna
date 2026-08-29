@@ -151,6 +151,108 @@ static bool isTextuallyAvailable(const std::unordered_map<const BasicBlock *, st
     return defIt->second <= useIt->second;
 }
 
+/// @brief Per-function summary answering "can a memory write sit on some path
+///        from block D to block C?" for the dominator-tree recursion.
+/// @details Dominance alone does not make a memoized load reusable: a store
+///          in a block that does not dominate C can still lie on a path from
+///          the load's block to C (a loop body writing a slot the header read,
+///          or one arm of a diamond). ZB-32: GVN inherited the parent's load
+///          facts into every dominated child, so `load %slot` after a loop was
+///          replaced by the header's load although the body stored `%slot`.
+///          `clobbers` marks blocks containing a store, an impure call, or any
+///          instruction with write effects; `reach` is the transitive
+///          successor closure (a block is in its own closure only when it lies
+///          on a cycle). Both are computed once per GVN run.
+struct PathClobberInfo {
+    std::unordered_map<const BasicBlock *, std::size_t> index;
+    std::vector<bool> clobbers;
+    std::vector<std::vector<bool>> reach; ///< reach[from][to]
+
+    /// @brief True when some clobbering block X (X != from) satisfies
+    ///        from ->* X ->* to; `to` itself counts when it lies on a cycle.
+    [[nodiscard]] bool clobberedBetween(const BasicBlock *from, const BasicBlock *to) const {
+        auto fi = index.find(from);
+        auto ti = index.find(to);
+        if (fi == index.end() || ti == index.end())
+            return true; // unknown block: be conservative
+        const std::size_t f = fi->second;
+        const std::size_t t = ti->second;
+        const auto &fromReach = reach[f];
+        for (std::size_t x = 0; x < clobbers.size(); ++x) {
+            if (!clobbers[x] || x == f)
+                continue;
+            if (fromReach[x] && reach[x][t])
+                return true;
+        }
+        return false;
+    }
+};
+
+/// @brief Build the path-clobber summary for @p F.
+/// @param F Function being optimized.
+/// @param cfg Successor map for @p F.
+/// @param AA Alias analysis used to classify calls.
+/// @return Summary consulted when facts flow to a dominated child.
+static PathClobberInfo buildPathClobberInfo(Function &F,
+                                            const il::transform::CFGInfo &cfg,
+                                            zanna::analysis::BasicAA &AA) {
+    PathClobberInfo info;
+    const std::size_t n = F.blocks.size();
+    info.index.reserve(n);
+    for (std::size_t i = 0; i < n; ++i)
+        info.index.emplace(&F.blocks[i], i);
+    info.clobbers.assign(n, false);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (const Instr &I : F.blocks[i].instructions) {
+            bool writes = false;
+            if (I.op == Opcode::Store) {
+                writes = true;
+            } else if (I.op == Opcode::Call || I.op == Opcode::CallIndirect) {
+                auto mr = AA.modRef(I);
+                writes = mr != zanna::analysis::ModRefResult::NoModRef &&
+                         mr != zanna::analysis::ModRefResult::Ref;
+            } else {
+                using il::core::MemoryEffects;
+                auto me = memoryEffects(I.op);
+                writes = me == MemoryEffects::Write || me == MemoryEffects::ReadWrite;
+            }
+            if (writes) {
+                info.clobbers[i] = true;
+                break;
+            }
+        }
+    }
+    // Transitive successor closure by DFS from every block (blocks are small
+    // in number per function; this is O(n * (n + e)) once per run).
+    info.reach.assign(n, std::vector<bool>(n, false));
+    std::vector<std::size_t> stack;
+    for (std::size_t start = 0; start < n; ++start) {
+        auto &row = info.reach[start];
+        stack.clear();
+        auto push = [&](const BasicBlock *b) {
+            auto it = info.index.find(b);
+            if (it == info.index.end() || row[it->second])
+                return;
+            row[it->second] = true;
+            stack.push_back(it->second);
+        };
+        auto succIt = cfg.successors.find(&F.blocks[start]);
+        if (succIt != cfg.successors.end())
+            for (const BasicBlock *s : succIt->second)
+                push(s);
+        while (!stack.empty()) {
+            const std::size_t cur = stack.back();
+            stack.pop_back();
+            auto it = cfg.successors.find(&F.blocks[cur]);
+            if (it == cfg.successors.end())
+                continue;
+            for (const BasicBlock *s : it->second)
+                push(s);
+        }
+    }
+    return info;
+}
+
 /// @brief Visit a basic block and apply GVN/RLE transformations.
 /// @details Walks instructions in order, eliminating redundant loads and pure
 ///          expressions. Load elimination uses exact key matches first, then
@@ -171,6 +273,7 @@ void visitBlock(Function &F,
                 const zanna::analysis::DomTree &DT,
                 zanna::analysis::BasicAA &AA,
                 const std::unordered_map<const BasicBlock *, std::size_t> &blockOrder,
+                const PathClobberInfo &paths,
                 State state,
                 bool &changed) {
     for (std::size_t idx = 0; idx < B->instructions.size();) {
@@ -290,7 +393,16 @@ void visitBlock(Function &F,
     auto it = DT.children.find(B);
     if (it != DT.children.end()) {
         for (auto *Child : it->second) {
-            visitBlock(F, Child, DT, AA, blockOrder, state, changed);
+            // ZB-32: a dominated child may still be reached through a block
+            // that writes memory (loop body, diamond arm). Load facts do not
+            // survive such a path; pure expressions do.
+            if (!state.loads.empty() && paths.clobberedBetween(B, Child)) {
+                State childState = state;
+                childState.loads.clear();
+                visitBlock(F, Child, DT, AA, blockOrder, paths, childState, changed);
+            } else {
+                visitBlock(F, Child, DT, AA, blockOrder, paths, state, changed);
+            }
         }
     }
 }
@@ -314,8 +426,7 @@ std::string_view GVN::id() const {
 /// @return Preserved analysis set after the transformation.
 PreservedAnalyses GVN::run(Function &function, AnalysisManager &analysis) {
     // Query required analyses
-    (void)analysis.getFunctionResult<il::transform::CFGInfo>(kAnalysisCFG,
-                                                             function); // ensure available
+    auto &cfg = analysis.getFunctionResult<il::transform::CFGInfo>(kAnalysisCFG, function);
     auto &dom = analysis.getFunctionResult<zanna::analysis::DomTree>(kAnalysisDominators, function);
     auto &aa = analysis.getFunctionResult<zanna::analysis::BasicAA>(kAnalysisBasicAA, function);
 
@@ -331,7 +442,8 @@ PreservedAnalyses GVN::run(Function &function, AnalysisManager &analysis) {
         blockOrder.emplace(&function.blocks[i], i);
 
     // Start at entry block
-    visitBlock(function, &function.blocks.front(), dom, aa, blockOrder, state, changed);
+    const PathClobberInfo paths = buildPathClobberInfo(function, cfg, aa);
+    visitBlock(function, &function.blocks.front(), dom, aa, blockOrder, paths, state, changed);
 
     if (!changed)
         return PreservedAnalyses::all();

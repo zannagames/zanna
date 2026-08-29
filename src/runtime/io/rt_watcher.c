@@ -374,7 +374,7 @@ static rt_string watcher_string_from_owned_bytes(char *bytes, size_t len, const 
     char *volatile owned_bytes = bytes;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         watcher_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -492,7 +492,7 @@ static rt_string watcher_event_path_from_owned_relative(rt_watcher_impl *w,
     char *volatile owned_path = path;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         watcher_save_trap_error(
             saved_error, sizeof(saved_error), "Watcher.Poll: event path allocation failed");
@@ -1182,7 +1182,7 @@ static rt_watcher_impl *watcher_alloc_configured(rt_string path, int8_t is_direc
     rt_watcher_impl *volatile owned_watcher = w;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         watcher_save_trap_error(saved_error, sizeof(saved_error), "Watcher.New: allocation failed");
         rt_trap_clear_recovery();

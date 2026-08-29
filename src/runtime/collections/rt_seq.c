@@ -51,6 +51,7 @@
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_random.h"
 #include "rt_seq_internal.h"
 #include "rt_string.h"
@@ -204,7 +205,7 @@ static int seq_ensure_capacity_or_release(
     rt_seq_impl *seq, int64_t needed, void *retained_value, int retained, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         seq_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -246,7 +247,7 @@ static int seq_retain_range_or_rollback(rt_seq_impl *seq,
     volatile int64_t staged = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         seq_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

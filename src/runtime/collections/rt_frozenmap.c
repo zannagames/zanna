@@ -54,6 +54,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq_internal.h"
 #include "rt_string.h"
 
@@ -217,7 +218,7 @@ static int fm_retain_new_slot_refs(rt_string key, void *value) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         fm_save_trap_error(saved_error, sizeof(saved_error), "FrozenMap: retain failed");
         rt_trap_clear_recovery();
@@ -250,7 +251,7 @@ static int fm_replace_slot_value(fm_slot *slot, void *value) {
     volatile int value_retained = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         fm_save_trap_error(saved_error, sizeof(saved_error), "FrozenMap: value replacement failed");
         rt_trap_clear_recovery();
@@ -454,7 +455,7 @@ void *rt_frozenmap_from_seqs(void *keys, void *values) {
     volatile int pending_key_owned = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         fm_save_trap_error(
             saved_error, sizeof(saved_error), "FrozenMap: element extraction failed");

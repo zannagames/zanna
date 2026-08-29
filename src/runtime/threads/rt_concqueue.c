@@ -497,7 +497,7 @@ void *rt_concqueue_new(void) {
     jmp_buf recovery;
     rt_concqueue_impl *volatile cq_for_cleanup = cq;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concqueue_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentQueue: GC tracking failed");
@@ -585,7 +585,7 @@ void rt_concqueue_enqueue(void *obj, void *item) {
     void *volatile obj_for_cleanup = obj;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concqueue_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentQueue.Enqueue: item retain failed");
@@ -654,7 +654,7 @@ int8_t rt_concqueue_try_enqueue(void *obj, void *item) {
     void *volatile obj_for_cleanup = obj;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concqueue_save_trap_error(
             saved_error, sizeof(saved_error), "ConcurrentQueue.TryEnqueue: item retain failed");
@@ -746,7 +746,7 @@ void *rt_concqueue_try_dequeue_option(void *obj) {
     jmp_buf recovery;
     void *volatile value_for_cleanup = value;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         concqueue_save_trap_error(saved_error,
                                   sizeof(saved_error),
@@ -907,7 +907,7 @@ void *rt_concqueue_peek(void *obj) {
         void *volatile obj_for_cleanup = obj;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             concqueue_save_trap_error(
                 saved_error, sizeof(saved_error), "ConcurrentQueue.Peek: item retain failed");

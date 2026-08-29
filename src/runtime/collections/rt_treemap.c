@@ -52,6 +52,7 @@
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -300,7 +301,7 @@ static int treemap_destroy_entries(treemap_entry *entries,
     rt_gc_mutator_enter();
     rt_trap_set_recovery(&recovery);
     for (;;) {
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             // Trap dispatch unwinds managed mutation scopes before longjmp.
             rt_gc_mutator_enter();
             if (!trapped)
@@ -349,7 +350,7 @@ static int treemap_push_key_or_release_seq(void *seq, const char *key, size_t ke
     rt_string volatile str = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         treemap_save_trap_error(
             saved_error, sizeof(saved_error), "TreeMap.Keys: snapshot append failed");
@@ -383,7 +384,7 @@ static int treemap_push_key_or_release_seq(void *seq, const char *key, size_t ke
 static int treemap_push_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         treemap_save_trap_error(
             saved_error, sizeof(saved_error), "TreeMap.Values: snapshot append failed");

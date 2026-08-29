@@ -21,6 +21,10 @@
 ///          the transformation stack.
 
 #include "il/transform/PassManager.hpp"
+#include <cstdlib>
+#include <fstream>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "il/analysis/BasicAA.hpp"
 #include "il/analysis/CFG.hpp"
@@ -100,9 +104,8 @@ PassManager::PassManager() {
     // to prove overflow, bounds, and divide-by-zero checks redundant.
     /// Compute whole-function integer ranges; module state is not required.
     analysisRegistry_.registerFunctionAnalysis<zanna::analysis::IntRangeInfo>(
-        kAnalysisIntRanges, [](core::Module &, core::Function &fn) {
-            return zanna::analysis::computeIntRanges(fn);
-        });
+        kAnalysisIntRanges,
+        [](core::Module &, core::Function &fn) { return zanna::analysis::computeIntRanges(fn); });
 
     addSimplifyCFG(false); // Register simplify-cfg pass (non-aggressive by default)
     registerLoopSimplifyPass(passRegistry_);
@@ -396,11 +399,74 @@ bool PassManager::run(core::Module &module, const Pipeline &pipeline) const {
 /// @param module Module undergoing transformation.
 /// @param pipelineId Identifier of the desired pipeline.
 /// @return @c true when the pipeline was found and executed; otherwise @c false.
+/// @brief Function-level triage for the IL optimizer (`ZANNA_IL_OPT_KEEP_FUNCS=<file>`).
+/// @details When set, the file lists one IL function name per line; after a
+///          named pipeline runs, every function NOT listed is restored to its
+///          pre-pipeline body, and functions, externs, and globals the pipeline
+///          removed are re-added, so a program-level oracle (VM output vs
+///          native output) can bisect "which optimized function changes the
+///          result" without a compiler rebuild. Plan 80 E0b found the AArch64
+///          divergence this way. Bisection aid only; the variable is read once
+///          per pipeline run.
+/// @param optimized Module after the pipeline (mutated in place).
+/// @param original Snapshot taken before the pipeline ran.
+static void revertUnlistedFunctions(core::Module &optimized, const core::Module &original) {
+    const char *listPath = std::getenv("ZANNA_IL_OPT_KEEP_FUNCS");
+    if (!listPath)
+        return;
+    std::unordered_set<std::string> keep;
+    std::ifstream in(listPath);
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+            line.pop_back();
+        if (!line.empty())
+            keep.insert(line);
+    }
+    std::unordered_map<std::string, const core::Function *> originalByName;
+    for (const auto &fn : original.functions)
+        originalByName[fn.name] = &fn;
+    std::unordered_set<std::string> present;
+    for (auto &fn : optimized.functions) {
+        present.insert(fn.name);
+        if (keep.count(fn.name))
+            continue;
+        auto it = originalByName.find(fn.name);
+        if (it != originalByName.end())
+            fn = *it->second;
+    }
+    for (const auto &fn : original.functions) {
+        if (!present.count(fn.name))
+            optimized.functions.push_back(fn);
+    }
+    std::unordered_set<std::string> externNames;
+    for (const auto &e : optimized.externs)
+        externNames.insert(e.name);
+    for (const auto &e : original.externs) {
+        if (!externNames.count(e.name))
+            optimized.externs.push_back(e);
+    }
+    std::unordered_set<std::string> globalNames;
+    for (const auto &g : optimized.globals)
+        globalNames.insert(g.name);
+    for (const auto &g : original.globals) {
+        if (!globalNames.count(g.name))
+            optimized.globals.push_back(g);
+    }
+}
+
 bool PassManager::runPipeline(core::Module &module, const std::string &pipelineId) const {
     const Pipeline *pipeline = getPipeline(pipelineId);
     if (!pipeline)
         return false;
-    return run(module, *pipeline);
+    const bool triage = std::getenv("ZANNA_IL_OPT_KEEP_FUNCS") != nullptr;
+    core::Module snapshot;
+    if (triage)
+        snapshot = module;
+    const bool ok = run(module, *pipeline);
+    if (ok && triage)
+        revertUnlistedFunctions(module, snapshot);
+    return ok;
 }
 
 } // namespace il::transform

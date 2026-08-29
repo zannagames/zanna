@@ -700,7 +700,7 @@ static int asset_find_packed_source_locked(const char *name, asset_packed_source
 static uint8_t *asset_read_packed_source(asset_packed_source_t source, size_t *out_size) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1178,7 +1178,7 @@ void *rt_asset_list(void) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

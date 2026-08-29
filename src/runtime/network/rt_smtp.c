@@ -1044,7 +1044,7 @@ static void *smtp_error_result(const char *message) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(
             saved_error, sizeof(saved_error), "SmtpClient: error Result allocation failed");
@@ -1070,7 +1070,7 @@ static void *smtp_success_result(void) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(
             saved_error, sizeof(saved_error), "SmtpClient: success Result allocation failed");
@@ -1165,7 +1165,7 @@ void *rt_smtp_new(rt_string host, int64_t port) {
     rt_smtp_impl *volatile s = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(saved_error, sizeof(saved_error), "SmtpClient: construction failed");
         rt_trap_clear_recovery();
@@ -1279,7 +1279,7 @@ static void *smtp_connect_plain_transaction(const char *host, int port) {
     void *volatile tcp = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(saved_error, sizeof(saved_error), "SMTP: TCP connection failed");
         rt_trap_clear_recovery();
@@ -1546,7 +1546,7 @@ static int smtp_send_message(rt_smtp_impl *s,
 static void smtp_quit_best_effort(rt_smtp_impl *s) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return;
     }
@@ -1609,7 +1609,7 @@ static int8_t smtp_send_common(void *obj,
     smtp_mutex_lock(&s->operation_lock);
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(saved_error, sizeof(saved_error), "SmtpClient.Send: transport failure");
         rt_trap_clear_recovery();
@@ -1667,7 +1667,7 @@ static void *smtp_send_result_common(void *obj,
     int8_t volatile ok = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -1761,7 +1761,7 @@ rt_string rt_smtp_last_error(void *obj) {
     rt_string volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         smtp_save_trap(saved_error, sizeof(saved_error), "SmtpClient.LastError: allocation failed");
         rt_trap_clear_recovery();

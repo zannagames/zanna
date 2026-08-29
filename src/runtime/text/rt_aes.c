@@ -58,6 +58,7 @@
 #include "rt_keyderive_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_result.h"
 #include "rt_string.h"
 
@@ -192,7 +193,7 @@ static void *aes_bytes_result(aes_bytes_decrypt_fn fn,
                               const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = aes_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -212,7 +213,7 @@ static void *aes_bytes_result(aes_bytes_decrypt_fn fn,
 static void *aes_bytes_option(aes_bytes_decrypt_fn fn, void *data, void *key, void *context) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -233,7 +234,7 @@ static void *aes_string_decrypt_result(aes_string_decrypt_fn fn,
                                        const char *trap_fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_string message = aes_current_error_message(trap_fallback);
         rt_trap_clear_recovery();
         return rt_result_err_str(message);
@@ -249,12 +250,10 @@ static void *aes_string_decrypt_result(aes_string_decrypt_fn fn,
 /// @param password Runtime password forwarded to @p fn.
 /// @return Caller-owned Option containing plaintext string, or None after a
 ///         trap or NULL result.
-static void *aes_string_decrypt_option(aes_string_decrypt_fn fn,
-                                       void *data,
-                                       rt_string password) {
+static void *aes_string_decrypt_option(aes_string_decrypt_fn fn, void *data, rt_string password) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         return rt_option_none();
     }
@@ -283,7 +282,10 @@ static void aes_secure_zero(void *ptr, size_t len) {
 /// @param ok Optional success flag cleared initially and set after a valid view.
 /// @return Borrowed string bytes, or a pointer to an empty static byte string
 ///         after validation failure or for a valid empty string.
-static const uint8_t *aes_string_bytes(rt_string str, size_t *len, const char *null_message, int *ok) {
+static const uint8_t *aes_string_bytes(rt_string str,
+                                       size_t *len,
+                                       const char *null_message,
+                                       int *ok) {
     if (ok)
         *ok = 0;
     if (!str) {

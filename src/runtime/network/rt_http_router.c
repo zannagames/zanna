@@ -583,7 +583,7 @@ static void *router_build_match(const route_t *route,
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         router_save_trap_error(
             saved_error, sizeof(saved_error), "HttpRouter.Match: allocation failed");

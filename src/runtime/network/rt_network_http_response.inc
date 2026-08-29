@@ -194,7 +194,7 @@ static int append_response_header_value(void *headers_map, const char *name, con
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -343,7 +343,7 @@ static int parse_header_line(const char *line, void *headers_map) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -434,7 +434,7 @@ static int read_response_head(http_conn_t *conn,
     char *volatile redirect_location = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

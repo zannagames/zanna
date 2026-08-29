@@ -36,6 +36,7 @@
 
 #include "rt_archive.h"
 #include "rt_archive_internal.h"
+#include "rt_platform.h"
 
 #include "network/rt_entropy_platform.h"
 #include "rt_box.h"
@@ -251,7 +252,7 @@ static int archive_read_exact_win(HANDLE h, uint8_t *dst, size_t total, const ch
 int archive_read_exact_win_or_free(HANDLE h, uint8_t *dst, size_t total, const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), trap_msg);
         rt_trap_clear_recovery();
@@ -286,7 +287,7 @@ int archive_read_exact_win_or_release_object(HANDLE h,
                                              const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), trap_msg);
         rt_trap_clear_recovery();
@@ -318,7 +319,7 @@ int archive_read_exact_win_or_release_object(HANDLE h,
 void *archive_bytes_new_win_or_close(HANDLE h, int64_t len, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -428,7 +429,7 @@ static int archive_read_exact_posix(int fd, uint8_t *dst, size_t total, const ch
 int archive_read_exact_posix_or_free(int fd, uint8_t *dst, size_t total, const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), trap_msg);
         rt_trap_clear_recovery();
@@ -463,7 +464,7 @@ int archive_read_exact_posix_or_release_object(int fd,
                                                const char *trap_msg) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), trap_msg);
         rt_trap_clear_recovery();
@@ -495,7 +496,7 @@ int archive_read_exact_posix_or_release_object(int fd,
 void *archive_bytes_new_posix_or_close(int fd, int64_t len, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

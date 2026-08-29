@@ -112,7 +112,9 @@ static uint32_t lookupOrdinal(const std::string &symName,
     return (it != symOrdinals.end()) ? it->second : 1;
 }
 
-/// @copydoc buildBindOpcodes(std::vector<uint8_t> &, const std::vector<GotEntry> &, const LinkLayout &, uint64_t, uint32_t, const std::unordered_map<std::string, uint32_t> &, std::ostream &)
+/// @copydoc buildBindOpcodes(std::vector<uint8_t> &, const std::vector<GotEntry> &, const
+/// LinkLayout &, uint64_t, uint32_t, const std::unordered_map<std::string, uint32_t> &,
+/// std::ostream &)
 bool buildBindOpcodes(std::vector<uint8_t> &bindData,
                       const std::vector<GotEntry> &gotEntries,
                       const LinkLayout &layout,
@@ -226,12 +228,17 @@ void buildRebaseOpcodes(std::vector<uint8_t> &rebaseData,
     rebaseData.push_back(REBASE_OPCODE_DONE);
 }
 
-/// @copydoc buildSymtab(std::vector<uint8_t> &, std::vector<uint8_t> &, const LinkLayout &, const std::unordered_set<std::string> &, const std::unordered_map<std::string, uint32_t> &, uint32_t &, uint32_t &)
+/// @copydoc buildSymtab(std::vector<uint8_t> &, std::vector<uint8_t> &, const LinkLayout &, const
+/// std::vector<size_t> &, bool, const std::unordered_set<std::string> &, const
+/// std::unordered_map<std::string, uint32_t> &, uint32_t &, uint32_t &, uint32_t &)
 void buildSymtab(std::vector<uint8_t> &symtabData,
                  std::vector<uint8_t> &strtabData,
                  const LinkLayout &layout,
+                 const std::vector<size_t> &sectionOrder,
+                 bool emitLocalSymbols,
                  const std::unordered_set<std::string> &dynSyms,
                  const std::unordered_map<std::string, uint32_t> &symOrdinals,
+                 uint32_t &nLocal,
                  uint32_t &nExtDef,
                  uint32_t &nUndef) {
     strtabData.push_back(0); // String table starts with NUL.
@@ -254,6 +261,21 @@ void buildSymtab(std::vector<uint8_t> &symtabData,
             symtabData.push_back(static_cast<uint8_t>(desc >> 8));
             writeLE64(symtabData, value);
         };
+
+    // Non-external definitions first (LC_DYSYMTAB requires locals, then
+    // external definitions, then undefined imports). `n_sect` is a byte, so
+    // definitions beyond the 255th section ordinal cannot be described and
+    // are left out rather than mis-attributed.
+    nLocal = 0;
+    if (emitLocalSymbols) {
+        for (const auto &rec : collectLocalSymbolRecords(layout, sectionOrder, true)) {
+            if (rec.sectionSlot + 1 > 255)
+                continue;
+            const uint32_t strx = addString(machoMangle(rec.name));
+            writeNlist(strx, N_SECT, static_cast<uint8_t>(rec.sectionSlot + 1), 0, rec.addr);
+            nLocal++;
+        }
+    }
 
     // External defined: _main.
     nExtDef = 0;

@@ -146,9 +146,13 @@ Strings have wrapper functions that dispatch to the heap API:
 - `rt_string_unref(s)` → `rt_heap_release`
 - `rt_str_retain_maybe(s)` / `rt_str_release_maybe(s)` — NULL-safe variants
 
-**Immortal strings**: Literal strings created via `rt_str_from_lit()` or
-`rt_const_cstr()` have `refcnt >= RT_HEAP_IMMORTAL_REFCNT` (`SIZE_MAX - 1`) and are never freed. The
-retain/release fast path checks for this and short-circuits.
+**Immortal strings**: `rt_str_from_lit()` — what native code calls for every
+evaluation of a string literal — returns one immortal string per literal site
+(`refcnt >= RT_HEAP_IMMORTAL_REFCNT`, `SIZE_MAX - 1`), created on first use and
+cached by the literal's address, so repeated evaluations allocate nothing and
+the generated retain/release are no-ops. (`rt_const_cstr()` copies into an
+ordinary mortal string; the VM keeps its own per-module literal cache.) The
+retain/release fast path checks the immortal count and short-circuits.
 
 **String interning**: `rt_string_intern(s)` inserts into a global hash table
 (FNV-1a, open-addressing, 5/8 load factor). Interned strings are effectively
@@ -704,7 +708,7 @@ degrade with thousands of tracked objects.
 
 | Term | Definition |
 |------|-----------|
-| **Immortal string** | A string with `refcnt >= RT_HEAP_IMMORTAL_REFCNT` (`SIZE_MAX - 1`); never freed. Created by `rt_str_from_lit()` or `rt_const_cstr()`. |
+| **Immortal string** | A string with `refcnt >= RT_HEAP_IMMORTAL_REFCNT` (`SIZE_MAX - 1`); never freed. Created once per literal site by `rt_str_from_lit()`, and for the shared empty string. |
 | **Pool-allocated** | Memory sourced from the slab allocator. Identified by `RT_HEAP_FLAG_POOLED` (bit 1) in the header flags. |
 | **Trial deletion** | The algorithm used by the cycle GC: temporarily decrement refcounts to identify objects only reachable through cycles. |
 | **Object resurrection** | Re-arming an object's refcount from 0→1 inside a finalizer, preventing deallocation. Used for pool recycling. |

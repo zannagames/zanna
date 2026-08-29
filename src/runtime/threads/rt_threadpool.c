@@ -464,7 +464,7 @@ static int8_t pool_finish_shutdown_join(
     void *volatile active_handle = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         const char *message = rt_trap_get_error();
         if (error && error_size > 0) {
             snprintf(error,
@@ -635,7 +635,7 @@ static void pool_finalizer(void *obj) {
             void *cleanup_thread = NULL;
             jmp_buf recovery;
             rt_trap_set_recovery(&recovery);
-            if (setjmp(recovery) != 0) {
+            if (RT_SETJMP(recovery) != 0) {
                 rt_trap_clear_recovery();
                 __atomic_store_n(&pool->cleanup_scheduled, 2, __ATOMIC_RELEASE);
                 pool_request_shutdown_atomic(pool, 1);
@@ -752,7 +752,7 @@ void *rt_threadpool_new(int64_t size) {
     char constructor_error[512];
     jmp_buf constructor_recovery;
     rt_trap_set_recovery(&constructor_recovery);
-    if (setjmp(constructor_recovery) != 0) {
+    if (RT_SETJMP(constructor_recovery) != 0) {
         const char *error = rt_trap_get_error();
         snprintf(constructor_error,
                  sizeof(constructor_error),
@@ -902,7 +902,7 @@ static void worker_entry(void *arg) {
         if (task && task->callback) {
             jmp_buf recovery;
             rt_trap_set_recovery(&recovery);
-            if (setjmp(recovery) == 0) {
+            if (RT_SETJMP(recovery) == 0) {
                 task->callback(task->arg);
             } else {
                 const char *msg = rt_trap_get_error();
@@ -972,7 +972,7 @@ static void pool_deferred_cleanup_entry(void *arg) {
     pool_impl *pool = (pool_impl *)arg;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0)
+    if (RT_SETJMP(recovery) == 0)
         rt_threadpool_shutdown_now(pool);
     rt_trap_clear_recovery();
     pool_release_object(pool);
@@ -1023,7 +1023,7 @@ static int8_t threadpool_submit_impl(void *pool_obj,
         char retain_error[256];
         jmp_buf retain_recovery;
         rt_trap_set_recovery(&retain_recovery);
-        if (setjmp(retain_recovery) != 0) {
+        if (RT_SETJMP(retain_recovery) != 0) {
             const char *error = rt_trap_get_error();
             snprintf(retain_error,
                      sizeof(retain_error),

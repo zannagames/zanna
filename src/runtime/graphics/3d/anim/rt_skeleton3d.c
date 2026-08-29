@@ -93,6 +93,18 @@ static int vgfx3d_backend_prefers_gpu_skinning(const vgfx3d_backend_t *backend,
 #include "rt_skeleton3d_skinning.inc"
 #include "rt_skeleton3d_blend.inc"
 // clang-format on
+
+int32_t rt_skeleton3d_mirror_bone(void *skel, int32_t bone) {
+    const rt_skeleton3d *s =
+        (const rt_skeleton3d *)rt_g3d_checked_or_null(skel, RT_G3D_SKELETON3D_CLASS_ID);
+    int32_t count;
+    if (!s)
+        return bone;
+    count = skeleton3d_safe_bone_count(s);
+    if (bone < 0 || bone >= count)
+        return bone;
+    return animation3d_mirror_bone(s, NULL, bone, count);
+}
 #else
 typedef int rt_graphics_disabled_tu_guard;
 #endif /* ZANNA_ENABLE_GRAPHICS */

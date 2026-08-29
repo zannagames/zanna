@@ -42,13 +42,21 @@ static std::string readFile(const std::string &path) {
     return ss.str();
 }
 
+#if defined(__APPLE__)
+static const bool kDarwinHost = true;
+#else
+static const bool kDarwinHost = false;
+#endif
+
 /// @brief Returns the expected mangled symbol name for a call target.
 static std::string blSym(const std::string &name) {
-#if defined(__APPLE__)
-    return "bl _" + name;
-#else
-    return "bl " + name;
-#endif
+    return kDarwinHost ? "bl _" + name : "bl " + name;
+}
+
+/// @brief The setjmp entry the EH lowering targets on this host: Darwin uses
+///        the mask-free `_setjmp` (no sigprocmask per `try`), others `setjmp`.
+static std::string setjmpSym() {
+    return blSym(kDarwinHost ? "_setjmp" : "setjmp");
 }
 
 // Test 1: eh.push with balanced unwind state
@@ -71,7 +79,7 @@ TEST(Arm64EH, EhPush) {
     const std::string asmText = readFile(out);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_frame_alloc")), std::string::npos);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_push")), std::string::npos);
-    EXPECT_NE(asmText.find(blSym("setjmp")), std::string::npos);
+    EXPECT_NE(asmText.find(setjmpSym()), std::string::npos);
 }
 
 // Test 2: eh.pop - pop error handler
@@ -149,7 +157,7 @@ TEST(Arm64EH, ResumeSame) {
     const std::string asmText = readFile(out);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_set_site")), std::string::npos);
     EXPECT_NE(asmText.find(blSym("rt_native_eh_get_site")), std::string::npos);
-    EXPECT_NE(asmText.find(blSym("setjmp")), std::string::npos);
+    EXPECT_NE(asmText.find(setjmpSym()), std::string::npos);
     EXPECT_NE(asmText.find(".__neh.site."), std::string::npos);
 }
 

@@ -42,6 +42,7 @@
 #include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_threads.h"
 
 #include <limits.h>
@@ -422,7 +423,7 @@ static int8_t channel_retain_item_locked(
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         channel_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -495,7 +496,7 @@ void *rt_channel_new(int64_t capacity) {
     channel_impl *volatile ch = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         channel_save_trap_error(saved_error, sizeof(saved_error), "Channel: construction failed");
         rt_trap_clear_recovery();
@@ -1039,7 +1040,7 @@ void *rt_channel_try_recv_option(void *channel) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         channel_save_trap_error(
             saved_error, sizeof(saved_error), "Channel.TryRecvOption: allocation failed");

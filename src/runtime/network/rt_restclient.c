@@ -187,7 +187,7 @@ static void *rest_error_result(const char *message) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(
             saved_error, sizeof(saved_error), "RestClient: error Result allocation failed");
@@ -224,7 +224,7 @@ static void *rest_success_result_owned(void *response) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(
             saved_error, sizeof(saved_error), "RestClient: success Result allocation failed");
@@ -470,7 +470,7 @@ static int rest_request_snapshot_capture(rest_client *client, rest_request_snaps
     volatile int mutex_locked = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(
             saved_error, sizeof(saved_error), "RestClient: default snapshot allocation failed");
@@ -611,7 +611,7 @@ static void *create_request(
     void *volatile req = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient: request setup failed");
         rt_trap_clear_recovery();
@@ -707,7 +707,7 @@ static void *execute_request(rest_client *client, void *req) {
     void *volatile res = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient request failed");
@@ -751,7 +751,7 @@ static void *execute_request_result(rest_client *client, void *req) {
     void *volatile res = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient request failed");
         rt_trap_clear_recovery();
@@ -785,7 +785,7 @@ void *rt_restclient_new(rt_string base_url) {
     rest_client *volatile client = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient: construction failed");
         rt_trap_clear_recovery();
@@ -936,7 +936,7 @@ void rt_restclient_set_auth_bearer(void *obj, rt_string token) {
     }
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(
             saved_error, sizeof(saved_error), "RestClient: Bearer authentication failed");
@@ -995,7 +995,7 @@ void rt_restclient_set_auth_basic(void *obj, rt_string username, rt_string passw
     }
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient: Basic authentication failed");
         rt_trap_clear_recovery();
@@ -1222,7 +1222,7 @@ static void *rest_execute_method_result(
     void *volatile req = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient request setup failed");
         rt_trap_clear_recovery();
@@ -1452,7 +1452,7 @@ static void *rest_execute_json(
     void *parsed = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         rest_save_trap(saved_error, sizeof(saved_error), "RestClient: JSON request failed");

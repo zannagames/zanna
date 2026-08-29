@@ -47,6 +47,7 @@
 #include "rt_file_path.h"
 #include "rt_object.h"
 #include "rt_path.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -461,7 +462,7 @@ void *rt_glob_files(rt_string dir, rt_string pattern) {
     rt_string volatile full_path = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         glob_save_trap_error(saved_error, sizeof(saved_error), "Glob.Files: result append failed");
         rt_trap_clear_recovery();
@@ -538,7 +539,7 @@ static void glob_recursive_helper(
     void *volatile entries = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         glob_save_trap_error(
             saved_error, sizeof(saved_error), "Glob.FilesRecursive: traversal failed");
@@ -630,7 +631,7 @@ void *rt_glob_files_recursive(rt_string base, rt_string pattern) {
     rt_string volatile empty = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         glob_save_trap_error(
             saved_error, sizeof(saved_error), "Glob.FilesRecursive: traversal failed");
@@ -687,7 +688,7 @@ void *rt_glob_entries(rt_string dir, rt_string pattern) {
     rt_string volatile full_path = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         glob_save_trap_error(
             saved_error, sizeof(saved_error), "Glob.Entries: result append failed");

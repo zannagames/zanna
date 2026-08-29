@@ -302,7 +302,9 @@ static uint32_t moduleLifetimeSectionFlags(const std::string &machoSecName) {
 
 } // anonymous namespace
 
-/// @copydoc writeMachOExe(const std::string &, const LinkLayout &, LinkArch, const std::vector<DylibImport> &, const std::unordered_set<std::string> &, const std::unordered_map<std::string, uint32_t> &, std::size_t, std::ostream &)
+/// @copydoc writeMachOExe(const std::string &, const LinkLayout &, LinkArch, const
+/// std::vector<DylibImport> &, const std::unordered_set<std::string> &, const
+/// std::unordered_map<std::string, uint32_t> &, std::size_t, bool, std::ostream &)
 bool writeMachOExe(const std::string &path,
                    const LinkLayout &layout,
                    LinkArch arch,
@@ -310,6 +312,7 @@ bool writeMachOExe(const std::string &path,
                    const std::unordered_set<std::string> &dynSyms,
                    const std::unordered_map<std::string, uint32_t> &symOrdinals,
                    std::size_t stackSize,
+                   bool emitLocalSymbols,
                    std::ostream &err) {
     const size_t pageSize = layout.pageSize;
     const bool isArm64 = (arch == LinkArch::AArch64);
@@ -361,9 +364,22 @@ bool writeMachOExe(const std::string &path,
     const bool hasDynamic = !layout.gotEntries.empty() || hasTLS || !layout.rebaseEntries.empty() ||
                             !layout.bindEntries.empty();
 
+    // Symbol `n_sect` ordinals follow section-header order: every __TEXT
+    // section, then every __DATA section (zero-fill included).
+    std::vector<size_t> symtabSectionOrder = textSections;
+    symtabSectionOrder.insert(symtabSectionOrder.end(), dataSections.begin(), dataSections.end());
     std::vector<uint8_t> symtabData, strtabData;
-    uint32_t nExtDef = 0, nUndef = 0;
-    buildSymtab(symtabData, strtabData, layout, dynSyms, symOrdinals, nExtDef, nUndef);
+    uint32_t nLocal = 0, nExtDef = 0, nUndef = 0;
+    buildSymtab(symtabData,
+                strtabData,
+                layout,
+                symtabSectionOrder,
+                emitLocalSymbols,
+                dynSyms,
+                symOrdinals,
+                nLocal,
+                nExtDef,
+                nUndef);
 
     // Pad string table to 8-byte alignment so that if it ever precedes
     // pointer-sized structures, offsets remain sane.
@@ -1018,9 +1034,13 @@ bool writeMachOExe(const std::string &path,
     // --- LC_SYMTAB ---
     uint32_t symCount = 0;
     uint64_t symCount64 = 0;
-    if (!checkedAddU64(nExtDef, nUndef, "symbol count", err, symCount64) ||
+    uint64_t definedCount64 = 0;
+    if (!checkedAddU64(nLocal, nExtDef, "symbol count", err, definedCount64) ||
+        !checkedAddU64(definedCount64, nUndef, "symbol count", err, symCount64) ||
         !checkedU32(symCount64, "symbol count", err, symCount))
         return false;
+    const uint32_t firstExtDef = nLocal;
+    const uint32_t firstUndef = static_cast<uint32_t>(definedCount64);
     writeLE32(file, LC_SYMTAB);
     writeLE32(file, 24);
     writeLE32(file, symtabOff);
@@ -1035,10 +1055,10 @@ bool writeMachOExe(const std::string &path,
     writeLE32(file, LC_DYSYMTAB);
     writeLE32(file, 80);
     writeLE32(file, 0);
-    writeLE32(file, 0); // ilocalsym, nlocalsym
-    writeLE32(file, 0);
+    writeLE32(file, nLocal); // ilocalsym, nlocalsym
+    writeLE32(file, firstExtDef);
     writeLE32(file, nExtDef); // iextdefsym, nextdefsym
-    writeLE32(file, nExtDef);
+    writeLE32(file, firstUndef);
     writeLE32(file, nUndef); // iundefsym, nundefsym
     for (int i = 0; i < 12; ++i)
         writeLE32(file, 0); // remaining fields (toc, modtab, extref, indirect, extrel, locrel)

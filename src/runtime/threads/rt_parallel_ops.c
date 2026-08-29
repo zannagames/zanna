@@ -102,7 +102,7 @@ void rt_parallel_foreach_pool(void *seq, void *func, void *pool) {
         task_error[0] = '\0';
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             void (*worker)(void *) = RT_FN_PTR_CAST((void (*)(void *))func);
             for (int64_t i = 0; i < count; i++)
                 worker(rt_seq_get(seq, i));
@@ -302,7 +302,7 @@ void *rt_parallel_map_pool(void *seq, void *func, void *pool) {
         task_error[0] = '\0';
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             void *(*mapper)(void *) = RT_FN_PTR_CAST((void *(*)(void *))func);
             for (int64_t i = 0; i < count; i++) {
                 void *mapped = mapper(rt_seq_get(seq, i));
@@ -534,7 +534,7 @@ void rt_parallel_invoke_pool(void *funcs, void *pool) {
         task_error[0] = '\0';
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             for (int64_t i = 0; i < count; i++) {
                 void (*worker)(void) = RT_FN_PTR_CAST((void (*)(void))rt_seq_get(funcs, i));
                 worker();
@@ -716,7 +716,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
         task_error[0] = '\0';
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             for (int64_t i = 0; i < count; i++)
                 result = combine(result, rt_seq_get(seq, i));
         } else {
@@ -878,7 +878,7 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
     if (!task_failed && !submit_failed) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             for (int64_t i = 0; i < nworkers; i++) {
                 result = combine(result, tasks[i].result);
             }
@@ -948,7 +948,7 @@ void rt_parallel_for_pool(int64_t start, int64_t end, void *func, void *pool) {
         task_error[0] = '\0';
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) == 0) {
+        if (RT_SETJMP(recovery) == 0) {
             void (*worker)(int64_t) = RT_FN_PTR_CAST((void (*)(int64_t))func);
             for (int64_t i = start; i < end; i++)
                 worker(i);
@@ -1109,7 +1109,7 @@ static void foreach_callback(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         for (int64_t i = task->start; i < task->end; i++)
             task->func(task->items[i]);
     } else {
@@ -1163,7 +1163,7 @@ static void map_callback(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         for (int64_t i = task->start; i < task->end; i++) {
             void *mapped = task->func(task->items[i]);
             rt_obj_retain_maybe(mapped);
@@ -1217,7 +1217,7 @@ static void invoke_callback(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0)
+    if (RT_SETJMP(recovery) == 0)
         task->func();
     else {
         parallel_copy_error(local_error, sizeof(local_error), "Parallel.Invoke: task trapped");
@@ -1270,7 +1270,7 @@ static void reduce_callback(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         if (task->start >= task->end) {
             task->result = task->identity;
         } else {
@@ -1328,7 +1328,7 @@ static void for_callback(void *arg) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         for (int64_t i = task->start; i < task->end; i++)
             task->func(i);
     } else {

@@ -294,9 +294,9 @@ static void rt_trap_dispatch(
             rt_native_eh_frame_t *frame =
                 (rt_native_eh_frame_t *)((char *)rt_trap_recovery_top_ -
                                          offsetof(rt_native_eh_frame_t, base));
-            longjmp(frame->env, 1);
+            RT_LONGJMP(frame->env, 1);
         }
-        longjmp(*((rt_trap_legacy_recovery_t *)rt_trap_recovery_top_)->buf, 1);
+        RT_LONGJMP(*((rt_trap_legacy_recovery_t *)rt_trap_recovery_top_)->buf, 1);
     }
     vm_trap(stable_msg);
 }
@@ -1064,7 +1064,7 @@ rt_string rt_term_read_line(void) {
 static void *rt_term_line_to_option(rt_string line) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,
@@ -1096,7 +1096,7 @@ static void *rt_term_line_to_result(rt_string line, const char *eof_message) {
     rt_string err_message = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *err = rt_trap_get_error();
         snprintf(saved_error,

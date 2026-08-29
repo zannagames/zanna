@@ -464,7 +464,7 @@ static void set_json_error_response(server_res_t *res, int status_code, const ch
     volatile int created_headers = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1397,7 +1397,7 @@ static char *build_response(server_res_t *res, int keep_alive, size_t *out_len) 
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

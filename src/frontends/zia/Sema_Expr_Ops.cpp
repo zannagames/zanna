@@ -488,9 +488,22 @@ TypeRef Sema::recordBinaryAssignment(BinaryExpr *expr, TypeRef leftType, TypeRef
         if (expr->left->kind == ExprKind::Ident) {
             auto *lhsIdent = static_cast<IdentExpr *>(expr->left.get());
             Symbol *sym = currentScope_->lookup(lhsIdent->name);
-            bool assigningFinalFieldDuringInit = sym && sym->kind == Symbol::Kind::Field &&
-                                                 currentSelfType_ && currentMethod_ &&
-                                                 currentMethod_->name == "init";
+            const bool assigningDuringInit =
+                currentSelfType_ && currentMethod_ && currentMethod_->name == "init";
+            if (identShadowedByField(sym, lhsIdent->name)) {
+                // Same precedence as reads: the (inherited) field is the
+                // assignment target, not the module-level symbol. `leftType`
+                // already carries the field type from analyzeIdent.
+                sym = nullptr;
+                if (auto owner = findFieldOwner(currentSelfType_->name, lhsIdent->name)) {
+                    if (finalFields_.contains(*owner + "." + lhsIdent->name) &&
+                        !assigningDuringInit) {
+                        error(expr->loc, "Cannot assign to final field '" + lhsIdent->name + "'");
+                    }
+                }
+            }
+            bool assigningFinalFieldDuringInit =
+                sym && sym->kind == Symbol::Kind::Field && assigningDuringInit;
             if (sym && sym->isFinal && !assigningFinalFieldDuringInit) {
                 if (sym->kind == Symbol::Kind::Field) {
                     error(expr->loc, "Cannot assign to final field '" + lhsIdent->name + "'");

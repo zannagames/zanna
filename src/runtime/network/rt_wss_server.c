@@ -31,6 +31,7 @@
  */
 
 #include "rt_wss_server.h"
+#include "rt_platform.h"
 #include "rt_websocket.h"
 
 #include "rt_bytes.h"
@@ -747,7 +748,7 @@ static void ws_client_run(rt_ws_server_impl *s, int slot, uint64_t generation, v
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         rt_trap_clear_recovery();
         ws_server_remove_client(s, slot, generation, tcp);
         return;
@@ -928,7 +929,7 @@ static void ws_accept_task_run(void *arg) {
     // retire the visible slot locally instead of escaping the pool task.
     jmp_buf tls_recovery;
     rt_trap_set_recovery(&tls_recovery);
-    if (setjmp(tls_recovery) != 0) {
+    if (RT_SETJMP(tls_recovery) != 0) {
         rt_trap_clear_recovery();
         ws_server_clear_pending_socket(s, slot, generation);
         (void)rt_socket_close((socket_t)socket_fd);
@@ -969,7 +970,7 @@ static void ws_accept_task_run(void *arg) {
     // locally so the slot reference and worker-owned TLS reference both retire.
     jmp_buf handshake_recovery;
     rt_trap_set_recovery(&handshake_recovery);
-    if (setjmp(handshake_recovery) != 0) {
+    if (RT_SETJMP(handshake_recovery) != 0) {
         rt_trap_clear_recovery();
         ws_server_remove_client(s, slot, generation, tls);
         rt_tls_close(tls);
@@ -1205,7 +1206,7 @@ void rt_wss_server_start(void *obj) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char error[512];
         const char *message = rt_trap_get_error();
         int net_code = rt_trap_get_net_code();
@@ -1429,7 +1430,7 @@ rt_string rt_wss_server_subprotocol(void *obj) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char error[512];
         const char *message = rt_trap_get_error();
         int net_code = rt_trap_get_net_code();

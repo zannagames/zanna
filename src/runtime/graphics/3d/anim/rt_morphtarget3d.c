@@ -847,6 +847,41 @@ void *rt_morphtarget3d_clone(void *obj) {
  * @param new_vertex_count Number of output vertices/map entries; must be positive and fit int32.
  * @return A new independently owned MorphTarget3D, or `NULL` on validation/allocation failure.
  */
+static void morphtarget_negate_x_lanes(float *deltas, int32_t vertex_count) {
+    if (!deltas)
+        return;
+    for (int32_t v = 0; v < vertex_count; ++v)
+        deltas[(size_t)v * 3u] = -deltas[(size_t)v * 3u];
+}
+
+double rt_morphtarget3d_delta_lane_internal(void *obj,
+                                            int64_t shape,
+                                            int64_t vertex,
+                                            int64_t lane) {
+    rt_morphtarget3d *mt = morphtarget_checked(obj);
+    if (!mt || !morphtarget_repair_storage(mt))
+        return 0.0;
+    if (shape < 0 || shape >= morphtarget_safe_shape_count(mt) || vertex < 0 ||
+        vertex >= mt->vertex_count || lane < 0 || lane > 2 || !mt->shapes[shape].pos_deltas)
+        return 0.0;
+    return (double)mt->shapes[shape].pos_deltas[(size_t)vertex * 3u + (size_t)lane];
+}
+
+void *rt_morphtarget3d_clone_mirrored_x(void *obj) {
+    rt_morphtarget3d *dst = (rt_morphtarget3d *)rt_morphtarget3d_clone(obj);
+    int32_t count;
+    if (!dst)
+        return NULL;
+    count = morphtarget_safe_shape_count(dst);
+    for (int32_t i = 0; i < count; ++i) {
+        morphtarget_negate_x_lanes(dst->shapes[i].owned_pos_deltas, dst->vertex_count);
+        morphtarget_negate_x_lanes(dst->shapes[i].owned_nrm_deltas, dst->vertex_count);
+        morphtarget_negate_x_lanes(dst->shapes[i].owned_tan_deltas, dst->vertex_count);
+    }
+    morphtarget_touch_payload(dst);
+    return dst;
+}
+
 void *rt_morphtarget3d_clone_remapped(void *obj,
                                       const uint32_t *new_to_old,
                                       uint32_t new_vertex_count) {

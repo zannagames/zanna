@@ -47,6 +47,7 @@
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_platform.h"
 #include "rt_stack_internal.h"
 
 #include <setjmp.h>
@@ -666,7 +667,7 @@ void *rt_stack_clone(void *obj) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         stack_save_trap(saved_error, sizeof(saved_error), "Stack.Clone: copy failed");
         rt_trap_clear_recovery();

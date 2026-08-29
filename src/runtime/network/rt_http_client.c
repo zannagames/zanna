@@ -32,6 +32,7 @@
 #include "rt_http_client.h"
 #include "rt_network_http_internal.h"
 #include "rt_network_time.inc"
+#include "rt_platform.h"
 
 #include "rt_heap.h"
 #include "rt_internal.h"
@@ -303,7 +304,7 @@ static int apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitive
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         http_client_save_trap_error(
             saved_error, sizeof(saved_error), "HttpClient: failed to apply defaults");
@@ -935,7 +936,7 @@ static int apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url)
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         http_client_save_trap_error(
             saved_error, sizeof(saved_error), "HttpClient: Cookie header construction failed");
@@ -1303,7 +1304,7 @@ static int store_response_cookies(rt_http_client_impl *c, void *res, rt_string u
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         http_client_save_trap_error(
             saved_error, sizeof(saved_error), "HttpClient: response cookie storage failed");
@@ -1504,7 +1505,7 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         int saved_net_code = rt_trap_get_net_code();
         http_client_save_trap_error(saved_error, sizeof(saved_error), "HttpClient: request failed");
@@ -1675,7 +1676,7 @@ void *rt_http_client_new(void) {
     rt_http_client_impl *volatile c = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         http_client_save_trap_error(
             saved_error, sizeof(saved_error), "HttpClient: construction failed");
@@ -2162,7 +2163,7 @@ void *rt_http_client_get_cookies(void *obj, rt_string domain) {
     rt_string volatile value = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         http_client_save_trap_error(
             saved_error, sizeof(saved_error), "HttpClient.GetCookies: allocation failed");

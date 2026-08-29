@@ -43,6 +43,7 @@
 #include "rt_collection_ids.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_seq.h"
 #include <setjmp.h>
 #include <stdio.h>
@@ -153,7 +154,7 @@ static int seq_push_string_copy(void *seq, rt_string s) {
     rt_string volatile copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sortedset_save_trap_error(
             saved_error, sizeof(saved_error), "SortedSet: snapshot append failed");
@@ -741,7 +742,7 @@ void *rt_sortedset_union(void *obj, void *other) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sortedset_save_trap_error(
             saved_error, sizeof(saved_error), "SortedSet.Union: construction failed");
@@ -797,7 +798,7 @@ void *rt_sortedset_intersect(void *obj, void *other) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sortedset_save_trap_error(
             saved_error, sizeof(saved_error), "SortedSet.Intersect: construction failed");
@@ -853,7 +854,7 @@ void *rt_sortedset_diff(void *obj, void *other) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         sortedset_save_trap_error(
             saved_error, sizeof(saved_error), "SortedSet.Diff: construction failed");

@@ -961,7 +961,7 @@ static void *gltf_decode_ktx2_payload(const uint8_t *data, size_t data_len) {
     if (!data || data_len == 0)
         return NULL;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0)
+    if (RT_SETJMP(recovery) == 0)
         asset = rt_textureasset3d_load_ktx2_memory(data, (uint64_t)data_len);
     rt_trap_clear_recovery();
     return asset;

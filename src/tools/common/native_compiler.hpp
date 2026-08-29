@@ -69,6 +69,8 @@ bool isNativeOutputPath(const std::string &path);
 /// leaves the platform default in effect (ignored on non-Windows targets).
 /// @param stackSize Requested executable stack size in bytes, or zero for the
 ///        platform/linker default.
+/// @param emitLocalSymbols When true (default) the executable's symbol table names
+///        every function and data definition for profilers and debuggers.
 /// @return 0 on success, non-zero on failure.
 int compileToNative(const std::string &ilPath,
                     const std::string &outputPath,
@@ -80,7 +82,8 @@ int compileToNative(const std::string &ilPath,
                     bool timePasses = false,
                     bool fastLink = false,
                     std::optional<bool> windowsDebugRuntime = std::nullopt,
-                    std::size_t stackSize = 0);
+                    std::size_t stackSize = 0,
+                    bool emitLocalSymbols = true);
 
 /// @brief Compile an already-built IL module to a native binary without reparsing IL text.
 ///
@@ -105,6 +108,9 @@ int compileToNative(const std::string &ilPath,
 /// leaves the platform default in effect (ignored on non-Windows targets).
 /// @param stackSize Requested executable stack size in bytes, or zero for the
 ///        platform/linker default.
+/// @param emitLocalSymbols When true (default) the executable's symbol table names
+///        every function and data definition for profilers and debuggers;
+///        false produces a stripped image.
 /// @return 0 on success, non-zero on failure.
 int compileModuleToNative(il::core::Module module,
                           const std::string &debugSourcePath,
@@ -118,7 +124,8 @@ int compileModuleToNative(il::core::Module module,
                           bool timePasses = false,
                           bool fastLink = false,
                           std::optional<bool> windowsDebugRuntime = std::nullopt,
-                          std::size_t stackSize = 0);
+                          std::size_t stackSize = 0,
+                          bool emitLocalSymbols = true);
 
 /// @brief Generate and reserve a unique temporary file for IL serialization.
 /// @return Path to an empty file in the system temp directory with a `.il` extension.

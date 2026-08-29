@@ -34,6 +34,7 @@
 #include "rt_crypto.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_result.h"
 #include "rt_string.h"
 #include "rt_trap.h"
@@ -678,7 +679,7 @@ void *rt_multipart_new(void) {
     rt_multipart_impl *volatile mp = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(
             saved_error, sizeof(saved_error), "Multipart: constructor initialization failed");
@@ -945,7 +946,7 @@ void *rt_multipart_build(void *obj) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(
             saved_error, sizeof(saved_error), "Multipart: result allocation failed");
@@ -1061,7 +1062,7 @@ void *rt_multipart_parse(rt_string content_type, void *body) {
     char *volatile header_text = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(saved_error, sizeof(saved_error), "Multipart: parse failed");
         rt_trap_clear_recovery();
@@ -1215,7 +1216,7 @@ static void *multipart_error_result(const char *message) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(
             saved_error, sizeof(saved_error), "Multipart: error Result allocation failed");
@@ -1247,7 +1248,7 @@ static void *multipart_success_result_owned(void *multipart) {
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(
             saved_error, sizeof(saved_error), "Multipart: success Result allocation failed");
@@ -1276,7 +1277,7 @@ static void *multipart_success_result_owned(void *multipart) {
 void *rt_multipart_parse_result(rt_string content_type, void *body) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[512];
         multipart_save_trap(saved_error, sizeof(saved_error), "Multipart: parse failed");
         rt_trap_clear_recovery();

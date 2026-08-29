@@ -46,6 +46,7 @@
 #include "rt_crc32.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <setjmp.h>
@@ -181,7 +182,7 @@ static void *compress_native_to_managed_bytes(uint8_t *raw, size_t len, const ch
     }
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         compress_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -212,7 +213,7 @@ static void *compress_run_string_bytes(void *bytes, int gzip, const char *fallba
     void *result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         compress_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -247,7 +248,7 @@ static rt_string compress_bytes_to_str_or_release(void *bytes, const char *fallb
     rt_string result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         compress_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -1431,7 +1432,7 @@ static int gunzip_raw_limited(const uint8_t *data,
     }
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         if (error_buffer && error_buffer_size > 0)
             compress_save_trap_error(
                 error_buffer, error_buffer_size, "Gunzip: invalid compressed data");
@@ -1636,7 +1637,7 @@ int rt_compress_inflate_raw(
     if (!data || !out_data || !out_len)
         return 0;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         raw = inflate_raw_limited_ex(data, len, max_output, &raw_len, NULL, false);
         ok = raw != NULL || raw_len == 0;
     }
@@ -1726,7 +1727,7 @@ int rt_compress_inflate_zlib_into(const uint8_t *data,
                      ((uint32_t)data[len - 2] << 8) | (uint32_t)data[len - 1];
 
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) == 0) {
+    if (RT_SETJMP(recovery) == 0) {
         decoded = inflate_raw_limited_to_ex(
             data + 2, len - 6, output_size, &decoded_size, NULL, false, output);
         ok = decoded == output && decoded_size == output_size;

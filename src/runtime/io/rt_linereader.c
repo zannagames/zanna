@@ -44,6 +44,7 @@
 #include "rt_internal.h"
 #include "rt_io_class_ids.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 
 #include <setjmp.h>
@@ -117,7 +118,7 @@ static rt_linereader_impl *linereader_alloc_or_close(FILE *fp) {
     FILE *volatile owned_fp = fp;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         linereader_save_trap_error(
             saved_error, sizeof(saved_error), "LineReader.Open: memory allocation failed");
@@ -153,7 +154,7 @@ static rt_string linereader_string_from_owned_buffer(char *buffer,
     char *volatile owned_buffer = buffer;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         linereader_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();

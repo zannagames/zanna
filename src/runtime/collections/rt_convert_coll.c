@@ -60,6 +60,7 @@
 #include "rt_list_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_queue.h"
 #include "rt_queue_internal.h"
 #include "rt_ring.h"
@@ -369,7 +370,7 @@ static void *convert_indexed(void *source,
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         save_conversion_trap(saved_error, sizeof(saved_error), diagnostic);
         rt_trap_clear_recovery();
@@ -407,7 +408,7 @@ static void *convert_native_pointers(void **elements,
     void *volatile result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         save_conversion_trap(saved_error, sizeof(saved_error), diagnostic);
         rt_trap_clear_recovery();
@@ -524,7 +525,7 @@ void *rt_seq_to_bag(void *seq) {
     rt_string volatile retained = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         save_conversion_trap(saved_error, sizeof(saved_error), "Seq.ToBag: conversion failed");
         rt_trap_clear_recovery();
@@ -562,15 +563,16 @@ void *rt_seq_to_bag(void *seq) {
     rt_trap_clear_recovery();
     return (void *)bag;
 
-returning_failure: {
-    char saved_error[256];
-    save_conversion_trap(saved_error, sizeof(saved_error), "Seq.ToBag: conversion failed");
-    rt_trap_clear_recovery();
-    rt_str_release_maybe((rt_string)retained);
-    release_temp_obj((void *)bag);
-    rt_trap(saved_error);
-    return NULL;
-}
+returning_failure:
+    {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), "Seq.ToBag: conversion failed");
+        rt_trap_clear_recovery();
+        rt_str_release_maybe((rt_string)retained);
+        release_temp_obj((void *)bag);
+        rt_trap(saved_error);
+        return NULL;
+    }
 }
 
 //=============================================================================
@@ -650,7 +652,7 @@ void *rt_set_to_list(void *set) {
     void *volatile seq = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         save_conversion_trap(saved_error, sizeof(saved_error), "Set.ToList: conversion failed");
         rt_trap_clear_recovery();
@@ -812,7 +814,7 @@ void *rt_bag_to_set(void *bag) {
     void *volatile entry = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         save_conversion_trap(saved_error, sizeof(saved_error), "Bag.ToSet: conversion failed");
         rt_trap_clear_recovery();
@@ -855,16 +857,17 @@ void *rt_bag_to_set(void *bag) {
     release_temp_obj((void *)items);
     return (void *)set;
 
-returning_failure: {
-    char saved_error[256];
-    save_conversion_trap(saved_error, sizeof(saved_error), "Bag.ToSet: conversion failed");
-    rt_trap_clear_recovery();
-    release_temp_obj((void *)entry);
-    release_temp_obj((void *)items);
-    release_temp_obj((void *)set);
-    rt_trap(saved_error);
-    return NULL;
-}
+returning_failure:
+    {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), "Bag.ToSet: conversion failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)entry);
+        release_temp_obj((void *)items);
+        release_temp_obj((void *)set);
+        rt_trap(saved_error);
+        return NULL;
+    }
 }
 
 //=============================================================================

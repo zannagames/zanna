@@ -40,6 +40,7 @@
 #include "rt_scheduler.h"
 
 #include "rt_option.h"
+#include "rt_platform.h"
 
 #include "rt_heap.h"
 #include "rt_internal.h"
@@ -366,7 +367,7 @@ static void scheduler_schedule_impl(void *sched,
     rt_string retained_name = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         scheduler_save_trap_error(
             saved_error, sizeof(saved_error), "Scheduler.Schedule: name retain failed");
@@ -644,7 +645,7 @@ void *rt_scheduler_poll(void *sched) {
     void *result = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         scheduler_save_trap_error(
             saved_error, sizeof(saved_error), "Scheduler.Poll: result allocation failed");
@@ -678,7 +679,7 @@ void *rt_scheduler_poll(void *sched) {
 
     sched_entry *volatile remaining = due_head;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         scheduler_save_trap_error(
             saved_error, sizeof(saved_error), "Scheduler.Poll: result append failed");

@@ -543,6 +543,7 @@ RT_FUNC(Mesh3DRasterizeUvMaskY, rt_mesh3d_rasterize_uv_mask_y, "Zanna.Graphics3D
 RT_FUNC(Mesh3DRasterizeUvHeight, rt_mesh3d_rasterize_uv_height, "Zanna.Graphics3D.Mesh3D.RasterizeUvHeight", "void(obj,obj,f64,f64)")
 RT_FUNC(Mesh3DClone,            rt_mesh3d_clone,            "Zanna.Graphics3D.Mesh3D.Clone",            "obj(obj)")
 RT_FUNC(Mesh3DTransform,        rt_mesh3d_transform,        "Zanna.Graphics3D.Mesh3D.Transform",        "void(obj,obj)")
+RT_FUNC(Mesh3DMirror,           rt_mesh3d_mirror,           "Zanna.Graphics3D.Mesh3D.Mirror",           "obj(obj,obj)")
 // Arc bend (ADR 0294): wrap a straight kit piece's X extent around a vertical
 // circular arc so adjacent pieces share end sections with no radial gap.
 RT_FUNC(Mesh3DBendArc,          rt_mesh3d_bend_arc,         "Zanna.Graphics3D.Mesh3D.BendArc",          "void(obj,f64,f64)")
@@ -588,6 +589,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Mesh3D", Mesh3D, "obj", Mesh3DNew)
     RT_METHOD("RasterizeUvHeight", "void(obj,f64,f64)", Mesh3DRasterizeUvHeight)
     RT_METHOD("Clone", "obj()", Mesh3DClone)
     RT_METHOD("Transform", "void(obj)", Mesh3DTransform)
+    // ADR 0306: the left/right-mirrored copy (geometry reflected, bone
+    // influences remapped to their sagittal partners, morph deltas reflected).
+    RT_METHOD("Mirror", "obj(obj)", Mesh3DMirror)
     RT_METHOD("BendArc", "void(f64,f64)", Mesh3DBendArc)
     // Frees auxiliary CPU geometry (double positions, build scratch) a
     // finished static mesh no longer needs; returns bytes released.

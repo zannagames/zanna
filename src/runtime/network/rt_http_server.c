@@ -1177,7 +1177,7 @@ static void handle_connection_task(void *arg) {
     }
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1251,9 +1251,8 @@ static void *accept_loop(void *arg)
         rt_obj_retain_maybe(server);
 
         if (!server->worker_pool ||
-            !rt_threadpool_submit(server->worker_pool,
-                                  RT_FN_PTR_CAST((void *)handle_connection_task),
-                                  task)) {
+            !rt_threadpool_submit(
+                server->worker_pool, RT_FN_PTR_CAST((void *)handle_connection_task), task)) {
             server_release_object(server);
             free(task);
             rt_tcp_close(tcp);
@@ -1295,7 +1294,7 @@ void *rt_http_server_new(int64_t port) {
     volatile int finalizer_installed = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1421,7 +1420,7 @@ static void add_route_binding(void *obj,
     volatile int lifecycle_locked = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -1645,7 +1644,7 @@ void rt_http_server_start(void *obj) {
     volatile int published = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         int saved_net_code = rt_trap_get_net_code();
         const char *error = rt_trap_get_error();
@@ -1809,7 +1808,7 @@ void rt_http_server_stop(void *obj) {
     if (worker_pool && rt_threadpool_current_worker_pool() != worker_pool) {
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             const char *error = rt_trap_get_error();
             snprintf(saved_error,
@@ -2205,7 +2204,7 @@ void rt_server_res_json(void *obj, rt_string json_str) {
     rt_string volatile ct_val = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,
@@ -2385,7 +2384,7 @@ void *rt_http_server_process_request(void *obj, rt_string raw_request) {
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         const char *error = rt_trap_get_error();
         snprintf(saved_error,

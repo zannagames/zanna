@@ -54,6 +54,8 @@ constexpr const char *kFramePop = "rt_native_eh_pop";
 constexpr const char *kFrameSetSite = "rt_native_eh_set_site";
 constexpr const char *kFrameGetSite = "rt_native_eh_get_site";
 constexpr const char *kSetjmpSymbol = "setjmp";
+/// Mask-free BSD variant selected for Darwin targets (see lowerNativeEh).
+constexpr const char *kMaskFreeSetjmpSymbol = "_setjmp";
 constexpr int32_t kErrInvalidOperation = 8;
 
 /// @brief Identifies one `eh.push` by its original function position.
@@ -251,14 +253,14 @@ static void ensureExtern(Module &module, std::string name, Type retType, std::ve
 
 /// @brief Ensure declarations for all runtime frame helpers and `setjmp`.
 /// @param[in,out] module Module extern table to extend.
-static void ensureRuntimeExterns(Module &module) {
+static void ensureRuntimeExterns(Module &module, const char *setjmpSymbol) {
     ensureExtern(module, kFrameAlloc, ptrTy(), {});
     ensureExtern(module, kFrameFree, voidTy(), {ptrTy()});
     ensureExtern(module, kFramePush, voidTy(), {ptrTy()});
     ensureExtern(module, kFramePop, voidTy(), {ptrTy()});
     ensureExtern(module, kFrameSetSite, voidTy(), {ptrTy(), i64Ty()});
     ensureExtern(module, kFrameGetSite, i64Ty(), {ptrTy()});
-    ensureExtern(module, kSetjmpSymbol, i64Ty(), {ptrTy()});
+    ensureExtern(module, setjmpSymbol, i64Ty(), {ptrTy()});
 }
 
 /// @brief Build a direct void call to an injected helper.
@@ -558,7 +560,7 @@ static void propagateEntryStacks(const Function &fn,
 /// @param[in,out] module Owning module whose runtime externs may be inserted.
 /// @param[in,out] fn Function whose value names, parameters, and blocks may change.
 /// @return Replacement block snapshot and whether a rewrite occurred.
-static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
+static RewrittenFunction rewriteFunction(Module &module, Function &fn, const char *setjmpSymbol) {
     RewrittenFunction rewritten{};
 
     std::unordered_map<std::string, std::size_t> blockIndex;
@@ -599,7 +601,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
     if (!hasEh)
         return rewritten;
 
-    ensureRuntimeExterns(module);
+    ensureRuntimeExterns(module, setjmpSymbol);
 
     std::vector<std::optional<std::vector<int>>> entryStacks(fn.blocks.size());
     std::deque<std::size_t> worklist;
@@ -732,7 +734,7 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
                     makeStore(Value::temp(scope.slotTemp), Value::temp(frameTemp)));
                 current.instructions.push_back(makeCallVoid(kFramePush, {Value::temp(frameTemp)}));
                 current.instructions.push_back(
-                    makeCallResult(setjmpTemp, i64Ty(), kSetjmpSymbol, {Value::temp(frameTemp)}));
+                    makeCallResult(setjmpTemp, i64Ty(), setjmpSymbol, {Value::temp(frameTemp)}));
                 {
                     Instr cmp;
                     cmp.result = caughtTemp;
@@ -969,10 +971,11 @@ static RewrittenFunction rewriteFunction(Module &module, Function &fn) {
 } // namespace
 
 /// @copydoc lowerNativeEh
-bool lowerNativeEh(Module &module) {
+bool lowerNativeEh(Module &module, bool maskFreeSetjmp) {
+    const char *setjmpSymbol = maskFreeSetjmp ? kMaskFreeSetjmpSymbol : kSetjmpSymbol;
     bool changed = false;
     for (auto &fn : module.functions) {
-        auto rewritten = rewriteFunction(module, fn);
+        auto rewritten = rewriteFunction(module, fn, setjmpSymbol);
         changed |= rewritten.changed;
     }
     return changed;

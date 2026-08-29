@@ -63,7 +63,7 @@ static constexpr uint32_t PF_R = 4;
 // Section header types.
 [[maybe_unused]] static constexpr uint32_t SHT_NULL = 0;
 static constexpr uint32_t SHT_PROGBITS = 1;
-[[maybe_unused]] static constexpr uint32_t SHT_SYMTAB = 2;
+static constexpr uint32_t SHT_SYMTAB = 2;
 static constexpr uint32_t SHT_STRTAB = 3;
 static constexpr uint32_t SHT_RELA = 4;
 static constexpr uint32_t SHT_HASH = 5;
@@ -109,9 +109,11 @@ static constexpr uint32_t R_AARCH64_COPY = 1024;
 static constexpr uint32_t R_AARCH64_GLOB_DAT = 1025;
 
 // Symbol table binding/type encodings used in .dynsym entries.
+static constexpr uint8_t STB_LOCAL = 0;
 static constexpr uint8_t STB_GLOBAL = 1;
 static constexpr uint8_t STT_NOTYPE = 0;
 static constexpr uint8_t STT_OBJECT = 1;
+static constexpr uint8_t STT_FUNC = 2;
 
 static constexpr const char *kLinuxX8664Interpreter = "/lib64/ld-linux-x86-64.so.2";
 static constexpr const char *kLinuxAArch64Interpreter = "/lib/ld-linux-aarch64.so.1";
@@ -667,9 +669,9 @@ bool buildDynamicInfo(const LinkLayout &layout,
 
     /// @brief One required version, already assigned its `.gnu.version` index.
     struct VersionRequirement {
-        std::string name;      ///< Version definition name.
-        uint16_t index = 0;    ///< Index this requirement occupies in `.gnu.version`.
-        uint32_t nameOff = 0;  ///< `.dynstr` offset of `name`.
+        std::string name;     ///< Version definition name.
+        uint16_t index = 0;   ///< Index this requirement occupies in `.gnu.version`.
+        uint32_t nameOff = 0; ///< `.dynstr` offset of `name`.
     };
 
     // Group requirements by library, preserving DT_NEEDED order so the emitted
@@ -777,10 +779,9 @@ bool buildDynamicInfo(const LinkLayout &layout,
             need.vn_cnt = static_cast<uint16_t>(versions.size());
             need.vn_file = info.neededNameOff[lib];
             need.vn_aux = sizeof(Elf64_Verneed);
-            need.vn_next =
-                lastLib ? 0u
-                        : static_cast<uint32_t>(sizeof(Elf64_Verneed) +
-                                                versions.size() * sizeof(Elf64_Vernaux));
+            need.vn_next = lastLib ? 0u
+                                   : static_cast<uint32_t>(sizeof(Elf64_Verneed) +
+                                                           versions.size() * sizeof(Elf64_Vernaux));
             appendStruct(info.verneed, need, 8);
 
             for (size_t auxIdx = 0; auxIdx < versions.size(); ++auxIdx) {
@@ -988,7 +989,9 @@ bool buildDynamicInfo(const LinkLayout &layout,
 
 } // anonymous namespace
 
-/// @copydoc writeElfExe(const std::string &, const LinkLayout &, LinkArch, const std::vector<std::string> &, const std::unordered_set<std::string> &, std::size_t, bool, std::ostream &)
+/// @copydoc writeElfExe(const std::string &, const LinkLayout &, LinkArch, const
+/// std::vector<std::string> &, const std::unordered_set<std::string> &, std::size_t, bool,
+/// std::ostream &)
 bool writeElfExe(const std::string &path,
                  const LinkLayout &layout,
                  LinkArch arch,
@@ -996,6 +999,7 @@ bool writeElfExe(const std::string &path,
                  const std::unordered_set<std::string> &dynSyms,
                  std::size_t stackSize,
                  bool emitStartupStub,
+                 bool emitLocalSymbols,
                  std::ostream &err) {
     const size_t pageSize = layout.pageSize;
     const uint16_t machine = (arch == LinkArch::AArch64) ? EM_AARCH64 : EM_X86_64;
@@ -1244,6 +1248,46 @@ bool writeElfExe(const std::string &path,
             return false;
     }
 
+    // Local symbol tables (.symtab/.strtab): every placed definition as a
+    // STB_LOCAL symbol so perf/gdb can name addresses. Not loaded; placed
+    // after the non-alloc sections and before .shstrtab.
+    std::vector<uint8_t> localSymtab;
+    std::vector<uint8_t> localStrtab;
+    size_t localSymtabOff = 0;
+    size_t localStrtabOff = 0;
+    uint32_t localSymCount = 0;
+    if (emitLocalSymbols) {
+        localStrtab.push_back(0);
+        appendStruct(localSymtab, Elf64_Sym{}, 8);
+        for (const auto &rec : collectLocalSymbolRecords(layout, loadableIndices, false)) {
+            uint32_t nameOff = 0;
+            if (!addString(localStrtab, rec.name, nameOff, err))
+                return false;
+            const auto &sec = layout.sections[loadableIndices[rec.sectionSlot]];
+            Elf64_Sym sym{};
+            sym.st_name = nameOff;
+            sym.st_info =
+                static_cast<uint8_t>((STB_LOCAL << 4) | (sec.executable ? STT_FUNC : STT_OBJECT));
+            sym.st_shndx = shndxForAddress(layout, loadableIndices, rec.addr);
+            sym.st_value = rec.addr;
+            sym.st_size = rec.size;
+            appendStruct(localSymtab, sym, 8);
+            if (localSymCount == std::numeric_limits<uint32_t>::max()) {
+                err << "error: ELF local symbol count exceeds 32-bit file format limit\n";
+                return false;
+            }
+            ++localSymCount;
+        }
+        if (!checkedAlignUpSize(filePos, 8, "symbol-table file offset", err, localSymtabOff))
+            return false;
+        filePos = localSymtabOff;
+        if (!checkedAddSize(filePos, localSymtab.size(), "symbol-table file range", err, filePos))
+            return false;
+        localStrtabOff = filePos;
+        if (!checkedAddSize(filePos, localStrtab.size(), "string-table file range", err, filePos))
+            return false;
+    }
+
     std::string shstrtab;
     shstrtab.push_back('\0');
 
@@ -1285,6 +1329,19 @@ bool writeElfExe(const std::string &path,
         }
     }
 
+    uint32_t symtabNameOff = 0;
+    uint32_t strtabNameOff = 0;
+    if (emitLocalSymbols) {
+        if (!checkedU32(shstrtab.size(), "section-name string-table offset", err, symtabNameOff))
+            return false;
+        shstrtab += ".symtab";
+        shstrtab.push_back('\0');
+        if (!checkedU32(shstrtab.size(), "section-name string-table offset", err, strtabNameOff))
+            return false;
+        shstrtab += ".strtab";
+        shstrtab.push_back('\0');
+    }
+
     uint32_t gnuStackNameOff = 0;
     if (!checkedU32(shstrtab.size(), "section-name string-table offset", err, gnuStackNameOff))
         return false;
@@ -1308,7 +1365,9 @@ bool writeElfExe(const std::string &path,
         return false;
 
     const size_t syntheticCount = dynInfo.enabled ? (dynInfo.versym.empty() ? 6 : 8) : 0;
-    const size_t shdrCount = loadableIndices.size() + nonAllocIndices.size() + syntheticCount + 3;
+    const size_t localTableCount = emitLocalSymbols ? 2 : 0;
+    const size_t shdrCount =
+        loadableIndices.size() + nonAllocIndices.size() + syntheticCount + localTableCount + 3;
     if (shdrCount > std::numeric_limits<uint16_t>::max()) {
         err << "error: ELF section header count exceeds 16-bit file format limit\n";
         return false;
@@ -1607,6 +1666,11 @@ bool writeElfExe(const std::string &path,
         std::memcpy(fileData.data() + nonAllocInfo[i].fileOffset, sec.data.data(), sec.data.size());
     }
 
+    if (emitLocalSymbols) {
+        std::memcpy(fileData.data() + localSymtabOff, localSymtab.data(), localSymtab.size());
+        std::memcpy(fileData.data() + localStrtabOff, localStrtab.data(), localStrtab.size());
+    }
+
     std::memcpy(fileData.data() + shstrtabOff, shstrtab.data(), shstrtab.size());
 
     size_t shdrOff = shdrsOff;
@@ -1659,6 +1723,37 @@ bool writeElfExe(const std::string &path,
         shdr.sh_addralign = sec.addralign;
         shdr.sh_entsize = sec.entsize;
         writeStruct(fileData, shdrOff, shdr);
+        shdrOff += sizeof(Elf64_Shdr);
+    }
+
+    if (emitLocalSymbols) {
+        // .symtab links to the .strtab header that immediately follows it;
+        // every entry is STB_LOCAL, so sh_info (first non-local index) is the
+        // total count.
+        const size_t strtabShndx =
+            1 + loadableIndices.size() + nonAllocIndices.size() + syntheticSections.size() + 1;
+        uint32_t strtabShndx32 = 0;
+        if (!checkedU32(strtabShndx, "string-table section index", err, strtabShndx32))
+            return false;
+        Elf64_Shdr symShdr{};
+        symShdr.sh_name = symtabNameOff;
+        symShdr.sh_type = SHT_SYMTAB;
+        symShdr.sh_offset = localSymtabOff;
+        symShdr.sh_size = localSymtab.size();
+        symShdr.sh_link = strtabShndx32;
+        symShdr.sh_info = localSymCount + 1;
+        symShdr.sh_addralign = 8;
+        symShdr.sh_entsize = sizeof(Elf64_Sym);
+        writeStruct(fileData, shdrOff, symShdr);
+        shdrOff += sizeof(Elf64_Shdr);
+
+        Elf64_Shdr strShdr{};
+        strShdr.sh_name = strtabNameOff;
+        strShdr.sh_type = SHT_STRTAB;
+        strShdr.sh_offset = localStrtabOff;
+        strShdr.sh_size = localStrtab.size();
+        strShdr.sh_addralign = 1;
+        writeStruct(fileData, shdrOff, strShdr);
         shdrOff += sizeof(Elf64_Shdr);
     }
 

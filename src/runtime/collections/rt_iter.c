@@ -61,6 +61,7 @@
 #include "rt_list_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "rt_ring.h"
 #include "rt_ring_internal.h"
 #include "rt_seq.h"
@@ -159,7 +160,7 @@ static rt_iter_impl *make_iter(void *source, iter_kind kind, int64_t len) {
     rt_iter_impl *volatile it = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         iter_save_trap(saved_error, sizeof(saved_error), "Iterator: construction failed");
         rt_trap_clear_recovery();
@@ -205,7 +206,7 @@ static rt_iter_impl *make_iter_snapshot(void *snapshot, int64_t len) {
     void *volatile owned_snapshot = snapshot;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         iter_save_trap(saved_error, sizeof(saved_error), "Iterator: construction failed");
         rt_trap_clear_recovery();
@@ -288,7 +289,7 @@ void *rt_iter_from_deque(void *deque) {
     int64_t len = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         iter_save_trap(saved_error, sizeof(saved_error), "Iterator: deque snapshot failed");
         rt_trap_clear_recovery();
@@ -396,7 +397,7 @@ void *rt_iter_from_stack(void *stack) {
     volatile int64_t count = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         iter_save_trap(saved_error, sizeof(saved_error), "Iterator: stack snapshot failed");
         rt_trap_clear_recovery();
@@ -669,7 +670,7 @@ void *rt_iter_to_seq(void *iter) {
     void *volatile retained = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         iter_save_trap(saved_error, sizeof(saved_error), "Iterator.ToSeq: snapshot failed");
         rt_trap_clear_recovery();

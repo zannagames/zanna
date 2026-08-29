@@ -167,7 +167,7 @@ static void archive_add_with_temp_data(void *obj,
     void *volatile owned_data = data;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -434,7 +434,7 @@ static rt_archive_t *archive_alloc(void) {
 static rt_archive_t *archive_alloc_or_free_data(uint8_t *data, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -465,7 +465,7 @@ static int archive_retain_path_or_release(rt_archive_t *ar, rt_string path, cons
         return 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), fallback);
         rt_trap_clear_recovery();
@@ -1498,7 +1498,7 @@ void *rt_archive_names(void *obj) {
     volatile int lock_held = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), "Archive: failed to list names");
         rt_trap_clear_recovery();
@@ -1651,7 +1651,7 @@ rt_string rt_archive_read_str(void *obj, rt_string name) {
         return rt_str_empty();
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to convert entry to string");
@@ -1687,7 +1687,7 @@ void rt_archive_extract(void *obj, rt_string name, rt_string dest_path) {
         return;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to extract entry");
@@ -1745,7 +1745,7 @@ void rt_archive_extract_all(void *obj, rt_string dest_dir) {
 #endif
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to extract archive");
@@ -1973,7 +1973,7 @@ void *rt_archive_info(void *obj, rt_string name) {
     void *volatile boxed = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to build entry info");
@@ -2117,7 +2117,7 @@ static void archive_add_locked(void *obj, rt_string name, void *data) {
         char *volatile norm_name_owner = norm_name;
         jmp_buf recovery;
         rt_trap_set_recovery(&recovery);
-        if (setjmp(recovery) != 0) {
+        if (RT_SETJMP(recovery) != 0) {
             char saved_error[256];
             archive_save_trap_error(
                 saved_error, sizeof(saved_error), "Archive: failed to compress entry");
@@ -2210,7 +2210,7 @@ static void archive_add_locked(void *obj, rt_string name, void *data) {
     void *volatile compressed_owner = compressed;
     jmp_buf append_recovery;
     rt_trap_set_recovery(&append_recovery);
-    if (setjmp(append_recovery) != 0) {
+    if (RT_SETJMP(append_recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), "Archive: failed to add entry");
         rt_trap_clear_recovery();
@@ -2259,7 +2259,7 @@ void rt_archive_add(void *obj, rt_string name, void *data) {
     archive_rwlock_write_enter(ar->rw_lock);
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(saved_error, sizeof(saved_error), "Archive: failed to add entry");
         rt_trap_clear_recovery();
@@ -2495,7 +2495,7 @@ static void archive_add_dir_locked(void *obj, rt_string name) {
     char *volatile norm_name_owner = norm_name;
     jmp_buf append_recovery;
     rt_trap_set_recovery(&append_recovery);
-    if (setjmp(append_recovery) != 0) {
+    if (RT_SETJMP(append_recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to add directory entry");
@@ -2537,7 +2537,7 @@ void rt_archive_add_dir(void *obj, rt_string name) {
     archive_rwlock_write_enter(ar->rw_lock);
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to add directory entry");
@@ -2647,7 +2647,7 @@ static void archive_finish_locked(void *obj) {
     size_t finish_start = ar->write_len;
     jmp_buf finish_recovery;
     rt_trap_set_recovery(&finish_recovery);
-    if (setjmp(finish_recovery) != 0) {
+    if (RT_SETJMP(finish_recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to finish archive");
@@ -2686,7 +2686,7 @@ void rt_archive_finish(void *obj) {
     archive_rwlock_write_enter(ar->rw_lock);
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
-    if (setjmp(recovery) != 0) {
+    if (RT_SETJMP(recovery) != 0) {
         char saved_error[256];
         archive_save_trap_error(
             saved_error, sizeof(saved_error), "Archive: failed to finish archive");
