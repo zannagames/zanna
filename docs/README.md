@@ -88,6 +88,8 @@ Zanna is a from-scratch compiler toolchain and game development platform: two la
 
 Latest release: **v0.3.0** ([release notes](release_notes/Zanna_Release_Notes_0_3_0.md)).
 
+In development: **v0.3.1-snapshot** ([draft release notes](release_notes/Zanna_Release_Notes_0_3_1.md)).
+
 [v0.3.0](release_notes/Zanna_Release_Notes_0_3_0.md) · [v0.2.7](release_notes/Zanna_Release_Notes_0_2_7.md) · [v0.2.6](release_notes/Zanna_Release_Notes_0_2_6.md) · [v0.2.5](release_notes/Zanna_Release_Notes_0_2_5.md) · [v0.2.4](release_notes/Zanna_Release_Notes_0_2_4.md) · [v0.2.3](release_notes/Zanna_Release_Notes_0_2_3.md) · [v0.2.2](release_notes/Zanna_Release_Notes_0_2_2.md) · [v0.2.1](release_notes/Zanna_Release_Notes_0_2_1.md) · [v0.2.0](release_notes/Zanna_Release_Notes_0_2_0.md) · [v0.1.3](release_notes/Zanna_Release_Notes_0_1_3.md) · [v0.1.2](release_notes/Zanna_Release_Notes_0_1_2.md)
 
 ---

@@ -54,6 +54,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0300](0300-animation-state-entry-at-offset.md) — Enter an Animation State at a Time Offset
 - [ADR 0301](0301-display-referred-render-target-sampling.md) — Display-Referred Render-Target Sampling on Every Backend
 - [ADR 0302](0302-animation-transition-continuity.md) — Animation Transition Continuity
+- [ADR 0304](0304-bounded-process-output-and-environment-snapshots.md) — Bound Process Output Publication and Own Environment Snapshots
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API
@@ -133,9 +134,11 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0265](0265-canonical-language-service-c-abi-headers.md) — Keep One Canonical C Header per Language Service
 - [ADR 0276](0276-process-lifetime-file-leases-and-isolated-studio-recovery.md) — Add Process-Lifetime File Leases and Isolate Studio Recovery
 - [ADR 0281](0281-event-driven-process-pty-gui-wakes.md) — Wake GUI Event Loops for Process and PTY Activity
+- [ADR 0303](0303-complete-owned-workspace-index-cursors.md) — Let Owned Workspace Index Cursors Reach Completion
 
 ## GUI & IDE
 
+- [ADR 0305](0305-background-search-and-virtual-tool-results.md) — Separate Background Search Analysis from Virtual Tool-Result Publication
 - [ADR 0007](0007-codeeditor-syntax-surface-expansion.md) — CodeEditor Syntax Surface Expansion Uses Registry-Only Semantics
 - [ADR 0008](0008-semantic-token-overlay.md) — Semantic Token Overlay Uses Registry-Only Semantics
 - [ADR 0009](0009-debug-evaluate-protocol.md) — Debug Adapter Evaluate Protocol Extension

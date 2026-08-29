@@ -1,0 +1,42 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/build_job_result.zia
+// Purpose: Define the immutable terminal snapshot of a Studio build/run job.
+// Key invariants:
+//   - Success excludes stopped jobs even when a platform reports exit code zero.
+//   - One snapshot contains the complete bounded output and diagnostic counts.
+// Ownership/Lifetime: BuildSystem owns and publishes each result snapshot.
+// Links: zannastudio/src/build/build_system.zia
+//
+//===----------------------------------------------------------------------===//
+
+module build_job_result;
+
+class BuildJobResult {
+    expose Boolean success;
+    expose Boolean stopped;
+    expose Integer exitCode;
+    expose String action;
+    expose String name;
+    expose String duration;
+    expose String output;
+    expose Integer errorCount;
+    expose Integer warningCount;
+
+    expose func init() {
+        success = false;
+        stopped = false;
+        exitCode = -1;
+        action = "";
+        name = "";
+        duration = "";
+        output = "";
+        errorCount = 0;
+        warningCount = 0;
+    }
+}

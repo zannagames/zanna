@@ -60,6 +60,14 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
         var model = ToolRowsForListBox(listBox);
         if model != null and model.virtualized {
             var selectedIndex = listBox.SelectedIndex;
+            if listBox == referencesListBox {
+                if selectedIndex >= 0
+                   and selectedIndex < visibleReferenceRows.count() {
+                    var visibleRow = visibleReferenceRows.get(selectedIndex);
+                    if visibleRow != null { return visibleRow.data; }
+                }
+                return "";
+            }
             if selectedIndex >= 0 and selectedIndex < model.Count() {
                 var row = model.rows.get(selectedIndex);
                 if row != null { return row.data; }
@@ -167,7 +175,11 @@ class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer 
             removeCount = removeCount - 1;
         }
         if removed and model.virtualized {
-            RebuildVirtualToolRows(listBox, model);
+            if listBox == referencesListBox {
+                RefreshReferenceRows();
+            } else {
+                RebuildVirtualToolRows(listBox, model);
+            }
         }
     }
 

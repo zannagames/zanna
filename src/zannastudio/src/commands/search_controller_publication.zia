@@ -1,0 +1,217 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/search_controller_publication.zia
+// Purpose: Schedule background file analysis and time-bound Search row publication.
+// Key invariants:
+//   - At most one source-analysis worker is active for a controller.
+//   - Completed records publish under both row-count and wall-clock budgets.
+//   - Results from canceled or superseded generations are never rendered.
+// Ownership/Lifetime: Inherits and coordinates SearchController-owned worker state.
+// Links: zannastudio/src/commands/search_controller.zia,
+//        zannastudio/src/commands/search_file_worker.zia
+//
+//===----------------------------------------------------------------------===//
+
+module search_controller_publication;
+
+bind "search_controller_discovery" as PreviousLayer;
+bind "search_commands_support" as SearchSupport;
+bind "search_file_worker";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../services/locations";
+bind "../ui/app_shell";
+
+bind Clock = Zanna.Time.Clock;
+bind IO = Zanna.IO;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Path = Zanna.IO.Path;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+
+final SEARCH_RESULT_ROWS_PER_FRAME = 64;
+final SEARCH_PUBLICATION_BUDGET_MS = 4;
+
+class SearchControllerPublicationLayer
+    extends PreviousLayer.SearchControllerDiscoveryLayer {
+    /// @brief Publish a finished worker into controller-owned pending state.
+    hide func PollSearchWorker() {
+        fileWorker.Pump();
+        if pendingWorkResult != null or fileWorker.completedRequest == null {
+            return;
+        }
+        var completed = fileWorker.TakeCompleted();
+        if completed == null or completed.cancelled
+           or completed.generation != searchGeneration {
+            return;
+        }
+        pendingWorkResult = completed;
+        pendingPublishIndex = 0;
+        pendingHeaderPublished = false;
+    }
+
+    /// @brief Queue one bounded candidate for off-UI-thread analysis.
+    /// @return True when a worker was started.
+    hide func QueueNextSearchWork(
+        docMgr: document_manager.DocumentManager) -> Boolean {
+        if fileWorker.IsBusy() or pendingWorkResult != null { return false; }
+        var considered = 0;
+        while active and considered < SearchSupport.SEARCH_FILES_PER_FRAME
+              and fileIndex < files.count() {
+            var filePath = Obj.ToString(files.get(fileIndex));
+            fileIndex = fileIndex + 1;
+            considered = considered + 1;
+            lastPumpFileCount = lastPumpFileCount + 1;
+
+            if mode == SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS {
+                var language = file_utils.DetectLanguage(filePath);
+                if language != "zia" and language != "basic" { continue; }
+            }
+
+            var openIndex = -1;
+            if docMgr != null { openIndex = docMgr.FindByPath(filePath); }
+            if openIndex < 0 and IO.File.Exists(filePath) == false {
+                skippedUnavailableFiles = skippedUnavailableFiles + 1;
+                lastSkippedSourceError = "Search source disappeared: " + filePath;
+                continue;
+            }
+            var contentBytes = SearchSupport.SearchContentSize(docMgr, filePath);
+            if contentBytes < 0 {
+                skippedUnavailableFiles = skippedUnavailableFiles + 1;
+                lastSkippedSourceError =
+                    "Search source metadata is unavailable: " + filePath;
+                continue;
+            }
+            if contentBytes > SearchSupport.MAX_SEARCH_FILE_BYTES {
+                skippedLargeFiles = skippedLargeFiles + 1;
+                continue;
+            }
+
+            var request = new search_file_worker.SearchFileRequest();
+            request.generation = searchGeneration;
+            request.mode = mode;
+            request.filePath = filePath;
+            request.query = query;
+            request.caseSensitive = caseSensitive;
+            request.wholeWord = wholeWord;
+            request.regexMode = regexMode;
+            request.maxResults = SearchSupport.MAX_SEARCH_RESULTS - resultCount;
+            if openIndex >= 0 {
+                request.hasLiveSource = true;
+                request.liveSource = docMgr.documents.get(openIndex).content;
+            }
+            lastPumpByteCount = lastPumpByteCount + contentBytes;
+            if fileWorker.Queue(request) { return true; }
+            skippedUnavailableFiles = skippedUnavailableFiles + 1;
+            lastSkippedSourceError = "Search worker could not start for: " + filePath;
+            return false;
+        }
+        return false;
+    }
+
+    /// @brief Publish a completed file under row and wall-clock limits.
+    hide func PublishPendingSearchWork(shell: app_shell.AppShell,
+                                       locStore: locations.LocationStore,
+                                       startedAtMs: Integer) {
+        if pendingWorkResult == null { return; }
+        var request = pendingWorkResult!;
+        if request.succeeded == false {
+            if request.skippedLarge {
+                skippedLargeFiles = skippedLargeFiles + 1;
+            } else {
+                skippedUnavailableFiles = skippedUnavailableFiles + 1;
+                lastSkippedSourceError = request.error;
+            }
+            ClearPendingSearchWork();
+            return;
+        }
+
+        var itemCount = Seq.get_Count(request.items);
+        var published = 0;
+        while pendingPublishIndex < itemCount
+              and published < SEARCH_RESULT_ROWS_PER_FRAME
+              and Clock.NowMs() - startedAtMs < SEARCH_PUBLICATION_BUDGET_MS {
+            if pendingHeaderPublished == false {
+                shell.toolPanels.AddToolGroupHeader(
+                    shell.toolPanels.searchListBox,
+                    Path.Name(request.filePath), request.filePath);
+                pendingHeaderPublished = true;
+            }
+            var item = Seq.Get(request.items, pendingPublishIndex);
+            pendingPublishIndex = pendingPublishIndex + 1;
+            published = published + 1;
+            if mode == SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS {
+                PublishSymbolItem(shell, locStore, request, item);
+            } else {
+                PublishTextItem(shell, locStore, request, item);
+            }
+            resultCount = resultCount + 1;
+        }
+        lastPumpRowCount = lastPumpRowCount + published;
+        if pendingPublishIndex >= itemCount {
+            var hitLimit = request.hitResultLimit;
+            ClearPendingSearchWork();
+            if hitLimit and resultCount >= SearchSupport.MAX_SEARCH_RESULTS {
+                resultLimitReached = true;
+                discovering = false;
+                discoveryCursor.Destroy();
+                active = false;
+            }
+        }
+    }
+
+    hide func PublishTextItem(shell: app_shell.AppShell,
+                              locStore: locations.LocationStore,
+                              request: search_file_worker.SearchFileRequest,
+                              item: Any) {
+        var line = Map.GetInt(item, "line");
+        var column = Map.GetInt(item, "column");
+        var length = Map.GetInt(item, "length");
+        var context = Map.GetStr(item, "context");
+        var row = shell.toolPanels.AddToolLocationRow(
+            shell.toolPanels.searchListBox, "match", "text",
+            "" + line + ":" + column, "", Map.GetStr(item, "display"), "");
+        var locationId = locStore.AddSearch(
+            request.filePath, line, column, line, column + length,
+            Str.Trim(context), request.sourceRevision, context);
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.searchListBox, row, locationId);
+    }
+
+    hide func PublishSymbolItem(shell: app_shell.AppShell,
+                                locStore: locations.LocationStore,
+                                request: search_file_worker.SearchFileRequest,
+                                item: Any) {
+        var kind = Map.GetStr(item, "kind");
+        var name = Map.GetStr(item, "name");
+        var typeText = Map.GetStr(item, "type");
+        var line = Map.GetInt(item, "line");
+        var detail = "";
+        if typeText != "" { detail = " : " + typeText; }
+        var row = shell.toolPanels.AddToolLocationRow(
+            shell.toolPanels.searchListBox, kind, "symbol",
+            "line " + line, typeText, name + detail, "");
+        var locationId = locStore.Add(
+            request.filePath, line, Map.GetInt(item, "column"),
+            Map.GetInt(item, "endLine"), Map.GetInt(item, "endColumn"),
+            locations.KIND_SYMBOL, name);
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.searchListBox, row, locationId);
+    }
+
+    hide func ClearPendingSearchWork() {
+        pendingWorkResult = null;
+        pendingPublishIndex = 0;
+        pendingHeaderPublished = false;
+    }
+
+    hide func SearchWorkIsPending() -> Boolean {
+        return pendingWorkResult != null or fileWorker.IsBusy();
+    }
+}

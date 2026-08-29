@@ -10,6 +10,7 @@
 // Key invariants:
 //   - Paired watcher/path and root/fingerprint lists remain index-aligned.
 //   - Explicit cursor objects are destroyed before a traversal is replaced.
+//   - Cancelled workers remain active until publication starts their replacement.
 // Ownership/Lifetime: The Studio application owns one state object per workspace.
 // Links: zannastudio/src/app/workspace_watcher.zia,
 //        zannastudio/src/app/workspace_watcher_fallback.zia
@@ -22,6 +23,35 @@ bind "../services/workspace_file_cursor";
 
 bind IO = Zanna.IO;
 bind Threads = Zanna.Threads;
+
+/// @brief Immutable roots plus worker-owned fallback fingerprint results.
+class WorkspaceFallbackScanRequest {
+    expose String rootSignature;
+    expose List[String] rootPaths;
+    expose List[String] rootIgnorePatterns;
+    expose List entryCounts;
+    expose List fingerprints;
+    expose List secondaryFingerprints;
+    expose Boolean cancelled;
+    expose Boolean succeeded;
+    expose Boolean failed;
+    expose String error;
+    expose Integer pagesScanned;
+
+    expose func init() {
+        rootSignature = "";
+        rootPaths = new List();
+        rootIgnorePatterns = new List();
+        entryCounts = new List();
+        fingerprints = new List();
+        secondaryFingerprints = new List();
+        cancelled = false;
+        succeeded = false;
+        failed = false;
+        error = "";
+        pagesScanned = 0;
+    }
+}
 
 /// @brief Mutable state shared by watcher topology and fallback controllers.
 class WorkspaceWatcherState {
@@ -47,6 +77,7 @@ class WorkspaceWatcherState {
     expose Boolean discoveryRootAdded;
     expose workspace_file_cursor.WorkspaceFileCursor discoveryCursor;
     expose Boolean fallbackScanActive;
+    expose Boolean fallbackRestartRequested;
     expose Boolean fallbackBaselineReady;
     expose Integer fallbackRootIndex;
     expose Integer fallbackPageOffset;
@@ -57,6 +88,8 @@ class WorkspaceWatcherState {
     expose List fallbackEntryCounts;
     expose List fallbackFingerprints;
     expose List fallbackSecondaryFingerprints;
+    expose WorkspaceFallbackScanRequest fallbackRequest;
+    expose Any fallbackFuture;
     expose Integer lastWatcherPollCount;
 
     expose func InitializeState() {
@@ -82,6 +115,7 @@ class WorkspaceWatcherState {
         discoveryRootAdded = false;
         discoveryCursor = new workspace_file_cursor.WorkspaceFileCursor();
         fallbackScanActive = false;
+        fallbackRestartRequested = false;
         fallbackBaselineReady = false;
         fallbackRootIndex = 0;
         fallbackPageOffset = 0;
@@ -92,6 +126,8 @@ class WorkspaceWatcherState {
         fallbackEntryCounts = new List();
         fallbackFingerprints = new List();
         fallbackSecondaryFingerprints = new List();
+        fallbackRequest = null;
+        fallbackFuture = null;
         lastWatcherPollCount = 0;
     }
 }

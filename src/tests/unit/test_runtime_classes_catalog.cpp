@@ -143,6 +143,8 @@ int main() {
         findClass("Zanna.System.Process.ProcessHandle");
     assert(processHandleCls != nullptr && "Zanna.System.Process.ProcessHandle not found");
     assert(hasMethod(*processHandleCls, "ReadOutputResult", "obj<Zanna.Collections.Map>()"));
+    assert(hasMethod(
+        *processHandleCls, "ReadOutputResultBounded", "obj<Zanna.Collections.Map>(i64,i64)"));
 
     const il::runtime::RuntimeClass *workspaceEditCls = findClass("Zanna.Workspace.Edit");
     assert(workspaceEditCls != nullptr && "Zanna.Workspace.Edit not found in catalog");

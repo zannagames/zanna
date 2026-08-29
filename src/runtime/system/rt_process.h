@@ -167,6 +167,16 @@ void *rt_process_read_stderr_result(void *handle);
 ///         handle, or NULL on managed allocation failure.
 void *rt_process_read_output_result(void *handle);
 
+/// @brief Read a bounded prefix of capture-ordered output.
+/// @details Returns `{ chunks, truncated, emittedBytes, remainingBytes,
+///          hasMore }`. Unconsumed native bytes remain queued for later calls.
+/// @param handle Candidate process handle.
+/// @param max_bytes Maximum managed text bytes to create; nonpositive selects
+///        the 64 KiB default and values above 16 MiB are clamped.
+/// @param max_chunks Maximum tagged chunks to create; nonpositive selects 64.
+/// @return Caller-owned result map, or NULL on managed allocation failure.
+void *rt_process_read_output_result_bounded(void *handle, int64_t max_bytes, int64_t max_chunks);
+
 /// @brief Write bytes to the child's stdin pipe.
 /// @details Honors the runtime-string byte length, including embedded NUL.
 ///          POSIX writes through a nonblocking descriptor. Windows accepts

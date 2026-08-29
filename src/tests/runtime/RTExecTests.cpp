@@ -12,6 +12,7 @@
 
 #include "common/PlatformCapabilities.hpp"
 #include "rt_activity_wake.h"
+#include "rt_args.h"
 #include "rt_box.h"
 #include "rt_exec.h"
 #include "rt_internal.h"
@@ -649,6 +650,57 @@ static void test_process_ordered_output_enforces_combined_cap() {
     rt_process_destroy(handle);
 }
 
+static void test_process_ordered_output_bounded_reads_preserve_remainder() {
+    void *handle =
+        start_shell_process("printf 'stdout-1234567890'; printf 'stderr-ABCDEFGHIJ' >&2");
+    assert(handle != nullptr);
+    assert(rt_process_wait(handle) == 0);
+
+    std::string tagged;
+    int64_t last_sequence = -1;
+    bool saw_stdout = false;
+    bool saw_stderr = false;
+    int64_t total_emitted = 0;
+    bool saw_more = false;
+    for (int i = 0; i < 32; ++i) {
+        void *result = rt_process_read_output_result_bounded(handle, 5, 1);
+        assert(result != nullptr);
+        const int64_t emitted = rt_map_get_int(result, rt_const_cstr("emittedBytes"));
+        assert(emitted >= 0 && emitted <= 5);
+        total_emitted += emitted;
+        saw_more = saw_more || rt_map_get_bool(result, rt_const_cstr("hasMore")) != 0;
+
+        void *chunks = rt_map_get(result, rt_const_cstr("chunks"));
+        assert(chunks != nullptr);
+        for (int64_t j = 0; j < rt_seq_len(chunks); ++j) {
+            void *chunk = rt_seq_get(chunks, j);
+            assert(chunk != nullptr);
+            const int64_t sequence = rt_map_get_int(chunk, rt_const_cstr("sequence"));
+            assert(sequence >= last_sequence);
+            last_sequence = sequence;
+            rt_string stream = rt_map_get_str(chunk, rt_const_cstr("stream"));
+            rt_string text = rt_map_get_str(chunk, rt_const_cstr("text"));
+            std::string stream_text(rt_string_cstr(stream), (size_t)rt_str_len(stream));
+            saw_stdout = saw_stdout || stream_text == "stdout";
+            saw_stderr = saw_stderr || stream_text == "stderr";
+            tagged.append(rt_string_cstr(text), (size_t)rt_str_len(text));
+            rt_str_release_maybe(stream);
+            rt_str_release_maybe(text);
+        }
+        if (rt_map_get_bool(result, rt_const_cstr("hasMore")) == 0)
+            break;
+    }
+
+    assert(saw_more);
+    assert(saw_stdout && saw_stderr);
+    assert(total_emitted == 34);
+    assert(tagged.find("stdout-1234567890") != std::string::npos);
+    assert(tagged.find("stderr-ABCDEFGHIJ") != std::string::npos);
+    assert(rt_map_get_bool(rt_process_read_output_result_bounded(handle, 5, 1),
+                           rt_const_cstr("hasMore")) == 0);
+    rt_process_destroy(handle);
+}
+
 static void test_process_cwd_and_env() {
     void *env = rt_seq_new();
     rt_seq_push(env, make_string("ZANNA_PROCESS_TEST=env-ok"));
@@ -669,8 +721,8 @@ static void test_process_cwd_and_env() {
 
 #if !ZANNA_HOST_WINDOWS
 static void test_process_environment_overlay() {
-    assert(setenv("ZANNA_PROCESS_OVERLAY_PARENT", "inherited", 1) == 0);
-    assert(setenv("ZANNA_PROCESS_OVERLAY_OVERRIDE", "parent", 1) == 0);
+    rt_env_set_var(make_string("ZANNA_PROCESS_OVERLAY_PARENT"), make_string("inherited"));
+    rt_env_set_var(make_string("ZANNA_PROCESS_OVERLAY_OVERRIDE"), make_string("parent"));
     void *overlay = rt_seq_new();
     rt_seq_push(overlay, make_string("ZANNA_PROCESS_OVERLAY_OVERRIDE=child"));
     rt_seq_push(overlay, make_string("ZANNA_PROCESS_OVERLAY_NEW=added"));
@@ -687,6 +739,35 @@ static void test_process_environment_overlay() {
     rt_process_destroy(handle);
     unsetenv("ZANNA_PROCESS_OVERLAY_PARENT");
     unsetenv("ZANNA_PROCESS_OVERLAY_OVERRIDE");
+}
+
+static void test_process_inherited_environment_snapshot_is_thread_safe() {
+    const rt_string name = make_string("ZANNA_PROCESS_SNAPSHOT_RACE");
+    rt_string initial = make_string("alpha");
+    rt_env_set_var(name, initial);
+    rt_str_release_maybe(initial);
+    std::atomic<bool> stop{false};
+    std::thread writer([&]() {
+        for (int64_t i = 0; !stop.load(std::memory_order_acquire); ++i) {
+            rt_string value = make_string((i & 1) == 0 ? "alpha" : "beta");
+            rt_env_set_var(name, value);
+            rt_str_release_maybe(value);
+        }
+    });
+
+    for (int i = 0; i < 64; ++i) {
+        void *handle = start_shell_process("printf '%s' \"$ZANNA_PROCESS_SNAPSHOT_RACE\"");
+        assert(handle != nullptr);
+        assert(rt_process_wait(handle) == 0);
+        std::string out;
+        append_runtime_string(out, rt_process_read_stdout(handle));
+        assert(out == "alpha" || out == "beta");
+        rt_process_destroy(handle);
+    }
+    stop.store(true, std::memory_order_release);
+    writer.join();
+    rt_str_release_maybe(name);
+    unsetenv("ZANNA_PROCESS_SNAPSHOT_RACE");
 }
 #endif
 
@@ -1077,10 +1158,12 @@ int main(int argc, char **argv) {
     test_pty_success_clears_last_error();
     test_process_ordered_tagged_output();
     test_process_ordered_output_enforces_combined_cap();
+    test_process_ordered_output_bounded_reads_preserve_remainder();
     test_process_write_stdin();
     test_process_cwd_and_env();
 #if !ZANNA_HOST_WINDOWS
     test_process_environment_overlay();
+    test_process_inherited_environment_snapshot_is_thread_safe();
 #endif
     test_process_bare_name_path_search_with_env();
     test_process_accepts_boxed_args_from_object_abi();

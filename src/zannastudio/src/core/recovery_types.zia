@@ -25,6 +25,7 @@ bind File = Zanna.IO.File;
 bind Str = Zanna.String;
 bind Map = Zanna.Collections.Map;
 bind Monitor = Zanna.Threads.Monitor;
+bind Future = Zanna.Threads.Future;
 
 final MAX_RECOVERY_PATH_BYTES = 32768;
 final MAX_RECOVERY_METADATA_BYTES = 131072;
@@ -125,6 +126,10 @@ class RecoveryScanJob {
         payloadRequest = new RecoveryPayloadReadRequest();
         payloadFuture = null;
     }
+
+    expose func PayloadReadPending() -> Boolean {
+        return payloadFuture != null and Future.get_IsDone(payloadFuture) == false;
+    }
 }
 
 /// @brief Read and compare validated swap payloads away from the UI thread.
@@ -208,6 +213,8 @@ class RecoveryWriteRequest {
     expose Boolean succeeded;
     expose String error;
     expose Integer committedCount;
+    expose Integer totalBytes;
+    expose Boolean truncated;
 
     expose func init() {
         snapshots = new List();
@@ -216,6 +223,8 @@ class RecoveryWriteRequest {
         succeeded = true;
         error = "";
         committedCount = 0;
+        totalBytes = 0;
+        truncated = false;
     }
 }
 
@@ -238,11 +247,21 @@ hide func RecoveryRequestCancelled(request: RecoveryWriteRequest) -> Boolean {
 ///          only canonical renames, so cancellation never waits for large I/O.
 expose func WriteRecoveryRequest(request: RecoveryWriteRequest) -> Any {
     if request == null { return request; }
+    if request.snapshots.count() > MAX_RECOVERY_RECORDS
+       or request.totalBytes < 0
+       or request.totalBytes > MAX_RECOVERY_TOTAL_BYTES {
+        request.succeeded = false;
+        request.truncated = true;
+        request.error = "Crash-recovery write exceeds the bounded request budget";
+        return request;
+    }
     var i = 0;
     while i < request.snapshots.count() {
         var snapshot = request.snapshots.get(i) as RecoveryWriteSnapshot;
         if RecoveryRequestCancelled(request) { break; }
         if snapshot == null
+           or Str.get_Length(snapshot!.content) > MAX_RECOVERY_SWAP_BYTES
+           or Str.get_Length(snapshot!.metadata) > MAX_RECOVERY_METADATA_BYTES
            or safe_io.WriteAllText(
                   snapshot!.tempMetadataFile, snapshot!.metadata) == false
            or safe_io.WriteAllText(

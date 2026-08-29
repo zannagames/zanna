@@ -43,14 +43,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt_args.h"
+
 #include "rt_context.h"
+#include "rt_context_internal.h"
+#include "rt_internal.h"
 #include "rt_parse.h"
 #include "rt_seq.h"
 #include "rt_string.h"
-#include "rt_string_internal.h"
-#include "rt_context_internal.h"
-#include "rt_internal.h"
 #include "rt_string_builder.h"
+#include "rt_string_internal.h"
 
 #include <limits.h>
 #include <stdatomic.h>
@@ -84,6 +85,8 @@ LPWSTR *WINAPI CommandLineToArgvW(LPCWSTR lpCmdLine, int *pNumArgs);
 ///          means import is complete or suppressed. Acquire/release ordering
 ///          prevents readers from observing a partially populated store.
 static atomic_int g_legacy_args_host_init_state; // zero-initialized = 0
+/// @brief Serializes POSIX getenv/setenv and owned child-environment snapshots.
+static atomic_flag g_process_environment_lock = ATOMIC_FLAG_INIT;
 
 /// @brief Yield the CPU while spin-waiting for another thread's import.
 /// @note Uses `SwitchToThread`/`Sleep(0)` on Windows and `sched_yield` elsewhere.
@@ -94,6 +97,16 @@ static void rt_args_spin_yield(void) {
 #else
     sched_yield();
 #endif
+}
+
+void rt_env_lock_process_environment(void) {
+    while (atomic_flag_test_and_set_explicit(&g_process_environment_lock, memory_order_acquire)) {
+        rt_args_spin_yield();
+    }
+}
+
+void rt_env_unlock_process_environment(void) {
+    atomic_flag_clear_explicit(&g_process_environment_lock, memory_order_release);
 }
 
 /// @brief Ensures an argument-state buffer can hold @p new_size items.
@@ -880,11 +893,15 @@ rt_string rt_env_get_var(rt_string name) {
     rt_trap("Zanna.System.Environment.GetVariable: variable changed too frequently");
     return rt_str_empty();
 #else
+    rt_env_lock_process_environment();
     const char *value = getenv(cname);
     if (!value) {
+        rt_env_unlock_process_environment();
         return rt_str_empty();
     }
-    return rt_string_from_bytes(value, strlen(value));
+    rt_string result = rt_string_from_bytes(value, strlen(value));
+    rt_env_unlock_process_environment();
+    return result;
 #endif
 }
 
@@ -916,8 +933,10 @@ int64_t rt_env_has_var(rt_string name) {
     }
     return 1;
 #else
-    const char *value = getenv(cname);
-    return value ? 1 : 0;
+    rt_env_lock_process_environment();
+    const int64_t present = getenv(cname) ? 1 : 0;
+    rt_env_unlock_process_environment();
+    return present;
 #endif
 }
 
@@ -962,9 +981,13 @@ void rt_env_set_var(rt_string name, rt_string value) {
         rt_trap("Zanna.System.Environment.SetVariable: failed to set variable");
     }
 #else
+    rt_env_lock_process_environment();
     if (setenv(cname, cvalue, 1) != 0) {
+        rt_env_unlock_process_environment();
         rt_trap("Zanna.System.Environment.SetVariable: failed to set variable");
+        return;
     }
+    rt_env_unlock_process_environment();
 #endif
 }
 

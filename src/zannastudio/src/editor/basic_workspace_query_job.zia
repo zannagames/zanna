@@ -22,6 +22,7 @@
 
 module basic_workspace_query_job;
 
+bind "basic_workspace_query_types";
 bind "../basic/semantic_scan";
 bind "../services/path_identity";
 bind "../services/safe_io";
@@ -52,6 +53,9 @@ final MAX_NAVIGATION_RESULTS = 1000;
 final FILE_INDEX_PAGE_SIZE = 256;
 final SHUTDOWN_WAIT_MS = 5000;
 
+type BasicWorkspaceQueryResult =
+    basic_workspace_query_types.BasicWorkspaceQueryResult;
+
 /// @brief Immutable workspace query input plus worker-published result state.
 /// @details List fields are built by the UI controller and never mutated after
 ///          Queue takes ownership of the request snapshot.
@@ -72,7 +76,7 @@ class BasicWorkspaceQueryRequest {
     expose List openSources;
     expose Boolean cancelled;
     expose Boolean succeeded;
-    expose Any result;
+    expose BasicWorkspaceQueryResult result;
     expose String error;
 
     expose func init() {
@@ -153,7 +157,8 @@ func RunBasicWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
 }
 
 /// @brief Resolve and execute the requested semantic operation.
-func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
+func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest)
+    -> BasicWorkspaceQueryResult {
     var result = NewQueryResult();
     var token = "";
     if request.kind != QUERY_OUTGOING_CALLS {
@@ -193,7 +198,7 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
             return FailResult(result, "no_outgoing_calls");
         }
         if Seq.get_Count(outgoingTokens) >= MAX_NAVIGATION_RESULTS {
-            Map.SetBool(result, "truncated", true);
+            result.truncated = true;
         }
     }
 
@@ -216,11 +221,11 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
         sourceIndex = sourceIndex + 1;
     }
     var truncated = corpus.truncated or declarationsComplete == false;
-    if Map.GetBool(result, "truncated") { truncated = true; }
-    Map.SetBool(result, "truncated", truncated);
-    Map.SetInt(result, "fileCount", corpus.paths.count());
-    Map.SetInt(result, "sourceChars", corpus.totalChars);
-    Map.SetInt(result, "declarationCount", Seq.get_Count(decls));
+    if result.truncated { truncated = true; }
+    result.truncated = truncated;
+    result.fileCount = corpus.paths.count();
+    result.sourceChars = corpus.totalChars;
+    result.declarationCount = Seq.get_Count(decls);
 
     if request.kind == QUERY_OUTGOING_CALLS {
         return BuildOutgoingResult(result, request, decls, outgoingTokens,
@@ -233,17 +238,17 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
         if truncated { return FailResult(result, "workspace_limit"); }
         return FailResult(result, "definition_not_found");
     }
-    Map.Set(result, "definition", def);
-    Map.SetStr(result, "symbol", Map.GetStr(def, "name"));
+    result.definition = def;
+    result.symbol = Map.GetStr(def, "name");
 
     if request.kind == QUERY_DEFINITION {
-        Map.SetBool(result, "success", true);
+        result.success = true;
         return result;
     }
 
     var refs = CollectReferences(request, corpus, def, result);
     if RequestIsCancelled(request) { return result; }
-    truncated = Map.GetBool(result, "truncated");
+    truncated = result.truncated;
     if request.kind == QUERY_RENAME {
         if truncated {
             return FailResult(result, "workspace_limit");
@@ -253,9 +258,9 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
         }
         var edits = semantic_scan.RenameEditsFromReferences(refs,
                                                             request.newName);
-        Map.Set(result, "edits", edits);
-        Map.SetInt(result, "resultCount", Seq.get_Count(edits));
-        Map.SetBool(result, "success", true);
+        result.edits = edits;
+        result.resultCount = Seq.get_Count(edits);
+        result.success = true;
         return result;
     }
 
@@ -277,9 +282,9 @@ func ExecuteWorkspaceQuery(request: BasicWorkspaceQueryRequest) -> Any {
         }
         return FailResult(result, "no_references");
     }
-    Map.Set(result, "items", items);
-    Map.SetInt(result, "resultCount", Seq.get_Count(items));
-    Map.SetBool(result, "success", true);
+    result.items = items;
+    result.resultCount = Seq.get_Count(items);
+    result.success = true;
     return result;
 }
 
@@ -475,7 +480,7 @@ func SourceShapeIsBounded(source: String) -> Boolean {
 func CollectReferences(request: BasicWorkspaceQueryRequest,
                        corpus: BasicWorkspaceCorpus,
                        def: Any,
-                       result: Any) -> Seq {
+                       result: BasicWorkspaceQueryResult) -> Seq {
     var refs = Seq.New();
     var complete = true;
     var sourceIndex = 0;
@@ -505,17 +510,17 @@ func CollectReferences(request: BasicWorkspaceQueryRequest,
         sourceIndex = sourceIndex + 1;
     }
     if complete == false or sourceIndex < corpus.paths.count() {
-        Map.SetBool(result, "truncated", true);
+        result.truncated = true;
     }
     return refs;
 }
 
 /// @brief Resolve call tokens against declarations and build display-neutral rows.
-func BuildOutgoingResult(result: Any,
+func BuildOutgoingResult(result: BasicWorkspaceQueryResult,
                          request: BasicWorkspaceQueryRequest,
                          decls: Seq,
                          tokens: Seq,
-                         callerName: String) -> Any {
+                         callerName: String) -> BasicWorkspaceQueryResult {
     var items = Seq.New();
     var sourceLines = Str.Split(request.activeSource, "\n");
     var tokenIndex = 0;
@@ -546,14 +551,14 @@ func BuildOutgoingResult(result: Any,
         tokenIndex = tokenIndex + 1;
     }
     if tokenIndex < Seq.get_Count(tokens) {
-        Map.SetBool(result, "truncated", true);
+        result.truncated = true;
     }
     if Seq.get_Count(items) == 0 {
         return FailResult(result, "no_outgoing_calls");
     }
-    Map.Set(result, "items", items);
-    Map.SetInt(result, "resultCount", Seq.get_Count(items));
-    Map.SetBool(result, "success", true);
+    result.items = items;
+    result.resultCount = Seq.get_Count(items);
+    result.success = true;
     return result;
 }
 
@@ -573,23 +578,15 @@ func CorpusPathKey(path: String) -> String {
 }
 
 /// @brief Create the stable result envelope consumed by the UI controller.
-func NewQueryResult() -> Any {
-    var result = Map.New();
-    Map.SetBool(result, "success", false);
-    Map.SetBool(result, "truncated", false);
-    Map.SetStr(result, "reason", "");
-    Map.SetInt(result, "fileCount", 0);
-    Map.SetInt(result, "sourceChars", 0);
-    Map.SetInt(result, "declarationCount", 0);
-    Map.SetInt(result, "resultCount", 0);
-    return result;
+func NewQueryResult() -> BasicWorkspaceQueryResult {
+    return new BasicWorkspaceQueryResult();
 }
 
 /// @brief Mark a logical query failure without treating it as a worker fault.
-func FailResult(result: Any,
-                reason: String) -> Any {
-    Map.SetBool(result, "success", false);
-    Map.SetStr(result, "reason", reason);
+func FailResult(result: BasicWorkspaceQueryResult,
+                reason: String) -> BasicWorkspaceQueryResult {
+    result.success = false;
+    result.reason = reason;
     return result;
 }
 

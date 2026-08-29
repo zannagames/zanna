@@ -49,7 +49,9 @@ bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
 bind "search_commands_support" as SearchSupport;
 bind "search_controller_base";
-bind "search_controller_discovery" as Implementation;
+bind "search_controller_publication" as Implementation;
+
+bind Clock = Zanna.Time.Clock;
 
 final SEARCH_FILES_PER_FRAME = SearchSupport.SEARCH_FILES_PER_FRAME;
 final SEARCH_BYTES_PER_FRAME = SearchSupport.SEARCH_BYTES_PER_FRAME;
@@ -59,7 +61,7 @@ final MAX_SEARCH_RESULTS = SearchSupport.MAX_SEARCH_RESULTS;
 final SEARCH_MODE_TEXT: Integer = SearchSupport.SEARCH_MODE_TEXT;
 final SEARCH_MODE_WORKSPACE_SYMBOLS: Integer = SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS;
 
-class SearchController extends Implementation.SearchControllerDiscoveryLayer {
+class SearchController extends Implementation.SearchControllerPublicationLayer {
     expose func init() { InitializeState(); }
 
     expose func StartCachedDirect(shell: app_shell.AppShell,
@@ -205,6 +207,10 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
         canceled = true;
         discovering = false;
         discoveryCursor.Destroy();
+        fileWorker.Cancel();
+        pendingWorkResult = null;
+        pendingPublishIndex = 0;
+        pendingHeaderPublished = false;
         pendingDirs = new List();
         discoveryError = "";
         lastPumpFileCount = 0;
@@ -299,75 +305,44 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
     expose func Pump(shell: app_shell.AppShell,
                      docMgr: document_manager.DocumentManager,
                      locStore: locations.LocationStore) {
+        var startedAtMs = Clock.NowMs();
         lastPumpFileCount = 0;
         lastPumpByteCount = 0;
-        if active == false { return; }
-        BeginResultLocationRange(locStore);
-
-        PumpDiscovery(SEARCH_DISCOVERY_PAGE_SIZE);
-        totalFiles = files.count();
-        if mode == SEARCH_MODE_WORKSPACE_SYMBOLS {
-            PumpWorkspaceSymbols(shell, docMgr, locStore);
-            UpdateResultLocationRange(locStore);
+        lastPumpRowCount = 0;
+        // Canceled generations must still be reaped before their owned Future
+        // can release the request. Polling is safe even when no search is live.
+        fileWorker.Pump();
+        if active == false {
+            if fileWorker.completedRequest != null {
+                fileWorker.TakeCompleted();
+            }
+            lastPumpElapsedMs = Clock.NowMs() - startedAtMs;
             return;
         }
-
-        var scanned = 0;
-        var scannedBytes = 0;
-        while active and scanned < SEARCH_FILES_PER_FRAME and fileIndex < files.count() {
-            var filePath = Obj.ToString(files.get(fileIndex));
-            if IO.File.Exists(filePath) == false {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                discoveryError = "Search source disappeared: " + filePath;
-                discovering = false;
-                active = false;
-                break;
-            }
-            var contentBytes = SearchSupport.SearchContentSize(docMgr, filePath);
-            if contentBytes < 0 {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                discoveryError = "Search source metadata is unavailable: " + filePath;
-                discovering = false;
-                active = false;
-                break;
-            }
-            if contentBytes > MAX_SEARCH_FILE_BYTES {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                skippedLargeFiles = skippedLargeFiles + 1;
-                continue;
-            }
-            if scanned > 0 and scannedBytes + contentBytes > SEARCH_BYTES_PER_FRAME {
-                break;
-            }
-            fileIndex = fileIndex + 1;
-            scanned = scanned + 1;
-            scannedBytes = scannedBytes + contentBytes;
-            var fileResult = SearchSupport.searchOneFileWithProgramResult(
-                shell, filePath, searchProgram, docMgr, locStore,
-                MAX_SEARCH_RESULTS - resultCount);
-            if fileResult.ok == false {
-                discoveryError = fileResult.error;
-                discovering = false;
-                active = false;
-                break;
-            }
-            resultCount = resultCount + fileResult.matches;
-            if resultCount >= MAX_SEARCH_RESULTS {
-                resultLimitReached = true;
-                discovering = false;
-                active = false;
-            }
+        if shell == null or locStore == null {
+            ResetActiveSearch();
+            lastPumpElapsedMs = Clock.NowMs() - startedAtMs;
+            return;
         }
-        lastPumpFileCount = scanned;
-        lastPumpByteCount = scannedBytes;
+        BeginResultLocationRange(locStore);
+
+        PollSearchWorker();
+        if Clock.NowMs() - startedAtMs < SearchSupport.SEARCH_PUMP_BUDGET_MS {
+            PumpDiscovery(SEARCH_DISCOVERY_PAGE_SIZE);
+        }
+        totalFiles = files.count();
+        PublishPendingSearchWork(shell, locStore, startedAtMs);
         UpdateResultLocationRange(locStore);
+        if active and SearchWorkIsPending() == false
+           and Clock.NowMs() - startedAtMs < SearchSupport.SEARCH_PUMP_BUDGET_MS {
+            QueueNextSearchWork(docMgr);
+        }
 
         if discoveryError != "" or resultLimitReached
-           or (discovering == false and fileIndex >= files.count()) {
+           or (discovering == false and fileIndex >= files.count()
+               and SearchWorkIsPending() == false) {
             active = false;
+            fileWorker.Cancel();
             if discoveryError != "" {
                 shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
                 shell.toolPanels.AddToolStateRow(shell.toolPanels.searchListBox, "ERR", "search",
@@ -375,11 +350,19 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
                 shell.SetStatusLeft(discoveryError);
             } else if resultCount > 0 {
                 var doneText = "Found " + resultCount + " matches for '" + query + "'";
+                if mode == SEARCH_MODE_WORKSPACE_SYMBOLS {
+                    doneText = "Found " + resultCount
+                        + " workspace symbols for '" + query + "'";
+                }
                 if resultLimitReached {
                     doneText = doneText + " (showing first " + MAX_SEARCH_RESULTS + ")";
                 }
                 if skippedLargeFiles > 0 {
                     doneText = doneText + " (" + skippedLargeFiles + " large file(s) skipped)";
+                }
+                if skippedUnavailableFiles > 0 {
+                    doneText = doneText + " (" + skippedUnavailableFiles
+                        + " unavailable or changed file(s) skipped)";
                 }
                 if discoveryTruncated {
                     doneText = doneText + " (file discovery truncated)";
@@ -388,17 +371,35 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
             } else {
                 shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
                 var noMatch = "No matches found for '" + query + "'";
+                var rowKind = "search";
+                if mode == SEARCH_MODE_WORKSPACE_SYMBOLS {
+                    noMatch = "No workspace symbols matched '" + query + "'";
+                    rowKind = "symbol";
+                }
                 if skippedLargeFiles > 0 {
                     noMatch = noMatch + " (" + skippedLargeFiles + " large file(s) skipped)";
+                }
+                if skippedUnavailableFiles > 0 {
+                    noMatch = noMatch + " (" + skippedUnavailableFiles
+                        + " unavailable or changed file(s) skipped)";
                 }
                 if discoveryTruncated {
                     noMatch = noMatch + " before file discovery was truncated";
                 }
-                shell.toolPanels.AddToolInfoRow(shell.toolPanels.searchListBox, "search", noMatch);
+                shell.toolPanels.AddToolInfoRow(shell.toolPanels.searchListBox,
+                                                rowKind, noMatch);
                 shell.SetStatusLeft(noMatch);
             }
         } else {
-            if discovering {
+            if mode == SEARCH_MODE_WORKSPACE_SYMBOLS {
+                if discovering {
+                    shell.SetStatusLeft("Finding workspace symbols: " + fileIndex + "/"
+                                        + totalFiles + " files checked; discovering...");
+                } else {
+                    shell.SetStatusLeft("Finding workspace symbols: " + fileIndex + "/"
+                                        + totalFiles + " files checked...");
+                }
+            } else if discovering {
                 shell.SetStatusLeft("Searching while discovering files: "
                                     + fileIndex + "/" + totalFiles
                                     + " searched, offset " + discoveryOffset + "...");
@@ -406,6 +407,7 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
                 shell.SetStatusLeft("Searching " + fileIndex + "/" + totalFiles + " files...");
             }
         }
+        lastPumpElapsedMs = Clock.NowMs() - startedAtMs;
     }
     /// @brief Capture the id interval owned by the current search result rows.
     hide func BeginResultLocationRange(locStore: locations.LocationStore) {
@@ -430,6 +432,7 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
                and resultLocationLastId >= resultLocationFirstId
                and resultLimitReached == false
                and discoveryTruncated == false
+               and skippedUnavailableFiles == 0
                and discoveryError == "";
     }
 
@@ -471,130 +474,9 @@ class SearchController extends Implementation.SearchControllerDiscoveryLayer {
         }
     }
 
-    /// @brief Advance workspace-symbol parsing without monopolizing one frame.
-    /// @details Discovery and parsing overlap, but no more than four source
-    ///          files are parsed in one call. Large or unreadable sources are
-    ///          skipped before compiler/scanner entry, and result publication
-    ///          shares the ordinary search result cap.
-    hide func PumpWorkspaceSymbols(shell: app_shell.AppShell,
-                                   docMgr: document_manager.DocumentManager,
-                                   locStore: locations.LocationStore) {
-        if shell == null or locStore == null {
-            active = false;
-            discovering = false;
-            return;
-        }
-
-        var scanned = 0;
-        var scannedBytes = 0;
-        // Four compiler/scanner entries per frame keeps symbol lookup
-        // responsive even when the workspace contains thousands of sources.
-        while active and scanned < 4
-              and fileIndex < files.count() {
-            var filePath = Obj.ToString(files.get(fileIndex));
-            var language = file_utils.DetectLanguage(filePath);
-            if language != "zia" and language != "basic" {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                continue;
-            }
-            var contentBytes = SearchSupport.SearchContentSize(docMgr, filePath);
-            if contentBytes < 0 {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                discoveryError = "Workspace-symbol source metadata is unavailable: "
-                                 + filePath;
-                discovering = false;
-                active = false;
-                break;
-            }
-            if contentBytes > MAX_SEARCH_FILE_BYTES {
-                fileIndex = fileIndex + 1;
-                scanned = scanned + 1;
-                skippedLargeFiles = skippedLargeFiles + 1;
-                continue;
-            }
-            if scanned > 0 and scannedBytes + contentBytes > SEARCH_BYTES_PER_FRAME {
-                break;
-            }
-            fileIndex = fileIndex + 1;
-            scanned = scanned + 1;
-            scannedBytes = scannedBytes + contentBytes;
-            var source = SearchSupport.contentResultForPath(docMgr, filePath);
-            if source.ok == false {
-                discoveryError = source.error;
-                discovering = false;
-                active = false;
-                break;
-            }
-            var content = source.text;
-
-            var remaining = MAX_SEARCH_RESULTS - resultCount;
-            if remaining <= 0 {
-                resultLimitReached = true;
-                discovering = false;
-                active = false;
-                break;
-            }
-            if language == "basic" {
-                resultCount = resultCount + SearchSupport.AddBasicWorkspaceSymbols(
-                    shell, locStore, filePath, content, Str.ToLower(query), remaining);
-            } else {
-                resultCount = resultCount + SearchSupport.AddZiaWorkspaceSymbols(
-                    shell, locStore, filePath, content, Str.ToLower(query), remaining);
-            }
-            if resultCount >= MAX_SEARCH_RESULTS {
-                resultLimitReached = true;
-                discovering = false;
-                active = false;
-            }
-        }
-        lastPumpFileCount = scanned;
-        lastPumpByteCount = scannedBytes;
-
-        if discoveryError != "" or resultLimitReached
-           or (discovering == false and fileIndex >= files.count()) {
-            active = false;
-            if discoveryError != "" {
-                shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
-                shell.toolPanels.AddToolStateRow(shell.toolPanels.searchListBox,
-                                                 "ERR", "symbol",
-                                                 discoveryError, 14707829);
-                shell.SetStatusLeft(discoveryError);
-            } else if resultCount > 0 {
-                var doneText = "Found " + resultCount
-                    + " workspace symbols for '" + query + "'";
-                if resultLimitReached {
-                    doneText = doneText + " (showing first " + MAX_SEARCH_RESULTS + ")";
-                }
-                if skippedLargeFiles > 0 {
-                    doneText = doneText + " (" + skippedLargeFiles
-                        + " large or unreadable file(s) skipped)";
-                }
-                if discoveryTruncated {
-                    doneText = doneText + " (file discovery truncated)";
-                }
-                shell.SetStatusLeft(doneText);
-            } else {
-                shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
-                var noMatch = "No workspace symbols matched '" + query + "'";
-                if skippedLargeFiles > 0 {
-                    noMatch = noMatch + " (" + skippedLargeFiles
-                        + " large or unreadable file(s) skipped)";
-                }
-                shell.toolPanels.AddToolInfoRow(shell.toolPanels.searchListBox,
-                                                "symbol", noMatch);
-                shell.SetStatusLeft(noMatch);
-            }
-            return;
-        }
-
-        if discovering {
-            shell.SetStatusLeft("Finding workspace symbols: " + fileIndex + "/"
-                                + totalFiles + " files checked; discovering...");
-        } else {
-            shell.SetStatusLeft("Finding workspace symbols: " + fileIndex + "/"
-                                + totalFiles + " files checked...");
-        }
+    /// @brief Cancel and drain the owned search callback during application shutdown.
+    expose func Shutdown() -> Boolean {
+        ResetActiveSearch();
+        return fileWorker.CancelAndWait();
     }
 }

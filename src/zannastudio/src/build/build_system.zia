@@ -14,13 +14,15 @@
 //   - Every terminal path drains, destroys, and publishes one typed result.
 // Ownership/Lifetime: BuildSystem owns active process handles and output state.
 // Links: zannastudio/src/build/run_config.zia,
-//        zannastudio/src/build/bounded_output.zia
+//        zannastudio/src/build/bounded_output.zia,
+//        docs/adr/0304-bounded-process-output-and-environment-snapshots.md
 //
 //===----------------------------------------------------------------------===//
 
 module build_system;
 
 bind "bounded_output";
+bind "build_job_result";
 bind "diagnostic";
 bind "diagnostic_parser";
 bind "diagnostic_publication";
@@ -48,32 +50,10 @@ bind StringBuilder = Zanna.Text.StringBuilder;
 
 final MAX_BUILD_OUTPUT_CHARS = 250000;
 final MAX_BUILD_OUTPUT_DELTA_CHARS = 65536;
+final PROCESS_OUTPUT_BYTES_PER_FRAME = 65536;
+final PROCESS_OUTPUT_CHUNKS_PER_FRAME = 64;
 
-/// @brief Immutable terminal snapshot consumed by the Studio frame loop.
-class BuildJobResult {
-    expose Boolean success;
-    expose Boolean stopped;
-    expose Integer exitCode;
-    expose String action;
-    expose String name;
-    expose String duration;
-    expose String output;
-    expose Integer errorCount;
-    expose Integer warningCount;
-
-    expose func init() {
-        success = false;
-        stopped = false;
-        exitCode = -1;
-        action = "";
-        name = "";
-        duration = "";
-        output = "";
-        errorCount = 0;
-        warningCount = 0;
-    }
-}
-
+type BuildJobResult = build_job_result.BuildJobResult;
 class BuildSystem {
     // Build state
     expose Boolean isBuilding;
@@ -101,6 +81,9 @@ class BuildSystem {
     expose process_reaper.ProcessReaper processReaper;
     hide GUI.App wakeApp;
     hide Boolean activityWakeAttached;
+    expose Boolean stopRequested;
+    expose Boolean stopAccepted;
+    expose Boolean processOutputPending;
 
     // Parsed diagnostics
     expose List[diagnostic.Diagnostic] diagnostics;
@@ -127,6 +110,9 @@ class BuildSystem {
         processReaper = new process_reaper.ProcessReaper();
         wakeApp = null;
         activityWakeAttached = false;
+        stopRequested = false;
+        stopAccepted = false;
+        processOutputPending = false;
         diagnostics = [];
     }
 
@@ -135,7 +121,8 @@ class BuildSystem {
 
     /// @brief Report whether active process I/O still needs timer polling.
     expose func NeedsActivityPolling() -> Boolean {
-        return IsActive() and activityWakeAttached == false;
+        return IsActive()
+            and (activityWakeAttached == false or processOutputPending);
     }
 
     expose func IsActive() -> Boolean {
@@ -166,6 +153,9 @@ class BuildSystem {
             startMs = Zanna.Time.Clock.NowMs();
         }
         exitCode = -1;
+        stopRequested = false;
+        stopAccepted = false;
+        processOutputPending = false;
         lastBuildSuccess = false;
         lastBuildTime = "";
 
@@ -231,8 +221,14 @@ class BuildSystem {
         if processHandle.IsRunning() {
             return true;
         }
+        if processOutputPending { return true; }
         DrainProcessOutput();
         var finishedCode = processHandle.ExitCode();
+        if stopRequested {
+            AppendOutput("\n[stopped]\n");
+            FinalizeJob(finishedCode, true);
+            return false;
+        }
         // A successful stage hands off to its continuation in the same
         // job slot (build-then-launch chains, ADR 0225).
         if finishedCode == 0 and activeConfig != null
@@ -251,16 +247,18 @@ class BuildSystem {
 
     expose func Stop() -> Boolean {
         if processHandle == null { return false; }
-        var killed = processHandle.Kill();
-        AppendOutput("\n[stopped]\n");
-        FinalizeJob(-1, true);
-        return killed;
+        if stopRequested { return stopAccepted; }
+        stopRequested = true;
+        stopAccepted = processHandle.Kill();
+        AppendOutput("\n[stopping]\n");
+        return stopAccepted;
     }
 
     /// @brief Drain both streams through one parser/output path.
     func DrainProcessOutput() {
         if processHandle == null { return; }
-        var result = processHandle.ReadOutputResult();
+        var result = processHandle.ReadOutputResultBounded(
+            PROCESS_OUTPUT_BYTES_PER_FRAME, PROCESS_OUTPUT_CHUNKS_PER_FRAME);
         var chunks = Map.Get(result, "chunks");
         var frameOutput = new StringBuilder();
         var i = 0;
@@ -278,6 +276,7 @@ class BuildSystem {
         if Map.GetBool(result, "truncated") {
             AppendOutput("\n[ordered process output truncated by runtime]\n");
         }
+        processOutputPending = Map.GetBool(result, "hasMore");
     }
 
     func AppendOutput(text: String) {
@@ -313,11 +312,16 @@ class BuildSystem {
         processReaper.RetireProcess(processHandle);
         processHandle = null;
         activityWakeAttached = false;
+        processOutputPending = false;
     }
 
     /// @brief Stop active work and drain handle-only destruction workers.
     expose func Shutdown() -> Boolean {
-        if IsActive() { Stop(); }
+        if IsActive() {
+            Stop();
+            Update();
+            if IsActive() { return false; }
+        }
         return processReaper.WaitForShutdown();
     }
 
@@ -332,7 +336,7 @@ class BuildSystem {
         exitCode = code;
         isBuilding = false;
         isRunning = false;
-        lastBuildSuccess = code == 0;
+        lastBuildSuccess = code == 0 and stopped == false;
         lastBuildTime = FormatDuration(Zanna.Time.Clock.NowMs() - startMs);
         var result = new BuildJobResult();
         result.success = lastBuildSuccess;

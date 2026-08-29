@@ -13,7 +13,7 @@
 
 **[Zia](docs/languages/zia-reference.md)** is the flagship language: a modern, statically typed language with classes, generics, enums, lambdas, modules, pattern matching, and direct access to the Zanna runtime. A **[BASIC](docs/languages/basic-reference.md)** frontend is included for education, compatibility experiments, and quick prototypes.
 
-> **Status:** Pre-alpha, active development. The current source tree is `v0.3.0`; the IL reference is `0.3.0`. APIs, diagnostics, IL rules, and tooling are still evolving.
+> **Status:** Pre-alpha, active development. The current source tree is `v0.3.1-snapshot`; the IL reference is `0.3.0`. APIs, diagnostics, IL rules, and tooling are still evolving.
 
 ---
 
@@ -27,6 +27,8 @@
 
 This pre-alpha release is distributed as source only; prebuilt toolchain and
 installer binaries are not published with v0.3.0.
+
+**In development:** `v0.3.1-snapshot` on `master`. See the [draft v0.3.1 release notes](docs/release_notes/Zanna_Release_Notes_0_3_1.md).
 
 ```sh
 git clone https://github.com/zannagames/zanna.git

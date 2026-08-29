@@ -33,6 +33,7 @@ bind "../editor/editor_tabs";
 bind "../services/file_utils";
 bind "../services/path_identity";
 bind "../commands/file_save_support";
+bind "file_command_results";
 
 bind Zanna.GUI;
 bind IO = Zanna.IO;
@@ -50,26 +51,7 @@ final CLOSE_CHOICE_CANCEL = 0;
 final CLOSE_CHOICE_SAVE = 1;
 final CLOSE_CHOICE_DISCARD = 2;
 
-/// @brief Result object returned by Save All so callers can stop destructive work.
-/// @details Build, debug, close, and project operations need to distinguish a
-///          successful save sweep from a user cancellation or failed disk write.
-///          A plain saved-count cannot express those states.
-class SaveAllResult {
-    expose Boolean success;
-    expose Boolean canceled;
-    expose Integer savedCount;
-    expose List savedPaths;
-    expose String message;
-
-    /// @brief Initialize to a failed/no-op result until a handler marks success.
-    expose func init() {
-        success = false;
-        canceled = false;
-        savedCount = 0;
-        savedPaths = new List();
-        message = "";
-    }
-}
+type SaveAllResult = file_command_results.SaveAllResult;
 
 // ============================================================================
 // MODULE: file_commands
@@ -332,7 +314,7 @@ func handleSaveAll(shell: app_shell.AppShell,
                 result.message = "Read-only preview has unsaved changes: " + doc.fileName;
                 shell.SetStatusLeft(result.message);
                 GUI.Toast.Warning(result.message);
-                return result;
+                return CompleteSaveAllRecovery(result, docMgr, engine);
             } else if doc.isNew {
                 var savePath = FileDialog.Save(
                     "Save " + doc.fileName, "", file_utils.SaveDialogFilter(doc.kind, doc.language), doc.fileName);
@@ -343,13 +325,13 @@ func handleSaveAll(shell: app_shell.AppShell,
                         result.message = "Could not save " + doc.fileName + ": " + blocked;
                         shell.SetStatusLeft(result.message);
                         GUI.Toast.Warning(blocked);
-                        return result;
+                        return CompleteSaveAllRecovery(result, docMgr, engine);
                     }
                     if NormalizeDocumentForSave(docMgr, engine, i) == false {
                         result.savedCount = savedCount;
                         result.message = file_save_support.ReportNormalizationFailure(
                             shell, doc.fileName);
-                        return result;
+                        return CompleteSaveAllRecovery(result, docMgr, engine);
                     }
                     if docMgr.SaveDocumentAs(i, savePath) {
                         tabs.SetTitle(i, doc.fileName);
@@ -358,19 +340,18 @@ func handleSaveAll(shell: app_shell.AppShell,
                         engine.ClearDocumentModified(doc);
                         savedCount = savedCount + 1;
                         result.savedPaths.Push(doc.filePath);
-                        SyncRecoverySwaps(docMgr, engine);
                     } else {
                         result.savedCount = savedCount;
                         result.message = file_save_support.ReportSaveFailure(
                             shell, docMgr, doc.fileName);
-                        return result;
+                        return CompleteSaveAllRecovery(result, docMgr, engine);
                     }
                 } else {
                     result.canceled = true;
                     result.savedCount = savedCount;
                     result.message = "Save All canceled";
                     shell.SetStatusLeft(result.message);
-                    return result;
+                    return CompleteSaveAllRecovery(result, docMgr, engine);
                 }
             } else {
                 var externalState = docMgr.ExternalStateForSave(i);
@@ -379,25 +360,24 @@ func handleSaveAll(shell: app_shell.AppShell,
                     result.savedCount = savedCount;
                     result.message = "Save All canceled";
                     shell.SetStatusLeft(result.message);
-                    return result;
+                    return CompleteSaveAllRecovery(result, docMgr, engine);
                 }
                 if NormalizeDocumentForSave(docMgr, engine, i) == false {
                     result.savedCount = savedCount;
                     result.message = file_save_support.ReportNormalizationFailure(
                         shell, doc.fileName);
-                    return result;
+                    return CompleteSaveAllRecovery(result, docMgr, engine);
                 }
                 if docMgr.SaveDocumentAfterExternalConfirmation(i, externalState) {
                     tabs.SetModified(i, false);
                     engine.ClearDocumentModified(doc);
                     savedCount = savedCount + 1;
                     result.savedPaths.Push(doc.filePath);
-                    SyncRecoverySwaps(docMgr, engine);
                 } else {
                     result.savedCount = savedCount;
                     result.message = file_save_support.ReportSaveFailure(
                         shell, docMgr, doc.fileName);
-                    return result;
+                    return CompleteSaveAllRecovery(result, docMgr, engine);
                 }
             }
         }
@@ -407,6 +387,14 @@ func handleSaveAll(shell: app_shell.AppShell,
     result.success = true;
     result.savedCount = savedCount;
     result.message = "Saved " + savedCount + " files";
+    return CompleteSaveAllRecovery(result, docMgr, engine);
+}
+
+/// @brief Reconcile recovery exactly once after a Save All sweep ends.
+func CompleteSaveAllRecovery(result: SaveAllResult,
+                             docMgr: document_manager.DocumentManager,
+                             engine: editor_engine.EditorEngine) -> SaveAllResult {
+    SyncRecoverySwaps(docMgr, engine);
     return result;
 }
 

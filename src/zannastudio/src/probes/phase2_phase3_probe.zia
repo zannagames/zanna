@@ -431,14 +431,20 @@ func VerifyProjectExecutionAndStop(
         return false;
     }
     var killed = buildSys.Stop();
+    var stopDeadlineMs = Clock.NowMs() + 5000;
+    while buildSys.IsActive() and Clock.NowMs() < stopDeadlineMs {
+        buildSys.Update();
+        Clock.Sleep(1);
+    }
     var stoppedResult = buildSys.TakeCompletedResult();
     if assertTrue(killed
                   and buildSys.IsActive() == false
                   and buildSys.processHandle == null
-                  and buildSys.exitCode == -1
+                  and buildSys.exitCode != -1
                   and stoppedResult != null and stoppedResult!.stopped
+                  and stoppedResult!.exitCode == buildSys.exitCode
                   and Str.IndexOf(buildSys.GetOutput(), "[stopped]") != 0,
-                  "stop uses unified finalization and typed completion") == false { return false; }
+                  "stop preserves the observed process outcome") == false { return false; }
 
     return true;
 }

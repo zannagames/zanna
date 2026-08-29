@@ -15,7 +15,8 @@
 // Links: src/runtime/io/rt_ide_primitives.h, src/runtime/io/rt_watcher.h,
 //        docs/adr/0151-transactional-multi-root-workspace-edits.md,
 //        docs/adr/0280-prepared-workspace-edit-transactions.md,
-//        docs/adr/0287-generation-safe-workspace-index-cursors.md
+//        docs/adr/0287-generation-safe-workspace-index-cursors.md,
+//        docs/adr/0303-complete-owned-workspace-index-cursors.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -376,8 +377,7 @@ bool pathGlobMatch(std::string_view text, std::string_view pattern) {
         if (pi == pattern.size()) {
             matched = ti == text.size();
         } else if (pattern[pi] == '\\' && pi + 1 < pattern.size()) {
-            matched = ti < text.size() && text[ti] == pattern[pi + 1] &&
-                      rec(ti + 1, pi + 2);
+            matched = ti < text.size() && text[ti] == pattern[pi + 1] && rec(ti + 1, pi + 2);
         } else if (pattern[pi] == '[') {
             size_t end = pi + 1;
             bool negated = false;
@@ -423,8 +423,7 @@ bool pathGlobMatch(std::string_view text, std::string_view pattern) {
                 matched = rec(ti, next) || (ti < text.size() && rec(ti + 1, pi));
             }
         } else if (pattern[pi] == '*') {
-            matched = rec(ti, pi + 1) ||
-                      (ti < text.size() && text[ti] != '/' && rec(ti + 1, pi));
+            matched = rec(ti, pi + 1) || (ti < text.size() && text[ti] != '/' && rec(ti + 1, pi));
         } else if (pattern[pi] == '?') {
             matched = ti < text.size() && text[ti] != '/' && rec(ti + 1, pi + 1);
         } else {
@@ -924,6 +923,7 @@ struct WorkspaceFileIndexPageCursor {
     std::error_code ec;
     int64_t matched{0};
     int64_t scanned{0};
+    int64_t maxEntries{kWorkspaceFileIndexMaxEntries};
     bool done{false};
     bool truncated{false};
     int64_t generation{0};
@@ -949,23 +949,28 @@ struct FileIndexCursorRegistryLockGuard {
         while (g_fileIndexCursorRegistryLock.test_and_set(std::memory_order_acquire)) {
         }
     }
+
     ~FileIndexCursorRegistryLockGuard() {
         g_fileIndexCursorRegistryLock.clear(std::memory_order_release);
     }
+
     FileIndexCursorRegistryLockGuard(const FileIndexCursorRegistryLockGuard &) = delete;
 };
 
 /// @brief Serialize iterator mutation for one retained cursor registration.
 struct FileIndexCursorOperationGuard {
     WorkspaceFileIndexCursorRegistration *registration;
+
     explicit FileIndexCursorOperationGuard(WorkspaceFileIndexCursorRegistration *value)
         : registration(value) {
         while (registration->operationLock.test_and_set(std::memory_order_acquire)) {
         }
     }
+
     ~FileIndexCursorOperationGuard() {
         registration->operationLock.clear(std::memory_order_release);
     }
+
     FileIndexCursorOperationGuard(const FileIndexCursorOperationGuard &) = delete;
 };
 
@@ -1064,8 +1069,7 @@ const std::vector<std::string> &cursorGitignorePatternsForDirectory(
 
     std::vector<std::string> patterns;
     if (!directory.empty()) {
-        std::string ancestor =
-            normalizeSlashes(fs::path(directory).parent_path().generic_string());
+        std::string ancestor = normalizeSlashes(fs::path(directory).parent_path().generic_string());
         if (ancestor == ".")
             ancestor.clear();
         const auto &inherited = cursorGitignorePatternsForDirectory(cursor, ancestor);
@@ -1220,8 +1224,7 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
             continue;
 
         bool isDir = dirEntry.is_directory(cursor->ec);
-        std::string parent =
-            normalizeSlashes(fs::path(rel).parent_path().generic_string());
+        std::string parent = normalizeSlashes(fs::path(rel).parent_path().generic_string());
         const auto &gitignorePatterns =
             cursorGitignorePatternsForDirectory(cursor, parent == "." ? "" : parent);
         if (shouldIgnorePathWithPatterns(rel, isDir, cursor->extraPatterns, gitignorePatterns)) {
@@ -1236,7 +1239,7 @@ int64_t scanFileIndexPageCursor(WorkspaceFileIndexPageCursor *cursor,
             if (!cursor->extensions.count(ext))
                 continue;
         }
-        if (cursor->matched >= kWorkspaceFileIndexMaxEntries) {
+        if (cursor->maxEntries > 0 && cursor->matched >= cursor->maxEntries) {
             cursor->truncated = true;
             cursor->done = true;
             break;
@@ -1647,8 +1650,8 @@ struct WorkspaceEditTargetAccess {
 /// @brief Open a directory without following its final path component.
 #if RT_PLATFORM_WINDOWS
 static HANDLE openWorkspaceEditDirectoryWindows(const fs::path &path, bool retainNameLock) {
-    const DWORD sharing = FILE_SHARE_READ | FILE_SHARE_WRITE |
-                          (retainNameLock ? 0 : FILE_SHARE_DELETE);
+    const DWORD sharing =
+        FILE_SHARE_READ | FILE_SHARE_WRITE | (retainNameLock ? 0 : FILE_SHARE_DELETE);
     HANDLE handle = CreateFileW(path.wstring().c_str(),
                                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                                 sharing,
@@ -1735,10 +1738,8 @@ static int openWorkspaceEditChildDirectoryPosix(int parentFd, const fs::path &na
 /// @param roots Optional canonical roots; null denotes the legacy unrooted API.
 /// @param requireDeleteAccess Windows-only request for commit-time rename access.
 /// @return Owned access object, or null when any component/leaf is unsafe.
-static std::unique_ptr<WorkspaceEditTargetAccess>
-openWorkspaceEditTarget(const std::string &file,
-                        const std::vector<fs::path> *roots,
-                        bool requireDeleteAccess) {
+static std::unique_ptr<WorkspaceEditTargetAccess> openWorkspaceEditTarget(
+    const std::string &file, const std::vector<fs::path> *roots, bool requireDeleteAccess) {
     auto access = std::make_unique<WorkspaceEditTargetAccess>();
     access->file = fs::path(file);
     access->parent = access->file.parent_path();
@@ -1791,10 +1792,10 @@ openWorkspaceEditTarget(const std::string &file,
             access->directoryHandles.push_back(current);
         }
     }
-    const DWORD desired = GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL |
-                          (requireDeleteAccess ? DELETE : 0);
-    const DWORD fileSharing = FILE_SHARE_READ | FILE_SHARE_WRITE |
-                              (requireDeleteAccess ? 0 : FILE_SHARE_DELETE);
+    const DWORD desired =
+        GENERIC_READ | FILE_READ_ATTRIBUTES | READ_CONTROL | (requireDeleteAccess ? DELETE : 0);
+    const DWORD fileSharing =
+        FILE_SHARE_READ | FILE_SHARE_WRITE | (requireDeleteAccess ? 0 : FILE_SHARE_DELETE);
     access->fileHandle = CreateFileW(access->file.wstring().c_str(),
                                      desired,
                                      fileSharing,
@@ -1805,12 +1806,10 @@ openWorkspaceEditTarget(const std::string &file,
     if (access->fileHandle == INVALID_HANDLE_VALUE)
         return nullptr;
     FILE_ATTRIBUTE_TAG_INFO attributes{};
-    if (!GetFileInformationByHandleEx(access->fileHandle,
-                                      FileAttributeTagInfo,
-                                      &attributes,
-                                      sizeof(attributes)) ||
-        (attributes.FileAttributes &
-         (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) != 0)
+    if (!GetFileInformationByHandleEx(
+            access->fileHandle, FileAttributeTagInfo, &attributes, sizeof(attributes)) ||
+        (attributes.FileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) !=
+            0)
         return nullptr;
 #else
     int current = openWorkspaceEditDirectoryPosix(traversalRoot);
@@ -1842,8 +1841,7 @@ openWorkspaceEditTarget(const std::string &file,
     }
 #endif
     struct stat status{};
-    if (access->fileFd < 0 || fstat(access->fileFd, &status) != 0 ||
-        !S_ISREG(status.st_mode))
+    if (access->fileFd < 0 || fstat(access->fileFd, &status) != 0 || !S_ISREG(status.st_mode))
         return nullptr;
 #endif
     return access;
@@ -1890,14 +1888,10 @@ bool readWorkspaceEditTarget(const std::string &file,
                              WorkspaceEditFileIdentity &identity,
                              int64_t &modifiedSeconds,
                              int64_t &fileSize) {
-    std::unique_ptr<WorkspaceEditTargetAccess> access =
-        openWorkspaceEditTarget(file, roots, false);
+    std::unique_ptr<WorkspaceEditTargetAccess> access = openWorkspaceEditTarget(file, roots, false);
     if (!access || !workspaceEditFileIdentity(*access, identity)) {
-        pushDiagnostic(diagnostics,
-                       "workspace edit target is not a safe regular file",
-                       file,
-                       0,
-                       "edit.read");
+        pushDiagnostic(
+            diagnostics, "workspace edit target is not a safe regular file", file, 0, "edit.read");
         return false;
     }
 
@@ -1913,10 +1907,10 @@ bool readWorkspaceEditTarget(const std::string &file,
     ticks.LowPart = before.ftLastWriteTime.dwLowDateTime;
     ticks.HighPart = before.ftLastWriteTime.dwHighDateTime;
     constexpr uint64_t kWindowsToUnixEpoch100ns = 116444736000000000ull;
-    modifiedSeconds = ticks.QuadPart >= kWindowsToUnixEpoch100ns
-                          ? static_cast<int64_t>((ticks.QuadPart - kWindowsToUnixEpoch100ns) /
-                                                 10000000ull)
-                          : -1;
+    modifiedSeconds =
+        ticks.QuadPart >= kWindowsToUnixEpoch100ns
+            ? static_cast<int64_t>((ticks.QuadPart - kWindowsToUnixEpoch100ns) / 10000000ull)
+            : -1;
 #else
     struct stat before{};
     if (fstat(access->fileFd, &before) != 0 || before.st_size < 0)
@@ -1943,8 +1937,8 @@ bool readWorkspaceEditTarget(const std::string &file,
         return false;
     size_t offset = 0;
     while (offset < size) {
-        const DWORD chunk = static_cast<DWORD>(
-            std::min<size_t>(size - offset, std::numeric_limits<DWORD>::max()));
+        const DWORD chunk =
+            static_cast<DWORD>(std::min<size_t>(size - offset, std::numeric_limits<DWORD>::max()));
         DWORD read = 0;
         if (!ReadFile(access->fileHandle, text.data() + offset, chunk, &read, nullptr) ||
             read != chunk) {
@@ -1966,7 +1960,8 @@ bool readWorkspaceEditTarget(const std::string &file,
 #else
     size_t offset = 0;
     while (offset < size) {
-        const ssize_t readBytes = pread(access->fileFd, text.data() + offset, size - offset, offset);
+        const ssize_t readBytes =
+            pread(access->fileFd, text.data() + offset, size - offset, offset);
         if (readBytes <= 0) {
             pushDiagnostic(
                 diagnostics, "edit target changed while being read", file, 0, "edit.version");
@@ -2339,6 +2334,11 @@ void *rt_workspace_file_index_cursor_new(rt_string root_s,
         WorkspaceFileIndexPageCursor *cursor = startFileIndexPageCursor(
             root, toStd(extensions_csv), toStd(excludes_csv), include_dirs != 0, diagnostics);
         releaseObject(diagnostics);
+        // An explicitly owned cursor retains only one bounded page at a time,
+        // so it can safely traverse workspaces larger than legacy materialized
+        // result limits. Stateless page/enumerate callers keep the hard cap.
+        if (cursor)
+            cursor->maxEntries = 0;
         void *handle = registerFileIndexCursor(cursor);
         if (!handle)
             destroyFileIndexPageCursor(cursor);
@@ -2385,7 +2385,7 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
     rt_map_set_int(result, rt_const_cstr("nextOffset"), offset);
     rt_map_set_int(result, rt_const_cstr("scanned"), cursor ? cursor->scanned : 0);
     rt_map_set_int(result, rt_const_cstr("generation"), cursor ? cursor->generation : 0);
-    rt_map_set_int(result, rt_const_cstr("maxEntries"), kWorkspaceFileIndexMaxEntries);
+    rt_map_set_int(result, rt_const_cstr("maxEntries"), cursor ? cursor->maxEntries : 0);
     rt_map_set_bool(result, rt_const_cstr("done"), cursor && !cursor->done ? 0 : 1);
     rt_map_set_bool(result, rt_const_cstr("truncated"), cursor && cursor->truncated ? 1 : 0);
     rt_map_set_bool(result, rt_const_cstr("stale"), 0);
@@ -2406,8 +2406,7 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
         FileIndexCursorOperationGuard operation(registration);
         const int64_t scannedBefore = cursor->scanned;
         const int64_t workLimit = std::min<int64_t>(32768, std::max<int64_t>(64, limit * 8));
-        const int64_t emitted =
-            scanFileIndexPageCursor(cursor, entries, offset, limit, workLimit);
+        const int64_t emitted = scanFileIndexPageCursor(cursor, entries, offset, limit, workLimit);
         if (cursor->ec) {
             pushDiagnostic(diagnostics,
                            "workspace traversal stopped early",
@@ -3395,10 +3394,7 @@ static bool moveWorkspaceTargetToReservedBackup(WorkspaceEditTargetAccess &acces
         return false;
     return renameWorkspaceEditHandleWindows(access.fileHandle, access.parent / backupLeaf, true);
 #else
-    return renameat(access.parentFd,
-                    access.leaf.c_str(),
-                    access.parentFd,
-                    backupLeaf.c_str()) == 0;
+    return renameat(access.parentFd, access.leaf.c_str(), access.parentFd, backupLeaf.c_str()) == 0;
 #endif
 }
 
@@ -3429,10 +3425,7 @@ static bool moveWorkspaceTempToTarget(WorkspaceEditTargetAccess &access,
     return ok;
 #else
     (void)temp;
-    return renameat(access.parentFd,
-                    tempLeaf.c_str(),
-                    access.parentFd,
-                    access.leaf.c_str()) == 0;
+    return renameat(access.parentFd, tempLeaf.c_str(), access.parentFd, access.leaf.c_str()) == 0;
 #endif
 }
 
@@ -3544,8 +3537,7 @@ static ssize_t listWorkspaceEditXattrs(int fd, char *names, size_t size) {
 }
 
 /// @brief Read one extended attribute through the host's descriptor signature.
-static ssize_t
-getWorkspaceEditXattr(int fd, const char *name, void *value, size_t size) {
+static ssize_t getWorkspaceEditXattr(int fd, const char *name, void *value, size_t size) {
 #if RT_PLATFORM_MACOS
     return fgetxattr(fd, name, value, size, 0, 0);
 #else
@@ -3554,10 +3546,7 @@ getWorkspaceEditXattr(int fd, const char *name, void *value, size_t size) {
 }
 
 /// @brief Write one extended attribute through the host's descriptor signature.
-static int setWorkspaceEditXattr(int fd,
-                                 const char *name,
-                                 const void *value,
-                                 size_t size) {
+static int setWorkspaceEditXattr(int fd, const char *name, const void *value, size_t size) {
 #if RT_PLATFORM_MACOS
     return fsetxattr(fd, name, value, size, 0, 0);
 #else
@@ -3609,8 +3598,8 @@ static bool copyWorkspaceEditXattrs(int sourceFd, int tempFd) {
         bool equal = rawExistingBytes == rawValueBytes;
         if (equal && valueBytes > 0) {
             std::vector<unsigned char> existing(valueBytes);
-            equal = getWorkspaceEditXattr(
-                        tempFd, name, existing.data(), existing.size()) == rawExistingBytes &&
+            equal = getWorkspaceEditXattr(tempFd, name, existing.data(), existing.size()) ==
+                        rawExistingBytes &&
                     existing == value;
         }
         if (!equal && setWorkspaceEditXattr(tempFd, name, value.data(), value.size()) != 0)
@@ -3644,11 +3633,8 @@ static bool preserveWorkspaceEditMetadata(WorkspaceEditTargetAccess &access,
     if (needed == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
         return false;
     std::vector<unsigned char> security(needed);
-    if (!GetFileSecurityW(sourceText.c_str(),
-                          securityInformation,
-                          security.data(),
-                          needed,
-                          &needed) ||
+    if (!GetFileSecurityW(
+            sourceText.c_str(), securityInformation, security.data(), needed, &needed) ||
         !SetFileSecurityW(tempText.c_str(), securityInformation, security.data()))
         return false;
 
@@ -3752,13 +3738,11 @@ static bool restoreWorkspaceEditBackup(PendingWorkspaceWrite &write) {
 #endif
 }
 
-static bool rollbackWorkspaceWrites(std::vector<PendingWorkspaceWrite> &writes,
-                                    void *diagnostics) {
+static bool rollbackWorkspaceWrites(std::vector<PendingWorkspaceWrite> &writes, void *diagnostics) {
     bool complete = true;
     for (auto it = writes.rbegin(); it != writes.rend(); ++it) {
         if (it->backupCreated) {
-            if (!it->access ||
-                !removeWorkspaceEditEntry(*it->access, it->file, it->access->leaf)) {
+            if (!it->access || !removeWorkspaceEditEntry(*it->access, it->file, it->access->leaf)) {
                 pushDiagnostic(diagnostics,
                                "cannot remove replacement during workspace edit rollback; "
                                "original preserved at " +
@@ -3781,8 +3765,7 @@ static bool rollbackWorkspaceWrites(std::vector<PendingWorkspaceWrite> &writes,
         } else if (it->backupReserved) {
             // Reserved but never used: remove the empty placeholder we created
             // (VDOC-196) so a failed apply leaves no stale sidecar.
-            if (!it->access ||
-                !removeWorkspaceEditEntry(*it->access, it->backup, it->backupLeaf)) {
+            if (!it->access || !removeWorkspaceEditEntry(*it->access, it->backup, it->backupLeaf)) {
                 pushDiagnostic(diagnostics,
                                "cannot remove reserved workspace edit backup",
                                it->backup,
@@ -3853,8 +3836,7 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
     std::unordered_map<std::string, std::string> contents = prepared->contents;
     const auto &validatedOriginals = prepared->contents;
     const auto &validatedIdentities = prepared->identities;
-    const std::vector<fs::path> *transactionRoots =
-        prepared->rooted ? &prepared->roots : nullptr;
+    const std::vector<fs::path> *transactionRoots = prepared->rooted ? &prepared->roots : nullptr;
 
     std::map<std::string, std::vector<EditRecord>> byFile;
     for (const auto &record : records)
@@ -3909,8 +3891,7 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         // content temp. A partial or failed temp write must clean both artifacts.
         writes.push_back(std::move(write));
         PendingWorkspaceWrite &pending = writes.back();
-        if (!writeWorkspaceEditTemp(
-                *pending.access, pending.temp, pending.tempLeaf, text)) {
+        if (!writeWorkspaceEditTemp(*pending.access, pending.temp, pending.tempLeaf, text)) {
             pushDiagnostic(
                 diagnostics, "cannot write temporary edit target", file, 0, "edit.write");
             rt_map_set_bool(result, rt_const_cstr("success"), 0);
@@ -3918,8 +3899,7 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
             rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
             return result;
         }
-        if (!preserveWorkspaceEditMetadata(
-                *pending.access, pending.temp, pending.tempLeaf)) {
+        if (!preserveWorkspaceEditMetadata(*pending.access, pending.temp, pending.tempLeaf)) {
             pushDiagnostic(diagnostics,
                            "cannot preserve workspace edit target metadata",
                            file,
@@ -3987,8 +3967,8 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
     }
     for (auto &write : writes) {
 #if RT_PLATFORM_WINDOWS
-        const bool backupRemoved = write.access &&
-                                   deleteWorkspaceEditHandleWindows(write.access->fileHandle);
+        const bool backupRemoved =
+            write.access && deleteWorkspaceEditHandleWindows(write.access->fileHandle);
 #else
         const bool backupRemoved =
             write.access && unlinkat(write.access->parentFd, write.backupLeaf.c_str(), 0) == 0;

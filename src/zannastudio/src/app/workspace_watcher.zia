@@ -114,6 +114,7 @@ expose func PumpWorkspaceWatcher(shell: app_shell.AppShell,
 /// @param state Mutable watcher state owned by the main loop.
 expose func StopWorkspaceWatcher(state: WorkspaceWatcherState) {
     if state == null { return; }
+    workspace_watcher_fallback.Cancel(state);
     var i = 0;
     while i < state.watchers.count() {
         var w = state.watchers.get(i);
@@ -125,41 +126,9 @@ expose func StopWorkspaceWatcher(state: WorkspaceWatcherState) {
     if state.watching and state.watcher != null {
         state.watcher.Stop();
     }
-    state.watcher = null;
-    state.watchers = new List();
-    state.watcherPaths = new List();
-    state.watching = false;
-    state.degraded = false;
-    state.rootPath = "";
-    state.rootSignature = "";
-    state.rootPaths = new List();
-    state.rootIgnorePatterns = new List();
-    state.lastEntryCounts = new List();
-    state.lastFingerprints = new List();
-    state.lastSecondaryFingerprints = new List();
-    state.watcherPollPos = 0;
-    state.rescanThrottle.Reset();
-    state.lastEntryCount = -1;
-    state.lastFingerprint = 0;
-    state.discoveryActive = false;
-    state.discoveryRootIndex = 0;
-    state.discoveryPageOffset = 0;
-    state.discoveryRootAdded = false;
     if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
-    state.discoveryCursor = new workspace_file_cursor.WorkspaceFileCursor();
-    state.fallbackScanActive = false;
-    state.fallbackBaselineReady = false;
-    state.fallbackRootIndex = 0;
-    state.fallbackPageOffset = 0;
     if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
-    state.fallbackCursor = new workspace_file_cursor.WorkspaceFileCursor();
-    state.fallbackCurrentCount = 0;
-    state.fallbackCurrentFingerprint = 0;
-    state.fallbackCurrentSecondaryFingerprint = 0;
-    state.fallbackEntryCounts = new List();
-    state.fallbackFingerprints = new List();
-    state.fallbackSecondaryFingerprints = new List();
-    state.lastWatcherPollCount = 0;
+    state.InitializeState();
 }
 
 /// @brief Build the capped recursive watcher set for every workspace root.
@@ -189,6 +158,7 @@ func StartWorkspaceWatchers(state: WorkspaceWatcherState,
     state.discoveryPageOffset = 0;
     state.discoveryRootAdded = false;
     state.fallbackScanActive = false;
+    state.fallbackRestartRequested = false;
     state.fallbackBaselineReady = false;
     state.watcherPollPos = 0;
 }
@@ -304,16 +274,15 @@ func AdvanceWatcherDiscoveryRoot(state: WorkspaceWatcherState) {
         state.watching = state.watchers.count() > 0;
     }
 }
-
 /// @brief Request an additive directory pass without dropping live watchers.
 func BeginAdditiveWatcherDiscovery(state: WorkspaceWatcherState) {
     if state == null or state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
         return;
     }
     // Do not resume a metadata snapshot across a topology change. The runtime
-    // cursor is harmlessly evicted later; the next degraded scan starts a
-    // coherent snapshot from offset zero after discovery settles.
-    state.fallbackScanActive = false;
+    // cursor is evicted; the next degraded scan starts from offset zero.
+    workspace_watcher_fallback.Cancel(state);
+    state.fallbackRestartRequested = true;
     state.fallbackRootIndex = 0;
     state.fallbackPageOffset = 0;
     state.fallbackCurrentCount = 0;

@@ -211,6 +211,7 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
             Probe.fail(shell, "search exceeded later aggregate byte budget");
             return false;
         }
+        if byteBudgetSearch.active { Clock.Sleep(1); }
     }
     if byteBudgetSearch.resultCount != 3 {
         Probe.fail(shell, "byte-budget search lost results");
@@ -231,9 +232,43 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
     }
     while occurrenceSearch.active {
         occurrenceSearch.Pump(shell, docMgr, occurrenceLocs);
+        if occurrenceSearch.active { Clock.Sleep(1); }
     }
     if occurrenceSearch.resultCount != 3 or occurrenceLocs.items.count() != 3 {
         Probe.fail(shell, "search did not publish every line occurrence");
+        return false;
+    }
+
+    // A worker may return many matches at once, but GUI row creation remains
+    // independently bounded so result publication cannot monopolize a frame.
+    var publicationRoot = TempFile.CreateDirWithPrefix(
+        "zannastudio_search_publication_");
+    File.WriteAllText(Path.Join(publicationRoot, "many.txt"),
+                      Str.Repeat("needle ", 200));
+    var publicationSearch = new search_commands.SearchController();
+    var publicationLocs = new locations.LocationStore();
+    if publicationSearch.StartDirect(shell, publicationRoot, "needle", ".txt",
+                                     true, false) == false {
+        Probe.fail(shell, "publication-budget search did not start");
+        return false;
+    }
+    var sawPartialPublication = false;
+    while publicationSearch.active {
+        publicationSearch.Pump(shell, docMgr, publicationLocs);
+        if publicationSearch.lastPumpRowCount > 64 {
+            Probe.fail(shell, "search exceeded row-publication budget");
+            return false;
+        }
+        if publicationSearch.lastPumpRowCount > 0
+           and publicationSearch.resultCount < 200 {
+            sawPartialPublication = true;
+        }
+        if publicationSearch.active { Clock.Sleep(1); }
+    }
+    if publicationSearch.resultCount != 200
+       or publicationLocs.items.count() != 200
+       or sawPartialPublication == false {
+        Probe.fail(shell, "bounded search publication lost results");
         return false;
     }
     var anchorSearch = new search_commands.SearchController();
@@ -245,6 +280,7 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
     }
     while anchorSearch.active {
         anchorSearch.Pump(shell, docMgr, anchorLocs);
+        if anchorSearch.active { Clock.Sleep(1); }
     }
     if anchorSearch.resultCount != 2 or anchorLocs.items.count() != 2 {
         Probe.fail(shell, "zero-width search lost an anchor occurrence");
@@ -277,6 +313,34 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
         return false;
     }
 
+    // A file-level race after successful discovery must preserve matches from
+    // stable files while making the incomplete result explicit.
+    var racedRoot = TempFile.CreateDirWithPrefix("zannastudio_search_raced_file_");
+    var stablePath = Path.Join(racedRoot, "stable.txt");
+    var racedPath = Path.Join(racedRoot, "raced.txt");
+    File.WriteAllText(stablePath, "needle\n");
+    File.WriteAllText(racedPath, "needle\n");
+    var racedSearch = new search_commands.SearchController();
+    var racedLocs = new locations.LocationStore();
+    if racedSearch.StartDirect(shell, racedRoot, "needle", ".txt",
+                               true, false) == false {
+        Probe.fail(shell, "raced-file search did not start");
+        return false;
+    }
+    while racedSearch.discovering { racedSearch.PumpDiscovery(256); }
+    File.Delete(racedPath);
+    while racedSearch.active {
+        racedSearch.Pump(shell, docMgr, racedLocs);
+        if racedSearch.active { Clock.Sleep(1); }
+    }
+    if racedSearch.resultCount != 1
+       or racedSearch.skippedUnavailableFiles != 1
+       or racedSearch.discoveryError != ""
+       or racedLocs.items.count() != 1 {
+        Probe.fail(shell, "raced file discarded stable search results");
+        return false;
+    }
+
     var searcher = new search_commands.SearchController();
     if searcher.StartDirect(shell, root, "needle", ".zia", false, false) == false {
         Probe.fail(shell, "start direct search");
@@ -287,13 +351,14 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
         Probe.fail(shell, "search completed in one pump");
         return false;
     }
-    if searcher.resultCount <= 0 or searcher.resultCount >= 40 {
-        Probe.fail(shell, "search slice result count");
+    if searcher.resultCount != 0 or searcher.fileWorker.IsBusy() == false {
+        Probe.fail(shell, "search source analysis ran synchronously");
         return false;
     }
     shell.toolPanels.ShowTerminalPanel();
     while searcher.active {
         searcher.Pump(shell, docMgr, locStore);
+        if searcher.active { Clock.Sleep(1); }
     }
     if searcher.resultCount != 40 {
         Probe.fail(shell, "cooperative search final count");
@@ -331,6 +396,7 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
     }
     while filteredSearcher.active {
         filteredSearcher.Pump(shell, docMgr, locStore);
+        if filteredSearcher.active { Clock.Sleep(1); }
     }
     if filteredSearcher.resultCount != 10 {
         Probe.fail(shell, "filtered direct search count");
@@ -344,6 +410,7 @@ expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeCont
     }
     while regexSearcher.active {
         regexSearcher.Pump(shell, docMgr, locStore);
+        if regexSearcher.active { Clock.Sleep(1); }
     }
     if regexSearcher.resultCount != 30 {
         Probe.fail(shell, "regex direct search count");
@@ -501,6 +568,7 @@ expose func VerifySearchModesAndWorkspaceIndex(ctx: Probe.ConsoleSearchProbeCont
     }
     while panelSearcher.active {
         panelSearcher.Pump(shell, docMgr, locStore);
+        if panelSearcher.active { Clock.Sleep(1); }
     }
     if panelSearcher.resultCount != 10 {
         Probe.fail(shell, "search panel input filters");
@@ -559,8 +627,19 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
     var projMgr = ctx.projMgr;
 
     docMgr.GetActive()!.content = "module Symbols;\nfunc betaSymbol() -> Integer { return 2; }\n";
-    var symbolCount = search_commands.CollectWorkspaceSymbols(shell, projMgr, docMgr, locStore, "beta");
-    if symbolCount != 1 or shell.toolPanels.searchListBox.Count != 2 {
+    var symbolSearch = new search_commands.SearchController();
+    if symbolSearch.StartWorkspaceSymbols(shell, projMgr, docMgr, null,
+                                          "beta") == false {
+        Probe.fail(shell, "workspace symbol worker did not start");
+        return false;
+    }
+    var symbolDeadline = Clock.NowMs() + 10000;
+    while symbolSearch.active and Clock.NowMs() < symbolDeadline {
+        symbolSearch.Pump(shell, docMgr, locStore);
+        if symbolSearch.active { Clock.Sleep(1); }
+    }
+    if symbolSearch.active or symbolSearch.resultCount != 1
+       or shell.toolPanels.searchListBox.Count != 2 {
         Probe.fail(shell, "workspace symbols use dirty open content");
         return false;
     }
@@ -578,10 +657,17 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
     var uncachedSymbolPath = Path.Join(root, "uncached_symbol.zia");
     File.WriteAllText(uncachedSymbolPath,
                       "module UncachedSymbol;\nfunc uncachedSymbolProbe() -> Integer { return 3; }\n");
-    var uncachedCount = search_commands.CollectWorkspaceSymbols(shell, projMgr,
-                                                               docMgr, locStore,
-                                                               "uncachedSymbolProbe");
-    if uncachedCount != 1 {
+    if symbolSearch.StartWorkspaceSymbols(shell, projMgr, docMgr, null,
+                                          "uncachedSymbolProbe") == false {
+        Probe.fail(shell, "uncached workspace symbol worker did not start");
+        return false;
+    }
+    symbolDeadline = Clock.NowMs() + 10000;
+    while symbolSearch.active and Clock.NowMs() < symbolDeadline {
+        symbolSearch.Pump(shell, docMgr, locStore);
+        if symbolSearch.active { Clock.Sleep(1); }
+    }
+    if symbolSearch.active or symbolSearch.resultCount != 1 {
         Probe.fail(shell, "workspace symbols enumerate uncached files");
         return false;
     }
@@ -612,6 +698,7 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
             return false;
         }
         symbolPumps = symbolPumps + 1;
+        if asyncSymbols.active { Clock.Sleep(1); }
     }
     if asyncSymbols.active or asyncSymbols.resultCount != 1
        or asyncSymbolLocs.items.count() != 1 {
@@ -625,6 +712,7 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
     }
     while cachedSearcher.active {
         cachedSearcher.Pump(shell, docMgr, locStore);
+        if cachedSearcher.active { Clock.Sleep(1); }
     }
     if cachedSearcher.resultCount != 40 {
         Probe.fail(shell, "cached search final count");
@@ -638,6 +726,7 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
     }
     while filteredCachedSearcher.active {
         filteredCachedSearcher.Pump(shell, docMgr, locStore);
+        if filteredCachedSearcher.active { Clock.Sleep(1); }
     }
     if filteredCachedSearcher.resultCount != 10 {
         Probe.fail(shell, "filtered cached search count");
@@ -651,6 +740,7 @@ expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeC
     }
     while regexCachedSearcher.active {
         regexCachedSearcher.Pump(shell, docMgr, locStore);
+        if regexCachedSearcher.active { Clock.Sleep(1); }
     }
     if regexCachedSearcher.resultCount != 20 {
         Probe.fail(shell, "regex cached search count");

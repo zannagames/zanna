@@ -223,9 +223,9 @@ class BasicWorkspaceCommandController {
         }
 
         var result = request.result;
-        if Map.GetBool(result, "success") == false {
+        if result.success == false {
             ReportLogicalFailure(shell, request.kind, request.label,
-                                 Map.GetStr(result, "reason"));
+                                 result.reason);
             return;
         }
         if request.kind == basic_workspace_query_job.QUERY_DEFINITION {
@@ -245,8 +245,8 @@ class BasicWorkspaceCommandController {
                               engine: editor_engine.EditorEngine,
                               tabs: editor_tabs.EditorTabs,
                               locStore: locations.LocationStore,
-                              result: Any) {
-        var def = Map.Get(result, "definition");
+                              result: basic_workspace_query_job.BasicWorkspaceQueryResult) {
+        var def = result.definition;
         if def == null or Map.GetBool(def, "found") == false {
             shell.SetStatusLeft("Definition not found");
             return;
@@ -260,7 +260,7 @@ class BasicWorkspaceCommandController {
                               Map.GetStr(def, "name"));
         if locStore.OpenLocation(shell, docMgr, engine, tabs, id) {
             var status = "Definition: " + Map.GetStr(def, "name");
-            if Map.GetBool(result, "truncated") {
+            if result.truncated {
                 status = status + " (workspace scan limited)";
             }
             shell.SetStatusLeft(status);
@@ -272,8 +272,8 @@ class BasicWorkspaceCommandController {
     hide func OpenRenamePreview(
         shell: app_shell.AppShell,
         request: basic_workspace_query_job.BasicWorkspaceQueryRequest,
-        result: Any) {
-        var edits = Map.Get(result, "edits") as Seq;
+        result: basic_workspace_query_job.BasicWorkspaceQueryResult) {
+        var edits = result.edits;
         if edits == null or Seq.get_Count(edits) == 0 {
             GUI.Toast.Warning("Rename failed: no references found");
             return;
@@ -292,13 +292,13 @@ class BasicWorkspaceCommandController {
     hide func BeginRendering(shell: app_shell.AppShell,
                              kind: Integer,
                              label: String,
-                             result: Any) {
-        renderItems = Map.Get(result, "items") as Seq;
+                             result: basic_workspace_query_job.BasicWorkspaceQueryResult) {
+        renderItems = result.items;
         renderIndex = 0;
         renderKind = kind;
         renderLabel = label;
         renderLastGroup = "";
-        renderTruncated = Map.GetBool(result, "truncated");
+        renderTruncated = result.truncated;
         shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
         if renderItems == null or Seq.get_Count(renderItems) == 0 {
             ResetRendering();

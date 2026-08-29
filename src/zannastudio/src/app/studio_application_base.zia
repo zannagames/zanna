@@ -592,10 +592,9 @@ class StudioApplicationBase {
             }
             welcomeView.SetStartupProgress(recoveryScanStatus);
             shell.SetStatusLeft(recoveryScanStatus);
-            shell.Poll();
+            if recoveryScan.PayloadReadPending() { shell.PollWait(8); } else { shell.Poll(); }
             shell.Render();
         }
-
         // After an unclean exit, re-open captured documents one painted item at a
         // time. Keep swaps durable until a later save or clean shutdown so a second
         // immediate crash cannot lose the recovered buffer.
@@ -854,6 +853,7 @@ class StudioApplicationBase {
         // Every RunOwned owner must synchronously relinquish publication before
         // runtime and GUI handles disappear. Results are sticky: one timeout is
         // enough to preserve the recovery marker for the next launch.
+        if searcher != null { shutdownState.RecordWorkerDrain(searcher.Shutdown()); }
         if autoSaveJob != null {
             shutdownState.RecordWorkerDrain(autoSaveJob.WaitForShutdown());
         }

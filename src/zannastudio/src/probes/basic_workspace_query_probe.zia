@@ -99,7 +99,7 @@ class BasicWorkspaceQueryProbeContext {
     expose List ignores;
     expose List openPaths;
     expose List openSources;
-    expose Any edits;
+    expose Seq edits;
 }
 
 /// @brief Verify asynchronous multi-root navigation and rename snapshots.
@@ -142,10 +142,10 @@ func VerifyWorkspaceQueries(
     }
     var definition = waitForCompletion(definitionJob);
     if definition == null or definition!.succeeded == false
-       or Map.GetBool(definition!.result, "success") == false
-       or Map.GetStr(Map.Get(definition!.result, "definition"), "file")
+       or definition!.result.success == false
+       or Map.GetStr(definition!.result.definition, "file")
           != overridePath
-       or Map.GetInt(definition!.result, "fileCount") != 3 {
+       or definition!.result.fileCount != 3 {
         fail("unsaved multi-root definition result");
         return false;
     }
@@ -158,12 +158,12 @@ func VerifyWorkspaceQueries(
           openSources);
     var references = waitForCompletion(referencesJob);
     if references == null or references!.succeeded == false
-       or Map.GetBool(references!.result, "success") == false
-       or Map.GetInt(references!.result, "resultCount") != 2 {
+       or references!.result.success == false
+       or references!.result.resultCount != 2 {
         fail("cross-root references result");
         return false;
     }
-    var referenceItems = Map.Get(references!.result, "items");
+    var referenceItems = references!.result.items;
     var activeRef = refForFile(referenceItems, activePath);
     var libraryRef = refForFile(referenceItems, libraryPath);
     if activeRef == null or libraryRef == null
@@ -190,10 +190,10 @@ func VerifyWorkspaceQueries(
           activePath, activeSource, 3, 3, roots, ignores, openPaths,
           openSources);
     var incoming = waitForCompletion(incomingJob);
-    var incomingItems: Any = null;
-    if incoming != null { incomingItems = Map.Get(incoming!.result, "items"); }
+    var incomingItems: Seq = null;
+    if incoming != null { incomingItems = incoming!.result.items; }
     if incoming == null or incoming!.succeeded == false
-       or Map.GetBool(incoming!.result, "success") == false
+       or incoming!.result.success == false
        or Seq.get_Count(incomingItems) != 1
        or Map.GetStr(Seq.Get(incomingItems, 0), "caller") != "Caller" {
         fail("incoming caller metadata");
@@ -206,8 +206,8 @@ func VerifyWorkspaceQueries(
           openSources);
     var outgoing = waitForCompletion(outgoingJob);
     if outgoing == null or outgoing!.succeeded == false
-       or Map.GetBool(outgoing!.result, "success") == false
-       or Map.GetInt(outgoing!.result, "resultCount") != 2 {
+       or outgoing!.result.success == false
+       or outgoing!.result.resultCount != 2 {
         fail("outgoing call result");
         return false;
     }
@@ -217,10 +217,10 @@ func VerifyWorkspaceQueries(
           activePath, activeSource, 3, 3, roots, ignores, openPaths,
           openSources);
     var rename = waitForCompletion(renameJob);
-    var edits: Any = null;
-    if rename != null { edits = Map.Get(rename!.result, "edits"); }
+    var edits: Seq = null;
+    if rename != null { edits = rename!.result.edits; }
     if rename == null or rename!.succeeded == false
-       or Map.GetBool(rename!.result, "success") == false
+       or rename!.result.success == false
        or Seq.get_Count(edits) != 2
        or Map.GetStr(Seq.Get(edits, 0), "expectedText") == "" {
         fail("rename edit snapshot contract");
@@ -298,7 +298,7 @@ func VerifyWorkspaceQueryBoundaries(
     var latest = waitForCompletion(coalesced);
     if latest == null or latest!.generation != secondGeneration
        or latest!.succeeded == false
-       or Map.GetBool(latest!.result, "success") == false {
+       or latest!.result.success == false {
         fail("stale workspace request published");
         return false;
     }
@@ -321,15 +321,15 @@ func VerifyWorkspaceQueryBoundaries(
           "limit.bas", cappedSource, 3, 1, empty, empty, empty, empty);
     var cappedRefs = waitForCompletion(cappedRefsJob);
     if cappedRefs == null or cappedRefs!.succeeded == false
-       or Map.GetBool(cappedRefs!.result, "success") == false
-       or Map.GetBool(cappedRefs!.result, "truncated") == false
-       or Map.GetInt(cappedRefs!.result, "resultCount")
+       or cappedRefs!.result.success == false
+       or cappedRefs!.result.truncated == false
+       or cappedRefs!.result.resultCount
           != basic_workspace_query_job.MAX_NAVIGATION_RESULTS {
         if cappedRefs != null and cappedRefs!.result != null {
-            Terminal.Say("CAP: success=" + Map.GetBool(cappedRefs!.result, "success")
-                         + " truncated=" + Map.GetBool(cappedRefs!.result, "truncated")
-                         + " count=" + Map.GetInt(cappedRefs!.result, "resultCount")
-                         + " reason=" + Map.GetStr(cappedRefs!.result, "reason"));
+            Terminal.Say("CAP: success=" + cappedRefs!.result.success
+                         + " truncated=" + cappedRefs!.result.truncated
+                         + " count=" + cappedRefs!.result.resultCount
+                         + " reason=" + cappedRefs!.result.reason);
         }
         fail("reference cap contract");
         return false;
@@ -340,9 +340,9 @@ func VerifyWorkspaceQueryBoundaries(
           "limit.bas", cappedSource, 3, 1, empty, empty, empty, empty);
     var cappedRename = waitForCompletion(cappedRenameJob);
     if cappedRename == null or cappedRename!.succeeded == false
-       or Map.GetBool(cappedRename!.result, "success")
-       or Map.GetStr(cappedRename!.result, "reason") != "workspace_limit"
-       or Map.Get(cappedRename!.result, "edits") != null {
+       or cappedRename!.result.success
+       or cappedRename!.result.reason != "workspace_limit"
+       or cappedRename!.result.edits != null {
         fail("partial rename was not rejected");
         return false;
     }

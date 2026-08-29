@@ -216,6 +216,7 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
             referencesRows.Clear();
             referencesResultCount = 0;
             visibleReferenceCount = 0;
+            visibleReferenceRows = [];
             currentReferenceGroupId = "";
             UpdateReferencesToolbarState();
             ApplyReferenceSurfaceVisibility();
@@ -300,7 +301,7 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
         var item: Any = null;
         if isGroupHeader {
             if referencesFilterText == "" {
-                item = RenderReferenceModelRow(row);
+                item = AppendVisibleReferenceRow(row);
             }
         } else {
             var group = FindReferenceRow(row.groupId);
@@ -309,16 +310,73 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
                 visible = true;
             }
             if visible {
-                if group != null and group.item == null {
-                    RenderReferenceModelRow(group);
+                if group != null and VisibleReferenceRowIndex(group.id) < 0 {
+                    AppendVisibleReferenceRow(group);
                 }
-                item = RenderReferenceModelRow(row);
+                item = AppendVisibleReferenceRow(row);
                 visibleReferenceCount = visibleReferenceCount + 1;
             }
+        }
+        if referencesRows.virtualized == false
+           and visibleReferenceRows.count()
+               >= tool_panel_model.VIRTUALIZE_AFTER_ROWS {
+            BindVirtualReferenceRows();
+            item = null;
         }
         UpdateReferencesToolbarState();
         ApplyReferenceSurfaceVisibility();
         return item;
+    }
+
+    /// @brief Append one filtered References row to its concrete/virtual projection.
+    hide func AppendVisibleReferenceRow(
+        row: tool_panel_model.ToolPanelRow) -> Any {
+        if row == null { return null; }
+        visibleReferenceRows.add(row);
+        if referencesRows.virtualized {
+            var index = visibleReferenceRows.count() - 1;
+            referencesRows.virtualList.SetCount(visibleReferenceRows.count());
+            referencesRows.virtualList.SetRowId(index, row.id);
+            referencesRows.virtualList.SetRowText(index, row.text);
+            row.item = null;
+            return null;
+        }
+        return RenderReferenceModelRow(row);
+    }
+
+    /// @brief Find a stable row ID in the current filtered References projection.
+    hide func VisibleReferenceRowIndex(id: String) -> Integer {
+        if id == "" { return -1; }
+        var i = 0;
+        while i < visibleReferenceRows.count() {
+            var row = visibleReferenceRows.get(i);
+            if row != null and row.id == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Bind the filtered References projection to viewport-backed rows.
+    hide func BindVirtualReferenceRows() -> Boolean {
+        if referencesListBox == null or referencesRows == null
+           or referencesRows.virtualList == null { return false; }
+        referencesRows.virtualList.SetCount(0);
+        referencesRows.virtualList.SetCount(visibleReferenceRows.count());
+        var i = 0;
+        while i < visibleReferenceRows.count() {
+            var row = visibleReferenceRows.get(i);
+            if row != null {
+                referencesRows.virtualList.SetRowId(i, row.id);
+                referencesRows.virtualList.SetRowText(i, row.text);
+                row.item = null;
+            }
+            i = i + 1;
+        }
+        if referencesRows.virtualList.Bind(referencesListBox) {
+            referencesRows.virtualized = true;
+            return true;
+        }
+        return false;
     }
 
     /// @brief Realize one durable References row with its navigation metadata.
@@ -376,8 +434,12 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
     ///          omitted. Navigation IDs are reapplied to every realized row.
     hide override func RefreshReferenceRows() {
         if referencesListBox == null or referencesRows == null { return; }
+        referencesRows.virtualList.Unbind();
+        referencesRows.virtualList.SetCount(0);
+        referencesRows.virtualized = false;
         referencesListBox.Clear();
         visibleReferenceCount = 0;
+        visibleReferenceRows = [];
 
         var resetIndex = 0;
         while resetIndex < referencesRows.rows.count() {
@@ -405,10 +467,10 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
                     } else {
                         if groupMatches or ReferenceRowMatches(child) {
                             if renderedHeader == false {
-                                RenderReferenceModelRow(row);
+                                visibleReferenceRows.add(row);
                                 renderedHeader = true;
                             }
-                            RenderReferenceModelRow(child);
+                            visibleReferenceRows.add(child);
                             visibleReferenceCount =
                                 visibleReferenceCount + 1;
                         }
@@ -420,10 +482,21 @@ class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
                 // A bounded eviction can orphan an old child from its header.
                 // Keep that valid result independently filterable.
                 if ReferenceRowMatches(row) {
-                    RenderReferenceModelRow(row);
+                    visibleReferenceRows.add(row);
                     visibleReferenceCount = visibleReferenceCount + 1;
                 }
                 i = i + 1;
+            }
+        }
+        if visibleReferenceRows.count()
+           >= tool_panel_model.VIRTUALIZE_AFTER_ROWS {
+            BindVirtualReferenceRows();
+        } else {
+            var visibleIndex = 0;
+            while visibleIndex < visibleReferenceRows.count() {
+                RenderReferenceModelRow(
+                    visibleReferenceRows.get(visibleIndex));
+                visibleIndex = visibleIndex + 1;
             }
         }
         RecountReferenceResults();

@@ -1,0 +1,353 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/search_file_worker.zia
+// Purpose: Read and analyze one bounded search source away from the GUI thread.
+// Key invariants:
+//   - Workers receive immutable query options and optional live-source snapshots.
+//   - Disk reads, hashing, line splitting, matching, and symbol extraction never
+//     run on the Studio GUI thread.
+//   - Result records contain display-neutral values and obey the request cap.
+// Ownership/Lifetime:
+//   - SearchFileJob owns requests until Async.RunOwned completion.
+//   - The UI publishes completed records in separately bounded slices.
+// Links: zannastudio/src/commands/search_controller.zia,
+//        zannastudio/src/commands/search_commands_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module search_file_worker;
+
+bind "../basic/semantic_scan";
+bind "../editor/zia_query";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../services/search_matcher";
+
+bind Async = Zanna.Threads.Async;
+bind Convert = Zanna.Core.Convert;
+bind Future = Zanna.Threads.Future;
+bind Hash = Zanna.Crypto.Hash;
+bind Map = Zanna.Collections.Map;
+bind Monitor = Zanna.Threads.Monitor;
+bind Obj = Zanna.Core.Object;
+bind Path = Zanna.IO.Path;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind ZiaCompletion = Zanna.Zia.Completion;
+
+final SEARCH_WORK_TEXT = 1;
+final SEARCH_WORK_SYMBOLS = 2;
+final MAX_SEARCH_FILE_BYTES = 2000000;
+final SEARCH_WORKER_SHUTDOWN_WAIT_MS = 5000;
+
+/// @brief Immutable input and worker-published output for one source file.
+class SearchFileRequest {
+    expose Integer generation;
+    expose Integer mode;
+    expose String filePath;
+    expose String query;
+    expose Boolean caseSensitive;
+    expose Boolean wholeWord;
+    expose Boolean regexMode;
+    expose Boolean hasLiveSource;
+    expose String liveSource;
+    expose Integer maxResults;
+    expose Boolean cancelled;
+    expose Boolean succeeded;
+    expose Boolean skippedLarge;
+    expose Boolean hitResultLimit;
+    expose Integer sourceBytes;
+    expose String sourceRevision;
+    expose String error;
+    expose Seq items;
+
+    expose func init() {
+        generation = 0;
+        mode = SEARCH_WORK_TEXT;
+        filePath = "";
+        query = "";
+        caseSensitive = false;
+        wholeWord = false;
+        regexMode = false;
+        hasLiveSource = false;
+        liveSource = "";
+        maxResults = 0;
+        cancelled = false;
+        succeeded = false;
+        skippedLarge = false;
+        hitResultLimit = false;
+        sourceBytes = 0;
+        sourceRevision = "";
+        error = "";
+        items = Seq.New();
+    }
+}
+
+/// @brief Read a cancellation flag without racing the UI owner.
+func IsCancelled(request: SearchFileRequest) -> Boolean {
+    if request == null { return true; }
+    Monitor.Enter(request);
+    var cancelled = request.cancelled;
+    Monitor.Exit(request);
+    return cancelled;
+}
+
+/// @brief Analyze one source and publish only plain result records.
+func RunSearchFile(request: SearchFileRequest) -> Any {
+    if request == null or IsCancelled(request) { return request; }
+    var content = request.liveSource;
+    if request.hasLiveSource == false {
+        var read = safe_io.ReadAllTextBounded(request.filePath,
+                                              MAX_SEARCH_FILE_BYTES);
+        if read.ok == false {
+            request.error = "Search source is unavailable, unreadable, or changed while reading: "
+                            + request.filePath;
+            return request;
+        }
+        content = read.text;
+    }
+    request.sourceBytes = Str.get_Length(content);
+    if request.sourceBytes > MAX_SEARCH_FILE_BYTES {
+        request.skippedLarge = true;
+        request.error = "Search source exceeds the file byte budget: "
+                        + request.filePath;
+        return request;
+    }
+    if IsCancelled(request) { return request; }
+
+    if request.mode == SEARCH_WORK_SYMBOLS {
+        CollectSymbolItems(request, content);
+    } else {
+        CollectTextItems(request, content);
+    }
+    if IsCancelled(request) { return request; }
+    request.succeeded = request.error == "";
+    return request;
+}
+
+/// @brief Collect bounded text matches without touching GUI or location state.
+func CollectTextItems(request: SearchFileRequest, content: String) {
+    var program = search_matcher.CompileSearch(
+        request.query, request.caseSensitive, request.wholeWord,
+        request.regexMode);
+    if program.valid == false {
+        request.error = program.error;
+        return;
+    }
+    request.sourceRevision = Hash.Sha256(content);
+    var lines = Str.Split(content, "\n");
+    var lineIndex = 0;
+    while lineIndex < Seq.get_Count(lines)
+          and Seq.get_Count(request.items) < request.maxResults {
+        if IsCancelled(request) { return; }
+        var line = Obj.ToString(Seq.Get(lines, lineIndex));
+        var lineNumber = lineIndex + 1;
+        lineIndex = lineIndex + 1;
+        var offset = 0;
+        var lineLength = Str.get_Length(line);
+        while offset <= lineLength
+              and Seq.get_Count(request.items) < request.maxResults {
+            var match = search_matcher.FindLineMatchFrom(line, offset, program);
+            if match.matched == false { break; }
+            var item = Map.New();
+            Map.SetInt(item, "line", lineNumber);
+            Map.SetInt(item, "column", match.startCol);
+            Map.SetInt(item, "length", match.length);
+            Map.SetStr(item, "context", line);
+            Map.SetStr(item, "display", Str.Trim(line));
+            Seq.Push(request.items, item);
+            offset = match.resumeOffset;
+        }
+    }
+    request.hitResultLimit = Seq.get_Count(request.items) >= request.maxResults;
+}
+
+/// @brief Collect bounded compiler/scanner symbol records for one source.
+func CollectSymbolItems(request: SearchFileRequest, content: String) {
+    var language = file_utils.DetectLanguage(request.filePath);
+    if language != "zia" and language != "basic" { return; }
+    var needle = Str.ToLower(request.query);
+    if language == "basic" {
+        CollectBasicSymbolItems(request, content, needle);
+    } else {
+        CollectZiaSymbolItems(request, content, needle);
+    }
+    request.hitResultLimit = Seq.get_Count(request.items) >= request.maxResults;
+}
+
+func CollectBasicSymbolItems(request: SearchFileRequest,
+                             content: String,
+                             needle: String) {
+    var declarations = semantic_scan.DeclarationsForFile(
+        request.filePath, content);
+    var index = 0;
+    while index < Seq.get_Count(declarations)
+          and Seq.get_Count(request.items) < request.maxResults {
+        if IsCancelled(request) { return; }
+        var declaration = Seq.Get(declarations, index);
+        index = index + 1;
+        var kind = Map.GetStr(declaration, "kind");
+        if Map.GetBool(declaration, "local")
+           or kind == "parameter" or kind == "label"
+           or semantic_scan.WorkspaceSymbolMatchesDecl(
+               declaration, needle) == false { continue; }
+        var item = Map.New();
+        var name = Map.GetStr(declaration, "name");
+        var typeText = Map.GetStr(declaration, "returnType");
+        if typeText == "" { typeText = Map.GetStr(declaration, "signature"); }
+        var line = Map.GetInt(declaration, "line");
+        var column = Map.GetInt(declaration, "column");
+        Map.SetStr(item, "kind", kind);
+        Map.SetStr(item, "name", name);
+        Map.SetStr(item, "type", typeText);
+        Map.SetInt(item, "line", line);
+        Map.SetInt(item, "column", column);
+        Map.SetInt(item, "endLine", Map.GetIntOr(declaration, "endLine", line));
+        Map.SetInt(item, "endColumn", Map.GetIntOr(
+            declaration, "endColumn", column + Str.get_Length(name)));
+        Seq.Push(request.items, item);
+    }
+}
+
+func CollectZiaSymbolItems(request: SearchFileRequest,
+                           content: String,
+                           needle: String) {
+    var querySource = zia_query.WrapForQuery(content);
+    var lineOffset = zia_query.LineOffset(content);
+    var raw = ZiaCompletion.SymbolsForFile(querySource, request.filePath);
+    if raw == "" { return; }
+    var rows = Str.Split(raw, "\n");
+    var index = 0;
+    while index < Seq.get_Count(rows)
+          and Seq.get_Count(request.items) < request.maxResults {
+        if IsCancelled(request) { return; }
+        var row = Obj.ToString(Seq.Get(rows, index));
+        index = index + 1;
+        if row == "" { continue; }
+        var parts = Str.Split(row, "\t");
+        if Seq.get_Count(parts) < 4 { continue; }
+        var name = Obj.ToString(Seq.Get(parts, 0));
+        var kind = Obj.ToString(Seq.Get(parts, 1));
+        var typeText = Obj.ToString(Seq.Get(parts, 2));
+        var lineText = Obj.ToString(Seq.Get(parts, 3));
+        if lineText == "0"
+           or SymbolMatches(name, kind, request.filePath, needle) == false {
+            continue;
+        }
+        var line = Convert.ToInt64(lineText) - lineOffset;
+        if line < 1 { continue; }
+        var item = Map.New();
+        Map.SetStr(item, "kind", kind);
+        Map.SetStr(item, "name", name);
+        Map.SetStr(item, "type", typeText);
+        Map.SetInt(item, "line", line);
+        Map.SetInt(item, "column", 1);
+        Map.SetInt(item, "endLine", line);
+        Map.SetInt(item, "endColumn", 1 + Str.get_Length(name));
+        Seq.Push(request.items, item);
+    }
+}
+
+func SymbolMatches(name: String,
+                   kind: String,
+                   filePath: String,
+                   needle: String) -> Boolean {
+    if Str.IndexOf(Str.ToLower(name), needle) != 0 { return true; }
+    if Str.IndexOf(Str.ToLower(kind), needle) != 0 { return true; }
+    if Str.IndexOf(Str.ToLower(filePath), needle) != 0 { return true; }
+    return false;
+}
+
+/// @brief Own at most one background source-analysis callback.
+class SearchFileJob {
+    expose SearchFileRequest activeRequest;
+    expose Any activeFuture;
+    expose SearchFileRequest completedRequest;
+    expose Integer startedCount;
+    expose Integer completedCount;
+
+    expose func init() {
+        activeRequest = null;
+        activeFuture = null;
+        completedRequest = null;
+        startedCount = 0;
+        completedCount = 0;
+    }
+
+    expose func Queue(request: SearchFileRequest) -> Boolean {
+        if request == null or activeFuture != null
+           or completedRequest != null { return false; }
+        activeRequest = request;
+        try {
+            activeFuture = Async.RunOwned(&RunSearchFile, request);
+        } catch {
+            activeFuture = null;
+        }
+        if activeFuture == null {
+            request.error = "Could not start search worker";
+            completedRequest = request;
+            activeRequest = null;
+            return false;
+        }
+        startedCount = startedCount + 1;
+        return true;
+    }
+
+    expose func Pump() -> Boolean {
+        if activeFuture == null
+           or Future.get_IsDone(activeFuture) == false {
+            return completedRequest != null;
+        }
+        var finished = activeRequest;
+        if Future.get_IsError(activeFuture) {
+            finished.succeeded = false;
+            finished.error = Future.get_Error(activeFuture);
+        }
+        if finished.cancelled == false {
+            completedRequest = finished;
+            completedCount = completedCount + 1;
+        }
+        activeRequest = null;
+        activeFuture = null;
+        return completedRequest != null;
+    }
+
+    expose func TakeCompleted() -> SearchFileRequest {
+        var request = completedRequest;
+        completedRequest = null;
+        return request;
+    }
+
+    expose func Cancel() {
+        completedRequest = null;
+        if activeRequest == null { return; }
+        Monitor.Enter(activeRequest);
+        activeRequest.cancelled = true;
+        Monitor.Exit(activeRequest);
+    }
+
+    expose func IsBusy() -> Boolean {
+        return activeFuture != null or completedRequest != null;
+    }
+
+    expose func CancelAndWait() -> Boolean {
+        Cancel();
+        if activeFuture == null { return true; }
+        var finished = false;
+        try {
+            finished = Future.WaitFor(activeFuture,
+                                      SEARCH_WORKER_SHUTDOWN_WAIT_MS);
+        } catch {
+            return false;
+        }
+        if finished == false { return false; }
+        Pump();
+        completedRequest = null;
+        return activeFuture == null;
+    }
+}

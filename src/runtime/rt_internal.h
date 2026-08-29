@@ -4,14 +4,15 @@
 // See LICENSE for license information.
 //
 // File: src/runtime/rt_internal.h
-// Purpose: Internal runtime helpers for buffer growth, allocation hooks, hex utilities, and array
-// macros. This header is implementation-only and must never be included by IL-generated or user
-// code.
+// Purpose: Internal runtime helpers for synchronization, buffer growth,
+// allocation hooks, hex utilities, and array macros. This header is
+// implementation-only and must never be included by IL-generated or user code.
 //
 // Key invariants:
 //   - Implementation-only: must not be included from public-facing headers.
 //   - Successful input growth doubles capacity without overflowing size_t.
 //   - Allocation hooks are process-global; only one hook may be active at a time.
+//   - Native process-environment access is serialized while borrowed bytes are copied.
 //   - Generated array helpers preserve heap-header kind and element-tag checks.
 //
 // Ownership/Lifetime:
@@ -21,7 +22,8 @@
 //     before their code or context becomes unavailable.
 //
 // Links: src/runtime/core/rt_heap.h (heap header),
-//        src/runtime/core/rt_string.h (managed string representation)
+//        src/runtime/core/rt_string.h (managed string representation),
+//        docs/adr/0304-bounded-process-output-and-environment-snapshots.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -76,6 +78,14 @@ typedef void *(*rt_alloc_hook_fn)(int64_t bytes, void *(*next)(int64_t bytes));
 ///          @c NULL restores the default behaviour.
 /// @param hook Replacement hook or @c NULL to disable overrides.
 void rt_set_alloc_hook(rt_alloc_hook_fn hook);
+
+/// @brief Acquire the process-global lock for native environment storage.
+/// @details Callers must copy borrowed `getenv`/`environ` bytes before release
+///          and must not hold this lock across blocking process launch.
+void rt_env_lock_process_environment(void);
+
+/// @brief Release the process-global native-environment lock.
+void rt_env_unlock_process_environment(void);
 
 //=========================================================================
 // Bytes Extraction Utilities

@@ -6,14 +6,16 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/app/workspace_watcher_fallback.zia
-// Purpose: Cooperatively fingerprint workspaces with degraded native coverage.
+// Purpose: Fingerprint workspaces with degraded native coverage on an owned worker.
 // Key invariants:
-//   - Each pump consumes at most one bounded explicit-cursor page.
+//   - The UI pump only starts or publishes work and never performs file traversal.
+//   - The worker consumes bounded explicit-cursor pages until a full snapshot ends.
 //   - Nanosecond metadata and sampled content participate in two fingerprints.
 //   - A completed changed snapshot refreshes topology-derived state once.
 // Ownership/Lifetime: Borrows application state; owns no watcher or cursor.
 // Links: zannastudio/src/app/workspace_watcher.zia,
-//        zannastudio/src/app/workspace_watcher_state.zia
+//        zannastudio/src/app/workspace_watcher_state.zia,
+//        docs/adr/0303-complete-owned-workspace-index-cursors.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,16 +30,20 @@ bind "../editor/editor_engine";
 bind "../editor/project_index";
 bind "../services/locations";
 bind "../services/path_identity";
+bind "../services/workspace_file_cursor";
 
 bind Hash = Zanna.Crypto.Hash;
 bind Map = Zanna.Collections.Map;
+bind Monitor = Zanna.Threads.Monitor;
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
 bind Seq = Zanna.Collections.Seq;
 
 final WORKSPACE_FALLBACK_PAGE_SIZE = 256;
 final WORKSPACE_FINGERPRINT_MODULUS = 2000000011;
 final WORKSPACE_SECONDARY_FINGERPRINT_MODULUS = 1999999973;
 
-/// @brief Consume one bounded fallback page or publish a completed snapshot.
+/// @brief Start or publish one owned fallback scan without blocking the UI.
 expose func Pump(
     shell: app_shell.AppShell,
     projMgr: project_manager.ProjectManager,
@@ -49,68 +55,164 @@ expose func Pump(
     if state == null or state.rootPaths.count() == 0 { return; }
     if state.discoveryActive { return; }
     if state.fallbackScanActive == false {
+        if state.fallbackFuture != null {
+            if Future.get_IsDone(state.fallbackFuture) == false { return; }
+            state.fallbackFuture = null;
+            state.fallbackRequest = null;
+        }
+        if state.fallbackRestartRequested {
+            Begin(state);
+            return;
+        }
         if state.rescanThrottle.TryAcquire() == false { return; }
         Begin(state);
-    }
-    if state.fallbackRootIndex >= state.rootPaths.count() {
-        Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
         return;
     }
+    if state.fallbackFuture == null
+       or Future.get_IsDone(state.fallbackFuture) == false { return; }
 
-    var rootIndex = state.fallbackRootIndex;
-    var root = state.rootPaths.get(rootIndex);
-    var ignores = "";
-    if rootIndex < state.rootIgnorePatterns.count() {
-        ignores = state.rootIgnorePatterns.get(rootIndex);
-    }
-    if state.fallbackCursor.IsOpen() == false
-       and state.fallbackCursor.Open(root, "", ignores, true) == false {
+    var future = state.fallbackFuture;
+    var request = state.fallbackRequest;
+    state.fallbackFuture = null;
+    state.fallbackRequest = null;
+    state.fallbackScanActive = false;
+    if request == null or Future.get_IsError(future)
+       or request!.failed or request!.cancelled {
         state.degraded = true;
-        FinishRoot(state);
+        if state.fallbackRestartRequested {
+            Begin(state);
+            return;
+        }
+        ResetThrottle(state);
         return;
     }
-    var page = state.fallbackCursor.Next(WORKSPACE_FALLBACK_PAGE_SIZE);
-    if Map.GetBool(page, "valid") == false {
-        state.degraded = true;
-        FinishRoot(state);
+    if request!.succeeded == false
+       or request!.rootSignature != state.rootSignature {
+        ResetThrottle(state);
         return;
     }
-    var entries = Map.Get(page, "entries") as Seq;
-    var entryCount = 0;
-    if entries != null { entryCount = Seq.get_Count(entries); }
+    state.fallbackEntryCounts = request!.entryCounts;
+    state.fallbackFingerprints = request!.fingerprints;
+    state.fallbackSecondaryFingerprints = request!.secondaryFingerprints;
+    Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
+}
+
+/// @brief Start one immutable full-workspace fallback scan on an owned worker.
+func Begin(state: workspace_watcher_state.WorkspaceWatcherState) {
+    var request = new workspace_watcher_state.WorkspaceFallbackScanRequest();
+    request.rootSignature = state.rootSignature;
     var i = 0;
-    while entries != null and i < entryCount {
-        Accumulate(state, Seq.Get(entries, i));
+    while i < state.rootPaths.count() {
+        request.rootPaths.Push(state.rootPaths.get(i));
+        if i < state.rootIgnorePatterns.count() {
+            request.rootIgnorePatterns.Push(state.rootIgnorePatterns.get(i));
+        } else {
+            request.rootIgnorePatterns.Push("");
+        }
         i = i + 1;
     }
-    state.fallbackPageOffset = Map.GetInt(page, "nextOffset");
-    var done = Map.GetBool(page, "done");
-    if Map.GetBool(page, "truncated") {
-        state.degraded = true;
-        done = true;
+    state.fallbackScanActive = true;
+    state.fallbackRestartRequested = false;
+    state.fallbackPageOffset = 0;
+    state.fallbackRequest = request;
+    try {
+        state.fallbackFuture = Async.RunOwned(&RunFallbackScan, request);
+    } catch {
+        state.fallbackFuture = null;
     }
-    if entryCount == 0 and done == false and Map.GetInt(page, "work") <= 0 {
+    if state.fallbackFuture == null {
+        request.failed = true;
+        request.error = "Could not start workspace fallback scan";
+        state.fallbackScanActive = false;
         state.degraded = true;
-        done = true;
-    }
-    if done { FinishRoot(state); }
-    if state.fallbackRootIndex >= state.rootPaths.count() {
-        Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
+        ResetThrottle(state);
     }
 }
 
-/// @brief Reset one cooperative fallback traversal.
-func Begin(state: workspace_watcher_state.WorkspaceWatcherState) {
-    if state.fallbackCursor != null { state.fallbackCursor.Destroy(); }
-    state.fallbackScanActive = true;
-    state.fallbackRootIndex = 0;
-    state.fallbackPageOffset = 0;
-    state.fallbackCurrentCount = 0;
-    state.fallbackCurrentFingerprint = 0;
-    state.fallbackCurrentSecondaryFingerprint = 0;
-    state.fallbackEntryCounts = new List();
-    state.fallbackFingerprints = new List();
-    state.fallbackSecondaryFingerprints = new List();
+/// @brief Cancel a running fallback snapshot after workspace/shutdown changes.
+expose func Cancel(state: workspace_watcher_state.WorkspaceWatcherState) {
+    if state == null or state.fallbackRequest == null { return; }
+    Monitor.Enter(state.fallbackRequest);
+    state.fallbackRequest.cancelled = true;
+    Monitor.Exit(state.fallbackRequest);
+}
+
+/// @brief Test one request cancellation flag under its monitor.
+func IsCancelled(request: workspace_watcher_state.WorkspaceFallbackScanRequest)
+    -> Boolean {
+    if request == null { return true; }
+    Monitor.Enter(request);
+    var cancelled = request.cancelled;
+    Monitor.Exit(request);
+    return cancelled;
+}
+
+/// @brief Traverse all roots on a worker and publish only compact fingerprints.
+func RunFallbackScan(
+    request: workspace_watcher_state.WorkspaceFallbackScanRequest) -> Any {
+    if request == null { return request; }
+    var rootIndex = 0;
+    while rootIndex < request.rootPaths.count() and IsCancelled(request) == false {
+        var root = request.rootPaths.get(rootIndex);
+        var ignores = "";
+        if rootIndex < request.rootIgnorePatterns.count() {
+            ignores = request.rootIgnorePatterns.get(rootIndex);
+        }
+        var cursor = new workspace_file_cursor.WorkspaceFileCursor();
+        if cursor.Open(root, "", ignores, true) == false {
+            request.failed = true;
+            request.error = "Workspace fallback traversal could not open " + root;
+            break;
+        }
+        var count = 0;
+        var fingerprint = 0;
+        var secondaryFingerprint = 0;
+        var done = false;
+        while done == false and IsCancelled(request) == false {
+            var page = cursor.Next(WORKSPACE_FALLBACK_PAGE_SIZE);
+            if page == null or Map.GetBool(page, "valid") == false {
+                request.failed = true;
+                request.error = "Workspace fallback traversal failed for " + root;
+                break;
+            }
+            var entries = Map.Get(page, "entries") as Seq;
+            var entryCount = 0;
+            if entries != null { entryCount = Seq.get_Count(entries); }
+            var entryIndex = 0;
+            while entries != null and entryIndex < entryCount {
+                var entry = Seq.Get(entries, entryIndex);
+                fingerprint = (fingerprint + PrimaryFingerprintTerm(entry))
+                    % WORKSPACE_FINGERPRINT_MODULUS;
+                secondaryFingerprint =
+                    (secondaryFingerprint + SecondaryFingerprintTerm(entry))
+                    % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+                count = count + 1;
+                entryIndex = entryIndex + 1;
+            }
+            request.pagesScanned = request.pagesScanned + 1;
+            done = Map.GetBool(page, "done");
+            if Map.GetBool(page, "truncated") {
+                request.failed = true;
+                request.error = "Workspace fallback traversal was truncated for " + root;
+                break;
+            }
+            if entryCount == 0 and done == false and Map.GetInt(page, "work") <= 0 {
+                request.failed = true;
+                request.error = "Workspace fallback traversal stalled for " + root;
+                break;
+            }
+        }
+        cursor.Destroy();
+        if request.failed or IsCancelled(request) { break; }
+        request.entryCounts.Push(count);
+        request.fingerprints.Push(fingerprint);
+        request.secondaryFingerprints.Push(secondaryFingerprint);
+        rootIndex = rootIndex + 1;
+    }
+    request.succeeded = request.failed == false
+        and IsCancelled(request) == false
+        and rootIndex == request.rootPaths.count();
+    return request;
 }
 
 /// @brief Fold one FileIndex row into bounded order-independent metadata keys.
@@ -118,6 +220,17 @@ expose func Accumulate(
     state: workspace_watcher_state.WorkspaceWatcherState,
     entry: Any) {
     if state == null or entry == null { return; }
+    state.fallbackCurrentFingerprint =
+        (state.fallbackCurrentFingerprint + PrimaryFingerprintTerm(entry))
+        % WORKSPACE_FINGERPRINT_MODULUS;
+    state.fallbackCurrentSecondaryFingerprint =
+        (state.fallbackCurrentSecondaryFingerprint + SecondaryFingerprintTerm(entry))
+        % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
+    state.fallbackCurrentCount = state.fallbackCurrentCount + 1;
+}
+
+/// @brief Return the primary order-independent contribution for one entry.
+func PrimaryFingerprintTerm(entry: Any) -> Integer {
     var idPart = NormalizePrimary(Map.GetInt(entry, "id"));
     var modifiedPart = NormalizePrimary(Map.GetInt(entry, "modified"));
     var modifiedNsPart = NormalizePrimary(Map.GetInt(entry, "modifiedNs"));
@@ -134,8 +247,11 @@ expose func Accumulate(
     if Map.GetBool(entry, "isDirectory") {
         term = (term + 104729) % WORKSPACE_FINGERPRINT_MODULUS;
     }
-    state.fallbackCurrentFingerprint =
-        (state.fallbackCurrentFingerprint + term) % WORKSPACE_FINGERPRINT_MODULUS;
+    return term;
+}
+
+/// @brief Return the secondary order-independent contribution for one entry.
+func SecondaryFingerprintTerm(entry: Any) -> Integer {
     var secondary = NormalizeSecondary(Map.GetInt(entry, "id"));
     secondary = (secondary
                  + NormalizeSecondary(Map.GetInt(entry, "size")) * 8191)
@@ -151,10 +267,7 @@ expose func Accumulate(
                        path_identity.Normalize(Map.GetStr(entry, "path"))))
                    * 65537)
                 % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
-    state.fallbackCurrentSecondaryFingerprint =
-        (state.fallbackCurrentSecondaryFingerprint + secondary)
-        % WORKSPACE_SECONDARY_FINGERPRINT_MODULUS;
-    state.fallbackCurrentCount = state.fallbackCurrentCount + 1;
+    return secondary;
 }
 
 func NormalizePrimary(value: Integer) -> Integer {
@@ -223,8 +336,7 @@ func Complete(
         state.lastEntryCount = -1;
         state.lastFingerprint = 0;
     }
-    state.rescanThrottle.Reset();
-    state.rescanThrottle.TryAcquire();
+    ResetThrottle(state);
 
     if changed {
         if projMgr != null {
@@ -237,4 +349,11 @@ func Complete(
             shell.SetStatusLeft("Workspace changed: refreshed nested files");
         }
     }
+}
+
+/// @brief Restart the periodic-scan interval after success or failure.
+func ResetThrottle(state: workspace_watcher_state.WorkspaceWatcherState) {
+    if state == null { return; }
+    state.rescanThrottle.Reset();
+    state.rescanThrottle.TryAcquire();
 }

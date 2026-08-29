@@ -1,0 +1,49 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/basic_workspace_query_types.zia
+// Purpose: Define typed, display-neutral BASIC workspace query results.
+// Key invariants:
+//   - Envelope fields have stable types across every query kind and failure.
+//   - Compiler-produced definition and item records remain opaque payloads.
+// Ownership/Lifetime: Query jobs construct results; command controllers consume them.
+// Links: zannastudio/src/editor/basic_workspace_query_job.zia,
+//        zannastudio/src/commands/basic_workspace_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module basic_workspace_query_types;
+
+bind Seq = Zanna.Collections.Seq;
+
+class BasicWorkspaceQueryResult {
+    expose Boolean success;
+    expose Boolean truncated;
+    expose String reason;
+    expose Integer fileCount;
+    expose Integer sourceChars;
+    expose Integer declarationCount;
+    expose Integer resultCount;
+    expose String symbol;
+    expose Any definition;
+    expose Seq items;
+    expose Seq edits;
+
+    expose func init() {
+        success = false;
+        truncated = false;
+        reason = "";
+        fileCount = 0;
+        sourceChars = 0;
+        declarationCount = 0;
+        resultCount = 0;
+        symbol = "";
+        definition = null;
+        items = null;
+        edits = null;
+    }
+}

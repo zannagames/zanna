@@ -29,7 +29,8 @@
 // Links: src/runtime/system/rt_process.h,
 //        src/runtime/system/rt_activity_watch.h,
 //        src/runtime/system/rt_async_pipe_writer.h,
-//        docs/adr/0281-event-driven-process-pty-gui-wakes.md
+//        docs/adr/0281-event-driven-process-pty-gui-wakes.md,
+//        docs/adr/0304-bounded-process-output-and-environment-snapshots.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -111,9 +112,11 @@ typedef struct process_output_chunk {
 /// @details The vector owns references to runtime strings whose byte pointers
 ///          appear in @c values, keeping those pointers valid through spawning.
 typedef struct process_string_vector {
-    char **values;            ///< Owned pointer array ending in NULL.
-    rt_string *owned_strings; ///< Owned array of retained runtime strings.
-    int64_t owned_count;      ///< Number of entries in @c owned_strings.
+    char **values;              ///< Owned pointer array ending in NULL.
+    rt_string *owned_strings;   ///< Owned array of retained runtime strings.
+    int64_t owned_count;        ///< Number of entries in @c owned_strings.
+    char **owned_cstrings;      ///< Owned snapshots copied from native environ.
+    size_t owned_cstring_count; ///< Number of entries in @c owned_cstrings.
 } process_string_vector;
 
 /// @brief Platform process state stored in a Zanna.System.Process object.
@@ -487,11 +490,36 @@ static void ordered_output_free(rt_process_impl *proc) {
     proc->stderr_output_truncated = 0;
 }
 
-/// @brief Consume ordered output as `{ chunks, truncated }`.
+/// @brief Consume an already-materialized byte prefix from the native queue.
+static void ordered_output_consume_prefix(rt_process_impl *proc, size_t bytes) {
+    if (!proc || bytes == 0)
+        return;
+    while (proc->output_head && bytes > 0) {
+        process_output_chunk *chunk = proc->output_head;
+        const size_t consumed = chunk->len < bytes ? chunk->len : bytes;
+        chunk->len -= consumed;
+        proc->output_bytes -= consumed;
+        *output_stream_bytes(proc, chunk->stream) -= consumed;
+        bytes -= consumed;
+        if (chunk->len > 0) {
+            memmove(chunk->data, chunk->data + consumed, chunk->len);
+            break;
+        }
+        proc->output_head = chunk->next;
+        if (!proc->output_head)
+            proc->output_tail = NULL;
+        free(chunk->data);
+        free(chunk);
+    }
+}
+
+/// @brief Consume ordered output under explicit managed-copy budgets.
 /// @details `chunks` is an owning Seq of maps with `sequence`, `stream`, and
-///          `text`. The native queue is cleared only after its content has been
-///          copied into managed values.
-static void *ordered_output_take_result(rt_process_impl *proc) {
+///          `text`. Native bytes are removed only after every result allocation
+///          succeeds; unconsumed bytes remain available to a later call.
+static void *ordered_output_take_result_bounded(rt_process_impl *proc,
+                                                size_t max_bytes,
+                                                int64_t max_chunks) {
     void *result = rt_map_new();
     void *chunks = rt_seq_new_owned();
     if (!result || !chunks) {
@@ -500,9 +528,16 @@ static void *ordered_output_take_result(rt_process_impl *proc) {
         return NULL;
     }
 
-    size_t remaining = PROCESS_ORDERED_OUTPUT_MAX_SIZE;
+    if (max_bytes == 0 || max_bytes > PROCESS_ORDERED_OUTPUT_MAX_SIZE)
+        max_bytes = PROCESS_ORDERED_OUTPUT_MAX_SIZE;
+    if (max_chunks <= 0)
+        max_chunks = INT64_MAX;
+    size_t remaining = max_bytes;
+    size_t emitted_total = 0;
+    int64_t emitted_chunks = 0;
     int truncated = proc && proc->output_truncated;
-    for (process_output_chunk *chunk = proc ? proc->output_head : NULL; chunk && remaining > 0;
+    for (process_output_chunk *chunk = proc ? proc->output_head : NULL;
+         chunk && remaining > 0 && emitted_chunks < max_chunks;
          chunk = chunk->next) {
         size_t emitted = chunk->len < remaining ? chunk->len : remaining;
         void *entry = rt_map_new();
@@ -524,16 +559,33 @@ static void *ordered_output_take_result(rt_process_impl *proc) {
         rt_seq_push(chunks, entry);
         process_release_object(entry);
         remaining -= emitted;
+        emitted_total += emitted;
+        emitted_chunks++;
         if (emitted < chunk->len)
-            truncated = 1;
+            break;
     }
 
     rt_map_set(result, rt_const_cstr("chunks"), chunks);
     rt_map_set_bool(result, rt_const_cstr("truncated"), truncated ? 1 : 0);
+    rt_map_set_int(result, rt_const_cstr("emittedBytes"), (int64_t)emitted_total);
+    const size_t retained = proc ? proc->output_bytes : 0;
+    rt_map_set_int(result,
+                   rt_const_cstr("remainingBytes"),
+                   (int64_t)(retained >= emitted_total ? retained - emitted_total : 0));
+    rt_map_set_bool(result, rt_const_cstr("hasMore"), proc && retained > emitted_total ? 1 : 0);
     process_release_object(chunks);
-    if (proc)
-        ordered_output_free(proc);
+    if (proc) {
+        ordered_output_consume_prefix(proc, emitted_total);
+        proc->output_truncated = 0;
+        proc->stdout_output_truncated = 0;
+        proc->stderr_output_truncated = 0;
+    }
     return result;
+}
+
+/// @brief Consume all currently retained ordered output for legacy callers.
+static void *ordered_output_take_result(rt_process_impl *proc) {
+    return ordered_output_take_result_bounded(proc, PROCESS_ORDERED_OUTPUT_MAX_SIZE, INT64_MAX);
 }
 
 /// @brief Build a temporary C-string vector from a runtime string sequence.
@@ -593,6 +645,11 @@ static void free_string_vector(process_string_vector *vector) {
         for (int64_t i = 0; i < vector->owned_count; i++)
             rt_str_release_maybe(vector->owned_strings[i]);
         free(vector->owned_strings);
+    }
+    if (vector->owned_cstrings) {
+        for (size_t i = 0; i < vector->owned_cstring_count; i++)
+            free(vector->owned_cstrings[i]);
+        free(vector->owned_cstrings);
     }
     free(vector->values);
     memset(vector, 0, sizeof(*vector));
@@ -1818,6 +1875,23 @@ static const char *process_env_lookup(char *const *envp, const char *key) {
     return NULL;
 }
 
+/// @brief Copy one inherited environment value under the shared environment lock.
+/// @param key Borrowed nonempty variable name.
+/// @return Owned value bytes, or NULL when the variable is absent/allocation fails.
+static char *process_copy_inherited_env_value(const char *key) {
+    char *copy = NULL;
+    rt_env_lock_process_environment();
+    const char *value = getenv(key);
+    if (value) {
+        const size_t length = strlen(value);
+        copy = (char *)malloc(length + 1);
+        if (copy)
+            memcpy(copy, value, length + 1);
+    }
+    rt_env_unlock_process_environment();
+    return copy;
+}
+
 /// @brief Resolve a program name to a full path for posix_spawn, PATH-searching
 ///        bare names so they resolve the same whether or not an explicit
 ///        environment is supplied (VDOC-213).
@@ -1845,11 +1919,15 @@ static int process_resolve_program_path(const char *program,
         return 1;
     }
     const char *path = process_env_lookup(envp, "PATH");
-    if (!path)
-        path = getenv("PATH");
+    char *inherited_path = NULL;
+    if (!path) {
+        inherited_path = process_copy_inherited_env_value("PATH");
+        path = inherited_path;
+    }
     if (!path || !*path)
         path = "/usr/bin:/bin";
 
+    int resolved = 0;
     const char *seg = path;
     while (*seg) {
         const char *colon = strchr(seg, ':');
@@ -1863,10 +1941,12 @@ static int process_resolve_program_path(const char *program,
             candidate[effective_dirlen] = '/';
             strcpy(candidate + effective_dirlen + 1, program);
             if (access(candidate, X_OK) == 0) {
-                if (strlen(candidate) >= out_size)
-                    return 0;
-                strcpy(out, candidate);
-                return 1;
+                if (strlen(candidate) < out_size) {
+                    strcpy(out, candidate);
+                    resolved = 1;
+                }
+                free(inherited_path);
+                return resolved;
             }
         }
         if (!colon)
@@ -1874,10 +1954,12 @@ static int process_resolve_program_path(const char *program,
         seg = colon + 1;
     }
     // Not found: leave the name unchanged so posix_spawn fails like execvp.
-    if (strlen(program) >= out_size)
-        return 0;
-    strcpy(out, program);
-    return 1;
+    if (strlen(program) < out_size) {
+        strcpy(out, program);
+        resolved = 1;
+    }
+    free(inherited_path);
+    return resolved;
 }
 
 /// @brief Return the nonempty name length of one POSIX `NAME=value` entry.
@@ -1895,9 +1977,10 @@ static int process_env_names_equal(const char *left, const char *right) {
     return left_len > 0 && left_len == right_len && memcmp(left, right, left_len) == 0;
 }
 
-/// @brief Build an environment vector by overlaying retained runtime strings.
-/// @details Inherited pointers remain borrowed from `environ` until spawn; the
-///          aggregate owns only the overlay string references and pointer array.
+/// @brief Build an owned environment snapshot plus retained runtime overlays.
+/// @details Native environment strings are copied while holding the shared
+///          environment lock, so concurrent SetVariable calls cannot invalidate
+///          pointers during PATH resolution or posix_spawn.
 static process_string_vector build_env_overlay_vector(void *env) {
     process_string_vector result;
     memset(&result, 0, sizeof(result));
@@ -1917,18 +2000,30 @@ static process_string_vector build_env_overlay_vector(void *env) {
         }
     }
 
+    rt_env_lock_process_environment();
     size_t inherited_count = 0;
     while (environ && environ[inherited_count])
         inherited_count++;
     if (inherited_count > SIZE_MAX - overlay_count - 1 ||
         inherited_count + overlay_count + 1 > SIZE_MAX / sizeof(char *)) {
+        rt_env_unlock_process_environment();
         free_string_vector(&overlay);
         return result;
     }
     result.values = (char **)calloc(inherited_count + overlay_count + 1, sizeof(*result.values));
     if (!result.values) {
+        rt_env_unlock_process_environment();
         free_string_vector(&overlay);
         return result;
+    }
+    if (inherited_count > 0) {
+        result.owned_cstrings = (char **)calloc(inherited_count, sizeof(char *));
+        if (!result.owned_cstrings) {
+            rt_env_unlock_process_environment();
+            free_string_vector(&overlay);
+            free_string_vector(&result);
+            return result;
+        }
     }
 
     size_t at = 0;
@@ -1940,9 +2035,21 @@ static process_string_vector build_env_overlay_vector(void *env) {
                 break;
             }
         }
-        if (!shadowed)
-            result.values[at++] = environ[i];
+        if (!shadowed) {
+            const size_t length = strlen(environ[i]);
+            char *snapshot = (char *)malloc(length + 1);
+            if (!snapshot) {
+                rt_env_unlock_process_environment();
+                free_string_vector(&overlay);
+                free_string_vector(&result);
+                return result;
+            }
+            memcpy(snapshot, environ[i], length + 1);
+            result.owned_cstrings[result.owned_cstring_count++] = snapshot;
+            result.values[at++] = snapshot;
+        }
     }
+    rt_env_unlock_process_environment();
     for (size_t i = 0; i < overlay_count; i++)
         result.values[at++] = overlay.values[i];
     result.values[at] = NULL;
@@ -2001,10 +2108,11 @@ static rt_process_impl *process_start_impl(
 
     process_string_vector envp;
     memset(&envp, 0, sizeof(envp));
-    if (env)
-        envp =
-            overlay_environment ? build_env_overlay_vector(env) : build_string_vector(NULL, env, 0);
-    if (env && !envp.values) {
+    if (overlay_environment || !env)
+        envp = build_env_overlay_vector(env);
+    else
+        envp = build_string_vector(NULL, env, 0);
+    if (!envp.values) {
         free_string_vector(&argv);
         rt_trap("Process.Start: environment allocation failed");
         return NULL;
@@ -2115,12 +2223,8 @@ static rt_process_impl *process_start_impl(
         free_string_vector(&argv);
         return NULL;
     }
-    int spawn_rc = posix_spawn(&pid,
-                               resolved_program,
-                               &actions,
-                               &attributes,
-                               argv.values,
-                               envp.values ? envp.values : environ);
+    int spawn_rc =
+        posix_spawn(&pid, resolved_program, &actions, &attributes, argv.values, envp.values);
     posix_spawnattr_destroy(&attributes);
     posix_spawn_file_actions_destroy(&actions);
     if (spawn_rc != 0) {
@@ -2405,6 +2509,24 @@ void *rt_process_read_output_result(void *handle) {
         return ordered_output_take_result(NULL);
     process_drain(proc);
     return ordered_output_take_result(proc);
+}
+
+/// @brief Consume a bounded managed-copy prefix of ordered process output.
+void *rt_process_read_output_result_bounded(void *handle, int64_t max_bytes, int64_t max_chunks) {
+    rt_process_impl *proc = process_checked(handle);
+    size_t byte_limit = 64u * 1024u;
+    if (max_bytes > 0) {
+        byte_limit = (uint64_t)max_bytes > PROCESS_ORDERED_OUTPUT_MAX_SIZE
+                         ? PROCESS_ORDERED_OUTPUT_MAX_SIZE
+                         : (size_t)max_bytes;
+    }
+    int64_t chunk_limit = max_chunks > 0 ? max_chunks : 64;
+    if (chunk_limit > 4096)
+        chunk_limit = 4096;
+    if (!proc || !proc->started || proc->destroyed)
+        return ordered_output_take_result_bounded(NULL, byte_limit, chunk_limit);
+    process_drain(proc);
+    return ordered_output_take_result_bounded(proc, byte_limit, chunk_limit);
 }
 
 /// @brief Write all possible bytes to the redirected child stdin stream.

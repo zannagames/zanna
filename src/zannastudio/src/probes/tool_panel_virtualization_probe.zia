@@ -169,6 +169,53 @@ func VerifyProblems(shell: app_shell.AppShell) -> Boolean {
     return true;
 }
 
+func VerifyReferences(shell: app_shell.AppShell) -> Boolean {
+    shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+    shell.toolPanels.AddToolGroupHeader(
+        shell.toolPanels.referencesListBox, "virtual.zia", "/virtual.zia");
+    var resultCount = tool_panel_model.VIRTUALIZE_AFTER_ROWS + 24;
+    var i = 0;
+    while i < resultCount {
+        var item = shell.toolPanels.AddToolLocationRow(
+            shell.toolPanels.referencesListBox, "reference", "zia",
+            "line " + (i + 1), "-", "virtual reference row " + i, "");
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.referencesListBox, item, "reference-data:" + i);
+        i = i + 1;
+    }
+    shell.toolPanels.ShowReferencesPanel();
+    shell.Render();
+    if shell.toolPanels.referencesRows.virtualized == false
+       or shell.toolPanels.referencesListBox.Count != resultCount + 1
+       or shell.toolPanels.referencesListBox.GetVisibleCount()
+          >= resultCount + 1 {
+        Fail(shell, "references did not virtualize");
+        return false;
+    }
+    shell.toolPanels.referencesListBox.SelectIndex(resultCount);
+    if shell.toolPanels.GetSelectedToolRowData(
+           shell.toolPanels.referencesListBox)
+       != "reference-data:" + (resultCount - 1) {
+        Fail(shell, "virtual references selection metadata");
+        return false;
+    }
+
+    shell.toolPanels.SetReferencesFilter(
+        "virtual reference row " + (resultCount - 1));
+    shell.Render();
+    shell.toolPanels.referencesListBox.SelectIndex(1);
+    if shell.toolPanels.referencesRows.virtualized
+       or shell.toolPanels.referencesListBox.Count != 2
+       or shell.toolPanels.GetSelectedToolRowData(
+          shell.toolPanels.referencesListBox)
+          != "reference-data:" + (resultCount - 1) {
+        Fail(shell, "filtered references projection");
+        return false;
+    }
+    shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+    return true;
+}
+
 func VerifyDebugConsole(shell: app_shell.AppShell) -> Boolean {
     var output = "";
     var lineCount = tool_panel_model.VIRTUALIZE_AFTER_ROWS + 24;
@@ -202,6 +249,7 @@ func main() {
     if VerifyBuildOutput(shell) == false { return; }
     if VerifySearch(shell) == false { return; }
     if VerifyProblems(shell) == false { return; }
+    if VerifyReferences(shell) == false { return; }
     if VerifyDebugConsole(shell) == false { return; }
 
     shell.Destroy();

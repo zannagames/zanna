@@ -255,6 +255,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
     expose String referencesFilterText;
     expose Integer referencesResultCount;
     expose Integer visibleReferenceCount;
+    expose List[tool_panel_model.ToolPanelRow] visibleReferenceRows;
     hide String currentReferenceGroupId;
     expose String debugConsoleSource;
     expose String debugFilterText;
@@ -513,6 +514,7 @@ class ToolPanelShellState extends ToolPanelContract.ToolPanelShellContract04 {
         referencesFilterText = "";
         referencesResultCount = 0;
         visibleReferenceCount = 0;
+        visibleReferenceRows = [];
         currentReferenceGroupId = "";
         debugConsoleSource = "";
         debugFilterText = "";

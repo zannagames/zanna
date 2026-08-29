@@ -1,0 +1,35 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/file_command_results.zia
+// Purpose: Define typed outcomes shared by Studio file-command consumers.
+// Key invariants:
+//   - Save All distinguishes success, cancellation, and partial failure.
+//   - Successfully written paths remain available for narrow cache invalidation.
+// Ownership/Lifetime: Command handlers construct results; callers consume them.
+// Links: zannastudio/src/commands/file_commands.zia,
+//        zannastudio/src/commands/build_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module file_command_results;
+
+class SaveAllResult {
+    expose Boolean success;
+    expose Boolean canceled;
+    expose Integer savedCount;
+    expose List savedPaths;
+    expose String message;
+
+    expose func init() {
+        success = false;
+        canceled = false;
+        savedCount = 0;
+        savedPaths = new List();
+        message = "";
+    }
+}

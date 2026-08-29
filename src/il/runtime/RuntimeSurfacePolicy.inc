@@ -98,6 +98,11 @@ RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_context.h")
 // binding state to generated programs.
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_context_internal.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_crc32.h")
+// Process launch and Environment.SetVariable share private synchronization
+// declared on the existing broad internal header below, keeping native-
+// environment locking out of the public runtime ABI.
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_env_lock_process_environment")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_env_unlock_process_environment")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_debug.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_format.h")
 RUNTIME_SURFACE_INTERNAL_HEADER("src/runtime/core/rt_int_format.h")
@@ -489,6 +494,9 @@ RUNTIME_SURFACE_EXPECT_METHOD("Zanna.Game.ParticleEmitter", "ParticleAt", "obj<Z
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.IO.File", "WriteAllLines", "void(str,seq<str>)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.Container", "SetSpacing", "void(f64)")
 RUNTIME_SURFACE_EXPECT_METHOD("Zanna.GUI.Container", "SetPadding", "void(f64)")
+RUNTIME_SURFACE_EXPECT_METHOD("Zanna.System.Process.ProcessHandle",
+                              "ReadOutputResultBounded",
+                              "obj<Zanna.Collections.Map>(i64,i64)")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.ParticleSnapshot", "X", "f64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.ParticleSnapshot", "Y", "f64")
 RUNTIME_SURFACE_EXPECT_PROPERTY("Zanna.Game.ParticleSnapshot", "Size", "f64")

@@ -127,7 +127,7 @@ func handleWorkspaceSymbolsTextAsync(shell: app_shell.AppShell,
                                      projMgr: project_manager.ProjectManager,
                                      docMgr: document_manager.DocumentManager,
                                      engine: editor_engine.EditorEngine,
-                                     locStore: locations.LocationStore,
+                                     _locStore: locations.LocationStore,
                                      searcher: SearchController,
                                      queryText: String) -> Boolean {
     if projMgr == null or projMgr.IsOpen() == false {
@@ -137,48 +137,10 @@ func handleWorkspaceSymbolsTextAsync(shell: app_shell.AppShell,
     var query = Str.Trim(queryText);
     if query == "" { return false; }
     if searcher == null {
-        return handleWorkspaceSymbolsText(shell, projMgr, docMgr, engine,
-                                          locStore, query);
-    }
-    return searcher.StartWorkspaceSymbols(shell, projMgr, docMgr, engine, query);
-}
-
-/// @brief Collect and display workspace symbols for an already-entered query.
-/// @param shell Workbench shell that owns the Search panel and status bar.
-/// @param projMgr Project manager providing workspace root and file cache.
-/// @param docMgr Open document manager used to prefer live unsaved buffers.
-/// @param engine Active editor engine whose state is saved before scanning.
-/// @param locStore Location store receiving structured result locations.
-/// @param queryText User-entered symbol search text.
-/// @return True when one or more symbol rows were produced.
-func handleWorkspaceSymbolsText(shell: app_shell.AppShell,
-                                projMgr: project_manager.ProjectManager,
-                                docMgr: document_manager.DocumentManager,
-                                engine: editor_engine.EditorEngine,
-                                locStore: locations.LocationStore,
-                                queryText: String) -> Boolean {
-    if projMgr.IsOpen() == false {
-        notification_policy.ActionWarning("Open a project folder first");
+        shell.SetStatusLeft("Workspace symbol search is unavailable");
         return false;
     }
-
-    var query = Str.Trim(queryText);
-    if query == "" { return false; }
-
-    file_commands.SaveEditorState(docMgr, engine);
-    var count = CollectWorkspaceSymbols(shell, projMgr, docMgr, locStore, query);
-    if count > 0 {
-        shell.toolPanels.ShowSearchPanel();
-        shell.SetStatusLeft("Found " + count + " workspace symbols for '" + query + "'");
-        return true;
-    } else {
-        shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
-        shell.toolPanels.AddToolInfoRow(shell.toolPanels.searchListBox, "symbol",
-                             "No workspace symbols matched '" + query + "'");
-        shell.toolPanels.ShowSearchPanel();
-        shell.SetStatusLeft("No workspace symbols matched '" + query + "'");
-    }
-    return false;
+    return searcher.StartWorkspaceSymbols(shell, projMgr, docMgr, engine, query);
 }
 
 /// @brief Forward WorkspaceScopeLabel to the focused search helper module.
@@ -261,55 +223,6 @@ func AnySearchGlobMatches(relativePath: String, globs: String) -> Boolean {
 /// @brief Forward SearchGlobMatches to the focused search helper module.
 func SearchGlobMatches(relativePath: String, pattern: String) -> Boolean {
     return SearchSupport.SearchGlobMatches(relativePath, pattern);
-}
-
-/// @brief Forward CollectWorkspaceSymbols to the focused search helper module.
-func CollectWorkspaceSymbols(shell: app_shell.AppShell,
-                             projMgr: project_manager.ProjectManager,
-                             docMgr: document_manager.DocumentManager,
-                             locStore: locations.LocationStore,
-                             query: String) -> Integer {
-    return SearchSupport.CollectWorkspaceSymbols(shell, projMgr, docMgr, locStore, query);
-}
-
-/// @brief Forward WorkspaceSymbolFiles to the focused search helper module.
-func WorkspaceSymbolFiles(projMgr: project_manager.ProjectManager,
-                          docMgr: document_manager.DocumentManager) -> List {
-    return SearchSupport.WorkspaceSymbolFiles(projMgr, docMgr);
-}
-
-/// @brief Forward WorkspaceSymbolContentForPath to the focused search helper module.
-func WorkspaceSymbolContentForPath(docMgr: document_manager.DocumentManager,
-                                   filePath: String) -> String {
-    return SearchSupport.WorkspaceSymbolContentForPath(docMgr, filePath);
-}
-
-/// @brief Forward AddZiaWorkspaceSymbols to the focused search helper module.
-func AddZiaWorkspaceSymbols(shell: app_shell.AppShell,
-                            locStore: locations.LocationStore,
-                            filePath: String,
-                            content: String,
-                            needle: String,
-                            maxResults: Integer) -> Integer {
-    return SearchSupport.AddZiaWorkspaceSymbols(shell, locStore, filePath, content, needle, maxResults);
-}
-
-/// @brief Forward AddBasicWorkspaceSymbols to the focused search helper module.
-func AddBasicWorkspaceSymbols(shell: app_shell.AppShell,
-                              locStore: locations.LocationStore,
-                              filePath: String,
-                              content: String,
-                              needle: String,
-                              maxResults: Integer) -> Integer {
-    return SearchSupport.AddBasicWorkspaceSymbols(shell, locStore, filePath, content, needle, maxResults);
-}
-
-/// @brief Forward WorkspaceSymbolMatches to the focused search helper module.
-func WorkspaceSymbolMatches(name: String,
-                            kind: String,
-                            filePath: String,
-                            needle: String) -> Boolean {
-    return SearchSupport.WorkspaceSymbolMatches(name, kind, filePath, needle);
 }
 
 /// @brief Forward SearchDiskFileTooLarge to the focused search helper module.

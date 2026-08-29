@@ -234,6 +234,8 @@ static void test_file_index_and_ignore() {
     assert(rt_map_get_bool(cursor_first, rt_const_cstr("valid")) == 1);
     assert(rt_map_get_int(cursor_first, rt_const_cstr("generation")) == cursor_generation);
     assert(rt_map_get_int(cursor_first, rt_const_cstr("emitted")) == 2);
+    assert(rt_map_get_int(cursor_first, rt_const_cstr("maxEntries")) == 0);
+    assert(rt_map_get_bool(cursor_first, rt_const_cstr("truncated")) == 0);
 
     // More than the former eight-cache-entry limit cannot evict an explicitly
     // owned traversal. Every independent cursor also receives its own generation.
@@ -280,14 +282,12 @@ static void test_file_index_and_ignore() {
     assert(first_sample >= 0);
 
     std::error_code rewrite_time_error;
-    const auto original_main_mtime =
-        fs::last_write_time(root / "src/main.zia", rewrite_time_error);
+    const auto original_main_mtime = fs::last_write_time(root / "src/main.zia", rewrite_time_error);
     assert(!rewrite_time_error);
     write_file(root / "src/main.zia", "module Mine;\n");
     fs::last_write_time(root / "src/main.zia", original_main_mtime, rewrite_time_error);
     assert(!rewrite_time_error);
-    assert(fs::last_write_time(root / "src/main.zia", rewrite_time_error) ==
-           original_main_mtime);
+    assert(fs::last_write_time(root / "src/main.zia", rewrite_time_error) == original_main_mtime);
     assert(!rewrite_time_error);
     void *rewritten_page =
         rt_workspace_file_index_page(root_s, rt_const_cstr(""), rt_const_cstr(""), 1, 0, 4096);
@@ -353,9 +353,9 @@ static void test_file_index_and_ignore() {
                root_s, rt_const_cstr("src/main.zia"), rt_const_cstr("src/*.zia")) == 1);
     assert(rt_workspace_file_index_should_ignore(
                root_s, rt_const_cstr("src/nested/main.zia"), rt_const_cstr("src/*.zia")) == 0);
-    assert(rt_workspace_file_index_should_ignore(
-               root_s, rt_const_cstr("src/nested/main.zia"), rt_const_cstr("src/**/main.zia")) ==
-           1);
+    assert(rt_workspace_file_index_should_ignore(root_s,
+                                                 rt_const_cstr("src/nested/main.zia"),
+                                                 rt_const_cstr("src/**/main.zia")) == 1);
     assert(rt_workspace_file_index_should_ignore(
                root_s, rt_const_cstr("file7.zia"), rt_const_cstr("file[0-9].zia")) == 1);
     assert(rt_workspace_file_index_should_ignore(
@@ -374,8 +374,8 @@ static void test_file_index_cursor_work_budget() {
     for (int i = 0; i < 200; ++i)
         write_file(root / ("candidate_" + std::to_string(i) + ".txt"), "skip");
     rt_string root_s = s(root.string());
-    void *cursor = rt_workspace_file_index_cursor_new(
-        root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+    void *cursor =
+        rt_workspace_file_index_cursor_new(root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
     assert(rt_workspace_file_index_cursor_is_valid(cursor) == 1);
 
     int64_t priorScanned = 0;
@@ -605,8 +605,7 @@ static void test_workspace_edits() {
     const bool ownership_fixture = stat(a.c_str(), &ownership_before) == 0;
 #if RT_PLATFORM_MACOS
     constexpr uint32_t kUserNoDumpFlag = 0x00000001u;
-    bool file_flags_fixture =
-        chflags(a.c_str(), ownership_before.st_flags | kUserNoDumpFlag) == 0;
+    bool file_flags_fixture = chflags(a.c_str(), ownership_before.st_flags | kUserNoDumpFlag) == 0;
     struct stat flags_before{};
     file_flags_fixture = file_flags_fixture && stat(a.c_str(), &flags_before) == 0;
 #elif RT_PLATFORM_LINUX
@@ -637,20 +636,18 @@ static void test_workspace_edits() {
     bool alternate_stream_fixture = false;
     if (stream_handle != INVALID_HANDLE_VALUE) {
         DWORD written = 0;
-        alternate_stream_fixture =
-            WriteFile(stream_handle,
-                      stream_payload,
-                      static_cast<DWORD>(sizeof(stream_payload)),
-                      &written,
-                      nullptr) != 0 &&
-            written == sizeof(stream_payload);
+        alternate_stream_fixture = WriteFile(stream_handle,
+                                             stream_payload,
+                                             static_cast<DWORD>(sizeof(stream_payload)),
+                                             &written,
+                                             nullptr) != 0 &&
+                                   written == sizeof(stream_payload);
         CloseHandle(stream_handle);
     }
     DWORD original_attributes = GetFileAttributesW(a.wstring().c_str());
-    bool attribute_fixture = original_attributes != INVALID_FILE_ATTRIBUTES &&
-                             SetFileAttributesW(a.wstring().c_str(),
-                                                original_attributes |
-                                                    FILE_ATTRIBUTE_HIDDEN) != 0;
+    bool attribute_fixture =
+        original_attributes != INVALID_FILE_ATTRIBUTES &&
+        SetFileAttributesW(a.wstring().c_str(), original_attributes | FILE_ATTRIBUTE_HIDDEN) != 0;
 #endif
 
 #if RT_PLATFORM_LINUX || RT_PLATFORM_MACOS
@@ -705,8 +702,7 @@ static void test_workspace_edits() {
         assert(flags_after_fd >= 0);
         assert(ioctl(flags_after_fd, FS_IOC_GETFLAGS, &flags_after) == 0);
         close(flags_after_fd);
-        assert((flags_after & FS_FL_USER_MODIFIABLE) ==
-               (flags_before & FS_FL_USER_MODIFIABLE));
+        assert((flags_after & FS_FL_USER_MODIFIABLE) == (flags_before & FS_FL_USER_MODIFIABLE));
     }
 #endif
 #else
@@ -877,19 +873,12 @@ static void test_workspace_edits() {
     fs::path secure_dir = root / "secure-dir";
     fs::path held_dir = root / "secure-dir-held";
     fs::path secure_file = secure_dir / "guarded.zia";
-    fs::path outside_dir =
-        root.parent_path() / (root.filename().string() + "_symlink_target");
+    fs::path outside_dir = root.parent_path() / (root.filename().string() + "_symlink_target");
     fs::path outside_guarded = outside_dir / "guarded.zia";
     write_file(secure_file, "inside\n");
     write_file(outside_guarded, "outside\n");
     void *guarded_edits = rt_seq_new_owned();
-    add_edit(guarded_edits,
-             fs::path("secure-dir/guarded.zia"),
-             1,
-             1,
-             1,
-             7,
-             "MUTATE");
+    add_edit(guarded_edits, fs::path("secure-dir/guarded.zia"), 1, 1, 1, 7, "MUTATE");
     void *guarded_prepared = rt_workspace_edit_prepare_in_root(guarded_edits, root_s);
     assert(rt_workspace_edit_prepared_is_valid(guarded_prepared) == 1);
     std::error_code swap_ec;

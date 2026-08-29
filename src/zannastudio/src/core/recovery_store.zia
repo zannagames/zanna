@@ -44,7 +44,9 @@ bind Future = Zanna.Threads.Future;
 
 final MAX_RECOVERY_PATH_BYTES = Types.MAX_RECOVERY_PATH_BYTES;
 final MAX_RECOVERY_METADATA_BYTES = Types.MAX_RECOVERY_METADATA_BYTES;
+final MAX_RECOVERY_SWAP_BYTES = Types.MAX_RECOVERY_SWAP_BYTES;
 final MAX_RECOVERY_RECORDS = Types.MAX_RECOVERY_RECORDS;
+final MAX_RECOVERY_TOTAL_BYTES = Types.MAX_RECOVERY_TOTAL_BYTES;
 final RECOVERY_FORMAT_VERSION = Types.RECOVERY_FORMAT_VERSION;
 
 type RecoveryRecord = Types.RecoveryRecord;
@@ -70,8 +72,13 @@ class RecoveryStore extends Base.RecoveryStoreBase {
         if recoveryDir == "" or lockClaimed == false or docMgr == null {
             return false;
         }
-        var request = BuildRequest(docMgr, engine);
-        if request == null or request.snapshots.count() == 0 { return false; }
+        var request = BuildRequest(docMgr, engine, false);
+        if request == null { return false; }
+        if request.succeeded == false {
+            lastAsyncError = request.error;
+            return false;
+        }
+        if request.snapshots.count() == 0 { return true; }
         asyncQueuedRequests = asyncQueuedRequests + 1;
         if activeFuture == null { return StartRequest(request); }
         pendingRequest = request;
@@ -85,25 +92,15 @@ class RecoveryStore extends Base.RecoveryStoreBase {
             return false;
         }
         CancelAsync();
-        var allWritten = true;
-        var i = 0;
-        while i < docMgr.GetCount() {
-            var doc = docMgr.GetDocument(i);
-            if doc != null and doc!.isModified and doc!.isReadOnlyPreview == false {
-                var content = doc!.content;
-                if i == docMgr.activeIndex and engine != null
-                   and file_utils.IsVisualKind(doc!.kind) == false {
-                    content = engine.GetTextSnapshot();
-                }
-                var base = SwapBase(doc!);
-                var metadata = RecoveryMetadata(doc!);
-                if base == "" or metadata == ""
-                   or safe_io.WriteAllText(base + ".meta", metadata) == false
-                   or safe_io.WriteAllText(base + ".swp", content) == false {
-                    allWritten = false;
-                }
-            }
-            i = i + 1;
+        var request = BuildRequest(docMgr, engine, true);
+        var allWritten = request != null and request!.succeeded;
+        if allWritten and request!.snapshots.count() > 0 {
+            Types.WriteRecoveryRequest(request!);
+            allWritten = request!.succeeded and request!.cancelled == false;
+            if allWritten { RememberCommittedRecoveryContent(request!); }
+        }
+        if request != null and request!.error != "" {
+            lastAsyncError = request!.error;
         }
         if PruneStaleSwaps(docMgr) == false { allWritten = false; }
         return allWritten;
@@ -132,7 +129,8 @@ class RecoveryStore extends Base.RecoveryStoreBase {
     }
 
     hide func BuildRequest(docMgr: document_manager.DocumentManager,
-                           engine: editor_engine.EditorEngine) -> RecoveryWriteRequest {
+                           engine: editor_engine.EditorEngine,
+                           forceAll: Boolean) -> RecoveryWriteRequest {
         var request = new RecoveryWriteRequest();
         request.generation = nextGeneration;
         nextGeneration = nextGeneration + 1;
@@ -152,9 +150,27 @@ class RecoveryStore extends Base.RecoveryStoreBase {
                    and file_utils.IsVisualKind(doc!.kind) == false {
                     snapshot.content = engine.GetTextSnapshot();
                 }
+                var contentBytes = Str.get_Length(snapshot.content);
                 if snapshot.basePath == "" or snapshot.metadata == "" {
                     request.succeeded = false;
                     request.error = "Could not allocate crash-recovery identity";
+                    request.snapshots = new List();
+                    return request;
+                }
+                if contentBytes < 0 or contentBytes > MAX_RECOVERY_SWAP_BYTES
+                   or Str.get_Length(snapshot.metadata) > MAX_RECOVERY_METADATA_BYTES
+                   or request.totalBytes + contentBytes > MAX_RECOVERY_TOTAL_BYTES
+                   or request.snapshots.count() >= MAX_RECOVERY_RECORDS {
+                    request.succeeded = false;
+                    request.truncated = true;
+                    request.error = "Crash-recovery write exceeds the bounded request budget";
+                    request.snapshots = new List();
+                    return request;
+                }
+                if forceAll == false
+                   and Map.Has(lastRecoveredContents, snapshot.basePath)
+                   and Map.GetStr(lastRecoveredContents, snapshot.basePath)
+                       == snapshot.content {
                     i = i + 1;
                     continue;
                 }
@@ -162,6 +178,7 @@ class RecoveryStore extends Base.RecoveryStoreBase {
                 snapshot.tempMetadataFile = snapshot.basePath + unique + ".meta.tmp";
                 snapshot.tempSwapFile = snapshot.basePath + unique + ".swp.tmp";
                 request.snapshots.add(snapshot);
+                request.totalBytes = request.totalBytes + contentBytes;
             }
             i = i + 1;
         }

@@ -72,6 +72,7 @@ class RecoveryStoreBase {
     expose Integer asyncCancelledRequests;
     expose Integer asyncCommittedDocuments;
     expose String lastAsyncError;
+    expose Any lastRecoveredContents;
 
     hide func InitializeRecoveryState() {
         recoveryRoot = "";
@@ -92,6 +93,7 @@ class RecoveryStoreBase {
         asyncCancelledRequests = 0;
         asyncCommittedDocuments = 0;
         lastAsyncError = "";
+        lastRecoveredContents = Map.New();
     }
 
     /// @brief Create and lease a fresh namespace after claiming abandoned ones.
@@ -233,12 +235,13 @@ class RecoveryStoreBase {
             asyncCompletedRequests = asyncCompletedRequests + 1;
             if Future.get_IsError(activeFuture) {
                 lastAsyncError = Future.get_Error(activeFuture);
-            } else if activeRequest != null {
+                } else if activeRequest != null {
                 asyncCommittedDocuments = asyncCommittedDocuments
                     + activeRequest.committedCount;
                 if activeRequest.succeeded == false {
                     lastAsyncError = activeRequest.error;
                 } else if activeRequest.cancelled == false {
+                    RememberCommittedRecoveryContent(activeRequest);
                     lastAsyncError = "";
                 }
             }
@@ -255,6 +258,20 @@ class RecoveryStoreBase {
 
     expose func IsAsyncBusy() -> Boolean {
         return activeFuture != null or pendingRequest != null;
+    }
+
+    /// @brief Remember exact immutable contents only after canonical publication.
+    hide func RememberCommittedRecoveryContent(request: RecoveryWriteRequest) {
+        if request == null or request.succeeded == false or request.cancelled { return; }
+        var i = 0;
+        while i < request.snapshots.count() {
+            var snapshot = request.snapshots.get(i) as Types.RecoveryWriteSnapshot;
+            if snapshot != null and snapshot!.basePath != "" {
+                Map.SetStr(lastRecoveredContents, snapshot!.basePath,
+                           snapshot!.content);
+            }
+            i = i + 1;
+        }
     }
 
     /// @brief Prevent active publication and discard coalesced work.

@@ -31,6 +31,7 @@ module recovery_probe;
 // ============================================================================
 
 bind "../core/recovery_store";
+bind "../core/recovery_types";
 bind "../core/document_manager";
 bind "../core/project_manager";
 bind "../core/session";
@@ -256,6 +257,27 @@ func VerifyAsynchronousRecovery() -> Boolean {
        or (asyncRecovered.get(0) as recovery_store.RecoveryRecord).content
           != "newest coalesced snapshot" {
         fail("coalesced recovery did not retain the newest content");
+        return false;
+    }
+
+    // An unchanged dirty buffer is already durable and must not enqueue or
+    // rewrite the complete recovery set on every debounce tick.
+    var queuedBeforeUnchanged = asyncStore.asyncQueuedRequests;
+    if asyncStore.QueueSwaps(asyncDocs, null) == false
+       or asyncStore.asyncQueuedRequests != queuedBeforeUnchanged
+       or asyncStore.IsAsyncBusy() {
+        fail("unchanged recovery content was rewritten");
+        return false;
+    }
+
+    // Worker entry points independently reject over-budget requests before
+    // creating staging files, even if a future caller bypasses BuildRequest.
+    var oversizedRequest = new recovery_types.RecoveryWriteRequest();
+    oversizedRequest.totalBytes = recovery_types.MAX_RECOVERY_TOTAL_BYTES + 1;
+    recovery_types.WriteRecoveryRequest(oversizedRequest);
+    if oversizedRequest.succeeded or oversizedRequest.truncated == false
+       or oversizedRequest.error == "" {
+        fail("recovery writer accepted an oversized request");
         return false;
     }
 
