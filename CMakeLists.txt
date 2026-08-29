@@ -679,9 +679,6 @@ endif()
 if(ZANNA_BUILD_TESTING)
   enable_testing()
 
-  # Disable CTest cost data to prevent scheduling issues with CMake 4.x
-  set(CTEST_COST_DATA_FILE "" CACHE FILEPATH "Disable CTest cost data")
-
   # Exclude slow tests by default (run with: ctest -L slow to include)
   configure_file(
     "${CMAKE_SOURCE_DIR}/cmake/CTestCustom.cmake.in"
@@ -689,10 +686,11 @@ if(ZANNA_BUILD_TESTING)
     COPYONLY
   )
 
-  # Add target to clear test cache (fixes slow parallel test runs)
+  # Keep an explicit recovery target for intentionally discarding CTest's
+  # learned timing data and transient logs without penalizing every test run.
   add_custom_target(clean-test-cache
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${CMAKE_BINARY_DIR}/Testing"
-    COMMENT "Clearing CTest cache to fix parallel scheduling"
+    COMMENT "Clearing CTest timing data and transient logs"
   )
 
   # Shell script test - only runs on Unix

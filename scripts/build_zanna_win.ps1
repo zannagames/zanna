@@ -454,7 +454,6 @@ try {
     Write-Host ""
 
     Start-Sleep -Seconds 1
-    Remove-BuildChild -BuildRoot $buildRoot -Child (Join-Path $buildRoot "Testing") -Recurse
 
     $validationFailed = $false
     if ($skipTests -eq "1") {

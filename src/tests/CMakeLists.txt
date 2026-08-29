@@ -3812,6 +3812,29 @@ if (WIN32)
     unset(_zanna_windows_tests)
 endif ()
 
+# Fresh build trees have no historical CTest timing data. Give the two long,
+# mutually exclusive lanes a small non-zero baseline so their chains begin
+# immediately while zero-cost tests fill the remaining workers. Preserve
+# explicit per-test costs above, and let CTest retain measured costs across
+# subsequent canonical runs.
+get_property(_zanna_scheduled_tests DIRECTORY PROPERTY TESTS)
+foreach (_test IN LISTS _zanna_scheduled_tests)
+    get_property(_cost_is_set TEST ${_test} PROPERTY COST SET)
+    if (NOT _cost_is_set)
+        get_property(_resource_locks TEST ${_test} PROPERTY RESOURCE_LOCK)
+        if ("zanna_display" IN_LIST _resource_locks OR
+            "zanna_d3d11" IN_LIST _resource_locks)
+            set_property(TEST ${_test} PROPERTY COST 2)
+        elseif ("aarch64_codegen_artifacts" IN_LIST _resource_locks)
+            set_property(TEST ${_test} PROPERTY COST 1)
+        endif ()
+    endif ()
+endforeach ()
+unset(_zanna_scheduled_tests)
+unset(_cost_is_set)
+unset(_resource_locks)
+unset(_test)
+
 # Instrumentation can make otherwise short integration probes several times
 # slower. Preserve the deliberately tight ordinary-build limits, but prevent an
 # explicit per-test TIMEOUT from defeating the sanitizer driver's bounded

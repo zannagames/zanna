@@ -197,7 +197,6 @@ fi
 if [[ "$SKIP_TESTS" == "1" ]]; then
     echo "[build_zanna] Skipping tests (ZANNA_SKIP_TESTS=1)"
 else
-    rm -rf "$BUILD_DIR/Testing"
     if [[ -n "$TEST_LABEL" ]]; then
         echo "[build_zanna] Running tests labeled '$TEST_LABEL' (ZANNA_TEST_LABEL)..."
     else
