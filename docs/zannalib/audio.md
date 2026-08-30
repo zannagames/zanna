@@ -200,7 +200,7 @@ remain paused and retain their load slots.
 | `Destroy()`    | `Void()`            | Release this stream reference and its load slot when no references remain |
 | `IsPlaying()`  | `Boolean()`         | Returns `true` only while actively playing (not while paused) |
 | `Pause()`      | `Void()`            | Pause playback; also freezes an active crossfade involving this track |
-| `Play(loop)`   | `Void(Integer)`     | Play the track; stopped tracks restart at zero, and any nonzero `loop` enables looping |
+| `Play(loop)`   | `Void(Integer)`     | Play the track; stopped tracks restart at zero, and any nonzero `loop` enables looping. The argument is **not** a volume — set `Volume` before `Play` |
 | `Resume()`     | `Void()`            | Resume a track paused by `Pause()` and reclaim foreground ownership |
 | `Seek(ms)`     | `Void(Integer)`     | Seek to a clamped position in `[0, Duration]` milliseconds |
 | `SetLoop(loop)` | `Void(Boolean)`    | Change the loop preference without restarting the track |
@@ -419,6 +419,9 @@ destroying those handles remains safe, but playback calls on them fail until the
 loaded again.
 Call `Audio.Update()` once per frame when using streaming `Music` or direct
 `Music.CrossfadeTo`; `Playlist.Update()` already forwards through the same update path.
+A `Music` stream holds only ~0.5 s of decoded audio ahead of the mixer and every
+refill happens inside `Update()`: a program that never calls it hears the prefill and
+then silence, while `IsPlaying()` keeps reporting `true`.
 The mixer also attempts a locked buffer prefill if playback reaches an empty music buffer before end-of-stream has been reported, so transient stream-buffer gaps do not force the rest of the render block to silence.
 
 Master volume is clamped to 0–100 and persists as logical settings state across shutdown/re-init.
@@ -1184,7 +1187,7 @@ auto-detected from file magic bytes — no extension matching required.
    decode is capped at 512 MiB, while compressed Sound decode is capped at 100 MiB.
 4. **Buffered decode:** WAV and OGG music read incrementally; MP3 music keeps the compressed file in memory and decodes frame-by-frame during playback.
 5. **Float WAV endpoints:** 32-bit float WAV samples map full-scale `-1.0` to `-32768` and `+1.0` to `32767` when converted to the engine's 16-bit mix format.
-6. **MP3 decoder scope:** Unsupported MP3 Huffman codebooks now fail at load time instead of producing corrupted audio. Re-encode the file if a specific MP3 is rejected.
+6. **MP3 decoder scope:** the from-scratch Layer III decoder implements the complete ISO 11172-3 / 13818-3 codec — all 32 Huffman pair tables and both count1 tables, MPEG-1 (with `scfsi`), MPEG-2 LSF and MPEG-2.5, mono / stereo / M-S and intensity joint stereo, long / short / mixed blocks, CBR and VBR. It is verified at ~80 dB SNR against independent decoders (`docs/internals/mp3-decoder-conformance.md`). A frame that selects a reserved codebook (4 or 14) is rejected as unsupported data.
 7. **Encoding:** Use a tool such as ffmpeg to convert source audio between formats:
    ```
    ffmpeg -i input.wav output.ogg                      # OGG Vorbis

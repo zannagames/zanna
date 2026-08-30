@@ -180,3 +180,199 @@ TEST(Mp3DecodeTest, StreamRejectsId3OnlyFile) {
 int main() {
     return zanna_test::run_all_tests();
 }
+
+//===----------------------------------------------------------------------===//
+// Conformance against real LAME-encoded streams (plan 81 / ZB-37).
+//
+// Every ISO Huffman codebook was missing or wrong before this ledger entry,
+// the synthesis window carried sign errors, and scfsi / frequency inversion /
+// the short-block reorder were absent — no real MP3 decoded correctly. These
+// tests decode embedded LAME streams covering MPEG-1, MPEG-2 LSF and MPEG-2.5,
+// mono and joint stereo, long / short / stop blocks, and verify the tones
+// they carry.
+//===----------------------------------------------------------------------===//
+
+#include "common/Mp3Fixtures.hpp"
+
+#include <cmath>
+#include <vector>
+
+namespace {
+
+/// @brief Goertzel amplitude of @p freq over @p count frames of one channel.
+double toneAmplitude(const int16_t *pcm,
+                     int channels,
+                     int channel,
+                     int sampleRate,
+                     double freq,
+                     int start,
+                     int count) {
+    const double w = 2.0 * M_PI * freq / sampleRate;
+    double re = 0.0;
+    double im = 0.0;
+    for (int k = 0; k < count; k++) {
+        const double v = pcm[(start + k) * channels + channel];
+        re += v * std::cos(w * k);
+        im -= v * std::sin(w * k);
+    }
+    return 2.0 * std::sqrt(re * re + im * im) / count;
+}
+
+struct DecodedFixture {
+    int16_t *pcm = nullptr;
+    int samples = 0;
+    int channels = 0;
+    int sampleRate = 0;
+    mp3_decoder_t *dec = nullptr;
+
+    ~DecodedFixture() {
+        free(pcm);
+        if (dec)
+            mp3_decoder_free(dec);
+    }
+};
+
+bool decodeFixture(const uint8_t *data, size_t size, DecodedFixture &out) {
+    out.dec = mp3_decoder_new();
+    if (!out.dec)
+        return false;
+    return mp3_decode_file(
+               out.dec, data, size, &out.pcm, &out.samples, &out.channels, &out.sampleRate) == 0 &&
+           out.pcm != nullptr;
+}
+
+} // namespace
+
+TEST(Mp3DecodeTest, HuffmanTablesAreCompleteIsoCodes) {
+    // 0 = every pair table and both count1 quad tables are complete prefix
+    // codes over exactly the value square the standard defines.
+    EXPECT_EQ(mp3_huffman_self_check(), 0);
+}
+
+TEST(Mp3DecodeTest, DecodesMpeg1StereoToneExactly) {
+    using namespace zanna_test_mp3;
+    DecodedFixture d;
+    ASSERT_TRUE(decodeFixture(kMp3ToneMpeg1Stereo48k, kMp3ToneMpeg1Stereo48kSize, d));
+    EXPECT_EQ(d.sampleRate, 48000);
+    EXPECT_EQ(d.channels, 2);
+    // 44 frames x 1152 (the LAME Info frame decodes as silence).
+    EXPECT_EQ(d.samples, 50688);
+
+    const int start = 15000;
+    const int count = 24000;
+    const double l440 = toneAmplitude(d.pcm, 2, 0, 48000, 440.0, start, count);
+    const double l1320 = toneAmplitude(d.pcm, 2, 0, 48000, 1320.0, start, count);
+    const double l880 = toneAmplitude(d.pcm, 2, 0, 48000, 880.0, start, count);
+    const double r880 = toneAmplitude(d.pcm, 2, 1, 48000, 880.0, start, count);
+    const double r3000 = toneAmplitude(d.pcm, 2, 1, 48000, 3000.0, start, count);
+    const double r440 = toneAmplitude(d.pcm, 2, 1, 48000, 440.0, start, count);
+    // Encoded amplitudes: L 12000 + 6000, R 12000 + 4000.
+    EXPECT_NEAR(l440, 12000.0, 1500.0);
+    EXPECT_NEAR(l1320, 6000.0, 900.0);
+    EXPECT_NEAR(r880, 12000.0, 1500.0);
+    EXPECT_NEAR(r3000, 4000.0, 800.0);
+    // Channel separation: the other channel's tone stays 20 dB down.
+    EXPECT_LT(l880, 1200.0);
+    EXPECT_LT(r440, 1200.0);
+}
+
+TEST(Mp3DecodeTest, DecodesMpeg2LsfJointStereo) {
+    using namespace zanna_test_mp3;
+    DecodedFixture d;
+    ASSERT_TRUE(decodeFixture(kMp3ToneMpeg2Joint24k, kMp3ToneMpeg2Joint24kSize, d));
+    EXPECT_EQ(d.sampleRate, 24000);
+    EXPECT_EQ(d.channels, 2);
+    EXPECT_EQ(d.samples, 25344);
+
+    const int start = 6000;
+    const int count = 12000;
+    const double l440 = toneAmplitude(d.pcm, 2, 0, 24000, 440.0, start, count);
+    const double r880 = toneAmplitude(d.pcm, 2, 1, 24000, 880.0, start, count);
+    const double l880 = toneAmplitude(d.pcm, 2, 0, 24000, 880.0, start, count);
+    const double r440 = toneAmplitude(d.pcm, 2, 1, 24000, 440.0, start, count);
+    EXPECT_NEAR(l440, 12000.0, 1800.0);
+    EXPECT_NEAR(r880, 12000.0, 1800.0);
+    // M/S decoding restores separation; a broken stereo stage leaks the mix.
+    EXPECT_LT(l880, 1500.0);
+    EXPECT_LT(r440, 1500.0);
+}
+
+TEST(Mp3DecodeTest, DecodesMpeg25JointStereoWithShortBlocks) {
+    using namespace zanna_test_mp3;
+    DecodedFixture d;
+    ASSERT_TRUE(decodeFixture(kMp3ToneMpeg25Joint11k, kMp3ToneMpeg25Joint11kSize, d));
+    EXPECT_EQ(d.sampleRate, 11025);
+    EXPECT_EQ(d.channels, 2);
+    EXPECT_EQ(d.samples, 12672);
+
+    // The early frames switch to short / stop blocks: analyse the whole body
+    // so a wrong band table (the MPEG-2.5 11025 Hz convention) shows up.
+    const int start = 1200;
+    const int count = 10000;
+    const double l440 = toneAmplitude(d.pcm, 2, 0, 11025, 440.0, start, count);
+    const double r880 = toneAmplitude(d.pcm, 2, 1, 11025, 880.0, start, count);
+    const double l880 = toneAmplitude(d.pcm, 2, 0, 11025, 880.0, start, count);
+    const double r440 = toneAmplitude(d.pcm, 2, 1, 11025, 440.0, start, count);
+    EXPECT_GT(l440, 8000.0);
+    EXPECT_GT(r880, 8000.0);
+    EXPECT_LT(l880, 2500.0);
+    EXPECT_LT(r440, 2500.0);
+}
+
+TEST(Mp3DecodeTest, DecodesMpeg25Mono) {
+    using namespace zanna_test_mp3;
+    DecodedFixture d;
+    ASSERT_TRUE(decodeFixture(kMp3ToneMpeg25Mono8k, kMp3ToneMpeg25Mono8kSize, d));
+    EXPECT_EQ(d.sampleRate, 8000);
+    EXPECT_EQ(d.channels, 1);
+    EXPECT_EQ(d.samples, 9216);
+    const double m440 = toneAmplitude(d.pcm, 1, 0, 8000, 440.0, 1200, 7000);
+    const double m880 = toneAmplitude(d.pcm, 1, 0, 8000, 880.0, 1200, 7000);
+    const double m2500 = toneAmplitude(d.pcm, 1, 0, 8000, 2500.0, 1200, 7000);
+    // The mono mix carries both fundamentals at ~6000; 2500 Hz is silence.
+    EXPECT_GT(m440, 4000.0);
+    EXPECT_GT(m880, 4000.0);
+    EXPECT_LT(m2500, 800.0);
+}
+
+TEST(Mp3DecodeTest, StreamDecodesEveryFrameWithoutErrors) {
+    using namespace zanna_test_mp3;
+    const char *path = "/tmp/zanna_test_mp3_tone_stream.mp3";
+    ASSERT_TRUE(write_temp_file(path, kMp3ToneMpeg1Stereo48k, kMp3ToneMpeg1Stereo48kSize));
+    mp3_stream_t *stream = mp3_stream_open(path);
+    ASSERT_TRUE(stream != nullptr);
+    EXPECT_EQ(mp3_stream_sample_rate(stream), 48000);
+    EXPECT_EQ(mp3_stream_channels(stream), 2);
+    EXPECT_EQ(mp3_stream_total_samples(stream), 50688);
+
+    int frames = 0;
+    int errors = 0;
+    long total = 0;
+    for (;;) {
+        int16_t *pcm = nullptr;
+        int rc = mp3_stream_decode_frame(stream, &pcm);
+        if (rc == 0)
+            break;
+        if (rc < 0) {
+            errors++;
+            if (errors > 8)
+                break;
+            continue;
+        }
+        EXPECT_EQ(rc, 1152);
+        EXPECT_TRUE(pcm != nullptr);
+        frames++;
+        total += rc;
+    }
+    // Before the codebook fix every real stream stopped after the Info
+    // frame with -1 ("unsupported Huffman table").
+    EXPECT_EQ(errors, 0);
+    EXPECT_EQ(frames, 44);
+    EXPECT_EQ(total, 50688L);
+
+    mp3_stream_rewind(stream);
+    int16_t *first = nullptr;
+    EXPECT_EQ(mp3_stream_decode_frame(stream, &first), 1152);
+    mp3_stream_free(stream);
+    remove(path);
+}

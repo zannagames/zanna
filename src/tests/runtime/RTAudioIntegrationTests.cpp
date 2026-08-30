@@ -36,6 +36,7 @@ void vm_trap(const char *msg) {
 }
 }
 
+#include "../common/Mp3Fixtures.hpp"
 #include "ZpakWriter.hpp"
 
 static int tests_run = 0;
@@ -818,6 +819,33 @@ static void test_default_sound_play_survives_sfx_group_changes() {
     remove(path);
 }
 
+static void test_music_load_real_mp3_reports_duration() {
+    // Plan 81 / ZB-37: Music.Load on a real LAME stream. Before the Layer III
+    // codebook fix the stream decoded one silent frame and stopped 24 ms in.
+    const char *path = "/tmp/zanna_test_music_real_tone.mp3";
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        ASSERT(1, "could not write temp MP3 file (skip real MP3 music test)");
+        return;
+    }
+    fwrite(
+        zanna_test_mp3::kMp3ToneMpeg1Stereo48k, 1, zanna_test_mp3::kMp3ToneMpeg1Stereo48kSize, f);
+    fclose(f);
+
+    void *music = rt_music_load(make_str(path));
+    if (!music) {
+        ASSERT(1, "music load unavailable in environment (skip real MP3 music test)");
+        remove(path);
+        return;
+    }
+    int64_t duration_ms = rt_music_get_duration(music);
+    // 44 frames x 1152 samples at 48 kHz = 1056 ms.
+    ASSERT(duration_ms >= 1040 && duration_ms <= 1072,
+           "real MP3 music duration covers every decoded frame");
+    rt_music_destroy(music);
+    remove(path);
+}
+
 static void test_music_seek_resampled_wav() {
     const char *path = "/tmp/zanna_test_music_seek_22050.wav";
     if (!write_test_wav_frames(path, 22050, 22050)) {
@@ -1519,6 +1547,7 @@ int main() {
     test_sound_load_asset_from_mounted_pack();
     test_destroy_loaded_handles_after_shutdown();
     test_default_sound_play_survives_sfx_group_changes();
+    test_music_load_real_mp3_reports_duration();
     test_music_seek_resampled_wav();
     test_music_seek_to_duration_reaches_eof();
     test_music_seek_huge_position_clamps_to_duration();

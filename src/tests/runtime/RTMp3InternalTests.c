@@ -119,7 +119,9 @@ static void test_failed_late_granule_restores_synthesis_state(void) {
     mp3_decoder_t *dec = mp3_decoder_new();
 
     assert(dec != NULL);
-    put_msb_bits(frame + 4, 111, 7, 5); // granule 1 uses an unsupported Huffman table
+    // Granule 1 selects codebook 4 — reserved by ISO 11172-3 (every real
+    // table, 1-31, now decodes), so the frame is rejected as unsupported.
+    put_msb_bits(frame + 4, 111, 4, 5);
     assert(mp3_decode_frame_internal(
                dec, frame, frame_size, &pos, pcm, &frames, &channels, &rate) == -2);
     assert(dec->synth_offset[0] == 0);
@@ -218,7 +220,14 @@ static void test_part_length_bounds_every_entropy_read(void) {
     mp3_decoder_t *dec = mp3_decoder_new();
 
     assert(dec != NULL);
+    // Granule 0 declares a one-bit part2_3_length yet two big_values lines
+    // coded with table 15: the Huffman walk cannot complete inside the
+    // granule's own length, so the frame is rejected (a lone count1 code
+    // in that bit would be legal — the standard discards an overrunning
+    // final quadruple).
     put_msb_bits(frame + 4, 20, 1, 12);
+    put_msb_bits(frame + 4, 32, 1, 9);
+    put_msb_bits(frame + 4, 54, 15, 5);
     assert(mp3_decode_frame_internal(
                dec, frame, frame_size, &pos, pcm, &frames, &channels, &rate) == -1);
     assert(frames == 0 && channels == 0 && rate == 0);
@@ -229,8 +238,25 @@ static void test_short_and_mixed_block_index_helpers(void) {
     mp3_granule_info_t info;
     memset(&info, 0, sizeof(info));
 
-    assert(mp3_short_band_index(0, 4, 2, 5) == 65);
+    /* Short-window lines land subband-major / window-major (plan 81). */
+    assert(mp3_short_line_index(0, 0) == 0);
+    assert(mp3_short_line_index(5, 0) == 5);
+    assert(mp3_short_line_index(0, 1) == 6);
+    assert(mp3_short_line_index(6, 0) == 18);
+    assert(mp3_short_line_index(191, 2) == 575);
+    assert(mp3_short_line_index(192, 0) == -1);
+    assert(mp3_short_line_index(0, 3) == -1);
     assert(mp3_short_imdct_offset(2, 11) == 29);
+    /* Band-table rows: ISO rates plus the MPEG-2.5 11025 / 12000 Hz row. */
+    assert(mp3_sfb_row_for(3, 44100) == 0 && mp3_sfb_row_for(3, 48000) == 1 &&
+           mp3_sfb_row_for(3, 32000) == 2);
+    assert(mp3_sfb_row_for(2, 22050) == 3 && mp3_sfb_row_for(2, 24000) == 4 &&
+           mp3_sfb_row_for(2, 16000) == 5);
+    assert(mp3_sfb_row_for(0, 8000) == 6 && mp3_sfb_row_for(0, 11025) == 7 &&
+           mp3_sfb_row_for(0, 12000) == 7);
+    assert(mp3_sfb_row_for(2, 11025) == -1 && mp3_sfb_row_for(3, 96000) == -1);
+    /* Every generated Huffman tree is a complete ISO prefix code. */
+    assert(mp3_huffman_self_check() == 0);
 
     info.block_type = 2;
     info.mixed_block = 1;

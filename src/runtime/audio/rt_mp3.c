@@ -8,11 +8,16 @@
 // File: src/runtime/audio/rt_mp3.c
 // Purpose: MPEG-1/2/2.5 Layer III (MP3) audio decoder.
 // Key invariants:
-//   - Decodes baseline MP3: MPEG-1 Layer III, mono and joint/stereo
-//   - Pipeline: frame sync → side info → Huffman → requantize → stereo →
-//     anti-alias → IMDCT → window → overlap-add → polyphase synthesis → PCM
-//   - All tables from ISO 11172-3 / ISO 13818-3
-//   - Output: interleaved 16-bit signed PCM
+//   - Full ISO 11172-3 / ISO 13818-3 Layer III decode: MPEG-1, MPEG-2 (LSF)
+//     and MPEG-2.5; mono, stereo, dual and joint (M/S + intensity) stereo
+//   - Pipeline: frame sync → side info → scalefactors (scfsi / LSF
+//     partitions) → Huffman (all 32 pair tables + count1 A/B) → requantize
+//     (short-block reorder) → joint stereo → alias reduction → IMDCT →
+//     overlap-add + frequency inversion → polyphase synthesis
+//   - All tables from ISO 11172-3 / ISO 13818-3; the MPEG-2.5 11025 / 12000
+//     Hz band tables follow the LAME convention (there is no ISO text)
+//   - Output: interleaved 16-bit signed PCM; verified against independent
+//     decoders at ~80 dB SNR (see docs/internals/mp3-decoder-conformance.md)
 // Ownership/Lifetime:
 //   - Decoder state owned by mp3_decoder_t; caller frees via mp3_decoder_free
 //   - Output PCM buffer malloc'd by decoder; caller frees
@@ -338,7 +343,10 @@ struct mp3_decoder {
 
 /// @brief Allocate zero-initialized MP3 decoder state.
 /// @return Caller-owned decoder, or NULL on allocation failure.
+static void mp3_ensure_tables(void);
+
 mp3_decoder_t *mp3_decoder_new(void) {
+    mp3_ensure_tables();
     mp3_decoder_t *dec = (mp3_decoder_t *)calloc(1, sizeof(mp3_decoder_t));
     return dec;
 }
@@ -401,96 +409,207 @@ static int mp3_huff_tree_decode(
     return -1;
 }
 
-/// @brief Get the Huffman tree for a given table index (small tables only).
+/// @brief Get the flat Huffman tree that decodes @p table_idx.
+/// @details Every ISO pair table is backed by a generated tree: 1-3, 5-13 and
+///          15 own theirs, 16-23 share table 16's codes and 24-31 share table
+///          24's (only their linbits differ). Table 0 has no tree (every pair
+///          is (0, 0)); the reserved tables 4 and 14 have none either.
 /// @param table_idx Layer III Huffman table index.
 /// @param out_size Receives the flat tree's entry count, or zero when absent.
-/// @return Static tree pointer, or NULL when no explicit tree is stored.
+/// @return Static tree pointer, or NULL when no tree exists for the index.
 static const mp3_huff_node_t *mp3_get_huff_tree(int table_idx, int *out_size) {
+#define MP3_HUFF_RETURN_TREE(tree)                                                                 \
+    do {                                                                                           \
+        *out_size = (int)(sizeof(tree) / sizeof((tree)[0]));                                       \
+        return (tree);                                                                             \
+    } while (0)
     switch (table_idx) {
         case 1:
-            *out_size = 7;
-            return mp3_htree_1;
+            MP3_HUFF_RETURN_TREE(mp3_htree_1);
         case 2:
+            MP3_HUFF_RETURN_TREE(mp3_htree_2);
         case 3:
-            *out_size = 16;
-            return mp3_htree_2;
+            MP3_HUFF_RETURN_TREE(mp3_htree_3);
         case 5:
+            MP3_HUFF_RETURN_TREE(mp3_htree_5);
         case 6:
-            *out_size = 28;
-            return mp3_htree_5;
+            MP3_HUFF_RETURN_TREE(mp3_htree_6);
+        case 7:
+            MP3_HUFF_RETURN_TREE(mp3_htree_7);
+        case 8:
+            MP3_HUFF_RETURN_TREE(mp3_htree_8);
+        case 9:
+            MP3_HUFF_RETURN_TREE(mp3_htree_9);
+        case 10:
+            MP3_HUFF_RETURN_TREE(mp3_htree_10);
+        case 11:
+            MP3_HUFF_RETURN_TREE(mp3_htree_11);
+        case 12:
+            MP3_HUFF_RETURN_TREE(mp3_htree_12);
+        case 13:
+            MP3_HUFF_RETURN_TREE(mp3_htree_13);
+        case 15:
+            MP3_HUFF_RETURN_TREE(mp3_htree_15);
+        case 16:
+        case 17:
+        case 18:
+        case 19:
+        case 20:
+        case 21:
+        case 22:
+        case 23:
+            MP3_HUFF_RETURN_TREE(mp3_htree_16);
+        case 24:
+        case 25:
+        case 26:
+        case 27:
+        case 28:
+        case 29:
+        case 30:
+        case 31:
+            MP3_HUFF_RETURN_TREE(mp3_htree_24);
         default:
             *out_size = 0;
             return NULL;
     }
+#undef MP3_HUFF_RETURN_TREE
 }
 
-/// @brief Probe whether table @p table_idx has a baked tree or a known fallback.
-/// @details This decoder only ships explicit Huffman trees for a small
-///          subset of the 32 ISO tables (1, 2/3, 5/6); table 0 is the
-///          empty/"zero" table. Returns 1 for those indices and 0 for
-///          unsupported ones so the caller can fall back to the
-///          bit-width approximation in @ref mp3_huff_decode_pair without
-///          attempting an out-of-range tree walk.
+/// @brief Get the count1 quadruple tree selected by `count1table_select`.
+/// @param select Side-info `count1table_select` bit (0 = table A, 1 = table B).
+/// @param out_size Receives the flat tree's entry count.
+/// @return Static tree pointer (never NULL).
+static const mp3_huff_node_t *mp3_get_quad_tree(int select, int *out_size) {
+    if (select) {
+        *out_size = (int)(sizeof(mp3_htree_quad_b) / sizeof(mp3_htree_quad_b[0]));
+        return mp3_htree_quad_b;
+    }
+    *out_size = (int)(sizeof(mp3_htree_quad_a) / sizeof(mp3_htree_quad_a[0]));
+    return mp3_htree_quad_a;
+}
+
+/// @brief Whether @p table_idx names a decodable big_values table.
+/// @details Table 0 and every ISO pair table 1-3, 5-13, 15-31 decode; the
+///          reserved indices 4 and 14 (and anything out of range) do not, and
+///          a frame that selects one is rejected as unsupported data.
 /// @param table_idx Huffman table index from the side-info `table_select`.
 /// @return 1 if supported, 0 otherwise.
 static int mp3_huff_table_supported(int table_idx) {
-    switch (table_idx) {
-        case 0:
-        case 1:
-        case 2:
-        case 3:
-        case 5:
-        case 6:
-            return 1;
-        default:
-            return 0;
-    }
+    if (table_idx < 0 || table_idx >= 32)
+        return 0;
+    return table_idx != 4 && table_idx != 14;
 }
 
-/// @brief Decode one Huffman pair using tree walk (small tables) or bit-width
-/// approximation (large tables where full ISO trees aren't stored).
+/// @brief Decode one big_values (x, y) pair from the selected ISO table.
 /// @param bits Main-data bit reader.
-/// @param table_idx Layer III Huffman table index.
-/// @param x Receives the first non-negative spectral value.
-/// @param y Receives the second non-negative spectral value.
+/// @param table_idx Layer III Huffman table index (0 consumes no bits).
+/// @param x Receives the first non-negative spectral value (before linbits).
+/// @param y Receives the second non-negative spectral value (before linbits).
+/// @return `0` on success, or `-1` for a reserved table or an invalid walk.
 static int mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y) {
     if (!bits || !x || !y)
         return -1;
-    if (table_idx <= 0 || table_idx >= 32 || mp3_huff_info[table_idx].max_val == 0) {
-        *x = *y = 0;
+    *x = *y = 0;
+    if (table_idx == 0)
         return 0;
-    }
-
-    int tree_size;
+    int tree_size = 0;
     const mp3_huff_node_t *tree = mp3_get_huff_tree(table_idx, &tree_size);
-    if (tree) {
-        if (mp3_huff_tree_decode(bits, tree, tree_size, x, y) != 0) {
-            *x = *y = 0;
+    if (!tree)
+        return -1;
+    if (mp3_huff_tree_decode(bits, tree, tree_size, x, y) != 0) {
+        *x = *y = 0;
+        return -1;
+    }
+    return 0;
+}
+
+/// @brief Verify every stored Huffman tree against the ISO invariants.
+/// @details Walks each pair table (1-3, 5-13, 15-31 through their shared
+///          trees) and both count1 quad tables, checking that every branch
+///          index stays inside the tree, no walk exceeds 24 bits, the code is
+///          complete (Kraft sum exactly 1), and the leaf set is exactly the
+///          (max_val + 1)^2 value square (16 quad symbols for A / B) with no
+///          duplicate leaves. Diagnostic entry point for the unit tests.
+/// @return `0` when every tree passes, otherwise `-(table index)` of the first
+///         failing pair table (`-32` / `-33` for quad table A / B).
+static int mp3_huffman_check_tree(const mp3_huff_node_t *tree,
+                                  int tree_size,
+                                  int node,
+                                  int depth,
+                                  uint64_t *kraft,
+                                  uint8_t *seen) {
+    if (node < 0 || node >= tree_size || depth > 24)
+        return -1;
+    int16_t val = tree[node].value;
+    if (val >= 0) {
+        if (val > 0xFF || seen[val])
             return -1;
-        }
+        seen[val] = 1;
+        *kraft += (uint64_t)1 << (32 - depth);
         return 0;
     }
+    if (mp3_huffman_check_tree(tree, tree_size, -val, depth + 1, kraft, seen) != 0)
+        return -1;
+    return mp3_huffman_check_tree(tree, tree_size, -val + 1, depth + 1, kraft, seen);
+}
 
-    // Fallback for larger tables: read variable-length values.
-    // Use a simple Elias-gamma-like approach: read bits until a valid
-    // pair is formed within [0, max_val].
-    int max_val = mp3_huff_info[table_idx].max_val;
-    int nbits = 0;
-    {
-        int tmp = max_val;
-        while (tmp > 0) {
-            nbits++;
-            tmp >>= 1;
+int mp3_huffman_self_check(void) {
+    for (int table = 1; table < 34; table++) {
+        if (table == 4 || table == 14)
+            continue;
+        int tree_size = 0;
+        const mp3_huff_node_t *tree = table < 32 ? mp3_get_huff_tree(table, &tree_size)
+                                                 : mp3_get_quad_tree(table - 32, &tree_size);
+        if (!tree || tree_size <= 0)
+            return -table;
+        uint64_t kraft = 0;
+        uint8_t seen[256];
+        memset(seen, 0, sizeof(seen));
+        if (mp3_huffman_check_tree(tree, tree_size, 0, 0, &kraft, seen) != 0)
+            return -table;
+        if (kraft != ((uint64_t)1 << 32))
+            return -table;
+        int max_val = table < 32 ? mp3_huff_info[table].max_val : 0;
+        for (int v = 0; v < 256; v++) {
+            int x = v >> 4;
+            int y = v & 0xF;
+            int expected = table < 32 ? (x <= max_val && y <= max_val) : (x == 0);
+            if ((seen[v] != 0) != (expected != 0))
+                return -table;
         }
+        if (table < 32 && mp3_huff_info[table].tree_size != tree_size)
+            return -table;
     }
+    return 0;
+}
 
-    *x = (int)mp3_bits_read(bits, nbits);
-    *y = (int)mp3_bits_read(bits, nbits);
-    if (*x > max_val)
-        *x = max_val;
-    if (*y > max_val)
-        *y = max_val;
-    return bits->error ? -1 : 0;
+//===----------------------------------------------------------------------===//
+// Transform tables
+//===----------------------------------------------------------------------===//
+
+static double mp3_cos36_table[36][18];
+static double mp3_cos12_table[12][6];
+static double mp3_synth_n_table[64][32];
+static int mp3_tables_ready = 0;
+
+/// @brief Build the IMDCT and synthesis cosine tables once per process.
+/// @details Every entry is a pure function of its indices, so a first call
+///          racing on two threads computes identical values.
+static void mp3_ensure_tables(void) {
+    if (mp3_tables_ready)
+        return;
+    for (int i = 0; i < 36; i++)
+        for (int k = 0; k < 18; k++)
+            mp3_cos36_table[i][k] =
+                cos(M_PI / 72.0 * (double)(2 * i + 1 + 18) * (double)(2 * k + 1));
+    for (int i = 0; i < 12; i++)
+        for (int k = 0; k < 6; k++)
+            mp3_cos12_table[i][k] =
+                cos(M_PI / 24.0 * (double)(2 * i + 1 + 6) * (double)(2 * k + 1));
+    for (int i = 0; i < 64; i++)
+        for (int k = 0; k < 32; k++)
+            mp3_synth_n_table[i][k] = cos((double)(16 + i) * (double)(2 * k + 1) * M_PI / 64.0);
+    mp3_tables_ready = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -498,37 +617,29 @@ static int mp3_huff_decode_pair(mp3_bits_t *bits, int table_idx, int *x, int *y)
 //===----------------------------------------------------------------------===//
 
 /// @brief 36-point IMDCT used for "long" blocks (most steady-state samples).
-///
-/// Converts 18 frequency-domain samples back to 36 time-domain
-/// samples, with the standard MDCT windowing folded in. Adjacent
-/// long blocks overlap-add by 18 samples to give continuous output.
+/// @details x[i] = sum_{k<18} X[k] cos(pi/72 (2i + 19)(2k + 1)), ISO 11172-3 2.4.3.4.10.3.
 /// @param in Eighteen frequency-domain coefficients.
 /// @param out Receives 36 time-domain samples.
 static void mp3_imdct36(const float *in, float *out) {
-    // 36-point IMDCT: X[i] = sum_{k=0}^{17} in[k] * cos(pi/36 * (2*i+1+18) * (2*k+1) / 2)
     for (int i = 0; i < 36; i++) {
         double sum = 0.0;
+        const double *row = mp3_cos36_table[i];
         for (int k = 0; k < 18; k++)
-            sum += (double)in[k] *
-                   cos(M_PI / 36.0 * (double)(2 * i + 1 + 18) * (double)(2 * k + 1) / 2.0);
+            sum += (double)in[k] * row[k];
         out[i] = (float)sum;
     }
 }
 
 /// @brief 12-point IMDCT used for "short" blocks (transients — three sub-blocks per granule).
-///
-/// Short blocks improve the time-resolution of the codec for
-/// percussive content; the encoder switches to them via the
-/// `block_type` flag in side-info.
+/// @details x[i] = sum_{k<6} X[k] cos(pi/24 (2i + 7)(2k + 1)).
 /// @param in Six frequency-domain coefficients.
 /// @param out Receives 12 time-domain samples.
 static void mp3_imdct12(const float *in, float *out) {
-    // 12-point IMDCT for short blocks
     for (int i = 0; i < 12; i++) {
         double sum = 0.0;
+        const double *row = mp3_cos12_table[i];
         for (int k = 0; k < 6; k++)
-            sum += (double)in[k] *
-                   cos(M_PI / 12.0 * (double)(2 * i + 1 + 6) * (double)(2 * k + 1) / 2.0);
+            sum += (double)in[k] * row[k];
         out[i] = (float)sum;
     }
 }
@@ -552,12 +663,12 @@ static int16_t mp3_pcm_s16_from_double(double sample) {
 
 /// @brief Polyphase synthesis filter — converts subband samples back to PCM.
 ///
-/// MP3's final stage: each frame yields 32 subband samples per
-/// channel per "subband sample slot" (32 slots per frame).  This
-/// filter combines the 32 subband values via the standard
-/// pre-baked window matrix and outputs 32 PCM samples per call.
-/// Per-channel state (`v[]` ring buffer) carries across calls for
-/// the windowed overlap-add.
+/// The ISO 11172-3 Annex B synthesis procedure: the 32 subband samples are
+/// matrixed into 64 new V values (N[i][k] = cos((16 + i)(2k + 1) pi / 64)),
+/// pushed onto the 1024-entry V FIFO, the U vector is gathered from the first
+/// and last 32 entries of each 128-block, windowed by the D[] table and summed
+/// sixteen-fold into 32 output samples. Per-channel state (the V ring and its
+/// write offset) carries across calls.
 /// @param dec Decoder carrying per-channel synthesis history.
 /// @param ch Zero-based channel index.
 /// @param subbands Thirty-two reconstructed subband samples.
@@ -566,31 +677,24 @@ static void mp3_synth_filter(mp3_decoder_t *dec,
                              int ch,
                              const float subbands[32],
                              int16_t *pcm_out) {
-    float *buf = dec->synth_buf[ch];
-    int offset = dec->synth_offset[ch];
-
-    // Shift buffer and matrixing (32-point DCT-IV via direct computation)
-    offset = (offset - 64 + 1024) % 1024;
+    float *v = dec->synth_buf[ch];
+    int offset = (dec->synth_offset[ch] - 64 + 1024) & 1023;
     dec->synth_offset[ch] = offset;
 
-    // Matrixing: Ni[k] = sum_{j=0}^{31} S[j] * cos(pi/64 * (2*k+1) * (2*j+1+32) / 2)
-    for (int k = 0; k < 64; k++) {
+    for (int i = 0; i < 64; i++) {
         double sum = 0.0;
-        for (int j = 0; j < 32; j++) {
-            sum += (double)subbands[j] *
-                   cos(M_PI / 64.0 * (double)(2 * k + 1) * (double)(2 * j + 1 + 32) / 2.0);
-        }
-        buf[(offset + k) % 1024] = (float)sum;
+        const double *row = mp3_synth_n_table[i];
+        for (int k = 0; k < 32; k++)
+            sum += row[k] * (double)subbands[k];
+        v[(offset + i) & 1023] = (float)sum;
     }
 
-    // Dewindowing and output
     for (int j = 0; j < 32; j++) {
         double sum = 0.0;
-        for (int i = 0; i < 16; i++) {
-            int idx = (offset + j + 64 * i) % 1024;
-            int d_idx = j + 32 * i;
-            if (d_idx < 512)
-                sum += (double)buf[idx] * (double)mp3_synth_d[d_idx];
+        for (int p = 0; p < 8; p++) {
+            sum += (double)mp3_synth_d[j + 64 * p] * (double)v[(offset + 128 * p + j) & 1023];
+            sum += (double)mp3_synth_d[j + 32 + 64 * p] *
+                   (double)v[(offset + 128 * p + 96 + j) & 1023];
         }
         pcm_out[j] = mp3_pcm_s16_from_double(sum);
     }
@@ -757,16 +861,361 @@ static void mp3_reservoir_append(mp3_decoder_t *dec, const uint8_t *data, int si
     dec->reservoir_size += to_save;
 }
 
-/// @brief Map a short-block scalefactor-band coefficient to reordered spectral storage.
-static int mp3_short_band_index(int sample_rate_index, int band, int window, int coefficient) {
-    if (sample_rate_index < 0 || sample_rate_index >= 3 || band < 0 || band >= 13 || window < 0 ||
-        window >= 3)
+/// @brief Select the scalefactor-band table row for a frame's version and rate.
+/// @details MPEG-1 and MPEG-2 rows follow the ISO tables. MPEG-2.5 is a
+///          de-facto extension: 8000 Hz has its own bands, while 11025 and
+///          12000 Hz use the 22050 Hz long bands with the 16000 Hz short bands
+///          (the convention LAME's encoder and decoder share).
+/// @param mpeg_version Header version code (3 = MPEG-1, 2 = MPEG-2, 0 = MPEG-2.5).
+/// @param sample_rate Frame sample rate in hertz.
+/// @return Row index into mp3_sfb_long_cumul / mp3_sfb_short_cumul, or -1.
+static int mp3_sfb_row_for(int mpeg_version, int sample_rate) {
+    switch (sample_rate) {
+        case 44100:
+            return 0;
+        case 48000:
+            return 1;
+        case 32000:
+            return 2;
+        case 22050:
+            return 3;
+        case 24000:
+            return 4;
+        case 16000:
+            return 5;
+        case 8000:
+            return 6;
+        case 11025:
+        case 12000:
+            return mpeg_version == 0 ? 7 : -1;
+        default:
+            return -1;
+    }
+}
+
+/// @brief Read one granule's MPEG-1 scalefactors (ISO 11172-3 2.4.2.7).
+/// @details Long blocks honour scfsi: a band group flagged for the second
+///          granule reuses the first granule's scalefactors instead of reading
+///          new ones; granule 0's long scalefactors are kept in @p prev_l.
+static void mp3_read_scalefactors_mpeg1(mp3_bits_t *bits,
+                                        const mp3_granule_info_t *gi,
+                                        int gr,
+                                        const int scfsi[4],
+                                        int prev_l[22],
+                                        int scalefac_l[22],
+                                        int scalefac_s[13][3]) {
+    memset(scalefac_l, 0, 22 * sizeof(int));
+    memset(scalefac_s, 0, 13 * 3 * sizeof(int));
+    int sfc = gi->scalefac_compress & 0x0F;
+    int slen1 = mp3_slen_table[0][sfc];
+    int slen2 = mp3_slen_table[1][sfc];
+    if (gi->window_switching && gi->block_type == 2) {
+        int first_short = 0;
+        if (gi->mixed_block) {
+            for (int sfb = 0; sfb < 8; sfb++)
+                scalefac_l[sfb] = slen1 > 0 ? (int)mp3_bits_read(bits, slen1) : 0;
+            first_short = 3;
+        }
+        for (int sfb = first_short; sfb < 12; sfb++) {
+            int slen = sfb < 6 ? slen1 : slen2;
+            for (int win = 0; win < 3; win++)
+                scalefac_s[sfb][win] = slen > 0 ? (int)mp3_bits_read(bits, slen) : 0;
+        }
+        return;
+    }
+    for (int sfb = 0; sfb < 21; sfb++) {
+        int group = sfb < 6 ? 0 : (sfb < 11 ? 1 : (sfb < 16 ? 2 : 3));
+        int slen = sfb < 11 ? slen1 : slen2;
+        if (gr == 1 && scfsi[group])
+            scalefac_l[sfb] = prev_l[sfb];
+        else
+            scalefac_l[sfb] = slen > 0 ? (int)mp3_bits_read(bits, slen) : 0;
+    }
+    if (gr == 0)
+        memcpy(prev_l, scalefac_l, 22 * sizeof(int));
+}
+
+/// @brief Read one LSF (MPEG-2 / 2.5) granule's scalefactors (ISO 13818-3 2.4.3.2).
+/// @details scalefac_compress selects one of six partition layouts (three for
+///          an intensity-stereo right channel); each partition's count from
+///          mp3_lsf_nr_of_sfb is read sequentially in long-then-short order
+///          (a mixed block's leading long bands first). Also derives preflag
+///          and the per-band illegal intensity position (is_max) the stereo
+///          stage needs.
+static void mp3_read_scalefactors_lsf(mp3_bits_t *bits,
+                                      mp3_granule_info_t *gi,
+                                      int is_right,
+                                      int mixed_long_bands,
+                                      int scalefac_l[22],
+                                      int scalefac_s[13][3],
+                                      int is_max_l[22],
+                                      int is_max_s[13][3]) {
+    memset(scalefac_l, 0, 22 * sizeof(int));
+    memset(scalefac_s, 0, 13 * 3 * sizeof(int));
+    memset(is_max_l, 0, 22 * sizeof(int));
+    memset(is_max_s, 0, 13 * 3 * sizeof(int));
+    int sfc = gi->scalefac_compress;
+    int slen[4] = {0, 0, 0, 0};
+    int blocknumber = 0;
+    gi->preflag = 0;
+    if (is_right) {
+        sfc >>= 1;
+        if (sfc < 180) {
+            slen[0] = sfc / 36;
+            slen[1] = (sfc % 36) / 6;
+            slen[2] = (sfc % 36) % 6;
+            blocknumber = 3;
+        } else if (sfc < 244) {
+            sfc -= 180;
+            slen[0] = (sfc % 64) >> 4;
+            slen[1] = (sfc % 16) >> 2;
+            slen[2] = sfc % 4;
+            blocknumber = 4;
+        } else {
+            sfc -= 244;
+            slen[0] = sfc / 3;
+            slen[1] = sfc % 3;
+            blocknumber = 5;
+        }
+    } else {
+        if (sfc < 400) {
+            slen[0] = (sfc >> 4) / 5;
+            slen[1] = (sfc >> 4) % 5;
+            slen[2] = (sfc % 16) >> 2;
+            slen[3] = sfc % 4;
+            blocknumber = 0;
+        } else if (sfc < 500) {
+            sfc -= 400;
+            slen[0] = (sfc >> 2) / 5;
+            slen[1] = (sfc >> 2) % 5;
+            slen[2] = sfc % 4;
+            blocknumber = 1;
+        } else {
+            sfc -= 500;
+            slen[0] = sfc / 3;
+            slen[1] = sfc % 3;
+            blocknumber = 2;
+            gi->preflag = 1;
+        }
+    }
+    int bt = 0;
+    if (gi->window_switching && gi->block_type == 2)
+        bt = gi->mixed_block ? 2 : 1;
+    int sfb_l = 0;
+    int sfb_s = (bt == 2) ? 3 : 0;
+    int win = 0;
+    for (int part = 0; part < 4; part++) {
+        int count = mp3_lsf_nr_of_sfb[blocknumber][bt][part];
+        int max = (1 << slen[part]) - 1;
+        for (int i = 0; i < count; i++) {
+            int value = slen[part] > 0 ? (int)mp3_bits_read(bits, slen[part]) : 0;
+            int use_long = (bt == 0) || (bt == 2 && sfb_l < mixed_long_bands);
+            if (use_long) {
+                if (sfb_l < 22) {
+                    scalefac_l[sfb_l] = value;
+                    is_max_l[sfb_l] = max;
+                }
+                sfb_l++;
+            } else {
+                if (sfb_s < 13) {
+                    scalefac_s[sfb_s][win] = value;
+                    is_max_s[sfb_s][win] = max;
+                }
+                if (++win == 3) {
+                    win = 0;
+                    sfb_s++;
+                }
+            }
+        }
+    }
+}
+
+/// @brief Reordered storage index of short-window frequency line @p f.
+/// @details Short-block lines are stored subband-major and window-major —
+///          (f / 6) * 18 + window * 6 + f % 6 — the layout the short IMDCT
+///          reads six lines per window from.
+/// @param f Frequency line within the window's 192-line spectrum.
+/// @param window Window index 0..2.
+/// @return Index into the 576-line granule, or -1 when out of range.
+static int mp3_short_line_index(int f, int window) {
+    if (f < 0 || f >= 192 || window < 0 || window >= 3)
         return -1;
-    int start = mp3_sfb_short_cumul[sample_rate_index][band];
-    int width = mp3_sfb_short_cumul[sample_rate_index][band + 1] - start;
-    if (coefficient < 0 || coefficient >= width)
-        return -1;
-    return 3 * start + window * width + coefficient;
+    return (f / 6) * 18 + window * 6 + (f % 6);
+}
+
+/// @brief Sign-preserving |v|^(4/3) requantization of one Huffman value.
+static double mp3_requant_value(int v) {
+    double mag = pow((double)abs(v), 4.0 / 3.0);
+    return v < 0 ? -mag : mag;
+}
+
+/// @brief Requantize one granule's Huffman values into spectral lines.
+/// @details ISO 11172-3 2.4.3.4.7: xr = sign |is|^(4/3) 2^((global_gain - 210
+///          - 8 subblock_gain) / 4) 2^(-(scalefac_multiplier (scalefac +
+///          preflag pretab))). Long-block values stay in bitstream order;
+///          short-window values are read in bitstream (band, window, line)
+///          order and stored subband-major / window-major — the reorder the
+///          short IMDCT consumes — so no separate reorder pass exists. The
+///          last long band (21) and short band (12) carry no scalefactor.
+/// @param xr Receives 576 spectral lines (zero-filled first).
+static void mp3_requantize(const mp3_granule_info_t *gi,
+                           const int *is_values,
+                           const int scalefac_l[22],
+                           const int scalefac_s[13][3],
+                           const int *sfb_long,
+                           const int *sfb_short,
+                           int mixed_long_bands,
+                           float *xr) {
+    memset(xr, 0, MP3_SBLIMIT * sizeof(float));
+    double global_gain_pow = pow(2.0, (double)(gi->global_gain - 210) / 4.0);
+    int sfac_scale = gi->scalefac_scale ? 2 : 1;
+    int short_blocks = gi->window_switching && gi->block_type == 2;
+
+    if (!short_blocks || gi->mixed_block) {
+        int limit = short_blocks ? 36 : MP3_SBLIMIT;
+        int bands = short_blocks ? mixed_long_bands : 22;
+        for (int sfb = 0; sfb < bands && sfb < 22; sfb++) {
+            int start = sfb_long[sfb];
+            int end = sfb_long[sfb + 1];
+            if (end > limit)
+                end = limit;
+            int sf = sfb < 21 ? scalefac_l[sfb] : 0;
+            if (gi->preflag)
+                sf += mp3_pretab[sfb];
+            double sfac_pow = pow(2.0, -0.5 * (double)(sf * sfac_scale));
+            for (int i = start; i < end; i++)
+                xr[i] = (float)(mp3_requant_value(is_values[i]) * global_gain_pow * sfac_pow);
+        }
+    }
+    if (short_blocks) {
+        int first = gi->mixed_block ? 3 : 0;
+        for (int sfb = first; sfb < 13; sfb++) {
+            int start = sfb_short[sfb];
+            int width = sfb_short[sfb + 1] - start;
+            for (int win = 0; win < 3; win++) {
+                int sf = sfb < 12 ? scalefac_s[sfb][win] : 0;
+                double sfac_pow = pow(2.0, -0.5 * (double)(sf * sfac_scale)) *
+                                  pow(2.0, -2.0 * (double)gi->subblock_gain[win]);
+                for (int i = 0; i < width; i++) {
+                    int src = 3 * start + win * width + i;
+                    int dst = mp3_short_line_index(start + i, win);
+                    if (src >= MP3_SBLIMIT || dst < 0)
+                        break;
+                    xr[dst] =
+                        (float)(mp3_requant_value(is_values[src]) * global_gain_pow * sfac_pow);
+                }
+            }
+        }
+    }
+}
+
+/// @brief Apply joint-stereo processing to one granule in the spectral domain.
+/// @details Intensity stereo (ISO 11172-3 2.4.3.4.9.3 / ISO 13818-3 2.4.3.2)
+///          reconstructs both channels from the left channel for every band
+///          lying entirely above the right channel's last nonzero line, using
+///          the right channel's scalefactor as is_pos (a band at the illegal
+///          position keeps its coded values). Every remaining line is M/S
+///          decoded when ms_stereo is set: L = (M + S) / sqrt 2, R = (M - S) / sqrt 2.
+static void mp3_stereo_process(float xr[MP3_MAX_CHANNELS][MP3_SBLIMIT],
+                               const mp3_granule_info_t *gi_right,
+                               const int scalefac_l_r[22],
+                               const int scalefac_s_r[13][3],
+                               const int is_max_l[22],
+                               const int is_max_s[13][3],
+                               int ms_stereo,
+                               int i_stereo,
+                               int is_mpeg1,
+                               int lsf_intensity_scale,
+                               const int *sfb_long,
+                               const int *sfb_short,
+                               int mixed_long_bands) {
+    int is_pos[MP3_SBLIMIT];
+    for (int i = 0; i < MP3_SBLIMIT; i++)
+        is_pos[i] = -1;
+
+    if (i_stereo) {
+        int short_blocks = gi_right->window_switching && gi_right->block_type == 2;
+        if (!short_blocks || gi_right->mixed_block) {
+            int limit = short_blocks ? 36 : MP3_SBLIMIT;
+            int rzero = 0;
+            for (int i = 0; i < limit; i++)
+                if (xr[1][i] != 0.0f)
+                    rzero = i + 1;
+            int bands = short_blocks ? mixed_long_bands : 22;
+            for (int sfb = 0; sfb < bands && sfb < 22; sfb++) {
+                int start = sfb_long[sfb];
+                int end = sfb_long[sfb + 1];
+                if (end > limit)
+                    end = limit;
+                if (start < rzero)
+                    continue;
+                int src = sfb < 21 ? sfb : 20;
+                int pos = scalefac_l_r[src];
+                int illegal = is_mpeg1 ? 7 : is_max_l[src];
+                if (pos == illegal)
+                    continue;
+                for (int i = start; i < end; i++)
+                    is_pos[i] = pos;
+            }
+        }
+        if (short_blocks) {
+            int first = gi_right->mixed_block ? 3 : 0;
+            for (int win = 0; win < 3; win++) {
+                int rzero = 0;
+                for (int f = 0; f < 192; f++) {
+                    if (xr[1][mp3_short_line_index(f, win)] != 0.0f)
+                        rzero = f + 1;
+                }
+                for (int sfb = first; sfb < 13; sfb++) {
+                    int start = sfb_short[sfb];
+                    int end = sfb_short[sfb + 1];
+                    if (start < rzero)
+                        continue;
+                    int src = sfb < 12 ? sfb : 11;
+                    int pos = scalefac_s_r[src][win];
+                    int illegal = is_mpeg1 ? 7 : is_max_s[src][win];
+                    if (pos == illegal)
+                        continue;
+                    for (int f = start; f < end; f++)
+                        is_pos[mp3_short_line_index(f, win)] = pos;
+                }
+            }
+        }
+    }
+
+    for (int i = 0; i < MP3_SBLIMIT; i++) {
+        int pos = is_pos[i];
+        if (pos >= 0) {
+            double kl;
+            double kr;
+            if (is_mpeg1) {
+                if (pos > 6)
+                    pos = 6;
+                kl = mp3_is_gain_mpeg1[pos][0];
+                kr = mp3_is_gain_mpeg1[pos][1];
+            } else {
+                double io = lsf_intensity_scale ? 0.840896415 : 0.707106781;
+                if (pos == 0) {
+                    kl = 1.0;
+                    kr = 1.0;
+                } else if (pos & 1) {
+                    kl = 1.0;
+                    kr = pow(io, (double)((pos + 1) / 2));
+                } else {
+                    kl = pow(io, (double)(pos / 2));
+                    kr = 1.0;
+                }
+            }
+            float l = xr[0][i];
+            xr[0][i] = (float)(l * kl);
+            xr[1][i] = (float)(l * kr);
+        } else if (ms_stereo) {
+            float m = xr[0][i];
+            float sd = xr[1][i];
+            xr[0][i] = (m + sd) * 0.707106781f;
+            xr[1][i] = (m - sd) * 0.707106781f;
+        }
+    }
 }
 
 /// @brief Return the time-domain destination for a short-window IMDCT sample.
@@ -890,10 +1339,34 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
     mp3_bits_t bits;
     mp3_bits_init(&bits, main_data, (size_t)main_data_len);
 
-    for (int gr = 0; gr < ngranules; gr++) {
-        float samples[MP3_MAX_CHANNELS][MP3_SBLIMIT];
-        memset(samples, 0, sizeof(samples));
+    int sfb_row = mp3_sfb_row_for(hdr.mpeg_version, hdr.sample_rate);
+    if (sfb_row < 0)
+        goto frame_data_error;
+    const int *sfb_long = mp3_sfb_long_cumul[sfb_row];
+    const int *sfb_short = mp3_sfb_short_cumul[sfb_row];
+    int mixed_long_bands = is_mpeg1 ? 8 : (hdr.sample_rate == 8000 ? 3 : 6);
+    int joint = hdr.channels == 2 && hdr.channel_mode == 1;
+    int ms_stereo = joint && (hdr.mode_ext & 0x02) != 0;
+    int i_stereo = joint && (hdr.mode_ext & 0x01) != 0;
+    int scalefac_prev[MP3_MAX_CHANNELS][22];
+    memset(scalefac_prev, 0, sizeof(scalefac_prev));
+    mp3_ensure_tables();
 
+    for (int gr = 0; gr < ngranules; gr++) {
+        float xr[MP3_MAX_CHANNELS][MP3_SBLIMIT];
+        float samples[MP3_MAX_CHANNELS][MP3_SBLIMIT];
+        int scalefac_l[MP3_MAX_CHANNELS][22];
+        int scalefac_s[MP3_MAX_CHANNELS][13][3];
+        int is_max_l[22];
+        int is_max_s[13][3];
+        memset(xr, 0, sizeof(xr));
+        memset(samples, 0, sizeof(samples));
+        memset(scalefac_l, 0, sizeof(scalefac_l));
+        memset(scalefac_s, 0, sizeof(scalefac_s));
+        memset(is_max_l, 0, sizeof(is_max_l));
+        memset(is_max_s, 0, sizeof(is_max_s));
+
+        // Pass 1: side info → scalefactors → Huffman values → spectral lines.
         for (int ch = 0; ch < hdr.channels; ch++) {
             mp3_granule_info_t *gi = &si.granules[gr][ch];
             for (int region = 0; region < 3; region++) {
@@ -911,38 +1384,24 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
             size_t main_data_bit_len = bits.len;
             bits.len = part_end;
 
-            int scalefac_l[22];
-            int scalefac_s[13][3];
-            memset(scalefac_l, 0, sizeof(scalefac_l));
-            memset(scalefac_s, 0, sizeof(scalefac_s));
-
-            int sfc = gi->scalefac_compress;
-            int slen1 = mp3_slen_table[0][sfc & 0x0F];
-            int slen2 = mp3_slen_table[1][sfc & 0x0F];
-
-            if (gi->window_switching && gi->block_type == 2) {
-                if (gi->mixed_block) {
-                    for (int sfb = 0; sfb < 8; sfb++)
-                        scalefac_l[sfb] = slen1 > 0 ? (int)mp3_bits_read(&bits, slen1) : 0;
-                    for (int sfb = 3; sfb < 6; sfb++)
-                        for (int win = 0; win < 3; win++)
-                            scalefac_s[sfb][win] = slen1 > 0 ? (int)mp3_bits_read(&bits, slen1) : 0;
-                    for (int sfb = 6; sfb < 12; sfb++)
-                        for (int win = 0; win < 3; win++)
-                            scalefac_s[sfb][win] = slen2 > 0 ? (int)mp3_bits_read(&bits, slen2) : 0;
-                } else {
-                    for (int sfb = 0; sfb < 6; sfb++)
-                        for (int win = 0; win < 3; win++)
-                            scalefac_s[sfb][win] = slen1 > 0 ? (int)mp3_bits_read(&bits, slen1) : 0;
-                    for (int sfb = 6; sfb < 12; sfb++)
-                        for (int win = 0; win < 3; win++)
-                            scalefac_s[sfb][win] = slen2 > 0 ? (int)mp3_bits_read(&bits, slen2) : 0;
-                }
+            if (is_mpeg1) {
+                mp3_read_scalefactors_mpeg1(
+                    &bits, gi, gr, si.scfsi[ch], scalefac_prev[ch], scalefac_l[ch], scalefac_s[ch]);
             } else {
-                for (int sfb = 0; sfb < 11; sfb++)
-                    scalefac_l[sfb] = slen1 > 0 ? (int)mp3_bits_read(&bits, slen1) : 0;
-                for (int sfb = 11; sfb < 21; sfb++)
-                    scalefac_l[sfb] = slen2 > 0 ? (int)mp3_bits_read(&bits, slen2) : 0;
+                int lsf_max_l[22];
+                int lsf_max_s[13][3];
+                mp3_read_scalefactors_lsf(&bits,
+                                          gi,
+                                          i_stereo && ch == 1,
+                                          mixed_long_bands,
+                                          scalefac_l[ch],
+                                          scalefac_s[ch],
+                                          lsf_max_l,
+                                          lsf_max_s);
+                if (ch == 1) {
+                    memcpy(is_max_l, lsf_max_l, sizeof(is_max_l));
+                    memcpy(is_max_s, lsf_max_s, sizeof(is_max_s));
+                }
             }
             if (bits.error)
                 goto frame_data_error;
@@ -951,25 +1410,24 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
             memset(is_values, 0, sizeof(is_values));
             int line = 0;
 
-            int sr_idx = (hdr.sample_rate == 44100) ? 0 : (hdr.sample_rate == 48000) ? 1 : 2;
-            int region1_start, region2_start;
+            int region1_start;
+            int region2_start;
             if (gi->window_switching && gi->block_type == 2) {
-                region1_start = 36;
+                region1_start = gi->mixed_block ? 36 : 3 * sfb_short[3];
                 region2_start = MP3_SBLIMIT;
             } else {
                 int r0 = gi->region0_count + 1;
                 int r1 = gi->region1_count + 1;
-                region1_start = (r0 < 22) ? mp3_sfb_long_cumul[sr_idx][r0] : MP3_SBLIMIT;
-                region2_start = (r0 + r1 < 22) ? mp3_sfb_long_cumul[sr_idx][r0 + r1] : MP3_SBLIMIT;
+                region1_start = (r0 < 22) ? sfb_long[r0] : MP3_SBLIMIT;
+                region2_start = (r0 + r1 < 22) ? sfb_long[r0 + r1] : MP3_SBLIMIT;
             }
-            if (region1_start > gi->big_values * 2)
-                region1_start = gi->big_values * 2;
-            if (region2_start > gi->big_values * 2)
-                region2_start = gi->big_values * 2;
-
             int big_end = gi->big_values * 2;
             if (big_end > MP3_SBLIMIT)
                 big_end = MP3_SBLIMIT;
+            if (region1_start > big_end)
+                region1_start = big_end;
+            if (region2_start > big_end)
+                region2_start = big_end;
 
             for (int region = 0; region < 3 && line < big_end; region++) {
                 int region_end;
@@ -986,8 +1444,6 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 }
                 if (region_end > big_end)
                     region_end = big_end;
-                if (table_idx < 0 || table_idx >= 32)
-                    table_idx = 0;
 
                 int linbits = mp3_huff_info[table_idx].linbits;
                 int max_val = mp3_huff_info[table_idx].max_val;
@@ -1000,7 +1456,8 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                         continue;
                     }
 
-                    int x, y;
+                    int x;
+                    int y;
                     if (mp3_huff_decode_pair(&bits, table_idx, &x, &y) != 0)
                         goto frame_data_error;
 
@@ -1020,91 +1477,78 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 }
             }
 
-            if (bits.error)
+            // part2_3_length bounds every entropy read: a big_values region
+            // the granule's own length cannot hold is truncated data.
+            if (bits.error || line < big_end)
                 goto frame_data_error;
 
-            while (line + 3 < MP3_SBLIMIT && bits.pos < part_end) {
-                if (gi->count1table_select == 0) {
-                    uint32_t code = mp3_bits_read(&bits, 4);
-                    is_values[line++] = (code & 8) ? ((mp3_bits_read(&bits, 1)) ? -1 : 1) : 0;
-                    is_values[line++] = (code & 4) ? ((mp3_bits_read(&bits, 1)) ? -1 : 1) : 0;
-                    is_values[line++] = (code & 2) ? ((mp3_bits_read(&bits, 1)) ? -1 : 1) : 0;
-                    is_values[line++] = (code & 1) ? ((mp3_bits_read(&bits, 1)) ? -1 : 1) : 0;
-                } else {
-                    for (int q = 0; q < 4 && line < MP3_SBLIMIT; q++) {
-                        int v = (int)mp3_bits_read(&bits, 1);
-                        if (v && bits.pos < part_end)
-                            v = mp3_bits_read(&bits, 1) ? -1 : 1;
-                        is_values[line++] = v;
+            // count1 region (ISO 11172-3 2.4.3.4.6): quadruples through quad
+            // table A or B, each nonzero value followed by its sign bit. The
+            // encoder may leave a quadruple that overruns part2_3_length; the
+            // standard discards it, so the walk is allowed to probe past
+            // part_end (within the main data) and rolls back on overrun.
+            {
+                int quad_size = 0;
+                const mp3_huff_node_t *quad_tree =
+                    mp3_get_quad_tree(gi->count1table_select, &quad_size);
+                while (line + 3 < MP3_SBLIMIT && bits.pos < part_end) {
+                    int qx = 0;
+                    int qy = 0;
+                    bits.len = main_data_bit_len;
+                    int rc_quad = mp3_huff_tree_decode(&bits, quad_tree, quad_size, &qx, &qy);
+                    int quad[4] = {(qy >> 3) & 1, (qy >> 2) & 1, (qy >> 1) & 1, qy & 1};
+                    if (rc_quad == 0) {
+                        for (int q = 0; q < 4; q++) {
+                            if (quad[q] && mp3_bits_read(&bits, 1))
+                                quad[q] = -quad[q];
+                        }
                     }
+                    bits.len = part_end;
+                    if (rc_quad != 0 || bits.error)
+                        goto frame_data_error;
+                    if (bits.pos > part_end) {
+                        bits.pos = part_end;
+                        break;
+                    }
+                    for (int q = 0; q < 4; q++)
+                        is_values[line++] = quad[q];
                 }
             }
-
-            if (bits.error)
-                goto frame_data_error;
 
             bits.pos = part_end;
             bits.len = main_data_bit_len;
 
-            float xr[MP3_SBLIMIT];
-            memset(xr, 0, sizeof(xr));
-            double global_gain_pow = pow(2.0, (double)(gi->global_gain - 210) / 4.0);
-            int sfac_scale = gi->scalefac_scale ? 2 : 1;
+            mp3_requantize(gi,
+                           is_values,
+                           scalefac_l[ch],
+                           scalefac_s[ch],
+                           sfb_long,
+                           sfb_short,
+                           mixed_long_bands,
+                           xr[ch]);
+        }
 
-            if (gi->window_switching && gi->block_type == 2) {
-                if (gi->mixed_block) {
-                    for (int sfb = 0; sfb < 8; sfb++) {
-                        int start = mp3_sfb_long_cumul[sr_idx][sfb];
-                        int end = mp3_sfb_long_cumul[sr_idx][sfb + 1];
-                        int sf = scalefac_l[sfb];
-                        if (gi->preflag)
-                            sf += mp3_pretab[sfb];
-                        double sfac_pow = pow(2.0, -0.5 * (double)(sf * sfac_scale));
-                        for (int i = start; i < end; i++) {
-                            double val = (double)abs(is_values[i]);
-                            val = (is_values[i] < 0 ? -1.0 : 1.0) * pow(val, 4.0 / 3.0);
-                            xr[i] = (float)(val * global_gain_pow * sfac_pow);
-                        }
-                    }
-                }
+        // Pass 2: joint stereo in the spectral domain.
+        if (hdr.channels == 2 && (ms_stereo || i_stereo)) {
+            mp3_stereo_process(xr,
+                               &si.granules[gr][1],
+                               scalefac_l[1],
+                               scalefac_s[1],
+                               is_max_l,
+                               is_max_s,
+                               ms_stereo,
+                               i_stereo,
+                               is_mpeg1,
+                               si.granules[gr][1].scalefac_compress & 1,
+                               sfb_long,
+                               sfb_short,
+                               mixed_long_bands);
+        }
 
-                int first_short_band = gi->mixed_block ? 3 : 0;
-                for (int sfb = first_short_band; sfb < 12; sfb++) {
-                    int width =
-                        mp3_sfb_short_cumul[sr_idx][sfb + 1] - mp3_sfb_short_cumul[sr_idx][sfb];
-                    for (int win = 0; win < 3; win++) {
-                        double sfac_pow =
-                            pow(2.0, -0.5 * (double)(scalefac_s[sfb][win] * sfac_scale));
-                        double subblock_pow = pow(2.0, -0.5 * (double)(gi->subblock_gain[win] * 8));
-                        for (int i = 0; i < width; i++) {
-                            int idx = mp3_short_band_index(sr_idx, sfb, win, i);
-                            if (idx < 0 || idx >= MP3_SBLIMIT)
-                                break;
-                            double val = (double)abs(is_values[idx]);
-                            val = (is_values[idx] < 0 ? -1.0 : 1.0) * pow(val, 4.0 / 3.0);
-                            xr[idx] = (float)(val * global_gain_pow * sfac_pow * subblock_pow);
-                        }
-                    }
-                }
-            } else {
-                for (int sfb = 0; sfb < 21; sfb++) {
-                    int start = (sr_idx < 3) ? mp3_sfb_long_cumul[sr_idx][sfb] : sfb * 18;
-                    int end = (sr_idx < 3) ? mp3_sfb_long_cumul[sr_idx][sfb + 1] : (sfb + 1) * 18;
-                    if (end > MP3_SBLIMIT)
-                        end = MP3_SBLIMIT;
-
-                    int sf = scalefac_l[sfb];
-                    if (gi->preflag)
-                        sf += mp3_pretab[sfb];
-                    double sfac_pow = pow(2.0, -0.5 * (double)(sf * sfac_scale));
-
-                    for (int i = start; i < end; i++) {
-                        double val = (double)abs(is_values[i]);
-                        val = (is_values[i] < 0 ? -1.0 : 1.0) * pow(val, 4.0 / 3.0);
-                        xr[i] = (float)(val * global_gain_pow * sfac_pow);
-                    }
-                }
-            }
+        // Pass 3: alias reduction → IMDCT → overlap-add → frequency inversion.
+        for (int ch = 0; ch < hdr.channels; ch++) {
+            const mp3_granule_info_t *gi = &si.granules[gr][ch];
+            float *lines = xr[ch];
 
             if (gi->block_type != 2 || gi->mixed_block) {
                 int alias_subbands = gi->mixed_block ? 2 : 32;
@@ -1112,12 +1556,10 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                     for (int i = 0; i < 8; i++) {
                         int a_idx = sb * 18 - 1 - i;
                         int b_idx = sb * 18 + i;
-                        if (a_idx >= 0 && b_idx < MP3_SBLIMIT) {
-                            float a = xr[a_idx];
-                            float b = xr[b_idx];
-                            xr[a_idx] = a * mp3_cs[i] - b * mp3_ca[i];
-                            xr[b_idx] = b * mp3_cs[i] + a * mp3_ca[i];
-                        }
+                        float a = lines[a_idx];
+                        float b = lines[b_idx];
+                        lines[a_idx] = a * mp3_cs[i] - b * mp3_ca[i];
+                        lines[b_idx] = b * mp3_cs[i] + a * mp3_ca[i];
                     }
                 }
             }
@@ -1130,7 +1572,7 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                     for (int win = 0; win < 3; win++) {
                         float short_in[6];
                         for (int i = 0; i < 6; i++)
-                            short_in[i] = xr[sb * 18 + win * 6 + i];
+                            short_in[i] = lines[sb * 18 + win * 6 + i];
                         float short_out[12];
                         mp3_imdct12(short_in, short_out);
                         for (int i = 0; i < 12; i++) {
@@ -1141,7 +1583,7 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 } else {
                     float long_in[18];
                     for (int i = 0; i < 18; i++)
-                        long_in[i] = xr[sb * 18 + i];
+                        long_in[i] = lines[sb * 18 + i];
                     mp3_imdct36(long_in, imdct_out);
 
                     const float *win;
@@ -1156,21 +1598,18 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 }
 
                 for (int i = 0; i < 18; i++) {
-                    samples[ch][sb * 18 + i] = imdct_out[i] + dec->overlap[ch][sb][i];
+                    float value = imdct_out[i] + dec->overlap[ch][sb][i];
+                    // Frequency inversion: every odd time sample of every odd
+                    // subband is negated to undo the polyphase inversion.
+                    if ((sb & 1) && (i & 1))
+                        value = -value;
+                    samples[ch][sb * 18 + i] = value;
                     dec->overlap[ch][sb][i] = imdct_out[18 + i];
                 }
             }
         }
 
-        if (hdr.channel_mode == 1 && (hdr.mode_ext & 0x02)) {
-            for (int i = 0; i < MP3_SBLIMIT; i++) {
-                float m = samples[0][i];
-                float s = samples[1][i];
-                samples[0][i] = (m + s) * 0.707106781f;
-                samples[1][i] = (m - s) * 0.707106781f;
-            }
-        }
-
+        // Pass 4: polyphase synthesis into interleaved PCM.
         for (int ss = 0; ss < 18; ss++) {
             for (int ch = 0; ch < hdr.channels; ch++) {
                 float subbands[32];
@@ -1181,10 +1620,9 @@ static int mp3_decode_frame_internal(mp3_decoder_t *dec,
                 mp3_synth_filter(dec, ch, subbands, pcm_samples);
 
                 for (int j = 0; j < 32; j++) {
-                    size_t out_idx = ((size_t)gr * (size_t)(samples_per_frame / ngranules) +
-                                      (size_t)ss * 32 + (size_t)j) *
-                                         (size_t)hdr.channels +
-                                     (size_t)ch;
+                    size_t out_idx =
+                        ((size_t)gr * 576u + (size_t)ss * 32 + (size_t)j) * (size_t)hdr.channels +
+                        (size_t)ch;
                     pcm_out[out_idx] = pcm_samples[j];
                 }
             }

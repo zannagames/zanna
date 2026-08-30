@@ -70,6 +70,13 @@ int mp3_decode_file(mp3_decoder_t *dec,
 /// @brief Opaque MP3 streaming decoder handle.
 typedef struct mp3_stream mp3_stream_t;
 
+/// @brief Verify the decoder's built-in ISO Huffman trees (diagnostic).
+/// @details Checks every pair table and both count1 quad tables for a complete
+///          prefix code with exactly the value square the standard defines.
+/// @return `0` when every tree passes, otherwise `-(table index)` of the first
+///         failure (`-32` / `-33` for quad table A / B).
+int mp3_huffman_self_check(void);
+
 /// @brief Open an MP3 file for streaming frame-by-frame decode.
 /// @details Keeps the compressed file in memory, pre-scans its metadata and
 ///          total frame count, then decodes one MP3 frame at a time.
