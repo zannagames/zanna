@@ -332,6 +332,12 @@ struct vaud_context {
     volatile int paused;     ///< Global pause flag
     volatile int destroying; ///< Context teardown is in progress.
 
+    // Background music streamer (see vaud.c): keeps ring buffers refilled
+    // when the app thread stalls between vaud_update() calls.
+    vaud_thread_t streamer_thread; ///< Streamer thread handle (valid when started).
+    int streamer_thread_started;   ///< Nonzero while streamer_thread is joinable.
+    volatile int streamer_running; ///< Streamer loop control flag.
+
     // Platform-specific data
     void *platform_data; ///< Platform backend state (AudioQueue, ALSA, WASAPI)
 };

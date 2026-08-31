@@ -420,11 +420,13 @@ vaud_music_t vaud_load_music_ogg(vaud_context_t ctx, const char *path);
 vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path);
 
 /// @brief Service streaming music buffers outside the audio render callback.
-/// @details Decodes/refills empty music buffers and processes pending loop rewinds.
-///          Applications using the high-level Zanna runtime should call
-///          `Zanna.Sound.Audio.Update()` each frame; it forwards here. The
-///          realtime mixer consumes decoded buffers and never performs file I/O
-///          or codec decode work.
+/// @details Decodes/refills empty music buffers and processes pending loop
+///          rewinds. Refills are normally serviced continuously by the
+///          context's background streamer thread (VAUD_STREAM_THREAD_ENABLE),
+///          so streams keep playing even when the caller stalls; this call
+///          remains a synchronous best-effort top-up and the only refill path
+///          when that thread could not start. The realtime mixer consumes
+///          decoded buffers and never performs file I/O or codec decode work.
 /// @param ctx Audio context.
 void vaud_update(vaud_context_t ctx);
 

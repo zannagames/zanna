@@ -120,6 +120,25 @@ extern "C" {
 #define VAUD_MUSIC_BUFFER_COUNT 3
 #endif
 
+/// @brief Enable the per-context background music streaming thread (1 = on).
+/// @details When enabled, vaud_create() starts one low-duty pump thread that
+///          services music ring-buffer refills so streams keep playing even
+///          when the app thread stalls between vaud_update() calls (asset
+///          loads, long frames). Thread-creation failure is non-fatal: the
+///          context still works with vaud_update() as the only refill pump.
+#ifndef VAUD_STREAM_THREAD_ENABLE
+#define VAUD_STREAM_THREAD_ENABLE 1
+#endif
+
+/// @brief Background streamer pump interval in milliseconds.
+/// @details The music ring holds VAUD_MUSIC_BUFFER_COUNT x
+///          VAUD_MUSIC_BUFFER_FRAMES frames (~557 ms at the defaults); a 50 ms
+///          cadence refills far faster than realtime playback drains, leaving
+///          an order-of-magnitude headroom while keeping the thread idle.
+#ifndef VAUD_STREAM_THREAD_INTERVAL_MS
+#define VAUD_STREAM_THREAD_INTERVAL_MS 50
+#endif
+
 #ifdef __cplusplus
 }
 #endif

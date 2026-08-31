@@ -40,7 +40,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#if !defined(VAUD_PLATFORM_WINDOWS)
+#if defined(VAUD_PLATFORM_WINDOWS)
+#include <process.h>
+#else
 #include <time.h>
 #endif
 
@@ -500,6 +502,94 @@ static void vaud_event_wait(vaud_event_t *event) {
 }
 
 //===----------------------------------------------------------------------===//
+// Background Music Streamer Thread
+//===----------------------------------------------------------------------===//
+
+static void vaud_update_service_refills(vaud_context_t ctx);
+
+/// @brief Body of the per-context background music streaming thread.
+/// @details Services ring-buffer refills every VAUD_STREAM_THREAD_INTERVAL_MS
+///          so music keeps playing when the app thread stalls between
+///          vaud_update() calls (asset loads, long frames). Sleeps in 1 ms
+///          slices and re-checks the stop flags so vaud_destroy() joins
+///          promptly. Per-stream refill claims are taken under the context
+///          mutex, so this loop and app-thread vaud_update() calls can never
+///          decode the same stream concurrently.
+/// @param ctx Owning audio context; outlives the thread (joined in destroy).
+static void vaud_streamer_run(vaud_context_t ctx) {
+    if (!ctx)
+        return;
+    for (;;) {
+        if (!vaud_atomic_load_i32(&ctx->streamer_running) || !vaud_atomic_load_i32(&ctx->running) ||
+            vaud_atomic_load_i32(&ctx->destroying))
+            break;
+        vaud_update_service_refills(ctx);
+        for (int32_t slept = 0; slept < VAUD_STREAM_THREAD_INTERVAL_MS; slept++) {
+            if (!vaud_atomic_load_i32(&ctx->streamer_running) ||
+                vaud_atomic_load_i32(&ctx->destroying))
+                break;
+            vaud_control_sleep_1ms();
+        }
+    }
+}
+
+#if defined(VAUD_PLATFORM_WINDOWS)
+
+/// @brief Win32 entry shim for the background music streamer thread.
+/// @param arg Owning audio context.
+/// @return Always 0.
+static unsigned __stdcall vaud_streamer_thread_main(void *arg) {
+    vaud_streamer_run((vaud_context_t)arg);
+    return 0;
+}
+
+/// @brief Start the context's background streamer thread.
+/// @param ctx Context whose streamer_thread handle receives the new thread.
+/// @return 1 when the thread is running; otherwise 0.
+static int vaud_streamer_thread_start(vaud_context_t ctx) {
+    uintptr_t handle = _beginthreadex(NULL, 0, vaud_streamer_thread_main, ctx, 0, NULL);
+    if (!handle)
+        return 0;
+    ctx->streamer_thread = (vaud_thread_t)handle;
+    return 1;
+}
+
+/// @brief Join and release the context's background streamer thread.
+/// @param ctx Context whose streamer thread was started successfully.
+static void vaud_streamer_thread_join(vaud_context_t ctx) {
+    if (!ctx->streamer_thread)
+        return;
+    WaitForSingleObject(ctx->streamer_thread, INFINITE);
+    CloseHandle(ctx->streamer_thread);
+    ctx->streamer_thread = NULL;
+}
+
+#else /* POSIX */
+
+/// @brief POSIX entry shim for the background music streamer thread.
+/// @param arg Owning audio context.
+/// @return Always NULL.
+static void *vaud_streamer_thread_main(void *arg) {
+    vaud_streamer_run((vaud_context_t)arg);
+    return NULL;
+}
+
+/// @brief Start the context's background streamer thread.
+/// @param ctx Context whose streamer_thread handle receives the new thread.
+/// @return 1 when the thread is running; otherwise 0.
+static int vaud_streamer_thread_start(vaud_context_t ctx) {
+    return pthread_create(&ctx->streamer_thread, NULL, vaud_streamer_thread_main, ctx) == 0;
+}
+
+/// @brief Join and release the context's background streamer thread.
+/// @param ctx Context whose streamer thread was started successfully.
+static void vaud_streamer_thread_join(vaud_context_t ctx) {
+    pthread_join(ctx->streamer_thread, NULL);
+}
+
+#endif
+
+//===----------------------------------------------------------------------===//
 // Version Functions
 //===----------------------------------------------------------------------===//
 
@@ -570,6 +660,18 @@ vaud_context_t vaud_create(void) {
         return NULL;
     }
 
+#if VAUD_STREAM_THREAD_ENABLE
+    /* Start the background music streamer. Failure is non-fatal: the context
+     * still works with app-thread vaud_update() as the only refill pump. */
+    vaud_atomic_store_i32(&ctx->streamer_running, 1);
+    if (vaud_streamer_thread_start(ctx)) {
+        ctx->streamer_thread_started = 1;
+    } else {
+        vaud_atomic_store_i32(&ctx->streamer_running, 0);
+        ctx->streamer_thread_started = 0;
+    }
+#endif
+
     return ctx;
 }
 
@@ -581,6 +683,17 @@ void vaud_destroy(vaud_context_t ctx) {
     /* Stop running flag first */
     vaud_atomic_store_i32(&ctx->destroying, 1);
     vaud_atomic_store_i32(&ctx->running, 0);
+
+    /* Stop and join the background streamer before backend teardown so no
+     * refill machinery runs during platform shutdown or stream detach. If the
+     * platform shutdown below fails and destroy aborts, the context stays
+     * alive without its streamer; app-thread vaud_update() remains a fully
+     * functional refill pump. */
+    vaud_atomic_store_i32(&ctx->streamer_running, 0);
+    if (ctx->streamer_thread_started) {
+        vaud_streamer_thread_join(ctx);
+        ctx->streamer_thread_started = 0;
+    }
 
     /* Shutdown platform (stops audio thread) */
     if (!vaud_platform_shutdown(ctx)) {
@@ -1228,9 +1341,14 @@ static void vaud_music_clear_buffers(struct vaud_music *music) {
         return;
     music->current_buffer = 0;
     music->buffer_position = 0;
+    /* Deliberately leaves buffer_refilling[] untouched: forced refills mark
+     * every slot claimed before dropping the context mutex, and this helper
+     * runs inside that unlocked window. Clearing the claims here would let the
+     * realtime mixer advance current_buffer mid-refill (torn slots). Claims
+     * are only released by mutex-held paths (vaud_music_finish_refill_locked,
+     * vaud_music_clear_stream_buffers). */
     for (int32_t i = 0; i < VAUD_MUSIC_BUFFER_COUNT; i++) {
         music->buffer_frames[i] = 0;
-        music->buffer_refilling[i] = 0;
     }
     music->leftover_frames = 0;
     music->resample_phase = 0.0;
@@ -2118,6 +2236,34 @@ static void vaud_music_wait_for_refill(vaud_context_t ctx, vaud_music_t music) {
     }
 }
 
+/// @brief Acquire the context mutex with no refill in progress on @p music.
+/// @details Returns HOLDING ctx->mutex, with music->refill_in_progress
+///          guaranteed zero under that same hold. Callers that stop, seek,
+///          restart, detach, or free a stream must use this instead of
+///          "wait, then relock": the background streamer thread could
+///          otherwise claim a fresh refill inside the unlocked gap between
+///          the wait and the relock. Both arguments must be non-NULL.
+/// @param ctx Context whose mutex protects @p music.
+/// @param music Stream that must have no refill in flight.
+static void vaud_music_lock_no_refill(vaud_context_t ctx, vaud_music_t music) {
+    int64_t wait_start = vaud_platform_now_ms();
+    int warned = 0;
+    for (;;) {
+        vaud_mutex_lock(&ctx->mutex);
+        if (!music->refill_in_progress)
+            return; /* still holding ctx->mutex */
+        vaud_mutex_unlock(&ctx->mutex);
+        if (!warned && vaud_platform_now_ms() - wait_start >= 5000) {
+            vaud_set_error(VAUD_ERR_PLATFORM, "Timed out waiting for music refill completion");
+            warned = 1;
+        }
+        if (music->refill_event_ready)
+            vaud_event_wait(&music->refill_event);
+        else
+            vaud_control_sleep_1ms();
+    }
+}
+
 //===----------------------------------------------------------------------===//
 // Music Loading and Playback
 //===----------------------------------------------------------------------===//
@@ -2417,8 +2563,13 @@ vaud_music_t vaud_load_music_mp3(vaud_context_t ctx, const char *path) {
     return music;
 }
 
-/// @copydoc vaud_update
-void vaud_update(vaud_context_t ctx) {
+/// @brief Service pending music refills for one bounded pump pass.
+/// @details Shared by vaud_update() and the background streamer thread.
+///          Per-stream refill claims are taken under the context mutex, so
+///          concurrent passes from the app thread and the streamer never
+///          decode the same stream.
+/// @param ctx Audio context.
+static void vaud_update_service_refills(vaud_context_t ctx) {
     if (vaud_context_is_destroying(ctx))
         return;
 
@@ -2496,6 +2647,11 @@ void vaud_update(vaud_context_t ctx) {
     vaud_mutex_unlock(&ctx->mutex);
 }
 
+/// @copydoc vaud_update
+void vaud_update(vaud_context_t ctx) {
+    vaud_update_service_refills(ctx);
+}
+
 /// @copydoc vaud_free_music
 void vaud_free_music(vaud_music_t music) {
     if (!music)
@@ -2503,11 +2659,11 @@ void vaud_free_music(vaud_music_t music) {
 
     vaud_context_t ctx = music->ctx;
 
-    /* Remove from context's music list. This waits behind any in-progress
-     * refill/seek because those operations hold the same mutex while decoding. */
+    /* Remove from the context's music list inside the same mutex hold that
+     * observed no in-progress refill, so the streamer thread can never claim
+     * this stream again once it leaves the registry. */
     if (ctx) {
-        vaud_music_wait_for_refill(ctx, music);
-        vaud_mutex_lock(&ctx->mutex);
+        vaud_music_lock_no_refill(ctx, music);
         for (int32_t i = 0; i < ctx->music_count; i++) {
             if (ctx->active_music[i] == music) {
                 /* Shift remaining entries */
@@ -2562,8 +2718,7 @@ void vaud_detach_music(vaud_music_t music) {
 
     vaud_context_t ctx = music->ctx;
     if (ctx) {
-        vaud_music_wait_for_refill(ctx, music);
-        vaud_mutex_lock(&ctx->mutex);
+        vaud_music_lock_no_refill(ctx, music);
         for (int32_t i = 0; i < ctx->music_count; i++) {
             if (ctx->active_music[i] == music) {
                 for (int32_t j = i; j < ctx->music_count - 1; j++)
@@ -2597,9 +2752,7 @@ void vaud_music_play(vaud_music_t music, int loop) {
         return;
 
     vaud_context_t ctx = music->ctx;
-    vaud_music_wait_for_refill(ctx, music);
-
-    vaud_mutex_lock(&ctx->mutex);
+    vaud_music_lock_no_refill(ctx, music);
     music->loop = loop ? 1 : 0;
     if (music->state == VAUD_MUSIC_STOPPED) {
         if (!vaud_music_begin_forced_refill_locked(music)) {
@@ -2635,9 +2788,7 @@ void vaud_music_stop(vaud_music_t music) {
         return;
 
     vaud_context_t ctx = music->ctx;
-    vaud_music_wait_for_refill(ctx, music);
-
-    vaud_mutex_lock(&ctx->mutex);
+    vaud_music_lock_no_refill(ctx, music);
 
     music->state = VAUD_MUSIC_STOPPED;
     music->refill_in_progress = 0;
@@ -2757,7 +2908,6 @@ void vaud_music_seek(vaud_music_t music, float seconds) {
         return;
 
     vaud_context_t ctx = music->ctx;
-    vaud_music_wait_for_refill(ctx, music);
 
     double target = (double)seconds * (double)music->sample_rate;
     if (target < 0.0)
@@ -2769,7 +2919,7 @@ void vaud_music_seek(vaud_music_t music, float seconds) {
 
     int64_t target_frame = (int64_t)target;
 
-    vaud_mutex_lock(&ctx->mutex);
+    vaud_music_lock_no_refill(ctx, music);
     if (!vaud_music_begin_forced_refill_locked(music)) {
         vaud_mutex_unlock(&ctx->mutex);
         return;

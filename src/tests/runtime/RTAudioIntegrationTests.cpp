@@ -10,11 +10,13 @@
 // surface, verify null-safety, and confirm playlist manipulation semantics.
 //===----------------------------------------------------------------------===//
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -846,6 +848,50 @@ static void test_music_load_real_mp3_reports_duration() {
     remove(path);
 }
 
+static void test_music_playback_survives_missing_updates() {
+    // The loading-stall regression (Legacy Baseball boot stutter): streaming
+    // music must keep playing past its ~0.5 s ring prefill even when the app
+    // thread never calls rt_audio_update() — the engine's background streamer
+    // thread services refills. Before it existed, position froze at the
+    // prefill ceiling and playback went silent.
+    const char *path = "/tmp/zanna_test_music_stream_thread.mp3";
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        ASSERT(1, "could not write temp MP3 file (skip streamer test)");
+        return;
+    }
+    fwrite(
+        zanna_test_mp3::kMp3ToneMpeg1Stereo48k, 1, zanna_test_mp3::kMp3ToneMpeg1Stereo48kSize, f);
+    fclose(f);
+
+    void *music = rt_music_load(make_str(path));
+    if (!music) {
+        ASSERT(1, "music load unavailable in environment (skip streamer test)");
+        remove(path);
+        return;
+    }
+
+    rt_music_set_volume(music, 5);
+    rt_music_play(music, /*loop=*/1);
+
+    // Poll WITHOUT rt_audio_update(): the ~1.056 s fixture loops (position
+    // wraps back to zero), so track the maximum observed position.
+    int64_t max_pos_ms = 0;
+    for (int i = 0; i < 60; i++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        int64_t pos = rt_music_get_position(music);
+        if (pos > max_pos_ms)
+            max_pos_ms = pos;
+        if (max_pos_ms > 800)
+            break;
+    }
+
+    ASSERT(max_pos_ms > 750, "music advances past the ring prefill with no rt_audio_update calls");
+    rt_music_stop(music);
+    rt_music_destroy(music);
+    remove(path);
+}
+
 static void test_music_seek_resampled_wav() {
     const char *path = "/tmp/zanna_test_music_seek_22050.wav";
     if (!write_test_wav_frames(path, 22050, 22050)) {
@@ -1548,6 +1594,7 @@ int main() {
     test_destroy_loaded_handles_after_shutdown();
     test_default_sound_play_survives_sfx_group_changes();
     test_music_load_real_mp3_reports_duration();
+    test_music_playback_survives_missing_updates();
     test_music_seek_resampled_wav();
     test_music_seek_to_duration_reaches_eof();
     test_music_seek_huge_position_clamps_to_duration();

@@ -140,6 +140,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 
 - [ADR 0305](0305-background-search-and-virtual-tool-results.md) — Separate Background Search Analysis from Virtual Tool-Result Publication
 - [ADR 0306](0306-mesh3d-mirror.md) — Mirror Skinned Meshes Across the Sagittal Plane
+- [ADR 0307](0307-vaud-background-music-streaming-thread.md) — Background Music Streaming Thread
 - [ADR 0007](0007-codeeditor-syntax-surface-expansion.md) — CodeEditor Syntax Surface Expansion Uses Registry-Only Semantics
 - [ADR 0008](0008-semantic-token-overlay.md) — Semantic Token Overlay Uses Registry-Only Semantics
 - [ADR 0009](0009-debug-evaluate-protocol.md) — Debug Adapter Evaluate Protocol Extension

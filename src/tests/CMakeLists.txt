@@ -669,6 +669,11 @@ if (TARGET zannaaud)
             ${CMAKE_CURRENT_SOURCE_DIR}/unit/runtime/TestWavStream.cpp
             LIBS zannaaud zanna_test_common
             INCLUDES ${CMAKE_SOURCE_DIR}/src/lib/audio/include ${CMAKE_SOURCE_DIR}/src/lib/audio/src)
+
+    zanna_add_test(test_music_stream_thread
+            ${CMAKE_CURRENT_SOURCE_DIR}/unit/runtime/TestMusicStreamThread.cpp
+            LIBS zannaaud zanna_test_common
+            INCLUDES ${CMAKE_SOURCE_DIR}/src/lib/audio/include ${CMAKE_SOURCE_DIR}/src/lib/audio/src)
 endif ()
 
 zanna_add_test(test_stl_load

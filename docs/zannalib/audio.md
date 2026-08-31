@@ -411,18 +411,22 @@ expose that event. A new explicit or lazily initialized context starts them from
 | `SetMasterVolume(vol)`          | `Void(Integer)`                | Set master volume for all audio (0–100)           |
 | `Shutdown()`                    | `Void()`                       | Shut down the audio system                        |
 | `StopAllSounds()`               | `Void()`                       | Stop all playing sounds (does not affect music)   |
-| `Update()`                      | `Void()`                       | Advance music crossfades and service streaming buffers |
+| `Update()`                      | `Void()`                       | Advance music crossfades; streaming buffers are also refilled automatically by the engine's background streamer thread |
 
 `Audio.Init()` may be called again after a failed initialization or after
 `Audio.Shutdown()`. `Audio.Shutdown()` detaches existing `Sound` and `Music` handles:
 destroying those handles remains safe, but playback calls on them fail until the asset is
 loaded again.
-Call `Audio.Update()` once per frame when using streaming `Music` or direct
-`Music.CrossfadeTo`; `Playlist.Update()` already forwards through the same update path.
-A `Music` stream holds only ~0.5 s of decoded audio ahead of the mixer and every
-refill happens inside `Update()`: a program that never calls it hears the prefill and
-then silence, while `IsPlaying()` keeps reporting `true`.
-The mixer also attempts a locked buffer prefill if playback reaches an empty music buffer before end-of-stream has been reported, so transient stream-buffer gaps do not force the rest of the render block to silence.
+Call `Audio.Update()` once per frame when using `Music.CrossfadeTo` or playlists;
+`Playlist.Update()` already forwards through the same update path. Crossfade
+envelopes and playlist auto-advance progress only inside `Update()`.
+A `Music` stream holds only ~0.5 s of decoded audio ahead of the mixer, but ring
+refills no longer depend on the caller: a background streamer thread keeps every
+playing stream fed, so music keeps playing even when the app thread stalls between
+`Update()` calls (asset loads, long frames). `Update()` remains a synchronous
+best-effort top-up and the only refill path if the streamer thread could not start.
+The realtime mixer only consumes decoded buffers; it never performs file I/O or
+codec decode work.
 
 Master volume is clamped to 0–100 and persists as logical settings state across shutdown/re-init.
 `PauseAll()` freezes the mixer globally without changing each Music object's individual pause
@@ -1136,7 +1140,7 @@ successfully—otherwise the playlist swaps or stops without a fade.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `Audio.Update()` | `Void()` | Advance active crossfades and service streaming music buffers; call once per frame when using `Music.CrossfadeTo` or direct `Music` playback (paused crossfades stay frozen) |
+| `Audio.Update()` | `Void()` | Advance active crossfades; call once per frame when using `Music.CrossfadeTo` (paused crossfades stay frozen). Streaming buffers are refilled automatically by the engine's background streamer |
 
 ### Playlist Properties (Crossfade)
 
