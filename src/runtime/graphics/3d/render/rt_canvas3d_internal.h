@@ -286,6 +286,13 @@ int rt_mesh3d_geometry_revision_ensure_tangents(rt_mesh3d *mesh,
 /// @return GC-managed Mesh3D handle, or NULL on allocation failure.
 void *rt_mesh3d_new_empty_storage(void);
 
+/// @brief Clone readable mesh storage for transactional lightmap publication.
+/// @details Unlike public Mesh3D.Clone, unrelated malformed triangle slots are preserved because
+///          the baker validates and rewrites only its captured valid triangles.
+/// @param mesh Source Mesh3D handle.
+/// @return Independent mesh storage, or NULL on invalid input or allocation failure.
+void *rt_mesh3d_clone_for_lightmap(void *mesh);
+
 /// @brief Vertex count safe to read directly — the live count clamped to capacity, 0 when
 ///   the vertex buffer is absent or empty.
 /// @param mesh Borrowed mesh to inspect; may be `NULL`.

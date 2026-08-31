@@ -101,6 +101,10 @@ typedef struct {
     /// A clean zero-triangle cache marks a degenerate layout that falls back
     /// to legacy weighting.
     int8_t tris_dirty;
+    /// Cached boundary-edge endpoint pairs derived with the triangulation.
+    int32_t hull_edges[RT_BLENDTREE3D_MAX_TRIS * 3 * 2];
+    /// Number of initialized endpoint pairs in `hull_edges`.
+    int32_t hull_edge_count;
 } rt_blend_tree3d;
 
 /// @brief Validate @p obj as a BlendTree3D handle and return its typed pointer (NULL on mismatch).
@@ -191,6 +195,7 @@ static int blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
         blend_tree3d_release_blend_ref(&tree->blend);
         tree->sample_count = 0;
         tree->tri_count = 0;
+        tree->hull_edge_count = 0;
         tree->tris_dirty = 1;
         return 1;
     }
@@ -240,8 +245,16 @@ static int blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
     }
     if (triangulation_changed) {
         tree->tri_count = 0;
+        tree->hull_edge_count = 0;
         tree->tris_dirty = 1;
     } else if (!tree->tris_dirty) {
+        if ((tree->tri_count > 0 && tree->hull_edge_count <= 0) || tree->hull_edge_count < 0 ||
+            tree->hull_edge_count > RT_BLENDTREE3D_MAX_TRIS * 3) {
+            tree->tri_count = 0;
+            tree->hull_edge_count = 0;
+            tree->tris_dirty = 1;
+            changed = 1;
+        }
         for (int32_t t = 0; !tree->tris_dirty && t < tree->tri_count; t++) {
             int32_t a = tree->tris[t * 3];
             int32_t b = tree->tris[t * 3 + 1];
@@ -249,6 +262,16 @@ static int blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
             if (a < 0 || b < 0 || c < 0 || a >= tree->sample_count || b >= tree->sample_count ||
                 c >= tree->sample_count || a == b || b == c || a == c) {
                 tree->tri_count = 0;
+                tree->tris_dirty = 1;
+                changed = 1;
+            }
+        }
+        for (int32_t edge = 0; !tree->tris_dirty && edge < tree->hull_edge_count; ++edge) {
+            int32_t a = tree->hull_edges[edge * 2];
+            int32_t b = tree->hull_edges[edge * 2 + 1];
+            if (a < 0 || b < 0 || a >= tree->sample_count || b >= tree->sample_count || a == b) {
+                tree->tri_count = 0;
+                tree->hull_edge_count = 0;
                 tree->tris_dirty = 1;
                 changed = 1;
             }
@@ -416,6 +439,7 @@ static double blend_tree3d_signed_area2(
 /// @param[in,out] tree Tree whose cached triangle triples to replace.
 static void blend_tree3d_triangulate(rt_blend_tree3d *tree) {
     tree->tri_count = 0;
+    tree->hull_edge_count = 0;
     tree->tris_dirty = 0;
     int32_t n = blend_tree3d_safe_sample_count(tree);
     if (n < 3)
@@ -546,6 +570,33 @@ static void blend_tree3d_triangulate(rt_blend_tree3d *tree) {
         tree->tris[tree->tri_count * 3 + 2] = c;
         tree->tri_count++;
     }
+    /* Cache the boundary once. Adding every triangle edge and cancelling its reversed duplicate
+     * leaves exactly the convex-hull edges; parameter updates can then project in O(hull) rather
+     * than rediscovering adjacency with an O(triangle squared) scan every frame. */
+    for (int32_t t = 0; t < tree->tri_count; ++t) {
+        for (int32_t edge = 0; edge < 3; ++edge) {
+            int32_t a = tree->tris[t * 3 + edge];
+            int32_t b = tree->tris[t * 3 + (edge + 1) % 3];
+            int32_t found = -1;
+            for (int32_t cached = 0; cached < tree->hull_edge_count; ++cached) {
+                int32_t ca = tree->hull_edges[cached * 2];
+                int32_t cb = tree->hull_edges[cached * 2 + 1];
+                if ((ca == a && cb == b) || (ca == b && cb == a)) {
+                    found = cached;
+                    break;
+                }
+            }
+            if (found >= 0) {
+                --tree->hull_edge_count;
+                tree->hull_edges[found * 2] = tree->hull_edges[tree->hull_edge_count * 2];
+                tree->hull_edges[found * 2 + 1] = tree->hull_edges[tree->hull_edge_count * 2 + 1];
+            } else if (tree->hull_edge_count < RT_BLENDTREE3D_MAX_TRIS * 3) {
+                tree->hull_edges[tree->hull_edge_count * 2] = a;
+                tree->hull_edges[tree->hull_edge_count * 2 + 1] = b;
+                ++tree->hull_edge_count;
+            }
+        }
+    }
 }
 
 /// @brief Freeform-directional 2D weighting: barycentric inside the containing
@@ -603,45 +654,28 @@ static void blend_tree3d_apply_2d_freeform(rt_blend_tree3d *tree) {
     /* Exterior: project onto the nearest hull (boundary) edge and lerp its
      * two clips. A boundary edge belongs to exactly one triangle. */
     double best_d2 = DBL_MAX;
-    int32_t best_a = tree->tris[0];
-    int32_t best_b = tree->tris[1];
+    int32_t best_a = tree->hull_edge_count > 0 ? tree->hull_edges[0] : tree->tris[0];
+    int32_t best_b = tree->hull_edge_count > 0 ? tree->hull_edges[1] : tree->tris[1];
     double best_t = 0.0;
-    for (int32_t t = 0; t < tree->tri_count; t++) {
-        for (int32_t e = 0; e < 3; e++) {
-            int32_t a = tree->tris[t * 3 + e];
-            int32_t b = tree->tris[t * 3 + (e + 1) % 3];
-            int shared = 0;
-            for (int32_t u = 0; u < tree->tri_count && !shared; u++) {
-                if (u == t)
-                    continue;
-                for (int32_t e2 = 0; e2 < 3; e2++) {
-                    int32_t ua = tree->tris[u * 3 + e2];
-                    int32_t ub = tree->tris[u * 3 + (e2 + 1) % 3];
-                    if ((ua == a && ub == b) || (ua == b && ub == a)) {
-                        shared = 1;
-                        break;
-                    }
-                }
-            }
-            if (shared)
-                continue; /* interior edge */
-            double ax = tree->samples[a].x, ay = tree->samples[a].y;
-            double bx = tree->samples[b].x, by = tree->samples[b].y;
-            double ex = bx - ax, ey = by - ay;
-            double len2 = ex * ex + ey * ey;
-            double proj = len2 > 1e-18 ? ((x - ax) * ex + (y - ay) * ey) / len2 : 0.0;
-            if (proj < 0.0)
-                proj = 0.0;
-            if (proj > 1.0)
-                proj = 1.0;
-            double qx = ax + ex * proj, qy = ay + ey * proj;
-            double d2 = (x - qx) * (x - qx) + (y - qy) * (y - qy);
-            if (d2 < best_d2) {
-                best_d2 = d2;
-                best_a = a;
-                best_b = b;
-                best_t = proj;
-            }
+    for (int32_t edge = 0; edge < tree->hull_edge_count; ++edge) {
+        int32_t a = tree->hull_edges[edge * 2];
+        int32_t b = tree->hull_edges[edge * 2 + 1];
+        double ax = tree->samples[a].x, ay = tree->samples[a].y;
+        double bx = tree->samples[b].x, by = tree->samples[b].y;
+        double ex = bx - ax, ey = by - ay;
+        double len2 = ex * ex + ey * ey;
+        double proj = len2 > 1e-18 ? ((x - ax) * ex + (y - ay) * ey) / len2 : 0.0;
+        if (proj < 0.0)
+            proj = 0.0;
+        if (proj > 1.0)
+            proj = 1.0;
+        double qx = ax + ex * proj, qy = ay + ey * proj;
+        double d2 = (x - qx) * (x - qx) + (y - qy) * (y - qy);
+        if (d2 < best_d2) {
+            best_d2 = d2;
+            best_a = a;
+            best_b = b;
+            best_t = proj;
         }
     }
     blend_tree3d_clear_weights(tree);

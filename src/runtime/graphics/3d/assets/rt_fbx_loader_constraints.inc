@@ -171,10 +171,10 @@ struct fbx_constraint_pose {
      * replayed for every other target instead of resampling all models. Only the final global
      * matrices are cached: post-evaluation consumers read globals exclusively (components and
      * local matrices are evaluation scratch). */
-    /// Owned sorted array of cached source ticks.
+    /// Owned insertion-ordered array of cached source ticks.
     int64_t *cache_times;
-    /// Owned per-cached-tick block indices into `cache_globals`, parallel to `cache_times`.
-    int32_t *cache_slots;
+    /// Owned open-addressed tick table storing cache entry indices plus one.
+    int32_t *cache_hash_slots;
     /// Owned cached global-matrix blocks of `count * 16` doubles each, in insertion order.
     double *cache_globals;
     /// Single owned allocation backing all three cache views above.
@@ -183,6 +183,8 @@ struct fbx_constraint_pose {
     int32_t cache_count;
     /// Allocated cache capacity in ticks.
     int32_t cache_capacity;
+    /// Power-of-two slot count in `cache_hash_slots`.
+    int32_t cache_hash_capacity;
     /// Zero after a cap or allocation failure permanently disables further caching.
     int cache_disabled;
 };
@@ -208,23 +210,45 @@ static void fbx_constraint_pose_free(fbx_constraint_pose_t *pose) {
 /// Ceiling on cached global-matrix bytes per pose; a pose lives for one animation stack.
 #define FBX_POSE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
 
-/// @brief Locate a cached tick's slot in the pose result cache.
-/// @param[in] pose Pose whose sorted cache-time table is searched.
+/// @brief Hash an FBX source tick for the pose result cache.
+static uint64_t fbx_constraint_pose_cache_hash(int64_t time) {
+    uint64_t value = (uint64_t)time;
+    value ^= value >> 30;
+    value *= UINT64_C(0xbf58476d1ce4e5b9);
+    value ^= value >> 27;
+    value *= UINT64_C(0x94d049bb133111eb);
+    return value ^ (value >> 31);
+}
+
+/// @brief Locate a cached tick's insertion slot in the pose result cache.
+/// @param[in] pose Pose whose open-addressed cache-time table is searched.
 /// @param[in] time Source tick.
-/// @return Index into `cache_times`/`cache_slots`, or `-1` when absent.
+/// @return Index into `cache_times`/`cache_globals`, or `-1` when absent.
 static int32_t fbx_constraint_pose_cache_index(const fbx_constraint_pose_t *pose, int64_t time) {
-    int32_t lo = 0;
-    int32_t hi = pose->cache_count - 1;
-    while (lo <= hi) {
-        int32_t mid = lo + (hi - lo) / 2;
-        if (pose->cache_times[mid] == time)
-            return mid;
-        if (pose->cache_times[mid] < time)
-            lo = mid + 1;
-        else
-            hi = mid - 1;
+    uint32_t mask;
+    uint32_t slot;
+    if (!pose || pose->cache_hash_capacity <= 0 || !pose->cache_hash_slots || !pose->cache_times)
+        return -1;
+    mask = (uint32_t)pose->cache_hash_capacity - 1u;
+    slot = (uint32_t)fbx_constraint_pose_cache_hash(time) & mask;
+    for (int32_t probe = 0; probe < pose->cache_hash_capacity; ++probe) {
+        int32_t encoded = pose->cache_hash_slots[slot];
+        if (encoded == 0)
+            return -1;
+        if (encoded > 0 && encoded <= pose->cache_count && pose->cache_times[encoded - 1] == time)
+            return encoded - 1;
+        slot = (slot + 1u) & mask;
     }
     return -1;
+}
+
+/// @brief Insert one cache entry into an initialized open-addressed tick table.
+static void fbx_constraint_pose_cache_insert_hash(fbx_constraint_pose_t *pose, int32_t index) {
+    uint32_t mask = (uint32_t)pose->cache_hash_capacity - 1u;
+    uint32_t slot = (uint32_t)fbx_constraint_pose_cache_hash(pose->cache_times[index]) & mask;
+    while (pose->cache_hash_slots[slot] != 0)
+        slot = (slot + 1u) & mask;
+    pose->cache_hash_slots[slot] = index + 1;
 }
 
 /// @brief Replay a previously evaluated tick's global matrices into @p pose.
@@ -239,7 +263,7 @@ static int fbx_constraint_pose_cache_fetch(fbx_constraint_pose_t *pose, int64_t 
     if (index < 0)
         return 0;
     memcpy(pose->global_matrices,
-           &pose->cache_globals[(size_t)pose->cache_slots[index] * (size_t)pose->count * 16u],
+           &pose->cache_globals[(size_t)index * (size_t)pose->count * 16u],
            (size_t)pose->count * 16u * sizeof(double));
     return 1;
 }
@@ -258,7 +282,6 @@ static int fbx_constraint_pose_cache_fetch(fbx_constraint_pose_t *pose, int64_t 
 /// @param[in] time Source tick just evaluated.
 static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t time) {
     size_t block_doubles;
-    int32_t index;
     if (!pose || pose->cache_disabled || pose->count <= 0 || !pose->global_matrices)
         return;
     if (fbx_constraint_pose_cache_index(pose, time) >= 0)
@@ -266,10 +289,11 @@ static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t
     block_doubles = (size_t)pose->count * 16u;
     if (pose->cache_count == pose->cache_capacity) {
         int32_t new_capacity;
+        int64_t hash_capacity_i64;
         uint64_t per_entry_bytes =
-            (uint64_t)block_doubles * sizeof(double) + sizeof(int64_t) + sizeof(int32_t);
+            (uint64_t)block_doubles * sizeof(double) + sizeof(int64_t) + 2u * sizeof(int32_t);
         int64_t *times;
-        int32_t *slots;
+        int32_t *hash_slots;
         double *globals;
         void *storage;
         size_t times_bytes;
@@ -281,13 +305,19 @@ static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t
             return;
         }
         new_capacity = pose->cache_capacity == 0 ? 64 : pose->cache_capacity * 2;
+        hash_capacity_i64 = (int64_t)new_capacity * 2;
+        if (hash_capacity_i64 > INT32_MAX) {
+            pose->cache_disabled = 1;
+            return;
+        }
+        int32_t hash_capacity = (int32_t)hash_capacity_i64;
         if ((uint64_t)new_capacity > SIZE_MAX / (block_doubles * sizeof(double)) ||
             (uint64_t)new_capacity * per_entry_bytes > FBX_POSE_CACHE_MAX_BYTES) {
             pose->cache_disabled = 1;
             return;
         }
         times_bytes = (size_t)new_capacity * sizeof(*times);
-        slots_bytes = (size_t)new_capacity * sizeof(*slots);
+        slots_bytes = (size_t)hash_capacity * sizeof(*hash_slots);
         globals_bytes = (size_t)new_capacity * block_doubles * sizeof(*globals);
         if (times_bytes > SIZE_MAX - slots_bytes ||
             times_bytes + slots_bytes > SIZE_MAX - globals_bytes) {
@@ -301,11 +331,11 @@ static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t
             return;
         }
         times = (int64_t *)storage;
-        slots = (int32_t *)((uint8_t *)storage + times_bytes);
+        hash_slots = (int32_t *)((uint8_t *)storage + times_bytes);
         globals = (double *)((uint8_t *)storage + times_bytes + slots_bytes);
+        memset(hash_slots, 0, slots_bytes);
         if (pose->cache_count > 0) {
             memcpy(times, pose->cache_times, (size_t)pose->cache_count * sizeof(*times));
-            memcpy(slots, pose->cache_slots, (size_t)pose->cache_count * sizeof(*slots));
             memcpy(globals,
                    pose->cache_globals,
                    (size_t)pose->cache_count * block_doubles * sizeof(*globals));
@@ -313,22 +343,19 @@ static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t
         free(pose->cache_storage);
         pose->cache_storage = storage;
         pose->cache_times = times;
-        pose->cache_slots = slots;
+        pose->cache_hash_slots = hash_slots;
         pose->cache_globals = globals;
         pose->cache_capacity = new_capacity;
+        pose->cache_hash_capacity = hash_capacity;
+        for (int32_t cached = 0; cached < pose->cache_count; ++cached)
+            fbx_constraint_pose_cache_insert_hash(pose, cached);
     }
-    /* Keep tick order sorted; blocks stay in insertion order behind the slot indirection. */
-    index = pose->cache_count;
-    while (index > 0 && pose->cache_times[index - 1] > time) {
-        pose->cache_times[index] = pose->cache_times[index - 1];
-        pose->cache_slots[index] = pose->cache_slots[index - 1];
-        --index;
-    }
-    pose->cache_times[index] = time;
-    pose->cache_slots[index] = pose->cache_count;
+    /* Append both the tick and its global block, then publish the hash slot. */
+    pose->cache_times[pose->cache_count] = time;
     memcpy(&pose->cache_globals[(size_t)pose->cache_count * block_doubles],
            pose->global_matrices,
            block_doubles * sizeof(double));
+    fbx_constraint_pose_cache_insert_hash(pose, pose->cache_count);
     ++pose->cache_count;
 }
 

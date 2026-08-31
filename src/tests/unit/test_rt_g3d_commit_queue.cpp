@@ -55,6 +55,14 @@ struct WorkerDrainArg {
     void *queue;
 };
 
+struct CloseRaceArg {
+    void *queue;
+    volatile int phase;
+    volatile int accepted;
+    volatile int rejected;
+    volatile int cancelled;
+};
+
 struct CommitQueueLayout {
     void *items;
     volatile int64_t submitted;
@@ -87,6 +95,29 @@ extern "C" void drain_from_worker(void *user_data) {
     WorkerDrainArg *arg = (WorkerDrainArg *)user_data;
     expect_true(rt_is_main_thread() == 0, "worker drain probe should run off main thread");
     (void)rt_g3d_commit_queue_drain(arg->queue, 0);
+}
+
+extern "C" void count_cancelled_commit(void *user_data) {
+    CloseRaceArg *arg = (CloseRaceArg *)user_data;
+    rt_atomic_fetch_add_i32(&arg->cancelled, 1, __ATOMIC_RELAXED);
+}
+
+extern "C" void enqueue_across_close(void *user_data) {
+    CloseRaceArg *arg = (CloseRaceArg *)user_data;
+    for (int attempt = 0; attempt < 1024; ++attempt) {
+        int8_t accepted = rt_g3d_commit_queue_enqueue_cost_cancel(
+            arg->queue, record_commit, arg, 1, count_cancelled_commit);
+        rt_atomic_fetch_add_i32(accepted ? &arg->accepted : &arg->rejected, 1, __ATOMIC_RELAXED);
+    }
+    rt_atomic_store_i32(&arg->phase, 1, __ATOMIC_RELEASE);
+    while (rt_atomic_load_i32(&arg->phase, __ATOMIC_ACQUIRE) < 2)
+        rt_atomic_thread_fence(__ATOMIC_ACQUIRE);
+    for (int attempt = 0; attempt < 1024; ++attempt) {
+        int8_t accepted = rt_g3d_commit_queue_enqueue_cost_cancel(
+            arg->queue, record_commit, arg, 1, count_cancelled_commit);
+        rt_atomic_fetch_add_i32(accepted ? &arg->accepted : &arg->rejected, 1, __ATOMIC_RELAXED);
+    }
+    rt_atomic_store_i32(&arg->phase, 3, __ATOMIC_RELEASE);
 }
 
 static bool wait_for_worker_trap(void *pool, const char *needle) {
@@ -295,6 +326,31 @@ static void test_wrapper_allocation_failure_preserves_caller_ownership() {
 
     rt_g3d_commit_queue_free(queue);
 }
+
+static void test_close_then_join_prevents_enqueue_free_race() {
+    void *queue = rt_g3d_commit_queue_new();
+    void *pool = rt_threadpool_new(1);
+    expect_true(queue != nullptr, "queue should be created for close race test");
+    expect_true(pool != nullptr, "pool should be created for close race test");
+
+    CloseRaceArg arg = {queue, 0, 0, 0, 0};
+    expect_true(rt_threadpool_submit(pool, (void *)&enqueue_across_close, &arg) != 0,
+                "close-race producer should submit");
+    while (rt_atomic_load_i32(&arg.phase, __ATOMIC_ACQUIRE) < 1)
+        rt_atomic_thread_fence(__ATOMIC_ACQUIRE);
+    rt_g3d_commit_queue_close(queue);
+    rt_atomic_store_i32(&arg.phase, 2, __ATOMIC_RELEASE);
+    rt_threadpool_wait(pool);
+
+    expect_true(arg.accepted == 1024,
+                "all submissions before the close publication transfer ownership");
+    expect_true(arg.rejected == 1024,
+                "all producer submissions after close retain caller ownership");
+    rt_threadpool_shutdown(pool);
+    rt_g3d_commit_queue_free(queue);
+    expect_true(arg.cancelled == arg.accepted,
+                "free after producer join cancels every accepted pending payload exactly once");
+}
 } // namespace
 
 int main() {
@@ -305,6 +361,7 @@ int main() {
     test_cost_budget_drain();
     test_closed_backing_queue_rejects_enqueue_without_trap();
     test_wrapper_allocation_failure_preserves_caller_ownership();
+    test_close_then_join_prevents_enqueue_free_race();
     std::printf("Graphics3D commit queue tests: all passed\n");
     return 0;
 }

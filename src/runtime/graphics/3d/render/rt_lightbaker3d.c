@@ -8,13 +8,13 @@
 // File: src/runtime/graphics/3d/render/rt_lightbaker3d.c
 // Purpose: Baked global illumination — LightBaker3D (deterministic CPU path
 //   tracer over static scene geometry producing a lightmap atlas with
-//   per-triangle charts) and LightProbeGrid3D (SH-9 irradiance probe grid for
+//   seam-safe charts) and LightProbeGrid3D (SH-9 irradiance probe grid for
 //   dynamic objects), with .vlm/.vlpg serialization.
 // Key invariants:
 //   - Bakes are deterministic: fixed per-texel/per-probe sample seeds, no
-//     wall-clock or thread-order dependence (single-threaded chunked BakeStep).
-//   - Charts write TEXCOORD_1 directly into mesh vertices; the atlas applies
-//     through Material3D lightmap slots on per-node material instances.
+//     wall-clock or thread-order dependence.
+//   - Charts publish through per-node mesh copies with unique seam vertices;
+//     the atlas applies through Material3D lightmap slots on material instances.
 // Ownership/Lifetime:
 //   - Baker/grid are GC-managed; the baker retains its scene and output atlas.
 //   - Explicit light state is copied at AddLight time rather than retained.
@@ -32,13 +32,17 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_lightbaker3d.h"
+#include "rt_alloc_size.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_file_stdio.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_morphtarget3d.h"
+#include "rt_parallel.h"
 #include "rt_pixels_internal.h"
 #include "rt_scene3d.h"
+#include "rt_threadpool.h"
 #include "rt_trap.h"
 #include "rt_vec3.h"
 
@@ -85,8 +89,10 @@ extern void *rt_pixels_new(int64_t width, int64_t height);
 #define BAKER3D_MAX_NODES 4096
 #define BAKER3D_MAX_TRAVERSAL_NODES 65536
 #define BAKER3D_ATLAS_DIM 1024
+#define BAKER3D_MAX_CHART_DIM 128
 #define BAKER3D_EPS 1e-4
-#define BAKER3D_MAX_LIGHTS 16
+#define BAKER3D_SAMPLE_WORK_PER_STEP 1024
+#define BAKER3D_MAX_PARALLEL_TASKS 32
 
 /*==========================================================================
  * Deterministic sampler (per-texel seeded LCG)
@@ -121,6 +127,10 @@ typedef struct baker_tri {
     uint32_t vertex_indices[3]; /* captured UV publication targets */
     int32_t chart_x, chart_y;
     int32_t chart_w, chart_h;
+    int32_t chart_root;
+    int32_t texel_min_x, texel_min_y;
+    int32_t texel_max_x, texel_max_y;
+    double chart_uv[3][2];
 } baker_tri;
 
 typedef struct baker_bvh_node {
@@ -145,18 +155,29 @@ typedef struct baker_node_entry {
 } baker_node_entry;
 
 typedef struct baker_light {
-    int32_t type; /* 0 directional, 1 point, 3 spot (ambient skipped) */
+    int32_t type; /* 0 directional, 1 point, 3 spot, 4 rectangle, 5 sphere, 6 volume */
     double direction[3];
     double position[3];
+    double basis_u[3];
+    double basis_v[3];
     double color[3];
     double intensity;
     double attenuation;
     double inner_cos;
     double outer_cos;
     double range;
+    double width;
+    double height;
+    double radius;
     int32_t decay_type;
     int8_t casts_shadows;
 } baker_light;
+
+typedef struct baker_light_bvh_node {
+    double min_b[3], max_b[3];
+    int32_t left, right;
+    int32_t first, count;
+} baker_light_bvh_node;
 
 typedef struct rt_lightbaker3d {
     void *vptr;
@@ -175,15 +196,30 @@ typedef struct rt_lightbaker3d {
     int32_t bvh_node_count;
     baker_node_entry nodes[BAKER3D_MAX_NODES];
     int32_t node_count;
-    baker_light lights[BAKER3D_MAX_LIGHTS];
+    baker_light *lights;
     int32_t light_count;
+    int32_t light_capacity;
+    int32_t *bounded_light_order;
+    int32_t bounded_light_count;
+    int32_t *global_light_indices;
+    int32_t global_light_count;
+    baker_light_bvh_node *light_bvh_nodes;
+    int32_t light_bvh_node_count;
+    int8_t light_index_built;
     /* atlas + charts */
     void *atlas;             /* retained Pixels */
     float *atlas_hdr;        /* rgb accumulation at atlas resolution */
     uint8_t *atlas_coverage; /* 1 where a chart texel wrote */
     int32_t atlas_dim;
-    int32_t cursor_x, cursor_y, row_height; /* shelf packer state */
-    int32_t next_tri;                       /* BakeStep cursor over gathered triangles */
+    int32_t next_tri;    /* BakeStep cursor over gathered triangles */
+    int32_t next_texel;  /* linear chart texel cursor */
+    int64_t next_sample; /* sample cursor within the current texel */
+    double sample_acc[3];
+    uint64_t completed_sample_work;
+    uint64_t total_sample_work;
+    void *worker_pool; /* retained baker-owned Threadpool, lazily created */
+    int32_t worker_count;
+    int8_t worker_pool_failed;
     int8_t gathered;
     int8_t failed;
     int8_t applied;
@@ -750,16 +786,22 @@ static int baker_bvh_build(rt_lightbaker3d *baker) {
 /// @param min_b Three-element box minimum.
 /// @param max_b Three-element box maximum.
 /// @param t_max Exclusive working maximum distance.
+/// @param t_near_out Optional output receiving the nonnegative box entry distance.
 /// @return Nonzero when the forward interval intersects before @p t_max.
 static int baker_ray_aabb(const double origin[3],
                           const double dir[3],
                           const double min_b[3],
                           const double max_b[3],
-                          double t_max) {
+                          double t_max,
+                          double *t_near_out) {
     double t0 = 0.0, t1 = t_max;
+    if (!origin || !dir || !min_b || !max_b || !isfinite(t_max) || t_max <= 0.0)
+        return 0;
     for (int a = 0; a < 3; ++a) {
         double near_t;
         double far_t;
+        if (!isfinite(origin[a]) || !isfinite(dir[a]) || !isfinite(min_b[a]) || !isfinite(max_b[a]))
+            return 0;
         if (dir[a] == 0.0) {
             if (origin[a] < min_b[a] || origin[a] > max_b[a])
                 return 0;
@@ -779,6 +821,8 @@ static int baker_ray_aabb(const double origin[3],
         if (t0 > t1)
             return 0;
     }
+    if (t_near_out)
+        *t_near_out = t0;
     return 1;
 }
 
@@ -803,21 +847,21 @@ static int baker_ray_tri(const double origin[3],
                     dir[2] * e2[0] - dir[0] * e2[2],
                     dir[0] * e2[1] - dir[1] * e2[0]};
     double det = e1[0] * pv[0] + e1[1] * pv[1] + e1[2] * pv[2];
-    if (fabs(det) < 1e-12)
+    if (!isfinite(det) || fabs(det) < 1e-12)
         return 0;
     double inv_det = 1.0 / det;
     double tv[3] = {origin[0] - tri->p0[0], origin[1] - tri->p0[1], origin[2] - tri->p0[2]};
     double u = (tv[0] * pv[0] + tv[1] * pv[1] + tv[2] * pv[2]) * inv_det;
-    if (u < -1e-9 || u > 1.0 + 1e-9)
+    if (!isfinite(u) || u < -1e-9 || u > 1.0 + 1e-9)
         return 0;
     double qv[3] = {tv[1] * e1[2] - tv[2] * e1[1],
                     tv[2] * e1[0] - tv[0] * e1[2],
                     tv[0] * e1[1] - tv[1] * e1[0]};
     double v = (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]) * inv_det;
-    if (v < -1e-9 || u + v > 1.0 + 1e-9)
+    if (!isfinite(v) || v < -1e-9 || u + v > 1.0 + 1e-9)
         return 0;
     double t = (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]) * inv_det;
-    if (t <= BAKER3D_EPS)
+    if (!isfinite(t) || t <= BAKER3D_EPS)
         return 0;
     *t_out = t;
     *u_out = u;
@@ -839,14 +883,25 @@ static int32_t baker_trace(const rt_lightbaker3d *baker,
                            double *t_out) {
     if (!baker->bvh_nodes || baker->bvh_node_count <= 0)
         return -1;
-    int32_t stack[64];
+
+    typedef struct {
+        int32_t node_index;
+        double t_near;
+    } baker_trace_stack_entry;
+
+    baker_trace_stack_entry stack[64];
     int32_t stack_count = 0;
-    stack[stack_count++] = 0;
+    double root_near;
+    if (!baker_ray_aabb(
+            origin, dir, baker->bvh_nodes[0].min_b, baker->bvh_nodes[0].max_b, t_max, &root_near))
+        return -1;
+    stack[stack_count++] = (baker_trace_stack_entry){0, root_near};
     int32_t best = -1;
     double best_t = t_max;
     while (stack_count > 0) {
-        const baker_bvh_node *node = &baker->bvh_nodes[stack[--stack_count]];
-        if (!baker_ray_aabb(origin, dir, node->min_b, node->max_b, best_t))
+        baker_trace_stack_entry entry = stack[--stack_count];
+        const baker_bvh_node *node = &baker->bvh_nodes[entry.node_index];
+        if (entry.t_near >= best_t)
             continue;
         if (node->left < 0) {
             for (int32_t i = node->first; i < node->first + node->count; ++i) {
@@ -857,9 +912,28 @@ static int32_t baker_trace(const rt_lightbaker3d *baker,
                     best = baker->bvh_order[i];
                 }
             }
-        } else if (stack_count + 2 <= 64) {
-            stack[stack_count++] = node->left;
-            stack[stack_count++] = node->right;
+        } else {
+            const baker_bvh_node *left = &baker->bvh_nodes[node->left];
+            const baker_bvh_node *right = &baker->bvh_nodes[node->right];
+            double left_near;
+            double right_near;
+            int left_hit =
+                baker_ray_aabb(origin, dir, left->min_b, left->max_b, best_t, &left_near);
+            int right_hit =
+                baker_ray_aabb(origin, dir, right->min_b, right->max_b, best_t, &right_near);
+            if (left_hit && right_hit && stack_count + 2 <= 64) {
+                if (left_near <= right_near) {
+                    stack[stack_count++] = (baker_trace_stack_entry){node->right, right_near};
+                    stack[stack_count++] = (baker_trace_stack_entry){node->left, left_near};
+                } else {
+                    stack[stack_count++] = (baker_trace_stack_entry){node->left, left_near};
+                    stack[stack_count++] = (baker_trace_stack_entry){node->right, right_near};
+                }
+            } else if (left_hit && stack_count < 64) {
+                stack[stack_count++] = (baker_trace_stack_entry){node->left, left_near};
+            } else if (right_hit && stack_count < 64) {
+                stack[stack_count++] = (baker_trace_stack_entry){node->right, right_near};
+            }
         }
     }
     if (best >= 0 && t_out)
@@ -903,6 +977,322 @@ static double baker_light_range_fade(double distance, double range) {
     return remaining * remaining * (3.0 - 2.0 * remaining);
 }
 
+/// @brief Normalize one finite three-vector in place.
+/// @param value Mutable vector.
+/// @return Nonzero when a finite unit vector was produced.
+static int baker_normalize3(double value[3]) {
+    double length;
+    if (!value)
+        return 0;
+    length = hypot(hypot(value[0], value[1]), value[2]);
+    if (!isfinite(length) || length <= 1e-12)
+        return 0;
+    value[0] /= length;
+    value[1] /= length;
+    value[2] /= length;
+    return 1;
+}
+
+/// @brief Evaluate one copied analytic light at a world-space point.
+/// @param light Immutable light snapshot.
+/// @param point World-space shading point.
+/// @param to_light Output unit direction for surface lights.
+/// @param distance Output distance to the selected emitter point, or `DBL_MAX` for directional.
+/// @param attenuation Output finite nonnegative attenuation.
+/// @return Zero for no contribution, one for directional surface irradiance, or two for isotropic
+/// volume irradiance.
+static int baker_evaluate_light(const baker_light *light,
+                                const double point[3],
+                                double to_light[3],
+                                double *distance,
+                                double *attenuation) {
+    double dist = DBL_MAX;
+    double atten = 1.0;
+    if (!light || !point || !to_light || !distance || !attenuation)
+        return 0;
+    if (light->type == 0) {
+        to_light[0] = -light->direction[0];
+        to_light[1] = -light->direction[1];
+        to_light[2] = -light->direction[2];
+        if (!baker_normalize3(to_light))
+            return 0;
+    } else if (light->type == 1 || light->type == 3) {
+        to_light[0] = light->position[0] - point[0];
+        to_light[1] = light->position[1] - point[1];
+        to_light[2] = light->position[2] - point[2];
+        dist = hypot(hypot(to_light[0], to_light[1]), to_light[2]);
+        if (!isfinite(dist) || dist <= 1e-9)
+            return 0;
+        to_light[0] /= dist;
+        to_light[1] /= dist;
+        to_light[2] /= dist;
+        atten =
+            baker_light_distance_decay(light, dist) * baker_light_range_fade(dist, light->range);
+        if (light->type == 3) {
+            double spot_dot = to_light[0] * -light->direction[0] +
+                              to_light[1] * -light->direction[1] +
+                              to_light[2] * -light->direction[2];
+            if (spot_dot < light->outer_cos)
+                return 0;
+            if (spot_dot < light->inner_cos) {
+                double cone_range = light->inner_cos - light->outer_cos;
+                double t;
+                if (cone_range <= 1e-12)
+                    return 0;
+                t = (spot_dot - light->outer_cos) / cone_range;
+                atten *= t * t * (3.0 - 2.0 * t);
+            }
+        }
+    } else if (light->type == 4) {
+        double basis_u[3] = {light->basis_u[0], light->basis_u[1], light->basis_u[2]};
+        double basis_v[3] = {light->basis_v[0], light->basis_v[1], light->basis_v[2]};
+        double relative[3] = {point[0] - light->position[0],
+                              point[1] - light->position[1],
+                              point[2] - light->position[2]};
+        double half_width = fmax(light->width * 0.5, 1e-9);
+        double half_height = fmax(light->height * 0.5, 1e-9);
+        double u;
+        double v;
+        double emitter_cosine;
+        double area;
+        double solid_angle;
+        if (!baker_normalize3(basis_u) || !baker_normalize3(basis_v))
+            return 0;
+        u = relative[0] * basis_u[0] + relative[1] * basis_u[1] + relative[2] * basis_u[2];
+        v = relative[0] * basis_v[0] + relative[1] * basis_v[1] + relative[2] * basis_v[2];
+        u = fmax(-half_width, fmin(half_width, u));
+        v = fmax(-half_height, fmin(half_height, v));
+        to_light[0] = light->position[0] + basis_u[0] * u + basis_v[0] * v - point[0];
+        to_light[1] = light->position[1] + basis_u[1] * u + basis_v[1] * v - point[1];
+        to_light[2] = light->position[2] + basis_u[2] * u + basis_v[2] * v - point[2];
+        dist = hypot(hypot(to_light[0], to_light[1]), to_light[2]);
+        if (!isfinite(dist))
+            return 0;
+        if (dist <= 1e-9) {
+            to_light[0] = -light->direction[0];
+            to_light[1] = -light->direction[1];
+            to_light[2] = -light->direction[2];
+            if (!baker_normalize3(to_light))
+                return 0;
+            dist = 0.0;
+        } else {
+            to_light[0] /= dist;
+            to_light[1] /= dist;
+            to_light[2] /= dist;
+        }
+        emitter_cosine = -(light->direction[0] * to_light[0] + light->direction[1] * to_light[1] +
+                           light->direction[2] * to_light[2]);
+        if (!isfinite(emitter_cosine) || emitter_cosine <= 0.0)
+            return 0;
+        area = fmax(light->width * light->height, 1e-12);
+        solid_angle = area / (area + 3.14159265358979323846 * dist * dist);
+        atten = fmin(emitter_cosine, 1.0) * solid_angle * baker_light_distance_decay(light, dist) *
+                baker_light_range_fade(dist, light->range);
+    } else if (light->type == 5) {
+        double radius = fmax(light->radius, 1e-9);
+        double center_distance;
+        double solid_angle;
+        to_light[0] = light->position[0] - point[0];
+        to_light[1] = light->position[1] - point[1];
+        to_light[2] = light->position[2] - point[2];
+        center_distance = hypot(hypot(to_light[0], to_light[1]), to_light[2]);
+        if (!isfinite(center_distance))
+            return 0;
+        if (center_distance <= 1e-9) {
+            to_light[0] = 0.0;
+            to_light[1] = 1.0;
+            to_light[2] = 0.0;
+            dist = 0.0;
+        } else {
+            to_light[0] /= center_distance;
+            to_light[1] /= center_distance;
+            to_light[2] /= center_distance;
+            dist = center_distance > radius ? center_distance - radius : 0.0;
+        }
+        solid_angle = radius * radius / (radius * radius + dist * dist);
+        atten = solid_angle * baker_light_distance_decay(light, dist) *
+                baker_light_range_fade(dist, light->range);
+    } else if (light->type == 6) {
+        double radius = fmax(light->radius, 1e-9);
+        double t;
+        dist = hypot(hypot(point[0] - light->position[0], point[1] - light->position[1]),
+                     point[2] - light->position[2]);
+        if (!isfinite(dist) || dist >= radius)
+            return 0;
+        t = 1.0 - dist / radius;
+        *distance = dist;
+        *attenuation = t * t * (3.0 - 2.0 * t);
+        to_light[0] = to_light[1] = to_light[2] = 0.0;
+        return 2;
+    } else {
+        return 0;
+    }
+    if (!isfinite(atten) || atten <= 0.0)
+        return 0;
+    *distance = dist;
+    *attenuation = atten;
+    return 1;
+}
+
+/// @brief Compute a conservative finite influence AABB for one copied light.
+/// @return Nonzero for spatially bounded lights, or zero when the light must remain global.
+static int baker_light_bounds(const baker_light *light, double min_b[3], double max_b[3]) {
+    double extent;
+    if (!light || light->type == 0)
+        return 0;
+    if (light->type == 6) {
+        extent = light->radius;
+    } else {
+        if (!(light->range > 0.0) || !isfinite(light->range))
+            return 0;
+        extent = light->range;
+        if (light->type == 4)
+            extent += hypot(light->width, light->height) * 0.5;
+        else if (light->type == 5)
+            extent += light->radius;
+    }
+    if (!(extent > 0.0) || !isfinite(extent))
+        return 0;
+    for (int axis = 0; axis < 3; ++axis) {
+        min_b[axis] = light->position[axis] - extent;
+        max_b[axis] = light->position[axis] + extent;
+        if (!isfinite(min_b[axis]) || !isfinite(max_b[axis]))
+            return 0;
+    }
+    return 1;
+}
+
+static double baker_light_center_axis(const rt_lightbaker3d *baker, int32_t light_index, int axis) {
+    return baker->lights[light_index].position[axis];
+}
+
+/// @brief Build one balanced light-influence BVH node by midpoint partitioning.
+static int32_t baker_light_bvh_build_node(rt_lightbaker3d *baker, int32_t first, int32_t count) {
+    int32_t node_index = baker->light_bvh_node_count++;
+    baker_light_bvh_node *node = &baker->light_bvh_nodes[node_index];
+    double center_min[3] = {DBL_MAX, DBL_MAX, DBL_MAX};
+    double center_max[3] = {-DBL_MAX, -DBL_MAX, -DBL_MAX};
+    node->left = node->right = -1;
+    node->first = first;
+    node->count = count;
+    for (int axis = 0; axis < 3; ++axis) {
+        node->min_b[axis] = DBL_MAX;
+        node->max_b[axis] = -DBL_MAX;
+    }
+    for (int32_t offset = 0; offset < count; ++offset) {
+        int32_t light_index = baker->bounded_light_order[first + offset];
+        double min_b[3], max_b[3];
+        (void)baker_light_bounds(&baker->lights[light_index], min_b, max_b);
+        for (int axis = 0; axis < 3; ++axis) {
+            double center = baker_light_center_axis(baker, light_index, axis);
+            if (min_b[axis] < node->min_b[axis])
+                node->min_b[axis] = min_b[axis];
+            if (max_b[axis] > node->max_b[axis])
+                node->max_b[axis] = max_b[axis];
+            if (center < center_min[axis])
+                center_min[axis] = center;
+            if (center > center_max[axis])
+                center_max[axis] = center;
+        }
+    }
+    if (count <= 8)
+        return node_index;
+    int axis = 0;
+    if (center_max[1] - center_min[1] > center_max[axis] - center_min[axis])
+        axis = 1;
+    if (center_max[2] - center_min[2] > center_max[axis] - center_min[axis])
+        axis = 2;
+    double pivot = 0.5 * (center_min[axis] + center_max[axis]);
+    int32_t lower = first;
+    int32_t upper = first + count - 1;
+    while (lower <= upper) {
+        int32_t light_index = baker->bounded_light_order[lower];
+        if (baker_light_center_axis(baker, light_index, axis) < pivot) {
+            ++lower;
+        } else {
+            int32_t temporary = baker->bounded_light_order[lower];
+            baker->bounded_light_order[lower] = baker->bounded_light_order[upper];
+            baker->bounded_light_order[upper--] = temporary;
+        }
+    }
+    if (lower == first || lower == first + count)
+        lower = first + count / 2;
+    node->left = baker_light_bvh_build_node(baker, first, lower - first);
+    node->right = baker_light_bvh_build_node(baker, lower, first + count - lower);
+    node->count = 0;
+    return node_index;
+}
+
+/// @brief Build immutable global and spatially bounded light lists for hot sample queries.
+static int baker_build_light_index(rt_lightbaker3d *baker) {
+    if (!baker || baker->light_count < 0)
+        return 0;
+    if (baker->light_index_built)
+        return 1;
+    if (baker->light_count == 0) {
+        baker->light_index_built = 1;
+        return 1;
+    }
+    baker->bounded_light_order =
+        (int32_t *)malloc((size_t)baker->light_count * sizeof(*baker->bounded_light_order));
+    baker->global_light_indices =
+        (int32_t *)malloc((size_t)baker->light_count * sizeof(*baker->global_light_indices));
+    baker->light_bvh_nodes = (baker_light_bvh_node *)calloc((size_t)baker->light_count * 2u,
+                                                            sizeof(*baker->light_bvh_nodes));
+    if (!baker->bounded_light_order || !baker->global_light_indices || !baker->light_bvh_nodes)
+        return 0;
+    for (int32_t index = 0; index < baker->light_count; ++index) {
+        double min_b[3], max_b[3];
+        if (baker_light_bounds(&baker->lights[index], min_b, max_b))
+            baker->bounded_light_order[baker->bounded_light_count++] = index;
+        else
+            baker->global_light_indices[baker->global_light_count++] = index;
+    }
+    if (baker->bounded_light_count > 0)
+        (void)baker_light_bvh_build_node(baker, 0, baker->bounded_light_count);
+    baker->light_index_built = 1;
+    return 1;
+}
+
+/// @brief Accumulate one indexed light after spatial candidate selection.
+static void baker_accumulate_direct_light(const rt_lightbaker3d *baker,
+                                          int32_t light_index,
+                                          const double point[3],
+                                          const double normal[3],
+                                          double out_rgb[3]) {
+    const baker_light *light = &baker->lights[light_index];
+    double to_light[3];
+    double dist;
+    double atten;
+    int mode = baker_evaluate_light(light, point, to_light, &dist, &atten);
+    if (mode == 0)
+        return;
+    if (mode == 2) {
+        double volume_scale = atten * light->intensity;
+        out_rgb[0] += light->color[0] * volume_scale;
+        out_rgb[1] += light->color[1] * volume_scale;
+        out_rgb[2] += light->color[2] * volume_scale;
+        return;
+    }
+    double ndl = normal[0] * to_light[0] + normal[1] * to_light[1] + normal[2] * to_light[2];
+    if (ndl <= 0.0)
+        return;
+    double origin[3] = {point[0] + normal[0] * BAKER3D_EPS * 4,
+                        point[1] + normal[1] * BAKER3D_EPS * 4,
+                        point[2] + normal[2] * BAKER3D_EPS * 4};
+    if (light->casts_shadows) {
+        double shadow_limit = dist == DBL_MAX ? DBL_MAX : dist - BAKER3D_EPS * 8;
+        double t;
+        if (shadow_limit > BAKER3D_EPS &&
+            baker_trace(baker, origin, to_light, shadow_limit, &t) >= 0)
+            return;
+    }
+    double scale = ndl * atten * light->intensity;
+    out_rgb[0] += light->color[0] * scale;
+    out_rgb[1] += light->color[1] * scale;
+    out_rgb[2] += light->color[2] * scale;
+}
+
 /// @brief Accumulate direct irradiance from the baker's immutable light snapshot.
 /// @details Directional lights use parallel rays; local lights honor finite
 ///   range and authored decay, spot lights apply smooth cone falloff, and only
@@ -916,62 +1306,31 @@ static void baker_direct_light(const rt_lightbaker3d *baker,
                                const double normal[3],
                                double out_rgb[3]) {
     out_rgb[0] = out_rgb[1] = out_rgb[2] = 0.0;
-    for (int32_t li = 0; li < baker->light_count; ++li) {
-        const baker_light *light = &baker->lights[li];
-        double to_light[3];
-        double dist = DBL_MAX;
-        double atten = 1.0;
-        if (light->type == 0) {
-            to_light[0] = -light->direction[0];
-            to_light[1] = -light->direction[1];
-            to_light[2] = -light->direction[2];
-        } else {
-            to_light[0] = light->position[0] - point[0];
-            to_light[1] = light->position[1] - point[1];
-            to_light[2] = light->position[2] - point[2];
-            dist = hypot(hypot(to_light[0], to_light[1]), to_light[2]);
-            if (!isfinite(dist) || dist < 1e-9)
+    for (int32_t global = 0; global < baker->global_light_count; ++global)
+        baker_accumulate_direct_light(
+            baker, baker->global_light_indices[global], point, normal, out_rgb);
+    if (baker->light_bvh_node_count > 0) {
+        int32_t stack[64];
+        int32_t stack_count = 0;
+        stack[stack_count++] = 0;
+        while (stack_count > 0) {
+            const baker_light_bvh_node *node = &baker->light_bvh_nodes[stack[--stack_count]];
+            if (point[0] < node->min_b[0] || point[0] > node->max_b[0] ||
+                point[1] < node->min_b[1] || point[1] > node->max_b[1] ||
+                point[2] < node->min_b[2] || point[2] > node->max_b[2])
                 continue;
-            to_light[0] /= dist;
-            to_light[1] /= dist;
-            to_light[2] /= dist;
-            atten = baker_light_distance_decay(light, dist) *
-                    baker_light_range_fade(dist, light->range);
-            if (atten <= 0.0)
-                continue;
-            if (light->type == 3) {
-                double spot_dot = to_light[0] * -light->direction[0] +
-                                  to_light[1] * -light->direction[1] +
-                                  to_light[2] * -light->direction[2];
-                if (spot_dot < light->outer_cos)
-                    continue;
-                if (spot_dot < light->inner_cos) {
-                    double cone_range = light->inner_cos - light->outer_cos;
-                    double t;
-                    if (cone_range <= 1e-12)
-                        continue;
-                    t = (spot_dot - light->outer_cos) / cone_range;
-                    atten *= t * t * (3.0 - 2.0 * t);
-                }
+            if (node->count > 0) {
+                for (int32_t offset = 0; offset < node->count; ++offset)
+                    baker_accumulate_direct_light(baker,
+                                                  baker->bounded_light_order[node->first + offset],
+                                                  point,
+                                                  normal,
+                                                  out_rgb);
+            } else if (stack_count <= 62) {
+                stack[stack_count++] = node->left;
+                stack[stack_count++] = node->right;
             }
         }
-        double ndl = normal[0] * to_light[0] + normal[1] * to_light[1] + normal[2] * to_light[2];
-        if (ndl <= 0.0)
-            continue;
-        double origin[3] = {point[0] + normal[0] * BAKER3D_EPS * 4,
-                            point[1] + normal[1] * BAKER3D_EPS * 4,
-                            point[2] + normal[2] * BAKER3D_EPS * 4};
-        if (light->casts_shadows) {
-            double shadow_limit = dist == DBL_MAX ? DBL_MAX : dist - BAKER3D_EPS * 8;
-            double t;
-            if (shadow_limit > BAKER3D_EPS &&
-                baker_trace(baker, origin, to_light, shadow_limit, &t) >= 0)
-                continue;
-        }
-        double scale = ndl * atten * light->intensity;
-        out_rgb[0] += light->color[0] * scale;
-        out_rgb[1] += light->color[1] * scale;
-        out_rgb[2] += light->color[2] * scale;
     }
 }
 
@@ -1056,6 +1415,121 @@ static void baker_radiance(const rt_lightbaker3d *baker,
     out_rgb[2] += (bounce_rgb[2] * tri->albedo[2] + tri->emissive[2]);
 }
 
+typedef struct baker_sample_task {
+    const rt_lightbaker3d *baker;
+    double point[3];
+    double normal[3];
+    double (*results)[3];
+    int64_t first_sample;
+    int32_t sample_count;
+    int32_t result_offset;
+    int32_t tri_index;
+    int32_t texel_x;
+    int32_t texel_y;
+    int32_t bounces;
+} baker_sample_task;
+
+static void *baker_worker_pool(rt_lightbaker3d *baker) {
+    int64_t workers;
+    if (!baker || baker->worker_pool_failed || rt_threadpool_current_worker_pool())
+        return NULL;
+    if (baker->worker_pool)
+        return baker->worker_pool;
+    workers = rt_parallel_default_workers();
+    if (workers > BAKER3D_MAX_PARALLEL_TASKS)
+        workers = BAKER3D_MAX_PARALLEL_TASKS;
+    if (workers < 2) {
+        baker->worker_pool_failed = 1;
+        return NULL;
+    }
+    baker->worker_pool = rt_threadpool_new(workers);
+    if (!baker->worker_pool) {
+        baker->worker_pool_failed = 1;
+        return NULL;
+    }
+    baker->worker_count = (int32_t)workers;
+    return baker->worker_pool;
+}
+
+/// @brief Derive an independent deterministic path seed from immutable sample coordinates.
+static uint32_t baker_sample_seed(int32_t tri_index,
+                                  int32_t texel_x,
+                                  int32_t texel_y,
+                                  int64_t sample_index) {
+    uint64_t value = (uint64_t)(uint32_t)tri_index * UINT64_C(0x9e3779b185ebca87);
+    value ^= (uint64_t)(uint32_t)texel_x * UINT64_C(0xc2b2ae3d27d4eb4f);
+    value ^= (uint64_t)(uint32_t)texel_y * UINT64_C(0x165667b19e3779f9);
+    value ^= (uint64_t)sample_index * UINT64_C(0x85ebca77c2b2ae63);
+    value ^= value >> 33;
+    value *= UINT64_C(0xff51afd7ed558ccd);
+    value ^= value >> 33;
+    return (uint32_t)(value ^ (value >> 32)) | 1u;
+}
+
+static void baker_sample_task_run(void *argument) {
+    baker_sample_task *task = (baker_sample_task *)argument;
+    if (!task || !task->baker || !task->results || task->sample_count <= 0)
+        return;
+    for (int32_t offset = 0; offset < task->sample_count; ++offset) {
+        uint32_t rng = baker_sample_seed(
+            task->tri_index, task->texel_x, task->texel_y, task->first_sample + offset);
+        baker_radiance(task->baker,
+                       task->point,
+                       task->normal,
+                       &rng,
+                       task->bounces,
+                       task->results[task->result_offset + offset]);
+    }
+}
+
+/// @brief Evaluate one bounded sample batch in parallel without changing reduction order.
+static void baker_evaluate_sample_batch(rt_lightbaker3d *baker,
+                                        const baker_tri *tri,
+                                        int32_t tri_index,
+                                        int32_t texel_x,
+                                        int32_t texel_y,
+                                        const double point[3],
+                                        int64_t first_sample,
+                                        int32_t sample_count,
+                                        double results[BAKER3D_SAMPLE_WORK_PER_STEP][3]) {
+    baker_sample_task tasks[BAKER3D_MAX_PARALLEL_TASKS];
+    void *pool = NULL;
+    int32_t task_count = 1;
+    if (!baker || !tri || !point || !results || sample_count <= 0)
+        return;
+    if (sample_count >= 8) {
+        pool = baker_worker_pool(baker);
+        int32_t workers = pool ? baker->worker_count : 1;
+        if (workers > sample_count)
+            workers = sample_count;
+        if (workers > 1)
+            task_count = workers;
+    }
+    int32_t base_count = sample_count / task_count;
+    int32_t extra = sample_count % task_count;
+    int32_t result_offset = 0;
+    for (int32_t task_index = 0; task_index < task_count; ++task_index) {
+        baker_sample_task *task = &tasks[task_index];
+        memset(task, 0, sizeof(*task));
+        task->baker = baker;
+        memcpy(task->point, point, sizeof(task->point));
+        memcpy(task->normal, tri->normal, sizeof(task->normal));
+        task->results = results;
+        task->first_sample = first_sample + result_offset;
+        task->sample_count = base_count + (task_index < extra ? 1 : 0);
+        task->result_offset = result_offset;
+        task->tri_index = tri_index;
+        task->texel_x = texel_x;
+        task->texel_y = texel_y;
+        task->bounces = (int32_t)baker->bounces;
+        result_offset += task->sample_count;
+        if (!pool || !rt_threadpool_submit_fn(pool, baker_sample_task_run, task))
+            baker_sample_task_run(task);
+    }
+    if (pool)
+        rt_threadpool_wait(pool);
+}
+
 /*==========================================================================
  * LightBaker3D public surface
  *=========================================================================*/
@@ -1074,9 +1548,18 @@ static void lightbaker3d_finalize(void *obj) {
     baker->atlas = NULL;
     baker_release_node_entries(baker->nodes, baker->node_count);
     baker->node_count = 0;
+    if (baker->worker_pool) {
+        rt_threadpool_shutdown(baker->worker_pool);
+        baker_release_ref(&baker->worker_pool);
+    }
+    baker->worker_count = 0;
     free(baker->tris);
     free(baker->bvh_order);
     free(baker->bvh_nodes);
+    free(baker->lights);
+    free(baker->bounded_light_order);
+    free(baker->global_light_indices);
+    free(baker->light_bvh_nodes);
     free(baker->atlas_hdr);
     free(baker->atlas_coverage);
 }
@@ -1199,10 +1682,36 @@ double rt_lightbaker3d_get_progress(void *obj) {
     return baker ? baker->progress : 0.0;
 }
 
+/// @brief Ensure dynamic light-snapshot capacity for one more input.
+/// @param baker Mutable baker whose light table may grow.
+/// @return Nonzero when one more light can be appended, otherwise zero.
+static int baker_reserve_light(rt_lightbaker3d *baker) {
+    int32_t new_capacity;
+    baker_light *grown;
+    if (!baker || baker->light_count < 0 || baker->light_capacity < 0 ||
+        baker->light_count > baker->light_capacity || baker->light_count == INT32_MAX)
+        return 0;
+    if (baker->light_count < baker->light_capacity)
+        return 1;
+    new_capacity = baker->light_capacity > 0 ? baker->light_capacity : 16;
+    if (new_capacity <= INT32_MAX / 2)
+        new_capacity *= 2;
+    else
+        new_capacity = baker->light_count + 1;
+    if ((size_t)new_capacity > SIZE_MAX / sizeof(*grown))
+        return 0;
+    grown = (baker_light *)realloc(baker->lights, (size_t)new_capacity * sizeof(*grown));
+    if (!grown)
+        return 0;
+    baker->lights = grown;
+    baker->light_capacity = new_capacity;
+    return 1;
+}
+
 /// @brief Snapshot one enabled non-ambient Light3D into the bake input.
-/// @details Copies and sanitizes the complete punctual-light state immediately;
+/// @details Copies and sanitizes the complete analytic-light state immediately;
 ///   the baker does not retain the source light and later mutations do not affect
-///   this bake. Inputs beyond the sixteen-light cap are ignored.
+///   this bake. Storage grows dynamically so accepted lights are never silently dropped.
 /// @param obj LightBaker3D receiver.
 /// @param light_obj Light3D to copy; invalid handles report a trap.
 void rt_lightbaker3d_add_light(void *obj, void *light_obj) {
@@ -1214,19 +1723,25 @@ void rt_lightbaker3d_add_light(void *obj, void *light_obj) {
         return;
     }
     double direction_length;
-    if (!baker_inputs_mutable(baker) || baker->light_count >= BAKER3D_MAX_LIGHTS ||
-        light->type < 0 || light->type > 6 || light->type == 2 || !light->enabled)
+    if (!baker_inputs_mutable(baker) || light->type < 0 || light->type > 6 || light->type == 2 ||
+        !light->enabled)
         return;
     if (light->type != 0 && (!isfinite(light->position[0]) || !isfinite(light->position[1]) ||
                              !isfinite(light->position[2])))
         return;
+    if (!baker_reserve_light(baker)) {
+        rt_trap("LightBaker3D.AddLight: memory allocation failed");
+        return;
+    }
     baker_light *slot = &baker->lights[baker->light_count];
     memset(slot, 0, sizeof(*slot));
     slot->type = light->type;
     memcpy(slot->direction, light->direction, sizeof(slot->direction));
     memcpy(slot->position, light->position, sizeof(slot->position));
+    memcpy(slot->basis_u, light->basis_u, sizeof(slot->basis_u));
+    memcpy(slot->basis_v, light->basis_v, sizeof(slot->basis_v));
     direction_length = hypot(hypot(slot->direction[0], slot->direction[1]), slot->direction[2]);
-    if ((slot->type == 0 || slot->type == 3) &&
+    if ((slot->type == 0 || slot->type == 3 || slot->type == 4) &&
         (!isfinite(direction_length) || direction_length <= 1e-12))
         return;
     if (isfinite(direction_length) && direction_length > 1e-12) {
@@ -1249,68 +1764,396 @@ void rt_lightbaker3d_add_light(void *obj, void *light_obj) {
         slot->outer_cos = tmp;
     }
     slot->range = isfinite(light->range) && light->range > 0.0 ? light->range : 0.0;
+    slot->width = isfinite(light->width) && light->width > 0.0 ? light->width : 1.0;
+    slot->height = isfinite(light->height) && light->height > 0.0 ? light->height : 1.0;
+    slot->radius = isfinite(light->radius) && light->radius > 0.0 ? light->radius : 1.0;
     slot->decay_type = light->decay_type >= 0 && light->decay_type <= 3 ? light->decay_type : 2;
     slot->casts_shadows = light->casts_shadows ? 1 : 0;
     baker->light_count++;
 }
 
-/// @brief Allocate a chart rect on the atlas shelf packer. Returns 0 when full.
-/// @param baker Baker containing atlas dimensions and mutable shelf cursor.
-/// @param w Positive chart width in texels.
-/// @param h Positive chart height in texels.
-/// @param x Output atlas X origin.
-/// @param y Output atlas Y origin.
-/// @return Nonzero when the padded chart fits and cursor state advances; zero
-///   when the atlas is full.
-static int baker_alloc_chart(rt_lightbaker3d *baker, int32_t w, int32_t h, int32_t *x, int32_t *y) {
-    if (baker->cursor_x + w + 1 > baker->atlas_dim) {
-        baker->cursor_x = 0;
-        baker->cursor_y += baker->row_height + 1;
-        baker->row_height = 0;
+typedef struct baker_chart_edge {
+    int32_t node_index;
+    uint32_t lo;
+    uint32_t hi;
+    int32_t tri_index;
+} baker_chart_edge;
+
+typedef struct baker_chart_rect {
+    int32_t root;
+    int32_t width;
+    int32_t height;
+} baker_chart_rect;
+
+/// @brief Order topology edges so shared source-mesh edges become contiguous.
+static int baker_chart_edge_compare(const void *lhs, const void *rhs) {
+    const baker_chart_edge *a = (const baker_chart_edge *)lhs;
+    const baker_chart_edge *b = (const baker_chart_edge *)rhs;
+    if (a->node_index != b->node_index)
+        return a->node_index < b->node_index ? -1 : 1;
+    if (a->lo != b->lo)
+        return a->lo < b->lo ? -1 : 1;
+    if (a->hi != b->hi)
+        return a->hi < b->hi ? -1 : 1;
+    return a->tri_index < b->tri_index ? -1 : a->tri_index != b->tri_index;
+}
+
+/// @brief Order larger islands first for deterministic skyline packing.
+static int baker_chart_rect_compare(const void *lhs, const void *rhs) {
+    const baker_chart_rect *a = (const baker_chart_rect *)lhs;
+    const baker_chart_rect *b = (const baker_chart_rect *)rhs;
+    uint64_t area_a = (uint64_t)(uint32_t)a->width * (uint32_t)a->height;
+    uint64_t area_b = (uint64_t)(uint32_t)b->width * (uint32_t)b->height;
+    if (area_a != area_b)
+        return area_a > area_b ? -1 : 1;
+    if (a->height != b->height)
+        return a->height > b->height ? -1 : 1;
+    return a->root < b->root ? -1 : a->root != b->root;
+}
+
+static int32_t baker_chart_find_root(int32_t *parents, int32_t index) {
+    int32_t root = index;
+    while (parents[root] != root)
+        root = parents[root];
+    while (parents[index] != index) {
+        int32_t next = parents[index];
+        parents[index] = root;
+        index = next;
     }
-    if (baker->cursor_y + h + 1 > baker->atlas_dim)
+    return root;
+}
+
+static void baker_chart_union(int32_t *parents, int32_t a, int32_t b) {
+    int32_t root_a = baker_chart_find_root(parents, a);
+    int32_t root_b = baker_chart_find_root(parents, b);
+    if (root_a == root_b)
+        return;
+    if (root_a < root_b)
+        parents[root_b] = root_a;
+    else
+        parents[root_a] = root_b;
+}
+
+/// @brief Return barycentric coordinates for the center of one island-chart texel.
+static int baker_chart_texel_barycentric(
+    const baker_tri *tri, int32_t x, int32_t y, double *out_b1, double *out_b2) {
+    double px = (double)x + 0.5;
+    double py = (double)y + 0.5;
+    double x10 = tri->chart_uv[1][0] - tri->chart_uv[0][0];
+    double y10 = tri->chart_uv[1][1] - tri->chart_uv[0][1];
+    double x20 = tri->chart_uv[2][0] - tri->chart_uv[0][0];
+    double y20 = tri->chart_uv[2][1] - tri->chart_uv[0][1];
+    double dx = px - tri->chart_uv[0][0];
+    double dy = py - tri->chart_uv[0][1];
+    double determinant = x10 * y20 - y10 * x20;
+    double b1;
+    double b2;
+    double b0;
+    if (!isfinite(determinant) || fabs(determinant) <= 1e-12)
         return 0;
-    *x = baker->cursor_x;
-    *y = baker->cursor_y;
-    baker->cursor_x += w + 1;
-    if (h > baker->row_height)
-        baker->row_height = h;
+    b1 = (dx * y20 - dy * x20) / determinant;
+    b2 = (x10 * dy - y10 * dx) / determinant;
+    b0 = 1.0 - b1 - b2;
+    if (!isfinite(b0) || !isfinite(b1) || !isfinite(b2) || b0 < -1e-9 || b1 < -1e-9 || b2 < -1e-9)
+        return 0;
+    if (out_b1)
+        *out_b1 = b1;
+    if (out_b2)
+        *out_b2 = b2;
     return 1;
 }
 
-/// @brief Convert one finite-or-overflowing world edge into a bounded chart axis.
-static int32_t baker_chart_dimension(const double from[3],
-                                     const double to[3],
-                                     double texels_per_unit) {
-    double dx = to[0] - from[0];
-    double dy = to[1] - from[1];
-    double dz = to[2] - from[2];
-    double length = hypot(hypot(dx, dy), dz);
-    double scaled = length * texels_per_unit;
-    int32_t dimension;
-    if (!isfinite(scaled) || scaled >= 126.0)
-        return 128;
-    dimension = (int32_t)ceil(scaled) + 2;
-    if (dimension < 3)
-        dimension = 3;
-    return dimension > 128 ? 128 : dimension;
+static uint64_t baker_chart_triangle_texel_count(const baker_tri *tri) {
+    uint64_t count = 0;
+    for (int32_t y = tri->texel_min_y; y <= tri->texel_max_y; ++y)
+        for (int32_t x = tri->texel_min_x; x <= tri->texel_max_x; ++x)
+            if (baker_chart_texel_barycentric(tri, x, y, NULL, NULL))
+                count++;
+    return count;
 }
 
-/// @brief Preflight and store every chart placement before any bake mutation.
+/// @brief Place one padded rectangle at the lowest deterministic skyline position.
+static int baker_chart_skyline_place(int32_t atlas_dim,
+                                     int32_t *skyline,
+                                     int32_t width,
+                                     int32_t height,
+                                     int32_t *out_x,
+                                     int32_t *out_y) {
+    int32_t padded_width = width + 1;
+    int32_t padded_height = height + 1;
+    int32_t best_x = -1;
+    int32_t best_y = INT32_MAX;
+    if (!skyline || !out_x || !out_y || width <= 0 || height <= 0 || padded_width > atlas_dim ||
+        padded_height > atlas_dim)
+        return 0;
+    for (int32_t x = 0; x + padded_width <= atlas_dim; ++x) {
+        int32_t y = 0;
+        for (int32_t column = x; column < x + padded_width; ++column)
+            if (skyline[column] > y)
+                y = skyline[column];
+        if (y + padded_height <= atlas_dim && y < best_y) {
+            best_x = x;
+            best_y = y;
+        }
+    }
+    if (best_x < 0)
+        return 0;
+    for (int32_t column = best_x; column < best_x + padded_width; ++column)
+        skyline[column] = best_y + padded_height;
+    *out_x = best_x;
+    *out_y = best_y;
+    return 1;
+}
+
+/// @brief Build connected coplanar UV islands and pack them into the atlas skyline.
+/// @details Triangles join only through a shared source-mesh edge and a near-coplanar normal,
+///   preserving hard seams while eliminating redundant padding between ordinary quad faces.
 static int baker_preflight_charts(rt_lightbaker3d *baker) {
+    baker_chart_edge *edges = NULL;
+    baker_chart_rect *rects = NULL;
+    int32_t *parents = NULL;
+    int32_t *root_width = NULL;
+    int32_t *root_height = NULL;
+    int32_t *root_x = NULL;
+    int32_t *root_y = NULL;
+    int32_t *skyline = NULL;
+    double (*basis_u)[3] = NULL;
+    double (*basis_v)[3] = NULL;
+    double (*bounds)[4] = NULL;
+    int32_t rect_count = 0;
+    int result = 0;
+    int32_t tri_count;
+    uint64_t samples;
     if (!baker || baker->tri_count < 0 || (baker->tri_count > 0 && !baker->tris))
         return 0;
-    baker->cursor_x = 0;
-    baker->cursor_y = 0;
-    baker->row_height = 0;
-    for (int32_t i = 0; i < baker->tri_count; ++i) {
-        baker_tri *tri = &baker->tris[i];
-        tri->chart_w = baker_chart_dimension(tri->p0, tri->p1, baker->texels_per_unit);
-        tri->chart_h = baker_chart_dimension(tri->p0, tri->p2, baker->texels_per_unit);
-        if (!baker_alloc_chart(baker, tri->chart_w, tri->chart_h, &tri->chart_x, &tri->chart_y))
-            return 0;
+    tri_count = baker->tri_count;
+    samples = (uint64_t)(baker->samples < 1 ? 1 : baker->samples);
+    if (tri_count == 0)
+        return 1;
+    if ((size_t)tri_count > SIZE_MAX / (3u * sizeof(*edges)))
+        return 0;
+    edges = (baker_chart_edge *)malloc((size_t)tri_count * 3u * sizeof(*edges));
+    rects = (baker_chart_rect *)malloc((size_t)tri_count * sizeof(*rects));
+    parents = (int32_t *)malloc((size_t)tri_count * sizeof(*parents));
+    root_width = (int32_t *)calloc((size_t)tri_count, sizeof(*root_width));
+    root_height = (int32_t *)calloc((size_t)tri_count, sizeof(*root_height));
+    root_x = (int32_t *)calloc((size_t)tri_count, sizeof(*root_x));
+    root_y = (int32_t *)calloc((size_t)tri_count, sizeof(*root_y));
+    basis_u = (double (*)[3])calloc((size_t)tri_count, sizeof(*basis_u));
+    basis_v = (double (*)[3])calloc((size_t)tri_count, sizeof(*basis_v));
+    bounds = (double (*)[4])malloc((size_t)tri_count * sizeof(*bounds));
+    skyline = (int32_t *)calloc((size_t)baker->atlas_dim, sizeof(*skyline));
+    if (!edges || !rects || !parents || !root_width || !root_height || !root_x || !root_y ||
+        !basis_u || !basis_v || !bounds || !skyline)
+        goto cleanup;
+    for (int32_t i = 0; i < tri_count; ++i) {
+        parents[i] = i;
+        bounds[i][0] = bounds[i][1] = DBL_MAX;
+        bounds[i][2] = bounds[i][3] = -DBL_MAX;
+        for (int edge = 0; edge < 3; ++edge) {
+            uint32_t a = baker->tris[i].vertex_indices[edge];
+            uint32_t b = baker->tris[i].vertex_indices[(edge + 1) % 3];
+            baker_chart_edge *record = &edges[(size_t)i * 3u + (size_t)edge];
+            record->node_index = baker->tris[i].node_index;
+            record->lo = a < b ? a : b;
+            record->hi = a < b ? b : a;
+            record->tri_index = i;
+        }
     }
-    return 1;
+    qsort(edges, (size_t)tri_count * 3u, sizeof(*edges), baker_chart_edge_compare);
+    for (int32_t first = 0; first < tri_count * 3;) {
+        int32_t end = first + 1;
+        while (end < tri_count * 3 && edges[end].node_index == edges[first].node_index &&
+               edges[end].lo == edges[first].lo && edges[end].hi == edges[first].hi)
+            end++;
+        const baker_tri *representative = &baker->tris[edges[first].tri_index];
+        for (int32_t b = first + 1; b < end; ++b) {
+            const baker_tri *candidate = &baker->tris[edges[b].tri_index];
+            double dot = representative->normal[0] * candidate->normal[0] +
+                         representative->normal[1] * candidate->normal[1] +
+                         representative->normal[2] * candidate->normal[2];
+            if (isfinite(dot) && dot >= 0.9995)
+                baker_chart_union(parents, edges[first].tri_index, edges[b].tri_index);
+        }
+        first = end;
+    }
+
+project_islands:
+    memset(basis_u, 0, (size_t)tri_count * sizeof(*basis_u));
+    memset(basis_v, 0, (size_t)tri_count * sizeof(*basis_v));
+    for (int32_t i = 0; i < tri_count; ++i) {
+        bounds[i][0] = bounds[i][1] = DBL_MAX;
+        bounds[i][2] = bounds[i][3] = -DBL_MAX;
+    }
+    for (int32_t i = 0; i < tri_count; ++i) {
+        int32_t root = baker_chart_find_root(parents, i);
+        baker_tri *root_tri = &baker->tris[root];
+        double axis[3] = {0.0, 0.0, 0.0};
+        baker->tris[i].chart_root = root;
+        if (root != i)
+            continue;
+        int least_axis = fabs(root_tri->normal[0]) <= fabs(root_tri->normal[1])
+                             ? (fabs(root_tri->normal[0]) <= fabs(root_tri->normal[2]) ? 0 : 2)
+                             : (fabs(root_tri->normal[1]) <= fabs(root_tri->normal[2]) ? 1 : 2);
+        axis[least_axis] = 1.0;
+        basis_u[root][0] = axis[1] * root_tri->normal[2] - axis[2] * root_tri->normal[1];
+        basis_u[root][1] = axis[2] * root_tri->normal[0] - axis[0] * root_tri->normal[2];
+        basis_u[root][2] = axis[0] * root_tri->normal[1] - axis[1] * root_tri->normal[0];
+        double length = hypot(hypot(basis_u[root][0], basis_u[root][1]), basis_u[root][2]);
+        if (!isfinite(length) || length <= 1e-12)
+            goto cleanup;
+        for (int component = 0; component < 3; ++component)
+            basis_u[root][component] /= length;
+        basis_v[root][0] =
+            root_tri->normal[1] * basis_u[root][2] - root_tri->normal[2] * basis_u[root][1];
+        basis_v[root][1] =
+            root_tri->normal[2] * basis_u[root][0] - root_tri->normal[0] * basis_u[root][2];
+        basis_v[root][2] =
+            root_tri->normal[0] * basis_u[root][1] - root_tri->normal[1] * basis_u[root][0];
+    }
+    for (int32_t i = 0; i < tri_count; ++i) {
+        int32_t root = baker->tris[i].chart_root;
+        const double *positions[3] = {baker->tris[i].p0, baker->tris[i].p1, baker->tris[i].p2};
+        for (int corner = 0; corner < 3; ++corner) {
+            double u = positions[corner][0] * basis_u[root][0] +
+                       positions[corner][1] * basis_u[root][1] +
+                       positions[corner][2] * basis_u[root][2];
+            double v = positions[corner][0] * basis_v[root][0] +
+                       positions[corner][1] * basis_v[root][1] +
+                       positions[corner][2] * basis_v[root][2];
+            if (!isfinite(u) || !isfinite(v))
+                goto cleanup;
+            if (u < bounds[root][0])
+                bounds[root][0] = u;
+            if (v < bounds[root][1])
+                bounds[root][1] = v;
+            if (u > bounds[root][2])
+                bounds[root][2] = u;
+            if (v > bounds[root][3])
+                bounds[root][3] = v;
+        }
+    }
+    {
+        int split_oversized_island = 0;
+        for (int32_t root = 0; root < tri_count; ++root) {
+            int has_other_triangle = 0;
+            if (baker->tris[root].chart_root != root)
+                continue;
+            double scaled_w = (bounds[root][2] - bounds[root][0]) * baker->texels_per_unit;
+            double scaled_h = (bounds[root][3] - bounds[root][1]) * baker->texels_per_unit;
+            if (scaled_w < BAKER3D_MAX_CHART_DIM - 2 && scaled_h < BAKER3D_MAX_CHART_DIM - 2)
+                continue;
+            for (int32_t i = root + 1; i < tri_count; ++i)
+                if (baker->tris[i].chart_root == root) {
+                    has_other_triangle = 1;
+                    break;
+                }
+            if (!has_other_triangle)
+                continue;
+            for (int32_t i = root; i < tri_count; ++i)
+                if (baker->tris[i].chart_root == root)
+                    parents[i] = i;
+            split_oversized_island = 1;
+        }
+        if (split_oversized_island)
+            goto project_islands;
+    }
+    for (int32_t root = 0; root < tri_count; ++root) {
+        if (baker->tris[root].chart_root != root)
+            continue;
+        double scaled_w = (bounds[root][2] - bounds[root][0]) * baker->texels_per_unit;
+        double scaled_h = (bounds[root][3] - bounds[root][1]) * baker->texels_per_unit;
+        if (!isfinite(scaled_w) || !isfinite(scaled_h) || scaled_w < 0.0 || scaled_h < 0.0)
+            goto cleanup;
+        root_width[root] = scaled_w >= BAKER3D_MAX_CHART_DIM - 2 ? BAKER3D_MAX_CHART_DIM
+                                                                 : (int32_t)ceil(scaled_w) + 2;
+        root_height[root] = scaled_h >= BAKER3D_MAX_CHART_DIM - 2 ? BAKER3D_MAX_CHART_DIM
+                                                                  : (int32_t)ceil(scaled_h) + 2;
+        if (root_width[root] < 3)
+            root_width[root] = 3;
+        if (root_height[root] < 3)
+            root_height[root] = 3;
+        rects[rect_count++] = (baker_chart_rect){root, root_width[root], root_height[root]};
+    }
+    qsort(rects, (size_t)rect_count, sizeof(*rects), baker_chart_rect_compare);
+    for (int32_t i = 0; i < rect_count; ++i)
+        if (!baker_chart_skyline_place(baker->atlas_dim,
+                                       skyline,
+                                       rects[i].width,
+                                       rects[i].height,
+                                       &root_x[rects[i].root],
+                                       &root_y[rects[i].root]))
+            goto cleanup;
+    baker->total_sample_work = 0;
+    baker->completed_sample_work = 0;
+    baker->next_texel = 0;
+    baker->next_sample = 0;
+    baker->sample_acc[0] = baker->sample_acc[1] = baker->sample_acc[2] = 0.0;
+    for (int32_t i = 0; i < tri_count; ++i) {
+        baker_tri *tri = &baker->tris[i];
+        int32_t root = tri->chart_root;
+        double extent_u = bounds[root][2] - bounds[root][0];
+        double extent_v = bounds[root][3] - bounds[root][1];
+        double scale_u = extent_u > 1e-12 ? (double)(root_width[root] - 2) / extent_u : 0.0;
+        double scale_v = extent_v > 1e-12 ? (double)(root_height[root] - 2) / extent_v : 0.0;
+        const double *positions[3] = {tri->p0, tri->p1, tri->p2};
+        tri->chart_x = root_x[root];
+        tri->chart_y = root_y[root];
+        tri->chart_w = root_width[root];
+        tri->chart_h = root_height[root];
+        tri->texel_min_x = tri->chart_w - 1;
+        tri->texel_min_y = tri->chart_h - 1;
+        tri->texel_max_x = 0;
+        tri->texel_max_y = 0;
+        for (int corner = 0; corner < 3; ++corner) {
+            double projected_u = positions[corner][0] * basis_u[root][0] +
+                                 positions[corner][1] * basis_u[root][1] +
+                                 positions[corner][2] * basis_u[root][2];
+            double projected_v = positions[corner][0] * basis_v[root][0] +
+                                 positions[corner][1] * basis_v[root][1] +
+                                 positions[corner][2] * basis_v[root][2];
+            tri->chart_uv[corner][0] = 0.5 + (projected_u - bounds[root][0]) * scale_u;
+            tri->chart_uv[corner][1] = 0.5 + (projected_v - bounds[root][1]) * scale_v;
+            int32_t tx = (int32_t)floor(tri->chart_uv[corner][0]);
+            int32_t ty = (int32_t)floor(tri->chart_uv[corner][1]);
+            if (tx < tri->texel_min_x)
+                tri->texel_min_x = tx;
+            if (ty < tri->texel_min_y)
+                tri->texel_min_y = ty;
+            if (tx > tri->texel_max_x)
+                tri->texel_max_x = tx;
+            if (ty > tri->texel_max_y)
+                tri->texel_max_y = ty;
+        }
+        if (tri->texel_min_x < 0)
+            tri->texel_min_x = 0;
+        if (tri->texel_min_y < 0)
+            tri->texel_min_y = 0;
+        if (tri->texel_max_x >= tri->chart_w)
+            tri->texel_max_x = tri->chart_w - 1;
+        if (tri->texel_max_y >= tri->chart_h)
+            tri->texel_max_y = tri->chart_h - 1;
+        uint64_t texels = baker_chart_triangle_texel_count(tri);
+        if (texels > UINT64_MAX / samples ||
+            baker->total_sample_work > UINT64_MAX - texels * samples)
+            goto cleanup;
+        baker->total_sample_work += texels * samples;
+    }
+    result = baker->total_sample_work > 0;
+
+cleanup:
+    free(edges);
+    free(rects);
+    free(parents);
+    free(root_width);
+    free(root_height);
+    free(root_x);
+    free(root_y);
+    free(skyline);
+    free(basis_u);
+    free(basis_v);
+    free(bounds);
+    return result;
 }
 
 /// @brief Release transient HDR/coverage storage after publication or failure.
@@ -1376,47 +2219,190 @@ static int baker_validate_uv_targets(const rt_lightbaker3d *baker) {
     return 1;
 }
 
-/// @brief Publish all staged chart UVs and invalidate each distinct mesh once.
+/// @brief Clone one node mesh, append seam-safe chart vertices, and rewrite captured indices.
+/// @details A linear-time hash reuses `(source vertex, UV island)` pairs while keeping different
+/// islands private, avoiding both shared-vertex UV overwrites and quadratic publication scans.
+/// @param baker Baker containing chart metadata.
+/// @param node_index Valid baked-node index.
+/// @return Caller-owned cloned mesh, or NULL on validation/allocation failure.
+static rt_mesh3d *baker_clone_node_lightmap_mesh(rt_lightbaker3d *baker, int32_t node_index) {
+    baker_node_entry *entry;
+    rt_mesh3d *source;
+    rt_mesh3d *clone;
+    uint32_t source_vertex_count;
+    uint32_t destination_capacity;
+    uint32_t destination_vertex_count;
+    uint32_t *vertex_sources = NULL;
+    uint64_t *vertex_keys = NULL;
+    uint32_t *vertex_values = NULL;
+    uint32_t hash_capacity = 16;
+    double inv_dim;
+    if (!baker || node_index < 0 || node_index >= baker->node_count)
+        return NULL;
+    entry = &baker->nodes[node_index];
+    source = (rt_mesh3d *)entry->mesh;
+    source_vertex_count = rt_mesh3d_safe_vertex_count(source);
+    if (!source || entry->tri_count < 0 ||
+        (uint64_t)source_vertex_count + (uint64_t)entry->tri_count * 3u > UINT32_MAX)
+        return NULL;
+    destination_capacity = source_vertex_count + (uint32_t)entry->tri_count * 3u;
+    destination_vertex_count = source_vertex_count;
+    while ((uint64_t)hash_capacity < (uint64_t)(uint32_t)entry->tri_count * 6u) {
+        if (hash_capacity > UINT32_MAX / 2u)
+            return NULL;
+        hash_capacity *= 2u;
+    }
+    if (!rt_alloc_count_ok(destination_capacity, sizeof(vgfx3d_vertex_t)) ||
+        (source->positions64 && !rt_alloc_count_ok(destination_capacity, 3u * sizeof(double))) ||
+        (source->extra_influences &&
+         !rt_alloc_count_ok(destination_capacity, sizeof(vgfx3d_extra_influences_t))) ||
+        (source->morph_targets_ref &&
+         !rt_alloc_count_ok(destination_capacity, sizeof(*vertex_sources))) ||
+        !rt_alloc_count_ok(hash_capacity, sizeof(*vertex_keys)) ||
+        !rt_alloc_count_ok(hash_capacity, sizeof(*vertex_values)))
+        return NULL;
+    clone = (rt_mesh3d *)rt_mesh3d_clone_for_lightmap(source);
+    if (!clone)
+        return NULL;
+    if (destination_capacity > source_vertex_count) {
+        vgfx3d_vertex_t *vertices = (vgfx3d_vertex_t *)realloc(
+            clone->vertices, (size_t)destination_capacity * sizeof(*vertices));
+        if (!vertices)
+            goto fail;
+        clone->vertices = vertices;
+        if (clone->positions64) {
+            double *positions = (double *)realloc(
+                clone->positions64, (size_t)destination_capacity * 3u * sizeof(*positions));
+            if (!positions)
+                goto fail;
+            clone->positions64 = positions;
+        }
+        if (clone->extra_influences) {
+            vgfx3d_extra_influences_t *extra = (vgfx3d_extra_influences_t *)realloc(
+                clone->extra_influences, (size_t)destination_capacity * sizeof(*extra));
+            if (!extra)
+                goto fail;
+            clone->extra_influences = extra;
+        }
+    }
+    if (source->morph_targets_ref) {
+        vertex_sources = (uint32_t *)malloc((size_t)destination_capacity * sizeof(*vertex_sources));
+        if (!vertex_sources)
+            goto fail;
+        for (uint32_t vertex = 0; vertex < source_vertex_count; ++vertex)
+            vertex_sources[vertex] = vertex;
+    }
+    vertex_keys = (uint64_t *)malloc((size_t)hash_capacity * sizeof(*vertex_keys));
+    vertex_values = (uint32_t *)malloc((size_t)hash_capacity * sizeof(*vertex_values));
+    if (!vertex_keys || !vertex_values)
+        goto fail;
+    memset(vertex_keys, 0xFF, (size_t)hash_capacity * sizeof(*vertex_keys));
+    inv_dim = 1.0 / (double)baker->atlas_dim;
+    for (int32_t local_tri = 0; local_tri < entry->tri_count; ++local_tri) {
+        baker_tri *tri = &baker->tris[entry->first_tri + local_tri];
+        size_t first_index = (size_t)tri->tri_index * 3u;
+        float uv[3][2];
+        for (int corner = 0; corner < 3; ++corner) {
+            uv[corner][0] = (float)((tri->chart_x + tri->chart_uv[corner][0]) * inv_dim);
+            uv[corner][1] = (float)((tri->chart_y + tri->chart_uv[corner][1]) * inv_dim);
+        }
+        if (tri->node_index != node_index || first_index + 2u >= clone->index_count)
+            goto fail;
+        for (int corner = 0; corner < 3; ++corner) {
+            uint32_t source_vertex = tri->vertex_indices[corner];
+            uint64_t key = ((uint64_t)(uint32_t)tri->chart_root << 32) | source_vertex;
+            uint64_t hash = key;
+            hash ^= hash >> 33;
+            hash *= UINT64_C(0xff51afd7ed558ccd);
+            hash ^= hash >> 33;
+            uint32_t slot = (uint32_t)hash & (hash_capacity - 1u);
+            while (vertex_keys[slot] != UINT64_MAX && vertex_keys[slot] != key)
+                slot = (slot + 1u) & (hash_capacity - 1u);
+            if (source_vertex >= source_vertex_count)
+                goto fail;
+            uint32_t destination_vertex;
+            if (vertex_keys[slot] == key) {
+                destination_vertex = vertex_values[slot];
+            } else {
+                if (destination_vertex_count >= destination_capacity)
+                    goto fail;
+                destination_vertex = destination_vertex_count++;
+                vertex_keys[slot] = key;
+                vertex_values[slot] = destination_vertex;
+                clone->vertices[destination_vertex] = source->vertices[source_vertex];
+                clone->vertices[destination_vertex].uv1[0] = uv[corner][0];
+                clone->vertices[destination_vertex].uv1[1] = uv[corner][1];
+                if (clone->positions64)
+                    memcpy(&clone->positions64[(size_t)destination_vertex * 3u],
+                           &source->positions64[(size_t)source_vertex * 3u],
+                           3u * sizeof(double));
+                if (clone->extra_influences)
+                    clone->extra_influences[destination_vertex] =
+                        source->extra_influences[source_vertex];
+                if (vertex_sources)
+                    vertex_sources[destination_vertex] = source_vertex;
+            }
+            clone->indices[first_index + (size_t)corner] = destination_vertex;
+        }
+    }
+    clone->vertex_count = destination_vertex_count;
+    clone->vertex_capacity = destination_capacity;
+    if (source->morph_targets_ref) {
+        void *remapped = rt_morphtarget3d_clone_remapped(
+            source->morph_targets_ref, vertex_sources, destination_vertex_count);
+        if (!remapped)
+            goto fail;
+        rt_mesh3d_set_morph_targets(clone, remapped);
+        baker_release_ref(&remapped);
+    }
+    free(vertex_sources);
+    free(vertex_keys);
+    free(vertex_values);
+    rt_mesh3d_touch_geometry(clone);
+    rt_mesh3d_refresh_bounds(clone);
+    return clone;
+
+fail:
+    free(vertex_sources);
+    free(vertex_keys);
+    free(vertex_values);
+    if (rt_obj_release_check0(clone))
+        rt_obj_free(clone);
+    return NULL;
+}
+
+/// @brief Transactionally publish seam-safe per-node lightmap mesh copies.
 static int baker_publish_uvs(rt_lightbaker3d *baker) {
+    rt_mesh3d **staged;
     if (!baker_validate_uv_targets(baker))
         return 0;
-    for (int32_t i = 0; i < baker->tri_count; ++i) {
-        baker_tri *tri = &baker->tris[i];
-        baker_node_entry *entry = &baker->nodes[tri->node_index];
-        rt_mesh3d *mesh = (rt_mesh3d *)entry->mesh;
-        double inv_dim = 1.0 / (double)baker->atlas_dim;
-        float uv[3][2] = {
-            {(float)((tri->chart_x + 0.5) * inv_dim), (float)((tri->chart_y + 0.5) * inv_dim)},
-            {(float)((tri->chart_x + tri->chart_w - 1.5) * inv_dim),
-             (float)((tri->chart_y + 0.5) * inv_dim)},
-            {(float)((tri->chart_x + 0.5) * inv_dim),
-             (float)((tri->chart_y + tri->chart_h - 1.5) * inv_dim)}};
-        for (int corner = 0; corner < 3; ++corner) {
-            vgfx3d_vertex_t *vertex = &mesh->vertices[tri->vertex_indices[corner]];
-            vertex->uv1[0] = uv[corner][0];
-            vertex->uv1[1] = uv[corner][1];
-        }
-        entry->uv1_written = 1;
-    }
-    for (int32_t n = 0; n < baker->node_count; ++n) {
-        int already_touched = 0;
-        if (!baker->nodes[n].uv1_written)
+    staged = (rt_mesh3d **)calloc((size_t)baker->node_count, sizeof(*staged));
+    if (!staged && baker->node_count > 0)
+        return 0;
+    for (int32_t node = 0; node < baker->node_count; ++node) {
+        if (baker->nodes[node].tri_count <= 0)
             continue;
-        for (int32_t prior = 0; prior < n; ++prior) {
-            if (baker->nodes[prior].uv1_written &&
-                baker->nodes[prior].mesh == baker->nodes[n].mesh) {
-                already_touched = 1;
-                break;
-            }
-        }
-        if (!already_touched) {
-            rt_mesh3d *mesh = (rt_mesh3d *)baker->nodes[n].mesh;
-            rt_mesh3d_touch_geometry(mesh);
-            for (int32_t entry = n; entry < baker->node_count; ++entry)
-                if (baker->nodes[entry].mesh == mesh)
-                    baker->nodes[entry].geometry_revision = mesh->geometry_revision;
+        staged[node] = baker_clone_node_lightmap_mesh(baker, node);
+        if (!staged[node]) {
+            for (int32_t release = 0; release < baker->node_count; ++release)
+                baker_release_ref((void **)&staged[release]);
+            free(staged);
+            return 0;
         }
     }
+    for (int32_t node = 0; node < baker->node_count; ++node) {
+        baker_node_entry *entry = &baker->nodes[node];
+        if (!staged[node])
+            continue;
+        rt_scene_node3d_set_mesh(entry->node, staged[node]);
+        baker_release_ref(&entry->mesh);
+        rt_obj_retain_maybe(staged[node]);
+        entry->mesh = staged[node];
+        entry->geometry_revision = staged[node]->geometry_revision;
+        entry->uv1_written = 1;
+        baker_release_ref((void **)&staged[node]);
+    }
+    free(staged);
     return 1;
 }
 
@@ -1430,7 +2416,7 @@ static uint32_t baker_encode_atlas_channel(float value) {
 }
 
 /// @brief Run one deterministic bake slice after transactional setup/preflight.
-/// @details Each call processes at most 64 charts and updates progress. Source
+/// @details Each call processes a bounded number of radiance samples and updates progress. Source
 ///   UV1 data remains untouched until all sampling and atlas allocation succeed.
 ///   Terminal gather/BVH/capacity/allocation/source-change failure completes
 ///   without an atlas. Success publishes all UVs, dilates one texel ring, and
@@ -1445,7 +2431,8 @@ int8_t rt_lightbaker3d_bake_step(void *obj) {
         return 1;
     if (baker->done)
         return 1;
-    if ((!baker->gathered && !baker_gather_scene(baker)) || !baker_bvh_build(baker))
+    if ((!baker->gathered && !baker_gather_scene(baker)) || !baker_bvh_build(baker) ||
+        !baker_build_light_index(baker))
         return baker_fail(baker);
     if (baker->tri_count == 0) {
         baker->done = 1;
@@ -1470,54 +2457,77 @@ int8_t rt_lightbaker3d_bake_step(void *obj) {
     if (!baker_validate_uv_targets(baker))
         return baker_fail(baker);
 
-    int32_t budget = 64; /* triangles per step: keeps editor slices responsive */
-    while (baker->next_tri < baker->tri_count && budget-- > 0) {
+    int32_t budget = BAKER3D_SAMPLE_WORK_PER_STEP;
+    double sample_results[BAKER3D_SAMPLE_WORK_PER_STEP][3];
+    while (baker->next_tri < baker->tri_count && budget > 0) {
         baker_tri *tri = &baker->tris[baker->next_tri];
-        int32_t w = tri->chart_w;
-        int32_t h = tri->chart_h;
         int32_t cx = tri->chart_x;
         int32_t cy = tri->chart_y;
-        /* Bake texels: chart parameterizes the triangle by (u,v) barycentrics with
-         * u along edge1 and v along edge2 (u + v <= 1 covers the triangle; the
-         * spill texels clamp so dilation has valid neighbors). */
-        for (int32_t ty = 0; ty < h; ++ty) {
-            for (int32_t tx = 0; tx < w; ++tx) {
-                double u = (double)tx / (double)(w - 1);
-                double v = (double)ty / (double)(h - 1);
-                if (u + v > 1.0) {
-                    double excess = (u + v - 1.0) * 0.5;
-                    u -= excess;
-                    v -= excess;
-                    if (u < 0.0)
-                        u = 0.0;
-                    if (v < 0.0)
-                        v = 0.0;
-                }
-                double point[3] = {
-                    tri->p0[0] + (tri->p1[0] - tri->p0[0]) * u + (tri->p2[0] - tri->p0[0]) * v,
-                    tri->p0[1] + (tri->p1[1] - tri->p0[1]) * u + (tri->p2[1] - tri->p0[1]) * v,
-                    tri->p0[2] + (tri->p1[2] - tri->p0[2]) * u + (tri->p2[2] - tri->p0[2]) * v};
-                uint32_t rng = (uint32_t)(baker->next_tri * 9781 + ty * 6271 + tx * 26699 + 1);
-                double acc[3] = {0.0, 0.0, 0.0};
-                int64_t samples = baker->samples < 1 ? 1 : baker->samples;
-                for (int64_t si = 0; si < samples; ++si) {
-                    double rgb[3];
-                    baker_radiance(baker, point, tri->normal, &rng, (int32_t)baker->bounces, rgb);
-                    acc[0] += rgb[0];
-                    acc[1] += rgb[1];
-                    acc[2] += rgb[2];
-                }
-                size_t at = ((size_t)(cy + ty) * baker->atlas_dim + (cx + tx));
-                baker->atlas_hdr[at * 3 + 0] = (float)(acc[0] / (double)samples);
-                baker->atlas_hdr[at * 3 + 1] = (float)(acc[1] / (double)samples);
-                baker->atlas_hdr[at * 3 + 2] = (float)(acc[2] / (double)samples);
-                baker->atlas_coverage[at] = 1;
-            }
+        int32_t texel_width = tri->texel_max_x - tri->texel_min_x + 1;
+        int32_t texel_height = tri->texel_max_y - tri->texel_min_y + 1;
+        int32_t texel_count = texel_width * texel_height;
+        int64_t samples = baker->samples < 1 ? 1 : baker->samples;
+        if (baker->next_texel >= texel_count) {
+            baker->next_tri++;
+            baker->next_texel = 0;
+            continue;
         }
-        baker->next_tri++;
+        int32_t tx = tri->texel_min_x + baker->next_texel % texel_width;
+        int32_t ty = tri->texel_min_y + baker->next_texel / texel_width;
+        double u;
+        double v;
+        if (!baker_chart_texel_barycentric(tri, tx, ty, &u, &v)) {
+            baker->next_texel++;
+            continue;
+        }
+        double point[3] = {
+            tri->p0[0] + (tri->p1[0] - tri->p0[0]) * u + (tri->p2[0] - tri->p0[0]) * v,
+            tri->p0[1] + (tri->p1[1] - tri->p0[1]) * u + (tri->p2[1] - tri->p0[1]) * v,
+            tri->p0[2] + (tri->p1[2] - tri->p0[2]) * u + (tri->p2[2] - tri->p0[2]) * v};
+        if (baker->next_sample == 0) {
+            baker->sample_acc[0] = baker->sample_acc[1] = baker->sample_acc[2] = 0.0;
+        }
+        int64_t remaining = samples - baker->next_sample;
+        int32_t batch_count = remaining < budget ? (int32_t)remaining : budget;
+        baker_evaluate_sample_batch(baker,
+                                    tri,
+                                    baker->next_tri,
+                                    tx,
+                                    ty,
+                                    point,
+                                    baker->next_sample,
+                                    batch_count,
+                                    sample_results);
+        for (int32_t sample = 0; sample < batch_count; ++sample) {
+            baker->sample_acc[0] += sample_results[sample][0];
+            baker->sample_acc[1] += sample_results[sample][1];
+            baker->sample_acc[2] += sample_results[sample][2];
+        }
+        baker->next_sample += batch_count;
+        baker->completed_sample_work += (uint64_t)batch_count;
+        budget -= batch_count;
+        if (baker->next_sample == samples) {
+            size_t at = ((size_t)(cy + ty) * baker->atlas_dim + (cx + tx));
+            baker->atlas_hdr[at * 3 + 0] = (float)(baker->sample_acc[0] / (double)samples);
+            baker->atlas_hdr[at * 3 + 1] = (float)(baker->sample_acc[1] / (double)samples);
+            baker->atlas_hdr[at * 3 + 2] = (float)(baker->sample_acc[2] / (double)samples);
+            baker->atlas_coverage[at] = 1;
+            baker->next_sample = 0;
+            baker->next_texel++;
+        }
     }
-    baker->progress =
-        baker->tri_count > 0 ? (double)baker->next_tri / (double)baker->tri_count : 1.0;
+    while (baker->next_tri < baker->tri_count) {
+        baker_tri *tri = &baker->tris[baker->next_tri];
+        int32_t texel_count =
+            (tri->texel_max_x - tri->texel_min_x + 1) * (tri->texel_max_y - tri->texel_min_y + 1);
+        if (baker->next_texel < texel_count)
+            break;
+        baker->next_tri++;
+        baker->next_texel = 0;
+    }
+    baker->progress = baker->total_sample_work > 0
+                          ? (double)baker->completed_sample_work / (double)baker->total_sample_work
+                          : 1.0;
     if (baker->next_tri < baker->tri_count)
         return 0;
 
@@ -1776,6 +2786,82 @@ static float probe_accumulate_coefficient(float current, double contribution) {
     return (float)sum;
 }
 
+typedef struct probe_bake_task {
+    rt_lightprobegrid3d *grid;
+    const rt_lightbaker3d *baker;
+    size_t first_probe;
+    size_t probe_count;
+    int64_t direction_samples;
+} probe_bake_task;
+
+/// @brief Bake a disjoint deterministic range of probe coefficients.
+static void probe_bake_task_run(void *argument) {
+    probe_bake_task *task = (probe_bake_task *)argument;
+    if (!task || !task->grid || !task->baker || task->direction_samples <= 0)
+        return;
+    rt_lightprobegrid3d *grid = task->grid;
+    const rt_lightbaker3d *baker = task->baker;
+    int64_t dir_samples = task->direction_samples;
+    size_t end = task->first_probe + task->probe_count;
+    for (size_t p = task->first_probe; p < end; ++p) {
+        int32_t px = (int32_t)(p % (size_t)grid->nx);
+        int32_t py = (int32_t)((p / (size_t)grid->nx) % (size_t)grid->ny);
+        int32_t pz = (int32_t)(p / ((size_t)grid->nx * (size_t)grid->ny));
+        double point[3] = {grid->min_b[0] + px * grid->spacing,
+                           grid->min_b[1] + py * grid->spacing,
+                           grid->min_b[2] + pz * grid->spacing};
+        uint32_t rng = (uint32_t)(p * 40507u + 7u);
+        float *sh = grid->sh + p * 27u;
+        int inside_hits = 0;
+        memset(sh, 0, 27u * sizeof(*sh));
+        for (int64_t sample = 0; sample < dir_samples; ++sample) {
+            double z = 1.0 - 2.0 * baker_lcg_unit(&rng);
+            double phi = 2.0 * 3.14159265358979323846 * baker_lcg_unit(&rng);
+            double radial = sqrt(fmax(0.0, 1.0 - z * z));
+            double direction[3] = {radial * cos(phi), z, radial * sin(phi)};
+            double distance;
+            int32_t hit = baker_trace(baker, point, direction, DBL_MAX, &distance);
+            double rgb[3];
+            if (hit < 0) {
+                rgb[0] = baker->sky_color[0];
+                rgb[1] = baker->sky_color[1];
+                rgb[2] = baker->sky_color[2];
+            } else {
+                const baker_tri *tri = &baker->tris[hit];
+                double facing = tri->normal[0] * direction[0] + tri->normal[1] * direction[1] +
+                                tri->normal[2] * direction[2];
+                if (facing > 0.0 && distance < grid->spacing * 0.5)
+                    inside_hits++;
+                double hit_point[3] = {point[0] + direction[0] * distance,
+                                       point[1] + direction[1] * distance,
+                                       point[2] + direction[2] * distance};
+                double hit_normal[3] = {tri->normal[0], tri->normal[1], tri->normal[2]};
+                if (facing > 0.0) {
+                    hit_normal[0] = -hit_normal[0];
+                    hit_normal[1] = -hit_normal[1];
+                    hit_normal[2] = -hit_normal[2];
+                }
+                baker_radiance(baker, hit_point, hit_normal, &rng, (int32_t)baker->bounces, rgb);
+                rgb[0] = rgb[0] * tri->albedo[0] + tri->emissive[0];
+                rgb[1] = rgb[1] * tri->albedo[1] + tri->emissive[1];
+                rgb[2] = rgb[2] * tri->albedo[2] + tri->emissive[2];
+            }
+            double basis[9];
+            probe_sh_basis(direction, basis);
+            double weight = 4.0 * 3.14159265358979323846 / (double)dir_samples;
+            for (int coefficient = 0; coefficient < 9; ++coefficient) {
+                sh[coefficient * 3 + 0] = probe_accumulate_coefficient(
+                    sh[coefficient * 3 + 0], rgb[0] * basis[coefficient] * weight);
+                sh[coefficient * 3 + 1] = probe_accumulate_coefficient(
+                    sh[coefficient * 3 + 1], rgb[1] * basis[coefficient] * weight);
+                sh[coefficient * 3 + 2] = probe_accumulate_coefficient(
+                    sh[coefficient * 3 + 2], rgb[2] * basis[coefficient] * weight);
+            }
+        }
+        grid->valid[p] = inside_hits * 4 < dir_samples ? 1 : 0;
+    }
+}
+
 /// @brief Bake the probe grid against a baker's gathered scene + lights.
 /// @details Reuses the baker's BVH and radiance estimator so probes and
 ///   lightmaps agree; the baker must be constructed over the same scene (its
@@ -1795,7 +2881,8 @@ void rt_lightprobegrid3d_bake(void *obj, void *baker_obj) {
     size_t *queue;
     if (!grid || !baker || !grid->sh || !grid->valid)
         return;
-    if ((!baker->gathered && !baker_gather_scene(baker)) || !baker_bvh_build(baker))
+    if ((!baker->gathered && !baker_gather_scene(baker)) || !baker_bvh_build(baker) ||
+        !baker_build_light_index(baker))
         return;
     probes = (size_t)grid->nx * (size_t)grid->ny * (size_t)grid->nz;
     queue = (size_t *)malloc(probes * sizeof(*queue));
@@ -1803,63 +2890,27 @@ void rt_lightprobegrid3d_bake(void *obj, void *baker_obj) {
         return;
     grid->baked = 0;
     int64_t dir_samples = baker->samples < 8 ? 8 : (baker->samples > 256 ? 256 : baker->samples);
-    for (size_t p = 0; p < probes; ++p) {
-        int32_t px = (int32_t)(p % grid->nx);
-        int32_t py = (int32_t)((p / grid->nx) % grid->ny);
-        int32_t pz = (int32_t)(p / ((size_t)grid->nx * grid->ny));
-        double point[3] = {grid->min_b[0] + px * grid->spacing,
-                           grid->min_b[1] + py * grid->spacing,
-                           grid->min_b[2] + pz * grid->spacing};
-        uint32_t rng = (uint32_t)(p * 40507 + 7);
-        float *sh = grid->sh + p * 27;
-        memset(sh, 0, 27 * sizeof(float));
-        int inside_hits = 0;
-        for (int64_t s = 0; s < dir_samples; ++s) {
-            /* Uniform sphere direction. */
-            double z = 1.0 - 2.0 * baker_lcg_unit(&rng);
-            double phi = 2.0 * 3.14159265358979323846 * baker_lcg_unit(&rng);
-            double rxy = sqrt(fmax(0.0, 1.0 - z * z));
-            double dir[3] = {rxy * cos(phi), z, rxy * sin(phi)};
-            double t;
-            int32_t hit = baker_trace(baker, point, dir, DBL_MAX, &t);
-            double rgb[3];
-            if (hit < 0) {
-                rgb[0] = baker->sky_color[0];
-                rgb[1] = baker->sky_color[1];
-                rgb[2] = baker->sky_color[2];
-            } else {
-                const baker_tri *tri = &baker->tris[hit];
-                double facing =
-                    tri->normal[0] * dir[0] + tri->normal[1] * dir[1] + tri->normal[2] * dir[2];
-                if (facing > 0.0 && t < grid->spacing * 0.5)
-                    inside_hits++; /* backface very close: probably inside geometry */
-                double hp[3] = {
-                    point[0] + dir[0] * t, point[1] + dir[1] * t, point[2] + dir[2] * t};
-                double hn[3] = {tri->normal[0], tri->normal[1], tri->normal[2]};
-                if (facing > 0.0) {
-                    hn[0] = -hn[0];
-                    hn[1] = -hn[1];
-                    hn[2] = -hn[2];
-                }
-                baker_radiance(baker, hp, hn, &rng, (int32_t)baker->bounces, rgb);
-                rgb[0] = rgb[0] * tri->albedo[0] + tri->emissive[0];
-                rgb[1] = rgb[1] * tri->albedo[1] + tri->emissive[1];
-                rgb[2] = rgb[2] * tri->albedo[2] + tri->emissive[2];
-            }
-            double basis[9];
-            probe_sh_basis(dir, basis);
-            double weight = 4.0 * 3.14159265358979323846 / (double)dir_samples;
-            for (int c = 0; c < 9; ++c) {
-                sh[c * 3 + 0] =
-                    probe_accumulate_coefficient(sh[c * 3 + 0], rgb[0] * basis[c] * weight);
-                sh[c * 3 + 1] =
-                    probe_accumulate_coefficient(sh[c * 3 + 1], rgb[1] * basis[c] * weight);
-                sh[c * 3 + 2] =
-                    probe_accumulate_coefficient(sh[c * 3 + 2], rgb[2] * basis[c] * weight);
-            }
-        }
-        grid->valid[p] = inside_hits * 4 < dir_samples ? 1 : 0;
+    void *pool = probes >= 8 ? baker_worker_pool(baker) : NULL;
+    int32_t task_count = pool ? baker->worker_count : 1;
+    if ((size_t)task_count > probes)
+        task_count = (int32_t)probes;
+    probe_bake_task tasks[BAKER3D_MAX_PARALLEL_TASKS];
+    size_t base_count = probes / (size_t)task_count;
+    size_t extra = probes % (size_t)task_count;
+    size_t first_probe = 0;
+    for (int32_t task_index = 0; task_index < task_count; ++task_index) {
+        probe_bake_task *task = &tasks[task_index];
+        task->grid = grid;
+        task->baker = baker;
+        task->first_probe = first_probe;
+        task->probe_count = base_count + ((size_t)task_index < extra ? 1u : 0u);
+        task->direction_samples = dir_samples;
+        first_probe += task->probe_count;
+        if (!pool || !rt_threadpool_submit_fn(pool, probe_bake_task_run, task))
+            probe_bake_task_run(task);
     }
+    if (pool)
+        rt_threadpool_wait(pool);
     {
         static const int32_t offsets[6][3] = {
             {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};

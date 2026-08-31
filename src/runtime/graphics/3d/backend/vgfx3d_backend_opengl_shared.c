@@ -457,3 +457,88 @@ int vgfx3d_opengl_should_prune_cache_entry(uint64_t current_frame,
         return 0;
     return (current_frame - last_used_frame) > max_age;
 }
+
+/// @brief Invert a finite row-major 4x4 matrix with scaled partial pivoting.
+/// @details The former cofactor implementation accepted a NaN determinant because every ordered
+/// comparison with NaN is false, then published an all-NaN inverse. Gauss-Jordan elimination lets
+/// this helper reject every non-finite intermediate and choose a scale-aware pivot. Failure writes
+/// identity so callers cannot accidentally consume partially initialized output.
+int vgfx3d_opengl_inverse_matrix4(const float matrix[16], float inverse[16]) {
+    double augmented[4][8];
+    double row_scales[4];
+    float result[16];
+
+    if (!inverse)
+        return 0;
+    memset(inverse, 0, sizeof(float) * 16u);
+    inverse[0] = inverse[5] = inverse[10] = inverse[15] = 1.0f;
+    if (!matrix)
+        return 0;
+    for (int row = 0; row < 4; ++row) {
+        double scale = 0.0;
+        for (int column = 0; column < 4; ++column) {
+            double value = matrix[row * 4 + column];
+            if (!isfinite(value))
+                return 0;
+            augmented[row][column] = value;
+            if (fabs(value) > scale)
+                scale = fabs(value);
+            augmented[row][column + 4] = row == column ? 1.0 : 0.0;
+        }
+        if (!(scale > 0.0) || !isfinite(scale))
+            return 0;
+        row_scales[row] = scale;
+    }
+    for (int column = 0; column < 4; ++column) {
+        int pivot_row = column;
+        double pivot_magnitude = fabs(augmented[column][column]);
+        double pivot_score = pivot_magnitude / row_scales[column];
+        for (int row = column + 1; row < 4; ++row) {
+            double candidate = fabs(augmented[row][column]);
+            double candidate_score = candidate / row_scales[row];
+            if (candidate_score > pivot_score) {
+                pivot_magnitude = candidate;
+                pivot_score = candidate_score;
+                pivot_row = row;
+            }
+        }
+        if (!isfinite(pivot_score) || pivot_score <= 1.0e-12)
+            return 0;
+        if (pivot_row != column) {
+            for (int lane = 0; lane < 8; ++lane) {
+                double temporary = augmented[column][lane];
+                augmented[column][lane] = augmented[pivot_row][lane];
+                augmented[pivot_row][lane] = temporary;
+            }
+            double temporary_scale = row_scales[column];
+            row_scales[column] = row_scales[pivot_row];
+            row_scales[pivot_row] = temporary_scale;
+        }
+        double pivot = augmented[column][column];
+        if (!isfinite(pivot) || fabs(pivot) <= row_scales[column] * 1.0e-12)
+            return 0;
+        for (int lane = 0; lane < 8; ++lane) {
+            augmented[column][lane] /= pivot;
+            if (!isfinite(augmented[column][lane]))
+                return 0;
+        }
+        for (int row = 0; row < 4; ++row) {
+            if (row == column)
+                continue;
+            double factor = augmented[row][column];
+            for (int lane = 0; lane < 8; ++lane) {
+                augmented[row][lane] -= factor * augmented[column][lane];
+                if (!isfinite(augmented[row][lane]))
+                    return 0;
+            }
+        }
+    }
+    for (int row = 0; row < 4; ++row)
+        for (int column = 0; column < 4; ++column) {
+            result[row * 4 + column] = (float)augmented[row][column + 4];
+            if (!isfinite(result[row * 4 + column]))
+                return 0;
+        }
+    memcpy(inverse, result, sizeof(result));
+    return 1;
+}

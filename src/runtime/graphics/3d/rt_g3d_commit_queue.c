@@ -80,6 +80,16 @@ void *rt_g3d_commit_queue_new(void) {
     return queue;
 }
 
+/// @brief Close the producer side of a commit queue while preserving its allocation.
+/// @details `rt_concqueue_close` provides the atomic publish point: racing enqueue attempts either
+/// complete before closure or fail without transferring payload ownership. Keeping the wrapper
+/// alive lets callers join every producer before the separate reclamation step.
+void rt_g3d_commit_queue_close(void *obj) {
+    rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
+    if (queue && queue->items)
+        rt_concqueue_close(queue->items);
+}
+
 /// @brief Drain and free every pending item without running its callback.
 /// @details Used during teardown so worker-produced commits still in the queue are
 ///          reclaimed rather than leaked; the callbacks are intentionally skipped.
@@ -104,7 +114,7 @@ void rt_g3d_commit_queue_free(void *obj) {
     if (!queue)
         return;
     if (queue->items) {
-        rt_concqueue_close(queue->items);
+        rt_g3d_commit_queue_close(queue);
         rt_g3d_commit_queue_discard_pending(queue);
         if (rt_obj_release_check0(queue->items))
             rt_obj_free(queue->items);

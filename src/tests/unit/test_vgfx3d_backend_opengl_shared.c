@@ -186,6 +186,39 @@ static void test_frame_history_sanitizes_nonfinite_scene_inputs(void) {
     EXPECT_NEAR(history.draw_prev_vp[11], 0.0f, 0.0f, "Invalid OpenGL overlay VP lane is cleared");
 }
 
+static void test_matrix_inverse_rejects_nonfinite_and_singular_inputs(void) {
+    float matrix[16];
+    float inverse[16];
+
+    set_identity4x4(matrix);
+    matrix[0] = 2.0f;
+    matrix[5] = 4.0f;
+    matrix[10] = 8.0f;
+    EXPECT_TRUE(vgfx3d_opengl_inverse_matrix4(matrix, inverse) == 1,
+                "finite nonsingular OpenGL matrix inverts");
+    EXPECT_NEAR(inverse[0], 0.5f, 1e-6f, "inverse preserves X scale reciprocal");
+    EXPECT_NEAR(inverse[5], 0.25f, 1e-6f, "inverse preserves Y scale reciprocal");
+    EXPECT_NEAR(inverse[10], 0.125f, 1e-6f, "inverse preserves Z scale reciprocal");
+
+    set_identity4x4(matrix);
+    matrix[0] = 1.0e-10f;
+    EXPECT_TRUE(vgfx3d_opengl_inverse_matrix4(matrix, inverse) == 1,
+                "scaled pivoting preserves a small but well-conditioned transform");
+    EXPECT_NEAR(inverse[0], 1.0e10f, 1.0e4f, "small finite scale produces a finite reciprocal");
+
+    matrix[3] = NAN;
+    EXPECT_TRUE(vgfx3d_opengl_inverse_matrix4(matrix, inverse) == 0,
+                "NaN matrix is rejected instead of publishing a NaN inverse");
+    EXPECT_NEAR(inverse[0], 1.0f, 0.0f, "failed inverse produces identity fallback");
+    EXPECT_NEAR(inverse[3], 0.0f, 0.0f, "failed inverse clears non-identity lanes");
+
+    set_identity4x4(matrix);
+    matrix[15] = INFINITY;
+    EXPECT_TRUE(vgfx3d_opengl_inverse_matrix4(matrix, inverse) == 0, "infinite matrix is rejected");
+    memset(matrix, 0, sizeof(matrix));
+    EXPECT_TRUE(vgfx3d_opengl_inverse_matrix4(matrix, inverse) == 0, "singular matrix is rejected");
+}
+
 static void test_target_blend_motion_and_readback_helpers(void) {
     vgfx3d_draw_cmd_t cmd;
 
@@ -483,6 +516,9 @@ static void test_opengl_source_contracts_are_context_safe(void) {
     EXPECT_TRUE(strstr(source, "gl_compile_context_shaders(&shaders, ctx->zero_to_one_clip)") !=
                     NULL,
                 "OpenGL shader compilation receives the owning context's clip convention");
+    EXPECT_TRUE(strstr(source, "gl_resolve_context_proc") != NULL &&
+                    strstr(source, "result = dlsym(gl.lib, name);") != NULL,
+                "OpenGL extension dispatch prefers provider-neutral libGL thunks");
     EXPECT_TRUE(strstr(source, "gl_try_load_context_program_binaries") != NULL &&
                     strstr(source, "gl_store_context_program_binaries") != NULL,
                 "OpenGL reuses driver program binaries across isolated contexts when supported");
@@ -646,6 +682,7 @@ static void test_opengl_source_contracts_are_context_safe(void) {
 int main(void) {
     test_frame_history_preserves_scene_state_across_overlay_passes();
     test_frame_history_sanitizes_nonfinite_scene_inputs();
+    test_matrix_inverse_rejects_nonfinite_and_singular_inputs();
     test_target_blend_motion_and_readback_helpers();
     test_capacity_and_cache_helpers();
     test_shadow_projection_helper_handles_orthographic_and_perspective();

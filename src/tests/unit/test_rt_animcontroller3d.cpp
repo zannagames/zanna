@@ -175,6 +175,8 @@ struct BlendTree3DTestLayout {
     int32_t tris[64 * 3];
     int32_t tri_count;
     int8_t tris_dirty;
+    int32_t hull_edges[64 * 3 * 2];
+    int32_t hull_edge_count;
 };
 
 struct IKSolver3DTestPrefix {
@@ -378,7 +380,8 @@ static void test_controller_crossfade_from_finished_one_shot_blends() {
         rt_anim_controller3d_set_transition_continuity(controller, (int8_t)continuity);
         rt_anim_controller3d_play(controller, rt_const_cstr("throw"));
         rt_anim_controller3d_update(controller, 2.0);
-        EXPECT_NEAR(adr0302_root_x(controller), 10.0, 0.01, "finished one-shot holds its last frame");
+        EXPECT_NEAR(
+            adr0302_root_x(controller), 10.0, 0.01, "finished one-shot holds its last frame");
         EXPECT_TRUE(rt_anim_controller3d_is_state_playing(controller, rt_const_cstr("throw")) == 0,
                     "finished one-shot reports not playing");
         rt_anim_controller3d_crossfade(controller, rt_const_cstr("idle"), 0.4);
@@ -417,7 +420,8 @@ static void test_controller_crossfade_out_of_stopped_layer_blends_from_bind() {
     EXPECT_NEAR(adr0302_root_x(controller), 0.0, 0.01, "Stop returns to bind");
     rt_anim_controller3d_crossfade(controller, rt_const_cstr("idle"), 0.4);
     rt_anim_controller3d_update(controller, 0.2);
-    EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.1, "continuity: fade departs from the bind pose");
+    EXPECT_NEAR(
+        adr0302_root_x(controller), 4.0, 0.1, "continuity: fade departs from the bind pose");
     rt_anim_controller3d_update(controller, 0.2);
     EXPECT_NEAR(adr0302_root_x(controller), 8.0, 0.01, "continuity: fade lands on the target");
 }
@@ -442,7 +446,8 @@ static void test_controller_blend_tree_fade_produces_intermediate_palettes() {
     EXPECT_NEAR(adr0302_root_x(controller), 2.0, 0.05, "half-way through the fade-in");
     rt_anim_controller3d_update(controller, 0.25);
     EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "fade-in lands on the tree pose");
-    EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, nullptr) != 0, "fade clear accepted");
+    EXPECT_TRUE(rt_anim_controller3d_set_blend_tree(controller, nullptr) != 0,
+                "fade clear accepted");
     EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "clear with a fade holds the tree pose");
     EXPECT_TRUE(layout->blend_tree != nullptr, "the clearing tree stays retained during the fade");
     rt_anim_controller3d_update(controller, 0.25);
@@ -468,7 +473,8 @@ static void test_controller_blend_tree_fade_retrigger_is_continuous() {
     EXPECT_NEAR(adr0302_root_x(controller), 1.0, 0.05, "quarter of the way in");
     rt_anim_controller3d_set_blend_tree(controller, nullptr);
     rt_anim_controller3d_update(controller, 0.05);
-    EXPECT_NEAR(adr0302_root_x(controller), 0.5, 0.05, "fade-out continues from the current weight");
+    EXPECT_NEAR(
+        adr0302_root_x(controller), 0.5, 0.05, "fade-out continues from the current weight");
     rt_anim_controller3d_set_blend_tree(controller, tree);
     double prev = adr0302_root_x(controller);
     int monotone = 1;
@@ -479,7 +485,8 @@ static void test_controller_blend_tree_fade_retrigger_is_continuous() {
             monotone = 0;
         prev = x;
     }
-    EXPECT_TRUE(monotone, "re-attach mid-fade ramps up continuously (no step larger than the slope)");
+    EXPECT_TRUE(monotone,
+                "re-attach mid-fade ramps up continuously (no step larger than the slope)");
     EXPECT_NEAR(adr0302_root_x(controller), 4.0, 0.01, "re-attach lands on the tree pose");
 }
 
@@ -509,7 +516,8 @@ static void test_controller_blend_tree_fade_zero_matches_legacy_bit_exact() {
     for (int step = 0; step < 4; step++) {
         const float *a = rt_anim_controller3d_get_final_palette_data(legacy, &n_legacy);
         const float *b = rt_anim_controller3d_get_final_palette_data(tuned, &n_tuned);
-        if (!a || !b || n_legacy != n_tuned || memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
+        if (!a || !b || n_legacy != n_tuned ||
+            memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
             same = 0;
         rt_anim_controller3d_update(legacy, 0.125);
         rt_anim_controller3d_update(tuned, 0.125);
@@ -519,11 +527,14 @@ static void test_controller_blend_tree_fade_zero_matches_legacy_bit_exact() {
     {
         const float *a = rt_anim_controller3d_get_final_palette_data(legacy, &n_legacy);
         const float *b = rt_anim_controller3d_get_final_palette_data(tuned, &n_tuned);
-        if (!a || !b || n_legacy != n_tuned || memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
+        if (!a || !b || n_legacy != n_tuned ||
+            memcmp(a, b, (size_t)n_legacy * 16 * sizeof(float)) != 0)
             same = 0;
     }
-    EXPECT_TRUE(same, "fade 0 attach/update/detach palettes are bit-identical to the legacy controller");
-    EXPECT_TRUE(tuned_layout->blend_tree == nullptr, "fade 0 releases the tree immediately on clear");
+    EXPECT_TRUE(same,
+                "fade 0 attach/update/detach palettes are bit-identical to the legacy controller");
+    EXPECT_TRUE(tuned_layout->blend_tree == nullptr,
+                "fade 0 releases the tree immediately on clear");
 }
 
 /// A crossfade issued mid-fade departs from the blended pose (no pop) with
@@ -1834,6 +1845,8 @@ static void test_animation_objects_repair_corrupt_private_counts() {
     EXPECT_TRUE(tree_2d_bits->tri_count >= 0 && tree_2d_bits->tri_count <= 64 &&
                     tree_2d_bits->tris_dirty == 0,
                 "BlendTree3D bounds a corrupt triangulation count before rebuilding it");
+    EXPECT_TRUE(tree_2d_bits->hull_edge_count == 3,
+                "BlendTree3D caches the triangle hull once during triangulation");
 
     tree_2d_bits->tri_count = 1;
     tree_2d_bits->tris_dirty = 0;
@@ -1849,6 +1862,12 @@ static void test_animation_objects_repair_corrupt_private_counts() {
                         tree_2d_bits->tris[t * 3 + 2] >= 0 && tree_2d_bits->tris[t * 3 + 2] < 3,
                     "BlendTree3D rebuilt triangles contain only live sample indexes");
     }
+
+    tree_2d_bits->hull_edge_count = INT32_MAX;
+    tree_2d_bits->tris_dirty = 0;
+    rt_blend_tree3d_set_param(tree_2d, 2.0, 2.0);
+    EXPECT_TRUE(tree_2d_bits->hull_edge_count == 3,
+                "BlendTree3D repairs a corrupt cached hull before exterior projection");
 
     tree_2d_bits->tris_dirty = -7;
     tree_2d_bits->param_x = NAN;

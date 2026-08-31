@@ -691,22 +691,35 @@ static uint64_t canvas3d_sort_key_backend_state(const deferred_draw_t *draw, voi
 /// @return Non-zero when both arrays have sufficient capacity; zero on invalid input, overflow, or
 /// allocation failure.
 static int canvas3d_ensure_sort_key_capacity(rt_canvas3d *c, int32_t needed) {
-    uint64_t *grown;
+    uint64_t *keys;
+    uint64_t *scratch;
+    int32_t capacity;
     if (!c || needed <= 0)
         return 0;
     if (c->sort_key_capacity >= needed && c->sort_keys && c->sort_keys_scratch)
         return 1;
-    if ((size_t)needed > SIZE_MAX / sizeof(uint64_t))
+    capacity = c->sort_key_capacity > 0 ? c->sort_key_capacity : 64;
+    while (capacity < needed) {
+        if (capacity > INT32_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if ((size_t)capacity > SIZE_MAX / sizeof(uint64_t))
         return 0;
-    grown = (uint64_t *)realloc(c->sort_keys, (size_t)needed * sizeof(uint64_t));
-    if (!grown)
+    keys = (uint64_t *)malloc((size_t)capacity * sizeof(*keys));
+    scratch = (uint64_t *)malloc((size_t)capacity * sizeof(*scratch));
+    if (!keys || !scratch) {
+        free(keys);
+        free(scratch);
         return 0;
-    c->sort_keys = grown;
-    grown = (uint64_t *)realloc(c->sort_keys_scratch, (size_t)needed * sizeof(uint64_t));
-    if (!grown)
-        return 0;
-    c->sort_keys_scratch = grown;
-    c->sort_key_capacity = needed;
+    }
+    free(c->sort_keys);
+    free(c->sort_keys_scratch);
+    c->sort_keys = keys;
+    c->sort_keys_scratch = scratch;
+    c->sort_key_capacity = capacity;
     return 1;
 }
 

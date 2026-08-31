@@ -10,7 +10,7 @@
 //   lightmap baker over static scene geometry) and LightProbeGrid3D (SH-9
 //   irradiance probe grid with trilinear sampling and .vlpg serialization).
 // Key invariants:
-//   - Bakes are deterministic (fixed seeds); BakeStep is chunked and
+//   - Bakes are deterministic (fixed seeds); BakeStep is work-budgeted and
 //     main-thread only.
 //   - Bake settings and copied lights freeze at the first scene gather; atlas
 //     and UV publication is failure-atomic.
@@ -88,9 +88,8 @@ double rt_lightbaker3d_get_progress(void *baker);
 
 /// @brief Snapshot an explicit enabled non-ambient bake light before gathering.
 /// @param baker LightBaker3D receiver.
-/// @param light Light3D whose type, pose, radiance, decay/range, cone, and
-///   shadow flag are copied, not retained; late inputs and inputs past the
-///   fixed sixteen-light cap are ignored.
+/// @param light Light3D whose type, pose, shape, radiance, decay/range, cone,
+///   and shadow flag are copied, not retained; late inputs are ignored.
 void rt_lightbaker3d_add_light(void *baker, void *light);
 
 /// @brief Run one deterministic bake slice; returns 1 when the bake is complete.

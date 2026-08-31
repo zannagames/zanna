@@ -229,6 +229,11 @@ int vgfx3d_opengl_should_reuse_morph_cache(const void *cached_key,
 int vgfx3d_opengl_should_prune_cache_entry(uint64_t current_frame,
                                            uint64_t last_used_frame,
                                            uint64_t max_age);
+/// @brief Invert a finite row-major 4x4 matrix with scaled partial pivoting.
+/// @param matrix Borrowed sixteen-component input matrix.
+/// @param[out] inverse Required sixteen-component inverse destination.
+/// @return 1 when a finite inverse was produced, otherwise 0 with @p inverse set to identity.
+int vgfx3d_opengl_inverse_matrix4(const float matrix[16], float inverse[16]);
 
 #ifdef __cplusplus
 }

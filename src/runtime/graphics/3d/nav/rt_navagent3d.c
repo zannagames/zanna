@@ -73,6 +73,8 @@ extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
 
 typedef struct navagent_crowd navagent_crowd;
+typedef struct navagent_batch_scratch navagent_batch_scratch;
+static void navagent_batch_scratch_destroy(navagent_batch_scratch *scratch);
 
 typedef struct rt_navagent3d {
     void *vptr;
@@ -136,6 +138,7 @@ struct navagent_crowd {
     int32_t count;
     double max_reach;
     uint64_t batch_epoch;
+    navagent_batch_scratch *batch_scratch;
     navagent_crowd *next;
 };
 
@@ -248,6 +251,7 @@ static void navagent_crowd_remove(rt_navagent3d *agent) {
         link = &(*link)->next;
     if (*link == crowd)
         *link = crowd->next;
+    navagent_batch_scratch_destroy(crowd->batch_scratch);
     free(crowd);
 }
 
@@ -1408,23 +1412,41 @@ typedef struct {
     uint32_t *bucket_visit_stamps;
     uint32_t bucket_count;
     uint32_t bucket_head_epoch;
+    navagent_batch_scratch *scratch;
 } navagent_batch_context_t;
 
-/* Main-thread reusable staging buffers remove per-frame allocation churn for crowd updates. They
- * are process-lifetime scratch, do not retain the raw object pointers they temporarily contain,
- * and are overwritten by every batch. */
+/// @brief Reusable avoidance staging owned by exactly one `(NavMesh3D, physics-world)` crowd.
+struct navagent_batch_scratch {
+    navagent_batch_snapshot_t *snapshots;
+    int32_t snapshot_capacity;
+    int32_t snapshot_count;
+    int32_t *neighbor_indices;
+    int32_t neighbor_capacity;
+    int32_t *bucket_heads;
+    uint32_t *bucket_head_stamps;
+    uint32_t *bucket_visit_stamps;
+    uint32_t bucket_capacity;
+    uint32_t bucket_head_epoch;
+    uint32_t bucket_visit_epoch;
+    int64_t last_bucket_initializations;
+};
+
+static void navagent_batch_scratch_destroy(navagent_batch_scratch *scratch) {
+    if (!scratch)
+        return;
+    free(scratch->snapshots);
+    free(scratch->neighbor_indices);
+    free(scratch->bucket_heads);
+    free(scratch->bucket_head_stamps);
+    free(scratch->bucket_visit_stamps);
+    free(scratch);
+}
+
+/* Main-thread reusable staging buffers remove per-frame allocation churn for the selected handle
+ * list. Each crowd owns the heavier snapshot, neighbor, and spatial-hash scratch so unrelated
+ * NavMesh/world pairs do not force one process-wide high-water allocation. */
 static navagent_batch_item_t *g_navagent_batch_items = NULL;
 static int32_t g_navagent_batch_item_capacity = 0;
-static navagent_batch_snapshot_t *g_navagent_batch_snapshots = NULL;
-static int32_t g_navagent_batch_snapshot_capacity = 0;
-static int32_t *g_navagent_batch_neighbor_indices = NULL;
-static int32_t g_navagent_batch_neighbor_capacity = 0;
-static int32_t *g_navagent_batch_bucket_heads = NULL;
-static uint32_t *g_navagent_batch_bucket_head_stamps = NULL;
-static uint32_t *g_navagent_batch_bucket_visit_stamps = NULL;
-static uint32_t g_navagent_batch_bucket_capacity = 0;
-static uint32_t g_navagent_batch_bucket_head_epoch = 0;
-static uint32_t g_navagent_batch_bucket_visit_epoch = 0;
 static rt_navagent3d **g_navagent_batch_selected_slots = NULL;
 static uint32_t *g_navagent_batch_selected_stamps = NULL;
 static uint32_t g_navagent_batch_selected_capacity = 0;
@@ -1560,43 +1582,14 @@ static int navagent_batch_agent_selected(const rt_navagent3d *agent, uint32_t ep
 /// @brief Grow the reusable whole-registry snapshot array.
 /// @param needed Minimum number of immutable snapshot records required.
 /// @return 1 when capacity is available, or 0 on invalid size/overflow/allocation failure.
-static int navagent_batch_reserve_snapshots(int32_t needed) {
+static int navagent_batch_reserve_snapshots(navagent_batch_scratch *scratch, int32_t needed) {
     navagent_batch_snapshot_t *grown;
     int32_t capacity;
-    if (needed < 0)
+    if (!scratch || needed < 0)
         return 0;
-    if (needed <= g_navagent_batch_snapshot_capacity)
+    if (needed <= scratch->snapshot_capacity)
         return 1;
-    capacity = g_navagent_batch_snapshot_capacity > 0 ? g_navagent_batch_snapshot_capacity : 32;
-    while (capacity < needed) {
-        if (capacity > INT32_MAX / 2) {
-            capacity = needed;
-            break;
-        }
-        capacity *= 2;
-    }
-    if ((size_t)capacity > SIZE_MAX / sizeof(*grown))
-        return 0;
-    grown = (navagent_batch_snapshot_t *)realloc(g_navagent_batch_snapshots,
-                                                 (size_t)capacity * sizeof(*grown));
-    if (!grown)
-        return 0;
-    g_navagent_batch_snapshots = grown;
-    g_navagent_batch_snapshot_capacity = capacity;
-    return 1;
-}
-
-/// @brief Grow the reusable snapshot-neighbor index list.
-/// @param needed Minimum number of peer indices required by an exhaustive solve.
-/// @return 1 when capacity is available, or 0 on invalid size/overflow/allocation failure.
-static int navagent_batch_reserve_neighbors(int32_t needed) {
-    int32_t *grown;
-    int32_t capacity;
-    if (needed < 0)
-        return 0;
-    if (needed <= g_navagent_batch_neighbor_capacity)
-        return 1;
-    capacity = g_navagent_batch_neighbor_capacity > 0 ? g_navagent_batch_neighbor_capacity : 32;
+    capacity = scratch->snapshot_capacity > 0 ? scratch->snapshot_capacity : 32;
     while (capacity < needed) {
         if (capacity > INT32_MAX / 2) {
             capacity = needed;
@@ -1607,21 +1600,49 @@ static int navagent_batch_reserve_neighbors(int32_t needed) {
     if ((size_t)capacity > SIZE_MAX / sizeof(*grown))
         return 0;
     grown =
-        (int32_t *)realloc(g_navagent_batch_neighbor_indices, (size_t)capacity * sizeof(*grown));
+        (navagent_batch_snapshot_t *)realloc(scratch->snapshots, (size_t)capacity * sizeof(*grown));
     if (!grown)
         return 0;
-    g_navagent_batch_neighbor_indices = grown;
-    g_navagent_batch_neighbor_capacity = capacity;
+    scratch->snapshots = grown;
+    scratch->snapshot_capacity = capacity;
+    return 1;
+}
+
+/// @brief Grow the reusable snapshot-neighbor index list.
+/// @param needed Minimum number of peer indices required by an exhaustive solve.
+/// @return 1 when capacity is available, or 0 on invalid size/overflow/allocation failure.
+static int navagent_batch_reserve_neighbors(navagent_batch_scratch *scratch, int32_t needed) {
+    int32_t *grown;
+    int32_t capacity;
+    if (!scratch || needed < 0)
+        return 0;
+    if (needed <= scratch->neighbor_capacity)
+        return 1;
+    capacity = scratch->neighbor_capacity > 0 ? scratch->neighbor_capacity : 32;
+    while (capacity < needed) {
+        if (capacity > INT32_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if ((size_t)capacity > SIZE_MAX / sizeof(*grown))
+        return 0;
+    grown = (int32_t *)realloc(scratch->neighbor_indices, (size_t)capacity * sizeof(*grown));
+    if (!grown)
+        return 0;
+    scratch->neighbor_indices = grown;
+    scratch->neighbor_capacity = capacity;
     return 1;
 }
 
 /// @brief Grow reusable batch snapshot hash buckets to at least two slots per snapshot.
-static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
-    uint32_t capacity = g_navagent_batch_bucket_capacity;
+static int navagent_batch_reserve_buckets(navagent_batch_scratch *scratch, int32_t snapshot_count) {
+    uint32_t capacity = scratch ? scratch->bucket_capacity : 0;
     int32_t *heads;
     uint32_t *head_stamps;
     uint32_t *stamps;
-    if (snapshot_count < 0 || g_navagent_test_force_batch_bucket_alloc_failure)
+    if (!scratch || snapshot_count < 0 || g_navagent_test_force_batch_bucket_alloc_failure)
         return 0;
     if ((uint64_t)snapshot_count <= (uint64_t)capacity / 2u && capacity > 0)
         return 1;
@@ -1641,46 +1662,44 @@ static int navagent_batch_reserve_buckets(int32_t snapshot_count) {
         free(stamps);
         return 0;
     }
-    free(g_navagent_batch_bucket_heads);
-    free(g_navagent_batch_bucket_head_stamps);
-    free(g_navagent_batch_bucket_visit_stamps);
-    g_navagent_batch_bucket_heads = heads;
-    g_navagent_batch_bucket_head_stamps = head_stamps;
-    g_navagent_batch_bucket_visit_stamps = stamps;
-    g_navagent_batch_bucket_capacity = capacity;
-    g_navagent_batch_bucket_head_epoch = 0;
-    g_navagent_batch_bucket_visit_epoch = 0;
+    free(scratch->bucket_heads);
+    free(scratch->bucket_head_stamps);
+    free(scratch->bucket_visit_stamps);
+    scratch->bucket_heads = heads;
+    scratch->bucket_head_stamps = head_stamps;
+    scratch->bucket_visit_stamps = stamps;
+    scratch->bucket_capacity = capacity;
+    scratch->bucket_head_epoch = 0;
+    scratch->bucket_visit_epoch = 0;
     return 1;
 }
 
 /// @brief Begin one batch-grid query and return a fresh bucket-visit epoch.
-static uint32_t navagent_batch_next_visit_epoch(void) {
-    if (!g_navagent_batch_bucket_visit_stamps || g_navagent_batch_bucket_capacity == 0)
+static uint32_t navagent_batch_next_visit_epoch(navagent_batch_scratch *scratch) {
+    if (!scratch || !scratch->bucket_visit_stamps || scratch->bucket_capacity == 0)
         return 0;
-    g_navagent_batch_bucket_visit_epoch++;
-    if (g_navagent_batch_bucket_visit_epoch == 0) {
-        memset(g_navagent_batch_bucket_visit_stamps,
+    scratch->bucket_visit_epoch++;
+    if (scratch->bucket_visit_epoch == 0) {
+        memset(scratch->bucket_visit_stamps,
                0,
-               (size_t)g_navagent_batch_bucket_capacity *
-                   sizeof(*g_navagent_batch_bucket_visit_stamps));
-        g_navagent_batch_bucket_visit_epoch = 1;
+               (size_t)scratch->bucket_capacity * sizeof(*scratch->bucket_visit_stamps));
+        scratch->bucket_visit_epoch = 1;
     }
-    return g_navagent_batch_bucket_visit_epoch;
+    return scratch->bucket_visit_epoch;
 }
 
 /// @brief Advance the batch-grid publication epoch without clearing every bucket head.
-static uint32_t navagent_batch_next_head_epoch(void) {
-    if (!g_navagent_batch_bucket_head_stamps || g_navagent_batch_bucket_capacity == 0)
+static uint32_t navagent_batch_next_head_epoch(navagent_batch_scratch *scratch) {
+    if (!scratch || !scratch->bucket_head_stamps || scratch->bucket_capacity == 0)
         return 0;
-    g_navagent_batch_bucket_head_epoch++;
-    if (g_navagent_batch_bucket_head_epoch == 0) {
-        memset(g_navagent_batch_bucket_head_stamps,
+    scratch->bucket_head_epoch++;
+    if (scratch->bucket_head_epoch == 0) {
+        memset(scratch->bucket_head_stamps,
                0,
-               (size_t)g_navagent_batch_bucket_capacity *
-                   sizeof(*g_navagent_batch_bucket_head_stamps));
-        g_navagent_batch_bucket_head_epoch = 1;
+               (size_t)scratch->bucket_capacity * sizeof(*scratch->bucket_head_stamps));
+        scratch->bucket_head_epoch = 1;
     }
-    return g_navagent_batch_bucket_head_epoch;
+    return scratch->bucket_head_epoch;
 }
 
 /// @brief Mark each distinct selected crowd once and sum its live agents in linear time.
@@ -1738,19 +1757,19 @@ static int32_t navagent_batch_find_snapshot(const navagent_batch_snapshot_t *sna
 /// @param context Output context whose fixed bucket table and reusable snapshot pointer are filled.
 /// @param count Exact number of agents in the previously stamped crowds.
 /// @return 1 on success, or 0 if registry accounting exceeds reserved bounds.
-static int navagent_batch_build_snapshot(navagent_batch_context_t *context, int32_t count) {
+static int navagent_batch_build_snapshot(navagent_crowd *crowd,
+                                         navagent_batch_context_t *context,
+                                         int32_t count) {
     int32_t write_index = count;
     uint32_t head_epoch;
-    if (!context || count < 0 || count > g_navagent_batch_snapshot_capacity ||
-        !navagent_batch_reserve_buckets(count))
+    navagent_batch_scratch *scratch = crowd ? crowd->batch_scratch : NULL;
+    if (!context || !scratch || count < 0 || count > scratch->snapshot_capacity ||
+        !navagent_batch_reserve_buckets(scratch, count))
         return 0;
-    for (rt_navagent3d *agent = g_navagent3d_registry; agent; agent = agent->registry_next) {
-        navagent_crowd *crowd = agent->crowd;
-        if (!crowd || crowd->batch_epoch != g_navagent_batch_crowd_epoch)
-            continue;
+    for (rt_navagent3d *agent = crowd->agents; agent; agent = agent->crowd_next) {
         if (write_index <= 0)
             return 0;
-        navagent_batch_snapshot_t *snapshot = &g_navagent_batch_snapshots[--write_index];
+        navagent_batch_snapshot_t *snapshot = &scratch->snapshots[--write_index];
         memset(snapshot, 0, sizeof(*snapshot));
         snapshot->agent = agent;
         snapshot->crowd = crowd;
@@ -1770,17 +1789,19 @@ static int navagent_batch_build_snapshot(navagent_batch_context_t *context, int3
     }
     if (write_index != 0)
         return 0;
-    head_epoch = navagent_batch_next_head_epoch();
+    head_epoch = navagent_batch_next_head_epoch(scratch);
     if (!head_epoch)
         return 0;
-    context->snapshots = g_navagent_batch_snapshots;
+    scratch->snapshot_count = count;
+    context->snapshots = scratch->snapshots;
     context->snapshot_count = count;
-    context->bucket_heads = g_navagent_batch_bucket_heads;
-    context->bucket_head_stamps = g_navagent_batch_bucket_head_stamps;
-    context->bucket_visit_stamps = g_navagent_batch_bucket_visit_stamps;
-    context->bucket_count = g_navagent_batch_bucket_capacity;
+    context->bucket_heads = scratch->bucket_heads;
+    context->bucket_head_stamps = scratch->bucket_head_stamps;
+    context->bucket_visit_stamps = scratch->bucket_visit_stamps;
+    context->bucket_count = scratch->bucket_capacity;
     context->bucket_head_epoch = head_epoch;
-    g_navagent_batch_last_bucket_initializations = 0;
+    context->scratch = scratch;
+    scratch->last_bucket_initializations = 0;
     for (int32_t i = 0; i < count; i++) {
         navagent_batch_snapshot_t *snapshot = &context->snapshots[i];
         uint32_t bucket = navagent_grid_bucket_for_capacity(
@@ -1788,11 +1809,32 @@ static int navagent_batch_build_snapshot(navagent_batch_context_t *context, int3
         if (context->bucket_head_stamps[bucket] != head_epoch) {
             context->bucket_head_stamps[bucket] = head_epoch;
             context->bucket_heads[bucket] = -1;
-            g_navagent_batch_last_bucket_initializations++;
+            scratch->last_bucket_initializations++;
         }
         snapshot->grid_next = context->bucket_heads[bucket];
         context->bucket_heads[bucket] = i;
     }
+    return 1;
+}
+
+/// @brief Reconstruct a read-only solve context from one crowd's published snapshot scratch.
+static int navagent_batch_context_for_crowd(navagent_crowd *crowd,
+                                            navagent_batch_context_t *context) {
+    navagent_batch_scratch *scratch = crowd ? crowd->batch_scratch : NULL;
+    if (!context || !scratch || scratch->snapshot_count < 0 ||
+        scratch->snapshot_count > scratch->snapshot_capacity || !scratch->snapshots ||
+        !scratch->bucket_heads || !scratch->bucket_head_stamps || !scratch->bucket_visit_stamps ||
+        scratch->bucket_capacity == 0 || scratch->bucket_head_epoch == 0)
+        return 0;
+    memset(context, 0, sizeof(*context));
+    context->snapshots = scratch->snapshots;
+    context->snapshot_count = scratch->snapshot_count;
+    context->bucket_heads = scratch->bucket_heads;
+    context->bucket_head_stamps = scratch->bucket_head_stamps;
+    context->bucket_visit_stamps = scratch->bucket_visit_stamps;
+    context->bucket_count = scratch->bucket_capacity;
+    context->bucket_head_epoch = scratch->bucket_head_epoch;
+    context->scratch = scratch;
     return 1;
 }
 
@@ -1806,23 +1848,23 @@ static int navagent_batch_append_peer(const navagent_batch_context_t *context,
                                       int32_t self_index,
                                       int32_t candidate_index,
                                       int32_t *count) {
-    if (!context || !count || self_index < 0 || candidate_index < 0 ||
+    if (!context || !context->scratch || !count || self_index < 0 || candidate_index < 0 ||
         self_index >= context->snapshot_count || candidate_index >= context->snapshot_count ||
-        *count < 0 || *count >= g_navagent_batch_neighbor_capacity)
+        *count < 0 || *count >= context->scratch->neighbor_capacity)
         return 0;
     const navagent_batch_snapshot_t *self = &context->snapshots[self_index];
     const navagent_batch_snapshot_t *candidate = &context->snapshots[candidate_index];
     if (candidate_index == self_index || !candidate->avoidance_enabled ||
         candidate->crowd != self->crowd || candidate->avoidance_radius <= 0.0)
         return 1;
-    g_navagent_batch_neighbor_indices[(*count)++] = candidate_index;
+    context->scratch->neighbor_indices[(*count)++] = candidate_index;
     return 1;
 }
 
 /// @brief Collect a deterministic spatially culled peer list from immutable snapshots.
 /// @param context Complete start-of-tick snapshot and spatial hash.
 /// @param self_index Snapshot index of the selected agent.
-/// @param out_count Receives the number of indices in `g_navagent_batch_neighbor_indices`.
+/// @param out_count Receives the number of indices in the crowd-owned neighbor scratch.
 /// @return 1 on success, or 0 for invalid state/capacity.
 static int navagent_batch_collect_peers(const navagent_batch_context_t *context,
                                         int32_t self_index,
@@ -1830,14 +1872,15 @@ static int navagent_batch_collect_peers(const navagent_batch_context_t *context,
     int32_t count = 0;
     if (out_count)
         *out_count = 0;
-    if (!context || !out_count || self_index < 0 || self_index >= context->snapshot_count)
+    if (!context || !context->scratch || !out_count || self_index < 0 ||
+        self_index >= context->snapshot_count)
         return 0;
     const navagent_batch_snapshot_t *self = &context->snapshots[self_index];
     double max_distance = self->reach + (self->crowd ? self->crowd->max_reach : 0.0);
     int ring = (int)ceil(max_distance / NAVAGENT_GRID_CELL) + 1;
     int64_t grid_cells = (int64_t)(2 * ring + 1) * (int64_t)(2 * ring + 1);
     if (ring >= 1 && (ring <= NAVAGENT_GRID_MAX_RING || grid_cells <= context->snapshot_count)) {
-        uint32_t visit_epoch = navagent_batch_next_visit_epoch();
+        uint32_t visit_epoch = navagent_batch_next_visit_epoch(context->scratch);
         for (int32_t dz = -ring; dz <= ring; dz++) {
             for (int32_t dx = -ring; dx <= ring; dx++) {
                 int32_t cell_x = self->grid_cx + dx;
@@ -2002,7 +2045,7 @@ static int navagent_batch_solve_velocity(const navagent_batch_context_t *context
         for (int32_t peer = 0; peer < neighbor_count; peer++) {
             score += navagent_batch_peer_penalty(
                 self,
-                &context->snapshots[g_navagent_batch_neighbor_indices[peer]],
+                &context->snapshots[context->scratch->neighbor_indices[peer]],
                 horizon,
                 candidate_x,
                 candidate_z);
@@ -2586,7 +2629,7 @@ void rt_navagent3d_update(void *obj, double dt) {
 ///   solve reads that immutable state; solved velocities and positions are finally published in
 ///   the same stable handle order. Invalid handles and duplicates are ignored. The function is
 ///   main-thread only, matching agent registration, binding, and the live spatial grid. Reusable
-///   process-owned scratch buffers avoid allocation after the largest observed batch has warmed up.
+///   per-crowd scratch avoids coupling unrelated NavMesh/world high-water marks.
 /// @param agents Array of candidate NavAgent3D handles. The array is borrowed for the call.
 /// @param agent_count Number of entries available in @p agents.
 /// @param dt Tick duration in seconds, sanitized and capped identically to individual Update.
@@ -2633,10 +2676,25 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
         return 0;
     int32_t unique_count = selected_count;
     relevant_count = navagent_batch_mark_relevant_crowds(g_navagent_batch_items, unique_count);
-    if (relevant_count < unique_count || !navagent_batch_reserve_snapshots(relevant_count) ||
-        !navagent_batch_reserve_neighbors(relevant_count) ||
-        !navagent_batch_reserve_buckets(relevant_count))
+    if (relevant_count < unique_count)
         return 0;
+
+    /* Reserve every selected crowd before preparation mutates any live agent. Keeping this
+     * transactional boundary preserves the batch API's all-or-nothing allocation contract. */
+    for (navagent_crowd *crowd = g_navagent3d_crowds; crowd; crowd = crowd->next) {
+        if (crowd->batch_epoch != g_navagent_batch_crowd_epoch)
+            continue;
+        if (!crowd->batch_scratch) {
+            crowd->batch_scratch =
+                (navagent_batch_scratch *)calloc(1, sizeof(*crowd->batch_scratch));
+            if (!crowd->batch_scratch)
+                return 0;
+        }
+        if (!navagent_batch_reserve_snapshots(crowd->batch_scratch, crowd->count) ||
+            !navagent_batch_reserve_neighbors(crowd->batch_scratch, crowd->count) ||
+            !navagent_batch_reserve_buckets(crowd->batch_scratch, crowd->count))
+            return 0;
+    }
 
     g_navagent_batch_active = 1;
     for (int32_t i = 0; i < unique_count; i++) {
@@ -2646,13 +2704,29 @@ int64_t rt_navagent3d_update_batch(void *const *agents, int64_t agent_count, dou
                                  ? 1
                                  : 0;
     }
-    memset(&context, 0, sizeof(context));
-    if (!navagent_batch_build_snapshot(&context, relevant_count)) {
-        g_navagent_batch_active = 0;
-        return 0;
+    g_navagent_batch_last_bucket_initializations = 0;
+    for (navagent_crowd *crowd = g_navagent3d_crowds; crowd; crowd = crowd->next) {
+        if (crowd->batch_epoch != g_navagent_batch_crowd_epoch)
+            continue;
+        memset(&context, 0, sizeof(context));
+        if (!navagent_batch_build_snapshot(crowd, &context, crowd->count)) {
+            g_navagent_batch_active = 0;
+            return 0;
+        }
+        if (crowd->batch_scratch->last_bucket_initializations >
+            INT64_MAX - g_navagent_batch_last_bucket_initializations) {
+            g_navagent_batch_last_bucket_initializations = INT64_MAX;
+        } else {
+            g_navagent_batch_last_bucket_initializations +=
+                crowd->batch_scratch->last_bucket_initializations;
+        }
     }
     for (int32_t i = 0; i < unique_count; i++) {
         navagent_batch_item_t *item = &g_navagent_batch_items[i];
+        if (!navagent_batch_context_for_crowd(item->agent->crowd, &context)) {
+            navagent_vec_copy(item->solved_velocity, item->agent->desired_velocity);
+            continue;
+        }
         item->snapshot_index =
             navagent_batch_find_snapshot(context.snapshots, context.snapshot_count, item->agent);
         if (!item->should_apply)

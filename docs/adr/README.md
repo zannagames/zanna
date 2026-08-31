@@ -55,6 +55,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0301](0301-display-referred-render-target-sampling.md) — Display-Referred Render-Target Sampling on Every Backend
 - [ADR 0302](0302-animation-transition-continuity.md) — Animation Transition Continuity
 - [ADR 0304](0304-bounded-process-output-and-environment-snapshots.md) — Bound Process Output Publication and Own Environment Snapshots
+- [ADR 0308](0308-deterministic-parallel-light-baking-and-commit-queue-close.md) — Deterministic Parallel Light Baking and Two-Phase Commit-Queue Teardown
 - [ADR 0280](0280-prepared-workspace-edit-transactions.md) — Prepare Workspace Edit Transactions Once
 - [ADR 0028](0028-terminal-option-result-input-apis.md) — Terminal Option and Result Input APIs
 - [ADR 0029](0029-diagnostics-current-trap-api.md) — Diagnostics Current Trap API

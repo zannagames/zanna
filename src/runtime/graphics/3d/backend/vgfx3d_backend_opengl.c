@@ -663,6 +663,25 @@ static void gl_unload_partial_dispatch(void) {
     gl_wayland_binding = 0;
 }
 
+/// @brief Resolve a context-dispatched OpenGL entry point without binding it to GLX or EGL.
+/// @details A process may create headless EGL and windowed GLX contexts in either order. Exported
+/// libGL/GLVND symbols are provider-neutral dispatch thunks, so they are preferred; GLX and EGL
+/// lookup are compatibility fallbacks. The cached table is therefore independent of which native
+/// binding happened to initialize first.
+static void *gl_resolve_context_proc(const char *name) {
+    void *result;
+    if (!name || !gl.lib)
+        return NULL;
+    result = dlsym(gl.lib, name);
+#if !defined(ZANNA_GRAPHICS_WAYLAND)
+    if (!result && glx.GetProcAddress)
+        result = (void *)glx.GetProcAddress((const unsigned char *)name);
+#endif
+    if (!result && vgfx3d_egl_available())
+        result = vgfx3d_egl_wayland_get_proc(name);
+    return result;
+}
+
 #define GLX_RGBA_BIT 0x0001
 #define GLX_RENDER_TYPE 0x8011
 #define GLX_DRAWABLE_TYPE 0x8010
@@ -1442,49 +1461,7 @@ static void mat4f_mul_gl(const float *a, const float *b, float *out) {
 /// @param[out] out Caller-owned 4x4 inverse destination.
 /// @return 0 on success, or -1 when @p m is singular.
 static int mat4f_inverse_gl(const float *m, float *out) {
-    float inv[16];
-    inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
-             m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
-    inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
-             m[8] * m[7] * m[14] - m[12] * m[6] * m[11] + m[12] * m[7] * m[10];
-    inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15] +
-             m[8] * m[7] * m[13] + m[12] * m[5] * m[11] - m[12] * m[7] * m[9];
-    inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14] -
-              m[8] * m[6] * m[13] - m[12] * m[5] * m[10] + m[12] * m[6] * m[9];
-    inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15] -
-             m[9] * m[3] * m[14] - m[13] * m[2] * m[11] + m[13] * m[3] * m[10];
-    inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15] +
-             m[8] * m[3] * m[14] + m[12] * m[2] * m[11] - m[12] * m[3] * m[10];
-    inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15] -
-             m[8] * m[3] * m[13] - m[12] * m[1] * m[11] + m[12] * m[3] * m[9];
-    inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14] +
-              m[8] * m[2] * m[13] + m[12] * m[1] * m[10] - m[12] * m[2] * m[9];
-    inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15] + m[5] * m[3] * m[14] +
-             m[13] * m[2] * m[7] - m[13] * m[3] * m[6];
-    inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15] -
-             m[4] * m[3] * m[14] - m[12] * m[2] * m[7] + m[12] * m[3] * m[6];
-    inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15] +
-              m[4] * m[3] * m[13] + m[12] * m[1] * m[7] - m[12] * m[3] * m[5];
-    inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14] -
-              m[4] * m[2] * m[13] - m[12] * m[1] * m[6] + m[12] * m[2] * m[5];
-    inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11] -
-             m[5] * m[3] * m[10] - m[9] * m[2] * m[7] + m[9] * m[3] * m[6];
-    inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11] + m[4] * m[3] * m[10] +
-             m[8] * m[2] * m[7] - m[8] * m[3] * m[6];
-    inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11] - m[4] * m[3] * m[9] -
-              m[8] * m[1] * m[7] + m[8] * m[3] * m[5];
-    inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
-              m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
-
-    {
-        float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-        if (fabsf(det) < 1e-12f)
-            return -1;
-        det = 1.0f / det;
-        for (int i = 0; i < 16; i++)
-            out[i] = inv[i] * det;
-    }
-    return 0;
+    return vgfx3d_opengl_inverse_matrix4(m, out) ? 0 : -1;
 }
 
 /// @brief Resolve every OpenGL + GLX function pointer the backend needs.
@@ -1543,51 +1520,17 @@ static int load_gl(int wayland_binding) {
         missing_symbol = "glX" #name;                                                              \
         goto fail;                                                                                 \
     }
-#if defined(ZANNA_GRAPHICS_WAYLAND)
 #define LOADP(name)                                                                                \
-    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));        \
+    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))gl_resolve_context_proc("gl" #name));            \
     if (!gl.name) {                                                                                \
         missing_symbol = "gl" #name;                                                               \
         goto fail;                                                                                 \
     }
-#elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
-#define LOADP(name)                                                                                \
-    if (gl_wayland_binding)                                                                        \
-        gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));    \
-    else                                                                                           \
-        gl.name = RT_FN_PTR_CAST(                                                                  \
-            (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));           \
-    if (!gl.name) {                                                                                \
-        missing_symbol = "gl" #name;                                                               \
-        goto fail;                                                                                 \
-    }
-#else
-#define LOADP(name)                                                                                \
-    gl.name = RT_FN_PTR_CAST(                                                                      \
-        (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));               \
-    if (!gl.name) {                                                                                \
-        missing_symbol = "gl" #name;                                                               \
-        goto fail;                                                                                 \
-    }
-#endif
 
-/* Same resolution order as LOADP, but a missing symbol is not fatal: the caller
- * must null-check before use and degrade the corresponding feature. */
-#if defined(ZANNA_GRAPHICS_WAYLAND)
+/* Same provider-neutral resolution as LOADP, but a missing symbol is not fatal: the caller must
+ * null-check before use and degrade the corresponding feature. */
 #define LOADP_OPTIONAL(name)                                                                       \
-    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));
-#elif defined(ZANNA_GRAPHICS_LINUX_AUTO)
-#define LOADP_OPTIONAL(name)                                                                       \
-    if (gl_wayland_binding)                                                                        \
-        gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))vgfx3d_egl_wayland_get_proc("gl" #name));    \
-    else                                                                                           \
-        gl.name = RT_FN_PTR_CAST(                                                                  \
-            (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));
-#else
-#define LOADP_OPTIONAL(name)                                                                       \
-    gl.name = RT_FN_PTR_CAST(                                                                      \
-        (__typeof__(gl.name))glx.GetProcAddress((const unsigned char *)"gl" #name));
-#endif
+    gl.name = RT_FN_PTR_CAST((__typeof__(gl.name))gl_resolve_context_proc("gl" #name));
 
     LOAD(GetError);
     LOAD(GetString);
@@ -1766,17 +1709,18 @@ static int load_gl(int wayland_binding) {
     gl_dispatch_unlock();
     return 0;
 
-fail: {
-    const char *debug = getenv("ZANNA_OPENGL_DEBUG");
-    if (debug && debug[0] != '\0' && strcmp(debug, "0") != 0) {
-        const char *err = dlerror();
-        fprintf(stderr,
-                "[OpenGL] missing required symbol %s%s%s\n",
-                missing_symbol ? missing_symbol : "<unknown>",
-                err ? ": " : "",
-                err ? err : "");
+fail:
+    {
+        const char *debug = getenv("ZANNA_OPENGL_DEBUG");
+        if (debug && debug[0] != '\0' && strcmp(debug, "0") != 0) {
+            const char *err = dlerror();
+            fprintf(stderr,
+                    "[OpenGL] missing required symbol %s%s%s\n",
+                    missing_symbol ? missing_symbol : "<unknown>",
+                    err ? ": " : "",
+                    err ? err : "");
+        }
     }
-}
     gl_unload_partial_dispatch();
     gl_dispatch_unlock();
     return -1;

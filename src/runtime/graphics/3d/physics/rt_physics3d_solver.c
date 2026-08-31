@@ -1518,19 +1518,64 @@ static int ph3d_broadphase_range_axis(const ph3d_broadphase_entry *entries, int3
     return axis;
 }
 
+/// @brief Swap two broadphase entries in place.
+static void ph3d_broadphase_swap_entries(ph3d_broadphase_entry *a, ph3d_broadphase_entry *b) {
+    ph3d_broadphase_entry temporary = *a;
+    *a = *b;
+    *b = temporary;
+}
+
+/// @brief Partition a broadphase range until the requested median occupies its sorted position.
+/// @details A deterministic median-of-three pivot plus three-way partition avoids recursively
+/// sorting both halves merely to discover one split point. Equal center coordinates are ordered by
+/// the existing stable body key, so construction stays repeatable across platforms. Each BVH level
+/// now performs linear partition work instead of a full O(n log n) subrange sort.
+static void ph3d_broadphase_select_nth(
+    ph3d_broadphase_entry *entries, int32_t begin, int32_t end, int32_t nth, int axis) {
+    while (end - begin > 1) {
+        int32_t first = begin;
+        int32_t middle = begin + (end - begin) / 2;
+        int32_t last = end - 1;
+        if (ph3d_broadphase_compare_entries_axis(&entries[first], &entries[middle], axis) > 0)
+            ph3d_broadphase_swap_entries(&entries[first], &entries[middle]);
+        if (ph3d_broadphase_compare_entries_axis(&entries[middle], &entries[last], axis) > 0)
+            ph3d_broadphase_swap_entries(&entries[middle], &entries[last]);
+        if (ph3d_broadphase_compare_entries_axis(&entries[first], &entries[middle], axis) > 0)
+            ph3d_broadphase_swap_entries(&entries[first], &entries[middle]);
+        ph3d_broadphase_entry pivot = entries[middle];
+        int32_t lower = begin;
+        int32_t cursor = begin;
+        int32_t upper = end;
+        while (cursor < upper) {
+            int comparison = ph3d_broadphase_compare_entries_axis(&entries[cursor], &pivot, axis);
+            if (comparison < 0) {
+                ph3d_broadphase_swap_entries(&entries[lower++], &entries[cursor++]);
+            } else if (comparison > 0) {
+                ph3d_broadphase_swap_entries(&entries[cursor], &entries[--upper]);
+            } else {
+                cursor++;
+            }
+        }
+        if (nth < lower)
+            end = lower;
+        else if (nth >= upper)
+            begin = upper;
+        else
+            return;
+    }
+}
+
 /// @brief Recursively build a balanced spatial AABB hierarchy over an entry range.
-/// @details Each internal range is stably sorted on its own widest centre axis before the median
-/// split. This prevents the one-axis dense layouts that degrade sweep-and-prune to quadratic
-/// bounds tests, while preserving deterministic body-id tie breaking in the shared sorter.
+/// @details Each internal range is partitioned at its median on the widest centre axis. This
+/// prevents one-axis dense layouts from degrading candidate traversal without paying for a full
+/// sort at every recursive node.
 /// @param entries Mutable entry range; reordered deterministically during construction.
-/// @param sort_scratch Parallel merge-sort scratch with capacity for the whole entry array.
 /// @param begin First entry in the range.
 /// @param end One-past-last entry in the range.
 /// @param nodes Caller-owned node array with capacity `2 * entry_count - 1`.
 /// @param node_cursor Next unused node slot, advanced for every constructed node.
 /// @return Root node index for the range.
 static int32_t ph3d_broadphase_bvh_build(ph3d_broadphase_entry *entries,
-                                         ph3d_broadphase_entry *sort_scratch,
                                          int32_t begin,
                                          int32_t end,
                                          ph3d_broadphase_bvh_node *nodes,
@@ -1549,11 +1594,9 @@ static int32_t ph3d_broadphase_bvh_build(ph3d_broadphase_entry *entries,
     {
         int axis = ph3d_broadphase_range_axis(entries + begin, count);
         int32_t middle = begin + count / 2;
-        ph3d_broadphase_sort_entries(entries + begin, sort_scratch + begin, count, axis);
-        node->left =
-            ph3d_broadphase_bvh_build(entries, sort_scratch, begin, middle, nodes, node_cursor);
-        node->right =
-            ph3d_broadphase_bvh_build(entries, sort_scratch, middle, end, nodes, node_cursor);
+        ph3d_broadphase_select_nth(entries, begin, end, middle, axis);
+        node->left = ph3d_broadphase_bvh_build(entries, begin, middle, nodes, node_cursor);
+        node->right = ph3d_broadphase_bvh_build(entries, middle, end, nodes, node_cursor);
     }
     node->entry = -1;
     for (int k = 0; k < 3; ++k) {
@@ -1614,7 +1657,7 @@ static int world3d_process_broadphase_bvh_pair(rt_world3d *w,
 
 /// @brief Run the full broad-phase + narrow-phase collision pass for one world step.
 /// @details Clears the contact list from the previous step, then:
-///   1. Attempts to allocate/reuse broadphase entries, sort scratch, and BVH scratch.
+///   1. Attempts to allocate/reuse broadphase entries and BVH scratch.
 ///   2. If allocation fails for a small world, uses bounded stack scratch; large worlds fail
 ///      cleanly instead of silently entering an O(n²) collision crawl.
 ///   3. On success: computes each body's AABB, recursively median-splits on the widest centre
@@ -1633,27 +1676,22 @@ int world3d_detect_contacts(rt_world3d *w) {
         return 1;
 
     ph3d_broadphase_entry stack_entries[PH3D_BROADPHASE_STACK_FALLBACK];
-    ph3d_broadphase_entry stack_scratch[PH3D_BROADPHASE_STACK_FALLBACK];
     ph3d_broadphase_bvh_node stack_nodes[PH3D_BROADPHASE_STACK_FALLBACK * 2 - 1];
     int32_t geometry_count = world3d_count_broadphase_bodies(w);
     ph3d_broadphase_entry *entries = NULL;
-    ph3d_broadphase_entry *sort_scratch = NULL;
     ph3d_broadphase_bvh_node *nodes = NULL;
     if (geometry_count <= 1)
         return 1;
-    if (!world3d_reserve_broadphase_capacity(w, geometry_count) ||
-        !world3d_reserve_broadphase_sort_scratch(w, geometry_count)) {
+    if (!world3d_reserve_broadphase_capacity(w, geometry_count)) {
         world3d_note_broadphase_fallback(w);
         if (geometry_count > PH3D_BROADPHASE_STACK_FALLBACK) {
             world3d_step_fail(w, "Physics3D.World.Step: broadphase allocation failed");
             return 0;
         }
         entries = stack_entries;
-        sort_scratch = stack_scratch;
         nodes = stack_nodes;
     } else {
         entries = w->broadphase_entries;
-        sort_scratch = w->broadphase_sort_scratch;
         nodes = (ph3d_broadphase_bvh_node *)world3d_step_scratch_acquire(
             w, PH3D_SCRATCH_BROADPHASE_BVH, ((size_t)geometry_count * 2u - 1u) * sizeof(*nodes), 0);
         if (!nodes) {
@@ -1665,8 +1703,7 @@ int world3d_detect_contacts(rt_world3d *w) {
     int32_t entry_count = world3d_fill_broadphase_entries(w, entries);
     {
         int32_t node_cursor = 0;
-        int32_t root =
-            ph3d_broadphase_bvh_build(entries, sort_scratch, 0, entry_count, nodes, &node_cursor);
+        int32_t root = ph3d_broadphase_bvh_build(entries, 0, entry_count, nodes, &node_cursor);
         if (node_cursor != entry_count * 2 - 1 ||
             !world3d_process_broadphase_bvh_pair(w, entries, nodes, root, root))
             return 0;

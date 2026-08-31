@@ -39,7 +39,17 @@ typedef void (*rt_g3d_commit_cancel_fn)(void *user_data);
 /// @return A new opaque queue handle, or `NULL` when queue allocation fails.
 void *rt_g3d_commit_queue_new(void);
 
+/// @brief Atomically close the queue to new producer submissions without destroying it.
+/// @details This is the first half of concurrent teardown: call Close while producers may still
+/// hold the handle, join or otherwise stop those producers, then call Free. Already queued work
+/// remains owned by the queue and is drained or cancelled normally.
+/// @param queue Queue to close; ignored when null or already closed.
+void rt_g3d_commit_queue_close(void *queue);
+
 /// @brief Free the queue, discarding any pending commits without running them.
+/// @details Free is the reclamation half of teardown and must not overlap any operation that may
+/// dereference the handle. When producers can race shutdown, Close the queue first, stop/join all
+/// producers, and only then call Free.
 /// @param queue Queue to close and destroy; pending items receive optional cancellation callbacks.
 void rt_g3d_commit_queue_free(void *queue);
 

@@ -367,7 +367,7 @@ bool test_deep_scene_and_malformed_triangle_recovery() {
 }
 
 bool test_incremental_snapshot_and_single_publication() {
-    TEST("incremental bake freezes inputs, defers UVs, and publishes each payload once");
+    TEST("incremental bake bounds sample work, freezes inputs, and publishes private UV meshes");
 
     void *scene = rt_scene3d_new();
     void *mesh = make_unique_triangle_strip(65);
@@ -375,11 +375,12 @@ bool test_incremental_snapshot_and_single_publication() {
     void *node = add_static_node(scene, mesh, material, "incremental_strip");
     void *baker = rt_lightbaker3d_new(scene);
     rt_lightbaker3d_set_texels_per_unit(baker, 1.0);
-    rt_lightbaker3d_set_samples(baker, 1);
+    rt_lightbaker3d_set_samples(baker, 8);
     rt_lightbaker3d_set_bounces(baker, 1);
     rt_lightbaker3d_set_sky_color(baker, 0.25, 0.25, 0.25);
     uint32_t revision_before = static_cast<rt_mesh3d *>(mesh)->geometry_revision;
-    EXPECT_TRUE(rt_lightbaker3d_bake_step(baker) == 0, "first 64-triangle slice is incomplete");
+    EXPECT_TRUE(rt_lightbaker3d_bake_step(baker) == 0,
+                "first bounded sample-work slice is incomplete");
     EXPECT_TRUE(static_cast<rt_mesh3d *>(mesh)->geometry_revision == revision_before,
                 "partial slice does not publish UV mutations");
 
@@ -389,13 +390,19 @@ bool test_incremental_snapshot_and_single_publication() {
     rt_lightbaker3d_set_sky_color(baker, 1.0, 0.0, 0.0);
     EXPECT_TRUE(rt_lightbaker3d_get_texels_per_unit(baker) == 1.0,
                 "density is frozen after the first gather");
-    EXPECT_TRUE(rt_lightbaker3d_get_samples(baker) == 1,
+    EXPECT_TRUE(rt_lightbaker3d_get_samples(baker) == 8,
                 "sample count is frozen after the first gather");
     EXPECT_TRUE(rt_lightbaker3d_get_bounces(baker) == 1,
                 "bounce count is frozen after the first gather");
     EXPECT_TRUE(run_bake(baker), "remaining slice completes");
-    EXPECT_TRUE(static_cast<rt_mesh3d *>(mesh)->geometry_revision == revision_before + 1,
-                "all UV writes cause one mesh revision");
+    EXPECT_TRUE(static_cast<rt_mesh3d *>(mesh)->geometry_revision == revision_before,
+                "published UVs never mutate the shared source mesh");
+    auto *published_mesh = static_cast<rt_mesh3d *>(rt_scene_node3d_get_mesh(node));
+    EXPECT_TRUE(published_mesh && published_mesh != mesh,
+                "publication installs a private lightmap mesh on the node");
+    EXPECT_TRUE(published_mesh->vertex_count ==
+                    static_cast<rt_mesh3d *>(mesh)->vertex_count + 65 * 3,
+                "each baked triangle receives seam-safe private vertices");
     void *atlas = rt_lightbaker3d_get_atlas(baker);
     EXPECT_TRUE(atlas != nullptr, "incremental bake publishes an atlas");
     EXPECT_TRUE(static_cast<rt_pixels_impl *>(atlas)->generation == 1,
@@ -423,7 +430,7 @@ bool test_source_changes_reject_publication_and_apply() {
     void *node = add_static_node(scene, mesh, material, "changing_source");
     void *baker = rt_lightbaker3d_new(scene);
     rt_lightbaker3d_set_texels_per_unit(baker, 1.0);
-    rt_lightbaker3d_set_samples(baker, 1);
+    rt_lightbaker3d_set_samples(baker, 8);
     rt_lightbaker3d_set_bounces(baker, 0);
     uint32_t revision_before = static_cast<rt_mesh3d *>(mesh)->geometry_revision;
     EXPECT_TRUE(rt_lightbaker3d_bake_step(baker) == 0, "first source snapshot slice is incomplete");
@@ -463,13 +470,82 @@ bool test_source_changes_reject_publication_and_apply() {
     PASS();
 }
 
+bool test_lightmap_uv_seams_and_shared_instances() {
+    TEST("bake UV publication preserves indexed seams and isolates shared mesh instances");
+
+    void *scene = rt_scene3d_new();
+    void *mesh = make_quad(2.0, 0.0, 0.0, 1.0, 0.0, 0);
+    auto *source = static_cast<rt_mesh3d *>(mesh);
+    uint32_t source_revision = source->geometry_revision;
+    float source_uv1[8];
+    for (uint32_t i = 0; i < source->vertex_count; ++i) {
+        source_uv1[i * 2] = source->vertices[i].uv1[0];
+        source_uv1[i * 2 + 1] = source->vertices[i].uv1[1];
+    }
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+    void *node_a = add_static_node(scene, mesh, material, "shared_instance_a");
+    void *node_b = add_static_node(scene, mesh, material, "shared_instance_b");
+    rt_scene_node3d_set_position(node_b, 3.0, 0.0, 0.0);
+    void *bent_mesh = rt_mesh3d_new();
+    rt_mesh3d_add_vertex(bent_mesh, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(bent_mesh, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0);
+    rt_mesh3d_add_vertex(bent_mesh, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0);
+    rt_mesh3d_add_vertex(bent_mesh, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0);
+    rt_mesh3d_add_triangle(bent_mesh, 0, 1, 2);
+    rt_mesh3d_add_triangle(bent_mesh, 0, 3, 1);
+    void *bent_node = add_static_node(scene, bent_mesh, material, "hard_seam");
+    rt_scene_node3d_set_position(bent_node, -3.0, 0.0, 0.0);
+
+    void *baker = rt_lightbaker3d_new(scene);
+    rt_lightbaker3d_set_texels_per_unit(baker, 2.0);
+    rt_lightbaker3d_set_samples(baker, 1);
+    rt_lightbaker3d_set_bounces(baker, 0);
+    EXPECT_TRUE(run_bake(baker), "shared-instance bake completes");
+
+    auto *mesh_a = static_cast<rt_mesh3d *>(rt_scene_node3d_get_mesh(node_a));
+    auto *mesh_b = static_cast<rt_mesh3d *>(rt_scene_node3d_get_mesh(node_b));
+    EXPECT_TRUE(mesh_a && mesh_b && mesh_a != source && mesh_b != source && mesh_a != mesh_b,
+                "each shared source instance receives a distinct published mesh");
+    EXPECT_TRUE(source->geometry_revision == source_revision && source->vertex_count == 4,
+                "source topology and revision remain unchanged");
+    for (uint32_t i = 0; i < source->vertex_count; ++i)
+        EXPECT_TRUE(source->vertices[i].uv1[0] == source_uv1[i * 2] &&
+                        source->vertices[i].uv1[1] == source_uv1[i * 2 + 1],
+                    "source UV1 data remains byte-for-byte equivalent");
+    EXPECT_TRUE(mesh_a->vertex_count == 8 && mesh_a->index_count == 6,
+                "coplanar quad publication appends one four-vertex UV island");
+    EXPECT_TRUE(mesh_a->indices[0] == mesh_a->indices[3] &&
+                    mesh_a->indices[2] == mesh_a->indices[4],
+                "connected coplanar triangles retain shared island vertices");
+    EXPECT_TRUE(mesh_a->vertices[mesh_a->indices[0]].uv1[0] ==
+                        mesh_a->vertices[mesh_a->indices[3]].uv1[0] &&
+                    mesh_a->vertices[mesh_a->indices[0]].uv1[1] ==
+                        mesh_a->vertices[mesh_a->indices[3]].uv1[1],
+                "shared island corners publish one stable UV coordinate");
+    auto *bent_published = static_cast<rt_mesh3d *>(rt_scene_node3d_get_mesh(bent_node));
+    EXPECT_TRUE(bent_published && bent_published != bent_mesh && bent_published->vertex_count == 10,
+                "non-coplanar triangles append independent hard-seam vertices");
+    EXPECT_TRUE(bent_published->indices[0] != bent_published->indices[3] &&
+                    bent_published->indices[1] != bent_published->indices[5],
+                "hard-edge source vertices are split across UV islands");
+
+    for (void *object : {baker, material, bent_mesh, mesh, scene})
+        release_object(object);
+    PASS();
+}
+
 bool test_atlas_capacity_failure_is_atomic() {
     TEST("atlas-capacity preflight rejects the whole bake without touching UVs");
 
     void *scene = rt_scene3d_new();
-    void *mesh = make_triangle(0.001);
-    for (int triangle = 1; triangle < 65537; ++triangle)
-        rt_mesh3d_add_triangle(mesh, 0, 1, 2);
+    void *mesh = rt_mesh3d_new();
+    for (int triangle = 0; triangle < 50; ++triangle) {
+        int64_t first = (int64_t)triangle * 3;
+        rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+        rt_mesh3d_add_vertex(mesh, 126.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0);
+        rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 126.0, 0.0, 1.0, 0.0, 0.0, 1.0);
+        rt_mesh3d_add_triangle(mesh, first, first + 1, first + 2);
+    }
     void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
     add_static_node(scene, mesh, material, "overfull_atlas");
     uint32_t revision_before = static_cast<rt_mesh3d *>(mesh)->geometry_revision;
@@ -531,6 +607,57 @@ bool test_punctual_light_semantics() {
     release_object(shadowed_light);
     release_object(position);
     EXPECT_TRUE(unshadowed > shadowed, "disabling shadows preserves occluded direct light");
+    PASS();
+}
+
+bool test_area_volume_and_dynamic_light_storage() {
+    TEST("rectangle, sphere, volume, and lights beyond the old sixteen-light cap bake correctly");
+
+    void *position = rt_vec3_new(0.0, 2.0, 0.0);
+    void *down = rt_vec3_new(0.0, -1.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    void *rectangle_down =
+        rt_light3d_new_area_rectangle(position, down, 2.0, 2.0, 1.0, 1.0, 1.0, 0.0, 8.0);
+    void *rectangle_up =
+        rt_light3d_new_area_rectangle(position, up, 2.0, 2.0, 1.0, 1.0, 1.0, 0.0, 8.0);
+    void *sphere = rt_light3d_new_area_sphere(position, 0.75, 1.0, 1.0, 1.0, 8.0);
+    void *volume = rt_light3d_new_volume(position, 3.0, 1.0, 1.0, 1.0, 8.0);
+    long long rectangle_front = bake_floor_with_light(rectangle_down, false);
+    long long rectangle_back = bake_floor_with_light(rectangle_up, false);
+    long long sphere_sum = bake_floor_with_light(sphere, false);
+    long long volume_sum = bake_floor_with_light(volume, false);
+    EXPECT_TRUE(rectangle_front > 0 && rectangle_back == 0,
+                "rectangle bake respects finite area and one-sided emission");
+    EXPECT_TRUE(sphere_sum > 0, "sphere area light contributes finite irradiance");
+    EXPECT_TRUE(volume_sum > 0, "points inside a volume light receive isotropic irradiance");
+    for (void *object : {volume, sphere, rectangle_up, rectangle_down, up, down, position})
+        release_object(object);
+
+    void *scene = rt_scene3d_new();
+    void *mesh = make_quad(2.0, 0.0, 0.0, 1.0, 0.0, 0);
+    void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+    add_static_node(scene, mesh, material, "many_lights_floor");
+    void *baker = rt_lightbaker3d_new(scene);
+    rt_lightbaker3d_set_texels_per_unit(baker, 1.0);
+    rt_lightbaker3d_set_samples(baker, 1);
+    rt_lightbaker3d_set_bounces(baker, 0);
+    position = rt_vec3_new(0.0, 2.0, 0.0);
+    void *lights[17] = {};
+    for (int index = 0; index < 17; ++index) {
+        lights[index] = rt_light3d_new_point(position, 0.0, index == 16 ? 1.0 : 0.0, 0.0, 0.0);
+        rt_light3d_set_decay_type(lights[index], 0);
+        rt_lightbaker3d_add_light(baker, lights[index]);
+    }
+    EXPECT_TRUE(run_bake(baker), "bake with more than sixteen lights completes");
+    void *atlas = rt_lightbaker3d_get_atlas(baker);
+    EXPECT_TRUE(atlas && atlas_channel_sum(atlas, 16) > 0,
+                "the seventeenth light contributes instead of being silently dropped");
+
+    release_object(atlas);
+    for (void *light : lights)
+        release_object(light);
+    for (void *object : {position, baker, material, mesh, scene})
+        release_object(object);
     PASS();
 }
 
@@ -855,8 +982,10 @@ int main() {
     ok &= test_deep_scene_and_malformed_triangle_recovery();
     ok &= test_incremental_snapshot_and_single_publication();
     ok &= test_source_changes_reject_publication_and_apply();
+    ok &= test_lightmap_uv_seams_and_shared_instances();
     ok &= test_atlas_capacity_failure_is_atomic();
     ok &= test_punctual_light_semantics();
+    ok &= test_area_volume_and_dynamic_light_storage();
     ok &= test_bounce_color_bleed_and_determinism();
     ok &= test_probe_validation_empty_scene_and_sampling_guards();
     ok &= test_probe_bake_rejects_non_baker_argument();

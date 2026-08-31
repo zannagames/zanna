@@ -2172,14 +2172,15 @@ static int mesh3d_fill_missing_normals(rt_mesh3d *m) {
     return 1;
 }
 
-/// @brief Create a deep copy of a mesh (independent vertex/index arrays).
+/// @brief Create a deep copy of a mesh, optionally requiring valid triangle indices.
 /// @details Copies and sanitizes authored geometry, submesh metadata, retained precision data,
 ///          skin maps, bounds, and residency flags. Skeletons are shared through a retained
 ///          reference, morph targets are cloned, and transient frame animation payloads and
 ///          acceleration caches are not copied.
 /// @param obj Source Mesh3D handle.
+/// @param validate_indices Nonzero to reject malformed triangle indices before copying.
 /// @return New independent Mesh3D, or NULL for invalid/failed source state or allocation failure.
-void *rt_mesh3d_clone(void *obj) {
+static void *mesh3d_clone_impl(void *obj, int validate_indices) {
     rt_mesh3d *src = mesh3d_checked(obj);
     uint32_t vertex_count;
     uint32_t index_count;
@@ -2191,7 +2192,8 @@ void *rt_mesh3d_clone(void *obj) {
         return NULL;
     }
     rt_mesh3d_repair_geometry_counts(src);
-    if (!mesh3d_sanitize_triangle_indices(src, "Mesh3D.Clone: invalid triangle index buffer"))
+    if (validate_indices &&
+        !mesh3d_sanitize_triangle_indices(src, "Mesh3D.Clone: invalid triangle index buffer"))
         return NULL;
     vertex_count = rt_mesh3d_safe_vertex_count(src);
     index_count = rt_mesh3d_safe_index_count(src);
@@ -2332,6 +2334,23 @@ void *rt_mesh3d_clone(void *obj) {
     rt_mesh3d_refresh_bounds(dst);
 
     return dst;
+}
+
+/// @brief Create a validated deep copy of a mesh for the public Mesh3D.Clone surface.
+/// @param obj Source Mesh3D handle.
+/// @return New independent Mesh3D, or NULL for invalid geometry or allocation failure.
+void *rt_mesh3d_clone(void *obj) {
+    return mesh3d_clone_impl(obj, 1);
+}
+
+/// @brief Clone readable mesh storage while preserving malformed, skipped triangle slots.
+/// @details Lightmap publication uses this transactional internal path after independently
+/// validating every triangle it will rewrite. Preserving unrelated malformed slots keeps the
+/// baker's established recovery behavior without weakening the public Clone contract.
+/// @param obj Source Mesh3D handle.
+/// @return Independent mesh storage, or NULL on invalid object/build/allocation failure.
+void *rt_mesh3d_clone_for_lightmap(void *obj) {
+    return mesh3d_clone_impl(obj, 0);
 }
 
 /// @brief Apply a 4x4 matrix to every vertex position, normal, and tangent in-place.

@@ -96,12 +96,46 @@ static int32_t canvas3d_prepare_shadow_draw_indices(rt_canvas3d *c,
 
     if (!c || !cmds || draw_count <= 0)
         return 0;
-    if (!canvas3d_ensure_shadow_draw_index_capacity(c, draw_count))
+    if (draw_count > INT32_MAX / 2 ||
+        !canvas3d_ensure_shadow_draw_index_capacity(c, draw_count * 2))
         return 0;
     indices = (int32_t *)c->shadow_draw_indices;
     for (int32_t i = 0; i < draw_count; ++i) {
         if (canvas3d_deferred_casts_shadow(&cmds[i]))
             indices[count++] = i;
+    }
+    return count;
+}
+
+/// @brief Build one light/cascade-specific caster list from the frame eligibility list.
+/// @details The second half of the canvas shadow-index allocation is reusable filtering scratch.
+///   Classifying each caster once prevents the signature and draw loops from repeating bounds
+///   extraction for every shadow slot, cascade, or cube face.
+static int32_t canvas3d_filter_shadow_draw_indices(rt_canvas3d *c,
+                                                   deferred_draw_t *cmds,
+                                                   const int32_t *source_indices,
+                                                   int32_t source_count,
+                                                   int use_depth,
+                                                   float near_depth,
+                                                   float far_depth,
+                                                   int use_bounds,
+                                                   const float bounds_min[3],
+                                                   const float bounds_max[3],
+                                                   int32_t *out_indices) {
+    int32_t count = 0;
+    if (!c || !cmds || !source_indices || source_count < 0 || !out_indices)
+        return 0;
+    for (int32_t i = 0; i < source_count; ++i) {
+        int32_t draw_index = source_indices[i];
+        if (draw_index < 0 || draw_index >= c->draw_count)
+            continue;
+        if (use_depth &&
+            !canvas3d_deferred_intersects_view_depth(c, &cmds[draw_index], near_depth, far_depth))
+            continue;
+        if (use_bounds && !canvas3d_deferred_intersects_world_bounds(
+                              c, &cmds[draw_index], bounds_min, bounds_max))
+            continue;
+        out_indices[count++] = draw_index;
     }
     return count;
 }
@@ -405,16 +439,29 @@ static int canvas3d_render_shadow_light_slot(
         }
     }
 
+    const int32_t *light_indices = shadow_indices;
+    int32_t light_index_count = shadow_index_count;
+    if (cull_spot) {
+        int32_t *filtered = (int32_t *)c->shadow_draw_indices + shadow_index_count;
+        light_index_count = canvas3d_filter_shadow_draw_indices(c,
+                                                                cmds,
+                                                                shadow_indices,
+                                                                shadow_index_count,
+                                                                0,
+                                                                0.0f,
+                                                                0.0f,
+                                                                1,
+                                                                spot_min,
+                                                                spot_max,
+                                                                filtered);
+        light_indices = filtered;
+    }
+
     {
         uint64_t signature =
             canvas3d_shadow_slot_signature_seed(c, shadow_rt, shadow_resolution, light_vp);
-        for (int32_t si = 0; signature != 0 && si < shadow_index_count; si++) {
-            int32_t draw_index = shadow_indices[si];
-            if (draw_index < 0)
-                continue;
-            if (cull_spot && !canvas3d_deferred_intersects_world_bounds(
-                                 c, &cmds[draw_index], spot_min, spot_max))
-                continue;
+        for (int32_t si = 0; signature != 0 && si < light_index_count; si++) {
+            int32_t draw_index = light_indices[si];
             signature = canvas3d_shadow_hash_caster(signature, &cmds[draw_index]);
         }
         if (canvas3d_shadow_slot_try_reuse(c, slot, signature, shadow_rt, light_vp)) {
@@ -428,13 +475,8 @@ static int canvas3d_render_shadow_light_slot(
                                  shadow_rt->width,
                                  shadow_rt->height,
                                  light_vp);
-        for (int32_t si = 0; si < shadow_index_count; si++) {
-            int32_t draw_index = shadow_indices[si];
-            if (draw_index < 0)
-                continue;
-            if (cull_spot && !canvas3d_deferred_intersects_world_bounds(
-                                 c, &cmds[draw_index], spot_min, spot_max))
-                continue;
+        for (int32_t si = 0; si < light_index_count; si++) {
+            int32_t draw_index = light_indices[si];
             canvas3d_shadow_deferred(c, &cmds[draw_index]);
         }
         c->backend->shadow_end(c->backend_ctx, slot, c->shadow_bias);
@@ -532,17 +574,30 @@ static int canvas3d_render_point_shadow_cube(
             }
         }
 
+        const int32_t *face_indices = shadow_indices;
+        int32_t face_index_count = shadow_index_count;
+        if (cull_faces) {
+            int32_t *filtered = (int32_t *)c->shadow_draw_indices + shadow_index_count;
+            face_index_count = canvas3d_filter_shadow_draw_indices(c,
+                                                                   cmds,
+                                                                   shadow_indices,
+                                                                   shadow_index_count,
+                                                                   0,
+                                                                   0.0f,
+                                                                   0.0f,
+                                                                   1,
+                                                                   face_min,
+                                                                   face_max,
+                                                                   filtered);
+            face_indices = filtered;
+        }
+
         memcpy(c->shadow_light_vps[slot], light_vp, sizeof(light_vp));
         {
             uint64_t signature = canvas3d_shadow_slot_signature_seed(
                 c, shadow_rt, canvas3d_shadow_slot_resolution(c, slot), light_vp);
-            for (int32_t si = 0; signature != 0 && si < shadow_index_count; si++) {
-                int32_t draw_index = shadow_indices[si];
-                if (draw_index < 0)
-                    continue;
-                if (cull_faces && !canvas3d_deferred_intersects_world_bounds(
-                                      c, &cmds[draw_index], face_min, face_max))
-                    continue;
+            for (int32_t si = 0; signature != 0 && si < face_index_count; si++) {
+                int32_t draw_index = face_indices[si];
                 signature = canvas3d_shadow_hash_caster(signature, &cmds[draw_index]);
             }
             if (canvas3d_shadow_slot_try_reuse(c, slot, signature, shadow_rt, light_vp)) {
@@ -555,13 +610,8 @@ static int canvas3d_render_point_shadow_cube(
                                      shadow_rt->width,
                                      shadow_rt->height,
                                      light_vp);
-            for (int32_t si = 0; si < shadow_index_count; si++) {
-                int32_t draw_index = shadow_indices[si];
-                if (draw_index < 0)
-                    continue;
-                if (cull_faces && !canvas3d_deferred_intersects_world_bounds(
-                                      c, &cmds[draw_index], face_min, face_max))
-                    continue;
+            for (int32_t si = 0; si < face_index_count; si++) {
+                int32_t draw_index = face_indices[si];
                 canvas3d_shadow_deferred(c, &cmds[draw_index]);
             }
             c->backend->shadow_end(c->backend_ctx, slot, c->shadow_bias);
@@ -689,18 +739,24 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                        cascade_splits,
                        sizeof(shadow_lights[c->shadow_count].shadow_cascade_splits));
                 {
+                    int32_t *cascade_indices =
+                        (int32_t *)c->shadow_draw_indices + shadow_index_count;
+                    int32_t cascade_index_count =
+                        canvas3d_filter_shadow_draw_indices(c,
+                                                            cmds,
+                                                            shadow_indices,
+                                                            shadow_index_count,
+                                                            1,
+                                                            cascade_depth_near,
+                                                            cascade_depth_far,
+                                                            1,
+                                                            cascade_min,
+                                                            cascade_max,
+                                                            cascade_indices);
                     uint64_t signature = canvas3d_shadow_slot_signature_seed(
                         c, shadow_rt, shadow_resolution, light_vp);
-                    for (int32_t si = 0; signature != 0 && si < shadow_index_count; si++) {
-                        int32_t draw_index = shadow_indices[si];
-                        if (draw_index < 0)
-                            continue;
-                        if (!canvas3d_deferred_intersects_view_depth(
-                                c, &cmds[draw_index], cascade_depth_near, cascade_depth_far))
-                            continue;
-                        if (!canvas3d_deferred_intersects_world_bounds(
-                                c, &cmds[draw_index], cascade_min, cascade_max))
-                            continue;
+                    for (int32_t si = 0; signature != 0 && si < cascade_index_count; si++) {
+                        int32_t draw_index = cascade_indices[si];
                         signature = canvas3d_shadow_hash_caster(signature, &cmds[draw_index]);
                     }
                     if (canvas3d_shadow_slot_try_reuse(
@@ -714,16 +770,8 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                                              shadow_rt->width,
                                              shadow_rt->height,
                                              light_vp);
-                    for (int32_t si = 0; si < shadow_index_count; si++) {
-                        int32_t draw_index = shadow_indices[si];
-                        if (draw_index < 0)
-                            continue;
-                        if (!canvas3d_deferred_intersects_view_depth(
-                                c, &cmds[draw_index], cascade_depth_near, cascade_depth_far))
-                            continue;
-                        if (!canvas3d_deferred_intersects_world_bounds(
-                                c, &cmds[draw_index], cascade_min, cascade_max))
-                            continue;
+                    for (int32_t si = 0; si < cascade_index_count; si++) {
+                        int32_t draw_index = cascade_indices[si];
                         canvas3d_shadow_deferred(c, &cmds[draw_index]);
                     }
                     c->backend->shadow_end(c->backend_ctx, c->shadow_count, c->shadow_bias);
@@ -851,6 +899,8 @@ static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
     int use_occlusion_grid = c->occlusion_culling ? 1 : 0;
     int sort_opaque = use_occlusion_grid || c->opaque_depth_sorting;
     int state_sort_opaque = sort_opaque && !canvas3d_backend_uses_software_raster(c);
+    int32_t opaque_count = 0;
+    int32_t trans_count = 0;
 
     if (use_occlusion_grid) {
         canvas3d_occlusion_history_prune(c);
@@ -867,65 +917,64 @@ static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                 if (!cmds[i].visible) {
                     c->last_occluded_draw_count++;
                     c->last_frustum_culled_draw_count++;
+                } else if (cmds[i].requires_blend) {
+                    trans_count++;
+                } else {
+                    opaque_count++;
                 }
             }
         }
     } else {
         for (int32_t i = 0; i < c->draw_count; i++) {
-            if (cmds[i].pass_kind == DEFERRED_PASS_MAIN)
+            if (cmds[i].pass_kind == DEFERRED_PASS_MAIN) {
                 cmds[i].visible = 1;
+                if (cmds[i].requires_blend)
+                    trans_count++;
+                else
+                    opaque_count++;
+            }
         }
     }
 
     {
-        int32_t opaque_count = 0;
-        int32_t trans_count = 0;
         int32_t staged_total;
-        for (int32_t i = 0; i < c->draw_count; i++) {
-            if (cmds[i].pass_kind != DEFERRED_PASS_MAIN || !cmds[i].visible)
-                continue;
-            if (cmds[i].requires_blend)
-                trans_count++;
-            else
-                opaque_count++;
-        }
         staged_total = opaque_count + trans_count;
         if (!sort_opaque) {
+            deferred_draw_t *trans = NULL;
+            deferred_draw_t *single_trans = NULL;
+            int32_t ti = 0;
+            if (trans_count > 1) {
+                if (!ensure_deferred_capacity(&c->trans_cmds, &c->trans_capacity, trans_count)) {
+                    rt_trap("Canvas3D.End: deferred transparent sort buffer allocation failed");
+                    return;
+                }
+                trans = (deferred_draw_t *)c->trans_cmds;
+            }
             for (int32_t i = 0; i < c->draw_count; i++) {
-                if (cmds[i].pass_kind == DEFERRED_PASS_MAIN && cmds[i].visible &&
-                    !cmds[i].requires_blend)
+                if (cmds[i].pass_kind != DEFERRED_PASS_MAIN || !cmds[i].visible)
+                    continue;
+                if (!cmds[i].requires_blend) {
                     canvas3d_submit_deferred(c, &cmds[i]);
+                } else if (trans_count == 1) {
+                    single_trans = &cmds[i];
+                } else {
+                    trans[ti++] = cmds[i];
+                }
             }
             canvas3d_draw_backend_skybox_after_opaque(c);
             if (trans_count > 0 && c->backend->resolve_opaque_targets)
                 c->backend->resolve_opaque_targets(c->backend_ctx);
             if (trans_count == 1) {
-                for (int32_t i = 0; i < c->draw_count; i++) {
-                    if (cmds[i].pass_kind == DEFERRED_PASS_MAIN && cmds[i].visible &&
-                        cmds[i].requires_blend) {
-                        canvas3d_submit_deferred(c, &cmds[i]);
-                        break;
-                    }
-                }
+                canvas3d_submit_deferred(c, single_trans);
                 return;
             }
-            if (trans_count > 1 &&
-                ensure_deferred_capacity(&c->trans_cmds, &c->trans_capacity, trans_count)) {
-                deferred_draw_t *trans = (deferred_draw_t *)c->trans_cmds;
-                int32_t ti = 0;
-                for (int32_t i = 0; i < c->draw_count; i++) {
-                    if (cmds[i].pass_kind == DEFERRED_PASS_MAIN && cmds[i].visible &&
-                        cmds[i].requires_blend)
-                        trans[ti++] = cmds[i];
-                }
+            if (trans_count > 1) {
                 if (!canvas3d_sort_transparent_draws(c, trans, trans_count)) {
                     rt_trap("Canvas3D.End: deferred transparent sort scratch allocation failed");
                     return;
                 }
                 for (int32_t i = 0; i < trans_count; i++)
                     canvas3d_submit_deferred(c, &trans[i]);
-            } else if (trans_count > 1) {
-                rt_trap("Canvas3D.End: deferred transparent sort buffer allocation failed");
             }
             return;
         }
