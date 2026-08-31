@@ -82,13 +82,9 @@ expose func ContentFor(docs: document_manager.DocumentManager,
         }
     }
     if IO.File.Exists(filePath) {
-        if maxBytes > 0 {
-            var boundedRead = safe_io.ReadAllTextBounded(filePath, maxBytes);
-            if boundedRead.ok { return boundedRead.text; }
-        } else {
-            var readResult = safe_io.ReadAllText(filePath);
-            if readResult.ok { return readResult.text; }
-        }
+        if maxBytes <= 0 { return ""; }
+        var boundedRead = safe_io.ReadAllTextBounded(filePath, maxBytes);
+        if boundedRead.ok { return boundedRead.text; }
     }
     return "";
 }

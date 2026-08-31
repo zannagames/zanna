@@ -42,7 +42,14 @@ func main() {
     }
 
     var handle = Process.Start(program, args);
-    if handle == null or handle.IsValid() == false {
+    var second = Process.Start(program, args);
+    var third = Process.Start(program, args);
+    if handle == null or handle.IsValid() == false
+       or second == null or second.IsValid() == false
+       or third == null or third.IsValid() == false {
+        if handle != null { handle.Destroy(); }
+        if second != null { second.Destroy(); }
+        if third != null { third.Destroy(); }
         Terminal.Say("RESULT: fail child launch");
         return;
     }
@@ -50,14 +57,31 @@ func main() {
     var reaper = new process_reaper.ProcessReaper();
     var started = Clock.NowMs();
     reaper.RetireProcess(handle);
+    reaper.RetireProcess(second);
+    reaper.RetireProcess(third);
     var queueElapsed = Clock.NowMs() - started;
-    if queueElapsed > 250 or reaper.PendingCount() != 1 {
+    if queueElapsed > 250 or reaper.PendingCount() != 3
+       or reaper.activeWorkerCount > process_reaper.MAX_ACTIVE_REAPER_WORKERS
+       or reaper.peakWorkerCount > process_reaper.MAX_ACTIVE_REAPER_WORKERS {
         Terminal.Say("RESULT: fail queue blocked " + queueElapsed + "ms");
         return;
     }
-    if reaper.WaitForShutdown() == false
+    var firstShutdownPollStarted = Clock.NowMs();
+    var drained = reaper.WaitForShutdown();
+    var firstShutdownPollElapsed = Clock.NowMs() - firstShutdownPollStarted;
+    if firstShutdownPollElapsed > 250 {
+        Terminal.Say("RESULT: fail shutdown poll blocked "
+                     + firstShutdownPollElapsed + "ms");
+        return;
+    }
+    var deadline = Clock.NowMs() + 6000;
+    while drained == false and Clock.NowMs() < deadline {
+        Clock.Sleep(5);
+        drained = reaper.WaitForShutdown();
+    }
+    if drained == false
        or reaper.PendingCount() != 0
-       or reaper.completedCount != 1
+       or reaper.completedCount != 3
        or reaper.failedCount != 0 {
         Terminal.Say("RESULT: fail reaper drain " + reaper.lastError);
         return;

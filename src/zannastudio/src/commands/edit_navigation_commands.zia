@@ -368,7 +368,8 @@ func SourceForPath(docMgr: document_manager.DocumentManager,
         }
     }
     if IO.File.Exists(filePath) {
-        var readResult = safe_io.ReadAllText(filePath);
+        var readResult = safe_io.ReadAllTextBounded(
+            filePath, document_manager.MAX_TEXT_OPEN_BYTES);
         if readResult.ok { return readResult.text; }
     }
     return "";
@@ -454,4 +455,3 @@ expose func ApplyActiveDocumentContentToEditor(docMgr: document_manager.Document
     }
     return true;
 }
-

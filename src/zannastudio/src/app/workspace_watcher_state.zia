@@ -23,6 +23,7 @@ bind "../services/workspace_file_cursor";
 
 bind IO = Zanna.IO;
 bind Threads = Zanna.Threads;
+bind Map = Zanna.Collections.Map;
 
 /// @brief Immutable roots plus worker-owned fallback fingerprint results.
 class WorkspaceFallbackScanRequest {
@@ -58,8 +59,12 @@ class WorkspaceWatcherState {
     expose IO.Watcher watcher;
     expose List[IO.Watcher] watchers;
     expose List[String] watcherPaths;
+    /// Canonical membership mirror for O(1) watcher-path de-duplication.
+    expose Any watcherPathSet;
     expose Boolean watching;
     expose Boolean degraded;
+    /// @brief First concrete reason native watcher coverage fell back to scans.
+    expose String degradationReason;
     expose String rootPath;
     expose String rootSignature;
     expose List[String] rootPaths;
@@ -91,13 +96,17 @@ class WorkspaceWatcherState {
     expose WorkspaceFallbackScanRequest fallbackRequest;
     expose Any fallbackFuture;
     expose Integer lastWatcherPollCount;
+    expose Integer lastWatcherEventCount;
+    expose Integer lastFallbackPagesScanned;
 
     expose func InitializeState() {
         watcher = null;
         watchers = new List();
         watcherPaths = new List();
+        watcherPathSet = Map.New();
         watching = false;
         degraded = false;
+        degradationReason = "";
         rootPath = "";
         rootSignature = "";
         rootPaths = new List();
@@ -129,5 +138,7 @@ class WorkspaceWatcherState {
         fallbackRequest = null;
         fallbackFuture = null;
         lastWatcherPollCount = 0;
+        lastWatcherEventCount = 0;
+        lastFallbackPagesScanned = 0;
     }
 }

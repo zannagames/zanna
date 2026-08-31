@@ -108,6 +108,26 @@ func main() {
         fail("checked read accepted missing or oversized input");
         return;
     }
+    if oversizedResult.errorMessage == "" or missingResult.errorMessage == ""
+       or oversizedResult.errorKind == "" or missingResult.errorKind == "" {
+        fail("checked read discarded native failure detail");
+        return;
+    }
+    var missingDirectory = Path.Join(root, "missing-directory");
+    var listedMissing = safe_io.ListFiles(missingDirectory);
+    var pagedMissing = safe_io.ListDirectoryPage(missingDirectory, 0, 8);
+    if listedMissing.ok or pagedMissing.ok
+       or listedMissing.errorKind == "" or listedMissing.errorMessage == ""
+       or pagedMissing.errorKind == "" or pagedMissing.errorMessage == "" {
+        fail("directory enumeration discarded native failure detail");
+        return;
+    }
+    var invalidPage = safe_io.ListDirectoryPage(root, -1, 0);
+    if invalidPage.ok or invalidPage.errorKind != "argument"
+       or invalidPage.nextOffset != -1 {
+        fail("directory page accepted invalid bounds");
+        return;
+    }
 
     var replacement = "complete replacement\n";
     if safe_io.WriteAllTextAtomic(path, replacement) == false

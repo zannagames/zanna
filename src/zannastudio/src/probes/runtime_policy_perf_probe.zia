@@ -79,6 +79,27 @@ func VerifyPerfWriter() -> Boolean {
         return false;
     }
 
+    // One slow frame reduces optional background work; repeated slow frames
+    // tighten the recommendation further without changing foreground input.
+    monitor.frameStartUs = Clock.NowMicros() - 20000;
+    monitor.EndFrame(null, null);
+    if monitor.lastFrameUs < 16000
+       or monitor.RecommendedBackgroundBudgetMs(10) != 4 {
+        Fail("single-frame adaptive budget");
+        Dir.RemoveAll(root);
+        return false;
+    }
+    monitor.frameStartUs = Clock.NowMicros() - 20000;
+    monitor.EndFrame(null, null);
+    monitor.frameStartUs = Clock.NowMicros() - 20000;
+    monitor.EndFrame(null, null);
+    if monitor.overBudgetStreak < 3
+       or monitor.RecommendedBackgroundBudgetMs(10) != 2 {
+        Fail("sustained adaptive budget");
+        Dir.RemoveAll(root);
+        return false;
+    }
+
     monitor.lastFlushMs = Clock.NowMs() - 1001;
     monitor.BeginFrame();
     var publishStart = Clock.NowMs();
@@ -89,7 +110,19 @@ func VerifyPerfWriter() -> Boolean {
         Dir.RemoveAll(root);
         return false;
     }
-    if monitor.Shutdown() == false or File.Exists(path) == false {
+    var shutdownStarted = Clock.NowMs();
+    var drained = monitor.Shutdown();
+    if Clock.NowMs() - shutdownStarted > 250 {
+        Fail("perf writer shutdown blocked caller");
+        Dir.RemoveAll(root);
+        return false;
+    }
+    var deadline = Clock.NowMs() + 5000;
+    while drained == false and Clock.NowMs() < deadline {
+        Clock.Sleep(5);
+        drained = monitor.Shutdown();
+    }
+    if drained == false or File.Exists(path) == false {
         Fail("perf writer shutdown");
         Dir.RemoveAll(root);
         return false;

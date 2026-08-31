@@ -30,8 +30,6 @@ bind Future = Zanna.Threads.Future;
 bind Hash = Zanna.Crypto.Hash;
 bind Str = Zanna.String;
 
-final AUTOSAVE_SHUTDOWN_WAIT_MS = 5000;
-
 /// @brief Immutable autosave input plus worker-published completion details.
 /// @details `owner` is retained only so the UI thread can reject a closed or
 ///          retargeted document; RunAutoSaveSnapshot deliberately never reads it.
@@ -210,16 +208,12 @@ class AutoSaveJob {
         return activeFuture != null;
     }
 
-    /// @brief Drain a bounded active write before runtime teardown.
+    /// @brief Poll an active write during shutdown without blocking the UI.
+    /// @details The outer Studio shutdown loop retries this after cancellation.
+    ///          The worker owns only immutable snapshot data and never reads the
+    ///          retained document reference, so keeping the application alive
+    ///          until this returns true is sufficient for safe teardown.
     expose func WaitForShutdown() -> Boolean {
-        if activeFuture == null { return true; }
-        var finished = false;
-        try {
-            finished = Future.WaitFor(activeFuture, AUTOSAVE_SHUTDOWN_WAIT_MS);
-        } catch {
-            return false;
-        }
-        if finished == false { return false; }
         Pump();
         return activeFuture == null;
     }

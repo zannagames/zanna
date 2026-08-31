@@ -307,6 +307,23 @@ func VerifyAsynchronousRecovery() -> Boolean {
         fail("cancellation recovery request did not start");
         return false;
     }
+    // Shutdown only polls this large owned write. The application-level retry
+    // loop, rather than this UI-thread call, waits for cancellation to finish.
+    var shutdownPollStarted = Time.Clock.NowMs();
+    var shutdownDrained = asyncStore.WaitForShutdown();
+    if Time.Clock.NowMs() - shutdownPollStarted > 250 {
+        fail("recovery shutdown poll blocked the UI thread");
+        return false;
+    }
+    var shutdownDeadline = Time.Clock.NowMs() + 12000;
+    while shutdownDrained == false and Time.Clock.NowMs() < shutdownDeadline {
+        Time.Clock.Sleep(1);
+        shutdownDrained = asyncStore.WaitForShutdown();
+    }
+    if shutdownDrained == false {
+        fail("cancelled recovery worker did not drain");
+        return false;
+    }
     asyncDoc.isModified = false;
     if asyncStore.WriteSwaps(asyncDocs, null) == false {
         fail("authoritative recovery reconciliation failed");

@@ -38,6 +38,8 @@ bind "../zia/bind_utils";
 bind "project_manager_base" as Base;
 bind "project_manager_bind_layer" as PreviousLayer;
 
+final MAX_PROJECT_MANIFEST_EDIT_BYTES = 1000000;
+
 class ProjectManagerMutationLayer extends PreviousLayer.ProjectManagerBindLayer {
 expose func RenameSelected(newName: String,
                                docMgr: document_manager.DocumentManager) -> String {
@@ -481,7 +483,8 @@ expose func RenameSelected(newName: String,
         var replaced = false;
 
         if IO.File.Exists(manifestPath) {
-            var manifestRead = safe_io.ReadAllText(manifestPath);
+            var manifestRead = safe_io.ReadAllTextBounded(
+                manifestPath, MAX_PROJECT_MANIFEST_EDIT_BYTES);
             if manifestRead.ok == false { return false; }
             var lines = Str.Split(manifestRead.text, "\n");
             var contentBuilder = new StringBuilder();

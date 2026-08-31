@@ -109,6 +109,12 @@ func VerifyDocumentWatchers(
         Terminal.Say("RESULT: fail - active-file watcher did not remember its path");
         return false;
     }
+    if fileWatch.hasWatcher and fileWatch.lastOpenDocPollMetadataCount != 0 {
+        fileWatch.Destroy();
+        safe_io.DeleteDirectoryTree(root);
+        Terminal.Say("RESULT: fail - native active watcher did not suppress duplicate metadata polling");
+        return false;
+    }
     fileWatch.Destroy();
     if fileWatch.hasWatcher or fileWatch.fileWatcher != null or fileWatch.watchedPath != "" {
         safe_io.DeleteDirectoryTree(root);
@@ -190,6 +196,27 @@ func VerifyWorkspaceWatchers(
     ctx: WorkspaceWatcherProbeContext) -> Boolean {
     var root = ctx.root;
     var projMgr = ctx.projMgr;
+
+    // Diagnostics preserve the first actionable degradation cause instead of
+    // replacing it with a less useful downstream fallback symptom.
+    var telemetryState = new workspace_watcher.WorkspaceWatcherState();
+    workspace_watcher.MarkDegraded(telemetryState, "native watcher limit reached");
+    workspace_watcher.MarkDegraded(telemetryState, "fallback scan failed");
+    if telemetryState.degraded == false
+       or telemetryState.degradationReason != "native watcher limit reached" {
+        fail(telemetryState, root, "watcher degradation diagnostics were unstable");
+        return false;
+    }
+
+    var duplicateEvents = Seq.New();
+    Seq.Push(duplicateEvents, watcherEvent(Path.Join(root, "same.zia"), "modified", false));
+    Seq.Push(duplicateEvents, watcherEvent(Path.Join(root, "same.zia"), "modified", false));
+    Seq.Push(duplicateEvents, watcherEvent(Path.Join(root, "same.zia"), "created", false));
+    var coalescedEvents = workspace_watcher.CoalesceWorkspaceEvents(duplicateEvents);
+    if Seq.get_Count(coalescedEvents) != 2 {
+        fail(telemetryState, root, "duplicate workspace events were not coalesced");
+        return false;
+    }
 
     // A rename can preserve every metadata field. The fallback digest must
     // therefore include normalized path identity, not only id/time/size.
@@ -282,7 +309,8 @@ func VerifyWorkspaceWatchers(
     if workspace_watcher.EventsRequireFallback(completeRenameEvents)
        or workspace_watcher.ObserveWorkspaceTopologyEvents(state,
                                                             completeRenameEvents) == false
-       or state.watchers.count() < watcherCount - 1 {
+       or state.watchers.count() < watcherCount - 1
+       or workspace_watcher.WatcherPathKnown(state, renamedDirectory) {
         fail(state, root, "complete rename endpoints were not handled narrowly");
         return false;
     }

@@ -1,0 +1,105 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/workspace_watcher_events.zia
+// Purpose: Normalize and coalesce bounded native workspace watcher events.
+// Key invariants:
+//   - Identical notifications are removed without reordering distinct events.
+//   - Incomplete renames and native overflow always request a fallback scan.
+// Ownership/Lifetime: Stateless helpers borrow watcher handles and event batches.
+// Links: zannastudio/src/app/workspace_watcher.zia
+//
+//===----------------------------------------------------------------------===//
+
+module workspace_watcher_events;
+
+bind IO = Zanna.IO;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+/// @brief Snapshot the current Watcher event into the map shape consumed by the
+///        topology and workspace refresh handlers.
+expose func Record(watcher: IO.Watcher, eventType: Integer) -> Any {
+    var event = Map.New();
+    Map.SetStr(event, "path", watcher.EventPath());
+    var oldPath = "";
+    var newPath = "";
+    if eventType == watcher.EventRenamed {
+        oldPath = watcher.EventOldPath();
+        newPath = watcher.EventNewPath();
+    }
+    Map.SetStr(event, "oldPath", oldPath);
+    Map.SetStr(event, "newPath", newPath);
+    var typeName = "none";
+    if eventType == watcher.EventCreated {
+        typeName = "created";
+    } else if eventType == watcher.EventModified {
+        typeName = "modified";
+    } else if eventType == watcher.EventDeleted {
+        typeName = "deleted";
+    } else if eventType == watcher.EventRenamed {
+        typeName = "renamed";
+    } else if eventType == watcher.EventOverflow {
+        typeName = "overflow";
+    }
+    Map.SetStr(event, "typeName", typeName);
+    Map.SetInt(event, "type", eventType);
+    Map.SetInt(event, "overflowCount",
+               eventType == watcher.EventOverflow ? watcher.EventOverflowCount() : 0);
+    Map.SetBool(event, "requiresRescan",
+                eventType == watcher.EventOverflow
+                or (eventType == watcher.EventRenamed
+                    and (oldPath == "" or newPath == "")));
+    return event;
+}
+
+/// @brief Remove identical notifications from overlapping parent/child watchers.
+/// @details The batch is globally bounded, so a small linear coalescer avoids a
+///          map allocation for every filesystem burst. Distinct transitions
+///          deliberately remain ordered and visible.
+expose func Coalesce(events: Seq) -> Seq {
+    var result = Seq.New();
+    if events == null { return result; }
+    var i = 0;
+    while i < Seq.get_Count(events) {
+        var candidate = Seq.Get(events, i);
+        var duplicate = false;
+        var j = 0;
+        while j < Seq.get_Count(result) {
+            if Equivalent(Seq.Get(result, j), candidate) {
+                duplicate = true;
+                break;
+            }
+            j = j + 1;
+        }
+        if duplicate == false { Seq.Push(result, candidate); }
+        i = i + 1;
+    }
+    return result;
+}
+
+hide func Equivalent(left: Any, right: Any) -> Boolean {
+    if left == null or right == null { return left == right; }
+    return Map.GetInt(left, "type") == Map.GetInt(right, "type")
+       and Map.GetStr(left, "typeName") == Map.GetStr(right, "typeName")
+       and Map.GetStr(left, "path") == Map.GetStr(right, "path")
+       and Map.GetStr(left, "oldPath") == Map.GetStr(right, "oldPath")
+       and Map.GetStr(left, "newPath") == Map.GetStr(right, "newPath")
+       and Map.GetBool(left, "requiresRescan") == Map.GetBool(right, "requiresRescan");
+}
+
+/// @brief Return whether a normalized event batch requires fallback scanning.
+expose func RequiresFallback(events: Seq) -> Boolean {
+    if events == null { return false; }
+    var i = 0;
+    while i < Seq.get_Count(events) {
+        var ev = Seq.Get(events, i);
+        i = i + 1;
+        if Map.GetBool(ev, "requiresRescan") { return true; }
+    }
+    return false;
+}

@@ -48,10 +48,18 @@ final MAX_STAGING_PURPOSE_LENGTH = 24;
 class TextReadResult {
     expose Boolean ok;
     expose String text;
+    /// Native failure detail is retained for user-facing callers that can
+    /// distinguish a retryable race from a permission or size-limit problem.
+    expose String errorKind;
+    expose Integer errorCode;
+    expose String errorMessage;
 
     expose func init() {
         ok = false;
         text = "";
+        errorKind = "";
+        errorCode = 0;
+        errorMessage = "";
     }
 }
 
@@ -59,10 +67,16 @@ class TextReadResult {
 class PathListResult {
     expose Boolean ok;
     expose List items;
+    expose String errorKind;
+    expose Integer errorCode;
+    expose String errorMessage;
 
     expose func init() {
         ok = false;
         items = new List();
+        errorKind = "";
+        errorCode = 0;
+        errorMessage = "";
     }
 }
 
@@ -72,12 +86,18 @@ class DirectoryPageResult {
     expose List entries;
     expose Integer nextOffset;
     expose Boolean done;
+    expose String errorKind;
+    expose Integer errorCode;
+    expose String errorMessage;
 
     expose func init() {
         ok = false;
         entries = new List();
         nextOffset = 0;
         done = true;
+        errorKind = "";
+        errorCode = 0;
+        errorMessage = "";
     }
 }
 
@@ -88,9 +108,12 @@ expose func ReadAllText(path: String) -> TextReadResult {
     try {
         result.text = File.ReadAllText(path);
         result.ok = true;
-    } catch {
+    } catch(e: Error) {
         result.ok = false;
         result.text = "";
+        result.errorKind = e.kind;
+        result.errorCode = e.code;
+        result.errorMessage = e.message;
     }
     return result;
 }
@@ -104,9 +127,12 @@ expose func ReadAllTextBounded(path: String, maxBytes: Integer) -> TextReadResul
     try {
         result.text = File.ReadAllTextBounded(path, maxBytes);
         result.ok = true;
-    } catch {
+    } catch(e: Error) {
         result.ok = false;
         result.text = "";
+        result.errorKind = e.kind;
+        result.errorCode = e.code;
+        result.errorMessage = e.message;
     }
     return result;
 }
@@ -143,15 +169,22 @@ expose func Modified(path: String) -> Integer {
 /// @brief Enumerate immediate child directory names without propagating traps.
 expose func ListDirectories(path: String) -> PathListResult {
     var result = new PathListResult();
-    if path == "" { return result; }
+    if path == "" or Dir.Exists(path) == false {
+        result.errorKind = "directory";
+        result.errorMessage = "Directory is unavailable";
+        return result;
+    }
     try {
         for name in Dir.Dirs(path) {
             result.items.Push(name);
         }
         result.ok = true;
-    } catch {
+    } catch(e: Error) {
         result.items = new List();
         result.ok = false;
+        result.errorKind = e.kind;
+        result.errorCode = e.code;
+        result.errorMessage = e.message;
     }
     return result;
 }
@@ -159,15 +192,22 @@ expose func ListDirectories(path: String) -> PathListResult {
 /// @brief Enumerate immediate child file names without propagating traps.
 expose func ListFiles(path: String) -> PathListResult {
     var result = new PathListResult();
-    if path == "" { return result; }
+    if path == "" or Dir.Exists(path) == false {
+        result.errorKind = "directory";
+        result.errorMessage = "Directory is unavailable";
+        return result;
+    }
     try {
         for name in Dir.Files(path) {
             result.items.Push(name);
         }
         result.ok = true;
-    } catch {
+    } catch(e: Error) {
         result.items = new List();
         result.ok = false;
+        result.errorKind = e.kind;
+        result.errorCode = e.code;
+        result.errorMessage = e.message;
     }
     return result;
 }
@@ -184,10 +224,23 @@ expose func ListDirectoryPage(path: String,
                               limit: Integer) -> DirectoryPageResult {
     var result = new DirectoryPageResult();
     result.nextOffset = offset;
-    if path == "" { return result; }
+    if offset < 0 or limit <= 0 {
+        result.errorKind = "argument";
+        result.errorMessage = "Directory page offset must be non-negative and limit positive";
+        return result;
+    }
+    if path == "" or Dir.Exists(path) == false {
+        result.errorKind = "directory";
+        result.errorMessage = "Directory is unavailable";
+        return result;
+    }
     try {
         var page = Dir.Page(path, offset, limit);
-        if Map.GetBool(page, "valid") == false { return result; }
+        if Map.GetBool(page, "valid") == false {
+            result.errorKind = "directory";
+            result.errorMessage = "Directory page is unavailable";
+            return result;
+        }
         var pageEntries = Map.Get(page, "entries");
         var i = 0;
         while pageEntries != null and i < Seq.get_Count(pageEntries) {
@@ -197,16 +250,21 @@ expose func ListDirectoryPage(path: String,
         var diagnostics = Map.Get(page, "diagnostics");
         if diagnostics != null and Seq.get_Count(diagnostics) > 0 {
             result.entries = new List();
+            result.errorKind = "directory";
+            result.errorMessage = "Directory page reported diagnostics";
             return result;
         }
         result.nextOffset = Map.GetInt(page, "nextOffset");
         result.done = Map.GetBool(page, "done");
         result.ok = true;
-    } catch {
+    } catch(e: Error) {
         result.ok = false;
         result.entries = new List();
         result.nextOffset = offset;
         result.done = true;
+        result.errorKind = e.kind;
+        result.errorCode = e.code;
+        result.errorMessage = e.message;
     }
     return result;
 }

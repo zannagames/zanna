@@ -25,12 +25,13 @@ module file_watch_controller;
 bind "../core/document_manager";
 bind "../core/document";
 bind "../ui/app_shell";
+bind "../services/studio_background_limits" as Limits;
 
 bind Zanna.GUI;
 bind IO = Zanna.IO;
 bind Time = Zanna.Time;
 
-final OPEN_DOCUMENT_STATS_PER_FRAME = 4;
+final OPEN_DOCUMENT_STATS_PER_FRAME = Limits.OPEN_DOCUMENT_METADATA_PROBES_PER_FRAME;
 final WATCHER_RETRY_MIN_MS = 1000;
 
 // ============================================================================
@@ -60,6 +61,9 @@ class FileWatchController {
     expose String openDocPollFirstName;
     expose Boolean openDocPollActiveChanged;
     expose Integer lastOpenDocPollCount;
+    /// Number of metadata probes in the most recent page (as distinct from
+    /// visited tabs, which includes an active tab skipped by its native watcher).
+    expose Integer lastOpenDocPollMetadataCount;
 
     /// @brief Initialize with no active watched path.
     /// @details The watcher stays null until the first valid named file becomes
@@ -77,6 +81,7 @@ class FileWatchController {
         openDocPollFirstName = "";
         openDocPollActiveChanged = false;
         lastOpenDocPollCount = 0;
+        lastOpenDocPollMetadataCount = 0;
     }
 
     /// @brief Clear the pending reload flag after a user action resolved it.
@@ -100,6 +105,7 @@ class FileWatchController {
         openDocPollFirstName = "";
         openDocPollActiveChanged = false;
         lastOpenDocPollCount = 0;
+        lastOpenDocPollMetadataCount = 0;
     }
 
     /// @brief Pump active-file watch events and inactive-tab timestamp checks.
@@ -111,6 +117,7 @@ class FileWatchController {
                      docMgr: document_manager.DocumentManager,
                      openDocPollMs: Integer) -> Boolean {
         lastOpenDocPollCount = 0;
+        lastOpenDocPollMetadataCount = 0;
         PumpActiveDocument(shell, docMgr, openDocPollMs);
         PumpOpenDocumentTimestamps(shell, docMgr, openDocPollMs);
         return pendingReload;
@@ -263,6 +270,14 @@ class FileWatchController {
             visited = visited + 1;
             var doc = docMgr.GetDocument(index);
             if doc != null {
+                // The active document's native watcher supplies the fast path.
+                // Do not duplicate its metadata syscalls during every complete
+                // tab sweep; watcher loss falls back to this polling path.
+                if index == docMgr.activeIndex and hasWatcher
+                   and watchedPath == doc!.filePath {
+                    continue;
+                }
+                lastOpenDocPollMetadataCount = lastOpenDocPollMetadataCount + 1;
                 var state = docMgr.ExternalState(index);
                 if state != document.EXTERNAL_STATE_CLEAN and doc!.externalChangeNotified == false {
                     docMgr.MarkExternalState(index, state, ExternalStateMessageForDoc(doc!, state));
@@ -314,6 +329,7 @@ class FileWatchController {
         openDocPollFirstName = "";
         openDocPollActiveChanged = false;
         lastOpenDocPollCount = 0;
+        lastOpenDocPollMetadataCount = 0;
     }
 
     /// @brief Mark a document state and emit one concise user notification.

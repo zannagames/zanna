@@ -30,6 +30,7 @@ bind WorkspaceEdit = Zanna.Workspace.Edit;
 bind PreparedEdit = Zanna.Workspace.PreparedEdit;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
+bind Hash = Zanna.Crypto.Hash;
 
 /// @brief Replace one existing file through a prepared native transaction.
 expose func Replace(path: String,
@@ -78,6 +79,10 @@ expose func Replace(path: String,
 }
 
 /// @brief Persist Save As content without mutating document state first.
+/// @details An existing destination is captured through a bounded snapshot and
+///          then replaced only if that exact revision remains current.  This
+///          closes the confirmation-to-commit race where another editor could
+///          otherwise be overwritten after the user selected Save As.
 expose func SaveAs(path: String,
                    content: String,
                    maxBytes: Integer) -> safe_io_results.MutationResult {
@@ -86,7 +91,19 @@ expose func SaveAs(path: String,
             "save-as", path, "", safe_io_results.IO_FAILURE_INVALID);
     }
     if File.Exists(path) {
-        return Replace(path, content, -1, -1, "", maxBytes);
+        var current = safe_io.ReadAllTextBounded(path, maxBytes);
+        if current.ok == false {
+            return safe_io_results.Failure(
+                "save-as", path, "", safe_io_results.IO_FAILURE_IO);
+        }
+        var modified = safe_io.Modified(path);
+        var size = safe_io.SizeBytes(path);
+        if modified < 0 or size < 0 {
+            return safe_io_results.Failure(
+                "save-as", path, "", safe_io_results.IO_FAILURE_IO);
+        }
+        return Replace(path, content, modified, size,
+                       Hash.Sha256(current.text), maxBytes);
     }
     return Create(path, content);
 }

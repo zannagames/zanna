@@ -184,6 +184,8 @@ The facade is assembled from three focused modules:
 
 - `app/workspace_watcher_state.zia` owns roots, snapshots, generations, and
   deterministic initialization.
+- `app/workspace_watcher_events.zia` normalizes and coalesces bounded native
+  event batches and identifies batches that require fallback scanning.
 - `app/workspace_watcher_fallback.zia` owns bounded metadata-scan fallback and
   coarse-timestamp content-fingerprint checks.
 - `app/workspace_refresh.zia` converts watcher results into project-tree and

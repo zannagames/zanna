@@ -1232,6 +1232,21 @@ rt_string rt_io_file_read_all_text(rt_string path) {
         }
         off += (size_t)n;
     }
+    // The descriptor can grow after fstat.  Do not return a prefix while the
+    // bounded sibling rejects the same race; callers that need a coherent
+    // whole-file snapshot must either receive all observed bytes or a trap.
+    uint8_t extra = 0;
+    ssize_t trailing = -1;
+    do {
+        trailing = rt_posix_read(fd, &extra, 1);
+    } while (trailing < 0 && errno == EINTR);
+    if (trailing != 0) {
+        free(buf);
+        close(fd);
+        rt_trap(trailing > 0 ? "Zanna.IO.File.ReadAllText: file changed while reading"
+                             : "Zanna.IO.File.ReadAllText: failed to read file");
+        return rt_str_empty();
+    }
     if (close(fd) != 0) {
         free(buf);
         rt_trap("Zanna.IO.File.ReadAllText: failed to close file");

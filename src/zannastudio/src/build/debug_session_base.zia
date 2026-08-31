@@ -85,7 +85,11 @@ class DebugSessionBase extends State.DebugSessionState {
         Seq.Push(args, "run");
         Seq.Push(args, "--debug-adapter");
         Seq.Push(args, path);
-        processHandle = Process.StartWithEnv(zannaBin, args, Path.Directory(path), null);
+        // Match BuildSystem's launch contract: preserve the parent environment
+        // while accepting any later debugger-specific overlay.  The previous
+        // StartWithEnv(..., null) path made debug launches diverge from builds.
+        processHandle = Process.StartWithEnvOverlay(zannaBin, args,
+                                                    Path.Directory(path), null);
         if processHandle == null or processHandle.IsValid() == false {
             processHandle = null;
             return false;

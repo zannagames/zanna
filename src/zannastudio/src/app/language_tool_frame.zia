@@ -55,6 +55,7 @@ bind "../editor/symbols";
 bind "../editor/workbench_state";
 bind "../services/file_utils";
 bind "../services/locations";
+bind "../services/studio_background_limits" as Limits;
 bind "../ui/app_shell";
 
 bind Input = Zanna.Input;
@@ -62,8 +63,8 @@ bind Str = Zanna.String;
 bind Clock = Zanna.Time.Clock;
 bind Zanna.GUI;
 
-final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = 10;
-final LANGUAGE_BACKGROUND_LANE_COUNT = 4;
+final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = Limits.LANGUAGE_FRAME_BACKGROUND_BUDGET_MS;
+final LANGUAGE_BACKGROUND_LANE_COUNT = Limits.LANGUAGE_BACKGROUND_LANE_COUNT;
 
 /// @brief Coordinates editor intelligence and background work for one frame.
 /// @details The main loop still owns application lifecycle and command routing,
@@ -457,10 +458,14 @@ class LanguageToolFrameController extends State.LanguageToolFrameState {
     }
 
     /// @brief Return whether lower-priority work may still run this frame.
-    /// @return True while elapsed work is below the soft controller budget.
+    /// @return True while elapsed work is below the adaptive soft budget.
     expose func BudgetAllows() -> Boolean {
+        var budgetMs = LANGUAGE_FRAME_BACKGROUND_BUDGET_MS;
+        if perfMon != null {
+            budgetMs = perfMon.RecommendedBackgroundBudgetMs(budgetMs);
+        }
         return dispatch_helpers.FrameBudgetAllows(frameWorkStartMs,
-                                                  LANGUAGE_FRAME_BACKGROUND_BUDGET_MS);
+                                                  budgetMs);
     }
 
     /// @brief Apply active language-service capability state to all tool controllers.

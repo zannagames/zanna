@@ -29,9 +29,11 @@ bind "../editor/editor_engine";
 bind "../editor/project_index";
 bind "../services/locations";
 bind "../services/path_identity";
+bind "../services/studio_background_limits" as Limits;
 bind "../services/workspace_file_index";
 bind "../services/workspace_file_cursor";
 bind "workspace_refresh";
+bind "workspace_watcher_events" as WatcherEvents;
 bind "workspace_watcher_fallback";
 bind "workspace_watcher_state";
 
@@ -42,11 +44,19 @@ bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
 bind Map = Zanna.Collections.Map;
 
-final WORKSPACE_WATCHER_MAX_DIRS = 2048;
-final WORKSPACE_WATCHER_DIR_PAGE_SIZE = 64;
+final WORKSPACE_WATCHER_MAX_DIRS = Limits.WORKSPACE_WATCHER_MAX_DIRS;
+final WORKSPACE_WATCHER_DIR_PAGE_SIZE = Limits.WORKSPACE_WATCHER_DIR_PAGE_SIZE;
 final WORKSPACE_WATCHER_DIRECTORY_FILTER = ".__zanna_watcher_directory_only__";
-final WORKSPACE_WATCHERS_PER_FRAME = 32;
-final WORKSPACE_WATCHER_EVENTS_PER_FRAME = 32;
+final WORKSPACE_WATCHERS_PER_FRAME = Limits.WORKSPACE_WATCHERS_PER_FRAME;
+final WORKSPACE_WATCHER_EVENTS_PER_FRAME = Limits.WORKSPACE_WATCHER_EVENTS_PER_FRAME;
+
+/// @brief Preserve the first actionable reason while later failures continue
+///          through the same safe fallback path.
+func MarkDegraded(state: WorkspaceWatcherState, reason: String) {
+    if state == null { return; }
+    state.degraded = true;
+    if state.degradationReason == "" { state.degradationReason = reason; }
+}
 
 // ============================================================================
 // MODULE: workspace_watcher
@@ -145,6 +155,7 @@ func StartWorkspaceWatchers(state: WorkspaceWatcherState,
     state.rootIgnorePatterns = new List();
     state.watchers = new List();
     state.watcherPaths = new List();
+    state.watcherPathSet = Map.New();
     var rootIndex = 0;
     while rootIndex < projMgr.RootCount() {
         var root = projMgr.RootPathAt(rootIndex);
@@ -178,7 +189,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
         return 0;
     }
     if state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
-        state.degraded = true;
+        MarkDegraded(state, "native watcher limit reached");
         state.discoveryActive = false;
         if state.discoveryCursor != null { state.discoveryCursor.Destroy(); }
         return 0;
@@ -187,14 +198,14 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
     var rootIndex = state.discoveryRootIndex;
     var root = state.rootPaths.get(rootIndex);
     if root == "" or Dir.Exists(root) == false {
-        state.degraded = true;
+        MarkDegraded(state, "workspace root became unavailable");
         AdvanceWatcherDiscoveryRoot(state);
         return 0;
     }
 
     var added = 0;
     if state.discoveryRootAdded == false {
-        var rootAlreadyKnown = ListContainsString(state.watcherPaths, root);
+        var rootAlreadyKnown = WatcherPathKnown(state, root);
         if AddDirectoryWatcher(state, root) == false {
             state.discoveryActive = false;
             return 0;
@@ -212,13 +223,13 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
                                       WORKSPACE_WATCHER_DIRECTORY_FILTER,
                                       ignores,
                                       true) == false {
-        state.degraded = true;
+        MarkDegraded(state, "workspace watcher discovery could not open root");
         AdvanceWatcherDiscoveryRoot(state);
         return added;
     }
     var page = state.discoveryCursor.Next(WORKSPACE_WATCHER_DIR_PAGE_SIZE);
     if Map.GetBool(page, "valid") == false {
-        state.degraded = true;
+        MarkDegraded(state, "workspace watcher discovery returned invalid data");
         AdvanceWatcherDiscoveryRoot(state);
         return added;
     }
@@ -232,7 +243,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
         if Map.GetBool(entry, "isDirectory") {
             var dirPath = Map.GetStr(entry, "path");
             if WorkspaceWatcherCanWatchDirectory(state, dirPath) {
-                var alreadyKnown = ListContainsString(state.watcherPaths, dirPath);
+                var alreadyKnown = WatcherPathKnown(state, dirPath);
                 if AddDirectoryWatcher(state, dirPath) == false {
                     state.discoveryActive = false;
                     state.discoveryCursor.Destroy();
@@ -242,7 +253,7 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
             }
         }
         if state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
-            state.degraded = true;
+            MarkDegraded(state, "native watcher limit reached");
             state.discoveryActive = false;
             state.discoveryCursor.Destroy();
             return added;
@@ -251,11 +262,11 @@ expose func PumpWorkspaceWatcherDiscovery(state: WorkspaceWatcherState,
     state.discoveryPageOffset = Map.GetInt(page, "nextOffset");
     var done = Map.GetBool(page, "done");
     if Map.GetBool(page, "truncated") {
-        state.degraded = true;
+        MarkDegraded(state, "workspace watcher discovery was truncated");
         done = true;
     }
     if entryCount == 0 and done == false and Map.GetInt(page, "work") <= 0 {
-        state.degraded = true;
+        MarkDegraded(state, "workspace watcher discovery made no progress");
         done = true;
     }
     if done { AdvanceWatcherDiscoveryRoot(state); }
@@ -305,9 +316,9 @@ func AddDirectoryWatcher(state: WorkspaceWatcherState,
     if state == null or dirPath == "" { return true; }
     if Dir.Exists(dirPath) == false { return true; }
     if WorkspaceWatcherCanWatchDirectory(state, dirPath) == false { return true; }
-    if ListContainsString(state.watcherPaths, dirPath) { return true; }
+    if WatcherPathKnown(state, dirPath) { return true; }
     if state.watchers.count() >= WORKSPACE_WATCHER_MAX_DIRS {
-        state.degraded = true;
+        MarkDegraded(state, "native watcher limit reached");
         return false;
     }
     try {
@@ -315,20 +326,27 @@ func AddDirectoryWatcher(state: WorkspaceWatcherState,
         watcher.Start();
         if watcher.IsWatching == false {
             // Ran out of OS watch resources; degrade to fingerprint rescans.
-            state.degraded = true;
+            MarkDegraded(state, "native watcher could not start");
             return false;
         }
         state.watchers.add(watcher);
         state.watcherPaths.add(dirPath);
+        Map.SetBool(state.watcherPathSet, path_identity.Normalize(dirPath), true);
         if state.watcher == null {
             state.watcher = watcher;
         }
         state.watching = true;
         return true;
     } catch {
-        state.degraded = true;
+        MarkDegraded(state, "native watcher creation failed");
     }
     return false;
+}
+
+/// @brief Return whether a canonical directory already owns a watcher.
+func WatcherPathKnown(state: WorkspaceWatcherState, dirPath: String) -> Boolean {
+    if state == null or dirPath == "" or state.watcherPathSet == null { return false; }
+    return Map.GetBool(state.watcherPathSet, path_identity.Normalize(dirPath));
 }
 
 /// @brief Test whether a watcher path stays within a root without linked descendants.
@@ -366,6 +384,7 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
                            state: WorkspaceWatcherState) -> Integer {
     if state == null { return 0; }
     state.lastWatcherPollCount = 0;
+    state.lastWatcherEventCount = 0;
     if state.watchers.count() == 0 { return 0; }
     var changed = 0;
     var polled = 0;
@@ -380,7 +399,7 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
         polled = polled + 1;
         if watcher == null { continue; }
         if watcher.IsWatching == false {
-            state.degraded = true;
+            MarkDegraded(state, "native watcher stopped unexpectedly");
             continue;
         }
         // Polling a quiet watcher should not allocate an empty Seq/Map graph.
@@ -391,72 +410,32 @@ func PollWorkspaceWatchers(shell: app_shell.AppShell,
         while eventType != watcher.EventNone
               and changed < WORKSPACE_WATCHER_EVENTS_PER_FRAME {
             if events == null { events = Seq.New(); }
-            Seq.Push(events, WatcherEventRecord(watcher, eventType));
+            Seq.Push(events, WatcherEvents.Record(watcher, eventType));
             changed = changed + 1;
             if changed < WORKSPACE_WATCHER_EVENTS_PER_FRAME {
                 eventType = watcher.Poll();
             }
         }
         if events != null and Seq.get_Count(events) > 0 {
+            events = CoalesceWorkspaceEvents(events);
             if EventsRequireFallback(events) {
-                state.degraded = true;
+                MarkDegraded(state, "native watcher event overflow");
             }
             ObserveWorkspaceTopologyEvents(state, events);
             HandleWorkspaceWatcherEvents(shell, projMgr, docMgr, indexer, locStore, engine, events);
         }
     }
     state.lastWatcherPollCount = polled;
+    state.lastWatcherEventCount = changed;
     return changed;
 }
 
-/// @brief Snapshot the current Watcher event into the map shape used by the
-///        topology and workspace refresh handlers.
-func WatcherEventRecord(watcher: IO.Watcher,
-                        eventType: Integer) -> Any {
-    var event = Map.New();
-    Map.SetStr(event, "path", watcher.EventPath());
-    var oldPath = "";
-    var newPath = "";
-    if eventType == watcher.EventRenamed {
-        oldPath = watcher.EventOldPath();
-        newPath = watcher.EventNewPath();
-    }
-    Map.SetStr(event, "oldPath", oldPath);
-    Map.SetStr(event, "newPath", newPath);
-    var typeName = "none";
-    if eventType == watcher.EventCreated {
-        typeName = "created";
-    } else if eventType == watcher.EventModified {
-        typeName = "modified";
-    } else if eventType == watcher.EventDeleted {
-        typeName = "deleted";
-    } else if eventType == watcher.EventRenamed {
-        typeName = "renamed";
-    } else if eventType == watcher.EventOverflow {
-        typeName = "overflow";
-    }
-    Map.SetStr(event, "typeName", typeName);
-    Map.SetInt(event, "type", eventType);
-    Map.SetInt(event, "overflowCount",
-               eventType == watcher.EventOverflow ? watcher.EventOverflowCount() : 0);
-    Map.SetBool(event, "requiresRescan",
-                eventType == watcher.EventOverflow
-                or (eventType == watcher.EventRenamed
-                    and (oldPath == "" or newPath == "")));
-    return event;
+expose func CoalesceWorkspaceEvents(events: Seq) -> Seq {
+    return WatcherEvents.Coalesce(events);
 }
 
 expose func EventsRequireFallback(events: Seq) -> Boolean {
-    if events == null { return false; }
-    var i = 0;
-    while i < Seq.get_Count(events) {
-        var ev = Seq.Get(events, i);
-        i = i + 1;
-        if Map.GetBool(ev, "requiresRescan") {
-            return true;
-        }
-    }
-    return false;
+    return WatcherEvents.RequiresFallback(events);
 }
 
 /// @brief Incorporate directory topology events without rebuilding for file edits.
@@ -511,7 +490,7 @@ expose func ObserveWorkspaceTopologyEvents(state: WorkspaceWatcherState,
             if rootIndex >= 0
                and WorkspaceWatcherCanWatchDirectory(state, candidatePath)
                and WorkspaceWatcherDirectoryIgnored(state, rootIndex, candidatePath) == false {
-                var known = ListContainsString(state.watcherPaths, candidatePath);
+                var known = WatcherPathKnown(state, candidatePath);
                 if AddDirectoryWatcher(state, candidatePath) == false {
                     continue;
                 }
@@ -550,6 +529,12 @@ expose func RemoveDirectoryWatchersAtOrBelow(state: WorkspaceWatcherState,
             if staleWatcher != null { staleWatcher.Stop(); }
             state.watchers.removeAt(i);
             state.watcherPaths.removeAt(i);
+            // Delete rather than retain a false tombstone: long-lived
+            // workspaces that repeatedly create/rename generated directories
+            // must not grow the O(1) membership mirror without bound.
+            if Map.Has(state.watcherPathSet, watcherPath) {
+                Map.Remove(state.watcherPathSet, watcherPath);
+            }
             removed = removed + 1;
         }
         i = i - 1;

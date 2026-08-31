@@ -39,7 +39,6 @@ bind Async = Zanna.Threads.Async;
 bind Future = Zanna.Threads.Future;
 bind Monitor = Zanna.Threads.Monitor;
 
-final RECOVERY_SHUTDOWN_WAIT_MS = Types.RECOVERY_SHUTDOWN_WAIT_MS;
 final RECOVERY_FORMAT_VERSION = Types.RECOVERY_FORMAT_VERSION;
 final RECOVERY_NAMESPACE_PREFIX = Types.RECOVERY_NAMESPACE_PREFIX;
 final RECOVERY_RETIRED_PREFIX = Types.RECOVERY_RETIRED_PREFIX;
@@ -287,23 +286,15 @@ class RecoveryStoreBase {
         }
     }
 
-    /// @brief Cancel and drain recovery publication before clean persistence.
+    /// @brief Cancel and poll recovery publication before clean persistence.
+    /// @details Shutdown's outer retry loop keeps the recovery store and its
+    ///          leases alive until the owned immutable write request finishes.
+    ///          Never synchronously wait here: a slow filesystem must not
+    ///          freeze the close UI for the full worker timeout.
     expose func WaitForShutdown() -> Boolean {
         CancelAsync();
-        if activeFuture == null { return pendingRequest == null; }
-        var finished = false;
-        try {
-            finished = Future.WaitFor(
-                activeFuture, RECOVERY_SHUTDOWN_WAIT_MS);
-        } catch {
-            return false;
-        }
-        if finished == false { return false; }
-        var failed = Future.get_IsError(activeFuture);
-        if failed { lastAsyncError = Future.get_Error(activeFuture); }
-        activeFuture = null;
-        activeRequest = null;
-        return failed == false and pendingRequest == null;
+        PumpAsync();
+        return activeFuture == null and pendingRequest == null;
     }
 
     /// @brief Remove swaps no longer owned by a modified open document.

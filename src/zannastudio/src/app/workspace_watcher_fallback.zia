@@ -79,6 +79,9 @@ expose func Pump(
     if request == null or Future.get_IsError(future)
        or request!.failed or request!.cancelled {
         state.degraded = true;
+        if state.degradationReason == "" {
+            state.degradationReason = "workspace fallback scan failed";
+        }
         if state.fallbackRestartRequested {
             Begin(state);
             return;
@@ -94,6 +97,7 @@ expose func Pump(
     state.fallbackEntryCounts = request!.entryCounts;
     state.fallbackFingerprints = request!.fingerprints;
     state.fallbackSecondaryFingerprints = request!.secondaryFingerprints;
+    state.lastFallbackPagesScanned = request!.pagesScanned;
     Complete(shell, projMgr, docMgr, indexer, locStore, engine, state);
 }
 
@@ -125,6 +129,9 @@ func Begin(state: workspace_watcher_state.WorkspaceWatcherState) {
         request.error = "Could not start workspace fallback scan";
         state.fallbackScanActive = false;
         state.degraded = true;
+        if state.degradationReason == "" {
+            state.degradationReason = "workspace fallback worker could not start";
+        }
         ResetThrottle(state);
     }
 }

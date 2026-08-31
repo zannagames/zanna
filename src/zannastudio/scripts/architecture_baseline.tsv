@@ -44,7 +44,7 @@ dep	src/ui/menu_chrome.zia	src/commands/command_registry.zia
 dep	src/ui/menu_chrome_base.zia	src/commands/command_registry.zia
 dep	src/ui/welcome_view.zia	src/app/build_info.zia
 line	src/app/studio_application_base.zia	924
-line	src/app/workspace_watcher.zia	716
+line	src/app/workspace_watcher.zia	701
 line	src/basic/semantic_scan.zia	779
 line	src/commands/build_commands.zia	653
 line	src/commands/command_registry.zia	907

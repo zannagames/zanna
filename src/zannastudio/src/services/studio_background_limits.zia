@@ -1,0 +1,32 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/studio_background_limits.zia
+// Purpose: Keep cooperative Studio background-work limits centrally reviewed.
+// Key invariants:
+//   - Limits protect foreground input and rendering before throughput.
+//   - Consumers preserve their public compatibility constants as aliases.
+// Ownership/Lifetime: Stateless compile-time policy values.
+// Links: zannastudio/src/app/language_tool_frame.zia,
+//        zannastudio/src/app/workspace_watcher.zia
+//
+//===----------------------------------------------------------------------===//
+
+module studio_background_limits;
+
+/// Native-handle destruction can block while process trees terminate.
+expose final MAX_DEFERRED_PROCESS_REAPER_WORKERS = 2;
+/// Metadata calls across many open tabs remain strictly bounded per frame.
+expose final OPEN_DOCUMENT_METADATA_PROBES_PER_FRAME = 4;
+/// Optional language tooling yields after this normal frame allowance.
+expose final LANGUAGE_FRAME_BACKGROUND_BUDGET_MS = 10;
+expose final LANGUAGE_BACKGROUND_LANE_COUNT = 4;
+/// Recursive workspace coverage is intentionally capped by OS-handle pressure.
+expose final WORKSPACE_WATCHER_MAX_DIRS = 2048;
+expose final WORKSPACE_WATCHER_DIR_PAGE_SIZE = 64;
+expose final WORKSPACE_WATCHERS_PER_FRAME = 32;
+expose final WORKSPACE_WATCHER_EVENTS_PER_FRAME = 32;

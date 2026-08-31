@@ -30,6 +30,8 @@ bind Obj = Zanna.Core.Object;
 bind IO = Zanna.IO;
 bind Str = Zanna.String;
 
+final MAX_BIND_REWRITE_SOURCE_BYTES = 200000;
+
 /// @brief Bind-rewrite behavior layered over workspace tree ownership.
 class ProjectManagerBindLayer extends PreviousLayer.ProjectManagerTreeLayer {
     func RewriteProjectBindsAfterRename(oldPath: String,
@@ -80,7 +82,8 @@ class ProjectManagerBindLayer extends PreviousLayer.ProjectManagerTreeLayer {
             if docIndex >= 0 {
                 content = docMgr.documents.get(docIndex).content;
             } else if IO.File.Exists(filePath) {
-                var sourceRead = safe_io.ReadAllText(filePath);
+                var sourceRead = safe_io.ReadAllTextBounded(
+                    filePath, MAX_BIND_REWRITE_SOURCE_BYTES);
                 if sourceRead.ok { content = sourceRead.text; }
             }
 

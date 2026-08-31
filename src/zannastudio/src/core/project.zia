@@ -27,6 +27,8 @@ bind Obj = Zanna.Core.Object;
 bind Manifest = Zanna.Project.Manifest;
 bind "../services/safe_io";
 
+final MAX_LEGACY_PROJECT_FILE_BYTES = 1000000;
+
 // ============================================================================
 // MODULE: project
 // PURPOSE: Models an open workspace folder. Holds the root path, derived
@@ -245,7 +247,8 @@ class Project {
     ///          double-quoted, and unrecognized keys are ignored. This is kept
     ///          only for compatibility with pre-manifest-parser projects.
     hide func parseLegacyProjectFile(path: String) {
-        var readResult = safe_io.ReadAllText(path);
+        var readResult = safe_io.ReadAllTextBounded(
+            path, MAX_LEGACY_PROJECT_FILE_BYTES);
         if readResult.ok == false { return; }
         var lines = Str.Split(readResult.text, "\n");
         var i = 0;

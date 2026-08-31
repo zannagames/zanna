@@ -20,15 +20,19 @@
 
 module process_reaper;
 
+bind "studio_background_limits" as Limits;
+
 bind Async = Zanna.Threads.Async;
 bind Future = Zanna.Threads.Future;
 bind Process = Zanna.System.Process;
 bind Pty = Zanna.System.Pty;
-bind Clock = Zanna.Time.Clock;
 
 final RETIRED_PROCESS = 1;
 final RETIRED_PTY = 2;
-final REAPER_SHUTDOWN_WAIT_MS = 6000;
+/// Keep native-handle destruction from turning a burst of closed terminals or
+/// builds into one detached runtime thread per handle.  Destroy can block on
+/// process-tree teardown, so these workers are intentionally few.
+final MAX_ACTIVE_REAPER_WORKERS = Limits.MAX_DEFERRED_PROCESS_REAPER_WORKERS;
 
 /// @brief One queued or worker-owned native-handle destruction request.
 class RetiredHandle {
@@ -61,6 +65,8 @@ class ProcessReaper {
     expose Integer queuedCount;
     expose Integer completedCount;
     expose Integer failedCount;
+    expose Integer activeWorkerCount;
+    expose Integer peakWorkerCount;
     expose String lastError;
 
     expose func init() {
@@ -68,6 +74,8 @@ class ProcessReaper {
         queuedCount = 0;
         completedCount = 0;
         failedCount = 0;
+        activeWorkerCount = 0;
+        peakWorkerCount = 0;
         lastError = "";
     }
 
@@ -79,7 +87,7 @@ class ProcessReaper {
         request.handle = handle;
         requests.add(request);
         queuedCount = queuedCount + 1;
-        StartRequest(request);
+        StartQueuedRequests();
     }
 
     /// @brief Transfer one PTY handle to the deferred-destruction queue.
@@ -90,17 +98,16 @@ class ProcessReaper {
         request.handle = handle;
         requests.add(request);
         queuedCount = queuedCount + 1;
-        StartRequest(request);
+        StartQueuedRequests();
     }
 
     /// @brief Publish completed futures and retry transient scheduling failures.
     expose func Pump() {
+        activeWorkerCount = 0;
         var i = requests.count() - 1;
         while i >= 0 {
             var request = requests.get(i) as RetiredHandle;
-            if request.future == null {
-                StartRequest(request);
-            } else if Future.get_IsDone(request.future) {
+            if request.future != null and Future.get_IsDone(request.future) {
                 if Future.get_IsError(request.future) {
                     failedCount = failedCount + 1;
                     lastError = Future.get_Error(request.future);
@@ -108,27 +115,29 @@ class ProcessReaper {
                     completedCount = completedCount + 1;
                 }
                 requests.removeAt(i);
+            } else if request.future != null {
+                activeWorkerCount = activeWorkerCount + 1;
             }
             i = i - 1;
         }
+        StartQueuedRequests();
     }
 
     expose func PendingCount() -> Integer { return requests.count(); }
 
-    /// @brief Wait for all handle-only workers under one total deadline.
+    /// @brief Poll whether deferred native-handle destruction has drained.
+    /// @details IDE shutdown retries this from its outer frame/cleanup loop.
+    ///          Never sleep here: process-tree teardown can take seconds and
+    ///          blocking this call would freeze the close UI.
     /// @return True when no deferred native handle remains.
     expose func WaitForShutdown() -> Boolean {
-        var deadline = Clock.NowMs() + REAPER_SHUTDOWN_WAIT_MS;
-        while requests.count() > 0 and Clock.NowMs() < deadline {
-            Pump();
-            if requests.count() > 0 { Clock.Sleep(5); }
-        }
         Pump();
         return requests.count() == 0;
     }
 
     hide func StartRequest(request: RetiredHandle) {
-        if request == null or request.future != null or request.handle == null {
+        if request == null or request.future != null or request.handle == null
+           or activeWorkerCount >= MAX_ACTIVE_REAPER_WORKERS {
             return;
         }
         var future: Any = null;
@@ -140,6 +149,22 @@ class ProcessReaper {
         if future != null {
             request.future = future;
             request.handle = null;
+            activeWorkerCount = activeWorkerCount + 1;
+            if activeWorkerCount > peakWorkerCount {
+                peakWorkerCount = activeWorkerCount;
+            }
+        }
+    }
+
+    /// @brief Start only the bounded number of queued destruction workers.
+    hide func StartQueuedRequests() {
+        var i = 0;
+        while i < requests.count() and activeWorkerCount < MAX_ACTIVE_REAPER_WORKERS {
+            var request = requests.get(i) as RetiredHandle;
+            if request != null and request.future == null {
+                StartRequest(request);
+            }
+            i = i + 1;
         }
     }
 }

@@ -28,8 +28,6 @@ bind Log = Zanna.Diagnostics.Log;
 bind Async = Zanna.Threads.Async;
 bind Future = Zanna.Threads.Future;
 
-final PERF_LOG_SHUTDOWN_WAIT_MS = 5000;
-
 /// @brief Immutable path/message payload for one background append.
 class PerfLogRequest {
     expose String path;
@@ -69,6 +67,8 @@ class PerfMonitor {
     expose Integer frameCount;
     expose Integer maxFrameUs;
     expose Integer totalFrameUs;
+    expose Integer lastFrameUs;
+    expose Integer overBudgetStreak;
     expose Integer eventWaitUs;
     expose Integer completionUs;
     expose Integer diagnosticsUs;
@@ -96,6 +96,8 @@ class PerfMonitor {
         pendingLogRequest = null;
         logWriteFailures = 0;
         lastLogError = "";
+        lastFrameUs = 0;
+        overBudgetStreak = 0;
         ResetWindow();
     }
 
@@ -179,6 +181,12 @@ class PerfMonitor {
         if enabled == false { return; }
         PumpLogWriter();
         var frameUs = Clock.NowMicros() - frameStartUs;
+        lastFrameUs = frameUs;
+        if frameUs > 16000 {
+            overBudgetStreak = overBudgetStreak + 1;
+        } else {
+            overBudgetStreak = 0;
+        }
         totalFrameUs = totalFrameUs + frameUs;
         if frameUs > maxFrameUs { maxFrameUs = frameUs; }
         frameCount = frameCount + 1;
@@ -253,18 +261,25 @@ class PerfMonitor {
         ResetWindow();
     }
 
-    /// @brief Drain the handle-only log worker before runtime teardown.
+    /// @brief Poll the handle-only log worker before runtime teardown.
+    /// @details The application shutdown coordinator retries incomplete worker
+    ///          drains.  Do not sleep on the UI thread merely to flush optional
+    ///          diagnostics output.
     expose func Shutdown() -> Boolean {
-        var deadline = Clock.NowMs() + PERF_LOG_SHUTDOWN_WAIT_MS;
-        while (activeLogFuture != null or pendingLogRequest != null)
-              and Clock.NowMs() < deadline {
-            PumpLogWriter();
-            if activeLogFuture != null or pendingLogRequest != null {
-                Clock.Sleep(5);
-            }
-        }
         PumpLogWriter();
         return activeLogFuture == null and pendingLogRequest == null;
+    }
+
+    /// @brief Recommend a lower background-work budget after slow frames.
+    /// @details This stays inert when instrumentation is disabled, preserving
+    ///          the normal hot-path cost. A single slow frame reduces optional
+    ///          work; sustained pressure yields even more quickly to input and
+    ///          rendering on subsequent frames.
+    expose func RecommendedBackgroundBudgetMs(normalBudgetMs: Integer) -> Integer {
+        if normalBudgetMs <= 0 or enabled == false { return normalBudgetMs; }
+        if overBudgetStreak >= 3 { return 2; }
+        if overBudgetStreak >= 1 { return 4; }
+        return normalBudgetMs;
     }
 
     hide func QueueLogWrite(path: String, line: String) {
