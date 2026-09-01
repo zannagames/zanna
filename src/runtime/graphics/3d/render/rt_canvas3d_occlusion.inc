@@ -1104,11 +1104,11 @@ static int canvas3d_occlusion_history_allows_cull(rt_canvas3d *c, const deferred
     rt_canvas3d_occlusion_history_entry *entry = canvas3d_occlusion_history_entry(c, key, 1);
     if (!entry)
         return 0;
-    if (entry->last_frame_seen == c->frame_serial - 1)
+    if (entry->last_frame_seen == c->occlusion_frame_serial - 1)
         entry->covered_streak++;
     else
         entry->covered_streak = 1;
-    entry->last_frame_seen = c->frame_serial;
+    entry->last_frame_seen = c->occlusion_frame_serial;
     return entry->covered_streak >= canvas3d_occlusion_required_covered_streak(dd);
 }
 
@@ -1123,7 +1123,7 @@ static void canvas3d_occlusion_history_note_visible(rt_canvas3d *c, const deferr
     if (!entry)
         return;
     entry->covered_streak = 0;
-    entry->last_frame_seen = c->frame_serial;
+    entry->last_frame_seen = c->occlusion_frame_serial;
 }
 
 /// @brief Drop stale CPU occlusion-history entries and rebuild their hash table.
@@ -1138,9 +1138,9 @@ static void canvas3d_occlusion_history_prune(rt_canvas3d *c) {
 
     if (!c || c->occlusion_history_count <= 0)
         return;
-    if (c->frame_serial <= CANVAS3D_OCCLUSION_HISTORY_RETENTION_FRAMES)
+    if (c->occlusion_frame_serial <= CANVAS3D_OCCLUSION_HISTORY_RETENTION_FRAMES)
         return;
-    cutoff = c->frame_serial - CANVAS3D_OCCLUSION_HISTORY_RETENTION_FRAMES;
+    cutoff = c->occlusion_frame_serial - CANVAS3D_OCCLUSION_HISTORY_RETENTION_FRAMES;
     for (int32_t read_index = 0; read_index < c->occlusion_history_count; read_index++) {
         rt_canvas3d_occlusion_history_entry entry = c->occlusion_history[read_index];
         if (entry.last_frame_seen >= cutoff) {

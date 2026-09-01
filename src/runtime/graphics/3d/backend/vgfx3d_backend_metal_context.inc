@@ -1901,8 +1901,13 @@ static void metal_resolve_opaque_targets(void *ctx_ptr) {
         depth = ctx.rttActive ? ctx.rttDepthTexture : ctx.depthTexture;
         if (!depth)
             return;
-        if (!ctx.opaqueDepthTexture || ctx.opaqueDepthTexture.width != depth.width ||
-            ctx.opaqueDepthTexture.height != depth.height) {
+        /* Per-target-kind snapshot slot: alternating RT/window brackets each
+         * keep their own cached texture instead of thrashing one size-keyed
+         * slot with a full-resolution allocation + in-flight deferred free
+         * twice per displayed frame. The size check still handles window
+         * resize / render-scale changes. */
+        id<MTLTexture> slot = ctx.rttActive ? ctx.opaqueDepthRtt : ctx.opaqueDepthWindow;
+        if (!slot || slot.width != depth.width || slot.height != depth.height) {
             MTLTextureDescriptor *desc =
                 [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                                    width:depth.width
@@ -1910,10 +1915,19 @@ static void metal_resolve_opaque_targets(void *ctx_ptr) {
                                                                mipmapped:NO];
             desc.usage = MTLTextureUsageShaderRead;
             desc.storageMode = MTLStorageModePrivate;
-            ctx.opaqueDepthTexture = [ctx.device newTextureWithDescriptor:desc];
-            if (!ctx.opaqueDepthTexture)
+            slot = [ctx.device newTextureWithDescriptor:desc];
+            if (!slot)
                 return;
+            if (ctx.rttActive)
+                ctx.opaqueDepthRtt = slot;
+            else
+                ctx.opaqueDepthWindow = slot;
         }
+        ctx.opaqueDepthTexture = slot;
+        /* ADR 0310: materialize any pending scene pass first — the snapshot
+         * must capture a CLEARED depth when the frame's clear has not landed
+         * yet (zero-opaque frames with transparency). */
+        (void)metal_ensure_scene_encoder(ctx);
         if (ctx.encoder) {
             [ctx.encoder endEncoding];
             ctx.encoder = nil;
@@ -1931,8 +1945,8 @@ static void metal_resolve_opaque_targets(void *ctx_ptr) {
                 destinationOrigin:MTLOriginMake(0, 0, 0)];
             [blit endEncoding];
         }
-        metal_begin_scene_encoder(ctx, YES, YES);
-        ctx->_opaqueDepthValid = (ctx.encoder && blit) ? 1 : 0;
+        metal_request_scene_encoder(ctx, YES, YES);
+        ctx->_opaqueDepthValid = blit ? 1 : 0;
     }
 }
 
@@ -2127,15 +2141,18 @@ static void metal_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
             metal_prune_render_target_cache(ctx);
         }
 
-        metal_begin_scene_encoder(ctx, load_existing_color, cam->load_existing_depth);
-        if (!ctx.encoder) {
-            /* Scene target unavailable — drawable acquisition routinely fails during window
-             * resize/occlusion. Abandoning the open command buffer here would leak this
-             * frame's state into the next begin_frame (whose per-frame resets only run when
-             * cmdBuf is nil); commit it empty so the next frame starts clean. */
+        /* ADR 0310: the scene pass is REQUESTED here and materialized by the
+         * first draw. The availability probe preserves the old eager-begin
+         * failure semantics: drawable acquisition routinely fails during
+         * window resize/occlusion, and abandoning the open command buffer
+         * would leak this frame's state into the next begin_frame (whose
+         * per-frame resets only run when cmdBuf is nil) — commit it empty so
+         * the next frame starts clean. */
+        if (!metal_scene_targets_available(ctx)) {
             metal_commit_pending(ctx, NO);
             return;
         }
+        metal_request_scene_encoder(ctx, load_existing_color, cam->load_existing_depth);
         ctx.inFrame = YES;
     }
 }

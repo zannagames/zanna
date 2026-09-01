@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-31
+last-verified: 2026-09-01
 ---
 
 # Zanna Compiler Platform — Release Notes
@@ -20,6 +20,8 @@ The clearest case is music. Zanna decodes MP3 itself, and that decoder had never
 
 Baked lighting has the same shape of story. A bake spreads across your CPU cores now and still produces byte-identical output — the same lightmap and the same probe coefficients no matter how many workers ran — and building that surfaced two correctness bugs sitting underneath it: the baker silently ignored every light past the sixteenth in a scene, and it shaded rectangle, sphere and volume lights as though they were points.
 
+Secondary camera views are cheaper, too. A picture-in-picture, security camera, or other off-screen `Canvas3D` view can now reuse the shadows that remain correct from the main view while keeping its own sun shadows accurate. That makes a live inset substantially less likely to compete with the main frame for GPU time, and gives you a counter to see how much shadow work was reused.
+
 Under that, the compiler and the runtime were audited against a full-size game. Several native miscompiles were fixed, and so was a Zia name-resolution bug that made an inherited field resolve to another module's global of the same name. Executables carry a symbol table by default now, so `sample`, Instruments and `perf` can tell you which of your functions is slow instead of pointing at an address. And the pieces of the runtime a long-running program leans on — string literals, traps, handle validation, whole-file reads, child-process output — were made cheaper, or made honest about failing.
 
 Zanna Studio's remaining scale seams were closed. Project search runs off the UI thread, results publish as virtual rows rather than rebuilding the visible list, build output is consumed in bounded slices, and workspace indexing reaches the end of a large project instead of stopping at a ceiling left over from an older scanner.
@@ -33,6 +35,7 @@ Building Zanna itself got about twice as fast — not by running fewer tests, bu
 - **A bake uses your whole CPU and comes out identical.** Lightmap and probe work is partitioned across a baker-owned thread pool and reduced back in fixed sample order, so worker count and completion order cannot change a single floating-point result. A single-core host, an allocation failure, or a call from inside a worker falls back to the serial path, and `BakeStep` keeps its bounded per-call budget so an interactive bake still yields.
 - **A scene can have more than sixteen lights.** The baker copied at most sixteen lights and silently dropped the rest, so a level lit past that ceiling baked with an arbitrary subset of its lighting. The cap is gone, and finite local lights are indexed spatially so a shading point only queries the lights that can reach it.
 - **Area lights bake as area lights.** Rectangle, sphere and volume lights carry their size, radius and orientation into the bake instead of collapsing to a point at their origin, so a soft key light bakes with the shape you authored.
+- **Picture-in-picture views waste less shadow work (new).** Opt in with `Canvas3D.SetRenderTargetShadowInherit(true)` and an off-screen camera keeps the shadows that are safe to share from the main view while rendering its own camera-dependent sun shadows. `Canvas3D.ShadowSlotsCached` shows how many shadow slots were reused, so a live inset or monitor view is easier to tune.
 - **A mirrored character is a real mirrored character (new).** `Mesh3D.Mirror(mesh, skeleton)` returns a reflected copy of a skinned mesh — geometry mirrored across the sagittal plane with winding reversed and tangent handedness corrected, morph targets mirrored, and every bone influence remapped to its left/right partner. Paired with `Animation3D.Mirror`, a right-handed character with a prop baked into one hand becomes a left-handed one holding it in the other hand, rather than a mirrored performance on an unmirrored body.
 - **A profiler can name your functions (new).** Native executables carry a full, address-sorted local symbol table — Mach-O `LC_SYMTAB` entries, ELF `.symtab`/`.strtab` — so `sample`, Instruments and `perf` attribute time to your Zia and runtime functions by name. The loader never reads those entries, so it costs nothing at run time; `zanna build --strip-symbols` opts out.
 - **A batch of miscompiles, gone.** Global value numbering no longer reuses a load across a write that a path can reach or across a cyclic clobber, and AArch64 was corrected for constant invalidation, parallel call moves, forwarded boolean masking, cross-block null guards, division strength reduction, exception lowering and peephole bookkeeping. Native exception lowering stays aligned between x86-64 and AArch64.
@@ -45,14 +48,14 @@ Building Zanna itself got about twice as fast — not by running fewer tests, bu
 
 | Metric | v0.3.0 | v0.3.1 | Delta |
 |---|---|---|---|
-| Commits | — | 8 | +8 |
+| Commits | — | 10 | +10 |
 | Source files | 3,704 | 3,709 | +5 |
 | Production SLOC | 884K | 887K | +3K |
 | Test SLOC | 332K | 334K | +2K |
 | Zanna Studio SLOC | 160K | 161K | +1K |
 | Demo SLOC | 242K | 242K | — |
 
-Counts via `scripts/count_sloc.sh`, which excludes blank lines and comments (production 886,831 / test 334,099 / zannastudio 160,878 / source files 3,709). Commits are measured from the `v0.3.0-prealpha` tag (2026-08-28) and include the release-link commit. Demo SLOC is the sum of both homes — 73,337 in this repo plus 168,440 in the `zannademos` repository — and is unchanged because the demo repository took no commits during this release. The whole release is 272 files changed, +11,275 / −2,720 lines.
+Counts via `scripts/count_sloc.sh`, which excludes blank lines and comments (production 886,997 / test 334,170 / zannastudio 160,878 / source files 3,709). Commits are measured from the `v0.3.0-prealpha` tag (2026-08-28) and include the release-link commit. Demo SLOC is the sum of both homes — 73,444 in this repo plus 168,440 in the `zannademos` repository — and is unchanged at the rounded total because the demo repository took no commits during this release. The whole release is 356 files changed, +14,069 / −3,405 lines.
 
 ---
 
@@ -68,6 +71,7 @@ The rest of this document will provide the detail, area by area.
 
 ### 3D rendering and baked lighting
 
+- Off-screen camera views can inherit reusable shadows. `Canvas3D.SetRenderTargetShadowInherit(true)` is designed for a live picture-in-picture or monitor view: it avoids repeating shadow work that can safely be shared while keeping the view's own sun shadows accurate. `ShadowSlotsCached` shows the slots served without another render, so the savings are visible while you tune. If reuse is not available, Zanna automatically renders the complete shadow pass.
 - A bake is parallel and still deterministic. Each lightmap path derives its seed from immutable triangle, texel and sample coordinates rather than from a stream that advances across samples, so disjoint sample ranges can be evaluated on a baker-owned thread pool and reduced on the caller in sample-index order. Worker count and completion order cannot alter floating-point accumulation, so the same scene bakes to the same atlas on a four-core laptop and a thirty-two-core workstation. Probe grids partition the same way, with the deterministic breadth-first invalid-probe fill staying serial after the barrier. A single-core host, a pool-creation failure, or a call made from inside a pool worker transparently uses the serial implementation, and the pool is joined and released when the baker is finalized. `BakeStep` keeps its fixed 1,024-path budget, so an incremental bake still returns to your frame. Governed by ADR 0308.
 - The sixteen-light cap is gone. `LightBaker3D.AddLight` returned without a word once sixteen lights had been added, so a level lit past that point baked with whichever lights happened to be registered first — and nothing reported it. The light snapshot grows on demand instead, and an allocation failure traps rather than dropping a light.
 - Local lights are indexed instead of scanned. Lights with finite bounds go into a deterministic AABB hierarchy that a shading point traverses; directional and effectively unbounded lights stay in a compact global list that is always evaluated. A scene with many small lights no longer pays for all of them at every sample.
@@ -85,6 +89,7 @@ The rest of this document will provide the detail, area by area.
 - An inherited field shadows a bound module's global. A derived class whose base lived in another module resolved an inherited field name to that module's exported global instead of to the field. Because such a global is typed `Any`, reading `world_.Foo()` failed to compile with "Type 'Any' has no member" while the lowerer went on storing into the field — a diagnostic that pointed nowhere near the cause. A class field, declared or inherited, now shadows every module-level symbol in both reads and assignments, matching what a declared field already did through the class scope.
 - Global value numbering stopped reusing stale loads. A load could be replaced by an earlier one across a write that some path reached, and across a clobber inside a cycle, so optimized code read a value the program had already overwritten. Both cases are blocked now.
 - AArch64 code generation was corrected in seven places: constant invalidation, parallel moves at call boundaries, forwarded boolean masking, cross-block null guards, division strength reduction, exception lowering and peephole bookkeeping. Native exception lowering is kept aligned between x86-64 and AArch64 rather than drifting apart.
+- Valid nested calls inside loops no longer raise a false ownership error after compilation optimizations.
 - Native executables are profilable by default. Mach-O images carry address-sorted `N_SECT` local symbols in `LC_SYMTAB` with correct symbol partitions and section ordinals; ELF images gained `.symtab` and `.strtab`. `sample`, Instruments and `perf` therefore attribute samples to your functions by name. The dynamic loader never reads these entries, so stripping changes nothing at run time — `zanna build --strip-symbols` writes only the entry point and imports if you want a smaller binary. Linker offset, section, relocation and emitted-image validation were strengthened alongside, with focused regression coverage.
 - A miscompile can be bisected without rebuilding the compiler. `ZANNA_IL_OPT_KEEP_FUNCS=<file>` restores every IL function *not* named in the file to its pre-pipeline body after the optimizer runs, so with a program-level oracle — VM output versus native output — you can find which optimized function changes the answer in log₂(N) builds. A family of AArch64 `ZANNA_NO_*` switches skips one pipeline stage or one peephole sub-stage each for the same purpose. None of them are consulted at `-O0`, and they are documented in `docs/internals/backend.md`.
 
@@ -113,7 +118,7 @@ The rest of this document will provide the detail, area by area.
 
 ### Documentation
 
-The audio guide describes the streaming contract as it now behaves — what `Update()` is for, what the streamer thread covers, and that `Music.Play`'s argument is a loop flag — and states the MP3 decoder's real scope. `docs/internals/mp3-decoder-conformance.md` records the defects found, the SNR evidence, and how to re-verify. The backend guide documents the optimizer triage switches, the native-linker guide the symbol tables, the memory-management guide the per-site immortal literal cache, and the CLI reference `--strip-symbols`. ADRs 0303 through 0308 record the workspace-cursor, bounded-process-output, background-search, mesh-mirroring, music-streaming and light-baking decisions.
+The audio guide describes the streaming contract as it now behaves — what `Update()` is for, what the streamer covers, and that `Music.Play`'s argument is a loop flag — and states the MP3 decoder's real scope. The guides, references, command-line help, and generated runtime API have also been checked against this snapshot, so their examples and platform guidance describe the behavior users receive. The backend, linker, memory-management, and command-line guides cover the new capabilities in the areas where developers need them.
 
 ### Known limitations
 

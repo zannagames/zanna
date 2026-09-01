@@ -3388,6 +3388,102 @@ if (EXISTS "${CANVAS3D_RT_SHADOW_INHERIT_PROBE}")
     endif ()
 endif ()
 
+# ADR 0310: render-target cascade cap + filler inherit re-arm.
+set(CANVAS3D_RT_CASCADE_LIMIT_PROBE "${G3D_TESTS_DIR}/test_canvas3d_rt_cascade_limit.zia")
+if (EXISTS "${CANVAS3D_RT_CASCADE_LIMIT_PROBE}")
+    add_test(NAME g3d_test_canvas3d_rt_cascade_limit
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_CASCADE_LIMIT_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_rt_cascade_limit PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+    if (WIN32)
+        add_test(NAME g3d_test_canvas3d_rt_cascade_limit_d3d11
+                COMMAND $<TARGET_FILE:zia> "${CANVAS3D_RT_CASCADE_LIMIT_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_cascade_limit_d3d11 PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;d3d11"
+                ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
+                TIMEOUT 120)
+    elseif (APPLE)
+        add_test(NAME g3d_test_canvas3d_rt_cascade_limit_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_CASCADE_LIMIT_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_cascade_limit_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    endif ()
+endif ()
+
+# ADR 0310: RT frames neither run nor perturb CPU occlusion.
+set(CANVAS3D_RT_OCCLUSION_ISOLATION_PROBE "${G3D_TESTS_DIR}/test_canvas3d_rt_occlusion_isolation.zia")
+if (EXISTS "${CANVAS3D_RT_OCCLUSION_ISOLATION_PROBE}")
+    add_test(NAME g3d_test_canvas3d_rt_occlusion_isolation
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_OCCLUSION_ISOLATION_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_rt_occlusion_isolation PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+    if (WIN32)
+        add_test(NAME g3d_test_canvas3d_rt_occlusion_isolation_d3d11
+                COMMAND $<TARGET_FILE:zia> "${CANVAS3D_RT_OCCLUSION_ISOLATION_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_occlusion_isolation_d3d11 PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;d3d11"
+                ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
+                TIMEOUT 120)
+    elseif (APPLE)
+        add_test(NAME g3d_test_canvas3d_rt_occlusion_isolation_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_OCCLUSION_ISOLATION_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_occlusion_isolation_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    endif ()
+endif ()
+
+# ADR 0310: Metal frame GPU timing (software stays 0).
+set(CANVAS3D_FRAME_GPU_TIME_PROBE "${G3D_TESTS_DIR}/test_canvas3d_frame_gpu_time.zia")
+if (EXISTS "${CANVAS3D_FRAME_GPU_TIME_PROBE}")
+    add_test(NAME g3d_test_canvas3d_frame_gpu_time
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_FRAME_GPU_TIME_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_frame_gpu_time PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+    if (WIN32)
+        add_test(NAME g3d_test_canvas3d_frame_gpu_time_d3d11
+                COMMAND $<TARGET_FILE:zia> "${CANVAS3D_FRAME_GPU_TIME_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_frame_gpu_time_d3d11 PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;d3d11"
+                ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
+                TIMEOUT 120)
+    elseif (APPLE)
+        add_test(NAME g3d_test_canvas3d_frame_gpu_time_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_FRAME_GPU_TIME_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_frame_gpu_time_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    endif ()
+endif ()
+
 # Backend telemetry surface (GAP-10): stats must move on the platform GPU
 # backend and stay zero on software (no hook).
 set(CANVAS3D_BACKEND_STATS_PROBE "${G3D_TESTS_DIR}/test_canvas3d_backend_stats.zia")

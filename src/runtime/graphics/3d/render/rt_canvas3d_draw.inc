@@ -1042,6 +1042,7 @@ static void canvas3d_advance_frame_serial(rt_canvas3d *c) {
     }
 
     c->frame_serial = 1;
+    c->occlusion_frame_serial = 0;
     canvas3d_clear_motion_history(c);
     canvas3d_clear_occlusion_history(c);
     free(c->texture_stream_entries);
@@ -1578,7 +1579,16 @@ static void canvas3d_begin_camera_pass(void *obj,
     c->cached_cam_near = (float)rt_camera3d_get_near_plane(cam);
     c->cached_cam_far = (float)rt_camera3d_get_far_plane(cam);
     c->cached_cam_is_ortho = params.is_ortho;
-    canvas3d_update_occlusion_state_for_begin(c, output_w, output_h);
+    /* ADR 0310: only window-backed camera passes participate in CPU occlusion —
+     * render-target brackets (insets, mirrors, probe bakes) and view-model
+     * passes neither wipe the history (their camera/identity never reaches the
+     * signature check) nor advance the occlusion serial (covered streaks stay
+     * consecutive across them). */
+    if (!c->render_target && !view_model_pass) {
+        if (c->occlusion_frame_serial < INT64_MAX)
+            c->occlusion_frame_serial++;
+        canvas3d_update_occlusion_state_for_begin(c, output_w, output_h);
+    }
 
     /* Reset draw command queue for this frame */
     canvas3d_advance_frame_serial(c);

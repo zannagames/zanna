@@ -59,8 +59,8 @@ static void metal_submit_draw(void *ctx_ptr,
         float safe_ambient[3];
         if (!ctx)
             return;
-        if (!ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
-            cmd->vertex_count == 0 || cmd->index_count == 0) {
+        if (!ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices || cmd->vertex_count == 0 ||
+            cmd->index_count == 0 || metal_ensure_scene_encoder(ctx) == nil) {
             ctx->_stats.dropped_draws++;
             return;
         }
@@ -498,13 +498,13 @@ static void metal_end_frame(void *ctx_ptr) {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
         VGFXMetalRenderTargetCacheEntry *rt_entry = nil;
         id<MTLCommandBuffer> submitted = nil;
-        if (!ctx || !ctx.encoder || !ctx.inFrame)
+        if (!ctx || !ctx.inFrame)
             return;
 
-        [ctx.encoder endEncoding];
-        /* Nil immediately: metal_commit_pending below re-runs metal_finish_encoding,
-         * which would double-end a stale encoder reference. */
-        ctx.encoder = nil;
+        /* ADR 0310: ends the open encoder OR flushes a still-pending clear —
+         * a zero-draw frame must still land its clear before the RT display
+         * resolve / commit below. */
+        metal_finish_encoding(ctx);
 
         if (ctx.rttActive && ctx.rttTarget && ctx.rttColorTexture) {
             rt_entry = metal_lookup_render_target_entry(ctx, ctx.rttTarget);
@@ -529,6 +529,21 @@ static void metal_end_frame(void *ctx_ptr) {
 /// @brief Read the total bytes uploaded to Metal textures so far this frame (diagnostics counter).
 /// @param ctx_ptr Borrowed `VGFXMetalContext`; may be NULL.
 /// @return The context's accumulated texture-upload byte count, or zero for a NULL context.
+/// @brief Backend `get_frame_gpu_time_us` — last fully retired displayed-frame GPU total.
+/// @details Sum of every command buffer committed between two presents (RT brackets and
+///          overlay replays included). Trails by 1-2 displayed frames and reads 0 until
+///          the first epoch retires — the same contract family as the GL timer ring.
+/// @param ctx_ptr Borrowed `VGFXMetalContext`.
+/// @return Microseconds of GPU time for the most recently retired displayed frame.
+static uint64_t metal_get_frame_gpu_time_us(void *ctx_ptr) {
+    VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
+    if (!ctx)
+        return 0;
+    @synchronized(ctx) {
+        return ctx->_gpuTimeFrameUs;
+    }
+}
+
 static uint64_t metal_get_texture_upload_bytes(void *ctx_ptr) {
     VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
     return ctx ? ctx.textureUploadBytes : 0;
@@ -538,6 +553,15 @@ static uint64_t metal_get_texture_upload_bytes(void *ctx_ptr) {
 /// Commits the frame's command buffer (which contains all render passes)
 /// and presents the drawable to the display in one atomic operation.
 /// @param backend_ctx Borrowed `VGFXMetalContext` backend handle.
+/// @brief Advance the GPU-timing epoch: everything committed after this belongs to
+///   the NEXT displayed frame. RT-bracket and mid-frame commits keep the current
+///   epoch — their cost belongs to the frame being displayed.
+/// @param ctx Borrowed Metal context whose epoch counter advances.
+static void metal_advance_gpu_time_epoch(VGFXMetalContext *ctx) {
+    if (ctx)
+        ctx->_gpuTimeEpoch++;
+}
+
 static void metal_present(void *backend_ctx) {
     if (!backend_ctx)
         return;
@@ -563,6 +587,7 @@ static void metal_present(void *backend_ctx) {
             }
             [ctx.cmdBuf presentDrawable:ctx.drawable];
             metal_commit_pending(ctx, NO);
+            metal_advance_gpu_time_epoch(ctx);
             ctx->_stats.direct_presents++;
             ctx->_stats.present_path = 1;
             return;
@@ -571,6 +596,7 @@ static void metal_present(void *backend_ctx) {
             (void)metal_capture_current_drawable_to_display_texture(ctx);
             [ctx.cmdBuf presentDrawable:ctx.drawable];
             metal_commit_pending(ctx, NO);
+            metal_advance_gpu_time_epoch(ctx);
             ctx.postfxCompositedToDrawable = 0;
             ctx->_stats.direct_presents++;
             ctx->_stats.present_path = 1;
@@ -594,6 +620,7 @@ static void metal_present(void *backend_ctx) {
             metal_commit_pending(ctx, YES);
             metal_present_texture_to_framebuffer(ctx, final_texture);
         }
+        metal_advance_gpu_time_epoch(ctx);
         ctx->_stats.offscreen_presents++;
         ctx->_stats.present_path = 2;
     }
@@ -750,7 +777,9 @@ static void metal_leave_shadow_pass(VGFXMetalContext *ctx) {
     ctx->_shadowPassSlot = -1;
     ctx->_shadowPassFailed = 0;
     metal_recompute_shadow_count(ctx);
-    metal_begin_scene_encoder(ctx, YES, YES);
+    /* ADR 0310: request, don't materialize — back-to-back shadow slots must
+     * not open interstitial full-resolution Load/Store scene passes. */
+    metal_request_scene_encoder(ctx, YES, YES);
 }
 
 /// @brief Backend vtable entry: begin the shadow-map depth pass for shadow-casting light @p slot,
@@ -1029,7 +1058,8 @@ static void metal_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
         ctx->_shadowPassFailed = 0;
         ctx->_shadowBias = vgfx3d_clamp_float_param(bias, -1000000.0f, 1000000.0f, 0.0f);
         metal_recompute_shadow_count(ctx);
-        metal_begin_scene_encoder(ctx, YES, YES);
+        /* ADR 0310: request, don't materialize (see metal_leave_shadow_pass). */
+        metal_request_scene_encoder(ctx, YES, YES);
     }
 }
 
@@ -1152,9 +1182,9 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         particle_mode = cmd && cmd->particle_instances != NULL;
         if (!ctx)
             return;
-        if (!ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
-            cmd->vertex_count == 0 || cmd->index_count == 0 ||
-            (!particle_mode && !instance_matrices) || instance_count <= 0) {
+        if (!ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices || cmd->vertex_count == 0 ||
+            cmd->index_count == 0 || (!particle_mode && !instance_matrices) ||
+            instance_count <= 0 || metal_ensure_scene_encoder(ctx) == nil) {
             ctx->_stats.dropped_draws++;
             return;
         }
@@ -2368,6 +2398,7 @@ static void metal_present_postfx(void *backend_ctx, const vgfx3d_postfx_chain_t 
             metal_present_texture_to_framebuffer(ctx, final_texture);
             ctx.postfxCompositedToDrawable = 0;
         }
+        metal_advance_gpu_time_epoch(ctx);
     }
 }
 
@@ -2407,7 +2438,9 @@ static void metal_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
         float inv_projection[16];
         float inv_view_rot[16];
 
-        if (!ctx || !ctx.encoder || !cubemap)
+        if (!ctx || !cubemap)
+            return;
+        if (metal_ensure_scene_encoder(ctx) == nil)
             return;
         skybox_pipeline =
             metal_target_uses_hdr_color(ctx) ? ctx.skyboxPipeline : ctx.skyboxColorPipeline;

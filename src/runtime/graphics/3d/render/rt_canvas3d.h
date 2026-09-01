@@ -645,6 +645,10 @@ int64_t rt_canvas3d_get_shadow_slots_cached(void *obj);
 /// @param obj Borrowed Canvas3D handle.
 /// @param enabled Nonzero to enable, zero to disable (the default).
 void rt_canvas3d_set_render_target_shadow_inherit(void *obj, int64_t enabled);
+/// @brief ADR 0310: cap the cascade slots rendered by render-target frames.
+/// @param obj Borrowed Canvas3D handle.
+/// @param n Cascade cap, clamped to [0, max cascade slots]; 0 = no cap.
+void rt_canvas3d_set_render_target_shadow_cascade_limit(void *obj, int64_t n);
 /// @brief Set the per-cluster light-index capacity (8..64, default 64).
 /// @param obj Borrowed Canvas3D handle.
 /// @param budget Requested per-cluster capacity, clamped from 8 through 64.

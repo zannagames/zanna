@@ -178,6 +178,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-resetsubmissiondiagnostics"></a>`ResetSubmissionDiagnostics` | `void()` | `Zanna.Graphics3D.Canvas3D.ResetSubmissionDiagnostics` |
 | <a id="zanna-graphics3d-canvas3d-setshadowbudget"></a>`SetShadowBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetShadowBudget` |
 | <a id="zanna-graphics3d-canvas3d-setrendertargetshadowinherit"></a>`SetRenderTargetShadowInherit` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowInherit` |
+| <a id="zanna-graphics3d-canvas3d-setrendertargetshadowcascadelimit"></a>`SetRenderTargetShadowCascadeLimit` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowCascadeLimit` |
 | <a id="zanna-graphics3d-canvas3d-setclusterlightbudget"></a>`SetClusterLightBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetClusterLightBudget` |
 | <a id="zanna-graphics3d-canvas3d-passcpums"></a>`PassCpuMs` | `f64(i64)` | `Zanna.Graphics3D.Canvas3D.PassCpuMs` |
 | <a id="zanna-graphics3d-canvas3d-clear"></a>`Clear` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Canvas3D.Clear` |
@@ -2838,6 +2839,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-shadowrequestsdropped"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowRequestsDropped` | `i64(obj)` | `rt_canvas3d_get_shadow_requests_dropped` |
 | <a id="zanna-graphics3d-canvas3d-get-shadowslotscached"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowSlotsCached` | `i64(obj)` | `rt_canvas3d_get_shadow_slots_cached` |
 | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowInherit` | `void(obj,i64)` | `rt_canvas3d_set_render_target_shadow_inherit` |
+| `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowCascadeLimit` | `void(obj,i64)` | `rt_canvas3d_set_render_target_shadow_cascade_limit` |
 | `Zanna.Graphics3D.Canvas3D.SetClusterLightBudget` | `void(obj,i64)` | `rt_canvas3d_set_cluster_light_budget` |
 | <a id="zanna-graphics3d-canvas3d-get-clusteroverflowcount"></a>`Zanna.Graphics3D.Canvas3D.get_ClusterOverflowCount` | `i64(obj)` | `rt_canvas3d_get_cluster_overflow_count` |
 | <a id="zanna-graphics3d-canvas3d-get-droppedlightcount"></a>`Zanna.Graphics3D.Canvas3D.get_DroppedLightCount` | `i64(obj)` | `rt_canvas3d_get_dropped_light_count` |

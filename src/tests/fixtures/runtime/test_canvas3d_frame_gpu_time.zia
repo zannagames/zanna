@@ -1,0 +1,48 @@
+module TestCanvas3DFrameGpuTime;
+
+bind Zanna.Graphics3D;
+bind Zanna.Graphics;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+// ADR 0310 coverage: Canvas3D.FrameGpuTimeUs on GPU backends.
+//   - The value trails 1-2 displayed frames (published when the first
+//     command buffer of the NEXT epoch completes), so render several frames
+//     and require it to become positive.
+//   - The software backend has no GPU-time hook and must stay 0.
+
+func start() {
+    var canvas = Canvas3D.New("Frame GPU Time", 96, 64);
+    var cam = Camera3D.New(60.0, 1.5, 0.1, 200.0);
+    Camera3D.LookAt(cam,
+                    new Vec3(0.0, 3.0, 8.0),
+                    new Vec3(0.0, 0.0, 0.0),
+                    new Vec3(0.0, 1.0, 0.0));
+    var ground = Mesh3D.Plane(30.0, 30.0);
+    var box = Mesh3D.Box(2.0, 2.0, 2.0);
+    var mat = Material3D.FromColor(0.7, 0.5, 0.3);
+    var gpuBackend = Canvas3D.BackendSupports(canvas, "gpu-skinning");
+
+    var sawTime = false;
+    var f = 0;
+    while (f < 12) {
+        Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
+        Canvas3D.Begin(canvas, cam);
+        Canvas3D.DrawMesh(canvas, ground, Mat4.Translate(0.0, -1.0, 0.0), mat);
+        Canvas3D.DrawMesh(canvas, box, Mat4.RotateY(f * 0.3), mat);
+        Canvas3D.End(canvas);
+        Canvas3D.Flip(canvas);
+        if (canvas.FrameGpuTimeUs > 0) { sawTime = true; }
+        f = f + 1;
+    }
+
+    if (gpuBackend && !sawTime) {
+        Say("FAIL: FrameGpuTimeUs never became positive on a GPU backend");
+        return;
+    }
+    if (!gpuBackend && sawTime) {
+        Say("FAIL: the software backend reported GPU time");
+        return;
+    }
+    Say("PASS");
+}

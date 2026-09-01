@@ -3015,6 +3015,17 @@ void rt_canvas3d_set_render_target_shadow_inherit(void *o, int64_t enabled) {
         "Canvas3D.SetRenderTargetShadowInherit: graphics support not compiled in");
 }
 
+/// @brief Silent fallback stub for `Canvas3D.SetRenderTargetShadowCascadeLimit`
+///   (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @param n Requested cap (ignored).
+void rt_canvas3d_set_render_target_shadow_cascade_limit(void *o, int64_t n) {
+    (void)o;
+    (void)n;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID(
+        "Canvas3D.SetRenderTargetShadowCascadeLimit: graphics support not compiled in");
+}
+
 /// @brief Silent fallback stub for `Canvas3D.get_SkinningUploadBytes` (graphics-disabled build).
 /// @param o Canvas3D handle (ignored).
 /// @return `0` bytes.

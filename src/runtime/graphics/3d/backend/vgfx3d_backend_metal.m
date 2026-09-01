@@ -136,6 +136,30 @@ extern void rt_obj_free(void *obj);
     int32_t _depthProbeRequestCount;
     float _depthProbeResults[VGFX3D_DEPTH_PROBE_MAX];
     int32_t _depthProbeResultCount;
+    /* GPU frame timing (backend get_frame_gpu_time_us): every committed
+     * command buffer's GPUEndTime-GPUStartTime is summed into the epoch it
+     * was committed under; the epoch advances at present, so an RT-bracket
+     * buffer + the window frame's buffer + any overlay replay sum into ONE
+     * displayed-frame figure. Guarded by @synchronized(self); handlers run
+     * on Metal's callback queue. Published value trails 1-2 displayed
+     * frames (it lands when the first buffer of the NEXT epoch completes)
+     * and stays 0 until then — the GL timer-ring contract. */
+    uint64_t _gpuTimeEpoch;
+    uint64_t _gpuTimeAccumEpoch;
+    double _gpuTimeAccumSeconds;
+    uint64_t _gpuTimeFrameUs;
+    /* ADR 0310 lazy scene encoder: a scene pass is REQUESTED at frame begin
+     * and after each shadow slot, but only MATERIALIZED by the first draw
+     * that needs it — back-to-back shadow slots no longer open and close a
+     * full-resolution Load/Store pass carrying zero draws. Invariants:
+     * pending set implies ctx.encoder == nil; a pending CLEAR is sticky
+     * (lands at materialize or as a one-shot pass at flush); a pending pure
+     * LOAD may be dropped (an empty Load/Store pass is a no-op — that drop
+     * IS the optimization); pending never survives a commit. */
+    int8_t _scenePassPending;
+    int8_t _scenePendingLoadColor;
+    int8_t _scenePendingLoadDepth;
+    vgfx3d_metal_target_kind_t _scenePendingTargetKind;
     /* GAP-10: backend telemetry snapshot mirrored by get_backend_stats.
      * Zero-initialized with the object; texture_fallback_binds stays zero on
      * Metal (streaming fallbacks resolve inside ctx-free helpers). */
@@ -189,6 +213,13 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic, strong) CAMetalLayer *metalLayer;
 @property(nonatomic, strong) id<MTLTexture> depthTexture;
 @property(nonatomic, strong) id<MTLTexture> opaqueDepthTexture;
+/* Per-target-kind opaque-depth snapshot cache. opaqueDepthTexture is the
+ * ACTIVE binding; these two keep the window-sized and RT-sized snapshots
+ * alive across brackets so alternating inset/window frames stop
+ * reallocating (and deferred-freeing) a full-resolution D32F texture
+ * twice per displayed frame. */
+@property(nonatomic, strong) id<MTLTexture> opaqueDepthWindow;
+@property(nonatomic, strong) id<MTLTexture> opaqueDepthRtt;
 @property(nonatomic, strong) id<MTLTexture> opaqueDepthDummy;
 @property(nonatomic, strong) NSMutableArray *depthProbeBuffers;
 @property(nonatomic, strong) id<MTLLibrary> library;
@@ -538,6 +569,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .get_native_texture_caps = metal_get_native_texture_caps,
     .get_feature_caps = metal_get_feature_caps,
     .get_backend_stats = metal_get_backend_stats,
+    .get_frame_gpu_time_us = metal_get_frame_gpu_time_us,
     .set_vsync = metal_set_vsync,
     .set_render_scale = metal_set_render_scale,
     .set_capture_after_present = metal_set_capture_after_present,

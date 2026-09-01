@@ -2229,6 +2229,8 @@ static void *canvas3d_new_impl(rt_string title,
     memset(c->shadow_rts, 0, sizeof(c->shadow_rts));
     memset(c->shadow_light_vps, 0, sizeof(c->shadow_light_vps));
     c->frame_serial = 0;
+    c->occlusion_frame_serial = 0;
+    c->rt_shadow_cascade_limit = 0;
     c->timing_serial = 0;
     c->opaque_depth_sorting = 1;
     /* Frustum culling defaults on: the deferred test is cheap (bounds are cached per

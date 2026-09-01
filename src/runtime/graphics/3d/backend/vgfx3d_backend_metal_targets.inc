@@ -783,32 +783,79 @@ static MTLRenderPassDescriptor *metal_make_scene_pass_descriptor(VGFXMetalContex
     return rp;
 }
 
-/// @brief Begin the scene render-command encoder for the frame from a pass descriptor.
-/// @details Sets up viewport and shared render state so subsequent draw calls can be encoded.
-/// @param ctx Borrowed Metal context that receives the active scene encoder.
+/// @brief ADR 0310: request a scene pass without materializing its encoder.
+/// @details Records the desired load actions and target kind; the encoder (and, on
+///          the swapchain route, the drawable-backed descriptor) is created lazily by
+///          `metal_ensure_scene_encoder` when the first draw needs it. Requesting
+///          over an existing pending pass MERGES load actions (a clear stays sticky);
+///          requesting for a DIFFERENT target kind first flushes a pending clear so
+///          it cannot be lost inside a shared command buffer.
+/// @param ctx Borrowed Metal context whose pending scene-pass state is updated.
 /// @param loadExistingColor YES to load rather than clear color and motion attachments.
 /// @param loadExistingDepth YES to load rather than clear the depth attachment.
-static void metal_begin_scene_encoder(VGFXMetalContext *ctx,
-                                      BOOL loadExistingColor,
-                                      BOOL loadExistingDepth) {
+static void metal_flush_pending_scene_pass(VGFXMetalContext *ctx);
+
+static void metal_request_scene_encoder(VGFXMetalContext *ctx,
+                                        BOOL loadExistingColor,
+                                        BOOL loadExistingDepth) {
+    if (!ctx)
+        return;
+    if (ctx.encoder) {
+        [ctx.encoder endEncoding];
+        ctx.encoder = nil;
+    }
+    if (ctx->_scenePassPending) {
+        if (ctx->_scenePendingTargetKind != ctx.currentTargetKind) {
+            metal_flush_pending_scene_pass(ctx);
+            ctx->_scenePendingLoadColor = loadExistingColor ? 1 : 0;
+            ctx->_scenePendingLoadDepth = loadExistingDepth ? 1 : 0;
+        } else {
+            /* Same target: merge — clear (0) is sticky over load (1). */
+            if (!loadExistingColor)
+                ctx->_scenePendingLoadColor = 0;
+            if (!loadExistingDepth)
+                ctx->_scenePendingLoadDepth = 0;
+        }
+    } else {
+        ctx->_scenePendingLoadColor = loadExistingColor ? 1 : 0;
+        ctx->_scenePendingLoadDepth = loadExistingDepth ? 1 : 0;
+    }
+    ctx->_scenePendingTargetKind = ctx.currentTargetKind;
+    ctx->_scenePassPending = 1;
+}
+
+/// @brief ADR 0310: materialize the pending scene pass, or return the open encoder.
+/// @details Never materializes mid-shadow (`_shadowPassSlot >= 0`) — the request is
+///          simply still pending when the shadow phase ends. On descriptor or encoder
+///          failure the pending state is kept so a later attempt (or the flush at
+///          commit) can retry.
+/// @param ctx Borrowed Metal context.
+/// @return The active scene encoder, or nil when none exists and none could be made.
+static id<MTLRenderCommandEncoder> metal_ensure_scene_encoder(VGFXMetalContext *ctx) {
     double vw, vh;
     MTLViewport viewport;
     MTLRenderPassDescriptor *rp;
 
     if (!ctx)
-        return;
+        return nil;
+    if (ctx.encoder)
+        return ctx.encoder;
+    if (!ctx->_scenePassPending || ctx->_shadowPassSlot >= 0)
+        return nil;
     if (!ctx.cmdBuf) {
         ctx.cmdBuf = metal_acquire_command_buffer(ctx);
         if (!ctx.cmdBuf)
-            return;
+            return nil;
     }
-    rp = metal_make_scene_pass_descriptor(ctx, loadExistingColor, loadExistingDepth);
+    rp = metal_make_scene_pass_descriptor(
+        ctx, ctx->_scenePendingLoadColor ? YES : NO, ctx->_scenePendingLoadDepth ? YES : NO);
     if (!rp)
-        return;
+        return nil;
     ctx.encoder = [ctx.cmdBuf renderCommandEncoderWithDescriptor:rp];
     ctx->_encoderLightsRevision = 0; /* fresh encoder: no constants encoded yet */
     if (!ctx.encoder)
-        return;
+        return nil;
+    ctx->_scenePassPending = 0;
 
     [ctx.encoder setRenderPipelineState:metal_target_uses_hdr_color(ctx)
                                             ? ctx.pipelineState
@@ -820,6 +867,62 @@ static void metal_begin_scene_encoder(VGFXMetalContext *ctx,
     [ctx.encoder setViewport:viewport];
     [ctx.encoder setFrontFacingWinding:MTLWindingCounterClockwise];
     [ctx.encoder setCullMode:MTLCullModeBack];
+    return ctx.encoder;
+}
+
+/// @brief ADR 0310: settle a pending scene pass at a pass boundary or commit.
+/// @details A pending CLEAR materializes as a one-shot empty pass (at most once per
+///          bracket, only for genuinely draw-free targets) so clears are never lost;
+///          a pending pure LOAD is dropped silently — an empty Load/Store pass is a
+///          no-op, and skipping it is the entire optimization.
+/// @param ctx Borrowed Metal context whose pending scene-pass state is settled.
+static void metal_flush_pending_scene_pass(VGFXMetalContext *ctx) {
+    if (!ctx || !ctx->_scenePassPending)
+        return;
+    if (ctx->_scenePendingLoadColor && ctx->_scenePendingLoadDepth) {
+        ctx->_scenePassPending = 0;
+        return;
+    }
+    /* Materialize the clear against the kind it was requested for — the
+     * current kind may already have moved on (scene -> overlay). */
+    vgfx3d_metal_target_kind_t savedKind = ctx.currentTargetKind;
+    ctx.currentTargetKind = ctx->_scenePendingTargetKind;
+    id<MTLRenderCommandEncoder> enc = metal_ensure_scene_encoder(ctx);
+    ctx.currentTargetKind = savedKind;
+    if (enc) {
+        [enc endEncoding];
+        ctx.encoder = nil;
+    }
+    ctx->_scenePassPending = 0;
+}
+
+/// @brief ADR 0310: can `metal_make_scene_pass_descriptor` succeed for the current
+///        target kind right now?
+/// @details Mirrors the descriptor's attachment switch, INCLUDING eager swapchain
+///          drawable acquisition — begin_frame keeps today's failure semantics
+///          (drawable acquisition routinely fails during resize/occlusion and must
+///          take the commit-empty-and-return path, not silently drop the frame's
+///          draws later).
+/// @param ctx Borrowed Metal context.
+/// @return YES when every attachment for the current target kind is available.
+static BOOL metal_scene_targets_available(VGFXMetalContext *ctx) {
+    if (!ctx)
+        return NO;
+    switch (ctx.currentTargetKind) {
+        case VGFX3D_METAL_TARGET_SCENE:
+            return ctx.offscreenColor && ctx.offscreenMotion && ctx.depthTexture;
+        case VGFX3D_METAL_TARGET_OVERLAY:
+            return ctx.overlayColorTexture && ctx.overlayMotionTexture && ctx.overlayDepthTexture;
+        case VGFX3D_METAL_TARGET_RTT:
+            return ctx.rttColorTexture && ctx.rttMotionTexture && ctx.rttDepthTexture;
+        case VGFX3D_METAL_TARGET_SWAPCHAIN:
+            metal_update_layer_size(ctx);
+            if (!ctx.drawable && ctx.metalLayer)
+                ctx.drawable = [ctx.metalLayer nextDrawable];
+            return ctx.drawable != nil && ctx.offscreenMotion && ctx.depthTexture;
+        default:
+            return NO;
+    }
 }
 
 /// @brief Recreate window scene, overlay, and composite targets for a logical output extent.

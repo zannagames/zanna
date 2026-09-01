@@ -1,0 +1,114 @@
+module TestCanvas3DRtCascadeLimit;
+
+bind Zanna.Graphics3D;
+bind Zanna.Graphics;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+// ADR 0310 coverage: SetRenderTargetShadowCascadeLimit.
+//   - A render-target frame renders only the capped cascade count; the
+//     unused cascade slots re-arm as FILLERS through the inherit hook so
+//     the backend's contiguous shadow-count computation keeps every
+//     inherited slot above them alive.
+//   - Window frames are never capped.
+//   - Limit 0 restores the full cascade rig on RT frames.
+// A "mover" box shifts every frame so per-slot signatures cannot satisfy
+// the near cascade — cached counts are attributable to inheritance.
+
+var moverX = 0.0;
+
+func drawScene(canvas: Canvas3D, cam: Camera3D, ground: Mesh3D, pillar: Mesh3D,
+               mover: Mesh3D, mat: Material3D) {
+    moverX = moverX + 0.3;
+    Canvas3D.Clear(canvas, 0.0, 0.0, 0.0);
+    Canvas3D.Begin(canvas, cam);
+    Canvas3D.DrawMesh(canvas, ground, Mat4.Translate(0.0, -1.0, 0.0), mat);
+    Canvas3D.DrawMesh(canvas, pillar, Mat4.Translate(3.0, 0.5, 0.0), mat);
+    Canvas3D.DrawMesh(canvas, mover, Mat4.Translate(moverX, 0.5, 1.5), mat);
+    Canvas3D.End(canvas);
+}
+
+func start() {
+    var canvas = Canvas3D.New("RT Cascade Limit", 96, 64);
+    if (!Canvas3D.BackendSupports(canvas, "shadow-point") ||
+        !Canvas3D.BackendSupports(canvas, "shadow-csm")) {
+        Say("PASS"); // needs atlas slots + cascades
+        return;
+    }
+    var cam = Camera3D.New(60.0, 1.5, 0.1, 200.0);
+    Camera3D.LookAt(cam,
+                    new Vec3(0.0, 9.0, 16.0),
+                    new Vec3(3.0, 0.0, 0.0),
+                    new Vec3(0.0, 1.0, 0.0));
+    var ground = Mesh3D.Plane(50.0, 50.0);
+    var pillar = Mesh3D.Box(1.0, 3.0, 3.0);
+    var mover = Mesh3D.Box(1.0, 1.0, 1.0);
+    var mat = Material3D.FromColor(0.7, 0.7, 0.7);
+    var rt = RenderTarget3D.New(96, 64);
+
+    Canvas3D.EnableShadows(canvas, 256);
+    Canvas3D.SetShadowCascades(canvas, 2);
+    Canvas3D.SetAmbient(canvas, 0.05, 0.05, 0.05);
+    Canvas3D.SetRenderTargetShadowInherit(canvas, 1);
+    Canvas3D.SetRenderTargetShadowCascadeLimit(canvas, 1);
+
+    var sun = Light3D.Directional(new Vec3(0.2, -1.0, 0.1), 0.15, 0.15, 0.15);
+    sun.CastsShadows = true;
+    Canvas3D.SetLight(canvas, 0, sun);
+    var point = Light3D.Point(new Vec3(0.0, 2.0, 0.0), 1.0, 1.0, 1.0, 0.0);
+    point.CastsShadows = true;
+    Canvas3D.SetLight(canvas, 1, point);
+
+    // Frame A: full window pass — the limit must NOT apply here.
+    drawScene(canvas, cam, ground, pillar, mover, mat);
+    Canvas3D.Flip(canvas);
+    if (canvas.ShadowSlotsUsed != 8) {
+        Say("FAIL A: window frame should render 2 cascades + 6 cube faces, got " +
+            toString(canvas.ShadowSlotsUsed));
+        return;
+    }
+
+    // Frame B: RT frame with the cap — renders 1 cascade, inherits the
+    // filler cascade slot AND the 6 cube faces; the published count stays
+    // the full cached total so no inherited slot is sanitized away.
+    Canvas3D.SetRenderTarget(canvas, rt);
+    drawScene(canvas, cam, ground, pillar, mover, mat);
+    if (canvas.ShadowSlotsUsed != 8) {
+        Say("FAIL B: capped RT frame must still publish 8 slots, got " +
+            toString(canvas.ShadowSlotsUsed));
+        return;
+    }
+    if (canvas.ShadowSlotsCached != 7) {
+        Say("FAIL B: 1 filler cascade + 6 cube faces should inherit, got " +
+            toString(canvas.ShadowSlotsCached));
+        return;
+    }
+    Canvas3D.ResetRenderTarget(canvas);
+
+    // Frame C: window frame again — still uncapped.
+    drawScene(canvas, cam, ground, pillar, mover, mat);
+    Canvas3D.Flip(canvas);
+    if (canvas.ShadowSlotsUsed != 8) {
+        Say("FAIL C: the cap must never touch window frames");
+        return;
+    }
+
+    // Frame D: limit 0 restores the full rig on RT frames (6 cube faces
+    // inherit; both cascades render — the far cascade may additionally
+    // signature-reuse, so cached lands in [6, 8)).
+    Canvas3D.SetRenderTargetShadowCascadeLimit(canvas, 0);
+    Canvas3D.SetRenderTarget(canvas, rt);
+    drawScene(canvas, cam, ground, pillar, mover, mat);
+    if (canvas.ShadowSlotsUsed != 8) {
+        Say("FAIL D: uncapped RT frame should publish 8 slots");
+        return;
+    }
+    if (canvas.ShadowSlotsCached < 6 || canvas.ShadowSlotsCached >= 8) {
+        Say("FAIL D: cubes inherit and the near cascade re-renders, got " +
+            toString(canvas.ShadowSlotsCached));
+        return;
+    }
+    Canvas3D.ResetRenderTarget(canvas);
+
+    Say("PASS");
+}

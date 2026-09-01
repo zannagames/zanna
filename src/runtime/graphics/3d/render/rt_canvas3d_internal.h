@@ -1618,6 +1618,11 @@ typedef struct {
      * vgfx3d_light_params_t[VGFX3D_MAX_SHADOW_LIGHTS] (the type is not
      * complete here). */
     int8_t rt_shadow_inherit;
+    /* ADR 0310: cap on cascade slots rendered by render-target frames
+     * (0 = no cap). A small offscreen subject does not need the full
+     * cascade rig; the last cascade's split always extends to the far
+     * depth, so a single cascade stays correct. */
+    int32_t rt_shadow_cascade_limit;
     int8_t shadow_pass_cache_valid;
     int32_t shadow_cache_slot_count;    /* slots granted by the last full pass */
     int32_t shadow_cache_cascade_slots; /* leading slots of the cascaded primary */
@@ -1757,6 +1762,12 @@ typedef struct {
      * not the pointer: a freed target reallocated at the same address must not
      * inherit covered-streak occlusion history (ABA). */
     uint64_t occlusion_last_render_target_identity;
+    /* ADR 0310: occlusion-only frame counter. Advances ONLY on window-backed
+     * camera passes (never render-target, view-model, or 2D frames), so
+     * covered-streak hysteresis survives interleaved RT brackets — an inset
+     * refresh no longer resets the whole scene's culling. frame_serial keeps
+     * its every-Begin semantics for streaming/motion/overlay/flare consumers. */
+    int64_t occlusion_frame_serial;
     int32_t occlusion_last_output_width;
     int32_t occlusion_last_output_height;
     double occlusion_last_world_cam_pos[3];

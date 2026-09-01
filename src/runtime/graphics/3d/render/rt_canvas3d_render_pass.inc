@@ -637,11 +637,22 @@ static int canvas3d_render_point_shadow_cube(
 /// @param shadow_lights Frame-local packed light array receiving the cached entries.
 /// @return 1 when every cached slot was inherited, 0 to fall back to the full pass.
 static int canvas3d_inherit_cached_shadow_slots(
-    rt_canvas3d *c, vgfx3d_light_params_t shadow_lights[VGFX3D_MAX_SHADOW_LIGHTS]) {
+    rt_canvas3d *c,
+    vgfx3d_light_params_t shadow_lights[VGFX3D_MAX_SHADOW_LIGHTS],
+    int32_t rendered_cascades) {
     const vgfx3d_light_params_t *cache = (const vgfx3d_light_params_t *)c->shadow_cache_lights;
-    int32_t first = c->shadow_cache_cascade_slots;
+    /* ADR 0310: with a render-target cascade limit this frame rendered fewer
+     * cascade slots than the cache holds. Backends compute their shadow count
+     * as the CONTIGUOUS complete-slot prefix, so the unused cascade slots
+     * [rendered_cascades, cache_cascade_slots) are re-armed as FILLERS from
+     * their untouched per-slot textures — otherwise every inherited slot above
+     * the gap would be sanitized away. Fillers are classic CSM slots, so the
+     * atlas-legality argument is unaffected. */
+    int32_t first = rendered_cascades;
     int32_t count = c->shadow_cache_slot_count;
 
+    if (first < 0 || first > c->shadow_cache_cascade_slots)
+        first = c->shadow_cache_cascade_slots;
     if (!cache || first < 0 || count <= first || count > VGFX3D_MAX_SHADOW_LIGHTS)
         return 0;
     for (int32_t slot = first; slot < count; slot++) {
@@ -730,6 +741,14 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
             c->shadow_cascade_count > 1) {
             vgfx3d_light_params_t primary_light = selected_lights[0];
             int32_t cascade_count = c->shadow_cascade_count;
+            /* ADR 0310: a render-target frame may cap its cascade count — a
+             * small offscreen subject does not need the full rig, and the
+             * split computation always extends the LAST cascade to the far
+             * depth, so one cascade covers the whole range. Window frames are
+             * never affected, and RT frames never write the cache. */
+            if (c->render_target && c->rt_shadow_cascade_limit > 0 &&
+                cascade_count > c->rt_shadow_cascade_limit)
+                cascade_count = c->rt_shadow_cascade_limit;
             float cascade_splits[VGFX3D_CSM_SLOTS];
             float cascade_near = 0.0f;
             float cascade_far = 0.0f;
@@ -841,7 +860,8 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
             int rt_inherited = 0;
             if (inherit_rt_frame && cascade_region <= c->shadow_cache_cascade_slots &&
                 c->shadow_cache_slot_count > c->shadow_cache_cascade_slots) {
-                rt_inherited = canvas3d_inherit_cached_shadow_slots(c, shadow_lights);
+                rt_inherited =
+                    canvas3d_inherit_cached_shadow_slots(c, shadow_lights, cascade_region);
                 if (rt_inherited)
                     shadow_lights_granted += c->shadow_cache_extra_granted;
             }
@@ -876,7 +896,7 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
             int rt_inherited = 0;
             if (inherit_rt_frame && c->shadow_cache_cascade_slots == 0 && c->shadow_count == 0 &&
                 c->shadow_cache_slot_count > 0) {
-                rt_inherited = canvas3d_inherit_cached_shadow_slots(c, shadow_lights);
+                rt_inherited = canvas3d_inherit_cached_shadow_slots(c, shadow_lights, 0);
                 if (rt_inherited)
                     shadow_lights_granted += c->shadow_cache_extra_granted;
             }
@@ -994,7 +1014,13 @@ static void canvas3d_draw_backend_skybox_after_opaque(rt_canvas3d *c) {
 static void canvas3d_render_main_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
     vgfx3d_frustum_t visibility_frustum;
     canvas3d_occlusion_grid_t occlusion_grid;
-    int use_occlusion_grid = c->occlusion_culling ? 1 : 0;
+    /* ADR 0310: CPU occlusion (grid, Hi-Z raster, streaks, prune) runs only on
+     * window-backed non-view-model frames — an RT bracket's disjoint camera
+     * would poison the window frame's covered-streak history, and rasterizing
+     * occluders for a small offscreen target is pure waste. Frustum culling
+     * below stays independent and active for every frame. */
+    int use_occlusion_grid =
+        (c->occlusion_culling && !c->render_target && !c->frame_is_view_model) ? 1 : 0;
     int sort_opaque = use_occlusion_grid || c->opaque_depth_sorting;
     int state_sort_opaque = sort_opaque && !canvas3d_backend_uses_software_raster(c);
     int32_t opaque_count = 0;

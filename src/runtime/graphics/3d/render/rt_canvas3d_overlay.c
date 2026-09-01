@@ -2062,6 +2062,23 @@ void rt_canvas3d_set_render_target_shadow_inherit(void *obj, int64_t enabled) {
     c->rt_shadow_inherit = enabled != 0 ? 1 : 0;
 }
 
+/// @brief ADR 0310: cap the cascade slots a render-target frame renders (0 = no
+///   cap, the default). Applies ONLY to frames rendered into a bound
+///   RenderTarget3D; window frames always keep the full configured cascade
+///   count, and RT frames never write the shadow-inherit cache.
+/// @param obj Borrowed Canvas3D handle.
+/// @param n Cascade cap, clamped to [0, VGFX3D_CSM_SLOTS].
+void rt_canvas3d_set_render_target_shadow_cascade_limit(void *obj, int64_t n) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    if (n < 0)
+        n = 0;
+    if (n > VGFX3D_CSM_SLOTS)
+        n = VGFX3D_CSM_SLOTS;
+    c->rt_shadow_cascade_limit = (int32_t)n;
+}
+
 /// @brief Set the per-cluster light-index capacity (clamped 8..64; default 64).
 /// @param obj Borrowed Canvas3D handle.
 /// @param budget Requested indices per cluster, clamped to eight through 64.

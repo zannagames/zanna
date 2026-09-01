@@ -39,15 +39,22 @@ static void metal_update_layer_size(VGFXMetalContext *ctx) {
     }
 }
 
-/// @brief End the active scene render-command encoder if one is open.
-/// @param ctx Borrowed Metal context whose current encoder is finalized and cleared.
+/// @brief End the active scene render-command encoder, or settle a pending pass.
+/// @details ADR 0310: with the lazy scene encoder, a frame that never drew still
+///          carries a pending clear — this single choke point (commit, post-FX,
+///          RT display resolve, present, readback all route through it) either
+///          ends the open encoder or flushes the pending pass so no clear is lost.
+/// @param ctx Borrowed Metal context whose current encoder/pending pass is settled.
 static void metal_finish_encoding(VGFXMetalContext *ctx) {
     if (!ctx)
         return;
     if (ctx.encoder) {
         [ctx.encoder endEncoding];
         ctx.encoder = nil;
+        ctx->_scenePassPending = 0; /* invariant: pending implies no encoder */
+        return;
     }
+    metal_flush_pending_scene_pass(ctx);
 }
 
 /* Transient-buffer ring depth and the frames-in-flight cap. A single MTLCommandQueue
@@ -242,6 +249,32 @@ static void metal_invalidate_depth_probes(VGFXMetalContext *ctx) {
     }
 }
 
+/// @brief Record one completed command buffer's GPU duration into its epoch's sum.
+/// @details Called from command-buffer completion handlers (Metal callback queue) and
+///          the synchronous wait path. When the first buffer of a NEW epoch completes,
+///          the previous epoch's sum is published as the frame GPU time. The command
+///          queue completes FIFO, so epoch transitions are monotonic.
+/// @param ctx Borrowed Metal context owning the timing accumulator.
+/// @param epoch Epoch the buffer was committed under (captured before commit).
+/// @param seconds GPUEndTime - GPUStartTime; non-positive values are ignored
+///        (errored buffers report zeros).
+static void metal_note_command_buffer_gpu_time(VGFXMetalContext *ctx,
+                                               uint64_t epoch,
+                                               double seconds) {
+    if (!ctx)
+        return;
+    @synchronized(ctx) {
+        if (epoch != ctx->_gpuTimeAccumEpoch) {
+            if (ctx->_gpuTimeAccumSeconds > 0.0)
+                ctx->_gpuTimeFrameUs = (uint64_t)(ctx->_gpuTimeAccumSeconds * 1e6);
+            ctx->_gpuTimeAccumSeconds = 0.0;
+            ctx->_gpuTimeAccumEpoch = epoch;
+        }
+        if (seconds > 0.0 && isfinite(seconds))
+            ctx->_gpuTimeAccumSeconds += seconds;
+    }
+}
+
 /// @brief Commit the pending command buffer, optionally blocking until the GPU finishes it.
 /// @details Finalizes open encoding, appends queued depth-probe copies, retains per-frame
 ///          resources through completion, and signals the in-flight semaphore exactly once.
@@ -258,8 +291,10 @@ static void metal_commit_pending(VGFXMetalContext *ctx, BOOL waitUntilCompleted)
         id<MTLBuffer> probeBuffer = nil;
         dispatch_semaphore_t inflight = ctx.inflightSemaphore;
         int32_t probe_count = metal_encode_depth_probes(ctx, cmdBuf, &probeBuffer);
+        uint64_t gpuTimeEpoch = ctx->_gpuTimeEpoch;
         if (!waitUntilCompleted) {
             VGFXMetalContext *probeCtx = probe_count > 0 ? ctx : nil;
+            VGFXMetalContext *timeCtx = ctx;
             [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
               (void)retainedFrameBuffers;
               (void)retainedDrawable;
@@ -269,6 +304,8 @@ static void metal_commit_pending(VGFXMetalContext *ctx, BOOL waitUntilCompleted)
                   else
                       metal_invalidate_depth_probes(probeCtx);
               }
+              metal_note_command_buffer_gpu_time(
+                  timeCtx, gpuTimeEpoch, buffer.GPUEndTime - buffer.GPUStartTime);
               if (inflight)
                   dispatch_semaphore_signal(inflight);
             }];
@@ -282,6 +319,8 @@ static void metal_commit_pending(VGFXMetalContext *ctx, BOOL waitUntilCompleted)
                 else
                     metal_invalidate_depth_probes(ctx);
             }
+            metal_note_command_buffer_gpu_time(
+                ctx, gpuTimeEpoch, cmdBuf.GPUEndTime - cmdBuf.GPUStartTime);
             if (inflight)
                 dispatch_semaphore_signal(inflight);
         }
@@ -302,7 +341,7 @@ static void metal_detach_render_target(VGFXMetalContext *ctx, BOOL syncColor) {
     if (!ctx)
         return;
     target = ctx.rttTarget;
-    hadPendingFrame = ctx.inFrame || ctx.encoder || ctx.cmdBuf;
+    hadPendingFrame = ctx.inFrame || ctx.encoder || ctx.cmdBuf || ctx->_scenePassPending;
     if (hadPendingFrame) {
         metal_commit_pending(ctx, syncColor);
         ctx.inFrame = NO;
