@@ -1577,6 +1577,10 @@ const vgfx3d_backend_t vgfx3d_software_backend = {
     .shadow_draw = sw_shadow_draw,
     .shadow_end = sw_shadow_end,
     .shadow_reuse = sw_shadow_reuse,
+    /* ADR 0309: software shadow depth is canvas-owned malloc storage that
+     * persists for every slot (no shared atlas), so inheritance re-arms
+     * exactly like reuse. */
+    .shadow_inherit = sw_shadow_reuse,
     .present = NULL, /* software renders to CPU framebuffer; vgfx_update handles display */
     .show_gpu_layer = NULL,
     .hide_gpu_layer = NULL,

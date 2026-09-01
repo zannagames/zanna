@@ -825,6 +825,24 @@ typedef struct vgfx3d_backend {
     int8_t (*shadow_reuse)(
         void *ctx, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp);
 
+    /* Optional ADR 0309 render-target shadow inheritance: like shadow_reuse, but
+     * atlas slots (>= VGFX3D_CSM_SLOTS) may also re-arm. Canvas3D calls this only
+     * for a render-target frame that renders NO atlas slot itself, so the shared
+     * atlas is never whole-cleared and its previous-frame tiles remain intact.
+     * NULL = the backend cannot guarantee persistence; the render-target
+     * inheritance opt-in becomes a no-op on that backend. */
+    /// @brief Re-arm any persistent shadow slot (atlas tiles included) for a
+    ///   render-target frame that renders no atlas slot of its own.
+    /// @param[in,out] ctx Backend context.
+    /// @param[in] slot Shadow slot index (classic or atlas).
+    /// @param[in,out] depth_buf Canvas-owned CPU depth storage where applicable.
+    /// @param[in] w Required shadow-map width.
+    /// @param[in] h Required shadow-map height.
+    /// @param[in] light_vp Required row-major light view-projection matrix.
+    /// @return 1 when the prior slot contents remain reusable, otherwise 0.
+    int8_t (*shadow_inherit)(
+        void *ctx, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp);
+
     /* Shadow slots beyond VGFX3D_CSM_SLOTS are "atlas slots": Canvas3D still
      * drives them through shadow_begin/draw/end with per-slot CPU depth
      * buffers, but GPU backends store them as tiles of one internal depth

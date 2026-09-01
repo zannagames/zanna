@@ -1605,6 +1605,25 @@ typedef struct {
      * (animated caster present, or the slot was not rendered). */
     uint64_t shadow_slot_signature[VGFX3D_MAX_SHADOW_LIGHTS];
     int64_t last_shadow_slots_cached; /* diagnostics: slots reused this frame */
+    /* ADR 0309: render-target shadow inheritance (opt-in via
+     * Canvas3D.SetRenderTargetShadowInherit). A render-target frame re-renders
+     * only the primary cascaded directional light's slots (cascade selection is
+     * view-depth-relative, so cascades must be fitted to the RT camera) and
+     * re-arms every other slot the last full window-backed pass rendered from
+     * its persisted depth (backend shadow_inherit hook) — point-cube and spot
+     * selection is world-space, so those inherit across cameras exactly, one
+     * frame stale. The cache is written by full non-RT passes only, never
+     * updated from an RT frame, and any re-arm failure falls back to the full
+     * pass. shadow_cache_lights is a lazily allocated
+     * vgfx3d_light_params_t[VGFX3D_MAX_SHADOW_LIGHTS] (the type is not
+     * complete here). */
+    int8_t rt_shadow_inherit;
+    int8_t shadow_pass_cache_valid;
+    int32_t shadow_cache_slot_count;    /* slots granted by the last full pass */
+    int32_t shadow_cache_cascade_slots; /* leading slots of the cascaded primary */
+    int32_t shadow_cache_extra_granted; /* granted lights beyond that primary */
+    void *shadow_cache_lights;
+    float shadow_cache_light_vps[VGFX3D_MAX_SHADOW_LIGHTS][16];
 
     /* Auto-instancing scratch: consecutive state-sorted opaque draws that share
      * identical commands (same stable geometry, material, lights — everything but

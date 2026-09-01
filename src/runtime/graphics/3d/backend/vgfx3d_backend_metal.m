@@ -520,6 +520,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .shadow_draw = metal_shadow_draw,
     .shadow_end = metal_shadow_end,
     .shadow_reuse = metal_shadow_reuse,
+    .shadow_inherit = metal_shadow_inherit,
     .draw_skybox = metal_draw_skybox,
     .submit_draw_instanced = metal_submit_draw_instanced,
     .present = metal_present,

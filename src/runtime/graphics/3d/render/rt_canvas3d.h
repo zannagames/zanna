@@ -636,6 +636,15 @@ int64_t rt_canvas3d_get_shadow_slots_used(void *obj);
 /// @param obj Borrowed Canvas3D handle.
 /// @return Latest denied-request count, or zero for invalid input.
 int64_t rt_canvas3d_get_shadow_requests_dropped(void *obj);
+/// @brief Shadow slots satisfied without re-rendering in the latest frame
+///   (signature reuse + ADR 0309 render-target inheritance).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest cached/inherited slot count, or zero for invalid input.
+int64_t rt_canvas3d_get_shadow_slots_cached(void *obj);
+/// @brief ADR 0309: opt render-target frames into shadow inheritance.
+/// @param obj Borrowed Canvas3D handle.
+/// @param enabled Nonzero to enable, zero to disable (the default).
+void rt_canvas3d_set_render_target_shadow_inherit(void *obj, int64_t enabled);
 /// @brief Set the per-cluster light-index capacity (8..64, default 64).
 /// @param obj Borrowed Canvas3D handle.
 /// @param budget Requested per-cluster capacity, clamped from 8 through 64.

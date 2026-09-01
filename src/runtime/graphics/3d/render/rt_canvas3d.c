@@ -1749,6 +1749,9 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->last_light_snapshot);
     c->last_light_snapshot = NULL;
     c->last_light_snapshot_valid = 0;
+    free(c->shadow_cache_lights);
+    c->shadow_cache_lights = NULL;
+    c->shadow_pass_cache_valid = 0;
     free(c->frame_light_snapshots);
     c->frame_light_snapshots = NULL;
     c->frame_light_snapshot_count = 0;
@@ -3665,6 +3668,8 @@ void rt_canvas3d_set_shadow_cascades(void *obj, int64_t count) {
         }
     }
     c->shadow_cascade_count = (int32_t)count;
+    /* ADR 0309: the cached slot layout no longer matches the config. */
+    c->shadow_pass_cache_valid = 0;
 }
 
 /// @brief `Canvas3D.ShadowCascades` — read the retained cascade count (ADR 0233).

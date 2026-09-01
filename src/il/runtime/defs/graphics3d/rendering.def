@@ -167,6 +167,8 @@ RT_FUNC(Canvas3DGetMeshSnapshotBudgetBytes, rt_canvas3d_get_mesh_snapshot_budget
 RT_FUNC(Canvas3DSetShadowBudget, rt_canvas3d_set_shadow_budget, "Zanna.Graphics3D.Canvas3D.SetShadowBudget", "void(obj,i64)")
 RT_FUNC(Canvas3DGetShadowSlotsUsed, rt_canvas3d_get_shadow_slots_used, "Zanna.Graphics3D.Canvas3D.get_ShadowSlotsUsed", "i64(obj)")
 RT_FUNC(Canvas3DGetShadowRequestsDropped, rt_canvas3d_get_shadow_requests_dropped, "Zanna.Graphics3D.Canvas3D.get_ShadowRequestsDropped", "i64(obj)")
+RT_FUNC(Canvas3DGetShadowSlotsCached, rt_canvas3d_get_shadow_slots_cached, "Zanna.Graphics3D.Canvas3D.get_ShadowSlotsCached", "i64(obj)")
+RT_FUNC(Canvas3DSetRenderTargetShadowInherit, rt_canvas3d_set_render_target_shadow_inherit, "Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowInherit", "void(obj,i64)")
 RT_FUNC(Canvas3DSetClusterLightBudget, rt_canvas3d_set_cluster_light_budget, "Zanna.Graphics3D.Canvas3D.SetClusterLightBudget", "void(obj,i64)")
 RT_FUNC(Canvas3DGetClusterOverflowCount, rt_canvas3d_get_cluster_overflow_count, "Zanna.Graphics3D.Canvas3D.get_ClusterOverflowCount", "i64(obj)")
 RT_FUNC(Canvas3DGetDroppedLightCount, rt_canvas3d_get_dropped_light_count, "Zanna.Graphics3D.Canvas3D.get_DroppedLightCount", "i64(obj)")
@@ -330,6 +332,10 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Canvas3D", Canvas3D, "obj", Canvas3DNew)
     RT_METHOD("SetShadowBudget", "void(i64)", Canvas3DSetShadowBudget)
     RT_PROP("ShadowSlotsUsed", "i64", Canvas3DGetShadowSlotsUsed, none)
     RT_PROP("ShadowRequestsDropped", "i64", Canvas3DGetShadowRequestsDropped, none)
+    // ADR 0309: slots satisfied without re-rendering (signature reuse +
+    // render-target inheritance), and the render-target inheritance opt-in.
+    RT_PROP("ShadowSlotsCached", "i64", Canvas3DGetShadowSlotsCached, none)
+    RT_METHOD("SetRenderTargetShadowInherit", "void(i64)", Canvas3DSetRenderTargetShadowInherit)
     // Light budget observability: per-cluster index capacity (8..64), lifetime
     // cluster truncations, and forward-path lights dropped this frame.
     RT_METHOD("SetClusterLightBudget", "void(i64)", Canvas3DSetClusterLightBudget)

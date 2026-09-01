@@ -410,5 +410,89 @@ int main() {
         assert(result && "fresh loop result must supersede its prior-iteration release");
     }
 
+    // A block parameter rebinds a fresh dynamic value on every entry, exactly
+    // like a result temp. Releasing one inside a loop (the inliner's
+    // continuation blocks routinely carry a caller temp as a param) must not
+    // report the prior iteration's release as a double release.
+    {
+        Module module;
+        appendManagedObjectExterns(module);
+
+        Extern strReleaseMaybe;
+        strReleaseMaybe.name = "rt_str_release_maybe";
+        strReleaseMaybe.retType = Type(Type::Kind::Void);
+        strReleaseMaybe.params.push_back(Type(Type::Kind::Str));
+        module.externs.push_back(strReleaseMaybe);
+
+        Function fn;
+        fn.name = "loop_fresh_param_after_release";
+        fn.retType = Type(Type::Kind::Void);
+
+        BasicBlock entry;
+        entry.label = "entry";
+        Instr enterLoop;
+        enterLoop.op = Opcode::Br;
+        enterLoop.type = Type(Type::Kind::Void);
+        enterLoop.labels = {"head"};
+        enterLoop.brArgs = {{}};
+        entry.instructions = {enterLoop};
+        entry.terminated = true;
+
+        BasicBlock head;
+        head.label = "head";
+        Instr makeString;
+        makeString.result = 0;
+        makeString.op = Opcode::Call;
+        makeString.type = Type(Type::Kind::Str);
+        makeString.callee = "rt_str_empty";
+        Instr enterHand;
+        enterHand.op = Opcode::Br;
+        enterHand.type = Type(Type::Kind::Void);
+        enterHand.labels = {"hand"};
+        enterHand.brArgs = {{Value::temp(0)}};
+        head.instructions = {makeString, enterHand};
+        head.terminated = true;
+
+        BasicBlock hand;
+        hand.label = "hand";
+        Param handParam;
+        handParam.name = "carried";
+        handParam.type = Type(Type::Kind::Str);
+        handParam.id = 1;
+        hand.params.push_back(handParam);
+        Instr releaseCarried;
+        releaseCarried.op = Opcode::Call;
+        releaseCarried.type = Type(Type::Kind::Void);
+        releaseCarried.callee = "rt_str_release_maybe";
+        releaseCarried.operands = {Value::temp(1)};
+        Instr loopOrExit;
+        loopOrExit.op = Opcode::CBr;
+        loopOrExit.type = Type(Type::Kind::Void);
+        loopOrExit.operands = {Value::constBool(true)};
+        loopOrExit.labels = {"head", "exit"};
+        loopOrExit.brArgs = {{}, {}};
+        hand.instructions = {releaseCarried, loopOrExit};
+        hand.terminated = true;
+
+        BasicBlock exit;
+        exit.label = "exit";
+        Instr ret;
+        ret.op = Opcode::Ret;
+        ret.type = Type(Type::Kind::Void);
+        exit.instructions = {ret};
+        exit.terminated = true;
+
+        fn.blocks.push_back(entry);
+        fn.blocks.push_back(head);
+        fn.blocks.push_back(hand);
+        fn.blocks.push_back(exit);
+        module.functions.push_back(fn);
+
+        auto result = il::verify::Verifier::verify(module);
+        if (!result)
+            std::cerr << "unexpected verifier message: " << result.error().message << '\n';
+        assert(result && "fresh block param must supersede its prior-iteration release");
+    }
+
     return 0;
 }

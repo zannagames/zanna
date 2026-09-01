@@ -1063,6 +1063,43 @@ static int8_t metal_shadow_reuse(
     }
 }
 
+/// @brief Backend `shadow_inherit` op (ADR 0309) — re-arm a slot for a render-target frame.
+/// @details Unlike `shadow_reuse`, atlas slots may re-arm: Canvas3D only calls this for a
+///   render-target frame that renders no atlas slot of its own, so the shared atlas is never
+///   whole-cleared this frame and its previous full-pass tiles remain intact. Classic CSM
+///   slots re-arm exactly as in `metal_shadow_reuse`.
+/// @param ctx_ptr Borrowed `VGFXMetalContext` containing prior-frame shadow textures.
+/// @param slot Shadow slot (classic or atlas) whose persistent depth should be reused.
+/// @param depth_buf Ignored CPU depth buffer retained for backend-interface compatibility.
+/// @param w Expected per-slot width of the persistent shadow storage.
+/// @param h Expected per-slot height of the persistent shadow storage.
+/// @param light_vp Borrowed replacement 4x4 light view-projection matrix.
+/// @return 1 when the slot was successfully rearmed, or 0 when inheritance is unavailable.
+static int8_t metal_shadow_inherit(
+    void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
+    @autoreleasepool {
+        VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
+        (void)depth_buf;
+        if (!ctx || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS ||
+            !vgfx3d_shadow_matrix_is_usable(light_vp) || w <= 0 || h <= 0)
+            return 0;
+        if (slot >= VGFX3D_CSM_SLOTS) {
+            if (!ctx->_shadowAtlasTexture || (int32_t)ctx->_shadowAtlasTexture.width != w * 4 ||
+                (int32_t)ctx->_shadowAtlasTexture.height != h * 2)
+                return 0;
+        } else {
+            if (!ctx->_shadowDepthTexture[slot] ||
+                (int32_t)ctx->_shadowDepthTexture[slot].width != w ||
+                (int32_t)ctx->_shadowDepthTexture[slot].height != h)
+                return 0;
+        }
+        vgfx3d_copy_mat4_finite_or_identity(ctx->_shadowLightVP[slot], light_vp);
+        ctx->_shadowComplete[slot] = 1;
+        metal_recompute_shadow_count(ctx);
+        return 1;
+    }
+}
+
 //=============================================================================
 // MTL-13: Instanced rendering
 //=============================================================================

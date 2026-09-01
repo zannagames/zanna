@@ -1426,6 +1426,15 @@ Expected<void> FunctionVerifier::verifyDominanceAndEscapes(
         auto transferReleases =
             [&](const BasicBlock &block,
                 std::unordered_set<unsigned> released) -> Expected<std::unordered_set<unsigned>> {
+            // Block parameters rebind a fresh dynamic value on every entry,
+            // exactly like result temps: kill any loop-carried release state
+            // for their ids before the block body is checked. Without this, a
+            // release of a block parameter inside a loop (the inliner's
+            // continuation blocks routinely carry a caller temp as a param)
+            // reports a false double release when the state flows around the
+            // backedge into its own defining block.
+            for (const Param &param : block.params)
+                released.erase(param.id);
             for (const Instr &instr : block.instructions) {
                 if (isRuntimeExplicitRelease(instr)) {
                     if (!instr.operands.empty() && instr.operands[0].kind == Value::Kind::Temp) {

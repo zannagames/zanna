@@ -624,6 +624,50 @@ static int canvas3d_render_point_shadow_cube(
     return 1;
 }
 
+/// @brief ADR 0309: satisfy a render-target frame's non-cascade shadow slots from
+///   the last full window-backed pass instead of re-rendering them.
+/// @details Re-arms every cached slot in [c->shadow_cache_cascade_slots,
+///   c->shadow_cache_slot_count) through the backend's shadow_inherit hook (which,
+///   unlike shadow_reuse, may re-arm atlas tiles — the caller guarantees this frame
+///   renders no atlas slot, so the shared atlas is never whole-cleared), then
+///   publishes the cached light entries and light VPs and advances the shadow
+///   count. Nothing is published on failure; slots a failed attempt already armed
+///   are overwritten by the full-pass fallback's normal begin/draw/end.
+/// @param c Canvas in a render-target frame with a valid shadow pass cache.
+/// @param shadow_lights Frame-local packed light array receiving the cached entries.
+/// @return 1 when every cached slot was inherited, 0 to fall back to the full pass.
+static int canvas3d_inherit_cached_shadow_slots(
+    rt_canvas3d *c, vgfx3d_light_params_t shadow_lights[VGFX3D_MAX_SHADOW_LIGHTS]) {
+    const vgfx3d_light_params_t *cache = (const vgfx3d_light_params_t *)c->shadow_cache_lights;
+    int32_t first = c->shadow_cache_cascade_slots;
+    int32_t count = c->shadow_cache_slot_count;
+
+    if (!cache || first < 0 || count <= first || count > VGFX3D_MAX_SHADOW_LIGHTS)
+        return 0;
+    for (int32_t slot = first; slot < count; slot++) {
+        vgfx3d_rendertarget_t *shadow_rt = c->shadow_rts[slot];
+
+        if (!shadow_rt || !shadow_rt->depth_buf)
+            return 0;
+        if (!c->backend->shadow_inherit(c->backend_ctx,
+                                        slot,
+                                        shadow_rt->depth_buf,
+                                        shadow_rt->width,
+                                        shadow_rt->height,
+                                        c->shadow_cache_light_vps[slot]))
+            return 0;
+    }
+    for (int32_t slot = first; slot < count; slot++) {
+        memcpy(c->shadow_light_vps[slot],
+               c->shadow_cache_light_vps[slot],
+               sizeof(c->shadow_light_vps[slot]));
+        shadow_lights[slot] = cache[slot];
+        c->last_shadow_slots_cached++;
+    }
+    c->shadow_count = count;
+    return 1;
+}
+
 /// @brief Render the directional, spot, and cascaded shadow-map pass for the queued
 ///   3D draws.
 /// @details Populates the canvas-owned shadow targets, selects lights within the
@@ -644,6 +688,7 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
     int32_t shadow_lights_granted = 0;
     const int32_t *shadow_indices = NULL;
     int32_t shadow_index_count = 0;
+    int32_t cascade_region = 0;
     c->last_shadow_slots_used = 0;
     c->last_shadow_requests_dropped = 0;
     c->last_shadow_slots_cached = 0;
@@ -654,12 +699,20 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
         int32_t slot_cap =
             c->backend->shadow_atlas_slots ? VGFX3D_MAX_SHADOW_LIGHTS : VGFX3D_CSM_SLOTS;
         int32_t shadow_budget = c->shadow_budget;
+        /* ADR 0309: render-target frames with a valid full-pass cache re-render
+         * only the cascaded primary and re-arm every other cached slot. */
+        int inherit_rt_frame = c->render_target && c->rt_shadow_inherit &&
+                               c->shadow_pass_cache_valid && c->backend->shadow_inherit != NULL &&
+                               c->shadow_cache_slot_count <= slot_cap;
         if (shadow_budget < 1 || shadow_budget > slot_cap)
             shadow_budget = slot_cap;
         shadow_index_count = canvas3d_prepare_shadow_draw_indices(c, cmds, c->draw_count);
         shadow_indices = (const int32_t *)c->shadow_draw_indices;
-        if (shadow_index_count <= 0 || !shadow_indices)
+        if (shadow_index_count <= 0 || !shadow_indices) {
+            if (!c->render_target)
+                c->shadow_pass_cache_valid = 0;
             return;
+        }
         int32_t selected_shadow_count =
             canvas3d_select_shadow_lights_from_draws(c,
                                                      cmds,
@@ -784,8 +837,16 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                 shadow_lights[0].shadow_index = 0;
                 shadow_lights_granted++;
             }
-            for (int32_t slot = 1;
-                 has_shadow_bounds && slot < selected_shadow_count && c->shadow_count < slot_cap;
+            cascade_region = c->shadow_count;
+            int rt_inherited = 0;
+            if (inherit_rt_frame && cascade_region <= c->shadow_cache_cascade_slots &&
+                c->shadow_cache_slot_count > c->shadow_cache_cascade_slots) {
+                rt_inherited = canvas3d_inherit_cached_shadow_slots(c, shadow_lights);
+                if (rt_inherited)
+                    shadow_lights_granted += c->shadow_cache_extra_granted;
+            }
+            for (int32_t slot = 1; !rt_inherited && has_shadow_bounds &&
+                                   slot < selected_shadow_count && c->shadow_count < slot_cap;
                  slot++) {
                 shadow_lights_granted +=
                     selected_lights[slot].type == 1 || selected_lights[slot].type == 5
@@ -808,8 +869,19 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
                                                             shadow_lights);
             }
         } else {
-            for (int32_t slot = 0;
-                 has_shadow_bounds && slot < selected_shadow_count && c->shadow_count < slot_cap;
+            /* No cascaded primary this frame: an eligible render-target frame
+             * inherits the whole cached slot set (a cached non-cascaded
+             * directional keeps its window-camera fit — ortho light-space
+             * sampling is camera-independent, only the fit region is). */
+            int rt_inherited = 0;
+            if (inherit_rt_frame && c->shadow_cache_cascade_slots == 0 && c->shadow_count == 0 &&
+                c->shadow_cache_slot_count > 0) {
+                rt_inherited = canvas3d_inherit_cached_shadow_slots(c, shadow_lights);
+                if (rt_inherited)
+                    shadow_lights_granted += c->shadow_cache_extra_granted;
+            }
+            for (int32_t slot = 0; !rt_inherited && has_shadow_bounds &&
+                                   slot < selected_shadow_count && c->shadow_count < slot_cap;
                  slot++)
                 shadow_lights_granted +=
                     selected_lights[slot].type == 1 || selected_lights[slot].type == 5
@@ -835,6 +907,32 @@ static void canvas3d_render_shadow_pass(rt_canvas3d *c, deferred_draw_t *cmds) {
         c->last_shadow_requests_dropped = shadow_request_count > shadow_lights_granted
                                               ? shadow_request_count - shadow_lights_granted
                                               : 0;
+        /* ADR 0309: full window-backed passes snapshot their granted slots (packed
+         * light entries + light VPs, which frame Begin zeroes) so a later
+         * render-target frame can inherit the non-cascade region. RT frames never
+         * write the cache. */
+        if (!c->render_target) {
+            vgfx3d_light_params_t *cache = (vgfx3d_light_params_t *)c->shadow_cache_lights;
+
+            if (c->shadow_count > 0 && !cache) {
+                cache = (vgfx3d_light_params_t *)calloc(VGFX3D_MAX_SHADOW_LIGHTS, sizeof(*cache));
+                c->shadow_cache_lights = cache;
+            }
+            if (c->shadow_count > 0 && cache) {
+                int32_t extra_granted = shadow_lights_granted - (cascade_region > 0 ? 1 : 0);
+
+                memcpy(cache, shadow_lights, sizeof(shadow_lights));
+                memcpy(c->shadow_cache_light_vps,
+                       c->shadow_light_vps,
+                       sizeof(c->shadow_cache_light_vps));
+                c->shadow_cache_slot_count = c->shadow_count;
+                c->shadow_cache_cascade_slots = cascade_region;
+                c->shadow_cache_extra_granted = extra_granted > 0 ? extra_granted : 0;
+                c->shadow_pass_cache_valid = 1;
+            } else {
+                c->shadow_pass_cache_valid = 0;
+            }
+        }
     }
 
     for (int32_t i = 0; i < c->draw_count; i++)

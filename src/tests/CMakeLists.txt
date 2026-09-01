@@ -3353,6 +3353,41 @@ if (EXISTS "${CANVAS3D_POINT_SHADOWS_PROBE}")
     endif ()
 endif ()
 
+# ADR 0309: render-target shadow inheritance — RT frames re-arm the last full
+# pass's non-cascade slots instead of re-rendering them (opt-in).
+set(CANVAS3D_RT_SHADOW_INHERIT_PROBE "${G3D_TESTS_DIR}/test_canvas3d_rt_shadow_inherit.zia")
+if (EXISTS "${CANVAS3D_RT_SHADOW_INHERIT_PROBE}")
+    add_test(NAME g3d_test_canvas3d_rt_shadow_inherit
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_SHADOW_INHERIT_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_rt_shadow_inherit PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+    if (WIN32)
+        add_test(NAME g3d_test_canvas3d_rt_shadow_inherit_d3d11
+                COMMAND $<TARGET_FILE:zia> "${CANVAS3D_RT_SHADOW_INHERIT_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_shadow_inherit_d3d11 PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;d3d11"
+                ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
+                TIMEOUT 120)
+    elseif (APPLE)
+        # Metal is where atlas-tile re-arm legality matters most: run the same
+        # probe on the real device.
+        add_test(NAME g3d_test_canvas3d_rt_shadow_inherit_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_RT_SHADOW_INHERIT_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_rt_shadow_inherit_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    endif ()
+endif ()
+
 # Backend telemetry surface (GAP-10): stats must move on the platform GPU
 # backend and stay zero on software (no hook).
 set(CANVAS3D_BACKEND_STATS_PROBE "${G3D_TESTS_DIR}/test_canvas3d_backend_stats.zia")

@@ -2995,6 +2995,26 @@ int64_t rt_canvas3d_get_shadow_slots_used(void *o) {
                                   0);
 }
 
+/// @brief Silent fallback stub for `Canvas3D.get_ShadowSlotsCached` (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @return `0`.
+int64_t rt_canvas3d_get_shadow_slots_cached(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "Canvas3D.get_ShadowSlotsCached: graphics support not compiled in", 0);
+}
+
+/// @brief Silent fallback stub for `Canvas3D.SetRenderTargetShadowInherit`
+///   (graphics-disabled build).
+/// @param o Canvas3D handle (ignored).
+/// @param enabled Requested state (ignored).
+void rt_canvas3d_set_render_target_shadow_inherit(void *o, int64_t enabled) {
+    (void)o;
+    (void)enabled;
+    RT_GRAPHICS_OPTIONAL_TRAP_VOID(
+        "Canvas3D.SetRenderTargetShadowInherit: graphics support not compiled in");
+}
+
 /// @brief Silent fallback stub for `Canvas3D.get_SkinningUploadBytes` (graphics-disabled build).
 /// @param o Canvas3D handle (ignored).
 /// @return `0` bytes.

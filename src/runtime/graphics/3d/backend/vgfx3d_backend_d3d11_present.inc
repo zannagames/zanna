@@ -2342,6 +2342,47 @@ static int8_t d3d11_shadow_reuse(
     return 1;
 }
 
+/// @brief Backend `shadow_inherit` op (ADR 0309) — re-arm a slot for a render-target frame.
+///
+/// Unlike `shadow_reuse`, atlas slots may re-arm: Canvas3D only calls this for a
+/// render-target frame that renders no atlas slot of its own, so the shared atlas
+/// is never whole-cleared this frame and its previous full-pass tiles remain
+/// intact. Classic CSM slots re-arm exactly as in `d3d11_shadow_reuse`.
+/// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
+/// @param[in] slot Shadow slot (classic or atlas) to re-arm.
+/// @param[in] depth_buf Host depth buffer from the backend interface; unused by D3D11.
+/// @param[in] w Expected per-slot shadow-map width in pixels.
+/// @param[in] h Expected per-slot shadow-map height in pixels.
+/// @param[in] light_vp Current light view-projection matrix for the inherited slot.
+/// @return One when a compatible persistent shadow resource is re-armed; otherwise zero.
+static int8_t d3d11_shadow_inherit(
+    void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
+    d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
+    (void)depth_buf;
+    if (!ctx || !ctx->frame_active || ctx->frame_submission_failed || slot < 0 ||
+        slot >= VGFX3D_MAX_SHADOW_LIGHTS || !light_vp || w <= 0 || h <= 0)
+        return 0;
+    if (!vgfx3d_d3d11_shadow_matrix_is_usable(light_vp))
+        return 0;
+    if (slot >= VGFX3D_CSM_SLOTS) {
+        if (w > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS ||
+            h > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_ROWS)
+            return 0;
+        if (!ctx->shadow_atlas_tex || !ctx->shadow_atlas_dsv || !ctx->shadow_atlas_srv ||
+            ctx->shadow_atlas_w != w * VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS ||
+            ctx->shadow_atlas_h != h * VGFX3D_D3D11_SHADOW_ATLAS_ROWS)
+            return 0;
+    } else {
+        if (!ctx->shadow_dsv[slot] || !ctx->shadow_srv[slot] || ctx->shadow_width[slot] != w ||
+            ctx->shadow_height[slot] != h)
+            return 0;
+    }
+    vgfx3d_d3d11_copy_mat4_finite_or_identity(ctx->shadow_vp[slot], light_vp);
+    ctx->shadow_slot_complete[slot] = 1;
+    d3d11_recompute_shadow_count(ctx);
+    return 1;
+}
+
 /// @brief Backend `draw_skybox` — full-screen triangle draw with the cubemap shader.
 ///
 /// Sets up skybox VS/PS, the fullscreen-triangle VB built at context creation,

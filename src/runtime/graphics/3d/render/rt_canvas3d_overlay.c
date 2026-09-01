@@ -2011,6 +2011,8 @@ void rt_canvas3d_set_shadow_budget(void *obj, int64_t budget) {
     if (budget > VGFX3D_MAX_SHADOW_LIGHTS)
         budget = VGFX3D_MAX_SHADOW_LIGHTS;
     c->shadow_budget = (int32_t)budget;
+    /* ADR 0309: the cached slot layout no longer matches the config. */
+    c->shadow_pass_cache_valid = 0;
 }
 
 /// @brief `Canvas3D.ShadowBudget` — read the retained shadow-light slot budget (ADR 0233).
@@ -2035,6 +2037,29 @@ int64_t rt_canvas3d_get_shadow_slots_used(void *obj) {
 int64_t rt_canvas3d_get_shadow_requests_dropped(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->last_shadow_requests_dropped : 0;
+}
+
+/// @brief Shadow slots satisfied WITHOUT re-rendering in the latest frame —
+///   signature reuse plus ADR 0309 render-target inheritance.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Latest cached/inherited slot count, or zero.
+int64_t rt_canvas3d_get_shadow_slots_cached(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->last_shadow_slots_cached : 0;
+}
+
+/// @brief ADR 0309: opt render-target frames into shadow inheritance — they
+///   re-render only the cascaded primary light (fitted to the RT camera) and
+///   re-arm every other slot from the last full window-backed pass's persisted
+///   depth. A no-op on backends without the shadow_inherit hook; any re-arm
+///   failure falls back to the full shadow pass.
+/// @param obj Borrowed Canvas3D handle.
+/// @param enabled Nonzero to enable, zero to disable (the default).
+void rt_canvas3d_set_render_target_shadow_inherit(void *obj, int64_t enabled) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    c->rt_shadow_inherit = enabled != 0 ? 1 : 0;
 }
 
 /// @brief Set the per-cluster light-index capacity (clamped 8..64; default 64).

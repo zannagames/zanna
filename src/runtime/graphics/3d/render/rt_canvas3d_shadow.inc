@@ -630,6 +630,8 @@ static void canvas3d_release_shadow_targets(rt_canvas3d *c) {
         c->shadow_rt_owned[slot] = 0;
     }
     c->shadow_count = 0;
+    /* ADR 0309: the inherit cache points at slots that no longer exist. */
+    c->shadow_pass_cache_valid = 0;
 }
 
 /// @brief Resolve the effective square shadow-map resolution for one target slot.

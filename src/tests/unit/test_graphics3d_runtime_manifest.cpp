@@ -70,10 +70,13 @@ namespace {
 // ADR 0286 (2026-08-21): IKSolver3D.SetTargetRotation/ClearTargetRotation —
 // model-space end-bone orientation goal applied after the positional solve:
 // +2 functions / +2 methods.
-constexpr std::size_t kExpectedFunctionCount = 2269;
+// ADR 0309 (2026-09-01): Canvas3D.SetRenderTargetShadowInherit +
+// get_ShadowSlotsCached — render-target shadow inheritance opt-in and its
+// cached/inherited-slot diagnostic: +2 functions / +1 property / +1 method.
+constexpr std::size_t kExpectedFunctionCount = 2271;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 829;
-constexpr std::size_t kExpectedMethodCount = 1225;
+constexpr std::size_t kExpectedPropertyCount = 830;
+constexpr std::size_t kExpectedMethodCount = 1226;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -274,7 +277,9 @@ int main() {
     // Re-pinned 2026-08-21: ADR 0286 IKSolver3D.SetTargetRotation and
     // ClearTargetRotation (two functions/methods).
     // Re-pinned 2026-08-28: ADR 0300 AnimController3D.CrossfadeAt (0x96d4bb5a8a2f756a).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x69f0ac9a84301e75);
+    // Re-pinned 2026-09-01: ADR 0309 Canvas3D.SetRenderTargetShadowInherit
+    // + get_ShadowSlotsCached (previous: 0x69f0ac9a84301e75).
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xa86908e033a83516);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */
