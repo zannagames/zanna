@@ -75,6 +75,7 @@ User-facing documentation lives in the **[main documentation index](../README.md
 
 Living ledgers that track findings and their resolution for high-risk subsystems.
 
+- [Defect Audit (2026-09-01)](../audit_09012026.md) — 30 engine defects found while validating the documentation tree against the running toolchain, each with a minimal reproduction
 - [Memory, Threads, and Core Runtime Audit (August 2026)](memory-threads-core-runtime-audit-2026-08.md) — Resolution ledger for 10 weak-reference, numeric-ordering, diagnostics, and receiver-retain findings
 - [Runtime Hardening Audit (July 2026)](runtime-hardening-audit-2026-07.md) — Resolution ledger for 64 runtime findings
 - [Audio Runtime Hardening Program (August 2026)](audio-runtime-hardening-2026-08.md) — Resolution ledger for 100 WAV, Ogg, Vorbis, MP3, streaming, and mixer findings

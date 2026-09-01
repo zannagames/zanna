@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Numeric Semantics
@@ -62,13 +62,15 @@ default to `DOUBLE`; `!` and `#` both lower to `f64`.
 ## Rounding and Conversion Functions
 
 All conversions that round from floating point use round-to-nearest, ties-to-even
-("banker’s rounding"). Unless otherwise stated, traps are reported as `Overflow`.
+("banker’s rounding"). Arithmetic overflow is reported as `Overflow`; a rejected
+*conversion* — a NaN or negative operand, an out-of-range narrowing, or a `CINT`
+/ `CLNG` value outside the classic range — is reported as `InvalidCast`.
 
 | Function   | Description |
 |------------|-------------|
 | `CDBL(x)`  | Convert to `DOUBLE` (`f64`). Always succeeds for finite inputs. |
-| `CINT(x)`  | Round-to-nearest-even, validate against the classic 16-bit `INTEGER` range −32,768…32,767, then return the value in `i64` storage. Example: `CINT(2.5) = 2`, `CINT(3.5) = 4`. |
-| `CLNG(x)`  | Round-to-nearest-even, validate against the classic 32-bit `LONG` range −2,147,483,648…2,147,483,647, then return the value in `i64` storage. |
+| `CINT(x)`  | Round-to-nearest-even, validate against the classic 16-bit `INTEGER` range −32,768…32,767, then return the value in `i64` storage. Out-of-range input traps with `InvalidCast`. Example: `CINT(2.5) = 2`, `CINT(3.5) = 4`. |
+| `CLNG(x)`  | Round-to-nearest-even, validate against the classic 32-bit `LONG` range −2,147,483,648…2,147,483,647, then return the value in `i64` storage. Out-of-range input traps with `InvalidCast`. |
 | `CSNG(x)`  | Convert through IEEE-754 binary32. Trap if the rounded binary32 result would be non-finite, then return the widened value in `f64` storage. |
 | `FIX(x)`   | Truncate toward zero. Works on any numeric rank and returns a floating result for floating inputs. |
 | `INT(x)`   | Floor: greatest integral value <= `x`. Works on any numeric rank. |
@@ -131,10 +133,10 @@ indicated condition.
 
 | IL op                   | Description                                            | Trap                                                      |
 |-------------------------|--------------------------------------------------------|-----------------------------------------------------------|
-| `cast.fp_to_si.rte.chk` | Float-to-signed-integer cast (round to even).          | `Overflow` on NaN or out-of-range.                        |
-| `cast.fp_to_ui.rte.chk` | Float-to-unsigned-integer cast (round to even).        | `Overflow` on NaN or out-of-range.                        |
-| `cast.si_narrow.chk`    | Signed narrowing cast.                                 | `Overflow` when the result is out of range.               |
-| `cast.ui_narrow.chk`    | Unsigned narrowing cast.                               | `Overflow` when the result is out of range.               |
+| `cast.fp_to_si.rte.chk` | Float-to-signed-integer cast (round to even).          | `InvalidCast` on NaN; `Overflow` when out of range.       |
+| `cast.fp_to_ui.rte.chk` | Float-to-unsigned-integer cast (round to even).        | `InvalidCast` on NaN or a negative operand; `Overflow` when out of range. |
+| `cast.si_narrow.chk`    | Signed narrowing cast.                                 | `InvalidCast` when the result is out of range.            |
+| `cast.ui_narrow.chk`    | Unsigned narrowing cast.                               | `InvalidCast` when the result is out of range.            |
 | `iadd.ovf`              | Signed integer addition with overflow detection.       | `Overflow`                                                |
 | `imul.ovf`              | Signed integer multiplication with overflow detection. | `Overflow`                                                |
 | `isub.ovf`              | Signed integer subtraction with overflow detection.    | `Overflow`                                                |

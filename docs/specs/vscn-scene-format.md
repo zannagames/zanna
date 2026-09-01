@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-09-01
 ---
 
 # VSCN Scene Format (`.scene3d` / `.vscn`)

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-09-01
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -1025,7 +1025,7 @@ world-space values.
 
 Camera positions and FPS-style movement inputs are clamped to the runtime's safe world range before
 view/projection matrices are generated. Non-finite position components fall back to `0.0`.
-For game cameras, prefer `NewHorizontalFov` or `SetHorizontalFov` when the authored
+For game cameras, prefer `WithHorizontalFov` or `SetHorizontalFov` when the authored
 value is a horizontal FOV; passing that value to `New` treats it as vertical FOV
 and can produce visibly stretched edges on wide windows.
 `SmoothFollow` and `SmoothLookAt` keep FPS-style yaw/pitch state synchronized with the resulting view.
@@ -1286,9 +1286,9 @@ Post-processing effect chain applied to a rendered scene.
 | `AddDof(focusDist, focalRange, blurRadius)` | `Void(Double, Double, Double)` | Add depth of field |
 | `AddMotionBlur(strength, samples)` | `Void(Double, Integer)` | Add motion blur |
 | `AddTaa(blend)` | `Void(Double)` | Add temporal anti-aliasing. `blend` is the history weight (0.5–0.98; typical 0.9) |
-| `AddSSR(intensity, maxRoughness)` | `Void(Double, Double)` | Add screen-space reflections; the software reference uses a bounded coarse depth march |
+| `AddSsr(intensity, maxRoughness)` | `Void(Double, Double)` | Add screen-space reflections; the software reference uses a bounded coarse depth march |
 | `AddAutoExposure(minEv, maxEv, adaptSpeed)` | `Void(Double, Double, Double)` | Add temporally smoothed eye adaptation within the ordered exposure range |
-| `AddColorLUT(pixels, blend)` | `Void(Object, Double)` | Set the chain's retained singleton 256×16 LUT strip and blend it with the current color; a later call replaces the earlier LUT in place |
+| `AddColorLut(pixels, blend)` | `Void(Object, Double)` | Set the chain's retained singleton 256×16 LUT strip and blend it with the current color; a later call replaces the earlier LUT in place |
 | `AddSunShafts(intensity, decay, samples)` | `Void(Double, Double, Integer)` | Add bounded screen-space radial light shafts |
 | `GetEffectKind(index)` | `Integer(Integer)` | Kind of the effect at `index` in application order — one of the `PostFXEffectKind` constants; `-1` when out of range |
 | `RemoveEffectAt(index)` | `Boolean(Integer)` | Remove one effect, closing the chain over the gap; `false` when out of range |
@@ -2402,7 +2402,7 @@ per-frame `Advance`); see the Graphics3D guide for the full class table.
 
 ### Zanna.Graphics3D.Trigger3D
 
-AABB trigger volume that tracks entry and exit events for `Physics3DBody` objects.
+AABB trigger volume that tracks entry and exit events for `PhysicsBody3D` objects.
 
 **Type:** Instance (obj)
 **Constructor:** `Trigger3D.New(minX, minY, minZ, maxX, maxY, maxZ)`
@@ -2419,7 +2419,7 @@ AABB trigger volume that tracks entry and exit events for `Physics3DBody` object
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Contains(point)` | `Boolean(Object)` | True when a world-space `Vec3` lies inside the volume |
-| `Update(world)` | `Void(Object)` | Recompute enter/exit events against a `Physics3DWorld` |
+| `Update(world)` | `Void(Object)` | Recompute enter/exit events against a `PhysicsWorld3D` |
 | `SetBounds(minX, minY, minZ, maxX, maxY, maxZ)` | `Void(Double, Double, Double, Double, Double, Double)` | Resize the trigger volume |
 
 ---

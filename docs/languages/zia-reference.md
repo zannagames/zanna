@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Zia — Reference
@@ -196,7 +196,7 @@ assignments.
 | `Boolean` | True or false | `false` |
 | `Integer` | 64-bit signed integer | `0` |
 | `Number` | 64-bit floating-point | `0.0` |
-| `Byte` | 8-bit value lowered through the IL integer path | `0` |
+| `Byte` | Lowered to IL `i32` (see the defect note below — **not** currently 8-bit) | `0` |
 | `String` | UTF-8 string | `""` |
 | `Any` | Managed top type for boxed values, objects, strings, and function references | `null` |
 | `Never` | Bottom type for code paths that do not produce a value | — |
@@ -479,6 +479,14 @@ custom value semantics.
   operands produces `Integer`; bitwise `&`, `|`, `^` on two `Byte` operands
   produces `Byte`; shifts produce `Integer`. Assign back to a `Byte` with an
   explicit `as Byte` (a checked narrowing).
+
+> **`Byte` is partially broken today.** `Byte` lowers to IL `i32` and the
+> widening/narrowing conversions are not always inserted, so two common forms
+> fail IL verification: string concatenation (`"v=" + aByte`) and storing a
+> `Byte`-operand arithmetic result into an `Integer`. `Integer as Byte`,
+> implicit widening in a direct initialization, and `SayInt(aByte)` do work.
+> See [defect audit #5](../audit_09012026.md). Note that `zanna check` does not
+> currently report these — use `zanna build` to confirm.
 
 ### Ternary Operator
 
@@ -805,12 +813,17 @@ value as Type           // Type cast
 
 `as` performs numeric conversions and reference (class/interface) casts:
 
-- `Integer` ↔ `Number`: `Number as Integer` rounds to the nearest integer, with
-  ties rounded away from zero (`3.5 as Integer` is `4`, `-3.5 as Integer` is
-  `-4`), and traps on NaN or a value outside the `Integer` range. `Integer as
-  Number` widens (values above 2^53 may lose precision).
-- `Integer` ↔ `Byte`: `Integer as Byte` is a checked narrowing that traps on
-  overflow; `Byte as Integer` zero-extends.
+- `Integer` ↔ `Number`: `Number as Integer` rounds to the nearest integer with
+  ties going to the **even** neighbour (`2.5 as Integer` is `2`, `3.5 as Integer`
+  is `4`, `4.5 as Integer` is `4`, `-2.5 as Integer` is `-2`) — the same
+  round-half-to-even rule the IL `cast.fp_to_si.rte.chk` opcode uses. It traps on
+  NaN or a value outside the `Integer` range. `Integer as Number` widens (values
+  above 2^53 may lose precision).
+- `Integer` ↔ `Byte`: `Integer as Byte` is intended to be a checked narrowing
+  that traps on overflow, and `Byte as Integer` zero-extends. **The narrowing is
+  currently 32-bit, not 8-bit**, so `256 as Byte` is `256`, `300 as Byte` is
+  `300`, and `-1 as Byte` reads back as `4294967295` instead of trapping. See
+  [defect audit #12](../audit_09012026.md).
 - Class/interface casts are checked at runtime and trap on a mismatch.
 
 `as` does **not** convert between `String` and scalar types — there is no
@@ -1021,12 +1034,12 @@ for item in list {
 }
 
 // Map iteration (keys only)
-for key in map {
+for key in ages {
     // key is String
 }
 
 // Map iteration with tuple binding
-for key, value in map {
+for key, value in ages {
     // key is String, value is map value type
 }
 
@@ -1055,9 +1068,13 @@ for index, item in stack {
 }
 
 // Parenthesized tuple form
-for ((key, value) in map) {
-    // same as: for key, value in map { ... }
+for ((key, value) in ages) {
+    // same as: for key, value in ages { ... }
 }
+
+// NOTE: do not name the iterable `map` or `set` — `map {` and `set {` are the
+// explicit empty-collection literal forms, so `for key in map { ... }` is
+// mis-parsed as a collection literal. See defect audit #13.
 
 // Range iteration
 for i in 0..10 {        // 0 to 9
@@ -1175,7 +1192,10 @@ try {
 - One or more `catch` clauses may follow the `try` block. Named error binding
   uses parentheses: `catch(e) { ... }`.
 - A named catch binding has type `Error`. It exposes:
-  - `kind` / `type`: runtime error kind name such as `"RuntimeError"` or `"DivideByZero"`
+  - `kind`: runtime error kind name such as `"RuntimeError"` or `"DivideByZero"`
+    (an alias spelled `type` is documented elsewhere but cannot be written —
+    `type` is a reserved word, so `e.type` is a parse error; see
+    [defect audit #14](../audit_09012026.md))
   - `message`: `throw` payload text for language throws, or a default message for runtime faults
   - `code`: numeric runtime error code
   - `line`: source line if available, otherwise `-1`
@@ -1435,7 +1455,10 @@ class Player {
 ```
 
 Class fields may use familiar `var name: Type;` syntax or the original
-`Type name;` syntax. A `weak` field stores a non-owning reference to a class,
+`Type name;` syntax. The type annotation is **required** in the `var`/`final`/
+`let` form — a field cannot infer its type from an initializer, so
+`expose var x = 5;` is a parse error (`expected field name`); write
+`expose var x: Integer = 5;`. A `weak` field stores a non-owning reference to a class,
 interface, `Any`, or optional reference type. Weak fields cannot be `static`,
 and are loaded like ordinary fields:
 
@@ -1463,8 +1486,8 @@ instance state. `final` composes with `expose`/`hide` and with `static` (a
 
 ```zia
 class Circle {
-    expose final radius: Number;      // set once in init, then immutable
-    expose static final PI = 3.14159; // class-level constant
+    expose final radius: Number;              // set once in init, then immutable
+    expose static final PI: Number = 3.14159; // class-level constant
 
     func init(r: Number) {
         radius = r;                   // OK: assignment inside init
@@ -1573,21 +1596,27 @@ Fields and methods marked `static` belong to the class type, not to instances:
 class Counter {
     expose static Integer instanceCount;
 
-    static func getCount() -> Integer {
-        return instanceCount;
+    expose static func describe() -> String {
+        return "counter";
     }
+}
 
-    func init() {
-        instanceCount = instanceCount + 1;
-    }
+func start() {
+    Counter.instanceCount = Counter.instanceCount + 1;   // works: access from outside
 }
 ```
 
 - Static fields are stored in module-level runtime storage (not per-instance).
 - Static methods have no `self` parameter.
-- Access via the class name: `Counter.getCount()`, `Counter.instanceCount`.
+- Access via the class name: `Counter.describe()`, `Counter.instanceCount`.
 - Use `expose static` when code outside the declaring type should access the
   field.
+
+> **Static fields cannot currently be read from inside their own class.** Both a
+> bare `instanceCount` and a qualified `Counter.instanceCount` inside a method of
+> `Counter` fail with `error[V3000]: Unknown identifier ... reached lowering`.
+> Only access from outside the declaring type works. See
+> [defect audit #15](../audit_09012026.md).
 
 ### Destructors
 
@@ -2084,9 +2113,9 @@ PrintStr(str);       // Print string (low-level)
 TryReadLine();       // Read a line (returns Option<String>, None on EOF)
 ReadLineResult();    // Read a line (returns Result<String, String>)
 ReadLine();          // Compatibility API; prefer TryReadLine or ReadLineResult for EOF
-GetKey();            // Block until key press, return key string
-GetKeyTimeout(ms);   // Read key with timeout in ms (returns "" on timeout)
-InKey();             // Non-blocking key check (returns "" if no key)
+ReadKey();           // Block until key press, return key string
+ReadKeyFor(ms);      // Read key with timeout in ms (returns "" on timeout)
+PollKey();           // Non-blocking key check (returns "" if no key)
 
 // Terminal control
 Bell();              // Emit bell character
@@ -2137,7 +2166,8 @@ Zanna.Math.Random.NextInt(max);   // Random integer [0, max)
 // Seeded instances keep independent state.
 var rng = new Zanna.Math.Random(42);
 rng.NextDouble();                 // Random Number [0.0, 1.0)
-rng.NextInt(10, 20);              // Random integer [10, 20]
+rng.NextInt(20);                  // Random integer [0, 20)
+rng.Range(10, 20);                // Random integer [10, 20] (inclusive)
 ```
 
 #### Generic Collections

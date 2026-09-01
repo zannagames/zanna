@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Zanna BASIC — Tutorial
@@ -64,10 +64,11 @@ LET Flag = TRUE
 Arrays **require** `DIM` and are zero-based:
 
 ```basic
-DIM A(3)              ' indices 0..2
+DIM A(3)              ' indices 0..3 — the bound is inclusive
 LET A(0) = 42
 LET A(1) = 100
 PRINT A(0)            ' 42
+PRINT UBOUND(A)       ' 3
 ```
 
 Arrays can store integers, strings, or object references. Object arrays are
@@ -368,6 +369,13 @@ DIM R AS Graphics.Rendering.Renderer
 DIM B AS Graphics.UI.Button
 ```
 
+> **Namespaced classes are currently limited.** A class declared inside a
+> `NAMESPACE` gets no implicit default constructor (`NEW Ns.C()` fails with
+> `unknown callee @NS.C.__ctor` unless the class declares an explicit
+> `SUB NEW()`), and its fields are not visible from inside or outside the class
+> (`E_PROP_NO_SUCH_PROPERTY`). Method-only namespaced classes with an explicit
+> constructor do work. See [defect audit](../audit_09012026.md) #17 and #21.
+
 ### Using the USING Directive
 
 Import types from a namespace for unqualified references:
@@ -502,6 +510,11 @@ END
 - `RESUME` — Retry the statement that caused the error
 - `RESUME NEXT` — Continue with the next statement
 - `RESUME <label>` — Resume execution at a specific line label
+
+> **`RESUME` is not implemented yet.** Every form lowers to a `trap`, so control
+> does not return to the protected code — the handler runs and the program ends.
+> Have the handler do the recovery work itself for now. See
+> [defect audit #22](../audit_09012026.md).
 
 To stop execution from a handler use `END` (or fall through). Zanna BASIC does **not** treat
 `RESUME 0` as "end the program"; it parses as a `RESUME <label>` jump to label `0`, which simply

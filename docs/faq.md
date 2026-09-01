@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Zanna FAQ
@@ -102,7 +102,7 @@ Zanna builds and runs on:
 
 - **macOS** (Apple Silicon)
 - **Linux** (x86-64 and AArch64)
-- **Windows** (x86-64)
+- **Windows** (x86-64 and ARM64)
 
 Native code generation targets x86-64 (System V and Windows x64 ABIs) and AArch64.
 
@@ -283,11 +283,15 @@ The VM supports source-level debugging:
 ```bash
 # Build to IL, then set a source breakpoint in the IL runner
 zanna build program.zia -o /tmp/program.il
-zanna -run /tmp/program.il --break-src program.zia:42
+zanna -run /tmp/program.il --break-src /tmp/program.il:42
 
-# Use debugger commands
-# (watch variables, step through code, inspect state)
+# Watch a variable while running
+zanna -run /tmp/program.il --watch counter
 ```
+
+The line number is the **original source line** recorded in the IL's `.loc`
+records, but the file name must be the **IL module's own path** — textual IL
+carries no source-file table, so `program.zia` will not match.
 
 See VM debugging tests in `/src/tests/vm/` for examples.
 

@@ -946,7 +946,7 @@ bind Game;
 bind Renderer;
 bind Zanna.Graphics;
 bind Keyboard = Zanna.Input.Keyboard;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 func start() {
     // Create the game window

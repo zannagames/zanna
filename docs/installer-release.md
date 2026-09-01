@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Installer and Package Release Guide
@@ -311,8 +311,9 @@ serializes concurrent first extraction with a recoverable lock; extracts into
 an atomic staging directory; verifies the payload before reuse; and supports
 quiet and colored terminal output. It does not require FUSE.
 
-Portable Linux tarball `install.sh` and `uninstall.sh` support `PREFIX`,
-`DESTDIR`, `--dry-run`, `--force`, and `--quiet`. Installation preflights
+Portable Linux tarball `install.sh` and `uninstall.sh` both honor `PREFIX`,
+`DESTDIR`, `--dry-run`, and `--quiet`; `--force` is install-only (it is what
+lets installation overwrite paths not owned by a prior Zanna manifest). Installation preflights
 unowned conflicts, journals same-filesystem backups, rolls back failures,
 removes stale owned files on upgrade, and records the actual prefix. Uninstall
 is also transactional and preserves unrelated files.

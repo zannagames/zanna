@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Appendix D: Error Messages
@@ -14,25 +14,46 @@ A comprehensive guide to Zanna error messages, their causes, and solutions. When
 
 Error messages in Zanna follow a consistent format:
 
+**Compile-time diagnostics** use this format:
+
 ```text
-Error: ErrorType at filename.zia:LINE:COLUMN
-  Description of what went wrong
+filename.zia:LINE:COLUMN: error[CODE]: Description of what went wrong
+ LINE |     the problematic line
+      |     ^ indicator pointing to the issue
+  stage: sema
+```
 
-    LINE-1 | previous line of code
-  > LINE   | the problematic line
-           |     ^^^ indicator pointing to the issue
-    LINE+1 | next line of code
+For example:
 
-  in function 'functionName' at filename.zia:LINE
-  called from 'callerName' at filename.zia:LINE
+```text
+main.zia:2:16: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected Integer, got String
+ 2 |     var count: Integer = "hello";
+   |     ^
+  stage: sema
+```
+
+**Runtime traps** use a different, single-line format:
+
+```text
+Trap @function:block#ip (filename.zia:LINE): Kind (code=C): message
+```
+
+```text
+Trap @main:entry_0#13 (main.zia:4): DivideByZero (code=0): division by zero
 ```
 
 **Reading strategy:**
-1. Note the **error type** (e.g., `TypeError`, `SyntaxError`)
+1. Note the **stable code** (e.g., `V-ZIA-TYPE-MISMATCH`, `W008`, `B1006`) — run
+   `zanna explain <CODE>` for a one-line description of any of them
 2. Check the **line and column** numbers
 3. Read the **description** for specifics
-4. Look at the **code context** shown
-5. Trace the **call stack** if the error is in a function
+4. Look at the **code context** and caret shown beneath it
+5. Check the **stage** line (`parse`, `sema`, `lower`, `verify`) to see which
+   pipeline phase rejected the program
+
+> Diagnostic codes are grouped by subsystem: `V-ZIA-*` for the Zia frontend,
+> `B####` for BASIC, `W###` for Zia lint warnings, `E_NS_*` for BASIC
+> namespaces, and `V-IL-VERIFY` for IL verification.
 
 ---
 
@@ -64,8 +85,7 @@ Syntax errors occur when your code violates the grammar rules of Zia. The compil
 ### "Unexpected token"
 
 ```text
-Error: SyntaxError at main.zia:5:5
-  Unexpected token 'else'
+main.zia:5:5: error[V-ZIA-PARSE-EXPR]: expected expression
 ```
 
 **What it means:** The compiler found a keyword or symbol where it wasn't expected, usually because something is missing earlier in the code.
@@ -118,8 +138,7 @@ if (x > 0 && y < 10) {
 ### "Expected ';'"
 
 ```text
-Error: SyntaxError at main.zia:10:1
-  Expected ';' after statement
+main.zia:10:1: error[V-ZIA-PARSE-EXPECTED]: expected ;, got }
 ```
 
 **What it means:** A statement ended without the required semicolon.
@@ -158,8 +177,7 @@ var result = someFunction(arg1, arg2) +
 ### "Expected '}'"
 
 ```text
-Error: SyntaxError at main.zia:EOF
-  Expected '}' at end of block
+main.zia:12:1: error[V-ZIA-PARSE-EXPECTED]: expected }, got eof
 ```
 
 **What it means:** A block (function, if, loop, etc.) was opened with `{` but never closed with `}`.
@@ -199,8 +217,7 @@ func calculate(x: Integer) -> Integer {
 ### "Invalid character"
 
 ```text
-Error: SyntaxError at main.zia:3:15
-  Invalid character '@'
+main.zia:3:15: error[V-ZIA-PARSE-EXPECTED]: expected ;, got @
 ```
 
 **What it means:** A character that isn't part of Zia syntax was found in your code.
@@ -235,8 +252,7 @@ var email = "user@domain.com";
 ### "Unterminated String literal"
 
 ```text
-Error: SyntaxError at main.zia:7:20
-  Unterminated String literal
+main.zia:7:20: error[V-ZIA-LEX-LITERAL]: newline in string literal
 ```
 
 **What it means:** A String was opened with `"` but never closed.
@@ -287,8 +303,7 @@ var text = "Line one\nLine two";
 ### "Expected identifier"
 
 ```text
-Error: SyntaxError at main.zia:5:5
-  Expected identifier after 'var'
+main.zia:5:5: error[V-ZIA-PARSE-EXPECTED]: expected variable name
 ```
 
 **What it means:** The compiler expected a name (for a variable, function, etc.) but found something else.
@@ -336,8 +351,7 @@ Type errors occur when you use a value in a way that doesn't match its type.
 ### "Type mismatch"
 
 ```text
-Error: TypeError at main.zia:7:14
-  Type mismatch: expected 'Integer', got 'String'
+main.zia:7:14: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected Integer, got String
 ```
 
 **What it means:** You used a value of one type where a different type was required.
@@ -398,8 +412,7 @@ func getAge() -> Integer {
 ### "Cannot assign to immutable variable"
 
 ```text
-Error: TypeError at main.zia:12:1
-  Cannot assign to immutable variable 'PI'
+main.zia:12:1: error[V-ZIA-SEMA]: Cannot reassign final variable 'PI'
 ```
 
 **What it means:** You tried to change a value that was declared as constant.
@@ -443,8 +456,7 @@ counter = counter + 1;  // OK
 ### "Incompatible types in binary operation"
 
 ```text
-Error: TypeError at main.zia:8:20
-  Cannot apply '+' to 'String' and 'Integer'
+main.zia:8:20: error[V-ZIA-SEMA]: Invalid operands for arithmetic operation
 ```
 
 **What it means:** You tried to use an operator with types that don't support that operation together.
@@ -502,8 +514,7 @@ var sum = a + b;  // 8
 ### "Cannot convert type"
 
 ```text
-Error: TypeError at main.zia:15:12
-  Cannot convert 'String' to 'Integer': invalid format
+main.zia:15:12: error[V-ZIA-SEMA]: Cannot cast String to Integer with 'as'; use Zanna.Core.Parse.IntOr or Zanna.Core.Parse.DoubleOr for fallible parsing
 ```
 
 **What it means:** A type conversion was attempted but failed because the value couldn't be converted.
@@ -552,8 +563,7 @@ var num = Convert.ToInt64(cleaned);
 ### "Null pointer exception" / "Cannot access property of null"
 
 ```text
-Error: NullPointerError at main.zia:15:18
-  Cannot access property 'name' of null value
+main.zia:15:18: error[V-ZIA-SEMA]: Cannot access member 'name' on Optional type 'User?' without null check; use optional chaining or force unwrap
 ```
 
 **What it means:** You tried to use a method or field on a value that is null.
@@ -617,8 +627,7 @@ Name errors occur when you use a name that doesn't exist or conflicts with anoth
 ### "Undefined variable"
 
 ```text
-Error: NameError at main.zia:15:20
-  Undefined variable 'count'
+main.zia:15:20: error[V-ZIA-UNDEFINED]: Undefined identifier: count
 ```
 
 **What it means:** You used a variable name that hasn't been declared.
@@ -681,8 +690,7 @@ Say(temp);
 ### "Undefined function"
 
 ```text
-Error: NameError at main.zia:20:5
-  Undefined function 'calulate'
+main.zia:20:5: error[V-ZIA-UNDEFINED]: Undefined identifier: calulate; did you mean 'calculate'?
 ```
 
 **What it means:** You called a function that doesn't exist.
@@ -727,8 +735,7 @@ var length = myString.Length;
 ### "Duplicate definition"
 
 ```text
-Error: NameError at main.zia:30:6
-  Duplicate definition of 'processData'
+main.zia:30:6: error[V-ZIA-SEMA]: Duplicate definition of 'processData' with the same signature
 ```
 
 **What it means:** The same name is defined twice in the same scope.
@@ -816,8 +823,7 @@ END ENUM
 ### "Variable used before declaration"
 
 ```text
-Error: NameError at main.zia:5:12
-  Variable 'total' used before declaration
+main.zia:5:12: error[V-ZIA-UNDEFINED]: Undefined identifier: total
 ```
 
 **What it means:** You referenced a variable on a line before its `var` declaration.
@@ -841,8 +847,7 @@ Say(total);  // OK
 ### "Cannot shadow variable"
 
 ```text
-Error: NameError at main.zia:12:9
-  Cannot shadow variable 'x' from outer scope
+main.zia:12:9: warning[W004]: Variable 'x' shadows a variable in an outer scope
 ```
 
 **What it means:** You declared a variable with the same name as one in an outer scope, which can cause confusion.
@@ -879,8 +884,7 @@ Errors related to function definitions and calls.
 ### "Wrong number of arguments"
 
 ```text
-Error: ArgumentError at main.zia:10:5
-  Function 'add' expects 2 arguments, got 3
+main.zia:10:5: error[V-ZIA-SEMA]: Too many arguments to 'add': expected 2, got 3
 ```
 
 **What it means:** You called a function with more or fewer arguments than it accepts.
@@ -926,8 +930,7 @@ var result = sum([1, 2, 3, 4, 5]);  // Pass array
 ### "Missing return statement"
 
 ```text
-Error: TypeError at main.zia:25:1
-  Function 'getValue' must return a value of type 'Integer'
+main.zia:25:1: error[W008]: Function 'getValue' may not return a value on all code paths
 ```
 
 **What it means:** A function declares a return type but doesn't always return a value.
@@ -977,8 +980,7 @@ func getStatus(code: Integer) -> String {
 ### "Cannot return value from void function"
 
 ```text
-Error: TypeError at main.zia:8:5
-  Cannot return a value from function with no return type
+main.zia:8:5: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected Void, got Integer
 ```
 
 **What it means:** You tried to return a value from a function that doesn't declare a return type.
@@ -1012,8 +1014,7 @@ func printMessage(msg: String) -> String {
 ### "Argument type mismatch"
 
 ```text
-Error: TypeError at main.zia:15:12
-  Argument 1: expected 'String', got 'Integer'
+main.zia:15:12: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected String, got Integer
 ```
 
 **What it means:** A function was called with an argument of the wrong type.
@@ -1048,8 +1049,7 @@ Errors related to entities (Zanna's term for classes), interfaces, and object-or
 ### "Entity does not implement interface"
 
 ```text
-Error: TypeError at main.zia:20:8
-  Entity 'Circle' does not implement method 'draw' from interface 'Drawable'
+main.zia:20:8: error[V-ZIA-SEMA]: Type 'Circle' does not implement interface method 'Drawable.draw'
 ```
 
 **What it means:** An class claims to implement an interface but is missing one or more required methods.
@@ -1096,8 +1096,7 @@ class Circle implements Drawable {
 ### "Cannot access hidden member"
 
 ```text
-Error: AccessError at main.zia:30:15
-  Cannot access hidden member 'balance' of class 'BankAccount'
+main.zia:30:15: error[V-ZIA-SEMA]: Cannot access private member 'balance' of type 'BankAccount'
 ```
 
 **What it means:** You tried to access a field or method marked `hide` from outside the class.
@@ -1132,8 +1131,7 @@ Say(account.getBalance());  // OK
 ### "Method signature mismatch"
 
 ```text
-Error: TypeError at main.zia:25:5
-  Override of 'speak' has different signature than parent
+main.zia:25:5: error[V-ZIA-SEMA]: Method 'speak' is marked override but no parent method with the same signature exists
 ```
 
 **What it means:** When overriding a method from a parent class, the signature must match exactly.
@@ -1174,8 +1172,7 @@ class Dog extends Animal {
 ### "Missing initializer"
 
 ```text
-Error: TypeError at main.zia:15:12
-  Cannot create 'Player' without initializer
+main.zia:15:12: error[V-ZIA-SEMA]: Type 'Player' has no init overload matching the provided arguments
 ```
 
 **What it means:** You tried to create a class instance without providing required initialization values.
@@ -1205,8 +1202,7 @@ var player = Player("Alice", 100);  // OK
 ### "Cannot access 'self' in static context"
 
 ```text
-Error: ContextError at main.zia:12:16
-  Cannot access 'self' outside of method context
+main.zia:12:16: error[V-ZIA-SEMA]: 'self' can only be used inside a method
 ```
 
 **What it means:** You used `self` in a context where there's no object instance.
@@ -1257,8 +1253,7 @@ Runtime errors occur while your program is running, typically when an operation 
 ### "Index out of bounds"
 
 ```text
-Error: IndexError at main.zia:20:15
-  Array index 10 is out of bounds for array of length 5
+main.zia:20:15: error[V-ZIA-BOUNDS]: fixed array index 10 is out of bounds for length 5
 ```
 
 **What it means:** You tried to access an array element at a position that doesn't exist.
@@ -1322,8 +1317,7 @@ if scores.Length > 0 {
 ### "Division by zero"
 
 ```text
-Error: ArithmeticError at main.zia:12:16
-  Division by zero
+main.zia:12:16: error[W010]: Division by zero
 ```
 
 **What it means:** You divided a number by zero, which is mathematically undefined.
@@ -1368,8 +1362,7 @@ var average = safeDivide(total, count, 0);
 ### "Integer overflow"
 
 ```text
-Error: OverflowError at main.zia:8:12
-  Integer overflow: result exceeds Integer range
+Trap @main:entry_0#13 (main.zia:8): Overflow (code=4): Overflow: integer overflow in add
 ```
 
 **What it means:** A calculation produced a number too large (or too small) to fit in the integer type.
@@ -1401,8 +1394,7 @@ if big < Integer.MAX {
 ### "Type cast failed"
 
 ```text
-Error: CastError at main.zia:30:12
-  Cannot cast 'Dog' to 'Cat'
+Trap @main:entry_0#21 (main.zia:30): InvalidCast (code=0): invalid cast
 ```
 
 **What it means:** You tried to cast an object to a type it isn't compatible with.
@@ -1448,8 +1440,7 @@ match animal {
 ### "Stack overflow"
 
 ```text
-Error: StackOverflowError at main.zia:15:5
-  Stack overflow: too many nested function calls
+Trap @recurse:entry_0#5 (main.zia:15): RuntimeError (code=0): stack overflow
 ```
 
 **What it means:** Your program ran out of stack space, usually from too-deep recursion.
@@ -1530,8 +1521,7 @@ Errors related to file operations and input/output.
 ### "File not found"
 
 ```text
-Error: FileError at main.zia:5:20
-  File not found: 'data.txt'
+Trap @main:entry_0#3 (main.zia:5): DomainError (code=0): Zanna.IO.File.ReadAllText: failed to open file
 ```
 
 **What it means:** You tried to read a file that doesn't exist.
@@ -1540,8 +1530,8 @@ Error: FileError at main.zia:5:20
 
 ```zia
 // Problem: File doesn't exist
-bind Zanna.IO;
-bind Zanna.Terminal;
+bind Zanna.IO as IO;
+bind Zanna.Terminal as Terminal;
 
 var content = IO.File.ReadAllText("data.txt");  // Error if missing
 
@@ -1579,8 +1569,7 @@ if filename != null and IO.File.Exists(filename!) {
 ### "Permission denied"
 
 ```text
-Error: FileError at main.zia:10:5
-  Permission denied: '/etc/passwd'
+Trap @main:entry_0#3 (main.zia:10): DomainError (code=0): Zanna.IO.File.WriteAllText: failed to open file
 ```
 
 **What it means:** Your program doesn't have permission to access the file.
@@ -1609,8 +1598,7 @@ File.WriteAllText(Machine.Home + "/config.txt", data);  // User's home
 ### "File already exists"
 
 ```text
-Error: FileError at main.zia:15:5
-  File already exists: 'output.txt' (exclusive create mode)
+Trap @main:entry_0#3 (main.zia:15): DomainError (code=0): Zanna.IO.File.Create: failed to open file
 ```
 
 **What it means:** You tried to create a file that already exists when using exclusive create mode.
@@ -1621,7 +1609,7 @@ Error: FileError at main.zia:15:5
 // Problem: You want to create a file only when it does not already exist
 bind File = Zanna.IO.File;
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Convert = Zanna.Core.Convert;
 
 // Solution 1: Check and decide
@@ -1645,8 +1633,7 @@ File.WriteAllText(filename, data);
 ### "Parse error"
 
 ```text
-Error: ParseError at main.zia:8:25
-  Invalid JSON at position 42: unexpected '}'
+Trap @main:entry_0#3 (main.zia:8): DomainError (code=0): Json.Parse: expected string key in object at line 1, column 2
 ```
 
 **What it means:** File content couldn't be parsed in the expected format.
@@ -1686,8 +1673,7 @@ Errors related to memory allocation and management.
 ### "Out of memory"
 
 ```text
-Error: MemoryError at main.zia:50:5
-  Out of memory: failed to allocate 1073741824 bytes
+Trap @main:entry_0#7 (main.zia:50): RuntimeError (code=0): out of memory
 ```
 
 **What it means:** Your program requested more memory than is available.
@@ -1748,8 +1734,7 @@ Errors related to multi-threaded and concurrent programming.
 ### "Deadlock detected"
 
 ```text
-Error: DeadlockError at runtime
-  Deadlock detected: threads waiting on each other
+Trap @worker:entry_0#9 (main.zia:22): RuntimeError (code=0): deadlock detected
 ```
 
 **What it means:** Two or more threads are each waiting for the other to release a lock, so neither can proceed.
@@ -1867,8 +1852,7 @@ Errors related to module imports and organization.
 ### "Module not found"
 
 ```text
-Error: ImportError at main.zia:3:8
-  Module not found: 'Utils'
+main.zia:3:8: error[V1000]: Failed to open imported file: utils.zia
 ```
 
 **What it means:** An imported module couldn't be located.
@@ -1896,8 +1880,7 @@ bind src.utils.Utils;  // For Utils.zia in src/utils/
 ### "Circular import"
 
 ```text
-Error: ImportError at moduleA.zia:2:8
-  Circular import detected: ModuleA -> ModuleB -> ModuleA
+moduleA.zia:2:8: error[V1000]: circular bind detected
 ```
 
 **What it means:** Two modules import each other, creating a circular dependency.
@@ -1927,8 +1910,7 @@ bind ModuleA;  // Circular!
 ### "Symbol not exported"
 
 ```text
-Error: ImportError at main.zia:5:12
-  Symbol 'internalFunc' is not exported from module 'Utils'
+main.zia:5:12: error[V-ZIA-UNDEFINED]: Undefined identifier: internalFunc
 ```
 
 **What it means:** You tried to use something from a module that isn't marked for export.

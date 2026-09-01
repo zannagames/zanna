@@ -672,7 +672,7 @@ class KeyMap {
     hide bindings: Map[String, Integer];
 
     expose func init() {
-        self.bindings = new Map();
+        self.bindings = new Map[String, Integer]();
         // Default bindings
         self.bindings.Set("jump", Key.Space);
         self.bindings.Set("left", Key.Left);
@@ -707,7 +707,7 @@ To let the player rebind a key:
 
 ```zia
 bind Keyboard = Zanna.Input.Keyboard;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 func waitForKeyAndRebind(keyMap: KeyMap, action: String) {
     // Wait for any key press
@@ -814,7 +814,7 @@ class Debouncer {
     hide cooldowns: Map[String, Number];
 
     expose func init() {
-        self.cooldowns = new Map();
+        self.cooldowns = new Map[String, Number]();
     }
 
     func update(dt: Number) {
@@ -1113,7 +1113,7 @@ Centralizing input handling makes it easy to add controller support, rebindable 
 When your game window isn't focused (the player clicked on another window), you might still receive input events in some situations, or the input state might be stale. Good practice:
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 while !canvas.ShouldClose {
     canvas.Poll();
@@ -1214,7 +1214,7 @@ For input buffering and timing-sensitive code:
 ```zia
 bind Keyboard = Zanna.Input.Keyboard;
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 if Keyboard.WasPressed(Key.Space) {
     Say("Jump pressed at time: " + Time.Clock.NowMs());

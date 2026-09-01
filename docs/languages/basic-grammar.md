@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # BASIC Frontend Grammar Notes
@@ -85,7 +85,7 @@ Constraints:
   DELETE <expr>
   ```
 
-`<expr>` must evaluate to an object handle; deleting `NULL` is a no‑op. The keyword is `DELETE`
+`<expr>` must evaluate to an object handle; deleting `NOTHING` (or an unassigned object variable) is a no‑op. The keyword is `DELETE`
 (parser handler `Parser::parseDeleteStatement` in `Parser_Stmt_OOP.cpp`); there is no `DISPOSE`
 keyword in the BASIC frontend.
 
@@ -161,11 +161,13 @@ outer `TRY`/`ON ERROR` handlers still see the failure.
     - `expr IS Type` → BOOLEAN
         - If `Type` is a class, tests whether the dynamic type of `expr` is that class or a derived class.
         - If `Type` is an interface, tests whether the dynamic type of `expr` implements that interface.
-    - `expr AS Type` → pointer/reference value or NULL
+    - `expr AS Type` → pointer/reference value or `NOTHING`
         - If `Type` is a class, returns `expr` when the dynamic type is that class or a derived class; otherwise returns
-          NULL.
+          `NOTHING`.
         - If `Type` is an interface, returns `expr` when the dynamic type implements the interface; otherwise returns
-          NULL.
+          `NOTHING`.
+        - Test the result with `Zanna.Core.Object.RefEquals(x, NOTHING)`. Comparing an
+          object against `NOTHING` with `=`, `<>`, or `IS` does not compile.
 
 Notes:
 
@@ -187,6 +189,11 @@ CLASS C
   END PROPERTY
 END CLASS
 ```
+
+> **Known defects.** A `STATIC` *field* currently fails to compile: the lowerer
+> emits a global named `@C::VALUE` and the IL verifier rejects it with
+> `global has malformed name`. Static *methods* only resolve through an instance
+> receiver (`c.Ping()`); `C.Ping()` reports `unknown procedure`.
 
 ### PROPERTY blocks
 
@@ -216,7 +223,12 @@ CLASS A
 END CLASS
 ```
 
-The static constructor is parameterless and is invoked by the module initializer before any user code runs.
+The static constructor is parameterless and is intended to be invoked by the module
+initializer before any user code runs.
+
+> **Not currently functional.** `STATIC SUB NEW()` parses, but the body does not
+> execute — the same gap that affects `STATIC DESTRUCTOR`. See
+> [Lifetime Model](lifetime.md#static-destructors).
 
 ## Enum declarations
 

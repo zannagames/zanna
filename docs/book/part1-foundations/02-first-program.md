@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Chapter 2: Your First Program
@@ -80,7 +80,7 @@ zia --version
 
 You should see something like:
 ```text
-zia v0.3.0
+zia v0.3.1-snapshot
 Zia Compiler
 IL version: 0.3.0
 ```
@@ -305,7 +305,7 @@ func start() {
 
 You'll get:
 ```text
-hello.zia:4:5: error[V3000]: Undefined identifier: Say
+hello.zia:4:5: error[V-ZIA-UNDEFINED]: Undefined identifier: Say
 ```
 
 The compiler doesn't know what `Say` means because we didn't tell it where to find the function.
@@ -350,7 +350,7 @@ func begin() {
 
 Running this produces:
 ```text
-Function not found
+Trap: RuntimeError (code=0): Function not found
 ```
 
 The program compiles, but the computer doesn't know what to run. It's like having a recipe book with no table of contents — you don't know where to start reading.
@@ -381,7 +381,7 @@ This is the line that actually makes something happen. Let's examine each piece:
 
 Error:
 ```text
-hello.zia:5:1: error[V2000]: expected ;, got }
+hello.zia:5:1: error[V-ZIA-PARSE-EXPECTED]: expected ;, got }
 ```
 
 The compiler reached the closing brace and realized the previous statement was never properly terminated.
@@ -394,7 +394,7 @@ The compiler reached the closing brace and realized the previous statement was n
 
 Error:
 ```text
-hello.zia:4:23: error[V3000]: Runtime class 'Zanna.Terminal' has no method 'Sya'
+hello.zia:4:23: error[V-ZIA-SEMA]: Runtime class 'Zanna.Terminal' has no method 'Sya'
 ```
 
 The compiler can't find a function with that name. Function names must be spelled exactly right. Most of the standard library uses `PascalCase` for function names (capital letter at the start of each word).
@@ -407,8 +407,8 @@ The compiler can't find a function with that name. Function names must be spelle
 
 Error:
 ```text
-hello.zia:4:24: error[V3000]: Undefined identifier: Hello
-hello.zia:4:31: error[V3000]: Undefined identifier: World
+hello.zia:4:9: error[V-ZIA-UNDEFINED]: Undefined identifier: Hello; did you mean 'Bell'?
+hello.zia:4:16: error[V-ZIA-UNDEFINED]: Undefined identifier: World
 ```
 
 Without quotes, the compiler tries to interpret `Hello` and `World` as variable names, which don't exist.
@@ -433,7 +433,7 @@ func start() {
 
 Error:
 ```text
-hello.zia:5:1: error[V2000]: expected }, got eof
+hello.zia:5:1: error[V-ZIA-PARSE-EXPECTED]: expected }, got eof
 ```
 
 The compiler reached the end of the file still expecting to find the closing brace. Braces must always be balanced — every `{` needs a matching `}`.
@@ -684,7 +684,7 @@ func start() {
 
 Run it:
 ```text
-hello.zia:4:24: error[V1000]: newline in string literal
+hello.zia:4:9: error[V-ZIA-LEX-LITERAL]: newline in string literal
 ```
 
 The error message tells us:
@@ -710,7 +710,7 @@ func start() {
 
 Run it:
 ```text
-hello.zia:5:1: error[V2000]: expected ;, got }
+hello.zia:5:1: error[V-ZIA-PARSE-EXPECTED]: expected ;, got }
 ```
 
 Notice the error points to line 5 (the closing brace), not line 4 (where the semicolon is missing). The compiler didn't realize something was wrong until it hit the `}` and thought "wait, I was expecting a semicolon, not a brace."
@@ -729,7 +729,7 @@ func start() {
 
 Run it:
 ```text
-hello.zia:4:23: error[V3000]: Runtime class 'Zanna.Terminal' has no method 'Sya'
+hello.zia:4:23: error[V-ZIA-SEMA]: Runtime class 'Zanna.Terminal' has no method 'Sya'
 ```
 
 The compiler knows `Terminal` exists but doesn't recognize `Sya`. This kind of error often comes from typos.

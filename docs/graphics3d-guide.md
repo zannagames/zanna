@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-09-01
 ---
 
 # Zanna.Graphics3D — User Guide
@@ -149,7 +149,7 @@ scene attachment defines synchronization.
 - [Decal3D](#decal3d) — Projected decals
 
 **Physics**
-- [Physics3DWorld, PhysicsHit3D, CollisionEvent3D, Collider3D, Physics3DBody](#physics3dworld) — Rigid body physics, queries, and contacts
+- [PhysicsWorld3D, PhysicsHit3D, CollisionEvent3D, Collider3D, PhysicsBody3D](#physics3dworld) — Rigid body physics, queries, and contacts
 - [Character3D](#character3d) — Character controller
 - [Trigger3D](#trigger3d) — Trigger volumes
 - [DistanceJoint3D, SpringJoint3D](#distancejoint3d) — Constraints
@@ -186,13 +186,13 @@ scene attachment defines synchronization.
 ```zia
 module HelloCube;
 
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Graphics3D.Light3D;
-bind Zanna.Math.Vec3;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Graphics3D.Light3D as Light3D;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("My 3D App", 640, 480);
@@ -211,7 +211,7 @@ func start() {
     Canvas3D.SetAmbient(canvas, 0.1, 0.1, 0.1);
 
     var angle = 0.0;
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
         var xform = Mat4.RotateY(angle);
@@ -490,13 +490,13 @@ or color grading.
 ```zia
 module Canvas3DDemo;
 
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Graphics3D.Light3D;
-bind Zanna.Math.Vec3;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Graphics3D.Light3D as Light3D;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("Demo", 800, 600);
@@ -515,7 +515,7 @@ func start() {
     Canvas3D.EnableShadows(canvas, 1024);
 
     var angle = 0.0;
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
         Canvas3D.Begin(canvas, cam);
@@ -566,8 +566,8 @@ overlay, and compares to the committed baseline in `examples/3d/baselines/`.
 | `FromOBJ(path)` | `obj(str)` | Load Wavefront OBJ file |
 | `FromSTL(path)` | `obj(str)` | Load STL file (binary or ASCII) |
 
-`NewBox`, `NewSphere`, `NewPlane`, and `NewCylinder` remain available as
-compatibility aliases for the shape factories.
+The shape factories are named `Box`, `Sphere`, `Plane`, and `Cylinder`. There
+are no `NewBox` / `NewSphere` / `NewPlane` / `NewCylinder` aliases.
 
 ### Properties
 
@@ -591,8 +591,8 @@ compatibility aliases for the shape factories.
 | `AddVertex(x, y, z, nx, ny, nz, u, v)` | `void(f64 x8)` | Add vertex with position, normal, and UV |
 | `AddTriangle(i0, i1, i2)` | `void(i64, i64, i64)` | Add triangle from vertex indices (CCW winding) |
 | `Clear()` | `void()` | Reset vertex/index counts to zero (reuse backing arrays) |
-| `RecalcNormals()` | `void()` | Auto-compute vertex normals from face geometry |
-| `CalcTangents()` | `void()` | Compute tangent vectors (required for normal mapping) |
+| `RecalculateNormals()` | `void()` | Auto-compute vertex normals from face geometry |
+| `CalculateTangents()` | `void()` | Compute tangent vectors (required for normal mapping) |
 | `Clone()` | `obj()` | Deep copy of mesh data, including attached morph targets |
 | `Transform(mat4)` | `void(obj)` | Transform all vertices in-place by Mat4 |
 | `BendArc(radius, arcDegrees)` | `void(f64, f64)` | Bend the mesh's X extent around a vertical circular arc in place, rotating normals and tangents with it |
@@ -640,7 +640,7 @@ unloading the whole node or model template.
 ```zia
 module MeshDemo;
 
-bind Zanna.Graphics3D.Mesh3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
 
 func start() {
     // Procedural triangle
@@ -669,14 +669,14 @@ func start() {
 
 All mesh generators and the OBJ loader produce **counter-clockwise (CCW)** winding for front faces. When constructing meshes programmatically, vertices must be ordered CCW when viewed from the front.
 
-**Mesh validation:** Procedural generators reject non-finite and non-positive dimensions. `Box` takes full extents, while collider boxes use half-extents. `Plane` emits +Y-facing triangles, matching its vertex normals and backface-culling expectations. Sphere and cylinder segment counts are clamped to production-safe maxima to avoid accidental unbounded allocation. `Reserve()` can be called before many `AddVertex`/`AddTriangle` calls to avoid repeated reallocations; it changes capacity only, not counts or geometry revision. `AddVertex` traps on non-finite or out-of-float-range vertex data. `AddTriangle` traps on negative, out-of-range, duplicate-index, collinear, or otherwise degenerate triangles. These public append validation traps do not poison the mesh; valid later appends can continue without `Clear()`. Allocation failures and importer failures still mark the build failed until `Clear()` resets it. `RecalcNormals` accumulates in double precision before normalizing back to renderer floats. `CalcTangents` skips degenerate or overflowing face contributions instead of narrowing invalid double intermediates into renderer floats. Deferred heap draws retain an immutable geometry revision, so a source mutation after `DrawMesh` cannot change the queued bytes; unchanged later frames reuse that revision without another vertex/index copy. Camera-relative rebase and other dynamic geometry retain their explicit frame snapshots.
+**Mesh validation:** Procedural generators reject non-finite and non-positive dimensions. `Box` takes full extents, while collider boxes use half-extents. `Plane` emits +Y-facing triangles, matching its vertex normals and backface-culling expectations. Sphere and cylinder segment counts are clamped to production-safe maxima to avoid accidental unbounded allocation. `Reserve()` can be called before many `AddVertex`/`AddTriangle` calls to avoid repeated reallocations; it changes capacity only, not counts or geometry revision. `AddVertex` traps on non-finite or out-of-float-range vertex data. `AddTriangle` traps on negative, out-of-range, duplicate-index, collinear, or otherwise degenerate triangles. These public append validation traps do not poison the mesh; valid later appends can continue without `Clear()`. Allocation failures and importer failures still mark the build failed until `Clear()` resets it. `RecalculateNormals` accumulates in double precision before normalizing back to renderer floats. `CalculateTangents` skips degenerate or overflowing face contributions instead of narrowing invalid double intermediates into renderer floats. Deferred heap draws retain an immutable geometry revision, so a source mutation after `DrawMesh` cannot change the queued bytes; unchanged later frames reuse that revision without another vertex/index copy. Camera-relative rebase and other dynamic geometry retain their explicit frame snapshots.
 
 `VertexPosition(index)` is a bounded, read-only geometry query. It returns a
 fresh mesh-local `Vec3`, preserving the authoritative double-precision position
 sidecar when present, and returns `null` for negative or out-of-range indices.
 Interactive tools should cap the number of vertices they scan per operation.
 
-**Tangents:** `CalcTangents()` uses position/UV derivatives with Gram-Schmidt orthogonalization and `tangent.w` handedness for mirrored UVs. Degenerate UV islands get a normalized fallback tangent orthogonal to the vertex normal so normal maps never receive a tangent parallel to the normal. When a normal-mapped heap mesh has missing or degenerate tangents, Canvas3D generates a separate immutable tangent variant keyed by the mesh geometry revision. It is reused across frames and hardware backends without mutating the authored mesh; any position, normal, UV, or topology mutation forks a new raw/tangent revision.
+**Tangents:** `CalculateTangents()` uses position/UV derivatives with Gram-Schmidt orthogonalization and `tangent.w` handedness for mirrored UVs. Degenerate UV islands get a normalized fallback tangent orthogonal to the vertex normal so normal maps never receive a tangent parallel to the normal. When a normal-mapped heap mesh has missing or degenerate tangents, Canvas3D generates a separate immutable tangent variant keyed by the mesh geometry revision. It is reused across frames and hardware backends without mutating the authored mesh; any position, normal, UV, or topology mutation forks a new raw/tangent revision.
 
 **OBJ loader:** Supports v/vn/vt tuples, negative indices, inline face comments, locale-independent decimal parsing, and arbitrary n-gons through ear-clipping triangulation. The loader deduplicates identical `(position, uv, normal)` tuples so indexed assets do not balloon into one vertex per face corner. Invalid face indices trap and abort the load instead of emitting corrupt geometry. `Mesh3D.FromOBJ` is a geometry-only loader: `.mtl`, `usemtl`, `g`, and `o` directives are parsed and flattened into one mesh. Use `SceneAsset.LoadResult(".obj")` when you want `mtllib`/`usemtl` material groups preserved as separate model nodes and materials.
 
@@ -691,7 +691,7 @@ Perspective or orthographic camera with view and projection matrices.
 | Constructor | Signature | Description |
 |-------------|-----------|-------------|
 | `New(fov, aspect, near, far)` | `obj(f64, f64, f64, f64)` | Create perspective camera with a vertical FOV in degrees |
-| `NewHorizontalFov(fov, aspect, near, far)` | `obj(f64, f64, f64, f64)` | Create perspective camera from a horizontal FOV in degrees |
+| `WithHorizontalFov(fov, aspect, near, far)` | `obj(f64, f64, f64, f64)` | Create perspective camera from a horizontal FOV in degrees |
 | `NewOrtho(size, aspect, near, far)` | `obj(f64, f64, f64, f64)` | Create orthographic camera (size = half-height in world units) |
 
 ### Properties
@@ -719,11 +719,11 @@ Perspective or orthographic camera with view and projection matrices.
 | `Shake(intensity, duration, decay)` | `void(f64, f64, f64)` | Apply camera shake effect |
 | `SmoothFollow(target, speed, height, distance, dt)` | `void(obj, f64, f64, f64, f64)` | Smoothly follow a Vec3 target position |
 | `SmoothLookAt(target, speed, dt)` | `void(obj, f64, f64)` | Smoothly rotate toward a Vec3 target |
-| `FPSInit()` | `void()` | Extract yaw/pitch from current view matrix |
-| `FPSUpdate(mdx, mdy, fwd, right, up, speed, dt)` | `void(f64, f64, f64, f64, f64, f64, f64)` | FPS mouse look + WASD movement |
+| `FirstPersonInit()` | `void()` | Extract yaw/pitch from current view matrix |
+| `FirstPersonUpdate(mdx, mdy, fwd, right, up, speed, dt)` | `void(f64, f64, f64, f64, f64, f64, f64)` | FPS mouse look + WASD movement |
 
 `Yaw`, `Pitch`, `Orbit`, and `Light3D.Spot` all use degrees. Writing `Yaw` or `Pitch` updates the camera view immediately.
-Use `NewHorizontalFov` or `SetHorizontalFov` for game cameras authored with familiar horizontal FOV values; the runtime converts them to the vertical FOV stored in `Fov` using the camera aspect ratio, which avoids edge stretching from passing a horizontal value to `New`.
+Use `WithHorizontalFov` or `SetHorizontalFov` for game cameras authored with familiar horizontal FOV values; the runtime converts them to the vertical FOV stored in `Fov` using the camera aspect ratio, which avoids edge stretching from passing a horizontal value to `New`.
 `Canvas3D.Begin(canvas, camera)` uses the active output's aspect ratio (window or bound `RenderTarget3D`) when building that frame's projection, so perspective remains correct across resizes and RTT passes without mutating the camera object's stored projection/aspect.
 Camera constructors and control methods sanitize invalid numeric inputs at the API boundary: non-finite FOV/aspect/clip planes/orthographic sizes, degenerate `LookAt` vectors, invalid FPS deltas, and invalid shake/follow parameters fall back to finite defaults so view matrices, projection matrices, `ScreenToRay()`, and `ScreenToRayOrigin()` results remain usable. Imported camera animation can switch `IsOrtho` with step keys and animate `Fov`, aspect, clip planes, and `OrthoSize` through its attached `SceneNode`.
 
@@ -732,9 +732,9 @@ Camera constructors and control methods sanitize invalid numeric inputs at the A
 ```zia
 module CameraDemo;
 
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var canvas = Canvas3D.New("Camera Demo", 800, 600);
@@ -793,7 +793,7 @@ aliases for these factories.
 | `AlphaMode` | Integer | read/write | `0=Opaque`, `1=Mask`, `2=Blend` |
 | `DoubleSided` | Bool | read/write | Disable backface culling when true |
 | `Reflectivity` | Float | read/write | Environment reflection strength [0.0-1.0] |
-| `SsrEnabled` | Bool | read/write | Opt into screen-space reflections (composited by a `PostFX3D.AddSSR` pass on GPU backends; misses keep the env-map term) |
+| `SsrEnabled` | Bool | read/write | Opt into screen-space reflections (composited by a `PostFX3D.AddSsr` pass on GPU backends; misses keep the env-map term) |
 | `Color` | Vec3 | read | Current diffuse/base color |
 | `TexturePixels` | Pixels | read | Current decoded base-color/albedo map, or null |
 | `NormalMapPixels` | Pixels | read | Current decoded normal map, or null |
@@ -816,17 +816,17 @@ aliases for these factories.
 | `SetAlbedoMap(texture)` | `void(obj)` | Set/change the PBR albedo map |
 | `SetShininess(s)` | `void(f64)` | Specular exponent (default 32.0, higher = sharper highlights) |
 | `SetUnlit(flag)` | `void(i1)` | Skip lighting (render flat color) |
-| `SetMetallic(value)` | `void(f64)` | Set the metallic factor |
-| `SetRoughness(value)` | `void(f64)` | Set the roughness factor |
-| `SetAO(value)` | `void(f64)` | Set the AO multiplier |
-| `SetEmissiveIntensity(value)` | `void(f64)` | Scale emissive output |
+| `Metallic` property | `f64` | Metallic factor — assign it (`mat.Metallic = 0.5`) |
+| `Roughness` property | `f64` | Roughness factor — assign it (`mat.Roughness = 0.4`) |
+| `AmbientOcclusion` property | `f64` | AO multiplier — assign it |
+| `EmissiveIntensity` property | `f64` | Scale emissive output — assign it |
 | `SetNormalMap(texture)` | `void(obj)` | Set tangent-space normal map (`Pixels` or `TextureAsset3D`) |
 | `SetMetallicRoughnessMap(texture)` | `void(obj)` | Set the glTF-style metallic/roughness map (`G=roughness`, `B=metallic`) |
-| `SetAOMap(texture)` | `void(obj)` | Set the ambient-occlusion map (`R=occlusion`) |
+| `SetAmbientOcclusionMap(texture)` | `void(obj)` | Set the ambient-occlusion map (`R=occlusion`) |
 | `SetSpecularMap(texture)` | `void(obj)` | Set specular intensity map (`Pixels` or `TextureAsset3D`) |
 | `SetEmissiveMap(texture)` | `void(obj)` | Set emissive color map (`Pixels` or `TextureAsset3D`) |
 | `SetEmissiveColor(r, g, b)` | `void(f64, f64, f64)` | Set emissive color multiplier (additive glow) |
-| `SetNormalScale(value)` | `void(f64)` | Scale tangent-space normal-map strength |
+| `NormalScale` property | `f64` | Scale tangent-space normal-map strength — assign it |
 | `SetShadingModel(model)` | `void(i64)` | Set shading model (see table below) |
 | `SetCustomParam(index, value)` | `void(i64, f64)` | Set custom shader parameter (index 0-11) |
 | `SetEnvMap(cubemap)` | `void(obj)` | Set environment CubeMap3D for reflections |
@@ -834,7 +834,7 @@ aliases for these factories.
 ### Workflow Notes
 
 - `PBR` and `SetShadingModel(2)` select the metallic/roughness workflow directly.
-- Calling `SetMetallic`, `SetRoughness`, `SetAO`, `SetMetallicRoughnessMap`, or `SetAOMap` on a legacy material promotes it into the PBR workflow.
+- Assigning `Metallic`, `Roughness`, or `AmbientOcclusion`, or calling `SetMetallicRoughnessMap` or `SetAmbientOcclusionMap`, on a legacy material promotes it into the PBR workflow.
 - `Clone()` and `MakeInstance()` both return independent material objects. They eagerly copy scalar state and share the currently referenced texture/cubemap objects by pointer. After cloning, either material can replace its maps independently.
 - Color and scalar setters sanitize input at the runtime boundary: colors and PBR factors are clamped to valid ranges, non-finite custom parameters become `0`, and non-finite shadow/fog/material values fall back to deterministic safe defaults. The draw path repeats finite/clamp validation before backend command submission.
 - `Textured` and texture map setters accept `Pixels` handles or `TextureAsset3D` handles with either an RGBA8 fallback or retained native compressed mip blocks. Compressed-only assets render on backends that advertise the matching `bc7`, `astc`, or `etc2` capability and otherwise behave as an unbound texture until a fallback-capable mip is resident. `SetEnvMap` accepts `CubeMap3D` handles only; invalid cubemap handles are ignored rather than retained.
@@ -908,7 +908,7 @@ reconstructable backing and, for PNG, JPEG, GIF, BMP, or KTX2 imports, the exact
 bounded source container retained for lossless VSCN v5 bake. Negative arguments trap, `mipCount` clamps to the
 available range, and a zero count releases all decoded resident fallbacks.
 `Material3D.Textured`, `SetTexture`,
-`SetAlbedoMap`, `SetNormalMap`, `SetMetallicRoughnessMap`, `SetAOMap`,
+`SetAlbedoMap`, `SetNormalMap`, `SetMetallicRoughnessMap`, `SetAmbientOcclusionMap`,
 `SetSpecularMap`, and `SetEmissiveMap` accept texture assets directly when they
 have an RGBA8 fallback or native compressed mip blocks. BC1/BC3/BC4/BC5/BC7/ASTC/ETC2
 assets expose metadata, resident/retained byte counts, native mip payloads,
@@ -926,7 +926,7 @@ final-frame tolerance check for the selected capable backend.
 ```zia
 module MaterialDemo;
 
-bind Zanna.Graphics3D.Material3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
 
 func start() {
     var base = Material3D.PBR(0.8, 0.6, 0.4);
@@ -935,7 +935,7 @@ func start() {
     Material3D.set_AmbientOcclusion(base, 0.9);
     Material3D.set_EmissiveIntensity(base, 1.4);
     Material3D.set_AlphaMode(base, 2); // blend
-    Material3D.set_DoubleSided(base, 1);
+    Material3D.set_DoubleSided(base, true);
 
     var inst = Material3D.MakeInstance(base);
     Material3D.set_Roughness(inst, 0.75);
@@ -1011,9 +1011,9 @@ area/volume light parameter contract.
 ```zia
 module LightDemo;
 
-bind Zanna.Graphics3D.Light3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Light3D as Light3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var canvas = Canvas3D.New("Lights", 800, 600);
@@ -1095,12 +1095,12 @@ Offscreen rendering targets for render-to-texture effects (TV screens, mirrors, 
 ```zia
 module RenderTargetDemo;
 
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.RenderTarget3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.RenderTarget3D as RenderTarget3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("RTT Demo", 800, 600);
@@ -1134,10 +1134,10 @@ Use `Canvas3D.NewOffscreen(target)` when rendering should remain inside an
 existing application window or no display server is available:
 
 ```zia
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.RenderTarget3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.SceneGraph;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.RenderTarget3D as RenderTarget3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.SceneGraph as SceneGraph;
 
 var target = RenderTarget3D.New(640, 360);
 var canvas = Canvas3D.NewOffscreen(target);
@@ -1187,10 +1187,10 @@ Seam handling is also more consistent now: the software sampler remaps bilinear 
 ```zia
 module CubeMapDemo;
 
-bind Zanna.Graphics3D.CubeMap3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Graphics.Pixels;
+bind Zanna.Graphics3D.CubeMap3D as CubeMap3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Graphics.Pixels as Pixels;
 
 func start() {
     var canvas = Canvas3D.New("Skybox Demo", 800, 600);
@@ -1284,7 +1284,7 @@ camera, and child hierarchy.
 | `Camera` | Camera3D | read/write | Camera attached to this node; imported camera animation updates this exact object |
 | `BoundsMin` | Vec3 | read | Subtree axis-aligned bounding box minimum in this node's local space |
 | `BoundsMax` | Vec3 | read | Subtree axis-aligned bounding box maximum in this node's local space |
-| `Body` | Physics3DBody | read | Bound body used by `SyncBindings` |
+| `Body` | PhysicsBody3D | read | Bound body used by `SyncBindings` |
 | `Animator` | AnimController3D | read | Bound controller used for root motion and skinned draw submission |
 | `SyncMode` | Integer | read/write | Transform sync policy used by `SceneGraph.SyncBindings` |
 
@@ -1316,11 +1316,11 @@ camera, and child hierarchy.
 | `MetadataSetBool(key, value)` | `i1(str, i1)` | Create/replace Boolean metadata; false on rejected input |
 | `MetadataSetString(key, value)` | `i1(str, str)` | Create/replace bounded string metadata; false on rejected input |
 | `MetadataRemove(key)` | `i1(str)` | Remove a value and report whether the key existed |
-| `BindBody(body)` | `void(obj)` | Attach a `Physics3DBody` for transform sync |
+| `BindBody(body)` | `void(obj)` | Attach a `PhysicsBody3D` for transform sync |
 | `ClearBodyBinding()` | `void()` | Remove the current body binding |
 | `BindAnimator(controller)` | `void(obj)` | Attach an `AnimController3D` for root motion and animated draw submission |
 | `ClearAnimatorBinding()` | `void()` | Remove the current animator binding |
-| `AddLOD(distance, mesh)` | `void(f64, obj)` | Add or replace an LOD mesh at a distance threshold |
+| `AddLod(distance, mesh)` | `void(f64, obj)` | Add or replace an LOD mesh at a distance threshold |
 | `SetAutoLOD(enabled, screenErrorPx)` | `void(i1, f64)` | Select authored LODs by projected screen size |
 | `SetImpostor(distance, pixels)` | `void(f64, obj)` | Generate or clear a distant textured impostor |
 | `ClearLOD()` | `void()` | Remove all LOD levels |
@@ -1352,12 +1352,12 @@ approximation.
 ```zia
 module SceneDemo;
 
-bind Zanna.Graphics3D.SceneGraph;
-bind Zanna.Graphics3D.SceneNode;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Graphics3D.Material3D;
+bind Zanna.Graphics3D.SceneGraph as SceneGraph;
+bind Zanna.Graphics3D.SceneNode as SceneNode;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
 bind Zanna.Math.Quat;
 
 func start() {
@@ -1384,16 +1384,16 @@ func start() {
     SceneNode.set_Material(branch, Material3D.FromColor(0.1, 0.6, 0.1));
 
     // LOD: use low-poly sphere at distance
-    SceneNode.AddLOD(branch, 20.0, Mesh3D.Sphere(1.5, 4));
+    SceneNode.AddLod(branch, 20.0, Mesh3D.Sphere(1.5, 4));
 
     SceneNode.AddChild(trunk, branch);
     SceneGraph.Add(scene, trunk);
 
     // Find node by name
-    var found = SceneGraph.FindOption(scene, "branch");
+    var found = SceneGraph.Find(scene, "branch");
 
     // Render loop
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
         SceneGraph.Draw(scene, canvas, cam);
@@ -1482,7 +1482,7 @@ for node-light ownership, spot-cone authoring, and Studio transaction rules.
 
 `SceneNode.SyncMode` values:
 
-- `0` = `NodeFromBody`: pull the bound `Physics3DBody` world pose into the node.
+- `0` = `NodeFromBody`: pull the bound `PhysicsBody3D` world pose into the node.
 - `1` = `BodyFromNode`: push the node world pose into the bound body.
 - `2` = `NodeFromAnimatorRootMotion`: consume root motion from the bound `AnimController3D` into the node's local transform (translation plus rotation).
 - `3` = `TwoWayKinematic`: push node-to-body while the body is kinematic, otherwise pull body-to-node.
@@ -1497,7 +1497,7 @@ When `NodeFromAnimatorRootMotion` is active, `SceneGraph.SyncBindings(dt)` consu
 
 Current scope:
 
-- `SceneNode` bindings currently cover `Physics3DBody` and `AnimController3D`.
+- `SceneNode` bindings currently cover `PhysicsBody3D` and `AnimController3D`.
 - `NavAgent3D` now provides its own `BindNode` / `BindCharacter` workflow for navigation-driven motion.
 - `SoundListener3D` and `SoundSource3D` now use `SpatialAudio3D.SyncBindings(dt)`, and `SceneGraph.SyncBindings(dt)` forwards into that audio-binding pass after node/body/anim synchronization.
 
@@ -1522,8 +1522,6 @@ Current scope:
 |--------|-----------|-------------|
 | `LoadResult(path)` | `obj<Zanna.Result>(str)` | Load `.vscn`, `.fbx`, `.gltf`, `.glb`, `.obj`, or `.stl` as `Ok(SceneAsset)` or `Err(message)` |
 | `LoadAssetResult(path)` | `obj<Zanna.Result>(str)` | Load through `Zanna.IO.Assets` as `Ok(SceneAsset)` or `Err(message)`; `.gltf` external buffers/images resolve relative to the model asset |
-| `Load(path)` | `obj(str)` | Compatibility loader that returns `null` on routine content failure |
-| `LoadAsset(path)` | `obj(str)` | Compatibility asset-store loader that returns `null` on routine content failure |
 | `GetMesh(index)` | `obj(i64)` | Get a shared `Mesh3D` by index |
 | `GetMaterial(index)` | `obj(i64)` | Get a shared `Material3D` by index |
 | `GetSkeleton(index)` | `obj(i64)` | Get a shared `Skeleton3D` by index |
@@ -1536,7 +1534,6 @@ Current scope:
 | `GetCamera(sceneIndex, index)` | `obj(i64, i64)` | Get an imported `Camera3D`, or `null` when absent/out of range |
 | `GetSceneName(index)` | `str(i64)` | Get the immutable scene name, or `""` when out of range |
 | `FindNode(name)` | `obj(str)` | Find a template `SceneNode` by name inside the imported hierarchy |
-| `FindNodeOption(name)` | `obj<Zanna.Option>(str)` | Find a template `SceneNode` as `Some(node)`, or `None` |
 | `Instantiate()` | `obj()` | Clone the template hierarchy into a fresh `SceneNode` subtree |
 | `InstantiateScene()` | `obj()` | Create a fresh `SceneGraph` and attach cloned top-level imported nodes below its root |
 | `InstantiateSceneAt(index)` | `obj(i64)` | Create a fresh `SceneGraph` for an immutable scene index |
@@ -1563,6 +1560,9 @@ module SceneAssetDemo;
 
 bind Zanna.Graphics3D;
 bind Zanna.Terminal;
+bind Zanna.Graphics3D.SceneNode as SceneNode;
+bind Zanna.Graphics3D.SceneGraph as SceneGraph;
+bind Zanna.Graphics3D.SceneAsset as SceneAsset;
 
 func start() {
     var model = SceneAsset.LoadResult("tree.gltf").Unwrap();
@@ -1625,7 +1625,6 @@ Bone hierarchy for skeletal animation.
 |--------|-----------|-------------|
 | `AddBone(name, parentIdx, bindPose)` | `i64(str, i64, obj)` | Add a bone with an exact retained name (returns index). parentIdx=-1 for root. bindPose is Mat4 |
 | `ComputeInverseBind()` | `void()` | Compute inverse bind matrices (call after all bones added) |
-| `FindBone(name)` | `i64(str)` | Find bone index by name (-1 if not found) |
 | `FindBoneOption(name)` | `obj<Zanna.Option>(str)` | Find bone index by name as `Some(index)`, or `None` |
 | `GetBoneName(index)` | `str(i64)` | Get bone name by index |
 
@@ -1725,15 +1724,16 @@ animation memory.
 ```zia
 module SkeletonDemo;
 
-bind Zanna.Graphics3D.Skeleton3D;
-bind Zanna.Graphics3D.Animation3D;
-bind Zanna.Graphics3D.AnimPlayer3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Mesh3D;
+bind Zanna.Graphics3D.Skeleton3D as Skeleton3D;
+bind Zanna.Graphics3D.Animation3D as Animation3D;
+bind Zanna.Graphics3D.AnimPlayer3D as AnimPlayer3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
 bind Zanna.Graphics3D.Material3D;
-bind Zanna.Math.Mat4;
-bind Zanna.Math.Vec3;
-bind Zanna.Math.Quat;
+bind Zanna.Math.Mat4 as Mat4;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Math.Quat as Quat;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
 
 func start() {
     var canvas = Canvas3D.New("Skeleton", 800, 600);
@@ -1764,7 +1764,7 @@ func start() {
     Mesh3D.SetSkeleton(mesh, skel);
 
     // Render loop
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         var dt = Canvas3D.get_DeltaTime(canvas);
         AnimPlayer3D.Update(player, dt / 1000.0);
@@ -1813,11 +1813,12 @@ Blend shapes for facial animation, muscle flex, and shape-based deformation.
 ```zia
 module MorphDemo;
 
-bind Zanna.Graphics3D.MorphTarget3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.MorphTarget3D as MorphTarget3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Math.Mat4 as Mat4;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
 
 func start() {
     var canvas = Canvas3D.New("Morph Demo", 800, 600);
@@ -1904,11 +1905,11 @@ partial asset.
 ```zia
 module FBXDemo;
 
-bind Zanna.Graphics3D.Fbx;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.AnimPlayer3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Fbx as Fbx;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.AnimPlayer3D as AnimPlayer3D;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("FBX Demo", 800, 600);
@@ -1924,7 +1925,7 @@ func start() {
     var anim = Fbx.GetAnimation(asset, 0);
     AnimPlayer3D.Play(player, anim);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         AnimPlayer3D.Update(player, Canvas3D.get_DeltaTime(canvas) / 1000.0);
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
@@ -1992,10 +1993,10 @@ Low-level extractor API for meshes and materials from glTF 2.0 files. `SceneAsse
 ```zia
 module GLTFDemo;
 
-bind Zanna.Graphics3D.Gltf;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Gltf as Gltf;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("GLTF Demo", 800, 600);
@@ -2005,7 +2006,7 @@ func start() {
     var mesh = Gltf.GetMesh(asset, 0);
     var mat = Gltf.GetMaterial(asset, 0);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         Canvas3D.Clear(canvas, 0.1, 0.1, 0.2);
         Canvas3D.Begin(canvas, cam);
@@ -2091,9 +2092,9 @@ compact hardware billboard batch.
 ```zia
 module ParticleDemo;
 
-bind Zanna.Graphics3D.Particles3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
+bind Zanna.Graphics3D.Particles3D as Particles3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
 
 func start() {
     var canvas = Canvas3D.New("Particles", 800, 600);
@@ -2112,7 +2113,7 @@ func start() {
     Particles3D.set_Additive(sparks, true);
     Particles3D.Start(sparks);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         var dt = Canvas3D.get_DeltaTime(canvas) / 1000.0;
         Particles3D.Update(sparks, dt);
@@ -2164,7 +2165,7 @@ Full-screen post-processing effect chain applied automatically in `Canvas3D.Flip
 | `AddDOF(focusDist, aperture, maxBlur)` | `void(f64, f64, f64)` | Depth of field |
 | `AddMotionBlur(strength, samples)` | `void(f64, i64)` | Velocity-buffer motion blur |
 | `AddTAA(blend)` | `void(f64)` | Temporal anti-aliasing resolve; `blend` is the history weight (0.5-0.98) |
-| `AddSSR(intensity, maxRoughness)` | `void(f64, f64)` | Screen-space reflections for `SsrEnabled` materials (Water3D opts in automatically); ray misses fall back to the material's environment map |
+| `AddSsr(intensity, maxRoughness)` | `void(f64, f64)` | Screen-space reflections for `SsrEnabled` materials (Water3D opts in automatically); ray misses fall back to the material's environment map |
 | `Clear()` | `void()` | Remove all effects from chain |
 
 Effects run strictly in append order. If you add the same effect type more than once, each pass is preserved instead of being collapsed into one combined backend setting. The GPU backends now follow that same ordered-chain behavior as the CPU path, so `Flip()`, GPU screenshots, and GPU readback all match the authored `PostFX3D` chain. Each D3D11 bloom entry builds its thresholded mip chain from that entry's current input, so effects before bloom and repeated bloom entries are preserved. Bloom `passes` is part of the backend snapshot so GPU paths can widen the bloom radius consistently with the authored quality setting.
@@ -2178,8 +2179,8 @@ Bloom, Tonemap, FXAA, ColorGrade, and Vignette run on both GPU outputs and CPU r
 ```zia
 module PostFXDemo;
 
-bind Zanna.Graphics3D.PostFX3D;
-bind Zanna.Graphics3D.Canvas3D;
+bind Zanna.Graphics3D.PostFX3D as PostFX3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
 
 func start() {
     var canvas = Canvas3D.New("PostFX Demo", 800, 600);
@@ -2271,11 +2272,11 @@ segment-to-box distance rather than only testing against the box center.
 ```zia
 module RaycastDemo;
 
-bind Zanna.Graphics3D.Ray3D;
-bind Zanna.Graphics3D.RayHit3D;
-bind Zanna.Graphics3D.AABB3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Ray3D as Ray3D;
+bind Zanna.Graphics3D.RayHit3D as RayHit3D;
+bind Zanna.Graphics3D.AABB3D as AABB3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var cam = Camera3D.New(60.0, 800.0 / 600.0, 0.1, 100.0);
@@ -2311,10 +2312,10 @@ First-person camera controller with yaw/pitch mouse look and WASD movement. Thes
 ```zia
 module FPSDemo;
 
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Input.Mouse;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Input.Mouse as Mouse;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var canvas = Canvas3D.New("FPS", 800, 600);
@@ -2323,7 +2324,7 @@ func start() {
     Camera3D.FirstPersonInit(cam);
     Mouse.Capture();
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         var dt = Canvas3D.get_DeltaTime(canvas) / 1000.0;
         var mdx = Mouse.DeltaX() * 0.1;
@@ -2340,8 +2341,8 @@ func start() {
 }
 ```
 
-- `FPSInit` decomposes the current view matrix to extract yaw/pitch
-- `FPSUpdate(mdx, mdy, fwd, right, up, speed, dt)` accumulates yaw/pitch, clamps pitch to +/-89 degrees, applies WASD movement
+- `FirstPersonInit` decomposes the current view matrix to extract yaw/pitch
+- `FirstPersonUpdate(mdx, mdy, fwd, right, up, speed, dt)` accumulates yaw/pitch, clamps pitch to +/-89 degrees, applies WASD movement
 - `Yaw`/`Pitch` properties allow reading/writing the current angles and rebuild the view immediately
 - Use `Mouse.Capture()` to hide cursor and enable warp-to-center mouse tracking
 
@@ -2369,7 +2370,13 @@ module Sound3DObjectsDemo;
 
 bind Zanna.Graphics3D;
 bind Zanna.Math;
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.SceneNode as SceneNode;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Audio.Synth as Synth;
+bind Zanna.Audio.SpatialAudio3D as SpatialAudio3D;
+bind Zanna.Graphics3D.SoundSource3D as SoundSource3D;
 
 func start() {
     var cam = Camera3D.New(60.0, 1.0, 0.1, 100.0);
@@ -2385,7 +2392,7 @@ func start() {
 
     var source = SoundSource3D.New(Synth.Tone(523, 220, 0));
     source.BindNode(node);
-    source.RefDistance = 2.0;
+    source.ReferenceDistance = 2.0;
     source.MaxDistance = 20.0;
     source.Volume = 75;
 
@@ -2437,7 +2444,7 @@ and convex-hull contacts, falling back to a full triangle scan if the BVH path i
 SixDof joints measure angular limits as per-axis pose angles relative to the bodies' creation
 orientation, then stop angular velocity that would push locked or already-limited axes farther out.
 
-### Physics3DWorld
+### PhysicsWorld3D
 
 World storage for bodies, contacts, contact events, and joints grows on demand from production-sized initial capacities. Query result lists are still bounded for predictable allocation behavior.
 
@@ -2507,7 +2514,7 @@ Notes:
 
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
-| `Body` | Object | read | Hit `Physics3DBody` |
+| `Body` | Object | read | Hit `PhysicsBody3D` |
 | `Collider` | Object | read | Hit `Collider3D` leaf collider |
 | `Point` | Vec3 | read | Contact point approximation |
 | `Normal` | Vec3 | read | Surface normal at the hit |
@@ -2563,7 +2570,7 @@ Notes:
 ### Collider3D
 
 `Collider3D` is the reusable shape object for 3D physics. Prefer authoring colliders first and
-then attaching them to `Physics3DBody`; the old body shape constructors remain as convenience
+then attaching them to `PhysicsBody3D`; the old body shape constructors remain as convenience
 wrappers for simple cases.
 
 | Constructor | Signature | Description |
@@ -2576,8 +2583,10 @@ wrappers for simple cases.
 | `NewHeightfield(heightmap, sx, sy, sz)` | `obj(obj, f64, f64, f64)` | Static heightfield collider from `Pixels` |
 | `NewCompound()` | `obj()` | Empty compound collider for child composition |
 
-`NewBox`, `NewSphere`, and `NewCapsule` remain available as compatibility
-aliases for collider factories.
+`Collider3D`'s primitive factories are `Box`, `Sphere`, and `Capsule`; the
+mesh/heightfield/compound factories keep the `New` prefix (`NewConvexHull`,
+`NewMesh`, `NewHeightfield`, `NewCompound`). There are no `NewBox` / `NewSphere`
+/ `NewCapsule` aliases.
 
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
@@ -2600,13 +2609,13 @@ Notes:
 
 ---
 
-### Physics3DBody
+### PhysicsBody3D
 
 | Constructor | Signature | Description |
 |-------------|-----------|-------------|
 | `New(mass)` | `obj(f64)` | Create an empty body and assign a collider later |
 | `NewAABB(sx, sy, sz, mass)` | `obj(f64, f64, f64, f64)` | Box body (mass=0 for static); name retained for compatibility |
-| `NewSphere(radius, mass)` | `obj(f64, f64)` | Sphere body |
+| `Sphere(radius, mass)` | `obj(f64, f64)` | Sphere body |
 | `NewCapsule(radius, height, mass)` | `obj(f64, f64, f64)` | Capsule body; `height` is total height including caps |
 
 | Property | Type | Access | Description |
@@ -2647,7 +2656,7 @@ Notes:
 | `Wake()` | `void()` | Wake a sleeping dynamic body |
 | `Sleep()` | `void()` | Force a dynamic body into the sleeping state |
 
-`NewAABB`, `NewSphere`, and `NewCapsule` now allocate a body, create the matching collider, and
+`NewAABB`, `Sphere`, and `NewCapsule` now allocate a body, create the matching collider, and
 attach it internally. Use `New(mass)` plus `body.Collider = collider` when you want reusable or advanced
 shapes.
 
@@ -2772,11 +2781,11 @@ load-scaled friction circle — unloaded wheels slide first.
 ```zia
 module PhysicsDemo;
 
-bind Zanna.Graphics3D.PhysicsWorld3D;
-bind Zanna.Graphics3D.Physics3DBody;
-bind Zanna.Graphics3D.Character3D;
-bind Zanna.Graphics3D.Trigger3D;
-bind Zanna.Graphics3D.DistanceJoint3D;
+bind Zanna.Graphics3D.PhysicsWorld3D as PhysicsWorld3D;
+bind Zanna.Graphics3D.PhysicsBody3D as PhysicsBody3D;
+bind Zanna.Graphics3D.Character3D as Character3D;
+bind Zanna.Graphics3D.Trigger3D as Trigger3D;
+bind Zanna.Graphics3D.DistanceJoint3D as DistanceJoint3D;
 bind Zanna.Math.Vec3;
 
 func start() {
@@ -2784,21 +2793,21 @@ func start() {
     var world = PhysicsWorld3D.New(0.0, -9.8, 0.0);
 
     // Static ground
-    var ground = Physics3DBody.NewAABB(100.0, 1.0, 100.0, 0.0);
-    Physics3DBody.SetPosition(ground, 0.0, -0.5, 0.0);
-    Physics3DBody.set_Static(ground, true);
+    var ground = PhysicsBody3D.NewAABB(100.0, 1.0, 100.0, 0.0);
+    PhysicsBody3D.SetPosition(ground, 0.0, -0.5, 0.0);
+    PhysicsBody3D.set_IsStatic(ground, true);
     PhysicsWorld3D.Add(world, ground);
 
     // Dynamic sphere
-    var ball = Physics3DBody.NewSphere(0.5, 1.0);
-    Physics3DBody.SetPosition(ball, 0.0, 10.0, 0.0);
-    Physics3DBody.set_Restitution(ball, 0.8);
+    var ball = PhysicsBody3D.Sphere(0.5, 1.0);
+    PhysicsBody3D.SetPosition(ball, 0.0, 10.0, 0.0);
+    PhysicsBody3D.set_Restitution(ball, 0.8);
     PhysicsWorld3D.Add(world, ball);
 
     // Distance joint between two bodies
-    var anchor = Physics3DBody.NewSphere(0.2, 0.0);
-    Physics3DBody.SetPosition(anchor, 0.0, 15.0, 0.0);
-    Physics3DBody.set_Static(anchor, true);
+    var anchor = PhysicsBody3D.Sphere(0.2, 0.0);
+    PhysicsBody3D.SetPosition(anchor, 0.0, 15.0, 0.0);
+    PhysicsBody3D.set_IsStatic(anchor, true);
     PhysicsWorld3D.Add(world, anchor);
     var joint = DistanceJoint3D.New(anchor, ball, 5.0);
     PhysicsWorld3D.AddJoint(world, joint, 0);
@@ -2814,10 +2823,10 @@ func start() {
     PhysicsWorld3D.Step(world, 0.016);
 
     // Check collisions
-    var n = Physics3DWorld.get_CollisionCount(world);
+    var n = PhysicsWorld3D.get_CollisionCount(world);
     for i in 0..n {
-        var bodyA = Physics3DWorld.GetCollisionBodyA(world, i);
-        var normal = Physics3DWorld.GetCollisionNormal(world, i);
+        var bodyA = PhysicsWorld3D.GetCollisionBodyA(world, i);
+        var normal = PhysicsWorld3D.GetCollisionNormal(world, i);
     }
 
     // Check trigger
@@ -2863,8 +2872,8 @@ Standalone 3D transform (position, rotation, scale) with lazy matrix computation
 ```zia
 module TransformDemo;
 
-bind Zanna.Graphics3D.Transform3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Transform3D as Transform3D;
+bind Zanna.Math.Vec3 as Vec3;
 bind Zanna.Math.Quat;
 
 func start() {
@@ -2913,10 +2922,10 @@ Draw via `Canvas3D.DrawSprite3D(sprite, camera)`. Mesh and material are cached i
 ```zia
 module Sprite3DDemo;
 
-bind Zanna.Graphics3D.Sprite3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics.Pixels;
+bind Zanna.Graphics3D.Sprite3D as Sprite3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics.Pixels as Pixels;
 
 func start() {
     var canvas = Canvas3D.New("Sprite3D", 800, 600);
@@ -2967,10 +2976,10 @@ Draw via `Canvas3D.DrawDecal(decal)`.
 ```zia
 module DecalDemo;
 
-bind Zanna.Graphics3D.Decal3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Decal3D as Decal3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var canvas = Canvas3D.New("Decals", 800, 600);
@@ -3026,9 +3035,9 @@ Animated water surface with Gerstner wave simulation, texture support, and envir
 ```zia
 module WaterDemo;
 
-bind Zanna.Graphics3D.Water3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
+bind Zanna.Graphics3D.Water3D as Water3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
 bind Zanna.Graphics3D.CubeMap3D;
 
 func start() {
@@ -3049,7 +3058,7 @@ func start() {
     Water3D.SetEnvMap(water, skyboxCubemap);
     Water3D.SetReflectivity(water, 0.6);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         var dt = Canvas3D.get_DeltaTime(canvas) / 1000.0;
         Water3D.Update(water, dt);
@@ -3118,11 +3127,11 @@ authoring and normal scene loading use one exact surface.
 ```zia
 module TerrainDemo;
 
-bind Zanna.Graphics3D.Terrain3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Math.PerlinNoise;
+bind Zanna.Graphics3D.Terrain3D as Terrain3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Math.PerlinNoise as PerlinNoise;
 
 func start() {
     var canvas = Canvas3D.New("Terrain", 800, 600);
@@ -3147,7 +3156,7 @@ func start() {
     Terrain3D.SetLodDistances(terrain, 80.0, 200.0);
     Terrain3D.SetSkirtDepth(terrain, 2.0);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         Canvas3D.Clear(canvas, 0.5, 0.7, 0.9);
         Canvas3D.Begin(canvas, cam);
@@ -3217,12 +3226,12 @@ transient transform-buffer address, so reallocating an instance buffer does not 
 ```zia
 module InstanceDemo;
 
-bind Zanna.Graphics3D.InstanceBatch3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Graphics3D.Material3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.InstanceBatch3D as InstanceBatch3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.Material3D as Material3D;
+bind Zanna.Math.Mat4 as Mat4;
 
 func start() {
     var canvas = Canvas3D.New("Instancing", 800, 600);
@@ -3274,7 +3283,6 @@ more than two triangles on one undirected edge is rejected because adjacency wou
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `FindPath(start, goal)` | `obj(obj, obj)` | A* pathfinding (Vec3 start/goal, returns waypoint list) |
 | `FindPathOption(start, goal)` | `obj<Zanna.Option>(obj, obj)` | A* pathfinding as `Some(path)`, or `None` |
 | `SamplePosition(position)` | `obj(obj)` | Snap position to nearest point on navmesh (Vec3) |
 | `IsWalkable(position)` | `i1(obj)` | Check if Vec3 position is on the navmesh |
@@ -3305,9 +3313,9 @@ compatibility with existing `null` checks.
 ```zia
 module NavMeshDemo;
 
-bind Zanna.Graphics3D.NavMesh3D;
-bind Zanna.Graphics3D.Mesh3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.NavMesh3D as NavMesh3D;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var level_mesh = Mesh3D.FromObj("level.obj");
@@ -3397,6 +3405,10 @@ module NavAgentDemo;
 bind Zanna.Graphics3D;
 bind Zanna.Math;
 bind Zanna.Terminal;
+bind Zanna.Graphics3D.Mesh3D as Mesh3D;
+bind Zanna.Graphics3D.SceneNode as SceneNode;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Graphics3D.NavMesh3D as NavMesh3D;
 
 func start() {
     var mesh = Mesh3D.Plane(20.0, 20.0);
@@ -3460,8 +3472,8 @@ Looping paths include the closing segment from the final control point back to t
 ```zia
 module PathDemo;
 
-bind Zanna.Graphics3D.Path3D;
-bind Zanna.Math.Vec3;
+bind Zanna.Graphics3D.Path3D as Path3D;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var path = Path3D.New();
@@ -3522,11 +3534,12 @@ Draw blended mesh via `Canvas3D.DrawMeshBlended(canvas, mesh, transform, materia
 ```zia
 module BlendDemo;
 
-bind Zanna.Graphics3D.AnimBlend3D;
+bind Zanna.Graphics3D.AnimBlend3D as AnimBlend3D;
 bind Zanna.Graphics3D.Skeleton3D;
 bind Zanna.Graphics3D.Animation3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Math.Mat4 as Mat4;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
 
 func start() {
     var canvas = Canvas3D.New("Blend", 800, 600);
@@ -3589,9 +3602,9 @@ or a `BlendTree3D`; no separate extraction step is needed.
 ```zia
 module BlendTreeDemo;
 
-bind Zanna.Graphics3D.BlendTree3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Math.Mat4;
+bind Zanna.Graphics3D.BlendTree3D as BlendTree3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Math.Mat4 as Mat4;
 
 func makeLocomotionTree(skel, idleAnim, walkAnim, runAnim) {
     var tree = BlendTree3D.New1D(skel);
@@ -3741,6 +3754,10 @@ module AnimController3DDemo;
 bind Zanna.Graphics3D;
 bind Zanna.Math;
 bind Zanna.Terminal;
+bind Zanna.Math.Vec3 as Vec3;
+bind Zanna.Math.Mat4 as Mat4;
+bind Zanna.Graphics3D.Skeleton3D as Skeleton3D;
+bind Zanna.Graphics3D.Animation3D as Animation3D;
 
 func start() {
     var skel = Skeleton3D.New();
@@ -3810,8 +3827,8 @@ Each added layer is copied into the atlas with a duplicated 1-pixel edge/corner 
 ```zia
 module AtlasDemo;
 
-bind Zanna.Graphics3D.TextureAtlas3D;
-bind Zanna.Graphics.Pixels;
+bind Zanna.Graphics3D.TextureAtlas3D as TextureAtlas3D;
+bind Zanna.Graphics.Pixels as Pixels;
 
 func start() {
     var atlas = TextureAtlas3D.New(256, 256);
@@ -3852,11 +3869,12 @@ Draw via `Canvas3D.DrawVegetation(vegetation)`. `SetSeed(seed)` pins reproducibl
 ```zia
 module VegetationDemo;
 
-bind Zanna.Graphics3D.Vegetation3D;
-bind Zanna.Graphics3D.Terrain3D;
-bind Zanna.Graphics3D.Canvas3D;
-bind Zanna.Graphics3D.Camera3D;
-bind Zanna.Graphics.Pixels;
+bind Zanna.Graphics3D.Vegetation3D as Vegetation3D;
+bind Zanna.Graphics3D.Terrain3D as Terrain3D;
+bind Zanna.Graphics3D.Canvas3D as Canvas3D;
+bind Zanna.Graphics3D.Camera3D as Camera3D;
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Math.Vec3 as Vec3;
 
 func start() {
     var canvas = Canvas3D.New("Vegetation", 800, 600);
@@ -3873,7 +3891,7 @@ func start() {
     Vegetation3D.SetSeed(veg, 12345);
     Vegetation3D.Populate(veg, cam, 50000);
 
-    while (Canvas3D.get_ShouldClose(canvas) == 0) {
+    while (!Canvas3D.get_ShouldClose(canvas)) {
         Canvas3D.Poll(canvas);
         var dt = Canvas3D.get_DeltaTime(canvas) / 1000.0;
         var pos = Camera3D.get_Position(cam);

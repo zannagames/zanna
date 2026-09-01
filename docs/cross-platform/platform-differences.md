@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-01
+last-verified: 2026-09-01
 ---
 
 # Platform Behavioral Differences
@@ -373,7 +373,7 @@ The parallel task pool (`Zanna.Parallel`) uses this to size its worker thread po
 | macOS | `nanosleep()` with EINTR retry | ~1 ms |
 | Linux | `nanosleep()` with EINTR retry | ~1 ms (kernel `CONFIG_HZ` dependent) |
 
-**User-visible difference:** `Zanna.Time.Sleep(1)` on Windows may sleep for up to 15 ms due to the default timer resolution. On macOS and Linux, the actual sleep duration is much closer to the requested value.
+**User-visible difference:** `Zanna.Time.Clock.Sleep(1)` on Windows may sleep for up to 15 ms due to the default timer resolution. On macOS and Linux, the actual sleep duration is much closer to the requested value.
 
 ### Monotonic Clock
 
@@ -383,7 +383,7 @@ The parallel task pool (`Zanna.Parallel`) uses this to size its worker thread po
 | macOS | `clock_gettime(CLOCK_MONOTONIC)` | `CLOCK_REALTIME` | Nanosecond |
 | Linux | `clock_gettime(CLOCK_MONOTONIC)` | `CLOCK_REALTIME` | Nanosecond |
 
-Used by `Zanna.Time.Timer()`, `Zanna.Time.ClockUs()`, and `Zanna.Stopwatch`.
+Used by `Zanna.Time.Clock.NowMs()`, `Zanna.Time.Clock.NowMicros()`, and `Zanna.Time.Stopwatch`.
 
 ### Wall-Clock Time
 
@@ -393,7 +393,7 @@ Used by `Zanna.Time.Timer()`, `Zanna.Time.ClockUs()`, and `Zanna.Stopwatch`.
 | macOS | `gettimeofday()` |
 | Linux | `clock_gettime(CLOCK_REALTIME)` |
 
-Used by `Zanna.DateTime.Now()`. All platforms return milliseconds since the Unix epoch. Results are consistent across platforms for the same wall-clock instant.
+Used by `Zanna.Time.DateTime.Now()`. All platforms return milliseconds since the Unix epoch. Results are consistent across platforms for the same wall-clock instant.
 
 ### Thread-Safe Time Formatting
 

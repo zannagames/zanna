@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Getting Started on Windows
@@ -24,7 +24,7 @@ The first page offers four clear paths:
 - **Install SDK tools** installs the command-line tools and native development
   files without the IDE-focused extras.
 - **Install everything** also installs all packaged samples.
-- **Customize** lets you choose user or machine scope, a Unicode-capable custom
+- **Custom build** lets you choose user or machine scope, a Unicode-capable custom
   folder, individual components, PATH, safe file associations, and shortcuts.
 
 Current-user setup is the default and needs no administrator approval. A
@@ -158,7 +158,7 @@ Important exit codes are:
 | 3010 | Success; restart is required |
 
 Without `/log`, setup writes a redacted UTF-8 log named
-`ZannaInstaller-<package-id>-<UTC-time>-<pid>.log` under `%TEMP%`.
+`ZannaInstaller-<package-id>-<UTC-time>-<pid>-<tick>.log` under `%TEMP%`.
 
 ## Build Zanna and the Installer from Source
 

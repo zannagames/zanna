@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-03
+last-verified: 2026-09-01
 ---
 
 # 3D Physics
@@ -439,7 +439,7 @@ sleeping, and optional CCD.
 ### Zia Example
 
 ```zia
-module Physics3DBodyDemo;
+module PhysicsBody3DDemo;
 
 bind Zanna.Graphics3D;
 bind Zanna.Math.Quat as Quat;

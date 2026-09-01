@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Chapter 10: Errors and Recovery
@@ -880,7 +880,7 @@ Networks are inherently unreliable. Connections drop, servers go down, requests 
 
 ```zia
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 func fetchUserData(userId: Integer) -> UserData {
     var maxRetries = 3;
@@ -1207,11 +1207,12 @@ OPEN "file.txt" FOR INPUT AS #1
 GOTO Continue
 
 ErrorHandler:
-PRINT "Error: "; ERR; " - "; ERROR$
+PRINT "Error code: "; ERR()   ' ERR() needs parentheses; there is no ERROR$ builtin
 RESUME Continue
 
 Continue:
 ' Continue execution
+END
 ```
 
 BASIC uses `ON ERROR GOTO` for older-style error handling. The `ERR` variable contains the error number, and `ERROR$` contains the message.

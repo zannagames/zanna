@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Chapter 24: Concurrency
@@ -511,6 +511,13 @@ At the C ABI layer, `rt_channel_try_recv(channel, NULL)` checks availability wit
 ### Pipeline Pattern
 
 Channels naturally compose into pipelines where each stage processes data and passes results to the next:
+
+> **Known defect:** `Channel.Send` does not retain the value it is given, so a
+> boxed temporary can be freed before the receiving thread unboxes it. This
+> pipeline fails roughly 30% of runs with
+> `rt_unbox_i64: invalid boxed value`. Until it is fixed, keep a strong
+> reference to anything you send (e.g. push it into a `Seq` the sender owns).
+> See [defect audit #31](../../audit_09012026.md).
 
 ```zia
 bind Thread = Zanna.Threads.Thread;
@@ -1055,7 +1062,7 @@ The `Scheduler` manages named tasks that should execute at scheduled times:
 ```zia
 bind Thread = Zanna.Threads.Thread;
 bind Scheduler = Zanna.Threads.Scheduler;
-bind Box = Zanna.Core.Box;
+bind Seq = Zanna.Collections.Seq;
 bind Zanna.Terminal as Terminal;
 
 func start() {
@@ -1065,11 +1072,11 @@ func start() {
     sched.Schedule("backup", 5000);      // Due in 5 seconds
     sched.Schedule("heartbeat", 1000);   // Due in 1 second
 
-    // Poll loop
+    // Poll loop: Poll() returns a Seq of every task that is now due
     while (sched.Pending > 0) {
-        var dueTask = sched.Poll();  // Returns name of due task, or null
-        if dueTask != null {
-            Terminal.Say("Running: " + Box.ToStr(dueTask));
+        var due = sched.Poll();
+        for i in 0..Seq.get_Count(due) {
+            Terminal.Say("Running: " + Seq.GetStr(due, i));
         }
         Thread.Sleep(100);
     }
@@ -1082,7 +1089,7 @@ func start() {
 | `.Schedule(name, delayMs)` | Schedule a named task |
 | `.Cancel(name)` | Cancel a scheduled task |
 | `.IsDue(name)` | Check if a task is due |
-| `.Poll()` | Get next due task name (or null) |
+| `.Poll()` | `Seq[String]` of every task that has become due (empty when none) |
 | `.Clear()` | Cancel all tasks |
 | `.Pending` | Number of scheduled tasks |
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-08-31
 ---
 
 # Zanna Debugging Guide
@@ -16,7 +16,7 @@ This guide covers all debugging features available in the Zanna platform, includ
 |------|---------------|
 | Trace every IL instruction | `--trace=il` |
 | Trace source locations | `--trace=src` |
-| Break at source line | `--break-src main.zia:42` |
+| Break at source line | `--break-src program.il:42` (IL path, source line) |
 | Break at block label | `--break entry` |
 | Watch a variable | `--watch x` |
 | Limit execution steps | `--max-steps 10000` |
@@ -60,10 +60,21 @@ zanna -run program.il --trace=src
 
 Output format:
 ```text
-[SRC] main.zia:42:10 (fn=@main blk=L3 ip=#5)
+[SRC] main.zia:42:10  (fn=@main blk=L3 ip=#5)  Say("hello");
 ```
 
-Shows the original source file, line, and column for each executed instruction. Requires that the IL was compiled with source location information (Zia and BASIC both propagate source locations to IL).
+Shows the source file, line, and column for each executed instruction, followed
+by the source text from that column onward. Requires that the IL was compiled
+with source location information (Zia and BASIC both propagate source locations
+to IL).
+
+> When you run a **source** file (`zanna run program.zia --trace=src`), the file
+> name and the echoed text are the real source. When you run a **pre-built `.il`
+> module** (`zanna -run program.il --trace=src`), the runner registers the `.il`
+> file itself as the source, so the `.loc` line/column numbers still come from
+> the original source while the file name and echoed text come from the `.il`
+> file — the echoed snippet will not line up. Trace the source directly when you
+> want readable source text.
 
 ### Notes
 
@@ -77,21 +88,29 @@ Shows the original source file, line, and column for each executed instruction. 
 
 Breakpoints pause execution at a specific point and return control to the debug controller.
 
-Source breakpoints are resolved by the IL runner. Build the source target to IL
-first, then debug the resulting module:
+Source breakpoints are resolved by the IL runner, and only by the IL runner —
+`zanna run` does not accept `--break` or `--break-src`. Build the source target
+to IL first, then debug the resulting module:
 
 ```sh
 zanna build program.zia -o /tmp/program.il
-zanna -run /tmp/program.il --break-src program.zia:42
+zanna -run /tmp/program.il --break-src /tmp/program.il:42
 ```
+
+> **Pass the `.il` path, not the original source path.** Textual IL carries no
+> source-file table, so the runner registers the `.il` file being executed as
+> file 1 and every `.loc` record resolves to it. The **line number** is still the
+> original source line recorded at lowering time, but the **file name** must be
+> the `.il` module. `--break-src program.zia:42` matches nothing and the program
+> runs to completion silently.
 
 ### Source-Line Breakpoints
 
 ```sh
-zanna -run program.il --break-src main.zia:42
+zanna -run program.il --break-src program.il:42
 ```
 
-Pauses before executing any instruction originating from line 42 of `main.zia`. File paths are normalized automatically (forward slashes, case-insensitive on Windows).
+Pauses before executing any instruction whose recorded source line is 42. File paths are normalized automatically (forward slashes, case-insensitive on Windows).
 
 ### Block-Label Breakpoints
 
@@ -99,10 +118,10 @@ Pauses before executing any instruction originating from line 42 of `main.zia`. 
 zanna -run program.il --break entry
 ```
 
-Pauses when the VM enters a block with the given label. Also supports `file:line` format as a shorthand for `--break-src`:
+Pauses when the VM enters a block with the given label. Also supports `file:line` format as a shorthand for `--break-src` — with the same `.il`-path rule:
 
 ```sh
-zanna -run program.il --break main.zia:42
+zanna -run program.il --break program.il:42
 ```
 
 ### Multiple Breakpoints
@@ -110,7 +129,7 @@ zanna -run program.il --break main.zia:42
 Specify multiple `--break` or `--break-src` flags:
 
 ```sh
-zanna -run program.il --break-src main.zia:10 --break-src util.zia:25
+zanna -run program.il --break-src program.il:10 --break-src program.il:25
 ```
 
 ### Breakpoint Coalescing
@@ -245,10 +264,14 @@ All compiler diagnostics follow this format:
 
 For example:
 ```text
-main.zia:42:15: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected Integer, got String
+main.zia:42:1: error[V-ZIA-TYPE-MISMATCH]: Type mismatch: expected Integer, got String
  42 | var x: Integer = "hello";
-    |                  ^
+    | ^
+  stage: sema
 ```
+
+The caret marks the start of the offending declaration, and a `stage:` line
+names the pipeline phase that produced the diagnostic.
 
 Severity levels: `note`, `warning`, `error`.
 
@@ -295,13 +318,14 @@ Warnings are printed even when compilation succeeds. Use `--quiet-warnings` or `
 
 ### Trap Format
 
-Runtime traps (VM errors) use this format:
+Runtime traps (VM errors) are formatted by the execution path that raised them.
+
+`zanna -run` and `ilrun` (standard VM) use:
 
 ```text
 Trap @function:block#ip line N: Kind (code=C): path:line:column: message
 ```
 
-For example:
 ```text
 Trap @processRow:L3#2 line 145: Bounds (code=7): src/main.zia:145:12: index out of bounds
 ```
@@ -309,9 +333,23 @@ Trap @processRow:L3#2 line 145: Bounds (code=7): src/main.zia:145:12: index out 
 When no source path is registered, the VM falls back to `file#ID:line:column` after the trap kind while preserving the
 stable `line N` token used by existing tooling.
 
+`zanna run` (the default execution path) places the source detail in parentheses
+immediately after the instruction pointer and omits the `line N` token:
+
+```text
+Trap @main:entry_0#26 (/path/to/main.zia:7): Overflow (code=4): Overflow: integer overflow in add
+```
+
+Match on the trap **kind** name rather than on either layout or on `code=`.
+
 ### Trap Kinds
 
-| Kind | Code | Description |
+These are the values of the `TrapKind` enum (`src/vm/Trap.hpp`). They are **not**
+the number printed as `(code=C)` in a trap message — that is a separate
+secondary error code, and the same logical failure can carry different secondary
+codes on different execution paths.
+
+| Kind | TrapKind value | Description |
 |------|------|-------------|
 | DivideByZero | 0 | Integer division or remainder by zero |
 | Overflow | 1 | Arithmetic or conversion overflow |
@@ -345,7 +383,7 @@ Zanna.Diagnostics.Log.Error("something failed")
 
 Output format:
 ```text
-[INFO] 14:30:05 normal info
+[INFO] 2026-08-31 14:30:05 normal info
 ```
 
 Log levels (lowest to highest): DEBUG (0), INFO (1), WARN (2), ERROR (3), OFF (4).
@@ -429,12 +467,15 @@ Prints the parsed AST (abstract syntax tree) as an indented tree. For Zia, this 
 === AST after parsing ===
 ModuleDecl "Test" (1:1)
   FunctionDecl "start" (2:1)
+    Visibility: private
     Body:
       BlockStmt (2:14)
         ExprStmt (3:5)
           CallExpr (3:26)
             Callee:
               FieldExpr "SayInt" (3:19)
+                FieldExpr "Terminal" (3:10)
+                  IdentExpr "Zanna" (3:5)
             Args:
               Arg:
                 IntLiteral 42 (3:27)
@@ -671,7 +712,7 @@ zanna bench program.il -n 5 --all
 Runs the program multiple times across different VM dispatch strategies and reports timing:
 
 ```text
-BENCH program.il table instr=50000 time_ms=12 insns_per_sec=4166666
+BENCH "program.il" table instr=50000 time_ms=12.04 insns_per_sec=4152824
 ```
 
 ### Dispatch Strategies
@@ -726,7 +767,7 @@ zanna -run program.il --time
 
 Output:
 ```text
-[SUMMARY] time_ms=42
+[SUMMARY] time_ms=42.183012
 ```
 
 Both flags can be combined:

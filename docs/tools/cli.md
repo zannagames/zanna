@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-08-31
 ---
 
 # CLI Tools Reference
@@ -124,6 +124,7 @@ The CLI is organized around primary entry points:
 - `zanna init <name> [--lang zia|basic]` — Scaffold a new project
 - `zanna run <file|dir>` — Build and run a source file or project
 - `zanna build <file|dir> [-o out]` — Emit IL or build a native binary
+- `zanna build-many --output-dir DIR name=project [...]` — Build several projects in one process
 - `zanna check <file|dir>` — Type-check and verify without running or emitting
 - `zanna eval [code]` — Evaluate a one-line snippet and print the result
 - `zanna explain <code>` — Describe a diagnostic code from the central catalog
@@ -137,6 +138,8 @@ The CLI is organized around primary entry points:
 - `zanna codegen arm64 <in.il> -S <out.s>` — Generate ARM64 assembly
 - `zanna package <dir>` — Package a project for distribution (.app, .dmg, .deb, .rpm, .run, .exe, .tar.gz)
 - `zanna install-package` — Package the staged Zanna toolchain itself (.exe, .pkg, .deb, .rpm, .tar.gz)
+- `zanna asset bake|validate <model> [out.scene3d]` — Offline 3D asset conditioning
+- `zanna bench <file.il>` — Benchmark VM dispatch strategies (see the [Debugging Guide](debugging.md))
 - `zanna repl` — Launch the interactive REPL
 
 ### zanna init
@@ -187,7 +190,7 @@ zanna build program.zia -o program
 | `--paranoid-verify` | Run every frontend verifier checkpoint, including intermediate optimized-build checks |
 | `--time-compile` | Print project resolution, source read, frontend phase, final verifier, asset, backend pass, and native-codegen/link timings |
 | `--pass-stats` | Print detailed IL optimizer pass statistics; kept separate from `--time-compile` because it scans the module around each pass |
-| `--fast-link` | Skip non-essential native-link size reductions and coalesce generated arm64 function sections; enabled automatically for debug/O0 native builds |
+| `--fast-link` | Skip non-essential native-link size reductions and coalesce generated arm64 function sections; enabled automatically for debug/O0 native builds (`zanna build` only) |
 | `--build-profile debug\|balanced\|release` | Override the manifest build profile (`debug`=`O0`, `balanced`=`O1`, `release`=`O2`) |
 | `-O0`, `-O1`, `-O2` | Override the final optimization level; this takes precedence over the build profile |
 | `--profile` | Print execution profile data after the program exits (`zanna run` only) |
@@ -230,8 +233,16 @@ apply to every target in the batch.
 
 Type-check and verify a source file or project without executing or emitting
 anything. This is the fast verification gate for editors, scripts, and AI
-coding agents: it runs the same frontend + IL verifier pipeline as `zanna run`
-(at `O0` by default for speed) and stops.
+coding agents: it runs the frontend and then stops before emitting or executing.
+
+> **`check` is not currently as strict as `run`/`build`.** It compiles with
+> optimization enabled (the manifest/default build profile, not `O0`), and it
+> re-runs the IL verifier only when the frontend did not already mark the module
+> verified. A module can therefore pass `zanna check` with exit `0` and still
+> fail IL verification under `zanna run` or `zanna build`. When you need the
+> check to match what a build will accept, pass `-O0`, `--build-profile debug`,
+> or `--paranoid-verify` — each of those restores the lowering-stage verifier
+> and reports exit `2`.
 
 ```bash
 zanna check program.zia
@@ -343,10 +354,10 @@ operation that returns an object reports `ownership: "owned"` (math values are
 immutable, freshly allocated results). The `Zanna.System.*` surface is covered
 the same way: process spawns (`Process.Start` / `StartWithEnv`) mark their
 handle return `nullable: true` because a failed spawn yields `NULL` rather than
-a live object, the unmanaged `Unsafe.Release` / `ReleaseStr` primitives report
-`fallibility: "traps"` (they trap on an invalid or already-freed handle), and
-`PtySession.Resize` reports `fallibility: "status"` because it returns a boolean
-success indicator instead of an infallible void. The `Zanna.Time.*` surface is
+a live object, and `PtySession.Resize` reports `fallibility: "status"` because it
+returns a boolean success indicator instead of an infallible void. The unmanaged
+`Zanna.Runtime.Unsafe.Release` / `ReleaseStr` primitives likewise report
+`fallibility: "traps"` (they trap on an invalid or already-freed handle). The `Zanna.Time.*` surface is
 likewise annotated: the sentinel parsers (`DateTime.ParseIso8601` / `ParseDate` /
 `ParseTime`, `DateOnly.Parse`) report `fallibility: "sentinel"` rather than the
 heuristic's default `traps`, every `Zanna.Time.*` object return is `owned` (a
@@ -358,6 +369,17 @@ report `nullable: true` so tools emit the null branch. Overflow-on-extreme-input
 and null/wrong-class-receiver traps are deliberately left `infallible`, matching
 the runtime-wide convention that `fallibility` describes normal-operation failure
 modes rather than arithmetic edges or programming errors.
+`--dump-runtime-api` is the **full registry inventory**, which is a superset of
+the public language surface: it includes hand-authored descriptor rows in
+`src/il/runtime/RuntimeSignatures.cpp` that exist only as front-end lowering
+targets. For example `Zanna.Math.Randomize` / `Zanna.Math.Rnd` back BASIC's
+`RANDOMIZE` / `RND()`, and `Zanna.String.RetainMaybe` / `ReleaseMaybe` are
+refcount helpers — none are callable from Zia (`Runtime class 'Zanna.Math' has
+no method 'Rnd'`). The curated public surface is
+[`docs/generated/runtime/`](../generated/runtime/README.md), generated by `rtgen`
+from `src/il/runtime/runtime.def`; use that when you want "what can user code
+call", and `--dump-runtime-api` when you want "what is registered".
+
 Together, the canonical name, compact signature, C symbol, and complete class
 member bindings form the live ABI manifest used by contract tests. The C
 symbols are available to Zanna's embedding and VM layers, but they are not a
@@ -377,7 +399,7 @@ zanna -run <file.il> [flags]
 | `--trace=src`                | Show source file, line, column for each step |
 | `--stdin-from <file>`        | Feed program stdin from file                 |
 | `--max-steps <N>`            | Limit execution to N VM steps                |
-| `--bounds-checks`            | Enable runtime bounds checking               |
+| `--bounds-checks`            | Rejected here — bounds checks are generated at compile time, so recompile the source with `zanna build --bounds-checks` instead |
 | `--break <Label\|file:line>` | Halt before executing instruction            |
 | `--break-src <file:line>`    | Explicit source-line breakpoint              |
 | `--debug-cmds <file>`        | Read debugger actions from file              |
@@ -416,11 +438,16 @@ Run optimization passes on IL modules.
 zanna il-opt <in.il> -o <out.il> [flags]
 ```
 
-| Flag              | Description                        |
-|-------------------|------------------------------------|
-| `--passes a,b,c`  | Override the pass list             |
-| `--no-mem2reg`    | Drop mem2reg from the selected pipeline when present |
-| `--mem2reg-stats` | Print counts of promoted variables |
+| Flag                  | Description                                          |
+|-----------------------|------------------------------------------------------|
+| `--passes a,b,c`      | Run an explicit comma-separated pass list            |
+| `--pipeline NAME`     | Run a registered pipeline: `O0`, `O1`, `O2`, or `rehab-*` |
+| `--no-mem2reg`        | Drop mem2reg from the selected pipeline when present |
+| `--mem2reg-stats`     | Print counts of promoted variables                   |
+| `-print-before`, `-print-after` | Print IL before or after each pass         |
+| `--verify-each`       | Verify the module between passes                     |
+| `--pass-stats`        | Print pass statistics                                |
+| `--bisect-pipeline`   | Run and report every pipeline prefix, to isolate a bad pass |
 
 Default pipeline: O1 (`simplify-cfg, mem2reg, simplify-cfg, sccp, constfold, peephole, dce, simplify-cfg, sccp, inline, peephole, dce, simplify-cfg`)
 
@@ -467,9 +494,9 @@ should leave backend IL optimization enabled.
 ### Demo build driver
 
 The platform demo drivers read `scripts/demo_projects.list`, a shared curated
-selection of Zia showcase projects. The default selection contains seven games
-and two applications; BASIC and smaller feature examples remain available for
-individual builds but are not part of the showcase build. On Linux,
+selection of Zia showcase projects. The default selection contains three games,
+four 3D demos, and one application; BASIC and smaller feature examples remain
+available for individual builds but are not part of the showcase build. On Linux,
 `scripts/build_demos_linux.sh` uses the in-process project-to-native path and
 defaults to O1, the fast linker, host CPU parallelism, and dependency stamps.
 Useful controls are `--release` (O2), `--opt O1|O2`, `--jobs N`, `--timings`,
@@ -754,6 +781,12 @@ Every successful toolchain package invocation writes `<artifact>.sha256` and a J
 | `0`  | Program completed successfully            |
 | `10` | Halted at breakpoint with no debug script |
 | `>0` | Trap or error                             |
+
+> **Known discrepancy:** the `10` breakpoint code is only produced when the IL
+> module's `@main` returns `i64`. A module whose `@main` returns `void` — which
+> is what `zanna build` emits for Zia sources — still prints `[BREAK]` but exits
+> `0`. Check for the `[BREAK]` line on stderr rather than relying on the exit
+> code when scripting against Zia-built IL.
 
 `zanna check` and `zanna eval` define differentiated exit codes for
 programmatic callers: see their sections above (`0` ok, `1` usage, `2`

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-09-01
 ---
 
 # Specialized Maps
@@ -192,8 +192,9 @@ func start() {
     SayInt(mm.Count);                              // 5 (total values)
     SayInt(mm.KeyCount);                         // 2 (distinct keys)
 
-    // Get all values for a key
-    var colors = mm.Get("color");
+    // Get all values for a key.
+    // MultiMap.Get returns a bare `obj`, so narrow it to Seq before use.
+    var colors: Seq = mm.Get("color") as Seq;
     SayInt(Seq.get_Count(colors));                 // 3
     Say(Box.ToStr(Seq.Get(colors, 0)));          // red
     Say(Box.ToStr(Seq.Get(colors, 1)));          // green

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Chapter 22: Networking
@@ -380,6 +380,7 @@ bind Zanna.Network;
 bind Json = Zanna.Data.Json;
 bind Zanna.Terminal as Terminal;
 bind Fmt = Zanna.Text.Fmt;
+bind Codec = Zanna.Text.Codec;
 
 class Weather {
     expose temperature: Integer;
@@ -395,7 +396,7 @@ class Weather {
 
 func fetchWeather(city: String) -> Weather? {
     // Build the URL with the city parameter
-    var url = "https://api.weather.example.com/current?city=" + Url.EncodeQuery(city);
+    var url = "https://api.weather.example.com/current?city=" + Codec.UrlEncode(city);
 
     // Make the request with a timeout
     var req = HttpReq.New("GET", url);
@@ -908,7 +909,7 @@ Games often need to send player state many times per second. Lost packets don't 
 
 ```zia
 bind Zanna.Network;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Convert = Zanna.Core.Convert;
 
 // Player state that we'll send frequently
@@ -1118,10 +1119,15 @@ func demonstrateFailures() {
 
 For important operations, implement retry logic with exponential backoff:
 
+> **Note:** the `return null;` statements below currently fail IL verification —
+> returning `null` directly from a `String?` function is a known lowering defect
+> ([audit #25](../../audit_09012026.md)). Return through a typed local
+> (`var none: String? = null; return none;`) until it is fixed.
+
 ```zia
 bind Zanna.Network;
 bind Zanna.Terminal as Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Fmt = Zanna.Text.Fmt;
 
 func robustFetch(url: String, maxRetries: Integer) -> String? {
@@ -1377,7 +1383,7 @@ while true {
 
 // GOOD: Detect disconnection and reconnect
 bind Zanna.Terminal as Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 func reliableConnection(host: String, port: Integer) {
     var socket: Tcp? = null;
@@ -1496,7 +1502,7 @@ class RateLimitedServer {
     hide maxRequestsPerMinute: Integer;
 
     expose func init() {
-        self.requestCounts = new Map();
+        self.requestCounts = new Map[String, Integer]();
         self.lastReset = Clock.NowMs();
         self.maxRequestsPerMinute = 100;
     }
@@ -1507,7 +1513,7 @@ class RateLimitedServer {
 
         // Reset counts every minute
         if now - self.lastReset > 60000 {
-            self.requestCounts = new Map();
+            self.requestCounts = new Map[String, Integer]();
             self.lastReset = now;
         }
 
@@ -1592,7 +1598,7 @@ Network communication involves multiple layers. Test each one:
 
 1. **Can you reach the host at all?**
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 var socket = Tcp.ConnectFor(host, port, 3000);
 if socket == null {
@@ -1604,7 +1610,7 @@ if socket == null {
 
 2. **Can you send data?**
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 socket.SendStr("test\n");
 Terminal.Say("Data sent successfully");
@@ -1613,7 +1619,7 @@ Terminal.Say("Data sent successfully");
 
 3. **Can you receive data?**
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 var response = socket.RecvLine();
 if response == null {
@@ -1680,6 +1686,7 @@ bind Json = Zanna.Data.Json;
 bind Clock = Zanna.Time.Clock;
 bind Zanna.Terminal as Terminal;
 bind Fmt = Zanna.Text.Fmt;
+bind Codec = Zanna.Text.Codec;
 
 // Data type for weather information
 class CityWeather {
@@ -1711,7 +1718,7 @@ class WeatherService {
     expose func init(apiKey: String) {
         self.apiKey = apiKey;
         self.baseUrl = "https://api.weather.example.com/v1";
-        self.cache = new Map();
+        self.cache = new Map[String, CityWeather]();
         self.cacheTimeout = 300000;  // 5 minutes
     }
 
@@ -1733,7 +1740,7 @@ class WeatherService {
 
         // Fetch from API
         var url = self.baseUrl + "/current?city=" +
-                  Url.EncodeQuery(city) + "&key=" + self.apiKey;
+                  Codec.UrlEncode(city) + "&key=" + self.apiKey;
 
         var req = HttpReq.New("GET", url);
         req.SetTimeout(10000);

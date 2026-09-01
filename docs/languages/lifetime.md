@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Lifetime Model
@@ -17,7 +17,7 @@ model and best practices.
 
 ## Explicit Disposal
 
-- Deleting `NULL` is a no-op.
+- Deleting `NOTHING` (or an unassigned object variable) is a no-op.
 - Multiple deletes of the same object are a programming error; debug builds trap to aid diagnosis.
 - Use `DELETE obj` to deterministically destroy an instance when it goes out of scope or when you finish with it
   earlier. (The BASIC keyword is `DELETE`; there is no `DISPOSE` keyword.)
@@ -30,9 +30,13 @@ model and best practices.
 
 ## Static Destructors
 
-- A `STATIC DESTRUCTOR` runs once at program shutdown. Use this for module-level cleanup (e.g., releasing global
-  resources).
-- Shutdown order is class declaration order within the module.
+- A `STATIC DESTRUCTOR` is intended to run once at program shutdown, for
+  module-level cleanup (e.g., releasing global resources), in class declaration
+  order within the module.
+- **Not currently functional.** `STATIC DESTRUCTOR` parses and lowers to a
+  `@Class.__dtor` function, but nothing schedules that function at shutdown, so
+  the body never executes. Do not rely on it for cleanup; use an explicit
+  teardown call at the end of the program instead.
 
 ## Cyclic References
 
@@ -63,7 +67,7 @@ Cycles must be broken manually before the objects go out of scope:
 
 ```basic
 ' Break the cycle before leaving scope
-a.Other = NULL
+a.Other = NOTHING
 ' Now b can be freed when it goes out of scope
 ' And a can be freed after that
 ```
@@ -74,14 +78,19 @@ cleanup that clears cyclic references:
 ```basic
 ' Clean up a doubly-linked list
 DIM current AS Node = head
-WHILE current <> NULL
+WHILE NOT Zanna.Core.Object.RefEquals(current, NOTHING)
     DIM nxt AS Node = current.Next
-    current.Prev = NULL
-    current.Next = NULL
+    current.Prev = NOTHING
+    current.Next = NOTHING
     DELETE current
     current = nxt
 WEND
 ```
+
+> **Testing for null.** `NOTHING` can be *assigned* to an object variable, but it
+> cannot be compared with `=`, `<>`, or `IS` — those report
+> `B2001: operand type mismatch` and `B2111: unknown type 'nothing'`
+> respectively. Use `Zanna.Core.Object.RefEquals(obj, NOTHING)` for the test.
 
 ### Design Patterns to Avoid Cycles
 
@@ -92,7 +101,7 @@ WEND
 
 ### Detection
 
-Zanna includes a cycle-detecting garbage collector (`rt_gc.c`) that uses a trial-deletion algorithm. Objects must be registered via `rt_gc_track` for cycle detection to apply. The GC runs periodically during allocation and at program shutdown via `rt_gc_run_all_finalizers`. For debugging:
+Zanna includes a cycle-detecting garbage collector (`rt_gc.c`) that uses a trial-deletion algorithm. Objects must be registered via `rt_gc_track` for cycle detection to apply. **Automatic collection is off by default** — the allocation-debt threshold starts at `0` (disabled), so cycles are only reclaimed when you call `Zanna.Runtime.GC.Collect()` or opt in with `Zanna.Runtime.GC.SetThreshold(n)`. Finalizers do run at program shutdown via `rt_gc_run_all_finalizers`. For debugging:
 
 1. Review object relationships for potential cycles
 2. Use debug builds with refcount tracing: configure with
@@ -102,7 +111,10 @@ Zanna includes a cycle-detecting garbage collector (`rt_gc.c`) that uses a trial
 ## Guidance
 
 - Be mindful of cyclic references; break them explicitly before objects go out of scope.
-- Do not delete `ME` inside a destructor; this is diagnosed as an error to prevent recursion.
+- Do not delete `ME` inside a destructor. This is not rejected at compile time: it
+  runs and then traps at runtime with `DomainError: rt_heap: double release
+  (refcount already zero)`, because the destructor is already running on the
+  final release.
 - Prefer `DELETE` when you want timely cleanup of scarce resources (file handles, OS objects) and ordering relative to
   surrounding code matters.
 - Use static destructors for module-scoped resources that must outlive all user code in the module.

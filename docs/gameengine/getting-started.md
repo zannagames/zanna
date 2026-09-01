@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Your First Game in 15 Minutes
@@ -33,7 +33,7 @@ Every game starts with a **Canvas** — a window you draw to.
 ```zia
 module mygame;
 
-bind Zanna.Graphics.Canvas;
+bind Zanna.Graphics.Canvas as Canvas;
 
 func start() {
     var canvas = Canvas.New("My First Game", 640, 480);
@@ -78,7 +78,7 @@ Read keyboard input to move a paddle.
 ```zia
 module mygame;
 
-bind Zanna.Graphics.Canvas;
+bind Zanna.Graphics.Canvas as Canvas;
 
 final W = 640;
 final H = 480;
@@ -154,7 +154,7 @@ Add a ball with velocity that bounces off walls and the paddle.
 ```zia
 module mygame;
 
-bind Zanna.Graphics.Canvas;
+bind Zanna.Graphics.Canvas as Canvas;
 
 final W = 640;
 final H = 480;
@@ -286,7 +286,7 @@ Zanna includes a **Synth** module for procedural sound — no audio files needed
 Add these imports and lines to the previous example:
 
 ```zia
-bind Zanna.Audio;
+bind Zanna.Audio as Audio;
 
 // In start(), before the game loop:
 Audio.Init();

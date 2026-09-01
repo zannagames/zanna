@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-08-31
 ---
 
 # Zia Language Server Reference
@@ -113,6 +113,9 @@ Both servers expose the shared 11-tool MCP surface. Zia tool names use the
 
 All source-based tools accept an optional `path` argument (defaults to `"untitled.zia"`).
 `zia/dump-il` accepts an optional `optimized` boolean (defaults to `false`).
+`zia/completions` and `zia/hover` take **1-based** `line` and `col` (unlike the
+zero-based positions LSP uses). Every tool result carries both a `content` text
+block and a parsed `structuredContent` object.
 
 For detailed JSON schemas and examples, see [MCP Tool Specification](zia-server-mcp-tools.md).
 
@@ -120,12 +123,12 @@ For detailed JSON schemas and examples, see [MCP Tool Specification](zia-server-
 
 ```jsonl
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}
-← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"zia-server","version":"0.3.0"}}}
+← {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"zia-server","version":"0.3.1-snapshot"}}}
 
 → {"jsonrpc":"2.0","method":"initialized"}
 
 → {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zia/check","arguments":{"source":"module Test;\nfunc start() {\n    Zanna.Terminal.Say(\"hello\");\n}\n"}}}
-← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"[]"}]}}
+← {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"diagnostics\":[]}"}],"structuredContent":{"diagnostics":[]}}}
 ```
 
 ---

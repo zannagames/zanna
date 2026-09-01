@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-17
+last-verified: 2026-09-01
 ---
 
 # Advanced IO
@@ -386,7 +386,7 @@ DIM gzipped AS OBJECT = Zanna.IO.Compress.Gzip(original)
 DIM gunzipped AS OBJECT = Zanna.IO.Compress.Gunzip(gzipped)
 
 ' Verify GZIP magic bytes
-PRINT HEX(gzipped.Get(0)); HEX(gzipped.Get(1))  ' Output: 1F8B
+PRINT gzipped.ToHex()   ' Output starts with 1F8B (BASIC has no HEX$ builtin)
 ```
 
 ### String Convenience Methods

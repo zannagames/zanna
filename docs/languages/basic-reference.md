@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Zanna BASIC — Reference
@@ -14,7 +14,7 @@ Complete language reference for Zanna BASIC. This document describes **statement
 
 ## Key Language Features
 
-- **Assignment**: Requires `LET` keyword (e.g., `LET X = 2`)
+- **Assignment**: `LET` is optional — `LET X = 2` and `X = 2` are both accepted, for scalars, strings, compound updates, and array elements
 - **Function calls**: Use `Name(args)` with parentheses (required in expressions). For statement-form
   SUB calls, parentheses are required when passing arguments; the legacy paren-less form for zero-arg
   SUBs is accepted in statement position.
@@ -163,7 +163,7 @@ END CLASS
 Declares a variable or array. Required for arrays; optional for scalars (to pin type).
 
 ```basic
-DIM A(5)           ' array 0..4
+DIM A(5)           ' array 0..5 (upper bound is inclusive)
 DIM Flag AS BOOLEAN
 ```
 
@@ -559,6 +559,12 @@ Resumes execution after an error. Forms:
 
 There is no special "end the program" form; use `END` from inside the handler instead.
 
+> **Not implemented.** All three forms currently lower to a bare `trap`
+> instruction, so the handler runs and the program then ends instead of
+> resuming. Write handlers that finish the work themselves (or call `END`)
+> rather than relying on `RESUME`. See
+> [defect audit #22](../audit_09012026.md).
+
 ```basic
 ErrHandler:
 PRINT "failed to open"
@@ -736,7 +742,7 @@ PRINT EXP(1)          ' 2.71828... (e)
 PRINT LOG(2.71828)    ' ~1  (natural log)
 PRINT SGN(-5)         ' -1
 PRINT SGN(0)          ' 0
-PRINT TIMER           ' seconds since midnight
+PRINT TIMER()         ' monotonic milliseconds (not seconds, and not time-of-day)
 PRINT ERR()           ' current error code (0 = none)
 ```
 
@@ -765,7 +771,7 @@ PRINT CLNG(3.9)             ' 4
 PRINT CSNG(3.5)             ' 3.5
 PRINT CDBL(3.5)             ' 3.5
 PRINT VAL("42")             ' 42
-PRINT STR$(42)              ' " 42"
+PRINT STR$(42)              ' "42" (no leading space)
 PRINT RND()                 ' 0 <= x < 1
 ```
 
@@ -874,7 +880,7 @@ available.
 
 Error and diagnostic utilities:
 
-- `Zanna.Diagnostics.Trap(str)->void` — Trigger a runtime trap with message
+- `Zanna.Core.Diagnostics.Trap(str)->void` — Trigger a runtime trap with message
 
 ### Runtime Types
 
@@ -972,13 +978,19 @@ USING Zanna.Terminal  ' Error: USING must appear before all declarations
 ```
 
 ```basic
-' ✗ WRONG: USING inside NAMESPACE block (Error: E_NS_008)
+' ✗ WRONG: USING inside NAMESPACE block
 NAMESPACE App
-  USING Zanna.Terminal  ' Error: USING inside NAMESPACE block not allowed
+  USING Zanna.Terminal  ' accepted by default, but the import does not work
   SUB Main()
   END SUB
 END NAMESPACE
 ```
+
+`E_NS_008` is only raised when runtime namespaces are disabled
+(`--no-runtime-namespaces`). In the default configuration the directive is
+accepted, has no effect, and the resulting module fails IL verification with
+`unknown callee`. Keep `USING` at file scope. See
+[defect audit #18](../audit_09012026.md).
 
 ### USING Rules
 
@@ -987,7 +999,11 @@ END NAMESPACE
 3. **File-scoped effect**: Each file's USING directives do not affect other compilation units
 4. **Two forms**:
     - Simple: `USING Zanna.Terminal` (imports all from namespace)
-    - Aliased: `USING VC = Zanna.Terminal` (creates shorthand alias)
+    - Aliased: `USING VC = Zanna.Terminal` (creates shorthand alias). The alias
+      currently resolves **type** references only (`DIM w AS VC.Widget`,
+      `NEW VC.Widget()`); an alias-qualified *call* such as `VC.PrintI64(7)`
+      fails with `B1001: unknown variable 'VC'`. See
+      [defect audit #19](../audit_09012026.md).
 
 For complete namespace documentation, see [Namespace Reference](basic-namespaces.md).
 
@@ -1257,6 +1273,10 @@ Single inheritance only (`CLASS B : A`). Namespaces may qualify base names, e.g.
 - `VIRTUAL`: Declares a new virtual method. A vtable slot is introduced if the name does not already exist in a base.
 - `OVERRIDE`: Reuses the slot of the closest base virtual with the same name. Signature must match exactly.
 - `ABSTRACT`: Method has no body; must be implemented in a non-abstract descendant.
+  Combine with `VIRTUAL` (`VIRTUAL ABSTRACT`) — `ABSTRACT` alone introduces no
+  vtable slot, so a descendant's `OVERRIDE` fails with
+  `B2104: cannot override non-virtual`. Instantiating an abstract class is
+  rejected with `B2106`.
 - `FINAL`: Prevents further overrides in descendants.
 - `PUBLIC|PRIVATE`: Access control enforced at call/field-access sites.
 
@@ -1295,14 +1315,24 @@ itable per interface. Dispatch materializes the callee pointer from the itable a
 RTTI operators:
 - `expr IS Class` — true iff the dynamic type equals or derives from the class.
 - `expr IS Interface` — true iff the dynamic type implements the interface.
-- `expr AS Class` — returns the object when IS succeeds; otherwise NULL.
-- `expr AS Interface` — returns the object when IS succeeds; otherwise NULL.
+- `expr AS Class` — returns the object when IS succeeds; otherwise `NOTHING`.
+- `expr AS Interface` — returns the object when IS succeeds; otherwise `NOTHING`.
+  Test the result with `Zanna.Core.Object.RefEquals(x, NOTHING)`.
 
 ### Static members
 
-- `STATIC SUB NEW()` runs once per class during module initialization before user code.
-- Static fields lower to module-scope globals; reads/writes are independent of any instance.
-- Static methods do not receive `ME`; referencing `ME` in a static method is a semantic error.
+- `STATIC SUB NEW()` is intended to run once per class during module
+  initialization before user code.
+- Static fields are intended to lower to module-scope globals, with reads/writes
+  independent of any instance.
+- Static methods do not receive `ME`.
+
+> **Static members are largely non-functional today.** A `STATIC` field fails to
+> compile (`global has malformed name @C::VALUE`); `STATIC SUB NEW()` never runs;
+> `STATIC DESTRUCTOR` never runs; a static method resolves only through an
+> instance receiver (`c.Ping()`, not `C.Ping()`); and referencing `ME` inside a
+> `STATIC SUB` is accepted rather than rejected. See
+> [defect audit](../audit_09012026.md) entries 1, 2, 3, 9, and 16.
 
 ### Properties
 
@@ -1316,10 +1346,14 @@ Property sugar:
 
 - Chaining order: derived body runs first, then base, continuing up the chain.
 - One instance destructor per class; no parameters or return value.
-- `STATIC DESTRUCTOR` runs at program shutdown in class declaration order.
+- `STATIC DESTRUCTOR` is intended to run at program shutdown in class
+  declaration order, but currently never runs — see the note under
+  [Static members](#static-members).
 - `DELETE expr` invokes the derived→base destructor chain and releases storage when retain count drops to zero.
-- Deleting `NULL` is a no-op; double-delete traps in debug builds. (The BASIC keyword is `DELETE`; there
-  is no `DISPOSE` keyword.)
+- Deleting `NOTHING` (or an unassigned object variable) is a no-op; double-delete
+  traps in debug builds. (The BASIC keyword is `DELETE`; there is no `DISPOSE`
+  keyword.) Note that `NOTHING` can only be *assigned* — comparing against it
+  requires `Zanna.Core.Object.RefEquals(obj, NOTHING)`.
 
 ### Overload resolution
 

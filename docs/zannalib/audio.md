@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Audio
@@ -230,7 +230,7 @@ func start() {
 
     var mus = Music.Load("background.ogg");
     if mus != null {
-        mus.SetVolume(70);
+        mus.Volume = 70;
         mus.Play(1);  // Looped
 
         Say("Duration: " + Fmt.Int(mus.get_Duration()) + " ms");
@@ -347,7 +347,8 @@ value. This makes it suitable for lip-sync rather than output-bus metering.
 module VoiceDemo;
 
 bind Zanna.Terminal;
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Audio.Voice as Voice;
 
 func start() {
     // Initialize audio system
@@ -549,7 +550,8 @@ permutation slot. Playlist objects are not thread-safe.
 module PlaylistDemo;
 
 bind Zanna.Terminal;
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Audio.Playlist as Playlist;
 
 func start() {
     var tracks = Playlist.New();
@@ -623,7 +625,9 @@ removing or clearing the bank does not invalidate references already returned to
 ```zia
 module BankDemo;
 
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Audio.SoundBank as SoundBank;
+bind Zanna.Audio.Synth as Synth;
 
 func start() {
     Audio.Init();
@@ -698,7 +702,9 @@ the same playback/lifetime rules as file-loaded Sounds. Use `Sound.PlayEx`, `Sou
 ```zia
 module SynthDemo;
 
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Audio.SoundBank as SoundBank;
+bind Zanna.Audio.Synth as Synth;
 
 func start() {
     Audio.Init();
@@ -843,7 +849,9 @@ values produce brighter hi-hat/cymbal noise.
 ```zia
 module MusicDemo;
 
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
+bind Zanna.Audio.Voice as Voice;
+bind Zanna.Audio.MusicGen as MusicGen;
 
 func start() {
     Audio.Init();
@@ -1151,7 +1159,7 @@ successfully—otherwise the playlist swaps or stops without a fade.
 ### Example
 
 ```zia
-bind Zanna.Audio;
+bind Zanna.Audio.Mixer as Audio;
 
 // Set up volume sliders
 Audio.SetGroupVolume(0, 80);  // Music at 80%

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Zia Server — MCP Tool Specification
@@ -22,11 +22,15 @@ All tools are invoked via JSON-RPC 2.0 `tools/call`:
 {"jsonrpc":"2.0","id":N,"method":"tools/call","params":{"name":"TOOL_NAME","arguments":{...}}}
 ```
 
-Responses follow the MCP content format:
+Responses follow the MCP content format, and every tool result also carries a
+pre-parsed `structuredContent` object holding the same payload:
 
 ```json
-{"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text","text":"RESULT_STRING"}]}}
+{"jsonrpc":"2.0","id":N,"result":{"content":[{"type":"text","text":"RESULT_STRING"}],"structuredContent":{...}}}
 ```
+
+Clients that can read `structuredContent` should prefer it over re-parsing the
+`content` text block.
 
 ---
 
@@ -46,7 +50,7 @@ Type-check Zia source code and return diagnostics (no code generation).
 }
 ```
 
-**Result:** JSON array of diagnostics. Each diagnostic has:
+**Result:** JSON object with a `diagnostics` array. Each diagnostic has:
 - `severity`: 0 (note), 1 (warning), 2 (error)
 - `message`: Human-readable message
 - `line`: 1-based line number
@@ -63,8 +67,11 @@ Use `zanna explain <code>` (or `zanna --print-error-codes --json`) to resolve di
 **Example:**
 ```jsonl
 → {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"zia/check","arguments":{"source":"module T;\nfunc start() { var x = unknown; }"}}}
-← {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"[{\"severity\":2,\"message\":\"undeclared identifier 'unknown'\",\"line\":2,\"column\":26,\"code\":\"\"}]"}]}}
+← {"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"diagnostics\":[{\"severity\":2,\"message\":\"Undefined identifier: unknown\",\"line\":2,\"column\":24,\"code\":\"V-ZIA-UNDEFINED\",\"endLine\":2,\"endColumn\":31,\"stage\":\"sema\",\"help\":\"Declare the symbol, import it, or correct the spelling.\",\"notes\":[],\"fixits\":[]}]}"}],"structuredContent":{"diagnostics":[...]}}}
 ```
+
+(The real response also reports a `W001` "declared but never used" warning for
+`x`; it is elided above for readability.)
 
 ---
 
@@ -131,10 +138,15 @@ List all top-level declarations in Zia source.
 
 **Input Schema:** Same as `zia/check`.
 
-**Result:** JSON array of symbols:
+**Result:** JSON object with a `symbols` array. Each symbol has:
 - `name`: Symbol name
 - `kind`: `"variable"`, `"function"`, `"method"`, `"field"`, `"type"`, `"module"`, `"parameter"`
 - `type`: Type as string (e.g., `"Integer"`, `"() -> Void"`)
+- `line` / `column`: 1-based declaration position
+
+```json
+{"symbols":[{"name":"start","kind":"function","type":"() -> Void","line":2,"column":1}]}
+```
 
 ---
 
@@ -175,7 +187,13 @@ Dump the token stream.
 
 **Input Schema:** Same as `zia/check`.
 
-**Result:** Tab-separated token list, one per line: `line:col\ttext`.
+**Result:** Tab-separated token list, one per line: `line:col\tkind\ttext`.
+
+```text
+1:1	module	module
+1:8	identifier	T
+1:9	;	;
+```
 
 ---
 
@@ -208,12 +226,12 @@ List methods and properties for a specific runtime class.
 }
 ```
 
-**Result:** JSON array:
+**Result:** JSON object with a `members` array. Each member has:
 - `name`: Member name
 - `memberKind`: `"method"` or `"property"`
 - `signature`: Method signature or property type string
 
-Returns empty array if class not found.
+Returns `{"members":[]}` if the class is not found.
 
 ---
 
@@ -232,7 +250,7 @@ Search Zanna runtime APIs by keyword (case-insensitive substring match).
 }
 ```
 
-**Result:** JSON array of matching entries (same format as `zia/runtime-methods`), including class names that match. The `name` field uses dotted notation (e.g., `"Zanna.Terminal.Say"`).
+**Result:** JSON object with a `results` array whose entries use the same shape as `zia/runtime-methods` members, including class names that match. The `name` field uses dotted notation (e.g., `"Zanna.Math.BigInt.Sqrt"`).
 
 ---
 

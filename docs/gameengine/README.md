@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Zanna Game Engine
@@ -29,7 +29,7 @@ Create a window, draw shapes, and respond to input — all in under 20 lines.
 ```zia
 module MyGame;
 
-bind Zanna.Graphics.Canvas;
+bind Zanna.Graphics.Canvas as Canvas;
 
 func start() {
     var c = Canvas.New("My Game", 640, 480);

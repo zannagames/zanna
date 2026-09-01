@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Functional & Lazy
@@ -17,7 +17,7 @@ Dynamic sequence (growable array) with stack operations. Zanna's primary growabl
 push/pop, insert/remove, and slicing operations.
 
 **Type:** Instance (obj)
-**Constructor:** `NEW Zanna.Collections.Seq()`, `Zanna.Collections.Seq.New(size)`, or `Zanna.Collections.Seq.WithCapacity(cap)`
+**Constructor:** `NEW Zanna.Collections.Seq()`, `Zanna.Collections.Seq.NewSized(size)`, or `Zanna.Collections.Seq.WithCapacity(cap)`
 
 ### Properties
 
@@ -73,8 +73,8 @@ push/pop, insert/remove, and slicing operations.
 
 ### Notes
 
-- Public `Seq` constructors (`new Seq()`, `Seq.New()`, `Seq.New(size)`, and `Seq.WithCapacity(cap)`) create owning sequences, so pushed strings and objects remain valid until removed or the sequence is released.
-- `Seq.New(size)` creates a sequence with `Count == size` and null-initialized slots. Use `Seq.WithCapacity(cap)` to reserve capacity without changing the count.
+- Public `Seq` constructors (`new Seq()`, `Seq.New()`, `Seq.NewSized(size)`, and `Seq.WithCapacity(cap)`) create owning sequences, so pushed strings and objects remain valid until removed or the sequence is released.
+- `Seq.NewSized(size)` creates a sequence with `Count == size` and null-initialized slots (`Seq.New()` takes no arguments). Use `Seq.WithCapacity(cap)` to reserve capacity without changing the count.
 - Negative sizes trap; capacity values below 1 are clamped to one slot.
 - The lower-level C helpers `rt_seq_new` and `rt_seq_with_capacity` still create borrowed-element sequences for internal runtime views; ownership mode must be selected while the sequence is empty.
 - `Pop()` and `RemoveAt(index)` return an owned object reference. When the sequence owns elements, the removed element's retained reference is transferred to the caller.
@@ -188,11 +188,11 @@ seq.Clear()
 
 ### Creating with Initial Count or Capacity
 
-Use `Seq.New(size)` when you want indexed slots immediately, and `Seq.WithCapacity(cap)` when you only want to reserve append space:
+Use `Seq.NewSized(size)` when you want indexed slots immediately, and `Seq.WithCapacity(cap)` when you only want to reserve append space:
 
 ```basic
 DIM seq AS Zanna.Collections.Seq
-seq = Zanna.Collections.Seq.New(1000)
+seq = Zanna.Collections.Seq.NewSized(1000)
 seq.Set(0, firstItem)
 
 DIM buffered AS Zanna.Collections.Seq

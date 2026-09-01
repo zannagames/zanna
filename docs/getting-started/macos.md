@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Getting Started on macOS
@@ -85,9 +85,9 @@ A successful build ends with output similar to:
 ```text
 [100%] Built target zanna
 ...
-100% tests passed, 0 tests failed
+100% tests passed, 0 tests failed out of <N>
 ...
-Install complete.
+[build_zanna] Install complete
 ```
 
 ---
@@ -100,7 +100,7 @@ After building, confirm Zanna is working:
 zanna --version
 ```
 
-You should see the version string (e.g., `zanna v0.2.x-dev`) followed by the IL version. If the command is not found, ensure `/usr/local/bin` is in your `PATH`:
+You should see the version string (e.g., `zanna v0.3.1-snapshot`) followed by the build's source identity and the IL version. If the command is not found, ensure `/usr/local/bin` is in your `PATH`:
 
 ```bash
 echo $PATH | tr ':' '\n' | grep /usr/local/bin
@@ -217,7 +217,7 @@ If you previously had the tools installed but they were removed during a macOS u
 **Symptom:** CMake prints an error like:
 
 ```text
-CMake Error at CMakeLists.txt:1:
+CMake Error at CMakeLists.txt:21 (cmake_minimum_required):
   CMake 3.20 or higher is required.  You are running version 3.16.
 ```
 

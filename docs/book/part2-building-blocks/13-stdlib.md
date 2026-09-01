@@ -79,7 +79,7 @@ bind Zanna.Terminal;
 Say("Hello!");              // Print with newline
 Print("No newline here");   // Print without newline
 var input = ReadLine();     // Read a line of text, or null on EOF
-var char = GetKey();        // Read a single keypress
+var char = ReadKey();       // Read a single keypress
 ```
 
 ### When to Use Each
@@ -87,7 +87,7 @@ var char = GetKey();        // Read a single keypress
 - **`Say()`**: Most output. Each message on its own line.
 - **`Print()`**: When you want to build up a line piece by piece, or when prompting for input on the same line.
 - **`ReadLine()`**: Getting text input when EOF should be handled explicitly.
-- **`GetKey()`**: Games, menus, or "press any key" prompts.
+- **`ReadKey()`**: Games, menus, or "press any key" prompts.
 
 ### Terminal Control
 
@@ -349,7 +349,7 @@ Time is surprisingly complex. Leap years, time zones, daylight saving, calendar 
 ### Getting the Current Time
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Terminal;
 bind Zanna.Text.Fmt as Fmt;
 
@@ -368,7 +368,7 @@ Say("Second: " + Fmt.Int(Time.DateTime.Second(dt)));
 Dates need to be displayed in different formats depending on context:
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Text.Fmt as Fmt;
 bind Zanna.Terminal;
 
@@ -395,7 +395,7 @@ Say(Fmt.IntPad(y, 4, "0") + "-" + Fmt.IntPad(mo, 2, "0") + "-" + Fmt.IntPad(d, 2
 For performance measurement or timing games:
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Terminal;
 bind Zanna.Text.Fmt as Fmt;
 
@@ -412,7 +412,7 @@ Say("Processing took " + Fmt.Int(elapsed) + " ms");
 
 ```zia
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 Say("Loading...");
 Time.Clock.Sleep(2000);  // Pause for 2000 milliseconds (2 seconds)
@@ -423,7 +423,7 @@ Say("Done!");
 
 ```zia
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Text.Fmt as Fmt;
 
 func stopwatch() {
@@ -1342,7 +1342,7 @@ func readFileSafe(path: String) -> String {
 ### Pattern: Measure Performance
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Terminal;
 bind Zanna.Text.Fmt as Fmt;
 
@@ -1365,7 +1365,7 @@ Say("Loop took " + Fmt.Int(elapsed) + " ms");
 ```zia
 bind Zanna.IO.Path as Path;
 bind Zanna.System.Machine as Machine;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Text.Fmt as Fmt;
 
 var dt = Time.DateTime.Now();

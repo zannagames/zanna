@@ -1116,7 +1116,7 @@ Handle parse errors:
 
 ```zia
 bind Json = Zanna.Data.Json;
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 if !Json.IsValid(jsonText) {
     Terminal.Say("Invalid JSON");
@@ -1159,7 +1159,7 @@ When data does not parse correctly, systematic debugging helps.
 Before parsing, see exactly what you received:
 
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 var jsonText = File.ReadAllText("data.json");
 Terminal.Say("=== RAW JSON ===");
@@ -1185,7 +1185,7 @@ Paste your JSON into a validator to get precise error messages.
 After parsing, inspect what you got:
 
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 bind Json = Zanna.Data.Json;
 
 func debugJSON(data: Any) {
@@ -1230,7 +1230,7 @@ Instead of crashing on bad data, log the problem and continue:
 
 ```zia
 bind Json = Zanna.Data.Json;
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 func loadPlayerSafe(filename: String) -> Player? {
     if !File.Exists(filename) {
@@ -1333,7 +1333,7 @@ Here is a complete binary save example:
 ```zia
 bind Buffer = Zanna.IO.BinaryBuffer;
 bind File = Zanna.IO.File;
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 final MAGIC = 0x56535631;  // "VSV1"
 final VERSION = 1;

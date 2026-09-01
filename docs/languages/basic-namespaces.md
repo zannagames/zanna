@@ -868,9 +868,9 @@ first‑class and tested:
     - Methods (static):
         - `Bell() -> VOID` — Sound terminal bell
         - `Clear() -> VOID` — Clear the screen
-        - `GetKey() -> STRING` — Wait for and return keypress
-        - `GetKeyTimeout(I64 ms) -> STRING` — Wait with timeout (empty if timeout)
-        - `InKey() -> STRING` — Non-blocking key check (empty if no key)
+        - `ReadKey() -> STRING` — Wait for and return keypress
+        - `ReadKeyFor(I64 ms) -> STRING` — Wait with timeout (empty if timeout)
+        - `PollKey() -> STRING` — Non-blocking key check (empty if no key)
         - `SetAltScreen(Boolean enable) -> VOID` — Switch to/from alternate screen buffer
         - `SetColor(I64 fg, I64 bg) -> VOID` — Set foreground/background colors
         - `SetCursorVisible(Boolean visible) -> VOID` — Show/hide cursor (FALSE=hide, TRUE=show)

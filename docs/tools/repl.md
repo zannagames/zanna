@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-08-31
 ---
 
 # Zanna REPL
@@ -27,7 +27,7 @@ zanna repl basic
 You'll see a prompt where you can type code:
 
 ```text
-Zanna zia REPL v0.3.0
+Zanna zia REPL v0.3.1-snapshot
 Type .help for commands, .quit to exit.
 
 zia> 2 + 3
@@ -293,10 +293,16 @@ String
 
 zia> .il 2 + 3
 il 0.3.0
+extern @rt_str_release_maybe(str) -> void
+extern @Zanna.Terminal.Say(str) -> void
+extern @Zanna.Text.Fmt.Int(i64) -> str
 func @main() -> void {
 entry_0:
+  .loc 1 8 19
   %t0 = iadd.ovf 2, 3
-  %t1 = call @Zanna.Text.Fmt.Int(%t0)
+  .loc 1 8 16
+  %t1:str = call @Zanna.Text.Fmt.Int(%t0)
+  .loc 1 8 8
   call @Zanna.Terminal.Say(%t1)
   ...
 }

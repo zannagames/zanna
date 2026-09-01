@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Zanna Memory Management
@@ -596,10 +596,23 @@ Severity-ordered list of memory management gaps:
 
 ### 1. HIGH: No Automatic GC Triggering
 
-The cycle collector only runs when explicitly called via
-`Zanna.Runtime.GC.Collect()`. Programs that create cyclic object graphs (e.g.,
-doubly-linked lists, parent-child class references) without calling
-`GC.Collect()` will leak those cycles indefinitely.
+The cycle collector does not run on its own **by default**: the auto-collection
+allocation-debt threshold (`g_gc_threshold` in `rt_gc.c`) starts at `0`, which
+means disabled. Programs that create cyclic object graphs (e.g., doubly-linked
+lists, parent-child class references) will leak those cycles indefinitely unless
+they act.
+
+Two ways to reclaim cycles:
+
+- Call `Zanna.Runtime.GC.Collect()` explicitly at a convenient point.
+- Opt in to automatic collection with `Zanna.Runtime.GC.SetThreshold(n)`
+  (`GetThreshold()` reads it back; `0` disables). Crossing the threshold during
+  allocation only *publishes a request* — the collection itself happens at a
+  mutator boundary or an explicit `rt_gc_safepoint`, never inside the allocator
+  call stack.
+
+The remaining unsoundness is that the threshold is opt-in, so the default
+configuration still leaks cycles silently.
 
 ### 2. HIGH: Borrowed Seq Elements Require Explicit Lifetime Management
 

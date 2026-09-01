@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Cross-Language Interop Guide
@@ -39,11 +39,13 @@ Use `expose` before `func` at module scope to mark a function as exported:
 
 ```zia
 // mathlib.zia
+module MathLib;
+
 expose func factorial(n: Integer) -> Integer {
     if n <= 1 {
-        return 1
+        return 1;
     }
-    return n * factorial(n - 1)
+    return n * factorial(n - 1);
 }
 ```
 
@@ -54,10 +56,12 @@ function declarations have no body:
 
 ```zia
 // main.zia
+module Main;
+
 foreign func Factorial(n: Integer) -> Integer
 
 func start() {
-    let result = Factorial(10)
+    let result = Factorial(10);
     // result = 3628800
 }
 ```
@@ -173,10 +177,18 @@ Zia and BASIC share the same IL type system. Most types are directly compatible:
 
 ### The Boolean Bridge
 
-Zia and BASIC represent booleans differently:
+Zia and BASIC both lower a boolean to IL `i1`; they differ only in how a boolean
+is *widened* to a number:
 
-- **Zia**: `Boolean` compiles to `i1` (0 = false, 1 = true)
-- **BASIC**: `BOOLEAN` compiles to `i64` (-1 = true, 0 = false)
+- **Zia**: `Boolean` is `i1`; widening zero-extends, so `true` becomes `1`
+- **BASIC**: `BOOLEAN` is also stored as `i1`, but widening materializes the
+  classic `-1` for true and `0` for false
+
+Because both sides agree on `i1`, the common pairing — a Zia `Boolean` against a
+BASIC `AS BOOLEAN` — needs **no conversion at all**, and the linker generates no
+thunk. A value returned as Zia `true` is indistinguishable from BASIC's own
+`TRUE`: it compares equal to `TRUE`, and `value AND 255` yields `255` exactly as
+a native BASIC `TRUE` does.
 
 When the linker detects a boolean mismatch between an export and its
 corresponding import, it **automatically generates a conversion thunk**:
@@ -186,15 +198,16 @@ corresponding import, it **automatically generates a conversion thunk**:
 | `i1` -> `i64` | Zero-extend | `Zext1` | `true` (1) -> `1`, `false` (0) -> `0` |
 | `i64` -> `i1` | Compare != 0 | `ICmpNe` | Any non-zero -> `true`, `0` -> `false` |
 
-This means:
-- BASIC's `-1` (true) correctly maps to Zia's `true`
-- BASIC's `1` or any non-zero value also maps to Zia's `true`
-- Zia's `true` maps to BASIC's `1` (not `-1`)
+A thunk is only synthesized when the import and the definition genuinely
+disagree — one side `i1`, the other `i64`. That happens when a declaration
+deliberately widens the type (for example declaring a Zia `Boolean` export as
+`AS LONG` in BASIC), not when both sides spell the type as a boolean.
 
-**Important**: Zia's `true` maps to `1`, not `-1`. If your BASIC code uses
-bitwise `AND` on boolean values expecting `-1`, the interop result may differ.
-Use comparison operators (`<>`, `=`) rather than bitwise operators on
-cross-language boolean values.
+This means:
+- BASIC's `-1` (true) maps to Zia's `true`
+- BASIC's `1` or any non-zero value also maps to Zia's `true`
+- A Zia `true` reaching BASIC behaves as BASIC's `TRUE`, including under
+  bitwise operators
 
 ---
 
@@ -245,8 +258,9 @@ The IL module linker (`il::link::linkModules`) merges multiple modules:
 - **No class/value type sharing**: Object types cannot currently be shared
   across language boundaries. Use primitive types (`Integer`, `Number`, `String`)
   for cross-language function signatures
-- **Boolean arithmetic caveat**: Zia's `true` zero-extends to `1`, not BASIC's
-  `-1`. Code that relies on `true AND mask` patterns may see different results
+- **Deliberately widened booleans**: declaring one side's boolean as an integer
+  (e.g. a Zia `Boolean` export imported as `AS LONG`) is a type mismatch. Spell
+  the type as a boolean on both sides
 
 ---
 
@@ -263,13 +277,15 @@ entry main.zia
 ### `main.zia`
 
 ```zia
+module Main;
+
 bind Zanna.Terminal;
 
 foreign func Factorial(n: Integer) -> Integer
 
 func start() {
-    let result = Factorial(10)
-    Say(toString(result))
+    let result = Factorial(10);
+    Say(toString(result));
 }
 ```
 

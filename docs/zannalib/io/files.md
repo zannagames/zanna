@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-20
+last-verified: 2026-09-01
 ---
 
 # Files & Directories
@@ -360,8 +360,8 @@ bf = Zanna.IO.BinFile.Open("data.bin", "r")
 PRINT bf.Size                 ' Output: 8
 
 ' Read byte by byte
-PRINT HEX(bf.ReadByte())      ' Output: CA
-PRINT HEX(bf.ReadByte())      ' Output: FE
+PRINT bf.ReadByte()           ' Output: 202  (0xCA — BASIC has no HEX$ builtin)
+PRINT bf.ReadByte()           ' Output: 254  (0xFE)
 
 ' Seek to position
 bf.Seek(0, 0)                 ' Back to start

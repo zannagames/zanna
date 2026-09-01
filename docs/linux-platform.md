@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Linux Platform Implementation
@@ -22,10 +22,13 @@ remain loaded for the process lifetime: unloading either library while Xlib or a
 callbacks into it is unsafe. XInput extension opcodes remain display-local because different X
 server connections are not required to assign the same opcode.
 
-`ZANNA_GRAPHICS_BACKEND=HEADLESS` selects the dependency-free in-memory framebuffer backend while
+`ZANNA_GRAPHICS_BACKEND` is a **CMake configure option** (`-DZANNA_GRAPHICS_BACKEND=...`), not a
+runtime environment variable. Its accepted values are `AUTO` (the default), `NATIVE`, `WAYLAND`,
+`X11`, and `HEADLESS`. `HEADLESS` selects the dependency-free in-memory framebuffer backend while
 keeping the public graphics surface enabled. `WAYLAND` and Linux `NATIVE` select native Wayland;
-`X11` selects Xlib. `AUTO` namespaces both adapters into one archive, prefers a usable compositor
-when `WAYLAND_DISPLAY` is set, and falls back to X11 when `DISPLAY` is usable. The first successful
+`X11` selects Xlib. `AUTO` namespaces both adapters into one archive and chooses at **run time**:
+it prefers a usable compositor when `WAYLAND_DISPLAY` is set, and falls back to X11 when `DISPLAY`
+is usable. The first successful
 window fixes the adapter for the process. If X11 development files are absent, `AUTO` remains a
 valid Wayland-only build. A failed desktop connection never silently becomes an invisible headless
 application. See [ADR 0139](adr/0139-native-wayland-backend-and-linux-runtime-selection.md).

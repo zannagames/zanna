@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Zanna IL — Complete Guide
@@ -166,7 +166,7 @@ Functions declare typed parameters. Values are passed and returned explicitly.
 il 0.3.0
 extern @Zanna.Terminal.PrintI64(i64) -> void
 func @add(i64 %a, i64 %b) -> i64 {
-entry:
+entry(%a:i64, %b:i64):     # the entry block must re-declare the parameters
   %sum = iadd.ovf %a, %b   # compute a + b (traps on overflow)
   ret %sum
 }
@@ -178,9 +178,17 @@ entry:
 }
 ```
 
+> **Parameters are bound by the entry block, not the signature.** A function with
+> parameters must declare them again as entry-block parameters
+> (`entry(%a:i64, %b:i64):`). Writing a bare `entry:` produces a function that
+> takes zero arguments; `il-verify` still reports `OK`, and the call traps at
+> runtime with `argument count mismatch for function add: expected 0 arguments,
+> received 2`. See [defect audit #23](../audit_09012026.md).
+
 **Line by line**
 
 - `func @add(i64 %a, i64 %b) -> i64` – declare a function with two `i64` parameters and an `i64` return type.
+- `entry(%a:i64, %b:i64):` – bind the incoming arguments as entry-block parameters.
 - `%sum = iadd.ovf %a, %b` – add the two parameters with overflow checking; traps on signed overflow.
 - `ret %sum` – return the computed sum.
 - `func @main() -> i64 { ... }` – define the entry point.
@@ -322,26 +330,36 @@ PRINT 2 + 2
 END
 ```
 
-Lowered IL:
+Lowered IL (abridged — inspect the real output with `zanna run prog.bas --dump-il`):
 
 ```llvm
 il 0.3.0
 extern @Zanna.Terminal.PrintI64(i64) -> void
+extern @Zanna.Terminal.PrintStr(str) -> void
+global const str @.L0 = "\n"
 func @main() -> i64 {
 entry:
-  %t0 = iadd.ovf 2, 2
-  call @Zanna.Terminal.PrintI64(%t0)
+  call @__mod_init$oop()      # module initializer
+  br UL1000000000
+UL1000000000:
+  call @Zanna.Terminal.PrintI64(4)   # 2 + 2 was folded at lowering time
+  %t0 = const_str @.L0
+  call @Zanna.Terminal.PrintStr(%t0) # PRINT's trailing newline
   ret 0
 }
 ```
 
 **Line by line**
 
-- `%t0 = iadd.ovf 2, 2` – compute the arithmetic expression from the BASIC code with overflow checking.
-- `call @Zanna.Terminal.PrintI64(%t0)` – print the result.
+- `call @__mod_init$oop()` – run the module initializer before user code.
+- `call @Zanna.Terminal.PrintI64(4)` – print the result. The front end folds the
+  constant expression `2 + 2` before emitting IL, so no `iadd.ovf` appears; a
+  non-constant expression such as `PRINT A + B` does emit `iadd.ovf`.
+- `call @Zanna.Terminal.PrintStr(%t0)` – emit `PRINT`'s trailing newline.
 - `ret 0` – exit with success.
 
-**What just happened?** The front end evaluated the expression, emitted an `iadd.ovf`, and called the print routine.
+**What just happened?** The front end evaluated the constant expression, emitted the
+print calls, and returned success.
 
 ### Debugging IL
 

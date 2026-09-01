@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Getting Started on Linux
@@ -55,9 +55,11 @@ cmake --version     # must be 3.20 or higher
 The core compiler, VM, and language frontends build and run with no extra packages.
 
 **Graphics** needs nothing at build time in the default configuration. The native
-Wayland adapter is always compiled and resolves the Wayland, xkbcommon, cursor,
-and EGL ABIs at runtime. The X11 fallback adapter is added only when X11
-development headers are present; without them you get a valid Wayland-only build.
+Wayland adapter is always compiled and `dlopen`s `libwayland-client`,
+`libxkbcommon`, and `libwayland-cursor` at runtime; the 3D backend resolves
+`libEGL` and `libwayland-egl` the same way. The X11 fallback adapter is added
+only when X11 development headers are present; without them you get a valid
+Wayland-only build.
 
 **Audio** does need ALSA development headers at configure time. Without them CMake
 prints `ZannaAUD: disabled` and the audio library is omitted.
@@ -101,9 +103,9 @@ A successful build ends with output similar to:
 ```text
 [100%] Built target zanna
 ...
-100% tests passed, 0 tests failed
+100% tests passed, 0 tests failed out of <N>
 ...
-Install complete.
+[build_zanna] Install complete
 ```
 
 ---
@@ -116,7 +118,7 @@ After building, confirm Zanna is working:
 zanna --version
 ```
 
-You should see the version string (e.g., `zanna v0.2.x-dev`) followed by the IL version. If the command is not found, ensure `/usr/local/bin` is in your `PATH`:
+You should see the version string (e.g., `zanna v0.3.1-snapshot`) followed by the build's source identity and the IL version. If the command is not found, ensure `/usr/local/bin` is in your `PATH`:
 
 ```bash
 echo $PATH | tr ':' '\n' | grep /usr/local/bin
@@ -212,13 +214,9 @@ Hello, World!
 CMake Error: CMAKE_CXX_COMPILER not set, not able to find compiler
 ```
 
-or the build script prints:
-
-```text
-Error: No suitable C++ compiler found.
-```
-
-**Cause:** Neither Clang nor GCC is installed.
+**Cause:** Neither Clang nor GCC is installed. The build script selects `clang`
+when it is on `PATH` and otherwise falls back to `gcc`; when neither is present
+it leaves the choice to CMake, which then fails to configure.
 
 **Fix:**
 
@@ -276,7 +274,7 @@ If you only need the compiler, VM, and language frontends, these warnings are sa
 **Symptom:** CMake prints:
 
 ```text
-CMake Error at CMakeLists.txt:1:
+CMake Error at CMakeLists.txt:21 (cmake_minimum_required):
   CMake 3.20 or higher is required.  You are running version 3.16.
 ```
 

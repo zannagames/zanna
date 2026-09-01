@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-09-01
 ---
 
 # Chapter 26: Performance
@@ -100,8 +100,8 @@ Your intuition about what's slow is probably wrong. Programmers routinely spend 
 The simplest way to measure is with a stopwatch:
 
 ```zia
-bind Zanna.Time;
-bind Zanna.Terminal;
+bind Zanna.Time as Time;
+bind Zanna.Terminal as Terminal;
 
 func start() {
     var startTime = Time.Clock.NowMs();
@@ -120,8 +120,8 @@ This tells you how long `doExpensiveWork` takes. But what if `doExpensiveWork` c
 You can time individual sections:
 
 ```zia
-bind Zanna.Time;
-bind Zanna.Terminal;
+bind Zanna.Time as Time;
+bind Zanna.Terminal as Terminal;
 
 func processData(data: List[Record]) {
     var t0 = Time.Clock.NowMs();
@@ -163,8 +163,8 @@ Now you know: validation is the bottleneck. Optimizing parsing or computation wo
 Let's make timing reusable:
 
 ```zia
-bind Zanna.Time;
-bind Zanna.Terminal;
+bind Zanna.Time as Time;
+bind Zanna.Terminal as Terminal;
 
 func timed[T](name: String, work: func() -> T) -> T {
     var start = Time.Clock.NowMicros();
@@ -494,8 +494,8 @@ With 1,000,000 items: ~1,000,000 operations (very fast)
 Let's benchmark all three:
 
 ```zia
-bind Zanna.Time;
-bind Zanna.Terminal;
+bind Zanna.Time as Time;
+bind Zanna.Terminal as Terminal;
 
 func start() {
     var sizes = [1000, 10000, 100000];
@@ -592,7 +592,7 @@ func findUser(id: Integer) -> User? {
 
 **Fast: Using a Map**
 ```zia
-var users: Map[Integer, User] = new Map();
+var users: Map[Integer, User] = new Map[Integer, User]();
 
 func findUser(id: Integer) -> User? {
     return users.Get(id);        // O(1) - direct lookup
@@ -611,7 +611,7 @@ if !contains(seen, item) {       // O(n) each time
 
 **Fast:**
 ```zia
-var seen: Set[String] = new Set();
+var seen: Set[String] = new Set[String]();
 if !seen.Contains(item) {        // O(1) each time
     seen.Add(item);
 }
@@ -1202,7 +1202,7 @@ When comparing approaches, benchmark carefully. Computers are tricky; many thing
 ### A Proper Benchmark Function
 
 ```text
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Terminal;
 bind Zanna.Text.Fmt as Fmt;
 
@@ -1269,7 +1269,7 @@ When your program is slow but you're not sure why, follow this systematic approa
 First, create a test case that reliably shows the problem:
 
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 func reproduceSlowness() {
     var testData = loadTestData("large_dataset.json");
@@ -1298,7 +1298,7 @@ Add `Time.Clock.NowMs()` measurements around suspect sections. Is the hotspot wh
 If the profiler points to a large function, add internal timing:
 
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 func processData(data: List[Record]) {
     var t0 = Time.Clock.NowMs();
@@ -1378,7 +1378,7 @@ When debugging performance, look for these usual suspects:
 
 **Zia**
 ```text
-bind Zanna.Time;
+bind Zanna.Time as Time;
 bind Zanna.Terminal;
 
 func benchmark(name: String, work: func()) {

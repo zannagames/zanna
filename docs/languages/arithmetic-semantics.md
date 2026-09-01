@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-31
 ---
 
 # Zanna Arithmetic Semantics Reference
@@ -220,11 +220,17 @@ Type hierarchy: `Byte < Integer < Number`
 | `Integer + Number` | `sitofp` on Integer operand, then `fadd` | Implicit widening |
 | `Integer / Integer` | `sdiv.chk0` | Truncation toward zero, trap on `/0` and `MIN/-1` |
 | `Integer % Integer` | `srem.chk0` | Dividend sign, trap on `/0` |
-| `Byte + Integer` | `iadd.ovf` (both I64 at IL level) | Byte is I32 in sema, but I64 in IL |
+| `Byte + Integer` | — | **Currently broken.** `Byte` lowers to `i32` and no implicit widening is inserted, so the module fails IL verification (`operand type mismatch: operand 1 must be i32`). `Byte + Byte` and even `"s" + byteValue` fail the same way. Convert explicitly before use. |
 
 ### BASIC
 
-Type hierarchy: `INTEGER% (I16) < LONG& (I64) < SINGLE! (F64) < DOUBLE# (F64)`
+Semantic promotion lattice: `INTEGER% < LONG& < SINGLE! < DOUBLE#`.
+
+The lattice governs diagnostics and result-type spelling only. Every integral
+value lowers to `i64` and every floating value to `f64` — `%` and `&` both lower
+to `i64`, `!` and `#` both lower to `f64`. Narrow BASIC storage (`i16`, `i32`,
+`f32`) is not a current guarantee; see
+[specs/numerics.md](../specs/numerics.md), which is the source of truth here.
 
 | Expression | IL Emitted | Notes |
 |-----------|-----------|-------|

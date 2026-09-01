@@ -695,7 +695,7 @@ Same code, different results!
 Instead of moving a fixed amount per frame, we move based on how much time has passed:
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 var lastTime = Time.Clock.NowMs();
 
@@ -734,7 +734,7 @@ Same distance covered in the same real-world time, regardless of frame rate!
 ### Delta Time in Practice
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 var x = 400.0;
 var y = 300.0;
@@ -1162,7 +1162,7 @@ canvas.Line(player.x, player.y, player.x + player.dx * 10, player.y + player.dy 
 Make things move slowly so you can watch:
 
 ```zia
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 Time.Clock.Sleep(500);  // Half second between frames
 ```

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-14
+last-verified: 2026-09-01
 ---
 
 # Graphics
@@ -29,7 +29,7 @@ retain the API surface but use unavailable/empty stubs for these host services.
 | [2D Animation, Collision, and Camera](game2d.md) | Viewport2D, ScreenScaler, Transform2D, AnimationClip2D, AnimatedSprite2D, CollisionMask2D, Hitbox2D, CameraRig2D, ParticleSystem2D, Emitter2D, Lighting2D |
 | [Scene Graph](scene.md) | SceneNode, SceneGraph, SpriteBatch, TextureAtlas, Camera, SpriteAnimation |
 | [Game3D](game3d.md) | `World3D`, `Entity3D`, `LayerMask`, `Input3D`, streaming/perf telemetry, native callback-loop boundaries, and code-first 3D game workflow helpers |
-| [3D Physics](physics3d.md) | `Physics3DWorld`, `PhysicsHit3D`, `PhysicsHitList3D`, `LedgeHit3D`, `CollisionEvent3D`, `ContactPoint3D`, `Collider3D`, `Physics3DBody`, `Character3D`, `Ragdoll3D`, `DistanceJoint3D`, `SpringJoint3D`, `HingeJoint3D`, `RopeJoint3D`, `SixDofJoint3D`, `Cloth3D` |
+| [3D Physics](physics3d.md) | `PhysicsWorld3D`, `PhysicsHit3D`, `PhysicsHitList3D`, `LedgeHit3D`, `CollisionEvent3D`, `ContactPoint3D`, `Collider3D`, `PhysicsBody3D`, `Character3D`, `Ragdoll3D`, `DistanceJoint3D`, `SpringJoint3D`, `HingeJoint3D`, `RopeJoint3D`, `SixDofJoint3D`, `Cloth3D` |
 | [3D Rendering, Animation, and Environment](rendering3d.md) | `SceneGraph`, `SceneNode`, authored LOD/impostors, `Camera3D`, `RenderTarget3D`, `CubeMap3D`, `Material3D`, `TextureAsset3D`, `Light3D`, `LightBaker3D`, `PostFX3D`, `RayHit3D`, `SceneAsset`, `Skeleton3D`, `Animation3D`, `AnimPlayer3D`, `AnimBlend3D`, `BlendTree3D`, `IKSolver3D`, `AnimController3D`, `MorphTarget3D`, `Particles3D`, `Decal3D`, `AssetDiagnostics3D`, `Zanna.Audio.SpatialAudio3D`, `SoundListener3D`, `SoundSource3D`, `NavMesh3D`, `NavAgent3D`, `Terrain3D`, `Water3D`, `Vegetation3D`, `Transform3D`, `Trigger3D`, `Path3D`, `InstanceBatch3D`, `Sprite3D`, `TextureAtlas3D` |
 | [Graphics 3D Guide](../../graphics3d-guide.md) | `SceneAsset`, `AnimController3D`, `Canvas3D`, `SceneGraph`, `SceneNode`, `SceneGraph.SyncBindings`, `Mesh3D`, `Material3D`, `Fbx`, `Gltf`, and the higher-level 3D asset pipeline |
 

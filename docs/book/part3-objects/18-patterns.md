@@ -1103,7 +1103,7 @@ Now let's build a stock price monitoring system:
 ```text
 bind Zanna.Terminal;
 bind Zanna.Math as Math;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 // The subject: stock price
 class StockPrice extends Subject {

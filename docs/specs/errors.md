@@ -1,6 +1,6 @@
 ---
 status: active
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 audience: public
 ---
 
@@ -139,10 +139,12 @@ simply fall off the end (which behaves like re-raising the same trap).
 
 | Instruction              | Condition                                              | Trap Kind                    |
 |--------------------------|--------------------------------------------------------|------------------------------|
-| `cast.fp_to_si.rte.chk`  | NaN or value outside signed integer range              | `Overflow`                   |
-| `cast.fp_to_ui.rte.chk`  | NaN or value outside unsigned integer range            | `Overflow`                   |
-| `cast.si_narrow.chk`     | Value outside target signed range                      | `Overflow`                   |
-| `cast.ui_narrow.chk`     | Value outside target unsigned range                    | `Overflow`                   |
+| `cast.fp_to_si.rte.chk`  | NaN operand                                            | `InvalidCast`                |
+| `cast.fp_to_si.rte.chk`  | Value outside signed integer range                     | `Overflow`                   |
+| `cast.fp_to_ui.rte.chk`  | NaN or negative operand                                | `InvalidCast`                |
+| `cast.fp_to_ui.rte.chk`  | Value outside unsigned integer range                   | `Overflow`                   |
+| `cast.si_narrow.chk`     | Value outside target signed range                      | `InvalidCast`                |
+| `cast.ui_narrow.chk`     | Value outside target unsigned range                    | `InvalidCast`                |
 | `iadd.ovf`               | Signed addition overflows                              | `Overflow`                   |
 | `idx.chk`                | Index outside `[lo, hi)` range                         | `Bounds`                     |
 | `imul.ovf`               | Signed multiplication overflows                        | `Overflow`                   |
@@ -166,7 +168,13 @@ The `Err` enum is defined in `src/runtime/core/rt_error.h`. Numeric values are l
 | `Err_InvalidOperation`                | 8     | `InvalidOperation` |
 | `Err_IOError`                         | 3     | `IOError`          |
 | `Err_Overflow`                        | 4     | `Overflow`         |
-| `Err_RuntimeError` (any other non-zero) | 9   | `RuntimeError`     |
+| `Err_RuntimeError`                    | 9     | `RuntimeError`     |
+| `Err_ConnectionRefused` … `Err_ProtocolError` | 10–19 | `NetworkError` |
+
+Values 10–19 are the network family (`Err_ConnectionRefused`, `Err_HostNotFound`,
+`Err_ConnectionReset`, `Err_Timeout`, `Err_ConnectionClosed`, `Err_DnsError`,
+`Err_InvalidUrl`, `Err_TlsError`, `Err_NetworkError`, `Err_ProtocolError`). Any
+other non-zero value maps to `RuntimeError`.
 
 The C runtime reports success or failure and fills an `Err` out-parameter. VM
 glue converts that code into the listed trap kind and raises `trap.err` with the
@@ -217,6 +225,12 @@ remove the active handler.
 | `RESUME NEXT`   | `resume.next %tok`          |
 | `RESUME label`  | `resume.label %tok, ^label` |
 
+> **Not yet wired up.** The `resume.*` opcodes exist and are implemented, but the
+> BASIC front end does not emit them: all three `RESUME` forms currently lower to
+> a bare `trap` (see `src/tests/golden/eh_lowering/resume_forms.il`). The table
+> above describes the intended mapping. See
+> [defect audit #22](../audit_09012026.md).
+
 The `%tok` value is always the resume token received by the handler block. Hand
 crafted IL must not forge resume tokens.
 
@@ -264,24 +278,29 @@ message and `RESUME NEXT` to continue without the file.
 
 ## Unhandled Trap Diagnostics
 
-If no `eh.push` is active when a trap occurs, the VM terminates with a deterministic
-multi-field diagnostic:
+If no `eh.push` is active when a trap occurs, the VM terminates with a
+deterministic single-line diagnostic:
 
 ```text
-Trap: <Kind>
-Function: <function name>
-IL: <function>#<block>#<instruction index>
-Source line: <line number or -1>
+Trap @<function>:<block>#<ip> line <N>: <Kind> (code=<C>): <path>:<line>:<col>: <message>
 ```
 
-For example, an unhandled divide-by-zero might report:
+For example, an unhandled overflow reports:
 
 ```text
-Trap: DivideByZero
-Function: @main
-IL: @main#L2#7
-Source line: 42
+Trap @main:entry#0 line 7: Overflow (code=0): program.il:7:17: integer overflow in iadd.ovf
 ```
 
-The `Source line` field is `-1` when the IL instruction is not annotated with a
-line number.
+The ` line <N>` segment is omitted when no source line is available, and the
+trailing source detail falls back to `file#<ID>:<line>:<col>` when no path is
+registered. `code=<C>` is the *secondary* error code carried in the `Error`
+record — it is not the `TrapKind` value from the table above.
+
+`zanna run` (the default execution path) uses a slightly different layout,
+placing the source detail in parentheses after the instruction pointer:
+
+```text
+Trap @main:entry_0#26 (/path/to/main.zia:7): Overflow (code=4): Overflow: integer overflow in add
+```
+
+Match on the trap **kind** name rather than on either layout.

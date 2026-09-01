@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-09-01
 ---
 
 # Zia — Getting Started
@@ -52,7 +52,7 @@ zanna run hello.zia
 
 **Key points:**
 
-- Every file starts with a `module` declaration
+- Files conventionally start with a `module` declaration; it is optional, and a file without one compiles as module `Main`
 - `start()` is the entry point (like `main()` in C)
 - Use `bind Zanna.Terminal;` to import terminal functions, then `Say()` for console output with newline
 - Statements end with semicolons; blocks use `{ }`
@@ -435,11 +435,15 @@ When you need the object-based runtime collection classes instead, bind
 
 ### Module Declaration
 
-Every file starts with a module declaration:
+Files conventionally start with a module declaration:
 
 ```zia
 module MyGame;
 ```
+
+It is optional — a file with no `module` line compiles as module `Main`, which is
+convenient for single-file programs. Name a module when other files will bind it,
+so its declarations can be qualified (`MyGame.thing`) on a name collision.
 
 ### Binding Other Modules
 
@@ -520,9 +524,9 @@ PrintInt(42);           // Print integer without newline
 // Input
 var line = TryReadLine();       // Read a line (returns Option<String>, None on EOF)
 var result = ReadLineResult();  // Read a line (returns Result<String, String>)
-var key = GetKey();             // Wait for key press (blocking)
-var keyTimeout = GetKeyTimeout(100);  // With timeout (ms), "" on timeout
-var peek = InKey();             // Non-blocking key check, "" if no key
+var key = ReadKey();            // Wait for key press (blocking)
+var keyTimeout = ReadKeyFor(100);     // With timeout (ms), "" on timeout
+var peek = PollKey();           // Non-blocking key check, "" if no key
 
 // Terminal control
 Clear();                // Clear screen

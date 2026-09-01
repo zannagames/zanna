@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-28
+last-verified: 2026-09-01
 ---
 
 # Game3D
@@ -168,13 +168,13 @@ rebase are discarded rather than lerped across the rebase delta.
 `FixedInterpolationAlpha` remains available for games that blend visual-only
 state manually.
 Raw `Zanna.Graphics3D.PhysicsWorld3D` users can use the same fixed-step pattern
-without the Game3D facade through `Physics3DWorld.StepFixed(dt, fixedDt,
+without the Game3D facade through `PhysicsWorld3D.StepFixed(dt, fixedDt,
 maxSteps)`, `FixedStepAlpha`, and `DroppedFixedSteps`. `fixedDt` should be
 positive (commonly `1.0 / 60.0`) and `maxSteps` should be a positive spiral
 guard; `StepFixed` returns the fixed steps actually run and carries the
 remainder on the world.
 
-`Physics3DWorld` solver tuning is per-world: `SolverIterations` defaults to `6`
+`PhysicsWorld3D` solver tuning is per-world: `SolverIterations` defaults to `6`
 for velocity contacts and joints, `PositionIterations` defaults to `1`,
 `ContactBeta` defaults to `0.8` and clamps to `0.0..1.0`, and
 `RestitutionThreshold` defaults to `0.5` m/s and clamps to finite non-negative
@@ -537,7 +537,7 @@ an attached body only when the node sync mode is `SyncMode.BodyFromNode`:
 | `Name` | Read/write property naming the entity and backing node for lookup |
 | `Layer` | Read/write property: gameplay/physics layer |
 | `CollisionMask` | Read/write property: the layer mask used by attached bodies |
-| `AttachBody(bodyDef)` | Create and attach a `Physics3DBody` from a `BodyDef` |
+| `AttachBody(bodyDef)` | Create and attach a `PhysicsBody3D` from a `BodyDef` |
 | `AttachAnimator(animator)` | Attach an `Animator3D` or raw `AnimController3D` to the entity node |
 | `Position` / `WorldPosition` | Read local/world position (read-only properties) |
 | `IsSpawned()` / `IsDestroyed()` | Inspect lifecycle state |
@@ -1550,7 +1550,7 @@ never extend past the longest request — the standard combat-impact feel.
 
 In the fixed-step loop (`runFixed`) the accumulator gains scaled time, so at
 `TimeScale 0.5` fixed steps fire half as often while the fixed step *size*
-never changes — simulation determinism is unaffected. Raw `Physics3DWorld`
+never changes — simulation determinism is unaffected. Raw `PhysicsWorld3D`
 users are untouched: scaling lives entirely in the Game3D facade. Audio voices
 keep playing under pause (menu music continues; positional one-shots finish).
 

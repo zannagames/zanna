@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-17
+last-verified: 2026-08-31
 ---
 
 # Getting Started with Zanna
@@ -92,7 +92,7 @@ This creates a project directory with a manifest and entry-point source file:
 
 ```text
 my-app/
-  zanna.project    # Project manifest (name, version, language, entry point)
+  zanna.project    # Project manifest (name, version, language, entry point, profile, optimize level)
   main.zia         # Entry-point source file
 ```
 
@@ -249,7 +249,7 @@ point.
 
 Zanna guarantees consistent numeric behavior across all platforms and execution modes:
 
-- **Overflow checking**: Zia defaults to checked arithmetic (traps on overflow); BASIC uses wrapping
+- **Overflow checking**: Both frontends use checked integer arithmetic — `+`, `-`, and `*` trap with `Overflow` rather than wrapping
 - **Division**: Zia `/` on integers is integer division; BASIC has separate `/` (float) and `\` (integer)
 - **Modulo**: Remainder preserves the dividend's sign (C11 semantics)
 - **Conversions**: Casts use checked variants that trap when values are out of range

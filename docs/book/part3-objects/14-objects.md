@@ -1304,7 +1304,7 @@ Let's put everything together with a more complete example:
 module TodoApp;
 
 bind Zanna.Terminal;
-bind Zanna.Time;
+bind Zanna.Time as Time;
 
 class TodoItem {
     hide text: String;

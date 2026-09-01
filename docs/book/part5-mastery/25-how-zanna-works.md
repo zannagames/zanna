@@ -57,7 +57,7 @@ Source Code → Lexer → Parser → Semantic Analyzer → IL Generator → Runt
 Let's trace a simple program through this entire journey. We'll use this example:
 
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 func add(a: Integer, b: Integer) -> Integer {
     return a + b;
@@ -934,7 +934,7 @@ Understanding the compilation pipeline gives you powerful debugging strategies.
 
 1. **Print intermediate values** to narrow down where logic goes wrong
    ```zia
-   bind Zanna.Terminal;
+   bind Zanna.Terminal as Terminal;
 
    func calculate(x: Integer) -> Integer {
        Terminal.Say("Input: " + x.toString());
@@ -986,7 +986,7 @@ Zanna's architecture allows three different languages to share one runtime. Let'
 
 **Zia** (modern, curly-brace syntax)
 ```zia
-bind Zanna.Terminal;
+bind Zanna.Terminal as Terminal;
 
 func greet(name: String) {
     Terminal.Say("Hello, " + name + "!");

@@ -831,7 +831,7 @@ class InMemoryProductRepository implements IProductRepository {
     hide products: Map[String, Product];
 
     expose func init() {
-        self.products = Map();
+        self.products = new Map[String, Product]();
     }
 
     func findById(id: String) -> Product? {
@@ -1159,35 +1159,37 @@ Cons: Control flow is less obvious. Callbacks can nest deeply.
 
 Components publish events without knowing who listens. Other components subscribe to events they care about.
 
+> **Note:** this pattern is not currently runnable in Zia. Invoking a handler
+> through a `&function` reference segfaults
+> ([audit #26](../../audit_09012026.md)), so the `publish` loop below cannot
+> execute today. The structure is still the right shape to learn from.
+
 ```zia
+class Event {
+    expose String kind;
+    expose func init(k: String) { kind = k; }
+}
+
 class EventBus {
-    hide subscribers: Map[String, [func(Event)]];
+    hide subscribers: Map[String, List[(Event) -> Void]];
 
     expose func init() {
-        self.subscribers = Map();
+        subscribers = new Map[String, List[(Event) -> Void]]();
     }
 
-    func subscribe(eventType: String, handler: func(Event)) {
-        if !self.subscribers.Has(eventType) {
-            self.subscribers.Set(eventType, []);
+    expose func subscribe(eventType: String, handler: (Event) -> Void) {
+        if !subscribers.has(eventType) {
+            var fresh: List[(Event) -> Void] = [];
+            subscribers.set(eventType, fresh);
         }
-        self.subscribers.Get(eventType).Push(handler);
+        var handlers = subscribers.get(eventType);
+        handlers!.add(handler);
     }
 
-    func unsubscribe(eventType: String, handler: func(Event)) {
-        if self.subscribers.Has(eventType) {
-            var handlers = self.subscribers.Get(eventType);
-            self.subscribers.Set(
-                eventType,
-                handlers.Filter(h => h != handler)
-            );
-        }
-    }
-
-    func publish(event: Event) {
-        var eventType = event.type;
-        if self.subscribers.Has(eventType) {
-            for handler in self.subscribers.Get(eventType) {
+    expose func publish(event: Event) {
+        if subscribers.has(event.kind) {
+            var handlers = subscribers.get(event.kind);
+            for handler in handlers! {
                 handler(event);
             }
         }
@@ -1265,8 +1267,8 @@ class Container {
     hide singletons: Map[String, any];
 
     expose func init() {
-        self.registrations = new Map();
-        self.singletons = new Map();
+        self.registrations = new Map[String, func() -> any]();
+        self.singletons = new Map[String, any]();
     }
 
     func register[T](name: String, factory: func() -> T) {
