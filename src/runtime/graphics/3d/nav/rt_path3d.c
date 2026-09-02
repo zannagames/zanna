@@ -98,7 +98,17 @@ typedef struct {
     double *owned_spline_cumulative;
     ///< Single allocation backing owned_xs/owned_ys/owned_zs in three contiguous slices.
     double *owned_points;
+    ///< Element stride between consecutive coordinates in each lane (one for SoA, three for XYZ).
+    int32_t point_stride;
 } rt_path3d;
+
+static double path3d_get_lane(const rt_path3d *p, const double *lane, int32_t index) {
+    return lane[(size_t)index * (size_t)p->point_stride];
+}
+
+static void path3d_set_lane(rt_path3d *p, double *lane, int32_t index, double value) {
+    lane[(size_t)index * (size_t)p->point_stride] = value;
+}
 
 /// @brief Validate both the Path3D class tag and the complete private payload size.
 /// @param obj Candidate opaque runtime handle.
@@ -130,6 +140,7 @@ static void path3d_finalizer(void *obj) {
     p->xs = p->ys = p->zs = NULL;
     p->owned_xs = p->owned_ys = p->owned_zs = NULL;
     p->owned_points = NULL;
+    p->point_stride = 0;
     p->point_count = p->point_capacity = 0;
     p->point_allocation_capacity = 0;
     free(p->owned_spline_cumulative);
@@ -163,7 +174,8 @@ static double path3d_coord_or(double value, double fallback) {
 static void path3d_repair_storage(rt_path3d *p) {
     if (!p)
         return;
-    if (p->point_allocation_capacity <= 0 || !p->owned_xs || !p->owned_ys || !p->owned_zs) {
+    if (p->point_allocation_capacity <= 0 || !p->owned_xs || !p->owned_ys || !p->owned_zs ||
+        (p->point_stride != 1 && p->point_stride != 3)) {
         p->xs = p->ys = p->zs = NULL;
         p->point_count = 0;
         p->point_capacity = 0;
@@ -226,14 +238,17 @@ static void path3d_repair(rt_path3d *p) {
         return;
     path3d_repair_storage(p);
     for (int32_t i = 0; i < p->point_count; ++i) {
-        double x = path3d_coord_or(p->xs[i], 0.0);
-        double y = path3d_coord_or(p->ys[i], 0.0);
-        double z = path3d_coord_or(p->zs[i], 0.0);
-        if (x != p->xs[i] || y != p->ys[i] || z != p->zs[i])
+        double old_x = path3d_get_lane(p, p->xs, i);
+        double old_y = path3d_get_lane(p, p->ys, i);
+        double old_z = path3d_get_lane(p, p->zs, i);
+        double x = path3d_coord_or(old_x, 0.0);
+        double y = path3d_coord_or(old_y, 0.0);
+        double z = path3d_coord_or(old_z, 0.0);
+        if (x != old_x || y != old_y || z != old_z)
             changed = 1;
-        p->xs[i] = x;
-        p->ys[i] = y;
-        p->zs[i] = z;
+        path3d_set_lane(p, p->xs, i, x);
+        path3d_set_lane(p, p->ys, i, y);
+        path3d_set_lane(p, p->zs, i, z);
     }
     if (p->looping != 0 && p->looping != 1) {
         p->looping = p->looping ? 1 : 0;
@@ -303,9 +318,11 @@ static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
     double *new_ys = new_points + new_cap;
     double *new_zs = new_points + (size_t)new_cap * 2u;
     if (p->point_count > 0) {
-        memcpy(new_xs, p->xs, (size_t)p->point_count * sizeof(double));
-        memcpy(new_ys, p->ys, (size_t)p->point_count * sizeof(double));
-        memcpy(new_zs, p->zs, (size_t)p->point_count * sizeof(double));
+        for (int32_t i = 0; i < p->point_count; ++i) {
+            new_xs[i] = path3d_get_lane(p, p->xs, i);
+            new_ys[i] = path3d_get_lane(p, p->ys, i);
+            new_zs[i] = path3d_get_lane(p, p->zs, i);
+        }
     }
     if (p->owned_points) {
         free(p->owned_points);
@@ -323,6 +340,7 @@ static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
     p->owned_points = new_points;
     p->point_capacity = new_cap;
     p->point_allocation_capacity = new_cap;
+    p->point_stride = 1;
     return 1;
 }
 
@@ -356,6 +374,7 @@ void *rt_path3d_new(void) {
     p->point_count = 0;
     p->point_capacity = PATH3D_INIT_CAP;
     p->point_allocation_capacity = PATH3D_INIT_CAP;
+    p->point_stride = 1;
     p->looping = 0;
     p->cached_length = 0.0;
     p->length_dirty = 1;
@@ -364,6 +383,36 @@ void *rt_path3d_new(void) {
     p->owned_spline_cumulative = NULL;
     p->spline_sample_count = 0;
     p->spline_capacity = 0;
+    rt_obj_set_finalizer(p, path3d_finalizer);
+    return p;
+}
+
+/// @brief Create a Path3D that directly owns an interleaved XYZ reconstruction buffer.
+/// @details No coordinate allocation or copy is performed. Later growth converts the buffer to
+///   the cache-friendly struct-of-arrays layout used by ordinary mutable paths.
+void *rt_path3d_new_adopt_xyz_internal(double *points_xyz,
+                                       int64_t point_count,
+                                       int64_t point_capacity) {
+    if (!points_xyz || point_count <= 0 || point_count > INT32_MAX ||
+        point_capacity < point_count || point_capacity > INT32_MAX)
+        return NULL;
+    rt_path3d *p = (rt_path3d *)rt_obj_new_i64(RT_G3D_PATH3D_CLASS_ID, (int64_t)sizeof(rt_path3d));
+    if (!p)
+        return NULL;
+    memset(p, 0, sizeof(*p));
+    p->owned_points = points_xyz;
+    p->owned_xs = points_xyz;
+    p->owned_ys = points_xyz + 1;
+    p->owned_zs = points_xyz + 2;
+    p->xs = p->owned_xs;
+    p->ys = p->owned_ys;
+    p->zs = p->owned_zs;
+    p->point_count = (int32_t)point_count;
+    p->point_capacity = (int32_t)point_capacity;
+    p->point_allocation_capacity = (int32_t)point_capacity;
+    p->point_stride = 3;
+    p->length_dirty = 1;
+    p->spline_dirty = 1;
     rt_obj_set_finalizer(p, path3d_finalizer);
     return p;
 }
@@ -385,9 +434,9 @@ int32_t rt_path3d_append_xyz_batch_internal(void *obj,
         return 0;
     int32_t first = p->point_count;
     for (int64_t i = 0; i < point_count; ++i) {
-        p->xs[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 0], 0.0);
-        p->ys[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 1], 0.0);
-        p->zs[first + (int32_t)i] = path3d_coord_or(points_xyz[i * 3 + 2], 0.0);
+        path3d_set_lane(p, p->xs, first + (int32_t)i, path3d_coord_or(points_xyz[i * 3 + 0], 0.0));
+        path3d_set_lane(p, p->ys, first + (int32_t)i, path3d_coord_or(points_xyz[i * 3 + 1], 0.0));
+        path3d_set_lane(p, p->zs, first + (int32_t)i, path3d_coord_or(points_xyz[i * 3 + 2], 0.0));
     }
     p->point_count += (int32_t)point_count;
     p->length_dirty = 1;
@@ -417,9 +466,9 @@ void rt_path3d_add_point(void *obj, void *pos) {
     double x = rt_vec3_x(pos);
     double y = rt_vec3_y(pos);
     double z = rt_vec3_z(pos);
-    p->xs[p->point_count] = path3d_coord_or(x, 0.0);
-    p->ys[p->point_count] = path3d_coord_or(y, 0.0);
-    p->zs[p->point_count] = path3d_coord_or(z, 0.0);
+    path3d_set_lane(p, p->xs, p->point_count, path3d_coord_or(x, 0.0));
+    path3d_set_lane(p, p->ys, p->point_count, path3d_coord_or(y, 0.0));
+    path3d_set_lane(p, p->zs, p->point_count, path3d_coord_or(z, 0.0));
     p->point_count++;
     p->length_dirty = 1;
     p->spline_dirty = 1;
@@ -501,9 +550,9 @@ static void path3d_eval_position(rt_path3d *p, double t, double *ox, double *oy,
         t = 0.0;
     if (p->point_count < 2) {
         if (p->point_count == 1) {
-            *ox = p->xs[0];
-            *oy = p->ys[0];
-            *oz = p->zs[0];
+            *ox = path3d_get_lane(p, p->xs, 0);
+            *oy = path3d_get_lane(p, p->ys, 0);
+            *oz = path3d_get_lane(p, p->zs, 0);
         } else {
             *ox = *oy = *oz = 0.0;
         }
@@ -541,18 +590,18 @@ static void path3d_eval_position(rt_path3d *p, double t, double *ox, double *oy,
     int32_t i2 = path_idx(p, seg + 1);
     int32_t i3 = path_idx(p, seg + 2);
 
-    catmull_rom_3d(p->xs[i0],
-                   p->ys[i0],
-                   p->zs[i0],
-                   p->xs[i1],
-                   p->ys[i1],
-                   p->zs[i1],
-                   p->xs[i2],
-                   p->ys[i2],
-                   p->zs[i2],
-                   p->xs[i3],
-                   p->ys[i3],
-                   p->zs[i3],
+    catmull_rom_3d(path3d_get_lane(p, p->xs, i0),
+                   path3d_get_lane(p, p->ys, i0),
+                   path3d_get_lane(p, p->zs, i0),
+                   path3d_get_lane(p, p->xs, i1),
+                   path3d_get_lane(p, p->ys, i1),
+                   path3d_get_lane(p, p->zs, i1),
+                   path3d_get_lane(p, p->xs, i2),
+                   path3d_get_lane(p, p->ys, i2),
+                   path3d_get_lane(p, p->zs, i2),
+                   path3d_get_lane(p, p->xs, i3),
+                   path3d_get_lane(p, p->ys, i3),
+                   path3d_get_lane(p, p->zs, i3),
                    local_t,
                    ox,
                    oy,
@@ -672,9 +721,9 @@ static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
         t = 0.0;
     if (p->point_count < 2) {
         if (p->point_count == 1) {
-            out[0] = p->xs[0];
-            out[1] = p->ys[0];
-            out[2] = p->zs[0];
+            out[0] = path3d_get_lane(p, p->xs, 0);
+            out[1] = path3d_get_lane(p, p->ys, 0);
+            out[2] = path3d_get_lane(p, p->zs, 0);
         }
         return;
     }
@@ -706,10 +755,18 @@ static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
     int32_t i1 = path_idx(p, seg);
     int32_t i2 = path_idx(p, seg + 1);
     int32_t i3 = path_idx(p, seg + 2);
-    double q0[3] = {p->xs[i0], p->ys[i0], p->zs[i0]};
-    double q1[3] = {p->xs[i1], p->ys[i1], p->zs[i1]};
-    double q2[3] = {p->xs[i2], p->ys[i2], p->zs[i2]};
-    double q3[3] = {p->xs[i3], p->ys[i3], p->zs[i3]};
+    double q0[3] = {path3d_get_lane(p, p->xs, i0),
+                    path3d_get_lane(p, p->ys, i0),
+                    path3d_get_lane(p, p->zs, i0)};
+    double q1[3] = {path3d_get_lane(p, p->xs, i1),
+                    path3d_get_lane(p, p->ys, i1),
+                    path3d_get_lane(p, p->zs, i1)};
+    double q2[3] = {path3d_get_lane(p, p->xs, i2),
+                    path3d_get_lane(p, p->ys, i2),
+                    path3d_get_lane(p, p->zs, i2)};
+    double q3[3] = {path3d_get_lane(p, p->xs, i3),
+                    path3d_get_lane(p, p->ys, i3),
+                    path3d_get_lane(p, p->zs, i3)};
     path3d_eval_centripetal_segment(q0, q1, q2, q3, local_u, out);
     out[0] = path3d_coord_or(out[0], 0.0);
     out[1] = path3d_coord_or(out[1], 0.0);

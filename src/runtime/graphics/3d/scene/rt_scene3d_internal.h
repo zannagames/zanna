@@ -118,6 +118,8 @@ typedef struct rt_node_animator3d {
     struct rt_scene_node3d **traversal_stack;
     size_t traversal_stack_capacity;
     uint64_t cached_hierarchy_epoch;
+    uint64_t target_cache_rebuild_node_visits; /* diagnostics for one-pass cache rebuilds */
+    int8_t target_cache_complete;              /* includes negative (unresolved) channel results */
 } rt_node_animator3d;
 
 /// @brief One immutable VSCN v4+ scene carried privately from SceneGraph.Load to SceneAsset.Load.
@@ -363,6 +365,9 @@ typedef struct rt_scene_node3d {
      * this so a destroyed node's same-address successor never inherits its previous
      * transform (which would flash a bogus motion vector on its first frame). */
     uint32_t identity_serial;
+    /* Topology generation owned by a hierarchy root. Unrelated roots advance independently so
+     * animator target caches are not invalidated by changes in other scenes. */
+    uint64_t hierarchy_epoch;
 } rt_scene_node3d;
 
 /// @brief Release every native-owned metadata allocation on one node.
@@ -765,11 +770,15 @@ double scene3d_distance_or_zero(double value);
 /// @param scene Borrowed scene to invalidate; `NULL` is accepted.
 void scene3d_mark_spatial_dirty(rt_scene3d *scene);
 
-/// @brief Record a process-wide scene-parent topology change.
-void scene3d_note_hierarchy_change(void);
+/// @brief Record a topology change on the affected hierarchy roots.
+/// @param first Borrowed node in the first affected hierarchy; `NULL` is accepted.
+/// @param second Optional borrowed node in a second affected hierarchy.
+void scene3d_note_hierarchy_change(rt_scene_node3d *first, rt_scene_node3d *second);
 
-/// @brief Read the current nonzero process-wide scene-parent topology epoch.
-uint64_t scene3d_hierarchy_epoch(void);
+/// @brief Read the current nonzero root-local scene-parent topology epoch.
+/// @param node Borrowed node whose hierarchy root owns the epoch.
+/// @return Root-local nonzero epoch, or zero for a null node.
+uint64_t scene3d_hierarchy_epoch(rt_scene_node3d *node);
 
 /// @brief Mark one node's spatial visibility subtree stale without changing BVH topology.
 /// @param node Borrowed changed node; `NULL` is accepted.

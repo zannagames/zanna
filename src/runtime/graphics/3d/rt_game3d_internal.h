@@ -112,6 +112,14 @@
 #define RT_GAME3D_MODEL_CACHE_KEY_MAX 4096 ///< Max bytes snapshotted for model cache/load paths.
 #endif
 
+/// @brief Return non-zero only when a frontend callback is null or resides in executable native
+/// memory.
+/// @details Kept on the private Game3D surface so platform-specific mapping tests can exercise the
+/// validator without attempting to call deliberately invalid addresses.
+/// @param callback Candidate raw frontend callback address.
+/// @return One for null or verified executable native code, otherwise zero.
+int game3d_callback_pointer_is_native_internal(void *callback);
+
 /// @brief Bound a signed mouse delta before converting it to floating-point controller motion.
 /// @param value Candidate backend or snapshot delta.
 /// @return Value clamped to the finite Game3D coordinate range.

@@ -424,43 +424,22 @@ static void sw_apply_environment_reflection(const vgfx3d_draw_cmd_t *cmd,
     }
 }
 
-/// @brief PBR D term: GGX/Trowbridge-Reitz normal distribution.
-///
-/// `(α² / (π · ((N·H)² · (α² - 1) + 1)²))` with `α = roughness²`.
-/// Standard formula from "Microfacet Models for Refraction" (Walter
-/// et al, 2007). Used in the Cook-Torrance specular term.
+/// @brief PBR D term with the material-invariant alpha-squared value precomputed.
 /// @param ndh Clamped dot product between surface normal and half vector.
-/// @param roughness Perceptual material roughness.
+/// @param alpha_squared Fourth power of perceptual roughness.
 /// @return GGX normal-distribution value with a small denominator guard.
-static inline float pbr_distribution_ggx(float ndh, float roughness) {
+static inline float pbr_distribution_ggx_alpha(float ndh, float alpha_squared) {
     const float kPi = 3.14159265358979323846f;
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float denom = ndh * ndh * (a2 - 1.0f) + 1.0f;
-    return a2 / (kPi * denom * denom + 1e-6f);
+    float denom = ndh * ndh * (alpha_squared - 1.0f) + 1.0f;
+    return alpha_squared / (kPi * denom * denom + 1e-6f);
 }
 
-/// @brief PBR G1 term: Schlick-GGX geometry function for one direction.
-///
-/// `N·V / (N·V · (1 - k) + k)` with k = (roughness+1)²/8 (per-direction
-/// k; pairs with `pbr_geometry_smith` to combine view + light). Models
-/// microfacet self-shadowing/masking.
-/// @param ndv Clamped normal-direction dot product.
-/// @param roughness Perceptual material roughness.
+/// @brief PBR G1 term with the material-invariant geometry factor precomputed.
+/// @param nd Clamped normal-direction dot product.
+/// @param geometry_k Schlick geometry factor `(roughness + 1)^2 / 8`.
 /// @return Schlick-GGX single-direction visibility term.
-static inline float pbr_geometry_schlick_ggx(float ndv, float roughness) {
-    float r = roughness + 1.0f;
-    float k = (r * r) / 8.0f;
-    return ndv / (ndv * (1.0f - k) + k + 1e-6f);
-}
-
-/// @brief PBR G term: Smith geometry — combines view and light G1 contributions.
-/// @param ndv Clamped normal-view dot product.
-/// @param ndl Clamped normal-light dot product.
-/// @param roughness Perceptual material roughness.
-/// @return Product of the view and light Schlick-GGX visibility terms.
-static inline float pbr_geometry_smith(float ndv, float ndl, float roughness) {
-    return pbr_geometry_schlick_ggx(ndv, roughness) * pbr_geometry_schlick_ggx(ndl, roughness);
+static inline float pbr_geometry_schlick_ggx_k(float nd, float geometry_k) {
+    return nd / (nd * (1.0f - geometry_k) + geometry_k + 1e-6f);
 }
 
 /// @brief Per-triangle invariants shared by every fragment of one raster_triangle
@@ -485,6 +464,9 @@ typedef struct {
     const vgfx3d_draw_cmd_t *cmd;
     const vgfx3d_light_params_t *lights;
     int32_t light_count;
+    const vgfx3d_cluster_table_t *cluster_table;
+    int32_t framebuffer_width;
+    int32_t framebuffer_height;
     const float *ambient;
     const sw_context_t *fog_ctx;
     int depth_disabled;
@@ -512,7 +494,20 @@ typedef struct {
     float wx, wy, wz;
     float vx, vy, vz;
     float ndv;
+    int32_t global_light_count;
+    const uint16_t *local_light_indices;
+    int32_t local_light_count;
 } sw_shade_geom;
+
+/// @brief Resolve one selected global-prefix or cluster-local light index.
+/// @param g Borrowed fragment geometry carrying the clustered-light selection.
+/// @param selection_index Index in the compact global-plus-local selection.
+/// @return Index into the draw's flattened light array.
+static int32_t sw_shade_light_index(const sw_shade_geom *g, int32_t selection_index) {
+    if (selection_index < g->global_light_count)
+        return selection_index;
+    return (int32_t)g->local_light_indices[selection_index - g->global_light_count];
+}
 
 /// @brief Resolve the pre-lighting albedo: interpolated vertex color modulated by
 ///   the base-color texture, the optional terrain-splat layer blend, and the
@@ -821,7 +816,7 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
     const sw_pixels_view *metallic_roughness_map = fc->metallic_roughness_map;
     const sw_pixels_view *ao_map = fc->ao_map;
     const vgfx3d_light_params_t *lights = fc->lights;
-    int32_t light_count = sw_sanitize_light_count(fc->lights, fc->light_count);
+    int32_t selected_light_count = g->global_light_count + g->local_light_count;
     const float *ambient = fc->ambient;
     const sw_context_t *fog_ctx = fc->fog_ctx;
     float pnx = g->nx, pny = g->ny, pnz = g->nz;
@@ -884,22 +879,32 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
     }
     float sheen = pbr_param_model ? clamp01f(cmd->custom_params[0]) : 0.0f;
     float sheen_roughness = cmd->custom_params[7] < 0.07f ? 0.07f : clamp01f(cmd->custom_params[7]);
+    float one_minus_metallic = 1.0f - metallic;
+    float f0_r = dielectric_f0 + (base_r - dielectric_f0) * metallic;
+    float f0_g = dielectric_f0 + (base_g - dielectric_f0) * metallic;
+    float f0_b = dielectric_f0 + (base_b - dielectric_f0) * metallic;
+    float rough_alpha = roughness * roughness;
+    float rough_alpha_squared = rough_alpha * rough_alpha;
+    float rough_geometry_r = roughness + 1.0f;
+    float rough_geometry_k = (rough_geometry_r * rough_geometry_r) * 0.125f;
+    float geometry_view = pbr_geometry_schlick_ggx_k(ndv, rough_geometry_k);
+    float coat_alpha = coat_roughness * coat_roughness;
+    float coat_alpha_squared = coat_alpha * coat_alpha;
+    float sheen_inv_alpha = 1.0f / (sheen_roughness * sheen_roughness);
+    const float inv_pi = 0.31830988618f;
     if (cmd->ibl_env && cmd->env_map && fog_ctx && fog_ctx->ibl_enabled) {
         /* Image-based ambient: SH diffuse + prefiltered specular (split-sum).
          * Replaces the flat ambient term; direct lights below are unchanged. */
         float irr[3];
-        float f0_r = dielectric_f0 + (base_r - dielectric_f0) * metallic;
-        float f0_g = dielectric_f0 + (base_g - dielectric_f0) * metallic;
-        float f0_b = dielectric_f0 + (base_b - dielectric_f0) * metallic;
         float gloss = 1.0f - roughness;
         float w = pow5f_fast(1.0f - ndv);
         /* Roughness-aware Schlick: rough surfaces lose grazing Fresnel gain. */
         float fa_r = f0_r + ((gloss > f0_r ? gloss : f0_r) - f0_r) * w;
         float fa_g = f0_g + ((gloss > f0_g ? gloss : f0_g) - f0_g) * w;
         float fa_b = f0_b + ((gloss > f0_b ? gloss : f0_b) - f0_b) * w;
-        float kd_r = (1.0f - fa_r) * (1.0f - metallic);
-        float kd_g = (1.0f - fa_g) * (1.0f - metallic);
-        float kd_b = (1.0f - fa_b) * (1.0f - metallic);
+        float kd_r = (1.0f - fa_r) * one_minus_metallic;
+        float kd_g = (1.0f - fa_g) * one_minus_metallic;
+        float kd_b = (1.0f - fa_b) * one_minus_metallic;
         /* Reflection vector R = 2(N.V)N - V. */
         float rvx = 2.0f * ndv * pnx - vdx;
         float rvy = 2.0f * ndv * pny - vdy;
@@ -969,7 +974,8 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
         lit_b = (ambient ? ambient[2] : 0.0f) * base_b * ao;
     }
 
-    for (int32_t li = 0; li < light_count; li++) {
+    for (int32_t selection = 0; selection < selected_light_count; selection++) {
+        int32_t li = sw_shade_light_index(g, selection);
         const vgfx3d_light_params_t *lt = &lights[li];
         float llx, lly, llz, la = 1.0f;
 
@@ -1010,25 +1016,21 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
         float ndh = clamp01f(dot3f(pnx, pny, pnz, hx, hy, hz));
         float vdh = clamp01f(dot3f(vdx, vdy, vdz, hx, hy, hz));
 
-        float f0_r = dielectric_f0 + (base_r - dielectric_f0) * metallic;
-        float f0_g = dielectric_f0 + (base_g - dielectric_f0) * metallic;
-        float f0_b = dielectric_f0 + (base_b - dielectric_f0) * metallic;
         float fresnel_w = pow5f_fast(1.0f - vdh);
         float f_r = f0_r + (1.0f - f0_r) * fresnel_w;
         float f_g = f0_g + (1.0f - f0_g) * fresnel_w;
         float f_b = f0_b + (1.0f - f0_b) * fresnel_w;
 
-        float d = pbr_distribution_ggx(ndh, roughness);
-        float gg = pbr_geometry_smith(ndv, ndl, roughness);
+        float d = pbr_distribution_ggx_alpha(ndh, rough_alpha_squared);
+        float gg = geometry_view * pbr_geometry_schlick_ggx_k(ndl, rough_geometry_k);
         float spec_denom = 4.0f * ndv * ndl + 1e-4f;
         float spec_r = (d * gg * f_r) / spec_denom;
         float spec_g = (d * gg * f_g) / spec_denom;
         float spec_b = (d * gg * f_b) / spec_denom;
 
-        const float inv_pi = 0.31830988618f;
-        float kd_r = (1.0f - f_r) * (1.0f - metallic);
-        float kd_g = (1.0f - f_g) * (1.0f - metallic);
-        float kd_b = (1.0f - f_b) * (1.0f - metallic);
+        float kd_r = (1.0f - f_r) * one_minus_metallic;
+        float kd_g = (1.0f - f_g) * one_minus_metallic;
+        float kd_b = (1.0f - f_b) * one_minus_metallic;
         float diff_r = kd_r * base_r * inv_pi;
         float diff_g = kd_g * base_g * inv_pi;
         float diff_b = kd_b * base_b * inv_pi;
@@ -1039,11 +1041,9 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
         if (sheen > 0.0f) {
             /* Charlie sheen lobe (KHR_materials_sheen): inverted-GGX style
              * distribution with the Neubelt-Pettineo visibility term. */
-            float alpha_s = sheen_roughness * sheen_roughness;
-            float inv_alpha = 1.0f / alpha_s;
             float sin2 = 1.0f - ndh * ndh;
-            float d_charlie = (2.0f + inv_alpha) *
-                              powf(sin2 > 0.0f ? sin2 : 0.0f, inv_alpha * 0.5f) *
+            float d_charlie = (2.0f + sheen_inv_alpha) *
+                              powf(sin2 > 0.0f ? sin2 : 0.0f, sheen_inv_alpha * 0.5f) *
                               0.15915494309f; /* 1 / (2 pi) */
             float vis_sheen = 1.0f / (4.0f * (ndl + ndv - ndl * ndv) + 1e-4f);
             float sheen_spec = sheen * d_charlie * vis_sheen;
@@ -1054,7 +1054,7 @@ static void sw_shade_lighting_pbr(const sw_fragment_ctx *fc,
         if (coat > 0.0f) {
             /* Second specular lobe: GGX D at the coat roughness, Schlick F at
              * F0 0.04, Kelemen visibility; base layer attenuated by the coat. */
-            float coat_d = pbr_distribution_ggx(ndh, coat_roughness);
+            float coat_d = pbr_distribution_ggx_alpha(ndh, coat_alpha_squared);
             float coat_f = 0.04f + 0.96f * fresnel_w;
             float coat_vis = 0.25f / (vdh * vdh + 1e-4f);
             float coat_spec = coat * coat_d * coat_f * coat_vis;
@@ -1141,7 +1141,7 @@ static void sw_shade_lighting_phong(const sw_fragment_ctx *fc,
     const vgfx3d_draw_cmd_t *cmd = fc->cmd;
     const sw_pixels_view *specular_map = fc->specular_map;
     const vgfx3d_light_params_t *lights = fc->lights;
-    int32_t light_count = sw_sanitize_light_count(fc->lights, fc->light_count);
+    int32_t selected_light_count = g->global_light_count + g->local_light_count;
     const float *ambient = fc->ambient;
     const sw_context_t *fog_ctx = fc->fog_ctx;
     float pnx = g->nx, pny = g->ny, pnz = g->nz;
@@ -1177,7 +1177,8 @@ static void sw_shade_lighting_phong(const sw_fragment_ctx *fc,
         sp_b *= smb;
     }
 
-    for (int32_t li = 0; li < light_count; li++) {
+    for (int32_t selection = 0; selection < selected_light_count; selection++) {
+        int32_t li = sw_shade_light_index(g, selection);
         const vgfx3d_light_params_t *lt = &lights[li];
         float llx, lly, llz, la = 1.0f;
 
@@ -1364,6 +1365,44 @@ static float sw_linearize_ndc_depth(const sw_context_t *ctx, float ndc_z) {
     if (ctx->cam_is_ortho)
         return zn + (ndc_z + 1.0f) * 0.5f * (zf - zn);
     return (2.0f * zn * zf) / (zf + zn - ndc_z * (zf - zn));
+}
+
+/// @brief Resolve a fragment's flattened clustered-light cell.
+/// @param fc Borrowed triangle context with validated table and framebuffer dimensions.
+/// @param x Fragment pixel X coordinate.
+/// @param y Fragment pixel Y coordinate.
+/// @param ndc_z Interpolated normalized-device depth.
+/// @return Clamped flattened cluster index.
+static int32_t sw_fragment_cluster_index(const sw_fragment_ctx *fc, int x, int y, float ndc_z) {
+    const vgfx3d_cluster_table_t *table = fc->cluster_table;
+    float u = ((float)x + 0.5f) / (float)fc->framebuffer_width;
+    float v = ((float)y + 0.5f) / (float)fc->framebuffer_height;
+    float depth = sw_linearize_ndc_depth(fc->fog_ctx, ndc_z);
+    float z_scale;
+    int32_t cluster_x = (int32_t)(u * (float)VGFX3D_CLUSTER_DIM_X);
+    int32_t cluster_y = (int32_t)(v * (float)VGFX3D_CLUSTER_DIM_Y);
+    int32_t cluster_z = 0;
+
+    if (depth > table->znear && depth < table->zfar) {
+        z_scale = logf(depth / table->znear) / logf(table->zfar / table->znear);
+        cluster_z = (int32_t)(z_scale * (float)VGFX3D_CLUSTER_DIM_Z);
+    } else if (depth >= table->zfar) {
+        cluster_z = VGFX3D_CLUSTER_DIM_Z - 1;
+    }
+    if (cluster_x < 0)
+        cluster_x = 0;
+    if (cluster_x >= VGFX3D_CLUSTER_DIM_X)
+        cluster_x = VGFX3D_CLUSTER_DIM_X - 1;
+    if (cluster_y < 0)
+        cluster_y = 0;
+    if (cluster_y >= VGFX3D_CLUSTER_DIM_Y)
+        cluster_y = VGFX3D_CLUSTER_DIM_Y - 1;
+    if (cluster_z < 0)
+        cluster_z = 0;
+    if (cluster_z >= VGFX3D_CLUSTER_DIM_Z)
+        cluster_z = VGFX3D_CLUSTER_DIM_Z - 1;
+    return cluster_x + cluster_y * VGFX3D_CLUSTER_DIM_X +
+           cluster_z * VGFX3D_CLUSTER_DIM_X * VGFX3D_CLUSTER_DIM_Y;
 }
 
 /// @brief Decide whether a resolved fragment may use the opaque color/depth write path.
@@ -1608,6 +1647,17 @@ static int sw_shade_fragment(
             sw_compute_view_vector(
                 fog_ctx, geom.wx, geom.wy, geom.wz, &geom.vx, &geom.vy, &geom.vz);
             geom.ndv = clamp01f(dot3f(geom.nx, geom.ny, geom.nz, geom.vx, geom.vy, geom.vz));
+            geom.global_light_count = fc->light_count;
+            geom.local_light_indices = NULL;
+            geom.local_light_count = 0;
+            if (fc->cluster_table) {
+                int32_t cluster_index = sw_fragment_cluster_index(fc, x, y, z);
+                uint16_t begin = fc->cluster_table->offsets[cluster_index];
+                uint16_t end = fc->cluster_table->offsets[cluster_index + 1];
+                geom.global_light_count = fc->cluster_table->global_light_count;
+                geom.local_light_indices = &fc->cluster_table->indices[begin];
+                geom.local_light_count = (int32_t)(end - begin);
+            }
             pixel_ndv = geom.ndv;
 
             if (cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR)
@@ -1998,6 +2048,12 @@ static void raster_triangle_scissored(uint8_t *pixels,
     int per_pixel_shadows =
         sw_draw_requires_per_pixel_lighting(fog_ctx, cmd, lights, light_count) &&
         cmd->workflow != RT_MATERIAL3D_WORKFLOW_PBR && !normal_map;
+    const vgfx3d_cluster_table_t *cluster_table =
+        (fog_ctx && fb_w > 0 && fb_h > 0 &&
+         vgfx3d_cluster_table_is_usable(
+             (const vgfx3d_cluster_table_t *)cmd->cluster_table, cmd->lights_revision, light_count))
+            ? (const vgfx3d_cluster_table_t *)cmd->cluster_table
+            : NULL;
     sw_fragment_ctx fc = {.pixels = pixels,
                           .zbuf = zbuf,
                           .stride = stride,
@@ -2015,6 +2071,9 @@ static void raster_triangle_scissored(uint8_t *pixels,
                           .cmd = cmd,
                           .lights = lights,
                           .light_count = light_count,
+                          .cluster_table = cluster_table,
+                          .framebuffer_width = fb_w,
+                          .framebuffer_height = fb_h,
                           .ambient = ambient,
                           .decal_tex = decal_tex,
                           .fog_ctx = fog_ctx,

@@ -303,6 +303,7 @@ void *rt_scene_node3d_new(void) {
     memset(node, 0, sizeof(*node));
     node->vptr = NULL;
     node->identity_serial = rt_g3d_next_identity_serial();
+    node->hierarchy_epoch = 1;
     node->position[0] = node->position[1] = node->position[2] = 0.0;
     node->rotation[0] = node->rotation[1] = node->rotation[2] = 0.0;
     node->rotation[3] = 1.0; /* identity quaternion (0,0,0,1) */
@@ -980,6 +981,9 @@ static int8_t scene_node3d_try_add_child_impl(rt_scene_node3d *parent,
         parent->child_capacity = new_cap;
     }
 
+    /* Invalidate both affected roots before parent links change. No fallible work remains. */
+    scene3d_note_hierarchy_change(old_parent ? old_parent : child, parent);
+
     /* Transfer the old parent's retained slot to the already-reserved target
        slot. No fallible work remains after this topology mutation begins. */
     if (old_parent && old_child_index >= 0) {
@@ -993,7 +997,6 @@ static int8_t scene_node3d_try_add_child_impl(rt_scene_node3d *parent,
 
     parent->children[parent->child_count++] = child;
     child->parent = parent;
-    scene3d_note_hierarchy_change();
     if (owner_change)
         scene_node_owner_transaction_assign(&owner_transaction, new_owner);
     scene_node_owner_transaction_discard(&owner_transaction);
@@ -1151,7 +1154,7 @@ void rt_scene_node3d_remove_child(void *obj, void *child_obj) {
             parent->child_count--;
             parent->children[parent->child_count] = NULL;
             child->parent = NULL;
-            scene3d_note_hierarchy_change();
+            scene3d_note_hierarchy_change(parent, child);
             if (owner) {
                 scene_node_owner_transaction_clear(&owner_transaction, owner);
                 scene3d_mark_spatial_dirty(owner);

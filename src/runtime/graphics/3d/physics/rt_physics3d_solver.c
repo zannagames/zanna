@@ -380,7 +380,7 @@ int ph3d_i32_stack_push(int32_t **items, int32_t *count, int32_t *capacity, int3
 }
 
 /// @brief Carve the per-body and per-contact scratch arrays for one island-solver batch
-///   (union-find parent, active-body flags, root/body→island maps, per-island contact
+///   (union-find parent/rank, active-body flags, root/body→island maps, per-island contact
 ///   counts/write offsets, island offset table, contact-index buffer) out of the world's
 ///   persistent PH3D_SCRATCH_SOLVER_BATCH slot.
 /// @details One zeroed block per substep replaces what used to be 8 malloc/calloc + 8 free
@@ -400,10 +400,10 @@ static int ph3d_solver_island_batch_alloc(rt_world3d *w, ph3d_solver_island_batc
         return 0;
     body_slots = (size_t)w->body_count;
     contact_slots = (size_t)w->contact_count;
-    /* 6 per-body arrays + island_offsets (body_slots + 1) + contact_indices. */
-    if (body_slots > (SIZE_MAX / sizeof(int32_t) - 1u) / 7u)
+    /* 7 per-body arrays + island_offsets (body_slots + 1) + contact_indices. */
+    if (body_slots > (SIZE_MAX / sizeof(int32_t) - 1u) / 8u)
         return 0;
-    total_slots = body_slots * 7u + 1u;
+    total_slots = body_slots * 8u + 1u;
     if (contact_slots > SIZE_MAX / sizeof(int32_t) - total_slots)
         return 0;
     total_slots += contact_slots;
@@ -412,13 +412,14 @@ static int ph3d_solver_island_batch_alloc(rt_world3d *w, ph3d_solver_island_batc
     if (!mem)
         return 0;
     batch->parent = mem;
-    batch->active_body = mem + body_slots;
-    batch->root_to_island = mem + body_slots * 2u;
-    batch->body_island = mem + body_slots * 3u;
-    batch->island_contact_counts = mem + body_slots * 4u;
-    batch->island_write_offsets = mem + body_slots * 5u;
-    batch->island_offsets = mem + body_slots * 6u;
-    batch->contact_indices = mem + body_slots * 7u + 1u;
+    batch->rank = mem + body_slots;
+    batch->active_body = mem + body_slots * 2u;
+    batch->root_to_island = mem + body_slots * 3u;
+    batch->body_island = mem + body_slots * 4u;
+    batch->island_contact_counts = mem + body_slots * 5u;
+    batch->island_write_offsets = mem + body_slots * 6u;
+    batch->island_offsets = mem + body_slots * 7u;
+    batch->contact_indices = mem + body_slots * 8u + 1u;
     return 1;
 }
 
@@ -458,26 +459,57 @@ static int32_t ph3d_island_find(int32_t *parent, int32_t index) {
 }
 
 /// @brief Union-find UNION: merge the islands containing bodies @p a and @p b.
-/// @details Roots are joined under the numerically smaller index, giving a deterministic island
-///          layout independent of contact ordering. No-op when either index is negative.
+/// @details The shallower tree is joined below the deeper tree. Equal-rank ties choose the
+///          numerically smaller root, keeping the result deterministic without permitting an
+///          adversarial linear parent chain. No-op when either index is negative.
 /// @param[in,out] parent Union-find parent array.
+/// @param[in,out] rank Union-find rank array.
 /// @param a First body index, or a negative value for no body.
 /// @param b Second body index, or a negative value for no body.
-static void ph3d_island_union(int32_t *parent, int32_t a, int32_t b) {
+static void ph3d_island_union(int32_t *parent, int32_t *rank, int32_t a, int32_t b) {
     int32_t root_a;
     int32_t root_b;
-    if (!parent || a < 0 || b < 0)
+    if (!parent || !rank || a < 0 || b < 0)
         return;
     root_a = ph3d_island_find(parent, a);
     root_b = ph3d_island_find(parent, b);
     if (root_a == root_b)
         return;
-    if (root_b < root_a) {
+    if (rank[root_a] < rank[root_b] || (rank[root_a] == rank[root_b] && root_b < root_a)) {
         int32_t tmp = root_a;
         root_a = root_b;
         root_b = tmp;
     }
     parent[root_b] = root_a;
+    if (rank[root_a] == rank[root_b] && rank[root_a] < INT32_MAX)
+        rank[root_a]++;
+}
+
+/// @brief Build an adversarial descending union sequence and report its raw maximum tree depth.
+/// @details This test-only probe intentionally measures before path compression, so it detects a
+///          regression from union-by-rank to deterministic-but-linear root linking.
+int32_t ph3d_test_island_union_max_depth(int32_t count) {
+    int32_t max_depth = 0;
+    if (count <= 0 || (size_t)count > SIZE_MAX / (2u * sizeof(int32_t)))
+        return 0;
+    int32_t *storage = (int32_t *)calloc((size_t)count * 2u, sizeof(*storage));
+    if (!storage)
+        return INT32_MAX;
+    int32_t *parent = storage;
+    int32_t *rank = storage + count;
+    for (int32_t i = 0; i < count; ++i)
+        parent[i] = i;
+    for (int32_t i = count - 1; i > 0; --i)
+        ph3d_island_union(parent, rank, i - 1, i);
+    for (int32_t i = 0; i < count; ++i) {
+        int32_t depth = 0;
+        for (int32_t node = i; parent[node] != node; node = parent[node])
+            depth++;
+        if (depth > max_depth)
+            max_depth = depth;
+    }
+    free(storage);
+    return max_depth;
 }
 
 /// @brief Resolve the world-array indices of a contact's two bodies for solving.
@@ -553,7 +585,7 @@ int world3d_build_solver_island_batch(rt_world3d *w, ph3d_solver_island_batch *b
         if (active_b)
             batch->active_body[index_b] = 1;
         if (active_a && active_b)
-            ph3d_island_union(batch->parent, index_a, index_b);
+            ph3d_island_union(batch->parent, batch->rank, index_a, index_b);
     }
 
     for (int32_t i = 0; i < w->body_count; ++i) {

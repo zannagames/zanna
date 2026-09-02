@@ -157,6 +157,7 @@ static void navmesh3d_finalizer(void *obj) {
     nm->path_workspace_gate = NULL;
     nm->path_active_queries = 0;
     nm->path_peak_active_queries = 0;
+    nm->path_transient_allocation_count = 0;
     nm->last_path_touched_count = 0;
     nm->last_path_heap_peak = 0;
     nm->voxel_cell_height = NULL;

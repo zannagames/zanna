@@ -78,6 +78,8 @@ static void world3d_finalizer(void *obj) {
     free(w->exit_event_objects);
     free(w->joints);
     free(w->joint_types);
+    free(w->joint_adjacency_storage);
+    free(w->joint_adjacency_partners);
     free(w->broadphase_entries);
     free(w->broadphase_sort_scratch);
     free(w->query_broadphase_entries);
@@ -110,6 +112,12 @@ static void world3d_finalizer(void *obj) {
     w->exit_event_objects = NULL;
     w->joints = NULL;
     w->joint_types = NULL;
+    w->joint_adjacency_storage = NULL;
+    w->joint_adjacency_partners = NULL;
+    w->joint_adjacency_body_capacity = 0;
+    w->joint_adjacency_partner_capacity = 0;
+    w->joint_adjacency_dirty = 1;
+    w->last_joint_wake_candidate_count = 0;
     w->broadphase_entries = NULL;
     w->broadphase_sort_scratch = NULL;
     w->query_broadphase_entries = NULL;
@@ -224,6 +232,12 @@ void *rt_world3d_new(double gx, double gy, double gz) {
     w->exit_event_objects = NULL;
     w->joints = NULL;
     w->joint_types = NULL;
+    w->joint_adjacency_storage = NULL;
+    w->joint_adjacency_partners = NULL;
+    w->joint_adjacency_body_capacity = 0;
+    w->joint_adjacency_partner_capacity = 0;
+    w->joint_adjacency_dirty = 1;
+    w->last_joint_wake_candidate_count = 0;
     w->broadphase_entries = NULL;
     w->broadphase_sort_scratch = NULL;
     w->query_broadphase_entries = NULL;
@@ -772,6 +786,9 @@ static int world3d_step_internal(rt_world3d *w, double dt, const char **error_ou
     w->step_pending_broadphase_fallbacks = 0;
     sub_dt = dt;
     world3d_begin_ccd_diagnostics(w);
+    w->ccd_broadphase_count = -1;
+    w->ccd_broadphase_dt = sub_dt;
+    w->last_ccd_candidate_tests = 0;
     world3d_invalidate_query_broadphase(w);
     w->frame_contact_count = 0;
     w->last_solver_island_count = 0;
@@ -1164,6 +1181,7 @@ void rt_world3d_add_joint(void *obj, void *joint, int64_t joint_type) {
     w->joints[w->joint_count] = joint;
     w->joint_types[w->joint_count] = (int32_t)joint_type;
     w->joint_count++;
+    world3d_invalidate_joint_adjacency(w);
 }
 
 /// @brief `World3D.RemoveJoint(joint)` — unregister a constraint.
@@ -1187,6 +1205,7 @@ void rt_world3d_remove_joint(void *obj, void *joint) {
             w->joint_types[w->joint_count] = 0;
             if (rt_obj_release_check0(removed))
                 rt_obj_free(removed);
+            world3d_invalidate_joint_adjacency(w);
             return;
         }
     }
@@ -1234,6 +1253,7 @@ static void world3d_purge_joints_for_body(rt_world3d *w, rt_body3d *body) {
         w->joint_types[i] = 0;
     }
     w->joint_count = write;
+    world3d_invalidate_joint_adjacency(w);
 }
 
 /// @brief `World3D.JointCount` — number of registered joints (0 for NULL).

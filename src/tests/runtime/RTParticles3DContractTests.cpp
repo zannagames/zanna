@@ -45,6 +45,7 @@ int g_draw_mesh_matrix_keyed_calls = 0;
 int g_last_mesh_vertex_count = 0;
 int g_last_mesh_index_count = 0;
 double g_last_mesh_quad_z[16] = {0.0};
+double g_last_mesh_draw_quad_z[16] = {0.0};
 double g_keyed_draw_z[16] = {0.0};
 double g_keyed_draw_alpha[16] = {0.0};
 int g_keyed_draw_additive[16] = {0};
@@ -262,6 +263,7 @@ extern "C" int64_t rt_particles3d_test_sort_key_capacity(void *o);
 extern "C" uint64_t rt_particles3d_test_sort_key_grow_count(void *o);
 extern "C" int64_t rt_particles3d_test_instance_scratch_capacity(void *o);
 extern "C" uint64_t rt_particles3d_test_instance_scratch_grow_count(void *o);
+extern "C" void rt_particles3d_test_age_overflow_draw_slots(void *o, int32_t frames);
 
 extern "C" void *rt_obj_new_i64(int64_t, int64_t byte_size) {
     return std::calloc(1, static_cast<size_t>(byte_size));
@@ -402,6 +404,7 @@ extern "C" void rt_canvas3d_draw_mesh(void *, void *mesh, void *, void *material
     g_last_mesh_signature = hash_bytes(
         g_last_mesh_signature, &g_last_mesh_index_count, sizeof(g_last_mesh_index_count));
     std::memset(g_last_mesh_quad_z, 0, sizeof(g_last_mesh_quad_z));
+    std::memset(g_last_mesh_draw_quad_z, 0, sizeof(g_last_mesh_draw_quad_z));
     std::memset(g_last_mesh_vertices, 0, sizeof(g_last_mesh_vertices));
     if (m && m->vertices) {
         size_t copied_vertices = m->vertex_count;
@@ -424,6 +427,16 @@ extern "C" void rt_canvas3d_draw_mesh(void *, void *mesh, void *, void *material
             hash_bytes(g_last_mesh_signature,
                        m->indices,
                        static_cast<size_t>(m->index_count) * sizeof(*m->indices));
+        int quad_count = m->index_count / 6;
+        if (quad_count >
+            (int)(sizeof(g_last_mesh_draw_quad_z) / sizeof(g_last_mesh_draw_quad_z[0])))
+            quad_count =
+                (int)(sizeof(g_last_mesh_draw_quad_z) / sizeof(g_last_mesh_draw_quad_z[0]));
+        for (int i = 0; i < quad_count; ++i) {
+            uint32_t vertex_index = m->indices[i * 6];
+            if (vertex_index < m->vertex_count)
+                g_last_mesh_draw_quad_z[i] = m->vertices[vertex_index].pos[2];
+        }
     }
     g_last_draw_alpha = material ? static_cast<StubMaterial *>(material)->alpha : 0.0;
     g_last_draw_additive = material ? static_cast<StubMaterial *>(material)->additive_blend : 0;
@@ -774,6 +787,7 @@ static void reset_draw_records() {
     g_particle_batch_alpha = 0.0;
     g_particle_batch_additive = 0;
     std::memset(g_last_mesh_quad_z, 0, sizeof(g_last_mesh_quad_z));
+    std::memset(g_last_mesh_draw_quad_z, 0, sizeof(g_last_mesh_draw_quad_z));
     std::memset(g_last_mesh_vertices, 0, sizeof(g_last_mesh_vertices));
     std::memset(g_particle_batch_instances, 0, sizeof(g_particle_batch_instances));
     std::memset(g_keyed_draw_z, 0, sizeof(g_keyed_draw_z));
@@ -920,10 +934,10 @@ static void test_hardware_instances_match_software_billboards_and_reuse_scratch(
     g_particle_instancing_supported = 0;
 }
 
-/// @brief Prove hardware billboards do not remove the CPU ribbon-trail feature.
-/// @details The hardware frame must queue one compact billboard while retaining precisely the
-///   software trail vertices and indices after subtracting the one expanded billboard quad.
-static void test_hardware_particle_path_preserves_cpu_trail_ribbons() {
+/// @brief Prove alpha trails keep billboards and ribbons in one sortable primitive stream.
+/// @details Hardware particle support must not split conventional-alpha billboards away from their
+/// trails because the two submissions cannot establish a correct primitive-level blend order.
+static void test_alpha_trails_use_one_cpu_primitive_stream() {
     void *ps = rt_particles3d_new(4);
     rt_canvas3d canvas = {};
     rt_camera3d cam = make_test_camera();
@@ -951,11 +965,63 @@ static void test_hardware_particle_path_preserves_cpu_trail_ribbons() {
     canvas.frame_serial = 21;
     reset_draw_records();
     rt_particles3d_draw(ps, &canvas, &cam);
-    assert(g_particle_batch_calls == 1);
-    assert(g_particle_batch_count == 1);
+    assert(g_particle_batch_calls == 0);
+    assert(g_particle_batch_count == 0);
     assert(g_draw_mesh_calls == 1);
-    assert(g_last_mesh_vertex_count == software_vertex_count - 4);
-    assert(g_last_mesh_index_count == software_index_count - 6);
+    assert(g_last_mesh_vertex_count == software_vertex_count);
+    assert(g_last_mesh_index_count == software_index_count);
+    g_particle_instancing_supported = 0;
+}
+
+/// @brief Prove billboards and trail segments share a back-to-front draw order and trail tails fade
+/// to zero.
+static void test_alpha_trails_sort_all_quads_and_fade_complete_tail() {
+    void *ps = rt_particles3d_new(2);
+    auto *view = static_cast<ParticlesView *>(ps);
+    rt_canvas3d canvas = {};
+    rt_camera3d cam = make_test_camera();
+    assert(ps != nullptr);
+
+    rt_particles3d_set_speed(ps, 0.0, 0.0);
+    rt_particles3d_set_lifetime(ps, 10.0, 10.0);
+    rt_particles3d_set_size(ps, 1.0, 1.0);
+    rt_particles3d_set_alpha(ps, 1.0, 1.0);
+    rt_particles3d_set_additive(ps, 0);
+    rt_particles3d_set_trail(ps, 1.0, 4);
+    rt_particles3d_set_position(ps, 0.0, 0.0, 1.0);
+    rt_particles3d_burst(ps, 1);
+    rt_particles3d_set_position(ps, 0.0, 0.0, 5.0);
+    rt_particles3d_burst(ps, 1);
+
+    constexpr int trail_segments = 4;
+    constexpr size_t trail_stride = trail_segments * 3u;
+    for (int particle = 0; particle < 2; ++particle) {
+        float depth = particle == 0 ? 10.0f : 3.0f;
+        float *ring = &view->trail_pos[(size_t)particle * trail_stride];
+        ring[0] = 0.0f;
+        ring[1] = 0.0f;
+        ring[2] = depth;
+        ring[3] = 1.0f;
+        ring[4] = 0.0f;
+        ring[5] = depth;
+        view->trail_len[particle] = 2;
+        view->trail_head[particle] = 2;
+    }
+
+    g_particle_instancing_supported = 1;
+    canvas.frame_serial = 22;
+    reset_draw_records();
+    rt_particles3d_draw(ps, &canvas, &cam);
+    assert(g_particle_batch_calls == 0);
+    assert(g_draw_mesh_calls == 1);
+    assert(g_last_mesh_vertex_count == 16);
+    assert(g_last_mesh_index_count == 24);
+    assert(std::fabs(g_last_mesh_draw_quad_z[0] - 10.0) < 1e-6);
+    assert(std::fabs(g_last_mesh_draw_quad_z[1] - 5.0) < 1e-6);
+    assert(std::fabs(g_last_mesh_draw_quad_z[2] - 3.0) < 1e-6);
+    assert(std::fabs(g_last_mesh_draw_quad_z[3] - 1.0) < 1e-6);
+    assert(std::fabs(g_last_mesh_vertices[9].color[3]) < 1e-6);
+    assert(std::fabs(g_last_mesh_vertices[10].color[3]) < 1e-6);
     g_particle_instancing_supported = 0;
 }
 
@@ -1271,6 +1337,12 @@ static void test_overflow_table_mirrors_restore_owned_storage() {
     std::free(foreign_vertex_caps);
     std::free(foreign_index_caps);
     std::free(foreign_materials);
+
+    rt_particles3d_test_age_overflow_draw_slots(ps, 119);
+    assert(v->overflow_draw_slot_capacity == owned_capacity);
+    rt_particles3d_test_age_overflow_draw_slots(ps, 1);
+    assert(v->overflow_draw_slot_capacity == 0);
+    assert(v->overflow_draw_vertices == nullptr && v->overflow_draw_indices == nullptr);
 }
 
 int main() {
@@ -1286,7 +1358,8 @@ int main() {
     test_rebase_origin_shifts_emitter_and_live_particles();
     test_draw_batches_additive_and_alpha_particles();
     test_hardware_instances_match_software_billboards_and_reuse_scratch();
-    test_hardware_particle_path_preserves_cpu_trail_ribbons();
+    test_alpha_trails_use_one_cpu_primitive_stream();
+    test_alpha_trails_sort_all_quads_and_fade_complete_tail();
     test_alpha_sort_scratch_grows_to_capacity_and_reuses_for_repeated_draws();
     test_corrupted_emitter_state_is_persistently_repaired();
     test_pool_and_trail_mirrors_restore_owned_storage();

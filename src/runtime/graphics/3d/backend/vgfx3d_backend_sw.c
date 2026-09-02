@@ -1368,6 +1368,68 @@ static int sw_pixel_count_checked(int32_t width, int32_t height, size_t *out_cou
 #include "vgfx3d_backend_sw_raster.inc"
 #include "vgfx3d_backend_sw_shadow.inc"
 #include "vgfx3d_backend_sw_vtable.inc"
+
+/// @brief Test probe for the software fragment light selector.
+/// @details Mirrors the exact validated-table and fragment-cell path used by rasterization and
+///   writes the selected flattened-light indices when space is available. Kept outside the public
+///   backend header because it is a unit-test diagnostic, not a runtime API.
+/// @param cmd Borrowed draw command containing a candidate cluster table and revision.
+/// @param light_count Sanitized flattened light-array count.
+/// @param width Positive framebuffer width.
+/// @param height Positive framebuffer height.
+/// @param x Fragment X coordinate.
+/// @param y Fragment Y coordinate.
+/// @param ndc_z Fragment normalized-device depth.
+/// @param out_indices Optional output array for selected flattened-light indices.
+/// @param out_capacity Writable index capacity.
+/// @return Number of lights the fragment loop would evaluate.
+int32_t vgfx3d_sw_test_fragment_light_selection(const vgfx3d_draw_cmd_t *cmd,
+                                                int32_t light_count,
+                                                int32_t width,
+                                                int32_t height,
+                                                int32_t x,
+                                                int32_t y,
+                                                float ndc_z,
+                                                int32_t *out_indices,
+                                                int32_t out_capacity) {
+    sw_context_t context;
+    sw_fragment_ctx fragment;
+    sw_shade_geom geom;
+    const vgfx3d_cluster_table_t *table;
+    int32_t selected_count;
+
+    light_count = light_count < 0 ? 0 : (light_count > VGFX3D_MAX_LIGHTS ? VGFX3D_MAX_LIGHTS
+                                                                        : light_count);
+    if (!cmd || width <= 0 || height <= 0)
+        return 0;
+    table = (const vgfx3d_cluster_table_t *)cmd->cluster_table;
+    if (!vgfx3d_cluster_table_is_usable(table, cmd->lights_revision, light_count)) {
+        for (int32_t i = 0; out_indices && i < light_count && i < out_capacity; i++)
+            out_indices[i] = i;
+        return light_count;
+    }
+    memset(&context, 0, sizeof(context));
+    memset(&fragment, 0, sizeof(fragment));
+    memset(&geom, 0, sizeof(geom));
+    context.cam_znear = table->znear;
+    context.cam_zfar = table->zfar;
+    fragment.cluster_table = table;
+    fragment.framebuffer_width = width;
+    fragment.framebuffer_height = height;
+    fragment.fog_ctx = &context;
+    {
+        int32_t cluster_index = sw_fragment_cluster_index(&fragment, x, y, ndc_z);
+        uint16_t begin = table->offsets[cluster_index];
+        uint16_t end = table->offsets[cluster_index + 1];
+        geom.global_light_count = table->global_light_count;
+        geom.local_light_indices = &table->indices[begin];
+        geom.local_light_count = (int32_t)(end - begin);
+    }
+    selected_count = geom.global_light_count + geom.local_light_count;
+    for (int32_t i = 0; out_indices && i < selected_count && i < out_capacity; i++)
+        out_indices[i] = sw_shade_light_index(&geom, i);
+    return selected_count;
+}
 // clang-format on
 
 /* Test-only robustness probes. These mirror the existing worker-count probe and

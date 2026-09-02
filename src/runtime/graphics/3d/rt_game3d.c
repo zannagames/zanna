@@ -397,7 +397,7 @@ static int game3d_linux_maps_line_contains_executable_callback(const char *line,
 ///   that the target page is executable. NULL is treated as "native" (no-op).
 /// @param callback Candidate raw callback address.
 /// @return 1 for `NULL` or a verified executable native address, or 0 otherwise.
-static int game3d_callback_pointer_is_native(void *callback) {
+int game3d_callback_pointer_is_native_internal(void *callback) {
     if (!callback)
         return 1;
     if (rt_heap_is_payload(callback))
@@ -406,11 +406,14 @@ static int game3d_callback_pointer_is_native(void *callback) {
     MEMORY_BASIC_INFORMATION info;
     if (VirtualQuery(callback, &info, sizeof(info)) == 0)
         return 0;
+    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0)
+        return 0;
     DWORD protect = info.Protect & 0xffu;
     return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
            protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
 #elif RT_PLATFORM_MACOS
-    mach_vm_address_t region = (mach_vm_address_t)(uintptr_t)callback;
+    mach_vm_address_t needle = (mach_vm_address_t)(uintptr_t)callback;
+    mach_vm_address_t region = needle;
     mach_vm_size_t size = 0;
     vm_region_basic_info_data_64_t info = {0};
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
@@ -425,24 +428,18 @@ static int game3d_callback_pointer_is_native(void *callback) {
         return 0;
     if (object != MACH_PORT_NULL)
         mach_port_deallocate(mach_task_self(), object);
-    return (info.protection & VM_PROT_EXECUTE) != 0;
+    /* mach_vm_region describes the next higher allocation when `needle` is an
+     * address-space hole, so executable protection alone does not prove that
+     * the callback belongs to the returned range. */
+    return needle >= region && needle - region < size && (info.protection & VM_PROT_EXECUTE) != 0;
 #elif RT_PLATFORM_LINUX
-    static RT_THREAD_LOCAL uintptr_t cached_exec_start = 0;
-    static RT_THREAD_LOCAL uintptr_t cached_exec_end = 0;
-    FILE *maps = fopen("/proc/self/maps", "r");
     char line[512];
     uintptr_t needle = (uintptr_t)callback;
-    if (cached_exec_start < cached_exec_end && needle >= cached_exec_start &&
-        needle < cached_exec_end)
-        return 1;
+    FILE *maps = fopen("/proc/self/maps", "r");
     if (!maps)
         return 0;
     while (fgets(line, sizeof(line), maps)) {
-        uintptr_t start = 0;
-        uintptr_t end = 0;
-        if (game3d_linux_maps_line_contains_executable_callback(line, needle, &start, &end)) {
-            cached_exec_start = start;
-            cached_exec_end = end;
+        if (game3d_linux_maps_line_contains_executable_callback(line, needle, NULL, NULL)) {
             fclose(maps);
             return 1;
         }
@@ -462,7 +459,7 @@ static int game3d_callback_pointer_is_native(void *callback) {
 static rt_game3d_update_fn game3d_update_callback_checked(void *callback, const char *diagnostic) {
     if (!callback)
         return NULL;
-    if (!game3d_callback_pointer_is_native(callback)) {
+    if (!game3d_callback_pointer_is_native_internal(callback)) {
         rt_trap(diagnostic);
         return NULL;
     }
@@ -478,7 +475,7 @@ static rt_game3d_overlay_fn game3d_overlay_callback_checked(void *callback,
                                                             const char *diagnostic) {
     if (!callback)
         return NULL;
-    if (!game3d_callback_pointer_is_native(callback)) {
+    if (!game3d_callback_pointer_is_native_internal(callback)) {
         rt_trap(diagnostic);
         return NULL;
     }

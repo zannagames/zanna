@@ -1427,6 +1427,7 @@ static void *fbx_load_impl(rt_string path) {
     fbx_node_t *objects = NULL;
     int is_binary = 0;
     int is_ascii_signature = 0;
+    int owns_data = 0;
     fbx_mesh_binding_t *mesh_bindings = NULL;
     int32_t mesh_binding_count = 0;
     fbx_mesh_remap_t *mesh_remaps = NULL;
@@ -1452,11 +1453,29 @@ static void *fbx_load_impl(rt_string path) {
         return NULL;
     }
 
-    /* Read file */
+    /* Read a path source or borrow the synchronous in-memory bridge. */
     long fsize;
-    uint8_t *data = fbx_read_entire_file(cpath, &fsize, &context);
-    if (!data)
-        return NULL;
+    const uint8_t *data;
+    uint8_t *owned_data = NULL;
+    if (g_fbx_source_bytes_override) {
+        uint64_t max_file_bytes = fbx_max_file_bytes();
+        if (g_fbx_source_size_override == 0 || g_fbx_source_size_override > (size_t)LONG_MAX ||
+            (uint64_t)g_fbx_source_size_override > max_file_bytes ||
+            g_fbx_source_size_override == SIZE_MAX ||
+            !fbx_budget_charge(&context, (uint64_t)g_fbx_source_size_override + 1u, 1u)) {
+            rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
+                               "FBX.Load: in-memory source exceeds a configured limit");
+            return NULL;
+        }
+        data = g_fbx_source_bytes_override;
+        fsize = (long)g_fbx_source_size_override;
+    } else {
+        owned_data = fbx_read_entire_file(cpath, &fsize, &context);
+        if (!owned_data)
+            return NULL;
+        data = owned_data;
+        owns_data = 1;
+    }
 
     is_binary = fbx_has_binary_magic(data, fsize);
     is_ascii_signature = fbx_has_ascii_fbx_signature(data, fsize);
@@ -1464,7 +1483,8 @@ static void *fbx_load_impl(rt_string path) {
         fbx_reader_t reader;
         memset(&reader, 0, sizeof(reader));
         if (fsize < 27) {
-            free(data);
+            if (owns_data)
+                free(owned_data);
             rt_asset_error_set(RT_ASSET_ERROR_BAD_MAGIC, "FBX.Load: truncated binary FBX header");
             return NULL;
         }
@@ -1502,7 +1522,8 @@ static void *fbx_load_impl(rt_string path) {
             }
             root.child_count++;
         }
-        free(data);
+        if (owns_data)
+            free(owned_data);
         if (reader.error) {
             fbx_free_node(&root);
             if (context.budget_exhausted) {
@@ -1521,7 +1542,8 @@ static void *fbx_load_impl(rt_string path) {
         }
     } else {
         int parsed = fbx_parse_ascii_document(data, (size_t)fsize, &root, &context);
-        free(data);
+        if (owns_data)
+            free(owned_data);
         if (!parsed) {
             if (context.budget_exhausted) {
                 rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
@@ -1944,5 +1966,32 @@ void *rt_fbx_load_recoverable_with_texture_base(rt_string path, rt_string textur
     g_fbx_texture_base_override = texture_base;
     asset = rt_fbx_load_recoverable(path);
     g_fbx_texture_base_override = previous;
+    return asset;
+}
+
+/// @brief Parse borrowed FBX bytes directly while retaining the logical texture base path.
+void *fbx_load_recoverable_bytes_internal(rt_string original_path,
+                                          const uint8_t *bytes,
+                                          size_t size) {
+    const uint8_t *previous_bytes = g_fbx_source_bytes_override;
+    size_t previous_size = g_fbx_source_size_override;
+    rt_string previous_base = g_fbx_texture_base_override;
+    void *asset;
+    if (!original_path || !rt_string_cstr(original_path) || !bytes || size == 0)
+        return NULL;
+    rt_asset_error_begin_load();
+    g_fbx_source_bytes_override = bytes;
+    g_fbx_source_size_override = size;
+    g_fbx_texture_base_override = original_path;
+    asset = fbx_load_impl(original_path);
+    g_fbx_texture_base_override = previous_base;
+    g_fbx_source_bytes_override = previous_bytes;
+    g_fbx_source_size_override = previous_size;
+    if (asset) {
+        rt_asset_error_end_load_success();
+    } else {
+        rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT, "FBX.Load: failed to load FBX bytes");
+        rt_asset_error_end_load_failure();
+    }
     return asset;
 }

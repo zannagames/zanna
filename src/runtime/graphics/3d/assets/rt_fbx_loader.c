@@ -52,6 +52,7 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_compress.h"
+#include "rt_fbx_loader_internal.h"
 #include "rt_file_stdio.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_gif.h"
@@ -129,6 +130,9 @@ extern void *rt_asset_decode_typed(const char *name, const uint8_t *data, size_t
 /// @brief Thread-local original path used when a temp FBX file should resolve external textures
 /// beside the source asset rather than beside the temp spill file.
 static RT_FBX_THREAD_LOCAL rt_string g_fbx_texture_base_override = NULL;
+/// @brief Optional borrowed source bytes for the synchronous internal memory-load bridge.
+static RT_FBX_THREAD_LOCAL const uint8_t *g_fbx_source_bytes_override = NULL;
+static RT_FBX_THREAD_LOCAL size_t g_fbx_source_size_override = 0;
 
 /// @brief Per-load accounting and diagnostics shared by binary/ASCII FBX parsing and extraction.
 /// @details Every retained allocation class named by ADR 0173 is charged before allocation. The

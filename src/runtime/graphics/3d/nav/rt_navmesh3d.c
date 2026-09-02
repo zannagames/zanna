@@ -85,7 +85,7 @@
 #define NAVMESH3D_QUERY_GRID_MAX_DIM 512
 #define NAVMESH3D_QUERY_GRID_MAX_CELLS 262144u
 #define NAVMESH3D_QUERY_GRID_MAX_REFERENCES (8u * 1024u * 1024u)
-#define NAVMESH3D_PATH_WORKSPACE_COUNT 4
+#define NAVMESH3D_PATH_WORKSPACE_COUNT 8
 #define NAVMESH3D_SAMPLE_MAX_GRID_CELLS 4096
 #define NAVMESH3D_SAMPLE_MAX_GRID_REFERENCES 131072
 
@@ -176,6 +176,7 @@ typedef struct {
 ///   slot before growing or writing its arrays, so searches on the same immutable topology can
 ///   overlap without sharing mutable costs, parents, closed flags, or heap entries.
 typedef struct {
+    void *storage;
     float *g_cost;
     int32_t *parent;
     int8_t *closed;
@@ -227,6 +228,7 @@ typedef struct {
     void *path_workspace_gate;
     volatile int path_active_queries;
     volatile int path_peak_active_queries;
+    volatile int path_transient_allocation_count;
     volatile int last_path_touched_count;
     volatile int last_path_heap_peak;
     double agent_radius;
@@ -277,18 +279,11 @@ static int navmesh3d_init_path_workspace_gate(rt_navmesh3d *nm) {
     return nm->path_workspace_gate != NULL;
 }
 
-/// @brief Release every dynamic array owned by one retained or transient path workspace.
+/// @brief Release the packed allocation owned by one retained or transient path workspace.
 static void navmesh3d_dispose_path_workspace(navmesh3d_path_workspace_t *workspace) {
     if (!workspace)
         return;
-    free(workspace->g_cost);
-    free(workspace->parent);
-    free(workspace->closed);
-    free(workspace->node_generation);
-    free(workspace->heap_positions);
-    free(workspace->heap);
-    free(workspace->corridor);
-    free(workspace->portals);
+    free(workspace->storage);
     memset(workspace, 0, sizeof(*workspace));
 }
 

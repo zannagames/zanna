@@ -191,6 +191,7 @@ typedef struct {
     vgfx3d_particle_instance_t *owned_instance_scratch;
     int32_t owned_instance_scratch_capacity;
     uint64_t owned_instance_scratch_grow_count;
+    int32_t overflow_draw_idle_frames;
 } rt_particles3d;
 
 /// @brief Generate a non-zero per-instance seed for Particles3D.
@@ -717,7 +718,7 @@ static void random_cone_dir(rt_particles3d *ps, const double *dir, double spread
     /* Random angle within cone */
     float cos_theta = 1.0f - randf(ps) * (1.0f - cosf((float)spread));
     cos_theta = (float)particles_clamp((double)cos_theta, -1.0, 1.0);
-    float theta = acosf(cos_theta);
+    float sin_theta = sqrtf(fmaxf(0.0f, 1.0f - cos_theta * cos_theta));
     float phi = randf(ps) * (float)(2.0 * M_PI);
 
     /* Build a coordinate frame around dir */
@@ -758,7 +759,7 @@ static void random_cone_dir(rt_particles3d *ps, const double *dir, double spread
     float uy = rz * d[0] - rx * d[2];
     float uz = rx * d[1] - ry * d[0];
 
-    float st = sinf(theta), ct = cosf(theta);
+    float st = sin_theta, ct = cos_theta;
     float sp = sinf(phi), cp = cosf(phi);
 
     out[0] = d[0] * ct + rx * st * cp + ux * st * sp;
@@ -969,6 +970,7 @@ void *rt_particles3d_new(int64_t max_particles) {
     ps->owned_sort_key_grow_count = 0;
     ps->draw_frame_serial = -1;
     ps->draw_slots_used = 0;
+    ps->overflow_draw_idle_frames = 0;
     ps->simulation_residual = 0.0;
     ps->dropped_time_total = 0.0;
     ps->dropped_time_last_update = 0.0;
@@ -1800,10 +1802,11 @@ static void spawn_particle(rt_particles3d *ps) {
     {
         double r = cbrt((double)randf(ps)) * emitter_size[0];
         double theta = (double)randf(ps) * (2.0 * M_PI);
-        double phi = acos(particles_clamp(1.0 - 2.0 * (double)randf(ps), -1.0, 1.0));
-        p->pos[0] += r * sin(phi) * cos(theta);
-        p->pos[1] += r * cos(phi);
-        p->pos[2] += r * sin(phi) * sin(theta);
+        double y = particles_clamp(1.0 - 2.0 * (double)randf(ps), -1.0, 1.0);
+        double radial = sqrt(fmax(0.0, 1.0 - y * y));
+        p->pos[0] += r * radial * cos(theta);
+        p->pos[1] += r * y;
+        p->pos[2] += r * radial * sin(theta);
     } else if (ps->emitter_shape == 2) /* box */
     {
         p->pos[0] += ((double)randf(ps) - 0.5) * 2.0 * emitter_size[0];
@@ -2591,6 +2594,53 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
     return 1;
 }
 
+/// @brief Release overflow draw buffers after a sustained return to fixed-slot usage.
+static void particles3d_age_overflow_draw_slots(rt_particles3d *ps, int used_overflow) {
+    if (!ps || ps->owned_overflow_draw_slot_capacity <= 0)
+        return;
+    if (used_overflow) {
+        ps->overflow_draw_idle_frames = 0;
+        return;
+    }
+    if (ps->overflow_draw_idle_frames < 120) {
+        ps->overflow_draw_idle_frames++;
+        if (ps->overflow_draw_idle_frames < 120)
+            return;
+    }
+    for (int32_t i = 0; i < ps->owned_overflow_draw_slot_capacity; ++i) {
+        free(ps->owned_overflow_draw_vertices[i]);
+        free(ps->owned_overflow_draw_indices[i]);
+        particles3d_release_material_slot(&ps->owned_overflow_draw_materials[i]);
+    }
+    free(ps->owned_overflow_draw_vertices);
+    free(ps->owned_overflow_draw_indices);
+    free(ps->owned_overflow_draw_vertex_capacity);
+    free(ps->owned_overflow_draw_index_capacity);
+    free(ps->owned_overflow_draw_materials);
+    ps->owned_overflow_draw_vertices = NULL;
+    ps->owned_overflow_draw_indices = NULL;
+    ps->owned_overflow_draw_vertex_capacity = NULL;
+    ps->owned_overflow_draw_index_capacity = NULL;
+    ps->owned_overflow_draw_materials = NULL;
+    ps->owned_overflow_draw_slot_capacity = 0;
+    ps->overflow_draw_vertices = NULL;
+    ps->overflow_draw_indices = NULL;
+    ps->overflow_draw_vertex_capacity = NULL;
+    ps->overflow_draw_index_capacity = NULL;
+    ps->overflow_draw_materials = NULL;
+    ps->overflow_draw_slot_capacity = 0;
+    ps->overflow_draw_idle_frames = 0;
+}
+
+/// @brief Test-only idle-frame advance for overflow draw-slot reclamation.
+void rt_particles3d_test_age_overflow_draw_slots(void *obj, int32_t frames) {
+    rt_particles3d *ps = particles3d_checked(obj);
+    if (!ps || frames <= 0)
+        return;
+    for (int32_t i = 0; i < frames; ++i)
+        particles3d_age_overflow_draw_slots(ps, 0);
+}
+
 /// @brief Prepare one reusable draw slot's vertex/index buffers and material.
 /// @details Used by both fixed and overflow slot arrays. Vertex payloads are fully initialized by
 ///   the billboard/trail emitters, so this avoids a full-buffer zero-fill on every draw.
@@ -2738,6 +2788,7 @@ static int particles3d_acquire_draw_storage(rt_particles3d *ps,
     *out_canvas_owned = 0;
     frame_serial = canvas->frame_serial;
     if (ps->draw_frame_serial != frame_serial) {
+        particles3d_age_overflow_draw_slots(ps, ps->draw_slots_used > PARTICLES3D_DRAW_SLOT_COUNT);
         ps->draw_frame_serial = frame_serial;
         ps->draw_slots_used = 0;
     }
@@ -3013,10 +3064,22 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
                         right[0] * up[1] - right[1] * up[0]};
     particles3d_normalize3_or(forward, 0.0f, 0.0f, 1.0f);
 
+    /* Trail ribbons occupy multiple depths and must share one primitive-level
+     * order with conventional-alpha billboards. Additive draws remain
+     * order-independent and may keep the compact hardware path. */
+    uint32_t trail_quads = 0;
+    if (ps->trail_pos && ps->trail_segments > 1) {
+        for (int32_t i = 0; i < ps->count; i++) {
+            if (ps->trail_len[i] > 1)
+                trail_quads += (uint32_t)(ps->trail_len[i] - 1);
+        }
+    }
+    int unified_alpha_trails = !ps->additive_blend && trail_quads > 0;
+
     particle3d_sort_key *sort_keys = NULL;
 
     /* Sort particles back-to-front for alpha blend (skip for additive or a single quad). */
-    if (!ps->additive_blend && draw_particle_count > 1) {
+    if (!ps->additive_blend && !unified_alpha_trails && draw_particle_count > 1) {
         if (!particles3d_ensure_sort_keys(ps, draw_particle_count))
             return;
         sort_keys = (particle3d_sort_key *)ps->sort_keys;
@@ -3045,16 +3108,10 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
         }
     }
 
-    /* Trail ribbons remain CPU-expanded on every backend. Hardware backends encode the particle
-     * billboards separately below, while software keeps billboards and trails in one CPU mesh. */
-    uint32_t trail_quads = 0;
-    if (ps->trail_pos && ps->trail_segments > 1) {
-        for (int32_t i = 0; i < ps->count; i++) {
-            if (ps->trail_len[i] > 1)
-                trail_quads += (uint32_t)(ps->trail_len[i] - 1);
-        }
-    }
-    int compact_particles = rt_canvas3d_supports_particle_instancing(canvas3d);
+    /* Trail ribbons remain CPU-expanded on every backend. Conventional-alpha trails also keep
+     * their billboards in this mesh so one index stream can establish the complete blend order. */
+    int compact_particles =
+        rt_canvas3d_supports_particle_instancing(canvas3d) && !unified_alpha_trails;
     if (compact_particles && !particles3d_ensure_instance_scratch(ps, draw_particle_count))
         compact_particles = 0;
     uint64_t cpu_quad_count64 = (uint64_t)trail_quads;
@@ -3062,11 +3119,15 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
         cpu_quad_count64 += (uint64_t)draw_particle_count;
     if (cpu_quad_count64 > UINT32_MAX / 6u ||
         cpu_quad_count64 > SIZE_MAX / (4u * sizeof(vgfx3d_vertex_t)) ||
-        cpu_quad_count64 > SIZE_MAX / (6u * sizeof(uint32_t))) {
+        cpu_quad_count64 > SIZE_MAX / (6u * sizeof(uint32_t)) ||
+        (!ps->additive_blend && cpu_quad_count64 > INT32_MAX)) {
         rt_trap("Particles3D.Draw: particle buffer allocation overflow");
         return;
     }
     uint32_t cpu_quad_count = (uint32_t)cpu_quad_count64;
+    if (unified_alpha_trails && cpu_quad_count > 1u &&
+        !particles3d_ensure_sort_keys(ps, (int32_t)cpu_quad_count))
+        return;
     uint32_t vert_count = cpu_quad_count * 4u;
     uint32_t idx_count = cpu_quad_count * 6u;
     vgfx3d_vertex_t *verts = NULL;
@@ -3183,8 +3244,9 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
                 side_x /= slen;
                 side_y /= slen;
                 side_z /= slen;
-                float t0 = (float)k / (float)(ps->trail_segments);
-                float t1 = (float)(k + 1) / (float)(ps->trail_segments);
+                float trail_denominator = (float)(len - 1);
+                float t0 = (float)k / trail_denominator;
+                float t1 = (float)(k + 1) / trail_denominator;
                 float w0 = p->size * 0.5f * (1.0f - t0 * 0.9f);
                 float w1 = p->size * 0.5f * (1.0f - t1 * 0.9f);
                 float a0 = p->color[3] * (1.0f - t0);
@@ -3226,6 +3288,40 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
             for (int vi = 0; vi < 6; vi++)
                 indices[cursor * 6 + vi] = base;
             cursor++;
+        }
+    }
+
+    if (unified_alpha_trails && cpu_quad_count > 1u) {
+        sort_keys = (particle3d_sort_key *)ps->sort_keys;
+        if (!sort_keys)
+            return;
+        for (uint32_t quad = 0; quad < cpu_quad_count; quad++) {
+            uint32_t base = quad * 4u;
+            double center_x = 0.0;
+            double center_y = 0.0;
+            double center_z = 0.0;
+            for (uint32_t corner = 0; corner < 4u; corner++) {
+                center_x += (double)verts[base + corner].pos[0];
+                center_y += (double)verts[base + corner].pos[1];
+                center_z += (double)verts[base + corner].pos[2];
+            }
+            sort_keys[quad].index = (int32_t)quad;
+            sort_keys[quad].view_depth = center_x * 0.25 * (double)forward[0] +
+                                         center_y * 0.25 * (double)forward[1] +
+                                         center_z * 0.25 * (double)forward[2];
+            if (!isfinite(sort_keys[quad].view_depth))
+                sort_keys[quad].view_depth = 0.0;
+        }
+        particles3d_sort_keys_back_to_front(
+            sort_keys, (particle3d_sort_key *)ps->sort_scratch, (int32_t)cpu_quad_count);
+        for (uint32_t draw_quad = 0; draw_quad < cpu_quad_count; draw_quad++) {
+            uint32_t base = (uint32_t)sort_keys[draw_quad].index * 4u;
+            indices[draw_quad * 6u + 0u] = base + 0u;
+            indices[draw_quad * 6u + 1u] = base + 1u;
+            indices[draw_quad * 6u + 2u] = base + 2u;
+            indices[draw_quad * 6u + 3u] = base + 0u;
+            indices[draw_quad * 6u + 4u] = base + 2u;
+            indices[draw_quad * 6u + 5u] = base + 3u;
         }
     }
 

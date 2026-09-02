@@ -761,7 +761,7 @@ typedef struct {
     double decal_forward[3]; /* unit projector forward; surfaces with dot(n, f) < 0 take it */
     double decal_opacity;    /* [0,1] multiplier on the decal alpha, default 1 */
     int8_t decal_projector_set;
-    uint32_t identity_serial;       /* allocation generation (see rt_mesh3d.identity_serial) */
+    uint32_t identity_serial; /* allocation generation (see rt_mesh3d.identity_serial) */
 } rt_material3d;
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting
@@ -858,6 +858,7 @@ typedef struct {
     int32_t decay_type; /* 0=none, 1=linear, 2=quadratic, 3=cubic */
     int8_t enabled;
     int8_t casts_shadows;
+    uint64_t mutation_revision; /* per-light cache generation; starts at one */
 } rt_light3d;
 
 /* Minimum local-light attenuation used by constructors and importers to avoid unbounded point,
@@ -1468,13 +1469,13 @@ typedef struct {
     uintptr_t selected_light_ids[VGFX3D_MAX_LIGHTS];
     int32_t selected_light_id_count;
 
-    /* Per-frame flattened-light cache: draws sharing one light generation reuse a
+    /* Per-frame flattened-light cache: draws sharing one dependency fingerprint reuse a
      * single snapshot slice, revision stamp, and froxel table instead of paying
      * build_light_params + a full snapshot memcmp per queued draw. Invalidated at
-     * frame begin, on slot/ambient/scene-light changes, and whenever the global
-     * Light3D mutation generation advances (rt_light3d_mutation_revision). */
+     * frame begin, on slot/ambient/scene-light changes, and whenever one of this
+     * canvas's referenced Light3D instances advances its private revision. */
     int8_t frame_light_cache_valid;
-    uint64_t frame_light_cache_revision; /* Light3D mutation generation at flatten */
+    uint64_t frame_light_cache_revision; /* referenced-light fingerprint at flatten */
     int32_t frame_light_cache_limit;     /* active light limit at flatten */
     int32_t frame_light_cache_count;
     int32_t frame_light_cache_offset; /* arena element offset, -1 = no lights */
@@ -2552,17 +2553,16 @@ float canvas3d_effective_shadow_distance(const rt_canvas3d *c);
 /// @param c Mutable Canvas3D whose sweep vector and validity state are updated.
 void canvas3d_update_shadow_caster_sweep(rt_canvas3d *c);
 
-/// @brief Monotonic Light3D mutation generation (rt_light3d.c); never returns 0.
-/// @details The per-frame flattened-light cache compares this against the generation it
-///   flattened at, so any Light3D property change forces one re-flatten instead of
-///   per-draw rebuilds.
-/// @return Current non-zero process-wide light mutation generation.
+/// @brief Monotonic Light3D diagnostic mutation generation (rt_light3d.c).
+/// @details Canvas cache validation uses a dependency fingerprint built from per-light
+///   revisions; this process-wide counter remains available for diagnostics and tests.
+/// @return Current non-zero process-wide diagnostic mutation generation.
 uint64_t rt_light3d_mutation_revision(void);
 
 /// @brief Drop the canvas's per-frame flattened-light cache.
-/// @details Call after any change build_light_params reads that the Light3D mutation
-///   generation cannot observe: canvas light-slot assignment, ambient color, scene-light
-///   swaps, and camera-relative-origin changes at frame begin.
+/// @details Call after any change build_light_params reads that per-light revisions
+///   cannot observe: canvas light-slot assignment, ambient color, scene-light swaps,
+///   and camera-relative-origin changes at frame begin.
 /// @param c Mutable Canvas3D whose per-frame flattened-light cache is invalidated.
 static inline void canvas3d_invalidate_light_flatten_cache(rt_canvas3d *c) {
     if (c)

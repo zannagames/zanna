@@ -15,7 +15,7 @@
 //   - Public point inputs are finite and bounded before float conversion.
 //   - Failed topology rebuilds preserve the previously published query state.
 //   - Path queries never return partially initialized point arrays.
-//   - In-flight A* queries exclusively own one slot from a four-workspace pool.
+//   - In-flight A* queries exclusively own one slot from a retained workspace pool.
 //   - Indexed nearest-point search stops only after a conservative geometric
 //     bound proves every unvisited cell unable to improve the result.
 //
@@ -45,7 +45,7 @@
 typedef navmesh3d_heap_entry_t heap_entry_t;
 
 /// @brief Claim one independently mutable A* workspace from a navmesh's retained pool.
-/// @details A free retained slot is preferred. When all four are busy, the caller receives a
+/// @details A free retained slot is preferred. When the bounded pool is busy, the caller receives a
 ///   transient workspace instead of blocking, so path concurrency scales with the worker pool.
 /// @param nm Navigation mesh whose workspace pool is queried.
 /// @return An exclusively owned slot, or NULL for a null navmesh.
@@ -76,6 +76,7 @@ static navmesh3d_path_workspace_t *navmesh3d_path_workspace_acquire(rt_navmesh3d
             return NULL;
         claimed->in_use = 1;
         claimed->transient = 1;
+        rt_atomic_fetch_add_i32(&nm->path_transient_allocation_count, 1, __ATOMIC_ACQ_REL);
     }
     int active = rt_atomic_fetch_add_i32(&nm->path_active_queries, 1, __ATOMIC_ACQ_REL) + 1;
     int peak = rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE);
@@ -105,7 +106,29 @@ static void navmesh3d_path_workspace_release(rt_navmesh3d *nm,
     rt_gate_leave(nm->path_workspace_gate);
 }
 
-/// @brief Grow reusable A* arrays without discarding the previous workspace on allocation failure.
+/// @brief Append an aligned typed region to a packed workspace-size calculation.
+static int navmesh3d_path_workspace_region(
+    size_t *total, size_t count, size_t item_size, size_t alignment, size_t *offset) {
+    size_t aligned;
+    size_t bytes;
+    if (!total || !offset || alignment == 0 || (alignment & (alignment - 1u)) != 0)
+        return 0;
+    if (*total > SIZE_MAX - (alignment - 1u))
+        return 0;
+    aligned = (*total + alignment - 1u) & ~(alignment - 1u);
+    if (count > SIZE_MAX / item_size)
+        return 0;
+    bytes = count * item_size;
+    if (aligned > SIZE_MAX - bytes)
+        return 0;
+    *offset = aligned;
+    *total = aligned + bytes;
+    return 1;
+}
+
+/// @brief Grow every reusable A* array in one packed allocation.
+/// @details One allocation replaces eight independently allocated arrays. Publication is
+///   transactional: the previous workspace remains intact if sizing or allocation fails.
 /// @param workspace Exclusively held workspace whose buffers may be enlarged.
 /// @param triangle_count Required capacity of the per-triangle cost, parent, and closed arrays.
 /// @param heap_capacity Required number of entries in the open-set heap.
@@ -114,67 +137,71 @@ static void navmesh3d_path_workspace_release(rt_navmesh3d *nm,
 static int navmesh3d_reserve_path_workspace(navmesh3d_path_workspace_t *workspace,
                                             int32_t triangle_count,
                                             int32_t heap_capacity) {
+    size_t total = 0;
+    size_t g_cost_offset;
+    size_t parent_offset;
+    size_t closed_offset;
+    size_t generation_offset;
+    size_t heap_positions_offset;
+    size_t heap_offset;
+    size_t corridor_offset;
+    size_t portals_offset;
+    int32_t portal_capacity;
+    unsigned char *storage;
     if (!workspace || triangle_count <= 0 || heap_capacity <= 0)
         return 0;
-    if (triangle_count > workspace->triangle_capacity) {
-        float *g_cost = (float *)malloc((size_t)triangle_count * sizeof(*g_cost));
-        int32_t *parent = (int32_t *)malloc((size_t)triangle_count * sizeof(*parent));
-        int8_t *closed = (int8_t *)malloc((size_t)triangle_count * sizeof(*closed));
-        uint32_t *node_generation =
-            (uint32_t *)calloc((size_t)triangle_count, sizeof(*node_generation));
-        int32_t *heap_positions =
-            (int32_t *)malloc((size_t)triangle_count * sizeof(*heap_positions));
-        if (!g_cost || !parent || !closed || !node_generation || !heap_positions) {
-            free(g_cost);
-            free(parent);
-            free(closed);
-            free(node_generation);
-            free(heap_positions);
-            return 0;
-        }
-        free(workspace->g_cost);
-        free(workspace->parent);
-        free(workspace->closed);
-        free(workspace->node_generation);
-        free(workspace->heap_positions);
-        workspace->g_cost = g_cost;
-        workspace->parent = parent;
-        workspace->closed = closed;
-        workspace->node_generation = node_generation;
-        workspace->heap_positions = heap_positions;
-        workspace->triangle_capacity = triangle_count;
-    }
-    if (heap_capacity > workspace->heap_capacity) {
-        heap_entry_t *heap = (heap_entry_t *)malloc((size_t)heap_capacity * sizeof(*heap));
-        if (!heap)
-            return 0;
-        free(workspace->heap);
-        workspace->heap = heap;
-        workspace->heap_capacity = heap_capacity;
-    }
-    if (triangle_count > workspace->corridor_capacity) {
-        int32_t *corridor = (int32_t *)malloc((size_t)triangle_count * sizeof(*corridor));
-        if (!corridor)
-            return 0;
-        free(workspace->corridor);
-        workspace->corridor = corridor;
-        workspace->corridor_capacity = triangle_count;
-    }
-    if (triangle_count >= workspace->portal_capacity) {
-        int32_t portal_capacity;
-        navmesh3d_portal_t *portals;
-        if (triangle_count == INT32_MAX)
-            return 0;
-        portal_capacity = triangle_count + 1;
-        if ((size_t)portal_capacity > SIZE_MAX / sizeof(*portals))
-            return 0;
-        portals = (navmesh3d_portal_t *)malloc((size_t)portal_capacity * sizeof(*portals));
-        if (!portals)
-            return 0;
-        free(workspace->portals);
-        workspace->portals = portals;
-        workspace->portal_capacity = portal_capacity;
-    }
+    if (triangle_count <= workspace->triangle_capacity && heap_capacity <= workspace->heap_capacity)
+        return 1;
+    if (triangle_count == INT32_MAX)
+        return 0;
+    portal_capacity = triangle_count + 1;
+    if (!navmesh3d_path_workspace_region(
+            &total, (size_t)triangle_count, sizeof(float), _Alignof(float), &g_cost_offset) ||
+        !navmesh3d_path_workspace_region(
+            &total, (size_t)triangle_count, sizeof(int32_t), _Alignof(int32_t), &parent_offset) ||
+        !navmesh3d_path_workspace_region(
+            &total, (size_t)triangle_count, sizeof(int8_t), _Alignof(int8_t), &closed_offset) ||
+        !navmesh3d_path_workspace_region(&total,
+                                         (size_t)triangle_count,
+                                         sizeof(uint32_t),
+                                         _Alignof(uint32_t),
+                                         &generation_offset) ||
+        !navmesh3d_path_workspace_region(&total,
+                                         (size_t)triangle_count,
+                                         sizeof(int32_t),
+                                         _Alignof(int32_t),
+                                         &heap_positions_offset) ||
+        !navmesh3d_path_workspace_region(&total,
+                                         (size_t)heap_capacity,
+                                         sizeof(heap_entry_t),
+                                         _Alignof(heap_entry_t),
+                                         &heap_offset) ||
+        !navmesh3d_path_workspace_region(
+            &total, (size_t)triangle_count, sizeof(int32_t), _Alignof(int32_t), &corridor_offset) ||
+        !navmesh3d_path_workspace_region(&total,
+                                         (size_t)portal_capacity,
+                                         sizeof(navmesh3d_portal_t),
+                                         _Alignof(navmesh3d_portal_t),
+                                         &portals_offset))
+        return 0;
+    storage = (unsigned char *)calloc(1, total);
+    if (!storage)
+        return 0;
+    free(workspace->storage);
+    workspace->storage = storage;
+    workspace->g_cost = (float *)(storage + g_cost_offset);
+    workspace->parent = (int32_t *)(storage + parent_offset);
+    workspace->closed = (int8_t *)(storage + closed_offset);
+    workspace->node_generation = (uint32_t *)(storage + generation_offset);
+    workspace->heap_positions = (int32_t *)(storage + heap_positions_offset);
+    workspace->heap = (heap_entry_t *)(storage + heap_offset);
+    workspace->corridor = (int32_t *)(storage + corridor_offset);
+    workspace->portals = (navmesh3d_portal_t *)(storage + portals_offset);
+    workspace->triangle_capacity = triangle_count;
+    workspace->heap_capacity = heap_capacity;
+    workspace->corridor_capacity = triangle_count;
+    workspace->portal_capacity = portal_capacity;
+    workspace->generation = 0;
     return 1;
 }
 
@@ -210,6 +237,20 @@ void rt_navmesh3d_test_reset_path_peak_concurrency(void *obj) {
 int64_t rt_navmesh3d_test_get_path_peak_concurrency(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     return nm ? (int64_t)rt_atomic_load_i32(&nm->path_peak_active_queries, __ATOMIC_ACQUIRE) : 0;
+}
+
+/// @brief Reset the count of transient path-workspace allocations for one navmesh.
+void rt_navmesh3d_test_reset_path_transient_allocation_count(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    if (nm)
+        rt_atomic_store_i32(&nm->path_transient_allocation_count, 0, __ATOMIC_RELEASE);
+}
+
+/// @brief Read transient path-workspace allocations since the last reset.
+int64_t rt_navmesh3d_test_get_path_transient_allocation_count(void *obj) {
+    rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
+    return nm ? (int64_t)rt_atomic_load_i32(&nm->path_transient_allocation_count, __ATOMIC_ACQUIRE)
+              : 0;
 }
 
 /// @brief Count workspaces whose reconstructed-corridor and funnel-portal scratch is reusable.
@@ -1005,17 +1046,13 @@ void *rt_navmesh3d_find_path(void *obj, void *from_v, void *to_v) {
     if (point_count <= 0 || !points)
         return NULL;
 
-    void *path = rt_path3d_new();
+    /* Reconstruction already owns a correctly sized interleaved XYZ allocation. Path3D can
+     * retain that storage directly, avoiding a second allocation and full coordinate copy. */
+    void *path = rt_path3d_new_adopt_xyz_internal(points, point_count, point_count);
     if (!path) {
         free(points);
         return NULL;
     }
-    if (!rt_path3d_append_xyz_batch_internal(path, points, point_count)) {
-        free(points);
-        navmesh3d_release_local(path);
-        return NULL;
-    }
-    free(points);
     return path;
 }
 
@@ -1048,6 +1085,8 @@ typedef struct {
     float best_z;
     int32_t best_triangle;
     int32_t triangle_probes;
+    int32_t grid_references;
+    uint8_t *seen_triangles;
 } navmesh3d_sample_search_t;
 
 /// @brief Test one triangle and update the nearest XZ surface projection with deterministic ties.
@@ -1070,6 +1109,13 @@ static void navmesh3d_sample_test_triangle(const rt_navmesh3d *nm,
     int better;
     if (!nm || !search || triangle_index < 0 || triangle_index >= nm->triangle_count)
         return;
+    if (search->seen_triangles) {
+        size_t byte = (size_t)triangle_index >> 3u;
+        uint8_t mask = (uint8_t)(1u << ((uint32_t)triangle_index & 7u));
+        if (search->seen_triangles[byte] & mask)
+            return;
+        search->seen_triangles[byte] |= mask;
+    }
     if (search->triangle_probes < INT32_MAX)
         search->triangle_probes++;
     const nav_triangle_t *triangle = &nm->triangles[triangle_index];
@@ -1177,8 +1223,9 @@ static int navmesh3d_sample_scan_cell(const rt_navmesh3d *nm,
     end = nm->qgrid_starts[cell + 1u];
     if (begin < 0 || end < begin || end > (int32_t)NAVMESH3D_QUERY_GRID_MAX_REFERENCES)
         return 0;
-    if (end - begin > NAVMESH3D_SAMPLE_MAX_GRID_REFERENCES - search->triangle_probes)
+    if (end - begin > NAVMESH3D_SAMPLE_MAX_GRID_REFERENCES - search->grid_references)
         return 0;
+    search->grid_references += end - begin;
     for (int32_t k = begin; k < end; k++)
         navmesh3d_sample_test_triangle(nm, nm->qgrid_tris[k], search);
     return 1;
@@ -1310,7 +1357,10 @@ void *rt_navmesh3d_sample_position(void *obj, void *point) {
     }
 
     /* Find the nearest point on the triangle surface in XZ through expanding grid rings. */
-    navmesh3d_sample_search_t search = {px, py, pz, FLT_MAX, FLT_MAX, px, py, pz, -1, 0};
+    size_t seen_bytes = ((size_t)nm->triangle_count + 7u) / 8u;
+    uint8_t *seen_triangles = seen_bytes > 0 ? (uint8_t *)calloc(seen_bytes, 1) : NULL;
+    navmesh3d_sample_search_t search = {
+        px, py, pz, FLT_MAX, FLT_MAX, px, py, pz, -1, 0, 0, seen_triangles};
     int used_fallback = !navmesh3d_sample_search_grid(nm, &search);
     if (used_fallback) {
         /* The grid may be absent by policy or a pathological replicated query may hit its fixed
@@ -1319,16 +1369,20 @@ void *rt_navmesh3d_sample_position(void *obj, void *point) {
         search.best_distance_sq = FLT_MAX;
         search.best_vertical_distance = FLT_MAX;
         search.best_triangle = -1;
+        search.triangle_probes = 0;
+        if (seen_triangles)
+            memset(seen_triangles, 0, seen_bytes);
         for (int32_t i = 0; i < nm->triangle_count; i++)
             navmesh3d_sample_test_triangle(nm, i, &search);
     }
     navmesh3d_sample_record_metrics(nm, search.triangle_probes, used_fallback);
+    free(seen_triangles);
     return rt_vec3_new(search.best_x, search.best_y, search.best_z);
 }
 
 /// @brief Read the triangle-reference probe count from the most recent SamplePosition query.
-/// @details This atomic, test-only metric includes duplicate grid references and any fallback
-///   probes, making it a conservative measure of query work. It is not scripting-visible.
+/// @details Duplicate grid references are suppressed, so this reports actual triangle tests rather
+///   than CSR replication. It is not scripting-visible.
 /// @param obj NavMesh3D handle to inspect.
 /// @return Non-negative probe count, or zero for an invalid handle.
 int64_t rt_navmesh3d_test_get_last_sample_probe_count(void *obj) {

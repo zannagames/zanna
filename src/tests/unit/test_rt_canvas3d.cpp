@@ -4147,6 +4147,51 @@ static void test_cluster_table_ring_and_gating() {
     PASS();
 }
 
+extern "C" int32_t vgfx3d_sw_test_fragment_light_selection(const vgfx3d_draw_cmd_t *cmd,
+                                                           int32_t light_count,
+                                                           int32_t width,
+                                                           int32_t height,
+                                                           int32_t x,
+                                                           int32_t y,
+                                                           float ndc_z,
+                                                           int32_t *out_indices,
+                                                           int32_t out_capacity);
+
+static void test_software_fragment_uses_cluster_light_selection() {
+    TEST("Software fragments evaluate only global and froxel-local lights");
+    vgfx3d_cluster_table_t *table =
+        (vgfx3d_cluster_table_t *)calloc(1, sizeof(vgfx3d_cluster_table_t));
+    vgfx3d_draw_cmd_t cmd = {};
+    int32_t selected[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+    const float near_plane = 0.1f;
+    const float far_plane = 100.0f;
+    const float depth_at_ndc_zero = (2.0f * near_plane * far_plane) / (far_plane + near_plane);
+    int32_t cluster = canvas3d_cluster_index_for_point(
+        32.5f / 64.0f, 32.5f / 64.0f, depth_at_ndc_zero, near_plane, far_plane);
+    assert(table != nullptr);
+    table->lights_revision = 42u;
+    table->global_light_count = 1;
+    table->binned_light_count = 7;
+    table->znear = near_plane;
+    table->zfar = far_plane;
+    for (int32_t i = cluster + 1; i <= VGFX3D_CLUSTER_COUNT; i++)
+        table->offsets[i] = 1u;
+    table->indices[0] = 5u;
+    cmd.lights_revision = 42u;
+    cmd.cluster_table = table;
+
+    EXPECT_EQ(vgfx3d_sw_test_fragment_light_selection(&cmd, 8, 64, 64, 32, 32, 0.0f, selected, 8),
+              2);
+    EXPECT_EQ(selected[0], 0);
+    EXPECT_EQ(selected[1], 5);
+
+    cmd.lights_revision = 43u;
+    EXPECT_EQ(vgfx3d_sw_test_fragment_light_selection(&cmd, 8, 64, 64, 32, 32, 0.0f, selected, 8),
+              8);
+    free(table);
+    PASS();
+}
+
 /// Plan 10: soft particles fade blend-mode fragments against the opaque depth
 /// snapshot taken at the opaque->transparent seam (software backend, real
 /// end-to-end render into a RenderTarget3D).
@@ -7294,7 +7339,14 @@ static void test_frame_light_flatten_cache_shares_snapshot_across_draws() {
     EXPECT_EQ(canvas.frame_light_snapshot_count, after_first);
     EXPECT_EQ(canvas.frame_light_cache_stamp, first_stamp);
 
-    /* A Light3D mutation advances the generation and forces one re-flatten. */
+    /* A mutation to a light not referenced by this canvas must not invalidate it. */
+    void *unrelated_light = rt_light3d_new_directional(light_dir, 1.0, 0.0, 0.0);
+    rt_light3d_set_intensity(unrelated_light, 0.25);
+    rt_canvas3d_draw_mesh(&canvas, mesh, xf, material);
+    EXPECT_EQ(canvas.frame_light_snapshot_count, after_first);
+    EXPECT_EQ(canvas.frame_light_cache_stamp, first_stamp);
+
+    /* A referenced Light3D mutation forces one re-flatten. */
     rt_light3d_set_intensity(light, 0.5);
     rt_canvas3d_draw_mesh(&canvas, mesh, xf, material);
     EXPECT_EQ(canvas.frame_light_snapshot_count, after_first * 2);
@@ -7756,7 +7808,8 @@ static void adr0301_set_snapshot(void *ctx, const vgfx3d_postfx_chain_t *chain) 
 }
 
 static void test_canvas_render_target_frame_publishes_chain_without_present_toggle() {
-    TEST("Render-target frames publish the post-FX chain and leave the present route alone (ADR 0301)");
+    TEST("Render-target frames publish the post-FX chain and leave the present route alone (ADR "
+         "0301)");
     vgfx3d_backend_t backend = {};
     rt_canvas3d canvas;
     void *fx = rt_postfx3d_new();
@@ -12142,7 +12195,8 @@ static void test_canvas_decal_layer_software() {
      * projector centred on that face, looking along -Z (right = +X, up = +Y, so
      * forward = +Z... the face normal is +Z, which must face AGAINST forward), so
      * build it with right = -X: forward = (-X) x (+Y) = -Z and the +Z face faces it. */
-    rt_material3d_set_decal_projector(mat, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
+    rt_material3d_set_decal_projector(
+        mat, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
     rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
     rt_canvas3d_begin(&canvas, camera);
     rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
@@ -12160,7 +12214,8 @@ static void test_canvas_decal_layer_software() {
 
     /* Flip the projector so it faces the far side: the +Z face now points WITH forward
      * and must stay white. */
-    rt_material3d_set_decal_projector(mat, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
+    rt_material3d_set_decal_projector(
+        mat, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
     rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
     rt_canvas3d_begin(&canvas, camera);
     rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
@@ -12320,6 +12375,7 @@ int main() {
     test_cluster_table_binning_is_conservative();
     test_cluster_table_overflow_truncates_deterministically();
     test_cluster_table_ring_and_gating();
+    test_software_fragment_uses_cluster_light_selection();
     test_build_light_params_sorts_globals_first();
     test_build_light_params_selects_top_k_across_all_candidates();
     test_soft_particle_fade_software();

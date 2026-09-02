@@ -356,18 +356,114 @@ void joint3d_mark_body_moved(rt_body3d_kinematics *body) {
 }
 
 static int32_t world3d_joint_count_safe(const rt_world3d *w);
+static int32_t world3d_body_count_safe(const rt_world3d *w);
+
+/// @brief Mark the cached body-to-joint-partner table stale after topology changes.
+static void world3d_invalidate_joint_adjacency(rt_world3d *w) {
+    if (w)
+        w->joint_adjacency_dirty = 1;
+}
+
+/// @brief Rebuild a CSR table of directly jointed body partners.
+/// @return One when the retained table is ready, otherwise zero so callers can scan joints.
+static int world3d_rebuild_joint_adjacency(rt_world3d *w) {
+    int32_t body_count;
+    int32_t joint_count;
+    int32_t body_slots;
+    int32_t partner_slots;
+    if (!w)
+        return 0;
+    body_count = world3d_body_count_safe(w);
+    joint_count = world3d_joint_count_safe(w);
+    if (body_count == INT32_MAX || joint_count > INT32_MAX / 2)
+        return 0;
+    body_slots = body_count + 1;
+    partner_slots = joint_count > 0 ? joint_count * 2 : 1;
+    if (body_slots > w->joint_adjacency_body_capacity ||
+        partner_slots > w->joint_adjacency_partner_capacity) {
+        int32_t *new_storage;
+        rt_body3d **new_partners;
+        if ((size_t)body_slots > SIZE_MAX / (2u * sizeof(*new_storage)) ||
+            (size_t)partner_slots > SIZE_MAX / sizeof(*new_partners))
+            return 0;
+        new_storage = (int32_t *)calloc((size_t)body_slots * 2u, sizeof(*new_storage));
+        new_partners = (rt_body3d **)malloc((size_t)partner_slots * sizeof(*new_partners));
+        if (!new_storage || !new_partners) {
+            free(new_storage);
+            free(new_partners);
+            return 0;
+        }
+        free(w->joint_adjacency_storage);
+        free(w->joint_adjacency_partners);
+        w->joint_adjacency_storage = new_storage;
+        w->joint_adjacency_partners = new_partners;
+        w->joint_adjacency_body_capacity = body_slots;
+        w->joint_adjacency_partner_capacity = partner_slots;
+    } else {
+        memset(w->joint_adjacency_storage, 0, (size_t)body_slots * 2u * sizeof(int32_t));
+    }
+    int32_t *offsets = w->joint_adjacency_storage;
+    int32_t *cursor = offsets + body_slots;
+    for (int32_t i = 0; i < joint_count; ++i) {
+        void *a = NULL;
+        void *b = NULL;
+        if (!rt_joint3d_get_bodies(w->joints[i], w->joint_types[i], &a, &b))
+            continue;
+        rt_body3d *body_a = (rt_body3d *)a;
+        rt_body3d *body_b = (rt_body3d *)b;
+        if (body_a && body_a->owner_world == w && body_a->owner_index >= 0 &&
+            body_a->owner_index < body_count)
+            offsets[body_a->owner_index + 1]++;
+        if (body_b && body_b != body_a && body_b->owner_world == w && body_b->owner_index >= 0 &&
+            body_b->owner_index < body_count)
+            offsets[body_b->owner_index + 1]++;
+    }
+    for (int32_t i = 0; i < body_count; ++i)
+        offsets[i + 1] += offsets[i];
+    memcpy(cursor, offsets, (size_t)body_slots * sizeof(*cursor));
+    for (int32_t i = 0; i < joint_count; ++i) {
+        void *a = NULL;
+        void *b = NULL;
+        if (!rt_joint3d_get_bodies(w->joints[i], w->joint_types[i], &a, &b))
+            continue;
+        rt_body3d *body_a = (rt_body3d *)a;
+        rt_body3d *body_b = (rt_body3d *)b;
+        if (body_a && body_a->owner_world == w && body_a->owner_index >= 0 &&
+            body_a->owner_index < body_count)
+            w->joint_adjacency_partners[cursor[body_a->owner_index]++] = body_b;
+        if (body_b && body_b != body_a && body_b->owner_world == w && body_b->owner_index >= 0 &&
+            body_b->owner_index < body_count)
+            w->joint_adjacency_partners[cursor[body_b->owner_index]++] = body_a;
+    }
+    w->joint_adjacency_dirty = 0;
+    return 1;
+}
 
 /// @brief Wake every dynamic body joined to @p body by any joint in @p w.
 /// @details Called from explicit pose writes (SetPosition/SetOrientation): a
 ///   teleported static or kinematic anchor must re-activate sleeping partners
-///   so the constraint re-solves against the new pose. O(joint_count), only on
-///   user action.
+///   so the constraint re-solves against the new pose. The retained CSR adjacency
+///   table makes the common path O(degree); allocation failure falls back to the
+///   original linear scan without changing behavior.
 /// @param w World containing the retained joint table.
 /// @param body Body whose directly connected dynamic partners should wake.
 static void world3d_wake_joint_partners(rt_world3d *w, const rt_body3d *body) {
     if (!w || !body)
         return;
+    w->last_joint_wake_candidate_count = 0;
+    if ((!w->joint_adjacency_dirty || world3d_rebuild_joint_adjacency(w)) &&
+        body->owner_world == w && body->owner_index >= 0 &&
+        body->owner_index < world3d_body_count_safe(w)) {
+        int32_t *offsets = w->joint_adjacency_storage;
+        int32_t begin = offsets[body->owner_index];
+        int32_t end = offsets[body->owner_index + 1];
+        w->last_joint_wake_candidate_count = end - begin;
+        for (int32_t i = begin; i < end; ++i)
+            body3d_wake_if_dynamic(w->joint_adjacency_partners[i]);
+        return;
+    }
     int32_t joint_count = world3d_joint_count_safe(w);
+    w->last_joint_wake_candidate_count = joint_count;
     for (int32_t i = 0; i < joint_count; i++) {
         void *ja = NULL;
         void *jb = NULL;
@@ -379,6 +475,12 @@ static void world3d_wake_joint_partners(rt_world3d *w, const rt_body3d *body) {
         else if ((const rt_body3d *)jb == body)
             body3d_wake_if_dynamic((rt_body3d *)ja);
     }
+}
+
+/// @brief Read candidate joints examined by the most recent explicit-pose wake propagation.
+int64_t rt_world3d_test_get_last_joint_wake_candidate_count(void *obj) {
+    rt_world3d *w = world3d_checked(obj);
+    return w ? w->last_joint_wake_candidate_count : 0;
 }
 
 /// @brief Return non-zero only when every component of @p v is finite.

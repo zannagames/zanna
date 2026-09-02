@@ -73,20 +73,45 @@
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Conservative process-wide epoch for parent/child topology mutations.
-static volatile uint64_t g_scene3d_hierarchy_epoch = 1;
-
-/// @brief Record an add/remove/reparent so hierarchy-dependent caches revalidate once.
-void scene3d_note_hierarchy_change(void) {
-    uint64_t previous =
-        rt_atomic_fetch_add_u64(&g_scene3d_hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
-    if (previous == UINT64_MAX)
-        rt_atomic_store_u64(&g_scene3d_hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
+/// @brief Find the root that owns one hierarchy epoch, tolerating malformed parent cycles.
+/// @param node Borrowed node inside a hierarchy.
+/// @return Borrowed root, or the last safely visited node for malformed topology.
+static rt_scene_node3d *scene3d_hierarchy_root(rt_scene_node3d *node) {
+    uint32_t budget = RT_SCENE3D_MAX_OWNER_TRANSACTION_NODES;
+    while (node && node->parent && budget-- > 0)
+        node = node->parent;
+    return node;
 }
 
-/// @brief Return the current nonzero hierarchy epoch.
-uint64_t scene3d_hierarchy_epoch(void) {
-    return rt_atomic_load_u64(&g_scene3d_hierarchy_epoch, __ATOMIC_ACQUIRE);
+/// @brief Advance one hierarchy root's nonzero topology generation.
+/// @param root Borrowed hierarchy root.
+static void scene3d_advance_hierarchy_root(rt_scene_node3d *root) {
+    uint64_t previous;
+    if (!root)
+        return;
+    previous = rt_atomic_fetch_add_u64(&root->hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
+    if (previous == UINT64_MAX)
+        rt_atomic_store_u64(&root->hierarchy_epoch, UINT64_C(1), __ATOMIC_RELEASE);
+}
+
+/// @brief Record a topology change against the one or two affected hierarchy roots.
+/// @details Callers may pass nodes before a reparent operation to preserve both old/new roots.
+/// @param first Borrowed node in the first affected hierarchy.
+/// @param second Optional borrowed node in the second affected hierarchy.
+void scene3d_note_hierarchy_change(rt_scene_node3d *first, rt_scene_node3d *second) {
+    rt_scene_node3d *first_root = scene3d_hierarchy_root(first);
+    rt_scene_node3d *second_root = scene3d_hierarchy_root(second);
+    scene3d_advance_hierarchy_root(first_root);
+    if (second_root != first_root)
+        scene3d_advance_hierarchy_root(second_root);
+}
+
+/// @brief Return the current nonzero topology epoch for one node's hierarchy root.
+/// @param node Borrowed node inside the queried hierarchy.
+/// @return Root-local nonzero epoch, or zero for a null node.
+uint64_t scene3d_hierarchy_epoch(rt_scene_node3d *node) {
+    rt_scene_node3d *root = scene3d_hierarchy_root(node);
+    return root ? rt_atomic_load_u64(&root->hierarchy_epoch, __ATOMIC_ACQUIRE) : 0;
 }
 
 /// @brief Validate @p obj as a Scene3D handle and return its typed pointer (NULL on mismatch).

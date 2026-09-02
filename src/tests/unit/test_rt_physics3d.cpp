@@ -61,6 +61,8 @@ extern void rt_mesh3d_add_vertex(
 extern void rt_mesh3d_add_triangle(void *obj, int64_t i0, int64_t i1, int64_t i2);
 extern void rt_world3d_test_set_event_pair_table_failure(int8_t enabled);
 extern int64_t rt_trigger3d_test_get_last_candidate_count(void *trigger);
+extern int64_t rt_world3d_test_get_last_ccd_candidate_count(void *world);
+extern int64_t rt_world3d_test_get_last_joint_wake_candidate_count(void *world);
 }
 
 static int tests_passed = 0;
@@ -1101,6 +1103,30 @@ static void test_ccd_segmentation_is_body_local() {
                 "Fast CCD motion is still divided into body-local segments");
 }
 
+static void test_ccd_broadphase_prunes_distant_bodies() {
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *bullet = rt_body3d_new_sphere(0.1, 1.0);
+    void *wall = rt_body3d_new_aabb(0.1, 2.0, 2.0, 0.0);
+    rt_body3d_set_position(bullet, 0.0, 0.0, 0.0);
+    rt_body3d_set_velocity(bullet, 100.0, 0.0, 0.0);
+    rt_body3d_set_use_ccd(bullet, 1);
+    rt_body3d_set_position(wall, 5.0, 0.0, 0.0);
+    rt_world3d_add(world, bullet);
+    rt_world3d_add(world, wall);
+    for (int i = 0; i < 256; ++i) {
+        void *distant = rt_body3d_new_aabb(0.5, 0.5, 0.5, 0.0);
+        rt_body3d_set_position(distant, 1000.0 + (double)i * 4.0, 100.0, 0.0);
+        rt_world3d_add(world, distant);
+    }
+
+    rt_world3d_step(world, 0.1);
+
+    EXPECT_TRUE(rt_vec3_x(rt_body3d_get_position(bullet)) < 5.0,
+                "CCD broadphase preserves the near-wall time of impact");
+    EXPECT_TRUE(rt_world3d_test_get_last_ccd_candidate_count(world) < 32,
+                "CCD broadphase excludes distant bodies from per-segment narrow phase");
+}
+
 /*==========================================================================
  * World tests
  *=========================================================================*/
@@ -1685,6 +1711,11 @@ static void test_world_solver_island_batches_resting_pile_target() {
                 first_us,
                 settle_us,
                 min_top_y);
+}
+
+static void test_solver_island_union_depth_is_bounded() {
+    EXPECT_TRUE(ph3d_test_island_union_max_depth(4096) <= 12,
+                "Solver island union-by-rank bounds adversarial parent depth");
 }
 
 /*==========================================================================
@@ -5173,6 +5204,15 @@ static void test_joint_wakes_sleeping_partner() {
     rt_world3d_add(w, b);
     void *joint = rt_distance_joint3d_new(a, b, 2.0);
     rt_world3d_add_joint(w, joint, RT_JOINT_DISTANCE);
+    for (int i = 0; i < 64; ++i) {
+        void *other_a = rt_body3d_new_sphere(0.1, 1.0);
+        void *other_b = rt_body3d_new_sphere(0.1, 1.0);
+        rt_body3d_set_position(other_a, 100.0 + (double)i * 3.0, 0.0, 0.0);
+        rt_body3d_set_position(other_b, 101.0 + (double)i * 3.0, 0.0, 0.0);
+        rt_world3d_add(w, other_a);
+        rt_world3d_add(w, other_b);
+        rt_world3d_add_joint(w, rt_distance_joint3d_new(other_a, other_b, 1.0), RT_JOINT_DISTANCE);
+    }
     rt_body3d_sleep(a);
     rt_body3d_sleep(b);
 
@@ -5181,6 +5221,8 @@ static void test_joint_wakes_sleeping_partner() {
      * back to the target distance instead of leaving the sleeper frozen. */
     rt_body3d_set_position(a, -3.0, 0.0, 0.0);
     EXPECT_TRUE(rt_body3d_is_sleeping(b) == 0, "teleporting A wakes sleeping joint partner B");
+    EXPECT_TRUE(rt_world3d_test_get_last_joint_wake_candidate_count(w) == 1,
+                "joint wake adjacency examines only A's direct partner");
     for (int i = 0; i < 60; i++)
         rt_world3d_step(w, 1.0 / 60.0);
     {
@@ -5545,6 +5587,7 @@ int main() {
     test_ccd_proxy_encloses_rotated_box_corners();
     test_ccd_toi_uses_target_collider_material();
     test_ccd_segmentation_is_body_local();
+    test_ccd_broadphase_prunes_distant_bodies();
     test_ccd_clamped_body_catchup_segments_no_tunnel();
 
     /* Vehicle3D */
@@ -5585,6 +5628,7 @@ int main() {
     test_box_stack_rests_stably();
     test_ten_box_tower_stacking_regression();
     test_world_solver_island_batches_resting_pile_target();
+    test_solver_island_union_depth_is_bounded();
 
     /* Character controller */
     test_character_create();

@@ -1730,8 +1730,8 @@ static void test_instance_batch_repairs_storage_and_preserves_relative_motion_hi
     batch->instance_capacity = INT32_MAX;
     assert(rt_instbatch3d_count(batch) == 1);
     assert(batch->transforms == batch->owned_transforms);
-    assert(batch->current_snapshot == batch->owned_current_snapshot);
-    assert(batch->prev_transforms == batch->owned_prev_transforms);
+    assert(batch->current_snapshot == nullptr && batch->owned_current_snapshot == nullptr);
+    assert(batch->prev_transforms == nullptr && batch->owned_prev_transforms == nullptr);
     assert(batch->transforms64 == batch->owned_transforms64);
     assert(batch->current_snapshot64 == batch->owned_current_snapshot64);
     assert(batch->prev_transforms64 == batch->owned_prev_transforms64);

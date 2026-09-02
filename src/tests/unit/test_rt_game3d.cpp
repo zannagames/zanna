@@ -441,7 +441,19 @@ typedef struct {
 #include <string>
 #include <vector>
 
+#if RT_PLATFORM_WINDOWS
+#include <windows.h>
+#elif RT_PLATFORM_MACOS
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
 typedef void (*rt_game3d_test_async_cache_publish_hook_fn)(void *user_data);
+extern "C" int game3d_callback_pointer_is_native_internal(void *callback);
 extern "C" void rt_game3d_test_set_async_cache_publish_hook(
     rt_game3d_test_async_cache_publish_hook_fn hook, void *user_data);
 
@@ -2487,6 +2499,67 @@ static bool test_frame_loop_manual_frame_and_final_capture() {
                   "captured final frame height");
     rt_game3d_world_present(world);
     rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_callback_validation_tracks_current_mapping_permissions() {
+    TEST("Game3D callback validation tracks current mapping permissions");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal((void *)&game3d_test_update) == 1,
+                "A compiled native callback is executable");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal(nullptr) == 1,
+                "A null callback remains the documented no-op");
+
+#if RT_PLATFORM_WINDOWS
+    SYSTEM_INFO system_info = {};
+    GetSystemInfo(&system_info);
+    SIZE_T page_size = (SIZE_T)system_info.dwPageSize;
+    void *page = VirtualAlloc(nullptr, page_size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    EXPECT_TRUE(page != nullptr, "Executable callback test page allocates");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal(page) == 1,
+                "Committed executable pages are accepted");
+    DWORD old_protect = 0;
+    EXPECT_TRUE(VirtualProtect(page, page_size, PAGE_EXECUTE_READ | PAGE_GUARD, &old_protect) != 0,
+                "Executable callback test page becomes guarded");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal(page) == 0,
+                "Guarded executable pages are rejected");
+    EXPECT_TRUE(VirtualFree(page, 0, MEM_RELEASE) != 0, "Callback test page releases");
+#elif RT_PLATFORM_MACOS
+    mach_vm_size_t page_size = (mach_vm_size_t)vm_page_size;
+    mach_vm_address_t mapping = 0;
+    EXPECT_TRUE(mach_vm_allocate(mach_task_self(), &mapping, page_size * 2u, VM_FLAGS_ANYWHERE) ==
+                    KERN_SUCCESS,
+                "Two callback test pages allocate");
+    mach_vm_address_t next_page = mapping + page_size;
+    EXPECT_TRUE(
+        mach_vm_protect(
+            mach_task_self(), next_page, page_size, FALSE, VM_PROT_READ | VM_PROT_EXECUTE) ==
+            KERN_SUCCESS,
+        "Second callback test page becomes executable");
+    EXPECT_TRUE(mach_vm_deallocate(mach_task_self(), mapping, page_size) == KERN_SUCCESS,
+                "First callback test page becomes an address hole");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal((void *)(uintptr_t)mapping) == 0,
+                "An unmapped address before executable memory is rejected");
+    EXPECT_TRUE(mach_vm_deallocate(mach_task_self(), next_page, page_size) == KERN_SUCCESS,
+                "Remaining callback test page releases");
+#elif RT_PLATFORM_LINUX
+    long page_size_value = sysconf(_SC_PAGESIZE);
+    EXPECT_TRUE(page_size_value > 0, "Host page size is available");
+    size_t page_size = (size_t)page_size_value;
+    int zero_fd = open("/dev/zero", O_RDWR);
+    EXPECT_TRUE(zero_fd >= 0, "Anonymous callback test backing opens");
+    void *page =
+        mmap(nullptr, page_size, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE, zero_fd, 0);
+    EXPECT_TRUE(close(zero_fd) == 0, "Anonymous callback test backing closes");
+    EXPECT_TRUE(page != MAP_FAILED, "Executable callback test page allocates");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal(page) == 1,
+                "A current executable mapping is accepted");
+    EXPECT_TRUE(mprotect(page, page_size, PROT_NONE) == 0,
+                "Callback test page becomes non-executable");
+    EXPECT_TRUE(game3d_callback_pointer_is_native_internal(page) == 0,
+                "Cached executable ranges are revalidated after protection changes");
+    EXPECT_TRUE(munmap(page, page_size) == 0, "Callback test page releases");
+#endif
+
     PASS();
 }
 
@@ -7541,6 +7614,7 @@ int main() {
     ok = test_entity_child_count_repair_bounds_tree_walks() && ok;
     ok = test_entity_tree_walks_deduplicate_corrupt_cycles() && ok;
     ok = test_world_spawn_stable_id_exhaustion_is_transactional() && ok;
+    ok = test_callback_validation_tracks_current_mapping_permissions() && ok;
     ok = test_frame_loop_manual_frame_and_final_capture() && ok;
     ok = test_run_fixed_accumulator_and_spiral_guard() && ok;
     ok = test_worker_count_runframes_replay_parity() && ok;

@@ -580,6 +580,27 @@ static void test_deep_hierarchy() {
     EXPECT_NEAR(mv->m[3], 5.0, 0.001, "5-level hierarchy: world X = 5");
 }
 
+static void test_hierarchy_epochs_are_root_local() {
+    auto *root_a = static_cast<rt_scene_node3d *>(rt_scene_node3d_new());
+    auto *root_b = static_cast<rt_scene_node3d *>(rt_scene_node3d_new());
+    void *child_a = rt_scene_node3d_new();
+    void *child_b = rt_scene_node3d_new();
+    uint64_t a_before = scene3d_hierarchy_epoch(root_a);
+    uint64_t b_before = scene3d_hierarchy_epoch(root_b);
+
+    rt_scene_node3d_add_child(root_a, child_a);
+    EXPECT_TRUE(scene3d_hierarchy_epoch(root_a) != a_before,
+                "mutated root advances its topology epoch");
+    EXPECT_TRUE(scene3d_hierarchy_epoch(root_b) == b_before,
+                "unrelated root keeps its topology epoch");
+
+    uint64_t a_after = scene3d_hierarchy_epoch(root_a);
+    rt_scene_node3d_add_child(root_b, child_b);
+    EXPECT_TRUE(scene3d_hierarchy_epoch(root_a) == a_after,
+                "first root is unchanged by second-root mutation");
+    EXPECT_TRUE(scene3d_hierarchy_epoch(root_b) != b_before, "second root advances independently");
+}
+
 static void test_deep_hierarchy_iterative_traversal() {
     void *scene = rt_scene3d_new();
     void *parent = rt_scene3d_get_root(scene);
@@ -3171,6 +3192,50 @@ static void test_node_animator_import_index_binding_does_not_fallback_to_duplica
                 "Import-index-bound node animation does not drive a same-name fallback node");
 }
 
+static void test_node_animator_rebuilds_all_targets_in_one_tree_walk() {
+    constexpr int node_count = 64;
+    void *scene = rt_scene3d_new();
+    void *clip = rt_node_animation3d_new(rt_const_cstr("many_targets"), 1.0);
+    double times[2] = {0.0, 1.0};
+    float values[6] = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+
+    for (int i = 0; i < node_count; i++) {
+        char name_bytes[32];
+        int name_length = std::snprintf(name_bytes, sizeof(name_bytes), "animated_%d", i);
+        rt_string name = rt_string_from_bytes(name_bytes, (size_t)name_length);
+        void *node = rt_scene_node3d_new();
+        rt_scene_node3d_set_name(node, name);
+        rt_scene3d_add(scene, node);
+        EXPECT_TRUE(rt_node_animation3d_add_channel(clip,
+                                                    name,
+                                                    RT_NODE_ANIM_PATH_TRANSLATION,
+                                                    RT_NODE_ANIM_INTERP_LINEAR,
+                                                    2,
+                                                    3,
+                                                    times,
+                                                    values) >= 0,
+                    "many-target fixture channel is accepted");
+        rt_string_unref(name);
+    }
+    void *clips[1] = {clip};
+    auto *animator = static_cast<rt_node_animator3d *>(rt_node_animator3d_new_from_clips(clips, 1));
+    rt_scene_node3d_bind_node_animator(rt_scene3d_get_root(scene), animator);
+    rt_scene3d_sync_bindings(scene, 0.5);
+
+    EXPECT_TRUE(animator->target_cache_complete == 1,
+                "bulk target cache records resolved and negative results");
+    EXPECT_TRUE(animator->target_cache_rebuild_node_visits == (uint64_t)(node_count + 1),
+                "bulk target cache visits each hierarchy node exactly once");
+    for (int i = 0; i < node_count; i++)
+        EXPECT_TRUE(animator->cached_targets[i] != nullptr,
+                    "every channel target is populated by the one-pass rebuild");
+
+    uint64_t visits = animator->target_cache_rebuild_node_visits;
+    rt_scene3d_sync_bindings(scene, 0.25);
+    EXPECT_TRUE(animator->target_cache_rebuild_node_visits == visits,
+                "stable hierarchy reuses the completed target cache");
+}
+
 static void test_scene_roundtrip_deep_hierarchy_uses_format_depth_limit() {
     const char *path = "/tmp/zanna_scene_deep_roundtrip_test.vscn";
     constexpr int supported_depth = 98;
@@ -5648,6 +5713,7 @@ int main(int argc, char **argv) {
     test_rotation_propagation();
     test_scale_propagation();
     test_deep_hierarchy();
+    test_hierarchy_epochs_are_root_local();
     test_deep_hierarchy_iterative_traversal();
     test_dirty_flag();
     test_find_by_name();
@@ -5722,6 +5788,7 @@ int main(int argc, char **argv) {
     test_node_animator_skips_corrupt_channel_shape();
     test_node_animator_skips_corrupt_channel_interpolation();
     test_node_animator_import_index_binding_does_not_fallback_to_duplicate_name();
+    test_node_animator_rebuilds_all_targets_in_one_tree_walk();
     test_node_animator_weights_all_morph_primitives_in_subtree();
     test_node_animator_samples_cubic_translation_channels();
     test_node_animator_slerps_linear_rotation_channels();

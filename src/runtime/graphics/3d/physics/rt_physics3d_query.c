@@ -175,67 +175,6 @@ int query_sanitize_hit(rt_query_hit3d *hit, double max_distance, const double *f
     return 1;
 }
 
-/// @brief Insert `hit` into a distance-sorted hit array, keeping the order.
-///
-/// O(n) insertion (linear shift). Acceptable because `RaycastAll` /
-/// `OverlapAll` queries are bounded by `PH3D_MAX_QUERY_HITS` (256).
-/// @param[in,out] hits Writable array with space for the existing entries and one new entry.
-/// @param count Number of initialized, ascending-distance entries already in @p hits.
-/// @param hit Borrowed candidate record; the inserted copy is sanitized before comparison.
-/// @return @p count plus one when the candidate is valid, or the unchanged count for invalid
-///         storage or hit data.
-static int query_hit_insert_sorted(rt_query_hit3d *hits, int32_t count, const rt_query_hit3d *hit) {
-    int32_t pos = count;
-    rt_query_hit3d clean;
-    if (!hits || !hit)
-        return count;
-    clean = *hit;
-    if (!query_sanitize_hit(&clean, PH3D_QUERY_DISTANCE_MAX, NULL))
-        return count;
-    while (pos > 0 && hits[pos - 1].distance > clean.distance) {
-        hits[pos] = hits[pos - 1];
-        pos--;
-    }
-    hits[pos] = clean;
-    return count + 1;
-}
-
-/// @brief Insert a query hit into a distance-sorted array capped at @p capacity (keeps the
-/// nearest).
-/// @details Below capacity it inserts in order; when full, a hit nearer than the current farthest
-///          displaces it (bounded insertion sort), so the array always holds the K closest results.
-/// @param[in,out] hits Writable array containing @p count sorted entries and storage for
-///        @p capacity records.
-/// @param count Current number of initialized entries.
-/// @param capacity Maximum number of entries that may be retained.
-/// @param hit Borrowed candidate record; a sanitized copy is inserted if it belongs among the
-///        nearest results.
-/// @return The retained hit count, never greater than @p capacity. Invalid arguments or a
-///         farther-than-capacity candidate leave the count unchanged.
-int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
-                                    int32_t count,
-                                    int32_t capacity,
-                                    const rt_query_hit3d *hit) {
-    int32_t pos;
-    rt_query_hit3d clean;
-    if (!hits || !hit || capacity <= 0)
-        return count;
-    clean = *hit;
-    if (!query_sanitize_hit(&clean, PH3D_QUERY_DISTANCE_MAX, NULL))
-        return count;
-    if (count < capacity)
-        return query_hit_insert_sorted(hits, count, &clean);
-    if (clean.distance >= hits[capacity - 1].distance)
-        return count;
-    pos = capacity - 1;
-    while (pos > 0 && hits[pos - 1].distance > clean.distance) {
-        hits[pos] = hits[pos - 1];
-        pos--;
-    }
-    hits[pos] = clean;
-    return capacity;
-}
-
 /// @brief Swap two raw hit records.
 static void query_hit_swap(rt_query_hit3d *a, rt_query_hit3d *b) {
     rt_query_hit3d tmp = *a;
@@ -1073,6 +1012,58 @@ rt_query_hit3d *world3d_query_hits_scratch(rt_world3d *w) {
     return (rt_query_hit3d *)w->query_hits_scratch;
 }
 
+/// @brief Build one conservative min-X-sorted CCD candidate table for the current step.
+/// @details Each body AABB is expanded by its current velocity and a conservative acceleration
+///   bound for @p sub_dt. The table is reused by every local impact and trigger sweep in the step,
+///   replacing a full world scan per CCD body/segment.
+static int32_t world3d_ccd_prepare_broadphase(rt_world3d *w, double sub_dt) {
+    int32_t count = 0;
+    if (!w)
+        return -1;
+    if (w->ccd_broadphase_count >= 0)
+        return w->ccd_broadphase_count;
+    if (w->ccd_broadphase_count == -2)
+        return -1;
+    if (isfinite(w->ccd_broadphase_dt) && w->ccd_broadphase_dt > sub_dt)
+        sub_dt = w->ccd_broadphase_dt;
+    if (!world3d_reserve_broadphase_capacity(w, w->body_count) ||
+        !world3d_reserve_broadphase_sort_scratch(w, w->body_count)) {
+        w->ccd_broadphase_count = -2;
+        return -1;
+    }
+    if (!isfinite(sub_dt) || sub_dt < 0.0)
+        sub_dt = 0.0;
+    for (int32_t i = 0; i < w->body_count; ++i) {
+        rt_body3d *body = w->bodies[i];
+        if (!body3d_has_collision_geometry(body))
+            continue;
+        ph3d_broadphase_entry *entry = &w->broadphase_entries[count++];
+        entry->body = body;
+        entry->body_revision = 0;
+        body_aabb(body, entry->min, entry->max);
+        for (int axis = 0; axis < 3; ++axis) {
+            double acceleration = 0.0;
+            if (body->motion_mode == PH3D_MODE_DYNAMIC)
+                acceleration = w->gravity[axis] + body->force[axis] * body->inv_mass;
+            double travel =
+                fabs(body->velocity[axis]) * sub_dt + fabs(acceleration) * sub_dt * sub_dt + 1e-3;
+            if (!isfinite(travel))
+                travel = PH3D_QUERY_DISTANCE_MAX;
+            entry->min[axis] = query_saturate_coord(entry->min[axis] - travel);
+            entry->max[axis] = query_saturate_coord(entry->max[axis] + travel);
+        }
+    }
+    ph3d_broadphase_sort_entries(w->broadphase_entries, w->broadphase_sort_scratch, count, 0);
+    w->ccd_broadphase_count = count;
+    return count;
+}
+
+/// @brief Read the number of CCD narrow-phase candidates tested by the most recent step.
+int64_t rt_world3d_test_get_last_ccd_candidate_count(void *obj) {
+    rt_world3d *w = world3d_checked(obj);
+    return w ? w->last_ccd_candidate_tests : 0;
+}
+
 /// @brief Finds the earliest blocking body along one raw CCD sphere sweep.
 /// @details Candidates are read directly from the world instead of the lazily cached query
 ///          broad phase because dynamic poses can change during each integration substep.
@@ -1106,6 +1097,8 @@ int world3d_ccd_sweep_sphere_raw(rt_world3d *w,
     rt_query_hit3d best_hit = {0};
     int found = 0;
     double max_distance;
+    double swept_min[3];
+    double swept_max[3];
     void *sphere_collider;
     if (!w || !center || !delta || !isfinite(radius) || radius <= 0.0)
         return 0;
@@ -1117,16 +1110,27 @@ int world3d_ccd_sweep_sphere_raw(rt_world3d *w,
     if (!sphere_collider)
         return 0;
 
-    /* Direct body iteration: CCD targets' poses are read directly each substep,
-     * so the cached query broadphase — which is invalidated as dynamic bodies
-     * integrate — is deliberately not used here. */
-    for (int32_t i = 0; i < w->body_count; ++i) {
-        rt_body3d *body = w->bodies[i];
+    for (int axis = 0; axis < 3; ++axis) {
+        swept_min[axis] =
+            query_saturate_coord(fmin(center[axis], center[axis] + delta[axis]) - radius);
+        swept_max[axis] =
+            query_saturate_coord(fmax(center[axis], center[axis] + delta[axis]) + radius);
+    }
+    int32_t entry_count = world3d_ccd_prepare_broadphase(w, sub_dt);
+
+    for (int32_t i = 0; i < (entry_count >= 0 ? entry_count : w->body_count); ++i) {
+        rt_body3d *body = entry_count >= 0 ? w->broadphase_entries[i].body : w->bodies[i];
         rt_query_hit3d hit;
         double sweep_delta[3];
         double sweep_len;
         double toi;
         int target_is_dynamic;
+        if (entry_count >= 0) {
+            if (w->broadphase_entries[i].min[0] > swept_max[0])
+                break;
+            if (!query_entry_overlaps_bounds(&w->broadphase_entries[i], swept_min, swept_max))
+                continue;
+        }
         if (!body || body == ignore_body)
             continue;
         target_is_dynamic = body->motion_mode == PH3D_MODE_DYNAMIC;
@@ -1147,6 +1151,8 @@ int world3d_ccd_sweep_sphere_raw(rt_world3d *w,
         /* Triggers report overlaps but never block motion. */
         if (body->is_trigger)
             continue;
+        if (w->last_ccd_candidate_tests < INT64_MAX)
+            w->last_ccd_candidate_tests++;
         vec3_copy(sweep_delta, delta);
         if (target_is_dynamic && isfinite(sub_dt) && sub_dt > 0.0) {
             sweep_delta[0] -= body->velocity[0] * sub_dt;
@@ -1215,6 +1221,8 @@ int world3d_ccd_record_trigger_crossings(rt_world3d *w,
                                          rt_body3d *moving_body,
                                          double segment_dt) {
     double max_distance;
+    double swept_min[3];
+    double swept_max[3];
     void *sphere_collider;
     if (!w || !center || !delta || !moving_body || !isfinite(radius) || radius <= 0.0)
         return 1;
@@ -1225,18 +1233,34 @@ int world3d_ccd_record_trigger_crossings(rt_world3d *w,
     if (!sphere_collider)
         return 0;
 
-    for (int32_t i = 0; i < w->body_count; ++i) {
-        rt_body3d *trigger = w->bodies[i];
+    for (int axis = 0; axis < 3; ++axis) {
+        swept_min[axis] =
+            query_saturate_coord(fmin(center[axis], center[axis] + delta[axis]) - radius);
+        swept_max[axis] =
+            query_saturate_coord(fmax(center[axis], center[axis] + delta[axis]) + radius);
+    }
+    int32_t entry_count = world3d_ccd_prepare_broadphase(w, segment_dt);
+
+    for (int32_t i = 0; i < (entry_count >= 0 ? entry_count : w->body_count); ++i) {
+        rt_body3d *trigger = entry_count >= 0 ? w->broadphase_entries[i].body : w->bodies[i];
         rt_query_hit3d hit;
         rt_contact3d contact;
         double sweep_delta[3];
         double sweep_len;
+        if (entry_count >= 0) {
+            if (w->broadphase_entries[i].min[0] > swept_max[0])
+                break;
+            if (!query_entry_overlaps_bounds(&w->broadphase_entries[i], swept_min, swept_max))
+                continue;
+        }
         if (!trigger || trigger == moving_body || !trigger->is_trigger ||
             !body3d_has_collision_geometry(trigger))
             continue;
         if (!(moving_body->collision_layer & trigger->collision_mask) ||
             !(trigger->collision_layer & moving_body->collision_mask))
             continue;
+        if (w->last_ccd_candidate_tests < INT64_MAX)
+            w->last_ccd_candidate_tests++;
         vec3_copy(sweep_delta, delta);
         if (trigger->motion_mode == PH3D_MODE_DYNAMIC && isfinite(segment_dt) && segment_dt > 0.0) {
             sweep_delta[0] -= trigger->velocity[0] * segment_dt;

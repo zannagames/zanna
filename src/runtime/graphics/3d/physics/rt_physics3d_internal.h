@@ -283,6 +283,12 @@ struct rt_world3d {
     int32_t *joint_types;
     int32_t joint_count;
     int32_t joint_capacity;
+    int32_t *joint_adjacency_storage;
+    rt_body3d **joint_adjacency_partners;
+    int32_t joint_adjacency_body_capacity;
+    int32_t joint_adjacency_partner_capacity;
+    int8_t joint_adjacency_dirty;
+    int64_t last_joint_wake_candidate_count;
     ph3d_broadphase_entry *broadphase_entries;
     ph3d_broadphase_entry *broadphase_sort_scratch;
     int32_t broadphase_capacity;
@@ -324,6 +330,9 @@ struct rt_world3d {
     int32_t last_ccd_clamped_body_count;
     int64_t ccd_substep_clamped_body_count;
     int64_t ccd_toi_count; /* total swept time-of-impact clips applied */
+    int32_t ccd_broadphase_count;
+    double ccd_broadphase_dt;
+    int64_t last_ccd_candidate_tests;
     int32_t solver_iterations;
     int32_t position_iterations;
     double contact_beta;
@@ -447,6 +456,7 @@ typedef struct contact_pair_hash_entry {
 ///   per-island contact-index partition (owned/freed by the solver).
 typedef struct {
     int32_t *parent;
+    int32_t *rank;
     int32_t *active_body;
     int32_t *root_to_island;
     int32_t *body_island;
@@ -1000,6 +1010,8 @@ void ph3d_solver_island_batch_free(ph3d_solver_island_batch *batch);
 /// @param batch Output batch.
 /// @return One on success, otherwise zero.
 int world3d_build_solver_island_batch(rt_world3d *w, ph3d_solver_island_batch *batch);
+/// @brief Test-only adversarial union-find depth probe.
+int32_t ph3d_test_island_union_max_depth(int32_t count);
 /// @brief Apply cached impulses across solver islands.
 /// @param w World3D containing contacts.
 /// @param batch Island partition.

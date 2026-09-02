@@ -74,17 +74,6 @@ void query_normalize_normal(double normal[3], const double *fallback_dir);
 /// @return `1` when @p hit has a valid non-negative distance; otherwise `0`.
 int query_sanitize_hit(rt_query_hit3d *hit, double max_distance, const double *fallback_dir);
 
-/// @brief Inserts a hit into a nearest-first array with bounded capacity.
-/// @param[in,out] hits Writable sorted hit array with storage for @p capacity records.
-/// @param count Number of initialized records already present.
-/// @param capacity Maximum retained record count.
-/// @param hit Borrowed candidate record, copied and sanitized before insertion.
-/// @return The resulting retained count, never greater than @p capacity.
-int query_hit_insert_sorted_bounded(rt_query_hit3d *hits,
-                                    int32_t count,
-                                    int32_t capacity,
-                                    const rt_query_hit3d *hit);
-
 /// @brief Accumulates the nearest hits in a bounded max-heap.
 /// @param[in,out] hits Writable heap storage with room for @p capacity records.
 /// @param count Number of initialized heap records.

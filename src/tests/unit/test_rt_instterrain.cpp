@@ -71,6 +71,16 @@ typedef struct {
     int32_t prev_count;
     int64_t last_motion_frame;
     int8_t has_prev_snapshot;
+    double *transforms64;
+    float *visible_transforms;
+    float *visible_prev_transforms;
+    int32_t visible_capacity;
+    int32_t visible_prev_capacity;
+    float *prev_submit_transforms;
+    int32_t prev_submit_capacity;
+    int32_t allocation_capacity;
+    double *current_snapshot64;
+    double *prev_transforms64;
 } rt_instbatch3d_view;
 
 typedef struct {
@@ -172,22 +182,22 @@ static void test_instbatch_remove_keeps_motion_history_aligned() {
     view->motion_snapshot_count = 3;
     view->prev_count = 3;
     view->has_prev_snapshot = 1;
-    view->current_snapshot[3] = 10.0f;
-    view->current_snapshot[19] = 20.0f;
-    view->current_snapshot[35] = 30.0f;
-    view->prev_transforms[3] = 100.0f;
-    view->prev_transforms[19] = 200.0f;
-    view->prev_transforms[35] = 300.0f;
+    view->current_snapshot64[3] = 10.0;
+    view->current_snapshot64[19] = 20.0;
+    view->current_snapshot64[35] = 30.0;
+    view->prev_transforms64[3] = 100.0;
+    view->prev_transforms64[19] = 200.0;
+    view->prev_transforms64[35] = 300.0;
 
     rt_instbatch3d_remove(batch, 0);
 
     EXPECT_TRUE(rt_instbatch3d_count(batch) == 2, "Batch remove keeps the expected instance count");
     EXPECT_NEAR(view->transforms[3], 2.0, 0.01, "Batch remove swap-moves the last transform");
-    EXPECT_NEAR(view->current_snapshot[3],
+    EXPECT_NEAR(view->current_snapshot64[3],
                 30.0,
                 0.01,
                 "Batch remove keeps current motion history aligned with swapped transforms");
-    EXPECT_NEAR(view->prev_transforms[3],
+    EXPECT_NEAR(view->prev_transforms64[3],
                 300.0,
                 0.01,
                 "Batch remove keeps previous motion history aligned with swapped transforms");

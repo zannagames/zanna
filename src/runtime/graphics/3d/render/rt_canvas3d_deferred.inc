@@ -262,13 +262,53 @@ static vgfx3d_light_params_t *canvas3d_store_frame_light_snapshot(
     return &base[c->frame_light_snapshot_count - light_count];
 }
 
+/// @brief Hash only the Light3D instances referenced by one canvas.
+/// @details A process-global generation made an unrelated light mutation invalidate every
+///   canvas's flattened-light cache. This dependency fingerprint retains the same mutation
+///   detection while isolating canvases and includes slot position so replacements cannot alias.
+/// @param c Borrowed canvas whose retained and transient scene-light slots are inspected.
+/// @return Nonzero 64-bit dependency fingerprint.
+static uint64_t canvas3d_light_dependency_revision(const rt_canvas3d *c) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    int32_t scene_count;
+    if (!c)
+        return 1;
+    for (int32_t i = 0; i < VGFX3D_MAX_LIGHTS; i++) {
+        rt_light3d *light = c->lights[i];
+        uint64_t identity = (uint64_t)(uintptr_t)light;
+        uint64_t revision =
+            rt_g3d_has_class(light, RT_G3D_LIGHT3D_CLASS_ID) ? light->mutation_revision : 0;
+        hash ^= identity + ((uint64_t)(uint32_t)i << 32u);
+        hash *= UINT64_C(1099511628211);
+        hash ^= revision;
+        hash *= UINT64_C(1099511628211);
+    }
+    scene_count = c->scene_light_count;
+    if (scene_count < 0)
+        scene_count = 0;
+    if (scene_count > VGFX3D_MAX_LIGHTS)
+        scene_count = VGFX3D_MAX_LIGHTS;
+    hash ^= (uint64_t)(uint32_t)scene_count;
+    hash *= UINT64_C(1099511628211);
+    for (int32_t i = 0; i < scene_count; i++) {
+        rt_light3d *light = c->scene_lights[i];
+        uint64_t revision =
+            rt_g3d_has_class(light, RT_G3D_LIGHT3D_CLASS_ID) ? light->mutation_revision : 0;
+        hash ^= (uint64_t)(uintptr_t)light;
+        hash *= UINT64_C(1099511628211);
+        hash ^= revision;
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash ? hash : 1;
+}
+
 /// @brief Assign the frame's flattened lights to a queued draw, flattening at most once
-///        per light-state generation.
+///        per canvas-local light dependency fingerprint.
 /// @details Previously every queued draw ran build_light_params (two passes over all 64
 ///   slots) plus a full snapshot memcmp — O(draws x lights) per frame. Draws that share
-///   one Light3D mutation generation now share a single snapshot slice, revision stamp,
+///   one relevant Light3D fingerprint now share a single snapshot slice, revision stamp,
 ///   and froxel table. The cache is invalidated at frame begin, on slot/ambient/scene-
-///   light changes, and by any Light3D property mutation (global generation counter).
+///   light changes, and by mutations to Light3D instances referenced by this canvas.
 ///   Shadow patching in End() mutates the shared slice in place, which is safe because
 ///   canvas3d_apply_shadow_light_params is idempotent per slice.
 /// @param c Canvas owning the flattened-light cache and snapshot arena.
@@ -281,7 +321,7 @@ static int canvas3d_assign_frame_lights(rt_canvas3d *c, deferred_draw_t *dd) {
 
     if (!c || !dd)
         return 0;
-    light_revision = rt_light3d_mutation_revision();
+    light_revision = canvas3d_light_dependency_revision(c);
     limit = canvas3d_active_light_limit(c);
     if (!c->frame_light_cache_valid || c->frame_light_cache_revision != light_revision ||
         c->frame_light_cache_limit != limit) {

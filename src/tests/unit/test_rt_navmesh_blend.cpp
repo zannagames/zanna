@@ -70,6 +70,8 @@ extern int64_t rt_navmesh3d_copy_path_points(void *navmesh,
                                              double **out_points_xyz);
 extern int64_t rt_navmesh3d_test_get_last_path_touched_count(void *navmesh);
 extern int64_t rt_navmesh3d_test_get_last_path_heap_peak(void *navmesh);
+extern int64_t rt_navmesh3d_test_get_path_transient_allocation_count(void *navmesh);
+extern void rt_navmesh3d_test_reset_path_transient_allocation_count(void *navmesh);
 extern int32_t rt_path3d_append_xyz_batch_internal(void *path,
                                                    const double *points_xyz,
                                                    int64_t point_count);
@@ -294,6 +296,8 @@ static void test_navmesh_sample_position_uses_sublinear_local_probe() {
                 "NavMesh local off-mesh sampling stays on the expanding-grid path");
     EXPECT_TRUE(probes > 0 && triangle_count > 0 && probes < triangle_count / 8,
                 "NavMesh local off-mesh sampling probes a sublinear triangle fraction");
+    EXPECT_TRUE(probes <= triangle_count,
+                "NavMesh indexed sampling tests each replicated triangle at most once");
 }
 
 static void test_navmesh_find_path() {
@@ -393,6 +397,18 @@ static void test_path3d_bulk_append_is_transactional() {
                 "Path3D bulk append publishes every point after one successful reserve");
 }
 
+static void test_navmesh_find_path_adopts_reconstructed_storage() {
+    void *nm = make_dense_grid_navmesh(16);
+    void *from = rt_vec3_new(-7.0, 0.0, -7.0);
+    void *to = rt_vec3_new(7.0, 0.0, 7.0);
+    rt_path3d_test_set_coordinate_alloc_failure(1);
+    void *path = rt_navmesh3d_find_path(nm, from, to);
+    rt_path3d_test_set_coordinate_alloc_failure(0);
+    EXPECT_TRUE(
+        path != nullptr && rt_path3d_get_point_count(path) >= 2,
+        "NavMesh FindPath transfers reconstructed points without a second coordinate allocation");
+}
+
 static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
     constexpr int cells = 64;
     void *nm = make_dense_grid_navmesh(cells);
@@ -404,6 +420,7 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
     constexpr int worker_count = 8;
     std::thread workers[worker_count];
     rt_navmesh3d_test_reset_path_peak_concurrency(nm);
+    rt_navmesh3d_test_reset_path_transient_allocation_count(nm);
     for (int worker = 0; worker < worker_count; worker++) {
         workers[worker] = std::thread([&]() {
             ready.fetch_add(1, std::memory_order_release);
@@ -427,10 +444,12 @@ static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
     EXPECT_TRUE(ok.load(std::memory_order_relaxed),
                 "NavMesh A* workspace pool is reusable across concurrent queries");
     EXPECT_TRUE(rt_navmesh3d_test_get_path_peak_concurrency(nm) > 4,
-                "NavMesh overflow workspaces let more than four searches overlap in flight");
+                "NavMesh retained workspaces let more than four searches overlap in flight");
+    EXPECT_TRUE(rt_navmesh3d_test_get_path_transient_allocation_count(nm) == 0,
+                "NavMesh eight-way query bursts perform no transient workspace allocations");
     EXPECT_TRUE(rt_navmesh3d_test_get_ready_path_scratch_count(nm) >= 2,
                 "NavMesh concurrent searches retain per-workspace corridor and portal scratch");
-    EXPECT_TRUE(rt_navmesh3d_test_get_path_workspace_permits(nm) == 4,
+    EXPECT_TRUE(rt_navmesh3d_test_get_path_workspace_permits(nm) == worker_count,
                 "NavMesh returns every blocking workspace permit after concurrent searches");
     EXPECT_TRUE(std::isfinite(rt_navmesh3d_get_last_path_cost(nm)),
                 "NavMesh LastPathCost remains atomically readable during workspace reuse");
@@ -1568,6 +1587,7 @@ int main() {
     test_navmesh_rejects_out_of_domain_query_instead_of_clamping();
     test_navmesh_astar_touches_only_frontier_nodes();
     test_path3d_bulk_append_is_transactional();
+    test_navmesh_find_path_adopts_reconstructed_storage();
     test_navmesh_path_workspace_reuse_is_concurrent_safe();
     test_navmesh_box_slope_filter();
     test_navmesh_voxel_grid_extreme_arithmetic_is_bounded();

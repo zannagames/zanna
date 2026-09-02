@@ -219,6 +219,7 @@ static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
         animator->cached_clip_index = -1;
         animator->cached_root = NULL;
         animator->cached_hierarchy_epoch = 0;
+        animator->target_cache_complete = 0;
         return;
     }
     if (animator->cached_targets && animator->cached_target_capacity > 0) {
@@ -235,6 +236,7 @@ static void node_animator_clear_target_cache(rt_node_animator3d *animator) {
     animator->cached_clip_index = -1;
     animator->cached_root = NULL;
     animator->cached_hierarchy_epoch = 0;
+    animator->target_cache_complete = 0;
 }
 
 /// @brief Ensure the per-animator channel-target cache can address @p channel_count channels.
@@ -1516,6 +1518,146 @@ static rt_scene_node3d *node_anim_find_by_name(rt_node_animator3d *animator,
     return NULL;
 }
 
+/// @brief Hash a validated animation target name for cache-rebuild lookup.
+/// @param name Borrowed runtime string handle.
+/// @return Stable FNV-1a hash, or zero for an invalid name.
+static uint64_t node_anim_target_name_hash(rt_string name) {
+    const char *data;
+    size_t length;
+    uint64_t hash = UINT64_C(1469598103934665603);
+    if (!node_anim_string_view(name, 0, &data, &length))
+        return 0;
+    for (size_t i = 0; i < length; i++) {
+        hash ^= (uint8_t)data[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash ? hash : 1;
+}
+
+/// @brief Rebuild all channel target slots with one hierarchy traversal.
+/// @details Channels are bucketed by import index or exact name first, then each scene node is
+///   visited once in the same depth-first order as the legacy per-channel searches. The first
+///   matching node therefore preserves behavior while rebuild complexity drops from O(C*N) to
+///   expected O(C+N). Allocation failure leaves the normal per-channel fallback available.
+/// @param animator Borrowed animator owning cache and traversal scratch.
+/// @param root Borrowed animation subtree root.
+/// @param clip Borrowed current animation clip.
+/// @param channel_count Valid channel count.
+/// @return Nonzero when the bulk rebuild completed; zero when fallback lookup should be used.
+static int node_animator_rebuild_target_cache(rt_node_animator3d *animator,
+                                              rt_scene_node3d *root,
+                                              rt_node_animation3d *clip,
+                                              int32_t channel_count) {
+    int32_t bucket_count = 16;
+    int32_t *workspace;
+    int32_t *index_buckets;
+    int32_t *name_buckets;
+    int32_t *index_next;
+    int32_t *name_next;
+    size_t traversal_count = 0;
+    size_t visited = 0;
+    size_t workspace_count;
+
+    if (!animator || !root || !clip || channel_count <= 0)
+        return 0;
+    while (bucket_count < channel_count * 2 && bucket_count <= INT32_MAX / 2)
+        bucket_count *= 2;
+    workspace_count = (size_t)bucket_count * 2u + (size_t)channel_count * 2u;
+    if (workspace_count > SIZE_MAX / sizeof(*workspace))
+        return 0;
+    workspace = (int32_t *)malloc(workspace_count * sizeof(*workspace));
+    if (!workspace)
+        return 0;
+    index_buckets = workspace;
+    name_buckets = index_buckets + bucket_count;
+    index_next = name_buckets + bucket_count;
+    name_next = index_next + channel_count;
+    for (int32_t i = 0; i < bucket_count * 2; i++)
+        workspace[i] = -1;
+    for (int32_t i = 0; i < channel_count; i++) {
+        rt_node_anim_channel3d *channel = &clip->channels[i];
+        index_next[i] = -1;
+        name_next[i] = -1;
+        if (!channel->target_name || !node_anim_string_view(channel->target_name, 0, NULL, NULL))
+            continue;
+        if (channel->target_node_index >= 0) {
+            uint32_t hash = (uint32_t)channel->target_node_index * UINT32_C(2654435761);
+            int32_t bucket = (int32_t)(hash & (uint32_t)(bucket_count - 1));
+            index_next[i] = index_buckets[bucket];
+            index_buckets[bucket] = i;
+        } else {
+            uint64_t hash = node_anim_target_name_hash(channel->target_name);
+            int32_t bucket = (int32_t)(hash & (uint64_t)(bucket_count - 1));
+            name_next[i] = name_buckets[bucket];
+            name_buckets[bucket] = i;
+        }
+    }
+    animator->target_cache_rebuild_node_visits = 0;
+    if (!node_animator_stack_push(animator, &traversal_count, root)) {
+        free(workspace);
+        return 0;
+    }
+    while (traversal_count > 0 && visited++ < NODE_ANIM_TRAVERSAL_NODE_MAX) {
+        rt_scene_node3d *current = animator->traversal_stack[--traversal_count];
+        animator->target_cache_rebuild_node_visits++;
+        if (current->import_index >= 0) {
+            uint32_t hash = (uint32_t)current->import_index * UINT32_C(2654435761);
+            int32_t bucket = (int32_t)(hash & (uint32_t)(bucket_count - 1));
+            for (int32_t channel_index = index_buckets[bucket]; channel_index >= 0;
+                 channel_index = index_next[channel_index]) {
+                if (!animator->cached_targets[channel_index] &&
+                    clip->channels[channel_index].target_node_index == current->import_index)
+                    node_animator_cache_store(animator, channel_index, current);
+            }
+        }
+        if (current->name && !rt_string_is_handle(current->name)) {
+            current->name = NULL;
+        } else if (current->name) {
+            uint64_t hash = node_anim_target_name_hash(current->name);
+            int32_t bucket = (int32_t)(hash & (uint64_t)(bucket_count - 1));
+            for (int32_t channel_index = name_buckets[bucket]; channel_index >= 0;
+                 channel_index = name_next[channel_index]) {
+                if (!animator->cached_targets[channel_index] &&
+                    node_anim_string_equal(current->name,
+                                           clip->channels[channel_index].target_name))
+                    node_animator_cache_store(animator, channel_index, current);
+            }
+        }
+        for (int32_t i = scene3d_node_child_count(current) - 1; i >= 0; i--) {
+            rt_scene_node3d *child = (rt_scene_node3d *)rt_g3d_checked_or_null(
+                current->children[i], RT_G3D_SCENENODE3D_CLASS_ID);
+            if (child && !node_animator_stack_push(animator, &traversal_count, child)) {
+                free(workspace);
+                return 0;
+            }
+        }
+    }
+    free(workspace);
+    if (traversal_count > 0) {
+        rt_trap("NodeAnimation3D: traversal node budget exceeded");
+        return 0;
+    }
+    return 1;
+}
+
+/// @brief Validate the root/clip/epoch cache key and bulk-rebuild on a miss.
+static void node_animator_prepare_target_cache(rt_node_animator3d *animator,
+                                               rt_scene_node3d *root,
+                                               rt_node_animation3d *clip,
+                                               int32_t channel_count) {
+    uint64_t hierarchy_epoch = scene3d_hierarchy_epoch(root);
+    if (animator->cached_root == root &&
+        animator->cached_clip_index == animator->current_animation &&
+        animator->cached_hierarchy_epoch == hierarchy_epoch)
+        return;
+    node_animator_clear_target_cache(animator);
+    animator->cached_root = root;
+    animator->cached_clip_index = animator->current_animation;
+    animator->cached_hierarchy_epoch = hierarchy_epoch;
+    animator->target_cache_complete =
+        node_animator_rebuild_target_cache(animator, root, clip, channel_count) ? 1 : 0;
+}
+
 /// @brief Resolve an animation channel's target node within @p root's subtree, by name.
 /// @details Caches the resolved node on the channel keyed by the target name, so repeated frames
 /// skip
@@ -1531,11 +1673,12 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
                                                  int32_t channel_index) {
     rt_scene_node3d *cached_target = NULL;
     uint64_t hierarchy_epoch;
+    int cache_entry_corrupt = 0;
     if (!animator || !root || !channel || !channel->target_name)
         return NULL;
     if (!node_anim_string_view(channel->target_name, 0, NULL, NULL))
         return NULL;
-    hierarchy_epoch = scene3d_hierarchy_epoch();
+    hierarchy_epoch = scene3d_hierarchy_epoch(root);
     if (animator->cached_root != root ||
         animator->cached_clip_index != animator->current_animation ||
         animator->cached_hierarchy_epoch != hierarchy_epoch)
@@ -1548,10 +1691,13 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
     if (cached_target && !rt_g3d_has_class(cached_target, RT_G3D_SCENENODE3D_CLASS_ID)) {
         animator->cached_targets[channel_index] = NULL;
         cached_target = NULL;
+        cache_entry_corrupt = 1;
     }
     if (channel->target_node_index >= 0) {
         if (cached_target && cached_target->import_index == channel->target_node_index)
             return cached_target;
+        if (!cached_target && animator->target_cache_complete && !cache_entry_corrupt)
+            return NULL;
         cached_target = node_anim_find_by_import_index(animator, root, channel->target_node_index);
         node_animator_cache_store(animator, channel_index, cached_target);
         if (cached_target)
@@ -1562,6 +1708,8 @@ static rt_scene_node3d *node_anim_resolve_target(rt_node_animator3d *animator,
         if (node_anim_string_equal(cached_target->name, channel->target_name))
             return cached_target;
     }
+    if (!cached_target && animator->target_cache_complete && !cache_entry_corrupt)
+        return NULL;
     cached_target = node_anim_find_by_name(animator, root, channel->target_name);
     node_animator_cache_store(animator, channel_index, cached_target);
     return cached_target;
@@ -1734,6 +1882,8 @@ void node_animator_update(rt_node_animator3d *animator, double dt) {
         rt_trap("NodeAnimator3D.Update: target cache allocation failed");
         return;
     }
+    if (channel_count > 0)
+        node_animator_prepare_target_cache(animator, animator->root, clip, channel_count);
     double speed = isfinite(animator->speed) ? animator->speed : 1.0;
     if (speed > NODE_ANIM_SPEED_ABS_MAX)
         speed = NODE_ANIM_SPEED_ABS_MAX;

@@ -708,10 +708,9 @@ static rt_string model3d_spill_asset_bytes(const char *prefix_cstr,
     return path;
 }
 
-/// @brief Decode a binary/ASCII FBX from in-memory asset bytes via a temp-file bridge.
-/// @details The FBX importer is path-based (binary parsing re-opens the file), so embedded or
-///   packed assets are spilled to a temp file, decoded with the recoverable loader, and
-///   unlinked — mirroring the asset-decode tempfile bridge used for path-only image formats.
+/// @brief Decode a binary/ASCII FBX directly from in-memory asset bytes.
+/// @details The synchronous importer borrows the asset-manager span while retaining the logical
+///   source path as the base for external texture references.
 /// @param original_path Logical FBX path retained as the base for referenced textures.
 /// @param bytes Non-null FBX byte span to stage; the caller retains ownership.
 /// @param size Number of bytes available at @p bytes.
@@ -721,32 +720,7 @@ static void *model3d_fbx_from_asset_bytes(rt_string original_path,
                                           size_t size) {
     if (!bytes || size == 0)
         return NULL;
-    rt_string prefix = rt_const_cstr("zanna_fbx_");
-    rt_string suffix = rt_const_cstr(".fbx");
-    rt_string tmp = rt_tempfile_path_with_ext(prefix, suffix);
-    rt_string_unref(prefix);
-    rt_string_unref(suffix);
-    if (!tmp)
-        return NULL;
-    const char *tpath = rt_string_cstr(tmp);
-    if (!tpath) {
-        rt_string_unref(tmp);
-        return NULL;
-    }
-    (void)tpath;
-    if (size > (size_t)INT64_MAX) {
-        rt_string_unref(tmp);
-        return NULL;
-    }
-    if (!model3d_write_temp_asset_bytes(tmp, bytes, size)) {
-        rt_io_file_delete(tmp);
-        rt_string_unref(tmp);
-        return NULL;
-    }
-    void *asset = rt_fbx_load_recoverable_with_texture_base(tmp, original_path);
-    rt_io_file_delete(tmp);
-    rt_string_unref(tmp);
-    return asset;
+    return fbx_load_recoverable_bytes_internal(original_path, bytes, size);
 }
 
 /// @brief .fbx branch of rt_model3d_load_impl: decode the asset and collect its meshes/
