@@ -700,6 +700,28 @@ class Lowerer {
     ///      with function pointers, and binds it via rt_bind_interface
     void emitItableInit();
 
+    /// @brief ADR 0315: emit `__zia_layout_init`, which registers every class's
+    ///        strong object-typed field offsets with the runtime
+    ///        (rt_obj_class_layout_begin / rt_obj_class_layout_add_slot) so the
+    ///        cycle collector can traverse class instances. Always emitted (a
+    ///        `ret void` stub when no class has a strong slot) and called from
+    ///        the entry prologue right after the destructor hook is installed.
+    void emitClassLayoutInit();
+
+    /// @brief One managed slot inside an object or boxed value payload.
+    struct ManagedSlot {
+        size_t offset;
+        int64_t kind; ///< 1 = object reference, 2 = string.
+    };
+
+    /// @brief Flatten the managed (reference-bearing) slots of a semantic type.
+    /// @details Recurses through inline structs, fixed arrays and tuples,
+    ///          accumulating byte offsets; strings are kind 2, object-like
+    ///          references (classes, interfaces, functions, Any, runtime
+    ///          handles) kind 1. Shared by boxed value-type registration and
+    ///          the class layout map.
+    void collectManagedSlots(TypeRef type, size_t baseOffset, std::vector<ManagedSlot> &out);
+
     /// @brief Resolve the lowered name of an interface's default method body
     ///        (returns "" when the interface method is abstract).
     std::string defaultInterfaceMethodName(const InterfaceTypeInfo &ifaceInfo,

@@ -927,6 +927,7 @@ set(ZIA_RUNTIME_TESTS
         test_weakref_gc
         test_object_field_release
         test_runtime_result_ownership
+        test_class_cycle_gc
         test_async_promise
         test_intmap
         test_binbuf

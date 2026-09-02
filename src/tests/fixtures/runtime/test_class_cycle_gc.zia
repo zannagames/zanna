@@ -1,0 +1,190 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_class_cycle_gc.zia
+// Purpose: ADR 0315 — strong cycles between class instances are reclaimed by
+//          an explicit GC.Collect(): a parent/child ring, a doubly linked
+//          list, a self reference, a cycle through a List[Node] and through a
+//          Map, and a weak back-reference variant. After the collection the
+//          tracked count is back at its baseline, the weak references are
+//          dead, every member's deinit ran exactly once, and a value-only
+//          class never enters the collector.
+// Key invariants:
+//   - Nothing here is reachable after the local scope ends; only the
+//     collector can free the rings.
+//   - GC.TrackedCount() counts tracked class instances AND reference arrays.
+// Links: src/runtime/core/rt_gc.c (gc_zia_object_traverse),
+//        src/frontends/zia/Lowerer_Decl_Types.cpp (emitClassLayoutInit)
+//
+//===----------------------------------------------------------------------===//
+module TestClassCycleGc;
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Runtime.GC as GC;
+bind Zanna.Memory.WeakRef as WeakRef;
+
+var deinits: Integer = 0;
+
+class Bag {
+    expose List[Node] items;
+    expose func init() { items = []; }
+    deinit { deinits = deinits + 1; }
+}
+
+class Node {
+    expose Node? next;
+    expose Node? prev;
+    expose Bag? bag;
+    expose String name;
+    expose func init(n: String) { name = n; next = null; prev = null; bag = null; }
+    deinit { deinits = deinits + 1; }
+}
+
+class Owner {
+    expose Node? child;
+    expose func init() { child = null; }
+    deinit { deinits = deinits + 1; }
+}
+
+class WeakChild {
+    expose weak Owner? parent;
+    expose func init() { parent = null; }
+    deinit { deinits = deinits + 1; }
+}
+
+class Point {
+    expose Integer x;
+    expose Integer y;
+}
+
+func ring() -> Any {
+    var a = new Node("a");
+    var b = new Node("b");
+    a.next = b;
+    b.next = a;
+    return WeakRef.New(a);
+}
+
+func doubly() -> Any {
+    var head = new Node("h");
+    var cur = head;
+    for i in 0..4 {
+        var n = new Node("n" + Fmt.Int(i));
+        cur.next = n;
+        n.prev = cur;
+        cur = n;
+    }
+    return WeakRef.New(head);
+}
+
+func selfRef() -> Any {
+    var s = new Node("s");
+    s.next = s;
+    return WeakRef.New(s);
+}
+
+func throughList() -> Any {
+    // bag -> items (a tracked reference array) -> n -> bag: the cycle runs
+    // through a runtime container as well as class instances.
+    var bag = new Bag();
+    var n = new Node("in-bag");
+    bag.items.add(n);
+    n.bag = bag;
+    return WeakRef.New(bag);
+}
+
+func weakVariant() -> Integer {
+    var o = new Owner();
+    var w = new WeakChild();
+    w.parent = o;
+    var n = new Node("w");
+    o.child = n;
+    // No strong cycle: o -> n, w -> (weak) o. Everything dies by refcount.
+    return 0;
+}
+
+func valueOnly() {
+    var p = new Point();
+    p.x = 1;
+    p.y = 2;
+}
+
+func expectCount(label: String, want: Integer) -> Boolean {
+    var have = GC.TrackedCount();
+    if have != want {
+        Say("FAIL: " + label + ": tracked " + Fmt.Int(have) + ", expected " + Fmt.Int(want));
+        return false;
+    }
+    return true;
+}
+
+func start() {
+    GC.Collect();
+    var base = GC.TrackedCount();
+
+    // Value-only instances are never tracked.
+    valueOnly();
+    if !expectCount("value-only class", base) { return; }
+
+    // Each ring stays alive after its scope (refcounts never reach zero) ...
+    var r1 = ring();
+    var r2 = doubly();
+    var r3 = selfRef();
+    if GC.TrackedCount() <= base {
+        Say("FAIL: rings were not tracked");
+        return;
+    }
+    if !WeakRef.IsAlive(r1) || !WeakRef.IsAlive(r2) || !WeakRef.IsAlive(r3) {
+        Say("FAIL: a ring died before the collection");
+        return;
+    }
+    deinits = 0;
+    // ... until the collector runs.
+    var collected = GC.Collect();
+    if collected < 8 {
+        Say("FAIL: collected " + Fmt.Int(collected) + " objects, expected the 8 ring members");
+        return;
+    }
+    if WeakRef.IsAlive(r1) || WeakRef.IsAlive(r2) || WeakRef.IsAlive(r3) {
+        Say("FAIL: a ring survived the collection");
+        return;
+    }
+    if deinits != 8 {
+        Say("FAIL: ring deinits ran " + Fmt.Int(deinits) + " times, expected 8");
+        return;
+    }
+    if !expectCount("after collecting the rings", base) { return; }
+
+    // A cycle through a List[Node] (the list is a tracked reference array).
+    var r4 = throughList();
+    deinits = 0;
+    GC.Collect();
+    if WeakRef.IsAlive(r4) {
+        Say("FAIL: the bag cycle survived the collection");
+        return;
+    }
+    if deinits != 2 {
+        Say("FAIL: bag cycle deinits ran " + Fmt.Int(deinits) + " times, expected 2");
+        return;
+    }
+    if !expectCount("after collecting the bag", base) { return; }
+
+    // The weak variant never needed the collector.
+    deinits = 0;
+    weakVariant();
+    if deinits != 3 {
+        Say("FAIL: weak variant deinits ran " + Fmt.Int(deinits) + " times, expected 3");
+        return;
+    }
+    if !expectCount("weak variant", base) { return; }
+
+    WeakRef.Free(r1);
+    WeakRef.Free(r2);
+    WeakRef.Free(r3);
+    WeakRef.Free(r4);
+    Say("RESULT: ok");
+}

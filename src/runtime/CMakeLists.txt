@@ -62,6 +62,7 @@ set(RT_ARRAY_SOURCES
 set(RT_OOP_SOURCES
         oop/rt_box.c
         oop/rt_object.c
+        oop/rt_class_layout.c
         oop/rt_oop_dispatch.c
         oop/rt_type_registry.c
         oop/rt_sb_bridge.c

@@ -80,6 +80,7 @@
 #include "rt_canvas3d.h"
 #include "rt_channel.h"
 #include "rt_cipher.h"
+#include "rt_class_layout.h"
 #include "rt_cloth3d.h"
 #include "rt_codec.h"
 #include "rt_collator.h"
@@ -2122,6 +2123,25 @@ constexpr auto kDescriptorRows = std::to_array<DescriptorRow>({
                   nullptr,
                   0,
                   RuntimeTrapClass::None},
+    // ADR 0315: per-class strong-slot maps, registered by the entry prologue
+    // (`__zia_layout_init`) so the cycle collector can traverse class instances.
+    DescriptorRow{"rt_obj_class_layout_begin",
+                  std::nullopt,
+                  "void(i64,i64)",
+                  &DirectHandler<&rt_obj_class_layout_begin, void, int64_t, int64_t>::invoke,
+                  kManualLowering,
+                  nullptr,
+                  0,
+                  RuntimeTrapClass::None},
+    DescriptorRow{
+        "rt_obj_class_layout_add_slot",
+        std::nullopt,
+        "void(i64,i64,i64)",
+        &DirectHandler<&rt_obj_class_layout_add_slot, void, int64_t, int64_t, int64_t>::invoke,
+        kManualLowering,
+        nullptr,
+        0,
+        RuntimeTrapClass::None},
     // --- Weak Reference Support ---
     DescriptorRow{"rt_weak_store",
                   std::nullopt,

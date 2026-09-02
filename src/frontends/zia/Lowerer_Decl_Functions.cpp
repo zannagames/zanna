@@ -320,6 +320,10 @@ void Lowerer::lowerFunctionDecl(FunctionDecl &decl) {
     // executors bridge the call to a re-entrant trampoline.
     if (isEntryPoint) {
         emitCall(runtime::kRtObjSetClassDtorHook, {Value::global(runtime::kZiaDtorDispatch)});
+        // ADR 0315: register every class's strong object slots before any
+        // instance can be allocated, so instances of classes that can take
+        // part in a cycle are tracked from their first allocation.
+        emitCall(runtime::kZiaLayoutInit, {});
     }
 
     // Emit interface itable init call at start of the entry point (before any user code).

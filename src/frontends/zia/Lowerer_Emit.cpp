@@ -702,55 +702,8 @@ Lowerer::Value Lowerer::emitBoxValue(Value val, Type ilType, TypeRef semanticTyp
         // Look up the struct type info
         const StructTypeInfo *info = getOrCreateStructTypeInfo(semanticType->name);
         if (info && info->totalSize > 0) {
-            struct ManagedValueField {
-                size_t offset;
-                int64_t kind;
-            };
-
-            std::vector<ManagedValueField> managedFields;
-            /// @brief Recursively records managed fields within a boxed value type.
-            /// @param type Semantic field or aggregate type.
-            /// @param baseOffset Byte offset accumulated from enclosing aggregates.
-            std::function<void(TypeRef, size_t)> collectManagedFields = [&](TypeRef type,
-                                                                            size_t baseOffset) {
-                if (!type)
-                    return;
-                if (type->kind == TypeKindSem::Struct) {
-                    if (const StructTypeInfo *nested = getOrCreateStructTypeInfo(type->name)) {
-                        for (const auto &field : nested->fields)
-                            collectManagedFields(field.type, baseOffset + field.offset);
-                    }
-                    return;
-                }
-                if (type->kind == TypeKindSem::FixedArray) {
-                    TypeRef elemType = type->elementType();
-                    const size_t elemSize = getSemanticTypeSize(elemType);
-                    for (size_t i = 0; i < type->elementCount; ++i)
-                        collectManagedFields(elemType, baseOffset + i * elemSize);
-                    return;
-                }
-                if (type->kind == TypeKindSem::Tuple) {
-                    const auto elements = type->tupleElementTypes();
-                    for (size_t i = 0; i < elements.size(); ++i)
-                        collectManagedFields(elements[i],
-                                             baseOffset + getTupleElementOffset(type, i));
-                    return;
-                }
-
-                if (isStringType(type)) {
-                    managedFields.push_back({baseOffset, /*RT_VALUE_FIELD_STR=*/2});
-                    return;
-                }
-
-                bool objectLike = needsRelease(type);
-                if (type->kind == TypeKindSem::Interface || type->kind == TypeKindSem::Function ||
-                    type->kind == TypeKindSem::Any)
-                    objectLike = true;
-                if (objectLike && mapType(type).kind == Type::Kind::Ptr) {
-                    managedFields.push_back({baseOffset, /*RT_VALUE_FIELD_OBJ=*/1});
-                }
-            };
-            collectManagedFields(semanticType, 0);
+            std::vector<ManagedSlot> managedFields;
+            collectManagedSlots(semanticType, 0, managedFields);
 
             // Read all field values BEFORE allocating heap memory. The source
             // pointer (val) may point into a callee's C stack frame that was
@@ -2200,6 +2153,43 @@ void Lowerer::emitDestructorDispatch() {
         blockMgr_.bind(builder_.get(), savedFunc);
     else
         blockMgr_.reset(nullptr);
+}
+
+void Lowerer::collectManagedSlots(TypeRef type, size_t baseOffset, std::vector<ManagedSlot> &out) {
+    if (!type)
+        return;
+    if (type->kind == TypeKindSem::Struct) {
+        if (const StructTypeInfo *nested = getOrCreateStructTypeInfo(type->name)) {
+            for (const auto &field : nested->fields)
+                collectManagedSlots(field.type, baseOffset + field.offset, out);
+        }
+        return;
+    }
+    if (type->kind == TypeKindSem::FixedArray) {
+        TypeRef elemType = type->elementType();
+        const size_t elemSize = getSemanticTypeSize(elemType);
+        for (size_t i = 0; i < type->elementCount; ++i)
+            collectManagedSlots(elemType, baseOffset + i * elemSize, out);
+        return;
+    }
+    if (type->kind == TypeKindSem::Tuple) {
+        const auto elements = type->tupleElementTypes();
+        for (size_t i = 0; i < elements.size(); ++i)
+            collectManagedSlots(elements[i], baseOffset + getTupleElementOffset(type, i), out);
+        return;
+    }
+
+    if (isStringType(type)) {
+        out.push_back({baseOffset, /*RT_VALUE_FIELD_STR=*/2});
+        return;
+    }
+
+    bool objectLike = needsRelease(type);
+    if (type->kind == TypeKindSem::Interface || type->kind == TypeKindSem::Function ||
+        type->kind == TypeKindSem::Any)
+        objectLike = true;
+    if (objectLike && mapType(type).kind == Type::Kind::Ptr)
+        out.push_back({baseOffset, /*RT_VALUE_FIELD_OBJ=*/1});
 }
 
 } // namespace il::frontends::zia

@@ -30,6 +30,7 @@
 #include "frontends/zia/Lowerer.hpp"
 #include "frontends/zia/RuntimeNames.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <unordered_set>
 #include <utility>
@@ -354,6 +355,121 @@ std::string itableAdapterKey(const std::string &structName,
     return structName + "|" + ifaceName + "|" + methodName;
 }
 } // namespace
+
+/// @brief ADR 0315: emit `__zia_layout_init` — every class's strong object slots.
+/// @details For each class with a positive runtime id, walks its fields
+///          (inherited first), skips weak fields, flattens inline aggregates
+///          with collectManagedSlots, keeps object-kind slots (strings and weak
+///          handles are never cycle members) and emits one
+///          rt_obj_class_layout_begin plus one rt_obj_class_layout_add_slot per
+///          slot. Classes without a strong slot register nothing, so their
+///          instances are never tracked. Large modules batch the registrations
+///          into bounded helpers exactly like the itable init. The function is
+///          always emitted; the entry prologue calls it unconditionally.
+void Lowerer::emitClassLayoutInit() {
+    Function *savedFunc = currentFunc_;
+    auto savedLocals = std::exchange(locals_, {});
+    auto savedSlots = std::exchange(slots_, {});
+    auto savedLocalTypes = std::exchange(localTypes_, {});
+
+    struct ClassSlots {
+        int64_t classId;
+        std::vector<ManagedSlot> slots;
+    };
+
+    std::vector<ClassSlots> registrations;
+    std::vector<std::string> classNames;
+    for (const auto &entry : classTypes_)
+        classNames.push_back(entry.first);
+    std::sort(classNames.begin(), classNames.end());
+    for (const auto &className : classNames) {
+        const ClassTypeInfo &info = classTypes_.at(className);
+        if (info.classId <= 0)
+            continue;
+        std::vector<ManagedSlot> slots;
+        for (const auto &field : info.fields) {
+            if (field.isWeak)
+                continue;
+            std::vector<ManagedSlot> fieldSlots;
+            collectManagedSlots(field.type, field.offset, fieldSlots);
+            for (const auto &slot : fieldSlots) {
+                if (slot.kind == 1)
+                    slots.push_back(slot);
+            }
+        }
+        if (slots.empty())
+            continue;
+        registrations.push_back({static_cast<int64_t>(info.classId), std::move(slots)});
+    }
+
+    auto startInitFunction = [&](const std::string &name) {
+        auto &initFn = builder_->startFunction(name, Type(Type::Kind::Void), {});
+        initFn.moduleInitializer = false;
+        currentFunc_ = &initFn;
+        definedFunctions_.insert(name);
+        blockMgr_.bind(builder_.get(), &initFn);
+        builder_->createBlock(initFn, "entry_0", {});
+        setBlock(initFn.blocks.size() - 1);
+    };
+
+    auto emitRegistration = [&](const ClassSlots &reg) {
+        emitCall(runtime::kRtObjClassLayoutBegin,
+                 {Value::constInt(reg.classId),
+                  Value::constInt(static_cast<int64_t>(reg.slots.size()))});
+        for (const auto &slot : reg.slots) {
+            emitCall(runtime::kRtObjClassLayoutAddSlot,
+                     {Value::constInt(reg.classId),
+                      Value::constInt(static_cast<int64_t>(slot.offset)),
+                      Value::constInt(slot.kind)});
+        }
+    };
+
+    std::vector<std::string> helpers;
+    size_t totalCost = 0;
+    for (const auto &reg : registrations)
+        totalCost += 1 + reg.slots.size();
+    if (totalCost > kClassRegistrationBatchCost) {
+        size_t batchBegin = 0;
+        size_t batchCost = 0;
+        size_t helperIndex = 0;
+        auto emitBatch = [&](size_t begin, size_t end) {
+            const std::string helperName = "__zia_layout_init_" + std::to_string(helperIndex++);
+            helpers.push_back(helperName);
+            startInitFunction(helperName);
+            for (size_t i = begin; i < end; ++i)
+                emitRegistration(registrations[i]);
+            emitRetVoid();
+        };
+        for (size_t i = 0; i < registrations.size(); ++i) {
+            const size_t cost = 1 + registrations[i].slots.size();
+            if (i > batchBegin && batchCost + cost > kClassRegistrationBatchCost) {
+                emitBatch(batchBegin, i);
+                batchBegin = i;
+                batchCost = 0;
+            }
+            batchCost += cost;
+        }
+        if (batchBegin < registrations.size())
+            emitBatch(batchBegin, registrations.size());
+    }
+
+    startInitFunction(runtime::kZiaLayoutInit);
+    if (helpers.empty()) {
+        for (const auto &reg : registrations)
+            emitRegistration(reg);
+    } else {
+        for (const auto &helperName : helpers)
+            emitCall(helperName, {});
+    }
+    emitRetVoid();
+
+    currentFunc_ = savedFunc;
+    locals_ = std::move(savedLocals);
+    slots_ = std::move(savedSlots);
+    localTypes_ = std::move(savedLocalTypes);
+    if (currentFunc_)
+        blockMgr_.bind(builder_.get(), currentFunc_);
+}
 
 /// @brief Emit the `__zia_iface_init` startup function that wires up runtime type metadata.
 /// @details Called once from the program entry point when interfaces exist. In four phases it

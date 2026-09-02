@@ -1463,22 +1463,79 @@ static void test_controller_animation_lod_reprogram_preserves_accumulator() {
                 0.01,
                 "state time reflects the preserved accumulator");
 
-    /* A rate change restarts the batch: 0.1 s pending is discarded. */
+    /* A rate change keeps the batch: the 0.1 s pending joins the new 0.25 s
+     * interval, so two more 0.1 s updates (0.3 s pending) evaluate one whole
+     * interval and carry 0.05 s. */
     rt_anim_controller3d_update(controller, 0.1);
     rt_anim_controller3d_set_animation_lod(controller, 50.0, 4.0);
     for (int i = 0; i < 2; i++)
         rt_anim_controller3d_update(controller, 0.1);
     root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
     EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
-                5.0,
+                7.5,
                 0.1,
-                "a LOD rate change resets the accumulator (0.2 s < 0.25 s interval)");
+                "a LOD rate change keeps the pending 0.1 s (0.3 s >= 0.25 s interval)");
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.75,
+                0.01,
+                "state time counts the interval consumed after the rate change");
     rt_anim_controller3d_update(controller, 0.1);
     root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
     EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
                 7.5,
                 0.1,
-                "the new interval applies once it fills after the reset");
+                "the 0.15 s remainder waits for the next whole interval");
+}
+
+/* ADR 0299 amendment (plan 89): a rate change never drops pose time. Pending
+ * time is consumed in whole intervals of the new rate, a downward change keeps
+ * the remainder, and only a full disable clears the accumulator. */
+static void test_controller_animation_lod_rate_change_preserves_progress() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *walk = make_anim("walk", 0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("walk"), walk);
+    rt_anim_controller3d_play(controller, rt_const_cstr("walk"));
+
+    /* 2 Hz: three 0.1 s ticks accumulate 0.3 s below the 0.5 s interval. */
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 2.0);
+    for (int i = 0; i < 3; i++)
+        rt_anim_controller3d_update(controller, 0.1);
+    void *root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3), 0.0, 0.1, "nothing evaluated under 2 Hz yet");
+
+    /* Up to 4 Hz: the pending 0.3 s is worth one 0.25 s interval at once. */
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 4.0);
+    rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3), 2.5, 0.1, "the pending time plays under the new rate");
+    rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3), 5.0, 0.1, "the 0.15 s remainder carried over");
+    EXPECT_NEAR(rt_anim_controller3d_get_state_time(controller),
+                0.5,
+                0.01,
+                "state time equals the summed deltas so far (no pose time dropped)");
+
+    /* Down to 2 Hz with 0.0 s pending, then 0.15 s pending survives another change. */
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 2.0);
+    rt_anim_controller3d_update(controller, 0.15);
+    rt_anim_controller3d_set_animation_lod(controller, 50.0, 4.0);
+    rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3),
+                7.5,
+                0.1,
+                "a downward then upward change keeps the 0.15 s remainder");
+
+    /* Full disable clears the batch: the next tick evaluates immediately. */
+    rt_anim_controller3d_set_animation_lod(controller, 0.0, 0.0);
+    rt_anim_controller3d_update(controller, 0.1);
+    root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 3), 8.5, 0.1, "disable clears the accumulator");
 }
 
 static void test_controller_animation_lod_throttles_updates_deterministically() {
@@ -2122,6 +2179,7 @@ int main() {
     test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage();
     test_controller_crossfade_at_enters_at_offset();
     test_controller_animation_lod_reprogram_preserves_accumulator();
+    test_controller_animation_lod_rate_change_preserves_progress();
     test_controller_animation_lod_throttles_updates_deterministically();
     test_controller_bone_count_lod_freezes_distal_bones();
     test_controller_events_cover_full_loops_and_reverse();

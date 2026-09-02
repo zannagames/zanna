@@ -49,6 +49,7 @@
 #include "rt_gc.h"
 
 #include "rt_atomic_compat.h"
+#include "rt_class_layout.h"
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
@@ -659,6 +660,32 @@ static void gc_reference_array_traverse(void *obj, rt_gc_visitor_t visitor, void
         if (items[i])
             visitor(items[i], ctx);
     }
+}
+
+/// @brief Enumerate the strong object slots of a compiled class instance (ADR 0315).
+/// @details Reads the class's registered slot map (rt_class_layout) and reports
+///          every non-null pointer it holds. Untracked children (value-only
+///          objects, runtime handles) are reported too and ignored by the
+///          collector's lookups; strings and weak handles are never in the map.
+/// @param obj Live class-instance payload with a positive class id.
+/// @param visitor Collector callback for each outgoing strong edge.
+/// @param ctx Opaque visitor context.
+static void gc_zia_object_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
+    rt_heap_hdr_t *hdr = NULL;
+    if (!obj || !visitor || !rt_heap_try_get_header(obj, &hdr) || !hdr)
+        return;
+    const rt_class_layout_t *layout = rt_obj_class_layout_get(hdr->class_id);
+    if (!layout)
+        return;
+    for (int64_t i = 0; i < layout->count; ++i) {
+        void *child = *(void **)((char *)obj + layout->offsets[i]);
+        if (child)
+            visitor(child, ctx);
+    }
+}
+
+int8_t rt_gc_track_class_instance(void *payload) {
+    return gc_track_impl(payload, gc_zia_object_traverse) == GC_TRACK_OK ? 1 : 0;
 }
 
 /// @brief Register an object for cycle detection.
@@ -1280,6 +1307,7 @@ typedef struct {
     int finalizer_cleared;
     int resurrected;
     int reclaimed;
+    int class_dtor_ran; ///< ADR 0315: the class destructor released this member's fields.
 } gc_garbage_state;
 
 /// @brief Dynamically growing list of strong edges reported by traversals.
@@ -1442,6 +1470,22 @@ static void gc_finalize_unreachable(gc_garbage_state *state) {
 
     if ((rt_heap_kind_t)hdr->kind == RT_HEAP_OBJECT) {
         state->finalized = 1;
+        /* ADR 0315: a compiled class instance runs its synthesized destructor
+           under the same release suppression a finalizer gets — releases to
+           other members of this garbage set are no-ops (the collector owns
+           their counts), releases to outside objects are ordinary. The free
+           step then skips the traverse-release for this member so every
+           outgoing edge is dropped exactly once. */
+        rt_obj_class_dtor_hook_t class_dtor =
+            (rt_obj_class_dtor_hook_t)rt_obj_get_class_dtor_hook();
+        if (class_dtor && hdr->class_id > 0) {
+            if (g_gc_suppress_member_release_depth == UINT32_MAX)
+                rt_abort("gc: finalizer release suppression overflow");
+            g_gc_suppress_member_release_depth++;
+            class_dtor(obj);
+            g_gc_suppress_member_release_depth--;
+            state->class_dtor_ran = 1;
+        }
         if (hdr->finalizer) {
             rt_heap_finalizer_t fin = hdr->finalizer;
             state->saved_finalizer = fin;
@@ -1513,7 +1557,9 @@ static int gc_free_finalized_unreachable(gc_garbage_state *state, void *release_
     if (!rt_heap_try_get_header(obj, &hdr) || !hdr)
         return 0;
 
-    if (state->entry.traverse)
+    /* ADR 0315: the class destructor already released every field (in-set
+       targets were suppressed, outside targets released for real). */
+    if (state->entry.traverse && !state->class_dtor_ran)
         state->entry.traverse(obj, gc_release_outgoing_ref, release_ctx);
     rt_gc_clear_weak_refs(obj);
     if ((rt_heap_kind_t)hdr->kind == RT_HEAP_OBJECT)

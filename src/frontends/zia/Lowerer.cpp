@@ -221,6 +221,10 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
     // Emit destructor dispatch after all concrete class destructors exist.
     emitDestructorDispatch();
 
+    // ADR 0315: every class's strong-slot map (always emitted; the entry
+    // prologue calls it after the destructor hook is installed).
+    emitClassLayoutInit();
+
     // Emit interface registration and itable binding
     emitItableInit();
 
@@ -310,6 +314,7 @@ void Lowerer::hoistLoopAllocasToEntry(il::core::Function &fn) {
         size_t index;
         unsigned temp;
     };
+
     std::vector<Site> sites;
     for (size_t b = 1; b < fn.blocks.size(); ++b) {
         BasicBlock &bb = fn.blocks[b];

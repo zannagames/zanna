@@ -94,10 +94,10 @@ behaviour that the game observed while diagnosing the stutter:
   cache smaller than the canvas cache thrashes and re-uploads every frame once
   the overlay working set exceeds it.
 - `AnimController3D.SetAnimationLod` keeps its accumulated interval when it is
-  re-programmed with the rate it already runs at; only a rate change restarts
-  the accumulator. Re-applying an unchanged throttle (a camera cut re-gating
-  an already-throttled actor) used to drop up to one interval of pose time and
-  read as a one-frame freeze.
+  re-programmed, with the same rate or a new one (see the plan 89 amendment
+  below); only a full disable clears the accumulator. Re-applying a throttle
+  (a camera cut re-gating an already-throttled actor) used to drop up to one
+  interval of pose time and read as a one-frame freeze.
 
 ## Consequences
 
@@ -117,6 +117,23 @@ behaviour that the game observed while diagnosing the stutter:
 - `test_rt_canvas3d`: `DrawImage2D` accepts a RenderTarget3D on the software
   backend and blits its last completed frame through the mirror path.
 - `test_rt_animcontroller3d`: re-applying the same LOD rate preserves the
-  pending accumulator; a rate change resets it.
+  pending accumulator; a rate change keeps it too (amendment below), and only a
+  full disable clears it.
 - Legacy Baseball `watch3d_runner_insets_probe` (game repository) pins the
   inset composite through this path.
+
+## Amendment (plan 89): a rate change keeps the pending interval
+
+The original contract reset the throttle accumulator whenever
+`AnimController3D.SetAnimationLod` received a different rate, discarding up to
+one old interval of pose time. Legacy Baseball's per-slot inset subjects
+re-program actors at the tier rate on every camera cut, and the reset read as a
+one-in-three-frame freeze on the runner, the covering fielder and the base
+umpire. The accumulator now survives a rate change: `controller_apply_animation_lod`
+already evaluates whole intervals of the *current* rate out of the accumulated
+time and carries the remainder, so a pending 0.4 s under a new 0.25 s interval
+plays 0.25 s on the next tick and keeps 0.15 s. No clamp is applied (it would
+drop pose time). A non-positive or non-finite argument still disables the
+throttle and clears the accumulator. `distance` remains stored-only; the caller
+gates the throttle by its own camera-distance verdict.
+

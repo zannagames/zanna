@@ -282,6 +282,17 @@ rt_gc_untrack(obj);              // Remove before manual free
 rt_gc_is_tracked(obj);           // Query tracking status
 ```
 
+Compiled Zia class instances are registered automatically (ADR 0315): the
+program's entry prologue runs `__zia_layout_init`, which declares every
+class's strong object-typed slot offsets through `rt_obj_class_layout_begin`
+/ `rt_obj_class_layout_add_slot` (`src/runtime/oop/rt_class_layout.c`), and
+`rt_obj_new_i64` tracks each instance of a class with at least one such slot
+(`rt_gc_track_class_instance`, transactional like reference arrays). The
+collector traverses an instance through its class map; when a member of a
+collected cycle is a class instance its synthesized destructor runs under the
+same release suppression as a finalizer and the traverse-release is skipped
+for it, so each outgoing edge is dropped exactly once.
+
 `rt_gc_track` accepts heap objects and reference-bearing arrays. Passing a string,
 primitive array, stale pointer,
 or non-runtime payload traps instead of registering a value the collector cannot
@@ -594,7 +605,15 @@ manage their own internal retain/release.
 
 Severity-ordered list of memory management gaps:
 
-### 1. HIGH: No Automatic GC Triggering
+### 1. MEDIUM: No Automatic GC Triggering (class instances now collectable)
+
+Since ADR 0315 every Zia class with a strong object-typed field registers its
+slot map at program entry (`__zia_layout_init` → `rt_obj_class_layout_*`) and
+its instances are tracked by the cycle collector from allocation, so strong
+cycles between plain objects (`parent <-> child`, doubly linked lists, a node
+held by a list it owns) ARE reclaimed by `Zanna.Runtime.GC.Collect()`; the
+class destructor runs once per member under release suppression and the
+collector drops each outgoing edge exactly once. What remains is the policy:
 
 The cycle collector does not run on its own **by default**: the auto-collection
 allocation-debt threshold (`g_gc_threshold` in `rt_gc.c`) starts at `0`, which
@@ -612,7 +631,9 @@ Two ways to reclaim cycles:
   call stack.
 
 The remaining unsoundness is that the threshold is opt-in, so the default
-configuration still leaks cycles silently.
+configuration keeps cycles until the program collects. Cycles that pass only
+through closure environments (class id 0) or runtime-internal objects are not
+traversed and still leak.
 
 ### 2. HIGH: Borrowed Seq Elements Require Explicit Lifetime Management
 

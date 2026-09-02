@@ -4,7 +4,7 @@
 # ZIA_RUNTIME_TESTS; the native binary must give the same answer because it
 # installs the destructor hook with a real function address and releases
 # exactly the results the runtime.def rows declare as owned.
-foreach (fixture IN ITEMS test_object_field_release test_runtime_result_ownership)
+foreach (fixture IN ITEMS test_object_field_release test_runtime_result_ownership test_class_cycle_gc)
     string(REPLACE "test_" "" _lane "${fixture}")
     add_test(NAME native_run_zia_${_lane}
             COMMAND ${CMAKE_COMMAND}

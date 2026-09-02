@@ -115,6 +115,15 @@ void rt_gc_track(void *obj, rt_gc_traverse_fn traverse);
 /// @internal Heap/collector construction handshake; not a language ABI.
 int8_t rt_gc_track_reference_array(void *array);
 
+/// @brief Transactionally register a newly allocated compiled class instance (ADR 0315).
+/// @details Non-trapping, like @ref rt_gc_track_reference_array: called by
+///          rt_obj_new_i64 before the payload escapes, for classes whose
+///          registered layout (rt_class_layout) has at least one strong slot.
+///          The collector traverses the instance through that layout.
+/// @param payload Exact live object payload with a positive class id.
+/// @return 1 when tracked, otherwise 0 (the caller rolls the allocation back).
+int8_t rt_gc_track_class_instance(void *payload);
+
 /// @brief Remove an object from cycle tracking.
 /// @details NULL and untracked addresses are no-ops. Removing bookkeeping does
 ///   not release an object reference.

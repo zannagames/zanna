@@ -351,6 +351,10 @@ inline constexpr const char *kRtAlloc = "rt_alloc";
 inline constexpr const char *kRtObjClassId = "rt_obj_class_id";
 inline constexpr const char *kRtObjSetClassDtorHook = "rt_obj_set_class_dtor_hook";
 inline constexpr const char *kZiaDtorDispatch = "__zia_dtor_dispatch";
+/// @brief ADR 0315: per-class strong-slot registration (entry prologue).
+inline constexpr const char *kRtObjClassLayoutBegin = "rt_obj_class_layout_begin";
+inline constexpr const char *kRtObjClassLayoutAddSlot = "rt_obj_class_layout_add_slot";
+inline constexpr const char *kZiaLayoutInit = "__zia_layout_init";
 
 /// @}
 

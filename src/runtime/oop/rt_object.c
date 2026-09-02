@@ -46,6 +46,7 @@
 #include "rt_array_obj.h"
 #include "rt_array_str.h"
 #include "rt_box.h"
+#include "rt_class_layout.h"
 #include "rt_format.h"
 #include "rt_gc.h"
 #include "rt_hash_util.h"
@@ -205,6 +206,18 @@ void *rt_obj_new_i64(int64_t class_id, int64_t byte_size) {
     rt_heap_hdr_t *hdr = rt_heap_hdr(payload);
     if (hdr)
         hdr->class_id = class_id;
+    /* ADR 0315: instances of classes with strong object slots join the cycle
+       collector the instant they become live, exactly like reference-bearing
+       arrays (rt_heap_alloc). Registration is non-trapping so a tracking-table
+       failure rolls the allocation back before the payload escapes or holds
+       any field (the class destructor must never see this object). */
+    if (class_id > 0 && rt_obj_class_layout_has_ref_slots(class_id) &&
+        !rt_gc_track_class_instance(payload)) {
+        (void)rt_heap_release_deferred(payload);
+        rt_heap_free_zero_ref(payload);
+        rt_trap("rt_obj_new_i64: cannot register the instance with the cycle collector");
+        return NULL;
+    }
     return payload;
 }
 

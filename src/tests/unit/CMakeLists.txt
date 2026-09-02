@@ -2186,6 +2186,7 @@ function(zanna_add_runtime_tests)
 
     zanna_add_test(test_rt_object_alloc ${ZANNA_TESTS_DIR}/runtime/RTObjectAllocTests.cpp)
     zanna_add_test(test_rt_object_class_dtor_hook ${ZANNA_TESTS_DIR}/runtime/RTObjectClassDtorHookTests.cpp)
+    zanna_add_test(test_rt_class_layout ${ZANNA_TESTS_DIR}/runtime/RTClassLayoutTests.cpp)
     zanna_add_test(test_runtime_result_ownership ${ZANNA_TESTS_DIR}/unit/test_runtime_result_ownership.cpp)
     target_link_libraries(test_rt_object_alloc PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_object_alloc test_rt_object_alloc)

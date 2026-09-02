@@ -76,6 +76,22 @@ static bool hasCallee(const il::core::Module &mod,
 // ============================================================================
 
 /// @brief Test that a basic deinit block compiles and produces __dtor function.
+/// @brief Count calls to @p callee inside @p fnName.
+static int countCallee(const il::core::Module &mod,
+                       const std::string &fnName,
+                       const std::string &callee) {
+    int n = 0;
+    for (const auto &fn : mod.functions) {
+        if (fn.name != fnName)
+            continue;
+        for (const auto &block : fn.blocks)
+            for (const auto &instr : block.instructions)
+                if (instr.op == il::core::Opcode::Call && instr.callee == callee)
+                    ++n;
+    }
+    return n;
+}
+
 TEST(ZiaDestructors, BasicDeinit) {
     SourceManager sm;
     const std::string source = R"(
@@ -346,6 +362,55 @@ func start() {    var r = new Resource();
                 hasCallee(result.module, "makeResource", "rt_heap_release_deferred"));
     EXPECT_TRUE(hasCallee(result.module, "main", "rt_obj_free") ||
                 hasCallee(result.module, "makeResource", "rt_obj_free"));
+}
+
+/// @brief ADR 0315: the entry prologue calls `__zia_layout_init`, which registers
+///        one strong slot per object-typed field (inherited included) and
+///        nothing for weak, string, or value fields; a class without a strong
+///        slot registers no layout at all.
+TEST(ZiaDestructors, ClassLayoutInitRegistersStrongSlots) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+class Leaf {
+    expose Integer id;
+    expose String label;
+}
+
+class Node {
+    expose Node? next;
+    expose weak Node? back;
+    expose String name;
+    expose Integer depth;
+    expose Leaf leaf;
+}
+
+class Deep extends Node {
+    expose List[Integer] pad;
+}
+
+func start() {
+    var n = new Node();
+    var d = new Deep();
+    var l = new Leaf();
+}
+)";
+
+    CompilerInput input{.source = source, .path = "test_layout_init.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+
+    ASSERT_TRUE(result.succeeded());
+    EXPECT_TRUE(hasFunction(result.module, "__zia_layout_init"));
+    EXPECT_TRUE(returnsVoid(result.module, "__zia_layout_init"));
+    // The Zia entry point lowers to `main`.
+    EXPECT_TRUE(hasCallee(result.module, "main", "__zia_layout_init"));
+    EXPECT_TRUE(hasCallee(result.module, "main", "rt_obj_set_class_dtor_hook"));
+    // Node: next + leaf (strong objects); Deep adds pad; Leaf has no strong slot.
+    // Two classes register (Node, Deep): two begin calls, 2 + 3 slots.
+    EXPECT_EQ(countCallee(result.module, "__zia_layout_init", "rt_obj_class_layout_begin"), 2);
+    EXPECT_EQ(countCallee(result.module, "__zia_layout_init", "rt_obj_class_layout_add_slot"), 5);
 }
 
 } // anonymous namespace

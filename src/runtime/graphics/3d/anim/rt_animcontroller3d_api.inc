@@ -800,12 +800,14 @@ void rt_anim_controller3d_set_animation_lod(void *obj, double distance, double r
     if (rate_hz > RT_ANIM_CONTROLLER3D_LOD_RATE_MAX)
         rate_hz = RT_ANIM_CONTROLLER3D_LOD_RATE_MAX;
     controller->animation_lod_distance = distance;
-    /* Re-programming the same rate (a camera cut re-gating an already-throttled actor)
-     * keeps the pending batch: zeroing it dropped up to one interval of pose time and
-     * read as a one-frame freeze on every actor the cut touched. Only a rate change
-     * restarts the accumulator. */
-    if (controller->animation_lod_rate_hz != rate_hz)
-        controller->animation_lod_accum = 0.0;
+    /* Re-programming keeps the pending batch whether or not the rate changes (ADR 0299
+     * amendment, plan 89): zeroing it dropped up to one interval of pose time and read as
+     * a freeze on every actor the cut touched. The consumer evaluates whole intervals of
+     * the NEW rate out of the accumulated time and carries the remainder, so a pending
+     * 0.4 s under a fresh 0.25 s interval plays 0.25 s on the next tick and keeps 0.15 s;
+     * no clamp is needed and none is applied. Only a full disable (above) clears it.
+     * `distance` is stored for introspection; the throttle itself is unconditional and
+     * the caller gates it by its own camera-distance verdict. */
     controller->animation_lod_rate_hz = rate_hz;
 }
 
