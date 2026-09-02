@@ -69,6 +69,7 @@ struct RuntimeFunc {
     std::string canonical;                // Canonical Zanna.* name (e.g., "Zanna.Console.PrintStr")
     std::string signature;                // Type signature (e.g., "void(str)")
     std::string lowering;                 // Lowering kind: "always" or "" (default: manual)
+    std::string resultOwnership;          // Declared result ownership: "owned", "borrowed" or ""
     std::vector<std::string> bridgeRoles; // Safe Zia bridge roles: none/callback/payload
     bool publicSurface{true};             // False for class-method implementation targets.
 };
@@ -114,15 +115,16 @@ struct CSignature {
 
 /// @brief Fields used to emit one descriptor row in RuntimeSignatures.inc.
 struct DescriptorFields {
-    std::string signatureId;   ///< Signature identifier.
-    std::string spec;          ///< Signature-spec expression.
-    std::string handler;       ///< VM handler expression.
-    std::string lowering;      ///< Lowering kind.
-    std::string hidden;        ///< Hidden-argument expression.
-    std::string hiddenCount;   ///< Number of hidden arguments.
-    std::string trapClass;     ///< Trap classification.
-    std::string publicSurface; ///< Whether this descriptor is frontend-visible as a function.
-    std::string cSymbol;       ///< Backing C function symbol for manifest/tooling output.
+    std::string signatureId;     ///< Signature identifier.
+    std::string spec;            ///< Signature-spec expression.
+    std::string handler;         ///< VM handler expression.
+    std::string lowering;        ///< Lowering kind.
+    std::string hidden;          ///< Hidden-argument expression.
+    std::string hiddenCount;     ///< Number of hidden arguments.
+    std::string trapClass;       ///< Trap classification.
+    std::string publicSurface;   ///< Whether this descriptor is frontend-visible as a function.
+    std::string cSymbol;         ///< Backing C function symbol for manifest/tooling output.
+    std::string resultOwnership; ///< Declared result ownership enumerator expression.
 };
 
 /// @brief A runtime function prototype recovered from a runtime header.
@@ -533,11 +535,11 @@ static std::optional<std::string> extractParens(std::string_view line, std::stri
 /// @param publicSurface Whether the function is independently frontend-visible.
 /// @throws std::runtime_error Through ParseState::error on invalid definitions.
 static void parseRtFunc(ParseState &state, const std::string &args, bool publicSurface = true) {
-    // RT_FUNC(id, c_symbol, canonical, signature [, lowering])
+    // RT_FUNC(id, c_symbol, canonical, signature [, lowering] [, owned|borrowed])
     auto parts = splitTopLevel(args, ',');
-    if (parts.size() < 4 || parts.size() > 5) {
-        state.error(
-            "RT_FUNC requires 4-5 arguments: id, c_symbol, canonical, signature [, lowering]");
+    if (parts.size() < 4 || parts.size() > 6) {
+        state.error("RT_FUNC requires 4-6 arguments: id, c_symbol, canonical, signature "
+                    "[, lowering] [, owned|borrowed]");
     }
 
     RuntimeFunc func;
@@ -545,8 +547,18 @@ static void parseRtFunc(ParseState &state, const std::string &args, bool publicS
     func.c_symbol = parts[1];
     func.canonical = parts[2];
     func.signature = parts[3];
-    if (parts.size() == 5)
-        func.lowering = parts[4];
+    for (size_t i = 4; i < parts.size(); ++i) {
+        if (parts[i] == "owned" || parts[i] == "borrowed") {
+            if (!func.resultOwnership.empty())
+                state.error("RT_FUNC " + func.id + " declares result ownership twice");
+            func.resultOwnership = parts[i];
+        } else if (parts[i] == "always" || parts[i] == "manual") {
+            func.lowering = parts[i];
+        } else {
+            state.error("RT_FUNC " + func.id + ": unknown trailing token '" + parts[i] +
+                        "' (expected always, manual, owned or borrowed)");
+        }
+    }
     func.publicSurface = publicSurface;
 
     // Remove quotes from canonical and signature
@@ -554,6 +566,23 @@ static void parseRtFunc(ParseState &state, const std::string &args, bool publicS
         func.canonical = func.canonical.substr(1, func.canonical.size() - 2);
     if (func.signature.size() >= 2 && func.signature.front() == '"')
         func.signature = func.signature.substr(1, func.signature.size() - 2);
+
+    // A function that hands back a managed reference (obj, obj<...>, seq<...>)
+    // must say whether the caller owns it. The compiler releases owned results
+    // and leaves borrowed ones alone; an undeclared result used to be treated
+    // as borrowed, which leaked every constructor that was not named `New`.
+    {
+        const std::string &sig = func.signature;
+        const bool returnsReference =
+            sig.rfind("obj", 0) == 0 || sig.rfind("seq", 0) == 0 || sig.rfind("str", 0) == 0;
+        if (returnsReference && func.resultOwnership.empty())
+            state.error("RT_FUNC " + func.id + " (" + func.canonical +
+                        ") returns a managed reference (object, sequence or string) but declares "
+                        "no result ownership; append `owned` or `borrowed` (ADR 0314)");
+        if (!returnsReference && !func.resultOwnership.empty())
+            state.error("RT_FUNC " + func.id + " (" + func.canonical +
+                        ") declares result ownership but returns no managed reference");
+    }
 
     // Validate uniqueness
     if (state.func_by_id.count(func.id))
@@ -1713,10 +1742,11 @@ static std::unordered_set<std::string> loadRuntimeSourceTokens(const fs::path &r
 
 /// @brief A flattened runtime function row used during code generation.
 struct RuntimeEntry {
-    std::string name;      ///< Canonical Zanna.* name.
-    std::string c_symbol;  ///< C runtime symbol.
-    std::string signature; ///< IL type signature.
-    std::string lowering;  ///< "always" or "" (default: manual)
+    std::string name;            ///< Canonical Zanna.* name.
+    std::string c_symbol;        ///< C runtime symbol.
+    std::string signature;       ///< IL type signature.
+    std::string lowering;        ///< "always" or "" (default: manual)
+    std::string resultOwnership; ///< Declared result ownership: "owned", "borrowed" or "".
 };
 
 /// @brief Build the standard "AUTO-GENERATED — DO NOT EDIT" banner for an .inc file.
@@ -2153,6 +2183,10 @@ static DescriptorFields buildDefaultDescriptor(
     fields.trapClass = "RuntimeTrapClass::None";
     fields.publicSurface = "true";
     fields.cSymbol = cppStringLiteral(entry.c_symbol);
+    fields.resultOwnership = entry.resultOwnership == "owned" ? "RuntimeResultOwnership::Owned"
+                             : entry.resultOwnership == "borrowed"
+                                 ? "RuntimeResultOwnership::Borrowed"
+                                 : "RuntimeResultOwnership::Unspecified";
     return fields;
 }
 
@@ -2175,7 +2209,8 @@ static void emitDescriptorRow(std::ostream &out,
     out << pad << "              " << fields.hiddenCount << ",\n";
     out << pad << "              " << fields.trapClass << ",\n";
     out << pad << "              " << fields.publicSurface << ",\n";
-    out << pad << "              " << fields.cSymbol << "},\n";
+    out << pad << "              " << fields.cSymbol << ",\n";
+    out << pad << "              " << fields.resultOwnership << "},\n";
 }
 
 /// @brief Generate RuntimeNameMap.inc: canonical Zanna.* → C rt_* symbol mappings.
@@ -2293,7 +2328,11 @@ static void generateSignatures(const ParseState &state,
     std::unordered_map<std::string, const RuntimeFunc *> cSymbolToFunc;
     for (const auto &func : state.functions) {
         entries.emplace(func.canonical,
-                        RuntimeEntry{func.canonical, func.c_symbol, func.signature, func.lowering});
+                        RuntimeEntry{func.canonical,
+                                     func.c_symbol,
+                                     func.signature,
+                                     func.lowering,
+                                     func.resultOwnership});
         cSymbolToFunc[func.c_symbol] = &func;
     }
 

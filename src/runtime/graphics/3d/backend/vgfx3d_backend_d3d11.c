@@ -151,7 +151,7 @@ typedef struct {
 
 /// @brief Complete set of temporary and cached shader resources resolved for one draw.
 typedef struct {
-    d3d_temp_srv_t textures[11];
+    d3d_temp_srv_t textures[12]; /* 11 = ADR 0312 decal */
     d3d_temp_srv_t cubemap;
     int has_texture;
     int has_normal_map;

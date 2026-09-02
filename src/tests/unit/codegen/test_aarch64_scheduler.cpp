@@ -342,6 +342,73 @@ TEST(AArch64Scheduler, IndependentStackSlotsDoNotSerializeLoadAfterStore) {
     EXPECT_EQ(instrs.back().opc, MOpcode::Ret);
 }
 
+/// Plan 88 / choreo bisect: a store whose frame offset the emitter materializes
+/// through kScratchGPR (`mov x9, #off; add x9, x29, x9; str [x9]`) must not be
+/// scheduled between two instructions that keep a value in x9 — the post-RA
+/// magic-division expansion's sign-correction term lived there and came back
+/// as a stack address.
+TEST(AArch64Scheduler, LargeOffsetStoreCannotSplitScratchLiveRange) {
+    const TargetInfo &ti = darwinTarget();
+    AArch64Module module;
+    module.ti = &ti;
+
+    MFunction fn;
+    fn.name = "scratch_live_range";
+
+    MBasicBlock bb;
+    bb.name = "entry";
+
+    // The post-RA magic-division expansion keeps its sign-correction term in
+    // kScratchGPR across two adjacent instructions ...
+    MInstr lsr;
+    lsr.opc = MOpcode::LsrRI;
+    lsr.ops = {MOperand::regOp(kScratchGPR), MOperand::regOp(PhysReg::X1), MOperand::immOp(63)};
+    bb.instrs.push_back(std::move(lsr));
+
+    MInstr add;
+    add.opc = MOpcode::AddRRR;
+    add.ops = {
+        MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X0), MOperand::regOp(kScratchGPR)};
+    bb.instrs.push_back(std::move(add));
+
+    // ... and a later spill store looks independent in the MIR, but its
+    // -1000 frame offset is materialized through kScratchGPR at emit time.
+    // The scheduler must never hoist it between the two.
+    MInstr bigStore;
+    bigStore.opc = MOpcode::StrRegFpImm;
+    bigStore.ops = {MOperand::regOp(PhysReg::X4), MOperand::immOp(-1000)};
+    bb.instrs.push_back(std::move(bigStore));
+
+    // An encodable offset carries no such hazard and may still move freely.
+    MInstr smallStore;
+    smallStore.opc = MOpcode::StrRegFpImm;
+    smallStore.ops = {MOperand::regOp(PhysReg::X5), MOperand::immOp(-8)};
+    bb.instrs.push_back(std::move(smallStore));
+
+    MInstr ret;
+    ret.opc = MOpcode::Ret;
+    bb.instrs.push_back(std::move(ret));
+
+    fn.blocks.push_back(std::move(bb));
+    module.mir.push_back(std::move(fn));
+
+    Diagnostics diags;
+    ASSERT_TRUE(SchedulerPass().run(module, diags));
+    const auto &instrs = module.mir[0].blocks[0].instrs;
+    ASSERT_EQ(instrs.size(), 5u);
+    std::size_t lsrAt = 0, bigAt = 0, addAt = 0;
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        if (instrs[i].opc == MOpcode::LsrRI)
+            lsrAt = i;
+        if (instrs[i].opc == MOpcode::AddRRR)
+            addAt = i;
+        if (instrs[i].opc == MOpcode::StrRegFpImm && instrs[i].ops[1].imm == -1000)
+            bigAt = i;
+    }
+    EXPECT_LT(lsrAt, addAt);
+    EXPECT_LT(addAt, bigAt);
+}
+
 TEST(AArch64Scheduler, BaseRegisterMemoryMayAliasAcrossRegisters) {
     AArch64Module module;
     module.ti = &darwinTarget();
@@ -586,12 +653,11 @@ TEST(AArch64Scheduler, LargeFunctionsRetainPostRAOrder) {
     for (std::size_t i = 0; i < 1025; ++i) {
         MInstr move;
         move.opc = i == 1024 ? MOpcode::MulRRR : MOpcode::MovRR;
-        move.ops = i == 1024
-                       ? std::vector<MOperand>{MOperand::regOp(PhysReg::X21),
-                                               MOperand::regOp(PhysReg::X22),
-                                               MOperand::regOp(PhysReg::X23)}
-                       : std::vector<MOperand>{MOperand::regOp(PhysReg::X19),
-                                               MOperand::regOp(PhysReg::X20)};
+        move.ops = i == 1024 ? std::vector<MOperand>{MOperand::regOp(PhysReg::X21),
+                                                     MOperand::regOp(PhysReg::X22),
+                                                     MOperand::regOp(PhysReg::X23)}
+                             : std::vector<MOperand>{MOperand::regOp(PhysReg::X19),
+                                                     MOperand::regOp(PhysReg::X20)};
         bb.instrs.push_back(std::move(move));
     }
     MInstr ret;

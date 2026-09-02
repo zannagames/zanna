@@ -1,0 +1,85 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_runtime_result_ownership.zia
+// Purpose: Prove the declared result ownership of runtime functions (ADR
+//          0314) end to end: an owned result dies with its last Zia owner, a
+//          borrowed result never disturbs the object that owns it, a borrowed
+//          string outlives the Result it was read from, and elements taken
+//          out of a temporary sequence stay valid.
+// Key invariants:
+//   - WeakRef.IsAlive turns false exactly when the last owner drops an
+//     owned result (Mesh3D.Box, Material3D.PBR, Pattern-style sequences).
+//   - Reading a borrowed accessor (Entity3D.get_Mesh) and dropping the read
+//     value leaves the entity's mesh alive.
+//   - Result.UnwrapStr / UnwrapErrStr results survive the Result's death.
+// Ownership/Lifetime:
+//   - Every object is owned by locals of start(); WeakRefs only observe.
+// Links: docs/adr/0314-declared-runtime-result-ownership.md
+//
+//===----------------------------------------------------------------------===//
+module TestRuntimeResultOwnership;
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Memory.WeakRef as WeakRef;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Game3D as Game3D;
+bind Zanna.Result as Result;
+bind Zanna.Collections.Seq as Seq;
+bind Zanna.Text.TextWrapper as Wrap;
+
+func makeResult() -> Any { return Result.OkStr("hello world"); }
+func makeErr() -> Any { return Result.ErrStr("bad thing"); }
+
+func start() {
+    // 1. Owned constructors die with their owner.
+    var mesh: Any = G3D.Mesh3D.Box(1.0, 1.0, 1.0);
+    var meshRef = WeakRef.New(mesh);
+    if !WeakRef.IsAlive(meshRef) { Say("FAIL: mesh dead while owned"); return; }
+    mesh = null;
+    if WeakRef.IsAlive(meshRef) { Say("FAIL: Mesh3D.Box result survived its owner"); return; }
+
+    var mat: Any = G3D.Material3D.PBR(0.5, 0.5, 0.5);
+    var matRef = WeakRef.New(mat);
+    mat = null;
+    if WeakRef.IsAlive(matRef) { Say("FAIL: Material3D.PBR result survived its owner"); return; }
+
+    // 2. A borrowed accessor does not steal the entity's reference.
+    var e: Any = Game3D.Entity3D.New();
+    var held: Any = G3D.Mesh3D.Box(2.0, 2.0, 2.0);
+    var heldRef = WeakRef.New(held);
+    Game3D.Entity3D.set_Mesh(e, held);
+    held = null;
+    if !WeakRef.IsAlive(heldRef) { Say("FAIL: entity did not keep its mesh"); return; }
+    var got: Any = Game3D.Entity3D.get_Mesh(e);
+    got = null;
+    if !WeakRef.IsAlive(heldRef) { Say("FAIL: reading a borrowed mesh released it"); return; }
+    e = null;
+    if WeakRef.IsAlive(heldRef) { Say("FAIL: mesh survived its entity"); return; }
+
+    // 3. Borrowed strings outlive the Result they were read from.
+    var s = Result.UnwrapStr(makeResult());
+    var r = makeResult();
+    var t = Result.UnwrapStr(r);
+    r = null;
+    var err = Result.UnwrapErrStr(makeErr());
+    var churn = Wrap.WrapLines("aa bb cc dd ee ff", 5);
+    if s != "hello world" { Say("FAIL: UnwrapStr of a temporary Result: " + s); return; }
+    if t != "hello world" { Say("FAIL: UnwrapStr after the Result died: " + t); return; }
+    if err != "bad thing" { Say("FAIL: UnwrapErrStr after the Result died: " + err); return; }
+
+    // 4. Elements taken from a temporary owned sequence stay valid.
+    var first = Seq.GetStr(Wrap.WrapLines("one two three four", 7), 0);
+    var churn2 = Wrap.WrapLines("11 22 33 44 55", 5);
+    var acc = "";
+    for line in Wrap.WrapLines("ab cd ef gh", 5) { acc = acc + (line as String) + ";"; }
+    if first != "one two" { Say("FAIL: element of a temporary sequence: " + first); return; }
+    if acc != "ab cd;ef gh;" { Say("FAIL: iterating a temporary sequence: " + acc); return; }
+    if Seq.get_Count(churn) < 1 || Seq.get_Count(churn2) < 1 { Say("FAIL: churn"); return; }
+
+    Say("RESULT: ok");
+}

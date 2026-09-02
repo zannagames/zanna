@@ -374,7 +374,14 @@ LowerResult Lowerer::coerceValueToType(Value value,
 /// @details Runtime string accessors should return owned handles. Keep this
 ///          hook for future borrowed APIs, but default to the owned contract.
 static bool isBorrowedStringCall(const std::string &callee) {
-    (void)callee;
+    // A runtime.def row declares whether its string result is owned by the
+    // caller (the overwhelming convention) or borrowed from another runtime
+    // object, such as `Result.UnwrapStr` handing back the string a Result
+    // still owns (ADR 0314). Borrowed results are never released here; the
+    // slot or field they land in takes its own retain.
+    if (const auto *descriptor = il::runtime::findRuntimeDescriptor(callee))
+        return descriptor->signature.resultOwnership ==
+               il::runtime::RuntimeResultOwnership::Borrowed;
     return false;
 }
 
@@ -1782,7 +1789,9 @@ Lowerer::Value Lowerer::emitManagedReleaseRet(Value value, bool isString) {
     emitCBr(isZero, destroyIdx, contIdx);
 
     setBlock(destroyIdx);
-    emitCall("__zia_dtor_dispatch", {value});
+    // rt_obj_free runs the class destructor through the hook installed at
+    // program entry (rt_obj_set_class_dtor_hook), so compiled releases and
+    // runtime-internal releases share one dispatch path.
     emitCall("rt_obj_free", {value});
     emitBr(contIdx);
 
@@ -1814,7 +1823,6 @@ void Lowerer::emitManagedRelease(Value value, bool isString) {
     emitCBr(shouldDestroy, destroyIdx, contIdx);
 
     setBlock(destroyIdx);
-    emitCall("__zia_dtor_dispatch", {value});
     emitCall("rt_obj_free", {value});
     emitBr(contIdx);
 
@@ -2133,32 +2141,48 @@ void Lowerer::emitDestructorDispatch() {
     if (destructors.empty()) {
         emitRetVoid();
     } else {
+        // Every class with reference fields has a destructor, so this runs for
+        // most object deaths: dispatch by binary search over the sorted class
+        // ids (O(log n) compares) instead of a linear chain.
         Value classId = emitCallRet(Type(Type::Kind::I64), "rt_obj_class_id", {selfValue});
         size_t defaultIdx = createBlock("dtor_default");
-        std::vector<size_t> testBlocks;
-        std::vector<size_t> callBlocks;
-        testBlocks.reserve(destructors.size());
-        callBlocks.reserve(destructors.size());
+        unsigned blockSerial = 0;
 
-        for (size_t i = 0; i < destructors.size(); ++i) {
-            testBlocks.push_back(i == 0 ? blockMgr_.currentBlockIndex()
-                                        : createBlock("dtor_test_" + std::to_string(i)));
-            callBlocks.push_back(createBlock("dtor_call_" + std::to_string(i)));
-        }
-
-        for (size_t i = 0; i < destructors.size(); ++i) {
-            if (i != 0)
-                setBlock(testBlocks[i]);
-            Value match = emitBinary(Opcode::ICmpEq,
+        /// @brief Emit the dispatch for destructors[lo, hi) into the current block.
+        std::function<void(size_t, size_t)> emitRange = [&](size_t lo, size_t hi) {
+            if (hi - lo <= 3) {
+                for (size_t i = lo; i < hi; ++i) {
+                    Value match = emitBinary(Opcode::ICmpEq,
+                                             Type(Type::Kind::I1),
+                                             classId,
+                                             Value::constInt(destructors[i].first));
+                    size_t callIdx = createBlock("dtor_call_" + std::to_string(blockSerial++));
+                    size_t nextIdx = (i + 1 < hi)
+                                         ? createBlock("dtor_test_" + std::to_string(blockSerial++))
+                                         : defaultIdx;
+                    emitCBr(match, callIdx, nextIdx);
+                    setBlock(callIdx);
+                    emitCall(destructors[i].second, {selfValue});
+                    emitRetVoid();
+                    if (i + 1 < hi)
+                        setBlock(nextIdx);
+                }
+                return;
+            }
+            size_t mid = lo + (hi - lo) / 2;
+            Value below = emitBinary(Opcode::SCmpLT,
                                      Type(Type::Kind::I1),
                                      classId,
-                                     Value::constInt(destructors[i].first));
-            size_t falseIdx = (i + 1 < destructors.size()) ? testBlocks[i + 1] : defaultIdx;
-            emitCBr(match, callBlocks[i], falseIdx);
-            setBlock(callBlocks[i]);
-            emitCall(destructors[i].second, {selfValue});
-            emitRetVoid();
-        }
+                                     Value::constInt(destructors[mid].first));
+            size_t leftIdx = createBlock("dtor_lo_" + std::to_string(blockSerial++));
+            size_t rightIdx = createBlock("dtor_hi_" + std::to_string(blockSerial++));
+            emitCBr(below, leftIdx, rightIdx);
+            setBlock(leftIdx);
+            emitRange(lo, mid);
+            setBlock(rightIdx);
+            emitRange(mid, hi);
+        };
+        emitRange(0, destructors.size());
 
         setBlock(defaultIdx);
         emitRetVoid();

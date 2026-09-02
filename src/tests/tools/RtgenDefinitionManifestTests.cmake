@@ -16,7 +16,7 @@ file(MAKE_DIRECTORY "${TEST_WORK_DIR}/positive/nested")
 file(WRITE "${TEST_WORK_DIR}/positive/runtime.def"
      "#include \"domain.def\"\n")
 file(WRITE "${TEST_WORK_DIR}/positive/domain.def"
-     "RT_FUNC(ExampleNew, rt_example_new, \"Zanna.Example.New\", \"obj()\")\n"
+     "RT_FUNC(ExampleNew, rt_example_new, \"Zanna.Example.New\", \"obj()\", owned)\n"
      "#include \"nested/class.def\"\n")
 file(WRITE "${TEST_WORK_DIR}/positive/nested/class.def"
      "/// @summary Provides an example runtime class.\n"

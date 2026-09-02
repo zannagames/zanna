@@ -664,17 +664,24 @@ void *rt_concmap_get(void *obj, rt_string key) {
 /// @param default_value Borrowed fallback returned unchanged on a miss.
 /// @return Retained stored value on a hit, otherwise borrowed @p default_value.
 void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
-    if (!obj)
+    if (!obj) {
+        rt_obj_retain_maybe(default_value); /* uniform owned result (ADR 0314) */
         return default_value;
+    }
     rt_concmap_impl *cm = concmap_require(obj, 0);
-    if (!cm)
+    if (!cm) {
+        rt_obj_retain_maybe(default_value); /* uniform owned result (ADR 0314) */
         return default_value;
-    if (!concmap_retain_receiver(obj))
+    }
+    if (!concmap_retain_receiver(obj)) {
+        rt_obj_retain_maybe(default_value); /* uniform owned result (ADR 0314) */
         return default_value;
+    }
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, &key_data, &key_len)) {
         concmap_release_object(obj);
+        rt_obj_retain_maybe(default_value); /* uniform owned result (ADR 0314) */
         return default_value;
     }
     uint64_t h = rt_fnv1a(key_data, key_len);
@@ -701,6 +708,8 @@ void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
         rt_obj_retain_maybe(result);
         rt_trap_clear_recovery();
     }
+    if (!(e && result))
+        rt_obj_retain_maybe(result); /* a miss hands back the retained default */
     CM_UNLOCK(cm);
     concmap_release_object(obj);
     return result;

@@ -568,6 +568,7 @@ static void gl_bind_main_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->uBrdfLut, GL_TU_BRDF_LUT);
     gl.Uniform1i(ctx->uMetallicRoughnessTex, GL_TU_METALLIC_ROUGHNESS);
     gl.Uniform1i(ctx->uAOTex, GL_TU_AO);
+    gl.Uniform1i(ctx->uDecalTex, GL_TU_DECAL);
 }
 
 /// @brief Bind fixed sampler-unit assignments for every context-owned shader program.

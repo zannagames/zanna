@@ -88,6 +88,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-postfx"></a>`PostFX` | `obj<Zanna.Graphics3D.PostFX3D>` | read-only |
 | <a id="zanna-graphics3d-canvas3d-frustumculling"></a>`FrustumCulling` | `i1` | read-only |
 | <a id="zanna-graphics3d-canvas3d-occlusionculling"></a>`OcclusionCulling` | `i1` | read-only |
+| <a id="zanna-graphics3d-canvas3d-depthonlyshading"></a>`DepthOnlyShading` | `i1` | read-only |
 | <a id="zanna-graphics3d-canvas3d-texturestreaming"></a>`TextureStreaming` | `i1` | read-only |
 | <a id="zanna-graphics3d-canvas3d-texturestreamingbias"></a>`TextureStreamingBias` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-maxdeltatime"></a>`MaxDeltaTime` | `i64` | read-only |
@@ -285,6 +286,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-drawtext2d"></a>`DrawText2D` | `void(i64,i64,str,i64)` | `Zanna.Graphics3D.Canvas3D.DrawText2D` |
 | <a id="zanna-graphics3d-canvas3d-setfrustumculling"></a>`SetFrustumCulling` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetFrustumCulling` |
 | <a id="zanna-graphics3d-canvas3d-setocclusionculling"></a>`SetOcclusionCulling` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetOcclusionCulling` |
+| <a id="zanna-graphics3d-canvas3d-setdepthonlyshading"></a>`SetDepthOnlyShading` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetDepthOnlyShading` |
 | <a id="zanna-graphics3d-canvas3d-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.Graphics3D.Canvas3D.New` |
 
 <a id="zanna-graphics3d-mesh3d"></a>
@@ -489,6 +491,8 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | <a id="zanna-graphics3d-material3d-hasnormalmap"></a>`HasNormalMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-hasspecularmap"></a>`HasSpecularMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-hasemissivemap"></a>`HasEmissiveMap` | `i1` | read-only |
+| <a id="zanna-graphics3d-material3d-hasdecalmap"></a>`HasDecalMap` | `i1` | read-only |
+| <a id="zanna-graphics3d-material3d-decalopacity"></a>`DecalOpacity` | `f64` | read-only |
 | <a id="zanna-graphics3d-material3d-hasmetallicroughnessmap"></a>`HasMetallicRoughnessMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-hasambientocclusionmap"></a>`HasAmbientOcclusionMap` | `i1` | read-only |
 | <a id="zanna-graphics3d-material3d-hasenvmap"></a>`HasEnvMap` | `i1` | read-only |
@@ -521,6 +525,9 @@ Constructor: `Zanna.Graphics3D.Material3D.New`
 | <a id="zanna-graphics3d-material3d-setlightmap"></a>`SetLightmap` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetLightmap` |
 | <a id="zanna-graphics3d-material3d-setspecularmap"></a>`SetSpecularMap` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetSpecularMap` |
 | <a id="zanna-graphics3d-material3d-setemissivemap"></a>`SetEmissiveMap` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetEmissiveMap` |
+| <a id="zanna-graphics3d-material3d-setdecalmap"></a>`SetDecalMap` | `void(obj)` | `Zanna.Graphics3D.Material3D.SetDecalMap` |
+| <a id="zanna-graphics3d-material3d-setdecalprojector"></a>`SetDecalProjector` | `void(f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Graphics3D.Material3D.SetDecalProjector` |
+| <a id="zanna-graphics3d-material3d-setdecalopacity"></a>`SetDecalOpacity` | `void(f64)` | `Zanna.Graphics3D.Material3D.SetDecalOpacity` |
 | <a id="zanna-graphics3d-material3d-setemissivecolor"></a>`SetEmissiveColor` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Material3D.SetEmissiveColor` |
 | <a id="zanna-graphics3d-material3d-setshadingmodel"></a>`SetShadingModel` | `void(i64)` | `Zanna.Graphics3D.Material3D.SetShadingModel` |
 | <a id="zanna-graphics3d-material3d-setcustomparam"></a>`SetCustomParam` | `void(i64,f64)` | `Zanna.Graphics3D.Material3D.SetCustomParam` |
@@ -2911,6 +2918,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-postfx"></a>`Zanna.Graphics3D.Canvas3D.get_PostFX` | `obj<Zanna.Graphics3D.PostFX3D>(obj)` | `rt_canvas3d_get_post_fx` |
 | <a id="zanna-graphics3d-canvas3d-get-frustumculling"></a>`Zanna.Graphics3D.Canvas3D.get_FrustumCulling` | `i1(obj)` | `rt_canvas3d_get_frustum_culling` |
 | <a id="zanna-graphics3d-canvas3d-get-occlusionculling"></a>`Zanna.Graphics3D.Canvas3D.get_OcclusionCulling` | `i1(obj)` | `rt_canvas3d_get_occlusion_culling` |
+| `Zanna.Graphics3D.Canvas3D.SetDepthOnlyShading` | `void(obj,i1)` | `rt_canvas3d_set_depth_only_shading` |
+| <a id="zanna-graphics3d-canvas3d-get-depthonlyshading"></a>`Zanna.Graphics3D.Canvas3D.get_DepthOnlyShading` | `i1(obj)` | `rt_canvas3d_get_depth_only_shading` |
 | <a id="zanna-graphics3d-canvas3d-get-texturestreaming"></a>`Zanna.Graphics3D.Canvas3D.get_TextureStreaming` | `i1(obj)` | `rt_canvas3d_get_texture_streaming` |
 | <a id="zanna-graphics3d-canvas3d-get-texturestreamingbias"></a>`Zanna.Graphics3D.Canvas3D.get_TextureStreamingBias` | `f64(obj)` | `rt_canvas3d_get_texture_streaming_bias` |
 | <a id="zanna-graphics3d-canvas3d-get-maxdeltatime"></a>`Zanna.Graphics3D.Canvas3D.get_MaxDeltaTime` | `i64(obj)` | `rt_canvas3d_get_dt_max` |
@@ -3056,6 +3065,11 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-material3d-get-hasspecularmap"></a>`Zanna.Graphics3D.Material3D.get_HasSpecularMap` | `i1(obj)` | `rt_material3d_get_has_specular_map` |
 | `Zanna.Graphics3D.Material3D.SetEmissiveMap` | `void(obj,obj)` | `rt_material3d_set_emissive_map` |
 | <a id="zanna-graphics3d-material3d-get-hasemissivemap"></a>`Zanna.Graphics3D.Material3D.get_HasEmissiveMap` | `i1(obj)` | `rt_material3d_get_has_emissive_map` |
+| `Zanna.Graphics3D.Material3D.SetDecalMap` | `void(obj,obj)` | `rt_material3d_set_decal_map` |
+| <a id="zanna-graphics3d-material3d-get-hasdecalmap"></a>`Zanna.Graphics3D.Material3D.get_HasDecalMap` | `i1(obj)` | `rt_material3d_get_has_decal_map` |
+| `Zanna.Graphics3D.Material3D.SetDecalProjector` | `void(obj,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_material3d_set_decal_projector` |
+| `Zanna.Graphics3D.Material3D.SetDecalOpacity` | `void(obj,f64)` | `rt_material3d_set_decal_opacity` |
+| <a id="zanna-graphics3d-material3d-get-decalopacity"></a>`Zanna.Graphics3D.Material3D.get_DecalOpacity` | `f64(obj)` | `rt_material3d_get_decal_opacity` |
 | <a id="zanna-graphics3d-material3d-get-hasenvmap"></a>`Zanna.Graphics3D.Material3D.get_HasEnvMap` | `i1(obj)` | `rt_material3d_get_has_env_map` |
 | `Zanna.Graphics3D.Material3D.SetEmissiveColor` | `void(obj,f64,f64,f64)` | `rt_material3d_set_emissive_color` |
 | <a id="zanna-graphics3d-material3d-set-normalscale"></a>`Zanna.Graphics3D.Material3D.set_NormalScale` | `void(obj,f64)` | `rt_material3d_set_normal_scale` |

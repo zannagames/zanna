@@ -636,11 +636,15 @@ void *rt_result_map(void *obj, void *(*fn)(void *)) {
 /// @return Caller-owned new mapped Result, or borrowed original @p obj on
 ///         null/no-op/pass-through paths.
 void *rt_result_map_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
     Result *r = (Result *)obj;
-    if (r->variant != RESULT_OK)
+    if (r->variant != RESULT_OK) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     // For pointer values, apply the function
     if (r->value_type == VALUE_PTR) {
@@ -648,6 +652,7 @@ void *rt_result_map_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx)
         return rt_result_ok(new_val);
     }
     // For other types, return as-is (can't map non-pointer)
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 
@@ -672,16 +677,21 @@ void *rt_result_map_err(void *obj, void *(*fn)(void *)) {
 /// @param ctx Borrowed strategy context forwarded unchanged to @p invoke.
 /// @return Caller-owned new mapped Result, or borrowed original @p obj.
 void *rt_result_map_err_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
     Result *r = (Result *)obj;
-    if (r->variant != RESULT_ERR)
+    if (r->variant != RESULT_ERR) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     if (r->value_type == VALUE_PTR) {
         void *new_val = invoke(ctx, fn, r->value.ptr);
         return rt_result_err(new_val);
     }
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 
@@ -706,15 +716,20 @@ void *rt_result_and_then(void *obj, void *(*fn)(void *)) {
 /// @return Callback result with strategy-defined ownership, or borrowed
 ///         original @p obj on pass-through paths.
 void *rt_result_and_then_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
     Result *r = (Result *)obj;
-    if (r->variant != RESULT_OK)
+    if (r->variant != RESULT_OK) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     if (r->value_type == VALUE_PTR) {
         return invoke(ctx, fn, r->value.ptr);
     }
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 
@@ -739,15 +754,20 @@ void *rt_result_or_else(void *obj, void *(*fn)(void *)) {
 /// @return Callback result with strategy-defined ownership, or borrowed
 ///         original @p obj on pass-through paths.
 void *rt_result_or_else_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
     Result *r = (Result *)obj;
-    if (r->variant != RESULT_ERR)
+    if (r->variant != RESULT_ERR) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     if (r->value_type == VALUE_PTR) {
         return invoke(ctx, fn, r->value.ptr);
     }
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 

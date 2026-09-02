@@ -20,12 +20,12 @@
 // CRYPTO - HASH
 //=============================================================================
 
-RT_FUNC(HashSHA256,     rt_hash_sha256,      "Zanna.Crypto.Hash.Sha256",     "str(str)")
-RT_FUNC(HashSHA256Bytes,rt_hash_sha256_bytes,"Zanna.Crypto.Hash.Sha256Bytes","str(obj)")
+RT_FUNC(HashSHA256, rt_hash_sha256, "Zanna.Crypto.Hash.Sha256", "str(str)", owned)
+RT_FUNC(HashSHA256Bytes, rt_hash_sha256_bytes, "Zanna.Crypto.Hash.Sha256Bytes", "str(obj)", owned)
 
 // HMAC functions
-RT_FUNC(HashHmacSHA256,     rt_hash_hmac_sha256,      "Zanna.Crypto.Hash.HmacSha256",     "str(str,str)")
-RT_FUNC(HashHmacSHA256Bytes,rt_hash_hmac_sha256_bytes,"Zanna.Crypto.Hash.HmacSha256Bytes","str(obj,obj)")
+RT_FUNC(HashHmacSHA256, rt_hash_hmac_sha256, "Zanna.Crypto.Hash.HmacSha256", "str(str,str)", owned)
+RT_FUNC(HashHmacSHA256Bytes, rt_hash_hmac_sha256_bytes, "Zanna.Crypto.Hash.HmacSha256Bytes", "str(obj,obj)", owned)
 RT_FUNC(HashConstantTimeEquals,      rt_hash_constant_time_equals,       "Zanna.Crypto.Hash.ConstantTimeEquals",      "i1(str,str)")
 RT_FUNC(HashConstantTimeEqualsBytes, rt_hash_constant_time_equals_bytes, "Zanna.Crypto.Hash.ConstantTimeEqualsBytes", "i1(obj,obj)")
 
@@ -33,14 +33,14 @@ RT_FUNC(HashConstantTimeEqualsBytes, rt_hash_constant_time_equals_bytes, "Zanna.
 // should prefer SHA256/HMAC-SHA256 in Zanna.Crypto.Hash.
 RT_FUNC(LegacyHashCRC32,      rt_hash_crc32,       "Zanna.Crypto.Legacy.Hash.Crc32",      "i64(str)")
 RT_FUNC(LegacyHashCRC32Bytes, rt_hash_crc32_bytes, "Zanna.Crypto.Legacy.Hash.Crc32Bytes", "i64(obj)")
-RT_FUNC(LegacyHashMD5,        rt_hash_md5,         "Zanna.Crypto.Legacy.Hash.Md5",        "str(str)")
-RT_FUNC(LegacyHashMD5Bytes,   rt_hash_md5_bytes,   "Zanna.Crypto.Legacy.Hash.Md5Bytes",   "str(obj)")
-RT_FUNC(LegacyHashSHA1,       rt_hash_sha1,        "Zanna.Crypto.Legacy.Hash.Sha1",       "str(str)")
-RT_FUNC(LegacyHashSHA1Bytes,  rt_hash_sha1_bytes,  "Zanna.Crypto.Legacy.Hash.Sha1Bytes",  "str(obj)")
-RT_FUNC(LegacyHashHmacMD5,    rt_hash_hmac_md5,    "Zanna.Crypto.Legacy.Hash.HmacMd5",    "str(str,str)")
-RT_FUNC(LegacyHashHmacMD5Bytes, rt_hash_hmac_md5_bytes, "Zanna.Crypto.Legacy.Hash.HmacMd5Bytes", "str(obj,obj)")
-RT_FUNC(LegacyHashHmacSHA1,   rt_hash_hmac_sha1,   "Zanna.Crypto.Legacy.Hash.HmacSha1",   "str(str,str)")
-RT_FUNC(LegacyHashHmacSHA1Bytes, rt_hash_hmac_sha1_bytes, "Zanna.Crypto.Legacy.Hash.HmacSha1Bytes", "str(obj,obj)")
+RT_FUNC(LegacyHashMD5, rt_hash_md5, "Zanna.Crypto.Legacy.Hash.Md5", "str(str)", owned)
+RT_FUNC(LegacyHashMD5Bytes, rt_hash_md5_bytes, "Zanna.Crypto.Legacy.Hash.Md5Bytes", "str(obj)", owned)
+RT_FUNC(LegacyHashSHA1, rt_hash_sha1, "Zanna.Crypto.Legacy.Hash.Sha1", "str(str)", owned)
+RT_FUNC(LegacyHashSHA1Bytes, rt_hash_sha1_bytes, "Zanna.Crypto.Legacy.Hash.Sha1Bytes", "str(obj)", owned)
+RT_FUNC(LegacyHashHmacMD5, rt_hash_hmac_md5, "Zanna.Crypto.Legacy.Hash.HmacMd5", "str(str,str)", owned)
+RT_FUNC(LegacyHashHmacMD5Bytes, rt_hash_hmac_md5_bytes, "Zanna.Crypto.Legacy.Hash.HmacMd5Bytes", "str(obj,obj)", owned)
+RT_FUNC(LegacyHashHmacSHA1, rt_hash_hmac_sha1, "Zanna.Crypto.Legacy.Hash.HmacSha1", "str(str,str)", owned)
+RT_FUNC(LegacyHashHmacSHA1Bytes, rt_hash_hmac_sha1_bytes, "Zanna.Crypto.Legacy.Hash.HmacSha1Bytes", "str(obj,obj)", owned)
 
 // Fast keyed non-cryptographic hash functions
 RT_FUNC(HashFast,      rt_hash_fast,       "Zanna.Crypto.Hash.NonCryptoFast",      "i64(str)")
@@ -51,16 +51,16 @@ RT_FUNC(HashFastInt,   rt_hash_fast_int,   "Zanna.Crypto.Hash.NonCryptoFastInt",
 // CRYPTO - KEY DERIVATION
 //=============================================================================
 
-RT_FUNC(KeyDerivePbkdf2SHA256,    rt_keyderive_pbkdf2_sha256,     "Zanna.Crypto.KeyDerive.Pbkdf2Sha256",    "obj(str,obj,i64,i64)")
-RT_FUNC(KeyDerivePbkdf2SHA256Str, rt_keyderive_pbkdf2_sha256_str, "Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded", "str(str,obj,i64,i64)")
-RT_FUNC(KeyDeriveScryptSHA256,    rt_keyderive_scrypt_sha256,     "Zanna.Crypto.KeyDerive.Scrypt",    "obj(str,obj,i64,i64,i64,i64)")
-RT_FUNC(KeyDeriveScryptSHA256Str, rt_keyderive_scrypt_sha256_str, "Zanna.Crypto.KeyDerive.ScryptEncoded", "str(str,obj,i64,i64,i64,i64)")
+RT_FUNC(KeyDerivePbkdf2SHA256, rt_keyderive_pbkdf2_sha256, "Zanna.Crypto.KeyDerive.Pbkdf2Sha256", "obj(str,obj,i64,i64)", owned)
+RT_FUNC(KeyDerivePbkdf2SHA256Str, rt_keyderive_pbkdf2_sha256_str, "Zanna.Crypto.KeyDerive.Pbkdf2Sha256Encoded", "str(str,obj,i64,i64)", owned)
+RT_FUNC(KeyDeriveScryptSHA256, rt_keyderive_scrypt_sha256, "Zanna.Crypto.KeyDerive.Scrypt", "obj(str,obj,i64,i64,i64,i64)", owned)
+RT_FUNC(KeyDeriveScryptSHA256Str, rt_keyderive_scrypt_sha256_str, "Zanna.Crypto.KeyDerive.ScryptEncoded", "str(str,obj,i64,i64,i64,i64)", owned)
 
 //=============================================================================
 // CRYPTO - SECURE RANDOM
 //=============================================================================
 
-RT_FUNC(CryptoRandBytes, rt_crypto_rand_bytes, "Zanna.Crypto.SecureRandom.Bytes", "obj<Zanna.Collections.Bytes>(i64)")
+RT_FUNC(CryptoRandBytes, rt_crypto_rand_bytes, "Zanna.Crypto.SecureRandom.Bytes", "obj<Zanna.Collections.Bytes>(i64)", owned)
 RT_FUNC(CryptoRandInt,   rt_crypto_rand_int,   "Zanna.Crypto.SecureRandom.Int",   "i64(i64,i64)")
 
 //=============================================================================
@@ -70,47 +70,47 @@ RT_FUNC(CryptoRandInt,   rt_crypto_rand_int,   "Zanna.Crypto.SecureRandom.Int", 
 RT_FUNC(CryptoModuleEnableApprovedModeForProcess, rt_crypto_module_enable_approved_mode, "Zanna.Crypto.Compliance.EnableApprovedModeForProcess", "i1()")
 RT_FUNC(CryptoModuleDisableApprovedModeForProcess, rt_crypto_module_disable_approved_mode, "Zanna.Crypto.Compliance.DisableApprovedModeForProcess", "void()")
 RT_FUNC(CryptoModuleIsApprovedModeForProcess, rt_crypto_module_is_approved_mode_zanna, "Zanna.Crypto.Compliance.IsApprovedModeForProcess", "i1()")
-RT_FUNC(CryptoModuleStatus, rt_crypto_module_status_text, "Zanna.Crypto.Compliance.Status", "str()")
+RT_FUNC(CryptoModuleStatus, rt_crypto_module_status_text, "Zanna.Crypto.Compliance.Status", "str()", owned)
 
 //=============================================================================
 // CRYPTO - CIPHER (HIGH-LEVEL ENCRYPTION)
 //=============================================================================
 
-RT_FUNC(CipherEncrypt,        rt_cipher_encrypt,          "Zanna.Crypto.Cipher.Encrypt",        "obj<Zanna.Collections.Bytes>(obj,str)")
-RT_FUNC(CipherDecrypt,        rt_cipher_decrypt,          "Zanna.Crypto.Cipher.Decrypt",        "obj(obj,str)")
-RT_FUNC(CipherDecryptResult,  rt_cipher_decrypt_result,   "Zanna.Crypto.Cipher.DecryptResult",  "obj<Zanna.Result>(obj,str)")
-RT_FUNC(CipherTryDecrypt,     rt_cipher_try_decrypt,      "Zanna.Crypto.Cipher.TryDecrypt",     "obj<Zanna.Option>(obj,str)")
-RT_FUNC(CipherEncryptAAD,     rt_cipher_encrypt_aad,      "Zanna.Crypto.Cipher.EncryptAad",     "obj<Zanna.Collections.Bytes>(obj,str,obj)")
-RT_FUNC(CipherDecryptAAD,     rt_cipher_decrypt_aad,      "Zanna.Crypto.Cipher.DecryptAad",     "obj(obj,str,obj)")
-RT_FUNC(CipherDecryptAADResult, rt_cipher_decrypt_aad_result, "Zanna.Crypto.Cipher.DecryptAadResult", "obj<Zanna.Result>(obj,str,obj)")
-RT_FUNC(CipherTryDecryptAAD,  rt_cipher_try_decrypt_aad,  "Zanna.Crypto.Cipher.TryDecryptAad",  "obj<Zanna.Option>(obj,str,obj)")
-RT_FUNC(CipherEncryptWithKey, rt_cipher_encrypt_with_key, "Zanna.Crypto.Cipher.EncryptWithKey", "obj<Zanna.Collections.Bytes>(obj,obj)")
-RT_FUNC(CipherDecryptWithKey, rt_cipher_decrypt_with_key, "Zanna.Crypto.Cipher.DecryptWithKey", "obj(obj,obj)")
-RT_FUNC(CipherDecryptWithKeyResult, rt_cipher_decrypt_with_key_result, "Zanna.Crypto.Cipher.DecryptWithKeyResult", "obj<Zanna.Result>(obj,obj)")
-RT_FUNC(CipherTryDecryptWithKey, rt_cipher_try_decrypt_with_key, "Zanna.Crypto.Cipher.TryDecryptWithKey", "obj<Zanna.Option>(obj,obj)")
-RT_FUNC(CipherEncryptWithKeyAAD, rt_cipher_encrypt_with_key_aad, "Zanna.Crypto.Cipher.EncryptWithKeyAad", "obj<Zanna.Collections.Bytes>(obj,obj,obj)")
-RT_FUNC(CipherDecryptWithKeyAAD, rt_cipher_decrypt_with_key_aad, "Zanna.Crypto.Cipher.DecryptWithKeyAad", "obj(obj,obj,obj)")
-RT_FUNC(CipherDecryptWithKeyAADResult, rt_cipher_decrypt_with_key_aad_result, "Zanna.Crypto.Cipher.DecryptWithKeyAadResult", "obj<Zanna.Result>(obj,obj,obj)")
-RT_FUNC(CipherTryDecryptWithKeyAAD, rt_cipher_try_decrypt_with_key_aad, "Zanna.Crypto.Cipher.TryDecryptWithKeyAad", "obj<Zanna.Option>(obj,obj,obj)")
-RT_FUNC(CipherGenerateKey,    rt_cipher_generate_key,     "Zanna.Crypto.Cipher.GenerateKey",    "obj<Zanna.Collections.Bytes>()")
-RT_FUNC(CipherDeriveKey,      rt_cipher_derive_key,       "Zanna.Crypto.Cipher.DeriveKey",      "obj(str,obj)")
+RT_FUNC(CipherEncrypt, rt_cipher_encrypt, "Zanna.Crypto.Cipher.Encrypt", "obj<Zanna.Collections.Bytes>(obj,str)", owned)
+RT_FUNC(CipherDecrypt, rt_cipher_decrypt, "Zanna.Crypto.Cipher.Decrypt", "obj(obj,str)", owned)
+RT_FUNC(CipherDecryptResult, rt_cipher_decrypt_result, "Zanna.Crypto.Cipher.DecryptResult", "obj<Zanna.Result>(obj,str)", owned)
+RT_FUNC(CipherTryDecrypt, rt_cipher_try_decrypt, "Zanna.Crypto.Cipher.TryDecrypt", "obj<Zanna.Option>(obj,str)", owned)
+RT_FUNC(CipherEncryptAAD, rt_cipher_encrypt_aad, "Zanna.Crypto.Cipher.EncryptAad", "obj<Zanna.Collections.Bytes>(obj,str,obj)", owned)
+RT_FUNC(CipherDecryptAAD, rt_cipher_decrypt_aad, "Zanna.Crypto.Cipher.DecryptAad", "obj(obj,str,obj)", owned)
+RT_FUNC(CipherDecryptAADResult, rt_cipher_decrypt_aad_result, "Zanna.Crypto.Cipher.DecryptAadResult", "obj<Zanna.Result>(obj,str,obj)", owned)
+RT_FUNC(CipherTryDecryptAAD, rt_cipher_try_decrypt_aad, "Zanna.Crypto.Cipher.TryDecryptAad", "obj<Zanna.Option>(obj,str,obj)", owned)
+RT_FUNC(CipherEncryptWithKey, rt_cipher_encrypt_with_key, "Zanna.Crypto.Cipher.EncryptWithKey", "obj<Zanna.Collections.Bytes>(obj,obj)", owned)
+RT_FUNC(CipherDecryptWithKey, rt_cipher_decrypt_with_key, "Zanna.Crypto.Cipher.DecryptWithKey", "obj(obj,obj)", owned)
+RT_FUNC(CipherDecryptWithKeyResult, rt_cipher_decrypt_with_key_result, "Zanna.Crypto.Cipher.DecryptWithKeyResult", "obj<Zanna.Result>(obj,obj)", owned)
+RT_FUNC(CipherTryDecryptWithKey, rt_cipher_try_decrypt_with_key, "Zanna.Crypto.Cipher.TryDecryptWithKey", "obj<Zanna.Option>(obj,obj)", owned)
+RT_FUNC(CipherEncryptWithKeyAAD, rt_cipher_encrypt_with_key_aad, "Zanna.Crypto.Cipher.EncryptWithKeyAad", "obj<Zanna.Collections.Bytes>(obj,obj,obj)", owned)
+RT_FUNC(CipherDecryptWithKeyAAD, rt_cipher_decrypt_with_key_aad, "Zanna.Crypto.Cipher.DecryptWithKeyAad", "obj(obj,obj,obj)", owned)
+RT_FUNC(CipherDecryptWithKeyAADResult, rt_cipher_decrypt_with_key_aad_result, "Zanna.Crypto.Cipher.DecryptWithKeyAadResult", "obj<Zanna.Result>(obj,obj,obj)", owned)
+RT_FUNC(CipherTryDecryptWithKeyAAD, rt_cipher_try_decrypt_with_key_aad, "Zanna.Crypto.Cipher.TryDecryptWithKeyAad", "obj<Zanna.Option>(obj,obj,obj)", owned)
+RT_FUNC(CipherGenerateKey, rt_cipher_generate_key, "Zanna.Crypto.Cipher.GenerateKey", "obj<Zanna.Collections.Bytes>()", owned)
+RT_FUNC(CipherDeriveKey, rt_cipher_derive_key, "Zanna.Crypto.Cipher.DeriveKey", "obj(str,obj)", owned)
 
 //=============================================================================
 // CRYPTO - AES ENCRYPTION
 //=============================================================================
 
-RT_FUNC(LegacyAesEncryptCBC, rt_aes_encrypt, "Zanna.Crypto.Legacy.Aes.EncryptCbc", "obj(obj,obj,obj)")
-RT_FUNC(LegacyAesDecryptCBC, rt_aes_decrypt, "Zanna.Crypto.Legacy.Aes.DecryptCbc", "obj(obj,obj,obj)")
-RT_FUNC(LegacyAesDecryptCBCResult, rt_aes_decrypt_result, "Zanna.Crypto.Legacy.Aes.DecryptCbcResult", "obj<Zanna.Result>(obj,obj,obj)")
-RT_FUNC(LegacyAesTryDecryptCBC, rt_aes_try_decrypt, "Zanna.Crypto.Legacy.Aes.TryDecryptCbc", "obj<Zanna.Option>(obj,obj,obj)")
-RT_FUNC(AesEncryptAuth, rt_aes_encrypt_auth, "Zanna.Crypto.Aes.EncryptAuth", "obj<Zanna.Collections.Bytes>(obj,obj,obj)")
-RT_FUNC(AesDecryptAuth, rt_aes_decrypt_auth, "Zanna.Crypto.Aes.DecryptAuth", "obj(obj,obj,obj)")
-RT_FUNC(AesDecryptAuthResult, rt_aes_decrypt_auth_result, "Zanna.Crypto.Aes.DecryptAuthResult", "obj<Zanna.Result>(obj,obj,obj)")
-RT_FUNC(AesTryDecryptAuth, rt_aes_try_decrypt_auth, "Zanna.Crypto.Aes.TryDecryptAuth", "obj<Zanna.Option>(obj,obj,obj)")
-RT_FUNC(AesEncryptStr, rt_aes_encrypt_str, "Zanna.Crypto.Aes.EncryptStr", "obj<Zanna.Collections.Bytes>(str,str)")
-RT_FUNC(AesDecryptStr, rt_aes_decrypt_str, "Zanna.Crypto.Aes.DecryptStr", "str(obj,str)")
-RT_FUNC(AesDecryptStrResult, rt_aes_decrypt_str_result, "Zanna.Crypto.Aes.DecryptStrResult", "obj<Zanna.Result>(obj,str)")
-RT_FUNC(AesTryDecryptStr, rt_aes_try_decrypt_str, "Zanna.Crypto.Aes.TryDecryptStr", "obj<Zanna.Option>(obj,str)")
+RT_FUNC(LegacyAesEncryptCBC, rt_aes_encrypt, "Zanna.Crypto.Legacy.Aes.EncryptCbc", "obj(obj,obj,obj)", owned)
+RT_FUNC(LegacyAesDecryptCBC, rt_aes_decrypt, "Zanna.Crypto.Legacy.Aes.DecryptCbc", "obj(obj,obj,obj)", owned)
+RT_FUNC(LegacyAesDecryptCBCResult, rt_aes_decrypt_result, "Zanna.Crypto.Legacy.Aes.DecryptCbcResult", "obj<Zanna.Result>(obj,obj,obj)", owned)
+RT_FUNC(LegacyAesTryDecryptCBC, rt_aes_try_decrypt, "Zanna.Crypto.Legacy.Aes.TryDecryptCbc", "obj<Zanna.Option>(obj,obj,obj)", owned)
+RT_FUNC(AesEncryptAuth, rt_aes_encrypt_auth, "Zanna.Crypto.Aes.EncryptAuth", "obj<Zanna.Collections.Bytes>(obj,obj,obj)", owned)
+RT_FUNC(AesDecryptAuth, rt_aes_decrypt_auth, "Zanna.Crypto.Aes.DecryptAuth", "obj(obj,obj,obj)", owned)
+RT_FUNC(AesDecryptAuthResult, rt_aes_decrypt_auth_result, "Zanna.Crypto.Aes.DecryptAuthResult", "obj<Zanna.Result>(obj,obj,obj)", owned)
+RT_FUNC(AesTryDecryptAuth, rt_aes_try_decrypt_auth, "Zanna.Crypto.Aes.TryDecryptAuth", "obj<Zanna.Option>(obj,obj,obj)", owned)
+RT_FUNC(AesEncryptStr, rt_aes_encrypt_str, "Zanna.Crypto.Aes.EncryptStr", "obj<Zanna.Collections.Bytes>(str,str)", owned)
+RT_FUNC(AesDecryptStr, rt_aes_decrypt_str, "Zanna.Crypto.Aes.DecryptStr", "str(obj,str)", owned)
+RT_FUNC(AesDecryptStrResult, rt_aes_decrypt_str_result, "Zanna.Crypto.Aes.DecryptStrResult", "obj<Zanna.Result>(obj,str)", owned)
+RT_FUNC(AesTryDecryptStr, rt_aes_try_decrypt_str, "Zanna.Crypto.Aes.TryDecryptStr", "obj<Zanna.Option>(obj,str)", owned)
 
 /// @summary Provides Aes constants and static operations for cryptographic workflows.
 /// @details
@@ -144,10 +144,10 @@ RT_CLASS_END()
 // CRYPTO - PASSWORD HASHING
 //=============================================================================
 
-RT_FUNC(PasswordHash,       rt_password_hash,                 "Zanna.Crypto.Password.Hash",       "str(str)")
-RT_FUNC(PasswordHashIters,  rt_password_hash_with_iterations, "Zanna.Crypto.Password.HashIters",  "str(str,i64)")
-RT_FUNC(PasswordHashScrypt, rt_password_hash_scrypt,          "Zanna.Crypto.Password.HashScrypt", "str(str)")
-RT_FUNC(PasswordHashScryptParams, rt_password_hash_scrypt_params, "Zanna.Crypto.Password.HashScryptParams", "str(str,i64,i64,i64)")
+RT_FUNC(PasswordHash, rt_password_hash, "Zanna.Crypto.Password.Hash", "str(str)", owned)
+RT_FUNC(PasswordHashIters, rt_password_hash_with_iterations, "Zanna.Crypto.Password.HashIters", "str(str,i64)", owned)
+RT_FUNC(PasswordHashScrypt, rt_password_hash_scrypt, "Zanna.Crypto.Password.HashScrypt", "str(str)", owned)
+RT_FUNC(PasswordHashScryptParams, rt_password_hash_scrypt_params, "Zanna.Crypto.Password.HashScryptParams", "str(str,i64,i64,i64)", owned)
 RT_FUNC(PasswordVerify,     rt_password_verify,               "Zanna.Crypto.Password.Verify",     "i1(str,str)")
 RT_FUNC(PasswordNeedsRehash, rt_password_needs_rehash,        "Zanna.Crypto.Password.NeedsRehash","i1(str)")
 
@@ -155,22 +155,22 @@ RT_FUNC(PasswordNeedsRehash, rt_password_needs_rehash,        "Zanna.Crypto.Pass
 // CRYPTO - TLS (Secure Connections)
 //=============================================================================
 
-RT_FUNC(TlsConnect,    rt_zanna_tls_connect,     "Zanna.Crypto.Tls.Connect",    "obj(str,i64)")
-RT_FUNC(TlsConnectResult, rt_zanna_tls_connect_result, "Zanna.Crypto.Tls.ConnectResult", "obj<Zanna.Result>(str,i64)")
-RT_FUNC(TlsConnectFor, rt_zanna_tls_connect_for, "Zanna.Crypto.Tls.ConnectFor", "obj(str,i64,i64)")
-RT_FUNC(TlsConnectForResult, rt_zanna_tls_connect_for_result, "Zanna.Crypto.Tls.ConnectForResult", "obj<Zanna.Result>(str,i64,i64)")
-RT_FUNC(TlsConnectOptions, rt_zanna_tls_connect_options, "Zanna.Crypto.Tls.ConnectOptions", "obj(str,i64,str,str,i1,i64)")
-RT_FUNC(TlsConnectOptionsResult, rt_zanna_tls_connect_options_result, "Zanna.Crypto.Tls.ConnectOptionsResult", "obj<Zanna.Result>(str,i64,str,str,i1,i64)")
-RT_FUNC(TlsHost,       rt_zanna_tls_host,        "Zanna.Crypto.Tls.get_Host",   "str(obj)")
+RT_FUNC(TlsConnect, rt_zanna_tls_connect, "Zanna.Crypto.Tls.Connect", "obj(str,i64)", owned)
+RT_FUNC(TlsConnectResult, rt_zanna_tls_connect_result, "Zanna.Crypto.Tls.ConnectResult", "obj<Zanna.Result>(str,i64)", owned)
+RT_FUNC(TlsConnectFor, rt_zanna_tls_connect_for, "Zanna.Crypto.Tls.ConnectFor", "obj(str,i64,i64)", owned)
+RT_FUNC(TlsConnectForResult, rt_zanna_tls_connect_for_result, "Zanna.Crypto.Tls.ConnectForResult", "obj<Zanna.Result>(str,i64,i64)", owned)
+RT_FUNC(TlsConnectOptions, rt_zanna_tls_connect_options, "Zanna.Crypto.Tls.ConnectOptions", "obj(str,i64,str,str,i1,i64)", owned)
+RT_FUNC(TlsConnectOptionsResult, rt_zanna_tls_connect_options_result, "Zanna.Crypto.Tls.ConnectOptionsResult", "obj<Zanna.Result>(str,i64,str,str,i1,i64)", owned)
+RT_FUNC(TlsHost, rt_zanna_tls_host, "Zanna.Crypto.Tls.get_Host", "str(obj)", owned)
 RT_FUNC(TlsPort,       rt_zanna_tls_port,        "Zanna.Crypto.Tls.get_Port",   "i64(obj)")
-RT_FUNC(TlsNegotiatedAlpn, rt_zanna_tls_negotiated_alpn, "Zanna.Crypto.Tls.get_NegotiatedAlpn", "str(obj)")
+RT_FUNC(TlsNegotiatedAlpn, rt_zanna_tls_negotiated_alpn, "Zanna.Crypto.Tls.get_NegotiatedAlpn", "str(obj)", owned)
 RT_FUNC(TlsIsOpen,     rt_zanna_tls_is_open,     "Zanna.Crypto.Tls.get_IsOpen", "i1(obj)")
 RT_FUNC(TlsSend,       rt_zanna_tls_send,        "Zanna.Crypto.Tls.Send",       "i64(obj,obj)")
 RT_FUNC(TlsSendStr,    rt_zanna_tls_send_str,    "Zanna.Crypto.Tls.SendStr",    "i64(obj,str)")
-RT_FUNC(TlsRecv,       rt_zanna_tls_recv,        "Zanna.Crypto.Tls.Recv",       "obj(obj,i64)")
-RT_FUNC(TlsRecvStr,    rt_zanna_tls_recv_str,    "Zanna.Crypto.Tls.RecvStr",    "str(obj,i64)")
+RT_FUNC(TlsRecv, rt_zanna_tls_recv, "Zanna.Crypto.Tls.Recv", "obj(obj,i64)", owned)
+RT_FUNC(TlsRecvStr, rt_zanna_tls_recv_str, "Zanna.Crypto.Tls.RecvStr", "str(obj,i64)", owned)
 RT_FUNC(TlsClose,      rt_zanna_tls_close,       "Zanna.Crypto.Tls.Close",      "void(obj)")
-RT_FUNC(TlsRecvLine,   rt_zanna_tls_recv_line,   "Zanna.Crypto.Tls.RecvLine",   "str(obj)")
+RT_FUNC(TlsRecvLine, rt_zanna_tls_recv_line, "Zanna.Crypto.Tls.RecvLine", "str(obj)", owned)
 
 //=============================================================================
 // DATETIME
@@ -182,25 +182,25 @@ RT_FUNC(DateTimeCreate,     rt_datetime_create,      "Zanna.Time.DateTime.FromPa
 RT_FUNC(DateTimeDay,        rt_datetime_day,         "Zanna.Time.DateTime.Day",        "i64(i64)")
 RT_FUNC(DateTimeDayOfWeek,  rt_datetime_day_of_week, "Zanna.Time.DateTime.DayOfWeek",  "i64(i64)")
 RT_FUNC(DateTimeDiff,       rt_datetime_diff,        "Zanna.Time.DateTime.Diff",       "i64(i64,i64)")
-RT_FUNC(DateTimeFormat,     rt_datetime_format,      "Zanna.Time.DateTime.Format",     "str(i64,str)")
-RT_FUNC(DateTimeFormatInZone, rt_datetime_format_in_zone, "Zanna.Time.DateTime.FormatInZone", "str(i64,obj,str)")
+RT_FUNC(DateTimeFormat, rt_datetime_format, "Zanna.Time.DateTime.Format", "str(i64,str)", owned)
+RT_FUNC(DateTimeFormatInZone, rt_datetime_format_in_zone, "Zanna.Time.DateTime.FormatInZone", "str(i64,obj,str)", owned)
 RT_FUNC(DateTimeHour,       rt_datetime_hour,        "Zanna.Time.DateTime.Hour",       "i64(i64)")
 RT_FUNC(DateTimeMinute,     rt_datetime_minute,      "Zanna.Time.DateTime.Minute",     "i64(i64)")
 RT_FUNC(DateTimeMonth,      rt_datetime_month,       "Zanna.Time.DateTime.Month",      "i64(i64)")
 RT_FUNC(DateTimeNow,        rt_datetime_now,         "Zanna.Time.DateTime.Now",        "i64()")
 RT_FUNC(DateTimeNowMs,      rt_datetime_now_ms,      "Zanna.Time.DateTime.NowMs",      "i64()")
 RT_FUNC(DateTimeSecond,     rt_datetime_second,      "Zanna.Time.DateTime.Second",     "i64(i64)")
-RT_FUNC(DateTimeToISO,      rt_datetime_to_iso,      "Zanna.Time.DateTime.ToIso8601",      "str(i64)")
-RT_FUNC(DateTimeToLocal,    rt_datetime_to_local,    "Zanna.Time.DateTime.FormatLocal",    "str(i64)")
-RT_FUNC(DateTimeToZone,     rt_datetime_to_zone,     "Zanna.Time.DateTime.ToZone",     "str(i64,obj)")
+RT_FUNC(DateTimeToISO, rt_datetime_to_iso, "Zanna.Time.DateTime.ToIso8601", "str(i64)", owned)
+RT_FUNC(DateTimeToLocal, rt_datetime_to_local, "Zanna.Time.DateTime.FormatLocal", "str(i64)", owned)
+RT_FUNC(DateTimeToZone, rt_datetime_to_zone, "Zanna.Time.DateTime.ToZone", "str(i64,obj)", owned)
 RT_FUNC(DateTimeYear,       rt_datetime_year,        "Zanna.Time.DateTime.Year",       "i64(i64)")
 RT_FUNC(DateTimeParseISO,   rt_datetime_parse_iso,   "Zanna.Time.DateTime.ParseIso8601",   "i64(str)")
 RT_FUNC(DateTimeParseDate,  rt_datetime_parse_date,  "Zanna.Time.DateTime.ParseDate",  "i64(str)")
 RT_FUNC(DateTimeParseTime,  rt_datetime_parse_time,  "Zanna.Time.DateTime.ParseTime",  "i64(str)")
-RT_FUNC(DateTimeTryParseOption, rt_datetime_try_parse_option, "Zanna.Time.DateTime.TryParse", "obj<Zanna.Option>(str)")
-RT_FUNC(DateTimeCreateOption, rt_datetime_create_option, "Zanna.Time.DateTime.TryFromParts", "obj<Zanna.Option>(i64,i64,i64,i64,i64,i64)")
-RT_FUNC(TimeZoneFind,       rt_tz_find,              "Zanna.Time.TimeZone.Find",       "obj<Zanna.Time.TimeZone>(str)")
-RT_FUNC(TimeZoneName,       rt_tz_name,              "Zanna.Time.TimeZone.get_Name",   "str(obj)")
+RT_FUNC(DateTimeTryParseOption, rt_datetime_try_parse_option, "Zanna.Time.DateTime.TryParse", "obj<Zanna.Option>(str)", owned)
+RT_FUNC(DateTimeCreateOption, rt_datetime_create_option, "Zanna.Time.DateTime.TryFromParts", "obj<Zanna.Option>(i64,i64,i64,i64,i64,i64)", owned)
+RT_FUNC(TimeZoneFind, rt_tz_find, "Zanna.Time.TimeZone.Find", "obj<Zanna.Time.TimeZone>(str)", borrowed)
+RT_FUNC(TimeZoneName, rt_tz_name, "Zanna.Time.TimeZone.get_Name", "str(obj)", owned)
 RT_FUNC(TimeZoneOffsetAt,   rt_tz_offset_at,         "Zanna.Time.TimeZone.OffsetAt",   "i64(obj,i64)")
 RT_FUNC(TimeZoneIsDstAt,    rt_tz_is_dst_at,         "Zanna.Time.TimeZone.IsDstAt",    "i1(obj,i64)")
 
@@ -243,79 +243,79 @@ RT_FUNC(DurationNeg, rt_duration_neg, "Zanna.Time.Duration.Negate", "i64(i64)")
 RT_FUNC(DurationCmp, rt_duration_cmp, "Zanna.Time.Duration.Compare", "i64(i64,i64)")
 
 // Formatting
-RT_FUNC(DurationToString, rt_duration_to_string, "Zanna.Time.Duration.ToString", "str(i64)")
-RT_FUNC(DurationToISO,    rt_duration_to_iso,    "Zanna.Time.Duration.ToIso8601",    "str(i64)")
+RT_FUNC(DurationToString, rt_duration_to_string, "Zanna.Time.Duration.ToString", "str(i64)", owned)
+RT_FUNC(DurationToISO, rt_duration_to_iso, "Zanna.Time.Duration.ToIso8601", "str(i64)", owned)
 
 //=============================================================================
 // RELATIVE TIME
 //=============================================================================
 
-RT_FUNC(RelTimeFormat,         rt_reltime_format,          "Zanna.Time.RelativeTime.Format",         "str(i64)")
-RT_FUNC(RelTimeFormatFrom,     rt_reltime_format_from,     "Zanna.Time.RelativeTime.FormatFrom",     "str(i64,i64)")
-RT_FUNC(RelTimeFormatDuration, rt_reltime_format_duration, "Zanna.Time.RelativeTime.FormatDuration", "str(i64)")
-RT_FUNC(RelTimeFormatShort,    rt_reltime_format_short,    "Zanna.Time.RelativeTime.FormatShort",    "str(i64)")
+RT_FUNC(RelTimeFormat, rt_reltime_format, "Zanna.Time.RelativeTime.Format", "str(i64)", owned)
+RT_FUNC(RelTimeFormatFrom, rt_reltime_format_from, "Zanna.Time.RelativeTime.FormatFrom", "str(i64,i64)", owned)
+RT_FUNC(RelTimeFormatDuration, rt_reltime_format_duration, "Zanna.Time.RelativeTime.FormatDuration", "str(i64)", owned)
+RT_FUNC(RelTimeFormatShort, rt_reltime_format_short, "Zanna.Time.RelativeTime.FormatShort", "str(i64)", owned)
 
 //=============================================================================
 // DATE RANGE
 //=============================================================================
 
-RT_FUNC(DateRangeNew,          rt_daterange_new,          "Zanna.Time.DateRange.New",          "obj(i64,i64)")
+RT_FUNC(DateRangeNew, rt_daterange_new, "Zanna.Time.DateRange.New", "obj(i64,i64)", owned)
 RT_FUNC(DateRangeStart,        rt_daterange_start,        "Zanna.Time.DateRange.get_Start",    "i64(obj)")
 RT_FUNC(DateRangeEnd,          rt_daterange_end,          "Zanna.Time.DateRange.get_End",      "i64(obj)")
 RT_FUNC(DateRangeContains,     rt_daterange_contains,     "Zanna.Time.DateRange.Contains",     "i1(obj,i64)")
 RT_FUNC(DateRangeOverlaps,     rt_daterange_overlaps,     "Zanna.Time.DateRange.Overlaps",     "i1(obj,obj)")
-RT_FUNC(DateRangeIntersection, rt_daterange_intersection, "Zanna.Time.DateRange.Intersection", "obj(obj,obj)")
-RT_FUNC(DateRangeUnion,        rt_daterange_union_range,  "Zanna.Time.DateRange.Union",        "obj(obj,obj)")
+RT_FUNC(DateRangeIntersection, rt_daterange_intersection, "Zanna.Time.DateRange.Intersection", "obj(obj,obj)", owned)
+RT_FUNC(DateRangeUnion, rt_daterange_union_range, "Zanna.Time.DateRange.Union", "obj(obj,obj)", owned)
 RT_FUNC(DateRangeDays,         rt_daterange_days,         "Zanna.Time.DateRange.Days",         "i64(obj)")
 RT_FUNC(DateRangeHours,        rt_daterange_hours,        "Zanna.Time.DateRange.Hours",        "i64(obj)")
 RT_FUNC(DateRangeDuration,     rt_daterange_duration,     "Zanna.Time.DateRange.Duration",     "i64(obj)")
-RT_FUNC(DateRangeToString,     rt_daterange_to_string,    "Zanna.Time.DateRange.ToString",     "str(obj)")
+RT_FUNC(DateRangeToString, rt_daterange_to_string, "Zanna.Time.DateRange.ToString", "str(obj)", owned)
 
-RT_FUNC(DateOnlyToday,         rt_dateonly_today,         "Zanna.Time.DateOnly.Today",         "obj()")
-RT_FUNC(DateOnlyCreate,        rt_dateonly_create,        "Zanna.Time.DateOnly.FromParts",        "obj(i64,i64,i64)")
-RT_FUNC(DateOnlyParse,         rt_dateonly_parse,         "Zanna.Time.DateOnly.Parse",         "obj(str)")
-RT_FUNC(DateOnlyFromDays,      rt_dateonly_from_days,     "Zanna.Time.DateOnly.FromDays",      "obj(i64)")
+RT_FUNC(DateOnlyToday, rt_dateonly_today, "Zanna.Time.DateOnly.Today", "obj()", owned)
+RT_FUNC(DateOnlyCreate, rt_dateonly_create, "Zanna.Time.DateOnly.FromParts", "obj(i64,i64,i64)", owned)
+RT_FUNC(DateOnlyParse, rt_dateonly_parse, "Zanna.Time.DateOnly.Parse", "obj(str)", owned)
+RT_FUNC(DateOnlyFromDays, rt_dateonly_from_days, "Zanna.Time.DateOnly.FromDays", "obj(i64)", owned)
 RT_FUNC(DateOnlyYear,          rt_dateonly_year,          "Zanna.Time.DateOnly.get_Year",      "i64(obj)")
 RT_FUNC(DateOnlyMonth,         rt_dateonly_month,         "Zanna.Time.DateOnly.get_Month",     "i64(obj)")
 RT_FUNC(DateOnlyDay,           rt_dateonly_day,           "Zanna.Time.DateOnly.get_Day",       "i64(obj)")
 RT_FUNC(DateOnlyDayOfWeek,     rt_dateonly_day_of_week,   "Zanna.Time.DateOnly.get_DayOfWeek", "i64(obj)")
 RT_FUNC(DateOnlyDayOfYear,     rt_dateonly_day_of_year,   "Zanna.Time.DateOnly.get_DayOfYear", "i64(obj)")
 RT_FUNC(DateOnlyToDays,        rt_dateonly_to_days,       "Zanna.Time.DateOnly.ToDays",        "i64(obj)")
-RT_FUNC(DateOnlyAddDays,       rt_dateonly_add_days,      "Zanna.Time.DateOnly.AddDays",       "obj(obj,i64)")
-RT_FUNC(DateOnlyAddMonths,     rt_dateonly_add_months,    "Zanna.Time.DateOnly.AddMonths",     "obj(obj,i64)")
-RT_FUNC(DateOnlyAddYears,      rt_dateonly_add_years,     "Zanna.Time.DateOnly.AddYears",      "obj(obj,i64)")
+RT_FUNC(DateOnlyAddDays, rt_dateonly_add_days, "Zanna.Time.DateOnly.AddDays", "obj(obj,i64)", owned)
+RT_FUNC(DateOnlyAddMonths, rt_dateonly_add_months, "Zanna.Time.DateOnly.AddMonths", "obj(obj,i64)", owned)
+RT_FUNC(DateOnlyAddYears, rt_dateonly_add_years, "Zanna.Time.DateOnly.AddYears", "obj(obj,i64)", owned)
 RT_FUNC(DateOnlyDiffDays,      rt_dateonly_diff_days,     "Zanna.Time.DateOnly.DiffDays",      "i64(obj,obj)")
 RT_FUNC(DateOnlyIsLeapYear,    rt_dateonly_is_leap_year,  "Zanna.Time.DateOnly.get_IsLeapYear","i1(obj)")
 RT_FUNC(DateOnlyDaysInMonth,   rt_dateonly_days_in_month, "Zanna.Time.DateOnly.get_DaysInMonth","i64(obj)")
-RT_FUNC(DateOnlyStartOfMonth,  rt_dateonly_start_of_month,"Zanna.Time.DateOnly.StartOfMonth",  "obj(obj)")
-RT_FUNC(DateOnlyEndOfMonth,    rt_dateonly_end_of_month,  "Zanna.Time.DateOnly.EndOfMonth",    "obj(obj)")
-RT_FUNC(DateOnlyStartOfYear,   rt_dateonly_start_of_year, "Zanna.Time.DateOnly.StartOfYear",   "obj(obj)")
-RT_FUNC(DateOnlyEndOfYear,     rt_dateonly_end_of_year,   "Zanna.Time.DateOnly.EndOfYear",     "obj(obj)")
+RT_FUNC(DateOnlyStartOfMonth, rt_dateonly_start_of_month, "Zanna.Time.DateOnly.StartOfMonth", "obj(obj)", owned)
+RT_FUNC(DateOnlyEndOfMonth, rt_dateonly_end_of_month, "Zanna.Time.DateOnly.EndOfMonth", "obj(obj)", owned)
+RT_FUNC(DateOnlyStartOfYear, rt_dateonly_start_of_year, "Zanna.Time.DateOnly.StartOfYear", "obj(obj)", owned)
+RT_FUNC(DateOnlyEndOfYear, rt_dateonly_end_of_year, "Zanna.Time.DateOnly.EndOfYear", "obj(obj)", owned)
 RT_FUNC(DateOnlyCmp,           rt_dateonly_cmp,           "Zanna.Time.DateOnly.Compare",           "i64(obj,obj)")
 RT_FUNC(DateOnlyEquals,        rt_dateonly_equals,        "Zanna.Time.DateOnly.Equals",        "i1(obj,obj)")
-RT_FUNC(DateOnlyToString,      rt_dateonly_to_string,     "Zanna.Time.DateOnly.ToString",      "str(obj)")
-RT_FUNC(DateOnlyFormat,        rt_dateonly_format,        "Zanna.Time.DateOnly.Format",        "str(obj,str)")
+RT_FUNC(DateOnlyToString, rt_dateonly_to_string, "Zanna.Time.DateOnly.ToString", "str(obj)", owned)
+RT_FUNC(DateOnlyFormat, rt_dateonly_format, "Zanna.Time.DateOnly.Format", "str(obj,str)", owned)
 
 
 //=============================================================================
 // NUMBER FORMAT
 //=============================================================================
 
-RT_FUNC(NumFmtDecimals,  rt_numfmt_decimals,  "Zanna.Text.InvariantNumberFormat.Decimals",  "str(f64,i64)")
-RT_FUNC(NumFmtThousands, rt_numfmt_thousands, "Zanna.Text.InvariantNumberFormat.Thousands", "str(i64,str)")
-RT_FUNC(NumFmtCurrency,  rt_numfmt_currency,  "Zanna.Text.InvariantNumberFormat.Currency",  "str(f64,str)")
-RT_FUNC(NumFmtPercent,   rt_numfmt_percent,   "Zanna.Text.InvariantNumberFormat.Percent",   "str(f64)")
-RT_FUNC(NumFmtOrdinal,   rt_numfmt_ordinal,   "Zanna.Text.InvariantNumberFormat.Ordinal",   "str(i64)")
-RT_FUNC(NumFmtToWords,   rt_numfmt_to_words,  "Zanna.Text.InvariantNumberFormat.ToWords",   "str(i64)")
-RT_FUNC(NumFmtBytes,     rt_numfmt_bytes,     "Zanna.Text.InvariantNumberFormat.Bytes",     "str(i64)")
-RT_FUNC(NumFmtPad,       rt_numfmt_pad,       "Zanna.Text.InvariantNumberFormat.Pad",       "str(i64,i64)")
+RT_FUNC(NumFmtDecimals, rt_numfmt_decimals, "Zanna.Text.InvariantNumberFormat.Decimals", "str(f64,i64)", owned)
+RT_FUNC(NumFmtThousands, rt_numfmt_thousands, "Zanna.Text.InvariantNumberFormat.Thousands", "str(i64,str)", owned)
+RT_FUNC(NumFmtCurrency, rt_numfmt_currency, "Zanna.Text.InvariantNumberFormat.Currency", "str(f64,str)", owned)
+RT_FUNC(NumFmtPercent, rt_numfmt_percent, "Zanna.Text.InvariantNumberFormat.Percent", "str(f64)", owned)
+RT_FUNC(NumFmtOrdinal, rt_numfmt_ordinal, "Zanna.Text.InvariantNumberFormat.Ordinal", "str(i64)", owned)
+RT_FUNC(NumFmtToWords, rt_numfmt_to_words, "Zanna.Text.InvariantNumberFormat.ToWords", "str(i64)", owned)
+RT_FUNC(NumFmtBytes, rt_numfmt_bytes, "Zanna.Text.InvariantNumberFormat.Bytes", "str(i64)", owned)
+RT_FUNC(NumFmtPad, rt_numfmt_pad, "Zanna.Text.InvariantNumberFormat.Pad", "str(i64,i64)", owned)
 
 //=============================================================================
 // DIFF
 //=============================================================================
 
-RT_FUNC(DiffLines,        rt_diff_lines,         "Zanna.Text.Diff.Lines",        "seq<str>(str,str)")
-RT_FUNC(DiffUnified,      rt_diff_unified,       "Zanna.Text.Diff.Unified",      "str(str,str,i64)")
+RT_FUNC(DiffLines, rt_diff_lines, "Zanna.Text.Diff.Lines", "seq<str>(str,str)", owned)
+RT_FUNC(DiffUnified, rt_diff_unified, "Zanna.Text.Diff.Unified", "str(str,str,i64)", owned)
 
 //=============================================================================
 // TESTING (ADR 0251) — non-fatal assertions and golden digests
@@ -324,7 +324,7 @@ RT_FUNC(DiffUnified,      rt_diff_unified,       "Zanna.Text.Diff.Unified",     
 // so a test program runs every check, prints every failure, and emits one
 // parseable verdict line plus a process exit code.
 
-RT_FUNC(TestingSuiteNew,    rt_testing_suite_new,   "Zanna.Testing.Suite.New",          "obj(str)")
+RT_FUNC(TestingSuiteNew, rt_testing_suite_new, "Zanna.Testing.Suite.New", "obj(str)", owned)
 RT_FUNC(TestingCheck,       rt_testing_check,       "Zanna.Testing.Suite.Check",        "i1(obj,i1,str)")
 RT_FUNC(TestingEqInt,       rt_testing_eq_int,      "Zanna.Testing.Suite.EqInt",        "i1(obj,i64,i64,str)")
 RT_FUNC(TestingEqStr,       rt_testing_eq_str,      "Zanna.Testing.Suite.EqStr",        "i1(obj,str,str,str)")
@@ -334,11 +334,11 @@ RT_FUNC(TestingFail,        rt_testing_fail,        "Zanna.Testing.Suite.Fail", 
 RT_FUNC(TestingNote,        rt_testing_note,        "Zanna.Testing.Suite.Note",         "void(obj,str)")
 RT_FUNC(TestingFailures,    rt_testing_failures,    "Zanna.Testing.Suite.get_Failures", "i64(obj)")
 RT_FUNC(TestingChecks,      rt_testing_checks,      "Zanna.Testing.Suite.get_Checks",   "i64(obj)")
-RT_FUNC(TestingName,        rt_testing_name,        "Zanna.Testing.Suite.get_Name",     "str(obj)")
+RT_FUNC(TestingName, rt_testing_name, "Zanna.Testing.Suite.get_Name", "str(obj)", owned)
 RT_FUNC(TestingPassed,      rt_testing_passed,      "Zanna.Testing.Suite.get_Passed",   "i1(obj)")
 RT_FUNC(TestingReport,      rt_testing_report,      "Zanna.Testing.Suite.Report",       "i1(obj)")
 RT_FUNC(TestingExitCode,    rt_testing_exit_code,   "Zanna.Testing.Suite.ExitCode",     "i64(obj)")
-RT_FUNC(TestingGoldenDigest, rt_testing_golden_digest, "Zanna.Testing.Golden.Digest",   "str(str)")
+RT_FUNC(TestingGoldenDigest, rt_testing_golden_digest, "Zanna.Testing.Golden.Digest", "str(str)", owned)
 RT_FUNC(TestingGoldenCheck, rt_testing_golden_check, "Zanna.Testing.Golden.Check",      "i1(obj,str,str,str)")
 
 //=============================================================================
@@ -349,39 +349,39 @@ RT_FUNC(TestingGoldenCheck, rt_testing_golden_check, "Zanna.Testing.Golden.Check
 // hand-counts column widths in a header literal and keeps them in sync with a
 // chain of pad calls by eye.
 
-RT_FUNC(TableNew,           rt_table_new,             "Zanna.Text.Table.New",             "obj()")
+RT_FUNC(TableNew, rt_table_new, "Zanna.Text.Table.New", "obj()", owned)
 RT_FUNC(TableAddColumn,     rt_table_add_column,      "Zanna.Text.Table.AddColumn",       "i64(obj,str,i64,i64)")
 RT_FUNC(TableAddColumnAuto, rt_table_add_column_auto, "Zanna.Text.Table.AddColumnAuto",   "i64(obj,str,i64)")
 RT_FUNC(TableSetTruncate,   rt_table_set_truncate,    "Zanna.Text.Table.SetTruncate",     "void(obj,i64,i1)")
 RT_FUNC(TableColumnCount,   rt_table_column_count,    "Zanna.Text.Table.get_ColumnCount", "i64(obj)")
 RT_FUNC(TableAddRow,        rt_table_add_row,         "Zanna.Text.Table.AddRow",          "i64(obj)")
 RT_FUNC(TableSetCell,       rt_table_set_cell,        "Zanna.Text.Table.SetCell",         "void(obj,i64,i64,str)")
-RT_FUNC(TableGetCell,       rt_table_get_cell,        "Zanna.Text.Table.GetCell",         "str(obj,i64,i64)")
+RT_FUNC(TableGetCell, rt_table_get_cell, "Zanna.Text.Table.GetCell", "str(obj,i64,i64)", owned)
 RT_FUNC(TableRowCount,      rt_table_row_count,       "Zanna.Text.Table.get_RowCount",    "i64(obj)")
 RT_FUNC(TableClearRows,     rt_table_clear_rows,      "Zanna.Text.Table.ClearRows",       "void(obj)")
 RT_FUNC(TableSetGutter,     rt_table_set_gutter,      "Zanna.Text.Table.SetGutter",       "void(obj,str)")
-RT_FUNC(TableRenderHeader,  rt_table_render_header,   "Zanna.Text.Table.RenderHeader",    "str(obj)")
-RT_FUNC(TableRenderRule,    rt_table_render_rule,     "Zanna.Text.Table.RenderRule",      "str(obj,str)")
-RT_FUNC(TableRenderRow,     rt_table_render_row,      "Zanna.Text.Table.RenderRow",       "str(obj,i64)")
-RT_FUNC(TableRender,        rt_table_render,          "Zanna.Text.Table.Render",          "str(obj,i1,i1)")
+RT_FUNC(TableRenderHeader, rt_table_render_header, "Zanna.Text.Table.RenderHeader", "str(obj)", owned)
+RT_FUNC(TableRenderRule, rt_table_render_rule, "Zanna.Text.Table.RenderRule", "str(obj,str)", owned)
+RT_FUNC(TableRenderRow, rt_table_render_row, "Zanna.Text.Table.RenderRow", "str(obj,i64)", owned)
+RT_FUNC(TableRender, rt_table_render, "Zanna.Text.Table.Render", "str(obj,i1,i1)", owned)
 RT_FUNC(TableAlignLeft,     rt_table_align_left,      "Zanna.Text.Table.get_AlignLeft",   "i64()")
 RT_FUNC(TableAlignRight,    rt_table_align_right,     "Zanna.Text.Table.get_AlignRight",  "i64()")
 RT_FUNC(TableAlignCenter,   rt_table_align_center,    "Zanna.Text.Table.get_AlignCenter", "i64()")
 RT_FUNC(DiffCountChanges, rt_diff_count_changes, "Zanna.Text.Diff.CountChanges", "i64(str,str)")
-RT_FUNC(DiffPatch,        rt_diff_patch,         "Zanna.Text.Diff.Patch",        "str(str,obj)")
+RT_FUNC(DiffPatch, rt_diff_patch, "Zanna.Text.Diff.Patch", "str(str,obj)", owned)
 
 //=============================================================================
 // DEFAULT MAP
 //=============================================================================
 
-RT_FUNC(DefaultMapNew,        rt_defaultmap_new,         "Zanna.Collections.DefaultMap.New",        "obj(obj)")
+RT_FUNC(DefaultMapNew, rt_defaultmap_new, "Zanna.Collections.DefaultMap.New", "obj(obj)", owned)
 RT_FUNC(DefaultMapLen,        rt_defaultmap_len,         "Zanna.Collections.DefaultMap.get_Count",    "i64(obj)")
-RT_FUNC(DefaultMapGet,        rt_defaultmap_get,         "Zanna.Collections.DefaultMap.Get",        "obj(obj,str)")
+RT_FUNC(DefaultMapGet, rt_defaultmap_get, "Zanna.Collections.DefaultMap.Get", "obj(obj,str)", borrowed)
 RT_FUNC(DefaultMapSet,        rt_defaultmap_set,         "Zanna.Collections.DefaultMap.Set",        "void(obj,str,obj)")
 RT_FUNC(DefaultMapHas,        rt_defaultmap_has,         "Zanna.Collections.DefaultMap.Has",        "i1(obj,str)")
 RT_FUNC(DefaultMapRemove,     rt_defaultmap_remove,      "Zanna.Collections.DefaultMap.Remove",     "i1(obj,str)")
-RT_FUNC(DefaultMapKeys,       rt_defaultmap_keys,        "Zanna.Collections.DefaultMap.Keys",       "seq<str>(obj)")
-RT_FUNC(DefaultMapGetDefault, rt_defaultmap_get_default, "Zanna.Collections.DefaultMap.GetDefault", "obj(obj)")
+RT_FUNC(DefaultMapKeys, rt_defaultmap_keys, "Zanna.Collections.DefaultMap.Keys", "seq<str>(obj)", owned)
+RT_FUNC(DefaultMapGetDefault, rt_defaultmap_get_default, "Zanna.Collections.DefaultMap.GetDefault", "obj(obj)", borrowed)
 RT_FUNC(DefaultMapClear,      rt_defaultmap_clear,       "Zanna.Collections.DefaultMap.Clear",      "void(obj)")
 RT_FUNC(DefaultMapIsEmpty,   rt_defaultmap_is_empty,    "Zanna.Collections.DefaultMap.get_IsEmpty","i1(obj)")
 
@@ -389,14 +389,14 @@ RT_FUNC(DefaultMapIsEmpty,   rt_defaultmap_is_empty,    "Zanna.Collections.Defau
 // CORE - MESSAGEBUS
 //=============================================================================
 
-RT_FUNC(MsgBusNew,              rt_msgbus_new,                "Zanna.Core.MessageBus.New",              "obj()")
-RT_FUNC(MsgBusCallback,         rt_msgbus_callback_new,       "Zanna.Core.MessageBus.Callback",         "obj(obj)")
+RT_FUNC(MsgBusNew, rt_msgbus_new, "Zanna.Core.MessageBus.New", "obj()", owned)
+RT_FUNC(MsgBusCallback, rt_msgbus_callback_new, "Zanna.Core.MessageBus.Callback", "obj(obj)", owned)
 RT_FUNC(MsgBusSubscribe,        rt_msgbus_subscribe,          "Zanna.Core.MessageBus.Subscribe",        "i64(obj,str,obj)")
 RT_FUNC(MsgBusUnsubscribe,      rt_msgbus_unsubscribe,        "Zanna.Core.MessageBus.Unsubscribe",      "i1(obj,i64)")
 RT_FUNC(MsgBusPublish,          rt_msgbus_publish,            "Zanna.Core.MessageBus.Publish",          "i64(obj,str,obj)")
 RT_FUNC(MsgBusSubscriberCount,  rt_msgbus_subscriber_count,   "Zanna.Core.MessageBus.SubscriberCount",  "i64(obj,str)")
 RT_FUNC(MsgBusTotalSubs,        rt_msgbus_total_subscriptions,"Zanna.Core.MessageBus.get_TotalSubscriptions", "i64(obj)")
-RT_FUNC(MsgBusTopics,           rt_msgbus_topics,             "Zanna.Core.MessageBus.Topics",           "seq<str>(obj)")
+RT_FUNC(MsgBusTopics, rt_msgbus_topics, "Zanna.Core.MessageBus.Topics", "seq<str>(obj)", owned)
 RT_FUNC(MsgBusClearTopic,       rt_msgbus_clear_topic,        "Zanna.Core.MessageBus.ClearTopic",       "void(obj,str)")
 RT_FUNC(MsgBusClear,            rt_msgbus_clear,              "Zanna.Core.MessageBus.Clear",            "void(obj)")
 
@@ -417,14 +417,14 @@ RT_FUNC(DiagAssertGt, rt_diag_assert_gt, "Zanna.Core.Diagnostics.AssertGt", "voi
 RT_FUNC(DiagAssertLt, rt_diag_assert_lt, "Zanna.Core.Diagnostics.AssertLt", "void(i64,i64,str)")
 RT_FUNC(DiagAssertGte, rt_diag_assert_gte, "Zanna.Core.Diagnostics.AssertGte", "void(i64,i64,str)")
 RT_FUNC(DiagAssertLte, rt_diag_assert_lte, "Zanna.Core.Diagnostics.AssertLte", "void(i64,i64,str)")
-RT_FUNC(DiagnosticsCurrentTrap, rt_diagnostics_current_trap, "Zanna.Diagnostics.CurrentTrap", "obj<Zanna.Option>()")
+RT_FUNC(DiagnosticsCurrentTrap, rt_diagnostics_current_trap, "Zanna.Diagnostics.CurrentTrap", "obj<Zanna.Option>()", owned)
 RT_FUNC(TrapInfoKind,          rt_trap_info_get_kind,       "Zanna.Diagnostics.TrapInfo.get_Kind",     "i64(obj)")
 RT_FUNC(TrapInfoCode,          rt_trap_info_get_code,       "Zanna.Diagnostics.TrapInfo.get_Code",     "i64(obj)")
 RT_FUNC(TrapInfoIp,            rt_trap_info_get_ip,         "Zanna.Diagnostics.TrapInfo.get_Ip",       "i64(obj)")
 RT_FUNC(TrapInfoLine,          rt_trap_info_get_line,       "Zanna.Diagnostics.TrapInfo.get_Line",     "i64(obj)")
-RT_FUNC(TrapInfoKindName,      rt_trap_info_get_kind_name,  "Zanna.Diagnostics.TrapInfo.get_KindName", "str(obj)")
-RT_FUNC(TrapInfoMessage,       rt_trap_info_get_message,    "Zanna.Diagnostics.TrapInfo.get_Message",  "str(obj)")
-RT_FUNC(TrapInfoLocation,      rt_trap_info_get_location,   "Zanna.Diagnostics.TrapInfo.get_Location", "str(obj)")
+RT_FUNC(TrapInfoKindName, rt_trap_info_get_kind_name, "Zanna.Diagnostics.TrapInfo.get_KindName", "str(obj)", owned)
+RT_FUNC(TrapInfoMessage, rt_trap_info_get_message, "Zanna.Diagnostics.TrapInfo.get_Message", "str(obj)", owned)
+RT_FUNC(TrapInfoLocation, rt_trap_info_get_location, "Zanna.Diagnostics.TrapInfo.get_Location", "str(obj)", owned)
 
 //=============================================================================
 // DIAGNOSTICS - STOPWATCH
@@ -434,11 +434,11 @@ RT_FUNC(StopwatchElapsedMs, rt_stopwatch_elapsed_ms, "Zanna.Time.Stopwatch.get_E
 RT_FUNC(StopwatchElapsedNs, rt_stopwatch_elapsed_ns, "Zanna.Time.Stopwatch.get_ElapsedNs", "i64(obj)")
 RT_FUNC(StopwatchElapsedUs, rt_stopwatch_elapsed_us, "Zanna.Time.Stopwatch.get_ElapsedUs", "i64(obj)")
 RT_FUNC(StopwatchIsRunning, rt_stopwatch_is_running, "Zanna.Time.Stopwatch.get_IsRunning", "i1(obj)")
-RT_FUNC(StopwatchNew,       rt_stopwatch_new,        "Zanna.Time.Stopwatch.New",           "obj()")
+RT_FUNC(StopwatchNew, rt_stopwatch_new, "Zanna.Time.Stopwatch.New", "obj()", owned)
 RT_FUNC(StopwatchReset,     rt_stopwatch_reset,      "Zanna.Time.Stopwatch.Reset",         "void(obj)")
 RT_FUNC(StopwatchRestart,   rt_stopwatch_restart,    "Zanna.Time.Stopwatch.Restart",       "void(obj)")
 RT_FUNC(StopwatchStart,     rt_stopwatch_start,      "Zanna.Time.Stopwatch.Start",         "void(obj)")
-RT_FUNC(StopwatchStartNew,  rt_stopwatch_start_new,  "Zanna.Time.Stopwatch.StartNew",      "obj()")
+RT_FUNC(StopwatchStartNew, rt_stopwatch_start_new, "Zanna.Time.Stopwatch.StartNew", "obj()", owned)
 RT_FUNC(StopwatchStop,      rt_stopwatch_stop,       "Zanna.Time.Stopwatch.Stop",          "void(obj)")
 
 //=============================================================================
@@ -496,20 +496,20 @@ RT_CLASS_END()
 //=============================================================================
 
 RT_FUNC(EnvArgCount, rt_args_count,    "Zanna.System.Environment.GetArgumentCount", "i64()")
-RT_FUNC(EnvArgGet,   rt_args_get,      "Zanna.System.Environment.GetArgument",      "str(i64)")
+RT_FUNC(EnvArgGet, rt_args_get, "Zanna.System.Environment.GetArgument", "str(i64)", owned)
 // Flag and option parsing (ADR 0253). The raw count/index store below is the
 // primitive; every CLI-facing program then rewrote the same scan.
 RT_FUNC(ArgsHasFlag,      rt_args_has_flag,       "Zanna.System.Args.HasFlag",      "i1(str)")
-RT_FUNC(ArgsGetOption,    rt_args_get_option,     "Zanna.System.Args.GetOption",    "str(str,str)")
+RT_FUNC(ArgsGetOption, rt_args_get_option, "Zanna.System.Args.GetOption", "str(str,str)", owned)
 RT_FUNC(ArgsGetOptionInt, rt_args_get_option_int, "Zanna.System.Args.GetOptionInt", "i64(str,i64)")
-RT_FUNC(ArgsPositionals,  rt_args_positionals,    "Zanna.System.Args.Positionals",  "seq()")
-RT_FUNC(EnvCmdLine,  rt_cmdline,       "Zanna.System.Environment.GetCommandLine",   "str()")
+RT_FUNC(ArgsPositionals, rt_args_positionals, "Zanna.System.Args.Positionals", "seq()", owned)
+RT_FUNC(EnvCmdLine, rt_cmdline, "Zanna.System.Environment.GetCommandLine", "str()", owned)
 RT_FUNC(EnvExit,     rt_env_exit,      "Zanna.System.Environment.Exit",       "void(i64)")
-RT_FUNC(EnvGetVar,   rt_env_get_var,   "Zanna.System.Environment.GetVariable",      "str(str)")
+RT_FUNC(EnvGetVar, rt_env_get_var, "Zanna.System.Environment.GetVariable", "str(str)", owned)
 RT_FUNC(EnvHasVar,   rt_env_has_var,   "Zanna.System.Environment.HasVariable",      "i1(str)")
 RT_FUNC(EnvIsNative, rt_env_is_native, "Zanna.System.Environment.IsNative",         "i1()")
 RT_FUNC(EnvSetVar,   rt_env_set_var,   "Zanna.System.Environment.SetVariable",      "void(str,str)")
-RT_FUNC(SystemClipboardGet,     rt_system_clipboard_get,      "Zanna.System.Clipboard.Get",     "str()")
+RT_FUNC(SystemClipboardGet, rt_system_clipboard_get, "Zanna.System.Clipboard.Get", "str()", owned)
 RT_FUNC(SystemClipboardSet,     rt_system_clipboard_set,      "Zanna.System.Clipboard.Set",     "void(str)")
 RT_FUNC(SystemClipboardHasText, rt_system_clipboard_has_text, "Zanna.System.Clipboard.HasText", "i1()")
 
@@ -517,19 +517,19 @@ RT_FUNC(SystemClipboardHasText, rt_system_clipboard_has_text, "Zanna.System.Clip
 // EXEC
 //=============================================================================
 
-RT_FUNC(ExecCapture,     rt_exec_capture,      "Zanna.System.Exec.Capture",      "str(str)")
-RT_FUNC(ExecCaptureArgs, rt_exec_capture_args, "Zanna.System.Exec.CaptureArgs",  "str(str,obj)")
+RT_FUNC(ExecCapture, rt_exec_capture, "Zanna.System.Exec.Capture", "str(str)", owned)
+RT_FUNC(ExecCaptureArgs, rt_exec_capture_args, "Zanna.System.Exec.CaptureArgs", "str(str,obj)", owned)
 RT_FUNC(ExecRun,         rt_exec_run,          "Zanna.System.Exec.Run",          "i64(str)")
 RT_FUNC(ExecRunArgs,     rt_exec_run_args,     "Zanna.System.Exec.RunArgs",      "i64(str,obj)")
 RT_FUNC(ExecShell,       rt_exec_shell,        "Zanna.System.Exec.Shell",        "i64(str)")
-RT_FUNC(ExecShellCapture,rt_exec_shell_capture,"Zanna.System.Exec.ShellCapture", "str(str)")
-RT_FUNC(ExecShellResult, rt_exec_shell_result, "Zanna.System.Exec.ShellResult",  "obj<Zanna.System.CommandResult>(str)")
-RT_FUNC(ExecCommandResultOutput, rt_exec_command_result_output, "Zanna.System.CommandResult.get_Output", "str(obj)")
+RT_FUNC(ExecShellCapture, rt_exec_shell_capture, "Zanna.System.Exec.ShellCapture", "str(str)", owned)
+RT_FUNC(ExecShellResult, rt_exec_shell_result, "Zanna.System.Exec.ShellResult", "obj<Zanna.System.CommandResult>(str)", owned)
+RT_FUNC(ExecCommandResultOutput, rt_exec_command_result_output, "Zanna.System.CommandResult.get_Output", "str(obj)", owned)
 RT_FUNC(ExecCommandResultExitCode, rt_exec_command_result_exit_code, "Zanna.System.CommandResult.get_ExitCode", "i64(obj)")
 RT_FUNC(ExecCommandResultSucceeded, rt_exec_command_result_succeeded, "Zanna.System.CommandResult.get_IsSuccess", "i1(obj)")
 
-RT_FUNC(EmbedHostCreate,     rt_embed_host_create,     "Zanna.System.EmbedHost.Create",              "obj<Zanna.System.EmbedHost.EmbedChannel>(str,i64,i64)")
-RT_FUNC(EmbedHostAttach,     rt_embed_host_attach,     "Zanna.System.EmbedHost.Attach",              "obj<Zanna.System.EmbedHost.EmbedChannel>(str)")
+RT_FUNC(EmbedHostCreate, rt_embed_host_create, "Zanna.System.EmbedHost.Create", "obj<Zanna.System.EmbedHost.EmbedChannel>(str,i64,i64)", owned)
+RT_FUNC(EmbedHostAttach, rt_embed_host_attach, "Zanna.System.EmbedHost.Attach", "obj<Zanna.System.EmbedHost.EmbedChannel>(str)", owned)
 RT_FUNC(EmbedHostClose,      rt_embed_host_close,      "Zanna.System.EmbedHost.Close",               "void(obj)")
 RT_FUNC(EmbedHostIsValid,    rt_embed_host_is_valid,   "Zanna.System.EmbedHost.IsValid",             "i1(obj)")
 RT_FUNC(EmbedHostFrameWidth, rt_embed_host_frame_width, "Zanna.System.EmbedHost.FrameWidth",         "i64(obj)")
@@ -545,19 +545,19 @@ RT_FUNC(EmbedHostEventC,     rt_embed_host_event_c,    "Zanna.System.EmbedHost.E
 RT_FUNC(EmbedHostSetSize,    rt_embed_host_set_size,   "Zanna.System.EmbedHost.SetSize",             "i1(obj,i64,i64)")
 RT_FUNC(EmbedHostProducerAttached, rt_embed_host_producer_attached, "Zanna.System.EmbedHost.ProducerAttached", "i1(obj)")
 RT_FUNC(EmbedHostProducerExited, rt_embed_host_producer_exited, "Zanna.System.EmbedHost.ProducerExited", "i1(obj)")
-RT_FUNC(ProcessStart,        rt_process_start,         "Zanna.System.Process.Start",                 "obj<Zanna.System.Process.ProcessHandle>(str,obj)")
-RT_FUNC(ProcessStartIn,      rt_process_start_in,      "Zanna.System.Process.StartIn",               "obj<Zanna.System.Process.ProcessHandle>(str,obj,str)")
-RT_FUNC(ProcessStartWithEnv, rt_process_start_with_env,"Zanna.System.Process.StartWithEnv",          "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)")
-RT_FUNC(ProcessStartWithEnvOverlay, rt_process_start_with_env_overlay,"Zanna.System.Process.StartWithEnvOverlay", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)")
+RT_FUNC(ProcessStart, rt_process_start, "Zanna.System.Process.Start", "obj<Zanna.System.Process.ProcessHandle>(str,obj)", owned)
+RT_FUNC(ProcessStartIn, rt_process_start_in, "Zanna.System.Process.StartIn", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str)", owned)
+RT_FUNC(ProcessStartWithEnv, rt_process_start_with_env, "Zanna.System.Process.StartWithEnv", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)", owned)
+RT_FUNC(ProcessStartWithEnvOverlay, rt_process_start_with_env_overlay, "Zanna.System.Process.StartWithEnvOverlay", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)", owned)
 RT_FUNC(ProcessIsValid,      rt_process_is_valid,      "Zanna.System.Process.ProcessHandle.IsValid",        "i1(obj)")
 RT_FUNC(ProcessPoll,         rt_process_poll,          "Zanna.System.Process.ProcessHandle.Poll",           "i1(obj)")
 RT_FUNC(ProcessIsRunning,    rt_process_is_running,    "Zanna.System.Process.ProcessHandle.IsRunning",      "i1(obj)")
-RT_FUNC(ProcessReadStdout,   rt_process_read_stdout,   "Zanna.System.Process.ProcessHandle.ReadStdout",     "str(obj)")
-RT_FUNC(ProcessReadStdoutResult, rt_process_read_stdout_result, "Zanna.System.Process.ProcessHandle.ReadStdoutResult", "obj<Zanna.Collections.Map>(obj)")
-RT_FUNC(ProcessReadStderr,   rt_process_read_stderr,   "Zanna.System.Process.ProcessHandle.ReadStderr",     "str(obj)")
-RT_FUNC(ProcessReadStderrResult, rt_process_read_stderr_result, "Zanna.System.Process.ProcessHandle.ReadStderrResult", "obj<Zanna.Collections.Map>(obj)")
-RT_FUNC(ProcessReadOutputResult, rt_process_read_output_result, "Zanna.System.Process.ProcessHandle.ReadOutputResult", "obj<Zanna.Collections.Map>(obj)")
-RT_FUNC(ProcessReadOutputResultBounded, rt_process_read_output_result_bounded, "Zanna.System.Process.ProcessHandle.ReadOutputResultBounded", "obj<Zanna.Collections.Map>(obj,i64,i64)")
+RT_FUNC(ProcessReadStdout, rt_process_read_stdout, "Zanna.System.Process.ProcessHandle.ReadStdout", "str(obj)", owned)
+RT_FUNC(ProcessReadStdoutResult, rt_process_read_stdout_result, "Zanna.System.Process.ProcessHandle.ReadStdoutResult", "obj<Zanna.Collections.Map>(obj)", owned)
+RT_FUNC(ProcessReadStderr, rt_process_read_stderr, "Zanna.System.Process.ProcessHandle.ReadStderr", "str(obj)", owned)
+RT_FUNC(ProcessReadStderrResult, rt_process_read_stderr_result, "Zanna.System.Process.ProcessHandle.ReadStderrResult", "obj<Zanna.Collections.Map>(obj)", owned)
+RT_FUNC(ProcessReadOutputResult, rt_process_read_output_result, "Zanna.System.Process.ProcessHandle.ReadOutputResult", "obj<Zanna.Collections.Map>(obj)", owned)
+RT_FUNC(ProcessReadOutputResultBounded, rt_process_read_output_result_bounded, "Zanna.System.Process.ProcessHandle.ReadOutputResultBounded", "obj<Zanna.Collections.Map>(obj,i64,i64)", owned)
 RT_FUNC(ProcessWriteStdin,   rt_process_write_stdin,   "Zanna.System.Process.ProcessHandle.WriteStdin",     "i64(obj,str)")
 RT_FUNC(ProcessExitCode,     rt_process_exit_code,     "Zanna.System.Process.ProcessHandle.ExitCode",       "i64(obj)")
 RT_FUNC(ProcessKill,         rt_process_kill,          "Zanna.System.Process.ProcessHandle.Kill",           "i1(obj)")
@@ -566,16 +566,16 @@ RT_FUNC(ProcessDestroy,      rt_process_destroy,       "Zanna.System.Process.Pro
 
 // Zanna.System.Pty - PTY-backed child with a merged ANSI output stream + resize.
 // See ADR 0016. Backed by rt_pty.c (POSIX openpt/fork; Windows ConPTY).
-RT_FUNC(PtyOpen,        rt_pty_open,         "Zanna.System.Pty.Open",                 "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)")
-RT_FUNC(PtyOpenResult,  rt_pty_open_result,  "Zanna.System.Pty.OpenResult",           "obj<Zanna.Result>(str,obj,str,obj,i64,i64)")
-RT_FUNC(PtyOpenWithEnvOverlay, rt_pty_open_with_env_overlay, "Zanna.System.Pty.OpenWithEnvOverlay", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)")
-RT_FUNC(PtyOpenWithEnvOverlayResult, rt_pty_open_with_env_overlay_result, "Zanna.System.Pty.OpenWithEnvOverlayResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)")
+RT_FUNC(PtyOpen, rt_pty_open, "Zanna.System.Pty.Open", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)", owned)
+RT_FUNC(PtyOpenResult, rt_pty_open_result, "Zanna.System.Pty.OpenResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)", owned)
+RT_FUNC(PtyOpenWithEnvOverlay, rt_pty_open_with_env_overlay, "Zanna.System.Pty.OpenWithEnvOverlay", "obj<Zanna.System.Pty.PtySession>(str,obj,str,obj,i64,i64)", owned)
+RT_FUNC(PtyOpenWithEnvOverlayResult, rt_pty_open_with_env_overlay_result, "Zanna.System.Pty.OpenWithEnvOverlayResult", "obj<Zanna.Result>(str,obj,str,obj,i64,i64)", owned)
 RT_FUNC(PtyIsSupported, rt_pty_is_supported, "Zanna.System.Pty.IsSupported",          "i1()")
 RT_FUNC(PtyIsValid,     rt_pty_is_valid,     "Zanna.System.Pty.PtySession.IsValid",   "i1(obj)")
 RT_FUNC(PtyPoll,        rt_pty_poll,         "Zanna.System.Pty.PtySession.Poll",      "i1(obj)")
 RT_FUNC(PtyIsRunning,   rt_pty_is_running,   "Zanna.System.Pty.PtySession.IsRunning", "i1(obj)")
-RT_FUNC(PtyRead,        rt_pty_read,         "Zanna.System.Pty.PtySession.Read",      "str(obj)")
-RT_FUNC(PtyReadResult,  rt_pty_read_result,  "Zanna.System.Pty.PtySession.ReadResult","obj<Zanna.Collections.Map>(obj)")
+RT_FUNC(PtyRead, rt_pty_read, "Zanna.System.Pty.PtySession.Read", "str(obj)", owned)
+RT_FUNC(PtyReadResult, rt_pty_read_result, "Zanna.System.Pty.PtySession.ReadResult", "obj<Zanna.Collections.Map>(obj)", owned)
 RT_FUNC(PtyWrite,       rt_pty_write,        "Zanna.System.Pty.PtySession.Write",     "i64(obj,str)")
 RT_FUNC(PtyResize,      rt_pty_resize,       "Zanna.System.Pty.PtySession.Resize",    "i1(obj,i64,i64)")
 RT_FUNC(PtyExitCode,    rt_pty_exit_code,    "Zanna.System.Pty.PtySession.ExitCode",  "i64(obj)")

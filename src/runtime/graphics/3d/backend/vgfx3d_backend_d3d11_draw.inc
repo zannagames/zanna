@@ -817,6 +817,18 @@ static void d3d11_prepare_material_data(const vgfx3d_draw_cmd_t *cmd,
     material_data->pbr_flags[1] = vgfx3d_d3d11_sanitize_alpha_mode(cmd->alpha_mode);
     material_data->pbr_flags[2] = vgfx3d_d3d11_sanitize_bool_flag(has_metallic_roughness_map);
     material_data->pbr_flags[3] = vgfx3d_d3d11_sanitize_bool_flag(has_ao_map);
+    memset(material_data->decal_rows, 0, sizeof(material_data->decal_rows));
+    memset(material_data->decal_params, 0, sizeof(material_data->decal_params));
+    if (cmd->has_decal) {
+        for (int di = 0; di < 12; di++)
+            material_data->decal_rows[di / 4][di % 4] =
+                vgfx3d_d3d11_clamp_float_param(cmd->decal_rows[di], -1.0e6f, 1.0e6f, 0.0f);
+        for (int di = 0; di < 3; di++)
+            material_data->decal_params[di] =
+                vgfx3d_d3d11_clamp_float_param(cmd->decal_forward[di], -1.0f, 1.0f, 0.0f);
+        material_data->decal_params[3] =
+            vgfx3d_d3d11_clamp_float_param(cmd->decal_opacity, 0.0f, 1.0f, 0.0f);
+    }
     material_data->shading_model = vgfx3d_d3d11_sanitize_shading_model(cmd->shading_model);
     vgfx3d_d3d11_copy_float_array_clamped_finite_or(safe_custom_params,
                                                     cmd->custom_params,
@@ -1220,6 +1232,8 @@ static HRESULT d3d11_bind_main_pipeline(d3d11_context_t *ctx,
     ID3D11DeviceContext_VSSetConstantBuffers(ctx->ctx, 5, 1, &ctx->cb_prev_bones);
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 1, 1, &ctx->cb_per_scene);
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 2, 1, &ctx->cb_per_material);
+    /* ADR 0312: the vertex stage projects decals through the material block. */
+    ID3D11DeviceContext_VSSetConstantBuffers(ctx->ctx, 2, 1, &ctx->cb_per_material);
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 3, 1, &ctx->cb_per_lights);
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 6, 1, &ctx->cb_cluster_offsets);
     ID3D11DeviceContext_PSSetConstantBuffers(ctx->ctx, 7, 1, &ctx->cb_cluster_indices);
@@ -1241,11 +1255,11 @@ static void d3d11_unbind_draw_resources(d3d11_context_t *ctx) {
     ID3D11ShaderResourceView *null_vs[2] = {NULL, NULL};
     /* Main draws use t17 for the shadow atlas and t18 for the BRDF LUT. Leaving those
      * slots live can keep an atlas resource tethered when it is resized or destroyed. */
-    ID3D11ShaderResourceView *null_ps[19] = {NULL};
+    ID3D11ShaderResourceView *null_ps[20] = {NULL};
     if (!ctx || !ctx->ctx)
         return;
     ID3D11DeviceContext_VSSetShaderResources(ctx->ctx, 0, 2, null_vs);
-    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 19, null_ps);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 20, null_ps);
 }
 
 /// @brief Pack inverse-projection + inverse-view-rotation data for the skybox shader.
@@ -1381,7 +1395,7 @@ static void d3d11_prepare_postfx_data(d3d11_context_t *ctx,
 static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
                                      const vgfx3d_draw_cmd_t *cmd,
                                      d3d_draw_resources_t *resources) {
-    ID3D11ShaderResourceView *srvs[19];
+    ID3D11ShaderResourceView *srvs[20];
 
     if (!ctx || !cmd || !resources)
         return 0;
@@ -1461,6 +1475,11 @@ static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
         cmd->texture_asset_mip_start[RT_MATERIAL3D_TEXTURE_SLOT_AO],
         cmd->texture_asset_mip_count[RT_MATERIAL3D_TEXTURE_SLOT_AO],
         &resources->textures[10]);
+    /* ADR 0312 projected decal (t19): resident Pixels only; absent = never sampled. */
+    srvs[19] = NULL;
+    if (cmd->has_decal && cmd->decal_map)
+        srvs[19] = d3d11_get_or_create_material_srv(
+            ctx, NULL, cmd->decal_map, 0, 0, 0, &resources->textures[11]);
 
     resources->has_texture =
         vgfx3d_d3d11_srv_is_ready(srvs[0] != NULL, srvs[0] == ctx->fallback_white_srv);
@@ -1498,6 +1517,7 @@ static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 16, srvs);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 17, 1, &srvs[17]);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 18, 1, &srvs[18]);
+    ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 19, 1, &srvs[19]);
     return resources->has_splat;
 }
 
@@ -1509,7 +1529,7 @@ static int d3d11_bind_draw_resources(d3d11_context_t *ctx,
 static void d3d11_release_temporary_resources(d3d_draw_resources_t *resources) {
     if (!resources)
         return;
-    for (int i = 0; i < 11; i++)
+    for (int i = 0; i < 12; i++)
         d3d11_release_temp_srv(&resources->textures[i]);
     d3d11_release_temp_srv(&resources->cubemap);
 }

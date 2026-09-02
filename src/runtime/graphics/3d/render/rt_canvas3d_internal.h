@@ -241,6 +241,11 @@ typedef struct {
      * (motion vectors, occlusion streaks) salt their keys with this so a freed object
      * and its same-address successor never inherit each other's temporal state. */
     uint32_t identity_serial;
+    /* ADR 0312: bind-pose vertices behind a CPU-skinned submission (the
+     * skinning path stamps the source mesh's array onto its stack copy) so
+     * the software backend can project decals in model space. NULL means
+     * `vertices` already ARE the bind positions. Borrowed, never owned. */
+    const vgfx3d_vertex_t *bind_vertices_ref;
 } rt_mesh3d;
 
 /// @brief Return the immutable retained copy for the mesh's current geometry revision.
@@ -748,6 +753,14 @@ typedef struct {
     double slope_scaled_depth_bias; /* additional slope-scaled depth offset for decals/overlays */
     double soft_fade;               /* soft-particle fade distance in world units (0 = off) */
     int8_t ssr_enabled;             /* screen-space reflections opt-in (Plan 10) */
+    /* ADR 0312 projected decal layer: a texture composited over the albedo
+     * through a MODEL-space projector (pre-skin / bind positions), never the
+     * mesh UVs. Runtime-only; not persisted into VSCN. */
+    void *decal_map;         /* Pixels, TextureAsset3D, or RenderTarget3D source, or NULL */
+    double decal_rows[12];   /* row-major 3x4: (s, t, d) = rows * (x, y, z, 1) */
+    double decal_forward[3]; /* unit projector forward; surfaces with dot(n, f) < 0 take it */
+    double decal_opacity;    /* [0,1] multiplier on the decal alpha, default 1 */
+    int8_t decal_projector_set;
     uint32_t identity_serial;       /* allocation generation (see rt_mesh3d.identity_serial) */
 } rt_material3d;
 
@@ -1656,6 +1669,8 @@ typedef struct {
     int8_t backface_cull;
     int8_t frustum_culling;
     int8_t occlusion_culling;
+    /// ADR 0311: depth-only shading for headless probes (software backend honours it).
+    int8_t depth_only_shading;
     int8_t opaque_depth_sorting;
     float occlusion_depth_margin;
     int32_t occlusion_rect_expand_cells;

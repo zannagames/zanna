@@ -175,6 +175,10 @@ int32_t rt_heap_try_retain_live(void *payload);
 /// @return New reference count after decrement (0 when freed).
 size_t rt_heap_release(void *payload);
 
+/// @brief Debug aid: print every live object payload (class id, size, refcount).
+/// @details Used by the collector's `ZANNA_GC_DUMP_TRACKED` dump; single-threaded.
+void rt_heap_debug_dump_objects(void);
+
 /// @brief Decrement the reference count without immediate free.
 /// @details Allows batched cleanup in contexts where immediate free is unsafe
 ///          (e.g., re-entrant callbacks) or to avoid deep recursive frees. This

@@ -163,8 +163,89 @@ func start() {    var p = new Point();
     auto result = compile(input, opts, sm);
 
     ASSERT_TRUE(result.succeeded());
-    // No deinit -> no __dtor function
+    // No deinit and only value fields -> nothing to release, no __dtor function
     EXPECT_FALSE(hasFunction(result.module, "Point.__dtor"));
+}
+
+/// @brief A class without deinit still owns its reference fields: the compiler
+///        synthesizes a __dtor that releases them (strings, objects, lists).
+TEST(ZiaDestructors, SynthesizedDtorReleasesReferenceFields) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+class Tag {
+    expose Integer id;
+}
+
+class Holder {
+    expose String name;
+    expose Tag tag;
+    expose List[Integer] pad;
+}
+
+func start() {    var h = new Holder();
+}
+)";
+
+    CompilerInput input{.source = source, .path = "test_synth_dtor.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+
+    ASSERT_TRUE(result.succeeded());
+    EXPECT_TRUE(hasFunction(result.module, "Holder.__dtor"));
+    EXPECT_TRUE(hasSelfParam(result.module, "Holder.__dtor"));
+    EXPECT_TRUE(returnsVoid(result.module, "Holder.__dtor"));
+    EXPECT_TRUE(hasCallee(result.module, "Holder.__dtor", "rt_str_release_maybe"));
+    EXPECT_TRUE(hasCallee(result.module, "Holder.__dtor", "rt_obj_release_check0"));
+    EXPECT_TRUE(hasCallee(result.module, "__zia_dtor_dispatch", "Holder.__dtor"));
+    // Value-only classes still get no destructor.
+    EXPECT_FALSE(hasFunction(result.module, "Tag.__dtor"));
+}
+
+/// @brief A derived class chains to the base destructor instead of releasing
+///        inherited fields itself, so the base deinit body runs for derived
+///        instances and no field is released twice.
+TEST(ZiaDestructors, DerivedDtorChainsToBase) {
+    SourceManager sm;
+    const std::string source = R"(
+module Test;
+
+class Base {
+    expose String label;
+    deinit { }
+}
+
+class Derived extends Base {
+    expose List[Integer] extra;
+}
+
+class Leaf extends Derived {
+    expose Integer n;
+}
+
+func start() {    var d = new Derived();
+    var l = new Leaf();
+}
+)";
+
+    CompilerInput input{.source = source, .path = "test_dtor_chain.zia"};
+    CompilerOptions opts{};
+    auto result = compile(input, opts, sm);
+
+    ASSERT_TRUE(result.succeeded());
+    EXPECT_TRUE(hasFunction(result.module, "Base.__dtor"));
+    EXPECT_TRUE(hasCallee(result.module, "Base.__dtor", "rt_str_release_maybe"));
+    EXPECT_TRUE(hasFunction(result.module, "Derived.__dtor"));
+    EXPECT_TRUE(hasCallee(result.module, "Derived.__dtor", "Base.__dtor"));
+    // The inherited string is the base destructor's job.
+    EXPECT_FALSE(hasCallee(result.module, "Derived.__dtor", "rt_str_release_maybe"));
+    EXPECT_TRUE(hasCallee(result.module, "Derived.__dtor", "rt_obj_release_check0"));
+    // A leaf with only value fields of its own still needs a destructor so the
+    // chain reaches Base and Derived.
+    EXPECT_TRUE(hasFunction(result.module, "Leaf.__dtor"));
+    EXPECT_TRUE(hasCallee(result.module, "Leaf.__dtor", "Derived.__dtor"));
+    EXPECT_TRUE(hasCallee(result.module, "__zia_dtor_dispatch", "Leaf.__dtor"));
 }
 
 /// @brief Test destructor with user code that accesses self fields.
@@ -255,8 +336,11 @@ func start() {    var r = new Resource();
 
     ASSERT_TRUE(result.succeeded());
     EXPECT_TRUE(hasFunction(result.module, "__zia_dtor_dispatch"));
-    EXPECT_TRUE(hasCallee(result.module, "makeResource", "__zia_dtor_dispatch") ||
-                hasCallee(result.module, "main", "__zia_dtor_dispatch"));
+    // The dispatcher is reached through the runtime hook installed at entry,
+    // never called directly: rt_obj_free dispatches for compiled and
+    // runtime-internal releases alike.
+    EXPECT_TRUE(hasCallee(result.module, "main", "rt_obj_set_class_dtor_hook"));
+    EXPECT_FALSE(hasCallee(result.module, "main", "__zia_dtor_dispatch"));
     EXPECT_TRUE(hasCallee(result.module, "__zia_dtor_dispatch", "Resource.__dtor"));
     EXPECT_TRUE(hasCallee(result.module, "main", "rt_heap_release_deferred") ||
                 hasCallee(result.module, "makeResource", "rt_heap_release_deferred"));

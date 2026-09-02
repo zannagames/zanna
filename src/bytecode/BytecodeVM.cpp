@@ -184,6 +184,7 @@ UnifiedRuntimeHandler gPriorParallelForHandler = nullptr;
 UnifiedRuntimeHandler gPriorParallelForPoolHandler = nullptr;
 UnifiedRuntimeHandler gPriorPoolSubmitHandler = nullptr;
 UnifiedRuntimeHandler gPriorParallelInvokeHandler = nullptr;
+UnifiedRuntimeHandler gPriorObjSetClassDtorHookHandler = nullptr;
 UnifiedRuntimeHandler gPriorParallelInvokePoolHandler = nullptr;
 UnifiedRuntimeHandler gPriorParallelForEachHandler = nullptr;
 UnifiedRuntimeHandler gPriorParallelForEachPoolHandler = nullptr;
@@ -6642,6 +6643,72 @@ static void runBytecodeInvoke(BytecodeVM &vm,
     }
 }
 
+/// @brief Class destructor dispatcher registered by the running bytecode module.
+/// @details `rt_obj_set_class_dtor_hook` receives a tagged bytecode function
+///          value, not native code, so the bridge remembers the resolved
+///          function (and the module it belongs to) and installs a C trampoline
+///          in the runtime. The module check makes the trampoline inert for any
+///          later program that never registered a dispatcher of its own.
+static const BytecodeFunction *gBytecodeClassDtorFn = nullptr;
+static const BytecodeModule *gBytecodeClassDtorModule = nullptr;
+
+/// @brief Runtime-side trampoline: run the module's `__zia_dtor_dispatch` re-entrantly.
+/// @param obj Object payload whose reference count reached zero.
+/// @details Only the thread executing the owning bytecode module can dispatch;
+///          a foreign thread or a different module leaves the fields unreleased
+///          rather than executing bytecode off its VM.
+static void bytecode_class_dtor_trampoline(void *obj) {
+    if (!obj)
+        return;
+    BytecodeVM *vm = activeBytecodeVMInstance();
+    const BytecodeFunction *fn = gBytecodeClassDtorFn;
+    if (!vm || !fn || activeBytecodeModule() != gBytecodeClassDtorModule)
+        return;
+    BCSlot self;
+    self.ptr = obj;
+    std::vector<BCSlot> args{self};
+    vm->invokeVoidReentrant(fn, args);
+}
+
+/// @brief Bridge `rt_obj_set_class_dtor_hook` for the bytecode VM.
+/// @param args Runtime ABI slots containing `(dispatcher)`.
+/// @param result Unused void-result storage forwarded to a prior handler.
+/// @details Resolves the tagged dispatcher to a bytecode function and installs the
+///          re-entrant trampoline; a null dispatcher clears the hook. Outside the
+///          bytecode VM the value is a real function address and is installed as is.
+static void unified_obj_set_class_dtor_hook_handler(void **args, void *result) {
+    void *fnValue = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
+    if (BytecodeVM *bcVm = activeBytecodeVMInstance()) {
+        (void)bcVm;
+        if (const BytecodeModule *bcModule = activeBytecodeModule()) {
+            if (!fnValue) {
+                gBytecodeClassDtorFn = nullptr;
+                gBytecodeClassDtorModule = nullptr;
+                rt_obj_set_class_dtor_hook(nullptr);
+                return;
+            }
+            const BytecodeFunction *fn = resolveBytecodeEntry(bcModule, fnValue);
+            if (!fn) {
+                rt_trap("rt_obj_set_class_dtor_hook: invalid dispatcher function");
+                return;
+            }
+            if (fn->hasReturn || fn->numParams != 1) {
+                rt_trap("rt_obj_set_class_dtor_hook: dispatcher must be (Ptr) -> Unit");
+                return;
+            }
+            gBytecodeClassDtorFn = fn;
+            gBytecodeClassDtorModule = bcModule;
+            rt_obj_set_class_dtor_hook(reinterpret_cast<void *>(&bytecode_class_dtor_trampoline));
+            return;
+        }
+    }
+    if (gPriorObjSetClassDtorHookHandler) {
+        gPriorObjSetClassDtorHookHandler(args, result);
+        return;
+    }
+    rt_obj_set_class_dtor_hook(fnValue);
+}
+
 /// @brief Bridge `Parallel.For` for the bytecode VM, otherwise chain or run natively.
 /// @param args Runtime ABI slots containing `(start, end, callback)`.
 /// @param result Unused void-result storage forwarded to a prior handler.
@@ -7586,6 +7653,9 @@ void registerUnifiedVmRuntimeHandlers() {
         capturePriorHandler("Zanna.Game3D.World3D.DrawOverlay",
                             reinterpret_cast<void *>(&unified_game3d_draw_overlay_handler),
                             gPriorGame3DDrawOverlayHandler);
+        capturePriorHandler("rt_obj_set_class_dtor_hook",
+                            reinterpret_cast<void *>(&unified_obj_set_class_dtor_hook_handler),
+                            gPriorObjSetClassDtorHookHandler);
         capturePriorHandler("Zanna.Threads.Parallel.For",
                             reinterpret_cast<void *>(&unified_parallel_for_handler),
                             gPriorParallelForHandler);
@@ -7799,6 +7869,13 @@ void registerUnifiedVmRuntimeHandlers() {
         ext.name = "Zanna.Game3D.World3D.DrawOverlay";
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&unified_game3d_draw_overlay_handler);
+        il::vm::RuntimeBridge::registerExtern(ext);
+    }
+    {
+        il::vm::ExternDesc ext;
+        ext.name = "rt_obj_set_class_dtor_hook";
+        ext.signature = make_signature(ext.name, {SigParam::Ptr});
+        ext.fn = reinterpret_cast<void *>(&unified_obj_set_class_dtor_hook_handler);
         il::vm::RuntimeBridge::registerExtern(ext);
     }
     {

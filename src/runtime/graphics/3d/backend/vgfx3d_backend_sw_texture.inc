@@ -321,6 +321,7 @@ typedef struct screen_vert_t {
     float wx, wy, wz;     /* world position (for fog distance computation) */
     float nx, ny, nz;     /* world normal (for per-pixel lighting with normal maps) */
     float tx, ty, tz, tw; /* world tangent plus handedness sign (for TBN construction) */
+    float ds, dt, dd, dfacing; /* ADR 0312 decal projector coords + facing (raw) */
 } screen_vert_t;
 
 /// @brief Return the S-axis wrap mode for a specific texture slot, falling back to the primary wrap

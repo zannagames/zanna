@@ -450,6 +450,7 @@ static uint64_t canvas3d_backend_state_key_core(deferred_draw_kind_t kind,
     key = canvas3d_mix_sort_ptr(key, cmd->normal_map);
     key = canvas3d_mix_sort_ptr(key, cmd->specular_map);
     key = canvas3d_mix_sort_ptr(key, cmd->emissive_map);
+    key = canvas3d_mix_sort_ptr(key, cmd->decal_map);
     key = canvas3d_mix_sort_ptr(key, cmd->metallic_roughness_map);
     key = canvas3d_mix_sort_ptr(key, cmd->ao_map);
     key = canvas3d_mix_sort_ptr(key, cmd->texture_asset);
@@ -1383,6 +1384,22 @@ static void canvas3d_fill_material_cmd(const rt_canvas3d *c,
     cmd->metallic_roughness_map_asset =
         rt_material3d_resolve_texture_native_asset(mat->metallic_roughness_map);
     cmd->ao_map_asset = rt_material3d_resolve_texture_native_asset(mat->ao_map);
+    /* ADR 0312 decal layer: armed only with a source AND a projector. */
+    cmd->decal_map = NULL;
+    cmd->has_decal = 0;
+    cmd->decal_opacity = 0.0f;
+    if (mat->decal_projector_set && mat->decal_map && mat->decal_opacity > 0.0) {
+        const void *decal_px = rt_material3d_resolve_texture_pixels(mat->decal_map);
+        if (decal_px) {
+            cmd->decal_map = decal_px;
+            for (int di = 0; di < 12; di++)
+                cmd->decal_rows[di] = (float)mat->decal_rows[di];
+            for (int di = 0; di < 3; di++)
+                cmd->decal_forward[di] = (float)mat->decal_forward[di];
+            cmd->decal_opacity = (float)mat->decal_opacity;
+            cmd->has_decal = 1;
+        }
+    }
     canvas3d_capture_texture_asset_snapshot(
         cmd, RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS, cmd->metallic_roughness_map_asset);
     canvas3d_capture_texture_asset_snapshot(cmd, RT_MATERIAL3D_TEXTURE_SLOT_AO, cmd->ao_map_asset);
@@ -2288,6 +2305,7 @@ int canvas3d_begin_overlay_frame(rt_canvas3d *c, int8_t preserve_existing_color)
                                         params.projection[r * 4 + 1] * params.view[1 * 4 + col] +
                                         params.projection[r * 4 + 2] * params.view[2 * 4 + col] +
                                         params.projection[r * 4 + 3] * params.view[3 * 4 + col];
+    params.depth_only_shading = c->depth_only_shading;
     c->backend->begin_frame(c->backend_ctx, &params);
     c->in_frame = 1;
     return 1;

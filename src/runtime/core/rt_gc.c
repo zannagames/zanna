@@ -1537,14 +1537,83 @@ static int gc_free_finalized_unreachable(gc_garbage_state *state, void *release_
 /// observe a stable set of strong edges and matching reference counts.
 /// @return Number of objects freed. Reentrant calls, calls deferred from a
 ///   mutator scope, empty sets, and returning error traps yield zero.
+/// @brief Debug aid: list every tracked object still alive after a collection.
+/// @details Enabled by `ZANNA_GC_DUMP_TRACKED=1`. Prints one line per tracked
+///          payload (kind, element kind, length, bytes, refcount, class id) and
+///          the class ids of the first few non-null elements of reference
+///          arrays, so a leak can be attributed to the class that owns the
+///          list. Runs without the GC lock: it is a single-threaded diagnostic
+///          for probes, never part of normal execution.
+static void gc_debug_dump_tracked(void) {
+    static int checked = 0;
+    static int enabled = 0;
+    if (!checked) {
+        checked = 1;
+        const char *env = getenv("ZANNA_GC_DUMP_TRACKED");
+        enabled = env && env[0] && env[0] != '0';
+    }
+    if (!enabled)
+        return;
+    fprintf(stderr, "[gc-dump] tracked=%lld\n", (long long)g_gc.count);
+    rt_heap_debug_dump_objects();
+    for (int64_t i = 0; i < g_gc.capacity; ++i) {
+        gc_entry *e = &g_gc.entries[i];
+        if (!e->obj || e->obj == (void *)1)
+            continue;
+        rt_heap_hdr_t *hdr = NULL;
+        if (!rt_heap_try_get_header(e->obj, &hdr) || !hdr) {
+            fprintf(stderr, "[gc-dump] %p (no header)\n", e->obj);
+            continue;
+        }
+        fprintf(stderr,
+                "[gc-dump] %p kind=%u elem=%u len=%zu bytes=%zu rc=%zu class=%lld",
+                e->obj,
+                (unsigned)hdr->kind,
+                (unsigned)hdr->elem_kind,
+                hdr->len,
+                hdr->alloc_size,
+                hdr->refcnt,
+                (long long)hdr->class_id);
+        if ((rt_heap_kind_t)hdr->kind == RT_HEAP_ARRAY &&
+            (hdr->elem_kind == RT_ELEM_OBJ || hdr->elem_kind == RT_ELEM_BOX)) {
+            void **slots = (void **)e->obj;
+            int shown = 0;
+            for (size_t k = 0; k < hdr->len && shown < 4; ++k) {
+                void *el = slots[k];
+                rt_heap_hdr_t *eh = NULL;
+                if (!el)
+                    continue;
+                if (rt_heap_try_get_header(el, &eh) && eh) {
+                    fprintf(stderr,
+                            " [%zu: kind=%u class=%lld rc=%zu]",
+                            k,
+                            (unsigned)eh->kind,
+                            (long long)eh->class_id,
+                            eh->refcnt);
+                } else {
+                    fprintf(stderr, " [%zu: opaque]", k);
+                }
+                ++shown;
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
 int64_t rt_gc_collect(void) {
     int64_t freed = 0;
+    /* Debug dump before the pass (also covers the count == 0 early return). */
+    gc_debug_dump_tracked();
     int64_t snap_count = 0;
     gc_snap_entry *snapshot = NULL;
     gc_edge_list trial_edges = {0};
     gc_worklist work = {0};
-    int64_t garbage_count = 0;
-    gc_garbage_state *garbage = NULL;
+    /* Assigned AFTER the recovery setjmp below and read in its longjmp branch:
+     * C leaves such locals indeterminate unless volatile (an optimized build
+     * kept them in registers and the branch restored finalizers from stale
+     * values — test_rt_gc "restores finalizer after failed collection"). */
+    volatile int64_t garbage_count = 0;
+    gc_garbage_state *volatile garbage = NULL;
     gc_pointer_set garbage_members = {0};
     jmp_buf collection_recovery;
 

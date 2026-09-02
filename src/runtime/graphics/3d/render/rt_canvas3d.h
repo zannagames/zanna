@@ -1524,6 +1524,21 @@ void rt_material3d_set_emissive_map(void *obj, void *pixels);
 /// @param obj Borrowed Material3D handle.
 /// @return 1 when the emissive-map slot is populated; otherwise 0.
 int8_t rt_material3d_get_has_emissive_map(void *obj);
+/// @brief `Material3D.SetDecalMap` — ADR 0312 projected decal layer source (NULL clears).
+void rt_material3d_set_decal_map(void *obj, void *pixels);
+/// @brief `Material3D.HasDecalMap` — nonzero when a decal source and projector are set.
+int8_t rt_material3d_get_has_decal_map(void *obj);
+/// @brief `Material3D.SetDecalProjector` — model-space box: origin, right, up (both unit
+///   direction vectors; up is re-orthogonalized), half extents and depth. Texel (0,0) is
+///   the top-left corner (+up, -right).
+void rt_material3d_set_decal_projector(void *obj, double ox, double oy, double oz,
+                                       double ux, double uy, double uz,
+                                       double vx, double vy, double vz,
+                                       double half_w, double half_h, double depth);
+/// @brief `Material3D.SetDecalOpacity` — [0,1] multiplier on the decal alpha (default 1).
+void rt_material3d_set_decal_opacity(void *obj, double opacity);
+/// @brief `Material3D.DecalOpacity` — read the decal alpha multiplier.
+double rt_material3d_get_decal_opacity(void *obj);
 /// @brief True when an environment cubemap is bound.
 /// @param obj Borrowed Material3D handle.
 /// @return 1 when a complete environment cubemap is retained; otherwise 0.
@@ -2111,6 +2126,12 @@ void rt_canvas3d_set_frustum_culling(void *canvas, int8_t enabled);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param enabled Non-zero to enable history-backed coarse occlusion testing.
 void rt_canvas3d_set_occlusion_culling(void *canvas, int8_t enabled);
+/// @brief `Canvas3D.SetDepthOnlyShading` — ADR 0311: skip fragment shading on the
+///   software backend (depth test and opaque depth writes stay; draw counting,
+///   culling and shadow bookkeeping are unchanged). GPU backends ignore it.
+void rt_canvas3d_set_depth_only_shading(void *canvas, int8_t enabled);
+/// @brief `Canvas3D.DepthOnlyShading` — read the retained depth-only shading flag.
+int8_t rt_canvas3d_get_depth_only_shading(void *canvas);
 
 /* Render-settings readback (ADR 0233) — each write-only setter's read peer over
  * retained state. Handle-returning getters are borrowed (NULL when unbound);

@@ -203,6 +203,32 @@ typedef struct {
 /// @brief Lazily allocated payload registry and its spinlock state.
 static rt_heap_registry_t g_heap_registry_;
 
+static int rt_heap_registry_slot_is_live_(void *slot);
+
+void rt_heap_debug_dump_objects(void) {
+    if (!g_heap_registry_.slots)
+        return;
+    /* Debug-only diagnostic (ZANNA_GC_DUMP_TRACKED): one line per live object
+       payload with its class id and size, so a retained object graph can be
+       attributed to the classes that own it. No locking: single-threaded use. */
+    for (size_t i = 0; i < g_heap_registry_.capacity; ++i) {
+        void *payload = g_heap_registry_.slots[i];
+        if (!rt_heap_registry_slot_is_live_(payload))
+            continue;
+        rt_heap_hdr_t *hdr = (rt_heap_hdr_t *)((char *)payload - sizeof(rt_heap_hdr_t));
+        if (hdr->magic != RT_MAGIC)
+            continue;
+        if ((rt_heap_kind_t)hdr->kind != RT_HEAP_OBJECT)
+            continue;
+        fprintf(stderr,
+                "[heap-obj] %p class=%lld bytes=%zu rc=%zu\n",
+                payload,
+                (long long)hdr->class_id,
+                hdr->alloc_size,
+                hdr->refcnt);
+    }
+}
+
 /// @brief Hash a pointer to 64 bits using David Stafford's mix13 finalizer.
 /// @details Pointers from a real allocator are very correlated in their
 ///          low bits (alignment puts zeros there) and clustered in

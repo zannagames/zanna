@@ -935,8 +935,10 @@ void *rt_seq_drop_while(void *obj, int8_t (*pred)(void *)) {
 ///       accumulators; ownership is entirely defined by the reducer contract.
 /// @note Thread safety: Not thread-safe.
 void *rt_seq_fold(void *obj, void *init, void *(*fn)(void *, void *)) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(init); /* uniform owned result (ADR 0314) */
         return init;
+    }
 
     rt_seq_impl *seq = as_seq(obj, "Seq.Fold: invalid Seq object");
     void *acc = init;
@@ -945,5 +947,7 @@ void *rt_seq_fold(void *obj, void *init, void *(*fn)(void *, void *)) {
         acc = fn(acc, seq->items[i]);
     }
 
+    if (acc == init)
+        rt_obj_retain_maybe(acc); /* an untouched identity is handed back retained */
     return acc;
 }

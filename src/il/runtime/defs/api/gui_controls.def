@@ -25,9 +25,9 @@
 //=============================================================================
 
 RT_FUNC(GuiSystemIsAvailable, rt_gui_system_is_available, "Zanna.GUI.System.IsAvailable", "i1()")
-RT_FUNC(GuiSystemGetUnavailableReason, rt_gui_system_get_unavailable_reason, "Zanna.GUI.System.GetUnavailableReason", "str()")
-RT_FUNC(GuiAppNew, rt_gui_app_new, "Zanna.GUI.App.New", "obj(str,i64,i64)")
-RT_FUNC(GuiAppTryNew, rt_gui_app_try_new, "Zanna.GUI.App.TryNew", "obj<Zanna.Result>(str,i64,i64)")
+RT_FUNC(GuiSystemGetUnavailableReason, rt_gui_system_get_unavailable_reason, "Zanna.GUI.System.GetUnavailableReason", "str()", owned)
+RT_FUNC(GuiAppNew, rt_gui_app_new, "Zanna.GUI.App.New", "obj(str,i64,i64)", owned)
+RT_FUNC(GuiAppTryNew, rt_gui_app_try_new, "Zanna.GUI.App.TryNew", "obj<Zanna.Result>(str,i64,i64)", owned)
 RT_FUNC(GuiAppDestroy, rt_gui_app_destroy, "Zanna.GUI.App.Destroy", "void(obj)")
 RT_FUNC(GuiAppShouldClose, rt_gui_app_should_close, "Zanna.GUI.App.get_ShouldClose", "i1(obj)")
 RT_FUNC(GuiAppPoll, rt_gui_app_poll, "Zanna.GUI.App.Poll", "void(obj)")
@@ -39,7 +39,7 @@ RT_FUNC(GuiAppRunFrame, rt_gui_app_run_frame, "Zanna.GUI.App.RunFrame", "i1(obj)
 RT_FUNC(GuiAppRunFrameWithDelta, rt_gui_app_run_frame_with_delta, "Zanna.GUI.App.RunFrameWithDelta", "i1(obj,f64)")
 RT_FUNC(GuiAppGetNextDeadlineMs, rt_gui_app_get_next_deadline_ms, "Zanna.GUI.App.GetNextDeadlineMs", "i64(obj)")
 RT_FUNC(GuiAppMakeCurrent, rt_gui_app_make_current, "Zanna.GUI.App.MakeCurrent", "void(obj)")
-RT_FUNC(GuiAppGetRoot, rt_gui_app_get_root, "Zanna.GUI.App.get_Root", "obj<Zanna.GUI.Widget>(obj)")
+RT_FUNC(GuiAppGetRoot, rt_gui_app_get_root, "Zanna.GUI.App.get_Root", "obj<Zanna.GUI.Widget>(obj)", borrowed)
 RT_FUNC(GuiAppSetFont, rt_gui_app_set_font, "Zanna.GUI.App.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiAppGetWidth, rt_app_get_width, "Zanna.GUI.App.GetWidth", "i64(obj)")
 RT_FUNC(GuiAppGetHeight, rt_app_get_height, "Zanna.GUI.App.GetHeight", "i64(obj)")
@@ -76,7 +76,7 @@ RT_FUNC(GuiAppGetFontSize, rt_app_get_font_size, "Zanna.GUI.App.GetFontSize", "f
 RT_FUNC(GuiAppGetLogicalFontSize, rt_app_get_logical_font_size, "Zanna.GUI.App.GetLogicalFontSize", "f64(obj)")
 RT_FUNC(GuiAppSetFontSize, rt_app_set_font_size, "Zanna.GUI.App.SetFontSize", "void(obj,f64)")
 RT_FUNC(GuiAppSetTitle, rt_app_set_title, "Zanna.GUI.App.SetTitle", "void(obj,str)")
-RT_FUNC(GuiAppGetTitle, rt_app_get_title, "Zanna.GUI.App.GetTitle", "str(obj)")
+RT_FUNC(GuiAppGetTitle, rt_app_get_title, "Zanna.GUI.App.GetTitle", "str(obj)", owned)
 RT_FUNC(GuiAppSetSize, rt_app_set_size, "Zanna.GUI.App.SetSize", "void(obj,i64,i64)")
 RT_FUNC(GuiAppWasCloseRequested, rt_app_was_close_requested, "Zanna.GUI.App.WasCloseRequested", "i1(obj)")
 RT_FUNC(GuiAppIsFocused, rt_app_is_focused, "Zanna.GUI.App.IsFocused", "i1(obj)")
@@ -88,9 +88,9 @@ RT_FUNC(GuiAppSetPartialPaint, rt_app_set_partial_paint, "Zanna.GUI.App.SetParti
 // GUI - FONT
 //=============================================================================
 
-RT_FUNC(GuiFontLoad, rt_font_load, "Zanna.GUI.Font.Load", "obj(str)")
-RT_FUNC(GuiFontLoadSystemUi, rt_font_load_system_ui, "Zanna.GUI.Font.LoadSystemUi", "obj<Zanna.Result>(f64)")
-RT_FUNC(GuiFontLoadSystemUiBold, rt_font_load_system_ui_bold, "Zanna.GUI.Font.LoadSystemUiBold", "obj<Zanna.Result>(f64)")
+RT_FUNC(GuiFontLoad, rt_font_load, "Zanna.GUI.Font.Load", "obj(str)", owned)
+RT_FUNC(GuiFontLoadSystemUi, rt_font_load_system_ui, "Zanna.GUI.Font.LoadSystemUi", "obj<Zanna.Result>(f64)", owned)
+RT_FUNC(GuiFontLoadSystemUiBold, rt_font_load_system_ui_bold, "Zanna.GUI.Font.LoadSystemUiBold", "obj<Zanna.Result>(f64)", owned)
 RT_FUNC(GuiFontGetLogicalSize, rt_font_get_logical_size, "Zanna.GUI.Font.GetLogicalSize", "f64(obj)")
 RT_FUNC(GuiFontDestroy, rt_font_destroy, "Zanna.GUI.Font.Destroy", "void(obj)")
 
@@ -109,9 +109,9 @@ RT_FUNC(GuiWidgetGetMinWidth, rt_widget_get_min_width, "Zanna.GUI.Widget.GetMinW
 RT_FUNC(GuiWidgetGetMinHeight, rt_widget_get_min_height, "Zanna.GUI.Widget.GetMinHeight", "f64(obj)")
 RT_FUNC(GuiWidgetSetFlex, rt_widget_set_flex, "Zanna.GUI.Widget.SetFlex", "void(obj,f64)")
 RT_FUNC(GuiWidgetAddChild, rt_widget_add_child, "Zanna.GUI.Widget.AddChild", "void(obj,obj)")
-RT_FUNC(GuiWidgetGetParentOption, rt_widget_get_parent_option, "Zanna.GUI.Widget.GetParentOption", "obj<Zanna.Option>(obj)")
+RT_FUNC(GuiWidgetGetParentOption, rt_widget_get_parent_option, "Zanna.GUI.Widget.GetParentOption", "obj<Zanna.Option>(obj)", owned)
 RT_FUNC(GuiWidgetGetChildCount, rt_widget_get_child_count, "Zanna.GUI.Widget.GetChildCount", "i64(obj)")
-RT_FUNC(GuiWidgetGetChildAtOption, rt_widget_get_child_at_option, "Zanna.GUI.Widget.GetChildAtOption", "obj<Zanna.Option>(obj,i64)")
+RT_FUNC(GuiWidgetGetChildAtOption, rt_widget_get_child_at_option, "Zanna.GUI.Widget.GetChildAtOption", "obj<Zanna.Option>(obj,i64)", owned)
 RT_FUNC(GuiWidgetRemoveChild, rt_widget_remove_child, "Zanna.GUI.Widget.RemoveChild", "i1(obj,obj)")
 RT_FUNC(GuiWidgetClearChildren, rt_widget_clear_children, "Zanna.GUI.Widget.ClearChildren", "void(obj)")
 RT_FUNC(GuiWidgetIsHovered, rt_widget_is_hovered, "Zanna.GUI.Widget.IsHovered", "i1(obj)")
@@ -144,21 +144,21 @@ RT_FUNC(GuiWidgetSetTabIndex, rt_widget_set_tab_index, "Zanna.GUI.Widget.SetTabI
 RT_FUNC(GuiWidgetSetCursor, rt_widget_set_cursor, "Zanna.GUI.Widget.SetCursor", "void(obj,i64)")
 RT_FUNC(GuiWidgetResetCursor, rt_widget_reset_cursor, "Zanna.GUI.Widget.ResetCursor", "void(obj)")
 RT_FUNC(GuiWidgetSetName, rt_widget_set_name, "Zanna.GUI.Widget.SetName", "void(obj,str)")
-RT_FUNC(GuiWidgetGetName, rt_widget_get_name, "Zanna.GUI.Widget.GetName", "str(obj)")
+RT_FUNC(GuiWidgetGetName, rt_widget_get_name, "Zanna.GUI.Widget.GetName", "str(obj)", owned)
 RT_FUNC(GuiWidgetGetId, rt_widget_get_id, "Zanna.GUI.Widget.GetId", "i64(obj)")
-RT_FUNC(GuiWidgetFindByIdOption, rt_widget_find_by_id_option, "Zanna.GUI.Widget.FindByIdOption", "obj<Zanna.Option>(obj,i64)")
-RT_FUNC(GuiWidgetFindByNameOption, rt_widget_find_by_name_option, "Zanna.GUI.Widget.FindByNameOption", "obj<Zanna.Option>(obj,str)")
+RT_FUNC(GuiWidgetFindByIdOption, rt_widget_find_by_id_option, "Zanna.GUI.Widget.FindByIdOption", "obj<Zanna.Option>(obj,i64)", owned)
+RT_FUNC(GuiWidgetFindByNameOption, rt_widget_find_by_name_option, "Zanna.GUI.Widget.FindByNameOption", "obj<Zanna.Option>(obj,str)", owned)
 RT_FUNC(GuiWidgetHitTest, rt_widget_hit_test, "Zanna.GUI.Widget.HitTest", "i1(obj,f64,f64)")
 RT_FUNC(GuiWidgetInvalidatePaint, rt_widget_invalidate_paint, "Zanna.GUI.Widget.InvalidatePaint", "void(obj)")
 RT_FUNC(GuiWidgetInvalidateLayout, rt_widget_invalidate_layout, "Zanna.GUI.Widget.InvalidateLayout", "void(obj)")
 RT_FUNC(GuiWidgetSetAccessibleRole, rt_widget_set_accessible_role, "Zanna.GUI.Widget.SetAccessibleRole", "void(obj,i64)")
 RT_FUNC(GuiWidgetGetAccessibleRole, rt_widget_get_accessible_role, "Zanna.GUI.Widget.GetAccessibleRole", "i64(obj)")
 RT_FUNC(GuiWidgetSetAccessibleName, rt_widget_set_accessible_name, "Zanna.GUI.Widget.SetAccessibleName", "void(obj,str)")
-RT_FUNC(GuiWidgetGetAccessibleName, rt_widget_get_accessible_name, "Zanna.GUI.Widget.GetAccessibleName", "str(obj)")
+RT_FUNC(GuiWidgetGetAccessibleName, rt_widget_get_accessible_name, "Zanna.GUI.Widget.GetAccessibleName", "str(obj)", owned)
 RT_FUNC(GuiWidgetSetAccessibleDescription, rt_widget_set_accessible_description, "Zanna.GUI.Widget.SetAccessibleDescription", "void(obj,str)")
-RT_FUNC(GuiWidgetGetAccessibleDescription, rt_widget_get_accessible_description, "Zanna.GUI.Widget.GetAccessibleDescription", "str(obj)")
+RT_FUNC(GuiWidgetGetAccessibleDescription, rt_widget_get_accessible_description, "Zanna.GUI.Widget.GetAccessibleDescription", "str(obj)", owned)
 RT_FUNC(GuiWidgetSetAccessibleValue, rt_widget_set_accessible_value, "Zanna.GUI.Widget.SetAccessibleValue", "void(obj,str)")
-RT_FUNC(GuiWidgetGetAccessibleValue, rt_widget_get_accessible_value, "Zanna.GUI.Widget.GetAccessibleValue", "str(obj)")
+RT_FUNC(GuiWidgetGetAccessibleValue, rt_widget_get_accessible_value, "Zanna.GUI.Widget.GetAccessibleValue", "str(obj)", owned)
 RT_FUNC(GuiWidgetSetAccessibleLabelFor, rt_widget_set_accessible_label_for, "Zanna.GUI.Widget.SetAccessibleLabelFor", "void(obj,obj)")
 RT_FUNC(GuiWidgetClearAccessibleLabelFor, rt_widget_clear_accessible_label_for, "Zanna.GUI.Widget.ClearAccessibleLabelFor", "void(obj)")
 RT_FUNC(GuiWidgetSetLiveRegion, rt_widget_set_live_region, "Zanna.GUI.Widget.SetLiveRegion", "void(obj,i64)")
@@ -169,7 +169,7 @@ RT_FUNC(GuiWidgetGetRevision, rt_widget_get_revision, "Zanna.GUI.Widget.GetRevis
 // GUI - LABEL
 //=============================================================================
 
-RT_FUNC(GuiLabelNew, rt_label_new, "Zanna.GUI.Label.New", "obj(obj,str)")
+RT_FUNC(GuiLabelNew, rt_label_new, "Zanna.GUI.Label.New", "obj(obj,str)", owned)
 RT_FUNC(GuiLabelSetText, rt_label_set_text, "Zanna.GUI.Label.SetText", "void(obj,str)")
 RT_FUNC(GuiLabelSetFont, rt_label_set_font, "Zanna.GUI.Label.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiLabelSetColor, rt_label_set_color, "Zanna.GUI.Label.SetColor", "void(obj,i64)")
@@ -180,13 +180,13 @@ RT_FUNC(GuiLabelGetAlignment, rt_label_get_alignment, "Zanna.GUI.Label.GetAlignm
 RT_FUNC(GuiLabelSetEllipsis, rt_label_set_ellipsis, "Zanna.GUI.Label.SetEllipsis", "void(obj,i1)")
 RT_FUNC(GuiLabelSetMaxLines, rt_label_set_max_lines, "Zanna.GUI.Label.SetMaxLines", "void(obj,i64)")
 RT_FUNC(GuiLabelSetSelectable, rt_label_set_selectable, "Zanna.GUI.Label.SetSelectable", "void(obj,i1)")
-RT_FUNC(GuiLabelGetSelectedText, rt_label_get_selected_text, "Zanna.GUI.Label.GetSelectedText", "str(obj)")
+RT_FUNC(GuiLabelGetSelectedText, rt_label_get_selected_text, "Zanna.GUI.Label.GetSelectedText", "str(obj)", owned)
 
 //=============================================================================
 // GUI - BUTTON
 //=============================================================================
 
-RT_FUNC(GuiButtonNew, rt_button_new, "Zanna.GUI.Button.New", "obj(obj,str)")
+RT_FUNC(GuiButtonNew, rt_button_new, "Zanna.GUI.Button.New", "obj(obj,str)", owned)
 RT_FUNC(GuiButtonSetText, rt_button_set_text, "Zanna.GUI.Button.SetText", "void(obj,str)")
 RT_FUNC(GuiButtonSetFont, rt_button_set_font, "Zanna.GUI.Button.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiButtonSetStyle, rt_button_set_style, "Zanna.GUI.Button.SetStyle", "void(obj,i64)")
@@ -198,9 +198,9 @@ RT_FUNC(GuiButtonSetIconName, rt_button_set_icon_name, "Zanna.GUI.Button.SetIcon
 // GUI - TEXTINPUT
 //=============================================================================
 
-RT_FUNC(GuiTextInputNew, rt_textinput_new, "Zanna.GUI.TextInput.New", "obj(obj)")
+RT_FUNC(GuiTextInputNew, rt_textinput_new, "Zanna.GUI.TextInput.New", "obj(obj)", owned)
 RT_FUNC(GuiTextInputSetText, rt_textinput_set_text, "Zanna.GUI.TextInput.SetText", "void(obj,str)")
-RT_FUNC(GuiTextInputGetText, rt_textinput_get_text, "Zanna.GUI.TextInput.get_Text", "str(obj)")
+RT_FUNC(GuiTextInputGetText, rt_textinput_get_text, "Zanna.GUI.TextInput.get_Text", "str(obj)", owned)
 RT_FUNC(GuiTextInputSetPlaceholder, rt_textinput_set_placeholder, "Zanna.GUI.TextInput.SetPlaceholder", "void(obj,str)")
 RT_FUNC(GuiTextInputSetFont, rt_textinput_set_font, "Zanna.GUI.TextInput.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiTextInputSetMaxLength, rt_textinput_set_max_length, "Zanna.GUI.TextInput.SetMaxLength", "void(obj,i64)")
@@ -217,7 +217,7 @@ RT_FUNC(GuiTextInputSelectRange, rt_textinput_select_range, "Zanna.GUI.TextInput
 RT_FUNC(GuiTextInputClearSelection, rt_textinput_clear_selection, "Zanna.GUI.TextInput.ClearSelection", "void(obj)")
 RT_FUNC(GuiTextInputGetSelectionStart, rt_textinput_get_selection_start, "Zanna.GUI.TextInput.GetSelectionStart", "i64(obj)")
 RT_FUNC(GuiTextInputGetSelectionEnd, rt_textinput_get_selection_end, "Zanna.GUI.TextInput.GetSelectionEnd", "i64(obj)")
-RT_FUNC(GuiTextInputGetSelectedText, rt_textinput_get_selected_text, "Zanna.GUI.TextInput.GetSelectedText", "str(obj)")
+RT_FUNC(GuiTextInputGetSelectedText, rt_textinput_get_selected_text, "Zanna.GUI.TextInput.GetSelectedText", "str(obj)", owned)
 RT_FUNC(GuiTextInputInsertText, rt_textinput_insert_text, "Zanna.GUI.TextInput.InsertText", "i1(obj,str)")
 RT_FUNC(GuiTextInputDeleteSelection, rt_textinput_delete_selection, "Zanna.GUI.TextInput.DeleteSelection", "i1(obj)")
 RT_FUNC(GuiTextInputUndo, rt_textinput_undo, "Zanna.GUI.TextInput.Undo", "i1(obj)")
@@ -228,7 +228,7 @@ RT_FUNC(GuiTextInputWasChanged, rt_textinput_was_changed, "Zanna.GUI.TextInput.W
 RT_FUNC(GuiTextInputWasSubmitted, rt_textinput_was_submitted, "Zanna.GUI.TextInput.WasSubmitted", "i1(obj)")
 RT_FUNC(GuiTextInputGetRevision, rt_textinput_get_revision, "Zanna.GUI.TextInput.GetRevision", "i64(obj)")
 RT_FUNC(GuiTextInputIsComposing, rt_textinput_is_composing, "Zanna.GUI.TextInput.IsComposing", "i1(obj)")
-RT_FUNC(GuiTextInputGetCompositionText, rt_textinput_get_composition_text, "Zanna.GUI.TextInput.GetCompositionText", "str(obj)")
+RT_FUNC(GuiTextInputGetCompositionText, rt_textinput_get_composition_text, "Zanna.GUI.TextInput.GetCompositionText", "str(obj)", owned)
 RT_FUNC(GuiTextInputGetCompositionStart, rt_textinput_get_composition_start, "Zanna.GUI.TextInput.GetCompositionStart", "i64(obj)")
 RT_FUNC(GuiTextInputGetCompositionLength, rt_textinput_get_composition_length, "Zanna.GUI.TextInput.GetCompositionLength", "i64(obj)")
 
@@ -236,7 +236,7 @@ RT_FUNC(GuiTextInputGetCompositionLength, rt_textinput_get_composition_length, "
 // GUI - CHECKBOX
 //=============================================================================
 
-RT_FUNC(GuiCheckboxNew, rt_checkbox_new, "Zanna.GUI.Checkbox.New", "obj(obj,str)")
+RT_FUNC(GuiCheckboxNew, rt_checkbox_new, "Zanna.GUI.Checkbox.New", "obj(obj,str)", owned)
 RT_FUNC(GuiCheckboxSetChecked, rt_checkbox_set_checked, "Zanna.GUI.Checkbox.SetChecked", "void(obj,i1)")
 RT_FUNC(GuiCheckboxIsChecked, rt_checkbox_is_checked, "Zanna.GUI.Checkbox.IsChecked", "i1(obj)")
 RT_FUNC(GuiCheckboxSetText, rt_checkbox_set_text, "Zanna.GUI.Checkbox.SetText", "void(obj,str)")
@@ -249,7 +249,7 @@ RT_FUNC(GuiCheckboxGetRevision, rt_checkbox_get_revision, "Zanna.GUI.Checkbox.Ge
 // GUI - SCROLLVIEW
 //=============================================================================
 
-RT_FUNC(GuiScrollViewNew, rt_scrollview_new, "Zanna.GUI.ScrollView.New", "obj(obj)")
+RT_FUNC(GuiScrollViewNew, rt_scrollview_new, "Zanna.GUI.ScrollView.New", "obj(obj)", owned)
 RT_FUNC(GuiScrollViewSetScroll, rt_scrollview_set_scroll, "Zanna.GUI.ScrollView.SetScroll", "void(obj,f64,f64)")
 RT_FUNC(GuiScrollViewSetContentSize, rt_scrollview_set_content_size, "Zanna.GUI.ScrollView.SetContentSize", "void(obj,f64,f64)")
 RT_FUNC(GuiScrollViewScrollTo, rt_scrollview_scroll_to, "Zanna.GUI.ScrollView.ScrollTo", "void(obj,obj)")
@@ -260,8 +260,8 @@ RT_FUNC(GuiScrollViewGetScrollY, rt_scrollview_get_scroll_y, "Zanna.GUI.ScrollVi
 // GUI - TREEVIEW
 //=============================================================================
 
-RT_FUNC(GuiTreeViewNew, rt_treeview_new, "Zanna.GUI.TreeView.New", "obj(obj)")
-RT_FUNC(GuiTreeViewAddNode, rt_treeview_add_node, "Zanna.GUI.TreeView.AddNode", "obj(obj,obj,str)")
+RT_FUNC(GuiTreeViewNew, rt_treeview_new, "Zanna.GUI.TreeView.New", "obj(obj)", owned)
+RT_FUNC(GuiTreeViewAddNode, rt_treeview_add_node, "Zanna.GUI.TreeView.AddNode", "obj(obj,obj,str)", owned)
 RT_FUNC(GuiTreeViewRemoveNode, rt_treeview_remove_node, "Zanna.GUI.TreeView.RemoveNode", "void(obj,obj)")
 RT_FUNC(GuiTreeViewClear, rt_treeview_clear, "Zanna.GUI.TreeView.Clear", "void(obj)")
 RT_FUNC(GuiTreeViewPruneRetiredNodes, rt_treeview_prune_retired_nodes, "Zanna.GUI.TreeView.PruneRetiredNodes", "void(obj)")
@@ -272,60 +272,60 @@ RT_FUNC(GuiTreeViewSelect, rt_treeview_select, "Zanna.GUI.TreeView.Select", "voi
 RT_FUNC(GuiTreeViewSetMultiSelect, rt_treeview_set_multi_select, "Zanna.GUI.TreeView.SetMultiSelect", "void(obj,i1)")
 RT_FUNC(GuiTreeViewScrollTo, rt_treeview_scroll_to, "Zanna.GUI.TreeView.ScrollTo", "void(obj,obj)")
 RT_FUNC(GuiTreeViewSetFont, rt_treeview_set_font, "Zanna.GUI.TreeView.SetFont", "void(obj,obj,f64)")
-RT_FUNC(GuiTreeViewGetSelected, rt_treeview_get_selected, "Zanna.GUI.TreeView.GetSelected", "obj(obj)")
-RT_FUNC(GuiTreeViewGetSelectedData, rt_treeview_get_selected_data, "Zanna.GUI.TreeView.GetSelectedData", "seq<str>(obj)")
-RT_FUNC(GuiTreeViewGetNodeAt, rt_treeview_get_node_at, "Zanna.GUI.TreeView.GetNodeAt", "obj(obj,i64,i64)")
+RT_FUNC(GuiTreeViewGetSelected, rt_treeview_get_selected, "Zanna.GUI.TreeView.GetSelected", "obj(obj)", owned)
+RT_FUNC(GuiTreeViewGetSelectedData, rt_treeview_get_selected_data, "Zanna.GUI.TreeView.GetSelectedData", "seq<str>(obj)", owned)
+RT_FUNC(GuiTreeViewGetNodeAt, rt_treeview_get_node_at, "Zanna.GUI.TreeView.GetNodeAt", "obj(obj,i64,i64)", owned)
 RT_FUNC(GuiTreeViewWasSelectionChanged, rt_treeview_was_selection_changed, "Zanna.GUI.TreeView.WasSelectionChanged", "i1(obj)")
 RT_FUNC(GuiTreeViewWasChanged, rt_treeview_was_changed, "Zanna.GUI.TreeView.WasChanged", "i1(obj)")
 RT_FUNC(GuiTreeViewWasActivated, rt_treeview_was_activated, "Zanna.GUI.TreeView.WasActivated", "i1(obj)")
 RT_FUNC(GuiTreeViewWasLoadChildrenRequested, rt_treeview_was_load_children_requested, "Zanna.GUI.TreeView.WasLoadChildrenRequested", "i1(obj)")
-RT_FUNC(GuiTreeViewGetLoadRequestedNodeOption, rt_treeview_get_load_requested_node_option, "Zanna.GUI.TreeView.GetLoadRequestedNodeOption", "obj<Zanna.Option>(obj)")
-RT_FUNC(GuiTreeViewGetActivatedNodeOption, rt_treeview_get_activated_node_option, "Zanna.GUI.TreeView.GetActivatedNodeOption", "obj<Zanna.Option>(obj)")
+RT_FUNC(GuiTreeViewGetLoadRequestedNodeOption, rt_treeview_get_load_requested_node_option, "Zanna.GUI.TreeView.GetLoadRequestedNodeOption", "obj<Zanna.Option>(obj)", owned)
+RT_FUNC(GuiTreeViewGetActivatedNodeOption, rt_treeview_get_activated_node_option, "Zanna.GUI.TreeView.GetActivatedNodeOption", "obj<Zanna.Option>(obj)", owned)
 RT_FUNC(GuiTreeViewGetRevision, rt_treeview_get_revision, "Zanna.GUI.TreeView.GetRevision", "i64(obj)")
 RT_FUNC(GuiTreeViewSetDragDropEnabled, rt_treeview_set_drag_drop_enabled, "Zanna.GUI.TreeView.SetDragDropEnabled", "void(obj,i1)")
 RT_FUNC(GuiTreeViewSetDragDropMode, rt_treeview_set_drag_drop_mode, "Zanna.GUI.TreeView.SetDragDropMode", "void(obj,i64)")
 RT_FUNC(GuiTreeViewWasDropReceived, rt_treeview_was_drop_received, "Zanna.GUI.TreeView.WasDropReceived", "i1(obj)")
-RT_FUNC(GuiTreeViewGetDropSourceData, rt_treeview_get_drop_source_data, "Zanna.GUI.TreeView.GetDropSourceData", "str(obj)")
-RT_FUNC(GuiTreeViewGetDropTargetData, rt_treeview_get_drop_target_data, "Zanna.GUI.TreeView.GetDropTargetData", "str(obj)")
+RT_FUNC(GuiTreeViewGetDropSourceData, rt_treeview_get_drop_source_data, "Zanna.GUI.TreeView.GetDropSourceData", "str(obj)", owned)
+RT_FUNC(GuiTreeViewGetDropTargetData, rt_treeview_get_drop_target_data, "Zanna.GUI.TreeView.GetDropTargetData", "str(obj)", owned)
 RT_FUNC(GuiTreeViewGetDropPosition, rt_treeview_get_drop_position, "Zanna.GUI.TreeView.GetDropPosition", "i64(obj)")
 RT_FUNC(GuiTreeViewClearDrop, rt_treeview_clear_drop, "Zanna.GUI.TreeView.ClearDrop", "void(obj)")
 RT_FUNC(GuiTreeViewBeginEditNode, rt_treeview_begin_edit_node, "Zanna.GUI.TreeView.BeginEditNode", "i1(obj,obj,str)")
 RT_FUNC(GuiTreeViewIsEditing, rt_treeview_is_editing, "Zanna.GUI.TreeView.IsEditing", "i1(obj)")
 RT_FUNC(GuiTreeViewWasEditCommitted, rt_treeview_was_edit_committed, "Zanna.GUI.TreeView.WasEditCommitted", "i1(obj)")
-RT_FUNC(GuiTreeViewGetEditText, rt_treeview_get_edit_text, "Zanna.GUI.TreeView.GetEditText", "str(obj)")
-RT_FUNC(GuiTreeViewGetEditedNodeOption, rt_treeview_get_edited_node_option, "Zanna.GUI.TreeView.GetEditedNodeOption", "obj<Zanna.Option>(obj)")
+RT_FUNC(GuiTreeViewGetEditText, rt_treeview_get_edit_text, "Zanna.GUI.TreeView.GetEditText", "str(obj)", owned)
+RT_FUNC(GuiTreeViewGetEditedNodeOption, rt_treeview_get_edited_node_option, "Zanna.GUI.TreeView.GetEditedNodeOption", "obj<Zanna.Option>(obj)", owned)
 RT_FUNC(GuiTreeViewCancelEdit, rt_treeview_cancel_edit, "Zanna.GUI.TreeView.CancelEdit", "void(obj)")
-RT_FUNC(GuiTreeViewNodeGetText, rt_treeview_node_get_text, "Zanna.GUI.TreeView.Node.GetText", "str(obj)")
+RT_FUNC(GuiTreeViewNodeGetText, rt_treeview_node_get_text, "Zanna.GUI.TreeView.Node.GetText", "str(obj)", owned)
 RT_FUNC(GuiTreeViewNodeSetText, rt_treeview_node_set_text, "Zanna.GUI.TreeView.Node.SetText", "void(obj,str)")
 RT_FUNC(GuiTreeViewNodeSetIcon, rt_treeview_node_set_icon, "Zanna.GUI.TreeView.Node.SetIcon", "void(obj,str)")
-RT_FUNC(GuiTreeViewNodeGetIcon, rt_treeview_node_get_icon, "Zanna.GUI.TreeView.Node.GetIcon", "str(obj)")
+RT_FUNC(GuiTreeViewNodeGetIcon, rt_treeview_node_get_icon, "Zanna.GUI.TreeView.Node.GetIcon", "str(obj)", owned)
 RT_FUNC(GuiTreeViewNodeSetHasChildren, rt_treeview_node_set_has_children, "Zanna.GUI.TreeView.Node.SetHasChildren", "void(obj,i1)")
 RT_FUNC(GuiTreeViewNodeHasChildren, rt_treeview_node_has_children, "Zanna.GUI.TreeView.Node.HasChildren", "i1(obj)")
 RT_FUNC(GuiTreeViewNodeSetLoading, rt_treeview_node_set_loading, "Zanna.GUI.TreeView.Node.SetLoading", "void(obj,i1)")
 RT_FUNC(GuiTreeViewNodeIsLoading, rt_treeview_node_is_loading, "Zanna.GUI.TreeView.Node.IsLoading", "i1(obj)")
 RT_FUNC(GuiTreeViewNodeSetStableId, rt_treeview_node_set_stable_id, "Zanna.GUI.TreeView.Node.SetStableId", "void(obj,str)")
-RT_FUNC(GuiTreeViewNodeGetStableId, rt_treeview_node_get_stable_id, "Zanna.GUI.TreeView.Node.GetStableId", "str(obj)")
+RT_FUNC(GuiTreeViewNodeGetStableId, rt_treeview_node_get_stable_id, "Zanna.GUI.TreeView.Node.GetStableId", "str(obj)", owned)
 RT_FUNC(GuiTreeViewNodeSetData, rt_treeview_node_set_data, "Zanna.GUI.TreeView.Node.SetData", "void(obj,str)")
-RT_FUNC(GuiTreeViewNodeGetData, rt_treeview_node_get_data, "Zanna.GUI.TreeView.Node.GetData", "str(obj)")
+RT_FUNC(GuiTreeViewNodeGetData, rt_treeview_node_get_data, "Zanna.GUI.TreeView.Node.GetData", "str(obj)", owned)
 RT_FUNC(GuiTreeViewNodeIsExpanded, rt_treeview_node_is_expanded, "Zanna.GUI.TreeView.Node.IsExpanded", "i1(obj)")
 
 //=============================================================================
 // GUI - TABBAR
 //=============================================================================
 
-RT_FUNC(GuiTabBarNew, rt_tabbar_new, "Zanna.GUI.TabBar.New", "obj(obj)")
-RT_FUNC(GuiTabBarAddTab, rt_tabbar_add_tab, "Zanna.GUI.TabBar.AddTab", "obj(obj,str,i64)")
+RT_FUNC(GuiTabBarNew, rt_tabbar_new, "Zanna.GUI.TabBar.New", "obj(obj)", owned)
+RT_FUNC(GuiTabBarAddTab, rt_tabbar_add_tab, "Zanna.GUI.TabBar.AddTab", "obj(obj,str,i64)", owned)
 RT_FUNC(GuiTabBarRemoveTab, rt_tabbar_remove_tab, "Zanna.GUI.TabBar.RemoveTab", "void(obj,obj)")
 RT_FUNC(GuiTabBarPruneRetiredTabs, rt_tabbar_prune_retired_tabs, "Zanna.GUI.TabBar.PruneRetiredTabs", "void(obj)")
 RT_FUNC(GuiTabBarSetActive, rt_tabbar_set_active, "Zanna.GUI.TabBar.SetActive", "void(obj,obj)")
-RT_FUNC(GuiTabBarGetActive, rt_tabbar_get_active, "Zanna.GUI.TabBar.GetActive", "obj(obj)")
+RT_FUNC(GuiTabBarGetActive, rt_tabbar_get_active, "Zanna.GUI.TabBar.GetActive", "obj(obj)", owned)
 RT_FUNC(GuiTabBarGetActiveIndex, rt_tabbar_get_active_index, "Zanna.GUI.TabBar.GetActiveIndex", "i64(obj)")
 RT_FUNC(GuiTabBarWasChanged, rt_tabbar_was_changed, "Zanna.GUI.TabBar.WasChanged", "i1(obj)")
 RT_FUNC(GuiTabBarGetRevision, rt_tabbar_get_revision, "Zanna.GUI.TabBar.GetRevision", "i64(obj)")
 RT_FUNC(GuiTabBarGetTabCount, rt_tabbar_get_tab_count, "Zanna.GUI.TabBar.get_TabCount", "i64(obj)")
 RT_FUNC(GuiTabBarWasCloseClicked, rt_tabbar_was_close_clicked, "Zanna.GUI.TabBar.WasCloseClicked", "i1(obj)")
 RT_FUNC(GuiTabBarGetCloseClickedIdx, rt_tabbar_get_close_clicked_index, "Zanna.GUI.TabBar.GetCloseClickedIndex", "i64(obj)")
-RT_FUNC(GuiTabBarGetTabAt, rt_tabbar_get_tab_at, "Zanna.GUI.TabBar.GetTabAt", "obj<Zanna.GUI.Tab>(obj,i64)")
+RT_FUNC(GuiTabBarGetTabAt, rt_tabbar_get_tab_at, "Zanna.GUI.TabBar.GetTabAt", "obj<Zanna.GUI.Tab>(obj,i64)", owned)
 RT_FUNC(GuiTabBarGetTabIndexAt, rt_tabbar_get_tab_index_at, "Zanna.GUI.TabBar.GetTabIndexAt", "i64(obj,i64,i64)")
 RT_FUNC(GuiTabBarSetAutoClose, rt_tabbar_set_auto_close, "Zanna.GUI.TabBar.SetAutoClose", "void(obj,i1)")
 RT_FUNC(GuiTabBarSetFont, rt_tabbar_set_font, "Zanna.GUI.TabBar.SetFont", "void(obj,obj,f64)")
@@ -335,13 +335,13 @@ RT_FUNC(GuiTabBarGetReorderedTo, rt_tabbar_get_reordered_to, "Zanna.GUI.TabBar.G
 RT_FUNC(GuiTabBarMoveTab, rt_tabbar_move_tab, "Zanna.GUI.TabBar.MoveTab", "i1(obj,i64,i64)")
 
 RT_FUNC(GuiTabSetTitle, rt_tab_set_title, "Zanna.GUI.Tab.SetTitle", "void(obj,str)")
-RT_FUNC(GuiTabGetTitle, rt_tab_get_title, "Zanna.GUI.Tab.GetTitle", "str(obj)")
+RT_FUNC(GuiTabGetTitle, rt_tab_get_title, "Zanna.GUI.Tab.GetTitle", "str(obj)", owned)
 RT_FUNC(GuiTabSetData, rt_tab_set_data, "Zanna.GUI.Tab.SetData", "void(obj,str)")
-RT_FUNC(GuiTabGetData, rt_tab_get_data, "Zanna.GUI.Tab.GetData", "str(obj)")
+RT_FUNC(GuiTabGetData, rt_tab_get_data, "Zanna.GUI.Tab.GetData", "str(obj)", owned)
 RT_FUNC(GuiTabSetClosable, rt_tab_set_closable, "Zanna.GUI.Tab.SetClosable", "void(obj,i1)")
 RT_FUNC(GuiTabIsClosable, rt_tab_is_closable, "Zanna.GUI.Tab.IsClosable", "i1(obj)")
 RT_FUNC(GuiTabSetStableId, rt_tab_set_stable_id, "Zanna.GUI.Tab.SetStableId", "void(obj,str)")
-RT_FUNC(GuiTabGetStableId, rt_tab_get_stable_id, "Zanna.GUI.Tab.GetStableId", "str(obj)")
+RT_FUNC(GuiTabGetStableId, rt_tab_get_stable_id, "Zanna.GUI.Tab.GetStableId", "str(obj)", owned)
 RT_FUNC(GuiTabSetTooltip, rt_tab_set_tooltip, "Zanna.GUI.Tab.SetTooltip", "void(obj,str)")
 RT_FUNC(GuiTabSetModified, rt_tab_set_modified, "Zanna.GUI.Tab.SetModified", "void(obj,i1)")
 RT_FUNC(GuiTabSetNamedIcon, rt_tab_set_named_icon, "Zanna.GUI.Tab.SetNamedIcon", "void(obj,str)")
@@ -350,7 +350,7 @@ RT_FUNC(GuiTabSetNamedIcon, rt_tab_set_named_icon, "Zanna.GUI.Tab.SetNamedIcon",
 // GUI - SPLITPANE
 //=============================================================================
 
-RT_FUNC(GuiSplitPaneNew, rt_splitpane_new, "Zanna.GUI.SplitPane.New", "obj(obj,i64)")
+RT_FUNC(GuiSplitPaneNew, rt_splitpane_new, "Zanna.GUI.SplitPane.New", "obj(obj,i64)", owned)
 RT_FUNC(GuiSplitPaneSetPosition, rt_splitpane_set_position, "Zanna.GUI.SplitPane.SetPosition", "void(obj,f64)")
 RT_FUNC(GuiSplitPaneGetPosition, rt_splitpane_get_position, "Zanna.GUI.SplitPane.GetPosition", "f64(obj)")
 RT_FUNC(GuiSplitPaneSetMinFirst, rt_splitpane_set_min_first, "Zanna.GUI.SplitPane.SetMinFirst", "void(obj,f64)")
@@ -362,20 +362,20 @@ RT_FUNC(GuiSplitPaneCollapseFirst, rt_splitpane_collapse_first, "Zanna.GUI.Split
 RT_FUNC(GuiSplitPaneCollapseSecond, rt_splitpane_collapse_second, "Zanna.GUI.SplitPane.CollapseSecond", "void(obj)")
 RT_FUNC(GuiSplitPaneRestore, rt_splitpane_restore, "Zanna.GUI.SplitPane.Restore", "void(obj)")
 RT_FUNC(GuiSplitPaneGetCollapsedSide, rt_splitpane_get_collapsed_side, "Zanna.GUI.SplitPane.GetCollapsedSide", "i64(obj)")
-RT_FUNC(GuiSplitPaneGetFirst, rt_splitpane_get_first, "Zanna.GUI.SplitPane.get_First", "obj<Zanna.GUI.Widget>(obj)")
-RT_FUNC(GuiSplitPaneGetSecond, rt_splitpane_get_second, "Zanna.GUI.SplitPane.get_Second", "obj<Zanna.GUI.Widget>(obj)")
+RT_FUNC(GuiSplitPaneGetFirst, rt_splitpane_get_first, "Zanna.GUI.SplitPane.get_First", "obj<Zanna.GUI.Widget>(obj)", borrowed)
+RT_FUNC(GuiSplitPaneGetSecond, rt_splitpane_get_second, "Zanna.GUI.SplitPane.get_Second", "obj<Zanna.GUI.Widget>(obj)", borrowed)
 
 //=============================================================================
 // GUI - CODEEDITOR
 //=============================================================================
 
-RT_FUNC(GuiCodeEditorNew, rt_codeeditor_new, "Zanna.GUI.CodeEditor.New", "obj(obj)")
+RT_FUNC(GuiCodeEditorNew, rt_codeeditor_new, "Zanna.GUI.CodeEditor.New", "obj(obj)", owned)
 RT_FUNC(GuiCodeEditorSetText, rt_codeeditor_set_text, "Zanna.GUI.CodeEditor.SetText", "void(obj,str)")
 RT_FUNC(GuiCodeEditorReplaceAllText, rt_codeeditor_replace_all_text, "Zanna.GUI.CodeEditor.ReplaceAllText", "i1(obj,str)")
-RT_FUNC(GuiCodeEditorGetText, rt_codeeditor_get_text, "Zanna.GUI.CodeEditor.get_Text", "str(obj)")
+RT_FUNC(GuiCodeEditorGetText, rt_codeeditor_get_text, "Zanna.GUI.CodeEditor.get_Text", "str(obj)", owned)
 RT_FUNC(GuiCodeEditorGetRevision, rt_codeeditor_get_revision, "Zanna.GUI.CodeEditor.get_Revision", "i64(obj)")
-RT_FUNC(GuiCodeEditorTakeDeltas, rt_codeeditor_take_deltas, "Zanna.GUI.CodeEditor.TakeDeltas", "str(obj,i64)")
-RT_FUNC(GuiCodeEditorGetSelectedText, rt_codeeditor_get_selected_text, "Zanna.GUI.CodeEditor.GetSelectedText", "str(obj)")
+RT_FUNC(GuiCodeEditorTakeDeltas, rt_codeeditor_take_deltas, "Zanna.GUI.CodeEditor.TakeDeltas", "str(obj,i64)", owned)
+RT_FUNC(GuiCodeEditorGetSelectedText, rt_codeeditor_get_selected_text, "Zanna.GUI.CodeEditor.GetSelectedText", "str(obj)", owned)
 RT_FUNC(GuiCodeEditorSetCursor, rt_codeeditor_set_cursor, "Zanna.GUI.CodeEditor.SetCursor", "void(obj,i64,i64)")
 RT_FUNC(GuiCodeEditorScrollToLine, rt_codeeditor_scroll_to_line, "Zanna.GUI.CodeEditor.ScrollToLine", "void(obj,i64)")
 RT_FUNC(GuiCodeEditorGetScrollTopLine, rt_codeeditor_get_scroll_top_line, "Zanna.GUI.CodeEditor.get_ScrollTopLine", "i64(obj)")
@@ -393,13 +393,13 @@ RT_FUNC(GuiCodeEditorSetFontSize, rt_codeeditor_set_font_size, "Zanna.GUI.CodeEd
 // GUI - DROPDOWN
 //=============================================================================
 
-RT_FUNC(GuiDropdownNew, rt_dropdown_new, "Zanna.GUI.Dropdown.New", "obj(obj)")
+RT_FUNC(GuiDropdownNew, rt_dropdown_new, "Zanna.GUI.Dropdown.New", "obj(obj)", owned)
 RT_FUNC(GuiDropdownAddItem, rt_dropdown_add_item, "Zanna.GUI.Dropdown.AddItem", "i64(obj,str)")
 RT_FUNC(GuiDropdownRemoveItem, rt_dropdown_remove_item, "Zanna.GUI.Dropdown.RemoveItem", "void(obj,i64)")
 RT_FUNC(GuiDropdownClear, rt_dropdown_clear, "Zanna.GUI.Dropdown.Clear", "void(obj)")
 RT_FUNC(GuiDropdownSetSelected, rt_dropdown_set_selected, "Zanna.GUI.Dropdown.SetSelected", "void(obj,i64)")
 RT_FUNC(GuiDropdownGetSelected, rt_dropdown_get_selected, "Zanna.GUI.Dropdown.get_Selected", "i64(obj)")
-RT_FUNC(GuiDropdownGetSelectedText, rt_dropdown_get_selected_text, "Zanna.GUI.Dropdown.get_SelectedText", "str(obj)")
+RT_FUNC(GuiDropdownGetSelectedText, rt_dropdown_get_selected_text, "Zanna.GUI.Dropdown.get_SelectedText", "str(obj)", owned)
 RT_FUNC(GuiDropdownSetPlaceholder, rt_dropdown_set_placeholder, "Zanna.GUI.Dropdown.SetPlaceholder", "void(obj,str)")
 RT_FUNC(GuiDropdownWasChanged, rt_dropdown_was_changed, "Zanna.GUI.Dropdown.WasChanged", "i1(obj)")
 RT_FUNC(GuiDropdownGetRevision, rt_dropdown_get_revision, "Zanna.GUI.Dropdown.GetRevision", "i64(obj)")
@@ -408,7 +408,7 @@ RT_FUNC(GuiDropdownGetRevision, rt_dropdown_get_revision, "Zanna.GUI.Dropdown.Ge
 // GUI - SLIDER
 //=============================================================================
 
-RT_FUNC(GuiSliderNew, rt_slider_new, "Zanna.GUI.Slider.New", "obj(obj,i64)")
+RT_FUNC(GuiSliderNew, rt_slider_new, "Zanna.GUI.Slider.New", "obj(obj,i64)", owned)
 RT_FUNC(GuiSliderSetValue, rt_slider_set_value, "Zanna.GUI.Slider.SetValue", "void(obj,f64)")
 RT_FUNC(GuiSliderGetValue, rt_slider_get_value, "Zanna.GUI.Slider.get_Value", "f64(obj)")
 RT_FUNC(GuiSliderSetRange, rt_slider_set_range, "Zanna.GUI.Slider.SetRange", "void(obj,f64,f64)")
@@ -420,7 +420,7 @@ RT_FUNC(GuiSliderGetRevision, rt_slider_get_revision, "Zanna.GUI.Slider.GetRevis
 // GUI - PROGRESSBAR
 //=============================================================================
 
-RT_FUNC(GuiProgressBarNew, rt_progressbar_new, "Zanna.GUI.ProgressBar.New", "obj(obj)")
+RT_FUNC(GuiProgressBarNew, rt_progressbar_new, "Zanna.GUI.ProgressBar.New", "obj(obj)", owned)
 RT_FUNC(GuiProgressBarSetValue, rt_progressbar_set_value, "Zanna.GUI.ProgressBar.SetValue", "void(obj,f64)")
 RT_FUNC(GuiProgressBarGetValue, rt_progressbar_get_value, "Zanna.GUI.ProgressBar.get_Value", "f64(obj)")
 RT_FUNC(GuiProgressBarSetStyle, rt_progressbar_set_style, "Zanna.GUI.ProgressBar.SetStyle", "void(obj,i64)")
@@ -430,12 +430,12 @@ RT_FUNC(GuiProgressBarShowPercentage, rt_progressbar_show_percentage, "Zanna.GUI
 // GUI - LISTBOX
 //=============================================================================
 
-RT_FUNC(GuiListBoxNew, rt_listbox_new, "Zanna.GUI.ListBox.New", "obj(obj)")
-RT_FUNC(GuiListBoxAddItem, rt_listbox_add_item, "Zanna.GUI.ListBox.AddItem", "obj(obj,str)")
+RT_FUNC(GuiListBoxNew, rt_listbox_new, "Zanna.GUI.ListBox.New", "obj(obj)", owned)
+RT_FUNC(GuiListBoxAddItem, rt_listbox_add_item, "Zanna.GUI.ListBox.AddItem", "obj(obj,str)", owned)
 RT_FUNC(GuiListBoxRemoveItem, rt_listbox_remove_item, "Zanna.GUI.ListBox.RemoveItem", "void(obj,obj)")
 RT_FUNC(GuiListBoxClear, rt_listbox_clear, "Zanna.GUI.ListBox.Clear", "void(obj)")
 RT_FUNC(GuiListBoxSelect, rt_listbox_select, "Zanna.GUI.ListBox.Select", "void(obj,obj)")
-RT_FUNC(GuiListBoxGetSelected, rt_listbox_get_selected, "Zanna.GUI.ListBox.get_Selected", "obj(obj)")
+RT_FUNC(GuiListBoxGetSelected, rt_listbox_get_selected, "Zanna.GUI.ListBox.get_Selected", "obj(obj)", owned)
 RT_FUNC(GuiListBoxGetCount, rt_listbox_get_count, "Zanna.GUI.ListBox.get_Count", "i64(obj)")
 RT_FUNC(GuiListBoxGetSelectedIndex, rt_listbox_get_selected_index, "Zanna.GUI.ListBox.get_SelectedIndex", "i64(obj)")
 RT_FUNC(GuiListBoxSelectIndex, rt_listbox_select_index, "Zanna.GUI.ListBox.SelectIndex", "void(obj,i64)")
@@ -446,21 +446,21 @@ RT_FUNC(GuiListBoxSetReorderable, rt_listbox_set_reorderable, "Zanna.GUI.ListBox
 RT_FUNC(GuiListBoxWasReorderRequested, rt_listbox_was_reorder_requested, "Zanna.GUI.ListBox.WasReorderRequested", "i1(obj)")
 RT_FUNC(GuiListBoxGetReorderSourceIndex, rt_listbox_get_reorder_source_index, "Zanna.GUI.ListBox.GetReorderSourceIndex", "i64(obj)")
 RT_FUNC(GuiListBoxGetReorderTargetIndex, rt_listbox_get_reorder_target_index, "Zanna.GUI.ListBox.GetReorderTargetIndex", "i64(obj)")
-RT_FUNC(GuiListBoxGetSelectedText, rt_listbox_get_selected_text, "Zanna.GUI.ListBox.GetSelectedText", "str(obj)")
-RT_FUNC(GuiListBoxGetSelectedData, rt_listbox_get_selected_data, "Zanna.GUI.ListBox.GetSelectedData", "seq<str>(obj)")
+RT_FUNC(GuiListBoxGetSelectedText, rt_listbox_get_selected_text, "Zanna.GUI.ListBox.GetSelectedText", "str(obj)", owned)
+RT_FUNC(GuiListBoxGetSelectedData, rt_listbox_get_selected_data, "Zanna.GUI.ListBox.GetSelectedData", "seq<str>(obj)", owned)
 RT_FUNC(GuiListBoxWasSelectionChanged, rt_listbox_was_selection_changed, "Zanna.GUI.ListBox.WasSelectionChanged", "i1(obj)")
 RT_FUNC(GuiListBoxWasChanged, rt_listbox_was_changed, "Zanna.GUI.ListBox.WasChanged", "i1(obj)")
 RT_FUNC(GuiListBoxWasActivated, rt_listbox_was_activated, "Zanna.GUI.ListBox.WasActivated", "i1(obj)")
 RT_FUNC(GuiListBoxGetRevision, rt_listbox_get_revision, "Zanna.GUI.ListBox.GetRevision", "i64(obj)")
-RT_FUNC(GuiListBoxItemGetText, rt_listbox_item_get_text, "Zanna.GUI.ListBox.ItemGetText", "str(obj)")
+RT_FUNC(GuiListBoxItemGetText, rt_listbox_item_get_text, "Zanna.GUI.ListBox.ItemGetText", "str(obj)", owned)
 RT_FUNC(GuiListBoxItemSetText, rt_listbox_item_set_text, "Zanna.GUI.ListBox.ItemSetText", "void(obj,str)")
-RT_FUNC(GuiListBoxItemGetData, rt_listbox_item_get_data, "Zanna.GUI.ListBox.ItemGetData", "str(obj)")
+RT_FUNC(GuiListBoxItemGetData, rt_listbox_item_get_data, "Zanna.GUI.ListBox.ItemGetData", "str(obj)", owned)
 RT_FUNC(GuiListBoxItemSetData, rt_listbox_item_set_data, "Zanna.GUI.ListBox.ItemSetData", "void(obj,str)")
 RT_FUNC(GuiListBoxItemSetTextColor, rt_listbox_item_set_text_color, "Zanna.GUI.ListBox.ItemSetTextColor", "void(obj,i64)")
 RT_FUNC(GuiListBoxItemSetNamedIcon, rt_listbox_item_set_named_icon, "Zanna.GUI.ListBox.ItemSetNamedIcon", "void(obj,str)")
 RT_FUNC(GuiListBoxSetFont, rt_listbox_set_font, "Zanna.GUI.ListBox.SetFont", "void(obj,obj,f64)")
 
-RT_FUNC(GuiOutputPaneNew, rt_outputpane_new, "Zanna.GUI.OutputPane.New", "obj(obj)")
+RT_FUNC(GuiOutputPaneNew, rt_outputpane_new, "Zanna.GUI.OutputPane.New", "obj(obj)", owned)
 RT_FUNC(GuiOutputPaneAppend, rt_outputpane_append, "Zanna.GUI.OutputPane.Append", "void(obj,str)")
 RT_FUNC(GuiOutputPaneAppendLine, rt_outputpane_append_line, "Zanna.GUI.OutputPane.AppendLine", "void(obj,str)")
 RT_FUNC(GuiOutputPaneAppendStyled, rt_outputpane_append_styled, "Zanna.GUI.OutputPane.AppendStyled", "void(obj,str,i64,i64,i64)")
@@ -468,24 +468,24 @@ RT_FUNC(GuiOutputPaneClear, rt_outputpane_clear, "Zanna.GUI.OutputPane.Clear", "
 RT_FUNC(GuiOutputPaneScrollToTop, rt_outputpane_scroll_to_top, "Zanna.GUI.OutputPane.ScrollToTop", "void(obj)")
 RT_FUNC(GuiOutputPaneScrollToBottom, rt_outputpane_scroll_to_bottom, "Zanna.GUI.OutputPane.ScrollToBottom", "void(obj)")
 RT_FUNC(GuiOutputPaneSetAutoScroll, rt_outputpane_set_auto_scroll, "Zanna.GUI.OutputPane.SetAutoScroll", "void(obj,i1)")
-RT_FUNC(GuiOutputPaneGetSelection, rt_outputpane_get_selection, "Zanna.GUI.OutputPane.GetSelection", "str(obj)")
+RT_FUNC(GuiOutputPaneGetSelection, rt_outputpane_get_selection, "Zanna.GUI.OutputPane.GetSelection", "str(obj)", owned)
 RT_FUNC(GuiOutputPaneSelectAll, rt_outputpane_select_all, "Zanna.GUI.OutputPane.SelectAll", "void(obj)")
 RT_FUNC(GuiOutputPaneSetMaxLines, rt_outputpane_set_max_lines, "Zanna.GUI.OutputPane.SetMaxLines", "void(obj,i64)")
 RT_FUNC(GuiOutputPaneGetLineCount, rt_outputpane_get_line_count, "Zanna.GUI.OutputPane.get_LineCount", "i64(obj)")
 RT_FUNC(GuiOutputPaneSetFont, rt_outputpane_set_font, "Zanna.GUI.OutputPane.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiOutputPaneSetTerminalMode, rt_outputpane_set_terminal_mode, "Zanna.GUI.OutputPane.SetTerminalMode", "void(obj,i1)")
-RT_FUNC(GuiOutputPaneTakeInput, rt_outputpane_take_input, "Zanna.GUI.OutputPane.TakeInput", "str(obj)")
+RT_FUNC(GuiOutputPaneTakeInput, rt_outputpane_take_input, "Zanna.GUI.OutputPane.TakeInput", "str(obj)", owned)
 RT_FUNC(GuiOutputPaneGetCellWidth, rt_outputpane_get_cell_width, "Zanna.GUI.OutputPane.GetCellWidth", "i64(obj)")
 RT_FUNC(GuiOutputPaneGetCellHeight, rt_outputpane_get_cell_height, "Zanna.GUI.OutputPane.GetCellHeight", "i64(obj)")
 RT_FUNC(GuiOutputPaneMeasureText, rt_outputpane_measure_text, "Zanna.GUI.OutputPane.MeasureText", "i64(obj,str)")
 RT_FUNC(GuiOutputPaneColumnsForWidth, rt_outputpane_columns_for_width, "Zanna.GUI.OutputPane.ColumnsForWidth", "i64(obj)")
 RT_FUNC(GuiOutputPaneRowsForHeight, rt_outputpane_rows_for_height, "Zanna.GUI.OutputPane.RowsForHeight", "i64(obj)")
 
-RT_FUNC(GuiGridNew, rt_datagrid_new, "Zanna.GUI.Grid.New", "obj(obj)")
+RT_FUNC(GuiGridNew, rt_datagrid_new, "Zanna.GUI.Grid.New", "obj(obj)", owned)
 RT_FUNC(GuiGridSetColumns, rt_datagrid_set_columns, "Zanna.GUI.Grid.SetColumns", "void(obj,i64)")
 RT_FUNC(GuiGridSetHeader, rt_datagrid_set_header, "Zanna.GUI.Grid.SetHeader", "void(obj,i64,str)")
 RT_FUNC(GuiGridSetCell, rt_datagrid_set_cell, "Zanna.GUI.Grid.SetCell", "void(obj,i64,i64,str)")
-RT_FUNC(GuiGridGetCell, rt_datagrid_get_cell, "Zanna.GUI.Grid.GetCell", "str(obj,i64,i64)")
+RT_FUNC(GuiGridGetCell, rt_datagrid_get_cell, "Zanna.GUI.Grid.GetCell", "str(obj,i64,i64)", owned)
 RT_FUNC(GuiGridClear, rt_datagrid_clear, "Zanna.GUI.Grid.Clear", "void(obj)")
 RT_FUNC(GuiGridSetFont, rt_datagrid_set_font, "Zanna.GUI.Grid.SetFont", "void(obj,obj,f64)")
 RT_FUNC(GuiGridGetColumnWidth, rt_datagrid_get_column_width, "Zanna.GUI.Grid.GetColumnWidth", "i64(obj,i64)")
@@ -521,7 +521,7 @@ RT_FUNC(GuiGridGetScrollRow, rt_datagrid_get_scroll_row, "Zanna.GUI.Grid.GetScro
 RT_FUNC(GuiGridWasChanged, rt_datagrid_was_changed, "Zanna.GUI.Grid.WasChanged", "i1(obj)")
 RT_FUNC(GuiGridGetRevision, rt_datagrid_get_revision, "Zanna.GUI.Grid.GetRevision", "i64(obj)")
 
-RT_FUNC(GuiPopupListNew, rt_popuplist_new, "Zanna.GUI.PopupList.New", "obj(obj)")
+RT_FUNC(GuiPopupListNew, rt_popuplist_new, "Zanna.GUI.PopupList.New", "obj(obj)", owned)
 RT_FUNC(GuiPopupListAddItem, rt_popuplist_add_item, "Zanna.GUI.PopupList.AddItem", "void(obj,str)")
 RT_FUNC(GuiPopupListClear, rt_popuplist_clear, "Zanna.GUI.PopupList.Clear", "void(obj)")
 RT_FUNC(GuiPopupListSetFilter, rt_popuplist_set_filter, "Zanna.GUI.PopupList.SetFilter", "void(obj,str)")
@@ -530,7 +530,7 @@ RT_FUNC(GuiPopupListNavigateUp, rt_popuplist_navigate_up, "Zanna.GUI.PopupList.N
 RT_FUNC(GuiPopupListNavigateDown, rt_popuplist_navigate_down, "Zanna.GUI.PopupList.NavigateDown", "void(obj)")
 RT_FUNC(GuiPopupListSetSelectedIndex, rt_popuplist_set_selected_index, "Zanna.GUI.PopupList.SetSelectedIndex", "void(obj,i64)")
 RT_FUNC(GuiPopupListGetSelectedIndex, rt_popuplist_get_selected_index, "Zanna.GUI.PopupList.GetSelectedIndex", "i64(obj)")
-RT_FUNC(GuiPopupListGetSelected, rt_popuplist_get_selected, "Zanna.GUI.PopupList.GetSelected", "str(obj)")
+RT_FUNC(GuiPopupListGetSelected, rt_popuplist_get_selected, "Zanna.GUI.PopupList.GetSelected", "str(obj)", owned)
 RT_FUNC(GuiPopupListAcceptSelected, rt_popuplist_accept_selected, "Zanna.GUI.PopupList.AcceptSelected", "void(obj)")
 RT_FUNC(GuiPopupListWasAccepted, rt_popuplist_was_accepted, "Zanna.GUI.PopupList.WasAccepted", "i1(obj)")
 RT_FUNC(GuiPopupListAnchorAt, rt_popuplist_anchor_at, "Zanna.GUI.PopupList.AnchorAt", "void(obj,f64,f64)")
@@ -544,20 +544,20 @@ RT_FUNC(GuiPopupListIsVisible, rt_popuplist_is_visible, "Zanna.GUI.PopupList.IsV
 // GUI - RADIOGROUP / RADIOBUTTON
 //=============================================================================
 
-RT_FUNC(GuiRadioGroupNew, rt_radiogroup_new, "Zanna.GUI.RadioGroup.New", "obj()")
+RT_FUNC(GuiRadioGroupNew, rt_radiogroup_new, "Zanna.GUI.RadioGroup.New", "obj()", owned)
 RT_FUNC(GuiRadioGroupDestroy, rt_radiogroup_destroy, "Zanna.GUI.RadioGroup.Destroy", "void(obj)")
 RT_FUNC(GuiRadioGroupGetSelectedIndex, rt_radiogroup_get_selected_index, "Zanna.GUI.RadioGroup.GetSelectedIndex", "i64(obj)")
 RT_FUNC(GuiRadioGroupSetSelectedIndex, rt_radiogroup_set_selected_index, "Zanna.GUI.RadioGroup.SetSelectedIndex", "i1(obj,i64)")
 RT_FUNC(GuiRadioGroupGetCount, rt_radiogroup_get_count, "Zanna.GUI.RadioGroup.GetCount", "i64(obj)")
 RT_FUNC(GuiRadioGroupWasChanged, rt_radiogroup_was_changed, "Zanna.GUI.RadioGroup.WasChanged", "i1(obj)")
 RT_FUNC(GuiRadioGroupGetRevision, rt_radiogroup_get_revision, "Zanna.GUI.RadioGroup.GetRevision", "i64(obj)")
-RT_FUNC(GuiRadioButtonNew, rt_radiobutton_new, "Zanna.GUI.RadioButton.New", "obj(obj,str,obj)")
+RT_FUNC(GuiRadioButtonNew, rt_radiobutton_new, "Zanna.GUI.RadioButton.New", "obj(obj,str,obj)", owned)
 RT_FUNC(GuiRadioButtonIsSelected, rt_radiobutton_is_selected, "Zanna.GUI.RadioButton.IsSelected", "i1(obj)")
 RT_FUNC(GuiRadioButtonSetSelected, rt_radiobutton_set_selected, "Zanna.GUI.RadioButton.SetSelected", "void(obj,i1)")
 RT_FUNC(GuiRadioButtonSetText, rt_radiobutton_set_text, "Zanna.GUI.RadioButton.SetText", "void(obj,str)")
-RT_FUNC(GuiRadioButtonGetText, rt_radiobutton_get_text, "Zanna.GUI.RadioButton.GetText", "str(obj)")
+RT_FUNC(GuiRadioButtonGetText, rt_radiobutton_get_text, "Zanna.GUI.RadioButton.GetText", "str(obj)", owned)
 RT_FUNC(GuiRadioButtonSetData, rt_radiobutton_set_data, "Zanna.GUI.RadioButton.SetData", "void(obj,str)")
-RT_FUNC(GuiRadioButtonGetData, rt_radiobutton_get_data, "Zanna.GUI.RadioButton.GetData", "str(obj)")
+RT_FUNC(GuiRadioButtonGetData, rt_radiobutton_get_data, "Zanna.GUI.RadioButton.GetData", "str(obj)", owned)
 RT_FUNC(GuiRadioButtonWasChanged, rt_radiobutton_was_changed, "Zanna.GUI.RadioButton.WasChanged", "i1(obj)")
 RT_FUNC(GuiRadioButtonGetRevision, rt_radiobutton_get_revision, "Zanna.GUI.RadioButton.GetRevision", "i64(obj)")
 
@@ -565,7 +565,7 @@ RT_FUNC(GuiRadioButtonGetRevision, rt_radiobutton_get_revision, "Zanna.GUI.Radio
 // GUI - SPINNER
 //=============================================================================
 
-RT_FUNC(GuiSpinnerNew, rt_spinner_new, "Zanna.GUI.Spinner.New", "obj(obj)")
+RT_FUNC(GuiSpinnerNew, rt_spinner_new, "Zanna.GUI.Spinner.New", "obj(obj)", owned)
 RT_FUNC(GuiSpinnerSetValue, rt_spinner_set_value, "Zanna.GUI.Spinner.SetValue", "void(obj,f64)")
 RT_FUNC(GuiSpinnerGetValue, rt_spinner_get_value, "Zanna.GUI.Spinner.get_Value", "f64(obj)")
 RT_FUNC(GuiSpinnerSetIndeterminate, rt_spinner_set_indeterminate, "Zanna.GUI.Spinner.SetIndeterminate", "void(obj,i1)")
@@ -582,7 +582,7 @@ RT_FUNC(GuiSpinnerGetRevision, rt_spinner_get_revision, "Zanna.GUI.Spinner.GetRe
 // GUI - COLOR CONTROLS
 //=============================================================================
 
-RT_FUNC(GuiColorSwatchNew, rt_colorswatch_new, "Zanna.GUI.ColorSwatch.New", "obj(obj,i64)")
+RT_FUNC(GuiColorSwatchNew, rt_colorswatch_new, "Zanna.GUI.ColorSwatch.New", "obj(obj,i64)", owned)
 RT_FUNC(GuiColorSwatchSetColor, rt_colorswatch_set_color, "Zanna.GUI.ColorSwatch.SetColor", "void(obj,i64)")
 RT_FUNC(GuiColorSwatchGetColor, rt_colorswatch_get_color, "Zanna.GUI.ColorSwatch.GetColor", "i64(obj)")
 RT_FUNC(GuiColorSwatchSetSelected, rt_colorswatch_set_selected, "Zanna.GUI.ColorSwatch.SetSelected", "void(obj,i1)")
@@ -590,7 +590,7 @@ RT_FUNC(GuiColorSwatchIsSelected, rt_colorswatch_is_selected, "Zanna.GUI.ColorSw
 RT_FUNC(GuiColorSwatchWasChanged, rt_colorswatch_was_changed, "Zanna.GUI.ColorSwatch.WasChanged", "i1(obj)")
 RT_FUNC(GuiColorSwatchGetRevision, rt_colorswatch_get_revision, "Zanna.GUI.ColorSwatch.GetRevision", "i64(obj)")
 
-RT_FUNC(GuiColorPaletteNew, rt_colorpalette_new, "Zanna.GUI.ColorPalette.New", "obj(obj)")
+RT_FUNC(GuiColorPaletteNew, rt_colorpalette_new, "Zanna.GUI.ColorPalette.New", "obj(obj)", owned)
 RT_FUNC(GuiColorPaletteAddColor, rt_colorpalette_add_color, "Zanna.GUI.ColorPalette.AddColor", "void(obj,i64)")
 RT_FUNC(GuiColorPaletteRemoveColor, rt_colorpalette_remove_color, "Zanna.GUI.ColorPalette.RemoveColor", "i1(obj,i64)")
 RT_FUNC(GuiColorPaletteClear, rt_colorpalette_clear, "Zanna.GUI.ColorPalette.Clear", "void(obj)")
@@ -601,7 +601,7 @@ RT_FUNC(GuiColorPaletteGetSelectedIndex, rt_colorpalette_get_selected_index, "Za
 RT_FUNC(GuiColorPaletteWasChanged, rt_colorpalette_was_changed, "Zanna.GUI.ColorPalette.WasChanged", "i1(obj)")
 RT_FUNC(GuiColorPaletteGetRevision, rt_colorpalette_get_revision, "Zanna.GUI.ColorPalette.GetRevision", "i64(obj)")
 
-RT_FUNC(GuiColorPickerNew, rt_colorpicker_new, "Zanna.GUI.ColorPicker.New", "obj(obj)")
+RT_FUNC(GuiColorPickerNew, rt_colorpicker_new, "Zanna.GUI.ColorPicker.New", "obj(obj)", owned)
 RT_FUNC(GuiColorPickerSetColor, rt_colorpicker_set_color, "Zanna.GUI.ColorPicker.SetColor", "void(obj,i64)")
 RT_FUNC(GuiColorPickerGetColor, rt_colorpicker_get_color, "Zanna.GUI.ColorPicker.GetColor", "i64(obj)")
 RT_FUNC(GuiColorPickerSetAlphaEnabled, rt_colorpicker_set_alpha_enabled, "Zanna.GUI.ColorPicker.SetAlphaEnabled", "void(obj,i1)")
@@ -617,7 +617,7 @@ RT_FUNC(GuiColorPickerGetRevision, rt_colorpicker_get_revision, "Zanna.GUI.Color
 // GUI - IMAGE
 //=============================================================================
 
-RT_FUNC(GuiImageNew, rt_image_new, "Zanna.GUI.Image.New", "obj(obj)")
+RT_FUNC(GuiImageNew, rt_image_new, "Zanna.GUI.Image.New", "obj(obj)", owned)
 RT_FUNC(GuiImageSetPixels, rt_image_set_pixels, "Zanna.GUI.Image.SetPixels", "void(obj,obj,i64,i64)")
 RT_FUNC(GuiImageTrySetPixels, rt_image_try_set_pixels, "Zanna.GUI.Image.TrySetPixels", "i1(obj,obj,i64,i64)")
 RT_FUNC(GuiImageTrySetFromRenderTarget, rt_image_try_set_from_render_target, "Zanna.GUI.Image.TrySetFromRenderTarget", "i1(obj,obj)")
@@ -637,26 +637,26 @@ RT_FUNC(GuiFloatingPanelDestroy, rt_floatingpanel_destroy, "Zanna.GUI.FloatingPa
 
 RT_FUNC(GuiThemeSetDark, rt_theme_set_dark, "Zanna.GUI.Theme.SetDark", "void()")
 RT_FUNC(GuiThemeSetLight, rt_theme_set_light, "Zanna.GUI.Theme.SetLight", "void()")
-RT_FUNC(GuiThemeGetName, rt_theme_get_name, "Zanna.GUI.Theme.GetName", "str()")
+RT_FUNC(GuiThemeGetName, rt_theme_get_name, "Zanna.GUI.Theme.GetName", "str()", owned)
 RT_FUNC(GuiThemeSetMode, rt_theme_set_mode, "Zanna.GUI.Theme.SetMode", "void(i64)")
 RT_FUNC(GuiThemeGetMode, rt_theme_get_mode, "Zanna.GUI.Theme.GetMode", "i64()")
 RT_FUNC(GuiThemeFollowSystem, rt_theme_follow_system, "Zanna.GUI.Theme.FollowSystem", "void()")
 RT_FUNC(GuiThemeSetPalette, rt_theme_set_palette, "Zanna.GUI.Theme.SetPalette", "i1(obj)")
-RT_FUNC(GuiThemeGetPalette, rt_theme_get_palette, "Zanna.GUI.Theme.GetPalette", "obj()")
+RT_FUNC(GuiThemeGetPalette, rt_theme_get_palette, "Zanna.GUI.Theme.GetPalette", "obj()", owned)
 RT_FUNC(GuiThemeResetCustom, rt_theme_reset_custom, "Zanna.GUI.Theme.ResetCustom", "void()")
 RT_FUNC(GuiThemeWasChanged, rt_theme_was_changed, "Zanna.GUI.Theme.WasChanged", "i1()")
 RT_FUNC(GuiThemeGetRevision, rt_theme_get_revision, "Zanna.GUI.Theme.GetRevision", "i64()")
 
-RT_FUNC(GuiThemePaletteNew, rt_theme_palette_new, "Zanna.GUI.ThemePalette.New", "obj()")
-RT_FUNC(GuiThemePaletteFromDark, rt_theme_palette_from_dark, "Zanna.GUI.ThemePalette.FromDark", "obj()")
-RT_FUNC(GuiThemePaletteFromLight, rt_theme_palette_from_light, "Zanna.GUI.ThemePalette.FromLight", "obj()")
-RT_FUNC(GuiThemePaletteClone, rt_theme_palette_clone, "Zanna.GUI.ThemePalette.Clone", "obj(obj)")
+RT_FUNC(GuiThemePaletteNew, rt_theme_palette_new, "Zanna.GUI.ThemePalette.New", "obj()", owned)
+RT_FUNC(GuiThemePaletteFromDark, rt_theme_palette_from_dark, "Zanna.GUI.ThemePalette.FromDark", "obj()", owned)
+RT_FUNC(GuiThemePaletteFromLight, rt_theme_palette_from_light, "Zanna.GUI.ThemePalette.FromLight", "obj()", owned)
+RT_FUNC(GuiThemePaletteClone, rt_theme_palette_clone, "Zanna.GUI.ThemePalette.Clone", "obj(obj)", owned)
 RT_FUNC(GuiThemePaletteSetColor, rt_theme_palette_set_color, "Zanna.GUI.ThemePalette.SetColor", "i1(obj,str,i64)")
 RT_FUNC(GuiThemePaletteGetColor, rt_theme_palette_get_color, "Zanna.GUI.ThemePalette.GetColor", "i64(obj,str)")
 RT_FUNC(GuiThemePaletteSetMetric, rt_theme_palette_set_metric, "Zanna.GUI.ThemePalette.SetMetric", "i1(obj,str,f64)")
 RT_FUNC(GuiThemePaletteGetMetric, rt_theme_palette_get_metric, "Zanna.GUI.ThemePalette.GetMetric", "f64(obj,str)")
 RT_FUNC(GuiThemePaletteSetMotionEnabled, rt_theme_palette_set_motion_enabled, "Zanna.GUI.ThemePalette.SetMotionEnabled", "void(obj,i1)")
 RT_FUNC(GuiThemePaletteSetFontRoles, rt_theme_palette_set_font_roles, "Zanna.GUI.ThemePalette.SetFontRoles", "void(obj,obj,obj,obj)")
-RT_FUNC(GuiThemePaletteValidate, rt_theme_palette_validate, "Zanna.GUI.ThemePalette.Validate", "obj<Zanna.Result>(obj)")
+RT_FUNC(GuiThemePaletteValidate, rt_theme_palette_validate, "Zanna.GUI.ThemePalette.Validate", "obj<Zanna.Result>(obj)", owned)
 
 //=============================================================================

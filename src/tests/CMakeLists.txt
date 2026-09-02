@@ -925,6 +925,8 @@ set(ZIA_RUNTIME_TESTS
         test_spline
         test_serialize_unified
         test_weakref_gc
+        test_object_field_release
+        test_runtime_result_ownership
         test_async_promise
         test_intmap
         test_binbuf
@@ -1120,6 +1122,9 @@ if (NOT WIN32)
     set_tests_properties(native_run_zia_43_alpha_hardening PROPERTIES
             LABELS "zia;native_run"
             TIMEOUT 60)
+
+    # ADR 0313 / ADR 0314 ownership lanes (VM twins live in ZIA_RUNTIME_TESTS).
+    include(${CMAKE_CURRENT_SOURCE_DIR}/e2e/native_run_ownership.cmake)
 
     add_test(NAME native_run_zia_44_language_promises
             COMMAND ${CMAKE_COMMAND}

@@ -12024,6 +12024,175 @@ static void test_canvas3d_ttf_font_and_text() {
 // Main
 //=============================================================================
 
+/* ADR 0311: depth-only shading keeps the draw pipeline (submission, culling,
+ * depth) but never shades or writes colour on the software backend. */
+static void test_canvas_depth_only_shading() {
+    TEST("Canvas3D depth-only shading skips colour writes, keeps draw counts");
+    rt_canvas3d canvas = {};
+    rt_rendertarget3d *rt = (rt_rendertarget3d *)rt_rendertarget3d_new(8, 8);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 500.0);
+    void *mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    void *mat = rt_material3d_new();
+    void *near_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 0.0, 0.0, 0.0, 1.0);
+
+    EXPECT_TRUE(rt != nullptr && rt->target != nullptr, "RenderTarget3D fixture exists");
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = vgfx3d_software_backend.create_ctx((vgfx_window_t)0, 8, 8);
+    EXPECT_TRUE(canvas.backend_ctx != nullptr, "software backend context exists");
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 8;
+    canvas.height = 8;
+    if (!rt || !rt->target || !canvas.backend_ctx)
+        return;
+    rt_canvas3d_set_render_target(&canvas, rt);
+    rt_material3d_set_unlit(mat, 1);
+    rt_material3d_set_color(mat, 1.0, 1.0, 1.0);
+
+    EXPECT_EQ(rt_canvas3d_get_depth_only_shading(&canvas), 0);
+
+    /* Full shading: the unlit white box covers the centre texel. */
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
+    rt_canvas3d_end(&canvas);
+    const int64_t full_draws = rt_canvas3d_get_draw_count(&canvas);
+    void *full_px = rt_rendertarget3d_as_pixels(rt);
+    const int64_t full_center = full_px ? rt_pixels_get_rgba(full_px, 4, 4) : 0;
+    EXPECT_TRUE((full_center & 0x00FFFFFF) != 0, "full shading paints the centre texel");
+
+    /* Depth-only: same draws submitted, centre texel stays at the clear colour. */
+    rt_canvas3d_set_depth_only_shading(&canvas, 1);
+    EXPECT_EQ(rt_canvas3d_get_depth_only_shading(&canvas), 1);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(rt_canvas3d_get_draw_count(&canvas), full_draws);
+    void *depth_px = rt_rendertarget3d_as_pixels(rt);
+    const int64_t depth_center = depth_px ? rt_pixels_get_rgba(depth_px, 4, 4) : 0;
+    const int64_t depth_corner = depth_px ? rt_pixels_get_rgba(depth_px, 0, 0) : 0;
+    EXPECT_EQ(depth_center & 0x00FFFFFF, depth_corner & 0x00FFFFFF);
+
+    /* Back to full shading: the box paints again (the flag is not sticky in the backend). */
+    rt_canvas3d_set_depth_only_shading(&canvas, 0);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
+    rt_canvas3d_end(&canvas);
+    void *again_px = rt_rendertarget3d_as_pixels(rt);
+    const int64_t again_center = again_px ? rt_pixels_get_rgba(again_px, 4, 4) : 0;
+    EXPECT_TRUE((again_center & 0x00FFFFFF) != 0, "full shading resumes after the flag clears");
+
+    rt_canvas3d_set_render_target(&canvas, nullptr);
+    vgfx3d_software_backend.destroy_ctx(canvas.backend_ctx);
+    canvas.backend_ctx = nullptr;
+    free(canvas.texture_stream_entries);
+    canvas.texture_stream_entries = nullptr;
+    if (full_px && rt_obj_release_check0(full_px))
+        rt_obj_free(full_px);
+    if (depth_px && rt_obj_release_check0(depth_px))
+        rt_obj_free(depth_px);
+    if (again_px && rt_obj_release_check0(again_px))
+        rt_obj_free(again_px);
+    if (rt_obj_release_check0(mat))
+        rt_obj_free(mat);
+    if (rt_obj_release_check0(mesh))
+        rt_obj_free(mesh);
+    if (rt_obj_release_check0(camera))
+        rt_obj_free(camera);
+    if (rt_obj_release_check0(near_xf))
+        rt_obj_free(near_xf);
+    if (rt_obj_release_check0(rt))
+        rt_obj_free(rt);
+    PASS();
+}
+
+/* ADR 0312: on the software backend a projected decal paints the fragments inside its
+ * model-space box and facing it, leaves the rest of the surface alone, and never paints a
+ * surface whose normal points away from the projector. */
+static void test_canvas_decal_layer_software() {
+    TEST("Material3D decal layer paints inside the projector box on the software backend");
+    rt_canvas3d canvas = {};
+    rt_rendertarget3d *rt = (rt_rendertarget3d *)rt_rendertarget3d_new(16, 16);
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 500.0);
+    void *mesh = rt_mesh3d_new_box(2.0, 2.0, 2.0);
+    void *mat = rt_material3d_new();
+    void *decal = rt_pixels_new(4, 4);
+    void *near_xf = rt_mat4_new(
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, -3.0, 0.0, 0.0, 0.0, 1.0);
+    EXPECT_TRUE(rt != nullptr && rt->target != nullptr, "RenderTarget3D fixture exists");
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = vgfx3d_software_backend.create_ctx((vgfx_window_t)0, 16, 16);
+    EXPECT_TRUE(canvas.backend_ctx != nullptr, "software backend context exists");
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 16;
+    canvas.height = 16;
+    if (!rt || !rt->target || !canvas.backend_ctx || !decal)
+        return;
+    rt_canvas3d_set_render_target(&canvas, rt);
+    rt_material3d_set_unlit(mat, 1);
+    rt_material3d_set_color(mat, 1.0, 1.0, 1.0);
+    for (int y = 0; y < 4; y++)
+        for (int x = 0; x < 4; x++)
+            rt_pixels_set_rgba(decal, x, y, (int64_t)0xFF0000FFu); /* opaque red */
+    rt_material3d_set_decal_map(mat, decal);
+
+    /* The camera looks down -Z at the box's +Z face (z = +1 in model space). A
+     * projector centred on that face, looking along -Z (right = +X, up = +Y, so
+     * forward = +Z... the face normal is +Z, which must face AGAINST forward), so
+     * build it with right = -X: forward = (-X) x (+Y) = -Z and the +Z face faces it. */
+    rt_material3d_set_decal_projector(mat, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
+    rt_canvas3d_end(&canvas);
+    void *px = rt_rendertarget3d_as_pixels(rt);
+    const int64_t center = px ? rt_pixels_get_rgba(px, 8, 8) : 0;
+    const int64_t edge = px ? rt_pixels_get_rgba(px, 2, 8) : 0;
+    /* Centre texel is inside the 0.3 half-extent box (the box face spans roughly the
+     * middle third of the 16 px target): red decal over white. Near the face edge the
+     * white base remains. */
+    EXPECT_EQ((center >> 24) & 0xFF, 0xFF);
+    EXPECT_EQ((center >> 8) & 0xFF, 0x00);
+    EXPECT_EQ((edge >> 24) & 0xFF, 0xFF);
+    EXPECT_EQ((edge >> 8) & 0xFF, 0xFF);
+
+    /* Flip the projector so it faces the far side: the +Z face now points WITH forward
+     * and must stay white. */
+    rt_material3d_set_decal_projector(mat, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.3, 0.3, 0.5);
+    rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, near_xf, mat);
+    rt_canvas3d_end(&canvas);
+    void *px2 = rt_rendertarget3d_as_pixels(rt);
+    const int64_t center2 = px2 ? rt_pixels_get_rgba(px2, 8, 8) : 0;
+    EXPECT_EQ((center2 >> 8) & 0xFF, 0xFF);
+
+    rt_canvas3d_set_render_target(&canvas, nullptr);
+    vgfx3d_software_backend.destroy_ctx(canvas.backend_ctx);
+    canvas.backend_ctx = nullptr;
+    free(canvas.texture_stream_entries);
+    canvas.texture_stream_entries = nullptr;
+    if (px && rt_obj_release_check0(px))
+        rt_obj_free(px);
+    if (px2 && rt_obj_release_check0(px2))
+        rt_obj_free(px2);
+    if (rt_obj_release_check0(mat))
+        rt_obj_free(mat);
+    if (rt_obj_release_check0(decal))
+        rt_obj_free(decal);
+    if (rt_obj_release_check0(mesh))
+        rt_obj_free(mesh);
+    if (rt_obj_release_check0(camera))
+        rt_obj_free(camera);
+    if (rt_obj_release_check0(near_xf))
+        rt_obj_free(near_xf);
+    if (rt_obj_release_check0(rt))
+        rt_obj_free(rt);
+    PASS();
+}
+
 int main() {
     printf("=== Graphics3D Unit Tests ===\n\n");
 
@@ -12118,6 +12287,8 @@ int main() {
     test_textureasset3d_ktx2_retains_exact_container();
     test_textureasset3d_ktx2_material_bridge();
     test_textureasset3d_bc3_software_decode();
+    test_canvas_depth_only_shading();
+    test_canvas_decal_layer_software();
     test_textureasset3d_bc1_bc4_bc5_software_decode();
     test_textureasset3d_bc7_software_decode();
     test_textureasset3d_etc2_astc_software_decode();

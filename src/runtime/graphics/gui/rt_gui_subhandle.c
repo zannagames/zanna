@@ -689,6 +689,9 @@ static void *rt_gui_wrap_subhandle(rt_gui_subhandle_kind_t kind,
             existing->owner_widget_id = owner_widget ? owner_widget->id : 0;
             rt_gui_subhandle_owner_link(existing);
         }
+        /* Every return hands the caller one reference (ADR 0314): the
+           existing wrapper is retained exactly like a freshly allocated one. */
+        rt_obj_retain_maybe(existing);
         return existing;
     }
     if (s_gui_subhandle_count >= RT_GUI_MAX_COLLECTION_ITEMS)

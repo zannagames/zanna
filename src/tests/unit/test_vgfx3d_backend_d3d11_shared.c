@@ -281,7 +281,9 @@ static void test_finite_copy_helpers(void) {
 static void test_constant_buffer_struct_sizes_match_expected_layout(void) {
     EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_object_t) == 752u,
                 "PerObject C struct matches the packed HLSL cbuffer size");
-    EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_material_t) == 448u,
+    /* 448 bytes through the UV transforms, plus the ADR 0312 decal block:
+     * three float4 projector rows and one float4 of params. */
+    EXPECT_TRUE(sizeof(vgfx3d_d3d11_per_material_t) == 512u,
                 "PerMaterial C struct matches the packed HLSL cbuffer size");
 }
 
@@ -2494,12 +2496,13 @@ static void test_d3d11_backend_source_contracts(void) {
                            ": d3d11_try_create_headless_device(ctx, "
                            "D3D_DRIVER_TYPE_HARDWARE)") != NULL,
                 "Windowless D3D11 contexts create a device directly without a hidden HWND");
-    EXPECT_TRUE(strstr(source,
-                       "if (ctx->swap_chain && (!ctx->rtv || !ctx->depth_tex || !ctx->dsv)") !=
-                    NULL &&
-                    strstr(source, "if (ctx->swap_chain) {\n"
-                                   "        hr = d3d11_create_swapchain_targets") != NULL,
-                "Headless D3D11 contexts never enter swapchain target creation or repair");
+    EXPECT_TRUE(
+        strstr(source, "if (ctx->swap_chain && (!ctx->rtv || !ctx->depth_tex || !ctx->dsv)") !=
+                NULL &&
+            strstr(source,
+                   "if (ctx->swap_chain) {\n"
+                   "        hr = d3d11_create_swapchain_targets") != NULL,
+        "Headless D3D11 contexts never enter swapchain target creation or repair");
     EXPECT_TRUE(strstr(source, "Begin(frame timestamp)") != NULL &&
                     strstr(source, "End(frame timestamp)") != NULL,
                 "Timestamp query publication is gated by device-health checks");

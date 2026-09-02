@@ -54,25 +54,25 @@ using il::runtime::signatures::SigParam;
 /// @details Captures the module, program state, entry function, and user arg
 ///          so a new VM can be created and invoked on the target function.
 struct VmThreadStartPayload {
-    const il::core::Module *module = nullptr; ///< Module owning @ref entry.
+    const il::core::Module *module = nullptr;  ///< Module owning @ref entry.
     std::shared_ptr<VM::ProgramState> program; ///< Shared mutable VM state.
-    ExternRegistry *externRegistry = nullptr; ///< Retained external registry.
+    ExternRegistry *externRegistry = nullptr;  ///< Retained external registry.
     const il::core::Function *entry = nullptr; ///< Resolved worker function.
-    void *arg = nullptr; ///< Optional object argument.
-    bool ownsArg = false; ///< Whether payload retains @ref arg.
+    void *arg = nullptr;                       ///< Optional object argument.
+    bool ownsArg = false;                      ///< Whether payload retains @ref arg.
 };
 
 /// @brief Payload passed to VM-backed Async.Run worker threads.
 /// @details Extends the basic thread payload with a promise reference owned by
 ///          the worker thread until it resolves the asynchronous result.
 struct VmAsyncRunPayload {
-    const il::core::Module *module = nullptr; ///< Module owning @ref entry.
+    const il::core::Module *module = nullptr;  ///< Module owning @ref entry.
     std::shared_ptr<VM::ProgramState> program; ///< Shared mutable VM state.
-    ExternRegistry *externRegistry = nullptr; ///< Retained external registry.
+    ExternRegistry *externRegistry = nullptr;  ///< Retained external registry.
     const il::core::Function *entry = nullptr; ///< Resolved async worker.
-    void *arg = nullptr; ///< Worker environment object.
-    bool ownsArg = false; ///< Whether payload retains @ref arg.
-    void *promise = nullptr; ///< Promise resolved by the worker.
+    void *arg = nullptr;                       ///< Worker environment object.
+    bool ownsArg = false;                      ///< Whether payload retains @ref arg.
+    void *promise = nullptr;                   ///< Promise resolved by the worker.
 };
 
 /// @brief Release all resources owned by a VM thread-start payload.
@@ -1027,6 +1027,61 @@ static void threads_parallel_invoke_pool_handler(void **args, void *result) {
     rt_parallel_invoke_pool(funcs, pool);
 }
 
+/// @brief Class destructor dispatcher registered by the running IL module.
+static const il::core::Function *gVmClassDtorFn = nullptr;
+static const il::core::Module *gVmClassDtorModule = nullptr;
+
+/// @brief Runtime-side trampoline: run the module's `__zia_dtor_dispatch` on the VM.
+/// @param obj Object payload whose reference count reached zero.
+static void vm_class_dtor_trampoline(void *obj) {
+    if (!obj)
+        return;
+    VM *vm = activeVMInstance();
+    const il::core::Function *fn = gVmClassDtorFn;
+    if (!vm || !fn || &vm->module() != gVmClassDtorModule)
+        return;
+    il::support::SmallVector<Slot, 1> callArgs;
+    Slot s{};
+    s.ptr = obj;
+    callArgs.push_back(s);
+    detail::VMAccess::callFunction(*vm, *fn, callArgs);
+}
+
+/// @brief Install the class destructor hook for the tree-walking VM.
+/// @param args Runtime argument-storage array containing the dispatcher address.
+/// @param result Unused result-storage pointer.
+/// @details The VM passes IL function objects, not native code, so the hook is a
+///          trampoline that calls the resolved function through the VM. Outside
+///          the VM the value is a real function address and is installed as is.
+static void threads_obj_set_class_dtor_hook_handler(void **args, void *result) {
+    (void)result;
+    void *fnValue = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
+    if (VM *vm = activeVMInstance()) {
+        if (!fnValue) {
+            gVmClassDtorFn = nullptr;
+            gVmClassDtorModule = nullptr;
+            rt_obj_set_class_dtor_hook(nullptr);
+            return;
+        }
+        const il::core::Function *fn = resolveEntryFunction(vm->module(), fnValue);
+        if (!fn) {
+            rt_trap("rt_obj_set_class_dtor_hook: invalid dispatcher function");
+            return;
+        }
+        using Kind = il::core::Type::Kind;
+        if (fn->retType.kind != Kind::Void || fn->params.size() != 1 ||
+            fn->params[0].type.kind != Kind::Ptr) {
+            rt_trap("rt_obj_set_class_dtor_hook: dispatcher must be (Ptr) -> Unit");
+            return;
+        }
+        gVmClassDtorFn = fn;
+        gVmClassDtorModule = &vm->module();
+        rt_obj_set_class_dtor_hook(reinterpret_cast<void *>(&vm_class_dtor_trampoline));
+        return;
+    }
+    rt_obj_set_class_dtor_hook(fnValue);
+}
+
 /// @brief Execute Parallel.For natively or sequentially on the active VM.
 /// @param args Runtime argument-storage array containing range and callback.
 /// @param result Unused result-storage pointer.
@@ -1110,6 +1165,13 @@ static void threads_parallel_reduce_pool_handler(void **args, void *result) {
 void registerThreadsRuntimeExternals() {
     {
         ExternDesc ext;
+        ext.name = "rt_obj_set_class_dtor_hook";
+        ext.signature = make_signature(ext.name, {SigParam::Ptr});
+        ext.fn = reinterpret_cast<void *>(&threads_obj_set_class_dtor_hook_handler);
+        RuntimeBridge::registerExtern(ext);
+    }
+    {
+        ExternDesc ext;
         ext.name = il::runtime::names::kThreadsThreadStart;
         ext.signature = make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&threads_thread_start_handler);
@@ -1153,32 +1215,32 @@ void registerThreadsRuntimeExternals() {
     {
         ExternDesc ext;
         ext.name = "Zanna.Threads.Async.RunCancellable";
-        ext.signature =
-            make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
+        ext.signature = make_signature(
+            ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&threads_async_run_cancellable_handler);
         RuntimeBridge::registerExtern(ext);
     }
     {
         ExternDesc ext;
         ext.name = "Zanna.Threads.Async.RunCancellableOwned";
-        ext.signature =
-            make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
+        ext.signature = make_signature(
+            ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&threads_async_run_cancellable_owned_handler);
         RuntimeBridge::registerExtern(ext);
     }
     {
         ExternDesc ext;
         ext.name = "Zanna.Threads.Async.Map";
-        ext.signature =
-            make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
+        ext.signature = make_signature(
+            ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&threads_async_map_handler);
         RuntimeBridge::registerExtern(ext);
     }
     {
         ExternDesc ext;
         ext.name = "Zanna.Threads.Async.MapOwned";
-        ext.signature =
-            make_signature(ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
+        ext.signature = make_signature(
+            ext.name, {SigParam::Ptr, SigParam::Ptr, SigParam::Ptr}, {SigParam::Ptr});
         ext.fn = reinterpret_cast<void *>(&threads_async_map_owned_handler);
         RuntimeBridge::registerExtern(ext);
     }

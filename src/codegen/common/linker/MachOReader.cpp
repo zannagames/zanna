@@ -666,6 +666,10 @@ bool readMachOObj(
                 // its r_symbolnum carries the addend for the NEXT relocation.
                 int64_t pendingAddend = 0;
                 bool hasPendingAddend = false;
+                bool hasPendingSubtractor = false;
+                uint32_t pendingSubtractorSym = 0;
+                uint32_t pendingSubtractorAddr = 0;
+                uint32_t pendingSubtractorLength = 0;
                 size_t relocTableBytes = 0;
                 if (!checkedMul(static_cast<size_t>(sec->nreloc),
                                 sizeof(macho::relocation_info),
@@ -724,20 +728,42 @@ bool readMachOObj(
                         continue;
                     }
 
-                    // SUBTRACTOR relocations (paired with a following UNSIGNED) encode a
-                    // symbol difference B - A. Compilers emit them for label-difference
-                    // expressions such as C++ exception/typeinfo tables and jump tables.
-                    // The applier has no lowering for symbol differences yet, so reject
-                    // the pair explicitly here instead of misreading the SUBTRACTOR record
-                    // as an ordinary relocation and silently corrupting the fixup.
+                    // SUBTRACTOR relocations (paired with a following UNSIGNED at the same
+                    // address) encode a symbol difference B - A. Compilers emit them for
+                    // label-difference expressions: __eh_frame FDE pointers in optimized C
+                    // objects, C++ exception/typeinfo tables, and jump tables. Record the
+                    // subtrahend here; the UNSIGNED that follows becomes the paired fixup.
                     if ((isArm64 && relType == macho_a64::kSubtractor) ||
                         (!isArm64 && relType == macho_x64::kSubtractor)) {
-                        err << "error: " << name
-                            << ": Mach-O SUBTRACTOR relocations (symbol-difference fixups, e.g. "
-                               "C++ exception tables or jump tables) are not yet supported in "
-                               "section "
-                            << os.name << "\n";
-                        return false;
+                        if (hasPendingSubtractor) {
+                            err << "error: " << name
+                                << ": consecutive Mach-O SUBTRACTOR entries in section "
+                                << os.name << "\n";
+                            return false;
+                        }
+                        if (isPcRel || !isExtern || (relLength != 2 && relLength != 3)) {
+                            err << "error: " << name
+                                << ": malformed Mach-O SUBTRACTOR relocation in section "
+                                << os.name << " (must be an extern, non-pcrel long or quad)\n";
+                            return false;
+                        }
+                        pendingSubtractorSym = symbolNum;
+                        pendingSubtractorAddr = static_cast<uint32_t>(ri->r_address);
+                        pendingSubtractorLength = relLength;
+                        hasPendingSubtractor = true;
+                        continue;
+                    }
+                    if (hasPendingSubtractor) {
+                        const bool unsignedType = isArm64 ? relType == macho_a64::kUnsigned
+                                                          : relType == macho_x64::kUnsigned;
+                        if (!unsignedType || isPcRel || static_cast<uint32_t>(ri->r_address) != pendingSubtractorAddr ||
+                            relLength != pendingSubtractorLength) {
+                            err << "error: " << name
+                                << ": Mach-O SUBTRACTOR must be followed by an UNSIGNED "
+                                   "relocation of the same address and length in section "
+                                << os.name << "\n";
+                            return false;
+                        }
                     }
 
                     if ((relType == macho_a64::kUnsigned || relType == macho_x64::kUnsigned) &&
@@ -763,6 +789,13 @@ bool readMachOObj(
                     rel.pcrel = isPcRel;
                     rel.length = static_cast<uint8_t>(relLength);
                     rel.sectionRelative = !isExtern;
+                    if (hasPendingSubtractor) {
+                        rel.subtract = true;
+                        rel.subSymIndex = pendingSubtractorSym;
+                        // SUBTRACTOR records are always extern (validated above).
+                        rel.subSectionRelative = false;
+                        hasPendingSubtractor = false;
+                    }
 
                     if (hasPendingAddend) {
                         rel.addend = pendingAddend;
@@ -784,6 +817,11 @@ bool readMachOObj(
                     }
 
                     os.relocs.push_back(rel);
+                }
+                if (hasPendingSubtractor) {
+                    err << "error: " << name << ": dangling Mach-O SUBTRACTOR in section "
+                        << os.name << " (no paired UNSIGNED relocation)\n";
+                    return false;
                 }
                 if (hasPendingAddend) {
                     err << "error: " << name << ": dangling ARM64_RELOC_ADDEND in Mach-O section "
@@ -1002,6 +1040,26 @@ bool readMachOObj(
         };
         for (auto &sec : obj.sections) {
             for (auto &rel : sec.relocs) {
+                if (rel.subtract) {
+                    if (rel.subSectionRelative) {
+                        const uint32_t mapped = sectionSymbolFor(rel.subSymIndex);
+                        if (mapped == 0) {
+                            err << "error: " << name
+                                << ": SUBTRACTOR references unmapped Mach-O section "
+                                << rel.subSymIndex << "\n";
+                            return false;
+                        }
+                        rel.subSymIndex = mapped;
+                        rel.subSectionRelative = false;
+                    } else if (rel.subSymIndex < symMap.size()) {
+                        rel.subSymIndex = symMap[rel.subSymIndex];
+                    } else {
+                        err << "error: " << name
+                            << ": SUBTRACTOR references invalid symbol index " << rel.subSymIndex
+                            << "\n";
+                        return false;
+                    }
+                }
                 if (rel.sectionRelative) {
                     const uint32_t mapped = sectionSymbolFor(rel.symIndex);
                     if (mapped == 0) {

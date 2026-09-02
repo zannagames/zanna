@@ -79,6 +79,16 @@ The rest of this document will provide the detail, area by area.
 - OpenGL rejects transforms it cannot invert. The shared OpenGL paths gained a finite, scale-aware Gauss-Jordan 4×4 inverse, and the deferred and render-pass consumers refuse a non-finite or singular transform instead of drawing through whatever the old routine produced.
 - Animation blending, FBX constraints, navigation, physics, mesh publication and render-path handling were hardened against the revised baking and transform contracts.
 - Concurrent teardown of the internal worker-to-main-thread commit queue is explicit. `Free` used to close and immediately reclaim the wrapper, so a producer still holding the raw handle could begin an enqueue into memory being freed. Teardown is two-phase now — close while producers may still hold the handle, stop or join them, then free — with close idempotent, queued ownership preserved, and post-close enqueues failing without taking their payload. Governed by ADR 0308.
+- `Material3D.SetDecalMap` / `SetDecalProjector` / `SetDecalOpacity` (ADR 0312): a projected
+  decal layer composited over the albedo before lighting through a model-space (pre-skin)
+  box projector, so a number, logo or scuff rides a skinned surface and is lit, shadowed
+  and normal-mapped like the cloth it sits on. Identical on Metal, D3D11, OpenGL and the
+  software rasterizer; runtime-only (not persisted into VSCN).
+- `Canvas3D.SetDepthOnlyShading` / `Canvas3D.DepthOnlyShading` (ADR 0311): headless
+  verification probes whose gates never read pixels can ask the software backend to
+  keep the vertex stage, depth test and opaque depth writes but skip fragment shading
+  and colour writes. Draw, culling and hitch counters are unchanged; GPU backends
+  ignore the flag; capture paths clear it before reading pixels.
 
 ### 3D assets
 
@@ -92,9 +102,44 @@ The rest of this document will provide the detail, area by area.
 - Valid nested calls inside loops no longer raise a false ownership error after compilation optimizations.
 - Native executables are profilable by default. Mach-O images carry address-sorted `N_SECT` local symbols in `LC_SYMTAB` with correct symbol partitions and section ordinals; ELF images gained `.symtab` and `.strtab`. `sample`, Instruments and `perf` therefore attribute samples to your functions by name. The dynamic loader never reads these entries, so stripping changes nothing at run time — `zanna build --strip-symbols` writes only the entry point and imports if you want a smaller binary. Linker offset, section, relocation and emitted-image validation were strengthened alongside, with focused regression coverage.
 - A miscompile can be bisected without rebuilding the compiler. `ZANNA_IL_OPT_KEEP_FUNCS=<file>` restores every IL function *not* named in the file to its pre-pipeline body after the optimizer runs, so with a program-level oracle — VM output versus native output — you can find which optimized function changes the answer in log₂(N) builds. A family of AArch64 `ZANNA_NO_*` switches skips one pipeline stage or one peephole sub-stage each for the same purpose. None of them are consulted at `-O0`, and they are documented in `docs/internals/backend.md`.
+- The in-house Mach-O linker lowers `SUBTRACTOR` + `UNSIGNED` relocation pairs into
+  signed symbol differences (32- and 64-bit) with no rebase or bind bookkeeping, so
+  optimized C objects carrying `__eh_frame` label differences, jump tables and C++
+  typeinfo tables now link. A lone `SUBTRACTOR` or an undefined subtrahend is still a
+  hard diagnostic. The macOS import planner also knows `__sincos_stret`.
+- Every class releases its reference fields when it dies (ADR 0313). A class without
+  `deinit` used to get no destructor at all, so its strings, objects, collections and
+  runtime handles leaked on every instance death; a ten-line object-churn loop grew
+  without bound on the VM and in native binaries, and a game that rebuilt its 3D stage
+  per shot capture reached 14.8 GB. The lowerer now synthesizes `<Type>.__dtor` for any
+  class with a releasable field (own or inherited); a derived destructor releases only its
+  own fields and chains to `Base.__dtor`, so the base `deinit` body finally runs for
+  derived instances and nothing is released twice. The dispatcher is a binary search over
+  class ids instead of a linear chain.
 
 ### Runtime
 
+- Every runtime function that returns a managed reference now declares who owns the result
+  (ADR 0314). The compiler used to guess from names: a result was owned only when the symbol
+  ended in `_new`/`.New`/`.Clone` or contained `.From`, so `Mesh3D.Box`, `Material3D.PBR`,
+  `World3D.WithCamera`, every loader, retarget and screenshot — 502 functions — were retained on
+  store and never released, while `Entity3D.DetachFromBone` matched `.From` and had a reference it
+  never owned released. String results had the mirror bug: `Result.UnwrapStr`, `Option.UnwrapStr`,
+  `Lazy.GetStr` and the clip-name accessors return a string another object owns, and the compiler
+  released them anyway. `runtime.def` rows returning `obj`, `seq` or `str` now carry `owned` or
+  `borrowed`; `rtgen` refuses a row without it; the manifest's `ownership` field reports it. The
+  Option/Result/Lazy combinators, `ConcurrentMap.GetOr`, `Seq.Fold`, `Parallel.Reduce` and the GUI
+  sub-handle wrappers hand back one caller-owned reference on every path instead of a fresh object
+  on one path and a borrowed one on another.
+- Objects freed by the runtime run their Zia destructor (ADR 0313). A list element, a map
+  value or a boxed `Any` whose last reference the runtime dropped used to be reclaimed by
+  C code with no knowledge of `deinit`, so its fields leaked and its body never ran. The
+  compiler now installs one program-wide hook, `rt_obj_set_class_dtor_hook(@__zia_dtor_dispatch)`,
+  as the first statement of the entry point; `rt_obj_free` invokes it for every payload with
+  a positive class id before any per-object finalizer. Native binaries pass the real
+  address; the bytecode and tree-walking VMs bridge the call to a re-entrant trampoline
+  that only runs on the owning module's thread. Compiled release sites no longer call the
+  dispatcher themselves, so there is exactly one destruction path.
 - A string literal costs one allocation for the life of the process. `rt_str_from_lit()` — what native code calls for every evaluation of a string literal — returns one immortal string per literal site, created on first use and cached by the literal's address, so a literal inside a hot loop allocates nothing and its generated retain/release are no-ops. Empty-string and concatenation ownership contracts are preserved, and the VM keeps its own per-module literal cache.
 - Traps are cheaper on macOS. The Darwin trap and finalizer-recovery paths use mask-free `setjmp`/`longjmp` adapters, removing the signal-mask work that the default variants perform on every save and restore.
 - Handle validation got a fast path. Heap and string handle checks accelerate on recently seen entries, and the reference VM can validate module-variable and tracked raw-allocation ranges without slowing ordinary native or bytecode execution.
@@ -115,6 +160,13 @@ The rest of this document will provide the detail, area by area.
 
 - The test suite runs about twice as fast. The canonical Unix and Windows validation scripts deleted the build tree's `Testing` directory before every run, throwing away the weighted runtime estimates CTest uses to schedule parallel jobs, and a cache-level `CTEST_COST_DATA_FILE` override claimed to disable that history while command-line CTest generated it anyway. History is retained now, and the same 2,004-test `-j10` selection measured 554.43 seconds without it against 291.08 seconds with it. `clean-test-cache` remains as an explicit target for deliberately discarding timing data and transient logs.
 - A fresh build tree schedules well too. Display-locked and D3D11-locked tests get a small baseline cost when they have no explicit one, and the shared AArch64 artifact lane is seeded below the display lane, so both long serialized chains start immediately while zero-cost tests fill the remaining workers. Existing Windows high-cost overrides and every resource-isolation contract are preserved.
+- Fast Debug (`ZANNA_FAST_DEBUG`, the default local configuration) now compiles the C
+  runtime object libraries with `-O2 -g`. They previously received no optimization flag
+  at all — only C++ targets got `-Og` — which made the software rasterizer, skinning and
+  heap paths the dominant cost of every headless 3D test and probe. Assertions stay on.
+- `rt_gc_collect` recovery locals that are assigned after its `setjmp` are now
+  `volatile`; an optimized build kept them in registers and the trap-recovery branch
+  restored finalizers from stale values (`test_rt_gc`).
 
 ### Documentation
 

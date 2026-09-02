@@ -349,6 +349,8 @@ inline constexpr const char *kRtAlloc = "rt_alloc";
 /// @brief Get the class ID from a runtime object's header.
 /// @details Signature: rt_obj_class_id(ptr) -> i64
 inline constexpr const char *kRtObjClassId = "rt_obj_class_id";
+inline constexpr const char *kRtObjSetClassDtorHook = "rt_obj_set_class_dtor_hook";
+inline constexpr const char *kZiaDtorDispatch = "__zia_dtor_dispatch";
 
 /// @}
 

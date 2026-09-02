@@ -102,6 +102,12 @@ typedef struct {
     int32_t textureUvSets1[4];
     float textureUvTransform0[RT_MATERIAL3D_TEXTURE_SLOT_COUNT][4];
     float textureUvTransform1[RT_MATERIAL3D_TEXTURE_SLOT_COUNT][4];
+    /* ADR 0312 projected decal: three affine rows over model-space (x, y, z, 1)
+     * and params = (forward.xyz, opacity; opacity 0 disables). */
+    float decalRow0[4];
+    float decalRow1[4];
+    float decalRow2[4];
+    float decalParams[4];
 } mtl_per_material_t;
 
 typedef struct {

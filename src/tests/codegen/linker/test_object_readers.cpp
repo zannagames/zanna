@@ -493,6 +493,66 @@ static std::vector<uint8_t> makeMachOArm64Subtractor() {
     return obj;
 }
 
+// Mach-O arm64 object with a SUBTRACTOR + UNSIGNED pair at __data+0: two extern
+// undefined symbols, _target (nlist 0) and _base (nlist 1); the pair encodes
+// _target - _base as a quad. Same layout as makeMachOArm64Subtractor with two
+// relocation records and two nlist entries.
+static std::vector<uint8_t> makeMachOArm64SubtractorPair() {
+    constexpr uint32_t segmentSize = 72 + 80;
+    constexpr uint32_t sizeofcmds = segmentSize + 24;
+    constexpr uint32_t dataOff = 32 + sizeofcmds;
+    constexpr uint32_t relocOff = dataOff + 8;
+    constexpr uint32_t symOff = relocOff + 16;
+    constexpr uint32_t strOff = symOff + 32;
+
+    std::vector<uint8_t> obj;
+    appendMachHeader(obj, 0x0100000C, 2, sizeofcmds, 0);
+    appendLE32(obj, 0x19);
+    appendLE32(obj, segmentSize);
+    appendName16(obj, "");
+    appendLE64(obj, 0);
+    appendLE64(obj, 8);
+    appendLE64(obj, dataOff);
+    appendLE64(obj, 8);
+    appendLE32(obj, 0);
+    appendLE32(obj, 0);
+    appendLE32(obj, 1);
+    appendLE32(obj, 0);
+    appendName16(obj, "__data");
+    appendName16(obj, "__DATA");
+    appendLE64(obj, 0);
+    appendLE64(obj, 8);
+    appendLE32(obj, dataOff);
+    appendLE32(obj, 3);
+    appendLE32(obj, relocOff);
+    appendLE32(obj, 2);
+    appendLE32(obj, 0);
+    appendLE32(obj, 0);
+    appendLE32(obj, 0);
+    appendLE32(obj, 0);
+    appendMachSymtab(obj, symOff, 2, strOff, 15);
+    appendLE64(obj, 0);
+    // ARM64_RELOC_SUBTRACTOR: symbol 1 (_base), extern, length=quad.
+    appendLE32(obj, 0);
+    appendLE32(obj, 1u | (3u << 25) | (1u << 27) | (1u << 28));
+    // ARM64_RELOC_UNSIGNED: symbol 0 (_target), extern, length=quad.
+    appendLE32(obj, 0);
+    appendLE32(obj, 0u | (3u << 25) | (1u << 27));
+    appendLE32(obj, 1);
+    obj.push_back(0x01);
+    obj.push_back(0);
+    appendLE16(obj, 0);
+    appendLE64(obj, 0);
+    appendLE32(obj, 9);
+    obj.push_back(0x01);
+    obj.push_back(0);
+    appendLE16(obj, 0);
+    appendLE64(obj, 0);
+    obj.insert(obj.end(),
+               {'\0', '_', 't', 'a', 'r', 'g', 'e', 't', '\0', '_', 'b', 'a', 's', 'e', '\0'});
+    return obj;
+}
+
 // Minimal Mach-O arm64 object with a single external common (tentative) symbol:
 // N_UNDF | N_EXT with a non-zero n_value (size) and GET_COMM_ALIGN in n_desc.
 static std::vector<uint8_t> makeMachOArm64Common() {
@@ -612,14 +672,38 @@ int main() {
         CHECK(obj.sections[1].data.size() == 8);
     }
 
-    // F2: ARM64_RELOC_SUBTRACTOR must be rejected with a clear diagnostic, not
-    // misread as an ordinary relocation.
+    // F2: a lone ARM64_RELOC_SUBTRACTOR (no paired UNSIGNED) must be rejected with
+    // a clear diagnostic, not misread as an ordinary relocation.
     {
         ObjFile obj;
         std::ostringstream err;
         auto bytes = makeMachOArm64Subtractor();
         CHECK(!readObjFile(bytes.data(), bytes.size(), "subtractor.o", obj, err));
         CHECK(err.str().find("SUBTRACTOR") != std::string::npos);
+    }
+
+    // F2b: a SUBTRACTOR followed by an UNSIGNED at the same address folds into ONE
+    // symbol-difference relocation: target = the UNSIGNED's symbol, subtrahend =
+    // the SUBTRACTOR's symbol (optimized C objects carry these in __eh_frame).
+    {
+        ObjFile obj;
+        std::ostringstream err;
+        auto bytes = makeMachOArm64SubtractorPair();
+        CHECK(readObjFile(bytes.data(), bytes.size(), "subtractor_pair.o", obj, err));
+        if (!err.str().empty())
+            std::cerr << "  subtractor pair err: " << err.str() << "\n";
+        CHECK(obj.sections.size() == 2);
+        CHECK(obj.sections[1].relocs.size() == 1);
+        if (obj.sections[1].relocs.size() == 1) {
+            const ObjReloc &rel = obj.sections[1].relocs[0];
+            CHECK(rel.subtract);
+            CHECK(rel.length == 3);
+            CHECK(!rel.pcrel);
+            CHECK(rel.offset == 0);
+            CHECK(rel.symIndex < obj.symbols.size() && obj.symbols[rel.symIndex].name == "target");
+            CHECK(rel.subSymIndex < obj.symbols.size() &&
+                  obj.symbols[rel.subSymIndex].name == "base");
+        }
     }
 
     // F8: N_UNDF with a non-zero n_value is a common (tentative) symbol; the reader

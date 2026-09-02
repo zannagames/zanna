@@ -119,6 +119,8 @@ typedef struct {
     float height_fog_sun_amount;
     /* Image-based lighting (copied from Canvas3D each begin_frame) */
     int8_t ibl_enabled;
+    /* ADR 0311: depth-only shading — no fragment shading or colour writes. */
+    int8_t depth_only_shading;
     float ibl_intensity;
     float ibl_sh[27];
     /* Shadow mapping state */

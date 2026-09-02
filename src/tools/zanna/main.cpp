@@ -748,6 +748,14 @@ std::string inferRuntimeOwnership(std::string_view name, std::string_view signat
     const RuntimeApiSignatureParts sig = parseRuntimeApiSignature(signature);
     if (!sig.valid || sig.returnType == "void")
         return "none";
+    // A runtime.def row that declares its result ownership (ADR 0314) is the
+    // source of truth; the heuristics below only cover undeclared rows.
+    if (const il::runtime::RuntimeDescriptor *declared = il::runtime::findRuntimeDescriptor(name)) {
+        if (declared->signature.resultOwnership == il::runtime::RuntimeResultOwnership::Owned)
+            return "owned";
+        if (declared->signature.resultOwnership == il::runtime::RuntimeResultOwnership::Borrowed)
+            return "borrowed";
+    }
     if (sig.returnType == "i1" || sig.returnType == "i8" || sig.returnType == "i16" ||
         sig.returnType == "i32" || sig.returnType == "i64" || sig.returnType == "f32" ||
         sig.returnType == "f64" || sig.returnType == "bool")

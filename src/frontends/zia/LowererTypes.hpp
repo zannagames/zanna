@@ -86,6 +86,7 @@ struct ClassTypeInfo {
     std::set<std::string> implementedInterfaces;         ///< Names of implemented interfaces.
     std::set<std::string> propertyGetters;               ///< Synthesized `get_<Prop>` names.
     std::set<std::string> propertySetters;               ///< Synthesized `set_<Prop>` names.
+    bool hasUserDeinit{false};                           ///< True when the class declares `deinit`.
 
     /// @brief Look up a field by name.
     /// @param n Source field name to resolve.

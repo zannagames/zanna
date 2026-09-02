@@ -323,8 +323,10 @@ void rt_lazy_force(void *obj) {
 /// @param[in] fn Borrowed transform whose returned object transfers to the new Lazy.
 /// @return Caller-owned transformed Lazy, or the original borrowed @p obj for invalid arguments.
 void *rt_lazy_map(void *obj, void *(*fn)(void *)) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     Lazy *l = (Lazy *)obj;
 
@@ -349,8 +351,10 @@ void *rt_lazy_map(void *obj, void *(*fn)(void *)) {
 /// @param[in] fn Borrowed transform returning a Lazy.
 /// @return Callback result, or the original borrowed @p obj for invalid arguments.
 void *rt_lazy_flat_map(void *obj, void *(*fn)(void *)) {
-    if (!obj || !fn)
+    if (!obj || !fn) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
 
     // Force evaluation of the source lazy
     void *value = rt_lazy_get(obj);

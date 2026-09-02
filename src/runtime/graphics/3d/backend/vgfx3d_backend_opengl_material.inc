@@ -729,6 +729,20 @@ static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cm
                                    RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS);
     bind_texture_unit_with_sampler(
         ctx, ctx->uAOTex, GL_TU_AO, GL_TEXTURE_2D, ao_tex, cmd, RT_MATERIAL3D_TEXTURE_SLOT_AO);
+    /* ADR 0312 projected decal: resident Pixels only, sampled inside its box so the
+     * base-colour sampler state is fine. */
+    {
+        GLuint decal_tex = 0;
+        if (cmd->has_decal && cmd->decal_map)
+            decal_tex = gl_get_cached_texture(ctx, cmd->decal_map);
+        gl.Uniform1i(ctx->uHasDecalMap, decal_tex ? 1 : 0);
+        gl.Uniform1f(ctx->uDecalOpacity, decal_tex ? cmd->decal_opacity : 0.0f);
+        gl.Uniform4f(ctx->uDecalRow0, cmd->decal_rows[0], cmd->decal_rows[1], cmd->decal_rows[2], cmd->decal_rows[3]);
+        gl.Uniform4f(ctx->uDecalRow1, cmd->decal_rows[4], cmd->decal_rows[5], cmd->decal_rows[6], cmd->decal_rows[7]);
+        gl.Uniform4f(ctx->uDecalRow2, cmd->decal_rows[8], cmd->decal_rows[9], cmd->decal_rows[10], cmd->decal_rows[11]);
+        gl.Uniform3f(ctx->uDecalForward, cmd->decal_forward[0], cmd->decal_forward[1], cmd->decal_forward[2]);
+        bind_texture_unit(ctx->uDecalTex, GL_TU_DECAL, GL_TEXTURE_2D, decal_tex);
+    }
     if (ctx->uSplatScales >= 0) {
         gl.Uniform4f(ctx->uSplatScales,
                      cmd->splat_layer_scales[0],
@@ -989,6 +1003,13 @@ static void query_main_uniforms(gl_context_t *ctx) {
     U(uBrdfLut);
     U(uMetallicRoughnessTex);
     U(uAOTex);
+    U(uDecalTex);
+    U(uHasDecalMap);
+    U(uDecalOpacity);
+    U(uDecalRow0);
+    U(uDecalRow1);
+    U(uDecalRow2);
+    U(uDecalForward);
     U(uSplatTex);
     U(uSplatLayer0);
     U(uSplatLayer1);

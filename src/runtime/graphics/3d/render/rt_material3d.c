@@ -148,6 +148,7 @@ static void rt_material3d_finalize(void *obj) {
     material_release_texture_slot(&mat->normal_map);
     material_release_texture_slot(&mat->specular_map);
     material_release_texture_slot(&mat->emissive_map);
+    material_release_texture_slot(&mat->decal_map);
     material_release_texture_slot(&mat->metallic_roughness_map);
     material_release_texture_slot(&mat->ao_map);
     material_release_texture_slot(&mat->lightmap);
@@ -596,6 +597,9 @@ static void material_init_defaults(rt_material3d *mat) {
     mat->normal_scale = 1.0;
     mat->alpha = 1.0;
     mat->alpha_cutoff = 0.5;
+    mat->decal_map = NULL;
+    mat->decal_opacity = 1.0;
+    mat->decal_projector_set = 0;
     mat->alpha_mode = RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
     mat->alpha_mode_auto = 0;
     mat->alpha_mode_explicit = 0;
@@ -808,6 +812,11 @@ static void *material_clone_like(void *obj) {
     material_assign_ref(&dst->emissive_map, src->emissive_map);
     material_assign_ref(&dst->metallic_roughness_map, src->metallic_roughness_map);
     material_assign_ref(&dst->ao_map, src->ao_map);
+    material_assign_ref(&dst->decal_map, src->decal_map);
+    memcpy(dst->decal_rows, src->decal_rows, sizeof(dst->decal_rows));
+    memcpy(dst->decal_forward, src->decal_forward, sizeof(dst->decal_forward));
+    dst->decal_opacity = src->decal_opacity;
+    dst->decal_projector_set = src->decal_projector_set;
     material_assign_ref(&dst->lightmap, src->lightmap);
     material_assign_ref(&dst->env_map, src->env_map);
     return dst;
@@ -1547,6 +1556,124 @@ void rt_material3d_set_emissive_map(void *obj, void *pixels) {
 int8_t rt_material3d_get_has_emissive_map(void *obj) {
     rt_material3d *mat = material_checked(obj);
     return (mat && material_texture_slot_has_drawable_source(&mat->emissive_map)) ? 1 : 0;
+}
+
+/// @brief `Material3D.SetDecalMap` — ADR 0312 projected decal layer source.
+/// @details The decal samples through the model-space projector set by
+///   `SetDecalProjector`, never the mesh UVs, and is composited over the albedo
+///   before lighting on every backend. NULL clears the slot.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param pixels Nullable Pixels, TextureAsset3D, or RenderTarget3D source.
+void rt_material3d_set_decal_map(void *obj, void *pixels) {
+    rt_material3d *mat = material_checked(obj);
+    if (!mat)
+        return;
+    (void)material_assign_texture_ref_checked(
+        &mat->decal_map,
+        pixels,
+        "Material3D.SetDecalMap: texture must be Pixels, TextureAsset3D, or RenderTarget3D");
+}
+
+/// @brief `Material3D.HasDecalMap` — nonzero when the decal slot has a drawable source AND a
+///   projector has been set (a decal without a projector never draws).
+/// @param obj Material3D receiver.
+/// @return One when the decal layer is armed; otherwise zero.
+int8_t rt_material3d_get_has_decal_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return (mat && mat->decal_projector_set &&
+            material_texture_slot_has_drawable_source(&mat->decal_map))
+               ? 1
+               : 0;
+}
+
+static double material_decal_finite(double v) {
+    return isfinite(v) ? v : 0.0;
+}
+
+/// @brief `Material3D.SetDecalProjector` — the model-space box the decal projects through.
+/// @details `origin` is the box centre on the surface, `right` and `up` unit directions in
+///   MODEL (pre-skin) space, `half_w`/`half_h` the half extents along them and `depth` the
+///   accepted distance along forward = right x up. Texel (0,0) is the top-left corner
+///   (-right, +up) so an image reads upright. Surfaces facing the projector — those whose
+///   bind normal points against forward — take the decal; the far side of a torso never
+///   does. Non-finite or non-positive extents trap and leave the material unchanged.
+void rt_material3d_set_decal_projector(void *obj, double ox, double oy, double oz,
+                                       double ux, double uy, double uz,
+                                       double vx, double vy, double vz,
+                                       double half_w, double half_h, double depth) {
+    rt_material3d *mat = material_checked(obj);
+    double u[3], v[3], n[3], o[3];
+    double ul, vl, nl, dotuv;
+    if (!mat)
+        return;
+    u[0] = material_decal_finite(ux); u[1] = material_decal_finite(uy); u[2] = material_decal_finite(uz);
+    v[0] = material_decal_finite(vx); v[1] = material_decal_finite(vy); v[2] = material_decal_finite(vz);
+    o[0] = material_decal_finite(ox); o[1] = material_decal_finite(oy); o[2] = material_decal_finite(oz);
+    if (!isfinite(half_w) || !isfinite(half_h) || !isfinite(depth) || half_w <= 0.0 ||
+        half_h <= 0.0 || depth <= 0.0) {
+        rt_trap("Material3D.SetDecalProjector: half extents and depth must be positive");
+        return;
+    }
+    ul = sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!(ul > 1e-9)) {
+        rt_trap("Material3D.SetDecalProjector: right vector must be non-zero");
+        return;
+    }
+    for (int i = 0; i < 3; i++)
+        u[i] /= ul;
+    /* Re-orthogonalize up against right so a slightly skewed pair still yields a box. */
+    dotuv = u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+    for (int i = 0; i < 3; i++)
+        v[i] -= u[i] * dotuv;
+    vl = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!(vl > 1e-9)) {
+        rt_trap("Material3D.SetDecalProjector: up vector must not be parallel to right");
+        return;
+    }
+    for (int i = 0; i < 3; i++)
+        v[i] /= vl;
+    n[0] = u[1] * v[2] - u[2] * v[1];
+    n[1] = u[2] * v[0] - u[0] * v[2];
+    n[2] = u[0] * v[1] - u[1] * v[0];
+    nl = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (int i = 0; i < 3; i++)
+        n[i] = nl > 1e-9 ? n[i] / nl : 0.0;
+    /* s = dot(p - o, u) / (2 half_w) + 0.5 ; t = 0.5 - dot(p - o, v) / (2 half_h) ;
+     * d = dot(p - o, n) / depth. Stored as three affine rows over (x, y, z, 1). */
+    for (int i = 0; i < 3; i++) {
+        mat->decal_rows[i] = u[i] / (2.0 * half_w);
+        mat->decal_rows[4 + i] = -v[i] / (2.0 * half_h);
+        mat->decal_rows[8 + i] = n[i] / depth;
+        mat->decal_forward[i] = n[i];
+    }
+    mat->decal_rows[3] = 0.5 - (u[0] * o[0] + u[1] * o[1] + u[2] * o[2]) / (2.0 * half_w);
+    mat->decal_rows[7] = 0.5 + (v[0] * o[0] + v[1] * o[1] + v[2] * o[2]) / (2.0 * half_h);
+    mat->decal_rows[11] = -(n[0] * o[0] + n[1] * o[1] + n[2] * o[2]) / depth;
+    mat->decal_projector_set = 1;
+}
+
+/// @brief `Material3D.SetDecalOpacity` — [0,1] multiplier on the decal alpha.
+/// @param obj Material3D receiver; invalid handles are ignored.
+/// @param opacity Clamped to [0,1]; non-finite reads as 1.
+void rt_material3d_set_decal_opacity(void *obj, double opacity) {
+    rt_material3d *mat = material_checked(obj);
+    if (!mat)
+        return;
+    if (!isfinite(opacity))
+        opacity = 1.0;
+    if (opacity < 0.0)
+        opacity = 0.0;
+    if (opacity > 1.0)
+        opacity = 1.0;
+    mat->decal_opacity = opacity;
+}
+
+/// @brief `Material3D.DecalOpacity` — the decal alpha multiplier.
+/// @param obj Material3D receiver.
+/// @return The clamped opacity, or 1 for an invalid handle.
+double rt_material3d_get_decal_opacity(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->decal_opacity : 1.0;
 }
 
 /// @brief Return whether an environment cubemap is populated.

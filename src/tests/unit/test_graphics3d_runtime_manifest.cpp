@@ -75,10 +75,10 @@ namespace {
 // cached/inherited-slot diagnostic: +2 functions / +1 property / +1 method.
 // ADR 0310 (2026-09-01): Canvas3D.SetRenderTargetShadowCascadeLimit —
 // render-target cascade cap: +1 function / +1 method.
-constexpr std::size_t kExpectedFunctionCount = 2272;
+constexpr std::size_t kExpectedFunctionCount = 2279;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 830;
-constexpr std::size_t kExpectedMethodCount = 1227;
+constexpr std::size_t kExpectedPropertyCount = 833;
+constexpr std::size_t kExpectedMethodCount = 1231;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -283,7 +283,7 @@ int main() {
     // + get_ShadowSlotsCached (previous: 0x69f0ac9a84301e75), then ADR 0310
     // Canvas3D.SetRenderTargetShadowCascadeLimit (previous:
     // 0xa86908e033a83516).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xd5dabdf525317870);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x239d23cf1f9c5a55);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

@@ -840,6 +840,93 @@ int main() {
         CHECK(delta == static_cast<int32_t>(0x102040 - 0x100004));
     }
 
+    // --- Mach-O SUBTRACTOR pairs resolve to S(target) + A - S(subtrahend), quad and long ---
+    {
+        std::vector<uint8_t> data(16, 0);
+        auto obj = makeObj("macho_a64_subtractor.o",
+                           ObjFileFormat::MachO,
+                           data,
+                           "fde_target",
+                           macho_a64::kUnsigned,
+                           0,
+                           0x10);
+        ObjSymbol base;
+        base.name = "fde_base";
+        base.binding = ObjSymbol::Undefined;
+        obj.symbols.push_back(base); // index 2
+        obj.sections[1].relocs[0].length = 3;
+        obj.sections[1].relocs[0].subtract = true;
+        obj.sections[1].relocs[0].subSymIndex = 2;
+        ObjReloc narrow = obj.sections[1].relocs[0];
+        narrow.offset = 8;
+        narrow.length = 2;
+        narrow.addend = -4;
+        obj.sections[1].relocs.push_back(narrow);
+
+        std::vector<ObjFile> objs = {obj};
+        auto layout = makeLayout(objs, 0x100000);
+
+        GlobalSymEntry targetEntry;
+        targetEntry.name = "fde_target";
+        targetEntry.binding = GlobalSymEntry::Global;
+        targetEntry.resolvedAddr = 0x100200;
+        targetEntry.resolvedAddrValid = true;
+        layout.globalSyms["fde_target"] = targetEntry;
+        GlobalSymEntry baseEntry;
+        baseEntry.name = "fde_base";
+        baseEntry.binding = GlobalSymEntry::Global;
+        baseEntry.resolvedAddr = 0x100080;
+        baseEntry.resolvedAddrValid = true;
+        layout.globalSyms["fde_base"] = baseEntry;
+
+        std::ostringstream err;
+        std::unordered_set<std::string> dynSyms;
+        bool ok =
+            applyRelocations(objs, layout, dynSyms, LinkPlatform::macOS, LinkArch::AArch64, err);
+        CHECK(ok);
+        if (!err.str().empty())
+            std::cerr << "  Mach-O subtractor err: " << err.str() << "\n";
+        CHECK(readLE64(layout.sections[0].data.data()) == 0x190);
+        CHECK(readLE32(layout.sections[0].data.data() + 8) == 0x17C);
+        CHECK(layout.rebaseEntries.empty());
+        CHECK(layout.bindEntries.empty());
+    }
+
+    // --- Mach-O SUBTRACTOR pairs reject an undefined subtrahend ---
+    {
+        std::vector<uint8_t> data(8, 0);
+        auto obj = makeObj("macho_a64_subtractor_undef.o",
+                           ObjFileFormat::MachO,
+                           data,
+                           "fde_target",
+                           macho_a64::kUnsigned,
+                           0,
+                           0);
+        ObjSymbol base;
+        base.name = "fde_missing";
+        base.binding = ObjSymbol::Undefined;
+        obj.symbols.push_back(base);
+        obj.sections[1].relocs[0].length = 3;
+        obj.sections[1].relocs[0].subtract = true;
+        obj.sections[1].relocs[0].subSymIndex = 2;
+
+        std::vector<ObjFile> objs = {obj};
+        auto layout = makeLayout(objs, 0x100000);
+        GlobalSymEntry targetEntry;
+        targetEntry.name = "fde_target";
+        targetEntry.binding = GlobalSymEntry::Global;
+        targetEntry.resolvedAddr = 0x100200;
+        targetEntry.resolvedAddrValid = true;
+        layout.globalSyms["fde_target"] = targetEntry;
+
+        std::ostringstream err;
+        std::unordered_set<std::string> dynSyms;
+        bool ok =
+            applyRelocations(objs, layout, dynSyms, LinkPlatform::macOS, LinkArch::AArch64, err);
+        CHECK(!ok);
+        CHECK(err.str().find("subtrahend") != std::string::npos);
+    }
+
     // --- AArch64 dynamic GOT LDR pageoff rejects unaligned GOT slots ---
     {
         std::vector<uint8_t> code = {0x00, 0x00, 0x40, 0xF9}; // ldr x0, [x0, #0]

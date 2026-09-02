@@ -1,0 +1,100 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_object_field_release.zia
+// Purpose: Prove that objects WITHOUT a user `deinit` release their reference
+//          fields when they die. The GC tracked-object count (reference-bearing
+//          arrays) must return to its baseline after churning objects that own
+//          lists, whether the object was a local, was nulled, was a bare
+//          expression statement, was returned and dropped, or sat in a class
+//          hierarchy whose base declares `deinit`.
+// Key invariants:
+//   - Every construct below leaves GC.TrackedCount() at its pre-churn value.
+//   - A derived instance runs the base `deinit` body exactly once.
+// Ownership/Lifetime:
+//   - Each helper owns its objects until it returns.
+// Links: src/frontends/zia/Lowerer_Decl_Functions.cpp (lowerDestructorDecl)
+//
+//===----------------------------------------------------------------------===//
+module TestObjectFieldRelease;
+bind Zanna.Terminal;
+bind Zanna.Text.Fmt as Fmt;
+bind Zanna.Runtime.GC as GC;
+
+var baseDeinits: Integer = 0;
+
+class Holder {
+    expose List[Integer] pad;
+    expose String name;
+    expose func init() {
+        pad = [];
+        for i in 0..64 { pad.add(i); }
+        name = "holder";
+    }
+}
+
+class Bare {
+    expose List[Integer] pad;
+}
+
+class Base {
+    expose List[String] tags;
+    expose func init() { tags = ["a", "b"]; }
+    deinit { baseDeinits = baseDeinits + 1; }
+}
+
+class Derived extends Base {
+    expose List[Integer] extra;
+    expose func init() {
+        super.init();
+        extra = [1, 2, 3];
+    }
+}
+
+func local() { var h = new Holder(); }
+func nulled() { var h: Holder? = new Holder(); h = null; }
+func statement() { new Holder(); }
+func make() -> Holder { return new Holder(); }
+func returned() { var h = make(); }
+func fieldFromOutside() { var b = new Bare(); b.pad = [7, 8, 9]; }
+func nested() {
+    var outer: List[Holder] = [];
+    for i in 0..4 { outer.add(new Holder()); }
+}
+func derived() { var d = new Derived(); }
+
+func check(label: String, before: Integer) -> Boolean {
+    var after = GC.TrackedCount();
+    if after != before {
+        Say("FAIL: " + label + " leaked " + Fmt.Int(after - before) + " tracked object(s)");
+        return false;
+    }
+    return true;
+}
+
+func start() {
+    var base = GC.TrackedCount();
+    for i in 0..8 { local(); }
+    if !check("local", base) { return; }
+    for i in 0..8 { nulled(); }
+    if !check("nulled", base) { return; }
+    for i in 0..8 { statement(); }
+    if !check("statement", base) { return; }
+    for i in 0..8 { returned(); }
+    if !check("returned", base) { return; }
+    for i in 0..8 { fieldFromOutside(); }
+    if !check("field assigned from outside", base) { return; }
+    for i in 0..8 { nested(); }
+    if !check("objects inside a list", base) { return; }
+    for i in 0..8 { derived(); }
+    if !check("derived", base) { return; }
+    if baseDeinits != 8 {
+        Say("FAIL: base deinit ran " + Fmt.Int(baseDeinits) + " times, expected 8");
+        return;
+    }
+    Say("RESULT: ok");
+}

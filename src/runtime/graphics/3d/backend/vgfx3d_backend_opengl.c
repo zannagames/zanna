@@ -100,6 +100,7 @@ typedef void *GLsync;
 #define GL_TU_AO 15
 #define GL_TU_MORPH_DELTAS 16
 #define GL_TU_MORPH_NORMAL_DELTAS 17
+#define GL_TU_DECAL 18 /* ADR 0312 projected decal */
 
 /* Depth of the GPU-timestamp query ring. Three frames keeps a result available
  * without ever blocking on a query the GPU has not retired. */
@@ -1025,6 +1026,7 @@ typedef struct {
     GLint uMorphWeights, uPrevMorphWeights, uMorphDeltas, uMorphNormalDeltas, uHasMorphNormalDeltas;
     GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray, uEnvMap, uBrdfLut;
     GLint uMetallicRoughnessTex, uAOTex;
+    GLint uDecalTex, uHasDecalMap, uDecalOpacity, uDecalRow0, uDecalRow1, uDecalRow2, uDecalForward;
     GLint uSplatTex, uSplatLayer0, uSplatLayer1, uSplatLayer2, uSplatLayer3, uSplatScales;
     GLint uLightType[VGFX3D_MAX_LIGHTS], uLightShadowIndex[VGFX3D_MAX_LIGHTS],
         uLightShadowProjectionType[VGFX3D_MAX_LIGHTS], uLightDir[VGFX3D_MAX_LIGHTS],

@@ -922,6 +922,15 @@ foreach (_rtobj IN LISTS ZANNA_RUNTIME_COMPONENT_OBJECT_LIBS)
                 CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
             target_compile_options(${_rtobj} PRIVATE -mno-outline-atomics)
         endif ()
+        if (ZANNA_FAST_DEBUG)
+            # Fast Debug optimizes the C runtime too. These object libraries
+            # never linked zanna_common_opts, so a Debug tree compiled the
+            # software rasterizer, skinning, morphs, and heap with NO -O flag
+            # at all while every C++ target received -Og. Headless 3D probes
+            # spent ~92 % of their time in that unoptimized rasterizer.
+            # -O2 keeps -g, assertions, and backtraces (NDEBUG stays unset).
+            target_compile_options(${_rtobj} PRIVATE "$<$<CONFIG:Debug>:-O2>")
+        endif ()
     endif ()
     if (IL_WARN_AS_ERROR AND NOT MSVC)
         target_compile_options(${_rtobj} PRIVATE -Werror)

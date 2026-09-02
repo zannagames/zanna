@@ -558,8 +558,13 @@ static void test_indexed_subhandles_reclaim_after_last_wrapper(void) {
         assert(handles[i]);
     }
     rt_gui_subhandle_debug_reset_probes();
-    for (size_t i = 0; i < item_count; ++i)
-        assert(rt_gui_wrap_listbox_item(items[i]) == handles[i]);
+    for (size_t i = 0; i < item_count; ++i) {
+        /* A repeated wrap returns the same stable handle with one more
+         * caller-owned reference (ADR 0314); give it back at once. */
+        void *again = rt_gui_wrap_listbox_item(items[i]);
+        assert(again == handles[i]);
+        release_test_runtime_object(again);
+    }
     size_t capacity = rt_gui_subhandle_debug_index_capacity();
     assert(capacity >= item_count);
     assert(rt_gui_subhandle_debug_max_probes() > 0);
@@ -2404,8 +2409,12 @@ static void test_runtime_listbox_selected_text_copies_multi_selection(void) {
     assert(first && second && third);
 
     rt_listbox_set_multi_select(listbox, 1);
-    rt_listbox_select(listbox, rt_gui_wrap_listbox_item(first));
-    rt_listbox_select(listbox, rt_gui_wrap_listbox_item(third));
+    void *first_sel = rt_gui_wrap_listbox_item(first);
+    void *third_sel = rt_gui_wrap_listbox_item(third);
+    rt_listbox_select(listbox, first_sel);
+    rt_listbox_select(listbox, third_sel);
+    release_test_runtime_object(first_sel);
+    release_test_runtime_object(third_sel);
     rt_string selected = rt_listbox_get_selected_text(listbox);
     assert(strcmp(rt_string_cstr(selected), "first\nthird") == 0);
     rt_string_unref(selected);

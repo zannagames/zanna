@@ -1119,6 +1119,7 @@ void rt_canvas3d_begin_2d(void *obj) {
     }
 
     canvas3d_latch_gpu_postfx_state(c);
+    params.depth_only_shading = c->depth_only_shading;
     c->backend->begin_frame(c->backend_ctx, &params);
     c->in_frame = 1;
 }
@@ -1636,6 +1637,7 @@ static void canvas3d_begin_camera_pass(void *obj,
     c->has_last_scene_vp = 1;
 
     canvas3d_latch_gpu_postfx_state(c);
+    params.depth_only_shading = c->depth_only_shading;
     c->backend->begin_frame(c->backend_ctx, &params);
     c->in_frame = 1;
 }
@@ -1915,6 +1917,7 @@ void rt_canvas3d_draw_mesh_matrix_keyed_bounds(void *obj,
 
     /* Build draw command */
     dd->cmd.vertices = queued_vertices;
+    dd->cmd.bind_vertices = mesh->bind_vertices_ref; /* ADR 0312: CPU-skinned draws */
     dd->cmd.vertex_count = safe_vertex_count;
     dd->cmd.indices = queued_indices;
     dd->cmd.index_count = safe_index_count;

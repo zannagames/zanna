@@ -278,6 +278,7 @@ inline const std::vector<const char *> &windowsExclusiveDynamicSymbols() {
 /// @return Stable process-lifetime list of macOS-only import names.
 inline const std::vector<const char *> &macExclusiveDynamicSymbols() {
     static const std::vector<const char *> kSyms = {"sincosf_stret",
+                                                    "sincos_stret",
                                                     "memset_pattern4",
                                                     "memset_pattern8",
                                                     "memset_pattern16",
@@ -972,9 +973,11 @@ inline bool isKnownDynamicSymbol(const std::string &name, LinkPlatform platform)
         "acosf",
         "atanf",
         "atan2f",
-        // Darwin libSystem helper emitted by Clang when neighbouring sinf/cosf
-        // calls are combined, for example circular progress rendering.
+        // Darwin libSystem helpers emitted by Clang when neighbouring sin/cos
+        // calls are combined (float and double), for example circular progress
+        // rendering and optimized runtime C (rt_postfx3d at -O2).
         "sincosf_stret",
+        "sincos_stret",
         "cbrt",
         "cbrtf",
         "sqrt",

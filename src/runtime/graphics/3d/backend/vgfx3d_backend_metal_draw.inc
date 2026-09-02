@@ -300,7 +300,16 @@ static void metal_submit_draw(void *ctx_ptr,
             mat.textureUvTransform1[slot][0] = cmd->texture_slot_uv_transform[slot][4];
             mat.textureUvTransform1[slot][1] = cmd->texture_slot_uv_transform[slot][5];
         }
+        metal_fill_material_decal(&mat, cmd);
         [ctx.encoder setFragmentBytes:&mat length:sizeof(mat) atIndex:1];
+        [ctx.encoder setVertexBytes:&mat length:sizeof(mat) atIndex:11];
+        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:19];
+        if (cmd->has_decal) {
+            id<MTLTexture> decal_tex =
+                metal_get_material_texture(ctx, NULL, cmd->decal_map, 0, 0, 0);
+            if (decal_tex)
+                [ctx.encoder setFragmentTexture:decal_tex atIndex:19];
+        }
 
         /* Bind default textures to all shader slots. */
         for (int slot = 0; slot <= 12; slot++)
@@ -1012,7 +1021,16 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
                 mat.textureUvTransform1[tex_slot][0] = cmd->texture_slot_uv_transform[tex_slot][4];
                 mat.textureUvTransform1[tex_slot][1] = cmd->texture_slot_uv_transform[tex_slot][5];
             }
+            metal_fill_material_decal(&mat, cmd);
             [ctx.encoder setFragmentBytes:&mat length:sizeof(mat) atIndex:1];
+            [ctx.encoder setVertexBytes:&mat length:sizeof(mat) atIndex:11];
+            [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:19];
+            if (cmd->has_decal) {
+                id<MTLTexture> decal_tex =
+                    metal_get_material_texture(ctx, NULL, cmd->decal_map, 0, 0, 0);
+                if (decal_tex)
+                    [ctx.encoder setFragmentTexture:decal_tex atIndex:19];
+            }
             [ctx.encoder setFragmentTexture:diffuse_tex ? diffuse_tex : ctx.defaultTexture
                                     atIndex:0];
             [ctx.encoder
@@ -1442,7 +1460,16 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             mat.textureUvTransform1[slot][0] = cmd->texture_slot_uv_transform[slot][4];
             mat.textureUvTransform1[slot][1] = cmd->texture_slot_uv_transform[slot][5];
         }
+        metal_fill_material_decal(&mat, cmd);
         [ctx.encoder setFragmentBytes:&mat length:sizeof(mat) atIndex:1];
+        [ctx.encoder setVertexBytes:&mat length:sizeof(mat) atIndex:11];
+        [ctx.encoder setFragmentTexture:ctx.defaultTexture atIndex:19];
+        if (cmd->has_decal) {
+            id<MTLTexture> decal_tex =
+                metal_get_material_texture(ctx, NULL, cmd->decal_map, 0, 0, 0);
+            if (decal_tex)
+                [ctx.encoder setFragmentTexture:decal_tex atIndex:19];
+        }
 
         /* Default textures + sampler */
         for (int slot = 0; slot <= 12; slot++)

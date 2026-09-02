@@ -935,6 +935,44 @@ int8_t rt_material3d_get_has_emissive_map(void *o) {
     return 0;
 }
 
+/// @brief Stub for `Material3D.SetDecalMap` (ADR 0312).
+/// Silent no-op stub.
+void rt_material3d_set_decal_map(void *o, void *p) {
+    (void)o;
+    (void)p;
+}
+
+/// @brief Stub for `Material3D.HasDecalMap` (ADR 0312).
+/// Silent no-op stub.
+int8_t rt_material3d_get_has_decal_map(void *o) {
+    (void)o;
+    return 0;
+}
+
+/// @brief Stub for `Material3D.SetDecalProjector` (ADR 0312).
+/// Silent no-op stub.
+void rt_material3d_set_decal_projector(void *o, double ox, double oy, double oz,
+                                       double ux, double uy, double uz,
+                                       double vx, double vy, double vz,
+                                       double half_w, double half_h, double depth) {
+    (void)o; (void)ox; (void)oy; (void)oz; (void)ux; (void)uy; (void)uz;
+    (void)vx; (void)vy; (void)vz; (void)half_w; (void)half_h; (void)depth;
+}
+
+/// @brief Stub for `Material3D.SetDecalOpacity` (ADR 0312).
+/// Silent no-op stub.
+void rt_material3d_set_decal_opacity(void *o, double a) {
+    (void)o;
+    (void)a;
+}
+
+/// @brief Stub for `Material3D.DecalOpacity` (ADR 0312).
+/// Silent no-op stub.
+double rt_material3d_get_decal_opacity(void *o) {
+    (void)o;
+    return 1.0;
+}
+
 /// @brief Stub for `Material3D.HasEnvMap`.
 ///
 /// Silent stub returning `0`.

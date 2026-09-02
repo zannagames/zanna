@@ -56,6 +56,12 @@ struct ObjReloc {
     bool pcrel = false;           ///< Mach-O r_pcrel bit; unused by ELF/COFF readers.
     uint8_t length = 0;           ///< Mach-O r_length field (0=byte, 1=word, 2=long, 3=quad).
     bool sectionRelative = false; ///< Reader-internal: raw reloc targeted a section ordinal.
+    /// Mach-O SUBTRACTOR pair: the fixup stores `S(sym) + addend - S(subSym)` — a
+    /// link-time symbol difference (eh_frame FDE pointers, jump tables, C++ tables).
+    /// Never rebased or bound: the value is position-independent by construction.
+    bool subtract = false;
+    uint32_t subSymIndex = 0;        ///< Subtrahend symbol index (valid when `subtract`).
+    bool subSectionRelative = false; ///< Reader-internal: subtrahend targeted a section ordinal.
 };
 
 /// @brief Normalized object symbol and its definition/ownership metadata.

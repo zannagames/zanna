@@ -374,6 +374,7 @@ thumbnails, tests, and offline previews.
 | `SetPostFX(fx)` | `void(obj)` | Set PostFX3D chain applied during frame finalization to the window or active render target; SSAO/DOF/motion blur require GPU window postfx |
 | `SetFrustumCulling(enabled)` | `void(i1)` | Toggle coarse CPU frustum rejection plus front-to-back opaque ordering |
 | `SetOcclusionCulling(enabled)` | `void(i1)` | Toggle frustum rejection plus conservative CPU occlusion skips; SceneGraph feeds the grid from BVH candidates before Canvas3D sorting |
+| `SetDepthOnlyShading(enabled)` / `DepthOnlyShading` | `void(i1)` / `i1` | ADR 0311: on the software backend keep the vertex stage, depth test and opaque depth writes but skip fragment shading and colour writes — for headless probes whose gates never read pixels; capture paths must clear it. GPU backends ignore it |
 
 ### Canvas Telemetry
 
@@ -825,6 +826,7 @@ aliases for these factories.
 | `SetAmbientOcclusionMap(texture)` | `void(obj)` | Set the ambient-occlusion map (`R=occlusion`) |
 | `SetSpecularMap(texture)` | `void(obj)` | Set specular intensity map (`Pixels` or `TextureAsset3D`) |
 | `SetEmissiveMap(texture)` | `void(obj)` | Set emissive color map (`Pixels` or `TextureAsset3D`) |
+| `SetDecalMap(source)` / `HasDecalMap` / `SetDecalProjector(ox,oy,oz, ux,uy,uz, vx,vy,vz, halfW, halfH, depth)` / `SetDecalOpacity(a)` / `DecalOpacity` | ADR 0312 | Projected decal layer: a texture composited over the albedo BEFORE lighting through a model-space (pre-skin) box projector — lit, shadowed and normal-mapped like the surface; surfaces facing away from the projector never take it. Runtime-only (not persisted); identical on Metal, D3D11, OpenGL and the software rasterizer |
 | `SetEmissiveColor(r, g, b)` | `void(f64, f64, f64)` | Set emissive color multiplier (additive glow) |
 | `NormalScale` property | `f64` | Scale tangent-space normal-map strength — assign it |
 | `SetShadingModel(model)` | `void(i64)` | Set shading model (see table below) |

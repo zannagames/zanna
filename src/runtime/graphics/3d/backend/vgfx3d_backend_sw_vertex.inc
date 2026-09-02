@@ -39,6 +39,8 @@ struct pipe_vert {
     float uv[2];
     float uv1[2];
     float color[4];
+    /* ADR 0312 decal projector coords (s, t, d) + facing, from the BIND position. */
+    float decal[4];
 };
 
 /// @brief Grow-on-demand scratch buffer for per-draw transformed vertices.
@@ -126,6 +128,8 @@ static void pipe_lerp(const pipe_vert_t *a, const pipe_vert_t *b, float t, pipe_
         out->uv1[i] = s * a->uv1[i] + t * b->uv1[i];
     for (int i = 0; i < 4; i++)
         out->color[i] = s * a->color[i] + t * b->color[i];
+    for (int i = 0; i < 4; i++)
+        out->decal[i] = s * a->decal[i] + t * b->decal[i];
 }
 
 /*==========================================================================

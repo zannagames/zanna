@@ -744,6 +744,17 @@ static void rt_memory_free_zero_ref_array(void *p, rt_heap_hdr_t *hdr) {
 ///        nonzero count installed by a resurrecting finalizer.
 /// @return @c 1 when the payload was reclaimed, or @c 0 when it was null,
 ///         invalid, or resurrected.
+/// @brief Installed class destructor hook (see rt_obj_set_class_dtor_hook).
+static void *volatile g_class_dtor_hook = NULL;
+
+void rt_obj_set_class_dtor_hook(void *fn) {
+    __atomic_store_n(&g_class_dtor_hook, fn, __ATOMIC_RELEASE);
+}
+
+void *rt_obj_get_class_dtor_hook(void) {
+    return __atomic_load_n(&g_class_dtor_hook, __ATOMIC_ACQUIRE);
+}
+
 static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
     if (post_refcount)
         *post_refcount = 0;
@@ -767,7 +778,16 @@ static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
         return 0;
     }
 
-    if (hdr->finalizer) {
+    /* Compiled class instances (positive class id) run the program's
+       destructor dispatcher first, then any per-object finalizer. Both share
+       one trap-recovery scope so a trapping destructor is reported the same
+       way as a trapping finalizer. */
+    rt_obj_class_dtor_hook_t class_dtor =
+        (rt_obj_class_dtor_hook_t)__atomic_load_n(&g_class_dtor_hook, __ATOMIC_ACQUIRE);
+    if (hdr->class_id <= 0)
+        class_dtor = NULL;
+
+    if (class_dtor || hdr->finalizer) {
         rt_heap_finalizer_t fin = hdr->finalizer;
         hdr->finalizer = NULL;
         jmp_buf recovery;
@@ -801,7 +821,10 @@ static int32_t rt_obj_free_zero_ref_object(void *p, int64_t *post_refcount) {
             rt_trap(saved_error);
             return 1;
         }
-        fin(p);
+        if (class_dtor)
+            class_dtor(p);
+        if (fin)
+            fin(p);
         rt_trap_clear_recovery();
     }
 

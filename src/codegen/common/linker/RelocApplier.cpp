@@ -1240,6 +1240,76 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                     }
                 }
 
+                if (rel.subtract) {
+                    // Mach-O SUBTRACTOR + UNSIGNED pair: a link-time symbol difference
+                    // S(target) + A - S(subtrahend). The value is a delta, so it is
+                    // position-independent by construction and takes no rebase or bind
+                    // bookkeeping. Emitted for __eh_frame FDE pointers in optimized C
+                    // objects, C++ exception/typeinfo tables, and jump tables.
+                    if (obj.format != ObjFileFormat::MachO ||
+                        rel.subSymIndex >= obj.symbols.size()) {
+                        err << "error: " << obj.name
+                            << ": malformed symbol-difference relocation for '" << targetDisplay
+                            << "'\n";
+                        return false;
+                    }
+                    if (weakResolvedToZero) {
+                        err << "error: " << obj.name << ": weak undefined symbol '"
+                            << targetDisplay << "' cannot anchor a symbol-difference relocation\n";
+                        return false;
+                    }
+                    const ObjSymbol &subSym = obj.symbols[rel.subSymIndex];
+                    const std::string subDisplay = subSym.name.empty()
+                                                       ? std::string("<anonymous section symbol>")
+                                                       : subSym.name;
+                    uint64_t subAddr = 0;
+                    bool subResolved = false;
+                    size_t subOutSecIdx = SIZE_MAX;
+                    if (!subSym.name.empty() && subSym.binding != ObjSymbol::Local)
+                        subResolved = resolveGlobalSymLocation(subSym.name,
+                                                               layout.globalSyms,
+                                                               locMap,
+                                                               layout,
+                                                               platform,
+                                                               subAddr,
+                                                               &subOutSecIdx);
+                    if (!subResolved && (subSym.sectionIndex > 0 || subSym.absolute))
+                        subResolved =
+                            resolveLocalSymAddr(subSym, oi, locMap, layout, subAddr, &subOutSecIdx);
+                    if (!subResolved && !subSym.name.empty())
+                        subResolved = resolveGlobalSymLocation(subSym.name,
+                                                               layout.globalSyms,
+                                                               locMap,
+                                                               layout,
+                                                               platform,
+                                                               subAddr,
+                                                               &subOutSecIdx);
+                    if (!subResolved) {
+                        err << "error: " << obj.name << ": undefined subtrahend symbol '"
+                            << subDisplay << "' in symbol-difference relocation\n";
+                        return false;
+                    }
+                    const uint64_t minuend = wrappingAbs64Target(S, A);
+                    const int64_t diff = static_cast<int64_t>(minuend - subAddr);
+                    if (rel.length == 3) {
+                        if (!requirePatchBytes(8, "symbol difference"))
+                            return false;
+                        writeLE64(patch, static_cast<uint64_t>(diff));
+                    } else {
+                        if (!requirePatchBytes(4, "symbol difference"))
+                            return false;
+                        if (diff < std::numeric_limits<int32_t>::min() ||
+                            diff > std::numeric_limits<int32_t>::max()) {
+                            err << "error: " << obj.name
+                                << ": 32-bit symbol-difference relocation out of range for '"
+                                << targetDisplay << "' - '" << subDisplay << "'\n";
+                            return false;
+                        }
+                        writeLE32(patch, static_cast<uint32_t>(static_cast<int32_t>(diff)));
+                    }
+                    continue;
+                }
+
                 RelocAction action = classifyReloc(obj.format, arch, rel.type);
                 if (obj.format == ObjFileFormat::MachO &&
                     ((arch == LinkArch::X86_64 && rel.type == macho_x64::kUnsigned) ||

@@ -53,7 +53,7 @@ RT_FUNC(EaseInOutBounce, rt_ease_in_out_bounce, "Zanna.Math.Easing.EaseInOutBoun
 // MATH - PERLIN NOISE
 //=============================================================================
 
-RT_FUNC(PerlinNew,       rt_perlin_new,       "Zanna.Math.PerlinNoise.New",       "obj<Zanna.Math.PerlinNoise>(i64)")
+RT_FUNC(PerlinNew, rt_perlin_new, "Zanna.Math.PerlinNoise.New", "obj<Zanna.Math.PerlinNoise>(i64)", owned)
 RT_FUNC(PerlinNoise2D,   rt_perlin_noise2d,   "Zanna.Math.PerlinNoise.Noise2D",   "f64(obj,f64,f64)")
 RT_FUNC(PerlinNoise3D,   rt_perlin_noise3d,   "Zanna.Math.PerlinNoise.Noise3D",   "f64(obj,f64,f64,f64)")
 RT_FUNC(PerlinOctave2D,  rt_perlin_octave2d,  "Zanna.Math.PerlinNoise.Octave2D",  "f64(obj,f64,f64,i64,f64)")
@@ -125,8 +125,8 @@ RT_FUNC(MathWrapInt,  rt_wrap_i64,       "Zanna.Math.WrapInt",  "i64(i64,i64,i64
 RT_FUNC(ObjEquals,          rt_obj_equals,           "Zanna.Core.Object.Equals",          "i1(obj,obj)")
 RT_FUNC(ObjHashCode,        rt_obj_get_hash_code,    "Zanna.Core.Object.HashCode",        "i64(obj)")
 RT_FUNC(ObjRefEquals,       rt_obj_reference_equals, "Zanna.Core.Object.RefEquals",       "i1(obj,obj)")
-RT_FUNC(ObjToString,        rt_obj_to_string,        "Zanna.Core.Object.ToString",        "str(obj)")
-RT_FUNC(ObjTypeName,        rt_obj_type_name,        "Zanna.Core.Object.TypeName",        "str(obj)")
+RT_FUNC(ObjToString, rt_obj_to_string, "Zanna.Core.Object.ToString", "str(obj)", owned)
+RT_FUNC(ObjTypeName, rt_obj_type_name, "Zanna.Core.Object.TypeName", "str(obj)", owned)
 RT_FUNC(ObjTypeId,          rt_obj_type_id,          "Zanna.Core.Object.TypeId",          "i64(obj)")
 RT_FUNC(ObjIsNull,          rt_obj_is_null,          "Zanna.Core.Object.IsNull",          "i1(obj)")
 
@@ -134,7 +134,7 @@ RT_FUNC(ObjIsNull,          rt_obj_is_null,          "Zanna.Core.Object.IsNull",
 // RANDOM
 //=============================================================================
 
-RT_FUNC(RandomNew,           rt_random_new,             "Zanna.Math.Random.New",       "obj(i64)")
+RT_FUNC(RandomNew, rt_random_new, "Zanna.Math.Random.New", "obj(i64)", owned)
 RT_FUNC(RandomNext,          rt_rnd,                    "Zanna.Math.Random.NextDouble", "f64()")
 RT_FUNC(RandomNextInt,       rt_rand_int,               "Zanna.Math.Random.NextInt",   "i64(i64)")
 RT_FUNC(RandomSeed,          rt_randomize_i64,          "Zanna.Math.Random.Seed",      "void(i64)")
@@ -157,8 +157,8 @@ RT_FUNC(RandomShuffle,     rt_rand_shuffle,     "Zanna.Math.Random.Shuffle",    
 // save-games, and deterministic test harnesses all need the cursor.
 RT_FUNC(RandomGetState,     rt_random_get_state,        "Zanna.Math.Random.get_State",       "i64(obj)")
 RT_FUNC(RandomSetState,     rt_random_set_state,        "Zanna.Math.Random.set_State",       "void(obj,i64)")
-RT_FUNC(RandomClone,        rt_random_clone,            "Zanna.Math.Random.Clone",           "obj(obj)")
-RT_FUNC(RandomDerive,       rt_random_derive,           "Zanna.Math.Random.Derive",          "obj(obj,i64)")
+RT_FUNC(RandomClone, rt_random_clone, "Zanna.Math.Random.Clone", "obj(obj)", owned)
+RT_FUNC(RandomDerive, rt_random_derive, "Zanna.Math.Random.Derive", "obj(obj,i64)", owned)
 RT_FUNC(RandomGetGlobalState, rt_random_get_global_state, "Zanna.Math.Random.GetGlobalState",  "i64()")
 RT_FUNC(RandomSetGlobalState, rt_random_set_global_state, "Zanna.Math.Random.SetGlobalState",  "void(i64)")
 RT_FUNC(RandomHashRange,    rt_random_hash_range,       "Zanna.Math.Random.HashRange",       "i64(i64,i64,i64,i64,i64)")
@@ -169,27 +169,27 @@ RT_INTERNAL_FUNC(RandomChancePercentMethod, rt_rand_chance_percent_method, "Zann
 //=============================================================================
 
 // Creation
-RT_FUNC(BigIntFromI64,      rt_bigint_from_i64,     "Zanna.Math.BigInt.FromInt",      "obj(i64)")
-RT_FUNC(BigIntFromStr,      rt_bigint_from_str,     "Zanna.Math.BigInt.FromStr",      "obj(str)")
-RT_FUNC(BigIntFromBytes,    rt_bigint_from_bytes,   "Zanna.Math.BigInt.FromBytes",    "obj(obj)")
-RT_FUNC(BigIntZero,         rt_bigint_zero,         "Zanna.Math.BigInt.get_Zero",     "obj()")
-RT_FUNC(BigIntOne,          rt_bigint_one,          "Zanna.Math.BigInt.get_One",      "obj()")
+RT_FUNC(BigIntFromI64, rt_bigint_from_i64, "Zanna.Math.BigInt.FromInt", "obj(i64)", owned)
+RT_FUNC(BigIntFromStr, rt_bigint_from_str, "Zanna.Math.BigInt.FromStr", "obj(str)", owned)
+RT_FUNC(BigIntFromBytes, rt_bigint_from_bytes, "Zanna.Math.BigInt.FromBytes", "obj(obj)", owned)
+RT_FUNC(BigIntZero, rt_bigint_zero, "Zanna.Math.BigInt.get_Zero", "obj()", owned)
+RT_FUNC(BigIntOne, rt_bigint_one, "Zanna.Math.BigInt.get_One", "obj()", owned)
 
 // Conversion
 RT_FUNC(BigIntToI64,        rt_bigint_to_i64,       "Zanna.Math.BigInt.ToInt",        "i64(obj)")
-RT_FUNC(BigIntToStr,        rt_bigint_to_str,       "Zanna.Math.BigInt.ToString",     "str(obj)")
-RT_FUNC(BigIntToStrBase,    rt_bigint_to_str_base,  "Zanna.Math.BigInt.ToStringBase",    "str(obj,i64)")
-RT_FUNC(BigIntToBytes,      rt_bigint_to_bytes,     "Zanna.Math.BigInt.ToBytes",      "obj(obj)")
+RT_FUNC(BigIntToStr, rt_bigint_to_str, "Zanna.Math.BigInt.ToString", "str(obj)", owned)
+RT_FUNC(BigIntToStrBase, rt_bigint_to_str_base, "Zanna.Math.BigInt.ToStringBase", "str(obj,i64)", owned)
+RT_FUNC(BigIntToBytes, rt_bigint_to_bytes, "Zanna.Math.BigInt.ToBytes", "obj(obj)", owned)
 RT_FUNC(BigIntFitsI64,      rt_bigint_fits_i64,     "Zanna.Math.BigInt.FitsInt",      "i1(obj)")
 
 // Arithmetic
-RT_FUNC(BigIntAdd,          rt_bigint_add,          "Zanna.Math.BigInt.Add",          "obj(obj,obj)")
-RT_FUNC(BigIntSub,          rt_bigint_sub,          "Zanna.Math.BigInt.Sub",          "obj(obj,obj)")
-RT_FUNC(BigIntMul,          rt_bigint_mul,          "Zanna.Math.BigInt.Mul",          "obj(obj,obj)")
-RT_FUNC(BigIntDiv,          rt_bigint_div,          "Zanna.Math.BigInt.Div",          "obj(obj,obj)")
-RT_FUNC(BigIntMod,          rt_bigint_mod,          "Zanna.Math.BigInt.Mod",          "obj(obj,obj)")
-RT_FUNC(BigIntNeg,          rt_bigint_neg,          "Zanna.Math.BigInt.Negate",          "obj(obj)")
-RT_FUNC(BigIntAbs,          rt_bigint_abs,          "Zanna.Math.BigInt.Abs",          "obj(obj)")
+RT_FUNC(BigIntAdd, rt_bigint_add, "Zanna.Math.BigInt.Add", "obj(obj,obj)", owned)
+RT_FUNC(BigIntSub, rt_bigint_sub, "Zanna.Math.BigInt.Sub", "obj(obj,obj)", owned)
+RT_FUNC(BigIntMul, rt_bigint_mul, "Zanna.Math.BigInt.Mul", "obj(obj,obj)", owned)
+RT_FUNC(BigIntDiv, rt_bigint_div, "Zanna.Math.BigInt.Div", "obj(obj,obj)", owned)
+RT_FUNC(BigIntMod, rt_bigint_mod, "Zanna.Math.BigInt.Mod", "obj(obj,obj)", owned)
+RT_FUNC(BigIntNeg, rt_bigint_neg, "Zanna.Math.BigInt.Negate", "obj(obj)", owned)
+RT_FUNC(BigIntAbs, rt_bigint_abs, "Zanna.Math.BigInt.Abs", "obj(obj)", owned)
 
 // Comparison
 RT_FUNC(BigIntCmp,          rt_bigint_cmp,          "Zanna.Math.BigInt.Compare",          "i64(obj,obj)")
@@ -199,23 +199,23 @@ RT_FUNC(BigIntIsNegative,   rt_bigint_is_negative,  "Zanna.Math.BigInt.IsNegativ
 RT_FUNC(BigIntSign,         rt_bigint_sign,         "Zanna.Math.BigInt.Sign",         "i64(obj)")
 
 // Bitwise
-RT_FUNC(BigIntAnd,          rt_bigint_and,          "Zanna.Math.BigInt.And",          "obj(obj,obj)")
-RT_FUNC(BigIntOr,           rt_bigint_or,           "Zanna.Math.BigInt.Or",           "obj(obj,obj)")
-RT_FUNC(BigIntXor,          rt_bigint_xor,          "Zanna.Math.BigInt.Xor",          "obj(obj,obj)")
-RT_FUNC(BigIntNot,          rt_bigint_not,          "Zanna.Math.BigInt.Not",          "obj(obj)")
-RT_FUNC(BigIntShl,          rt_bigint_shl,          "Zanna.Math.BigInt.Shl",          "obj(obj,i64)")
-RT_FUNC(BigIntShr,          rt_bigint_shr,          "Zanna.Math.BigInt.Shr",          "obj(obj,i64)")
+RT_FUNC(BigIntAnd, rt_bigint_and, "Zanna.Math.BigInt.And", "obj(obj,obj)", owned)
+RT_FUNC(BigIntOr, rt_bigint_or, "Zanna.Math.BigInt.Or", "obj(obj,obj)", owned)
+RT_FUNC(BigIntXor, rt_bigint_xor, "Zanna.Math.BigInt.Xor", "obj(obj,obj)", owned)
+RT_FUNC(BigIntNot, rt_bigint_not, "Zanna.Math.BigInt.Not", "obj(obj)", owned)
+RT_FUNC(BigIntShl, rt_bigint_shl, "Zanna.Math.BigInt.Shl", "obj(obj,i64)", owned)
+RT_FUNC(BigIntShr, rt_bigint_shr, "Zanna.Math.BigInt.Shr", "obj(obj,i64)", owned)
 
 // Advanced
-RT_FUNC(BigIntPow,          rt_bigint_pow,          "Zanna.Math.BigInt.Pow",          "obj(obj,i64)")
-RT_FUNC(BigIntPowMod,       rt_bigint_pow_mod,      "Zanna.Math.BigInt.PowMod",       "obj(obj,obj,obj)")
-RT_FUNC(BigIntGcd,          rt_bigint_gcd,          "Zanna.Math.BigInt.Gcd",          "obj(obj,obj)")
-RT_FUNC(BigIntLcm,          rt_bigint_lcm,          "Zanna.Math.BigInt.Lcm",          "obj(obj,obj)")
+RT_FUNC(BigIntPow, rt_bigint_pow, "Zanna.Math.BigInt.Pow", "obj(obj,i64)", owned)
+RT_FUNC(BigIntPowMod, rt_bigint_pow_mod, "Zanna.Math.BigInt.PowMod", "obj(obj,obj,obj)", owned)
+RT_FUNC(BigIntGcd, rt_bigint_gcd, "Zanna.Math.BigInt.Gcd", "obj(obj,obj)", owned)
+RT_FUNC(BigIntLcm, rt_bigint_lcm, "Zanna.Math.BigInt.Lcm", "obj(obj,obj)", owned)
 RT_FUNC(BigIntBitLen,       rt_bigint_bit_length,   "Zanna.Math.BigInt.BitLength",    "i64(obj)")
 RT_FUNC(BigIntTestBit,      rt_bigint_test_bit,     "Zanna.Math.BigInt.TestBit",      "i1(obj,i64)")
-RT_FUNC(BigIntSetBit,       rt_bigint_set_bit,      "Zanna.Math.BigInt.SetBit",       "obj(obj,i64)")
-RT_FUNC(BigIntClearBit,     rt_bigint_clear_bit,    "Zanna.Math.BigInt.ClearBit",     "obj(obj,i64)")
-RT_FUNC(BigIntSqrt,         rt_bigint_sqrt,         "Zanna.Math.BigInt.Sqrt",         "obj(obj)")
+RT_FUNC(BigIntSetBit, rt_bigint_set_bit, "Zanna.Math.BigInt.SetBit", "obj(obj,i64)", owned)
+RT_FUNC(BigIntClearBit, rt_bigint_clear_bit, "Zanna.Math.BigInt.ClearBit", "obj(obj,i64)", owned)
+RT_FUNC(BigIntSqrt, rt_bigint_sqrt, "Zanna.Math.BigInt.Sqrt", "obj(obj)", owned)
 
 /// @summary Provides Big Int functionality for numeric and geometric calculations.
 /// @details
@@ -269,58 +269,58 @@ RT_CLASS_END()
 // String instance methods (Zanna.String.*)
 RT_FUNC(Asc,            rt_str_asc,              "Zanna.String.Asc",         "i64(str)",         always)
 RT_FUNC(ByteAt,         rt_str_byte_at,          "Zanna.String.ByteAt",      "i64(str,i64)",     always)
-RT_FUNC(Chr,            rt_str_chr,              "Zanna.String.Chr",         "str(i64)",         always)
-RT_FUNC(Concat,         rt_str_concat,           "Zanna.String.Concat",      "str(str,str)")
+RT_FUNC(Chr, rt_str_chr, "Zanna.String.Chr", "str(i64)",         always, owned)
+RT_FUNC(Concat, rt_str_concat, "Zanna.String.Concat", "str(str,str)", owned)
 RT_FUNC(IndexOf,        rt_str_index_of,           "Zanna.String.IndexOf",     "i64(str,str)",     always)
 RT_FUNC(IndexOfFrom,    rt_str_index_of_from, "Zanna.String.IndexOfFrom", "i64(str,i64,str)", always)
-RT_FUNC(LCase,          rt_str_lcase,            "Zanna.String.ToLower",     "str(str)",         always)
-RT_FUNC(LTrim,          rt_str_ltrim,            "Zanna.String.TrimStart",   "str(str)",         always)
-RT_FUNC(Left,           rt_str_left,             "Zanna.String.Left",        "str(str,i64)",     always)
+RT_FUNC(LCase, rt_str_lcase, "Zanna.String.ToLower", "str(str)",         always, owned)
+RT_FUNC(LTrim, rt_str_ltrim, "Zanna.String.TrimStart", "str(str)",         always, owned)
+RT_FUNC(Left, rt_str_left, "Zanna.String.Left", "str(str,i64)",     always, owned)
 RT_FUNC(Len,            rt_str_len,              "Zanna.String.get_Length",  "i64(str)",         always)
-RT_FUNC(Mid2,           rt_str_mid,             "Zanna.String.Mid",         "str(str,i64)",     always)
-RT_FUNC(Mid3,           rt_str_mid_len,             "Zanna.String.MidLen",      "str(str,i64,i64)", always)
-RT_FUNC(RTrim,          rt_str_rtrim,            "Zanna.String.TrimEnd",     "str(str)",         always)
-RT_FUNC(Right,          rt_str_right,            "Zanna.String.Right",       "str(str,i64)",     always)
+RT_FUNC(Mid2, rt_str_mid, "Zanna.String.Mid", "str(str,i64)",     always, owned)
+RT_FUNC(Mid3, rt_str_mid_len, "Zanna.String.MidLen", "str(str,i64,i64)", always, owned)
+RT_FUNC(RTrim, rt_str_rtrim, "Zanna.String.TrimEnd", "str(str)",         always, owned)
+RT_FUNC(Right, rt_str_right, "Zanna.String.Right", "str(str,i64)",     always, owned)
 RT_FUNC(StrCmp,         rt_str_cmp,          "Zanna.String.Compare",         "i64(str,str)",     always)
 RT_FUNC(StrCmpNoCase,   rt_str_cmp_nocase,   "Zanna.String.CompareIgnoreCase",   "i64(str,str)",     always)
 RT_FUNC(StrCount,       rt_str_count,        "Zanna.String.Count",       "i64(str,str)",     always)
 RT_FUNC(StrEndsWith,    rt_str_ends_with,    "Zanna.String.EndsWith",    "i1(str,str)",      always)
-RT_FUNC(StrFlip,        rt_str_flip,         "Zanna.String.Reverse",        "str(str)",         always)
+RT_FUNC(StrFlip, rt_str_flip, "Zanna.String.Reverse", "str(str)",         always, owned)
 RT_FUNC(StrHas,         rt_str_has,          "Zanna.String.Contains",         "i1(str,str)",      always)
 RT_FUNC(StrIsEmpty,     rt_str_is_empty,     "Zanna.String.get_IsEmpty", "i1(str)",          always)
-RT_FUNC(StrPadLeft,     rt_str_pad_left,     "Zanna.String.PadLeft",     "str(str,i64,str)", always)
-RT_FUNC(StrPadRight,    rt_str_pad_right,    "Zanna.String.PadRight",    "str(str,i64,str)", always)
-RT_FUNC(StrRepeat,      rt_str_repeat,       "Zanna.String.Repeat",      "str(str,i64)",     always)
-RT_FUNC(StrReplace,     rt_str_replace,      "Zanna.String.Replace",     "str(str,str,str)", always)
-RT_FUNC(StrSplit,       rt_str_split,        "Zanna.String.Split",       "seq<str>(str,str)",     always)
-RT_FUNC(StrLines,       rt_str_lines,        "Zanna.String.Lines",       "seq<str>(str)",         always)
+RT_FUNC(StrPadLeft, rt_str_pad_left, "Zanna.String.PadLeft", "str(str,i64,str)", always, owned)
+RT_FUNC(StrPadRight, rt_str_pad_right, "Zanna.String.PadRight", "str(str,i64,str)", always, owned)
+RT_FUNC(StrRepeat, rt_str_repeat, "Zanna.String.Repeat", "str(str,i64)",     always, owned)
+RT_FUNC(StrReplace, rt_str_replace, "Zanna.String.Replace", "str(str,str,str)", always, owned)
+RT_FUNC(StrSplit, rt_str_split, "Zanna.String.Split", "seq<str>(str,str)",     always, owned)
+RT_FUNC(StrLines, rt_str_lines, "Zanna.String.Lines", "seq<str>(str)",         always, owned)
 RT_FUNC(TextCharIsIdentStart, rt_text_char_is_identifier_start, "Zanna.Text.Char.IsIdentifierStart", "i1(str)", always)
 RT_FUNC(TextCharIsIdentPart,  rt_text_char_is_identifier_part,  "Zanna.Text.Char.IsIdentifierPart",  "i1(str)", always)
 RT_FUNC(TextCharIsAlnum,      rt_text_char_is_alnum,            "Zanna.Text.Char.IsAlphanumeric",           "i1(str)", always)
 RT_FUNC(TextCharIsWord,       rt_text_char_is_word,             "Zanna.Text.Char.IsWord",                   "i1(str)")
 RT_FUNC(StrStartsWith,  rt_str_starts_with,  "Zanna.String.StartsWith",  "i1(str,str)",      always)
-RT_FUNC(Substr,         rt_str_substr,           "Zanna.String.Substring",   "str(str,i64,i64)", always)
-RT_FUNC(Trim,           rt_str_trim,             "Zanna.String.Trim",        "str(str)",         always)
-RT_FUNC(UCase,          rt_str_ucase,            "Zanna.String.ToUpper",     "str(str)",         always)
+RT_FUNC(Substr, rt_str_substr, "Zanna.String.Substring", "str(str,i64,i64)", always, owned)
+RT_FUNC(Trim, rt_str_trim, "Zanna.String.Trim", "str(str)",         always, owned)
+RT_FUNC(UCase, rt_str_ucase, "Zanna.String.ToUpper", "str(str)",         always, owned)
 
 // String static utilities (Zanna.Strings.*)
-RT_FUNC(SplitFields,           rt_str_split_fields_seq,  "Zanna.String.SplitFields",       "seq<str>(str)")
-RT_FUNC(SplitFieldsResult,     rt_str_split_fields_result, "Zanna.String.SplitFieldsResult", "obj<Zanna.Result>(str)")
+RT_FUNC(SplitFields, rt_str_split_fields_seq, "Zanna.String.SplitFields", "seq<str>(str)", owned)
+RT_FUNC(SplitFieldsResult, rt_str_split_fields_result, "Zanna.String.SplitFieldsResult", "obj<Zanna.Result>(str)", owned)
 RT_FUNC(StrEquals,             rt_str_eq,        "Zanna.String.Equals",            "i1(str,str)")
 // Internal BASIC PRINT lowering targets for narrow numeric variable types.
-RT_INTERNAL_FUNC(StrFromI16,    rt_str_i16_alloc, "Zanna.String.FromI16",           "str(i16)")
-RT_INTERNAL_FUNC(StrFromI32,    rt_str_i32_alloc, "Zanna.String.FromI32",           "str(i32)")
-RT_INTERNAL_FUNC(StrFromSingle, rt_str_f_alloc,   "Zanna.String.FromSingle",        "str(f64)")
+RT_INTERNAL_FUNC(StrFromI16, rt_str_i16_alloc, "Zanna.String.FromI16", "str(i16)", owned)
+RT_INTERNAL_FUNC(StrFromI32, rt_str_i32_alloc, "Zanna.String.FromI32", "str(i32)", owned)
+RT_INTERNAL_FUNC(StrFromSingle, rt_str_f_alloc, "Zanna.String.FromSingle", "str(f64)", owned)
 
 // Throw message storage for catch(e) variable binding
-RT_FUNC(ErrorKindName,         rt_error_kind_name, "Zanna.Error.KindName",          "str(i32)")
-RT_FUNC(ErrorMessage,          rt_error_message,   "Zanna.Error.Message",           "str(i32,i32,i32)")
-RT_FUNC(ErrorLocation,         rt_error_location,  "Zanna.Error.Location",          "str(i32,i32,i32)")
+RT_FUNC(ErrorKindName, rt_error_kind_name, "Zanna.Error.KindName", "str(i32)", owned)
+RT_FUNC(ErrorMessage, rt_error_message, "Zanna.Error.Message", "str(i32,i32,i32)", owned)
+RT_FUNC(ErrorLocation, rt_error_location, "Zanna.Error.Location", "str(i32,i32,i32)", owned)
 
 // Trap field storage for native codegen ErrGetKind/Code/Line
 
-RT_FUNC(WeakRefNew,            rt_weakref_new,     "Zanna.Memory.WeakRef.New",      "obj<Zanna.Memory.WeakRef>(obj)")
-RT_FUNC(WeakRefGet,            rt_weakref_get,     "Zanna.Memory.WeakRef.Get",      "obj(obj)")
+RT_FUNC(WeakRefNew, rt_weakref_new, "Zanna.Memory.WeakRef.New", "obj<Zanna.Memory.WeakRef>(obj)", owned)
+RT_FUNC(WeakRefGet, rt_weakref_get, "Zanna.Memory.WeakRef.Get", "obj(obj)", owned)
 RT_FUNC(WeakRefAlive,          rt_weakref_alive,   "Zanna.Memory.WeakRef.IsAlive",    "i1(obj)")
 RT_FUNC(WeakRefFree,           rt_weakref_free,    "Zanna.Memory.WeakRef.Free",     "void(obj)")
 RT_FUNC(WeakRefReset,          rt_weakref_reset,   "Zanna.Memory.WeakRef.Reset",    "void(obj,obj)")
@@ -342,49 +342,49 @@ RT_CLASS_BEGIN("Zanna.Memory.WeakRef", MemoryWeakRef, "obj", WeakRefNew)
     RT_METHOD("Reset", "void(obj,obj)", WeakRefReset)
 RT_CLASS_END()
 
-RT_FUNC(StringsJoin,           rt_str_join,  "Zanna.String.Join",              "str(str,obj)", always)
-RT_FUNC(StrCapitalize,         rt_str_capitalize,     "Zanna.String.Capitalize",     "str(str)")
-RT_FUNC(StrTitle,              rt_str_title,          "Zanna.String.Title",          "str(str)")
-RT_FUNC(StrRemovePrefix,      rt_str_remove_prefix,  "Zanna.String.RemovePrefix",   "str(str,str)")
-RT_FUNC(StrRemoveSuffix,      rt_str_remove_suffix,  "Zanna.String.RemoveSuffix",   "str(str,str)")
+RT_FUNC(StringsJoin, rt_str_join, "Zanna.String.Join", "str(str,obj)", always, owned)
+RT_FUNC(StrCapitalize, rt_str_capitalize, "Zanna.String.Capitalize", "str(str)", owned)
+RT_FUNC(StrTitle, rt_str_title, "Zanna.String.Title", "str(str)", owned)
+RT_FUNC(StrRemovePrefix, rt_str_remove_prefix, "Zanna.String.RemovePrefix", "str(str,str)", owned)
+RT_FUNC(StrRemoveSuffix, rt_str_remove_suffix, "Zanna.String.RemoveSuffix", "str(str,str)", owned)
 RT_FUNC(StrLastIndexOf,       rt_str_last_index_of,  "Zanna.String.LastIndexOf",    "i64(str,str)")
-RT_FUNC(StrTrimChar,          rt_str_trim_char,      "Zanna.String.TrimChar",       "str(str,str)")
-RT_FUNC(StrSlug,              rt_str_slug,           "Zanna.String.Slug",           "str(str)")
+RT_FUNC(StrTrimChar, rt_str_trim_char, "Zanna.String.TrimChar", "str(str,str)", owned)
+RT_FUNC(StrSlug, rt_str_slug, "Zanna.String.Slug", "str(str)", owned)
 RT_FUNC(StrLevenshtein,       rt_str_levenshtein,    "Zanna.String.Levenshtein",    "i64(str,str)")
 RT_FUNC(StrJaro,              rt_str_jaro,           "Zanna.String.Jaro",           "f64(str,str)")
 RT_FUNC(StrLike,              rt_str_like,           "Zanna.String.Like",           "i1(str,str)")
 RT_FUNC(StrLikeCI,            rt_str_like_ci,        "Zanna.String.LikeIgnoreCase",         "i1(str,str)")
 RT_FUNC(StrJaroWinkler,       rt_str_jaro_winkler,   "Zanna.String.JaroWinkler",    "f64(str,str)")
 RT_FUNC(StrHamming,           rt_str_hamming,        "Zanna.String.Hamming",        "i64(str,str)")
-RT_FUNC(StrCamelCase,         rt_str_camel_case,     "Zanna.String.CamelCase",      "str(str)")
-RT_FUNC(StrPascalCase,        rt_str_pascal_case,    "Zanna.String.PascalCase",     "str(str)")
-RT_FUNC(StrSnakeCase,         rt_str_snake_case,     "Zanna.String.SnakeCase",      "str(str)")
-RT_FUNC(StrKebabCase,         rt_str_kebab_case,     "Zanna.String.KebabCase",      "str(str)")
-RT_FUNC(StrScreamingSnake,    rt_str_screaming_snake,"Zanna.String.ScreamingSnakeCase", "str(str)")
+RT_FUNC(StrCamelCase, rt_str_camel_case, "Zanna.String.CamelCase", "str(str)", owned)
+RT_FUNC(StrPascalCase, rt_str_pascal_case, "Zanna.String.PascalCase", "str(str)", owned)
+RT_FUNC(StrSnakeCase, rt_str_snake_case, "Zanna.String.SnakeCase", "str(str)", owned)
+RT_FUNC(StrKebabCase, rt_str_kebab_case, "Zanna.String.KebabCase", "str(str)", owned)
+RT_FUNC(StrScreamingSnake, rt_str_screaming_snake, "Zanna.String.ScreamingSnakeCase", "str(str)", owned)
 
 // Pluralization
-RT_FUNC(Pluralize,        rt_pluralize,        "Zanna.Text.Pluralize.Plural",     "str(str)")
-RT_FUNC(Singularize,      rt_singularize,      "Zanna.Text.Pluralize.Singular",   "str(str)")
-RT_FUNC(PluralizeCount,   rt_pluralize_count,  "Zanna.Text.Pluralize.Count",      "str(i64,str)")
+RT_FUNC(Pluralize, rt_pluralize, "Zanna.Text.Pluralize.Plural", "str(str)", owned)
+RT_FUNC(Singularize, rt_singularize, "Zanna.Text.Pluralize.Singular", "str(str)", owned)
+RT_FUNC(PluralizeCount, rt_pluralize_count, "Zanna.Text.Pluralize.Count", "str(i64,str)", owned)
 
 // Semantic versioning
-RT_FUNC(VersionParse,      rt_version_parse,      "Zanna.Text.Version.Parse",      "obj(str)")
+RT_FUNC(VersionParse, rt_version_parse, "Zanna.Text.Version.Parse", "obj(str)", owned)
 RT_FUNC(VersionIsValid,    rt_version_is_valid,   "Zanna.Text.Version.IsValid",    "i1(str)")
 RT_FUNC(VersionMajor,      rt_version_major,      "Zanna.Text.Version.get_Major",  "i64(obj)")
 RT_FUNC(VersionMinor,      rt_version_minor,      "Zanna.Text.Version.get_Minor",  "i64(obj)")
 RT_FUNC(VersionPatch,      rt_version_patch,      "Zanna.Text.Version.get_Patch",  "i64(obj)")
-RT_FUNC(VersionPrerelease, rt_version_prerelease, "Zanna.Text.Version.get_Prerelease", "str(obj)")
-RT_FUNC(VersionBuild,      rt_version_build,      "Zanna.Text.Version.get_Build",  "str(obj)")
-RT_FUNC(VersionToString,   rt_version_to_string,  "Zanna.Text.Version.ToString",   "str(obj)")
+RT_FUNC(VersionPrerelease, rt_version_prerelease, "Zanna.Text.Version.get_Prerelease", "str(obj)", owned)
+RT_FUNC(VersionBuild, rt_version_build, "Zanna.Text.Version.get_Build", "str(obj)", owned)
+RT_FUNC(VersionToString, rt_version_to_string, "Zanna.Text.Version.ToString", "str(obj)", owned)
 RT_FUNC(VersionCmp,        rt_version_cmp,        "Zanna.Text.Version.CompareTo",        "i64(obj,obj)")
 RT_FUNC(VersionCompare,    rt_version_compare,    "Zanna.Text.Version.Compare",    "i64(str,str)")
 RT_FUNC(VersionMajorStr,   rt_version_major_str,  "Zanna.Text.Version.ParseMajor", "i64(str)")
 RT_FUNC(VersionMinorStr,   rt_version_minor_str,  "Zanna.Text.Version.ParseMinor", "i64(str)")
 RT_FUNC(VersionPatchStr,   rt_version_patch_str,  "Zanna.Text.Version.ParsePatch", "i64(str)")
 RT_FUNC(VersionSatisfies,  rt_version_satisfies,  "Zanna.Text.Version.Satisfies",  "i1(obj,str)")
-RT_FUNC(VersionBumpMajor,  rt_version_bump_major, "Zanna.Text.Version.BumpMajor",  "str(obj)")
-RT_FUNC(VersionBumpMinor,  rt_version_bump_minor, "Zanna.Text.Version.BumpMinor",  "str(obj)")
-RT_FUNC(VersionBumpPatch,  rt_version_bump_patch, "Zanna.Text.Version.BumpPatch",  "str(obj)")
+RT_FUNC(VersionBumpMajor, rt_version_bump_major, "Zanna.Text.Version.BumpMajor", "str(obj)", owned)
+RT_FUNC(VersionBumpMinor, rt_version_bump_minor, "Zanna.Text.Version.BumpMinor", "str(obj)", owned)
+RT_FUNC(VersionBumpPatch, rt_version_bump_patch, "Zanna.Text.Version.BumpPatch", "str(obj)", owned)
 
 // String aliases (alternative canonical names)
 
@@ -408,15 +408,15 @@ RT_FUNC(TermPrintNum,  rt_term_print_f64,"Zanna.Terminal.PrintNum", "void(f64)")
 RT_FUNC(TermPrintBool, rt_term_print_bool,"Zanna.Terminal.PrintBool","void(i1)")
 
 // Terminal input
-RT_FUNC(TermAskResult,      rt_term_ask_result,       "Zanna.Terminal.AskResult",        "obj<Zanna.Result>(str)")
-RT_FUNC(TermGetKey,         rt_getkey_str,            "Zanna.Terminal.ReadKey",           "str()")
-RT_FUNC(TermGetKeyTimeout,  rt_getkey_timeout,        "Zanna.Terminal.ReadKeyFor",    "str(i64)")
-RT_FUNC(TermInKey,          rt_inkey_str,             "Zanna.Terminal.PollKey",            "str()")
-RT_FUNC(TermReadLineResult, rt_term_read_line_result, "Zanna.Terminal.ReadLineResult",   "obj<Zanna.Result>()")
-RT_FUNC(TermTryAsk,         rt_term_try_ask,          "Zanna.Terminal.TryAsk",           "obj<Zanna.Option>(str)")
-RT_FUNC(TermTryReadLine,    rt_term_try_read_line,    "Zanna.Terminal.TryReadLine",      "obj<Zanna.Option>()")
+RT_FUNC(TermAskResult, rt_term_ask_result, "Zanna.Terminal.AskResult", "obj<Zanna.Result>(str)", owned)
+RT_FUNC(TermGetKey, rt_getkey_str, "Zanna.Terminal.ReadKey", "str()", owned)
+RT_FUNC(TermGetKeyTimeout, rt_getkey_timeout, "Zanna.Terminal.ReadKeyFor", "str(i64)", owned)
+RT_FUNC(TermInKey, rt_inkey_str, "Zanna.Terminal.PollKey", "str()", owned)
+RT_FUNC(TermReadLineResult, rt_term_read_line_result, "Zanna.Terminal.ReadLineResult", "obj<Zanna.Result>()", owned)
+RT_FUNC(TermTryAsk, rt_term_try_ask, "Zanna.Terminal.TryAsk", "obj<Zanna.Option>(str)", owned)
+RT_FUNC(TermTryReadLine, rt_term_try_read_line, "Zanna.Terminal.TryReadLine", "obj<Zanna.Option>()", owned)
 // Internal lowering target for BASIC INPUT (hidden from the public catalog).
-RT_INTERNAL_FUNC(TermReadLine, rt_term_read_line,     "Zanna.Terminal.ReadLine",         "str()")
+RT_INTERNAL_FUNC(TermReadLine, rt_term_read_line, "Zanna.Terminal.ReadLine", "str()", owned)
 
 // Terminal screen control
 RT_FUNC(TermBell,             rt_bell,                    "Zanna.Terminal.Bell",             "void()")
@@ -435,26 +435,26 @@ RT_FUNC(TermFlush,      rt_term_flush,       "Zanna.Terminal.Flush",      "void(
 // TEXT - CODEC
 //=============================================================================
 
-RT_FUNC(CodecBase64Dec, rt_codec_base64_dec, "Zanna.Text.Codec.Base64Decode", "str(str)")
-RT_FUNC(CodecBase64Enc, rt_codec_base64_enc, "Zanna.Text.Codec.Base64Encode", "str(str)")
-RT_FUNC(CodecHexDec,    rt_codec_hex_dec,    "Zanna.Text.Codec.HexDecode",    "str(str)")
-RT_FUNC(CodecHexEnc,    rt_codec_hex_enc,    "Zanna.Text.Codec.HexEncode",    "str(str)")
+RT_FUNC(CodecBase64Dec, rt_codec_base64_dec, "Zanna.Text.Codec.Base64Decode", "str(str)", owned)
+RT_FUNC(CodecBase64Enc, rt_codec_base64_enc, "Zanna.Text.Codec.Base64Encode", "str(str)", owned)
+RT_FUNC(CodecHexDec, rt_codec_hex_dec, "Zanna.Text.Codec.HexDecode", "str(str)", owned)
+RT_FUNC(CodecHexEnc, rt_codec_hex_enc, "Zanna.Text.Codec.HexEncode", "str(str)", owned)
 RT_FUNC(CodecIsValidUtf8, rt_codec_is_valid_utf8, "Zanna.Text.Codec.IsValidUtf8", "i1(str)")
-RT_FUNC(CodecUrlDecode, rt_codec_url_decode, "Zanna.Text.Codec.UrlDecode", "str(str)")
-RT_FUNC(CodecUrlEncode, rt_codec_url_encode, "Zanna.Text.Codec.UrlEncode", "str(str)")
+RT_FUNC(CodecUrlDecode, rt_codec_url_decode, "Zanna.Text.Codec.UrlDecode", "str(str)", owned)
+RT_FUNC(CodecUrlEncode, rt_codec_url_encode, "Zanna.Text.Codec.UrlEncode", "str(str)", owned)
 
 //=============================================================================
 // TEXT - CSV
 //=============================================================================
 
-RT_FUNC(CsvParseLine,       rt_csv_parse_line,        "Zanna.Data.Csv.ParseLine",       "seq<str>(str)")
-RT_FUNC(CsvParseLineWith,   rt_csv_parse_line_with,   "Zanna.Data.Csv.ParseLineWith",   "seq<str>(str,str)")
-RT_FUNC(CsvParse,           rt_csv_parse,             "Zanna.Data.Csv.Parse",           "seq<obj>(str)")
-RT_FUNC(CsvParseWith,       rt_csv_parse_with,        "Zanna.Data.Csv.ParseWith",       "seq<obj>(str,str)")
-RT_FUNC(CsvFormatLine,      rt_csv_format_line,       "Zanna.Data.Csv.FormatLine",      "str(obj)")
-RT_FUNC(CsvFormatLineWith,  rt_csv_format_line_with,  "Zanna.Data.Csv.FormatLineWith",  "str(obj,str)")
-RT_FUNC(CsvFormat,          rt_csv_format,            "Zanna.Data.Csv.Format",          "str(obj)")
-RT_FUNC(CsvFormatWith,      rt_csv_format_with,       "Zanna.Data.Csv.FormatWith",      "str(obj,str)")
+RT_FUNC(CsvParseLine, rt_csv_parse_line, "Zanna.Data.Csv.ParseLine", "seq<str>(str)", owned)
+RT_FUNC(CsvParseLineWith, rt_csv_parse_line_with, "Zanna.Data.Csv.ParseLineWith", "seq<str>(str,str)", owned)
+RT_FUNC(CsvParse, rt_csv_parse, "Zanna.Data.Csv.Parse", "seq<obj>(str)", owned)
+RT_FUNC(CsvParseWith, rt_csv_parse_with, "Zanna.Data.Csv.ParseWith", "seq<obj>(str,str)", owned)
+RT_FUNC(CsvFormatLine, rt_csv_format_line, "Zanna.Data.Csv.FormatLine", "str(obj)", owned)
+RT_FUNC(CsvFormatLineWith, rt_csv_format_line_with, "Zanna.Data.Csv.FormatLineWith", "str(obj,str)", owned)
+RT_FUNC(CsvFormat, rt_csv_format, "Zanna.Data.Csv.Format", "str(obj)", owned)
+RT_FUNC(CsvFormatWith, rt_csv_format_with, "Zanna.Data.Csv.FormatWith", "str(obj,str)", owned)
 RT_FUNC(CsvIsValid,         rt_csv_is_valid,          "Zanna.Data.Csv.IsValid",         "i1(str)")
 
 //=============================================================================
@@ -462,42 +462,42 @@ RT_FUNC(CsvIsValid,         rt_csv_is_valid,          "Zanna.Data.Csv.IsValid", 
 //=============================================================================
 
 RT_FUNC(FuzzyMatchScore, rt_fuzzy_match_score, "Zanna.Text.FuzzyMatch.Score", "i64(str,str)")
-RT_FUNC(FuzzyMatchMatch, rt_fuzzy_match_match, "Zanna.Text.FuzzyMatch.Match", "obj<Zanna.Collections.Map>(str,str)")
+RT_FUNC(FuzzyMatchMatch, rt_fuzzy_match_match, "Zanna.Text.FuzzyMatch.Match", "obj<Zanna.Collections.Map>(str,str)", owned)
 
 //=============================================================================
 // TEXT - INI
 //=============================================================================
 
-RT_FUNC(IniParse,          rt_ini_parse,             "Zanna.Data.Ini.Parse",           "obj(str)")
-RT_FUNC(IniFormat,         rt_ini_format,            "Zanna.Data.Ini.Format",          "str(obj)")
-RT_FUNC(IniGet,            rt_ini_get,               "Zanna.Data.Ini.Get",             "str(obj,str,str)")
+RT_FUNC(IniParse, rt_ini_parse, "Zanna.Data.Ini.Parse", "obj(str)", owned)
+RT_FUNC(IniFormat, rt_ini_format, "Zanna.Data.Ini.Format", "str(obj)", owned)
+RT_FUNC(IniGet, rt_ini_get, "Zanna.Data.Ini.Get", "str(obj,str,str)", owned)
 RT_FUNC(IniSet,            rt_ini_set,               "Zanna.Data.Ini.Set",             "void(obj,str,str,str)")
 RT_FUNC(IniHasSection,     rt_ini_has_section,       "Zanna.Data.Ini.HasSection",      "i1(obj,str)")
-RT_FUNC(IniSections,       rt_ini_sections,          "Zanna.Data.Ini.Sections",        "seq<str>(obj)")
+RT_FUNC(IniSections, rt_ini_sections, "Zanna.Data.Ini.Sections", "seq<str>(obj)", owned)
 RT_FUNC(IniRemove,         rt_ini_remove,            "Zanna.Data.Ini.Remove",          "i1(obj,str,str)")
 
 //=============================================================================
 // TEXT - JSON
 //=============================================================================
 
-RT_FUNC(JsonParse,          rt_json_parse,            "Zanna.Data.Json.Parse",          "obj(str)")
-RT_FUNC(JsonParseObject,    rt_json_parse_object,     "Zanna.Data.Json.ParseObject",    "obj<Zanna.Collections.Map>(str)")
-RT_FUNC(JsonParseArray,     rt_json_parse_array,      "Zanna.Data.Json.ParseArray",     "seq<obj>(str)")
-RT_FUNC(JsonFormat,         rt_json_format,           "Zanna.Data.Json.Format",         "str(obj)")
-RT_FUNC(JsonFormatPretty,   rt_json_format_pretty,    "Zanna.Data.Json.FormatPretty",   "str(obj,i64)")
+RT_FUNC(JsonParse, rt_json_parse, "Zanna.Data.Json.Parse", "obj(str)", owned)
+RT_FUNC(JsonParseObject, rt_json_parse_object, "Zanna.Data.Json.ParseObject", "obj<Zanna.Collections.Map>(str)", owned)
+RT_FUNC(JsonParseArray, rt_json_parse_array, "Zanna.Data.Json.ParseArray", "seq<obj>(str)", owned)
+RT_FUNC(JsonFormat, rt_json_format, "Zanna.Data.Json.Format", "str(obj)", owned)
+RT_FUNC(JsonFormatPretty, rt_json_format_pretty, "Zanna.Data.Json.FormatPretty", "str(obj,i64)", owned)
 RT_FUNC(JsonIsValid,        rt_json_is_valid,         "Zanna.Data.Json.IsValid",        "i1(str)")
-RT_FUNC(JsonTypeOf,         rt_json_type_of,          "Zanna.Data.Json.TypeOf",         "str(obj)")
-RT_FUNC(JsonNewObject,      rt_map_new,               "Zanna.Data.Json.NewObject",      "obj<Zanna.Collections.Map>()")
+RT_FUNC(JsonTypeOf, rt_json_type_of, "Zanna.Data.Json.TypeOf", "str(obj)", owned)
+RT_FUNC(JsonNewObject, rt_map_new, "Zanna.Data.Json.NewObject", "obj<Zanna.Collections.Map>()", owned)
 
 //=============================================================================
 // TEXT - JSON Stream (SAX-style streaming parser)
 //=============================================================================
 
-RT_FUNC(JsonStreamNew,          rt_json_stream_new,           "Zanna.Data.JsonStream.New",           "obj(str)")
+RT_FUNC(JsonStreamNew, rt_json_stream_new, "Zanna.Data.JsonStream.New", "obj(str)", owned)
 RT_FUNC(JsonStreamNext,         rt_json_stream_next,          "Zanna.Data.JsonStream.Next",          "i64(obj)")
-RT_FUNC(JsonStreamNextResult,   rt_json_stream_next_result,   "Zanna.Data.JsonStream.NextResult",    "obj<Zanna.Result>(obj)")
+RT_FUNC(JsonStreamNextResult, rt_json_stream_next_result, "Zanna.Data.JsonStream.NextResult", "obj<Zanna.Result>(obj)", owned)
 RT_FUNC(JsonStreamTokenType,    rt_json_stream_token_type,    "Zanna.Data.JsonStream.TokenType",     "i64(obj)")
-RT_FUNC(JsonStreamStringValue,  rt_json_stream_string_value,  "Zanna.Data.JsonStream.StringValue",   "str(obj)")
+RT_FUNC(JsonStreamStringValue, rt_json_stream_string_value, "Zanna.Data.JsonStream.StringValue", "str(obj)", owned)
 RT_FUNC(JsonStreamNumberValue,  rt_json_stream_number_value,  "Zanna.Data.JsonStream.NumberValue",   "f64(obj)")
 RT_FUNC(JsonStreamBoolValue,    rt_json_stream_bool_value,    "Zanna.Data.JsonStream.BoolValue",     "i1(obj)")
 RT_FUNC(JsonStreamDepth,        rt_json_stream_depth,         "Zanna.Data.JsonStream.Depth",         "i64(obj)")
@@ -509,35 +509,35 @@ RT_FUNC(JsonStreamHasNext,      rt_json_stream_has_next,      "Zanna.Data.JsonSt
 //=============================================================================
 
 // Parsing
-RT_FUNC(XmlParse,           rt_xml_parse,             "Zanna.Data.Xml.Parse",           "obj(str)")
-RT_FUNC(XmlParseResult,     rt_xml_parse_result,      "Zanna.Data.Xml.ParseResult",     "obj<Zanna.Result>(str)")
+RT_FUNC(XmlParse, rt_xml_parse, "Zanna.Data.Xml.Parse", "obj(str)", owned)
+RT_FUNC(XmlParseResult, rt_xml_parse_result, "Zanna.Data.Xml.ParseResult", "obj<Zanna.Result>(str)", owned)
 RT_FUNC(XmlIsValid,         rt_xml_is_valid,          "Zanna.Data.Xml.IsValid",         "i1(str)")
 
 // Node Creation
-RT_FUNC(XmlElement,         rt_xml_element,           "Zanna.Data.Xml.Element",         "obj(str)")
-RT_FUNC(XmlText,            rt_xml_text,              "Zanna.Data.Xml.Text",            "obj(str)")
-RT_FUNC(XmlComment,         rt_xml_comment,           "Zanna.Data.Xml.Comment",         "obj(str)")
-RT_FUNC(XmlCdata,           rt_xml_cdata,             "Zanna.Data.Xml.Cdata",           "obj(str)")
+RT_FUNC(XmlElement, rt_xml_element, "Zanna.Data.Xml.Element", "obj(str)", owned)
+RT_FUNC(XmlText, rt_xml_text, "Zanna.Data.Xml.Text", "obj(str)", owned)
+RT_FUNC(XmlComment, rt_xml_comment, "Zanna.Data.Xml.Comment", "obj(str)", owned)
+RT_FUNC(XmlCdata, rt_xml_cdata, "Zanna.Data.Xml.Cdata", "obj(str)", owned)
 
 // Node Properties
 RT_FUNC(XmlNodeType,        rt_xml_node_type,         "Zanna.Data.Xml.NodeType",        "i64(obj)")
-RT_FUNC(XmlTag,             rt_xml_tag,               "Zanna.Data.Xml.Tag",             "str(obj)")
-RT_FUNC(XmlContent,         rt_xml_content,           "Zanna.Data.Xml.Content",         "str(obj)")
-RT_FUNC(XmlTextContent,     rt_xml_text_content,      "Zanna.Data.Xml.TextContent",     "str(obj)")
+RT_FUNC(XmlTag, rt_xml_tag, "Zanna.Data.Xml.Tag", "str(obj)", owned)
+RT_FUNC(XmlContent, rt_xml_content, "Zanna.Data.Xml.Content", "str(obj)", owned)
+RT_FUNC(XmlTextContent, rt_xml_text_content, "Zanna.Data.Xml.TextContent", "str(obj)", owned)
 
 // Attributes
-RT_FUNC(XmlAttr,            rt_xml_attr,              "Zanna.Data.Xml.Attr",            "str(obj,str)")
+RT_FUNC(XmlAttr, rt_xml_attr, "Zanna.Data.Xml.Attr", "str(obj,str)", owned)
 RT_FUNC(XmlHasAttr,         rt_xml_has_attr,          "Zanna.Data.Xml.HasAttr",         "i1(obj,str)")
 RT_FUNC(XmlSetAttr,         rt_xml_set_attr,          "Zanna.Data.Xml.SetAttr",         "void(obj,str,str)")
 RT_FUNC(XmlRemoveAttr,      rt_xml_remove_attr,       "Zanna.Data.Xml.RemoveAttr",      "i1(obj,str)")
-RT_FUNC(XmlAttrNames,       rt_xml_attr_names,        "Zanna.Data.Xml.AttrNames",       "seq<str>(obj)")
+RT_FUNC(XmlAttrNames, rt_xml_attr_names, "Zanna.Data.Xml.AttrNames", "seq<str>(obj)", owned)
 
 // Children
-RT_FUNC(XmlChildren,        rt_xml_children,          "Zanna.Data.Xml.Children",        "seq<obj>(obj)")
+RT_FUNC(XmlChildren, rt_xml_children, "Zanna.Data.Xml.Children", "seq<obj>(obj)", owned)
 RT_FUNC(XmlChildCount,      rt_xml_child_count,       "Zanna.Data.Xml.ChildCount",      "i64(obj)")
-RT_FUNC(XmlChildAt,         rt_xml_child_at,          "Zanna.Data.Xml.ChildAt",         "obj(obj,i64)")
-RT_FUNC(XmlChild,           rt_xml_child,             "Zanna.Data.Xml.Child",           "obj(obj,str)")
-RT_FUNC(XmlChildrenByTag,   rt_xml_children_by_tag,   "Zanna.Data.Xml.ChildrenByTag",   "seq<obj>(obj,str)")
+RT_FUNC(XmlChildAt, rt_xml_child_at, "Zanna.Data.Xml.ChildAt", "obj(obj,i64)", borrowed)
+RT_FUNC(XmlChild, rt_xml_child, "Zanna.Data.Xml.Child", "obj(obj,str)", borrowed)
+RT_FUNC(XmlChildrenByTag, rt_xml_children_by_tag, "Zanna.Data.Xml.ChildrenByTag", "seq<obj>(obj,str)", owned)
 RT_FUNC(XmlAppend,          rt_xml_append,            "Zanna.Data.Xml.Append",          "void(obj,obj)")
 RT_FUNC(XmlInsert,          rt_xml_insert,            "Zanna.Data.Xml.Insert",          "void(obj,i64,obj)")
 RT_FUNC(XmlRemove,          rt_xml_remove,            "Zanna.Data.Xml.Remove",          "i1(obj,obj)")
@@ -545,18 +545,18 @@ RT_FUNC(XmlRemoveAt,        rt_xml_remove_at,         "Zanna.Data.Xml.RemoveAt",
 RT_FUNC(XmlSetText,         rt_xml_set_text,          "Zanna.Data.Xml.SetText",         "void(obj,str)")
 
 // Navigation
-RT_FUNC(XmlParent,          rt_xml_parent,            "Zanna.Data.Xml.Parent",          "obj(obj)")
-RT_FUNC(XmlRoot,            rt_xml_root,              "Zanna.Data.Xml.Root",            "obj(obj)")
-RT_FUNC(XmlFindAll,         rt_xml_find_all,          "Zanna.Data.Xml.FindAll",         "seq<obj>(obj,str)")
-RT_FUNC(XmlFindOption,      rt_xml_find_option,       "Zanna.Data.Xml.Find",      "obj<Zanna.Option>(obj,str)")
+RT_FUNC(XmlParent, rt_xml_parent, "Zanna.Data.Xml.Parent", "obj(obj)", owned)
+RT_FUNC(XmlRoot, rt_xml_root, "Zanna.Data.Xml.Root", "obj(obj)", borrowed)
+RT_FUNC(XmlFindAll, rt_xml_find_all, "Zanna.Data.Xml.FindAll", "seq<obj>(obj,str)", owned)
+RT_FUNC(XmlFindOption, rt_xml_find_option, "Zanna.Data.Xml.Find", "obj<Zanna.Option>(obj,str)", owned)
 
 // Formatting
-RT_FUNC(XmlFormat,          rt_xml_format,            "Zanna.Data.Xml.Format",          "str(obj)")
-RT_FUNC(XmlFormatPretty,    rt_xml_format_pretty,     "Zanna.Data.Xml.FormatPretty",    "str(obj,i64)")
+RT_FUNC(XmlFormat, rt_xml_format, "Zanna.Data.Xml.Format", "str(obj)", owned)
+RT_FUNC(XmlFormatPretty, rt_xml_format_pretty, "Zanna.Data.Xml.FormatPretty", "str(obj,i64)", owned)
 
 // Utility
-RT_FUNC(XmlEscape,          rt_xml_escape,            "Zanna.Data.Xml.Escape",          "str(str)")
-RT_FUNC(XmlUnescape,        rt_xml_unescape,          "Zanna.Data.Xml.Unescape",        "str(str)")
+RT_FUNC(XmlEscape, rt_xml_escape, "Zanna.Data.Xml.Escape", "str(str)", owned)
+RT_FUNC(XmlUnescape, rt_xml_unescape, "Zanna.Data.Xml.Unescape", "str(str)", owned)
 
 /// @summary Provides Xml functionality for structured data processing.
 /// @details
@@ -605,16 +605,16 @@ RT_CLASS_END()
 //=============================================================================
 
 // Parsing
-RT_FUNC(YamlParse,          rt_yaml_parse,            "Zanna.Data.Yaml.Parse",          "obj(str)")
-RT_FUNC(YamlParseResult,    rt_yaml_parse_result,     "Zanna.Data.Yaml.ParseResult",    "obj<Zanna.Result>(str)")
+RT_FUNC(YamlParse, rt_yaml_parse, "Zanna.Data.Yaml.Parse", "obj(str)", owned)
+RT_FUNC(YamlParseResult, rt_yaml_parse_result, "Zanna.Data.Yaml.ParseResult", "obj<Zanna.Result>(str)", owned)
 RT_FUNC(YamlIsValid,        rt_yaml_is_valid,         "Zanna.Data.Yaml.IsValid",        "i1(str)")
 
 // Formatting
-RT_FUNC(YamlFormat,         rt_yaml_format,           "Zanna.Data.Yaml.Format",         "str(obj)")
-RT_FUNC(YamlFormatIndent,   rt_yaml_format_indent,    "Zanna.Data.Yaml.FormatIndent",   "str(obj,i64)")
+RT_FUNC(YamlFormat, rt_yaml_format, "Zanna.Data.Yaml.Format", "str(obj)", owned)
+RT_FUNC(YamlFormatIndent, rt_yaml_format_indent, "Zanna.Data.Yaml.FormatIndent", "str(obj,i64)", owned)
 
 // Type Inspection
-RT_FUNC(YamlTypeOf,         rt_yaml_type_of,          "Zanna.Data.Yaml.TypeOf",         "str(obj)")
+RT_FUNC(YamlTypeOf, rt_yaml_type_of, "Zanna.Data.Yaml.TypeOf", "str(obj)", owned)
 
 /// @summary Provides Yaml functionality for structured data processing.
 /// @details
@@ -634,28 +634,28 @@ RT_CLASS_END()
 // TEXT - TOML
 //=============================================================================
 
-RT_FUNC(TomlParse,          rt_toml_parse,            "Zanna.Data.Toml.Parse",          "obj(str)")
+RT_FUNC(TomlParse, rt_toml_parse, "Zanna.Data.Toml.Parse", "obj(str)", owned)
 RT_FUNC(TomlIsValid,        rt_toml_is_valid,         "Zanna.Data.Toml.IsValid",        "i1(str)")
-RT_FUNC(TomlFormat,         rt_toml_format,           "Zanna.Data.Toml.Format",         "str(obj)")
-RT_FUNC(TomlGet,            rt_toml_get,              "Zanna.Data.Toml.Get",            "obj(obj,str)")
-RT_FUNC(TomlGetStr,         rt_toml_get_str,          "Zanna.Data.Toml.GetStr",         "str(obj,str)")
+RT_FUNC(TomlFormat, rt_toml_format, "Zanna.Data.Toml.Format", "str(obj)", owned)
+RT_FUNC(TomlGet, rt_toml_get, "Zanna.Data.Toml.Get", "obj(obj,str)", borrowed)
+RT_FUNC(TomlGetStr, rt_toml_get_str, "Zanna.Data.Toml.GetStr", "str(obj,str)", owned)
 
 //=============================================================================
 // DATA - UNIFIED SERIALIZATION
 //=============================================================================
 
 // Format constants: JSON=0, XML=1, YAML=2, TOML=3, CSV=4
-RT_FUNC(SerializeParse,        rt_serialize_parse,           "Zanna.Data.Serialize.Parse",        "obj(str,i64)")
-RT_FUNC(SerializeParseResult,  rt_serialize_parse_result,    "Zanna.Data.Serialize.ParseResult",  "obj<Zanna.Result>(str,i64)")
-RT_FUNC(SerializeFormat,       rt_serialize_format,          "Zanna.Data.Serialize.Format",       "str(obj,i64)")
-RT_FUNC(SerializeFormatPretty, rt_serialize_format_pretty,   "Zanna.Data.Serialize.FormatPretty", "str(obj,i64,i64)")
+RT_FUNC(SerializeParse, rt_serialize_parse, "Zanna.Data.Serialize.Parse", "obj(str,i64)", owned)
+RT_FUNC(SerializeParseResult, rt_serialize_parse_result, "Zanna.Data.Serialize.ParseResult", "obj<Zanna.Result>(str,i64)", owned)
+RT_FUNC(SerializeFormat, rt_serialize_format, "Zanna.Data.Serialize.Format", "str(obj,i64)", owned)
+RT_FUNC(SerializeFormatPretty, rt_serialize_format_pretty, "Zanna.Data.Serialize.FormatPretty", "str(obj,i64,i64)", owned)
 RT_FUNC(SerializeIsValid,      rt_serialize_is_valid,        "Zanna.Data.Serialize.IsValid",      "i1(str,i64)")
 RT_FUNC(SerializeDetect,       rt_serialize_detect,          "Zanna.Data.Serialize.Detect",       "i64(str)")
-RT_FUNC(SerializeAutoParse,    rt_serialize_auto_parse,      "Zanna.Data.Serialize.AutoParse",    "obj(str)")
-RT_FUNC(SerializeAutoParseResult, rt_serialize_auto_parse_result, "Zanna.Data.Serialize.AutoParseResult", "obj<Zanna.Result>(str)")
-RT_FUNC(SerializeConvert,      rt_serialize_convert,         "Zanna.Data.Serialize.Convert",      "str(str,i64,i64)")
-RT_FUNC(SerializeFormatName,   rt_serialize_format_name,     "Zanna.Data.Serialize.FormatName",   "str(i64)")
-RT_FUNC(SerializeMimeType,     rt_serialize_mime_type,       "Zanna.Data.Serialize.MimeType",     "str(i64)")
+RT_FUNC(SerializeAutoParse, rt_serialize_auto_parse, "Zanna.Data.Serialize.AutoParse", "obj(str)", owned)
+RT_FUNC(SerializeAutoParseResult, rt_serialize_auto_parse_result, "Zanna.Data.Serialize.AutoParseResult", "obj<Zanna.Result>(str)", owned)
+RT_FUNC(SerializeConvert, rt_serialize_convert, "Zanna.Data.Serialize.Convert", "str(str,i64,i64)", owned)
+RT_FUNC(SerializeFormatName, rt_serialize_format_name, "Zanna.Data.Serialize.FormatName", "str(i64)", owned)
+RT_FUNC(SerializeMimeType, rt_serialize_mime_type, "Zanna.Data.Serialize.MimeType", "str(i64)", owned)
 RT_FUNC(SerializeFormatFromName, rt_serialize_format_from_name, "Zanna.Data.Serialize.FormatFromName", "i64(str)")
 
 /// @summary Provides Serialize functionality for structured data processing.
@@ -682,88 +682,88 @@ RT_CLASS_END()
 // TEXT - MARKDOWN
 //=============================================================================
 
-RT_FUNC(MarkdownToHtml,         rt_markdown_to_html,          "Zanna.Text.Markdown.ToHtml",         "str(str)")
-RT_FUNC(MarkdownToText,         rt_markdown_to_text,          "Zanna.Text.Markdown.ToText",         "str(str)")
-RT_FUNC(MarkdownExtractLinks,   rt_markdown_extract_links,    "Zanna.Text.Markdown.ExtractLinks",   "seq<str>(str)")
-RT_FUNC(MarkdownExtractHeadings,rt_markdown_extract_headings, "Zanna.Text.Markdown.ExtractHeadings","seq<str>(str)")
+RT_FUNC(MarkdownToHtml, rt_markdown_to_html, "Zanna.Text.Markdown.ToHtml", "str(str)", owned)
+RT_FUNC(MarkdownToText, rt_markdown_to_text, "Zanna.Text.Markdown.ToText", "str(str)", owned)
+RT_FUNC(MarkdownExtractLinks, rt_markdown_extract_links, "Zanna.Text.Markdown.ExtractLinks", "seq<str>(str)", owned)
+RT_FUNC(MarkdownExtractHeadings, rt_markdown_extract_headings, "Zanna.Text.Markdown.ExtractHeadings", "seq<str>(str)", owned)
 
 //=============================================================================
 // TEXT - JSONPATH
 //=============================================================================
 
-RT_FUNC(JsonPathGet,             rt_jsonpath_get,              "Zanna.Data.JsonPath.Get",             "obj(obj,str)")
-RT_FUNC(JsonPathGetOr,           rt_jsonpath_get_or,           "Zanna.Data.JsonPath.GetOr",           "obj(obj,str,obj)")
+RT_FUNC(JsonPathGet, rt_jsonpath_get, "Zanna.Data.JsonPath.Get", "obj(obj,str)", owned)
+RT_FUNC(JsonPathGetOr, rt_jsonpath_get_or, "Zanna.Data.JsonPath.GetOr", "obj(obj,str,obj)", owned)
 RT_FUNC(JsonPathHas,             rt_jsonpath_has,              "Zanna.Data.JsonPath.Has",             "i1(obj,str)")
-RT_FUNC(JsonPathQuery,           rt_jsonpath_query,            "Zanna.Data.JsonPath.Query",           "seq<obj>(obj,str)")
-RT_FUNC(JsonPathGetStr,          rt_jsonpath_get_str,          "Zanna.Data.JsonPath.GetStr",          "str(obj,str)")
+RT_FUNC(JsonPathQuery, rt_jsonpath_query, "Zanna.Data.JsonPath.Query", "seq<obj>(obj,str)", owned)
+RT_FUNC(JsonPathGetStr, rt_jsonpath_get_str, "Zanna.Data.JsonPath.GetStr", "str(obj,str)", owned)
 RT_FUNC(JsonPathGetInt,          rt_jsonpath_get_int,          "Zanna.Data.JsonPath.GetInt",          "i64(obj,str)")
 
 //=============================================================================
 // TEXT - HTML
 //=============================================================================
 
-RT_FUNC(HtmlParse,               rt_html_parse,            "Zanna.Text.Html.Parse",           "obj<Zanna.Collections.Map>(str)")
-RT_FUNC(HtmlToText,              rt_html_to_text,          "Zanna.Text.Html.ToText",          "str(str)")
-RT_FUNC(HtmlEscape,              rt_html_escape,           "Zanna.Text.Html.Escape",          "str(str)")
-RT_FUNC(HtmlUnescape,            rt_html_unescape,         "Zanna.Text.Html.Unescape",        "str(str)")
-RT_FUNC(HtmlStripTags,           rt_html_strip_tags,       "Zanna.Text.Html.StripTags",       "str(str)")
-RT_FUNC(HtmlExtractLinks,        rt_html_extract_links,    "Zanna.Text.Html.ExtractLinks",    "seq<str>(str)")
-RT_FUNC(HtmlExtractText,         rt_html_extract_text,     "Zanna.Text.Html.ExtractText",     "seq<str>(str,str)")
+RT_FUNC(HtmlParse, rt_html_parse, "Zanna.Text.Html.Parse", "obj<Zanna.Collections.Map>(str)", owned)
+RT_FUNC(HtmlToText, rt_html_to_text, "Zanna.Text.Html.ToText", "str(str)", owned)
+RT_FUNC(HtmlEscape, rt_html_escape, "Zanna.Text.Html.Escape", "str(str)", owned)
+RT_FUNC(HtmlUnescape, rt_html_unescape, "Zanna.Text.Html.Unescape", "str(str)", owned)
+RT_FUNC(HtmlStripTags, rt_html_strip_tags, "Zanna.Text.Html.StripTags", "str(str)", owned)
+RT_FUNC(HtmlExtractLinks, rt_html_extract_links, "Zanna.Text.Html.ExtractLinks", "seq<str>(str)", owned)
+RT_FUNC(HtmlExtractText, rt_html_extract_text, "Zanna.Text.Html.ExtractText", "seq<str>(str,str)", owned)
 
 //=============================================================================
 // TEXT - GUID
 //=============================================================================
 
-RT_FUNC(UuidEmpty,     rt_guid_empty,      "Zanna.Text.Uuid.get_Empty", "str()")
-RT_FUNC(UuidFromBytes, rt_guid_from_bytes, "Zanna.Text.Uuid.FromBytes", "str(obj)")
+RT_FUNC(UuidEmpty, rt_guid_empty, "Zanna.Text.Uuid.get_Empty", "str()", owned)
+RT_FUNC(UuidFromBytes, rt_guid_from_bytes, "Zanna.Text.Uuid.FromBytes", "str(obj)", owned)
 RT_FUNC(UuidIsValid,   rt_guid_is_valid,   "Zanna.Text.Uuid.IsValid",   "i1(str)")
-RT_FUNC(UuidNew,       rt_guid_new,        "Zanna.Text.Uuid.Generate",       "str()")
-RT_FUNC(UuidToBytes,   rt_guid_to_bytes,   "Zanna.Text.Uuid.ToBytes",   "obj(str)")
+RT_FUNC(UuidNew, rt_guid_new, "Zanna.Text.Uuid.Generate", "str()", owned)
+RT_FUNC(UuidToBytes, rt_guid_to_bytes, "Zanna.Text.Uuid.ToBytes", "obj(str)", owned)
 
 //=============================================================================
 // TEXT - STRINGBUILDER
 //=============================================================================
 
-RT_FUNC(SBAppend,      rt_text_sb_append,       "Zanna.Text.StringBuilder.Append",       "obj(obj,str)")
-RT_FUNC(SBAppendLine,  rt_text_sb_append_line,  "Zanna.Text.StringBuilder.AppendLine",   "obj(obj,str)")
+RT_FUNC(SBAppend, rt_text_sb_append, "Zanna.Text.StringBuilder.Append", "obj(obj,str)", borrowed)
+RT_FUNC(SBAppendLine, rt_text_sb_append_line, "Zanna.Text.StringBuilder.AppendLine", "obj(obj,str)", borrowed)
 RT_FUNC(SBClear,       rt_text_sb_clear,        "Zanna.Text.StringBuilder.Clear",        "void(obj)")
 RT_FUNC(SBGetCapacity, rt_text_sb_get_capacity, "Zanna.Text.StringBuilder.get_Capacity", "i64(obj)")
 RT_FUNC(SBGetLength,   rt_text_sb_get_length,   "Zanna.Text.StringBuilder.get_Length",   "i64(obj)")
-RT_FUNC(SBNew,         rt_sb_new,               "Zanna.Text.StringBuilder.New",          "obj()")
-RT_FUNC(SBToString,    rt_text_sb_to_string,    "Zanna.Text.StringBuilder.ToString",     "str(obj)")
+RT_FUNC(SBNew, rt_sb_new, "Zanna.Text.StringBuilder.New", "obj()", owned)
+RT_FUNC(SBToString, rt_text_sb_to_string, "Zanna.Text.StringBuilder.ToString", "str(obj)", owned)
 
 //=============================================================================
 // TEXT - PATTERN (Regex)
 //=============================================================================
 
 RT_FUNC(PatternIsMatch,      rt_pattern_is_match,       "Zanna.Text.Pattern.IsMatch",      "i1(str,str)")
-RT_FUNC(PatternFindOption,   rt_pattern_find_option,    "Zanna.Text.Pattern.Find",   "obj<Zanna.Option>(str,str)")
-RT_FUNC(PatternFindFromOption, rt_pattern_find_from_option, "Zanna.Text.Pattern.FindFrom", "obj<Zanna.Option>(str,str,i64)")
-RT_FUNC(PatternFindPosOption, rt_pattern_find_pos_option, "Zanna.Text.Pattern.FindPos", "obj<Zanna.Option>(str,str)")
-RT_FUNC(PatternFindAll,      rt_pattern_find_all,       "Zanna.Text.Pattern.FindAll",      "seq<str>(str,str)")
-RT_FUNC(PatternReplace,      rt_pattern_replace,        "Zanna.Text.Pattern.Replace",      "str(str,str,str)")
-RT_FUNC(PatternReplaceFirst, rt_pattern_replace_first,  "Zanna.Text.Pattern.ReplaceFirst", "str(str,str,str)")
-RT_FUNC(PatternSplit,        rt_pattern_split,          "Zanna.Text.Pattern.Split",        "seq<str>(str,str)")
-RT_FUNC(PatternEscape,       rt_pattern_escape,         "Zanna.Text.Pattern.Escape",       "str(str)")
+RT_FUNC(PatternFindOption, rt_pattern_find_option, "Zanna.Text.Pattern.Find", "obj<Zanna.Option>(str,str)", owned)
+RT_FUNC(PatternFindFromOption, rt_pattern_find_from_option, "Zanna.Text.Pattern.FindFrom", "obj<Zanna.Option>(str,str,i64)", owned)
+RT_FUNC(PatternFindPosOption, rt_pattern_find_pos_option, "Zanna.Text.Pattern.FindPos", "obj<Zanna.Option>(str,str)", owned)
+RT_FUNC(PatternFindAll, rt_pattern_find_all, "Zanna.Text.Pattern.FindAll", "seq<str>(str,str)", owned)
+RT_FUNC(PatternReplace, rt_pattern_replace, "Zanna.Text.Pattern.Replace", "str(str,str,str)", owned)
+RT_FUNC(PatternReplaceFirst, rt_pattern_replace_first, "Zanna.Text.Pattern.ReplaceFirst", "str(str,str,str)", owned)
+RT_FUNC(PatternSplit, rt_pattern_split, "Zanna.Text.Pattern.Split", "seq<str>(str,str)", owned)
+RT_FUNC(PatternEscape, rt_pattern_escape, "Zanna.Text.Pattern.Escape", "str(str)", owned)
 
-RT_FUNC(CompiledPatternNew,          rt_compiled_pattern_new,          "Zanna.Text.CompiledPattern.New",          "obj(str)")
-RT_FUNC(CompiledPatternTryNew,       rt_compiled_pattern_try_new,      "Zanna.Text.CompiledPattern.TryNew",       "obj<Zanna.Result>(str,i1)")
-RT_FUNC(CompiledPatternGetPattern,   rt_compiled_pattern_get_pattern,  "Zanna.Text.CompiledPattern.get_Pattern",  "str(obj)")
+RT_FUNC(CompiledPatternNew, rt_compiled_pattern_new, "Zanna.Text.CompiledPattern.New", "obj(str)", owned)
+RT_FUNC(CompiledPatternTryNew, rt_compiled_pattern_try_new, "Zanna.Text.CompiledPattern.TryNew", "obj<Zanna.Result>(str,i1)", owned)
+RT_FUNC(CompiledPatternGetPattern, rt_compiled_pattern_get_pattern, "Zanna.Text.CompiledPattern.get_Pattern", "str(obj)", owned)
 RT_FUNC(CompiledPatternIsMatch,      rt_compiled_pattern_is_match,     "Zanna.Text.CompiledPattern.IsMatch",      "i1(obj,str)")
-RT_FUNC(CompiledPatternFindOption,   rt_compiled_pattern_find_option,  "Zanna.Text.CompiledPattern.Find",   "obj<Zanna.Option>(obj,str)")
-RT_FUNC(CompiledPatternFindFromOption, rt_compiled_pattern_find_from_option, "Zanna.Text.CompiledPattern.FindFrom", "obj<Zanna.Option>(obj,str,i64)")
-RT_FUNC(CompiledPatternFindPosOption, rt_compiled_pattern_find_pos_option, "Zanna.Text.CompiledPattern.FindPos", "obj<Zanna.Option>(obj,str)")
-RT_FUNC(CompiledPatternFindRangeFrom, rt_compiled_pattern_find_range_from, "Zanna.Text.CompiledPattern.FindRangeFrom", "seq<i64>(obj,str,i64,i1)")
-RT_FUNC(CompiledPatternFindAll,      rt_compiled_pattern_find_all,     "Zanna.Text.CompiledPattern.FindAll",      "seq<str>(obj,str)")
-RT_FUNC(CompiledPatternCaptures,     rt_compiled_pattern_captures,     "Zanna.Text.CompiledPattern.Captures",     "seq<str>(obj,str)")
-RT_FUNC(CompiledPatternCapturesFrom, rt_compiled_pattern_captures_from,"Zanna.Text.CompiledPattern.CapturesFrom", "seq<str>(obj,str,i64)")
-RT_FUNC(CompiledPatternReplace,      rt_compiled_pattern_replace,      "Zanna.Text.CompiledPattern.Replace",      "str(obj,str,str)")
-RT_FUNC(CompiledPatternReplaceFirst, rt_compiled_pattern_replace_first,"Zanna.Text.CompiledPattern.ReplaceFirst", "str(obj,str,str)")
-RT_FUNC(CompiledPatternExpandReplacementAt, rt_compiled_pattern_expand_replacement_at, "Zanna.Text.CompiledPattern.ExpandReplacementAt", "obj<Zanna.Result>(obj,str,i64,str)")
-RT_FUNC(CompiledPatternSplit,        rt_compiled_pattern_split,        "Zanna.Text.CompiledPattern.Split",        "seq<str>(obj,str)")
-RT_FUNC(CompiledPatternSplitN,       rt_compiled_pattern_split_n,      "Zanna.Text.CompiledPattern.SplitLimited",       "seq<str>(obj,str,i64)")
+RT_FUNC(CompiledPatternFindOption, rt_compiled_pattern_find_option, "Zanna.Text.CompiledPattern.Find", "obj<Zanna.Option>(obj,str)", owned)
+RT_FUNC(CompiledPatternFindFromOption, rt_compiled_pattern_find_from_option, "Zanna.Text.CompiledPattern.FindFrom", "obj<Zanna.Option>(obj,str,i64)", owned)
+RT_FUNC(CompiledPatternFindPosOption, rt_compiled_pattern_find_pos_option, "Zanna.Text.CompiledPattern.FindPos", "obj<Zanna.Option>(obj,str)", owned)
+RT_FUNC(CompiledPatternFindRangeFrom, rt_compiled_pattern_find_range_from, "Zanna.Text.CompiledPattern.FindRangeFrom", "seq<i64>(obj,str,i64,i1)", owned)
+RT_FUNC(CompiledPatternFindAll, rt_compiled_pattern_find_all, "Zanna.Text.CompiledPattern.FindAll", "seq<str>(obj,str)", owned)
+RT_FUNC(CompiledPatternCaptures, rt_compiled_pattern_captures, "Zanna.Text.CompiledPattern.Captures", "seq<str>(obj,str)", owned)
+RT_FUNC(CompiledPatternCapturesFrom, rt_compiled_pattern_captures_from, "Zanna.Text.CompiledPattern.CapturesFrom", "seq<str>(obj,str,i64)", owned)
+RT_FUNC(CompiledPatternReplace, rt_compiled_pattern_replace, "Zanna.Text.CompiledPattern.Replace", "str(obj,str,str)", owned)
+RT_FUNC(CompiledPatternReplaceFirst, rt_compiled_pattern_replace_first, "Zanna.Text.CompiledPattern.ReplaceFirst", "str(obj,str,str)", owned)
+RT_FUNC(CompiledPatternExpandReplacementAt, rt_compiled_pattern_expand_replacement_at, "Zanna.Text.CompiledPattern.ExpandReplacementAt", "obj<Zanna.Result>(obj,str,i64,str)", owned)
+RT_FUNC(CompiledPatternSplit, rt_compiled_pattern_split, "Zanna.Text.CompiledPattern.Split", "seq<str>(obj,str)", owned)
+RT_FUNC(CompiledPatternSplitN, rt_compiled_pattern_split_n, "Zanna.Text.CompiledPattern.SplitLimited", "seq<str>(obj,str,i64)", owned)
 
-RT_FUNC(ScannerNew,          rt_scanner_new,            "Zanna.Text.Scanner.New",          "obj(str)")
+RT_FUNC(ScannerNew, rt_scanner_new, "Zanna.Text.Scanner.New", "obj(str)", owned)
 RT_FUNC(ScannerPos,          rt_scanner_pos,            "Zanna.Text.Scanner.get_Position",      "i64(obj)")
 RT_FUNC(ScannerSetPos,       rt_scanner_set_pos,        "Zanna.Text.Scanner.set_Position",      "void(obj,i64)")
 RT_FUNC(ScannerIsEnd,        rt_scanner_is_end,         "Zanna.Text.Scanner.get_IsEnd",    "i1(obj)")
@@ -772,11 +772,11 @@ RT_FUNC(ScannerLen,          rt_scanner_len,            "Zanna.Text.Scanner.get_
 RT_FUNC(ScannerReset,        rt_scanner_reset,          "Zanna.Text.Scanner.Reset",        "void(obj)")
 RT_FUNC(ScannerPeek,         rt_scanner_peek,           "Zanna.Text.Scanner.Peek",         "i64(obj)")
 RT_FUNC(ScannerPeekAt,       rt_scanner_peek_at,        "Zanna.Text.Scanner.PeekAt",       "i64(obj,i64)")
-RT_FUNC(ScannerPeekStr,      rt_scanner_peek_str,       "Zanna.Text.Scanner.PeekStr",      "str(obj,i64)")
+RT_FUNC(ScannerPeekStr, rt_scanner_peek_str, "Zanna.Text.Scanner.PeekStr", "str(obj,i64)", owned)
 RT_FUNC(ScannerRead,         rt_scanner_read,           "Zanna.Text.Scanner.Read",         "i64(obj)")
-RT_FUNC(ScannerReadStr,      rt_scanner_read_str,       "Zanna.Text.Scanner.ReadStr",      "str(obj,i64)")
-RT_FUNC(ScannerReadUntil,    rt_scanner_read_until,     "Zanna.Text.Scanner.ReadUntil",    "str(obj,i64)")
-RT_FUNC(ScannerReadUntilAny, rt_scanner_read_until_any, "Zanna.Text.Scanner.ReadUntilAny", "str(obj,str)")
+RT_FUNC(ScannerReadStr, rt_scanner_read_str, "Zanna.Text.Scanner.ReadStr", "str(obj,i64)", owned)
+RT_FUNC(ScannerReadUntil, rt_scanner_read_until, "Zanna.Text.Scanner.ReadUntil", "str(obj,i64)", owned)
+RT_FUNC(ScannerReadUntilAny, rt_scanner_read_until_any, "Zanna.Text.Scanner.ReadUntilAny", "str(obj,str)", owned)
 RT_FUNC(ScannerMatch,        rt_scanner_match,          "Zanna.Text.Scanner.Match",        "i1(obj,i64)")
 RT_FUNC(ScannerMatchStr,     rt_scanner_match_str,      "Zanna.Text.Scanner.MatchStr",     "i1(obj,str)")
 RT_FUNC(ScannerAccept,       rt_scanner_accept,         "Zanna.Text.Scanner.Accept",       "i1(obj,i64)")
@@ -784,36 +784,36 @@ RT_FUNC(ScannerAcceptStr,    rt_scanner_accept_str,     "Zanna.Text.Scanner.Acce
 RT_FUNC(ScannerAcceptAny,    rt_scanner_accept_any,     "Zanna.Text.Scanner.AcceptAny",    "i1(obj,str)")
 RT_FUNC(ScannerSkip,         rt_scanner_skip,           "Zanna.Text.Scanner.Skip",         "void(obj,i64)")
 RT_FUNC(ScannerSkipWhitespace,rt_scanner_skip_whitespace,"Zanna.Text.Scanner.SkipWhitespace","i64(obj)")
-RT_FUNC(ScannerReadIdent,    rt_scanner_read_ident,     "Zanna.Text.Scanner.ReadIdent",    "str(obj)")
-RT_FUNC(ScannerReadInt,      rt_scanner_read_int,       "Zanna.Text.Scanner.ReadIntToken",      "str(obj)")
-RT_FUNC(ScannerReadNumber,   rt_scanner_read_number,    "Zanna.Text.Scanner.ReadNumberToken",   "str(obj)")
-RT_FUNC(ScannerReadQuoted,   rt_scanner_read_quoted,    "Zanna.Text.Scanner.ReadQuoted",   "str(obj,i64)")
-RT_FUNC(ScannerReadLine,     rt_scanner_read_line,      "Zanna.Text.Scanner.ReadLine",     "str(obj)")
+RT_FUNC(ScannerReadIdent, rt_scanner_read_ident, "Zanna.Text.Scanner.ReadIdent", "str(obj)", owned)
+RT_FUNC(ScannerReadInt, rt_scanner_read_int, "Zanna.Text.Scanner.ReadIntToken", "str(obj)", owned)
+RT_FUNC(ScannerReadNumber, rt_scanner_read_number, "Zanna.Text.Scanner.ReadNumberToken", "str(obj)", owned)
+RT_FUNC(ScannerReadQuoted, rt_scanner_read_quoted, "Zanna.Text.Scanner.ReadQuoted", "str(obj,i64)", owned)
+RT_FUNC(ScannerReadLine, rt_scanner_read_line, "Zanna.Text.Scanner.ReadLine", "str(obj)", owned)
 
 //=============================================================================
 // TEXT - TEXTWRAPPER
 //=============================================================================
 
-RT_FUNC(TextWrapWrap,        rt_textwrap_wrap,          "Zanna.Text.TextWrapper.Wrap",         "str(str,i64)")
-RT_FUNC(TextWrapWrapLines,   rt_textwrap_wrap_lines,    "Zanna.Text.TextWrapper.WrapLines",    "seq<str>(str,i64)")
-RT_FUNC(TextWrapFill,        rt_textwrap_fill,          "Zanna.Text.TextWrapper.Fill",         "str(str,i64)")
-RT_FUNC(TextWrapIndent,      rt_textwrap_indent,        "Zanna.Text.TextWrapper.Indent",       "str(str,str)")
-RT_FUNC(TextWrapDedent,      rt_textwrap_dedent,        "Zanna.Text.TextWrapper.Dedent",       "str(str)")
-RT_FUNC(TextWrapHang,        rt_textwrap_hang,          "Zanna.Text.TextWrapper.Hang",         "str(str,str)")
-RT_FUNC(TextWrapTruncate,    rt_textwrap_truncate,      "Zanna.Text.TextWrapper.Truncate",     "str(str,i64)")
-RT_FUNC(TextWrapTruncateWith,rt_textwrap_truncate_with, "Zanna.Text.TextWrapper.TruncateWith", "str(str,i64,str)")
-RT_FUNC(TextWrapShorten,     rt_textwrap_shorten,       "Zanna.Text.TextWrapper.Shorten",      "str(str,i64)")
-RT_FUNC(TextWrapLeft,        rt_textwrap_left,          "Zanna.Text.TextWrapper.AlignLeft",         "str(str,i64)")
-RT_FUNC(TextWrapRight,       rt_textwrap_right,         "Zanna.Text.TextWrapper.AlignRight",        "str(str,i64)")
-RT_FUNC(TextWrapCenter,      rt_textwrap_center,        "Zanna.Text.TextWrapper.Center",       "str(str,i64)")
+RT_FUNC(TextWrapWrap, rt_textwrap_wrap, "Zanna.Text.TextWrapper.Wrap", "str(str,i64)", owned)
+RT_FUNC(TextWrapWrapLines, rt_textwrap_wrap_lines, "Zanna.Text.TextWrapper.WrapLines", "seq<str>(str,i64)", owned)
+RT_FUNC(TextWrapFill, rt_textwrap_fill, "Zanna.Text.TextWrapper.Fill", "str(str,i64)", owned)
+RT_FUNC(TextWrapIndent, rt_textwrap_indent, "Zanna.Text.TextWrapper.Indent", "str(str,str)", owned)
+RT_FUNC(TextWrapDedent, rt_textwrap_dedent, "Zanna.Text.TextWrapper.Dedent", "str(str)", owned)
+RT_FUNC(TextWrapHang, rt_textwrap_hang, "Zanna.Text.TextWrapper.Hang", "str(str,str)", owned)
+RT_FUNC(TextWrapTruncate, rt_textwrap_truncate, "Zanna.Text.TextWrapper.Truncate", "str(str,i64)", owned)
+RT_FUNC(TextWrapTruncateWith, rt_textwrap_truncate_with, "Zanna.Text.TextWrapper.TruncateWith", "str(str,i64,str)", owned)
+RT_FUNC(TextWrapShorten, rt_textwrap_shorten, "Zanna.Text.TextWrapper.Shorten", "str(str,i64)", owned)
+RT_FUNC(TextWrapLeft, rt_textwrap_left, "Zanna.Text.TextWrapper.AlignLeft", "str(str,i64)", owned)
+RT_FUNC(TextWrapRight, rt_textwrap_right, "Zanna.Text.TextWrapper.AlignRight", "str(str,i64)", owned)
+RT_FUNC(TextWrapCenter, rt_textwrap_center, "Zanna.Text.TextWrapper.Center", "str(str,i64)", owned)
 RT_FUNC(TextWrapLineCount,   rt_textwrap_line_count,    "Zanna.Text.TextWrapper.LineCount",    "i64(str)")
 RT_FUNC(TextWrapMaxLineLen,  rt_textwrap_max_line_len,  "Zanna.Text.TextWrapper.MaxLineLength",   "i64(str)")
 
-RT_FUNC(TemplateRender,      rt_template_render,        "Zanna.Text.Template.Render",      "str(str,obj)")
-RT_FUNC(TemplateRenderSeq,   rt_template_render_seq,    "Zanna.Text.Template.RenderSeq",   "str(str,obj)")
-RT_FUNC(TemplateRenderWith,  rt_template_render_with,   "Zanna.Text.Template.RenderWith",  "str(str,obj,str,str)")
+RT_FUNC(TemplateRender, rt_template_render, "Zanna.Text.Template.Render", "str(str,obj)", owned)
+RT_FUNC(TemplateRenderSeq, rt_template_render_seq, "Zanna.Text.Template.RenderSeq", "str(str,obj)", owned)
+RT_FUNC(TemplateRenderWith, rt_template_render_with, "Zanna.Text.Template.RenderWith", "str(str,obj,str,str)", owned)
 RT_FUNC(TemplateHas,         rt_template_has,           "Zanna.Text.Template.Has",         "i1(str,str)")
-RT_FUNC(TemplateKeys,        rt_template_keys,          "Zanna.Text.Template.Keys",        "obj<Zanna.Collections.StringSet>(str)")
-RT_FUNC(TemplateEscape,      rt_template_escape,        "Zanna.Text.Template.Escape",      "str(str)")
+RT_FUNC(TemplateKeys, rt_template_keys, "Zanna.Text.Template.Keys", "obj<Zanna.Collections.StringSet>(str)", owned)
+RT_FUNC(TemplateEscape, rt_template_escape, "Zanna.Text.Template.Escape", "str(str)", owned)
 
 //=============================================================================

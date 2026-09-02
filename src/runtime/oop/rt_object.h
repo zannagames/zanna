@@ -173,6 +173,28 @@ void rt_obj_free(void *p);
 /// @param fn Finalizer callback or NULL to clear.
 void rt_obj_set_finalizer(void *p, rt_obj_finalizer_t fn);
 
+/// @brief Program-wide destructor dispatcher for compiled class instances.
+/// @details The compiler installs one hook per program (the Zia
+///          `__zia_dtor_dispatch` function). @ref rt_obj_free invokes it for
+///          every object payload whose header carries a positive class id
+///          before any per-object finalizer runs, so instances that the
+///          runtime frees itself (collection elements, map values, boxed
+///          `Any`) release their fields exactly like instances released by
+///          compiled code. Runtime-internal objects use zero or negative class
+///          ids and never reach the hook.
+typedef void (*rt_obj_class_dtor_hook_t)(void *obj);
+
+/// @brief Install (or clear with NULL) the class destructor hook.
+/// @details Declared with an opaque pointer so the IL runtime ABI can pass a
+///          function address like any other `ptr`; the value must be an
+///          @ref rt_obj_class_dtor_hook_t. Bytecode executors bridge this call
+///          to a re-entrant trampoline instead of storing the raw value.
+/// @param fn Function address cast from @ref rt_obj_class_dtor_hook_t, or NULL.
+void rt_obj_set_class_dtor_hook(void *fn);
+
+/// @brief The installed class destructor hook, or NULL.
+void *rt_obj_get_class_dtor_hook(void);
+
 /// @brief Resurrect an object inside its finalizer to recycle it into a pool.
 /// @details Sets the reference count from 0 to 1 atomically.  Must only be
 ///          called from within a finalizer installed via @ref rt_obj_set_finalizer.

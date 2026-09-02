@@ -493,6 +493,60 @@ static bool usesSP(MOpcode opc) noexcept {
     }
 }
 
+/// @brief Test whether the emitter may materialize this instruction's address through
+///        a reserved scratch register (kScratchGPR/kScratchGPR2/kScratchGPR3).
+/// @details `AsmEmitter::resolveBaseOffset` and the FP/SP store helpers only encode
+///          displacements in the signed unscaled range [-256, 255] (pairs: the scaled
+///          imm7 form) directly; anything wider is rewritten at emit time as
+///          `mov xS, #off; add xS, base, xS; ldr/str [xS]`, and `AddFpImm` beyond
+///          the 12-bit immediate does the same. Those scratch writes are invisible
+///          in the MIR operands, so a post-RA peephole that keeps a value in
+///          kScratchGPR across neighbouring instructions (the magic-division
+///          expansion's sign-correction term) was silently clobbered when the
+///          scheduler hoisted such a spill store between the two halves. Plan 88
+///          bisect: a throw-backup leg's end time became a stack address.
+/// @param mi Instruction to classify.
+/// @return `true` when emission may write a scratch GPR.
+static bool mayClobberEmitScratch(const MInstr &mi) noexcept {
+    auto lastImm = [&mi]() -> std::optional<long long> {
+        for (std::size_t k = mi.ops.size(); k > 0; --k) {
+            if (mi.ops[k - 1].kind == MOperand::Kind::Imm)
+                return mi.ops[k - 1].imm;
+        }
+        return std::nullopt;
+    };
+    switch (mi.opc) {
+        case MOpcode::AddFpImm: {
+            const auto imm = lastImm();
+            return imm.has_value() && (*imm > 4095 || *imm < -4095);
+        }
+        case MOpcode::LdpRegFpImm:
+        case MOpcode::StpRegFpImm:
+        case MOpcode::LdpFprFpImm:
+        case MOpcode::StpFprFpImm: {
+            const auto imm = lastImm();
+            if (!imm.has_value())
+                return false;
+            return (*imm % 8) != 0 || *imm < -512 || *imm > 504;
+        }
+        case MOpcode::StrRegSpImm:
+        case MOpcode::StrFprSpImm: {
+            const auto imm = lastImm();
+            if (!imm.has_value())
+                return false;
+            return *imm < 0 || (*imm % 8) != 0 || (*imm / 8) > 4095;
+        }
+        default:
+            break;
+    }
+    if (!isLoad(mi.opc) && !isStore(mi.opc))
+        return false;
+    const auto imm = lastImm();
+    if (!imm.has_value())
+        return false;
+    return *imm < -256 || *imm > 255;
+}
+
 /// @brief Test whether an opcode is a direct or indirect call.
 /// @param opc Machine opcode to classify.
 /// @return `true` for `Bl` or `Blr`; `false` otherwise.
@@ -713,6 +767,30 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
+    /// @brief Models the emitter's address-materialization scratch writes as
+    ///        definitions of every reserved scratch GPR (see mayClobberEmitScratch).
+    /// @param i Current instruction index.
+    /// @param mi Current instruction.
+    auto emitScratchClobbers = [&](std::size_t i, const MInstr &mi) {
+        if (!mayClobberEmitScratch(mi))
+            return;
+        const uint32_t scratch[] = {static_cast<uint32_t>(kScratchGPR),
+                                    static_cast<uint32_t>(kScratchGPR2),
+                                    static_cast<uint32_t>(kScratchGPR3)};
+        for (uint32_t r : scratch) {
+            const std::size_t ri = regIdx(r);
+            if (ri >= kNumPhysRegs)
+                continue;
+            if (lastDef[ri] != kNone)
+                addDep(i, lastDef[ri], 1); // WAW
+            for (auto u : usesSinceDef[ri])
+                addDep(i, u, 1); // WAR
+            usesSinceDef[ri].clear();
+            lastDef[ri] = i;
+            trackedAddrs[ri] = std::nullopt;
+        }
+    };
+
     /// @brief Adds WAW/WAR edges for an NZCV definition and updates flag state.
     /// @param i Current instruction index.
     /// @param mi Current instruction.
@@ -762,6 +840,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         emitMemoryDeps(i, mi);
         emitCallBarrier(i, mi);
         emitRegDefs(i, mi);
+        emitScratchClobbers(i, mi);
 
         // Track derived address values (e.g., adr+add page-off chains) for the
         // memory alias analysis above.

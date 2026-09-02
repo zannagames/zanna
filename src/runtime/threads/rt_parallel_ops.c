@@ -687,7 +687,10 @@ void rt_parallel_invoke(void *funcs) {
 /// @param identity Initial accumulator and empty-sequence result.
 /// @param pool Borrowed Threadpool, or NULL to use the shared default.
 /// @return Final accumulator pointer, or @p identity after a reported failure.
-void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool) {
+/// @brief Reduce body shared by the pool and default-pool entry points.
+/// @details Returns the reducer's final pointer exactly as produced, or the
+///          borrowed @p identity when the sequence is empty or the work failed.
+static void *parallel_reduce_pool_impl(void *seq, void *func, void *identity, void *pool) {
     if (!seq || !func)
         return identity;
 
@@ -913,6 +916,15 @@ void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool)
 /// @param func Borrowed combiner with signature `void *(*)(void *, void *)`.
 /// @param identity Initial accumulator and empty-sequence result.
 /// @return Final accumulator pointer, or @p identity after a reported failure.
+void *rt_parallel_reduce_pool(void *seq, void *func, void *identity, void *pool) {
+    void *result = parallel_reduce_pool_impl(seq, func, identity, pool);
+    /* The caller always receives one reference it owns (ADR 0314): the reducer
+       hands its results back retained, and an untouched identity is retained here. */
+    if (result == identity)
+        rt_obj_retain_maybe(result);
+    return result;
+}
+
 void *rt_parallel_reduce(void *seq, void *func, void *identity) {
     return rt_parallel_reduce_pool(seq, func, identity, NULL);
 }

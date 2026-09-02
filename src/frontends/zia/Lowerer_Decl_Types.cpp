@@ -115,6 +115,13 @@ void Lowerer::registerClassLayout(ClassDecl &decl) {
     computeClassFieldLayout(decl, info, qualifiedName);
     buildClassVtable(decl, info, qualifiedName);
 
+    for (const auto &member : decl.members) {
+        if (member->kind == DeclKind::Destructor) {
+            info.hasUserDeinit = true;
+            break;
+        }
+    }
+
     classTypes_[qualifiedName] = std::move(info);
 }
 

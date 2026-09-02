@@ -618,6 +618,7 @@ void *rt_option_map_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void *ctx)
         void *new_val = invoke(ctx, fn, o->value.ptr);
         return rt_option_some(new_val);
     }
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 
@@ -653,6 +654,7 @@ void *rt_option_and_then_invoke(void *obj, void *fn, rt_cb_invoke1 invoke, void 
     if (o->value_type == VALUE_PTR) {
         return invoke(ctx, fn, o->value.ptr);
     }
+    rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
     return obj;
 }
 
@@ -679,8 +681,10 @@ void *rt_option_or_else_invoke(void *obj, void *fn, rt_cb_invoke0 invoke, void *
     if (!obj)
         return fn ? invoke(ctx, fn) : rt_option_none();
     Option *o = (Option *)obj;
-    if (o->variant == OPTION_SOME)
+    if (o->variant == OPTION_SOME) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
+    }
     return fn ? invoke(ctx, fn) : rt_option_none();
 }
 
@@ -712,6 +716,7 @@ void *rt_option_filter_invoke(void *obj, void *fn, rt_cb_invoke_pred invoke, voi
         return rt_option_none();
 
     if (o->value_type == VALUE_PTR && invoke(ctx, fn, o->value.ptr)) {
+        rt_obj_retain_maybe(obj); /* uniform owned result (ADR 0314) */
         return obj;
     }
     return rt_option_none();

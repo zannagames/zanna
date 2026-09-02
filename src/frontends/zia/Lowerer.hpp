@@ -757,6 +757,13 @@ class Lowerer {
     ///          body then releases reference-typed fields.
     void lowerDestructorDecl(DestructorDecl &decl, const std::string &typeName);
 
+    /// @brief True when a field holds a managed reference the destructor must release.
+    bool fieldNeedsRelease(const FieldLayout &field);
+
+    /// @brief True when instances of @p info need a `__dtor` (user `deinit`, releasable
+    ///        fields, or a base class that needs one).
+    bool classNeedsDestructor(const ClassTypeInfo &info);
+
     /// @}
     //=========================================================================
     /// @name Statement Lowering

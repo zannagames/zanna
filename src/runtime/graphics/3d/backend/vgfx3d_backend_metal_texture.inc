@@ -777,6 +777,26 @@ static id<MTLTexture> metal_material_base_texture(VGFXMetalContext *ctx,
 /// @param ctx Borrowed Metal context.
 /// @param cmd Borrowed draw command.
 /// @return The texture to bind at the emissive slot, or nil when nothing is resident yet.
+/// @brief ADR 0312: copy a draw's decal projector into the per-material block (opacity 0
+///   disables the layer in the shader).
+static void metal_fill_material_decal(mtl_per_material_t *mat, const vgfx3d_draw_cmd_t *cmd) {
+    if (!mat)
+        return;
+    memset(mat->decalRow0, 0, sizeof(mat->decalRow0));
+    memset(mat->decalRow1, 0, sizeof(mat->decalRow1));
+    memset(mat->decalRow2, 0, sizeof(mat->decalRow2));
+    memset(mat->decalParams, 0, sizeof(mat->decalParams));
+    if (!cmd || !cmd->has_decal)
+        return;
+    memcpy(mat->decalRow0, &cmd->decal_rows[0], sizeof(float) * 4);
+    memcpy(mat->decalRow1, &cmd->decal_rows[4], sizeof(float) * 4);
+    memcpy(mat->decalRow2, &cmd->decal_rows[8], sizeof(float) * 4);
+    mat->decalParams[0] = cmd->decal_forward[0];
+    mat->decalParams[1] = cmd->decal_forward[1];
+    mat->decalParams[2] = cmd->decal_forward[2];
+    mat->decalParams[3] = cmd->decal_opacity;
+}
+
 static id<MTLTexture> metal_material_emissive_texture(VGFXMetalContext *ctx,
                                                       const vgfx3d_draw_cmd_t *cmd) {
     if (cmd->emissive_map_target)

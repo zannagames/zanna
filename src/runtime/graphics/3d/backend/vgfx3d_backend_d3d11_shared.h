@@ -168,6 +168,10 @@ typedef struct {
     int32_t texture_uv_sets1[4];
     float texture_uv_transform0[VGFX3D_D3D11_TEXTURE_SLOT_COUNT][4];
     float texture_uv_transform1[VGFX3D_D3D11_TEXTURE_SLOT_COUNT][4];
+    /* ADR 0312 projected decal: three affine rows over model-space (x, y, z, 1)
+     * and params = (forward.xyz, opacity; opacity 0 disables). */
+    float decal_rows[3][4];
+    float decal_params[4];
 } vgfx3d_d3d11_per_material_t;
 
 /// @brief One per-instance vertex-buffer entry for instanced draws: model, normal, and

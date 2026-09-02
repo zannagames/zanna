@@ -397,6 +397,7 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
         tmp.morph_shape_count = 0;
     }
     tmp.vertices = skinned;
+    tmp.bind_vertices_ref = mesh->vertices; /* ADR 0312: decal projection stays in bind space */
     tmp.positions64 = NULL;
     tmp.bone_palette = NULL;
     tmp.prev_bone_palette = NULL;

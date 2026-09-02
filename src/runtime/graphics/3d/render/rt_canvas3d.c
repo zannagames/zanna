@@ -3933,6 +3933,30 @@ void rt_canvas3d_set_occlusion_culling(void *obj, int8_t enabled) {
     c->occlusion_culling = enabled;
 }
 
+/// @brief `Canvas3D.SetDepthOnlyShading` — ADR 0311 depth-only shading.
+/// @details Headless probes render thousands of frames whose pixels no gate ever
+///   reads; on the software backend the per-fragment PBR shading was ~92 % of their
+///   time. With the flag set the backend still transforms, clips, depth-tests and
+///   writes opaque depth (so occlusion, draw counts and hitch counters stay honest)
+///   but never shades or writes colour. GPU backends ignore the flag. Capture paths
+///   must clear it before reading pixels.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to skip fragment shading.
+void rt_canvas3d_set_depth_only_shading(void *obj, int8_t enabled) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    c->depth_only_shading = enabled ? 1 : 0;
+}
+
+/// @brief `Canvas3D.DepthOnlyShading` — read the retained depth-only shading flag.
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero while depth-only shading is requested.
+int8_t rt_canvas3d_get_depth_only_shading(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->depth_only_shading : 0;
+}
+
 /// @brief `Canvas3D.OcclusionCulling` — read the retained occlusion-cull flag (ADR 0233).
 /// @param obj Canvas3D handle or approved stack fixture.
 /// @return Nonzero while CPU occlusion culling is enabled.

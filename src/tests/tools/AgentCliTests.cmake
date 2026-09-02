@@ -176,6 +176,27 @@ execute_process(
         RESULT_VARIABLE _api_rc
         OUTPUT_VARIABLE _api_out
         ERROR_VARIABLE _api_err)
+
+# A function row of the API dump, so per-function contract checks match inside
+# one JSON object instead of backtracking `[^\n]*` across the whole single-line
+# document (which took CMake's regex engine hours once the tail of the dump
+# changed, ADR 0314). Sets ${out} to the substring from `"name":"<name>"` up to
+# the next row.
+function(zanna_api_row name out)
+    string(FIND "${_api_out}" "\"name\":\"${name}\"" _row_start)
+    if (_row_start LESS 0)
+        set(${out} "" PARENT_SCOPE)
+        return()
+    endif ()
+    string(SUBSTRING "${_api_out}" ${_row_start} -1 _row_tail)
+    string(FIND "${_row_tail}" "{\"name\":\"" _row_end)
+    if (_row_end LESS 0)
+        set(${out} "${_row_tail}" PARENT_SCOPE)
+    else ()
+        string(SUBSTRING "${_row_tail}" 0 ${_row_end} _row_only)
+        set(${out} "${_row_only}" PARENT_SCOPE)
+    endif ()
+endfunction()
 if (NOT _api_rc EQUAL 0)
     message(FATAL_ERROR "--dump-runtime-api should exit 0, got ${_api_rc}")
 endif ()
@@ -201,21 +222,25 @@ if (NOT _api_out MATCHES "\"fallibility\":" OR NOT _api_out MATCHES "\"class_kin
 endif ()
 # VDOC-198: IO conversion/allocation entries carry accurate trapping + owned
 # contracts (previously mislabeled infallible / unknown ownership).
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.IO.Stream.AsBinFile" _api_row_1)
+if (NOT _api_row_1 MATCHES
         "\"name\":\"Zanna.IO.Stream.AsBinFile\"[^\n]*\"fallibility\":\"traps\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api Stream.AsBinFile contract regressed (expected traps/owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.IO.LineWriter.Append" _api_row_2)
+if (NOT _api_row_2 MATCHES
         "\"name\":\"Zanna.IO.LineWriter.Append\"[^\n]*\"fallibility\":\"traps\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api LineWriter.Append contract regressed (expected traps/owned)")
 endif ()
 # VDOC-209: trapping/allocating Math entries carry accurate traps + owned
 # contracts (were mislabeled infallible / unknown ownership).
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Math.Mat4.Inverse" _api_row_3)
+if (NOT _api_row_3 MATCHES
         "\"name\":\"Zanna.Math.Mat4.Inverse\"[^\n]*\"fallibility\":\"traps\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api Mat4.Inverse contract regressed (expected traps/owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Math.BigInt.Div" _api_row_4)
+if (NOT _api_row_4 MATCHES
         "\"name\":\"Zanna.Math.BigInt.Div\"[^\n]*\"fallibility\":\"traps\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api BigInt.Div contract regressed (expected traps/owned)")
 endif ()
@@ -223,22 +248,26 @@ endif ()
 # Process spawns return NULL on failure (nullable return, not a live handle),
 # Unsafe releases trap on an invalid object, and PtySession.Resize returns a
 # boolean status rather than an infallible void.
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.System.Process.Start" _api_row_5)
+if (NOT _api_row_5 MATCHES
         "\"name\":\"Zanna.System.Process.Start\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"infallible\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api Process.Start contract regressed (expected nullable return / owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Runtime.Unsafe.Release" _api_row_6)
+if (NOT _api_row_6 MATCHES
         "\"name\":\"Zanna.Runtime.Unsafe.Release\"[^\n]*\"fallibility\":\"traps\"")
     message(FATAL_ERROR "--dump-runtime-api Unsafe.Release contract regressed (expected traps)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.System.Pty.PtySession.Resize" _api_row_7)
+if (NOT _api_row_7 MATCHES
         "\"name\":\"Zanna.System.Pty.PtySession.Resize\"[^\n]*\"fallibility\":\"status\"")
     message(FATAL_ERROR "--dump-runtime-api PtySession.Resize contract regressed (expected status)")
 endif ()
 # VDOC-228: TimeZone.Find carries its concrete class return type so Zia can chain
 # instance members, and stays "borrowed" because the handle is static, must-not-free
 # data (not an owned allocation).
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Time.TimeZone.Find" _api_row_8)
+if (NOT _api_row_8 MATCHES
         "\"name\":\"Zanna.Time.TimeZone.Find\"[^\n]*\"class\":\"Zanna.Time.TimeZone\"[^\n]*\"fallibility\":\"traps\"[^\n]*\"ownership\":\"borrowed\"")
     message(FATAL_ERROR "--dump-runtime-api TimeZone.Find contract regressed (expected typed handle / traps / borrowed)")
 endif ()
@@ -246,39 +275,48 @@ endif ()
 # owned fresh allocations. ParseIso8601 signals failure with a sentinel (not a
 # trap); DateOnly.FromParts / DateRange.Intersection return NULL on ordinary
 # failure and own their fresh result; Stopwatch.StartNew is an owned allocation.
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Time.DateTime.ParseIso8601" _api_row_9)
+if (NOT _api_row_9 MATCHES
         "\"name\":\"Zanna.Time.DateTime.ParseIso8601\"[^\n]*\"fallibility\":\"sentinel\"")
     message(FATAL_ERROR "--dump-runtime-api DateTime.ParseIso8601 contract regressed (expected sentinel)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Time.DateOnly.FromParts" _api_row_10)
+if (NOT _api_row_10 MATCHES
         "\"name\":\"Zanna.Time.DateOnly.FromParts\"[^\n]*\"nullable\":true[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api DateOnly.FromParts contract regressed (expected nullable / owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Time.DateRange.Intersection" _api_row_11)
+if (NOT _api_row_11 MATCHES
         "\"name\":\"Zanna.Time.DateRange.Intersection\"[^\n]*\"nullable\":true[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api DateRange.Intersection contract regressed (expected nullable / owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Time.Stopwatch.StartNew" _api_row_12)
+if (NOT _api_row_12 MATCHES
         "\"name\":\"Zanna.Time.Stopwatch.StartNew\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api Stopwatch.StartNew contract regressed (expected owned)")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.Graphics3D.Canvas3D.TryCopyScreenshotTo" _api_row_13)
+if (NOT _api_row_13 MATCHES
         "\"name\":\"Zanna.Graphics3D.Canvas3D.TryCopyScreenshotTo\"[^\n]*\"c_symbol\":\"rt_canvas3d_try_copy_screenshot_to\"[^\n]*\"fallibility\":\"status\"[^\n]*\"ownership\":\"value\"[^\n]*\"contract_source\":\"three-d-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api missing the allocation-reusing Canvas3D status contract")
 endif ()
-if (NOT _api_out MATCHES
-        "\"name\":\"Zanna.GUI.App.New\"[^\n]*\"c_symbol\":\"rt_gui_app_new\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"managed\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
+zanna_api_row("Zanna.GUI.App.New" _api_row_14)
+if (NOT _api_row_14 MATCHES
+        "\"name\":\"Zanna.GUI.App.New\"[^\n]*\"c_symbol\":\"rt_gui_app_new\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI App.New contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.App.TryNew" _api_row_15)
+if (NOT _api_row_15 MATCHES
         "\"name\":\"Zanna.GUI.App.TryNew\"[^\n]*\"class\":\"Zanna.Result\"[^\n]*\"nullable\":false[^\n]*\"fallibility\":\"result\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI App.TryNew Result contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.App.get_Root" _api_row_16)
+if (NOT _api_row_16 MATCHES
         "\"name\":\"Zanna.GUI.App.get_Root\"[^\n]*\"class\":\"Zanna.GUI.Widget\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"borrowed\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI App.Root borrowed contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.App.RunFrameWithDelta" _api_row_17)
+if (NOT _api_row_17 MATCHES
         "\"name\":\"Zanna.GUI.App.RunFrameWithDelta\"[^\n]*\"c_symbol\":\"rt_gui_app_run_frame_with_delta\"[^\n]*\"return_type\":\{\"raw\":\"i1\"[^\n]*\"ownership\":\"value\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI deterministic frame contract regressed")
 endif ()
@@ -286,27 +324,33 @@ if (NOT _api_out MATCHES
         "\"name\":\"GetNextDeadlineMs\"[^\n]*\"target\":\"Zanna.GUI.App.GetNextDeadlineMs\"[^\n]*\"c_symbol\":\"rt_gui_app_get_next_deadline_ms\"")
     message(FATAL_ERROR "--dump-runtime-api GUI deadline method binding regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.CodeEditor.TakeGutterClick" _api_row_19)
+if (NOT _api_row_19 MATCHES
         "\"name\":\"Zanna.GUI.CodeEditor.TakeGutterClick\"[^\n]*\"class\":\"Zanna.Collections.Map\"[^\n]*\"nullable\":false[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI TakeGutterClick typed-map contract regressed")
 endif ()
-if (NOT _api_out MATCHES
-        "\"name\":\"Zanna.GUI.Theme.GetPalette\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"managed\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
+zanna_api_row("Zanna.GUI.Theme.GetPalette" _api_row_20)
+if (NOT _api_row_20 MATCHES
+        "\"name\":\"Zanna.GUI.Theme.GetPalette\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI Theme.GetPalette ownership contract regressed")
 endif ()
-if (NOT _api_out MATCHES
-        "\"name\":\"Zanna.GUI.ThemePalette.FromDark\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"managed\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
+zanna_api_row("Zanna.GUI.ThemePalette.FromDark" _api_row_21)
+if (NOT _api_row_21 MATCHES
+        "\"name\":\"Zanna.GUI.ThemePalette.FromDark\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI ThemePalette factory ownership contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.ThemePalette.Validate" _api_row_22)
+if (NOT _api_row_22 MATCHES
         "\"name\":\"Zanna.GUI.ThemePalette.Validate\"[^\n]*\"class\":\"Zanna.Result\"[^\n]*\"nullable\":false[^\n]*\"fallibility\":\"result\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api GUI ThemePalette.Validate Result contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.TreeView.GetLoadRequestedNodeOption" _api_row_23)
+if (NOT _api_row_23 MATCHES
         "\"name\":\"Zanna.GUI.TreeView.GetLoadRequestedNodeOption\"[^\n]*\"class\":\"Zanna.Option\"[^\n]*\"nullable\":false[^\n]*\"fallibility\":\"option\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api TreeView lazy-load Option contract regressed")
 endif ()
-if (NOT _api_out MATCHES
+zanna_api_row("Zanna.GUI.TreeView.GetActivatedNodeOption" _api_row_24)
+if (NOT _api_row_24 MATCHES
         "\"name\":\"Zanna.GUI.TreeView.GetActivatedNodeOption\"[^\n]*\"class\":\"Zanna.Option\"[^\n]*\"nullable\":false[^\n]*\"fallibility\":\"option\"[^\n]*\"ownership\":\"owned\"[^\n]*\"contract_source\":\"gui-boundary-policy\"")
     message(FATAL_ERROR "--dump-runtime-api TreeView activation Option contract regressed")
 endif ()
@@ -342,8 +386,9 @@ if (NOT _api_out MATCHES
         "\"name\":\"CommitEdit\"[^\n]*\"target\":\"Zanna.GUI.Grid.CommitEdit\"[^\n]*\"c_symbol\":\"rt_datagrid_commit_edit\"")
     message(FATAL_ERROR "--dump-runtime-api Grid edit method binding regressed")
 endif ()
-if (NOT _api_out MATCHES
-        "\"name\":\"Zanna.Graphics3D.Canvas3D.Screenshot\"[^\n]*\"c_symbol\":\"rt_canvas3d_screenshot\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"managed\"")
+zanna_api_row("Zanna.Graphics3D.Canvas3D.Screenshot" _api_row_33)
+if (NOT _api_row_33 MATCHES
+        "\"name\":\"Zanna.Graphics3D.Canvas3D.Screenshot\"[^\n]*\"c_symbol\":\"rt_canvas3d_screenshot\"[^\n]*\"nullable\":true[^\n]*\"fallibility\":\"nullable\"[^\n]*\"ownership\":\"owned\"")
     message(FATAL_ERROR "--dump-runtime-api missing the Canvas3D screenshot ownership contract")
 endif ()
 if (NOT _api_out MATCHES
@@ -438,7 +483,8 @@ if (NOT _api_out MATCHES "Zanna.Input.Key" OR
     NOT _api_out MATCHES "Zanna.Input.Key.get_NumpadDecimal")
     message(FATAL_ERROR "--dump-runtime-api missing canonical input key entries")
 endif ()
-if (NOT _api_out MATCHES "\"name\":\"Zanna.Math.Random.Chance\"[^\\n]*\"signature\":\"i1\\(f64\\)\"")
+zanna_api_row("Zanna.Math.Random.Chance" _api_row_35)
+if (NOT _api_row_35 MATCHES "\"name\":\"Zanna.Math.Random.Chance\"[^\\n]*\"signature\":\"i1\\(f64\\)\"")
     message(FATAL_ERROR "--dump-runtime-api missing boolean Random.Chance row")
 endif ()
 if (NOT _api_out MATCHES "Zanna.Crypto.Compliance.EnableApprovedModeForProcess" OR

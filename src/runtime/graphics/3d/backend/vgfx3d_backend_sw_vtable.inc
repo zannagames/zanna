@@ -332,6 +332,7 @@ static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
     ctx->height_fog_sun_amount =
         vgfx3d_clamp_float_param(cam->height_fog_sun_amount, 0.0f, 1.0f, 0.0f);
     ctx->ibl_enabled = cam->ibl_enabled ? 1 : 0;
+    ctx->depth_only_shading = cam->depth_only_shading ? 1 : 0;
     ctx->ibl_intensity =
         vgfx3d_clamp_float_param(cam->ibl_intensity, 0.0f, SW_MATERIAL_PARAM_ABS_MAX, 1.0f);
     for (int lane = 0; lane < 27; lane++)
@@ -426,6 +427,8 @@ typedef struct {
     sw_pixels_view *ao_ptr;
     sw_pixels_view lightmap_view;
     sw_pixels_view *lightmap_ptr;
+    sw_pixels_view decal_view; /* ADR 0312 */
+    sw_pixels_view *decal_ptr;
 } sw_material_views;
 
 /// @brief Copy each present material map (base color, emissive, normal, specular,
@@ -441,6 +444,9 @@ static void sw_resolve_material_views(const vgfx3d_draw_cmd_t *cmd, sw_material_
     mv->metallic_roughness_ptr = NULL;
     mv->ao_ptr = NULL;
     mv->lightmap_ptr = NULL;
+    mv->decal_ptr = NULL;
+    if (cmd->has_decal && setup_pixels_view(cmd->decal_map, &mv->decal_view))
+        mv->decal_ptr = &mv->decal_view;
     if (setup_pixels_view(cmd->texture, &mv->tex_view))
         mv->tex_ptr = &mv->tex_view;
     if (setup_pixels_view(cmd->emissive_map, &mv->emissive_view))
@@ -596,6 +602,22 @@ static void sw_transform_vertices_range(sw_context_t *ctx,
         dst->uv[1] = src->uv[1];
         dst->uv1[0] = src->uv1[0];
         dst->uv1[1] = src->uv1[1];
+        /* ADR 0312: project the BIND position (the source mesh behind a
+         * CPU-skinned submission, else the vertex itself) through the decal
+         * box; facing is the bind normal against the projector forward. */
+        if (cmd->has_decal) {
+            const vgfx3d_vertex_t *bv = cmd->bind_vertices ? &cmd->bind_vertices[i] : src;
+            const float *r = cmd->decal_rows;
+            dst->decal[0] = r[0] * bv->pos[0] + r[1] * bv->pos[1] + r[2] * bv->pos[2] + r[3];
+            dst->decal[1] = r[4] * bv->pos[0] + r[5] * bv->pos[1] + r[6] * bv->pos[2] + r[7];
+            dst->decal[2] = r[8] * bv->pos[0] + r[9] * bv->pos[1] + r[10] * bv->pos[2] + r[11];
+            dst->decal[3] = bv->normal[0] * cmd->decal_forward[0] +
+                            bv->normal[1] * cmd->decal_forward[1] +
+                            bv->normal[2] * cmd->decal_forward[2];
+        } else {
+            dst->decal[0] = dst->decal[1] = dst->decal[2] = 0.0f;
+            dst->decal[3] = 1.0f;
+        }
 
         /* Vertex color (defaults to white {1,1,1,1} if not set) */
         dst->color[0] = src->color[0];
@@ -752,6 +774,10 @@ static int sw_project_clip_to_screen(const pipe_vert_t *p,
     sv->ty = p->tangent[1];
     sv->tz = p->tangent[2];
     sv->tw = p->tangent[3];
+    sv->ds = p->decal[0];
+    sv->dt = p->decal[1];
+    sv->dd = p->decal[2];
+    sv->dfacing = p->decal[3];
     return 1;
 }
 
@@ -885,6 +911,7 @@ typedef struct {
     const sw_pixels_view *metallic_roughness_map;
     const sw_pixels_view *ao_map;
     const sw_pixels_view *lightmap;
+    const sw_pixels_view *decal_tex; /* ADR 0312 */
     const vgfx3d_draw_cmd_t *cmd;
     const vgfx3d_light_params_t *lights;
     int32_t light_count;
@@ -1423,6 +1450,7 @@ static void sw_raster_task_run(void *arg) {
                                       task->metallic_roughness_map,
                                       task->ao_map,
                                       task->lightmap,
+                                      task->decal_tex,
                                       task->cmd,
                                       task->lights,
                                       task->light_count,
@@ -1493,6 +1521,7 @@ static int sw_raster_tiles_parallel(sw_context_t *ctx,
         tasks[i].metallic_roughness_map = mv->metallic_roughness_ptr;
         tasks[i].ao_map = mv->ao_ptr;
         tasks[i].lightmap = mv->lightmap_ptr;
+        tasks[i].decal_tex = mv->decal_ptr;
         tasks[i].cmd = cmd;
         tasks[i].lights = lights;
         tasks[i].light_count = light_count;
@@ -1748,6 +1777,7 @@ static void sw_submit_draw_serial_prepared(sw_context_t *ctx,
                                 setup->material_views.metallic_roughness_ptr,
                                 setup->material_views.ao_ptr,
                                 setup->material_views.lightmap_ptr,
+                                setup->material_views.decal_ptr,
                                 cmd,
                                 lights,
                                 light_count,

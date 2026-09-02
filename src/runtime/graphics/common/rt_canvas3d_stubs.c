@@ -2593,6 +2593,29 @@ void rt_canvas3d_set_occlusion_culling(void *c, int8_t e) {
     RT_GRAPHICS_TRAP_VOID("Canvas3D.SetOcclusionCulling: graphics support not compiled in");
 }
 
+/// @brief Stub for `Canvas3D.SetDepthOnlyShading` (ADR 0311).
+///
+/// Trapping stub.
+///
+/// @param c Canvas3D handle (ignored).
+/// @param e Non-zero to enable (ignored).
+void rt_canvas3d_set_depth_only_shading(void *c, int8_t e) {
+    (void)c;
+    (void)e;
+    RT_GRAPHICS_TRAP_VOID("Canvas3D.SetDepthOnlyShading: graphics support not compiled in");
+}
+
+/// @brief Stub for `Canvas3D.DepthOnlyShading` (ADR 0311).
+///
+/// Trapping stub.
+///
+/// @param c Canvas3D handle (ignored).
+/// @return Never returns a value; traps.
+int8_t rt_canvas3d_get_depth_only_shading(void *c) {
+    (void)c;
+    RT_GRAPHICS_TRAP_RET("Canvas3D.DepthOnlyShading: graphics support not compiled in", 0);
+}
+
 /// @brief Stub for `Canvas3D.Begin2D` — switch into 2D overlay mode for
 ///        screen-space draws (HUD / UI). Disables depth testing and binds
 ///        an orthographic projection matrix sized to the viewport.

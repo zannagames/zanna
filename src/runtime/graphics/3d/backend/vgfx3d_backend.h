@@ -200,6 +200,23 @@ typedef struct vgfx3d_draw_cmd {
     void *metallic_roughness_map_asset;
     /// Borrowed ambient-occlusion TextureAsset3D source.
     void *ao_map_asset;
+    /* ADR 0312 projected decal layer. `decal_map` is the resident Pixels fallback
+     * (assets sample their resident mip); `decal_rows` map a MODEL-space (pre-skin)
+     * position to (s, t, d); a fragment inside [0,1]^3 whose bind normal faces
+     * against `decal_forward` blends decal.rgb over the albedo by decal.a *
+     * decal_opacity before lighting. `has_decal` gates the whole path. */
+    /// Borrowed decal Pixels fallback (ADR 0312) or NULL.
+    const void *decal_map;
+    /// Row-major 3x4 model-space projector (s, t, d rows over x, y, z, 1).
+    float decal_rows[12];
+    /// Unit projector forward; surfaces facing it take the decal.
+    float decal_forward[3];
+    /// Multiplier on the decal alpha in the inclusive range 0-1.
+    float decal_opacity;
+    /// Nonzero when the decal layer is armed for this draw.
+    int8_t has_decal;
+    /// Bind-pose vertices behind a CPU-skinned submission (NULL = `vertices` are bind).
+    const vgfx3d_vertex_t *bind_vertices;
     /// Borrowed CubeMap3D environment used for reflections.
     const void *env_map; /* CubeMap3D (environment reflections) or NULL */
     /// Legacy environment reflection strength in the inclusive range 0-1.
@@ -556,6 +573,11 @@ typedef struct vgfx3d_camera_params {
     float znear;
     /// Camera far clip distance used for shader-side depth linearization.
     float zfar;
+    /// Nonzero for depth-only shading (ADR 0311): the software backend keeps the
+    /// vertex stage, clipping, depth test, and opaque depth writes but skips the
+    /// fragment shader and colour writes. GPU backends ignore the flag. Headless
+    /// probes whose gates never read pixels set it; capture paths clear it.
+    int8_t depth_only_shading;
 } vgfx3d_camera_params_t;
 
 /*==========================================================================

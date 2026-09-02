@@ -398,7 +398,65 @@ static void test_clone_preserves_and_repairs_extended_state() {
                 "Material clone canonicalizes explicit alpha-mode state");
 }
 
+/* ADR 0312: the projected decal layer round-trips its source, projector and opacity,
+ * survives Clone/MakeInstance, and refuses degenerate projectors. */
+static void test_decal_layer_set_get_clone() {
+    rt_material3d *mat = (rt_material3d *)rt_material3d_new_pbr(1.0, 1.0, 1.0);
+    void *px = rt_pixels_new(2, 2);
+    EXPECT_TRUE(mat != nullptr && px != nullptr, "decal fixtures exist");
+    if (!mat || !px)
+        return;
+    EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 0, "decal starts unarmed");
+    EXPECT_NEAR(rt_material3d_get_decal_opacity(mat), 1.0, 1e-9, "decal opacity defaults to 1");
+
+    /* A source without a projector is not armed. */
+    rt_material3d_set_decal_map(mat, px);
+    EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 0, "decal starts unarmed");
+
+    /* Box centred at (0, 1, -0.1) looking along -Z: right = +X, up = +Y, 0.5 x 0.25
+     * half extents, 0.2 deep. */
+    rt_material3d_set_decal_projector(mat, 0.0, 1.0, -0.1, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.25, 0.2);
+    EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1, "decal armed once source and projector are set");
+    /* Centre maps to (0.5, 0.5, 0); the +right/+up corner to (1, 0, 0); depth to 1. */
+    const double *r = mat->decal_rows;
+    auto s_at = [&](double x, double y, double z) { return r[0] * x + r[1] * y + r[2] * z + r[3]; };
+    auto t_at = [&](double x, double y, double z) { return r[4] * x + r[5] * y + r[6] * z + r[7]; };
+    auto d_at = [&](double x, double y, double z) { return r[8] * x + r[9] * y + r[10] * z + r[11]; };
+    EXPECT_NEAR(s_at(0.0, 1.0, -0.1), 0.5, 1e-9, "centre maps to s=0.5");
+    EXPECT_NEAR(t_at(0.0, 1.0, -0.1), 0.5, 1e-9, "centre maps to t=0.5");
+    EXPECT_NEAR(d_at(0.0, 1.0, -0.1), 0.0, 1e-9, "centre maps to d=0");
+    EXPECT_NEAR(s_at(0.5, 1.25, -0.1), 1.0, 1e-9, "+right corner maps to s=1");
+    EXPECT_NEAR(t_at(0.5, 1.25, -0.1), 0.0, 1e-9, "+up corner maps to t=0 (image top)");
+    EXPECT_NEAR(d_at(0.0, 1.0, -0.1 + 0.2), 1.0, 1e-9, "depth maps to d=1");
+    /* forward = right x up = +Z. */
+    EXPECT_NEAR(mat->decal_forward[2], 1.0, 1e-9, "forward = right x up");
+
+    rt_material3d_set_decal_opacity(mat, 0.25);
+    EXPECT_NEAR(rt_material3d_get_decal_opacity(mat), 0.25, 1e-9, "opacity round-trips");
+    rt_material3d_set_decal_opacity(mat, 7.0);
+    EXPECT_NEAR(rt_material3d_get_decal_opacity(mat), 1.0, 1e-9, "decal opacity defaults to 1");
+
+    rt_material3d *inst = (rt_material3d *)rt_material3d_make_instance(mat);
+    EXPECT_TRUE(inst != nullptr, "MakeInstance duplicates the decal layer");
+    if (inst) {
+        EXPECT_TRUE(rt_material3d_get_has_decal_map(inst) == 1, "instance keeps the decal");
+        EXPECT_NEAR(inst->decal_rows[3], mat->decal_rows[3], 1e-12, "instance copies the projector");
+        EXPECT_NEAR(rt_material3d_get_decal_opacity(inst), 1.0, 1e-9, "instance copies the opacity");
+        rt_material3d_set_decal_map(inst, nullptr);
+        EXPECT_TRUE(rt_material3d_get_has_decal_map(inst) == 0, "clearing the instance source disarms it");
+        EXPECT_TRUE(rt_material3d_get_has_decal_map(mat) == 1, "decal armed once source and projector are set");
+        if (rt_obj_release_check0(inst))
+            rt_obj_free(inst);
+    }
+
+    if (rt_obj_release_check0(mat))
+        rt_obj_free(mat);
+    if (rt_obj_release_check0(px))
+        rt_obj_free(px);
+}
+
 int main() {
+    test_decal_layer_set_get_clone();
     test_new_pbr_defaults();
     test_pbr_setters_promote_legacy_material();
     test_anisotropy_clamps_and_round_trips();

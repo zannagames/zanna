@@ -481,6 +481,7 @@ typedef struct {
     const sw_pixels_view *metallic_roughness_map;
     const sw_pixels_view *ao_map;
     const sw_pixels_view *lightmap_tex; /* baked GI atlas view (TEXCOORD_1) or NULL */
+    const sw_pixels_view *decal_tex;    /* ADR 0312 decal view or NULL */
     const vgfx3d_draw_cmd_t *cmd;
     const vgfx3d_light_params_t *lights;
     int32_t light_count;
@@ -615,6 +616,40 @@ static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
                 cg = blg * material_g;
                 cb = blb * material_b;
             }
+        }
+    }
+
+    /* ADR 0312 projected decal: composite over the albedo before lighting so
+     * the decal is lit, shadowed and normal-mapped exactly like the cloth it
+     * sits on. Coordinates come from the BIND position through the material's
+     * projector; the facing test keeps the far side of a torso clean. */
+    if (fc->decal_tex && cmd && cmd->has_decal) {
+        float ds = attr_b0 * v0->ds + attr_b1 * v1->ds + attr_b2 * v2->ds;
+        float dt = attr_b0 * v0->dt + attr_b1 * v1->dt + attr_b2 * v2->dt;
+        float dd = attr_b0 * v0->dd + attr_b1 * v1->dd + attr_b2 * v2->dd;
+        float df = attr_b0 * v0->dfacing + attr_b1 * v1->dfacing + attr_b2 * v2->dfacing;
+        if (df < 0.0f && ds >= 0.0f && ds <= 1.0f && dt >= 0.0f && dt <= 1.0f && dd >= 0.0f &&
+            dd <= 1.0f) {
+            float dcr, dcg, dcb, dca;
+            sample_texture_ex(fc->decal_tex,
+                              ds,
+                              dt,
+                              RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE,
+                              RT_MATERIAL3D_TEXTURE_WRAP_CLAMP_TO_EDGE,
+                              RT_MATERIAL3D_TEXTURE_FILTER_LINEAR,
+                              &dcr,
+                              &dcg,
+                              &dcb,
+                              &dca);
+            if (cmd->workflow == RT_MATERIAL3D_WORKFLOW_PBR) {
+                dcr = sw_srgb_to_linear(dcr);
+                dcg = sw_srgb_to_linear(dcg);
+                dcb = sw_srgb_to_linear(dcb);
+            }
+            float w = clamp01f(dca * cmd->decal_opacity);
+            cr = cr + (dcr - cr) * w;
+            cg = cg + (dcg - cg) * w;
+            cb = cb + (dcb - cb) * w;
         }
     }
 
@@ -1898,6 +1933,7 @@ static void raster_triangle_scissored(uint8_t *pixels,
                                       const sw_pixels_view *metallic_roughness_map,
                                       const sw_pixels_view *ao_map,
                                       const sw_pixels_view *lightmap,
+                                      const sw_pixels_view *decal_tex,
                                       const vgfx3d_draw_cmd_t *cmd,
                                       const vgfx3d_light_params_t *lights,
                                       int32_t light_count,
@@ -1980,6 +2016,7 @@ static void raster_triangle_scissored(uint8_t *pixels,
                           .lights = lights,
                           .light_count = light_count,
                           .ambient = ambient,
+                          .decal_tex = decal_tex,
                           .fog_ctx = fog_ctx,
                           .depth_disabled = depth_disabled,
                           .have_splat = have_splat,
@@ -2018,10 +2055,22 @@ static void raster_triangle_scissored(uint8_t *pixels,
                         z = 1.0f;
                 }
                 if (isfinite(z) && (depth_disabled || !isfinite(zbuf[idx]) || z < zbuf[idx])) {
-                    int wrote_pixel = sw_shade_fragment(&fc, x, y, idx, z, b0, b1, b2);
-                    if (emit_debug) {
-                        depth_passes++;
-                        pixels_written += (size_t)(wrote_pixel != 0);
+                    if (fog_ctx && fog_ctx->depth_only_shading) {
+                        /* ADR 0311 depth-only shading: keep the depth test and the
+                         * opaque depth write (occlusion and later draws see the same
+                         * scene), skip the fragment shader and the colour write. */
+                        if (!depth_disabled && cmd &&
+                            cmd->alpha_mode != RT_MATERIAL3D_ALPHA_MODE_BLEND &&
+                            !cmd->additive_blend)
+                            zbuf[idx] = z;
+                        if (emit_debug)
+                            depth_passes++;
+                    } else {
+                        int wrote_pixel = sw_shade_fragment(&fc, x, y, idx, z, b0, b1, b2);
+                        if (emit_debug) {
+                            depth_passes++;
+                            pixels_written += (size_t)(wrote_pixel != 0);
+                        }
                     }
                 }
             }
@@ -2101,6 +2150,7 @@ static void raster_triangle(uint8_t *pixels,
                             const sw_pixels_view *metallic_roughness_map,
                             const sw_pixels_view *ao_map,
                             const sw_pixels_view *lightmap,
+                            const sw_pixels_view *decal_tex,
                             const vgfx3d_draw_cmd_t *cmd,
                             const vgfx3d_light_params_t *lights,
                             int32_t light_count,
@@ -2123,6 +2173,7 @@ static void raster_triangle(uint8_t *pixels,
                               metallic_roughness_map,
                               ao_map,
                               lightmap,
+                              decal_tex,
                               cmd,
                               lights,
                               light_count,

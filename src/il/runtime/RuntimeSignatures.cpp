@@ -68,7 +68,6 @@
 #include "rt_binbuf.h"
 #include "rt_binfile.h"
 #include "rt_bitmapfont.h"
-#include "rt_ttf_font.h"
 #include "rt_bits.h"
 #include "rt_bitset.h"
 #include "rt_blendtree3d.h"
@@ -112,6 +111,7 @@
 #include "rt_dir.h"
 #include "rt_duration.h"
 #include "rt_easing.h"
+#include "rt_embed_host.h"
 #include "rt_entity.h"
 #include "rt_error.h"
 #include "rt_exc.h"
@@ -224,7 +224,6 @@
 #include "rt_postfx3d.h"
 #include "rt_pqueue.h"
 #include "rt_printf_compat.h"
-#include "rt_embed_host.h"
 #include "rt_process.h"
 #include "rt_pty.h"
 #include "rt_quadtree.h"
@@ -250,6 +249,7 @@
 #include "rt_text_direction.h"
 #include "rt_timeofday3d.h"
 #include "rt_transform3d.h"
+#include "rt_ttf_font.h"
 #include "rt_vegetation3d.h"
 #include "rt_videoplayer.h"
 #include "rt_videowidget.h"
@@ -383,8 +383,7 @@ void applyOwnershipEffects(RuntimeSignature &signature, std::string_view name) {
     signature.ownedOutArgMask |= ownership.ownedOutArgMask;
     signature.returnsOwned = signature.returnsOwned || ownership.returnsOwned;
     signature.mayAllocate = signature.mayAllocate || ownership.mayAllocate;
-    signature.returnsKnownObject =
-        signature.returnsKnownObject || ownership.returnsKnownObject;
+    signature.returnsKnownObject = signature.returnsKnownObject || ownership.returnsKnownObject;
 }
 
 /// @brief Retrieve the parsed runtime signature for a generated enumerator.
@@ -491,6 +490,8 @@ struct DescriptorRow {
     bool publicSurface{true};
     /// Backing linker-visible C symbol, if distinct metadata is available.
     std::string_view cSymbol{};
+    /// Result ownership declared on the runtime.def row (ADR 0314).
+    RuntimeResultOwnership resultOwnership{RuntimeResultOwnership::Unspecified};
 };
 
 // Use deduced array size to avoid mismatches that would create an empty default row.
@@ -2113,6 +2114,14 @@ constexpr auto kDescriptorRows = std::to_array<DescriptorRow>({
                   nullptr,
                   0,
                   RuntimeTrapClass::None},
+    DescriptorRow{"rt_obj_set_class_dtor_hook",
+                  std::nullopt,
+                  "void(ptr)",
+                  &DirectHandler<&rt_obj_set_class_dtor_hook, void, void *>::invoke,
+                  kManualLowering,
+                  nullptr,
+                  0,
+                  RuntimeTrapClass::None},
     // --- Weak Reference Support ---
     DescriptorRow{"rt_weak_store",
                   std::nullopt,
@@ -2432,6 +2441,13 @@ RuntimeSignature buildSignature(const DescriptorRow &row) {
     signature.readonly = signature.readonly || effects.readonly;
     signature.pure = signature.pure || effects.pure;
     applyOwnershipEffects(signature, row.name);
+    // The declaration on the runtime.def row is authoritative for the result:
+    // it overrides the name-pattern catalog in both directions (ADR 0314).
+    signature.resultOwnership = row.resultOwnership;
+    if (row.resultOwnership == RuntimeResultOwnership::Owned)
+        signature.returnsOwned = true;
+    else if (row.resultOwnership == RuntimeResultOwnership::Borrowed)
+        signature.returnsOwned = false;
     return signature;
 }
 

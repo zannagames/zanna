@@ -178,6 +178,18 @@ enum class RuntimeTrapClass {
     PowDomainOverflow,
 };
 
+/// @brief Result ownership declared on a runtime.def row (ADR 0314).
+/// @details `Owned`: the callee hands the caller one reference that the caller
+///          must release. `Borrowed`: the result is a view into another runtime
+///          object and must not be released. Every function returning a managed
+///          reference declares one of the two; `Unspecified` only remains for
+///          hand-authored internal rows without a reference result.
+enum class RuntimeResultOwnership : std::uint8_t {
+    Unspecified = 0,
+    Owned = 1,
+    Borrowed = 2,
+};
+
 /// @brief Describes the complete IL-visible and bridge-visible runtime ABI.
 /// @details Parameter order matches the runtime C ABI. Hidden parameters are
 ///          appended by the bridge and are not included in ownership bitmasks.
@@ -195,9 +207,11 @@ struct RuntimeSignature {
     std::uint64_t retainedArgMask{0}; ///< IL-visible args whose reference count is retained.
     std::uint64_t ownedOutArgMask{0}; ///< Pointer args that receive an owned reference.
     bool returnsOwned{false};         ///< Helper returns an owned reference/string handle.
-    bool mayAllocate{false};          ///< Helper may allocate runtime-managed storage.
-    bool returnsKnownObject{false};   ///< Result supports object-specific RC helpers.
-    bool valid{true};                 ///< Parsed signature text was well-formed and supported.
+    RuntimeResultOwnership resultOwnership{
+        RuntimeResultOwnership::Unspecified}; ///< Declared (runtime.def) result ownership.
+    bool mayAllocate{false};                  ///< Helper may allocate runtime-managed storage.
+    bool returnsKnownObject{false};           ///< Result supports object-specific RC helpers.
+    bool valid{true}; ///< Parsed signature text was well-formed and supported.
 };
 
 /// @brief Aggregated descriptor covering signature, handler, and lowering metadata.

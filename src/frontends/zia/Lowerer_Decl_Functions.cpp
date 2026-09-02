@@ -312,6 +312,16 @@ void Lowerer::lowerFunctionDecl(FunctionDecl &decl) {
 
     const bool isEntryPoint = decl.name == "start" || decl.name == "main";
 
+    // Install the class destructor hook before any object can die. The runtime
+    // calls `__zia_dtor_dispatch` for every class instance it frees itself
+    // (collection elements, map values, boxed Any), so reference fields are
+    // released whether the last reference was dropped by compiled code or by
+    // the runtime. Native binaries pass the real function address; bytecode
+    // executors bridge the call to a re-entrant trampoline.
+    if (isEntryPoint) {
+        emitCall(runtime::kRtObjSetClassDtorHook, {Value::global(runtime::kZiaDtorDispatch)});
+    }
+
     // Emit interface itable init call at start of the entry point (before any user code).
     // The __zia_iface_init function is emitted later by emitItableInit(); if no
     // interfaces have implementors, it emits a trivial ret-void stub.
@@ -756,12 +766,22 @@ void Lowerer::lowerClassDecl(ClassDecl &decl) {
     }
 
     // Lower destructor declaration (at most one per class)
+    bool loweredDtor = false;
     for (auto &member : decl.members) {
         if (member->kind == DeclKind::Destructor) {
             auto *dtor = static_cast<DestructorDecl *>(member.get());
             lowerDestructorDecl(*dtor, qualifiedName);
+            loweredDtor = true;
             break; // at most one destructor
         }
+    }
+
+    // A class without `deinit` still owns its reference fields (strings,
+    // objects, collections, runtime handles). Synthesize the destructor that
+    // releases them; without it every instance leaked its fields on death.
+    if (!loweredDtor && classNeedsDestructor(storedInfo)) {
+        DestructorDecl synthesized(decl.loc);
+        lowerDestructorDecl(synthesized, qualifiedName);
     }
 
     // Emit vtable global (array of function pointers)
@@ -1250,12 +1270,26 @@ void Lowerer::lowerDestructorDecl(DestructorDecl &decl, const std::string &typeN
     if (decl.body)
         lowerStmt(decl.body.get());
 
-    // Release reference-typed fields (Str and Ptr)
+    // Release reference-typed fields (Str and Ptr). Inherited fields come
+    // first in the layout; when the base class has a destructor of its own,
+    // release only this class's fields and chain to `Base.__dtor`, so the
+    // base body runs for derived instances and no field is released twice.
     if (!isTerminated()) {
         Value selfPtr = loadFromSlot("self", Type(Type::Kind::Ptr));
         const ClassTypeInfo &info = *currentClassType_;
 
-        for (const auto &field : info.fields) {
+        size_t firstOwnField = 0;
+        std::string baseDtor;
+        if (!info.baseClass.empty()) {
+            auto baseIt = classTypes_.find(info.baseClass);
+            if (baseIt != classTypes_.end() && classNeedsDestructor(baseIt->second)) {
+                firstOwnField = baseIt->second.fields.size();
+                baseDtor = info.baseClass + ".__dtor";
+            }
+        }
+
+        for (size_t fieldIdx = firstOwnField; fieldIdx < info.fields.size(); ++fieldIdx) {
+            const auto &field = info.fields[fieldIdx];
             if (field.isWeak) {
                 Value fieldAddr = emitGEP(selfPtr, static_cast<int64_t>(field.offset));
                 Value fieldValue = emitLoad(fieldAddr, Type(Type::Kind::Ptr));
@@ -1273,6 +1307,9 @@ void Lowerer::lowerDestructorDecl(DestructorDecl &decl, const std::string &typeN
                 emitManagedRelease(fieldValue, /*isString=*/false);
             }
         }
+
+        if (!baseDtor.empty())
+            emitCall(baseDtor, {selfPtr});
     }
 
     // Emit return void
@@ -1284,6 +1321,36 @@ void Lowerer::lowerDestructorDecl(DestructorDecl &decl, const std::string &typeN
     currentReturnType_ = nullptr;
     currentClassType_ = nullptr;
     currentStructType_ = nullptr;
+}
+
+/// @brief True when @p field holds a managed reference the destructor must release.
+/// @details Weak fields are released through WeakRef.Free; strings and pointers
+///          (objects, collections, boxed `Any`, runtime handles) through the
+///          managed release helpers. Value fields need nothing.
+bool Lowerer::fieldNeedsRelease(const FieldLayout &field) {
+    if (field.isWeak)
+        return true;
+    Type ilFieldType = mapType(field.type);
+    return ilFieldType.kind == Type::Kind::Str || ilFieldType.kind == Type::Kind::Ptr;
+}
+
+/// @brief True when instances of @p info need a `__dtor`.
+/// @details A user `deinit`, any releasable field (own or inherited), or a base
+///          class that itself needs a destructor all require one, so derived
+///          instances always reach the base body through the chain.
+bool Lowerer::classNeedsDestructor(const ClassTypeInfo &info) {
+    if (info.hasUserDeinit)
+        return true;
+    for (const auto &field : info.fields) {
+        if (fieldNeedsRelease(field))
+            return true;
+    }
+    if (!info.baseClass.empty()) {
+        auto baseIt = classTypes_.find(info.baseClass);
+        if (baseIt != classTypes_.end() && &baseIt->second != &info)
+            return classNeedsDestructor(baseIt->second);
+    }
+    return false;
 }
 
 } // namespace il::frontends::zia
