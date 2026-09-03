@@ -1596,7 +1596,9 @@ static double material_decal_finite(double v) {
 ///   accepted distance along forward = right x up. Texel (0,0) is the top-left corner
 ///   (-right, +up) so an image reads upright. Surfaces facing the projector — those whose
 ///   bind normal points against forward — take the decal; the far side of a torso never
-///   does. Non-finite or non-positive extents trap and leave the material unchanged.
+///   does (ADR 0316: the gate is feathered — full below facing 0.25, gone above 0.5 —
+///   so a lumbar curling past perpendicular keeps its digits).
+///   Non-finite or non-positive extents trap and leave the material unchanged.
 void rt_material3d_set_decal_projector(void *obj, double ox, double oy, double oz,
                                        double ux, double uy, double uz,
                                        double vx, double vy, double vz,

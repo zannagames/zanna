@@ -535,6 +535,7 @@ extern "C" void vgfx_set_window_size(vgfx_window_t window, int32_t w, int32_t h)
 extern "C" void vgfx_set_fullscreen(vgfx_window_t, int32_t) {}
 
 extern "C" void vgfx_set_title(vgfx_window_t, const char *) {}
+extern "C" void vgfx_set_icon(vgfx_window_t, const uint32_t *, int32_t, int32_t) {}
 
 extern "C" void vgfx_set_fps(vgfx_window_t window, int32_t fps) {
     auto *fake = window_from(window);

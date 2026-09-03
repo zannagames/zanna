@@ -63,6 +63,7 @@
 #define vgfx_platform_set_text_input_enabled VGFX_PREFIXED(vgfx_platform_set_text_input_enabled)
 #define vgfx_platform_set_text_input_state VGFX_PREFIXED(vgfx_platform_set_text_input_state)
 #define vgfx_platform_set_title VGFX_PREFIXED(vgfx_platform_set_title)
+#define vgfx_platform_set_icon VGFX_PREFIXED(vgfx_platform_set_icon)
 #define vgfx_platform_set_window_size VGFX_PREFIXED(vgfx_platform_set_window_size)
 #define vgfx_platform_set_window_min_size VGFX_PREFIXED(vgfx_platform_set_window_min_size)
 #define vgfx_platform_show_cursor VGFX_PREFIXED(vgfx_platform_show_cursor)

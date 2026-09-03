@@ -38,14 +38,14 @@ Underneath, a broad correctness pass addressed failures that were most visible i
 
 | Metric | v0.3.0 | v0.3.1 | Delta |
 |---|---:|---:|---:|
-| Commits | — | 12 | +12 |
-| Source files | 3,704 | 3,711 | +7 |
-| Production SLOC | 884K | 888K | +4K |
-| Test SLOC | 332K | 335K | +3K |
+| Commits | — | 14 | +14 |
+| Source files | 3,704 | 3,715 | +11 |
+| Production SLOC | 884K | 889K | +5K |
+| Test SLOC | 332K | 335K | +4K |
 | Zanna Studio SLOC | 160K | 161K | +1K |
 | Demo SLOC | 242K | 242K | — |
 
-Counts use `scripts/count_sloc.sh`, excluding blank lines and comments (production 888,157; test 334,744; Zanna Studio 160,878; source files 3,711). Commit count is measured from the `v0.3.0-prealpha` tag on 2026-08-28. Demo SLOC remains unchanged at the rounded total.
+Counts use `scripts/count_sloc.sh`, excluding blank lines and comments (production 889,152; test 335,270; Zanna Studio 160,878; source files 3,715). Commit count is measured from the `v0.3.0-prealpha` tag on 2026-08-28. Demo SLOC remains unchanged at the rounded total.
 
 ---
 

@@ -939,6 +939,18 @@ void vgfx_set_title(vgfx_window_t window, const char *title) {
     vgfx_platform_set_title(window, actual_title);
 }
 
+/// @brief Set the application / window icon (ADR 0317).
+/// @details Validates the pixel block and forwards to the platform layer.
+/// @param window Window handle
+/// @param rgba   0xRRGGBBAA words, row-major
+/// @param width  Icon width (1..1024)
+/// @param height Icon height (1..1024)
+void vgfx_set_icon(vgfx_window_t window, const uint32_t *rgba, int32_t width, int32_t height) {
+    if (!window || !rgba || width <= 0 || height <= 0 || width > 1024 || height > 1024)
+        return;
+    vgfx_platform_set_icon(window, rgba, width, height);
+}
+
 /// @brief Register a callback invoked immediately on window resize.
 /// @details On macOS the Cocoa live-resize modal loop blocks the main thread;
 ///          calling the callback from windowDidResize: keeps the window painted

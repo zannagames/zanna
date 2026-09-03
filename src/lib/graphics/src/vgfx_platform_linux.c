@@ -2748,6 +2748,50 @@ void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
     XFlush(x11->display);
 }
 
+/// @copydoc vgfx_platform_set_icon
+/// @details ADR 0317: publishes the EWMH `_NET_WM_ICON` property (width, height, then ARGB
+///          words, each in a 32-bit "long" slot as the X protocol packs format-32 data).
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height) {
+    if (!win || !win->platform_data || !rgba || width <= 0 || height <= 0)
+        return;
+    vgfx_x11_data *x11 = (vgfx_x11_data *)win->platform_data;
+    if (!x11->display || !x11->window)
+        return;
+    size_t count = 2u + (size_t)width * (size_t)height;
+    if (count > (size_t)INT_MAX)
+        return;
+    long *buffer = (long *)malloc(count * sizeof(long));
+    if (!buffer)
+        return;
+    buffer[0] = (long)width;
+    buffer[1] = (long)height;
+    for (size_t i = 0; i < (size_t)width * (size_t)height; ++i) {
+        uint32_t w = rgba[i];
+        uint32_t r = (w >> 24) & 0xFFu;
+        uint32_t g = (w >> 16) & 0xFFu;
+        uint32_t b = (w >> 8) & 0xFFu;
+        uint32_t a = w & 0xFFu;
+        buffer[2 + i] = (long)(unsigned long)((a << 24) | (r << 16) | (g << 8) | b);
+    }
+    Atom net_wm_icon = XInternAtom(x11->display, "_NET_WM_ICON", False);
+    Atom cardinal = XInternAtom(x11->display, "CARDINAL", False);
+    if (net_wm_icon != None && cardinal != None) {
+        XChangeProperty(x11->display,
+                        x11->window,
+                        net_wm_icon,
+                        cardinal,
+                        32,
+                        PropModeReplace,
+                        (const unsigned char *)buffer,
+                        (int)count);
+        XFlush(x11->display);
+    }
+    free(buffer);
+}
+
 /// @brief Set the window to fullscreen or windowed mode.
 /// @details Uses the EWMH _NET_WM_STATE_FULLSCREEN hint to toggle fullscreen.
 ///          This is the standard way to request fullscreen on modern X11

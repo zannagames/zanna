@@ -75,10 +75,10 @@ namespace {
 // cached/inherited-slot diagnostic: +2 functions / +1 property / +1 method.
 // ADR 0310 (2026-09-01): Canvas3D.SetRenderTargetShadowCascadeLimit —
 // render-target cascade cap: +1 function / +1 method.
-constexpr std::size_t kExpectedFunctionCount = 2279;
+constexpr std::size_t kExpectedFunctionCount = 2281;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 833;
-constexpr std::size_t kExpectedMethodCount = 1231;
+constexpr std::size_t kExpectedMethodCount = 1233;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -193,6 +193,9 @@ int main() {
     ok = require(functionNames.contains("Zanna.Graphics3D.Mesh3D.VertexPosition"),
                  "reviewed read-only mesh vertex query (ADR 0210) is missing") &&
          ok;
+    ok = require(functionNames.contains("Zanna.Graphics3D.Mesh3D.VertexNormal"),
+                 "reviewed read-only mesh vertex normal query (ADR 0316) is missing") &&
+         ok;
 
     std::size_t classCount = 0;
     std::size_t propertyCount = 0;
@@ -283,7 +286,9 @@ int main() {
     // + get_ShadowSlotsCached (previous: 0x69f0ac9a84301e75), then ADR 0310
     // Canvas3D.SetRenderTargetShadowCascadeLimit (previous:
     // 0xa86908e033a83516).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x239d23cf1f9c5a55);
+    // Re-pinned 2026-09-02: ADR 0316 Mesh3D.VertexNormal (0xf581997153415d7f)
+    // then ADR 0317 Canvas3D.SetIcon (previous: 0x239d23cf1f9c5a55).
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x59856117417403f3);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

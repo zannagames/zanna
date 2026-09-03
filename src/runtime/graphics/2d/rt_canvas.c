@@ -717,6 +717,20 @@ void rt_canvas_set_title(void *canvas_ptr, rt_string title) {
     }
 }
 
+/// @brief `Canvas.SetIcon` — the application / window icon (ADR 0317).
+/// @details Forwards the Pixels' 0xRRGGBBAA words to vgfx_set_icon; the platform copies
+///   them. Invalid or oversized (> 1024 px) sources are ignored, never trapped.
+/// @param canvas_ptr Borrowed Canvas handle.
+/// @param pixels Borrowed Pixels handle.
+void rt_canvas_set_icon(void *canvas_ptr, void *pixels) {
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    rt_pixels_impl *p = rt_pixels_checked_impl_or_null(pixels);
+    if (!canvas || !canvas->gfx_win || !p || !p->data || p->width <= 0 || p->height <= 0 ||
+        p->width > 1024 || p->height > 1024)
+        return;
+    vgfx_set_icon(canvas->gfx_win, p->data, (int32_t)p->width, (int32_t)p->height);
+}
+
 /// @brief Get the current window title.
 /// @param canvas_ptr Borrowed Canvas handle.
 /// @return Newly owned copy of the cached title, an owned empty string for

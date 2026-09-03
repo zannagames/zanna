@@ -709,6 +709,11 @@ void rt_canvas_clear_clip_rect(void *canvas);
 /// @param title New window title.
 void rt_canvas_set_title(void *canvas, rt_string title);
 
+/// @brief Set the application / window icon from a Pixels source (ADR 0317).
+/// @param canvas Canvas handle.
+/// @param pixels Pixels handle (0xRRGGBBAA words, at most 1024 x 1024).
+void rt_canvas_set_icon(void *canvas, void *pixels);
+
 /// @brief Get the current window title.
 /// @param canvas Canvas handle.
 /// @return Window title string.

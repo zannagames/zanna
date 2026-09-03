@@ -654,6 +654,9 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "RT_METHOD(\"VertexPosition\""),
                  "Mesh3D.VertexPosition method missing") &&
          ok;
+    ok = require(contains(runtime_def, "RT_METHOD(\"VertexNormal\""),
+                 "Mesh3D.VertexNormal method missing") &&
+         ok;
     ok = require(contains(runtime_def, "RT_PROP(\"SimplifyRequestedTriangles\""),
                  "Mesh3D.SimplifyRequestedTriangles property missing") &&
          ok;

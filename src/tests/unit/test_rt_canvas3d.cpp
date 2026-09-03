@@ -762,6 +762,24 @@ static void test_mesh_vertex_position_readback() {
     PASS();
 }
 
+static void test_mesh_vertex_normal_readback() {
+    TEST("Mesh3D.VertexNormal reads the authored normal and rejects invalid indices");
+    void *m = rt_mesh3d_new();
+    rt_mesh3d_add_vertex(m, 1.0, 2.0, 3.0, 0.0, -0.6, 0.8, 0.0, 0.0);
+    void *normal = rt_mesh3d_get_vertex_normal(m, 0);
+    EXPECT_TRUE(normal != nullptr, "live vertex returns a normal");
+    EXPECT_NEAR(rt_vec3_x(normal), 0.0, 0.000001);
+    EXPECT_NEAR(rt_vec3_y(normal), -0.6, 0.000001);
+    EXPECT_NEAR(rt_vec3_z(normal), 0.8, 0.000001);
+    EXPECT_TRUE(rt_mesh3d_get_vertex_normal(m, -1) == nullptr,
+                "negative vertex index returns null");
+    EXPECT_TRUE(rt_mesh3d_get_vertex_normal(m, 1) == nullptr,
+                "past-end vertex index returns null");
+    EXPECT_TRUE(rt_mesh3d_get_vertex_normal(nullptr, 0) == nullptr,
+                "invalid receiver returns null");
+    PASS();
+}
+
 static void test_mesh_reserve_presizes_without_dirtying_geometry() {
     TEST("Mesh3D.Reserve presizes without dirtying geometry");
     rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new();
@@ -12257,6 +12275,7 @@ int main() {
     test_mesh_rasterize_uv_mask_conservative();
     test_mesh_rasterize_uv_height_interpolates();
     test_mesh_vertex_position_readback();
+    test_mesh_vertex_normal_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();
     test_mesh_mutations_restore_residency_and_counts_are_clamped();
     test_mesh_recalc_normals_reuses_large_accumulator();

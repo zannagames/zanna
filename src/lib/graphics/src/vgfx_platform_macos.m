@@ -38,6 +38,10 @@
 #ifdef __APPLE__
 
 #import <Cocoa/Cocoa.h>
+#include <mach-o/dyld.h>
+
+/* ADR 0317: installs a sibling .icns/.png as the Dock icon for bare executables. */
+static void vgfx_macos_apply_adjacent_application_icon(void);
 #import <QuartzCore/QuartzCore.h>
 #include <errno.h>
 #include <mach/mach_time.h>
@@ -1483,6 +1487,8 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
 
         /* Set window title */
         [platform->window setTitle:vgfx_macos_string_or_empty(params->title)];
+        /* ADR 0317: a bare executable's sibling icon becomes the Dock icon. */
+        vgfx_macos_apply_adjacent_application_icon();
         if ([platform->window respondsToSelector:@selector(setTabbingMode:)]) {
             [platform->window setTabbingMode:NSWindowTabbingModeDisallowed];
         }
@@ -2082,6 +2088,82 @@ void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
         }
 
         vgfx_platform_macos_ensure_default_main_menu(title);
+    }
+}
+
+/// @copydoc vgfx_platform_set_icon
+/// @details ADR 0317: the Dock / application icon. A bare Mach-O has no Info.plist, so this
+///          is the only way an unbundled game shows its own identity; a bundled app already
+///          carries CFBundleIconFile and this simply replaces it at runtime.
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height) {
+    (void)win;
+    if (!rgba || width <= 0 || height <= 0)
+        return;
+    @autoreleasepool {
+        [NSApplication sharedApplication];
+        NSBitmapImageRep *rep =
+            [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL
+                                                    pixelsWide:width
+                                                    pixelsHigh:height
+                                                 bitsPerSample:8
+                                               samplesPerPixel:4
+                                                      hasAlpha:YES
+                                                      isPlanar:NO
+                                                colorSpaceName:@"NSDeviceRGBColorSpace"
+                                                   bytesPerRow:(NSInteger)width * 4
+                                                  bitsPerPixel:32];
+        if (!rep)
+            return;
+        unsigned char *dst = [rep bitmapData];
+        size_t count = (size_t)width * (size_t)height;
+        for (size_t i = 0; i < count; ++i) {
+            uint32_t w = rgba[i];
+            dst[i * 4 + 0] = (unsigned char)((w >> 24) & 0xFFu);
+            dst[i * 4 + 1] = (unsigned char)((w >> 16) & 0xFFu);
+            dst[i * 4 + 2] = (unsigned char)((w >> 8) & 0xFFu);
+            dst[i * 4 + 3] = (unsigned char)(w & 0xFFu);
+        }
+        NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(width, height)];
+        [image addRepresentation:rep];
+        [NSApp setApplicationIconImage:image];
+        [image release];
+        [rep release];
+    }
+}
+
+/// @brief Install an icon file shipped beside a BARE executable as the Dock icon (ADR 0317).
+/// @details The Win32 backend's `<executable>.ico` convention, mirrored: `<executable>.icns`
+///          then `<executable>.png` next to the binary. A bundled app never needs this (its
+///          Info.plist names the icon) and a missing file is not an error. Runs once.
+static void vgfx_macos_apply_adjacent_application_icon(void) {
+    static BOOL applied = NO;
+    if (applied)
+        return;
+    applied = YES;
+    char path[4096];
+    uint32_t size = (uint32_t)sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0)
+        return;
+    NSString *exe = [NSString stringWithUTF8String:path];
+    if (!exe)
+        return;
+    NSString *base = [exe stringByDeletingPathExtension];
+    NSArray<NSString *> *candidates = @[
+        [base stringByAppendingPathExtension:@"icns"],
+        [base stringByAppendingPathExtension:@"png"]
+    ];
+    for (NSString *candidate in candidates) {
+        if (![[NSFileManager defaultManager] fileExistsAtPath:candidate])
+            continue;
+        NSImage *image = [[NSImage alloc] initWithContentsOfFile:candidate];
+        if (image) {
+            [NSApp setApplicationIconImage:image];
+            [image release];
+            return;
+        }
     }
 }
 

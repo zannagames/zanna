@@ -230,6 +230,14 @@ static void test_runtime_metadata_matches_core_contracts(void) {
            meshVertexPosition.returnsKnownObject);
     assert(meshVertexPositionSymbol.returnsOwned && meshVertexPositionSymbol.mayAllocate &&
            meshVertexPositionSymbol.returnsKnownObject);
+    const auto meshVertexNormal =
+        il::runtime::classifyRuntimeOwnership("Zanna.Graphics3D.Mesh3D.VertexNormal");
+    const auto meshVertexNormalSymbol =
+        il::runtime::classifyRuntimeOwnership("rt_mesh3d_get_vertex_normal");
+    assert(meshVertexNormal.returnsOwned && meshVertexNormal.mayAllocate &&
+           meshVertexNormal.returnsKnownObject);
+    assert(meshVertexNormalSymbol.returnsOwned && meshVertexNormalSymbol.mayAllocate &&
+           meshVertexNormalSymbol.returnsKnownObject);
     const auto borrowedOrbitTarget =
         il::runtime::classifyRuntimeOwnership("Zanna.Game3D.OrbitController.get_Target");
     const auto borrowedFollowOffset =

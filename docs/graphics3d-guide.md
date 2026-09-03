@@ -589,6 +589,7 @@ are no `NewBox` / `NewSphere` / `NewPlane` / `NewCylinder` aliases.
 |--------|-----------|-------------|
 | `Reserve(vertexCount, triangleCount)` | `void(i64, i64)` | Pre-size backing arrays for bulk mesh construction |
 | `VertexPosition(index)` | `obj<Zanna.Math.Vec3>(i64)` | Return a fresh read-only snapshot of one mesh-local vertex position, or `null` when the index is invalid |
+| `VertexNormal(index)` | `obj<Zanna.Math.Vec3>(i64)` | Return a fresh read-only snapshot of one authored (bind-space) vertex normal, or `null` when the index is invalid (ADR 0316) |
 | `AddVertex(x, y, z, nx, ny, nz, u, v)` | `void(f64 x8)` | Add vertex with position, normal, and UV |
 | `AddTriangle(i0, i1, i2)` | `void(i64, i64, i64)` | Add triangle from vertex indices (CCW winding) |
 | `Clear()` | `void()` | Reset vertex/index counts to zero (reuse backing arrays) |
@@ -826,7 +827,7 @@ aliases for these factories.
 | `SetAmbientOcclusionMap(texture)` | `void(obj)` | Set the ambient-occlusion map (`R=occlusion`) |
 | `SetSpecularMap(texture)` | `void(obj)` | Set specular intensity map (`Pixels` or `TextureAsset3D`) |
 | `SetEmissiveMap(texture)` | `void(obj)` | Set emissive color map (`Pixels` or `TextureAsset3D`) |
-| `SetDecalMap(source)` / `HasDecalMap` / `SetDecalProjector(ox,oy,oz, ux,uy,uz, vx,vy,vz, halfW, halfH, depth)` / `SetDecalOpacity(a)` / `DecalOpacity` | ADR 0312 | Projected decal layer: a texture composited over the albedo BEFORE lighting through a model-space (pre-skin) box projector — lit, shadowed and normal-mapped like the surface; surfaces facing away from the projector never take it. Runtime-only (not persisted); identical on Metal, D3D11, OpenGL and the software rasterizer |
+| `SetDecalMap(source)` / `HasDecalMap` / `SetDecalProjector(ox,oy,oz, ux,uy,uz, vx,vy,vz, halfW, halfH, depth)` / `SetDecalOpacity(a)` / `DecalOpacity` | ADR 0312 | Projected decal layer: a texture composited over the albedo BEFORE lighting through a model-space (pre-skin) box projector — lit, shadowed and normal-mapped like the surface; surfaces facing away from the projector never take it (ADR 0316: feathered — full up to facing 0.25, gone at 0.5). Runtime-only (not persisted); identical on Metal, D3D11, OpenGL and the software rasterizer |
 | `SetEmissiveColor(r, g, b)` | `void(f64, f64, f64)` | Set emissive color multiplier (additive glow) |
 | `NormalScale` property | `f64` | Scale tangent-space normal-map strength — assign it |
 | `SetShadingModel(model)` | `void(i64)` | Set shading model (see table below) |

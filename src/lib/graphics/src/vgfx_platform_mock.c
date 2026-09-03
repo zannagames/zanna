@@ -917,6 +917,18 @@ void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
     /* Mock backend has no title bar - no-op */
 }
 
+/// @copydoc vgfx_platform_set_icon
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height) {
+    (void)win;
+    (void)rgba;
+    (void)width;
+    (void)height;
+    /* Mock backend has no window chrome - no-op (ADR 0317) */
+}
+
 /// @brief Set fullscreen mode (mock version - updates state only).
 /// @details The mock backend has no display, but tracks the fullscreen state
 ///          for test verification.

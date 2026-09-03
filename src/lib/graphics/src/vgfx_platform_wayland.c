@@ -44,6 +44,7 @@
 #include <poll.h>
 #include <sched.h>
 #include <stdio.h>
+static const char *vgfx_wayland_app_id(void);
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -353,7 +354,7 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
         !vgfx_wayland_shell_open(&platform->shell,
                                  &platform->connection,
                                  params->title,
-                                 "org.zanna.app",
+                                 vgfx_wayland_app_id(),
                                  error,
                                  sizeof(error)) ||
         !vgfx_wayland_scale_open(&platform->scale, &platform->connection, &platform->shell) ||
@@ -400,7 +401,7 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
                                  &platform->connection,
                                  &platform->input,
                                  (struct wl_proxy *)platform->shell.surface,
-                                 "org.zanna.app");
+                                 vgfx_wayland_app_id());
     g_vgfx_wayland_active_data = &platform->data;
     g_vgfx_wayland_active_cursor = &platform->cursor;
     if (params->fullscreen)
@@ -505,6 +506,53 @@ int vgfx_platform_present(struct vgfx_window *win) {
     vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
     size_t size = (size_t)win->stride * (size_t)win->height;
     return vgfx_wayland_shm_present(&platform->presenter, win->pixels, size);
+}
+
+
+/// @brief The toplevel app id: `org.zanna.<executable basename>` (ADR 0317).
+/// @details Wayland compositors match a toplevel to its desktop entry (and so to its icon)
+///          by app id. It used to be the fixed `org.zanna.app`, so every packaged game
+///          shared one identity; the basename of the running executable, sanitized to
+///          the desktop-entry alphabet, gives each its own. Falls back to the old id when
+///          the executable path cannot be read.
+static const char *vgfx_wayland_app_id(void) {
+    static char id[160];
+    static int ready = 0;
+    if (ready)
+        return id;
+    ready = 1;
+    snprintf(id, sizeof(id), "org.zanna.app");
+    char exe[4096];
+    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (n <= 0)
+        return id;
+    exe[n] = '\0';
+    const char *base = strrchr(exe, '/');
+    base = base ? base + 1 : exe;
+    if (!base[0])
+        return id;
+    size_t at = (size_t)snprintf(id, sizeof(id), "org.zanna.");
+    for (size_t i = 0; base[i] && at + 1 < sizeof(id); ++i) {
+        char c = base[i];
+        int ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                 c == '_' || c == '-' || c == '.';
+        id[at++] = ok ? c : '_';
+    }
+    id[at] = '\0';
+    return id;
+}
+
+/// @copydoc vgfx_platform_set_icon
+/// @details Wayland has no icon protocol: the compositor draws the icon of the desktop entry
+///          whose name matches the toplevel's app id (see vgfx_wayland_app_id).
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height) {
+    (void)win;
+    (void)rgba;
+    (void)width;
+    (void)height;
 }
 
 /// @copydoc vgfx_platform_set_title

@@ -1477,6 +1477,20 @@ static void canvas3d_record_event_type(rt_canvas3d *c, int64_t type) {
 /// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 /// @param w Requested logical width in pixels.
 /// @param h Requested logical height in pixels.
+/// @brief `Canvas3D.SetIcon` — the application / window icon for a canvas that OWNS its
+///   window (ADR 0317). A canvas borrowing a 2D Canvas window (NewOnCanvas) has no window
+///   of its own; use `Canvas.SetIcon` on the owner. Invalid sources are ignored.
+/// @param obj Canvas3D handle.
+/// @param pixels Pixels handle (0xRRGGBBAA words, at most 1024 x 1024).
+void rt_canvas3d_set_icon(void *obj, void *pixels) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    rt_pixels_impl *p = rt_pixels_checked_impl_or_null(pixels);
+    if (!c || !c->gfx_win || !p || !p->data || p->width <= 0 || p->height <= 0 ||
+        p->width > 1024 || p->height > 1024)
+        return;
+    vgfx_set_icon(c->gfx_win, p->data, (int32_t)p->width, (int32_t)p->height);
+}
+
 void rt_canvas3d_resize(void *obj, int64_t w, int64_t h) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)

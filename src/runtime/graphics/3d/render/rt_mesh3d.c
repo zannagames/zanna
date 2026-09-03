@@ -1488,6 +1488,27 @@ void *rt_mesh3d_get_vertex_position(void *obj, int64_t index) {
     return rt_vec3_new(position[0], position[1], position[2]);
 }
 
+/// @brief `Mesh3D.VertexNormal` — read one vertex's authored (bind-space) normal.
+/// @details Plan 90 / ADR 0316: the projected-decal facing test (ADR 0312) is
+///   `dot(bindNormal, projectorForward)`, so a game that places a projector on a
+///   rig needs the same normals the shaders see to measure where a decal will
+///   be rejected. Returns a fresh Vec3 (owned), or NULL for an invalid receiver
+///   or index; non-finite components read as zero.
+/// @param obj Mesh3D receiver.
+/// @param index Vertex index in `[0, VertexCount)`.
+/// @return Owned Vec3 or NULL.
+void *rt_mesh3d_get_vertex_normal(void *obj, int64_t index) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    uint32_t vertex_count = m ? rt_mesh3d_safe_vertex_count(m) : 0;
+    const float *n;
+    if (!m || !m->vertices || index < 0 || (uint64_t)index >= (uint64_t)vertex_count)
+        return NULL;
+    n = m->vertices[(size_t)index].normal;
+    return rt_vec3_new(isfinite(n[0]) ? (double)n[0] : 0.0,
+                       isfinite(n[1]) ? (double)n[1] : 0.0,
+                       isfinite(n[2]) ? (double)n[2] : 0.0);
+}
+
 //=============================================================================
 // Bounds Readback and Normalization (ADR 0252)
 //=============================================================================

@@ -597,6 +597,18 @@ int64_t vgfx_platform_now_ms(void);
 /// @pre  win->platform_data != NULL
 void vgfx_platform_set_title(struct vgfx_window *win, const char *title);
 
+/// @brief Set the application / window icon from 0xRRGGBBAA words (ADR 0317).
+/// @details Backends without an icon concept (Wayland, mock) ignore the call.
+///
+/// @param win    Pointer to the window structure
+/// @param rgba   Row-major pixel words (validated non-NULL by vgfx_set_icon)
+/// @param width  Icon width in pixels
+/// @param height Icon height in pixels
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height);
+
 /// @brief Set the window to fullscreen or windowed mode.
 /// @details Toggles the native OS window between fullscreen and windowed modes.
 ///          The framebuffer should be reallocated by the caller if dimensions change.

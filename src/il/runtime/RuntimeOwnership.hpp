@@ -376,6 +376,7 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Camera3D.get_Forward" ||
            name == "Zanna.Graphics3D.Camera3D.get_Right" ||
            name == "Zanna.Graphics3D.Mesh3D.VertexPosition" ||
+           name == "Zanna.Graphics3D.Mesh3D.VertexNormal" ||
            // ADR 0252: the bounds accessors snapshot the cached AABB into a
            // fresh Vec3 each call; they do not hand out stored storage.
            name == "Zanna.Graphics3D.Mesh3D.get_BoundsMin" ||
@@ -447,6 +448,7 @@ template <std::size_t N>
            name == "rt_terrain3d_get_scale" || name == "rt_water3d_get_position" ||
            name == "rt_water3d_get_color" || name == "rt_transform3d_get_euler" ||
            name == "rt_quat_to_euler" || name == "rt_mesh3d_get_vertex_position" ||
+           name == "rt_mesh3d_get_vertex_normal" ||
            name == "rt_material3d_get_color" || name == "rt_transform3d_get_position" ||
            name == "rt_transform3d_get_scale" || name == "rt_lightprobegrid3d_sample" ||
            name == "rt_timeofday3d_get_sun_direction" ||

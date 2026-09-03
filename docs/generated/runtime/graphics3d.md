@@ -184,6 +184,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-passcpums"></a>`PassCpuMs` | `f64(i64)` | `Zanna.Graphics3D.Canvas3D.PassCpuMs` |
 | <a id="zanna-graphics3d-canvas3d-clear"></a>`Clear` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Canvas3D.Clear` |
 | <a id="zanna-graphics3d-canvas3d-resize"></a>`Resize` | `void(i64,i64)` | `Zanna.Graphics3D.Canvas3D.Resize` |
+| <a id="zanna-graphics3d-canvas3d-seticon"></a>`SetIcon` | `void(obj<Zanna.Graphics.Pixels>)` | `Zanna.Graphics3D.Canvas3D.SetIcon` |
 | <a id="zanna-graphics3d-canvas3d-setfullscreen"></a>`SetFullscreen` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetFullscreen` |
 | <a id="zanna-graphics3d-canvas3d-togglefullscreen"></a>`ToggleFullscreen` | `void()` | `Zanna.Graphics3D.Canvas3D.ToggleFullscreen` |
 | <a id="zanna-graphics3d-canvas3d-begin"></a>`Begin` | `void(obj)` | `Zanna.Graphics3D.Canvas3D.Begin` |
@@ -333,6 +334,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-fromstl"></a>`FromStl` | `obj(str)` | `Zanna.Graphics3D.Mesh3D.FromStl` |
 | <a id="zanna-graphics3d-mesh3d-reserve"></a>`Reserve` | `void(i64,i64)` | `Zanna.Graphics3D.Mesh3D.Reserve` |
 | <a id="zanna-graphics3d-mesh3d-vertexposition"></a>`VertexPosition` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Graphics3D.Mesh3D.VertexPosition` |
+| <a id="zanna-graphics3d-mesh3d-vertexnormal"></a>`VertexNormal` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Graphics3D.Mesh3D.VertexNormal` |
 | <a id="zanna-graphics3d-mesh3d-append"></a>`Append` | `void(obj<Zanna.Graphics3D.Mesh3D>)` | `Zanna.Graphics3D.Mesh3D.Append` |
 | <a id="zanna-graphics3d-mesh3d-addvertex"></a>`AddVertex` | `void(f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Graphics3D.Mesh3D.AddVertex` |
 | <a id="zanna-graphics3d-mesh3d-addtriangle"></a>`AddTriangle` | `void(i64,i64,i64)` | `Zanna.Graphics3D.Mesh3D.AddTriangle` |
@@ -2758,6 +2760,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `rt_canvas3d_new_offscreen_accelerated` |
 | <a id="zanna-graphics3d-canvas3d-get-isoffscreen"></a>`Zanna.Graphics3D.Canvas3D.get_IsOffscreen` | `i1(obj)` | `rt_canvas3d_get_is_offscreen` |
 | `Zanna.Graphics3D.Canvas3D.Resize` | `void(obj,i64,i64)` | `rt_canvas3d_resize` |
+| `Zanna.Graphics3D.Canvas3D.SetIcon` | `void(obj,obj<Zanna.Graphics.Pixels>)` | `rt_canvas3d_set_icon` |
 | `Zanna.Graphics3D.Canvas3D.Clear` | `void(obj,f64,f64,f64)` | `rt_canvas3d_clear` |
 | `Zanna.Graphics3D.Canvas3D.Begin` | `void(obj,obj)` | `rt_canvas3d_begin` |
 | `Zanna.Graphics3D.Canvas3D.BeginViewModel` | `void(obj,obj,f64)` | `rt_canvas3d_begin_view_model` |
@@ -2943,6 +2946,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.FromStl` | `obj(str)` | `rt_mesh3d_from_stl` |
 | <a id="zanna-graphics3d-mesh3d-get-vertexcount"></a>`Zanna.Graphics3D.Mesh3D.get_VertexCount` | `i64(obj)` | `rt_mesh3d_get_vertex_count` |
 | `Zanna.Graphics3D.Mesh3D.VertexPosition` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_mesh3d_get_vertex_position` |
+| `Zanna.Graphics3D.Mesh3D.VertexNormal` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_mesh3d_get_vertex_normal` |
 | `Zanna.Graphics3D.Mesh3D.Append` | `void(obj,obj)` | `rt_mesh3d_append` |
 | <a id="zanna-graphics3d-mesh3d-get-boundsmin"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsMin` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_min` |
 | <a id="zanna-graphics3d-mesh3d-get-boundsmax"></a>`Zanna.Graphics3D.Mesh3D.get_BoundsMax` | `obj<Zanna.Math.Vec3>(obj)` | `rt_mesh3d_get_bounds_max` |

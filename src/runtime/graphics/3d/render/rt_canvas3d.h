@@ -108,6 +108,8 @@ int8_t rt_canvas3d_get_is_offscreen(void *obj);
 /// @param w Requested logical window width in pixels.
 /// @param h Requested logical window height in pixels.
 void rt_canvas3d_resize(void *obj, int64_t w, int64_t h);
+/// ADR 0317: application / window icon from a Pixels source (window-owning canvases only).
+void rt_canvas3d_set_icon(void *obj, void *pixels);
 /// @brief Clear the back buffer to the given RGB color (each channel 0.0–1.0).
 /// @param obj Borrowed Canvas3D handle.
 /// @param r Normalized red clear channel.
@@ -935,6 +937,8 @@ int64_t rt_mesh3d_get_vertex_count(void *obj);
 /// @param index Zero-based vertex index.
 /// @return Fresh GC-managed Vec3 handle, or NULL for an invalid mesh or out-of-range index.
 void *rt_mesh3d_get_vertex_position(void *obj, int64_t index);
+/// Plan 90 / ADR 0316: one vertex's authored (bind-space) normal as an owned Vec3, or NULL.
+void *rt_mesh3d_get_vertex_normal(void *obj, int64_t index);
 /// @brief Minimum corner of the mesh-local axis-aligned bounding box.
 /// @param obj Mesh3D receiver.
 /// @return Fresh GC-managed Vec3, or NULL for an invalid or empty mesh.

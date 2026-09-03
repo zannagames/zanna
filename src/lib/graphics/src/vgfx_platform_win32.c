@@ -98,6 +98,7 @@ typedef struct {
     DWORD saved_exstyle;          ///< Windowed ex-style saved for fullscreen restore
     RECT saved_rect;              ///< Windowed bounds saved for fullscreen restore
     int is_fullscreen;            ///< 1 if this window is currently fullscreen
+    HICON app_icon;               ///< Icon installed by vgfx_set_icon (ADR 0317), or NULL
     int cursor_type;              ///< Current cursor type for WM_SETCURSOR
     int mouse_captured;           ///< 1 while this window owns drag-button capture
 } vgfx_win32_data;
@@ -2047,6 +2048,11 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
 
     vgfx_win32_data *w32 = (vgfx_win32_data *)win->platform_data;
 
+    if (w32->app_icon) {
+        DestroyIcon(w32->app_icon);
+        w32->app_icon = NULL;
+    }
+
     if (w32->mouse_captured) {
         (void)win32_release_mouse_capture(w32);
     }
@@ -2526,6 +2532,77 @@ void vgfx_platform_set_title(struct vgfx_window *win, const char *title) {
         return;
     }
     free(wtitle);
+}
+
+/// @copydoc vgfx_platform_set_icon
+/// @details ADR 0317: builds a 32-bit BGRA DIB from the 0xRRGGBBAA words, wraps it in an
+///          icon with an empty monochrome mask (the alpha channel drives transparency) and
+///          installs it as the window's big and small icon — the taskbar and title bar pick
+///          it up; Explorer's icon for the .exe file stays the embedded resource.
+void vgfx_platform_set_icon(struct vgfx_window *win,
+                            const uint32_t *rgba,
+                            int32_t width,
+                            int32_t height) {
+    if (!win || !win->platform_data || !rgba || width <= 0 || height <= 0)
+        return;
+    vgfx_win32_data *w32 = (vgfx_win32_data *)win->platform_data;
+    if (!w32->hwnd)
+        return;
+
+    BITMAPV5HEADER bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = width;
+    bi.bV5Height = -height; /* top-down */
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000u;
+    bi.bV5GreenMask = 0x0000FF00u;
+    bi.bV5BlueMask = 0x000000FFu;
+    bi.bV5AlphaMask = 0xFF000000u;
+
+    void *bits = NULL;
+    HDC screen = GetDC(NULL);
+    HBITMAP color =
+        CreateDIBSection(screen, (const BITMAPINFO *)&bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    if (screen)
+        ReleaseDC(NULL, screen);
+    if (!color || !bits) {
+        if (color)
+            DeleteObject(color);
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to allocate Win32 icon bitmap");
+        return;
+    }
+    uint32_t *dst = (uint32_t *)bits;
+    size_t count = (size_t)width * (size_t)height;
+    for (size_t i = 0; i < count; ++i) {
+        uint32_t w = rgba[i];
+        uint32_t r = (w >> 24) & 0xFFu;
+        uint32_t g = (w >> 16) & 0xFFu;
+        uint32_t b = (w >> 8) & 0xFFu;
+        uint32_t a = w & 0xFFu;
+        dst[i] = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+    HBITMAP mask = CreateBitmap(width, height, 1, 1, NULL);
+    ICONINFO info;
+    memset(&info, 0, sizeof(info));
+    info.fIcon = TRUE;
+    info.hbmMask = mask;
+    info.hbmColor = color;
+    HICON icon = CreateIconIndirect(&info);
+    if (mask)
+        DeleteObject(mask);
+    DeleteObject(color);
+    if (!icon) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to create Win32 window icon");
+        return;
+    }
+    SendMessageW(w32->hwnd, WM_SETICON, ICON_BIG, (LPARAM)icon);
+    SendMessageW(w32->hwnd, WM_SETICON, ICON_SMALL, (LPARAM)icon);
+    if (w32->app_icon)
+        DestroyIcon(w32->app_icon);
+    w32->app_icon = icon;
 }
 
 /// @brief Set the window to fullscreen or windowed mode.

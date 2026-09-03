@@ -90,6 +90,7 @@ Constructor: `Zanna.Graphics.Canvas.New`
 | <a id="zanna-graphics-canvas-setcliprect"></a>`SetClipRect` | `void(i64,i64,i64,i64)` | `Zanna.Graphics.Canvas.SetClipRect` |
 | <a id="zanna-graphics-canvas-clearcliprect"></a>`ClearClipRect` | `void()` | `Zanna.Graphics.Canvas.ClearClipRect` |
 | <a id="zanna-graphics-canvas-settitle"></a>`SetTitle` | `void(str)` | `Zanna.Graphics.Canvas.SetTitle` |
+| <a id="zanna-graphics-canvas-seticon"></a>`SetIcon` | `void(obj<Zanna.Graphics.Pixels>)` | `Zanna.Graphics.Canvas.SetIcon` |
 | <a id="zanna-graphics-canvas-gettitle"></a>`GetTitle` | `str()` | `Zanna.Graphics.Canvas.GetTitle` |
 | <a id="zanna-graphics-canvas-resize"></a>`Resize` | `void(i64,i64)` | `Zanna.Graphics.Canvas.Resize` |
 | <a id="zanna-graphics-canvas-close"></a>`Close` | `void()` | `Zanna.Graphics.Canvas.Close` |
@@ -1616,6 +1617,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Canvas.SetClipRect` | `void(obj,i64,i64,i64,i64)` | `rt_canvas_set_clip_rect` |
 | `Zanna.Graphics.Canvas.ClearClipRect` | `void(obj)` | `rt_canvas_clear_clip_rect` |
 | `Zanna.Graphics.Canvas.SetTitle` | `void(obj,str)` | `rt_canvas_set_title` |
+| `Zanna.Graphics.Canvas.SetIcon` | `void(obj,obj<Zanna.Graphics.Pixels>)` | `rt_canvas_set_icon` |
 | `Zanna.Graphics.Canvas.Screenshot` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_canvas_screenshot` |
 | `Zanna.Graphics.Canvas.Fullscreen` | `void(obj)` | `rt_canvas_fullscreen` |
 | `Zanna.Graphics.Canvas.Windowed` | `void(obj)` | `rt_canvas_windowed` |

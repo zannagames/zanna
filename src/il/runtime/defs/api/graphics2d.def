@@ -98,6 +98,7 @@ RT_FUNC(CanvasSavePng,     rt_canvas_save_png,      "Zanna.Graphics.Canvas.SaveP
 RT_FUNC(CanvasSetClipRect, rt_canvas_set_clip_rect, "Zanna.Graphics.Canvas.SetClipRect",   "void(obj,i64,i64,i64,i64)")
 RT_FUNC(CanvasClearClipRect, rt_canvas_clear_clip_rect, "Zanna.Graphics.Canvas.ClearClipRect", "void(obj)")
 RT_FUNC(CanvasSetTitle,    rt_canvas_set_title,     "Zanna.Graphics.Canvas.SetTitle",      "void(obj,str)")
+RT_FUNC(CanvasSetIcon,     rt_canvas_set_icon,      "Zanna.Graphics.Canvas.SetIcon",       "void(obj,obj<Zanna.Graphics.Pixels>)")
 RT_FUNC(CanvasScreenshot, rt_canvas_screenshot, "Zanna.Graphics.Canvas.Screenshot", "obj<Zanna.Graphics.Pixels>(obj)", owned)
 RT_FUNC(CanvasFullscreen,  rt_canvas_fullscreen,    "Zanna.Graphics.Canvas.Fullscreen",    "void(obj)")
 RT_FUNC(CanvasWindowed,    rt_canvas_windowed,      "Zanna.Graphics.Canvas.Windowed",      "void(obj)")

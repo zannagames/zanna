@@ -604,6 +604,19 @@ int32_t vgfx_frame_time_ms(vgfx_window_t window);
 /// @param title New window title (UTF-8 string; NULL restores default)
 void vgfx_set_title(vgfx_window_t window, const char *title);
 
+/// @brief Set the application / window icon from RGBA pixels (ADR 0317).
+/// @details `rgba` holds `width * height` row-major words packed 0xRRGGBBAA
+///          (the runtime Pixels layout). macOS sets the Dock/application
+///          icon; Win32 sets the window's big and small icons; X11 publishes
+///          `_NET_WM_ICON`; Wayland has no icon protocol (its toplevel app id
+///          names the desktop entry instead) and the mock backend ignores it.
+///          The pixels are copied; the caller may free them after the call.
+/// @param window Window handle
+/// @param rgba   Pixel words, or NULL to ignore the call
+/// @param width  Icon width in pixels (1..1024)
+/// @param height Icon height in pixels (1..1024)
+void vgfx_set_icon(vgfx_window_t window, const uint32_t *rgba, int32_t width, int32_t height);
+
 /// @brief Register a callback invoked immediately on window resize.
 /// @details On macOS, the Cocoa live-resize modal loop blocks the main
 ///          thread while the user drags the resize handle.  Registering a

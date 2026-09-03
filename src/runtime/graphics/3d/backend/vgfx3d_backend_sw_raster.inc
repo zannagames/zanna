@@ -623,7 +623,17 @@ static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
         float dt = attr_b0 * v0->dt + attr_b1 * v1->dt + attr_b2 * v2->dt;
         float dd = attr_b0 * v0->dd + attr_b1 * v1->dd + attr_b2 * v2->dd;
         float df = attr_b0 * v0->dfacing + attr_b1 * v1->dfacing + attr_b2 * v2->dfacing;
-        if (df < 0.0f && ds >= 0.0f && ds <= 1.0f && dt >= 0.0f && dt <= 1.0f && dd >= 0.0f &&
+        /* ADR 0316 (plan 90): the facing test uses the OUTWARD normal — a
+         * back-facing triangle of cull-off geometry flips it exactly as the
+         * lighting does (ZB-21). Legacy Baseball's batter bake carries inward
+         * normals over most of its back (winding mirrored with them, so the
+         * lighting never showed it); the old test rejected every one of those
+         * triangles and the number lost its lower half. The gate is also
+         * FEATHERED: surfaces up to ~75 deg from the projector take the decal
+         * in full, it fades out between facing 0.25 and 0.5, and the far side
+         * of a torso (facing ~ +1) stays clean. */
+        df *= fc->normal_sign;
+        if (df < 0.5f && ds >= 0.0f && ds <= 1.0f && dt >= 0.0f && dt <= 1.0f && dd >= 0.0f &&
             dd <= 1.0f) {
             float dcr, dcg, dcb, dca;
             sample_texture_ex(fc->decal_tex,
@@ -641,7 +651,9 @@ static void sw_shade_resolve_albedo(const sw_fragment_ctx *fc,
                 dcg = sw_srgb_to_linear(dcg);
                 dcb = sw_srgb_to_linear(dcb);
             }
-            float w = clamp01f(dca * cmd->decal_opacity);
+            float facing_t = clamp01f((df - 0.25f) / 0.25f);
+            float facing_w = 1.0f - facing_t * facing_t * (3.0f - 2.0f * facing_t);
+            float w = clamp01f(dca * cmd->decal_opacity * facing_w);
             cr = cr + (dcr - cr) * w;
             cg = cg + (dcg - cg) * w;
             cb = cb + (dcb - cb) * w;

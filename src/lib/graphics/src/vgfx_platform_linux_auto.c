@@ -61,6 +61,7 @@ static atomic_int g_backend = ATOMIC_VAR_INIT(VGFX_LINUX_BACKEND_UNSELECTED);
     int prefix##_vgfx_platform_process_events(struct vgfx_window *);                               \
     int prefix##_vgfx_platform_present(struct vgfx_window *);                                      \
     void prefix##_vgfx_platform_set_title(struct vgfx_window *, const char *);                     \
+    void prefix##_vgfx_platform_set_icon(struct vgfx_window *, const uint32_t *, int32_t, int32_t); \
     int prefix##_vgfx_platform_set_fullscreen(struct vgfx_window *, int);                          \
     int prefix##_vgfx_platform_is_fullscreen(struct vgfx_window *);                                \
     void prefix##_vgfx_platform_minimize(struct vgfx_window *);                                    \
@@ -240,6 +241,10 @@ DISPATCH_RET(int, vgfx_platform_process_events, (struct vgfx_window * w), (w), 0
 DISPATCH_RET(int, vgfx_platform_present, (struct vgfx_window * w), (w), 0)
 /// @copydoc vgfx_platform_set_title
 DISPATCH_VOID(vgfx_platform_set_title, (struct vgfx_window * w, const char *s), (w, s))
+/// @copydoc vgfx_platform_set_icon
+DISPATCH_VOID(vgfx_platform_set_icon,
+              (struct vgfx_window * w, const uint32_t *p, int32_t cw, int32_t ch),
+              (w, p, cw, ch))
 /// @copydoc vgfx_platform_set_fullscreen
 DISPATCH_RET(int, vgfx_platform_set_fullscreen, (struct vgfx_window * w, int v), (w, v), 0)
 /// @copydoc vgfx_platform_is_fullscreen
