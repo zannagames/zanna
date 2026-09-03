@@ -47,7 +47,7 @@ bind Str = Zanna.String;
 /// @return Sequence of maps with `name`, `line`, and 0-based `column` fields.
 expose func OutgoingZiaCallTokens(source: String,
                                   startLine: Integer,
-                                  endLine: Integer) -> Any {
+                                  endLine: Integer) -> Seq {
     var tokens = Seq.New();
     if source == "" { return tokens; }
     return OutgoingZiaCallTokensFromLines(

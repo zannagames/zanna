@@ -206,7 +206,8 @@ class TerminalSession {
     hide BoundedTerminalText pendingStore;
     expose Boolean scrollbackDropped;
     expose Boolean pendingOutputDropped;
-    hide String pendingInput;
+    hide List[String] pendingInputChunks;
+    hide Integer pendingInputBytes;
     expose String title; // Display label for the terminal selector.
     expose Boolean manualStop;
     expose Integer lastCols;
@@ -227,7 +228,8 @@ class TerminalSession {
         pendingStore = new BoundedTerminalText(MAX_TERMINAL_PENDING);
         scrollbackDropped = false;
         pendingOutputDropped = false;
-        pendingInput = "";
+        pendingInputChunks = [];
+        pendingInputBytes = 0;
         title = "";
         manualStop = false;
         lastCols = 0;
@@ -284,7 +286,8 @@ class TerminalSession {
         active = true;
         exitCode = -1;
         outputTruncated = false;
-        pendingInput = "";
+        pendingInputChunks = [];
+        pendingInputBytes = 0;
         manualStop = false;
         lastCols = cols;
         lastRows = rows;
@@ -316,8 +319,9 @@ class TerminalSession {
             exitCode = session.ExitCode();
             active = false;
             exitedThisUpdate = true;
-            if pendingInput != "" {
-                pendingInput = "";
+            if pendingInputBytes > 0 {
+                pendingInputChunks = [];
+                pendingInputBytes = 0;
                 out = out + "\n[terminal exited before queued input was sent]\n";
             }
             out = out + "\n[exited " + exitCode + "]\n";
@@ -396,16 +400,20 @@ class TerminalSession {
 
     /// @brief Retry queued PTY input without blocking or dropping a suffix.
     hide func FlushInput() -> Boolean {
-        if pendingInput == "" { return true; }
+        if pendingInputChunks.count() == 0 { return true; }
         if session == null or active == false { return false; }
-        var accepted = session.Write(pendingInput);
+        var chunk = pendingInputChunks.get(0);
+        var accepted = session.Write(chunk);
         if accepted <= 0 { return false; }
-        var length = Str.get_Length(pendingInput);
+        var length = Str.get_Length(chunk);
         if accepted >= length {
-            pendingInput = "";
-            return true;
+            pendingInputChunks.removeAt(0);
+            pendingInputBytes = pendingInputBytes - length;
+            return pendingInputChunks.count() == 0;
         }
-        pendingInput = Str.Substring(pendingInput, accepted, length - accepted);
+        pendingInputChunks.set(
+            0, Str.Substring(chunk, accepted, length - accepted));
+        pendingInputBytes = pendingInputBytes - accepted;
         return false;
     }
 
@@ -415,12 +423,12 @@ class TerminalSession {
         if session == null or active == false { return false; }
         if text == "" { return true; }
         FlushInput();
-        var currentBytes = Str.get_Length(pendingInput);
         var textBytes = Str.get_Length(text);
-        if textBytes > MAX_TERMINAL_INPUT_PENDING - currentBytes {
+        if textBytes > MAX_TERMINAL_INPUT_PENDING - pendingInputBytes {
             return false;
         }
-        pendingInput = pendingInput + text;
+        pendingInputChunks.add(text);
+        pendingInputBytes = pendingInputBytes + textBytes;
         FlushInput();
         return true;
     }
@@ -444,7 +452,8 @@ class TerminalSession {
     ///          session latch here lets explicit Run/Restart actions create a
     ///          fresh PTY after Stop.
     expose func Stop() {
-        pendingInput = "";
+        pendingInputChunks = [];
+        pendingInputBytes = 0;
         manualStop = true;
         lastCols = 0;
         lastRows = 0;

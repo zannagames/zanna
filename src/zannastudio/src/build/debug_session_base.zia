@@ -106,12 +106,14 @@ class DebugSessionBase extends State.DebugSessionState {
         lastReason = "";
         consoleText = "";
         programOutput = "";
+        programOutputStore.Clear();
         exitCode = -1;
         if varTree != null { varTree.ClearAll(); } // fresh session starts collapsed
         ClearStopSnapshot();
         ClearEvaluationSnapshot();
         ClearWatchValues();
-        ctrlBuf = "";
+        ctrlBytes = null;
+        ctrlLength = 0;
         adapterInputCarry = "";
         nextRequestId = 1;
         dirty = true;

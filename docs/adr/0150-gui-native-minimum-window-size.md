@@ -47,6 +47,10 @@ main window. The native floor multiplies that base by whole-UI zoom at 100 to
 300 percent. Zoom below 100 percent does not reduce the usability floor. On
 displays smaller than the calculated floor, each dimension contracts to the
 monitor size minus a 96-pixel safety gap so the application remains reachable.
+On macOS sessions where Cocoa exposes no `NSScreen` (for example login-less CI
+or a hardened launch context), the graphics adapter reports a deterministic
+1920×1080 backing-pixel desktop rather than `0×0`, so the same clamping logic
+remains well-defined.
 The monitor API reports the full display rather than the desktop work area, so
 this reserve also accommodates common menu-bar, taskbar, and title-bar chrome.
 

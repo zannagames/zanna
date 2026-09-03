@@ -27,6 +27,7 @@ module editor_engine;
 bind "../core/document";
 bind "../services/file_utils";
 bind "editor_engine_base" as Base;
+bind "editor_mirror_sync";
 bind Zanna.GUI as GUI;
 
 /// @brief Return whether a document can safely own one CodeEditor split pane.
@@ -362,6 +363,7 @@ class EditorEngine extends Base.EditorEngineBase {
         sharedDocumentSplit = true;
         secondaryFocused = false;
         sharedMirrorGeneration = currentDoc.sharedBuffer.generation;
+        sharedMirrorSourceRevision = editor.Revision;
         paneFocusChanged = false;
         return true;
     }
@@ -373,27 +375,27 @@ class EditorEngine extends Base.EditorEngineBase {
            or shadow == null {
             return false;
         }
-        var ownerView = 0;
-        if secondaryFocused { ownerView = 1; }
-        var text = GetTextSnapshot();
-        currentDoc.PublishText(text, ownerView);
-        if sharedMirrorGeneration == currentDoc.sharedBuffer.generation {
+        var revision = editor.Revision;
+        if revision == sharedMirrorSourceRevision {
             return false;
         }
 
         var mirror = rightWidget;
         if secondaryFocused { mirror = leftWidget; }
         if mirror == null { return false; }
-        var cursorLine = mirror.CursorLine;
-        var cursorCol = mirror.CursorCol;
-        var scrollLine = mirror.ScrollTopLine;
-        mirror.SetReadOnly(false);
-        mirror.SetText(text);
-        mirror.SetCursor(cursorLine, cursorCol);
-        mirror.ScrollTopLine = scrollLine;
-        mirror.SetReadOnly(true);
-        shadow.cachedTextSnapshot = text;
-        shadow.cachedTextRevision = mirror.Revision;
+        var applied = editor_mirror_sync.ApplyDeltas(
+            editor, mirror, sharedMirrorSourceRevision);
+        if applied == false {
+            editor_mirror_sync.Reset(mirror, GetTextSnapshot());
+        }
+        var ownerView = 0;
+        if secondaryFocused { ownerView = 1; }
+        currentDoc.sharedBuffer.PublishRevision(revision, ownerView);
+        cachedTextSnapshot = "";
+        cachedTextRevision = -1;
+        shadow.cachedTextSnapshot = "";
+        shadow.cachedTextRevision = -1;
+        sharedMirrorSourceRevision = revision;
         sharedMirrorGeneration = currentDoc.sharedBuffer.generation;
         return true;
     }
@@ -497,14 +499,14 @@ class EditorEngine extends Base.EditorEngineBase {
 
         var canonical = source.AttachBuffer(GUI.EditorBuffer.New(""));
         if canonical == null { return; }
-        var text = canonical.Text;
         target.SetReadOnly(false);
-        target.AttachBuffer(canonical);
+        var mirrorBuffer = target.AttachBuffer(canonical);
+        if mirrorBuffer == null { return; }
         target.SetCursor(targetLine, targetCol);
         target.ScrollTopLine = targetScroll;
 
         source.SetReadOnly(false);
-        source.SetText(text);
+        source.AttachBuffer(mirrorBuffer);
         source.SetCursor(sourceLine, sourceCol);
         source.ScrollTopLine = sourceScroll;
         source.SetReadOnly(true);
@@ -514,14 +516,14 @@ class EditorEngine extends Base.EditorEngineBase {
         shadow = previous;
         secondaryFocused = secondaryFocused == false;
         editor = target;
-        cachedTextSnapshot = text;
-        cachedTextRevision = target.Revision;
-        shadow.cachedTextSnapshot = text;
-        shadow.cachedTextRevision = source.Revision;
+        cachedTextSnapshot = "";
+        cachedTextRevision = -1;
+        shadow.cachedTextSnapshot = "";
+        shadow.cachedTextRevision = -1;
         var ownerView = 0;
         if secondaryFocused { ownerView = 1; }
-        currentDoc.PublishText(text, ownerView);
         currentDoc.sharedBuffer.TransferOwnership(ownerView);
+        sharedMirrorSourceRevision = target.Revision;
         sharedMirrorGeneration = currentDoc.sharedBuffer.generation;
         paneFocusChanged = true;
         InvalidateDocumentSync();
@@ -554,6 +556,7 @@ class EditorEngine extends Base.EditorEngineBase {
         }
         sharedDocumentSplit = false;
         sharedMirrorGeneration = -1;
+        sharedMirrorSourceRevision = -1;
         secondaryFocused = false;
         editor = leftWidget;
     }

@@ -1,6 +1,189 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/bounded_output.zia
+// Purpose: Retain bounded process output without repeated whole-tail copies.
+// Key invariants:
+//   - Overflow retains a valid UTF-8 suffix and publishes one visible marker.
+//   - Appends copy only incoming bytes; strings materialize only on demand.
+// Ownership/Lifetime: Each BoundedText owns one fixed-capacity byte ring.
+// Links: zannastudio/src/build/build_system.zia,
+//        zannastudio/src/build/debug_session.zia
+//
+//===----------------------------------------------------------------------===//
+
 module bounded_output;
 
 bind Str = Zanna.String;
+bind Bytes = Zanna.Collections.Bytes;
+
+/// @brief Fixed-capacity UTF-8-aware byte ring for process output.
+class BoundedText {
+    hide Any storage;
+    hide Integer head;
+    expose Integer byteCount;
+    expose Integer maxBytes;
+    expose Boolean dropped;
+    expose String truncationPrefix;
+
+    expose func init(maximumBytes: Integer, prefix: String) {
+        maxBytes = maximumBytes;
+        if maxBytes < 1 { maxBytes = 1; }
+        truncationPrefix = prefix;
+        storage = Bytes.New(maxBytes);
+        head = 0;
+        byteCount = 0;
+        dropped = false;
+    }
+
+    hide func ByteAt(offset: Integer) -> Integer {
+        return Bytes.Get(storage, (head + offset) % maxBytes);
+    }
+
+    hide func IsContinuation(value: Integer) -> Boolean {
+        return value >= 0x80 and value <= 0xBF;
+    }
+
+    hide func NormalizeHead() {
+        while byteCount > 0 and IsContinuation(ByteAt(0)) {
+            head = (head + 1) % maxBytes;
+            byteCount = byteCount - 1;
+            dropped = true;
+        }
+    }
+
+    hide func CopyToTail(input: Any,
+                         sourceOffset: Integer,
+                         count: Integer) {
+        if count <= 0 { return; }
+        var tail = (head + byteCount) % maxBytes;
+        var firstCount = count;
+        if firstCount > maxBytes - tail { firstCount = maxBytes - tail; }
+        Bytes.Copy(storage, tail, input, sourceOffset, firstCount);
+        var remaining = count - firstCount;
+        if remaining > 0 {
+            Bytes.Copy(storage, 0, input, sourceOffset + firstCount, remaining);
+        }
+        byteCount = byteCount + count;
+    }
+
+    expose func Append(text: String) {
+        if text == "" { return; }
+        var input = Bytes.FromStr(text);
+        var inputBytes = Bytes.get_Length(input);
+        if inputBytes >= maxBytes {
+            if byteCount > 0 or inputBytes > maxBytes { dropped = true; }
+            Bytes.Copy(storage, 0, input, inputBytes - maxBytes, maxBytes);
+            head = 0;
+            byteCount = maxBytes;
+            NormalizeHead();
+            return;
+        }
+        var overflow = byteCount + inputBytes - maxBytes;
+        if overflow > 0 {
+            head = (head + overflow) % maxBytes;
+            byteCount = byteCount - overflow;
+            dropped = true;
+            NormalizeHead();
+        }
+        CopyToTail(input, 0, inputBytes);
+    }
+
+    hide func CompletePrefixBytes() -> Integer {
+        var i = 0;
+        while i < byteCount {
+            var lead = ByteAt(i);
+            var width = 1;
+            if lead >= 0xC2 and lead <= 0xDF {
+                width = 2;
+            } else if lead >= 0xE0 and lead <= 0xEF {
+                width = 3;
+            } else if lead >= 0xF0 and lead <= 0xF4 {
+                width = 4;
+            } else if IsContinuation(lead) {
+                i = i + 1;
+                continue;
+            }
+            if i + width > byteCount { return i; }
+            var validShape = true;
+            var j = 1;
+            while j < width {
+                if IsContinuation(ByteAt(i + j)) == false { validShape = false; }
+                j = j + 1;
+            }
+            if validShape { i = i + width; } else { i = i + 1; }
+        }
+        return byteCount;
+    }
+
+    hide func PrefixText(count: Integer) -> String {
+        if count <= 0 { return ""; }
+        var output = Bytes.New(count);
+        var firstCount = count;
+        if firstCount > maxBytes - head { firstCount = maxBytes - head; }
+        Bytes.Copy(output, 0, storage, head, firstCount);
+        var remaining = count - firstCount;
+        if remaining > 0 {
+            Bytes.Copy(output, firstCount, storage, 0, remaining);
+        }
+        return Bytes.ToStr(output);
+    }
+
+    hide func DropPrefix(count: Integer) {
+        var removeCount = count;
+        if removeCount < 0 { removeCount = 0; }
+        if removeCount > byteCount { removeCount = byteCount; }
+        head = (head + removeCount) % maxBytes;
+        byteCount = byteCount - removeCount;
+    }
+
+    expose func Text() -> String {
+        var text = PrefixText(CompletePrefixBytes());
+        if dropped { return truncationPrefix + text; }
+        return text;
+    }
+
+    expose func TakeText() -> String {
+        var count = CompletePrefixBytes();
+        var text = PrefixText(count);
+        DropPrefix(count);
+        var wasDropped = dropped;
+        dropped = false;
+        if wasDropped { return truncationPrefix + text; }
+        return text;
+    }
+
+    expose func Clear() {
+        head = 0;
+        byteCount = 0;
+        dropped = false;
+    }
+}
+
+/// @brief Pair the durable build log with its independently consumed UI delta.
+class OutputChannels {
+    hide BoundedText complete;
+    hide BoundedText delta;
+
+    expose func init(completeBytes: Integer, deltaBytes: Integer) {
+        complete = new BoundedText(completeBytes, "[output truncated]\n");
+        delta = new BoundedText(deltaBytes, "[output delta truncated]\n");
+    }
+
+    expose func Append(existing: String, text: String) {
+        if complete.byteCount == 0 and existing != "" { complete.Append(existing); }
+        complete.Append(text);
+        delta.Append(text);
+    }
+
+    expose func CompleteText() -> String { return complete.Text(); }
+    expose func TakeDelta() -> String { return delta.TakeText(); }
+    expose func Clear() { complete.Clear(); delta.Clear(); }
+}
 
 // ============================================================================
 // MODULE: bounded_output

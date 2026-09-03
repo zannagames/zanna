@@ -503,6 +503,8 @@ RT_CLASS_BEGIN("Zanna.GUI.CodeEditor", GuiCodeEditor, "obj", GuiCodeEditorNew, "
     RT_METHOD("IsModified", "i1()", GuiCodeEditorIsModified)
     RT_METHOD("ClearModified", "void()", GuiCodeEditorClearModified)
     RT_METHOD("TakeDeltas", "str(i64)", GuiCodeEditorTakeDeltas)
+    RT_METHOD("PeekDeltas", "str(i64)", GuiCodeEditorPeekDeltas)
+    RT_METHOD("ApplyMirrorEdit", "i1(i64,i64,i64,i64,str)", GuiCodeEditorApplyMirrorEdit)
     RT_METHOD("SetFont", "void(obj,f64)", GuiCodeEditorSetFont)
     RT_METHOD("GetFontSize", "f64()", GuiCodeEditorGetFontSize)
     RT_METHOD("SetFontSize", "void(f64)", GuiCodeEditorSetFontSize)

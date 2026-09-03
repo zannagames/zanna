@@ -35,19 +35,6 @@ bind Zanna.System.Process as Process;
 bind Zanna.GUI as GUI;
 bind StringBuilder = Zanna.Text.StringBuilder;
 
-// ============================================================================
-// MODULE: build_system
-// PURPOSE: Compile and run Zia/BASIC programs from the IDE.
-//
-// WHERE-THIS-FITS: Build and debug command handlers create jobs here; main.zia
-//          pumps UpdateJob every frame and AppShell renders the streamed output.
-//
-// TEACHING-NOTE: Build/run processes are long-lived external state. Keep process
-//          handles, output deltas, cancellation, and elapsed time together so
-//          command handlers remain thin request initiators. Pure parsing and
-//          buffer policies live in sibling leaf modules.
-// ============================================================================
-
 final MAX_BUILD_OUTPUT_CHARS = 250000;
 final MAX_BUILD_OUTPUT_DELTA_CHARS = 65536;
 final PROCESS_OUTPUT_BYTES_PER_FRAME = 65536;
@@ -63,6 +50,7 @@ class BuildSystem {
     // Build output
     expose String buildOutput;
     expose String outputDelta;
+    hide bounded_output.OutputChannels outputStores;
     expose String compilerPath;
 
     // Build timing ("1.2s" after last build)
@@ -94,6 +82,8 @@ class BuildSystem {
         lastBuildSuccess = false;
         buildOutput = "";
         outputDelta = "";
+        outputStores = new bounded_output.OutputChannels(
+            MAX_BUILD_OUTPUT_CHARS, MAX_BUILD_OUTPUT_DELTA_CHARS);
         compilerPath = "zanna";
         lastBuildTime = "";
         startMs = 0;
@@ -145,6 +135,7 @@ class BuildSystem {
         if preserveChain == false {
             buildOutput = "";
             outputDelta = "";
+            outputStores.Clear();
             diagnosticStream.Reset();
             diagnostics = diagnosticStream.records;
             reportedDiagnosticRevision = 0;
@@ -281,12 +272,9 @@ class BuildSystem {
 
     func AppendOutput(text: String) {
         if text == "" { return; }
-        buildOutput = bounded_output.Append(buildOutput, text,
-                                            "[output truncated]\n",
-                                            MAX_BUILD_OUTPUT_CHARS);
-        outputDelta = bounded_output.Append(outputDelta, text,
-                                            "[output delta truncated]\n",
-                                            MAX_BUILD_OUTPUT_DELTA_CHARS);
+        outputStores.Append(buildOutput, text);
+        buildOutput = "";
+        outputDelta = "";
     }
 
     /// @brief Publish parser limits once in the durable build output.
@@ -345,7 +333,7 @@ class BuildSystem {
         result.action = activeAction;
         result.name = activeName;
         result.duration = lastBuildTime;
-        result.output = buildOutput;
+        result.output = GetOutput();
         result.errorCount = GetErrorCount();
         result.warningCount = GetWarningCount();
         completedResult = result;
@@ -429,11 +417,13 @@ class BuildSystem {
 
     // Get the build output text.
     expose func GetOutput() -> String {
+        buildOutput = outputStores.CompleteText();
         return buildOutput;
     }
 
     expose func TakeOutputDelta() -> String {
-        var delta = outputDelta;
+        var delta = outputStores.TakeDelta();
+        if delta == "" { delta = outputDelta; }
         outputDelta = "";
         return delta;
     }

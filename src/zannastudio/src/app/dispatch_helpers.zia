@@ -95,17 +95,12 @@ expose func HasIdentifierInput(text: String) -> Boolean {
     return false;
 }
 
-/// @brief Check whether lower-priority background controllers may run this frame.
-/// @param frameWorkStartMs Tick captured near the start of controller updates.
-/// @param budgetMs Soft elapsed-time budget for background controller work.
-/// @return True while elapsed controller work is below the supplied budget.
-/// @details Build/debug polling, input handling, completion, and diagnostics run
-///          before this gate. Hover, signature, inlay, symbols, and search can
-///          wait one frame when earlier work has consumed the soft budget.
-expose func FrameBudgetAllows(frameWorkStartMs: Integer, budgetMs: Integer) -> Boolean {
-    if frameWorkStartMs <= 0 { return true; }
-    if budgetMs <= 0 { return true; }
-    return Zanna.Time.Clock.NowMs() - frameWorkStartMs < budgetMs;
+/// @brief Check one immutable absolute deadline for cooperative frame work.
+/// @details Callers compute the deadline once at frame start, so an adaptive
+///          budget change cannot accidentally extend a frame already in progress.
+expose func FrameDeadlineAllows(deadlineMs: Integer) -> Boolean {
+    if deadlineMs <= 0 { return true; }
+    return Zanna.Time.Clock.NowMs() < deadlineMs;
 }
 
 /// @brief Return whether a build/run command may start in the current IDE state.

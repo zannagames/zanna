@@ -410,7 +410,9 @@ static void test_navmesh_find_path_adopts_reconstructed_storage() {
 }
 
 static void test_navmesh_path_workspace_reuse_is_concurrent_safe() {
-    constexpr int cells = 64;
+    /* Keep each search alive across scheduler quanta so the peak-concurrency
+     * assertion remains meaningful on oversubscribed CI workers. */
+    constexpr int cells = 256;
     void *nm = make_dense_grid_navmesh(cells);
     void *from = rt_vec3_new(-31.0, 0.0, -31.0);
     void *to = rt_vec3_new(31.0, 0.0, 31.0);

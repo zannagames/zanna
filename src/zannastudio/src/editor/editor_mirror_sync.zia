@@ -1,0 +1,56 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/editor_mirror_sync.zia
+// Purpose: Apply non-consuming editor deltas to a read-only split mirror.
+// Key invariants:
+//   - Applying mirror edits never consumes the mutable owner's delta stream.
+//   - Overflow or an invalid delta falls back to one canonical text snapshot.
+// Ownership/Lifetime: Stateless helper borrowing both editor widgets.
+// Links: zannastudio/src/editor/editor_engine.zia,
+//        docs/adr/0318-non-consuming-editor-deltas-for-split-mirrors.md
+//
+//===----------------------------------------------------------------------===//
+
+module editor_mirror_sync;
+
+bind GUI = Zanna.GUI;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+
+/// @brief Apply every delta newer than sourceRevision to the mirror.
+func ApplyDeltas(source: GUI.CodeEditor,
+                 mirror: GUI.CodeEditor,
+                 sourceRevision: Integer) -> Boolean {
+    var deltaText = source.PeekDeltas(sourceRevision);
+    if deltaText == "overflow" { return false; }
+    var deltas = Json.ParseArray(deltaText);
+    var applied = true;
+    var i = 0;
+    while i < Seq.get_Count(deltas) and applied {
+        var delta = Seq.Get(deltas, i);
+        applied = mirror.ApplyMirrorEdit(
+            Map.GetInt(delta, "sl"), Map.GetInt(delta, "sc"),
+            Map.GetInt(delta, "el"), Map.GetInt(delta, "ec"),
+            Map.GetStr(delta, "t"));
+        i = i + 1;
+    }
+    return applied;
+}
+
+/// @brief Replace a mirror while preserving its independent viewport.
+func Reset(mirror: GUI.CodeEditor, text: String) {
+    var cursorLine = mirror.CursorLine;
+    var cursorCol = mirror.CursorCol;
+    var scrollLine = mirror.ScrollTopLine;
+    mirror.SetReadOnly(false);
+    mirror.SetText(text);
+    mirror.SetCursor(cursorLine, cursorCol);
+    mirror.ScrollTopLine = scrollLine;
+    mirror.SetReadOnly(true);
+}

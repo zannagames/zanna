@@ -26,6 +26,7 @@
 #include "il/runtime/RuntimeSignatures.hpp"
 #include "rt_error.h"
 #include "rt_gc.h"
+#include "rt_platform.h"
 #include "vm/DiagFormat.hpp"
 #include "vm/Marshal.hpp"
 #include "vm/OpcodeHandlerHelpers.hpp"
@@ -140,7 +141,7 @@ static VmResult executeDescriptor(const RuntimeDescriptor &desc,
 #pragma warning(push)
 #pragma warning(disable : 4611)
 #endif
-    const int recoveryState = setjmp(recovery);
+    const int recoveryState = RT_SETJMP(recovery);
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -217,7 +218,7 @@ const std::array<Thunk, static_cast<std::size_t>(RtSig::Count)> &thunkTable() {
 /// @brief RAII helper that installs a runtime call context for the current thread.
 struct ContextGuard {
     RuntimeCallContext *previous; ///< Context restored at scope exit.
-    RuntimeCallContext *current; ///< Context installed by this guard.
+    RuntimeCallContext *current;  ///< Context installed by this guard.
 
     /// @brief Push the provided context as the thread-local active call.
     /// @param ctx Mutable call context installed for this scope.
@@ -244,14 +245,14 @@ using Operands = std::span<const Slot>;
 
 /// @brief Aggregates information required to finalise a runtime trap.
 struct TrapCtx {
-    TrapKind kind; ///< Runtime trap classification.
-    const std::string &message; ///< Borrowed human-readable diagnostic.
-    const SourceLoc &loc; ///< Source location associated with the trap.
+    TrapKind kind;               ///< Runtime trap classification.
+    const std::string &message;  ///< Borrowed human-readable diagnostic.
+    const SourceLoc &loc;        ///< Source location associated with the trap.
     const std::string &function; ///< Active function name.
-    const std::string &block; ///< Active block label.
-    VM *vm = nullptr; ///< Active VM, or null outside interpreted execution.
-    VmError error{}; ///< Structured error delivered to VM/runtime consumers.
-    FrameInfo frame{}; ///< Standalone frame metadata when no VM is active.
+    const std::string &block;    ///< Active block label.
+    VM *vm = nullptr;            ///< Active VM, or null outside interpreted execution.
+    VmError error{};             ///< Structured error delivered to VM/runtime consumers.
+    FrameInfo frame{};           ///< Standalone frame metadata when no VM is active.
 };
 
 /// @brief Deliver a trap either to the active VM or to the call-site context.
@@ -970,10 +971,12 @@ bool unregisterExternIn(ExternRegistry &registry, std::string_view name) {
 /// @param name Case-insensitive external name.
 /// @return Pointer to a thread-local descriptor copy, or @c nullptr if absent.
 const ExternDesc *findExternIn(ExternRegistry &registry, std::string_view name) {
-    const std::string key = canonicalizeExternName(name);
     thread_local std::array<ExternDesc, 8> tlsExternCopies{};
     thread_local size_t tlsExternCopyIndex = 0;
     std::lock_guard<std::mutex> lock(registry.mutex);
+    if (registry.entries.empty())
+        return nullptr;
+    const std::string key = canonicalizeExternName(name);
     auto it = registry.entries.find(key);
     if (it == registry.entries.end())
         return nullptr;
@@ -994,10 +997,15 @@ const ExternDesc *resolveExternIn(ExternRegistry &registry,
                                   std::string_view name,
                                   il::runtime::RuntimeSignature *outSig,
                                   il::runtime::RuntimeHandler *outHandler) {
-    const std::string key = canonicalizeExternName(name);
     thread_local std::array<ExternDesc, 8> tlsExternCopies{};
     thread_local size_t tlsExternCopyIndex = 0;
     std::lock_guard<std::mutex> lock(registry.mutex);
+    // Every runtime call resolves through here before the built-in table;
+    // an empty registry (the common case) must not pay the lowercase-key
+    // allocation.
+    if (registry.entries.empty())
+        return nullptr;
+    const std::string key = canonicalizeExternName(name);
     auto it = registry.entries.find(key);
     if (it == registry.entries.end())
         return nullptr;

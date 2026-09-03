@@ -177,6 +177,12 @@ class LanguageToolFrameController extends State.LanguageToolFrameState {
             if sigCtrl != null { sigCtrl.Hide(); }
         }
         frameWorkStartMs = Clock.NowMs();
+        var frameBudgetMs = LANGUAGE_FRAME_BACKGROUND_BUDGET_MS;
+        if perfMon != null {
+            frameBudgetMs = perfMon.RecommendedBackgroundBudgetMs(frameBudgetMs);
+        }
+        if frameBudgetMs < 1 { frameBudgetMs = 1; }
+        frameWorkDeadlineMs = frameWorkStartMs + frameBudgetMs;
     }
 
     /// @brief Run bounded workspace indexing and cache refresh work.
@@ -460,12 +466,7 @@ class LanguageToolFrameController extends State.LanguageToolFrameState {
     /// @brief Return whether lower-priority work may still run this frame.
     /// @return True while elapsed work is below the adaptive soft budget.
     expose func BudgetAllows() -> Boolean {
-        var budgetMs = LANGUAGE_FRAME_BACKGROUND_BUDGET_MS;
-        if perfMon != null {
-            budgetMs = perfMon.RecommendedBackgroundBudgetMs(budgetMs);
-        }
-        return dispatch_helpers.FrameBudgetAllows(frameWorkStartMs,
-                                                  budgetMs);
+        return dispatch_helpers.FrameDeadlineAllows(frameWorkDeadlineMs);
     }
 
     /// @brief Apply active language-service capability state to all tool controllers.

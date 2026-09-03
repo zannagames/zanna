@@ -401,6 +401,33 @@ static void test_file_index_cursor_work_budget() {
     fs::remove_all(root);
 }
 
+/// @brief Explicit traversal ownership remains bounded even if callers leak handles.
+static void test_file_index_cursor_resource_budget() {
+    fs::path root = temp_root();
+    write_file(root / "main.zia", "module Main;\n");
+    rt_string root_s = s(root.string());
+    std::vector<void *> cursors;
+    for (int i = 0; i < 64; ++i) {
+        void *cursor =
+            rt_workspace_file_index_cursor_new(root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+        assert(cursor != nullptr);
+        cursors.push_back(cursor);
+    }
+    void *overflow =
+        rt_workspace_file_index_cursor_new(root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+    assert(overflow == nullptr);
+    rt_workspace_file_index_cursor_destroy(cursors.back());
+    cursors.pop_back();
+    void *replacement =
+        rt_workspace_file_index_cursor_new(root_s, rt_const_cstr(".zia"), rt_const_cstr(""), 0);
+    assert(replacement != nullptr);
+    rt_workspace_file_index_cursor_destroy(replacement);
+    for (void *cursor : cursors)
+        rt_workspace_file_index_cursor_destroy(cursor);
+    rt_string_unref(root_s);
+    fs::remove_all(root);
+}
+
 static void test_asset_resolver_and_manifest() {
     fs::path root = temp_root();
     write_file(root / "scenes/level.json", "{}");
@@ -940,6 +967,11 @@ static void test_workspace_edits() {
     assert(read_file(a) == "allowed\n");
     assert(read_file(outside) == "outside\n");
 
+    for (const auto &entry : fs::recursive_directory_iterator(root)) {
+        const std::string name = entry.path().filename().string();
+        assert(name.find(".zanna-workspace-edit-") == std::string::npos);
+    }
+
     rt_string_unref(root_s);
     fs::remove(outside);
     fs::remove_all(second_root);
@@ -982,6 +1014,7 @@ int main() {
     test_directory_page();
     test_file_index_and_ignore();
     test_file_index_cursor_work_budget();
+    test_file_index_cursor_resource_budget();
     test_asset_resolver_and_manifest();
     test_workspace_watcher_batch();
     test_workspace_edits();

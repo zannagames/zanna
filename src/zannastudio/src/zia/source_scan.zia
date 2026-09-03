@@ -112,7 +112,7 @@ expose func ZiaFunctionEndLineFromLines(lines: Seq,
 /// @return Sequence of maps with `name`, `line`, and 0-based `column` fields.
 expose func OutgoingZiaCallTokens(source: String,
                                   startLine: Integer,
-                                  endLine: Integer) -> Any {
+                                  endLine: Integer) -> Seq {
     return call_scan.OutgoingZiaCallTokens(source, startLine, endLine);
 }
 

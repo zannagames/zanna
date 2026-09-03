@@ -5,25 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// ZannaGFX macOS Cocoa Backend
-//
-// Platform-specific implementation using macOS Cocoa APIs (Objective-C).
-// Provides window creation, event handling, framebuffer blitting, and timing
-// functions for macOS systems.
-//
-// Architecture:
-//   - NSWindow: Native window container
-//   - VGFXView (NSView): Custom view for framebuffer display via CGImage
-//   - VGFXWindowDelegate: Handles window lifecycle events (close, resize, focus)
-//   - Event Translation: NSEvent → vgfx_event_t mapping
-//   - Coordinate Conversion: Cocoa (bottom-left origin) → ZannaGFX (top-left origin)
-//
-// Key macOS Concepts:
-//   - Autorelease pools: Required for Objective-C memory management
-//   - NSApplication: Singleton application instance (NSApp)
-//   - Event loop: nextEventMatchingMask with distantPast for non-blocking
-//   - CGImage: Core Graphics image created from raw RGBA framebuffer
-//   - mach_absolute_time: High-resolution monotonic timer
+// File: src/lib/graphics/src/vgfx_platform_macos.m
+// Purpose: Cocoa window, input, clipboard, presentation, and timing adapter.
+// Key invariants:
+//   - Cocoa coordinates and backing scales are normalized to ZannaGFX contracts.
+//   - Unavailable pasteboard and screen services retain deterministic fallbacks.
+// Ownership/Lifetime:
+//   - Objective-C objects follow Cocoa ownership inside autorelease pools.
+//   - Process-local clipboard fallback bytes remain owned by this adapter.
+// Links: src/lib/graphics/src/vgfx.c, src/lib/graphics/include/vgfx.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,6 +45,8 @@ static void vgfx_macos_apply_adjacent_application_icon(void);
 static int g_vgfx_macos_cursor_hidden = 0;
 static mach_timebase_info_data_t g_vgfx_macos_timebase = {0};
 static pthread_once_t g_vgfx_macos_timebase_once = PTHREAD_ONCE_INIT;
+static char *g_vgfx_macos_clipboard_fallback = NULL;
+static int g_vgfx_macos_clipboard_fallback_active = 0;
 
 static int vgfx_macos_env_flag_enabled(const char *name) {
     const char *value = getenv(name);
@@ -1675,14 +1667,14 @@ int vgfx_platform_wake_events(struct vgfx_window *win) {
         return 0;
     @autoreleasepool {
         NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
-                                          location:NSZeroPoint
-                                     modifierFlags:0
-                                         timestamp:0.0
-                                      windowNumber:0
-                                           context:nil
-                                           subtype:0
-                                             data1:0
-                                             data2:0];
+                                            location:NSZeroPoint
+                                       modifierFlags:0
+                                           timestamp:0.0
+                                        windowNumber:0
+                                             context:nil
+                                             subtype:0
+                                               data1:0
+                                               data2:0];
         if (!event)
             return 0;
         [NSApp postEvent:event atStart:NO];
@@ -1999,6 +1991,8 @@ void vgfx_platform_yield(void) {
 /// @return 1 if data is available, 0 otherwise
 int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
     @autoreleasepool {
+        if (format == VGFX_CLIPBOARD_TEXT && g_vgfx_macos_clipboard_fallback_active)
+            return g_vgfx_macos_clipboard_fallback != NULL ? 1 : 0;
         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
 
         switch (format) {
@@ -2028,6 +2022,9 @@ int vgfx_clipboard_has_format(vgfx_clipboard_format_t format) {
 /// @return Clipboard text (caller must free), or NULL if not available
 char *vgfx_clipboard_get_text(void) {
     @autoreleasepool {
+        if (g_vgfx_macos_clipboard_fallback_active)
+            return vgfx_macos_strdup(
+                g_vgfx_macos_clipboard_fallback ? g_vgfx_macos_clipboard_fallback : "");
         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
         NSString *string = [pasteboard stringForType:NSPasteboardTypeString];
 
@@ -2047,14 +2044,19 @@ char *vgfx_clipboard_get_text(void) {
 /// @param text Text to copy (NULL clears text from clipboard)
 void vgfx_clipboard_set_text(const char *text) {
     @autoreleasepool {
+        free(g_vgfx_macos_clipboard_fallback);
+        g_vgfx_macos_clipboard_fallback = text ? vgfx_macos_strdup(text) : NULL;
+        g_vgfx_macos_clipboard_fallback_active = 0;
         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
         [pasteboard clearContents];
 
         if (text) {
             NSString *string = vgfx_macos_string_or_empty(text);
-            if (string) {
-                [pasteboard setString:string forType:NSPasteboardTypeString];
-            }
+            BOOL published = string && [pasteboard setString:string forType:NSPasteboardTypeString];
+            NSString *round_trip =
+                published ? [pasteboard stringForType:NSPasteboardTypeString] : nil;
+            g_vgfx_macos_clipboard_fallback_active =
+                !round_trip || ![round_trip isEqualToString:string];
         }
     }
 }
@@ -2062,6 +2064,9 @@ void vgfx_clipboard_set_text(const char *text) {
 /// @brief Clear all clipboard contents.
 void vgfx_clipboard_clear(void) {
     @autoreleasepool {
+        free(g_vgfx_macos_clipboard_fallback);
+        g_vgfx_macos_clipboard_fallback = NULL;
+        g_vgfx_macos_clipboard_fallback_active = 0;
         NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
         [pasteboard clearContents];
     }
@@ -2404,6 +2409,16 @@ void vgfx_platform_get_monitor_size(struct vgfx_window *win, int32_t *out_w, int
         }
         if (!screen)
             screen = [NSScreen mainScreen];
+        if (!screen) {
+            // Login-less CI and hardened app sessions can have no NSScreen.
+            // Preserve a usable, deterministic desktop contract instead of
+            // returning 0x0 and allowing window-growth math to go negative.
+            if (out_w)
+                *out_w = 1920;
+            if (out_h)
+                *out_h = 1080;
+            return;
+        }
         NSRect frame = [screen convertRectToBacking:[screen frame]];
         if (out_w)
             *out_w = vgfx_internal_round_scaled((float)frame.size.width);

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-08-21
+last-verified: 2026-09-03
 ---
 
 # ADR 0287: Make Workspace Index Cursor Tokens Generation-Safe and Work-Bounded
@@ -31,13 +31,18 @@ queries fail closed, and repeated destruction is a no-op. Operations on the same
 cursor are serialized while independent cursors remain independent.
 
 `Next(handle, limit)` now bounds traversal work as well as result allocation. It
-examines at most `clamp(limit * 8, 64, 32768)` directory entries per call and may
+examines at most `clamp(limit * 4, 64, 4096)` directory entries per call and may
 return an empty, valid, non-final page. Its map reports `work` for candidates
 examined in that call and `scanned` for the cursor's cumulative candidates;
 `nextOffset` remains the logical matching-entry offset.
 
 Each cursor also caches the inherited ignore-rule vector once per visited
 directory and no longer retains a duplicate set of every emitted path.
+
+The registry admits at most 64 simultaneously live cursors and releases a slot
+as soon as `Destroy` removes its token. Registry, per-cursor operation, and
+shared ignore-cache contention use blocking mutexes rather than unbounded tight
+spin loops.
 
 ## Consequences
 
@@ -47,6 +52,8 @@ directory and no longer retains a duplicate set of every emitted path.
   paging until `done`.
 - Cursor tokens are process-local capabilities and must never be persisted or
   interpreted as addresses.
+- A failed cursor creation can indicate that the process-wide live-cursor
+  budget is exhausted; callers must finish or destroy an older traversal.
 
 ## Alternatives Considered
 

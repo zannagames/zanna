@@ -775,7 +775,7 @@ func Publish(shell: app_shell.AppShell,
              tabs: editor_tabs.EditorTabs,
              session: debug_session.DebugSession) {
     var stopInfo = session.FormatConsole();
-    shell.toolPanels.UpdateDebugOutputParts(session.programOutput, stopInfo);
+    shell.toolPanels.UpdateDebugOutputParts(session.GetProgramOutput(), stopInfo);
     PopulateDebugPanels(shell, session);
     if session.lastType == "stopped" {
         shell.SetStatusLeft("Stopped at " + session.activePath + ":" + session.lastLine

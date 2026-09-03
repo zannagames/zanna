@@ -42,22 +42,6 @@ bind Codec = Zanna.Text.Codec;
 
 final MAX_GIT_STDOUT_CHARS = 500000;
 final MAX_GIT_STDERR_CHARS = 120000;
-// ============================================================================
-// MODULE: scm_git
-// PURPOSE: Async git command layer for the IDE Source Control view.
-//
-// WHERE-THIS-FITS: scm_view owns widgets and starts GitJob instances from this
-//          module. Each frame it pumps the active job, then parses status/diff
-//          output or refreshes after mutating commands.
-//
-// KEY-DESIGN-CHOICES:
-//   * PROCESS, NOT EXEC. Zanna.System.Process gives stdout, stderr, exit code,
-//     and cancellation in one handle, so network operations never block the UI.
-//   * PATH RESOLUTION AT THE EDGE. Process does not search PATH, so this module
-//     resolves git once and reports a useful error if it cannot be found.
-//   * PORCELAIN V2 PARSING. Status parsing is field-based, so paths containing
-//     spaces are handled without display-string splitting.
-// ============================================================================
 
 /// @brief One changed file in `git status`, with staged/worktree state.
 class GitEntry {
@@ -137,6 +121,8 @@ class GitJob {
     expose Boolean stagedDiff;
     expose String stdoutText;
     expose String stderrText;
+    hide bounded_output.BoundedText stdoutStore;
+    hide bounded_output.BoundedText stderrStore;
     expose Integer exitCode;
     expose Boolean running;
     expose Boolean started;
@@ -152,6 +138,10 @@ class GitJob {
         stagedDiff = false;
         stdoutText = "";
         stderrText = "";
+        stdoutStore = new bounded_output.BoundedText(
+            MAX_GIT_STDOUT_CHARS, "[git stdout truncated]\n");
+        stderrStore = new bounded_output.BoundedText(
+            MAX_GIT_STDERR_CHARS, "[git stderr truncated]\n");
         exitCode = -1;
         running = false;
         started = false;
@@ -177,6 +167,8 @@ class GitJob {
         stagedDiff = isStagedDiff;
         stdoutText = "";
         stderrText = "";
+        stdoutStore.Clear();
+        stderrStore.Clear();
         exitCode = -1;
         stdoutTruncated = false;
         stderrTruncated = false;
@@ -203,6 +195,7 @@ class GitJob {
         }
         Drain();
         exitCode = handle.ExitCode();
+        PublishOutputText();
         ReleaseHandle();
         running = false;
         return false;
@@ -224,6 +217,7 @@ class GitJob {
         var ok = handle.Kill();
         Drain();
         exitCode = -1;
+        PublishOutputText();
         ReleaseHandle();
         running = false;
         return ok;
@@ -249,6 +243,7 @@ class GitJob {
     }
 
     expose func CombinedOutput() -> String {
+        PublishOutputText();
         if stdoutText == "" { return stderrText; }
         if stderrText == "" { return stdoutText; }
         return stdoutText + "\n" + stderrText;
@@ -264,20 +259,12 @@ class GitJob {
         if result == null { return; }
         var out = Map.GetStr(result, "text");
         if out != "" {
-            if Str.get_Length(out) > MAX_GIT_STDOUT_CHARS
-               or Str.get_Length(stdoutText) > MAX_GIT_STDOUT_CHARS - Str.get_Length(out) {
-                stdoutTruncated = true;
-            }
-            stdoutText = bounded_output.Append(stdoutText, out,
-                                               "[git stdout truncated]\n",
-                                               MAX_GIT_STDOUT_CHARS);
+            stdoutStore.Append(out);
+            if stdoutStore.dropped { stdoutTruncated = true; }
         }
         if Map.GetBool(result, "truncated") and stdoutTruncated == false {
             stdoutTruncated = true;
-            stdoutText = bounded_output.Append(stdoutText,
-                                               "\n[git stdout truncated by runtime]\n",
-                                               "[git stdout truncated]\n",
-                                               MAX_GIT_STDOUT_CHARS);
+            stdoutStore.Append("\n[git stdout truncated by runtime]\n");
         }
     }
 
@@ -285,20 +272,22 @@ class GitJob {
         if result == null { return; }
         var err = Map.GetStr(result, "text");
         if err != "" {
-            if Str.get_Length(err) > MAX_GIT_STDERR_CHARS
-               or Str.get_Length(stderrText) > MAX_GIT_STDERR_CHARS - Str.get_Length(err) {
-                stderrTruncated = true;
-            }
-            stderrText = bounded_output.Append(stderrText, err,
-                                               "[git stderr truncated]\n",
-                                               MAX_GIT_STDERR_CHARS);
+            stderrStore.Append(err);
+            if stderrStore.dropped { stderrTruncated = true; }
         }
         if Map.GetBool(result, "truncated") and stderrTruncated == false {
             stderrTruncated = true;
-            stderrText = bounded_output.Append(stderrText,
-                                               "\n[git stderr truncated by runtime]\n",
-                                               "[git stderr truncated]\n",
-                                               MAX_GIT_STDERR_CHARS);
+            stderrStore.Append("\n[git stderr truncated by runtime]\n");
+        }
+    }
+
+    /// @brief Materialize completed or explicitly requested Git output.
+    hide func PublishOutputText() {
+        if stdoutStore.byteCount > 0 or stdoutStore.dropped {
+            stdoutText = stdoutStore.Text();
+        }
+        if stderrStore.byteCount > 0 or stderrStore.dropped {
+            stderrText = stderrStore.Text();
         }
     }
 }

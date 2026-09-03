@@ -611,6 +611,39 @@ uint64_t vg_codeeditor_get_revision(vg_codeeditor_t *editor);
 /// @return Owned JSON array string, "overflow", or NULL on OOM/NULL editor.
 char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision);
 
+/// @brief Serialize retained forward deltas without consuming the journal.
+/// @param editor Code editor whose incremental journal is inspected.
+/// @param since_revision Last revision already held by the caller.
+/// @return Caller-owned JSON array or `overflow`; free with free().
+char *vg_codeeditor_peek_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision);
+
+/// @brief Replay one byte-column edit into a read-only document mirror.
+/// @details Updates text/layout while intentionally retaining no undo or sync journal.
+bool vg_codeeditor_apply_mirror_edit(vg_codeeditor_t *editor,
+                                     int start_line,
+                                     int start_col,
+                                     int end_line,
+                                     int end_col,
+                                     const char *text);
+
+/// @brief Map a UTF-8 byte boundary to fixed-cell display columns.
+size_t vg_codeeditor_display_column_for_byte(const vg_codeeditor_t *editor,
+                                             int line,
+                                             size_t byte_col);
+
+/// @brief Map a fixed-cell display column to a UTF-8 byte boundary.
+size_t vg_codeeditor_byte_for_display_column(const vg_codeeditor_t *editor,
+                                             int line,
+                                             size_t display_col);
+
+/// @brief Map a fixed-cell display column to a Unicode scalar column.
+size_t vg_codeeditor_character_column_for_display(const vg_codeeditor_t *editor,
+                                                  int line,
+                                                  size_t display_col);
+
+/// @brief Return the fixed-cell display width of one logical line.
+size_t vg_codeeditor_line_display_columns(const vg_codeeditor_t *editor, int line);
+
 /// @brief Return the currently selected text as a newly allocated string.
 /// @param editor Code editor widget.
 /// @return Caller-owned null-terminated string, or NULL if no selection.

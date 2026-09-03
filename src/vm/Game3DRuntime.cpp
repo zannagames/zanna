@@ -188,7 +188,7 @@ static void invokeGame3DLoopWithScope(VmGame3DCallbackScope &scope, Fn &&fn) {
     tlsGame3DScope = &scope;
     rt_trap_set_recovery(&recovery);
     RT_SUPPRESS_SETJMP_WARNING_BEGIN;
-    const int recoveryState = setjmp(recovery);
+    const int recoveryState = RT_SETJMP(recovery);
     RT_SUPPRESS_SETJMP_WARNING_END;
     if (recoveryState != 0) {
         const char *msg = rt_trap_get_error();

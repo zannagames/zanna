@@ -72,6 +72,8 @@ class RecoveryStoreBase {
     expose Integer asyncCommittedDocuments;
     expose String lastAsyncError;
     expose Any lastRecoveredContents;
+    expose Any lastRecoveredRevisions;
+    expose Any lastRecoveredGenerations;
 
     hide func InitializeRecoveryState() {
         recoveryRoot = "";
@@ -93,6 +95,8 @@ class RecoveryStoreBase {
         asyncCommittedDocuments = 0;
         lastAsyncError = "";
         lastRecoveredContents = Map.New();
+        lastRecoveredRevisions = Map.New();
+        lastRecoveredGenerations = Map.New();
     }
 
     /// @brief Create and lease a fresh namespace after claiming abandoned ones.
@@ -268,6 +272,12 @@ class RecoveryStoreBase {
             if snapshot != null and snapshot!.basePath != "" {
                 Map.SetStr(lastRecoveredContents, snapshot!.basePath,
                            snapshot!.content);
+                if snapshot!.sourceRevision >= 0 {
+                    Map.SetInt(lastRecoveredRevisions, snapshot!.basePath,
+                               snapshot!.sourceRevision);
+                    Map.SetInt(lastRecoveredGenerations, snapshot!.basePath,
+                               snapshot!.sourceGeneration);
+                }
             }
             i = i + 1;
         }

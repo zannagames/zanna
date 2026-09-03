@@ -23,6 +23,7 @@ module autosave_job;
 
 bind "../core/document";
 bind "../services/safe_io";
+bind "../services/safe_io_results";
 bind "file_save_support";
 
 bind Async = Zanna.Threads.Async;
@@ -114,14 +115,18 @@ func RunAutoSaveSnapshot(request: AutoSaveRequest) -> Any {
         return request;
     }
 
-    if existing != request.savedContent
-       and safe_io.CompareExchangeTextFile(request.path,
-                                           existing,
-                                           request.savedContent,
-                                           request.maxBytes) == false {
-        request.conflict = true;
-        request.error = "File changed before autosave commit";
-        return request;
+    if existing != request.savedContent {
+        var mutation = safe_io.CompareExchangeTextFileResult(
+            request.path, existing, request.savedContent, request.maxBytes);
+        if mutation.ok == false {
+            request.conflict = mutation.code
+                == safe_io_results.IO_FAILURE_CONFLICT;
+            request.error = mutation.message;
+            if mutation.detail != "" {
+                request.error = request.error + " " + mutation.detail;
+            }
+            return request;
+        }
     }
     request.committedModified = safe_io.Modified(request.path);
     request.committedSize = safe_io.SizeBytes(request.path);

@@ -3157,7 +3157,11 @@ void game3d_world_note_hitches(struct rt_game3d_world *world, double step_wall_m
         }
         world->hitch_last_stream_stall_ms = stream->stream_stall_ms;
     }
-    if (!attributed && isfinite(step_wall_ms) && step_wall_ms > world->hitch_threshold_ms)
+    /* A zero threshold is the documented capture-every-step mode. The
+     * microsecond clock can legitimately report 0 ms for a fast software
+     * step, so do not let timer quantization silently drop that sample. */
+    if (!attributed && isfinite(step_wall_ms) &&
+        (world->hitch_threshold_ms == 0.0 || step_wall_ms > world->hitch_threshold_ms))
         game3d_world_push_hitch(world, RT_GAME3D_HITCH_SOURCE_FRAME_TOTAL, step_wall_ms);
 }
 

@@ -165,18 +165,18 @@ static void codeeditor_draw_fold_marker(vg_codeeditor_t *editor,
 /// @param content_x Horizontal origin of the editor content area.
 /// @param baseline_y Text baseline for the ellipsis.
 /// @param line Zero-based logical line whose fold state is queried.
-/// @param start_col Visual column after which the ellipsis is placed.
+/// @param display_col Display column after which the ellipsis is placed.
 static void codeeditor_draw_fold_ellipsis(vg_codeeditor_t *editor,
                                           void *canvas,
                                           float content_x,
                                           float baseline_y,
                                           int line,
-                                          int start_col) {
+                                          size_t display_col) {
     const struct vg_fold_region *region = codeeditor_fold_region_starting_at(editor, line);
     if (!editor || !region || !region->folded)
         return;
 
-    float ellipsis_x = content_x + (float)start_col * editor->char_width + 4.0f;
+    float ellipsis_x = content_x + (float)display_col * editor->char_width + 4.0f;
     vg_font_draw_text(canvas,
                       editor->font,
                       editor->font_size,
@@ -281,10 +281,16 @@ static void codeeditor_paint_inlay_hints_for_segment(vg_codeeditor_t *editor,
                 continue;
         }
 
-        int visual_col = wrapped ? col - segment_start : col;
-        if (visual_col < 0)
-            visual_col = 0;
-        float x = content_x + (float)visual_col * editor->char_width - scroll_x + 4.0f;
+        size_t hint_display = codeeditor_display_columns_before_byte(
+            &editor->lines[line], (size_t)col, editor->tab_width);
+        size_t segment_display =
+            wrapped ? codeeditor_display_columns_before_byte(
+                          &editor->lines[line], (size_t)segment_start, editor->tab_width)
+                    : 0u;
+        if (hint_display < segment_display)
+            hint_display = segment_display;
+        float x = content_x + (float)(hint_display - segment_display) * editor->char_width -
+                  scroll_x + 4.0f;
         vg_text_metrics_t metrics = {0};
         vg_font_measure_text(editor->font, hint_size, hint->text, &metrics);
         if (metrics.width > 0.0f) {
@@ -384,8 +390,7 @@ static bool codeeditor_whitespace_cell_visible(const vg_code_line_t *ln, int col
     if (col < first_non_ws)
         return true;
     int last_non_ws = (int)ln->length - 1;
-    while (last_non_ws >= 0 &&
-           (ln->text[last_non_ws] == ' ' || ln->text[last_non_ws] == '\t'))
+    while (last_non_ws >= 0 && (ln->text[last_non_ws] == ' ' || ln->text[last_non_ws] == '\t'))
         last_non_ws--;
     return col > last_non_ws;
 }
@@ -435,11 +440,12 @@ static void codeeditor_paint_whitespace(vg_codeeditor_t *editor,
     if (dot_r < 1.0f)
         dot_r = 1.0f;
 
-    int visual_col = 0;
     for (int k = 0; k < (int)ln->length; k++) {
         char c = ln->text[k];
         if (((unsigned char)c & 0xC0) == 0x80)
             continue; // UTF-8 continuation byte: no new visual column
+        int visual_col =
+            (int)codeeditor_display_columns_before_byte(ln, (size_t)k, editor->tab_width);
         float x = content_x + (float)visual_col * cw - editor->scroll_x;
         int adv = 1;
         if (c == '\t')
@@ -455,12 +461,13 @@ static void codeeditor_paint_whitespace(vg_codeeditor_t *editor,
                 if (x1 > x0) {
                     vg_draw_line_aa((vgfx_window_t)canvas, x0, cy, x1, cy, 1.0f, color);
                     // Small arrowhead at the trailing edge.
-                    vg_draw_line_aa((vgfx_window_t)canvas, x1, cy, x1 - 3.0f, cy - 3.0f, 1.0f, color);
-                    vg_draw_line_aa((vgfx_window_t)canvas, x1, cy, x1 - 3.0f, cy + 3.0f, 1.0f, color);
+                    vg_draw_line_aa(
+                        (vgfx_window_t)canvas, x1, cy, x1 - 3.0f, cy - 3.0f, 1.0f, color);
+                    vg_draw_line_aa(
+                        (vgfx_window_t)canvas, x1, cy, x1 - 3.0f, cy + 3.0f, 1.0f, color);
                 }
             }
         }
-        visual_col += adv;
     }
 }
 
@@ -631,8 +638,13 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                 if (i >= sel_start_line && i <= sel_end_line) {
                     int col_start = (i == sel_start_line) ? sel_start_col : 0;
                     int col_end = (i == sel_end_line) ? sel_end_col : (int)editor->lines[i].length;
-                    float sel_x = content_x + col_start * editor->char_width - editor->scroll_x;
-                    float sel_width = (col_end - col_start) * editor->char_width;
+                    size_t display_start = codeeditor_display_columns_before_byte(
+                        &editor->lines[i], (size_t)col_start, editor->tab_width);
+                    size_t display_end = codeeditor_display_columns_before_byte(
+                        &editor->lines[i], (size_t)col_end, editor->tab_width);
+                    float sel_x =
+                        content_x + (float)display_start * editor->char_width - editor->scroll_x;
+                    float sel_width = (float)(display_end - display_start) * editor->char_width;
                     vgfx_fill_rect((vgfx_window_t)canvas,
                                    (int32_t)sel_x,
                                    (int32_t)line_y,
@@ -656,8 +668,13 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                         continue;
                     int col_start = (i == sel_start_line) ? sel_start_col : 0;
                     int col_end = (i == sel_end_line) ? sel_end_col : (int)editor->lines[i].length;
-                    float sel_x = content_x + col_start * editor->char_width - editor->scroll_x;
-                    float sel_width = (col_end - col_start) * editor->char_width;
+                    size_t display_start = codeeditor_display_columns_before_byte(
+                        &editor->lines[i], (size_t)col_start, editor->tab_width);
+                    size_t display_end = codeeditor_display_columns_before_byte(
+                        &editor->lines[i], (size_t)col_end, editor->tab_width);
+                    float sel_x =
+                        content_x + (float)display_start * editor->char_width - editor->scroll_x;
+                    float sel_width = (float)(display_end - display_start) * editor->char_width;
                     vgfx_fill_rect((vgfx_window_t)canvas,
                                    (int32_t)sel_x,
                                    (int32_t)line_y,
@@ -678,11 +695,13 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                                                   text_x,
                                                   text_y,
                                                   editor->lines[i].text,
+                                                  &editor->lines[i],
                                                   editor->lines[i].colors,
                                                   editor->lines[i].colors_capacity,
                                                   0,
                                                   editor->lines[i].length,
                                                   editor->char_width,
+                                                  editor->tab_width,
                                                   editor->text_color);
                 } else {
                     vg_font_draw_text(canvas,
@@ -693,12 +712,13 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                                       editor->lines[i].text,
                                       editor->text_color);
                 }
-                codeeditor_draw_fold_ellipsis(editor,
-                                              canvas,
-                                              content_x - editor->scroll_x,
-                                              text_y,
-                                              i,
-                                              (int)editor->lines[i].length);
+                codeeditor_draw_fold_ellipsis(
+                    editor,
+                    canvas,
+                    content_x - editor->scroll_x,
+                    text_y,
+                    i,
+                    codeeditor_line_display_columns(&editor->lines[i], editor->tab_width));
             }
             codeeditor_paint_inlay_hints_for_segment(editor,
                                                      canvas,
@@ -721,8 +741,12 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                 widget->y + (float)visible_cursor_line * editor->line_height - editor->scroll_y;
             if (cursor_y + editor->line_height > widget->y &&
                 cursor_y < widget->y + widget->height) {
+                size_t cursor_display_col =
+                    codeeditor_display_columns_before_byte(&editor->lines[editor->cursor_line],
+                                                           (size_t)editor->cursor_col,
+                                                           editor->tab_width);
                 float cursor_x =
-                    content_x + editor->cursor_col * editor->char_width - editor->scroll_x;
+                    content_x + (float)cursor_display_col * editor->char_width - editor->scroll_x;
                 codeeditor_draw_caret(
                     canvas, cursor_x, cursor_y, editor->line_height, editor->cursor_color);
             }
@@ -733,8 +757,12 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                                                        content_width,
                                                        editor->extra_cursors[c].line,
                                                        editor->extra_cursors[c].col);
-                float cursor_x = content_x + editor->extra_cursors[c].col * editor->char_width -
-                                 editor->scroll_x;
+                size_t cursor_display_col = codeeditor_display_columns_before_byte(
+                    &editor->lines[editor->extra_cursors[c].line],
+                    (size_t)editor->extra_cursors[c].col,
+                    editor->tab_width);
+                float cursor_x =
+                    content_x + (float)cursor_display_col * editor->char_width - editor->scroll_x;
                 float extra_cursor_y =
                     widget->y + (float)visible_extra_line * editor->line_height - editor->scroll_y;
                 if (extra_cursor_y + editor->line_height <= widget->y ||
@@ -763,12 +791,21 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                     row_in_line = 0;
                     continue;
                 }
-                int seg_start = chars_per_row > 0 ? row_in_line * chars_per_row : 0;
-                size_t remaining = line_len > (size_t)seg_start ? line_len - (size_t)seg_start : 0;
-                int seg_len = chars_per_row > 0 ? (int)((remaining < (size_t)chars_per_row)
-                                                            ? remaining
-                                                            : (size_t)chars_per_row)
-                                                : (int)line_len;
+                size_t segment_display_start =
+                    chars_per_row > 0 ? (size_t)row_in_line * (size_t)chars_per_row : 0u;
+                size_t segment_display_end =
+                    chars_per_row > 0
+                        ? segment_display_start + (size_t)chars_per_row
+                        : codeeditor_line_display_columns(&editor->lines[line], editor->tab_width);
+                size_t segment_start_byte = codeeditor_byte_for_display_column(
+                    &editor->lines[line], segment_display_start, editor->tab_width);
+                size_t segment_end_byte = codeeditor_byte_for_display_column(
+                    &editor->lines[line], segment_display_end, editor->tab_width);
+                int seg_start =
+                    segment_start_byte > (size_t)INT_MAX ? INT_MAX : (int)segment_start_byte;
+                int seg_len = segment_end_byte - segment_start_byte > (size_t)INT_MAX
+                                  ? INT_MAX
+                                  : (int)(segment_end_byte - segment_start_byte);
 
                 if (line == editor->cursor_line && (widget->state & VG_STATE_FOCUSED)) {
                     codeeditor_draw_current_line(canvas,
@@ -799,9 +836,15 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                         int overlap_end =
                             sel_end < seg_start + seg_len ? sel_end : seg_start + seg_len;
                         if (overlap_end > overlap_start) {
+                            size_t overlap_display_start = codeeditor_display_columns_before_byte(
+                                &editor->lines[line], (size_t)overlap_start, editor->tab_width);
+                            size_t overlap_display_end = codeeditor_display_columns_before_byte(
+                                &editor->lines[line], (size_t)overlap_end, editor->tab_width);
                             float sel_x =
-                                content_x + (float)(overlap_start - seg_start) * editor->char_width;
-                            float sel_w = (float)(overlap_end - overlap_start) * editor->char_width;
+                                content_x + (float)(overlap_display_start - segment_display_start) *
+                                                editor->char_width;
+                            float sel_w = (float)(overlap_display_end - overlap_display_start) *
+                                          editor->char_width;
                             vgfx_fill_rect((vgfx_window_t)canvas,
                                            (int32_t)sel_x,
                                            (int32_t)row_y,
@@ -830,9 +873,15 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                         int overlap_end =
                             sel_end < seg_start + seg_len ? sel_end : seg_start + seg_len;
                         if (overlap_end > overlap_start) {
+                            size_t overlap_display_start = codeeditor_display_columns_before_byte(
+                                &editor->lines[line], (size_t)overlap_start, editor->tab_width);
+                            size_t overlap_display_end = codeeditor_display_columns_before_byte(
+                                &editor->lines[line], (size_t)overlap_end, editor->tab_width);
                             float sel_x =
-                                content_x + (float)(overlap_start - seg_start) * editor->char_width;
-                            float sel_w = (float)(overlap_end - overlap_start) * editor->char_width;
+                                content_x + (float)(overlap_display_start - segment_display_start) *
+                                                editor->char_width;
+                            float sel_w = (float)(overlap_display_end - overlap_display_start) *
+                                          editor->char_width;
                             vgfx_fill_rect((vgfx_window_t)canvas,
                                            (int32_t)sel_x,
                                            (int32_t)row_y,
@@ -853,11 +902,13 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                                                       content_x,
                                                       text_y,
                                                       editor->lines[line].text,
+                                                      &editor->lines[line],
                                                       editor->lines[line].colors,
                                                       editor->lines[line].colors_capacity,
                                                       (size_t)seg_start,
                                                       (size_t)seg_len,
                                                       editor->char_width,
+                                                      editor->tab_width,
                                                       editor->text_color);
                     } else {
                         char stack_buf[256];
@@ -887,8 +938,17 @@ static void codeeditor_paint(vg_widget_t *widget, void *canvas) {
                     }
                 }
                 if (row_in_line == 0) {
-                    codeeditor_draw_fold_ellipsis(
-                        editor, canvas, content_x, row_y + font_metrics.ascent, line, seg_len);
+                    size_t segment_display_width =
+                        codeeditor_display_columns_before_byte(&editor->lines[line],
+                                                               segment_start_byte + (size_t)seg_len,
+                                                               editor->tab_width) -
+                        segment_display_start;
+                    codeeditor_draw_fold_ellipsis(editor,
+                                                  canvas,
+                                                  content_x,
+                                                  row_y + font_metrics.ascent,
+                                                  line,
+                                                  segment_display_width);
                 }
                 codeeditor_paint_inlay_hints_for_segment(editor,
                                                          canvas,

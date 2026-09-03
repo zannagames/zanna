@@ -22,7 +22,7 @@
 //   - Included only by src/lib/gui/src/widgets/vg_codeeditor.c.
 //   - Fragment order preserves the original static helper visibility and
 //     vtable wiring from the monolithic source file.
-//   - Public CodeEditor behavior and exported symbols remain unchanged.
+//   - Public APIs share the core UTF-8 display-column and edit-journal helpers.
 //
 // Ownership/Lifetime:
 //   - Ownership follows vg_codeeditor_t rules from vg_ide_widgets_editor.h;
@@ -394,20 +394,25 @@ static char *cej_dup(const char *s) {
 /// @param since_revision Last revision already applied by the consumer.
 /// @return Caller-owned JSON array, caller-owned `overflow` string, or NULL for invalid input or
 /// allocation failure.
-char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision) {
+static char *codeeditor_deltas_json(vg_codeeditor_t *editor,
+                                    uint64_t since_revision,
+                                    bool consume) {
     if (!editor)
         return NULL;
     // A cold mutation (undo/redo/SetText/buffer swap) or a ring wrap happened:
     // the caller cannot apply incrementally and must full-sync.
     if (editor->journal_overflowed) {
-        codeeditor_journal_reset(editor);
-        editor->journal_overflowed = false;
+        if (consume) {
+            codeeditor_journal_reset(editor);
+            editor->journal_overflowed = false;
+        }
         return cej_dup("overflow");
     }
     // Defensive gap check: retained deltas are contiguous in revision, so an
     // oldest revision beyond since_revision+1 means intervening deltas were lost.
     if (editor->journal_count > 0 && editor->journal_oldest_rev > since_revision + 1) {
-        codeeditor_journal_reset(editor);
+        if (consume)
+            codeeditor_journal_reset(editor);
         return cej_dup("overflow");
     }
 
@@ -439,7 +444,8 @@ char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_rev
     cej_putc(&b, ']');
 
     // The caller now holds every delta up to the latest revision; drop them.
-    codeeditor_journal_reset(editor);
+    if (consume)
+        codeeditor_journal_reset(editor);
 
     if (!b.ok) {
         free(b.data);
@@ -447,6 +453,85 @@ char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_rev
     }
     b.data[b.len] = '\0';
     return b.data;
+}
+
+char *vg_codeeditor_take_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision) {
+    return codeeditor_deltas_json(editor, since_revision, true);
+}
+
+char *vg_codeeditor_peek_deltas_json(vg_codeeditor_t *editor, uint64_t since_revision) {
+    return codeeditor_deltas_json(editor, since_revision, false);
+}
+
+bool vg_codeeditor_apply_mirror_edit(vg_codeeditor_t *editor,
+                                     int start_line,
+                                     int start_col,
+                                     int end_line,
+                                     int end_col,
+                                     const char *text) {
+    if (!editor)
+        return false;
+    const bool was_read_only = editor->read_only;
+    const bool was_modified = editor->modified;
+    const uint64_t before = editor->revision;
+    vg_edit_target_t target;
+    memset(&target, 0, sizeof(target));
+    target.cursor_id = 0;
+    target.cursor_line_before = editor->cursor_line;
+    target.cursor_col_before = editor->cursor_col;
+    target.start_line = start_line;
+    target.start_col = start_col;
+    target.end_line = end_line;
+    target.end_col = end_col;
+    editor->read_only = false;
+    apply_edit_targets(editor, &target, 1, text ? text : "");
+    editor->read_only = was_read_only;
+    editor->modified = was_modified;
+    edit_history_clear(editor->history);
+    codeeditor_journal_reset(editor);
+    editor->journal_overflowed = false;
+    return editor->revision != before;
+}
+
+size_t vg_codeeditor_display_column_for_byte(const vg_codeeditor_t *editor,
+                                             int line,
+                                             size_t byte_col) {
+    if (!editor || line < 0 || line >= editor->line_count)
+        return 0;
+    return codeeditor_display_columns_before_byte(
+        &editor->lines[line], byte_col, editor->tab_width);
+}
+
+size_t vg_codeeditor_byte_for_display_column(const vg_codeeditor_t *editor,
+                                             int line,
+                                             size_t display_col) {
+    if (!editor || line < 0 || line >= editor->line_count)
+        return 0;
+    return codeeditor_byte_for_display_column(&editor->lines[line], display_col, editor->tab_width);
+}
+
+size_t vg_codeeditor_character_column_for_display(const vg_codeeditor_t *editor,
+                                                  int line,
+                                                  size_t display_col) {
+    if (!editor || line < 0 || line >= editor->line_count)
+        return 0;
+    const vg_code_line_t *source = &editor->lines[line];
+    const size_t byte_limit = vg_codeeditor_byte_for_display_column(editor, line, display_col);
+    size_t characters = 0;
+    for (size_t pos = 0; pos < byte_limit;) {
+        size_t span = codeeditor_utf8_span(source->text + pos);
+        if (span == 0 || span > source->length - pos)
+            span = 1;
+        pos += span;
+        characters++;
+    }
+    return characters;
+}
+
+size_t vg_codeeditor_line_display_columns(const vg_codeeditor_t *editor, int line) {
+    if (!editor || line < 0 || line >= editor->line_count)
+        return 0;
+    return codeeditor_line_display_columns(&editor->lines[line], editor->tab_width);
 }
 
 /// @brief Remove every inlay hint and release its copied text.

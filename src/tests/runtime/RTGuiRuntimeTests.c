@@ -1628,7 +1628,15 @@ static void test_codeeditor_set_text_round_trips_embedded_nuls(void) {
 }
 
 static void test_codeeditor_runtime_pixel_helpers_follow_scroll_and_wrap(void) {
-    vg_codeeditor_t *editor = vg_codeeditor_create(NULL);
+    rt_gui_app_t app;
+    reset_fake_app(&app);
+    app.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(app.root);
+    app.root->user_data = &app;
+    rt_gui_activate_app(&app);
+
+    void *handle = rt_codeeditor_new(app.root);
+    vg_codeeditor_t *editor = (vg_codeeditor_t *)handle;
     assert(editor);
 
     vg_codeeditor_set_text(editor, "abcdefghi\nabcdef");
@@ -1644,27 +1652,66 @@ static void test_codeeditor_runtime_pixel_helpers_follow_scroll_and_wrap(void) {
     editor->cursor_col = 4;
     editor->scroll_x = 15.0f;
     editor->scroll_y = 5.0f;
-    assert(rt_codeeditor_get_cursor_pixel_x(editor) == 145);
-    assert(rt_codeeditor_get_cursor_pixel_y(editor) == 55);
-    assert(rt_codeeditor_get_line_at_pixel(editor, 55) == 1);
-    assert(rt_codeeditor_get_col_at_pixel(editor, 145, 55) == 4);
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) == 145);
+    assert(rt_codeeditor_get_cursor_pixel_y(handle) == 55);
+    assert(rt_codeeditor_get_line_at_pixel(handle, 55) == 1);
+    assert(rt_codeeditor_get_col_at_pixel(handle, 145, 55) == 4);
 
-    rt_codeeditor_set_word_wrap(editor, 1);
+    rt_codeeditor_set_word_wrap(handle, 1);
     editor->gutter_width = 20.0f;
     editor->scroll_y = 10.0f;
     editor->cursor_line = 0;
     editor->cursor_col = 6;
-    assert(rt_codeeditor_get_cursor_pixel_x(editor) == 120);
-    assert(rt_codeeditor_get_cursor_pixel_y(editor) == 60);
-    assert(rt_codeeditor_get_line_at_pixel(editor, 60) == 0);
-    assert(rt_codeeditor_get_line_at_pixel(editor, 70) == 1);
-    assert(rt_codeeditor_get_col_at_pixel(editor, 140, 60) == 8);
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) == 120);
+    assert(rt_codeeditor_get_cursor_pixel_y(handle) == 60);
+    assert(rt_codeeditor_get_line_at_pixel(handle, 60) == 0);
+    assert(rt_codeeditor_get_line_at_pixel(handle, 70) == 1);
+    assert(rt_codeeditor_get_col_at_pixel(handle, 140, 60) == 8);
 
     editor->base.width = editor->gutter_width;
     editor->scroll_y = 0.0f;
-    assert(rt_codeeditor_get_col_at_pixel(editor, 130, 50) == 1);
+    assert(rt_codeeditor_get_col_at_pixel(handle, 130, 50) == 1);
 
-    vg_widget_destroy(&editor->base);
+    vg_codeeditor_set_text(editor, "a\xC3\xA9\xE4\xB8\xAD\x62\x63");
+    editor->base.width = 200.0f;
+    editor->base.height = 200.0f;
+    editor->gutter_width = 20.0f;
+    editor->scroll_x = 0.0f;
+    editor->scroll_y = 0.0f;
+    rt_codeeditor_set_word_wrap(handle, 0);
+    editor->cursor_line = 0;
+    editor->cursor_col = 6; // Internal byte offset after a, e-acute, and CJK ideograph.
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) ==
+           (int64_t)(editor->base.x + editor->gutter_width + 40.0f));
+    assert(rt_codeeditor_get_col_at_pixel(
+               handle, (int64_t)(editor->base.x + editor->gutter_width + 40.0f), 50) == 3);
+
+    editor->base.width = 70.0f;
+    rt_codeeditor_set_word_wrap(handle, 1);
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) ==
+           (int64_t)(editor->base.x + editor->gutter_width));
+    assert(rt_codeeditor_get_cursor_pixel_y(handle) == 60);
+    assert(rt_codeeditor_get_line_at_pixel(handle, 60) == 0);
+    assert(rt_codeeditor_get_col_at_pixel(
+               handle, (int64_t)(editor->base.x + editor->gutter_width + 20.0f), 60) == 5);
+
+    vg_codeeditor_set_text(editor, "\tX");
+    editor->tab_width = 8;
+    editor->base.width = 200.0f;
+    rt_codeeditor_set_word_wrap(handle, 0);
+    editor->cursor_col = 1;
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) ==
+           (int64_t)(editor->base.x + editor->gutter_width + 80.0f));
+    assert(rt_codeeditor_get_col_at_pixel(
+               handle, (int64_t)(editor->base.x + editor->gutter_width + 80.0f), 50) == 1);
+
+    editor->base.width = 70.0f;
+    rt_codeeditor_set_word_wrap(handle, 1);
+    assert(rt_codeeditor_get_cursor_pixel_x(handle) ==
+           (int64_t)(editor->base.x + editor->gutter_width));
+    assert(rt_codeeditor_get_cursor_pixel_y(handle) == 70);
+
+    cleanup_fake_app(&app);
     printf("test_codeeditor_runtime_pixel_helpers_follow_scroll_and_wrap: PASSED\n");
 }
 
@@ -5110,6 +5157,48 @@ static void test_codeeditor_runtime_read_only_blocks_insertions(void) {
     printf("test_codeeditor_runtime_read_only_blocks_insertions: PASSED\n");
 }
 
+/// @brief Split mirrors can replay deltas without consuming language-sync state.
+static void test_codeeditor_nonconsuming_mirror_deltas(void) {
+    rt_gui_app_t app;
+    reset_fake_app(&app);
+    app.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(app.root);
+    app.root->user_data = &app;
+    rt_gui_activate_app(&app);
+
+    void *source = rt_codeeditor_new(app.root);
+    void *mirror = rt_codeeditor_new(app.root);
+    assert(source && mirror);
+    rt_codeeditor_set_text(source, rt_const_cstr("abc"));
+    rt_codeeditor_set_text(mirror, rt_const_cstr("abc"));
+    const int64_t source_revision = rt_codeeditor_get_revision(source);
+    rt_string cold = rt_codeeditor_take_deltas(source, source_revision);
+    assert(strcmp(rt_string_cstr(cold), "overflow") == 0);
+
+    rt_codeeditor_set_cursor(source, 0, 3);
+    rt_codeeditor_insert_at_cursor(source, rt_const_cstr("X"));
+    rt_string peeked = rt_codeeditor_peek_deltas(source, source_revision);
+    assert(strstr(rt_string_cstr(peeked), "\"sc\":3") != NULL);
+    rt_string peeked_again = rt_codeeditor_peek_deltas(source, source_revision);
+    assert(strcmp(rt_string_cstr(peeked), rt_string_cstr(peeked_again)) == 0);
+
+    rt_codeeditor_set_read_only(mirror, 1);
+    assert(rt_codeeditor_apply_mirror_edit(mirror, 0, 3, 0, 3, rt_const_cstr("X")) == 1);
+    rt_string mirror_text = rt_codeeditor_get_text(mirror);
+    assert(strcmp(rt_string_cstr(mirror_text), "abcX") == 0);
+    assert(rt_codeeditor_get_read_only(mirror) == 1);
+    assert(rt_codeeditor_is_modified(mirror) == 0);
+    assert(rt_codeeditor_can_undo(mirror) == 0);
+
+    rt_string consumed = rt_codeeditor_take_deltas(source, source_revision);
+    assert(strcmp(rt_string_cstr(consumed), rt_string_cstr(peeked)) == 0);
+    rt_string empty = rt_codeeditor_take_deltas(source, rt_codeeditor_get_revision(source));
+    assert(strcmp(rt_string_cstr(empty), "[]") == 0);
+
+    cleanup_fake_app(&app);
+    printf("test_codeeditor_nonconsuming_mirror_deltas: PASSED\n");
+}
+
 /// @brief Verify the complete base-widget geometry, hierarchy, identity, and invalidation API.
 /// @details A synthetic app at 2x scale proves public layout setters multiply exactly once while
 ///          legacy integer getters remain physical and new bounds getters divide exactly once.
@@ -6138,6 +6227,7 @@ int main(void) {
     test_codeeditor_add_highlight_rejects_empty_and_inverted_spans();
     test_codeeditor_gutter_slots_are_validated_and_click_coords_are_fresh();
     test_codeeditor_runtime_read_only_blocks_insertions();
+    test_codeeditor_nonconsuming_mirror_deltas();
     test_widget_complete_logical_hierarchy_api();
     test_uniform_control_events_and_revisions();
     test_interactive_virtual_grid_runtime();

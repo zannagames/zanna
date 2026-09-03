@@ -58,7 +58,7 @@ line	src/core/document_manager_base.zia	643
 line	src/core/project_manager_tree.zia	666
 line	src/editor/basic_workspace_query_job.zia	770
 line	src/editor/diagnostics.zia	667
-line	src/scm/scm_git.zia	960
+line	src/scm/scm_git.zia	949
 line	src/ui/scene_asset_browser.zia	963
 line	src/ui/scene_component_authoring.zia	1000
 line	src/ui/scene_component_palette.zia	795

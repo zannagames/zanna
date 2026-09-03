@@ -375,6 +375,8 @@ RT_FUNC(GuiCodeEditorReplaceAllText, rt_codeeditor_replace_all_text, "Zanna.GUI.
 RT_FUNC(GuiCodeEditorGetText, rt_codeeditor_get_text, "Zanna.GUI.CodeEditor.get_Text", "str(obj)", owned)
 RT_FUNC(GuiCodeEditorGetRevision, rt_codeeditor_get_revision, "Zanna.GUI.CodeEditor.get_Revision", "i64(obj)")
 RT_FUNC(GuiCodeEditorTakeDeltas, rt_codeeditor_take_deltas, "Zanna.GUI.CodeEditor.TakeDeltas", "str(obj,i64)", owned)
+RT_FUNC(GuiCodeEditorPeekDeltas, rt_codeeditor_peek_deltas, "Zanna.GUI.CodeEditor.PeekDeltas", "str(obj,i64)", owned)
+RT_FUNC(GuiCodeEditorApplyMirrorEdit, rt_codeeditor_apply_mirror_edit, "Zanna.GUI.CodeEditor.ApplyMirrorEdit", "i1(obj,i64,i64,i64,i64,str)")
 RT_FUNC(GuiCodeEditorGetSelectedText, rt_codeeditor_get_selected_text, "Zanna.GUI.CodeEditor.GetSelectedText", "str(obj)", owned)
 RT_FUNC(GuiCodeEditorSetCursor, rt_codeeditor_set_cursor, "Zanna.GUI.CodeEditor.SetCursor", "void(obj,i64,i64)")
 RT_FUNC(GuiCodeEditorScrollToLine, rt_codeeditor_scroll_to_line, "Zanna.GUI.CodeEditor.ScrollToLine", "void(obj,i64)")

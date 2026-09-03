@@ -1378,13 +1378,20 @@ void BytecodeVM::releaseOwnedGlobals() {
 /// @param ptr Candidate address.
 /// @return Matching global index, or `SIZE_MAX`.
 size_t BytecodeVM::globalIndexForAddress(const void *ptr) const {
-    if (!ptr)
+    if (!ptr || globals_.empty())
         return SIZE_MAX;
-    for (size_t i = 0; i < globals_.size(); ++i) {
-        if (ptr == static_cast<const void *>(&globals_[i]))
-            return i;
-    }
-    return SIZE_MAX;
+    // globals_ is contiguous: a slot address maps to its index arithmetically.
+    // (This used to scan every global on each typed store into a string
+    // global, which dominated string-heavy programs with many globals.)
+    const auto *base = reinterpret_cast<const unsigned char *>(globals_.data());
+    const auto *probe = static_cast<const unsigned char *>(ptr);
+    if (probe < base)
+        return SIZE_MAX;
+    const size_t offset = static_cast<size_t>(probe - base);
+    if (offset % sizeof(BCSlot) != 0)
+        return SIZE_MAX;
+    const size_t idx = offset / sizeof(BCSlot);
+    return idx < globals_.size() ? idx : SIZE_MAX;
 }
 
 /// @brief Release the string reference owned by global @p idx (no-op if the
@@ -4441,6 +4448,10 @@ void BytecodeVM::clearAllBreakpoints() {
 /// Called at the start of each instruction. Invokes the debug callback
 /// if a breakpoint is hit or single-step mode is enabled.
 bool BytecodeVM::checkBreakpoint() {
+    // Fast path: no breakpoints and not stepping — skip the per-instruction
+    // name lookup entirely.
+    if (breakpoints_.empty() && !singleStep_)
+        return false;
     if (!fp_ || !fp_->func)
         return false;
 

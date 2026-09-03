@@ -80,17 +80,49 @@ func VerifyVim(shell: app_shell.AppShell,
     Seq.Push(args, "-N");
     Seq.Push(args, "-u");
     Seq.Push(args, "NONE");
+    Seq.Push(args, "-i");
+    Seq.Push(args, "NONE");
     Seq.Push(args, "-n");
     Seq.Push(args, path);
     var session = new terminal_session.TerminalSession();
-    if session.Start("/usr/bin/vim", args, root, 80, 24) == false
-       or PumpUntil(session, pane, "original vim line", false, 5000) == false
-       or session.Resize(100, 30) == false
-       or session.Send("gg0iZANNA \x1b:wq\r") == false
-       or PumpUntil(session, pane, "", true, 8000) == false
-       or Str.StartsWith(File.ReadAllText(path), "ZANNA original vim line") == false
-       or PrimaryScreenContains(pane, "vim-primary-sentinel") == false {
-        Fail(shell, session, "real Vim edit/resize/save/exit workflow");
+    if session.Start("/usr/bin/vim", args, root, 80, 24) == false {
+        Fail(shell, session, "real Vim startup: " + session.LastError());
+        return false;
+    }
+    if PumpUntil(session, pane, "original vim line", false, 5000) == false {
+        Fail(shell, session, "real Vim initial render");
+        return false;
+    }
+    if session.Resize(100, 30) == false {
+        Fail(shell, session, "real Vim resize");
+        return false;
+    }
+    if session.Send("gg0iZANNA \x1b:w\r") == false {
+        Fail(shell, session, "real Vim input queue");
+        return false;
+    }
+    if PumpUntil(session, pane, "written", false, 5000) == false {
+        Fail(shell, session, "real Vim save acknowledgement");
+        return false;
+    }
+    if session.Send(":qa!\r") == false {
+        Fail(shell, session, "real Vim exit input queue");
+        return false;
+    }
+    if PumpUntil(session, pane, "", true, 8000) == false {
+        var replay = session.ReplayText();
+        var start = Str.get_Length(replay) - 300;
+        if start < 0 { start = 0; }
+        Fail(shell, session, "real Vim save/exit timeout; tail="
+            + Str.Substring(replay, start, Str.get_Length(replay) - start));
+        return false;
+    }
+    if Str.StartsWith(File.ReadAllText(path), "ZANNA original vim line") == false {
+        Fail(shell, session, "real Vim saved unexpected content");
+        return false;
+    }
+    if PrimaryScreenContains(pane, "vim-primary-sentinel") == false {
+        Fail(shell, session, "real Vim did not restore the primary screen");
         return false;
     }
     session.Stop();
@@ -138,10 +170,27 @@ func VerifyHtop(shell: app_shell.AppShell,
     pane.Clear();
     pane.Append("htop-primary-sentinel\n");
     var session = new terminal_session.TerminalSession();
-    if session.Start("/opt/homebrew/bin/htop", Seq.New(), root, 80, 24) == false
-       or PumpUntil(session, pane, "Tasks", false, 8000) == false
-       or session.Resize(104, 32) == false {
-        Fail(shell, session, "real htop startup/resize workflow");
+    if session.Start("/opt/homebrew/bin/htop", Seq.New(), root, 80, 24) == false {
+        Fail(shell, session, "real htop startup: " + session.LastError());
+        return false;
+    }
+    if PumpUntil(session, pane, "Tasks", false, 8000) == false {
+        var replay = session.ReplayText();
+        // Hardened macOS runners can execute htop but deny its kproc query.
+        // This is a host capability restriction, not a PTY/rendering failure;
+        // Vim and less above still exercise the complete interactive path.
+        if Str.Contains(replay, "Unable to get size of kproc_infos: Operation not permitted") {
+            session.Stop();
+            return true;
+        }
+        var start = Str.get_Length(replay) - 300;
+        if start < 0 { start = 0; }
+        Fail(shell, session, "real htop initial render; tail="
+            + Str.Substring(replay, start, Str.get_Length(replay) - start));
+        return false;
+    }
+    if session.Resize(104, 32) == false {
+        Fail(shell, session, "real htop resize");
         return false;
     }
     Time.Clock.Sleep(100);

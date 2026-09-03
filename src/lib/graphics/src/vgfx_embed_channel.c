@@ -18,7 +18,8 @@
 //     rejects the newest event so neither side ever writes the other's index
 //     or races an in-flight record copy.
 // Ownership/Lifetime:
-//   - POSIX: the host shm_unlink()s on close; mappings live per handle.
+//   - POSIX: the host unlinks its shm object or secure temporary-file fallback
+//     on close; mappings live per handle.
 //     Windows: the section dies with the last handle automatically.
 // Links: src/lib/graphics/src/vgfx_embed_channel.h
 //
@@ -26,6 +27,7 @@
 
 #include "vgfx_embed_channel.h"
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +103,37 @@ static void embed_posix_name(const char *name, char out[128]) {
     snprintf(out, 128, "/ze-%016llx%08x", (unsigned long long)primary, (unsigned int)secondary);
 }
 
+/// @brief Derive the secure file-mapping fallback used when POSIX shm is unavailable.
+static int embed_posix_backing_path(const char *name, char out[256]) {
+    char native_name[128];
+    embed_posix_name(name, native_name);
+    const char *temp = getenv("TMPDIR");
+    if (!temp || temp[0] != '/')
+        temp = "/tmp";
+    size_t temp_len = strlen(temp);
+    const char *separator = temp_len > 0 && temp[temp_len - 1] == '/' ? "" : "/";
+    int written = snprintf(out, 256, "%s%s%s.map", temp, separator, native_name + 1);
+    return written > 0 && written < 256;
+}
+
+/// @brief Open a same-user regular mapping file without following links.
+static int embed_posix_open_backing(const char *path, int flags, mode_t mode) {
+#if defined(O_NOFOLLOW)
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = open(path, flags, mode);
+    if (fd < 0)
+        return -1;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+        (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+        close(fd);
+        errno = EACCES;
+        return -1;
+    }
+    return fd;
+}
+
 /// @brief Accept the requested extent or one native-page rounding of it.
 /// @details Darwin reports shm sizes rounded up to the VM page while Linux reports the exact
 ///          ftruncate size. Larger or non-page-aligned extents still fail closed.
@@ -150,6 +183,8 @@ struct vgfx_embed_channel {
     HANDLE mapping;
 #else
     char shm_name[128];
+    char backing_path[256];
+    int uses_file_backing;
 #endif
 };
 
@@ -292,20 +327,31 @@ int vgfx_embed_channel_create(const char *name,
 #else
     embed_posix_name(name, ch->shm_name);
     int fd = shm_open(ch->shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd < 0 && (errno == EACCES || errno == EPERM || errno == ENOSYS || errno == ENOENT) &&
+        embed_posix_backing_path(name, ch->backing_path)) {
+        fd = embed_posix_open_backing(ch->backing_path, O_CREAT | O_EXCL | O_RDWR, 0600);
+        ch->uses_file_backing = fd >= 0;
+    }
     if (fd < 0) {
         free(ch);
         return 0;
     }
     if (ftruncate(fd, (off_t)ch->map_bytes) != 0) {
         close(fd);
-        shm_unlink(ch->shm_name);
+        if (ch->uses_file_backing)
+            unlink(ch->backing_path);
+        else
+            shm_unlink(ch->shm_name);
         free(ch);
         return 0;
     }
     void *base = mmap(NULL, ch->map_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
     if (base == MAP_FAILED) {
-        shm_unlink(ch->shm_name);
+        if (ch->uses_file_backing)
+            unlink(ch->backing_path);
+        else
+            shm_unlink(ch->shm_name);
         free(ch);
         return 0;
     }
@@ -345,6 +391,11 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
 #else
     embed_posix_name(name, ch->shm_name);
     int fd = shm_open(ch->shm_name, O_RDWR, 0600);
+    if (fd < 0 && (errno == EACCES || errno == EPERM || errno == ENOSYS || errno == ENOENT) &&
+        embed_posix_backing_path(name, ch->backing_path)) {
+        fd = embed_posix_open_backing(ch->backing_path, O_RDWR, 0600);
+        ch->uses_file_backing = fd >= 0;
+    }
     if (fd < 0) {
         free(ch);
         return 0;
@@ -474,8 +525,12 @@ void vgfx_embed_channel_close(vgfx_embed_channel_t *channel) {
         (void)embed_win32_close_mapping(&channel->mapping,
                                         "closing shared channel mapping during close");
 #else
-    if (channel->is_host)
-        shm_unlink(channel->shm_name);
+    if (channel->is_host) {
+        if (channel->uses_file_backing)
+            unlink(channel->backing_path);
+        else
+            shm_unlink(channel->shm_name);
+    }
 #endif
     free(channel);
 }

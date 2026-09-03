@@ -413,7 +413,11 @@ func VerifyWindowConstraintsAndOverlays(
            or shell.app.GetY() < 0
            or shell.app.GetY() + shell.app.GetLogicalHeight()
                > shell.app.GetMonitorHeight() - 16 {
-            fail(shell, "zoom expansion left the workbench outside the desktop");
+            fail(shell, "zoom expansion left the workbench outside the desktop: x="
+                + shell.app.GetX() + " y=" + shell.app.GetY()
+                + " logical=" + shell.app.GetLogicalWidth() + "x"
+                + shell.app.GetLogicalHeight() + " monitor="
+                + shell.app.GetMonitorWidth() + "x" + shell.app.GetMonitorHeight());
             return false;
         }
     }

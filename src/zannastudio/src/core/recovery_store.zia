@@ -74,11 +74,11 @@ class RecoveryStore extends Base.RecoveryStoreBase {
         }
         var request = BuildRequest(docMgr, engine, false);
         if request == null { return false; }
+        if request.error != "" { lastAsyncError = request.error; }
         if request.succeeded == false {
-            lastAsyncError = request.error;
             return false;
         }
-        if request.snapshots.count() == 0 { return true; }
+        if request.snapshots.count() == 0 { return request.truncated == false; }
         asyncQueuedRequests = asyncQueuedRequests + 1;
         if activeFuture == null { return StartRequest(request); }
         pendingRequest = request;
@@ -93,11 +93,16 @@ class RecoveryStore extends Base.RecoveryStoreBase {
         }
         CancelAsync();
         var request = BuildRequest(docMgr, engine, true);
-        var allWritten = request != null and request!.succeeded;
-        if allWritten and request!.snapshots.count() > 0 {
+        var allWritten = request != null and request!.succeeded
+            and request!.truncated == false;
+        if request != null and request!.succeeded
+           and request!.snapshots.count() > 0 {
             Types.WriteRecoveryRequest(request!);
-            allWritten = request!.succeeded and request!.cancelled == false;
-            if allWritten { RememberCommittedRecoveryContent(request!); }
+            if request!.succeeded and request!.cancelled == false {
+                RememberCommittedRecoveryContent(request!);
+            } else {
+                allWritten = false;
+            }
         }
         if request != null and request!.error != "" {
             lastAsyncError = request!.error;
@@ -134,55 +139,91 @@ class RecoveryStore extends Base.RecoveryStoreBase {
         var request = new RecoveryWriteRequest();
         request.generation = nextGeneration;
         nextGeneration = nextGeneration + 1;
+        if docMgr.activeIndex >= 0 and docMgr.activeIndex < docMgr.GetCount() {
+            AppendDocumentSnapshot(
+                request, docMgr, engine, docMgr.activeIndex, forceAll);
+        }
         var i = 0;
         while i < docMgr.GetCount() {
-            var doc = docMgr.GetDocument(i);
-            if doc != null and doc!.isModified and doc!.isReadOnlyPreview == false {
-                var snapshot = new RecoveryWriteSnapshot();
-                snapshot.basePath = SwapBase(doc!);
-                snapshot.originPath = doc!.filePath;
-                snapshot.identity = KeyFor(doc!);
-                snapshot.instanceId = instanceId;
-                snapshot.documentId = doc!.recoveryId;
-                snapshot.content = doc!.content;
-                snapshot.metadata = RecoveryMetadata(doc!);
-                if i == docMgr.activeIndex and engine != null
-                   and file_utils.IsVisualKind(doc!.kind) == false {
-                    snapshot.content = engine.GetTextSnapshot();
-                }
-                var contentBytes = Str.get_Length(snapshot.content);
-                if snapshot.basePath == "" or snapshot.metadata == "" {
-                    request.succeeded = false;
-                    request.error = "Could not allocate crash-recovery identity";
-                    request.snapshots = new List();
-                    return request;
-                }
-                if contentBytes < 0 or contentBytes > MAX_RECOVERY_SWAP_BYTES
-                   or Str.get_Length(snapshot.metadata) > MAX_RECOVERY_METADATA_BYTES
-                   or request.totalBytes + contentBytes > MAX_RECOVERY_TOTAL_BYTES
-                   or request.snapshots.count() >= MAX_RECOVERY_RECORDS {
-                    request.succeeded = false;
-                    request.truncated = true;
-                    request.error = "Crash-recovery write exceeds the bounded request budget";
-                    request.snapshots = new List();
-                    return request;
-                }
-                if forceAll == false
-                   and Map.Has(lastRecoveredContents, snapshot.basePath)
-                   and Map.GetStr(lastRecoveredContents, snapshot.basePath)
-                       == snapshot.content {
-                    i = i + 1;
-                    continue;
-                }
-                var unique = ".recovery-" + request.generation + "-" + i;
-                snapshot.tempMetadataFile = snapshot.basePath + unique + ".meta.tmp";
-                snapshot.tempSwapFile = snapshot.basePath + unique + ".swp.tmp";
-                request.snapshots.add(snapshot);
-                request.totalBytes = request.totalBytes + contentBytes;
+            if i != docMgr.activeIndex {
+                AppendDocumentSnapshot(request, docMgr, engine, i, forceAll);
             }
             i = i + 1;
         }
         return request;
+    }
+
+    /// @brief Append one eligible recovery snapshot without discarding peers on failure.
+    hide func AppendDocumentSnapshot(request: RecoveryWriteRequest,
+                                     docMgr: document_manager.DocumentManager,
+                                     engine: editor_engine.EditorEngine,
+                                     index: Integer,
+                                     forceAll: Boolean) {
+        if request == null or docMgr == null { return; }
+        var doc = docMgr.GetDocument(index);
+        if doc == null or doc!.isModified == false or doc!.isReadOnlyPreview { return; }
+        var basePath = SwapBase(doc!);
+        var sourceGeneration = doc!.sharedBuffer.generation;
+        var sourceRevision = -1;
+        var activeText = index == docMgr.activeIndex and engine != null
+            and engine.currentDoc == doc
+            and file_utils.IsVisualKind(doc!.kind) == false;
+        if activeText {
+            sourceRevision = engine.GetRevision();
+        }
+        if forceAll == false and activeText and sourceRevision >= 0
+           and basePath != ""
+           and Map.Has(lastRecoveredRevisions, basePath)
+           and Map.Has(lastRecoveredGenerations, basePath)
+           and Map.GetInt(lastRecoveredRevisions, basePath) == sourceRevision
+           and Map.GetInt(lastRecoveredGenerations, basePath) == sourceGeneration {
+            return;
+        }
+        var snapshot = new RecoveryWriteSnapshot();
+        snapshot.basePath = basePath;
+        snapshot.originPath = doc!.filePath;
+        snapshot.identity = KeyFor(doc!);
+        snapshot.instanceId = instanceId;
+        snapshot.documentId = doc!.recoveryId;
+        snapshot.sourceRevision = sourceRevision;
+        snapshot.sourceGeneration = sourceGeneration;
+        snapshot.content = doc!.content;
+        snapshot.metadata = RecoveryMetadata(doc!);
+        if index == docMgr.activeIndex and engine != null
+           and file_utils.IsVisualKind(doc!.kind) == false {
+            snapshot.content = engine.GetTextSnapshot();
+        }
+        var contentBytes = Str.get_Length(snapshot.content);
+        if snapshot.basePath == "" or snapshot.metadata == "" {
+            MarkRecoverySkip(request, "Could not allocate one crash-recovery identity");
+            return;
+        }
+        if contentBytes < 0 or contentBytes > MAX_RECOVERY_SWAP_BYTES
+           or Str.get_Length(snapshot.metadata) > MAX_RECOVERY_METADATA_BYTES
+           or request.totalBytes + contentBytes > MAX_RECOVERY_TOTAL_BYTES
+           or request.snapshots.count() >= MAX_RECOVERY_RECORDS {
+            MarkRecoverySkip(request,
+                             "One or more crash-recovery snapshots exceeded the bounded request budget");
+            return;
+        }
+        if forceAll == false
+           and Map.Has(lastRecoveredContents, snapshot.basePath)
+           and Map.GetStr(lastRecoveredContents, snapshot.basePath) == snapshot.content {
+            return;
+        }
+        var unique = ".recovery-" + request.generation + "-" + index;
+        snapshot.tempMetadataFile = snapshot.basePath + unique + ".meta.tmp";
+        snapshot.tempSwapFile = snapshot.basePath + unique + ".swp.tmp";
+        request.snapshots.add(snapshot);
+        request.totalBytes = request.totalBytes + contentBytes;
+    }
+
+    /// @brief Record bounded partial-recovery loss while retaining valid snapshots.
+    hide func MarkRecoverySkip(request: RecoveryWriteRequest,
+                               message: String) {
+        if request == null { return; }
+        request.truncated = true;
+        if request.error == "" { request.error = message; }
     }
 
     /// @brief Collect every valid record under the fixed startup ceilings.

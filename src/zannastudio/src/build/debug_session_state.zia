@@ -20,12 +20,14 @@
 module debug_session_state;
 
 bind "var_model";
+bind "bounded_output";
 bind "../services/process_reaper";
 
 bind Process = Zanna.System.Process;
 bind Time = Zanna.Time;
 bind GUI = Zanna.GUI;
 bind Str = Zanna.String;
+bind Bytes = Zanna.Collections.Bytes;
 
 final TERMINATE_GRACE_MS = 750;
 final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
@@ -44,6 +46,7 @@ class DebugSessionState {
     expose String lastReason;
     expose String consoleText;
     expose String programOutput;
+    hide bounded_output.BoundedText programOutputStore;
     expose Integer exitCode;
     expose Seq stopFrames;
     expose Seq stopLocals;
@@ -74,7 +77,8 @@ class DebugSessionState {
     expose String watchRequestExpr;
     expose Integer watchRequestId;
     expose Time.Countdown watchRequestCountdown;
-    hide String ctrlBuf;
+    hide Any ctrlBytes;
+    hide Integer ctrlLength;
     expose String adapterInputCarry;
     expose Integer nextRequestId;
     expose Boolean dirty;
@@ -99,6 +103,8 @@ class DebugSessionState {
         lastReason = "";
         consoleText = "";
         programOutput = "";
+        programOutputStore = new bounded_output.BoundedText(
+            250000, "[debug output truncated]\n");
         exitCode = -1;
         stopFrames = null;
         stopLocals = null;
@@ -132,7 +138,8 @@ class DebugSessionState {
         watchRequestCountdown = Time.Countdown.New(
             EVALUATION_REQUEST_TIMEOUT_MS);
         varTree = new var_model.VarTreeState();
-        ctrlBuf = "";
+        ctrlBytes = null;
+        ctrlLength = 0;
         adapterInputCarry = "";
         nextRequestId = 1;
         dirty = false;

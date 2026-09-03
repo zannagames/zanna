@@ -192,6 +192,46 @@ static void test_pty_environment_overlay() {
     unsetenv("ZANNA_PTY_OVERLAY_PARENT");
 }
 
+static void test_pty_inherited_environment_snapshot_is_thread_safe() {
+    if (!rt_pty_is_supported())
+        return;
+    const rt_string name = make_string("ZANNA_PTY_SNAPSHOT_RACE");
+    rt_string initial = make_string("alpha");
+    rt_env_set_var(name, initial);
+    rt_str_release_maybe(initial);
+    std::atomic<bool> stop{false};
+    std::thread writer([&]() {
+        for (int64_t i = 0; !stop.load(std::memory_order_acquire); ++i) {
+            rt_string value = make_string((i & 1) == 0 ? "alpha" : "beta");
+            rt_env_set_var(name, value);
+            rt_str_release_maybe(value);
+        }
+    });
+
+    for (int i = 0; i < 32; ++i) {
+        void *overlay = rt_seq_new();
+        rt_seq_push(overlay, make_string("TERM=zanna-snapshot-test"));
+        void *handle = rt_pty_open_with_env_overlay(
+            make_string("/bin/sh"),
+            make_shell_args("printf '%s' \"$ZANNA_PTY_SNAPSHOT_RACE\""),
+            make_string(""),
+            overlay,
+            80,
+            24);
+        assert(handle != nullptr);
+        assert(rt_pty_wait(handle) == 0);
+        std::string output;
+        append_runtime_string(output, rt_pty_read(handle));
+        assert(output.find("alpha") != std::string::npos ||
+               output.find("beta") != std::string::npos);
+        rt_pty_destroy(handle);
+    }
+    stop.store(true, std::memory_order_release);
+    writer.join();
+    rt_str_release_maybe(name);
+    unsetenv("ZANNA_PTY_SNAPSHOT_RACE");
+}
+
 static int count_open_file_descriptors() {
     DIR *directory = opendir("/dev/fd");
     assert(directory != nullptr);
@@ -1174,6 +1214,7 @@ int main(int argc, char **argv) {
     test_process_activity_wake();
     test_pty_activity_wake();
     test_pty_environment_overlay();
+    test_pty_inherited_environment_snapshot_is_thread_safe();
     test_pty_lifecycle_reaps_session_and_descriptors();
 #endif
 

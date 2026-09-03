@@ -27,12 +27,14 @@ class SharedDocumentBuffer {
     expose Integer generation;
     expose Integer viewCount;
     expose Integer mutableOwnerView;
+    expose Integer editorRevision;
 
     expose func init() {
         content = "";
         generation = 0;
         viewCount = 0;
         mutableOwnerView = -1;
+        editorRevision = -1;
     }
 
     /// @brief Reconcile legacy Document.content before views attach.
@@ -52,11 +54,21 @@ class SharedDocumentBuffer {
         return true;
     }
 
+    /// @brief Publish mutable-editor identity without materializing full text.
+    expose func PublishRevision(revision: Integer, ownerView: Integer) -> Boolean {
+        mutableOwnerView = ownerView;
+        if editorRevision == revision { return false; }
+        editorRevision = revision;
+        generation = generation + 1;
+        return true;
+    }
+
     /// @brief Declare a two-view session over the current canonical text.
     expose func OpenPair(text: String, ownerView: Integer) {
         Adopt(text);
         viewCount = 2;
         mutableOwnerView = ownerView;
+        editorRevision = -1;
     }
 
     /// @brief Transfer the sole mutable GUI buffer to another physical view.

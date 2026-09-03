@@ -401,7 +401,7 @@ expose func ZiaFunctionEndLine(source: String,
 
 expose func OutgoingZiaCallTokens(source: String,
                                   startLine: Integer,
-                                  endLine: Integer) -> Any {
+                                  endLine: Integer) -> Seq {
     return source_scan.OutgoingZiaCallTokens(source, startLine, endLine);
 }
 

@@ -97,6 +97,9 @@ static void delete_text_range_internal(
     vg_codeeditor_t *editor, int start_line, int start_col, int end_line, int end_col);
 static void codeeditor_adjust_hidden_cursors(vg_codeeditor_t *editor);
 static int codeeditor_prev_byte_boundary(const vg_codeeditor_t *editor, int line, int byte_col);
+static size_t codeeditor_display_columns_before_byte(const vg_code_line_t *line,
+                                                     size_t byte_col,
+                                                     int tab_width);
 
 /// @brief Saturating-add an amount to a performance counter.
 /// @param counter Counter to update; NULL is ignored.
@@ -591,8 +594,12 @@ static void codeeditor_paint_highlights_for_line(vg_codeeditor_t *editor,
             span_end = span_start + 1;
 
         if (!wrapped) {
-            float span_x = content_x + (float)span_start * editor->char_width - scroll_x;
-            float span_w = (float)(span_end - span_start) * editor->char_width;
+            size_t display_start = codeeditor_display_columns_before_byte(
+                &editor->lines[line], (size_t)span_start, editor->tab_width);
+            size_t display_end = codeeditor_display_columns_before_byte(
+                &editor->lines[line], (size_t)span_end, editor->tab_width);
+            float span_x = content_x + (float)display_start * editor->char_width - scroll_x;
+            float span_w = (float)(display_end - display_start) * editor->char_width;
             codeeditor_draw_highlight_underline(
                 canvas, span_x, row_y, span_w, editor->line_height, span->color);
             continue;
@@ -603,8 +610,15 @@ static void codeeditor_paint_highlights_for_line(vg_codeeditor_t *editor,
             span_end < segment_start + segment_len ? span_end : segment_start + segment_len;
         if (overlap_end <= overlap_start)
             continue;
-        float span_x = content_x + (float)(overlap_start - segment_start) * editor->char_width;
-        float span_w = (float)(overlap_end - overlap_start) * editor->char_width;
+        size_t segment_display = codeeditor_display_columns_before_byte(
+            &editor->lines[line], (size_t)segment_start, editor->tab_width);
+        size_t overlap_display_start = codeeditor_display_columns_before_byte(
+            &editor->lines[line], (size_t)overlap_start, editor->tab_width);
+        size_t overlap_display_end = codeeditor_display_columns_before_byte(
+            &editor->lines[line], (size_t)overlap_end, editor->tab_width);
+        float span_x =
+            content_x + (float)(overlap_display_start - segment_display) * editor->char_width;
+        float span_w = (float)(overlap_display_end - overlap_display_start) * editor->char_width;
         codeeditor_draw_highlight_underline(
             canvas, span_x, row_y, span_w, editor->line_height, span->color);
     }
@@ -631,11 +645,8 @@ typedef struct codeeditor_syntax_scan_state {
 /// @param col Current byte column.
 /// @param out_advance Number of bytes the caller should advance.
 /// @return true when the byte is outside comments and strings.
-static bool codeeditor_syntax_scan_byte(codeeditor_syntax_scan_state_t *state,
-                                        const char *text,
-                                        int len,
-                                        int col,
-                                        int *out_advance) {
+static bool codeeditor_syntax_scan_byte(
+    codeeditor_syntax_scan_state_t *state, const char *text, int len, int col, int *out_advance) {
     if (out_advance)
         *out_advance = 1;
     if (!state || !text || col < 0 || col >= len)
@@ -747,11 +758,8 @@ typedef struct codeeditor_pair_position {
 /// @param line Source line to append.
 /// @param col Source byte column to append.
 /// @return `true` on success, or `false` for invalid arguments or allocation failure.
-static bool codeeditor_pair_stack_push(codeeditor_pair_position_t **stack,
-                                       int *count,
-                                       int *cap,
-                                       int line,
-                                       int col) {
+static bool codeeditor_pair_stack_push(
+    codeeditor_pair_position_t **stack, int *count, int *cap, int line, int col) {
     if (!stack || !count || !cap)
         return false;
     if (*count >= *cap) {
@@ -1097,6 +1105,7 @@ static void codeeditor_update_pair_match_cache(vg_codeeditor_t *editor) {
 /// @param wrapped Whether segment-local wrapped coordinates are active.
 static void codeeditor_draw_pair_cell(vg_codeeditor_t *editor,
                                       void *canvas,
+                                      int line,
                                       int col,
                                       int segment_start,
                                       int segment_len,
@@ -1108,8 +1117,13 @@ static void codeeditor_draw_pair_cell(vg_codeeditor_t *editor,
         return;
     if (wrapped && (col < segment_start || col >= segment_start + segment_len))
         return;
-    float x = wrapped ? content_x + (float)(col - segment_start) * editor->char_width
-                      : content_x + (float)col * editor->char_width - scroll_x;
+    size_t display_col = codeeditor_display_columns_before_byte(
+        &editor->lines[line], (size_t)col, editor->tab_width);
+    size_t segment_display = wrapped ? codeeditor_display_columns_before_byte(&editor->lines[line],
+                                                                              (size_t)segment_start,
+                                                                              editor->tab_width)
+                                     : 0u;
+    float x = content_x + (float)(display_col - segment_display) * editor->char_width - scroll_x;
     float y = row_y + 1.0f;
     float h = editor->line_height - 2.0f;
     if (h < 1.0f)
@@ -1155,6 +1169,7 @@ static void codeeditor_paint_pair_highlight_for_segment(vg_codeeditor_t *editor,
     if (line == editor->pair_anchor_line) {
         codeeditor_draw_pair_cell(editor,
                                   canvas,
+                                  line,
                                   editor->pair_anchor_col,
                                   segment_start,
                                   segment_len,
@@ -1166,6 +1181,7 @@ static void codeeditor_paint_pair_highlight_for_segment(vg_codeeditor_t *editor,
     if (line == editor->pair_peer_line) {
         codeeditor_draw_pair_cell(editor,
                                   canvas,
+                                  line,
                                   editor->pair_peer_col,
                                   segment_start,
                                   segment_len,
@@ -1681,11 +1697,13 @@ static void codeeditor_draw_colored_slice(void *canvas,
                                           float origin_x,
                                           float y,
                                           const char *text,
+                                          const vg_code_line_t *line,
                                           const uint32_t *colors,
                                           size_t colors_capacity,
                                           size_t start,
                                           size_t len,
                                           float char_width,
+                                          int tab_width,
                                           uint32_t fallback_color) {
     if (!text || !colors || len == 0)
         return;
@@ -1697,10 +1715,12 @@ static void codeeditor_draw_colored_slice(void *canvas,
         uint32_t color = i < colors_capacity ? colors[i] : fallback_color;
         if (color == run_color)
             continue;
+        size_t run_display = codeeditor_display_columns_before_byte(line, run_start, tab_width);
+        size_t start_display = codeeditor_display_columns_before_byte(line, start, tab_width);
         codeeditor_draw_text_slice(canvas,
                                    font,
                                    font_size,
-                                   origin_x + (float)(run_start - start) * char_width,
+                                   origin_x + (float)(run_display - start_display) * char_width,
                                    y,
                                    text,
                                    run_start,
@@ -1709,10 +1729,12 @@ static void codeeditor_draw_colored_slice(void *canvas,
         run_start = i;
         run_color = color;
     }
+    size_t run_display = codeeditor_display_columns_before_byte(line, run_start, tab_width);
+    size_t start_display = codeeditor_display_columns_before_byte(line, start, tab_width);
     codeeditor_draw_text_slice(canvas,
                                font,
                                font_size,
-                               origin_x + (float)(run_start - start) * char_width,
+                               origin_x + (float)(run_display - start_display) * char_width,
                                y,
                                text,
                                run_start,
@@ -1974,14 +1996,15 @@ static int codeeditor_codepoint_display_width(uint32_t cp) {
 /// @brief Count approximate display columns for one editor line.
 /// @param line Line whose UTF-8 text should be measured.
 /// @return Display columns with tabs expanded to four-column stops.
-static size_t codeeditor_line_display_columns(const vg_code_line_t *line) {
+static size_t codeeditor_line_display_columns(const vg_code_line_t *line, int tab_width) {
     if (!line || !line->text)
         return 0;
     size_t columns = 0;
     for (size_t pos = 0; pos < line->length;) {
         unsigned char ch = (unsigned char)line->text[pos];
         if (ch == '\t') {
-            size_t add = 4u - (columns % 4u);
+            size_t tab = tab_width > 0 ? (size_t)tab_width : 4u;
+            size_t add = tab - (columns % tab);
             if (add > SIZE_MAX - columns)
                 return SIZE_MAX;
             columns += add;
@@ -2001,6 +2024,69 @@ static size_t codeeditor_line_display_columns(const vg_code_line_t *line) {
     return columns;
 }
 
+/// @brief Count display columns preceding one byte position in a line.
+/// @param line Line whose UTF-8 text should be measured.
+/// @param byte_col Byte position clamped to the line and to a codepoint boundary.
+/// @return Display columns preceding @p byte_col, including expanded tabs.
+static size_t codeeditor_display_columns_before_byte(const vg_code_line_t *line,
+                                                     size_t byte_col,
+                                                     int tab_width) {
+    if (!line || !line->text)
+        return 0;
+    if (byte_col > line->length)
+        byte_col = line->length;
+    size_t columns = 0;
+    for (size_t pos = 0; pos < byte_col;) {
+        unsigned char ch = (unsigned char)line->text[pos];
+        if (ch == '\t') {
+            size_t tab = tab_width > 0 ? (size_t)tab_width : 4u;
+            columns += tab - (columns % tab);
+            pos++;
+            continue;
+        }
+        size_t span = codeeditor_utf8_span(line->text + pos);
+        if (span == 0 || span > line->length - pos)
+            span = 1;
+        if (pos + span > byte_col)
+            break;
+        columns += (size_t)codeeditor_codepoint_display_width(
+            codeeditor_decode_span_codepoint(line->text + pos, span));
+        pos += span;
+    }
+    return columns;
+}
+
+/// @brief Map a display-column boundary to a UTF-8 byte boundary.
+/// @param line Line whose UTF-8 text should be traversed.
+/// @param display_col Requested display column.
+/// @return Byte boundary at or immediately after the requested display cell.
+static size_t codeeditor_byte_for_display_column(const vg_code_line_t *line,
+                                                 size_t display_col,
+                                                 int tab_width) {
+    if (!line || !line->text || display_col == 0)
+        return 0;
+    size_t columns = 0;
+    size_t pos = 0;
+    while (pos < line->length && columns < display_col) {
+        unsigned char ch = (unsigned char)line->text[pos];
+        size_t span = 1;
+        size_t width = 1;
+        if (ch == '\t') {
+            size_t tab = tab_width > 0 ? (size_t)tab_width : 4u;
+            width = tab - (columns % tab);
+        } else {
+            span = codeeditor_utf8_span(line->text + pos);
+            if (span == 0 || span > line->length - pos)
+                span = 1;
+            width = (size_t)codeeditor_codepoint_display_width(
+                codeeditor_decode_span_codepoint(line->text + pos, span));
+        }
+        pos += span;
+        columns += width;
+    }
+    return pos;
+}
+
 /// @brief Returns the number of wrapped rows needed to display @p line given @p content_width
 /// (minimum 1).
 /// @param editor Editor supplying text and wrap metrics.
@@ -2015,7 +2101,7 @@ static int codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *editor,
     int chars_per_row = codeeditor_chars_per_row(editor, content_width);
     if (chars_per_row <= 0)
         return 1;
-    size_t columns = codeeditor_line_display_columns(&editor->lines[line]);
+    size_t columns = codeeditor_line_display_columns(&editor->lines[line], editor->tab_width);
     if (columns == 0)
         return 1;
     size_t rows = (columns + (size_t)chars_per_row - 1) / (size_t)chars_per_row;
@@ -2041,7 +2127,8 @@ static int codeeditor_visual_rows_for_line(const vg_codeeditor_t *editor,
 
 /// @brief Build or reuse prefix sums of visual rows for every source line.
 /// @details The cache key includes layout generation, rounded content width, wrap mode, and line
-/// count. Each prefix entry gives the absolute visual row at the corresponding source-line boundary.
+/// count. Each prefix entry gives the absolute visual row at the corresponding source-line
+/// boundary.
 /// @param editor Editor whose layout cache is populated.
 /// @param content_width Available text width in pixels.
 /// @return `true` when a current cache is available.
@@ -2313,14 +2400,18 @@ static void codeeditor_visual_offset_for_position(const vg_codeeditor_t *editor,
 
     int chars_per_row = codeeditor_chars_per_row(editor, content_width);
     int row_index = 0;
-    int col_in_row = col;
+    size_t display_col = codeeditor_display_columns_before_byte(
+        &editor->lines[line], col > 0 ? (size_t)col : 0u, editor->tab_width);
+    int col_in_row = display_col > (size_t)INT_MAX ? INT_MAX : (int)display_col;
     if (chars_per_row > 0) {
-        size_t len = editor->lines[line].length;
-        row_index = col / chars_per_row;
-        if (col > 0 && (size_t)col == len && len > 0 && (len % (size_t)chars_per_row) == 0) {
-            row_index = (int)((len - 1) / (size_t)chars_per_row);
+        size_t columns = codeeditor_line_display_columns(&editor->lines[line], editor->tab_width);
+        row_index = (int)(display_col / (size_t)chars_per_row);
+        if (display_col > 0 && display_col == columns && columns > 0 &&
+            (columns % (size_t)chars_per_row) == 0) {
+            row_index = (int)((columns - 1) / (size_t)chars_per_row);
         }
-        col_in_row = col - row_index * chars_per_row;
+        size_t row_start = (size_t)row_index * (size_t)chars_per_row;
+        col_in_row = display_col > row_start ? (int)(display_col - row_start) : 0;
         if (col_in_row < 0)
             col_in_row = 0;
     }
@@ -2494,10 +2585,8 @@ bool vg_codeeditor_get_ligatures_enabled(const vg_codeeditor_t *editor) {
 bool vg_codeeditor_smooth_tick(vg_codeeditor_t *editor, float delta_ms) {
     if (!editor || !editor->smooth_animating)
         return false;
-    bool moving_x =
-        vg_smooth_scroll_step(&editor->scroll_x, editor->smooth_target_x, delta_ms);
-    bool moving_y =
-        vg_smooth_scroll_step(&editor->scroll_y, editor->smooth_target_y, delta_ms);
+    bool moving_x = vg_smooth_scroll_step(&editor->scroll_x, editor->smooth_target_x, delta_ms);
+    bool moving_y = vg_smooth_scroll_step(&editor->scroll_y, editor->smooth_target_y, delta_ms);
     codeeditor_clamp_scroll(editor, &editor->base);
     editor->base.needs_paint = true;
     editor->smooth_animating = moving_x || moving_y;

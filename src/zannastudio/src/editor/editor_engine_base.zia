@@ -72,6 +72,7 @@ class EditorEngineBase {
     hide Number appliedSplitPosition;
     hide Boolean splitPositionDirty;
     hide Integer sharedMirrorGeneration;
+    hide Integer sharedMirrorSourceRevision;
     expose Integer syncedRevision;
     expose String syncedPath;
 
@@ -94,6 +95,7 @@ class EditorEngineBase {
         appliedSplitPosition = 0.50;
         splitPositionDirty = false;
         sharedMirrorGeneration = -1;
+        sharedMirrorSourceRevision = -1;
         syncedRevision = -1;
         syncedPath = "";
     }

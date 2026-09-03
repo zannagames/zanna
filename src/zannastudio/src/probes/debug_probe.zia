@@ -61,7 +61,7 @@ func fail(reason: String) {
 func VerifyProtocolFraming() -> Boolean {
     var session = new debug_session.DebugSession();
     session.AcceptAdapterControlText("@@VDBG@@ {not-json}\n");
-    if Str.IndexOf(session.programOutput,
+    if Str.IndexOf(session.GetProgramOutput(),
                    "malformed debug control JSON discarded") == 0 {
         fail("malformed debug control JSON was silently discarded");
         return false;
@@ -70,9 +70,21 @@ func VerifyProtocolFraming() -> Boolean {
     session.ClearProgramOutput();
     session.AcceptAdapterControlText(
         "@@VDBG@@ " + Str.Repeat("x", 1024 * 1024 + 1) + "\n");
-    if Str.IndexOf(session.programOutput,
+    if Str.IndexOf(session.GetProgramOutput(),
                    "oversized debug control line discarded") == 0 {
         fail("oversized debug control record reached the parser");
+        return false;
+    }
+
+    session.ClearProgramOutput();
+    var fragment = 0;
+    while fragment < 4096 {
+        session.AcceptAdapterControlText("x");
+        fragment = fragment + 1;
+    }
+    session.AcceptAdapterControlText("\n");
+    if Str.get_Length(session.GetProgramOutput()) != 4097 {
+        fail("fragmented debug control text was not reassembled exactly");
         return false;
     }
     return true;
@@ -325,13 +337,13 @@ func VerifyZiaStepping(
         fail("exit code was " + session.exitCode + " (expected 30)");
         return false;
     }
-    if Str.IndexOf(session.programOutput, "c=30") == 0 {
-        fail("program output missing 'c=30': " + session.programOutput);
+    if Str.IndexOf(session.GetProgramOutput(), "c=30") == 0 {
+        fail("program output missing 'c=30': " + session.GetProgramOutput());
         return false;
     }
     var terminatedStatus = session.FormatConsole();
     session.ClearProgramOutput();
-    if session.programOutput != ""
+    if session.GetProgramOutput() != ""
        or Str.IndexOf(terminatedStatus, "terminated") == 0
        or session.FormatConsole() != terminatedStatus {
         fail("clearing program output changed debugger termination status");
@@ -463,8 +475,8 @@ func VerifyConditionalBreakpointsAndLogpoints(
         Time.Clock.Sleep(5);
         lw = lw + 5;
     }
-    if Str.IndexOf(lsession.programOutput, "[logpoint:5] iter i=3") == 0 {
-        fail("logpoint: missing 'iter i=3' in output: " + lsession.programOutput);
+    if Str.IndexOf(lsession.GetProgramOutput(), "[logpoint:5] iter i=3") == 0 {
+        fail("logpoint: missing 'iter i=3' in output: " + lsession.GetProgramOutput());
         return false;
     }
 

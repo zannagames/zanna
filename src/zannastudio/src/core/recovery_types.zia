@@ -187,6 +187,8 @@ class RecoveryWriteSnapshot {
     expose String identity;
     expose String instanceId;
     expose String documentId;
+    expose Integer sourceRevision;
+    expose Integer sourceGeneration;
     expose String content;
     expose String metadata;
     expose String tempMetadataFile;
@@ -198,6 +200,8 @@ class RecoveryWriteSnapshot {
         identity = "";
         instanceId = "";
         documentId = "";
+        sourceRevision = -1;
+        sourceGeneration = -1;
         content = "";
         metadata = "";
         tempMetadataFile = "";

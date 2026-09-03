@@ -117,9 +117,14 @@ func VerifySplitOwnership(
     engine.editor.InsertAtCursor(" shared");
     if engine.SynchronizeSharedDocumentViews() == false
        or engine.rightWidget.Text != engine.leftWidget.Text
-       or primary.content != engine.leftWidget.Text
+       or primary.content == engine.leftWidget.Text
        or primary.sharedBuffer.viewCount != 2 {
-        fail(shell, "shared edit did not reach the inactive mirror");
+        fail(shell, "shared edit did not use lazy delta mirroring");
+        return false;
+    }
+    engine.SaveToDocument(primary);
+    if primary.content != engine.leftWidget.Text {
+        fail(shell, "explicit shared snapshot did not publish document text");
         return false;
     }
     engine.rightWidget.SetCursor(0, 2);
@@ -135,6 +140,7 @@ func VerifySplitOwnership(
     }
     engine.editor.Undo();
     engine.SynchronizeSharedDocumentViews();
+    engine.SaveToDocument(primary);
     if engine.leftWidget.Text != primary.content
        or engine.rightWidget.Text != primary.content {
         fail(shell, "shared undo did not converge both views");

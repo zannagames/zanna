@@ -1444,6 +1444,8 @@ Constructor: `Zanna.GUI.CodeEditor.New`
 | <a id="zanna-gui-codeeditor-ismodified"></a>`IsModified` | `i1()` | `Zanna.GUI.CodeEditor.IsModified` |
 | <a id="zanna-gui-codeeditor-clearmodified"></a>`ClearModified` | `void()` | `Zanna.GUI.CodeEditor.ClearModified` |
 | <a id="zanna-gui-codeeditor-takedeltas"></a>`TakeDeltas` | `str(i64)` | `Zanna.GUI.CodeEditor.TakeDeltas` |
+| <a id="zanna-gui-codeeditor-peekdeltas"></a>`PeekDeltas` | `str(i64)` | `Zanna.GUI.CodeEditor.PeekDeltas` |
+| <a id="zanna-gui-codeeditor-applymirroredit"></a>`ApplyMirrorEdit` | `i1(i64,i64,i64,i64,str)` | `Zanna.GUI.CodeEditor.ApplyMirrorEdit` |
 | <a id="zanna-gui-codeeditor-setfont"></a>`SetFont` | `void(obj,f64)` | `Zanna.GUI.CodeEditor.SetFont` |
 | <a id="zanna-gui-codeeditor-getfontsize"></a>`GetFontSize` | `f64()` | `Zanna.GUI.CodeEditor.GetFontSize` |
 | <a id="zanna-gui-codeeditor-setfontsize"></a>`SetFontSize` | `void(f64)` | `Zanna.GUI.CodeEditor.SetFontSize` |
@@ -2772,6 +2774,8 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | <a id="zanna-gui-codeeditor-get-text"></a>`Zanna.GUI.CodeEditor.get_Text` | `str(obj)` | `rt_codeeditor_get_text` |
 | <a id="zanna-gui-codeeditor-get-revision"></a>`Zanna.GUI.CodeEditor.get_Revision` | `i64(obj)` | `rt_codeeditor_get_revision` |
 | `Zanna.GUI.CodeEditor.TakeDeltas` | `str(obj,i64)` | `rt_codeeditor_take_deltas` |
+| `Zanna.GUI.CodeEditor.PeekDeltas` | `str(obj,i64)` | `rt_codeeditor_peek_deltas` |
+| `Zanna.GUI.CodeEditor.ApplyMirrorEdit` | `i1(obj,i64,i64,i64,i64,str)` | `rt_codeeditor_apply_mirror_edit` |
 | `Zanna.GUI.CodeEditor.GetSelectedText` | `str(obj)` | `rt_codeeditor_get_selected_text` |
 | `Zanna.GUI.CodeEditor.SetCursor` | `void(obj,i64,i64)` | `rt_codeeditor_set_cursor` |
 | `Zanna.GUI.CodeEditor.ScrollToLine` | `void(obj,i64)` | `rt_codeeditor_scroll_to_line` |

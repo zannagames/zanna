@@ -1083,6 +1083,43 @@ rt_string rt_codeeditor_take_deltas(void *editor, int64_t since_revision) {
     return result;
 }
 
+/// @brief Serialize retained deltas without consuming the editor journal.
+rt_string rt_codeeditor_peek_deltas(void *editor, int64_t since_revision) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_codeeditor_t *ce = rt_codeeditor_checked(editor);
+    if (!ce)
+        return rt_str_empty();
+    uint64_t since = since_revision < 0 ? 0u : (uint64_t)since_revision;
+    char *json = vg_codeeditor_peek_deltas_json(ce, since);
+    if (!json)
+        return rt_string_from_bytes("overflow", 8);
+    rt_string result = rt_gui_string_from_cstr_bounded(json);
+    free(json);
+    return result;
+}
+
+/// @brief Apply one incremental edit to an inactive same-document mirror.
+int64_t rt_codeeditor_apply_mirror_edit(void *editor,
+                                        int64_t start_line,
+                                        int64_t start_col,
+                                        int64_t end_line,
+                                        int64_t end_col,
+                                        rt_string text) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_codeeditor_t *ce = rt_codeeditor_checked(editor);
+    if (!ce || start_line < 0 || start_line > INT_MAX || start_col < 0 || start_col > INT_MAX ||
+        end_line < 0 || end_line > INT_MAX || end_col < 0 || end_col > INT_MAX)
+        return 0;
+    return vg_codeeditor_apply_mirror_edit(ce,
+                                           (int)start_line,
+                                           (int)start_col,
+                                           (int)end_line,
+                                           (int)end_col,
+                                           text ? rt_string_cstr(text) : "")
+               ? 1
+               : 0;
+}
+
 /// @brief Retrieve the currently selected text in a code editor.
 /// @param editor CodeEditor widget handle.
 /// @return Owned selected bytes joined with newlines, or the canonical empty string when absent.
@@ -3168,6 +3205,27 @@ rt_string rt_codeeditor_take_deltas(void *editor, int64_t since_revision) {
     (void)editor;
     (void)since_revision;
     return rt_str_empty();
+}
+
+rt_string rt_codeeditor_peek_deltas(void *editor, int64_t since_revision) {
+    (void)editor;
+    (void)since_revision;
+    return rt_str_empty();
+}
+
+int64_t rt_codeeditor_apply_mirror_edit(void *editor,
+                                        int64_t start_line,
+                                        int64_t start_col,
+                                        int64_t end_line,
+                                        int64_t end_col,
+                                        rt_string text) {
+    (void)editor;
+    (void)start_line;
+    (void)start_col;
+    (void)end_line;
+    (void)end_col;
+    (void)text;
+    return 0;
 }
 
 /// @brief Stub: return empty CodeEditor selection text without graphics.

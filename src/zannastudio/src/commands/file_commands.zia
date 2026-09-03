@@ -34,6 +34,7 @@ bind "../services/file_utils";
 bind "../services/path_identity";
 bind "../commands/file_save_support";
 bind "file_command_results";
+bind "save_all_job";
 
 bind Zanna.GUI;
 bind IO = Zanna.IO;
@@ -46,43 +47,11 @@ bind Obj = Zanna.Core.Object;
 
 var confirmDirtyClose = true;
 var activeRecoveryStore: recovery_store.RecoveryStore = null;
-
 final CLOSE_CHOICE_CANCEL = 0;
 final CLOSE_CHOICE_SAVE = 1;
 final CLOSE_CHOICE_DISCARD = 2;
 
 type SaveAllResult = file_command_results.SaveAllResult;
-
-// ============================================================================
-// MODULE: file_commands
-// PURPOSE: File-management command handlers (New, Open, Save, Save As,
-//          Save All, Close, Reload, Exit) plus Open Folder for projects.
-//          Coordinates DocumentManager, EditorTabs, EditorEngine, and
-//          AppShell so a single user action updates every relevant
-//          surface (tab title, breadcrumb, status bar, modified marker,
-//          tooltip).
-//
-// WHERE-THIS-FITS: Wired into main.zia's command dispatcher. Most
-//          handlers take the same four arguments (shell, docMgr,
-//          engine, tabs) — that's the "active document context."
-//
-// KEY-DESIGN-CHOICES:
-//   * SaveEditorState BEFORE EVERY MUTATION. Every handler starts by
-//     copying the editor's current cursor / scroll / text into the
-//     active Document so subsequent operations work against fresh
-//     state. This is the IDE equivalent of "flush the write buffer
-//     before fsync."
-//   * SAVE OF UNTITLED -> SAVE AS PROMPT. handleSave detects
-//     `doc.isNew` and routes to a SaveAs dialog rather than failing.
-//   * MODIFIED-PROMPT ON CLOSE. handleClose routes through the shared
-//     ConfirmCloseDocuments path so tab close, File > Close, project
-//     switch, and exit use the same dirty-document sweep.
-//   * BREADCRUMB AUTO-HIDE. SetBreadcrumbPath("") hides the breadcrumb
-//     when no path is meaningful (after closing the last document).
-//   * STATUS LABEL HELPER. DocStatusLabel renders "Zia | LF" / "Basic |
-//     CRLF" — the tiny right-aligned label in the status bar. Reused
-//     by every handler that lands on a different document.
-// ============================================================================
 
 /// @brief Create a new untitled document and activate its tab.
 func handleNew(shell: app_shell.AppShell,
@@ -390,6 +359,32 @@ func handleSaveAll(shell: app_shell.AppShell,
     return CompleteSaveAllRecovery(result, docMgr, engine);
 }
 
+/// @brief Queue the common all-named, conflict-free Save All case off-frame.
+func handleSaveAllAsync(shell: app_shell.AppShell,
+                        docMgr: document_manager.DocumentManager,
+                        engine: editor_engine.EditorEngine,
+                        tabs: editor_tabs.EditorTabs) -> Boolean {
+    if save_all_job.IsBusy() {
+        shell.SetStatusLeft("Save All is already in progress");
+        return false;
+    }
+    if save_all_job.RequiresInteraction(docMgr) {
+        return handleSaveAll(shell, docMgr, engine, tabs).success;
+    }
+    return save_all_job.QueueDocuments(shell, docMgr, engine);
+}
+
+/// @brief Publish a completed background Save All without clearing newer edits.
+func PumpSaveAll(shell: app_shell.AppShell,
+                 docMgr: document_manager.DocumentManager,
+                 engine: editor_engine.EditorEngine,
+                 tabs: editor_tabs.EditorTabs) {
+    if save_all_job.PumpDocuments(shell, docMgr, engine, tabs) {
+        SyncRecoverySwaps(docMgr, engine);
+    }
+}
+func SaveAllIsBusy() -> Boolean { return save_all_job.IsBusy(); }
+
 /// @brief Reconcile recovery exactly once after a Save All sweep ends.
 func CompleteSaveAllRecovery(result: SaveAllResult,
                              docMgr: document_manager.DocumentManager,
@@ -397,7 +392,6 @@ func CompleteSaveAllRecovery(result: SaveAllResult,
     SyncRecoverySwaps(docMgr, engine);
     return result;
 }
-
 /// @brief Save documents before a build, run, or debug launch.
 /// @details The default IDE policy saves every modified file so project builds
 ///          see fresh dependencies. Users can switch to active-file-only saves
@@ -414,6 +408,12 @@ func handleSaveForExecution(shell: app_shell.AppShell,
                             engine: editor_engine.EditorEngine,
                             tabs: editor_tabs.EditorTabs,
                             saveAll: Boolean) -> SaveAllResult {
+    if save_all_job.IsBusy() {
+        var busy = new SaveAllResult();
+        busy.message = "Save All is still in progress";
+        shell.SetStatusLeft(busy.message);
+        return busy;
+    }
     if saveAll {
         return handleSaveAll(shell, docMgr, engine, tabs);
     }

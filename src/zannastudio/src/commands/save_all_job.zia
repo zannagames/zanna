@@ -1,0 +1,262 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/save_all_job.zia
+// Purpose: Persist an immutable batch of ordinary Save All snapshots off the UI thread.
+// Key invariants:
+//   - Workers never read live Document or GUI state.
+//   - Every file commits through the typed prepared workspace-edit transaction.
+//   - Completion is reconciled by document identity, path, content, and revision.
+// Ownership/Lifetime: SaveAllJob owns one request until its future completes.
+// Links: zannastudio/src/commands/file_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module save_all_job;
+
+bind "../core/document";
+bind "../core/document_save_transaction";
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "file_save_support";
+
+bind Async = Zanna.Threads.Async;
+bind Future = Zanna.Threads.Future;
+bind Zanna.GUI;
+
+var backgroundSaveAll = new SaveAllJob();
+
+class SaveAllItem {
+    expose document.Document owner;
+    expose String path;
+    expose String content;
+    expose Integer sourceRevision;
+    expose Integer expectedModified;
+    expose Integer expectedSize;
+    expose String expectedHash;
+    expose Integer maxBytes;
+    expose Boolean succeeded;
+    expose String error;
+    expose Integer committedModified;
+    expose Integer committedSize;
+
+    expose func init() {
+        owner = null;
+        path = "";
+        content = "";
+        sourceRevision = -1;
+        expectedModified = -1;
+        expectedSize = -1;
+        expectedHash = "";
+        maxBytes = 0;
+        succeeded = false;
+        error = "";
+        committedModified = -1;
+        committedSize = -1;
+    }
+}
+
+class SaveAllRequest {
+    expose List[SaveAllItem] items;
+    expose Integer savedCount;
+    expose Boolean succeeded;
+    expose String error;
+
+    expose func init() {
+        items = [];
+        savedCount = 0;
+        succeeded = true;
+        error = "";
+    }
+}
+
+func RunSaveAll(request: SaveAllRequest) -> Any {
+    if request == null { return request; }
+    var i = 0;
+    while i < request.items.count() {
+        var item = request.items.get(i);
+        var result = document_save_transaction.Replace(
+            item.path, item.content, item.expectedModified, item.expectedSize,
+            item.expectedHash, item.maxBytes);
+        if result.ok {
+            item.committedModified = safe_io.Modified(item.path);
+            item.committedSize = safe_io.SizeBytes(item.path);
+            item.succeeded = item.committedModified >= 0
+                and item.committedSize >= 0;
+            if item.succeeded {
+                request.savedCount = request.savedCount + 1;
+            } else {
+                item.error = "Could not verify Save All commit";
+            }
+        } else {
+            item.error = result.message;
+            if result.detail != "" { item.error = item.error + " " + result.detail; }
+        }
+        if item.succeeded == false {
+            request.succeeded = false;
+            if request.error == "" { request.error = item.error; }
+        }
+        i = i + 1;
+    }
+    return request;
+}
+
+class SaveAllJob {
+    expose SaveAllRequest activeRequest;
+    expose SaveAllRequest completedRequest;
+    hide Any activeFuture;
+
+    expose func init() {
+        activeRequest = null;
+        completedRequest = null;
+        activeFuture = null;
+    }
+
+    expose func Queue(request: SaveAllRequest) -> Boolean {
+        if request == null or request.items.count() == 0 or activeFuture != null {
+            return false;
+        }
+        activeRequest = request;
+        completedRequest = null;
+        try { activeFuture = Async.RunOwned(&RunSaveAll, request); }
+        catch { activeFuture = null; }
+        if activeFuture == null {
+            activeRequest = null;
+            request.succeeded = false;
+            request.error = "Could not start Save All worker";
+            completedRequest = request;
+            return false;
+        }
+        return true;
+    }
+
+    expose func Pump() -> Boolean {
+        if activeFuture != null and Future.get_IsDone(activeFuture) {
+            var request = activeRequest;
+            if Future.get_IsError(activeFuture) {
+                request.succeeded = false;
+                request.error = Future.get_Error(activeFuture);
+            }
+            completedRequest = request;
+            activeRequest = null;
+            activeFuture = null;
+        }
+        return completedRequest != null;
+    }
+
+    expose func TakeCompleted() -> SaveAllRequest {
+        var result = completedRequest;
+        completedRequest = null;
+        return result;
+    }
+
+    expose func IsBusy() -> Boolean { return activeFuture != null; }
+}
+
+/// @brief Return whether Save All requires an ordered UI decision.
+func RequiresInteraction(docMgr: document_manager.DocumentManager) -> Boolean {
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var doc = docMgr.documents.get(i);
+        if doc != null and doc.isModified
+           and (doc.isNew or doc.isReadOnlyPreview
+                or docMgr.ExternalStateForSave(i) != document.EXTERNAL_STATE_CLEAN) {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+/// @brief Snapshot and queue the conflict-free modified documents.
+func QueueDocuments(shell: app_shell.AppShell,
+                    docMgr: document_manager.DocumentManager,
+                    engine: editor_engine.EditorEngine) -> Boolean {
+    if backgroundSaveAll.IsBusy() {
+        shell.SetStatusLeft("Save All is already in progress");
+        return false;
+    }
+    file_save_support.SaveEditorState(docMgr, engine);
+    var request = new SaveAllRequest();
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var doc = docMgr.documents.get(i);
+        if doc != null and doc.isModified {
+            if file_save_support.NormalizeDocumentForSave(docMgr, engine, i) == false {
+                file_save_support.ReportNormalizationFailure(shell, doc.fileName);
+                return false;
+            }
+            var item = new SaveAllItem();
+            item.owner = doc;
+            item.path = doc.filePath;
+            item.content = doc.content;
+            item.expectedModified = doc.lastModifiedOnDisk;
+            item.expectedSize = doc.lastSizeOnDisk;
+            item.expectedHash = doc.lastContentHashOnDisk;
+            item.maxBytes = document_manager.MaxOpenBytesForPath(doc.filePath);
+            if engine != null and engine.currentDoc == doc {
+                item.sourceRevision = engine.GetRevision();
+            }
+            request.items.add(item);
+        }
+        i = i + 1;
+    }
+    if request.items.count() == 0 {
+        shell.SetStatusLeft("Saved 0 files");
+        return true;
+    }
+    if backgroundSaveAll.Queue(request) == false {
+        shell.SetStatusLeft(request.error);
+        return false;
+    }
+    shell.SetStatusLeft("Saving " + request.items.count() + " files…");
+    return true;
+}
+
+/// @brief Publish a completed batch without clearing edits made after its snapshot.
+/// @return True when a request completed and recovery state should be reconciled.
+func PumpDocuments(shell: app_shell.AppShell,
+                   docMgr: document_manager.DocumentManager,
+                   engine: editor_engine.EditorEngine,
+                   tabs: editor_tabs.EditorTabs) -> Boolean {
+    backgroundSaveAll.Pump();
+    var request = backgroundSaveAll.TakeCompleted();
+    if request == null { return false; }
+    var i = 0;
+    while i < request.items.count() {
+        var item = request.items.get(i);
+        if item.succeeded {
+            var doc = item.owner;
+            var stillCurrent = doc != null and doc.filePath == item.path
+                and doc.content == item.content;
+            if stillCurrent and engine != null and engine.currentDoc == doc {
+                stillCurrent = engine.GetRevision() == item.sourceRevision
+                    and engine.GetTextSnapshot() == item.content;
+            }
+            var index = docMgr.AcknowledgeBackgroundSave(
+                doc, item.content, item.committedModified,
+                item.committedSize, stillCurrent);
+            if index >= 0 and stillCurrent {
+                tabs.SetModified(index, false);
+                engine.ClearDocumentModified(doc);
+            }
+        }
+        i = i + 1;
+    }
+    if request.succeeded {
+        shell.SetStatusLeft("Saved " + request.savedCount + " files");
+    } else {
+        shell.SetStatusLeft("Save All partially failed: " + request.error);
+        GUI.Toast.Warning(request.error);
+    }
+    return true;
+}
+
+func IsBusy() -> Boolean { return backgroundSaveAll.IsBusy(); }

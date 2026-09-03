@@ -48,6 +48,7 @@ class LanguageToolFrameState {
     expose Integer curCursorLine;
     expose Integer curCursorCol;
     expose Integer frameWorkStartMs;
+    expose Integer frameWorkDeadlineMs;
     expose Integer nextBackgroundLane;
     hide String lastWorkspaceIndexStatus;
     hide String lastBreakpointPath;
@@ -71,6 +72,7 @@ class LanguageToolFrameState {
         curCursorLine = 1;
         curCursorCol = 1;
         frameWorkStartMs = 0;
+        frameWorkDeadlineMs = 0;
         nextBackgroundLane = 0;
         lastWorkspaceIndexStatus = "";
         lastBreakpointPath = "";

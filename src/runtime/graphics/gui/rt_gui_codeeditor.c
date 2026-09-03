@@ -14,7 +14,7 @@
 ///
 //===----------------------------------------------------------------------===//
 //
-// File: src/runtime/graphics/rt_gui_codeeditor.c
+// File: src/runtime/graphics/gui/rt_gui_codeeditor.c
 // Purpose: Runtime bindings for the ZannaGUI CodeEditor widget. Implements
 //   syntax highlighting (Zia and BASIC keyword/type color tables), gutter icon
 //   management, code folding, multiple cursors, edit operations, and completion
@@ -1503,10 +1503,10 @@ static int rt_codeeditor_wrapped_rows_for_line(const vg_codeeditor_t *ce,
     int chars_per_row = rt_codeeditor_chars_per_row(ce, content_width);
     if (chars_per_row <= 0)
         return 1;
-    size_t len = ce->lines[line].length;
-    if (len == 0)
+    int columns = (int)vg_codeeditor_line_display_columns(ce, line);
+    if (columns <= 0)
         return 1;
-    size_t rows = (len + (size_t)chars_per_row - 1) / (size_t)chars_per_row;
+    size_t rows = ((size_t)columns + (size_t)chars_per_row - 1) / (size_t)chars_per_row;
     return rows > (size_t)INT_MAX ? INT_MAX : (int)rows;
 }
 
@@ -1636,14 +1636,16 @@ static void rt_codeeditor_visual_offset_for_position(const vg_codeeditor_t *ce,
 
     int chars_per_row = rt_codeeditor_chars_per_row(ce, content_width);
     int row_index = 0;
-    int col_in_row = col;
+    int display_col = (int)vg_codeeditor_display_column_for_byte(ce, line, (size_t)col);
+    int col_in_row = display_col;
     if (chars_per_row > 0) {
-        size_t len = ce->lines[line].length;
-        row_index = col / chars_per_row;
-        if (col > 0 && (size_t)col == len && len > 0 && (len % (size_t)chars_per_row) == 0) {
-            row_index = (int)((len - 1) / (size_t)chars_per_row);
+        int columns = (int)vg_codeeditor_line_display_columns(ce, line);
+        row_index = display_col / chars_per_row;
+        if (display_col > 0 && display_col == columns && columns > 0 &&
+            (columns % chars_per_row) == 0) {
+            row_index = (columns - 1) / chars_per_row;
         }
-        col_in_row = col - row_index * chars_per_row;
+        col_in_row = display_col - row_index * chars_per_row;
         if (col_in_row < 0)
             col_in_row = 0;
     }
@@ -1764,7 +1766,10 @@ int64_t rt_codeeditor_get_cursor_pixel_x(void *editor) {
             ce, content_width, ce->cursor_line, ce->cursor_col, NULL, &col_in_row);
         px += (float)col_in_row * ce->char_width;
     } else {
-        px += (float)(ce->cursor_col) * ce->char_width - ce->scroll_x;
+        px += (float)vg_codeeditor_display_column_for_byte(
+                  ce, ce->cursor_line, (size_t)ce->cursor_col) *
+                  ce->char_width -
+              ce->scroll_x;
     }
     return rt_gui_saturating_f64_to_i64((double)px);
 }
@@ -1822,7 +1827,7 @@ int64_t rt_codeeditor_get_line_at_pixel(void *editor, int64_t y) {
 /// @param editor CodeEditor widget handle.
 /// @param x Absolute screen X coordinate.
 /// @param y Absolute screen Y coordinate.
-/// @return Zero-based byte column clamped to the selected line, or -1 when unavailable.
+/// @return Zero-based codepoint column clamped to the selected line, or -1 when unavailable.
 int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
     vg_codeeditor_t *ce = rt_codeeditor_handle_checked(editor);
     if (!ce)
@@ -1864,10 +1869,7 @@ int64_t rt_codeeditor_get_col_at_pixel(void *editor, int64_t x, int64_t y) {
     }
     if (col < 0)
         col = 0;
-    int line_len = rt_codeeditor_line_length_i32(ce, line);
-    if (col > line_len)
-        col = line_len;
-    return col;
+    return (int64_t)vg_codeeditor_character_column_for_display(ce, line, (size_t)col);
 }
 
 /// @brief Insert text at the primary cursor position.

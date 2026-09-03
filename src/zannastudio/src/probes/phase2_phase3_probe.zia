@@ -13,7 +13,8 @@
 //   - Persistent debug state fails safely under malformed filesystem state.
 // Ownership/Lifetime: Owns all temporary projects, processes, and model values.
 // Links: zannastudio/src/build/build_system.zia,
-//        zannastudio/src/build/breakpoints.zia
+//        zannastudio/src/build/breakpoints.zia,
+//        zannastudio/src/app/dispatch_helpers.zia
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +34,7 @@ module phase2_phase3_probe;
 // ============================================================================
 
 bind "../build/build_system";
+bind "../build/bounded_output";
 bind "../build/breakpoints";
 bind "../build/debug_session";
 bind "../build/run_config";
@@ -43,6 +45,7 @@ bind "../core/document_manager";
 bind "../core/project";
 bind "../core/project_manager";
 bind "../services/file_utils";
+bind "../app/dispatch_helpers";
 
 bind Terminal = Zanna.Terminal;
 bind File = Zanna.IO.File;
@@ -67,6 +70,18 @@ func assertTrue(cond: Boolean, msg: String) -> Boolean {
         return false;
     }
     return true;
+}
+
+/// @brief Prove frame work uses one expiring absolute deadline.
+func VerifyFrameDeadline() -> Boolean {
+    if assertTrue(dispatch_helpers.FrameDeadlineAllows(0),
+                  "disabled frame deadline remains permissive") == false { return false; }
+    var deadline = Clock.NowMs() + 20;
+    if assertTrue(dispatch_helpers.FrameDeadlineAllows(deadline),
+                  "future frame deadline permits work") == false { return false; }
+    Clock.Sleep(30);
+    return assertTrue(dispatch_helpers.FrameDeadlineAllows(deadline) == false,
+                      "expired absolute frame deadline blocks work");
 }
 
 func ArgValue(name: String) -> String {
@@ -155,6 +170,16 @@ func VerifyRunConfigurationAndProcess(
                   "invalid project arguments fail closed") == false { return false; }
 
     var buildSys = new build_system.BuildSystem();
+    var bounded = new bounded_output.BoundedText(8, "[cut]");
+    bounded.Append("abcd");
+    bounded.Append("efgh");
+    bounded.Append("ij");
+    if assertTrue(bounded.Text() == "[cut]cdefghij"
+                  and bounded.TakeText() == "[cut]cdefghij"
+                  and bounded.Text() == "",
+                  "bounded output ring retains and consumes the newest suffix") == false {
+        return false;
+    }
     var diag = buildSys.ParseDiagnosticLine("C:\\tmp\\a file.zia:12:3: warning[W123]: careful");
     if assertTrue(diag != null
                   and diag!.filePath == "C:\\tmp\\a file.zia"
@@ -576,8 +601,8 @@ func VerifyDebugAdapterAndScene(
         return false;
     }
     if assertTrue(dbg.terminated
-                  and Str.IndexOf(dbg.programOutput, "before-bp") != 0
-                  and Str.IndexOf(dbg.programOutput, "after-bp") != 0,
+                  and Str.IndexOf(dbg.GetProgramOutput(), "before-bp") != 0
+                  and Str.IndexOf(dbg.GetProgramOutput(), "after-bp") != 0,
                   "debug adapter runs the program and terminates after continue") == false { return false; }
 
     var scene = SceneDocument.New(3, 2, 16, 16);
@@ -611,6 +636,7 @@ func VerifyDebugAdapterAndScene(
 
 func main() {
     var ctx = new Phase23ProbeContext();
+    if VerifyFrameDeadline() == false { return; }
     if VerifyRunConfigurationAndProcess(ctx) == false { return; }
     if VerifyProjectExecutionAndStop(ctx) == false { return; }
     if VerifyBreakpointPersistence(ctx) == false { return; }

@@ -1203,6 +1203,9 @@ function(zanna_add_runtime_tests)
     zanna_add_test(test_rt_navmesh_blend ${ZANNA_TESTS_DIR}/unit/test_rt_navmesh_blend.cpp)
     target_link_libraries(test_rt_navmesh_blend PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_navmesh_blend test_rt_navmesh_blend)
+    # The test asserts that more than four short A* queries overlap. External
+    # suite contention can serialize its worker threads and invalidate that premise.
+    set_tests_properties(test_rt_navmesh_blend PROPERTIES RUN_SERIAL TRUE)
 
     zanna_add_test(test_rt_navagent3d ${ZANNA_TESTS_DIR}/unit/test_rt_navagent3d.cpp)
     target_link_libraries(test_rt_navagent3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})

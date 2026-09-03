@@ -62,7 +62,10 @@ document is the watched scene.
   a flat C11-atomic header, a two-slot seqlock frame ring (RGBA8,
   latest-wins, torn reads retried, neither side blocks), and a 256-record
   drop-oldest input ring. The host creates and unlinks; games attach via
-  `ZANNA_EMBED_CHANNEL`.
+  `ZANNA_EMBED_CHANNEL`. If a POSIX sandbox rejects `shm_open`, the same
+  protocol uses a mode-0600, same-owner, regular file mapping in the inherited
+  absolute temporary directory; creation remains exclusive, links are never
+  followed, and the host unlinks the mapping on close.
 - **Game side — zero game changes:** the shared vgfx layer taps every
   successful present (framebuffer → channel) and injects channel input
   into the ordinary event queue during event pumping, translating the

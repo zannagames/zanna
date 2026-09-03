@@ -256,7 +256,7 @@ expose func ZiaFunctionEndLine(
 }
 
 expose func OutgoingZiaCallTokens(
-    source: String, startLine: Integer, endLine: Integer) -> Any {
+    source: String, startLine: Integer, endLine: Integer) -> Seq {
     return EditNavigation.OutgoingZiaCallTokens(
         source, startLine, endLine);
 }

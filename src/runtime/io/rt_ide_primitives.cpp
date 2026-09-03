@@ -8,6 +8,7 @@
 //          Zanna Studio and editor-style tooling.
 // Key invariants:
 //   - Workspace edit targets are validated before any disk mutation is attempted.
+//   - Multi-file commits publish a flushed crash manifest before the first rename.
 //   - Workspace/file-index helpers never depend on compiler-layer services.
 // Ownership/Lifetime:
 //   - Runtime strings borrowed from lower-level APIs are released after copying.
@@ -16,7 +17,8 @@
 //        docs/adr/0151-transactional-multi-root-workspace-edits.md,
 //        docs/adr/0280-prepared-workspace-edit-transactions.md,
 //        docs/adr/0287-generation-safe-workspace-index-cursors.md,
-//        docs/adr/0303-complete-owned-workspace-index-cursors.md
+//        docs/adr/0303-complete-owned-workspace-index-cursors.md,
+//        docs/adr/0319-durable-workspace-edit-crash-journals.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -56,6 +58,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <set>
@@ -99,6 +102,10 @@ namespace {
 constexpr size_t kGitignoreCacheMaxEntries = 64;
 /** Hard count limit for a complete workspace file-index traversal. */
 constexpr int64_t kWorkspaceFileIndexMaxEntries = 100000;
+/** Maximum simultaneously live explicit file-index cursors. */
+constexpr size_t kWorkspaceFileIndexMaxCursors = 64;
+/** Maximum native directory entries examined by one explicit cursor page. */
+constexpr int64_t kWorkspaceFileIndexMaxPageWork = 4096;
 /** FNV-1a offset basis used for deterministic workspace fingerprints. */
 constexpr uint64_t kWorkspaceFingerprintOffset = 14695981039346656037ull;
 /** FNV-1a prime used for deterministic workspace fingerprints. */
@@ -116,44 +123,48 @@ struct GitignoreCacheEntry {
 
 /** Head of the trivially initialized gitignore-cache linked list. */
 GitignoreCacheEntry *g_gitignoreCacheHead = nullptr;
-/** Spin lock protecting gitignore-cache lookup, insertion, and eviction. */
-std::atomic_flag g_gitignoreCacheLock = ATOMIC_FLAG_INIT;
+
+/// @brief Lazily allocate a process-lifetime mutex without static destruction.
+/// @details Runtime archive members can be entered before their C++ global
+///          constructors run. The atomic pointer is trivially initialized, and
+///          the winning mutex is intentionally retained for process lifetime so
+///          it never registers an `__cxa_atexit` destructor.
+struct ProcessLifetimeMutex {
+    std::atomic<std::mutex *> value{nullptr};
+
+    std::mutex &get() {
+        std::mutex *mutex = value.load(std::memory_order_acquire);
+        if (mutex)
+            return *mutex;
+        auto *candidate = new std::mutex();
+        if (!value.compare_exchange_strong(
+                mutex, candidate, std::memory_order_release, std::memory_order_acquire)) {
+            delete candidate;
+            return *mutex;
+        }
+        return *candidate;
+    }
+};
+
+/** Mutex protecting gitignore-cache lookup, insertion, and eviction. */
+ProcessLifetimeMutex g_gitignoreCacheMutex;
 /** Unique input counter for keyed transactional-edit sidecar nonces. */
 std::atomic<uint64_t> g_workspaceEditTempCounter{0};
 /** Monotonic identity for explicit workspace file-index traversals. */
 std::atomic<uint64_t> g_fileIndexCursorGeneration{0};
 
-/// @brief Scope guard for the process-wide gitignore cache spin lock.
-/// @details The file-index runtime archive is linked into native programs, so
-///          this lock deliberately avoids heap allocation and C++ static
-///          destructor registration. Gitignore cache critical sections are
-///          short and only protect an in-memory linked list, making an atomic
-///          spin lock preferable here to a lazily allocated `std::mutex`.
+/// @brief Scope guard for the process-wide gitignore cache mutex.
+/// @details Blocking under contention avoids burning a worker core while a
+///          cache entry is copied or replaced.
 struct GitignoreCacheLockGuard {
-    /// @brief Acquire exclusive access to the gitignore cache list.
-    /// @details Uses acquire ordering so subsequent cache reads observe writes
-    ///          from the previous holder before traversing `g_gitignoreCacheHead`.
-    GitignoreCacheLockGuard() {
-        while (g_gitignoreCacheLock.test_and_set(std::memory_order_acquire)) {
-        }
-    }
+    std::lock_guard<std::mutex> lock;
+
+    GitignoreCacheLockGuard() : lock(g_gitignoreCacheMutex.get()) {}
 
     /// @brief Release exclusive access to the gitignore cache list.
     /// @details Uses release ordering so newly inserted or evicted cache nodes
     ///          are visible to the next thread that acquires the guard.
-    ~GitignoreCacheLockGuard() {
-        g_gitignoreCacheLock.clear(std::memory_order_release);
-    }
-
-    /// @brief Prevent accidental copies of the active lock guard.
-    /// @details Copying a guard would make ownership ambiguous and could clear
-    ///          the process-wide spin lock while the original guard is still
-    ///          in scope.
     GitignoreCacheLockGuard(const GitignoreCacheLockGuard &) = delete;
-
-    /// @brief Prevent assigning one active lock guard to another.
-    /// @details Assignment would have the same ownership ambiguity as copying
-    ///          and is not meaningful for a scope-bound cache lock.
     GitignoreCacheLockGuard &operator=(const GitignoreCacheLockGuard &) = delete;
 };
 
@@ -934,25 +945,21 @@ struct WorkspaceFileIndexCursorRegistration {
     uintptr_t token{0};
     WorkspaceFileIndexPageCursor *cursor{nullptr};
     int64_t leases{0};
-    std::atomic_flag operationLock = ATOMIC_FLAG_INIT;
+    std::mutex operationMutex;
     bool destroyed{false};
     WorkspaceFileIndexCursorRegistration *next{nullptr};
 };
 
 /** Trivially initialized registry for opaque cursor tokens. */
 WorkspaceFileIndexCursorRegistration *g_fileIndexCursorRegistry = nullptr;
-std::atomic_flag g_fileIndexCursorRegistryLock = ATOMIC_FLAG_INIT;
+size_t g_fileIndexCursorRegistryCount = 0;
+ProcessLifetimeMutex g_fileIndexCursorRegistryMutex;
 
 /// @brief Serialize access to the cursor-token registry.
 struct FileIndexCursorRegistryLockGuard {
-    FileIndexCursorRegistryLockGuard() {
-        while (g_fileIndexCursorRegistryLock.test_and_set(std::memory_order_acquire)) {
-        }
-    }
+    std::lock_guard<std::mutex> lock;
 
-    ~FileIndexCursorRegistryLockGuard() {
-        g_fileIndexCursorRegistryLock.clear(std::memory_order_release);
-    }
+    FileIndexCursorRegistryLockGuard() : lock(g_fileIndexCursorRegistryMutex.get()) {}
 
     FileIndexCursorRegistryLockGuard(const FileIndexCursorRegistryLockGuard &) = delete;
 };
@@ -960,16 +967,10 @@ struct FileIndexCursorRegistryLockGuard {
 /// @brief Serialize iterator mutation for one retained cursor registration.
 struct FileIndexCursorOperationGuard {
     WorkspaceFileIndexCursorRegistration *registration;
+    std::unique_lock<std::mutex> lock;
 
     explicit FileIndexCursorOperationGuard(WorkspaceFileIndexCursorRegistration *value)
-        : registration(value) {
-        while (registration->operationLock.test_and_set(std::memory_order_acquire)) {
-        }
-    }
-
-    ~FileIndexCursorOperationGuard() {
-        registration->operationLock.clear(std::memory_order_release);
-    }
+        : registration(value), lock(value->operationMutex) {}
 
     FileIndexCursorOperationGuard(const FileIndexCursorOperationGuard &) = delete;
 };
@@ -989,8 +990,13 @@ void *registerFileIndexCursor(WorkspaceFileIndexPageCursor *cursor) {
     registration->cursor = cursor;
     {
         FileIndexCursorRegistryLockGuard lock;
+        if (g_fileIndexCursorRegistryCount >= kWorkspaceFileIndexMaxCursors) {
+            delete registration;
+            return nullptr;
+        }
         registration->next = g_fileIndexCursorRegistry;
         g_fileIndexCursorRegistry = registration;
+        g_fileIndexCursorRegistryCount++;
     }
     return reinterpret_cast<void *>(registration->token);
 }
@@ -1042,6 +1048,7 @@ void unregisterFileIndexCursor(void *handle) {
                 *link = removed->next;
                 removed->next = nullptr;
                 removed->destroyed = true;
+                g_fileIndexCursorRegistryCount--;
                 deleteNow = removed->leases == 0;
                 break;
             }
@@ -2405,7 +2412,8 @@ void *rt_workspace_file_index_cursor_next(void *handle, int64_t limit) {
     try {
         FileIndexCursorOperationGuard operation(registration);
         const int64_t scannedBefore = cursor->scanned;
-        const int64_t workLimit = std::min<int64_t>(32768, std::max<int64_t>(64, limit * 8));
+        const int64_t workLimit =
+            std::min<int64_t>(kWorkspaceFileIndexMaxPageWork, std::max<int64_t>(64, limit * 4));
         const int64_t emitted = scanFileIndexPageCursor(cursor, entries, offset, limit, workLimit);
         if (cursor->ec) {
             pushDiagnostic(diagnostics,
@@ -3247,6 +3255,12 @@ struct PendingWorkspaceWrite {
     bool backupCreated{false};  ///< Original target has been renamed into the backup.
 };
 
+/// @brief Durable manifest left behind if a multi-file commit is interrupted.
+struct WorkspaceEditJournal {
+    fs::path path;
+    bool created{false};
+};
+
 /// @brief Return an unpredictable per-process nonce for edit sidecar names.
 /// @details Folds the process-local atomic counter through the runtime's
 ///          per-process keyed hash (SipHash seeded from the OS CSPRNG), so
@@ -3277,6 +3291,128 @@ static fs::path workspaceEditTempPath(const fs::path &file, const char *suffix) 
         nonce, sizeof(nonce), "%016llx", static_cast<unsigned long long>(workspaceEditNonce()));
     std::string leaf = "." + file.filename().generic_string() + ".zanna-edit-" + nonce + suffix;
     return dir / leaf;
+}
+
+/// @brief Encode arbitrary path bytes without delimiter ambiguity.
+static std::string workspaceEditJournalHex(std::string_view value) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string encoded;
+    encoded.reserve(value.size() * 2);
+    for (unsigned char byte : value) {
+        encoded.push_back(digits[byte >> 4]);
+        encoded.push_back(digits[byte & 0x0fu]);
+    }
+    return encoded;
+}
+
+/// @brief Write and flush one journal image, optionally requiring a new file.
+static bool writeWorkspaceEditJournalFile(const fs::path &path,
+                                          const std::string &content,
+                                          bool exclusive) {
+#if RT_PLATFORM_WINDOWS
+    HANDLE file = CreateFileW(path.wstring().c_str(),
+                              GENERIC_WRITE,
+                              0,
+                              nullptr,
+                              exclusive ? CREATE_NEW : TRUNCATE_EXISTING,
+                              FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
+                                  FILE_FLAG_OPEN_REPARSE_POINT,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE)
+        return false;
+    size_t offset = 0;
+    while (offset < content.size()) {
+        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(
+            content.size() - offset, static_cast<size_t>(std::numeric_limits<DWORD>::max())));
+        DWORD written = 0;
+        if (!WriteFile(file, content.data() + offset, chunk, &written, nullptr) ||
+            written != chunk) {
+            CloseHandle(file);
+            return false;
+        }
+        offset += written;
+    }
+    const bool ok = FlushFileBuffers(file) != 0;
+    return CloseHandle(file) != 0 && ok;
+#else
+    int flags = O_WRONLY | (exclusive ? (O_CREAT | O_EXCL) : O_TRUNC);
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+    int fd = open(path.c_str(), flags, S_IRUSR | S_IWUSR);
+    if (fd < 0)
+        return false;
+    size_t offset = 0;
+    while (offset < content.size()) {
+        const ssize_t written = write(fd, content.data() + offset, content.size() - offset);
+        if (written <= 0) {
+            close(fd);
+            return false;
+        }
+        offset += static_cast<size_t>(written);
+    }
+    const bool ok = fsync(fd) == 0;
+    return close(fd) == 0 && ok;
+#endif
+}
+
+/// @brief Publish the transaction phase and complete sidecar mapping durably.
+static bool publishWorkspaceEditJournal(WorkspaceEditJournal &journal,
+                                        const std::vector<PendingWorkspaceWrite> &writes,
+                                        std::string_view phase,
+                                        int64_t applied) {
+    if (writes.empty())
+        return false;
+    if (!journal.created) {
+        const fs::path first = writes.front().access->parent;
+        char nonce[17];
+        std::snprintf(
+            nonce, sizeof(nonce), "%016llx", static_cast<unsigned long long>(workspaceEditNonce()));
+        journal.path = first / (std::string(".zanna-workspace-edit-") + nonce + ".journal");
+    }
+    std::string content = "ZANNA_WORKSPACE_EDIT_V1\nphase=" + std::string(phase) +
+                          "\napplied=" + std::to_string(applied) + "\n";
+    for (const auto &write : writes) {
+        content += "file=" + workspaceEditJournalHex(write.file) + "\n";
+        content += "temp=" + workspaceEditJournalHex(write.temp) + "\n";
+        content += "backup=" + workspaceEditJournalHex(write.backup) + "\n";
+    }
+    if (!writeWorkspaceEditJournalFile(journal.path, content, !journal.created))
+        return false;
+    journal.created = true;
+    std::error_code ec;
+    fs::path parent = journal.path.parent_path();
+#if RT_PLATFORM_WINDOWS
+    HANDLE directory = CreateFileW(parent.wstring().c_str(),
+                                   FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                   nullptr,
+                                   OPEN_EXISTING,
+                                   FILE_FLAG_BACKUP_SEMANTICS,
+                                   nullptr);
+    if (directory != INVALID_HANDLE_VALUE) {
+        (void)FlushFileBuffers(directory);
+        CloseHandle(directory);
+    }
+#else
+    int directory = open(parent.c_str(), O_RDONLY | O_DIRECTORY);
+    if (directory >= 0) {
+        (void)fsync(directory);
+        close(directory);
+    }
+#endif
+    (void)ec;
+    return true;
+}
+
+static bool removeWorkspaceEditJournal(WorkspaceEditJournal &journal) {
+    if (!journal.created)
+        return true;
+    std::error_code ec;
+    const bool removed = fs::remove(journal.path, ec);
+    if (removed && !ec)
+        journal.created = false;
+    return removed && !ec;
 }
 
 /// @brief Exclusively reserve a fresh backup path in the target's directory.
@@ -3912,6 +4048,23 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         }
     }
 
+    if (writes.empty()) {
+        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        return result;
+    }
+    WorkspaceEditJournal journal;
+    if (!publishWorkspaceEditJournal(journal, writes, "prepared", 0)) {
+        pushDiagnostic(diagnostics,
+                       "cannot publish durable workspace edit journal",
+                       writes.empty() ? "" : writes.front().file,
+                       0,
+                       "edit.journal");
+        rt_map_set_bool(result, rt_const_cstr("success"), 0);
+        rollbackWorkspaceWrites(writes, diagnostics);
+        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        return result;
+    }
+
     int64_t applied = 0;
     for (auto &write : writes) {
         // Optimistic-concurrency recheck: confirm the live target still matches
@@ -3942,7 +4095,8 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
                                0,
                                "edit.version");
                 rt_map_set_bool(result, rt_const_cstr("success"), 0);
-                rollbackWorkspaceWrites(writes, diagnostics);
+                if (rollbackWorkspaceWrites(writes, diagnostics))
+                    removeWorkspaceEditJournal(journal);
                 rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
                 return result;
             }
@@ -3950,7 +4104,8 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         if (!moveWorkspaceTargetToReservedBackup(*write.access, write.backupLeaf)) {
             pushDiagnostic(diagnostics, "cannot back up edit target", write.file, 0, "edit.write");
             rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rollbackWorkspaceWrites(writes, diagnostics);
+            if (rollbackWorkspaceWrites(writes, diagnostics))
+                removeWorkspaceEditJournal(journal);
             rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
             return result;
         }
@@ -3958,13 +4113,39 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         if (!moveWorkspaceTempToTarget(*write.access, write.temp, write.tempLeaf)) {
             pushDiagnostic(diagnostics, "cannot replace edit target", write.file, 0, "edit.write");
             rt_map_set_bool(result, rt_const_cstr("success"), 0);
-            rollbackWorkspaceWrites(writes, diagnostics);
+            if (rollbackWorkspaceWrites(writes, diagnostics))
+                removeWorkspaceEditJournal(journal);
             rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
             return result;
         }
         flushWorkspaceEditDirectory(*write.access);
         applied++;
+        if (!publishWorkspaceEditJournal(journal, writes, "committing", applied)) {
+            pushDiagnostic(diagnostics,
+                           "cannot advance durable workspace edit journal",
+                           write.file,
+                           0,
+                           "edit.journal");
+            rt_map_set_bool(result, rt_const_cstr("success"), 0);
+            if (rollbackWorkspaceWrites(writes, diagnostics))
+                removeWorkspaceEditJournal(journal);
+            rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+            return result;
+        }
     }
+    if (!publishWorkspaceEditJournal(journal, writes, "committed", applied)) {
+        pushDiagnostic(diagnostics,
+                       "cannot publish durable workspace edit commit decision",
+                       writes.front().file,
+                       0,
+                       "edit.journal");
+        rt_map_set_bool(result, rt_const_cstr("success"), 0);
+        if (rollbackWorkspaceWrites(writes, diagnostics))
+            removeWorkspaceEditJournal(journal);
+        rt_map_set_int(result, rt_const_cstr("appliedFiles"), 0);
+        return result;
+    }
+    bool cleanupComplete = true;
     for (auto &write : writes) {
 #if RT_PLATFORM_WINDOWS
         const bool backupRemoved =
@@ -3974,6 +4155,7 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
             write.access && unlinkat(write.access->parentFd, write.backupLeaf.c_str(), 0) == 0;
 #endif
         if (!backupRemoved) {
+            cleanupComplete = false;
             pushDiagnostic(diagnostics,
                            "workspace edit applied, but its backup could not be removed; "
                            "stale backup preserved at " +
@@ -3984,6 +4166,21 @@ static void *workspace_edit_apply_prepared_impl(PreparedWorkspaceEdit *prepared)
         }
         if (write.access)
             flushWorkspaceEditDirectory(*write.access);
+    }
+    if (cleanupComplete) {
+        if (!removeWorkspaceEditJournal(journal)) {
+            pushDiagnostic(diagnostics,
+                           "workspace edit applied, but its crash journal could not be removed",
+                           journal.path.string(),
+                           0,
+                           "edit.cleanup");
+        }
+    } else {
+        pushDiagnostic(diagnostics,
+                       "workspace edit crash journal retained at " + journal.path.string(),
+                       journal.path.string(),
+                       0,
+                       "edit.cleanup");
     }
     rt_map_set_int(result, rt_const_cstr("appliedFiles"), applied);
     return result;

@@ -20,13 +20,13 @@
 
 module debug_session;
 
-bind "bounded_output";
 bind "var_model";
 bind "debug_session_view" as View;
 
 bind Json = Zanna.Data.Json;
 bind Map = Zanna.Collections.Map;
 bind Seq = Zanna.Collections.Seq;
+bind Bytes = Zanna.Collections.Bytes;
 bind Str = Zanna.String;
 
 // ============================================================================
@@ -44,7 +44,6 @@ bind Str = Zanna.String;
 // ============================================================================
 
 final SENTINEL = "@@VDBG@@ ";
-final MAX_DEBUG_OUTPUT_CHARS = 250000;
 final TERMINATE_GRACE_MS = 750;
 final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
 final MAX_DEBUG_CONTROL_CARRY_BYTES = 1024 * 1024;
@@ -132,13 +131,10 @@ class DebugSession extends View.DebugSessionViewLayer {
         if result == null { return; }
         var out = Map.GetStr(result, "text");
         if out != "" {
-            programOutput = AppendBoundedOutput(programOutput, out);
-            dirty = true;
+            AppendProgramOutput(out);
         }
         if Map.GetBool(result, "truncated") {
-            programOutput = AppendBoundedOutput(programOutput,
-                                                "\n[debug stdout truncated by runtime]\n");
-            dirty = true;
+            AppendProgramOutput("\n[debug stdout truncated by runtime]\n");
         }
     }
 
@@ -147,9 +143,7 @@ class DebugSession extends View.DebugSessionViewLayer {
         var err = Map.GetStr(result, "text");
         AcceptAdapterControlText(err);
         if Map.GetBool(result, "truncated") {
-            programOutput = AppendBoundedOutput(programOutput,
-                                                "\n[debug stderr truncated by runtime]\n");
-            dirty = true;
+            AppendProgramOutput("\n[debug stderr truncated by runtime]\n");
         }
     }
 
@@ -160,33 +154,45 @@ class DebugSession extends View.DebugSessionViewLayer {
     ///          test-only process implementation.
     expose func AcceptAdapterControlText(text: String) {
         if text == "" { return; }
-        ctrlBuf = ctrlBuf + text;
-        drainControlLines();
-        if Str.get_Length(ctrlBuf) > MAX_DEBUG_CONTROL_CARRY_BYTES {
-            ctrlBuf = "";
+        var input = Bytes.FromStr(text);
+        var inputLength = Bytes.get_Length(input);
+        if inputLength > MAX_DEBUG_CONTROL_CARRY_BYTES - ctrlLength {
+            ctrlLength = 0;
             ReportProtocolDiagnostic("oversized debug control line discarded");
+            return;
         }
+        if ctrlBytes == null {
+            ctrlBytes = Bytes.New(MAX_DEBUG_CONTROL_CARRY_BYTES);
+        }
+        Bytes.Copy(ctrlBytes, ctrlLength, input, 0, inputLength);
+        ctrlLength = ctrlLength + inputLength;
+        drainControlLines();
     }
 
     hide func drainControlLines() {
-        var lineStart = 1;
-        var nl = Str.IndexOfFrom(ctrlBuf, lineStart, "\n");
-        while nl != 0 {
-            var lineBytes = nl - lineStart;
-            if lineBytes > MAX_DEBUG_CONTROL_CARRY_BYTES {
-                ReportProtocolDiagnostic("oversized debug control line discarded");
-            } else {
-                var line = Str.Substring(ctrlBuf, lineStart - 1, lineBytes);
+        if ctrlBytes == null or ctrlLength <= 0 { return; }
+        var lineStart = 0;
+        var i = 0;
+        while i < ctrlLength {
+            if Bytes.Get(ctrlBytes, i) == 10 {
+                var lineLength = i - lineStart;
+                var line = "";
+                if lineLength > 0 {
+                    var lineBytes = Bytes.New(lineLength);
+                    Bytes.Copy(lineBytes, 0, ctrlBytes, lineStart, lineLength);
+                    line = Bytes.ToStr(lineBytes);
+                }
                 handleLine(line);
+                lineStart = i + 1;
             }
-            lineStart = nl + 1;
-            nl = Str.IndexOfFrom(ctrlBuf, lineStart, "\n");
+            i = i + 1;
         }
-        var remaining = Str.get_Length(ctrlBuf) - lineStart + 1;
-        if remaining <= 0 {
-            ctrlBuf = "";
-        } else if lineStart > 1 {
-            ctrlBuf = Str.Substring(ctrlBuf, lineStart - 1, remaining);
+        if lineStart > 0 {
+            var remaining = ctrlLength - lineStart;
+            if remaining > 0 {
+                Bytes.Copy(ctrlBytes, 0, ctrlBytes, lineStart, remaining);
+            }
+            ctrlLength = remaining;
         }
     }
 
@@ -199,29 +205,32 @@ class DebugSession extends View.DebugSessionViewLayer {
                                       lineBytes - prefixBytes));
         } else {
             // Raw program stderr or trap text: show it as output.
-            programOutput = AppendBoundedOutput(programOutput, line + "\n");
-            dirty = true;
+            AppendProgramOutput(line + "\n");
         }
     }
 
     /// @brief Publish one bounded, visible adapter-protocol diagnostic.
     hide func ReportProtocolDiagnostic(message: String) {
-        programOutput = AppendBoundedOutput(
-            programOutput, "\n[" + message + "]\n");
+        AppendProgramOutput("\n[" + message + "]\n");
+    }
+
+    /// @brief Append debug output without copying the retained history.
+    hide func AppendProgramOutput(text: String) {
+        if text == "" { return; }
+        if programOutputStore.byteCount == 0 and programOutput != "" {
+            programOutputStore.Append(programOutput);
+        }
+        programOutputStore.Append(text);
+        programOutput = "";
         dirty = true;
     }
 
-    /// @brief Append debug output while preserving a bounded console history.
-    /// @details Debug sessions can run indefinitely and stream unbounded stdout or
-    ///          stderr. Keeping only the newest history avoids quadratic string
-    ///          growth in long IDE sessions while making truncation visible.
-    /// @param existing Existing console buffer.
-    /// @param text Newly read process output.
-    /// @return Combined buffer, trimmed to MAX_DEBUG_OUTPUT_CHARS when needed.
-    hide func AppendBoundedOutput(existing: String, text: String) -> String {
-        return bounded_output.Append(existing, text,
-                                     "[debug output truncated]\n",
-                                     MAX_DEBUG_OUTPUT_CHARS);
+    /// @brief Materialize the bounded program-output snapshot on demand.
+    expose func GetProgramOutput() -> String {
+        if programOutputStore.byteCount > 0 or programOutputStore.dropped {
+            programOutput = programOutputStore.Text();
+        }
+        return programOutput;
     }
 
     /// @brief Clear only user-program stdout/stderr retained by this session.
@@ -229,6 +238,7 @@ class DebugSession extends View.DebugSessionViewLayer {
     ///          remain available to the Debug Console after this operation.
     expose func ClearProgramOutput() {
         programOutput = "";
+        programOutputStore.Clear();
         dirty = true;
     }
 
@@ -368,8 +378,9 @@ class DebugSession extends View.DebugSessionViewLayer {
             dirty = true;
         } else if evType == "log" {
             // Logpoint: surfaced in the debug console; execution never paused.
-            programOutput = AppendBoundedOutput(programOutput,
-                "[logpoint:" + Zanna.Collections.Map.GetInt(ev, "line") + "] " + Zanna.Collections.Map.GetStr(ev, "message") + "\n");
+            AppendProgramOutput(
+                "[logpoint:" + Zanna.Collections.Map.GetInt(ev, "line") + "] "
+                + Zanna.Collections.Map.GetStr(ev, "message") + "\n");
             dirty = true;
         } else if evType == "initialized" {
             dirty = true;

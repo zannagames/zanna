@@ -1675,6 +1675,17 @@ int64_t rt_codeeditor_get_revision(void *editor);
 /// @return Owned compact JSON describing subsequent deltas or an overflow marker.
 rt_string rt_codeeditor_take_deltas(void *editor, int64_t since_revision);
 
+/// @brief Serialize retained edit deltas without consuming them (ADR 0318).
+rt_string rt_codeeditor_peek_deltas(void *editor, int64_t since_revision);
+
+/// @brief Replay one byte-column edit into a secondary read-only mirror.
+int64_t rt_codeeditor_apply_mirror_edit(void *editor,
+                                        int64_t start_line,
+                                        int64_t start_col,
+                                        int64_t end_line,
+                                        int64_t end_col,
+                                        rt_string text);
+
 /// @brief Get the currently selected text.
 /// @param editor CodeEditor widget handle.
 /// @return Selected text, or empty string if no selection.

@@ -120,9 +120,11 @@ typedef struct pty_buffer {
 /// @details Retained runtime strings keep every byte view in @c values valid
 ///          until the fork/exec or process-creation setup is complete.
 typedef struct pty_string_vector {
-    char **values;            ///< Owned pointer array ending in NULL.
-    rt_string *owned_strings; ///< Owned array of retained runtime strings.
-    int64_t owned_count;      ///< Number of entries in @c owned_strings.
+    char **values;              ///< Owned pointer array ending in NULL.
+    rt_string *owned_strings;   ///< Owned array of retained runtime strings.
+    int64_t owned_count;        ///< Number of entries in @c owned_strings.
+    char **owned_cstrings;      ///< Owned snapshots copied from native environ.
+    size_t owned_cstring_count; ///< Number of entries in @c owned_cstrings.
 } pty_string_vector;
 
 /// @brief Platform state stored in a Zanna.System.Pty session object.
@@ -469,6 +471,11 @@ static void free_string_vector(pty_string_vector *vector) {
         for (int64_t i = 0; i < vector->owned_count; i++)
             rt_str_release_maybe(vector->owned_strings[i]);
         free(vector->owned_strings);
+    }
+    if (vector->owned_cstrings) {
+        for (size_t i = 0; i < vector->owned_cstring_count; i++)
+            free(vector->owned_cstrings[i]);
+        free(vector->owned_cstrings);
     }
     free(vector->values);
     memset(vector, 0, sizeof(*vector));
@@ -1360,7 +1367,10 @@ static int pty_env_names_equal(const char *left, const char *right) {
     return left_len > 0 && left_len == right_len && memcmp(left, right, left_len) == 0;
 }
 
-/// @brief Build an inherited POSIX environment with validated overrides.
+/// @brief Build an owned inherited POSIX environment with validated overrides.
+/// @details Copies native environment strings while holding the shared process-
+///          environment lock, so concurrent SetVariable calls cannot invalidate
+///          pointers used during fork and PATH resolution.
 static pty_string_vector pty_build_env_overlay_vector(void *env) {
     pty_string_vector result;
     memset(&result, 0, sizeof(result));
@@ -1378,18 +1388,30 @@ static pty_string_vector pty_build_env_overlay_vector(void *env) {
             }
         }
     }
+    rt_env_lock_process_environment();
     size_t inherited_count = 0;
     while (environ && environ[inherited_count])
         inherited_count++;
     if (inherited_count > SIZE_MAX - overlay_count - 1 ||
         inherited_count + overlay_count + 1 > SIZE_MAX / sizeof(char *)) {
+        rt_env_unlock_process_environment();
         free_string_vector(&overlay);
         return result;
     }
     result.values = (char **)calloc(inherited_count + overlay_count + 1, sizeof(char *));
     if (!result.values) {
+        rt_env_unlock_process_environment();
         free_string_vector(&overlay);
         return result;
+    }
+    if (inherited_count > 0) {
+        result.owned_cstrings = (char **)calloc(inherited_count, sizeof(char *));
+        if (!result.owned_cstrings) {
+            rt_env_unlock_process_environment();
+            free_string_vector(&overlay);
+            free_string_vector(&result);
+            return result;
+        }
     }
     size_t at = 0;
     for (size_t i = 0; i < inherited_count; i++) {
@@ -1400,9 +1422,21 @@ static pty_string_vector pty_build_env_overlay_vector(void *env) {
                 break;
             }
         }
-        if (!shadowed)
-            result.values[at++] = environ[i];
+        if (!shadowed) {
+            size_t length = strlen(environ[i]);
+            char *snapshot = (char *)malloc(length + 1);
+            if (!snapshot) {
+                rt_env_unlock_process_environment();
+                free_string_vector(&overlay);
+                free_string_vector(&result);
+                return result;
+            }
+            memcpy(snapshot, environ[i], length + 1);
+            result.owned_cstrings[result.owned_cstring_count++] = snapshot;
+            result.values[at++] = snapshot;
+        }
     }
+    rt_env_unlock_process_environment();
     for (size_t i = 0; i < overlay_count; i++)
         result.values[at++] = overlay.values[i];
     result.values[at] = NULL;

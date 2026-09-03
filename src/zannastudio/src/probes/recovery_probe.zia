@@ -222,6 +222,42 @@ func VerifySynchronousRecovery(
 
 /// @brief Verify coalesced asynchronous swaps and cancellation-safe pruning.
 func VerifyAsynchronousRecovery() -> Boolean {
+    // A request that exceeds the record budget must retain its active document
+    // and every earlier eligible snapshot instead of clearing the whole batch.
+    var partialDir = TempFile.CreateDirWithPrefix("zannastudio_recovery_partial_");
+    var partialStore = new recovery_store.RecoveryStore();
+    if partialStore.Setup(partialDir) == false {
+        fail("partial recovery setup failed");
+        return false;
+    }
+    var partialDocs = new document_manager.DocumentManager();
+    var partialIndex = 0;
+    while partialIndex <= recovery_types.MAX_RECOVERY_RECORDS {
+        var partialDoc = partialDocs.NewDocument();
+        partialDoc.content = "partial snapshot " + partialIndex;
+        partialDoc.isModified = true;
+        partialIndex = partialIndex + 1;
+    }
+    var activePartial = partialDocs.GetActive();
+    if activePartial == null
+       or partialStore.QueueSwaps(partialDocs, null) == false
+       or partialStore.activeRequest == null
+       or partialStore.activeRequest!.truncated == false
+       or partialStore.activeRequest!.snapshots.count()
+          != recovery_types.MAX_RECOVERY_RECORDS
+       or (partialStore.activeRequest!.snapshots.get(0)
+           as recovery_types.RecoveryWriteSnapshot).content
+          != activePartial!.content {
+        fail("bounded recovery discarded or deprioritized eligible snapshots");
+        return false;
+    }
+    partialStore.CancelAsync();
+    if drainAsync(partialStore, 12000) == false
+       or partialStore.MarkCleanExit() == false {
+        fail("partial recovery cleanup failed");
+        return false;
+    }
+
     // Interactive recovery uses owned background callbacks. A second request
     // coalesces behind the active worker and must eventually replace the older
     // snapshot without sharing editor/document objects across threads.

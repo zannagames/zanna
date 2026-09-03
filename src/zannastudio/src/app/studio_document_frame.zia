@@ -66,6 +66,7 @@ class StudioApplicationDocumentFrame extends SurfaceFrame.StudioApplicationSurfa
 
     /// @brief Reconcile tabs, dirty state, and the coalescing autosave worker.
     hide func PumpTabsAndAutoSaveFrame() {
+        file_commands.PumpSaveAll(shell, docMgr, engine, tabs);
         // Same-document panes share one mutable GUI buffer. Publish edits from
         // its focused owner and refresh the independently scrolled mirror
         // before dirty tracking, autosave, recovery, or semantic snapshots.

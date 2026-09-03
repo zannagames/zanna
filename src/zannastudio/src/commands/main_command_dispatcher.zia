@@ -419,7 +419,7 @@ hide func DispatchFileCommands(ctx: command_context.CommandContext,
         ctx.fileWatchCtrl.ResetPendingReload();
     }
     if dispatch_helpers.Triggered("saveas", ctx.shell.menuChrome.miSaveAs, null, cpSelected)       { file_commands.handleSaveAs(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); }
-    if dispatch_helpers.Triggered("saveall", ctx.shell.menuChrome.miSaveAll, ctx.shell.menuChrome.tbSaveAll, cpSelected) { file_commands.handleSaveAll(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); }
+    if dispatch_helpers.Triggered("saveall", ctx.shell.menuChrome.miSaveAll, ctx.shell.menuChrome.tbSaveAll, cpSelected) { file_commands.handleSaveAllAsync(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); }
     if dispatch_helpers.Triggered("reload", ctx.shell.menuChrome.miReload, null, cpSelected)       { file_commands.handleReload(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); ctx.fileWatchCtrl.ResetPendingReload(); }
     if dispatch_helpers.TriggeredMenu("recentfiles", ctx.shell.menuChrome.miRecentFiles, cpSelected) { view_commands.handleRecentFiles(ctx.shell, ctx.sessionMgr); }
     if dispatch_helpers.TriggeredMenu("reopenclosed", ctx.shell.menuChrome.miReopenClosed, cpSelected) { explorer_action_runner.ReopenClosedFile(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs, ctx.sessionMgr); ctx.fileWatchCtrl.ResetPendingReload(); }

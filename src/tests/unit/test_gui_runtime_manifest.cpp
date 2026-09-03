@@ -26,6 +26,7 @@
 //        docs/adr/0258-undoable-state-preserving-full-document-replacement.md,
 //        docs/adr/0281-event-driven-process-pty-gui-wakes.md,
 //        docs/adr/0290-virtual-tree-bulk-updates.md,
+//        docs/adr/0318-non-consuming-editor-deltas-for-split-mirrors.md,
 //        src/tools/zanna/main.cpp
 //
 //===----------------------------------------------------------------------===//
@@ -40,10 +41,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 1167;
+constexpr std::size_t kExpectedFunctionCount = 1169;
 constexpr std::size_t kExpectedClassCount = 79;
 constexpr std::size_t kExpectedPropertyCount = 110;
-constexpr std::size_t kExpectedMethodCount = 1058;
+constexpr std::size_t kExpectedMethodCount = 1060;
 
 /// @brief Test whether a canonical runtime name belongs to the GUI boundary.
 /// @param name Function or class name from the live runtime registry.
@@ -238,6 +239,13 @@ int main() {
                                "i1(obj, string)",
                                "rt_codeeditor_replace_all_text") &&
          ok;
+    ok = checkFunctionContract(
+             "Zanna.GUI.CodeEditor.PeekDeltas", "string(obj, i64)", "rt_codeeditor_peek_deltas") &&
+         ok;
+    ok = checkFunctionContract("Zanna.GUI.CodeEditor.ApplyMirrorEdit",
+                               "i1(obj, i64, i64, i64, i64, string)",
+                               "rt_codeeditor_apply_mirror_edit") &&
+         ok;
     ok = checkFunctionContract("Zanna.GUI.EditorBuffer.ReplaceAllText",
                                "i1(obj, string)",
                                "rt_editorbuffer_replace_all_text") &&
@@ -245,7 +253,7 @@ int main() {
 
     // Set after deliberate review of every registry row. Any future mismatch prints the new value
     // and requires an explicit count/signature/class-binding review before this constant changes.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xc5e1f36072319c6d);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xddec3db66a2d5089);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: GUI ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';
