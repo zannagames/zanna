@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(_WIN32)
+#if RT_PLATFORM_WINDOWS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 

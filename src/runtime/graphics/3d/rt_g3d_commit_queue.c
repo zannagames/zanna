@@ -11,35 +11,66 @@
 /// @file
 /// @brief Implements the concurrent Graphics3D worker-to-main-thread commit queue.
 /// @details Producers enqueue callbacks with ownership cleanup and cost metadata; the main thread
-///   drains FIFO work under count and cost budgets, while teardown cancels payloads that never ran
-///   and atomic counters expose approximate progress.
+///   drains FIFO work under count and cost budgets, while teardown cancels payloads that never ran.
+///   Item storage is allocated in blocks and recycled, avoiding allocator traffic per commit.
 
 #include "rt_g3d_commit_queue.h"
 
-#include "rt_concqueue.h"
-#include "rt_object.h"
 #include "rt_platform.h"
+#include "rt_threads.h"
 #include "rt_trap.h"
 
 #include <stdlib.h>
 
-/// @brief One queued commit: the callback, its user data, and its budget cost.
+/// @brief Number of commit records acquired in one amortized allocation.
+#define RT_G3D_COMMIT_ITEMS_PER_BLOCK 64
+
+/// @brief One queued or reusable commit record.
 typedef struct rt_g3d_commit_item {
     rt_g3d_commit_fn fn;
     rt_g3d_commit_cancel_fn cancel_fn;
     void *user_data;
     uint64_t cost;
+    struct rt_g3d_commit_item *next;
 } rt_g3d_commit_item;
 
-/// @brief Queue state: a concurrent FIFO of items plus submit/drain counters.
+/// @brief Allocation block retained until the owning queue is destroyed.
+typedef struct rt_g3d_commit_block {
+    struct rt_g3d_commit_block *next;
+    rt_g3d_commit_item items[RT_G3D_COMMIT_ITEMS_PER_BLOCK];
+} rt_g3d_commit_block;
+
+/// @brief Queue state protected by a short-held cross-platform atomic gate.
 typedef struct rt_g3d_commit_queue {
-    void *items;
+    rt_g3d_commit_item *head;
+    rt_g3d_commit_item *tail;
+    rt_g3d_commit_item *free_items;
+    rt_g3d_commit_block *blocks;
+    volatile int gate;
+    volatile int closed;
+    int64_t pending;
     int64_t submitted;
     int64_t drained;
+    uint64_t block_allocations;
 } rt_g3d_commit_queue;
 
-/// @brief Test-only countdown for deterministic enqueue-wrapper allocation failures.
+/// @brief Test-only countdown for deterministic enqueue-record acquisition failures.
 static volatile int g_rt_g3d_commit_queue_fail_allocations;
+
+/// @brief Acquire the queue's short-held structural spin gate.
+/// @details Commit producers hold this only while linking a record. Cooperative yields keep a
+///   producer preempted inside the critical section from causing an aggressive busy-wait.
+/// @param queue Queue whose structural fields will be accessed.
+static void rt_g3d_commit_queue_lock(rt_g3d_commit_queue *queue) {
+    while (rt_atomic_exchange_i32(&queue->gate, 1, __ATOMIC_ACQUIRE) != 0)
+        rt_thread_yield();
+}
+
+/// @brief Release the queue's structural spin gate.
+/// @param queue Locked queue to publish and release.
+static void rt_g3d_commit_queue_unlock(rt_g3d_commit_queue *queue) {
+    rt_atomic_store_i32(&queue->gate, 0, __ATOMIC_RELEASE);
+}
 
 /// @brief Consume one requested allocation failure without racing concurrent producers.
 /// @return 1 when this allocation attempt must fail, or 0 when normal allocation may proceed.
@@ -66,28 +97,23 @@ void rt_g3d_commit_queue_test_fail_next_allocations(int32_t count) {
         &g_rt_g3d_commit_queue_fail_allocations, count > 0 ? count : 0, __ATOMIC_RELEASE);
 }
 
-/// @brief Allocate a commit queue wrapping a fresh concurrent FIFO.
-/// @return Opaque queue handle, or NULL if either allocation fails.
+/// @brief Allocate an empty commit queue; item blocks are acquired lazily.
+/// @return Opaque queue handle, or NULL if allocation fails.
 void *rt_g3d_commit_queue_new(void) {
-    rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)calloc(1, sizeof(rt_g3d_commit_queue));
-    if (!queue)
-        return NULL;
-    queue->items = rt_concqueue_new();
-    if (!queue->items) {
-        free(queue);
-        return NULL;
-    }
-    return queue;
+    return calloc(1, sizeof(rt_g3d_commit_queue));
 }
 
 /// @brief Close the producer side of a commit queue while preserving its allocation.
-/// @details `rt_concqueue_close` provides the atomic publish point: racing enqueue attempts either
-/// complete before closure or fail without transferring payload ownership. Keeping the wrapper
-/// alive lets callers join every producer before the separate reclamation step.
+/// @details The structural gate provides the atomic publish point: racing enqueue attempts either
+/// complete before closure or fail without transferring payload ownership. Keeping the queue alive
+/// lets callers join every producer before the separate reclamation step.
 void rt_g3d_commit_queue_close(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
-    if (queue && queue->items)
-        rt_concqueue_close(queue->items);
+    if (!queue)
+        return;
+    rt_g3d_commit_queue_lock(queue);
+    rt_atomic_store_i32(&queue->closed, 1, __ATOMIC_RELEASE);
+    rt_g3d_commit_queue_unlock(queue);
 }
 
 /// @brief Drain and free every pending item without running its callback.
@@ -95,15 +121,16 @@ void rt_g3d_commit_queue_close(void *obj) {
 ///          reclaimed rather than leaked; the callbacks are intentionally skipped.
 /// @param queue Queue whose pending payloads receive their optional cancellation callbacks.
 static void rt_g3d_commit_queue_discard_pending(rt_g3d_commit_queue *queue) {
-    if (!queue || !queue->items)
+    if (!queue)
         return;
-    for (;;) {
-        rt_g3d_commit_item *item = (rt_g3d_commit_item *)rt_concqueue_try_dequeue(queue->items);
-        if (!item)
-            break;
+    rt_g3d_commit_item *item = queue->head;
+    queue->head = NULL;
+    queue->tail = NULL;
+    while (item) {
+        rt_g3d_commit_item *next = item->next;
         if (item->cancel_fn)
             item->cancel_fn(item->user_data);
-        free(item);
+        item = next;
     }
 }
 
@@ -113,14 +140,32 @@ void rt_g3d_commit_queue_free(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     if (!queue)
         return;
-    if (queue->items) {
-        rt_g3d_commit_queue_close(queue);
-        rt_g3d_commit_queue_discard_pending(queue);
-        if (rt_obj_release_check0(queue->items))
-            rt_obj_free(queue->items);
-        queue->items = NULL;
+    rt_g3d_commit_queue_close(queue);
+    rt_g3d_commit_queue_discard_pending(queue);
+    rt_g3d_commit_block *block = queue->blocks;
+    while (block) {
+        rt_g3d_commit_block *next = block->next;
+        free(block);
+        block = next;
     }
     free(queue);
+}
+
+/// @brief Grow the queue's reusable-record pool while the structural gate is held.
+/// @param queue Locked queue needing at least one free record.
+/// @return Nonzero on success, or zero when the block allocation fails.
+static int8_t rt_g3d_commit_queue_grow_locked(rt_g3d_commit_queue *queue) {
+    rt_g3d_commit_block *block = (rt_g3d_commit_block *)malloc(sizeof(*block));
+    if (!block)
+        return 0;
+    block->next = queue->blocks;
+    queue->blocks = block;
+    for (int index = 0; index < RT_G3D_COMMIT_ITEMS_PER_BLOCK; ++index) {
+        block->items[index].next = queue->free_items;
+        queue->free_items = &block->items[index];
+    }
+    queue->block_allocations++;
+    return 1;
 }
 
 /// @brief Enqueue a commit callback tagged with a main-thread cost estimate and cleanup hook.
@@ -140,24 +185,37 @@ int8_t rt_g3d_commit_queue_enqueue_cost_cancel(void *obj,
                                                uint64_t cost,
                                                rt_g3d_commit_cancel_fn cancel_fn) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
-    if (!queue || !queue->items || !fn)
+    if (!queue || !fn)
         return 0;
-    if (rt_concqueue_get_is_closed(queue->items))
+    if (rt_atomic_load_i32(&queue->closed, __ATOMIC_ACQUIRE))
         return 0;
-    rt_g3d_commit_item *item = NULL;
-    if (!rt_g3d_commit_queue_should_fail_allocation())
-        item = (rt_g3d_commit_item *)malloc(sizeof(rt_g3d_commit_item));
-    if (!item)
+    if (rt_g3d_commit_queue_should_fail_allocation())
         return 0;
+
+    rt_g3d_commit_queue_lock(queue);
+    if (rt_atomic_load_i32(&queue->closed, __ATOMIC_RELAXED)) {
+        rt_g3d_commit_queue_unlock(queue);
+        return 0;
+    }
+    if (!queue->free_items && !rt_g3d_commit_queue_grow_locked(queue)) {
+        rt_g3d_commit_queue_unlock(queue);
+        return 0;
+    }
+    rt_g3d_commit_item *item = queue->free_items;
+    queue->free_items = item->next;
     item->fn = fn;
     item->cancel_fn = cancel_fn;
     item->user_data = user_data;
     item->cost = cost;
-    if (!rt_concqueue_try_enqueue(queue->items, item)) {
-        free(item);
-        return 0;
-    }
+    item->next = NULL;
+    if (queue->tail)
+        queue->tail->next = item;
+    else
+        queue->head = item;
+    queue->tail = item;
+    queue->pending++;
     rt_atomic_fetch_add_i64(&queue->submitted, 1, __ATOMIC_RELAXED);
+    rt_g3d_commit_queue_unlock(queue);
     return 1;
 }
 
@@ -208,7 +266,7 @@ static uint64_t rt_g3d_commit_queue_cost_add(uint64_t a, uint64_t b) {
 int64_t rt_g3d_commit_queue_drain_budget(void *obj, int64_t max_items, uint64_t max_cost) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
     int no_cost_limit;
-    if (!queue || !queue->items)
+    if (!queue)
         return 0;
     RT_ASSERT_MAIN_THREAD();
 
@@ -216,24 +274,32 @@ int64_t rt_g3d_commit_queue_drain_budget(void *obj, int64_t max_items, uint64_t 
     uint64_t cost = 0;
     no_cost_limit = (max_cost == UINT64_MAX);
     while (max_items <= 0 || count < max_items) {
-        rt_g3d_commit_item *peek = (rt_g3d_commit_item *)rt_concqueue_peek(queue->items);
-        if (!peek)
+        rt_g3d_commit_queue_lock(queue);
+        rt_g3d_commit_item *item = queue->head;
+        if (!item) {
+            rt_g3d_commit_queue_unlock(queue);
             break;
-        uint64_t item_cost = peek->cost;
+        }
+        uint64_t item_cost = item->cost;
         if (!no_cost_limit && item_cost > 0) {
             uint64_t next_cost = rt_g3d_commit_queue_cost_add(cost, item_cost);
             if (next_cost > max_cost) {
-                if (count > 0 || max_cost == 0)
+                if (count > 0 || max_cost == 0) {
+                    rt_g3d_commit_queue_unlock(queue);
                     break;
+                }
             }
         }
-        rt_g3d_commit_item *item = (rt_g3d_commit_item *)rt_concqueue_try_dequeue(queue->items);
-        if (!item)
-            break;
+        queue->head = item->next;
+        if (!queue->head)
+            queue->tail = NULL;
+        queue->pending--;
         rt_g3d_commit_fn fn = item->fn;
         void *user_data = item->user_data;
         item_cost = item->cost;
-        free(item);
+        item->next = queue->free_items;
+        queue->free_items = item;
+        rt_g3d_commit_queue_unlock(queue);
         if (fn) {
             fn(user_data);
             count++;
@@ -258,9 +324,11 @@ int64_t rt_g3d_commit_queue_drain(void *obj, int64_t max_items) {
 /// @return A non-negative approximate queue length, or zero for an invalid queue.
 int64_t rt_g3d_commit_queue_pending(void *obj) {
     rt_g3d_commit_queue *queue = (rt_g3d_commit_queue *)obj;
-    if (!queue || !queue->items)
+    if (!queue)
         return 0;
-    int64_t pending = rt_concqueue_len(queue->items);
+    rt_g3d_commit_queue_lock(queue);
+    int64_t pending = queue->pending;
+    rt_g3d_commit_queue_unlock(queue);
     return pending > 0 ? pending : 0;
 }
 

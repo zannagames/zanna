@@ -183,8 +183,7 @@ void *rt_game3d_lipsync_bind_mouth_shape(void *obj, rt_string shape_name, double
     if (shape->name_interned)
         rt_string_unref(shape->name_interned);
     memset(shape, 0, sizeof(*shape));
-    strncpy(shape->name, name, RT_GAME3D_DLG_NAME_MAX - 1);
-    shape->name[RT_GAME3D_DLG_NAME_MAX - 1] = '\0';
+    (void)game3d_utf8_copy_bounded(shape->name, RT_GAME3D_DLG_NAME_MAX, name);
     shape->scale = game3d_clamp(game3d_finite_or(weight_scale, 1.0), 0.0, 4.0);
     shape->name_interned = rt_string_ref(shape_name); /* reused each tick; no per-frame alloc */
     if (!shape->name_interned) {
@@ -270,8 +269,7 @@ void rt_game3d_lipsync_set_blink(
         lipsync->blink_interned = NULL;
     }
     if (name) {
-        strncpy(lipsync->blink_shape, name, RT_GAME3D_DLG_NAME_MAX - 1);
-        lipsync->blink_shape[RT_GAME3D_DLG_NAME_MAX - 1] = '\0';
+        (void)game3d_utf8_copy_bounded(lipsync->blink_shape, RT_GAME3D_DLG_NAME_MAX, name);
         lipsync->blink_interned = rt_string_ref(shape_name); /* reused each tick */
     }
     lipsync->blink_min_interval = game3d_positive_clamped_or(min_interval, 2.0, 60.0);

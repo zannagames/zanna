@@ -1032,7 +1032,7 @@ static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
     }
     morph_upload_ok = 0;
     morph_normal_upload_ok = object_data->has_morph_normal_deltas ? 0 : 1;
-    if (cmd->morph_key && cmd->morph_revision != 0) {
+    if (cmd->morph_key && cmd->morph_identity != 0 && cmd->morph_revision != 0) {
         d3d11_morph_cache_entry_t *slot = NULL;
         d3d11_morph_cache_entry_t *oldest = NULL;
 
@@ -1055,6 +1055,7 @@ static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
                 (!object_data->has_morph_normal_deltas ||
                  (slot->normal_buffer && slot->normal_srv)) &&
                 vgfx3d_d3d11_should_reuse_morph_cache(slot->key,
+                                                      slot->identity,
                                                       slot->generation,
                                                       (int32_t)slot->shape_count,
                                                       slot->vertex_count,
@@ -1085,6 +1086,7 @@ static int d3d11_prepare_anim_resources(d3d11_context_t *ctx,
                     }
                     if (SUCCEEDED(hr)) {
                         replacement.key = cmd->morph_key;
+                        replacement.identity = cmd->morph_identity;
                         replacement.generation = cmd->morph_revision;
                         replacement.vertex_count = (uint32_t)cmd->vertex_count;
                         replacement.shape_count = (uint32_t)object_data->morph_shape_count;

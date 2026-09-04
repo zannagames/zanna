@@ -891,6 +891,7 @@ vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_resolve_available_target(
     int rtt_available);
 /// @brief Decide whether a cached morph payload still matches a draw command.
 /// @param[in] cached_key Cached identity.
+/// @param[in] cached_identity Cached allocation generation.
 /// @param[in] cached_revision Cached revision.
 /// @param[in] cached_shape_count Cached shapes.
 /// @param[in] cached_vertex_count Cached vertices.
@@ -898,6 +899,7 @@ vgfx3d_d3d11_target_kind_t vgfx3d_d3d11_resolve_available_target(
 /// @param[in] cmd Candidate command.
 /// @return One when all discriminators match.
 int vgfx3d_d3d11_should_reuse_morph_cache(const void *cached_key,
+                                          uint64_t cached_identity,
                                           uint64_t cached_revision,
                                           int32_t cached_shape_count,
                                           uint32_t cached_vertex_count,

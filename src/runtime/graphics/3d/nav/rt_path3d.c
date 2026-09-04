@@ -61,6 +61,8 @@ extern double rt_vec3_z(void *v);
 
 static int8_t g_path3d_test_force_coordinate_alloc_failure = 0;
 
+static double path3d_coord_or(double value, double fallback);
+
 /**
  * @brief Mutable storage and derived-data caches for one Path3D object.
  */
@@ -100,10 +102,21 @@ typedef struct {
     double *owned_points;
     ///< Element stride between consecutive coordinates in each lane (one for SoA, three for XYZ).
     int32_t point_stride;
+    ///< Rotating cursors for bounded defensive scrubbing without O(N) work per accessor.
+    int32_t point_repair_cursor;
+    int32_t spline_repair_cursor;
 } rt_path3d;
 
-static double path3d_get_lane(const rt_path3d *p, const double *lane, int32_t index) {
-    return lane[(size_t)index * (size_t)p->point_stride];
+static double path3d_get_lane(rt_path3d *p, double *lane, int32_t index) {
+    size_t offset = (size_t)index * (size_t)p->point_stride;
+    double value = lane[offset];
+    double repaired = path3d_coord_or(value, 0.0);
+    if (repaired != value) {
+        lane[offset] = repaired;
+        p->length_dirty = 1;
+        p->spline_dirty = 1;
+    }
+    return repaired;
 }
 
 static void path3d_set_lane(rt_path3d *p, double *lane, int32_t index, double value) {
@@ -233,34 +246,32 @@ static int32_t path3d_required_spline_samples(const rt_path3d *p) {
 /// @brief Repair defensive invariants before evaluators expose path contents or caches.
 /// @param p Path storage to normalize; a null pointer is ignored.
 static void path3d_repair(rt_path3d *p) {
-    int changed = 0;
     if (!p)
         return;
     path3d_repair_storage(p);
-    for (int32_t i = 0; i < p->point_count; ++i) {
-        double old_x = path3d_get_lane(p, p->xs, i);
-        double old_y = path3d_get_lane(p, p->ys, i);
-        double old_z = path3d_get_lane(p, p->zs, i);
-        double x = path3d_coord_or(old_x, 0.0);
-        double y = path3d_coord_or(old_y, 0.0);
-        double z = path3d_coord_or(old_z, 0.0);
-        if (x != old_x || y != old_y || z != old_z)
-            changed = 1;
-        path3d_set_lane(p, p->xs, i, x);
-        path3d_set_lane(p, p->ys, i, y);
-        path3d_set_lane(p, p->zs, i, z);
+    if (p->point_count > 0) {
+        if (p->point_repair_cursor < 0 || p->point_repair_cursor >= p->point_count)
+            p->point_repair_cursor = 0;
+        int32_t checks = p->point_count < 16 ? p->point_count : 16;
+        for (int32_t checked = 0; checked < checks; ++checked) {
+            int32_t index = p->point_repair_cursor++;
+            (void)path3d_get_lane(p, p->xs, index);
+            (void)path3d_get_lane(p, p->ys, index);
+            (void)path3d_get_lane(p, p->zs, index);
+            if (p->point_repair_cursor >= p->point_count)
+                p->point_repair_cursor = 0;
+        }
+    } else {
+        p->point_repair_cursor = 0;
     }
     if (p->looping != 0 && p->looping != 1) {
         p->looping = p->looping ? 1 : 0;
-        changed = 1;
+        p->length_dirty = 1;
+        p->spline_dirty = 1;
     }
     if (!isfinite(p->cached_length) || p->cached_length < 0.0 ||
         p->cached_length > PATH3D_LENGTH_MAX) {
         p->cached_length = 0.0;
-        p->length_dirty = 1;
-        p->spline_dirty = 1;
-    }
-    if (changed) {
         p->length_dirty = 1;
         p->spline_dirty = 1;
     }
@@ -269,12 +280,26 @@ static void path3d_repair(rt_path3d *p) {
         int cache_valid = required == 0
                               ? (!p->spline_cumulative && p->spline_sample_count == 0)
                               : (p->spline_cumulative && p->spline_sample_count == required);
-        double previous = 0.0;
-        for (int32_t i = 0; cache_valid && i < required; i++) {
-            double value = p->spline_cumulative[i];
-            if (!isfinite(value) || value < previous || value > PATH3D_LENGTH_MAX)
-                cache_valid = 0;
-            previous = value;
+        if (cache_valid && required > 0) {
+            double total = p->spline_cumulative[required - 1];
+            cache_valid = isfinite(total) && total >= 0.0 && total <= PATH3D_LENGTH_MAX;
+            if (cache_valid) {
+                if (p->spline_repair_cursor < 0 || p->spline_repair_cursor >= required)
+                    p->spline_repair_cursor = 0;
+                int32_t checks = required < 16 ? required : 16;
+                for (int32_t checked = 0; checked < checks; ++checked) {
+                    int32_t index = p->spline_repair_cursor++;
+                    double value = p->spline_cumulative[index];
+                    double previous = index > 0 ? p->spline_cumulative[index - 1] : 0.0;
+                    if (!isfinite(value) || !isfinite(previous) || value < previous ||
+                        value > PATH3D_LENGTH_MAX) {
+                        cache_valid = 0;
+                        break;
+                    }
+                    if (p->spline_repair_cursor >= required)
+                        p->spline_repair_cursor = 0;
+                }
+            }
         }
         if (!cache_valid)
             p->spline_dirty = 1;

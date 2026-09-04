@@ -415,6 +415,7 @@ int vgfx3d_opengl_project_shadow_coord(const float *shadow_vp,
 /// Returns 1 if the cached payload is still valid (same key + matching shape/vertex count),
 /// 0 if the buffer must be re-uploaded.
 /// @param cached_key Identity key recorded by the cached payload.
+/// @param cached_identity Allocation generation recorded by the cached payload.
 /// @param cached_revision Revision recorded by the cached payload.
 /// @param cached_shape_count Sanitized shape count recorded by the cache.
 /// @param cached_vertex_count Vertex count recorded by the cache.
@@ -422,6 +423,7 @@ int vgfx3d_opengl_project_shadow_coord(const float *shadow_vp,
 /// @param cmd Borrowed draw command requesting morph data.
 /// @return 1 when every identity and layout field matches, otherwise 0.
 int vgfx3d_opengl_should_reuse_morph_cache(const void *cached_key,
+                                           uint64_t cached_identity,
                                            uint64_t cached_revision,
                                            int32_t cached_shape_count,
                                            uint32_t cached_vertex_count,
@@ -430,8 +432,9 @@ int vgfx3d_opengl_should_reuse_morph_cache(const void *cached_key,
     int32_t shape_count;
     int8_t has_normal_deltas;
 
-    if (!cmd || !cmd->morph_key || cmd->morph_revision == 0 || !cmd->morph_deltas ||
-        !cmd->morph_weights || cmd->morph_shape_count <= 0 || cmd->vertex_count == 0) {
+    if (!cmd || !cmd->morph_key || cmd->morph_identity == 0 || cmd->morph_revision == 0 ||
+        !cmd->morph_deltas || !cmd->morph_weights || cmd->morph_shape_count <= 0 ||
+        cmd->vertex_count == 0) {
         return 0;
     }
 
@@ -439,8 +442,9 @@ int vgfx3d_opengl_should_reuse_morph_cache(const void *cached_key,
     if (shape_count <= 0)
         return 0;
     has_normal_deltas = cmd->morph_normal_deltas ? 1 : 0;
-    return cached_key == cmd->morph_key && cached_revision == cmd->morph_revision &&
-           cached_shape_count == shape_count && cached_vertex_count == cmd->vertex_count &&
+    return cached_key == cmd->morph_key && cached_identity == cmd->morph_identity &&
+           cached_revision == cmd->morph_revision && cached_shape_count == shape_count &&
+           cached_vertex_count == cmd->vertex_count &&
            cached_has_normal_deltas == has_normal_deltas;
 }
 

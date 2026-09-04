@@ -2863,6 +2863,27 @@ static void test_world_raycast_all_sorted() {
     }
 }
 
+static void test_world_raycast_equal_distance_uses_body_order() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *first_box = rt_body3d_new_aabb(0.5, 0.5, 0.5, 0.0);
+    void *second_box = rt_body3d_new_aabb(0.5, 0.5, 0.5, 0.0);
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *dir = rt_vec3_new(1.0, 0.0, 0.0);
+    rt_body3d_set_position(first_box, 4.0, 0.0, 0.0);
+    rt_body3d_set_position(second_box, 4.0, 0.0, 0.0);
+    rt_world3d_add(world, first_box);
+    rt_world3d_add(world, second_box);
+
+    void *hits = rt_world3d_raycast_all(world, origin, dir, 20.0, 1);
+    EXPECT_TRUE(hits != nullptr, "equal-distance raycast returns a list");
+    EXPECT_TRUE(rt_physics_hit_list3d_get_count(hits) == 2,
+                "equal-distance raycast returns both bodies");
+    EXPECT_TRUE(rt_physics_hit3d_get_body(rt_physics_hit_list3d_get(hits, 0)) == first_box,
+                "equal-distance results use stable world insertion order first");
+    EXPECT_TRUE(rt_physics_hit3d_get_body(rt_physics_hit_list3d_get(hits, 1)) == second_box,
+                "equal-distance results use stable world insertion order second");
+}
+
 static void test_world_overlap_hit_list_reports_truncation() {
     void *world = rt_world3d_new(0, 0, 0);
     void *center = rt_vec3_new(0.0, 0.0, 0.0);
@@ -5693,6 +5714,7 @@ int main() {
     test_world_raycast_nonuniform_sphere_uses_ellipsoid_geometry();
     test_heightfield_raycast_finds_between_sample_crossing();
     test_world_raycast_all_sorted();
+    test_world_raycast_equal_distance_uses_body_order();
     test_query_broadphase_survives_step_with_nonx_sweep_axis();
     test_query_broadphase_fat_aabb_skips_rebuild();
     test_query_broadphase_escape_rebuilds();

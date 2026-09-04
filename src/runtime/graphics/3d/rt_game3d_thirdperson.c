@@ -1022,18 +1022,15 @@ void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double 
         lock_engaged = rt_game3d_targetlock_get_target(lock) != NULL;
     }
 
-    /* Look input: Input3D.lookAxis merges mouse + pad with sensitivity applied.
+    /* Look input: merge mouse displacement with frame-integrated pad velocity.
      * Ignored while lock framing owns yaw/pitch (Cycle gestures are game-side). */
     if (!lock_engaged) {
-        void *look = rt_game3d_input_look_axis(input);
-        if (look) {
-            double look_x = game3d_finite_or(rt_vec2_x(look), 0.0);
-            double look_y = game3d_finite_or(rt_vec2_y(look), 0.0);
-            controller->yaw = game3d_thirdperson_wrap_yaw(controller->yaw - look_x);
-            controller->pitch = game3d_clamp(
-                controller->pitch + look_y, controller->pitch_min, controller->pitch_max);
-            game3d_release_ref(&look);
-        }
+        double look_x = 0.0;
+        double look_y = 0.0;
+        game3d_input_look_axis_components(input, input->look_sensitivity, dt, &look_x, &look_y);
+        controller->yaw = game3d_thirdperson_wrap_yaw(controller->yaw - look_x);
+        controller->pitch =
+            game3d_clamp(controller->pitch + look_y, controller->pitch_min, controller->pitch_max);
     }
 
     /* Aim blend: linear ramp toward the requested state. */
@@ -1174,13 +1171,9 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
     /* Boom sweep: pull in on hit (instant), release smoothly. */
     double allowed = want;
     if (world->physics && want > 1e-9) {
-        void *center = rt_vec3_new(pivot[0], pivot[1], pivot[2]);
-        void *delta = rt_vec3_new(-forward[0] * want, -forward[1] * want, -forward[2] * want);
-        void *hit = rt_world3d_sweep_sphere(world->physics,
-                                            center,
-                                            controller->collision_radius,
-                                            delta,
-                                            controller->collision_mask);
+        double delta[3] = {-forward[0] * want, -forward[1] * want, -forward[2] * want};
+        void *hit = rt_world3d_sweep_sphere_components(
+            world->physics, pivot, controller->collision_radius, delta, controller->collision_mask);
         if (hit) {
             if (rt_physics_hit3d_get_started_penetrating(hit)) {
                 allowed = controller->min_distance;
@@ -1191,8 +1184,6 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
             allowed = game3d_clamp(allowed, controller->min_distance, want);
         }
         game3d_release_ref(&hit);
-        game3d_release_ref(&delta);
-        game3d_release_ref(&center);
     }
 
     double current = controller->current_distance;

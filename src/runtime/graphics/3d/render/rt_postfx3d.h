@@ -139,8 +139,9 @@ int64_t rt_postfx3d_effect_kind_sun_shafts(void);
 /// @brief PostFXEffectKind.Sharpen constant.
 int64_t rt_postfx3d_effect_kind_sharpen(void);
 
-/// @brief Bind a PostFX chain to a Canvas3D for automatic application during Flip to the active
-/// output.
+/// @brief Bind a PostFX chain to one Canvas3D for automatic application during Flip.
+/// @details A chain owns temporal history and therefore cannot be shared concurrently. Detach it
+///          from its current canvas before binding it elsewhere; failed binds set LastError.
 /// @param canvas Canvas3D receiving the retained chain reference.
 /// @param postfx PostFX3D chain to attach, or `NULL` to detach the current chain.
 void rt_canvas3d_set_post_fx(void *canvas, void *postfx);

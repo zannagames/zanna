@@ -576,18 +576,20 @@ void game3d_sync_body_from_entity_node(rt_game3d_entity *entity, int8_t force) {
     double sx;
     double sy;
     double sz;
-    void *rot = rt_scene_node3d_get_world_rotation(node);
+    double qx;
+    double qy;
+    double qz;
+    double qw;
     if (rt_scene_node3d_get_world_position_components(node, &px, &py, &pz))
         rt_body3d_set_position(body,
                                game3d_clamp_coord_or(px, 0.0),
                                game3d_clamp_coord_or(py, 0.0),
                                game3d_clamp_coord_or(pz, 0.0));
-    if (rot)
-        rt_body3d_set_orientation(body, rot);
+    if (rt_scene_node3d_get_world_rotation_components(node, &qx, &qy, &qz, &qw))
+        rt_body3d_set_orientation_components(body, qx, qy, qz, qw);
     if (rt_scene_node3d_get_world_scale_components(node, &sx, &sy, &sz))
         rt_body3d_set_scale(
             body, game3d_scale_or_unit(sx), game3d_scale_or_unit(sy), game3d_scale_or_unit(sz));
-    game3d_release_ref(&rot);
 }
 
 /// @brief Copy the character's current position back onto the driven entity's node.
@@ -598,13 +600,12 @@ static void game3d_character_controller_sync_entity(rt_game3d_character_controll
     void *character = game3d_character_controller_character_ref(controller);
     if (!entity || !character)
         return;
-    void *pos = rt_character3d_get_position(character);
     void *node = game3d_entity_node_ref(entity);
-    if (node && pos) {
-        double world_pos[3] = {rt_vec3_x(pos), rt_vec3_y(pos), rt_vec3_z(pos)};
+    double world_pos[3];
+    if (node && rt_character3d_get_position_components(
+                    character, &world_pos[0], &world_pos[1], &world_pos[2])) {
         game3d_set_node_world_position(node, world_pos);
     }
-    game3d_release_ref(&pos);
 }
 
 /// @brief Create a capsule character controller bound to an entity, seeding the
@@ -828,11 +829,7 @@ void game3d_character_controller_drive(rt_game3d_character_controller *controlle
     double speed = controller->speed;
     double vx = (fx * move_z + rx * move_x) * speed;
     double vz = (fz * move_z + rz * move_x) * speed;
-    void *velocity = rt_vec3_new(vx, controller->vertical_velocity, vz);
-    if (!velocity)
-        return;
-    rt_character3d_move(character, velocity, dt);
-    game3d_release_ref(&velocity);
+    rt_character3d_move_components(character, vx, controller->vertical_velocity, vz, dt);
     if (rt_character3d_is_grounded(character) && controller->vertical_velocity < 0.0)
         controller->vertical_velocity = -0.5;
     game3d_character_controller_sync_entity(controller);
@@ -1059,18 +1056,16 @@ static int game3d_character_controller_probe_basis(rt_game3d_character_controlle
     void *physics = world ? rt_g3d_checked_or_null(world->physics, RT_G3D_WORLD3D_CLASS_ID) : NULL;
     if (!physics || !character)
         return 0;
-    void *pos = rt_character3d_get_position(character);
-    if (!pos)
+    if (!rt_character3d_get_position_components(character, &origin[0], &origin[1], &origin[2]))
         return 0;
     /* World probes take a FOOT-level origin; the character position is the
      * capsule center, so drop by half the current height. */
     double current_height = game3d_positive_clamped_or(
         rt_character3d_get_height(character), controller->stand_height, RT_GAME3D_SCALE_ABS_MAX);
     double half_height = current_height * 0.5;
-    origin[0] = game3d_clamp_coord_or(rt_vec3_x(pos), 0.0);
-    origin[1] = game3d_clamp_coord_or(rt_vec3_y(pos) - half_height, 0.0);
-    origin[2] = game3d_clamp_coord_or(rt_vec3_z(pos), 0.0);
-    game3d_release_ref(&pos);
+    origin[0] = game3d_clamp_coord_or(origin[0], 0.0);
+    origin[1] = game3d_clamp_coord_or(origin[1] - half_height, 0.0);
+    origin[2] = game3d_clamp_coord_or(origin[2], 0.0);
     forward[0] = 0.0;
     forward[1] = 0.0;
     forward[2] = -1.0;
@@ -1565,11 +1560,10 @@ void rt_game3d_first_person_controller_update(void *obj, void *world_obj, double
     game3d_input_repair_state(input);
     if (controller->capture_mouse && !rt_mouse_is_captured())
         rt_mouse_capture();
-    double sensitivity = controller->look_sensitivity;
-    double yaw = game3d_input_mouse_fdx(input) * sensitivity;
-    double pitch = 0.0 - game3d_input_mouse_fdy(input) * sensitivity;
-    yaw = game3d_clamp_abs_or(yaw, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
-    pitch = game3d_clamp_abs_or(pitch, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+    double yaw = 0.0;
+    double look_y = 0.0;
+    game3d_input_look_axis_components(input, controller->look_sensitivity, dt, &yaw, &look_y);
+    double pitch = 0.0 - look_y;
     void *character_controller = game3d_first_person_character_controller_ref(controller);
     if (character_controller) {
         rt_game3d_character_controller *character = game3d_character_controller_checked(
@@ -1626,8 +1620,9 @@ void rt_game3d_first_person_controller_late_update(void *obj, void *world_obj, d
     void *character_ref = game3d_character_controller_character_ref(character);
     if (!character || !character_ref)
         return;
-    void *pos = rt_character3d_get_position(character_ref);
-    if (pos) {
+    double position[3];
+    if (rt_character3d_get_position_components(
+            character_ref, &position[0], &position[1], &position[2])) {
         /* Scale the standing eye offset by the capsule's CURRENT height so a
          * crouched character's camera drops with the capsule instead of
          * floating at standing eye level above the shrunk collider. */
@@ -1636,14 +1631,11 @@ void rt_game3d_first_person_controller_late_update(void *obj, void *world_obj, d
         if (isfinite(current_height) && current_height > 1e-9 &&
             isfinite(character->stand_height) && character->stand_height > 1e-9)
             eye_offset *= current_height / character->stand_height;
-        void *eye = rt_vec3_new(game3d_clamp_coord_or(rt_vec3_x(pos), 0.0),
-                                game3d_clamp_coord_or(rt_vec3_y(pos) + eye_offset, 0.0),
-                                game3d_clamp_coord_or(rt_vec3_z(pos), 0.0));
-        if (eye)
-            rt_camera3d_set_position(camera, eye);
-        game3d_release_ref(&eye);
+        rt_camera3d_set_position_components(camera,
+                                            game3d_clamp_coord_or(position[0], 0.0),
+                                            game3d_clamp_coord_or(position[1] + eye_offset, 0.0),
+                                            game3d_clamp_coord_or(position[2], 0.0));
     }
-    game3d_release_ref(&pos);
 }
 
 /// @brief GC finalizer for a FreeFlyController: release its retained world/camera references.
@@ -1792,11 +1784,10 @@ void rt_game3d_free_fly_controller_update(void *obj, void *world_obj, double dt)
     double move_y = 0.0;
     double move_z = 0.0;
     game3d_input_move_axis_components(input, &move_x, &move_y, &move_z);
-    double sensitivity = controller->look_sensitivity;
-    double yaw = game3d_input_mouse_fdx(input) * sensitivity;
-    double pitch = 0.0 - game3d_input_mouse_fdy(input) * sensitivity;
-    yaw = game3d_clamp_abs_or(yaw, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
-    pitch = game3d_clamp_abs_or(pitch, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+    double yaw = 0.0;
+    double look_y = 0.0;
+    game3d_input_look_axis_components(input, controller->look_sensitivity, dt, &yaw, &look_y);
+    double pitch = 0.0 - look_y;
     rt_camera3d_fps_update(camera, yaw, pitch, move_z, move_x, move_y, controller->speed, dt);
 }
 

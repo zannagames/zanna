@@ -706,6 +706,7 @@ void *rt_camera3d_new(double fov, double aspect, double near_val, double far_val
         *cam = zero;
     }
     cam->vptr = NULL;
+    cam->identity_serial = rt_g3d_next_identity_serial();
     cam->fov = sanitize_fov(fov);
     cam->aspect = sanitize_aspect(aspect);
     cam->near_plane = near_val;
@@ -1257,16 +1258,18 @@ int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, doub
     return 1;
 }
 
-/// @brief Set the camera's eye position and rebuild the view matrix.
+/// @brief Set the camera's eye position from raw components and rebuild the view matrix.
 /// @param obj Borrowed heap or stack camera.
-/// @param pos Borrowed `Vec3` logical eye; invalid objects are ignored.
-void rt_camera3d_set_position(void *obj, void *pos) {
+/// @param x Logical eye X coordinate.
+/// @param y Logical eye Y coordinate.
+/// @param z Logical eye Z coordinate.
+void rt_camera3d_set_position_components(void *obj, double x, double y, double z) {
     double forward[3];
     double up[3];
     double target[3];
 
     rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
-    if (!cam || !rt_g3d_is_vec3(pos))
+    if (!cam)
         return;
     forward[0] = finite_or(-cam->view[8], 0.0);
     forward[1] = finite_or(-cam->view[9], 0.0);
@@ -1276,14 +1279,23 @@ void rt_camera3d_set_position(void *obj, void *pos) {
     up[1] = finite_or(cam->view[5], 1.0);
     up[2] = finite_or(cam->view[6], 0.0);
     camera_normalize_vec3_or(&up[0], &up[1], &up[2], 0.0, 1.0, 0.0);
-    cam->eye[0] = clamp_abs_or(rt_vec3_x(pos), 0.0, CAMERA3D_WORLD_ABS_MAX);
-    cam->eye[1] = clamp_abs_or(rt_vec3_y(pos), 0.0, CAMERA3D_WORLD_ABS_MAX);
-    cam->eye[2] = clamp_abs_or(rt_vec3_z(pos), 0.0, CAMERA3D_WORLD_ABS_MAX);
+    cam->eye[0] = clamp_abs_or(x, 0.0, CAMERA3D_WORLD_ABS_MAX);
+    cam->eye[1] = clamp_abs_or(y, 0.0, CAMERA3D_WORLD_ABS_MAX);
+    cam->eye[2] = clamp_abs_or(z, 0.0, CAMERA3D_WORLD_ABS_MAX);
     target[0] = cam->eye[0] + forward[0];
     target[1] = cam->eye[1] + forward[1];
     target[2] = cam->eye[2] + forward[2];
     build_look_at(cam->view, cam->eye, target, up);
     camera_apply_shake_to_view(cam);
+}
+
+/// @brief Set the camera's eye position and rebuild the view matrix.
+/// @param obj Borrowed heap or stack camera.
+/// @param pos Borrowed `Vec3` logical eye; invalid objects are ignored.
+void rt_camera3d_set_position(void *obj, void *pos) {
+    if (!rt_camera3d_checked_or_stack(obj) || !rt_g3d_is_vec3(pos))
+        return;
+    rt_camera3d_set_position_components(obj, rt_vec3_x(pos), rt_vec3_y(pos), rt_vec3_z(pos));
 }
 
 /// @brief Extract the world-space forward unit vector the camera is currently pointing
@@ -1487,7 +1499,8 @@ static int camera_pick_cache_scalar_equal(double a, double b) {
 /// @brief Compute the inverse view-projection matrix used to unproject screen rays for picking.
 /// @details Builds the projection (perspective or ortho) for the given @p aspect, multiplies by the
 ///          view matrix, and inverts the result. @p out_inv_vp receives the 4x4 inverse.
-/// @param[in,out] cam Borrowed camera whose view may be repaired and whose inverse cache is updated.
+/// @param[in,out] cam Borrowed camera whose view may be repaired and whose inverse cache is
+/// updated.
 /// @param aspect Render-surface width-to-height ratio.
 /// @param[out] out_inv_vp Writable 16-element inverse view-projection matrix.
 /// @return 1 on success, 0 if inputs are invalid or the matrix is singular.

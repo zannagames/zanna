@@ -152,10 +152,8 @@ static void game3d_dialogue_resolve_text(rt_game3d_dialogue *dialogue,
         owns_resolved = 1;
     }
     const char *cstr = resolved ? rt_string_cstr(resolved) : NULL;
-    if (cstr) {
-        strncpy(dst, cstr, dst_size - 1);
-        dst[dst_size - 1] = '\0';
-    }
+    if (cstr)
+        (void)game3d_utf8_copy_bounded(dst, dst_size, cstr);
     if (owns_resolved && resolved)
         rt_string_unref(resolved);
 }
@@ -189,10 +187,8 @@ static void *game3d_dialogue_say_impl(
     game3d_release_ref(&line->voice_clip);
     memset(line, 0, sizeof(*line));
     const char *speaker_cstr = speaker ? rt_string_cstr(speaker) : NULL;
-    if (speaker_cstr) {
-        strncpy(line->speaker, speaker_cstr, RT_GAME3D_DLG_NAME_MAX - 1);
-        line->speaker[RT_GAME3D_DLG_NAME_MAX - 1] = '\0';
-    }
+    if (speaker_cstr)
+        (void)game3d_utf8_copy_bounded(line->speaker, RT_GAME3D_DLG_NAME_MAX, speaker_cstr);
     game3d_dialogue_resolve_text(dialogue, text, line->text, RT_GAME3D_TL_TEXT_MAX);
     game3d_assign_ref(&line->voice_clip, voice_clip);
     dialogue->line_count += 1;
@@ -305,14 +301,15 @@ void rt_game3d_dialogue_hide(void *obj) {
         game3d_release_typed_ref(&world->active_dialogue, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
 }
 
-/// @brief Current line text length (revealed cap).
+/// @brief Current line codepoint length (revealed cap).
 /// @param dialogue Dialogue whose current queue position is inspected.
-/// @return The byte length of the current resolved line, or zero outside the queue.
+/// @return The codepoint length of the current resolved line, or zero outside the queue.
 static size_t game3d_dialogue_line_len(const rt_game3d_dialogue *dialogue) {
     int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
     if (!dialogue || dialogue->line_index < 0 || dialogue->line_index >= line_count)
         return 0;
-    return strlen(dialogue->lines[dialogue->line_index].text);
+    const char *text = dialogue->lines[dialogue->line_index].text;
+    return game3d_utf8_codepoint_count(text, strlen(text));
 }
 
 /// @brief Advance to the next line (or arm the pending choice / finish).
@@ -477,7 +474,7 @@ int64_t rt_game3d_dialogue_last_choice(void *obj) {
 
 /// @brief Currently displayed (revealed) text of the active line.
 /// @param obj Dialogue3D runtime handle.
-/// @return A runtime string containing only the currently revealed byte prefix;
+/// @return A runtime string containing only the currently revealed codepoint prefix;
 ///         inactive or exhausted dialogues return an empty string.
 rt_string rt_game3d_dialogue_current_text(void *obj) {
     rt_game3d_dialogue *dialogue =
@@ -492,11 +489,12 @@ rt_string rt_game3d_dialogue_current_text(void *obj) {
         dialogue->line_index < line_count) {
         const char *full = dialogue->lines[dialogue->line_index].text;
         size_t len = strlen(full);
-        size_t shown = 0;
+        size_t shown_codepoints = 0;
         if (isfinite(dialogue->reveal_chars) && dialogue->reveal_chars > 0.0)
-            shown = dialogue->reveal_chars >= (double)len ? len : (size_t)dialogue->reveal_chars;
-        memcpy(revealed, full, shown);
-        revealed[shown] = '\0';
+            shown_codepoints = (size_t)dialogue->reveal_chars;
+        size_t shown_bytes = game3d_utf8_prefix_bytes(full, len, shown_codepoints);
+        memcpy(revealed, full, shown_bytes);
+        revealed[shown_bytes] = '\0';
     }
     return rt_const_cstr(revealed);
 }
@@ -543,7 +541,7 @@ void rt_game3d_dialogue_set_auto_advance(void *obj, int8_t enabled) {
 
 /// @brief Configure the typewriter reveal rate.
 /// @param obj Dialogue3D runtime handle.
-/// @param chars_per_second Requested positive byte reveal rate. Invalid values
+/// @param chars_per_second Requested positive Unicode codepoint reveal rate. Invalid values
 ///                         select the default and the result is capped at 10,000.
 void rt_game3d_dialogue_set_reveal_speed(void *obj, double chars_per_second) {
     rt_game3d_dialogue *dialogue =
@@ -614,7 +612,7 @@ void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
         if (line->voice_clip && world->audio)
             (void)rt_game3d_audio_play2d(world->audio, line->voice_clip);
     }
-    size_t len = strlen(line->text);
+    size_t len = game3d_utf8_codepoint_count(line->text, strlen(line->text));
     dialogue->reveal_speed = game3d_positive_clamped_or(
         dialogue->reveal_speed, GAME3D_DLG_DEFAULT_REVEAL_SPEED, 10000.0);
     if (!isfinite(dialogue->reveal_chars) || dialogue->reveal_chars < 0.0)
@@ -680,11 +678,9 @@ void game3d_world_dialogue_overlay(rt_game3d_world *world) {
             world->canvas, 12, top, width - 24, panel_h, 0x101418, dialogue->panel_alpha);
         for (int32_t i = 0; i < choice_count; ++i) {
             char row[RT_GAME3D_TL_TEXT_MAX + 4];
-            snprintf(row,
-                     sizeof(row),
-                     "%s %s",
-                     i == dialogue->choice_selected ? ">" : " ",
-                     dialogue->choices[i]);
+            row[0] = i == dialogue->choice_selected ? '>' : ' ';
+            row[1] = ' ';
+            (void)game3d_utf8_copy_bounded(row + 2, sizeof(row) - 2, dialogue->choices[i]);
             game3d_dialogue_draw_text_cstr(world->canvas,
                                            24,
                                            top + 10 + (int64_t)i * 14,
@@ -700,11 +696,12 @@ void game3d_world_dialogue_overlay(rt_game3d_world *world) {
     rt_game3d_dlg_line *line = &dialogue->lines[dialogue->line_index];
     char revealed[RT_GAME3D_TL_TEXT_MAX];
     size_t len = strlen(line->text);
-    size_t shown = 0;
+    size_t shown_codepoints = 0;
     if (isfinite(dialogue->reveal_chars) && dialogue->reveal_chars > 0.0)
-        shown = dialogue->reveal_chars >= (double)len ? len : (size_t)dialogue->reveal_chars;
-    memcpy(revealed, line->text, shown);
-    revealed[shown] = '\0';
+        shown_codepoints = (size_t)dialogue->reveal_chars;
+    size_t shown_bytes = game3d_utf8_prefix_bytes(line->text, len, shown_codepoints);
+    memcpy(revealed, line->text, shown_bytes);
+    revealed[shown_bytes] = '\0';
 
     /* Anchored bubble above the speaker entity when projectable. */
     if (dialogue->anchored) {
@@ -715,17 +712,34 @@ void game3d_world_dialogue_overlay(rt_game3d_world *world) {
             double sy = 0.0;
             if (rt_camera3d_world_to_screen(
                     world->camera, pos[0], pos[1] + 1.9, pos[2], width, height, &sx, &sy)) {
-                int64_t bubble_w = (int64_t)(shown > 8 ? shown : 8) * 8 + 16;
+                size_t speaker_codepoints =
+                    game3d_utf8_codepoint_count(line->speaker, strlen(line->speaker));
+                size_t bubble_codepoints = game3d_utf8_codepoint_count(revealed, shown_bytes);
+                if (speaker_codepoints > bubble_codepoints)
+                    bubble_codepoints = speaker_codepoints;
+                if (bubble_codepoints < 8)
+                    bubble_codepoints = 8;
+                int64_t bubble_w = (int64_t)bubble_codepoints * 8 + 16;
+                int64_t margin_x = width >= 8 ? 4 : 0;
+                int64_t max_bubble_w = width - margin_x * 2;
+                if (bubble_w > max_bubble_w)
+                    bubble_w = max_bubble_w;
                 int64_t bx = (int64_t)sx - bubble_w / 2;
-                if (bx < 4)
-                    bx = 4;
-                if (bx + bubble_w > width - 4)
-                    bx = width - 4 - bubble_w;
+                if (bx < margin_x)
+                    bx = margin_x;
+                if (bx + bubble_w > width - margin_x)
+                    bx = width - margin_x - bubble_w;
+                const int64_t bubble_h = 28;
+                int64_t margin_y = height >= bubble_h + 8 ? 4 : 0;
                 int64_t by = (int64_t)sy - 34;
-                if (by < 4)
-                    by = 4;
+                if (by < margin_y)
+                    by = margin_y;
+                if (by + bubble_h > height - margin_y)
+                    by = height - margin_y - bubble_h;
+                if (by < 0)
+                    by = 0;
                 rt_canvas3d_draw_rect2d_alpha(
-                    world->canvas, bx, by, bubble_w, 28, 0x101418, dialogue->panel_alpha);
+                    world->canvas, bx, by, bubble_w, bubble_h, 0x101418, dialogue->panel_alpha);
                 if (line->speaker[0])
                     game3d_dialogue_draw_text_cstr(
                         world->canvas, bx + 8, by + 4, line->speaker, dialogue->name_color);

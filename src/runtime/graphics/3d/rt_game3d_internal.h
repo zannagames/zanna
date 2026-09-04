@@ -219,6 +219,13 @@ void *rt_camera3d_get_position(void *obj);
 /// @param[out] z Required Z-coordinate destination, initialized to zero.
 /// @return `1` when all destinations receive a valid position; otherwise `0`.
 int8_t rt_camera3d_get_position_components(void *obj, double *x, double *y, double *z);
+void rt_camera3d_set_position_components(void *obj, double x, double y, double z);
+void rt_body3d_set_orientation_components(void *obj, double x, double y, double z, double w);
+int8_t rt_character3d_get_position_components(void *obj, double *x, double *y, double *z);
+void rt_character3d_move_components(
+    void *obj, double velocity_x, double velocity_y, double velocity_z, double dt);
+void *rt_world3d_sweep_sphere_components(
+    void *world, const double center[3], double radius, const double delta[3], int64_t mask);
 
 /// @brief Allocate a Vec3 containing a camera's normalized forward direction.
 /// @param obj Borrowed heap or stack Camera3D handle.
@@ -984,6 +991,7 @@ typedef struct rt_game3d_tl_track {
     int64_t marker_id;                  ///< Marker payload.
     char text_a[RT_GAME3D_TL_TEXT_MAX]; ///< Anim entity name / subtitle text.
     char text_b[RT_GAME3D_TL_TEXT_MAX]; ///< Anim state name.
+    uint64_t insertion_order;           ///< Stable append ordinal for equal-time tracks.
 } rt_game3d_tl_track;
 
 /// @brief Timeline3D payload: track list + playhead + polled marker buffer.
@@ -1917,6 +1925,16 @@ double game3d_clamp_dt(double dt);
 /// @return A finite value in `[0, RT_GAME3D_MAX_DT]`.
 double game3d_clamp_controller_dt(double dt);
 
+/// @brief Copy a C UTF-8 string into a fixed buffer without splitting a codepoint.
+/// @return Number of non-terminator bytes copied.
+size_t game3d_utf8_copy_bounded(char *dst, size_t dst_capacity, const char *src);
+
+/// @brief Count strict UTF-8 codepoints, stopping before malformed input.
+size_t game3d_utf8_codepoint_count(const char *text, size_t byte_len);
+
+/// @brief Return the byte length of a strict UTF-8 prefix containing at most @p codepoints.
+size_t game3d_utf8_prefix_bytes(const char *text, size_t byte_len, size_t codepoints);
+
 /// @brief Substitute a fallback for a non-finite scalar.
 /// @param value Candidate scalar.
 /// @param fallback Value used when @p value is NaN or infinite.
@@ -2070,6 +2088,15 @@ void game3d_input_move_axis_components(rt_game3d_input *input,
                                        double *out_x,
                                        double *out_y,
                                        double *out_z);
+
+/// @brief Merge mouse displacement and right-stick angular velocity without boxing.
+/// @param input Borrowed Input3D payload.
+/// @param mouse_sensitivity Degrees per mouse unit.
+/// @param dt Frame duration used only to integrate continuous gamepad input.
+/// @param[out] out_x Optional horizontal angular displacement.
+/// @param[out] out_y Optional vertical angular displacement.
+void game3d_input_look_axis_components(
+    rt_game3d_input *input, double mouse_sensitivity, double dt, double *out_x, double *out_y);
 
 /// @brief Read the vertical wheel delta from an Input3D snapshot or live input.
 /// @param input Borrowed Input3D payload.

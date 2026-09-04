@@ -163,6 +163,16 @@ int32_t vgfx3d_sanitize_texture_uv_set(int32_t requested);
 /// @param dst Caller-owned destination receiving normalized matrices, material values, sampler
 ///            state, counts, and flags. Null input pointers make the operation a no-op.
 void vgfx3d_sanitize_draw_command(const struct vgfx3d_draw_cmd *src, struct vgfx3d_draw_cmd *dst);
+/// @brief Compare a retained backend cache identity without trusting an address alone.
+/// @param cached_key Address key stored by the cache entry.
+/// @param cached_identity Allocation generation stored by the cache entry.
+/// @param requested_key Address key supplied by the current draw.
+/// @param requested_identity Allocation generation supplied by the current draw.
+/// @return One only when both nonzero identity components match exactly.
+int8_t vgfx3d_cache_identity_matches(const void *cached_key,
+                                     uint64_t cached_identity,
+                                     const void *requested_key,
+                                     uint64_t requested_identity);
 /// @brief Copy per-frame camera state while normalizing every backend-visible value.
 /// @param src Borrowed camera snapshot.
 /// @param dst Caller-owned destination receiving normalized matrices, clip planes, fog, IBL,

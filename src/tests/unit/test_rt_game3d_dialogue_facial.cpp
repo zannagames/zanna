@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 namespace {
 static std::jmp_buf g_trap_jmp;
@@ -199,6 +200,56 @@ bool test_dialogue_queue_reveal_advance() {
     rt_game3d_dialogue_advance(dialogue);
     EXPECT_TRUE(rt_game3d_dialogue_get_active(dialogue) == 0,
                 "conversation hides after the last line");
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+bool test_dialogue_utf8_reveal_and_bounded_copy() {
+    TEST("Dialogue3D reveals and truncates only at UTF-8 boundaries");
+    void *world = rt_game3d_world_new(rt_const_cstr("Dlg UTF-8"), 64, 48);
+    rt_game3d_world_set_gravity(world, 0.0, 0.0, 0.0);
+    void *dialogue = rt_game3d_dialogue_new(world);
+    const char utf8_text[] = {'A',
+                              static_cast<char>(0xC3),
+                              static_cast<char>(0xA9),
+                              static_cast<char>(0xF0),
+                              static_cast<char>(0x9F),
+                              static_cast<char>(0x99),
+                              static_cast<char>(0x82),
+                              'Z'};
+    rt_string text = rt_string_from_bytes(utf8_text, sizeof(utf8_text));
+    rt_game3d_dialogue_say(dialogue, rt_const_cstr("Ada"), text);
+    rt_game3d_dialogue_set_reveal_speed(dialogue, 1.0);
+    rt_game3d_dialogue_show(dialogue);
+
+    for (int i = 0; i < 5; ++i)
+        rt_game3d_world_step_simulation(world, 0.25);
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_game3d_dialogue_current_text(dialogue)), "A") == 0,
+                "first reveal unit contains one complete ASCII codepoint");
+    for (int i = 0; i < 4; ++i)
+        rt_game3d_world_step_simulation(world, 0.25);
+    EXPECT_TRUE(
+        std::strcmp(rt_string_cstr(rt_game3d_dialogue_current_text(dialogue)), "A\xC3\xA9") == 0,
+        "second reveal unit contains the complete two-byte codepoint");
+    for (int i = 0; i < 4; ++i)
+        rt_game3d_world_step_simulation(world, 0.25);
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_game3d_dialogue_current_text(dialogue)),
+                            "A\xC3\xA9\xF0\x9F\x99\x82") == 0,
+                "third reveal unit contains the complete four-byte codepoint");
+
+    void *truncated = rt_game3d_dialogue_new(world);
+    std::string long_text(254, 'x');
+    long_text += "\xC3\xA9";
+    rt_string long_runtime = rt_string_from_bytes(long_text.data(), long_text.size());
+    rt_game3d_dialogue_say(truncated, rt_const_cstr("Ada"), long_runtime);
+    rt_game3d_dialogue_show(truncated);
+    rt_game3d_dialogue_skip_reveal(truncated);
+    const char *copied = rt_string_cstr(rt_game3d_dialogue_current_text(truncated));
+    EXPECT_EQ_INT(
+        std::strlen(copied), 254, "fixed line buffer omits a codepoint that cannot fit completely");
+    EXPECT_TRUE(copied[253] == 'x', "bounded line remains valid at its final byte");
+    rt_string_unref(long_runtime);
+    rt_string_unref(text);
     rt_game3d_world_destroy(world);
     PASS();
 }
@@ -393,6 +444,7 @@ int main() {
     bool ok = true;
     ok = test_world_to_screen_projection() && ok;
     ok = test_dialogue_queue_reveal_advance() && ok;
+    ok = test_dialogue_utf8_reveal_and_bounded_copy() && ok;
     ok = test_dialogue_choices() && ok;
     ok = test_dialogue_localization() && ok;
     ok = test_dialogue_localization_balances_owned_lookup() && ok;

@@ -748,6 +748,7 @@ typedef struct {
 
 typedef struct {
     const void *key;
+    uint64_t identity;
     uint64_t revision;
     int32_t shape_count;
     uint32_t vertex_count;
@@ -765,6 +766,7 @@ typedef struct {
 
 typedef struct {
     const void *key;
+    uint64_t identity;
     uint32_t revision;
     uint32_t vertex_count;
     uint32_t index_count;

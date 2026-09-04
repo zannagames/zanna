@@ -91,6 +91,15 @@ static void rt_scene3d_finalize(void *obj) {
     free(scene->spatial_index.query_order_scratch);
     free(scene->spatial_index.dirty_nodes);
     free(scene->spatial_index.dirty_walk_stack);
+    if (scene->spatial_index.mesh_dependencies && scene->spatial_index.mesh_dependency_count >= 0 &&
+        scene->spatial_index.mesh_dependency_count <=
+            scene->spatial_index.mesh_dependency_capacity) {
+        for (int32_t i = 0; i < scene->spatial_index.mesh_dependency_count; i++) {
+            void *mesh = scene->spatial_index.mesh_dependencies[i].mesh;
+            scene3d_release_ref(&mesh);
+        }
+    }
+    free(scene->spatial_index.mesh_dependencies);
     scene->spatial_index.entries = NULL;
     scene->spatial_index.entry_indices = NULL;
     scene->spatial_index.nodes = NULL;
@@ -98,11 +107,14 @@ static void rt_scene3d_finalize(void *obj) {
     scene->spatial_index.query_order_scratch = NULL;
     scene->spatial_index.dirty_nodes = NULL;
     scene->spatial_index.dirty_walk_stack = NULL;
+    scene->spatial_index.mesh_dependencies = NULL;
     scene->spatial_index.count = 0;
     scene->spatial_index.capacity = 0;
     scene->spatial_index.entry_index_capacity = 0;
     scene->spatial_index.node_count = 0;
     scene->spatial_index.node_capacity = 0;
+    scene->spatial_index.mesh_dependency_count = 0;
+    scene->spatial_index.mesh_dependency_capacity = 0;
     scene->spatial_index.root_node = -1;
     visibility_zone_count = scene3d_visibility_zone_count_safe(scene);
     for (int32_t i = 0; i < visibility_zone_count; ++i)

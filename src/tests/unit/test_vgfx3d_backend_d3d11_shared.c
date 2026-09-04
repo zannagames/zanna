@@ -1420,26 +1420,29 @@ static void test_morph_cache_reuse_helper(void) {
 
     memset(&cmd, 0, sizeof(cmd));
     cmd.morph_key = &cmd;
+    cmd.morph_identity = 9;
     cmd.morph_revision = 7;
     cmd.morph_deltas = deltas;
     cmd.morph_weights = weights;
     cmd.morph_shape_count = 3;
     cmd.vertex_count = 1;
 
-    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 7, 3, 1, 0, &cmd) == 1,
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 9, 7, 3, 1, 0, &cmd) == 1,
                 "Morph cache reuse accepts matching position-only payloads");
-    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 6, 3, 1, 0, &cmd) == 0,
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 8, 7, 3, 1, 0, &cmd) == 0,
+                "Morph cache reuse rejects recycled addresses with a new allocation identity");
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 9, 6, 3, 1, 0, &cmd) == 0,
                 "Morph cache reuse rejects stale revisions");
-    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 7, 2, 1, 0, &cmd) == 0,
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 9, 7, 2, 1, 0, &cmd) == 0,
                 "Morph cache reuse rejects mismatched shape counts");
     cmd.morph_normal_deltas = normal_deltas;
-    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 7, 3, 1, 0, &cmd) == 0,
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 9, 7, 3, 1, 0, &cmd) == 0,
                 "Morph cache reuse includes normal-delta presence");
-    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 7, 3, 1, 1, &cmd) == 1,
+    EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(cmd.morph_key, 9, 7, 3, 1, 1, &cmd) == 1,
                 "Morph cache reuse accepts matching normal-delta payloads");
     cmd.morph_shape_count = VGFX3D_D3D11_MAX_MORPH_SHAPES + 4;
     EXPECT_TRUE(vgfx3d_d3d11_should_reuse_morph_cache(
-                    cmd.morph_key, 7, VGFX3D_D3D11_MAX_MORPH_SHAPES, 1, 1, &cmd) == 1,
+                    cmd.morph_key, 9, 7, VGFX3D_D3D11_MAX_MORPH_SHAPES, 1, 1, &cmd) == 1,
                 "Morph cache reuse compares against the clamped D3D11 shape count");
 }
 
@@ -2530,7 +2533,8 @@ static void test_d3d11_backend_source_contracts(void) {
                 "status check");
     EXPECT_TRUE(
         text_appears_in_order_after(source,
-                                    "if (!cmd->geometry_key || cmd->geometry_revision == 0)",
+                                    "if (!cmd->geometry_key || cmd->geometry_identity == 0 || "
+                                    "cmd->geometry_revision == 0)",
                                     "D3D11_INITIAL_DYNAMIC_IB_SIZE))",
                                     "&ctx->stats.mesh_stream_uploads"),
         "D3D11 stream-upload telemetry commits after both buffer uploads succeed");

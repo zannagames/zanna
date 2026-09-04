@@ -219,6 +219,28 @@ void configureInstallerStack(PEBuildParams &pe) {
     pe.stackCommit = kInstallerStackCommit;
 }
 
+/// @brief Pad immediately before a ZIP overlay when embedded metadata creates a size cycle.
+/// @details The absolute offset is embedded in compressed installer script data. In rare cases,
+///          changing that value moves the aligned PE boundary back one file-alignment unit, so
+///          fixed-point iteration alternates between two offsets. Padding the smaller image keeps
+///          the stub's already-embedded larger offset exact without modifying the ZIP bytes.
+/// @return true when padding reconciled the measured and expected offsets.
+bool padInstallerOverlayToExpectedOffset(std::vector<uint8_t> &peBytes,
+                                         size_t zipPayloadSize,
+                                         uint64_t expectedOffset,
+                                         uint64_t measuredOffset) {
+    if (measuredOffset >= expectedOffset)
+        return false;
+    const uint64_t padding64 = expectedOffset - measuredOffset;
+    if (zipPayloadSize > peBytes.size() || padding64 > std::numeric_limits<size_t>::max())
+        throw std::runtime_error("Windows installer overlay padding overflow");
+    peBytes.insert(peBytes.end() -
+                       static_cast<std::vector<uint8_t>::difference_type>(zipPayloadSize),
+                   static_cast<size_t>(padding64),
+                   uint8_t{0});
+    return true;
+}
+
 /// @brief Append a directory entry to out only if it has not already been seen.
 /// The seen set keys on root+path so the same relative path under different
 /// roots (e.g. InstallDir vs StartMenuDir) is treated as two distinct entries.
@@ -2516,6 +2538,9 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
             static_cast<uint64_t>(peBytes.size() - zipPayload.size());
         if (finalOverlayOffset == layout.overlayFileOffset)
             break;
+        if (padInstallerOverlayToExpectedOffset(
+                peBytes, zipPayload.size(), layout.overlayFileOffset, finalOverlayOffset))
+            break;
         if (attempt == 3) {
             throw std::runtime_error("Windows installer overlay offset did not converge");
         }
@@ -3097,6 +3122,9 @@ void buildWindowsToolchainInstaller(const WindowsToolchainBuildParams &params) {
         const uint64_t finalOverlayOffset =
             static_cast<uint64_t>(peBytes.size() - zipPayload.size());
         if (finalOverlayOffset == layout.overlayFileOffset)
+            break;
+        if (padInstallerOverlayToExpectedOffset(
+                peBytes, zipPayload.size(), layout.overlayFileOffset, finalOverlayOffset))
             break;
         if (attempt == 3) {
             throw std::runtime_error("Windows installer overlay offset did not converge");

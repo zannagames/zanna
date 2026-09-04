@@ -662,15 +662,6 @@ static void particles3d_repair_state(rt_particles3d *ps) {
             particles3d_clear_owned_trails(ps);
         } else {
             ps->trail_lifetime = (float)trail_lifetime;
-            for (int32_t i = 0; i < ps->owned_count; i++) {
-                if (!isfinite(ps->owned_trail_age[i]) || ps->owned_trail_age[i] < 0.0f)
-                    ps->owned_trail_age[i] = 0.0f;
-                if (ps->owned_trail_len[i] < 0 || ps->owned_trail_len[i] > ps->owned_trail_segments)
-                    ps->owned_trail_len[i] = 0;
-                if (ps->owned_trail_head[i] < 0 ||
-                    ps->owned_trail_head[i] >= ps->owned_trail_segments)
-                    ps->owned_trail_head[i] = 0;
-            }
         }
     } else {
         ps->trail_lifetime = 0.0f;
@@ -690,6 +681,23 @@ static void particles3d_repair_state(rt_particles3d *ps) {
     }
     if (ps->draw_slots_used < 0)
         ps->draw_slots_used = 0;
+}
+
+/// @brief Repair trail entries immediately before simulation or rendering consumes them.
+/// @details Kept separate from the constant-time object repair path so scalar getters do not scan
+///   every live particle merely to return an unrelated property.
+/// @param ps Particle system whose owned trail entries should be sanitized.
+static void particles3d_repair_trail_entries(rt_particles3d *ps) {
+    if (!ps || ps->owned_trail_segments <= 0)
+        return;
+    for (int32_t i = 0; i < ps->owned_count; i++) {
+        if (!isfinite(ps->owned_trail_age[i]) || ps->owned_trail_age[i] < 0.0f)
+            ps->owned_trail_age[i] = 0.0f;
+        if (ps->owned_trail_len[i] < 0 || ps->owned_trail_len[i] > ps->owned_trail_segments)
+            ps->owned_trail_len[i] = 0;
+        if (ps->owned_trail_head[i] < 0 || ps->owned_trail_head[i] >= ps->owned_trail_segments)
+            ps->owned_trail_head[i] = 0;
+    }
 }
 
 /// @brief Generate a random direction within a cone of half-angle `spread`
@@ -2119,6 +2127,7 @@ void rt_particles3d_update(void *o, double delta_time) {
     if (!ps)
         return;
     particles3d_repair_state(ps);
+    particles3d_repair_trail_entries(ps);
     ps->dropped_time_last_update = 0.0;
     if (!isfinite(delta_time) || delta_time <= 0.0 || !ps->particles || ps->max_particles <= 0)
         return;
@@ -3013,6 +3022,7 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
     if (!ps || !canvas || !cam)
         return;
     particles3d_repair_state(ps);
+    particles3d_repair_trail_entries(ps);
     if (!ps->particles || ps->max_particles <= 0)
         return;
     if (ps->count < 0) {

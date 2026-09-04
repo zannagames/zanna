@@ -184,6 +184,13 @@ typedef struct {
     int8_t leaf;
 } rt_scene3d_spatial_bvh_node;
 
+/// @brief One unique mesh revision on which a scene spatial index depends.
+typedef struct {
+    rt_mesh3d *mesh;
+    uint64_t identity_serial;
+    uint32_t geometry_revision;
+} rt_scene3d_spatial_mesh_dependency;
+
 typedef struct {
     rt_scene3d_spatial_entry *entries;
     int32_t count;
@@ -202,6 +209,10 @@ typedef struct {
     int32_t dirty_node_capacity;
     struct rt_scene_node3d **dirty_walk_stack;
     int32_t dirty_walk_stack_capacity;
+    rt_scene3d_spatial_mesh_dependency *mesh_dependencies;
+    int32_t mesh_dependency_count;
+    int32_t mesh_dependency_capacity;
+    int8_t mesh_dependencies_complete;
     int8_t dirty_all;
     int32_t root_node;
     int8_t dirty;
@@ -210,6 +221,8 @@ typedef struct {
     uint32_t build_count;
     uint32_t refit_count;
     uint64_t mesh_geometry_epoch;
+    int32_t last_mesh_dependency_probe_count;
+    int32_t last_full_geometry_scan_count;
     int32_t last_candidate_count;
     int32_t last_prefiltered_count;
 } rt_scene3d_spatial_index;
@@ -229,8 +242,11 @@ typedef struct {
 /// @details Nodes keep a small fixed cache instead of one global LOD/impostor selection so
 ///   alternating cameras do not contaminate each other's hysteresis and cause mesh popping.
 typedef struct rt_scene3d_lod_view_state {
-    uintptr_t view_key;
-    uint32_t last_used;
+    const void *canvas_key;
+    const void *camera_key;
+    uint64_t canvas_identity;
+    uint64_t camera_identity;
+    uint64_t last_used;
     int32_t lod_selected_index;
     int8_t lod_selection_valid;
     int8_t impostor_selected;
@@ -340,7 +356,7 @@ typedef struct rt_scene_node3d {
     double auto_lod_screen_error_px;
     int32_t lod_selected_index;
     int8_t lod_selection_valid;
-    uint32_t lod_view_state_clock;
+    uint64_t lod_view_state_clock;
     rt_scene3d_lod_view_state lod_view_states[RT_SCENE3D_LOD_VIEW_STATE_COUNT];
 
     /* KHR_materials_variants: variant-indexed retained Material3D pointers imported
@@ -364,7 +380,7 @@ typedef struct rt_scene_node3d {
     /* Allocation generation: draw submission salts the node's motion-history key with
      * this so a destroyed node's same-address successor never inherits its previous
      * transform (which would flash a bogus motion vector on its first frame). */
-    uint32_t identity_serial;
+    uint64_t identity_serial;
     /* Topology generation owned by a hierarchy root. Unrelated roots advance independently so
      * animator target caches are not invalidated by changes in other scenes. */
     uint64_t hierarchy_epoch;

@@ -356,6 +356,7 @@ typedef vgfx3d_d3d11_instance_data_t d3d_instance_data_t;
 /// @brief One static mesh cache slot containing immutable vertex and index buffers.
 typedef struct {
     const void *key;
+    uint64_t identity;
     uint32_t revision;
     uint32_t vertex_count;
     uint32_t index_count;
@@ -379,6 +380,7 @@ _Static_assert((D3D11_TEXTURE_CACHE_HINT_CAPACITY & (D3D11_TEXTURE_CACHE_HINT_CA
 /// @brief One cached morph-target position/normal shader-resource payload.
 typedef struct {
     const void *key;
+    uint64_t identity;
     uint64_t generation;
     uint32_t vertex_count;
     uint32_t shape_count;
@@ -2557,7 +2559,7 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
             (size_t)cmd->vertex_count, sizeof(vgfx3d_vertex_t), &vertex_bytes) ||
         !d3d11_checked_mul_size((size_t)index_count, sizeof(uint32_t), &index_bytes))
         return 0;
-    if (!cmd->geometry_key || cmd->geometry_revision == 0) {
+    if (!cmd->geometry_key || cmd->geometry_identity == 0 || cmd->geometry_revision == 0) {
         if (!d3d11_upload_dynamic_buffer(ctx,
                                          &ctx->dynamic_vb,
                                          &ctx->dynamic_vb_size,
@@ -2603,9 +2605,11 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
         if (!slot)
             return 0;
 
-        if (slot->key != cmd->geometry_key || slot->revision != cmd->geometry_revision ||
-            slot->vertex_count != cmd->vertex_count || slot->index_count != index_count ||
-            slot->compact != wants_compact || !slot->vb || !slot->ib) {
+        if (!vgfx3d_cache_identity_matches(
+                slot->key, slot->identity, cmd->geometry_key, cmd->geometry_identity) ||
+            slot->revision != cmd->geometry_revision || slot->vertex_count != cmd->vertex_count ||
+            slot->index_count != index_count || slot->compact != wants_compact || !slot->vb ||
+            !slot->ib) {
             d3d11_stats_count(&ctx->stats.mesh_cache_misses);
             if (wants_compact) {
                 /* R20: encode into the packed 48-byte layout; the compact input
@@ -2645,6 +2649,7 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
             slot->vb = new_vb;
             slot->ib = new_ib;
             slot->key = cmd->geometry_key;
+            slot->identity = cmd->geometry_identity;
             slot->revision = cmd->geometry_revision;
             slot->vertex_count = cmd->vertex_count;
             slot->index_count = index_count;

@@ -319,6 +319,42 @@ void game3d_input_move_axis_components(rt_game3d_input *input,
         *out_z = z;
 }
 
+/// @brief Compute the combined mouse displacement and frame-integrated right-stick look delta.
+/// @details Mouse input is already a per-frame displacement and must not be multiplied by time.
+///          Right-stick input is continuous, so its legacy 60 Hz sensitivity is scaled by
+///          `dt * 60` to produce frame-rate-independent angular motion.
+void game3d_input_look_axis_components(
+    rt_game3d_input *input, double mouse_sensitivity, double dt, double *out_x, double *out_y) {
+    double dx;
+    double dy;
+    game3d_input_repair_state(input);
+    mouse_sensitivity = game3d_positive_clamped_or(mouse_sensitivity, 0.01, 100.0);
+    dt = game3d_clamp_controller_dt(dt);
+    dx = game3d_input_mouse_fdx(input) * mouse_sensitivity;
+    dy = game3d_input_mouse_fdy(input) * mouse_sensitivity;
+    if (input && input->pad_connected && dt > 0.0) {
+        double rx = input->pad_rx;
+        double ry = input->pad_ry;
+        double mag = hypot(rx, ry);
+        const double deadzone = 0.18;
+        if (mag > deadzone) {
+            double scale = (mag - deadzone) / (1.0 - deadzone);
+            if (scale > 1.0)
+                scale = 1.0;
+            scale = pow(scale, 1.8) / mag;
+            scale *= input->pad_look_sensitivity * dt * 60.0;
+            dx += rx * scale;
+            dy += ry * scale;
+        }
+    }
+    dx = game3d_clamp_abs_or(dx, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+    dy = game3d_clamp_abs_or(dy, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+    if (out_x)
+        *out_x = dx;
+    if (out_y)
+        *out_y = dy;
+}
+
 /// @brief Build the WASD/arrow/space/shift movement axis as a Vec3
 ///   (x = strafe, y = up/down, z = forward/back); see header.
 /// @param obj Input3D runtime handle.
@@ -343,28 +379,9 @@ void *rt_game3d_input_look_axis(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.lookAxis: invalid input");
     if (!input)
         return rt_vec2_new(0.0, 0.0);
-    game3d_input_repair_state(input);
-    double s = input->look_sensitivity;
-    double dx = game3d_input_mouse_fdx(input) * s;
-    double dy = game3d_input_mouse_fdy(input) * s;
-    if (input && input->pad_connected) {
-        double rx = input->pad_rx;
-        double ry = input->pad_ry;
-        double mag = hypot(rx, ry);
-        const double deadzone = 0.18;
-        if (mag > deadzone) {
-            double scale = (mag - deadzone) / (1.0 - deadzone);
-            if (scale > 1.0)
-                scale = 1.0;
-            /* Response curve: fine aim near center, fast sweep at the rim. */
-            scale = pow(scale, 1.8) / mag;
-            double ps = input->pad_look_sensitivity;
-            dx += rx * scale * ps;
-            dy += ry * scale * ps;
-        }
-    }
-    double x = game3d_clamp_abs_or(dx, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
-    double y = game3d_clamp_abs_or(dy, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
+    double x = 0.0;
+    double y = 0.0;
+    game3d_input_look_axis_components(input, input->look_sensitivity, 1.0 / 60.0, &x, &y);
     return rt_vec2_new(x, y);
 }
 

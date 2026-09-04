@@ -69,6 +69,8 @@ extern "C" {
 #include "rt_canvas3d_internal.h"
 #include "rt_scene3d_internal.h"
 #include "vgfx3d_backend.h"
+void game3d_input_look_axis_components(
+    void *input, double mouse_sensitivity, double dt, double *out_x, double *out_y);
 }
 
 typedef struct {
@@ -1235,6 +1237,42 @@ static bool test_input_axes() {
     rt_keyboard_on_key_up(rt_game3d_key_space());
     rt_mouse_button_up(rt_game3d_mouse_left());
     EXPECT_TRUE(rt_game3d_input_released(input, rt_game3d_key_w()) != 0, "W was released");
+    PASS();
+}
+
+static bool test_input_gamepad_look_is_frame_rate_independent() {
+    TEST("Input3D gamepad look integrates by frame duration");
+    void *input = rt_game3d_input_new();
+    auto *view = static_cast<Game3DInputTestLayout *>(input);
+    view->has_snapshot = 1;
+    view->bound_pad = 0;
+    view->pad_connected = 1;
+    view->pad_rx = 1.0;
+    view->pad_ry = 0.0;
+    view->mouse_fdx = 0.0;
+    view->mouse_fdy = 0.0;
+
+    double look_30 = 0.0;
+    double look_60 = 0.0;
+    double look_120 = 0.0;
+    game3d_input_look_axis_components(input, 0.01, 1.0 / 30.0, &look_30, nullptr);
+    game3d_input_look_axis_components(input, 0.01, 1.0 / 60.0, &look_60, nullptr);
+    game3d_input_look_axis_components(input, 0.01, 1.0 / 120.0, &look_120, nullptr);
+    EXPECT_NEAR(look_30 * 30.0,
+                look_60 * 60.0,
+                0.0001,
+                "30 Hz and 60 Hz integrate the same one-second pad rotation");
+    EXPECT_NEAR(look_60 * 60.0,
+                look_120 * 120.0,
+                0.0001,
+                "60 Hz and 120 Hz integrate the same one-second pad rotation");
+
+    view->pad_connected = 0;
+    view->mouse_fdx = 7.5;
+    game3d_input_look_axis_components(input, 0.2, 1.0 / 30.0, &look_30, nullptr);
+    game3d_input_look_axis_components(input, 0.2, 1.0 / 120.0, &look_120, nullptr);
+    EXPECT_NEAR(look_30, 1.5, 0.0001, "mouse displacement applies sensitivity once");
+    EXPECT_NEAR(look_30, look_120, 0.0001, "mouse displacement is not time-scaled");
     PASS();
 }
 
@@ -7600,6 +7638,7 @@ int main() {
     ok = test_entity_sweep_survives_cross_despawn() && ok;
     ok = test_world_worker_controls() && ok;
     ok = test_input_axes() && ok;
+    ok = test_input_gamepad_look_is_frame_rate_independent() && ok;
     ok = test_input_update_snapshots_frame_state() && ok;
     ok = test_input_repairs_corrupt_snapshots_and_rejects_undersized_handles() && ok;
     ok = test_game3d_core_rejects_undersized_class_id_spoofs() && ok;

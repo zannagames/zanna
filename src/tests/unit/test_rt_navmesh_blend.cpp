@@ -193,6 +193,7 @@ typedef struct {
     int8_t blocked;
     int32_t area_id;
     float traversal_cost;
+    volatile uint64_t sample_visit_generation;
 } NavMeshTriangleTestLayout;
 
 typedef struct {

@@ -77,6 +77,7 @@ typedef struct {
     int64_t marker_id;
     char text_a[256];
     char text_b[256];
+    uint64_t insertion_order;
 } Game3DTimelineTrackTestLayout;
 
 typedef struct {
@@ -544,6 +545,31 @@ bool test_timeline_firing_math() {
     PASS();
 }
 
+bool test_timeline_equal_time_tracks_preserve_append_order() {
+    TEST("Timeline3D equal-time tracks preserve append order");
+    void *world = rt_game3d_world_new(rt_const_cstr("TL Equal Time"), 64, 48);
+    rt_game3d_world_set_gravity(world, 0.0, 0.0, 0.0);
+    void *tl = rt_game3d_timeline_new(world);
+    rt_game3d_timeline_add_marker(tl, 0.25, 30);
+    rt_game3d_timeline_add_marker(tl, 0.25, 10);
+    rt_game3d_timeline_add_marker(tl, 0.25, 20);
+    rt_game3d_world_play_timeline(world, tl);
+    rt_game3d_world_step_simulation(world, 0.5);
+    EXPECT_EQ_INT(
+        rt_game3d_timeline_events_fired_count(tl), 3, "all equal-time markers fire in one step");
+    EXPECT_EQ_INT(rt_game3d_timeline_event_fired_id(tl, 0),
+                  30,
+                  "first appended equal-time marker fires first");
+    EXPECT_EQ_INT(rt_game3d_timeline_event_fired_id(tl, 1),
+                  10,
+                  "second appended equal-time marker fires second");
+    EXPECT_EQ_INT(rt_game3d_timeline_event_fired_id(tl, 2),
+                  20,
+                  "third appended equal-time marker fires third");
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
 bool test_timeline_camera_ownership() {
     TEST("Timeline3D suspends the installed controller and restores it after stop");
     void *world = rt_game3d_world_new(rt_const_cstr("TL Camera"), 64, 48);
@@ -678,6 +704,7 @@ int main() {
     ok = test_dof_focus_drive() && ok;
     ok = test_timeline_storage_and_payload_hardening() && ok;
     ok = test_timeline_firing_math() && ok;
+    ok = test_timeline_equal_time_tracks_preserve_append_order() && ok;
     ok = test_timeline_camera_ownership() && ok;
     ok = test_timeline_spline_move_and_overlay_state() && ok;
     ok = test_timeline_skip_semantics() && ok;

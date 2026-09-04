@@ -85,6 +85,7 @@
 #include "rt_soundlistener3d.h"
 #include "rt_soundsource3d.h"
 #include "rt_string.h"
+#include "rt_string_internal.h"
 #include "rt_terrain3d.h"
 #include "rt_textureasset3d.h"
 #include "rt_threadpool.h"
@@ -811,6 +812,55 @@ double game3d_clamp_controller_dt(double dt) {
     if (!isfinite(dt) || dt <= 0.0)
         return 0.0;
     return dt > RT_GAME3D_MAX_DT ? RT_GAME3D_MAX_DT : dt;
+}
+
+/// @brief Copy complete strict UTF-8 codepoints into bounded C-string storage.
+size_t game3d_utf8_copy_bounded(char *dst, size_t dst_capacity, const char *src) {
+    size_t source_len;
+    size_t offset = 0;
+    if (!dst || dst_capacity == 0)
+        return 0;
+    dst[0] = '\0';
+    if (!src)
+        return 0;
+    source_len = strlen(src);
+    while (offset < source_len) {
+        size_t step = rt_utf8_strict_step(src + offset, source_len - offset);
+        if (step == 0 || step >= dst_capacity - offset)
+            break;
+        memcpy(dst + offset, src + offset, step);
+        offset += step;
+    }
+    dst[offset] = '\0';
+    return offset;
+}
+
+/// @brief Count complete strict UTF-8 codepoints in a byte span.
+size_t game3d_utf8_codepoint_count(const char *text, size_t byte_len) {
+    size_t offset = 0;
+    size_t count = 0;
+    while (text && offset < byte_len) {
+        size_t step = rt_utf8_strict_step(text + offset, byte_len - offset);
+        if (step == 0)
+            break;
+        offset += step;
+        count++;
+    }
+    return count;
+}
+
+/// @brief Measure a complete strict UTF-8 prefix by codepoint count.
+size_t game3d_utf8_prefix_bytes(const char *text, size_t byte_len, size_t codepoints) {
+    size_t offset = 0;
+    size_t count = 0;
+    while (text && offset < byte_len && count < codepoints) {
+        size_t step = rt_utf8_strict_step(text + offset, byte_len - offset);
+        if (step == 0)
+            break;
+        offset += step;
+        count++;
+    }
+    return offset;
 }
 
 /// @brief Return `value` if finite and ≥ 0, else `fallback`. For non-negative knobs.

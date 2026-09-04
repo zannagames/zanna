@@ -366,7 +366,7 @@ void *rt_game3d_hitbox_bind_window(void *obj, rt_string state_name, double t0, d
     }
     rt_game3d_hitbox_window *window = &hitbox->windows[hitbox->window_count];
     memset(window, 0, sizeof(*window));
-    strncpy(window->state, name, RT_GAME3D_HITBOX_STATE_NAME_MAX - 1);
+    (void)game3d_utf8_copy_bounded(window->state, RT_GAME3D_HITBOX_STATE_NAME_MAX, name);
     window->t0 = game3d_finite_or(t0, 0.0);
     window->t1 = game3d_finite_or(t1, 0.0);
     if (window->t1 < window->t0) {

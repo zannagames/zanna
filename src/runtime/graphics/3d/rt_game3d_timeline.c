@@ -313,6 +313,7 @@ static rt_game3d_tl_track *game3d_timeline_append(
     memset(track, 0, sizeof(*track));
     timeline->track_storage_count = timeline->track_count;
     track->type = type;
+    track->insertion_order = (uint64_t)(timeline->track_count - 1);
     t0 = game3d_nonnegative_clamped_or(t0, 0.0, 86400.0);
     t1 = game3d_nonnegative_clamped_or(t1, t0, 86400.0);
     if (t1 < t0)
@@ -722,7 +723,7 @@ rt_string rt_game3d_timeline_active_subtitle(void *obj) {
 // Playback engine
 //=========================================================================
 
-/// @brief qsort comparator: by t0, stable-ish via type then marker id.
+/// @brief qsort comparator: by start time and then by immutable append order.
 /// @param a Borrowed pointer to the first track.
 /// @param b Borrowed pointer to the second track.
 /// @return Negative, zero, or positive according to playback ordering.
@@ -733,8 +734,8 @@ static int game3d_timeline_track_cmp(const void *a, const void *b) {
         return -1;
     if (ta->t0 > tb->t0)
         return 1;
-    if (ta->type != tb->type)
-        return ta->type < tb->type ? -1 : 1;
+    if (ta->insertion_order != tb->insertion_order)
+        return ta->insertion_order < tb->insertion_order ? -1 : 1;
     return 0;
 }
 
@@ -890,8 +891,8 @@ int game3d_world_timeline_pre(rt_game3d_world *world, double dt) {
             if (alpha > timeline->fade_alpha)
                 timeline->fade_alpha = alpha;
         } else if (track->type == RT_GAME3D_TL_SUBTITLE) {
-            strncpy(timeline->active_subtitle, track->text_a, RT_GAME3D_TL_TEXT_MAX - 1);
-            timeline->active_subtitle[RT_GAME3D_TL_TEXT_MAX - 1] = '\0';
+            (void)game3d_utf8_copy_bounded(
+                timeline->active_subtitle, RT_GAME3D_TL_TEXT_MAX, track->text_a);
         }
     }
 

@@ -923,7 +923,7 @@ static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
         sw_shadow_collect_task_run(&tasks[i]);
     sw_shadow_collect_task_run(&tasks[0]);
     if (submitted > 0)
-        rt_threadpool_wait(ctx->worker_pool);
+        sw_wait_for_workers(ctx);
     if (rt_atomic_load_i32(&failed, __ATOMIC_RELAXED)) {
         sw_shadow_retain_task_scratch(ctx, tasks, task_count);
         return 0;
@@ -1056,7 +1056,7 @@ static int sw_shadow_raster_tiles_parallel(sw_context_t *ctx,
         sw_shadow_raster_task_run(&tasks[i]);
     sw_shadow_raster_task_run(&tasks[0]);
     if (submitted > 0)
-        rt_threadpool_wait(ctx->worker_pool);
+        sw_wait_for_workers(ctx);
     return 1;
 }
 
@@ -1084,7 +1084,7 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
     if (!cmd || !cmd->vertices || !cmd->indices || cmd->vertex_count == 0 || cmd->index_count == 0)
         return 0;
     index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
-    if (index_count < SW_PARALLEL_MIN_INDICES)
+    if (index_count < sw_parallel_index_threshold(ctx))
         return 0;
     slot = ctx->shadow_pass_slot;
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS || !ctx->shadow_depth[slot])

@@ -57,18 +57,6 @@ static int scene3d_mesh_resident(void *mesh) {
     return mesh && rt_mesh3d_get_resident(mesh) != 0;
 }
 
-/// @brief Build a stable key for LOD/impostor hysteresis in one rendered view.
-/// @details Combines the active camera and canvas pointers. A scene drawn alternately by multiple
-///   cameras gets separate hysteresis slots so one view's distance thresholds do not push another
-///   view across an LOD boundary.
-/// @param canvas Borrowed canvas identifying the rendered target.
-/// @param cam Borrowed camera identifying the rendered view.
-/// @return Stable nonzero key derived from the two addresses.
-static uintptr_t scene3d_lod_view_key(const rt_canvas3d *canvas, const rt_camera3d *cam) {
-    uintptr_t key = (uintptr_t)cam ^ ((uintptr_t)canvas << 1u) ^ ((uintptr_t)canvas >> 3u);
-    return key ? key : (uintptr_t)1u;
-}
-
 /// @brief Reset all per-view LOD and impostor hysteresis state on a node.
 /// @details Called when LOD/impostor payloads or residency change. Keeping the legacy fields reset
 ///   preserves existing behavior for code that inspects the most recent selected index directly.
@@ -83,31 +71,33 @@ static void scene3d_node_reset_lod_view_states(rt_scene_node3d *node) {
     node->impostor_selected = 0;
 }
 
-/// @brief Return the cache slot holding hysteresis state for @p view_key, creating it if needed.
+/// @brief Return the cache slot holding hysteresis state for one canvas/camera pair.
 /// @details The fixed-size cache avoids heap allocation during draw traversal. On overflow, the
 ///   least-recently-used slot is replaced; the selected view then starts from the raw LOD decision
 ///   for that frame, which is conservative and avoids cross-view flicker.
 /// @param node Borrowed node owning the fixed-size cache.
-/// @param view_key Nonzero canvas/camera identity key.
+/// @param canvas Borrowed canvas address and allocation generation.
+/// @param cam Borrowed camera address and allocation generation.
 /// @return Borrowed mutable cache slot, or `NULL` for an invalid node.
 static rt_scene3d_lod_view_state *scene3d_node_lod_view_state(rt_scene_node3d *node,
-                                                              uintptr_t view_key) {
+                                                              const rt_canvas3d *canvas,
+                                                              const rt_camera3d *cam) {
     int32_t best = 0;
-    uint32_t oldest = UINT32_MAX;
+    uint64_t oldest = UINT64_MAX;
     if (!node)
         return NULL;
-    if (!view_key)
-        view_key = (uintptr_t)1u;
     node->lod_view_state_clock++;
     if (node->lod_view_state_clock == 0)
         node->lod_view_state_clock = 1;
     for (int32_t i = 0; i < RT_SCENE3D_LOD_VIEW_STATE_COUNT; ++i) {
         rt_scene3d_lod_view_state *state = &node->lod_view_states[i];
-        if (state->view_key == view_key) {
+        if (state->canvas_key == canvas && state->camera_key == cam &&
+            state->canvas_identity == (canvas ? canvas->identity_serial : 0) &&
+            state->camera_identity == (cam ? cam->identity_serial : 0)) {
             state->last_used = node->lod_view_state_clock;
             return state;
         }
-        if (state->view_key == 0) {
+        if (!state->canvas_key && !state->camera_key) {
             best = i;
             oldest = 0;
             break;
@@ -119,7 +109,10 @@ static rt_scene3d_lod_view_state *scene3d_node_lod_view_state(rt_scene_node3d *n
     }
     (void)oldest;
     memset(&node->lod_view_states[best], 0, sizeof(node->lod_view_states[best]));
-    node->lod_view_states[best].view_key = view_key;
+    node->lod_view_states[best].canvas_key = canvas;
+    node->lod_view_states[best].camera_key = cam;
+    node->lod_view_states[best].canvas_identity = canvas ? canvas->identity_serial : 0;
+    node->lod_view_states[best].camera_identity = cam ? cam->identity_serial : 0;
     node->lod_view_states[best].last_used = node->lod_view_state_clock;
     return &node->lod_view_states[best];
 }
@@ -364,8 +357,7 @@ static void *scene3d_resolve_draw_mesh(rt_scene_node3d *current,
     void *draw_material = rt_g3d_checked_or_null(current->material, RT_G3D_MATERIAL3D_CLASS_ID);
     double camera_distance = 0.0;
     int has_camera_distance = 0;
-    rt_scene3d_lod_view_state *lod_state =
-        scene3d_node_lod_view_state(current, scene3d_lod_view_key(canvas, cam));
+    rt_scene3d_lod_view_state *lod_state = scene3d_node_lod_view_state(current, canvas, cam);
 
     if ((draw_mesh || current->has_impostor) && cam_pos) {
         float local_center[3] = {0.0f, 0.0f, 0.0f};

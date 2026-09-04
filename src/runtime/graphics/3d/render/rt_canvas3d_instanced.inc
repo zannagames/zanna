@@ -217,6 +217,7 @@ static void canvas3d_queue_instanced_fallback(const canvas3d_instanced_batch_t *
                 per_instance.vertices = rebased_vertices;
                 per_instance.indices = rebased_indices;
                 per_instance.geometry_key = NULL;
+                per_instance.geometry_identity = 0;
                 per_instance.geometry_revision = 0;
                 memcpy(per_instance.prev_model_matrix,
                        per_instance.model_matrix,
@@ -836,6 +837,7 @@ static int canvas3d_queue_instanced_batch_common(void *canvas_obj,
             ? (needs_generated_tangents ? (const void *)&mesh->retained_tangent_cache_key
                                         : mesh_obj)
             : NULL;
+    base_cmd.geometry_identity = base_cmd.geometry_key ? mesh->identity_serial : 0;
     base_cmd.geometry_revision = base_cmd.geometry_key ? mesh->geometry_revision : 0;
     base_cmd.compact_vertex_stream = (base_cmd.geometry_key && mesh->compact_streams) ? 1 : 0;
     if (suppress_normal_map)
@@ -1195,6 +1197,7 @@ int rt_canvas3d_queue_particle_batch(void *canvas_obj,
     unit_mesh.resident = 1;
     canvas3d_build_instanced_base_cmd(&unit_mesh, mat, c, &cmd);
     cmd.geometry_key = &g_canvas3d_particle_unit_quad_key;
+    cmd.geometry_identity = 1u;
     cmd.geometry_revision = 1u;
     cmd.validated_index_count = 6u;
     cmd.particle_instances = snapshot;

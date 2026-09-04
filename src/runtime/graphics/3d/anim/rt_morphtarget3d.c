@@ -138,6 +138,8 @@ typedef struct {
     int8_t motion_frame_initialized;
     /// Nonzero when shape channels alias the packed owned position/normal arrays.
     int8_t shape_channels_alias_packed;
+    /// Immutable allocation identity used to salt backend cache entries.
+    uint64_t identity_serial;
 } rt_morphtarget3d;
 
 /// @brief Validate @p obj is a heap-allocated Mat4 and return its typed pointer (NULL on mismatch).
@@ -223,6 +225,8 @@ static int morphtarget_repair_storage(rt_morphtarget3d *mt) {
         mt->max_delta_generation = 0;
         mt->max_position_delta_cache = 0.0;
     }
+    if (mt->identity_serial == 0)
+        mt->identity_serial = rt_g3d_next_identity_serial();
     return 1;
 }
 
@@ -682,6 +686,7 @@ void *rt_morphtarget3d_new(int64_t vertex_count) {
         return NULL;
     }
     mt->vptr = NULL;
+    mt->identity_serial = rt_g3d_next_identity_serial();
     mt->shapes = NULL;
     mt->weights = NULL;
     mt->prev_weights = NULL;
@@ -1460,6 +1465,16 @@ uint64_t rt_morphtarget3d_get_payload_generation(void *obj) {
     if (!mt || !morphtarget_repair_storage(mt))
         return 0;
     return mt->payload_generation;
+}
+
+/// @brief Return the immutable allocation identity used by native backend caches.
+/// @param[in,out] obj MorphTarget3D to inspect.
+/// @return Nonzero allocation identity, or zero for an invalid handle.
+uint64_t rt_morphtarget3d_get_identity_serial(void *obj) {
+    rt_morphtarget3d *mt = morphtarget_checked(obj);
+    if (!mt || !morphtarget_repair_storage(mt))
+        return 0;
+    return mt->identity_serial;
 }
 
 /// @brief Advance the previous-weight history by one frame for motion vectors.

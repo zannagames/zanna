@@ -42,6 +42,9 @@ extern "C" {
 #include "vgfx3d_backend.h"
 
 int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx);
+uint64_t vgfx3d_software_backend_parallel_index_threshold_for_test(const void *ctx);
+uint64_t vgfx3d_software_backend_worker_wait_count_for_test(const void *ctx);
+uint64_t vgfx3d_software_backend_instanced_batch_count_for_test(const void *ctx);
 float vgfx3d_software_backend_clamp01_for_test(float value);
 float vgfx3d_software_backend_material_pow_for_test(float value, float power);
 int32_t vgfx3d_software_backend_wrap_index_for_test(int64_t index, int32_t size, int32_t mode);
@@ -823,6 +826,91 @@ cleanup:
     release_obj(target_obj);
 }
 
+static void test_software_parallel_granularity_and_instanced_batching() {
+    ScopedEnvVar threads_env("ZANNA_3D_SW_THREADS");
+    EXPECT_TRUE(threads_env.set("4"), "Test can force four workers for batch diagnostics");
+    rt_canvas3d canvas = {};
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = vgfx3d_software_backend.create_ctx(nullptr, 96, 96);
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.framebuffer_width = 96;
+    canvas.height = canvas.framebuffer_height = 96;
+    void *target = rt_rendertarget3d_new(96, 96);
+    void *camera = rt_camera3d_new(55.0, 1.0, 0.1, 20.0);
+    void *eye = rt_vec3_new(0.0, 1.2, 5.0);
+    void *look = rt_vec3_new(0.0, 0.0, 0.0);
+    void *up = rt_vec3_new(0.0, 1.0, 0.0);
+    void *mesh = rt_mesh3d_new_sphere(0.45, 24);
+    void *material = rt_material3d_new_color(0.8, 0.5, 0.25);
+    float matrices[48] = {};
+    for (int i = 0; i < 3; i++) {
+        matrices[i * 16 + 0] = 1.0f;
+        matrices[i * 16 + 5] = 1.0f;
+        matrices[i * 16 + 10] = 1.0f;
+        matrices[i * 16 + 15] = 1.0f;
+        matrices[i * 16 + 3] = (float)(i - 1) * 1.15f;
+    }
+    EXPECT_TRUE(canvas.backend_ctx && target && camera && eye && look && up && mesh && material,
+                "Software instanced-batch fixture allocates");
+    if (canvas.backend_ctx && target && camera && eye && look && up && mesh && material) {
+        EXPECT_EQ_I64(vgfx3d_software_backend_parallel_index_threshold_for_test(canvas.backend_ctx),
+                      960,
+                      "Four workers require enough geometry for five useful execution lanes");
+        rt_camera3d_look_at(camera, eye, look, up);
+        rt_canvas3d_set_render_target(&canvas, target);
+        rt_canvas3d_set_ambient(&canvas, 0.4, 0.4, 0.4);
+        rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+        rt_canvas3d_begin(&canvas, camera);
+        rt_canvas3d_queue_instanced_batch(&canvas, mesh, material, matrices, 3, nullptr, 0);
+        rt_canvas3d_end(&canvas);
+        EXPECT_EQ_I64(vgfx3d_software_backend_instanced_batch_count_for_test(canvas.backend_ctx),
+                      1,
+                      "Large software instances are collected as one combined primitive batch");
+        EXPECT_TRUE(vgfx3d_software_backend_worker_wait_count_for_test(canvas.backend_ctx) <= 1,
+                    "A large instanced batch pays at most one worker completion barrier");
+        auto *parallel_target = static_cast<rt_rendertarget3d *>(target)->target;
+        std::vector<uint8_t> parallel_pixels(static_cast<size_t>(parallel_target->stride) *
+                                             parallel_target->height);
+        std::memcpy(parallel_pixels.data(),
+                    parallel_target->color_buf,
+                    parallel_pixels.size() * sizeof(uint8_t));
+        rt_canvas3d_reset_render_target(&canvas);
+        canvas.backend->destroy_ctx(canvas.backend_ctx);
+        canvas.backend_ctx = nullptr;
+
+        EXPECT_TRUE(threads_env.set("1"), "Test can force a serial reference renderer");
+        canvas.backend_ctx = vgfx3d_software_backend.create_ctx(nullptr, 96, 96);
+        void *serial_target_obj = rt_rendertarget3d_new(96, 96);
+        auto *serial_target = static_cast<rt_rendertarget3d *>(serial_target_obj)->target;
+        EXPECT_TRUE(canvas.backend_ctx && serial_target_obj,
+                    "Software instanced-batch serial reference allocates");
+        if (canvas.backend_ctx && serial_target_obj) {
+            rt_canvas3d_set_render_target(&canvas, serial_target_obj);
+            rt_canvas3d_clear(&canvas, 0.0, 0.0, 0.0);
+            rt_canvas3d_begin(&canvas, camera);
+            rt_canvas3d_queue_instanced_batch(&canvas, mesh, material, matrices, 3, nullptr, 0);
+            rt_canvas3d_end(&canvas);
+            EXPECT_TRUE(parallel_pixels.size() == static_cast<size_t>(serial_target->stride) *
+                                                      serial_target->height &&
+                            std::memcmp(parallel_pixels.data(),
+                                        serial_target->color_buf,
+                                        parallel_pixels.size()) == 0,
+                        "Combined parallel instances exactly match serial raster output");
+            rt_canvas3d_reset_render_target(&canvas);
+        }
+        release_obj(serial_target_obj);
+    }
+    if (canvas.backend_ctx)
+        canvas.backend->destroy_ctx(canvas.backend_ctx);
+    release_obj(material);
+    release_obj(mesh);
+    release_obj(up);
+    release_obj(look);
+    release_obj(eye);
+    release_obj(camera);
+    release_obj(target);
+}
+
 static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *result) {
     const int32_t width = 96;
     const int32_t height = 96;
@@ -1199,6 +1287,7 @@ int main() {
     test_canvas_render_state_sanitizes_inputs();
     test_software_backend_numeric_guards();
     test_software_depth_probe_uses_active_render_target();
+    test_software_parallel_granularity_and_instanced_batching();
     test_render_target_notifies_native_cache_before_finalization();
     test_software_tiled_raster_threads_are_deterministic();
     test_software_spot_light_shadow_render_is_stable();

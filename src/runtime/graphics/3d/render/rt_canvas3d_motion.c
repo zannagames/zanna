@@ -30,6 +30,7 @@
 #ifdef ZANNA_ENABLE_GRAPHICS
 
 #include "rt_canvas3d_internal.h"
+#include "rt_platform.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -448,14 +449,15 @@ int32_t canvas3d_next_power_of_two_i32(int32_t value) {
 }
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting.
-/// @details Main-thread object construction owns this non-atomic process-wide counter.
-/// @return A newly allocated non-zero 32-bit identity, wrapping past zero to one.
-uint32_t rt_g3d_next_identity_serial(void) {
-    static uint32_t serial = 0;
-    serial++;
-    if (serial == 0)
-        serial = 1;
-    return serial;
+/// @details Relaxed atomic ordering provides uniqueness without imposing publication ordering.
+/// @return A newly allocated non-zero 64-bit identity, wrapping past zero to one.
+uint64_t rt_g3d_next_identity_serial(void) {
+    static uint64_t serial = 1;
+    uint64_t identity;
+    do {
+        identity = rt_atomic_fetch_add_u64(&serial, UINT64_C(1), __ATOMIC_RELAXED);
+    } while (identity == 0);
+    return identity;
 }
 
 /// @brief Allocation-generation salt for a mesh or material handle (0 for other types).

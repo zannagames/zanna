@@ -151,7 +151,7 @@ struct StubMaterial {
     double decal_forward[3] = {0.0};
     double decal_opacity = 0.0;
     int8_t decal_projector_set = 0;
-    uint32_t identity_serial = 0;
+    uint64_t identity_serial = 0;
 };
 
 static_assert(sizeof(StubMaterial) == sizeof(rt_material3d));
@@ -1215,6 +1215,26 @@ static void test_pool_and_trail_mirrors_restore_owned_storage() {
     std::free(foreign_head);
 }
 
+static void test_scalar_getters_do_not_scan_live_trails() {
+    void *ps = rt_particles3d_new(4);
+    auto *v = static_cast<ParticlesView *>(ps);
+    rt_particles3d_burst(ps, 1);
+    rt_particles3d_set_trail(ps, 1.0, 4);
+    v->trail_age[0] = NAN;
+    v->trail_len[0] = 99;
+    v->trail_head[0] = 99;
+
+    assert(rt_particles3d_get_count(ps) == 1);
+    assert(std::isnan(v->trail_age[0]));
+    assert(v->trail_len[0] == 99);
+    assert(v->trail_head[0] == 99);
+
+    rt_particles3d_update(ps, 0.001);
+    assert(v->trail_age[0] == 0.0f);
+    assert(v->trail_len[0] == 0);
+    assert(v->trail_head[0] == 0);
+}
+
 static void test_texture_mirror_restores_retained_owner() {
     void *ps = rt_particles3d_new(4);
     auto *v = static_cast<ParticlesView *>(ps);
@@ -1363,6 +1383,7 @@ int main() {
     test_alpha_sort_scratch_grows_to_capacity_and_reuses_for_repeated_draws();
     test_corrupted_emitter_state_is_persistently_repaired();
     test_pool_and_trail_mirrors_restore_owned_storage();
+    test_scalar_getters_do_not_scan_live_trails();
     test_texture_mirror_restores_retained_owner();
     test_draw_and_scratch_mirrors_restore_owned_storage();
     test_overflow_table_mirrors_restore_owned_storage();

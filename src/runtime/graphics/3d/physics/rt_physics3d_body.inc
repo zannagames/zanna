@@ -264,33 +264,44 @@ void *rt_body3d_get_scale(void *o) {
     return rt_vec3_new(scale[0], scale[1], scale[2]);
 }
 
-/// @brief `Body3D.SetOrientation(quat)` — set the body's orientation quaternion.
-///
-/// NULL `quat` resets to identity. Always normalizes to defend against
-/// caller-passed unnormalized quaternions.
+/// @brief Set a body's orientation from raw components without allocating a Quat wrapper.
+/// @details Always normalizes the supplied quaternion before publishing it.
 /// @param o Body3D handle to rotate and wake when dynamic.
-/// @param quat Quaternion handle to normalize and copy, or NULL for identity.
-void rt_body3d_set_orientation(void *o, void *quat) {
+/// @param x Quaternion X component.
+/// @param y Quaternion Y component.
+/// @param z Quaternion Z component.
+/// @param w Quaternion W component.
+void rt_body3d_set_orientation_components(void *o, double x, double y, double z, double w) {
     rt_body3d *b = body3d_checked(o);
     if (!b)
         return;
-    if (!quat) {
-        quat_identity(b->orientation);
-    } else if (!rt_g3d_is_quat(quat)) {
-        rt_trap("Physics3DBody.SetOrientation: quat must be Quat");
-        return;
-    } else {
-        b->orientation[0] = rt_quat_x(quat);
-        b->orientation[1] = rt_quat_y(quat);
-        b->orientation[2] = rt_quat_z(quat);
-        b->orientation[3] = rt_quat_w(quat);
-        quat_normalize(b->orientation);
-    }
+    b->orientation[0] = x;
+    b->orientation[1] = y;
+    b->orientation[2] = z;
+    b->orientation[3] = w;
+    quat_normalize(b->orientation);
     /* Pose-only: the lazy escape check recomputes the true AABB, so a rotation
      * that swings the body outside its fat bounds still forces a rebuild. */
     body3d_touch_broadphase_moved(b);
     body3d_wake_if_dynamic(b);
     world3d_wake_joint_partners(b->owner_world, b);
+}
+
+/// @brief `Body3D.SetOrientation(quat)` — boxed scripting wrapper over the raw component setter.
+/// @param o Body3D handle to rotate and wake when dynamic.
+/// @param quat Quaternion handle to normalize and copy, or NULL for identity.
+void rt_body3d_set_orientation(void *o, void *quat) {
+    if (!body3d_checked(o))
+        return;
+    if (quat && !rt_g3d_is_quat(quat)) {
+        rt_trap("Physics3DBody.SetOrientation: quat must be Quat");
+        return;
+    }
+    rt_body3d_set_orientation_components(o,
+                                         quat ? rt_quat_x(quat) : 0.0,
+                                         quat ? rt_quat_y(quat) : 0.0,
+                                         quat ? rt_quat_z(quat) : 0.0,
+                                         quat ? rt_quat_w(quat) : 1.0);
 }
 
 /// @brief `Body3D.GetOrientation` — fresh `Quat` of the body's orientation.

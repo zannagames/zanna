@@ -903,7 +903,7 @@ void *rt_character3d_new(double radius, double height, double mass) {
     return c;
 }
 
-/// @brief `Character3D.Move(velocity, dt)` — kinematic move with sliding.
+/// @brief Allocation-free Character3D movement core using raw velocity components.
 ///
 /// Splits the velocity into horizontal (allows step-up) and vertical
 /// (does not), runs `character3d_move_axis` for each, then probes the
@@ -911,11 +911,15 @@ void *rt_character3d_new(double radius, double height, double mass) {
 /// actual achieved displacement / dt — useful for animation systems
 /// that read velocity off the controller.
 /// @param obj Character3D handle to move.
-/// @param velocity_vec Vec3 requested world-space velocity.
+/// @param velocity_x Requested world-space X velocity.
+/// @param velocity_y Requested world-space Y velocity.
+/// @param velocity_z Requested world-space Z velocity.
 /// @param dt Positive finite movement interval, capped at one second.
-void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
+void rt_character3d_move_components(
+    void *obj, double velocity_x, double velocity_y, double velocity_z, double dt) {
     rt_character3d *ctrl = character3d_checked(obj);
-    if (!ctrl || !rt_g3d_is_vec3(velocity_vec) || !isfinite(dt) || dt <= 0)
+    double velocity[3] = {velocity_x, velocity_y, velocity_z};
+    if (!ctrl || !ph3d_vec3_all_finite(velocity) || !isfinite(dt) || dt <= 0)
         return;
     if (dt > CHARACTER3D_DT_MAX)
         dt = CHARACTER3D_DT_MAX;
@@ -923,10 +927,6 @@ void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
     if (!body || !rt_g3d_has_class(ctrl->world, RT_G3D_WORLD3D_CLASS_ID))
         return;
 
-    double velocity[3] = {
-        rt_vec3_x(velocity_vec), rt_vec3_y(velocity_vec), rt_vec3_z(velocity_vec)};
-    if (!ph3d_vec3_all_finite(velocity))
-        return;
     character3d_sanitize_vec3(velocity);
 
     ctrl->was_grounded = ctrl->is_grounded;
@@ -999,6 +999,17 @@ void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
          * escape check keeps the query cache valid for sub-margin moves. */
         body3d_touch_broadphase_moved(body);
     }
+}
+
+/// @brief `Character3D.Move(velocity, dt)` — boxed scripting wrapper over the raw movement core.
+/// @param obj Character3D handle to move.
+/// @param velocity_vec Vec3 requested world-space velocity.
+/// @param dt Positive finite movement interval, capped at one second.
+void rt_character3d_move(void *obj, void *velocity_vec, double dt) {
+    if (!character3d_checked(obj) || !rt_g3d_is_vec3(velocity_vec))
+        return;
+    rt_character3d_move_components(
+        obj, rt_vec3_x(velocity_vec), rt_vec3_y(velocity_vec), rt_vec3_z(velocity_vec), dt);
 }
 
 /// @brief `Character3D.set_StepHeight(h)` — max obstacle height the controller can step over.
@@ -1099,6 +1110,24 @@ void *rt_character3d_get_position(void *o) {
     if (!c || !character3d_body_or_null(c->body))
         return rt_vec3_new(0, 0, 0);
     return rt_body3d_get_position(c->body);
+}
+
+/// @brief Read Character3D position without allocating a Vec3 wrapper.
+int8_t rt_character3d_get_position_components(void *o, double *x, double *y, double *z) {
+    rt_character3d *c = character3d_checked(o);
+    rt_body3d *body = c ? character3d_body_or_null(c->body) : NULL;
+    if (x)
+        *x = 0.0;
+    if (y)
+        *y = 0.0;
+    if (z)
+        *z = 0.0;
+    if (!body || !x || !y || !z)
+        return 0;
+    *x = character3d_saturate_coord(body->position[0]);
+    *y = character3d_saturate_coord(body->position[1]);
+    *z = character3d_saturate_coord(body->position[2]);
+    return 1;
 }
 
 /// @brief `Character3D.SetPosition(x, y, z)` — teleport the controller.

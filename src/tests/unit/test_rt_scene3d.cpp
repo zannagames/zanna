@@ -1850,6 +1850,44 @@ static void test_scene_spatial_index_rebuilds_on_dirty_node() {
                 "SceneGraph spatial index still has not rebuilt after re-show");
 }
 
+static void test_scene_spatial_mesh_dependencies_are_scene_local() {
+    void *scene_a = rt_scene3d_new();
+    void *scene_b = rt_scene3d_new();
+    auto *a = static_cast<rt_scene3d *>(scene_a);
+    auto *b = static_cast<rt_scene3d *>(scene_b);
+    void *node_a = rt_scene_node3d_new();
+    void *node_b = rt_scene_node3d_new();
+    void *mesh_a = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *mesh_b = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    rt_scene_node3d_set_mesh(node_a, mesh_a);
+    rt_scene_node3d_set_mesh(node_b, mesh_b);
+    rt_scene3d_add(scene_a, node_a);
+    rt_scene3d_add(scene_b, node_b);
+    auto query = [](void *scene) {
+        return rt_scene3d_query_aabb(
+            scene, rt_vec3_new(-2.0, -2.0, -2.0), rt_vec3_new(2.0, 2.0, 2.0));
+    };
+    EXPECT_TRUE(rt_seq_len(query(scene_a)) == 1 && rt_seq_len(query(scene_b)) == 1,
+                "scene-local mesh dependency fixtures build both indexes");
+    uint32_t b_refits = b->spatial_index.refit_count;
+
+    rt_mesh3d_add_vertex(mesh_a, 5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+    EXPECT_TRUE(rt_seq_len(query(scene_b)) == 1,
+                "an unrelated mesh mutation leaves the second scene query unchanged");
+    EXPECT_TRUE(b->spatial_index.last_mesh_dependency_probe_count == 1,
+                "the unrelated scene checks only its unique mesh dependency");
+    EXPECT_TRUE(b->spatial_index.last_full_geometry_scan_count == 0 &&
+                    b->spatial_index.refit_count == b_refits,
+                "the unrelated scene does not scan or refit all spatial entries");
+
+    uint32_t a_refits = a->spatial_index.refit_count;
+    (void)query(scene_a);
+    EXPECT_TRUE(a->spatial_index.last_mesh_dependency_probe_count == 1 &&
+                    a->spatial_index.last_full_geometry_scan_count == 1 &&
+                    a->spatial_index.refit_count == a_refits + 1,
+                "the scene that owns the changed mesh still performs its required refit");
+}
+
 static void test_scene_spatial_index_repairs_storage_and_query_pool_metadata() {
     void *scene = rt_scene3d_new();
     auto *scene_impl = (rt_scene3d *)scene;
@@ -5759,6 +5797,7 @@ int main(int argc, char **argv) {
     test_scene_precise_raycast_allocation_failure_returns_no_partial_result();
     test_scene_spatial_queries_validate_vec3_args_before_result_alloc();
     test_scene_spatial_index_rebuilds_on_dirty_node();
+    test_scene_spatial_mesh_dependencies_are_scene_local();
     test_scene_spatial_index_repairs_storage_and_query_pool_metadata();
     test_scene_spatial_index_contains_corrupt_cached_topology();
     test_scene_spatial_refit_repairs_bounds_when_revisions_agree();

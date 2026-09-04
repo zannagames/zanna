@@ -208,6 +208,7 @@ int vgfx3d_opengl_project_shadow_coord(const float *shadow_vp,
                                        float out_uv_depth[3]);
 /// @brief Decide whether to reuse a cached morph-target GPU buffer (key + revision + counts match).
 /// @param cached_key Cached identity key.
+/// @param cached_identity Cached allocation generation.
 /// @param cached_revision Cached revision.
 /// @param cached_shape_count Cached sanitized shape count.
 /// @param cached_vertex_count Cached vertex count.
@@ -215,6 +216,7 @@ int vgfx3d_opengl_project_shadow_coord(const float *shadow_vp,
 /// @param cmd Borrowed draw command requesting morph data.
 /// @return 1 when identity and layout match, otherwise 0.
 int vgfx3d_opengl_should_reuse_morph_cache(const void *cached_key,
+                                           uint64_t cached_identity,
                                            uint64_t cached_revision,
                                            int32_t cached_shape_count,
                                            uint32_t cached_vertex_count,

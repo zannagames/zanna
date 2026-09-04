@@ -660,13 +660,16 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
         (size_t)cmd->index_count > SIZE_MAX / sizeof(uint32_t))
         return 0;
 
-    if (cmd->geometry_key && cmd->geometry_revision != 0) {
+    if (cmd->geometry_key && cmd->geometry_identity != 0 && cmd->geometry_revision != 0) {
         BOOL wants_compact = (cmd->compact_vertex_stream && ctx.compactPipelinesReady) ? YES : NO;
         NSValue *key = [NSValue valueWithPointer:cmd->geometry_key];
         VGFXMetalGeometryCacheEntry *entry = ctx.geometryCache[key];
-        if (!entry || entry.revision != cmd->geometry_revision ||
-            entry.vertexCount != cmd->vertex_count || entry.indexCount != cmd->index_count ||
-            entry.compactStream != wants_compact || !entry.vertexBuffer || !entry.indexBuffer) {
+        if (!entry ||
+            !vgfx3d_cache_identity_matches(
+                cmd->geometry_key, entry.identity, cmd->geometry_key, cmd->geometry_identity) ||
+            entry.revision != cmd->geometry_revision || entry.vertexCount != cmd->vertex_count ||
+            entry.indexCount != cmd->index_count || entry.compactStream != wants_compact ||
+            !entry.vertexBuffer || !entry.indexBuffer) {
             ctx->_stats.mesh_cache_misses++;
             VGFXMetalGeometryCacheEntry *new_entry;
             new_entry = [[VGFXMetalGeometryCacheEntry alloc] init];
@@ -690,6 +693,7 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
                 ctx, cmd->indices, (size_t)cmd->index_count * sizeof(uint32_t));
             if (!new_entry.vertexBuffer || !new_entry.indexBuffer)
                 return 0;
+            new_entry.identity = cmd->geometry_identity;
             new_entry.revision = cmd->geometry_revision;
             new_entry.vertexCount = cmd->vertex_count;
             new_entry.indexCount = cmd->index_count;

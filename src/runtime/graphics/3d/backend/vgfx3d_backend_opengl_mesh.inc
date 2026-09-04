@@ -85,8 +85,8 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
 
     if (out_compact)
         *out_compact = 0;
-    if (!ctx || !cmd || !out_vbo || !out_ibo || !cmd->geometry_key || cmd->geometry_revision == 0 ||
-        !cmd->vertices || !cmd->indices)
+    if (!ctx || !cmd || !out_vbo || !out_ibo || !cmd->geometry_key || cmd->geometry_identity == 0 ||
+        cmd->geometry_revision == 0 || !cmd->vertices || !cmd->indices)
         return 0;
     wants_compact = cmd->compact_vertex_stream ? 1 : 0;
 
@@ -107,9 +107,11 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
     if (!slot)
         return 0;
 
-    if (slot->key != cmd->geometry_key || slot->revision != cmd->geometry_revision ||
-        slot->vertex_count != cmd->vertex_count || slot->index_count != cmd->index_count ||
-        slot->compact != wants_compact || !slot->vbo || !slot->ibo) {
+    if (!vgfx3d_cache_identity_matches(
+            slot->key, slot->identity, cmd->geometry_key, cmd->geometry_identity) ||
+        slot->revision != cmd->geometry_revision || slot->vertex_count != cmd->vertex_count ||
+        slot->index_count != cmd->index_count || slot->compact != wants_compact || !slot->vbo ||
+        !slot->ibo) {
         gl_mesh_cache_entry_t replacement;
         GLuint candidate_vbo = 0;
         GLuint candidate_ibo = 0;
@@ -161,6 +163,7 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
 
         memset(&replacement, 0, sizeof(replacement));
         replacement.key = cmd->geometry_key;
+        replacement.identity = cmd->geometry_identity;
         replacement.revision = cmd->geometry_revision;
         replacement.vertex_count = cmd->vertex_count;
         replacement.index_count = cmd->index_count;
@@ -711,7 +714,8 @@ static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
     int append_slot = 0;
     size_t bytes;
 
-    if (!ctx || !cmd || morph_count <= 0 || !cmd->morph_key || cmd->morph_revision == 0)
+    if (!ctx || !cmd || morph_count <= 0 || !cmd->morph_key || cmd->morph_identity == 0 ||
+        cmd->morph_revision == 0)
         return NULL;
     if (!gl_compute_morph_payload_bytes(cmd->vertex_count, morph_count, &bytes) ||
         !gl_morph_payload_fits_texture_buffer(ctx, bytes)) {
@@ -721,6 +725,7 @@ static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
     for (int32_t i = 0; i < ctx->morph_cache_count; i++) {
         gl_morph_cache_entry_t *entry = &ctx->morph_cache[i];
         if (vgfx3d_opengl_should_reuse_morph_cache(entry->key,
+                                                   entry->identity,
                                                    entry->revision,
                                                    entry->shape_count,
                                                    entry->vertex_count,
@@ -779,6 +784,7 @@ static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
         return NULL;
     }
     candidate.key = cmd->morph_key;
+    candidate.identity = cmd->morph_identity;
     candidate.revision = cmd->morph_revision;
     candidate.shape_count = morph_count;
     candidate.vertex_count = cmd->vertex_count;

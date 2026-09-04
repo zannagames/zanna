@@ -1086,7 +1086,7 @@ typedef struct {
     int32_t best_triangle;
     int32_t triangle_probes;
     int32_t grid_references;
-    uint8_t *seen_triangles;
+    uint64_t visit_generation;
 } navmesh3d_sample_search_t;
 
 /// @brief Test one triangle and update the nearest XZ surface projection with deterministic ties.
@@ -1096,7 +1096,7 @@ typedef struct {
 /// @param nm Navigation mesh supplying triangles and vertices.
 /// @param triangle_index Candidate triangle index.
 /// @param search In/out nearest-point accumulator and probe counter.
-static void navmesh3d_sample_test_triangle(const rt_navmesh3d *nm,
+static void navmesh3d_sample_test_triangle(rt_navmesh3d *nm,
                                            int32_t triangle_index,
                                            navmesh3d_sample_search_t *search) {
     float cx;
@@ -1109,16 +1109,15 @@ static void navmesh3d_sample_test_triangle(const rt_navmesh3d *nm,
     int better;
     if (!nm || !search || triangle_index < 0 || triangle_index >= nm->triangle_count)
         return;
-    if (search->seen_triangles) {
-        size_t byte = (size_t)triangle_index >> 3u;
-        uint8_t mask = (uint8_t)(1u << ((uint32_t)triangle_index & 7u));
-        if (search->seen_triangles[byte] & mask)
+    nav_triangle_t *triangle = &nm->triangles[triangle_index];
+    volatile uint64_t *visit_stamp = &triangle->sample_visit_generation;
+    if (search->visit_generation != 0) {
+        if (rt_atomic_load_u64(visit_stamp, __ATOMIC_RELAXED) == search->visit_generation)
             return;
-        search->seen_triangles[byte] |= mask;
+        rt_atomic_store_u64(visit_stamp, search->visit_generation, __ATOMIC_RELAXED);
     }
     if (search->triangle_probes < INT32_MAX)
         search->triangle_probes++;
-    const nav_triangle_t *triangle = &nm->triangles[triangle_index];
     if (triangle->blocked)
         return;
     const float *v0 = nm->vertices[triangle->v[0]].position;
@@ -1208,7 +1207,7 @@ static float navmesh3d_sample_unvisited_lower_bound_sq(const rt_navmesh3d *nm,
 /// @param search In/out nearest-point state.
 /// @return 1 on a valid bounded cell scan, or 0 when corrupt metadata or the per-query reference
 ///   budget requires the bounded linear fallback.
-static int navmesh3d_sample_scan_cell(const rt_navmesh3d *nm,
+static int navmesh3d_sample_scan_cell(rt_navmesh3d *nm,
                                       int32_t cell_x,
                                       int32_t cell_z,
                                       navmesh3d_sample_search_t *search) {
@@ -1239,7 +1238,7 @@ static int navmesh3d_sample_scan_cell(const rt_navmesh3d *nm,
 /// @param nm Navigation mesh with a complete query grid.
 /// @param search In/out nearest-point state.
 /// @return 1 when the indexed search completed exactly, or 0 when the caller must use fallback.
-static int navmesh3d_sample_search_grid(const rt_navmesh3d *nm, navmesh3d_sample_search_t *search) {
+static int navmesh3d_sample_search_grid(rt_navmesh3d *nm, navmesh3d_sample_search_t *search) {
     int32_t origin_x;
     int32_t origin_z;
     int32_t max_ring;
@@ -1357,10 +1356,11 @@ void *rt_navmesh3d_sample_position(void *obj, void *point) {
     }
 
     /* Find the nearest point on the triangle surface in XZ through expanding grid rings. */
-    size_t seen_bytes = ((size_t)nm->triangle_count + 7u) / 8u;
-    uint8_t *seen_triangles = seen_bytes > 0 ? (uint8_t *)calloc(seen_bytes, 1) : NULL;
+    uint64_t visit_generation =
+        rt_atomic_fetch_add_u64(&nm->sample_query_generation, UINT64_C(1), __ATOMIC_RELAXED) +
+        UINT64_C(1);
     navmesh3d_sample_search_t search = {
-        px, py, pz, FLT_MAX, FLT_MAX, px, py, pz, -1, 0, 0, seen_triangles};
+        px, py, pz, FLT_MAX, FLT_MAX, px, py, pz, -1, 0, 0, visit_generation};
     int used_fallback = !navmesh3d_sample_search_grid(nm, &search);
     if (used_fallback) {
         /* The grid may be absent by policy or a pathological replicated query may hit its fixed
@@ -1370,13 +1370,13 @@ void *rt_navmesh3d_sample_position(void *obj, void *point) {
         search.best_vertical_distance = FLT_MAX;
         search.best_triangle = -1;
         search.triangle_probes = 0;
-        if (seen_triangles)
-            memset(seen_triangles, 0, seen_bytes);
+        /* The fallback visits each triangle exactly once, so duplicate suppression is unnecessary.
+         * Disabling it also guarantees candidates visited by the aborted grid pass are retested. */
+        search.visit_generation = 0;
         for (int32_t i = 0; i < nm->triangle_count; i++)
             navmesh3d_sample_test_triangle(nm, i, &search);
     }
     navmesh3d_sample_record_metrics(nm, search.triangle_probes, used_fallback);
-    free(seen_triangles);
     return rt_vec3_new(search.best_x, search.best_y, search.best_z);
 }
 

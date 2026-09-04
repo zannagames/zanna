@@ -182,6 +182,19 @@ static void query_hit_swap(rt_query_hit3d *a, rt_query_hit3d *b) {
     *b = tmp;
 }
 
+/// @brief Compare sanitized hits by distance, then by stable world body index.
+static int query_hit_compare_order_raw(const rt_query_hit3d *a, const rt_query_hit3d *b) {
+    int32_t a_index;
+    int32_t b_index;
+    if (a->distance < b->distance)
+        return -1;
+    if (a->distance > b->distance)
+        return 1;
+    a_index = a->body ? a->body->owner_index : INT32_MAX;
+    b_index = b->body ? b->body->owner_index : INT32_MAX;
+    return (a_index > b_index) - (a_index < b_index);
+}
+
 /// @brief Accumulate the nearest hits as a max-heap, avoiding a shift per candidate.
 /// @details The farthest retained hit stays at the root. Each candidate therefore costs
 ///          O(log capacity), and a final O(k log k) sort restores the public nearest-first order.
@@ -200,14 +213,14 @@ int query_hit_heap_collect_bounded(rt_query_hit3d *hits,
         hits[child] = clean;
         while (child > 0) {
             int32_t parent = (child - 1) / 2;
-            if (hits[parent].distance >= hits[child].distance)
+            if (query_hit_compare_order_raw(&hits[parent], &hits[child]) >= 0)
                 break;
             query_hit_swap(&hits[parent], &hits[child]);
             child = parent;
         }
         return count;
     }
-    if (clean.distance >= hits[0].distance)
+    if (query_hit_compare_order_raw(&clean, &hits[0]) >= 0)
         return count;
     hits[0] = clean;
     for (int32_t parent = 0;;) {
@@ -215,8 +228,10 @@ int query_hit_heap_collect_bounded(rt_query_hit3d *hits,
         if (left >= count)
             break;
         int32_t right = left + 1;
-        int32_t larger = right < count && hits[right].distance > hits[left].distance ? right : left;
-        if (hits[parent].distance >= hits[larger].distance)
+        int32_t larger = right < count && query_hit_compare_order_raw(&hits[right], &hits[left]) > 0
+                             ? right
+                             : left;
+        if (query_hit_compare_order_raw(&hits[parent], &hits[larger]) >= 0)
             break;
         query_hit_swap(&hits[parent], &hits[larger]);
         parent = larger;
@@ -226,9 +241,7 @@ int query_hit_heap_collect_bounded(rt_query_hit3d *hits,
 
 /// @brief Compare hit records by ascending distance for public result ordering.
 static int query_hit_compare_distance(const void *lhs, const void *rhs) {
-    double a = ((const rt_query_hit3d *)lhs)->distance;
-    double b = ((const rt_query_hit3d *)rhs)->distance;
-    return (a > b) - (a < b);
+    return query_hit_compare_order_raw((const rt_query_hit3d *)lhs, (const rt_query_hit3d *)rhs);
 }
 
 /// @brief Sort retained heap records once after collection.
@@ -944,8 +957,11 @@ void *rt_world3d_overlap_aabb(void *obj, void *min_obj, void *max_obj, int64_t m
 /// @param mask Collision-layer bit mask used to select candidate bodies.
 /// @return A newly boxed nearest `PhysicsHit3D`, including an initial-penetration hit, or null
 ///         when the query is invalid, scratch allocation fails, or no selected body is hit.
-void *rt_world3d_sweep_sphere(
-    void *obj, void *center_obj, double radius, void *delta_obj, int64_t mask) {
+void *rt_world3d_sweep_sphere_components(void *obj,
+                                         const double center_components[3],
+                                         double radius,
+                                         const double delta_components[3],
+                                         int64_t mask) {
     rt_world3d *w = world3d_checked(obj);
     rt_query_hit3d best_hit = {0};
     int found = 0;
@@ -954,11 +970,13 @@ void *rt_world3d_sweep_sphere(
     double max_distance;
     rt_body3d query_body;
     void *sphere_collider;
-    if (!w || !rt_g3d_is_vec3(center_obj) || !rt_g3d_is_vec3(delta_obj) || !isfinite(radius) ||
-        radius < 0.0)
+    if (!w || !center_components || !delta_components || !ph3d_vec3_all_finite(center_components) ||
+        !ph3d_vec3_all_finite(delta_components) || !isfinite(radius) || radius < 0.0)
         return NULL;
-    if (!query_read_vec3(center_obj, center) || !query_read_vec3(delta_obj, delta))
-        return NULL;
+    for (int axis = 0; axis < 3; axis++) {
+        center[axis] = query_saturate_coord(center_components[axis]);
+        delta[axis] = query_saturate_coord(delta_components[axis]);
+    }
     radius = query_sanitize_distance(radius);
     max_distance = query_cap_vector_length(delta);
     sphere_collider = world3d_query_sphere_collider(w, radius);
@@ -991,6 +1009,19 @@ void *rt_world3d_sweep_sphere(
         }
     }
     return found ? physics_hit3d_new(&best_hit) : NULL;
+}
+
+/// @brief Boxed scripting wrapper for the allocation-free component sweep input path.
+void *rt_world3d_sweep_sphere(
+    void *obj, void *center_obj, double radius, void *delta_obj, int64_t mask) {
+    double center[3];
+    double delta[3];
+    if (!world3d_checked(obj) || !rt_g3d_is_vec3(center_obj) || !rt_g3d_is_vec3(delta_obj) ||
+        !isfinite(radius) || radius < 0.0)
+        return NULL;
+    if (!query_read_vec3(center_obj, center) || !query_read_vec3(delta_obj, delta))
+        return NULL;
+    return rt_world3d_sweep_sphere_components(obj, center, radius, delta, mask);
 }
 
 /// @brief Returns the world's reusable bounded query-hit scratch array.

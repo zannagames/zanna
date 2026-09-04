@@ -1187,7 +1187,7 @@ static int sw_parallel_transform_vertices(sw_context_t *ctx,
         sw_transform_task_run(&tasks[i]);
     sw_transform_task_run(&tasks[0]);
     if (submitted > 0)
-        rt_threadpool_wait(ctx->worker_pool);
+        sw_wait_for_workers(ctx);
     return 1;
 }
 
@@ -1314,7 +1314,7 @@ static int sw_collect_screen_triangles_parallel(sw_context_t *ctx,
         sw_clip_task_run(&tasks[i]);
     sw_clip_task_run(&tasks[0]);
     if (submitted > 0)
-        rt_threadpool_wait(ctx->worker_pool);
+        sw_wait_for_workers(ctx);
     if (rt_atomic_load_i32(&failed, __ATOMIC_RELAXED)) {
         sw_retain_clip_task_scratch(ctx, tasks, task_count);
         return 0;
@@ -1538,7 +1538,7 @@ static int sw_raster_tiles_parallel(sw_context_t *ctx,
         sw_raster_task_run(&tasks[i]);
     sw_raster_task_run(&tasks[0]);
     if (submitted > 0)
-        rt_threadpool_wait(ctx->worker_pool);
+        sw_wait_for_workers(ctx);
     return 1;
 }
 
@@ -1583,7 +1583,7 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
     index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
     if (index_count == 0)
         return 0;
-    if (index_count < SW_PARALLEL_MIN_INDICES)
+    if (index_count < sw_parallel_index_threshold(ctx))
         return 0;
     if (!ambient)
         ambient = zero_ambient;
@@ -1643,6 +1643,8 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
                                   ambient,
                                   backface_cull))
         goto cleanup;
+    if (ctx->parallel_draw_count != UINT64_MAX)
+        ctx->parallel_draw_count++;
     ok = 1;
 
 cleanup:
@@ -1878,6 +1880,116 @@ static void sw_submit_draw(void *ctx_ptr,
                           backface_cull);
 }
 
+/// @brief Transform and collect an entire instanced batch before one tiled raster dispatch.
+/// @details Large meshes previously ran the three-barrier parallel pipeline independently for
+///   every instance. This path reuses one vertex buffer, appends projected triangles in instance
+///   order, bins the combined primitive stream, and pays at most the final tile-raster barrier once
+///   for the batch. Triangle order within each tile matches serial instance submission.
+/// @return Nonzero when the batch was fully handled; zero requests the prepared serial fallback.
+static int sw_submit_draw_instanced_parallel_batch(sw_context_t *ctx,
+                                                   vgfx_window_t win,
+                                                   const vgfx3d_draw_cmd_t *cmd,
+                                                   const float *instance_matrices,
+                                                   int32_t instance_count,
+                                                   const vgfx3d_light_params_t *lights,
+                                                   int32_t light_count,
+                                                   const float *ambient,
+                                                   int8_t wireframe,
+                                                   int8_t backface_cull) {
+    sw_serial_draw_setup_t setup;
+    sw_screen_tri_list_t tris = {0};
+    sw_tile_grid_t *grid = NULL;
+    vgfx3d_draw_cmd_t instance_cmd;
+    pipe_vert_t *vertices;
+    uint32_t index_count;
+    uint32_t vertex_count;
+    uint64_t worst_triangle_count;
+    int ok = 0;
+    if (!ctx || !ctx->worker_pool || ctx->worker_count <= 1 || wireframe || sw_debug_enabled() ||
+        rt_threadpool_current_worker_pool() == ctx->worker_pool || !cmd || !instance_matrices ||
+        instance_count < 2)
+        return 0;
+    index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
+    if (index_count < sw_parallel_index_threshold(ctx))
+        return 0;
+    vertex_count = cmd->vertex_count;
+    worst_triangle_count =
+        (uint64_t)(index_count / 3u) * (uint64_t)instance_count * (uint64_t)(MAX_CLIP_VERTS - 2);
+    if (vertex_count == 0 || worst_triangle_count > UINT32_MAX ||
+        !sw_prepare_serial_draw_setup(ctx, win, cmd, &setup))
+        return 0;
+    vertices = sw_acquire_pipe_vertices(ctx, vertex_count);
+    if (!vertices)
+        return 0;
+    tris.items = (sw_screen_tri_t *)ctx->color_triangle_scratch;
+    tris.capacity = ctx->color_triangle_scratch_capacity;
+    ctx->color_triangle_scratch = NULL;
+    ctx->color_triangle_scratch_capacity = 0;
+    instance_cmd = *cmd;
+    for (int32_t i = 0; i < instance_count; i++) {
+        float mvp[16];
+        float normal_matrix[16];
+        vgfx3d_copy_mat4_finite_or_identity(instance_cmd.model_matrix,
+                                            &instance_matrices[(size_t)i * 16u]);
+        mat4f_mul(ctx->vp, instance_cmd.model_matrix, mvp);
+        vgfx3d_compute_normal_matrix4(instance_cmd.model_matrix, normal_matrix);
+        sw_transform_vertices(ctx,
+                              &instance_cmd,
+                              vertices,
+                              vertex_count,
+                              mvp,
+                              normal_matrix,
+                              lights,
+                              light_count,
+                              ambient);
+        if (!sw_collect_screen_triangles_range(&instance_cmd,
+                                               vertices,
+                                               vertex_count,
+                                               0,
+                                               index_count / 3u,
+                                               setup.half_width,
+                                               setup.half_height,
+                                               &tris))
+            goto cleanup;
+    }
+    if (tris.count == 0) {
+        ok = 1;
+        goto cleanup;
+    }
+    if (!ctx->color_tile_grid_scratch) {
+        ctx->color_tile_grid_scratch = calloc(1, sizeof(sw_tile_grid_t));
+        if (!ctx->color_tile_grid_scratch)
+            goto cleanup;
+    }
+    grid = (sw_tile_grid_t *)ctx->color_tile_grid_scratch;
+    if (!sw_tile_grid_prepare(grid, setup.width, setup.height) ||
+        !sw_bin_screen_triangles(grid, &tris, setup.width, setup.height, backface_cull))
+        goto cleanup;
+    if (grid->active_count > 0 && !sw_raster_tiles_parallel(ctx,
+                                                            grid,
+                                                            &tris,
+                                                            setup.pixels,
+                                                            setup.zbuf,
+                                                            setup.width,
+                                                            setup.height,
+                                                            setup.stride,
+                                                            &setup.material_views,
+                                                            cmd,
+                                                            lights,
+                                                            light_count,
+                                                            ambient,
+                                                            backface_cull))
+        goto cleanup;
+    if (ctx->instanced_parallel_batch_count != UINT64_MAX)
+        ctx->instanced_parallel_batch_count++;
+    ok = 1;
+
+cleanup:
+    ctx->color_triangle_scratch = tris.items;
+    ctx->color_triangle_scratch_capacity = tris.capacity;
+    return ok;
+}
+
 /// @brief Backend `submit_draw_instanced` op — rasterize one shared mesh N times.
 /// @details Iterates instances in the backend inner loop with a stack-local
 ///   command whose model matrix is swapped per instance. Removes the deferred
@@ -1924,21 +2036,17 @@ static void sw_submit_draw_instanced(void *ctx_ptr,
     sw_sanitize_ambient(ambient, safe_ambient);
     ambient = safe_ambient;
 
-    /* Keep the existing parallel path for very large meshes, where worker
-     * throughput matters more than per-instance setup overhead. Small instanced
-     * meshes are the common particle/foliage case and benefit from hoisting the
-     * invariant serial draw setup once for the whole batch. */
-    if (ctx->worker_pool && ctx->worker_count > 1 &&
-        vgfx3d_draw_cmd_validated_index_count(cmd) >= SW_PARALLEL_MIN_INDICES) {
-        vgfx3d_draw_cmd_t inst = *cmd;
-        for (int32_t i = 0; i < instance_count; i++) {
-            vgfx3d_copy_mat4_finite_or_identity(inst.model_matrix,
-                                                &instance_matrices[(size_t)i * 16u]);
-            sw_submit_draw(
-                ctx_ptr, win, &inst, lights, light_count, ambient, wireframe, backface_cull);
-        }
+    if (sw_submit_draw_instanced_parallel_batch(ctx,
+                                                win,
+                                                cmd,
+                                                instance_matrices,
+                                                instance_count,
+                                                lights,
+                                                light_count,
+                                                ambient,
+                                                wireframe,
+                                                backface_cull))
         return;
-    }
     if (!sw_prepare_serial_draw_setup(ctx, win, cmd, &setup))
         return;
     vgfx3d_draw_cmd_t inst = *cmd;

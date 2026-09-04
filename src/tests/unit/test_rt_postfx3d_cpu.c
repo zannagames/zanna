@@ -31,6 +31,7 @@
 #include "rt_pixels_internal.h"
 #include "rt_postfx3d.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -380,6 +381,101 @@ static void test_auto_exposure_samples_packed_luminance(void) {
     postfx_cpu_fixture_free(&fixture);
 }
 
+static void postfx_fill_uniform(vgfx3d_rendertarget_t *target, uint8_t value) {
+    size_t count = target ? (size_t)target->width * (size_t)target->height : 0;
+    for (size_t i = 0; i < count; i++) {
+        target->color_buf[i * 4u + 0u] = value;
+        target->color_buf[i * 4u + 1u] = value;
+        target->color_buf[i * 4u + 2u] = value;
+        target->color_buf[i * 4u + 3u] = 255;
+    }
+    if (target)
+        target->color_dirty = 0;
+}
+
+static void test_auto_exposure_uses_frame_time(void) {
+    PostFXCPUFixture slow = postfx_cpu_fixture_new();
+    PostFXCPUFixture fast = postfx_cpu_fixture_new();
+    void *slow_fx = rt_postfx3d_new();
+    void *fast_fx = rt_postfx3d_new();
+    PostFXCPUWorkerLayout *slow_state = (PostFXCPUWorkerLayout *)slow_fx;
+    PostFXCPUWorkerLayout *fast_state = (PostFXCPUWorkerLayout *)fast_fx;
+    rt_postfx3d_add_auto_exposure(slow_fx, -4.0, 4.0, 1.0);
+    rt_postfx3d_add_auto_exposure(fast_fx, -4.0, 4.0, 1.0);
+    rt_canvas3d_set_post_fx(slow.canvas_obj, slow_fx);
+    rt_canvas3d_set_post_fx(fast.canvas_obj, fast_fx);
+
+    postfx_fill_uniform(slow.target, 16);
+    postfx_fill_uniform(fast.target, 16);
+    rt_postfx3d_apply_to_canvas(slow.canvas_obj);
+    rt_postfx3d_apply_to_canvas(fast.canvas_obj);
+    slow.canvas->delta_time_us = 40000;
+    fast.canvas->delta_time_us = 10000;
+    for (int frame = 0; frame < 25; frame++) {
+        postfx_fill_uniform(slow.target, 255);
+        rt_postfx3d_apply_to_canvas(slow.canvas_obj);
+    }
+    for (int frame = 0; frame < 100; frame++) {
+        postfx_fill_uniform(fast.target, 255);
+        rt_postfx3d_apply_to_canvas(fast.canvas_obj);
+    }
+    EXPECT_TRUE(fabsf(slow_state->auto_exposure_ev - fast_state->auto_exposure_ev) < 0.002f,
+                "one second of exposure adaptation matches at 25 Hz and 100 Hz");
+
+    (void)rt_memory_release(slow_fx);
+    (void)rt_memory_release(fast_fx);
+    postfx_cpu_fixture_free(&slow);
+    postfx_cpu_fixture_free(&fast);
+}
+
+static void test_auto_exposure_stratifies_bounded_samples(void) {
+    PostFXCPUFixture fixture = postfx_cpu_fixture_new_sized(128, 64);
+    void *fx = rt_postfx3d_new();
+    PostFXCPUWorkerLayout *state = (PostFXCPUWorkerLayout *)fx;
+    size_t count = (size_t)fixture.target->width * (size_t)fixture.target->height;
+    for (size_t i = 0; i < count; i++) {
+        uint8_t value = (i & 1u) ? 255 : 1;
+        fixture.target->color_buf[i * 4u + 0u] = value;
+        fixture.target->color_buf[i * 4u + 1u] = value;
+        fixture.target->color_buf[i * 4u + 2u] = value;
+        fixture.target->color_buf[i * 4u + 3u] = 255;
+    }
+    fixture.target->color_dirty = 0;
+    rt_postfx3d_add_auto_exposure(fx, -4.0, 4.0, 3.0);
+    rt_canvas3d_set_post_fx(fixture.canvas_obj, fx);
+    rt_postfx3d_apply_to_canvas(fixture.canvas_obj);
+    EXPECT_TRUE(state->auto_exposure_ev > 1.0f && state->auto_exposure_ev < 2.5f,
+                "stratified 4096-sample cap observes both phases of an interleaved image");
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&fixture);
+}
+
+static void test_postfx_chain_has_exclusive_canvas_history_owner(void) {
+    PostFXCPUFixture first = postfx_cpu_fixture_new();
+    PostFXCPUFixture second = postfx_cpu_fixture_new();
+    void *fx = rt_postfx3d_new();
+    rt_postfx3d_add_auto_exposure(fx, -4.0, 4.0, 3.0);
+    rt_canvas3d_set_post_fx(first.canvas_obj, fx);
+    rt_canvas3d_set_post_fx(second.canvas_obj, fx);
+    EXPECT_TRUE(rt_canvas3d_get_post_fx(first.canvas_obj) == fx,
+                "first canvas retains the chain's temporal-state ownership");
+    EXPECT_TRUE(rt_canvas3d_get_post_fx(second.canvas_obj) == NULL,
+                "second canvas cannot share the same temporal-state chain");
+    {
+        rt_string error = rt_postfx3d_get_last_error(fx);
+        EXPECT_TRUE(strstr(rt_string_cstr(error), "another Canvas3D") != NULL,
+                    "rejected shared binding reports a recoverable reason");
+        rt_string_unref(error);
+    }
+    rt_canvas3d_set_post_fx(first.canvas_obj, NULL);
+    rt_canvas3d_set_post_fx(second.canvas_obj, fx);
+    EXPECT_TRUE(rt_canvas3d_get_post_fx(second.canvas_obj) == fx,
+                "detached chain can transfer cleanly to another canvas");
+    (void)rt_memory_release(fx);
+    postfx_cpu_fixture_free(&first);
+    postfx_cpu_fixture_free(&second);
+}
+
 static void test_taa_history_uses_packed_rgb_pixels(void) {
     PostFXCPUFixture fixture = postfx_cpu_fixture_new();
     void *fx = rt_postfx3d_new();
@@ -515,7 +611,8 @@ static void test_display_resolve_applies_target_subset(void) {
                     "HDR mirror resolves");
         {
             uint32_t r = (ph->data[9] >> 24) & 0xFFu;
-            EXPECT_TRUE(r >= 209u && r <= 214u, "the linear HDR mirror is the preferred source (~212)");
+            EXPECT_TRUE(r >= 209u && r <= 214u,
+                        "the linear HDR mirror is the preferred source (~212)");
         }
     } else {
         EXPECT_TRUE(1, "LDR fixture has no HDR mirror; HDR branch covered by the canvas test");
@@ -544,6 +641,9 @@ int main(void) {
     test_tonemap_free_chain_is_passthrough();
     test_color_lut_uses_packed_rgb_pixels();
     test_auto_exposure_samples_packed_luminance();
+    test_auto_exposure_uses_frame_time();
+    test_auto_exposure_stratifies_bounded_samples();
+    test_postfx_chain_has_exclusive_canvas_history_owner();
     test_taa_history_uses_packed_rgb_pixels();
     test_sharpen_steepens_soft_edges_without_halos();
     test_scene_effects_use_row_band_worker_pool();

@@ -1240,8 +1240,8 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
     size_t bytes;
 
     if (!ctx || !ctx.morphCache || !cmd || morph_count <= 0 || !cmd->morph_key ||
-        cmd->morph_revision == 0 || !cmd->morph_deltas || !cmd->morph_weights ||
-        cmd->morph_shape_count <= 0 || cmd->vertex_count == 0) {
+        cmd->morph_identity == 0 || cmd->morph_revision == 0 || !cmd->morph_deltas ||
+        !cmd->morph_weights || cmd->morph_shape_count <= 0 || cmd->vertex_count == 0) {
         return nil;
     }
 
@@ -1249,6 +1249,7 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
     entry = ctx.morphCache[key];
     if (entry && entry.deltaBuffer &&
         vgfx3d_metal_should_reuse_morph_cache(entry.key,
+                                              entry.identity,
                                               entry.revision,
                                               entry.shapeCount,
                                               entry.vertexCount,
@@ -1272,6 +1273,7 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
     entry.deltaBuffer = replacement_delta;
     entry.normalBuffer = replacement_normal;
     entry.key = cmd->morph_key;
+    entry.identity = cmd->morph_identity;
     entry.revision = cmd->morph_revision;
     entry.shapeCount = morph_count;
     entry.vertexCount = cmd->vertex_count;
@@ -1365,11 +1367,20 @@ static int metal_bind_extra_influences(VGFXMetalContext *ctx, const vgfx3d_draw_
     if ((size_t)cmd->vertex_count > SIZE_MAX / sizeof(vgfx3d_extra_influences_t))
         return 0;
     bytes = (size_t)cmd->vertex_count * sizeof(vgfx3d_extra_influences_t);
-    key = cmd->geometry_key ? cmd->geometry_key : (const void *)cmd->extra_influences;
+    key = cmd->geometry_key;
+    if (!key || cmd->geometry_identity == 0) {
+        buf = metal_new_shared_buffer(ctx, cmd->extra_influences, bytes);
+        if (buf && ctx.frameBuffers)
+            [ctx.frameBuffers addObject:buf];
+        if (!buf)
+            return 0;
+        [ctx.encoder setVertexBuffer:buf offset:0 atIndex:10];
+        return 1;
+    }
     dict_key = [NSNumber numberWithUnsignedLongLong:(unsigned long long)(uintptr_t)key];
     entry = ctx.extraInfluenceCache ? ctx.extraInfluenceCache[dict_key] : nil;
-    if (entry && entry.key == key && entry.revision == cmd->geometry_revision &&
-        entry.vertexCount == cmd->vertex_count) {
+    if (entry && entry.key == key && entry.identity == cmd->geometry_identity &&
+        entry.revision == cmd->geometry_revision && entry.vertexCount == cmd->vertex_count) {
         buf = entry.buffer;
         entry.lastUsedFrame = ctx.frameSerial;
     } else {
@@ -1381,6 +1392,7 @@ static int metal_bind_extra_influences(VGFXMetalContext *ctx, const vgfx3d_draw_
                 [[VGFXMetalExtraInfluenceCacheEntry alloc] init];
             fresh.buffer = buf;
             fresh.key = key;
+            fresh.identity = cmd->geometry_identity;
             fresh.revision = cmd->geometry_revision;
             fresh.vertexCount = cmd->vertex_count;
             fresh.lastUsedFrame = ctx.frameSerial;

@@ -72,6 +72,8 @@ typedef struct vgfx3d_draw_cmd {
      * geometry is transient and should use the streaming upload path. */
     /// Stable geometry identity used for backend static-mesh caching, or NULL for transient data.
     const void *geometry_key;
+    /// Allocation generation paired with @ref geometry_key; zero disables retained caching.
+    uint64_t geometry_identity;
     /// Revision invalidating cached buffers associated with @ref geometry_key.
     uint32_t geometry_revision;
     /* R20: upload this draw's cached static geometry in the compact 48-byte
@@ -276,6 +278,8 @@ typedef struct vgfx3d_draw_cmd {
     int32_t morph_shape_count; /* number of active morph shapes (0 = none) */
     /// Stable identity used by backend morph-delta caches.
     const void *morph_key; /* stable identity for backend morph-payload caches */
+    /// Allocation generation paired with @ref morph_key; zero disables retained caching.
+    uint64_t morph_identity;
     /// Revision invalidating cached morph delta payloads.
     uint64_t morph_revision; /* bumps when morph delta payload changes */
     /// Previous row-major transform per instance for instanced motion vectors.

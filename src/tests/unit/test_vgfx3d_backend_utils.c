@@ -1604,6 +1604,21 @@ static void test_material_enum_sanitizers(void) {
                 "UV-set selectors collapse to uv0 or uv1");
 }
 
+/// @brief Verify native resource caches require allocation identity as well as address identity.
+static void test_generation_safe_cache_identity(void) {
+    int key = 0;
+    int other_key = 0;
+
+    EXPECT_TRUE(vgfx3d_cache_identity_matches(&key, 17, &key, 17) == 1,
+                "Cache identity accepts an exact address and allocation-generation match");
+    EXPECT_TRUE(vgfx3d_cache_identity_matches(&key, 16, &key, 17) == 0,
+                "Cache identity rejects an allocator-recycled address with a new generation");
+    EXPECT_TRUE(vgfx3d_cache_identity_matches(&key, 17, &other_key, 17) == 0,
+                "Cache identity rejects a different address");
+    EXPECT_TRUE(vgfx3d_cache_identity_matches(&key, 0, &key, 0) == 0,
+                "Cache identity never treats zero-generation transient data as retained");
+}
+
 /// @brief Verify the shared material copy blocks NaNs, oversized values, and invalid enums.
 static void test_draw_command_sanitizer(void) {
     vgfx3d_draw_cmd_t src;
@@ -1992,6 +2007,7 @@ int main(void) {
     test_scaled_scene_extent_contract();
     test_cubemap_ibl_layout_and_upload_budget();
     test_material_enum_sanitizers();
+    test_generation_safe_cache_identity();
     test_draw_command_sanitizer();
     test_camera_parameter_sanitizer();
     test_light_parameter_sanitizers();

@@ -64,9 +64,16 @@ struct CloseRaceArg {
 };
 
 struct CommitQueueLayout {
-    void *items;
+    void *head;
+    void *tail;
+    void *free_items;
+    void *blocks;
+    volatile int gate;
+    volatile int closed;
+    int64_t pending;
     volatile int64_t submitted;
     volatile int64_t drained;
+    uint64_t block_allocations;
 };
 
 static void expect_true(bool cond, const char *message) {
@@ -283,12 +290,11 @@ static void test_cost_budget_drain() {
     rt_g3d_commit_queue_free(queue);
 }
 
-static void test_closed_backing_queue_rejects_enqueue_without_trap() {
+static void test_closed_queue_rejects_enqueue_without_trap() {
     void *queue = rt_g3d_commit_queue_new();
     expect_true(queue != nullptr, "queue should be created for closed enqueue test");
 
-    CommitQueueLayout *layout = (CommitQueueLayout *)queue;
-    rt_concqueue_close(layout->items);
+    rt_g3d_commit_queue_close(queue);
 
     CommitContext ctx = {};
     CommitRecord record = {&ctx, 7};
@@ -299,6 +305,29 @@ static void test_closed_backing_queue_rejects_enqueue_without_trap() {
     expect_true(rt_g3d_commit_queue_submitted(queue) == 0,
                 "closed backing queue should not advance submit telemetry");
 
+    rt_g3d_commit_queue_free(queue);
+}
+
+static void test_drained_item_storage_is_reused() {
+    void *queue = rt_g3d_commit_queue_new();
+    expect_true(queue != nullptr, "queue should be created for storage reuse test");
+
+    CommitContext ctx = {};
+    CommitRecord records[64] = {};
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        for (int index = 0; index < 64; ++index) {
+            records[index] = {&ctx, 0};
+            expect_true(rt_g3d_commit_queue_enqueue(queue, record_commit, &records[index]) != 0,
+                        "pooled enqueue should succeed");
+        }
+        expect_true(rt_g3d_commit_queue_drain(queue, 0) == 64,
+                    "each pooled batch should drain completely");
+        ctx.count = 0;
+    }
+
+    CommitQueueLayout *layout = (CommitQueueLayout *)queue;
+    expect_true(layout->block_allocations == 1,
+                "repeated drained batches should reuse one allocation block");
     rt_g3d_commit_queue_free(queue);
 }
 
@@ -359,7 +388,8 @@ int main() {
     test_worker_enqueue_main_thread_drain();
     test_worker_drain_is_rejected();
     test_cost_budget_drain();
-    test_closed_backing_queue_rejects_enqueue_without_trap();
+    test_closed_queue_rejects_enqueue_without_trap();
+    test_drained_item_storage_is_reused();
     test_wrapper_allocation_failure_preserves_caller_ownership();
     test_close_then_join_prevents_enqueue_free_race();
     std::printf("Graphics3D commit queue tests: all passed\n");

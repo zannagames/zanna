@@ -213,6 +213,10 @@ void *rt_morphtarget3d_new_packed_internal(int64_t vertex_count,
 /// @param[in,out] mt MorphTarget3D to inspect.
 /// @return Current nonzero generation, or zero for an invalid handle.
 uint64_t rt_morphtarget3d_get_payload_generation(void *mt);
+/// @brief Immutable process-local allocation identity for backend cache discrimination.
+/// @param[in,out] mt MorphTarget3D to inspect.
+/// @return Current nonzero allocation identity, or zero for an invalid handle.
+uint64_t rt_morphtarget3d_get_identity_serial(void *mt);
 /// @brief Bind a MorphTarget3D to a Mesh3D (vertex counts must match exactly).
 /// @details A successful binding retains the container, releases any previous
 ///          binding, and marks mesh geometry changed. Pass `NULL` to detach;

@@ -14,6 +14,7 @@
 // Key invariants:
 //   - Face normals always point away from the hull interior centroid.
 //   - The horizon is a closed edge loop; new faces link neighbor-consistent.
+//   - An O(1)-removal active-face set excludes retired faces from expansion scans.
 //   - Epsilons scale with the input's bounding-box diagonal so tiny and huge
 //     clouds behave identically.
 // Ownership/Lifetime:
@@ -48,6 +49,7 @@ typedef struct {
     int32_t conflict_cap;
     int32_t farthest_conflict;
     double farthest_distance;
+    int32_t active_slot;
     int8_t alive;
 } qh_face;
 
@@ -57,6 +59,9 @@ typedef struct {
     qh_face *faces;
     int32_t face_count;
     int32_t face_cap;
+    int32_t *active_faces;
+    int32_t active_count;
+    int32_t active_cap;
     double eps;
 } qh_ctx;
 
@@ -181,10 +186,38 @@ static int32_t qh_alloc_face(qh_ctx *ctx) {
         ctx->faces = grown;
         ctx->face_cap = cap;
     }
+    if (ctx->active_count >= ctx->active_cap) {
+        int32_t cap = ctx->active_cap > 0 ? ctx->active_cap * 2 : 64;
+        int32_t *grown = (int32_t *)realloc(ctx->active_faces, (size_t)cap * sizeof(int32_t));
+        if (!grown)
+            return -1;
+        ctx->active_faces = grown;
+        ctx->active_cap = cap;
+    }
     memset(&ctx->faces[ctx->face_count], 0, sizeof(qh_face));
     ctx->faces[ctx->face_count].alive = 1;
     ctx->faces[ctx->face_count].farthest_conflict = -1;
+    ctx->faces[ctx->face_count].active_slot = ctx->active_count;
+    ctx->active_faces[ctx->active_count++] = ctx->face_count;
     return ctx->face_count++;
+}
+
+/// @brief Retire one face and remove it from the dense active set in constant time.
+/// @details The active array is intentionally unordered. Selection resolves equal cached
+///   distances by face index, retaining deterministic behavior independent of swap removal.
+/// @param[in,out] ctx Hull context containing the face and active set.
+/// @param face_index Historical face index to retire.
+static void qh_retire_face(qh_ctx *ctx, int32_t face_index) {
+    qh_face *face = &ctx->faces[face_index];
+    if (!face->alive)
+        return;
+    const int32_t slot = face->active_slot;
+    const int32_t moved_face = ctx->active_faces[ctx->active_count - 1];
+    ctx->active_faces[slot] = moved_face;
+    ctx->faces[moved_face].active_slot = slot;
+    ctx->active_count--;
+    face->active_slot = -1;
+    face->alive = 0;
 }
 
 /// @brief Releases every conflict list and the face array owned by a hull context.
@@ -193,9 +226,13 @@ static void qh_free_all(qh_ctx *ctx) {
     for (int32_t i = 0; i < ctx->face_count; i++)
         free(ctx->faces[i].conflicts);
     free(ctx->faces);
+    free(ctx->active_faces);
     ctx->faces = NULL;
+    ctx->active_faces = NULL;
     ctx->face_count = 0;
     ctx->face_cap = 0;
+    ctx->active_count = 0;
+    ctx->active_cap = 0;
 }
 
 /// @brief Locate the neighbor slot on face `f` that points to face `old`.
@@ -446,8 +483,9 @@ int rt_quickhull3d_build(const double *points,
     int32_t visible_cap = 8;
     int32_t *stack = (int32_t *)malloc(sizeof(int32_t) * 8);
     int32_t stack_cap = 8;
-    int8_t *mark = (int8_t *)calloc((size_t)ctx.face_cap, 1);
+    uint32_t *mark = (uint32_t *)calloc((size_t)ctx.face_cap, sizeof(uint32_t));
     int32_t mark_cap = ctx.face_cap;
+    uint32_t mark_generation = 0;
     int32_t *horizon_slots = NULL;
     int32_t horizon_cap = 0;
     if (!visible || !stack || !mark)
@@ -458,11 +496,13 @@ int rt_quickhull3d_build(const double *points,
         int32_t best_face = -1;
         int32_t best_point = -1;
         double best_dist = ctx.eps;
-        for (int32_t fi = 0; fi < ctx.face_count; fi++) {
+        for (int32_t active = 0; active < ctx.active_count; ++active) {
+            const int32_t fi = ctx.active_faces[active];
             qh_face *f = &ctx.faces[fi];
-            if (!f->alive || f->farthest_conflict < 0)
+            if (f->farthest_conflict < 0)
                 continue;
-            if (f->farthest_distance > best_dist) {
+            if (f->farthest_distance > best_dist ||
+                (f->farthest_distance == best_dist && (best_face < 0 || fi < best_face))) {
                 best_dist = f->farthest_distance;
                 best_face = fi;
                 best_point = f->farthest_conflict;
@@ -477,18 +517,23 @@ int rt_quickhull3d_build(const double *points,
 
         /* Flood-fill the visible face set from the seed. */
         if (ctx.face_cap > mark_cap) {
-            int8_t *grown = (int8_t *)realloc(mark, (size_t)ctx.face_cap);
+            uint32_t *grown = (uint32_t *)realloc(mark, (size_t)ctx.face_cap * sizeof(uint32_t));
             if (!grown)
                 goto fail;
             mark = grown;
-            memset(mark + mark_cap, 0, (size_t)(ctx.face_cap - mark_cap));
+            memset(mark + mark_cap, 0, (size_t)(ctx.face_cap - mark_cap) * sizeof(uint32_t));
             mark_cap = ctx.face_cap;
         }
-        memset(mark, 0, (size_t)mark_cap);
+        if (mark_generation == UINT32_MAX) {
+            memset(mark, 0, (size_t)mark_cap * sizeof(uint32_t));
+            mark_generation = 1;
+        } else {
+            mark_generation++;
+        }
         int32_t visible_count = 0;
         int32_t stack_count = 0;
         stack[stack_count++] = best_face;
-        mark[best_face] = 1;
+        mark[best_face] = mark_generation;
         while (stack_count > 0) {
             int32_t fi = stack[--stack_count];
             if (visible_count >= visible_cap) {
@@ -502,10 +547,10 @@ int rt_quickhull3d_build(const double *points,
             visible[visible_count++] = fi;
             for (int32_t e = 0; e < 3; e++) {
                 int32_t nb = ctx.faces[fi].neighbor[e];
-                if (nb < 0 || mark[nb] || !ctx.faces[nb].alive)
+                if (nb < 0 || mark[nb] == mark_generation || !ctx.faces[nb].alive)
                     continue;
                 if (qh_face_dist(&ctx, &ctx.faces[nb], best_point) > ctx.eps) {
-                    mark[nb] = 1;
+                    mark[nb] = mark_generation;
                     if (stack_count >= stack_cap) {
                         int32_t cap = stack_cap * 2;
                         int32_t *grown = (int32_t *)realloc(stack, sizeof(int32_t) * (size_t)cap);
@@ -525,7 +570,7 @@ int rt_quickhull3d_build(const double *points,
             int32_t fi = visible[vi];
             for (int32_t e = 0; e < 3; e++) {
                 int32_t nb = ctx.faces[fi].neighbor[e];
-                if (nb >= 0 && mark[nb])
+                if (nb >= 0 && mark[nb] == mark_generation)
                     continue; /* interior edge of the visible set */
                 int32_t a = ctx.faces[fi].v[e];
                 int32_t b = ctx.faces[fi].v[(e + 1) % 3];
@@ -598,7 +643,6 @@ int rt_quickhull3d_build(const double *points,
         /* Retire visible faces, redistributing their conflict points. */
         for (int32_t vi = 0; vi < visible_count; vi++) {
             qh_face *f = &ctx.faces[visible[vi]];
-            f->alive = 0;
             for (int32_t c = 0; c < f->conflict_count; c++) {
                 int32_t p = f->conflicts[c];
                 if (p == best_point)
@@ -616,6 +660,7 @@ int rt_quickhull3d_build(const double *points,
             f->conflict_count = 0;
             f->conflict_cap = 0;
             f->farthest_conflict = -1;
+            qh_retire_face(&ctx, visible[vi]);
         }
         for (int32_t nfi = first_new; nfi < ctx.face_count; ++nfi)
             qh_face_refresh_farthest(&ctx, &ctx.faces[nfi]);

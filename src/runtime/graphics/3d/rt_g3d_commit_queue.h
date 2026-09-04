@@ -89,10 +89,11 @@ int8_t rt_g3d_commit_queue_enqueue_cost_cancel(void *queue,
                                                uint64_t cost,
                                                rt_g3d_commit_cancel_fn cancel_fn);
 
-/// @brief Force the next @p count enqueue-wrapper allocations to fail in tests.
+/// @brief Force the next @p count enqueue record acquisitions to fail in tests.
 /// @details This process-global fault-injection hook is internal to the runtime test surface.
-///          Passing zero disables it. It does not affect queue or payload allocations.
-/// @param count Number of subsequent wrapper allocations to suppress; non-positive input disables
+///          Passing zero disables it. It does not affect queue or payload allocations and applies
+///          even when a pooled record is available.
+/// @param count Number of subsequent record acquisitions to suppress; non-positive input disables
 ///   injection.
 void rt_g3d_commit_queue_test_fail_next_allocations(int32_t count);
 

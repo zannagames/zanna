@@ -349,6 +349,7 @@ static void test_capacity_and_cache_helpers(void) {
 
     memset(&cmd, 0, sizeof(cmd));
     cmd.morph_key = &cmd;
+    cmd.morph_identity = 9;
     cmd.morph_revision = 4;
     cmd.morph_deltas = (const float *)&cmd;
     cmd.morph_weights = (const float *)&cmd;
@@ -356,19 +357,22 @@ static void test_capacity_and_cache_helpers(void) {
     cmd.vertex_count = 128;
     cmd.morph_normal_deltas = NULL;
     EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(
-                    cmd.morph_key, cmd.morph_revision, 3, 128, 0, &cmd) == 1,
+                    cmd.morph_key, cmd.morph_identity, cmd.morph_revision, 3, 128, 0, &cmd) == 1,
                 "Morph cache entries reuse matching key/revision payloads");
+    EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(
+                    cmd.morph_key, 8, cmd.morph_revision, 3, 128, 0, &cmd) == 0,
+                "Morph cache entries reject recycled addresses with a new allocation identity");
     cmd.morph_revision = 5;
-    EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(cmd.morph_key, 4, 3, 128, 0, &cmd) == 0,
+    EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(cmd.morph_key, 9, 4, 3, 128, 0, &cmd) == 0,
                 "Morph cache entries reject stale revisions");
     cmd.morph_revision = 4;
     cmd.morph_normal_deltas = (const float *)&tests_run;
-    EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(cmd.morph_key, 4, 3, 128, 0, &cmd) == 0,
+    EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(cmd.morph_key, 9, 4, 3, 128, 0, &cmd) == 0,
                 "Morph cache entries include normal-delta presence in the cache key");
     cmd.morph_normal_deltas = (const float *)&tests_run;
     cmd.morph_shape_count = VGFX3D_OPENGL_MAX_MORPH_SHAPES + 4;
     EXPECT_TRUE(vgfx3d_opengl_should_reuse_morph_cache(
-                    cmd.morph_key, 4, VGFX3D_OPENGL_MAX_MORPH_SHAPES, 128, 1, &cmd) == 1,
+                    cmd.morph_key, 9, 4, VGFX3D_OPENGL_MAX_MORPH_SHAPES, 128, 1, &cmd) == 1,
                 "Morph cache reuse compares against the clamped OpenGL shape count");
 }
 

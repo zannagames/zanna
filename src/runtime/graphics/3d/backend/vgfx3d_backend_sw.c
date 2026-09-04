@@ -146,6 +146,9 @@ typedef struct {
     /* Persistent worker pool for deterministic tiled rasterization. */
     void *worker_pool;
     int64_t worker_count;
+    uint64_t worker_wait_count;
+    uint64_t parallel_draw_count;
+    uint64_t instanced_parallel_batch_count;
     int32_t debug_draw_count;
     int32_t debug_tri_count;
     /* Scene-depth probes (lens flares): answered synchronously from the CPU
@@ -164,6 +167,22 @@ typedef struct {
     int32_t scaled_w, scaled_h;
     int8_t scaled_frame_active;
 } sw_context_t;
+
+/// @brief Require enough indexed work to amortize every participating worker and barrier.
+static uint32_t sw_parallel_index_threshold(const sw_context_t *ctx) {
+    uint64_t lanes = ctx && ctx->worker_count > 1 ? (uint64_t)ctx->worker_count + 1u : 1u;
+    uint64_t threshold = lanes * (uint64_t)SW_PARALLEL_MIN_INDICES;
+    return threshold > UINT32_MAX ? UINT32_MAX : (uint32_t)threshold;
+}
+
+/// @brief Complete submitted software jobs and record the synchronization cost for diagnostics.
+static void sw_wait_for_workers(sw_context_t *ctx) {
+    if (!ctx || !ctx->worker_pool)
+        return;
+    rt_threadpool_wait(ctx->worker_pool);
+    if (ctx->worker_wait_count != UINT64_MAX)
+        ctx->worker_wait_count++;
+}
 
 /// @brief Select a checked geometric allocation capacity for a reusable software buffer.
 /// @details A 1.5x growth policy amortizes monotonically increasing scene sizes while preserving
@@ -1309,6 +1328,23 @@ static void sw_release_worker_pool(sw_context_t *ctx) {
 int64_t vgfx3d_software_backend_thread_count_for_test(const void *ctx_ptr) {
     const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
     return ctx ? sw_clamp_worker_count(ctx->worker_count) : 1;
+}
+
+/// @brief Return the adaptive index threshold required to amortize parallel draw barriers.
+uint64_t vgfx3d_software_backend_parallel_index_threshold_for_test(const void *ctx_ptr) {
+    return (uint64_t)sw_parallel_index_threshold((const sw_context_t *)ctx_ptr);
+}
+
+/// @brief Read the number of worker completion waits issued by one software context.
+uint64_t vgfx3d_software_backend_worker_wait_count_for_test(const void *ctx_ptr) {
+    const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    return ctx ? ctx->worker_wait_count : 0;
+}
+
+/// @brief Read the number of combined large-mesh instanced batches completed by a context.
+uint64_t vgfx3d_software_backend_instanced_batch_count_for_test(const void *ctx_ptr) {
+    const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    return ctx ? ctx->instanced_parallel_batch_count : 0;
 }
 
 /*==========================================================================

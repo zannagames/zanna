@@ -240,7 +240,7 @@ typedef struct {
     /* Allocation generation (rt_g3d_next_identity_serial): pointer-keyed history tables
      * (motion vectors, occlusion streaks) salt their keys with this so a freed object
      * and its same-address successor never inherit each other's temporal state. */
-    uint32_t identity_serial;
+    uint64_t identity_serial;
     /* ADR 0312: bind-pose vertices behind a CPU-skinned submission (the
      * skinning path stamps the source mesh's array onto its stack copy) so
      * the software backend can project decals in model space. NULL means
@@ -604,6 +604,7 @@ typedef struct {
     double pick_cache_ortho_size;
     double pick_cache_view[16];
     double pick_cache_inv_vp[16];
+    uint64_t identity_serial; /* allocation generation for per-view caches */
 } rt_camera3d;
 
 /// @brief Update a camera's cached projection for the given viewport aspect.
@@ -761,13 +762,16 @@ typedef struct {
     double decal_forward[3]; /* unit projector forward; surfaces with dot(n, f) < 0 take it */
     double decal_opacity;    /* [0,1] multiplier on the decal alpha, default 1 */
     int8_t decal_projector_set;
-    uint32_t identity_serial; /* allocation generation (see rt_mesh3d.identity_serial) */
+    uint64_t identity_serial; /* allocation generation (see rt_mesh3d.identity_serial) */
 } rt_material3d;
 
 /// @brief Monotonic allocation generation for pointer-keyed history salting
-///   (rt_canvas3d_motion.c). Never returns 0; main-thread only, like object creation.
+///   (rt_canvas3d_motion.c). Never returns 0 and is safe across construction threads.
 /// @return A new non-zero process-local object identity serial.
-uint32_t rt_g3d_next_identity_serial(void);
+uint64_t rt_g3d_next_identity_serial(void);
+
+/// @brief Clear PostFX3D's weak single-canvas binding during canvas teardown.
+void postfx3d_release_canvas_binding(void *postfx, const void *canvas, uint64_t canvas_identity);
 
 /// @brief Resolve a Material3D texture slot source to the currently resident Pixels fallback.
 /// @param texture_ref Borrowed Pixels, TextureAsset3D, RenderTarget3D, or `NULL`.
@@ -1797,6 +1801,7 @@ typedef struct {
     uint8_t *readback_rgba_owned;
     size_t readback_rgba_storage_capacity;
     uint64_t readback_rgba_storage_cookie;
+    uint64_t identity_serial; /* allocation generation for per-view caches */
 } rt_canvas3d;
 
 /// @brief Compute the integrity cookie for a Canvas3D readback allocation tuple.

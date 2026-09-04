@@ -455,6 +455,15 @@ void vgfx3d_sanitize_draw_command(const struct vgfx3d_draw_cmd *src, struct vgfx
     dst->has_alpha_texture = src->has_alpha_texture != 0;
 }
 
+/// @brief Match the address and allocation-generation halves of one retained cache identity.
+int8_t vgfx3d_cache_identity_matches(const void *cached_key,
+                                     uint64_t cached_identity,
+                                     const void *requested_key,
+                                     uint64_t requested_identity) {
+    return cached_key && requested_key && cached_identity != 0 && requested_identity != 0 &&
+           cached_key == requested_key && cached_identity == requested_identity;
+}
+
 /// @brief Copy camera parameters while enforcing the common shader/input contract.
 /// @param src Borrowed camera snapshot.
 /// @param dst Receives a full copy with matrices, clip planes, fog, IBL, shadow, and boolean state

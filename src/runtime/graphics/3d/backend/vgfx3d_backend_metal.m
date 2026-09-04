@@ -422,6 +422,7 @@ extern void rt_obj_free(void *obj);
 @interface VGFXMetalGeometryCacheEntry : NSObject
 @property(nonatomic, strong) id<MTLBuffer> vertexBuffer;
 @property(nonatomic, strong) id<MTLBuffer> indexBuffer;
+@property(nonatomic) uint64_t identity;
 @property(nonatomic) uint32_t revision;
 @property(nonatomic) uint32_t vertexCount;
 @property(nonatomic) uint32_t indexCount;
@@ -437,6 +438,7 @@ extern void rt_obj_free(void *obj);
 @property(nonatomic, strong) id<MTLBuffer> deltaBuffer;
 @property(nonatomic, strong) id<MTLBuffer> normalBuffer;
 @property(nonatomic, assign) const void *key;
+@property(nonatomic) uint64_t identity;
 @property(nonatomic) uint64_t revision;
 @property(nonatomic) int32_t shapeCount;
 @property(nonatomic) uint32_t vertexCount;
@@ -453,6 +455,7 @@ extern void rt_obj_free(void *obj);
 @interface VGFXMetalExtraInfluenceCacheEntry : NSObject
 @property(nonatomic, strong) id<MTLBuffer> buffer;
 @property(nonatomic, assign) const void *key;
+@property(nonatomic) uint64_t identity;
 @property(nonatomic) uint32_t revision;
 @property(nonatomic) uint32_t vertexCount;
 @property(nonatomic) uint64_t lastUsedFrame;

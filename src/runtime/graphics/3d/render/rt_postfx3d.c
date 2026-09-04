@@ -242,6 +242,8 @@ typedef struct {
     void *owned_worker_pool;
     int32_t worker_count;
     uint64_t worker_pool_owner_cookie;
+    const void *attached_canvas;
+    uint64_t attached_canvas_identity;
 } rt_postfx3d;
 
 /// @brief Record a recoverable configuration error on the chain (NULL msg clears).
@@ -2751,10 +2753,10 @@ static void apply_ssr_cpu(rt_postfx3d *fx,
     postfx_run_bands(fx, h, apply_ssr_rows, &ctx);
 }
 
-/// @brief Auto-exposure: geometric-mean luminance -> smoothed EV multiplier.
+/// @brief Auto-exposure: stratified geometric-mean luminance -> smoothed EV multiplier.
 /// @details Target exposure centers the scene's geometric mean at middle gray
-///   (0.18), clamped to [min_ev, max_ev] in stops. Smoothing uses a fixed
-///   deterministic 1/60 s step; downward adaptation runs 2.5x faster than
+///   (0.18), clamped to [min_ev, max_ev] in stops. Smoothing integrates the
+///   canvas frame duration; downward adaptation runs 2.5x faster than
 ///   upward for the classic cinematic feel.
 /// @param fx PostFX chain storing the temporally smoothed exposure state.
 /// @param fbuf Packed RGB float framebuffer scaled in place.
@@ -2763,13 +2765,15 @@ static void apply_ssr_cpu(rt_postfx3d *fx,
 /// @param min_ev Minimum permitted exposure value in stops.
 /// @param max_ev Maximum permitted exposure value in stops.
 /// @param adapt_speed Temporal adaptation rate.
+/// @param dt Sanitized frame duration in seconds.
 static void apply_auto_exposure_cpu(rt_postfx3d *fx,
                                     float *fbuf,
                                     int32_t w,
                                     int32_t h,
                                     float min_ev,
                                     float max_ev,
-                                    float adapt_speed) {
+                                    float adapt_speed,
+                                    float dt) {
     size_t count = (size_t)w * (size_t)h;
     if (!fx || count == 0)
         return;
@@ -2780,9 +2784,18 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
     if (!(adapt_speed > 0.0f))
         adapt_speed = 3.0f;
     double log_sum = 0.0;
-    size_t stride = count > 4096 ? count / 4096 : 1; /* bounded sampling */
+    size_t sample_limit = count < 4096u ? count : 4096u;
     size_t sampled = 0;
-    for (size_t i = 0; i < count; i += stride) {
+    for (size_t sample = 0; sample < sample_limit; sample++) {
+        size_t start =
+            sample * (count / sample_limit) + (sample * (count % sample_limit)) / sample_limit;
+        size_t next_sample = sample + 1u;
+        size_t end = next_sample * (count / sample_limit) +
+                     (next_sample * (count % sample_limit)) / sample_limit;
+        size_t span = end - start;
+        uint32_t phase = (uint32_t)sample * UINT32_C(2654435761);
+        size_t offset = (size_t)(((uint64_t)phase * (uint64_t)span) >> 32u);
+        size_t i = start + offset;
         const float *pixel = &fbuf[i * 3u];
         float lum = luminance(pixel[0], pixel[1], pixel[2]);
         if (!isfinite(lum) || lum < 0.0f)
@@ -2802,11 +2815,14 @@ static void apply_auto_exposure_cpu(rt_postfx3d *fx,
         fx->auto_exposure_ev = target_ev;
         fx->auto_exposure_valid = 1;
     } else {
-        float rate = adapt_speed * (1.0f / 60.0f);
+        if (!isfinite(dt) || dt <= 0.0f)
+            dt = 1.0f / 60.0f;
+        if (dt > 0.25f)
+            dt = 0.25f;
+        float speed = adapt_speed;
         if (target_ev < fx->auto_exposure_ev)
-            rate *= 2.5f; /* adapt down (bright flash) faster than up */
-        if (rate > 1.0f)
-            rate = 1.0f;
+            speed *= 2.5f; /* adapt down (bright flash) faster than up */
+        float rate = 1.0f - expf(-speed * dt);
         fx->auto_exposure_ev += (target_ev - fx->auto_exposure_ev) * rate;
     }
     float mul = exp2f(fx->auto_exposure_ev);
@@ -3129,7 +3145,8 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                                        int32_t w,
                                        int32_t h,
                                        int hdr_active,
-                                       const postfx_scene_in_t *scene) {
+                                       const postfx_scene_in_t *scene,
+                                       float dt) {
     int32_t effect_count = postfx3d_safe_effect_count(fx);
     postfx_scratch_t scratch;
     if (!fx || !fx->enabled || effect_count == 0 || !fbuf)
@@ -3221,7 +3238,8 @@ static void postfx_apply_float_effects(rt_postfx3d *fx,
                                         h,
                                         e->p.auto_exposure.min_ev,
                                         e->p.auto_exposure.max_ev,
-                                        e->p.auto_exposure.adapt_speed);
+                                        e->p.auto_exposure.adapt_speed,
+                                        dt);
                 break;
             case POSTFX_COLOR_LUT:
                 apply_color_lut_cpu(fx, fbuf, w, h, e->p.color_lut.blend);
@@ -3260,7 +3278,8 @@ static void postfx_apply(rt_postfx3d *fx,
                          int32_t w,
                          int32_t h,
                          int32_t stride,
-                         const postfx_scene_in_t *scene) {
+                         const postfx_scene_in_t *scene,
+                         float dt) {
     size_t pixel_count;
     size_t fbuf_bytes;
     int32_t effect_count = postfx3d_safe_effect_count(fx);
@@ -3301,7 +3320,7 @@ static void postfx_apply(rt_postfx3d *fx,
 
     /* tone_active selects the linear-chain contract inside the chain: the
      * tone curve consumes linear values and performs the single gamma-out. */
-    postfx_apply_float_effects(fx, fbuf, w, h, /*hdr_active=*/tone_active, scene);
+    postfx_apply_float_effects(fx, fbuf, w, h, /*hdr_active=*/tone_active, scene, dt);
 
     /* Write back to framebuffer */
     for (int32_t y = 0; y < h; y++)
@@ -3321,7 +3340,7 @@ static void postfx_apply(rt_postfx3d *fx,
 ///          writes the result back into the 8-bit UNORM color buffer for display/readback.
 /// @param fx PostFX chain whose enabled entries are applied.
 /// @param target Render target providing HDR source storage and mutable LDR output storage.
-static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *target) {
+static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *target, float dt) {
     size_t count;
     size_t fbuf_bytes;
     int tonemapped;
@@ -3344,7 +3363,7 @@ static void postfx_apply_hdr_target(rt_postfx3d *fx, vgfx3d_rendertarget_t *targ
 
     /* HDR RT chains skip the depth-aware effects for now (documented: the LDR
      * software path is the parity reference). */
-    postfx_apply_float_effects(fx, fbuf, target->width, target->height, /*hdr_active=*/1, NULL);
+    postfx_apply_float_effects(fx, fbuf, target->width, target->height, /*hdr_active=*/1, NULL, dt);
     tonemapped = postfx_chain_has_tonemap(fx, /*hdr_active=*/1);
     for (int32_t y = 0; y < target->height; y++) {
         uint8_t *dst = target->color_buf + (size_t)y * (size_t)target->stride;
@@ -3619,6 +3638,8 @@ void *rt_postfx3d_new(void) {
     fx->effect_capacity = 0;
     fx->enabled = 1;
     fx->last_error[0] = '\0';
+    fx->attached_canvas = NULL;
+    fx->attached_canvas_identity = 0;
     rt_obj_set_finalizer(fx, rt_postfx3d_finalize);
     return fx;
 }
@@ -3917,15 +3938,48 @@ void rt_canvas3d_set_post_fx(void *canvas, void *postfx) {
      * chains carrying them attach everywhere; GPU backends keep their native
      * versions. (The old bind-time refusal is gone — one chain runs on every
      * backend.) */
-    if (postfx)
-        postfx3d_set_last_error((rt_postfx3d *)postfx, NULL);
+    if (postfx) {
+        rt_postfx3d *next = (rt_postfx3d *)postfx;
+        if (next->attached_canvas &&
+            (next->attached_canvas != c || next->attached_canvas_identity != c->identity_serial)) {
+            postfx3d_set_last_error(
+                next, "PostFX3D is already attached to another Canvas3D; detach it first");
+            return;
+        }
+        postfx3d_set_last_error(next, NULL);
+    }
     if (c->postfx == postfx)
         return;
     if (postfx)
         rt_obj_retain_maybe(postfx);
-    if (c->postfx && rt_obj_release_check0(c->postfx))
-        rt_obj_free(c->postfx);
+    if (c->postfx) {
+        rt_postfx3d *previous = postfx3d_checked(c->postfx);
+        if (previous && previous->attached_canvas == c &&
+            previous->attached_canvas_identity == c->identity_serial) {
+            previous->attached_canvas = NULL;
+            previous->attached_canvas_identity = 0;
+            postfx3d_reset_temporal_state(previous);
+        }
+        if (rt_obj_release_check0(c->postfx))
+            rt_obj_free(c->postfx);
+    }
     c->postfx = postfx;
+    if (postfx) {
+        rt_postfx3d *next = (rt_postfx3d *)postfx;
+        next->attached_canvas = c;
+        next->attached_canvas_identity = c->identity_serial;
+        postfx3d_reset_temporal_state(next);
+    }
+}
+
+/// @brief Clear a chain's weak canvas owner before Canvas3D releases its retained reference.
+void postfx3d_release_canvas_binding(void *postfx, const void *canvas, uint64_t canvas_identity) {
+    rt_postfx3d *fx = postfx3d_checked(postfx);
+    if (!fx || fx->attached_canvas != canvas || fx->attached_canvas_identity != canvas_identity)
+        return;
+    fx->attached_canvas = NULL;
+    fx->attached_canvas_identity = 0;
+    postfx3d_reset_temporal_state(fx);
 }
 
 /// @brief `Canvas3D.PostFX` — borrowed retained post-effect chain (ADR 0233).
@@ -4111,6 +4165,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
     int32_t width = 0;
     int32_t height = 0;
     int32_t stride = 0;
+    float dt = 1.0f / 60.0f;
 
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
     if (!c)
@@ -4118,6 +4173,11 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
     rt_postfx3d *fx = postfx3d_checked(c->postfx);
     if (!fx || !fx->enabled || postfx3d_safe_effect_count(fx) == 0)
         return;
+    if (c->delta_time_us > 0) {
+        double seconds = (double)c->delta_time_us / 1000000.0;
+        if (isfinite(seconds) && seconds > 0.0)
+            dt = (float)(seconds > 0.25 ? 0.25 : seconds);
+    }
     /* Depth-aware effects (SSAO/DOF/MotionBlur/SSR/TAA) run on the CPU too:
      * scene inputs come from the software depth buffer (or the render target's)
      * plus the frame's cached view-projection. */
@@ -4135,7 +4195,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
             ((rt_rendertarget3d *)c->render_target_owner)->display_chain_valid = 0;
         if (vgfx3d_rendertarget_is_hdr(c->render_target) && c->render_target->hdr_color_valid &&
             c->render_target->hdr_color_buf) {
-            postfx_apply_hdr_target(fx, c->render_target);
+            postfx_apply_hdr_target(fx, c->render_target, dt);
             return;
         }
         pixels = c->render_target->color_buf;
@@ -4211,7 +4271,7 @@ void rt_postfx3d_apply_to_canvas(void *canvas) {
             }
             break;
         }
-        postfx_apply(fx, pixels, width, height, stride, &scene);
+        postfx_apply(fx, pixels, width, height, stride, &scene, dt);
         if (scene.has_inv) {
             memcpy(fx->cpu_prev_vp, scene.vp, sizeof(fx->cpu_prev_vp));
             fx->cpu_prev_vp_valid = 1;

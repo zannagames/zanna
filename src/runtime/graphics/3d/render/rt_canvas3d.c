@@ -1253,6 +1253,7 @@ static void canvas3d_bind_morph_cmd(rt_canvas3d *c,
     cmd->prev_morph_weights = NULL;
     cmd->morph_shape_count = 0;
     cmd->morph_key = NULL;
+    cmd->morph_identity = 0;
     cmd->morph_revision = 0;
     vertex_count = rt_mesh3d_safe_vertex_count(mesh);
     shape_count = mesh->morph_shape_count;
@@ -1335,6 +1336,8 @@ static void canvas3d_bind_morph_cmd(rt_canvas3d *c,
     }
     cmd->morph_shape_count = shape_count;
     cmd->morph_key = mesh->morph_targets_ref;
+    cmd->morph_identity =
+        mesh->morph_targets_ref ? rt_morphtarget3d_get_identity_serial(mesh->morph_targets_ref) : 0;
     cmd->morph_revision = mesh->morph_targets_ref
                               ? rt_morphtarget3d_get_payload_generation(mesh->morph_targets_ref)
                               : 0;
@@ -1873,6 +1876,7 @@ static void rt_canvas3d_finalize(void *obj) {
     rt_canvas3d_invalidate_skybox_cache(c);
 
     vgfx3d_postfx_chain_free(&c->frame_postfx_chain);
+    postfx3d_release_canvas_binding(c->postfx, c, c->identity_serial);
     canvas3d_release_owned_ref(&c->postfx);
     canvas3d_release_owned_ref((void **)&c->render_target_owner);
     c->render_target = NULL;
@@ -2050,6 +2054,7 @@ static void *canvas3d_new_impl(rt_string title,
         return NULL;
     }
     memset(c, 0, sizeof(rt_canvas3d));
+    c->identity_serial = rt_g3d_next_identity_serial();
     c->offscreen = offscreen ? 1 : 0;
     c->vsync_enabled = offscreen ? 0 : 1;
     c->owns_window = 1;

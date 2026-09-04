@@ -220,8 +220,8 @@ vgfx3d_metal_readback_kind_t vgfx3d_metal_choose_readback_kind(int8_t gpu_postfx
 /// @param has_command_buffer Nonzero when the frame's command buffer is open.
 /// @return 1 when the display resolve should run, otherwise 0.
 int8_t vgfx3d_metal_should_resolve_render_target_display(int8_t chain_valid,
-                                                          int8_t pipelines_ready,
-                                                          int8_t has_command_buffer);
+                                                         int8_t pipelines_ready,
+                                                         int8_t has_command_buffer);
 /// @brief Clamp light shadow indices to the currently completed contiguous shadow slots.
 /// @param shadow_index Requested zero-based shadow slot.
 /// @param shadow_count Number of complete contiguous slots available for sampling.
@@ -240,6 +240,7 @@ int vgfx3d_metal_project_shadow_coord(const float *shadow_vp,
 /// @brief Decide whether to reuse a cached morph-target Metal buffer (key + revision + counts
 /// match).
 /// @param cached_key Identity key recorded by the cached payload.
+/// @param cached_identity Allocation generation recorded by the cached payload.
 /// @param cached_revision Revision recorded by the cached payload.
 /// @param cached_shape_count Sanitized shape count recorded by the cached payload.
 /// @param cached_vertex_count Vertex count recorded by the cached payload.
@@ -247,6 +248,7 @@ int vgfx3d_metal_project_shadow_coord(const float *shadow_vp,
 /// @param cmd Borrowed draw command requesting morph data.
 /// @return 1 when every cache identity and layout field matches, otherwise 0.
 int vgfx3d_metal_should_reuse_morph_cache(const void *cached_key,
+                                          uint64_t cached_identity,
                                           uint64_t cached_revision,
                                           int32_t cached_shape_count,
                                           uint32_t cached_vertex_count,

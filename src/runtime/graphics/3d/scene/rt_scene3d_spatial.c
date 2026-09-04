@@ -121,8 +121,24 @@ static void scene3d_spatial_prepare_rebuild(rt_scene3d_spatial_index *index) {
         index->nodes = NULL;
         index->node_capacity = 0;
     }
+    if (index->mesh_dependencies && index->mesh_dependency_count >= 0 &&
+        index->mesh_dependency_count <= index->mesh_dependency_capacity &&
+        index->mesh_dependency_capacity <= SCENE3D_SPATIAL_ENTRY_MAX) {
+        for (int32_t i = 0; i < index->mesh_dependency_count; i++) {
+            rt_mesh3d *mesh = index->mesh_dependencies[i].mesh;
+            if (mesh && rt_obj_release_check0(mesh))
+                rt_obj_free(mesh);
+        }
+    } else if (!index->mesh_dependencies || index->mesh_dependency_capacity < 0 ||
+               index->mesh_dependency_capacity > SCENE3D_SPATIAL_ENTRY_MAX) {
+        free(index->mesh_dependencies);
+        index->mesh_dependencies = NULL;
+        index->mesh_dependency_capacity = 0;
+    }
     index->count = 0;
     index->node_count = 0;
+    index->mesh_dependency_count = 0;
+    index->mesh_dependencies_complete = 1;
     index->root_node = -1;
     scene3d_spatial_invalidate(index);
 }
@@ -136,13 +152,92 @@ static int scene3d_spatial_storage_valid(const rt_scene3d_spatial_index *index) 
         index->entry_index_capacity < index->count ||
         index->entry_index_capacity > SCENE3D_SPATIAL_ENTRY_MAX || index->node_count < 0 ||
         index->node_count > SCENE3D_SPATIAL_NODE_MAX || index->node_capacity < index->node_count ||
-        index->node_capacity > SCENE3D_SPATIAL_NODE_MAX)
+        index->node_capacity > SCENE3D_SPATIAL_NODE_MAX || index->mesh_dependency_count < 0 ||
+        index->mesh_dependency_count > index->mesh_dependency_capacity ||
+        index->mesh_dependency_capacity > SCENE3D_SPATIAL_ENTRY_MAX ||
+        (index->mesh_dependency_count > 0 && !index->mesh_dependencies))
         return 0;
     if (index->count == 0)
         return index->node_count == 0 && index->root_node == -1;
     return index->entries && index->entry_indices && index->nodes && index->node_count > 0 &&
            index->root_node >= 0 && index->root_node < index->node_count &&
            index->nodes[index->root_node].parent == -1;
+}
+
+/// @brief Add one unique live mesh revision to a scene-local dependency snapshot.
+static int scene3d_spatial_track_mesh_dependency(rt_scene3d_spatial_index *index, void *mesh_obj) {
+    rt_mesh3d *mesh = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
+    int32_t capacity;
+    rt_scene3d_spatial_mesh_dependency *grown;
+    if (!index || !mesh)
+        return 1;
+    for (int32_t i = 0; i < index->mesh_dependency_count; i++) {
+        if (index->mesh_dependencies[i].mesh == mesh &&
+            index->mesh_dependencies[i].identity_serial == mesh->identity_serial)
+            return 1;
+    }
+    if (index->mesh_dependency_count >= SCENE3D_SPATIAL_ENTRY_MAX)
+        return 0;
+    if (index->mesh_dependency_count >= index->mesh_dependency_capacity) {
+        capacity = index->mesh_dependency_capacity < 16 ? 16 : index->mesh_dependency_capacity * 2;
+        if (capacity < index->mesh_dependency_capacity || capacity > SCENE3D_SPATIAL_ENTRY_MAX)
+            capacity = SCENE3D_SPATIAL_ENTRY_MAX;
+        grown = (rt_scene3d_spatial_mesh_dependency *)realloc(index->mesh_dependencies,
+                                                              (size_t)capacity * sizeof(*grown));
+        if (!grown)
+            return 0;
+        index->mesh_dependencies = grown;
+        index->mesh_dependency_capacity = capacity;
+    }
+    rt_obj_retain_maybe(mesh);
+    index->mesh_dependencies[index->mesh_dependency_count++] =
+        (rt_scene3d_spatial_mesh_dependency){mesh, mesh->identity_serial, mesh->geometry_revision};
+    return 1;
+}
+
+/// @brief Snapshot every mesh variant contributing to one node's conservative draw bounds.
+static int scene3d_spatial_track_node_mesh_dependencies(rt_scene3d_spatial_index *index,
+                                                        rt_scene_node3d *node) {
+    if (!index || !node || !scene3d_spatial_track_mesh_dependency(index, node->mesh))
+        return 0;
+    for (int32_t i = 0, count = scene3d_node_lod_count(node); i < count; i++) {
+        if (!scene3d_spatial_track_mesh_dependency(index, node->lod_levels[i].mesh))
+            return 0;
+    }
+    return !node->has_impostor || scene3d_spatial_track_mesh_dependency(index, node->impostor_mesh);
+}
+
+/// @brief Determine whether a process-wide mesh mutation affected this scene's unique meshes.
+static int scene3d_spatial_mesh_dependencies_unchanged(rt_scene3d_spatial_index *index) {
+    if (!index || !index->mesh_dependencies_complete)
+        return 0;
+    index->last_mesh_dependency_probe_count = 0;
+    for (int32_t i = 0; i < index->mesh_dependency_count; i++) {
+        rt_scene3d_spatial_mesh_dependency *dependency = &index->mesh_dependencies[i];
+        rt_mesh3d *mesh =
+            (rt_mesh3d *)rt_g3d_checked_or_null(dependency->mesh, RT_G3D_MESH3D_CLASS_ID);
+        index->last_mesh_dependency_probe_count++;
+        if (!mesh || mesh->identity_serial != dependency->identity_serial ||
+            mesh->geometry_revision != dependency->geometry_revision)
+            return 0;
+    }
+    return 1;
+}
+
+/// @brief Refresh dependency revisions after a relevant scene refit.
+static void scene3d_spatial_refresh_mesh_dependencies(rt_scene3d_spatial_index *index) {
+    if (!index || !index->mesh_dependencies_complete)
+        return;
+    for (int32_t i = 0; i < index->mesh_dependency_count; i++) {
+        rt_scene3d_spatial_mesh_dependency *dependency = &index->mesh_dependencies[i];
+        rt_mesh3d *mesh =
+            (rt_mesh3d *)rt_g3d_checked_or_null(dependency->mesh, RT_G3D_MESH3D_CLASS_ID);
+        if (!mesh || mesh->identity_serial != dependency->identity_serial) {
+            index->mesh_dependencies_complete = 0;
+            return;
+        }
+        dependency->geometry_revision = mesh->geometry_revision;
+    }
 }
 
 /// @brief Validate one cached entry before query/refit dereference.
@@ -1160,6 +1255,8 @@ static int scene3d_spatial_refresh_mapped_entry(rt_scene3d_spatial_index *index,
     entry = &index->entries[entry_index];
     if (!scene3d_spatial_refresh_entry_bounds(entry))
         return 0;
+    if (!scene3d_spatial_track_node_mesh_dependencies(index, node))
+        index->mesh_dependencies_complete = 0;
     (*refresh_attempts)++;
     if (entry->leaf_node >= 0 && entry->leaf_node < index->node_count) {
         if (*refresh_attempts < (index->count + 7) / 8 &&
@@ -1198,6 +1295,7 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
         index->mesh_geometry_epoch != rt_mesh3d_global_geometry_epoch()) {
         /* Shared mesh mutations cannot identify their consuming scene nodes cheaply, and dirty
          * queue allocation failure deliberately lands here. Preserve the complete safe scan. */
+        index->last_full_geometry_scan_count = index->count;
         for (int32_t i = 0; i < index->count; ++i) {
             rt_scene3d_spatial_entry *entry = &index->entries[i];
             uint32_t geometry_now;
@@ -1215,6 +1313,7 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
                 return scene3d_spatial_rebuild(scene);
         }
     } else {
+        index->last_full_geometry_scan_count = 0;
         int32_t traversal_budget = SCENE3D_SPATIAL_ANCESTOR_MAX;
         for (int32_t root_index = 0; root_index < index->dirty_node_count; root_index++) {
             int32_t walk_count = 0;
@@ -1248,6 +1347,7 @@ static int scene3d_spatial_refit(rt_scene3d *scene) {
     index->valid = 1;
     index->topology_dirty = 0;
     index->mesh_geometry_epoch = rt_mesh3d_global_geometry_epoch();
+    scene3d_spatial_refresh_mesh_dependencies(index);
     index->dirty_node_count = 0;
     index->dirty_all = 0;
     if (refresh_attempts)
@@ -1387,6 +1487,8 @@ static int scene3d_spatial_rebuild(rt_scene3d *scene) {
                 free(stack);
                 return 0;
             }
+            if (!scene3d_spatial_track_node_mesh_dependencies(index, current))
+                index->mesh_dependencies_complete = 0;
         }
         for (int32_t i = scene3d_node_child_count(current) - 1; i >= 0; --i) {
             if (!rt_g3d_has_class(current->children[i], RT_G3D_SCENENODE3D_CLASS_ID))
@@ -1419,6 +1521,8 @@ static int scene3d_spatial_rebuild(rt_scene3d *scene) {
     index->build_count++;
     index->refit_count = 0;
     index->mesh_geometry_epoch = rt_mesh3d_global_geometry_epoch();
+    index->last_mesh_dependency_probe_count = 0;
+    index->last_full_geometry_scan_count = 0;
     index->dirty_node_count = 0;
     index->dirty_all = 0;
     return 1;
@@ -1429,15 +1533,23 @@ static int scene3d_spatial_rebuild(rt_scene3d *scene) {
 /// @param scene Borrowed scene whose index is requested.
 /// @return 1 if a usable index is available, 0 if it could not be built.
 static int scene3d_spatial_ensure(rt_scene3d *scene) {
+    uint64_t global_mesh_epoch;
     if (!scene || !scene->use_spatial_index)
         return 0;
     if (scene->spatial_index.valid && !scene3d_spatial_storage_valid(&scene->spatial_index))
         scene3d_spatial_invalidate(&scene->spatial_index);
-    if (scene->spatial_index.valid && !scene->spatial_index.dirty &&
-        scene->spatial_index.mesh_geometry_epoch == rt_mesh3d_global_geometry_epoch())
-        return 1;
-    if (scene->spatial_index.valid && !scene->spatial_index.dirty)
+    global_mesh_epoch = rt_mesh3d_global_geometry_epoch();
+    if (scene->spatial_index.valid && !scene->spatial_index.dirty) {
+        scene->spatial_index.last_mesh_dependency_probe_count = 0;
+        scene->spatial_index.last_full_geometry_scan_count = 0;
+        if (scene->spatial_index.mesh_geometry_epoch == global_mesh_epoch)
+            return 1;
+        if (scene3d_spatial_mesh_dependencies_unchanged(&scene->spatial_index)) {
+            scene->spatial_index.mesh_geometry_epoch = global_mesh_epoch;
+            return 1;
+        }
         scene->spatial_index.dirty = 1;
+    }
     if (scene->spatial_index.valid && scene->spatial_index.dirty &&
         !scene->spatial_index.topology_dirty)
         return scene3d_spatial_refit(scene);

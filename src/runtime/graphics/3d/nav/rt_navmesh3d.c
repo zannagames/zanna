@@ -137,6 +137,9 @@ typedef struct {
                         query */
     int32_t area_id; /* 0 = default, >0 indexes nm->area_names[id-1] */
     float traversal_cost; /* >=1 multiplier used by A* */
+    /* Allocation-free SamplePosition duplicate suppression. Concurrent queries may overwrite one
+     * another's stamps, which can only cause a redundant probe and can never hide a candidate. */
+    volatile uint64_t sample_visit_generation;
 } nav_triangle_t;
 
 typedef struct {
@@ -257,6 +260,7 @@ typedef struct {
     int64_t qgrid_fallback_count;
     volatile int sample_last_triangle_probes;
     volatile int sample_last_used_fallback;
+    volatile uint64_t sample_query_generation;
     /* Nonzero after a complete triangle/query representation has first been published. A rebuild
      * allocation failure can then distinguish an initial no-index fallback from a mutation that
      * must retain the prior representation bit-for-bit. */
