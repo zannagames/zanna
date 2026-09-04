@@ -1827,6 +1827,41 @@ void rt_mouse_clear_canvas_if_matches(void *canvas) {
         g_mouse_canvas = NULL;
 }
 
+/// @brief Cancel every held input edge when the active window loses focus.
+/// @details Platform backends clear their own state before publishing FOCUS_LOST. The runtime
+///          keeps a separate snapshot, so it must be cleared as well or the next physical press
+///          is filtered as a repeat of a button/key that is no longer held. Focus cancellation
+///          intentionally publishes no release/click edges: losing focus must never activate a
+///          control, and gesture owners can detect cancellation from the cleared level state.
+void rt_input_focus_lost(void) {
+    RT_ASSERT_MAIN_THREAD();
+
+    memset(g_key_state, 0, sizeof(g_key_state));
+    memset(g_pressed_this_frame, 0, sizeof(g_pressed_this_frame));
+    memset(g_released_this_frame, 0, sizeof(g_released_this_frame));
+    g_pressed_count = 0;
+    g_released_count = 0;
+    g_text_length = 0;
+
+    for (int button = 0; button < ZANNA_MOUSE_BUTTON_MAX; ++button) {
+        g_mouse_button_state[button] = false;
+        g_mouse_button_pressed[button] = false;
+        g_mouse_button_released[button] = false;
+        g_mouse_press_time[button] = 0;
+        g_mouse_last_click_time[button] = -1;
+        g_mouse_clicked[button] = false;
+        g_mouse_double_clicked[button] = false;
+    }
+    g_mouse_wheel_x = 0.0;
+    g_mouse_wheel_y = 0.0;
+    g_mouse_prev_x = g_mouse_x;
+    g_mouse_prev_y = g_mouse_y;
+    g_mouse_delta_x = 0;
+    g_mouse_delta_y = 0;
+    g_mouse_delta_fx = 0.0;
+    g_mouse_delta_fy = 0.0;
+}
+
 //=============================================================================
 // Position Methods
 //=============================================================================

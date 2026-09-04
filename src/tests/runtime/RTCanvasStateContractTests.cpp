@@ -68,6 +68,8 @@ static float g_initial_scale = 1.0f;
 static int64_t g_clock_us = 0;
 static int g_pump_events_result = 1;
 static int g_poll_event_calls = 0;
+static int32_t g_next_event_type = VGFX_EVENT_NONE;
+static int g_focus_lost_calls = 0;
 static int g_mouse_pos_calls = 0;
 static int g_destroyed_windows = 0;
 static void *g_object_payloads[16];
@@ -218,6 +220,18 @@ static void test_poll_tears_down_window_when_event_pump_fails() {
     g_pump_events_result = 1;
 }
 
+static void test_poll_forwards_focus_loss_to_runtime_input() {
+    g_initial_scale = 1.0f;
+    g_pump_events_result = 1;
+    g_next_event_type = VGFX_EVENT_FOCUS_LOST;
+    g_focus_lost_calls = 0;
+    rt_canvas *canvas = new_canvas();
+    assert(canvas != nullptr);
+
+    assert(rt_canvas_poll(canvas) == VGFX_EVENT_FOCUS_LOST);
+    assert(g_focus_lost_calls == 1);
+}
+
 static void test_window_position_and_monitor_scalar_wrappers() {
     g_initial_scale = 1.0f;
     rt_canvas *canvas = new_canvas();
@@ -353,6 +367,10 @@ extern "C" void rt_mouse_update_pos(int64_t, int64_t) {}
 extern "C" void rt_mouse_button_down(int64_t) {}
 
 extern "C" void rt_mouse_button_up(int64_t) {}
+
+extern "C" void rt_input_focus_lost(void) {
+    g_focus_lost_calls++;
+}
 
 extern "C" void rt_mouse_update_wheel(double, double) {}
 
@@ -492,8 +510,13 @@ extern "C" int32_t vgfx_pump_events(vgfx_window_t) {
     return g_pump_events_result;
 }
 
-extern "C" int32_t vgfx_poll_event(vgfx_window_t, vgfx_event_t *) {
+extern "C" int32_t vgfx_poll_event(vgfx_window_t, vgfx_event_t *event) {
     g_poll_event_calls++;
+    if (g_next_event_type != VGFX_EVENT_NONE) {
+        event->type = (vgfx_event_type_t)g_next_event_type;
+        g_next_event_type = VGFX_EVENT_NONE;
+        return 1;
+    }
     return 0;
 }
 
@@ -535,6 +558,7 @@ extern "C" void vgfx_set_window_size(vgfx_window_t window, int32_t w, int32_t h)
 extern "C" void vgfx_set_fullscreen(vgfx_window_t, int32_t) {}
 
 extern "C" void vgfx_set_title(vgfx_window_t, const char *) {}
+
 extern "C" void vgfx_set_icon(vgfx_window_t, const uint32_t *, int32_t, int32_t) {}
 
 extern "C" void vgfx_set_fps(vgfx_window_t window, int32_t fps) {
@@ -603,6 +627,7 @@ int main() {
     test_flip_timing_is_overflow_safe_and_recovers_after_clock_reset();
     test_shared_graphics_integer_helpers_cover_extremes();
     test_poll_tears_down_window_when_event_pump_fails();
+    test_poll_forwards_focus_loss_to_runtime_input();
     test_window_position_and_monitor_scalar_wrappers();
     test_title_cache_preserves_embedded_nul_bytes();
     return 0;

@@ -1,0 +1,49 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_canvas3d_adopted_coordinates.zia
+// Purpose: Cross-layer regression for the public coordinate space retained
+//          across fullscreen Canvas -> Canvas3D window adoption.
+//
+//===----------------------------------------------------------------------===//
+module test_canvas3d_adopted_coordinates;
+
+bind Zanna.Graphics;
+bind Zanna.Game3D;
+bind Zanna.Terminal as Terminal;
+
+func start() {
+    // Deliberately not the monitor's aspect ratio: one fullscreen axis has
+    // surplus backing pixels, which caught the old vgfx-size substitution.
+    var canvas = Canvas.New("Canvas3D adopted coordinate probe", 333, 211);
+    canvas.Fullscreen();
+    var beforeW = canvas.Width;
+    var beforeH = canvas.Height;
+
+    var world = World3D.WithCanvasCamera(canvas, 60.0, 0.1, 100.0);
+    if world == null || world.Canvas == null {
+        Terminal.Say("FAIL adopted world construction");
+        return;
+    }
+    if world.Canvas.Width != beforeW || world.Canvas.Height != beforeH {
+        Terminal.Say("FAIL adopted coordinate extent " +
+                     toString(beforeW) + "x" + toString(beforeH) + " -> " +
+                     toString(world.Canvas.Width) + "x" +
+                     toString(world.Canvas.Height));
+        world.Destroy();
+        return;
+    }
+    world.Destroy();
+
+    // Returning the loan must restore the same 2D public coordinate space.
+    if canvas.Width != beforeW || canvas.Height != beforeH {
+        Terminal.Say("FAIL returned coordinate extent");
+        return;
+    }
+    canvas.Windowed();
+    Terminal.Say("PASS adopted Canvas coordinate space");
+}

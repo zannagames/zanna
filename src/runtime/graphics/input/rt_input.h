@@ -708,6 +708,11 @@ void rt_keyboard_clear_canvas_if_matches(void *canvas);
 /// @param canvas Canvas being destroyed; NULL is ignored.
 void rt_mouse_clear_canvas_if_matches(void *canvas);
 
+/// @brief Cancel all held keyboard and mouse input after the active window loses focus.
+/// @details Clears level and per-frame edge state without synthesizing activation-capable
+/// release edges. Callers can treat the resulting up level as gesture cancellation.
+void rt_input_focus_lost(void);
+
 //=========================================================================
 // Position Methods
 //=========================================================================

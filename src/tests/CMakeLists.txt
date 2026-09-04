@@ -2912,6 +2912,20 @@ if (EXISTS "${CANVAS3D_SYNTHETIC_INPUT_PROBE}")
             TIMEOUT 30)
 endif ()
 
+set(CANVAS3D_ADOPTED_COORDINATES_PROBE
+    "${G3D_TESTS_DIR}/test_canvas3d_adopted_coordinates.zia")
+if (EXISTS "${CANVAS3D_ADOPTED_COORDINATES_PROBE}")
+    add_test(NAME g3d_test_canvas3d_adopted_coordinates
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_ADOPTED_COORDINATES_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_adopted_coordinates PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS adopted Canvas coordinate space"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            RUN_SERIAL TRUE
+            TIMEOUT 30)
+endif ()
+
 set(GAME3D_CAMERA_CONTROLLERS_PROBE "${G3D_TESTS_DIR}/test_game3d_camera_controllers_probe.zia")
 if (EXISTS "${GAME3D_CAMERA_CONTROLLERS_PROBE}")
     add_test(NAME g3d_test_game3d_camera_controllers_probe

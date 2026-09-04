@@ -553,6 +553,8 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
             rt_keyboard_on_vgfx_key_up((int64_t)canvas->last_event.data.key.key);
         else if (canvas->last_event.type == VGFX_EVENT_TEXT_INPUT)
             rt_keyboard_text_input((int32_t)canvas->last_event.data.text.codepoint);
+        else if (canvas->last_event.type == VGFX_EVENT_FOCUS_LOST)
+            rt_input_focus_lost();
 
         // Forward mouse events to mouse module (convert physical -> logical).
         // While captured, absolute move events are skipped — the delta comes

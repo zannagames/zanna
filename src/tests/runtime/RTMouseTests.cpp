@@ -408,6 +408,31 @@ static void test_canvas_detach() {
     printf("test_canvas_detach: PASSED\n");
 }
 
+static void test_focus_loss_cancels_held_input_and_allows_next_click() {
+    rt_mouse_begin_frame();
+    rt_mouse_update_pos(20, 12);
+    rt_mouse_button_down(ZANNA_MOUSE_BUTTON_LEFT);
+    rt_keyboard_on_key_down(ZANNA_KEY_A);
+    assert(rt_mouse_is_down(ZANNA_MOUSE_BUTTON_LEFT) == 1);
+    assert(rt_keyboard_is_down(ZANNA_KEY_A) == 1);
+
+    rt_input_focus_lost();
+    assert(rt_mouse_is_down(ZANNA_MOUSE_BUTTON_LEFT) == 0);
+    assert(rt_mouse_was_pressed(ZANNA_MOUSE_BUTTON_LEFT) == 0);
+    assert(rt_mouse_was_released(ZANNA_MOUSE_BUTTON_LEFT) == 0);
+    assert(rt_mouse_was_clicked(ZANNA_MOUSE_BUTTON_LEFT) == 0);
+    assert(rt_mouse_delta_x() == 0);
+    assert(rt_mouse_delta_y() == 0);
+    assert(rt_keyboard_is_down(ZANNA_KEY_A) == 0);
+    assert(rt_keyboard_was_pressed(ZANNA_KEY_A) == 0);
+    assert(rt_keyboard_was_released(ZANNA_KEY_A) == 0);
+
+    rt_mouse_button_down(ZANNA_MOUSE_BUTTON_LEFT);
+    rt_mouse_button_up(ZANNA_MOUSE_BUTTON_LEFT);
+    assert(rt_mouse_was_clicked(ZANNA_MOUSE_BUTTON_LEFT) == 1);
+    printf("test_focus_loss_cancels_held_input_and_allows_next_click: PASSED\n");
+}
+
 // ============================================================================
 // Boundary Cases
 // ============================================================================
@@ -455,6 +480,7 @@ int main() {
     test_scroll_wheel_rejects_nonfinite_and_saturates();
     test_cursor_control();
     test_canvas_detach();
+    test_focus_loss_cancels_held_input_and_allows_next_click();
     test_boundary_cases();
 
     printf("\nAll tests passed!\n");

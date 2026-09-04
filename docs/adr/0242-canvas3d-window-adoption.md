@@ -1,7 +1,7 @@
 ---
 status: draft
 audience: contributors
-last-verified: 2026-08-07
+last-verified: 2026-09-03
 ---
 
 # ADR 0242: Canvas3D Window Adoption (Single-Window 2D→3D Handoff)
@@ -61,6 +61,15 @@ Fullscreen: the adopted window keeps whatever mode the 2D canvas set
 already work). The Canvas3D adoption branch forces its own `fullscreen=0`
 bookkeeping so it never fights the 2D canvas over mode ownership.
 
+The borrowed window's **public coordinate scale is also lender-owned**.
+Canvas3D must not replace it with the platform backing scale during
+construction: a fullscreen Canvas can deliberately expose its original
+logical design extent while its framebuffer fills the display. Canvas3D
+derives the active physical-to-public scale from the window's physical and
+public extents for resize and mouse conversion, so `Mouse.X/Y`,
+`Canvas3D.Width/Height`, and the lender's `Canvas.Width/Height` remain in the
+same coordinate space throughout adoption and after return.
+
 ## Consequences
 
 - Single-window games become possible with zero platform-specific code: the
@@ -71,6 +80,10 @@ bookkeeping so it never fights the 2D canvas over mode ownership.
   attach/detach was the only per-platform risk and is already exercised by
   `vgfx_set_gpu_present`.
 - Existing constructors are unchanged; adoption is opt-in.
+- Fullscreen adoption preserves the lender's logical extent rather than
+  silently switching input and Canvas3D dimensions to backing pixels.
+- `g3d_test_canvas3d_adopted_coordinates` exercises the fullscreen handoff as
+  a displayed, cross-layer regression test.
 
 ## Links
 
