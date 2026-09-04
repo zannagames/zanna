@@ -583,11 +583,27 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
         } else if (canvas->last_event.type == VGFX_EVENT_RESIZE) {
             /* Keep the cached logical size in sync with OS-driven resizes (user drag,
              * Maximize/Restore); otherwise Canvas.Width/Height report the creation
-             * size forever while draw/clip use the live window size. */
-            if (canvas->last_event.data.resize.logical_width > 0)
-                canvas->logical_width = (int64_t)canvas->last_event.data.resize.logical_width;
-            if (canvas->last_event.data.resize.logical_height > 0)
-                canvas->logical_height = (int64_t)canvas->last_event.data.resize.logical_height;
+             * size forever while draw/clip use the live window size.
+             *
+             * Native fullscreen is the exception: the designed logical size IS the
+             * contract there (rt_canvas_effective_coord_scale scales the presentation
+             * to the monitor), so the monitor-sized RESIZE must not replace it. And a
+             * windowed size is derived from the event's PHYSICAL extent and the
+             * backing scale, not from the event's logical fields: those were computed
+             * with whatever coordinate scale was live when the platform enqueued the
+             * event (a fullscreen presentation scale on the way back to windowed). */
+            if (vgfx_is_fullscreen(canvas->gfx_win) != 1) {
+                const vgfx_event_t *evt = &canvas->last_event;
+                float backing = rtg_sanitize_scale(vgfx_window_get_scale(canvas->gfx_win));
+                if (evt->data.resize.width > 0)
+                    canvas->logical_width = rtg_scale_down_i64(evt->data.resize.width, backing);
+                else if (evt->data.resize.logical_width > 0)
+                    canvas->logical_width = (int64_t)evt->data.resize.logical_width;
+                if (evt->data.resize.height > 0)
+                    canvas->logical_height = rtg_scale_down_i64(evt->data.resize.height, backing);
+                else if (evt->data.resize.logical_height > 0)
+                    canvas->logical_height = (int64_t)evt->data.resize.logical_height;
+            }
             canvas->window_state_synced = 0;
         }
     }

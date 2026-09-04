@@ -1968,6 +1968,13 @@ function(zanna_add_runtime_tests)
             ${CMAKE_SOURCE_DIR}/src/runtime/graphics/2d/rt_canvas.c)
     target_compile_definitions(test_rt_canvas_state_contract PRIVATE ZANNA_ENABLE_GRAPHICS=1)
 
+    # Canvas3D coordinate-space invariant (ADR 0242): mouse, Width/Height, and
+    # overlay share one scale in every window shape. Pure header contract, no
+    # backend, so it runs in every build configuration including headless CI.
+    zanna_add_isolated_runtime_test(test_rt_canvas3d_coords_contract
+            ${ZANNA_TESTS_DIR}/runtime/RTCanvas3DCoordsContractTests.cpp)
+    target_compile_definitions(test_rt_canvas3d_coords_contract PRIVATE ZANNA_ENABLE_GRAPHICS=1)
+
     zanna_add_isolated_runtime_test(test_rt_bitmapfont_contract
             ${ZANNA_TESTS_DIR}/runtime/RTBitmapFontContractTests.cpp
             ${CMAKE_SOURCE_DIR}/src/runtime/graphics/text/rt_bitmapfont.c)

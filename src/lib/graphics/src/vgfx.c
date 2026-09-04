@@ -294,8 +294,13 @@ int vgfx_internal_resize_framebuffer(struct vgfx_window *win, int32_t width, int
         return 0;
     }
     if (width > VGFX_MAX_WIDTH || height > VGFX_MAX_HEIGHT) {
+        /* Loud on purpose: a refused resize leaves the framebuffer at its old size while the
+         * platform stretches it over the new window extent and reports mouse events in the new
+         * extent, so every hit test skews. The cap must be raised, not the window shrunk. */
         vgfx_internal_set_error(VGFX_ERR_INVALID_PARAM,
-                                "Framebuffer resize dimensions exceed maximum");
+                                "Framebuffer resize dimensions exceed VGFX_MAX_WIDTH/HEIGHT; the "
+                                "window keeps its previous framebuffer size (drawing and mouse "
+                                "coordinates will not match the window)");
         return 0;
     }
     if (win->width == width && win->height == height)
@@ -1198,8 +1203,9 @@ vgfx_window_t vgfx_create_window(const vgfx_window_params_t *params) {
 
     /* Validate dimensions against safety limits */
     if (actual_params.width > VGFX_MAX_WIDTH || actual_params.height > VGFX_MAX_HEIGHT) {
-        vgfx_internal_set_error(VGFX_ERR_INVALID_PARAM,
-                                "Window dimensions exceed maximum (4096x4096)");
+        vgfx_internal_set_error(
+            VGFX_ERR_INVALID_PARAM,
+            "Window dimensions exceed maximum (VGFX_MAX_WIDTH x VGFX_MAX_HEIGHT)");
         return NULL;
     }
 
@@ -1509,44 +1515,44 @@ static void vgfx_embed_input_tap(vgfx_window_t window) {
         vgfx_event_t out;
         memset(&out, 0, sizeof(out));
         switch (in.kind) {
-        case VGFX_EMBED_EVENT_MOUSE_MOVE:
-            out.type = VGFX_EVENT_MOUSE_MOVE;
-            out.data.mouse_move.x = in.a;
-            out.data.mouse_move.y = in.b;
-            break;
-        case VGFX_EMBED_EVENT_MOUSE_DOWN:
-        case VGFX_EMBED_EVENT_MOUSE_UP:
-            out.type = in.kind == VGFX_EMBED_EVENT_MOUSE_DOWN ? VGFX_EVENT_MOUSE_DOWN
-                                                              : VGFX_EVENT_MOUSE_UP;
-            out.data.mouse_button.x = in.a;
-            out.data.mouse_button.y = in.b;
-            out.data.mouse_button.button = (vgfx_mouse_button_t)in.c;
-            break;
-        case VGFX_EMBED_EVENT_WHEEL:
-            out.type = VGFX_EVENT_SCROLL;
-            out.data.scroll.x = in.a;
-            out.data.scroll.y = in.b;
-            out.data.scroll.delta_y = (float)in.c / 120.0f;
-            break;
-        case VGFX_EMBED_EVENT_KEY_DOWN:
-        case VGFX_EMBED_EVENT_KEY_UP:
-            out.type = in.kind == VGFX_EMBED_EVENT_KEY_DOWN ? VGFX_EVENT_KEY_DOWN
-                                                            : VGFX_EVENT_KEY_UP;
-            out.data.key.key = (vgfx_key_t)in.a;
-            out.data.key.modifiers = in.b;
-            break;
-        case VGFX_EMBED_EVENT_TEXT:
-            out.type = VGFX_EVENT_TEXT_INPUT;
-            out.data.text.codepoint = (uint32_t)in.a;
-            break;
-        case VGFX_EMBED_EVENT_RESIZE:
-            vgfx_set_window_size(window, in.a, in.b);
-            continue;
-        case VGFX_EMBED_EVENT_CLOSE:
-            out.type = VGFX_EVENT_CLOSE;
-            break;
-        default:
-            continue;
+            case VGFX_EMBED_EVENT_MOUSE_MOVE:
+                out.type = VGFX_EVENT_MOUSE_MOVE;
+                out.data.mouse_move.x = in.a;
+                out.data.mouse_move.y = in.b;
+                break;
+            case VGFX_EMBED_EVENT_MOUSE_DOWN:
+            case VGFX_EMBED_EVENT_MOUSE_UP:
+                out.type = in.kind == VGFX_EMBED_EVENT_MOUSE_DOWN ? VGFX_EVENT_MOUSE_DOWN
+                                                                  : VGFX_EVENT_MOUSE_UP;
+                out.data.mouse_button.x = in.a;
+                out.data.mouse_button.y = in.b;
+                out.data.mouse_button.button = (vgfx_mouse_button_t)in.c;
+                break;
+            case VGFX_EMBED_EVENT_WHEEL:
+                out.type = VGFX_EVENT_SCROLL;
+                out.data.scroll.x = in.a;
+                out.data.scroll.y = in.b;
+                out.data.scroll.delta_y = (float)in.c / 120.0f;
+                break;
+            case VGFX_EMBED_EVENT_KEY_DOWN:
+            case VGFX_EMBED_EVENT_KEY_UP:
+                out.type =
+                    in.kind == VGFX_EMBED_EVENT_KEY_DOWN ? VGFX_EVENT_KEY_DOWN : VGFX_EVENT_KEY_UP;
+                out.data.key.key = (vgfx_key_t)in.a;
+                out.data.key.modifiers = in.b;
+                break;
+            case VGFX_EMBED_EVENT_TEXT:
+                out.type = VGFX_EVENT_TEXT_INPUT;
+                out.data.text.codepoint = (uint32_t)in.a;
+                break;
+            case VGFX_EMBED_EVENT_RESIZE:
+                vgfx_set_window_size(window, in.a, in.b);
+                continue;
+            case VGFX_EMBED_EVENT_CLOSE:
+                out.type = VGFX_EVENT_CLOSE;
+                break;
+            default:
+                continue;
         }
         (void)vgfx_internal_enqueue_event(window, &out);
     }

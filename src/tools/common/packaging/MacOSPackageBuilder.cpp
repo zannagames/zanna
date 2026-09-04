@@ -1652,16 +1652,20 @@ struct StagedMacOSApp {
     fs::path stagedExec; ///< Absolute path to the bundle's Contents/MacOS/<exe>.
 };
 
-/// @brief Stage (and code-sign) a macOS .app bundle into @p stageRoot.
-/// @details Shared by the .app-in-.zip and .app-in-.dmg builders so both emit an
-///          identical, signed bundle. The caller owns @p stageRoot and its
-///          TempDirGuard; this only populates it.
+/// @brief Stage a macOS .app bundle into @p stageRoot and optionally code-sign it.
+/// @details ZIP packages sign the staged bundle directly. DMG packages defer signing until
+///          after the bundle has been copied to the image's HFS volume: HFS can normalize a
+///          Unicode resource name during that copy, which would otherwise invalidate the
+///          resource seal before a downloader mounts the image. The caller owns @p stageRoot
+///          and its TempDirGuard; this only populates it.
 /// @param params Application metadata, executable, assets, and signing configuration.
 /// @param stageRoot Existing temporary directory to populate.
+/// @param signBundle Whether to sign the staged bundle before returning it.
 /// @return Absolute staged app and primary-executable paths.
 /// @throws std::runtime_error If validation, staging, asset copying, or signing fails.
 static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
-                                          const fs::path &stageRoot) {
+                                          const fs::path &stageRoot,
+                                          bool signBundle) {
     const auto &pkg = params.pkgConfig;
     std::string displayName = pkg.displayName.empty() ? params.projectName : pkg.displayName;
     const std::string version = params.version.empty() ? "0.0.0" : params.version;
@@ -1737,7 +1741,8 @@ static StagedMacOSApp stageMacOSAppBundle(const MacOSBuildParams &params,
             srcPath, params.projectRoot, resourcesDir, targetDir, asset.sourcePath);
     }
 
-    signMacOSBundle(stageRoot, appPath, stagedExec, params.projectRoot, pkg);
+    if (signBundle)
+        signMacOSBundle(stageRoot, appPath, stagedExec, params.projectRoot, pkg);
     return {appPath, stagedExec};
 }
 
@@ -1855,6 +1860,14 @@ static void addStagedAppToDmg(const MacOSBuildParams &params,
     if (haveVolumeIcon)
         runBestEffortMacOSStyling({"SetFile", "-a", "C", mountPoint.string()},
                                   "macOS app DMG volume icon styling");
+    // HFS+ normalizes Unicode filenames while it copies the staged bundle into the image. Sign
+    // only after that copy, or CodeResources can retain the pre-normalized spelling and cause
+    // Gatekeeper to report a freshly downloaded DMG as damaged. This is also the last mutation
+    // of the bundle before the image is detached and compressed.
+    const fs::path mountedApp = mountPoint / appPath.filename();
+    const fs::path mountedExec =
+        mountedApp / "Contents" / "MacOS" / normalizeExecName(params.projectName);
+    signMacOSBundle(tmpRoot, mountedApp, mountedExec, params.projectRoot, params.pkgConfig);
     runChecked({"sync"}, "macOS app DMG filesystem flush");
 
     if (run_process({"hdiutil", "detach", mountPoint.string()}).exit_code != 0)
@@ -1885,7 +1898,7 @@ void buildMacOSPackage(const MacOSBuildParams &params) {
     const fs::path stageRoot =
         uniqueTempPackagingDir("zanna-macos-app-" + normalizeExecName(params.projectName));
     TempDirGuard cleanup(stageRoot);
-    const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot);
+    const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot, true);
     addStagedAppToZip(stageRoot, staged.appPath, staged.stagedExec, params.outputPath);
 }
 
@@ -1901,7 +1914,9 @@ void buildMacOSAppDmg(const MacOSBuildParams &params) {
     const fs::path stageRoot =
         uniqueTempPackagingDir("zanna-macos-app-dmg-" + normalizeExecName(params.projectName));
     TempDirGuard cleanup(stageRoot);
-    const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot);
+    // HFS+ can normalize a resource filename while copying into the image. Defer signing until
+    // addStagedAppToDmg has placed the app on that final filesystem.
+    const StagedMacOSApp staged = stageMacOSAppBundle(params, stageRoot, false);
     addStagedAppToDmg(params, staged.appPath, displayName, params.outputPath);
 }
 

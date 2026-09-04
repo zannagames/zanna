@@ -11,6 +11,10 @@
 //
 // Key invariants:
 //   - HiDPI scale and logical clips are applied exactly when backend state changes.
+//   - A window on loan to a Canvas3D never receives the lender's scale/clip
+//     (ADR 0242 loan ownership rule); the loan return re-arms the push.
+//   - Native fullscreen keeps the designed logical size; windowed RESIZE
+//     derives the logical size from physical pixels and the backing scale.
 //   - Frame timing remains defined across extreme or non-monotonic clock values.
 //   - Canvas-owned title bytes round-trip independently of C-string termination.
 //
@@ -72,6 +76,10 @@ static int32_t g_next_event_type = VGFX_EVENT_NONE;
 static int g_focus_lost_calls = 0;
 static int g_mouse_pos_calls = 0;
 static int g_destroyed_windows = 0;
+static int g_fake_fullscreen = 0;
+static int g_set_fullscreen_calls = 0;
+static vgfx_event_t g_next_event;
+static int g_next_event_armed = 0;
 static void *g_object_payloads[16];
 static int64_t g_object_class_ids[16];
 static size_t g_object_count = 0;
@@ -249,6 +257,119 @@ static void test_window_position_and_monitor_scalar_wrappers() {
     assert(rt_canvas_get_monitor_height(canvas) == 1440);
 }
 
+/// @brief ADR 0242 loan ownership rule: the 2026-09-04 Legacy Baseball fullscreen skew. The
+///        lender's Fullscreen() ran while its window was adopted by a Canvas3D; the lender's
+///        resync pushed its fullscreen presentation scale (min(fb/design) = 3.0 here) under the
+///        borrower, whose cached extent and overlay stayed in backing-scale space. While loaned,
+///        NO lender call may push scale or clip; the mode request itself still reaches vgfx.
+static void test_loaned_window_never_receives_lender_state() {
+    g_initial_scale = 1.0f;
+    g_fake_fullscreen = 0;
+    g_set_fullscreen_calls = 0;
+    rt_canvas *canvas = new_canvas();
+    assert(canvas != nullptr);
+    auto *window = window_from(canvas->gfx_win);
+    assert(window != nullptr);
+
+    vgfx_window_t loaned = rt_canvas_borrow_window(canvas);
+    assert(loaned == canvas->gfx_win);
+    int coord_calls = window->coord_scale_calls;
+    int clip_calls = window->clip_set_calls;
+    int clear_calls = window->clear_clip_calls;
+
+    // The monitor arrives (as AppKit does synchronously inside toggleFullScreen:) and the
+    // lender asks for fullscreen while the loan is active.
+    g_fake_fullscreen = 1;
+    window->physical_width = 300;
+    window->physical_height = 150;
+    rt_canvas_fullscreen(canvas);
+    assert(g_set_fullscreen_calls == 1);
+    assert(window->coord_scale_calls == coord_calls);
+    assert(window->last_coord_scale == 1.0f);
+    assert(canvas->window_state_synced == 0);
+
+    // Every other lender entry point that resyncs is equally inert while loaned.
+    assert(rt_canvas_width(canvas) == 100);
+    assert(rt_canvas_height(canvas) == 50);
+    rt_canvas_set_clip_rect(canvas, 1, 2, 3, 4);
+    rt_canvas_clear_clip_rect(canvas);
+    rt_canvas_windowed(canvas);
+    rt_canvas_fullscreen(canvas);
+    rt_canvas_resize(canvas, 100, 50);
+    assert(window->coord_scale_calls == coord_calls);
+    assert(window->clip_set_calls == clip_calls);
+    assert(window->clear_clip_calls == clear_calls);
+    assert(canvas->window_state_synced == 0);
+
+    // The loan ends (the fake's Resize above rewrote the physical extent; restore the monitor):
+    // the lender's next call pushes its own presentation scale exactly once.
+    window->physical_width = 300;
+    window->physical_height = 150;
+    rt_canvas_return_window(canvas);
+    assert(rt_canvas_width(canvas) == 100);
+    assert(window->coord_scale_calls == coord_calls + 1);
+    assert(window->last_coord_scale == 3.0f);
+    assert(canvas->window_state_synced == 1);
+    assert(rt_canvas_height(canvas) == 50);
+    assert(window->coord_scale_calls == coord_calls + 1);
+
+    g_fake_fullscreen = 0;
+}
+
+/// @brief 2D fullscreen contract: a monitor-sized RESIZE polled in native fullscreen must not
+///        replace the designed logical size (the presentation scale depends on it), and a
+///        windowed RESIZE derives the logical size from physical pixels / backing scale rather
+///        than the event's logical fields (computed under whatever scale was live at enqueue).
+static void test_poll_resize_keeps_design_in_fullscreen_and_derives_windowed_from_backing() {
+    g_initial_scale = 1.0f;
+    g_fake_fullscreen = 1;
+    g_pump_events_result = 1;
+    rt_canvas *canvas = new_canvas();
+    assert(canvas != nullptr);
+    auto *window = window_from(canvas->gfx_win);
+
+    window->physical_width = 300;
+    window->physical_height = 150;
+    std::memset(&g_next_event, 0, sizeof(g_next_event));
+    g_next_event.type = VGFX_EVENT_RESIZE;
+    g_next_event.data.resize.width = 300;
+    g_next_event.data.resize.height = 150;
+    g_next_event.data.resize.logical_width = 300;
+    g_next_event.data.resize.logical_height = 150;
+    g_next_event_armed = 1;
+    assert(rt_canvas_poll(canvas) == VGFX_EVENT_RESIZE);
+    assert(canvas->logical_width == 100);
+    assert(canvas->logical_height == 50);
+    assert(window->last_coord_scale == 3.0f);
+
+    // Back to windowed on a 2x display: physical 400x200, stale logical fields 133x66.
+    g_fake_fullscreen = 0;
+    window->scale_factor = 2.0f;
+    window->physical_width = 400;
+    window->physical_height = 200;
+    std::memset(&g_next_event, 0, sizeof(g_next_event));
+    g_next_event.type = VGFX_EVENT_RESIZE;
+    g_next_event.data.resize.width = 400;
+    g_next_event.data.resize.height = 200;
+    g_next_event.data.resize.logical_width = 133;
+    g_next_event.data.resize.logical_height = 66;
+    g_next_event_armed = 1;
+    assert(rt_canvas_poll(canvas) == VGFX_EVENT_RESIZE);
+    assert(canvas->logical_width == 200);
+    assert(canvas->logical_height == 100);
+    assert(window->last_coord_scale == 2.0f);
+
+    // A windowed event without physical fields still honors the logical ones.
+    std::memset(&g_next_event, 0, sizeof(g_next_event));
+    g_next_event.type = VGFX_EVENT_RESIZE;
+    g_next_event.data.resize.logical_width = 120;
+    g_next_event.data.resize.logical_height = 60;
+    g_next_event_armed = 1;
+    assert(rt_canvas_poll(canvas) == VGFX_EVENT_RESIZE);
+    assert(canvas->logical_width == 120);
+    assert(canvas->logical_height == 60);
+}
+
 static void test_title_cache_preserves_embedded_nul_bytes() {
     g_initial_scale = 1.0f;
     rt_canvas *canvas = new_canvas();
@@ -290,9 +411,35 @@ extern "C" int8_t rt_obj_is_instance(void *obj, int64_t class_id, size_t) {
 
 extern "C" void rt_obj_set_finalizer(void *, void (*)(void *)) {}
 
-extern "C" void rt_obj_retain_maybe(void *) {}
+// The window loan retains the lender (rt_canvas_borrow_window) and releases it on
+// return; the fake keeps a per-object count so a returned loan does not free a
+// canvas the test still holds, while un-retained objects release to zero as before.
+static void *g_retained_objects[16];
+static int g_retained_counts[16];
+static size_t g_retained_count = 0;
 
-extern "C" int32_t rt_obj_release_check0(void *) {
+extern "C" void rt_obj_retain_maybe(void *obj) {
+    if (!obj)
+        return;
+    for (size_t i = 0; i < g_retained_count; i++) {
+        if (g_retained_objects[i] == obj) {
+            g_retained_counts[i]++;
+            return;
+        }
+    }
+    assert(g_retained_count < sizeof(g_retained_objects) / sizeof(g_retained_objects[0]));
+    g_retained_objects[g_retained_count] = obj;
+    g_retained_counts[g_retained_count] = 1;
+    g_retained_count++;
+}
+
+extern "C" int32_t rt_obj_release_check0(void *obj) {
+    for (size_t i = 0; i < g_retained_count; i++) {
+        if (g_retained_objects[i] == obj && g_retained_counts[i] > 0) {
+            g_retained_counts[i]--;
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -464,19 +611,21 @@ extern "C" float vgfx_window_get_scale(vgfx_window_t window) {
     return fake ? fake->scale_factor : 1.0f;
 }
 
-// Fake windows are always windowed, so the effective coordinate scale equals the
-// window scale above (the fullscreen presentation branch is never taken). These
-// exist to satisfy the linker for rt_canvas_effective_coord_scale.
+// Fake windows report the fullscreen flag and physical extent the test arms, so
+// rt_canvas_effective_coord_scale takes its presentation branch (framebuffer /
+// designed extent) exactly when a test says the window is fullscreen.
 extern "C" int vgfx_is_fullscreen(vgfx_window_t) {
-    return 0;
+    return g_fake_fullscreen;
 }
 
-extern "C" int32_t vgfx_window_get_width(vgfx_window_t) {
-    return 0;
+extern "C" int32_t vgfx_window_get_width(vgfx_window_t window) {
+    auto *fake = window_from(window);
+    return fake ? fake->physical_width : 0;
 }
 
-extern "C" int32_t vgfx_window_get_height(vgfx_window_t) {
-    return 0;
+extern "C" int32_t vgfx_window_get_height(vgfx_window_t window) {
+    auto *fake = window_from(window);
+    return fake ? fake->physical_height : 0;
 }
 
 extern "C" int32_t vgfx_get_size(vgfx_window_t window, int32_t *width, int32_t *height) {
@@ -512,6 +661,11 @@ extern "C" int32_t vgfx_pump_events(vgfx_window_t) {
 
 extern "C" int32_t vgfx_poll_event(vgfx_window_t, vgfx_event_t *event) {
     g_poll_event_calls++;
+    if (g_next_event_armed) {
+        *event = g_next_event;
+        g_next_event_armed = 0;
+        return 1;
+    }
     if (g_next_event_type != VGFX_EVENT_NONE) {
         event->type = (vgfx_event_type_t)g_next_event_type;
         g_next_event_type = VGFX_EVENT_NONE;
@@ -555,7 +709,9 @@ extern "C" void vgfx_set_window_size(vgfx_window_t window, int32_t w, int32_t h)
     fake->physical_height = (int32_t)rtg_scale_up_i64(h, fake->scale_factor);
 }
 
-extern "C" void vgfx_set_fullscreen(vgfx_window_t, int32_t) {}
+extern "C" void vgfx_set_fullscreen(vgfx_window_t, int32_t) {
+    g_set_fullscreen_calls++;
+}
 
 extern "C" void vgfx_set_title(vgfx_window_t, const char *) {}
 
@@ -629,6 +785,8 @@ int main() {
     test_poll_tears_down_window_when_event_pump_fails();
     test_poll_forwards_focus_loss_to_runtime_input();
     test_window_position_and_monitor_scalar_wrappers();
+    test_loaned_window_never_receives_lender_state();
+    test_poll_resize_keeps_design_in_fullscreen_and_derives_windowed_from_backing();
     test_title_cache_preserves_embedded_nul_bytes();
     return 0;
 }

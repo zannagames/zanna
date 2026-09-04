@@ -61,14 +61,59 @@ Fullscreen: the adopted window keeps whatever mode the 2D canvas set
 already work). The Canvas3D adoption branch forces its own `fullscreen=0`
 bookkeeping so it never fights the 2D canvas over mode ownership.
 
-The borrowed window's **public coordinate scale is also lender-owned**.
-Canvas3D must not replace it with the platform backing scale during
-construction: a fullscreen Canvas can deliberately expose its original
-logical design extent while its framebuffer fills the display. Canvas3D
-derives the active physical-to-public scale from the window's physical and
-public extents for resize and mouse conversion, so `Mouse.X/Y`,
-`Canvas3D.Width/Height`, and the lender's `Canvas.Width/Height` remain in the
-same coordinate space throughout adoption and after return.
+**Fullscreen invariant (2026-09-03).** For whichever canvas pumps the window,
+`Mouse.X/Y`, that canvas's `Width/Height`, and its 2D overlay draw space are
+*one* space, and that space carries the framebuffer's aspect ratio. An adopted
+Canvas3D therefore lives in the window's public space — physical pixels
+divided by the window coordinate scale, which Canvas3D pins to the platform
+backing scale at adoption — and **never** in the lender's designed logical
+extent. The reason is structural: Canvas3D's overlay projection stretches its
+public extent over the whole framebuffer (no letterbox), so an extent whose
+aspect differs from the framebuffer would put the overlay, the mouse, and
+`Width/Height` in three different spaces. The 2D Canvas's "keep the designed
+size and scale the presentation" rule is a 2D-only contract; aspect-fit inside
+the public extent is the application's job (a `ViewportTransform` in script).
+`rt_canvas3d_coords.inc` holds the single physical↔public derivation, and
+`test_rt_canvas3d_coords_contract` pins the invariant in every build
+configuration; `g3d_test_canvas3d_adopted_coordinates` exercises the displayed
+handoff in the order every single-window game uses (adopt, then the lender
+goes fullscreen).
+
+**Loan ownership rule (2026-09-04).** The invariant above was established once,
+at adoption, and nothing kept it. The 2D lender's `rt_canvas_resync_window_state`
+runs from every 2D entry point (`Fullscreen`, `Windowed`, `Resize`, `Width`,
+`Height`, `Clear`, `Flip`, `Poll`, clips, every draw) and pushed the lender's own
+scale onto the shared window — in native fullscreen the *presentation* scale
+`min(framebuffer / designed extent)`, 1.5 on a 1080p display and 2.3625 on a
+16:10 Retina — with no loan check. A coordinate-scale change emits no `RESIZE`,
+so the adopted Canvas3D's cached `Width/Height` (and its overlay projection)
+stayed at the backing-scale extent while `Mouse.X/Y` moved to the presentation
+extent: `1920x1080` vs `1280x720`, a 1.5x skew anchored top-left. On macOS
+AppKit resizes the window synchronously inside `toggleFullScreen:`, so the very
+first `Canvas.Fullscreen()` after adoption poisoned the space (measured:
+Canvas3D `1920x1080`, lender `Screenshot()` public extent `1280x720`). Windowed
+1280x720 is the identity on every path, which hid it. Two rules now hold:
+
+1. *The lender never touches window presentation state while loaned.*
+   `rt_canvas_resync_window_state` returns early while `window_loan_active == 1`;
+   mode and size requests still reach vgfx (mode ownership stays with the
+   lender), only the coordinate-scale/clip push is withheld, and the loan return
+   re-arms it (`window_state_synced = 0`).
+2. *The borrower re-derives its extent every poll.* `rt_canvas3d_poll` compares
+   the live `vgfx_get_size()` / physical extent against its cache before sampling
+   the mouse (`canvas3d_coords_extent_drifted`) and applies any drift as a
+   resize, so `Width/Height`, the overlay, and `Mouse.X/Y` are read from one
+   scale in one frame no matter who wrote the window.
+
+Two smaller rules ride along: a borrowed window is never detached from the
+input subsystems on return (the lender stays bound), and the 2D `Poll` keeps
+the designed logical size in native fullscreen (the presentation-scale contract
+depends on it) while deriving a windowed size from physical pixels and the
+backing scale rather than the event's logical fields. `test_rt_canvas_state_contract`
+pins rule 1 and the 2D `RESIZE` contract; `test_rt_canvas3d_coords_contract` pins
+the drift detection; the displayed fixture observes the window's public extent
+through the lender's `Screenshot()` (never through `Mouse.SetPosition`, which
+writes and reads through the same scale and cannot see a skew).
 
 ## Consequences
 
@@ -80,10 +125,16 @@ same coordinate space throughout adoption and after return.
   attach/detach was the only per-platform risk and is already exercised by
   `vgfx_set_gpu_present`.
 - Existing constructors are unchanged; adoption is opt-in.
-- Fullscreen adoption preserves the lender's logical extent rather than
-  silently switching input and Canvas3D dimensions to backing pixels.
-- `g3d_test_canvas3d_adopted_coordinates` exercises the fullscreen handoff as
-  a displayed, cross-layer regression test.
+- Fullscreen adoption reports the window's public extent (the monitor in
+  backing-scale units); scripts that letterbox a fixed design space do so
+  inside that extent, and mouse hit tests share it without any conversion.
+- `test_rt_canvas3d_coords_contract` and `test_rt_canvas_state_contract`
+  (headless) and `g3d_test_canvas3d_adopted_coordinates` (displayed) guard the
+  invariant and the loan ownership rule.
+- `VGFX_MAX_WIDTH/HEIGHT` is 8192: a refused fullscreen framebuffer resize
+  leaves the framebuffer at its windowed size under a monitor-sized window and
+  monitor-space mouse events — the same skew with no coordinate scale
+  involved — so the cap must cover every shipping display.
 
 ## Links
 

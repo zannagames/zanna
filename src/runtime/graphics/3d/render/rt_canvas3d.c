@@ -1376,39 +1376,7 @@ static void canvas3d_copy_or_compute_local_bounds(const rt_mesh3d *mesh,
 
 #include "rt_canvas3d_frame_postfx.inc"
 
-/// @brief Return the active physical-to-public coordinate scale for a window.
-/// @details The backing scale and public coordinate scale differ when a 2D Canvas preserves its
-///          designed logical size in fullscreen. Deriving the public scale from the live physical
-///          and logical extents keeps adopted Canvas3D input and resize conversion in the exact
-///          coordinate space inherited from its lender without expanding the vgfx API.
-/// @param window Window whose current public extents are inspected; NULL implies scale 1.
-/// @return Uniform public coordinate scale, clamped to the supported `1..16` range.
-static float canvas3d_window_public_coord_scale(vgfx_window_t window) {
-    int32_t logical_w = 0;
-    int32_t logical_h = 0;
-    int32_t physical_w;
-    int32_t physical_h;
-    double sx = 0.0;
-    double sy = 0.0;
-    double scale;
-
-    if (!window || !vgfx_get_size(window, &logical_w, &logical_h))
-        return 1.0f;
-    physical_w = vgfx_window_get_width(window);
-    physical_h = vgfx_window_get_height(window);
-    if (logical_w > 0 && physical_w > 0)
-        sx = (double)physical_w / (double)logical_w;
-    if (logical_h > 0 && physical_h > 0)
-        sy = (double)physical_h / (double)logical_h;
-    scale = sx > 0.0 ? sx : sy;
-    if (sy > 0.0 && (scale <= 0.0 || sy < scale))
-        scale = sy;
-    if (!isfinite(scale) || scale < 1.0)
-        scale = 1.0;
-    if (scale > 16.0)
-        scale = 16.0;
-    return (float)scale;
-}
+#include "rt_canvas3d_coords.inc"
 
 /// @brief Estimate a physical backing size for a requested logical size.
 /// @param c Canvas whose window scale is consulted; NULL implies scale 1.
@@ -1416,16 +1384,7 @@ static float canvas3d_window_public_coord_scale(vgfx_window_t window) {
 /// @return Rounded physical dimension. Non-positive or overflow-prone inputs are returned
 /// unchanged.
 static int32_t canvas3d_scale_logical_size(rt_canvas3d *c, int32_t logical) {
-    float scale;
-
-    if (!c || logical <= 0)
-        return logical;
-    scale = c->gfx_win ? canvas3d_window_public_coord_scale(c->gfx_win) : 1.0f;
-    if (!isfinite(scale) || scale < 1.0f)
-        scale = 1.0f;
-    if ((double)logical > (double)INT32_MAX / (double)scale)
-        return logical;
-    return (int32_t)((double)logical * (double)scale + 0.5);
+    return canvas3d_coords_scale_logical_size(c ? c->gfx_win : NULL, logical);
 }
 
 /// @brief Convert a physical framebuffer dimension back to the public logical space.
@@ -1433,14 +1392,7 @@ static int32_t canvas3d_scale_logical_size(rt_canvas3d *c, int32_t logical) {
 /// @param physical Physical framebuffer dimension in backing pixels.
 /// @return Rounded logical dimension. Non-positive inputs are returned unchanged.
 static int32_t canvas3d_unscale_physical_size(rt_canvas3d *c, int32_t physical) {
-    float scale;
-
-    if (physical <= 0)
-        return physical;
-    scale = (c && c->gfx_win) ? canvas3d_window_public_coord_scale(c->gfx_win) : 1.0f;
-    if (!isfinite(scale) || scale < 1.0f)
-        scale = 1.0f;
-    return (int32_t)((double)physical / (double)scale + 0.5);
+    return canvas3d_coords_unscale_physical_size(c ? c->gfx_win : NULL, physical);
 }
 
 /// @brief Apply a window-size change to the canvas + active backend.
@@ -1448,9 +1400,13 @@ static int32_t canvas3d_unscale_physical_size(rt_canvas3d *c, int32_t physical) 
 /// `logical_*` is the public coordinate/capture size, while `physical_*`
 /// is the framebuffer/backing-pixel size used by native backends. Keeping
 /// both prevents Retina/HiDPI resize events from leaking 2x dimensions into
-/// Game3D and Canvas3D public APIs. A borrowed window additionally retains its
-/// lender Canvas's fixed logical design extent; fullscreen surplus pixels stay
-/// backing space rather than mutating the public size.
+/// Game3D and Canvas3D public APIs. A borrowed window follows the same rule:
+/// its public extent is always the window's live public size (physical divided
+/// by the window coordinate scale), never the lender's designed extent. The 2D
+/// overlay projection stretches the public extent over the whole framebuffer,
+/// so an extent with a different aspect than the framebuffer would put the
+/// overlay, `Mouse.X/Y`, and `Width/Height` in three different spaces
+/// (ADR 0242, fullscreen invariant).
 /// @param c Canvas and backend state to resize; NULL is ignored.
 /// @param logical_w Positive public width in logical units.
 /// @param logical_h Positive public height in logical units.
@@ -1461,17 +1417,7 @@ static void rt_canvas3d_apply_resize(
     int size_changed;
     int framebuffer_changed;
 
-    if (!c)
-        return;
-    if (c->lender_canvas) {
-        int64_t lender_w = rt_canvas_width(c->lender_canvas);
-        int64_t lender_h = rt_canvas_height(c->lender_canvas);
-        if (lender_w > 0 && lender_w <= CANVAS3D_MAX_DIMENSION)
-            logical_w = (int32_t)lender_w;
-        if (lender_h > 0 && lender_h <= CANVAS3D_MAX_DIMENSION)
-            logical_h = (int32_t)lender_h;
-    }
-    if (logical_w <= 0 || logical_h <= 0)
+    if (!c || logical_w <= 0 || logical_h <= 0)
         return;
     if (physical_w <= 0)
         physical_w = canvas3d_scale_logical_size(c, logical_w);
@@ -1639,9 +1585,12 @@ static void canvas3d_assign_owned_ref(void **slot, void *value) {
 
 /// @brief Tell keyboard + mouse subsystems to forget this window.
 ///
-/// Called when the canvas is destroyed. Without this, focus
+/// Called when an OWNED window is destroyed. Without this, focus
 /// queries would still return the dead window pointer until the
-/// next focus event arrived.
+/// next focus event arrived. A borrowed window (ADR 0242) is never
+/// detached here: the lending 2D canvas keeps it alive and bound, so
+/// cursor warp/show/hide must keep working for the lender after the
+/// loan is returned.
 /// @param gfx_win Window handle to detach from both input subsystems; NULL is ignored.
 static void rt_canvas3d_detach_input(vgfx_window_t gfx_win) {
     if (!gfx_win)
@@ -1931,7 +1880,8 @@ static void rt_canvas3d_finalize(void *obj) {
         canvas3d_release_owned_ref((void **)&c->lights[i]);
 
     if (c->gfx_win) {
-        rt_canvas3d_detach_input(c->gfx_win);
+        if (c->owns_window)
+            rt_canvas3d_detach_input(c->gfx_win);
         if (c->owns_window)
             vgfx_destroy_window(c->gfx_win);
         else
@@ -1977,7 +1927,7 @@ void rt_canvas3d_release_adopted_window(void *canvas3d) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas3d);
     if (!c || !c->gfx_win || c->owns_window)
         return;
-    rt_canvas3d_detach_input(c->gfx_win);
+    /* The lender still owns (and stays bound to) this window: input is NOT detached. */
     canvas3d_return_borrowed_window(c);
     c->gfx_win = NULL;
     c->should_close = 1;
@@ -1999,7 +1949,8 @@ static void canvas3d_close_window(rt_canvas3d *c) {
             rt_mouse_set_relative_native(0);
             c->relative_mouse_applied = 0;
         }
-        rt_canvas3d_detach_input(c->gfx_win);
+        if (c->owns_window)
+            rt_canvas3d_detach_input(c->gfx_win);
         if (c->owns_window)
             vgfx_destroy_window(c->gfx_win);
         else
@@ -2054,16 +2005,19 @@ static void *canvas3d_new_impl(rt_string title,
     const int32_t offscreen = offscreen_target != NULL;
 
     if (adopt_win && !offscreen) {
-        /* Single-window adoption (ADR): render into a window the 2D canvas
-         * owns. The lender's requested dimensions are authoritative because
-         * fullscreen backing extents can contain surplus pixels on one axis. */
-        if (w <= 0 || h <= 0) {
-            int32_t win_w = 0;
-            int32_t win_h = 0;
-            if (vgfx_get_size(adopt_win, &win_w, &win_h) && win_w > 0 && win_h > 0) {
-                w = win_w;
-                h = win_h;
-            }
+        /* Single-window adoption (ADR 0242): render into a window the 2D
+         * canvas owns. Requested dimensions are ignored — the window's public
+         * size, read AFTER the coordinate scale below is pinned to the backing
+         * scale, is the truth. The lender's designed extent is deliberately
+         * not used: it may not share the framebuffer's aspect in fullscreen,
+         * and the overlay projection stretches the public extent over the
+         * whole framebuffer (fullscreen invariant). */
+        int32_t win_w = 0;
+        int32_t win_h = 0;
+        vgfx_set_coord_scale(adopt_win, vgfx_window_get_scale(adopt_win));
+        if (vgfx_get_size(adopt_win, &win_w, &win_h) && win_w > 0 && win_h > 0) {
+            w = win_w;
+            h = win_h;
         }
         fullscreen = 0;
     }
@@ -2126,13 +2080,13 @@ static void *canvas3d_new_impl(rt_string title,
         }
         c->software_frame_limit = vgfx_get_fps(c->gfx_win);
 
-        /* A borrowed 2D Canvas may use a fullscreen presentation scale that differs from the
-         * display backing scale. Preserve that public coordinate space across the handoff;
-         * changing it after reading the adopted size leaves Canvas3D.Width/Height and Mouse.X/Y
-         * in different spaces until a later resize. Owned Canvas3D windows still establish the
-         * ordinary backing-scale coordinate space. */
-        if (!adopt_win)
-            vgfx_set_coord_scale(c->gfx_win, vgfx_window_get_scale(c->gfx_win));
+        /* Every Canvas3D window — owned or borrowed — lives in the backing-scale
+         * coordinate space: public size, mouse events, and the overlay
+         * projection all derive from the same window coordinate scale. A
+         * borrowed window had this pinned before its size was read (above);
+         * repeating it here is idempotent. The 2D lender re-establishes its own
+         * presentation scale when the loan is returned (window_state_synced). */
+        vgfx_set_coord_scale(c->gfx_win, vgfx_window_get_scale(c->gfx_win));
         if (vgfx_get_framebuffer(c->gfx_win, &fb) && fb.width > 0 && fb.height > 0) {
             initial_framebuffer_width = fb.width;
             initial_framebuffer_height = fb.height;
@@ -2407,15 +2361,13 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
 /// @param canvas2d Live Zanna.Graphics.Canvas handle whose window is adopted.
 /// @return New GC-managed Canvas3D, or NULL after a validation trap.
 void *rt_canvas3d_new_on_canvas(void *canvas2d) {
-    int64_t logical_w = rt_canvas_width(canvas2d);
-    int64_t logical_h = rt_canvas_height(canvas2d);
     vgfx_window_t win = rt_canvas_borrow_window(canvas2d);
     void *canvas3d;
     if (!win) {
         rt_trap("Canvas3D.NewOnCanvas: invalid, closed, or already adopted canvas");
         return NULL;
     }
-    canvas3d = canvas3d_new_impl(NULL, logical_w, logical_h, 0, NULL, 0, win, canvas2d);
+    canvas3d = canvas3d_new_impl(NULL, 0, 0, 0, NULL, 0, win, canvas2d);
     if (!canvas3d)
         rt_canvas_return_window(canvas2d);
     return canvas3d;
@@ -2641,11 +2593,10 @@ static void rt_canvas3d_update_mouse_from_logical(int32_t x, int32_t y) {
 /// @param x Physical horizontal event coordinate in backing pixels.
 /// @param y Physical vertical event coordinate in backing pixels.
 static void rt_canvas3d_update_mouse_from_physical(vgfx_window_t gfx_win, int32_t x, int32_t y) {
-    float scale = canvas3d_window_public_coord_scale(gfx_win);
-    if (!isfinite(scale) || scale < 0.001f)
-        scale = 1.0f;
-    rt_canvas3d_update_mouse_from_logical((int32_t)((double)x / (double)scale),
-                                          (int32_t)((double)y / (double)scale));
+    int32_t lx = x;
+    int32_t ly = y;
+    canvas3d_coords_physical_to_public(gfx_win, x, y, &lx, &ly);
+    rt_canvas3d_update_mouse_from_logical(lx, ly);
 }
 
 /// @brief Pump platform events, advance per-frame input state, and return whether the window is
@@ -2731,12 +2682,16 @@ int64_t rt_canvas3d_poll(void *obj) {
                 rt_canvas3d_update_mouse_from_physical(
                     c->gfx_win, evt.data.mouse_move.x, evt.data.mouse_move.y);
             } else if (evt.type == VGFX_EVENT_MOUSE_DOWN) {
-                rt_canvas3d_update_mouse_from_physical(
-                    c->gfx_win, evt.data.mouse_button.x, evt.data.mouse_button.y);
+                /* While captured the absolute position is owned by the relative / warp path
+                 * (same rule as the 2D poll); only the button edge is forwarded. */
+                if (!captured)
+                    rt_canvas3d_update_mouse_from_physical(
+                        c->gfx_win, evt.data.mouse_button.x, evt.data.mouse_button.y);
                 rt_mouse_button_down((int64_t)evt.data.mouse_button.button);
             } else if (evt.type == VGFX_EVENT_MOUSE_UP) {
-                rt_canvas3d_update_mouse_from_physical(
-                    c->gfx_win, evt.data.mouse_button.x, evt.data.mouse_button.y);
+                if (!captured)
+                    rt_canvas3d_update_mouse_from_physical(
+                        c->gfx_win, evt.data.mouse_button.x, evt.data.mouse_button.y);
                 rt_mouse_button_up((int64_t)evt.data.mouse_button.button);
             } else if (evt.type == VGFX_EVENT_RESIZE) {
                 rt_canvas3d_apply_resize(c,
@@ -2745,11 +2700,35 @@ int64_t rt_canvas3d_poll(void *obj) {
                                          evt.data.resize.width,
                                          evt.data.resize.height);
             } else if (evt.type == VGFX_EVENT_SCROLL) {
-                rt_canvas3d_update_mouse_from_physical(
-                    c->gfx_win, evt.data.scroll.x, evt.data.scroll.y);
+                if (!captured)
+                    rt_canvas3d_update_mouse_from_physical(
+                        c->gfx_win, evt.data.scroll.x, evt.data.scroll.y);
                 rt_mouse_update_wheel((double)evt.data.scroll.delta_x,
                                       (double)evt.data.scroll.delta_y);
             }
+        }
+
+        /* Borrower self-heal (ADR 0242): the window's public extent can change with no RESIZE
+         * event — any vgfx_set_coord_scale rewrites the scale the mouse and vgfx_get_size()
+         * apply. Re-derive the extent from the live window every poll, BEFORE the mouse is
+         * sampled below, so Width/Height, the overlay projection, and Mouse.X/Y are read in the
+         * same frame from the same scale no matter who wrote the window. Two integer reads
+         * when nothing changed. */
+        if (c->gfx_win) {
+            int32_t live_w = 0;
+            int32_t live_h = 0;
+            int32_t live_pw = 0;
+            int32_t live_ph = 0;
+            if (canvas3d_coords_extent_drifted(c->gfx_win,
+                                               c->width,
+                                               c->height,
+                                               c->framebuffer_width,
+                                               c->framebuffer_height,
+                                               &live_w,
+                                               &live_h,
+                                               &live_pw,
+                                               &live_ph))
+                rt_canvas3d_apply_resize(c, live_w, live_h, live_pw, live_ph);
         }
 
         if (!c->gfx_win) {

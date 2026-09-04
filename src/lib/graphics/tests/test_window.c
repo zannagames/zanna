@@ -52,8 +52,12 @@ void test_window_valid_params(void) {
 void test_window_exceed_max(void) {
     TEST_BEGIN("T2: Window Creation - Dimensions Exceed Max");
 
-    vgfx_window_params_t params = {
-        .width = 5000, .height = 5000, .title = "Test", .fps = 60, .resizable = 0};
+    /* One past the configured cap, whatever it is (8192 covers 8K and 2x-scaled 6K displays). */
+    vgfx_window_params_t params = {.width = VGFX_MAX_WIDTH + 1,
+                                   .height = VGFX_MAX_HEIGHT + 1,
+                                   .title = "Test",
+                                   .fps = 60,
+                                   .resizable = 0};
 
     vgfx_window_t win = vgfx_create_window(&params);
     ASSERT_NULL(win);

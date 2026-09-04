@@ -112,27 +112,35 @@
 //===----------------------------------------------------------------------===//
 
 /// @def VGFX_MAX_WIDTH
-/// @brief Maximum allowed window width in pixels.
+/// @brief Maximum allowed window width in physical (backing) pixels.
 /// @details Constrains memory allocation to prevent integer overflow when
 ///          computing framebuffer size (width * height * 4).  Attempts to
 ///          create windows larger than this will fail gracefully.
+///
+///          The cap must cover native fullscreen on every shipping display:
+///          a rejected fullscreen resize leaves the framebuffer at its
+///          windowed size while the platform stretches it over the whole
+///          screen and reports mouse events in screen pixels, which skews
+///          every hit test. 8192 covers 8K panels and 2x-scaled 5K/6K
+///          displays (7680 and 6016 backing pixels wide).
 ///
 ///          This limit ensures width * height * 4 fits in size_t on all
 ///          supported platforms.
 #ifndef VGFX_MAX_WIDTH
-#define VGFX_MAX_WIDTH 4096
+#define VGFX_MAX_WIDTH 8192
 #endif
 
 /// @def VGFX_MAX_HEIGHT
-/// @brief Maximum allowed window height in pixels.
+/// @brief Maximum allowed window height in physical (backing) pixels.
 /// @details Constrains memory allocation to prevent integer overflow when
 ///          computing framebuffer size (width * height * 4).  Attempts to
-///          create windows larger than this will fail gracefully.
+///          create windows larger than this will fail gracefully. Sized
+///          with VGFX_MAX_WIDTH so native fullscreen never exceeds it.
 ///
 ///          This limit ensures width * height * 4 fits in size_t on all
 ///          supported platforms.
 #ifndef VGFX_MAX_HEIGHT
-#define VGFX_MAX_HEIGHT 4096
+#define VGFX_MAX_HEIGHT 8192
 #endif
 
 /// @def VGFX_EVENT_QUEUE_SIZE

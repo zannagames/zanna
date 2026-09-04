@@ -267,8 +267,15 @@ single-window games where 2D menus and 3D gameplay share one surface. The
 window is borrowed, not owned: destroying the world returns presentation to
 the 2D canvas and the window stays open (keep the 2D canvas alive for the
 world's lifetime). World and camera dimensions adopt the window's current
-size. `Canvas3D.NewOnCanvas(canvas)` is the low-level equivalent when driving
-the canvas directly.
+public size — in fullscreen that is the monitor in backing-scale units, not
+the 2D canvas's designed size — and `Mouse.X/Y` report in that same space, so
+hit tests compare the mouse directly against `world.Canvas.Width`/`Height`
+(letterbox a fixed design space inside it yourself). The 2D canvas may still
+call `Fullscreen()`, `Windowed()`, or `Resize()` while the world is live — the
+window follows, and the world re-reads its extent every `Update()` — but its
+own coordinate space is suspended until the world is destroyed (its
+`Width`/`Height` keep the designed size). `Canvas3D.NewOnCanvas(canvas)`
+is the low-level equivalent when driving the canvas directly.
 
 ---
 

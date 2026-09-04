@@ -6,8 +6,20 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/fixtures/runtime/test_canvas3d_adopted_coordinates.zia
-// Purpose: Cross-layer regression for the public coordinate space retained
-//          across fullscreen Canvas -> Canvas3D window adoption.
+// Purpose: Cross-layer regression for the coordinate space of a Canvas3D
+//          adopted onto a 2D Canvas that goes fullscreen AFTER adoption — the
+//          order every single-window game uses (ADR 0242 fullscreen invariant
+//          + loan ownership rule). The adopted canvas must report the window's
+//          live public extent at every step, including after the lender
+//          touches the loaned window (Fullscreen again, a Width read, a
+//          Windowed/Fullscreen round trip), and the loan return must restore
+//          the lender's own designed extent.
+//
+//          Observer: `Canvas.Screenshot()` on the LENDER sizes its Pixels from
+//          `vgfx_get_size()` — the live public extent under whatever coordinate
+//          scale is on the window — independently of the Canvas3D's cached
+//          Width/Height. Mouse.SetPosition is NOT an observer (it writes the
+//          same value through the same scale and reads it straight back).
 //
 //===----------------------------------------------------------------------===//
 module test_canvas3d_adopted_coordinates;
@@ -16,34 +28,167 @@ bind Zanna.Graphics;
 bind Zanna.Game3D;
 bind Zanna.Terminal as Terminal;
 
-func start() {
-    // Deliberately not the monitor's aspect ratio: one fullscreen axis has
-    // surplus backing pixels, which caught the old vgfx-size substitution.
-    var canvas = Canvas.New("Canvas3D adopted coordinate probe", 333, 211);
-    canvas.Fullscreen();
-    var beforeW = canvas.Width;
-    var beforeH = canvas.Height;
+// Pump until the adopted extent has been stable for a while (the macOS
+// fullscreen transition is asynchronous and delivers several RESIZEs).
+func settle(world: World3D) -> Boolean {
+    var stable = 0;
+    var lastW = 0;
+    var lastH = 0;
+    var frames = 0;
+    while frames < 400000 && stable < 20000 {
+        if world.Update() == false { return false; }
+        var w = world.Canvas.Width;
+        var h = world.Canvas.Height;
+        if w == lastW && h == lastH {
+            stable = stable + 1;
+        } else {
+            stable = 0;
+            lastW = w;
+            lastH = h;
+        }
+        frames = frames + 1;
+    }
+    return true;
+}
 
+// The invariant: Canvas3D.Width/Height == the window's live public extent.
+func extentAgrees(label: String, canvas: Canvas, world: World3D) -> Boolean {
+    var w = world.Canvas.Width;
+    var h = world.Canvas.Height;
+    if w <= 0 || h <= 0 {
+        Terminal.Say("FAIL " + label + ": adopted extent " + toString(w) + "x" + toString(h));
+        return false;
+    }
+    if w != world.Canvas.WindowWidth || h != world.Canvas.WindowHeight {
+        Terminal.Say("FAIL " + label + ": Width/Height differ from WindowWidth/Height");
+        return false;
+    }
+    var shot = canvas.Screenshot();
+    if shot == null {
+        Terminal.Say("FAIL " + label + ": lender screenshot unavailable");
+        return false;
+    }
+    if shot!.Width != w || shot!.Height != h {
+        Terminal.Say("FAIL " + label + ": adopted extent " + toString(w) + "x" +
+                     toString(h) + " but window public extent " +
+                     toString(shot!.Width) + "x" + toString(shot!.Height));
+        return false;
+    }
+    return true;
+}
+
+func start() {
+    // The game's designed extent; deliberately the common 16:9 design so the
+    // regression reproduces exactly as shipped (1080p: 1.5x skew; 16:10
+    // Retina: 1.18x).
+    var canvas = Canvas.New("Canvas3D adopted coordinate probe", 1280, 720);
+    var lenderW = canvas.Width;
+    var lenderH = canvas.Height;
+
+    // Adopt FIRST, as the game does, then let the lender switch modes.
     var world = World3D.WithCanvasCamera(canvas, 60.0, 0.1, 100.0);
     if world == null || world.Canvas == null {
         Terminal.Say("FAIL adopted world construction");
         return;
     }
-    if world.Canvas.Width != beforeW || world.Canvas.Height != beforeH {
-        Terminal.Say("FAIL adopted coordinate extent " +
-                     toString(beforeW) + "x" + toString(beforeH) + " -> " +
-                     toString(world.Canvas.Width) + "x" +
-                     toString(world.Canvas.Height));
+    var frames = 0;
+    while frames < 5 {
+        if world.Update() == false { break; }
+        frames = frames + 1;
+    }
+    if extentAgrees("windowed adoption", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+
+    // The lender goes fullscreen while its window is on loan. On macOS the
+    // resize can land synchronously inside this call; the lender's resync
+    // used to push its presentation scale right here (the 2026-09-04 skew).
+    canvas.Fullscreen();
+    if settle(world) == false {
+        Terminal.Say("FAIL adopted pump closed during fullscreen transition");
+        world.Destroy();
+        return;
+    }
+    if extentAgrees("after lender Fullscreen()", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+    var fsW = world.Canvas.Width;
+    var fsH = world.Canvas.Height;
+    // A fullscreen window is strictly larger than the design on at least one
+    // axis on any real display; an extent EQUAL to the design is the
+    // lender-pinned regression, not a coincidence.
+    if world.Canvas.IsFullscreen && fsW == lenderW && fsH == lenderH {
+        Terminal.Say("FAIL fullscreen adopted extent pinned to design " +
+                     toString(lenderW) + "x" + toString(lenderH));
+        world.Destroy();
+        return;
+    }
+
+    // Every lender entry point that used to re-push the presentation scale
+    // onto the loaned window, each followed by one pump.
+    canvas.Fullscreen();
+    world.Update();
+    if extentAgrees("after second lender Fullscreen()", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+    var lw = canvas.Width;
+    var lh = canvas.Height;
+    world.Update();
+    if extentAgrees("after lender Width/Height read", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+    if lw != lenderW || lh != lenderH {
+        Terminal.Say("FAIL lender designed extent changed during the loan: " +
+                     toString(lw) + "x" + toString(lh));
+        world.Destroy();
+        return;
+    }
+
+    // The F11 path: back to windowed and fullscreen again while adopted.
+    canvas.Windowed();
+    if settle(world) == false {
+        Terminal.Say("FAIL adopted pump closed during windowed transition");
+        world.Destroy();
+        return;
+    }
+    if extentAgrees("after lender Windowed()", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+    canvas.Fullscreen();
+    if settle(world) == false {
+        Terminal.Say("FAIL adopted pump closed during second fullscreen transition");
+        world.Destroy();
+        return;
+    }
+    if extentAgrees("after lender Fullscreen() round trip", canvas, world) == false {
+        world.Destroy();
+        return;
+    }
+    if world.Canvas.Width != fsW || world.Canvas.Height != fsH {
+        Terminal.Say("FAIL fullscreen extent not reproduced after round trip: " +
+                     toString(world.Canvas.Width) + "x" + toString(world.Canvas.Height) +
+                     " vs " + toString(fsW) + "x" + toString(fsH));
         world.Destroy();
         return;
     }
     world.Destroy();
 
-    // Returning the loan must restore the same 2D public coordinate space.
-    if canvas.Width != beforeW || canvas.Height != beforeH {
-        Terminal.Say("FAIL returned coordinate extent");
+    // Returning the loan must restore the lender's own coordinate space.
+    if canvas.Width != lenderW || canvas.Height != lenderH {
+        Terminal.Say("FAIL returned coordinate extent " + toString(canvas.Width) +
+                     "x" + toString(canvas.Height));
         return;
     }
     canvas.Windowed();
+    frames = 0;
+    while frames < 20000 {
+        canvas.Poll();
+        frames = frames + 1;
+    }
     Terminal.Say("PASS adopted Canvas coordinate space");
 }

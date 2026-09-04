@@ -37,6 +37,7 @@
 
 #include "rt_graphics.h"
 #include "rt_pixels_internal.h"
+#include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_trap.h"
 
@@ -519,6 +520,18 @@ static inline float rt_canvas_effective_coord_scale(rt_canvas *canvas) {
 /// @param canvas Canvas whose scale and clip state are synchronized.
 static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
     if (!canvas || !canvas->gfx_win)
+        return;
+
+    /* Loan ownership rule (ADR 0242): while a Canvas3D has adopted this window, the borrower
+     * owns the window's presentation state — coordinate scale and clip. The lender's fullscreen
+     * presentation scale (framebuffer / designed extent) is NOT the borrower's space (physical /
+     * backing scale), and pushing it here shrank the public extent under a Canvas3D whose cached
+     * Width/Height and overlay projection never learn about it (no RESIZE follows a scale change),
+     * which put Mouse.X/Y and the drawn UI in two different spaces in native fullscreen.
+     * Mode/size requests (Fullscreen/Windowed/Resize) still reach vgfx; only the state push is
+     * withheld. `window_state_synced` stays as-is: rt_canvas_return_window clears it so the
+     * lender re-pushes its own state on its next call after the loan ends. */
+    if (rt_atomic_load_i32(&canvas->window_loan_active, __ATOMIC_ACQUIRE) == 1)
         return;
 
     float scale = rt_canvas_effective_coord_scale(canvas);
