@@ -1982,15 +1982,17 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
     }
 }
 
-/// @brief Rasterize per-texel INTERPOLATED bind-pose Y into UV space (see
-///   rt_canvas3d.h). Identical triangle setup and conservative coverage to
-///   rt_mesh3d_rasterize_uv_mask_y; instead of stamping a flat mask, each
-///   covered texel receives the barycentric Y at its center (clamped to the
-///   triangle's own Y range so conservative-bias texels just outside an edge
-///   stay honest), mapped [y_min, y_max] -> luminance 1..255. Overlapping
-///   triangles last-win — the atlases in scope pack disjoint charts.
-void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min, double y_max) {
-    rt_mesh3d *m = mesh3d_checked(obj);
+/// @brief Rasterize per-texel INTERPOLATED bind-pose position along one
+///   object-space axis into UV space (see rt_canvas3d.h). Identical triangle
+///   setup and conservative coverage to rt_mesh3d_rasterize_uv_mask_y;
+///   instead of stamping a flat mask, each covered texel receives the
+///   barycentric coordinate at its center (clamped to the triangle's own
+///   range so conservative-bias texels just outside an edge stay honest),
+///   mapped [y_min, y_max] -> luminance 1..255. Overlapping triangles
+///   last-win — the atlases in scope pack disjoint charts. ADR 0324
+///   generalised the Y-only op: `axis` 0/1/2 selects X/Y/Z.
+static void mesh3d_rasterize_uv_axis_impl(
+    rt_mesh3d *m, void *height_pixels, int axis, double y_min, double y_max) {
     int64_t w;
     int64_t h;
     uint32_t vertex_count;
@@ -2016,9 +2018,9 @@ void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min,
         double area;
         if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
             continue;
-        y0 = m->vertices[i0].pos[1];
-        y1 = m->vertices[i1].pos[1];
-        y2 = m->vertices[i2].pos[1];
+        y0 = m->vertices[i0].pos[axis];
+        y1 = m->vertices[i1].pos[axis];
+        y2 = m->vertices[i2].pos[axis];
         ty_min = y0;
         ty_max = y0;
         if (y1 < ty_min)
@@ -2113,6 +2115,20 @@ void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min,
             }
         }
     }
+}
+
+/// @brief Public Y-axis form (ADR 0273 amendment); see rt_canvas3d.h.
+void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min, double y_max) {
+    mesh3d_rasterize_uv_axis_impl(mesh3d_checked(obj), height_pixels, 1, y_min, y_max);
+}
+
+/// @brief Public any-axis form (ADR 0324); see rt_canvas3d.h. An axis outside
+///   0..2 is ignored (no trap, no write).
+void rt_mesh3d_rasterize_uv_axis(
+    void *obj, void *height_pixels, int64_t axis, double lo, double hi) {
+    if (axis < 0 || axis > 2)
+        return;
+    mesh3d_rasterize_uv_axis_impl(mesh3d_checked(obj), height_pixels, (int)axis, lo, hi);
 }
 
 /// @brief Compute per-vertex normals from the mesh's triangle faces when the source provided

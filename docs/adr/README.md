@@ -302,6 +302,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0321](0321-generation-safe-3d-render-cache-identities.md) — Make 3D Render Cache Identities Generation-Safe
 - [ADR 0322](0322-single-canvas-postfx-temporal-ownership.md) — Give PostFX Temporal State One Canvas Owner
 - [ADR 0323](0323-allocation-free-3d-component-helper-abi.md) — Add Allocation-Free 3D Component Helper ABI
+- [ADR 0324](0324-mesh3d-rasterize-uv-axis.md) — Mesh3D.RasterizeUvAxis (any-axis UV coordinate rasterizer)
 
 ## Release & Packaging
 

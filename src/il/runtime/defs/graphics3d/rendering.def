@@ -556,6 +556,8 @@ RT_FUNC(Mesh3DClear,            rt_mesh3d_clear,            "Zanna.Graphics3D.Me
 RT_FUNC(Mesh3DRecalcNormals,    rt_mesh3d_recalc_normals,   "Zanna.Graphics3D.Mesh3D.RecalculateNormals",    "void(obj)")
 RT_FUNC(Mesh3DRasterizeUvMaskY, rt_mesh3d_rasterize_uv_mask_y, "Zanna.Graphics3D.Mesh3D.RasterizeUvMaskY", "void(obj,obj,f64,f64)")
 RT_FUNC(Mesh3DRasterizeUvHeight, rt_mesh3d_rasterize_uv_height, "Zanna.Graphics3D.Mesh3D.RasterizeUvHeight", "void(obj,obj,f64,f64)")
+// ADR 0324: any-axis form (axis 0/1/2 = bind X/Y/Z) for lateral body-zone masks.
+RT_FUNC(Mesh3DRasterizeUvAxis, rt_mesh3d_rasterize_uv_axis, "Zanna.Graphics3D.Mesh3D.RasterizeUvAxis", "void(obj,obj,i64,f64,f64)")
 RT_FUNC(Mesh3DClone, rt_mesh3d_clone, "Zanna.Graphics3D.Mesh3D.Clone", "obj(obj)", owned)
 RT_FUNC(Mesh3DTransform,        rt_mesh3d_transform,        "Zanna.Graphics3D.Mesh3D.Transform",        "void(obj,obj)")
 RT_FUNC(Mesh3DMirror, rt_mesh3d_mirror, "Zanna.Graphics3D.Mesh3D.Mirror", "obj(obj,obj)", owned)
@@ -603,6 +605,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Mesh3D", Mesh3D, "obj", Mesh3DNew)
     RT_METHOD("RecalculateNormals", "void()", Mesh3DRecalcNormals)
     RT_METHOD("RasterizeUvMaskY", "void(obj,f64,f64)", Mesh3DRasterizeUvMaskY)
     RT_METHOD("RasterizeUvHeight", "void(obj,f64,f64)", Mesh3DRasterizeUvHeight)
+    RT_METHOD("RasterizeUvAxis", "void(obj,i64,f64,f64)", Mesh3DRasterizeUvAxis)
     RT_METHOD("Clone", "obj()", Mesh3DClone)
     RT_METHOD("Transform", "void(obj)", Mesh3DTransform)
     // ADR 0306: the left/right-mirrored copy (geometry reflected, bone

@@ -1,0 +1,5 @@
+# Generated game installers and validation sidecars stay out of source control.
+*.dmg
+*.zip
+*.sha256
+*.manifest.json

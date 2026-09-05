@@ -342,6 +342,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-recalculatenormals"></a>`RecalculateNormals` | `void()` | `Zanna.Graphics3D.Mesh3D.RecalculateNormals` |
 | <a id="zanna-graphics3d-mesh3d-rasterizeuvmasky"></a>`RasterizeUvMaskY` | `void(obj,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvMaskY` |
 | <a id="zanna-graphics3d-mesh3d-rasterizeuvheight"></a>`RasterizeUvHeight` | `void(obj,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` |
+| <a id="zanna-graphics3d-mesh3d-rasterizeuvaxis"></a>`RasterizeUvAxis` | `void(obj,i64,f64,f64)` | `Zanna.Graphics3D.Mesh3D.RasterizeUvAxis` |
 | <a id="zanna-graphics3d-mesh3d-clone"></a>`Clone` | `obj()` | `Zanna.Graphics3D.Mesh3D.Clone` |
 | <a id="zanna-graphics3d-mesh3d-transform"></a>`Transform` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.Transform` |
 | <a id="zanna-graphics3d-mesh3d-mirror"></a>`Mirror` | `obj(obj)` | `Zanna.Graphics3D.Mesh3D.Mirror` |
@@ -2968,6 +2969,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.RecalculateNormals` | `void(obj)` | `rt_mesh3d_recalc_normals` |
 | `Zanna.Graphics3D.Mesh3D.RasterizeUvMaskY` | `void(obj,obj,f64,f64)` | `rt_mesh3d_rasterize_uv_mask_y` |
 | `Zanna.Graphics3D.Mesh3D.RasterizeUvHeight` | `void(obj,obj,f64,f64)` | `rt_mesh3d_rasterize_uv_height` |
+| `Zanna.Graphics3D.Mesh3D.RasterizeUvAxis` | `void(obj,obj,i64,f64,f64)` | `rt_mesh3d_rasterize_uv_axis` |
 | `Zanna.Graphics3D.Mesh3D.Clone` | `obj(obj)` | `rt_mesh3d_clone` |
 | `Zanna.Graphics3D.Mesh3D.Transform` | `void(obj,obj)` | `rt_mesh3d_transform` |
 | `Zanna.Graphics3D.Mesh3D.Mirror` | `obj(obj,obj)` | `rt_mesh3d_mirror` |

@@ -699,6 +699,53 @@ static void test_mesh_rasterize_uv_mask_conservative() {
     PASS();
 }
 
+static void test_mesh_rasterize_uv_axis_lateral() {
+    TEST("Mesh3D.RasterizeUvAxis writes per-texel interpolated X/Z (ADR 0324)");
+    void *m = rt_mesh3d_new();
+    // A quad whose object-space X rises with U (left edge x=-1, right
+    // edge x=+1) and Z rises with V, at constant Y.
+    rt_mesh3d_add_vertex(m, -1.0, 0.5, 0.0, 0, 1, 0, 0.20, 0.20);
+    rt_mesh3d_add_vertex(m, 1.0, 0.5, 0.0, 0, 1, 0, 0.80, 0.20);
+    rt_mesh3d_add_vertex(m, -1.0, 0.5, 2.0, 0, 1, 0, 0.20, 0.80);
+    rt_mesh3d_add_vertex(m, 1.0, 0.5, 2.0, 0, 1, 0, 0.80, 0.80);
+    rt_mesh3d_add_triangle(m, 0, 1, 2);
+    rt_mesh3d_add_triangle(m, 1, 3, 2);
+    void *xm = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_axis(m, xm, 0, -1.0, 1.0);
+    EXPECT_EQ(rt_pixels_get_rgba(xm, 1, 1), 0);
+    int64_t left = rt_pixels_get_rgba(xm, 8, 16) >> 24 & 0xFF;
+    int64_t centre = rt_pixels_get_rgba(xm, 16, 16) >> 24 & 0xFF;
+    int64_t right = rt_pixels_get_rgba(xm, 24, 16) >> 24 & 0xFF;
+    EXPECT_TRUE(left > 0, "covered texel writes a non-zero lateral value");
+    EXPECT_TRUE(centre > left, "X rises across the map with U");
+    EXPECT_TRUE(right > centre, "X keeps rising toward the right edge");
+    // u=(16.5/32) -> x = -1 + 2*((u-0.2)/0.6); luminance 1+254*(x+1)/2.
+    double u = 16.5 / 32.0;
+    double x = -1.0 + 2.0 * ((u - 0.2) / 0.6);
+    int64_t expect_centre = 1 + (int64_t)(254.0 * (x + 1.0) / 2.0 + 0.5);
+    EXPECT_TRUE(centre - expect_centre < 6 && expect_centre - centre < 6,
+                "interpolated X matches the analytic ramp within 6");
+    // Z (axis 2) rises down the map; Y (axis 1) is flat at 0.5 -> mid grey.
+    void *zm = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_axis(m, zm, 2, 0.0, 2.0);
+    int64_t ztop = rt_pixels_get_rgba(zm, 16, 8) >> 24 & 0xFF;
+    int64_t zbot = rt_pixels_get_rgba(zm, 16, 24) >> 24 & 0xFF;
+    EXPECT_TRUE(zbot > ztop, "Z rises down the map with V");
+    void *ym = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_axis(m, ym, 1, 0.0, 1.0);
+    int64_t yv = rt_pixels_get_rgba(ym, 16, 16) >> 24 & 0xFF;
+    EXPECT_TRUE(yv > 120 && yv < 136, "constant Y maps to mid luminance");
+    // Axis 1 through the axis op equals the Y-only op byte for byte.
+    void *hm = rt_pixels_new(32, 32);
+    rt_mesh3d_rasterize_uv_height(m, hm, 0.0, 1.0);
+    EXPECT_EQ(rt_pixels_get_rgba(hm, 16, 16), rt_pixels_get_rgba(ym, 16, 16));
+    // An out-of-range axis is ignored, never trapped.
+    void *bad = rt_pixels_new(8, 8);
+    rt_mesh3d_rasterize_uv_axis(m, bad, 3, 0.0, 1.0);
+    EXPECT_EQ(rt_pixels_get_rgba(bad, 4, 4), 0);
+    PASS();
+}
+
 static void test_mesh_rasterize_uv_height_interpolates() {
     TEST("Mesh3D.RasterizeUvHeight writes per-texel interpolated Y (1..255)");
     void *m = rt_mesh3d_new();
@@ -773,8 +820,7 @@ static void test_mesh_vertex_normal_readback() {
     EXPECT_NEAR(rt_vec3_z(normal), 0.8, 0.000001);
     EXPECT_TRUE(rt_mesh3d_get_vertex_normal(m, -1) == nullptr,
                 "negative vertex index returns null");
-    EXPECT_TRUE(rt_mesh3d_get_vertex_normal(m, 1) == nullptr,
-                "past-end vertex index returns null");
+    EXPECT_TRUE(rt_mesh3d_get_vertex_normal(m, 1) == nullptr, "past-end vertex index returns null");
     EXPECT_TRUE(rt_mesh3d_get_vertex_normal(nullptr, 0) == nullptr,
                 "invalid receiver returns null");
     PASS();
@@ -12274,6 +12320,7 @@ int main() {
     test_mesh_add_vertex_triangle();
     test_mesh_rasterize_uv_mask_conservative();
     test_mesh_rasterize_uv_height_interpolates();
+    test_mesh_rasterize_uv_axis_lateral();
     test_mesh_vertex_position_readback();
     test_mesh_vertex_normal_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();

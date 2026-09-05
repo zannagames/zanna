@@ -1069,6 +1069,19 @@ void rt_mesh3d_rasterize_uv_mask_y(void *obj, void *mask_pixels, double y_min, d
 /// @param y_min Object-space Y mapping to luminance 1.
 /// @param y_max Object-space Y mapping to luminance 255 (> y_min).
 void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min, double y_max);
+/// @brief ADR 0324: the any-axis form of rt_mesh3d_rasterize_uv_height —
+///        per-texel barycentric object-space X (0), Y (1) or Z (2) mapped
+///        [lo, hi] -> luminance 1..255 (0 = uncovered). Region classifiers
+///        that cut a bind pose by height alone cannot tell a T-posed forearm
+///        from the torso beside it; the lateral map makes the sleeve end a
+///        measurable line.
+/// @param obj Mesh3D receiver; invalid handles are ignored.
+/// @param height_pixels Pixels handle receiving the map (any size).
+/// @param axis 0 = X, 1 = Y, 2 = Z; anything else is ignored.
+/// @param lo Object-space coordinate mapping to luminance 1.
+/// @param hi Object-space coordinate mapping to luminance 255 (> lo).
+void rt_mesh3d_rasterize_uv_axis(void *obj, void *height_pixels, int64_t axis, double lo,
+                                 double hi);
 /// @brief Deep copy the mesh (independent storage; safe to mutate the clone).
 /// @param obj Borrowed source Mesh3D handle.
 /// @return New independent GC-managed Mesh3D, or NULL on invalid input or allocation failure.
