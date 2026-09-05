@@ -405,6 +405,28 @@ void rt_mesh3d_bend_arc(void *o, double radius, double arc_degrees) {
     (void)arc_degrees;
 }
 
+/// @brief Graphics-disabled no-op for the static height loft (ADR 0326).
+/// @details Parameters and invalid handles are ignored, matching Mesh3D.BendArc.
+void rt_mesh3d_loft_height(void *obj,
+                           double xmin,
+                           double xmax,
+                           double ymin,
+                           double ymax,
+                           double bottom_left,
+                           double bottom_right,
+                           double top_left,
+                           double top_right) {
+    (void)obj;
+    (void)xmin;
+    (void)xmax;
+    (void)ymin;
+    (void)ymax;
+    (void)bottom_left;
+    (void)bottom_right;
+    (void)top_left;
+    (void)top_right;
+}
+
 /// @brief Stub for `Material3D.New` — would normally create a default
 ///        Blinn-Phong material (white diffuse, no textures, shininess 32).
 ///        Use `NewColor`, `NewTextured`, or `NewPBR` for shorthand
@@ -951,12 +973,32 @@ int8_t rt_material3d_get_has_decal_map(void *o) {
 
 /// @brief Stub for `Material3D.SetDecalProjector` (ADR 0312).
 /// Silent no-op stub.
-void rt_material3d_set_decal_projector(void *o, double ox, double oy, double oz,
-                                       double ux, double uy, double uz,
-                                       double vx, double vy, double vz,
-                                       double half_w, double half_h, double depth) {
-    (void)o; (void)ox; (void)oy; (void)oz; (void)ux; (void)uy; (void)uz;
-    (void)vx; (void)vy; (void)vz; (void)half_w; (void)half_h; (void)depth;
+void rt_material3d_set_decal_projector(void *o,
+                                       double ox,
+                                       double oy,
+                                       double oz,
+                                       double ux,
+                                       double uy,
+                                       double uz,
+                                       double vx,
+                                       double vy,
+                                       double vz,
+                                       double half_w,
+                                       double half_h,
+                                       double depth) {
+    (void)o;
+    (void)ox;
+    (void)oy;
+    (void)oz;
+    (void)ux;
+    (void)uy;
+    (void)uz;
+    (void)vx;
+    (void)vy;
+    (void)vz;
+    (void)half_w;
+    (void)half_h;
+    (void)depth;
 }
 
 /// @brief Stub for `Material3D.SetDecalOpacity` (ADR 0312).
@@ -3457,6 +3499,23 @@ int64_t rt_model3d_generate_lods(void *o, int64_t a1, double a2) {
     (void)o;
     (void)a1;
     (void)a2;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneAsset.GenerateLODs: graphics support not compiled in", 0);
+}
+
+/// @brief Graphics-disabled peer of constrained offline LOD generation.
+/// @param o Ignored asset handle.
+/// @param levels Ignored level count.
+/// @param ratio Ignored reduction ratio.
+/// @param flags Ignored simplification constraints.
+/// @param max_error_frac Ignored error ceiling.
+/// @return Zero; no mesh chains can be generated without graphics support.
+int64_t rt_model3d_generate_lods_ex(
+    void *o, int64_t levels, double ratio, int64_t flags, double max_error_frac) {
+    (void)o;
+    (void)levels;
+    (void)ratio;
+    (void)flags;
+    (void)max_error_frac;
     RT_GRAPHICS_OPTIONAL_TRAP_RET("SceneAsset.GenerateLODs: graphics support not compiled in", 0);
 }
 

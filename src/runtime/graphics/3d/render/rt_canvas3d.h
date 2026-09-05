@@ -659,6 +659,10 @@ void rt_canvas3d_set_cluster_light_budget(void *obj, int64_t budget);
 /// @param obj Borrowed Canvas3D handle.
 /// @return Saturating lifetime truncation count, or zero for invalid input.
 int64_t rt_canvas3d_get_cluster_overflow_count(void *obj);
+/// @brief Lifetime cluster-local entries served by full-light capacity fallback.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturating pressure count; not lost lighting. Zero for invalid handles.
+int64_t rt_canvas3d_get_cluster_fallback_entry_count(void *obj);
 /// @brief Enabled lights truncated by the forward-path light limit this frame.
 /// @param obj Borrowed Canvas3D handle.
 /// @return Latest dropped-light count, or zero for invalid input.
@@ -1080,8 +1084,8 @@ void rt_mesh3d_rasterize_uv_height(void *obj, void *height_pixels, double y_min,
 /// @param axis 0 = X, 1 = Y, 2 = Z; anything else is ignored.
 /// @param lo Object-space coordinate mapping to luminance 1.
 /// @param hi Object-space coordinate mapping to luminance 255 (> lo).
-void rt_mesh3d_rasterize_uv_axis(void *obj, void *height_pixels, int64_t axis, double lo,
-                                 double hi);
+void rt_mesh3d_rasterize_uv_axis(
+    void *obj, void *height_pixels, int64_t axis, double lo, double hi);
 /// @brief Deep copy the mesh (independent storage; safe to mutate the clone).
 /// @param obj Borrowed source Mesh3D handle.
 /// @return New independent GC-managed Mesh3D, or NULL on invalid input or allocation failure.
@@ -1111,6 +1115,28 @@ void *rt_mesh3d_mirror(void *obj, void *skeleton);
 /// @param radius Bend radius (finite, > 0).
 /// @param arc_degrees Angle the X extent spans after bending, in (0, 360].
 void rt_mesh3d_bend_arc(void *obj, double radius, double arc_degrees);
+
+/// @brief Fit static mesh Y between independent bottom/top edge heights (ADR 0326).
+/// @details Explicit X/Y source domains are shared across all material groups. Preserves
+///          topology/UVs, transforms normal/tangent frames, validates before mutation.
+/// @param obj Mesh receiver; invalid handles are ignored.
+/// @param xmin Source domain left edge.
+/// @param xmax Source domain right edge, greater than xmin.
+/// @param ymin Source domain bottom edge.
+/// @param ymax Source domain top edge, greater than ymin.
+/// @param bottom_left Destination bottom at xmin.
+/// @param bottom_right Destination bottom at xmax.
+/// @param top_left Destination top at xmin, greater than bottom_left.
+/// @param top_right Destination top at xmax, greater than bottom_right.
+void rt_mesh3d_loft_height(void *obj,
+                           double xmin,
+                           double xmax,
+                           double ymin,
+                           double ymax,
+                           double bottom_left,
+                           double bottom_right,
+                           double top_left,
+                           double top_right);
 /// @brief Compute per-vertex tangent vectors from UVs (required for normal mapping).
 /// @param obj Borrowed mutable Mesh3D handle.
 void rt_mesh3d_calc_tangents(void *obj);
@@ -1548,10 +1574,19 @@ int8_t rt_material3d_get_has_decal_map(void *obj);
 /// @brief `Material3D.SetDecalProjector` — model-space box: origin, right, up (both unit
 ///   direction vectors; up is re-orthogonalized), half extents and depth. Texel (0,0) is
 ///   the top-left corner (+up, -right).
-void rt_material3d_set_decal_projector(void *obj, double ox, double oy, double oz,
-                                       double ux, double uy, double uz,
-                                       double vx, double vy, double vz,
-                                       double half_w, double half_h, double depth);
+void rt_material3d_set_decal_projector(void *obj,
+                                       double ox,
+                                       double oy,
+                                       double oz,
+                                       double ux,
+                                       double uy,
+                                       double uz,
+                                       double vx,
+                                       double vy,
+                                       double vz,
+                                       double half_w,
+                                       double half_h,
+                                       double depth);
 /// @brief `Material3D.SetDecalOpacity` — [0,1] multiplier on the decal alpha (default 1).
 void rt_material3d_set_decal_opacity(void *obj, double opacity);
 /// @brief `Material3D.DecalOpacity` — read the decal alpha multiplier.

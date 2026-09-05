@@ -303,6 +303,8 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_keep_animation_subset")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_limit_texture_dim")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_simplify_meshes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_simplify_meshes_ex")
+// ADR 0327: offline-only LOD constraints; not a frontend runtime member.
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_generate_lods_ex")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_mesh3d_simplify_ex")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_strip_meshes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc1_block")

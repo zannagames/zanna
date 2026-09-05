@@ -1866,6 +1866,17 @@ static void test_cluster_table_validator(void) {
     EXPECT_TRUE(vgfx3d_cluster_table_is_usable(&table, 7, 2) == 0,
                 "Cluster offsets must be monotonic");
     table.offsets[VGFX3D_CLUSTER_COUNT / 2] = 0;
+    table.offsets[0] = VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_cluster_table_is_usable(&table, 7, 2) == 1,
+                "Flagged empty first cluster is a valid full-light fallback");
+    table.offsets[VGFX3D_CLUSTER_COUNT - 1] = VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_cluster_table_is_usable(&table, 7, 2) == 0,
+                "A fallback cluster cannot also carry a partial compact list");
+    table.offsets[VGFX3D_CLUSTER_COUNT - 1] = 0;
+    table.offsets[VGFX3D_CLUSTER_COUNT] |= VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_cluster_table_is_usable(&table, 7, 2) == 0,
+                "Terminal boundary cannot carry a cluster fallback flag");
+    table.offsets[VGFX3D_CLUSTER_COUNT] = 1;
     table.zfar = NAN;
     EXPECT_TRUE(vgfx3d_cluster_table_is_usable(&table, 7, 2) == 0,
                 "Cluster depth ranges must be finite and ordered");

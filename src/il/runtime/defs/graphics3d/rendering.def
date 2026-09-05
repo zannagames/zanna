@@ -173,6 +173,7 @@ RT_FUNC(Canvas3DSetRenderTargetShadowInherit, rt_canvas3d_set_render_target_shad
 RT_FUNC(Canvas3DSetRenderTargetShadowCascadeLimit, rt_canvas3d_set_render_target_shadow_cascade_limit, "Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowCascadeLimit", "void(obj,i64)")
 RT_FUNC(Canvas3DSetClusterLightBudget, rt_canvas3d_set_cluster_light_budget, "Zanna.Graphics3D.Canvas3D.SetClusterLightBudget", "void(obj,i64)")
 RT_FUNC(Canvas3DGetClusterOverflowCount, rt_canvas3d_get_cluster_overflow_count, "Zanna.Graphics3D.Canvas3D.get_ClusterOverflowCount", "i64(obj)")
+RT_FUNC(Canvas3DGetClusterFallbackEntryCount, rt_canvas3d_get_cluster_fallback_entry_count, "Zanna.Graphics3D.Canvas3D.get_ClusterFallbackEntryCount", "i64(obj)")
 RT_FUNC(Canvas3DGetDroppedLightCount, rt_canvas3d_get_dropped_light_count, "Zanna.Graphics3D.Canvas3D.get_DroppedLightCount", "i64(obj)")
 RT_FUNC(Canvas3DGetFrustumCulledDrawCount, rt_canvas3d_get_frustum_culled_draw_count, "Zanna.Graphics3D.Canvas3D.get_FrustumCulledDrawCount", "i64(obj)")
 RT_FUNC(Canvas3DGetCpuOccludedDrawCount, rt_canvas3d_get_cpu_occluded_draw_count, "Zanna.Graphics3D.Canvas3D.get_CpuOccludedDrawCount", "i64(obj)")
@@ -346,6 +347,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Canvas3D", Canvas3D, "obj", Canvas3DNew)
     // cluster truncations, and forward-path lights dropped this frame.
     RT_METHOD("SetClusterLightBudget", "void(i64)", Canvas3DSetClusterLightBudget)
     RT_PROP("ClusterOverflowCount", "i64", Canvas3DGetClusterOverflowCount, none)
+    RT_PROP("ClusterFallbackEntryCount", "i64", Canvas3DGetClusterFallbackEntryCount, none)
     RT_PROP("DroppedLightCount", "i64", Canvas3DGetDroppedLightCount, none)
     RT_PROP("FrustumCulledDrawCount", "i64", Canvas3DGetFrustumCulledDrawCount, none)
     RT_PROP("CpuOccludedDrawCount", "i64", Canvas3DGetCpuOccludedDrawCount, none)
@@ -564,6 +566,7 @@ RT_FUNC(Mesh3DMirror, rt_mesh3d_mirror, "Zanna.Graphics3D.Mesh3D.Mirror", "obj(o
 // Arc bend (ADR 0294): wrap a straight kit piece's X extent around a vertical
 // circular arc so adjacent pieces share end sections with no radial gap.
 RT_FUNC(Mesh3DBendArc,          rt_mesh3d_bend_arc,         "Zanna.Graphics3D.Mesh3D.BendArc",          "void(obj,f64,f64)")
+RT_FUNC(Mesh3DLoftHeight, rt_mesh3d_loft_height, "Zanna.Graphics3D.Mesh3D.LoftHeight", "void(obj,f64,f64,f64,f64,f64,f64,f64,f64)")
 
 /// @summary Provides Mesh 3D functionality for 3D rendering and scene applications.
 /// @details
@@ -612,6 +615,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Mesh3D", Mesh3D, "obj", Mesh3DNew)
     // influences remapped to their sagittal partners, morph deltas reflected).
     RT_METHOD("Mirror", "obj(obj)", Mesh3DMirror)
     RT_METHOD("BendArc", "void(f64,f64)", Mesh3DBendArc)
+    RT_METHOD("LoftHeight", "void(f64,f64,f64,f64,f64,f64,f64,f64)", Mesh3DLoftHeight)
     // Frees auxiliary CPU geometry (double positions, build scratch) a
     // finished static mesh no longer needs; returns bytes released.
     RT_METHOD("ReleaseCpuScratch", "i64()", Mesh3DReleaseCpuScratch)

@@ -5,11 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements sparse conditional constant propagation for the IL.  The solver
-// tracks executable blocks and edges, models block parameters as phi nodes, and
-// rewrites instructions whose results collapse to constants.  Terminators with
-// known outcomes are simplified to unconditional branches, leaving further CFG
-// clean-up to SimplifyCFG.
+// File: src/il/transform/SCCP.cpp
+// Purpose: Propagate constants along executable IL edges and fold known branches.
+// Key invariants:
+//   - Block parameters merge monotonically over executable incoming edges.
+//   - A provisional arithmetic trap must be reconsidered as its operands change.
+// Ownership/Lifetime: Solver borrows one function; instruction pointers remain
+// stable until solving and constant substitution finish, before CFG cleanup.
+// Links: SCCP.hpp, docs/il/il-guide.md#reference, test_SCCP.cpp.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -1050,12 +1053,15 @@ class SCCPSolver {
     std::unordered_map<unsigned, std::vector<Instr *>> uses_;
     /// Owning block index for every instruction.
     std::unordered_map<Instr *, size_t> instrBlock_;
+    /// Lexical index within each block's StableList (pointer order is unrelated).
+    std::unordered_map<Instr *, size_t> instrOrder_;
     /// Function block index keyed by label.
     std::unordered_map<std::string, size_t> blockIndex_;
     /// Blocks proven reachable by executable edges.
     std::vector<bool> blockExecutable_;
-    /// Blocks whose evaluated instruction stream is proven to trap.
-    std::vector<bool> blockTraps_;
+    /// Earliest currently trapping instruction in each block, or null. Arithmetic
+    /// traps are provisional until the operand lattice reaches its fixed point.
+    std::vector<Instr *> blockTraps_;
     /// Whether diagnostic lattice tracing is enabled.
     bool debug_ = false;
     /// Newly executable blocks awaiting instruction scheduling.
@@ -1074,7 +1080,7 @@ class SCCPSolver {
     /// @brief Index blocks, definitions, uses, and initial parameter lattice states.
     void initialiseStates() {
         blockExecutable_.assign(function_.blocks.size(), false);
-        blockTraps_.assign(function_.blocks.size(), false);
+        blockTraps_.assign(function_.blocks.size(), nullptr);
         for (size_t bi = 0; bi < function_.blocks.size(); ++bi) {
             blockIndex_[function_.blocks[bi].label] = bi;
         }
@@ -1096,8 +1102,10 @@ class SCCPSolver {
                 // from Function::params after frontend lowering or serialization.
                 registerValue(param.id, bi == 0);
 
+            size_t ordinal = 0;
             for (auto &instr : block.instructions) {
                 instrBlock_[&instr] = bi;
+                instrOrder_[&instr] = ordinal++;
                 if (instr.result)
                     registerValue(*instr.result, false);
 
@@ -1147,14 +1155,15 @@ class SCCPSolver {
         blockWorklist_.push(index);
     }
 
-    /// @brief Record that a block's terminator evaluates to a runtime trap.
-    /// @details Once marked, the block's instructions are excluded from the
-    ///          rewriting phase so no live code is removed.
+    /// @brief Record the earliest currently trapping instruction in a block.
+    /// @details Earlier instructions and the trap itself must still be revisited;
+    ///          a constant operand can become overdefined as another edge activates.
     /// @param index Function block index to mark.
-    void markBlockTrap(size_t index) {
-        if (blockTraps_[index])
+    /// @param instr Trapping instruction, borrowed from this block's StableList.
+    void markBlockTrap(size_t index, Instr &instr) {
+        if (blockTraps_[index] && instrOrder_.at(blockTraps_[index]) <= instrOrder_.at(&instr))
             return;
-        blockTraps_[index] = true;
+        blockTraps_[index] = &instr;
         if (debug_)
             std::cerr << "[sccp] block " << function_.blocks[index].label << " known to trap\n";
     }
@@ -1340,7 +1349,11 @@ class SCCPSolver {
     /// @param instr Instruction to evaluate.
     /// @param blockIndex Owning function block index.
     void visitInstruction(Instr &instr, size_t blockIndex) {
-        if (blockTraps_[blockIndex])
+        // StableList guarantees identity, not address ordering. Do not freeze
+        // definitions on which a provisional trap depends; only instructions
+        // lexically beyond it are presently unreachable.
+        if (blockTraps_[blockIndex] &&
+            instrOrder_.at(&instr) > instrOrder_.at(blockTraps_[blockIndex]))
             return;
 
         switch (instr.op) {
@@ -1359,7 +1372,7 @@ class SCCPSolver {
             case Opcode::ResumeSame:
             case Opcode::ResumeNext:
             case Opcode::ResumeLabel:
-                markBlockTrap(blockIndex);
+                markBlockTrap(blockIndex, instr);
                 break;
             default:
                 visitComputational(instr, blockIndex);
@@ -1427,8 +1440,18 @@ class SCCPSolver {
     void visitComputational(Instr &instr, size_t blockIndex) {
         FoldResult folded = foldInstruction(instr);
         if (folded.isTrap()) {
-            markBlockTrap(blockIndex);
+            markBlockTrap(blockIndex, instr);
             return;
+        }
+
+        if (blockTraps_[blockIndex] == &instr) {
+            blockTraps_[blockIndex] = nullptr;
+            // The formerly suppressed suffix, including its terminator, needs
+            // another visit even when it does not directly use the changed input.
+            blockWorklist_.push(blockIndex);
+            if (debug_)
+                std::cerr << "[sccp] reconsider block " << function_.blocks[blockIndex].label
+                          << " after provisional trap changed\n";
         }
 
         if (!instr.result)

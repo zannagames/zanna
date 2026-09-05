@@ -700,11 +700,17 @@ int vgfx3d_cluster_table_is_usable(const struct vgfx3d_cluster_table *table,
         table->global_light_count > light_count || table->binned_light_count < 0 ||
         table->binned_light_count != light_count - table->global_light_count ||
         table->overflow_count < 0 || !isfinite(table->znear) || !isfinite(table->zfar) ||
-        table->znear <= 0.0f || table->zfar <= table->znear || table->offsets[0] != 0)
+        table->znear <= 0.0f || table->zfar <= table->znear ||
+        (table->offsets[0] & VGFX3D_CLUSTER_OFFSET_MASK) != 0)
         return 0;
-    previous_offset = table->offsets[0];
+    previous_offset = table->offsets[0] & VGFX3D_CLUSTER_OFFSET_MASK;
     for (int32_t cluster = 1; cluster <= VGFX3D_CLUSTER_COUNT; cluster++) {
-        uint16_t offset = table->offsets[cluster];
+        uint16_t raw = table->offsets[cluster];
+        uint16_t offset = raw & VGFX3D_CLUSTER_OFFSET_MASK;
+        if ((cluster == VGFX3D_CLUSTER_COUNT && (raw & VGFX3D_CLUSTER_FALLBACK_FLAG)) ||
+            ((table->offsets[cluster - 1] & VGFX3D_CLUSTER_FALLBACK_FLAG) &&
+             offset != previous_offset))
+            return 0;
         if (offset < previous_offset || offset > VGFX3D_MAX_CLUSTER_LIGHT_INDICES)
             return 0;
         previous_offset = offset;

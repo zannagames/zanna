@@ -201,6 +201,10 @@ static void shadow_raster_tri_scissored(float *depth,
     if (area < 1e-12f)
         return;
 
+    sw_depth_plane depth_plane;
+    if (!sw_depth_plane_init(
+            &depth_plane, sx[0], sy[0], sz[0], sx[1], sy[1], sz[1], sx[2], sy[2], sz[2]))
+        return;
     float inv_area = 1.0f / area;
     int min_x = sw_floor_pixel_coord(fminf(fminf(sx[0], sx[1]), sx[2]), sw - 1);
     int max_x = sw_ceil_pixel_coord(fmaxf(fmaxf(sx[0], sx[1]), sx[2]), sw - 1);
@@ -234,7 +238,7 @@ static void shadow_raster_tri_scissored(float *depth,
         for (int x = min_x; x <= max_x; x++) {
             if (w0 >= edge_epsilon && w1 >= edge_epsilon && w2 >= edge_epsilon) {
                 float b0 = w0 * inv_area, b1 = w1 * inv_area, b2 = w2 * inv_area;
-                float z = b0 * sz[0] + b1 * sz[1] + b2 * sz[2];
+                float z = sw_depth_plane_sample(&depth_plane, x, y);
                 size_t idx = (size_t)y * (size_t)sw + (size_t)x;
                 if (cmd && cmd->alpha_mode == RT_MATERIAL3D_ALPHA_MODE_MASK) {
                     float attr_b0;

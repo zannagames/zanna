@@ -11,6 +11,7 @@
 // Key invariants:
 //   - The implicit root survives Clear and remains owned by its scene.
 //   - Subtree ownership is preflighted before hierarchy publication.
+//   - Node count is observed on demand, not recounted after each hierarchy edit.
 // Ownership/Lifetime:
 //   - Scene3D retains its root and root children retain their subtrees.
 //   - Temporary owner transactions own only their native node-pointer arrays.
@@ -209,7 +210,8 @@ int8_t rt_scene3d_try_add(void *obj, void *node) {
         return 0;
     if (!rt_scene_node3d_try_add_child(root, n))
         return 0;
-    s->node_count = count_subtree(root);
+    /* NodeCount already walks the current hierarchy on demand (ADR 0330).
+     * Recounting here makes independent insertion quadratic in scene size. */
     return n->parent == root ? 1 : 0;
 }
 
@@ -374,7 +376,6 @@ void rt_scene3d_remove(void *obj, void *node) {
         return;
     if (node_contains(root, n) && n->parent)
         rt_scene_node3d_remove_child(n->parent, n);
-    s->node_count = count_subtree(root);
 }
 
 /// @brief Locate a node by name via depth-first traversal from the scene root.
@@ -849,8 +850,8 @@ void rt_scene3d_sync_bindings(void *obj, double dt) {
 
 /// @brief Count every node in the scene, including the implicit root.
 /// @details Re-walks the tree rather than trusting a cached value so the result
-///   stays correct after direct child-list mutation. The cached `node_count`
-///   field is refreshed as a side effect.
+///   stays correct after every hierarchy mutation. The observational `node_count`
+///   field is refreshed as a side effect; hierarchy edits do not maintain it.
 /// @param obj Borrowed Scene3D handle.
 /// @return Non-negative total node count, including the root.
 int64_t rt_scene3d_get_node_count(void *obj) {

@@ -8,6 +8,8 @@
 // File: tests/unit/il/transform/test_SCCP.cpp
 // Purpose: Validate SCCP lattice behaviour (constants, traps) and interaction
 //          with SimplifyCFG on conditional/switch terminators.
+// Key invariants: Provisional trapping operands cannot freeze later loop values.
+// Ownership/Lifetime: Tests own parsed and constructed modules for each solver run.
 // Links: docs/internals/architecture.md, docs/il/il-guide.md#reference
 //
 //===----------------------------------------------------------------------===//
@@ -21,11 +23,13 @@
 #include "il/core/Module.hpp"
 #include "il/core/Type.hpp"
 #include "il/core/Value.hpp"
+#include "il/io/Parser.hpp"
 #include "il/io/Serializer.hpp"
 #include "il/verify/Verifier.hpp"
 #include "support/diag_expected.hpp"
 #include "tests/TestHarness.hpp"
 #include <cassert>
+#include <sstream>
 #include <string>
 
 using namespace il::core;
@@ -451,6 +455,70 @@ TEST(SCCP, FoldsConstantBranchAndPhi) {
         }
     }
     ASSERT_TRUE(foundConstRet);
+}
+
+TEST(SCCP, ReconsidersProvisionalTrapAfterLoopInputChanges) {
+    const std::string fixture = R"(il 0.3.0
+extern @extent() -> i64
+func @nested() -> i64 {
+entry:
+  br outer(0, 0)
+outer(%n:i64, %count:i64):
+  %limit:i64 = call @extent()
+  %more = scmp_lt %n, %limit
+  cbr %more, sample(0, %n, %count), setup
+sample(%x:i64, %row:i64, %samples:i64):
+  %width:i64 = call @extent()
+  %inrow = scmp_lt %x, %width
+  cbr %inrow, read, advance
+read:
+  %nextx = iadd.ovf %x, 4
+  %nextcount = iadd.ovf %samples, 1
+  br sample(%nextx, %row, %nextcount)
+advance:
+  %next = iadd.ovf %row, 4
+  br outer(%next, %samples)
+setup:
+  br inner(0, %count)
+inner(%i:i64, %d:i64):
+  %inside = scmp_lt %i, 16
+  cbr %inside, body, done
+body:
+  COMPUTATION
+  %step = iadd.ovf %i, 1
+  br inner(%step, %d)
+done:
+  ret %i
+}
+)";
+    for (const auto *computation : {"%q = sdiv.chk0 16, %d",
+                                    "%q = srem.chk0 16, %d",
+                                    // Changes to an earlier instruction in the trapped block must
+                                    // propagate too, not only direct inputs from another block.
+                                    "%distance = isub.ovf 9223372036854775807, %d\n"
+                                    "  %q = iadd.ovf %distance, 1",
+                                    // More than one provisional trap may occur in the same suffix.
+                                    "%q = sdiv.chk0 16, %d\n  %r = srem.chk0 16, %d"}) {
+        auto text = fixture;
+        text.replace(text.find("COMPUTATION"), std::string("COMPUTATION").size(), computation);
+        std::istringstream input(text);
+        Module module;
+        ASSERT_TRUE(il::io::Parser::parse(input, module));
+        ASSERT_TRUE(il::verify::Verifier::verify(module));
+        il::transform::sccp(module);
+        ASSERT_TRUE(il::verify::Verifier::verify(module));
+        auto &function = module.functions.front();
+        auto *inner = findBlock(function, "inner");
+        ASSERT_NE(inner, nullptr);
+        ASSERT_EQ(inner->instructions.back().op, Opcode::CBr);
+        EXPECT_EQ(inner->instructions.back().operands[0].kind, Value::Kind::Temp);
+        auto *body = findBlock(function, "body");
+        ASSERT_NE(body, nullptr);
+        EXPECT_EQ(body->instructions.back().brArgs[0][0].kind, Value::Kind::Temp);
+        auto *done = findBlock(function, "done");
+        ASSERT_NE(done, nullptr);
+        EXPECT_EQ(done->instructions.back().operands[0].kind, Value::Kind::Temp);
+    }
 }
 
 TEST(SCCP, DoesNotFoldTrappingDivision) {

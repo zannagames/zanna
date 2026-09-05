@@ -30,6 +30,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0064](0064-il-version-0-3-0.md) — IL Spec Version 0.2.0 → 0.3.0
 - [ADR 0111](0111-il-text-resource-limits.md) — Bound Textual IL Parsing Resources
 - [ADR 0147](0147-managed-reference-lowering-and-native-retain-elision.md) — Make Managed Reference Ownership Explicit Across Lowering and Native Codegen
+- [ADR 0329](0329-reconsider-provisional-sccp-traps.md) — Reconsider Provisional SCCP Traps
+- [ADR 0330](0330-observe-scene-node-count-on-demand.md) — Observe Scene Node Count on Demand
 
 ## Concurrency & Threads
 
@@ -303,6 +305,10 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0322](0322-single-canvas-postfx-temporal-ownership.md) — Give PostFX Temporal State One Canvas Owner
 - [ADR 0323](0323-allocation-free-3d-component-helper-abi.md) — Add Allocation-Free 3D Component Helper ABI
 - [ADR 0324](0324-mesh3d-rasterize-uv-axis.md) — Mesh3D.RasterizeUvAxis (any-axis UV coordinate rasterizer)
+- [ADR 0325](0325-stable-software-depth-interpolation.md) — Stable software depth interpolation for distant coplanar stadium surfaces
+- [ADR 0326](0326-mesh-height-loft.md) — Explicit-domain height fitting for authored static meshes
+- [ADR 0327](0327-constrained-offline-lod-generation.md) — Seam and error constraints for offline LOD cooking
+- [ADR 0328](0328-lossless-cluster-capacity-fallback.md) — Lossless clustered-light capacity fallback and separate pressure telemetry
 
 ## Release & Packaging
 

@@ -754,7 +754,9 @@ static int sw_project_clip_to_screen(const pipe_vert_t *p,
     float iw = 1.0f / p->clip[3];
     sv->sx = (p->clip[0] * iw + 1.0f) * half_w;
     sv->sy = (1.0f - p->clip[1] * iw) * half_h;
-    sv->sz = p->clip[2] * iw;
+    /* Depth needs one correctly rounded quotient, not reciprocal rounding
+     * followed by multiplication at a near-one NDC value (ADR 0325). */
+    sv->sz = (float)((double)p->clip[2] / p->clip[3]);
     sv->r = p->color[0];
     sv->g = p->color[1];
     sv->b = p->color[2];

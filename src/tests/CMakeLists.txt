@@ -1101,6 +1101,26 @@ foreach (test_name IN LISTS ZIA_ZANNA_RUN_O1_REGRESSION_TESTS)
     endif ()
 endforeach ()
 
+# Optimizer regression uses only pixel memory, not a graphics window. Keep its
+# VM and native O0/O1/O2 lanes enabled on every supported host.
+set(SCCP_TRAP_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/e2e/sccp_transient_trap.zia")
+add_test(NAME zia_sccp_transient_trap_vm
+        COMMAND $<TARGET_FILE:zanna> run "${SCCP_TRAP_FIXTURE}")
+set_tests_properties(zia_sccp_transient_trap_vm PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok" LABELS "zia;optimization" TIMEOUT 30)
+foreach (opt_level IN ITEMS O0 O1 O2)
+    add_test(NAME native_run_sccp_transient_trap_${opt_level}
+            COMMAND ${CMAKE_COMMAND}
+            -DZANNA_EXE=$<TARGET_FILE:zanna>
+            -DTEST_FILE=${SCCP_TRAP_FIXTURE}
+            -DOUT_EXE=${CMAKE_BINARY_DIR}/sccp_transient_trap_${opt_level}${CMAKE_EXECUTABLE_SUFFIX}
+            -DOPT_FLAG=-${opt_level}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(native_run_sccp_transient_trap_${opt_level} PROPERTIES
+            LABELS "zia;native_run;optimization" TIMEOUT 60)
+endforeach ()
+
 if (NOT WIN32)
     add_test(NAME native_run_zia_42_try_catch_promises
             COMMAND ${CMAKE_COMMAND}

@@ -1296,16 +1296,26 @@ typedef struct {
     int32_t worker_count;
     int64_t levels;
     double ratio;
+    int64_t flags;
+    double max_error_frac;
 } model_lod_build_slice_t;
 
 /// @brief Build the LOD chain for one prepared entry (worker or inline).
 /// @details Chained decimation: level k reduces level k-1 instead of the
 ///          base, cutting QEM cost by more than half on heavy scans while
-///          producing the same visual ladder.
+///          producing a progressively reduced ladder. Constrained generation
+///          always uses the original source so its boundary/error reference
+///          cannot drift between levels (ADR 0327).
 /// @param entry Prepared cache entry whose chain is filled in place.
 /// @param levels Sanitized chain length.
 /// @param ratio Per-level triangle ratio.
-static void model_lod_chain_build_one(model_lod_chain_entry *entry, int64_t levels, double ratio) {
+/// @param flags Simplification boundary constraints.
+/// @param max_error_frac Positive cost ceiling fraction, or zero.
+static void model_lod_chain_build_one(model_lod_chain_entry *entry,
+                                      int64_t levels,
+                                      double ratio,
+                                      int64_t flags,
+                                      double max_error_frac) {
     void *source = entry->mesh;
     int64_t source_tris = (int64_t)entry->base_tris;
     double target = (double)entry->base_tris;
@@ -1325,7 +1335,7 @@ static void model_lod_chain_build_one(model_lod_chain_entry *entry, int64_t leve
             tri_target = 2;
         if (tri_target >= source_tris)
             tri_target = source_tris - 1;
-        lod = rt_mesh3d_simplify(source, tri_target);
+        lod = rt_mesh3d_simplify_ex(source, tri_target, flags, max_error_frac);
         if (!lod)
             break;
         lod_mesh = (rt_mesh3d *)rt_g3d_checked_or_null(lod, RT_G3D_MESH3D_CLASS_ID);
@@ -1338,7 +1348,8 @@ static void model_lod_chain_build_one(model_lod_chain_entry *entry, int64_t leve
         entry->distances[entry->count] = distance;
         entry->count++;
         distance *= 2.0;
-        source = lod;
+        if (flags == 0 && max_error_frac == 0.0)
+            source = lod;
         source_tris = lod_tris;
     }
 }
@@ -1348,7 +1359,8 @@ static void model_lod_chain_build_one(model_lod_chain_entry *entry, int64_t leve
 static void model_lod_chain_build_slice(void *arg) {
     model_lod_build_slice_t *slice = (model_lod_build_slice_t *)arg;
     for (int32_t i = slice->worker_index; i < slice->entry_count; i += slice->worker_count)
-        model_lod_chain_build_one(&slice->entries[i], slice->levels, slice->ratio);
+        model_lod_chain_build_one(
+            &slice->entries[i], slice->levels, slice->ratio, slice->flags, slice->max_error_frac);
 }
 
 /// @brief Find (or register and prepare) the shared cache entry for @p mesh_obj.
@@ -1420,6 +1432,18 @@ static model_lod_chain_entry *model_lod_chain_find_or_prepare(model_lod_chain_en
 /// @param ratio Per-level triangle ratio; invalid values use 0.4.
 /// @return Number of nodes that received a LOD chain.
 int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
+    return rt_model3d_generate_lods_ex(obj, levels, ratio, 0, 0.0);
+}
+
+/// @brief Generate shared offline LODs with optional seam/cost constraints.
+/// @param obj Model3D whose unchained nodes receive reduced meshes.
+/// @param levels Requested levels, clamped to one through four.
+/// @param ratio Per-level triangle target ratio.
+/// @param flags RT_MESH3D_SIMPLIFY_FLAG_* constraints; unknown bits ignored.
+/// @param max_error_frac Positive finite cost fraction, otherwise disabled.
+/// @return Number of nodes receiving a chain; zero for invalid handles.
+int64_t rt_model3d_generate_lods_ex(
+    void *obj, int64_t levels, double ratio, int64_t flags, double max_error_frac) {
     rt_model3d *model = model3d_checked(obj);
     model_lod_chain_entry *chains = NULL;
     int32_t chain_count = 0;
@@ -1433,6 +1457,9 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
     int32_t pending_capacity = 0;
     if (!model)
         return 0;
+    flags &= RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES;
+    if (!isfinite(max_error_frac) || max_error_frac <= 0.0)
+        max_error_frac = 0.0;
     if (levels < 1)
         levels = 1;
     if (levels > 4)
@@ -1503,6 +1530,8 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
                 slices[w].worker_count = workers;
                 slices[w].levels = levels;
                 slices[w].ratio = ratio;
+                slices[w].flags = flags;
+                slices[w].max_error_frac = max_error_frac;
             }
             /* Slice 0 runs on this thread; extras run on spawned threads. */
             for (int32_t w = 1; w < workers; w++) {
@@ -1534,7 +1563,7 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
             }
         } else {
             for (int32_t i = 0; i < chain_count; i++)
-                model_lod_chain_build_one(&chains[i], levels, ratio);
+                model_lod_chain_build_one(&chains[i], levels, ratio, flags, max_error_frac);
         }
     }
     /* Phase 3 (main thread): attach the shared chains to their nodes. */

@@ -423,12 +423,12 @@ int8_t rt_scene_node3d_metadata_import_internal(rt_scene_node3d *node,
 /// @return Nonzero when every entry copied; zero on invalid tables or allocation failure.
 int8_t rt_scene_node3d_metadata_copy_internal(rt_scene_node3d *dst, const rt_scene_node3d *src);
 
-/// @brief Scene3D payload: the implicit root node, total node count, and the
+/// @brief Scene3D payload: the implicit root node, last observed node count, and the
 ///   frustum-culled count from the most recent draw (a perf metric).
 typedef struct rt_scene3d {
     void *vptr;
     rt_scene_node3d *root;
-    int32_t node_count;
+    int32_t node_count; /* Last observed/initialized count; query traverses the current tree. */
     int32_t last_culled_count;
     int32_t last_visible_node_count;
     int32_t last_pvs_culled_count;

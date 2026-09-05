@@ -1957,6 +1957,44 @@ static bool test_world_navmesh_bake_hooks() {
     PASS();
 }
 
+static bool test_entity_name_getter_owns_result() {
+    TEST("Entity3D.Name owns each result across rename and caller release");
+    void *entity = rt_game3d_entity_new();
+    rt_string original = rt_string_from_bytes("Shared fixture", 14);
+    rt_game3d_entity_set_name_prop(entity, original);
+    rt_string_unref(original);
+    rt_string held = rt_game3d_entity_get_name(entity);
+    const size_t held_count = rt_string_unref_count(rt_string_ref(held));
+    rt_string second = rt_game3d_entity_get_name(entity);
+    EXPECT_TRUE(second == held, "name getter shares the immutable string payload");
+    EXPECT_TRUE(rt_string_unref_count(rt_string_ref(held)) == held_count + 1,
+                "each owned ABI result has an independent retained reference");
+    rt_string_unref(second);
+    rt_string replacement = rt_string_from_bytes("Replacement", 11);
+    rt_game3d_entity_set_name_prop(entity, replacement);
+    rt_string_unref(replacement);
+    EXPECT_TRUE(rt_string_is_handle(held) != 0,
+                "renaming entity and node cannot invalidate the caller's old name");
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(held), "Shared fixture") == 0,
+                "caller retains the original name value after rename");
+    rt_string_unref(held);
+    for (int i = 0; i < 32; ++i) {
+        rt_string name = rt_game3d_entity_get_name(entity);
+        EXPECT_TRUE(std::strcmp(rt_string_cstr(name), "Replacement") == 0,
+                    "repeated owned reads cannot consume the entity name slot");
+        rt_string_unref(name);
+    }
+    rt_string surviving_name = rt_game3d_entity_get_name(entity);
+    if (rt_obj_release_check0(entity))
+        rt_obj_free(entity);
+    EXPECT_TRUE(rt_string_is_handle(surviving_name) != 0,
+                "caller name result outlives entity and scene node finalization");
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(surviving_name), "Replacement") == 0,
+                "finalization preserves the independently owned name value");
+    rt_string_unref(surviving_name);
+    PASS();
+}
+
 static bool test_entity_from_node_wraps_imported_subtree() {
     TEST("Entity3D.FromNode wraps a raw SceneNode subtree");
     void *root = rt_scene_node3d_new();
@@ -1980,8 +2018,10 @@ static bool test_entity_from_node_wraps_imported_subtree() {
     EXPECT_TRUE(entity != nullptr, "FromNode returns an Entity3D");
     EXPECT_TRUE(rt_game3d_entity_is_group(entity) != 0, "FromNode marks the wrapper as a group");
     EXPECT_TRUE(rt_game3d_entity_get_node(entity) == root, "FromNode uses the provided root node");
-    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_game3d_entity_get_name(entity)), "ImportedRoot") == 0,
+    rt_string imported_name = rt_game3d_entity_get_name(entity);
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(imported_name), "ImportedRoot") == 0,
                 "FromNode inherits a non-empty root node name");
+    rt_string_unref(imported_name);
     rt_game3d_entity_set_material_recursive(entity, material_b);
     EXPECT_TRUE(rt_scene_node3d_get_material(root) == material_b,
                 "setMaterialRecursive applies to the imported root node");
@@ -2114,8 +2154,10 @@ static bool test_entity_private_slots_reject_wrong_class_refs() {
     view->layer = rt_game3d_layers_dynamic();
     rt_string saved_name = view->name;
     view->name = reinterpret_cast<rt_string>(material_b);
-    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_game3d_entity_get_name(entity)), "") == 0,
+    rt_string empty_name = rt_game3d_entity_get_name(entity);
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(empty_name), "") == 0,
                 "Entity3D.GetName rejects wrong-class private string slots");
+    rt_string_unref(empty_name);
     rt_string repaired_name = view->name;
     view->name = saved_name;
     rt_string_unref(repaired_name);
@@ -7646,6 +7688,7 @@ int main() {
     ok = test_world_body_index_deletion_tombstones_and_duplicate_names() && ok;
     ok = test_world_navmesh_bake_hooks() && ok;
     ok = test_entity_from_node_wraps_imported_subtree() && ok;
+    ok = test_entity_name_getter_owns_result() && ok;
     ok = test_entity_private_slots_reject_wrong_class_refs() && ok;
     ok = test_animator_private_controller_rejects_wrong_class_refs() && ok;
     ok = test_animator_private_event_slots_reject_wrong_class_refs() && ok;

@@ -963,7 +963,7 @@ void *rt_game3d_entity_get_collision_mask(void *entity);
 void rt_game3d_entity_set_collision_mask_prop(void *entity, void *mask);
 /// @brief Get the entity's display name.
 /// @param entity Entity3D instance used by the operation.
-/// @return A runtime string containing the documented result.
+/// @return Retained runtime string; the caller releases its result.
 rt_string rt_game3d_entity_get_name(void *entity);
 /// @brief Set the entity's display name (property setter).
 /// @param entity Entity3D instance used by the operation.

@@ -584,6 +584,9 @@ typedef struct vgfx3d_camera_params {
     int8_t depth_only_shading;
 } vgfx3d_camera_params_t;
 
+/// Maximum resident static geometry entries on each GPU backend (not a byte budget).
+#define VGFX3D_STATIC_MESH_CACHE_CAPACITY 256
+
 /*==========================================================================
  * Lighting parameters — set before begin_frame
  *=========================================================================*/
@@ -606,6 +609,8 @@ typedef struct vgfx3d_camera_params {
 #define VGFX3D_CLUSTER_DIM_Z 24
 #define VGFX3D_CLUSTER_COUNT (VGFX3D_CLUSTER_DIM_X * VGFX3D_CLUSTER_DIM_Y * VGFX3D_CLUSTER_DIM_Z)
 #define VGFX3D_MAX_CLUSTER_LIGHT_INDICES 8192
+#define VGFX3D_CLUSTER_FALLBACK_FLAG 0x8000u
+#define VGFX3D_CLUSTER_OFFSET_MASK 0x7fffu
 
 /// @brief CPU-binned froxel light table consumed by GPU backends.
 /// @details Built by the canvas per light-snapshot revision (the same stamp that
@@ -615,8 +620,10 @@ typedef struct vgfx3d_camera_params {
 ///   conservatively rasterized into a 16x9x24 view froxel grid with exponential
 ///   Z slicing over [znear, zfar]. `offsets` holds prefix sums into `indices`
 ///   (light-array indices) per cluster in X-major, then Y, then Z order:
-///   cluster = x + y*DIM_X + z*DIM_X*DIM_Y. Per-cluster truncation on index
-///   overflow is order-stable and counted in `overflow_count` (never UB).
+///   cluster = x + y*DIM_X + z*DIM_X*DIM_Y. Per-cluster capacity/index
+///   overflow selects the full light loop using the high bit of the cluster's
+///   start offset (ADR 0328). Mask both endpoints before indexing. Flagged
+///   clusters have empty compact lists; the terminal offset is never flagged.
 typedef struct vgfx3d_cluster_table {
     /// Light snapshot revision matched by this table; zero marks invalid data.
     uint32_t lights_revision; /* snapshot revision this table matches (0 = invalid) */
@@ -624,8 +631,8 @@ typedef struct vgfx3d_cluster_table {
     int32_t global_light_count; /* directional/ambient prefix length in the light array */
     /// Number of point and spot lights considered during froxel binning.
     int32_t binned_light_count; /* point/spot lights considered for binning */
-    /// Number of cluster-light references dropped because the index array filled.
-    int32_t overflow_count; /* dropped cluster entries (diagnostics; 0 in practice) */
+    /// Local index demand served losslessly by full-light fallback, not dropped.
+    int32_t overflow_count; /* capacity pressure; no table-layout change */
     /// Near depth used by exponential Z slicing.
     float znear;
     /// Far depth used by exponential Z slicing.

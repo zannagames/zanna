@@ -617,7 +617,8 @@ static void metal_cache_evict_if_needed(VGFXMetalContext *ctx) {
     NSValue *oldestKey = nil;
     VGFXMetalGeometryCacheEntry *oldestEntry = nil;
 
-    if (!ctx || !ctx.geometryCache || ctx.geometryCache.count < 128)
+    if (!ctx || !ctx.geometryCache ||
+        ctx.geometryCache.count < VGFX3D_STATIC_MESH_CACHE_CAPACITY)
         return;
     for (NSValue *key in ctx.geometryCache) {
         VGFXMetalGeometryCacheEntry *entry = ctx.geometryCache[key];

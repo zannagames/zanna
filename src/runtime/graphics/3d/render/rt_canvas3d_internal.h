@@ -1686,10 +1686,11 @@ typedef struct {
     void *cluster_tables;
     int32_t cluster_table_count;
     int32_t cluster_table_cursor;
-    int64_t cluster_overflow_total;   /* lifetime truncated cluster entries (diagnostics) */
-    int32_t cluster_light_budget;     /* per-cluster light-index capacity (8..64) */
-    int32_t last_dropped_light_count; /* forward-path lights truncated by the active limit */
-    int32_t shadow_budget;            /* general shadow-light slots (1..VGFX3D_MAX_SHADOW_LIGHTS) */
+    int64_t cluster_overflow_total;       /* lifetime truncated cluster entries (diagnostics) */
+    int64_t cluster_fallback_entry_total; /* lifetime local entries served by flat fallback */
+    int32_t cluster_light_budget;         /* per-cluster light-index capacity (8..64) */
+    int32_t last_dropped_light_count;     /* forward-path lights truncated by the active limit */
+    int32_t shadow_budget;          /* general shadow-light slots (1..VGFX3D_MAX_SHADOW_LIGHTS) */
     int32_t last_shadow_slots_used; /* shadow slots rendered in the latest frame (incl. cascades) */
     int32_t last_shadow_requests_dropped; /* shadow-requesting lights denied a slot this frame */
     void *shadow_draw_indices;            /* int32_t scratch list of shadow-casting draw indices */

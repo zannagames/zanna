@@ -779,6 +779,18 @@ static void test_cluster_ibl_and_upload_budget_validation(void) {
 
     EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(&table, 7, 3) == 1,
                 "Cluster validation accepts a bounded revision-matched table");
+    table.offsets[1] |= VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(&table, 7, 3) == 1,
+                "An empty fallback next to a compact list preserves masked ranges");
+    table.offsets[0] = VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(&table, 7, 3) == 0,
+                "A fallback cluster cannot retain a partial list");
+    table.offsets[0] = 0;
+    table.offsets[1] = 2;
+    table.offsets[VGFX3D_CLUSTER_COUNT] |= VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(&table, 7, 3) == 0,
+                "Terminal prefix boundary cannot be flagged");
+    table.offsets[VGFX3D_CLUSTER_COUNT] = 2;
     EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(NULL, 7, 3) == 0,
                 "Cluster validation rejects a missing table");
     EXPECT_TRUE(vgfx3d_d3d11_cluster_table_is_usable(&table, 8, 3) == 0,
@@ -1988,16 +2000,19 @@ static void test_d3d11_shader_sources_keep_numeric_guards(void) {
         contains_text(d3d11_shader_source, "uint clusterIndexAt(int i) {\n    i = clamp(i, 0, "),
         "Cluster light-index reads clamp their packed-buffer index");
     EXPECT_TRUE(
-        count_text(d3d11_shader_source, "clusterStart = clamp(int(clusterOffsetAt(cidx)), 0,") == 2,
+        count_text(d3d11_shader_source, "clusterStart = clamp(int(rawStart & 32767u), 0,") == 2,
         "Both lighting workflows clamp cluster starts");
     EXPECT_TRUE(count_text(d3d11_shader_source,
-                           "int clusterEnd = clamp(int(clusterOffsetAt(cidx + 1)), "
+                           "int clusterEnd = clamp(int(clusterOffsetAt(cidx + 1) & 32767u), "
                            "clusterStart,") == 2,
                 "Both lighting workflows clamp and order cluster ends");
     EXPECT_TRUE(count_text(d3d11_shader_source,
-                           "lightLoopCount = min(lightCount, clusterGlobalCount + clusterEnd - "
+                           "lightLoopCount = min(lightCount, clusterGlobals + clusterEnd - "
                            "clusterStart);") == 2,
                 "Both clustered loops stay within uploaded lights");
+    EXPECT_TRUE(count_text(d3d11_shader_source, "if ((rawStart & 32768u) != 0u)") == 2 &&
+                    count_text(d3d11_shader_source, "clusterGlobals = -1;") == 2,
+                "Both workflows select the lossless full-light path on capacity fallback");
     EXPECT_TRUE(count_text(d3d11_shader_source, "if (i < 0 || i >= lightCount)") == 2,
                 "Both clustered loops reject malformed light indices");
     EXPECT_TRUE(contains_text(

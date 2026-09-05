@@ -1,0 +1,47 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/e2e/sccp_transient_trap.zia
+// Purpose: VM/native regression for a provisional SCCP division trap in a loop.
+// Key invariants: Both finite write-loop indices survive constant propagation.
+// Ownership/Lifetime: Fixture owns its small pixel buffers; no display or files.
+// Links: src/il/transform/SCCP.cpp, docs/il/il-guide.md#reference.
+//
+//===----------------------------------------------------------------------===//
+module sccp_transient_trap;
+bind Zanna.Graphics as G;
+bind Zanna.Terminal as T;
+bind Zanna.System.Environment as E;
+
+func kernel(pixels: G.Pixels) {
+    var red = 0; var green = 0; var blue = 0; var samples = 0;
+    var y = 0;
+    while y < pixels.Height {
+        var x = 0;
+        while x < pixels.Width {
+            var rgb = pixels.GetRgb(x, y);
+            red = red + rgb / 65536 % 256;
+            green = green + rgb / 256 % 256; blue = blue + rgb % 256;
+            samples = samples + 1; x = x + 4;
+        }
+        y = y + 4;
+    }
+    var mean = G.Pixels.New(16, 16);
+    for yy in 0..16 { for xx in 0..16 {
+        mean.SetRgb(xx, yy, (red / samples) * 65536 + (green / samples) * 256 + blue / samples);
+    } }
+    if mean.GetRgb(15, 15) != 986895 || mean.GetRgb(7, 7) != 986895 {
+        T.Say("RESULT: fail (mean-color loop)"); E.Exit(1);
+    }
+}
+
+func start() {
+    var image = G.Pixels.New(16, 16);
+    image.SetRgb(0, 0, 16777215);
+    kernel(image);
+    T.Say("RESULT: ok (finite pixel loops)");
+}

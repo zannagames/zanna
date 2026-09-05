@@ -1,3 +1,17 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_game3d_world_probe.zia
+// Purpose: Runtime-backed world creation, entity ownership and frame contract.
+// Key invariants: Name reads own their results across self-renames and teardown.
+// Ownership/Lifetime: The probe owns its world and explicitly destroys it.
+// Links: src/runtime/graphics/3d/rt_game3d_entity.c, src/tests/CMakeLists.txt.
+//
+//===----------------------------------------------------------------------===//
 module test_game3d_world_probe;
 
 bind Zanna.Game3D as Game3D;
@@ -5,6 +19,7 @@ bind Zanna.Graphics as Graphics;
 bind Zanna.Graphics3D as G3D;
 bind Zanna.Math as Math;
 bind Zanna.Terminal as Terminal;
+bind Zanna.Text.Fmt as Fmt;
 
 func fail(message: String) {
     Terminal.Say("FAIL: " + message);
@@ -43,6 +58,20 @@ func start() {
     }
 
     var mesh = G3D.Mesh3D.Box(1.0, 1.0, 1.0);
+    var renamed = Game3D.Entity3D.New();
+    renamed.Name = "Fixture/" + Fmt.Int(world.EntityCount);
+    var heldName = renamed.Name;
+    renamed.Name = renamed.Name + "/instance_0";
+    if (heldName != "Fixture/0" || renamed.Name != "Fixture/0/instance_0") {
+        fail("Entity3D.Name result did not survive self-rename");
+        return;
+    }
+    world.Spawn(renamed);
+    world.Despawn(renamed);
+    if (heldName != "Fixture/0") {
+        fail("retained entity name did not survive entity destruction");
+        return;
+    }
     var mat = G3D.Material3D.FromColor(0.2, 0.7, 0.9);
     var player = Game3D.Entity3D.Of(mesh, mat);
     player.Name = "Player";

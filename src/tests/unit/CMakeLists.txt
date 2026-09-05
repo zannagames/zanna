@@ -954,6 +954,7 @@ function(zanna_add_runtime_tests)
 
     zanna_add_test(test_rt_textureasset3d ${ZANNA_TESTS_DIR}/unit/test_rt_textureasset3d.cpp)
     target_link_libraries(test_rt_textureasset3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    target_compile_definitions(test_rt_textureasset3d PRIVATE ZANNA_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     zanna_add_ctest(test_rt_textureasset3d test_rt_textureasset3d)
     zanna_add_test_labels(test_rt_textureasset3d graphics3d unit)
 
@@ -996,6 +997,7 @@ function(zanna_add_runtime_tests)
     # from the same binary via --scale.
     zanna_add_test(test_rt_scene3d ${ZANNA_TESTS_DIR}/unit/test_rt_scene3d.cpp)
     target_link_libraries(test_rt_scene3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    target_compile_definitions(test_rt_scene3d PRIVATE ZANNA_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     zanna_add_ctest(test_rt_scene3d test_rt_scene3d)
     zanna_add_test_labels(test_rt_scene3d graphics3d unit)
     zanna_add_ctest(test_rt_scene3d_scale test_rt_scene3d --scale)

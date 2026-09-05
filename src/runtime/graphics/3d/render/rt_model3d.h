@@ -314,6 +314,17 @@ int64_t rt_model3d_simplify_meshes_ex(void *obj,
 /// @param ratio Per-level target triangle ratio.
 /// @return Number of nodes that received a LOD chain.
 int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio);
+/// @brief Tool-facing LOD generation with seam locking and a quadric-cost ceiling.
+/// @details Constrained levels reference the original mesh; duplicate/non-reducing
+///          levels are not attached. Existing chains remain unchanged (ADR 0327).
+/// @param obj Model3D whose template and scene hierarchies receive shared chains.
+/// @param levels Requested levels, clamped to one through four.
+/// @param ratio Per-level target ratio; invalid values use 0.4.
+/// @param flags RT_MESH3D_SIMPLIFY_FLAG_* constraints, or zero.
+/// @param max_error_frac Positive finite bounding-diameter cost fraction, else disabled.
+/// @return Number of nodes receiving a reduced chain, or zero for invalid handles.
+int64_t rt_model3d_generate_lods_ex(
+    void *obj, int64_t levels, double ratio, int64_t flags, double max_error_frac);
 
 /// @brief Find a scene-graph node by name (NULL if not found).
 /// @details The returned node belongs to the immutable imported template; mutate an instantiated

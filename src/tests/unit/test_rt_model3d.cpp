@@ -31,6 +31,7 @@
 #include "rt_fbx_loader.h"
 #include "rt_gltf.h"
 #include "rt_mat4.h"
+#include "rt_mesh_simplify.h"
 #include "rt_model3d.h"
 #include "rt_morphtarget3d.h"
 #include "rt_morphtarget3d_internal.h"
@@ -8041,6 +8042,91 @@ static void test_model3d_generate_lods_builds_chains() {
         rt_obj_free(model);
 }
 
+static void test_model3d_constrained_lods_preserve_boundary() {
+    const char *path = "zanna_model3d_constrained_lod_grid.obj";
+    std::string obj;
+    for (int z = 0; z < 5; ++z)
+        for (int x = 0; x < 5; ++x)
+            obj += "v " + std::to_string(x) + " 0 " + std::to_string(z) + "\n";
+    for (int z = 0; z < 4; ++z) {
+        for (int x = 0; x < 4; ++x) {
+            const int a = z * 5 + x + 1;
+            obj += "f " + std::to_string(a) + " " + std::to_string(a + 5) + " " +
+                   std::to_string(a + 6) + "\n";
+            obj += "f " + std::to_string(a) + " " + std::to_string(a + 6) + " " +
+                   std::to_string(a + 1) + "\n";
+        }
+    }
+    EXPECT_TRUE(write_text_file(path, obj), "constrained grid fixture writes");
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "constrained grid imports");
+    if (!model) {
+        std::remove(path);
+        return;
+    }
+    EXPECT_TRUE(rt_model3d_generate_lods_ex(
+                    model, 3, 0.25, RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES, 0.001) == 1,
+                "constrained generation reduces chart interiors");
+    void *instance = rt_model3d_instantiate(model);
+    auto *node =
+        instance ? static_cast<rt_scene_node3d *>(rt_scene_node3d_get_child(instance, 0)) : nullptr;
+    EXPECT_TRUE(node != nullptr && node->lod_count > 0, "instance inherits constrained chain");
+    if (node) {
+        auto *base = static_cast<rt_mesh3d *>(node->mesh);
+        EXPECT_TRUE(base && base->index_count == 96, "source grid topology remains unchanged");
+        uint32_t previous = base ? base->index_count : 0;
+        for (int level = 0; level < node->lod_count; ++level) {
+            auto *lod = static_cast<rt_mesh3d *>(node->lod_levels[level].mesh);
+            EXPECT_TRUE(lod && lod->index_count > 0 && lod->index_count < previous,
+                        "constrained levels are useful, nonempty reductions");
+            if (!lod || !base)
+                continue;
+            previous = lod->index_count;
+            for (uint32_t i = 0; i < base->vertex_count; ++i) {
+                const auto &vertex = base->vertices[i];
+                if (vertex.pos[0] != 0.0f && vertex.pos[0] != 4.0f && vertex.pos[2] != 0.0f &&
+                    vertex.pos[2] != 4.0f)
+                    continue;
+                bool found = false;
+                for (uint32_t j = 0; j < lod->vertex_count && !found; ++j)
+                    found = std::memcmp(&vertex, &lod->vertices[j], sizeof(vertex)) == 0;
+                EXPECT_TRUE(found, "every boundary position and attribute record survives");
+            }
+        }
+    }
+    EXPECT_TRUE(rt_model3d_generate_lods_ex(model, 2, 0.5, 1, 0.001) == 0,
+                "constrained generation preserves existing chains");
+    EXPECT_TRUE(rt_model3d_generate_lods_ex(nullptr, 2, 0.5, 1, 0.001) == 0,
+                "constrained generation ignores invalid handles");
+    if (instance && rt_obj_release_check0(instance))
+        rt_obj_free(instance);
+    if (rt_obj_release_check0(model))
+        rt_obj_free(model);
+    // A non-planar source with a near-zero cost budget cannot safely reduce.
+    // It must remain a usable base mesh, not acquire a duplicate or empty LOD.
+    const char *octahedron = "v 1 0 0\nv -1 0 0\nv 0 1 0\nv 0 -1 0\n"
+                             "v 0 0 1\nv 0 0 -1\n"
+                             "f 1 3 5\nf 5 3 2\nf 2 3 6\nf 6 3 1\n"
+                             "f 5 4 1\nf 2 4 5\nf 6 4 2\nf 1 4 6\n";
+    EXPECT_TRUE(write_text_file(path, octahedron), "cost-limited fixture writes");
+    model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "cost-limited fixture imports");
+    if (model) {
+        EXPECT_TRUE(rt_model3d_generate_lods_ex(model, 3, 0.25, 0, 1e-8) == 0,
+                    "tight cost limit preserves base rather than attaching duplicate LODs");
+        instance = rt_model3d_instantiate(model);
+        node = instance ? static_cast<rt_scene_node3d *>(rt_scene_node3d_get_child(instance, 0))
+                        : nullptr;
+        EXPECT_TRUE(node && node->lod_count == 0 && node->mesh,
+                    "non-reducible asset still instantiates its complete base mesh");
+        if (instance && rt_obj_release_check0(instance))
+            rt_obj_free(instance);
+        if (rt_obj_release_check0(model))
+            rt_obj_free(model);
+    }
+    std::remove(path);
+}
+
 static void test_model3d_strip_meshes_visits_all_scene_roots_once() {
     const char *obj_path = "/tmp/zanna_model3d_many_scene_roots.obj";
     const char *obj_text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
@@ -10502,6 +10588,7 @@ int main() {
     test_model3d_vscn_v5_corruption_rolls_back();
     test_model3d_draco_corrupt_payloads_fail_cleanly();
     test_model3d_generate_lods_builds_chains();
+    test_model3d_constrained_lods_preserve_boundary();
     test_model3d_strip_meshes_visits_all_scene_roots_once();
     test_model3d_applies_material_variants();
     test_model3d_autoplays_gltf_node_and_morph_animation();

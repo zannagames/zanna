@@ -15,6 +15,7 @@
 //   - Complete world-matrix assignment is exact or leaves every local TRS lane unchanged.
 //   - World transforms, bounds, culling, persistence, and animation remain deterministic.
 //   - Typed node metadata preserves exact kinds and values through VSCN v6.
+//   - Hierarchy mutation does not eagerly refresh the observational node count.
 // Ownership/Lifetime:
 //   - Runtime fixtures are managed by the runtime test heap.
 //   - White-box payload pointers are borrowed only while the owning fixture is live.
@@ -176,6 +177,24 @@ extern "C" void vm_trap(const char *msg) {
         }                                                                                          \
     } while (0)
 
+#define EXPECT_EQ(actual, expected)                                                                \
+    do {                                                                                           \
+        tests_run++;                                                                               \
+        const auto actual_value = (actual);                                                        \
+        const auto expected_value = (expected);                                                    \
+        if (actual_value != expected_value) {                                                      \
+            std::fprintf(stderr,                                                                   \
+                         "FAIL %s:%d: %s = %lld, expected %lld\n",                                 \
+                         __FILE__,                                                                 \
+                         __LINE__,                                                                 \
+                         #actual,                                                                  \
+                         static_cast<long long>(actual_value),                                     \
+                         static_cast<long long>(expected_value));                                  \
+        } else {                                                                                   \
+            tests_passed++;                                                                        \
+        }                                                                                          \
+    } while (0)
+
 template <typename Fn> static bool expect_trap_contains(Fn &&fn, const char *needle) {
     g_last_trap = nullptr;
     g_expect_trap = true;
@@ -294,6 +313,46 @@ static void test_add_remove_child() {
     rt_scene3d_remove(scene, node);
     EXPECT_TRUE(rt_scene3d_get_node_count(scene) == 1, "After Remove: node count is 1");
     EXPECT_TRUE(rt_scene_node3d_get_parent(node) == nullptr, "Removed node has no parent");
+}
+
+static void test_node_count_observation_is_not_eager() {
+    auto *scene = static_cast<rt_scene3d *>(rt_scene3d_new());
+    void *parent = rt_scene_node3d_new();
+    void *child = rt_scene_node3d_new();
+    rt_scene_node3d_add_child(parent, child);
+    rt_scene3d_add(scene, parent);
+    EXPECT_EQ(scene->node_count, 1);
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 3);
+    EXPECT_EQ(scene->node_count, 3);
+
+    /* Promote a nested node and add it twice: neither operation adds nodes. */
+    EXPECT_TRUE(rt_scene3d_try_add(scene, child) != 0, "Nested node promotes to root");
+    EXPECT_TRUE(rt_scene3d_try_add(scene, child) != 0, "Repeated insertion succeeds");
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 3);
+    rt_scene_node3d_add_child(parent, child);
+    rt_scene3d_remove(scene, child);
+    EXPECT_EQ(scene->node_count, 3);
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 2);
+    EXPECT_TRUE(rt_scene_node3d_get_parent(child) == nullptr, "Nested removal detaches child");
+
+    /* A deterministic work assertion, not a wall-clock performance threshold. */
+    for (int i = 0; i < 128; ++i) {
+        void *node = rt_scene_node3d_new();
+        rt_scene3d_add(scene, node);
+        EXPECT_EQ(scene->node_count, 2);
+    }
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 130);
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 130);
+
+    void *other = rt_scene3d_new();
+    rt_scene3d_add(other, child);
+    rt_scene3d_remove(scene, child);
+    EXPECT_TRUE(rt_scene3d_try_add(scene, other) == 0, "Invalid insertion stays rejected");
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 130);
+    EXPECT_EQ(rt_scene3d_get_node_count(other), 2);
+    rt_scene3d_clear(scene);
+    EXPECT_EQ(scene->node_count, 1);
+    EXPECT_EQ(rt_scene3d_get_node_count(scene), 1);
 }
 
 static void test_try_add_reports_parenting_success() {
@@ -5627,7 +5686,12 @@ static void test_scene_prefab_reference_nodes() {
     /* Golden fixture: the checked-in v7 file keeps loading with the same
      * structure and resaving byte-identically as the serializer evolves. */
     {
+#ifdef ZANNA_TEST_SOURCE_DIR
+        std::string golden_path =
+            ZANNA_TEST_SOURCE_DIR "/src/tests/fixtures/runtime/prefab_world_v7.scene3d";
+#else
         std::string golden_path = "src/tests/fixtures/runtime/prefab_world_v7.scene3d";
+#endif
         const char *golden_resave = "/tmp/zanna_prefab_golden_resave.scene3d";
         std::string golden_text = prefab_read_file(golden_path.c_str());
         if (golden_text.empty()) {
@@ -5740,6 +5804,7 @@ int main(int argc, char **argv) {
     test_node_animator_survives_target_removal_mid_clip();
     test_create_scene_and_node();
     test_add_remove_child();
+    test_node_count_observation_is_not_eager();
     test_try_add_reports_parenting_success();
     test_scene_remove_ignores_nodes_from_other_scenes();
     test_scene_rejects_reparenting_implicit_root();

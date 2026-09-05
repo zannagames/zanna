@@ -114,8 +114,10 @@ static int sw_debug_enabled(void) {
 /// @param out Receives all interpolated pipeline attributes.
 static void pipe_lerp(const pipe_vert_t *a, const pipe_vert_t *b, float t, pipe_vert_t *out) {
     float s = 1.0f - t;
+    /* ADR 0325: preserve constant clip coordinates exactly; the weighted
+     * sum can invent depth variation while clipping a distant flat plane. */
     for (int i = 0; i < 4; i++)
-        out->clip[i] = s * a->clip[i] + t * b->clip[i];
+        out->clip[i] = (float)((double)a->clip[i] + (double)t * ((double)b->clip[i] - a->clip[i]));
     for (int i = 0; i < 3; i++)
         out->world[i] = s * a->world[i] + t * b->world[i];
     for (int i = 0; i < 3; i++)

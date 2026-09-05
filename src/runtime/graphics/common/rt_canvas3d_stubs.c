@@ -2955,6 +2955,15 @@ int64_t rt_canvas3d_get_cluster_overflow_count(void *o) {
         "Canvas3D.get_ClusterOverflowCount: graphics support not compiled in", 0);
 }
 
+/// @brief Neutral diagnostic stub for lossless cluster fallback pressure.
+/// @param o Canvas3D handle (ignored).
+/// @return Zero when graphics is disabled.
+int64_t rt_canvas3d_get_cluster_fallback_entry_count(void *o) {
+    (void)o;
+    RT_GRAPHICS_OPTIONAL_TRAP_RET(
+        "Canvas3D.get_ClusterFallbackEntryCount: graphics support not compiled in", 0);
+}
+
 /// @brief Silent fallback stub for `Canvas3D.get_DroppedLightCount` (graphics-disabled build).
 /// @param o Canvas3D handle (ignored).
 /// @return `0`.

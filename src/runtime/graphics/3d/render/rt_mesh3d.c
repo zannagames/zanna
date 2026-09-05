@@ -1287,6 +1287,22 @@ void rt_mesh3d_add_vertex(
 // Geometry Merge (ADR 0252)
 //=============================================================================
 
+/// @brief Choose bounded geometric growth for an automatic append allocation.
+/// @details Unrepresentable doubling falls back to the exact required capacity;
+///          the existing storage allocator then validates/traps the minimum.
+/// @param current Existing element capacity.
+/// @param required Validated merged element count.
+/// @param element_size Size of one backing-storage element in bytes.
+/// @return Current capacity when sufficient, otherwise a representable growth target.
+static uint32_t mesh3d_append_capacity(uint32_t current, uint32_t required, size_t element_size) {
+    if (required <= current)
+        return current;
+    const uint64_t doubled = (uint64_t)current * 2u;
+    if (doubled < required || doubled > UINT32_MAX || !rt_alloc_count_ok(doubled, element_size))
+        return required;
+    return (uint32_t)doubled;
+}
+
 /// @brief Append @p src's geometry into @p dst.
 /// @details The missing primitive: the runtime could build a box, a sphere, a
 ///          cylinder, or a plane, and could transform one — but not put one
@@ -1346,8 +1362,16 @@ void rt_mesh3d_append(void *obj, void *src_obj) {
         return;
     }
 
-    if (!mesh3d_reserve_storage(
-            dst, base + src_vertices, dst->index_count + src_indices, "Mesh3D.Append")) {
+    // Geometric automatic growth makes a run of small module appends linear
+    // in copied payload rather than recopying its entire prefix on each call.
+    // Explicit Reserve remains a minimum-capacity operation. The full vertex
+    // element is larger than a three-double sidecar, so its checked capacity
+    // also fits the optional precision stream on narrower hosts.
+    const uint32_t vertex_capacity =
+        mesh3d_append_capacity(dst->vertex_capacity, base + src_vertices, sizeof(vgfx3d_vertex_t));
+    const uint32_t index_capacity = mesh3d_append_capacity(
+        dst->index_capacity, dst->index_count + src_indices, sizeof(uint32_t));
+    if (!mesh3d_reserve_storage(dst, vertex_capacity, index_capacity, "Mesh3D.Append")) {
         mesh_mark_build_failed(dst);
         return;
     }
@@ -2826,6 +2850,113 @@ void rt_mesh3d_bend_arc(void *obj, double radius, double arc_degrees) {
             mesh_default_tangent_from_normal(n, t);
         }
         t[3] = handedness;
+    }
+    rt_mesh3d_touch_geometry(m);
+    rt_mesh3d_refresh_bounds(m);
+}
+
+/// @brief Normalize a loft frame vector in double precision, with a finite fallback.
+static void mesh_loft_normalize(double v[3], const double fallback[3]) {
+    const double length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (isfinite(length) && length > 1e-20) {
+        for (int k = 0; k < 3; ++k)
+            v[k] /= length;
+    } else {
+        for (int k = 0; k < 3; ++k)
+            v[k] = fallback[k];
+    }
+}
+
+/// @brief Loft static mesh height in a caller-owned shared rectangle (ADR 0326).
+/// @details A bilinear Y map preserves both source end sections and changes no UVs or
+///          topology. The positive Jacobian transforms normals by inverse transpose and
+///          tangents by its forward map. A preflight scan makes invalid input atomic.
+void rt_mesh3d_loft_height(void *obj,
+                           double xmin,
+                           double xmax,
+                           double ymin,
+                           double ymax,
+                           double bottom_left,
+                           double bottom_right,
+                           double top_left,
+                           double top_right) {
+    rt_mesh3d *m = mesh3d_checked(obj);
+    const double parameters[] = {
+        xmin, xmax, ymin, ymax, bottom_left, bottom_right, top_left, top_right};
+    const double width = xmax - xmin;
+    const double height = ymax - ymin;
+    const double left_height = top_left - bottom_left;
+    const double right_height = top_right - bottom_right;
+    if (!m)
+        return;
+    for (size_t i = 0; i < sizeof(parameters) / sizeof(parameters[0]); ++i) {
+        if (!mesh_value_fits_float(parameters[i])) {
+            rt_trap("Mesh3D.LoftHeight: parameters must be finite and fit float range");
+            return;
+        }
+    }
+    if (!(width > 1e-9) || !(height > 1e-9) || !(left_height > 1e-9) || !(right_height > 1e-9)) {
+        rt_trap("Mesh3D.LoftHeight: source spans and destination heights must be positive");
+        return;
+    }
+    if (m->skeleton_ref || m->morph_targets_ref) {
+        rt_trap("Mesh3D.LoftHeight: skinned and morph-target meshes cannot be lofted");
+        return;
+    }
+    rt_mesh3d_repair_geometry_counts(m);
+    const uint32_t count = rt_mesh3d_safe_vertex_count(m);
+    for (uint32_t i = 0; i < count; ++i) {
+        double p[3];
+        mesh3d_authoritative_position(m, i, p);
+        if (!mesh_value_fits_float(p[0]) || !mesh_value_fits_float(p[1]) ||
+            !mesh_value_fits_float(p[2])) {
+            rt_trap("Mesh3D.LoftHeight: vertex positions must be finite and fit float range");
+            return;
+        }
+        const double t = (p[0] - xmin) / width;
+        const double u = (p[1] - ymin) / height;
+        if (t < -1e-6 || t > 1.0 + 1e-6 || u < -1e-6 || u > 1.0 + 1e-6) {
+            rt_trap("Mesh3D.LoftHeight: vertices must lie inside the source domain");
+            return;
+        }
+    }
+    if (count == 0u)
+        return;
+    for (uint32_t i = 0; i < count; ++i) {
+        double p[3];
+        mesh3d_authoritative_position(m, i, p);
+        const double t = fmin(1.0, fmax(0.0, (p[0] - xmin) / width));
+        const double u = fmin(1.0, fmax(0.0, (p[1] - ymin) / height));
+        const double bottom = bottom_left + t * (bottom_right - bottom_left);
+        const double span = left_height + t * (right_height - left_height);
+        const double py = bottom + u * span;
+        const double dy_dx =
+            ((bottom_right - bottom_left) + u * (right_height - left_height)) / width;
+        const double dy_dy = span / height;
+        float *n = m->vertices[i].normal;
+        float *tangent = m->vertices[i].tangent;
+        const float handedness = (!isfinite(tangent[3]) || tangent[3] == 0.0f)
+                                     ? 1.0f
+                                     : (tangent[3] < 0.0f ? -1.0f : 1.0f);
+        double normal[3] = {n[0] - dy_dx * n[1] / dy_dy, n[1] / dy_dy, n[2]};
+        const double up[3] = {0, 1, 0};
+        mesh_loft_normalize(normal, up);
+        double forward[3] = {tangent[0], dy_dx * tangent[0] + dy_dy * tangent[1], tangent[2]};
+        const double dot = forward[0] * normal[0] + forward[1] * normal[1] + forward[2] * normal[2];
+        for (int k = 0; k < 3; ++k) {
+            n[k] = (float)normal[k];
+            forward[k] -= dot * normal[k];
+        }
+        float fallback_tangent[4];
+        mesh_default_tangent_from_normal(n, fallback_tangent);
+        const double fallback[3] = {fallback_tangent[0], fallback_tangent[1], fallback_tangent[2]};
+        mesh_loft_normalize(forward, fallback);
+        for (int k = 0; k < 3; ++k)
+            tangent[k] = (float)forward[k];
+        tangent[3] = handedness;
+        if (m->positions64)
+            m->positions64[(size_t)i * 3u + 1u] = py;
+        m->vertices[i].pos[1] = (float)py;
     }
     rt_mesh3d_touch_geometry(m);
     rt_mesh3d_refresh_bounds(m);

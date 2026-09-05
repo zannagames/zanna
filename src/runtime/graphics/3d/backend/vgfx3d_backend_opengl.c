@@ -762,7 +762,7 @@ typedef struct {
     uint64_t last_used_frame;
 } gl_morph_cache_entry_t;
 
-#define GL_MESH_CACHE_CAPACITY 256
+#define GL_MESH_CACHE_CAPACITY VGFX3D_STATIC_MESH_CACHE_CAPACITY
 
 typedef struct {
     const void *key;

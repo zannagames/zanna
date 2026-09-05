@@ -128,6 +128,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-shadowrequestsdropped"></a>`ShadowRequestsDropped` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-shadowslotscached"></a>`ShadowSlotsCached` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-clusteroverflowcount"></a>`ClusterOverflowCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-canvas3d-clusterfallbackentrycount"></a>`ClusterFallbackEntryCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-droppedlightcount"></a>`DroppedLightCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-frustumculleddrawcount"></a>`FrustumCulledDrawCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-cpuoccludeddrawcount"></a>`CpuOccludedDrawCount` | `i64` | read-only |
@@ -347,6 +348,7 @@ Constructor: `Zanna.Graphics3D.Mesh3D.New`
 | <a id="zanna-graphics3d-mesh3d-transform"></a>`Transform` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.Transform` |
 | <a id="zanna-graphics3d-mesh3d-mirror"></a>`Mirror` | `obj(obj)` | `Zanna.Graphics3D.Mesh3D.Mirror` |
 | <a id="zanna-graphics3d-mesh3d-bendarc"></a>`BendArc` | `void(f64,f64)` | `Zanna.Graphics3D.Mesh3D.BendArc` |
+| <a id="zanna-graphics3d-mesh3d-loftheight"></a>`LoftHeight` | `void(f64,f64,f64,f64,f64,f64,f64,f64)` | `Zanna.Graphics3D.Mesh3D.LoftHeight` |
 | <a id="zanna-graphics3d-mesh3d-releasecpuscratch"></a>`ReleaseCpuScratch` | `i64()` | `Zanna.Graphics3D.Mesh3D.ReleaseCpuScratch` |
 | <a id="zanna-graphics3d-mesh3d-calculatetangents"></a>`CalculateTangents` | `void()` | `Zanna.Graphics3D.Mesh3D.CalculateTangents` |
 | <a id="zanna-graphics3d-mesh3d-setskeleton"></a>`SetSkeleton` | `void(obj)` | `Zanna.Graphics3D.Mesh3D.SetSkeleton` |
@@ -2853,6 +2855,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowCascadeLimit` | `void(obj,i64)` | `rt_canvas3d_set_render_target_shadow_cascade_limit` |
 | `Zanna.Graphics3D.Canvas3D.SetClusterLightBudget` | `void(obj,i64)` | `rt_canvas3d_set_cluster_light_budget` |
 | <a id="zanna-graphics3d-canvas3d-get-clusteroverflowcount"></a>`Zanna.Graphics3D.Canvas3D.get_ClusterOverflowCount` | `i64(obj)` | `rt_canvas3d_get_cluster_overflow_count` |
+| <a id="zanna-graphics3d-canvas3d-get-clusterfallbackentrycount"></a>`Zanna.Graphics3D.Canvas3D.get_ClusterFallbackEntryCount` | `i64(obj)` | `rt_canvas3d_get_cluster_fallback_entry_count` |
 | <a id="zanna-graphics3d-canvas3d-get-droppedlightcount"></a>`Zanna.Graphics3D.Canvas3D.get_DroppedLightCount` | `i64(obj)` | `rt_canvas3d_get_dropped_light_count` |
 | <a id="zanna-graphics3d-canvas3d-get-frustumculleddrawcount"></a>`Zanna.Graphics3D.Canvas3D.get_FrustumCulledDrawCount` | `i64(obj)` | `rt_canvas3d_get_frustum_culled_draw_count` |
 | <a id="zanna-graphics3d-canvas3d-get-cpuoccludeddrawcount"></a>`Zanna.Graphics3D.Canvas3D.get_CpuOccludedDrawCount` | `i64(obj)` | `rt_canvas3d_get_cpu_occluded_draw_count` |
@@ -2974,6 +2977,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Mesh3D.Transform` | `void(obj,obj)` | `rt_mesh3d_transform` |
 | `Zanna.Graphics3D.Mesh3D.Mirror` | `obj(obj,obj)` | `rt_mesh3d_mirror` |
 | `Zanna.Graphics3D.Mesh3D.BendArc` | `void(obj,f64,f64)` | `rt_mesh3d_bend_arc` |
+| `Zanna.Graphics3D.Mesh3D.LoftHeight` | `void(obj,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_mesh3d_loft_height` |
 | `Zanna.Graphics3D.Camera3D.New` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new` |
 | `Zanna.Graphics3D.Camera3D.WithHorizontalFov` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new_horizontal_fov` |
 | `Zanna.Graphics3D.Camera3D.NewOrtho` | `obj(f64,f64,f64,f64)` | `rt_camera3d_new_ortho` |

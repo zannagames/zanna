@@ -842,6 +842,52 @@ static void test_mesh_reserve_presizes_without_dirtying_geometry() {
     PASS();
 }
 
+/// @brief Repeated static assembly must grow amortized storage without losing precise vertices.
+static void test_mesh_append_amortizes_storage_and_preserves_precision() {
+    TEST("Mesh3D.Append amortizes storage and preserves precise source geometry");
+    auto *source = (rt_mesh3d *)rt_mesh3d_new();
+    auto *merged = (rt_mesh3d *)rt_mesh3d_new();
+    const double x = 16777216.125;
+    rt_mesh3d_add_vertex(source, x, 0, 0, 1, 0, 0, 0, 0);
+    rt_mesh3d_add_vertex(source, x + 1, 1, 0, 1, 0, 0, 1, 0);
+    rt_mesh3d_add_vertex(source, x + 1, 0, 1, 1, 0, 0, 0, 1);
+    rt_mesh3d_add_triangle(source, 0, 1, 2);
+    EXPECT_TRUE(source->positions64 != nullptr, "source has authoritative double positions");
+    const uint32_t source_revision = source->geometry_revision;
+    uint32_t vertex_growths = 0;
+    uint32_t index_growths = 0;
+    constexpr uint32_t copies = 512;
+    for (uint32_t i = 0; i < copies; ++i) {
+        const uint32_t vertices_before = merged->vertex_capacity;
+        const uint32_t indices_before = merged->index_capacity;
+        rt_mesh3d_append(merged, source);
+        vertex_growths += merged->vertex_capacity != vertices_before;
+        index_growths += merged->index_capacity != indices_before;
+    }
+    EXPECT_EQ(merged->vertex_count, copies * 3u);
+    EXPECT_EQ(merged->index_count, copies * 3u);
+    EXPECT_TRUE(vertex_growths < 20u,
+                "512 appends must not copy the entire vertex prefix each time");
+    EXPECT_TRUE(index_growths < 20u, "512 appends must not reallocate indices each time");
+    EXPECT_TRUE(merged->vertex_capacity <= merged->vertex_count * 2u, "vertex slack is bounded");
+    EXPECT_TRUE(merged->index_capacity <= merged->index_count * 2u, "index slack is bounded");
+    EXPECT_TRUE(merged->positions64 != nullptr, "merged mesh retains the precision sidecar");
+    for (uint32_t i = 0; i < copies * 3u; ++i) {
+        EXPECT_EQ(merged->indices[i], i);
+        EXPECT_EQ(memcmp(&merged->vertices[i], &source->vertices[i % 3u], sizeof(vgfx3d_vertex_t)),
+                  0);
+        for (uint32_t axis = 0; axis < 3u; ++axis)
+            EXPECT_NEAR(merged->positions64[(size_t)i * 3u + axis],
+                        source->positions64[(i % 3u) * 3u + axis],
+                        0.0);
+    }
+    EXPECT_EQ(source->vertex_count, 3u);
+    EXPECT_EQ(source->index_count, 3u);
+    EXPECT_EQ(source->geometry_revision, source_revision);
+    EXPECT_NEAR(rt_vec3_x(rt_mesh3d_get_vertex_position(source, 0)), x, 0.0);
+    PASS();
+}
+
 static void test_mesh_mutations_restore_residency_and_counts_are_clamped() {
     TEST("Mesh3D mutations restore residency and public counts clamp to capacity");
     rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new();
@@ -4129,8 +4175,8 @@ static void test_cluster_table_binning_is_conservative() {
     PASS();
 }
 
-static void test_cluster_table_overflow_truncates_deterministically() {
-    TEST("Cluster index overflow truncates deterministically (Plan 07)");
+static void test_cluster_table_overflow_falls_back_deterministically() {
+    TEST("Cluster index overflow falls back deterministically (ADR 0328)");
     rt_canvas3d canvas;
     void *cam = nullptr;
     (void)cluster_test_begin_frame(&canvas, &cam);
@@ -4146,28 +4192,81 @@ static void test_cluster_table_overflow_truncates_deterministically() {
         (vgfx3d_cluster_table_t *)calloc(1, sizeof(vgfx3d_cluster_table_t));
     canvas3d_build_cluster_table(&canvas, lights, 3, 9u, table);
 
-    EXPECT_EQ(table->overflow_count, 3 * VGFX3D_CLUSTER_COUNT - VGFX3D_MAX_CLUSTER_LIGHT_INDICES);
-    EXPECT_EQ((int)table->offsets[VGFX3D_CLUSTER_COUNT], VGFX3D_MAX_CLUSTER_LIGHT_INDICES);
+    const int compact_entries = (VGFX3D_MAX_CLUSTER_LIGHT_INDICES / 3) * 3;
+    EXPECT_EQ(table->overflow_count, 3 * VGFX3D_CLUSTER_COUNT - compact_entries);
+    EXPECT_EQ((int)table->offsets[VGFX3D_CLUSTER_COUNT], compact_entries);
     {
         int ok = 1;
         for (int32_t ci = 0; ci < VGFX3D_CLUSTER_COUNT; ci++)
-            if (table->offsets[ci] > table->offsets[ci + 1])
+            if ((table->offsets[ci] & VGFX3D_CLUSTER_OFFSET_MASK) >
+                (table->offsets[ci + 1] & VGFX3D_CLUSTER_OFFSET_MASK))
                 ok = 0;
-        EXPECT_TRUE(ok, "Offsets stay monotone under truncation");
+        EXPECT_TRUE(ok, "Masked offsets stay monotone under fallback");
         for (int32_t k = 0; k < VGFX3D_MAX_CLUSTER_LIGHT_INDICES; k++)
             if (table->indices[k] > 2)
                 ok = 0;
-        EXPECT_TRUE(ok, "Truncated index stream stays in range");
+        EXPECT_TRUE(ok, "Compact index stream stays in range");
     }
     {
         vgfx3d_cluster_table_t *again =
             (vgfx3d_cluster_table_t *)calloc(1, sizeof(vgfx3d_cluster_table_t));
         canvas3d_build_cluster_table(&canvas, lights, 3, 9u, again);
         EXPECT_TRUE(memcmp(table, again, sizeof(*table)) == 0,
-                    "Truncation is order-stable and deterministic");
+                    "Fallback is order-stable and deterministic");
         free(again);
     }
 
+    rt_canvas3d_end(&canvas);
+    free(table);
+    PASS();
+}
+
+static void test_cluster_capacity_fallback_is_lossless() {
+    TEST("Cluster capacity fallback preserves complete lighting (ADR 0328)");
+    rt_canvas3d canvas;
+    void *cam = nullptr;
+    (void)cluster_test_begin_frame(&canvas, &cam);
+    vgfx3d_light_params_t lights[10] = {};
+    lights[0].type = 0;
+    lights[0].intensity = 1.0f;
+    for (int i = 1; i < 10; ++i)
+        cluster_test_make_point_light(&lights[i], 0.0f, 0.0f, -5.0f, 1.0f, 0.0f);
+    auto *table = (vgfx3d_cluster_table_t *)calloc(1, sizeof(vgfx3d_cluster_table_t));
+    // Test the required wire encoding independently of production macros.
+    constexpr uint16_t fallback = 0x8000u;
+    constexpr uint16_t mask = 0x7fffu;
+    for (int locals : {3, 9}) {
+        canvas.cluster_light_budget = 8;
+        canvas3d_build_cluster_table(&canvas, lights, locals + 1, 95u, table);
+        int fallback_clusters = 0;
+        int compact_clusters = 0;
+        int invalid = 0;
+        for (int cluster = 0; cluster < VGFX3D_CLUSTER_COUNT; ++cluster) {
+            const uint16_t raw = table->offsets[cluster];
+            const uint16_t begin = raw & mask;
+            const uint16_t end = table->offsets[cluster + 1] & mask;
+            if (raw & fallback) {
+                ++fallback_clusters;
+                if (begin != end)
+                    ++invalid;
+            } else {
+                ++compact_clusters;
+                if (end < begin || end > VGFX3D_MAX_CLUSTER_LIGHT_INDICES ||
+                    end - begin != locals) {
+                    ++invalid;
+                    continue;
+                }
+                for (int light = 0; light < locals; ++light)
+                    if (table->indices[begin + light] != light + 1)
+                        ++invalid;
+            }
+        }
+        EXPECT_EQ(invalid, 0);
+        EXPECT_TRUE(fallback_clusters > 0, "capacity pressure must select a lossless fallback");
+        EXPECT_EQ(table->overflow_count, fallback_clusters * locals);
+        EXPECT_EQ(table->offsets[VGFX3D_CLUSTER_COUNT] & fallback, 0);
+        EXPECT_EQ(compact_clusters, locals == 3 ? VGFX3D_MAX_CLUSTER_LIGHT_INDICES / 3 : 0);
+    }
     rt_canvas3d_end(&canvas);
     free(table);
     PASS();
@@ -4204,6 +4303,21 @@ static void test_cluster_table_ring_and_gating() {
     EXPECT_EQ(t6->lights_revision, 6u);
     EXPECT_EQ(t5->global_light_count, 0);
     EXPECT_EQ(t5->binned_light_count, 2);
+    EXPECT_EQ(rt_canvas3d_get_cluster_fallback_entry_count(&canvas), 0);
+    vgfx3d_light_params_t dense[3] = {};
+    for (auto &light : dense)
+        cluster_test_make_point_light(&light, 0.0f, 0.0f, -5.0f, 1.0f, 0.0f);
+    const auto *t7 = canvas3d_cluster_table_for_revision(&canvas, dense, 3, 7u);
+    const int64_t pressure = rt_canvas3d_get_cluster_fallback_entry_count(&canvas);
+    EXPECT_TRUE(pressure > 0 && pressure == t7->overflow_count,
+                "fallback entries are reported separately from lost lighting");
+    EXPECT_EQ(rt_canvas3d_get_cluster_overflow_count(&canvas), 0);
+    EXPECT_TRUE(canvas3d_cluster_table_for_revision(&canvas, dense, 3, 7u) == t7,
+                "pressure table cache hit reuses its original snapshot");
+    EXPECT_EQ(rt_canvas3d_get_cluster_fallback_entry_count(&canvas), pressure);
+    canvas.cluster_fallback_entry_total = INT64_MAX - 1;
+    (void)canvas3d_cluster_table_for_revision(&canvas, dense, 3, 8u);
+    EXPECT_EQ(rt_canvas3d_get_cluster_fallback_entry_count(&canvas), INT64_MAX);
 
     rt_canvas3d_end(&canvas);
     free(canvas.cluster_tables);
@@ -4249,11 +4363,110 @@ static void test_software_fragment_uses_cluster_light_selection() {
     EXPECT_EQ(selected[0], 0);
     EXPECT_EQ(selected[1], 5);
 
+    table->offsets[cluster + 1] |= VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_EQ(vgfx3d_sw_test_fragment_light_selection(&cmd, 8, 64, 64, 32, 32, 0.0f, selected, 8),
+              2);
+    EXPECT_EQ(selected[1], 5); // next cluster's flag must not extend this list
+    table->offsets[cluster] = 1u | VGFX3D_CLUSTER_FALLBACK_FLAG;
+    EXPECT_EQ(vgfx3d_sw_test_fragment_light_selection(&cmd, 8, 64, 64, 32, 32, 0.0f, selected, 8),
+              8);
+    for (int i = 0; i < 8; ++i)
+        EXPECT_EQ(selected[i], i); // global prefix occurs exactly once
+
     cmd.lights_revision = 43u;
     EXPECT_EQ(vgfx3d_sw_test_fragment_light_selection(&cmd, 8, 64, 64, 32, 32, 0.0f, selected, 8),
               8);
     free(table);
     PASS();
+}
+
+/// ADR 0325: a segmented near plane must not leak a farther plane through its
+/// interior when the camera is hundreds of units away. Reference coverage is
+/// rendered independently so the test does not duplicate rasterizer arithmetic.
+static void test_software_stadium_depth_case(double slope, double gap) {
+    TEST(slope == 0.0 ? "Software distant surfaces preserve depth across triangle tessellations"
+                      : "Software sloped distant surfaces preserve depth through frustum clipping");
+    constexpr int width = 480;
+    constexpr int height = 270;
+    rt_canvas3d canvas = {};
+    auto *target = (rt_rendertarget3d *)rt_rendertarget3d_new(width, height);
+    void *camera = rt_camera3d_new(48.0, (double)width / height, 0.1, 2000.0);
+    void *identity =
+        rt_mat4_new(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    void *near_mesh = rt_mesh3d_new();
+    void *far_mesh = rt_mesh3d_new();
+    void *near_mat = rt_material3d_new();
+    void *far_mat = rt_material3d_new();
+    rt_material3d_set_unlit(near_mat, 1);
+    rt_material3d_set_unlit(far_mat, 1);
+    rt_material3d_set_color(near_mat, 1.0, 0.0, 0.0);
+    rt_material3d_set_color(far_mat, 0.0, 1.0, 0.0);
+    rt_material3d_set_double_sided(near_mat, 1);
+    rt_material3d_set_double_sided(far_mat, 1);
+    constexpr int sectors = 144;
+    for (int sector = 0; sector < sectors; ++sector) {
+        double a = sector * 6.283185307179586 / sectors;
+        double b = (sector + 1) * 6.283185307179586 / sectors;
+        const double xs[4] = {30 * cos(a), 110 * cos(a), 110 * cos(b), 30 * cos(b)};
+        const double ys[4] = {30 * sin(a), 110 * sin(a), 110 * sin(b), 30 * sin(b)};
+        for (int v = 0; v < 4; ++v)
+            rt_mesh3d_add_vertex(
+                near_mesh, xs[v], ys[v], -400.0 + gap + slope * xs[v], 0, 0, 1, 0, 0);
+        rt_mesh3d_add_triangle(near_mesh, sector * 4, sector * 4 + 1, sector * 4 + 2);
+        rt_mesh3d_add_triangle(near_mesh, sector * 4, sector * 4 + 2, sector * 4 + 3);
+    }
+    rt_mesh3d_add_vertex(far_mesh, -620, -620, -400 - slope * 620, 0, 0, 1, 0, 0);
+    rt_mesh3d_add_vertex(far_mesh, 620, -620, -400 + slope * 620, 0, 0, 1, 0, 0);
+    rt_mesh3d_add_vertex(far_mesh, 620, 620, -400 + slope * 620, 0, 0, 1, 0, 0);
+    rt_mesh3d_add_vertex(far_mesh, -620, 620, -400 - slope * 620, 0, 0, 1, 0, 0);
+    rt_mesh3d_add_triangle(far_mesh, 0, 1, 2);
+    rt_mesh3d_add_triangle(far_mesh, 0, 2, 3);
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = canvas.backend->create_ctx((vgfx_window_t)0, width, height);
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = width;
+    canvas.height = height;
+    EXPECT_TRUE(target && target->target && canvas.backend_ctx, "depth fixture allocates");
+    rt_canvas3d_set_render_target(&canvas, target);
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, near_mesh, identity, near_mat);
+    rt_canvas3d_end(&canvas);
+    std::vector<uint8_t> coverage(width * height);
+    int samples = 0;
+    for (size_t i = 0; i < coverage.size(); ++i) {
+        coverage[i] = target->target->color_buf[i * 4] > 200;
+        samples += coverage[i];
+    }
+    EXPECT_TRUE(samples > 10000, "near-only reference has substantial coverage");
+    for (int order = 0; order < 2; ++order) {
+        rt_canvas3d_begin(&canvas, camera);
+        if (order == 0)
+            rt_canvas3d_draw_mesh(&canvas, far_mesh, identity, far_mat);
+        rt_canvas3d_draw_mesh(&canvas, near_mesh, identity, near_mat);
+        if (order == 1)
+            rt_canvas3d_draw_mesh(&canvas, far_mesh, identity, far_mat);
+        rt_canvas3d_end(&canvas);
+        int leaked = 0;
+        for (size_t i = 0; i < coverage.size(); ++i)
+            if (coverage[i] && target->target->color_buf[i * 4 + 1] > 100)
+                ++leaked;
+        EXPECT_EQ(leaked, 0);
+    }
+    canvas.backend->destroy_ctx(canvas.backend_ctx);
+    rt_obj_release_check0(near_mesh);
+    rt_obj_release_check0(far_mesh);
+    rt_obj_release_check0(near_mat);
+    rt_obj_release_check0(far_mat);
+    rt_obj_release_check0(camera);
+    rt_obj_release_check0(identity);
+    rt_obj_release_check0(target);
+    PASS();
+}
+
+/// Both cases exercise clipping, dissimilar tessellation and both draw orders.
+static void test_software_stadium_depth_interpolation() {
+    test_software_stadium_depth_case(0.0, 0.06);
+    test_software_stadium_depth_case(0.2, 0.5);
 }
 
 /// Plan 10: soft particles fade blend-mode fragments against the opaque depth
@@ -11090,6 +11303,119 @@ static void test_mesh_bend_arc_rejects_invalid_input_without_mutation() {
     PASS();
 }
 
+static void test_mesh_loft_height_preserves_explicit_domain_and_frames() {
+    TEST("Mesh3D.LoftHeight fits endpoint heights and preserves the authored frame");
+    auto *m = static_cast<rt_mesh3d *>(rt_mesh3d_new());
+    assert(m != nullptr);
+    rt_mesh3d_add_vertex(m, -10, 0, 0, 0, 1, 0, .2, .3);
+    rt_mesh3d_add_vertex(m, 10, 0, 0, 0, 1, 0, .4, .5);
+    rt_mesh3d_add_vertex(m, 10, 8, 0, 0, 1, 0, .6, .7);
+    rt_mesh3d_add_vertex(m, -10, 8, 0, 0, 1, 0, .8, .9);
+    rt_mesh3d_add_vertex(m, 0, 4, -0.6, 0, 1, 0, .5, .5);
+    rt_mesh3d_add_triangle(m, 0, 1, 2);
+    for (uint32_t i = 0; i < m->vertex_count; ++i) {
+        m->vertices[i].tangent[0] = 1;
+        m->vertices[i].tangent[1] = 0;
+        m->vertices[i].tangent[2] = 0;
+        m->vertices[i].tangent[3] = -1;
+    }
+    const auto saved = m->vertices[0];
+    const auto revision = m->geometry_revision;
+    rt_mesh3d_loft_height(m, -10, 10, 0, 8, 1, 3, 9, 19);
+    const double expected[] = {1, 3, 19, 9, 8};
+    for (uint32_t i = 0; i < m->vertex_count; ++i) {
+        EXPECT_NEAR(m->vertices[i].pos[1], expected[i], 1e-5);
+        const float *n = m->vertices[i].normal;
+        const float *t = m->vertices[i].tangent;
+        EXPECT_NEAR(n[0] * t[0] + n[1] * t[1] + n[2] * t[2], 0, 1e-6);
+        EXPECT_NEAR(n[0] * n[0] + n[1] * n[1] + n[2] * n[2], 1, 1e-6);
+        EXPECT_NEAR(t[0] * t[0] + t[1] * t[1] + t[2] * t[2], 1, 1e-6);
+        EXPECT_NEAR(t[3], -1, 1e-6);
+    }
+    EXPECT_NEAR(m->vertices[0].normal[0], -0.099503719, 1e-6);
+    EXPECT_NEAR(m->vertices[2].normal[0], -0.447213595, 1e-6);
+    EXPECT_NEAR(m->vertices[4].pos[2], -.6, 1e-6);
+    EXPECT_TRUE(m->indices[0] == 0 && m->indices[1] == 1 && m->indices[2] == 2,
+                "loft preserves topology");
+    EXPECT_TRUE(m->geometry_revision != revision, "loft refreshes geometry revision");
+    EXPECT_NEAR(m->aabb_min[1], 1, 1e-6);
+    EXPECT_NEAR(m->aabb_max[1], 19, 1e-6);
+    // Byte-check every unrelated vertex field without relying on a UV member alias.
+    auto comparison = m->vertices[0];
+    for (int k = 0; k < 3; ++k) {
+        comparison.pos[k] = saved.pos[k];
+        comparison.normal[k] = saved.normal[k];
+    }
+    for (int k = 0; k < 4; ++k)
+        comparison.tangent[k] = saved.tangent[k];
+    EXPECT_TRUE(std::memcmp(&comparison, &saved, sizeof(saved)) == 0,
+                "loft preserves UVs, colors and unrelated attributes");
+    // A narrow material group uses the full module's domain, not its own bounds.
+    auto *narrow = static_cast<rt_mesh3d *>(rt_mesh3d_new());
+    rt_mesh3d_add_vertex(narrow, 0, 4, 0, 0, 0, 1, 0, 0);
+    rt_mesh3d_loft_height(narrow, -10, 10, 0, 8, 1, 3, 9, 19);
+    EXPECT_NEAR(narrow->vertices[0].pos[1], 8, 1e-6);
+    EXPECT_TRUE(std::isfinite(narrow->vertices[0].tangent[0]),
+                "zero tangent receives finite fallback");
+    PASS();
+}
+
+static void test_mesh_loft_height_preflights_without_mutation() {
+    TEST("Mesh3D.LoftHeight validates the whole domain before mutation");
+    auto *m = static_cast<rt_mesh3d *>(rt_mesh3d_new());
+    rt_mesh3d_add_vertex(m, 0, 4, 0, 0, 1, 0, 0, 0);
+    const auto before = m->vertices[0];
+    const auto revision = m->geometry_revision;
+    EXPECT_TRUE(
+        expect_trap_contains([&] { rt_mesh3d_loft_height(m, 0, 0, 0, 8, 0, 0, 8, 8); }, "positive"),
+        "zero source width traps");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 8, 0, 0, 0, 8, 8); },
+                                     "positive"),
+                "inverted source height traps");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 8, 8, 8); },
+                                     "positive"),
+                "collapsed destination end traps");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, NAN, 8); },
+                                     "finite"),
+                "nonfinite destination traps");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, 1e100, 8); },
+                             "float range"),
+        "overflow destination traps");
+    EXPECT_TRUE(std::memcmp(&before, &m->vertices[0], sizeof(before)) == 0 &&
+                    m->geometry_revision == revision,
+                "bad parameters leave bytes and revision intact");
+    rt_mesh3d_add_vertex(m, 11, 4, 0, 0, 1, 0, 0, 0);
+    const auto before_scan = m->geometry_revision;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, 10, 20); },
+                                     "inside"),
+                "later out-of-domain vertex traps before earlier vertices change");
+    EXPECT_TRUE(std::memcmp(&before, &m->vertices[0], sizeof(before)) == 0 &&
+                    m->geometry_revision == before_scan,
+                "preflight leaves earlier vertices and revision intact");
+    m->vertices[1].pos[0] = NAN;
+    if (m->positions64)
+        m->positions64[3] = NAN;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, 8, 8); },
+                                     "finite"),
+                "nonfinite source position traps");
+    m->skeleton_ref = m; // Rejection inspects presence only; no object is retained/dereferenced.
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, 8, 8); },
+                                     "skinned"),
+                "skinned input traps");
+    m->skeleton_ref = nullptr;
+    m->morph_targets_ref = m;
+    EXPECT_TRUE(expect_trap_contains([&] { rt_mesh3d_loft_height(m, -10, 10, 0, 8, 0, 0, 8, 8); },
+                                     "morph-target"),
+                "morph input traps");
+    m->morph_targets_ref = nullptr;
+    rt_mesh3d_loft_height(nullptr, 0, 0, 0, 0, 0, 0, 0, 0);
+    auto *empty = static_cast<rt_mesh3d *>(rt_mesh3d_new());
+    rt_mesh3d_loft_height(empty, -10, 10, 0, 8, 0, 0, 8, 8);
+    EXPECT_TRUE(empty->vertex_count == 0, "empty loft is a no-op");
+    PASS();
+}
+
 static void test_mesh_transform_rejects_singular_normal_matrix() {
     TEST("Mesh3D.Transform rejects singular normal matrices");
     rt_mesh3d *m = (rt_mesh3d *)rt_mesh3d_new_plane(1.0, 1.0);
@@ -12324,6 +12650,7 @@ int main() {
     test_mesh_vertex_position_readback();
     test_mesh_vertex_normal_readback();
     test_mesh_reserve_presizes_without_dirtying_geometry();
+    test_mesh_append_amortizes_storage_and_preserves_precision();
     test_mesh_mutations_restore_residency_and_counts_are_clamped();
     test_mesh_recalc_normals_reuses_large_accumulator();
     test_mesh_generators_batch_geometry_revision_updates();
@@ -12341,6 +12668,8 @@ int main() {
     test_mesh_transform_uses_inverse_transpose_normals();
     test_mesh_transform_updates_tangent_basis();
     test_mesh_bend_arc_wraps_chord_onto_shared_arc();
+    test_mesh_loft_height_preserves_explicit_domain_and_frames();
+    test_mesh_loft_height_preflights_without_mutation();
     test_mesh_bend_arc_rejects_invalid_input_without_mutation();
     test_mesh_transform_flips_tangent_handedness_for_mirrors();
     test_mesh_recalc_normals();
@@ -12439,11 +12768,13 @@ int main() {
     /* Light3D */
     test_cluster_slice_and_radius_math();
     test_cluster_table_binning_is_conservative();
-    test_cluster_table_overflow_truncates_deterministically();
+    test_cluster_table_overflow_falls_back_deterministically();
     test_cluster_table_ring_and_gating();
+    test_cluster_capacity_fallback_is_lossless();
     test_software_fragment_uses_cluster_light_selection();
     test_build_light_params_sorts_globals_first();
     test_build_light_params_selects_top_k_across_all_candidates();
+    test_software_stadium_depth_interpolation();
     test_soft_particle_fade_software();
     test_native_area_volume_lighting_software();
     test_ssr_chain_and_mask_plumbing();

@@ -479,8 +479,9 @@ lights.
 | `SetShadowBudget(n)` | `Void(Integer)` | Cap the shadow slots a frame may use (1..12, default all) |
 | `ShadowSlotsUsed` | `Integer` | Shadow slots rendered in the latest frame, cascades and cube faces included |
 | `ShadowRequestsDropped` | `Integer` | Shadow-requesting lights denied a slot in the latest frame |
-| `SetClusterLightBudget(n)` | `Void(Integer)` | Per-cluster light-index capacity for the clustered path (8..64, default 64) |
-| `ClusterOverflowCount` | `Integer` | Lifetime count of cluster light entries truncated by capacity |
+| `SetClusterLightBudget(n)` | `Void(Integer)` | Compact per-cluster list capacity (8..64, default 64); excess demand uses lossless full-light fallback |
+| `ClusterOverflowCount` | `Integer` | Lifetime count of actually lost cluster light entries; the lossless builder contributes zero |
+| `ClusterFallbackEntryCount` | `Integer` | Saturating lifetime local-list entries served by full-light capacity fallback; pressure, not lost lighting (ADR 0328) |
 | `DroppedLightCount` | `Integer` | Enabled lights truncated by the fixed-forward 16-light cap this frame |
 
 Image-based lighting (`IblEnabled`) replaces the flat ambient term on PBR

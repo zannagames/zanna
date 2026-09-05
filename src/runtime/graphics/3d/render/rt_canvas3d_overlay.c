@@ -2109,6 +2109,14 @@ int64_t rt_canvas3d_get_cluster_overflow_count(void *obj) {
     return c ? c->cluster_overflow_total : 0;
 }
 
+/// @brief Lifetime local cluster entries served by lossless full-light fallback.
+/// @param obj Borrowed Canvas3D handle.
+/// @return Saturating non-negative capacity-pressure count; zero when invalid.
+int64_t rt_canvas3d_get_cluster_fallback_entry_count(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->cluster_fallback_entry_total > 0 ? c->cluster_fallback_entry_total : 0;
+}
+
 /// @brief Enabled lights truncated by the forward-path light limit this frame.
 /// @param obj Borrowed Canvas3D handle.
 /// @return Latest dropped-light count, or zero.

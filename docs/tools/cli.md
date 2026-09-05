@@ -589,9 +589,10 @@ the written file and compares texture content and metadata before reporting
 success. Options:
 
 - `--force-tangents`, `--eight-influences`, and `--compress-anims` select importer conditioning.
-- `--lods N` generates 0-8 LOD levels at a halving ratio.
+- `--lods N` requests LOD levels at a halving ratio. The CLI accepts integer `N` in `0..8`; zero disables generation and the current runtime caps chains at four useful reduced levels.
 - `--clips LIST` keeps selected animation clips by name, zero-based skeletal-clip index, or inclusive `A-B` index range; node animations with matching names follow their skeletal clip.
 - `--simplify-meshes N` decimates every mesh above N triangles toward N before saving (`N >= 8`). `--simplify-lock-seams` keeps open, UV-seam, and material-boundary vertices fixed; a seam-constrained mesh can report a valid partial result above N. `--simplify-max-error F` stops when the next collapse would exceed F times the mesh bounding diameter (`0 < F < 1`; `0.001` is a typical starting point). Both refinement options require `--simplify-meshes`.
+- `--lod-lock-seams` and `--lod-max-error F` apply those constraints to generated LODs independently of base-mesh simplification; both require `--lods N` with `N > 0`. `F` must be finite and in `(0,1)`. Constrained levels reference the original mesh and stop when no smaller valid level is available. The error setting limits quadric cost, not measured screen-pixel or Hausdorff distance; validate silhouettes separately (ADR 0327).
 - `--max-texture-dim N` downsizes material textures above N texels on either axis (`N >= 64`) and stores compact canonical pixels.
 - `--strip-meshes` drops all meshes and materials for animation-only bakes; the saved scene keeps nodes, skeletons, and clips.
 - `--json` emits the machine-readable report described below.

@@ -65,10 +65,13 @@ static int tests_total = 0;
         }                                                                                          \
     } while (0)
 
-/// Read one fixture file, trying the build-tree-relative fallbacks the other
-/// runtime unit tests use.
+/// Read checked-in fixtures from the configured source root, including when
+/// ZANNA_BUILD_DIR is outside the repository. Retain standalone-run fallbacks.
 static bool read_fixture(const char *name, std::vector<uint8_t> &out) {
     const char *prefixes[] = {
+#ifdef ZANNA_TEST_SOURCE_DIR
+        ZANNA_TEST_SOURCE_DIR "/src/tests/fixtures/runtime/textures/",
+#endif
         "src/tests/fixtures/runtime/textures/",
         "../../../src/tests/fixtures/runtime/textures/",
         "../../src/tests/fixtures/runtime/textures/",

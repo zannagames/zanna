@@ -10,6 +10,7 @@
 // Key invariants:
 //   - Clipped bounds, surface strides, indices, and perspective denominators are validated first.
 //   - Every interpolated attribute uses the same finite perspective-correct barycentric weights.
+//   - NDC depth uses an absolute double-precision plane, independent of edge accumulation.
 // Ownership/Lifetime:
 //   - Raster jobs borrow immutable draw snapshots and write disjoint framebuffer tile regions.
 //   - Texture views borrow Pixels storage retained by the enclosing Canvas command snapshot.
@@ -442,9 +443,48 @@ static inline float pbr_geometry_schlick_ggx_k(float nd, float geometry_k) {
     return nd / (nd * (1.0f - geometry_k) + geometry_k + 1e-6f);
 }
 
-/// @brief Per-triangle invariants shared by every fragment of one raster_triangle
-///   call. Built once before the pixel loop; sw_shade_fragment reads it per pixel
-///   so the rasterizer's inner loop stays a thin barycentric/depth-test skeleton.
+/// @brief Affine NDC depth plane anchored at a projected vertex (ADR 0325).
+/// @details Storing only depth differences in its slopes prevents tiny errors in
+///          the sum of edge weights from amplifying the near-one common depth.
+typedef struct {
+    double x0, y0, z0, dx, dy;
+} sw_depth_plane;
+
+/// @brief Build a finite depth plane from projected triangle coordinates.
+/// @return Zero for invalid or degenerate inputs; no partially valid plane is used.
+static int sw_depth_plane_init(sw_depth_plane *plane,
+                               float x0,
+                               float y0,
+                               float z0,
+                               float x1,
+                               float y1,
+                               float z1,
+                               float x2,
+                               float y2,
+                               float z2) {
+    double dx1 = (double)x1 - x0, dy1 = (double)y1 - y0;
+    double dx2 = (double)x2 - x0, dy2 = (double)y2 - y0;
+    double dz1 = (double)z1 - z0, dz2 = (double)z2 - z0;
+    double determinant = dx1 * dy2 - dx2 * dy1;
+    if (!plane || !isfinite(x0) || !isfinite(y0) || !isfinite(z0) || !isfinite(determinant) ||
+        fabs(determinant) < 1e-20)
+        return 0;
+    plane->x0 = x0;
+    plane->y0 = y0;
+    plane->z0 = z0;
+    plane->dx = (dz1 * dy2 - dz2 * dy1) / determinant;
+    plane->dy = (dx1 * dz2 - dx2 * dz1) / determinant;
+    return isfinite(plane->dx) && isfinite(plane->dy);
+}
+
+/// @brief Evaluate depth at an absolute pixel center; worker tiles cannot change it.
+static inline float sw_depth_plane_sample(const sw_depth_plane *plane, int x, int y) {
+    return (float)(plane->z0 + ((double)x + 0.5 - plane->x0) * plane->dx +
+                   ((double)y + 0.5 - plane->y0) * plane->dy);
+}
+
+/// @brief Per-triangle invariants built once before the pixel loop and shared
+///        by every sw_shade_fragment call.
 typedef struct {
     uint8_t *pixels;
     float *zbuf;
@@ -1665,10 +1705,14 @@ static int sw_shade_fragment(
             if (fc->cluster_table) {
                 int32_t cluster_index = sw_fragment_cluster_index(fc, x, y, z);
                 uint16_t begin = fc->cluster_table->offsets[cluster_index];
-                uint16_t end = fc->cluster_table->offsets[cluster_index + 1];
-                geom.global_light_count = fc->cluster_table->global_light_count;
-                geom.local_light_indices = &fc->cluster_table->indices[begin];
-                geom.local_light_count = (int32_t)(end - begin);
+                uint16_t end = fc->cluster_table->offsets[cluster_index + 1] &
+                               VGFX3D_CLUSTER_OFFSET_MASK;
+                if (!(begin & VGFX3D_CLUSTER_FALLBACK_FLAG)) {
+                    begin &= VGFX3D_CLUSTER_OFFSET_MASK;
+                    geom.global_light_count = fc->cluster_table->global_light_count;
+                    geom.local_light_indices = &fc->cluster_table->indices[begin];
+                    geom.local_light_count = (int32_t)(end - begin);
+                }
             }
             pixel_ndv = geom.ndv;
 
@@ -1731,6 +1775,7 @@ typedef struct {
     float e12_dx, e12_dy, e20_dx, e20_dy, e01_dx, e01_dy;
     float row_w0, row_w1, row_w2;
     uint8_t edge12_top_left, edge20_top_left, edge01_top_left;
+    sw_depth_plane depth;
 } sw_raster_geom;
 
 /// @brief Conservatively test a screen triangle against one rectangle of pixel centers.
@@ -1937,7 +1982,8 @@ static int sw_raster_prepare(const screen_vert_t *v0,
     g->edge12_top_left = (uint8_t)sw_edge_is_top_left(v1, v2);
     g->edge20_top_left = (uint8_t)sw_edge_is_top_left(v2, v0);
     g->edge01_top_left = (uint8_t)sw_edge_is_top_left(v0, v1);
-    return 1;
+    return sw_depth_plane_init(
+        &g->depth, v0->sx, v0->sy, v0->sz, v1->sx, v1->sy, v1->sz, v2->sx, v2->sy, v2->sz);
 }
 
 /// @brief Advance an edge-function accumulator by a signed number of steps.
@@ -2032,18 +2078,9 @@ static void raster_triangle_scissored(uint8_t *pixels,
     const float depth_bias = vgfx3d_clamp_float_param(cmd->depth_bias, -0.05f, 0.05f, 0.0f);
     float slope_depth_bias = 0.0f;
     if (fabsf(cmd->slope_scaled_depth_bias) > 1e-8f) {
-        float denom = g.v0->sx * (g.v1->sy - g.v2->sy) + g.v1->sx * (g.v2->sy - g.v0->sy) +
-                      g.v2->sx * (g.v0->sy - g.v1->sy);
-        if (fabsf(denom) > 1e-8f) {
-            float dzdx = (g.v0->sz * (g.v1->sy - g.v2->sy) + g.v1->sz * (g.v2->sy - g.v0->sy) +
-                          g.v2->sz * (g.v0->sy - g.v1->sy)) /
-                         denom;
-            float dzdy = (g.v0->sz * (g.v2->sx - g.v1->sx) + g.v1->sz * (g.v0->sx - g.v2->sx) +
-                          g.v2->sz * (g.v1->sx - g.v0->sx)) /
-                         denom;
-            slope_depth_bias = cmd->slope_scaled_depth_bias * fmaxf(fabsf(dzdx), fabsf(dzdy));
-            slope_depth_bias = fmaxf(-0.05f, fminf(0.05f, slope_depth_bias));
-        }
+        slope_depth_bias =
+            cmd->slope_scaled_depth_bias * (float)fmax(fabs(g.depth.dx), fabs(g.depth.dy));
+        slope_depth_bias = fmaxf(-0.05f, fminf(0.05f, slope_depth_bias));
     }
     size_t inside_samples = 0;
     size_t depth_passes = 0;
@@ -2109,14 +2146,11 @@ static void raster_triangle_scissored(uint8_t *pixels,
                 sw_edge_accepts_sample(w2, g.edge01_top_left)) {
                 if (emit_debug)
                     inside_samples++;
-                /* Barycentric weights from edge functions. sz is the post-perspective-divide
-                 * NDC depth (clip.z * 1/w, set in the vertex stage), which is *linear in screen
-                 * space* — so this screen-space barycentric interpolation is exactly the depth
-                 * value GPU hardware produces, and matches the GL/D3D11 backends. (Perspective-
-                 * correct interpolation — z/w then divide by interpolated 1/w — is for vertex
-                 * *attributes* such as UVs, not for the depth buffer.) */
+                /* Coverage weights interpolate perspective-correct attributes.
+                 * Post-divide NDC depth is affine in screen space; evaluate its
+                 * stable plane independently of edge-accumulator drift (ADR 0325). */
                 float b0 = w0 * g.inv_area, b1 = w1 * g.inv_area, b2 = w2 * g.inv_area;
-                float z = b0 * g.v0->sz + b1 * g.v1->sz + b2 * g.v2->sz;
+                float z = sw_depth_plane_sample(&g.depth, x, y);
                 z += depth_bias + slope_depth_bias;
                 size_t idx = (size_t)y * (size_t)fb_w + (size_t)x;
                 if (isfinite(z)) {

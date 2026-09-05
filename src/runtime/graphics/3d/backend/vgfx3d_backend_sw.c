@@ -1456,10 +1456,14 @@ int32_t vgfx3d_sw_test_fragment_light_selection(const vgfx3d_draw_cmd_t *cmd,
     {
         int32_t cluster_index = sw_fragment_cluster_index(&fragment, x, y, ndc_z);
         uint16_t begin = table->offsets[cluster_index];
-        uint16_t end = table->offsets[cluster_index + 1];
-        geom.global_light_count = table->global_light_count;
-        geom.local_light_indices = &table->indices[begin];
-        geom.local_light_count = (int32_t)(end - begin);
+        uint16_t end = table->offsets[cluster_index + 1] & VGFX3D_CLUSTER_OFFSET_MASK;
+        geom.global_light_count = light_count;
+        if (!(begin & VGFX3D_CLUSTER_FALLBACK_FLAG)) {
+            begin &= VGFX3D_CLUSTER_OFFSET_MASK;
+            geom.global_light_count = table->global_light_count;
+            geom.local_light_indices = &table->indices[begin];
+            geom.local_light_count = (int32_t)(end - begin);
+        }
     }
     selected_count = geom.global_light_count + geom.local_light_count;
     for (int32_t i = 0; out_indices && i < selected_count && i < out_capacity; i++)

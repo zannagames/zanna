@@ -594,12 +594,15 @@ void rt_game3d_entity_set_collision_mask_prop(void *obj, void *mask) {
 }
 
 /// @brief Get the entity's name, or "" if unset/invalid.
+/// @details The public string-return ABI is owned. The private repair helper
+///   only guarantees the entity slot's reference; retain a separate caller
+///   reference so subsequent rename/finalization cannot invalidate the result.
 /// @param obj Entity3D runtime handle.
 /// @return The retained runtime name string, or an empty runtime string.
 rt_string rt_game3d_entity_get_name(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Name: invalid entity");
-    return game3d_entity_repair_name(entity);
+    return rt_string_ref(game3d_entity_repair_name(entity));
 }
 
 /// @brief Property setter for the name (delegates to the fluent setName).

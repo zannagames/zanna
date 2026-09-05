@@ -13,7 +13,7 @@
 //   their cluster's lights.
 // Key invariants:
 //   - Binning is deterministic: lights bin in flattened-array order and
-//     per-cluster truncation on overflow is order-stable (never UB).
+//     whole-list fallback on overflow is order-stable and lossless.
 //   - Conservative over-inclusion only: a light whose attenuated
 //     contribution is non-negligible at a point always appears in that
 //     point's cluster list (the parity guarantee); the reverse is allowed.
@@ -285,7 +285,8 @@ int canvas3d_cluster_light_is_global(int32_t type) {
 /// @details @p lights must already be ordered with the directional/ambient prefix
 ///          (see build_light_params). Uses the canvas's cached render-space camera
 ///          state, so call only between Begin and End of a 3D frame. Never fails;
-///          overflow truncates per cluster and is counted in `overflow_count`.
+///          overflow selects full-light fallback per cluster; omitted compact
+///          index demand is counted as pressure in `overflow_count`.
 /// @param c Borrowed canvas providing cached camera state and per-cluster budget.
 /// @param lights Borrowed globals-first flattened light array.
 /// @param light_count Number of valid entries in @p lights; capped at `VGFX3D_MAX_LIGHTS`.
@@ -335,8 +336,8 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
                     counts[x + y * VGFX3D_CLUSTER_DIM_X + z * plane]++;
     }
 
-    /* Prefix sums with a hard cap: clusters past the cap truncate their tail
-     * entries deterministically (later lights in flattened order drop first). */
+    /* Reserve complete lists only. Capacity pressure switches that cluster to
+     * the full-light loop, never a truncated subset (ADR 0328). */
     {
         int32_t running = 0;
         /* E11: configurable per-cluster capacity on top of the shared pool. */
@@ -348,9 +349,12 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
             int32_t room = VGFX3D_MAX_CLUSTER_LIGHT_INDICES - running;
             if (room > per_cluster)
                 room = per_cluster;
-            int32_t give = want < room ? want : (room > 0 ? room : 0);
+            int32_t give = want <= room ? want : 0;
             out->offsets[cidx] = (uint16_t)running;
-            out->overflow_count += want - give;
+            if (want > room) {
+                out->offsets[cidx] |= VGFX3D_CLUSTER_FALLBACK_FLAG;
+                out->overflow_count += want;
+            }
             counts[cidx] = (uint16_t)give; /* becomes remaining capacity below */
             running += give;
         }
@@ -369,7 +373,8 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
                     for (int32_t x = r->x0; x <= r->x1; x++) {
                         int32_t cidx = x + y * VGFX3D_CLUSTER_DIM_X + z * plane;
                         if (cursor[cidx] < counts[cidx]) {
-                            out->indices[out->offsets[cidx] + cursor[cidx]] = (uint16_t)i;
+                            out->indices[(out->offsets[cidx] & VGFX3D_CLUSTER_OFFSET_MASK) +
+                                         cursor[cidx]] = (uint16_t)i;
                             cursor[cidx]++;
                         }
                     }
@@ -443,7 +448,13 @@ const vgfx3d_cluster_table_t *canvas3d_cluster_table_for_revision(
     slot = &ring[c->cluster_table_cursor % CANVAS3D_CLUSTER_TABLE_RING];
     c->cluster_table_cursor = (c->cluster_table_cursor + 1) % CANVAS3D_CLUSTER_TABLE_RING;
     canvas3d_build_cluster_table(c, lights, light_count, revision, slot);
-    c->cluster_overflow_total += slot->overflow_count;
+    if (slot->overflow_count > 0) {
+        const int64_t pressure = slot->overflow_count;
+        if (c->cluster_fallback_entry_total > INT64_MAX - pressure)
+            c->cluster_fallback_entry_total = INT64_MAX;
+        else
+            c->cluster_fallback_entry_total += pressure;
+    }
     return slot;
 }
 

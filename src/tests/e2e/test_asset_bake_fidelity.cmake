@@ -34,6 +34,48 @@ if (NOT bake_result EQUAL 0)
     message(FATAL_ERROR "JSON bake failed (${bake_result}): ${bake_stderr}")
 endif ()
 
+# LOD constraints are independent of the base-mesh simplification pass.
+foreach(invalid_levels IN ITEMS "2junk" "1.5" "9" "-1" "")
+    execute_process(
+            COMMAND "${ZANNA_EXE}" asset bake "${INPUT}" "${OUTPUT}.invalid-lod"
+                    --lods "${invalid_levels}" --lod-lock-seams
+            RESULT_VARIABLE invalid_result OUTPUT_VARIABLE invalid_stdout
+            ERROR_VARIABLE invalid_stderr)
+    if (NOT invalid_result EQUAL 1 OR NOT invalid_stderr MATCHES "--lods expects 0..8")
+        message(FATAL_ERROR "invalid LOD count accepted: '${invalid_levels}': ${invalid_stderr}")
+    endif ()
+endforeach()
+foreach(invalid_error IN ITEMS "0" "1" "nan" "inf" "0.001junk" "")
+    execute_process(
+            COMMAND "${ZANNA_EXE}" asset bake "${INPUT}" "${OUTPUT}.invalid-lod"
+                    --lods 2 --lod-max-error "${invalid_error}"
+            RESULT_VARIABLE invalid_result OUTPUT_VARIABLE invalid_stdout
+            ERROR_VARIABLE invalid_stderr)
+    if (NOT invalid_result EQUAL 1 OR NOT invalid_stderr MATCHES "--lod-max-error expects")
+        message(FATAL_ERROR "invalid LOD error accepted: '${invalid_error}': ${invalid_stderr}")
+    endif ()
+endforeach()
+execute_process(
+        COMMAND "${ZANNA_EXE}" asset bake "${INPUT}" "${OUTPUT}.invalid-lod"
+                --lod-lock-seams
+        RESULT_VARIABLE invalid_result OUTPUT_VARIABLE invalid_stdout
+        ERROR_VARIABLE invalid_stderr)
+if (NOT invalid_result EQUAL 1 OR NOT invalid_stderr MATCHES "require --lods > 0")
+    message(FATAL_ERROR "LOD constraints without levels were accepted: ${invalid_stderr}")
+endif ()
+execute_process(
+        COMMAND "${ZANNA_EXE}" asset bake "${INPUT}" "${OUTPUT}.constrained-lod.vscn"
+                --lods 2 --lod-lock-seams --lod-max-error 0.001 --json
+        RESULT_VARIABLE constrained_result OUTPUT_VARIABLE constrained_stdout
+        ERROR_VARIABLE constrained_stderr)
+if (NOT constrained_result EQUAL 0 OR constrained_stderr)
+    message(FATAL_ERROR "constrained LOD bake failed: ${constrained_stderr}")
+endif ()
+string(JSON constrained_status GET "${constrained_stdout}" status)
+if (NOT constrained_status STREQUAL "ok")
+    message(FATAL_ERROR "constrained LOD bake report is not successful: ${constrained_stdout}")
+endif ()
+
 string(JSON schema ERROR_VARIABLE json_error GET "${bake_stdout}" schema)
 if (json_error OR NOT schema STREQUAL "zanna.asset-bake-report/v1")
     message(FATAL_ERROR "invalid bake report schema: ${json_error}; ${bake_stdout}")

@@ -53,7 +53,7 @@ int32_t canvas3d_cluster_z_slice(float depth, float znear, float zfar);
 int canvas3d_cluster_light_is_global(int32_t type);
 /// @brief Build a froxel table for a globals-first flattened light array.
 /// @details The output is always initialized. Invalid/empty input produces an empty table stamped
-/// with @p lights_revision; capacity overflow truncates later entries deterministically.
+/// with @p lights_revision; capacity overflow selects full-light fallback deterministically.
 /// @param c Borrowed canvas providing cached camera state and the cluster budget.
 /// @param lights Borrowed globals-first flattened light array.
 /// @param light_count Number of valid entries in @p lights.

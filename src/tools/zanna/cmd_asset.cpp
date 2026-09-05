@@ -25,6 +25,7 @@
 #include "rt_textureasset3d.h"
 #endif
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -749,6 +750,7 @@ void printAssetUsage(std::FILE *out) {
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
                  "                   [--clips LIST] [--strip-meshes] [--simplify-meshes N]\n"
                  "                   [--simplify-lock-seams] [--simplify-max-error F]\n"
+                 "                   [--lod-lock-seams] [--lod-max-error F]\n"
                  "                   [--max-texture-dim N] [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
@@ -766,6 +768,10 @@ void printAssetUsage(std::FILE *out) {
                  "      --simplify-max-error stops --simplify-meshes once the cheapest\n"
                  "      remaining collapse exceeds F of the mesh bounding diameter\n"
                  "      (typical: 0.001).\n"
+                 "      --lod-lock-seams / --lod-max-error constrain generated LODs\n"
+                 "      independently of --simplify-meshes; both require --lods > 0.\n"
+                 "      Constrained levels reference the original source and may stop\n"
+                 "      above the target ratio to preserve boundaries or the cost limit.\n"
                  "      --max-texture-dim downscales every material texture above N\n"
                  "      texels to fit N (stored as compact raw pixels — the source\n"
                  "      container's per-load decode cost disappears with its bulk).\n"
@@ -822,6 +828,8 @@ int cmdAsset(int argc, char **argv) {
         bool stripMeshes = false;
         bool simplifyLockSeams = false;
         double simplifyMaxError = 0.0;
+        bool lodLockSeams = false;
+        double lodMaxError = 0.0;
         bool json = false;
         for (int i = 3; i < argc; i++) {
             const std::string arg = argv[i];
@@ -838,9 +846,24 @@ int cmdAsset(int argc, char **argv) {
                     return 1;
                 }
             } else if (arg == "--lods" && i + 1 < argc) {
-                lods = std::strtol(argv[++i], nullptr, 10);
-                if (lods < 0 || lods > 8) {
+                char *end = nullptr;
+                const char *value = argv[++i];
+                lods = std::strtol(value, &end, 10);
+                if (end == value || *end != '\0' || lods < 0 || lods > 8) {
                     std::fprintf(stderr, "zanna asset bake: --lods expects 0..8\n");
+                    return 1;
+                }
+            } else if (arg == "--lod-lock-seams") {
+                lodLockSeams = true;
+            } else if (arg == "--lod-max-error") {
+                char *end = nullptr;
+                const char *value = i + 1 < argc ? argv[++i] : "";
+                lodMaxError = std::strtod(value, &end);
+                if (end == value || *end != '\0' || !std::isfinite(lodMaxError) ||
+                    lodMaxError <= 0.0 || lodMaxError >= 1.0) {
+                    std::fprintf(stderr,
+                                 "zanna asset bake: --lod-max-error expects a "
+                                 "bounding-diameter fraction in (0,1)\n");
                     return 1;
                 }
             } else if (arg == "--simplify-meshes" && i + 1 < argc) {
@@ -883,6 +906,12 @@ int cmdAsset(int argc, char **argv) {
             std::fprintf(stderr,
                          "zanna asset bake: --simplify-lock-seams/--simplify-max-error "
                          "require --simplify-meshes\n");
+            return 1;
+        }
+        if ((lodLockSeams || lodMaxError > 0.0) && lods <= 0) {
+            std::fprintf(stderr,
+                         "zanna asset bake: --lod-lock-seams/--lod-max-error "
+                         "require --lods > 0\n");
             return 1;
         }
         void *model =
@@ -934,7 +963,12 @@ int cmdAsset(int argc, char **argv) {
         if (maxTextureDim > 0)
             (void)rt_model3d_limit_texture_dim(model, (int64_t)maxTextureDim);
         if (lods > 0)
-            (void)rt_model3d_generate_lods(model, (int64_t)lods, 0.5);
+            (void)rt_model3d_generate_lods_ex(model,
+                                              (int64_t)lods,
+                                              0.5,
+                                              lodLockSeams ? RT_MESH3D_SIMPLIFY_FLAG_LOCK_BOUNDARIES
+                                                           : 0,
+                                              lodMaxError);
         const AssetSnapshot sourceSnapshot = snapshotAsset(model);
         int64_t saved = rt_model3d_save(model, rt_const_cstr(output));
         if (!saved) {

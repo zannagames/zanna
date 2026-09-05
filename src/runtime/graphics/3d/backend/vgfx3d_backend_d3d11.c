@@ -351,7 +351,7 @@ _Static_assert(sizeof(d3d_ssr_cb_t) == 176u, "D3D11 SSR cbuffer must match its H
 
 typedef vgfx3d_d3d11_instance_data_t d3d_instance_data_t;
 
-#define D3D11_MESH_CACHE_CAPACITY 256
+#define D3D11_MESH_CACHE_CAPACITY VGFX3D_STATIC_MESH_CACHE_CAPACITY
 
 /// @brief One static mesh cache slot containing immutable vertex and index buffers.
 typedef struct {
