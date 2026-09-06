@@ -865,10 +865,10 @@ typedef struct {
     uint64_t mutation_revision; /* per-light cache generation; starts at one */
 } rt_light3d;
 
-/* Minimum local-light attenuation used by constructors and importers to avoid unbounded point,
- * spot, rectangle, and sphere lights. Directional and ambient lights keep zero attenuation
- * because they are not distance-falloff lights. */
+/* Invalid/omitted local attenuation retains the historical default. Positive authored
+ * values use a separate float-safe minimum (ADR 0333), so world-unit falloff survives. */
 #define RT_LIGHT3D_DEFAULT_ATTENUATION 0.001
+#define RT_LIGHT3D_MIN_ATTENUATION 1e-12
 
 //=============================================================================
 // Canvas3D
@@ -877,9 +877,9 @@ typedef struct {
 #define VGFX3D_FORWARD_LIGHT_LIMIT 16
 #define VGFX3D_MAX_LIGHTS 64
 /* Total shadow slots: 0..3 are per-texture slots (CSM cascades and/or the
- * highest-priority lights); 4..11 are tiles of the GPU backends' internal
+ * highest-priority lights); 4..19 are tiles of the GPU backends' internal
  * shadow atlas (software keeps per-slot buffers). */
-#define VGFX3D_MAX_SHADOW_LIGHTS 12
+#define VGFX3D_MAX_SHADOW_LIGHTS 20
 /* CSM cascade slot count. Cascade-semantic sizes (split arrays, cascade
  * clamps) key on this, NOT on the total shadow-slot count, so growing the
  * general shadow budget cannot silently widen the float4 cascade-split
@@ -1416,7 +1416,7 @@ typedef struct {
     struct canvas3d_frame_arena_chunk *frame_arena_current;
     size_t frame_arena_frame_bytes; /* bytes handed out this frame */
 
-/* Per-pass CPU milliseconds for the LAST flushed frame (diagnostics; never
+/* Per-pass CPU milliseconds since Begin/Begin2D, including overlays (diagnostics; never
  * read by simulation, so VM==native determinism is unaffected). */
 #define RT_CANVAS3D_PASS_SHADOW 0
 #define RT_CANVAS3D_PASS_MAIN 1
@@ -1592,6 +1592,7 @@ typedef struct {
     /* Shadow mapping */
     int8_t shadows_enabled;
     int32_t shadow_resolution;
+    int32_t shadow_atlas_resolution; /* Zero inherits primary-map resolution. */
     float shadow_bias;
     int32_t shadow_count;
     int32_t shadow_cascade_count;
@@ -1693,7 +1694,9 @@ typedef struct {
     int32_t shadow_budget;          /* general shadow-light slots (1..VGFX3D_MAX_SHADOW_LIGHTS) */
     int32_t last_shadow_slots_used; /* shadow slots rendered in the latest frame (incl. cascades) */
     int32_t last_shadow_requests_dropped; /* shadow-requesting lights denied a slot this frame */
-    void *shadow_draw_indices;            /* int32_t scratch list of shadow-casting draw indices */
+    void *shadow_batch_entries;           /* retained key/index sorting scratch (ADR 0335) */
+    int32_t shadow_batch_capacity;
+    void *shadow_draw_indices; /* int32_t scratch list of shadow-casting draw indices */
     int32_t shadow_draw_index_capacity;
     int32_t last_draw_count;
     int32_t last_occluded_draw_count;
@@ -2255,6 +2258,21 @@ int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
 /// @param u1 Source U coordinate at the right edge.
 /// @param v1 Source V coordinate at the bottom edge.
 /// @return Non-zero when the image command is queued; otherwise zero.
+/// @brief Internal screen-image variant for light sprites; ordinary images use the wrapper.
+/// @param additive Select existing additive blend state when nonzero.
+/// @param opacity Finite coverage multiplier, clamped to [0,1]; invalid values draw transparent.
+int canvas3d_queue_screen_image_uv_blend(rt_canvas3d *c,
+                                         float x,
+                                         float y,
+                                         float w,
+                                         float h,
+                                         void *pixels,
+                                         float u0,
+                                         float v0,
+                                         float u1,
+                                         float v1,
+                                         int8_t additive,
+                                         float opacity);
 int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
                                    float x,
                                    float y,

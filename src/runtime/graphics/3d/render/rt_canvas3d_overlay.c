@@ -2263,7 +2263,7 @@ int64_t rt_canvas3d_get_frame_gpu_time_us(void *obj) {
 }
 
 /// @brief `Canvas3D.PassCpuMs(pass)` — CPU milliseconds one render stage took
-///   during the last flushed frame.
+///   since the latest Begin/Begin2D, including subsequent overlay flushes.
 /// @details Pass ids: 0 = shadow pass, 1 = main pass (opaque + transparent +
 ///   post-FX submission), 2 = screen overlay pass, 3 = backend end-of-frame
 ///   (encode/present). Diagnostics only — a profiler HUD can render these

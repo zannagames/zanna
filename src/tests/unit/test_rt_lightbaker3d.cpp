@@ -245,6 +245,50 @@ long long bake_floor_with_light(void *light, bool add_occluder) {
 
 //=========================================================================
 
+bool test_indirect_only_lightmaps() {
+    TEST("indirect-only lightmaps omit primary direct light but preserve sky and fixture bounces");
+    long long energy[4] = {};
+    for (int mode = 0; mode < 4; ++mode) {
+        void *scene = rt_scene3d_new();
+        void *floor = make_quad(6.0, 0.0, 0.0, 1.0, 0.0, 0);
+        void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+        add_static_node(scene, floor, material, "indirect_floor");
+        void *ceiling = nullptr;
+        if (mode == 3) {
+            ceiling = make_quad(6.0, 2.0, 0.0, -1.0, 0.0, 0);
+            add_static_node(scene, ceiling, material, "bounce_ceiling");
+        }
+        void *position = rt_vec3_new(0.0, 1.0, 0.0);
+        void *light = rt_light3d_new_point(position, 0.7, 0.5, 0.3, 0.01);
+        void *baker = rt_lightbaker3d_new(scene);
+        EXPECT_TRUE(rt_lightbaker3d_get_include_direct(baker) == 1,
+                    "default preserves direct bake");
+        rt_lightbaker3d_set_include_direct(baker, -7);
+        EXPECT_TRUE(rt_lightbaker3d_get_include_direct(baker) == 1, "C Boolean input normalizes");
+        rt_lightbaker3d_set_include_direct(baker, mode == 0);
+        rt_lightbaker3d_set_texels_per_unit(baker, 1.0);
+        rt_lightbaker3d_set_samples(baker, 16);
+        rt_lightbaker3d_set_bounces(baker, mode >= 2 ? 1 : 0);
+        if (mode == 2)
+            rt_lightbaker3d_set_sky_color(baker, 0.2, 0.2, 0.2);
+        rt_lightbaker3d_add_light(baker, light);
+        EXPECT_TRUE(run_bake(baker), "configured lightmap completes");
+        void *atlas = rt_lightbaker3d_get_atlas(baker);
+        EXPECT_TRUE(atlas != nullptr, "configured lightmap publishes atlas");
+        energy[mode] = atlas_channel_sum(atlas, 24);
+        rt_lightbaker3d_set_include_direct(baker, mode != 0);
+        EXPECT_TRUE(rt_lightbaker3d_get_include_direct(baker) == (mode == 0),
+                    "gathered option cannot change");
+        for (void *object : {atlas, baker, light, position, ceiling, material, floor, scene})
+            release_object(object);
+    }
+    EXPECT_TRUE(energy[0] > 0, "default mode includes direct light");
+    EXPECT_TRUE(energy[1] == 0, "zero-bounce indirect atlas is black despite live light");
+    EXPECT_TRUE(energy[2] > 0, "indirect-only atlas retains sky");
+    EXPECT_TRUE(energy[3] > 0, "indirect-only atlas retains fixture bounce with black sky");
+    PASS();
+}
+
 bool test_direct_bake_and_apply() {
     TEST("direct-only bake lights the floor atlas, writes UV1, and applies");
 
@@ -387,6 +431,7 @@ bool test_incremental_snapshot_and_single_publication() {
     rt_lightbaker3d_set_texels_per_unit(baker, 32.0);
     rt_lightbaker3d_set_samples(baker, 99);
     rt_lightbaker3d_set_bounces(baker, 7);
+    rt_lightbaker3d_set_include_direct(baker, 0);
     rt_lightbaker3d_set_sky_color(baker, 1.0, 0.0, 0.0);
     EXPECT_TRUE(rt_lightbaker3d_get_texels_per_unit(baker) == 1.0,
                 "density is frozen after the first gather");
@@ -394,6 +439,8 @@ bool test_incremental_snapshot_and_single_publication() {
                 "sample count is frozen after the first gather");
     EXPECT_TRUE(rt_lightbaker3d_get_bounces(baker) == 1,
                 "bounce count is frozen after the first gather");
+    EXPECT_TRUE(rt_lightbaker3d_get_include_direct(baker) == 1,
+                "direct-light option is frozen during a partial bake");
     EXPECT_TRUE(run_bake(baker), "remaining slice completes");
     EXPECT_TRUE(static_cast<rt_mesh3d *>(mesh)->geometry_revision == revision_before,
                 "published UVs never mutate the shared source mesh");
@@ -583,6 +630,15 @@ bool test_punctual_light_semantics() {
     void *spot = rt_light3d_new_spot(position, away, 1.0, 1.0, 1.0, 1.0, 10.0, 20.0);
     long long outside_spot = bake_floor_with_light(spot, false);
     release_object(spot);
+
+    void *ranged_point = rt_light3d_new_point(position, 1.0, 1.0, 1.0, 1.0);
+    rt_light3d_set_range(ranged_point, 1.0);
+    EXPECT_TRUE(bake_floor_with_light(ranged_point, false) == 0,
+                "authored point cutoff reaches baker through public property");
+    rt_light3d_set_range(ranged_point, 0.0);
+    EXPECT_TRUE(bake_floor_with_light(ranged_point, false) > 0,
+                "zero point range restores unbounded baked attenuation");
+    release_object(ranged_point);
 
     void *area = rt_light3d_new_area_sphere(position, 0.5, 1.0, 1.0, 1.0, 1.0);
     long long outside_range = bake_floor_with_light(area, false);
@@ -849,6 +905,23 @@ bool test_probe_grid_sampling_and_roundtrip() {
     double nr = rt_vec3_x(near_s), fr = rt_vec3_x(far_s);
     EXPECT_TRUE(nr > fr, "probe irradiance is brighter near the light");
 
+    // IncludeDirect controls lightmap primaries, never the lit surfaces seen
+    // by probe rays. Removing that contribution would erase fixture bounce.
+    void *indirect_baker = rt_lightbaker3d_new(scene);
+    rt_lightbaker3d_set_samples(indirect_baker, 32);
+    rt_lightbaker3d_set_bounces(indirect_baker, 1);
+    rt_lightbaker3d_set_sky_color(indirect_baker, 0.6, 0.6, 0.6);
+    rt_lightbaker3d_set_include_direct(indirect_baker, 0);
+    rt_lightbaker3d_add_light(indirect_baker, point);
+    void *indirect_grid = rt_lightprobegrid3d_new(gmin, gmax, 2.0);
+    rt_lightprobegrid3d_bake(indirect_grid, indirect_baker);
+    void *indirect_near = rt_lightprobegrid3d_sample(indirect_grid, near_pos, up);
+    void *indirect_far = rt_lightprobegrid3d_sample(indirect_grid, far_pos, up);
+    EXPECT_TRUE(rt_vec3_x(indirect_near) == nr && rt_vec3_x(indirect_far) == fr,
+                "lightmap option leaves probe fixture irradiance unchanged");
+    for (void *object : {indirect_far, indirect_near, indirect_grid, indirect_baker})
+        release_object(object);
+
     EXPECT_TRUE(rt_lightprobegrid3d_save(grid, rt_const_cstr(canonical_path)) == 1, "grid saves");
     unsigned char canonical_header[52] = {0};
     FILE *canonical = std::fopen(canonical_path, "rb");
@@ -943,6 +1016,13 @@ bool test_probe_bake_rejects_non_baker_argument() {
     void *scene = rt_scene3d_new();
     EXPECT_TRUE(scene != nullptr, "scene allocates");
 
+    EXPECT_TRUE(expect_trap("LightBaker3D.set_IncludeDirect: invalid baker",
+                            [&] { rt_lightbaker3d_set_include_direct(scene, 0); }),
+                "direct-light setter rejects wrong-class receivers");
+    EXPECT_TRUE(expect_trap("LightBaker3D.get_IncludeDirect: invalid baker",
+                            [&] { (void)rt_lightbaker3d_get_include_direct(nullptr); }),
+                "direct-light getter rejects null receivers");
+
     /* The shipped mistake: the scene itself where the baker belongs (the
      * neighboring ReflectionProbe3D.Capture signature does take the scene,
      * and obj<T> parameters are not enforced at Zia call sites). */
@@ -977,6 +1057,7 @@ bool test_probe_bake_rejects_non_baker_argument() {
 int main() {
     std::printf("LightBaker3D + LightProbeGrid3D tests\n");
     bool ok = true;
+    ok &= test_indirect_only_lightmaps();
     ok &= test_direct_bake_and_apply();
     ok &= test_mirrored_normal_and_directional_snapshot();
     ok &= test_deep_scene_and_malformed_triangle_recovery();

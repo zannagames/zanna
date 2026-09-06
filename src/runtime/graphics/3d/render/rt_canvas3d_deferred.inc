@@ -2398,6 +2398,11 @@ static void canvas3d_submit_mesh(rt_canvas3d *c,
         c->backend_ctx, c->gfx_win, cmd, lights, light_count, ambient, wireframe, backface_cull);
 }
 
+/// @brief Whether a command can use the static instanced shadow shader.
+static int canvas3d_shadow_instance_eligible(const vgfx3d_draw_cmd_t *cmd) {
+    return cmd && !cmd->bone_palette && !cmd->morph_weights && !cmd->particle_instances;
+}
+
 /// @brief Apply shadow-pass-only material adjustments before a backend depth draw.
 /// @details Explicit `ShadowMode.Cast` lets transparent materials cast shadows. Depth maps cannot
 ///   represent fractional coverage, so transparent cast mode uses the material alpha cutoff just

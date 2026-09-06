@@ -2004,6 +2004,28 @@ static HRESULT d3d11_leave_shadow_pass(d3d11_context_t *ctx) {
     return d3d11_select_current_targets(ctx);
 }
 
+/// @brief Allocate the announced atlas extent before any shadow tile renders.
+/// @param ctx_ptr Borrowed D3D11 context.
+/// @param slots Required contiguous slot extent.
+/// @param primary_resolution Primary size (allocated lazily per map).
+/// @param atlas_resolution Square secondary tile size.
+/// @return Nonzero when storage is ready, zero on allocation failure.
+static int8_t d3d11_prepare_shadow_frame(void *ctx_ptr,
+                                         int32_t slots,
+                                         int32_t primary_resolution,
+                                         int32_t atlas_resolution) {
+    d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
+    (void)primary_resolution;
+    if (!ctx || slots < 0 || slots > VGFX3D_MAX_SHADOW_LIGHTS)
+        return 0;
+    if (slots <= VGFX3D_CSM_SLOTS)
+        return 1;
+    ctx->shadow_atlas_rows = (slots - VGFX3D_CSM_SLOTS + 3) / 4;
+    if (ctx->shadow_atlas_rows < 2)
+        ctx->shadow_atlas_rows = 2;
+    return SUCCEEDED(d3d11_ensure_shadow_atlas(ctx, atlas_resolution, atlas_resolution)) ? 1 : 0;
+}
+
 /// @brief Backend `shadow_begin` - switch the pipeline to shadow-pass mode.
 ///
 /// Allocates the shadow depth target if needed, captures the light's
@@ -2124,7 +2146,10 @@ static void d3d11_shadow_begin(void *ctx_ptr,
 /// pixel shader. Uses the light-space VP captured by `shadow_begin`.
 /// @param[in,out] ctx_ptr Opaque pointer to the active D3D11 backend context.
 /// @param[in] cmd Mesh draw command to sanitize and submit to the active shadow pass.
-static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
+static void d3d11_shadow_draw_impl(void *ctx_ptr,
+                                   const vgfx3d_draw_cmd_t *cmd,
+                                   const float *matrices,
+                                   int32_t count) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     d3d_per_object_t object_data;
     d3d_per_scene_t scene_data;
@@ -2183,6 +2208,32 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         return;
     }
 
+    if (matrices) {
+        size_t bytes = 0;
+        int ready = ctx->vs_shadow_instanced &&
+                    vgfx3d_d3d11_compute_instance_upload_bytes(
+                        count, sizeof(d3d_instance_data_t), &bytes) &&
+                    d3d11_ensure_instance_upload_capacity(ctx, count);
+        if (ready) {
+            vgfx3d_d3d11_fill_instance_data(ctx->instance_upload_data, count, matrices, NULL, 0);
+            ready = d3d11_upload_dynamic_buffer(ctx,
+                                                &ctx->instance_buffer,
+                                                &ctx->instance_buffer_size,
+                                                D3D11_BIND_VERTEX_BUFFER,
+                                                ctx->instance_upload_data,
+                                                bytes,
+                                                D3D11_INITIAL_INSTANCE_BUFFER_SIZE);
+        }
+        if (!ready) {
+            for (int32_t i = 0; i < count; i++) {
+                vgfx3d_draw_cmd_t single = *cmd;
+                memcpy(
+                    single.model_matrix, matrices + (size_t)i * 16u, sizeof(single.model_matrix));
+                d3d11_shadow_draw_impl(ctx_ptr, &single, NULL, 1);
+            }
+            return;
+        }
+    }
     d3d11_prepare_object_data(cmd, &object_data);
     memset(&scene_data, 0, sizeof(scene_data));
     memcpy(scene_data.vp, ctx->shadow_vp[ctx->shadow_pass_slot], sizeof(scene_data.vp));
@@ -2235,11 +2286,22 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     /* R20: compact-cached geometry needs the packed input layout + stride. */
     if (d3d11_cmd_uses_compact_stream(ctx, cmd)) {
         stride = VGFX3D_COMPACT_VERTEX_STRIDE;
-        ID3D11DeviceContext_IASetInputLayout(ctx->ctx, ctx->input_layout_compact);
+        ID3D11DeviceContext_IASetInputLayout(
+            ctx->ctx, matrices ? ctx->input_layout_instanced_compact : ctx->input_layout_compact);
     } else {
-        ID3D11DeviceContext_IASetInputLayout(ctx->ctx, ctx->input_layout);
+        ID3D11DeviceContext_IASetInputLayout(
+            ctx->ctx, matrices ? ctx->input_layout_instanced : ctx->input_layout);
     }
-    ID3D11DeviceContext_IASetVertexBuffers(ctx->ctx, 0, 1, &mesh_vb, &stride, &offset);
+    ID3D11DeviceContext_VSSetShader(
+        ctx->ctx, matrices ? ctx->vs_shadow_instanced : ctx->vs_shadow, NULL, 0);
+    if (matrices) {
+        ID3D11Buffer *buffers[2] = {mesh_vb, ctx->instance_buffer};
+        UINT strides[2] = {stride, sizeof(d3d_instance_data_t)};
+        UINT offsets[2] = {0, 0};
+        ID3D11DeviceContext_IASetVertexBuffers(ctx->ctx, 0, 2, buffers, strides, offsets);
+    } else {
+        ID3D11DeviceContext_IASetVertexBuffers(ctx->ctx, 0, 1, &mesh_vb, &stride, &offset);
+    }
     ID3D11DeviceContext_IASetIndexBuffer(ctx->ctx, mesh_ib, DXGI_FORMAT_R32_UINT, 0);
     ID3D11DeviceContext_VSSetConstantBuffers(ctx->ctx, 0, 1, &ctx->cb_per_object);
     ID3D11DeviceContext_VSSetConstantBuffers(ctx->ctx, 1, 1, &ctx->cb_per_scene);
@@ -2269,7 +2331,10 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         ID3D11ShaderResourceView *vs_srvs[2] = {ctx->current_morph_srv, NULL};
         ID3D11DeviceContext_VSSetShaderResources(ctx->ctx, 0, 2, vs_srvs);
     }
-    ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
+    if (matrices)
+        ID3D11DeviceContext_DrawIndexedInstanced(ctx->ctx, index_count, (UINT)count, 0, 0, 0);
+    else
+        ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
     if (FAILED(d3d11_record_frame_device_status(ctx, "DrawIndexed(shadow)")))
         ctx->shadow_pass_failed = 1;
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, null_shadow_ps_srv);
@@ -2279,6 +2344,21 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         ID3D11ShaderResourceView *null_vs[2] = {NULL, NULL};
         ID3D11DeviceContext_VSSetShaderResources(ctx->ctx, 0, 2, null_vs);
     }
+}
+
+/// @brief Encode one mesh into the active depth tile.
+static void d3d11_shadow_draw(void *ctx, const vgfx3d_draw_cmd_t *cmd) {
+    d3d11_shadow_draw_impl(ctx, cmd, NULL, 1);
+}
+
+/// @brief Upload static shadow instances with the existing DISCARD-backed stream.
+static void d3d11_shadow_draw_instanced(void *ctx,
+                                        const vgfx3d_draw_cmd_t *cmd,
+                                        const float *matrices,
+                                        int32_t count) {
+    if (!matrices || count <= 0)
+        return;
+    d3d11_shadow_draw_impl(ctx, cmd, matrices, count);
 }
 
 /// @brief Backend `shadow_end` — exit shadow-pass mode and rebind the main targets.
@@ -2365,12 +2445,12 @@ static int8_t d3d11_shadow_inherit(
     if (!vgfx3d_d3d11_shadow_matrix_is_usable(light_vp))
         return 0;
     if (slot >= VGFX3D_CSM_SLOTS) {
-        if (w > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS ||
-            h > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_ROWS)
+        if (w > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS || ctx->shadow_atlas_rows < 2 ||
+            h > INT32_MAX / ctx->shadow_atlas_rows)
             return 0;
         if (!ctx->shadow_atlas_tex || !ctx->shadow_atlas_dsv || !ctx->shadow_atlas_srv ||
             ctx->shadow_atlas_w != w * VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS ||
-            ctx->shadow_atlas_h != h * VGFX3D_D3D11_SHADOW_ATLAS_ROWS)
+            ctx->shadow_atlas_h != h * ctx->shadow_atlas_rows)
             return 0;
     } else {
         if (!ctx->shadow_dsv[slot] || !ctx->shadow_srv[slot] || ctx->shadow_width[slot] != w ||

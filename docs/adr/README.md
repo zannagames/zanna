@@ -342,3 +342,13 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0215](0215-project-owned-direct-model-previews.md) — Render Project-Owned Direct Model Previews
 - [ADR 0216](0216-project-owned-3d-node-preview-states.md) — Add Project-Owned 3D Node Preview States
 - [ADR 0232](0232-map-embedded-preview-and-physics-windows-imports.md) — Map Embedded Preview and Physics Windows Imports
+- [ADR 0331](0331-indirect-only-lightmap-baking.md) — Indirect-only lightmaps alongside live analytic lighting
+- [ADR 0332](0332-punctual-light-range.md) — Consistent authored point/spot range across rendering, clusters and shadows
+- [ADR 0333](0333-authored-local-light-attenuation.md) — Preserve authored local-light falloff separately from invalid-input defaults
+- [ADR 0334](0334-additive-lens-flare-composition.md) — Additive flare sprites with visibility-scaled opacity
+
+- [ADR 0335](0335-instanced-shadow-submission.md) — Grouped static casters and GPU instanced shadow dispatch
+
+- [ADR 0336](0336-shadow-atlas-resolution.md) — Independent secondary shadow-tile resolution
+
+- [ADR 0337](0337-expanded-shadow-atlas-capacity.md) — Full fixture shadow capacity with prepared atlas storage

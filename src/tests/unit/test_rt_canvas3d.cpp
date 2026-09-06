@@ -4567,6 +4567,119 @@ static uint8_t render_native_light_center_pixel(rt_canvas3d *canvas,
     return target->target->color_buf[center];
 }
 
+/// Authored range must bound clusters even when the legacy attenuation is wide.
+static void test_punctual_range_cluster_bounds() {
+    TEST("Authored punctual range conservatively bounds cluster coverage");
+    rt_canvas3d canvas;
+    void *camera = nullptr;
+    auto *backend = cluster_test_begin_frame(&canvas, &camera);
+    vgfx3d_light_params_t light = {};
+    cluster_test_make_point_light(&light, 0.0f, 0.0f, -10.0f, 10.0f, 0.001f);
+    auto *table = static_cast<vgfx3d_cluster_table_t *>(calloc(1, sizeof(vgfx3d_cluster_table_t)));
+    for (int type : {1, 3}) {
+        light.type = type;
+        light.range = 2.0f;
+        canvas3d_build_cluster_table(&canvas, &light, 1, 1u, table);
+        int near_cell =
+            canvas3d_cluster_index_for_point(0.5f, 0.5f, 10.0f, table->znear, table->zfar);
+        int far_cell =
+            canvas3d_cluster_index_for_point(0.5f, 0.5f, 60.0f, table->znear, table->zfar);
+        EXPECT_EQ(table->offsets[near_cell + 1] - table->offsets[near_cell], 1);
+        EXPECT_EQ(table->offsets[far_cell + 1] - table->offsets[far_cell], 0);
+        light.range = 0.0f;
+        canvas3d_build_cluster_table(&canvas, &light, 1, 2u, table);
+        EXPECT_EQ(table->offsets[far_cell + 1] - table->offsets[far_cell], 1);
+    }
+    // ADR 0333: the emitter can be behind the camera while its sphere reaches
+    // the receiver. Clamping radius to camera far before the intersection test
+    // incorrectly drops this light completely.
+    for (int type : {1, 3}) {
+        light.type = type;
+        light.position[2] = 120.0f;
+        light.range = 150.0f;
+        canvas3d_build_cluster_table(&canvas, &light, 1, 3u, table);
+        int receiver =
+            canvas3d_cluster_index_for_point(0.5f, 0.5f, 10.0f, table->znear, table->zfar);
+        EXPECT_EQ(table->offsets[receiver + 1] - table->offsets[receiver], 1);
+    }
+    free(table);
+    free(backend);
+    PASS();
+}
+
+/// ADR 0332: authored punctual cutoffs survive flattening and both shading paths.
+static void test_punctual_light_range() {
+    TEST("Point/spot range authoring, flattening, and software shading");
+    rt_canvas3d canvas = {};
+    auto *target = static_cast<rt_rendertarget3d *>(rt_rendertarget3d_new(16, 16));
+    void *camera = rt_camera3d_new(55.0, 1.0, 0.1, 50.0);
+    void *mesh = rt_mesh3d_new_plane(1.0, 1.0);
+    void *transform = rt_mat4_identity();
+    void *position = rt_vec3_new(0.0, 2.0, 0.0);
+    void *down = rt_vec3_new(0.0, -1.0, 0.0);
+    void *lights[] = {rt_light3d_new_point(position, 1.0, 1.0, 1.0, 0.1),
+                      rt_light3d_new_spot(position, down, 1.0, 1.0, 1.0, 0.1, 30.0, 45.0)};
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.backend_ctx = vgfx3d_software_backend.create_ctx((vgfx_window_t)0, 16, 16);
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = canvas.height = 16;
+    assert(target && canvas.backend_ctx);
+    rt_canvas3d_set_render_target(&canvas, target);
+    rt_camera3d_look_at(camera,
+                        rt_vec3_new(0.0, 5.0, 0.0),
+                        rt_vec3_new(0.0, 0.0, 0.0),
+                        rt_vec3_new(0.0, 0.0, -1.0));
+    for (void *light : lights) {
+        EXPECT_NEAR(rt_light3d_get_range(light), 0.0, 0.0001);
+        rt_canvas3d_set_light(&canvas, 0, light);
+        vgfx3d_light_params_t flattened[1] = {};
+        EXPECT_EQ(build_light_params(&canvas, flattened, 1), 1);
+        EXPECT_NEAR(flattened[0].range, 0.0, 0.0001);
+        uint64_t revision = rt_light3d_mutation_revision();
+        rt_light3d_set_range(light, 4.0);
+        EXPECT_EQ(rt_light3d_mutation_revision(), revision + 1);
+        EXPECT_NEAR(rt_light3d_get_range(light), 4.0, 0.0001);
+        rt_light3d_set_range(light, 4.0);
+        EXPECT_EQ(rt_light3d_mutation_revision(), revision + 1);
+        EXPECT_EQ(build_light_params(&canvas, flattened, 1), 1);
+        EXPECT_NEAR(flattened[0].range, 4.0, 0.0001);
+        for (int mode : {0, 2}) {
+            void *material = rt_material3d_new_color(1.0, 1.0, 1.0);
+            rt_material3d_set_shading_model(material, mode);
+            rt_light3d_set_range(light, 0.0);
+            uint8_t full = render_native_light_center_pixel(
+                &canvas, target, camera, mesh, material, transform, light);
+            rt_light3d_set_range(light, 4.0);
+            uint8_t faded = render_native_light_center_pixel(
+                &canvas, target, camera, mesh, material, transform, light);
+            rt_light3d_set_range(light, 1.0);
+            uint8_t outside = render_native_light_center_pixel(
+                &canvas, target, camera, mesh, material, transform, light);
+            std::printf(" range type=%lld mode=%d full=%u faded=%u outside=%u\n",
+                        static_cast<long long>(rt_light3d_get_type(light)),
+                        mode,
+                        full,
+                        faded,
+                        outside);
+            EXPECT_TRUE(full > faded && faded > outside,
+                        "Finite range fades inside and removes outside contribution");
+            EXPECT_EQ(outside, 0);
+            rt_light3d_set_range(light, 0.0);
+            EXPECT_EQ(render_native_light_center_pixel(
+                          &canvas, target, camera, mesh, material, transform, light),
+                      full);
+        }
+        for (double invalid : {-1.0, static_cast<double>(NAN), static_cast<double>(INFINITY)}) {
+            rt_light3d_set_range(light, 4.0);
+            rt_light3d_set_range(light, invalid);
+            EXPECT_NEAR(rt_light3d_get_range(light), 0.0, 0.0001);
+        }
+    }
+    rt_canvas3d_set_light(&canvas, 0, nullptr);
+    vgfx3d_software_backend.destroy_ctx(canvas.backend_ctx);
+    PASS();
+}
+
 /// Native emitter semantics must execute in the software reference path, including
 /// rectangle sidedness and volume boundary fading. GPU shader twins mirror this math.
 static void test_native_area_volume_lighting_software() {
@@ -5602,6 +5715,33 @@ static void test_light_native_area_and_volume_types() {
     EXPECT_EQ(rt_light3d_get_casts_shadows(volume), 0);
     rt_light3d_set_casts_shadows(volume, 1);
     EXPECT_EQ(rt_light3d_get_casts_shadows(volume), 0);
+    PASS();
+}
+
+/// ADR 0333: the default is a fallback, not a minimum valid authored coefficient.
+static void test_authored_light_attenuation() {
+    TEST("Local lights preserve small positive authored attenuation");
+    void *position = rt_vec3_new(0.0, 100.0, 0.0);
+    void *direction = rt_vec3_new(0.0, -1.0, 0.0);
+    void *lights[] = {rt_light3d_new_point(position, 1.0, 1.0, 1.0, 0.0001),
+                      rt_light3d_new_spot(position, direction, 1.0, 1.0, 1.0, 0.0001, 30.0, 45.0),
+                      rt_light3d_new_area_rectangle(
+                          position, direction, 20.0, 20.0, 1.0, 1.0, 1.0, 0.0001, 500.0)};
+    for (void *light : lights) {
+        EXPECT_NEAR(rt_light3d_get_attenuation(light), 0.0001, 1e-10);
+        uint64_t revision = rt_light3d_mutation_revision();
+        rt_light3d_set_attenuation(light, 0.0001);
+        EXPECT_EQ(rt_light3d_mutation_revision(), revision);
+        rt_light3d_set_attenuation(light, 0.00001);
+        EXPECT_NEAR(rt_light3d_get_attenuation(light), 0.00001, 1e-11);
+        rt_light3d_set_attenuation(light, 1e-300);
+        EXPECT_NEAR(rt_light3d_get_attenuation(light), 1e-12, 1e-16);
+        for (double invalid :
+             {0.0, -1.0, static_cast<double>(NAN), static_cast<double>(INFINITY)}) {
+            rt_light3d_set_attenuation(light, invalid);
+            EXPECT_NEAR(rt_light3d_get_attenuation(light), 0.001, 1e-10);
+        }
+    }
     PASS();
 }
 
@@ -8534,6 +8674,22 @@ static void test_canvas_screen_image_marks_texture_required() {
     EXPECT_EQ((int)g_last_draw_cmd.texture_required, 1);
     EXPECT_TRUE(g_last_draw_cmd.texture == pixels, "screen quad samples the queued Pixels");
     EXPECT_EQ((int)g_last_draw_cmd.disable_depth_test, 1);
+
+    EXPECT_EQ((int)g_last_draw_cmd.additive_blend, 0);
+    EXPECT_NEAR(g_last_draw_cmd.alpha, 1.0f, 0.0001f);
+
+    // Flare sprites must preserve radial texture alpha while scaling additive
+    // light by visibility. The ordinary image above keeps its original blend.
+    g_canvas_submit_draw_calls = 0;
+    rt_canvas3d_begin(&canvas, camera);
+    EXPECT_TRUE(
+        canvas3d_queue_screen_image_uv_blend(&canvas, 4, 4, 8, 8, pixels, 0, 0, 1, 1, 1, 0.25f),
+        "additive sprite queues with visibility coverage");
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ((int)g_last_draw_cmd.additive_blend, 1);
+    EXPECT_NEAR(g_last_draw_cmd.alpha, 0.25f, 0.0001f);
+    EXPECT_EQ((int)g_last_draw_cmd.texture_required, 1);
 
     free_canvas3d_test_draw_state(&canvas);
     PASS();
@@ -12776,6 +12932,8 @@ int main() {
     test_build_light_params_selects_top_k_across_all_candidates();
     test_software_stadium_depth_interpolation();
     test_soft_particle_fade_software();
+    test_punctual_range_cluster_bounds();
+    test_punctual_light_range();
     test_native_area_volume_lighting_software();
     test_ssr_chain_and_mask_plumbing();
     test_light_directional();
@@ -12790,6 +12948,7 @@ int main() {
     test_light_spot_intensity();
     test_light_spot_cone_authoring();
     test_light_native_area_and_volume_types();
+    test_authored_light_attenuation();
     test_light_validation_and_clamping();
     test_light_sanitizes_nonfinite_inputs();
     test_light_clamps_extreme_finite_inputs();

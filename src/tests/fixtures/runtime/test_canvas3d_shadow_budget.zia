@@ -65,14 +65,14 @@ func start() {
         return;
     }
 
-    // Starve the general budget: the sun's cascades stay, spots drop.
+    // A one-slot budget retains one sun cascade and drops every spot.
     Canvas3D.SetShadowBudget(canvas, 1);
     drawScene(canvas, cam, ground, box, mat);
-    if (canvas.ShadowRequestsDropped < 4) {
-        Say("FAIL: budget 1 should deny most spot lights a slot");
+    if (canvas.ShadowSlotsUsed != 1 || canvas.ShadowRequestsDropped != 5) {
+        Say("FAIL: budget 1 should retain one cascade and deny all five spots");
         return;
     }
-    Canvas3D.SetShadowBudget(canvas, 8);
+    Canvas3D.SetShadowBudget(canvas, 9);
 
     // Visual proof that an ATLAS slot (>= 4) really darkens geometry: with the
     // sun's 3 cascades in slots 0-2 and spots filling 3+, the weakest spot

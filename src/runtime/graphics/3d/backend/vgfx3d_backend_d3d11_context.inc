@@ -39,6 +39,7 @@ typedef struct d3d11_shader_blobs_t {
     ID3DBlob *ps;
     /// Shadow-pass vertex shader bytecode.
     ID3DBlob *vs_shadow;
+    ID3DBlob *vs_shadow_instanced;
     /// Shadow-pass alpha-mask pixel shader bytecode.
     ID3DBlob *ps_shadow;
     /// Skybox vertex shader bytecode.
@@ -69,6 +70,7 @@ static void d3d11_release_shader_blobs(d3d11_shader_blobs_t *blobs) {
     SAFE_RELEASE(blobs->vs_particles);
     SAFE_RELEASE(blobs->ps);
     SAFE_RELEASE(blobs->vs_shadow);
+    SAFE_RELEASE(blobs->vs_shadow_instanced);
     SAFE_RELEASE(blobs->ps_shadow);
     SAFE_RELEASE(blobs->vs_skybox);
     SAFE_RELEASE(blobs->ps_skybox);
@@ -254,6 +256,7 @@ static HRESULT d3d11_create_context_blend_states(d3d11_context_t *ctx) {
     }
 
     blend_desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+    blend_desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ZERO;
     blend_desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
     hr = ID3D11Device_CreateBlendState(ctx->device, &blend_desc, &ctx->blend_state_additive);
     hr = d3d11_blend_state_result(hr, ctx->blend_state_additive, ctx->device, &blend_desc);
@@ -263,6 +266,7 @@ static HRESULT d3d11_create_context_blend_states(d3d11_context_t *ctx) {
     }
 
     blend_desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+    blend_desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
     blend_desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
     blend_desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
     hr = ID3D11Device_CreateBlendState(
@@ -379,6 +383,10 @@ static HRESULT d3d11_compile_context_shaders_uncached(d3d11_shader_blobs_t *blob
     hr = d3d11_compile_shader(d3d11_shader_source, "VSShadow", "vs_5_0", &blobs->vs_shadow);
     if (FAILED(hr))
         return hr;
+    hr = d3d11_compile_shader(
+        d3d11_shader_source, "VSShadowInstanced", "vs_5_0", &blobs->vs_shadow_instanced);
+    if (FAILED(hr))
+        return hr;
     hr = d3d11_compile_shader(d3d11_shader_source, "PSShadow", "ps_5_0", &blobs->ps_shadow);
     if (FAILED(hr))
         return hr;
@@ -452,6 +460,7 @@ static void d3d11_retain_shader_blobs(d3d11_shader_blobs_t *destination,
     D3D11_RETAIN_SHADER_BLOB(vs_particles);
     D3D11_RETAIN_SHADER_BLOB(ps);
     D3D11_RETAIN_SHADER_BLOB(vs_shadow);
+    D3D11_RETAIN_SHADER_BLOB(vs_shadow_instanced);
     D3D11_RETAIN_SHADER_BLOB(ps_shadow);
     D3D11_RETAIN_SHADER_BLOB(vs_skybox);
     D3D11_RETAIN_SHADER_BLOB(ps_skybox);
@@ -531,6 +540,16 @@ static HRESULT d3d11_create_context_shader_objects(d3d11_context_t *ctx,
     hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)ctx->vs_shadow, ctx->device);
     if (FAILED(hr)) {
         d3d11_log_hresult("CreateVertexShader(shadow)", hr);
+        return hr;
+    }
+    hr = ID3D11Device_CreateVertexShader(ctx->device,
+                                         ID3D10Blob_GetBufferPointer(blobs->vs_shadow_instanced),
+                                         ID3D10Blob_GetBufferSize(blobs->vs_shadow_instanced),
+                                         NULL,
+                                         &ctx->vs_shadow_instanced);
+    hr = d3d11_device_child_result(hr, (ID3D11DeviceChild *)ctx->vs_shadow_instanced, ctx->device);
+    if (FAILED(hr)) {
+        d3d11_log_hresult("CreateVertexShader(shadow instanced)", hr);
         return hr;
     }
     hr = ID3D11Device_CreatePixelShader(ctx->device,
@@ -1306,6 +1325,7 @@ static void d3d11_destroy_ctx(void *ctx_ptr) {
     SAFE_RELEASE(ctx->vs_skybox);
     SAFE_RELEASE(ctx->ps_shadow);
     SAFE_RELEASE(ctx->vs_shadow);
+    SAFE_RELEASE(ctx->vs_shadow_instanced);
     SAFE_RELEASE(ctx->ps_main);
     SAFE_RELEASE(ctx->vs_instanced);
     SAFE_RELEASE(ctx->vs_particles);

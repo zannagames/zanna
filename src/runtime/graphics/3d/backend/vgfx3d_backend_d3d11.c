@@ -444,6 +444,7 @@ typedef struct {
     ID3D11VertexShader *vs_particles;
     ID3D11PixelShader *ps_main;
     ID3D11VertexShader *vs_shadow;
+    ID3D11VertexShader *vs_shadow_instanced;
     ID3D11PixelShader *ps_shadow;
     ID3D11VertexShader *vs_skybox;
     ID3D11PixelShader *ps_skybox;
@@ -612,13 +613,14 @@ typedef struct {
     int8_t shadow_pass_failed;
     int32_t shadow_count;
     float shadow_vp[VGFX3D_MAX_SHADOW_LIGHTS][16];
-    /* Shadow atlas for slots >= VGFX3D_CSM_SLOTS: 4x2 tiles at the per-slot
+    /* Shadow atlas for slots >= VGFX3D_CSM_SLOTS: four-column tiles at the per-slot
      * resolution, sampled at t17; cleared once per frame on first tile pass. */
     ID3D11Texture2D *shadow_atlas_tex;
     ID3D11DepthStencilView *shadow_atlas_dsv;
     ID3D11ShaderResourceView *shadow_atlas_srv;
     int32_t shadow_atlas_w;
     int32_t shadow_atlas_h;
+    int32_t shadow_atlas_rows;
     int8_t shadow_atlas_cleared;
     /* Per-slot render completeness (atlas slots have no per-slot resources). */
     int8_t shadow_slot_complete[VGFX3D_MAX_SHADOW_LIGHTS];
@@ -3034,7 +3036,7 @@ const vgfx3d_backend_t vgfx3d_d3d11_backend = {
     .particle_instancing = 1,
     .clustered_lighting = 1,
     .shadow_csm = 1,
-    /* Slots >= VGFX3D_CSM_SLOTS render into the internal 4x2 depth atlas (t17). */
+    /* Slots >= VGFX3D_CSM_SLOTS render into the prepared four-column depth atlas (t17). */
     .shadow_atlas_slots = 1,
     .create_ctx = d3d11_create_ctx,
     .destroy_ctx = d3d11_destroy_ctx,
@@ -3044,8 +3046,10 @@ const vgfx3d_backend_t vgfx3d_d3d11_backend = {
     .submit_draw = d3d11_submit_draw,
     .end_frame = d3d11_end_frame,
     .set_render_target = d3d11_set_render_target,
+    .prepare_shadow_frame = d3d11_prepare_shadow_frame,
     .shadow_begin = d3d11_shadow_begin,
     .shadow_draw = d3d11_shadow_draw,
+    .shadow_draw_instanced = d3d11_shadow_draw_instanced,
     .shadow_end = d3d11_shadow_end,
     .shadow_reuse = d3d11_shadow_reuse,
     .shadow_inherit = d3d11_shadow_inherit,

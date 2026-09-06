@@ -107,7 +107,9 @@ static void canvas3d_copy_light_params(const rt_canvas3d *c,
     out->width = canvas3d_sanitize_positive_light_param(l->width);
     out->height = canvas3d_sanitize_positive_light_param(l->height);
     out->radius = canvas3d_sanitize_positive_light_param(l->radius);
-    out->range = canvas3d_sanitize_positive_light_param(l->range);
+    out->range = (out->type == 1 || out->type == 3)
+                     ? canvas3d_sanitize_nonnegative_f64(l->range, 0.0f)
+                     : canvas3d_sanitize_positive_light_param(l->range);
     out->decay_type = l->decay_type >= 0 && l->decay_type <= 3 ? l->decay_type : 2;
     if (out->type == 6) {
         out->casts_shadows = 0;

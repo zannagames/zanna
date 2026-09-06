@@ -1809,6 +1809,16 @@ static void test_light_parameter_sanitizers(void) {
     EXPECT_TRUE(dst[0].width > 0.0f && dst[0].height == 1.0f && dst[0].radius > 0.0f &&
                     dst[0].range == 1.0f && dst[0].decay_type == 3,
                 "Native emitter dimensions and decay types are bounded");
+    for (int type = 1; type <= 3; type += 2) {
+        const float ranges[] = {0.0f, 4.0f, NAN, -1.0f, INFINITY};
+        src[0].type = type;
+        for (size_t r = 0; r < sizeof(ranges) / sizeof(ranges[0]); ++r) {
+            src[0].range = ranges[r];
+            vgfx3d_sanitize_light_params(&src[0], &dst[0]);
+            EXPECT_TRUE(dst[0].range == (r == 1 ? 4.0f : 0.0f),
+                        "Punctual range sanitizer preserves zero and positive cutoffs");
+        }
+    }
     {
         const float bad_ambient[3] = {NAN, -1.0f, INFINITY};
         vgfx3d_sanitize_ambient_rgb(bad_ambient, ambient);

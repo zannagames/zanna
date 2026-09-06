@@ -1420,6 +1420,29 @@ static void gl_leave_shadow_pass(gl_context_t *ctx) {
     gl.UseProgram(ctx->program);
 }
 
+/// @brief Allocate both shadow size classes before rendering any depth.
+/// @param ctx_ptr Borrowed OpenGL context.
+/// @param slots Required contiguous extent.
+/// @param primary_resolution Primary square-map size.
+/// @param atlas_resolution Secondary square-map size.
+/// @return Nonzero on success; zero prevents partial shadow submission.
+static int8_t gl_prepare_shadow_frame(void *ctx_ptr,
+                                      int32_t slots,
+                                      int32_t primary_resolution,
+                                      int32_t atlas_resolution) {
+    gl_context_t *ctx = (gl_context_t *)ctx_ptr;
+    if (!ctx || slots < 0 || slots > VGFX3D_MAX_SHADOW_LIGHTS || !gl_make_current(ctx))
+        return 0;
+    ctx->shadow_requested_layers[0] = VGFX3D_CSM_SLOTS;
+    ctx->shadow_requested_layers[1] = slots > VGFX3D_CSM_SLOTS ? slots - VGFX3D_CSM_SLOTS : 0;
+    if (slots > 0 && ensure_shadow_targets(ctx, 0, primary_resolution, primary_resolution) != 0)
+        return 0;
+    if (slots > VGFX3D_CSM_SLOTS &&
+        ensure_shadow_targets(ctx, VGFX3D_CSM_SLOTS, atlas_resolution, atlas_resolution) != 0)
+        return 0;
+    return 1;
+}
+
 /// @brief Backend `shadow_begin` — switch the pipeline to shadow-pass mode.
 ///
 /// Allocates the shadow FBO if needed, captures the light-space VP,
@@ -1464,7 +1487,7 @@ static void gl_shadow_begin(
     gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->shadow_fbo[slot]);
     /* The shared array may exceed this slot's requested size (grow-only policy), so
      * render across the full layer to keep sample UVs spanning [0,1]. */
-    gl.Viewport(0, 0, ctx->shadow_array_width, ctx->shadow_array_height);
+    gl.Viewport(0, 0, ctx->shadow_width[slot], ctx->shadow_height[slot]);
     /* Shadow maps keep the standard depth convention: clear 1, compare Less. The
      * func is pinned here because scene draws leave Greater (reversed-Z) behind. */
     gl.ClearDepth(1.0);
@@ -1488,7 +1511,10 @@ static void gl_shadow_begin(
 /// only. No materials, no lights, no fog.
 /// @param ctx_ptr Borrowed OpenGL backend context with an active shadow pass.
 /// @param cmd Borrowed draw command supplying geometry, transform, alpha, and deformation state.
-static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
+static void gl_shadow_draw_impl(void *ctx_ptr,
+                                const vgfx3d_draw_cmd_t *cmd,
+                                const float *matrices,
+                                int32_t count) {
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     float safe_model[16];
     GLuint mesh_vbo, mesh_ibo;
@@ -1521,6 +1547,16 @@ static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         return;
     }
     configure_mesh_attributes(ctx, mesh_vbo, mesh_ibo, mesh_compact);
+    if (matrices && !configure_instance_attributes(ctx, matrices, NULL, count)) {
+        set_identity_instance_constants();
+        for (int32_t i = 0; i < count; i++) {
+            vgfx3d_draw_cmd_t single = *cmd;
+            memcpy(single.model_matrix, matrices + (size_t)i * 16u, sizeof(single.model_matrix));
+            gl_shadow_draw_impl(ctx_ptr, &single, NULL, 1);
+        }
+        return;
+    }
+    gl.Uniform1i(ctx->shadow_uInstanced, matrices != NULL);
     vgfx3d_copy_mat4_finite_or_identity(safe_model, cmd->model_matrix);
     gl.UniformMatrix4fv(ctx->shadow_uModelMatrix, 1, GL_TRUE, safe_model);
     gl.UniformMatrix4fv(
@@ -1583,7 +1619,27 @@ static void gl_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
                                        cmd,
                                        RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR);
     }
-    gl.DrawElements(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL);
+    if (matrices) {
+        gl.DrawElementsInstanced(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL, count);
+        set_identity_instance_constants();
+    } else {
+        gl.DrawElements(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL);
+    }
+}
+
+/// @brief Submit a single shadow caster with identity instance attributes.
+static void gl_shadow_draw(void *ctx, const vgfx3d_draw_cmd_t *cmd) {
+    gl_shadow_draw_impl(ctx, cmd, NULL, 1);
+}
+
+/// @brief Upload static shadow transforms into the existing orphaned instance stream.
+static void gl_shadow_draw_instanced(void *ctx,
+                                     const vgfx3d_draw_cmd_t *cmd,
+                                     const float *matrices,
+                                     int32_t count) {
+    if (!matrices || count <= 0)
+        return;
+    gl_shadow_draw_impl(ctx, cmd, matrices, count);
 }
 
 /// @brief Backend `shadow_end` op — exit shadow-pass mode and switch back to main.
@@ -1605,8 +1661,8 @@ static void gl_shadow_end(void *ctx_ptr, int32_t slot, float bias) {
     }
     ctx->shadow_bias = vgfx3d_clamp_float_param(bias, -1000000.0f, 1000000.0f, 0.0f);
     ctx->shadow_complete[slot] =
-        (!ctx->shadow_pass_failed && ctx->shadow_array_tex && ctx->shadow_fbo[slot] &&
-         ctx->shadow_width[slot] > 0 && ctx->shadow_height[slot] > 0)
+        (!ctx->shadow_pass_failed && ctx->shadow_array_tex[slot >= VGFX3D_CSM_SLOTS] &&
+         ctx->shadow_fbo[slot] && ctx->shadow_width[slot] > 0 && ctx->shadow_height[slot] > 0)
             ? 1
             : 0;
     gl_leave_shadow_pass(ctx);
@@ -1633,8 +1689,8 @@ static int8_t gl_shadow_reuse(
         return 0;
     /* The shared array may be larger than this slot asked for (see
      * ensure_shadow_targets' grow-only policy), so accept any layer that covers it. */
-    if (!ctx->shadow_array_tex || !ctx->shadow_fbo[slot] || ctx->shadow_width[slot] < w ||
-        ctx->shadow_height[slot] < h)
+    if (!ctx->shadow_array_tex[slot >= VGFX3D_CSM_SLOTS] || !ctx->shadow_fbo[slot] ||
+        ctx->shadow_width[slot] < w || ctx->shadow_height[slot] < h)
         return 0;
     vgfx3d_copy_mat4_finite_or_identity(ctx->shadow_vp[slot], light_vp);
     ctx->shadow_complete[slot] = 1;

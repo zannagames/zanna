@@ -1569,7 +1569,8 @@ static int sw_blend_and_write(const sw_fragment_ctx *fc,
             dst[1] = (uint8_t)(clamp01f(fg) * 255.0f * fa + (float)dst[1] * inv_a + 0.5f);
             dst[2] = (uint8_t)(clamp01f(fb_c) * 255.0f * fa + (float)dst[2] * inv_a + 0.5f);
         }
-        dst[3] = 0xFF;
+        if (!(cmd && cmd->additive_blend))
+            dst[3] = 0xFF;
         return 1;
     }
     /* else: alpha <= 0 → fully invisible, skip */
@@ -1705,8 +1706,8 @@ static int sw_shade_fragment(
             if (fc->cluster_table) {
                 int32_t cluster_index = sw_fragment_cluster_index(fc, x, y, z);
                 uint16_t begin = fc->cluster_table->offsets[cluster_index];
-                uint16_t end = fc->cluster_table->offsets[cluster_index + 1] &
-                               VGFX3D_CLUSTER_OFFSET_MASK;
+                uint16_t end =
+                    fc->cluster_table->offsets[cluster_index + 1] & VGFX3D_CLUSTER_OFFSET_MASK;
                 if (!(begin & VGFX3D_CLUSTER_FALLBACK_FLAG)) {
                     begin &= VGFX3D_CLUSTER_OFFSET_MASK;
                     geom.global_light_count = fc->cluster_table->global_light_count;

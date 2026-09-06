@@ -557,6 +557,7 @@ static void gl_bind_main_sampler_uniforms(gl_context_t *ctx) {
     gl.Uniform1i(ctx->uSpecularTex, 2);
     gl.Uniform1i(ctx->uEmissiveTex, 3);
     gl.Uniform1i(ctx->uShadowArray, GL_TU_SHADOW_ARRAY);
+    gl.Uniform1i(ctx->uShadowAtlas, GL_TU_SHADOW_ATLAS);
     gl.Uniform1i(ctx->uSplatTex, GL_TU_SPLAT_CONTROL);
     gl.Uniform1i(ctx->uSplatLayer0, GL_TU_SPLAT_LAYER0);
     gl.Uniform1i(ctx->uSplatLayer1, GL_TU_SPLAT_LAYER0 + 1);

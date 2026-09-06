@@ -75,6 +75,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-shadowstrength"></a>`ShadowStrength` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-shadowquality"></a>`ShadowQuality` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-shadowcascades"></a>`ShadowCascades` | `i64` | read-only |
+| <a id="zanna-graphics3d-canvas3d-shadowatlasresolution"></a>`ShadowAtlasResolution` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-shadowbudget"></a>`ShadowBudget` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-clusterlightbudget"></a>`ClusterLightBudget` | `i64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-backfacecull"></a>`BackfaceCull` | `i1` | read-only |
@@ -178,6 +179,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-newoffscreenaccelerated"></a>`NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` |
 | <a id="zanna-graphics3d-canvas3d-setforcecpuskinning"></a>`SetForceCpuSkinning` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetForceCpuSkinning` |
 | <a id="zanna-graphics3d-canvas3d-resetsubmissiondiagnostics"></a>`ResetSubmissionDiagnostics` | `void()` | `Zanna.Graphics3D.Canvas3D.ResetSubmissionDiagnostics` |
+| <a id="zanna-graphics3d-canvas3d-setshadowatlasresolution"></a>`SetShadowAtlasResolution` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetShadowAtlasResolution` |
 | <a id="zanna-graphics3d-canvas3d-setshadowbudget"></a>`SetShadowBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetShadowBudget` |
 | <a id="zanna-graphics3d-canvas3d-setrendertargetshadowinherit"></a>`SetRenderTargetShadowInherit` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowInherit` |
 | <a id="zanna-graphics3d-canvas3d-setrendertargetshadowcascadelimit"></a>`SetRenderTargetShadowCascadeLimit` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetRenderTargetShadowCascadeLimit` |
@@ -2117,7 +2119,9 @@ Provides Light Baker 3D functionality for 3D rendering and scene applications.
 Create `Zanna.Graphics3D.LightBaker3D` values through its registered constructor and use the
 returned object with the instance members below. Its public surface exposes properties such as
 `TexelsPerUnit`, `Samples`, `Bounces` and operations including `SetSkyColor`, `AddLight`,
-`BakeStep`, `Apply`.
+`BakeStep`, `Apply`. `IncludeDirect` defaults to true. Set it false before baking
+lightmaps used alongside live analytic lights; sky and bounced fixture energy
+remain, and probe-grid integration is unchanged.
 
 Constructor: `Zanna.Graphics3D.LightBaker3D.New`
 
@@ -2128,6 +2132,7 @@ Constructor: `Zanna.Graphics3D.LightBaker3D.New`
 | <a id="zanna-graphics3d-lightbaker3d-texelsperunit"></a>`TexelsPerUnit` | `f64` | read/write |
 | <a id="zanna-graphics3d-lightbaker3d-samples"></a>`Samples` | `i64` | read/write |
 | <a id="zanna-graphics3d-lightbaker3d-bounces"></a>`Bounces` | `i64` | read/write |
+| <a id="zanna-graphics3d-lightbaker3d-includedirect"></a>`IncludeDirect` | `i1` | read/write |
 | <a id="zanna-graphics3d-lightbaker3d-progress"></a>`Progress` | `f64` | read-only |
 | <a id="zanna-graphics3d-lightbaker3d-atlas"></a>`Atlas` | `obj` | read-only |
 
@@ -2847,6 +2852,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-meshsnapshotdropcount"></a>`Zanna.Graphics3D.Canvas3D.get_MeshSnapshotDropCount` | `i64(obj)` | `rt_canvas3d_get_mesh_snapshot_drop_count` |
 | <a id="zanna-graphics3d-canvas3d-get-meshsnapshotdroppedbytes"></a>`Zanna.Graphics3D.Canvas3D.get_MeshSnapshotDroppedBytes` | `i64(obj)` | `rt_canvas3d_get_mesh_snapshot_dropped_bytes` |
 | <a id="zanna-graphics3d-canvas3d-get-meshsnapshotbudgetbytes"></a>`Zanna.Graphics3D.Canvas3D.get_MeshSnapshotBudgetBytes` | `i64(obj)` | `rt_canvas3d_get_mesh_snapshot_budget_bytes` |
+| `Zanna.Graphics3D.Canvas3D.SetShadowAtlasResolution` | `void(obj,i64)` | `rt_canvas3d_set_shadow_atlas_resolution` |
+| <a id="zanna-graphics3d-canvas3d-get-shadowatlasresolution"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowAtlasResolution` | `i64(obj)` | `rt_canvas3d_get_shadow_atlas_resolution` |
 | `Zanna.Graphics3D.Canvas3D.SetShadowBudget` | `void(obj,i64)` | `rt_canvas3d_set_shadow_budget` |
 | <a id="zanna-graphics3d-canvas3d-get-shadowslotsused"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowSlotsUsed` | `i64(obj)` | `rt_canvas3d_get_shadow_slots_used` |
 | <a id="zanna-graphics3d-canvas3d-get-shadowrequestsdropped"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowRequestsDropped` | `i64(obj)` | `rt_canvas3d_get_shadow_requests_dropped` |
@@ -3938,6 +3945,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-lightbaker3d-get-samples"></a>`Zanna.Graphics3D.LightBaker3D.get_Samples` | `i64(obj)` | `rt_lightbaker3d_get_samples` |
 | <a id="zanna-graphics3d-lightbaker3d-set-bounces"></a>`Zanna.Graphics3D.LightBaker3D.set_Bounces` | `void(obj,i64)` | `rt_lightbaker3d_set_bounces` |
 | <a id="zanna-graphics3d-lightbaker3d-get-bounces"></a>`Zanna.Graphics3D.LightBaker3D.get_Bounces` | `i64(obj)` | `rt_lightbaker3d_get_bounces` |
+| <a id="zanna-graphics3d-lightbaker3d-set-includedirect"></a>`Zanna.Graphics3D.LightBaker3D.set_IncludeDirect` | `void(obj,i1)` | `rt_lightbaker3d_set_include_direct` |
+| <a id="zanna-graphics3d-lightbaker3d-get-includedirect"></a>`Zanna.Graphics3D.LightBaker3D.get_IncludeDirect` | `i1(obj)` | `rt_lightbaker3d_get_include_direct` |
 | `Zanna.Graphics3D.LightBaker3D.SetSkyColor` | `void(obj,f64,f64,f64)` | `rt_lightbaker3d_set_sky_color` |
 | <a id="zanna-graphics3d-lightbaker3d-get-progress"></a>`Zanna.Graphics3D.LightBaker3D.get_Progress` | `f64(obj)` | `rt_lightbaker3d_get_progress` |
 | `Zanna.Graphics3D.LightBaker3D.AddLight` | `void(obj,obj<Zanna.Graphics3D.Light3D>)` | `rt_lightbaker3d_add_light` |

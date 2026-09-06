@@ -791,6 +791,54 @@ static void metal_leave_shadow_pass(VGFXMetalContext *ctx) {
     metal_request_scene_encoder(ctx, YES, YES);
 }
 
+/// @brief Prepare the complete atlas before rendering any primary or secondary map.
+/// @param ctx_ptr Borrowed Metal context.
+/// @param slots Required contiguous slot extent.
+/// @param primary_resolution Requested primary size (allocated lazily per slot).
+/// @param atlas_resolution Requested square atlas tile size.
+/// @return Nonzero when the atlas extent is ready; zero on invalid size/allocation failure.
+static int8_t metal_prepare_shadow_frame(void *ctx_ptr,
+                                         int32_t slots,
+                                         int32_t primary_resolution,
+                                         int32_t atlas_resolution) {
+    @autoreleasepool {
+        VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
+        (void)primary_resolution;
+        if (!ctx || slots < 0 || slots > VGFX3D_MAX_SHADOW_LIGHTS)
+            return 0;
+        if (slots <= VGFX3D_CSM_SLOTS)
+            return 1;
+        int32_t rows = (slots - VGFX3D_CSM_SLOTS + 3) / 4;
+        if (rows < 2)
+            rows = 2;
+        if (atlas_resolution <= 0 || atlas_resolution > VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION / 4 ||
+            atlas_resolution > VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION / rows)
+            return 0;
+        NSUInteger atlas_w = (NSUInteger)atlas_resolution * 4u;
+        NSUInteger atlas_h = (NSUInteger)atlas_resolution * (NSUInteger)rows;
+        if (!ctx->_shadowAtlasTexture || ctx->_shadowAtlasTexture.width != atlas_w ||
+            ctx->_shadowAtlasTexture.height != atlas_h) {
+            MTLTextureDescriptor *desc =
+                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                                                   width:atlas_w
+                                                                  height:atlas_h
+                                                               mipmapped:NO];
+            desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            desc.storageMode = MTLStorageModePrivate;
+            id<MTLTexture> replacement = [ctx.device newTextureWithDescriptor:desc];
+            if (!replacement)
+                return 0;
+            ctx->_shadowAtlasTexture = replacement;
+            ctx->_shadowAtlasClearedSerial = 0;
+            for (int32_t slot = VGFX3D_CSM_SLOTS; slot < VGFX3D_MAX_SHADOW_LIGHTS; ++slot)
+                ctx->_shadowComplete[slot] = 0;
+            metal_recompute_shadow_count(ctx);
+        }
+        ctx->_shadowAtlasRows = rows;
+        return 1;
+    }
+}
+
 /// @brief Backend vtable entry: begin the shadow-map depth pass for shadow-casting light @p slot,
 ///   rendering depth from the light's @p light_vp view-projection into a @p w×@p h Depth32Float
 ///   texture (created or resized as needed).
@@ -827,31 +875,11 @@ static void metal_shadow_begin(
         ctx->_shadowPassFailed = 0;
         metal_recompute_shadow_count(ctx);
         if (atlas_slot) {
-            /* Atlas tile pass: 4x2 tiles at the per-slot resolution. */
-            NSUInteger atlas_w = (NSUInteger)w * 4u;
-            NSUInteger atlas_h = (NSUInteger)h * 2u;
-            if (!ctx->_shadowAtlasTexture || ctx->_shadowAtlasTexture.width != atlas_w ||
-                ctx->_shadowAtlasTexture.height != atlas_h) {
-                id<MTLTexture> replacement;
-                MTLTextureDescriptor *desc = [MTLTextureDescriptor
-                    texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
-                                                 width:atlas_w
-                                                height:atlas_h
-                                             mipmapped:NO];
-                desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-                desc.storageMode = MTLStorageModePrivate;
-                replacement = [ctx.device newTextureWithDescriptor:desc];
-                if (!replacement)
-                    return;
-                ctx->_shadowAtlasTexture = replacement;
-                ctx->_shadowAtlasClearedSerial = 0;
-                for (int32_t atlas_index = VGFX3D_CSM_SLOTS; atlas_index < VGFX3D_MAX_SHADOW_LIGHTS;
-                     atlas_index++) {
-                    ctx->_shadowComplete[atlas_index] = 0;
-                }
-                metal_recompute_shadow_count(ctx);
-            }
-            if (!ctx->_shadowAtlasTexture)
+            /* The shared pass establishes the full extent before the first tile. */
+            if (!ctx->_shadowAtlasTexture || ctx->_shadowAtlasRows < 2 ||
+                ctx->_shadowAtlasTexture.width != (NSUInteger)w * 4u ||
+                ctx->_shadowAtlasTexture.height !=
+                    (NSUInteger)h * (NSUInteger)ctx->_shadowAtlasRows)
                 return;
         } else {
             /* Create/recreate shadow depth texture if size changed */
@@ -930,7 +958,10 @@ static void metal_shadow_begin(
 /// @brief Encode a draw into the active shadow-map depth pass (depth-only, from the light's view).
 /// @param ctx_ptr Borrowed `VGFXMetalContext` with an active shadow encoder.
 /// @param cmd Borrowed draw command supplying geometry, transforms, alpha state, and deformation.
-static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
+static void metal_shadow_draw_impl(void *ctx_ptr,
+                                   const vgfx3d_draw_cmd_t *cmd,
+                                   const float *matrices,
+                                   int32_t count) {
     @autoreleasepool {
         VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
         id<MTLBuffer> vb;
@@ -949,6 +980,38 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
             if (ctx->_shadowPassSlot >= 0)
                 ctx->_shadowPassFailed = 1;
             return;
+        }
+        if (matrices) {
+            NSUInteger offset = 0;
+            id<MTLBuffer> instances = nil;
+            if (count > 0 && metal_ensure_instance_storage(ctx, count)) {
+                vgfx3d_metal_instance_data_t *data =
+                    (vgfx3d_metal_instance_data_t *)ctx.instanceScratch.mutableBytes;
+                vgfx3d_metal_fill_instance_data(data, count, matrices, NULL, 0);
+                instances = metal_upload_transient_buffer(ctx,
+                                                          VGFX3D_METAL_TRANSIENT_INSTANCE,
+                                                          data,
+                                                          (size_t)count * sizeof(*data),
+                                                          &offset);
+            }
+            if (!instances) {
+                // Preserve complete depth coverage if the transient upload cannot grow.
+                for (int32_t i = 0; i < count; i++) {
+                    vgfx3d_draw_cmd_t single = *cmd;
+                    memcpy(single.model_matrix,
+                           matrices + (size_t)i * 16u,
+                           sizeof(single.model_matrix));
+                    metal_shadow_draw_impl(ctx_ptr, &single, NULL, 1);
+                }
+                return;
+            }
+            [ctx.encoder setVertexBuffer:instances offset:offset atIndex:6];
+            if (ctx.frameBuffers)
+                [ctx.frameBuffers addObject:instances];
+        } else {
+            vgfx3d_metal_instance_data_t unused;
+            memset(&unused, 0, sizeof(unused));
+            [ctx.encoder setVertexBytes:&unused length:sizeof(unused) atIndex:6];
         }
         index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
         if (index_count == 0) {
@@ -993,6 +1056,7 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         has_skinning = metal_bind_bone_palettes(ctx, cmd, has_skinning, 0, &prev_bone_upload_ok);
         morph_status = metal_bind_morph_payload(ctx, cmd);
         obj.flags0[0] = has_skinning;
+        obj.flags0[1] = matrices != NULL;
         obj.flags0[2] = morph_status.shape_count;
         obj.flags0[3] = morph_status.shape_count > 0 ? (int32_t)cmd->vertex_count : 0;
         /* Shadow pose must match the main pass: bind influences 5-8 too. */
@@ -1043,8 +1107,24 @@ static void metal_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
                                 indexCount:index_count
                                  indexType:MTLIndexTypeUInt32
                                indexBuffer:ib
-                         indexBufferOffset:ib_offset];
+                         indexBufferOffset:ib_offset
+                             instanceCount:matrices ? (NSUInteger)count : 1];
     }
+}
+
+/// @brief Submit one shadow caster using the common depth encoding path.
+static void metal_shadow_draw(void *ctx, const vgfx3d_draw_cmd_t *cmd) {
+    metal_shadow_draw_impl(ctx, cmd, NULL, 1);
+}
+
+/// @brief Copy borrowed static instance transforms into retained GPU ring storage.
+static void metal_shadow_draw_instanced(void *ctx,
+                                        const vgfx3d_draw_cmd_t *cmd,
+                                        const float *matrices,
+                                        int32_t count) {
+    if (!matrices || count <= 0)
+        return;
+    metal_shadow_draw_impl(ctx, cmd, matrices, count);
 }
 
 /// @brief Finish the shadow-map pass for @p slot, storing its depth texture, light VP, and depth
@@ -1133,7 +1213,7 @@ static int8_t metal_shadow_inherit(
             return 0;
         if (slot >= VGFX3D_CSM_SLOTS) {
             if (!ctx->_shadowAtlasTexture || (int32_t)ctx->_shadowAtlasTexture.width != w * 4 ||
-                (int32_t)ctx->_shadowAtlasTexture.height != h * 2)
+                (int32_t)ctx->_shadowAtlasTexture.height != h * ctx->_shadowAtlasRows)
                 return 0;
         } else {
             if (!ctx->_shadowDepthTexture[slot] ||

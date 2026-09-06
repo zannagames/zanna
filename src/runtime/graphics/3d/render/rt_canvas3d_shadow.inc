@@ -345,8 +345,8 @@ static float canvas3d_shadow_spot_range_from_bounds(const vgfx3d_light_params_t 
     float corners[8][3];
     float max_distance = 0.0f;
 
-    if (light && light->type >= 4 && light->type <= 5 && isfinite(light->range) &&
-        light->range > 0.0f)
+    if (light && (light->type == 1 || light->type == 3 || light->type == 4 || light->type == 5) &&
+        isfinite(light->range) && light->range > 0.0f)
         range = light->range;
     else if (light && isfinite(light->attenuation) && light->attenuation > 1e-8f)
         range = 1.0f / sqrtf(light->attenuation);
@@ -648,6 +648,8 @@ static int32_t canvas3d_shadow_slot_resolution(const rt_canvas3d *c, int32_t slo
 
     if (!c || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
         return 0;
+    if (slot >= VGFX3D_CSM_SLOTS && c->shadow_atlas_resolution > 0)
+        return c->shadow_atlas_resolution;
     if (c->shadow_resolution > 0)
         return c->shadow_resolution;
     rt = c->shadow_rts[slot];
@@ -657,9 +659,8 @@ static int32_t canvas3d_shadow_slot_resolution(const rt_canvas3d *c, int32_t slo
 }
 
 /// @brief Return non-zero if any allocated shadow slot uses a different resolution.
-/// @details Canvas shadow slots are sampled as a contiguous array by the lighting pass; keeping all
-///   allocated slots at one square resolution avoids per-slot scale bugs and lets a resolution
-///   change release every stale depth buffer in one place.
+/// @details Primary maps use the requested resolution; shared atlas tiles use the optional
+///   override. Checking each slot against its own class avoids repeated mixed-size reallocation.
 /// @param c Canvas whose allocated slot dimensions are inspected.
 /// @param resolution Required positive square dimension in pixels.
 /// @return Nonzero if a non-null slot has a mismatched width or height; zero for
@@ -669,7 +670,10 @@ static int canvas3d_shadow_targets_need_resize(const rt_canvas3d *c, int32_t res
         return 0;
     for (int32_t slot = 0; slot < VGFX3D_MAX_SHADOW_LIGHTS; slot++) {
         const vgfx3d_rendertarget_t *rt = c->shadow_rts[slot];
-        if (rt && (rt->width != resolution || rt->height != resolution))
+        const int32_t expected = slot >= VGFX3D_CSM_SLOTS && c->shadow_atlas_resolution > 0
+                                     ? c->shadow_atlas_resolution
+                                     : resolution;
+        if (rt && (rt->width != expected || rt->height != expected))
             return 1;
     }
     return 0;
@@ -678,8 +682,8 @@ static int canvas3d_shadow_targets_need_resize(const rt_canvas3d *c, int32_t res
 /// @brief Lazily allocate one CPU shadow depth target slot at the requested resolution.
 /// @details Only the slots actually rendered this frame are allocated. If an existing shadow target
 ///   uses a stale resolution, all slots are released before allocating the requested one so the
-///   contiguous shadow array remains uniform. Color buffers stay null because shadow passes write
-///   depth only.
+///   target dimensions match their primary or atlas class. Color buffers stay null because passes
+///   write depth only.
 /// @param c Canvas that owns or references the target slot.
 /// @param slot Zero-based slot in `[0, VGFX3D_MAX_SHADOW_LIGHTS)`.
 /// @param resolution Requested square dimension in pixels. A nonpositive value
@@ -696,6 +700,10 @@ static int canvas3d_ensure_shadow_target_slot(rt_canvas3d *c, int32_t slot, int3
 
         return rt && rt->depth_buf && rt->width > 0 && rt->height > 0;
     }
+    if (canvas3d_shadow_targets_need_resize(c, resolution))
+        canvas3d_release_shadow_targets(c);
+    if (slot >= VGFX3D_CSM_SLOTS && c->shadow_atlas_resolution > 0)
+        resolution = c->shadow_atlas_resolution;
     if ((size_t)resolution > SIZE_MAX / (size_t)resolution)
         return 0;
     if (resolution > INT32_MAX / 4)
@@ -704,8 +712,6 @@ static int canvas3d_ensure_shadow_target_slot(rt_canvas3d *c, int32_t slot, int3
     if (depth_bytes > SIZE_MAX / sizeof(float))
         return 0;
     depth_bytes *= sizeof(float);
-    if (canvas3d_shadow_targets_need_resize(c, resolution))
-        canvas3d_release_shadow_targets(c);
     if (c->shadow_rts[slot] && c->shadow_rts[slot]->depth_buf &&
         c->shadow_rts[slot]->width == resolution && c->shadow_rts[slot]->height == resolution)
         return 1;

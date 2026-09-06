@@ -74,6 +74,17 @@ void rt_lightbaker3d_set_bounces(void *baker, int64_t bounces);
 /// @return Bounce count, or zero for an invalid handle.
 int64_t rt_lightbaker3d_get_bounces(void *baker);
 
+/// @brief Include primary-surface direct light in lightmaps (default true).
+/// @param baker LightBaker3D receiver.
+/// @param enabled Nonzero enables direct light. Writes after gathering are ignored.
+/// @details False preserves sky and bounced fixture light; probe grids are unaffected.
+void rt_lightbaker3d_set_include_direct(void *baker, int8_t enabled);
+
+/// @brief Return whether lightmaps include primary-surface direct light.
+/// @param baker LightBaker3D receiver.
+/// @return Normalized Boolean; invalid receivers report a trap and return zero.
+int8_t rt_lightbaker3d_get_include_direct(void *baker);
+
 /// @brief Sky radiance for rays that escape the scene (default black).
 /// @param baker LightBaker3D receiver.
 /// @param r Nonnegative red radiance; invalid values become zero before a bake starts.

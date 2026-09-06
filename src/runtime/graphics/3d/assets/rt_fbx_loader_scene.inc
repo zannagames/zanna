@@ -1513,8 +1513,10 @@ static void *fbx_make_model_light(fbx_node_t *attribute,
         if (!fbx_validate_light_dimension(range, "range"))
             return NULL;
         attenuation = 1.0 / (range * range);
-        if (!isfinite(attenuation) || attenuation < RT_LIGHT3D_DEFAULT_ATTENUATION)
+        if (!isfinite(attenuation) || attenuation <= 0.0)
             attenuation = RT_LIGHT3D_DEFAULT_ATTENUATION;
+        else if (attenuation < RT_LIGHT3D_MIN_ATTENUATION)
+            attenuation = RT_LIGHT3D_MIN_ATTENUATION;
     } else {
         range = 1.0 / sqrt(RT_LIGHT3D_DEFAULT_ATTENUATION);
     }

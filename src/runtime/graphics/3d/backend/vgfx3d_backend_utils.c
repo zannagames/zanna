@@ -609,7 +609,9 @@ void vgfx3d_sanitize_light_params(const struct vgfx3d_light_params *src,
     dst->width = vgfx3d_clamp_float_param(src->width, 0.000001f, scalar_max, 1.0f);
     dst->height = vgfx3d_clamp_float_param(src->height, 0.000001f, scalar_max, 1.0f);
     dst->radius = vgfx3d_clamp_float_param(src->radius, 0.000001f, scalar_max, 1.0f);
-    dst->range = vgfx3d_clamp_float_param(src->range, 0.000001f, scalar_max, 1.0f);
+    dst->range = (dst->type == 1 || dst->type == 3)
+                     ? vgfx3d_clamp_float_param(src->range, 0.0f, scalar_max, 0.0f)
+                     : vgfx3d_clamp_float_param(src->range, 0.000001f, scalar_max, 1.0f);
     if (src->decay_type < 0)
         dst->decay_type = 0;
     else if (src->decay_type > 3)

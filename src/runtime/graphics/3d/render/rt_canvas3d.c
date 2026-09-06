@@ -1816,6 +1816,9 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->hiz_vertex_scratch);
     c->hiz_vertex_scratch = NULL;
     c->hiz_vertex_scratch_capacity = 0;
+    free(c->shadow_batch_entries);
+    c->shadow_batch_entries = NULL;
+    c->shadow_batch_capacity = 0;
     free(c->shadow_draw_indices);
     c->shadow_draw_indices = NULL;
     c->shadow_draw_index_capacity = 0;
@@ -2430,10 +2433,15 @@ static void canvas3d_replay_final_overlay(rt_canvas3d *c) {
         return;
     if (!canvas3d_begin_overlay_frame(c, 1))
         return;
+    int64_t pass_t0 = rt_clock_ticks_us();
     cmds = (deferred_draw_t *)c->final_overlay_cmds;
     for (int32_t i = 0; i < c->final_overlay_count; i++)
         canvas3d_submit_screen_overlay_deferred(c, &cmds[i]);
+    c->pass_cpu_ms[RT_CANVAS3D_PASS_OVERLAY] += (double)(rt_clock_ticks_us() - pass_t0) / 1000.0;
+    pass_t0 = rt_clock_ticks_us();
     c->backend->end_frame(c->backend_ctx);
+    c->pass_cpu_ms[RT_CANVAS3D_PASS_BACKEND_END] +=
+        (double)(rt_clock_ticks_us() - pass_t0) / 1000.0;
     c->in_frame = 0;
     c->frame_is_2d = 0;
 }
@@ -3595,6 +3603,33 @@ void rt_canvas3d_enable_shadows(void *obj, int64_t resolution) {
     ok = canvas3d_ensure_shadow_targets(c, res);
     if (!ok)
         c->shadows_enabled = 0;
+}
+
+/// @brief Set the resolution shared by secondary shadow atlas tiles (ADR 0336).
+/// @param obj Canvas handle or approved stack fixture; invalid handles are ignored.
+/// @param resolution Zero inherits primary resolution; positive values clamp to 64..4096.
+void rt_canvas3d_set_shadow_atlas_resolution(void *obj, int64_t resolution) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    if (resolution <= 0)
+        resolution = 0;
+    else if (resolution < 64)
+        resolution = 64;
+    else if (resolution > 4096)
+        resolution = 4096;
+    if (c->shadow_atlas_resolution == resolution)
+        return;
+    c->shadow_atlas_resolution = (int32_t)resolution;
+    canvas3d_release_shadow_targets(c);
+}
+
+/// @brief Read the retained atlas resolution override (zero means inherit).
+/// @param obj Canvas handle or approved stack fixture.
+/// @return Override in pixels, or zero for an invalid handle.
+int64_t rt_canvas3d_get_shadow_atlas_resolution(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->shadow_atlas_resolution : 0;
 }
 
 /// @brief Disable shadow mapping and free the shadow depth buffer.

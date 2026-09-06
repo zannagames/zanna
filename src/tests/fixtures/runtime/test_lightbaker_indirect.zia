@@ -1,0 +1,31 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_lightbaker_indirect.zia
+// Purpose: Exercise ADR 0331 lightmap mode through the public Zia binding.
+// Key invariants: Compatible default, writable before gather, frozen afterward.
+// Ownership/Lifetime: Runtime-managed scene and baker handles.
+// Links: docs/adr/0331-indirect-only-lightmap-baking.md.
+//
+//===----------------------------------------------------------------------===//
+module test_lightbaker_indirect;
+
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Testing.Suite as Suite;
+
+func start() {
+    var tests = new Suite("LightBaker3D.IncludeDirect");
+    var scene = G3D.SceneGraph.New();
+    var baker = G3D.LightBaker3D.New(scene);
+    tests.Check(baker.IncludeDirect, "default includes primary direct light");
+    baker.IncludeDirect = false;
+    tests.Check(baker.IncludeDirect == false, "indirect-only mode is selectable");
+    baker.BakeStep();
+    baker.IncludeDirect = true;
+    tests.Check(baker.IncludeDirect == false, "gathered input is immutable");
+    tests.Report();
+}

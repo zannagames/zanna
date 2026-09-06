@@ -457,8 +457,7 @@ static void canvas3d_submit_screen_overlay_deferred(rt_canvas3d *c, const deferr
 ///
 /// Same dispatch shape as `submit_deferred` but routes through the
 /// backend's depth-only shadow draw entry. Instanced shadow draws
-/// always decompose to per-mesh draws (most backends don't have an
-/// instanced shadow path).
+/// use the optional static instanced hook or retain per-mesh fallback.
 /// @param c Canvas3D supplying the shadow backend and telemetry.
 /// @param dd Borrowed deferred caster command.
 static void canvas3d_shadow_deferred(rt_canvas3d *c, const deferred_draw_t *dd) {
@@ -470,7 +469,15 @@ static void canvas3d_shadow_deferred(rt_canvas3d *c, const deferred_draw_t *dd) 
     c->last_pass_instance_count[0] +=
         dd->kind == DEFERRED_DRAW_INSTANCED && dd->instance_count > 0 ? dd->instance_count : 1;
     if (dd->kind == DEFERRED_DRAW_INSTANCED) {
-        canvas3d_submit_instanced_as_meshes(c, dd, 1);
+        if (c->backend->shadow_draw_instanced && canvas3d_shadow_instance_eligible(&dd->cmd) &&
+            dd->instance_matrices && dd->instance_count > 0) {
+            shadow_cmd = dd->cmd;
+            canvas3d_prepare_shadow_draw_cmd(c, &shadow_cmd);
+            c->backend->shadow_draw_instanced(
+                c->backend_ctx, &shadow_cmd, dd->instance_matrices, dd->instance_count);
+        } else {
+            canvas3d_submit_instanced_as_meshes(c, dd, 1);
+        }
         return;
     }
     shadow_cmd = dd->cmd;

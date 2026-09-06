@@ -873,6 +873,7 @@ set(ZIA_RUNTIME_TESTS
         test_text_table
         test_runtime_completions
         test_mesh3d_append
+        test_lightbaker_indirect
         test_math
         test_string
         test_bits

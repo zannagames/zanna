@@ -592,6 +592,8 @@ static int sw_eval_analytic_light(const vgfx3d_light_params_t *light,
         ly /= distance;
         lz /= distance;
         attenuation = sw_punctual_attenuation(light->attenuation, distance);
+        if (light->range > 0.0f)
+            attenuation *= sw_light_range_fade(distance, light->range);
     } else if (light->type == 3) {
         float sx;
         float sy;
@@ -607,6 +609,8 @@ static int sw_eval_analytic_light(const vgfx3d_light_params_t *light,
         ly /= distance;
         lz /= distance;
         attenuation = sw_punctual_attenuation(light->attenuation, distance);
+        if (light->range > 0.0f)
+            attenuation *= sw_light_range_fade(distance, light->range);
         sx = -light->direction[0];
         sy = -light->direction[1];
         sz = -light->direction[2];
@@ -1669,7 +1673,7 @@ const vgfx3d_backend_t vgfx3d_software_backend = {
     .destroy_ctx = sw_destroy_ctx,
     .clear = sw_clear,
     /* CPU sampling is index-based with macro-sized slot arrays, so the
-     * software backend supports the full 12-slot shadow budget directly. */
+     * software backend supports the full 20-slot shadow budget directly. */
     .shadow_atlas_slots = 1,
     .resize = sw_resize,
     .begin_frame = sw_begin_frame,

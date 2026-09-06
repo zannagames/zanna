@@ -5686,6 +5686,24 @@ static void test_gltf_imports_required_punctual_lights() {
     EXPECT_TRUE(point->type == 1, "GLTF.Load preserves point-light type");
     EXPECT_NEAR(point->attenuation, 0.001, 0.0001, "GLTF.Load floors omitted point-light range");
     EXPECT_TRUE(point->casts_shadows == 0, "GLTF.Load imports point lights with shadows disabled");
+    // ADR 0333: a large authored range must not collapse to the fallback coefficient.
+    std::string wide_json = gltf_json;
+    const std::string range_token = "\"range\": 5.0";
+    size_t range_at = wide_json.find(range_token);
+    EXPECT_TRUE(range_at != std::string::npos, "fixture contains its authored light range");
+    wide_json.replace(range_at, range_token.size(), "\"range\": 100.0");
+    EXPECT_TRUE(write_text_file(gltf_path, wide_json), "wide light fixture writes");
+    void *wide_asset = rt_gltf_load(rt_const_cstr(gltf_path));
+    EXPECT_TRUE(wide_asset != nullptr, "wide light fixture imports");
+    if (wide_asset) {
+        void *wide_root = rt_gltf_get_scene_root(wide_asset);
+        auto *wide_light = static_cast<rt_light3d *>(
+            rt_scene_node3d_get_light(rt_scene_node3d_get_child(wide_root, 0)));
+        EXPECT_NEAR(wide_light->attenuation,
+                    0.0001,
+                    1e-10,
+                    "GLTF range-derived coefficient preserves world-unit falloff");
+    }
 }
 
 static void test_gltf_preserves_primary_texture_sampler_state() {

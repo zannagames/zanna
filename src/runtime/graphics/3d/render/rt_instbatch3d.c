@@ -922,6 +922,14 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
         (rt_material3d *)rt_g3d_checked_or_null(b->material, RT_G3D_MATERIAL3D_CLASS_ID);
     if (!mat)
         return;
+    // Camera-invisible instances can still shadow visible receivers. Until
+    // main/shadow instance lists are separate, preserve potential casters and
+    // let the light-volume tests reject whole batches conservatively.
+    const vgfx3d_frustum_t *instance_frustum =
+        c->shadows_enabled && !c->frame_is_view_model &&
+                mat->shadow_mode != RT_MATERIAL3D_SHADOW_MODE_NONE
+            ? NULL
+            : &frustum;
     instbatch_sanitize_active_matrices(b);
     {
         int64_t frame_serial = rt_canvas3d_get_frame_serial(canvas_obj);
@@ -963,7 +971,7 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 return;
             }
             if (mesh->bsphere_radius > 0.0f &&
-                !instbatch_instance_visible(&frustum, mesh_min, mesh_max, current))
+                !instbatch_instance_visible(instance_frustum, mesh_min, mesh_max, current))
                 continue;
             memcpy(&b->visible_transforms[(size_t)visible_count * 16u], current, sizeof(current));
             if (has_prev) {
@@ -1020,7 +1028,7 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
             for (int32_t i = 0; i < b->instance_count; i++) {
                 const float *src = &b->transforms[(size_t)i * 16u];
                 b->visibility_mask[i] =
-                    instbatch_instance_visible(&frustum, mesh_min, mesh_max, src) ? 1u : 0u;
+                    instbatch_instance_visible(instance_frustum, mesh_min, mesh_max, src) ? 1u : 0u;
                 visible_count += b->visibility_mask[i] ? 1 : 0;
             }
             if (visible_count == 0)

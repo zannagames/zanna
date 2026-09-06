@@ -184,8 +184,8 @@ typedef struct {
 
 /// @brief Return a conservative world-space influence radius for a finite local light.
 /// @details Area and volume emitters combine their physical extent with finite range. Point and
-/// spot lights use their attenuation threshold. Directional/ambient lights are classified before
-/// this helper is called.
+/// spot lights use authored range when positive, otherwise their attenuation threshold.
+/// Directional/ambient lights are classified before this helper is called.
 /// @param light Borrowed flattened local-light parameters.
 /// @return Zero for no influence, a negative unbounded sentinel, or a conservative positive radius.
 static float cluster_local_light_radius(const vgfx3d_light_params_t *light) {
@@ -209,6 +209,8 @@ static float cluster_local_light_radius(const vgfx3d_light_params_t *light) {
         reach = isfinite(light->range) && light->range > 0.0f ? light->range : 0.0f;
         return emitter_radius + reach;
     }
+    if ((light->type == 1 || light->type == 3) && isfinite(light->range) && light->range > 0.0f)
+        return light->range;
     return canvas3d_cluster_light_radius(light->intensity, light->attenuation);
 }
 
@@ -241,8 +243,8 @@ static cluster_range_t cluster_range_for_light(const rt_canvas3d *c,
     }
     if (radius < 0.0f)
         return out; /* unbounded: every cluster */
-    if (radius > zfar)
-        radius = zfar; /* beyond the far plane the grid is fully covered anyway */
+    /* Intersect the actual influence sphere. Clamping its radius to camera far
+     * can discard an off-frustum emitter whose sphere reaches visible receivers. */
 
     /* Z range from the view-depth extent of the sphere. */
     depth = (light->position[0] - c->cached_cam_pos[0]) * c->cached_cam_forward[0] +

@@ -19,6 +19,7 @@
 //     completed frame, no pipeline stall). Visibility is the unoccluded probe
 //     fraction, temporally smoothed per flare so occlusion transitions fade
 //     instead of popping in visibility-ninth steps.
+//   - Sprites add radiance while preserving destination alpha; visibility scales opacity.
 //   - Lights behind the camera or projecting far off-screen draw nothing.
 //
 // Ownership/Lifetime:
@@ -453,6 +454,12 @@ void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
     if (visibility <= 0.01f)
         return;
     {
+        int started_temp_frame = 0;
+        if (!c->in_frame) {
+            if (!canvas3d_begin_overlay_frame(c, 1))
+                return;
+            started_temp_frame = 1;
+        }
         double center_x = (double)w * 0.5;
         double center_y = (double)h * 0.5;
         double axis_x = center_x - light_screen[0];
@@ -480,17 +487,21 @@ void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
             double sz = base_size * (0.5 + 0.5 * (double)visibility);
             if (!isfinite(ex) || !isfinite(ey) || !isfinite(sz) || sz < 1.0)
                 continue;
-            rt_canvas3d_draw_image2d_region(canvas,
-                                            (int64_t)(ex - sz * 0.5f),
-                                            (int64_t)(ey - sz * 0.5f),
-                                            (int64_t)sz,
-                                            (int64_t)sz,
-                                            e->ghost,
-                                            0,
-                                            0,
-                                            LENSFLARE3D_GHOST_SIZE,
-                                            LENSFLARE3D_GHOST_SIZE);
+            (void)canvas3d_queue_screen_image_uv_blend(c,
+                                                       (float)(ex - sz * 0.5),
+                                                       (float)(ey - sz * 0.5),
+                                                       (float)sz,
+                                                       (float)sz,
+                                                       e->ghost,
+                                                       0.0f,
+                                                       0.0f,
+                                                       1.0f,
+                                                       1.0f,
+                                                       1,
+                                                       visibility);
         }
+        if (started_temp_frame)
+            rt_canvas3d_end(c);
     }
 }
 

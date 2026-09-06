@@ -178,6 +178,19 @@ static vgfx3d_backend_t kSoftwareBackend = make_backend("software");
 
 static int skybox_draw_calls = 0;
 static int shadow_begin_calls = 0;
+static int shadow_prepare_slots = 0;
+static int shadow_prepare_primary = 0;
+static int shadow_prepare_atlas = 0;
+static int shadow_prepare_succeeds = 1;
+
+static int8_t record_prepare_shadow_frame(void *, int32_t slots, int32_t primary, int32_t atlas) {
+    EXPECT_TRUE(shadow_begin_calls == 0, "Shadow storage prepares before any slot begins");
+    shadow_prepare_slots = slots;
+    shadow_prepare_primary = primary;
+    shadow_prepare_atlas = atlas;
+    return (int8_t)shadow_prepare_succeeds;
+}
+
 static int shadow_draw_calls = 0;
 static int shadow_end_calls = 0;
 static int draw_submit_calls = 0;
@@ -296,6 +309,20 @@ static void record_shadow_begin(
 
 static void record_shadow_draw(void *, const vgfx3d_draw_cmd_t *) {
     shadow_draw_calls++;
+}
+
+static int shadow_instance_calls = 0;
+static int shadow_instances = 0;
+static float shadow_instance_x[16];
+
+static void record_shadow_instances(void *,
+                                    const vgfx3d_draw_cmd_t *,
+                                    const float *matrices,
+                                    int32_t count) {
+    shadow_instance_calls++;
+    shadow_instances += count;
+    for (int32_t i = 0; i < count && i < 16; i++)
+        shadow_instance_x[i] = matrices[i * 16 + 3];
 }
 
 static void record_shadow_end(void *, int32_t slot, float) {
@@ -524,6 +551,7 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     std::free(canvas->final_overlay_temp_buffers);
     std::free(canvas->draw_cmds);
     std::free(canvas->sort_cmds);
+    std::free(canvas->shadow_batch_entries);
     std::free(canvas->motion_history);
     std::free(canvas->motion_history_hash);
     if (rt_canvas3d_readback_storage_is_valid(canvas))
@@ -2973,6 +3001,7 @@ static void test_shadow_cascades_render_primary_directional_light_slots(void) {
     backend.gpu_skinning = 1; /* mock mirrors real GPU backends */
     backend.end_frame = noop_end_frame;
     backend.submit_draw = record_draw_with_lights;
+    backend.prepare_shadow_frame = record_prepare_shadow_frame;
     backend.shadow_begin = record_shadow_begin;
     backend.shadow_draw = record_shadow_draw;
     backend.shadow_end = record_shadow_end;
@@ -3027,6 +3056,14 @@ static void test_shadow_cascades_render_primary_directional_light_slots(void) {
                         last_draw_lights[0].shadow_cascade_splits[2],
                 "CSM publishes monotonic camera-depth split distances to backends");
 
+    EXPECT_TRUE(shadow_prepare_slots == 3, "Preparation reserves every primary cascade");
+    rt_canvas3d_set_shadow_budget(&canvas, 2);
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_prepare_slots == 2 && shadow_begin_calls == 2,
+                "A two-slot budget caps both prepared and rendered cascades");
     cleanup_fake_canvas(&canvas);
 }
 
@@ -3127,6 +3164,186 @@ static void test_spot_shadow_selection_fills_budget_after_directionals(void) {
     cleanup_fake_canvas(&canvas);
 }
 
+static void test_shadow_atlas_resolution(int count) {
+    vgfx3d_backend_t backend = {};
+    backend.name = "metal";
+    backend.gpu_skinning = 1;
+    backend.shadow_atlas_slots = 1;
+    backend.prepare_shadow_frame = record_prepare_shadow_frame;
+    backend.end_frame = noop_end_frame;
+    backend.submit_draw = record_draw_with_lights;
+    backend.shadow_begin = record_shadow_begin;
+    backend.shadow_draw = record_shadow_draw;
+    backend.shadow_end = record_shadow_end;
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &backend);
+    rt_light3d lights[16] = {};
+    for (int i = 0; i < count; ++i) {
+        lights[i].type = 3;
+        lights[i].direction[2] = -1.0;
+        lights[i].position[2] = 1.0;
+        lights[i].color[0] = lights[i].color[1] = lights[i].color[2] = 1.0;
+        lights[i].intensity = 1.0;
+        lights[i].inner_cos = 0.8;
+        lights[i].outer_cos = 0.5;
+        lights[i].enabled = lights[i].casts_shadows = 1;
+        canvas.lights[i] = &lights[i];
+    }
+    EXPECT_TRUE(rt_canvas3d_get_shadow_atlas_resolution(&canvas) == 0,
+                "Atlas resolution inherits primary size by default");
+    rt_canvas3d_set_shadow_atlas_resolution(&canvas, 1);
+    EXPECT_TRUE(rt_canvas3d_get_shadow_atlas_resolution(&canvas) == 64,
+                "Positive atlas resolution clamps to minimum");
+    rt_canvas3d_set_shadow_atlas_resolution(&canvas, INT64_MAX);
+    EXPECT_TRUE(rt_canvas3d_get_shadow_atlas_resolution(&canvas) == 4096,
+                "Atlas resolution clamps before integer narrowing");
+    rt_canvas3d_set_shadow_atlas_resolution(&canvas, 64);
+    rt_canvas3d_enable_shadows(&canvas, 128);
+    rt_canvas3d_set_shadow_budget(&canvas, count);
+    void *mesh = make_test_mesh();
+    void *material = rt_material3d_new();
+    void *transform = rt_mat4_identity();
+    ((mat4_impl *)transform)->m[11] = -2.0;
+    for (int frame = 0; frame < 2; ++frame) {
+        auto *primary = canvas.shadow_rts[0];
+        reset_shadow_counts();
+        reset_canvas_frame(&canvas, 1);
+        rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+        rt_canvas3d_end(&canvas);
+        EXPECT_TRUE(shadow_prepare_slots == count && shadow_prepare_primary == 128 &&
+                        shadow_prepare_atlas == 64,
+                    "Preparation announces full mixed-size extent");
+        EXPECT_TRUE(canvas.shadow_rts[0] == primary && canvas.shadow_rts[0]->width == 128,
+                    "Mixed atlas sizing retains primary target across frames");
+        EXPECT_TRUE(canvas.shadow_rts[count - 1] && canvas.shadow_rts[count - 1]->width == 64,
+                    "Fifth light allocates the independent atlas resolution");
+    }
+    auto *atlas = canvas.shadow_rts[4];
+    rt_canvas3d_set_shadow_atlas_resolution(&canvas, 64);
+    EXPECT_TRUE(canvas.shadow_rts[4] == atlas, "Same atlas setting retains live targets");
+    rt_canvas3d_set_shadow_atlas_resolution(&canvas, -1);
+    EXPECT_TRUE(rt_canvas3d_get_shadow_atlas_resolution(&canvas) == 0 && !canvas.shadow_rts[0] &&
+                    !canvas.shadow_rts[4] && !canvas.shadow_pass_cache_valid,
+                "Changed atlas setting releases targets and invalidates shadow cache");
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(canvas.shadow_rts[4] && canvas.shadow_rts[4]->width == 128,
+                "Zero override restores inherited atlas resolution");
+    shadow_prepare_succeeds = 0;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_begin_calls == 0 && canvas.last_shadow_slots_used == 0 &&
+                    canvas.last_shadow_requests_dropped == count && !canvas.shadow_pass_cache_valid,
+                "Preparation failure reports every dropped request without partial shadows");
+    shadow_prepare_succeeds = 1;
+    for (int i = 0; i < count; ++i)
+        canvas.lights[i] = nullptr;
+    lights[0].type = 1;
+    canvas.lights[0] = &lights[0];
+    rt_canvas3d_set_shadow_budget(&canvas, 6);
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_prepare_slots == 6 && shadow_begin_calls == 6,
+                "Point lights prepare and render all six cube faces");
+    rt_canvas3d_set_shadow_budget(&canvas, 5);
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_prepare_slots == 5 && shadow_begin_calls == 0 &&
+                    canvas.last_shadow_requests_dropped == 1,
+                "Insufficient slot budget drops a whole point cube, never partial faces");
+    rt_canvas3d_disable_shadows(&canvas);
+    cleanup_fake_canvas(&canvas);
+}
+
+static void test_shadow_static_batching_and_fallback(void) {
+    vgfx3d_backend_t backend = {};
+    backend.name = "metal";
+    backend.gpu_skinning = 1;
+    backend.end_frame = noop_end_frame;
+    backend.submit_draw = record_draw_with_lights;
+    backend.shadow_begin = record_shadow_begin;
+    backend.shadow_draw = record_shadow_draw;
+    backend.shadow_draw_instanced = record_shadow_instances;
+    backend.shadow_end = record_shadow_end;
+    rt_canvas3d canvas;
+    vgfx3d_rendertarget_t target = {};
+    float depth[16] = {};
+    rt_light3d light = {};
+    init_fake_canvas(&canvas, &backend);
+    target.depth_buf = depth;
+    target.width = 4;
+    target.height = 4;
+    canvas.shadow_rts[0] = &target;
+    canvas.shadows_enabled = 1;
+    light.direction[2] = -1.0;
+    light.color[0] = light.color[1] = light.color[2] = 1.0;
+    light.intensity = 1.0;
+    light.enabled = 1;
+    light.casts_shadows = 1;
+    canvas.lights[0] = &light;
+    void *mesh = make_test_mesh();
+    void *material = rt_material3d_new();
+    void *masked = rt_material3d_new();
+    rt_material3d_set_alpha_mode(masked, RT_MATERIAL3D_ALPHA_MODE_MASK);
+    void *a = rt_mat4_identity();
+    void *b = rt_mat4_identity();
+    ((mat4_impl *)b)->m[3] = 2.0f;
+    shadow_instance_calls = shadow_instances = 0;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, a, material);
+    rt_canvas3d_draw_mesh(&canvas, mesh, a, masked);
+    rt_canvas3d_draw_mesh(&canvas, mesh, b, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_instance_calls == 1 && shadow_instances == 2 && shadow_draw_calls == 1,
+                "Interleaved compatible casters batch while alpha state stays separate");
+    EXPECT_TRUE(shadow_instance_x[0] == 0.0f && shadow_instance_x[1] == 2.0f,
+                "Shadow batches preserve current row-major transforms in stable order");
+    EXPECT_TRUE(canvas.last_pass_draw_count[0] == 2 && canvas.last_pass_instance_count[0] == 3,
+                "Shadow telemetry separates dispatches from instances");
+    backend.shadow_draw_instanced = nullptr;
+    shadow_instance_calls = shadow_instances = 0;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, a, material);
+    rt_canvas3d_draw_mesh(&canvas, mesh, b, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_instance_calls == 0 && shadow_draw_calls == 2,
+                "Backends without instanced shadows preserve per-mesh fallback");
+    backend.shadow_draw_instanced = record_shadow_instances;
+    // The second caster is outside the camera frustum but must remain for shadows.
+    void *batch = rt_instbatch3d_new(mesh, material);
+    rt_instbatch3d_add(batch, a);
+    rt_instbatch3d_add(batch, b);
+    shadow_instance_calls = shadow_instances = 0;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_instance_calls == 1 && shadow_instances == 2 && shadow_draw_calls == 0,
+                "Explicit static instances retain off-camera casters and use the depth batch hook");
+    shadow_instance_calls = shadow_instances = 0;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    test_deferred_draw_t *queued = (test_deferred_draw_t *)canvas.draw_cmds;
+    float palette[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+    queued[0].cmd.bone_palette = palette;
+    queued[0].cmd.bone_count = 1;
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_instance_calls == 0 && shadow_draw_calls == 2,
+                "Deformed instances preserve their existing pose-capable fallback");
+    cleanup_fake_canvas(&canvas);
+}
+
 static void test_spot_shadow_selection_uses_single_slot_without_cascades(void) {
     vgfx3d_backend_t backend = {};
     backend.name = "metal";
@@ -3156,6 +3373,8 @@ static void test_spot_shadow_selection_uses_single_slot_without_cascades(void) {
     spot.position[2] = 2.0;
     spot.color[0] = spot.color[1] = spot.color[2] = 1.0;
     spot.intensity = 2.0;
+    spot.attenuation = 0.1;
+    spot.range = 50.0; /* ADR 0332: much longer than the legacy shadow reach. */
     spot.outer_cos = 0.5;
     spot.inner_cos = 0.8;
     spot.enabled = 1;
@@ -3179,6 +3398,49 @@ static void test_spot_shadow_selection_uses_single_slot_without_cascades(void) {
                     last_draw_lights[0].shadow_projection_type ==
                         VGFX3D_SHADOW_PROJECTION_PERSPECTIVE,
                 "Spot shadow payload uses a single perspective shadow slot");
+
+    // An on-axis receiver 40 units from the emitter lies inside the authored
+    // shadow frustum; one at 60 lies beyond it. Attenuation alone would clip
+    // both at roughly 3.16 units and silently discard field shadows.
+    const float *vp = shadow_vps[0];
+    float inside_z = 2.0f - 40.0f;
+    float outside_z = 2.0f - 60.0f;
+    float inside_depth = (vp[10] * inside_z + vp[11]) / (vp[14] * inside_z + vp[15]);
+    float outside_depth = (vp[10] * outside_z + vp[11]) / (vp[14] * outside_z + vp[15]);
+    EXPECT_TRUE(inside_depth > -1.0f && inside_depth < 1.0f && outside_depth > 1.0f,
+                "Punctual shadow far plane honors positive authored range");
+
+    // A caster inside the light's range box but outside its perspective
+    // frustum cannot affect this tile. A camera frustum is irrelevant here.
+    void *side_transform = rt_mat4_identity();
+    ((mat4_impl *)side_transform)->m[3] = 30.0f;
+    ((mat4_impl *)side_transform)->m[11] = -2.0f;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_draw_mesh(&canvas, mesh, side_transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_draw_calls == 1,
+                "Spot shadow culling rejects bounded casters outside the light frustum");
+
+    ((mat4_impl *)side_transform)->m[3] = -7.2f;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_draw_mesh(&canvas, mesh, side_transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_draw_calls == 2,
+                "Spot shadow culling preserves a caster crossing the cone edge");
+
+    ((mat4_impl *)side_transform)->m[3] = 0.0f;
+    ((mat4_impl *)side_transform)->m[11] = 5.0f;
+    reset_shadow_counts();
+    reset_canvas_frame(&canvas, 1);
+    rt_canvas3d_draw_mesh(&canvas, mesh, transform, material);
+    rt_canvas3d_draw_mesh(&canvas, mesh, side_transform, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(shadow_draw_calls == 1,
+                "Spot shadow culling rejects bounded casters behind the emitter");
 
     cleanup_fake_canvas(&canvas);
 }
@@ -3605,6 +3867,53 @@ static void test_screenshot_reads_physical_framebuffer_to_logical_pixels(void) {
 
     if (shot && rt_obj_release_check0(shot))
         rt_obj_free(shot);
+    cleanup_fake_canvas(&canvas);
+}
+
+static void test_overlay_preserves_scene_pass_timings(void) {
+    vgfx3d_backend_t backend = {};
+    backend.name = "testgpu";
+    backend.begin_frame = record_begin_frame;
+    backend.submit_draw = record_draw_with_lights;
+    backend.end_frame = noop_end_frame;
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &backend);
+    canvas.in_frame = 0;
+    canvas.pass_cpu_ms[0] = 3.0;
+    canvas.pass_cpu_ms[1] = 5.0;
+    canvas.pass_cpu_ms[2] = 7.0;
+    canvas.pass_cpu_ms[3] = 11.0;
+    void *pixels = rt_pixels_new(1, 1);
+    rt_pixels_set(pixels, 0, 0, 0xFFFFFFFF);
+    EXPECT_TRUE(canvas3d_begin_overlay_frame(&canvas, 1) != 0,
+                "Timing regression opens a temporary overlay frame");
+    canvas3d_queue_screen_image(&canvas, 0, 0, 4, 4, pixels);
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(canvas.pass_cpu_ms[0] == 3.0 && canvas.pass_cpu_ms[1] == 5.0,
+                "Temporary overlays preserve scene shadow and main timing");
+    EXPECT_TRUE(canvas.pass_cpu_ms[2] >= 7.0 && canvas.pass_cpu_ms[3] >= 11.0,
+                "Temporary overlay and backend costs accumulate");
+    rt_camera3d camera = {};
+    camera.fov = 60.0;
+    camera.aspect = 1.0;
+    camera.near_plane = 0.1;
+    camera.far_plane = 20.0;
+    rt_canvas3d_begin(&canvas, &camera);
+    EXPECT_TRUE(canvas.pass_cpu_ms[0] == 0.0 && canvas.pass_cpu_ms[1] == 0.0 &&
+                    canvas.pass_cpu_ms[2] == 0.0 && canvas.pass_cpu_ms[3] == 0.0,
+                "New camera brackets reset pass timing alongside draw counters");
+    rt_canvas3d_end(&canvas);
+    EXPECT_TRUE(canvas.pass_cpu_ms[0] == 0.0 && canvas.pass_cpu_ms[1] == 0.0 &&
+                    canvas.pass_cpu_ms[2] == 0.0,
+                "Empty scene brackets do not retain old pass timing");
+    canvas.pass_cpu_ms[2] = 7.0;
+    canvas.last_pass_draw_count[2] = 9;
+    canvas.last_pass_instance_count[2] = 9;
+    rt_canvas3d_begin_2d(&canvas);
+    EXPECT_TRUE(canvas.pass_cpu_ms[2] == 0.0 && canvas.last_pass_draw_count[2] == 0 &&
+                    canvas.last_pass_instance_count[2] == 0,
+                "Explicit Begin2D starts fresh timing and pass counters");
+    rt_canvas3d_end(&canvas);
     cleanup_fake_canvas(&canvas);
 }
 
@@ -4099,6 +4408,9 @@ int main() {
     test_shadow_selection_prefers_strongest_directional_light_regardless_of_slot();
     test_shadow_cascades_render_primary_directional_light_slots();
     test_spot_shadow_selection_fills_budget_after_directionals();
+    test_shadow_atlas_resolution(5);
+    test_shadow_atlas_resolution(16);
+    test_shadow_static_batching_and_fallback();
     test_spot_shadow_selection_uses_single_slot_without_cascades();
     test_shadow_selection_uses_queued_scene_light_snapshots();
     test_casts_shadows_false_skips_shadow_selection();
@@ -4111,6 +4423,7 @@ int main() {
     test_screenshot_repairs_corrupt_readback_mirrors();
     test_screenshot_rejects_oversized_physical_framebuffer();
     test_screenshot_reads_physical_framebuffer_to_logical_pixels();
+    test_overlay_preserves_scene_pass_timings();
     test_final_overlay_replays_after_finalize();
     test_gpu_postfx_final_overlay_presents_composited_frame();
     test_screenshot_final_finalizes_before_readback();

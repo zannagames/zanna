@@ -687,7 +687,7 @@ int64_t rt_canvas3d_get_texture_upload_bytes(void *obj);
 /// @param obj Borrowed Canvas3D handle.
 /// @return Backend-reported microseconds, or zero when unavailable.
 int64_t rt_canvas3d_get_frame_gpu_time_us(void *obj);
-/// @brief CPU milliseconds one render stage took last frame (0=shadow, 1=main,
+/// @brief CPU milliseconds since Begin/Begin2D, including late overlays (0=shadow, 1=main,
 ///   2=overlay, 3=backend end-of-frame).
 /// @param obj Borrowed Canvas3D handle.
 /// @param pass Zero-based timing-stage identifier.
@@ -1873,11 +1873,12 @@ int64_t rt_light3d_get_decay_type(void *obj);
 void rt_light3d_set_decay_type(void *obj, int64_t decay_type);
 /// @brief Get the finite local-light influence range.
 /// @param obj Borrowed Light3D handle.
-/// @return Non-negative range in world units, or zero when invalid.
+/// @return World-unit range; point/spot zero means no authored cutoff.
 double rt_light3d_get_range(void *obj);
 /// @brief Set the finite local-light influence range.
 /// @param obj Borrowed local Light3D handle.
-/// @param range Requested finite non-negative range in world units.
+/// @param range Point/spot: finite non-negative world-unit cutoff (zero disables).
+///   Area/volume: positive range; invalid or near-zero values become one.
 void rt_light3d_set_range(void *obj, double range);
 /// @brief Get the sanitized inner spot-cone angle in degrees (zero for non-spot lights).
 /// @param obj Borrowed Light3D handle.
@@ -2111,6 +2112,13 @@ void rt_canvas3d_clear_fog(void *canvas);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param resolution Requested map dimension, clamped from 64 through 4096 pixels.
 void rt_canvas3d_enable_shadows(void *canvas, int64_t resolution);
+
+/// @brief Set secondary atlas tile resolution; zero inherits EnableShadows.
+/// @param obj Canvas handle; invalid handles are ignored.
+/// @param resolution Negative values become zero; positive values clamp to 64..4096.
+void rt_canvas3d_set_shadow_atlas_resolution(void *obj, int64_t resolution);
+/// @brief Read the atlas override, or zero for an invalid handle.
+int64_t rt_canvas3d_get_shadow_atlas_resolution(void *obj);
 /// @brief Disable shadow rendering.
 /// @param canvas Borrowed Canvas3D handle; allocated shadow targets are released.
 void rt_canvas3d_disable_shadows(void *canvas);

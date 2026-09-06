@@ -1505,7 +1505,7 @@ static bool write_fbx_camera_light_animation_fixture(const char *path, double ar
     light_properties.children.push_back(make_fbx_property_int("LightType", 2));
     light_properties.children.push_back(make_fbx_property_scalar("InnerAngle", 20.0));
     light_properties.children.push_back(make_fbx_property_scalar("OuterAngle", 60.0));
-    light_properties.children.push_back(make_fbx_property_scalar("FarAttenuationEnd", 10.0));
+    light_properties.children.push_back(make_fbx_property_scalar("FarAttenuationEnd", 100.0));
     light_properties.children.push_back(make_fbx_property_int("CastShadows", 1));
     light_attribute.children.push_back(light_properties);
 
@@ -8909,6 +8909,11 @@ static void test_fbx_imports_cameras_lights_and_object_animation() {
     void *light = light_node ? rt_scene_node3d_get_light(light_node) : nullptr;
     EXPECT_TRUE(light != nullptr, "FBX light NodeAttribute attaches to its SceneNode3D");
     EXPECT_TRUE(rt_light3d_get_type(light) == 3, "FBX spot lights retain their light type");
+    EXPECT_NEAR(rt_light3d_get_range(light), 100.0, 0.0001, "FBX authored wide range survives");
+    EXPECT_NEAR(rt_light3d_get_attenuation(light),
+                0.0001,
+                1e-10,
+                "FBX range-derived falloff is not replaced by the default");
     EXPECT_NEAR(rt_light3d_get_intensity(light),
                 2.5,
                 0.001,

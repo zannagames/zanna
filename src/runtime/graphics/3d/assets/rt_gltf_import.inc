@@ -953,11 +953,9 @@ static int gltf_install_active_scene_compat(rt_gltf_asset *asset) {
     return 1;
 }
 
-/// @brief Convert a glTF punctual-light range into the runtime local-light attenuation floor.
-/// @details glTF omits `range` or sets it to zero for unbounded local lights. Zanna intentionally
-/// avoids no-falloff point/spot lights because they are visually surprising and expensive, so this
-/// helper maps omitted, invalid, overflowing, or too-small attenuation values to the same floor
-/// used by `Light3D.NewPoint` and `Light3D.NewSpot`.
+/// @brief Convert a glTF range to the existing inverse-quadratic coefficient mapping.
+/// @details Invalid/omitted ranges retain the default; positive range-derived falloff
+///   uses the numerical minimum instead of replacing wide authored reach (ADR 0333).
 /// @param range glTF light range in scene units.
 /// @return Runtime attenuation coefficient for point and spot lights.
 static double gltf_local_light_attenuation(double range) {
@@ -965,9 +963,9 @@ static double gltf_local_light_attenuation(double range) {
     if (!isfinite(range) || range <= 1e-6)
         return RT_LIGHT3D_DEFAULT_ATTENUATION;
     attenuation = 1.0 / (range * range);
-    if (!isfinite(attenuation) || attenuation < RT_LIGHT3D_DEFAULT_ATTENUATION)
+    if (!isfinite(attenuation) || attenuation <= 0.0)
         return RT_LIGHT3D_DEFAULT_ATTENUATION;
-    return attenuation;
+    return attenuation < RT_LIGHT3D_MIN_ATTENUATION ? RT_LIGHT3D_MIN_ATTENUATION : attenuation;
 }
 
 /// @brief Construct a `rt_light3d` from a `KHR_lights_punctual` extension light JSON object.

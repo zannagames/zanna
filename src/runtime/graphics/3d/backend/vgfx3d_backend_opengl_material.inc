@@ -332,6 +332,7 @@ static void upload_light_uniforms(gl_context_t *ctx,
             ctx->uLightColor[i], lights[i].color[0], lights[i].color[1], lights[i].color[2]);
         gl.Uniform1f(ctx->uLightIntensity[i], lights[i].intensity);
         gl.Uniform1f(ctx->uLightAtten[i], lights[i].attenuation);
+        gl.Uniform1f(ctx->uLightRange[i], lights[i].range);
         gl.Uniform1f(ctx->uLightInnerCos[i],
                      native_emitter ? (lights[i].type == 4 ? lights[i].height : lights[i].radius)
                                     : lights[i].inner_cos);
@@ -694,12 +695,14 @@ static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cm
                                    emissive_tex,
                                    cmd,
                                    RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE);
-    /* ADR 0246: one array texture carries every shadow slot, so a single bind
-     * covers the CSM cascades and the general/point-light slots alike. Per-slot
+    /* ADR 0337: independently sized primary and secondary arrays share
+     * the existing contiguous shadow-index contract. Per-slot
      * completeness is enforced by uShadowCount plus gl_sanitize_shadow_slot on
      * the render side, so there is nothing to gate here. */
     bind_texture_unit(
-        ctx->uShadowArray, GL_TU_SHADOW_ARRAY, GL_TEXTURE_2D_ARRAY, ctx->shadow_array_tex);
+        ctx->uShadowArray, GL_TU_SHADOW_ARRAY, GL_TEXTURE_2D_ARRAY, ctx->shadow_array_tex[0]);
+    bind_texture_unit(
+        ctx->uShadowAtlas, GL_TU_SHADOW_ATLAS, GL_TEXTURE_2D_ARRAY, ctx->shadow_array_tex[1]);
     /* Plan 10: soft-particle draws never carry splat maps, so the snapshot
      * borrows the splat-control unit (GL 3.3's 16-unit budget is fully
      * assigned). The shader-side fade is force-disabled whenever a draw has
@@ -737,10 +740,25 @@ static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cm
             decal_tex = gl_get_cached_texture(ctx, cmd->decal_map);
         gl.Uniform1i(ctx->uHasDecalMap, decal_tex ? 1 : 0);
         gl.Uniform1f(ctx->uDecalOpacity, decal_tex ? cmd->decal_opacity : 0.0f);
-        gl.Uniform4f(ctx->uDecalRow0, cmd->decal_rows[0], cmd->decal_rows[1], cmd->decal_rows[2], cmd->decal_rows[3]);
-        gl.Uniform4f(ctx->uDecalRow1, cmd->decal_rows[4], cmd->decal_rows[5], cmd->decal_rows[6], cmd->decal_rows[7]);
-        gl.Uniform4f(ctx->uDecalRow2, cmd->decal_rows[8], cmd->decal_rows[9], cmd->decal_rows[10], cmd->decal_rows[11]);
-        gl.Uniform3f(ctx->uDecalForward, cmd->decal_forward[0], cmd->decal_forward[1], cmd->decal_forward[2]);
+        gl.Uniform4f(ctx->uDecalRow0,
+                     cmd->decal_rows[0],
+                     cmd->decal_rows[1],
+                     cmd->decal_rows[2],
+                     cmd->decal_rows[3]);
+        gl.Uniform4f(ctx->uDecalRow1,
+                     cmd->decal_rows[4],
+                     cmd->decal_rows[5],
+                     cmd->decal_rows[6],
+                     cmd->decal_rows[7]);
+        gl.Uniform4f(ctx->uDecalRow2,
+                     cmd->decal_rows[8],
+                     cmd->decal_rows[9],
+                     cmd->decal_rows[10],
+                     cmd->decal_rows[11]);
+        gl.Uniform3f(ctx->uDecalForward,
+                     cmd->decal_forward[0],
+                     cmd->decal_forward[1],
+                     cmd->decal_forward[2]);
         bind_texture_unit(ctx->uDecalTex, GL_TU_DECAL, GL_TEXTURE_2D, decal_tex);
     }
     if (ctx->uSplatScales >= 0) {
@@ -1045,6 +1063,8 @@ static void query_main_uniforms(gl_context_t *ctx) {
         ctx->uLightAtten[i] = gl.GetUniformLocation(ctx->program, name);
         snprintf(name, sizeof(name), "uLightInnerCos[%d]", i);
         ctx->uLightInnerCos[i] = gl.GetUniformLocation(ctx->program, name);
+        snprintf(name, sizeof(name), "uLightRange[%d]", i);
+        ctx->uLightRange[i] = gl.GetUniformLocation(ctx->program, name);
         snprintf(name, sizeof(name), "uLightOuterCos[%d]", i);
         ctx->uLightOuterCos[i] = gl.GetUniformLocation(ctx->program, name);
     }
@@ -1054,6 +1074,7 @@ static void query_main_uniforms(gl_context_t *ctx) {
         ctx->uShadowVP[i] = gl.GetUniformLocation(ctx->program, name);
     }
     ctx->uShadowArray = gl.GetUniformLocation(ctx->program, "uShadowArray");
+    ctx->uShadowAtlas = gl.GetUniformLocation(ctx->program, "uShadowAtlas");
 }
 
 /// @brief Measure the contiguous context-memory span occupied by main uniform locations.
@@ -1141,6 +1162,7 @@ static int gl_query_unlit_uniforms(gl_context_t *ctx) {
 /// @param ctx Borrowed OpenGL context receiving shadow-program uniform locations.
 static void query_shadow_uniforms(gl_context_t *ctx) {
     ctx->shadow_uModelMatrix = gl.GetUniformLocation(ctx->shadow_program, "uModelMatrix");
+    ctx->shadow_uInstanced = gl.GetUniformLocation(ctx->shadow_program, "uShadowInstanced");
     ctx->shadow_uViewProjection = gl.GetUniformLocation(ctx->shadow_program, "uViewProjection");
     ctx->shadow_uHasSkinning = gl.GetUniformLocation(ctx->shadow_program, "uHasSkinning");
     ctx->shadow_uMorphShapeCount = gl.GetUniformLocation(ctx->shadow_program, "uMorphShapeCount");

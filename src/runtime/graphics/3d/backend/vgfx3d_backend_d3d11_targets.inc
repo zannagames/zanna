@@ -1339,12 +1339,14 @@ static HRESULT d3d11_ensure_shadow_atlas(d3d11_context_t *ctx, int32_t tile_w, i
     ID3D11DepthStencilView *new_dsv = NULL;
     ID3D11ShaderResourceView *new_srv = NULL;
 
+    if (ctx && ctx->shadow_atlas_rows < 2)
+        ctx->shadow_atlas_rows = 2;
     if (!ctx || tile_w <= 0 || tile_h <= 0 ||
         tile_w > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS ||
-        tile_h > INT32_MAX / VGFX3D_D3D11_SHADOW_ATLAS_ROWS)
+        tile_h > INT32_MAX / ctx->shadow_atlas_rows)
         return E_INVALIDARG;
     atlas_w = tile_w * VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS;
-    atlas_h = tile_h * VGFX3D_D3D11_SHADOW_ATLAS_ROWS;
+    atlas_h = tile_h * ctx->shadow_atlas_rows;
     if (!vgfx3d_d3d11_is_valid_texture2d_extent(atlas_w, atlas_h))
         return E_INVALIDARG;
     if (ctx->shadow_atlas_tex && ctx->shadow_atlas_dsv && ctx->shadow_atlas_srv &&

@@ -185,6 +185,7 @@ typedef struct rt_lightbaker3d {
     double texels_per_unit;
     int64_t samples;
     int64_t bounces;
+    int8_t include_direct;
     double sky_color[3];
     double progress;
     int8_t done;
@@ -1376,14 +1377,18 @@ static void baker_cosine_dir(uint32_t *rng, const double normal[3], double out_d
 /// @param normal Three-element oriented unit normal.
 /// @param rng In/out deterministic sampler state.
 /// @param bounces Remaining nonnegative indirect-bounce depth.
+/// @param include_direct Include direct light at this surface (recursive hits always do).
 /// @param out_rgb Output three-element irradiance.
 static void baker_radiance(const rt_lightbaker3d *baker,
                            const double point[3],
                            const double normal[3],
                            uint32_t *rng,
                            int32_t bounces,
+                           int include_direct,
                            double out_rgb[3]) {
-    baker_direct_light(baker, point, normal, out_rgb);
+    out_rgb[0] = out_rgb[1] = out_rgb[2] = 0.0;
+    if (include_direct)
+        baker_direct_light(baker, point, normal, out_rgb);
     if (bounces <= 0)
         return;
     double origin[3] = {point[0] + normal[0] * BAKER3D_EPS * 4,
@@ -1408,7 +1413,7 @@ static void baker_radiance(const rt_lightbaker3d *baker,
         hn[2] = -hn[2];
     }
     double bounce_rgb[3];
-    baker_radiance(baker, hp, hn, rng, bounces - 1, bounce_rgb);
+    baker_radiance(baker, hp, hn, rng, bounces - 1, 1, bounce_rgb);
     /* Cosine-weighted sampling folds the ndl/pdf terms; albedo modulates. */
     out_rgb[0] += (bounce_rgb[0] * tri->albedo[0] + tri->emissive[0]);
     out_rgb[1] += (bounce_rgb[1] * tri->albedo[1] + tri->emissive[1]);
@@ -1478,6 +1483,7 @@ static void baker_sample_task_run(void *argument) {
                        task->normal,
                        &rng,
                        task->bounces,
+                       task->baker->include_direct,
                        task->results[task->result_offset + offset]);
     }
 }
@@ -1586,6 +1592,7 @@ void *rt_lightbaker3d_new(void *scene) {
     baker->texels_per_unit = 8.0;
     baker->samples = 64;
     baker->bounces = 2;
+    baker->include_direct = 1;
     baker->atlas_dim = BAKER3D_ATLAS_DIM;
     return baker;
 }
@@ -1658,6 +1665,25 @@ void rt_lightbaker3d_set_bounces(void *obj, int64_t bounces) {
 int64_t rt_lightbaker3d_get_bounces(void *obj) {
     rt_lightbaker3d *baker = lightbaker3d_checked(obj, "LightBaker3D.get_Bounces: invalid baker");
     return baker ? baker->bounces : 0;
+}
+
+/// @brief Configure primary-surface direct light before gathering freezes inputs.
+/// @param obj LightBaker3D receiver.
+/// @param enabled Nonzero includes direct light in lightmaps; probe grids are unchanged.
+void rt_lightbaker3d_set_include_direct(void *obj, int8_t enabled) {
+    rt_lightbaker3d *baker =
+        lightbaker3d_checked(obj, "LightBaker3D.set_IncludeDirect: invalid baker");
+    if (baker_inputs_mutable(baker))
+        baker->include_direct = enabled != 0;
+}
+
+/// @brief Return the primary-surface direct-light option.
+/// @param obj LightBaker3D receiver.
+/// @return Normalized Boolean, or zero after an invalid-receiver trap.
+int8_t rt_lightbaker3d_get_include_direct(void *obj) {
+    rt_lightbaker3d *baker =
+        lightbaker3d_checked(obj, "LightBaker3D.get_IncludeDirect: invalid baker");
+    return baker ? baker->include_direct : 0;
 }
 
 /// @brief Set nonnegative radiance returned by rays that miss the scene.
@@ -2841,7 +2867,7 @@ static void probe_bake_task_run(void *argument) {
                     hit_normal[1] = -hit_normal[1];
                     hit_normal[2] = -hit_normal[2];
                 }
-                baker_radiance(baker, hit_point, hit_normal, &rng, (int32_t)baker->bounces, rgb);
+                baker_radiance(baker, hit_point, hit_normal, &rng, (int32_t)baker->bounces, 1, rgb);
                 rgb[0] = rgb[0] * tri->albedo[0] + tri->emissive[0];
                 rgb[1] = rgb[1] * tri->albedo[1] + tri->emissive[1];
                 rgb[2] = rgb[2] * tri->albedo[2] + tri->emissive[2];

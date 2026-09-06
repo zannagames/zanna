@@ -169,6 +169,8 @@ RT_FUNC(LightBaker3DSetSamples,  rt_lightbaker3d_set_samples,         "Zanna.Gra
 RT_FUNC(LightBaker3DGetSamples,  rt_lightbaker3d_get_samples,         "Zanna.Graphics3D.LightBaker3D.get_Samples",        "i64(obj)")
 RT_FUNC(LightBaker3DSetBounces,  rt_lightbaker3d_set_bounces,         "Zanna.Graphics3D.LightBaker3D.set_Bounces",        "void(obj,i64)")
 RT_FUNC(LightBaker3DGetBounces,  rt_lightbaker3d_get_bounces,         "Zanna.Graphics3D.LightBaker3D.get_Bounces",        "i64(obj)")
+RT_FUNC(LightBaker3DSetIncludeDirect, rt_lightbaker3d_set_include_direct, "Zanna.Graphics3D.LightBaker3D.set_IncludeDirect", "void(obj,i1)")
+RT_FUNC(LightBaker3DGetIncludeDirect, rt_lightbaker3d_get_include_direct, "Zanna.Graphics3D.LightBaker3D.get_IncludeDirect", "i1(obj)")
 RT_FUNC(LightBaker3DSetSkyColor, rt_lightbaker3d_set_sky_color,       "Zanna.Graphics3D.LightBaker3D.SetSkyColor",        "void(obj,f64,f64,f64)")
 RT_FUNC(LightBaker3DGetProgress, rt_lightbaker3d_get_progress,        "Zanna.Graphics3D.LightBaker3D.get_Progress",       "f64(obj)")
 RT_FUNC(LightBaker3DAddLight,    rt_lightbaker3d_add_light,           "Zanna.Graphics3D.LightBaker3D.AddLight",           "void(obj,obj<Zanna.Graphics3D.Light3D>)")
@@ -181,11 +183,14 @@ RT_FUNC(LightBaker3DGetAtlas, rt_lightbaker3d_get_atlas, "Zanna.Graphics3D.Light
 /// Create `Zanna.Graphics3D.LightBaker3D` values through its registered constructor and use the
 /// returned object with the instance members below. Its public surface exposes properties such as
 /// `TexelsPerUnit`, `Samples`, `Bounces` and operations including `SetSkyColor`, `AddLight`,
-/// `BakeStep`, `Apply`.
+/// `BakeStep`, `Apply`. `IncludeDirect` defaults to true. Set it false before baking
+/// lightmaps used alongside live analytic lights; sky and bounced fixture energy
+/// remain, and probe-grid integration is unchanged.
 RT_CLASS_BEGIN("Zanna.Graphics3D.LightBaker3D", LightBaker3D, "obj", LightBaker3DNew)
     RT_PROP("TexelsPerUnit", "f64", LightBaker3DGetTexels, LightBaker3DSetTexels)
     RT_PROP("Samples", "i64", LightBaker3DGetSamples, LightBaker3DSetSamples)
     RT_PROP("Bounces", "i64", LightBaker3DGetBounces, LightBaker3DSetBounces)
+    RT_PROP("IncludeDirect", "i1", LightBaker3DGetIncludeDirect, LightBaker3DSetIncludeDirect)
     RT_PROP("Progress", "f64", LightBaker3DGetProgress, none)
     RT_PROP("Atlas", "obj", LightBaker3DGetAtlas, none)
     RT_METHOD("SetSkyColor", "void(f64,f64,f64)", LightBaker3DSetSkyColor)

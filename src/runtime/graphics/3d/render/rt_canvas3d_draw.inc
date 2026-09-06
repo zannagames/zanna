@@ -739,16 +739,18 @@ void canvas3d_release_tracked_final_overlay_temp_object(rt_canvas3d *c, void *ob
 /// @param v1 Source V coordinate at the bottom edge.
 /// @return Non-zero on successful queueing or complete clipping; zero on invalid input or any
 /// allocation, retention, tracking, or queue failure.
-int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
-                                   float x,
-                                   float y,
-                                   float w,
-                                   float h,
-                                   void *pixels,
-                                   float u0,
-                                   float v0,
-                                   float u1,
-                                   float v1) {
+int canvas3d_queue_screen_image_uv_blend(rt_canvas3d *c,
+                                         float x,
+                                         float y,
+                                         float w,
+                                         float h,
+                                         void *pixels,
+                                         float u0,
+                                         float v0,
+                                         float u1,
+                                         float v1,
+                                         int8_t additive,
+                                         float opacity) {
     vgfx3d_vertex_t verts[4];
     static const uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
     size_t vertex_bytes;
@@ -824,6 +826,7 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
     if (!mat)
         return 0;
     rt_material3d_set_unlit(mat, 1);
+    ((rt_material3d *)mat)->additive_blend = additive ? 1 : 0;
 
     block = canvas3d_alloc_screen_geometry_block(
         c, total_bytes, c->final_overlay_recording, &block_from_final_overlay_arena);
@@ -850,7 +853,7 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
     /* A screen quad exists only to show its Pixels: while the upload is still budget-paused the
      * backend must draw nothing rather than the material's white base colour. */
     cmd.texture_required = 1;
-    cmd.alpha = 1.0f;
+    cmd.alpha = isfinite(opacity) ? fminf(1.0f, fmaxf(0.0f, opacity)) : 0.0f;
 
     if (c->final_overlay_recording) {
         if (!canvas3d_track_final_overlay_temp_object(c, mat)) {
@@ -907,6 +910,20 @@ int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
         return 0;
     }
     return 1;
+}
+
+/// @brief Preserve ordinary alpha composition for public screen images.
+int canvas3d_queue_screen_image_uv(rt_canvas3d *c,
+                                   float x,
+                                   float y,
+                                   float w,
+                                   float h,
+                                   void *pixels,
+                                   float u0,
+                                   float v0,
+                                   float u1,
+                                   float v1) {
+    return canvas3d_queue_screen_image_uv_blend(c, x, y, w, h, pixels, u0, v0, u1, v1, 0, 1.0f);
 }
 
 /// @brief Queue a screen-space textured quad sampling `pixels` over the full UV range.
@@ -1098,6 +1115,10 @@ void rt_canvas3d_begin_2d(void *obj) {
     c->cpu_finalized_this_render = 0;
     canvas3d_prune_motion_history(c);
     canvas3d_reset_frame_submission_stats(c);
+    memset(c->pass_cpu_ms, 0, sizeof(c->pass_cpu_ms));
+    memset(c->last_pass_draw_count, 0, sizeof(c->last_pass_draw_count));
+    memset(c->last_pass_instance_count, 0, sizeof(c->last_pass_instance_count));
+    c->last_draw_count = 0;
     c->draw_count = 0;
     canvas3d_reset_frame_light_snapshots(c);
     c->frame_is_2d = 1;
@@ -1610,6 +1631,7 @@ static void canvas3d_begin_camera_pass(void *obj,
     c->last_instanced_fallback_count = 0;
     c->last_instanced_fallback_dropped_count = 0;
     c->last_draw_count = 0;
+    memset(c->pass_cpu_ms, 0, sizeof(c->pass_cpu_ms));
     memset(c->last_pass_draw_count, 0, sizeof(c->last_pass_draw_count));
     memset(c->last_pass_instance_count, 0, sizeof(c->last_pass_instance_count));
     c->last_occluded_draw_count = 0;

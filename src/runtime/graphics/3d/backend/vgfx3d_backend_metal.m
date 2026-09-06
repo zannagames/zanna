@@ -99,9 +99,10 @@ extern void rt_obj_free(void *obj);
     /* MTL-12: Shadow light view-projection matrices (stored from shadow_begin) */
     float _shadowLightVP[VGFX3D_MAX_SHADOW_LIGHTS][16];
     id<MTLTexture> _shadowDepthTexture[VGFX3D_MAX_SHADOW_LIGHTS];
-    /* Shadow atlas for slots >= VGFX3D_CSM_SLOTS: 4x2 tiles at the per-slot
+    /* Shadow atlas for slots >= VGFX3D_CSM_SLOTS: four-column tiles at the per-slot
      * resolution, cleared once per frame on its first tile pass. */
     id<MTLTexture> _shadowAtlasTexture;
+    int32_t _shadowAtlasRows;
     uint64_t _shadowAtlasClearedSerial;
     int32_t _shadowPassSlot;
     int8_t _shadowPassFailed;
@@ -536,7 +537,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .particle_instancing = 1,
     .clustered_lighting = 1,
     .shadow_csm = 1,
-    /* Slots >= VGFX3D_CSM_SLOTS render into the internal 4x2 depth atlas
+    /* Slots >= VGFX3D_CSM_SLOTS render into the prepared four-column depth atlas
      * (texture index 17); the shader remaps their UVs by static tile rects. */
     .shadow_atlas_slots = 1,
     /* Scene passes render reversed-Z (Canvas3D negates the projection z row;
@@ -550,8 +551,10 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .submit_draw = metal_submit_draw,
     .end_frame = metal_end_frame,
     .set_render_target = metal_set_render_target,
+    .prepare_shadow_frame = metal_prepare_shadow_frame,
     .shadow_begin = metal_shadow_begin,
     .shadow_draw = metal_shadow_draw,
+    .shadow_draw_instanced = metal_shadow_draw_instanced,
     .shadow_end = metal_shadow_end,
     .shadow_reuse = metal_shadow_reuse,
     .shadow_inherit = metal_shadow_inherit,

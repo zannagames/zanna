@@ -476,7 +476,7 @@ lights.
 | `ShadowDistance` | `Double` | Configured shadow distance (`0` = automatic) |
 | `SetShadowStrength(s)` | `Void(Double)` | How dark fully-occluded texels get (`0` = shadows off, `1` = black; default `0.85`) |
 | `SetShadowQuality(tier)` | `Void(Integer)` | Shadow PCF tier: `0` = 4 taps, `1` = 8 (default), `2` = 16 rotated-Poisson taps |
-| `SetShadowBudget(n)` | `Void(Integer)` | Cap the shadow slots a frame may use (1..12, default all) |
+| `SetShadowBudget(n)` | `Void(Integer)` | Cap the shadow slots a frame may use (1..20, default all) |
 | `ShadowSlotsUsed` | `Integer` | Shadow slots rendered in the latest frame, cascades and cube faces included |
 | `ShadowRequestsDropped` | `Integer` | Shadow-requesting lights denied a slot in the latest frame |
 | `SetClusterLightBudget(n)` | `Void(Integer)` | Compact per-cluster list capacity (8..64, default 64); excess demand uses lossless full-light fallback |
@@ -657,7 +657,7 @@ anisotropy, so changed settings reuse existing sampler objects once created.
 | `SetTextureStreamingBias(bias)` | `Void(Number)` method | Bias streaming's desired mip; positive drops more detail, clamped to `[-16, 16]` |
 | `TextureStreamingDemotions` | `Integer` property | Lifetime count of resident-window demotions applied by streaming |
 | `PassCount` | `Integer` property | Number of CPU-timed render passes (currently 4) |
-| `PassCpuMs(i)` | `Number(Integer)` method | CPU milliseconds spent in pass `i` of the latest ended frame: `0` shadow, `1` main scene, `2` overlay, `3` backend end/present |
+| `PassCpuMs(i)` | `Number(Integer)` method | CPU milliseconds spent in pass `i` since the latest Begin/Begin2D (late overlays accumulate): `0` shadow, `1` main scene, `2` overlay, `3` backend end/present |
 
 `TextureUploadBytes` counts actual texture cache uploads and re-uploads performed by the active
 Metal, OpenGL, or D3D11 backend. Pixels-backed 2D material textures and cubemaps
@@ -689,7 +689,8 @@ followed by GPU texture upload pressure.
 `PassCpuMs` complements `FrameGpuTimeUs` on the CPU side: the frame loop stamps
 a monotonic clock at the shadow → main → overlay → backend-end boundaries, so
 `PassCpuMs(1)` isolates scene submission cost from present/blit time in
-`PassCpuMs(3)`. Values describe the latest **ended** frame and read `0` before
+`PassCpuMs(3)`. Values reset at **Begin** or **Begin2D** alongside draw counters, then accumulate late
+overlay work without replacing scene timing. They read `0` before
 the first `End`. Indices are stable; `PassCount` future-proofs iteration.
 
 `FrameGpuTimeUs` is backend-owned timing telemetry. The D3D11 backend records it
@@ -2523,6 +2524,14 @@ Blended-material and floating-origin-rebased batches still route per instance
 (clamped at 65,536 queued instances, with overflow visible through
 `Canvas3D.InstancedFallbackDroppedCount`).
 
+Static shadow casters can batch on GPU backends, including compatible repeated
+mesh draws outside an explicit `InstanceBatch3D`. Depth-affecting material and
+alpha state stay separate; software and deformed payloads retain per-mesh depth
+submission. When shadows are enabled, explicit batches retain potential casters
+outside the camera view because their shadows may reach visible receivers.
+This conservative shared instance list can submit extra clipped main-view
+instances. `ShadowMode.None` and frames without shadows retain camera culling.
+
 **Per-instance skinned crowds.** `Canvas3D.DrawInstancedSkinned(batch, players)`
 renders the batch with one animator per instance: `players` is a `Seq` holding
 one `AnimPlayer3D` or `AnimController3D` per batch entry (counts must match, and
@@ -2549,7 +2558,7 @@ Billboard sprite placed in 3D world space, suitable for particles, UI labels, or
 
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
-| `Additive` | Boolean | Read/Write | Additive blending (muzzle glows, tracers); overlapping additive sprites sum toward white. Default off (alpha blend) |
+| `Additive` | Boolean | Read/Write | Additive RGB blending (muzzle glows, tracers); preserves destination alpha so accumulated light does not obscure a composited scene. Default off (alpha blend) |
 
 #### Methods
 
@@ -2592,3 +2601,15 @@ Texture atlas for 3D rendering with named-region management.
 - Deferred heap `Mesh3D` draws retain an immutable reference-counted geometry revision, so submitted bytes remain stable through `Canvas3D.End()` even if the live mesh mutates. Unchanged later frames reuse the same revision without copying vertex/index arrays. Missing normal-map tangents are a separate persistent variant of that revision and are invalidated by any position, normal, UV, or topology edit. Camera-relative rebase, skinned, and morphed paths keep explicit dynamic snapshots; public `DrawMesh` still rejects raw stack mesh payloads.
 - `Ray3D.IntersectMesh` lazily retains a local-space triangle BVH per mesh geometry revision. Repeated identity/invertible-transform queries reuse it, while singular transforms and allocation failure keep the exact linear fallback and deterministic lowest-triangle tie behavior.
 - `SpatialAudio3D.SyncBindings` must be called once per frame after physics/animation updates so bound sources and listeners track their nodes.
+
+### Secondary shadow atlas resolution
+
+`Canvas3D.SetShadowAtlasResolution(pixels)` controls the square tile size for
+shadow slots 4 and above. `ShadowAtlasResolution` reads the retained override.
+Zero (the default) inherits `EnableShadows` resolution; negative values become
+zero, and positive values clamp to 64–4096. The first four maps retain the primary
+resolution. All secondary tiles share one resolution, including any secondary
+directional maps allocated there. Changing the override invalidates shadow targets
+and cached passes; setting the same value preserves them. For example, a 4096
+primary map with a 1024 atlas reduces secondary-map storage at the cost of shadow
+detail. This setting does not increase the backend's shadow-slot capacity.

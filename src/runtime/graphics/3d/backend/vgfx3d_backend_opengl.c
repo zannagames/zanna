@@ -90,8 +90,9 @@ typedef void *GLsync;
  * per-slot units 4-7 freed three of GL 3.3's guaranteed 16 fragment units: the
  * BRDF LUT took one as a dedicated unit — it previously aliased splat layer 3,
  * which silently downgraded terrain draws to an analytic environment-BRDF — and
- * units 6-7 are spare. */
+ * unit 6 carries the independently sized secondary shadow array; unit 7 is spare. */
 #define GL_TU_SHADOW_ARRAY 4
+#define GL_TU_SHADOW_ATLAS 6
 #define GL_TU_BRDF_LUT 5
 #define GL_TU_SPLAT_CONTROL 8
 #define GL_TU_SPLAT_LAYER0 9
@@ -901,9 +902,11 @@ typedef struct {
      * — Canvas3D already drives them all from a single shadow_resolution, and a
      * request at a different size reallocates the array and invalidates the
      * slots, which the shadow_complete[] reset below records. */
-    GLuint shadow_array_tex;
-    int32_t shadow_array_width;
-    int32_t shadow_array_height;
+    GLuint shadow_array_tex[2];
+    int32_t shadow_array_width[2];
+    int32_t shadow_array_height[2];
+    int32_t shadow_array_layers[2];
+    int32_t shadow_requested_layers[2];
     int32_t shadow_width[VGFX3D_MAX_SHADOW_LIGHTS];
     int32_t shadow_height[VGFX3D_MAX_SHADOW_LIGHTS];
     int32_t shadow_pass_slot;
@@ -1026,7 +1029,8 @@ typedef struct {
     GLint uInstanceBoneStride;
     GLint uHasPrevModelMatrix, uHasPrevInstanceMatrices, uHasPrevSkinning, uHasPrevMorphWeights;
     GLint uMorphWeights, uPrevMorphWeights, uMorphDeltas, uMorphNormalDeltas, uHasMorphNormalDeltas;
-    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray, uEnvMap, uBrdfLut;
+    GLint uDiffuseTex, uNormalTex, uSpecularTex, uEmissiveTex, uShadowArray, uShadowAtlas, uEnvMap,
+        uBrdfLut;
     GLint uMetallicRoughnessTex, uAOTex;
     GLint uDecalTex, uHasDecalMap, uDecalOpacity, uDecalRow0, uDecalRow1, uDecalRow2, uDecalForward;
     GLint uSplatTex, uSplatLayer0, uSplatLayer1, uSplatLayer2, uSplatLayer3, uSplatScales;
@@ -1037,9 +1041,9 @@ typedef struct {
     GLint uLightShadowCascadeCount[VGFX3D_MAX_LIGHTS], uLightShadowCascadeSplits[VGFX3D_MAX_LIGHTS];
     GLint uShadowVP[VGFX3D_MAX_SHADOW_LIGHTS];
     GLint uLightAtten[VGFX3D_MAX_LIGHTS], uLightInnerCos[VGFX3D_MAX_LIGHTS],
-        uLightOuterCos[VGFX3D_MAX_LIGHTS];
+        uLightRange[VGFX3D_MAX_LIGHTS], uLightOuterCos[VGFX3D_MAX_LIGHTS];
 
-    GLint shadow_uModelMatrix, shadow_uViewProjection;
+    GLint shadow_uModelMatrix, shadow_uViewProjection, shadow_uInstanced;
     GLint shadow_uHasSkinning, shadow_uMorphShapeCount, shadow_uVertexCount;
     GLint shadow_uMorphWeights, shadow_uMorphDeltas;
     GLint shadow_uDiffuseTex, shadow_uHasTexture, shadow_uAlphaMode, shadow_uAlphaCutoff,
@@ -1186,7 +1190,7 @@ static void upload_main_uniforms(gl_context_t *ctx,
                                  int32_t light_count,
                                  const float *ambient,
                                  int8_t instanced);
-static void bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd);
+static int bind_material_textures(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd);
 static void bind_shadow_anim(gl_context_t *ctx, const vgfx3d_draw_cmd_t *cmd);
 static void bind_morph_payload(gl_context_t *ctx,
                                const vgfx3d_draw_cmd_t *cmd,
@@ -2197,8 +2201,10 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .submit_draw = gl_submit_draw,
     .end_frame = gl_end_frame,
     .set_render_target = gl_set_render_target,
+    .prepare_shadow_frame = gl_prepare_shadow_frame,
     .shadow_begin = gl_shadow_begin,
     .shadow_draw = gl_shadow_draw,
+    .shadow_draw_instanced = gl_shadow_draw_instanced,
     .shadow_end = gl_shadow_end,
     .shadow_reuse = gl_shadow_reuse,
     /* ADR 0309: GL has no atlas (shadow_atlas_slots = 0) and its per-slot

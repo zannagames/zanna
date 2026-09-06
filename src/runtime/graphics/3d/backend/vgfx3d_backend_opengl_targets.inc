@@ -1154,22 +1154,32 @@ static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
 /// @brief Release the shadow-map FBO + depth texture.
 /// @param ctx Borrowed OpenGL context whose complete shadow-target array is released; null is a
 ///            no-op.
-static void destroy_shadow_targets(gl_context_t *ctx) {
+static void destroy_shadow_class(gl_context_t *ctx, int32_t group) {
     if (!ctx)
         return;
-    for (int32_t slot = 0; slot < VGFX3D_MAX_SHADOW_LIGHTS; slot++) {
+    int32_t first = group == 0 ? 0 : VGFX3D_CSM_SLOTS;
+    int32_t end = group == 0 ? VGFX3D_CSM_SLOTS : VGFX3D_MAX_SHADOW_LIGHTS;
+    for (int32_t slot = first; slot < end; ++slot) {
         if (ctx->shadow_fbo[slot])
             gl.DeleteFramebuffers(1, &ctx->shadow_fbo[slot]);
         ctx->shadow_fbo[slot] = 0;
-        ctx->shadow_width[slot] = 0;
-        ctx->shadow_height[slot] = 0;
+        ctx->shadow_width[slot] = ctx->shadow_height[slot] = 0;
         ctx->shadow_complete[slot] = 0;
     }
-    if (ctx->shadow_array_tex)
-        gl.DeleteTextures(1, &ctx->shadow_array_tex);
-    ctx->shadow_array_tex = 0;
-    ctx->shadow_array_width = 0;
-    ctx->shadow_array_height = 0;
+    if (ctx->shadow_array_tex[group])
+        gl.DeleteTextures(1, &ctx->shadow_array_tex[group]);
+    ctx->shadow_array_tex[group] = 0;
+    ctx->shadow_array_width[group] = ctx->shadow_array_height[group] = 0;
+    ctx->shadow_array_layers[group] = 0;
+}
+
+/// @brief Release both independently sized shadow array classes.
+/// @param ctx Borrowed context; null is ignored.
+static void destroy_shadow_targets(gl_context_t *ctx) {
+    if (!ctx)
+        return;
+    destroy_shadow_class(ctx, 0);
+    destroy_shadow_class(ctx, 1);
     ctx->shadow_pass_slot = -1;
     ctx->shadow_count = 0;
 }
@@ -1186,8 +1196,8 @@ static void gl_recompute_shadow_count(gl_context_t *ctx) {
     if (!ctx)
         return;
     for (int32_t slot = 0; slot < VGFX3D_MAX_SHADOW_LIGHTS; slot++) {
-        if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex || !ctx->shadow_fbo[slot] ||
-            ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0)
+        if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex[slot >= VGFX3D_CSM_SLOTS] ||
+            !ctx->shadow_fbo[slot] || ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0)
             break;
         count++;
     }
@@ -1208,8 +1218,8 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
     slot = vgfx3d_opengl_sanitize_shadow_index(shadow_index, ctx->shadow_count);
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
         return -1;
-    if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex || !ctx->shadow_fbo[slot] ||
-        ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0) {
+    if (!ctx->shadow_complete[slot] || !ctx->shadow_array_tex[slot >= VGFX3D_CSM_SLOTS] ||
+        !ctx->shadow_fbo[slot] || ctx->shadow_width[slot] <= 0 || ctx->shadow_height[slot] <= 0) {
         return -1;
     }
     return slot;
@@ -1226,6 +1236,15 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
 /// @param h Positive shadow-map height in pixels.
 /// @return 0 when a complete depth-only framebuffer is ready, otherwise -1.
 static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int32_t h) {
+    if (!ctx)
+        return -1;
+    const int32_t group = slot >= VGFX3D_CSM_SLOTS;
+    const int32_t layer = group ? slot - VGFX3D_CSM_SLOTS : slot;
+    int32_t layers = ctx->shadow_requested_layers[group];
+    if (layers <= 0)
+        layers = group ? VGFX3D_MAX_SHADOW_LIGHTS - VGFX3D_CSM_SLOTS : VGFX3D_CSM_SLOTS;
+    if (layer < 0 || layer >= layers)
+        return -1;
     gl_framebuffer_state_t saved;
     GLuint candidate_fbo = 0;
     GLuint previous_fbo;
@@ -1234,21 +1253,11 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
     if (!gl_target_extent_is_valid(ctx, w, h) || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS) {
         return -1;
     }
-    /* Array layers share one size, and Canvas3D may request a smaller map for some
-     * slots than for others (cube faces versus cascades). Reallocating for a smaller
-     * request would drop every already-rendered layer, so the array only ever grows:
-     * a smaller slot simply renders into the full, higher-resolution layer, which
-     * costs memory already committed and keeps sample UVs in [0,1] unchanged. */
-    if (ctx->shadow_array_tex && ctx->shadow_fbo[slot] && ctx->shadow_array_width >= w &&
-        ctx->shadow_array_height >= h) {
-        ctx->shadow_width[slot] = ctx->shadow_array_width;
-        ctx->shadow_height[slot] = ctx->shadow_array_height;
+    /* The preparation hook allocates each class before any depth is rendered. */
+    if (ctx->shadow_array_tex[group] && ctx->shadow_fbo[slot] &&
+        ctx->shadow_array_width[group] == w && ctx->shadow_array_height[group] == h &&
+        ctx->shadow_array_layers[group] == layers)
         return 0;
-    }
-    if (ctx->shadow_array_tex) {
-        w = w > ctx->shadow_array_width ? w : ctx->shadow_array_width;
-        h = h > ctx->shadow_array_height ? h : ctx->shadow_array_height;
-    }
 
     depth_format = ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
     depth_type = ctx->supports_depth_float_target ? GL_FLOAT : GL_UNSIGNED_INT;
@@ -1258,11 +1267,13 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
 
     /* Growing invalidates every layer at once, so drop the whole array and all
      * per-slot FBOs rather than leaving slots pointing at a stale texture. */
-    if (ctx->shadow_array_tex && (ctx->shadow_array_width != w || ctx->shadow_array_height != h)) {
-        destroy_shadow_targets(ctx);
+    if (ctx->shadow_array_tex[group] &&
+        (ctx->shadow_array_width[group] != w || ctx->shadow_array_height[group] != h ||
+         ctx->shadow_array_layers[group] != layers)) {
+        destroy_shadow_class(ctx, group);
     }
 
-    if (!ctx->shadow_array_tex) {
+    if (!ctx->shadow_array_tex[group]) {
         GLuint candidate_array = 0;
         gl.GenTextures(1, &candidate_array);
         gl.BindTexture(GL_TEXTURE_2D_ARRAY, candidate_array);
@@ -1271,7 +1282,7 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
                       depth_format,
                       w,
                       h,
-                      (GLsizei)VGFX3D_MAX_SHADOW_LIGHTS,
+                      (GLsizei)layers,
                       0,
                       GL_DEPTH_COMPONENT,
                       depth_type,
@@ -1290,15 +1301,16 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
             gl_restore_framebuffer_state(&saved);
             return -1;
         }
-        ctx->shadow_array_tex = candidate_array;
-        ctx->shadow_array_width = w;
-        ctx->shadow_array_height = h;
+        ctx->shadow_array_tex[group] = candidate_array;
+        ctx->shadow_array_width[group] = w;
+        ctx->shadow_array_height[group] = h;
+        ctx->shadow_array_layers[group] = layers;
     }
 
     gl.GenFramebuffers(1, &candidate_fbo);
     gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo);
     gl.FramebufferTextureLayer(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, ctx->shadow_array_tex, 0, (GLint)slot);
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, ctx->shadow_array_tex[group], 0, (GLint)layer);
     gl.DrawBuffer(GL_NONE);
     gl.ReadBuffer(GL_NONE);
     if (!candidate_fbo || gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
@@ -1381,6 +1393,9 @@ static void gl_configure_draw_output(gl_context_t *ctx, const vgfx3d_draw_cmd_t 
         return;
     blend_mode = vgfx3d_opengl_choose_blend_mode(cmd);
     motion_mode = vgfx3d_opengl_choose_motion_attachment_mode(ctx->active_target_kind, cmd);
+
+    // Additive light carries radiance, not new coverage in a transparent overlay.
+    gl.ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, blend_mode != VGFX3D_OPENGL_BLEND_ADDITIVE);
 
     if (blend_mode == VGFX3D_OPENGL_BLEND_ALPHA || blend_mode == VGFX3D_OPENGL_BLEND_ADDITIVE)
         gl.Enable(GL_BLEND);

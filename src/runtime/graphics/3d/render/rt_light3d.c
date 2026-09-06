@@ -109,19 +109,17 @@ static double clamp_param_min0(double value) {
     return value > LIGHT3D_PARAM_MAX ? LIGHT3D_PARAM_MAX : value;
 }
 
-/// @brief Sanitize a local-light attenuation value, enforcing a small non-zero falloff floor.
-/// @details Without this floor, point and spot lights with exactly zero attenuation would
-/// illuminate
-///          the whole scene at full strength, which is both visually surprising and expensive when
-///          many local lights are active. The floor preserves wide-radius authoring while
-///          preventing accidental no-falloff lights; non-finite or negative values fall back to the
-///          same default.
-/// @param value Candidate attenuation factor.
-/// @return Finite attenuation in
-///   `[RT_LIGHT3D_DEFAULT_ATTENUATION, LIGHT3D_PARAM_MAX]`.
+/// @brief Preserve positive authored falloff while normalizing invalid input.
+/// @details The historical default is a fallback, not the minimum valid coefficient.
+///   The separate numerical floor keeps every positive value float-representable.
+/// @param value Candidate attenuation factor in inverse world-unit distance powers.
+/// @return Invalid/nonpositive input becomes the default; positive input clamps to
+///   `[RT_LIGHT3D_MIN_ATTENUATION, LIGHT3D_PARAM_MAX]` (ADR 0333).
 static double sanitize_local_attenuation(double value) {
+    if (!isfinite(value) || value <= 0.0)
+        return RT_LIGHT3D_DEFAULT_ATTENUATION;
     value = clamp_param_min0(value);
-    return value < RT_LIGHT3D_DEFAULT_ATTENUATION ? RT_LIGHT3D_DEFAULT_ATTENUATION : value;
+    return value < RT_LIGHT3D_MIN_ATTENUATION ? RT_LIGHT3D_MIN_ATTENUATION : value;
 }
 
 /// @brief Clamp a value to the [0, 1] range, mapping NaN/inf to 0.
@@ -442,12 +440,12 @@ void *rt_light3d_new_directional(void *direction, double r, double g, double b) 
 /// @brief Create a point light that radiates from a position in all directions.
 /// @details Point lights simulate light bulbs, torches, etc. Intensity falls
 ///          off with distance according to the attenuation factor. Values at or
-///          below 0.0 use a small default falloff floor instead of constant brightness.
+///          below 0.0 use a small default falloff coefficient instead of constant brightness.
 /// @param position    Vec3 world-space position (copied at creation time).
 /// @param r           Red color component [0.0–1.0].
 /// @param g           Green color component [0.0–1.0].
 /// @param b           Blue color component [0.0–1.0].
-/// @param attenuation Distance falloff factor (values <= 0 use the default falloff floor).
+/// @param attenuation Distance falloff factor (values <= 0 use the default falloff coefficient).
 /// @return Opaque light handle, or NULL on failure.
 void *rt_light3d_new_point(void *position, double r, double g, double b, double attenuation) {
     if (!rt_g3d_is_vec3(position)) {
@@ -679,7 +677,7 @@ void rt_light3d_set_intensity(void *obj, double intensity) {
 ///          lights have no distance falloff, so the call is a no-op for them —
 ///          letting pooled lights be retuned without recreating them.
 /// @param obj         Light handle.
-/// @param attenuation Distance falloff factor (values <= 0 use the default falloff floor).
+/// @param attenuation Distance falloff factor (values <= 0 use the default falloff coefficient).
 void rt_light3d_set_attenuation(void *obj, double attenuation) {
     rt_light3d *light = light3d_checked(obj);
     double sanitized;
@@ -1069,15 +1067,17 @@ void rt_light3d_set_decay_type(void *obj, int64_t decay_type) {
     light3d_note_mutation(light);
 }
 
-/// @brief Return an area or volume light's sanitized influence range.
+/// @brief Return an local light's sanitized influence range.
 /// @param obj Light3D receiver.
-/// @return Positive range for types `4..6`, otherwise zero.
+/// @return Non-negative point/spot range; positive area/volume range; otherwise zero.
 double rt_light3d_get_range(void *obj) {
     rt_light3d *light = light3d_checked(obj);
     double sanitized;
-    if (!light || light->type < 4 || light->type > 6)
+    if (!light || (light->type != 1 && light->type != 3 && (light->type < 4 || light->type > 6)))
         return 0.0;
-    sanitized = sanitize_positive_light_param(light->range);
+    sanitized = (light->type == 1 || light->type == 3)
+                    ? clamp_param_min0(light->range)
+                    : sanitize_positive_light_param(light->range);
     if (light->range != sanitized) {
         light->range = sanitized;
         light3d_note_mutation(light);
@@ -1085,15 +1085,16 @@ double rt_light3d_get_range(void *obj) {
     return sanitized;
 }
 
-/// @brief Set an area or volume light's influence range.
-/// @param obj Area or volume Light3D receiver; other types are ignored.
-/// @param range Positive world-unit range; invalid or near-zero values become one.
+/// @brief Set an local light's influence range.
+/// @param obj Local Light3D receiver; directional/ambient types are ignored.
+/// @param range World-unit range; punctual invalid values become zero (no cutoff).
 void rt_light3d_set_range(void *obj, double range) {
     rt_light3d *light = light3d_checked(obj);
     double sanitized;
-    if (!light || light->type < 4 || light->type > 6)
+    if (!light || (light->type != 1 && light->type != 3 && (light->type < 4 || light->type > 6)))
         return;
-    sanitized = sanitize_positive_light_param(range);
+    sanitized = (light->type == 1 || light->type == 3) ? clamp_param_min0(range)
+                                                       : sanitize_positive_light_param(range);
     if (light->range == sanitized)
         return;
     light->range = sanitized;

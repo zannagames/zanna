@@ -1921,9 +1921,12 @@ static void test_d3d11_shader_sources_keep_numeric_guards(void) {
                               "        float2 localUv = clamp(uv, halfTexel, 1.0 - halfTexel);"),
                 "Shadow-atlas comparison footprints stay inside their owning tile");
     EXPECT_TRUE(contains_text(d3d11_shader_source,
-                              "float2(atlasWidth, atlasHeight) /\n"
-                              "                  float2(kShadowAtlasColumns, kShadowAtlasRows)"),
+                              "float2(atlasWidth, atlasWidth) /\n"
+                              "                  float2(kShadowAtlasColumns, kShadowAtlasColumns)"),
                 "Shadow-atlas PCF derives texels from the per-tile dimensions");
+    EXPECT_TRUE(contains_text(d3d11_shader_source,
+                              "float(atlasWidth) / kShadowAtlasColumns / float(atlasHeight)"),
+                "Atlas row sampling follows the allocated height rather than a fixed row count");
     EXPECT_TRUE(contains_text(d3d11_shader_source, "int tile = shadowIndex - kShadowCsmSlots;") &&
                     contains_text(d3d11_shader_source, "tile % kShadowAtlasColumns"),
                 "Shadow HLSL consumes the shared CSM and atlas-grid constants");

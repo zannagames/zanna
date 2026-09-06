@@ -112,7 +112,8 @@ static void metal_configure_blend_state(MTLRenderPipelineColorAttachmentDescript
     if (blend_mode == VGFX3D_METAL_BLEND_ADDITIVE) {
         attachment.sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
         attachment.destinationRGBBlendFactor = MTLBlendFactorOne;
-        attachment.sourceAlphaBlendFactor = MTLBlendFactorOne;
+        // Add light without claiming opaque coverage in the post-FX overlay.
+        attachment.sourceAlphaBlendFactor = MTLBlendFactorZero;
         attachment.destinationAlphaBlendFactor = MTLBlendFactorOne;
         return;
     }
@@ -1419,7 +1420,7 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
                               "    }\n"
                               "    if (p.overlayEnabled != 0) {\n"
                               "        float4 overlay = overlayTex.sample(s, in.uv);\n"
-                              "        color = mix(color, overlay.rgb, clamp(overlay.a, 0.0, "
+                              "        color = overlay.rgb + color * (1.0 - clamp(overlay.a, 0.0, "
                               "1.0));\n"
                               "    }\n"
                               "    return float4(color, 1.0);\n"

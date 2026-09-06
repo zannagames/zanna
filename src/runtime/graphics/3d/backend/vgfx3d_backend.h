@@ -688,7 +688,7 @@ typedef struct vgfx3d_light_params {
     float height;
     /// Sphere or volume emitter radius.
     float radius;
-    /// Finite influence range.
+    /// Authored influence range; punctual zero preserves the legacy unbounded curve.
     float range;
     /// FBX attenuation mode: none, linear, quadratic, or cubic.
     int32_t decay_type; /* 0=none, 1=linear, 2=quadratic, 3=cubic */
@@ -732,6 +732,19 @@ typedef struct vgfx3d_backend {
      * receive slot indices the backend's shaders cannot resolve. */
     /// Nonzero when the backend renders and samples general shadow-atlas slots.
     int8_t shadow_atlas_slots;
+
+    /// @brief Prepare storage for the entire shadow pass before any slot renders (ADR 0337).
+    /// @param ctx Backend context.
+    /// @param slots Required contiguous slot extent, including inherited cached slots.
+    /// @param primary_resolution Requested square primary-map dimension.
+    /// @param atlas_resolution Requested square secondary-map dimension.
+    /// @return Nonzero on success; zero drops all shadow requests for this pass.
+    /// NULL preserves legacy lazy allocation for backends without shared storage.
+    int8_t (*prepare_shadow_frame)(void *ctx,
+                                   int32_t slots,
+                                   int32_t primary_resolution,
+                                   int32_t atlas_resolution);
+
 
     /* 1 = the backend's draw path consumes bone palettes directly (vertex-
      * shader skinning). Replaces the old per-draw backend-name strcmp gate. */
@@ -833,6 +846,15 @@ typedef struct vgfx3d_backend {
     /// @param[in,out] ctx Backend context.
     /// @param[in] cmd Resolved shadow draw command.
     void (*shadow_draw)(void *ctx, const vgfx3d_draw_cmd_t *cmd);
+    /// @brief Optional static instanced depth draw (ADR 0335); NULL uses per-mesh fallback.
+    /// @param ctx Backend with an active shadow slot.
+    /// @param cmd Borrowed shared geometry/material; no deformation or particles.
+    /// @param matrices Borrowed count * 16 row-major transforms; copy before returning if retained.
+    /// @param count Positive number of instances.
+    void (*shadow_draw_instanced)(void *ctx,
+                                  const vgfx3d_draw_cmd_t *cmd,
+                                  const float *matrices,
+                                  int32_t count);
     /// @brief Finish an indexed shadow slot and make it sampleable by scene draws.
     /// @param[in,out] ctx Backend context.
     /// @param[in] slot Shadow slot index.
@@ -879,7 +901,7 @@ typedef struct vgfx3d_backend {
     /* Shadow slots beyond VGFX3D_CSM_SLOTS are "atlas slots": Canvas3D still
      * drives them through shadow_begin/draw/end with per-slot CPU depth
      * buffers, but GPU backends store them as tiles of one internal depth
-     * atlas (static 4x2 grid keyed by slot - VGFX3D_CSM_SLOTS) so the general
+     * atlas (prepared grid keyed by slot - VGFX3D_CSM_SLOTS) so the general
      * shadow budget can grow without consuming more texture bind points. */
 
     /* Optional skybox pass. When non-NULL, Canvas3D may delegate cubemap skybox
