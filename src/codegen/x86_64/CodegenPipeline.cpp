@@ -33,8 +33,10 @@
 #include "codegen/common/NativeEHLowering.hpp"
 #include "codegen/common/linker/NativeLinker.hpp"
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
+#include "codegen/x86_64/CodegenStats.hpp"
 #include "codegen/x86_64/MirVerify.hpp"
 #include "codegen/x86_64/passes/BinaryEmitPass.hpp"
+#include "codegen/x86_64/passes/CodegenStatsPass.hpp"
 #include "codegen/x86_64/passes/EmitPass.hpp"
 #include "codegen/x86_64/passes/LegalizePass.hpp"
 #include "codegen/x86_64/passes/LoweringPass.hpp"
@@ -625,6 +627,11 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
     verifyStages.push_back(VerifyStage::PostSchedule);
     manager.addPass(std::make_unique<passes::PeepholePass>());
     verifyStages.push_back(VerifyStage::PostPeephole);
+    if (codegenStatsEnabled()) {
+        // Counts the final MIR at every optimization level.
+        manager.addPass(std::make_unique<passes::CodegenStatsPass>());
+        verifyStages.push_back(VerifyStage::PostPeephole);
+    }
 
     if (useNativeAsm) {
         manager.addPass(std::make_unique<passes::BinaryEmitPass>(codegenOpts));
@@ -654,12 +661,12 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
     }
 
     if (!manager.run(pipelineModule, diagnostics)) {
-        diagnostics.flush(err);
+        diagnostics.flush(err, &err);
         result.exit_code = 1;
         return finish();
     }
 
-    diagnostics.flush(err);
+    diagnostics.flush(err, &err);
 
     // --- Inject asset blob into .rodata (if present) ---
     if (useNativeAsm && pipelineModule.binaryRodata && !opts_.asset_blob_path.empty()) {

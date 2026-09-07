@@ -645,6 +645,14 @@ if (NOT TARGET test_x86_global_ra)
     zanna_add_ctest(test_x86_global_ra test_x86_global_ra)
 endif ()
 
+if (NOT TARGET test_x86_codegen_stats)
+    zanna_add_test(
+            test_x86_codegen_stats
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_codegen_stats.cpp)
+    target_link_libraries(test_x86_codegen_stats PRIVATE zanna_codegen_x86_64)
+    zanna_add_ctest(test_x86_codegen_stats test_x86_codegen_stats)
+endif ()
+
 if (NOT TARGET test_magic_division)
     zanna_add_test(
             test_magic_division

@@ -234,8 +234,10 @@ The AArch64 backend uses `CodegenPipeline` to orchestrate passes. The pipeline s
 13. **Rodata emission** — string/FP constant pool to `.section __TEXT,__const` (macOS) or `.section .rodata` (Linux)
 14. **Assembly + linking** (`LinkerSupport`) — invoke assembler/linker, link with only the runtime archives and support libraries required by the module; the selected target platform now also chooses the object format, linker platform, and system-assembler triple
 
-Set `ZANNA_CODEGEN_STATS=1` to emit non-fatal diagnostics with peephole transformation counts and MIR
-function/block/instruction, call, branch, load, and store counters.
+Set `ZANNA_CODEGEN_STATS=1` to emit non-fatal diagnostics with the peephole transformation count and,
+at every optimization level, one `[codegen-stats]` line per function (instructions, calls, branches,
+moves, loads, stores, frame loads/stores, offset-materialization prefixes, spill slots, frame bytes,
+callee-saved registers) plus a module total; `scripts/codegen_stats.sh` tabulates them.
 
 Native assembler debug line tables are disabled by default for faster object generation and smaller native-link
 executables. Use `--debug-lines` on `zanna codegen arm64` when DWARF `.debug_line` output and linked debug sections

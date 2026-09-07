@@ -409,6 +409,7 @@ set(_AARCH64_CODEGEN_ONLY_TESTS
         test_aarch64_frame_spill_reuse
         test_aarch64_logical_imm
         test_codegen_arm64_peephole_subpasses
+        test_aarch64_codegen_stats
 )
 foreach (_test IN LISTS _AARCH64_CODEGEN_ONLY_TESTS)
     _aarch64_add_test(${_test}

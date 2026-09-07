@@ -26,7 +26,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdlib>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -45,67 +44,6 @@ namespace {
     if (const char *value = std::getenv("ZANNA_CODEGEN_STATS"))
         return value[0] != '\0' && value[0] != '0';
     return false;
-}
-
-/// @brief Accumulator for MIR shape statistics emitted by the peephole pass.
-struct MirStats {
-    /// @brief Number of functions included in this accumulator.
-    std::size_t functions = 0;
-    /// @brief Total basic blocks across those functions.
-    std::size_t blocks = 0;
-    /// @brief Post-rewrite instruction count.
-    std::size_t instructions = 0;
-    /// @brief MIR @c CALL instruction count.
-    std::size_t calls = 0;
-    /// @brief Combined @c JMP, @c JCC, and @c RET count.
-    std::size_t branches = 0;
-    /// @brief Memory-load and stack-pop count.
-    std::size_t loads = 0;
-    /// @brief Memory-store and stack-push count.
-    std::size_t stores = 0;
-};
-
-/// @brief Predicate: does @p opcode read memory into a register?
-/// @details Used only by the optional stats counter — does not change codegen.
-/// @param opcode Machine opcode to classify.
-/// @return @c true for integer/SSE loads or @c POP.
-[[nodiscard]] bool isLoadOpcode(MOpcode opcode) noexcept {
-    return opcode == MOpcode::MOVmr || opcode == MOpcode::MOVSDmr || opcode == MOpcode::MOVUPSmr ||
-           opcode == MOpcode::POP;
-}
-
-/// @brief Predicate: does @p opcode write a register to memory?
-/// @param opcode Machine opcode to classify.
-/// @return @c true for integer/SSE stores or @c PUSH.
-[[nodiscard]] bool isStoreOpcode(MOpcode opcode) noexcept {
-    return opcode == MOpcode::MOVrm || opcode == MOpcode::MOVSDrm || opcode == MOpcode::MOVUPSrm ||
-           opcode == MOpcode::PUSH;
-}
-
-/// @brief Fold per-function MIR statistics into @p stats.
-/// @details Used only when the codegen-stats env var is active so the
-///          peephole pass can emit a summary at the end. Each accumulator
-///          is per-thread when peephole runs in parallel; results are
-///          merged under a mutex by the caller.
-/// @param fn Rewritten MIR function to count.
-/// @param stats Accumulator incremented in place.
-void accumulateStats(const MFunction &fn, MirStats &stats) {
-    ++stats.functions;
-    stats.blocks += fn.blocks.size();
-    for (const auto &block : fn.blocks) {
-        stats.instructions += block.instructions.size();
-        for (const auto &instr : block.instructions) {
-            if (instr.opcode == MOpcode::CALL)
-                ++stats.calls;
-            if (instr.opcode == MOpcode::JMP || instr.opcode == MOpcode::JCC ||
-                instr.opcode == MOpcode::RET)
-                ++stats.branches;
-            if (isLoadOpcode(instr.opcode))
-                ++stats.loads;
-            if (isStoreOpcode(instr.opcode))
-                ++stats.stores;
-        }
-    }
 }
 
 } // namespace
@@ -133,60 +71,39 @@ bool PeepholePass::run(Module &module, Diagnostics &diags) {
 
     const bool collectStats = codegenStatsEnabled();
     std::atomic_size_t total{0};
-    MirStats stats{};
-    std::mutex statsMutex;
     const std::size_t workerCount = common::codegenWorkerCount(module.mir.size());
     if (workerCount <= 1) {
         for (auto &fn : module.mir) {
             const std::size_t transformed = runPeepholes(fn, *module.target);
-            if (collectStats) {
+            if (collectStats)
                 total.fetch_add(transformed, std::memory_order_relaxed);
-                accumulateStats(fn, stats);
-            }
         }
     } else {
         std::atomic_size_t nextIndex{0};
         std::vector<std::thread> workers;
         workers.reserve(workerCount);
         for (std::size_t worker = 0; worker < workerCount; ++worker) {
-            /// @brief Rewrite atomically claimed functions and merge local statistics.
+            /// @brief Rewrite atomically claimed functions and merge the local count.
             workers.emplace_back([&]() {
-                MirStats localStats{};
                 std::size_t localTotal = 0;
                 for (;;) {
                     const std::size_t index = nextIndex.fetch_add(1, std::memory_order_relaxed);
                     if (index >= module.mir.size())
                         break;
-                    const std::size_t transformed = runPeepholes(module.mir[index], *module.target);
-                    if (collectStats) {
-                        localTotal += transformed;
-                        accumulateStats(module.mir[index], localStats);
-                    }
+                    localTotal += runPeepholes(module.mir[index], *module.target);
                 }
-                if (collectStats) {
+                if (collectStats)
                     total.fetch_add(localTotal, std::memory_order_relaxed);
-                    std::lock_guard<std::mutex> lock(statsMutex);
-                    stats.functions += localStats.functions;
-                    stats.blocks += localStats.blocks;
-                    stats.instructions += localStats.instructions;
-                    stats.calls += localStats.calls;
-                    stats.branches += localStats.branches;
-                    stats.loads += localStats.loads;
-                    stats.stores += localStats.stores;
-                }
             });
         }
         for (auto &worker : workers)
             worker.join();
     }
 
+    // The MIR shape counters live in CodegenStatsPass, which runs on the
+    // final MIR at every optimization level.
     if (collectStats)
-        diags.warning(
-            "x86-64 peephole: " + std::to_string(total.load()) + " transformations; mir " +
-            std::to_string(stats.functions) + " funcs, " + std::to_string(stats.blocks) +
-            " blocks, " + std::to_string(stats.instructions) + " inst, calls=" +
-            std::to_string(stats.calls) + ", branches=" + std::to_string(stats.branches) +
-            ", loads=" + std::to_string(stats.loads) + ", stores=" + std::to_string(stats.stores));
+        diags.warning("x86-64 peephole: " + std::to_string(total.load()) + " transformations");
 
     return true;
 }

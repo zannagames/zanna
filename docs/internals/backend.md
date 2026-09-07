@@ -174,7 +174,17 @@ class PassManager {
 - Failure in any pass short-circuits the pipeline
 - Diagnostics accumulate throughout execution
 - Each pass reports success/failure via return value
-- `ZANNA_CODEGEN_STATS=1` enables non-fatal diagnostics with backend peephole transformation counts and MIR size/memory
+- `ZANNA_CODEGEN_STATS=1` enables non-fatal diagnostics: the peephole transformation count and,
+  from `CodegenStatsPass` (the last MIR pass at every optimization level, so it reports at `-O0`
+  and counts what the emitters print), one `[codegen-stats] arch=<arm64|x64> fn=<name> key=value…`
+  line per function plus a `fn=<module>` total. Keys: `instrs`, `calls`, `branches`, `moves`,
+  `loads`, `stores`, `frameLoads`, `frameStores` (accesses through the frame pointer, including
+  AArch64 accesses reached through a `mov xS,#off; add xS,x29,xS` prefix and excluding x86-64
+  callee-saved save/restore moves), `offsetPrefixes` (those AArch64 prefix pairs; always 0 on
+  x86-64), `spillSlots`, `frameBytes`, `calleeSaved`. `scripts/codegen_stats.sh` tabulates the
+  module totals for the IL benchmark kernels and the demo projects at `-O0`/`-O2` on both targets
+  (assembly only, so it runs on any host) and `--baseline old.tsv` prints the deltas; see
+  "Codegen statistics baseline" below.
 - Triage kill switches (bisection aids; never consulted at `-O0`): `ZANNA_NO_PRE_RA_OPT`,
   `ZANNA_NO_BLOCK_LAYOUT`, `ZANNA_NO_PEEPHOLE`, `ZANNA_NO_SCHEDULER`,
   `ZANNA_NO_POST_SCHED_PEEPHOLE` skip one AArch64 pipeline stage each
@@ -692,6 +702,44 @@ struct AllocationResult {
 ```
 
 ---
+
+### Codegen statistics baseline (Phase 3 start)
+
+`docs/internals/codegen_stats_baseline.tsv` holds the module totals produced by
+`./scripts/codegen_stats.sh --out …` at commit `9dd2749` (Phase 2 complete, block-local register
+allocation on both backends) for the 16 `examples/il/benchmarks` kernels and the four demo
+projects, at `-O0` and `-O2`, for both targets. Regenerate and compare with
+`./scripts/codegen_stats.sh --baseline docs/internals/codegen_stats_baseline.tsv`. The demo rows:
+
+| program | arch | opt | instrs | frameLoads | frameStores | offsetPrefixes | spillSlots | frameBytes |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| chess | arm64 | O0 | 89607 | 7701 | 5377 | 2312 | 1575 | 35312 |
+| chess | arm64 | O2 | 105089 | 11054 | 10340 | 12381 | 9977 | 89344 |
+| chess | x64 | O0 | 107681 | 6135 | 6022 | 0 | 1997 | 52912 |
+| chess | x64 | O2 | 88966 | 6050 | 6282 | 0 | 2344 | 41488 |
+| crackman | arm64 | O0 | 57055 | 5609 | 2916 | 419 | 817 | 21376 |
+| crackman | arm64 | O2 | 56684 | 5481 | 4389 | 3289 | 4450 | 42816 |
+| crackman | x64 | O0 | 76782 | 3825 | 3706 | 0 | 1132 | 36784 |
+| crackman | x64 | O2 | 62172 | 2997 | 3168 | 0 | 1100 | 28000 |
+| paint | arm64 | O0 | 57350 | 5461 | 3115 | 124 | 741 | 22832 |
+| paint | arm64 | O2 | 55230 | 4998 | 3732 | 1897 | 3898 | 39248 |
+| paint | x64 | O0 | 78169 | 3190 | 3025 | 0 | 1017 | 39776 |
+| paint | x64 | O2 | 64893 | 2724 | 2821 | 0 | 1170 | 31696 |
+| openworld_slice | arm64 | O0 | 7060 | 395 | 300 | 0 | 151 | 2416 |
+| openworld_slice | arm64 | O2 | 6274 | 310 | 268 | 27 | 258 | 2912 |
+| openworld_slice | x64 | O0 | 8185 | 218 | 236 | 0 | 87 | 2864 |
+| openworld_slice | x64 | O2 | 7344 | 184 | 203 | 0 | 89 | 2496 |
+
+What the numbers say about the block-local allocator: on AArch64 `-O2` inlining grows `chess` to
+105,089 instructions of which 12,381 are `mov xS,#off; add xS,x29,xS` prefixes for frame accesses
+beyond the ±256-byte encodable range (the frame has 9,977 spill slots, every block-crossing value
+having its own), and frame loads plus stores (21,394) are one instruction in five. x86-64 spills
+less (every displacement encodes inline, and the pinning tier keeps loop-carried values in
+callee-saved registers) but still round-trips 12,332 frame accesses in `chess`. Across all 20
+programs at `-O2`: AArch64 224,277 instructions, 40,670 frame accesses, 17,598 prefixes, 18,783
+spill slots; x86-64 224,706 instructions, 24,434 frame accesses, 4,705 spill slots. The Phase 3
+success metric is those frame-access, prefix and spill-slot columns falling by a majority with no
+program's instruction count rising.
 
 ## Frame Lowering
 

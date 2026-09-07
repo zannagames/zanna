@@ -37,11 +37,13 @@
 
 #include "codegen/aarch64/CodegenPipeline.hpp"
 
+#include "codegen/aarch64/CodegenStats.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/MirVerify.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/passes/BinaryEmitPass.hpp"
 #include "codegen/aarch64/passes/BlockLayoutPass.hpp"
+#include "codegen/aarch64/passes/CodegenStatsPass.hpp"
 #include "codegen/aarch64/passes/EmitPass.hpp"
 #include "codegen/aarch64/passes/ExpandPseudosPass.hpp"
 #include "codegen/aarch64/passes/LegalizePass.hpp"
@@ -492,7 +494,7 @@ bool runCodegenPipeline(passes::AArch64Module &module,
     /// @brief Flush accumulated diagnostics after a pass failure.
     /// @return Always `false` for direct propagation by the caller.
     auto flushOnFailure = [&]() {
-        diags.flush(diagOut);
+        diags.flush(diagOut, &diagOut);
         return false;
     };
 
@@ -577,8 +579,14 @@ bool runCodegenPipeline(passes::AArch64Module &module,
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
         manager.addPass(std::make_unique<passes::ExpandPseudosPass>());
+        std::vector<VerifyStage> stages{VerifyStage::PostExpand};
+        if (codegenStatsEnabled()) {
+            // Counts the final MIR at every optimization level.
+            manager.addPass(std::make_unique<passes::CodegenStatsPass>());
+            stages.push_back(VerifyStage::PostExpand);
+        }
         if (verify)
-            installMirVerifier(manager, {VerifyStage::PostExpand});
+            installMirVerifier(manager, std::move(stages));
         if (!manager.run(module, diags))
             return flushOnFailure();
     }
@@ -595,7 +603,8 @@ bool runCodegenPipeline(passes::AArch64Module &module,
             return flushOnFailure();
     }
 
-    diags.flush(diagOut);
+    // Warnings carry the optional ZANNA_CODEGEN_STATS report; print them too.
+    diags.flush(diagOut, &diagOut);
     return true;
 }
 
