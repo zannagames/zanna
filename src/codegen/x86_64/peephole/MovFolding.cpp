@@ -82,27 +82,14 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
         addOperandMemRegs(mask, instr.operands[idx]);
     }
 
-    switch (instr.opcode) {
-        case MOpcode::RET:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
-            mask |= regBit(static_cast<uint16_t>(PhysReg::XMM0));
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RSP));
-            break;
-        case MOpcode::CQO:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
-            break;
-        case MOpcode::IDIVrm:
-        case MOpcode::DIVrm:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RDX));
-            break;
-        case MOpcode::MULr:
-        case MOpcode::IMULr:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
-            break;
-        default:
-            break;
+    if (instr.opcode == MOpcode::RET) {
+        mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
+        mask |= regBit(static_cast<uint16_t>(PhysReg::XMM0));
+        mask |= regBit(static_cast<uint16_t>(PhysReg::RSP));
     }
+    // CQO / IDIV / DIV / MUL / IMUL / shift-by-CL implicit inputs come from the
+    // shared operand-role model so every post-RA pass agrees on them.
+    mask |= implicitUseMask(instr.opcode);
 
     return mask;
 }
@@ -120,20 +107,7 @@ void addOperandMemRegs(RegMask &mask, const Operand &op) noexcept {
         addOperandReg(mask, instr.operands[idx]);
     }
 
-    switch (instr.opcode) {
-        case MOpcode::CQO:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RDX));
-            break;
-        case MOpcode::IDIVrm:
-        case MOpcode::DIVrm:
-        case MOpcode::MULr:
-        case MOpcode::IMULr:
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RAX));
-            mask |= regBit(static_cast<uint16_t>(PhysReg::RDX));
-            break;
-        default:
-            break;
-    }
+    mask |= implicitDefMask(instr.opcode);
 
     return mask;
 }

@@ -689,6 +689,17 @@ if (WIN32)
     target_sources(zia PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/common/WinDialogSuppress.c)
 endif ()
 set_target_properties(zia PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/src/tools/zia)
+# On ELF/lld the --whole-archive group must come *before* the ordinary
+# `fe_basic` / `zia_editor_services` link items below: a member that was
+# already extracted lazily and is then force-loaded again is reported as a
+# duplicate symbol. Declaring the group first makes the later lazy mentions
+# no-ops (every member is already loaded). Apple and MSVC use link options,
+# which are order-insensitive, and stay next to the explanation below.
+if (UNIX AND NOT APPLE)
+    target_link_libraries(zia PRIVATE
+            -Wl,--whole-archive $<TARGET_FILE:zia_editor_services> $<TARGET_FILE:fe_basic> -Wl,--no-whole-archive
+            il_build)
+endif ()
 target_link_libraries(zia
         PRIVATE
         zanna_common_opts
@@ -715,11 +726,8 @@ if (APPLE)
 elseif (MSVC)
     target_link_options(zia PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:zia_editor_services>")
     target_link_options(zia PRIVATE "/WHOLEARCHIVE:$<TARGET_FILE:fe_basic>")
-elseif (UNIX)
-    target_link_libraries(zia PRIVATE
-            -Wl,--whole-archive $<TARGET_FILE:zia_editor_services> $<TARGET_FILE:fe_basic> -Wl,--no-whole-archive
-            il_build)
 endif ()
+# (ELF: see the --whole-archive group declared above the main link list.)
 if (MSVC)
     target_link_options(zia PRIVATE /STACK:8388608)
 endif ()

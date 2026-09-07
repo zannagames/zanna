@@ -469,6 +469,29 @@ void AsmEmitter::emitMSubRRRR(
     os << "  cbz " << rn(reg) << ", " << label << "\n";
 }
 
+/// @brief Pick a reserved scratch GPR for a wide-immediate expansion.
+/// @details The register allocator hands the reserved scratch registers
+///          (x9/x16/x17) out as one-instruction emergency reload homes, and
+///          several fast paths keep a value in x9 across neighbouring
+///          instructions. An expansion such as `mov x9, #imm; add dst, lhs, x9`
+///          must therefore never pick a scratch that is itself one of the
+///          instruction's operands: `add x9, x9, x9` would read the immediate
+///          twice. Candidates are tried in preference order so the register
+///          chosen for the common (non-conflicting) case is unchanged.
+/// @param candidates Reserved scratch registers in preference order.
+/// @param blocked Operand registers of the instruction being expanded.
+/// @return First candidate absent from @p blocked.
+/// @throws std::runtime_error when every candidate is an operand.
+static PhysReg pickWideImmScratch(std::initializer_list<PhysReg> candidates,
+                                  std::initializer_list<PhysReg> blocked) {
+    for (PhysReg candidate : candidates) {
+        if (std::find(blocked.begin(), blocked.end(), candidate) == blocked.end())
+            return candidate;
+    }
+    throw std::runtime_error(
+        "AArch64 asm emitter: no scratch register for wide immediate expansion");
+}
+
 /// @copydoc AsmEmitter::emitAddRI()
 void AsmEmitter::emitAddRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long imm) const {
     const uint64_t magnitude = absImmUnsigned(imm);
@@ -486,8 +509,10 @@ void AsmEmitter::emitAddRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long
         return;
     }
 
-    emitMovImm64(os, kScratchGPR, static_cast<unsigned long long>(imm));
-    emit3R(os, "add", dst, lhs, kScratchGPR);
+    const PhysReg scratch =
+        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, lhs});
+    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
+    emit3R(os, "add", dst, lhs, scratch);
 }
 
 /// @copydoc AsmEmitter::emitSubRI()
@@ -507,8 +532,10 @@ void AsmEmitter::emitSubRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long
         return;
     }
 
-    emitMovImm64(os, kScratchGPR, static_cast<unsigned long long>(imm));
-    emit3R(os, "sub", dst, lhs, kScratchGPR);
+    const PhysReg scratch =
+        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, lhs});
+    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
+    emit3R(os, "sub", dst, lhs, scratch);
 }
 
 /// @copydoc AsmEmitter::emitAndRRR()
@@ -533,8 +560,10 @@ void AsmEmitter::emitAndRI(std::ostream &os, PhysReg dst, PhysReg src, long long
         return;
     }
 
-    emitMovImm64(os, kScratchGPR, static_cast<unsigned long long>(imm));
-    emit3R(os, "and", dst, src, kScratchGPR);
+    const PhysReg scratch =
+        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
+    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
+    emit3R(os, "and", dst, src, scratch);
 }
 
 /// @copydoc AsmEmitter::emitOrrRI()
@@ -544,8 +573,10 @@ void AsmEmitter::emitOrrRI(std::ostream &os, PhysReg dst, PhysReg src, long long
         return;
     }
 
-    emitMovImm64(os, kScratchGPR, static_cast<unsigned long long>(imm));
-    emit3R(os, "orr", dst, src, kScratchGPR);
+    const PhysReg scratch =
+        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
+    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
+    emit3R(os, "orr", dst, src, scratch);
 }
 
 /// @copydoc AsmEmitter::emitEorRI()
@@ -555,8 +586,10 @@ void AsmEmitter::emitEorRI(std::ostream &os, PhysReg dst, PhysReg src, long long
         return;
     }
 
-    emitMovImm64(os, kScratchGPR, static_cast<unsigned long long>(imm));
-    emit3R(os, "eor", dst, src, kScratchGPR);
+    const PhysReg scratch =
+        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
+    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
+    emit3R(os, "eor", dst, src, scratch);
 }
 
 /// @copydoc AsmEmitter::emitLslRI()
@@ -603,8 +636,10 @@ void AsmEmitter::emitCmpRI(std::ostream &os, PhysReg lhs, long long imm) const {
     } else if (imm >= -4095 && imm < 0) {
         os << "  cmn " << rn(lhs) << ", #" << -imm << "\n";
     } else {
-        emitMovImm64(os, kScratchGPR2, imm);
-        os << "  cmp " << rn(lhs) << ", " << rn(kScratchGPR2) << "\n";
+        const PhysReg scratch =
+            pickWideImmScratch({kScratchGPR2, kScratchGPR, kScratchGPR3}, {lhs});
+        emitMovImm64(os, scratch, imm);
+        os << "  cmp " << rn(lhs) << ", " << rn(scratch) << "\n";
     }
 }
 
@@ -1442,10 +1477,10 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
             const bool isLoad = mi.opc == MOpcode::LdrRegBaseRegLsl ||
                                 mi.opc == MOpcode::Ldr32RegBaseRegLsl ||
                                 mi.opc == MOpcode::LdrFprBaseRegLsl;
-            const bool is32 = mi.opc == MOpcode::Ldr32RegBaseRegLsl ||
-                              mi.opc == MOpcode::Str32RegBaseRegLsl;
-            const bool isFpr = mi.opc == MOpcode::LdrFprBaseRegLsl ||
-                               mi.opc == MOpcode::StrFprBaseRegLsl;
+            const bool is32 =
+                mi.opc == MOpcode::Ldr32RegBaseRegLsl || mi.opc == MOpcode::Str32RegBaseRegLsl;
+            const bool isFpr =
+                mi.opc == MOpcode::LdrFprBaseRegLsl || mi.opc == MOpcode::StrFprBaseRegLsl;
             const long long shift = getImm(mi.ops[3]);
             os << (isLoad ? "  ldr " : "  str ");
             if (isFpr) {
@@ -1472,9 +1507,8 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
                                    : mi.opc == MOpcode::AndRRRLsl ? "and"
                                    : mi.opc == MOpcode::OrrRRRLsl ? "orr"
                                                                   : "eor";
-            os << "  " << mnemonic << ' ' << rn(getReg(mi.ops[0])) << ", "
-               << rn(getReg(mi.ops[1])) << ", " << rn(getReg(mi.ops[2])) << ", lsl #"
-               << getImm(mi.ops[3]) << "\n";
+            os << "  " << mnemonic << ' ' << rn(getReg(mi.ops[0])) << ", " << rn(getReg(mi.ops[1]))
+               << ", " << rn(getReg(mi.ops[2])) << ", lsl #" << getImm(mi.ops[3]) << "\n";
             return;
         }
         case MOpcode::TstRR:
@@ -1571,9 +1605,11 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
                     os << ", lsl #12";
                 os << "\n";
             } else {
-                emitMovImm64(os, kScratchGPR2, static_cast<unsigned long long>(imm));
+                const PhysReg scratch =
+                    pickWideImmScratch({kScratchGPR2, kScratchGPR, kScratchGPR3}, {dst, lhs});
+                emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
                 os << "  " << (isAdds ? "adds " : "subs ") << rn(dst) << ", " << rn(lhs) << ", "
-                   << rn(kScratchGPR2) << "\n";
+                   << rn(scratch) << "\n";
             }
             return;
         }

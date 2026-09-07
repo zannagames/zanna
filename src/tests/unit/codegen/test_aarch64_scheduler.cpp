@@ -709,6 +709,66 @@ TEST(AArch64Scheduler, PipelineIntegration) {
     EXPECT_NE(m.assembly.find("mul"), std::string::npos);
 }
 
+/// Same hazard as above for a wide-immediate ALU form: `add x4, x5, #0x123456`
+/// is emitted as `mov x9, #0x123456; add x4, x5, x9`, so it must not be
+/// scheduled between two instructions that keep a value in x9 either.
+TEST(AArch64Scheduler, WideImmediateAddCannotSplitScratchLiveRange) {
+    const TargetInfo &ti = darwinTarget();
+    AArch64Module module;
+    module.ti = &ti;
+
+    MFunction fn;
+    fn.name = "scratch_live_range_addri";
+
+    MBasicBlock bb;
+    bb.name = "entry";
+
+    MInstr lsr;
+    lsr.opc = MOpcode::LsrRI;
+    lsr.ops = {MOperand::regOp(kScratchGPR), MOperand::regOp(PhysReg::X1), MOperand::immOp(63)};
+    bb.instrs.push_back(std::move(lsr));
+
+    MInstr add;
+    add.opc = MOpcode::AddRRR;
+    add.ops = {
+        MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X0), MOperand::regOp(kScratchGPR)};
+    bb.instrs.push_back(std::move(add));
+
+    MInstr wideAdd;
+    wideAdd.opc = MOpcode::AddRI;
+    wideAdd.ops = {
+        MOperand::regOp(PhysReg::X4), MOperand::regOp(PhysReg::X5), MOperand::immOp(0x123456)};
+    bb.instrs.push_back(std::move(wideAdd));
+
+    MInstr smallAdd;
+    smallAdd.opc = MOpcode::AddRI;
+    smallAdd.ops = {MOperand::regOp(PhysReg::X6), MOperand::regOp(PhysReg::X7), MOperand::immOp(8)};
+    bb.instrs.push_back(std::move(smallAdd));
+
+    MInstr ret;
+    ret.opc = MOpcode::Ret;
+    bb.instrs.push_back(std::move(ret));
+
+    fn.blocks.push_back(std::move(bb));
+    module.mir.push_back(std::move(fn));
+
+    Diagnostics diags;
+    ASSERT_TRUE(SchedulerPass().run(module, diags));
+    const auto &instrs = module.mir[0].blocks[0].instrs;
+    ASSERT_EQ(instrs.size(), 5u);
+    std::size_t lsrAt = 0, wideAt = 0, addAt = 0;
+    for (std::size_t i = 0; i < instrs.size(); ++i) {
+        if (instrs[i].opc == MOpcode::LsrRI)
+            lsrAt = i;
+        else if (instrs[i].opc == MOpcode::AddRRR)
+            addAt = i;
+        else if (instrs[i].opc == MOpcode::AddRI && instrs[i].ops[2].imm == 0x123456)
+            wideAt = i;
+    }
+    EXPECT_LT(lsrAt, addAt);
+    EXPECT_TRUE(wideAt < lsrAt || wideAt > addAt);
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, &argv);
     return zanna_test::run_all_tests();

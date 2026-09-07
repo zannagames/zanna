@@ -218,8 +218,8 @@ TEST(CodegenPreRegAllocOpt, X86KeepsCopyWhoseDestinationIsReadByAnotherBlock) {
     entry.label = ".Lentry";
     entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::MOVrr, {v2, v1}));
     entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::ADDrr, {v3, v2}));
-    entry.instructions.push_back(x64::MInstr::make(x64::MOpcode::JMP, {x64::makeLabelOperand(
-                                                                          ".Lnext")}));
+    entry.instructions.push_back(
+        x64::MInstr::make(x64::MOpcode::JMP, {x64::makeLabelOperand(".Lnext")}));
     fn.blocks.push_back(std::move(entry));
 
     x64::MBasicBlock next;
@@ -266,6 +266,78 @@ TEST(CodegenPreRegAllocOpt, AArch64KeepsCopyWhoseDestinationIsReadByAnotherBlock
     const auto &laterUse = fn.blocks.back().instrs.front();
     ASSERT_EQ(laterUse.ops[1].kind, a64::MOperand::Kind::Reg);
     EXPECT_EQ(laterUse.ops[1].reg.idOrPhys, 2u);
+}
+
+// A copy whose destination is read once before and once after an in-block
+// conditional branch (the shape LegalizePass produces for overflow traps:
+// `adds ...; b.vs trap`) must not be forwarded: the scan used to stop at the
+// branch after recording the first use, erase the copy, and leave the second
+// use reading an undefined virtual register.
+TEST(CodegenPreRegAllocOpt, X86KeepsCopyReadAgainAfterConditionalBranch) {
+    namespace x64 = zanna::codegen::x64;
+    x64::MFunction fn;
+    fn.name = "x86_pre_ra_use_after_jcc";
+    x64::MBasicBlock block;
+    block.label = ".Lentry";
+    auto v1 = x64::makeVRegOperand(x64::RegClass::GPR, 1);
+    auto v2 = x64::makeVRegOperand(x64::RegClass::GPR, 2);
+    auto v3 = x64::makeVRegOperand(x64::RegClass::GPR, 3);
+    auto v4 = x64::makeVRegOperand(x64::RegClass::GPR, 4);
+    block.instructions.push_back(x64::MInstr::make(x64::MOpcode::MOVrr, {v2, v1}));
+    block.instructions.push_back(x64::MInstr::make(x64::MOpcode::ADDrr, {v3, v2}));
+    block.instructions.push_back(x64::MInstr::make(
+        x64::MOpcode::JCC, {x64::makeImmOperand(12), x64::makeLabelOperand(".Ltrap")}));
+    block.instructions.push_back(x64::MInstr::make(x64::MOpcode::ADDrr, {v4, v2}));
+    fn.blocks.push_back(std::move(block));
+    EXPECT_EQ(x64::runPreRegAllocOpt(fn), 0u);
+    ASSERT_EQ(fn.blocks.front().instructions.size(), 4u);
+    EXPECT_EQ(fn.blocks.front().instructions.front().opcode, x64::MOpcode::MOVrr);
+}
+
+TEST(CodegenPreRegAllocOpt, AArch64KeepsCopyReadAgainAfterConditionalBranch) {
+    namespace a64 = zanna::codegen::aarch64;
+    a64::MFunction fn;
+    fn.name = "a64_pre_ra_use_after_bcond";
+    a64::MBasicBlock block;
+    block.name = ".Lentry";
+    auto v1 = a64::MOperand::vregOp(a64::RegClass::GPR, 1);
+    auto v2 = a64::MOperand::vregOp(a64::RegClass::GPR, 2);
+    auto v3 = a64::MOperand::vregOp(a64::RegClass::GPR, 3);
+    auto v4 = a64::MOperand::vregOp(a64::RegClass::GPR, 4);
+    block.instrs.push_back(a64::MInstr{a64::MOpcode::MovRR, {v2, v1}});
+    block.instrs.push_back(a64::MInstr{a64::MOpcode::AddsRRR, {v3, v2, v1}});
+    block.instrs.push_back(a64::MInstr{
+        a64::MOpcode::BCond, {a64::MOperand::condOp("vs"), a64::MOperand::labelOp(".Ltrap")}});
+    block.instrs.push_back(a64::MInstr{a64::MOpcode::AddRRR, {v4, v2, v1}});
+    fn.blocks.push_back(std::move(block));
+    EXPECT_EQ(a64::runPreRegAllocOpt(fn), 0u);
+    ASSERT_EQ(fn.blocks.front().instrs.size(), 4u);
+    EXPECT_EQ(fn.blocks.front().instrs.front().opc, a64::MOpcode::MovRR);
+}
+
+// The same shape with a load whose base register is the copy destination: the
+// memory use counts as a read even though it is not a plain register operand.
+TEST(CodegenPreRegAllocOpt, AArch64KeepsCopyUsedAsBaseBeforeAndAfterBranch) {
+    namespace a64 = zanna::codegen::aarch64;
+    a64::MFunction fn;
+    fn.name = "a64_pre_ra_base_use_after_bcond";
+    a64::MBasicBlock block;
+    block.name = ".Lentry";
+    auto v1 = a64::MOperand::vregOp(a64::RegClass::GPR, 1);
+    auto v2 = a64::MOperand::vregOp(a64::RegClass::GPR, 2);
+    auto v3 = a64::MOperand::vregOp(a64::RegClass::GPR, 3);
+    auto v4 = a64::MOperand::vregOp(a64::RegClass::GPR, 4);
+    block.instrs.push_back(a64::MInstr{a64::MOpcode::MovRR, {v2, v1}});
+    block.instrs.push_back(
+        a64::MInstr{a64::MOpcode::LdrRegBaseImm, {v3, v2, a64::MOperand::immOp(0)}});
+    block.instrs.push_back(a64::MInstr{
+        a64::MOpcode::BCond, {a64::MOperand::condOp("vs"), a64::MOperand::labelOp(".Ltrap")}});
+    block.instrs.push_back(
+        a64::MInstr{a64::MOpcode::StrRegBaseImm, {v4, v2, a64::MOperand::immOp(8)}});
+    fn.blocks.push_back(std::move(block));
+    EXPECT_EQ(a64::runPreRegAllocOpt(fn), 0u);
+    ASSERT_EQ(fn.blocks.front().instrs.size(), 4u);
+    EXPECT_EQ(fn.blocks.front().instrs.front().opc, a64::MOpcode::MovRR);
 }
 
 int main(int argc, char **argv) {

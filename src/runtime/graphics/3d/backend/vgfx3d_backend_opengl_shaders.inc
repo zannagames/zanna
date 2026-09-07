@@ -819,7 +819,10 @@ static const char *const
             "            }\n"
             "            if (sheenCC > 0.0) {\n"
             "                result += irradiance * sheenCC * 0.25 * ao * uIblIntensity;\n"
-            "            }\n"
+            "            }\n",
+            // Chunk split: ISO C99 only guarantees 4095-byte string literals and
+            // the build runs with -Werror=overlength-strings; glShaderSource
+            // concatenates every array element, so the split is invisible to GLSL.
             "        } else {\n"
             "            result = uAmbientColor * baseColor * ao;\n"
             "        }\n"

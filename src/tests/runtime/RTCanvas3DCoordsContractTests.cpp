@@ -75,6 +75,10 @@ extern "C" int32_t vgfx_window_get_height(vgfx_window_t window) {
     return win ? win->physical_h : 0;
 }
 
+// The .inc is C and calls the C99 `isfinite` macro; libstdc++'s <cmath> only
+// provides `std::isfinite`, so make it visible at global scope before inclusion.
+using std::isfinite;
+
 extern "C" {
 #include "../../runtime/graphics/3d/render/rt_canvas3d_coords.inc"
 }

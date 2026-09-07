@@ -33,6 +33,7 @@
 #include "codegen/common/linker/DynStubGen.hpp"
 #include "codegen/common/linker/LinkTypes.hpp"
 #include "codegen/common/linker/MachOBindRebase.hpp"
+#include "codegen/common/linker/RelocConstants.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -189,6 +190,100 @@ int main() {
                 foundGot = true;
         }
         CHECK(foundGot);
+    }
+
+    // Plain R_X86_64_GOTPCREL to a symbol defined in the link (clang emits it
+    // for `pushq foo@GOTPCREL(%rip)`, which the psABI forbids relaxing) gets a
+    // link-time GOT slot: `__gotl_foo` in `.got.zanna_local`, filled through an
+    // R_X86_64_64 relocation against `foo`. Dynamic, local, undefined, and
+    // already-slotted symbols are left alone.
+    {
+        ObjFile user;
+        user.format = ObjFileFormat::ELF;
+        user.sections.push_back({});
+        ObjSection text;
+        text.name = ".text";
+        text.executable = true;
+        text.data = {0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00,
+                     0xFF, 0x35, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x35, 0x00, 0x00, 0x00, 0x00};
+        user.symbols.push_back({});
+        auto addSym = [&](const char *name, ObjSymbol::Binding binding, uint32_t section) {
+            ObjSymbol s;
+            s.name = name;
+            s.binding = binding;
+            s.sectionIndex = section;
+            user.symbols.push_back(std::move(s));
+            return static_cast<uint32_t>(user.symbols.size() - 1);
+        };
+        const uint32_t definedIdx = addSym("rt_defined", ObjSymbol::Global, 1);
+        const uint32_t dynIdx = addSym("printf", ObjSymbol::Undefined, 0);
+        const uint32_t localIdx = addSym("static_helper", ObjSymbol::Local, 1);
+        const uint32_t externIdx = addSym("rt_elsewhere", ObjSymbol::Undefined, 0);
+        auto addReloc = [&](size_t off, uint32_t sym) {
+            ObjReloc r;
+            r.offset = off;
+            r.type = elf_x64::kGotPcRel;
+            r.symIndex = sym;
+            r.addend = -4;
+            text.relocs.push_back(r);
+        };
+        addReloc(2, definedIdx);
+        addReloc(8, dynIdx);
+        addReloc(14, localIdx);
+        addReloc(20, externIdx);
+        user.sections.push_back(std::move(text));
+
+        // rt_elsewhere is defined by a second object with global binding.
+        ObjFile other;
+        other.format = ObjFileFormat::ELF;
+        other.sections.push_back({});
+        ObjSection otherText;
+        otherText.name = ".text";
+        otherText.executable = true;
+        otherText.data = {0xC3};
+        other.sections.push_back(std::move(otherText));
+        other.symbols.push_back({});
+        ObjSymbol elsewhere;
+        elsewhere.name = "rt_elsewhere";
+        elsewhere.binding = ObjSymbol::Global;
+        elsewhere.sectionIndex = 1;
+        other.symbols.push_back(std::move(elsewhere));
+
+        std::vector<ObjFile> objs;
+        objs.push_back(std::move(user));
+        objs.push_back(std::move(other));
+        std::unordered_set<std::string> dyn = {"printf"};
+        ObjFile slots = generateStaticGotSlotsX8664(objs, dyn);
+        CHECK(slots.synthetic);
+        CHECK(slots.sections.size() == 2);
+        if (slots.sections.size() == 2) {
+            const auto &got = slots.sections[1];
+            CHECK(got.name == ".got.zanna_local");
+            CHECK(got.data.size() == 16); // rt_defined + rt_elsewhere, sorted
+            CHECK(got.relocs.size() == 2);
+            std::vector<std::string> gotNames;
+            std::vector<std::string> targetNames;
+            for (size_t i = 1; i < slots.symbols.size(); ++i) {
+                const auto &s = slots.symbols[i];
+                if (s.binding == ObjSymbol::Global)
+                    gotNames.push_back(s.name);
+                else if (s.binding == ObjSymbol::Undefined)
+                    targetNames.push_back(s.name);
+            }
+            CHECK(gotNames ==
+                  (std::vector<std::string>{"__gotl_rt_defined", "__gotl_rt_elsewhere"}));
+            CHECK(targetNames == (std::vector<std::string>{"rt_defined", "rt_elsewhere"}));
+            for (const auto &r : got.relocs) {
+                CHECK(r.type == elf_x64::kAbs64);
+                CHECK(r.addend == 0);
+                CHECK(r.symIndex < slots.symbols.size() &&
+                      slots.symbols[r.symIndex].binding == ObjSymbol::Undefined);
+            }
+        }
+        // Nothing to do → no sections at all.
+        std::unordered_set<std::string> none;
+        std::vector<ObjFile> empty;
+        CHECK(generateStaticGotSlotsX8664(empty, none).sections.empty());
     }
 
     if (gFail == 0) {

@@ -1005,6 +1005,48 @@ TEST(X86Peephole, FrameStoreForwardingInvalidatesWhenStoredRegisterIsClobbered) 
     EXPECT_EQ(instrs[3].opcode, MOpcode::MOVmr);
 }
 
+// The allocator spills a value living in RDX right before `cqo` because the
+// division sequence clobbers RDX implicitly. A later reload of that slot must
+// not be rewritten into `mov rbx, rdx`: RDX now holds the remainder.
+TEST(X86Peephole, FrameStoreForwardingStopsAtImplicitDivisionClobber) {
+    std::vector<MInstr> instrs = {
+        MInstr{MOpcode::MOVrm, {mem(PhysReg::RBP, -16), gpr(PhysReg::RDX)}},
+        MInstr{MOpcode::MOVrr, {gpr(PhysReg::RAX), gpr(PhysReg::RSI)}},
+        MInstr{MOpcode::CQO, {}},
+        MInstr{MOpcode::IDIVrm, {gpr(PhysReg::RCX)}},
+        MInstr{MOpcode::MOVrr, {gpr(PhysReg::RDI), gpr(PhysReg::RDX)}},
+        MInstr{MOpcode::MOVmr, {gpr(PhysReg::RBX), mem(PhysReg::RBP, -16)}},
+    };
+    peephole::PeepholeStats stats{};
+    EXPECT_EQ(peephole::forwardFrameStoreLoads(instrs, stats), 0U);
+    EXPECT_EQ(instrs[5].opcode, MOpcode::MOVmr);
+}
+
+// Same hazard for the widening multiply, which writes RAX:RDX implicitly.
+TEST(X86Peephole, FrameStoreForwardingStopsAtImplicitMultiplyClobber) {
+    std::vector<MInstr> instrs = {
+        MInstr{MOpcode::MOVrm, {mem(PhysReg::RBP, -16), gpr(PhysReg::RAX)}},
+        MInstr{MOpcode::IMULr, {gpr(PhysReg::RCX)}},
+        MInstr{MOpcode::MOVmr, {gpr(PhysReg::RBX), mem(PhysReg::RBP, -16)}},
+    };
+    peephole::PeepholeStats stats{};
+    EXPECT_EQ(peephole::forwardFrameStoreLoads(instrs, stats), 0U);
+    EXPECT_EQ(instrs[2].opcode, MOpcode::MOVmr);
+}
+
+// A store of a register the division does not touch still forwards.
+TEST(X86Peephole, FrameStoreForwardingSurvivesDivisionOfUnrelatedRegister) {
+    std::vector<MInstr> instrs = {
+        MInstr{MOpcode::MOVrm, {mem(PhysReg::RBP, -16), gpr(PhysReg::R12)}},
+        MInstr{MOpcode::CQO, {}},
+        MInstr{MOpcode::IDIVrm, {gpr(PhysReg::RCX)}},
+        MInstr{MOpcode::MOVmr, {gpr(PhysReg::RBX), mem(PhysReg::RBP, -16)}},
+    };
+    peephole::PeepholeStats stats{};
+    EXPECT_EQ(peephole::forwardFrameStoreLoads(instrs, stats), 1U);
+    EXPECT_EQ(instrs[3].opcode, MOpcode::MOVrr);
+}
+
 // ---------------------------------------------------------------------------
 // Multiple optimizations in combination
 // ---------------------------------------------------------------------------
