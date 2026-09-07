@@ -27,6 +27,7 @@
 #include "Peephole.hpp"
 
 #include "MirCfg.hpp"
+#include "PhysLiveness.hpp"
 #include "TargetAArch64.hpp"
 #include "peephole/BranchOpt.hpp"
 #include "peephole/CopyPropDCE.hpp"
@@ -51,9 +52,10 @@
  *
  * In addition to orchestrating modular local sub-passes, this file recognizes
  * stack-based phi transfers at block joins and replaces provably safe
- * store/load round trips with physical-register copies. Cross-block rewrites
- * maintain `carriedExitRegs` so subsequent local cleanup respects the extended
- * physical-register live ranges.
+ * store/load round trips with physical-register copies. Every stage that
+ * drops or redirects a definition reaching a block end solves physical
+ * liveness first (PhysLiveness.hpp) and reads blockExitLive(); cross-block
+ * rewrites publish no metadata of their own.
  */
 
 namespace zanna::codegen::aarch64 {
@@ -99,22 +101,28 @@ static std::uint32_t regKey(const MOperand &op) {
 }
 
 /**
- * @brief Records a physical register newly carried across a block exit.
+ * @brief Exit-live seed of the block-local DCE on the no-target path.
  *
- * Virtual/non-register operands are ignored. Physical IDs are inserted once
- * while preserving the sorted `carriedExitRegs` invariant.
+ * Direct unit tests run the driver without a target and without the
+ * CFG-aware DCE; their expectations were written against the block-local
+ * pass's conservative seed (argument registers and callee-saved GPRs live at
+ * every exit). Keep that seed there, on top of the solved exit-live set.
  *
- * @param[in,out] block Predecessor block whose live-out metadata is extended.
- * @param reg Candidate physical-register operand.
+ * @param exitLive Solved exit-live set of the block.
+ * @return @p exitLive plus X0-X7, V0-V7, and X19-X28.
  */
-static void markCarriedExitReg(MBasicBlock &block, const MOperand &reg) {
-    if (!ph::isPhysReg(reg))
-        return;
-    const uint16_t phys = reg.reg.idOrPhys;
-    const auto insertion =
-        std::lower_bound(block.carriedExitRegs.begin(), block.carriedExitRegs.end(), phys);
-    if (insertion == block.carriedExitRegs.end() || *insertion != phys)
-        block.carriedExitRegs.insert(insertion, phys);
+static PhysRegSet conservativeDceSeed(const PhysRegSet &exitLive) {
+    PhysRegSet seed = exitLive;
+    for (unsigned r = static_cast<unsigned>(PhysReg::X0); r <= static_cast<unsigned>(PhysReg::X7);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    for (unsigned r = static_cast<unsigned>(PhysReg::V0); r <= static_cast<unsigned>(PhysReg::V7);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    for (unsigned r = static_cast<unsigned>(PhysReg::X19); r <= static_cast<unsigned>(PhysReg::X28);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    return seed;
 }
 
 /**
@@ -494,11 +502,8 @@ static bool forwardSinglePredPhiLoads(MFunction &fn, PeepholeStats &stats) {
             continue;
 
         // Removing the successor loads makes every stored source register a
-        // live-in to this block, including identity copies omitted by the move
-        // ordering helper.
-        for (const auto &copy : copies)
-            markCarriedExitReg(fn.blocks[predIndex], copy.srcReg);
-
+        // live-in to this block (including identity copies, which emit no
+        // move); the next stage's liveness solve sees those reads.
         std::vector<bool> removeLoadInstr(block.instrs.size(), false);
         for (const auto &load : loads)
             removeLoadInstr[load.instrIndex] = true;
@@ -692,12 +697,6 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
                 }
             }
             predBlock.instrs.swap(rewritten);
-
-            // The join now consumes each load destination directly from this
-            // edge. Preserve the copy (or an identity-carried value) through
-            // post-schedule block-local cleanup.
-            for (std::size_t loadIndex : selectedLoads)
-                markCarriedExitReg(predBlock, loads[loadIndex].dstReg);
         }
 
         const std::unordered_set<std::size_t> forwardedLoadSet(selectedLoads.begin(),
@@ -844,11 +843,9 @@ static void forwardLayoutSuccessorStoreLoad(MFunction &fn, PeepholeStats &stats)
             continue;
 
         // The replacement moves execute in the successor, so their source
-        // registers are newly live across the predecessor's exit. This also
-        // covers identity pairs, for which no explicit move is emitted.
-        for (const auto &pair : ordered)
-            markCarriedExitReg(fn.blocks[bi], pair.srcReg);
-
+        // registers are newly live across the predecessor's exit (identity
+        // pairs too, for which no explicit move is emitted); the next
+        // stage's liveness solve sees those reads.
         std::vector<MInstr> newPrefix;
         newPrefix.reserve(prefixLoads.size());
         for (const auto &pair : ordered) {
@@ -890,13 +887,18 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
     // the common denominator.
     const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
 
+    // One liveness solve for the stage: the rewrites below never add an
+    // upward-exposed read to a block, so a block's exit-live set computed
+    // here stays a superset of the truth while earlier blocks are rewritten.
+    const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
+
     for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
         auto &block = fn.blocks[bi];
         auto &instrs = block.instrs;
         if (instrs.empty())
             continue;
 
-        const PhysRegSet exitLive = blockExitLive(fn, bi, effectiveTarget);
+        const PhysRegSet exitLive = blockExitLive(fn, bi, effectiveTarget, liveness);
 
         // Pass 0.9: Division/remainder strength reduction (multi-instruction patterns).
         // Must run BEFORE Pass 1's single-instruction strength reduction, because
@@ -908,8 +910,7 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 changed = false;
                 ph::RegConstMap divConsts;
                 for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-                    if (ph::tryRemainderFusion(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs)) {
+                    if (ph::tryRemainderFusion(instrs, i, divConsts, stats, &exitLive)) {
                         changed = true;
                         break;
                     }
@@ -924,11 +925,11 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 for (std::size_t i = 0; i < instrs.size(); ++i) {
                     bool localChange = false;
                     if (instrs[i].opc == MOpcode::UDivRRR)
-                        localChange = ph::tryUDivStrengthReduction(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs);
+                        localChange =
+                            ph::tryUDivStrengthReduction(instrs, i, divConsts, stats, &exitLive);
                     else if (instrs[i].opc == MOpcode::SDivRRR)
-                        localChange = ph::trySDivStrengthReduction(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs);
+                        localChange =
+                            ph::trySDivStrengthReduction(instrs, i, divConsts, stats, &exitLive);
 
                     if (localChange) {
                         changed = true;
@@ -961,11 +962,11 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 --i;
         }
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (ph::tryTbzTbnzFusion(instrs, i, stats, &block.carriedExitRegs) && i > 0)
+            if (ph::tryTbzTbnzFusion(instrs, i, stats, &exitLive) && i > 0)
                 --i;
         }
         for (std::size_t i = 0; i < instrs.size(); ++i) {
-            if (ph::tryCsetBranchFusion(instrs, i, stats, &block.carriedExitRegs) && i > 0)
+            if (ph::tryCsetBranchFusion(instrs, i, stats, &exitLive) && i > 0)
                 --i;
         }
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
@@ -984,8 +985,8 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
 
         // Pass 2: Fold consecutive moves.
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (!ph::tryFoldImmThenMove(instrs, i, stats, &block.carriedExitRegs))
-                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &block.carriedExitRegs);
+            if (!ph::tryFoldImmThenMove(instrs, i, stats, &exitLive))
+                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &exitLive);
         }
 
         // Pass 3+4: Mark and remove identity moves.
@@ -1006,9 +1007,12 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
             ph::removeMarkedInstructions(instrs, toRemove);
 
         // Pass 4.5: Local DCE. The modular pipeline runs the CFG-aware variant
-        // post-block; direct unit tests (no target) keep the legacy per-block path.
-        if (target == nullptr)
-            ph::removeDeadInstructions(instrs, stats, &block.carriedExitRegs);
+        // post-block; direct unit tests (no target) keep the legacy per-block path
+        // with its conservative seed on top of the solved exit-live set.
+        if (target == nullptr) {
+            const PhysRegSet seed = conservativeDceSeed(exitLive);
+            ph::removeDeadInstructions(instrs, stats, &seed);
+        }
 
         // Pass 4.6: Dead flag-setter elimination AFTER DCE so dead readers of
         // flags are gone before we judge a flag-setter unused.
@@ -1178,16 +1182,23 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
 PeepholeStats runPostSchedulePeephole(MFunction &fn, const TargetInfo *target) {
     PeepholeStats stats;
 
-    for (auto &block : fn.blocks) {
-        auto &instrs = block.instrs;
+    // The scheduler may have moved definitions; solve liveness on the
+    // scheduled shape before any move fold or block-local DCE reads it.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
+    const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
+
+    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+        auto &instrs = fn.blocks[bi].instrs;
         if (instrs.empty())
             continue;
+
+        const PhysRegSet exitLive = blockExitLive(fn, bi, effectiveTarget, liveness);
 
         ph::propagateCopies(instrs, stats);
 
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (!ph::tryFoldImmThenMove(instrs, i, stats, &block.carriedExitRegs))
-                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &block.carriedExitRegs);
+            if (!ph::tryFoldImmThenMove(instrs, i, stats, &exitLive))
+                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &exitLive);
         }
 
         std::vector<bool> toRemove(instrs.size(), false);
@@ -1206,8 +1217,10 @@ PeepholeStats runPostSchedulePeephole(MFunction &fn, const TargetInfo *target) {
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool v) { return v; }))
             ph::removeMarkedInstructions(instrs, toRemove);
 
-        if (target == nullptr)
-            ph::removeDeadInstructions(instrs, stats, &block.carriedExitRegs);
+        if (target == nullptr) {
+            const PhysRegSet seed = conservativeDceSeed(exitLive);
+            ph::removeDeadInstructions(instrs, stats, &seed);
+        }
         ph::removeDeadFlagSetters(instrs, stats);
     }
 

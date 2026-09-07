@@ -59,27 +59,25 @@ bool isIdentityFMovRR(const MInstr &instr) noexcept {
 
 /// @brief Return whether @p reg remains live after an adjacent-move pair.
 /// @details An in-block use keeps the value live, while an intervening
-///          redefinition kills it. If neither occurs, allocator-provided
-///          carried-exit metadata accounts for uses in successor blocks that
-///          have no local instruction marking the live-out value.
+///          redefinition kills it. If neither occurs, the block's exit-live
+///          set (solved physical liveness) decides.
 /// @param instrs Block-local instruction sequence containing the move pair.
 /// @param secondMoveIndex Index of the pair's second instruction.
 /// @param reg Intermediate physical register whose liveness is queried.
-/// @param carriedExitRegs Optional sorted live-through register identifiers.
+/// @param exitLive Optional exit-live set of the enclosing block.
 /// @return `true` when @p reg is used before redefinition or is live through
 ///         the block exit.
-static bool usedAfterMovePairOrCarried(const std::vector<MInstr> &instrs,
-                                       std::size_t secondMoveIndex,
-                                       const MOperand &reg,
-                                       const std::vector<uint16_t> *carriedExitRegs) noexcept {
+static bool usedAfterMovePairOrExitLive(const std::vector<MInstr> &instrs,
+                                        std::size_t secondMoveIndex,
+                                        const MOperand &reg,
+                                        const PhysRegSet *exitLive) noexcept {
     for (std::size_t i = secondMoveIndex + 1; i < instrs.size(); ++i) {
         if (usesReg(instrs[i], reg))
             return true;
         if (definesReg(instrs[i], reg))
             return false;
     }
-    return carriedExitRegs != nullptr && reg.kind == MOperand::Kind::Reg && reg.reg.isPhys &&
-           std::binary_search(carriedExitRegs->begin(), carriedExitRegs->end(), reg.reg.idOrPhys);
+    return exitLiveContains(exitLive, reg);
 }
 
 /// @brief Fold `MOV r1, r0` followed by `MOV r2, r1` into `MOV r2, r0` and a kill of r1.
@@ -91,12 +89,12 @@ static bool usedAfterMovePairOrCarried(const std::vector<MInstr> &instrs,
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the first move to consider.
 /// @param stats  Peephole statistics counter (incremented on success).
-/// @param carriedExitRegs Sorted physical registers live into successor blocks.
+/// @param exitLive Optional physical registers live at the block exit.
 /// @return True if the fold was applied at @p idx.
 bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs,
                              std::size_t idx,
                              PeepholeStats &stats,
-                             const std::vector<uint16_t> *carriedExitRegs) {
+                             const PhysRegSet *exitLive) {
     if (idx + 1 >= instrs.size())
         return false;
 
@@ -122,7 +120,7 @@ bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs,
         }
     }
 
-    if (usedAfterMovePairOrCarried(instrs, idx + 1, r1, carriedExitRegs))
+    if (usedAfterMovePairOrExitLive(instrs, idx + 1, r1, exitLive))
         return false;
 
     const MOperand originalSrc = first.ops[1];
@@ -141,12 +139,12 @@ bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs,
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the first move (the `MOVri`) to consider.
 /// @param stats  Peephole statistics counter (incremented on success).
-/// @param carriedExitRegs Sorted physical registers live into successor blocks.
+/// @param exitLive Optional physical registers live at the block exit.
 /// @return True if the fold was applied at @p idx.
 bool tryFoldImmThenMove(std::vector<MInstr> &instrs,
                         std::size_t idx,
                         PeepholeStats &stats,
-                        const std::vector<uint16_t> *carriedExitRegs) {
+                        const PhysRegSet *exitLive) {
     if (idx + 1 >= instrs.size())
         return false;
 
@@ -170,7 +168,7 @@ bool tryFoldImmThenMove(std::vector<MInstr> &instrs,
         }
     }
 
-    if (usedAfterMovePairOrCarried(instrs, idx + 1, rd, carriedExitRegs))
+    if (usedAfterMovePairOrExitLive(instrs, idx + 1, rd, exitLive))
         return false;
 
     const MOperand imm = first.ops[1];

@@ -9,6 +9,7 @@ add_library(il_codegen_aarch64 STATIC
         InstrEffects.cpp
         MirCfg.cpp
         MirVerify.cpp
+        PhysLiveness.cpp
         TerminatorLowering.cpp
         InstrLowering.cpp
         OpcodeDispatch.cpp

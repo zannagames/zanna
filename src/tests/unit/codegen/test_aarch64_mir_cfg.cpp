@@ -15,16 +15,18 @@
 //   - MirCfg edges match the register allocator's liveness CFG exactly.
 //   - Back edges are dominance-proven; layout-created backward branches to
 //     join blocks are not loops.
-//   - blockExitLive is carried ∪ callee-saved ∪ SP/FP/LR, plus the return
-//     registers only when the block leaves the function.
+//   - blockExitLive is the solved physical live-out ∪ carried ∪ SP/FP/LR,
+//     plus the return registers only when the block leaves the function.
 // Ownership/Lifetime: Standalone test binary.
-// Links: src/codegen/aarch64/MirCfg.hpp, src/codegen/aarch64/ra/Liveness.hpp
+// Links: src/codegen/aarch64/MirCfg.hpp, src/codegen/aarch64/PhysLiveness.hpp,
+//        src/codegen/aarch64/ra/Liveness.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "tests/TestHarness.hpp"
 
 #include "codegen/aarch64/MirCfg.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/ra/Liveness.hpp"
 
@@ -280,10 +282,20 @@ TEST(AArch64MirCfg, SelfLoopIsItsOwnNaturalLoop) {
 // blockExitLive
 // ---------------------------------------------------------------------------
 
+namespace {
+
+/// Exit-live set of block @p bi on the solved liveness of @p fn.
+PhysRegSet exitLive(const MFunction &fn, std::size_t bi) {
+    const PhysLiveness liveness = computePhysLiveness(fn, darwinTarget());
+    return blockExitLive(fn, bi, darwinTarget(), liveness);
+}
+
+} // namespace
+
 TEST(AArch64MirCfg, BlockExitLiveForReturningBlock) {
     MFunction fn = function({block("entry", {ret()})});
     fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X5)};
-    const PhysRegSet live = blockExitLive(fn, 0, darwinTarget());
+    const PhysRegSet live = exitLive(fn, 0);
     EXPECT_TRUE(live.contains(PhysReg::X0));
     EXPECT_TRUE(live.contains(PhysReg::V0));
     EXPECT_TRUE(live.contains(PhysReg::X5));
@@ -301,21 +313,43 @@ TEST(AArch64MirCfg, BlockExitLiveForReturningBlock) {
 }
 
 TEST(AArch64MirCfg, BlockExitLiveForBranchingBlockOmitsReturnRegs) {
+    // The successor writes x0 before its `ret` reads it, so x0 is not live
+    // across the edge; v0 is, because the `ret` reads it and nothing writes
+    // it first (a real read, not a seed).
     MFunction fn = function({
         block("entry", {bcond("exit"), br("exit")}),
-        block("exit", {ret()}),
+        block("exit", {ins(MOpcode::MovRI, {x(PhysReg::X0), MOperand::immOp(0)}), ret()}),
     });
     fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X2),
                                     static_cast<uint16_t>(PhysReg::V3)};
-    const PhysRegSet live = blockExitLive(fn, 0, darwinTarget());
+    const PhysRegSet live = exitLive(fn, 0);
     EXPECT_FALSE(live.contains(PhysReg::X0));
-    EXPECT_FALSE(live.contains(PhysReg::V0));
+    EXPECT_TRUE(live.contains(PhysReg::V0));
     EXPECT_TRUE(live.contains(PhysReg::X2));
     EXPECT_TRUE(live.contains(PhysReg::V3));
-    // Inside the function the callee-saved registers may hold pinned slots
-    // or allocator-carried values.
+    // A callee-saved register is live only when a successor reads it; the
+    // successor here reads nothing.
+    EXPECT_FALSE(live.contains(PhysReg::X20));
+    EXPECT_FALSE(live.contains(PhysReg::V8));
+}
+
+TEST(AArch64MirCfg, BlockExitLiveReadsSuccessorUses) {
+    // x20 is read in the successor before any write; x21 is written first.
+    MFunction fn = function({
+        block("entry", {bcond("other"), br("exit")}),
+        block("exit",
+              {ins(MOpcode::MovRR, {x(PhysReg::X0), x(PhysReg::X20)}),
+               ins(MOpcode::MovRI, {x(PhysReg::X21), MOperand::immOp(1)}),
+               ins(MOpcode::AddRRR, {x(PhysReg::X0), x(PhysReg::X0), x(PhysReg::X21)}),
+               ret()}),
+        block("other", {ins(MOpcode::MovRR, {x(PhysReg::X0), x(PhysReg::X9)}), ret()}),
+    });
+    const PhysRegSet live = exitLive(fn, 0);
     EXPECT_TRUE(live.contains(PhysReg::X20));
-    EXPECT_TRUE(live.contains(PhysReg::V8));
+    EXPECT_FALSE(live.contains(PhysReg::X21));
+    // A caller-saved register read by the other successor is live too.
+    EXPECT_TRUE(live.contains(PhysReg::X9));
+    EXPECT_FALSE(live.contains(PhysReg::X0));
 }
 
 TEST(AArch64MirCfg, BlockExitLiveForTrapBlockOmitsReturnRegs) {
@@ -323,9 +357,10 @@ TEST(AArch64MirCfg, BlockExitLiveForTrapBlockOmitsReturnRegs) {
         block("trap", {ins(MOpcode::Bl, {label("rt_trap_div0")})}),
         block("exit", {ret()}),
     });
-    const PhysRegSet live = blockExitLive(fn, 0, darwinTarget());
+    const PhysRegSet live = exitLive(fn, 0);
     EXPECT_FALSE(live.contains(PhysReg::X0));
-    EXPECT_TRUE(live.contains(PhysReg::X20)); // conservative: not a return
+    // Nothing runs after a no-return call: no register is live at its exit.
+    EXPECT_FALSE(live.contains(PhysReg::X20));
 }
 
 TEST(AArch64MirCfg, BlockExitLiveForFallthroughBlocks) {
@@ -335,10 +370,13 @@ TEST(AArch64MirCfg, BlockExitLiveForFallthroughBlocks) {
         block("tail", {ins(MOpcode::MovRR, {x(PhysReg::X0), x(PhysReg::X1)})}),
     });
     // Falls through into another block: not a function exit.
-    EXPECT_FALSE(blockExitLive(fn, 0, darwinTarget()).contains(PhysReg::X0));
-    EXPECT_FALSE(blockExitLive(fn, 1, darwinTarget()).contains(PhysReg::X0));
+    EXPECT_FALSE(exitLive(fn, 0).contains(PhysReg::X0));
+    EXPECT_FALSE(exitLive(fn, 1).contains(PhysReg::X0));
+    // The read of x1 in the tail flows back through the fallthroughs.
+    EXPECT_TRUE(exitLive(fn, 0).contains(PhysReg::X1));
+    EXPECT_TRUE(exitLive(fn, 1).contains(PhysReg::X1));
     // Falls off the end of the function: conservatively a return.
-    EXPECT_TRUE(blockExitLive(fn, 2, darwinTarget()).contains(PhysReg::X0));
+    EXPECT_TRUE(exitLive(fn, 2).contains(PhysReg::X0));
 }
 
 int main(int argc, char **argv) {

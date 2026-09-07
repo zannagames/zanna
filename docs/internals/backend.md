@@ -219,13 +219,23 @@ class PassManager {
   register allocator's liveness, the verifier, the AArch64 CFG-aware DCE, the phi-join
   forwarding/coalescing passes, the loop passes, and the x86-64 layout passes all read it; no pass
   keeps a private terminator scan, so a mid-block branch, a no-return call, a jump table, or a
-  trailing conditional branch means the same thing everywhere. On AArch64 `blockExitLive(fn, bi,
-  target)` is the exit-liveness seed for post-RA block-local rewrites: the allocator's
-  `carriedExitRegs` plus SP/FP/LR, plus the return registers of a block that leaves the function
-  or, for every other exit, the callee-saved registers (which hold pinned frame slots and values
-  carried across blocks; at a return the epilogue restores them). `foldComputeIntoTarget` and
-  `tryMaddFusion` consult it (and the effects model, so a call's argument registers and a
-  return's result registers count as reads) before declaring a register dead at the block end.
+  trailing conditional branch means the same thing everywhere.
+- **Physical liveness for the post-RA passes** (`src/codegen/aarch64/PhysLiveness.hpp`):
+  `computePhysLiveness(fn, target)` solves per-block physical-register live-in/live-out over
+  `MirCfg` from the effects model (a call reads its argument registers and clobbers the
+  caller-saved set, a return reads the result registers, the reserved scratch clobbers count).
+  `blockExitLive(fn, bi, target, liveness)` is the exit-liveness seed every post-RA block-local
+  rewrite reads when its forward scan reaches the block end: the solved live-out, plus SP/FP/LR,
+  plus the return registers of a block that leaves the function, plus (while the block-local
+  allocator exists) its `carriedExitRegs`, which the solved set already contains because the
+  successor reads the carried value. A callee-saved register is live at an exit only when some
+  successor actually reads it; at a return the epilogue restores it, so a value left there is
+  dead. Each peephole stage (`runPerBlockRewrites`, the CFG-aware DCE, `runPostSchedulePeephole`)
+  solves liveness once on the shape it is given; the loop and phi-join forwarders publish no
+  metadata of their own. Consumers: `foldComputeIntoTarget`, `tryMaddFusion`,
+  `tryFoldConsecutiveMoves`, `tryFoldImmThenMove`, `tryTbzTbnzFusion`, `tryCsetBranchFusion`,
+  the division strength reductions, and both DCE variants. The verifier's post-RA dataflow rules
+  read the same solver.
 - **Program-level oracles** (`ctest -L differential`, `ctest -L codegen_optdiff`): on every host
   that runs its own native backend, each shared-corpus program is byte-compared VM-vs-native and
   native `-O0`-vs-`-O2` (MIR verifier on), and `test_differential_il_kernels` does the same for a

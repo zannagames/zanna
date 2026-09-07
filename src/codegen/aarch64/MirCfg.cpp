@@ -152,11 +152,15 @@ PhysRegSet carriedExitRegSet(const MBasicBlock &block) noexcept {
 }
 
 /// @copydoc blockExitLive
-PhysRegSet blockExitLive(const MFunction &fn, std::size_t bi, const TargetInfo &target) {
+PhysRegSet blockExitLive(const MFunction &fn,
+                         std::size_t bi,
+                         const TargetInfo &target,
+                         const PhysLiveness &liveness) {
     using Desc = zanna::codegen::ra::BranchDesc;
 
     const MBasicBlock &block = fn.blocks[bi];
-    PhysRegSet live = carriedExitRegSet(block);
+    PhysRegSet live = liveness.liveOut[bi];
+    live |= carriedExitRegSet(block);
     live.add(PhysReg::SP);
     live.add(PhysReg::X29);
     live.add(PhysReg::X30);
@@ -181,18 +185,11 @@ PhysRegSet blockExitLive(const MFunction &fn, std::size_t bi, const TargetInfo &
     if (returns) {
         // Only the result registers reach the caller; the epilogue restores
         // every callee-saved register from its save slot, so a value left in
-        // one here is dead.
+        // one here is dead. (A `Ret` reads them through the effects model too;
+        // the seed also covers a block that falls off the end.)
         live.add(target.intReturnReg);
         live.add(target.f64ReturnReg);
-        return live;
     }
-
-    // Every other exit stays inside the function: the callee-saved registers
-    // may hold pinned frame slots or values the allocator keeps across blocks.
-    for (PhysReg reg : target.calleeSavedGPR)
-        live.add(reg);
-    for (PhysReg reg : target.calleeSavedFPR)
-        live.add(reg);
     return live;
 }
 

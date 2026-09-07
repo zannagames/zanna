@@ -13,8 +13,9 @@
 // Key invariants:
 //   - Copy origins are not chased through ABI registers; ABI uses are rewritten
 //     only from non-ABI origins and can be disabled through the debug override.
-//   - CFG-aware DCE runs over the shared MirCfg and seeds function exits from
-//     blockExitLive(); the block-local variant conservatively marks
+//   - CFG-aware DCE reads the solved physical liveness (PhysLiveness) and
+//     seeds every block exit from blockExitLive(); the block-local variant
+//     takes the same exit-live set, or without one conservatively marks
 //     callee-saved and ABI registers as live at exit.
 //   - Compute-into-target folding consults the effects model and the block's
 //     exit-live set before declaring an ALU destination dead.
@@ -53,26 +54,26 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats);
 
 /// @brief Remove side-effect-free definitions dead within one basic block.
 ///
-/// Performs a conservative backward physical-register liveness scan seeded
-/// with ABI argument registers, callee-saved GPRs, and any allocator-provided
-/// live-through registers.
+/// Performs a backward physical-register liveness scan seeded with the
+/// block's exit-live set when one is given, and otherwise (no liveness
+/// available) conservatively with the ABI argument registers and the
+/// callee-saved GPRs.
 ///
 /// @param[in,out] instrs Block-local instruction sequence to compact.
 /// @param[in,out] stats Statistics receiving the removal count.
-/// @param carriedExitRegs Optional sorted list of physical registers carried
-///        live across the enclosing block's exit without any in-block use
-///        (MBasicBlock::carriedExitRegs); seeded into the live-at-exit set.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()); used as the live-at-exit seed.
 /// @return Number of instructions removed.
 std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
                                    PeepholeStats &stats,
-                                   const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                   const PhysRegSet *exitLive = nullptr);
 
 /// @brief Perform whole-function, CFG-aware physical-register DCE.
 ///
-/// Builds successor edges from MIR branches and layout fallthrough, solves the
-/// standard live-in/live-out equations, and removes non-effectful definitions
-/// that are dead at their program point. Calls and returns include their
-/// implicit ABI uses and clobbers.
+/// Solves physical liveness over the shared MirCfg (computePhysLiveness),
+/// seeds every block from blockExitLive(), and removes non-effectful
+/// definitions that are dead at their program point. Calls and returns
+/// include their implicit ABI uses and clobbers.
 ///
 /// @param[in,out] fn Function whose block instructions may be removed.
 /// @param[in,out] stats Statistics receiving the removal count.

@@ -535,9 +535,9 @@ TEST(AArch64PeepholeSubpasses, LoopConstHoistRejectsBackwardJoinEdge) {
     EXPECT_TRUE(joinStillDefinesScale);
 }
 
-// ─── Carried exit registers: invisible cross-block liveness ─────────────────
+// ─── Cross-block liveness: a forwarded source stays live into its reader ────
 
-TEST(AArch64PeepholeSubpasses, CrossBlockForwardingPublishesCarriedSource) {
+TEST(AArch64PeepholeSubpasses, CrossBlockForwardingKeepsSourceLiveIntoReader) {
     MFunction fn{};
     fn.name = "cross_block_carried_source";
     fn.frame.spills.push_back(MFunction::SpillSlot{1, 8, 8, -8});
@@ -562,9 +562,9 @@ TEST(AArch64PeepholeSubpasses, CrossBlockForwardingPublishesCarriedSource) {
 
     (void)runPeephole(fn);
 
-    ASSERT_TRUE(std::binary_search(fn.blocks[0].carriedExitRegs.begin(),
-                                   fn.blocks[0].carriedExitRegs.end(),
-                                   static_cast<uint16_t>(PhysReg::X24)));
+    // The consumer now reads x24 directly; no metadata is published, the
+    // next stage's liveness solve sees the read.
+    EXPECT_TRUE(fn.blocks[0].carriedExitRegs.empty());
     const bool spillStoreRemoved =
         std::none_of(fn.blocks[0].instrs.begin(),
                      fn.blocks[0].instrs.end(),
@@ -585,12 +585,15 @@ TEST(AArch64PeepholeSubpasses, CrossBlockForwardingPublishesCarriedSource) {
 
 namespace {
 
-/// Two-block function: `entry` holding @p instrs, then `next: ret`.
-MFunction twoBlocks(std::vector<MInstr> instrs) {
+/// Two-block function: `entry` holding @p instrs, then `next` holding
+/// @p nextInstrs followed by `ret` (a successor that reads a register keeps
+/// it live across the edge; by default it reads nothing).
+MFunction twoBlocks(std::vector<MInstr> instrs, std::vector<MInstr> nextInstrs = {}) {
     MFunction fn{};
     fn.name = "exit_live";
     fn.blocks.push_back(MBasicBlock{"entry", std::move(instrs), {}});
-    fn.blocks.push_back(MBasicBlock{"next", {MInstr{MOpcode::Ret, {}}}, {}});
+    nextInstrs.push_back(MInstr{MOpcode::Ret, {}});
+    fn.blocks.push_back(MBasicBlock{"next", std::move(nextInstrs), {}});
     return fn;
 }
 
@@ -608,20 +611,20 @@ MInstr mov2(PhysReg dst, PhysReg src) {
 
 } // namespace
 
-TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetRespectsCarriedExitRegister) {
-    // add x1, x2, x3 ; mov x0, x1 ; b next — with x1 carried across the exit
-    // the ALU destination is live-out and must not be redirected to x0.
+TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetRespectsExitLiveRegister) {
+    // add x1, x2, x3 ; mov x0, x1 ; b next — with x1 read in `next` the ALU
+    // destination is live-out and must not be redirected to x0.
     MFunction fn = twoBlocks({add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
                               mov2(PhysReg::X0, PhysReg::X1),
-                              MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
-    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X1)};
+                              MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                             {mov2(PhysReg::X4, PhysReg::X1)});
     (void)runPeephole(fn);
     ASSERT_GE(fn.blocks[0].instrs.size(), 2u);
     EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
     EXPECT_EQ(fn.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X1));
     EXPECT_EQ(fn.blocks[0].instrs[1].opc, MOpcode::MovRR);
 
-    // Without the carry the fold is legal and the move disappears.
+    // Without the successor read the fold is legal and the move disappears.
     MFunction folded = twoBlocks({add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
                                   mov2(PhysReg::X0, PhysReg::X1),
                                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
@@ -694,15 +697,27 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsCallArgument) {
     EXPECT_EQ(saved.blocks[0].instrs[0].opc, MOpcode::AddRRR);
     EXPECT_EQ(saved.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
 
-    // ... but not at an exit that stays inside the function, where it may
-    // hold a pinned slot or an allocator-carried value.
+    // ... and inside the function only when a successor reads it (a pinned
+    // slot or a value kept across blocks is an explicit read there).
     MFunction inner = twoBlocks({add3(PhysReg::X25, PhysReg::X2, PhysReg::X3),
                                  mov2(PhysReg::X0, PhysReg::X25),
-                                 MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+                                 MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                                {mov2(PhysReg::X1, PhysReg::X25)});
     (void)runPeephole(inner);
     ASSERT_GE(inner.blocks[0].instrs.size(), 2u);
     EXPECT_EQ(inner.blocks[0].instrs[0].opc, MOpcode::AddRRR);
     EXPECT_EQ(inner.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X25));
+
+    // A callee-saved destination nobody reads later is dead at an inner exit
+    // too: the fold applies.
+    MFunction innerDead = twoBlocks({add3(PhysReg::X25, PhysReg::X2, PhysReg::X3),
+                                     mov2(PhysReg::X0, PhysReg::X25),
+                                     MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    (void)runPeephole(innerDead);
+    ASSERT_FALSE(innerDead.blocks[0].instrs.empty());
+    EXPECT_EQ(innerDead.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(innerDead.blocks[0].instrs[0].ops[0].reg.idOrPhys,
+              static_cast<uint16_t>(PhysReg::X0));
 
     // A caller-saved non-argument destination is clobbered by the call and
     // therefore dead: the fold applies.
@@ -735,11 +750,11 @@ TEST(AArch64PeepholeSubpasses, MaddFusionRespectsExitLiveMultiplyDestination) {
     ASSERT_FALSE(fn.blocks[0].instrs.empty());
     EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::MulRRR);
 
-    // A carried multiply destination is live-out too.
+    // A multiply destination read in the successor is live-out too.
     MFunction carried = twoBlocks({mul3(PhysReg::X4, PhysReg::X1, PhysReg::X2),
                                    add3(PhysReg::X3, PhysReg::X3, PhysReg::X4),
-                                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
-    carried.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X4)};
+                                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                                  {mov2(PhysReg::X0, PhysReg::X4)});
     const auto carriedStats = runPeephole(carried);
     EXPECT_EQ(carriedStats.maddFusions, 0);
     ASSERT_FALSE(carried.blocks[0].instrs.empty());
@@ -759,18 +774,13 @@ TEST(AArch64PeepholeSubpasses, MaddFusionRespectsExitLiveMultiplyDestination) {
     EXPECT_EQ(fused.blocks[0].instrs[0].opc, MOpcode::MAddRRRR);
 }
 
-TEST(AArch64PeepholeSubpasses, PostScheduleMoveFoldPreservesCarriedAbiRegister) {
-    MFunction fn{};
-    fn.name = "carried_move_pair";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    auto &bb = fn.blocks.back();
-    bb.carriedExitRegs = {static_cast<uint16_t>(PhysReg::X0)};
-
-    bb.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X19)}});
-    bb.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X20), MOperand::regOp(PhysReg::X0)}});
-    bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
+TEST(AArch64PeepholeSubpasses, PostScheduleMoveFoldPreservesExitLiveRegister) {
+    // mov x0, x19 ; mov x20, x0 ; b next — x0 is read in `next`, so the
+    // intermediate register is live and the pair must not fold.
+    MFunction fn = twoBlocks({mov2(PhysReg::X0, PhysReg::X19),
+                              mov2(PhysReg::X20, PhysReg::X0),
+                              MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                             {mov2(PhysReg::X1, PhysReg::X0)});
 
     const auto stats = runPostSchedulePeephole(fn);
     EXPECT_EQ(stats.consecutiveMovsFolded, 0);
@@ -778,20 +788,31 @@ TEST(AArch64PeepholeSubpasses, PostScheduleMoveFoldPreservesCarriedAbiRegister) 
     EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::MovRR);
     EXPECT_EQ(fn.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
     EXPECT_EQ(fn.blocks[0].instrs[0].ops[1].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X19));
+
+    // A caller-saved intermediate nobody reads later is folded away (by the
+    // pair fold, or by copy propagation plus block-local DCE): the block
+    // ends up moving x19 straight into x20 and never defines x10.
+    MFunction dead = twoBlocks({mov2(PhysReg::X10, PhysReg::X19),
+                                mov2(PhysReg::X20, PhysReg::X10),
+                                MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    (void)runPostSchedulePeephole(dead);
+    ASSERT_FALSE(dead.blocks[0].instrs.empty());
+    EXPECT_EQ(dead.blocks[0].instrs[0].opc, MOpcode::MovRR);
+    EXPECT_EQ(dead.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X20));
+    EXPECT_EQ(dead.blocks[0].instrs[0].ops[1].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X19));
+    for (const auto &instr : dead.blocks[0].instrs) {
+        if (instr.opc == MOpcode::MovRR)
+            EXPECT_NE(instr.ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X10));
+    }
 }
 
-TEST(AArch64PeepholeSubpasses, PostScheduleImmediateMovePreservesCarriedAbiRegister) {
-    MFunction fn{};
-    fn.name = "carried_immediate_pair";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    auto &bb = fn.blocks.back();
-    bb.carriedExitRegs = {static_cast<uint16_t>(PhysReg::X0)};
-
-    bb.instrs.push_back(
-        MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(42)}});
-    bb.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X19), MOperand::regOp(PhysReg::X0)}});
-    bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
+TEST(AArch64PeepholeSubpasses, PostScheduleImmediateMovePreservesExitLiveRegister) {
+    // mov x0, #42 ; mov x19, x0 ; b next — x0 is read in `next`.
+    MFunction fn =
+        twoBlocks({MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(42)}},
+                   mov2(PhysReg::X19, PhysReg::X0),
+                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                  {mov2(PhysReg::X1, PhysReg::X0)});
 
     const auto stats = runPostSchedulePeephole(fn);
     EXPECT_EQ(stats.consecutiveMovsFolded, 0);
@@ -801,23 +822,19 @@ TEST(AArch64PeepholeSubpasses, PostScheduleImmediateMovePreservesCarriedAbiRegis
     EXPECT_EQ(fn.blocks[0].instrs[0].ops[1].imm, 42);
 }
 
-TEST(AArch64PeepholeSubpasses, StrengthReductionRespectsCarriedDivisorRegister) {
-    // The allocator may carry x1 (the divisor) live into a single-predecessor
-    // successor without any in-block use marking the carry. Reusing it as a
-    // scratch register in the magic-number expansion would clobber the carried
-    // value, so the rewrite must decline.
-    MFunction fn{};
-    fn.name = "carried_divisor";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    auto &bb = fn.blocks.back();
-    bb.carriedExitRegs = {static_cast<uint16_t>(PhysReg::X1)};
-
-    bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(7)}});
-    bb.instrs.push_back(MInstr{MOpcode::UDivRRR,
-                               {MOperand::regOp(PhysReg::X2),
-                                MOperand::regOp(PhysReg::X0),
-                                MOperand::regOp(PhysReg::X1)}});
-    bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
+TEST(AArch64PeepholeSubpasses, StrengthReductionRespectsExitLiveDivisorRegister) {
+    // x1 (the divisor) is read in the successor with no in-block use after
+    // the division. Reusing it as a scratch register in the magic-number
+    // expansion would clobber the live value, so the rewrite must decline.
+    // The quotient x2 is read there too, so the division is not dead.
+    MFunction fn =
+        twoBlocks({MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(7)}},
+                   MInstr{MOpcode::UDivRRR,
+                          {MOperand::regOp(PhysReg::X2),
+                           MOperand::regOp(PhysReg::X0),
+                           MOperand::regOp(PhysReg::X1)}},
+                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}},
+                  {add3(PhysReg::X0, PhysReg::X1, PhysReg::X2)});
 
     auto stats = runPeephole(fn);
     (void)stats;
@@ -829,40 +846,96 @@ TEST(AArch64PeepholeSubpasses, StrengthReductionRespectsCarriedDivisorRegister) 
     EXPECT_TRUE(divSurvives);
 }
 
-TEST(AArch64PeepholeSubpasses, BlockLocalDceKeepsCarriedRegisterDef) {
-    // x10 has no in-block reader, but it is carried across the exit; the
-    // block-local DCE fallback must treat it as live.
+TEST(AArch64PeepholeSubpasses, BlockLocalDceSeedsFromExitLiveSet) {
+    // x10 has no in-block reader, but it is in the exit-live set; the
+    // block-local DCE must treat it as live.
     MFunction fn{};
-    fn.name = "carried_def";
+    fn.name = "exit_live_def";
     fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
     auto &bb = fn.blocks.back();
-    bb.carriedExitRegs = {static_cast<uint16_t>(PhysReg::X10)};
 
     bb.instrs.push_back(
         MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X10), MOperand::immOp(42)}});
     bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
 
+    PhysRegSet exitLive;
+    exitLive.add(PhysReg::X10);
     PeepholeStats stats{};
-    peephole::removeDeadInstructions(fn.blocks[0].instrs, stats, &fn.blocks[0].carriedExitRegs);
+    peephole::removeDeadInstructions(fn.blocks[0].instrs, stats, &exitLive);
 
     const bool defSurvives = std::any_of(fn.blocks[0].instrs.begin(),
                                          fn.blocks[0].instrs.end(),
                                          [](const MInstr &mi) { return mi.opc == MOpcode::MovRI; });
     EXPECT_TRUE(defSurvives);
 
-    // Sanity: without the carried set, the same def is removable.
+    // With an exit-live set that omits x10 the def is removable ...
     MFunction fn2{};
     fn2.blocks.push_back(MBasicBlock{"entry", {}, {}});
     fn2.blocks[0].instrs.push_back(
         MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X10), MOperand::immOp(42)}});
     fn2.blocks[0].instrs.push_back(MInstr{MOpcode::Ret, {}});
     PeepholeStats stats2{};
-    peephole::removeDeadInstructions(fn2.blocks[0].instrs, stats2, nullptr);
-    const bool removedWithoutCarry =
+    PhysRegSet empty;
+    peephole::removeDeadInstructions(fn2.blocks[0].instrs, stats2, &empty);
+    const bool removedWhenDead =
         std::none_of(fn2.blocks[0].instrs.begin(),
                      fn2.blocks[0].instrs.end(),
                      [](const MInstr &mi) { return mi.opc == MOpcode::MovRI; });
-    EXPECT_TRUE(removedWithoutCarry);
+    EXPECT_TRUE(removedWhenDead);
+
+    // ... and so is it without any liveness (x10 is not in the conservative seed).
+    MFunction fn3{};
+    fn3.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn3.blocks[0].instrs.push_back(
+        MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X10), MOperand::immOp(42)}});
+    fn3.blocks[0].instrs.push_back(MInstr{MOpcode::Ret, {}});
+    PeepholeStats stats3{};
+    peephole::removeDeadInstructions(fn3.blocks[0].instrs, stats3, nullptr);
+    const bool removedWithoutLiveness =
+        std::none_of(fn3.blocks[0].instrs.begin(),
+                     fn3.blocks[0].instrs.end(),
+                     [](const MInstr &mi) { return mi.opc == MOpcode::MovRI; });
+    EXPECT_TRUE(removedWithoutLiveness);
+}
+
+TEST(AArch64PeepholeSubpasses, CsetBranchFusionRespectsExitLiveDestination) {
+    // cset x1, eq ; cbnz x1, next ; b other — x1 is read in `next`, so the
+    // materialised boolean is live and the fusion must decline.
+    MFunction fn{};
+    fn.name = "cset_live";
+    fn.blocks.push_back(MBasicBlock{
+        "entry",
+        {MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(0)}},
+         MInstr{MOpcode::Cset, {MOperand::regOp(PhysReg::X1), MOperand::condOp("eq")}},
+         MInstr{MOpcode::Cbnz, {MOperand::regOp(PhysReg::X1), MOperand::labelOp("next")}},
+         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}},
+        {}});
+    fn.blocks.push_back(
+        MBasicBlock{"next", {mov2(PhysReg::X0, PhysReg::X1), MInstr{MOpcode::Ret, {}}}, {}});
+    fn.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret, {}}}, {}});
+    (void)runPeephole(fn);
+    const bool csetSurvives = std::any_of(fn.blocks[0].instrs.begin(),
+                                          fn.blocks[0].instrs.end(),
+                                          [](const MInstr &mi) { return mi.opc == MOpcode::Cset; });
+    EXPECT_TRUE(csetSurvives);
+
+    // Without the successor read the pair fuses into a conditional branch.
+    MFunction fused{};
+    fused.name = "cset_dead";
+    fused.blocks.push_back(MBasicBlock{
+        "entry",
+        {MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(0)}},
+         MInstr{MOpcode::Cset, {MOperand::regOp(PhysReg::X1), MOperand::condOp("eq")}},
+         MInstr{MOpcode::Cbnz, {MOperand::regOp(PhysReg::X1), MOperand::labelOp("next")}},
+         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}},
+        {}});
+    fused.blocks.push_back(MBasicBlock{"next", {MInstr{MOpcode::Ret, {}}}, {}});
+    fused.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret, {}}}, {}});
+    (void)runPeephole(fused);
+    const bool csetGone = std::none_of(fused.blocks[0].instrs.begin(),
+                                       fused.blocks[0].instrs.end(),
+                                       [](const MInstr &mi) { return mi.opc == MOpcode::Cset; });
+    EXPECT_TRUE(csetGone);
 }
 
 // ─── BranchOpt: cold-block reordering and fallthrough safety ────────────────

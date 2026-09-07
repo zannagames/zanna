@@ -13,8 +13,9 @@
 // Key invariants:
 //   - Every register fact comes from effectsOf()/ra::operandRoles; the
 //     verifier adds no opcode table of its own beyond frame-offset shapes.
-//   - The physical liveness solved here runs over the shared MirCfg (built
-//     from ra::classifyControlFlow), so it sees the same edges RA saw.
+//   - The physical liveness it reads (PhysLiveness.hpp) runs over the shared
+//     MirCfg (built from ra::classifyControlFlow), so it sees the same edges
+//     RA saw and the same sets the post-RA peepholes consult.
 //   - Reports are capped per function so one broken function stays readable.
 // Ownership/Lifetime:
 //   - Stateless; all containers are function-local.
@@ -30,6 +31,7 @@
 #include "codegen/aarch64/InstrEffects.hpp"
 #include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 #include "codegen/aarch64/ra/Liveness.hpp"
 #include "codegen/aarch64/ra/OperandRoles.hpp"
 
@@ -407,50 +409,6 @@ bool checkStructure(const MFunction &fn, Reporter &report) {
 // -----------------------------------------------------------------------------
 // Post-RA rules
 // -----------------------------------------------------------------------------
-
-/// @brief Per-block physical liveness over the RA control-flow graph.
-struct PhysLiveness {
-    std::vector<PhysRegSet> liveIn;  ///< Registers live before each block.
-    std::vector<PhysRegSet> liveOut; ///< Registers live after each block.
-};
-
-/// @brief Solve backward physical-register liveness for @p fn.
-[[nodiscard]] PhysLiveness computePhysLiveness(const MFunction &fn, const TargetInfo &target) {
-    const std::size_t n = fn.blocks.size();
-    const MirCfg cfg(fn);
-    const auto &succs = cfg.successors();
-
-    std::vector<PhysRegSet> gen(n);
-    std::vector<PhysRegSet> kill(n);
-    for (std::size_t bi = 0; bi < n; ++bi) {
-        for (const auto &mi : fn.blocks[bi].instrs) {
-            const InstrEffects fx = effectsOf(mi, target);
-            gen[bi].bits |= fx.uses.bits & ~kill[bi].bits;
-            kill[bi].bits |= fx.defs.bits;
-        }
-    }
-
-    PhysLiveness result;
-    result.liveIn.assign(n, {});
-    result.liveOut.assign(n, {});
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (std::size_t bi = n; bi-- > 0;) {
-            PhysRegSet out;
-            for (std::size_t s : succs[bi])
-                out.bits |= result.liveIn[s].bits;
-            PhysRegSet in;
-            in.bits = gen[bi].bits | (out.bits & ~kill[bi].bits);
-            if (out.bits != result.liveOut[bi].bits || in.bits != result.liveIn[bi].bits) {
-                result.liveOut[bi] = out;
-                result.liveIn[bi] = in;
-                changed = true;
-            }
-        }
-    }
-    return result;
-}
 
 /// @brief Run the rules that hold once every value has a physical register.
 void checkPostRA(const MFunction &fn, const TargetInfo &target, Reporter &report) {

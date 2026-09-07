@@ -112,7 +112,8 @@ Phase 2.3 (one `MirCfg` per backend, `blockExitLive`, B1) is implemented:
   `LoopOpt` bounded natural loops by layout position) are gone with them.
 - `blockExitLive(fn, bi, target)` (`aarch64/MirCfg.hpp`) = `carriedExitRegs` ∪ SP/FP/LR ∪ (return
   registers when the block leaves the function, otherwise callee-saved GPR/FPR — pinned slots live
-  there; at a return the epilogue restores them, so a value left in one is dead).
+  there; at a return the epilogue restores them, so a value left in one is dead). (Superseded in
+  Phase 3 C4 by the solved-liveness form below.)
   `foldComputeIntoTarget` and `tryMaddFusion` (B1) now take the ABI and this set and scan with the
   effects model, so a call's argument registers and a return's result registers are reads, a call's
   caller-saved clobbers are writes, and a value reaching the block end is dead only if it is not
@@ -171,7 +172,50 @@ Phase 2.5 (differential coverage) is implemented:
     `VerifierAcceptsDemotedAddManyBlocksPastHeader`). 4 seeds.
   After the fixes the first 400 seeds agree on VM, native -O0, and native -O2.
 
-Everything from B2 onward is open.
+Phase 3 (function-wide register allocation, C1) is in progress; the plan is in
+`docs/internals/backend.md` ("Codegen statistics baseline") and the ADR that lands with the flip.
+Steps landed so far, each gate-green with the default pipeline unchanged unless stated:
+
+- **C0 — metrics.** `aarch64/passes/CodegenStatsPass` and `x86_64/passes/CodegenStatsPass` print
+  one `[codegen-stats]` line per function and module at every -O level when `ZANNA_CODEGEN_STATS`
+  is set (instructions, loads/stores, frame loads/stores, offset prefixes, spill slots, frame
+  bytes, callee-saved count); `scripts/codegen_stats.sh` builds the TSV for the demos and the IL
+  benchmarks and diffs it against `docs/internals/codegen_stats_baseline.tsv`.
+- **C1 — parallel copies.** `common/ra/ParallelCopy.hpp`: allocator-independent sequentialisation of
+  a `(dst, src)` location bundle (dependency order, identity drop, cycle break through a scratch,
+  mem-to-mem through a temp). x86-64 `Coalescer::lower` runs on it with byte-identical output.
+- **C2 — `ParallelCopy` opcode.** The AArch64 pseudo (`dst0, src0, dst1, src1, …`, roles even=def
+  / odd=use) with verifier rules `PCOPY` (shape; never survives RA) and `SCRATCH-EXIT` (reserved
+  scratch never live out of a block); the emitters, encoder, expander, peepholes, and scheduler
+  reject or skip it.
+- **C3 — edge-copy lowering mode.** `AArch64Module::edgeCopyLowering` (off by default): block
+  parameters are virtual registers, branch arguments one `ParallelCopy` per edge (inline for `br`,
+  in the existing split block for `cbr`/`switch`), cross-block temporaries keep their vreg, blocks
+  lower in an order where every definition precedes its uses. The shared corpus lowers and verifies
+  in that mode (`test_aarch64_lowering_edge_copies`).
+- **C4 — physical liveness for the post-RA passes.** `aarch64/PhysLiveness.{hpp,cpp}`
+  (`computePhysLiveness`, moved out of the verifier) and `blockExitLive(fn, bi, target, liveness)`
+  = solved live-out ∪ `carriedExitRegs` ∪ SP/FP/LR ∪ (return registers at a function exit). The
+  twelve `carriedExitRegs` consumers (`tryFoldConsecutiveMoves`, `tryFoldImmThenMove`,
+  `tryTbzTbnzFusion`, `tryCsetBranchFusion`, the three division rewrites, both DCE variants, the
+  per-block and post-schedule drivers) take a `const PhysRegSet *exitLive` instead; each peephole
+  stage solves liveness once on its input shape, and the phi-join forwarders and loop passes no
+  longer publish carried metadata (`markCarriedExitReg` is gone). Under real liveness a callee-saved
+  register is exit-live only when a successor reads it, so the conservative "every callee-saved
+  register is live inside the function" seed is gone as well. Tests: `test_aarch64_phys_liveness`
+  (edge read, kill, call clobber/argument, return, loop back edge, diamond, determinism, the exit
+  seed, and the property *carried ⊆ solved live-out* over the allocated shared corpus),
+  `test_aarch64_mir_cfg` and `test_codegen_arm64_peephole_subpasses` re-derived on successor reads
+  instead of hand-set carried sets. Generated code at AArch64 -O2 (`scripts/codegen_stats.sh`
+  against the Phase 3 baseline): chess 105,089 → 104,752 instructions, crackman 56,684 → 56,569,
+  paint 55,230 → 55,127 (dead constant materializations and pinned-slot address computations into
+  callee-saved registers, which the old seed kept alive, are gone); frame traffic, offset prefixes,
+  and spill slots unchanged. openworld_slice 6,274 → 6,280: three `mov x5, x0; mov x0, x5` pairs
+  before a return in blocks with a mid-block trap branch survive, because the trap call's effects
+  read every argument register (`Bl` carries no arity) and the block-granular live-out includes
+  the trap edge; a call-site argument mask (item 16) recovers them.
+
+Everything from B2 onward, and Phase 3 from C5 on, is open.
 
 ## Context
 

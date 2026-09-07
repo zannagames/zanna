@@ -19,18 +19,19 @@
 //   - A back edge is an edge whose target dominates its source; a natural
 //     loop is the header plus everything that reaches the latch without
 //     passing through the header.
-//   - blockExitLive() is a superset of what the allocator publishes in
-//     MBasicBlock::carriedExitRegs: it adds the frame/stack/link registers,
-//     the return registers of a block that leaves the function, and the
-//     callee-saved registers of a block that does not (the epilogue restores
-//     them at a return, so a value left there is dead).
+//   - blockExitLive() is the solved physical live-out of the block
+//     (PhysLiveness) plus what no in-block read can express: the
+//     frame/stack/link registers, the return registers of a block that
+//     leaves the function, and, until the block-local allocator is retired,
+//     whatever it publishes in MBasicBlock::carriedExitRegs.
 // Ownership/Lifetime:
 //   - MirCfg is a snapshot: it holds no reference to the function and is
 //     invalidated by any change to block order or terminators.
 // Links: src/codegen/aarch64/MirCfg.cpp, src/codegen/aarch64/ra/Liveness.hpp,
+//        src/codegen/aarch64/PhysLiveness.hpp,
 //        src/codegen/common/ra/CfgExtract.hpp,
 //        src/codegen/common/ra/Dominators.hpp,
-//        docs/internals/backend-codegen-review-2026-09.md (Phase 2.3 / B1)
+//        docs/internals/backend-codegen-review-2026-09.md (Phase 2.3 / B1, Phase 3 C4)
 //
 //===----------------------------------------------------------------------===//
 
@@ -38,6 +39,7 @@
 
 #include "codegen/aarch64/InstrEffects.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/common/ra/Dominators.hpp"
 
@@ -162,21 +164,28 @@ class MirCfg {
 
 /// @brief Physical registers that must be treated as live at the exit of
 ///        block @p bi of @p fn after register allocation.
-/// @details The union of the block's carried exit registers and SP/FP/LR,
-///          plus: when the block leaves the function (through `Ret` or by
-///          falling off the end) the integer and floating-point return
-///          registers, and otherwise the target's callee-saved GPR/FPR sets
-///          (which hold pinned frame slots and values the allocator keeps
-///          across blocks). At a return the epilogue restores every
-///          callee-saved register from its slot, so a definition left there
-///          is dead. Block-local rewrites that redirect or drop a definition
-///          reaching the block end must consult this set (review item B1).
-/// @param fn     Function owning the block.
-/// @param bi     Block index in `[0, fn.blocks.size())`.
-/// @param target ABI description supplying the register sets.
+/// @details The solved live-out of the block (`liveness.liveOut[bi]`: every
+///          register some successor reads before writing, through any number
+///          of edges), plus SP/FP/LR, plus the block's carried exit registers
+///          (redundant with the solved set whenever the successor reads the
+///          carried value, kept while the block-local allocator exists), plus
+///          the integer and floating-point return registers when the block
+///          leaves the function (through `Ret` or by falling off the end).
+///          A callee-saved register is live here only if it is actually read
+///          later: at a return the epilogue restores it from its slot, and
+///          inside the function a pinned slot or a carried value shows up as
+///          an explicit read in the successor. Block-local rewrites that
+///          redirect or drop a definition reaching the block end must consult
+///          this set (review item B1).
+/// @param fn       Function owning the block.
+/// @param bi       Block index in `[0, fn.blocks.size())`.
+/// @param target   ABI description supplying the register sets.
+/// @param liveness Physical liveness of @p fn in its current shape
+///                 (`computePhysLiveness(fn, target)`).
 /// @return The live-at-exit register set.
 [[nodiscard]] PhysRegSet blockExitLive(const MFunction &fn,
                                        std::size_t bi,
-                                       const TargetInfo &target);
+                                       const TargetInfo &target,
+                                       const PhysLiveness &liveness);
 
 } // namespace zanna::codegen::aarch64

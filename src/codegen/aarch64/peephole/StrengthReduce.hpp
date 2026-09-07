@@ -74,17 +74,16 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param idx Index of the candidate `UDivRRR`.
 /// @param knownConsts Physical-GPR constants valid at @p idx.
 /// @param[in,out] stats Statistics updated when the rewrite succeeds.
-/// @param carriedExitRegs Optional sorted list of physical registers the
-///        allocator carries live across the enclosing block's exit without any
-///        in-block use (MBasicBlock::carriedExitRegs); clobber analysis treats
-///        them as live at block end.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()); clobber analysis treats them as live at
+///        block end.
 /// @return `true` when the divisor was suitable, the divisor register was dead,
 ///         scratch registers were available, and an expansion was installed.
 [[nodiscard]] bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
                                             std::size_t idx,
                                             const RegConstMap &knownConsts,
                                             PeepholeStats &stats,
-                                            const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                            const PhysRegSet *exitLive = nullptr);
 
 /// @brief Apply strength reduction: signed division by constant.
 ///
@@ -97,15 +96,15 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param idx Index of the candidate `SDivRRR`.
 /// @param knownConsts Physical-GPR constants valid at @p idx.
 /// @param[in,out] stats Statistics updated when the rewrite succeeds.
-/// @param carriedExitRegs Optional sorted physical-register identifiers carried
-///        live through the block exit; such a divisor register cannot be reused.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit; such a divisor register cannot be reused.
 /// @return `true` when the instruction was replaced by an equivalent move,
 ///         negate, shift/bias, or multiply-high sequence.
 [[nodiscard]] bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
                                             std::size_t idx,
                                             const RegConstMap &knownConsts,
                                             PeepholeStats &stats,
-                                            const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                            const PhysRegSet *exitLive = nullptr);
 
 /// @brief Fuse [SU]DIV+MSUB remainder pattern into cheaper operations.
 ///
@@ -120,15 +119,15 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param idx Index of the `[SU]DivRRR` candidate.
 /// @param knownConsts Physical-GPR constants valid at @p idx.
 /// @param[in,out] stats Statistics updated when the rewrite succeeds.
-/// @param carriedExitRegs Accepted for consistency with the other division
-///        rewrites. The current remainder forms reuse the division result and
-///        do not need to consult the live-through set.
+/// @param exitLive Accepted for consistency with the other division rewrites.
+///        The current remainder forms reuse the division result and do not
+///        need to consult the exit-live set.
 /// @return `true` when the adjacent divide/remainder sequence was replaced.
 [[nodiscard]] bool tryRemainderFusion(std::vector<MInstr> &instrs,
                                       std::size_t idx,
                                       const RegConstMap &knownConsts,
                                       PeepholeStats &stats,
-                                      const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                      const PhysRegSet *exitLive = nullptr);
 
 /// @brief Fold a known right-hand operand of `AddRRR` or `SubRRR` into an immediate.
 /// @param[in,out] instr Candidate register-form instruction.

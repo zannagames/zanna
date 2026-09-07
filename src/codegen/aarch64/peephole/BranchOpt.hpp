@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "../Peephole.hpp"
 
@@ -71,14 +72,14 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param[in,out] instrs Instruction sequence being rewritten.
 /// @param idx Index of the `AndRI` candidate.
 /// @param[in,out] stats Statistics updated when a fusion succeeds.
-/// @param carriedExitRegs Optional sorted physical-register identifiers carried
-///        live across the enclosing block's exit. A carried mask destination
-///        prevents fusion because its successor use is invisible locally.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()). An exit-live mask destination prevents
+///        fusion because its successor use is invisible locally.
 /// @return `true` when the mask and branch were replaced by a bit-test branch.
 [[nodiscard]] bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
                                     std::size_t idx,
                                     PeepholeStats &stats,
-                                    const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                    const PhysRegSet *exitLive = nullptr);
 
 /// @brief Fold a materialized condition and zero branch into `B.cond`.
 ///
@@ -90,15 +91,14 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param[in,out] instrs Instruction sequence being rewritten.
 /// @param idx Index of the `Cset` candidate.
 /// @param[in,out] stats Statistics updated when a fusion succeeds.
-/// @param carriedExitRegs Optional sorted list of physical registers carried
-///        live across the enclosing block's exit without any in-block use
-///        (MBasicBlock::carriedExitRegs); a CSET into such a register is
-///        never fused away.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()); a CSET into such a register is never fused
+///        away.
 /// @return `true` when the materialization and zero branch were folded.
 [[nodiscard]] bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
                                        std::size_t idx,
                                        PeepholeStats &stats,
-                                       const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                       const PhysRegSet *exitLive = nullptr);
 
 /// @brief Move safely relocatable trap and error blocks to the function tail.
 ///

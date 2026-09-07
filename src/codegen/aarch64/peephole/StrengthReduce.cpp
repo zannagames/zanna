@@ -99,32 +99,25 @@ using zanna::codegen::UnsignedMagicNumber;
 /// @brief Return true if @p reg is used by any instruction after @p idx before being redefined.
 /// @details Scans forward from idx+1; stops early when a definition is found.
 ///          When the scan reaches the end of the block without a redefinition,
-///          the register may still be live: the allocator can carry values to
-///          a single-predecessor successor in registers with no in-block use
-///          marking the carry. @p carriedExitRegs (MBasicBlock::carriedExitRegs,
-///          sorted) supplies that invisible live-out set.
+///          the register may still be live in a successor; @p exitLive
+///          (blockExitLive(), solved physical liveness) supplies that set.
 /// @param instrs Block-local instruction sequence to scan.
 /// @param idx Index after which the scan begins.
 /// @param reg Physical register whose liveness is queried.
-/// @param carriedExitRegs Optional sorted allocator-provided live-through set.
+/// @param exitLive Optional exit-live set of the enclosing block.
 /// @return `true` when @p reg is used before redefinition or remains live at
 ///         the end of the block.
-[[nodiscard]] bool regUsedAfterBeforeRedef(
-    const std::vector<MInstr> &instrs,
-    std::size_t idx,
-    const MOperand &reg,
-    const std::vector<uint16_t> *carriedExitRegs = nullptr) noexcept {
+[[nodiscard]] bool regUsedAfterBeforeRedef(const std::vector<MInstr> &instrs,
+                                           std::size_t idx,
+                                           const MOperand &reg,
+                                           const PhysRegSet *exitLive = nullptr) noexcept {
     for (std::size_t i = idx + 1; i < instrs.size(); ++i) {
         if (usesReg(instrs[i], reg))
             return true;
         if (definesReg(instrs[i], reg))
             return false;
     }
-    if (carriedExitRegs != nullptr && reg.kind == MOperand::Kind::Reg && reg.reg.isPhys) {
-        return std::binary_search(
-            carriedExitRegs->begin(), carriedExitRegs->end(), reg.reg.idOrPhys);
-    }
-    return false;
+    return exitLiveContains(exitLive, reg);
 }
 
 /// @brief Compute the magic number for signed division by a constant.
@@ -263,7 +256,7 @@ bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
                               std::size_t idx,
                               const RegConstMap &knownConsts,
                               PeepholeStats &stats,
-                              const std::vector<uint16_t> *carriedExitRegs) {
+                              const PhysRegSet *exitLive) {
     if (idx >= instrs.size())
         return false;
 
@@ -289,7 +282,7 @@ bool tryUDivStrengthReduction(std::vector<MInstr> &instrs,
     const MOperand lhs = divInstr.ops[1];
     const MOperand rhsReg = divInstr.ops[2];
 
-    const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, carriedExitRegs);
+    const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, exitLive);
     if (rhsLiveAfter)
         return false;
 
@@ -373,7 +366,7 @@ bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
                               std::size_t idx,
                               const RegConstMap &knownConsts,
                               PeepholeStats &stats,
-                              const std::vector<uint16_t> *carriedExitRegs) {
+                              const PhysRegSet *exitLive) {
     if (idx >= instrs.size())
         return false;
 
@@ -401,7 +394,7 @@ bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
 
     if (divisor == -1) {
         const PhysReg rhsPhys = static_cast<PhysReg>(rhsReg.reg.idOrPhys);
-        const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, carriedExitRegs);
+        const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, exitLive);
         if (rhsLiveAfter)
             return false;
 
@@ -422,7 +415,7 @@ bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
     const bool positiveDivisor = divisor > 0;
     const int log = positiveDivisor ? log2IfPowerOf2(divisor) : -1;
     if (log >= 1 && log <= 63) {
-        const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, carriedExitRegs);
+        const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, exitLive);
         if (rhsLiveAfter)
             return false;
 
@@ -470,7 +463,7 @@ bool trySDivStrengthReduction(std::vector<MInstr> &instrs,
     if (magic.multiplier == 0)
         return false;
 
-    const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, carriedExitRegs);
+    const bool rhsLiveAfter = regUsedAfterBeforeRedef(instrs, idx, rhsReg, exitLive);
     if (rhsLiveAfter)
         return false;
 
@@ -517,7 +510,7 @@ bool tryRemainderFusion(std::vector<MInstr> &instrs,
                         std::size_t idx,
                         const RegConstMap &knownConsts,
                         PeepholeStats &stats,
-                        const std::vector<uint16_t> *carriedExitRegs) {
+                        const PhysRegSet *exitLive) {
     // Match the pattern: [SU]DivRRR tmp, lhs, rhs; MSubRRRR dst, tmp, rhs, lhs
     // where rhs is a known power-of-2 constant.
     //

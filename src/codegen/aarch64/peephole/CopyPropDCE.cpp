@@ -14,8 +14,9 @@
 //   - Copy propagation rewrites an ABI-register use only when the copy origin
 //     is a non-ABI register (disable with ZANNA_NO_ABI_COPYFWD=1); origins are
 //     never chased through ABI registers.
-//   - CFG-aware DCE runs over the shared MirCfg and seeds function exits from
-//     blockExitLive(); the block-local variant conservatively marks
+//   - CFG-aware DCE reads the solved physical liveness (PhysLiveness) and
+//     seeds every block exit from blockExitLive(); the block-local variant
+//     takes the same exit-live set, or without one conservatively marks
 //     callee-saved and ABI registers as live at exit.
 //   - Compute-into-target folding consults the effects model and the block's
 //     exit-live set before declaring an ALU destination dead.
@@ -33,6 +34,7 @@
 #include "codegen/aarch64/InstrEffects.hpp"
 #include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -220,34 +222,36 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
 /// @copydoc removeDeadInstructions
 std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
                                    PeepholeStats &stats,
-                                   const std::vector<uint16_t> *carriedExitRegs) {
+                                   const PhysRegSet *exitLive) {
     if (instrs.empty())
         return 0;
 
     std::unordered_set<uint32_t> liveRegs;
 
-    // Mark argument registers as live at block exit
-    for (int i = 0; i <= 7; ++i) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) |
-                        (static_cast<uint32_t>(PhysReg::X0) + i));
-    }
-    for (int i = 0; i <= 7; ++i) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::FPR) << 16) |
-                        (static_cast<uint32_t>(PhysReg::V0) + i));
-    }
-
-    // Mark callee-saved GPRs (x19-x28) as live at block exit
-    for (uint32_t r = static_cast<uint32_t>(PhysReg::X19); r <= static_cast<uint32_t>(PhysReg::X28);
-         ++r) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) | r);
-    }
-
-    // Registers carried across the block exit by the allocator have no
-    // in-block use marking their liveness; treat them as live at exit.
-    if (carriedExitRegs != nullptr) {
-        for (uint16_t phys : *carriedExitRegs) {
-            const RegClass cls = isGPR(static_cast<PhysReg>(phys)) ? RegClass::GPR : RegClass::FPR;
+    if (exitLive != nullptr) {
+        // The solved exit-live set is exact: seed with it and nothing else.
+        for (unsigned bit = 0; bit < 64; ++bit) {
+            if ((exitLive->bits & (uint64_t{1} << bit)) == 0)
+                continue;
+            const RegClass cls = bit < 32 ? RegClass::GPR : RegClass::FPR;
+            const uint32_t phys = bit < 32 ? bit : static_cast<uint32_t>(PhysReg::V0) + (bit - 32);
             liveRegs.insert((static_cast<uint32_t>(cls) << 16) | phys);
+        }
+    } else {
+        // No liveness available: mark the argument registers and the
+        // callee-saved GPRs (x19-x28) as live at block exit.
+        for (int i = 0; i <= 7; ++i) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) |
+                            (static_cast<uint32_t>(PhysReg::X0) + i));
+        }
+        for (int i = 0; i <= 7; ++i) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::FPR) << 16) |
+                            (static_cast<uint32_t>(PhysReg::V0) + i));
+        }
+        for (uint32_t r = static_cast<uint32_t>(PhysReg::X19);
+             r <= static_cast<uint32_t>(PhysReg::X28);
+             ++r) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) | r);
         }
     }
 
@@ -429,57 +433,12 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
     if (fn.blocks.empty())
         return 0;
 
-    // The shared CFG snapshot: the same edges the allocator and the verifier
-    // see (mid-block Br, no-return calls, jump tables, trailing conditional
-    // branches all classified once).
-    const MirCfg cfg(fn);
-    const auto &successors = cfg.successors();
+    // The solved liveness runs over the shared CFG snapshot: the same edges the
+    // allocator and the verifier see (mid-block Br, no-return calls, jump
+    // tables, trailing conditional branches all classified once), and the
+    // same use/def facts as every other post-RA pass.
+    const PhysLiveness liveness = computePhysLiveness(fn, target);
     const std::size_t blockCount = fn.blocks.size();
-
-    std::vector<RegSet> gen(blockCount);
-    std::vector<RegSet> kill(blockCount);
-    std::vector<RegSet> liveIn(blockCount);
-    std::vector<RegSet> liveOut(blockCount);
-
-    for (std::size_t bi = 0; bi < blockCount; ++bi) {
-        for (const auto &instr : fn.blocks[bi].instrs) {
-            RegSet uses;
-            RegSet defs;
-            collectUsesDefs(instr, target, uses, defs);
-
-            gen[bi].bits |= uses.bits & ~kill[bi].bits;
-            kill[bi].bits |= defs.bits;
-        }
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (std::size_t bi = blockCount; bi-- > 0;) {
-            // RegSet and PhysRegSet share one bit layout, so the exit-live
-            // seed (carried registers, callee-saved, SP/FP/LR, return
-            // registers of a returning block) unions in directly. Blocks with
-            // successors take their successors' live-in plus the registers
-            // the allocator carries across the edge without an in-block use.
-            RegSet newOut;
-            if (successors[bi].empty()) {
-                newOut.bits |= blockExitLive(fn, bi, target).bits;
-            } else {
-                for (std::size_t succ : successors[bi])
-                    newOut.bits |= liveIn[succ].bits;
-                newOut.bits |= carriedExitRegSet(fn.blocks[bi]).bits;
-            }
-
-            RegSet newIn;
-            newIn.bits = gen[bi].bits | (newOut.bits & ~kill[bi].bits);
-
-            if (newOut.bits != liveOut[bi].bits || newIn.bits != liveIn[bi].bits) {
-                liveOut[bi] = newOut;
-                liveIn[bi] = newIn;
-                changed = true;
-            }
-        }
-    }
 
     std::size_t removed = 0;
     for (std::size_t bi = 0; bi < blockCount; ++bi) {
@@ -487,7 +446,11 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
         if (instrs.empty())
             continue;
 
-        RegSet live = liveOut[bi];
+        // RegSet and PhysRegSet share one bit layout, so the exit-live seed
+        // (solved live-out, carried registers, SP/FP/LR, the return registers
+        // of a returning block) unions in directly.
+        RegSet live;
+        live.bits = blockExitLive(fn, bi, target, liveness).bits;
         std::vector<bool> toRemove(instrs.size(), false);
 
         for (std::size_t i = instrs.size(); i-- > 0;) {
