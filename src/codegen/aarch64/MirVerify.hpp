@@ -52,7 +52,7 @@ namespace zanna::codegen::aarch64 {
 ///            the finalized frame; every callee-saved register written is in
 ///            the function's save list.
 ///          - PostExpand: every immediate is directly encodable (no emit-time
-///            scratch expansion remains). Enforced once ExpandPseudosPass runs.
+///            scratch expansion remains); holds after ExpandPseudosPass.
 ///          - PostPeephole / PostSchedule: currently the PostExpand rule set;
 ///            reserved so later phases can tighten them independently.
 enum class VerifyStage : unsigned {

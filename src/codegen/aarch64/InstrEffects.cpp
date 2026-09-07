@@ -10,9 +10,9 @@
 // Key invariants:
 //   - Explicit operand roles are delegated to ra::operandRoles; this file adds
 //     only implicit effects (ABI registers, NZCV, memory, emit-time scratch).
-//   - The emit-time scratch predicate mirrors the emitters' encodability
-//     checks exactly (A64ImmediateUtils / A64Encoding); it is deleted once
-//     ExpandPseudosPass materializes those expansions in MIR.
+//   - The pseudo-form predicate (emitTimeScratchClobber) mirrors the
+//     emitters' encodability checks exactly (A64ImmediateUtils / A64Encoding);
+//     it is what ExpandPseudosPass rewrites and what the emitters reject.
 // Ownership/Lifetime:
 //   - Stateless.
 // Links: src/codegen/aarch64/InstrEffects.hpp,
@@ -80,6 +80,69 @@ bool isSpRelativeOpcode(MOpcode opc) noexcept {
 
 bool isSpAdjustOpcode(MOpcode opc) noexcept {
     return opc == MOpcode::SubSpImm || opc == MOpcode::AddSpImm;
+}
+
+unsigned memAccessBytes(MOpcode opc) noexcept {
+    switch (opc) {
+        case MOpcode::Ldr8RegFpImm:
+        case MOpcode::Str8RegFpImm:
+        case MOpcode::Ldr8RegBaseImm:
+        case MOpcode::Str8RegBaseImm:
+            return 1;
+        case MOpcode::Ldr16RegFpImm:
+        case MOpcode::Str16RegFpImm:
+        case MOpcode::Ldr16RegBaseImm:
+        case MOpcode::Str16RegBaseImm:
+            return 2;
+        case MOpcode::Ldr32RegFpImm:
+        case MOpcode::Str32RegFpImm:
+        case MOpcode::Ldr32RegBaseImm:
+        case MOpcode::Str32RegBaseImm:
+        case MOpcode::Ldr32RegBaseRegLsl:
+        case MOpcode::Str32RegBaseRegLsl:
+            return 4;
+        case MOpcode::LdrRegFpImm:
+        case MOpcode::StrRegFpImm:
+        case MOpcode::LdrFprFpImm:
+        case MOpcode::StrFprFpImm:
+        case MOpcode::LdrRegBaseImm:
+        case MOpcode::StrRegBaseImm:
+        case MOpcode::LdrFprBaseImm:
+        case MOpcode::StrFprBaseImm:
+        case MOpcode::LdrRegBaseRegLsl:
+        case MOpcode::StrRegBaseRegLsl:
+        case MOpcode::LdrFprBaseRegLsl:
+        case MOpcode::StrFprBaseRegLsl:
+        case MOpcode::StrRegSpImm:
+        case MOpcode::StrFprSpImm:
+        case MOpcode::PhiStoreGPR:
+        case MOpcode::PhiStoreFPR:
+            return 8;
+        case MOpcode::LdpRegFpImm:
+        case MOpcode::StpRegFpImm:
+        case MOpcode::LdpFprFpImm:
+        case MOpcode::StpFprFpImm:
+            return 16;
+        default:
+            return 0;
+    }
+}
+
+bool isEncodableLdStOffset(long long offset, unsigned accessBytes) noexcept {
+    if (offset >= -256 && offset <= 255)
+        return true;
+    if (accessBytes == 0 || offset < 0)
+        return false;
+    const auto width = static_cast<long long>(accessBytes);
+    return (offset % width) == 0 && (offset / width) <= 4095;
+}
+
+bool isEncodablePairOffset(long long offset) noexcept {
+    return (offset % 8) == 0 && offset >= -512 && offset <= 504;
+}
+
+bool isEncodableSpStoreOffset(long long offset) noexcept {
+    return offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095;
 }
 
 bool setsFlags(MOpcode opc) noexcept {
@@ -229,26 +292,29 @@ bool emitTimeScratchClobber(const MInstr &mi) noexcept {
         case MOpcode::LdpFprFpImm:
         case MOpcode::StpFprFpImm: {
             const auto imm = lastImmediate(mi);
-            if (!imm.has_value())
-                return false;
-            return (*imm % 8) != 0 || *imm < -512 || *imm > 504;
+            return imm.has_value() && !isEncodablePairOffset(*imm);
         }
         case MOpcode::StrRegSpImm:
         case MOpcode::StrFprSpImm: {
             const auto imm = lastImmediate(mi);
-            if (!imm.has_value())
-                return false;
-            return *imm < 0 || (*imm % 8) != 0 || (*imm / 8) > 4095;
+            return imm.has_value() && !isEncodableSpStoreOffset(*imm);
         }
+        // Register-offset forms carry no displacement.
+        case MOpcode::LdrRegBaseRegLsl:
+        case MOpcode::Ldr32RegBaseRegLsl:
+        case MOpcode::LdrFprBaseRegLsl:
+        case MOpcode::StrRegBaseRegLsl:
+        case MOpcode::Str32RegBaseRegLsl:
+        case MOpcode::StrFprBaseRegLsl:
+            return false;
         default:
             break;
     }
-    if (!isLoadOpcode(mi.opc) && !isStoreOpcode(mi.opc))
+    const unsigned width = memAccessBytes(mi.opc);
+    if (width == 0)
         return false;
     const auto imm = lastImmediate(mi);
-    if (!imm.has_value())
-        return false;
-    return *imm < -256 || *imm > 255;
+    return imm.has_value() && !isEncodableLdStOffset(*imm, width);
 }
 
 PhysRegSet callClobberSet(const TargetInfo &target) noexcept {

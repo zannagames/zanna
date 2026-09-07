@@ -77,6 +77,25 @@ Phase 2.4 (MIR verifier) is implemented:
   no-return runtime helper; the symbol set moved to `codegen/common/NoReturnSymbols.hpp` so both
   backends share it (`test_x86_backend_regressions`).
 
+Phase 2.2 (A4, `ExpandPseudosPass`) is implemented:
+
+- `src/codegen/aarch64/passes/ExpandPseudosPass.{hpp,cpp}` — last MIR pass at every level;
+  rewrites every emit-time pseudo form (wide `AddRI/SubRI/AddsRI/SubsRI/AndRI/OrrRI/EorRI/CmpRI`,
+  non-FP8 `FMovRI`, `AddFpImm` and frame/base/pair/SP accesses outside the encodable range) into
+  explicit MIR with the historical scratch preference, skipping any reserved scratch that is an
+  operand or live later in the block. `InstrEffects` gained the shared encodability predicates
+  (`isEncodableLdStOffset` is width-aware, so positive scaled offsets no longer count as pseudo
+  forms). Both emitters now reject pseudo forms (`rejectUnexpanded`) and their private scratch
+  selection (`pickWideImmScratch`, `chooseGprScratch`, `resolveBaseOffset`,
+  `encodeLargeOffsetLdSt`) is deleted. The verifier's `PostExpand` stage runs after the pass.
+- Tests: `test_aarch64_expand_pseudos` (one case per form, scratch-live-across, pair split, SP
+  store, encodable forms untouched, pipeline at -O0/-O1/-O2 leaves no pseudo form),
+  `test_emit_aarch64_mir_bitwise` (emitters reject unexpanded forms). The shared corpus, every
+  example, and the demo games verify clean under `PostExpand` on this host.
+- Measurement that motivates a Phase 3 item: in `chess` at -O2, 12,447 of 113,289 emitted
+  instructions are the `mov x9,#off; add x9,x29,x9` prefixes of frame accesses beyond ±256
+  bytes (every spill/reload in a frame larger than 256 bytes costs three instructions).
+
 Everything from B1 onward is open.
 
 ## Context

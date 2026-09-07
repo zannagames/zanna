@@ -23,6 +23,7 @@
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/binenc/A64BinaryEncoder.hpp"
 #include "codegen/aarch64/binenc/A64Encoding.hpp"
+#include "codegen/aarch64/passes/ExpandPseudosPass.hpp"
 #include "codegen/common/objfile/CodeSection.hpp"
 
 #include <cstdlib>
@@ -122,7 +123,8 @@ static MOperand label(const std::string &name) {
     return MOperand::labelOp(name);
 }
 
-// Encode a single-block leaf function with given instructions.
+// Encode a single-block leaf function with given instructions, expanding
+// emit-time pseudo forms first exactly as the pipeline's ExpandPseudosPass does.
 // Returns the word at instruction index `idx` (skipping BTI prefix).
 static uint32_t encodeSingleInstr(const std::vector<MInstr> &instrs, size_t idx = 0) {
     MFunction fn;
@@ -134,6 +136,7 @@ static uint32_t encodeSingleInstr(const std::vector<MInstr> &instrs, size_t idx 
     // Add a Ret at the end.
     bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
     fn.blocks.push_back(std::move(bb));
+    (void)expandPseudoInstructions(fn);
 
     CodeSection text, rodata;
     rodata.defineSymbol("my_global", SymbolBinding::Local, SymbolSection::Rodata);
@@ -147,8 +150,8 @@ static uint32_t encodeSingleInstr(const std::vector<MInstr> &instrs, size_t idx 
     return readWord(text.bytes(), (idx + kBtiPrefixWords) * 4);
 }
 
-// Encode a single-block leaf function and return all bytes.
-// Includes BTI prefix (always emitted).
+// Encode a single-block leaf function (after pseudo expansion) and return all
+// bytes. Includes BTI prefix (always emitted).
 static std::vector<uint8_t> encodeInstrBytes(const std::vector<MInstr> &instrs) {
     MFunction fn;
     fn.name = "test_func";
@@ -158,6 +161,7 @@ static std::vector<uint8_t> encodeInstrBytes(const std::vector<MInstr> &instrs) 
     bb.instrs = instrs;
     bb.instrs.push_back(MInstr{MOpcode::Ret, {}});
     fn.blocks.push_back(std::move(bb));
+    (void)expandPseudoInstructions(fn);
 
     CodeSection text, rodata;
     rodata.defineSymbol("my_global", SymbolBinding::Local, SymbolSection::Rodata);
@@ -860,7 +864,8 @@ static void testLargeStoreAvoidsSourceAndBaseScratch() {
     MInstr mi{MOpcode::StrRegBaseImm, {gpr(PhysReg::X9), gpr(PhysReg::X16), imm(32768)}};
     auto bytes = encodeInstrBytes({mi});
 
-    // BTI + mov scratch + add scratch,base,scratch + str source,[scratch] + ret.
+    // BTI + mov scratch + add scratch,base,scratch + str source,[scratch] + ret
+    // (the expansion picks x17 because x9 is the source and x16 the base).
     CHECK(bytes.size() >= 20);
     uint32_t store = readWord(bytes, bytes.size() - 8);
     CHECK((store & 31u) == 9u);         // Rt = original store source X9.
@@ -1304,6 +1309,8 @@ static void testAssemblerCorrectnessValidation() {
     CHECK(
         encodeThrowsContaining(duplicateSanitizedLabels, "duplicate/sanitized label 'join_block'"));
 
+    // Pseudo forms that ExpandPseudosPass rewrites must never reach the
+    // encoder unexpanded; the encoder rejects them instead of improvising.
     MFunction spBaseLargeOffset;
     spBaseLargeOffset.name = "sp_base_large_offset";
     MBasicBlock spBlock;
@@ -1312,8 +1319,7 @@ static void testAssemblerCorrectnessValidation() {
         MInstr{MOpcode::LdrRegBaseImm, {gpr(PhysReg::X0), gpr(PhysReg::SP), imm(40000)}});
     spBlock.instrs.push_back(MInstr{MOpcode::Ret, {}});
     spBaseLargeOffset.blocks.push_back(std::move(spBlock));
-    CHECK(encodeThrowsContaining(spBaseLargeOffset,
-                                 "large-offset load/store cannot materialize SP base"));
+    CHECK(encodeThrowsContaining(spBaseLargeOffset, "without ExpandPseudosPass expansion"));
 
     MFunction pairOverflow;
     pairOverflow.name = "pair_overflow";
@@ -1324,7 +1330,16 @@ static void testAssemblerCorrectnessValidation() {
                {gpr(PhysReg::X0), gpr(PhysReg::X1), imm(std::numeric_limits<long long>::max())}});
     pairBlock.instrs.push_back(MInstr{MOpcode::Ret, {}});
     pairOverflow.blocks.push_back(std::move(pairBlock));
-    CHECK(encodeThrowsContaining(pairOverflow, "pair fallback offset"));
+    CHECK(encodeThrowsContaining(pairOverflow, "without ExpandPseudosPass expansion"));
+
+    MFunction wideCompare;
+    wideCompare.name = "wide_compare";
+    MBasicBlock cmpBlock;
+    cmpBlock.name = "entry";
+    cmpBlock.instrs.push_back(MInstr{MOpcode::CmpRI, {gpr(PhysReg::X0), imm(0x123456)}});
+    cmpBlock.instrs.push_back(MInstr{MOpcode::Ret, {}});
+    wideCompare.blocks.push_back(std::move(cmpBlock));
+    CHECK(encodeThrowsContaining(wideCompare, "without ExpandPseudosPass expansion"));
 
     MFunction winHugePrologue;
     winHugePrologue.name = "win_huge_prologue";
@@ -1541,8 +1556,8 @@ int main() {
                 case MOpcode::JumpTable:
                     return MInstr{opc, {x0, label(".Ljt"), label("target")}};
                 case MOpcode::FCsel:
-                    return MInstr{opc, {fpr(PhysReg::V0), fpr(PhysReg::V1), fpr(PhysReg::V2),
-                                        cond("ne")}};
+                    return MInstr{
+                        opc, {fpr(PhysReg::V0), fpr(PhysReg::V1), fpr(PhysReg::V2), cond("ne")}};
                 case MOpcode::Bl:
                     return MInstr{opc, {label("target")}};
                 case MOpcode::Blr:
@@ -1630,8 +1645,14 @@ int main() {
                     return MInstr{opc, {d0, d1}};
                 case MOpcode::FMovGR:
                     return MInstr{opc, {d0, x0}};
-                case MOpcode::FMovRI:
-                    return MInstr{opc, {d0, imm(0)}};
+                case MOpcode::FMovRI: {
+                    // 1.0 is FP8-encodable; other constants are expanded
+                    // before emission and would be rejected here.
+                    const double one = 1.0;
+                    long long bits = 0;
+                    std::memcpy(&bits, &one, sizeof(bits));
+                    return MInstr{opc, {d0, imm(bits)}};
+                }
                 case MOpcode::FRintN:
                     return MInstr{opc, {d0, d1}};
 

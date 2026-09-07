@@ -6,32 +6,55 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/unit/codegen/test_emit_aarch64_mir_bitwise.cpp
-// Purpose: Verify MIR bitwise rr emission for and/or/xor.
-// Key invariants: To be documented.
-// Ownership/Lifetime: To be documented.
-// Links: docs/internals/architecture.md
+// Purpose: Verify MIR bitwise and wide-immediate emission for AArch64.
+// Key invariants:
+//   - Functions are expanded by ExpandPseudosPass before emission, exactly
+//     as the pipeline does; the emitter itself rejects any pseudo form.
+//   - Wide-immediate expansions never materialise the immediate into a
+//     register that is one of the instruction's operands.
+// Ownership/Lifetime: Standalone test binary.
+// Links: src/codegen/aarch64/passes/ExpandPseudosPass.hpp,
+//        src/codegen/aarch64/AsmEmitter.hpp
 //
 //===----------------------------------------------------------------------===//
 #include "tests/TestHarness.hpp"
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include "codegen/aarch64/AsmEmitter.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
+#include "codegen/aarch64/passes/ExpandPseudosPass.hpp"
 
 using namespace zanna::codegen::aarch64;
 
-static std::string emit(const MInstr &mi) {
-    auto &ti = darwinTarget();
-    AsmEmitter emit{ti};
+namespace {
+
+MFunction functionOf(const MInstr &mi) {
     MFunction fn{};
     fn.name = "mir_bits";
     fn.blocks.push_back(MBasicBlock{});
     fn.blocks.back().instrs.push_back(mi);
+    return fn;
+}
+
+/// Emit @p fn as text without any expansion (what the emitter sees raw).
+std::string emitRaw(const MFunction &fn) {
+    auto &ti = darwinTarget();
+    AsmEmitter emitter{ti};
     std::ostringstream os;
-    emit.emitFunction(os, fn);
+    emitter.emitFunction(os, fn);
     return os.str();
 }
+
+/// Expand pseudo forms as the pipeline does, then emit as text.
+std::string emit(const MInstr &mi) {
+    MFunction fn = functionOf(mi);
+    (void)expandPseudoInstructions(fn);
+    return emitRaw(fn);
+}
+
+} // namespace
 
 TEST(AArch64MIR, BitwiseRR) {
     {
@@ -129,6 +152,32 @@ TEST(AArch64MIR, WideImmediateExpansionAvoidsOperandScratch) {
             MOpcode::AddRI,
             {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X1), MOperand::immOp(kWide)}});
         EXPECT_NE(text.find("add x0, x1, x9"), std::string::npos);
+    }
+}
+
+// Every emit-time expansion now lives in ExpandPseudosPass; the emitter must
+// refuse a pseudo form instead of silently writing a scratch register.
+TEST(AArch64MIR, EmitterRejectsUnexpandedPseudoForms) {
+    constexpr long long kWide = 0x123456;
+    const MInstr forms[] = {
+        MInstr{
+            MOpcode::AddRI,
+            {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X1), MOperand::immOp(kWide)}},
+        MInstr{MOpcode::AndRI,
+               {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X1), MOperand::immOp(5)}},
+        MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(kWide)}},
+        MInstr{MOpcode::AddFpImm, {MOperand::regOp(PhysReg::X0), MOperand::immOp(-5000)}},
+        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X0), MOperand::immOp(-300)}},
+        MInstr{MOpcode::StrRegSpImm, {MOperand::regOp(PhysReg::X0), MOperand::immOp(12)}},
+        MInstr{MOpcode::LdpRegFpImm,
+               {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X1), MOperand::immOp(-520)}},
+    };
+    for (const MInstr &mi : forms) {
+        EXPECT_THROWS(emitRaw(functionOf(mi)), std::runtime_error);
+        // The same instruction is fine once expanded.
+        MFunction fn = functionOf(mi);
+        EXPECT_GT(expandPseudoInstructions(fn), 0u);
+        EXPECT_FALSE(emitRaw(fn).empty());
     }
 }
 

@@ -36,6 +36,7 @@
 
 #include "A64ImmediateUtils.hpp"
 #include "FrameCodegen.hpp"
+#include "InstrEffects.hpp"
 #include "binenc/A64Encoding.hpp"
 #include "codegen/common/ICE.hpp"
 #include "codegen/common/LabelUtil.hpp"
@@ -469,73 +470,52 @@ void AsmEmitter::emitMSubRRRR(
     os << "  cbz " << rn(reg) << ", " << label << "\n";
 }
 
-/// @brief Pick a reserved scratch GPR for a wide-immediate expansion.
-/// @details The register allocator hands the reserved scratch registers
-///          (x9/x16/x17) out as one-instruction emergency reload homes, and
-///          several fast paths keep a value in x9 across neighbouring
-///          instructions. An expansion such as `mov x9, #imm; add dst, lhs, x9`
-///          must therefore never pick a scratch that is itself one of the
-///          instruction's operands: `add x9, x9, x9` would read the immediate
-///          twice. Candidates are tried in preference order so the register
-///          chosen for the common (non-conflicting) case is unchanged.
-/// @param candidates Reserved scratch registers in preference order.
-/// @param blocked Operand registers of the instruction being expanded.
-/// @return First candidate absent from @p blocked.
-/// @throws std::runtime_error when every candidate is an operand.
-static PhysReg pickWideImmScratch(std::initializer_list<PhysReg> candidates,
-                                  std::initializer_list<PhysReg> blocked) {
-    for (PhysReg candidate : candidates) {
-        if (std::find(blocked.begin(), blocked.end(), candidate) == blocked.end())
-            return candidate;
-    }
-    throw std::runtime_error(
-        "AArch64 asm emitter: no scratch register for wide immediate expansion");
+/// @brief Reject an instruction whose immediate or offset is not directly encodable.
+/// @details Every such form is rewritten into explicit MIR by ExpandPseudosPass
+///          before emission; reaching the emitter with one is a pipeline bug
+///          (a pass ran after the expansion, or a new pseudo form was added
+///          without teaching the pass about it).
+/// @param what Description of the offending form for the diagnostic.
+/// @throws std::runtime_error always.
+[[noreturn]] static void rejectUnexpanded(const std::string &what) {
+    throw std::runtime_error("AArch64 asm emitter: " + what +
+                             " reached the emitter without ExpandPseudosPass expansion");
 }
 
 /// @copydoc AsmEmitter::emitAddRI()
 void AsmEmitter::emitAddRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long imm) const {
     const uint64_t magnitude = absImmUnsigned(imm);
-    if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
-        if (imm >= 0) {
-            if (enc->shift12)
-                emit2RIShift12(os, "add", dst, lhs, enc->imm12);
-            else
-                emit2RI(os, "add", dst, lhs, static_cast<long long>(magnitude));
-        } else if (enc->shift12) {
-            emit2RIShift12(os, "sub", dst, lhs, enc->imm12);
-        } else {
-            emit2RI(os, "sub", dst, lhs, static_cast<long long>(magnitude));
-        }
-        return;
+    const auto enc = classifyAddSubImmEncoding(magnitude);
+    if (!enc)
+        rejectUnexpanded("add immediate #" + std::to_string(imm));
+    if (imm >= 0) {
+        if (enc->shift12)
+            emit2RIShift12(os, "add", dst, lhs, enc->imm12);
+        else
+            emit2RI(os, "add", dst, lhs, static_cast<long long>(magnitude));
+    } else if (enc->shift12) {
+        emit2RIShift12(os, "sub", dst, lhs, enc->imm12);
+    } else {
+        emit2RI(os, "sub", dst, lhs, static_cast<long long>(magnitude));
     }
-
-    const PhysReg scratch =
-        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, lhs});
-    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-    emit3R(os, "add", dst, lhs, scratch);
 }
 
 /// @copydoc AsmEmitter::emitSubRI()
 void AsmEmitter::emitSubRI(std::ostream &os, PhysReg dst, PhysReg lhs, long long imm) const {
     const uint64_t magnitude = absImmUnsigned(imm);
-    if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
-        if (imm >= 0) {
-            if (enc->shift12)
-                emit2RIShift12(os, "sub", dst, lhs, enc->imm12);
-            else
-                emit2RI(os, "sub", dst, lhs, static_cast<long long>(magnitude));
-        } else if (enc->shift12) {
-            emit2RIShift12(os, "add", dst, lhs, enc->imm12);
-        } else {
-            emit2RI(os, "add", dst, lhs, static_cast<long long>(magnitude));
-        }
-        return;
+    const auto enc = classifyAddSubImmEncoding(magnitude);
+    if (!enc)
+        rejectUnexpanded("sub immediate #" + std::to_string(imm));
+    if (imm >= 0) {
+        if (enc->shift12)
+            emit2RIShift12(os, "sub", dst, lhs, enc->imm12);
+        else
+            emit2RI(os, "sub", dst, lhs, static_cast<long long>(magnitude));
+    } else if (enc->shift12) {
+        emit2RIShift12(os, "add", dst, lhs, enc->imm12);
+    } else {
+        emit2RI(os, "add", dst, lhs, static_cast<long long>(magnitude));
     }
-
-    const PhysReg scratch =
-        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, lhs});
-    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-    emit3R(os, "sub", dst, lhs, scratch);
 }
 
 /// @copydoc AsmEmitter::emitAndRRR()
@@ -555,41 +535,23 @@ void AsmEmitter::emitEorRRR(std::ostream &os, PhysReg dst, PhysReg lhs, PhysReg 
 
 /// @copydoc AsmEmitter::emitAndRI()
 void AsmEmitter::emitAndRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
-    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
-        emit2RI(os, "and", dst, src, imm);
-        return;
-    }
-
-    const PhysReg scratch =
-        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
-    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-    emit3R(os, "and", dst, src, scratch);
+    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) < 0)
+        rejectUnexpanded("and immediate #" + std::to_string(imm));
+    emit2RI(os, "and", dst, src, imm);
 }
 
 /// @copydoc AsmEmitter::emitOrrRI()
 void AsmEmitter::emitOrrRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
-    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
-        emit2RI(os, "orr", dst, src, imm);
-        return;
-    }
-
-    const PhysReg scratch =
-        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
-    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-    emit3R(os, "orr", dst, src, scratch);
+    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) < 0)
+        rejectUnexpanded("orr immediate #" + std::to_string(imm));
+    emit2RI(os, "orr", dst, src, imm);
 }
 
 /// @copydoc AsmEmitter::emitEorRI()
 void AsmEmitter::emitEorRI(std::ostream &os, PhysReg dst, PhysReg src, long long imm) const {
-    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) >= 0) {
-        emit2RI(os, "eor", dst, src, imm);
-        return;
-    }
-
-    const PhysReg scratch =
-        pickWideImmScratch({kScratchGPR, kScratchGPR2, kScratchGPR3}, {dst, src});
-    emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-    emit3R(os, "eor", dst, src, scratch);
+    if (binenc::encodeLogicalImmediate(static_cast<uint64_t>(imm)) < 0)
+        rejectUnexpanded("eor immediate #" + std::to_string(imm));
+    emit2RI(os, "eor", dst, src, imm);
 }
 
 /// @copydoc AsmEmitter::emitLslRI()
@@ -636,10 +598,7 @@ void AsmEmitter::emitCmpRI(std::ostream &os, PhysReg lhs, long long imm) const {
     } else if (imm >= -4095 && imm < 0) {
         os << "  cmn " << rn(lhs) << ", #" << -imm << "\n";
     } else {
-        const PhysReg scratch =
-            pickWideImmScratch({kScratchGPR2, kScratchGPR, kScratchGPR3}, {lhs});
-        emitMovImm64(os, scratch, imm);
-        os << "  cmp " << rn(lhs) << ", " << rn(scratch) << "\n";
+        rejectUnexpanded("cmp immediate #" + std::to_string(imm));
     }
 }
 
@@ -704,96 +663,35 @@ void AsmEmitter::emitAddSp(std::ostream &os, long long bytes) const {
         emit2RI(os, "add", PhysReg::SP, PhysReg::SP, bytes);
 }
 
-/// @brief Pick a reserved scratch GPR outside the supplied blocked set.
-/// @details Prefers kScratchGPR, then kScratchGPR2, then kScratchGPR3. Callers
-///          pass every physical register that the helper sequence must not
-///          clobber, which keeps large-offset expansions independent of the
-///          particular operand shape being emitted.
-/// @param blocked Physical GPRs that cannot be used as scratch registers.
-/// @return Reserved scratch register not present in @p blocked.
-/// @throws std::runtime_error when all reserved scratch registers are blocked.
-static PhysReg chooseGprScratch(std::initializer_list<PhysReg> blocked) {
-    const PhysReg candidates[] = {kScratchGPR, kScratchGPR2, kScratchGPR3};
-    for (PhysReg candidate : candidates) {
-        if (std::find(blocked.begin(), blocked.end(), candidate) != blocked.end())
-            continue;
-        return candidate;
-    }
-    throw std::runtime_error(
-        "AArch64 asm emitter: no scratch register for large offset load/store");
-}
-
-/// @brief Pick a scratch GPR that is neither @p base nor optionally @p avoid.
-/// @param base Base register used by the addressing sequence.
-/// @param avoid Optional transfer register that must not be clobbered.
-/// @return Reserved scratch register suitable for the helper sequence.
-static PhysReg chooseGprScratch(PhysReg base, std::optional<PhysReg> avoid = std::nullopt) {
-    return avoid ? chooseGprScratch({base, *avoid}) : chooseGprScratch({base});
-}
-
 /// @copydoc AsmEmitter::emitStrToSp()
 void AsmEmitter::emitStrToSp(std::ostream &os, PhysReg src, long long offset) const {
-    if (offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095) {
-        os << "  str " << rn(src) << ", [sp, #" << offset << "]\n";
-        return;
-    }
-
-    const PhysReg scratch = chooseGprScratch(PhysReg::SP, src);
-    os << "  mov " << rn(scratch) << ", sp\n";
-    emitAddRI(os, scratch, scratch, offset);
-    os << "  str " << rn(src) << ", [" << rn(scratch) << "]\n";
+    if (!isEncodableSpStoreOffset(offset))
+        rejectUnexpanded("sp-relative store offset #" + std::to_string(offset));
+    os << "  str " << rn(src) << ", [sp, #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitStrFprToSp()
 void AsmEmitter::emitStrFprToSp(std::ostream &os, PhysReg src, long long offset) const {
-    if (offset >= 0 && (offset % 8) == 0 && (offset / 8) <= 4095) {
-        os << "  str ";
-        printD(os, src);
-        os << ", [sp, #" << offset << "]\n";
-        return;
-    }
-
-    const PhysReg scratch = chooseGprScratch(PhysReg::SP);
-    os << "  mov " << rn(scratch) << ", sp\n";
-    emitAddRI(os, scratch, scratch, offset);
+    if (!isEncodableSpStoreOffset(offset))
+        rejectUnexpanded("sp-relative store offset #" + std::to_string(offset));
     os << "  str ";
     printD(os, src);
-    os << ", [" << rn(scratch) << "]\n";
+    os << ", [sp, #" << offset << "]\n";
 }
 
-/// @brief Check if offset is in ARM64 signed immediate range for str/ldr instructions.
-/// @details The signed unscaled immediate for str/ldr is [-256, 255].
-/// @param offset Byte displacement to classify.
-/// @return `true` when @p offset fits signed imm9.
-static bool isInSignedImmRange(long long offset) {
-    return offset >= -256 && offset <= 255;
+/// @brief Reject a frame- or base-relative offset the access form cannot encode.
+/// @param offset Byte displacement to check.
+/// @param accessBytes Access width in bytes.
+static void requireEncodableOffset(long long offset, unsigned accessBytes) {
+    if (!isEncodableLdStOffset(offset, accessBytes))
+        rejectUnexpanded("load/store offset #" + std::to_string(offset));
 }
 
-/// @brief Check if offset fits the signed scaled pair form used by LDP/STP.
-/// @param offset Byte displacement, which must be eight-byte aligned.
-/// @return `true` when the scaled displacement fits signed imm7.
-static bool isPairImm7Offset(long long offset) {
-    if ((offset % 8) != 0)
-        return false;
-    const long long scaled = offset / 8;
-    return scaled >= -64 && scaled <= 63;
-}
-
-/// @brief Add two signed offsets while rejecting overflow.
-/// @details Used by pair load/store fallbacks that split an LDP/STP into two
-///          scalar accesses at @c offset and @c offset+8. Keeping the check in
-///          the text emitter mirrors the binary encoder's guarded fallback.
-/// @param lhs Base offset in bytes.
-/// @param rhs Delta in bytes.
-/// @param context Diagnostic context for any overflow exception.
-/// @return Sum of @p lhs and @p rhs.
-/// @throws std::overflow_error when the mathematical sum is not representable.
-static long long checkedOffsetAdd(long long lhs, long long rhs, const char *context) {
-    if ((rhs > 0 && lhs > std::numeric_limits<long long>::max() - rhs) ||
-        (rhs < 0 && lhs < std::numeric_limits<long long>::min() - rhs)) {
-        throw std::overflow_error(std::string(context) + " offset overflow");
-    }
-    return lhs + rhs;
+/// @brief Reject a pair offset outside the scaled signed imm7 range.
+/// @param offset Byte displacement to check.
+static void requireEncodablePairOffset(long long offset) {
+    if (!isEncodablePairOffset(offset))
+        rejectUnexpanded("ldp/stp offset #" + std::to_string(offset));
 }
 
 /// @brief GAS mnemonic for an unscaled narrow load of @p bytes (1/2/4).
@@ -852,100 +750,66 @@ static void emitNarrowGprAccess(
 
 /// @copydoc AsmEmitter::emitLdrFromFp()
 void AsmEmitter::emitLdrFromFp(std::ostream &os, PhysReg dst, long long offset) const {
-    if (isInSignedImmRange(offset)) {
-        os << "  ldr " << rn(dst) << ", [x29, #" << offset << "]\n";
-    } else {
-        PhysReg scratch = chooseGprScratch(PhysReg::X29);
-        emitMovRI(os, scratch, offset);
-        os << "  add " << rn(scratch) << ", x29, " << rn(scratch) << "\n";
-        os << "  ldr " << rn(dst) << ", [" << rn(scratch) << "]\n";
-    }
+    requireEncodableOffset(offset, 8);
+    os << "  ldr " << rn(dst) << ", [x29, #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitStrToFp()
 void AsmEmitter::emitStrToFp(std::ostream &os, PhysReg src, long long offset) const {
-    if (isInSignedImmRange(offset)) {
-        os << "  str " << rn(src) << ", [x29, #" << offset << "]\n";
-    } else {
-        PhysReg scratch = chooseGprScratch(PhysReg::X29, src);
-        emitMovRI(os, scratch, offset);
-        os << "  add " << rn(scratch) << ", x29, " << rn(scratch) << "\n";
-        os << "  str " << rn(src) << ", [" << rn(scratch) << "]\n";
-    }
+    requireEncodableOffset(offset, 8);
+    os << "  str " << rn(src) << ", [x29, #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitLdr8FromFp()
 void AsmEmitter::emitLdr8FromFp(std::ostream &os, PhysReg dst, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, base, resolved);
+    requireEncodableOffset(offset, 1);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr8ToFp()
 void AsmEmitter::emitStr8ToFp(std::ostream &os, PhysReg src, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, base, resolved);
+    requireEncodableOffset(offset, 1);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdr16FromFp()
 void AsmEmitter::emitLdr16FromFp(std::ostream &os, PhysReg dst, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, base, resolved);
+    requireEncodableOffset(offset, 2);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr16ToFp()
 void AsmEmitter::emitStr16ToFp(std::ostream &os, PhysReg src, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, base, resolved);
+    requireEncodableOffset(offset, 2);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdr32FromFp()
 void AsmEmitter::emitLdr32FromFp(std::ostream &os, PhysReg dst, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, base, resolved);
+    requireEncodableOffset(offset, 4);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr32ToFp()
 void AsmEmitter::emitStr32ToFp(std::ostream &os, PhysReg src, long long offset) const {
-    long long resolved;
-    PhysReg base = resolveBaseOffset(os, PhysReg::X29, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, base, resolved);
+    requireEncodableOffset(offset, 4);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, PhysReg::X29, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdrFprFromFp()
 void AsmEmitter::emitLdrFprFromFp(std::ostream &os, PhysReg dst, long long offset) const {
-    if (isInSignedImmRange(offset)) {
-        os << "  ldr ";
-        printD(os, dst);
-        os << ", [x29, #" << offset << "]\n";
-    } else {
-        PhysReg scratch = chooseGprScratch(PhysReg::X29);
-        emitMovRI(os, scratch, offset);
-        os << "  add " << rn(scratch) << ", x29, " << rn(scratch) << "\n";
-        os << "  ldr ";
-        printD(os, dst);
-        os << ", [" << rn(scratch) << "]\n";
-    }
+    requireEncodableOffset(offset, 8);
+    os << "  ldr ";
+    printD(os, dst);
+    os << ", [x29, #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitStrFprToFp()
 void AsmEmitter::emitStrFprToFp(std::ostream &os, PhysReg src, long long offset) const {
-    if (isInSignedImmRange(offset)) {
-        os << "  str ";
-        printD(os, src);
-        os << ", [x29, #" << offset << "]\n";
-    } else {
-        PhysReg scratch = chooseGprScratch(PhysReg::X29);
-        emitMovRI(os, scratch, offset);
-        os << "  add " << rn(scratch) << ", x29, " << rn(scratch) << "\n";
-        os << "  str ";
-        printD(os, src);
-        os << ", [" << rn(scratch) << "]\n";
-    }
+    requireEncodableOffset(offset, 8);
+    os << "  str ";
+    printD(os, src);
+    os << ", [x29, #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitAddFpImm()
@@ -958,51 +822,8 @@ void AsmEmitter::emitAddFpImm(std::ostream &os, PhysReg dst, long long offset) c
     } else if (offset < 0 && -offset <= 4095) {
         os << "  sub " << rn(dst) << ", x29, #" << -offset << "\n";
     } else {
-        // Large offset: use scratch register to load offset, then add
-        emitMovRI(os, kScratchGPR, offset);
-        os << "  add " << rn(dst) << ", x29, " << rn(kScratchGPR) << "\n";
+        rejectUnexpanded("frame address offset #" + std::to_string(offset));
     }
-}
-
-/// @brief Resolve base+offset to an effective base register for load/store.
-/// @details When @p offset fits in the signed immediate range, returns @p base
-///          unchanged and sets @p resolvedOffset to @p offset. For large offsets
-///          that exceed the immediate range, materialises the effective address
-///          into a non-conflicting scratch register via movz/movk + add and
-///          returns that register with @p resolvedOffset set to 0.
-/// @param os Output stream for any scratch-register setup instructions.
-/// @param base Original base register.
-/// @param offset Byte offset from base.
-/// @param[out] resolvedOffset Offset to use with the returned base register.
-/// @param avoid Optional live transfer register that scratch selection must not clobber.
-/// @return The register to use as the base in the subsequent load/store.
-PhysReg AsmEmitter::resolveBaseOffset(std::ostream &os,
-                                      PhysReg base,
-                                      long long offset,
-                                      long long &resolvedOffset,
-                                      std::optional<PhysReg> avoid) const {
-    if (isInSignedImmRange(offset)) {
-        resolvedOffset = offset;
-        return base;
-    }
-    const PhysReg candidates[] = {kScratchGPR, kScratchGPR2, kScratchGPR3};
-    std::optional<PhysReg> scratch;
-    for (PhysReg candidate : candidates) {
-        if (candidate == base)
-            continue;
-        if (avoid.has_value() && candidate == *avoid)
-            continue;
-        scratch = candidate;
-        break;
-    }
-    if (!scratch)
-        throw std::runtime_error(
-            "AArch64 asm emitter: no scratch register for large offset load/store");
-    // Large offset: materialise effective address into scratch register.
-    emitMovRI(os, *scratch, offset);
-    os << "  add " << rn(*scratch) << ", " << rn(base) << ", " << rn(*scratch) << "\n";
-    resolvedOffset = 0;
-    return *scratch;
 }
 
 /// @copydoc AsmEmitter::emitLdrFromBase()
@@ -1010,9 +831,8 @@ void AsmEmitter::emitLdrFromBase(std::ostream &os,
                                  PhysReg dst,
                                  PhysReg base,
                                  long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
-    os << "  ldr " << rn(dst) << ", [" << rn(b) << ", #" << resolved << "]\n";
+    requireEncodableOffset(offset, 8);
+    os << "  ldr " << rn(dst) << ", [" << rn(base) << ", #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitStrToBase()
@@ -1020,9 +840,8 @@ void AsmEmitter::emitStrToBase(std::ostream &os,
                                PhysReg src,
                                PhysReg base,
                                long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved, src);
-    os << "  str " << rn(src) << ", [" << rn(b) << ", #" << resolved << "]\n";
+    requireEncodableOffset(offset, 8);
+    os << "  str " << rn(src) << ", [" << rn(base) << ", #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitLdr8FromBase()
@@ -1030,9 +849,8 @@ void AsmEmitter::emitLdr8FromBase(std::ostream &os,
                                   PhysReg dst,
                                   PhysReg base,
                                   long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, b, resolved);
+    requireEncodableOffset(offset, 1);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(1), dst, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr8ToBase()
@@ -1040,9 +858,8 @@ void AsmEmitter::emitStr8ToBase(std::ostream &os,
                                 PhysReg src,
                                 PhysReg base,
                                 long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, b, resolved);
+    requireEncodableOffset(offset, 1);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(1), src, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdr16FromBase()
@@ -1050,9 +867,8 @@ void AsmEmitter::emitLdr16FromBase(std::ostream &os,
                                    PhysReg dst,
                                    PhysReg base,
                                    long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, b, resolved);
+    requireEncodableOffset(offset, 2);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(2), dst, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr16ToBase()
@@ -1060,9 +876,8 @@ void AsmEmitter::emitStr16ToBase(std::ostream &os,
                                  PhysReg src,
                                  PhysReg base,
                                  long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, b, resolved);
+    requireEncodableOffset(offset, 2);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(2), src, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdr32FromBase()
@@ -1070,9 +885,8 @@ void AsmEmitter::emitLdr32FromBase(std::ostream &os,
                                    PhysReg dst,
                                    PhysReg base,
                                    long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
-    emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, b, resolved);
+    requireEncodableOffset(offset, 4);
+    emitNarrowGprAccess(os, narrowLoadMnemonic(4), dst, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitStr32ToBase()
@@ -1080,9 +894,8 @@ void AsmEmitter::emitStr32ToBase(std::ostream &os,
                                  PhysReg src,
                                  PhysReg base,
                                  long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved, src);
-    emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, b, resolved);
+    requireEncodableOffset(offset, 4);
+    emitNarrowGprAccess(os, narrowStoreMnemonic(4), src, base, offset);
 }
 
 /// @copydoc AsmEmitter::emitLdrFprFromBase()
@@ -1090,11 +903,10 @@ void AsmEmitter::emitLdrFprFromBase(std::ostream &os,
                                     PhysReg dst,
                                     PhysReg base,
                                     long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
+    requireEncodableOffset(offset, 8);
     os << "  ldr ";
     printD(os, dst);
-    os << ", [" << rn(b) << ", #" << resolved << "]\n";
+    os << ", [" << rn(base) << ", #" << offset << "]\n";
 }
 
 /// @copydoc AsmEmitter::emitStrFprToBase()
@@ -1102,11 +914,10 @@ void AsmEmitter::emitStrFprToBase(std::ostream &os,
                                   PhysReg src,
                                   PhysReg base,
                                   long long offset) const {
-    long long resolved;
-    PhysReg b = resolveBaseOffset(os, base, offset, resolved);
+    requireEncodableOffset(offset, 8);
     os << "  str ";
     printD(os, src);
-    os << ", [" << rn(b) << ", #" << resolved << "]\n";
+    os << ", [" << rn(base) << ", #" << offset << "]\n";
 }
 
 /// @brief Emit a MOVZ (move wide with zero) instruction.
@@ -1193,11 +1004,7 @@ void AsmEmitter::emitFMovRI(std::ostream &os, PhysReg dst, double imm) const {
         return;
     }
 
-    unsigned long long bits = 0;
-    static_assert(sizeof(bits) == sizeof(imm), "unexpected f64 size");
-    std::memcpy(&bits, &imm, sizeof(bits));
-    emitMovImm64(os, kScratchGPR2, bits);
-    emitFMovGR(os, dst, kScratchGPR2);
+    rejectUnexpanded("non-FP8 floating-point constant");
 }
 
 /// @copydoc AsmEmitter::emitFMovGR()
@@ -1597,20 +1404,16 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
             const long long imm = getImm(mi.ops[2]);
             const uint64_t magnitude = absImmUnsigned(imm);
             const bool isAdds = (mi.opc == MOpcode::AddsRI);
-            if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
-                const bool emitAddImm = imm >= 0 ? isAdds : !isAdds;
-                os << "  " << (emitAddImm ? "adds " : "subs ") << rn(dst) << ", " << rn(lhs)
-                   << ", #" << enc->imm12;
-                if (enc->shift12)
-                    os << ", lsl #12";
-                os << "\n";
-            } else {
-                const PhysReg scratch =
-                    pickWideImmScratch({kScratchGPR2, kScratchGPR, kScratchGPR3}, {dst, lhs});
-                emitMovImm64(os, scratch, static_cast<unsigned long long>(imm));
-                os << "  " << (isAdds ? "adds " : "subs ") << rn(dst) << ", " << rn(lhs) << ", "
-                   << rn(scratch) << "\n";
-            }
+            const auto enc = classifyAddSubImmEncoding(magnitude);
+            if (!enc)
+                rejectUnexpanded(std::string(isAdds ? "adds" : "subs") + " immediate #" +
+                                 std::to_string(imm));
+            const bool emitAddImm = imm >= 0 ? isAdds : !isAdds;
+            os << "  " << (emitAddImm ? "adds " : "subs ") << rn(dst) << ", " << rn(lhs) << ", #"
+               << enc->imm12;
+            if (enc->shift12)
+                os << ", lsl #12";
+            os << "\n";
             return;
         }
         case MOpcode::MAddRRRR:
@@ -1640,36 +1443,17 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
             os << ", " << mi.ops[3].cond << "\n";
             return;
         case MOpcode::LdpRegFpImm:
-            if (!isPairImm7Offset(getImm(mi.ops[2]))) {
-                emitLdrFromFp(os, getReg(mi.ops[0]), getImm(mi.ops[2]));
-                emitLdrFromFp(os,
-                              getReg(mi.ops[1]),
-                              checkedOffsetAdd(getImm(mi.ops[2]), 8, "AArch64 ldp fallback"));
-                return;
-            }
+            requireEncodablePairOffset(getImm(mi.ops[2]));
             os << "  ldp " << rn(getReg(mi.ops[0])) << ", " << rn(getReg(mi.ops[1])) << ", [x29, #"
                << getImm(mi.ops[2]) << "]\n";
             return;
         case MOpcode::StpRegFpImm:
-            if (!isPairImm7Offset(getImm(mi.ops[2]))) {
-                emitStrToFp(os, getReg(mi.ops[0]), getImm(mi.ops[2]));
-                emitStrToFp(os,
-                            getReg(mi.ops[1]),
-                            checkedOffsetAdd(getImm(mi.ops[2]), 8, "AArch64 stp fallback"));
-                return;
-            }
+            requireEncodablePairOffset(getImm(mi.ops[2]));
             os << "  stp " << rn(getReg(mi.ops[0])) << ", " << rn(getReg(mi.ops[1])) << ", [x29, #"
                << getImm(mi.ops[2]) << "]\n";
             return;
         case MOpcode::LdpFprFpImm: {
-            if (!isPairImm7Offset(getImm(mi.ops[2]))) {
-                emitLdrFprFromFp(os, getReg(mi.ops[0]), getImm(mi.ops[2]));
-                emitLdrFprFromFp(
-                    os,
-                    getReg(mi.ops[1]),
-                    checkedOffsetAdd(getImm(mi.ops[2]), 8, "AArch64 ldp fpr fallback"));
-                return;
-            }
+            requireEncodablePairOffset(getImm(mi.ops[2]));
             os << "  ldp ";
             printD(os, getReg(mi.ops[0]));
             os << ", ";
@@ -1678,13 +1462,7 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
             return;
         }
         case MOpcode::StpFprFpImm: {
-            if (!isPairImm7Offset(getImm(mi.ops[2]))) {
-                emitStrFprToFp(os, getReg(mi.ops[0]), getImm(mi.ops[2]));
-                emitStrFprToFp(os,
-                               getReg(mi.ops[1]),
-                               checkedOffsetAdd(getImm(mi.ops[2]), 8, "AArch64 stp fpr fallback"));
-                return;
-            }
+            requireEncodablePairOffset(getImm(mi.ops[2]));
             os << "  stp ";
             printD(os, getReg(mi.ops[0]));
             os << ", ";

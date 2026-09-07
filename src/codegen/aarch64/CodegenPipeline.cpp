@@ -43,6 +43,7 @@
 #include "codegen/aarch64/passes/BinaryEmitPass.hpp"
 #include "codegen/aarch64/passes/BlockLayoutPass.hpp"
 #include "codegen/aarch64/passes/EmitPass.hpp"
+#include "codegen/aarch64/passes/ExpandPseudosPass.hpp"
 #include "codegen/aarch64/passes/LegalizePass.hpp"
 #include "codegen/aarch64/passes/LoweringPass.hpp"
 #include "codegen/aarch64/passes/PeepholePass.hpp"
@@ -538,9 +539,10 @@ bool runCodegenPipeline(passes::AArch64Module &module,
         std::vector<VerifyStage> stages;
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
-        // Until ExpandPseudosPass lands (Phase 2.2) wide immediates are still
-        // expanded at emit time, so every post-RA pass is verified against the
-        // PostRA rule set; the later stages add immediate-encodability rules.
+        // Wide immediates and large offsets stay in their compact pseudo forms
+        // through layout, peephole, and scheduling (the frame-slot forwarders
+        // match those forms); ExpandPseudosPass runs after this block, so these
+        // passes are verified against the PostRA rule set.
         if (!backendStageDisabled("BLOCK_LAYOUT")) {
             manager.addPass(std::make_unique<passes::BlockLayoutPass>());
             stages.push_back(VerifyStage::PostRA);
@@ -566,6 +568,20 @@ bool runCodegenPipeline(passes::AArch64Module &module,
 
     if (opts.dumpMirAfterRA && opts.optimizeLevel >= 1)
         dumpMir(module, "after peephole", diagOut);
+
+    {
+        // Last MIR pass at every optimization level: every emit-time pseudo
+        // form becomes explicit MIR, so the emitters below only see encodable
+        // immediates and the PostExpand rule set holds from here on.
+        passes::PassManager manager;
+        if (opts.timePasses)
+            manager.setTimingStream(&diagOut, "aarch64");
+        manager.addPass(std::make_unique<passes::ExpandPseudosPass>());
+        if (verify)
+            installMirVerifier(manager, {VerifyStage::PostExpand});
+        if (!manager.run(module, diags))
+            return flushOnFailure();
+    }
 
     {
         passes::PassManager manager;

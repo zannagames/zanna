@@ -119,10 +119,11 @@ struct InstrEffects {
 ///          argument registers and SP as uses and every caller-saved register
 ///          plus LR as defs; returns add the return registers as uses; FP- and
 ///          SP-relative forms add the base register as a use; jump tables add
-///          the reserved dispatch scratch registers as defs. While emit-time
-///          expansion still exists (until ExpandPseudosPass lands) the reserved
-///          scratch GPRs are added to `defs` for every instruction the emitters
-///          may expand through them (see emitTimeScratchClobber()).
+///          the reserved dispatch scratch registers as defs. Before
+///          ExpandPseudosPass runs (it is the last MIR pass) the reserved
+///          scratch GPRs are added to `defs` for every pseudo form it will
+///          expand through them (see emitTimeScratchClobber()), so the passes
+///          in between model the write the expansion will make.
 /// @param instr Instruction to classify.
 /// @param target ABI description supplying argument, return, and caller-saved sets.
 /// @return The instruction's effects.
@@ -160,17 +161,36 @@ struct InstrEffects {
 /// @brief Whether @p opc adjusts SP (`SubSpImm` / `AddSpImm`).
 [[nodiscard]] bool isSpAdjustOpcode(MOpcode opc) noexcept;
 
-/// @brief The reserved scratch GPRs the emitters may write during expansion (x9, x16, x17).
+/// @brief Bytes transferred by a scalar or pair load/store opcode (0 otherwise).
+[[nodiscard]] unsigned memAccessBytes(MOpcode opc) noexcept;
+
+/// @brief Whether a scalar load/store byte offset is directly encodable.
+/// @details True for the signed unscaled imm9 range `[-256, 255]` and for
+///          non-negative multiples of @p accessBytes whose scaled value fits
+///          the unsigned imm12 field (`offset / accessBytes <= 4095`).
+/// @param offset Byte displacement from the base register.
+/// @param accessBytes Access width (1, 2, 4, or 8).
+[[nodiscard]] bool isEncodableLdStOffset(long long offset, unsigned accessBytes) noexcept;
+
+/// @brief Whether a pair load/store byte offset fits the scaled signed imm7 field.
+/// @details True for multiples of 8 in `[-512, 504]`.
+[[nodiscard]] bool isEncodablePairOffset(long long offset) noexcept;
+
+/// @brief Whether an SP-relative argument store offset is directly encodable.
+/// @details True for non-negative multiples of 8 whose scaled value fits imm12.
+[[nodiscard]] bool isEncodableSpStoreOffset(long long offset) noexcept;
+
+/// @brief The reserved scratch GPRs an expansion may write (x9, x16, x17).
 [[nodiscard]] PhysRegSet emitScratchGPRs() noexcept;
 
-/// @brief Whether the emitters may write a reserved scratch GPR while emitting @p instr.
+/// @brief Whether @p instr is a pseudo form ExpandPseudosPass must rewrite.
 /// @details Wide immediates on ALU/compare forms, non-FP8 `FMovRI`, and FP-,
 ///          SP-, pair-, and base-relative accesses whose displacement exceeds
-///          the encodable range are materialized through kScratchGPR/2/3 at
-///          emit time. Those writes are invisible in the operands, so every
-///          post-RA reordering or liveness pass must treat the instruction as
-///          defining the scratch set. Removed once ExpandPseudosPass makes the
-///          expansion explicit MIR.
+///          the encodable range are materialized through kScratchGPR/2/3 by
+///          the expansion. Until it runs those writes are invisible in the
+///          operands, so every post-RA reordering or liveness pass treats the
+///          instruction as defining the scratch set; after it runs this is
+///          false for every instruction and the emitters reject any exception.
 [[nodiscard]] bool emitTimeScratchClobber(const MInstr &instr) noexcept;
 
 } // namespace zanna::codegen::aarch64

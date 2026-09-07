@@ -643,19 +643,6 @@ class AsmEmitter {
     void emitInstruction(std::ostream &os, const MInstr &mi) const;
 
   private:
-    /// @brief Resolve base+offset, materialising into scratch for large offsets.
-    /// @param os Output stream for any address-materialization instructions.
-    /// @param base Original base GPR.
-    /// @param offset Signed byte displacement.
-    /// @param resolvedOffset Receives an encodable residual displacement.
-    /// @param avoid Optional transfer register that scratch selection must preserve.
-    /// @return Original base or a reserved scratch register containing the full address.
-    [[nodiscard]] PhysReg resolveBaseOffset(std::ostream &os,
-                                            PhysReg base,
-                                            long long offset,
-                                            long long &resolvedOffset,
-                                            std::optional<PhysReg> avoid = std::nullopt) const;
-
     const TargetInfo *target_{nullptr};
     // Mutable state used during emitFunction to pass frame plan to Ret instructions
     mutable const FramePlan *currentPlan_{nullptr};

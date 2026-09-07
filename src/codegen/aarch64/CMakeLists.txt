@@ -41,6 +41,7 @@ add_library(il_codegen_aarch64 STATIC
         passes/LegalizePass.cpp
         passes/PreRegAllocOptPass.cpp
         passes/RegAllocPass.cpp
+        passes/ExpandPseudosPass.cpp
         passes/PeepholePass.cpp
         passes/EmitPass.cpp
         passes/BinaryEmitPass.cpp

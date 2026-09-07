@@ -160,22 +160,6 @@ static std::string getSanitizedNonEmptyLabel(const MOperand &op, const char *con
 }
 
 /**
- * @brief Adds two signed offsets with explicit overflow detection.
- * @param lhs First addend.
- * @param rhs Second addend.
- * @param context Non-null diagnostic context.
- * @return Exact signed sum.
- * @throws std::runtime_error If the sum is outside `int64_t`.
- */
-static int64_t checkedAddI64(int64_t lhs, int64_t rhs, const char *context) {
-    if ((rhs > 0 && lhs > std::numeric_limits<int64_t>::max() - rhs) ||
-        (rhs < 0 && lhs < std::numeric_limits<int64_t>::min() - rhs)) {
-        throw std::runtime_error(std::string(context) + " immediate addition overflows int64");
-    }
-    return lhs + rhs;
-}
-
-/**
  * @brief Computes a signed displacement between two unsigned section offsets.
  * @param target Target byte offset.
  * @param base PC/base byte offset.
@@ -671,24 +655,14 @@ static uint32_t unscaledGprLdStTemplate(bool isLoad, unsigned accessBytes) {
     }
 }
 
-/// @brief Select a scratch GPR that is not @p base and not @p avoid.
-/// @details Tries kScratchGPR (x9), kScratchGPR2 (x16), kScratchGPR3 (x17) in priority order.
-/// Throws if all three scratch registers conflict (indicates a register-allocation bug).
-/// @param base Hardware register field that must not be selected.
-/// @param avoid Optional second hardware register field to exclude.
-/// @return Hardware field of the first available reserved scratch GPR.
-/// @throws std::runtime_error If all reserved scratch registers conflict.
-static uint32_t chooseGprScratch(uint32_t base, std::optional<uint32_t> avoid = std::nullopt) {
-    const uint32_t candidates[] = {hwGPR(kScratchGPR), hwGPR(kScratchGPR2), hwGPR(kScratchGPR3)};
-    for (uint32_t candidate : candidates) {
-        if (candidate == base)
-            continue;
-        if (avoid.has_value() && candidate == *avoid)
-            continue;
-        return candidate;
-    }
-    throw std::runtime_error(
-        "AArch64 binary encoder: no scratch register for large offset load/store");
+/// @brief Reject an instruction whose immediate or offset is not directly encodable.
+/// @details Every such form is rewritten into explicit MIR by ExpandPseudosPass
+///          before emission; reaching the encoder with one is a pipeline bug.
+/// @param what Description of the offending form for the diagnostic.
+/// @throws std::runtime_error always.
+[[noreturn]] static void rejectUnexpanded(const std::string &what) {
+    throw std::runtime_error("AArch64 binary encoder: " + what +
+                             " reached the encoder without ExpandPseudosPass expansion");
 }
 
 /// @brief Convert a byte offset to a signed 7-bit scaled immediate for STP/LDP pair encoding.
@@ -799,29 +773,14 @@ size_t A64BinaryEncoder::addSubImmSmartSize(uint32_t value) const {
 }
 
 /**
- * @brief Measures scratch-address materialization plus one scalar access.
- * @param offset Signed offset materialized as a 64-bit constant.
- * @return Encoded sequence size in bytes.
- */
-size_t A64BinaryEncoder::largeOffsetLdStSize(int64_t offset) const {
-    return movImm64Size(static_cast<uint64_t>(offset)) + 8; // add scratch + ldr/str
-}
-
-/**
- * @brief Measures an SP-relative store and any scratch-address setup.
+ * @brief Measures an SP-relative argument store.
  * @param offset Signed destination byte offset from `SP`.
- * @return Encoded sequence size in bytes.
+ * @return Four bytes; any other offset was expanded before emission.
  */
 size_t A64BinaryEncoder::spOffsetStoreSize(int64_t offset) const {
-    if (isLegalScaledUImm64(offset))
-        return 4;
-
-    size_t bytes = 8; // mov scratch, sp + final store
-    if (offset > 0)
-        bytes += addSubImmSmartSize(checkedU32Magnitude(offset, "SP store offset"));
-    else if (offset < 0)
-        bytes += addSubImmSmartSize(checkedU32Magnitude(offset, "SP store offset"));
-    return bytes;
+    if (!isLegalScaledUImm64(offset))
+        rejectUnexpanded("sp-relative store offset #" + std::to_string(offset));
+    return 4;
 }
 
 /**
@@ -972,8 +931,9 @@ size_t A64BinaryEncoder::measureInstructionSize(
 
     if (const auto info = classifyLdSt(mi.opc)) {
         const long long offset = getImm(mi.ops[info->offsetOpIndex]);
-        return scalarLdStSizeForOffset(offset, info->bytes) != 0 ? size_t{4}
-                                                                 : largeOffsetLdStSize(offset);
+        if (scalarLdStSizeForOffset(offset, info->bytes) == 0)
+            rejectUnexpanded("load/store offset #" + std::to_string(offset));
+        return 4;
     }
 
     switch (mi.opc) {
@@ -989,23 +949,16 @@ size_t A64BinaryEncoder::measureInstructionSize(
             const long long imm = getImm(mi.ops[1]);
             if ((imm >= 0 && imm <= 4095) || (imm >= -4095 && imm < 0))
                 return 4;
-            return movImm64Size(static_cast<uint64_t>(imm)) + 4;
+            rejectUnexpanded("cmp immediate #" + std::to_string(imm));
         }
 
         case MOpcode::LdpRegFpImm:
         case MOpcode::StpRegFpImm:
         case MOpcode::LdpFprFpImm:
         case MOpcode::StpFprFpImm:
-            if (isPairImm7Offset(getImm(mi.ops[2])))
-                return 4;
-            return (scalarLdStSizeForOffset(getImm(mi.ops[2]), 8) != 0
-                        ? 4
-                        : largeOffsetLdStSize(getImm(mi.ops[2]))) +
-                   (scalarLdStSizeForOffset(
-                        checkedAddI64(getImm(mi.ops[2]), 8, "AArch64 pair fallback offset"), 8) != 0
-                        ? 4
-                        : largeOffsetLdStSize(
-                              checkedAddI64(getImm(mi.ops[2]), 8, "AArch64 pair fallback offset")));
+            if (!isPairImm7Offset(getImm(mi.ops[2])))
+                rejectUnexpanded("ldp/stp offset #" + std::to_string(getImm(mi.ops[2])));
+            return 4;
 
         case MOpcode::SubSpImm:
         case MOpcode::AddSpImm:
@@ -1017,26 +970,26 @@ size_t A64BinaryEncoder::measureInstructionSize(
 
         case MOpcode::AddFpImm: {
             const long long offset = getImm(mi.ops[1]);
-            const uint64_t magnitude = absImmUnsigned(offset);
-            return classifyAddSubImmEncoding(magnitude).has_value() ? 4
-                                                                    : movImm64Size(magnitude) + 4;
+            if (!classifyAddSubImmEncoding(absImmUnsigned(offset)).has_value())
+                rejectUnexpanded("frame address offset #" + std::to_string(offset));
+            return 4;
         }
 
         case MOpcode::AndRI:
         case MOpcode::OrrRI:
         case MOpcode::EorRI: {
             const auto imm = static_cast<uint64_t>(getImm(mi.ops[2]));
-            return encodeLogicalImmediate(imm) >= 0 ? 4 : movImm64Size(imm) + 4;
+            if (encodeLogicalImmediate(imm) < 0)
+                rejectUnexpanded("logical immediate #" + std::to_string(getImm(mi.ops[2])));
+            return 4;
         }
 
         case MOpcode::FMovRI: {
             double val;
             std::memcpy(&val, &mi.ops[1].imm, sizeof(val));
-            if (encodeFP8Immediate(val) >= 0)
-                return 4;
-            uint64_t bits;
-            std::memcpy(&bits, &val, sizeof(bits));
-            return movImm64Size(bits) + 4;
+            if (encodeFP8Immediate(val) < 0)
+                rejectUnexpanded("non-FP8 floating-point constant");
+            return 4;
         }
 
         case MOpcode::BCond:
@@ -1255,8 +1208,8 @@ void A64BinaryEncoder::encodeFunction(const MFunction &fn,
         for (const auto &bb : fn.blocks) {
             for (const auto &mi : bb.instrs) {
                 if (mi.opc == MOpcode::Br || mi.opc == MOpcode::BCond || mi.opc == MOpcode::Cbz ||
-                    mi.opc == MOpcode::Cbnz || mi.opc == MOpcode::Tbz ||
-                    mi.opc == MOpcode::Tbnz || mi.opc == MOpcode::Bl)
+                    mi.opc == MOpcode::Cbnz || mi.opc == MOpcode::Tbz || mi.opc == MOpcode::Tbnz ||
+                    mi.opc == MOpcode::Bl)
                     ++branchCount;
             }
         }
@@ -1346,9 +1299,8 @@ void A64BinaryEncoder::encodeFunction(const MFunction &fn,
         for (const auto &te : pendingTableEntries_) {
             auto it = labelOffsets_.find(te.caseLabel);
             if (it == labelOffsets_.end()) {
-                throw std::runtime_error(
-                    "AArch64 binary encoder: unresolved jump-table target '" + te.caseLabel +
-                    "' in function '" + fn.name + "'");
+                throw std::runtime_error("AArch64 binary encoder: unresolved jump-table target '" +
+                                         te.caseLabel + "' in function '" + fn.name + "'");
             }
             const int64_t delta = checkedOffsetDelta(it->second, te.tableStart, "jump-table entry");
             text.patch32LE(te.patchOffset, static_cast<uint32_t>(static_cast<int32_t>(delta)));
@@ -1819,29 +1771,6 @@ void A64BinaryEncoder::encodeAddSp(int64_t bytes, objfile::CodeSection &cs) {
  * @param accessBytes Scalar access width.
  * @param[in,out] cs Text section receiving words.
  */
-void A64BinaryEncoder::encodeLargeOffsetLdSt(uint32_t rt,
-                                             uint32_t base,
-                                             int64_t offset,
-                                             bool isLoad,
-                                             bool fprOperand,
-                                             unsigned accessBytes,
-                                             objfile::CodeSection &cs) {
-    if (base == hwGPR(PhysReg::SP)) {
-        throw std::runtime_error("AArch64 binary encoder: large-offset load/store cannot "
-                                 "materialize SP base with ADD (register)");
-    }
-    const uint32_t scratch = chooseGprScratch(
-        base, (!isLoad && !fprOperand) ? std::optional<uint32_t>(rt) : std::nullopt);
-    encodeMovImm64(scratch, static_cast<uint64_t>(offset), cs);
-    // add scratch, base, scratch
-    emit32(encode3Reg(kAddRRR, scratch, base, scratch), cs);
-    // ldr/str rt, [x9]  (offset 0)
-    if (fprOperand)
-        emit32((isLoad ? kLdrFpr : kStrFpr) | (0 << 10) | (scratch << 5) | rt, cs);
-    else
-        emit32(scaledGprLdStTemplate(isLoad, accessBytes) | (0 << 10) | (scratch << 5) | rt, cs);
-}
-
 /**
  * @brief Chooses and emits scaled, unscaled, or large-offset scalar access.
  * @param rt Transfer register hardware field.
@@ -1881,7 +1810,7 @@ void A64BinaryEncoder::encodeScalarLdSt(uint32_t rt,
         return;
     }
 
-    encodeLargeOffsetLdSt(rt, base, offset, isLoad, fprOperand, accessBytes, cs);
+    rejectUnexpanded("load/store offset #" + std::to_string(offset));
 }
 
 /**
@@ -1902,17 +1831,7 @@ void A64BinaryEncoder::encodeSpOffsetStore(uint32_t rt,
         return;
     }
 
-    const uint32_t scratch =
-        chooseGprScratch(sp, (!fprOperand) ? std::optional<uint32_t>(rt) : std::nullopt);
-    emit32(encodeAddSubImm(kAddRI, scratch, sp, 0), cs);
-    if (offset > 0)
-        emitAddSubImmSmart(
-            kAddRI, scratch, scratch, checkedU32Magnitude(offset, "SP store offset"), cs);
-    else if (offset < 0)
-        emitAddSubImmSmart(
-            kSubRI, scratch, scratch, checkedU32Magnitude(offset, "SP store offset"), cs);
-
-    emit32((fprOperand ? kStrFpr : kStrGpr) | (0 << 10) | (scratch << 5) | rt, cs);
+    rejectUnexpanded("sp-relative store offset #" + std::to_string(offset));
 }
 
 // =============================================================================
@@ -2313,10 +2232,7 @@ void A64BinaryEncoder::encodeCompareInstr(const MInstr &mi, objfile::CodeSection
                 // cmn = adds XZR, Xn, #(-imm)
                 emit32(encodeAddSubImm(kAddsRI, 31, rn, static_cast<uint32_t>(-imm)), cs);
             } else {
-                // Large: materialise into the reserved scratch, then subs reg-reg.
-                const uint32_t scratch = chooseGprScratch(rn);
-                encodeMovImm64(scratch, static_cast<uint64_t>(imm), cs);
-                emit32(encode3Reg(kSubsRRR, 31, rn, scratch), cs);
+                rejectUnexpanded("cmp immediate #" + std::to_string(imm));
             }
             return;
         }
@@ -2423,10 +2339,9 @@ void A64BinaryEncoder::encodeRegOffsetLdStInstr(const MInstr &mi, objfile::CodeS
     const bool isLoad = mi.opc == MOpcode::LdrRegBaseRegLsl ||
                         mi.opc == MOpcode::Ldr32RegBaseRegLsl ||
                         mi.opc == MOpcode::LdrFprBaseRegLsl;
-    const bool is32 = mi.opc == MOpcode::Ldr32RegBaseRegLsl ||
-                      mi.opc == MOpcode::Str32RegBaseRegLsl;
-    const bool isFpr = mi.opc == MOpcode::LdrFprBaseRegLsl ||
-                       mi.opc == MOpcode::StrFprBaseRegLsl;
+    const bool is32 =
+        mi.opc == MOpcode::Ldr32RegBaseRegLsl || mi.opc == MOpcode::Str32RegBaseRegLsl;
+    const bool isFpr = mi.opc == MOpcode::LdrFprBaseRegLsl || mi.opc == MOpcode::StrFprBaseRegLsl;
     const uint32_t rt = isFpr ? hwFPR(getReg(mi.ops[0])) : hwGPR(getReg(mi.ops[0]));
     const uint32_t rn = hwGPR(getReg(mi.ops[1]));
     const uint32_t rm = hwGPR(getReg(mi.ops[2]));
@@ -2460,19 +2375,8 @@ void A64BinaryEncoder::encodeLdStPairInstr(const MInstr &mi, objfile::CodeSectio
     const uint32_t tmpl = isLoad ? (isFpr ? kLdpFpr : kLdpGpr) : (isFpr ? kStpFpr : kStpGpr);
     const char *ctx = isLoad ? "ldp" : "stp";
 
-    if (!isPairImm7Offset(rawOffset)) {
-        // Offset doesn't fit the imm7 pair encoding: split into two scalar
-        // load/stores at +0 and +8.
-        encodeScalarLdSt(rt, fp, rawOffset, isLoad, isFpr, 8, cs);
-        encodeScalarLdSt(rt2,
-                         fp,
-                         checkedAddI64(rawOffset, 8, "AArch64 ldp/stp fallback offset"),
-                         isLoad,
-                         isFpr,
-                         8,
-                         cs);
-        return;
-    }
+    if (!isPairImm7Offset(rawOffset))
+        rejectUnexpanded(std::string(ctx) + " offset #" + std::to_string(rawOffset));
     const auto offset = checkedPairImm7(rawOffset, ctx);
     emit32(encodePair(tmpl, rt, rt2, fp, offset), cs);
 }
@@ -2512,37 +2416,30 @@ void A64BinaryEncoder::encodeAddFpImmInstr(const MInstr &mi, objfile::CodeSectio
     const uint32_t fp = hwGPR(PhysReg::X29);
     const uint64_t magnitude = absImmUnsigned(offset);
     const uint32_t tmpl = (offset >= 0) ? kAddRI : kSubRI;
-    if (const auto enc = classifyAddSubImmEncoding(magnitude)) {
-        emit32(enc->shift12 ? encodeAddSubImmShift(tmpl, rd, fp, enc->imm12)
-                            : encodeAddSubImm(tmpl, rd, fp, enc->imm12),
-               cs);
-    } else {
-        // Large offset: use a reserved scratch; register allocation never assigns it.
-        const uint32_t scratch = chooseGprScratch(fp, rd);
-        encodeMovImm64(scratch, magnitude, cs);
-        emit32(encode3Reg(offset >= 0 ? kAddRRR : kSubRRR, rd, fp, scratch), cs);
-    }
+    const auto enc = classifyAddSubImmEncoding(magnitude);
+    if (!enc)
+        rejectUnexpanded("frame address offset #" + std::to_string(offset));
+    emit32(enc->shift12 ? encodeAddSubImmShift(tmpl, rd, fp, enc->imm12)
+                        : encodeAddSubImm(tmpl, rd, fp, enc->imm12),
+           cs);
 }
 
 /** @brief Encodes a logical-immediate instruction after bitmask conversion.
  * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeLogicalImmInstr(const MInstr &mi, objfile::CodeSection &cs) {
-    // Three textually-identical patterns (And/Orr/Eor) differing only in
-    // instruction templates: try the immediate encoding; on failure materialise
-    // the value in a scratch register and emit the register-register form.
-    uint32_t immTpl = 0, regTpl = 0;
+    // Three textually-identical patterns (And/Orr/Eor) differing only in the
+    // instruction template; non-encodable immediates were expanded before
+    // emission and are rejected here.
+    uint32_t immTpl = 0;
     switch (mi.opc) {
         case MOpcode::AndRI:
             immTpl = kAndImm;
-            regTpl = kAndRRR;
             break;
         case MOpcode::OrrRI:
             immTpl = kOrrImm;
-            regTpl = kOrrRRR;
             break;
         case MOpcode::EorRI:
             immTpl = kEorImm;
-            regTpl = kEorRRR;
             break;
         default:
             break;
@@ -2551,13 +2448,9 @@ void A64BinaryEncoder::encodeLogicalImmInstr(const MInstr &mi, objfile::CodeSect
     const uint32_t rn = hwGPR(getReg(mi.ops[1]));
     const auto imm = static_cast<uint64_t>(getImm(mi.ops[2]));
     const int32_t enc = encodeLogicalImmediate(imm);
-    if (enc >= 0) {
-        emit32(encodeLogImm(immTpl, rd, rn, enc), cs);
-    } else {
-        const uint32_t scratch = chooseGprScratch(rn);
-        encodeMovImm64(scratch, imm, cs);
-        emit32(encode3Reg(regTpl, rd, rn, scratch), cs);
-    }
+    if (enc < 0)
+        rejectUnexpanded("logical immediate #" + std::to_string(getImm(mi.ops[2])));
+    emit32(encodeLogImm(immTpl, rd, rn, enc), cs);
 }
 
 /** @brief Encodes special FP moves, conversions, comparisons, and rounding.
@@ -2594,13 +2487,7 @@ void A64BinaryEncoder::encodeFpSpecialInstr(const MInstr &mi, objfile::CodeSecti
                 emit32(kFMovDImm | (static_cast<uint32_t>(fp8) << 13) | rd, cs);
                 return;
             }
-            // Fallback: materialise 64-bit IEEE 754 bits in a GPR, then FMOV Dd, Xn.
-            uint64_t bits;
-            std::memcpy(&bits, &val, sizeof(bits));
-            const uint32_t scratch = hwGPR(kScratchGPR);
-            encodeMovImm64(scratch, bits, cs);
-            emit32(encode2Reg(kFMovGR, rd, scratch), cs);
-            return;
+            rejectUnexpanded("non-FP8 floating-point constant");
         }
         default:
             break;

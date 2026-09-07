@@ -417,6 +417,10 @@ _aarch64_add_test_common(test_aarch64_mir_verify
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_mir_verify.cpp
         "il_codegen_aarch64")
 
+_aarch64_add_test_common(test_aarch64_expand_pseudos
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_expand_pseudos.cpp
+        "il_codegen_aarch64")
+
 _aarch64_add_test_common(test_aarch64_linux_abi
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_linux_abi.cpp
         "il_codegen_aarch64")

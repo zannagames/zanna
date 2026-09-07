@@ -636,8 +636,9 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     /// @brief Models every implicit register definition of @p mi as a def.
     /// @details Implicit defs come from the shared effects model: caller-saved
     ///          registers and LR at calls, the jump-table dispatch scratch, and
-    ///          (until ExpandPseudosPass) the reserved scratch GPRs the emitter
-    ///          writes while materializing wide immediates or large offsets.
+    ///          the reserved scratch GPRs that ExpandPseudosPass (which runs
+    ///          after the scheduler) will write while materializing wide
+    ///          immediates or large offsets.
     ///          The plan-88 bisect (a throw-backup leg's end time became a
     ///          stack address) was such a scratch write hoisted between two
     ///          instructions that kept a value in x9.

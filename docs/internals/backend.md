@@ -131,11 +131,22 @@ The backend design emphasizes:
 The backend implements a **sequential multi-pass pipeline**:
 
 ```cpp
-// High-level pipeline flow
+// High-level pipeline flow (x86-64)
 ILModule → LoweringPass → LegalizePass → PreRegAllocOptPass → RegAllocPass → SchedulerPass → PeepholePass → EmitPass → Assembly
+
+// AArch64
+ILModule → LoweringPass → LegalizePass → PreRegAllocOptPass → RegAllocPass → BlockLayoutPass → PeepholePass → SchedulerPass → PeepholePass(post-schedule) → ExpandPseudosPass → EmitPass / BinaryEmitPass
 ```
 
 Each pass operates on a shared `Module` structure that threads state through the pipeline.
+On AArch64, `ExpandPseudosPass` is the last MIR pass at every optimization level: it rewrites
+every form the emitters used to expand through a hidden scratch register (wide ALU/compare
+immediates, non-FP8 `FMovRI`, frame/base/pair/SP-relative accesses outside the encodable range)
+into explicit MIR (`MovRI xS,#imm; op dst,lhs,xS`, `MovRI xS,#off; AddRRR xS,x29,xS; op rt,[xS,#0]`,
+pair splits), choosing a reserved scratch (x9/x16/x17) that is neither an operand nor live at that
+point. It runs after the peepholes and scheduler so the frame-slot forwarders still match the
+compact forms; until it runs, `InstrEffects::effectsOf` reports the scratch set as implicit
+definitions of every such pseudo form. Both emitters reject any pseudo form that reaches them.
 `LegalizePass` is a real backend stage on both native backends: x86-64 lowers adapter IL to MIR and expands early
 machine pseudos; AArch64 expands overflow pseudos, inserts the `main` runtime-context calls into MIR, and refreshes
 leaf metadata before register allocation.
