@@ -96,7 +96,44 @@ Phase 2.2 (A4, `ExpandPseudosPass`) is implemented:
   instructions are the `mov x9,#off; add x9,x29,x9` prefixes of frame accesses beyond ±256
   bytes (every spill/reload in a frame larger than 256 bytes costs three instructions).
 
-Everything from B1 onward is open.
+Phase 2.3 (one `MirCfg` per backend, `blockExitLive`, B1) is implemented:
+
+- `src/codegen/{aarch64,x86_64}/MirCfg.{hpp,cpp}` — snapshot CFG built from `ra::classifyControlFlow`
+  through `common/ra/CfgExtract.hpp` (which now also reports per-block fallthrough), with
+  predecessors, `hasEdge`, `fallsThrough`, `exitsDirectlyTo` (AArch64), lazily computed dominators
+  (`common/ra/Dominators.hpp`, the former `aarch64/peephole/Dominators.cpp` moved there), dominance-
+  proven `backEdges`, `naturalLoop`, and `loopDepths`. Consumers: both `ra::LivenessAnalysis`, both
+  `MirVerify`, AArch64 `removeDeadInstructionsCFG`, `forwardSinglePredPhiLoads`,
+  `coalesceJoinPhiLoads`, `forwardLayoutSuccessorStoreLoad`, `hoistLoopConstants`,
+  `eliminateLoopPhiSpills`, and the x86-64 `traceBlockLayout`/`moveColdBlocks`. The five private
+  builders they used are deleted; the drifts they had (LoopOpt dropped the fallthrough edge after a
+  trailing `Tbz`/`Tbnz` and added one after a `JumpTable`/no-return call; `Peephole.cpp` added a
+  fallthrough after a `JumpTable` and never recorded jump-table targets as predecessors;
+  `LoopOpt` bounded natural loops by layout position) are gone with them.
+- `blockExitLive(fn, bi, target)` (`aarch64/MirCfg.hpp`) = `carriedExitRegs` ∪ SP/FP/LR ∪ (return
+  registers when the block leaves the function, otherwise callee-saved GPR/FPR — pinned slots live
+  there; at a return the epilogue restores them, so a value left in one is dead).
+  `foldComputeIntoTarget` and `tryMaddFusion` (B1) now take the ABI and this set and scan with the
+  effects model, so a call's argument registers and a return's result registers are reads, a call's
+  caller-saved clobbers are writes, and a value reaching the block end is dead only if it is not
+  exit-live. The CFG-aware DCE seeds function exits from the same helper and adds `carriedExitRegs`
+  to every block's live-out.
+- Generated-code check against the Phase 2.2 compiler (chess, crackman, paint, openworld_slice at
+  -O0/-O2 on both targets): x86-64 identical, AArch64 -O0 identical, AArch64 -O2 net −11/−11/−9
+  instructions (chess/crackman/paint). Two effects: (a) the CFG-aware DCE no longer seeds returning
+  blocks with the callee-saved set (the epilogue restores them), so dead `mov xN, #0`
+  materializations into callee-saved registers and the save/restore pairs they forced disappear;
+  (b) `foldComputeIntoTarget` declines a fold whose ALU destination is an argument register read
+  by the following one-argument call (five sites in chess, +1 `mov` each). The effects model reads
+  every argument register at a call because `Bl` carries no arity; a call-site argument mask on
+  the MIR call is Phase 3 item 16.
+- Tests: `test_aarch64_mir_cfg` (the four disagreement shapes, direct-exit edges, dominators/back
+  edges/natural loops/loop depth, `blockExitLive` for returning, branching, trapping, and
+  fall-through blocks), `test_codegen_cfg_extract` (x86-64 `MirCfg` shapes), and B1 cases in
+  `test_codegen_arm64_peephole_subpasses` (carried/return/call-argument registers block the fold
+  and the fusion).
+
+Everything from B2 onward is open.
 
 ## Context
 
@@ -135,7 +172,7 @@ Fix (preferred, removes the class): a post-RA `ExpandPseudosPass` on AArch64 tha
 
 ### B. Latent hazards (cheap fixes + tests)
 
-- **B1.** `foldComputeIntoTarget` (`aarch64/peephole/CopyPropDCE.cpp`) and `tryMaddFusion` (`aarch64/peephole/MemoryOpt.cpp`) treat an unconditional block end as "register dead" without consulting `carriedExitRegs`; `tryFoldImmThenMove`/`tryTbzTbnzFusion` do consult it. Masked today only because the end-of-block spill store is still present when they run. Add the `carriedExitRegs` parameter and a shared `blockExitLive(block, target)` helper.
+- **B1.** (fixed in Phase 2.3) `foldComputeIntoTarget` (`aarch64/peephole/CopyPropDCE.cpp`) and `tryMaddFusion` (`aarch64/peephole/MemoryOpt.cpp`) treat an unconditional block end as "register dead" without consulting `carriedExitRegs`; `tryFoldImmThenMove`/`tryTbzTbnzFusion` do consult it. Masked today only because the end-of-block spill store is still present when they run. Add the `carriedExitRegs` parameter and a shared `blockExitLive(block, target)` helper.
 - **B2.** `eliminateDeadFpStores` and `forwardStoreLoads` (AArch64) key on exact offsets and ignore sub-word `Ldr8/16/32RegFpImm` / `Str8/16/32RegFpImm`: `str x0,[fp,#-16]; ldr w1,[fp,#-16]; str x2,[fp,#-16]` deletes the first store. Use byte-range overlap for every FpImm width (extend `fpStoreRange` to loads and sub-word forms).
 - **B3.** x86 `ra/Coalescer.cpp::lower` leaves `dstState.hasPhys/cachedInBlock` set after a Mem-dest PX_COPY (stale register). Unreachable under SSA dominance; invalidate + assert.
 - **B4.** x86 `LowerOvf.cpp` 3-operand form `mov dest,lhs; op dest,rhs` assumes `dest != rhs`. Assert (or swap for commutative ops).
@@ -184,6 +221,7 @@ Fix (preferred, removes the class): a post-RA `ExpandPseudosPass` on AArch64 tha
 13. **C3** x86 argument marshalling as one `PX_COPY` per call (reuse `Coalescer::lower`), free R11 for allocation (keep R10 for cycle breaking or use `XCHG`).
 14. **C4** port `removeDeadInstructionsCFG` to x86 on top of `MirCfg`.
 15. **C5** precompute vreg use/def counts once per function for `foldLeaIntoMem`/`runAddressingFolds`; make `coalesceClass` incremental (update intervals on merge instead of restart); index spill slots by vreg in `FrameBuilder`.
+16. **Call-site argument masks.** `Bl`/`Blr` (and x86 `CALL`) carry no arity, so `effectsOf` reads every argument register at every call. Record the integer/FP argument-register counts on the MIR call at lowering and read only those: it restores the five `foldComputeIntoTarget` folds Phase 2.3 declines in `chess` (ALU result in an argument register the next one-argument call does not read), lets DCE drop dead argument-register writes before calls, and removes false scheduler dependencies. Measured on `chess` -O2: 12,447 frame-access prefixes (Phase 2.2) dwarf this, so it goes after global RA.
 
 ---
 

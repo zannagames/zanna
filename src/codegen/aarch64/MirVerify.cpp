@@ -13,25 +13,25 @@
 // Key invariants:
 //   - Every register fact comes from effectsOf()/ra::operandRoles; the
 //     verifier adds no opcode table of its own beyond frame-offset shapes.
-//   - The physical liveness solved here uses the register allocator's CFG
-//     classifier (ra::classifyControlFlow), so it sees the same edges RA saw.
+//   - The physical liveness solved here runs over the shared MirCfg (built
+//     from ra::classifyControlFlow), so it sees the same edges RA saw.
 //   - Reports are capped per function so one broken function stays readable.
 // Ownership/Lifetime:
 //   - Stateless; all containers are function-local.
 // Links: src/codegen/aarch64/MirVerify.hpp,
 //        src/codegen/aarch64/InstrEffects.cpp,
-//        src/codegen/aarch64/ra/Liveness.cpp,
-//        src/codegen/common/ra/CfgExtract.hpp
+//        src/codegen/aarch64/MirCfg.hpp,
+//        src/codegen/aarch64/ra/Liveness.cpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "codegen/aarch64/MirVerify.hpp"
 
 #include "codegen/aarch64/InstrEffects.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
 #include "codegen/aarch64/ra/Liveness.hpp"
 #include "codegen/aarch64/ra/OperandRoles.hpp"
-#include "codegen/common/ra/CfgExtract.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -385,15 +385,8 @@ struct PhysLiveness {
 /// @brief Solve backward physical-register liveness for @p fn.
 [[nodiscard]] PhysLiveness computePhysLiveness(const MFunction &fn, const TargetInfo &target) {
     const std::size_t n = fn.blocks.size();
-    std::unordered_map<std::string, std::size_t> blockIndex;
-    for (std::size_t bi = 0; bi < n; ++bi)
-        blockIndex.emplace(fn.blocks[bi].name, bi);
-
-    const auto succs = zanna::codegen::ra::extractSuccessors(
-        fn.blocks,
-        blockIndex,
-        [](const MBasicBlock &bb) -> const std::vector<MInstr> & { return bb.instrs; },
-        [](const MInstr &mi) { return ra::classifyControlFlow(mi); });
+    const MirCfg cfg(fn);
+    const auto &succs = cfg.successors();
 
     std::vector<PhysRegSet> gen(n);
     std::vector<PhysRegSet> kill(n);

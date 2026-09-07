@@ -52,9 +52,10 @@ namespace zanna::codegen::x64::ra {
 ///          several JCCs before its final JMP, e.g. switch compare cascades);
 ///          `JMP` is unconditional, `JUMPTABLE` multi-way (case labels from
 ///          operand 2), `RET` returns, and `UD2` never falls through. CALL
-///          label operands are deliberately not branch targets. Every CFG
-///          consumer (allocator liveness, verifier, peephole CFG passes) must
-///          use this so they see identical edges.
+///          label operands are deliberately not branch targets. MirCfg
+///          (codegen/x86_64/MirCfg.hpp) is built from this classifier and is
+///          what every CFG consumer (allocator liveness, verifier, layout
+///          peepholes) reads, so they all see identical edges.
 /// @param instr Instruction to classify.
 /// @return Descriptor whose target pointers refer to labels owned by @p instr.
 [[nodiscard]] zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr);

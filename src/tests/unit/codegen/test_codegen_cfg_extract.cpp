@@ -6,8 +6,9 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/unit/codegen/test_codegen_cfg_extract.cpp
-// Purpose: Unit tests for shared MIR CFG extraction (CfgExtract.hpp) and its
-//          use by both backend liveness analyses. The key regression covered:
+// Purpose: Unit tests for shared MIR CFG extraction (CfgExtract.hpp), its
+//          use by both backend liveness analyses, and the x86-64 MirCfg
+//          snapshot built on it. The key regression covered:
 //          a block containing several conditional branches before its final
 //          unconditional jump (switch compare cascades) must contribute an
 //          edge for EVERY conditional branch, not just the one nearest the
@@ -35,6 +36,7 @@
 #include "codegen/aarch64/ra/Liveness.hpp"
 #include "codegen/common/ra/CfgExtract.hpp"
 #include "codegen/x86_64/MachineIR.hpp"
+#include "codegen/x86_64/MirCfg.hpp"
 #include "codegen/x86_64/ra/Liveness.hpp"
 
 #include <algorithm>
@@ -244,6 +246,7 @@ TEST(CfgExtract, SharedExtractorSkipsUnknownLabelsAndDedups) {
         BranchDesc::Kind kind{BranchDesc::Kind::None};
         std::string label{};
     };
+
     struct FakeBlock {
         std::vector<FakeInstr> instrs{};
     };
@@ -269,6 +272,122 @@ TEST(CfgExtract, SharedExtractorSkipsUnknownLabelsAndDedups) {
     ASSERT_EQ(succs[0].size(), 1u);
     EXPECT_EQ(succs[0][0], 1u);
     EXPECT_TRUE(succs[1].empty());
+}
+
+// ---------------------------------------------------------------------------
+// x86-64 MirCfg: the shared snapshot agrees with the allocator's liveness CFG
+// on the shapes the retired private builders disagreed on, and exposes
+// fallthrough, dominators, back edges, and natural loops.
+// ---------------------------------------------------------------------------
+TEST(CfgExtract, X64MirCfgShapesMatchLivenessAndExposeFallthrough) {
+    using namespace zanna::codegen::x64;
+
+    MFunction fn{};
+    fn.name = "mircfg_shapes";
+
+    MBasicBlock entry{};
+    entry.label = "entry";
+    entry.instructions = {
+        MInstr::make(MOpcode::JCC, {makeImmOperand(0), makeLabelOperand("far")}),
+    };
+    MBasicBlock midJmp{};
+    midJmp.label = "mid_jmp";
+    midJmp.instructions = {
+        MInstr::make(MOpcode::JMP, {makeLabelOperand("far")}),
+        MInstr::make(MOpcode::JCC, {makeImmOperand(0), makeLabelOperand("entry")}), // dead
+    };
+    MBasicBlock trap{};
+    trap.label = "trap";
+    trap.instructions = {MInstr::make(MOpcode::UD2)};
+    MBasicBlock table{};
+    table.label = "table";
+    table.instructions = {
+        MInstr::make(MOpcode::JUMPTABLE,
+                     {makeVRegOperand(RegClass::GPR, 1),
+                      makeLabelOperand(".Ljt"),
+                      makeLabelOperand("far"),
+                      makeLabelOperand("trap")}),
+    };
+    MBasicBlock far{};
+    far.label = "far";
+    far.instructions = {MInstr::make(MOpcode::RET)};
+
+    fn.blocks = {entry, midJmp, trap, table, far};
+
+    const MirCfg cfg(fn);
+    ra::LivenessAnalysis liveness;
+    liveness.run(fn);
+    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi)
+        EXPECT_TRUE(cfg.succs(bi) == liveness.successors(bi));
+
+    EXPECT_TRUE(cfg.fallsThrough(0));  // trailing JCC
+    EXPECT_FALSE(cfg.fallsThrough(1)); // JMP ends the block; dead JCC ignored
+    EXPECT_FALSE(cfg.fallsThrough(2)); // UD2
+    EXPECT_FALSE(cfg.fallsThrough(3)); // JUMPTABLE
+    EXPECT_TRUE(cfg.anyFallthrough());
+
+    EXPECT_TRUE(cfg.hasEdge(0, 1));
+    EXPECT_TRUE(cfg.hasEdge(0, 4));
+    EXPECT_TRUE(cfg.hasEdge(1, 4));
+    EXPECT_FALSE(cfg.hasEdge(1, 0));
+    EXPECT_TRUE(cfg.succs(2).empty());
+    EXPECT_TRUE(cfg.hasEdge(3, 4));
+    EXPECT_TRUE(cfg.hasEdge(3, 2));
+    EXPECT_TRUE(cfg.preds(3).empty()); // unreachable
+    ASSERT_EQ(cfg.preds(4).size(), 3u);
+    ASSERT_TRUE(cfg.indexOf("far").has_value());
+    EXPECT_EQ(*cfg.indexOf("far"), 4u);
+    EXPECT_TRUE(cfg.backEdges().empty());
+}
+
+TEST(CfgExtract, X64MirCfgLoopsAreDominanceProven) {
+    using namespace zanna::codegen::x64;
+
+    MFunction fn{};
+    fn.name = "mircfg_loop";
+
+    MBasicBlock entry{};
+    entry.label = "entry";
+    entry.instructions = {MInstr::make(MOpcode::JMP, {makeLabelOperand("header")})};
+    MBasicBlock header{};
+    header.label = "header";
+    header.instructions = {
+        MInstr::make(MOpcode::JCC, {makeImmOperand(0), makeLabelOperand("exit")}),
+    };
+    MBasicBlock body{};
+    body.label = "body";
+    body.instructions = {MInstr::make(MOpcode::JMP, {makeLabelOperand("header")})};
+    MBasicBlock exitBlock{};
+    exitBlock.label = "exit";
+    exitBlock.instructions = {MInstr::make(MOpcode::RET)};
+    // A join placed before one of its predecessors: the backward JMP is not
+    // a loop because the join does not dominate the late block.
+    MBasicBlock late{};
+    late.label = "late";
+    late.instructions = {MInstr::make(MOpcode::JMP, {makeLabelOperand("exit")})};
+
+    fn.blocks = {entry, header, body, exitBlock, late};
+
+    const MirCfg cfg(fn);
+    EXPECT_TRUE(cfg.dominates(1, 2));
+    EXPECT_FALSE(cfg.dominates(3, 4));
+
+    const auto edges = cfg.backEdges();
+    ASSERT_EQ(edges.size(), 1u);
+    EXPECT_EQ(edges[0].latch, 2u);
+    EXPECT_EQ(edges[0].header, 1u);
+
+    const NaturalLoop loop = cfg.naturalLoop(edges[0]);
+    ASSERT_EQ(loop.blocks.size(), 2u);
+    EXPECT_TRUE(loop.contains(1));
+    EXPECT_TRUE(loop.contains(2));
+    EXPECT_FALSE(loop.contains(3));
+
+    const auto depth = cfg.loopDepths();
+    ASSERT_EQ(depth.size(), 5u);
+    EXPECT_EQ(depth[1], 1u);
+    EXPECT_EQ(depth[2], 1u);
+    EXPECT_EQ(depth[3], 0u);
 }
 
 int main(int argc, char **argv) {

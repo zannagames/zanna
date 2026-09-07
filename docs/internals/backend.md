@@ -199,6 +199,21 @@ class PassManager {
   pass consumes, so the verifier and the passes cannot disagree. Unit tests that drive a pipeline
   (`test_aarch64_mir_verify`, `test_x86_mir_verify`, the AArch64 shared-corpus and VM-vs-native
   property tests) run it unconditionally.
+- **One CFG per backend** (`src/codegen/aarch64/MirCfg.hpp`, `src/codegen/x86_64/MirCfg.hpp`):
+  `MirCfg` is a snapshot of a function's edges built from the allocator's branch classifier
+  (`ra::classifyControlFlow`) through the shared extractor (`common/ra/CfgExtract.hpp`), with
+  predecessors, per-block fallthrough flags, lazily computed dominators
+  (`common/ra/Dominators.hpp`), dominance-proven back edges, natural loops, and loop depths. The
+  register allocator's liveness, the verifier, the AArch64 CFG-aware DCE, the phi-join
+  forwarding/coalescing passes, the loop passes, and the x86-64 layout passes all read it; no pass
+  keeps a private terminator scan, so a mid-block branch, a no-return call, a jump table, or a
+  trailing conditional branch means the same thing everywhere. On AArch64 `blockExitLive(fn, bi,
+  target)` is the exit-liveness seed for post-RA block-local rewrites: the allocator's
+  `carriedExitRegs` plus SP/FP/LR, plus the return registers of a block that leaves the function
+  or, for every other exit, the callee-saved registers (which hold pinned frame slots and values
+  carried across blocks; at a return the epilogue restores them). `foldComputeIntoTarget` and
+  `tryMaddFusion` consult it (and the effects model, so a call's argument registers and a
+  return's result registers count as reads) before declaring a register dead at the block end.
 - `ZANNA_IL_OPT_KEEP_FUNCS=<file>` (IL optimizer, `PassManager::runPipeline`): the file lists
   one IL function name per line; every function *not* listed is restored to its pre-pipeline
   body after the named pipeline runs (functions, externs, and globals the pipeline removed

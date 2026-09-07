@@ -29,8 +29,8 @@
 #include "Liveness.hpp"
 
 #include "OperandRoles.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
-#include "codegen/common/ra/CfgExtract.hpp"
 #include "codegen/common/ra/DataflowLiveness.hpp"
 
 #include <algorithm>
@@ -50,7 +50,6 @@ void LivenessAnalysis::run(const MFunction &func) {
 
     buildBlockIndex(func);
     buildCFG(func);
-    preds_ = zanna::codegen::ra::buildPredecessors(succs_);
     computeLiveOutSets(func);
 }
 
@@ -101,13 +100,12 @@ zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &mi) {
 
 /// @copydoc LivenessAnalysis::buildCFG
 void LivenessAnalysis::buildCFG(const MFunction &func) {
-    succs_ = zanna::codegen::ra::extractSuccessors(
-        func.blocks,
-        blockIndex_,
-        /// Expose the instruction vector expected by the generic CFG extractor.
-        [](const MBasicBlock &bb) -> const std::vector<MInstr> & { return bb.instrs; },
-        /// Translate an AArch64 instruction into the generic branch descriptor.
-        [](const MInstr &mi) { return classifyControlFlow(mi); });
+    // The shared MirCfg snapshot is the one CFG every consumer sees; the
+    // allocator keeps its own copy of the tables because the analysis object
+    // outlives the snapshot.
+    const MirCfg cfg(func);
+    succs_ = cfg.successors();
+    preds_ = cfg.predecessors();
 }
 
 /// @copydoc LivenessAnalysis::computeLiveOutSets

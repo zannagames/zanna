@@ -10,21 +10,22 @@
 //          stage and physical-register dataflow checks after allocation.
 // Key invariants:
 //   - Register facts come from effectsOf()/operandRoles(); the physical
-//     liveness solved here uses the allocator's CFG classifier
-//     (ra::classifyControlFlow), so it sees the edges RA saw.
+//     liveness solved here runs over the shared MirCfg (built from the
+//     allocator's classifier, ra::classifyControlFlow), so it sees the edges
+//     RA saw.
 //   - Reports are capped per function so one broken function stays readable.
 // Ownership/Lifetime:
 //   - Stateless; all containers are function-local.
 // Links: src/codegen/x86_64/MirVerify.hpp,
 //        src/codegen/x86_64/OperandRoles.cpp,
-//        src/codegen/x86_64/ra/Liveness.cpp,
-//        src/codegen/common/ra/CfgExtract.hpp
+//        src/codegen/x86_64/MirCfg.hpp,
+//        src/codegen/x86_64/ra/Liveness.cpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "codegen/x86_64/MirVerify.hpp"
 
-#include "codegen/common/ra/CfgExtract.hpp"
+#include "codegen/x86_64/MirCfg.hpp"
 #include "codegen/x86_64/OperandRoles.hpp"
 #include "codegen/x86_64/ra/Liveness.hpp"
 
@@ -296,15 +297,8 @@ struct PhysLiveness {
 
 [[nodiscard]] PhysLiveness computePhysLiveness(const MFunction &fn, const TargetInfo &target) {
     const std::size_t n = fn.blocks.size();
-    std::unordered_map<std::string, std::size_t> blockIndex;
-    for (std::size_t bi = 0; bi < n; ++bi)
-        blockIndex.emplace(fn.blocks[bi].label, bi);
-
-    const auto succs = zanna::codegen::ra::extractSuccessors(
-        fn.blocks,
-        blockIndex,
-        [](const MBasicBlock &bb) -> const std::vector<MInstr> & { return bb.instructions; },
-        [](const MInstr &mi) { return ra::classifyControlFlow(mi); });
+    const MirCfg cfg(fn);
+    const auto &succs = cfg.successors();
 
     std::vector<PhysRegMask> gen(n, 0);
     std::vector<PhysRegMask> kill(n, 0);

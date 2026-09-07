@@ -421,6 +421,10 @@ _aarch64_add_test_common(test_aarch64_expand_pseudos
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_expand_pseudos.cpp
         "il_codegen_aarch64")
 
+_aarch64_add_test_common(test_aarch64_mir_cfg
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_mir_cfg.cpp
+        "il_codegen_aarch64")
+
 _aarch64_add_test_common(test_aarch64_linux_abi
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_linux_abi.cpp
         "il_codegen_aarch64")
@@ -538,6 +542,7 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" AND NOT WIN32)
             TIMEOUT 120
             LABELS "slow"
             RESOURCE_LOCK aarch64_codegen_artifacts)
+
 
     # ── ARM64 end-to-end demo tests ────────────────────────────────────
     set(_AARCH64_E2E_TESTS

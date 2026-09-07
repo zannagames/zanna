@@ -15,19 +15,21 @@
 //     throughout the loop body.
 //   - Phi-slot rewrites require dominance-proven, call-free natural loops and
 //     preserve parallel-copy semantics without a scratch register.
+//   - Edges, dominators, and natural loops come from the shared MirCfg; the
+//     passes keep no private CFG builder.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable MFunction owned by the caller.
 //
-// Links: codegen/aarch64/Peephole.hpp
+// Links: codegen/aarch64/Peephole.hpp, codegen/aarch64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "LoopOpt.hpp"
 
-#include "Dominators.hpp"
 #include "PeepholeCommon.hpp"
 #include "codegen/aarch64/InstrEffects.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 
 #include <algorithm>
 #include <unordered_map>
@@ -144,11 +146,6 @@ std::size_t hoistLoopConstants(MFunction &fn) {
     if (fn.blocks.size() < 3)
         return 0;
 
-    // Build block-name -> block-index map.
-    std::unordered_map<std::string, std::size_t> nameToIdx;
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i)
-        nameToIdx[fn.blocks[i].name] = i;
-
     /// Test whether operand zero of @p opc is not an explicit GPR definition.
     ///
     /// This conservative classification lets the loop scan distinguish uses
@@ -170,81 +167,10 @@ std::size_t hoistLoopConstants(MFunction &fn) {
                opc == MOpcode::PhiStoreFPR;
     };
 
-    // Build predecessor map from CFG edges (branch targets + fallthroughs).
-    std::unordered_map<std::size_t, std::vector<std::size_t>> preds;
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
-        const auto &instrs = fn.blocks[i].instrs;
-        if (instrs.empty())
-            continue;
-
-        // Explicit branch targets.
-        for (const auto &mi : instrs) {
-            std::string target = getBranchTarget(mi);
-            if (!target.empty()) {
-                auto it = nameToIdx.find(target);
-                if (it != nameToIdx.end())
-                    preds[it->second].push_back(i);
-            }
-        }
-
-        // Fallthrough edge: if last instr is not unconditional branch or ret,
-        // execution falls through to the next block.
-        if (i + 1 < fn.blocks.size()) {
-            const auto &last = instrs.back();
-            if (last.opc != MOpcode::Br && last.opc != MOpcode::Ret)
-                preds[i + 1].push_back(i);
-        }
-    }
-
-    std::vector<std::vector<std::size_t>> predsVec(fn.blocks.size());
-    for (const auto &kv : preds) {
-        if (kv.first < predsVec.size())
-            predsVec[kv.first] = kv.second;
-    }
-    const auto dominators = computeDominators(fn.blocks.size(), predsVec);
-
-    // Compute natural loop body from a back-edge (latch -> header).
-    // Uses the standard reverse-reachability algorithm: start from the latch,
-    // walk predecessors until reaching the header to find all blocks on paths
-    // from header to latch.
-    /// Collect the natural-loop blocks for a dominance-proven back edge.
-    ///
-    /// Reverse predecessor reachability is bounded at the header's layout
-    /// position to avoid absorbing earlier blocks in multi-header BASIC loops.
-    ///
-    /// @param header Loop-header block index.
-    /// @param latch Back-edge source block index.
-    /// @return Set containing the header, latch, and intervening predecessors.
-    auto computeLoopBody = [&preds](std::size_t header,
-                                    std::size_t latch) -> std::unordered_set<std::size_t> {
-        std::unordered_set<std::size_t> body;
-        body.insert(header);
-        if (body.count(latch))
-            return body; // Single-block loop.
-
-        std::vector<std::size_t> worklist;
-        worklist.push_back(latch);
-        body.insert(latch);
-
-        while (!worklist.empty()) {
-            std::size_t b = worklist.back();
-            worklist.pop_back();
-            auto pit = preds.find(b);
-            if (pit == preds.end())
-                continue;
-            for (std::size_t pred : pit->second) {
-                // Only include predecessors at or after the header in layout.
-                // This prevents the BFS from crawling backwards past the header
-                // (e.g. for BASIC two-header for-loops where for_head_neg's BFS
-                // would otherwise traverse through for_head_pos and beyond).
-                if (pred >= header && !body.count(pred)) {
-                    body.insert(pred);
-                    worklist.push_back(pred);
-                }
-            }
-        }
-        return body;
-    };
+    // Edges, dominators, and natural loops come from the shared CFG snapshot;
+    // the rewrites below insert and erase MovRI instructions only, so it
+    // stays valid for the whole pass.
+    const MirCfg cfg(fn);
 
     /// @brief Indexed natural loop considered for constant hoisting.
     struct LoopInfo {
@@ -254,32 +180,29 @@ std::size_t hoistLoopConstants(MFunction &fn) {
         /// Back-edge source.
         std::size_t latch{0};
 
-        /// Blocks in the reverse-reachable natural loop.
-        std::unordered_set<std::size_t> body;
+        /// Blocks in the natural loop (sorted).
+        std::vector<std::size_t> body;
+
+        /// @brief Membership test on @ref body.
+        [[nodiscard]] bool contains(std::size_t bi) const noexcept {
+            return std::binary_search(body.begin(), body.end(), bi);
+        }
     };
 
     std::vector<LoopInfo> loops;
     std::unordered_set<std::size_t> seenHeaders;
 
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
-        const auto &instrs = fn.blocks[i].instrs;
-        for (const auto &mi : instrs) {
-            std::string target = getBranchTarget(mi);
-            if (target.empty())
-                continue;
-
-            auto it = nameToIdx.find(target);
-            if (it != nameToIdx.end() && it->second < i) {
-                // A layout-created backward edge is not necessarily a loop.
-                // If/else joins can be placed before one predecessor, making
-                // that predecessor branch "back" to the join. Only a real loop
-                // header dominates its latch.
-                if (i >= dominators.blockCount || !dominators.dominates(it->second, i))
-                    continue;
-                if (seenHeaders.insert(it->second).second)
-                    loops.push_back({it->second, i, computeLoopBody(it->second, i)});
-            }
-        }
+    // One loop per header, keyed by its lowest-indexed latch. A layout-created
+    // backward edge is not necessarily a loop (if/else joins can be placed
+    // before one predecessor); MirCfg::backEdges() keeps only edges whose
+    // target dominates the source. The preheader convention below (the block
+    // laid out just before the header) needs the header ahead of its latch.
+    for (const BackEdge &edge : cfg.backEdges()) {
+        if (edge.header >= edge.latch)
+            continue;
+        if (!seenHeaders.insert(edge.header).second)
+            continue;
+        loops.push_back({edge.header, edge.latch, cfg.naturalLoop(edge).blocks});
     }
 
     if (loops.empty())
@@ -315,16 +238,13 @@ std::size_t hoistLoopConstants(MFunction &fn) {
         // A true loop header has exactly one entry edge from outside the loop (the
         // preheader) plus one back-edge from within the loop (the latch).
         {
-            auto pit = preds.find(loop.header);
-            if (pit != preds.end()) {
-                int outsidePreds = 0;
-                for (std::size_t p : pit->second) {
-                    if (!loop.body.count(p))
-                        ++outsidePreds;
-                }
-                if (outsidePreds > 1)
-                    continue; // merge point, not a proper loop header
+            int outsidePreds = 0;
+            for (std::size_t p : cfg.preds(loop.header)) {
+                if (!loop.contains(p))
+                    ++outsidePreds;
             }
+            if (outsidePreds > 1)
+                continue; // merge point, not a proper loop header
         }
 
         const std::size_t preIdx = loop.header - 1;
@@ -333,7 +253,7 @@ std::size_t hoistLoopConstants(MFunction &fn) {
         for (const auto &other : loops) {
             if (&other == &loop)
                 continue;
-            if (other.body.count(preIdx)) {
+            if (other.contains(preIdx)) {
                 preInLoop = true;
                 break;
             }
@@ -341,35 +261,18 @@ std::size_t hoistLoopConstants(MFunction &fn) {
         if (preInLoop)
             continue;
         // Also skip if preIdx is inside THIS loop's own body.
-        if (loop.body.count(preIdx))
+        if (loop.contains(preIdx))
             continue;
 
         auto &preBlock = fn.blocks[preIdx];
         if (preBlock.instrs.empty())
             continue;
 
-        {
-            bool reachesHeader = false;
-            const auto &lastInstr = preBlock.instrs.back();
-            std::string lastTarget = getBranchTarget(lastInstr);
-
-            if (lastTarget.empty() && lastInstr.opc != MOpcode::Ret) {
-                // Block falls through to the next block (the loop header).
-                // Ret does NOT fall through — it exits the function.
-                reachesHeader = true;
-            } else {
-                auto tgtIt = nameToIdx.find(lastTarget);
-                if (tgtIt != nameToIdx.end() && tgtIt->second == loop.header)
-                    reachesHeader = true;
-                if (lastInstr.opc == MOpcode::BCond || lastInstr.opc == MOpcode::Cbz ||
-                    lastInstr.opc == MOpcode::Cbnz || lastInstr.opc == MOpcode::Tbz ||
-                    lastInstr.opc == MOpcode::Tbnz)
-                    reachesHeader = true;
-            }
-
-            if (!reachesHeader)
-                continue;
-        }
+        // The preheader must actually reach the header (by branch or by
+        // fallthrough); a block that returns, traps, or jumps elsewhere is
+        // not a preheader even though layout puts it just before the loop.
+        if (!cfg.hasEdge(preIdx, loop.header))
+            continue;
 
         /// @brief Per-register evidence accumulated across one loop body.
         struct RegInfo {
@@ -525,18 +428,15 @@ std::size_t hoistLoopConstants(MFunction &fn) {
                 // preheader's hoisted MovRI hasn't executed, so removing the
                 // local MovRI would leave the register undefined on those paths.
                 {
-                    auto pit = preds.find(bi);
-                    if (pit != preds.end()) {
-                        bool hasOutsidePred = false;
-                        for (std::size_t p : pit->second) {
-                            if (!loop.body.count(p) && p != preIdx) {
-                                hasOutsidePred = true;
-                                break;
-                            }
+                    bool hasOutsidePred = false;
+                    for (std::size_t p : cfg.preds(bi)) {
+                        if (!loop.contains(p) && p != preIdx) {
+                            hasOutsidePred = true;
+                            break;
                         }
-                        if (hasOutsidePred)
-                            continue; // preserve MovRI in this block
                     }
+                    if (hasOutsidePred)
+                        continue; // preserve MovRI in this block
                 }
 
                 auto &instrs = fn.blocks[bi].instrs;
@@ -588,35 +488,11 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
                opc == MOpcode::JumpTable || opc == MOpcode::Ret;
     };
 
-    // Build predecessors and dominators so layout-created backward branches to
-    // earlier join blocks are not mistaken for loop back-edges.
-    std::unordered_map<std::size_t, std::vector<std::size_t>> preds;
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
-        const auto &instrs = fn.blocks[i].instrs;
-        for (const auto &mi : instrs) {
-            const std::string target = getBranchTarget(mi);
-            if (target.empty())
-                continue;
-            auto it = nameToIdx.find(target);
-            if (it != nameToIdx.end())
-                preds[it->second].push_back(i);
-        }
-
-        if (i + 1 < fn.blocks.size()) {
-            if (instrs.empty() || !isTerminator(instrs.back().opc) ||
-                instrs.back().opc == MOpcode::BCond || instrs.back().opc == MOpcode::Cbz ||
-                instrs.back().opc == MOpcode::Cbnz) {
-                preds[i + 1].push_back(i);
-            }
-        }
-    }
-
-    std::vector<std::vector<std::size_t>> predsVec(fn.blocks.size());
-    for (const auto &kv : preds) {
-        if (kv.first < predsVec.size())
-            predsVec[kv.first] = kv.second;
-    }
-    const auto dominators = computeDominators(fn.blocks.size(), predsVec);
+    // Dominators and natural loops come from the shared CFG snapshot so
+    // layout-created backward branches to earlier join blocks are not
+    // mistaken for loop back-edges. The snapshot is taken before the single
+    // block split this pass may perform (it returns right after).
+    const MirCfg cfg(fn);
 
     /// Test whether a call instruction clobbers a physical register under the
     /// AArch64 ABI sets modeled by this post-allocation rewrite.
@@ -633,9 +509,12 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
         return callClobbers.contains(static_cast<PhysReg>(reg.reg.idOrPhys));
     };
 
-    // Find back-edges: block i branches to block j where j <= i.
-    /// @brief Dominance-proven backward CFG edge.
-    struct BackEdge {
+    // Find back-edges: a direct or conditional branch in block i whose target
+    // block j <= i dominates i. Only explicit branch instructions qualify:
+    // the edge-move rewrite below inserts the copies before the latch's
+    // terminator suffix, which is where such a branch lives.
+    /// @brief Dominance-proven backward branch edge.
+    struct PhiBackEdge {
         /// Source block containing the backward branch.
         std::size_t latchIdx;
 
@@ -643,7 +522,7 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
         std::size_t headerIdx;
     };
 
-    std::vector<BackEdge> backEdges;
+    std::vector<PhiBackEdge> backEdges;
 
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         for (const auto &mi : fn.blocks[i].instrs) {
@@ -651,8 +530,7 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
             if (target.empty())
                 continue;
             auto it = nameToIdx.find(target);
-            if (it != nameToIdx.end() && it->second <= i && i < dominators.blockCount &&
-                dominators.dominates(it->second, i))
+            if (it != nameToIdx.end() && it->second <= i && cfg.dominates(it->second, i))
                 backEdges.push_back({i, it->second});
         }
     }
@@ -660,36 +538,10 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
     if (backEdges.empty())
         return 0;
 
-    /// Collect the natural loop induced by @p edge through reverse predecessors.
-    /// @param edge Dominance-proven latch-to-header edge.
-    /// @return Set of block indices belonging to the natural loop.
-    auto collectNaturalLoop = [&preds](const BackEdge &edge) {
-        std::unordered_set<std::size_t> loopBlocks;
-        std::vector<std::size_t> worklist;
-        loopBlocks.insert(edge.headerIdx);
-        worklist.push_back(edge.latchIdx);
-
-        while (!worklist.empty()) {
-            const std::size_t blockIdx = worklist.back();
-            worklist.pop_back();
-            if (!loopBlocks.insert(blockIdx).second)
-                continue;
-
-            auto pit = preds.find(blockIdx);
-            if (pit == preds.end())
-                continue;
-            for (std::size_t predIdx : pit->second) {
-                if (loopBlocks.count(predIdx) == 0)
-                    worklist.push_back(predIdx);
-            }
-        }
-        return loopBlocks;
-    };
-
     /// Test whether a candidate loop contains a call or an invalid block index.
     /// @param loopBlocks Natural-loop block indices to inspect.
     /// @return `true` when register edge moves cannot be proven call-safe.
-    auto loopContainsCall = [&fn](const std::unordered_set<std::size_t> &loopBlocks) {
+    auto loopContainsCall = [&fn](const std::vector<std::size_t> &loopBlocks) {
         for (std::size_t blockIdx : loopBlocks) {
             if (blockIdx >= fn.blocks.size())
                 return true;
@@ -827,11 +679,11 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) 
     // Process each back-edge. We process at most one per pass to avoid
     // invalidating indices after block insertion.
     for (const auto &edge : backEdges) {
-        const auto loopBlocks = collectNaturalLoop(edge);
+        const NaturalLoop loop = cfg.naturalLoop(BackEdge{edge.latchIdx, edge.headerIdx});
         // The edge-move rewrite extends physical-register phi values across the
         // hot loop body. Keep it to call-free loops until the pass has a full
         // liveness proof for every rewritten register through complex bodies.
-        if (loopContainsCall(loopBlocks))
+        if (loopContainsCall(loop.blocks))
             continue;
 
         auto &header = fn.blocks[edge.headerIdx];

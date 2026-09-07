@@ -13,17 +13,22 @@
 // Key invariants:
 //   - Copy origins are not chased through ABI registers; ABI uses are rewritten
 //     only from non-ABI origins and can be disabled through the debug override.
-//   - DCE conservatively marks callee-saved and ABI registers as live at exit.
+//   - CFG-aware DCE runs over the shared MirCfg and seeds function exits from
+//     blockExitLive(); the block-local variant conservatively marks
+//     callee-saved and ABI registers as live at exit.
+//   - Compute-into-target folding consults the effects model and the block's
+//     exit-live set before declaring an ALU destination dead.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable instruction vectors owned by the caller.
 //
-// Links: codegen/aarch64/Peephole.hpp
+// Links: codegen/aarch64/Peephole.hpp, codegen/aarch64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "../Peephole.hpp"
 
@@ -98,10 +103,20 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
 
 /// @brief Fold compute-then-move patterns where an ALU result is immediately
 ///        moved to another register and the original destination is dead.
+/// @details Deadness follows the shared effects model (calls read their
+///          argument registers and clobber the caller-saved set, returns read
+///          the result registers) and, when the scan reaches the block exit
+///          without a redefinition, the block's exit-live set (see
+///          blockExitLive()).
 /// @param[in,out] instrs Block-local instruction sequence to rewrite.
 /// @param[in,out] stats Statistics receiving the erased-move count.
+/// @param target ABI description for call and return effects.
+/// @param exitLive Physical registers live at the enclosing block's exit.
 /// @return Number of ALU destinations redirected to their move targets.
-std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &stats);
+std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs,
+                                  PeepholeStats &stats,
+                                  const TargetInfo &target,
+                                  const PhysRegSet &exitLive);
 
 /// @brief Remove stores to compiler spill slots never loaded in the function.
 ///

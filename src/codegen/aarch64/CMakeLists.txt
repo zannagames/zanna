@@ -7,6 +7,7 @@ add_library(il_codegen_aarch64 STATIC
         LowerILToMIR.cpp
         LivenessAnalysis.cpp
         InstrEffects.cpp
+        MirCfg.cpp
         MirVerify.cpp
         TerminatorLowering.cpp
         InstrLowering.cpp
@@ -29,7 +30,6 @@ add_library(il_codegen_aarch64 STATIC
         Peephole.cpp
         # Modular peephole sub-passes (Phase 4B)
         peephole/PeepholeCommon.cpp
-        peephole/Dominators.cpp
         peephole/IdentityElim.cpp
         peephole/StrengthReduce.cpp
         peephole/CopyPropDCE.cpp

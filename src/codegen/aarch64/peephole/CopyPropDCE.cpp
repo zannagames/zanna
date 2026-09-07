@@ -14,12 +14,16 @@
 //   - Copy propagation rewrites an ABI-register use only when the copy origin
 //     is a non-ABI register (disable with ZANNA_NO_ABI_COPYFWD=1); origins are
 //     never chased through ABI registers.
-//   - DCE conservatively marks callee-saved and ABI registers as live at exit.
+//   - CFG-aware DCE runs over the shared MirCfg and seeds function exits from
+//     blockExitLive(); the block-local variant conservatively marks
+//     callee-saved and ABI registers as live at exit.
+//   - Compute-into-target folding consults the effects model and the block's
+//     exit-live set before declaring an ALU destination dead.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable instruction vectors owned by the caller.
 //
-// Links: codegen/aarch64/Peephole.hpp
+// Links: codegen/aarch64/Peephole.hpp, codegen/aarch64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +31,7 @@
 
 #include "PeepholeCommon.hpp"
 #include "codegen/aarch64/InstrEffects.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
 
 #include <algorithm>
@@ -297,14 +302,6 @@ std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
 
 namespace {
 
-/// @brief Encode a physical register and its register class as a liveness key.
-/// @param reg Physical GPR or FPR to encode.
-/// @return Packed key compatible with @ref regKey.
-[[nodiscard]] uint32_t physRegKey(PhysReg reg) noexcept {
-    const RegClass cls = isGPR(reg) ? RegClass::GPR : RegClass::FPR;
-    return (static_cast<uint32_t>(cls) << 16) | static_cast<uint32_t>(reg);
-}
-
 /// @brief Compact live-register set covering the complete AArch64 physical file.
 ///
 /// GPR/SP identifiers occupy the low 32 bits and V0--V31 occupy the high
@@ -377,19 +374,6 @@ struct RegSet {
     }
 };
 
-/// @brief `RegSet` overload of @ref addTargetExitLive for the bitset live-set path.
-/// @param target Target ABI providing return + callee-saved register sets.
-/// @param regs   RegSet to which the live-at-exit register keys are added.
-void addTargetExitLive(const TargetInfo &target, RegSet &regs) {
-    regs.insertKey(physRegKey(target.intReturnReg));
-    regs.insertKey(physRegKey(target.f64ReturnReg));
-    regs.insertKey(physRegKey(PhysReg::SP));
-    for (PhysReg reg : target.calleeSavedGPR)
-        regs.insertKey(physRegKey(reg));
-    for (PhysReg reg : target.calleeSavedFPR)
-        regs.insertKey(physRegKey(reg));
-}
-
 /// @brief Collect the physical-register uses and defs of @p instr into bitset live sets.
 /// @details Delegates to the shared effects model: explicit operand roles,
 ///          call argument/clobber sets, the return registers a `Ret` reads
@@ -407,30 +391,22 @@ void collectUsesDefs(const MInstr &instr, const TargetInfo &target, RegSet &uses
     defs.bits |= fx.defs.bits;
 }
 
-/// @brief Append the block index for @p label to @p succs if not already present.
-/// @details Looks @p label up in the label-to-index map and appends the
-///          corresponding block index; duplicates are skipped. Used while
-///          building per-block successor lists for the liveness CFG walk.
-/// @param succs        Successor list being built (modified in place).
-/// @param labelToIndex Pre-built map from block name to block index.
-/// @param label        Branch target label to add as a successor.
-/// @return Nothing. Unknown labels and duplicate successors leave @p succs unchanged.
-void addUniqueSucc(std::vector<std::size_t> &succs,
-                   const std::unordered_map<std::string, std::size_t> &labelToIndex,
-                   const std::string &label) {
-    const auto it = labelToIndex.find(label);
-    if (it == labelToIndex.end())
-        return;
-    if (std::find(succs.begin(), succs.end(), it->second) == succs.end())
-        succs.push_back(it->second);
+/// @brief Test whether @p opc is a conditional branch (`B.cond`/`CBZ`/`CBNZ`/`TBZ`/`TBNZ`).
+/// @param opc Opcode to classify.
+/// @return True for one of the conditional-branch forms.
+[[nodiscard]] bool isConditionalBranchOpcode(MOpcode opc) noexcept {
+    return opc == MOpcode::BCond || opc == MOpcode::Cbz || opc == MOpcode::Cbnz ||
+           opc == MOpcode::Tbz || opc == MOpcode::Tbnz;
 }
 
-/// @brief Test whether @p instr is a conditional branch (`B.cond`/`CBZ`/`CBNZ`/`TBZ`/`TBNZ`).
+/// @brief Test whether @p instr leaves the block unconditionally.
+/// @details `Br`, `JumpTable`, `Ret`, and a direct call to a no-return runtime
+///          helper: nothing after such an instruction in the same block runs.
 /// @param instr Machine instruction to classify.
-/// @return True if @p instr's opcode is one of the conditional-branch forms.
-[[nodiscard]] bool isConditionalBranch(const MInstr &instr) noexcept {
-    return instr.opc == MOpcode::BCond || instr.opc == MOpcode::Cbz || instr.opc == MOpcode::Cbnz ||
-           instr.opc == MOpcode::Tbz || instr.opc == MOpcode::Tbnz;
+/// @return True when the block's straight-line flow ends at @p instr.
+[[nodiscard]] bool isUnconditionalExit(const MInstr &instr) noexcept {
+    return instr.opc == MOpcode::Br || instr.opc == MOpcode::JumpTable ||
+           instr.opc == MOpcode::Ret || isNoReturnCall(instr);
 }
 
 /// @brief Test whether @p opcode writes the NZCV flags.
@@ -444,55 +420,6 @@ void addUniqueSucc(std::vector<std::size_t> &succs,
     return setsFlags(opcode);
 }
 
-/// @brief Build the successor list used by whole-function physical liveness.
-///
-/// Conditional branch targets are collected wherever they occur in a block.
-/// The final instruction determines direct-branch, jump-table, return, or
-/// no-return-call behavior; all other endings retain layout fallthrough.
-///
-/// @param fn Function whose block labels and terminators define the CFG.
-/// @return One deduplicated successor-index vector per basic block.
-[[nodiscard]] std::vector<std::vector<std::size_t>> buildSuccessors(const MFunction &fn) {
-    std::unordered_map<std::string, std::size_t> labelToIndex;
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i)
-        labelToIndex.emplace(fn.blocks[i].name, i);
-
-    std::vector<std::vector<std::size_t>> succs(fn.blocks.size());
-    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
-        /// Add the next layout block as this block's implicit fallthrough.
-        const auto addFallthrough = [&]() {
-            if (bi + 1 < fn.blocks.size())
-                succs[bi].push_back(bi + 1);
-        };
-
-        const auto &instrs = fn.blocks[bi].instrs;
-        if (instrs.empty()) {
-            addFallthrough();
-            continue;
-        }
-
-        for (const auto &instr : instrs) {
-            if (isConditionalBranch(instr) && instr.ops.size() >= 2 &&
-                instr.ops[1].kind == MOperand::Kind::Label)
-                addUniqueSucc(succs[bi], labelToIndex, instr.ops[1].label);
-        }
-
-        const auto &last = instrs.back();
-        if (last.opc == MOpcode::Br && !last.ops.empty() &&
-            last.ops[0].kind == MOperand::Kind::Label)
-            addUniqueSucc(succs[bi], labelToIndex, last.ops[0].label);
-        else if (last.opc == MOpcode::JumpTable) {
-            // Case labels start at operand 2; no fallthrough.
-            for (std::size_t k = 2; k < last.ops.size(); ++k) {
-                if (last.ops[k].kind == MOperand::Kind::Label)
-                    addUniqueSucc(succs[bi], labelToIndex, last.ops[k].label);
-            }
-        } else if (last.opc != MOpcode::Ret && !isNoReturnCall(last))
-            addFallthrough();
-    }
-    return succs;
-}
-
 } // namespace
 
 /// @copydoc removeDeadInstructionsCFG
@@ -502,7 +429,11 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
     if (fn.blocks.empty())
         return 0;
 
-    const auto successors = buildSuccessors(fn);
+    // The shared CFG snapshot: the same edges the allocator and the verifier
+    // see (mid-block Br, no-return calls, jump tables, trailing conditional
+    // branches all classified once).
+    const MirCfg cfg(fn);
+    const auto &successors = cfg.successors();
     const std::size_t blockCount = fn.blocks.size();
 
     std::vector<RegSet> gen(blockCount);
@@ -525,12 +456,18 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
     while (changed) {
         changed = false;
         for (std::size_t bi = blockCount; bi-- > 0;) {
+            // RegSet and PhysRegSet share one bit layout, so the exit-live
+            // seed (carried registers, callee-saved, SP/FP/LR, return
+            // registers of a returning block) unions in directly. Blocks with
+            // successors take their successors' live-in plus the registers
+            // the allocator carries across the edge without an in-block use.
             RegSet newOut;
             if (successors[bi].empty()) {
-                addTargetExitLive(target, newOut);
+                newOut.bits |= blockExitLive(fn, bi, target).bits;
             } else {
                 for (std::size_t succ : successors[bi])
                     newOut.bits |= liveIn[succ].bits;
+                newOut.bits |= carriedExitRegSet(fn.blocks[bi]).bits;
             }
 
             RegSet newIn;
@@ -684,7 +621,10 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
 }
 
 /// @copydoc foldComputeIntoTarget
-std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &stats) {
+std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs,
+                                  PeepholeStats &stats,
+                                  const TargetInfo &target,
+                                  const PhysRegSet &exitLive) {
     /// Test whether an opcode's explicit destination may be redirected safely.
     auto isSimpleALU = [](MOpcode opc) -> bool {
         switch (opc) {
@@ -742,32 +682,31 @@ std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &st
         if (interveningUse)
             continue;
 
+        // The ALU destination must be dead after the move: no read before its
+        // next write on any path out of the block. Reads and writes come from
+        // the shared effects model, so a call's argument registers and
+        // caller-saved clobbers and a return's result registers are modeled;
+        // a conditional branch falls through within this list, so the scan
+        // continues past it. At an unconditional exit (or the block's
+        // fallthrough end) the block's exit-live set decides (review item B1).
+        const PhysReg aluPhys = static_cast<PhysReg>(aluDst.reg.idOrPhys);
         bool aluDstDead = true;
+        bool reachesExit = true;
         for (std::size_t j = movIdx + 1; j < instrs.size(); ++j) {
-            if (isControlBoundary(instrs[j].opc)) {
-                // A conditional branch (b.cc trap guard, cbz/cbnz) falls
-                // through within this instruction list, so instructions after
-                // it may still read the ALU destination — the boundary proves
-                // nothing. Only give up the scan for unconditional transfers.
-                const bool conditional =
-                    instrs[j].opc == MOpcode::BCond || instrs[j].opc == MOpcode::Cbz ||
-                    instrs[j].opc == MOpcode::Cbnz || instrs[j].opc == MOpcode::Tbz ||
-                    instrs[j].opc == MOpcode::Tbnz;
-                if (!conditional)
-                    break;
-                if (usesReg(instrs[j], aluDst)) {
-                    aluDstDead = false;
-                    break;
-                }
-                continue;
-            }
-            if (usesReg(instrs[j], aluDst)) {
+            const InstrEffects fx = effectsOf(instrs[j], target);
+            if (fx.uses.contains(aluPhys)) {
                 aluDstDead = false;
                 break;
             }
-            if (definesReg(instrs[j], aluDst))
+            if (fx.defs.contains(aluPhys)) {
+                reachesExit = false;
+                break;
+            }
+            if (isUnconditionalExit(instrs[j]))
                 break;
         }
+        if (aluDstDead && reachesExit && exitLive.contains(aluPhys))
+            aluDstDead = false;
         if (!aluDstDead)
             continue;
 

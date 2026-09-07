@@ -62,7 +62,7 @@ struct BranchDesc {
 
     ///< Classified control-flow effect.
     Kind kind{Kind::None};
-    const std::string *target{nullptr}; ///< Branch target label, if any.
+    const std::string *target{nullptr};              ///< Branch target label, if any.
     std::vector<const std::string *> multiTargets{}; ///< Targets for Kind::Multi.
 };
 
@@ -80,19 +80,26 @@ struct BranchDesc {
 /// @tparam BlockRange Container of blocks (indexable, sized).
 /// @tparam InstrsOf   Callable: const Block& -> const instruction container&.
 /// @tparam Classify   Callable: const Instr& -> BranchDesc.
-/// @param blocks     Function blocks in layout order.
-/// @param blockIndex Map from block label to block index.
-/// @param instrsOf   Accessor returning a block's instruction list.
-/// @param classify   Per-instruction control-flow classifier.
+/// @param blocks       Function blocks in layout order.
+/// @param blockIndex   Map from block label to block index.
+/// @param instrsOf     Accessor returning a block's instruction list.
+/// @param classify     Per-instruction control-flow classifier.
+/// @param fallsThrough Optional per-block flags (resized to the block count)
+///                     set to 1 when the block's exit reaches the next layout
+///                     block by fallthrough rather than by an explicit
+///                     transfer; distinguishes `br next` from adjacency.
 /// @return Per-block sorted, deduplicated successor index lists.
 template <typename BlockRange, typename InstrsOf, typename Classify>
 std::vector<std::vector<std::size_t>> extractSuccessors(
     const BlockRange &blocks,
     const std::unordered_map<std::string, std::size_t> &blockIndex,
     InstrsOf &&instrsOf,
-    Classify &&classify) {
+    Classify &&classify,
+    std::vector<unsigned char> *fallsThrough = nullptr) {
     const std::size_t n = blocks.size();
     std::vector<std::vector<std::size_t>> succs(n);
+    if (fallsThrough != nullptr)
+        fallsThrough->assign(n, 0);
 
     for (std::size_t bi = 0; bi < n; ++bi) {
         auto &out = succs[bi];
@@ -139,8 +146,11 @@ std::vector<std::vector<std::size_t>> extractSuccessors(
         // Fallthrough: a block that never ended in an unconditional transfer
         // (no terminator at all, or a trailing conditional branch) continues
         // into the next block in layout order.
-        if (!endedExplicitly && bi + 1 < n)
+        if (!endedExplicitly && bi + 1 < n) {
             out.push_back(bi + 1);
+            if (fallsThrough != nullptr)
+                (*fallsThrough)[bi] = 1;
+        }
 
         std::sort(out.begin(), out.end());
         out.erase(std::unique(out.begin(), out.end()), out.end());

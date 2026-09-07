@@ -581,6 +581,184 @@ TEST(AArch64PeepholeSubpasses, CrossBlockForwardingPublishesCarriedSource) {
     EXPECT_TRUE(producerStillDefinesX24);
 }
 
+// ─── B1: block-exit liveness for compute-into-target folding and MADD fusion ─
+
+namespace {
+
+/// Two-block function: `entry` holding @p instrs, then `next: ret`.
+MFunction twoBlocks(std::vector<MInstr> instrs) {
+    MFunction fn{};
+    fn.name = "exit_live";
+    fn.blocks.push_back(MBasicBlock{"entry", std::move(instrs), {}});
+    fn.blocks.push_back(MBasicBlock{"next", {MInstr{MOpcode::Ret, {}}}, {}});
+    return fn;
+}
+
+MInstr add3(PhysReg dst, PhysReg a, PhysReg b) {
+    return MInstr{MOpcode::AddRRR, {MOperand::regOp(dst), MOperand::regOp(a), MOperand::regOp(b)}};
+}
+
+MInstr mul3(PhysReg dst, PhysReg a, PhysReg b) {
+    return MInstr{MOpcode::MulRRR, {MOperand::regOp(dst), MOperand::regOp(a), MOperand::regOp(b)}};
+}
+
+MInstr mov2(PhysReg dst, PhysReg src) {
+    return MInstr{MOpcode::MovRR, {MOperand::regOp(dst), MOperand::regOp(src)}};
+}
+
+} // namespace
+
+TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetRespectsCarriedExitRegister) {
+    // add x1, x2, x3 ; mov x0, x1 ; b next — with x1 carried across the exit
+    // the ALU destination is live-out and must not be redirected to x0.
+    MFunction fn = twoBlocks({add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
+                              mov2(PhysReg::X0, PhysReg::X1),
+                              MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X1)};
+    (void)runPeephole(fn);
+    ASSERT_GE(fn.blocks[0].instrs.size(), 2u);
+    EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(fn.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X1));
+    EXPECT_EQ(fn.blocks[0].instrs[1].opc, MOpcode::MovRR);
+
+    // Without the carry the fold is legal and the move disappears.
+    MFunction folded = twoBlocks({add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
+                                  mov2(PhysReg::X0, PhysReg::X1),
+                                  MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    (void)runPeephole(folded);
+    ASSERT_FALSE(folded.blocks[0].instrs.empty());
+    EXPECT_EQ(folded.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(folded.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
+    for (const auto &instr : folded.blocks[0].instrs)
+        EXPECT_NE(instr.opc, MOpcode::MovRR);
+}
+
+TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsReturnRegisterAtRet) {
+    // add x0, x2, x3 ; mov x1, x0 ; ret — x0 is the return value, so the ALU
+    // destination is live at the exit and the fold must decline.
+    MFunction fn{};
+    fn.name = "ret_value";
+    fn.blocks.push_back(MBasicBlock{"entry",
+                                    {add3(PhysReg::X0, PhysReg::X2, PhysReg::X3),
+                                     mov2(PhysReg::X1, PhysReg::X0),
+                                     MInstr{MOpcode::Ret, {}}},
+                                    {}});
+    (void)runPeephole(fn);
+    ASSERT_GE(fn.blocks[0].instrs.size(), 2u);
+    EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(fn.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
+    EXPECT_EQ(fn.blocks[0].instrs[1].opc, MOpcode::MovRR);
+
+    // The mirror image (result computed in x1, moved into x0) folds.
+    MFunction mirrored{};
+    mirrored.name = "ret_value_fold";
+    mirrored.blocks.push_back(MBasicBlock{"entry",
+                                          {add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
+                                           mov2(PhysReg::X0, PhysReg::X1),
+                                           MInstr{MOpcode::Ret, {}}},
+                                          {}});
+    (void)runPeephole(mirrored);
+    ASSERT_FALSE(mirrored.blocks[0].instrs.empty());
+    EXPECT_EQ(mirrored.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(mirrored.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
+}
+
+TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsCallArgument) {
+    // add x1, x2, x3 ; mov x0, x1 ; bl f ; ret — the call reads its argument
+    // registers, so x1 is not dead after the move.
+    MFunction fn{};
+    fn.name = "call_arg";
+    fn.blocks.push_back(MBasicBlock{"entry",
+                                    {add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
+                                     mov2(PhysReg::X0, PhysReg::X1),
+                                     MInstr{MOpcode::Bl, {MOperand::labelOp("callee")}},
+                                     MInstr{MOpcode::Ret, {}}},
+                                    {}});
+    (void)runPeephole(fn);
+    ASSERT_GE(fn.blocks[0].instrs.size(), 3u);
+    EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(fn.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X1));
+    EXPECT_EQ(fn.blocks[0].instrs[1].opc, MOpcode::MovRR);
+
+    // A callee-saved destination is dead at a return (the epilogue restores
+    // the register from its slot), so that fold applies.
+    MFunction saved{};
+    saved.name = "ret_callee_saved";
+    saved.blocks.push_back(MBasicBlock{"entry",
+                                       {add3(PhysReg::X25, PhysReg::X2, PhysReg::X3),
+                                        mov2(PhysReg::X0, PhysReg::X25),
+                                        MInstr{MOpcode::Ret, {}}},
+                                       {}});
+    (void)runPeephole(saved);
+    ASSERT_FALSE(saved.blocks[0].instrs.empty());
+    EXPECT_EQ(saved.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(saved.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
+
+    // ... but not at an exit that stays inside the function, where it may
+    // hold a pinned slot or an allocator-carried value.
+    MFunction inner = twoBlocks({add3(PhysReg::X25, PhysReg::X2, PhysReg::X3),
+                                 mov2(PhysReg::X0, PhysReg::X25),
+                                 MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    (void)runPeephole(inner);
+    ASSERT_GE(inner.blocks[0].instrs.size(), 2u);
+    EXPECT_EQ(inner.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(inner.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X25));
+
+    // A caller-saved non-argument destination is clobbered by the call and
+    // therefore dead: the fold applies.
+    MFunction scratch{};
+    scratch.name = "call_scratch";
+    scratch.blocks.push_back(MBasicBlock{"entry",
+                                         {add3(PhysReg::X12, PhysReg::X2, PhysReg::X3),
+                                          mov2(PhysReg::X0, PhysReg::X12),
+                                          MInstr{MOpcode::Bl, {MOperand::labelOp("callee")}},
+                                          MInstr{MOpcode::Ret, {}}},
+                                         {}});
+    (void)runPeephole(scratch);
+    ASSERT_FALSE(scratch.blocks[0].instrs.empty());
+    EXPECT_EQ(scratch.blocks[0].instrs[0].opc, MOpcode::AddRRR);
+    EXPECT_EQ(scratch.blocks[0].instrs[0].ops[0].reg.idOrPhys, static_cast<uint16_t>(PhysReg::X0));
+}
+
+TEST(AArch64PeepholeSubpasses, MaddFusionRespectsExitLiveMultiplyDestination) {
+    // mul x0, x1, x2 ; add x3, x3, x0 ; ret — x0 is the return value, so the
+    // multiply result is live at the exit and the pair must not fuse.
+    MFunction fn{};
+    fn.name = "madd_ret";
+    fn.blocks.push_back(MBasicBlock{"entry",
+                                    {mul3(PhysReg::X0, PhysReg::X1, PhysReg::X2),
+                                     add3(PhysReg::X3, PhysReg::X3, PhysReg::X0),
+                                     MInstr{MOpcode::Ret, {}}},
+                                    {}});
+    const auto stats = runPeephole(fn);
+    EXPECT_EQ(stats.maddFusions, 0);
+    ASSERT_FALSE(fn.blocks[0].instrs.empty());
+    EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::MulRRR);
+
+    // A carried multiply destination is live-out too.
+    MFunction carried = twoBlocks({mul3(PhysReg::X4, PhysReg::X1, PhysReg::X2),
+                                   add3(PhysReg::X3, PhysReg::X3, PhysReg::X4),
+                                   MInstr{MOpcode::Br, {MOperand::labelOp("next")}}});
+    carried.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X4)};
+    const auto carriedStats = runPeephole(carried);
+    EXPECT_EQ(carriedStats.maddFusions, 0);
+    ASSERT_FALSE(carried.blocks[0].instrs.empty());
+    EXPECT_EQ(carried.blocks[0].instrs[0].opc, MOpcode::MulRRR);
+
+    // A dead multiply destination fuses.
+    MFunction fused{};
+    fused.name = "madd_dead";
+    fused.blocks.push_back(MBasicBlock{"entry",
+                                       {mul3(PhysReg::X4, PhysReg::X1, PhysReg::X2),
+                                        add3(PhysReg::X3, PhysReg::X3, PhysReg::X4),
+                                        MInstr{MOpcode::Ret, {}}},
+                                       {}});
+    const auto fusedStats = runPeephole(fused);
+    EXPECT_EQ(fusedStats.maddFusions, 1);
+    ASSERT_FALSE(fused.blocks[0].instrs.empty());
+    EXPECT_EQ(fused.blocks[0].instrs[0].opc, MOpcode::MAddRRRR);
+}
+
 TEST(AArch64PeepholeSubpasses, PostScheduleMoveFoldPreservesCarriedAbiRegister) {
     MFunction fn{};
     fn.name = "carried_move_pair";
