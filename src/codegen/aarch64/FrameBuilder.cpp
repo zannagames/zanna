@@ -146,6 +146,19 @@ int FrameBuilder::ensureSpill(uint32_t vreg, int sizeBytes, int alignBytes) {
     return off;
 }
 
+/// @copydoc FrameBuilder::addSharedSpill()
+int FrameBuilder::addSharedSpill(const std::vector<uint32_t> &vregs,
+                                 int sizeBytes,
+                                 int alignBytes) {
+    validateStackObjectSpec("spill", sizeBytes, alignBytes);
+    if (vregs.empty())
+        throw std::invalid_argument("AArch64 frame: shared spill slot needs an occupant");
+    const int off = assignAlignedSlot(sizeBytes, alignBytes);
+    for (uint32_t vreg : vregs)
+        fn_->frame.spills.push_back(MFunction::SpillSlot{vreg, sizeBytes, alignBytes, off});
+    return off;
+}
+
 /// @copydoc FrameBuilder::ensureSpillWithReuse()
 int FrameBuilder::ensureSpillWithReuse(uint32_t vreg,
                                        unsigned lastUseInstrIdx,

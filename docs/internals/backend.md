@@ -194,6 +194,11 @@ class PassManager {
   `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
   be bisected against a program-level oracle (VM vs native output) without rebuilding the
   compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
+- **AArch64 allocation path** (`ZANNA_GLOBAL_RA=1`, or `PipelineOptions::globalRegAlloc`): selects
+  the edge-copy lowering (block parameters are virtual registers, branch arguments one
+  `ParallelCopy` per edge) and the function-wide allocator (`ra/GlobalAllocator`) for every
+  function of the module, at every `-O` level; the phi-slot peephole stages are skipped on that
+  path. Off by default while Phase 3 lands (see "AArch64 function-wide allocation" below).
 - **MIR verifier** (`ZANNA_VERIFY_MIR=1`, or `--verify-mir` on `zanna codegen arm64|x64`): the
   pass manager's post-pass hook runs `verifyMir` (`src/codegen/aarch64/MirVerify.hpp`,
   `src/codegen/x86_64/MirVerify.hpp`) on every function after every backend pass. Rules are
@@ -614,6 +619,67 @@ class LinearScanAllocator {
 - **Active sets** use `std::unordered_set<uint16_t>` for O(1) insert/remove operations
 - **Caller-saved register lookup** uses precomputed `std::bitset<32>` for O(1) membership checks
 - **Deterministic allocation** via sorted free-register pools
+
+### AArch64 function-wide allocation (opt-in, Phase 3)
+
+`ZANNA_GLOBAL_RA=1` (or `PipelineOptions::globalRegAlloc`) replaces the AArch64 block-local path
+end to end. The lowering runs in edge-copy mode (`AArch64Module::edgeCopyLowering`): block
+parameters are virtual registers, every branch argument list is one `ParallelCopy dst0, src0, …`
+(inline for `br`, in the split block for `cbr`/`switch`), cross-block temporaries keep their
+virtual register, and blocks are lowered in reverse post-order so definitions precede uses. No
+frame slot comes from lowering except allocas, the switch scrutinee, and the `rt_arr_obj_get`
+round trip. `RegAllocPass` then runs `ra::allocateGlobal` (`src/codegen/aarch64/ra/GlobalAllocator`)
+instead of the coalescer plus block-local allocator:
+
+- **Positions and intervals** (`ra/LiveIntervals`): blocks are numbered in reverse post-order over
+  `MirCfg`; instruction *i* of block *b* reads at `base[b] + 2i` and writes at `base[b] + 2i + 1`,
+  and each block owns an exit position. One backward walk per block seeded from the CFG liveness
+  solution builds a sorted, merged range list per virtual register (holes across untaken arms and
+  between a last use and a redefinition), use and definition positions, the spill weight
+  `Σ (uses + defs) · 10^loopDepth`, whether the value is live at a call's write position, and
+  whether it is live across `rt_native_eh_push`. The same walk over `effectsOf()` seeded from the
+  solved physical liveness gives every physical register a fixed range list: an explicit write is
+  occupied until its last read (across blocks if needed), a call clobbers its caller-saved set at
+  one point, an ABI input is occupied from the entry to its last read, the return registers are
+  read by `ret`. Hints come from `mov`/`fmov` with a physical side and from every parallel-copy
+  pair.
+- **Assignment**: whole-interval linear scan in `(start, id)` order. Candidates are the physical
+  hint, the registers of hinted virtual registers, then the class pool with callee-saved
+  registers first when the interval crosses a call; the first candidate whose occupancy (fixed
+  ranges plus the intervals already assigned to it) does not intersect the interval wins. When
+  every candidate conflicts, the register whose conflicting occupants are lightest is taken and
+  those occupants are evicted, unless the new interval is lighter, in which case it is spilled.
+  Spilling is total (no register anywhere); a value live across `rt_native_eh_push` is always
+  spilled (EH-1: after a `longjmp` only memory is trustworthy).
+- **Slots**: spilled values sorted by weight get first-fit shared slots — two values share one iff
+  their range lists do not intersect — and the hottest slot is allocated first, nearest x29
+  (`FrameBuilder::addSharedSpill`).
+- **Rewrite**: one pass replaces operands. A spilled value is reloaded before every use into a
+  register that is free at the instruction (pool order first, the reserved x9/x16/x17 or v16/v17
+  last, under the same arity bound as the old allocator; a definition-only operand may reuse a
+  use's temporary) and stored after every definition; nothing is cached across instructions, so
+  no reload survives a call or a branch (EH-2). Each `ParallelCopy` goes through the shared
+  sequentializer (`common/ra/ParallelCopy.hpp`): register and slot locations, cycles broken
+  through a free pool register or, when none is free at that edge, a fresh frame slot, and
+  mem-to-mem moves through x17/v17 so the reserved scratch is never live across another
+  instruction. Identity moves are dropped. The frame is finalized and the callee-saved registers
+  the assignment, the temporaries, and the explicit operands touched are published.
+- **Determinism**: vector state indexed by virtual register, fixed pool order, id tie-breaks;
+  functions still allocate in parallel.
+
+Tests: `test_aarch64_live_intervals` (exact range strings for every shape), `test_regalloc_aarch64_global`
+(loop parameter in one register with no frame access, call-crossing value in a published
+callee-saved register, marshalled argument and ABI live-in kept out of the pool, pressure spills
+with shared slots, swap cycle in three moves, EH-push values memory-homed, mem-to-mem through x17,
+FPR rules, identity moves gone, determinism, 500 live values, three spilled sources), and
+`test_regalloc_aarch64_oracle`: a seeded generator builds random edge-copy functions (arithmetic,
+slot round trips, calls, diamonds, nested counted loops carrying up to 40 values in both classes
+through `ParallelCopy` edges) and a MIR interpreter executes each one before and after allocation
+(calls clobber every caller-saved register) — the results must agree and the allocated function
+must verify. `ZANNA_RA_ORACLE_SEEDS` widens the seed range. The shared-corpus lane of
+`test_aarch64_lowering_edge_copies` runs the whole pipeline in this mode at -O0 and -O2 with the
+verifier and checks determinism. On hosts that can run AArch64 code the differential labels run
+the program-level oracle with `ZANNA_GLOBAL_RA=1` as well.
 
 ### Register Classes
 

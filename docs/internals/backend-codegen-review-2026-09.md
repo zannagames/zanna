@@ -215,7 +215,43 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   read every argument register (`Bl` carries no arity) and the block-granular live-out includes
   the trap edge; a call-site argument mask (item 16) recovers them.
 
-Everything from B2 onward, and Phase 3 from C5 on, is open.
+- **C5 — the function-wide allocator (opt-in).** `aarch64/ra/LiveIntervals.{hpp,cpp}` (positions
+  in reverse post-order, range lists with holes from the CFG liveness solution, fixed physical
+  ranges from the effects model, weights, hints) and `aarch64/ra/GlobalAllocator.{hpp,cpp}`
+  (whole-interval linear scan with weight-based eviction and spill-everywhere, shared first-fit
+  spill slots hottest-first, the rewrite with per-use reloads, per-definition stores, temporaries
+  free at the instruction, `ParallelCopy` lowering through the shared sequentializer, EH-1/EH-2).
+  `ZANNA_GLOBAL_RA=1` / `PipelineOptions::globalRegAlloc` selects the edge-copy lowering and this
+  allocator for the module; `RegAllocPass` dispatches on `AArch64Module::edgeCopyLowering` and the
+  peephole skips its phi-slot stages on that path; the pre-RA move coalescer (a layout-order hull)
+  is not run on it — hints do that work. Tests: `test_aarch64_live_intervals`,
+  `test_regalloc_aarch64_global`, the shared-corpus global lane in `test_aarch64_lowering_edge_copies`,
+  and `test_regalloc_aarch64_oracle`, a MIR interpreter over seeded random edge-copy functions
+  (straight-line arithmetic, slot round trips, calls that clobber every caller-saved register,
+  diamonds, nested counted loops carrying up to 40 values in both classes) that must compute the
+  same result before and after allocation — this is the execution oracle for the allocator on
+  hosts without native AArch64 execution; 6,000 seeds agree. Every shared-corpus program, every
+  `examples/il` program and benchmark, and the four demos compile and verify in this mode at -O0
+  and -O2. Measurements (`ZANNA_GLOBAL_RA=1 scripts/codegen_stats.sh --baseline`, AArch64,
+  against the Phase 3 baseline):
+
+  | program | -O2 instructions | -O2 frame loads+stores | -O2 offset prefixes | -O2 spill slots | -O0 instructions |
+  |---|---|---|---|---|---|
+  | chess | 105,089 → 55,537 (−47%) | 21,394 → 4,946 | 12,381 → 64 | 9,977 → 200 | 89,607 → 74,321 |
+  | crackman | 56,684 → 36,567 (−36%) | 9,870 → 2,914 | 3,289 → 0 | 4,450 → 43 | 57,055 → 46,988 |
+  | paint | 55,230 → 40,293 (−27%) | 8,730 → 3,000 | 1,897 → 0 | 3,898 → 49 | 57,350 → 49,576 |
+  | openworld_slice | 6,274 → 4,896 (−22%) | 578 → 364 | 27 → 0 | 258 → 0 | 7,060 → 5,861 |
+
+  Every one of the 16 IL benchmarks loses all of its frame traffic and spill slots at both
+  levels (instructions −15% to −52% at -O2); the shared corpus goes 1,276 → 968 instructions at
+  -O2 and 2,019 → 1,475 at -O0. The kernel generator gained the `eh-catch` shape (an `eh.push`
+  around a division that traps every fourth trip, state carried through entry allocas, the
+  handler resuming into a recovery block that postdominates the pushing block; the phi-cycle
+  shape already existed), so the seeded differential exercises native EH on every host backend.
+  Still open before the flip (C6): the differential gates with `ZANNA_GLOBAL_RA=1` on an AArch64
+  host.
+
+Everything from B2 onward, and Phase 3 from C6 on, is open.
 
 ## Context
 

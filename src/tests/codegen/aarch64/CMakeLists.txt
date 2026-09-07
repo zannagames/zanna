@@ -22,6 +22,22 @@ zanna_add_test(test_aarch64_phys_liveness
         LIBS il_codegen_aarch64 zanna_test_common
         COMPILE_DEFS ZANNA_SHARED_IL_CORPUS_DIR="${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il")
 zanna_add_test_labels(test_aarch64_phys_liveness codegen arm64)
+
+# Function-wide register allocation (Phase 3 C5): the interval model, the
+# allocator on MIR shapes, and the MIR interpreter oracle over random functions.
+zanna_add_test(test_aarch64_live_intervals
+        ${CMAKE_SOURCE_DIR}/src/tests/unit/codegen/test_aarch64_live_intervals.cpp
+        LIBS il_codegen_aarch64 zanna_test_common)
+zanna_add_test_labels(test_aarch64_live_intervals codegen arm64)
+zanna_add_test(test_regalloc_aarch64_global
+        ${CMAKE_SOURCE_DIR}/src/tests/unit/codegen/test_regalloc_aarch64_global.cpp
+        LIBS il_codegen_aarch64 zanna_test_common
+        COMPILE_DEFS ZANNA_SHARED_IL_CORPUS_DIR="${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il")
+zanna_add_test_labels(test_regalloc_aarch64_global codegen arm64)
+zanna_add_test(test_regalloc_aarch64_oracle
+        ${CMAKE_SOURCE_DIR}/src/tests/unit/codegen/test_regalloc_aarch64_oracle.cpp
+        LIBS il_codegen_aarch64 zanna_test_common)
+zanna_add_test_labels(test_regalloc_aarch64_oracle codegen arm64)
 set_tests_properties(test_codegen_aarch64_shared_corpus PROPERTIES
         RUN_SERIAL TRUE
         TIMEOUT 120

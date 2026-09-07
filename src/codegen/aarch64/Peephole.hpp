@@ -86,10 +86,17 @@ struct PeepholeStats {
  * @param[in,out] fn Physical-register MIR function to optimize in place.
  * @param target Optional target description enabling CFG-aware liveness/DCE;
  *        `nullptr` selects the legacy block-local DCE path.
+ * @param frameSlotPhis Whether the function came through the frame-slot
+ *        lowering and block-local allocator (phi slots, `PhiStore` edges):
+ *        the cross-block phi-slot forwarding and loop phi-spill stages run
+ *        only then. Functions allocated by the function-wide allocator carry
+ *        their edge copies in registers and skip those stages.
  * @return Counts for all transformations applied during this invocation.
  * @pre Every register operand in @p fn has been allocated to a physical register.
  */
-[[nodiscard]] PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target = nullptr);
+[[nodiscard]] PeepholeStats runPeephole(MFunction &fn,
+                                        const TargetInfo *target = nullptr,
+                                        bool frameSlotPhis = true);
 
 /**
  * @brief Runs the inexpensive cleanup subset intended after scheduling.

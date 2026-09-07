@@ -1090,7 +1090,7 @@ static bool peepholeStageDisabled(const char *name) {
     return std::getenv(key.c_str()) != nullptr;
 }
 
-PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
+PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target, bool frameSlotPhis) {
     PeepholeStats stats;
 
     // Pass 0: Reorder blocks for better code layout
@@ -1119,24 +1119,30 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     if (fpStores)
         ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
+    // Passes 4.8 - 4.9 undo the frame-slot phi transfers of the block-local
+    // allocation path; a function allocated function-wide has none.
+    const bool phiStages = frameSlotPhis;
+
     // Pass 4.8: Cross-block store-load forwarding for phi stores/loads.
     // Forwards single-predecessor join blocks; multi-predecessor joins handled
     // by passes 4.86 / 4.88 below.
-    if (!peepholeStageDisabled("STORELOAD_FWD"))
+    if (phiStages && !peepholeStageDisabled("STORELOAD_FWD"))
         forwardLayoutSuccessorStoreLoad(fn, stats);
 
     // Pass 4.86: Forward single-predecessor phi-entry loads from predecessor
     // edge stores when the edge is acyclic and the source register survives to
     // the successor. This collapses direct join reloads without touching
     // loop-carried back-edges.
-    if (!peepholeStageDisabled("PHI_LOADS") && forwardSinglePredPhiLoads(fn, stats) && fpStores)
+    if (phiStages && !peepholeStageDisabled("PHI_LOADS") && forwardSinglePredPhiLoads(fn, stats) &&
+        fpStores)
         ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // Pass 4.88: Coalesce multi-predecessor join-entry phi loads into
     // predecessor register moves when every incoming edge already materializes
     // the values in physical registers before branching to the join. This cuts
     // stack round-trips that remain after the single-predecessor forwarding pass.
-    if (!peepholeStageDisabled("PHI_LOADS") && coalesceJoinPhiLoads(fn, stats) && fpStores)
+    if (phiStages && !peepholeStageDisabled("PHI_LOADS") && coalesceJoinPhiLoads(fn, stats) &&
+        fpStores)
         ph::eliminateDeadFpStoresCrossBlock(fn, stats);
 
     // (Pass 4.85 moved to Pass 0.7 — runs before per-block loop above)
@@ -1149,7 +1155,7 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     // ABI description; direct unit tests may run without one, in which case
     // AAPCS64 (the Darwin singleton) is the common denominator.
     const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
-    for (int iter = 0; iter < 16 && !peepholeStageDisabled("PHI_SPILLS"); ++iter) {
+    for (int iter = 0; iter < 16 && phiStages && !peepholeStageDisabled("PHI_SPILLS"); ++iter) {
         const auto eliminated = ph::eliminateLoopPhiSpills(fn, effectiveTarget);
         if (eliminated == 0)
             break;

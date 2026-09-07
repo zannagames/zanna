@@ -26,6 +26,7 @@
 
 #include "codegen/aarch64/Coalescer.hpp"
 #include "codegen/aarch64/RegAllocLinear.hpp"
+#include "codegen/aarch64/ra/GlobalAllocator.hpp"
 #include "codegen/common/Parallelism.hpp"
 
 #include <algorithm>
@@ -50,15 +51,25 @@ bool RegAllocPass::run(AArch64Module &module, Diagnostics &diags) {
     std::string firstError;
     std::mutex errorMutex;
 
+    // The lowering mode fixes the allocator: edge-copy MIR (block-parameter
+    // vregs, ParallelCopy edges) goes to the function-wide allocator, whose
+    // hints replace the pre-RA move coalescer; frame-slot MIR keeps the
+    // block-local path.
+    const bool global = module.edgeCopyLowering;
+
     /// Coalesce and allocate the function at @p index, recording only the first
     /// allocation exception so concurrent failures produce one stable diagnostic.
     auto allocateOne = [&](std::size_t index) {
         auto &fn = module.mir[index];
         try {
-            // Coalesce MovRR/FMovRR between virtual registers before register
-            // allocation to reduce register pressure and eliminate redundant copies.
-            coalesce(fn);
-            [[maybe_unused]] auto result = allocate(fn, *module.ti);
+            if (global) {
+                [[maybe_unused]] auto result = ra::allocateGlobal(fn, *module.ti);
+            } else {
+                // Coalesce MovRR/FMovRR between virtual registers before register
+                // allocation to reduce register pressure and eliminate redundant copies.
+                coalesce(fn);
+                [[maybe_unused]] auto result = allocate(fn, *module.ti);
+            }
         } catch (const std::exception &ex) {
             std::lock_guard<std::mutex> lock(errorMutex);
             if (firstError.empty())

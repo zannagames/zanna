@@ -27,6 +27,8 @@ add_library(il_codegen_aarch64 STATIC
         ra/OperandRoles.cpp
         ra/Allocator.cpp
         ra/Liveness.cpp
+        ra/LiveIntervals.cpp
+        ra/GlobalAllocator.cpp
         Coalescer.cpp
         Peephole.cpp
         # Modular peephole sub-passes (Phase 4B)

@@ -15,8 +15,9 @@
 //          corpus lowers and verifies in that mode. The frame-slot mode is
 //          unchanged.
 // Key invariants:
-//   - Only LoweringPass runs; the mode's MIR is consumed by the function-wide
-//     allocator (Phase 3 C5), so no later pass is exercised here.
+//   - The lowering cases run only LoweringPass; the corpus lane at the end
+//     runs the whole pipeline with the function-wide allocator (Phase 3 C5)
+//     and the verifier, and checks determinism.
 // Ownership/Lifetime: Standalone test binary.
 // Links: src/codegen/aarch64/LowerILToMIR.cpp, src/codegen/aarch64/TerminatorLowering.cpp,
 //        docs/internals/backend-codegen-review-2026-09.md (Phase 3)
@@ -25,6 +26,7 @@
 
 #include "tests/TestHarness.hpp"
 
+#include "codegen/aarch64/CodegenPipeline.hpp"
 #include "codegen/aarch64/MirVerify.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/passes/LoweringPass.hpp"
@@ -318,6 +320,64 @@ TEST(AArch64EdgeCopyLowering, SharedCorpusLowersAndVerifies) {
         for (const auto &fn : mir) {
             EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreGPR), 0u);
             EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreFPR), 0u);
+        }
+        ++files;
+    }
+    EXPECT_GT(files, 20u);
+}
+
+namespace {
+
+/// @brief Run the whole pipeline on @p mod with the function-wide allocator
+///        and the verifier at @p level; return the assembly (empty on failure).
+std::string compileGlobally(il::core::Module &mod, int level, std::ostream &diag) {
+    passes::AArch64Module m;
+    m.ilMod = &mod;
+    m.ti = &darwinTarget();
+    PipelineOptions opts;
+    opts.emitAssemblyText = true;
+    opts.optimizeLevel = level;
+    opts.verifyMir = true;
+    opts.globalRegAlloc = true;
+    if (!runCodegenPipeline(m, opts, diag))
+        return {};
+    return m.assembly;
+}
+
+} // namespace
+
+TEST(AArch64EdgeCopyLowering, SharedCorpusAllocatesGloballyAndVerifies) {
+    // Every corpus program goes through lowering, legalization, the
+    // function-wide allocator, the post-RA passes, and emission with the
+    // verifier on, at -O0 and -O2; the allocation is deterministic and leaves
+    // no phi-slot traffic (no PhiStore, no ParallelCopy).
+    namespace fs = std::filesystem;
+    const fs::path root = fs::path(ZANNA_SHARED_IL_CORPUS_DIR) / "success";
+    std::size_t files = 0;
+    for (const auto &entry : fs::directory_iterator(root)) {
+        if (entry.path().extension() != ".il")
+            continue;
+        std::ifstream in(entry.path());
+        std::stringstream buf;
+        buf << in.rdbuf();
+        for (int level : {0, 2}) {
+            il::core::Module first = parseIL(buf.str());
+            if (first.functions.empty())
+                continue;
+            std::ostringstream diag;
+            const std::string asmA = compileGlobally(first, level, diag);
+            if (asmA.empty() || diag.str().find("V-CG-MIR-") != std::string::npos) {
+                std::cerr << "global allocation failed for " << entry.path() << " at -O" << level
+                          << ":\n"
+                          << diag.str();
+            }
+            ASSERT_FALSE(asmA.empty());
+            EXPECT_EQ(diag.str().find("V-CG-MIR-"), std::string::npos);
+
+            il::core::Module second = parseIL(buf.str());
+            std::ostringstream diag2;
+            const std::string asmB = compileGlobally(second, level, diag2);
+            EXPECT_EQ(asmA, asmB);
         }
         ++files;
     }

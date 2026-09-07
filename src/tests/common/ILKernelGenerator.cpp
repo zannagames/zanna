@@ -238,6 +238,39 @@ class StageWriter {
         finish(t("m"), i, n);
     }
 
+    void ehCatch(const std::string &s, const std::string &i, std::size_t n) {
+        // A native EH frame around a division whose divisor is zero every
+        // fourth trip. A handler may read only its own parameters, so the
+        // stage state goes through the entry allocas: stored before the push,
+        // reloaded in the recovery block the handler resumes into. The sum is
+        // also read on the normal path after the pop, so it is live across
+        // the frame push (the setjmp) and must be memory-homed by a backend
+        // that honours EH-1.
+        out_ << "  store i64, %eh_s, " << s << "\n";
+        out_ << "  store i64, %eh_i, " << i << "\n";
+        out_ << "  " << t("d") << " = and " << i << ", 3\n";
+        out_ << "  " << t("num") << " = and " << s << ", 1048575\n";
+        out_ << "  eh.push ^" << l("eh") << "\n";
+        out_ << "  " << t("q") << " = sdiv.chk0 " << t("num") << ", " << t("d") << "\n";
+        out_ << "  eh.pop\n";
+        // The recovery block must postdominate the pushing block: the normal
+        // path reaches it with the quotient plus the incoming sum (read after
+        // the push), the handler with the trap kind.
+        out_ << "  " << t("acc") << " = iadd.ovf " << s << ", " << t("q") << "\n";
+        out_ << "  br " << l("rc") << "(" << t("acc") << ")\n\n";
+        out_ << l("eh") << "(%err: Error, %tok: ResumeTok):\n";
+        out_ << "  eh.entry\n";
+        out_ << "  " << t("kind") << " = trap.kind %err\n";
+        out_ << "  resume.label %tok, ^" << l("rc") << "(" << t("kind") << ")\n\n";
+        out_ << l("rc") << "(" << t("rk") << ": i64):\n";
+        out_ << "  " << t("rs") << " = load i64, %eh_s\n";
+        out_ << "  " << t("ri") << " = load i64, %eh_i\n";
+        out_ << "  " << t("hacc") << " = iadd.ovf " << t("rs") << ", " << t("rk") << "\n";
+        out_ << "  " << t("hacc2") << " = iadd.ovf " << t("hacc") << ", " << pick(1, 500) << "\n";
+        out_ << "  " << t("hm") << " = and " << t("hacc2") << ", " << kSumMask << "\n";
+        finish(t("hm"), t("ri"), n);
+    }
+
     void bitMix(const std::string &s, const std::string &i, std::size_t n) {
         out_ << "  " << t("h0") << " = imul.ovf " << i << ", 2654435761\n";
         out_ << "  " << t("h1") << " = lshr " << t("h0") << ", " << pick(3, 21) << "\n";
@@ -302,6 +335,8 @@ const char *kernelShapeName(KernelShape shape) noexcept {
             return "phi-cycle-loop";
         case KernelShape::BitMix:
             return "bit-mix";
+        case KernelShape::EhCatch:
+            return "eh-catch";
         case KernelShape::Count:
             break;
     }
@@ -337,6 +372,14 @@ KernelProgram generateKernelProgram(std::uint64_t seed) {
 
     out << "func @main() -> i64 {\n";
     out << "entry:\n";
+    // The EH shape carries the stage state across its handler through memory.
+    bool hasEh = false;
+    for (KernelShape shape : program.shapes)
+        hasEh = hasEh || shape == KernelShape::EhCatch;
+    if (hasEh) {
+        out << "  %eh_s = alloca 8\n";
+        out << "  %eh_i = alloca 8\n";
+    }
     out << "  br loop(0, 0)\n\n";
     out << "loop(%sum: i64, %i: i64):\n";
     out << "  %done = scmp_ge %i, " << program.iterations << "\n";
@@ -369,6 +412,9 @@ KernelProgram generateKernelProgram(std::uint64_t seed) {
                 break;
             case KernelShape::PhiCycleLoop:
                 w.phiCycleLoop(s, i, stageCount);
+                break;
+            case KernelShape::EhCatch:
+                w.ehCatch(s, i, stageCount);
                 break;
             case KernelShape::BitMix:
             case KernelShape::Count:

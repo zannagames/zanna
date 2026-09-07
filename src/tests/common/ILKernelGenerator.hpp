@@ -52,6 +52,8 @@ enum class KernelShape : unsigned {
     LeafCall,         ///< Call to a generated leaf helper with its own branches.
     PhiCycleLoop,     ///< Inner loop whose block parameters rotate (phi cycle).
     BitMix,           ///< and/or/xor/shift mixing (never trapping).
+    EhCatch,          ///< eh.push around a division that traps every fourth trip; the
+                      ///< handler reads a value defined before the push and resumes.
     Count             ///< Number of shapes.
 };
 

@@ -126,6 +126,20 @@ class FrameBuilder : public common::FrameLayout {
                              int sizeBytes = kSlotSizeBytes,
                              int alignBytes = kSlotSizeBytes);
 
+    /// @brief Allocate one spill slot shared by several virtual registers.
+    /// @details The function-wide allocator places values whose live ranges
+    ///          never intersect in one slot; one `SpillSlot` record per
+    ///          occupant is written so frame dumps and the verifier see every
+    ///          key. Slots are handed out in call order, so callers allocate
+    ///          the hottest slot first (nearest x29, no offset prefix).
+    /// @param vregs Occupant keys (at least one).
+    /// @param sizeBytes Slot size in bytes (default: 8).
+    /// @param alignBytes Alignment in bytes (default: 8).
+    /// @return FP-relative offset of the slot.
+    int addSharedSpill(const std::vector<uint32_t> &vregs,
+                       int sizeBytes = kSlotSizeBytes,
+                       int alignBytes = kSlotSizeBytes);
+
     /// @brief Reserve space for outgoing arguments passed on the stack.
     /// @param bytes Maximum bytes needed for outgoing arguments.
     void setMaxOutgoingBytes(int bytes);
