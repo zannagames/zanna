@@ -109,8 +109,7 @@ static uint32_t switchSpillKeyForBlock(std::size_t blockIndex) {
     constexpr std::size_t kMaxSwitchIndex =
         static_cast<std::size_t>(std::numeric_limits<uint32_t>::max() - kSwitchSpillBase);
     if (blockIndex > kMaxSwitchIndex) {
-        throw std::runtime_error(
-            "AArch64 terminator lowering: switch spill key range exhausted");
+        throw std::runtime_error("AArch64 terminator lowering: switch spill key range exhausted");
     }
     return kSwitchSpillBase + static_cast<uint32_t>(blockIndex);
 }
@@ -310,9 +309,62 @@ static void emitPhiEdgeCopies(
     std::unordered_map<unsigned, RegClass> &tempRegClass,
     uint16_t &nextVRegId,
     const std::unordered_map<std::string, std::vector<RegClass>> &phiRegClass,
-    const std::unordered_map<std::string, std::vector<int>> &phiSpillOffset) {
+    const std::unordered_map<std::string, std::vector<int>> &phiSpillOffset,
+    const std::unordered_map<std::string, std::vector<uint16_t>> &phiVregId,
+    bool edgeCopies) {
     if (args.empty())
         return;
+
+    if (edgeCopies) {
+        // Edge-copy mode: one ParallelCopy whose destinations are the target's
+        // phi vregs and whose sources are the materialized arguments. The
+        // register allocator sequentializes it (parallel semantics, cycles
+        // included); nothing touches the frame.
+        auto itIds = phiVregId.find(dst);
+        auto itCls = phiRegClass.find(dst);
+        if (itIds == phiVregId.end() || itCls == phiRegClass.end()) {
+            throw std::runtime_error("AArch64 terminator lowering: branch to block '" + dst +
+                                     "' carries arguments but target has no phi metadata");
+        }
+        const auto &ids = itIds->second;
+        const auto &classes = itCls->second;
+        if (ids.size() != classes.size() || args.size() != ids.size()) {
+            throw std::runtime_error(
+                "AArch64 terminator lowering: branch argument count mismatch for block '" + dst +
+                "'");
+        }
+        MInstr copy{MOpcode::ParallelCopy, {}};
+        copy.ops.reserve(args.size() * 2);
+        for (std::size_t ai = 0; ai < args.size(); ++ai) {
+            uint16_t sv = 0;
+            RegClass scls = RegClass::GPR;
+            if (!materializeValueToVReg(args[ai],
+                                        inBB,
+                                        ti,
+                                        fb,
+                                        edgeBB,
+                                        blockTempVReg,
+                                        tempRegClass,
+                                        nextVRegId,
+                                        sv,
+                                        scls)) {
+                throw std::runtime_error("AArch64 terminator lowering: failed to materialize "
+                                         "phi-edge argument for block '" +
+                                         dst + "'");
+            }
+            if (scls != classes[ai]) {
+                throw std::runtime_error(
+                    "AArch64 terminator lowering: phi-edge argument register class "
+                    "mismatch for block '" +
+                    dst + "'");
+            }
+            copy.ops.push_back(MOperand::vregOp(classes[ai], ids[ai]));
+            copy.ops.push_back(MOperand::vregOp(scls, sv));
+        }
+        edgeBB.instrs.push_back(std::move(copy));
+        return;
+    }
+
     auto itSpill = phiSpillOffset.find(dst);
     if (itSpill == phiSpillOffset.end()) {
         throw std::runtime_error("AArch64 terminator lowering: branch to block '" + dst +
@@ -407,7 +459,9 @@ static void lowerCBr(const il::core::Instr &term,
                      const std::unordered_map<std::string, std::vector<int>> &phiSpillOffset,
                      std::unordered_map<unsigned, uint16_t> &blockTempVReg,
                      std::unordered_map<unsigned, RegClass> &tempRegClass,
-                     uint16_t &nextVRegId) {
+                     uint16_t &nextVRegId,
+                     const std::unordered_map<std::string, std::vector<uint16_t>> &phiVregId,
+                     bool edgeCopies) {
     if (term.operands.size() < 1 || term.labels.size() != 2)
         return;
 
@@ -549,7 +603,9 @@ static void lowerCBr(const il::core::Instr &term,
                               tempRegClass,
                               nextVRegId,
                               phiRegClass,
-                              phiSpillOffset);
+                              phiSpillOffset,
+                              phiVregId,
+                              edgeCopies);
         trueEdgeBB.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp(trueLbl)}});
         mf.blocks.push_back(std::move(trueEdgeBB));
     }
@@ -567,7 +623,9 @@ static void lowerCBr(const il::core::Instr &term,
                               tempRegClass,
                               nextVRegId,
                               phiRegClass,
-                              phiSpillOffset);
+                              phiSpillOffset,
+                              phiVregId,
+                              edgeCopies);
         falseEdgeBB.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp(falseLbl)}});
         mf.blocks.push_back(std::move(falseEdgeBB));
     }
@@ -610,7 +668,9 @@ static void lowerSwitchI32(
     std::unordered_map<unsigned, uint16_t> &blockTempVReg,
     std::unordered_map<unsigned, RegClass> &tempRegClass,
     uint16_t &nextVRegId,
-    std::size_t &switchAuxCounter) {
+    std::size_t &switchAuxCounter,
+    const std::unordered_map<std::string, std::vector<uint16_t>> &phiVregId,
+    bool edgeCopies) {
     if (term.operands.empty()) {
         throw std::runtime_error("AArch64 terminator lowering: switch_i32 missing scrutinee");
     }
@@ -678,7 +738,9 @@ static void lowerSwitchI32(
                               tempRegClass,
                               nextVRegId,
                               phiRegClass,
-                              phiSpillOffset);
+                              phiSpillOffset,
+                              phiVregId,
+                              edgeCopies);
             edgeBB.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp(caseLabel)}});
             mf.blocks.push_back(std::move(edgeBB));
         }
@@ -703,7 +765,9 @@ static void lowerSwitchI32(
                               tempRegClass,
                               nextVRegId,
                               phiRegClass,
-                              phiSpillOffset);
+                              phiSpillOffset,
+                              phiVregId,
+                              edgeCopies);
             edgeBB.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp(defLbl)}});
             mf.blocks.push_back(std::move(edgeBB));
         }
@@ -735,8 +799,7 @@ static void lowerSwitchI32(
         const int64_t hi = cases.back().value;
         const int64_t span = hi - lo + 1;
         if (lo >= 0 && lo <= 4095 && span <= kMaxJumpTableSpan &&
-            static_cast<double>(cases.size()) >=
-                kMinJumpTableDensity * static_cast<double>(span)) {
+            static_cast<double>(cases.size()) >= kMinJumpTableDensity * static_cast<double>(span)) {
             // With lo == 0 the scrutinee IS the table index; a bare copy here
             // would tempt copy forwarding into splitting the compare and the
             // dispatch onto different registers.
@@ -749,11 +812,9 @@ static void lowerSwitchI32(
                                                MOperand::immOp(lo)}});
             }
             outBB.instrs.push_back(MInstr{
-                MOpcode::CmpRI,
-                {MOperand::vregOp(RegClass::GPR, idxV), MOperand::immOp(span)}});
-            outBB.instrs.push_back(
-                MInstr{MOpcode::BCond,
-                       {MOperand::condOp("hs"), MOperand::labelOp(defaultBranchLabel)}});
+                MOpcode::CmpRI, {MOperand::vregOp(RegClass::GPR, idxV), MOperand::immOp(span)}});
+            outBB.instrs.push_back(MInstr{
+                MOpcode::BCond, {MOperand::condOp("hs"), MOperand::labelOp(defaultBranchLabel)}});
 
             // The dispatch tail uses the reserved X16/X17 scratch registers,
             // so only the index needs allocation.
@@ -806,12 +867,15 @@ static void lowerSwitchI32(
  * @param[in,out] mf Parallel MIR function, plus any appended auxiliary blocks.
  * @param ti Target ABI/register metadata.
  * @param[in,out] fb Frame allocator.
- * @param phiVregId Currently unused phi-vreg compatibility input.
+ * @param phiVregId Phi parameter vregs by target label (the ParallelCopy
+ *        destinations in edge-copy mode).
  * @param phiRegClass Phi parameter classes by target label.
  * @param phiSpillOffset Phi parameter offsets by target label.
  * @param[in,out] blockTempVRegSnapshot Temporary mappings by original block.
  * @param[in,out] tempRegClass Function-wide temporary class map.
  * @param[in,out] nextVRegId Virtual-register allocator state.
+ * @param edgeCopies Emit ParallelCopy edges (edge-copy lowering mode) instead
+ *        of PhiStore slot writes.
  * @throws std::runtime_error If terminator validation or materialization fails.
  */
 void lowerTerminators(const il::core::Function &fn,
@@ -823,7 +887,8 @@ void lowerTerminators(const il::core::Function &fn,
                       const std::unordered_map<std::string, std::vector<int>> &phiSpillOffset,
                       std::vector<std::unordered_map<unsigned, uint16_t>> &blockTempVRegSnapshot,
                       std::unordered_map<unsigned, RegClass> &tempRegClass,
-                      uint16_t &nextVRegId) {
+                      uint16_t &nextVRegId,
+                      bool edgeCopies) {
     std::size_t switchAuxCounter = 0;
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         const auto &inBB = fn.blocks[i];
@@ -851,7 +916,9 @@ void lowerTerminators(const il::core::Function &fn,
                                           tempRegClass,
                                           nextVRegId,
                                           phiRegClass,
-                                          phiSpillOffset);
+                                          phiSpillOffset,
+                                          phiVregId,
+                                          edgeCopies);
                     }
                     outBB.instrs.push_back(
                         MInstr{MOpcode::Br, {MOperand::labelOp(term.labels[0])}});
@@ -951,7 +1018,9 @@ void lowerTerminators(const il::core::Function &fn,
                          phiSpillOffset,
                          blockTempVReg,
                          tempRegClass,
-                         nextVRegId);
+                         nextVRegId,
+                         phiVregId,
+                         edgeCopies);
                 break;
 
 
@@ -968,7 +1037,9 @@ void lowerTerminators(const il::core::Function &fn,
                                blockTempVReg,
                                tempRegClass,
                                nextVRegId,
-                               switchAuxCounter);
+                               switchAuxCounter,
+                               phiVregId,
+                               edgeCopies);
                 break;
 
             case Opcode::ResumeLabel:
