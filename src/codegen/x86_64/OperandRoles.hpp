@@ -20,6 +20,7 @@
 #pragma once
 
 #include "codegen/x86_64/MachineIR.hpp"
+#include "codegen/x86_64/TargetX64.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -78,7 +79,8 @@ using PhysRegMask = std::uint64_t;
 }
 
 /// @brief Physical registers written by @p opcode without appearing as operands.
-/// @details `CQO` writes RDX; `IDIVrm`/`DIVrm`/`MULr`/`IMULr` write RAX and RDX.
+/// @details `CQO` writes RDX; `IDIVrm`/`DIVrm`/`MULr`/`IMULr` write RAX and RDX;
+///          `JUMPTABLE` writes the R10/R11 dispatch scratch registers.
 ///          Every post-RA pass that reasons about register liveness or copy
 ///          validity (store-to-load forwarding, move folding, DCE, scheduling)
 ///          must treat these as definitions; explicit operand roles alone miss them.
@@ -93,5 +95,28 @@ using PhysRegMask = std::uint64_t;
 /// @param opcode Opcode to classify.
 /// @return Mask of implicitly used registers, or zero.
 [[nodiscard]] PhysRegMask implicitUseMask(MOpcode opcode) noexcept;
+
+/// @brief Everything one MIR instruction observably reads and writes.
+/// @details Explicit operand roles plus the implicit register masks, EFLAGS,
+///          memory access, and the ABI registers of calls and returns. Every
+///          post-RA pass that reasons about liveness, copies, or reordering
+///          should consume this (or the mask helpers) rather than a local
+///          opcode table, so implicit effects are modeled once.
+struct InstrEffects {
+    PhysRegMask uses{0};      ///< Explicit and implicit physical registers read.
+    PhysRegMask defs{0};      ///< Explicit and implicit physical registers written.
+    bool readsFlags{false};   ///< Reads EFLAGS.
+    bool writesFlags{false};  ///< Writes EFLAGS (arithmetic, compares, calls).
+    bool memRead{false};      ///< Reads memory (calls: may read anything).
+    bool memWrite{false};     ///< Writes memory (calls: may write anything).
+    bool isCall{false};       ///< `CALL`.
+    bool isTerminator{false}; ///< `JMP`, `JCC`, `JUMPTABLE`, `RET`, `UD2`.
+};
+
+/// @brief Compute the effects of @p instr under @p target.
+/// @param instr Instruction to classify.
+/// @param target ABI description supplying argument, return, and caller-saved sets.
+/// @return The instruction's effects.
+[[nodiscard]] InstrEffects effectsOf(const MInstr &instr, const TargetInfo &target);
 
 } // namespace zanna::codegen::x64

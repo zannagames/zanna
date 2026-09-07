@@ -724,6 +724,11 @@ bool instructionDefinesRegister(const MInstr &instr, const OpReg &needle) {
     if (needle.isPhys && instr.opcode == MOpcode::CALL) {
         return true;
     }
+    // CQO / IDIV / DIV / MUL / IMUL write RAX and/or RDX without operands.
+    if (needle.isPhys && needle.cls == RegClass::GPR &&
+        (implicitDefMask(instr.opcode) & physRegBit(static_cast<PhysReg>(needle.idOrPhys))) != 0) {
+        return true;
+    }
 
     for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
         const auto [isUse, isDef] = operandRoles(instr, idx);

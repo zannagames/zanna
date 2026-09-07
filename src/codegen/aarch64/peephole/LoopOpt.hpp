@@ -25,6 +25,7 @@
 #pragma once
 
 #include "../MachineIR.hpp"
+#include "../TargetAArch64.hpp"
 
 #include <cstddef>
 
@@ -62,6 +63,6 @@ std::size_t hoistLoopConstants(MFunction &fn);
 ///
 /// @param[in,out] fn Post-allocation function whose loop header may be split.
 /// @return Number of spill/reload pairs eliminated.
-std::size_t eliminateLoopPhiSpills(MFunction &fn);
+std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo);
 
 } // namespace zanna::codegen::aarch64::peephole

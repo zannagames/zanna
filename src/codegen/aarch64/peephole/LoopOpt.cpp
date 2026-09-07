@@ -27,6 +27,7 @@
 
 #include "Dominators.hpp"
 #include "PeepholeCommon.hpp"
+#include "codegen/aarch64/InstrEffects.hpp"
 
 #include <algorithm>
 #include <unordered_map>
@@ -569,7 +570,7 @@ std::size_t hoistLoopConstants(MFunction &fn) {
 }
 
 /// @copydoc eliminateLoopPhiSpills
-std::size_t eliminateLoopPhiSpills(MFunction &fn) {
+std::size_t eliminateLoopPhiSpills(MFunction &fn, const TargetInfo &targetInfo) {
     if (fn.blocks.size() < 2)
         return 0;
 
@@ -623,14 +624,13 @@ std::size_t eliminateLoopPhiSpills(MFunction &fn) {
     /// @param mi Candidate direct or indirect call.
     /// @param reg Physical register whose survival is queried.
     /// @return `true` when @p mi is a call and @p reg is caller-saved.
-    auto callClobbersReg = [](const MInstr &mi, const MOperand &reg) -> bool {
+    // Call clobbers come from the target's caller-saved sets via the shared
+    // effects model rather than a hard-coded AAPCS64 register range.
+    const PhysRegSet callClobbers = callClobberSet(targetInfo);
+    auto callClobbersReg = [&callClobbers](const MInstr &mi, const MOperand &reg) -> bool {
         if ((mi.opc != MOpcode::Bl && mi.opc != MOpcode::Blr) || !isPhysReg(reg))
             return false;
-        const auto phys = static_cast<PhysReg>(reg.reg.idOrPhys);
-        if (reg.reg.cls == RegClass::GPR)
-            return phys <= PhysReg::X17;
-        return (phys >= PhysReg::V0 && phys <= PhysReg::V7) ||
-               (phys >= PhysReg::V16 && phys <= PhysReg::V31);
+        return callClobbers.contains(static_cast<PhysReg>(reg.reg.idOrPhys));
     };
 
     // Find back-edges: block i branches to block j where j <= i.

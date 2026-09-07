@@ -23,6 +23,7 @@
 #include "Peephole.hpp"
 
 #include "Noreturn.hpp"
+#include "TargetAArch64.hpp"
 #include "peephole/BranchOpt.hpp"
 #include "peephole/CopyPropDCE.hpp"
 #include "peephole/Dominators.hpp"
@@ -1333,8 +1334,12 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     // Must run AFTER Pass 4.8 (cross-block store-load forwarding) because that pass
     // may convert phi loads to register movs, changing the header's instruction mix.
     // Running after 4.8 ensures we see the final form of the header instructions.
+    // Loop phi-spill elimination reasons about call clobbers, so it needs an
+    // ABI description; direct unit tests may run without one, in which case
+    // AAPCS64 (the Darwin singleton) is the common denominator.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
     for (int iter = 0; iter < 16 && !peepholeStageDisabled("PHI_SPILLS"); ++iter) {
-        const auto eliminated = ph::eliminateLoopPhiSpills(fn);
+        const auto eliminated = ph::eliminateLoopPhiSpills(fn, effectiveTarget);
         if (eliminated == 0)
             break;
         stats.loopConstsHoisted += static_cast<int>(eliminated);

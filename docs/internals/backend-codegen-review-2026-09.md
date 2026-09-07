@@ -42,6 +42,19 @@ the original scope:
   4095-byte literal limit under `-Werror=overlength-strings`) and
   `src/tests/runtime/RTCanvas3DCoordsContractTests.cpp` (`isfinite` from a C `.inc` inside C++).
 
+Phase 2.1 (one instruction-effects model per backend) is implemented:
+
+- `src/codegen/aarch64/InstrEffects.{hpp,cpp}` — `effectsOf(const MInstr&, const TargetInfo&)`
+  (explicit roles from `ra::operandRoles` plus call/return ABI registers, NZCV, memory class,
+  jump-table and emit-time scratch clobbers), `callClobberSet`, and the shared opcode predicates.
+  `peephole/PeepholeCommon.cpp`, `peephole/CopyPropDCE.cpp`, `peephole/LoopOpt.cpp`,
+  `passes/SchedulerPass.cpp`, and `PreRegAllocOpt.cpp` consume it; their private role tables are
+  deleted (`test_aarch64_instr_effects`, which also asserts `classifyOperand == ra::operandRoles`
+  on real MIR).
+- `src/codegen/x86_64/OperandRoles.{hpp,cpp}` — `effectsOf` on top of the Phase 1 implicit masks;
+  `ra/Allocator.cpp::collectPhysicalClobbers`, `Scheduler.cpp`, and `ISel.cpp` consume it. The
+  `JUMPTABLE` dispatch scratch (R10/R11) is now an implicit definition (`test_x86_peephole`).
+
 Everything from B1 onward is open.
 
 ## Context

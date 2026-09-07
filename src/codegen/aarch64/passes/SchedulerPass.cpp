@@ -25,16 +25,14 @@
 
 #include "codegen/aarch64/passes/SchedulerPass.hpp"
 
-#include "codegen/aarch64/A64ImmediateUtils.hpp"
+#include "codegen/aarch64/InstrEffects.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
-#include "codegen/aarch64/binenc/A64Encoding.hpp"
 #include "codegen/aarch64/ra/OperandRoles.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -117,54 +115,6 @@ static unsigned instrLatency(MOpcode opc) noexcept {
 // ---------------------------------------------------------------------------
 // Memory classification helpers
 // ---------------------------------------------------------------------------
-
-/// @brief Test whether an opcode reads memory through a modeled load operation.
-/// @param opc Machine opcode to classify.
-/// @return `true` for the recognized LDR/LDP variants; `false` otherwise.
-static bool isLoad(MOpcode opc) noexcept {
-    switch (opc) {
-        case MOpcode::LdrRegFpImm:
-        case MOpcode::LdrRegBaseImm:
-        case MOpcode::Ldr8RegFpImm:
-        case MOpcode::Ldr8RegBaseImm:
-        case MOpcode::Ldr16RegFpImm:
-        case MOpcode::Ldr16RegBaseImm:
-        case MOpcode::Ldr32RegFpImm:
-        case MOpcode::Ldr32RegBaseImm:
-        case MOpcode::LdrFprFpImm:
-        case MOpcode::LdrFprBaseImm:
-        case MOpcode::LdpRegFpImm:
-        case MOpcode::LdpFprFpImm:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief Test whether an opcode writes memory through a modeled store operation.
-/// @param opc Machine opcode to classify.
-/// @return `true` for the recognized STR/STP variants; `false` otherwise.
-static bool isStore(MOpcode opc) noexcept {
-    switch (opc) {
-        case MOpcode::StrRegFpImm:
-        case MOpcode::StrRegBaseImm:
-        case MOpcode::Str8RegFpImm:
-        case MOpcode::Str8RegBaseImm:
-        case MOpcode::Str16RegFpImm:
-        case MOpcode::Str16RegBaseImm:
-        case MOpcode::Str32RegFpImm:
-        case MOpcode::Str32RegBaseImm:
-        case MOpcode::StrRegSpImm:
-        case MOpcode::StrFprFpImm:
-        case MOpcode::StrFprBaseImm:
-        case MOpcode::StrFprSpImm:
-        case MOpcode::StpRegFpImm:
-        case MOpcode::StpFprFpImm:
-            return true;
-        default:
-            return false;
-    }
-}
 
 /// @brief Classifies the base register of a tracked memory address.
 enum class MemBaseKind : uint8_t {
@@ -435,39 +385,6 @@ static bool isTerminator(MOpcode opc) noexcept {
 // Flag (NZCV) classification helpers
 // ---------------------------------------------------------------------------
 
-/// @brief Test whether an opcode defines the implicit NZCV scheduling resource.
-/// @param opc Machine opcode to classify.
-/// @return `true` when @p opc writes condition flags.
-static bool setsFlags(MOpcode opc) noexcept {
-    switch (opc) {
-        case MOpcode::AddsRRR:
-        case MOpcode::SubsRRR:
-        case MOpcode::AddsRI:
-        case MOpcode::SubsRI:
-        case MOpcode::CmpRR:
-        case MOpcode::CmpRI:
-        case MOpcode::TstRR:
-        case MOpcode::FCmpRR:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief Test whether an opcode consumes the implicit NZCV scheduling resource.
-/// @param opc Machine opcode to classify.
-/// @return `true` when @p opc reads condition flags.
-static bool usesFlags(MOpcode opc) noexcept {
-    switch (opc) {
-        case MOpcode::BCond:
-        case MOpcode::Cset:
-        case MOpcode::Csel:
-        case MOpcode::FCsel:
-            return true;
-        default:
-            return false;
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Stack pointer helpers
@@ -494,91 +411,6 @@ static bool usesSP(MOpcode opc) noexcept {
         default:
             return false;
     }
-}
-
-/// @brief Test whether the emitter may materialize this instruction's address through
-///        a reserved scratch register (kScratchGPR/kScratchGPR2/kScratchGPR3).
-/// @details `AsmEmitter::resolveBaseOffset` and the FP/SP store helpers only encode
-///          displacements in the signed unscaled range [-256, 255] (pairs: the scaled
-///          imm7 form) directly; anything wider is rewritten at emit time as
-///          `mov xS, #off; add xS, base, xS; ldr/str [xS]`, and `AddFpImm` beyond
-///          the 12-bit immediate does the same. Those scratch writes are invisible
-///          in the MIR operands, so a post-RA peephole that keeps a value in
-///          kScratchGPR across neighbouring instructions (the magic-division
-///          expansion's sign-correction term) was silently clobbered when the
-///          scheduler hoisted such a spill store between the two halves. Plan 88
-///          bisect: a throw-backup leg's end time became a stack address.
-/// @param mi Instruction to classify.
-/// @return `true` when emission may write a scratch GPR.
-static bool mayClobberEmitScratch(const MInstr &mi) noexcept {
-    auto lastImm = [&mi]() -> std::optional<long long> {
-        for (std::size_t k = mi.ops.size(); k > 0; --k) {
-            if (mi.ops[k - 1].kind == MOperand::Kind::Imm)
-                return mi.ops[k - 1].imm;
-        }
-        return std::nullopt;
-    };
-    switch (mi.opc) {
-        case MOpcode::AddFpImm: {
-            const auto imm = lastImm();
-            return imm.has_value() && (*imm > 4095 || *imm < -4095);
-        }
-        // Wide-immediate ALU forms: the emitter materialises the immediate
-        // into a reserved scratch GPR (`mov xS, #imm; add dst, lhs, xS`) when
-        // it is not add/sub imm12(+lsl12) / logical-immediate encodable.
-        case MOpcode::AddRI:
-        case MOpcode::SubRI:
-        case MOpcode::AddsRI:
-        case MOpcode::SubsRI: {
-            const auto imm = lastImm();
-            return imm.has_value() && !classifyAddSubImmEncoding(absImmUnsigned(*imm)).has_value();
-        }
-        case MOpcode::AndRI:
-        case MOpcode::OrrRI:
-        case MOpcode::EorRI: {
-            const auto imm = lastImm();
-            return imm.has_value() &&
-                   binenc::encodeLogicalImmediate(static_cast<uint64_t>(*imm)) < 0;
-        }
-        case MOpcode::CmpRI: {
-            const auto imm = lastImm();
-            return imm.has_value() && (*imm > 4095 || *imm < -4095);
-        }
-        case MOpcode::FMovRI: {
-            // Non-FP8 doubles are materialised through a GPR scratch (`mov
-            // x16, #bits; fmov d, x16`).
-            if (mi.ops.size() < 2 || mi.ops[1].kind != MOperand::Kind::Imm)
-                return false;
-            double value = 0.0;
-            static_assert(sizeof(value) == sizeof(mi.ops[1].imm), "unexpected f64 size");
-            std::memcpy(&value, &mi.ops[1].imm, sizeof(value));
-            return binenc::encodeFP8Immediate(value) < 0;
-        }
-        case MOpcode::LdpRegFpImm:
-        case MOpcode::StpRegFpImm:
-        case MOpcode::LdpFprFpImm:
-        case MOpcode::StpFprFpImm: {
-            const auto imm = lastImm();
-            if (!imm.has_value())
-                return false;
-            return (*imm % 8) != 0 || *imm < -512 || *imm > 504;
-        }
-        case MOpcode::StrRegSpImm:
-        case MOpcode::StrFprSpImm: {
-            const auto imm = lastImm();
-            if (!imm.has_value())
-                return false;
-            return *imm < 0 || (*imm % 8) != 0 || (*imm / 8) > 4095;
-        }
-        default:
-            break;
-    }
-    if (!isLoad(mi.opc) && !isStore(mi.opc))
-        return false;
-    const auto imm = lastImm();
-    if (!imm.has_value())
-        return false;
-    return *imm < -256 || *imm > 255;
 }
 
 /// @brief Test whether an opcode is a direct or indirect call.
@@ -703,7 +535,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     /// @param i Current instruction index.
     /// @param mi Current instruction.
     auto emitFlagUse = [&](std::size_t i, const MInstr &mi) {
-        if (usesFlags(mi.opc)) {
+        if (readsFlags(mi.opc)) {
             if (lastDef[kIdxNZCV] != kNone)
                 addDep(i, lastDef[kIdxNZCV], 1);
             usesSinceDef[kIdxNZCV].push_back(i);
@@ -733,8 +565,8 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
     /// @param i Current instruction index.
     /// @param mi Current instruction.
     auto emitMemoryDeps = [&](std::size_t i, const MInstr &mi) {
-        const bool memLoad = isLoad(mi.opc);
-        const bool memStore = isStore(mi.opc);
+        const bool memLoad = isLoadOpcode(mi.opc);
+        const bool memStore = isStoreOpcode(mi.opc);
         if (!memLoad && !memStore)
             return;
         const auto memClass = classifyMemoryAccess(mi, trackedAddrs);
@@ -801,27 +633,38 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
     };
 
-    /// @brief Models the emitter's address-materialization scratch writes as
-    ///        definitions of every reserved scratch GPR (see mayClobberEmitScratch).
+    /// @brief Models every implicit register definition of @p mi as a def.
+    /// @details Implicit defs come from the shared effects model: caller-saved
+    ///          registers and LR at calls, the jump-table dispatch scratch, and
+    ///          (until ExpandPseudosPass) the reserved scratch GPRs the emitter
+    ///          writes while materializing wide immediates or large offsets.
+    ///          The plan-88 bisect (a throw-backup leg's end time became a
+    ///          stack address) was such a scratch write hoisted between two
+    ///          instructions that kept a value in x9.
     /// @param i Current instruction index.
     /// @param mi Current instruction.
-    auto emitScratchClobbers = [&](std::size_t i, const MInstr &mi) {
-        if (!mayClobberEmitScratch(mi))
-            return;
-        const uint32_t scratch[] = {static_cast<uint32_t>(kScratchGPR),
-                                    static_cast<uint32_t>(kScratchGPR2),
-                                    static_cast<uint32_t>(kScratchGPR3)};
-        for (uint32_t r : scratch) {
-            const std::size_t ri = regIdx(r);
-            if (ri >= kNumPhysRegs)
+    auto emitImplicitDefs = [&](std::size_t i, const MInstr &mi) {
+        const InstrEffects fx = effectsOf(mi, target);
+        PhysRegSet explicitDefs;
+        for (std::size_t opIdx = 0; opIdx < mi.ops.size(); ++opIdx) {
+            const auto &op = mi.ops[opIdx];
+            if (op.kind == MOperand::Kind::Reg && op.reg.isPhys &&
+                ra::operandRoles(mi, opIdx).second)
+                explicitDefs.add(static_cast<PhysReg>(op.reg.idOrPhys));
+        }
+        for (unsigned bit = 0; bit < 64; ++bit) {
+            const uint64_t mask = uint64_t{1} << bit;
+            if ((fx.defs.bits & mask) == 0 || (explicitDefs.bits & mask) != 0)
                 continue;
+            const std::size_t ri = bit; // PhysRegSet bit layout == regIdx layout
             if (lastDef[ri] != kNone)
                 addDep(i, lastDef[ri], 1); // WAW
             for (auto u : usesSinceDef[ri])
                 addDep(i, u, 1); // WAR
             usesSinceDef[ri].clear();
             lastDef[ri] = i;
-            trackedAddrs[ri] = std::nullopt;
+            if (ri < kNumPhysRegs)
+                trackedAddrs[ri] = std::nullopt;
         }
     };
 
@@ -839,23 +682,12 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         lastDef[kIdxNZCV] = i;
     };
 
-    /// @brief Models a call as definitions of caller-saved registers and NZCV.
+    /// @brief Serializes the NZCV clobber of a call after its register clobbers.
     /// @param i Current instruction index.
     /// @param mi Current instruction.
-    auto emitCallClobbers = [&](std::size_t i, const MInstr &mi) {
+    auto emitCallFlagClobber = [&](std::size_t i, const MInstr &mi) {
         if (!isCall(mi.opc))
             return;
-        for (uint32_t r : callerSaved) {
-            const std::size_t ri = regIdx(r);
-            if (lastDef[ri] != kNone)
-                addDep(i, lastDef[ri], 1); // WAW
-            for (auto u : usesSinceDef[ri])
-                addDep(i, u, 1); // WAR
-            usesSinceDef[ri].clear();
-            lastDef[ri] = i;
-            if (ri < kNumPhysRegs)
-                trackedAddrs[ri] = std::nullopt;
-        }
         if (lastDef[kIdxNZCV] != kNone)
             addDep(i, lastDef[kIdxNZCV], 1);
         for (auto u : usesSinceDef[kIdxNZCV])
@@ -874,7 +706,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         emitMemoryDeps(i, mi);
         emitCallBarrier(i, mi);
         emitRegDefs(i, mi);
-        emitScratchClobbers(i, mi);
+        emitImplicitDefs(i, mi);
 
         // Track derived address values (e.g., adr+add page-off chains) for the
         // memory alias analysis above.
@@ -887,7 +719,7 @@ static std::vector<DepNode> buildDependencyGraph(const std::vector<MInstr> &body
         }
 
         emitFlagDef(i, mi);
-        emitCallClobbers(i, mi);
+        emitCallFlagClobber(i, mi);
     }
 
     // Deduplicate predecessor lists (multiple emitters may add the same edge).

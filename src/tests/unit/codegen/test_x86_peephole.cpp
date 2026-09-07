@@ -26,6 +26,7 @@
 #include "tests/TestHarness.hpp"
 
 #include "codegen/x86_64/MachineIR.hpp"
+#include "codegen/x86_64/OperandRoles.hpp"
 #include "codegen/x86_64/Peephole.hpp"
 #include "codegen/x86_64/Scheduler.hpp"
 #include "codegen/x86_64/TargetX64.hpp"
@@ -1032,6 +1033,84 @@ TEST(X86Peephole, FrameStoreForwardingStopsAtImplicitMultiplyClobber) {
     peephole::PeepholeStats stats{};
     EXPECT_EQ(peephole::forwardFrameStoreLoads(instrs, stats), 0U);
     EXPECT_EQ(instrs[2].opcode, MOpcode::MOVmr);
+}
+
+// The shared effects model: implicit fixed registers, ABI sets, flags, memory.
+TEST(X86Peephole, EffectsTableModelsImplicitRegistersAndAbi) {
+    const TargetInfo &sysv = sysvTarget();
+    const auto bit = [](PhysReg r) { return physRegBit(r); };
+    {
+        const InstrEffects fx = effectsOf(MInstr{MOpcode::CQO, {}}, sysv);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RDX)) != 0);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RAX)) == 0);
+    }
+    {
+        const InstrEffects fx = effectsOf(MInstr{MOpcode::IDIVrm, {gpr(PhysReg::RCX)}}, sysv);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RCX)) != 0);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RDX)) != 0);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RDX)) != 0);
+        EXPECT_TRUE(fx.writesFlags);
+    }
+    {
+        const InstrEffects fx = effectsOf(MInstr{MOpcode::IMULr, {gpr(PhysReg::RBX)}}, sysv);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE((fx.defs & (bit(PhysReg::RAX) | bit(PhysReg::RDX))) ==
+                    (bit(PhysReg::RAX) | bit(PhysReg::RDX)));
+    }
+    {
+        const InstrEffects fx =
+            effectsOf(MInstr{MOpcode::SHLrc, {gpr(PhysReg::RBX), gpr(PhysReg::RCX)}}, sysv);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RCX)) != 0);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RBX)) != 0);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RBX)) != 0);
+    }
+    {
+        const InstrEffects fx = effectsOf(MInstr{MOpcode::CALL, {lbl("callee")}}, sysv);
+        EXPECT_TRUE(fx.isCall);
+        EXPECT_TRUE(fx.memRead && fx.memWrite);
+        for (std::size_t i = 0; i < sysv.maxGPRArgs; ++i)
+            EXPECT_TRUE((fx.uses & bit(sysv.intArgOrder[i])) != 0);
+        for (PhysReg r : sysv.callerSavedGPR)
+            EXPECT_TRUE((fx.defs & bit(r)) != 0);
+        for (PhysReg r : sysv.calleeSavedGPR)
+            EXPECT_TRUE((fx.defs & bit(r)) == 0);
+    }
+    {
+        const InstrEffects fx = effectsOf(MInstr{MOpcode::RET, {}}, sysv);
+        EXPECT_TRUE(fx.isTerminator);
+        EXPECT_TRUE((fx.uses & bit(sysv.intReturnReg)) != 0);
+        EXPECT_TRUE((fx.uses & bit(sysv.f64ReturnReg)) != 0);
+    }
+    {
+        // Memory operand: address registers are reads; the slot is written.
+        const InstrEffects fx =
+            effectsOf(MInstr{MOpcode::MOVrm, {mem(PhysReg::RBP, -8), gpr(PhysReg::RAX)}}, sysv);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RBP)) != 0);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE(fx.memWrite);
+        EXPECT_FALSE(fx.memRead);
+        EXPECT_TRUE(fx.defs == 0);
+    }
+    {
+        // LEA computes an address without touching memory.
+        const InstrEffects fx =
+            effectsOf(MInstr{MOpcode::LEA, {gpr(PhysReg::RDX), mem(PhysReg::RBP, -8)}}, sysv);
+        EXPECT_FALSE(fx.memRead || fx.memWrite);
+        EXPECT_TRUE((fx.defs & bit(PhysReg::RDX)) != 0);
+    }
+    {
+        // The jump-table dispatch sequence writes the reserved R10/R11 scratch.
+        const InstrEffects fx = effectsOf(
+            MInstr{MOpcode::JUMPTABLE, {gpr(PhysReg::RAX), lbl(".Ljt"), lbl("c0"), lbl("c1")}},
+            sysv);
+        EXPECT_TRUE(fx.isTerminator);
+        EXPECT_TRUE((fx.uses & bit(PhysReg::RAX)) != 0);
+        EXPECT_TRUE((fx.defs & (bit(PhysReg::R10) | bit(PhysReg::R11))) ==
+                    (bit(PhysReg::R10) | bit(PhysReg::R11)));
+    }
 }
 
 // A store of a register the division does not touch still forwards.

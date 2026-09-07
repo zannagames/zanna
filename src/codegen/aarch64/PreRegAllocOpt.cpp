@@ -96,91 +96,6 @@ namespace {
 }
 
 /**
- * @brief Tests whether an opcode defines its first operand.
- *
- * @param opcode MIR opcode to classify.
- * @return `true` for the explicitly enumerated single-destination operations.
- * @note Paired loads are handled separately because they define two operands.
- */
-[[nodiscard]] bool definesFirstOperand(MOpcode opcode) noexcept {
-    switch (opcode) {
-        case MOpcode::MovRR:
-        case MOpcode::MovRI:
-        case MOpcode::FMovRR:
-        case MOpcode::FMovRI:
-        case MOpcode::FMovGR:
-        case MOpcode::FAddRRR:
-        case MOpcode::FSubRRR:
-        case MOpcode::FMulRRR:
-        case MOpcode::FDivRRR:
-        case MOpcode::SCvtF:
-        case MOpcode::FCvtZS:
-        case MOpcode::UCvtF:
-        case MOpcode::FCvtZU:
-        case MOpcode::FRintN:
-        case MOpcode::LdrRegFpImm:
-        case MOpcode::Ldr8RegFpImm:
-        case MOpcode::Ldr16RegFpImm:
-        case MOpcode::Ldr32RegFpImm:
-        case MOpcode::LdrFprFpImm:
-        case MOpcode::LdrRegBaseImm:
-        case MOpcode::Ldr8RegBaseImm:
-        case MOpcode::Ldr16RegBaseImm:
-        case MOpcode::Ldr32RegBaseImm:
-        case MOpcode::LdrFprBaseImm:
-        case MOpcode::LdrRegBaseRegLsl:
-        case MOpcode::Ldr32RegBaseRegLsl:
-        case MOpcode::LdrFprBaseRegLsl:
-        case MOpcode::AddRRRLsl:
-        case MOpcode::SubRRRLsl:
-        case MOpcode::AndRRRLsl:
-        case MOpcode::OrrRRRLsl:
-        case MOpcode::EorRRRLsl:
-        case MOpcode::AddFpImm:
-        case MOpcode::AddRRR:
-        case MOpcode::SubRRR:
-        case MOpcode::MulRRR:
-        case MOpcode::SmulhRRR:
-        case MOpcode::UmulhRRR:
-        case MOpcode::SDivRRR:
-        case MOpcode::UDivRRR:
-        case MOpcode::MSubRRRR:
-        case MOpcode::AndRRR:
-        case MOpcode::OrrRRR:
-        case MOpcode::EorRRR:
-        case MOpcode::AndRI:
-        case MOpcode::OrrRI:
-        case MOpcode::EorRI:
-        case MOpcode::AddRI:
-        case MOpcode::SubRI:
-        case MOpcode::LslRI:
-        case MOpcode::LsrRI:
-        case MOpcode::AsrRI:
-        case MOpcode::LslvRRR:
-        case MOpcode::LsrvRRR:
-        case MOpcode::AsrvRRR:
-        case MOpcode::Cset:
-        case MOpcode::AdrPage:
-        case MOpcode::AddPageOff:
-        case MOpcode::MAddRRRR:
-        case MOpcode::Csel:
-        case MOpcode::FCsel:
-        case MOpcode::AddsRRR:
-        case MOpcode::SubsRRR:
-        case MOpcode::AddsRI:
-        case MOpcode::SubsRI:
-        case MOpcode::AddOvfRRR:
-        case MOpcode::SubOvfRRR:
-        case MOpcode::AddOvfRI:
-        case MOpcode::SubOvfRI:
-        case MOpcode::MulOvfRRR:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/**
  * @brief Tests whether an operand names a particular register.
  *
  * @param operand Candidate MIR operand.
@@ -192,24 +107,18 @@ namespace {
 }
 
 /**
- * @brief Classifies an indexed register operand as a use rather than a definition.
+ * @brief Classifies an indexed operand as a read of a register.
  *
  * @param instr Instruction whose operand roles are inspected.
  * @param operandIndex Valid index into `instr.ops`.
- * @return `false` for non-registers, first-operand definitions, and the two
- *         destination operands of paired loads; otherwise `true`.
+ * @return `true` when the operand is a register that the instruction reads,
+ *         per the backend's single role table (ra::operandRoles).
  * @pre `operandIndex < instr.ops.size()`.
  */
 [[nodiscard]] bool operandIsUse(const MInstr &instr, std::size_t operandIndex) noexcept {
     if (instr.ops[operandIndex].kind != MOperand::Kind::Reg)
         return false;
-    if (definesFirstOperand(instr.opc) && operandIndex == 0)
-        return false;
-    if ((instr.opc == MOpcode::LdpRegFpImm || instr.opc == MOpcode::LdpFprFpImm) &&
-        operandIndex < 2) {
-        return false;
-    }
-    return true;
+    return ra::operandRoles(instr, operandIndex).first;
 }
 
 /**
@@ -283,14 +192,14 @@ struct A64PreRATraits {
      * @brief Tests whether an instruction defines a specified register.
      * @param instr Instruction to inspect.
      * @param reg Register whose definition is sought.
-     * @return `true` for a matching ordinary destination or either paired-load destination.
+     * @return `true` when any operand naming @p reg is a definition per ra::operandRoles.
      */
     static bool definesReg(const MInstr &instr, const MReg &reg) {
-        if (definesFirstOperand(instr.opc) && !instr.ops.empty() && operandIsReg(instr.ops[0], reg))
-            return true;
-        if ((instr.opc == MOpcode::LdpRegFpImm || instr.opc == MOpcode::LdpFprFpImm) &&
-            instr.ops.size() >= 2) {
-            return operandIsReg(instr.ops[0], reg) || operandIsReg(instr.ops[1], reg);
+        for (std::size_t opIdx = 0; opIdx < instr.ops.size(); ++opIdx) {
+            if (!operandIsReg(instr.ops[opIdx], reg))
+                continue;
+            if (ra::operandRoles(instr, opIdx).second)
+                return true;
         }
         return false;
     }
@@ -390,8 +299,7 @@ std::size_t runAddressingFolds(MFunction &fn) {
         for (const auto &mi : bb.instrs) {
             for (std::size_t oi = 0; oi < mi.ops.size(); ++oi) {
                 const auto &op = mi.ops[oi];
-                if (op.kind != MOperand::Kind::Reg || op.reg.isPhys ||
-                    op.reg.cls != RegClass::GPR)
+                if (op.kind != MOperand::Kind::Reg || op.reg.isPhys || op.reg.cls != RegClass::GPR)
                     continue;
                 const auto [isUse, isDef] = ra::operandRoles(mi, oi);
                 if (isUse)
@@ -416,9 +324,7 @@ std::size_t runAddressingFolds(MFunction &fn) {
      * @param op Register operand.
      * @return Stored register ID.
      */
-    const auto vregOf = [](const MOperand &op) -> uint16_t {
-        return op.reg.idOrPhys;
-    };
+    const auto vregOf = [](const MOperand &op) -> uint16_t { return op.reg.idOrPhys; };
     /**
      * @brief Tests whether an operand names a virtual GPR.
      * @param op Operand to classify.
@@ -435,6 +341,7 @@ std::size_t runAddressingFolds(MFunction &fn) {
             MOperand src{};
             long long amount{};
         };
+
         struct AddrDef {
             std::size_t idx{};
             std::size_t shiftIdx{};
@@ -442,6 +349,7 @@ std::size_t runAddressingFolds(MFunction &fn) {
             MOperand index{};
             long long amount{};
         };
+
         std::unordered_map<uint16_t, ShiftDef> shiftDefs;
         std::unordered_map<uint16_t, AddrDef> addrDefs;
         std::vector<char> removed(bb.instrs.size(), 0);
@@ -505,8 +413,8 @@ std::size_t runAddressingFolds(MFunction &fn) {
                 mi.ops[2].kind == MOperand::Kind::Imm && mi.ops[2].imm == 0) {
                 auto addrIt = addrDefs.find(vregOf(mi.ops[1]));
                 if (addrIt != addrDefs.end()) {
-                    const bool is32 = mi.opc == MOpcode::Ldr32RegBaseImm ||
-                                      mi.opc == MOpcode::Str32RegBaseImm;
+                    const bool is32 =
+                        mi.opc == MOpcode::Ldr32RegBaseImm || mi.opc == MOpcode::Str32RegBaseImm;
                     const long long legal = is32 ? 2 : 3;
                     const long long amount = addrIt->second.amount;
                     if (amount == 0 || amount == legal) {
@@ -523,7 +431,8 @@ std::size_t runAddressingFolds(MFunction &fn) {
                             replacement = MOpcode::StrFprBaseRegLsl;
                         const AddrDef entry = addrIt->second;
                         mi.opc = replacement;
-                        mi.ops = {mi.ops[0], entry.base, entry.index, MOperand::immOp(entry.amount)};
+                        mi.ops = {
+                            mi.ops[0], entry.base, entry.index, MOperand::immOp(entry.amount)};
                         removed[entry.idx] = 1;
                         removed[entry.shiftIdx] = 1;
                         addrDefs.erase(addrIt);
@@ -590,9 +499,8 @@ std::size_t runAddressingFolds(MFunction &fn) {
             }
             invalidateOnDef(mi);
             if (mi.opc == MOpcode::LslRI && mi.ops.size() >= 3 && isVGpr(mi.ops[0]) &&
-                mi.ops[1].kind == MOperand::Kind::Reg &&
-                mi.ops[2].kind == MOperand::Kind::Imm && mi.ops[2].imm >= 0 &&
-                mi.ops[2].imm < 64) {
+                mi.ops[1].kind == MOperand::Kind::Reg && mi.ops[2].kind == MOperand::Kind::Imm &&
+                mi.ops[2].imm >= 0 && mi.ops[2].imm < 64) {
                 shiftDefs[vregOf(mi.ops[0])] = ShiftDef{i, mi.ops[1], mi.ops[2].imm};
             }
         }

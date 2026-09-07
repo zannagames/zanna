@@ -131,12 +131,13 @@ std::vector<PhysClobber> collectPhysicalClobbers(const MInstr &instr) {
         }
     }
 
-    if (instr.opcode == MOpcode::CQO) {
-        addPhysClobber(clobbers, PhysReg::RDX);
-    } else if (instr.opcode == MOpcode::IDIVrm || instr.opcode == MOpcode::DIVrm ||
-               instr.opcode == MOpcode::MULr || instr.opcode == MOpcode::IMULr) {
-        addPhysClobber(clobbers, PhysReg::RAX);
-        addPhysClobber(clobbers, PhysReg::RDX);
+    // Implicit fixed-register writes (CQO → RDX; IDIV/DIV/MUL/IMUL → RAX:RDX)
+    // come from the shared role model so the allocator, scheduler, ISel, and
+    // every peephole agree on them.
+    const PhysRegMask implicit = implicitDefMask(instr.opcode);
+    for (unsigned bit = 0; bit < 64 && (implicit >> bit) != 0; ++bit) {
+        if ((implicit & (PhysRegMask{1} << bit)) != 0)
+            addPhysClobber(clobbers, static_cast<PhysReg>(bit));
     }
     return clobbers;
 }
@@ -339,8 +340,8 @@ void LinearScanAllocator::assignPinnedGlobals() {
                 for (std::size_t oi = 0; oi + 1 < instr.operands.size(); oi += 2) {
                     const auto *dst = std::get_if<OpReg>(&instr.operands[oi]);
                     const auto *src = std::get_if<OpReg>(&instr.operands[oi + 1]);
-                    if (dst && src && !dst->isPhys && !src->isPhys &&
-                        dst->cls == RegClass::GPR && src->cls == RegClass::GPR) {
+                    if (dst && src && !dst->isPhys && !src->isPhys && dst->cls == RegClass::GPR &&
+                        src->cls == RegClass::GPR) {
                         allCopyPairs.emplace_back(dst->idOrPhys, src->idOrPhys);
                     }
                 }
@@ -369,10 +370,12 @@ void LinearScanAllocator::assignPinnedGlobals() {
     // One scan collects, per candidate: per-block use counts (weight input)
     // and per-block first/last access half-positions (copy-coalescing input).
     std::unordered_map<uint16_t, std::vector<uint32_t>> useCounts;
+
     struct AccessSpan {
         uint32_t first{std::numeric_limits<uint32_t>::max()};
         uint32_t last{0};
     };
+
     std::unordered_map<uint16_t, std::unordered_map<std::size_t, AccessSpan>> accessSpans;
     for (std::size_t bi = 0; bi < blockCount; ++bi) {
         const auto &instructions = func_.blocks[bi].instructions;
@@ -420,8 +423,7 @@ void LinearScanAllocator::assignPinnedGlobals() {
         for (std::size_t bi = 0; bi < blockCount; ++bi) {
             const bool liveIn = liveness_.liveIn(bi).count(vreg) != 0;
             const bool liveOut = liveness_.liveOut(bi).count(vreg) != 0;
-            const bool accessed =
-                spansIt != accessSpans.end() && spansIt->second.count(bi) != 0;
+            const bool accessed = spansIt != accessSpans.end() && spansIt->second.count(bi) != 0;
             if (!liveIn && !liveOut && !accessed) {
                 continue;
             }
