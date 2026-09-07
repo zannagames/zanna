@@ -214,6 +214,11 @@ class PassManager {
   carried across blocks; at a return the epilogue restores them). `foldComputeIntoTarget` and
   `tryMaddFusion` consult it (and the effects model, so a call's argument registers and a
   return's result registers count as reads) before declaring a register dead at the block end.
+- **Program-level oracles** (`ctest -L differential`, `ctest -L codegen_optdiff`): on every host
+  that runs its own native backend, each shared-corpus program is byte-compared VM-vs-native and
+  native `-O0`-vs-`-O2` (MIR verifier on), and `test_differential_il_kernels` does the same for a
+  fixed seed range of generated IL kernels (`src/tests/common/ILKernelGenerator.hpp`; the libFuzzer
+  harness `fuzz_il_native_diff` is the unbounded form). See `docs/internals/testing.md`.
 - `ZANNA_IL_OPT_KEEP_FUNCS=<file>` (IL optimizer, `PassManager::runPipeline`): the file lists
   one IL function name per line; every function *not* listed is restored to its pre-pipeline
   body after the named pipeline runs (functions, externs, and globals the pipeline removed

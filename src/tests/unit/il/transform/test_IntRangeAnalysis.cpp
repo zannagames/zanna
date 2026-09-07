@@ -20,9 +20,9 @@
 
 #include "il/analysis/IntRangeAnalysis.hpp"
 
-#include "il/api/expected_api.hpp"
 #include "il/analysis/CFG.hpp"
 #include "il/analysis/Dominators.hpp"
+#include "il/api/expected_api.hpp"
 #include "il/core/BasicBlock.hpp"
 #include "il/core/Function.hpp"
 #include "il/core/Instr.hpp"
@@ -81,8 +81,7 @@ il::transform::AnalysisRegistry makeRegistry() {
         "loop-info",
         [](Module &mod, Function &fn) { return il::transform::computeLoopInfo(mod, fn); });
     registry.registerFunctionAnalysis<zanna::analysis::IntRangeInfo>(
-        "int-ranges",
-        [](Module &, Function &fn) { return zanna::analysis::computeIntRanges(fn); });
+        "int-ranges", [](Module &, Function &fn) { return zanna::analysis::computeIntRanges(fn); });
     return registry;
 }
 
@@ -201,6 +200,67 @@ TEST(IntRangeAnalysis, ReachesBlocksBeyondLegacySweepLimit) {
     Module module = parseModule(text.str());
     auto info = zanna::analysis::computeIntRanges(module.functions.front());
     EXPECT_TRUE(info.entryFor("b31") != nullptr);
+}
+
+// A rotated loop whose induction variable travels through a chain of blocks
+// (block parameters at every hop) before the increment and the latch compare.
+// The header is the widening point, so its upper bound is stripped during the
+// ascent and only narrowing recovers it; narrowing carries a fact one edge per
+// sweep, so the use four blocks past the header needs at least four sweeps.
+// This is the shape inlining produces when it splits a caller block into a
+// chain of continuation blocks.
+constexpr const char *kChainedLoop = R"(il 0.3.0
+func @main() -> i64 {
+entry:
+  br head(0, 0)
+head(%sum: i64, %i: i64):
+  %a = and %sum, 255
+  br h1(%a, %i)
+h1(%s1: i64, %i1: i64):
+  br h2(%s1, %i1)
+h2(%s2: i64, %i2: i64):
+  br h3(%s2, %i2)
+h3(%s3: i64, %i3: i64):
+  br h4(%s3, %i3)
+h4(%s4: i64, %i4: i64):
+  %next_i = iadd.ovf %i4, 1
+  %done = scmp_ge %next_i, 1000
+  cbr %done, exit(%s4), head(%s4, %next_i)
+exit(%res: i64):
+  ret %res
+}
+)";
+
+TEST(IntRangeAnalysis, RecoveredLoopBoundReachesUsesManyBlocksPastHeader) {
+    Module module = parseModule(kChainedLoop);
+    Function &fn = module.functions.front();
+    auto info = zanna::analysis::computeIntRanges(fn);
+
+    const auto *h4 = info.entryFor("h4");
+    ASSERT_TRUE(h4 != nullptr);
+    auto it = h4->find(paramId(fn, "h4", 1));
+    ASSERT_TRUE(it != h4->end());
+    ASSERT_TRUE(it->second.lower.has_value());
+    ASSERT_TRUE(it->second.upper.has_value());
+    EXPECT_EQ(*it->second.lower, 0);
+    EXPECT_EQ(*it->second.upper, 999);
+}
+
+TEST(IntRangeAnalysis, VerifierAcceptsDemotedAddManyBlocksPastHeader) {
+    // CheckOpt demotes `iadd.ovf %i4, 1` to a plain `add` on the strength of
+    // the range above; the verifier must re-prove it from the same analysis
+    // even though the add sits several blocks past the loop header (before
+    // the narrowing budget followed the block count, this failed after
+    // inlining lengthened such chains).
+    std::string text = kChainedLoop;
+    const std::string checked = "%next_i = iadd.ovf %i4, 1";
+    const auto at = text.find(checked);
+    ASSERT_TRUE(at != std::string::npos);
+    text.replace(at, checked.size(), "%next_i = add %i4, 1");
+
+    Module module = parseModule(text);
+    auto verified = il::verify::Verifier::verify(module);
+    EXPECT_TRUE(static_cast<bool>(verified));
 }
 
 TEST(CheckOptRanges, DemotesGuardedLoopArithmetic) {

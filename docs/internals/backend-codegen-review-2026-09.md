@@ -133,6 +133,44 @@ Phase 2.3 (one `MirCfg` per backend, `blockExitLive`, B1) is implemented:
   `test_codegen_arm64_peephole_subpasses` (carried/return/call-argument registers block the fold
   and the fusion).
 
+Phase 2.5 (differential coverage) is implemented:
+
+- `src/tests/e2e/differential_opt_levels.cmake` and the `codegen_optdiff` label: every shared-corpus
+  program (success and trap) and the deterministic `examples/il/` programs are built natively at
+  -O0 and -O2 with the MIR verifier on and byte-compared (stdout and exit code). The VM-vs-native
+  gate and this gate are registered by one function for both architectures: the AArch64
+  registration is unchanged, and x86-64 hosts that link native code now get `differential_x64_*`
+  and `optdiff_x64_*` — until now the x86-64 backend had no program-level oracle in the gate.
+- `src/tests/common/ILKernelGenerator.{hpp,cpp}` (seeded IL text generator for the kernel shapes:
+  checked-arithmetic chains, `idx.chk` reused across trap branches, div/rem by constants,
+  `switch.i32` dispatch, select diamonds, leaf calls, phi-cycle inner loops, bit mixing) and
+  `common/ILKernelDiff.hpp` (parse → verify → VM → native -O0 → native -O2, exit codes compared).
+  `test_differential_il_kernels` runs a fixed seed range in the gate on the host backend;
+  `fuzz_il_native_diff` (`ZANNA_ENABLE_FUZZ=ON`) is the unbounded libFuzzer form.
+- First run of the kernel gate on x86-64 Linux: 18 of the first 48 seeds disagreed, in three
+  classes, all fixed with a regression test each:
+  - **IL `reassociate` rewrote multi-use values.** Its use counter only walked instruction
+    operands, so a temporary passed to a successor's block parameter looked single-use and became
+    an internal node of a flattened tree (`%m = and %s, M; %y = and %m, 8191; br next(%m)` turned
+    `%m` into `M & 8191`). Branch arguments now count as uses (`test_il_reassociate`
+    `BranchArgumentsCountAsUses`). 14 seeds.
+  - **x86-64 `urem`/`srem` by a magic constant** formed `quotient * divisor` in RAX while the
+    destination virtual register was defined by the following dividend copy; the allocator does
+    not treat an explicitly named allocatable register as occupied between its write and its read
+    and could hand the destination RAX, producing `sub rax, rax` (remainder 0). Visible at every
+    level once the global pinning tier changed the free pool. The product now lives in the reserved
+    scratch r11 (`test_x86_backend_regressions` `RemainderByMagicKeepsProductInReservedScratch`).
+    2 seeds.
+  - **Range-analysis narrowing budget.** CheckOpt demotes `iadd.ovf i, 1` to `add` from the
+    loop-guard bound the whole-function range analysis proves; the verifier re-proves it with the
+    same analysis. Narrowing after widening carried a recovered bound one CFG edge per sweep and
+    was capped at two sweeps, so once `inline-o2` split the caller block into a chain of
+    continuation blocks the proof was out of reach and the optimized module failed verification
+    (`native-O2` exit 1). The budget now follows the block count with the same early exit
+    (`test_il_int_range_analysis` `RecoveredLoopBoundReachesUsesManyBlocksPastHeader`,
+    `VerifierAcceptsDemotedAddManyBlocksPastHeader`). 4 seeds.
+  After the fixes the first 400 seeds agree on VM, native -O0, and native -O2.
+
 Everything from B2 onward is open.
 
 ## Context

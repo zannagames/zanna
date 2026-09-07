@@ -394,8 +394,8 @@ struct DivOpcodeKind {
     };
     /// Append an immediate shift of @p reg by @p amount.
     const auto emitShift = [&](MOpcode op, const Operand &reg, int amount) {
-        seq.push_back(MInstr::make(
-            op, std::vector<Operand>{cloneOperand(reg), makeImmOperand(amount)}));
+        seq.push_back(
+            MInstr::make(op, std::vector<Operand>{cloneOperand(reg), makeImmOperand(amount)}));
     };
 
     // Emits quotient computation; returns the operand holding the quotient.
@@ -424,8 +424,7 @@ struct DivOpcodeKind {
             seq.push_back(MInstr::make(
                 MOpcode::MOVri,
                 std::vector<Operand>{cloneOperand(r11), makeImmOperand(magic.multiplier)}));
-            seq.push_back(
-                MInstr::make(MOpcode::IMULr, std::vector<Operand>{cloneOperand(r11)}));
+            seq.push_back(MInstr::make(MOpcode::IMULr, std::vector<Operand>{cloneOperand(r11)}));
             if (magic.needsAdd)
                 emit2(MOpcode::ADDrr, rdx, dividend);
             if (magic.shift > 0)
@@ -437,8 +436,8 @@ struct DivOpcodeKind {
         }
         if (divisor < 0) {
             // Negate: r10 = 0 - q.
-            seq.push_back(MInstr::make(
-                MOpcode::MOVri, std::vector<Operand>{cloneOperand(r10), makeImmOperand(0)}));
+            seq.push_back(MInstr::make(MOpcode::MOVri,
+                                       std::vector<Operand>{cloneOperand(r10), makeImmOperand(0)}));
             emit2(MOpcode::SUBrr, r10, quotient);
             quotient = r10;
         }
@@ -470,19 +469,22 @@ struct DivOpcodeKind {
         emit2(MOpcode::MOVrr, dest, quotient);
     } else {
         // remainder = dividend - quotient * divisor (low 64 bits are sign
-        // agnostic).
-        emit2(MOpcode::MOVrr, rax, quotient);
+        // agnostic). The product lives in the reserved scratch r11, never in
+        // an allocatable register: `dest` is a virtual register defined by the
+        // copy below while the product is still live, and the allocator does
+        // not treat an explicitly named allocatable register (RAX) as occupied
+        // between its write and its read, so it could hand `dest` that very
+        // register and the subtraction would read the dividend twice.
+        emit2(MOpcode::MOVrr, r11, quotient);
         seq.push_back(MInstr::make(
             MOpcode::MOVri, std::vector<Operand>{cloneOperand(r10), makeImmOperand(divisor)}));
-        emit2(MOpcode::IMULrr, rax, r10);
+        emit2(MOpcode::IMULrr, r11, r10);
         emit2(MOpcode::MOVrr, dest, dividend);
-        emit2(MOpcode::SUBrr, dest, rax);
+        emit2(MOpcode::SUBrr, dest, r11);
     }
 
-    block.instructions.erase(block.instructions.begin() +
-                             static_cast<std::ptrdiff_t>(instrIdx));
-    block.instructions.insert(block.instructions.begin() +
-                                  static_cast<std::ptrdiff_t>(instrIdx),
+    block.instructions.erase(block.instructions.begin() + static_cast<std::ptrdiff_t>(instrIdx));
+    block.instructions.insert(block.instructions.begin() + static_cast<std::ptrdiff_t>(instrIdx),
                               std::make_move_iterator(seq.begin()),
                               std::make_move_iterator(seq.end()));
     instrIdx += seq.size() - 1U;

@@ -15,7 +15,8 @@
 //     which execution proceeds.
 // Ownership/Lifetime:
 //   - Pure computation; the returned IntRangeInfo owns all of its storage.
-// Links: il/analysis/IntRangeAnalysis.hpp, il/transform/CheckOpt.cpp, il/verify/InstructionChecker.cpp
+// Links: il/analysis/IntRangeAnalysis.hpp, il/transform/CheckOpt.cpp,
+// il/verify/InstructionChecker.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -385,8 +386,7 @@ std::optional<IntRange> applyRangeTransfer(const Instr &instr, RangeMap &ranges)
             case Opcode::IdxChk:
                 // idx.chk idx, lo, hi traps unless lo <= idx < hi and returns the
                 // normalized index idx - lo. On fall-through both facts hold.
-                if (instr.operands.size() >= 3 &&
-                    instr.operands[1].kind == Value::Kind::ConstInt &&
+                if (instr.operands.size() >= 3 && instr.operands[1].kind == Value::Kind::ConstInt &&
                     instr.operands[2].kind == Value::Kind::ConstInt) {
                     const int64_t lo = instr.operands[1].i64;
                     const int64_t hi = instr.operands[2].i64;
@@ -435,7 +435,8 @@ std::optional<IntRange> applyRangeTransfer(const Instr &instr, RangeMap &ranges)
 /// @param subInstr Candidate outer subtract.
 /// @param ranges Facts available before @p subInstr.
 /// @return Symmetric remainder interval on an exact safe match, otherwise no value.
-std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block, const Instr &subInstr,
+std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block,
+                                             const Instr &subInstr,
                                              const RangeMap &ranges) {
     if (subInstr.op != Opcode::Sub && subInstr.op != Opcode::ISubOvf)
         return std::nullopt;
@@ -485,7 +486,7 @@ std::optional<IntRange> matchPow2ModuloRange(const BasicBlock &block, const Inst
     if (!biased || mask >= 0 || mask == std::numeric_limits<int64_t>::min())
         return std::nullopt;
     const int64_t mag = -mask;  // 2^k
-    if ((mag & (mag - 1)) != 0)  // require an exact power of two
+    if ((mag & (mag - 1)) != 0) // require an exact power of two
         return std::nullopt;
 
     // %biased = add %z, %bias   (commutative; one addend must be the minuend Z)
@@ -658,8 +659,7 @@ IntRangeInfo computeIntRanges(const Function &fn) {
         while (!stack.empty()) {
             auto &[blockIdx, succPos] = stack.back();
             const BasicBlock &block = fn.blocks[blockIdx];
-            const Instr *term =
-                block.instructions.empty() ? nullptr : &block.instructions.back();
+            const Instr *term = block.instructions.empty() ? nullptr : &block.instructions.back();
             const size_t succCount = term ? term->labels.size() : 0;
             if (succPos < succCount) {
                 const std::string &label = term->labels[succPos];
@@ -744,8 +744,7 @@ IntRangeInfo computeIntRanges(const Function &fn) {
                 if (succIt == indexOf.end())
                     continue;
                 const size_t succIdx = succIt->second;
-                RangeMap facts =
-                    edgeFacts(block, term, branchIndex, fn.blocks[succIdx], out);
+                RangeMap facts = edgeFacts(block, term, branchIndex, fn.blocks[succIdx], out);
                 if (incoming[succIdx])
                     mergeMapInto(*incoming[succIdx], facts);
                 else
@@ -784,10 +783,14 @@ IntRangeInfo computeIntRanges(const Function &fn) {
             if (mapsEqual(fresh, entry[blockIdx]))
                 continue;
             if (const char *dbg = std::getenv("ZANNA_DEBUG_INTRANGES"); dbg && dbg[0] == '2') {
-                std::fprintf(stderr, "  [sweep %s] block %s changed:", widening ? "W" : "N",
+                std::fprintf(stderr,
+                             "  [sweep %s] block %s changed:",
+                             widening ? "W" : "N",
                              fn.blocks[blockIdx].label.c_str());
                 for (const auto &[id, range] : fresh)
-                    std::fprintf(stderr, " t%u=[%s,%s]", id,
+                    std::fprintf(stderr,
+                                 " t%u=[%s,%s]",
+                                 id,
                                  range.lower ? std::to_string(*range.lower).c_str() : "-inf",
                                  range.upper ? std::to_string(*range.upper).c_str() : "+inf");
                 std::fprintf(stderr, "\n");
@@ -838,11 +841,18 @@ IntRangeInfo computeIntRanges(const Function &fn) {
     // Narrowing: recover bounds that stabilized after being widened (e.g. a
     // rotated loop header whose latch compare caps the induction variable —
     // the header is the widening point, so the ascent stripped the very bound
-    // the latch refinement provides). Bounded sweep count; each iterate stays
-    // a sound over-approximation by monotonicity of the transfer functions.
+    // the latch refinement provides). Each sweep carries a recovered bound
+    // exactly one edge further (Phase A pushes the previous sweep's entries),
+    // so the sweep budget must cover the longest chain of blocks a fact can
+    // travel: bounding it by the block count lets a bound reach a use that
+    // inlining or block splitting moved many blocks past the header (a fixed
+    // budget of two left such uses unprovable, and CheckOpt demotions that
+    // were provable before inlining then failed verification). Each iterate
+    // stays a sound over-approximation by monotonicity of the transfer
+    // functions, and the loop stops as soon as a sweep changes nothing.
     if (converged) {
-        constexpr unsigned kNarrowSweeps = 2;
-        for (unsigned sweep = 0; sweep < kNarrowSweeps; ++sweep) {
+        const size_t narrowSweeps = blockCount + 2;
+        for (size_t sweep = 0; sweep < narrowSweeps; ++sweep) {
             if (!runSweep(/*widening=*/false))
                 break;
         }
@@ -851,14 +861,16 @@ IntRangeInfo computeIntRanges(const Function &fn) {
     // Debug observability: ZANNA_DEBUG_INTRANGES=1 dumps convergence status and
     // per-block entry facts to stderr.
     if (std::getenv("ZANNA_DEBUG_INTRANGES")) {
-        std::fprintf(stderr, "[int-ranges] fn=%s converged=%d\n", fn.name.c_str(),
-                     converged ? 1 : 0);
+        std::fprintf(
+            stderr, "[int-ranges] fn=%s converged=%d\n", fn.name.c_str(), converged ? 1 : 0);
         for (size_t i = 0; i < blockCount; ++i) {
             if (!reached[i])
                 continue;
             std::fprintf(stderr, "  block %s:", fn.blocks[i].label.c_str());
             for (const auto &[id, range] : entry[i]) {
-                std::fprintf(stderr, " t%u=[%s,%s]", id,
+                std::fprintf(stderr,
+                             " t%u=[%s,%s]",
+                             id,
                              range.lower ? std::to_string(*range.lower).c_str() : "-inf",
                              range.upper ? std::to_string(*range.upper).c_str() : "+inf");
             }

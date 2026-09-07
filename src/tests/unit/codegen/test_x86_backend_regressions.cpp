@@ -2738,6 +2738,33 @@ TEST(X86BackendRegressions, UremLargePowerOfTwoMaskMaterializesBeforeBinaryEmiss
     EXPECT_TRUE(binaryResult.errors.empty());
 }
 
+TEST(X86BackendRegressions, RemainderByMagicKeepsProductInReservedScratch) {
+    // remainder = dividend - quotient * 87. The product used to be formed in
+    // RAX while `dest` (a virtual register) was defined by the following copy
+    // of the dividend; the allocator could hand `dest` RAX itself, turning the
+    // subtraction into `sub rax, rax`. The product now lives in the reserved
+    // scratch r11, which the allocator never assigns.
+    ILBlock entry{};
+    entry.name = "entry";
+    entry.paramIds = {0};
+    entry.paramKinds = {ILValue::Kind::I64};
+    entry.instrs = {op("urem.chk0", {val(ILValue::Kind::I64, 0), imm(87)}, 1, ILValue::Kind::I64),
+                    op("ret", {val(ILValue::Kind::I64, 1)})};
+
+    ILFunction fn{};
+    fn.name = "urem_magic";
+    fn.blocks = {entry};
+
+    const CodegenResult result = compile(fn);
+    if (!result.errors.empty()) {
+        std::cerr << result.errors << '\n';
+    }
+    ASSERT_TRUE(result.errors.empty());
+    EXPECT_NE(result.asmText.find("imulq %r10, %r11"), std::string::npos);
+    EXPECT_NE(result.asmText.find("subq %r11, "), std::string::npos);
+    EXPECT_EQ(result.asmText.find("subq %rax, %rax"), std::string::npos);
+}
+
 TEST(X86BackendRegressions, ExistingOverflowTrapBlockGetsRuntimeCall) {
     MFunction fn{};
     fn.name = "ovf_reuse";
