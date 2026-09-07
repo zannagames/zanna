@@ -438,6 +438,13 @@ void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
          * readback is a frame late, so blend toward the raw value instead of snapping.
          * A gap in draws (light off-screen, flare disabled) resets to the raw value. */
         uint64_t serial = c->frame_serial;
+        /* ADR 0338: on the frame after a camera cut the flare fades in from
+         * nothing — the depth probe has no result yet and would otherwise
+         * latch full visibility for one frame (the near-white core popped). */
+        if (c->camera_cut_active) {
+            lf->smoothed_visibility = 0.0f;
+            lf->smoothed_frame_serial = serial;
+        }
         if (!isfinite(lf->smoothed_visibility) || lf->smoothed_visibility < 0.0f ||
             serial - lf->smoothed_frame_serial > UINT64_C(4)) {
             lf->smoothed_visibility = visibility;

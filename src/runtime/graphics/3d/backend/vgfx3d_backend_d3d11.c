@@ -369,7 +369,8 @@ typedef struct {
 } d3d11_mesh_cache_entry_t;
 
 #define D3D11_MORPH_CACHE_CAPACITY 32
-#define D3D11_TEXTURE_CACHE_MAX_RESIDENT 512
+/* ADR 0338: 2048 on every GPU backend (512 thrashed on an authored ballpark). */
+#define D3D11_TEXTURE_CACHE_MAX_RESIDENT 2048
 #define D3D11_TEXTURE_CACHE_MAX_ENTRIES 4096
 #define D3D11_TEXTURE_CACHE_HINT_CAPACITY 1024
 _Static_assert((D3D11_TEXTURE_CACHE_HINT_CAPACITY & (D3D11_TEXTURE_CACHE_HINT_CAPACITY - 1)) == 0,
@@ -643,6 +644,9 @@ typedef struct {
     uint64_t frame_serial;
     uint64_t texture_upload_bytes;
     uint64_t texture_upload_budget_bytes;
+    /* ADR 0338: the camera-cut override — the caller's budget, restored at present. */
+    uint64_t texture_upload_saved_budget_bytes;
+    int8_t texture_upload_cut_override;
     uint8_t *texture_upload_scratch_rgba;
     size_t texture_upload_scratch_bytes;
     vgfx3d_backend_stats_t stats;
@@ -3065,6 +3069,7 @@ const vgfx3d_backend_t vgfx3d_d3d11_backend = {
     .set_gpu_postfx_enabled = d3d11_set_gpu_postfx_enabled,
     .set_gpu_postfx_snapshot = d3d11_set_gpu_postfx_snapshot,
     .set_texture_upload_budget = d3d11_set_texture_upload_budget,
+    .note_camera_cut = d3d11_note_camera_cut,
     .get_texture_upload_pending_bytes = d3d11_get_texture_upload_pending_bytes,
     .get_texture_upload_bytes = d3d11_get_texture_upload_bytes,
     .get_frame_gpu_time_us = d3d11_get_frame_gpu_time_us,

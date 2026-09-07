@@ -1736,6 +1736,7 @@ static void d3d11_present_swapchain_classified(d3d11_context_t *ctx, int offscre
 static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_chain_t *chain) {
     int use_postfx;
 
+    d3d11_end_cut_budget_override(ctx);
     if (!ctx || ctx->rtt_active || ctx->frame_active || !ctx->frame_pending_present)
         return;
     ctx->frame_pending_present = 0;

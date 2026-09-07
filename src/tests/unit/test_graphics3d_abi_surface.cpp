@@ -1567,6 +1567,12 @@ bool check_runtime_surface_names() {
     ok = require(contains(runtime_def, "RT_METHOD(\"SetTextureUploadBudget\""),
                  "Canvas3D.SetTextureUploadBudget method missing") &&
          ok;
+    ok = require(contains(runtime_def, "\"Zanna.Graphics3D.Canvas3D.NoteCameraCut\""),
+                 "Canvas3D.NoteCameraCut must use Graphics3D PascalCase naming (ADR 0338)") &&
+         ok;
+    ok = require(contains(runtime_def, "RT_METHOD(\"NoteCameraCut\""),
+                 "Canvas3D.NoteCameraCut method missing (ADR 0338)") &&
+         ok;
     ok = require(contains(runtime_def, "RT_PROP(\"TextureUploadPendingBytes\""),
                  "Canvas3D.TextureUploadPendingBytes property missing") &&
          ok;

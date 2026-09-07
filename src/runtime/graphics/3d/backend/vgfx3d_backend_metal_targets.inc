@@ -207,9 +207,11 @@ static const float metal_skybox_vertices[] = {
 static const uint64_t k_texture_cache_max_age = 240u;
 static const uint64_t k_cubemap_cache_max_age = 240u;
 static const uint64_t k_morph_cache_max_age = 240u;
-/* Matches the Canvas3D antialiased-text raster LRU (512): a smaller backend cache would
- * thrash and re-upload every frame once the overlay working set passed it. */
-static const NSUInteger k_texture_cache_max_entries = 512u;
+/* ADR 0338: 512 (the antialiased-text raster LRU's size) thrashed on an authored
+ * ballpark — crowd cards, population, LODs and signage exceed it, so the textures
+ * behind the camera were evicted and every cut re-uploaded them without a
+ * fallback (a white frame). 2048 on every GPU backend. */
+static const NSUInteger k_texture_cache_max_entries = 2048u;
 static const NSUInteger k_cubemap_cache_max_entries = 64u;
 static const NSUInteger k_morph_cache_max_entries = 64u;
 

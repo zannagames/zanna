@@ -1020,6 +1020,14 @@ typedef struct vgfx3d_backend {
     /// @param[in] ctx Backend context.
     /// @return Current-frame texture upload bytes.
     uint64_t (*get_texture_upload_bytes)(void *ctx);
+    /* Optional camera-cut residency hint (ADR 0338). The frame that follows a
+     * hard camera cut relocates the whole visible set; a budget-paced first
+     * upload has no fallback texture and draws white. The backend lifts its
+     * texture upload budget until its next present, then restores the value
+     * last set through set_texture_upload_budget. NULL = unsupported. */
+    /// @brief Complete every texture upload the next presented frame demands.
+    /// @param[in,out] ctx Backend context.
+    void (*note_camera_cut)(void *ctx);
     /* Optional GPU timing telemetry. Returns the latest completed backend GPU
      * frame time in microseconds, or 0 when unsupported/not yet available. */
     /// @brief Query the latest completed GPU frame duration.

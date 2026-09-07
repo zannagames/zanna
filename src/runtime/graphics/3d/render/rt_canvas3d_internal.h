@@ -1730,6 +1730,11 @@ typedef struct {
     int8_t frame_has_backend_state_key;
     rt_canvas3d_world_bounds_cache_entry world_bounds_cache[RT_CANVAS3D_WORLD_BOUNDS_CACHE_SIZE];
 
+    /* ADR 0338: a camera cut was noted; the next frame fades every lens
+     * flare in from zero instead of latching its raw first-sight value. */
+    int8_t camera_cut_pending;
+    int8_t camera_cut_active;
+
     /* Timing */
     int64_t frame_serial;
     int64_t last_flip_us;

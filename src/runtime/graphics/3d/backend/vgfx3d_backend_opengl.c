@@ -939,6 +939,9 @@ typedef struct {
     uint64_t frame_serial;
     uint64_t texture_upload_bytes;
     uint64_t texture_upload_budget_bytes;
+    /* ADR 0338: the camera-cut override — the caller's budget, restored at present. */
+    uint64_t texture_upload_saved_budget_bytes;
+    int8_t texture_upload_cut_override;
     uint8_t *texture_upload_scratch_rgba;
     size_t texture_upload_scratch_bytes;
     int32_t gl_major_version;
@@ -1866,7 +1869,8 @@ static GLuint link_program(GLuint vs, GLuint fs) {
 }
 
 /* Matches the Canvas3D antialiased-text raster LRU (512). */
-#define GL_TEXTURE_CACHE_MAX_RESIDENT 512
+/* ADR 0338: 2048 on every GPU backend (512 thrashed on an authored ballpark). */
+#define GL_TEXTURE_CACHE_MAX_RESIDENT 2048
 #define GL_MAIN_UNIFORM_SNAPSHOT_CAPACITY 2048
 #define GL_TEXTURE_CACHE_PRUNE_AGE 240u
 #define GL_CUBEMAP_CACHE_MAX_RESIDENT 64
@@ -2221,6 +2225,7 @@ const vgfx3d_backend_t vgfx3d_opengl_backend = {
     .set_gpu_postfx_enabled = gl_set_gpu_postfx_enabled,
     .set_gpu_postfx_snapshot = gl_set_gpu_postfx_snapshot,
     .set_texture_upload_budget = gl_set_texture_upload_budget,
+    .note_camera_cut = gl_note_camera_cut,
     .get_texture_upload_pending_bytes = gl_get_texture_upload_pending_bytes,
     .get_texture_upload_bytes = gl_get_texture_upload_bytes,
     .get_frame_gpu_time_us = gl_get_frame_gpu_time_us,

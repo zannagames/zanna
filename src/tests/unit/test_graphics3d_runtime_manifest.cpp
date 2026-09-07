@@ -77,10 +77,10 @@ namespace {
 // render-target cascade cap: +1 function / +1 method.
 // ADR 0326: Mesh3D.LoftHeight adds one function and one method.
 // ADR 0328: lossless cluster fallback pressure adds one function/property.
-constexpr std::size_t kExpectedFunctionCount = 2288;
+constexpr std::size_t kExpectedFunctionCount = 2289;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 836;
-constexpr std::size_t kExpectedMethodCount = 1236;
+constexpr std::size_t kExpectedMethodCount = 1237;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -296,7 +296,7 @@ int main() {
     // ADR 0328: Canvas3D.ClusterFallbackEntryCount (previous: 0x7450f999880c99a5).
     // ADR 0331: LightBaker3D.IncludeDirect (previous: 0xad8edd30a7399516).
     // ADR 0336: Canvas3D.ShadowAtlasResolution (previous: 0xc827ada2c3ee5984).
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x500e3d540e8be53d);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xd64d2f6e2691f647);
     /* ADR 0306: Mesh3D.Mirror. Previous: 0xe5a66c9807da22d6 */ /* ADR 0302:
                                                                    AnimController3D.SetBlendTreeFade
                                                                    + SetTransitionContinuity */

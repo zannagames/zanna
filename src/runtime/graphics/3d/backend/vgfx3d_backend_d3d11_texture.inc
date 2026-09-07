@@ -825,8 +825,35 @@ static uint64_t d3d11_get_texture_upload_pending_bytes(void *ctx_ptr) {
 /// @param[in] bytes New per-frame upload budget.
 static void d3d11_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
-    if (ctx)
+    if (!ctx)
+        return;
+    /* ADR 0338: a value set during a cut override is the one restored at present. */
+    if (ctx->texture_upload_cut_override)
+        ctx->texture_upload_saved_budget_bytes = bytes;
+    else
         ctx->texture_upload_budget_bytes = bytes;
+}
+
+/// @brief Backend `note_camera_cut` (ADR 0338): lift the upload budget until the next present.
+/// @param[in,out] ctx_ptr Opaque pointer to the D3D11 context.
+static void d3d11_note_camera_cut(void *ctx_ptr) {
+    d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
+    if (!ctx)
+        return;
+    if (!ctx->texture_upload_cut_override) {
+        ctx->texture_upload_saved_budget_bytes = ctx->texture_upload_budget_bytes;
+        ctx->texture_upload_cut_override = 1;
+    }
+    ctx->texture_upload_budget_bytes = UINT64_MAX;
+}
+
+/// @brief End a camera-cut override at present: the caller's budget comes back.
+/// @param[in,out] ctx Borrowed D3D11 context.
+static void d3d11_end_cut_budget_override(d3d11_context_t *ctx) {
+    if (!ctx || !ctx->texture_upload_cut_override)
+        return;
+    ctx->texture_upload_budget_bytes = ctx->texture_upload_saved_budget_bytes;
+    ctx->texture_upload_cut_override = 0;
 }
 
 /// @brief Whether the device can use @p format as a sampleable 2D texture (CheckFormatSupport

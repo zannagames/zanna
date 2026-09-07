@@ -6659,6 +6659,12 @@ static void tracked_set_texture_upload_budget(void *, uint64_t bytes) {
     g_backend_texture_upload_budget = bytes;
 }
 
+static int g_backend_note_camera_cut_calls = 0;
+
+static void tracked_note_camera_cut(void *) {
+    g_backend_note_camera_cut_calls++;
+}
+
 static uint64_t tracked_texture_upload_pending_bytes(void *) {
     return g_backend_texture_upload_pending_bytes;
 }
@@ -9735,6 +9741,36 @@ static void test_canvas_frame_gpu_time_telemetry() {
     rt_canvas3d_begin(&canvas, cam);
     rt_canvas3d_end(&canvas);
     EXPECT_EQ(rt_canvas3d_get_frame_gpu_time_us(&canvas), 0);
+    PASS();
+}
+
+/// ADR 0338: the camera-cut hint reaches the backend, drops the motion history and arms
+/// the lens-flare fade-in for the frame that follows.
+static void test_canvas_note_camera_cut_hooks_backend() {
+    TEST("Canvas3D.NoteCameraCut hooks the backend, clears motion history, arms the next frame");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+
+    backend.name = "metal";
+    backend.note_camera_cut = tracked_note_camera_cut;
+
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.motion_history_count = 3;
+
+    g_backend_note_camera_cut_calls = 0;
+    rt_canvas3d_note_camera_cut(&canvas);
+    EXPECT_EQ(g_backend_note_camera_cut_calls, 1);
+    EXPECT_EQ(canvas.motion_history_count, 0);
+    EXPECT_EQ(canvas.camera_cut_pending, 1);
+    EXPECT_EQ(canvas.camera_cut_active, 0);
+
+    /* A backend without the hook still takes the canvas-side effects. */
+    backend.note_camera_cut = NULL;
+    canvas.camera_cut_pending = 0;
+    rt_canvas3d_note_camera_cut(&canvas);
+    EXPECT_EQ(g_backend_note_camera_cut_calls, 1);
+    EXPECT_EQ(canvas.camera_cut_pending, 1);
     PASS();
 }
 
@@ -13062,6 +13098,7 @@ int main() {
     test_canvas_texture_upload_bytes_telemetry();
     test_canvas_frame_gpu_time_telemetry();
     test_canvas_texture_upload_budget_controls_backend();
+    test_canvas_note_camera_cut_hooks_backend();
     test_canvas_screen_image_marks_texture_required();
     test_canvas_delta_time_preserves_first_zero();
     test_canvas_poll_event_queue_drains_in_order();

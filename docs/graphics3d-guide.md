@@ -390,7 +390,11 @@ thumbnails, tests, and offline previews.
 D3D11. Pixels-backed 2D material textures and cubemaps are row-sliced, while
 native compressed `TextureAsset3D` mip blocks are submitted by resident mip, by
 `Canvas3D.SetTextureUploadBudget(bytes)`; negative means unlimited, `0` pauses new upload rows, and
-positive values cap per-frame upload bytes while preserving progress for sub-row budgets. Cache hits
+positive values cap per-frame upload bytes while preserving progress for sub-row budgets.
+`Canvas3D.NoteCameraCut()` (ADR 0338) is the hard-cut hint: the frame that follows it completes
+every upload its draws demand regardless of the budget (a first upload has no fallback texture and
+would otherwise draw white for a few frames), the budget last set comes back at that frame's
+present, motion-blur history is dropped, and lens flares fade in from zero instead of popping. Cache hits
 and software/unsupported backends report `0`; non-overlay frame begin resets the counter. D3D11
 validates row slices, native block rows, block layouts, and D3D11-sized upload byte fields before
 issuing texture updates. If a D3D11 texture/cubemap cache table cannot grow, a valid upload may

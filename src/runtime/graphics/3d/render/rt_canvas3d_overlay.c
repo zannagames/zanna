@@ -2328,6 +2328,23 @@ void rt_canvas3d_set_texture_upload_budget(void *obj, int64_t bytes) {
         c->backend->set_texture_upload_budget(c->backend_ctx, budget);
 }
 
+/// @brief ADR 0338: note a hard camera cut before the frame that follows it.
+/// @details The next presented frame relocates the visible set, and a budget-paced
+///   first upload has no fallback texture (it draws white). The backend lifts its
+///   texture upload budget until its next present; the canvas drops the motion-blur
+///   history (a cut has no coherent previous frame) and fades every lens flare in
+///   from zero on the cut frame instead of latching its raw first-sight value.
+/// @param obj Borrowed Canvas3D handle.
+void rt_canvas3d_note_camera_cut(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    if (c->backend && c->backend->note_camera_cut)
+        c->backend->note_camera_cut(c->backend_ctx);
+    canvas3d_clear_motion_history(c);
+    c->camera_cut_pending = 1;
+}
+
 /// @brief Texture payload bytes still waiting for backend texture upload budget.
 /// @param obj Borrowed Canvas3D handle.
 /// @return Pending bytes saturated at INT64_MAX, or zero when unsupported.

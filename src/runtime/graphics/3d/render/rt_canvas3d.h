@@ -721,6 +721,11 @@ void rt_canvas3d_set_texture_upload_budget(void *obj, int64_t bytes);
 /// @param obj Borrowed Canvas3D handle.
 /// @return Pending payload bytes, or zero for invalid input.
 int64_t rt_canvas3d_get_texture_upload_pending_bytes(void *obj);
+/// @brief ADR 0338: note a hard camera cut; the next presented frame completes every texture
+///        upload it demands (the budget returns at present), drops motion-blur history and
+///        fades lens flares in from zero.
+/// @param obj Borrowed Canvas3D handle.
+void rt_canvas3d_note_camera_cut(void *obj);
 /// @brief Enable or disable automatic TextureAsset3D mip-residency streaming (default off).
 /// @param obj Borrowed Canvas3D handle.
 /// @param enabled Non-zero to permit automatic mip-window changes.
