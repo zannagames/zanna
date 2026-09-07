@@ -338,7 +338,7 @@ std::string compileGlobally(il::core::Module &mod, int level, std::ostream &diag
     opts.emitAssemblyText = true;
     opts.optimizeLevel = level;
     opts.verifyMir = true;
-    opts.globalRegAlloc = true;
+    opts.localRegAlloc = false; // the default path
     if (!runCodegenPipeline(m, opts, diag))
         return {};
     return m.assembly;

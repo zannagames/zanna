@@ -13,6 +13,10 @@
 //
 //===----------------------------------------------------------------------===//
 #include "tests/TestHarness.hpp"
+
+#include <cstdlib>
+
+#include "tests/common/PosixCompat.h" // setenv on every host (self-guarded)
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -206,6 +210,9 @@ TEST(Arm64CrossBlockPhi, PhiAfterCall) {
 }
 
 int main(int argc, char **argv) {
+    // This test pins the retired block-local allocation path (frame slots,
+    // PhiStore edges) until Phase 3 C7 deletes it; see ADR 0338.
+    setenv("ZANNA_LOCAL_RA", "1", 1);
     zanna_test::init(&argc, &argv);
     return zanna_test::run_all_tests();
 }

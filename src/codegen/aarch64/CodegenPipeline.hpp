@@ -65,10 +65,11 @@ struct PipelineOptions {
     bool timePasses = false;      ///< Emit per-pass wall-clock timings to diagOut.
     /// Run the MIR verifier after every pass (also enabled by `ZANNA_VERIFY_MIR=1`).
     bool verifyMir = false;
-    /// Lower block parameters to virtual registers with ParallelCopy edges and
-    /// allocate function-wide (also enabled by `ZANNA_GLOBAL_RA=1`); otherwise
-    /// the frame-slot lowering and block-local allocator run.
-    bool globalRegAlloc = false;
+    /// Run the retired block-local allocation path (frame-slot lowering, block-local
+    /// allocator, phi-slot peephole stages) instead of the function-wide allocator;
+    /// also selected by `ZANNA_LOCAL_RA=1`. A bisection aid until Phase 3 C7
+    /// deletes that path (ADR 0338).
+    bool localRegAlloc = false;
 };
 
 /// @brief High-level driver for the AArch64 code-generation pipeline.

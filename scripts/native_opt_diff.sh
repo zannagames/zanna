@@ -11,6 +11,9 @@
 # Environment:
 #   ZANNA_BIN   Override the zanna binary (default: build/src/tools/zanna/zanna)
 #   OPT_A/OPT_B Override the compared levels (default: -O0 vs -O2)
+#   Backend switches are inherited by every build: e.g. ZANNA_LOCAL_RA=1 compares
+#   the levels on the retired AArch64 block-local allocation path (ADR 0338), and
+#   the ZANNA_NO_* kill switches bisect a divergence to one stage.
 #
 # Exit codes: 0 outputs match · 1 divergence · 2 usage/build failure.
 

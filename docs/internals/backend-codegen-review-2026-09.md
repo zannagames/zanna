@@ -251,7 +251,20 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   Still open before the flip (C6): the differential gates with `ZANNA_GLOBAL_RA=1` on an AArch64
   host.
 
-Everything from B2 onward, and Phase 3 from C6 on, is open.
+- **C6 — the flip.** The function-wide allocator is the AArch64 default at every `-O` level;
+  `ZANNA_LOCAL_RA=1` / `PipelineOptions::localRegAlloc` brings the whole retired path back
+  (frame-slot lowering, block-local allocator with its `ZANNA_NO_GLOBAL_RA` toggle, phi-slot
+  peephole stages) for bisecting until C7. ADR 0338 records the decision. The seven old-shape
+  tests (`test_aarch64_cross_block_reload`, `test_codegen_arm64_cross_block_phi_spill`,
+  `test_codegen_arm64_spill_fpr`, `test_aarch64_frame_spill_reuse`, `test_regalloc_aarch64_linear`,
+  `test_aarch64_phi_coalescer`, `test_aarch64_global_liveness`) pin the old path explicitly so it
+  stays covered until it is deleted; every other backend test runs the new default, and the whole
+  codegen/golden/differential label set passes with and without `ZANNA_LOCAL_RA=1` on this
+  x86-64 host. `scripts/native_opt_diff.sh` documents the switch. Not yet run: the AArch64
+  program-level oracle (VM vs native, `-O0` vs `-O2`, the seeded kernels) on an AArch64 host — the
+  allocator's execution evidence on this host is the MIR interpreter oracle.
+
+Everything from B2 onward, and Phase 3 from C7 on, is open.
 
 ## Context
 

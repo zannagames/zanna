@@ -194,11 +194,12 @@ class PassManager {
   `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
   be bisected against a program-level oracle (VM vs native output) without rebuilding the
   compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
-- **AArch64 allocation path** (`ZANNA_GLOBAL_RA=1`, or `PipelineOptions::globalRegAlloc`): selects
-  the edge-copy lowering (block parameters are virtual registers, branch arguments one
-  `ParallelCopy` per edge) and the function-wide allocator (`ra/GlobalAllocator`) for every
-  function of the module, at every `-O` level; the phi-slot peephole stages are skipped on that
-  path. Off by default while Phase 3 lands (see "AArch64 function-wide allocation" below).
+- **AArch64 allocation path** (`ZANNA_LOCAL_RA=1`, or `PipelineOptions::localRegAlloc`): selects
+  the retired block-local path (frame-slot lowering with `PhiStore` edges, the block-local
+  allocator with its `ZANNA_NO_GLOBAL_RA` slot-pinning toggle, the phi-slot peephole stages)
+  instead of the default edge-copy lowering plus function-wide allocator
+  (`ra/GlobalAllocator`, ADR 0338). A bisection aid until Phase 3 C7 deletes the old path; see
+  "AArch64 function-wide allocation" below.
 - **MIR verifier** (`ZANNA_VERIFY_MIR=1`, or `--verify-mir` on `zanna codegen arm64|x64`): the
   pass manager's post-pass hook runs `verifyMir` (`src/codegen/aarch64/MirVerify.hpp`,
   `src/codegen/x86_64/MirVerify.hpp`) on every function after every backend pass. Rules are
@@ -620,10 +621,11 @@ class LinearScanAllocator {
 - **Caller-saved register lookup** uses precomputed `std::bitset<32>` for O(1) membership checks
 - **Deterministic allocation** via sorted free-register pools
 
-### AArch64 function-wide allocation (opt-in, Phase 3)
+### AArch64 function-wide allocation (default since Phase 3 C6, ADR 0338)
 
-`ZANNA_GLOBAL_RA=1` (or `PipelineOptions::globalRegAlloc`) replaces the AArch64 block-local path
-end to end. The lowering runs in edge-copy mode (`AArch64Module::edgeCopyLowering`): block
+The AArch64 backend allocates function-wide; `ZANNA_LOCAL_RA=1` (or
+`PipelineOptions::localRegAlloc`) brings the retired block-local path back for bisecting until
+Phase 3 C7 deletes it. The lowering runs in edge-copy mode (`AArch64Module::edgeCopyLowering`): block
 parameters are virtual registers, every branch argument list is one `ParallelCopy dst0, src0, …`
 (inline for `br`, in the split block for `cbr`/`switch`), cross-block temporaries keep their
 virtual register, and blocks are lowered in reverse post-order so definitions precede uses. No
@@ -679,7 +681,8 @@ through `ParallelCopy` edges) and a MIR interpreter executes each one before and
 must verify. `ZANNA_RA_ORACLE_SEEDS` widens the seed range. The shared-corpus lane of
 `test_aarch64_lowering_edge_copies` runs the whole pipeline in this mode at -O0 and -O2 with the
 verifier and checks determinism. On hosts that can run AArch64 code the differential labels run
-the program-level oracle with `ZANNA_GLOBAL_RA=1` as well.
+the program-level oracle on this path by default; run them with `ZANNA_LOCAL_RA=1` to compare
+against the old path while it exists.
 
 ### Register Classes
 
@@ -808,7 +811,24 @@ projects, at `-O0` and `-O2`, for both targets. Regenerate and compare with
 | openworld_slice | x64 | O0 | 8185 | 218 | 236 | 0 | 87 | 2864 |
 | openworld_slice | x64 | O2 | 7344 | 184 | 203 | 0 | 89 | 2496 |
 
-What the numbers say about the block-local allocator: on AArch64 `-O2` inlining grows `chess` to
+After the Phase 3 C6 flip (function-wide allocation by default, ADR 0338) the AArch64 rows read:
+
+| program | arch | opt | instrs | frameLoads+Stores | offsetPrefixes | spillSlots | frameBytes |
+|---|---|---|---:|---:|---:|---:|---:|
+| chess | arm64 | O0 | 74321 | 10626 | 1013 | 36 | — |
+| chess | arm64 | O2 | 55537 | 4946 | 64 | 200 | 11072 |
+| crackman | arm64 | O0 | 46988 | 7663 | 104 | 0 | — |
+| crackman | arm64 | O2 | 36567 | 2914 | 0 | 43 | — |
+| paint | arm64 | O0 | 49576 | 7463 | 34 | 0 | — |
+| paint | arm64 | O2 | 40293 | 3000 | 0 | 49 | — |
+| openworld_slice | arm64 | O0 | 5861 | 627 | 0 | 0 | — |
+| openworld_slice | arm64 | O2 | 4896 | 364 | 0 | 0 | — |
+
+Every one of the 16 benchmarks has zero frame accesses and zero spill slots at both levels; the
+x86-64 rows are unchanged until Phase 3 C8. (`—`: not recorded in the summary run; the TSV from
+`scripts/codegen_stats.sh --out` has every column.)
+
+What the numbers said about the block-local allocator: on AArch64 `-O2` inlining grows `chess` to
 105,089 instructions of which 12,381 are `mov xS,#off; add xS,x29,xS` prefixes for frame accesses
 beyond the ±256-byte encodable range (the frame has 9,977 spill slots, every block-crossing value
 having its own), and frame loads plus stores (21,394) are one instruction in five. x86-64 spills
