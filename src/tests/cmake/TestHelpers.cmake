@@ -9,6 +9,7 @@ set(_ZANNA_TEST_LABEL_WHITELIST
         basic
         bytecode
         codegen
+        codegen_optdiff
         comprehensive
         conformance
         contract
@@ -50,6 +51,7 @@ set(_ZANNA_TEST_LABEL_WHITELIST
         unit
         vm
         windows_broken
+        x64
         zia)
 
 function(_zanna_normalize_label out_var label)

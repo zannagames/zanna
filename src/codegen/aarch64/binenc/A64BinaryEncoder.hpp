@@ -219,13 +219,10 @@ class A64BinaryEncoder {
     /// @brief Measures smart add/sub immediate chunking for @p value.
     /// @return Encoded size in bytes.
     size_t addSubImmSmartSize(uint32_t value) const;
-    /// @brief Measures scratch-address materialization plus a scalar access.
-    /// @param offset Signed base-relative byte offset.
-    /// @return Encoded size in bytes.
-    size_t largeOffsetLdStSize(int64_t offset) const;
-    /// @brief Measures an SP-relative store, including scratch fallback.
+    /// @brief Measures an SP-relative argument store.
     /// @param offset Signed stack-pointer-relative byte offset.
     /// @return Encoded size in bytes.
+    /// @throws std::runtime_error when the offset needed an expansion.
     size_t spOffsetStoreSize(int64_t offset) const;
 
     /**
@@ -304,28 +301,8 @@ class A64BinaryEncoder {
      */
     void encodeAddSp(int64_t bytes, objfile::CodeSection &cs);
 
-    /// @brief Emit a large-offset load/store sequence using a reserved scratch register.
-    /// @details When the offset overflows the architectural immediate range for
-    ///          `LDR`/`STR`, materialises the effective address into a reserved
-    ///          scratch GPR via `MOV` + `ADD` and then issues the access with a
-    ///          zero immediate offset.
-    /// @param rt     5-bit transfer register hardware encoding.
-    /// @param base   5-bit base register hardware encoding.
-    /// @param offset Byte offset from @p base (may be negative).
-    /// @param isLoad True to emit `LDR`, false to emit `STR`.
-    /// @param fprOperand True if @p rt names an FPR (selects `Dt` view); false for GPR.
-    /// @param accessBytes Scalar width in bytes.
-    /// @param cs     Code section to append the emitted bytes to.
-    void encodeLargeOffsetLdSt(uint32_t rt,
-                               uint32_t base,
-                               int64_t offset,
-                               bool isLoad,
-                               bool fprOperand,
-                               unsigned accessBytes,
-                               objfile::CodeSection &cs);
-
     /**
-     * @brief Emits one scalar access using scaled, unscaled, or scratch-address form.
+     * @brief Emits one scalar access using the scaled or unscaled immediate form.
      * @param rt Transfer register hardware field.
      * @param base Base GPR hardware field.
      * @param offset Signed byte offset.
@@ -343,9 +320,8 @@ class A64BinaryEncoder {
                           objfile::CodeSection &cs);
 
     /// @brief Emit an outgoing-stack-arg store using SP-relative addressing.
-    /// @details For offsets that fit the scaled-unsigned-immediate form, emits a
-    ///          single `STR Rt, [SP, #imm]`. For larger offsets, materialises the
-    ///          effective address into a scratch base and stores via that base.
+    /// @details Emits a single `STR Rt, [SP, #imm]`; offsets outside the scaled
+    ///          unsigned form were expanded before emission and are rejected.
     /// @param rt     5-bit transfer register hardware encoding.
     /// @param offset Byte offset from `SP` of the destination slot.
     /// @param fprOperand True if @p rt names an FPR; false for GPR.

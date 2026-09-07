@@ -131,11 +131,22 @@ The backend design emphasizes:
 The backend implements a **sequential multi-pass pipeline**:
 
 ```cpp
-// High-level pipeline flow
+// High-level pipeline flow (x86-64)
 ILModule → LoweringPass → LegalizePass → PreRegAllocOptPass → RegAllocPass → SchedulerPass → PeepholePass → EmitPass → Assembly
+
+// AArch64
+ILModule → LoweringPass → LegalizePass → PreRegAllocOptPass → RegAllocPass → BlockLayoutPass → PeepholePass → SchedulerPass → PeepholePass(post-schedule) → ExpandPseudosPass → EmitPass / BinaryEmitPass
 ```
 
 Each pass operates on a shared `Module` structure that threads state through the pipeline.
+On AArch64, `ExpandPseudosPass` is the last MIR pass at every optimization level: it rewrites
+every form the emitters used to expand through a hidden scratch register (wide ALU/compare
+immediates, non-FP8 `FMovRI`, frame/base/pair/SP-relative accesses outside the encodable range)
+into explicit MIR (`MovRI xS,#imm; op dst,lhs,xS`, `MovRI xS,#off; AddRRR xS,x29,xS; op rt,[xS,#0]`,
+pair splits), choosing a reserved scratch (x9/x16/x17) that is neither an operand nor live at that
+point. It runs after the peepholes and scheduler so the frame-slot forwarders still match the
+compact forms; until it runs, `InstrEffects::effectsOf` reports the scratch set as implicit
+definitions of every such pseudo form. Both emitters reject any pseudo form that reaches them.
 `LegalizePass` is a real backend stage on both native backends: x86-64 lowers adapter IL to MIR and expands early
 machine pseudos; AArch64 expands overflow pseudos, inserts the `main` runtime-context calls into MIR, and refreshes
 leaf metadata before register allocation.
@@ -163,7 +174,17 @@ class PassManager {
 - Failure in any pass short-circuits the pipeline
 - Diagnostics accumulate throughout execution
 - Each pass reports success/failure via return value
-- `ZANNA_CODEGEN_STATS=1` enables non-fatal diagnostics with backend peephole transformation counts and MIR size/memory
+- `ZANNA_CODEGEN_STATS=1` enables non-fatal diagnostics: the peephole transformation count and,
+  from `CodegenStatsPass` (the last MIR pass at every optimization level, so it reports at `-O0`
+  and counts what the emitters print), one `[codegen-stats] arch=<arm64|x64> fn=<name> key=value…`
+  line per function plus a `fn=<module>` total. Keys: `instrs`, `calls`, `branches`, `moves`,
+  `loads`, `stores`, `frameLoads`, `frameStores` (accesses through the frame pointer, including
+  AArch64 accesses reached through a `mov xS,#off; add xS,x29,xS` prefix and excluding x86-64
+  callee-saved save/restore moves), `offsetPrefixes` (those AArch64 prefix pairs; always 0 on
+  x86-64), `spillSlots`, `frameBytes`, `calleeSaved`. `scripts/codegen_stats.sh` tabulates the
+  module totals for the IL benchmark kernels and the demo projects at `-O0`/`-O2` on both targets
+  (assembly only, so it runs on any host) and `--baseline old.tsv` prints the deltas; see
+  "Codegen statistics baseline" below.
 - Triage kill switches (bisection aids; never consulted at `-O0`): `ZANNA_NO_PRE_RA_OPT`,
   `ZANNA_NO_BLOCK_LAYOUT`, `ZANNA_NO_PEEPHOLE`, `ZANNA_NO_SCHEDULER`,
   `ZANNA_NO_POST_SCHED_PEEPHOLE` skip one AArch64 pipeline stage each
@@ -173,6 +194,53 @@ class PassManager {
   `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
   be bisected against a program-level oracle (VM vs native output) without rebuilding the
   compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
+- **MIR verifier** (`ZANNA_VERIFY_MIR=1`, or `--verify-mir` on `zanna codegen arm64|x64`): the
+  pass manager's post-pass hook runs `verifyMir` (`src/codegen/aarch64/MirVerify.hpp`,
+  `src/codegen/x86_64/MirVerify.hpp`) on every function after every backend pass. Rules are
+  cumulative by pipeline stage: structural rules everywhere (branch labels resolve, no
+  instruction after a terminator, the last block ends in one, one register class per virtual
+  register, well-formed carried-exit metadata, well-formed `ParallelCopy` bundles — register
+  pairs of one class with every destination written once); after register allocation no virtual
+  registers and no `ParallelCopy`, frame- and stack-relative offsets inside the finalized frame,
+  callee-saved writes covered by the save list, reserved scratch (x9/x16/x17/v16/v17, R10/R11)
+  never live across an instruction that clobbers it implicitly and (AArch64) never live out of a
+  block, and an entry live-in set restricted to ABI inputs; after pseudo expansion (AArch64) every
+  immediate directly encodable. Violations are `V-CG-MIR-*` error
+  diagnostics that stop the pipeline. The register facts come from the shared effects model
+  (`InstrEffects.hpp` on AArch64, `OperandRoles.hpp::effectsOf` on x86-64) that every post-RA
+  pass consumes, so the verifier and the passes cannot disagree. Unit tests that drive a pipeline
+  (`test_aarch64_mir_verify`, `test_x86_mir_verify`, the AArch64 shared-corpus and VM-vs-native
+  property tests) run it unconditionally.
+- **One CFG per backend** (`src/codegen/aarch64/MirCfg.hpp`, `src/codegen/x86_64/MirCfg.hpp`):
+  `MirCfg` is a snapshot of a function's edges built from the allocator's branch classifier
+  (`ra::classifyControlFlow`) through the shared extractor (`common/ra/CfgExtract.hpp`), with
+  predecessors, per-block fallthrough flags, lazily computed dominators
+  (`common/ra/Dominators.hpp`), dominance-proven back edges, natural loops, and loop depths. The
+  register allocator's liveness, the verifier, the AArch64 CFG-aware DCE, the phi-join
+  forwarding/coalescing passes, the loop passes, and the x86-64 layout passes all read it; no pass
+  keeps a private terminator scan, so a mid-block branch, a no-return call, a jump table, or a
+  trailing conditional branch means the same thing everywhere.
+- **Physical liveness for the post-RA passes** (`src/codegen/aarch64/PhysLiveness.hpp`):
+  `computePhysLiveness(fn, target)` solves per-block physical-register live-in/live-out over
+  `MirCfg` from the effects model (a call reads its argument registers and clobbers the
+  caller-saved set, a return reads the result registers, the reserved scratch clobbers count).
+  `blockExitLive(fn, bi, target, liveness)` is the exit-liveness seed every post-RA block-local
+  rewrite reads when its forward scan reaches the block end: the solved live-out, plus SP/FP/LR,
+  plus the return registers of a block that leaves the function, plus (while the block-local
+  allocator exists) its `carriedExitRegs`, which the solved set already contains because the
+  successor reads the carried value. A callee-saved register is live at an exit only when some
+  successor actually reads it; at a return the epilogue restores it, so a value left there is
+  dead. Each peephole stage (`runPerBlockRewrites`, the CFG-aware DCE, `runPostSchedulePeephole`)
+  solves liveness once on the shape it is given; the loop and phi-join forwarders publish no
+  metadata of their own. Consumers: `foldComputeIntoTarget`, `tryMaddFusion`,
+  `tryFoldConsecutiveMoves`, `tryFoldImmThenMove`, `tryTbzTbnzFusion`, `tryCsetBranchFusion`,
+  the division strength reductions, and both DCE variants. The verifier's post-RA dataflow rules
+  read the same solver.
+- **Program-level oracles** (`ctest -L differential`, `ctest -L codegen_optdiff`): on every host
+  that runs its own native backend, each shared-corpus program is byte-compared VM-vs-native and
+  native `-O0`-vs-`-O2` (MIR verifier on), and `test_differential_il_kernels` does the same for a
+  fixed seed range of generated IL kernels (`src/tests/common/ILKernelGenerator.hpp`; the libFuzzer
+  harness `fuzz_il_native_diff` is the unbounded form). See `docs/internals/testing.md`.
 - `ZANNA_IL_OPT_KEEP_FUNCS=<file>` (IL optimizer, `PassManager::runPipeline`): the file lists
   one IL function name per line; every function *not* listed is restored to its pre-pipeline
   body after the named pipeline runs (functions, externs, and globals the pipeline removed
@@ -646,6 +714,44 @@ struct AllocationResult {
 ```
 
 ---
+
+### Codegen statistics baseline (Phase 3 start)
+
+`docs/internals/codegen_stats_baseline.tsv` holds the module totals produced by
+`./scripts/codegen_stats.sh --out …` at commit `9dd2749` (Phase 2 complete, block-local register
+allocation on both backends) for the 16 `examples/il/benchmarks` kernels and the four demo
+projects, at `-O0` and `-O2`, for both targets. Regenerate and compare with
+`./scripts/codegen_stats.sh --baseline docs/internals/codegen_stats_baseline.tsv`. The demo rows:
+
+| program | arch | opt | instrs | frameLoads | frameStores | offsetPrefixes | spillSlots | frameBytes |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| chess | arm64 | O0 | 89607 | 7701 | 5377 | 2312 | 1575 | 35312 |
+| chess | arm64 | O2 | 105089 | 11054 | 10340 | 12381 | 9977 | 89344 |
+| chess | x64 | O0 | 107681 | 6135 | 6022 | 0 | 1997 | 52912 |
+| chess | x64 | O2 | 88966 | 6050 | 6282 | 0 | 2344 | 41488 |
+| crackman | arm64 | O0 | 57055 | 5609 | 2916 | 419 | 817 | 21376 |
+| crackman | arm64 | O2 | 56684 | 5481 | 4389 | 3289 | 4450 | 42816 |
+| crackman | x64 | O0 | 76782 | 3825 | 3706 | 0 | 1132 | 36784 |
+| crackman | x64 | O2 | 62172 | 2997 | 3168 | 0 | 1100 | 28000 |
+| paint | arm64 | O0 | 57350 | 5461 | 3115 | 124 | 741 | 22832 |
+| paint | arm64 | O2 | 55230 | 4998 | 3732 | 1897 | 3898 | 39248 |
+| paint | x64 | O0 | 78169 | 3190 | 3025 | 0 | 1017 | 39776 |
+| paint | x64 | O2 | 64893 | 2724 | 2821 | 0 | 1170 | 31696 |
+| openworld_slice | arm64 | O0 | 7060 | 395 | 300 | 0 | 151 | 2416 |
+| openworld_slice | arm64 | O2 | 6274 | 310 | 268 | 27 | 258 | 2912 |
+| openworld_slice | x64 | O0 | 8185 | 218 | 236 | 0 | 87 | 2864 |
+| openworld_slice | x64 | O2 | 7344 | 184 | 203 | 0 | 89 | 2496 |
+
+What the numbers say about the block-local allocator: on AArch64 `-O2` inlining grows `chess` to
+105,089 instructions of which 12,381 are `mov xS,#off; add xS,x29,xS` prefixes for frame accesses
+beyond the ±256-byte encodable range (the frame has 9,977 spill slots, every block-crossing value
+having its own), and frame loads plus stores (21,394) are one instruction in five. x86-64 spills
+less (every displacement encodes inline, and the pinning tier keeps loop-carried values in
+callee-saved registers) but still round-trips 12,332 frame accesses in `chess`. Across all 20
+programs at `-O2`: AArch64 224,277 instructions, 40,670 frame accesses, 17,598 prefixes, 18,783
+spill slots; x86-64 224,706 instructions, 24,434 frame accesses, 4,705 spill slots. The Phase 3
+success metric is those frame-access, prefix and spill-slot columns falling by a majority with no
+program's instruction count rising.
 
 ## Frame Lowering
 

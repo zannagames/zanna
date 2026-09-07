@@ -176,6 +176,8 @@ categories use the same lowercase grammar on every platform.
 | `runtime` | 373 | C runtime library (strings, collections, I/O, math, graphics, etc.) |
 | `runtime-smoke-ci` | platform-dependent | Bounded headless Studio-supporting runtime lane used on Windows and Linux CI |
 | `codegen` | 125 | Code generation (x86_64, AArch64, linker, binary encoding) |
+| `codegen_optdiff` | platform-dependent | Native `-O0` vs `-O2` output equivalence over the shared IL corpus and IL examples |
+| `differential` | platform-dependent | VM vs native and generated-kernel equivalence gates |
 | `oop` | 31 | Object-oriented programming (classes, inheritance, interfaces) |
 | `golden` | 203 | Golden file regression (diagnostic messages, IL/optimizer output) |
 | `e2e` | 19 | End-to-end pipeline tests |
@@ -273,8 +275,25 @@ Located in `src/tests/e2e/`. Test complete pipelines:
 
 ### Differential Tests
 
-Located in `src/tests/unit/codegen/`. Verify that VM and native backends produce identical results
-for the same IL programs.
+Located in `src/tests/unit/codegen/` and `src/tests/e2e/`. Verify that VM and native backends
+produce identical results for the same IL programs, and that a native program behaves the same at
+every optimization level. Three gates, registered on every host that can run its own native
+backend (Apple arm64 → AArch64, x86-64 Linux/Windows → x86-64):
+
+- `differential_<prog>` (AArch64) / `differential_x64_<prog>`: `zanna -run` versus
+  `zanna codegen <arch> -run-native` on every shared-corpus program, byte-comparing stdout and the
+  exit code (`src/tests/e2e/differential_vm_native.cmake`).
+- `optdiff_<arch>_<prog>` (label `codegen_optdiff`): the native build at `-O0` versus `-O2`, MIR
+  verifier on, over the same corpus plus the deterministic `examples/il/` programs
+  (`src/tests/e2e/differential_opt_levels.cmake`). `scripts/native_opt_diff.sh` is the same check
+  for a Zia/BASIC source project.
+- `test_differential_il_kernels`: a fixed range of seeds through the IL kernel generator
+  (`src/tests/common/ILKernelGenerator.hpp`: checked-arithmetic chains, `idx.chk` results reused
+  across trap branches, division/remainder by constants, `switch.i32` dispatch, select diamonds,
+  leaf calls, inner loops with phi cycles, bit mixing), each run on the VM and natively at `-O0` and
+  `-O2`; the three exit codes must agree. `ZANNA_KERNEL_SEEDS=<n>` widens the range locally, and
+  the opt-in libFuzzer harness `fuzz_il_native_diff` (`ZANNA_ENABLE_FUZZ=ON`) explores seeds
+  without bound. A mismatch prints the seed, the shapes, and the kept IL path for replay.
 
 `src/tests/codegen/aarch64/` is the dedicated home for AArch64 backend tests that
 consume shared or end-to-end corpus inputs. Low-level instruction, pass, or

@@ -29,6 +29,7 @@
 #pragma once
 
 #include "codegen/aarch64/MachineIR.hpp"
+#include "codegen/common/ra/CfgExtract.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -41,6 +42,19 @@
 /// @brief Declares CFG-aware virtual-register liveness for AArch64 allocation.
 
 namespace zanna::codegen::aarch64::ra {
+
+/// @brief Classify one instruction's control-flow effect for CFG extraction.
+/// @details The single AArch64 branch classifier: `Br` is unconditional,
+///          `BCond`/`Cbz`/`Cbnz`/`Tbz`/`Tbnz` are conditional with the target
+///          at operand 1, `JumpTable` is multi-way (case labels from operand 2),
+///          `Ret` returns, and a direct call to a no-return runtime helper ends
+///          the block. MirCfg (codegen/aarch64/MirCfg.hpp) is built from this
+///          classifier and is what every CFG consumer (allocator liveness,
+///          verifier, peephole CFG passes) reads, so they all see identical
+///          edges.
+/// @param mi Instruction to classify.
+/// @return Descriptor whose target pointers refer to labels owned by @p mi.
+[[nodiscard]] zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &mi);
 
 /// @brief CFG-aware liveness analysis over AArch64 Machine IR blocks.
 ///
@@ -109,7 +123,7 @@ class LivenessAnalysis {
     /// @param func Function supplying block names in stable layout order.
     void buildBlockIndex(const MFunction &func);
 
-    /// @brief Extract successor relations from control-transfer instructions.
+    /// @brief Copy the successor/predecessor relations out of a MirCfg snapshot.
     /// @param func Function whose branches and fallthroughs define the CFG.
     void buildCFG(const MFunction &func);
 

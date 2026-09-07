@@ -645,6 +645,14 @@ if (NOT TARGET test_x86_global_ra)
     zanna_add_ctest(test_x86_global_ra test_x86_global_ra)
 endif ()
 
+if (NOT TARGET test_x86_codegen_stats)
+    zanna_add_test(
+            test_x86_codegen_stats
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_codegen_stats.cpp)
+    target_link_libraries(test_x86_codegen_stats PRIVATE zanna_codegen_x86_64)
+    zanna_add_ctest(test_x86_codegen_stats test_x86_codegen_stats)
+endif ()
+
 if (NOT TARGET test_magic_division)
     zanna_add_test(
             test_magic_division
@@ -709,12 +717,28 @@ if (NOT TARGET test_x86_peephole)
     zanna_add_ctest(test_x86_peephole test_x86_peephole)
 endif ()
 
+if (NOT TARGET test_x86_mir_verify)
+    zanna_add_test(
+            test_x86_mir_verify
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_mir_verify.cpp)
+    target_link_libraries(test_x86_mir_verify PRIVATE zanna_codegen_x86_64 il_tools_common)
+    zanna_add_ctest(test_x86_mir_verify test_x86_mir_verify)
+endif ()
+
 if (NOT TARGET test_dataflow_liveness)
     zanna_add_test(
             test_dataflow_liveness
             ${ZANNA_TESTS_DIR}/unit/codegen/test_dataflow_liveness.cpp)
     target_link_libraries(test_dataflow_liveness PRIVATE zanna_codegen_common)
     zanna_add_ctest(test_dataflow_liveness test_dataflow_liveness)
+endif ()
+
+if (NOT TARGET test_parallel_copy)
+    zanna_add_test(
+            test_parallel_copy
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_parallel_copy.cpp)
+    target_link_libraries(test_parallel_copy PRIVATE zanna_codegen_common)
+    zanna_add_ctest(test_parallel_copy test_parallel_copy)
 endif ()
 
 if (NOT TARGET test_codegen_cfg_extract)

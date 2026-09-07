@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "codegen/common/PeepholeUtil.hpp"
 
@@ -88,6 +89,21 @@ using zanna::codegen::common::removeMarkedInstructions;
     if (reg.reg.cls == RegClass::FPR)
         return pr >= PhysReg::V0 && pr <= PhysReg::V7;
     return false;
+}
+
+/// @brief Test whether a physical-register operand is live at the enclosing
+///        block's exit.
+/// @details Block-local rewrites scan forward for an in-block use; when the
+///          scan reaches the block end this is the only remaining source of
+///          truth (see blockExitLive() in MirCfg.hpp). A null set means the
+///          caller has no liveness and the register is treated as dead.
+/// @param exitLive Exit-live set of the block, or `nullptr`.
+/// @param reg Operand to test; non-register and virtual operands are never live.
+/// @return `true` when @p reg is a physical register contained in @p exitLive.
+[[nodiscard]] inline bool exitLiveContains(const PhysRegSet *exitLive,
+                                           const MOperand &reg) noexcept {
+    return exitLive != nullptr && isPhysReg(reg) &&
+           exitLive->contains(static_cast<PhysReg>(reg.reg.idOrPhys));
 }
 
 /// @brief Test whether an operand is an immediate equal to a requested value.

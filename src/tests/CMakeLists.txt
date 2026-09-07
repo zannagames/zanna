@@ -272,6 +272,7 @@ target_link_libraries(zanna_testing INTERFACE zanna_common_opts zanna::il_full)
 add_library(zanna_test_common STATIC
         ${CMAKE_CURRENT_LIST_DIR}/common/CodegenFixture.cpp
         ${CMAKE_CURRENT_LIST_DIR}/common/ILGenerator.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/common/ILKernelGenerator.cpp
         ${CMAKE_CURRENT_LIST_DIR}/common/ProcessIsolation.cpp
         ${CMAKE_CURRENT_LIST_DIR}/common/TestIRBuilder.cpp
         ${CMAKE_CURRENT_LIST_DIR}/common/VmFixture.cpp)
@@ -344,6 +345,21 @@ if (ZANNA_ENABLE_FUZZ)
 endif ()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/codegen/x86_64)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/codegen/objfile)
+
+# x86-64 hosts that can link and run native code: the fixed-seed IL kernel
+# differential (VM vs native -O0 vs native -O2, MIR verifier on). The AArch64
+# registration of the same test lives in the ARM64 group below.
+if (ZANNA_BUILD_NATIVE_LINK_X86_64 AND NOT (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64"))
+    zanna_add_test(test_differential_il_kernels
+            ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_differential_il_kernels.cpp
+            ${CMAKE_SOURCE_DIR}/src/tools/zanna/cmd_codegen_x64.cpp
+            LIBS zanna_test_common zanna_native_compiler zanna_codegen_x86_64
+                 il_api il_transform il_tools_common zanna_bytecode
+            COMPILE_DEFS ZANNA_KERNEL_DIFF_X64
+            INCLUDES ${CMAKE_SOURCE_DIR}/src)
+    zanna_add_test_labels(test_differential_il_kernels codegen differential native_run)
+    set_tests_properties(test_differential_il_kernels PROPERTIES TIMEOUT 300)
+endif ()
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/codegen/binenc)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/codegen/linker)
 add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/codegen/common)
@@ -393,6 +409,7 @@ set(_AARCH64_CODEGEN_ONLY_TESTS
         test_aarch64_frame_spill_reuse
         test_aarch64_logical_imm
         test_codegen_arm64_peephole_subpasses
+        test_aarch64_codegen_stats
 )
 foreach (_test IN LISTS _AARCH64_CODEGEN_ONLY_TESTS)
     _aarch64_add_test(${_test}
@@ -407,6 +424,22 @@ _aarch64_add_test_common(test_aarch64_pass_manager
 
 _aarch64_add_test_common(test_aarch64_scheduler
         ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_scheduler.cpp
+        "il_codegen_aarch64")
+
+_aarch64_add_test_common(test_aarch64_instr_effects
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_instr_effects.cpp
+        "il_codegen_aarch64")
+
+_aarch64_add_test_common(test_aarch64_mir_verify
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_mir_verify.cpp
+        "il_codegen_aarch64")
+
+_aarch64_add_test_common(test_aarch64_expand_pseudos
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_expand_pseudos.cpp
+        "il_codegen_aarch64")
+
+_aarch64_add_test_common(test_aarch64_mir_cfg
+        ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_aarch64_mir_cfg.cpp
         "il_codegen_aarch64")
 
 _aarch64_add_test_common(test_aarch64_linux_abi
@@ -526,6 +559,20 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" AND NOT WIN32)
             TIMEOUT 120
             LABELS "slow"
             RESOURCE_LOCK aarch64_codegen_artifacts)
+
+    # Fixed-seed IL kernel differential (VM vs native -O0 vs native -O2, MIR
+    # verifier on) over the generator in common/ILKernelGenerator.cpp; the
+    # libFuzzer harness fuzz_il_native_diff explores seeds beyond the range.
+    _aarch64_add_test_common(test_differential_il_kernels
+            ${CMAKE_CURRENT_SOURCE_DIR}/unit/codegen/test_differential_il_kernels.cpp
+            "il_codegen_aarch64;zanna_cmd_arm64")
+    target_compile_definitions(test_differential_il_kernels PRIVATE ZANNA_KERNEL_DIFF_ARM64)
+    set_tests_properties(test_differential_il_kernels PROPERTIES
+            RUN_SERIAL TRUE
+            TIMEOUT 300
+            LABELS "codegen;differential;arm64"
+            RESOURCE_LOCK aarch64_codegen_artifacts)
+
 
     # ── ARM64 end-to-end demo tests ────────────────────────────────────
     set(_AARCH64_E2E_TESTS

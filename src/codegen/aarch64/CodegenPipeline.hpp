@@ -63,6 +63,8 @@ struct PipelineOptions {
     bool useBinaryEmit = false;   ///< Also run BinaryEmitPass to produce an object file.
     int optimizeLevel = 1;        ///< Backend optimization level: 0 = none, 1 = peephole+scheduler.
     bool timePasses = false;      ///< Emit per-pass wall-clock timings to diagOut.
+    /// Run the MIR verifier after every pass (also enabled by `ZANNA_VERIFY_MIR=1`).
+    bool verifyMir = false;
 };
 
 /// @brief High-level driver for the AArch64 code-generation pipeline.
@@ -111,6 +113,7 @@ class CodegenPipeline {
         TargetPlatform target_platform = TargetPlatform::Host; ///< OS ABI target.
         bool emit_debug_lines = false; ///< Emit .loc / line-number directives in assembly.
         bool time_passes = false;      ///< Print per-pass wall-clock timings to stderr.
+        bool verify_mir = false;       ///< Run the MIR verifier after every backend pass.
         bool fast_link = false;        ///< Skip non-essential size-reduction passes in the linker.
         /// Name every placed definition in the executable's symbol table so
         /// profilers and debuggers can attribute addresses; false strips them.

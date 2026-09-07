@@ -96,6 +96,7 @@ class CodegenPipeline {
         /// Preserve source locations as supported debug data.
         bool emit_debug_lines = false;
         bool time_passes = false; ///< Emit per-backend-pass timings.
+        bool verify_mir = false;  ///< Run the MIR verifier after every backend pass.
         bool fast_link = false;   ///< Skip non-essential native-link size reductions.
         /// Name every placed definition in the executable's symbol table so
         /// profilers and debuggers can attribute addresses; false strips them.

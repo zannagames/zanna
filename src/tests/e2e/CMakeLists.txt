@@ -561,54 +561,92 @@ if (NOT TARGET test_namespace_e2e)
     zanna_add_ctest(test_namespace_e2e test_namespace_e2e)
 endif ()
 
+# ── Native differential gates over the shared IL corpus ──────────────────────
+# Two oracles per program on every host that can run its own native backend:
+#   differential_<prog>      byte-diffs `zanna -run` (VM) against
+#                            `zanna codegen <arch> -run-native`;
+#   optdiff_<arch>_<prog>    byte-diffs the native build at -O0 against -O2
+#                            (label codegen_optdiff), so an optimizer or post-RA
+#                            rewrite that changes behaviour is caught even where
+#                            the VM oracle is not run.
+# Building the VM gate surfaced four real native codegen divergences; ALL FOUR
+# are now fixed and included below:
+#   - idxchk_normalize: idx.chk normalization (idx - lo) survived post-RA DCE.
+#   - switch_i32: switch/narrow result no longer copy-forwarded to an undef vreg.
+#   - eh_catch_return: trap.kind is rewritten off the handler %err.
+#   - global_scalar_load_store: mutable scalar globals now emit a writable
+#     __DATA,__data section in the binary object path; the text section's
+#     undefined reference coalesces onto the data-section defined global.
+set(_ZANNA_DIFF_CORPUS
+        ret_i64 arith_chain block_params_sum conditional_abs recursive_factorial
+        alloca_store_load gep_stack bitwise_shift unsigned_div_rem signed_div_rem
+        fp_cast_round cast_round_to_even idxchk_normalize i1_bool_flow call_two_args
+        string_print print_i64 branch_join_value i16_narrow_store unsigned_compare
+        fcmp_ord_nan fcmp_uno_nan err_get_msg_exec switch_i32 eh_catch_return
+        global_scalar_load_store
+        kernel_loop_sum kernel_array_traverse kernel_checked_arith
+        kernel_div_const kernel_switch_dispatch kernel_call_leaf
+        kernel_select_diamond)
+
+# Trapping corpus programs through the same gates: a null dereference must
+# trap deterministically on both backends (same stdout and exit code), not
+# SIGSEGV natively. These failed with a 139-vs-1 exit mismatch before native
+# load/store null-page guards landed.
+set(_ZANNA_DIFF_TRAP_CORPUS trap_null_load trap_null_store)
+
+# Deterministic runnable IL examples (the smoke manifest's il-run-smoke lane
+# minus the debugger script and the randomized one) through the -O0/-O2 gate.
+set(_ZANNA_OPTDIFF_EXAMPLES
+        ex1_hello_cond ex2_sum_1_to_10 ex3_table_5x5 ex5_strings summary trace_min)
+
+# Register both gates for one architecture. `_vm_prefix` names the VM-vs-native
+# tests (the AArch64 names predate the x86-64 mirror and stay unchanged).
+function(_zanna_add_native_differential _arch _arch_label _vm_prefix)
+    set(_e2e_dir ${CMAKE_CURRENT_FUNCTION_LIST_DIR})
+    set(_corpus_dir ${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il)
+    foreach (_prog IN LISTS _ZANNA_DIFF_CORPUS _ZANNA_DIFF_TRAP_CORPUS)
+        if (_prog IN_LIST _ZANNA_DIFF_TRAP_CORPUS)
+            set(_il ${_corpus_dir}/traps/${_prog}.il)
+        else ()
+            set(_il ${_corpus_dir}/success/${_prog}.il)
+        endif ()
+        zanna_add_ctest(${_vm_prefix}${_prog}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DARCH=${_arch}
+                -DIL_FILE=${_il}
+                -P ${_e2e_dir}/differential_vm_native.cmake)
+        zanna_set_test_labels(${_vm_prefix}${_prog} ${_arch_label} differential)
+
+        zanna_add_ctest(optdiff_${_arch}_${_prog}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DARCH=${_arch}
+                -DIL_FILE=${_il}
+                -P ${_e2e_dir}/differential_opt_levels.cmake)
+        zanna_set_test_labels(optdiff_${_arch}_${_prog} ${_arch_label} differential codegen_optdiff)
+    endforeach ()
+    foreach (_prog IN LISTS _ZANNA_OPTDIFF_EXAMPLES)
+        zanna_add_ctest(optdiff_${_arch}_example_${_prog}
+                ${CMAKE_COMMAND}
+                -DILC=$<TARGET_FILE:zanna>
+                -DARCH=${_arch}
+                -DIL_FILE=${CMAKE_SOURCE_DIR}/examples/il/${_prog}.il
+                -P ${_e2e_dir}/differential_opt_levels.cmake)
+        zanna_set_test_labels(optdiff_${_arch}_example_${_prog} ${_arch_label} differential codegen_optdiff examples)
+    endforeach ()
+endfunction()
+
+# x86-64 hosts that link and run native code (Linux, Windows).
+if (ZANNA_BUILD_NATIVE_LINK_X86_64 AND NOT (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64"))
+    _zanna_add_native_differential(x64 x64 differential_x64_)
+endif ()
+
 # ARM64 native linking tests - only on macOS ARM64
 if (CMAKE_SYSTEM_PROCESSOR STREQUAL "arm64" AND APPLE)
     set(_ZANNA_E2E_DIR ${CMAKE_CURRENT_LIST_DIR})
 
-    # ── VM<->native differential gate over the shared IL corpus ──────────────
-    # Byte-diffs `zanna -run` (VM) against `zanna codegen arm64 -run-native` for
-    # each curated corpus program. Building this gate surfaced four real native
-    # codegen divergences; ALL FOUR are now fixed and included below:
-    #   - idxchk_normalize: idx.chk normalization (idx - lo) survived post-RA DCE.
-    #   - switch_i32: switch/narrow result no longer copy-forwarded to an undef vreg.
-    #   - eh_catch_return: trap.kind is rewritten off the handler %err.
-    #   - global_scalar_load_store: mutable scalar globals now emit a writable
-    #     __DATA,__data section in the binary object path; the text section's
-    #     undefined reference coalesces onto the data-section defined global.
-    set(_ZANNA_DIFF_CORPUS
-            ret_i64 arith_chain block_params_sum conditional_abs recursive_factorial
-            alloca_store_load gep_stack bitwise_shift unsigned_div_rem signed_div_rem
-            fp_cast_round cast_round_to_even idxchk_normalize i1_bool_flow call_two_args
-            string_print print_i64 branch_join_value i16_narrow_store unsigned_compare
-            fcmp_ord_nan fcmp_uno_nan err_get_msg_exec switch_i32 eh_catch_return
-            global_scalar_load_store
-            kernel_loop_sum kernel_array_traverse kernel_checked_arith
-            kernel_div_const kernel_switch_dispatch kernel_call_leaf
-            kernel_select_diamond)
-    foreach (_prog IN LISTS _ZANNA_DIFF_CORPUS)
-        zanna_add_ctest(differential_${_prog}
-                ${CMAKE_COMMAND}
-                -DILC=$<TARGET_FILE:zanna>
-                -DARCH=arm64
-                -DIL_FILE=${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il/success/${_prog}.il
-                -P ${_ZANNA_E2E_DIR}/differential_vm_native.cmake)
-        zanna_set_test_labels(differential_${_prog} arm64 differential)
-    endforeach ()
-
-    # Trapping corpus programs through the same VM<->native gate: a null
-    # dereference must trap deterministically on both backends (same stdout
-    # and exit code), not SIGSEGV natively. These failed with a 139-vs-1
-    # exit mismatch before native load/store null-page guards landed.
-    set(_ZANNA_DIFF_TRAP_CORPUS trap_null_load trap_null_store)
-    foreach (_prog IN LISTS _ZANNA_DIFF_TRAP_CORPUS)
-        zanna_add_ctest(differential_${_prog}
-                ${CMAKE_COMMAND}
-                -DILC=$<TARGET_FILE:zanna>
-                -DARCH=arm64
-                -DIL_FILE=${CMAKE_SOURCE_DIR}/src/tests/shared_corpus/il/traps/${_prog}.il
-                -P ${_ZANNA_E2E_DIR}/differential_vm_native.cmake)
-        zanna_set_test_labels(differential_${_prog} arm64 differential)
-    endforeach ()
+    _zanna_add_native_differential(arm64 arm64 differential_)
 
     # Vtris demo - compile, assemble, link
     zanna_add_ctest(arm64_native_vtris

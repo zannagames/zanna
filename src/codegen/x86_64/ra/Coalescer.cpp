@@ -9,13 +9,17 @@
 // Purpose: Lower PX_COPY bundles into executable move sequences while
 //          respecting spill state managed by the linear-scan allocator.
 // Key invariants:
-//   - Scratch registers allocated to break cycles are released after use.
-//   - Generated code preserves the semantics of the original parallel copy.
+//   - Operand resolution (virtual -> physical or slot) is the only allocator
+//     state this file mutates; ordering and cycle breaking are the shared
+//     sequentializer's.
+//   - Borrowed XMM scratch registers are released as soon as the sequencer
+//     no longer reads them; R10/R11 are fixed and never released.
 // Ownership/Lifetime:
 //   - Operates on MIR provided by the allocator; no ownership taken.
 // Links: src/codegen/x86_64/ra/Coalescer.hpp,
 //        src/codegen/x86_64/ra/Allocator.hpp,
-//        src/codegen/x86_64/ra/Spiller.hpp
+//        src/codegen/x86_64/ra/Spiller.hpp,
+//        src/codegen/common/ra/ParallelCopy.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -24,102 +28,28 @@
 #include "Allocator.hpp"
 #include "Spiller.hpp"
 
-#include <algorithm>
 #include <stdexcept>
 
 /// @file
 /// @brief Lowers PX_COPY pseudo instructions into executable move sequences.
-/// @details The coalescer collaborates with the linear-scan allocator and
-///          spiller to materialise register moves, managing scratch registers and
-///          spill reloads to preserve the semantics of the original parallel
-///          copy bundles.
 
 namespace zanna::codegen::x64::ra {
 
 namespace {
 
-/// @brief Ticket recording a temporarily-borrowed scratch register.
-/// @details Used by the coalescer to return scratch registers to the
-///          allocator after a cycle-breaking sequence completes.
-struct ScratchRelease {
-    PhysReg phys{PhysReg::RAX};  ///< Physical register that was borrowed.
-    RegClass cls{RegClass::GPR}; ///< Register class for the allocator's bookkeeping.
-};
-
-/// @brief Concrete register or spill-slot node in the parallel-copy graph.
-struct CopyLocation {
-    /// @brief Storage category of the node.
-    enum class Kind { Reg, Mem };
-
-    /// @brief Whether @c reg or @c slot identifies the location.
-    Kind kind{Kind::Reg};
-    /// @brief Register bank used to distinguish otherwise equal locations.
-    RegClass cls{RegClass::GPR};
-    /// @brief Physical register when @c kind is @c Reg.
-    PhysReg reg{PhysReg::RAX};
-    /// @brief Spill-slot index when @c kind is @c Mem.
-    int slot{-1};
-};
-
-/// @brief Converts a copy task's source into a uniform graph location.
-/// @param task Copy task to inspect.
-/// @return Register or spill-slot source location.
-[[nodiscard]] CopyLocation sourceLocation(const CopyTask &task) {
-    if (task.src.kind == CopySource::Kind::Reg) {
-        return CopyLocation{CopyLocation::Kind::Reg, task.cls, task.src.reg, -1};
-    }
-    return CopyLocation{CopyLocation::Kind::Mem, task.cls, PhysReg::RAX, task.src.slot};
-}
-
-/// @brief Converts a copy task's destination into a uniform graph location.
-/// @param task Copy task to inspect.
-/// @return Register or spill-slot destination location.
-[[nodiscard]] CopyLocation destLocation(const CopyTask &task) {
-    if (task.destKind == CopyTask::DestKind::Reg) {
-        return CopyLocation{CopyLocation::Kind::Reg, task.cls, task.destReg, -1};
-    }
-    return CopyLocation{CopyLocation::Kind::Mem, task.cls, PhysReg::RAX, task.destSlot};
-}
-
-/// @brief Compares two typed copy-graph locations.
-/// @param lhs First location.
-/// @param rhs Second location.
-/// @return @c true when kind, class, and register or slot identity match.
-[[nodiscard]] bool sameLocation(const CopyLocation &lhs, const CopyLocation &rhs) noexcept {
-    if (lhs.kind != rhs.kind || lhs.cls != rhs.cls) {
-        return false;
-    }
-    return lhs.kind == CopyLocation::Kind::Reg ? lhs.reg == rhs.reg : lhs.slot == rhs.slot;
-}
-
-/// @brief Tests whether a task reads a specified copy-graph location.
-/// @param task Copy task whose source is inspected.
-/// @param location Candidate source location.
-/// @return @c true when the typed source matches @p location.
-[[nodiscard]] bool sourceMatchesLocation(const CopyTask &task,
-                                         const CopyLocation &location) noexcept {
-    if (location.kind == CopyLocation::Kind::Reg) {
-        return task.src.kind == CopySource::Kind::Reg && task.cls == location.cls &&
-               task.src.reg == location.reg;
-    }
-    return task.src.kind == CopySource::Kind::Mem && task.cls == location.cls &&
-           task.src.slot == location.slot;
-}
+using codegen::ra::CopyLoc;
+using codegen::ra::ParallelCopyTask;
 
 /// @brief Return true when @p reg is one of the fixed GPR scratch registers.
 /// @details R10/R11 are deliberately excluded from the allocator pool and used
 ///          by PX_COPY lowering for cycle breaking and memory-to-memory copies.
 ///          A PX_COPY bundle that explicitly names either register cannot be
 ///          lowered with those fixed scratch assumptions intact.
-/// @param reg Physical register to classify.
-/// @return @c true for R10 or R11.
 [[nodiscard]] bool isFixedGprScratch(PhysReg reg) noexcept {
     return reg == PhysReg::R10 || reg == PhysReg::R11;
 }
 
 /// @brief Validate a physical PX_COPY operand against fixed scratch registers.
-/// @param cls Register class of @p reg.
-/// @param reg Explicit physical copy operand.
 /// @throws std::runtime_error If a GPR copy operand names R10 or R11.
 void rejectFixedScratchOperand(RegClass cls, PhysReg reg) {
     if (cls == RegClass::GPR && isFixedGprScratch(reg)) {
@@ -128,37 +58,108 @@ void rejectFixedScratchOperand(RegClass cls, PhysReg reg) {
     }
 }
 
+/// @brief Location of a task's destination in the shared sequencer's terms.
+[[nodiscard]] CopyLoc destLoc(const CopyTask &task) noexcept {
+    const auto cls = static_cast<unsigned>(task.cls);
+    return task.destKind == CopyTask::DestKind::Reg
+               ? CopyLoc::regLoc(cls, static_cast<unsigned>(task.destReg))
+               : CopyLoc::memLoc(cls, task.destSlot);
+}
+
+/// @brief Location of a task's source in the shared sequencer's terms.
+[[nodiscard]] CopyLoc srcLoc(const CopyTask &task) noexcept {
+    const auto cls = static_cast<unsigned>(task.cls);
+    return task.src.kind == CopySource::Kind::Reg
+               ? CopyLoc::regLoc(cls, static_cast<unsigned>(task.src.reg))
+               : CopyLoc::memLoc(cls, task.src.slot);
+}
+
 } // namespace
 
+/// @brief Adapter the shared sequentializer drives; owns nothing.
+struct Coalescer::CopyEmitter {
+    Coalescer &owner;
+    std::vector<MInstr> &generated;
+
+    void move(const CopyLoc &dst, const CopyLoc &src) {
+        owner.emitMove(dst, src, generated);
+    }
+
+    /// @brief GPR cycles break through the fixed R10; XMM borrows a register.
+    CopyLoc cycleScratch(unsigned cls) {
+        const auto regClass = static_cast<RegClass>(cls);
+        if (regClass == RegClass::GPR)
+            return CopyLoc::regLoc(cls, static_cast<unsigned>(PhysReg::R10));
+        return CopyLoc::regLoc(cls,
+                               static_cast<unsigned>(owner.borrowRegister(regClass, generated)));
+    }
+
+    /// @brief Memory-to-memory copies go through the fixed R11; XMM borrows.
+    CopyLoc memTemp(unsigned cls) {
+        const auto regClass = static_cast<RegClass>(cls);
+        if (regClass == RegClass::GPR)
+            return CopyLoc::regLoc(cls, static_cast<unsigned>(PhysReg::R11));
+        return CopyLoc::regLoc(cls,
+                               static_cast<unsigned>(owner.borrowRegister(regClass, generated)));
+    }
+
+    void releaseScratch(const CopyLoc &loc) {
+        const auto regClass = static_cast<RegClass>(loc.cls);
+        if (regClass == RegClass::GPR)
+            return; // fixed scratch, never borrowed
+        owner.returnRegister(static_cast<PhysReg>(loc.reg), regClass);
+    }
+};
+
 /// @brief Construct a coalescer tied to a specific allocator and spiller.
-/// @details The constructor stores references to the linear-scan allocator and
-///          spiller so future copy lowering can request scratch registers and
-///          emit loads/stores.  No MIR is mutated during construction; the
-///          coalescer simply captures the collaborators it will use later.
 /// @param allocator Linear-scan allocator supplying register state.
 /// @param spiller Spiller responsible for materialising loads and stores.
 Coalescer::Coalescer(LinearScanAllocator &allocator, Spiller &spiller)
     : allocator_(allocator), spiller_(spiller) {}
 
+/// @copydoc Coalescer::emitMove
+void Coalescer::emitMove(const CopyLoc &dst, const CopyLoc &src, std::vector<MInstr> &generated) {
+    const auto cls = static_cast<RegClass>(dst.cls);
+    if (dst.isReg() && src.isReg()) {
+        generated.push_back(
+            allocator_.makeMove(cls, static_cast<PhysReg>(dst.reg), static_cast<PhysReg>(src.reg)));
+    } else if (dst.isReg()) {
+        generated.push_back(
+            spiller_.makeLoad(cls, static_cast<PhysReg>(dst.reg), SpillPlan{true, src.slot}));
+    } else if (src.isReg()) {
+        generated.push_back(
+            spiller_.makeStore(cls, SpillPlan{true, dst.slot}, static_cast<PhysReg>(src.reg)));
+    } else {
+        throw std::runtime_error("x86 PX_COPY lowering: memory-to-memory move reached the emitter");
+    }
+}
+
+/// @copydoc Coalescer::borrowRegister
+PhysReg Coalescer::borrowRegister(RegClass cls, std::vector<MInstr> &generated) {
+    std::vector<MInstr> prefix{};
+    const PhysReg reg = allocator_.takeRegister(cls, prefix);
+    for (auto &pre : prefix)
+        generated.push_back(std::move(pre));
+    return reg;
+}
+
+/// @copydoc Coalescer::returnRegister
+void Coalescer::returnRegister(PhysReg reg, RegClass cls) {
+    allocator_.releaseRegister(reg, cls);
+}
+
 /// @brief Expand a @c PX_COPY pseudo into executable machine instructions.
-/// @details The algorithm proceeds in three phases:
-///          1. Analyse the pseudo operands and build @ref CopyTask entries that
-///             describe the source and destination for each pair.
-///          2. Emit prefix instructions that materialise spilled or unmapped
-///             values by requesting temporary registers from the allocator and
-///             issuing loads where necessary.
-///          3. Consume the copy tasks while respecting dependency cycles,
-///             breaking them via scratch registers and ensuring every temporary
-///             is released back to the allocator.
-///          The resulting instruction stream is appended to @p out in the order
-///          it should execute.
+/// @details Two phases: resolve every operand pair to a @ref CopyTask (taking
+///          registers from the allocator for unmapped virtual registers and
+///          emitting any victim spills first), then run the shared
+///          sequentializer over the location pairs with @ref CopyEmitter
+///          producing the x86-64 instructions in dependency-safe order.
 /// @param instr @c PX_COPY instruction to lower.
 /// @param out Vector receiving the lowered instruction sequence.
 /// @throws std::runtime_error If operands are malformed, use reserved scratch
 ///         registers, disagree in class, or require an unavailable register.
 void Coalescer::lower(const MInstr &instr, std::vector<MInstr> &out) {
     std::vector<MInstr> prefix{};
-    std::vector<ScratchRelease> scratch{};
     std::vector<CopyTask> tasks{};
 
     if ((instr.operands.size() % 2U) != 0U) {
@@ -238,126 +239,18 @@ void Coalescer::lower(const MInstr &instr, std::vector<MInstr> &out) {
         out.push_back(std::move(pre));
     }
 
+    std::vector<ParallelCopyTask> pairs;
+    pairs.reserve(tasks.size());
+    for (const auto &task : tasks)
+        pairs.push_back(ParallelCopyTask{destLoc(task), srcLoc(task)});
+
     std::vector<MInstr> generated{};
     generated.reserve(tasks.size());
-
-    while (!tasks.empty()) {
-        bool progress = false;
-        for (std::size_t i = 0; i < tasks.size(); ++i) {
-            const auto task = tasks[i];
-            const CopyLocation dst = destLocation(task);
-            const CopyLocation src = sourceLocation(task);
-            bool locDestIsSource = false;
-            for (std::size_t j = 0; j < tasks.size(); ++j) {
-                if (i == j) {
-                    continue;
-                }
-                if (sourceMatchesLocation(tasks[j], dst)) {
-                    locDestIsSource = true;
-                    break;
-                }
-            }
-
-            const bool canEmit = !locDestIsSource || sameLocation(dst, src);
-
-            if (!canEmit) {
-                continue;
-            }
-
-            if (!sameLocation(dst, src))
-                emitCopyTask(task, generated);
-            tasks.erase(tasks.begin() + static_cast<long>(i));
-            progress = true;
-            break;
-        }
-
-        if (progress) {
-            continue;
-        }
-
-        /// @brief Prefers a register-to-register edge as the cycle-breaking seed.
-        auto it = std::find_if(tasks.begin(), tasks.end(), [](const CopyTask &t) {
-            return t.destKind == CopyTask::DestKind::Reg && t.src.kind == CopySource::Kind::Reg;
-        });
-        if (it == tasks.end()) {
-            it = tasks.begin();
-        }
-
-        CopyTask cycleTask = *it;
-        const CopyLocation savedSource = sourceLocation(cycleTask);
-
-        std::vector<MInstr> tmpPrefix{};
-        PhysReg temp = PhysReg::R10;
-        if (cycleTask.cls == RegClass::XMM) {
-            temp = allocator_.takeRegister(cycleTask.cls, tmpPrefix);
-            scratch.push_back(ScratchRelease{temp, cycleTask.cls});
-        }
-        for (auto &pre : tmpPrefix) {
-            generated.push_back(std::move(pre));
-        }
-        if (savedSource.kind == CopyLocation::Kind::Reg) {
-            generated.push_back(allocator_.makeMove(cycleTask.cls, temp, savedSource.reg));
-        } else {
-            generated.push_back(
-                spiller_.makeLoad(cycleTask.cls, temp, SpillPlan{true, savedSource.slot}));
-        }
-        for (auto &pending : tasks) {
-            if (sourceMatchesLocation(pending, savedSource)) {
-                pending.src.kind = CopySource::Kind::Reg;
-                pending.src.reg = temp;
-            }
-        }
-    }
+    CopyEmitter emitter{*this, generated};
+    (void)codegen::ra::sequentializeParallelCopy(std::move(pairs), emitter);
 
     for (auto &instrOut : generated) {
         out.push_back(std::move(instrOut));
-    }
-
-    for (const auto &rel : scratch) {
-        allocator_.releaseRegister(rel.phys, rel.cls);
-    }
-}
-
-/// @brief Materialise one lowered copy task.
-/// @details Depending on whether the destination resides in memory or a
-///          register, the helper either emits direct moves or synthesises loads
-///          into scratch registers before performing the store.  Memory-to-memory
-///          copies are handled by loading into a temporary first so the target
-///          architecture never observes illegal instructions.  Any temporaries
-///          acquired during the call are released once their final use is
-///          emitted.
-/// @param task Copy description built during @ref lower.
-/// @param generated Output buffer receiving the materialised instructions.
-/// @throws std::runtime_error If an XMM memory-to-memory copy cannot borrow a register.
-void Coalescer::emitCopyTask(const CopyTask &task, std::vector<MInstr> &generated) {
-    if (task.destKind == CopyTask::DestKind::Mem) {
-        if (task.src.kind == CopySource::Kind::Reg) {
-            generated.push_back(
-                spiller_.makeStore(task.cls, SpillPlan{true, task.destSlot}, task.src.reg));
-        } else {
-            std::vector<MInstr> tmpPrefix{};
-            PhysReg tmp = PhysReg::R11;
-            const bool borrowed = task.cls == RegClass::XMM;
-            if (borrowed) {
-                tmp = allocator_.takeRegister(task.cls, tmpPrefix);
-            }
-            for (auto &pre : tmpPrefix) {
-                generated.push_back(std::move(pre));
-            }
-            generated.push_back(spiller_.makeLoad(task.cls, tmp, SpillPlan{true, task.src.slot}));
-            generated.push_back(spiller_.makeStore(task.cls, SpillPlan{true, task.destSlot}, tmp));
-            if (borrowed) {
-                allocator_.releaseRegister(tmp, task.cls);
-            }
-        }
-        return;
-    }
-
-    if (task.src.kind == CopySource::Kind::Reg) {
-        generated.push_back(allocator_.makeMove(task.cls, task.destReg, task.src.reg));
-    } else {
-        generated.push_back(
-            spiller_.makeLoad(task.cls, task.destReg, SpillPlan{true, task.src.slot}));
     }
 }
 

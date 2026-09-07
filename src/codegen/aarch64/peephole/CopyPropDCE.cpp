@@ -14,19 +14,27 @@
 //   - Copy propagation rewrites an ABI-register use only when the copy origin
 //     is a non-ABI register (disable with ZANNA_NO_ABI_COPYFWD=1); origins are
 //     never chased through ABI registers.
-//   - DCE conservatively marks callee-saved and ABI registers as live at exit.
+//   - CFG-aware DCE reads the solved physical liveness (PhysLiveness) and
+//     seeds every block exit from blockExitLive(); the block-local variant
+//     takes the same exit-live set, or without one conservatively marks
+//     callee-saved and ABI registers as live at exit.
+//   - Compute-into-target folding consults the effects model and the block's
+//     exit-live set before declaring an ALU destination dead.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable instruction vectors owned by the caller.
 //
-// Links: codegen/aarch64/Peephole.hpp
+// Links: codegen/aarch64/Peephole.hpp, codegen/aarch64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "CopyPropDCE.hpp"
 
 #include "PeepholeCommon.hpp"
+#include "codegen/aarch64/InstrEffects.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
+#include "codegen/aarch64/PhysLiveness.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -184,8 +192,7 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
             // non-ABI register (calls already clear the copy map, so the origin
             // cannot have been clobbered by argument setup).
             if (isABIReg(op)) {
-                static const bool noAbiCopyFwd =
-                    std::getenv("ZANNA_NO_ABI_COPYFWD") != nullptr;
+                static const bool noAbiCopyFwd = std::getenv("ZANNA_NO_ABI_COPYFWD") != nullptr;
                 if (noAbiCopyFwd || isABIReg(it->second))
                     continue;
             }
@@ -215,34 +222,36 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats) {
 /// @copydoc removeDeadInstructions
 std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
                                    PeepholeStats &stats,
-                                   const std::vector<uint16_t> *carriedExitRegs) {
+                                   const PhysRegSet *exitLive) {
     if (instrs.empty())
         return 0;
 
     std::unordered_set<uint32_t> liveRegs;
 
-    // Mark argument registers as live at block exit
-    for (int i = 0; i <= 7; ++i) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) |
-                        (static_cast<uint32_t>(PhysReg::X0) + i));
-    }
-    for (int i = 0; i <= 7; ++i) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::FPR) << 16) |
-                        (static_cast<uint32_t>(PhysReg::V0) + i));
-    }
-
-    // Mark callee-saved GPRs (x19-x28) as live at block exit
-    for (uint32_t r = static_cast<uint32_t>(PhysReg::X19); r <= static_cast<uint32_t>(PhysReg::X28);
-         ++r) {
-        liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) | r);
-    }
-
-    // Registers carried across the block exit by the allocator have no
-    // in-block use marking their liveness; treat them as live at exit.
-    if (carriedExitRegs != nullptr) {
-        for (uint16_t phys : *carriedExitRegs) {
-            const RegClass cls = isGPR(static_cast<PhysReg>(phys)) ? RegClass::GPR : RegClass::FPR;
+    if (exitLive != nullptr) {
+        // The solved exit-live set is exact: seed with it and nothing else.
+        for (unsigned bit = 0; bit < 64; ++bit) {
+            if ((exitLive->bits & (uint64_t{1} << bit)) == 0)
+                continue;
+            const RegClass cls = bit < 32 ? RegClass::GPR : RegClass::FPR;
+            const uint32_t phys = bit < 32 ? bit : static_cast<uint32_t>(PhysReg::V0) + (bit - 32);
             liveRegs.insert((static_cast<uint32_t>(cls) << 16) | phys);
+        }
+    } else {
+        // No liveness available: mark the argument registers and the
+        // callee-saved GPRs (x19-x28) as live at block exit.
+        for (int i = 0; i <= 7; ++i) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) |
+                            (static_cast<uint32_t>(PhysReg::X0) + i));
+        }
+        for (int i = 0; i <= 7; ++i) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::FPR) << 16) |
+                            (static_cast<uint32_t>(PhysReg::V0) + i));
+        }
+        for (uint32_t r = static_cast<uint32_t>(PhysReg::X19);
+             r <= static_cast<uint32_t>(PhysReg::X28);
+             ++r) {
+            liveRegs.insert((static_cast<uint32_t>(RegClass::GPR) << 16) | r);
         }
     }
 
@@ -296,14 +305,6 @@ std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
 }
 
 namespace {
-
-/// @brief Encode a physical register and its register class as a liveness key.
-/// @param reg Physical GPR or FPR to encode.
-/// @return Packed key compatible with @ref regKey.
-[[nodiscard]] uint32_t physRegKey(PhysReg reg) noexcept {
-    const RegClass cls = isGPR(reg) ? RegClass::GPR : RegClass::FPR;
-    return (static_cast<uint32_t>(cls) << 16) | static_cast<uint32_t>(reg);
-}
 
 /// @brief Compact live-register set covering the complete AArch64 physical file.
 ///
@@ -377,98 +378,39 @@ struct RegSet {
     }
 };
 
-/// @brief `RegSet` overload of @ref addTargetExitLive for the bitset live-set path.
-/// @param target Target ABI providing return + callee-saved register sets.
-/// @param regs   RegSet to which the live-at-exit register keys are added.
-void addTargetExitLive(const TargetInfo &target, RegSet &regs) {
-    regs.insertKey(physRegKey(target.intReturnReg));
-    regs.insertKey(physRegKey(target.f64ReturnReg));
-    regs.insertKey(physRegKey(PhysReg::SP));
-    for (PhysReg reg : target.calleeSavedGPR)
-        regs.insertKey(physRegKey(reg));
-    for (PhysReg reg : target.calleeSavedFPR)
-        regs.insertKey(physRegKey(reg));
-}
-
-/// @brief `RegSet` overload of @ref addCallImplicitUses.
-/// @param target Target ABI providing the arg-register order.
-/// @param uses   RegSet to which the implicit-use register keys are added.
-void addCallImplicitUses(const TargetInfo &target, RegSet &uses) {
-    for (PhysReg reg : target.intArgOrder)
-        uses.insertKey(physRegKey(reg));
-    for (PhysReg reg : target.f64ArgOrder)
-        uses.insertKey(physRegKey(reg));
-    uses.insertKey(physRegKey(PhysReg::SP));
-}
-
-/// @brief `RegSet` overload of @ref addCallClobbers.
-/// @param target Target ABI providing the caller-saved sets.
-/// @param defs   RegSet to which the clobbered register keys are added.
-void addCallClobbers(const TargetInfo &target, RegSet &defs) {
-    for (PhysReg reg : target.callerSavedGPR)
-        defs.insertKey(physRegKey(reg));
-    for (PhysReg reg : target.callerSavedFPR)
-        defs.insertKey(physRegKey(reg));
-}
-
-/// @brief `RegSet` overload of @ref collectUsesDefs for the bitset live-set path.
+/// @brief Collect the physical-register uses and defs of @p instr into bitset live sets.
+/// @details Delegates to the shared effects model: explicit operand roles,
+///          call argument/clobber sets, the return registers a `Ret` reads
+///          (so the chain computing the return value is not treated as dead
+///          when the block also has trap successors), FP/SP base reads, and
+///          the reserved scratch registers the emitters may write. `RegSet`
+///          and `PhysRegSet` share one bit layout, so the union is direct.
 /// @param instr  Machine instruction whose live-set contribution is computed.
 /// @param target Target ABI for call-implicit handling.
 /// @param uses   RegSet receiving the use register keys.
 /// @param defs   RegSet receiving the def register keys.
 void collectUsesDefs(const MInstr &instr, const TargetInfo &target, RegSet &uses, RegSet &defs) {
-    for (std::size_t idx = 0; idx < instr.ops.size(); ++idx) {
-        const auto [isUse, isDef] = classifyOperand(instr, idx);
-        const auto &op = instr.ops[idx];
-        if (!isPhysReg(op))
-            continue;
-        const uint32_t key = regKey(op);
-        if (isUse)
-            uses.insertKey(key);
-        if (isDef)
-            defs.insertKey(key);
-    }
-
-    if (instr.opc == MOpcode::Bl || instr.opc == MOpcode::Blr) {
-        addCallImplicitUses(target, uses);
-        addCallClobbers(target, defs);
-    }
-
-    // A Ret reads the function's return value from the ABI return registers even though
-    // the instruction carries no explicit operand. Mark them used so the chain computing
-    // the return value is not treated as dead when the Ret's block also has other
-    // successors (e.g. idx.chk's bounds-trap branches that precede the final Ret),
-    // because then the block's live-out is taken from successors that omit x0/v0.
-    if (instr.opc == MOpcode::Ret) {
-        uses.insertKey(physRegKey(target.intReturnReg));
-        uses.insertKey(physRegKey(target.f64ReturnReg));
-    }
+    const InstrEffects fx = effectsOf(instr, target);
+    uses.bits |= fx.uses.bits;
+    defs.bits |= fx.defs.bits;
 }
 
-/// @brief Append the block index for @p label to @p succs if not already present.
-/// @details Looks @p label up in the label-to-index map and appends the
-///          corresponding block index; duplicates are skipped. Used while
-///          building per-block successor lists for the liveness CFG walk.
-/// @param succs        Successor list being built (modified in place).
-/// @param labelToIndex Pre-built map from block name to block index.
-/// @param label        Branch target label to add as a successor.
-/// @return Nothing. Unknown labels and duplicate successors leave @p succs unchanged.
-void addUniqueSucc(std::vector<std::size_t> &succs,
-                   const std::unordered_map<std::string, std::size_t> &labelToIndex,
-                   const std::string &label) {
-    const auto it = labelToIndex.find(label);
-    if (it == labelToIndex.end())
-        return;
-    if (std::find(succs.begin(), succs.end(), it->second) == succs.end())
-        succs.push_back(it->second);
+/// @brief Test whether @p opc is a conditional branch (`B.cond`/`CBZ`/`CBNZ`/`TBZ`/`TBNZ`).
+/// @param opc Opcode to classify.
+/// @return True for one of the conditional-branch forms.
+[[nodiscard]] bool isConditionalBranchOpcode(MOpcode opc) noexcept {
+    return opc == MOpcode::BCond || opc == MOpcode::Cbz || opc == MOpcode::Cbnz ||
+           opc == MOpcode::Tbz || opc == MOpcode::Tbnz;
 }
 
-/// @brief Test whether @p instr is a conditional branch (`B.cond`/`CBZ`/`CBNZ`/`TBZ`/`TBNZ`).
+/// @brief Test whether @p instr leaves the block unconditionally.
+/// @details `Br`, `JumpTable`, `Ret`, and a direct call to a no-return runtime
+///          helper: nothing after such an instruction in the same block runs.
 /// @param instr Machine instruction to classify.
-/// @return True if @p instr's opcode is one of the conditional-branch forms.
-[[nodiscard]] bool isConditionalBranch(const MInstr &instr) noexcept {
-    return instr.opc == MOpcode::BCond || instr.opc == MOpcode::Cbz ||
-           instr.opc == MOpcode::Cbnz || instr.opc == MOpcode::Tbz || instr.opc == MOpcode::Tbnz;
+/// @return True when the block's straight-line flow ends at @p instr.
+[[nodiscard]] bool isUnconditionalExit(const MInstr &instr) noexcept {
+    return instr.opc == MOpcode::Br || instr.opc == MOpcode::JumpTable ||
+           instr.opc == MOpcode::Ret || isNoReturnCall(instr);
 }
 
 /// @brief Test whether @p opcode writes the NZCV flags.
@@ -479,68 +421,7 @@ void addUniqueSucc(std::vector<std::size_t> &succs,
 /// @param opcode Opcode to classify.
 /// @return True if @p opcode sets the NZCV flags.
 [[nodiscard]] bool setsFlagsForDCE(MOpcode opcode) noexcept {
-    switch (opcode) {
-        case MOpcode::CmpRR:
-        case MOpcode::CmpRI:
-        case MOpcode::TstRR:
-        case MOpcode::FCmpRR:
-        case MOpcode::AddsRRR:
-        case MOpcode::SubsRRR:
-        case MOpcode::AddsRI:
-        case MOpcode::SubsRI:
-            return true;
-        default:
-            return false;
-    }
-}
-
-/// @brief Build the successor list used by whole-function physical liveness.
-///
-/// Conditional branch targets are collected wherever they occur in a block.
-/// The final instruction determines direct-branch, jump-table, return, or
-/// no-return-call behavior; all other endings retain layout fallthrough.
-///
-/// @param fn Function whose block labels and terminators define the CFG.
-/// @return One deduplicated successor-index vector per basic block.
-[[nodiscard]] std::vector<std::vector<std::size_t>> buildSuccessors(const MFunction &fn) {
-    std::unordered_map<std::string, std::size_t> labelToIndex;
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i)
-        labelToIndex.emplace(fn.blocks[i].name, i);
-
-    std::vector<std::vector<std::size_t>> succs(fn.blocks.size());
-    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
-        /// Add the next layout block as this block's implicit fallthrough.
-        const auto addFallthrough = [&]() {
-            if (bi + 1 < fn.blocks.size())
-                succs[bi].push_back(bi + 1);
-        };
-
-        const auto &instrs = fn.blocks[bi].instrs;
-        if (instrs.empty()) {
-            addFallthrough();
-            continue;
-        }
-
-        for (const auto &instr : instrs) {
-            if (isConditionalBranch(instr) && instr.ops.size() >= 2 &&
-                instr.ops[1].kind == MOperand::Kind::Label)
-                addUniqueSucc(succs[bi], labelToIndex, instr.ops[1].label);
-        }
-
-        const auto &last = instrs.back();
-        if (last.opc == MOpcode::Br && !last.ops.empty() &&
-            last.ops[0].kind == MOperand::Kind::Label)
-            addUniqueSucc(succs[bi], labelToIndex, last.ops[0].label);
-        else if (last.opc == MOpcode::JumpTable) {
-            // Case labels start at operand 2; no fallthrough.
-            for (std::size_t k = 2; k < last.ops.size(); ++k) {
-                if (last.ops[k].kind == MOperand::Kind::Label)
-                    addUniqueSucc(succs[bi], labelToIndex, last.ops[k].label);
-            }
-        } else if (last.opc != MOpcode::Ret && !isNoReturnCall(last))
-            addFallthrough();
-    }
-    return succs;
+    return setsFlags(opcode);
 }
 
 } // namespace
@@ -552,47 +433,12 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
     if (fn.blocks.empty())
         return 0;
 
-    const auto successors = buildSuccessors(fn);
+    // The solved liveness runs over the shared CFG snapshot: the same edges the
+    // allocator and the verifier see (mid-block Br, no-return calls, jump
+    // tables, trailing conditional branches all classified once), and the
+    // same use/def facts as every other post-RA pass.
+    const PhysLiveness liveness = computePhysLiveness(fn, target);
     const std::size_t blockCount = fn.blocks.size();
-
-    std::vector<RegSet> gen(blockCount);
-    std::vector<RegSet> kill(blockCount);
-    std::vector<RegSet> liveIn(blockCount);
-    std::vector<RegSet> liveOut(blockCount);
-
-    for (std::size_t bi = 0; bi < blockCount; ++bi) {
-        for (const auto &instr : fn.blocks[bi].instrs) {
-            RegSet uses;
-            RegSet defs;
-            collectUsesDefs(instr, target, uses, defs);
-
-            gen[bi].bits |= uses.bits & ~kill[bi].bits;
-            kill[bi].bits |= defs.bits;
-        }
-    }
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        for (std::size_t bi = blockCount; bi-- > 0;) {
-            RegSet newOut;
-            if (successors[bi].empty()) {
-                addTargetExitLive(target, newOut);
-            } else {
-                for (std::size_t succ : successors[bi])
-                    newOut.bits |= liveIn[succ].bits;
-            }
-
-            RegSet newIn;
-            newIn.bits = gen[bi].bits | (newOut.bits & ~kill[bi].bits);
-
-            if (newOut.bits != liveOut[bi].bits || newIn.bits != liveIn[bi].bits) {
-                liveOut[bi] = newOut;
-                liveIn[bi] = newIn;
-                changed = true;
-            }
-        }
-    }
 
     std::size_t removed = 0;
     for (std::size_t bi = 0; bi < blockCount; ++bi) {
@@ -600,7 +446,11 @@ std::size_t removeDeadInstructionsCFG(MFunction &fn,
         if (instrs.empty())
             continue;
 
-        RegSet live = liveOut[bi];
+        // RegSet and PhysRegSet share one bit layout, so the exit-live seed
+        // (solved live-out, carried registers, SP/FP/LR, the return registers
+        // of a returning block) unions in directly.
+        RegSet live;
+        live.bits = blockExitLive(fn, bi, target, liveness).bits;
         std::vector<bool> toRemove(instrs.size(), false);
 
         for (std::size_t i = instrs.size(); i-- > 0;) {
@@ -697,36 +547,8 @@ std::size_t eliminateDeadFpStores(std::vector<MInstr> &instrs, PeepholeStats &st
 
 /// @copydoc removeDeadFlagSetters
 std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &stats) {
-    /// Test whether an instruction produces a new NZCV value.
-    auto setsFlags = [](MOpcode opc) -> bool {
-        switch (opc) {
-            case MOpcode::CmpRR:
-            case MOpcode::CmpRI:
-            case MOpcode::TstRR:
-            case MOpcode::FCmpRR:
-            case MOpcode::AddsRRR:
-            case MOpcode::SubsRRR:
-            case MOpcode::AddsRI:
-            case MOpcode::SubsRI:
-                return true;
-            default:
-                return false;
-        }
-    };
-
-    /// Test whether an instruction consumes the current NZCV value.
-    auto readsFlags = [](MOpcode opc) -> bool {
-        switch (opc) {
-            case MOpcode::BCond:
-            case MOpcode::Cset:
-            case MOpcode::Csel:
-            case MOpcode::FCsel:
-                return true;
-            default:
-                return false;
-        }
-    };
-
+    // NZCV producers and consumers come from the shared effects model
+    // (InstrEffects.hpp) so this pass cannot drift from the scheduler or DCE.
     std::vector<bool> toRemove(instrs.size(), false);
     std::size_t removed = 0;
 
@@ -762,7 +584,10 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
 }
 
 /// @copydoc foldComputeIntoTarget
-std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &stats) {
+std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs,
+                                  PeepholeStats &stats,
+                                  const TargetInfo &target,
+                                  const PhysRegSet &exitLive) {
     /// Test whether an opcode's explicit destination may be redirected safely.
     auto isSimpleALU = [](MOpcode opc) -> bool {
         switch (opc) {
@@ -820,32 +645,31 @@ std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &st
         if (interveningUse)
             continue;
 
+        // The ALU destination must be dead after the move: no read before its
+        // next write on any path out of the block. Reads and writes come from
+        // the shared effects model, so a call's argument registers and
+        // caller-saved clobbers and a return's result registers are modeled;
+        // a conditional branch falls through within this list, so the scan
+        // continues past it. At an unconditional exit (or the block's
+        // fallthrough end) the block's exit-live set decides (review item B1).
+        const PhysReg aluPhys = static_cast<PhysReg>(aluDst.reg.idOrPhys);
         bool aluDstDead = true;
+        bool reachesExit = true;
         for (std::size_t j = movIdx + 1; j < instrs.size(); ++j) {
-            if (isControlBoundary(instrs[j].opc)) {
-                // A conditional branch (b.cc trap guard, cbz/cbnz) falls
-                // through within this instruction list, so instructions after
-                // it may still read the ALU destination — the boundary proves
-                // nothing. Only give up the scan for unconditional transfers.
-                const bool conditional =
-                    instrs[j].opc == MOpcode::BCond || instrs[j].opc == MOpcode::Cbz ||
-                    instrs[j].opc == MOpcode::Cbnz || instrs[j].opc == MOpcode::Tbz ||
-                    instrs[j].opc == MOpcode::Tbnz;
-                if (!conditional)
-                    break;
-                if (usesReg(instrs[j], aluDst)) {
-                    aluDstDead = false;
-                    break;
-                }
-                continue;
-            }
-            if (usesReg(instrs[j], aluDst)) {
+            const InstrEffects fx = effectsOf(instrs[j], target);
+            if (fx.uses.contains(aluPhys)) {
                 aluDstDead = false;
                 break;
             }
-            if (definesReg(instrs[j], aluDst))
+            if (fx.defs.contains(aluPhys)) {
+                reachesExit = false;
+                break;
+            }
+            if (isUnconditionalExit(instrs[j]))
                 break;
         }
+        if (aluDstDead && reachesExit && exitLive.contains(aluPhys))
+            aluDstDead = false;
         if (!aluDstDead)
             continue;
 
@@ -898,31 +722,28 @@ std::size_t eliminateDeadFpStoresCrossBlock(MFunction &fn, PeepholeStats &stats)
         return eligibleOffsets.count(off) != 0 && loadedOffsets.count(off) == 0;
     };
     for (auto &bb : fn.blocks) {
-        bb.instrs.erase(std::remove_if(bb.instrs.begin(),
-                                       bb.instrs.end(),
-                                       /// Select scalar and paired spill stores
-                                       /// whose complete covered range is dead.
-                                       [&](const MInstr &mi) {
-                                           if ((mi.opc == MOpcode::StrRegFpImm ||
-                                                mi.opc == MOpcode::StrFprFpImm) &&
-                                               mi.ops.size() >= 2 &&
-                                               mi.ops[1].kind == MOperand::Kind::Imm &&
-                                               deadSingle(mi.ops[1].imm)) {
-                                               ++removed;
-                                               return true;
-                                           }
-                                           if ((mi.opc == MOpcode::StpRegFpImm ||
-                                                mi.opc == MOpcode::StpFprFpImm) &&
-                                               mi.ops.size() >= 3 &&
-                                               mi.ops[2].kind == MOperand::Kind::Imm &&
-                                               deadSingle(mi.ops[2].imm) &&
-                                               deadSingle(mi.ops[2].imm + 8)) {
-                                               ++removed;
-                                               return true;
-                                           }
-                                           return false;
-                                       }),
-                        bb.instrs.end());
+        bb.instrs.erase(
+            std::remove_if(
+                bb.instrs.begin(),
+                bb.instrs.end(),
+                /// Select scalar and paired spill stores
+                /// whose complete covered range is dead.
+                [&](const MInstr &mi) {
+                    if ((mi.opc == MOpcode::StrRegFpImm || mi.opc == MOpcode::StrFprFpImm) &&
+                        mi.ops.size() >= 2 && mi.ops[1].kind == MOperand::Kind::Imm &&
+                        deadSingle(mi.ops[1].imm)) {
+                        ++removed;
+                        return true;
+                    }
+                    if ((mi.opc == MOpcode::StpRegFpImm || mi.opc == MOpcode::StpFprFpImm) &&
+                        mi.ops.size() >= 3 && mi.ops[2].kind == MOperand::Kind::Imm &&
+                        deadSingle(mi.ops[2].imm) && deadSingle(mi.ops[2].imm + 8)) {
+                        ++removed;
+                        return true;
+                    }
+                    return false;
+                }),
+            bb.instrs.end());
     }
     stats.deadInstructionsRemoved += static_cast<int>(removed);
     return removed;

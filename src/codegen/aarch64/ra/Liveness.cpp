@@ -29,8 +29,8 @@
 #include "Liveness.hpp"
 
 #include "OperandRoles.hpp"
+#include "codegen/aarch64/MirCfg.hpp"
 #include "codegen/aarch64/Noreturn.hpp"
-#include "codegen/common/ra/CfgExtract.hpp"
 #include "codegen/common/ra/DataflowLiveness.hpp"
 
 #include <algorithm>
@@ -50,7 +50,6 @@ void LivenessAnalysis::run(const MFunction &func) {
 
     buildBlockIndex(func);
     buildCFG(func);
-    preds_ = zanna::codegen::ra::buildPredecessors(succs_);
     computeLiveOutSets(func);
 }
 
@@ -60,51 +59,53 @@ void LivenessAnalysis::buildBlockIndex(const MFunction &func) {
         blockIndex_[func.blocks[i].name] = i;
 }
 
-/// @copydoc LivenessAnalysis::buildCFG
-void LivenessAnalysis::buildCFG(const MFunction &func) {
+/// @copydoc classifyControlFlow
+zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &mi) {
+    using Desc = zanna::codegen::ra::BranchDesc;
     /// Return the label operand used by register-test conditional branches.
-    const auto condTarget = [](const MInstr &mi) -> const std::string * {
-        if (mi.ops.size() >= 2 && mi.ops[1].kind == MOperand::Kind::Label)
-            return &mi.ops[1].label;
+    const auto condTarget = [](const MInstr &instr) -> const std::string * {
+        if (instr.ops.size() >= 2 && instr.ops[1].kind == MOperand::Kind::Label)
+            return &instr.ops[1].label;
         return nullptr;
     };
 
-    succs_ = zanna::codegen::ra::extractSuccessors(
-        func.blocks,
-        blockIndex_,
-        /// Expose the instruction vector expected by the generic CFG extractor.
-        [](const MBasicBlock &bb) -> const std::vector<MInstr> & { return bb.instrs; },
-        /// Translate an AArch64 instruction into the generic branch descriptor.
-        [&](const MInstr &mi) {
-            using Desc = zanna::codegen::ra::BranchDesc;
-            switch (mi.opc) {
-                case MOpcode::Br:
-                    if (!mi.ops.empty() && mi.ops[0].kind == MOperand::Kind::Label)
-                        return Desc{Desc::Kind::Uncond, &mi.ops[0].label};
-                    return Desc{Desc::Kind::Uncond, nullptr};
-                case MOpcode::BCond:
-                case MOpcode::Cbz:
-                case MOpcode::Cbnz:
-                case MOpcode::Tbz:
-                case MOpcode::Tbnz:
-                    return Desc{Desc::Kind::Cond, condTarget(mi)};
-                case MOpcode::JumpTable: {
-                    // Case labels start at operand 2 ([0]=index, [1]=name).
-                    Desc desc{Desc::Kind::Multi, nullptr};
-                    for (std::size_t k = 2; k < mi.ops.size(); ++k) {
-                        if (mi.ops[k].kind == MOperand::Kind::Label)
-                            desc.multiTargets.push_back(&mi.ops[k].label);
-                    }
-                    return desc;
-                }
-                case MOpcode::Ret:
-                    return Desc{Desc::Kind::Return, nullptr};
-                default:
-                    if (isNoReturnCall(mi))
-                        return Desc{Desc::Kind::NoReturn, nullptr};
-                    return Desc{Desc::Kind::None, nullptr};
+    switch (mi.opc) {
+        case MOpcode::Br:
+            if (!mi.ops.empty() && mi.ops[0].kind == MOperand::Kind::Label)
+                return Desc{Desc::Kind::Uncond, &mi.ops[0].label};
+            return Desc{Desc::Kind::Uncond, nullptr};
+        case MOpcode::BCond:
+        case MOpcode::Cbz:
+        case MOpcode::Cbnz:
+        case MOpcode::Tbz:
+        case MOpcode::Tbnz:
+            return Desc{Desc::Kind::Cond, condTarget(mi)};
+        case MOpcode::JumpTable: {
+            // Case labels start at operand 2 ([0]=index, [1]=name).
+            Desc desc{Desc::Kind::Multi, nullptr};
+            for (std::size_t k = 2; k < mi.ops.size(); ++k) {
+                if (mi.ops[k].kind == MOperand::Kind::Label)
+                    desc.multiTargets.push_back(&mi.ops[k].label);
             }
-        });
+            return desc;
+        }
+        case MOpcode::Ret:
+            return Desc{Desc::Kind::Return, nullptr};
+        default:
+            if (isNoReturnCall(mi))
+                return Desc{Desc::Kind::NoReturn, nullptr};
+            return Desc{Desc::Kind::None, nullptr};
+    }
+}
+
+/// @copydoc LivenessAnalysis::buildCFG
+void LivenessAnalysis::buildCFG(const MFunction &func) {
+    // The shared MirCfg snapshot is the one CFG every consumer sees; the
+    // allocator keeps its own copy of the tables because the analysis object
+    // outlives the snapshot.
+    const MirCfg cfg(func);
+    succs_ = cfg.successors();
+    preds_ = cfg.predecessors();
 }
 
 /// @copydoc LivenessAnalysis::computeLiveOutSets

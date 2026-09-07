@@ -143,6 +143,11 @@ std::pair<bool, bool> operandRoles(const MInstr &ins, std::size_t idx) {
     if ((ins.opc == MOpcode::PhiStoreGPR || ins.opc == MOpcode::PhiStoreFPR) && idx == 0)
         return {true, false};
 
+    // ParallelCopy: dst0, src0, dst1, src1, ... — even operands are written,
+    // odd operands are read, all pairs simultaneously (same as x86 PX_COPY).
+    if (ins.opc == MOpcode::ParallelCopy)
+        return {(idx % 2) == 1, (idx % 2) == 0};
+
     // AddFpImm: dst = fp + imm (alloca address materialisation).
     // Operand 0 is def-only (the computed address); operand 1 is an immediate.
     if (ins.opc == MOpcode::AddFpImm)
@@ -218,8 +223,9 @@ std::pair<bool, bool> operandRoles(const MInstr &ins, std::size_t idx) {
     if (idx < ins.ops.size() && ins.ops[idx].kind != MOperand::Kind::Reg)
         return {false, false};
 
-    throw std::logic_error("AArch64 register allocator: unclassified MIR register operand role for " +
-                           std::string(opcodeName(ins.opc)));
+    throw std::logic_error(
+        "AArch64 register allocator: unclassified MIR register operand role for " +
+        std::string(opcodeName(ins.opc)));
 }
 
 } // namespace zanna::codegen::aarch64::ra

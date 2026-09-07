@@ -125,8 +125,7 @@ namespace {
     if (cold.instrs.empty())
         return false;
     const MInstr &coldLast = cold.instrs.back();
-    return coldLast.opc == MOpcode::Br || coldLast.opc == MOpcode::Ret ||
-           isNoReturnCall(coldLast);
+    return coldLast.opc == MOpcode::Br || coldLast.opc == MOpcode::Ret || isNoReturnCall(coldLast);
 }
 
 } // namespace
@@ -245,19 +244,19 @@ bool tryCbzCbnzFusion(std::vector<MInstr> &instrs, std::size_t idx, PeepholeStat
 /// @details A single-bit mask followed by a compare-to-zero branch tests exactly
 ///          one bit, which TBZ/TBNZ does directly. Fusion requires the mask
 ///          destination to be dead after the branch: an in-block deadness scan
-///          plus the carried-exit-register check for invisible successor uses.
+///          plus the exit-live check for successor uses.
 ///          When `Xd == Xn` the erased AND leaves the source unmodified, which
 ///          is still correct — the bit test reads the original value.
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the single-bit AND candidate.
 /// @param stats  Peephole statistics counter (incremented on success).
-/// @param carriedExitRegs Optional sorted list of registers carried live across
-///        the enclosing block's exit (see tryCsetBranchFusion).
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (see tryCsetBranchFusion).
 /// @return True if the fusion was applied at @p idx.
 bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
                       std::size_t idx,
                       PeepholeStats &stats,
-                      const std::vector<uint16_t> *carriedExitRegs) {
+                      const PhysRegSet *exitLive) {
     if (idx + 1 >= instrs.size())
         return false;
 
@@ -285,8 +284,7 @@ bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
     // its branch, so scan forward rather than requiring adjacency. The source
     // register is read at the branch position after fusion, so any
     // redefinition of it (or of the mask result) aborts the scan.
-    if (carriedExitRegs != nullptr &&
-        std::binary_search(carriedExitRegs->begin(), carriedExitRegs->end(), dstReg.reg.idOrPhys))
+    if (exitLiveContains(exitLive, dstReg))
         return false;
 
     // Verify the mask result is dead after position @p after, then rewrite
@@ -396,13 +394,13 @@ bool tryTbzTbnzFusion(std::vector<MInstr> &instrs,
 /// @param instrs Instruction list being scanned (mutated in place).
 /// @param idx    Index of the `CSET` to consider.
 /// @param stats  Peephole statistics counter (incremented on success).
-/// @param carriedExitRegs Optional sorted live-through register identifiers;
-///        fusion is rejected when it contains the `Cset` destination.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit; fusion is rejected when it contains the `Cset` destination.
 /// @return True if the fusion was applied at @p idx.
 bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
                          std::size_t idx,
                          PeepholeStats &stats,
-                         const std::vector<uint16_t> *carriedExitRegs) {
+                         const PhysRegSet *exitLive) {
     if (idx >= instrs.size())
         return false;
 
@@ -418,13 +416,10 @@ bool tryCsetBranchFusion(std::vector<MInstr> &instrs,
     if (!cond)
         return false;
 
-    // A CSET whose destination is carried live across the block's exit has an
-    // invisible consumer in a successor; the in-block deadness scan below
-    // cannot see it, so refuse the fusion outright.
-    if (carriedExitRegs != nullptr && csetReg.kind == MOperand::Kind::Reg && csetReg.reg.isPhys &&
-        std::binary_search(carriedExitRegs->begin(),
-                           carriedExitRegs->end(),
-                           csetReg.reg.idOrPhys))
+    // A CSET whose destination is live across the block's exit has a consumer
+    // in a successor; the in-block deadness scan below cannot see it, so
+    // refuse the fusion outright.
+    if (exitLiveContains(exitLive, csetReg))
         return false;
 
     for (std::size_t j = idx + 1; j < instrs.size(); ++j) {

@@ -61,8 +61,8 @@ struct CorpusCase {
 void compileAssembly(const fs::path &input, const fs::path &output) {
     const std::string in = input.string();
     const std::string out = output.string();
-    const char *argv[] = {in.c_str(), "-S", out.c_str(), "-O0", "--target-darwin"};
-    const int rc = zanna::tools::ilc::cmd_codegen_arm64(5, const_cast<char **>(argv));
+    const char *argv[] = {in.c_str(), "-S", out.c_str(), "-O0", "--target-darwin", "--verify-mir"};
+    const int rc = zanna::tools::ilc::cmd_codegen_arm64(6, const_cast<char **>(argv));
     if (rc != 0) {
         std::cerr << "AArch64 corpus compile failed for " << input << " rc=" << rc << '\n';
         assert(false && "AArch64 shared corpus compile failed");

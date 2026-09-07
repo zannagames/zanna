@@ -415,11 +415,17 @@ struct PhiAssignment {
     std::unordered_map<std::string, std::vector<int>> spillOffset;
 };
 
-/// @brief Allocate canonical vregs and frame spills for non-entry block parameters.
+/// @brief Allocate canonical vregs (and, in frame-slot mode, spill slots) for
+///        non-entry block parameters.
 /// @param fn Function whose block parameters are assigned.
 /// @param fb Frame builder receiving phi spill slots.
+/// @param withSlots Whether each parameter also gets a frame slot (the
+///        frame-slot lowering mode); in edge-copy mode the phi vreg itself is
+///        the parameter's home and `spillOffset` stays empty.
 /// @return Parallel maps keyed by block label.
-static PhiAssignment allocatePhiSlots(const il::core::Function &fn, FrameBuilder &fb) {
+static PhiAssignment allocatePhiSlots(const il::core::Function &fn,
+                                      FrameBuilder &fb,
+                                      bool withSlots) {
     PhiAssignment out;
     uint16_t phiNextId = kPhiVRegStart; // reserve a distinct vreg range
     for (std::size_t bi = 1; bi < fn.blocks.size(); ++bi) {
@@ -438,13 +444,65 @@ static PhiAssignment allocatePhiSlots(const il::core::Function &fn, FrameBuilder
             const RegClass cls =
                 (param.type.kind == il::core::Type::Kind::F64) ? RegClass::FPR : RegClass::GPR;
             classes.push_back(cls);
-            spillOffsets.push_back(fb.ensureSpill(id));
+            if (withSlots)
+                spillOffsets.push_back(fb.ensureSpill(id));
         }
         out.vregId.emplace(bb.label, std::move(ids));
         out.regClass.emplace(bb.label, std::move(classes));
-        out.spillOffset.emplace(bb.label, std::move(spillOffsets));
+        if (withSlots)
+            out.spillOffset.emplace(bb.label, std::move(spillOffsets));
     }
     return out;
+}
+
+/// @brief Block lowering order for the edge-copy mode: reverse post-order from
+///        the entry over terminator labels, unreachable blocks last in text order.
+/// @details Cross-block temporaries keep one virtual register for the whole
+///          function in that mode, so every use must be lowered after its
+///          definition; reverse post-order guarantees that (a definition
+///          dominates its uses, and dominators precede dominated blocks in RPO)
+///          whatever the textual block order of the IL. The MIR block vector
+///          keeps the IL order; only the visiting order changes.
+/// @param fn Function whose blocks are ordered.
+/// @return Block indices in lowering order.
+static std::vector<std::size_t> edgeCopyLoweringOrder(const il::core::Function &fn) {
+    std::unordered_map<std::string, std::size_t> indexOf;
+    indexOf.reserve(fn.blocks.size());
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i)
+        indexOf.emplace(fn.blocks[i].label, i);
+
+    std::vector<char> seen(fn.blocks.size(), 0);
+    std::vector<std::size_t> postOrder;
+    postOrder.reserve(fn.blocks.size());
+    if (!fn.blocks.empty()) {
+        // Iterative DFS: (block, next successor position).
+        std::vector<std::pair<std::size_t, std::size_t>> stack;
+        stack.emplace_back(0, 0);
+        seen[0] = 1;
+        while (!stack.empty()) {
+            auto &[bi, pos] = stack.back();
+            const auto &instrs = fn.blocks[bi].instructions;
+            const il::core::Instr *term = instrs.empty() ? nullptr : &instrs.back();
+            const std::size_t succCount = term ? term->labels.size() : 0;
+            if (pos < succCount) {
+                const auto it = indexOf.find(term->labels[pos]);
+                ++pos;
+                if (it == indexOf.end() || seen[it->second])
+                    continue;
+                seen[it->second] = 1;
+                stack.emplace_back(it->second, 0);
+                continue;
+            }
+            postOrder.push_back(bi);
+            stack.pop_back();
+        }
+    }
+
+    std::vector<std::size_t> order(postOrder.rbegin(), postOrder.rend());
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i)
+        if (!seen[i])
+            order.push_back(i);
+    return order;
 }
 
 } // namespace
@@ -492,16 +550,21 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     FrameBuilder fb{mf};
     const std::unordered_set<unsigned> allocaTemps = setupFrameLocals(fn, fb);
 
-    // Phase 2: Assign canonical phi vregs + spill slots for non-entry block params.
-    PhiAssignment phi = allocatePhiSlots(fn, fb);
+    // Phase 2: Assign canonical phi vregs (+ spill slots in frame-slot mode)
+    // for non-entry block params.
+    PhiAssignment phi = allocatePhiSlots(fn, fb, /*withSlots=*/!edgeCopies_);
     auto &phiVregId = phi.vregId;
     auto &phiRegClass = phi.regClass;
     auto &phiSpillOffset = phi.spillOffset;
 
     // ===========================================================================
-    // Global Liveness Analysis for Cross-Block Temps
+    // Global Liveness Analysis for Cross-Block Temps (frame-slot mode only: in
+    // edge-copy mode a temporary keeps its virtual register everywhere, so the
+    // maps stay empty and no def-site store or block-entry reload is emitted)
     // ===========================================================================
-    LivenessInfo liveness = analyzeCrossBlockLiveness(fn, allocaTemps, fb);
+    LivenessInfo liveness;
+    if (!edgeCopies_)
+        liveness = analyzeCrossBlockLiveness(fn, allocaTemps, fb);
 
     // Try fast-paths for simple function patterns
     if (auto result =
@@ -537,7 +600,18 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     // entries, but the terminator loop for the DEFINING block needs the original vreg.
     std::vector<std::unordered_map<unsigned, uint16_t>> blockTempVRegSnapshot(fn.blocks.size());
 
-    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+    // Frame-slot mode lowers blocks in IL order (slots make the order
+    // irrelevant); edge-copy mode lowers definitions before uses.
+    std::vector<std::size_t> loweringOrder;
+    if (edgeCopies_) {
+        loweringOrder = edgeCopyLoweringOrder(fn);
+    } else {
+        loweringOrder.resize(fn.blocks.size());
+        for (std::size_t i = 0; i < loweringOrder.size(); ++i)
+            loweringOrder[i] = i;
+    }
+
+    for (const std::size_t bi : loweringOrder) {
         const auto &bbIn = fn.blocks[bi];
         // NOTE: We use index bi to access mf.blocks[bi] instead of a reference because
         // instruction lowering can add new trap blocks via emplace_back(), which may
@@ -595,6 +669,21 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
                                   funcParamSpillOffset,
                                   liveness.crossBlockSpillOffset,
                                   nextVRegId);
+
+        // Edge-copy mode: a block parameter *is* its phi vreg. Every incoming
+        // edge's ParallelCopy writes it, so the block reads it directly.
+        if (edgeCopies_ && bi != 0) {
+            if (auto itIds = phiVregId.find(bbIn.label); itIds != phiVregId.end()) {
+                const auto &ids = itIds->second;
+                for (std::size_t pi = 0; pi < bbIn.params.size() && pi < ids.size(); ++pi) {
+                    const unsigned paramId = bbIn.params[pi].id;
+                    tempVReg[paramId] = ids[pi];
+                    tempRegClass[paramId] = (bbIn.params[pi].type.kind == il::core::Type::Kind::F64)
+                                                ? RegClass::FPR
+                                                : RegClass::GPR;
+                }
+            }
+        }
 
         // Load block parameters from spill slots into fresh vregs at block entry.
         // The edge copies store values to these spill slots before branching here.
@@ -939,7 +1028,8 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
                      phiSpillOffset,
                      blockTempVRegSnapshot,
                      tempRegClass,
-                     nextVRegId);
+                     nextVRegId,
+                     edgeCopies_);
 
     // Materialise the shared trap blocks requested during lowering. Sort by
     // label so emission order is deterministic across STL implementations.

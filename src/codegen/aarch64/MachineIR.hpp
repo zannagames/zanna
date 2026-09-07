@@ -194,12 +194,14 @@ struct MBasicBlock {
     std::string name;           ///< Block label (used for branches).
     std::vector<MInstr> instrs; ///< Instructions in program order.
 
-    /// Physical registers (PhysReg values) the register allocator may carry
-    /// live across this block's exit WITHOUT any instruction in this block
-    /// referencing them: a single-predecessor successor can re-adopt a value
-    /// directly from the register it occupied at this block's end. Post-RA
-    /// block-local rewrites must treat these registers as live-out — no
-    /// instruction marks their liveness. Populated during allocation; sorted.
+    /// Physical registers (PhysReg values) the block-local register allocator
+    /// carries live across this block's exit WITHOUT any instruction in this
+    /// block referencing them: a single-predecessor successor re-adopts the
+    /// value directly from the register it occupied at this block's end (and
+    /// reads it there, so the solved physical liveness — PhysLiveness.hpp —
+    /// already contains every carried register). Post-RA rewrites read
+    /// blockExitLive(), which unions this set in as a safety net while the
+    /// block-local allocator exists. Populated during allocation; sorted.
     std::vector<uint16_t> carriedExitRegs;
 };
 

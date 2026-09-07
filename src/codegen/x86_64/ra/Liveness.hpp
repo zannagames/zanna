@@ -35,6 +35,7 @@
 #pragma once
 
 #include "../MachineIR.hpp"
+#include "codegen/common/ra/CfgExtract.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -44,6 +45,20 @@
 #include <vector>
 
 namespace zanna::codegen::x64::ra {
+
+/// @brief Classify one instruction's control-flow effect for CFG extraction.
+/// @details The single x86-64 branch classifier: `JCC` contributes a
+///          conditional edge and keeps scanning (a block may legally contain
+///          several JCCs before its final JMP, e.g. switch compare cascades);
+///          `JMP` is unconditional, `JUMPTABLE` multi-way (case labels from
+///          operand 2), `RET` returns, and `UD2` never falls through. CALL
+///          label operands are deliberately not branch targets. MirCfg
+///          (codegen/x86_64/MirCfg.hpp) is built from this classifier and is
+///          what every CFG consumer (allocator liveness, verifier, layout
+///          peepholes) reads, so they all see identical edges.
+/// @param instr Instruction to classify.
+/// @return Descriptor whose target pointers refer to labels owned by @p instr.
+[[nodiscard]] zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr);
 
 /// @brief CFG-aware liveness analysis over Machine IR blocks.
 ///

@@ -31,8 +31,8 @@
 #include "Liveness.hpp"
 
 #include "codegen/common/ICE.hpp"
-#include "codegen/common/ra/CfgExtract.hpp"
 #include "codegen/common/ra/DataflowLiveness.hpp"
+#include "codegen/x86_64/MirCfg.hpp"
 #include "codegen/x86_64/OperandRoles.hpp"
 
 #include <algorithm>
@@ -69,14 +69,9 @@ const std::string *firstLabelOperand(const MInstr &instr) {
     return nullptr;
 }
 
-/// @brief Classify @p instr for shared CFG extraction.
-/// @details JCC contributes a conditional edge and keeps scanning (a block may
-///          legally contain several JCCs before its final JMP, e.g. switch
-///          compare cascades); JMP/RET/UD2 end the scan. CALL label operands
-///          are deliberately NOT treated as branch targets.
-/// @param instr Machine instruction to classify.
-/// @return Backend-neutral branch descriptor. Any target pointers refer to
-///         label strings owned by @p instr.
+} // namespace
+
+/// @copydoc classifyControlFlow
 zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr) {
     using Desc = zanna::codegen::ra::BranchDesc;
     switch (instr.opcode) {
@@ -102,8 +97,6 @@ zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr) {
     }
 }
 
-} // namespace
-
 /// @brief Top-level: build CFG, gen/kill, and solve backward dataflow.
 /// @details Initialises per-block data containers, populates the label
 ///          index, builds successor/predecessor relations, computes
@@ -123,7 +116,6 @@ void LivenessAnalysis::run(const MFunction &func) {
 
     buildBlockIndex(func);
     buildCFG(func);
-    preds_ = zanna::codegen::ra::buildPredecessors(succs_);
     computeGenKill(func);
 
     // Delegate to the shared backward dataflow solver.
@@ -143,8 +135,8 @@ void LivenessAnalysis::buildBlockIndex(const MFunction &func) {
         blockIndex_[func.blocks[i].label] = i;
 }
 
-/// @brief Compute the successor list for every block in @p func.
-/// @details Delegates to the shared forward-scanning extractor so that every
+/// @brief Copy the successor/predecessor relations out of a MirCfg snapshot.
+/// @details MirCfg uses the shared forward-scanning extractor so that every
 ///          conditional branch in a block contributes an edge (the previous
 ///          backward scan honored only the JCC nearest the final JMP, which
 ///          silently dropped switch-cascade successors). RET/UD2 produce no
@@ -170,17 +162,12 @@ void LivenessAnalysis::buildCFG(const MFunction &func) {
         }
     }
 
-    /// @brief Exposes a block's instruction sequence to the CFG extractor.
-    /// @param block Machine basic block.
-    /// @return Block instruction vector.
-    succs_ = zanna::codegen::ra::extractSuccessors(
-        func.blocks,
-        blockIndex_,
-        [](const MBasicBlock &block) -> const std::vector<MInstr> & { return block.instructions; },
-        /// @brief Classifies one instruction's control-flow behavior.
-        /// @param instr Machine instruction to classify.
-        /// @return Control-flow classification used by CFG extraction.
-        [](const MInstr &instr) { return classifyControlFlow(instr); });
+    // The shared MirCfg snapshot is the one CFG every consumer sees; the
+    // allocator keeps its own copy of the tables because the analysis object
+    // outlives the snapshot.
+    const MirCfg cfg(func);
+    succs_ = cfg.successors();
+    preds_ = cfg.predecessors();
 }
 
 /// @brief Decompose an instruction's operands into use/def vreg lists.

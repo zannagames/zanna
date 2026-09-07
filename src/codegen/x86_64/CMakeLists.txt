@@ -13,6 +13,8 @@ add_library(zanna_codegen_x86_64 STATIC
         FrameLowering.cpp
         CallLowering.cpp
         OperandRoles.cpp
+        MirCfg.cpp
+        MirVerify.cpp
         PreRegAllocOpt.cpp
         ISel.cpp
         LowerDiv.cpp
@@ -42,6 +44,8 @@ add_library(zanna_codegen_x86_64 STATIC
         passes/RegAllocPass.cpp
         passes/SchedulerPass.cpp
         passes/PeepholePass.cpp
+        passes/CodegenStatsPass.cpp
+        CodegenStats.cpp
         passes/EmitPass.cpp
         passes/BinaryEmitPass.cpp
 )

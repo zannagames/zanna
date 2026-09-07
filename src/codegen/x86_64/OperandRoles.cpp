@@ -375,6 +375,10 @@ PhysRegMask implicitDefMask(MOpcode opcode) noexcept {
         case MOpcode::MULr:
         case MOpcode::IMULr:
             return physRegBit(PhysReg::RAX) | physRegBit(PhysReg::RDX);
+        case MOpcode::JUMPTABLE:
+            // The dispatch sequence materializes the table address and the
+            // scaled entry through the reserved R10/R11 scratch registers.
+            return physRegBit(PhysReg::R10) | physRegBit(PhysReg::R11);
         default:
             return 0;
     }
@@ -396,6 +400,87 @@ PhysRegMask implicitUseMask(MOpcode opcode) noexcept {
         default:
             return 0;
     }
+}
+
+InstrEffects effectsOf(const MInstr &instr, const TargetInfo &target) {
+    InstrEffects fx;
+    for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
+        const auto [isUse, isDef] = operandRoles(instr, idx);
+        const Operand &op = instr.operands[idx];
+        if (const auto *reg = std::get_if<OpReg>(&op)) {
+            if (!reg->isPhys)
+                continue;
+            const auto phys = static_cast<PhysReg>(reg->idOrPhys);
+            if (isUse)
+                fx.uses |= physRegBit(phys);
+            if (isDef)
+                fx.defs |= physRegBit(phys);
+            continue;
+        }
+        if (const auto *mem = std::get_if<OpMem>(&op)) {
+            // Address registers are always reads, whatever the operand's role.
+            if (mem->base.isPhys)
+                fx.uses |= physRegBit(static_cast<PhysReg>(mem->base.idOrPhys));
+            if (mem->hasIndex && mem->index.isPhys)
+                fx.uses |= physRegBit(static_cast<PhysReg>(mem->index.idOrPhys));
+            // The role table classifies a memory operand as an address read
+            // whatever the instruction does with the location, so the access
+            // direction comes from the opcode: the register-to-memory move
+            // forms store, everything else (except LEA) loads.
+            if (instr.opcode == MOpcode::MOVrm || instr.opcode == MOpcode::MOVSDrm ||
+                instr.opcode == MOpcode::MOVUPSrm) {
+                fx.memWrite = true;
+            } else if (instr.opcode != MOpcode::LEA) {
+                fx.memRead = true;
+            }
+        }
+    }
+    fx.uses |= implicitUseMask(instr.opcode);
+    fx.defs |= implicitDefMask(instr.opcode);
+    fx.readsFlags = usesEFlags(instr.opcode);
+    fx.writesFlags = definesEFlags(instr.opcode);
+
+    switch (instr.opcode) {
+        case MOpcode::CALL: {
+            fx.isCall = true;
+            fx.memRead = true;
+            fx.memWrite = true;
+            fx.writesFlags = true;
+            for (std::size_t i = 0; i < target.maxGPRArgs && i < target.intArgOrder.size(); ++i)
+                fx.uses |= physRegBit(target.intArgOrder[i]);
+            for (std::size_t i = 0; i < target.maxFPArgs && i < target.f64ArgOrder.size(); ++i)
+                fx.uses |= physRegBit(target.f64ArgOrder[i]);
+            fx.uses |= physRegBit(PhysReg::RSP) | physRegBit(PhysReg::RAX); // AL: vararg count
+            for (PhysReg reg : target.callerSavedGPR)
+                fx.defs |= physRegBit(reg);
+            for (PhysReg reg : target.callerSavedFPR)
+                fx.defs |= physRegBit(reg);
+            break;
+        }
+        case MOpcode::RET:
+            fx.isTerminator = true;
+            fx.uses |= physRegBit(target.intReturnReg) | physRegBit(target.f64ReturnReg) |
+                       physRegBit(PhysReg::RSP);
+            break;
+        case MOpcode::JMP:
+        case MOpcode::JCC:
+        case MOpcode::JUMPTABLE:
+        case MOpcode::UD2:
+            fx.isTerminator = true;
+            break;
+        case MOpcode::PUSH:
+        case MOpcode::POP:
+            fx.uses |= physRegBit(PhysReg::RSP);
+            fx.defs |= physRegBit(PhysReg::RSP);
+            if (instr.opcode == MOpcode::PUSH)
+                fx.memWrite = true;
+            else
+                fx.memRead = true;
+            break;
+        default:
+            break;
+    }
+    return fx;
 }
 
 } // namespace zanna::codegen::x64

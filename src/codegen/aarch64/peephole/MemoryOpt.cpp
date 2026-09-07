@@ -24,6 +24,7 @@
 #include "MemoryOpt.hpp"
 
 #include "PeepholeCommon.hpp"
+#include "codegen/aarch64/InstrEffects.hpp"
 
 #include <limits>
 
@@ -248,9 +249,8 @@ std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats)
                 break;
 
             if (next.opc == MOpcode::Br || next.opc == MOpcode::BCond || next.opc == MOpcode::Ret ||
-                next.opc == MOpcode::Cbz || next.opc == MOpcode::Cbnz ||
-                next.opc == MOpcode::Tbz || next.opc == MOpcode::Tbnz ||
-                next.opc == MOpcode::JumpTable)
+                next.opc == MOpcode::Cbz || next.opc == MOpcode::Cbnz || next.opc == MOpcode::Tbz ||
+                next.opc == MOpcode::Tbnz || next.opc == MOpcode::JumpTable)
                 break;
 
             if (isBaseRelativeMemory(next.opc))
@@ -270,7 +270,11 @@ std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats)
 /// @param idx    Index of the `MUL` to consider as the multiply half of the fusion.
 /// @param stats  Peephole statistics counter (incremented on success).
 /// @return True if the fusion was applied.
-bool tryMaddFusion(std::vector<MInstr> &instrs, std::size_t idx, PeepholeStats &stats) {
+bool tryMaddFusion(std::vector<MInstr> &instrs,
+                   std::size_t idx,
+                   PeepholeStats &stats,
+                   const TargetInfo &target,
+                   const PhysRegSet &exitLive) {
     if (idx + 1 >= instrs.size())
         return false;
 
@@ -301,12 +305,27 @@ bool tryMaddFusion(std::vector<MInstr> &instrs, std::size_t idx, PeepholeStats &
         return false;
     }
 
+    // The multiply destination must be dead after the add. Reads and writes
+    // come from the shared effects model (a call reads its argument registers
+    // and clobbers the caller-saved set; a return reads the result registers);
+    // when the scan reaches the block exit without a redefinition, the
+    // block's exit-live set decides (review item B1).
+    const PhysReg mulPhys = static_cast<PhysReg>(mulDst.reg.idOrPhys);
+    bool reachesExit = true;
     for (std::size_t i = idx + 2; i < instrs.size(); ++i) {
-        if (usesReg(instrs[i], mulDst))
+        const InstrEffects fx = effectsOf(instrs[i], target);
+        if (fx.uses.contains(mulPhys))
             return false;
-        if (definesReg(instrs[i], mulDst))
+        if (fx.defs.contains(mulPhys)) {
+            reachesExit = false;
+            break;
+        }
+        if (instrs[i].opc == MOpcode::Br || instrs[i].opc == MOpcode::JumpTable ||
+            instrs[i].opc == MOpcode::Ret || fx.isNoReturn)
             break;
     }
+    if (reachesExit && exitLive.contains(mulPhys))
+        return false;
 
     const MOperand addDst = addInstr.ops[0];
     mulInstr.opc = MOpcode::MAddRRRR;

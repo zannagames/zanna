@@ -14,14 +14,19 @@
 //   - Entry block always stays first in the layout.
 //   - Branch chain resolution detects cycles and leaves cyclic chains unchanged.
 //   - All control-flow rewrites preserve semantic equivalence.
+//   - Fallthrough facts come from the shared MirCfg, not a private
+//     terminator scan, so layout agrees with the allocator and the verifier.
 // Ownership/Lifetime:
 //   - Stateless; all state is owned by the caller.
 // Links: src/codegen/x86_64/peephole/BranchOpt.hpp,
-//        src/codegen/x86_64/peephole/PeepholeCommon.hpp
+//        src/codegen/x86_64/peephole/PeepholeCommon.hpp,
+//        src/codegen/x86_64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "BranchOpt.hpp"
+
+#include "codegen/x86_64/MirCfg.hpp"
 
 #include <optional>
 #include <string>
@@ -59,22 +64,6 @@ std::optional<std::size_t> lookupUnplacedTarget(
         return target->second;
     }
     return std::nullopt;
-}
-
-/// @brief Predicate: does @p block fall through to its sibling at runtime?
-/// @details A block falls through unless its last instruction is an
-///          unconditional terminator (JMP/RET/UD2). JCC counts as
-///          fall-through because it has an implicit unconditional path.
-/// @param block Machine block whose terminal instruction is inspected.
-/// @return @c true when execution may continue into the physically next block.
-bool fallsThroughToNext(const MBasicBlock &block) {
-    if (block.instructions.empty()) {
-        return true;
-    }
-
-    const MOpcode last = block.instructions.back().opcode;
-    return last != MOpcode::JMP && last != MOpcode::RET && last != MOpcode::UD2 &&
-           last != MOpcode::JUMPTABLE;
 }
 
 /// @brief Finds the unique label operand in a mutable instruction.
@@ -174,11 +163,10 @@ void traceBlockLayout(MFunction &fn, PeepholeStats &stats) {
     // Reordering a block with an implicit fall-through successor changes its
     // control flow unless the successor stays physically adjacent. Keep trace
     // layout to fully explicit CFG shapes; moveColdBlocks has its own local
-    // protection for fall-through pairs.
-    for (std::size_t bi = 0; bi + 1 < n; ++bi) {
-        if (fallsThroughToNext(fn.blocks[bi]))
-            return;
-    }
+    // protection for fall-through pairs. Fallthrough is read from the shared
+    // CFG so a JUMPTABLE, a UD2, or a mid-block JMP is classified once.
+    if (MirCfg(fn).anyFallthrough())
+        return;
 
     // Build label -> index map.
     std::unordered_map<std::string, std::size_t> nameToIdx;
@@ -275,8 +263,9 @@ void moveColdBlocks(MFunction &fn, PeepholeStats &stats) {
     std::vector<std::size_t> hotIndices;
     std::vector<bool> fallthroughProtected(fn.blocks.size(), false);
 
+    const MirCfg cfg(fn);
     for (std::size_t bi = 0; bi + 1 < fn.blocks.size(); ++bi) {
-        if (!fallsThroughToNext(fn.blocks[bi]))
+        if (!cfg.fallsThrough(bi))
             continue;
         fallthroughProtected[bi] = true;
         fallthroughProtected[bi + 1] = true;

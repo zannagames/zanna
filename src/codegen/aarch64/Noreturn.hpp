@@ -31,7 +31,7 @@
 #pragma once
 
 #include "codegen/aarch64/MachineIR.hpp"
-#include "il/runtime/RuntimeNameMap.hpp"
+#include "codegen/common/NoReturnSymbols.hpp"
 
 #include <string_view>
 
@@ -56,9 +56,7 @@ namespace zanna::codegen::aarch64 {
  *       not canonicalize @p symbol itself.
  */
 [[nodiscard]] inline bool isNoReturnRuntimeSymbol(std::string_view symbol) noexcept {
-    return symbol == "rt_trap_ovf" || symbol == "rt_trap_div0" || symbol == "rt_trap_null" ||
-           symbol == "rt_trap_raise_error" || symbol == "rt_trap_string" ||
-           symbol == "rt_arr_oob_panic" || symbol == "rt_trap";
+    return common::isNoReturnRuntimeSymbol(symbol);
 }
 
 /**
@@ -76,10 +74,7 @@ namespace zanna::codegen::aarch64 {
     if (instr.opc != MOpcode::Bl || instr.ops.empty() || instr.ops[0].kind != MOperand::Kind::Label)
         return false;
 
-    const std::string &raw = instr.ops[0].label;
-    if (auto mapped = il::runtime::mapCanonicalRuntimeName(raw))
-        return isNoReturnRuntimeSymbol(*mapped);
-    return isNoReturnRuntimeSymbol(raw);
+    return common::isNoReturnRuntimeCallee(instr.ops[0].label);
 }
 
 /**

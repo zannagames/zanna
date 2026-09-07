@@ -8,11 +8,15 @@
 // File: src/codegen/aarch64/Peephole.cpp
 // Purpose: Driver for conservative peephole optimizations over AArch64 MIR.
 //          Orchestrates modular sub-passes and implements cross-block phi-join
-//          load forwarding/coalescing using a dominator-based analysis.
+//          load forwarding/coalescing over the shared MirCfg (edges,
+//          dominators, natural loops).
 // Key invariants:
 //   - All rewrites preserve instruction semantics and ordering.
 //   - Must be called after register allocation (physical registers required).
+//   - Cross-block passes read edges only from MirCfg, never from a private
+//     terminator scan, so they agree with the allocator and the verifier.
 //   - Join-load coalescing skips loop headers whose natural loop contains calls.
+//   - Block-local folds that reach the block end consult blockExitLive().
 // Ownership/Lifetime:
 //   - Mutates MFunction in place; borrows fn only during the call.
 // Links: src/codegen/aarch64/Peephole.hpp,
@@ -22,10 +26,11 @@
 
 #include "Peephole.hpp"
 
-#include "Noreturn.hpp"
+#include "MirCfg.hpp"
+#include "PhysLiveness.hpp"
+#include "TargetAArch64.hpp"
 #include "peephole/BranchOpt.hpp"
 #include "peephole/CopyPropDCE.hpp"
-#include "peephole/Dominators.hpp"
 #include "peephole/IdentityElim.hpp"
 #include "peephole/LoopOpt.hpp"
 #include "peephole/MemoryOpt.hpp"
@@ -47,9 +52,10 @@
  *
  * In addition to orchestrating modular local sub-passes, this file recognizes
  * stack-based phi transfers at block joins and replaces provably safe
- * store/load round trips with physical-register copies. Cross-block rewrites
- * maintain `carriedExitRegs` so subsequent local cleanup respects the extended
- * physical-register live ranges.
+ * store/load round trips with physical-register copies. Every stage that
+ * drops or redirects a definition reaching a block end solves physical
+ * liveness first (PhysLiveness.hpp) and reads blockExitLive(); cross-block
+ * rewrites publish no metadata of their own.
  */
 
 namespace zanna::codegen::aarch64 {
@@ -95,151 +101,28 @@ static std::uint32_t regKey(const MOperand &op) {
 }
 
 /**
- * @brief Records a physical register newly carried across a block exit.
+ * @brief Exit-live seed of the block-local DCE on the no-target path.
  *
- * Virtual/non-register operands are ignored. Physical IDs are inserted once
- * while preserving the sorted `carriedExitRegs` invariant.
+ * Direct unit tests run the driver without a target and without the
+ * CFG-aware DCE; their expectations were written against the block-local
+ * pass's conservative seed (argument registers and callee-saved GPRs live at
+ * every exit). Keep that seed there, on top of the solved exit-live set.
  *
- * @param[in,out] block Predecessor block whose live-out metadata is extended.
- * @param reg Candidate physical-register operand.
+ * @param exitLive Solved exit-live set of the block.
+ * @return @p exitLive plus X0-X7, V0-V7, and X19-X28.
  */
-static void markCarriedExitReg(MBasicBlock &block, const MOperand &reg) {
-    if (!ph::isPhysReg(reg))
-        return;
-    const uint16_t phys = reg.reg.idOrPhys;
-    const auto insertion =
-        std::lower_bound(block.carriedExitRegs.begin(), block.carriedExitRegs.end(), phys);
-    if (insertion == block.carriedExitRegs.end() || *insertion != phys)
-        block.carriedExitRegs.insert(insertion, phys);
-}
-
-/**
- * @brief Tests whether a block's layout successor is reachable by fallthrough.
- *
- * @param fn Function providing block layout and instructions.
- * @param blockIndex Candidate predecessor index.
- * @param succName Required name of the immediately following block.
- * @return `true` for an empty block or a block whose last instruction is
- *         neither an explicit branch, return, nor no-return call.
- */
-static bool blockFallsThroughTo(const MFunction &fn,
-                                std::size_t blockIndex,
-                                const std::string &succName) {
-    if (blockIndex + 1 >= fn.blocks.size())
-        return false;
-    if (fn.blocks[blockIndex + 1].name != succName)
-        return false;
-    const auto &instrs = fn.blocks[blockIndex].instrs;
-    if (instrs.empty())
-        return true;
-    const auto &last = instrs.back();
-    if (isNoReturnCall(last))
-        return false;
-    return last.opc != MOpcode::Br && last.opc != MOpcode::Ret;
-}
-
-/**
- * @brief Builds predecessor lists from explicit and fallthrough CFG edges.
- *
- * Conditional targets found anywhere in a block are recorded, followed by the
- * final unconditional target or eligible layout fallthrough. Duplicate
- * predecessor indices for a label are suppressed.
- *
- * @param fn MIR function whose control-flow edges are inspected.
- * @return Map from target block name to predecessor indices in discovery order.
- */
-static std::unordered_map<std::string, std::vector<std::size_t>> buildPredecessorMap(
-    const MFunction &fn) {
-    std::unordered_map<std::string, std::vector<std::size_t>> preds;
-    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
-        const auto &block = fn.blocks[bi];
-        /// @brief Adds the current block index once to a target's predecessor list.
-        /// @param label Target block label.
-        const auto addPred = [&](const std::string &label) {
-            auto &list = preds[label];
-            if (std::find(list.begin(), list.end(), bi) == list.end())
-                list.push_back(bi);
-        };
-        /// @brief Records the current block as predecessor of its layout successor.
-        const auto addFallthrough = [&]() {
-            if (bi + 1 < fn.blocks.size())
-                addPred(fn.blocks[bi + 1].name);
-        };
-        /// @brief Recognizes conditional MIR branch families with label operands.
-        /// @param instr Instruction to classify.
-        /// @return `true` when the opcode is a conditional branch family.
-        const auto isConditionalBranch = [](const MInstr &instr) {
-            return instr.opc == MOpcode::BCond || instr.opc == MOpcode::Cbz ||
-                   instr.opc == MOpcode::Cbnz || instr.opc == MOpcode::Tbz ||
-                   instr.opc == MOpcode::Tbnz;
-        };
-        if (block.instrs.empty()) {
-            addFallthrough();
-            continue;
-        }
-
-        for (const auto &instr : block.instrs) {
-            if (isConditionalBranch(instr) && instr.ops.size() >= 2 &&
-                instr.ops[1].kind == MOperand::Kind::Label)
-                addPred(instr.ops[1].label);
-        }
-
-        const auto &last = block.instrs.back();
-        if (last.opc == MOpcode::Br && !last.ops.empty() &&
-            last.ops[0].kind == MOperand::Kind::Label)
-            addPred(last.ops[0].label);
-        else if (last.opc != MOpcode::Ret && !isNoReturnCall(last))
-            addFallthrough();
-    }
-    return preds;
-}
-
-/**
- * @brief Tests for a direct unconditional or fallthrough predecessor edge.
- *
- * @param fn Function containing both edge endpoints.
- * @param predIndex Candidate predecessor block index.
- * @param succName Expected successor label.
- * @return `true` when the block ends in `Br succName` or falls through to the
- *         named layout successor.
- * @pre `predIndex < fn.blocks.size()`.
- */
-static bool isDirectPredEdgeTo(const MFunction &fn,
-                               std::size_t predIndex,
-                               const std::string &succName) {
-    const auto &instrs = fn.blocks[predIndex].instrs;
-    if (instrs.empty())
-        return blockFallsThroughTo(fn, predIndex, succName);
-    const auto &last = instrs.back();
-    if (last.opc == MOpcode::Br && !last.ops.empty() && last.ops[0].kind == MOperand::Kind::Label)
-        return last.ops[0].label == succName;
-    return blockFallsThroughTo(fn, predIndex, succName);
-}
-
-/**
- * @brief Tests whether edge-specific join copies can be appended to a predecessor.
- *
- * Only an unconditional branch to the named successor or an eligible
- * fallthrough is accepted; returns and no-return calls reject insertion.
- *
- * @param fn Function containing the edge.
- * @param predIndex Candidate predecessor index.
- * @param succName Join block label.
- * @return `true` when end-of-block insertion executes only on the desired edge.
- * @pre `predIndex < fn.blocks.size()`.
- */
-static bool canInsertJoinCopiesOnPredEdge(const MFunction &fn,
-                                          std::size_t predIndex,
-                                          const std::string &succName) {
-    const auto &instrs = fn.blocks[predIndex].instrs;
-    if (instrs.empty())
-        return blockFallsThroughTo(fn, predIndex, succName);
-    const auto &last = instrs.back();
-    if (last.opc == MOpcode::Br && !last.ops.empty() && last.ops[0].kind == MOperand::Kind::Label)
-        return last.ops[0].label == succName;
-    if (last.opc == MOpcode::Ret || isNoReturnCall(last))
-        return false;
-    return blockFallsThroughTo(fn, predIndex, succName);
+static PhysRegSet conservativeDceSeed(const PhysRegSet &exitLive) {
+    PhysRegSet seed = exitLive;
+    for (unsigned r = static_cast<unsigned>(PhysReg::X0); r <= static_cast<unsigned>(PhysReg::X7);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    for (unsigned r = static_cast<unsigned>(PhysReg::V0); r <= static_cast<unsigned>(PhysReg::V7);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    for (unsigned r = static_cast<unsigned>(PhysReg::X19); r <= static_cast<unsigned>(PhysReg::X28);
+         ++r)
+        seed.add(static_cast<PhysReg>(r));
+    return seed;
 }
 
 /**
@@ -300,23 +183,26 @@ static bool collectJoinPrefixLoads(const MBasicBlock &block, std::vector<JoinLoa
  * later in the scanned region. Paired stores contribute one entry per offset.
  *
  * @param fn Function containing the predecessor and successor.
+ * @param cfg Control-flow graph of @p fn in its current layout.
  * @param predIndex Predecessor block index.
- * @param succName Required direct successor label.
+ * @param succIndex Required direct successor block index.
  * @param[out] stores Cleared map populated by FP-relative byte offset.
  * @param[out] storeInstrs Cleared set of instruction indices supplying entries.
  * @return `true` when at least one safe store is collected.
- * @pre `predIndex < fn.blocks.size()`.
+ * @pre `predIndex < fn.blocks.size()` and `succIndex < fn.blocks.size()`.
  */
 static bool collectJoinSuffixStores(const MFunction &fn,
+                                    const MirCfg &cfg,
                                     std::size_t predIndex,
-                                    const std::string &succName,
+                                    std::size_t succIndex,
                                     std::unordered_map<int64_t, JoinStore> &stores,
                                     std::unordered_set<std::size_t> &storeInstrs) {
     stores.clear();
     storeInstrs.clear();
-    if (!isDirectPredEdgeTo(fn, predIndex, succName))
+    if (!cfg.exitsDirectlyTo(fn, predIndex, succIndex))
         return false;
 
+    const std::string &succName = fn.blocks[succIndex].name;
     const auto &instrs = fn.blocks[predIndex].instrs;
     std::size_t scanEnd = instrs.size();
     if (!instrs.empty()) {
@@ -541,48 +427,6 @@ static void removeForwardedJoinLoads(MBasicBlock &block,
 }
 
 /**
- * @brief Collects the natural-loop region induced by a header and back-edge latch.
- *
- * A backward predecessor worklist begins at the latch and stops expanding
- * already visited blocks; the header is seeded into the result.
- *
- * @param fn Function providing block names and bounds.
- * @param preds Name-keyed predecessor map for @p fn.
- * @param headerIndex Dominating loop-header block index.
- * @param latchIndex Back-edge predecessor block index.
- * @return Set of reachable predecessor indices belonging to the natural loop.
- */
-static std::unordered_set<std::size_t> collectNaturalLoopBlocks(
-    const MFunction &fn,
-    const std::unordered_map<std::string, std::vector<std::size_t>> &preds,
-    std::size_t headerIndex,
-    std::size_t latchIndex) {
-    std::unordered_set<std::size_t> loopBlocks;
-    std::vector<std::size_t> worklist;
-    loopBlocks.insert(headerIndex);
-    worklist.push_back(latchIndex);
-
-    while (!worklist.empty()) {
-        const std::size_t blockIndex = worklist.back();
-        worklist.pop_back();
-        if (blockIndex >= fn.blocks.size())
-            continue;
-        if (!loopBlocks.insert(blockIndex).second)
-            continue;
-
-        auto predIt = preds.find(fn.blocks[blockIndex].name);
-        if (predIt == preds.end())
-            continue;
-        for (std::size_t predIndex : predIt->second) {
-            if (loopBlocks.count(predIndex) == 0)
-                worklist.push_back(predIndex);
-        }
-    }
-
-    return loopBlocks;
-}
-
-/**
  * @brief Tests whether a block set contains a direct or indirect call.
  *
  * @param fn Function containing the indexed blocks.
@@ -590,7 +434,7 @@ static std::unordered_set<std::size_t> collectNaturalLoopBlocks(
  * @return `true` on a `Bl`/`Blr` or on any out-of-range index, which is treated
  *         conservatively as unsafe; otherwise `false`.
  */
-static bool blocksContainCall(const MFunction &fn, const std::unordered_set<std::size_t> &blocks) {
+static bool blocksContainCall(const MFunction &fn, const std::vector<std::size_t> &blocks) {
     for (std::size_t blockIndex : blocks) {
         if (blockIndex >= fn.blocks.size())
             return true;
@@ -600,24 +444,6 @@ static bool blocksContainCall(const MFunction &fn, const std::unordered_set<std:
         }
     }
     return false;
-}
-
-/**
- * @brief Converts name-keyed predecessors to the dense block-index form used by dominators.
- *
- * @param fn Function establishing the output block order.
- * @param preds Predecessors keyed by block name.
- * @return Vector parallel to `fn.blocks`; missing names receive empty lists.
- */
-static std::vector<std::vector<std::size_t>> indexedPreds(
-    const MFunction &fn, const std::unordered_map<std::string, std::vector<std::size_t>> &preds) {
-    std::vector<std::vector<std::size_t>> result(fn.blocks.size());
-    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
-        auto it = preds.find(fn.blocks[i].name);
-        if (it != preds.end())
-            result[i] = it->second;
-    }
-    return result;
 }
 
 /**
@@ -633,7 +459,9 @@ static std::vector<std::vector<std::size_t>> indexedPreds(
  */
 static bool forwardSinglePredPhiLoads(MFunction &fn, PeepholeStats &stats) {
     bool changed = false;
-    const auto preds = buildPredecessorMap(fn);
+    // The rewrites below replace join loads with moves and append no
+    // terminators, so one CFG snapshot stays valid for the whole pass.
+    const MirCfg cfg(fn);
 
     for (std::size_t blockIndex = 0; blockIndex < fn.blocks.size(); ++blockIndex) {
         auto &block = fn.blocks[blockIndex];
@@ -641,19 +469,19 @@ static bool forwardSinglePredPhiLoads(MFunction &fn, PeepholeStats &stats) {
         if (!collectJoinPrefixLoads(block, loads))
             continue;
 
-        auto predIt = preds.find(block.name);
-        if (predIt == preds.end() || predIt->second.size() != 1)
+        const auto &preds = cfg.preds(blockIndex);
+        if (preds.size() != 1)
             continue;
 
-        const std::size_t predIndex = predIt->second.front();
+        const std::size_t predIndex = preds.front();
         if (predIndex >= blockIndex)
             continue;
-        if (!isDirectPredEdgeTo(fn, predIndex, block.name))
+        if (!cfg.exitsDirectlyTo(fn, predIndex, blockIndex))
             continue;
 
         std::unordered_map<int64_t, JoinStore> stores;
         std::unordered_set<std::size_t> ignoredStoreInstrs;
-        if (!collectJoinSuffixStores(fn, predIndex, block.name, stores, ignoredStoreInstrs))
+        if (!collectJoinSuffixStores(fn, cfg, predIndex, blockIndex, stores, ignoredStoreInstrs))
             continue;
 
         std::vector<JoinCopy> copies;
@@ -674,11 +502,8 @@ static bool forwardSinglePredPhiLoads(MFunction &fn, PeepholeStats &stats) {
             continue;
 
         // Removing the successor loads makes every stored source register a
-        // live-in to this block, including identity copies omitted by the move
-        // ordering helper.
-        for (const auto &copy : copies)
-            markCarriedExitReg(fn.blocks[predIndex], copy.srcReg);
-
+        // live-in to this block (including identity copies, which emit no
+        // move); the next stage's liveness solve sees those reads.
         std::vector<bool> removeLoadInstr(block.instrs.size(), false);
         for (const auto &load : loads)
             removeLoadInstr[load.instrIndex] = true;
@@ -725,8 +550,9 @@ static bool forwardSinglePredPhiLoads(MFunction &fn, PeepholeStats &stats) {
  */
 static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
     bool changed = false;
-    const auto preds = buildPredecessorMap(fn);
-    const auto dominators = ph::computeDominators(fn.blocks.size(), indexedPreds(fn, preds));
+    // Copies are inserted before predecessor terminators and join loads are
+    // replaced in place; no edge changes, so one CFG snapshot serves the pass.
+    const MirCfg cfg(fn);
 
     for (std::size_t blockIndex = 0; blockIndex < fn.blocks.size(); ++blockIndex) {
         auto &block = fn.blocks[blockIndex];
@@ -734,8 +560,8 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
         if (!collectJoinPrefixLoads(block, loads))
             continue;
 
-        auto predIt = preds.find(block.name);
-        if (predIt == preds.end() || predIt->second.size() < 2)
+        const auto &preds = cfg.preds(blockIndex);
+        if (preds.size() < 2)
             continue;
 
         // Loop headers are safe to coalesce only while their natural loop is
@@ -743,13 +569,13 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
         // keep loop-carried values only in physical registers across complex
         // call-heavy paths without proving every rewritten register live range.
         bool unsafeLoopHeader = false;
-        for (std::size_t predIndex : predIt->second) {
+        for (std::size_t predIndex : preds) {
             if (predIndex < blockIndex)
                 continue;
-            if (!dominators.dominates(blockIndex, predIndex))
+            if (!cfg.dominates(blockIndex, predIndex))
                 continue;
-            const auto loopBlocks = collectNaturalLoopBlocks(fn, preds, blockIndex, predIndex);
-            if (blocksContainCall(fn, loopBlocks)) {
+            const NaturalLoop loop = cfg.naturalLoop(BackEdge{predIndex, blockIndex});
+            if (blocksContainCall(fn, loop.blocks)) {
                 unsafeLoopHeader = true;
                 break;
             }
@@ -763,17 +589,18 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
         };
 
         std::vector<PredStorePlan> predStorePlans;
-        predStorePlans.reserve(predIt->second.size());
+        predStorePlans.reserve(preds.size());
         bool allPredsConvertible = true;
-        for (std::size_t predIndex : predIt->second) {
-            if (!canInsertJoinCopiesOnPredEdge(fn, predIndex, block.name)) {
+        for (std::size_t predIndex : preds) {
+            if (!cfg.exitsDirectlyTo(fn, predIndex, blockIndex)) {
                 allPredsConvertible = false;
                 break;
             }
 
             std::unordered_map<int64_t, JoinStore> stores;
             std::unordered_set<std::size_t> ignoredStoreInstrs;
-            if (!collectJoinSuffixStores(fn, predIndex, block.name, stores, ignoredStoreInstrs)) {
+            if (!collectJoinSuffixStores(
+                    fn, cfg, predIndex, blockIndex, stores, ignoredStoreInstrs)) {
                 allPredsConvertible = false;
                 break;
             }
@@ -870,12 +697,6 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
                 }
             }
             predBlock.instrs.swap(rewritten);
-
-            // The join now consumes each load destination directly from this
-            // edge. Preserve the copy (or an identity-carried value) through
-            // post-schedule block-local cleanup.
-            for (std::size_t loadIndex : selectedLoads)
-                markCarriedExitReg(predBlock, loads[loadIndex].dstReg);
         }
 
         const std::unordered_set<std::size_t> forwardedLoadSet(selectedLoads.begin(),
@@ -900,7 +721,9 @@ static bool coalesceJoinPhiLoads(MFunction &fn, PeepholeStats &stats) {
  * @param[in,out] stats Counters updated for non-identity replacement moves.
  */
 static void forwardLayoutSuccessorStoreLoad(MFunction &fn, PeepholeStats &stats) {
-    const auto preds = buildPredecessorMap(fn);
+    // Loads become moves and stores stay; no edge changes, so one CFG
+    // snapshot serves the pass.
+    const MirCfg cfg(fn);
 
     for (std::size_t bi = 0; bi + 1 < fn.blocks.size(); ++bi) {
         auto &predInstrs = fn.blocks[bi].instrs;
@@ -912,38 +735,13 @@ static void forwardLayoutSuccessorStoreLoad(MFunction &fn, PeepholeStats &stats)
 
         // Only forward to blocks with exactly one real predecessor — including
         // fallthrough edges — otherwise short-circuit boolean joins can be
-        // miscompiled by forwarding only one incoming value.
-        auto predIt = preds.find(succBlock.name);
-        if (predIt == preds.end() || predIt->second.size() != 1 || predIt->second.front() != bi)
+        // miscompiled by forwarding only one incoming value. The layout
+        // predecessor must actually reach the successor (a block ending in a
+        // branch elsewhere, a return, a jump table, or a no-return call does
+        // not).
+        const auto &preds = cfg.preds(bi + 1);
+        if (preds.size() != 1 || preds.front() != bi || !cfg.hasEdge(bi, bi + 1))
             continue;
-
-        // Verify the layout predecessor actually reaches the successor; an
-        // unconditional branch to a DIFFERENT block disqualifies the fallthrough.
-        {
-            bool reachesSucc = false;
-            for (const auto &mi : predInstrs) {
-                if (mi.opc == MOpcode::Br && !mi.ops.empty() &&
-                    mi.ops[0].kind == MOperand::Kind::Label && mi.ops[0].label == succBlock.name) {
-                    reachesSucc = true;
-                    break;
-                }
-                if ((mi.opc == MOpcode::BCond || mi.opc == MOpcode::Cbz ||
-                     mi.opc == MOpcode::Cbnz || mi.opc == MOpcode::Tbz ||
-                     mi.opc == MOpcode::Tbnz) &&
-                    mi.ops.size() >= 2 && mi.ops[1].kind == MOperand::Kind::Label &&
-                    mi.ops[1].label == succBlock.name) {
-                    reachesSucc = true;
-                    break;
-                }
-            }
-            if (!reachesSucc && !predInstrs.empty()) {
-                const auto &last = predInstrs.back();
-                if (last.opc != MOpcode::Br && last.opc != MOpcode::Ret)
-                    reachesSucc = true;
-            }
-            if (!reachesSucc)
-                continue;
-        }
 
         // Collect trailing FP-relative stores in the predecessor.
         struct StoreInfo {
@@ -1045,11 +843,9 @@ static void forwardLayoutSuccessorStoreLoad(MFunction &fn, PeepholeStats &stats)
             continue;
 
         // The replacement moves execute in the successor, so their source
-        // registers are newly live across the predecessor's exit. This also
-        // covers identity pairs, for which no explicit move is emitted.
-        for (const auto &pair : ordered)
-            markCarriedExitReg(fn.blocks[bi], pair.srcReg);
-
+        // registers are newly live across the predecessor's exit (identity
+        // pairs too, for which no explicit move is emitted); the next
+        // stage's liveness solve sees those reads.
         std::vector<MInstr> newPrefix;
         newPrefix.reserve(prefixLoads.size());
         for (const auto &pair : ordered) {
@@ -1085,10 +881,24 @@ static void forwardLayoutSuccessorStoreLoad(MFunction &fn, PeepholeStats &stats)
  *        enables the legacy per-block dead-instruction pass here.
  */
 static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const TargetInfo *target) {
-    for (auto &block : fn.blocks) {
+    // Folds that redirect or drop a definition reaching the block end need
+    // the ABI (call/return effects) and the block's exit-live set. Direct
+    // unit tests may run without a target; AAPCS64 (the Darwin singleton) is
+    // the common denominator.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
+
+    // One liveness solve for the stage: the rewrites below never add an
+    // upward-exposed read to a block, so a block's exit-live set computed
+    // here stays a superset of the truth while earlier blocks are rewritten.
+    const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
+
+    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+        auto &block = fn.blocks[bi];
         auto &instrs = block.instrs;
         if (instrs.empty())
             continue;
+
+        const PhysRegSet exitLive = blockExitLive(fn, bi, effectiveTarget, liveness);
 
         // Pass 0.9: Division/remainder strength reduction (multi-instruction patterns).
         // Must run BEFORE Pass 1's single-instruction strength reduction, because
@@ -1100,8 +910,7 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 changed = false;
                 ph::RegConstMap divConsts;
                 for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-                    if (ph::tryRemainderFusion(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs)) {
+                    if (ph::tryRemainderFusion(instrs, i, divConsts, stats, &exitLive)) {
                         changed = true;
                         break;
                     }
@@ -1116,11 +925,11 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 for (std::size_t i = 0; i < instrs.size(); ++i) {
                     bool localChange = false;
                     if (instrs[i].opc == MOpcode::UDivRRR)
-                        localChange = ph::tryUDivStrengthReduction(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs);
+                        localChange =
+                            ph::tryUDivStrengthReduction(instrs, i, divConsts, stats, &exitLive);
                     else if (instrs[i].opc == MOpcode::SDivRRR)
-                        localChange = ph::trySDivStrengthReduction(
-                            instrs, i, divConsts, stats, &block.carriedExitRegs);
+                        localChange =
+                            ph::trySDivStrengthReduction(instrs, i, divConsts, stats, &exitLive);
 
                     if (localChange) {
                         changed = true;
@@ -1153,15 +962,15 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
                 --i;
         }
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (ph::tryTbzTbnzFusion(instrs, i, stats, &block.carriedExitRegs) && i > 0)
+            if (ph::tryTbzTbnzFusion(instrs, i, stats, &exitLive) && i > 0)
                 --i;
         }
         for (std::size_t i = 0; i < instrs.size(); ++i) {
-            if (ph::tryCsetBranchFusion(instrs, i, stats, &block.carriedExitRegs) && i > 0)
+            if (ph::tryCsetBranchFusion(instrs, i, stats, &exitLive) && i > 0)
                 --i;
         }
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (ph::tryMaddFusion(instrs, i, stats) && i > 0)
+            if (ph::tryMaddFusion(instrs, i, stats, effectiveTarget, exitLive) && i > 0)
                 --i;
         }
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
@@ -1172,12 +981,12 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
         // Pass 1.85 / 1.9 / 1.97: local store/load shuffling.
         ph::eliminateDeadFpStores(instrs, stats);
         ph::forwardStoreLoads(instrs, stats);
-        ph::foldComputeIntoTarget(instrs, stats);
+        ph::foldComputeIntoTarget(instrs, stats, effectiveTarget, exitLive);
 
         // Pass 2: Fold consecutive moves.
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (!ph::tryFoldImmThenMove(instrs, i, stats, &block.carriedExitRegs))
-                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &block.carriedExitRegs);
+            if (!ph::tryFoldImmThenMove(instrs, i, stats, &exitLive))
+                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &exitLive);
         }
 
         // Pass 3+4: Mark and remove identity moves.
@@ -1198,9 +1007,12 @@ static void runPerBlockRewrites(MFunction &fn, PeepholeStats &stats, const Targe
             ph::removeMarkedInstructions(instrs, toRemove);
 
         // Pass 4.5: Local DCE. The modular pipeline runs the CFG-aware variant
-        // post-block; direct unit tests (no target) keep the legacy per-block path.
-        if (target == nullptr)
-            ph::removeDeadInstructions(instrs, stats, &block.carriedExitRegs);
+        // post-block; direct unit tests (no target) keep the legacy per-block path
+        // with its conservative seed on top of the solved exit-live set.
+        if (target == nullptr) {
+            const PhysRegSet seed = conservativeDceSeed(exitLive);
+            ph::removeDeadInstructions(instrs, stats, &seed);
+        }
 
         // Pass 4.6: Dead flag-setter elimination AFTER DCE so dead readers of
         // flags are gone before we judge a flag-setter unused.
@@ -1333,8 +1145,12 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
     // Must run AFTER Pass 4.8 (cross-block store-load forwarding) because that pass
     // may convert phi loads to register movs, changing the header's instruction mix.
     // Running after 4.8 ensures we see the final form of the header instructions.
+    // Loop phi-spill elimination reasons about call clobbers, so it needs an
+    // ABI description; direct unit tests may run without one, in which case
+    // AAPCS64 (the Darwin singleton) is the common denominator.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
     for (int iter = 0; iter < 16 && !peepholeStageDisabled("PHI_SPILLS"); ++iter) {
-        const auto eliminated = ph::eliminateLoopPhiSpills(fn);
+        const auto eliminated = ph::eliminateLoopPhiSpills(fn, effectiveTarget);
         if (eliminated == 0)
             break;
         stats.loopConstsHoisted += static_cast<int>(eliminated);
@@ -1366,16 +1182,23 @@ PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target) {
 PeepholeStats runPostSchedulePeephole(MFunction &fn, const TargetInfo *target) {
     PeepholeStats stats;
 
-    for (auto &block : fn.blocks) {
-        auto &instrs = block.instrs;
+    // The scheduler may have moved definitions; solve liveness on the
+    // scheduled shape before any move fold or block-local DCE reads it.
+    const TargetInfo &effectiveTarget = target != nullptr ? *target : darwinTarget();
+    const PhysLiveness liveness = computePhysLiveness(fn, effectiveTarget);
+
+    for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
+        auto &instrs = fn.blocks[bi].instrs;
         if (instrs.empty())
             continue;
+
+        const PhysRegSet exitLive = blockExitLive(fn, bi, effectiveTarget, liveness);
 
         ph::propagateCopies(instrs, stats);
 
         for (std::size_t i = 0; i + 1 < instrs.size(); ++i) {
-            if (!ph::tryFoldImmThenMove(instrs, i, stats, &block.carriedExitRegs))
-                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &block.carriedExitRegs);
+            if (!ph::tryFoldImmThenMove(instrs, i, stats, &exitLive))
+                (void)ph::tryFoldConsecutiveMoves(instrs, i, stats, &exitLive);
         }
 
         std::vector<bool> toRemove(instrs.size(), false);
@@ -1394,8 +1217,10 @@ PeepholeStats runPostSchedulePeephole(MFunction &fn, const TargetInfo *target) {
         if (std::any_of(toRemove.begin(), toRemove.end(), [](bool v) { return v; }))
             ph::removeMarkedInstructions(instrs, toRemove);
 
-        if (target == nullptr)
-            ph::removeDeadInstructions(instrs, stats, &block.carriedExitRegs);
+        if (target == nullptr) {
+            const PhysRegSet seed = conservativeDceSeed(exitLive);
+            ph::removeDeadInstructions(instrs, stats, &seed);
+        }
         ph::removeDeadFlagSetters(instrs, stats);
     }
 

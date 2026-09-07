@@ -13,17 +13,23 @@
 // Key invariants:
 //   - Copy origins are not chased through ABI registers; ABI uses are rewritten
 //     only from non-ABI origins and can be disabled through the debug override.
-//   - DCE conservatively marks callee-saved and ABI registers as live at exit.
+//   - CFG-aware DCE reads the solved physical liveness (PhysLiveness) and
+//     seeds every block exit from blockExitLive(); the block-local variant
+//     takes the same exit-live set, or without one conservatively marks
+//     callee-saved and ABI registers as live at exit.
+//   - Compute-into-target folding consults the effects model and the block's
+//     exit-live set before declaring an ALU destination dead.
 //
 // Ownership/Lifetime:
 //   - Operates on mutable instruction vectors owned by the caller.
 //
-// Links: codegen/aarch64/Peephole.hpp
+// Links: codegen/aarch64/Peephole.hpp, codegen/aarch64/MirCfg.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "../Peephole.hpp"
 
@@ -48,26 +54,26 @@ std::size_t propagateCopies(std::vector<MInstr> &instrs, PeepholeStats &stats);
 
 /// @brief Remove side-effect-free definitions dead within one basic block.
 ///
-/// Performs a conservative backward physical-register liveness scan seeded
-/// with ABI argument registers, callee-saved GPRs, and any allocator-provided
-/// live-through registers.
+/// Performs a backward physical-register liveness scan seeded with the
+/// block's exit-live set when one is given, and otherwise (no liveness
+/// available) conservatively with the ABI argument registers and the
+/// callee-saved GPRs.
 ///
 /// @param[in,out] instrs Block-local instruction sequence to compact.
 /// @param[in,out] stats Statistics receiving the removal count.
-/// @param carriedExitRegs Optional sorted list of physical registers carried
-///        live across the enclosing block's exit without any in-block use
-///        (MBasicBlock::carriedExitRegs); seeded into the live-at-exit set.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()); used as the live-at-exit seed.
 /// @return Number of instructions removed.
 std::size_t removeDeadInstructions(std::vector<MInstr> &instrs,
                                    PeepholeStats &stats,
-                                   const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                   const PhysRegSet *exitLive = nullptr);
 
 /// @brief Perform whole-function, CFG-aware physical-register DCE.
 ///
-/// Builds successor edges from MIR branches and layout fallthrough, solves the
-/// standard live-in/live-out equations, and removes non-effectful definitions
-/// that are dead at their program point. Calls and returns include their
-/// implicit ABI uses and clobbers.
+/// Solves physical liveness over the shared MirCfg (computePhysLiveness),
+/// seeds every block from blockExitLive(), and removes non-effectful
+/// definitions that are dead at their program point. Calls and returns
+/// include their implicit ABI uses and clobbers.
 ///
 /// @param[in,out] fn Function whose block instructions may be removed.
 /// @param[in,out] stats Statistics receiving the removal count.
@@ -98,10 +104,20 @@ std::size_t removeDeadFlagSetters(std::vector<MInstr> &instrs, PeepholeStats &st
 
 /// @brief Fold compute-then-move patterns where an ALU result is immediately
 ///        moved to another register and the original destination is dead.
+/// @details Deadness follows the shared effects model (calls read their
+///          argument registers and clobber the caller-saved set, returns read
+///          the result registers) and, when the scan reaches the block exit
+///          without a redefinition, the block's exit-live set (see
+///          blockExitLive()).
 /// @param[in,out] instrs Block-local instruction sequence to rewrite.
 /// @param[in,out] stats Statistics receiving the erased-move count.
+/// @param target ABI description for call and return effects.
+/// @param exitLive Physical registers live at the enclosing block's exit.
 /// @return Number of ALU destinations redirected to their move targets.
-std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs, PeepholeStats &stats);
+std::size_t foldComputeIntoTarget(std::vector<MInstr> &instrs,
+                                  PeepholeStats &stats,
+                                  const TargetInfo &target,
+                                  const PhysRegSet &exitLive);
 
 /// @brief Remove stores to compiler spill slots never loaded in the function.
 ///

@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "../Peephole.hpp"
 
@@ -53,13 +54,14 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param[in,out] instrs Block-local instruction sequence to rewrite.
 /// @param idx Index of the first `MovRR`.
 /// @param[in,out] stats Statistics updated when the fold succeeds.
-/// @param carriedExitRegs Optional sorted physical-register identifiers live
-///        into successor blocks.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()); the intermediate register is live when it
+///        is in this set.
 /// @return `true` when the adjacent pair was folded.
 [[nodiscard]] bool tryFoldConsecutiveMoves(std::vector<MInstr> &instrs,
                                            std::size_t idx,
                                            PeepholeStats &stats,
-                                           const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                           const PhysRegSet *exitLive = nullptr);
 
 /// @brief Forward an immediate through an adjacent register move.
 ///
@@ -71,12 +73,12 @@ namespace zanna::codegen::aarch64::peephole {
 /// @param[in,out] instrs Block-local instruction sequence to rewrite.
 /// @param idx Index of the `MovRI` candidate.
 /// @param[in,out] stats Statistics updated when the fold succeeds.
-/// @param carriedExitRegs Optional sorted physical-register identifiers live
-///        into successor blocks.
+/// @param exitLive Optional physical registers live at the enclosing block's
+///        exit (blockExitLive()).
 /// @return `true` when the immediate and move pair was folded.
 [[nodiscard]] bool tryFoldImmThenMove(std::vector<MInstr> &instrs,
                                       std::size_t idx,
                                       PeepholeStats &stats,
-                                      const std::vector<uint16_t> *carriedExitRegs = nullptr);
+                                      const PhysRegSet *exitLive = nullptr);
 
 } // namespace zanna::codegen::aarch64::peephole

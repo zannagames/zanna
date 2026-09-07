@@ -55,6 +55,24 @@ zanna_add_fuzzer(fuzz_basic_parser fuzz_basic_parser.cpp LIBS fe_basic)
 zanna_add_fuzzer(fuzz_il_parser fuzz_il_parser.cpp LIBS zanna::il_full)
 zanna_add_fuzzer(fuzz_il_verifier fuzz_il_verifier.cpp LIBS zanna::il_full)
 
+# ── Native codegen differential fuzzer ──────────────────────────────────────
+# Seeds an IL kernel from the input and requires the VM, the -O0 native build,
+# and the -O2 native build to agree (see tests/common/ILKernelDiff.hpp). Built
+# only where the host can run its own native backend.
+if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+    zanna_add_fuzzer(fuzz_il_native_diff fuzz_il_native_diff.cpp
+            LIBS zanna_test_common zanna_cmd_arm64 il_codegen_aarch64
+            INCLUDES ${CMAKE_SOURCE_DIR}/src/tests)
+    target_compile_definitions(fuzz_il_native_diff PRIVATE ZANNA_KERNEL_DIFF_ARM64)
+elseif (ZANNA_BUILD_NATIVE_LINK_X86_64)
+    zanna_add_fuzzer(fuzz_il_native_diff fuzz_il_native_diff.cpp
+            LIBS zanna_test_common zanna_native_compiler zanna_codegen_x86_64
+                 il_api il_transform il_tools_common zanna_bytecode
+            INCLUDES ${CMAKE_SOURCE_DIR}/src/tests)
+    target_sources(fuzz_il_native_diff PRIVATE ${CMAKE_SOURCE_DIR}/src/tools/zanna/cmd_codegen_x64.cpp)
+    target_compile_definitions(fuzz_il_native_diff PRIVATE ZANNA_KERNEL_DIFF_X64)
+endif ()
+
 # ── Runtime/protocol parser fuzzers ─────────────────────────────────────────
 zanna_add_fuzzer(fuzz_json fuzz_json.cpp LIBS zanna_runtime)
 zanna_add_fuzzer(fuzz_http_request fuzz_http_request.cpp LIBS zanna_runtime)

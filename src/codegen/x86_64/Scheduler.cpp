@@ -391,6 +391,20 @@ void addMemRegs(const OpMem &mem, InstrDeps &deps) {
         }
     }
 
+    // Implicit fixed-register operands (CQO, IDIV/DIV, MUL/IMUL, shift-by-CL)
+    // from the shared role model. These opcodes are also scheduling
+    // boundaries, so this mainly keeps the dependency record complete for the
+    // instructions on either side of them.
+    const PhysRegMask implicitUses = implicitUseMask(instr.opcode);
+    const PhysRegMask implicitDefs = implicitDefMask(instr.opcode);
+    for (unsigned bit = 0; bit < 64; ++bit) {
+        const PhysRegMask mask = PhysRegMask{1} << bit;
+        if ((implicitUses & mask) != 0)
+            deps.uses.insert(static_cast<uint16_t>(bit));
+        if ((implicitDefs & mask) != 0)
+            deps.defs.insert(static_cast<uint16_t>(bit));
+    }
+
     // Frame-slot precision is only valid when the instruction touches exactly
     // one memory location.
     if (memOperands != 1)

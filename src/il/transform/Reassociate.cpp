@@ -25,8 +25,8 @@
 #include "il/core/Value.hpp"
 #include "il/utils/Utils.hpp"
 
-#include <cstdint>
 #include <algorithm>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -182,24 +182,10 @@ bool canonicalizeTree(BasicBlock &block,
     std::vector<std::size_t> nodes;
     std::vector<Value> leaves;
     std::unordered_set<unsigned> visited;
-    flattenOperand(block,
-                   root.op,
-                   root.operands[0],
-                   rootIndex,
-                   defs,
-                   useCounts,
-                   visited,
-                   nodes,
-                   leaves);
-    flattenOperand(block,
-                   root.op,
-                   root.operands[1],
-                   rootIndex,
-                   defs,
-                   useCounts,
-                   visited,
-                   nodes,
-                   leaves);
+    flattenOperand(
+        block, root.op, root.operands[0], rootIndex, defs, useCounts, visited, nodes, leaves);
+    flattenOperand(
+        block, root.op, root.operands[1], rootIndex, defs, useCounts, visited, nodes, leaves);
     nodes.push_back(rootIndex);
     if (leaves.size() != nodes.size() + 1)
         return canonicalizeOperands(root);
@@ -237,12 +223,22 @@ bool canonicalizeTree(BasicBlock &block,
 /// @copydoc reassociate()
 void reassociate(Module &M) {
     for (auto &F : M.functions) {
+        // Every read of a temporary counts, including branch arguments: a
+        // value passed to a successor's block parameter is a use as much as an
+        // operand is, and rewriting its definition as an internal tree node
+        // would change what the successor receives.
         std::unordered_map<unsigned, unsigned> useCounts;
-        for (const auto &B : F.blocks)
-            for (const auto &I : B.instructions)
+        for (const auto &B : F.blocks) {
+            for (const auto &I : B.instructions) {
                 for (const auto &operand : I.operands)
                     if (operand.kind == Value::Kind::Temp)
                         ++useCounts[operand.id];
+                for (const auto &argList : I.brArgs)
+                    for (const auto &arg : argList)
+                        if (arg.kind == Value::Kind::Temp)
+                            ++useCounts[arg.id];
+            }
+        }
         for (auto &B : F.blocks) {
             DefIndex defs;
             for (std::size_t i = 0; i < B.instructions.size(); ++i)

@@ -78,6 +78,7 @@ void lowerTerminators(const il::core::Function &fn,
                       const std::unordered_map<std::string, std::vector<int>> &phiSpillOffset,
                       std::vector<std::unordered_map<unsigned, uint16_t>> &blockTempVRegSnapshot,
                       std::unordered_map<unsigned, RegClass> &tempRegClass,
-                      uint16_t &nextVRegId);
+                      uint16_t &nextVRegId,
+                      bool edgeCopies);
 
 } // namespace zanna::codegen::aarch64

@@ -57,10 +57,15 @@ class LowerILToMIR {
     /// @param ti Target info (calling convention, register names, alignment).
     /// @param stringLiteralByteLengths Optional per-symbol byte-length map for
     ///        runtime-string materialisation; the pointed-to map must outlive the lowerer.
-    explicit LowerILToMIR(const TargetInfo &ti,
-                          const std::unordered_map<std::string, std::size_t>
-                              *stringLiteralByteLengths = nullptr) noexcept
-        : ti_(&ti), stringLiteralByteLengths_(stringLiteralByteLengths) {}
+    /// @param edgeCopies When true, block parameters become virtual registers
+    ///        and branch arguments become ParallelCopy edges (see
+    ///        AArch64Module::edgeCopyLowering); otherwise they go through
+    ///        frame slots and PhiStore edges.
+    explicit LowerILToMIR(
+        const TargetInfo &ti,
+        const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths = nullptr,
+        bool edgeCopies = false) noexcept
+        : ti_(&ti), stringLiteralByteLengths_(stringLiteralByteLengths), edgeCopies_(edgeCopies) {}
 
     /// @brief Register known named-argument counts for variadic callees.
     /// @details The lowerer uses this table to emit the correct argument count for
@@ -74,8 +79,8 @@ class LowerILToMIR {
     /// @brief Look up the known named-argument count for @p callee, if registered.
     /// @param callee Direct callee name.
     /// @return The named-arg count, or nullopt if @p callee is not a known vararg callee.
-    [[maybe_unused]] [[nodiscard]] std::optional<std::size_t>
-    knownVarArgNamedArgs(std::string_view callee) const;
+    [[maybe_unused]] [[nodiscard]] std::optional<std::size_t> knownVarArgNamedArgs(
+        std::string_view callee) const;
 
     /// @brief Lower an IL function to MIR.
     /// @param fn The IL function to lower.
@@ -86,6 +91,7 @@ class LowerILToMIR {
     const TargetInfo *ti_{};
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths_{};
     std::unordered_map<std::string, std::size_t> knownVarArgNamedArgCounts_{};
+    bool edgeCopies_{false};
 };
 
 } // namespace zanna::codegen::aarch64

@@ -23,8 +23,8 @@
 #include "il/core/Param.hpp"
 #include "il/core/Type.hpp"
 #include "il/core/Value.hpp"
-#include "il/transform/Reassociate.hpp"
 #include "il/transform/EarlyCSE.hpp"
+#include "il/transform/Reassociate.hpp"
 #include "tests/TestHarness.hpp"
 
 #include <limits>
@@ -76,6 +76,80 @@ TEST(Reassociate, SwapsConstBeforeTemp) {
     const auto &add = mod.functions[0].blocks[0].instructions[0];
     EXPECT_EQ(add.operands[0].kind, Value::Kind::Temp);
     EXPECT_EQ(add.operands[1].kind, Value::Kind::ConstInt);
+}
+
+TEST(Reassociate, BranchArgumentsCountAsUses) {
+    // %a = and %x, M ; %b = and %a, 8191 ; br next(%a)
+    // %a is read twice: by %b and by the branch argument. Flattening the tree
+    // rooted at %b must therefore keep %a as a leaf; rewriting %a's definition
+    // into an internal node (M & 8191) would change the value `next` receives.
+    constexpr long long kMask = 268435455;
+    Module mod;
+    Function fn;
+    fn.name = "test";
+    fn.retType = Type(Type::Kind::I64);
+
+    BasicBlock entry;
+    entry.label = "entry";
+    {
+        Param p;
+        p.name = "x";
+        p.type = Type(Type::Kind::I64);
+        p.id = 0;
+        entry.params.push_back(std::move(p));
+    }
+    entry.instructions.push_back(
+        makeBinary(Opcode::And, 1, Value::temp(0), Value::constInt(kMask)));
+    entry.instructions.push_back(makeBinary(Opcode::And, 2, Value::temp(1), Value::constInt(8191)));
+    {
+        Instr br;
+        br.op = Opcode::Br;
+        br.type = Type(Type::Kind::Void);
+        br.addBranchTarget("next");
+        br.brArgs.back().push_back(Value::temp(1));
+        br.brArgs.back().push_back(Value::temp(2));
+        entry.instructions.push_back(std::move(br));
+    }
+    entry.terminated = true;
+
+    BasicBlock next;
+    next.label = "next";
+    for (unsigned id : {3u, 4u}) {
+        Param p;
+        p.name = id == 3 ? "p" : "q";
+        p.type = Type(Type::Kind::I64);
+        p.id = id;
+        next.params.push_back(std::move(p));
+    }
+    {
+        Instr ret;
+        ret.op = Opcode::Ret;
+        ret.operands.push_back(Value::temp(3));
+        next.instructions.push_back(std::move(ret));
+    }
+    next.terminated = true;
+
+    fn.blocks.push_back(std::move(entry));
+    fn.blocks.push_back(std::move(next));
+    mod.functions.push_back(std::move(fn));
+
+    il::transform::reassociate(mod);
+
+    const auto &defA = mod.functions[0].blocks[0].instructions[0];
+    ASSERT_EQ(defA.operands.size(), 2u);
+    const bool aReadsX = (defA.operands[0].kind == Value::Kind::Temp && defA.operands[0].id == 0) ||
+                         (defA.operands[1].kind == Value::Kind::Temp && defA.operands[1].id == 0);
+    const bool aMasks =
+        (defA.operands[0].kind == Value::Kind::ConstInt && defA.operands[0].i64 == kMask) ||
+        (defA.operands[1].kind == Value::Kind::ConstInt && defA.operands[1].i64 == kMask);
+    EXPECT_TRUE(aReadsX);
+    EXPECT_TRUE(aMasks);
+
+    const auto &defB = mod.functions[0].blocks[0].instructions[1];
+    ASSERT_EQ(defB.operands.size(), 2u);
+    const bool bReadsA = (defB.operands[0].kind == Value::Kind::Temp && defB.operands[0].id == 1) ||
+                         (defB.operands[1].kind == Value::Kind::Temp && defB.operands[1].id == 1);
+    EXPECT_TRUE(bReadsA);
 }
 
 TEST(Reassociate, DoesNotSwapSubOperands) {
@@ -216,14 +290,10 @@ TEST(Reassociate, EquivalentTreesReceiveTheSameAssociation) {
                  {"c", Type(Type::Kind::I64), 2}};
     BasicBlock entry;
     entry.label = "entry";
-    entry.instructions.push_back(
-        makeBinary(Opcode::Add, 3, Value::temp(0), Value::temp(1)));
-    entry.instructions.push_back(
-        makeBinary(Opcode::Add, 4, Value::temp(3), Value::temp(2)));
-    entry.instructions.push_back(
-        makeBinary(Opcode::Add, 5, Value::temp(1), Value::temp(2)));
-    entry.instructions.push_back(
-        makeBinary(Opcode::Add, 6, Value::temp(0), Value::temp(5)));
+    entry.instructions.push_back(makeBinary(Opcode::Add, 3, Value::temp(0), Value::temp(1)));
+    entry.instructions.push_back(makeBinary(Opcode::Add, 4, Value::temp(3), Value::temp(2)));
+    entry.instructions.push_back(makeBinary(Opcode::Add, 5, Value::temp(1), Value::temp(2)));
+    entry.instructions.push_back(makeBinary(Opcode::Add, 6, Value::temp(0), Value::temp(5)));
     Instr ret;
     ret.op = Opcode::Ret;
     ret.operands = {Value::temp(6)};

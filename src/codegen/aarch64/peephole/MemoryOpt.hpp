@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include "../InstrEffects.hpp"
 #include "../MachineIR.hpp"
 #include "../Peephole.hpp"
 
@@ -63,14 +64,21 @@ std::size_t forwardStoreLoads(std::vector<MInstr> &instrs, PeepholeStats &stats)
 /// @brief Fuse an adjacent integer multiply and addition into `MAddRRRR`.
 ///
 /// The multiply result must be exactly one add input and must be dead after the
-/// add. Either commutative add-input position is accepted.
+/// add. Either commutative add-input position is accepted. Deadness follows
+/// the shared effects model (call argument/clobber sets, return registers)
+/// and, when the scan reaches the block exit without a redefinition, the
+/// block's exit-live set (see blockExitLive()).
 ///
 /// @param[in,out] instrs Instruction sequence containing the candidate pair.
 /// @param idx Index of the `MulRRR` candidate.
 /// @param[in,out] stats Statistics updated when a fusion succeeds.
+/// @param target ABI description for call and return effects.
+/// @param exitLive Physical registers live at the enclosing block's exit.
 /// @return `true` when the multiply and add were replaced by one instruction.
 [[nodiscard]] bool tryMaddFusion(std::vector<MInstr> &instrs,
                                  std::size_t idx,
-                                 PeepholeStats &stats);
+                                 PeepholeStats &stats,
+                                 const TargetInfo &target,
+                                 const PhysRegSet &exitLive);
 
 } // namespace zanna::codegen::aarch64::peephole

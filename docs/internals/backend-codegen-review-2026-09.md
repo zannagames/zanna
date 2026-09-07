@@ -42,7 +42,180 @@ the original scope:
   4095-byte literal limit under `-Werror=overlength-strings`) and
   `src/tests/runtime/RTCanvas3DCoordsContractTests.cpp` (`isfinite` from a C `.inc` inside C++).
 
-Everything from B1 onward is open.
+Phase 2.1 (one instruction-effects model per backend) is implemented:
+
+- `src/codegen/aarch64/InstrEffects.{hpp,cpp}` — `effectsOf(const MInstr&, const TargetInfo&)`
+  (explicit roles from `ra::operandRoles` plus call/return ABI registers, NZCV, memory class,
+  jump-table and emit-time scratch clobbers), `callClobberSet`, and the shared opcode predicates.
+  `peephole/PeepholeCommon.cpp`, `peephole/CopyPropDCE.cpp`, `peephole/LoopOpt.cpp`,
+  `passes/SchedulerPass.cpp`, and `PreRegAllocOpt.cpp` consume it; their private role tables are
+  deleted (`test_aarch64_instr_effects`, which also asserts `classifyOperand == ra::operandRoles`
+  on real MIR).
+- `src/codegen/x86_64/OperandRoles.{hpp,cpp}` — `effectsOf` on top of the Phase 1 implicit masks;
+  `ra/Allocator.cpp::collectPhysicalClobbers`, `Scheduler.cpp`, and `ISel.cpp` consume it. The
+  `JUMPTABLE` dispatch scratch (R10/R11) is now an implicit definition (`test_x86_peephole`).
+
+Phase 2.4 (MIR verifier) is implemented:
+
+- `src/codegen/{aarch64,x86_64}/MirVerify.{hpp,cpp}` — `verifyMir(fn, stage, target, diags)`
+  with cumulative per-stage rule sets (structure at every stage; no virtual registers, frame and
+  stack offsets inside the finalized frame, callee-saved coverage, reserved scratch never live
+  across an implicit clobber, ABI-only entry live-in after RA; encodable immediates after pseudo
+  expansion on AArch64). Register facts come from the Phase 2.1 effects model and the CFG from the
+  allocator's now-exported `ra::classifyControlFlow`.
+- `src/codegen/common/PassManager.hpp` — post-pass hook (`setPostPassHook`) that both pipelines
+  install when `ZANNA_VERIFY_MIR=1` or `--verify-mir` (`zanna codegen arm64|x64`) is given; a
+  violation is a `V-CG-MIR-*` error that stops the pipeline.
+- Tests: `test_aarch64_mir_verify` / `test_x86_mir_verify` (one failing-MIR case per rule plus the
+  pipeline at -O0/-O1/-O2 with verification on), and the AArch64 shared-corpus and VM-vs-native
+  property tests now pass `--verify-mir`. Calibration on this host: zero violations across the
+  shared IL corpus, every `examples/` program, and the demo games / 3D showcases (chess, crackman,
+  paint at ~40–60K IL lines each) on both backends at -O0 and -O2.
+- First verifier finding: on x86-64 `trap.from_err` lowered to a bare `call rt_trap_raise_error`
+  with no terminator after it (the inline trap emitters all append `ud2`), so the block fell off
+  its end in the MIR CFG. `Lowering.Mem.cpp::emitCall` now appends `UD2` after any call to a
+  no-return runtime helper; the symbol set moved to `codegen/common/NoReturnSymbols.hpp` so both
+  backends share it (`test_x86_backend_regressions`).
+
+Phase 2.2 (A4, `ExpandPseudosPass`) is implemented:
+
+- `src/codegen/aarch64/passes/ExpandPseudosPass.{hpp,cpp}` — last MIR pass at every level;
+  rewrites every emit-time pseudo form (wide `AddRI/SubRI/AddsRI/SubsRI/AndRI/OrrRI/EorRI/CmpRI`,
+  non-FP8 `FMovRI`, `AddFpImm` and frame/base/pair/SP accesses outside the encodable range) into
+  explicit MIR with the historical scratch preference, skipping any reserved scratch that is an
+  operand or live later in the block. `InstrEffects` gained the shared encodability predicates
+  (`isEncodableLdStOffset` is width-aware, so positive scaled offsets no longer count as pseudo
+  forms). Both emitters now reject pseudo forms (`rejectUnexpanded`) and their private scratch
+  selection (`pickWideImmScratch`, `chooseGprScratch`, `resolveBaseOffset`,
+  `encodeLargeOffsetLdSt`) is deleted. The verifier's `PostExpand` stage runs after the pass.
+- Tests: `test_aarch64_expand_pseudos` (one case per form, scratch-live-across, pair split, SP
+  store, encodable forms untouched, pipeline at -O0/-O1/-O2 leaves no pseudo form),
+  `test_emit_aarch64_mir_bitwise` (emitters reject unexpanded forms). The shared corpus, every
+  example, and the demo games verify clean under `PostExpand` on this host.
+- Measurement that motivates a Phase 3 item: in `chess` at -O2, 12,447 of 113,289 emitted
+  instructions are the `mov x9,#off; add x9,x29,x9` prefixes of frame accesses beyond ±256
+  bytes (every spill/reload in a frame larger than 256 bytes costs three instructions).
+
+Phase 2.3 (one `MirCfg` per backend, `blockExitLive`, B1) is implemented:
+
+- `src/codegen/{aarch64,x86_64}/MirCfg.{hpp,cpp}` — snapshot CFG built from `ra::classifyControlFlow`
+  through `common/ra/CfgExtract.hpp` (which now also reports per-block fallthrough), with
+  predecessors, `hasEdge`, `fallsThrough`, `exitsDirectlyTo` (AArch64), lazily computed dominators
+  (`common/ra/Dominators.hpp`, the former `aarch64/peephole/Dominators.cpp` moved there), dominance-
+  proven `backEdges`, `naturalLoop`, and `loopDepths`. Consumers: both `ra::LivenessAnalysis`, both
+  `MirVerify`, AArch64 `removeDeadInstructionsCFG`, `forwardSinglePredPhiLoads`,
+  `coalesceJoinPhiLoads`, `forwardLayoutSuccessorStoreLoad`, `hoistLoopConstants`,
+  `eliminateLoopPhiSpills`, and the x86-64 `traceBlockLayout`/`moveColdBlocks`. The five private
+  builders they used are deleted; the drifts they had (LoopOpt dropped the fallthrough edge after a
+  trailing `Tbz`/`Tbnz` and added one after a `JumpTable`/no-return call; `Peephole.cpp` added a
+  fallthrough after a `JumpTable` and never recorded jump-table targets as predecessors;
+  `LoopOpt` bounded natural loops by layout position) are gone with them.
+- `blockExitLive(fn, bi, target)` (`aarch64/MirCfg.hpp`) = `carriedExitRegs` ∪ SP/FP/LR ∪ (return
+  registers when the block leaves the function, otherwise callee-saved GPR/FPR — pinned slots live
+  there; at a return the epilogue restores them, so a value left in one is dead). (Superseded in
+  Phase 3 C4 by the solved-liveness form below.)
+  `foldComputeIntoTarget` and `tryMaddFusion` (B1) now take the ABI and this set and scan with the
+  effects model, so a call's argument registers and a return's result registers are reads, a call's
+  caller-saved clobbers are writes, and a value reaching the block end is dead only if it is not
+  exit-live. The CFG-aware DCE seeds function exits from the same helper and adds `carriedExitRegs`
+  to every block's live-out.
+- Generated-code check against the Phase 2.2 compiler (chess, crackman, paint, openworld_slice at
+  -O0/-O2 on both targets): x86-64 identical, AArch64 -O0 identical, AArch64 -O2 net −11/−11/−9
+  instructions (chess/crackman/paint). Two effects: (a) the CFG-aware DCE no longer seeds returning
+  blocks with the callee-saved set (the epilogue restores them), so dead `mov xN, #0`
+  materializations into callee-saved registers and the save/restore pairs they forced disappear;
+  (b) `foldComputeIntoTarget` declines a fold whose ALU destination is an argument register read
+  by the following one-argument call (five sites in chess, +1 `mov` each). The effects model reads
+  every argument register at a call because `Bl` carries no arity; a call-site argument mask on
+  the MIR call is Phase 3 item 16.
+- Tests: `test_aarch64_mir_cfg` (the four disagreement shapes, direct-exit edges, dominators/back
+  edges/natural loops/loop depth, `blockExitLive` for returning, branching, trapping, and
+  fall-through blocks), `test_codegen_cfg_extract` (x86-64 `MirCfg` shapes), and B1 cases in
+  `test_codegen_arm64_peephole_subpasses` (carried/return/call-argument registers block the fold
+  and the fusion).
+
+Phase 2.5 (differential coverage) is implemented:
+
+- `src/tests/e2e/differential_opt_levels.cmake` and the `codegen_optdiff` label: every shared-corpus
+  program (success and trap) and the deterministic `examples/il/` programs are built natively at
+  -O0 and -O2 with the MIR verifier on and byte-compared (stdout and exit code). The VM-vs-native
+  gate and this gate are registered by one function for both architectures: the AArch64
+  registration is unchanged, and x86-64 hosts that link native code now get `differential_x64_*`
+  and `optdiff_x64_*` — until now the x86-64 backend had no program-level oracle in the gate.
+- `src/tests/common/ILKernelGenerator.{hpp,cpp}` (seeded IL text generator for the kernel shapes:
+  checked-arithmetic chains, `idx.chk` reused across trap branches, div/rem by constants,
+  `switch.i32` dispatch, select diamonds, leaf calls, phi-cycle inner loops, bit mixing) and
+  `common/ILKernelDiff.hpp` (parse → verify → VM → native -O0 → native -O2, exit codes compared).
+  `test_differential_il_kernels` runs a fixed seed range in the gate on the host backend;
+  `fuzz_il_native_diff` (`ZANNA_ENABLE_FUZZ=ON`) is the unbounded libFuzzer form.
+- First run of the kernel gate on x86-64 Linux: 18 of the first 48 seeds disagreed, in three
+  classes, all fixed with a regression test each:
+  - **IL `reassociate` rewrote multi-use values.** Its use counter only walked instruction
+    operands, so a temporary passed to a successor's block parameter looked single-use and became
+    an internal node of a flattened tree (`%m = and %s, M; %y = and %m, 8191; br next(%m)` turned
+    `%m` into `M & 8191`). Branch arguments now count as uses (`test_il_reassociate`
+    `BranchArgumentsCountAsUses`). 14 seeds.
+  - **x86-64 `urem`/`srem` by a magic constant** formed `quotient * divisor` in RAX while the
+    destination virtual register was defined by the following dividend copy; the allocator does
+    not treat an explicitly named allocatable register as occupied between its write and its read
+    and could hand the destination RAX, producing `sub rax, rax` (remainder 0). Visible at every
+    level once the global pinning tier changed the free pool. The product now lives in the reserved
+    scratch r11 (`test_x86_backend_regressions` `RemainderByMagicKeepsProductInReservedScratch`).
+    2 seeds.
+  - **Range-analysis narrowing budget.** CheckOpt demotes `iadd.ovf i, 1` to `add` from the
+    loop-guard bound the whole-function range analysis proves; the verifier re-proves it with the
+    same analysis. Narrowing after widening carried a recovered bound one CFG edge per sweep and
+    was capped at two sweeps, so once `inline-o2` split the caller block into a chain of
+    continuation blocks the proof was out of reach and the optimized module failed verification
+    (`native-O2` exit 1). The budget now follows the block count with the same early exit
+    (`test_il_int_range_analysis` `RecoveredLoopBoundReachesUsesManyBlocksPastHeader`,
+    `VerifierAcceptsDemotedAddManyBlocksPastHeader`). 4 seeds.
+  After the fixes the first 400 seeds agree on VM, native -O0, and native -O2.
+
+Phase 3 (function-wide register allocation, C1) is in progress; the plan is in
+`docs/internals/backend.md` ("Codegen statistics baseline") and the ADR that lands with the flip.
+Steps landed so far, each gate-green with the default pipeline unchanged unless stated:
+
+- **C0 — metrics.** `aarch64/passes/CodegenStatsPass` and `x86_64/passes/CodegenStatsPass` print
+  one `[codegen-stats]` line per function and module at every -O level when `ZANNA_CODEGEN_STATS`
+  is set (instructions, loads/stores, frame loads/stores, offset prefixes, spill slots, frame
+  bytes, callee-saved count); `scripts/codegen_stats.sh` builds the TSV for the demos and the IL
+  benchmarks and diffs it against `docs/internals/codegen_stats_baseline.tsv`.
+- **C1 — parallel copies.** `common/ra/ParallelCopy.hpp`: allocator-independent sequentialisation of
+  a `(dst, src)` location bundle (dependency order, identity drop, cycle break through a scratch,
+  mem-to-mem through a temp). x86-64 `Coalescer::lower` runs on it with byte-identical output.
+- **C2 — `ParallelCopy` opcode.** The AArch64 pseudo (`dst0, src0, dst1, src1, …`, roles even=def
+  / odd=use) with verifier rules `PCOPY` (shape; never survives RA) and `SCRATCH-EXIT` (reserved
+  scratch never live out of a block); the emitters, encoder, expander, peepholes, and scheduler
+  reject or skip it.
+- **C3 — edge-copy lowering mode.** `AArch64Module::edgeCopyLowering` (off by default): block
+  parameters are virtual registers, branch arguments one `ParallelCopy` per edge (inline for `br`,
+  in the existing split block for `cbr`/`switch`), cross-block temporaries keep their vreg, blocks
+  lower in an order where every definition precedes its uses. The shared corpus lowers and verifies
+  in that mode (`test_aarch64_lowering_edge_copies`).
+- **C4 — physical liveness for the post-RA passes.** `aarch64/PhysLiveness.{hpp,cpp}`
+  (`computePhysLiveness`, moved out of the verifier) and `blockExitLive(fn, bi, target, liveness)`
+  = solved live-out ∪ `carriedExitRegs` ∪ SP/FP/LR ∪ (return registers at a function exit). The
+  twelve `carriedExitRegs` consumers (`tryFoldConsecutiveMoves`, `tryFoldImmThenMove`,
+  `tryTbzTbnzFusion`, `tryCsetBranchFusion`, the three division rewrites, both DCE variants, the
+  per-block and post-schedule drivers) take a `const PhysRegSet *exitLive` instead; each peephole
+  stage solves liveness once on its input shape, and the phi-join forwarders and loop passes no
+  longer publish carried metadata (`markCarriedExitReg` is gone). Under real liveness a callee-saved
+  register is exit-live only when a successor reads it, so the conservative "every callee-saved
+  register is live inside the function" seed is gone as well. Tests: `test_aarch64_phys_liveness`
+  (edge read, kill, call clobber/argument, return, loop back edge, diamond, determinism, the exit
+  seed, and the property *carried ⊆ solved live-out* over the allocated shared corpus),
+  `test_aarch64_mir_cfg` and `test_codegen_arm64_peephole_subpasses` re-derived on successor reads
+  instead of hand-set carried sets. Generated code at AArch64 -O2 (`scripts/codegen_stats.sh`
+  against the Phase 3 baseline): chess 105,089 → 104,752 instructions, crackman 56,684 → 56,569,
+  paint 55,230 → 55,127 (dead constant materializations and pinned-slot address computations into
+  callee-saved registers, which the old seed kept alive, are gone); frame traffic, offset prefixes,
+  and spill slots unchanged. openworld_slice 6,274 → 6,280: three `mov x5, x0; mov x0, x5` pairs
+  before a return in blocks with a mid-block trap branch survive, because the trap call's effects
+  read every argument register (`Bl` carries no arity) and the block-granular live-out includes
+  the trap edge; a call-site argument mask (item 16) recovers them.
+
+Everything from B2 onward, and Phase 3 from C5 on, is open.
 
 ## Context
 
@@ -81,7 +254,7 @@ Fix (preferred, removes the class): a post-RA `ExpandPseudosPass` on AArch64 tha
 
 ### B. Latent hazards (cheap fixes + tests)
 
-- **B1.** `foldComputeIntoTarget` (`aarch64/peephole/CopyPropDCE.cpp`) and `tryMaddFusion` (`aarch64/peephole/MemoryOpt.cpp`) treat an unconditional block end as "register dead" without consulting `carriedExitRegs`; `tryFoldImmThenMove`/`tryTbzTbnzFusion` do consult it. Masked today only because the end-of-block spill store is still present when they run. Add the `carriedExitRegs` parameter and a shared `blockExitLive(block, target)` helper.
+- **B1.** (fixed in Phase 2.3) `foldComputeIntoTarget` (`aarch64/peephole/CopyPropDCE.cpp`) and `tryMaddFusion` (`aarch64/peephole/MemoryOpt.cpp`) treat an unconditional block end as "register dead" without consulting `carriedExitRegs`; `tryFoldImmThenMove`/`tryTbzTbnzFusion` do consult it. Masked today only because the end-of-block spill store is still present when they run. Add the `carriedExitRegs` parameter and a shared `blockExitLive(block, target)` helper.
 - **B2.** `eliminateDeadFpStores` and `forwardStoreLoads` (AArch64) key on exact offsets and ignore sub-word `Ldr8/16/32RegFpImm` / `Str8/16/32RegFpImm`: `str x0,[fp,#-16]; ldr w1,[fp,#-16]; str x2,[fp,#-16]` deletes the first store. Use byte-range overlap for every FpImm width (extend `fpStoreRange` to loads and sub-word forms).
 - **B3.** x86 `ra/Coalescer.cpp::lower` leaves `dstState.hasPhys/cachedInBlock` set after a Mem-dest PX_COPY (stale register). Unreachable under SSA dominance; invalidate + assert.
 - **B4.** x86 `LowerOvf.cpp` 3-operand form `mov dest,lhs; op dest,rhs` assumes `dest != rhs`. Assert (or swap for commutative ops).
@@ -130,6 +303,7 @@ Fix (preferred, removes the class): a post-RA `ExpandPseudosPass` on AArch64 tha
 13. **C3** x86 argument marshalling as one `PX_COPY` per call (reuse `Coalescer::lower`), free R11 for allocation (keep R10 for cycle breaking or use `XCHG`).
 14. **C4** port `removeDeadInstructionsCFG` to x86 on top of `MirCfg`.
 15. **C5** precompute vreg use/def counts once per function for `foldLeaIntoMem`/`runAddressingFolds`; make `coalesceClass` incremental (update intervals on merge instead of restart); index spill slots by vreg in `FrameBuilder`.
+16. **Call-site argument masks.** `Bl`/`Blr` (and x86 `CALL`) carry no arity, so `effectsOf` reads every argument register at every call. Record the integer/FP argument-register counts on the MIR call at lowering and read only those: it restores the five `foldComputeIntoTarget` folds Phase 2.3 declines in `chess` (ALU result in an argument register the next one-argument call does not read), lets DCE drop dead argument-register writes before calls, and removes false scheduler dependencies. Measured on `chess` -O2: 12,447 frame-access prefixes (Phase 2.2) dwarf this, so it goes after global RA.
 
 ---
 

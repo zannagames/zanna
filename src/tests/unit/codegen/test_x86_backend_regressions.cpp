@@ -430,6 +430,29 @@ TEST(X86BackendRegressions, IdxChkNormalizesNonZeroLowerBound) {
     EXPECT_NE(result.asmText.find("rt_trap_raise_error"), std::string::npos);
 }
 
+// trap.from_err lowers to a plain call of rt_trap_raise_error; the block must
+// still end in a terminator (the MIR verifier's FALLOFF rule found a function
+// ending in the bare call), so the lowering appends the same defensive UD2 the
+// inline trap emitters use.
+TEST(X86BackendRegressions, NoReturnRuntimeCallIsFollowedByUd2) {
+    ILBlock entry{};
+    entry.name = "entry";
+    entry.instrs = {op("call", {label("rt_trap_raise_error"), imm(9)})};
+
+    ILFunction fn{};
+    fn.name = "raise_only";
+    fn.blocks = {entry};
+
+    const CodegenResult result = compile(fn);
+    if (!result.errors.empty()) {
+        std::cerr << result.errors << '\n';
+    }
+    ASSERT_TRUE(result.errors.empty());
+    const auto callAt = result.asmText.find("rt_trap_raise_error");
+    ASSERT_NE(callAt, std::string::npos);
+    EXPECT_NE(result.asmText.find("ud2", callAt), std::string::npos);
+}
+
 TEST(X86BackendRegressions, IdxChkUsesSignedChecksForNegativeLowerBound) {
     ILBlock entry{};
     entry.name = "entry";
@@ -1601,6 +1624,7 @@ TEST(X86BackendRegressions, CoalescerPreservesSpilledMemorySourceCycles) {
     // pinning would keep both values in callee-saved registers and bypass the
     // path under test, so disable it for this allocation.
     setenv("ZANNA_NO_GLOBAL_RA", "1", 1);
+
     struct EnvReset {
         ~EnvReset() {
             unsetenv("ZANNA_NO_GLOBAL_RA");
@@ -2712,6 +2736,33 @@ TEST(X86BackendRegressions, UremLargePowerOfTwoMaskMaterializesBeforeBinaryEmiss
 
     const BinaryEmitResult binaryResult = compileBinary(fn);
     EXPECT_TRUE(binaryResult.errors.empty());
+}
+
+TEST(X86BackendRegressions, RemainderByMagicKeepsProductInReservedScratch) {
+    // remainder = dividend - quotient * 87. The product used to be formed in
+    // RAX while `dest` (a virtual register) was defined by the following copy
+    // of the dividend; the allocator could hand `dest` RAX itself, turning the
+    // subtraction into `sub rax, rax`. The product now lives in the reserved
+    // scratch r11, which the allocator never assigns.
+    ILBlock entry{};
+    entry.name = "entry";
+    entry.paramIds = {0};
+    entry.paramKinds = {ILValue::Kind::I64};
+    entry.instrs = {op("urem.chk0", {val(ILValue::Kind::I64, 0), imm(87)}, 1, ILValue::Kind::I64),
+                    op("ret", {val(ILValue::Kind::I64, 1)})};
+
+    ILFunction fn{};
+    fn.name = "urem_magic";
+    fn.blocks = {entry};
+
+    const CodegenResult result = compile(fn);
+    if (!result.errors.empty()) {
+        std::cerr << result.errors << '\n';
+    }
+    ASSERT_TRUE(result.errors.empty());
+    EXPECT_NE(result.asmText.find("imulq %r10, %r11"), std::string::npos);
+    EXPECT_NE(result.asmText.find("subq %r11, "), std::string::npos);
+    EXPECT_EQ(result.asmText.find("subq %rax, %rax"), std::string::npos);
 }
 
 TEST(X86BackendRegressions, ExistingOverflowTrapBlockGetsRuntimeCall) {
