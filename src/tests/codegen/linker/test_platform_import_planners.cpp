@@ -304,6 +304,10 @@ TEST(PlatformImportPlanners, WindowsPlannerCreatesGroupedImportsAndThunks) {
                                         "CreateWindowExW",
                                         "LoadIconW",
                                         "LoadImageW",
+                                        "CreateIconIndirect",
+                                        "DestroyIcon",
+                                        "SendMessageW",
+                                        "CreateBitmap",
                                         "CreateWaitableTimerExW",
                                         "ClipCursor",
                                         "SetWaitableTimer",
@@ -403,6 +407,11 @@ TEST(PlatformImportPlanners, WindowsPlannerCreatesGroupedImportsAndThunks) {
     EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "SetCapture"));
     EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "LoadIconW"));
     EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "LoadImageW"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "CreateIconIndirect"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "DestroyIcon"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "user32.dll", "SendMessageW"));
+    EXPECT_TRUE(importPlanHasDll(plan, "gdi32.dll"));
+    EXPECT_TRUE(importPlanDllHasFunction(plan, "gdi32.dll", "CreateBitmap"));
     EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", "GetModuleFileNameW"));
     EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", "InitializeCriticalSectionEx"));
     EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", "LockFileEx"));

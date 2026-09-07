@@ -19,10 +19,15 @@
 
 #include "tests/TestHarness.hpp"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 extern "C" {
 #include "runtime/audio/rt_mp3.h"

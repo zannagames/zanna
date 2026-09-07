@@ -211,7 +211,9 @@ _Static_assert(sizeof(d3d_per_scene_t) % 16 == 0,
 
 typedef vgfx3d_d3d11_per_material_t d3d_per_material_t;
 
-_Static_assert(sizeof(d3d_per_material_t) == 448u,
+/* 448 bytes through the UV transforms, plus the ADR 0312 decal block: three
+ * float4 projector rows and one float4 of params. */
+_Static_assert(sizeof(d3d_per_material_t) == 512u,
                "D3D11 PerMaterial cbuffer must match its HLSL layout");
 
 /// @brief CPU mirror of one packed D3D11 light constant-buffer element.

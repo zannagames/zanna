@@ -580,7 +580,11 @@ static inline void rt_atomic_store_f64(volatile double *ptr, const double *value
         volatile size_t *: rt_atomic_load_size,                                                    \
         const volatile size_t *: rt_atomic_load_size,                                              \
         size_t *: rt_atomic_load_size,                                                             \
-        const size_t *: rt_atomic_load_size)((ptr), (order))
+        const size_t *: rt_atomic_load_size,                                                       \
+        void *volatile *: rt_atomic_load_ptr,                                                      \
+        void *const volatile *: rt_atomic_load_ptr,                                                \
+        void **: rt_atomic_load_ptr,                                                               \
+        void *const *: rt_atomic_load_ptr)((ptr), (order))
 
 #define __atomic_store_n(ptr, val, order)                                                          \
     _Generic((ptr),                                                                                \
@@ -591,7 +595,9 @@ static inline void rt_atomic_store_f64(volatile double *ptr, const double *value
         volatile int64_t *: rt_atomic_store_i64,                                                   \
         int64_t *: rt_atomic_store_i64,                                                            \
         volatile size_t *: rt_atomic_store_size,                                                   \
-        size_t *: rt_atomic_store_size)((ptr), (val), (order))
+        size_t *: rt_atomic_store_size,                                                            \
+        void *volatile *: rt_atomic_store_ptr,                                                     \
+        void **: rt_atomic_store_ptr)((ptr), (val), (order))
 
 #define __atomic_load(ptr, ret, order)                                                             \
     _Generic((ptr),                                                                                \
@@ -858,6 +864,14 @@ static inline size_t rt_atomic_fetch_sub_size(volatile size_t *ptr, size_t value
 /// @return The pointer value observed in @p ptr.
 static inline void *rt_atomic_load_ptr(void *const volatile *ptr, int order) {
     return __atomic_load_n(ptr, order);
+}
+
+/// @brief Atomically store a pointer on GCC/Clang platforms.
+/// @param ptr Address of pointer storage to update.
+/// @param value Pointer value to publish.
+/// @param order GCC-style memory-order constant.
+static inline void rt_atomic_store_ptr(void *volatile *ptr, void *value, int order) {
+    __atomic_store_n(ptr, value, order);
 }
 
 /// @brief Atomically exchange a pointer on GCC/Clang platforms.
