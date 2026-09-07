@@ -733,6 +733,14 @@ if (NOT TARGET test_dataflow_liveness)
     zanna_add_ctest(test_dataflow_liveness test_dataflow_liveness)
 endif ()
 
+if (NOT TARGET test_parallel_copy)
+    zanna_add_test(
+            test_parallel_copy
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_parallel_copy.cpp)
+    target_link_libraries(test_parallel_copy PRIVATE zanna_codegen_common)
+    zanna_add_ctest(test_parallel_copy test_parallel_copy)
+endif ()
+
 if (NOT TARGET test_codegen_cfg_extract)
     zanna_add_test(
             test_codegen_cfg_extract
