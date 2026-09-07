@@ -1470,6 +1470,9 @@ void AsmEmitter::emitInstruction(std::ostream &os, const MInstr &mi) const {
             os << ", [x29, #" << getImm(mi.ops[2]) << "]\n";
             return;
         }
+        case MOpcode::ParallelCopy:
+            throw std::runtime_error(
+                "AArch64 asm emitter: ParallelCopy survived register allocation");
         default:
             break;
     }

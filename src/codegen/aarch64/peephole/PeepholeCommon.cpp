@@ -158,6 +158,7 @@ bool hasSideEffects(const MInstr &instr) noexcept {
         case MOpcode::StpFprFpImm:
         case MOpcode::PhiStoreGPR:
         case MOpcode::PhiStoreFPR:
+        case MOpcode::ParallelCopy:
         case MOpcode::Bl:
         case MOpcode::Blr:
         case MOpcode::Br:

@@ -1466,7 +1466,7 @@ int main() {
         auto isPseudo = [](MOpcode opc) {
             return opc == MOpcode::AddOvfRRR || opc == MOpcode::SubOvfRRR ||
                    opc == MOpcode::AddOvfRI || opc == MOpcode::SubOvfRI ||
-                   opc == MOpcode::MulOvfRRR;
+                   opc == MOpcode::MulOvfRRR || opc == MOpcode::ParallelCopy;
         };
 
         // Build a minimal valid instruction for each opcode category.
@@ -1729,10 +1729,10 @@ int main() {
         }
 
         // Verify we covered the expected counts.
-        CHECK(pseudoCount == 5);    // 5 pseudo-opcodes
-        CHECK(encodedCount == 102); // 107 total - 5 pseudo = 102 real opcodes
+        CHECK(pseudoCount == 6);    // 5 overflow pseudos + ParallelCopy
+        CHECK(encodedCount == 102); // 108 total - 6 pseudo = 102 real opcodes
 
-        if (encodedCount == 102 && pseudoCount == 5)
+        if (encodedCount == 102 && pseudoCount == 6)
             std::cout << "  Encoding coverage: " << encodedCount << "/102 opcodes OK, "
                       << pseudoCount << " pseudo-opcodes skipped.\n";
     }

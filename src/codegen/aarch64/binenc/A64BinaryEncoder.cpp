@@ -347,6 +347,12 @@ static void validateOperandCount(const MInstr &mi) {
         case MOpcode::EorRRRLsl:
             requireOperandCount(mi, 4);
             return;
+        case MOpcode::ParallelCopy:
+            // Any even count is well-formed; the pseudo never reaches
+            // encoding (encodeInstruction rejects it).
+            if (mi.ops.size() % 2 != 0)
+                throw std::runtime_error("AArch64 binary encoder: ParallelCopy operand count");
+            return;
     }
 }
 
@@ -2112,6 +2118,10 @@ void A64BinaryEncoder::encodeInstruction(const MInstr &mi, objfile::CodeSection 
             throw std::runtime_error("AArch64 binary encoder: overflow pseudo-op '" +
                                      std::string(opcodeName(mi.opc)) +
                                      "' reached binary emission before LowerOvf");
+
+        case MOpcode::ParallelCopy:
+            throw std::runtime_error(
+                "AArch64 binary encoder: ParallelCopy survived register allocation");
 
         default:
             break;

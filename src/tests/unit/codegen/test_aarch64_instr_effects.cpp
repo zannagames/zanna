@@ -258,6 +258,25 @@ TEST(AArch64InstrEffects, EmitTimeScratchClobbersAreDefs) {
         MInstr{MOpcode::StpRegFpImm, {x(PhysReg::X0), x(PhysReg::X1), imm(-520)}}));
 }
 
+TEST(AArch64InstrEffects, ParallelCopyWritesEvenOperandsAndReadsOddOnes) {
+    const MInstr pc{MOpcode::ParallelCopy,
+                    {x(PhysReg::X0), x(PhysReg::X1), x(PhysReg::X2), x(PhysReg::X3)}};
+    for (std::size_t idx = 0; idx < pc.ops.size(); ++idx) {
+        const auto [isUse, isDef] = ra::operandRoles(pc, idx);
+        EXPECT_EQ(isUse, (idx % 2) == 1);
+        EXPECT_EQ(isDef, (idx % 2) == 0);
+    }
+    const InstrEffects fx = effectsOf(pc, darwinTarget());
+    EXPECT_TRUE(fx.defs.contains(PhysReg::X0));
+    EXPECT_TRUE(fx.defs.contains(PhysReg::X2));
+    EXPECT_TRUE(fx.uses.contains(PhysReg::X1));
+    EXPECT_TRUE(fx.uses.contains(PhysReg::X3));
+    EXPECT_FALSE(fx.uses.contains(PhysReg::X0));
+    EXPECT_EQ(fx.mem, InstrEffects::Mem::None);
+    EXPECT_FALSE(fx.isCall);
+    EXPECT_FALSE(fx.isTerminator);
+}
+
 TEST(AArch64InstrEffects, PeepholeClassifiersMatchRoleTable) {
     // Hand-built shapes covering every operand convention.
     const MInstr samples[] = {
@@ -279,6 +298,8 @@ TEST(AArch64InstrEffects, PeepholeClassifiersMatchRoleTable) {
                {x(PhysReg::V0), x(PhysReg::V1), x(PhysReg::V2), MOperand::condOp("gt")}},
         MInstr{MOpcode::SCvtF, {x(PhysReg::V0), x(PhysReg::X1)}},
         MInstr{MOpcode::AddPageOff, {x(PhysReg::X0), x(PhysReg::X0), MOperand::labelOp("sym")}},
+        MInstr{MOpcode::ParallelCopy,
+               {x(PhysReg::X0), x(PhysReg::X1), x(PhysReg::X1), x(PhysReg::X0)}},
     };
     for (const MInstr &mi : samples) {
         for (std::size_t idx = 0; idx < mi.ops.size(); ++idx) {

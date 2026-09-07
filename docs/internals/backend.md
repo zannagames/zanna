@@ -199,11 +199,13 @@ class PassManager {
   `src/codegen/x86_64/MirVerify.hpp`) on every function after every backend pass. Rules are
   cumulative by pipeline stage: structural rules everywhere (branch labels resolve, no
   instruction after a terminator, the last block ends in one, one register class per virtual
-  register, well-formed carried-exit metadata); after register allocation no virtual registers,
-  frame- and stack-relative offsets inside the finalized frame, callee-saved writes covered by the
-  save list, reserved scratch (x9/x16/x17/v16/v17, R10/R11) never live across an instruction that
-  clobbers it implicitly, and an entry live-in set restricted to ABI inputs; after pseudo
-  expansion (AArch64) every immediate directly encodable. Violations are `V-CG-MIR-*` error
+  register, well-formed carried-exit metadata, well-formed `ParallelCopy` bundles — register
+  pairs of one class with every destination written once); after register allocation no virtual
+  registers and no `ParallelCopy`, frame- and stack-relative offsets inside the finalized frame,
+  callee-saved writes covered by the save list, reserved scratch (x9/x16/x17/v16/v17, R10/R11)
+  never live across an instruction that clobbers it implicitly and (AArch64) never live out of a
+  block, and an entry live-in set restricted to ABI inputs; after pseudo expansion (AArch64) every
+  immediate directly encodable. Violations are `V-CG-MIR-*` error
   diagnostics that stop the pipeline. The register facts come from the shared effects model
   (`InstrEffects.hpp` on AArch64, `OperandRoles.hpp::effectsOf` on x86-64) that every post-RA
   pass consumes, so the verifier and the passes cannot disagree. Unit tests that drive a pipeline

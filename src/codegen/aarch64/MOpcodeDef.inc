@@ -74,6 +74,9 @@ ZANNA_MIR_OPCODE(StrFprFpImm)
 // --- Phi-edge copies ---
 ZANNA_MIR_OPCODE(PhiStoreGPR)
 ZANNA_MIR_OPCODE(PhiStoreFPR)
+// --- Parallel copy: dst0, src0, dst1, src1, ... (all pairs simultaneous;
+//     pre-RA only, lowered to moves by the register allocator) ---
+ZANNA_MIR_OPCODE(ParallelCopy)
 ZANNA_MIR_OPCODE(AddFpImm)
 // --- Load/store from arbitrary base register ---
 ZANNA_MIR_OPCODE(LdrRegBaseImm)

@@ -164,7 +164,7 @@ std::size_t hoistLoopConstants(MFunction &fn) {
                opc == MOpcode::Tbnz || opc == MOpcode::JumpTable || opc == MOpcode::Ret ||
                opc == MOpcode::Bl || opc == MOpcode::Blr || opc == MOpcode::SubSpImm ||
                opc == MOpcode::AddSpImm || opc == MOpcode::PhiStoreGPR ||
-               opc == MOpcode::PhiStoreFPR;
+               opc == MOpcode::PhiStoreFPR || opc == MOpcode::ParallelCopy;
     };
 
     // Edges, dominators, and natural loops come from the shared CFG snapshot;

@@ -287,6 +287,75 @@ TEST(AArch64MirVerify, RejectsUnsortedCarriedExitRegs) {
     EXPECT_TRUE(rejectsWith(fn, VerifyStage::PostLowering, "V-CG-MIR-CARRY"));
 }
 
+TEST(AArch64MirVerify, AcceptsParallelCopyBeforeAllocation) {
+    const auto v = [](uint16_t id) { return MOperand::vregOp(RegClass::GPR, id); };
+    const auto d = [](uint16_t id) { return MOperand::vregOp(RegClass::FPR, id); };
+    MFunction fn = singleBlock({ins(MOpcode::ParallelCopy, {v(1), v(2), v(2), v(1), d(10), d(11)}),
+                                ins(MOpcode::Ret, {})});
+    passes::Diagnostics diags;
+    EXPECT_TRUE(verifyMir(fn, VerifyStage::PostLowering, darwinTarget(), diags));
+}
+
+TEST(AArch64MirVerify, RejectsMalformedParallelCopy) {
+    const auto v = [](uint16_t id) { return MOperand::vregOp(RegClass::GPR, id); };
+    const auto d = [](uint16_t id) { return MOperand::vregOp(RegClass::FPR, id); };
+    // Odd operand count.
+    EXPECT_TRUE(rejectsWith(
+        singleBlock({ins(MOpcode::ParallelCopy, {v(1), v(2), v(3)}), ins(MOpcode::Ret, {})}),
+        VerifyStage::PostLowering,
+        "V-CG-MIR-PCOPY"));
+    // Class mismatch inside a pair.
+    EXPECT_TRUE(
+        rejectsWith(singleBlock({ins(MOpcode::ParallelCopy, {v(1), d(2)}), ins(MOpcode::Ret, {})}),
+                    VerifyStage::PostLowering,
+                    "V-CG-MIR-PCOPY"));
+    // Destination written twice.
+    EXPECT_TRUE(rejectsWith(
+        singleBlock({ins(MOpcode::ParallelCopy, {v(1), v(2), v(1), v(3)}), ins(MOpcode::Ret, {})}),
+        VerifyStage::PostLowering,
+        "V-CG-MIR-PCOPY"));
+    // Non-register operand.
+    EXPECT_TRUE(rejectsWith(
+        singleBlock({ins(MOpcode::ParallelCopy, {v(1), imm(3)}), ins(MOpcode::Ret, {})}),
+        VerifyStage::PostLowering,
+        "V-CG-MIR-PCOPY"));
+}
+
+TEST(AArch64MirVerify, RejectsParallelCopyAfterAllocation) {
+    MFunction fn = singleBlock(
+        {ins(MOpcode::ParallelCopy, {x(PhysReg::X0), x(PhysReg::X1)}), ins(MOpcode::Ret, {})});
+    EXPECT_TRUE(rejectsWith(fn, VerifyStage::PostRA, "V-CG-MIR-PCOPY"));
+}
+
+TEST(AArch64MirVerify, RejectsReservedScratchLiveOutOfBlock) {
+    // x16 is written in `entry` and read in `exit` with no clobber between:
+    // legal for an allocatable register, never for reserved scratch.
+    MFunction fn;
+    fn.name = "leak";
+    MBasicBlock entry;
+    entry.name = "entry";
+    entry.instrs = {ins(MOpcode::MovRI, {x(PhysReg::X16), imm(1)}),
+                    ins(MOpcode::Br, {label("exit")})};
+    MBasicBlock exit;
+    exit.name = "exit";
+    exit.instrs = {ins(MOpcode::MovRR, {x(PhysReg::X0), x(PhysReg::X16)}), ins(MOpcode::Ret, {})};
+    fn.blocks = {std::move(entry), std::move(exit)};
+    EXPECT_TRUE(rejectsWith(fn, VerifyStage::PostRA, "V-CG-MIR-SCRATCH-EXIT"));
+
+    // The same shape through an allocatable register is fine.
+    MFunction ok;
+    ok.name = "fine";
+    MBasicBlock e2;
+    e2.name = "entry";
+    e2.instrs = {ins(MOpcode::MovRI, {x(PhysReg::X1), imm(1)}), ins(MOpcode::Br, {label("exit")})};
+    MBasicBlock x2;
+    x2.name = "exit";
+    x2.instrs = {ins(MOpcode::MovRR, {x(PhysReg::X0), x(PhysReg::X1)}), ins(MOpcode::Ret, {})};
+    ok.blocks = {std::move(e2), std::move(x2)};
+    passes::Diagnostics diags;
+    EXPECT_TRUE(verifyMir(ok, VerifyStage::PostRA, darwinTarget(), diags));
+}
+
 TEST(AArch64MirVerify, RejectsDuplicateBlockLabels) {
     MFunction fn = singleBlock({ins(MOpcode::Br, {label("entry")})});
     MBasicBlock dup;

@@ -335,6 +335,38 @@ bool checkStructure(const MFunction &fn, Reporter &report) {
                     report.error("LABEL", &block, &mi, "jump table has no case labels");
                 for (std::size_t k = 2; k < mi.ops.size(); ++k)
                     requireBlock(k);
+            } else if (mi.opc == MOpcode::ParallelCopy) {
+                // dst0, src0, dst1, src1, ...: register pairs of one class,
+                // every destination written once.
+                if (mi.ops.size() % 2 != 0)
+                    report.error("PCOPY", &block, &mi, "parallel copy has an odd operand count");
+                for (std::size_t k = 0; k + 1 < mi.ops.size(); k += 2) {
+                    const MOperand &dst = mi.ops[k];
+                    const MOperand &src = mi.ops[k + 1];
+                    if (dst.kind != MOperand::Kind::Reg || src.kind != MOperand::Kind::Reg) {
+                        report.error(
+                            "PCOPY", &block, &mi, "parallel copy operands must be registers");
+                        continue;
+                    }
+                    if (dst.reg.cls != src.reg.cls) {
+                        report.error("PCOPY",
+                                     &block,
+                                     &mi,
+                                     "parallel copy pair " + std::to_string(k / 2) +
+                                         " mixes register classes");
+                    }
+                    for (std::size_t m = 0; m < k; m += 2) {
+                        const MOperand &earlier = mi.ops[m];
+                        if (earlier.kind == MOperand::Kind::Reg &&
+                            earlier.reg.isPhys == dst.reg.isPhys &&
+                            earlier.reg.cls == dst.reg.cls &&
+                            earlier.reg.idOrPhys == dst.reg.idOrPhys) {
+                            report.error(
+                                "PCOPY", &block, &mi, "parallel copy writes a destination twice");
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -437,6 +469,12 @@ void checkPostRA(const MFunction &fn, const TargetInfo &target, Reporter &report
     for (const auto &block : fn.blocks) {
         long long spRegion = 0; // bytes reserved by the active SubSpImm, if any
         for (const auto &mi : block.instrs) {
+            // The allocator lowers every parallel copy to moves.
+            if (mi.opc == MOpcode::ParallelCopy) {
+                physOnly = false;
+                report.error("PCOPY", &block, &mi, "parallel copy survives register allocation");
+                continue;
+            }
             bool hasVreg = false;
             for (const auto &op : mi.ops) {
                 if (op.kind == MOperand::Kind::Reg && !op.reg.isPhys)
@@ -539,6 +577,19 @@ void checkPostRA(const MFunction &fn, const TargetInfo &target, Reporter &report
             }
             live.bits &= ~fx.defs.bits;
             live.bits |= fx.uses.bits;
+        }
+
+        // Reserved scratch is block-local by contract: ExpandPseudos and the
+        // emit-time expansions pick scratch from an in-block scan, and a
+        // parallel-copy sequence borrows it between two instructions of one
+        // block. A value carried in scratch across an edge would be clobbered.
+        PhysRegSet leak;
+        leak.bits = lv.liveOut[bi].bits & scratch.bits;
+        if (!leak.empty()) {
+            report.error("SCRATCH-EXIT",
+                         &block,
+                         nullptr,
+                         "reserved scratch " + describe(leak) + " is live out of the block");
         }
     }
 

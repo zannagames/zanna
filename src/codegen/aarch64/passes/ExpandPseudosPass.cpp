@@ -293,6 +293,8 @@ class Expander {
                 out_.push_back(std::move(add));
                 return 0;
             }
+            case MOpcode::ParallelCopy:
+                ZANNA_ICE("ParallelCopy survived register allocation");
             default:
                 break;
         }
