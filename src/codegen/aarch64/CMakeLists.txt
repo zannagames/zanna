@@ -7,6 +7,7 @@ add_library(il_codegen_aarch64 STATIC
         LowerILToMIR.cpp
         LivenessAnalysis.cpp
         InstrEffects.cpp
+        MirVerify.cpp
         TerminatorLowering.cpp
         InstrLowering.cpp
         OpcodeDispatch.cpp

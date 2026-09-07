@@ -33,6 +33,7 @@
 #include "codegen/common/NativeEHLowering.hpp"
 #include "codegen/common/linker/NativeLinker.hpp"
 #include "codegen/common/objfile/ObjectFileWriter.hpp"
+#include "codegen/x86_64/MirVerify.hpp"
 #include "codegen/x86_64/passes/BinaryEmitPass.hpp"
 #include "codegen/x86_64/passes/EmitPass.hpp"
 #include "codegen/x86_64/passes/LegalizePass.hpp"
@@ -608,18 +609,48 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module module,
     passes::PassManager manager{};
     if (opts_.time_passes)
         manager.setTimingStream(&err, "x86_64");
+    // One verifier stage per registered pass; emission passes are not verified.
+    std::vector<VerifyStage> verifyStages{};
     manager.addPass(std::make_unique<passes::LoweringPass>());
+    verifyStages.push_back(VerifyStage::PostLegalize);
     manager.addPass(std::make_unique<passes::LegalizePass>());
-    if (codegenOpts.optimizeLevel >= 1)
+    verifyStages.push_back(VerifyStage::PostLegalize);
+    if (codegenOpts.optimizeLevel >= 1) {
         manager.addPass(std::make_unique<passes::PreRegAllocOptPass>());
+        verifyStages.push_back(VerifyStage::PostLegalize);
+    }
     manager.addPass(std::make_unique<passes::RegAllocPass>());
+    verifyStages.push_back(VerifyStage::PostRA);
     manager.addPass(std::make_unique<passes::SchedulerPass>());
+    verifyStages.push_back(VerifyStage::PostSchedule);
     manager.addPass(std::make_unique<passes::PeepholePass>());
+    verifyStages.push_back(VerifyStage::PostPeephole);
 
     if (useNativeAsm) {
         manager.addPass(std::make_unique<passes::BinaryEmitPass>(codegenOpts));
     } else {
         manager.addPass(std::make_unique<passes::EmitPass>(codegenOpts));
+    }
+
+    if (opts_.verify_mir || mirVerificationRequested()) {
+        manager.setPostPassHook([stages = std::move(verifyStages)](passes::Module &module,
+                                                                   passes::Diagnostics &diags,
+                                                                   std::size_t passIndex) {
+            // MIR exists only once legalization has run; emission passes are
+            // past the end of the stage table and are not verified.
+            if (!module.legalised || module.target == nullptr || passIndex >= stages.size())
+                return true;
+            bool ok = true;
+            for (std::size_t i = 0; i < module.mir.size() && i < module.frames.size(); ++i) {
+                ok = verifyMir(module.mir[i],
+                               module.frames[i],
+                               stages[passIndex],
+                               *module.target,
+                               diags) &&
+                     ok;
+            }
+            return ok;
+        });
     }
 
     if (!manager.run(pipelineModule, diagnostics)) {

@@ -44,7 +44,7 @@ constexpr std::string_view kUsage =
     "       [--fast-link|--no-fast-link]\n"
     "       [--asset-blob <file.zpak>] [--extra-obj <file.o>]\n"
     "       [-O0|-O1|-O2|-O3]\n"
-    "       [--skip-il-optimization] [--time-passes]\n";
+    "       [--skip-il-optimization] [--time-passes] [--verify-mir]\n";
 /// @brief Minimum accepted native stack reserve for generated executables.
 constexpr std::size_t kMinStackSize = 4096;
 
@@ -190,6 +190,10 @@ ParseOutcome parseArgs(const ArgvView &args) {
         }
         if (tok == "--time-passes") {
             opts.time_passes = true;
+            continue;
+        }
+        if (tok == "--verify-mir") {
+            opts.verify_mir = true;
             continue;
         }
         if (tok == "--native-asm") {

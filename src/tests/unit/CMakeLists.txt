@@ -709,6 +709,14 @@ if (NOT TARGET test_x86_peephole)
     zanna_add_ctest(test_x86_peephole test_x86_peephole)
 endif ()
 
+if (NOT TARGET test_x86_mir_verify)
+    zanna_add_test(
+            test_x86_mir_verify
+            ${ZANNA_TESTS_DIR}/unit/codegen/test_x86_mir_verify.cpp)
+    target_link_libraries(test_x86_mir_verify PRIVATE zanna_codegen_x86_64 il_tools_common)
+    zanna_add_ctest(test_x86_mir_verify test_x86_mir_verify)
+endif ()
+
 if (NOT TARGET test_dataflow_liveness)
     zanna_add_test(
             test_dataflow_liveness

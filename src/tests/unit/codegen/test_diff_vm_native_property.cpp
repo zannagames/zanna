@@ -174,8 +174,8 @@ std::int64_t runOnVm(il::core::Module &module) {
 /// @return Native execution exit code, or -1 on failure.
 int runOnArm64Native(const std::filesystem::path &ilPath) {
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
-    const char *argv[] = {ilPath.c_str(), "-run-native"};
-    return cmd_codegen_arm64(2, const_cast<char **>(argv));
+    const char *argv[] = {ilPath.c_str(), "-run-native", "--verify-mir"};
+    return cmd_codegen_arm64(3, const_cast<char **>(argv));
 #else
     (void)ilPath;
     return -1; // Not supported on this platform

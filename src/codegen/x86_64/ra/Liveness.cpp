@@ -69,14 +69,9 @@ const std::string *firstLabelOperand(const MInstr &instr) {
     return nullptr;
 }
 
-/// @brief Classify @p instr for shared CFG extraction.
-/// @details JCC contributes a conditional edge and keeps scanning (a block may
-///          legally contain several JCCs before its final JMP, e.g. switch
-///          compare cascades); JMP/RET/UD2 end the scan. CALL label operands
-///          are deliberately NOT treated as branch targets.
-/// @param instr Machine instruction to classify.
-/// @return Backend-neutral branch descriptor. Any target pointers refer to
-///         label strings owned by @p instr.
+} // namespace
+
+/// @copydoc classifyControlFlow
 zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr) {
     using Desc = zanna::codegen::ra::BranchDesc;
     switch (instr.opcode) {
@@ -101,8 +96,6 @@ zanna::codegen::ra::BranchDesc classifyControlFlow(const MInstr &instr) {
             return Desc{Desc::Kind::None, nullptr};
     }
 }
-
-} // namespace
 
 /// @brief Top-level: build CFG, gen/kill, and solve backward dataflow.
 /// @details Initialises per-block data containers, populates the label

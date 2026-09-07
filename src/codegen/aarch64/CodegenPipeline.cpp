@@ -38,6 +38,7 @@
 #include "codegen/aarch64/CodegenPipeline.hpp"
 
 #include "codegen/aarch64/MachineIR.hpp"
+#include "codegen/aarch64/MirVerify.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/passes/BinaryEmitPass.hpp"
 #include "codegen/aarch64/passes/BlockLayoutPass.hpp"
@@ -407,6 +408,26 @@ static bool backendStageDisabled(const char *stage) {
     return std::getenv(key.c_str()) != nullptr;
 }
 
+/// @brief Install the MIR verifier as @p manager's post-pass hook.
+/// @details @p stages is parallel to the passes registered on @p manager and
+///          names the invariant set that must hold after each one. Every MIR
+///          function is verified after every pass; a violation is an error
+///          diagnostic (`V-CG-MIR-*`) that stops the pipeline.
+/// @param manager Pass manager whose passes have all been registered.
+/// @param stages One stage per registered pass, in registration order.
+static void installMirVerifier(passes::PassManager &manager, std::vector<VerifyStage> stages) {
+    manager.setPostPassHook([stages = std::move(stages)](passes::AArch64Module &module,
+                                                         passes::Diagnostics &diags,
+                                                         std::size_t passIndex) {
+        if (module.ti == nullptr || passIndex >= stages.size())
+            return true;
+        bool ok = true;
+        for (const auto &fn : module.mir)
+            ok = verifyMir(fn, stages[passIndex], *module.ti, diags) && ok;
+        return ok;
+    });
+}
+
 /// @brief Run IL-level optimization passes on @p mod before machine-code lowering.
 /// @details Skips all work when optimizeLevel < 1. At O1 the "O1" preset is used;
 ///          at O2+ the "O2" preset is used. The IL PassManager applies DCE, inlining,
@@ -474,14 +495,23 @@ bool runCodegenPipeline(passes::AArch64Module &module,
         return false;
     };
 
+    const bool verify = opts.verifyMir || mirVerificationRequested();
+
     {
         passes::PassManager manager;
+        std::vector<VerifyStage> stages;
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
         manager.addPass(std::make_unique<passes::LoweringPass>());
+        stages.push_back(VerifyStage::PostLowering);
         manager.addPass(std::make_unique<passes::LegalizePass>());
-        if (opts.optimizeLevel >= 1 && !backendStageDisabled("PRE_RA_OPT"))
+        stages.push_back(VerifyStage::PostLowering);
+        if (opts.optimizeLevel >= 1 && !backendStageDisabled("PRE_RA_OPT")) {
             manager.addPass(std::make_unique<passes::PreRegAllocOptPass>());
+            stages.push_back(VerifyStage::PostLowering);
+        }
+        if (verify)
+            installMirVerifier(manager, std::move(stages));
         if (!manager.run(module, diags))
             return flushOnFailure();
     }
@@ -494,6 +524,8 @@ bool runCodegenPipeline(passes::AArch64Module &module,
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
         manager.addPass(std::make_unique<passes::RegAllocPass>());
+        if (verify)
+            installMirVerifier(manager, {VerifyStage::PostRA});
         if (!manager.run(module, diags))
             return flushOnFailure();
     }
@@ -503,17 +535,31 @@ bool runCodegenPipeline(passes::AArch64Module &module,
 
     if (opts.optimizeLevel >= 1) {
         passes::PassManager manager;
+        std::vector<VerifyStage> stages;
         if (opts.timePasses)
             manager.setTimingStream(&diagOut, "aarch64");
-        if (!backendStageDisabled("BLOCK_LAYOUT"))
+        // Until ExpandPseudosPass lands (Phase 2.2) wide immediates are still
+        // expanded at emit time, so every post-RA pass is verified against the
+        // PostRA rule set; the later stages add immediate-encodability rules.
+        if (!backendStageDisabled("BLOCK_LAYOUT")) {
             manager.addPass(std::make_unique<passes::BlockLayoutPass>());
-        if (!backendStageDisabled("PEEPHOLE"))
+            stages.push_back(VerifyStage::PostRA);
+        }
+        if (!backendStageDisabled("PEEPHOLE")) {
             manager.addPass(std::make_unique<passes::PeepholePass>());
-        if (!backendStageDisabled("SCHEDULER"))
+            stages.push_back(VerifyStage::PostRA);
+        }
+        if (!backendStageDisabled("SCHEDULER")) {
             manager.addPass(std::make_unique<passes::SchedulerPass>());
-        if (!backendStageDisabled("POST_SCHED_PEEPHOLE"))
+            stages.push_back(VerifyStage::PostRA);
+        }
+        if (!backendStageDisabled("POST_SCHED_PEEPHOLE")) {
             manager.addPass(std::make_unique<passes::PeepholePass>(
                 passes::PeepholePass::Mode::PostScheduleCleanup));
+            stages.push_back(VerifyStage::PostRA);
+        }
+        if (verify)
+            installMirVerifier(manager, std::move(stages));
         if (!manager.run(module, diags))
             return flushOnFailure();
     }
@@ -656,6 +702,7 @@ PipelineResult CodegenPipeline::runWithModule(il::core::Module mod,
     pipeOpts.useBinaryEmit = opts_.assembler_mode == AssemblerMode::Native;
     pipeOpts.optimizeLevel = opts_.optimize;
     pipeOpts.timePasses = opts_.time_passes;
+    pipeOpts.verifyMir = opts_.verify_mir;
 
     if (!runCodegenPipeline(pipelineModule, pipeOpts, err)) {
         result.exit_code = 1;

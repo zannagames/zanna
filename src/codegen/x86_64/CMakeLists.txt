@@ -13,6 +13,7 @@ add_library(zanna_codegen_x86_64 STATIC
         FrameLowering.cpp
         CallLowering.cpp
         OperandRoles.cpp
+        MirVerify.cpp
         PreRegAllocOpt.cpp
         ISel.cpp
         LowerDiv.cpp

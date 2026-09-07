@@ -26,6 +26,7 @@
 #include "CallLowering.hpp"
 #include "LowerILToMIR.hpp"
 #include "Lowering.EmitCommon.hpp"
+#include "Noreturn.hpp"
 #include "OperandUtils.hpp"
 #include "Unsupported.hpp"
 
@@ -263,6 +264,15 @@ void emitCall(const ILInstr &instr, MIRBuilder &builder) {
 
     const uint32_t callPlanId = builder.recordCallPlan(std::move(plan));
     builder.append(makePlannedCall(builder.makeLabelOperand(instr.ops[0]), callPlanId));
+
+    // A runtime helper that never returns (trap.from_err lowers to a plain
+    // call of rt_trap_raise_error) ends the block: the defensive UD2 keeps the
+    // MIR block terminated like the inline trap emitters do, so the CFG and
+    // the verifier never see control fall off a no-return call.
+    if (common::isNoReturnRuntimeCallee(instr.ops.front().label)) {
+        builder.append(MInstr::make(MOpcode::UD2));
+        return;
+    }
 
     if (hasResult)
         emitCapturedCallResult(instr, resultVReg, builder, instr.ops.front().label);

@@ -55,6 +55,28 @@ Phase 2.1 (one instruction-effects model per backend) is implemented:
   `ra/Allocator.cpp::collectPhysicalClobbers`, `Scheduler.cpp`, and `ISel.cpp` consume it. The
   `JUMPTABLE` dispatch scratch (R10/R11) is now an implicit definition (`test_x86_peephole`).
 
+Phase 2.4 (MIR verifier) is implemented:
+
+- `src/codegen/{aarch64,x86_64}/MirVerify.{hpp,cpp}` — `verifyMir(fn, stage, target, diags)`
+  with cumulative per-stage rule sets (structure at every stage; no virtual registers, frame and
+  stack offsets inside the finalized frame, callee-saved coverage, reserved scratch never live
+  across an implicit clobber, ABI-only entry live-in after RA; encodable immediates after pseudo
+  expansion on AArch64). Register facts come from the Phase 2.1 effects model and the CFG from the
+  allocator's now-exported `ra::classifyControlFlow`.
+- `src/codegen/common/PassManager.hpp` — post-pass hook (`setPostPassHook`) that both pipelines
+  install when `ZANNA_VERIFY_MIR=1` or `--verify-mir` (`zanna codegen arm64|x64`) is given; a
+  violation is a `V-CG-MIR-*` error that stops the pipeline.
+- Tests: `test_aarch64_mir_verify` / `test_x86_mir_verify` (one failing-MIR case per rule plus the
+  pipeline at -O0/-O1/-O2 with verification on), and the AArch64 shared-corpus and VM-vs-native
+  property tests now pass `--verify-mir`. Calibration on this host: zero violations across the
+  shared IL corpus, every `examples/` program, and the demo games / 3D showcases (chess, crackman,
+  paint at ~40–60K IL lines each) on both backends at -O0 and -O2.
+- First verifier finding: on x86-64 `trap.from_err` lowered to a bare `call rt_trap_raise_error`
+  with no terminator after it (the inline trap emitters all append `ud2`), so the block fell off
+  its end in the MIR CFG. `Lowering.Mem.cpp::emitCall` now appends `UD2` after any call to a
+  no-return runtime helper; the symbol set moved to `codegen/common/NoReturnSymbols.hpp` so both
+  backends share it (`test_x86_backend_regressions`).
+
 Everything from B1 onward is open.
 
 ## Context
