@@ -25,13 +25,16 @@
 
 #include "codegen/aarch64/passes/SchedulerPass.hpp"
 
+#include "codegen/aarch64/A64ImmediateUtils.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
+#include "codegen/aarch64/binenc/A64Encoding.hpp"
 #include "codegen/aarch64/ra/OperandRoles.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <queue>
@@ -519,6 +522,37 @@ static bool mayClobberEmitScratch(const MInstr &mi) noexcept {
         case MOpcode::AddFpImm: {
             const auto imm = lastImm();
             return imm.has_value() && (*imm > 4095 || *imm < -4095);
+        }
+        // Wide-immediate ALU forms: the emitter materialises the immediate
+        // into a reserved scratch GPR (`mov xS, #imm; add dst, lhs, xS`) when
+        // it is not add/sub imm12(+lsl12) / logical-immediate encodable.
+        case MOpcode::AddRI:
+        case MOpcode::SubRI:
+        case MOpcode::AddsRI:
+        case MOpcode::SubsRI: {
+            const auto imm = lastImm();
+            return imm.has_value() && !classifyAddSubImmEncoding(absImmUnsigned(*imm)).has_value();
+        }
+        case MOpcode::AndRI:
+        case MOpcode::OrrRI:
+        case MOpcode::EorRI: {
+            const auto imm = lastImm();
+            return imm.has_value() &&
+                   binenc::encodeLogicalImmediate(static_cast<uint64_t>(*imm)) < 0;
+        }
+        case MOpcode::CmpRI: {
+            const auto imm = lastImm();
+            return imm.has_value() && (*imm > 4095 || *imm < -4095);
+        }
+        case MOpcode::FMovRI: {
+            // Non-FP8 doubles are materialised through a GPR scratch (`mov
+            // x16, #bits; fmov d, x16`).
+            if (mi.ops.size() < 2 || mi.ops[1].kind != MOperand::Kind::Imm)
+                return false;
+            double value = 0.0;
+            static_assert(sizeof(value) == sizeof(mi.ops[1].imm), "unexpected f64 size");
+            std::memcpy(&value, &mi.ops[1].imm, sizeof(value));
+            return binenc::encodeFP8Immediate(value) < 0;
         }
         case MOpcode::LdpRegFpImm:
         case MOpcode::StpRegFpImm:

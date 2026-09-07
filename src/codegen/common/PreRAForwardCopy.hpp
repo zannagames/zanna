@@ -105,6 +105,22 @@ std::optional<PreRAUseSite> findSingleDirectUse(const typename Traits::BlockT &b
     std::optional<PreRAUseSite> site;
     const auto &instrs = Traits::instrs(block);
 
+    // The forward scan below stops at the first non-call boundary (a mid-block
+    // conditional branch such as an overflow-trap `b.vs`, `cbz`, `tbz`, or a
+    // jump table). A use of @p dst that sits *behind* that boundary in the same
+    // block would otherwise be invisible to the scan, the copy would be erased,
+    // and the later use would read an undefined virtual register. Count every
+    // read of @p dst up to its next redefinition first and require exactly one.
+    std::size_t totalUses = 0;
+    for (std::size_t idx = copyIndex + 1; idx < instrs.size(); ++idx) {
+        const auto &instr = instrs[idx];
+        totalUses += Traits::scanUses(instr, dst).useCount;
+        if (Traits::definesReg(instr, dst))
+            break;
+    }
+    if (totalUses != 1)
+        return std::nullopt;
+
     bool crossedCall = false;
     for (std::size_t idx = copyIndex + 1; idx < instrs.size(); ++idx) {
         const auto &instr = instrs[idx];

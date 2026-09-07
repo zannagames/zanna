@@ -1343,7 +1343,7 @@ int main() {
         std::ostringstream err;
         std::unordered_set<std::string> dynSyms;
         CHECK(!applyRelocations(objs, layout, dynSyms, LinkPlatform::Linux, LinkArch::X86_64, err));
-        CHECK(err.str().find("requires MOV r*, disp32(%rip)") != std::string::npos);
+        CHECK(err.str().find("requires a disp32(%rip) memory operand") != std::string::npos);
     }
 
     // --- ELF x86_64 REX_GOTPCRELX rejects MOVs without a REX prefix ---
@@ -1401,7 +1401,136 @@ int main() {
         std::ostringstream err;
         std::unordered_set<std::string> dynSyms;
         CHECK(!applyRelocations(objs, layout, dynSyms, LinkPlatform::Linux, LinkArch::X86_64, err));
-        CHECK(err.str().find("requires a REX-prefixed MOV") != std::string::npos);
+        CHECK(err.str().find("with REX_GOTPCRELX requires a REX prefix") != std::string::npos);
+    }
+
+    // --- ELF x86_64 GOTPCRELX relaxes local CMP / CALL / JMP forms (psABI B.2) ---
+    // Clang 18 emits `cmpq foo@GOTPCREL(%rip), %rax` with REX_GOTPCRELX for
+    // pointer comparisons against local objects (rt_rendertarget3d.c); the
+    // linker used to reject every non-MOV form.
+    {
+        struct Case {
+            const char *name;
+            std::vector<uint8_t> code;
+            size_t relocOffset;
+            uint32_t relocType;
+            std::vector<uint8_t> expectPrefix; // bytes before the 32-bit field
+            size_t fieldOffset;
+            uint32_t expectField;
+            std::vector<uint8_t> expectSuffix; // bytes after the field
+        };
+
+        // .text at 0x401000, .data (local_data) at 0x402000.
+        const std::vector<Case> cases = {
+            // cmpq foo@GOTPCREL(%rip), %r8  ->  cmpq $0x402000, %r8  (REX.R -> REX.B)
+            {"cmp",
+             {0x4C, 0x3B, 0x05, 0x00, 0x00, 0x00, 0x00},
+             3,
+             elf_x64::kRexGotPcRelX,
+             {0x49, 0x81, 0xF8},
+             3,
+             0x00402000u,
+             {}},
+            // testq %rax, foo@GOTPCREL(%rip)  ->  testq $0x402000, %rax
+            {"test",
+             {0x48, 0x85, 0x05, 0x00, 0x00, 0x00, 0x00},
+             3,
+             elf_x64::kRexGotPcRelX,
+             {0x48, 0xF7, 0xC0},
+             3,
+             0x00402000u,
+             {}},
+            // call *foo@GOTPCREL(%rip)  ->  addr32 call foo   (rel32 from 0x401006)
+            {"call",
+             {0xFF, 0x15, 0x00, 0x00, 0x00, 0x00},
+             2,
+             elf_x64::kGotPcRelX,
+             {0x67, 0xE8},
+             2,
+             0x00000FFAu,
+             {}},
+            // jmp *foo@GOTPCREL(%rip)  ->  jmp foo; nop   (rel32 from 0x401005)
+            {"jmp",
+             {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00},
+             2,
+             elf_x64::kGotPcRelX,
+             {0xE9},
+             1,
+             0x00000FFBu,
+             {0x90}},
+        };
+        for (const auto &c : cases) {
+            ObjFile obj;
+            obj.name = std::string("test_local_gotpcrelx_") + c.name + ".o";
+            obj.format = ObjFileFormat::ELF;
+            obj.sections.push_back({});
+
+            ObjSection text;
+            text.name = ".text";
+            text.data = c.code;
+            text.executable = true;
+            text.alloc = true;
+            text.alignment = 4;
+            ObjReloc rel;
+            rel.offset = c.relocOffset;
+            rel.type = c.relocType;
+            rel.symIndex = 1;
+            rel.addend = -4;
+            text.relocs.push_back(rel);
+            obj.sections.push_back(text);
+
+            ObjSection data;
+            data.name = ".data";
+            data.data.resize(8, 0xAA);
+            data.writable = true;
+            data.alloc = true;
+            data.alignment = 8;
+            obj.sections.push_back(data);
+
+            obj.symbols.push_back({});
+            ObjSymbol local;
+            local.name = "local_data";
+            local.binding = ObjSymbol::Local;
+            local.sectionIndex = 2;
+            local.offset = 0;
+            obj.symbols.push_back(local);
+
+            std::vector<ObjFile> objs = {obj};
+            LinkLayout layout;
+            layout.pageSize = 0x1000;
+
+            OutputSection outText;
+            outText.name = ".text";
+            outText.executable = true;
+            outText.virtualAddr = 0x401000;
+            outText.data = text.data;
+            outText.chunks.push_back({0, 1, 0, text.data.size()});
+            layout.sections.push_back(outText);
+
+            OutputSection outData;
+            outData.name = ".data";
+            outData.writable = true;
+            outData.virtualAddr = 0x402000;
+            outData.data = data.data;
+            outData.chunks.push_back({0, 2, 0, data.data.size()});
+            layout.sections.push_back(outData);
+
+            std::ostringstream err;
+            std::unordered_set<std::string> dynSyms;
+            const bool ok =
+                applyRelocations(objs, layout, dynSyms, LinkPlatform::Linux, LinkArch::X86_64, err);
+            CHECK(ok);
+            if (!ok) {
+                std::cerr << "GOTPCRELX case '" << c.name << "': " << err.str();
+                continue;
+            }
+            const auto &out = layout.sections[0].data;
+            for (size_t i = 0; i < c.expectPrefix.size(); ++i)
+                CHECK(out[i] == c.expectPrefix[i]);
+            CHECK(readLE32(out.data() + c.fieldOffset) == c.expectField);
+            for (size_t i = 0; i < c.expectSuffix.size(); ++i)
+                CHECK(out[c.fieldOffset + 4 + i] == c.expectSuffix[i]);
+        }
     }
 
     // --- ELF AArch64 local GOT relaxation rewrites a validated ADRP/LDR pair ---
@@ -2184,14 +2313,10 @@ int main() {
         text.alignment = 4;
         // adrp x1, target@GOTPAGE; nop; ldr x0, [x1, target@GOTPAGEOFF]
         text.data = {0x01, 0x00, 0x00, 0x90, 0x1F, 0x20, 0x03, 0xD5, 0x20, 0x00, 0x40, 0xF9};
-        text.relocs.push_back(ObjReloc{.offset = 0,
-                                       .type = elf_a64::kAdrGotPage,
-                                       .symIndex = 1,
-                                       .addend = 0});
-        text.relocs.push_back(ObjReloc{.offset = 8,
-                                       .type = elf_a64::kLd64GotLo12Nc,
-                                       .symIndex = 1,
-                                       .addend = 0});
+        text.relocs.push_back(
+            ObjReloc{.offset = 0, .type = elf_a64::kAdrGotPage, .symIndex = 1, .addend = 0});
+        text.relocs.push_back(
+            ObjReloc{.offset = 8, .type = elf_a64::kLd64GotLo12Nc, .symIndex = 1, .addend = 0});
         obj.sections.push_back(std::move(text));
 
         ObjSection dataSec;

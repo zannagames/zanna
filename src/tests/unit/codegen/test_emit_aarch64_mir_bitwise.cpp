@@ -82,6 +82,56 @@ TEST(AArch64MIR, MovRIUsesSharedWideImmediatePlan) {
     }
 }
 
+// The register allocator can hand x9/x16/x17 out as one-instruction emergency
+// reload homes, and fast paths keep values in x9 across neighbouring
+// instructions. A wide-immediate expansion must therefore never materialise
+// the immediate into a register that is one of the instruction's operands.
+TEST(AArch64MIR, WideImmediateExpansionAvoidsOperandScratch) {
+    constexpr long long kWide = 0x123456; // not add/sub imm12(+lsl12) encodable
+    {
+        auto text = emit(MInstr{
+            MOpcode::AddRI,
+            {MOperand::regOp(kScratchGPR), MOperand::regOp(kScratchGPR), MOperand::immOp(kWide)}});
+        EXPECT_EQ(text.find("add x9, x9, x9"), std::string::npos);
+        EXPECT_NE(text.find("add x9, x9, x16"), std::string::npos);
+    }
+    {
+        auto text = emit(MInstr{
+            MOpcode::SubRI,
+            {MOperand::regOp(PhysReg::X0), MOperand::regOp(kScratchGPR), MOperand::immOp(kWide)}});
+        EXPECT_EQ(text.find("sub x0, x9, x9"), std::string::npos);
+        EXPECT_NE(text.find("sub x0, x9, x16"), std::string::npos);
+    }
+    {
+        // 5 is not a logical immediate, so the and goes through a scratch too.
+        auto text = emit(MInstr{
+            MOpcode::AndRI,
+            {MOperand::regOp(kScratchGPR), MOperand::regOp(PhysReg::X1), MOperand::immOp(5)}});
+        EXPECT_EQ(text.find("and x9, x1, x9"), std::string::npos);
+        EXPECT_NE(text.find("and x9, x1, x16"), std::string::npos);
+    }
+    {
+        auto text =
+            emit(MInstr{MOpcode::CmpRI, {MOperand::regOp(kScratchGPR2), MOperand::immOp(kWide)}});
+        EXPECT_EQ(text.find("cmp x16, x16"), std::string::npos);
+        EXPECT_NE(text.find("cmp x16, x9"), std::string::npos);
+    }
+    {
+        auto text = emit(MInstr{
+            MOpcode::AddsRI,
+            {MOperand::regOp(PhysReg::X2), MOperand::regOp(kScratchGPR2), MOperand::immOp(kWide)}});
+        EXPECT_EQ(text.find("adds x2, x16, x16"), std::string::npos);
+        EXPECT_NE(text.find("adds x2, x16, x9"), std::string::npos);
+    }
+    {
+        // The non-conflicting case keeps the historical scratch choice.
+        auto text = emit(MInstr{
+            MOpcode::AddRI,
+            {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X1), MOperand::immOp(kWide)}});
+        EXPECT_NE(text.find("add x0, x1, x9"), std::string::npos);
+    }
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, &argv);
     return zanna_test::run_all_tests();

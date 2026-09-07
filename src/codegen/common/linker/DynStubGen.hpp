@@ -30,6 +30,7 @@
 
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace zanna::codegen::linker {
 
@@ -80,5 +81,29 @@ ObjFile generateDynStubsAArch64(const std::unordered_set<std::string> &dynamicSy
 /// @throws std::runtime_error If a generated size or symbol index exceeds the
 ///         linker's representable range.
 ObjFile generateDynStubsX8664(const std::unordered_set<std::string> &dynamicSyms);
+
+/// @brief Synthesize link-time GOT slots for statically resolved x86-64 GOTPCREL references.
+/// @details Compilers emit the plain `R_X86_64_GOTPCREL` form (not the `X`
+///          variants) for instructions the assembler will not let the linker
+///          relax, e.g. `pushq foo@GOTPCREL(%rip)`. The psABI forbids
+///          relaxing those, so the referenced symbol needs a real GOT slot
+///          even when it is defined inside the link. This builds one
+///          `.got.zanna_local` section holding an 8-byte slot per such
+///          symbol, each defined as `__gotl_<name>` (the relocation applier
+///          consults it after the loader-bound `__got_<name>` key; the
+///          distinct prefix keeps absolute-pointer relocations from treating
+///          the target as an import) and filled through an `R_X86_64_64`
+///          relocation against `<name>`, so ordinary relocation application
+///          writes the absolute address and no loader binding is involved.
+/// @param objects Input objects whose relocations are scanned. Only symbols
+///                that some object defines with global or weak binding and
+///                that are not in @p dynamicSyms receive a slot; local
+///                (static) symbols are skipped because their names are not
+///                unique across objects.
+/// @param dynamicSyms Symbols that resolve through the loader and therefore
+///                    already own a synthesized GOT slot.
+/// @return Synthetic ELF object, or one with no sections when nothing is needed.
+ObjFile generateStaticGotSlotsX8664(const std::vector<ObjFile> &objects,
+                                    const std::unordered_set<std::string> &dynamicSyms);
 
 } // namespace zanna::codegen::linker

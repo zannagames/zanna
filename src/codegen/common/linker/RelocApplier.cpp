@@ -192,39 +192,121 @@ static bool isX64RexPrefix(uint8_t byte) {
     return (byte & 0xF0u) == 0x40u;
 }
 
-/// @brief Validate the instruction shape required for local GOTPCRELX relaxation.
-/// @details The relaxed instruction must be a RIP-relative MOV. The
-///          `R_X86_64_REX_GOTPCRELX` form additionally requires the preceding
-///          byte to be a REX prefix.
+/// @brief How a locally-resolved GOTPCRELX site was rewritten.
+struct GotPcRelXRelaxation {
+    /// `true` when the rewritten instruction takes the symbol's absolute
+    /// address as a sign-extended 32-bit immediate (`S + A + 4`) instead of a
+    /// PC-relative displacement (`S + A - P`).
+    bool absoluteImmediate{false};
+    /// Byte shift of the 32-bit field relative to the original displacement
+    /// (only the `jmp *foo@GOTPCREL(%rip)` → `jmp foo; nop` rewrite moves it).
+    int fieldShift{0};
+};
+
+/// @brief Rewrite a locally-resolved GOTPCRELX site per the x86-64 psABI.
+/// @details When the referenced symbol is defined in the image, the GOT
+///          indirection is unnecessary and the psABI (section B.2) lets the
+///          linker relax the instruction in place. Every form the compilers
+///          emit with `R_X86_64_GOTPCRELX` / `R_X86_64_REX_GOTPCRELX` is
+///          handled:
+///
+///          | original                          | relaxed                       |
+///          |-----------------------------------|-------------------------------|
+///          | `mov foo@GOTPCREL(%rip), %r`      | `lea foo(%rip), %r`           |
+///          | `call *foo@GOTPCREL(%rip)`        | `addr32 call foo`             |
+///          | `jmp *foo@GOTPCREL(%rip)`         | `jmp foo; nop`                |
+///          | `binop foo@GOTPCREL(%rip), %r`    | `binop $foo, %r` (81 /n imm32)|
+///          | `test %r, foo@GOTPCREL(%rip)`     | `test $foo, %r` (F7 /0 imm32) |
+///
+///          The immediate forms are legal only because Zanna links fixed-base
+///          `ET_EXEC` images whose addresses fit a sign-extended 32-bit
+///          immediate; the caller range-checks the value. The REX form must
+///          carry a REX prefix, and moving the register from the ModRM `reg`
+///          field to `r/m` swaps `REX.R` into `REX.B`.
 /// @param obj Object file used to qualify any diagnostic.
-/// @param rel Relocation whose exact GOTPCRELX form is being validated.
+/// @param rel Relocation whose exact GOTPCRELX form is being relaxed.
 /// @param patch Address of the four-byte displacement field.
 /// @param patchOff Offset of @p patch within the merged output section.
 /// @param symName Referenced symbol name, if available.
 /// @param err Stream that receives malformed-instruction diagnostics.
-/// @return `true` when the surrounding instruction can be safely relaxed.
-static bool validateGotPCRelXMov(const ObjFile &obj,
-                                 const ObjReloc &rel,
-                                 const uint8_t *patch,
-                                 size_t patchOff,
-                                 const std::string &symName,
-                                 std::ostream &err) {
-    if (patchOff < 2 || patch[-2] != 0x8B || (patch[-1] & 0xC7u) != 0x05u) {
-        err << "error: " << obj.name
-            << ": local GOTPCRELX relaxation requires MOV r*, disp32(%rip)";
+/// @param[out] out How the site was rewritten.
+/// @return `true` when the surrounding instruction was relaxed.
+static bool relaxLocalGotPcRelX(const ObjFile &obj,
+                                const ObjReloc &rel,
+                                uint8_t *patch,
+                                size_t patchOff,
+                                const std::string &symName,
+                                std::ostream &err,
+                                GotPcRelXRelaxation &out) {
+    const auto fail = [&](const char *what) {
+        err << "error: " << obj.name << ": local GOTPCRELX relaxation " << what;
         if (!symName.empty())
             err << " for '" << symName << "'";
         err << "\n";
         return false;
+    };
+    if (patchOff < 2 || (patch[-1] & 0xC7u) != 0x05u)
+        return fail("requires a disp32(%rip) memory operand");
+    const bool rexForm = rel.type == elf_x64::kRexGotPcRelX;
+    const bool hasRex = patchOff >= 3 && isX64RexPrefix(patch[-3]);
+    if (rexForm && !hasRex)
+        return fail("with REX_GOTPCRELX requires a REX prefix");
+    const uint8_t opcode = patch[-2];
+    const uint8_t modrm = patch[-1];
+    const uint8_t regField = static_cast<uint8_t>((modrm >> 3) & 0x7u);
+    // Move the register operand from ModRM.reg to ModRM.r/m: REX.R → REX.B.
+    const auto swapRexRToB = [&]() {
+        if (!hasRex)
+            return;
+        const uint8_t rex = patch[-3];
+        patch[-3] = static_cast<uint8_t>((rex & 0xFAu) | ((rex & 0x04u) ? 0x01u : 0x00u));
+    };
+    out = GotPcRelXRelaxation{};
+    switch (opcode) {
+        case 0x8B: // mov foo@GOTPCREL(%rip), %r  ->  lea foo(%rip), %r
+            patch[-2] = 0x8D;
+            return true;
+        case 0xFF:
+            if (rexForm)
+                break;
+            if (regField == 2) { // call *foo@GOTPCREL(%rip)  ->  addr32 call foo
+                patch[-2] = 0x67;
+                patch[-1] = 0xE8;
+                return true;
+            }
+            if (regField == 4) { // jmp *foo@GOTPCREL(%rip)  ->  jmp foo; nop
+                patch[-2] = 0xE9;
+                patch[3] = 0x90;
+                out.fieldShift = -1;
+                return true;
+            }
+            break;
+        case 0x85: // test %r, foo@GOTPCREL(%rip)  ->  test $foo, %r
+            patch[-2] = 0xF7;
+            patch[-1] = static_cast<uint8_t>(0xC0u | regField);
+            swapRexRToB();
+            out.absoluteImmediate = true;
+            return true;
+        case 0x03: // add
+        case 0x0B: // or
+        case 0x13: // adc
+        case 0x1B: // sbb
+        case 0x23: // and
+        case 0x2B: // sub
+        case 0x33: // xor
+        case 0x3B: // cmp   binop foo@GOTPCREL(%rip), %r  ->  binop $foo, %r
+        {
+            const uint8_t group1 = static_cast<uint8_t>((opcode >> 3) & 0x7u);
+            patch[-2] = 0x81;
+            patch[-1] = static_cast<uint8_t>(0xC0u | (group1 << 3) | regField);
+            swapRexRToB();
+            out.absoluteImmediate = true;
+            return true;
+        }
+        default:
+            break;
     }
-    if (rel.type == elf_x64::kRexGotPcRelX && (patchOff < 3 || !isX64RexPrefix(patch[-3]))) {
-        err << "error: " << obj.name << ": REX_GOTPCRELX relaxation requires a REX-prefixed MOV";
-        if (!symName.empty())
-            err << " for '" << symName << "'";
-        err << "\n";
-        return false;
-    }
-    return true;
+    return fail("requires MOV, CALL, JMP, TEST, or a group-1 ALU instruction");
 }
 
 /// @brief Recognize AArch64 unconditional immediate branch opcodes.
@@ -1254,8 +1336,8 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                         return false;
                     }
                     if (weakResolvedToZero) {
-                        err << "error: " << obj.name << ": weak undefined symbol '"
-                            << targetDisplay << "' cannot anchor a symbol-difference relocation\n";
+                        err << "error: " << obj.name << ": weak undefined symbol '" << targetDisplay
+                            << "' cannot anchor a symbol-difference relocation\n";
                         return false;
                     }
                     const ObjSymbol &subSym = obj.symbols[rel.subSymIndex];
@@ -1626,7 +1708,13 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                             return false;
 
                         uint64_t base = S;
+                        GotPcRelXRelaxation relaxed{};
                         auto git = findGotSymbol(layout.globalSyms, symName, platform);
+                        // Link-time slots synthesized for statically resolved plain
+                        // GOTPCREL references use the `__gotl_` prefix so the Abs64
+                        // path does not mistake their targets for loader-bound imports.
+                        auto lit = symName.empty() ? layout.globalSyms.end()
+                                                   : layout.globalSyms.find("__gotl_" + symName);
                         if (git != layout.globalSyms.end()) {
                             if (!git->second.resolvedAddrValid) {
                                 err << "error: " << obj.name << ": unresolved GOT entry for '"
@@ -1634,26 +1722,58 @@ bool applyRelocations(const std::vector<ObjFile> &objects,
                                 return false;
                             }
                             base = git->second.resolvedAddr;
+                        } else if (lit != layout.globalSyms.end() &&
+                                   lit->second.resolvedAddrValid) {
+                            base = lit->second.resolvedAddr;
                         } else if (rel.type == elf_x64::kGotPcRelX ||
                                    rel.type == elf_x64::kRexGotPcRelX) {
-                            if (!validateGotPCRelXMov(obj, rel, patch, patchOff, symName, err))
+                            if (!relaxLocalGotPcRelX(
+                                    obj, rel, patch, patchOff, symName, err, relaxed))
                                 return false;
-                            patch[-2] =
-                                0x8D; // Relax mov foo@GOTPCRELX(%rip), %reg -> lea foo(%rip), %reg
                         } else {
                             err << "error: " << obj.name << ": missing GOT entry for '"
                                 << targetDisplay << "'\n";
                             return false;
                         }
 
+                        if (relaxed.absoluteImmediate) {
+                            // `S + A + 4`: the GOTPCREL addend (-4) accounted for the
+                            // displacement's position; an immediate has no such bias.
+                            uint64_t absolute = 0;
+                            if (!checkedRelocTarget(
+                                    base, A + 4, obj, symName, "GOT immediate", err, absolute))
+                                return false;
+                            if (absolute >
+                                static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+                                err << "error: " << obj.name
+                                    << ": GOT immediate relocation out of range";
+                                if (!symName.empty())
+                                    err << " for '" << symName << "'";
+                                err << "\n";
+                                return false;
+                            }
+                            if (!writeCheckedRel32(patch,
+                                                   static_cast<int64_t>(absolute),
+                                                   obj,
+                                                   symName,
+                                                   "GOT immediate",
+                                                   err))
+                                return false;
+                            break;
+                        }
+
+                        uint8_t *field = patch + relaxed.fieldShift;
+                        const uint64_t fieldP = relaxed.fieldShift < 0
+                                                    ? P - static_cast<uint64_t>(-relaxed.fieldShift)
+                                                    : P + static_cast<uint64_t>(relaxed.fieldShift);
                         uint64_t target = 0;
                         int64_t delta = 0;
                         if (!checkedRelocTarget(
                                 base, A, obj, symName, "GOT PC-relative", err, target) ||
                             !checkedRelocDelta(
-                                target, P, obj, symName, "GOT PC-relative", err, delta))
+                                target, fieldP, obj, symName, "GOT PC-relative", err, delta))
                             return false;
-                        if (!writeCheckedRel32(patch, delta, obj, symName, "GOT PC-relative", err))
+                        if (!writeCheckedRel32(field, delta, obj, symName, "GOT PC-relative", err))
                             return false;
                         break;
                     }

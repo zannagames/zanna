@@ -25,8 +25,8 @@
  */
 
 #include "DynStubGen.hpp"
-#include "codegen/common/linker/DynamicSymbolPolicy.hpp"
 #include "RelocConstants.hpp"
+#include "codegen/common/linker/DynamicSymbolPolicy.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -113,11 +113,8 @@ size_t checkedAddSize(size_t lhs, size_t rhs, const char *context) {
 /// @param slotOff Byte offset within @p gotSec at which the value slot starts.
 /// @param size Storage size in bytes.
 /// @throws std::runtime_error If the section size arithmetic would overflow.
-void appendCopyRelocSlot(ObjFile &stubObj,
-                         ObjSection &gotSec,
-                         const std::string &name,
-                         size_t slotOff,
-                         size_t size) {
+void appendCopyRelocSlot(
+    ObjFile &stubObj, ObjSection &gotSec, const std::string &name, size_t slotOff, size_t size) {
     gotSec.data.resize(checkedAddSize(slotOff, size, "loader data import slot"), 0);
 
     ObjSymbol dataSym;
@@ -143,7 +140,6 @@ void appendCopyRelocSlot(ObjFile &stubObj,
     gotSym.sectionIndex = 2;
     gotSym.offset = gotOff;
     stubObj.symbols.push_back(std::move(gotSym));
-
 }
 
 } // namespace
@@ -500,6 +496,105 @@ ObjFile generateDynStubsX8664(const std::unordered_set<std::string> &dynamicSyms
     }
 
     return stubObj;
+}
+
+/// @copydoc generateStaticGotSlotsX8664
+ObjFile generateStaticGotSlotsX8664(const std::vector<ObjFile> &objects,
+                                    const std::unordered_set<std::string> &dynamicSyms) {
+    // Names defined with global/weak binding by some ELF x86-64 input, and
+    // names that already own a `__got_` slot (dynamic stubs, earlier runs).
+    std::unordered_set<std::string> defined;
+    std::unordered_set<std::string> haveSlot;
+    for (const ObjFile &obj : objects) {
+        if (obj.format != ObjFileFormat::ELF)
+            continue;
+        for (const ObjSymbol &sym : obj.symbols) {
+            if (sym.name.empty())
+                continue;
+            if (sym.name.size() > 6 && sym.name.compare(0, 6, "__got_") == 0)
+                haveSlot.insert(sym.name.substr(6));
+            if (sym.name.size() > 7 && sym.name.compare(0, 7, "__gotl_") == 0)
+                haveSlot.insert(sym.name.substr(7));
+            if ((sym.binding == ObjSymbol::Global || sym.binding == ObjSymbol::Weak) &&
+                (sym.sectionIndex != 0 || sym.absolute))
+                defined.insert(sym.name);
+        }
+    }
+
+    std::unordered_set<std::string> wanted;
+    for (const ObjFile &obj : objects) {
+        if (obj.format != ObjFileFormat::ELF || obj.synthetic)
+            continue;
+        for (const ObjSection &sec : obj.sections) {
+            for (const ObjReloc &rel : sec.relocs) {
+                if (rel.type != elf_x64::kGotPcRel)
+                    continue;
+                if (rel.symIndex >= obj.symbols.size())
+                    continue;
+                const ObjSymbol &sym = obj.symbols[rel.symIndex];
+                if (sym.name.empty() || sym.binding == ObjSymbol::Local)
+                    continue;
+                if (dynamicSyms.count(sym.name) || haveSlot.count(sym.name) ||
+                    !defined.count(sym.name))
+                    continue;
+                wanted.insert(sym.name);
+            }
+        }
+    }
+
+    ObjFile slotObj;
+    slotObj.name = "<elf64-static-got>";
+    slotObj.synthetic = true;
+    slotObj.format = ObjFileFormat::ELF;
+    slotObj.is64bit = true;
+    slotObj.isLittleEndian = true;
+    slotObj.machine = 62; // EM_X86_64
+    if (wanted.empty())
+        return slotObj;
+
+    slotObj.sections.push_back(ObjSection{});
+    ObjSection gotSec;
+    gotSec.name = ".got.zanna_local";
+    gotSec.executable = false;
+    gotSec.writable = true;
+    gotSec.alloc = true;
+    gotSec.alignment = 8;
+    slotObj.symbols.push_back(ObjSymbol{});
+
+    std::vector<std::string> sorted(wanted.begin(), wanted.end());
+    std::sort(sorted.begin(), sorted.end());
+    for (const std::string &name : sorted) {
+        const size_t gotOff = gotSec.data.size();
+
+        ObjSymbol gotSym;
+        gotSym.name = "__gotl_" + name; // distinct from loader-bound `__got_` slots
+        gotSym.binding = ObjSymbol::Global;
+        gotSym.sectionIndex = 1;
+        gotSym.offset = gotOff;
+        gotSym.size = 8;
+        slotObj.symbols.push_back(std::move(gotSym));
+
+        // Undefined reference; the applier resolves it by name to the
+        // definition elsewhere in the link and writes the absolute address.
+        ObjSymbol target;
+        target.name = name;
+        target.binding = ObjSymbol::Undefined;
+        target.sectionIndex = 0;
+        const uint32_t targetIdx =
+            checkedSymbolIndex(slotObj.symbols.size(), "x86_64 static GOT target");
+        slotObj.symbols.push_back(std::move(target));
+
+        ObjReloc reloc;
+        reloc.offset = gotOff;
+        reloc.type = elf_x64::kAbs64; // R_X86_64_64
+        reloc.symIndex = targetIdx;
+        reloc.addend = 0;
+        gotSec.relocs.push_back(reloc);
+
+        gotSec.data.resize(checkedAddSize(gotOff, 8, "x86_64 static GOT slot"), 0);
+    }
+    slotObj.sections.push_back(std::move(gotSec));
+    return slotObj;
 }
 
 } // namespace zanna::codegen::linker

@@ -221,21 +221,11 @@ void collectImplicitUses(const MInstr &instr,
         case MOpcode::RET:
             addReturnUsedRegs(target, liveRegs);
             break;
-        case MOpcode::CQO:
-            addReg(liveRegs, static_cast<uint16_t>(PhysReg::RAX));
-            break;
-        case MOpcode::IDIVrm:
-        case MOpcode::DIVrm:
-            addReg(liveRegs, static_cast<uint16_t>(PhysReg::RAX));
-            addReg(liveRegs, static_cast<uint16_t>(PhysReg::RDX));
-            break;
-        case MOpcode::MULr:
-        case MOpcode::IMULr:
-            addReg(liveRegs, static_cast<uint16_t>(PhysReg::RAX));
-            break;
         default:
             break;
     }
+    // CQO / IDIV / DIV / MUL / IMUL / shift-by-CL implicit inputs.
+    liveRegs |= implicitUseMask(instr.opcode);
 }
 
 } // namespace
@@ -296,6 +286,7 @@ std::size_t runBlockDCE(std::vector<MInstr> &instrs,
 
         if (defReg)
             liveRegs &= ~regBit(*defReg);
+        liveRegs &= ~implicitDefMask(instr.opcode);
         if (definesFlags)
             flagsLive = false;
 

@@ -88,6 +88,12 @@ bool definesOperandReg(const MInstr &instr, const Operand &regOperand) {
     const auto *reg = std::get_if<OpReg>(&regOperand);
     if (!reg || !reg->isPhys)
         return false;
+    // CQO / IDIV / DIV / MUL / IMUL write RAX and/or RDX without listing them as
+    // operands. A value spilled out of RDX right before `cqo` must not be
+    // forwarded from RDX after the division has overwritten it.
+    if (reg->cls == RegClass::GPR &&
+        (implicitDefMask(instr.opcode) & physRegBit(static_cast<PhysReg>(reg->idOrPhys))) != 0)
+        return true;
     for (std::size_t idx = 0; idx < instr.operands.size(); ++idx) {
         const auto [isUse, isDef] = operandRoles(instr, idx);
         (void)isUse;

@@ -366,4 +366,36 @@ bool hasObservableSideEffects(MOpcode opcode) noexcept {
     return true;
 }
 
+PhysRegMask implicitDefMask(MOpcode opcode) noexcept {
+    switch (opcode) {
+        case MOpcode::CQO:
+            return physRegBit(PhysReg::RDX);
+        case MOpcode::IDIVrm:
+        case MOpcode::DIVrm:
+        case MOpcode::MULr:
+        case MOpcode::IMULr:
+            return physRegBit(PhysReg::RAX) | physRegBit(PhysReg::RDX);
+        default:
+            return 0;
+    }
+}
+
+PhysRegMask implicitUseMask(MOpcode opcode) noexcept {
+    switch (opcode) {
+        case MOpcode::CQO:
+        case MOpcode::MULr:
+        case MOpcode::IMULr:
+            return physRegBit(PhysReg::RAX);
+        case MOpcode::IDIVrm:
+        case MOpcode::DIVrm:
+            return physRegBit(PhysReg::RAX) | physRegBit(PhysReg::RDX);
+        case MOpcode::SHLrc:
+        case MOpcode::SHRrc:
+        case MOpcode::SARrc:
+            return physRegBit(PhysReg::RCX);
+        default:
+            return 0;
+    }
+}
+
 } // namespace zanna::codegen::x64

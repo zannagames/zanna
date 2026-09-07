@@ -22,6 +22,7 @@
 #include "codegen/x86_64/MachineIR.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <utility>
 
 /**
@@ -65,5 +66,32 @@ namespace zanna::codegen::x64 {
 /// @param opcode Opcode to classify.
 /// @return True if @p opcode has observable side effects.
 [[nodiscard]] bool hasObservableSideEffects(MOpcode opcode) noexcept;
+
+/// @brief Bit set over physical registers: bit `i` is set when `PhysReg(i)` is a member.
+using PhysRegMask = std::uint64_t;
+
+/// @brief Single-register mask for @p reg.
+/// @param reg Physical register whose ordinal selects the bit.
+/// @return Mask with exactly one bit set.
+[[nodiscard]] constexpr PhysRegMask physRegBit(PhysReg reg) noexcept {
+    return PhysRegMask{1} << static_cast<unsigned>(reg);
+}
+
+/// @brief Physical registers written by @p opcode without appearing as operands.
+/// @details `CQO` writes RDX; `IDIVrm`/`DIVrm`/`MULr`/`IMULr` write RAX and RDX.
+///          Every post-RA pass that reasons about register liveness or copy
+///          validity (store-to-load forwarding, move folding, DCE, scheduling)
+///          must treat these as definitions; explicit operand roles alone miss them.
+/// @param opcode Opcode to classify.
+/// @return Mask of implicitly defined registers, or zero.
+[[nodiscard]] PhysRegMask implicitDefMask(MOpcode opcode) noexcept;
+
+/// @brief Physical registers read by @p opcode without appearing as operands.
+/// @details `CQO`/`MULr`/`IMULr` read RAX; `IDIVrm`/`DIVrm` read RAX and RDX;
+///          the `*rc` shift forms read the count in RCX. Call and return
+///          conventions are target-dependent and are modeled by the callers.
+/// @param opcode Opcode to classify.
+/// @return Mask of implicitly used registers, or zero.
+[[nodiscard]] PhysRegMask implicitUseMask(MOpcode opcode) noexcept;
 
 } // namespace zanna::codegen::x64

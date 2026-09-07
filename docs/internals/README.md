@@ -33,6 +33,8 @@ User-facing documentation lives in the **[main documentation index](../README.md
 
 **Runtime audits** — [Graphics 2D runtime (July 2026)](graphics2d-runtime-audit-2026-07.md)
 
+**Backend audits** — [Backend codegen review and level-up plan (September 2026)](backend-codegen-review-2026-09.md)
+
 ## Specifications
 
 - [IL Guide](../il/il-guide.md) — Normative IL specification (changes require an ADR)

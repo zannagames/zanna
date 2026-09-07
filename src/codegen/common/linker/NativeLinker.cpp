@@ -1677,6 +1677,24 @@ int nativeLink(const NativeLinkerOptions &opts, std::ostream & /*out*/, std::ost
         err << "\n";
         return 1;
     }
+    // Plain R_X86_64_GOTPCREL (the non-relaxable form, e.g. `pushq
+    // foo@GOTPCREL(%rip)`) to a symbol defined in the link still needs a real
+    // GOT slot. Synthesize link-time slots; they are filled by ordinary
+    // relocation application and never reach the loader.
+    if (opts.platform == LinkPlatform::Linux && opts.arch == LinkArch::X86_64) {
+        ObjFile slotObj;
+        try {
+            slotObj = generateStaticGotSlotsX8664(allObjects, dynamicSyms);
+        } catch (const std::exception &ex) {
+            err << "error: failed to generate static GOT slots: " << ex.what() << "\n";
+            return 1;
+        }
+        if (!slotObj.sections.empty()) {
+            const size_t slotObjIdx = allObjects.size();
+            allObjects.push_back(std::move(slotObj));
+            registerSyntheticSymbols(allObjects[slotObjIdx], slotObjIdx, globalSyms);
+        }
+    }
     timing.mark("generate-stubs");
 
     // Step 3.5c: Dead-strip unused sections from all non-synthetic input
