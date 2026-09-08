@@ -30,6 +30,7 @@
 #include "FrameLowering.hpp"
 #include "ISel.hpp"
 #include "MirVerify.hpp"
+#include "OperandRoles.hpp"
 #include "Peephole.hpp"
 #include "RegAllocLinear.hpp"
 #include "Scheduler.hpp"
@@ -352,8 +353,10 @@ void insertMainRuntimeContextInit(MFunction &func, const TargetInfo &target) {
     std::vector<MInstr> init;
     init.reserve(3);
     init.push_back(MInstr::make(MOpcode::CALL, {makeLabelOperand("rt_legacy_context")}));
+    init.back().callArgMask = 0; // no arguments
     init.push_back(MInstr::make(MOpcode::MOVrr, {argReg, retReg}));
     init.push_back(MInstr::make(MOpcode::CALL, {makeLabelOperand("rt_set_current_context")}));
+    init.back().callArgMask = physRegBit(target.intArgOrder.front());
     entry.insert(entry.begin(), init.begin(), init.end());
 }
 

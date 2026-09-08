@@ -79,4 +79,6 @@ Register allocation on AArch64 is function-wide, in two phases over an interval 
 - Against the Phase 3 baseline (`docs/internals/codegen_stats_baseline.tsv`): chess `-O2`
   105,089 → 55,537 instructions, 21,394 → 4,946 frame accesses, 12,381 → 64 offset prefixes,
   9,977 → 200 spill slots; every benchmark loses all frame traffic; no program's instruction count
-  rises.
+  rises. On x86-64 (C8, same core) chess `-O2` 88,966 → 75,513 instructions, 12,332 → 8,031
+  frame accesses, 2,344 → 833 spill slots; the after-table is
+  `docs/internals/codegen_stats_phase3.tsv`.

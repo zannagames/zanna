@@ -244,8 +244,10 @@ struct DivOpcodeKind {
                        std::get<OpLabel>(instr.operands[0]).name == callee;
             });
         if (!hasCall) {
-            trapBlock.append(
-                MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand(callee)}));
+            MInstr call =
+                MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand(callee)});
+            call.callArgMask = 0; // no arguments
+            trapBlock.append(std::move(call));
         }
         /// Recognize the non-returning illegal-instruction terminator.
         const bool hasTerminator =
@@ -259,7 +261,9 @@ struct DivOpcodeKind {
 
     MBasicBlock trapBlock{};
     trapBlock.label = label;
-    trapBlock.append(MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand(callee)}));
+    MInstr call = MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand(callee)});
+    call.callArgMask = 0; // no arguments
+    trapBlock.append(std::move(call));
     trapBlock.append(MInstr::make(MOpcode::UD2));
     fn.blocks.push_back(std::move(trapBlock));
     trapIndex = fn.blocks.size() - 1U;

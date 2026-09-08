@@ -258,7 +258,8 @@ void lowerCall(MBasicBlock &block,
     for (const auto &loc : layout.locations) {
         const auto &arg = plan.args[loc.argIndex];
         if (loc.isAggregatePart && arg.isImm)
-            throw std::invalid_argument("x86-64 call lowering: aggregate argument cannot be immediate");
+            throw std::invalid_argument(
+                "x86-64 call lowering: aggregate argument cannot be immediate");
         if (arg.isImm)
             continue;
         const auto currentIdx =
@@ -267,10 +268,11 @@ void lowerCall(MBasicBlock &block,
         if (loc.isAggregatePart) {
             const Operand base = makeVRegOperand(RegClass::GPR, arg.vreg);
             const Operand scratch = makePhysOperand(RegClass::GPR, kScratchGPR);
-            insertInstr(MInstr::make(
-                MOpcode::MOVmr,
-                {scratch, makeMemOperand(std::get<OpReg>(base),
-                                         checkedAggregateChunkOffset(loc.byteOffset))}));
+            insertInstr(
+                MInstr::make(MOpcode::MOVmr,
+                             {scratch,
+                              makeMemOperand(std::get<OpReg>(base),
+                                             checkedAggregateChunkOffset(loc.byteOffset))}));
 
             if (loc.inRegister) {
                 const PhysReg destReg = target.intArgOrder[loc.regIndex];
@@ -376,6 +378,30 @@ void lowerCall(MBasicBlock &block,
         insertInstr(MInstr::make(MOpcode::MOVri,
                                  {rax, makeImmOperand(static_cast<int64_t>(layout.fprRegsUsed))}));
     }
+
+    // Record exactly which argument registers the call reads, so the effects
+    // model (and through it liveness and the allocator) does not treat every
+    // argument register as read at every call.
+    PhysRegMask argMask = 0;
+    for (const auto &loc : layout.locations) {
+        if (!loc.inRegister)
+            continue;
+        if (loc.cls == CallArgClass::FPR) {
+            if (loc.regIndex < target.f64ArgOrder.size())
+                argMask |= physRegBit(target.f64ArgOrder[loc.regIndex]);
+            if (isWin64 && plan.isVarArg && loc.regIndex < target.intArgOrder.size())
+                argMask |= physRegBit(target.intArgOrder[loc.regIndex]);
+        } else if (loc.regIndex < target.intArgOrder.size()) {
+            argMask |= physRegBit(target.intArgOrder[loc.regIndex]);
+        }
+    }
+    if (plan.isVarArg && target.shadowSpace == 0)
+        argMask |= physRegBit(PhysReg::RAX);
+    // The CALL follows the setup sequence when the plan was attached to one
+    // (the pipeline case); a caller that only wants the marshalling emitted
+    // at an arbitrary point has no instruction to annotate.
+    if (insertIt != block.instructions.end() && insertIt->opcode == MOpcode::CALL)
+        insertIt->callArgMask = argMask;
 }
 
 } // namespace zanna::codegen::x64

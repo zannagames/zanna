@@ -224,6 +224,11 @@ class PassManager {
   `computePhysLiveness(fn, target)` solves per-block physical-register live-in/live-out over
   `MirCfg` from the effects model (a call reads its argument registers and clobbers the
   caller-saved set, a return reads the result registers, the reserved scratch clobbers count).
+  On x86-64 a `CALL` carries the argument registers its lowering marshalled
+  (`MInstr::callArgMask`, recorded by `lowerCall`; the no-argument runtime trap calls record an
+  empty mask) and `effectsOf` reads only those, so a shared trap block reachable from a loop does
+  not keep every argument register live around it; a `CALL` built without a mask still reads
+  every argument register. AArch64 `Bl`/`Blr` carry no arity yet (review item 16).
   `blockExitLive(fn, bi, target, liveness)` is the exit-liveness seed every post-RA block-local
   rewrite reads when its forward scan reaches the block end: the solved live-out, plus SP/FP/LR,
   plus the return registers of a block that leaves the function. A callee-saved register is
@@ -612,8 +617,8 @@ and the lowering of every parallel copy (`ParallelCopy` / `PX_COPY`) through
 x86-64 specifics: the pool excludes RSP, RBP, and the reserved R10/R11 (which serve as
 emergency temporaries within one instruction, exactly as the division and jump-table
 sequences use them); a temporary never names a register the instruction reads or writes,
-explicitly or implicitly (RAX/RDX of a division, RCX of a shift, the argument registers of a
-call); when every register of a class is occupied across an instruction, a pool register is
+explicitly or implicitly (RAX/RDX of a division, RCX of a shift, the argument registers a
+call marshals); when every register of a class is occupied across an instruction, a pool register is
 saved to a fresh slot before it and restored after it; memory address registers are reads;
 spill slots are RBP-relative placeholders (`ra/SpillSlots.hpp`, one namespace per class) that
 frame lowering maps to final offsets; `AllocationResult` reports the assignment map and the
@@ -760,9 +765,33 @@ After the Phase 3 C6 flip (function-wide allocation by default, ADR 0338) the AA
 | openworld_slice | arm64 | O0 | 5861 | 627 | 0 | 0 | — |
 | openworld_slice | arm64 | O2 | 4896 | 364 | 0 | 0 | — |
 
-Every one of the 16 benchmarks has zero frame accesses and zero spill slots at both levels; the
-x86-64 rows are unchanged until Phase 3 C8. (`—`: not recorded in the summary run; the TSV from
-`scripts/codegen_stats.sh --out` has every column.)
+Every one of the 16 benchmarks has zero frame accesses and zero spill slots at both levels.
+(`—`: not recorded in the summary run; the TSV from `scripts/codegen_stats.sh --out` has every
+column.)
+
+After Phase 3 C8 (x86-64 on the same allocator through the shared core, with the call argument
+masks) the x86-64 rows read; the full after-table for both targets is
+`docs/internals/codegen_stats_phase3.tsv`:
+
+| program | arch | opt | instrs | frameLoads+Stores | spillSlots | frameBytes |
+|---|---|---|---:|---:|---:|---:|
+| chess | x64 | O0 | 97089 | 8741 | 1228 | 42208 |
+| chess | x64 | O2 | 75513 | 8031 | 833 | 25488 |
+| crackman | x64 | O0 | 68593 | 4463 | 637 | 28672 |
+| crackman | x64 | O2 | 52572 | 3604 | 413 | 18608 |
+| paint | x64 | O0 | 69594 | 3779 | 648 | 32672 |
+| paint | x64 | O2 | 55214 | 2902 | 507 | 22784 |
+| openworld_slice | x64 | O0 | 7547 | 316 | 45 | 2352 |
+| openworld_slice | x64 | O2 | 6416 | 199 | 31 | 1840 |
+
+On x86-64 every benchmark has zero spill slots at both levels and zero frame accesses except
+`call_stress` at `-O0` (two outgoing stack-argument stores, unchanged from the baseline); no
+row's instruction count rises except `mixed_stress` `-O0` by two instructions. Across all 20
+programs at `-O2`: AArch64 224,277 → 137,951 instructions, 40,670 → 11,224 frame accesses,
+17,598 → 64 prefixes, 18,783 → 292 spill slots; x86-64 224,706 → 190,872 instructions,
+24,434 → 14,736 frame accesses, 4,705 → 1,784 spill slots. The Phase 3 success metric (frame
+accesses, prefixes and spill slots down by a majority, no program's instruction count rising)
+holds on both targets.
 
 What the numbers said about the block-local allocator: on AArch64 `-O2` inlining grows `chess` to
 105,089 instructions of which 12,381 are `mov xS,#off; add xS,x29,xS` prefixes for frame accesses

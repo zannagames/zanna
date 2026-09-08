@@ -107,6 +107,7 @@ void lowerOverflowOps(MFunction &fn) {
             if (!hasRuntimeCall) {
                 MInstr call = MInstr::make(MOpcode::CALL,
                                            std::vector<Operand>{makeLabelOperand("rt_trap_ovf")});
+                call.callArgMask = 0; // no arguments
                 if (ud2It != trapBlock.instructions.end()) {
                     ud2It = trapBlock.instructions.insert(ud2It, std::move(call));
                     ++ud2It;
@@ -123,8 +124,10 @@ void lowerOverflowOps(MFunction &fn) {
 
         MBasicBlock trapBlock{};
         trapBlock.label = trapLabel;
-        trapBlock.append(
-            MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand("rt_trap_ovf")}));
+        MInstr call =
+            MInstr::make(MOpcode::CALL, std::vector<Operand>{makeLabelOperand("rt_trap_ovf")});
+        call.callArgMask = 0; // no arguments
+        trapBlock.append(std::move(call));
         trapBlock.append(MInstr::make(MOpcode::UD2));
         fn.blocks.push_back(std::move(trapBlock));
         trapIndex = fn.blocks.size() - 1U;

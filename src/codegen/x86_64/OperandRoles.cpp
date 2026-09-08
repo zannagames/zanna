@@ -446,11 +446,17 @@ InstrEffects effectsOf(const MInstr &instr, const TargetInfo &target) {
             fx.memRead = true;
             fx.memWrite = true;
             fx.writesFlags = true;
-            for (std::size_t i = 0; i < target.maxGPRArgs && i < target.intArgOrder.size(); ++i)
-                fx.uses |= physRegBit(target.intArgOrder[i]);
-            for (std::size_t i = 0; i < target.maxFPArgs && i < target.f64ArgOrder.size(); ++i)
-                fx.uses |= physRegBit(target.f64ArgOrder[i]);
-            fx.uses |= physRegBit(PhysReg::RSP) | physRegBit(PhysReg::RAX); // AL: vararg count
+            if (instr.callArgMask == MInstr::kCallArgsUnknown) {
+                // No arity recorded: every argument register may be read.
+                for (std::size_t i = 0; i < target.maxGPRArgs && i < target.intArgOrder.size(); ++i)
+                    fx.uses |= physRegBit(target.intArgOrder[i]);
+                for (std::size_t i = 0; i < target.maxFPArgs && i < target.f64ArgOrder.size(); ++i)
+                    fx.uses |= physRegBit(target.f64ArgOrder[i]);
+                fx.uses |= physRegBit(PhysReg::RAX); // AL: vararg count
+            } else {
+                fx.uses |= static_cast<PhysRegMask>(instr.callArgMask);
+            }
+            fx.uses |= physRegBit(PhysReg::RSP);
             for (PhysReg reg : target.callerSavedGPR)
                 fx.defs |= physRegBit(reg);
             for (PhysReg reg : target.callerSavedFPR)

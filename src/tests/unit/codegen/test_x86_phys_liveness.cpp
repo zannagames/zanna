@@ -135,6 +135,58 @@ TEST(X86PhysLiveness, CallClobbersCallerSavedAndReadsArguments) {
     EXPECT_TRUE(has(lv.liveIn[0], PhysReg::RCX));
 }
 
+TEST(X86PhysLiveness, CallWithARecordedArgumentMaskReadsOnlyThoseRegisters) {
+    // Call lowering records the argument registers it marshalled; a CALL
+    // without a mask (hand-built here) reads every argument register.
+    MInstr masked{MOpcode::CALL, {lbl("callee")}};
+    masked.callArgMask = physRegBit(PhysReg::RDI);
+    const InstrEffects fx = effectsOf(masked, target());
+    EXPECT_TRUE(has(fx.uses, PhysReg::RDI));
+    EXPECT_FALSE(has(fx.uses, PhysReg::RSI));
+    EXPECT_FALSE(has(fx.uses, PhysReg::RAX));
+    EXPECT_TRUE(has(fx.uses, PhysReg::RSP));
+    EXPECT_TRUE(has(fx.defs, PhysReg::RAX));
+    const InstrEffects unknown = effectsOf(MInstr{MOpcode::CALL, {lbl("callee")}}, target());
+    EXPECT_TRUE(has(unknown.uses, PhysReg::RSI));
+    EXPECT_TRUE(has(unknown.uses, PhysReg::RAX));
+
+    MFunction fn = function({
+        block("entry", {movri(PhysReg::RDI, 7), masked, jmp("next")}),
+        block("next", {ret()}),
+    });
+    const PhysLiveness lv = computePhysLiveness(fn, target());
+    EXPECT_FALSE(has(lv.liveIn[0], PhysReg::RDI));
+    EXPECT_FALSE(has(lv.liveIn[0], PhysReg::RSI));
+}
+
+TEST(X86PhysLiveness, TrapBlockCallDoesNotKeepArgumentRegistersLiveAroundALoop) {
+    // A shared overflow trap block (`call rt_trap_ovf; ud2`, no arguments) is
+    // a successor of every checked add. Its call must not make RDI..R9 live
+    // across the loop, or the allocator could never use a caller-saved
+    // register in it.
+    MInstr trapCall{MOpcode::CALL, {lbl("rt_trap_ovf")}};
+    trapCall.callArgMask = 0;
+    MFunction fn = function({
+        block("entry", {movri(PhysReg::RBX, 0), jmp("loop")}),
+        block("loop", {addrr(PhysReg::RBX, PhysReg::RBX), jcc("trap"), jcc("loop"), jmp("exit")}),
+        block("exit", {ret()}),
+        block("trap", {trapCall, MInstr{MOpcode::UD2, {}}}),
+    });
+    const PhysLiveness lv = computePhysLiveness(fn, target());
+    for (PhysReg reg : {PhysReg::RDI,
+                        PhysReg::RSI,
+                        PhysReg::RDX,
+                        PhysReg::RCX,
+                        PhysReg::R8,
+                        PhysReg::R9,
+                        PhysReg::XMM1}) {
+        EXPECT_FALSE(has(lv.liveIn[1], reg));
+        EXPECT_FALSE(has(lv.liveOut[1], reg));
+        EXPECT_FALSE(has(lv.liveIn[3], reg));
+    }
+    EXPECT_TRUE(has(lv.liveIn[1], PhysReg::RBX));
+}
+
 TEST(X86PhysLiveness, ReturnReadsTheResultRegisters) {
     MFunction fn = function({block("entry", {ret()})});
     const PhysLiveness lv = computePhysLiveness(fn, target());

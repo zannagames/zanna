@@ -191,11 +191,18 @@ enum class MOpcode {
 struct MInstr {
     /// Sentinel indicating that a CALL has no deferred argument-lowering plan.
     static constexpr uint32_t kNoCallPlanId = UINT32_MAX;
+    /// Sentinel for a CALL whose argument registers are unknown: it is taken
+    /// to read every argument register (and RAX, the SysV vararg count).
+    static constexpr uint64_t kCallArgsUnknown = ~uint64_t{0};
 
     MOpcode opcode{MOpcode::MOVrr};     ///< Opcode for the instruction.
     std::vector<Operand> operands{};    ///< Operands in emission order.
     il::support::SourceLoc loc{};       ///< Source location (for debug info).
     uint32_t callPlanId{kNoCallPlanId}; ///< Planned call ABI metadata for CALL instructions.
+    /// Argument registers a CALL reads, as a physRegBit mask, recorded by call
+    /// lowering (exact) or by the site that builds a runtime call by hand.
+    /// Consumed by effectsOf; every other opcode ignores it.
+    uint64_t callArgMask{kCallArgsUnknown};
 
     /// \brief Create an instruction with the given operands.
     /// @param opc The machine opcode for the instruction.

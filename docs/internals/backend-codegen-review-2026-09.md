@@ -172,9 +172,9 @@ Phase 2.5 (differential coverage) is implemented:
     `VerifierAcceptsDemotedAddManyBlocksPastHeader`). 4 seeds.
   After the fixes the first 400 seeds agree on VM, native -O0, and native -O2.
 
-Phase 3 (function-wide register allocation, C1) is in progress; the plan is in
-`docs/internals/backend.md` ("Codegen statistics baseline") and the ADR that lands with the flip.
-Steps landed so far, each gate-green with the default pipeline unchanged unless stated:
+Phase 3 (function-wide register allocation, C1) is complete on both backends; the results
+table is in `docs/internals/backend.md` ("Codegen statistics baseline") and the model is ADR 0338.
+Steps, each gate-green with the default pipeline unchanged unless stated:
 
 - **C0 — metrics.** `aarch64/passes/CodegenStatsPass` and `x86_64/passes/CodegenStatsPass` print
   one `[codegen-stats]` line per function and module at every -O level when `ZANNA_CODEGEN_STATS`
@@ -321,9 +321,35 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   (`emitModuleToAssembly`, `emitFunctionToAssembly`) run the MIR verifier after every stage
   when `ZANNA_VERIFY_MIR` is set, as the pipeline already did. `test_abi_probe` and two
   `test_cf_stress` counts were re-derived (pass-through arguments need no move; an empty
-  block is threaded away; the last switch case may fall through under `jne`).
+  block is threaded away; the last switch case may fall through under `jne`). The first
+  results table showed x86-64 spilling in kernels that have no register pressure
+  (`udiv_stress` -O2: 0 → 19 frame accesses): every checked operation branches to the shared
+  overflow trap block, whose `call rt_trap_ovf` read every argument register under the
+  arity-less effects model, so RDI..R9 and RAX were live around every loop that can trap and
+  the pool shrank to RBX/R12..R15. Item 16 landed for x86-64 in its minimal form: a `CALL`
+  carries `MInstr::callArgMask`, `lowerCall` records exactly the registers it marshalled (plus
+  RAX for a SysV vararg call), the trap and startup calls record theirs by hand, and `effectsOf`
+  reads only those (a mask-less `CALL` keeps the old every-register reading). An in-block
+  variant tried first ("a call reads an argument register only if its block wrote it") was
+  unsound: the marshalling sequence can be split by a guard branch
+  (`native_run_sccp_transient_trap_O1`), so the mask is recorded at the one place that knows
+  the arity. AArch64 `Bl`/`Blr` are unchanged (its pool is wide enough that the trap-block
+  pollution costs nothing measurable; the same mask is the natural follow-up).
 
-Everything from B2 onward, and Phase 3 from C9 on, is open.
+- **C9 — docs and results.** `backend.md` carries the after-table for both targets
+  (`codegen_stats_phase3.tsv` has every column), the register-allocation section describes
+  the shared model, and the kill-switch list no longer names `ZANNA_NO_GLOBAL_RA` or
+  `ZANNA_LOCAL_RA`. Across the 20 programs at `-O2`: AArch64 224,277 → 137,951 instructions and
+  40,670 → 11,224 frame accesses; x86-64 224,706 → 190,872 instructions and 24,434 → 14,736
+  frame accesses; no program's instruction count rises except `mixed_stress` `-O0` by two.
+  The AArch64 execution gates (differential, `-O0` vs `-O2`, seeded kernels) and the ARM-host
+  ctests were last run on an ARM host at C6; C7, C8 and the argument-mask change were verified
+  here by the asm-only AArch64 lanes (shared corpus, verifier, byte-identical demo assembly
+  through C8b) and need one run on an ARM host.
+
+Everything from B2 onward is open; of the Phase 3 follow-ups, 12 is moot (intervals end at
+last use by construction), 13 is partly done (the entry copy is one `PX_COPY`; call arguments
+are still one move each), 16 is done for x86-64 and open for AArch64, and 14/15 are open.
 
 ## Context
 
@@ -411,7 +437,7 @@ Fix (preferred, removes the class): a post-RA `ExpandPseudosPass` on AArch64 tha
 13. **C3** x86 argument marshalling as one `PX_COPY` per call (reuse `Coalescer::lower`), free R11 for allocation (keep R10 for cycle breaking or use `XCHG`).
 14. **C4** port `removeDeadInstructionsCFG` to x86 on top of `MirCfg`.
 15. **C5** precompute vreg use/def counts once per function for `foldLeaIntoMem`/`runAddressingFolds`; make `coalesceClass` incremental (update intervals on merge instead of restart); index spill slots by vreg in `FrameBuilder`.
-16. **Call-site argument masks.** `Bl`/`Blr` (and x86 `CALL`) carry no arity, so `effectsOf` reads every argument register at every call. Record the integer/FP argument-register counts on the MIR call at lowering and read only those: it restores the five `foldComputeIntoTarget` folds Phase 2.3 declines in `chess` (ALU result in an argument register the next one-argument call does not read), lets DCE drop dead argument-register writes before calls, and removes false scheduler dependencies. Measured on `chess` -O2: 12,447 frame-access prefixes (Phase 2.2) dwarf this, so it goes after global RA.
+16. **Call-site argument masks.** `Bl`/`Blr` (and x86 `CALL`) carry no arity, so `effectsOf` reads every argument register at every call. *x86-64 done in Phase 3 C8b (`MInstr::callArgMask`); AArch64 open.* Record the integer/FP argument-register counts on the MIR call at lowering and read only those: it restores the five `foldComputeIntoTarget` folds Phase 2.3 declines in `chess` (ALU result in an argument register the next one-argument call does not read), lets DCE drop dead argument-register writes before calls, and removes false scheduler dependencies. Measured on `chess` -O2: 12,447 frame-access prefixes (Phase 2.2) dwarf this, so it goes after global RA.
 
 ---
 

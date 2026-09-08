@@ -1128,8 +1128,10 @@ MFunction LowerILToMIR::lower(const ILFunction &func) {
     if (nullTrapRequested_) {
         MBasicBlock trapBlock{};
         trapBlock.label = ".Ltrap_null_" + result.name;
-        trapBlock.append(MInstr::make(MOpcode::CALL,
-                                      std::vector<Operand>{x64::makeLabelOperand("rt_trap_null")}));
+        MInstr call = MInstr::make(MOpcode::CALL,
+                                   std::vector<Operand>{x64::makeLabelOperand("rt_trap_null")});
+        call.callArgMask = 0; // no arguments
+        trapBlock.append(std::move(call));
         trapBlock.append(MInstr::make(MOpcode::UD2));
         result.addBlock(std::move(trapBlock));
     }
