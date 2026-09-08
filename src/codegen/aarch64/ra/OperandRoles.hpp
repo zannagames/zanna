@@ -17,7 +17,7 @@
 //   - Stateless free function; no ownership.
 //
 // Links: codegen/aarch64/ra/OperandRoles.cpp,
-//        codegen/aarch64/ra/Allocator.cpp,
+//        codegen/aarch64/ra/GlobalAllocator.cpp,
 //        codegen/aarch64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//

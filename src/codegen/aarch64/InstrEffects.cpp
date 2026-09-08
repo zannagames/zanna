@@ -61,8 +61,6 @@ bool isFrameRelativeOpcode(MOpcode opc) noexcept {
         case MOpcode::Str32RegFpImm:
         case MOpcode::LdrFprFpImm:
         case MOpcode::StrFprFpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
         case MOpcode::AddFpImm:
         case MOpcode::LdpRegFpImm:
         case MOpcode::StpRegFpImm:
@@ -115,8 +113,6 @@ unsigned memAccessBytes(MOpcode opc) noexcept {
         case MOpcode::StrFprBaseRegLsl:
         case MOpcode::StrRegSpImm:
         case MOpcode::StrFprSpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
             return 8;
         case MOpcode::LdpRegFpImm:
         case MOpcode::StpRegFpImm:
@@ -222,8 +218,6 @@ bool isStoreOpcode(MOpcode opc) noexcept {
         case MOpcode::StrFprBaseRegLsl:
         case MOpcode::StpRegFpImm:
         case MOpcode::StpFprFpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
             return true;
         default:
             return false;

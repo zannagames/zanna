@@ -21,9 +21,8 @@
 //     passing through the header.
 //   - blockExitLive() is the solved physical live-out of the block
 //     (PhysLiveness) plus what no in-block read can express: the
-//     frame/stack/link registers, the return registers of a block that
-//     leaves the function, and, until the block-local allocator is retired,
-//     whatever it publishes in MBasicBlock::carriedExitRegs.
+//     frame/stack/link registers and the return registers of a block that
+//     leaves the function.
 // Ownership/Lifetime:
 //   - MirCfg is a snapshot: it holds no reference to the function and is
 //     invalidated by any change to block order or terminators.
@@ -158,25 +157,19 @@ class MirCfg {
     mutable std::optional<zanna::codegen::ra::DominatorSets> dominators_; ///< Lazy dominators.
 };
 
-/// @brief Physical registers the allocator says are carried across the exit
-///        of @p block (MBasicBlock::carriedExitRegs) as a register set.
-[[nodiscard]] PhysRegSet carriedExitRegSet(const MBasicBlock &block) noexcept;
-
 /// @brief Physical registers that must be treated as live at the exit of
 ///        block @p bi of @p fn after register allocation.
 /// @details The solved live-out of the block (`liveness.liveOut[bi]`: every
 ///          register some successor reads before writing, through any number
-///          of edges), plus SP/FP/LR, plus the block's carried exit registers
-///          (redundant with the solved set whenever the successor reads the
-///          carried value, kept while the block-local allocator exists), plus
-///          the integer and floating-point return registers when the block
-///          leaves the function (through `Ret` or by falling off the end).
-///          A callee-saved register is live here only if it is actually read
-///          later: at a return the epilogue restores it from its slot, and
-///          inside the function a pinned slot or a carried value shows up as
-///          an explicit read in the successor. Block-local rewrites that
-///          redirect or drop a definition reaching the block end must consult
-///          this set (review item B1).
+///          of edges), plus SP/FP/LR, plus the integer and floating-point
+///          return registers when the block leaves the function (through
+///          `Ret` or by falling off the end). A callee-saved register is live
+///          here only if it is actually read later: at a return the epilogue
+///          restores it from its slot, and inside the function every value
+///          that crosses the edge shows up as an explicit read in the
+///          successor. Block-local rewrites that redirect or drop a
+///          definition reaching the block end must consult this set (review
+///          item B1).
 /// @param fn       Function owning the block.
 /// @param bi       Block index in `[0, fn.blocks.size())`.
 /// @param target   ABI description supplying the register sets.

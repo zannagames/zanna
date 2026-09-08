@@ -98,7 +98,7 @@ bool LoweringPass::run(AArch64Module &module, Diagnostics &diags) {
     auto lowerOne = [&](std::size_t index) {
         try {
             const auto &fn = ilMod.functions[index];
-            LowerILToMIR lowerer{ti, &stringLiteralByteLengths, module.edgeCopyLowering};
+            LowerILToMIR lowerer{ti, &stringLiteralByteLengths};
             lowerer.setKnownVarArgCallees(knownVarArgNamedArgCounts);
             MFunction mir = lowerer.lowerFunction(fn);
 

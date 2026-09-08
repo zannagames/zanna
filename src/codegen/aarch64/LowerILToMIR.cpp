@@ -8,19 +8,21 @@
 // File: codegen/aarch64/LowerILToMIR.cpp
 // Purpose: IL→MIR lowering orchestrator for AArch64.
 //          Coordinates the full IL-to-MIR conversion: fast-path probe, frame
-//          setup, phi parameter slot allocation, cross-block liveness analysis,
-//          per-block instruction dispatch, and terminator lowering.
+//          setup, block-parameter vreg assignment, per-block instruction
+//          dispatch in reverse post-order, and terminator lowering.
 // Key invariants:
 //   - Fast paths are tried first; generic lowering is used on miss.
-//   - Cross-block temps are spilled at definition and reloaded at use.
-//   - Phi slots are allocated as stack spills before instruction lowering.
+//   - Every IL temporary keeps one virtual register for the whole function;
+//     blocks are lowered in reverse post-order so definitions precede uses.
+//   - Block parameters are virtual registers written by ParallelCopy edges;
+//     lowering allocates no frame slot for values (ADR 0338).
 // Ownership/Lifetime:
 //   - All state is local to lowerFunction(); the LowerILToMIR object is stateless.
 // Links: src/codegen/aarch64/LowerILToMIR.hpp,
 //        src/codegen/aarch64/InstrLowering.hpp,
 //        src/codegen/aarch64/OpcodeDispatch.hpp,
 //        src/codegen/aarch64/TerminatorLowering.hpp,
-//        src/codegen/aarch64/LivenessAnalysis.hpp,
+//        src/codegen/aarch64/ra/GlobalAllocator.hpp,
 //        src/codegen/aarch64/FastPaths.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -30,9 +32,9 @@
  * @brief Implements whole-function IL-to-AArch64-MIR orchestration.
  *
  * Lowering first probes transactional fast paths. The generic path allocates
- * locals and phi slots, analyzes cross-block values, seeds register classes,
- * materializes entry parameters, dispatches ordinary instructions, lowers
- * terminators, and finalizes the frame without retaining per-function state.
+ * locals and block-parameter vregs, seeds register classes, materializes entry
+ * parameters, dispatches ordinary instructions, lowers terminators, and
+ * finalizes the frame without retaining per-function state.
  */
 
 #include "LowerILToMIR.hpp"
@@ -41,7 +43,6 @@
 #include "FpCompareLowering.hpp"
 #include "FrameBuilder.hpp"
 #include "InstrLowering.hpp"
-#include "LivenessAnalysis.hpp"
 #include "LoweringContext.hpp"
 #include "OpcodeDispatch.hpp"
 #include "OpcodeMappings.hpp"
@@ -289,31 +290,26 @@ static bool cbrConsumesTemp(const il::core::BasicBlock &bb, unsigned tempId) {
 
 /// @brief Materialize entry-block parameters (function arguments) into virtual registers.
 /// @details Register arguments are copied from their ABI registers, and stack
-///          arguments are loaded from the caller frame. Parameters that liveness
-///          marks as cross-block values are also stored once into their shared
-///          cross-block spill slot; parameters used only within the entry block
-///          avoid the previous store/reload round trip entirely.
+///          arguments are loaded from the caller frame. The parameter's vreg is
+///          its home for the whole function; the register allocator decides
+///          whether it ever touches the frame.
 ///
 ///          Uses `planParamClasses` (shared with x86_64) so register-vs-stack
 ///          assignment matches the platform ABI exactly.
 /// @param fn Enclosing IL function and variadic metadata.
 /// @param bbIn Entry block whose parameters mirror function arguments.
 /// @param ti Target ABI register orders.
-/// @param out Entry machine block receiving moves, loads, and spill stores.
+/// @param out Entry machine block receiving moves and loads.
 /// @param tempVReg Parameter-temp to canonical-vreg map.
 /// @param tempRegClass Parameter-temp register-class map.
-/// @param funcParamSpillOffset Cross-block parameter spill map updated in place.
-/// @param crossBlockSpillOffset Preallocated liveness spill offsets.
 /// @param nextVRegId Monotonic virtual-register allocator.
-static void spillEntryBlockParams(const il::core::Function &fn,
-                                  const il::core::BasicBlock &bbIn,
-                                  const TargetInfo &ti,
-                                  MBasicBlock &out,
-                                  std::unordered_map<unsigned, uint16_t> &tempVReg,
-                                  std::unordered_map<unsigned, RegClass> &tempRegClass,
-                                  std::unordered_map<unsigned, int> &funcParamSpillOffset,
-                                  const std::unordered_map<unsigned, int> &crossBlockSpillOffset,
-                                  uint16_t &nextVRegId) {
+static void materializeEntryBlockParams(const il::core::Function &fn,
+                                        const il::core::BasicBlock &bbIn,
+                                        const TargetInfo &ti,
+                                        MBasicBlock &out,
+                                        std::unordered_map<unsigned, uint16_t> &tempVReg,
+                                        std::unordered_map<unsigned, RegClass> &tempRegClass,
+                                        uint16_t &nextVRegId) {
     std::vector<zanna::codegen::common::CallArgClass> paramClasses;
     paramClasses.reserve(bbIn.params.size());
     for (const auto &param : bbIn.params) {
@@ -336,11 +332,6 @@ static void spillEntryBlockParams(const il::core::Function &fn,
         const RegClass cls =
             (loc.cls == zanna::codegen::common::CallArgClass::FPR) ? RegClass::FPR : RegClass::GPR;
 
-        const auto spillIt = crossBlockSpillOffset.find(param.id);
-        const bool needsCrossBlockSpill = spillIt != crossBlockSpillOffset.end();
-        if (needsCrossBlockSpill)
-            funcParamSpillOffset[param.id] = spillIt->second;
-
         const uint16_t vid = allocateNextVReg(nextVRegId);
         tempVReg[param.id] = vid;
         tempRegClass[param.id] = cls;
@@ -359,27 +350,15 @@ static void spillEntryBlockParams(const il::core::Function &fn,
             out.instrs.push_back(
                 MInstr{loadOpc, {MOperand::vregOp(cls, vid), MOperand::immOp(callerArgOffset)}});
         }
-
-        if (needsCrossBlockSpill) {
-            const MOpcode storeOpc =
-                (cls == RegClass::FPR) ? MOpcode::StrFprFpImm : MOpcode::StrRegFpImm;
-            out.instrs.push_back(
-                MInstr{storeOpc, {MOperand::vregOp(cls, vid), MOperand::immOp(spillIt->second)}});
-        }
     }
 }
 
 /// @brief Walk the IL function and register each Alloca as a frame local.
-/// @details Populates @p fb with one local per Alloca and returns the set of
-///          temp ids that are allocas (used by liveness to exclude them from
-///          cross-block spilling).
+/// @details Populates @p fb with one local per Alloca.
 /// @param fn Function whose alloca instructions are scanned.
 /// @param fb Frame builder receiving local-slot allocations.
-/// @return Set of alloca result temp ids.
 /// @throws std::out_of_range if any alloca size is out-of-range (<=0 or > INT_MAX).
-static std::unordered_set<unsigned> setupFrameLocals(const il::core::Function &fn,
-                                                     FrameBuilder &fb) {
-    std::unordered_set<unsigned> allocaTemps;
+static void setupFrameLocals(const il::core::Function &fn, FrameBuilder &fb) {
     for (const auto &bb : fn.blocks) {
         for (const auto &instr : bb.instructions) {
             if (instr.op != il::core::Opcode::Alloca)
@@ -396,36 +375,25 @@ static std::unordered_set<unsigned> setupFrameLocals(const il::core::Function &f
             }
             const int size = static_cast<int>(rawSize);
             fb.addLocal(*instr.result, size, kSlotSizeBytes);
-            allocaTemps.insert(*instr.result);
         }
     }
-    return allocaTemps;
 }
 
-/// @brief Assign canonical phi vregs and a dedicated spill slot per block parameter.
-/// @details Skips the entry block (its params come in via ABI registers); all other
-///          blocks get a vreg per param plus a stack slot so edges can spill their
-///          phi arguments before branching.
+/// @brief Canonical phi vregs per non-entry block parameter.
+/// @details Skips the entry block (its params come in via ABI registers); every
+///          other block gets one vreg per parameter, which every incoming
+///          edge's ParallelCopy writes and the block reads directly.
 struct PhiAssignment {
     /// Block label to canonical phi virtual-register ids.
     std::unordered_map<std::string, std::vector<uint16_t>> vregId;
     /// Block label to phi register classes.
     std::unordered_map<std::string, std::vector<RegClass>> regClass;
-    /// Block label to FP-relative phi spill offsets.
-    std::unordered_map<std::string, std::vector<int>> spillOffset;
 };
 
-/// @brief Allocate canonical vregs (and, in frame-slot mode, spill slots) for
-///        non-entry block parameters.
+/// @brief Allocate canonical vregs for non-entry block parameters.
 /// @param fn Function whose block parameters are assigned.
-/// @param fb Frame builder receiving phi spill slots.
-/// @param withSlots Whether each parameter also gets a frame slot (the
-///        frame-slot lowering mode); in edge-copy mode the phi vreg itself is
-///        the parameter's home and `spillOffset` stays empty.
 /// @return Parallel maps keyed by block label.
-static PhiAssignment allocatePhiSlots(const il::core::Function &fn,
-                                      FrameBuilder &fb,
-                                      bool withSlots) {
+static PhiAssignment allocatePhiVRegs(const il::core::Function &fn) {
     PhiAssignment out;
     uint16_t phiNextId = kPhiVRegStart; // reserve a distinct vreg range
     for (std::size_t bi = 1; bi < fn.blocks.size(); ++bi) {
@@ -434,38 +402,30 @@ static PhiAssignment allocatePhiSlots(const il::core::Function &fn,
             continue;
         std::vector<uint16_t> ids;
         std::vector<RegClass> classes;
-        std::vector<int> spillOffsets;
         ids.reserve(bb.params.size());
         classes.reserve(bb.params.size());
-        spillOffsets.reserve(bb.params.size());
         for (const auto &param : bb.params) {
-            const uint16_t id = allocatePhiVReg(phiNextId);
-            ids.push_back(id);
-            const RegClass cls =
-                (param.type.kind == il::core::Type::Kind::F64) ? RegClass::FPR : RegClass::GPR;
-            classes.push_back(cls);
-            if (withSlots)
-                spillOffsets.push_back(fb.ensureSpill(id));
+            ids.push_back(allocatePhiVReg(phiNextId));
+            classes.push_back((param.type.kind == il::core::Type::Kind::F64) ? RegClass::FPR
+                                                                             : RegClass::GPR);
         }
         out.vregId.emplace(bb.label, std::move(ids));
         out.regClass.emplace(bb.label, std::move(classes));
-        if (withSlots)
-            out.spillOffset.emplace(bb.label, std::move(spillOffsets));
     }
     return out;
 }
 
-/// @brief Block lowering order for the edge-copy mode: reverse post-order from
-///        the entry over terminator labels, unreachable blocks last in text order.
+/// @brief Block lowering order: reverse post-order from the entry over
+///        terminator labels, unreachable blocks last in text order.
 /// @details Cross-block temporaries keep one virtual register for the whole
-///          function in that mode, so every use must be lowered after its
-///          definition; reverse post-order guarantees that (a definition
-///          dominates its uses, and dominators precede dominated blocks in RPO)
-///          whatever the textual block order of the IL. The MIR block vector
-///          keeps the IL order; only the visiting order changes.
+///          function, so every use must be lowered after its definition;
+///          reverse post-order guarantees that (a definition dominates its
+///          uses, and dominators precede dominated blocks in RPO) whatever the
+///          textual block order of the IL. The MIR block vector keeps the IL
+///          order; only the visiting order changes.
 /// @param fn Function whose blocks are ordered.
 /// @return Block indices in lowering order.
-static std::vector<std::size_t> edgeCopyLoweringOrder(const il::core::Function &fn) {
+static std::vector<std::size_t> loweringOrderOf(const il::core::Function &fn) {
     std::unordered_map<std::string, std::size_t> indexOf;
     indexOf.reserve(fn.blocks.size());
     for (std::size_t i = 0; i < fn.blocks.size(); ++i)
@@ -548,23 +508,12 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
 
     // Phase 1: Walk allocas → frame locals.
     FrameBuilder fb{mf};
-    const std::unordered_set<unsigned> allocaTemps = setupFrameLocals(fn, fb);
+    setupFrameLocals(fn, fb);
 
-    // Phase 2: Assign canonical phi vregs (+ spill slots in frame-slot mode)
-    // for non-entry block params.
-    PhiAssignment phi = allocatePhiSlots(fn, fb, /*withSlots=*/!edgeCopies_);
+    // Phase 2: Assign canonical phi vregs for non-entry block params.
+    PhiAssignment phi = allocatePhiVRegs(fn);
     auto &phiVregId = phi.vregId;
     auto &phiRegClass = phi.regClass;
-    auto &phiSpillOffset = phi.spillOffset;
-
-    // ===========================================================================
-    // Global Liveness Analysis for Cross-Block Temps (frame-slot mode only: in
-    // edge-copy mode a temporary keeps its virtual register everywhere, so the
-    // maps stay empty and no def-site store or block-entry reload is emitted)
-    // ===========================================================================
-    LivenessInfo liveness;
-    if (!edgeCopies_)
-        liveness = analyzeCrossBlockLiveness(fn, allocaTemps, fb);
 
     // Try fast-paths for simple function patterns
     if (auto result =
@@ -584,9 +533,6 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     std::unordered_map<unsigned, RegClass> tempRegClass = buildTempRegClassMap(fn);
     uint16_t nextVRegId = kFirstVirtualRegId; // vreg ids start at 1
 
-    // Map function parameter IDs to their spill offsets (for entry block params)
-    std::unordered_map<unsigned, int> funcParamSpillOffset;
-
     // Shared trap-block requests for this function (materialised after the
     // main lowering loops so block references stay valid; one block per kind).
     std::unordered_map<std::string, TrapBlockRequest> sharedTrapBlocks;
@@ -595,84 +541,33 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
     // verified once lowering completes.
     const std::size_t reservedBlockCapacity = mf.blocks.capacity();
 
-    // Save per-block tempVReg snapshots so terminator loop can use the correct vreg mappings.
-    // This is needed because cross-block temp reloading in later blocks can overwrite tempVReg
-    // entries, but the terminator loop for the DEFINING block needs the original vreg.
+    // Per-block tempVReg snapshots: the terminator loop materializes branch
+    // arguments with the mapping the defining block saw.
     std::vector<std::unordered_map<unsigned, uint16_t>> blockTempVRegSnapshot(fn.blocks.size());
 
-    // Frame-slot mode lowers blocks in IL order (slots make the order
-    // irrelevant); edge-copy mode lowers definitions before uses.
-    std::vector<std::size_t> loweringOrder;
-    if (edgeCopies_) {
-        loweringOrder = edgeCopyLoweringOrder(fn);
-    } else {
-        loweringOrder.resize(fn.blocks.size());
-        for (std::size_t i = 0; i < loweringOrder.size(); ++i)
-            loweringOrder[i] = i;
-    }
+    // Definitions are lowered before uses (reverse post-order).
+    const std::vector<std::size_t> loweringOrder = loweringOrderOf(fn);
 
     for (const std::size_t bi : loweringOrder) {
         const auto &bbIn = fn.blocks[bi];
         // NOTE: We use index bi to access mf.blocks[bi] instead of a reference because
         // instruction lowering can add new trap blocks via emplace_back(), which may
         // reallocate the vector and invalidate references.
-        // NOTE: Do NOT clear tempRegClass here - we need to preserve class info for
-        // cross-block temps that are spilled/reloaded. It's already cleared at function start.
         // Helper lambda to get current output block (avoids dangling references)
         /// @brief Retrieves the current output block without retaining a stale reference.
         /// @return Output block corresponding to `bi`.
         auto bbOutFn = [&]() -> MBasicBlock & { return mf.blocks[bi]; };
-        std::unordered_set<unsigned> reloadedCrossBlockTemps;
 
-        /// @brief Reloads a cross-block temporary once at the current block entry.
-        /// @param tempId Identifier of the temporary to reload.
-        auto reloadCrossBlockTempAtBlockEntry = [&](unsigned tempId) {
-            auto spillIt = liveness.crossBlockSpillOffset.find(tempId);
-            auto defIt = liveness.tempDefBlock.find(tempId);
-            if (spillIt == liveness.crossBlockSpillOffset.end() ||
-                defIt == liveness.tempDefBlock.end() || defIt->second == bi) {
-                return;
-            }
-
-            // Cross-block temps need a fresh vreg in each block because the register allocator
-            // is free to assign unrelated physical registers once control leaves the defining
-            // block. Reload exactly once per block and then reuse the rematerialized mapping.
-            if (!reloadedCrossBlockTemps.insert(tempId).second)
-                return;
-
-            const uint16_t vid = allocateNextVReg(nextVRegId);
-            tempVReg[tempId] = vid;
-            const int offset = spillIt->second;
-            auto clsIt = tempRegClass.find(tempId);
-            const RegClass cls = (clsIt != tempRegClass.end()) ? clsIt->second : RegClass::GPR;
-            if (cls == RegClass::FPR) {
-                bbOutFn().instrs.push_back(
-                    MInstr{MOpcode::LdrFprFpImm,
-                           {MOperand::vregOp(RegClass::FPR, vid), MOperand::immOp(offset)}});
-            } else {
-                bbOutFn().instrs.push_back(
-                    MInstr{MOpcode::LdrRegFpImm,
-                           {MOperand::vregOp(RegClass::GPR, vid), MOperand::immOp(offset)}});
-            }
-        };
-
-        // Entry block (bi == 0): Spill function parameters to stack slots immediately.
-        // This ensures parameters are preserved across function calls within the entry block.
-        // ABI registers (x0-x7, v0-v7) are caller-saved and will be clobbered by calls.
+        // Entry block (bi == 0): copy the ABI argument registers into the
+        // parameters' vregs (and load stack parameters) before anything can
+        // clobber them.
         if (bi == 0 && !bbIn.params.empty())
-            spillEntryBlockParams(fn,
-                                  bbIn,
-                                  *ti_,
-                                  bbOutFn(),
-                                  tempVReg,
-                                  tempRegClass,
-                                  funcParamSpillOffset,
-                                  liveness.crossBlockSpillOffset,
-                                  nextVRegId);
+            materializeEntryBlockParams(
+                fn, bbIn, *ti_, bbOutFn(), tempVReg, tempRegClass, nextVRegId);
 
-        // Edge-copy mode: a block parameter *is* its phi vreg. Every incoming
-        // edge's ParallelCopy writes it, so the block reads it directly.
-        if (edgeCopies_ && bi != 0) {
+        // A block parameter *is* its phi vreg. Every incoming edge's
+        // ParallelCopy writes it, so the block reads it directly.
+        if (bi != 0) {
             if (auto itIds = phiVregId.find(bbIn.label); itIds != phiVregId.end()) {
                 const auto &ids = itIds->second;
                 for (std::size_t pi = 0; pi < bbIn.params.size() && pi < ids.size(); ++pi) {
@@ -682,78 +577,6 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
                                                 ? RegClass::FPR
                                                 : RegClass::GPR;
                 }
-            }
-        }
-
-        // Load block parameters from spill slots into fresh vregs at block entry.
-        // The edge copies store values to these spill slots before branching here.
-        auto itPhi = phiVregId.find(bbIn.label);
-        auto itSpill = phiSpillOffset.find(bbIn.label);
-        if (itPhi != phiVregId.end() && itSpill != phiSpillOffset.end()) {
-            const auto &ids = itPhi->second;
-            const auto &spillOffsets = itSpill->second;
-            for (std::size_t pi = 0; pi < bbIn.params.size() && pi < ids.size(); ++pi) {
-                const uint16_t vid = allocateNextVReg(nextVRegId);
-                const unsigned paramId = bbIn.params[pi].id;
-                tempVReg[paramId] = vid;
-                const auto &pt = bbIn.params[pi].type;
-                const RegClass cls =
-                    (pt.kind == il::core::Type::Kind::F64) ? RegClass::FPR : RegClass::GPR;
-                tempRegClass[paramId] = cls;
-                const int offset = spillOffsets[pi];
-                // Load from spill slot into vreg
-                if (cls == RegClass::FPR) {
-                    bbOutFn().instrs.push_back(
-                        MInstr{MOpcode::LdrFprFpImm,
-                               {MOperand::vregOp(RegClass::FPR, vid), MOperand::immOp(offset)}});
-                } else {
-                    bbOutFn().instrs.push_back(
-                        MInstr{MOpcode::LdrRegFpImm,
-                               {MOperand::vregOp(RegClass::GPR, vid), MOperand::immOp(offset)}});
-                }
-
-                // A promoted block parameter can be used directly by dominated
-                // successor blocks. Those uses are handled by the cross-block
-                // temp reload path below, so publish the freshly loaded phi
-                // value into its cross-block spill slot at the defining block.
-                if (auto spillIt = liveness.crossBlockSpillOffset.find(paramId);
-                    spillIt != liveness.crossBlockSpillOffset.end()) {
-                    const int crossBlockOffset = spillIt->second;
-                    if (cls == RegClass::FPR) {
-                        bbOutFn().instrs.push_back(MInstr{MOpcode::StrFprFpImm,
-                                                          {MOperand::vregOp(RegClass::FPR, vid),
-                                                           MOperand::immOp(crossBlockOffset)}});
-                    } else {
-                        bbOutFn().instrs.push_back(MInstr{MOpcode::StrRegFpImm,
-                                                          {MOperand::vregOp(RegClass::GPR, vid),
-                                                           MOperand::immOp(crossBlockOffset)}});
-                    }
-                }
-            }
-        }
-
-        // Reload cross-block temps that are used in this block but defined elsewhere.
-        // We need to reload them at block entry because the register allocator may have
-        // reused their physical registers in intervening blocks.
-        for (const auto &ins : bbIn.instructions) {
-            for (const auto &op : ins.operands) {
-                if (op.kind == il::core::Value::Kind::Temp)
-                    reloadCrossBlockTempAtBlockEntry(op.id);
-            }
-            for (const auto &edgeArgs : ins.brArgs) {
-                for (const auto &arg : edgeArgs) {
-                    if (arg.kind == il::core::Value::Kind::Temp)
-                        reloadCrossBlockTempAtBlockEntry(arg.id);
-                }
-            }
-        }
-        // Also check terminator for cross-block temp uses (CBr condition)
-        if (!bbIn.instructions.empty()) {
-            const auto &term = bbIn.instructions.back();
-            if (term.op == il::core::Opcode::CBr && !term.operands.empty()) {
-                const auto &cond = term.operands[0];
-                if (cond.kind == il::core::Value::Kind::Temp)
-                    reloadCrossBlockTempAtBlockEntry(cond.id);
             }
         }
 
@@ -767,10 +590,6 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
                             tempRegClass,
                             phiVregId,
                             phiRegClass,
-                            phiSpillOffset,
-                            liveness.crossBlockSpillOffset,
-                            liveness.tempDefBlock,
-                            liveness.crossBlockTemps,
                             stringLiteralByteLengths_,
                             &knownVarArgNamedArgCounts_,
                             sharedTrapBlocks};
@@ -788,36 +607,8 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
             }
 
             // Try extracted handlers first; they return true if they handled the opcode
-            if (lowerInstruction(ins, bbIn, ctx, bi)) {
-                // Spill cross-block temps immediately after they are defined.
-                // This ensures the value is preserved in memory for use in other blocks.
-                if (ins.result) {
-                    auto spillIt = liveness.crossBlockSpillOffset.find(*ins.result);
-                    if (spillIt != liveness.crossBlockSpillOffset.end()) {
-                        auto vregIt = tempVReg.find(*ins.result);
-                        if (vregIt != tempVReg.end()) {
-                            const uint16_t srcVreg = vregIt->second;
-                            const int offset = spillIt->second;
-                            // Respect the producing register class when spilling
-                            auto clsIt = tempRegClass.find(*ins.result);
-                            const RegClass cls =
-                                (clsIt != tempRegClass.end()) ? clsIt->second : RegClass::GPR;
-                            if (cls == RegClass::FPR) {
-                                bbOutFn().instrs.push_back(
-                                    MInstr{MOpcode::StrFprFpImm,
-                                           {MOperand::vregOp(RegClass::FPR, srcVreg),
-                                            MOperand::immOp(offset)}});
-                            } else {
-                                bbOutFn().instrs.push_back(
-                                    MInstr{MOpcode::StrRegFpImm,
-                                           {MOperand::vregOp(RegClass::GPR, srcVreg),
-                                            MOperand::immOp(offset)}});
-                            }
-                        }
-                    }
-                }
+            if (lowerInstruction(ins, bbIn, ctx, bi))
                 continue;
-            }
 
             switch (ins.op) {
                     // NOTE: Zext1, Trunc1, CastSiNarrowChk, CastUiNarrowChk, CastFpToSiRteChk,
@@ -976,36 +767,6 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
                     break;
             }
 
-            // Spill cross-block temps immediately after they are defined.
-            // This ensures the value is preserved in memory for use in other blocks,
-            // since the register allocator may reuse the physical register.
-            if (ins.result) {
-                auto spillIt = liveness.crossBlockSpillOffset.find(*ins.result);
-                if (spillIt != liveness.crossBlockSpillOffset.end()) {
-                    // This temp is used in another block - spill it now
-                    auto vregIt = tempVReg.find(*ins.result);
-                    if (vregIt != tempVReg.end()) {
-                        const uint16_t srcVreg = vregIt->second;
-                        const int offset = spillIt->second;
-                        // Check register class for this temp
-                        auto clsIt = tempRegClass.find(*ins.result);
-                        const RegClass cls =
-                            (clsIt != tempRegClass.end()) ? clsIt->second : RegClass::GPR;
-                        if (cls == RegClass::FPR) {
-                            bbOutFn().instrs.push_back(
-                                MInstr{MOpcode::StrFprFpImm,
-                                       {MOperand::vregOp(RegClass::FPR, srcVreg),
-                                        MOperand::immOp(offset)}});
-                        } else {
-                            bbOutFn().instrs.push_back(
-                                MInstr{MOpcode::StrRegFpImm,
-                                       {MOperand::vregOp(RegClass::GPR, srcVreg),
-                                        MOperand::immOp(offset)}});
-                        }
-                    }
-                }
-            }
-
             // Stamp source location on all MInstrs emitted by this IL instruction.
             for (size_t mi = mirCountBefore; mi < bbOutFn().instrs.size(); ++mi)
                 bbOutFn().instrs[mi].loc = ins.loc;
@@ -1019,17 +780,8 @@ MFunction LowerILToMIR::lowerFunction(const il::core::Function &fn) const {
 
     // Lower control-flow terminators: br, cbr, trap AFTER all other instructions
     // This ensures branches appear after the values they depend on are computed.
-    lowerTerminators(fn,
-                     mf,
-                     *ti_,
-                     fb,
-                     phiVregId,
-                     phiRegClass,
-                     phiSpillOffset,
-                     blockTempVRegSnapshot,
-                     tempRegClass,
-                     nextVRegId,
-                     edgeCopies_);
+    lowerTerminators(
+        fn, mf, *ti_, fb, phiVregId, phiRegClass, blockTempVRegSnapshot, tempRegClass, nextVRegId);
 
     // Materialise the shared trap blocks requested during lowering. Sort by
     // label so emission order is deterministic across STL implementations.

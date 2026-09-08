@@ -186,23 +186,14 @@ struct MInstr {
 /**
  * @brief Owns the ordered MIR instructions for a single-entry basic block.
  *
- * The block's name is the branch target emitted for it. Register allocation
- * may additionally annotate physical registers whose values flow directly
- * into a single-predecessor successor.
+ * The block's name is the branch target emitted for it. Everything a
+ * successor needs is visible in the instructions: post-RA rewrites derive
+ * what is live at the block's exit from the solved physical liveness
+ * (PhysLiveness.hpp, blockExitLive()), never from side metadata.
  */
 struct MBasicBlock {
     std::string name;           ///< Block label (used for branches).
     std::vector<MInstr> instrs; ///< Instructions in program order.
-
-    /// Physical registers (PhysReg values) the block-local register allocator
-    /// carries live across this block's exit WITHOUT any instruction in this
-    /// block referencing them: a single-predecessor successor re-adopts the
-    /// value directly from the register it occupied at this block's end (and
-    /// reads it there, so the solved physical liveness — PhysLiveness.hpp —
-    /// already contains every carried register). Post-RA rewrites read
-    /// blockExitLive(), which unions this set in as a safety net while the
-    /// block-local allocator exists. Populated during allocation; sorted.
-    std::vector<uint16_t> carriedExitRegs;
 };
 
 /**

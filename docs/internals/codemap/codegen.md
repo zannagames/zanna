@@ -130,29 +130,25 @@ Targeting AAPCS64 (Apple Silicon, Linux ARM64).
 |-------------------------------|----------------------------------------|
 | `CodegenPipeline.hpp/cpp`     | End-to-end AArch64 compilation pipeline|
 | `A64ImmediateUtils.hpp`       | Immediate encoding/decoding helpers    |
-| `LivenessAnalysis.hpp/cpp`    | CFG-level liveness analysis            |
 | `LowerOvf.hpp/cpp`            | Overflow-checked operation lowering    |
 | `FrameCodegen.hpp`            | Frame code generation helpers          |
-| `RegAllocLinear.hpp/cpp`      | Legacy linear scan (pre-ra/ refactor)  |
 
 ### Register Allocation (`ra/`)
 
 | File                       | Purpose                                      |
 |----------------------------|----------------------------------------------|
-| `ra/Allocator.hpp/cpp`     | Linear scan register allocator with protected-use eviction |
-| `ra/Liveness.hpp/cpp`      | Liveness analysis for register alloc         |
-| `ra/InstrBuilders.hpp`     | MIR instruction builder helpers              |
+| `ra/GlobalAllocator.hpp/cpp` | Function-wide interval allocator (linear scan, spill-everywhere, ParallelCopy lowering; ADR 0338) |
+| `ra/LiveIntervals.hpp/cpp` | Positions, per-vreg range lists with holes, fixed physical ranges, call/EH positions |
+| `ra/Liveness.hpp/cpp`      | CFG liveness (per-block vreg live-in/out)   |
 | `ra/OpcodeClassify.hpp`    | Opcode classification (call, terminator, mem)|
 | `ra/OperandRoles.hpp/cpp`  | Per-operand use/def role classification      |
 | `ra/RegClassify.hpp`       | Register class classification                |
 | `ra/RegPools.hpp/cpp`      | Physical register pool management            |
-| `ra/VState.hpp`            | Virtual register state tracking              |
 
 ### Optimization
 
 | File                      | Purpose                              |
 |---------------------------|--------------------------------------|
-| `Coalescer.hpp/cpp`       | Pre-RA register coalescer            |
 | `PreRegAllocOpt.hpp/cpp`  | Pre-register-allocation optimization |
 | `Peephole.hpp/cpp`        | Top-level peephole dispatcher        |
 | `peephole/BranchOpt.hpp/cpp`       | Branch optimization sub-pass        |

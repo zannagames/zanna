@@ -10,7 +10,7 @@
 // Key invariants: Requires AArch64Module::mir to be populated by LoweringPass.
 //                 Assigns physical registers to all virtual registers in-place.
 // Ownership/Lifetime: Stateless pass; mutates AArch64Module::mir in place.
-// Links: docs/internals/codemap.md, src/codegen/aarch64/RegAllocLinear.hpp
+// Links: docs/internals/codemap.md, src/codegen/aarch64/ra/GlobalAllocator.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,15 +21,15 @@
 /// @file
 /// @brief Declares the AArch64 machine-register allocation pipeline pass.
 ///
-/// The pass coalesces compatible virtual-register copies and then invokes the
-/// target's linear-scan allocator independently for every lowered MIR function.
+/// The pass invokes the function-wide interval allocator (ADR 0338)
+/// independently for every lowered MIR function.
 
 namespace zanna::codegen::aarch64::passes {
 
-/// @brief Coalesce copies and allocate physical registers for all MIR functions.
+/// @brief Allocate physical registers for all MIR functions.
 ///
-/// `RegAllocPass` is the pipeline adapter around the AArch64 coalescer and
-/// linear-scan allocator. Functions are independent allocation units and may be
+/// `RegAllocPass` is the pipeline adapter around the AArch64 function-wide
+/// allocator. Functions are independent allocation units and may be
 /// processed concurrently. The pass must run after legalization and before any
 /// stage, such as post-allocation scheduling, that relies on physical operands.
 ///
@@ -39,8 +39,8 @@ class RegAllocPass final : public Pass {
   public:
     /// @brief Allocate every lowered function in the module.
     ///
-    /// Each function is first copy-coalesced and then passed to the linear-scan
-    /// allocator. When parallel code generation is enabled, workers claim
+    /// Each function is passed to `ra::allocateGlobal`. When parallel code
+    /// generation is enabled, workers claim
     /// functions from a shared index; each worker still mutates only its claimed
     /// function. Allocation exceptions are captured and reported through
     /// @p diags after all workers have joined.

@@ -16,7 +16,7 @@
 // Ownership/Lifetime:
 //   - Stateless free functions; no ownership.
 //
-// Links: codegen/aarch64/ra/Allocator.cpp,
+// Links: codegen/aarch64/ra/GlobalAllocator.cpp,
 //        codegen/aarch64/MachineIR.hpp
 //
 //===----------------------------------------------------------------------===//

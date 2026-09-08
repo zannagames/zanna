@@ -145,8 +145,6 @@ class Reporter {
         case MOpcode::StrRegFpImm:
         case MOpcode::LdrFprFpImm:
         case MOpcode::StrFprFpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
             return 8;
         case MOpcode::LdpRegFpImm:
         case MOpcode::StpRegFpImm:
@@ -369,23 +367,6 @@ bool checkStructure(const MFunction &fn, Reporter &report) {
                         }
                     }
                 }
-            }
-        }
-
-        // Carried-exit metadata: sorted, unique, valid ordinals.
-        for (std::size_t k = 0; k < block.carriedExitRegs.size(); ++k) {
-            const uint16_t ordinal = block.carriedExitRegs[k];
-            if (!isValidPhysOrdinal(ordinal)) {
-                report.error("CARRY",
-                             &block,
-                             nullptr,
-                             "carriedExitRegs entry " + std::to_string(ordinal) +
-                                 " is not a physical register");
-                break;
-            }
-            if (k > 0 && block.carriedExitRegs[k - 1] >= ordinal) {
-                report.error("CARRY", &block, nullptr, "carriedExitRegs is not sorted and unique");
-                break;
             }
         }
     }

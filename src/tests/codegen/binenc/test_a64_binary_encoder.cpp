@@ -1579,11 +1579,9 @@ int main() {
                 case MOpcode::Str16RegFpImm:
                 case MOpcode::Ldr32RegFpImm:
                 case MOpcode::Str32RegFpImm:
-                case MOpcode::PhiStoreGPR:
                     return MInstr{opc, {x0, imm(0)}};
                 case MOpcode::LdrFprFpImm:
                 case MOpcode::StrFprFpImm:
-                case MOpcode::PhiStoreFPR:
                     return MInstr{opc, {d0, imm(0)}};
 
                 // Base-register load/store
@@ -1730,10 +1728,10 @@ int main() {
 
         // Verify we covered the expected counts.
         CHECK(pseudoCount == 6);    // 5 overflow pseudos + ParallelCopy
-        CHECK(encodedCount == 102); // 108 total - 6 pseudo = 102 real opcodes
+        CHECK(encodedCount == 100); // 106 total - 6 pseudo = 100 real opcodes
 
-        if (encodedCount == 102 && pseudoCount == 6)
-            std::cout << "  Encoding coverage: " << encodedCount << "/102 opcodes OK, "
+        if (encodedCount == 100 && pseudoCount == 6)
+            std::cout << "  Encoding coverage: " << encodedCount << "/100 opcodes OK, "
                       << pseudoCount << " pseudo-opcodes skipped.\n";
     }
 

@@ -11,12 +11,10 @@
 //          on it (blockExitLive): reads in a successor keep a register live,
 //          a redefinition kills it, call clobbers and argument reads come
 //          from the effects model, a loop-carried register is live around
-//          the back edge, and a return reads the result registers. Also the
-//          property the block-local allocator must keep while it exists:
-//          every carried exit register is in the solved live-out.
+//          the back edge, and a return reads the result registers.
 // Key invariants:
-//   - The solver reads only effectsOf() and MirCfg; these tests never set
-//     carriedExitRegs except to check the property above.
+//   - The solver reads only effectsOf() and MirCfg; nothing else feeds the
+//     exit-live set.
 // Ownership/Lifetime: Standalone test binary.
 // Links: src/codegen/aarch64/PhysLiveness.hpp, src/codegen/aarch64/MirCfg.hpp,
 //        docs/internals/backend-codegen-review-2026-09.md (Phase 3 C4)
@@ -26,19 +24,9 @@
 #include "tests/TestHarness.hpp"
 
 #include "codegen/aarch64/MirCfg.hpp"
-#include "codegen/aarch64/MirVerify.hpp"
 #include "codegen/aarch64/PhysLiveness.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
-#include "codegen/aarch64/passes/LegalizePass.hpp"
-#include "codegen/aarch64/passes/LoweringPass.hpp"
-#include "codegen/aarch64/passes/PassManager.hpp"
-#include "codegen/aarch64/passes/RegAllocPass.hpp"
-#include "il/io/Parser.hpp"
 
-#include <filesystem>
-#include <fstream>
-#include <iostream>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -256,100 +244,6 @@ TEST(AArch64PhysLiveness, ExitLiveAddsReturnRegistersAtAFunctionExit) {
     EXPECT_TRUE(live.contains(PhysReg::V0));
     EXPECT_FALSE(live.contains(PhysReg::X1));
     EXPECT_FALSE(live.contains(PhysReg::X19));
-}
-
-TEST(AArch64PhysLiveness, ExitLiveKeepsCarriedRegistersWhileTheyExist) {
-    MFunction fn = function({
-        block("entry", {movri(PhysReg::X5, 1), br("next")}),
-        block("next", {ret()}),
-    });
-    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X5)};
-    const PhysLiveness lv = computePhysLiveness(fn, target());
-    EXPECT_FALSE(lv.liveOut[0].contains(PhysReg::X5));
-    EXPECT_TRUE(blockExitLive(fn, 0, target(), lv).contains(PhysReg::X5));
-}
-
-// ---------------------------------------------------------------------------
-// Property over the shared corpus: what the block-local allocator publishes
-// as carried is a subset of the solved live-out, and the allocated MIR
-// verifies at PostRA.
-// ---------------------------------------------------------------------------
-
-namespace {
-
-il::core::Module parseIL(const std::string &src) {
-    std::istringstream ss(src);
-    il::core::Module mod;
-    if (!il::io::Parser::parse(ss, mod))
-        return {};
-    return mod;
-}
-
-/// @brief Lower, legalize, and allocate @p mod on the default (frame-slot) path.
-/// @return The allocated MIR; empty on failure (diagnostics printed).
-std::vector<MFunction> allocate(il::core::Module &mod) {
-    passes::AArch64Module module;
-    module.ilMod = &mod;
-    module.ti = &darwinTarget();
-    passes::Diagnostics diags;
-    passes::LoweringPass lowering;
-    passes::LegalizePass legalize;
-    passes::RegAllocPass regalloc;
-    if (!lowering.run(module, diags) || !legalize.run(module, diags) ||
-        !regalloc.run(module, diags)) {
-        diags.flush(std::cerr, &std::cerr);
-        return {};
-    }
-    return module.mir;
-}
-
-} // namespace
-
-TEST(AArch64PhysLiveness, CarriedExitRegistersAreASubsetOfSolvedLiveOut) {
-    namespace fs = std::filesystem;
-    const fs::path root = fs::path(ZANNA_SHARED_IL_CORPUS_DIR) / "success";
-    std::size_t files = 0;
-    std::size_t carriedBlocks = 0;
-    for (const auto &entry : fs::directory_iterator(root)) {
-        if (entry.path().extension() != ".il")
-            continue;
-        std::ifstream in(entry.path());
-        std::stringstream buf;
-        buf << in.rdbuf();
-        il::core::Module mod = parseIL(buf.str());
-        if (mod.functions.empty())
-            continue;
-        const auto mir = allocate(mod);
-        if (mir.empty())
-            std::cerr << "allocation failed for " << entry.path() << "\n";
-        ASSERT_FALSE(mir.empty());
-        for (const auto &fn : mir) {
-            passes::Diagnostics vdiags;
-            const bool ok = verifyMir(fn, VerifyStage::PostRA, darwinTarget(), vdiags);
-            if (!ok)
-                vdiags.flush(std::cerr, &std::cerr);
-            EXPECT_TRUE(ok);
-
-            const PhysLiveness lv = computePhysLiveness(fn, darwinTarget());
-            ASSERT_EQ(lv.liveOut.size(), fn.blocks.size());
-            for (std::size_t bi = 0; bi < fn.blocks.size(); ++bi) {
-                const PhysRegSet carried = carriedExitRegSet(fn.blocks[bi]);
-                if (carried.empty())
-                    continue;
-                ++carriedBlocks;
-                PhysRegSet extra;
-                extra.bits = carried.bits & ~lv.liveOut[bi].bits;
-                if (!extra.empty()) {
-                    std::cerr << entry.path() << " " << fn.name << " block " << fn.blocks[bi].name
-                              << ": carried register is not in the solved live-out\n";
-                }
-                EXPECT_TRUE(extra.empty());
-            }
-        }
-        ++files;
-    }
-    EXPECT_GT(files, 20u);
-    EXPECT_GT(carriedBlocks, 0u);
 }
 
 int main(int argc, char **argv) {

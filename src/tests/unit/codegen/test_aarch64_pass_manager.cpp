@@ -424,10 +424,19 @@ TEST(AArch64PassManager, RegAllocPoolExhaustionBecomesDiagnostic) {
     MFunction fn;
     fn.name = "reg_pressure";
 
+    // With no allocatable register every value is spilled, and a spilled
+    // operand is served from the reserved scratch (x9, x16, x17). Three
+    // spilled sources plus an explicit x9 destination need one scratch more
+    // than exists: the allocator must fail loudly, not miscompile.
+    const auto v = [](uint16_t id) { return MOperand::vregOp(RegClass::GPR, id); };
     MBasicBlock entry;
     entry.name = "entry";
+    entry.instrs.push_back(MInstr{MOpcode::MovRI, {v(1), MOperand::immOp(1)}});
+    entry.instrs.push_back(MInstr{MOpcode::MovRI, {v(2), MOperand::immOp(2)}});
+    entry.instrs.push_back(MInstr{MOpcode::MovRI, {v(3), MOperand::immOp(3)}});
     entry.instrs.push_back(
-        MInstr{MOpcode::MovRI, {MOperand::vregOp(RegClass::GPR, 1), MOperand::immOp(42)}});
+        MInstr{MOpcode::MAddRRRR, {MOperand::regOp(PhysReg::X9), v(1), v(2), v(3)}});
+    entry.instrs.push_back(MInstr{MOpcode::Ret, {}});
     fn.blocks.push_back(std::move(entry));
 
     AArch64Module m;
@@ -445,7 +454,7 @@ TEST(AArch64PassManager, RegAllocPoolExhaustionBecomesDiagnostic) {
     EXPECT_NE(diags.errors().front().find(
                   "AArch64 register allocation failed for function 'reg_pressure'"),
               std::string::npos);
-    EXPECT_NE(diags.errors().front().find("pool exhausted"), std::string::npos);
+    EXPECT_NE(diags.errors().front().find("scratch exhausted"), std::string::npos);
 }
 
 TEST(AArch64PassManager, PeepholeRejectsRemainingVirtualRegisters) {

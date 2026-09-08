@@ -29,7 +29,7 @@ using namespace zanna::codegen::aarch64;
 TEST(AArch64Peephole, RemoveIdentityMovRR) {
     MFunction fn{};
     fn.name = "test_identity_mov";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x0, x1 (not identity)
@@ -60,7 +60,7 @@ TEST(AArch64Peephole, RemoveIdentityMovRR) {
 TEST(AArch64Peephole, RemoveIdentityFMovRR) {
     MFunction fn{};
     fn.name = "test_identity_fmov";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // fmov d0, d1 (not identity)
@@ -89,7 +89,7 @@ TEST(AArch64Peephole, RemoveIdentityFMovRR) {
 TEST(AArch64Peephole, FoldConsecutiveMoves) {
     MFunction fn{};
     fn.name = "test_fold_moves";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, x2
@@ -123,7 +123,7 @@ TEST(AArch64Peephole, FoldConsecutiveMoves) {
 TEST(AArch64Peephole, NoFoldWhenIntermediateLive) {
     MFunction fn{};
     fn.name = "test_no_fold";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, x2
@@ -153,7 +153,7 @@ TEST(AArch64Peephole, NoFoldWhenIntermediateLive) {
 TEST(AArch64Peephole, MixedOperations) {
     MFunction fn{};
     fn.name = "test_mixed";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x0, x0 (identity)
@@ -188,41 +188,12 @@ TEST(AArch64Peephole, MixedOperations) {
     EXPECT_EQ(bb.instrs[2].opc, MOpcode::Ret);
 }
 
-TEST(AArch64Peephole, ForwardSinglePredJoinLoadsFromAcyclicEdgeStores) {
-    MFunction fn{};
-    fn.name = "test_single_pred_join";
-    fn.frame.spills.push_back(MFunction::SpillSlot{1, 8, 8, -8});
-    fn.blocks.push_back(MBasicBlock{"pred", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"join", {}, {}});
-
-    auto &pred = fn.blocks[0];
-    pred.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-8)}});
-    pred.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("join")}});
-
-    auto &join = fn.blocks[1];
-    join.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X11), MOperand::immOp(-8)}});
-    join.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    auto stats = runPeephole(fn);
-    EXPECT_TRUE(stats.deadInstructionsRemoved >= 1);
-
-    EXPECT_TRUE(pred.instrs.empty());
-
-    ASSERT_EQ(join.instrs.size(), 2U);
-    EXPECT_EQ(join.instrs[0].opc, MOpcode::MovRR);
-    EXPECT_EQ(static_cast<PhysReg>(join.instrs[0].ops[0].reg.idOrPhys), PhysReg::X11);
-    EXPECT_EQ(static_cast<PhysReg>(join.instrs[0].ops[1].reg.idOrPhys), PhysReg::X10);
-    EXPECT_EQ(join.instrs[1].opc, MOpcode::Ret);
-}
-
 TEST(AArch64Peephole, CrossBlockDeadFpStoreSkipsAddressableStackLocals) {
     MFunction fn{};
     fn.name = "test_dead_fp_store_locals";
     fn.frame.locals.push_back(MFunction::StackLocal{1, 8, 8, -24});
     fn.frame.spills.push_back(MFunction::SpillSlot{2, 8, 8, -40});
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
 
     auto &entry = fn.blocks[0];
     entry.instrs.push_back(
@@ -248,36 +219,6 @@ TEST(AArch64Peephole, CrossBlockDeadFpStoreSkipsAddressableStackLocals) {
     EXPECT_TRUE(removedSpillStore);
 }
 
-TEST(AArch64Peephole, JoinForwardingBlocksClobberedLatestPairStoreOffset) {
-    MFunction fn{};
-    fn.name = "test_pair_store_blocked";
-    fn.blocks.push_back(MBasicBlock{"pred", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"join", {}, {}});
-
-    auto &pred = fn.blocks[0];
-    pred.instrs.push_back(MInstr{
-        MOpcode::StpRegFpImm,
-        {MOperand::regOp(PhysReg::X20), MOperand::regOp(PhysReg::X21), MOperand::immOp(-16)}});
-    pred.instrs.push_back(MInstr{
-        MOpcode::StpRegFpImm,
-        {MOperand::regOp(PhysReg::X19), MOperand::regOp(PhysReg::X22), MOperand::immOp(-16)}});
-    pred.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X19), MOperand::regOp(PhysReg::X4)}});
-    pred.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("join")}});
-
-    auto &join = fn.blocks[1];
-    join.instrs.push_back(MInstr{
-        MOpcode::LdpRegFpImm,
-        {MOperand::regOp(PhysReg::X10), MOperand::regOp(PhysReg::X11), MOperand::immOp(-16)}});
-    join.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    (void)runPeephole(fn);
-
-    ASSERT_GE(join.instrs.size(), 2U);
-    EXPECT_EQ(join.instrs[0].opc, MOpcode::LdpRegFpImm);
-    EXPECT_EQ(join.instrs[1].opc, MOpcode::Ret);
-}
-
 /// @brief Test that peephole produces correct assembly output.
 TEST(AArch64Peephole, EmittedAssemblyNoIdentityMoves) {
     auto &ti = darwinTarget();
@@ -285,7 +226,7 @@ TEST(AArch64Peephole, EmittedAssemblyNoIdentityMoves) {
 
     MFunction fn{};
     fn.name = "test_emit";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x0, x1 (real move)
@@ -328,7 +269,7 @@ TEST(AArch64Peephole, EmittedAssemblyNoIdentityMoves) {
 TEST(AArch64Peephole, StatsAccuracy) {
     MFunction fn{};
     fn.name = "test_stats";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // 3 identity GPR moves
@@ -359,8 +300,8 @@ TEST(AArch64Peephole, StatsAccuracy) {
 TEST(AArch64Peephole, CmpZeroToTst) {
     MFunction fn{};
     fn.name = "test_cmp_zero";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"target", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
+    fn.blocks.push_back(MBasicBlock{"target", {}});
     fn.blocks.back().instrs.push_back(MInstr{MOpcode::Ret, {}});
     auto &bb = fn.blocks.front();
 
@@ -405,7 +346,7 @@ TEST(AArch64Peephole, CmpZeroToTst) {
 TEST(AArch64Peephole, ArithmeticIdentityAddSub) {
     MFunction fn{};
     fn.name = "test_arith_identity";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // add x0, x1, #0 (should become mov x0, x1)
@@ -448,7 +389,7 @@ TEST(AArch64Peephole, ArithmeticIdentityAddSub) {
 TEST(AArch64Peephole, ArithmeticIdentityShift) {
     MFunction fn{};
     fn.name = "test_shift_identity";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // lsl x0, x1, #0 (should become mov x0, x1)
@@ -494,7 +435,7 @@ TEST(AArch64Peephole, TstEmitsCorrectly) {
 
     MFunction fn{};
     fn.name = "test_tst_emit";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // cmp x0, #0 (will become tst x0, x0)
@@ -525,28 +466,28 @@ TEST(AArch64Peephole, RemoveBranchToNextBlock) {
     fn.name = "test_br_next";
 
     // Block 1: entry -> branches to block2 (should be removed)
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     fn.blocks[0].instrs.push_back(
         MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(42)}});
     fn.blocks[0].instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("block2")}});
 
     // Block 2: block2 -> branches to block3 (should be removed)
-    fn.blocks.push_back(MBasicBlock{"block2", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"block2", {}});
     fn.blocks[1].instrs.push_back(
         MInstr{MOpcode::AddRI,
                {MOperand::regOp(PhysReg::X1), MOperand::regOp(PhysReg::X0), MOperand::immOp(1)}});
     fn.blocks[1].instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("block3")}});
 
     // Block 3: block3 -> branches to exit (NOT next, should NOT be removed)
-    fn.blocks.push_back(MBasicBlock{"block3", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"block3", {}});
     fn.blocks[2].instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("exit")}});
 
     // Block 4: different_block
-    fn.blocks.push_back(MBasicBlock{"different_block", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"different_block", {}});
     fn.blocks[3].instrs.push_back(MInstr{MOpcode::Ret, {}});
 
     // Block 5: exit
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"exit", {}});
     fn.blocks[4].instrs.push_back(MInstr{MOpcode::Ret, {}});
 
     auto stats = runPeephole(fn);

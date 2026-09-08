@@ -138,11 +138,6 @@ std::pair<bool, bool> operandRoles(const MInstr &ins, std::size_t idx) {
     if ((ins.opc == MOpcode::StrFprFpImm || ins.opc == MOpcode::StrFprSpImm) && idx == 0)
         return {true, false};
 
-    // Phi-edge copies: operand 0 is the source vreg (USE only).
-    // After RA they become StrRegFpImm / StrFprFpImm.
-    if ((ins.opc == MOpcode::PhiStoreGPR || ins.opc == MOpcode::PhiStoreFPR) && idx == 0)
-        return {true, false};
-
     // ParallelCopy: dst0, src0, dst1, src1, ... — even operands are written,
     // odd operands are read, all pairs simultaneously (same as x86 PX_COPY).
     if (ins.opc == MOpcode::ParallelCopy)

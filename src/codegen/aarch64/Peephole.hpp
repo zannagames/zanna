@@ -32,7 +32,7 @@
  * @brief Declares post-register-allocation AArch64 MIR cleanup pipelines.
  *
  * The full pipeline combines local algebraic rewrites with CFG-aware
- * forwarding, loop cleanup, dead-code removal, and branch layout work. A
+ * dead-code removal, loop-constant hoisting, and branch layout work. A
  * smaller post-scheduling entry point restricts itself to inexpensive cleanup
  * that is safe after instruction order has been chosen.
  */
@@ -80,30 +80,23 @@ struct PeepholeStats {
  * @brief Runs the complete post-allocation AArch64 MIR peephole pipeline.
  *
  * The pipeline performs block layout, loop-constant work, local folding and
- * fusion, optional CFG-aware DCE, cross-block spill/load forwarding, phi
- * cleanup, and final branch simplification.
+ * fusion, optional CFG-aware DCE, dead spill-store elimination, and final
+ * branch simplification.
  *
  * @param[in,out] fn Physical-register MIR function to optimize in place.
  * @param target Optional target description enabling CFG-aware liveness/DCE;
  *        `nullptr` selects the legacy block-local DCE path.
- * @param frameSlotPhis Whether the function came through the frame-slot
- *        lowering and block-local allocator (phi slots, `PhiStore` edges):
- *        the cross-block phi-slot forwarding and loop phi-spill stages run
- *        only then. Functions allocated by the function-wide allocator carry
- *        their edge copies in registers and skip those stages.
  * @return Counts for all transformations applied during this invocation.
  * @pre Every register operand in @p fn has been allocated to a physical register.
  */
-[[nodiscard]] PeepholeStats runPeephole(MFunction &fn,
-                                        const TargetInfo *target = nullptr,
-                                        bool frameSlotPhis = true);
+[[nodiscard]] PeepholeStats runPeephole(MFunction &fn, const TargetInfo *target = nullptr);
 
 /**
  * @brief Runs the inexpensive cleanup subset intended after scheduling.
  *
  * This entry point limits work to local copy propagation/folding, identity
  * removal, dead instructions and flag setters, plus final branch cleanup. It
- * deliberately omits layout, loop, phi, and cross-block memory rewrites.
+ * deliberately omits layout, loop, and cross-block memory rewrites.
  *
  * @param[in,out] fn Scheduled physical-register MIR function to clean in place.
  * @param target Optional target description enabling CFG-aware behavior in

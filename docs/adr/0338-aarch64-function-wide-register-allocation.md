@@ -1,7 +1,7 @@
 # ADR 0338: AArch64 function-wide register allocation
 
-Status: Implemented (default since Phase 3 C6 of the backend codegen review); the block-local
-path remains reachable through `ZANNA_LOCAL_RA=1` until Phase 3 C7 removes it
+Status: Implemented (default since Phase 3 C6 of the backend codegen review; the block-local
+path was deleted in Phase 3 C7)
 
 ## Context
 
@@ -24,7 +24,7 @@ rewrite that dropped a definition reaching a block end consulted it.
 
 Register allocation on AArch64 is function-wide, in two phases over an interval model with holes.
 
-- **Lowering** (`AArch64Module::edgeCopyLowering`, the only mode after C7): block parameters are
+- **Lowering** (the only mode since C7): block parameters are
   virtual registers, every branch argument list is one `ParallelCopy dst0, src0, …` pseudo
   (inline for `br`, in the existing split block for `cbr`/`switch`), cross-block temporaries keep
   their virtual register, and blocks are lowered in reverse post-order. No frame slot comes from
@@ -55,9 +55,9 @@ Register allocation on AArch64 is function-wide, in two phases over an interval 
 - **Post-RA passes** read the solved physical liveness (`PhysLiveness.hpp`,
   `blockExitLive(fn, bi, target, liveness)`); no pass publishes or consumes carried-register
   metadata. The phi-slot peephole stages do not run on this path.
-- **Switch**: `ZANNA_LOCAL_RA=1` (or `PipelineOptions::localRegAlloc`) selects the whole old path
-  (frame-slot lowering, block-local allocator, phi peephole stages) for bisecting until C7 deletes
-  it. The old path's `ZANNA_NO_GLOBAL_RA` (slot-pinning tier) applies to that path only.
+- **Switch**: during C6 `ZANNA_LOCAL_RA=1` (or `PipelineOptions::localRegAlloc`) selected the
+  whole old path for bisecting; C7 deleted the path and the switch. `ZANNA_NO_GLOBAL_RA` now
+  applies to the x86-64 backend only.
 
 ## Acceptance
 
@@ -75,8 +75,7 @@ Register allocation on AArch64 is function-wide, in two phases over an interval 
   through x17, FPR rules, determinism, 500 live values).
 - The shared corpus, `examples/il`, the benchmarks, and the demos compile and verify at `-O0` and
   `-O2`; the differential labels (VM vs native, `-O0` vs `-O2`, seeded IL kernels including the
-  `eh-catch` and `phi-cycle-loop` shapes) pass on AArch64 hosts with and without `ZANNA_LOCAL_RA=1`
-  while both paths exist.
+  `eh-catch` and `phi-cycle-loop` shapes) pass on AArch64 hosts.
 - Against the Phase 3 baseline (`docs/internals/codegen_stats_baseline.tsv`): chess `-O2`
   105,089 → 55,537 instructions, 21,394 → 4,946 frame accesses, 12,381 → 64 offset prefixes,
   9,977 → 200 spill slots; every benchmark loses all frame traffic; no program's instruction count

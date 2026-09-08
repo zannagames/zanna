@@ -6,14 +6,13 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/unit/codegen/test_aarch64_lowering_edge_copies.cpp
-// Purpose: Pins the edge-copy lowering mode of the AArch64 backend: block
-//          parameters are virtual registers, branch arguments become one
-//          ParallelCopy per edge (inline for `br`, in a split block for
-//          `cbr`/`switch`), cross-block temporaries keep their virtual
-//          register instead of a frame slot, blocks are lowered in an order
-//          where every definition precedes its uses, and the whole shared
-//          corpus lowers and verifies in that mode. The frame-slot mode is
-//          unchanged.
+// Purpose: Pins the AArch64 lowering shape: block parameters are virtual
+//          registers, branch arguments become one ParallelCopy per edge
+//          (inline for `br`, in a split block for `cbr`/`switch`),
+//          cross-block temporaries keep their virtual register instead of a
+//          frame slot, blocks are lowered in an order where every definition
+//          precedes its uses, and the whole shared corpus lowers and
+//          verifies.
 // Key invariants:
 //   - The lowering cases run only LoweringPass; the corpus lane at the end
 //     runs the whole pipeline with the function-wide allocator (Phase 3 C5)
@@ -52,13 +51,12 @@ il::core::Module parseIL(const std::string &src) {
     return mod;
 }
 
-/// @brief Lower @p mod in the requested mode and verify PostLowering.
+/// @brief Lower @p mod and verify PostLowering.
 /// @return The MIR functions; empty on failure (diagnostics printed).
-std::vector<MFunction> lower(il::core::Module &mod, bool edgeCopies) {
+std::vector<MFunction> lower(il::core::Module &mod) {
     passes::AArch64Module module;
     module.ilMod = &mod;
     module.ti = &darwinTarget();
-    module.edgeCopyLowering = edgeCopies;
     passes::LoweringPass pass;
     passes::Diagnostics diags;
     if (!pass.run(module, diags)) {
@@ -123,12 +121,10 @@ exit(%r: i64):
 TEST(AArch64EdgeCopyLowering, LoopUsesParallelCopiesAndNoFrameSlots) {
     il::core::Module mod = parseIL(kLoop);
     ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, /*edgeCopies=*/true);
+    const auto mir = lower(mod);
     ASSERT_EQ(mir.size(), 1u);
     const MFunction &fn = mir.front();
 
-    EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreGPR), 0u);
-    EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreFPR), 0u);
     EXPECT_EQ(countOpcode(fn, MOpcode::LdrRegFpImm), 0u);
     EXPECT_EQ(countOpcode(fn, MOpcode::StrRegFpImm), 0u);
     EXPECT_EQ(fn.frame.spills.size(), 0u);
@@ -173,16 +169,6 @@ TEST(AArch64EdgeCopyLowering, LoopUsesParallelCopiesAndNoFrameSlots) {
     EXPECT_EQ(countOpcode(fn, MOpcode::ParallelCopy), 4u);
 }
 
-TEST(AArch64EdgeCopyLowering, FrameSlotModeIsUnchanged) {
-    il::core::Module mod = parseIL(kLoop);
-    ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, /*edgeCopies=*/false);
-    ASSERT_EQ(mir.size(), 1u);
-    EXPECT_EQ(countOpcode(mir.front(), MOpcode::ParallelCopy), 0u);
-    EXPECT_GT(countOpcode(mir.front(), MOpcode::PhiStoreGPR), 0u);
-    EXPECT_GT(countOpcode(mir.front(), MOpcode::LdrRegFpImm), 0u);
-}
-
 TEST(AArch64EdgeCopyLowering, SwapIsOneParallelCopy) {
     il::core::Module mod = parseIL(R"(il 0.3.0
 func @main() -> i64 {
@@ -199,7 +185,7 @@ exit(%r: i64):
 }
 )");
     ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, true);
+    const auto mir = lower(mod);
     ASSERT_EQ(mir.size(), 1u);
     const MBasicBlock *body = findBlock(mir.front(), "body");
     ASSERT_TRUE(body != nullptr);
@@ -229,7 +215,7 @@ defblock:
 }
 )");
     ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, true);
+    const auto mir = lower(mod);
     ASSERT_EQ(mir.size(), 1u);
     const MFunction &fn = mir.front();
     EXPECT_EQ(countOpcode(fn, MOpcode::LdrRegFpImm), 0u);
@@ -257,11 +243,10 @@ dflt(%d: i64):
 }
 )");
     ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, true);
+    const auto mir = lower(mod);
     ASSERT_EQ(mir.size(), 1u);
     const MFunction &fn = mir.front();
     EXPECT_EQ(countOpcode(fn, MOpcode::ParallelCopy), 3u);
-    EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreGPR), 0u);
     const MBasicBlock *edge = findBlock(fn, ".Lswitch_case_0_0");
     ASSERT_TRUE(edge != nullptr);
     ASSERT_GE(edge->instrs.size(), 2u);
@@ -287,7 +272,7 @@ exit(%r: f64):
 }
 )");
     ASSERT_FALSE(mod.functions.empty());
-    const auto mir = lower(mod, true);
+    const auto mir = lower(mod);
     ASSERT_EQ(mir.size(), 1u);
     const MBasicBlock *body = findBlock(mir.front(), "body");
     ASSERT_TRUE(body != nullptr);
@@ -313,13 +298,11 @@ TEST(AArch64EdgeCopyLowering, SharedCorpusLowersAndVerifies) {
         il::core::Module mod = parseIL(buf.str());
         if (mod.functions.empty())
             continue;
-        const auto mir = lower(mod, true);
+        const auto mir = lower(mod);
         if (mir.empty())
             std::cerr << "edge-copy lowering failed for " << entry.path() << "\n";
         ASSERT_FALSE(mir.empty());
         for (const auto &fn : mir) {
-            EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreGPR), 0u);
-            EXPECT_EQ(countOpcode(fn, MOpcode::PhiStoreFPR), 0u);
         }
         ++files;
     }
@@ -338,7 +321,6 @@ std::string compileGlobally(il::core::Module &mod, int level, std::ostream &diag
     opts.emitAssemblyText = true;
     opts.optimizeLevel = level;
     opts.verifyMir = true;
-    opts.localRegAlloc = false; // the default path
     if (!runCodegenPipeline(m, opts, diag))
         return {};
     return m.assembly;
@@ -350,7 +332,7 @@ TEST(AArch64EdgeCopyLowering, SharedCorpusAllocatesGloballyAndVerifies) {
     // Every corpus program goes through lowering, legalization, the
     // function-wide allocator, the post-RA passes, and emission with the
     // verifier on, at -O0 and -O2; the allocation is deterministic and leaves
-    // no phi-slot traffic (no PhiStore, no ParallelCopy).
+    // no ParallelCopy behind.
     namespace fs = std::filesystem;
     const fs::path root = fs::path(ZANNA_SHARED_IL_CORPUS_DIR) / "success";
     std::size_t files = 0;

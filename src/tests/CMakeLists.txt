@@ -403,10 +403,8 @@ set(_AARCH64_CODEGEN_ONLY_TESTS
         test_emit_aarch64_mir_frameplan
         test_codegen_arm64_peephole
         test_codegen_arm64_div_strength
-        test_regalloc_aarch64_linear
         test_aarch64_rodata_pool
         test_codegen_review_fixes
-        test_aarch64_frame_spill_reuse
         test_aarch64_logical_imm
         test_codegen_arm64_peephole_subpasses
         test_aarch64_codegen_stats
@@ -508,16 +506,12 @@ if (CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64" AND NOT WIN32)
             test_codegen_arm64_shift_reg
             test_codegen_arm64_fp_cmp_all
             test_codegen_arm64_gaddr_constnull
-            test_codegen_arm64_spill_fpr
-            test_codegen_arm64_cross_block_phi_spill
             test_codegen_arm64_unsigned_cmp
             test_codegen_arm64_peephole_comprehensive
             test_codegen_arm64_abi_mixed_args
             test_codegen_arm64_rodata_literals
             test_codegen_arm64_callee_saved
             test_codegen_arm64_mixed_call_f64
-            test_aarch64_phi_coalescer
-            test_aarch64_global_liveness
             test_codegen_arm64_il_opt
             test_codegen_arm64_leaf_func
             test_codegen_arm64_native_asm

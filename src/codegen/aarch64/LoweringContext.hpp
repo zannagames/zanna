@@ -10,7 +10,8 @@
 // Key invariants:
 //   - Context references are valid for the duration of a single lowerFunction().
 //   - Maps are populated incrementally as instructions are lowered.
-//   - Cross-block temps are spilled to frame slots before successor blocks.
+//   - Every IL temporary keeps one virtual register for the whole function;
+//     lowering allocates frame slots only for allocas and switch scrutinees.
 // Ownership/Lifetime:
 //   - LoweringContext holds non-owning references; caller owns all state.
 // Links: src/codegen/aarch64/LowerILToMIR.hpp,
@@ -39,9 +40,9 @@
  * @file
  * @brief Defines the borrowed state bundle and common helpers used by AArch64 IL-to-MIR lowering.
  *
- * This header centralizes the virtual-register namespaces, cross-block spill
- * keys, deferred trap requests, and lookup utilities shared by instruction
- * and terminator lowering. `LoweringContext` does not own any referenced
+ * This header centralizes the virtual-register namespaces, deferred trap
+ * requests, and lookup utilities shared by instruction and terminator
+ * lowering. `LoweringContext` does not own any referenced
  * object; it is valid only while the surrounding `lowerFunction()` invocation
  * and all of its state remain alive.
  */
@@ -52,12 +53,10 @@ namespace zanna::codegen::aarch64 {
 /// @details Ordinary IDs occupy `[kFirstVirtualRegId, kPhiVRegStart)`.
 inline constexpr uint16_t kFirstVirtualRegId = 1;
 /// @brief First ID reserved for phi-parameter virtual registers.
-/// @details Phi IDs occupy `[kPhiVRegStart, kCrossBlockSpillKeyStart)`.
+/// @details Phi IDs occupy `[kPhiVRegStart, kPhiVRegEnd)`.
 inline constexpr uint16_t kPhiVRegStart = 40000;
-/// @brief First `FrameBuilder` key reserved for cross-block temporary spills.
-/// @details Adding an IL temp ID to this base keeps those keys disjoint from
-///          ordinary and phi virtual-register IDs.
-inline constexpr uint32_t kCrossBlockSpillKeyStart = 50000;
+/// @brief One past the last phi-parameter virtual-register ID.
+inline constexpr uint16_t kPhiVRegEnd = 50000;
 
 /**
  * @brief Allocates the next ordinary virtual-register ID.
@@ -70,7 +69,7 @@ inline constexpr uint32_t kCrossBlockSpillKeyStart = 50000;
 inline uint16_t allocateNextVReg(uint16_t &nextVRegId) {
     if (nextVRegId >= kPhiVRegStart)
         throw std::runtime_error(
-            "AArch64 lowering: virtual register space exhausted before phi spill range");
+            "AArch64 lowering: virtual register space exhausted before the phi range");
     return nextVRegId++;
 }
 
@@ -79,42 +78,13 @@ inline uint16_t allocateNextVReg(uint16_t &nextVRegId) {
  *
  * @param[in,out] phiNextId Next candidate in the phi-reserved ID range.
  * @return The candidate ID supplied on entry.
- * @throws std::runtime_error If allocation would enter the cross-block spill-key range.
+ * @throws std::runtime_error If the phi-reserved range is exhausted.
  * @post On success, @p phiNextId is one greater than the returned ID.
  */
 inline uint16_t allocatePhiVReg(uint16_t &phiNextId) {
-    if (phiNextId >= kCrossBlockSpillKeyStart)
-        throw std::runtime_error(
-            "AArch64 lowering: phi virtual register space exhausted before spill-key range");
+    if (phiNextId >= kPhiVRegEnd)
+        throw std::runtime_error("AArch64 lowering: phi virtual register space exhausted");
     return phiNextId++;
-}
-
-/**
- * @brief Maps a cross-block IL temporary to its reserved `FrameBuilder` spill key.
- *
- * @param tempId Function-local IL temporary ID.
- * @return `kCrossBlockSpillKeyStart + tempId`.
- * @throws std::runtime_error If the sum is not representable as `uint32_t`.
- */
-inline uint32_t spillKeyForCrossBlockTemp(unsigned tempId) {
-    if (tempId > (std::numeric_limits<uint32_t>::max)() - kCrossBlockSpillKeyStart)
-        throw std::runtime_error("AArch64 lowering: cross-block spill key overflow");
-    return kCrossBlockSpillKeyStart + tempId;
-}
-
-/**
- * @brief Allocates or retrieves the frame spill slot for a cross-block IL temporary.
- *
- * All entry saves, liveness allocation, and cross-block reloads use this
- * mapping so a given IL temporary has one stable slot within the function.
- *
- * @param[in,out] fb Frame allocator that owns the key-to-slot mapping.
- * @param tempId Function-local IL temporary ID.
- * @return Frame-pointer-relative offset of the temporary's spill slot.
- * @throws std::runtime_error If conversion to the reserved spill key overflows.
- */
-inline int ensureCrossBlockSpill(FrameBuilder &fb, unsigned tempId) {
-    return fb.ensureSpill(spillKeyForCrossBlockTemp(tempId));
 }
 
 /**
@@ -204,18 +174,6 @@ struct LoweringContext {
     /// @brief Maps block labels to the register classes of their phi parameters.
     std::unordered_map<std::string, std::vector<RegClass>> &phiRegClass;
 
-    /// @brief Maps block labels to spill slot offsets for their phi parameters.
-    std::unordered_map<std::string, std::vector<int>> &phiSpillOffset;
-
-    /// @brief Maps cross-block temp IDs to their allocated spill slot offsets.
-    std::unordered_map<unsigned, int> &crossBlockSpillOffset;
-
-    /// @brief Maps temp IDs to the index of the basic block that defines them.
-    std::unordered_map<unsigned, std::size_t> &tempDefBlock;
-
-    /// @brief Set of temp IDs whose values are live across block boundaries.
-    std::unordered_set<unsigned> &crossBlockTemps;
-
     /// @brief Optional map from IL global string names to their byte lengths.
     const std::unordered_map<std::string, std::size_t> *stringLiteralByteLengths = nullptr;
 
@@ -256,10 +214,6 @@ struct LoweringContext {
     /// @param tempClasses Function-wide mapping from IL temp IDs to register classes.
     /// @param phiVirtualRegs Phi-parameter vreg IDs by block label.
     /// @param phiClasses Phi-parameter register classes by block label.
-    /// @param phiSpillOffsets Phi spill-slot offsets by block label.
-    /// @param crossBlockSpillOffsets Spill slots for temps live across blocks.
-    /// @param tempDefinitionBlocks Basic-block index that defines each temp.
-    /// @param crossBlockLiveTemps Temps proven live across basic blocks.
     /// @param stringLiteralLengths Optional global string literal byte-length table.
     /// @param varArgNamedArgCounts Optional direct-callee named-argument count table.
     /// @param trapBlockRequests Per-function shared trap-block request registry.
@@ -272,18 +226,13 @@ struct LoweringContext {
                     std::unordered_map<unsigned, RegClass> &tempClasses,
                     std::unordered_map<std::string, std::vector<uint16_t>> &phiVirtualRegs,
                     std::unordered_map<std::string, std::vector<RegClass>> &phiClasses,
-                    std::unordered_map<std::string, std::vector<int>> &phiSpillOffsets,
-                    std::unordered_map<unsigned, int> &crossBlockSpillOffsets,
-                    std::unordered_map<unsigned, std::size_t> &tempDefinitionBlocks,
-                    std::unordered_set<unsigned> &crossBlockLiveTemps,
                     const std::unordered_map<std::string, std::size_t> *stringLiteralLengths,
                     const std::unordered_map<std::string, std::size_t> *varArgNamedArgCounts,
                     std::unordered_map<std::string, TrapBlockRequest> &trapBlockRequests)
         : fn(function), ti(targetInfo), fb(frameBuilder), mf(machineFunction),
           nextVRegId(nextVirtualRegId), tempVReg(tempVirtualRegs), tempRegClass(tempClasses),
-          phiVregId(phiVirtualRegs), phiRegClass(phiClasses), phiSpillOffset(phiSpillOffsets),
-          crossBlockSpillOffset(crossBlockSpillOffsets), tempDefBlock(tempDefinitionBlocks),
-          crossBlockTemps(crossBlockLiveTemps), stringLiteralByteLengths(stringLiteralLengths),
+          phiVregId(phiVirtualRegs), phiRegClass(phiClasses),
+          stringLiteralByteLengths(stringLiteralLengths),
           knownVarArgNamedArgCounts(varArgNamedArgCounts), sharedTrapBlocks(trapBlockRequests) {}
 
     /**

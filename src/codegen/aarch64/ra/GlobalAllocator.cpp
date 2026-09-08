@@ -422,11 +422,6 @@ void GlobalAllocator::rewriteBlock(std::size_t bi) {
             lowerParallelCopy(bi, ii, mi, out);
             continue;
         }
-        if (mi.opc == MOpcode::PhiStoreGPR || mi.opc == MOpcode::PhiStoreFPR) {
-            throw std::runtime_error("AArch64 global register allocation: PhiStore in function '" +
-                                     fn_.name + "' (frame-slot lowering shape)");
-        }
-
         const Pos rp = pos.readPos(bi, ii);
         const Pos wp = pos.writePos(bi, ii);
 
@@ -544,7 +539,6 @@ void GlobalAllocator::rewriteBlock(std::size_t bi) {
     }
 
     bb.instrs = std::move(out);
-    bb.carriedExitRegs.clear();
 }
 
 /// @brief Lower one ParallelCopy at (@p bi, @p ii) into moves, loads, and stores.

@@ -411,16 +411,6 @@ static bool backendStageDisabled(const char *stage) {
     return std::getenv(key.c_str()) != nullptr;
 }
 
-/// @brief Whether `ZANNA_LOCAL_RA` selects the retired block-local allocation path.
-/// @details Read per pipeline run so tests can set it; a non-empty value other
-///          than `0` turns the frame-slot lowering and the block-local
-///          allocator on for every function of the module (ADR 0338).
-static bool localRegAllocRequested() {
-    if (const char *value = std::getenv("ZANNA_LOCAL_RA"))
-        return value[0] != '\0' && value[0] != '0';
-    return false;
-}
-
 /// @brief Install the MIR verifier as @p manager's post-pass hook.
 /// @details @p stages is parallel to the passes registered on @p manager and
 ///          names the invariant set that must hold after each one. Every MIR
@@ -509,10 +499,6 @@ bool runCodegenPipeline(passes::AArch64Module &module,
     };
 
     const bool verify = opts.verifyMir || mirVerificationRequested();
-    // The allocation path is fixed at lowering: the edge-copy shape feeds the
-    // function-wide allocator (the default), the frame-slot shape the retired
-    // block-local one (ZANNA_LOCAL_RA=1, ADR 0338).
-    module.edgeCopyLowering = !(opts.localRegAlloc || localRegAllocRequested());
 
     {
         passes::PassManager manager;

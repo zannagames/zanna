@@ -805,14 +805,6 @@ if (NOT TARGET test_aarch64_trap_blocks)
     zanna_add_ctest(test_aarch64_trap_blocks test_aarch64_trap_blocks)
 endif ()
 
-if (NOT TARGET test_aarch64_cross_block_reload)
-    zanna_add_test(
-            test_aarch64_cross_block_reload
-            ${ZANNA_TESTS_DIR}/unit/codegen/test_aarch64_cross_block_reload.cpp)
-    target_link_libraries(test_aarch64_cross_block_reload PRIVATE il_codegen_aarch64)
-    zanna_add_ctest(test_aarch64_cross_block_reload test_aarch64_cross_block_reload)
-endif ()
-
 # Bytecode VM tests
 if (NOT TARGET test_bytecode_vm)
     zanna_add_test(test_bytecode_vm ${ZANNA_TESTS_DIR}/unit/test_bytecode_vm.cpp)

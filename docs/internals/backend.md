@@ -144,7 +144,7 @@ every form the emitters used to expand through a hidden scratch register (wide A
 immediates, non-FP8 `FMovRI`, frame/base/pair/SP-relative accesses outside the encodable range)
 into explicit MIR (`MovRI xS,#imm; op dst,lhs,xS`, `MovRI xS,#off; AddRRR xS,x29,xS; op rt,[xS,#0]`,
 pair splits), choosing a reserved scratch (x9/x16/x17) that is neither an operand nor live at that
-point. It runs after the peepholes and scheduler so the frame-slot forwarders still match the
+point. It runs after the peepholes and scheduler so the store/load forwarders still match the
 compact forms; until it runs, `InstrEffects::effectsOf` reports the scratch set as implicit
 definitions of every such pseudo form. Both emitters reject any pseudo form that reaches them.
 `LegalizePass` is a real backend stage on both native backends: x86-64 lowers adapter IL to MIR and expands early
@@ -188,18 +188,12 @@ class PassManager {
 - Triage kill switches (bisection aids; never consulted at `-O0`): `ZANNA_NO_PRE_RA_OPT`,
   `ZANNA_NO_BLOCK_LAYOUT`, `ZANNA_NO_PEEPHOLE`, `ZANNA_NO_SCHEDULER`,
   `ZANNA_NO_POST_SCHED_PEEPHOLE` skip one AArch64 pipeline stage each
-  (`CodegenPipeline.cpp`), and `ZANNA_NO_PH_{REORDER,LOOPHOIST,PERBLOCK,DCE_CFG,FPSTORES,STORELOAD_FWD,PHI_LOADS,PHI_SPILLS,BRANCH}`
+  (`CodegenPipeline.cpp`), and `ZANNA_NO_PH_{REORDER,LOOPHOIST,PERBLOCK,DCE_CFG,FPSTORES,BRANCH}`
   skip one sub-stage of the full peephole (`Peephole.cpp`). Together with the older
-  `ZANNA_NO_ADDR_FOLDS`, `ZANNA_NO_GLOBAL_RA`, `ZANNA_NO_JUMP_TABLES`, `ZANNA_NO_IF_CONVERT`,
+  `ZANNA_NO_ADDR_FOLDS`, `ZANNA_NO_GLOBAL_RA` (x86-64 only), `ZANNA_NO_JUMP_TABLES`, `ZANNA_NO_IF_CONVERT`,
   `ZANNA_NO_ABI_COPYFWD`, `ZANNA_NO_LOAD_FUSE`, `ZANNA_NO_RETAIN_ELIDE` they let a miscompile
   be bisected against a program-level oracle (VM vs native output) without rebuilding the
   compiler. Set the variable to any value, e.g. `ZANNA_NO_PEEPHOLE=1 zanna build …`.
-- **AArch64 allocation path** (`ZANNA_LOCAL_RA=1`, or `PipelineOptions::localRegAlloc`): selects
-  the retired block-local path (frame-slot lowering with `PhiStore` edges, the block-local
-  allocator with its `ZANNA_NO_GLOBAL_RA` slot-pinning toggle, the phi-slot peephole stages)
-  instead of the default edge-copy lowering plus function-wide allocator
-  (`ra/GlobalAllocator`, ADR 0338). A bisection aid until Phase 3 C7 deletes the old path; see
-  "AArch64 function-wide allocation" below.
 - **MIR verifier** (`ZANNA_VERIFY_MIR=1`, or `--verify-mir` on `zanna codegen arm64|x64`): the
   pass manager's post-pass hook runs `verifyMir` (`src/codegen/aarch64/MirVerify.hpp`,
   `src/codegen/x86_64/MirVerify.hpp`) on every function after every backend pass. Rules are
@@ -232,9 +226,8 @@ class PassManager {
   caller-saved set, a return reads the result registers, the reserved scratch clobbers count).
   `blockExitLive(fn, bi, target, liveness)` is the exit-liveness seed every post-RA block-local
   rewrite reads when its forward scan reaches the block end: the solved live-out, plus SP/FP/LR,
-  plus the return registers of a block that leaves the function, plus (while the block-local
-  allocator exists) its `carriedExitRegs`, which the solved set already contains because the
-  successor reads the carried value. A callee-saved register is live at an exit only when some
+  plus the return registers of a block that leaves the function. A callee-saved register is
+  live at an exit only when some
   successor actually reads it; at a return the epilogue restores it, so a value left there is
   dead. Each peephole stage (`runPerBlockRewrites`, the CFG-aware DCE, `runPostSchedulePeephole`)
   solves liveness once on the shape it is given; the loop and phi-join forwarders publish no
@@ -621,17 +614,15 @@ class LinearScanAllocator {
 - **Caller-saved register lookup** uses precomputed `std::bitset<32>` for O(1) membership checks
 - **Deterministic allocation** via sorted free-register pools
 
-### AArch64 function-wide allocation (default since Phase 3 C6, ADR 0338)
+### AArch64 function-wide allocation (ADR 0338)
 
-The AArch64 backend allocates function-wide; `ZANNA_LOCAL_RA=1` (or
-`PipelineOptions::localRegAlloc`) brings the retired block-local path back for bisecting until
-Phase 3 C7 deletes it. The lowering runs in edge-copy mode (`AArch64Module::edgeCopyLowering`): block
-parameters are virtual registers, every branch argument list is one `ParallelCopy dst0, src0, …`
-(inline for `br`, in the split block for `cbr`/`switch`), cross-block temporaries keep their
-virtual register, and blocks are lowered in reverse post-order so definitions precede uses. No
-frame slot comes from lowering except allocas, the switch scrutinee, and the `rt_arr_obj_get`
-round trip. `RegAllocPass` then runs `ra::allocateGlobal` (`src/codegen/aarch64/ra/GlobalAllocator`)
-instead of the coalescer plus block-local allocator:
+The AArch64 backend allocates function-wide; the block-local path was deleted in Phase 3 C7.
+Lowering produces block parameters as virtual registers, every branch argument list as one
+`ParallelCopy dst0, src0, …` (inline for `br`, in the split block for `cbr`/`switch`),
+cross-block temporaries keep their virtual register, and blocks are lowered in reverse post-order
+so definitions precede uses. No frame slot comes from lowering except allocas, the switch
+scrutinee, and the `rt_arr_obj_get` round trip. `RegAllocPass` then runs `ra::allocateGlobal`
+(`src/codegen/aarch64/ra/GlobalAllocator`):
 
 - **Positions and intervals** (`ra/LiveIntervals`): blocks are numbered in reverse post-order over
   `MirCfg`; instruction *i* of block *b* reads at `base[b] + 2i` and writes at `base[b] + 2i + 1`,
@@ -681,8 +672,7 @@ through `ParallelCopy` edges) and a MIR interpreter executes each one before and
 must verify. `ZANNA_RA_ORACLE_SEEDS` widens the seed range. The shared-corpus lane of
 `test_aarch64_lowering_edge_copies` runs the whole pipeline in this mode at -O0 and -O2 with the
 verifier and checks determinism. On hosts that can run AArch64 code the differential labels run
-the program-level oracle on this path by default; run them with `ZANNA_LOCAL_RA=1` to compare
-against the old path while it exists.
+the program-level oracle on this path.
 
 ### Register Classes
 
@@ -1162,18 +1152,18 @@ src/codegen/aarch64/
 ├── FrameBuilder.hpp/cpp       # Stack frame construction
 ├── FramePlan.hpp              # Frame layout planning
 ├── InstrLowering.hpp/cpp      # Individual instruction lowering
-├── LivenessAnalysis.hpp/cpp   # Live variable analysis
 ├── LowerILToMIR.hpp/cpp       # IL → MIR lowering driver
 ├── LoweringContext.hpp        # Context for lowering pass
 ├── MachineIR.hpp/cpp          # Machine IR structures
 ├── OpcodeDispatch.hpp/cpp     # Opcode-specific dispatch
 ├── OpcodeMappings.hpp         # IL opcode to MIR mapping tables
 ├── Peephole.hpp/cpp           # Peephole optimizations
-├── RegAllocLinear.hpp/cpp     # Linear scan allocator
+├── PhysLiveness.hpp/cpp       # Post-RA physical-register liveness
 ├── RodataPool.hpp/cpp         # Read-only data management
 ├── TargetAArch64.hpp/cpp      # Target description
 ├── TerminatorLowering.hpp/cpp # Branch/call/ret lowering
 ├── fastpaths/                 # Fast-path implementations
+├── ra/                        # Function-wide register allocation (GlobalAllocator, LiveIntervals, Liveness)
 └── generated/                 # Generated opcode/format tables (EncodingTable.inc, OpFmtTable.inc)
 ```
 

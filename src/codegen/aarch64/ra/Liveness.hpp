@@ -21,7 +21,7 @@
 //   - Value-owned containers valid for the lifetime of the LivenessAnalysis.
 //
 // Links: codegen/common/ra/DataflowLiveness.hpp,
-//        codegen/aarch64/ra/Allocator.cpp,
+//        codegen/aarch64/ra/LiveIntervals.cpp,
 //        codegen/aarch64/ra/Liveness.cpp
 //
 //===----------------------------------------------------------------------===//

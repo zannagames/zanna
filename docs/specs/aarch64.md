@@ -151,16 +151,14 @@ MIR opcode categories:
 
 | File | Purpose |
 |------|---------|
-| `src/codegen/aarch64/ra/Allocator.hpp`/`.cpp` | Linear-scan register allocator with protected-use eviction |
-| `src/codegen/aarch64/ra/Liveness.hpp`/`.cpp` | Live variable analysis |
+| `src/codegen/aarch64/ra/GlobalAllocator.hpp`/`.cpp` | Function-wide interval allocator: whole-interval linear scan, spill-everywhere with shared slots, ParallelCopy lowering (ADR 0338) |
+| `src/codegen/aarch64/ra/LiveIntervals.hpp`/`.cpp` | Positions, range lists with holes, fixed physical ranges, call and EH positions |
+| `src/codegen/aarch64/ra/Liveness.hpp`/`.cpp` | CFG liveness (per-block vreg live-in/out) |
+| `src/codegen/aarch64/PhysLiveness.hpp`/`.cpp` | Post-RA physical-register liveness for the peepholes |
 | `src/codegen/aarch64/ra/RegPools.hpp`/`.cpp` | Physical register pools (GPR/FPR) |
 | `src/codegen/aarch64/ra/OperandRoles.hpp`/`.cpp` | Per-operand use/def role classification |
 | `src/codegen/aarch64/ra/OpcodeClassify.hpp` | Opcode classification (call, terminator, mem load/store) |
-| `src/codegen/aarch64/ra/InstrBuilders.hpp` | MIR instruction builder helpers for spill/reload |
 | `src/codegen/aarch64/ra/RegClassify.hpp` | Register class classification |
-| `src/codegen/aarch64/ra/VState.hpp` | Virtual register state tracking |
-| `src/codegen/aarch64/Coalescer.hpp`/`.cpp` | Pre-RA register coalescer (~270 LOC) |
-| `src/codegen/aarch64/LivenessAnalysis.hpp`/`.cpp` | CFG-level liveness analysis |
 
 ### Frame layout
 
@@ -219,12 +217,12 @@ The AArch64 backend uses `CodegenPipeline` to orchestrate passes. The pipeline s
    `zanna build`
 2. **Rodata pool construction** (`RodataPool`) — scan globals, deduplicate string literals
 3. **IL to MIR lowering** (`LowerILToMIR::lowerFunction`) — instruction selection via `InstrLowering` + `TerminatorLowering` + fast paths; functions are lowered in parallel and written back in source order
-4. **Register coalescing** (`Coalescer`) — pre-RA copy elimination
-5. **Register allocation** (`ra/Allocator`) — linear scan, spill/reload insertion; functions are allocated in parallel
+4. **Pre-RA optimisation** (`PreRegAllocOpt`) — MIR-level rewrites on virtual registers
+5. **Register allocation** (`ra/GlobalAllocator`) — function-wide interval allocation, spill/reload insertion, ParallelCopy lowering; functions are allocated in parallel
 6. **Frame finalization** (`FrameBuilder`) — stack slot layout, frame size computation
 7. **Block layout** — reorder hot/fallthrough blocks before branch cleanup
 8. **Peephole optimization** (`Peephole` + sub-passes) — post-RA pattern rewrites, CFG-aware DCE, branch cleanup,
-   phi spill/reload cleanup, and MIR validation
+   and MIR validation
 9. **Post-RA scheduling** — instruction reordering for pipeline utilization; memory scheduling remains conservative
    for base-register heap/object accesses and only separates explicit FP/SP stack slots
 10. **Final peephole cleanup** — removes branches/fallthroughs and dead moves exposed by scheduling

@@ -5,7 +5,6 @@ add_library(il_codegen_aarch64 STATIC
         FrameBuilder.cpp
         MachineIR.cpp
         LowerILToMIR.cpp
-        LivenessAnalysis.cpp
         InstrEffects.cpp
         MirCfg.cpp
         MirVerify.cpp
@@ -21,15 +20,12 @@ add_library(il_codegen_aarch64 STATIC
         fastpaths/FastPaths_Memory.cpp
         fastpaths/FastPaths_Return.cpp
         LowerOvf.cpp
-        RegAllocLinear.cpp
-        # Modular register allocator sub-components (Phase 4C)
+        # Register allocator (function-wide, ADR 0338)
         ra/RegPools.cpp
         ra/OperandRoles.cpp
-        ra/Allocator.cpp
         ra/Liveness.cpp
         ra/LiveIntervals.cpp
         ra/GlobalAllocator.cpp
-        Coalescer.cpp
         Peephole.cpp
         # Modular peephole sub-passes (Phase 4B)
         peephole/PeepholeCommon.cpp

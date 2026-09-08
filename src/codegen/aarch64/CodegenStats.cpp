@@ -66,13 +66,12 @@ namespace {
            opc == MOpcode::LdrFprBaseRegLsl;
 }
 
-/// @brief Stores whose address is x29-relative (PhiStore writes a phi slot).
+/// @brief Stores whose address is x29-relative.
 [[nodiscard]] bool isFrameStore(MOpcode opc) noexcept {
     return opc == MOpcode::StrRegFpImm || opc == MOpcode::Str8RegFpImm ||
            opc == MOpcode::Str16RegFpImm || opc == MOpcode::Str32RegFpImm ||
            opc == MOpcode::StrFprFpImm || opc == MOpcode::StpRegFpImm ||
-           opc == MOpcode::StpFprFpImm || opc == MOpcode::PhiStoreGPR ||
-           opc == MOpcode::PhiStoreFPR;
+           opc == MOpcode::StpFprFpImm;
 }
 
 [[nodiscard]] bool isBaseStore(MOpcode opc) noexcept {

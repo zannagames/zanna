@@ -25,7 +25,7 @@ using namespace zanna::codegen::aarch64::peephole;
 TEST(AArch64DivStrength, UDivByPowerOf2BecomesLsr) {
     MFunction fn{};
     fn.name = "test_udiv_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, #8 (load constant divisor)
@@ -50,7 +50,7 @@ TEST(AArch64DivStrength, UDivByPowerOf2BecomesLsr) {
 TEST(AArch64DivStrength, UDivBy1BecomesLsr0) {
     MFunction fn{};
     fn.name = "test_udiv_by_1";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(1)}});
@@ -72,7 +72,7 @@ TEST(AArch64DivStrength, UDivBy1BecomesLsr0) {
 TEST(AArch64DivStrength, SDivByPowerOf2BecomesShift) {
     MFunction fn{};
     fn.name = "test_sdiv_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(4)}});
@@ -100,7 +100,7 @@ TEST(AArch64DivStrength, SDivByPowerOf2BecomesShift) {
 TEST(AArch64DivStrength, SDivByConstantUsesMagicMultiply) {
     MFunction fn{};
     fn.name = "test_sdiv_const";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(7)}});
@@ -131,7 +131,7 @@ TEST(AArch64DivStrength, SDivByConstantUsesMagicMultiply) {
 TEST(AArch64DivStrength, UDivByNonPowerOf2UsesMagicMultiply) {
     MFunction fn{};
     fn.name = "test_udiv_non_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(7)}});
@@ -158,7 +158,7 @@ TEST(AArch64DivStrength, UDivByNonPowerOf2UsesMagicMultiply) {
 TEST(AArch64DivStrength, SDivByNegativeConstantUsesMagicMultiply) {
     MFunction fn{};
     fn.name = "test_sdiv_neg_const";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(
@@ -194,7 +194,7 @@ TEST(AArch64DivStrength, SDivStrengthReductionUsesDominatingConstant) {
 
     MFunction fn{};
     fn.name = "test_sdiv_const_dominating";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(
@@ -229,7 +229,7 @@ TEST(AArch64DivStrength, SDivStrengthReductionUsesDominatingConstant) {
 TEST(AArch64DivStrength, SDivConstantRemainderKeepsDivSequence) {
     MFunction fn{};
     fn.name = "test_sdiv_const_preserve_divisor";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(3)}});
@@ -258,7 +258,7 @@ TEST(AArch64DivStrength, SDivConstantRemainderKeepsDivSequence) {
 TEST(AArch64DivStrength, UDivConstantRemainderKeepsDivSequence) {
     MFunction fn{};
     fn.name = "test_udiv_const_preserve_divisor";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(7)}});
@@ -286,7 +286,7 @@ TEST(AArch64DivStrength, UDivConstantRemainderKeepsDivSequence) {
 TEST(AArch64DivStrength, URemByPowerOf2BecomesAnd) {
     MFunction fn{};
     fn.name = "test_urem_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, #8 (divisor)
@@ -325,7 +325,7 @@ TEST(AArch64DivStrength, URemByPowerOf2BecomesAnd) {
 TEST(AArch64DivStrength, SRemByPowerOf2BecomesSignCorrectedAnd) {
     MFunction fn{};
     fn.name = "test_srem_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, #4 (divisor)
@@ -370,7 +370,7 @@ TEST(AArch64DivStrength, SRemByPowerOf2BecomesSignCorrectedAnd) {
 TEST(AArch64DivStrength, ConstantFactDiesAtFlagSettingRedefinition) {
     MFunction fn{};
     fn.name = "test_sdiv_stale_const_adds";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(2)}});
     bb.instrs.push_back(
@@ -393,7 +393,7 @@ TEST(AArch64DivStrength, ConstantFactDiesAtFlagSettingRedefinition) {
 TEST(AArch64DivStrength, ConstantFactDiesAtOverflowMultiplyRedefinition) {
     MFunction fn{};
     fn.name = "test_udiv_stale_const_mulovf";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
     bb.instrs.push_back(MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X1), MOperand::immOp(8)}});
     bb.instrs.push_back(MInstr{MOpcode::MulOvfRRR,

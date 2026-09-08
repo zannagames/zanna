@@ -294,11 +294,10 @@ PhysRegSet exitLive(const MFunction &fn, std::size_t bi) {
 
 TEST(AArch64MirCfg, BlockExitLiveForReturningBlock) {
     MFunction fn = function({block("entry", {ret()})});
-    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X5)};
     const PhysRegSet live = exitLive(fn, 0);
     EXPECT_TRUE(live.contains(PhysReg::X0));
     EXPECT_TRUE(live.contains(PhysReg::V0));
-    EXPECT_TRUE(live.contains(PhysReg::X5));
+    EXPECT_FALSE(live.contains(PhysReg::X5));
     EXPECT_TRUE(live.contains(PhysReg::SP));
     EXPECT_TRUE(live.contains(PhysReg::X29));
     EXPECT_TRUE(live.contains(PhysReg::X30));
@@ -320,13 +319,11 @@ TEST(AArch64MirCfg, BlockExitLiveForBranchingBlockOmitsReturnRegs) {
         block("entry", {bcond("exit"), br("exit")}),
         block("exit", {ins(MOpcode::MovRI, {x(PhysReg::X0), MOperand::immOp(0)}), ret()}),
     });
-    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X2),
-                                    static_cast<uint16_t>(PhysReg::V3)};
     const PhysRegSet live = exitLive(fn, 0);
     EXPECT_FALSE(live.contains(PhysReg::X0));
     EXPECT_TRUE(live.contains(PhysReg::V0));
-    EXPECT_TRUE(live.contains(PhysReg::X2));
-    EXPECT_TRUE(live.contains(PhysReg::V3));
+    EXPECT_FALSE(live.contains(PhysReg::X2));
+    EXPECT_FALSE(live.contains(PhysReg::V3));
     // A callee-saved register is live only when a successor reads it; the
     // successor here reads nothing.
     EXPECT_FALSE(live.contains(PhysReg::X20));

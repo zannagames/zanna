@@ -55,13 +55,9 @@ struct AArch64Module {
     std::string debugSourcePath{};     ///< Source path used for DWARF line table file entries.
     bool emitDebugLines = false;       ///< Emit DWARF .debug_line entries when true.
     bool coalesceTextSections = false; ///< Emit one text section instead of per-function sections.
-    /// Lower block parameters to virtual registers and branch arguments to
-    /// ParallelCopy edges (the function-wide allocator's input) instead of
-    /// frame slots and PhiStore edges (the block-local allocator's input).
-    bool edgeCopyLowering = false;
-    std::vector<MFunction> mir; ///< MIR functions, populated by LoweringPass.
-    RodataPool rodataPool;      ///< Rodata pool, populated by LoweringPass.
-    std::string assembly;       ///< Final assembly text, populated by EmitPass.
+    std::vector<MFunction> mir;        ///< MIR functions, populated by LoweringPass.
+    RodataPool rodataPool;             ///< Rodata pool, populated by LoweringPass.
+    std::string assembly;              ///< Final assembly text, populated by EmitPass.
 
     // Binary emission output (populated by BinaryEmitPass).
     std::optional<objfile::CodeSection> binaryText;       ///< Machine code bytes + relocations.

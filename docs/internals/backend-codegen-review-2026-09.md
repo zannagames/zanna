@@ -264,7 +264,24 @@ Steps landed so far, each gate-green with the default pipeline unchanged unless 
   program-level oracle (VM vs native, `-O0` vs `-O2`, the seeded kernels) on an AArch64 host — the
   allocator's execution evidence on this host is the MIR interpreter oracle.
 
-Everything from B2 onward, and Phase 3 from C7 on, is open.
+- **C7 — the block-local path is gone.** One commit deletes the frame-slot lowering mode
+  (`LivenessAnalysis`, `analyzeCrossBlockLiveness`, the def-site stores and block-entry reloads,
+  the phi slots), the `PhiStoreGPR`/`PhiStoreFPR` opcodes and their eleven consumers, the
+  block-local allocator (`ra/Allocator`, `ra/VState`, `ra/InstrBuilders`, `RegAllocLinear`), the
+  pre-RA `Coalescer`, the FrameBuilder block-epoch slot reuse, `MBasicBlock::carriedExitRegs`
+  with the verifier's `CARRY` rule and `carriedExitRegSet`, the phi-slot peephole stages
+  (`forwardSinglePredPhiLoads`, `coalesceJoinPhiLoads`, `forwardLayoutSuccessorStoreLoad`,
+  `eliminateLoopPhiSpills` and their join helpers, ~1,900 lines) with their `ZANNA_NO_PH_*`
+  switches, the `ZANNA_LOCAL_RA` / `PipelineOptions::localRegAlloc` /
+  `AArch64Module::edgeCopyLowering` fork, and the seven old-shape tests; `ZANNA_NO_GLOBAL_RA`
+  now belongs to x86-64 only. `blockExitLive` is the solved live-out plus SP/FP/LR plus the
+  return registers at a function exit, nothing else. The `MBasicBlock` initialisers, the
+  pool-exhaustion diagnostic test (now a reserved-scratch exhaustion: three spilled sources plus
+  an explicit x9 destination), the encoder coverage count, and the ARM-host loop-phi test
+  (loop-carried parameters never touch the frame; no `ldp`, no `[x29, #-…]`) were re-derived
+  on the remaining path. Net −2,650 lines.
+
+Everything from B2 onward, and Phase 3 from C8 on, is open.
 
 ## Context
 

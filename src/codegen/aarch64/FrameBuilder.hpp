@@ -13,7 +13,7 @@
 // Key invariants:
 //   - All offsets are negative (below the frame pointer).
 //   - Stack slots are 8-byte aligned minimum; 16-byte overall frame alignment.
-//   - addLocal() and ensureSpill() must be called before finalize().
+//   - addLocal(), ensureSpill(), and addSharedSpill() must be called before finalize().
 //   - finalize() is idempotent and must run after all frame requirements are known.
 // Ownership/Lifetime:
 //   - FrameBuilder borrows the MFunction reference; MFunction must outlive it.
@@ -25,7 +25,7 @@
 
 /**
  * @file
- * @brief Declares incremental AAPCS64 frame-slot allocation and spill reuse.
+ * @brief Declares incremental AAPCS64 frame-slot allocation and slot sharing.
  *
  * The builder resumes from any layout already recorded in its borrowed machine
  * function. Locals and spills grow downward from `x29`; outgoing arguments and
@@ -105,27 +105,6 @@ class FrameBuilder : public common::FrameLayout {
                     int sizeBytes = kSlotSizeBytes,
                     int alignBytes = kSlotSizeBytes) override;
 
-    /// @brief Ensure a spill slot for @p vreg, reusing a dead slot if available.
-    ///
-    /// @details A slot is dead when its previous occupant's last use occurred
-    ///          before @p currentInstrIdx.  If such a slot exists and has a
-    ///          compatible size, it is recycled for @p vreg without growing the
-    ///          frame.  Otherwise a fresh slot is allocated as normal.
-    ///
-    /// @param vreg           Virtual register to assign a slot to.
-    /// @param lastUseInstrIdx  Last instruction index that reads @p vreg
-    ///                         (used to record this slot's new lifetime end).
-    /// @param currentInstrIdx  Instruction index at the point of spill
-    ///                         (slots with lastUse < this value are dead).
-    /// @param sizeBytes      Slot size in bytes (default: 8).
-    /// @param alignBytes     Alignment in bytes (default: 8).
-    /// @return FP-relative offset of the (possibly reused) spill slot.
-    int ensureSpillWithReuse(uint32_t vreg,
-                             unsigned lastUseInstrIdx,
-                             unsigned currentInstrIdx,
-                             int sizeBytes = kSlotSizeBytes,
-                             int alignBytes = kSlotSizeBytes);
-
     /// @brief Allocate one spill slot shared by several virtual registers.
     /// @details The function-wide allocator places values whose live ranges
     ///          never intersect in one slot; one `SpillSlot` record per
@@ -162,40 +141,9 @@ class FrameBuilder : public common::FrameLayout {
         return fn_ ? fn_->localFrameSize : 0;
     }
 
-    /// @brief Notify the frame builder that a new basic block is starting.
-    ///
-    /// Increments the block epoch so that spill slots from previous blocks are
-    /// never reused in the current block.  Must be called before processing
-    /// each basic block during register allocation.
-    /// @post Spill lifetimes from earlier epochs cannot be reused in the new block.
-    void beginNewBlock() noexcept {
-        ++blockEpoch_;
-    }
-
   private:
-    /// @brief Lifetime record for a single spill slot.
-    ///
-    /// Tracks the FP-relative offset, size/alignment compatibility, the
-    /// instruction index of the last use of the most-recent vreg assigned to
-    /// this slot, and the block epoch in which that last use occurred. Slots
-    /// are only eligible for reuse within the SAME block epoch because
-    /// @p currentInstrIdx is a per-block counter that resets to 0 at each block
-    /// boundary, making cross-epoch comparisons meaningless.
-    struct SlotLifetime {
-        uint32_t vreg;       ///< Most-recent vreg assigned to this slot.
-        int offset;          ///< FP-relative offset (always negative).
-        int sizeBytes;       ///< Slot size (for size-compatible reuse check).
-        int alignBytes;      ///< Guaranteed alignment of the slot.
-        unsigned lastUseIdx; ///< Last instruction index reading the current vreg.
-        uint32_t epoch;      ///< Block epoch when lastUseIdx was recorded.
-    };
-
     MFunction *fn_{};
     common::DownwardFrameCursor slotCursor_{kSlotSizeBytes};
-    uint32_t blockEpoch_{0}; ///< Monotonically-increasing block counter.
-
-    /// Lifetime records for every slot allocated via ensureSpillWithReuse().
-    std::vector<SlotLifetime> slotLifetimes_;
 
     /// @brief Find the most-recently-allocated spill slot assigned to @p vreg, or nullptr.
     /// @param vreg Virtual-register identifier.
@@ -205,14 +153,6 @@ class FrameBuilder : public common::FrameLayout {
     /// @param vreg Virtual-register identifier.
     /// @return Borrowed slot record, or null.
     [[nodiscard]] const MFunction::SpillSlot *findLatestSpillSlot(uint32_t vreg) const noexcept;
-    /// @brief Find the SlotLifetime record for the slot at FP-relative @p offset, or nullptr.
-    /// @param offset Negative FP-relative spill-slot offset.
-    /// @return Mutable lifetime record, or null.
-    [[nodiscard]] SlotLifetime *findSlotLifetime(int offset) noexcept;
-    /// @brief Const overload of findSlotLifetime().
-    /// @param offset Negative FP-relative spill-slot offset.
-    /// @return Borrowed lifetime record, or null.
-    [[nodiscard]] const SlotLifetime *findSlotLifetime(int offset) const noexcept;
     /// @brief Advance slotCursor_ by @p sizeBytes with @p alignBytes alignment; return the offset.
     /// @param sizeBytes Positive allocation size.
     /// @param alignBytes Positive power-of-two alignment.

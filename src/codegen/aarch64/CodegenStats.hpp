@@ -12,8 +12,8 @@
 // Key invariants:
 //   - Counters describe the MIR they are given; run after ExpandPseudos they
 //     describe what the emitters print.
-//   - A frame access is any load/store through x29 (FpImm forms, pair forms,
-//     PhiStore) or through a scratch register that the immediately preceding
+//   - A frame access is any load/store through x29 (FpImm forms, pair forms)
+//     or through a scratch register that the immediately preceding
 //     `MovRI xS,#off; AddRRR xS,x29,xS` prefix pointed into the frame.
 //   - The report line format is stable: `[codegen-stats] arch=arm64 fn=<name>`
 //     followed by `key=value` pairs; scripts/codegen_stats.sh parses it.

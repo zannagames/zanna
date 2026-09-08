@@ -163,7 +163,6 @@ exit(%r: i64):
     passes::AArch64Module module;
     module.ilMod = &mod;
     module.ti = &target();
-    module.edgeCopyLowering = true;
     passes::LoweringPass lowering;
     passes::Diagnostics diags;
     ASSERT_TRUE(lowering.run(module, diags));
@@ -179,8 +178,6 @@ exit(%r: i64):
     for (const auto &bb : fn.blocks)
         EXPECT_EQ(countFrameAccesses(bb), 0u);
     EXPECT_TRUE(fn.frame.spills.empty());
-    for (const auto &bb : fn.blocks)
-        EXPECT_TRUE(bb.carriedExitRegs.empty());
 }
 
 TEST(Arm64GlobalRegAlloc, CallCrossingValueGetsACalleeSavedRegister) {
@@ -531,14 +528,6 @@ TEST(Arm64GlobalRegAlloc, ThreeSpilledOperandsUseThreeTemporaries) {
         madd->ops[1].reg.idOrPhys, madd->ops[2].reg.idOrPhys, madd->ops[3].reg.idOrPhys};
     std::sort(inputs.begin(), inputs.end());
     EXPECT_EQ(std::unique(inputs.begin(), inputs.end()), inputs.end());
-}
-
-TEST(Arm64GlobalRegAlloc, PhiStoreIsRejected) {
-    MFunction fn = function({block("entry",
-                                   {ins(MOpcode::MovRI, {v(1), imm(1)}),
-                                    ins(MOpcode::PhiStoreGPR, {v(1), imm(-8)}),
-                                    ins(MOpcode::Ret, {})})});
-    EXPECT_THROWS((void)ra::allocateGlobal(fn, target()), std::runtime_error);
 }
 
 int main(int argc, char **argv) {

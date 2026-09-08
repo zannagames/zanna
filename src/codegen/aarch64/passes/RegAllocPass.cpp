@@ -7,8 +7,8 @@
 //
 // File: src/codegen/aarch64/passes/RegAllocPass.cpp
 // Purpose: Register allocation pass for the AArch64 modular pipeline.
-//          Runs coalescer then linear-scan RA on every MIR function. Functions
-//          are processed in parallel when hardware concurrency ≥ 2.
+//          Runs the function-wide interval allocator on every MIR function.
+//          Functions are processed in parallel when hardware concurrency ≥ 2.
 // Key invariants:
 //   - Must run after LegalizePass (overflow pseudos must be expanded).
 //   - Each function is allocated independently; errors are deferred and
@@ -17,15 +17,12 @@
 // Ownership/Lifetime:
 //   - Stateless pass; mutates AArch64Module::mir in place.
 // Links: codegen/aarch64/passes/RegAllocPass.hpp,
-//        codegen/aarch64/RegAllocLinear.hpp,
-//        codegen/aarch64/Coalescer.hpp
+//        codegen/aarch64/ra/GlobalAllocator.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "codegen/aarch64/passes/RegAllocPass.hpp"
 
-#include "codegen/aarch64/Coalescer.hpp"
-#include "codegen/aarch64/RegAllocLinear.hpp"
 #include "codegen/aarch64/ra/GlobalAllocator.hpp"
 #include "codegen/common/Parallelism.hpp"
 
@@ -37,7 +34,7 @@
 #include <vector>
 
 /// @file
-/// @brief Implements copy coalescing and linear-scan allocation for AArch64 MIR.
+/// @brief Runs function-wide register allocation over every AArch64 MIR function.
 
 namespace zanna::codegen::aarch64::passes {
 
@@ -51,25 +48,12 @@ bool RegAllocPass::run(AArch64Module &module, Diagnostics &diags) {
     std::string firstError;
     std::mutex errorMutex;
 
-    // The lowering mode fixes the allocator: edge-copy MIR (block-parameter
-    // vregs, ParallelCopy edges) goes to the function-wide allocator, whose
-    // hints replace the pre-RA move coalescer; frame-slot MIR keeps the
-    // block-local path.
-    const bool global = module.edgeCopyLowering;
-
-    /// Coalesce and allocate the function at @p index, recording only the first
-    /// allocation exception so concurrent failures produce one stable diagnostic.
+    /// Allocate the function at @p index, recording only the first allocation
+    /// exception so concurrent failures produce one stable diagnostic.
     auto allocateOne = [&](std::size_t index) {
         auto &fn = module.mir[index];
         try {
-            if (global) {
-                [[maybe_unused]] auto result = ra::allocateGlobal(fn, *module.ti);
-            } else {
-                // Coalesce MovRR/FMovRR between virtual registers before register
-                // allocation to reduce register pressure and eliminate redundant copies.
-                coalesce(fn);
-                [[maybe_unused]] auto result = allocate(fn, *module.ti);
-            }
+            [[maybe_unused]] auto result = ra::allocateGlobal(fn, *module.ti);
         } catch (const std::exception &ex) {
             std::lock_guard<std::mutex> lock(errorMutex);
             if (firstError.empty())

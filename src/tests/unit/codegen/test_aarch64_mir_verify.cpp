@@ -198,8 +198,6 @@ TEST(AArch64MirVerify, AcceptsWellFormedPostRaFunction) {
     MBasicBlock done;
     done.name = "done";
     done.instrs = {ins(MOpcode::Ret, {})};
-    done.carriedExitRegs = {static_cast<uint16_t>(PhysReg::X0),
-                            static_cast<uint16_t>(PhysReg::X19)};
 
     fn.blocks = {std::move(entry), std::move(body), std::move(done)};
 
@@ -278,13 +276,6 @@ TEST(AArch64MirVerify, RejectsPhysicalRegisterWithWrongClass) {
         ins(MOpcode::Ret, {}),
     });
     EXPECT_TRUE(rejectsWith(fn, VerifyStage::PostLowering, "V-CG-MIR-REG-CLASS"));
-}
-
-TEST(AArch64MirVerify, RejectsUnsortedCarriedExitRegs) {
-    MFunction fn = singleBlock({ins(MOpcode::Ret, {})});
-    fn.blocks[0].carriedExitRegs = {static_cast<uint16_t>(PhysReg::X3),
-                                    static_cast<uint16_t>(PhysReg::X1)};
-    EXPECT_TRUE(rejectsWith(fn, VerifyStage::PostLowering, "V-CG-MIR-CARRY"));
 }
 
 TEST(AArch64MirVerify, AcceptsParallelCopyBeforeAllocation) {

@@ -16,10 +16,10 @@
 //   - GPR pool never hands out X9/X16/X17 (global scratch), X18, X29, X30, or SP.
 //
 // Ownership/Lifetime:
-//   - Owned by the LinearAllocator; one RegPools per allocation run.
+//   - Owned by its allocator or test; one RegPools per allocation run.
 //
 // Links: codegen/aarch64/ra/RegPools.cpp,
-//        codegen/aarch64/ra/Allocator.hpp,
+//        codegen/aarch64/ra/GlobalAllocator.hpp,
 //        codegen/aarch64/TargetAArch64.hpp
 //
 //===----------------------------------------------------------------------===//

@@ -11,7 +11,8 @@
 //          BranchOpt (conditional branch folding),
 //          CopyPropDCE (dead code after copy propagation),
 //          MemoryOpt (memory access patterns),
-//          LoopOpt (loop-specific peephole).
+//          LoopOpt (loop-constant hoisting), and the exit-live guards of
+//          every block-local fold.
 // Key invariants:
 //   - Rewrites preserve semantics.
 //   - Stats counters accurately reflect transformations.
@@ -40,7 +41,7 @@ TEST(AArch64PeepholeSubpasses, MulByPowerOf2ToShift) {
     // strength reduction should convert it to a shift.
     MFunction fn{};
     fn.name = "mul_pow2";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, #8
@@ -62,7 +63,7 @@ TEST(AArch64PeepholeSubpasses, AddFpImmZeroIdentity) {
     // fadd d0, d0, #0.0 should be eliminated as identity
     MFunction fn{};
     fn.name = "fadd_zero";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(MInstr{MOpcode::FAddRRR,
@@ -83,8 +84,8 @@ TEST(AArch64PeepholeSubpasses, AddFpImmZeroIdentity) {
 TEST(AArch64PeepholeSubpasses, RemoveRedundantBranchToFallthrough) {
     MFunction fn{};
     fn.name = "branch_fallthrough";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"next", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
+    fn.blocks.push_back(MBasicBlock{"next", {}});
     auto &entry = fn.blocks[0];
     auto &next = fn.blocks[1];
 
@@ -111,7 +112,7 @@ TEST(AArch64PeepholeSubpasses, RemoveRedundantBranchToFallthrough) {
 TEST(AArch64PeepholeSubpasses, DeadMovRemovedAfterLastUse) {
     MFunction fn{};
     fn.name = "dead_mov";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     // mov x1, x0  (only use)
@@ -136,7 +137,7 @@ TEST(AArch64PeepholeSubpasses, ImmThenMoveFolding) {
     // mov x1, #42; mov x2, x1 → mov x1, x1; mov x2, #42  (when x1 dead after)
     MFunction fn{};
     fn.name = "imm_then_move";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(
@@ -188,8 +189,8 @@ TEST(AArch64PeepholeSubpasses, StoreLoadForwardingStopsAtOverlappingPairStore) {
 TEST(AArch64PeepholeSubpasses, MultiplePassesInteract) {
     MFunction fn{};
     fn.name = "multi_pass";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"target", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
+    fn.blocks.push_back(MBasicBlock{"target", {}});
     auto &entry = fn.blocks[0];
     auto &target = fn.blocks[1];
 
@@ -212,284 +213,14 @@ TEST(AArch64PeepholeSubpasses, MultiplePassesInteract) {
     EXPECT_GT(stats.branchesToNextRemoved, 0);
 }
 
-TEST(AArch64PeepholeSubpasses, LoopPhiEdgeMovesPreserveOverlappingSources) {
-    MFunction fn{};
-    fn.name = "loop_phi_overlap";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"loop", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"body", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"latch", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
-
-    auto &entry = fn.blocks[0];
-    auto &loop = fn.blocks[1];
-    auto &body = fn.blocks[2];
-    auto &latch = fn.blocks[3];
-    auto &exit = fn.blocks[4];
-
-    entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-40)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X8), MOperand::immOp(-48)}});
-    loop.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("body")}});
-
-    body.instrs.push_back(MInstr{MOpcode::AddsRRR,
-                                 {MOperand::regOp(PhysReg::X11),
-                                  MOperand::regOp(PhysReg::X8),
-                                  MOperand::regOp(PhysReg::X10)}});
-    body.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("latch")}});
-
-    latch.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X17), MOperand::immOp(-104)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X17), MOperand::immOp(-40)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-96)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-48)}});
-    latch.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    exit.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    auto stats = runPeephole(fn);
-    EXPECT_GT(stats.loopConstsHoisted, 0);
-
-    const auto latchIt = std::find_if(fn.blocks.begin(),
-                                      fn.blocks.end(),
-                                      [](const MBasicBlock &bb) { return bb.name == "latch"; });
-    ASSERT_TRUE(latchIt != fn.blocks.end());
-
-    std::vector<std::pair<PhysReg, PhysReg>> movs;
-    for (const auto &instr : latchIt->instrs) {
-        if (instr.opc == MOpcode::MovRR && instr.ops.size() == 2 &&
-            instr.ops[0].kind == MOperand::Kind::Reg && instr.ops[1].kind == MOperand::Kind::Reg) {
-            movs.emplace_back(static_cast<PhysReg>(instr.ops[0].reg.idOrPhys),
-                              static_cast<PhysReg>(instr.ops[1].reg.idOrPhys));
-        }
-    }
-
-    ASSERT_GE(movs.size(), 2u);
-    EXPECT_EQ(movs[0], std::make_pair(PhysReg::X8, PhysReg::X10));
-    EXPECT_EQ(movs[1], std::make_pair(PhysReg::X10, PhysReg::X17));
-}
-
-TEST(AArch64PeepholeSubpasses, LoopPhiRejectsRedefinedEdgeSource) {
-    MFunction fn{};
-    fn.name = "loop_phi_redefined_source";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"loop", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"latch", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
-
-    auto &entry = fn.blocks[0];
-    auto &loop = fn.blocks[1];
-    auto &latch = fn.blocks[2];
-    auto &exit = fn.blocks[3];
-
-    entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X24), MOperand::immOp(-40)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-48)}});
-    loop.instrs.push_back(MInstr{MOpcode::AddRRR,
-                                 {MOperand::regOp(PhysReg::X12),
-                                  MOperand::regOp(PhysReg::X24),
-                                  MOperand::regOp(PhysReg::X10)}});
-    loop.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("latch")}});
-
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X24), MOperand::immOp(-40)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-48)}});
-    latch.instrs.push_back(MInstr{MOpcode::AddRRR,
-                                  {MOperand::regOp(PhysReg::X24),
-                                   MOperand::regOp(PhysReg::X10),
-                                   MOperand::regOp(PhysReg::X12)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::Cbz, {MOperand::regOp(PhysReg::X24), MOperand::labelOp("exit")}});
-    latch.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    exit.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    (void)runPeephole(fn);
-
-    const bool splitLoopHeader =
-        std::any_of(fn.blocks.begin(), fn.blocks.end(), [](const MBasicBlock &bb) {
-            return bb.name == "loop_body";
-        });
-    EXPECT_FALSE(splitLoopHeader);
-}
-
-TEST(AArch64PeepholeSubpasses, LoopPhiRejectsLoopsContainingCalls) {
-    MFunction fn{};
-    fn.name = "loop_phi_call_body";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"loop", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"latch", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
-
-    auto &entry = fn.blocks[0];
-    auto &loop = fn.blocks[1];
-    auto &latch = fn.blocks[2];
-    auto &exit = fn.blocks[3];
-
-    entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X22), MOperand::immOp(-40)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X23), MOperand::immOp(-48)}});
-    loop.instrs.push_back(MInstr{MOpcode::Bl, {MOperand::labelOp("may_touch_callee_saved")}});
-    loop.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("latch")}});
-
-    latch.instrs.push_back(
-        MInstr{MOpcode::AddsRI,
-               {MOperand::regOp(PhysReg::X24), MOperand::regOp(PhysReg::X22), MOperand::immOp(1)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X24), MOperand::immOp(-40)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X23), MOperand::immOp(-48)}});
-    latch.instrs.push_back(
-        MInstr{MOpcode::Cbz, {MOperand::regOp(PhysReg::X24), MOperand::labelOp("exit")}});
-    latch.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    exit.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    (void)runPeephole(fn);
-
-    const bool splitLoopHeader =
-        std::any_of(fn.blocks.begin(), fn.blocks.end(), [](const MBasicBlock &bb) {
-            return bb.name == "loop_body";
-        });
-    EXPECT_FALSE(splitLoopHeader);
-}
-
-TEST(AArch64PeepholeSubpasses, LoopPhiRejectsBackwardJoinEdge) {
-    MFunction fn{};
-    fn.name = "loop_phi_backward_join";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"else_path", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"join", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"then_path", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
-
-    auto &entry = fn.blocks[0];
-    auto &elsePath = fn.blocks[1];
-    auto &join = fn.blocks[2];
-    auto &thenPath = fn.blocks[3];
-    auto &exit = fn.blocks[4];
-
-    entry.instrs.push_back(
-        MInstr{MOpcode::Cbz, {MOperand::regOp(PhysReg::X0), MOperand::labelOp("then_path")}});
-    entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("else_path")}});
-
-    elsePath.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X20), MOperand::immOp(-40)}});
-    elsePath.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X21), MOperand::immOp(-48)}});
-    elsePath.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("join")}});
-
-    join.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X10), MOperand::immOp(-40)}});
-    join.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X11), MOperand::immOp(-48)}});
-    join.instrs.push_back(MInstr{MOpcode::AddRRR,
-                                 {MOperand::regOp(PhysReg::X12),
-                                  MOperand::regOp(PhysReg::X10),
-                                  MOperand::regOp(PhysReg::X11)}});
-    join.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("exit")}});
-
-    thenPath.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X22), MOperand::immOp(-40)}});
-    thenPath.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X23), MOperand::immOp(-48)}});
-    thenPath.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("join")}});
-
-    exit.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    (void)runPeephole(fn);
-
-    const bool splitJoin =
-        std::any_of(fn.blocks.begin(), fn.blocks.end(), [](const MBasicBlock &bb) {
-            return bb.name == "join_body";
-        });
-    EXPECT_FALSE(splitJoin);
-}
-
-TEST(AArch64PeepholeSubpasses, JoinPhiCoalescerSkipsLoopHeaderBackedgeWithCalls) {
-    MFunction fn{};
-    fn.name = "join_phi_coalescer_loop_header";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"loop", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"body", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"trap", {}, {}});
-
-    auto &entry = fn.blocks[0];
-    auto &loop = fn.blocks[1];
-    auto &body = fn.blocks[2];
-    auto &exit = fn.blocks[3];
-    auto &trap = fn.blocks[4];
-
-    entry.instrs.push_back(
-        MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X12), MOperand::immOp(0)}});
-    entry.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X12), MOperand::immOp(-24)}});
-    entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    loop.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X21), MOperand::immOp(-24)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X21), MOperand::immOp(-32)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X21), MOperand::immOp(64)}});
-    loop.instrs.push_back(
-        MInstr{MOpcode::BCond, {MOperand::condOp("lt"), MOperand::labelOp("body")}});
-    loop.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("exit")}});
-
-    body.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X22), MOperand::immOp(-32)}});
-    body.instrs.push_back(MInstr{MOpcode::Bl, {MOperand::labelOp("may_touch_loop_state")}});
-    body.instrs.push_back(
-        MInstr{MOpcode::AddsRI,
-               {MOperand::regOp(PhysReg::X11), MOperand::regOp(PhysReg::X22), MOperand::immOp(1)}});
-    body.instrs.push_back(
-        MInstr{MOpcode::BCond, {MOperand::condOp("vs"), MOperand::labelOp("trap")}});
-    body.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X11), MOperand::immOp(-24)}});
-    body.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("loop")}});
-
-    exit.instrs.push_back(MInstr{MOpcode::Ret, {}});
-    trap.instrs.push_back(MInstr{MOpcode::Bl, {MOperand::labelOp("rt_trap_ovf")}});
-
-    (void)runPeephole(fn);
-
-    const auto loopIt = std::find_if(fn.blocks.begin(), fn.blocks.end(), [](const MBasicBlock &bb) {
-        return bb.name == "loop";
-    });
-    ASSERT_TRUE(loopIt != fn.blocks.end());
-
-    const bool stillLoadsLoopIndex =
-        std::any_of(loopIt->instrs.begin(), loopIt->instrs.end(), [](const MInstr &instr) {
-            return instr.opc == MOpcode::LdrRegFpImm && instr.ops.size() == 2 &&
-                   instr.ops[0].kind == MOperand::Kind::Reg &&
-                   instr.ops[0].reg.idOrPhys == static_cast<uint16_t>(PhysReg::X21) &&
-                   instr.ops[1].kind == MOperand::Kind::Imm && instr.ops[1].imm == -24;
-        });
-    EXPECT_TRUE(stillLoadsLoopIndex);
-}
-
 TEST(AArch64PeepholeSubpasses, LoopConstHoistRejectsBackwardJoinEdge) {
     MFunction fn{};
     fn.name = "backward_join_not_loop";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"else_path", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"join", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"then_path", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"exit", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
+    fn.blocks.push_back(MBasicBlock{"else_path", {}});
+    fn.blocks.push_back(MBasicBlock{"join", {}});
+    fn.blocks.push_back(MBasicBlock{"then_path", {}});
+    fn.blocks.push_back(MBasicBlock{"exit", {}});
 
     auto &entry = fn.blocks[0];
     auto &elsePath = fn.blocks[1];
@@ -535,52 +266,6 @@ TEST(AArch64PeepholeSubpasses, LoopConstHoistRejectsBackwardJoinEdge) {
     EXPECT_TRUE(joinStillDefinesScale);
 }
 
-// ─── Cross-block liveness: a forwarded source stays live into its reader ────
-
-TEST(AArch64PeepholeSubpasses, CrossBlockForwardingKeepsSourceLiveIntoReader) {
-    MFunction fn{};
-    fn.name = "cross_block_carried_source";
-    fn.frame.spills.push_back(MFunction::SpillSlot{1, 8, 8, -8});
-    fn.blocks.push_back(MBasicBlock{"producer", {}, {}});
-    fn.blocks.push_back(MBasicBlock{"consumer", {}, {}});
-
-    auto &producer = fn.blocks[0];
-    producer.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X24), MOperand::regOp(PhysReg::X0)}});
-    producer.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X24)}});
-    producer.instrs.push_back(
-        MInstr{MOpcode::StrRegFpImm, {MOperand::regOp(PhysReg::X24), MOperand::immOp(-8)}});
-    producer.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("consumer")}});
-
-    auto &consumer = fn.blocks[1];
-    consumer.instrs.push_back(
-        MInstr{MOpcode::LdrRegFpImm, {MOperand::regOp(PhysReg::X7), MOperand::immOp(-8)}});
-    consumer.instrs.push_back(
-        MInstr{MOpcode::MovRR, {MOperand::regOp(PhysReg::X0), MOperand::regOp(PhysReg::X7)}});
-    consumer.instrs.push_back(MInstr{MOpcode::Ret, {}});
-
-    (void)runPeephole(fn);
-
-    // The consumer now reads x24 directly; no metadata is published, the
-    // next stage's liveness solve sees the read.
-    EXPECT_TRUE(fn.blocks[0].carriedExitRegs.empty());
-    const bool spillStoreRemoved =
-        std::none_of(fn.blocks[0].instrs.begin(),
-                     fn.blocks[0].instrs.end(),
-                     [](const MInstr &instr) { return instr.opc == MOpcode::StrRegFpImm; });
-    ASSERT_TRUE(spillStoreRemoved);
-
-    (void)runPostSchedulePeephole(fn);
-    const bool producerStillDefinesX24 = std::any_of(
-        fn.blocks[0].instrs.begin(), fn.blocks[0].instrs.end(), [](const MInstr &instr) {
-            return instr.opc == MOpcode::MovRR && instr.ops.size() == 2 &&
-                   instr.ops[0].kind == MOperand::Kind::Reg &&
-                   instr.ops[0].reg.idOrPhys == static_cast<uint16_t>(PhysReg::X24);
-        });
-    EXPECT_TRUE(producerStillDefinesX24);
-}
-
 // ─── B1: block-exit liveness for compute-into-target folding and MADD fusion ─
 
 namespace {
@@ -591,9 +276,9 @@ namespace {
 MFunction twoBlocks(std::vector<MInstr> instrs, std::vector<MInstr> nextInstrs = {}) {
     MFunction fn{};
     fn.name = "exit_live";
-    fn.blocks.push_back(MBasicBlock{"entry", std::move(instrs), {}});
+    fn.blocks.push_back(MBasicBlock{"entry", std::move(instrs)});
     nextInstrs.push_back(MInstr{MOpcode::Ret, {}});
-    fn.blocks.push_back(MBasicBlock{"next", std::move(nextInstrs), {}});
+    fn.blocks.push_back(MBasicBlock{"next", std::move(nextInstrs)});
     return fn;
 }
 
@@ -644,8 +329,7 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsReturnRegisterAtRet) {
     fn.blocks.push_back(MBasicBlock{"entry",
                                     {add3(PhysReg::X0, PhysReg::X2, PhysReg::X3),
                                      mov2(PhysReg::X1, PhysReg::X0),
-                                     MInstr{MOpcode::Ret, {}}},
-                                    {}});
+                                     MInstr{MOpcode::Ret, {}}}});
     (void)runPeephole(fn);
     ASSERT_GE(fn.blocks[0].instrs.size(), 2u);
     EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
@@ -658,8 +342,7 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsReturnRegisterAtRet) {
     mirrored.blocks.push_back(MBasicBlock{"entry",
                                           {add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
                                            mov2(PhysReg::X0, PhysReg::X1),
-                                           MInstr{MOpcode::Ret, {}}},
-                                          {}});
+                                           MInstr{MOpcode::Ret, {}}}});
     (void)runPeephole(mirrored);
     ASSERT_FALSE(mirrored.blocks[0].instrs.empty());
     EXPECT_EQ(mirrored.blocks[0].instrs[0].opc, MOpcode::AddRRR);
@@ -675,8 +358,7 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsCallArgument) {
                                     {add3(PhysReg::X1, PhysReg::X2, PhysReg::X3),
                                      mov2(PhysReg::X0, PhysReg::X1),
                                      MInstr{MOpcode::Bl, {MOperand::labelOp("callee")}},
-                                     MInstr{MOpcode::Ret, {}}},
-                                    {}});
+                                     MInstr{MOpcode::Ret, {}}}});
     (void)runPeephole(fn);
     ASSERT_GE(fn.blocks[0].instrs.size(), 3u);
     EXPECT_EQ(fn.blocks[0].instrs[0].opc, MOpcode::AddRRR);
@@ -690,8 +372,7 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsCallArgument) {
     saved.blocks.push_back(MBasicBlock{"entry",
                                        {add3(PhysReg::X25, PhysReg::X2, PhysReg::X3),
                                         mov2(PhysReg::X0, PhysReg::X25),
-                                        MInstr{MOpcode::Ret, {}}},
-                                       {}});
+                                        MInstr{MOpcode::Ret, {}}}});
     (void)runPeephole(saved);
     ASSERT_FALSE(saved.blocks[0].instrs.empty());
     EXPECT_EQ(saved.blocks[0].instrs[0].opc, MOpcode::AddRRR);
@@ -727,8 +408,7 @@ TEST(AArch64PeepholeSubpasses, FoldComputeIntoTargetKeepsCallArgument) {
                                          {add3(PhysReg::X12, PhysReg::X2, PhysReg::X3),
                                           mov2(PhysReg::X0, PhysReg::X12),
                                           MInstr{MOpcode::Bl, {MOperand::labelOp("callee")}},
-                                          MInstr{MOpcode::Ret, {}}},
-                                         {}});
+                                          MInstr{MOpcode::Ret, {}}}});
     (void)runPeephole(scratch);
     ASSERT_FALSE(scratch.blocks[0].instrs.empty());
     EXPECT_EQ(scratch.blocks[0].instrs[0].opc, MOpcode::AddRRR);
@@ -743,8 +423,7 @@ TEST(AArch64PeepholeSubpasses, MaddFusionRespectsExitLiveMultiplyDestination) {
     fn.blocks.push_back(MBasicBlock{"entry",
                                     {mul3(PhysReg::X0, PhysReg::X1, PhysReg::X2),
                                      add3(PhysReg::X3, PhysReg::X3, PhysReg::X0),
-                                     MInstr{MOpcode::Ret, {}}},
-                                    {}});
+                                     MInstr{MOpcode::Ret, {}}}});
     const auto stats = runPeephole(fn);
     EXPECT_EQ(stats.maddFusions, 0);
     ASSERT_FALSE(fn.blocks[0].instrs.empty());
@@ -766,8 +445,7 @@ TEST(AArch64PeepholeSubpasses, MaddFusionRespectsExitLiveMultiplyDestination) {
     fused.blocks.push_back(MBasicBlock{"entry",
                                        {mul3(PhysReg::X4, PhysReg::X1, PhysReg::X2),
                                         add3(PhysReg::X3, PhysReg::X3, PhysReg::X4),
-                                        MInstr{MOpcode::Ret, {}}},
-                                       {}});
+                                        MInstr{MOpcode::Ret, {}}}});
     const auto fusedStats = runPeephole(fused);
     EXPECT_EQ(fusedStats.maddFusions, 1);
     ASSERT_FALSE(fused.blocks[0].instrs.empty());
@@ -851,7 +529,7 @@ TEST(AArch64PeepholeSubpasses, BlockLocalDceSeedsFromExitLiveSet) {
     // block-local DCE must treat it as live.
     MFunction fn{};
     fn.name = "exit_live_def";
-    fn.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn.blocks.push_back(MBasicBlock{"entry", {}});
     auto &bb = fn.blocks.back();
 
     bb.instrs.push_back(
@@ -870,7 +548,7 @@ TEST(AArch64PeepholeSubpasses, BlockLocalDceSeedsFromExitLiveSet) {
 
     // With an exit-live set that omits x10 the def is removable ...
     MFunction fn2{};
-    fn2.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn2.blocks.push_back(MBasicBlock{"entry", {}});
     fn2.blocks[0].instrs.push_back(
         MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X10), MOperand::immOp(42)}});
     fn2.blocks[0].instrs.push_back(MInstr{MOpcode::Ret, {}});
@@ -885,7 +563,7 @@ TEST(AArch64PeepholeSubpasses, BlockLocalDceSeedsFromExitLiveSet) {
 
     // ... and so is it without any liveness (x10 is not in the conservative seed).
     MFunction fn3{};
-    fn3.blocks.push_back(MBasicBlock{"entry", {}, {}});
+    fn3.blocks.push_back(MBasicBlock{"entry", {}});
     fn3.blocks[0].instrs.push_back(
         MInstr{MOpcode::MovRI, {MOperand::regOp(PhysReg::X10), MOperand::immOp(42)}});
     fn3.blocks[0].instrs.push_back(MInstr{MOpcode::Ret, {}});
@@ -908,11 +586,10 @@ TEST(AArch64PeepholeSubpasses, CsetBranchFusionRespectsExitLiveDestination) {
         {MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(0)}},
          MInstr{MOpcode::Cset, {MOperand::regOp(PhysReg::X1), MOperand::condOp("eq")}},
          MInstr{MOpcode::Cbnz, {MOperand::regOp(PhysReg::X1), MOperand::labelOp("next")}},
-         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}},
-        {}});
+         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}}});
     fn.blocks.push_back(
-        MBasicBlock{"next", {mov2(PhysReg::X0, PhysReg::X1), MInstr{MOpcode::Ret, {}}}, {}});
-    fn.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret, {}}}, {}});
+        MBasicBlock{"next", {mov2(PhysReg::X0, PhysReg::X1), MInstr{MOpcode::Ret}}});
+    fn.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret}}});
     (void)runPeephole(fn);
     const bool csetSurvives = std::any_of(fn.blocks[0].instrs.begin(),
                                           fn.blocks[0].instrs.end(),
@@ -927,10 +604,9 @@ TEST(AArch64PeepholeSubpasses, CsetBranchFusionRespectsExitLiveDestination) {
         {MInstr{MOpcode::CmpRI, {MOperand::regOp(PhysReg::X0), MOperand::immOp(0)}},
          MInstr{MOpcode::Cset, {MOperand::regOp(PhysReg::X1), MOperand::condOp("eq")}},
          MInstr{MOpcode::Cbnz, {MOperand::regOp(PhysReg::X1), MOperand::labelOp("next")}},
-         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}},
-        {}});
-    fused.blocks.push_back(MBasicBlock{"next", {MInstr{MOpcode::Ret, {}}}, {}});
-    fused.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret, {}}}, {}});
+         MInstr{MOpcode::Br, {MOperand::labelOp("other")}}}});
+    fused.blocks.push_back(MBasicBlock{"next", {MInstr{MOpcode::Ret}}});
+    fused.blocks.push_back(MBasicBlock{"other", {MInstr{MOpcode::Ret}}});
     (void)runPeephole(fused);
     const bool csetGone = std::none_of(fused.blocks[0].instrs.begin(),
                                        fused.blocks[0].instrs.end(),
@@ -947,15 +623,15 @@ TEST(AArch64PeepholeSubpasses, ColdBlockWithFallthroughIsNotMoved) {
     MFunction fn{};
     fn.name = "cold_ft";
 
-    MBasicBlock entry{"entry", {}, {}};
+    MBasicBlock entry{"entry", {}};
     entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("user_error_path")}});
 
-    MBasicBlock coldFallthrough{"user_error_path", {}, {}};
+    MBasicBlock coldFallthrough{"user_error_path", {}};
     // Ends in a conditional branch: not-taken path falls through to "after".
     coldFallthrough.instrs.push_back(
         MInstr{MOpcode::Cbz, {MOperand::regOp(PhysReg::X0), MOperand::labelOp("entry")}});
 
-    MBasicBlock after{"after", {}, {}};
+    MBasicBlock after{"after", {}};
     after.instrs.push_back(MInstr{MOpcode::Ret, {}});
 
     fn.blocks = {entry, coldFallthrough, after};
@@ -971,13 +647,13 @@ TEST(AArch64PeepholeSubpasses, TerminatedColdBlockIsMovedToEnd) {
     MFunction fn{};
     fn.name = "cold_term";
 
-    MBasicBlock entry{"entry", {}, {}};
+    MBasicBlock entry{"entry", {}};
     entry.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("hot")}});
 
-    MBasicBlock cold{"check_error_exit", {}, {}};
+    MBasicBlock cold{"check_error_exit", {}};
     cold.instrs.push_back(MInstr{MOpcode::Br, {MOperand::labelOp("hot")}});
 
-    MBasicBlock hot{"hot", {}, {}};
+    MBasicBlock hot{"hot", {}};
     hot.instrs.push_back(MInstr{MOpcode::Ret, {}});
 
     fn.blocks = {entry, cold, hot};

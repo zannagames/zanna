@@ -44,7 +44,6 @@
 
 #include "codegen/aarch64/FrameBuilder.hpp"
 #include "codegen/aarch64/MachineIR.hpp"
-#include "codegen/aarch64/RegAllocLinear.hpp"
 #include "codegen/aarch64/TargetAArch64.hpp"
 #include "codegen/aarch64/ra/LiveIntervals.hpp"
 
@@ -55,6 +54,15 @@
 
 /// @file
 /// @brief Declares the AArch64 function-wide register allocator.
+
+namespace zanna::codegen::aarch64 {
+
+/// @brief Statistics produced by AArch64 register allocation.
+struct AllocationResult {
+    int gprSpillSlots{0}; ///< Number of frame slots the allocator created for spills.
+};
+
+} // namespace zanna::codegen::aarch64
 
 namespace zanna::codegen::aarch64::ra {
 
@@ -76,8 +84,8 @@ class GlobalAllocator {
 
     /// @brief Build intervals, assign, lay out slots, rewrite, publish frame
     ///        and callee-saved metadata.
-    /// @throws std::runtime_error on a malformed input (a PhiStore, a
-    ///         parallel copy with mismatched classes, or more simultaneous
+    /// @throws std::runtime_error on a malformed input (a parallel copy with
+    ///         mismatched classes, or more simultaneous
     ///         spilled operands than the reserved scratch can serve).
     GlobalAllocationStats run();
 
@@ -141,7 +149,7 @@ class GlobalAllocator {
 };
 
 /// @brief Run the function-wide allocator on @p fn.
-/// @param[in,out] fn Function lowered with AArch64Module::edgeCopyLowering.
+/// @param[in,out] fn Function in the lowering shape (block-parameter vregs, ParallelCopy edges).
 /// @param ti Target register sets and calling convention.
 /// @return Allocation statistics (spill slot count).
 /// @post Every register operand is physical, no ParallelCopy remains, the

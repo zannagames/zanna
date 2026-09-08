@@ -74,7 +74,7 @@ namespace zanna::codegen::aarch64 {
 /// of 8-byte registers, padding is added to maintain alignment.
 ///
 /// @see PrologueEpiloguePass for prologue/epilogue code generation
-/// @see RegAllocLinear for determining which callee-saved registers are used
+/// @see ra/GlobalAllocator for determining which callee-saved registers are used
 /// @invariant @ref localFrameSize is nonnegative and 16-byte aligned.
 /// @invariant Save lists exclude frame pointer `x29` and link register `x30`.
 struct FramePlan {

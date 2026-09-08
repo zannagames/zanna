@@ -143,14 +143,6 @@ std::vector<unsigned> MirCfg::loopDepths() const {
     return zanna::codegen::ra::computeLoopDepths(succs_);
 }
 
-/// @copydoc carriedExitRegSet
-PhysRegSet carriedExitRegSet(const MBasicBlock &block) noexcept {
-    PhysRegSet regs;
-    for (uint16_t phys : block.carriedExitRegs)
-        regs.add(static_cast<PhysReg>(phys));
-    return regs;
-}
-
 /// @copydoc blockExitLive
 PhysRegSet blockExitLive(const MFunction &fn,
                          std::size_t bi,
@@ -160,7 +152,6 @@ PhysRegSet blockExitLive(const MFunction &fn,
 
     const MBasicBlock &block = fn.blocks[bi];
     PhysRegSet live = liveness.liveOut[bi];
-    live |= carriedExitRegSet(block);
     live.add(PhysReg::SP);
     live.add(PhysReg::X29);
     live.add(PhysReg::X30);

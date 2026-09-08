@@ -147,7 +147,6 @@ constexpr ScratchOrder kOrderX16First = {kScratchGPR2, kScratchGPR, kScratchGPR3
         case MOpcode::LdrFprFpImm:
             return MOpcode::LdrFprBaseImm;
         case MOpcode::StrRegFpImm:
-        case MOpcode::PhiStoreGPR:
             return MOpcode::StrRegBaseImm;
         case MOpcode::Str8RegFpImm:
             return MOpcode::Str8RegBaseImm;
@@ -156,7 +155,6 @@ constexpr ScratchOrder kOrderX16First = {kScratchGPR2, kScratchGPR, kScratchGPR3
         case MOpcode::Str32RegFpImm:
             return MOpcode::Str32RegBaseImm;
         case MOpcode::StrFprFpImm:
-        case MOpcode::PhiStoreFPR:
             return MOpcode::StrFprBaseImm;
         case MOpcode::StrRegSpImm:
             return MOpcode::StrRegBaseImm;
@@ -199,8 +197,6 @@ constexpr ScratchOrder kOrderX16First = {kScratchGPR2, kScratchGPR, kScratchGPR3
         case MOpcode::Str16RegFpImm:
         case MOpcode::Str32RegFpImm:
         case MOpcode::StrFprFpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
             return true;
         default:
             return false;

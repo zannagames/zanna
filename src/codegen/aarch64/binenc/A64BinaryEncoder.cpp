@@ -256,8 +256,6 @@ static void validateOperandCount(const MInstr &mi) {
         case MOpcode::Str32RegFpImm:
         case MOpcode::LdrFprFpImm:
         case MOpcode::StrFprFpImm:
-        case MOpcode::PhiStoreGPR:
-        case MOpcode::PhiStoreFPR:
         case MOpcode::AddFpImm:
         case MOpcode::Cbz:
         case MOpcode::Cbnz:
@@ -898,10 +896,8 @@ size_t A64BinaryEncoder::measureInstructionSize(
         switch (opc) {
             // FP-relative, single-width-8.
             case MOpcode::LdrRegFpImm:
-            case MOpcode::PhiStoreGPR:
             case MOpcode::StrRegFpImm:
             case MOpcode::LdrFprFpImm:
-            case MOpcode::PhiStoreFPR:
             case MOpcode::StrFprFpImm:
                 return LdStInfo{1, 8};
             // FP-relative narrow widths.
@@ -2002,7 +1998,6 @@ void A64BinaryEncoder::encodeInstruction(const MInstr &mi, objfile::CodeSection 
             return;
 
         case MOpcode::LdrRegFpImm:
-        case MOpcode::PhiStoreGPR:
         case MOpcode::StrRegFpImm:
         case MOpcode::Ldr8RegFpImm:
         case MOpcode::Ldr16RegFpImm:
@@ -2011,7 +2006,6 @@ void A64BinaryEncoder::encodeInstruction(const MInstr &mi, objfile::CodeSection 
         case MOpcode::Str16RegFpImm:
         case MOpcode::Str32RegFpImm:
         case MOpcode::LdrFprFpImm:
-        case MOpcode::PhiStoreFPR:
         case MOpcode::StrFprFpImm:
             encodeFpRelLdStInstr(mi, cs);
             return;
@@ -2280,9 +2274,8 @@ void A64BinaryEncoder::encodeConditionalInstr(const MInstr &mi, objfile::CodeSec
 /** @brief Encodes frame-pointer-relative scalar memory MIR.
  * @param mi Validated instruction. @param[in,out] cs Destination text section. */
 void A64BinaryEncoder::encodeFpRelLdStInstr(const MInstr &mi, objfile::CodeSection &cs) {
-    // GPR Ldr/Str + PhiStore (single-width) — width 8 access.
-    if (mi.opc == MOpcode::LdrRegFpImm || mi.opc == MOpcode::PhiStoreGPR ||
-        mi.opc == MOpcode::StrRegFpImm) {
+    // GPR Ldr/Str (single-width) — width 8 access.
+    if (mi.opc == MOpcode::LdrRegFpImm || mi.opc == MOpcode::StrRegFpImm) {
         const uint32_t rt = hwGPR(getReg(mi.ops[0]));
         const long long offset = getImm(mi.ops[1]);
         const uint32_t fp = hwGPR(PhysReg::X29);

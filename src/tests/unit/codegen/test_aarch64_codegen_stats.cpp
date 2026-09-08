@@ -61,7 +61,7 @@ TEST(AArch64CodegenStats, CountsFrameTrafficPrefixesSlotsAndSaves) {
     fn.frame.spills.push_back(MFunction::SpillSlot{2, 8, 8, -16});
     fn.frame.spills.push_back(MFunction::SpillSlot{3, 8, 8, -8}); // shares slot -8
 
-    MBasicBlock entry{"entry", {}, {}};
+    MBasicBlock entry{"entry", {}};
     // Direct frame accesses.
     entry.instrs.push_back(ins(MOpcode::LdrRegFpImm, {r(PhysReg::X0), imm(-8)}));
     entry.instrs.push_back(ins(MOpcode::StrRegFpImm, {r(PhysReg::X0), imm(-16)}));
@@ -105,19 +105,6 @@ TEST(AArch64CodegenStats, CountsFrameTrafficPrefixesSlotsAndSaves) {
     total.add(s);
     EXPECT_EQ(total.functions, 2u);
     EXPECT_EQ(total.frameLoads, 4u);
-}
-
-TEST(AArch64CodegenStats, PhiStoreCountsAsFrameStore) {
-    MFunction fn;
-    fn.name = "g";
-    MBasicBlock entry{"entry", {}, {}};
-    entry.instrs.push_back(ins(MOpcode::PhiStoreGPR, {r(PhysReg::X0), imm(-24)}));
-    entry.instrs.push_back(ins(MOpcode::Ret, {}));
-    fn.blocks.push_back(std::move(entry));
-    const CodegenStats s = computeCodegenStats(fn);
-    EXPECT_EQ(s.stores, 1u);
-    EXPECT_EQ(s.frameStores, 1u);
-    EXPECT_EQ(s.frameLoads, 0u);
 }
 
 TEST(AArch64CodegenStats, PipelineReportsAtEveryLevel) {
